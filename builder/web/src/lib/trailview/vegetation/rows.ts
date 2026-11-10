@@ -40,16 +40,16 @@ export class Rows implements Producer {
             floats.set([rows.reach_m, ...rows.height_m], 64 + 4 * c + 1);
         });
         const evergreen = (region: Region, model: string) => (region.trees.find(rule => rule.model === model) ?? rules.regions.flatMap(r => r.trees).find(rule => rule.model === model))?.evergreen;
-        const word = (region: Region, model: string | undefined) => {
+        const word = (region: Region, r: number, model: string | undefined) => {
             if (model && model in PLANTS) {
-                const first = plants.rowModel(model);
+                const first = plants.rowModel(r, model);
                 return first === undefined ? NO_MODEL : first | ALONG | (SEEDS << SHAPES);
             }
-            const index = model && model in TREES ? trees.index(model, evergreen(region, model)) : undefined;
+            const index = model && model in TREES ? trees.index(r, model, evergreen(region, model)) : undefined;
             return index === undefined ? NO_MODEL : index | (TREES[model!].keepsHeading ? WINDWARD : 0);
         };
         rules.regions.forEach((region, r) => crops.forEach(({ code, rows }, c) => {
-            data[MODELS_AT + 4 * r + c] = word(region, region.rows[rules.vocabulary.materials[code].id] ?? rows.model);
+            data[MODELS_AT + 4 * r + c] = word(region, r, region.rows[rules.vocabulary.materials[code].id] ?? rows.model);
         }));
         this.data = data;
         this.reach = Math.max(0, ...crops.map(({ rows }) => rows.reach_m));

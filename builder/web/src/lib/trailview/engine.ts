@@ -21,14 +21,15 @@ import { EYE, Instances, SUN, type InstanceStats, type LastFrame } from './insta
 import { GroundSource } from './stream/ground';
 import { eyeTiles, pageDecoder, type EyeTiles } from './stream/terrain';
 import { Terrain, terrainPipelines, type Audit, type TerrainStats } from './terrain/terrain';
+import { piecePipelines } from './plan/pieces';
 import HOUSE_VERSION from 'virtual:house-version';
 import PLAN_VERSION from 'virtual:plan-version';
 import STAMP_VERSION from 'virtual:stamp-version';
 import TREE_VERSION from 'virtual:tree-version';
-import { FINEST } from './terrain/lod';
+import { FINEST, NEAR_M } from './terrain/lod';
 import { Houses, type HouseStats } from './structures/houses';
 import { Forest } from './vegetation/forest';
-import { TreeModels } from './vegetation/tree-models';
+import { TREE_REACH_M, TreeModels, type Reach } from './vegetation/tree-models';
 import { Plants } from './vegetation/plants';
 import { Rows } from './vegetation/rows';
 import { Dressing } from './dressing/dressing';
@@ -56,6 +57,8 @@ const RAD = Math.PI / 180;
 const STEP_M = 1, HEADROOM_M = 2;
 /** A flying eye under the terrain is in a tunnel when a floor lies at most this far below it. */
 const BORE_M = 6;
+/** The regions in reach are read this much wider and again only when the eye moves farther or the ground pages change. */
+const REACH_MARGIN_M = 250;
 
 export interface Stats {
     adapter: string;
@@ -85,12 +88,16 @@ export interface Stats {
 }
 
 /**
- * The pipelines of the first frame: the terrain and its compute, the ground pages, the sky and the
- * resolve. The other passes compile theirs at their attach, after the first frame.
+ * The pipelines of the first frames: the terrain and its compute, the ground pages, the sky and the resolve, and with the
+ * records (`plan`) the meshes, which draw the view about the eye. The other passes compile theirs at their attach, once
+ * the view about the eye is drawn: a compile holds the GPU process, which the first frames' stamps and corners need.
  */
-const FIRST: ((gpu: Gpu) => Promise<unknown>)[] = [terrainPipelines, groundPipelines, skyPipeline, resolvePipeline];
-/** The longest that the other passes wait for the first frame: a view whose eye has no ground draws none. */
-const REST_WAIT_MS = 2000;
+const first = (plan: boolean): ((gpu: Gpu) => Promise<unknown>)[] => [terrainPipelines(plan), groundPipelines, skyPipeline, resolvePipeline, ...(plan ? [piecePipelines] : [])];
+/**
+ * The longest from the attach that the other passes wait for the view about the eye: a view whose eye has no ground
+ * draws none. Their compile, which takes about a second on a desktop, would stall the view about the eye.
+ */
+const REST_WAIT_MS = 5000;
 
 /** Where the eye stands: a height, and whether it lies in a tunnel. */
 interface Feet { z: number; tunnel: boolean; floor: boolean }
@@ -114,6 +121,8 @@ export class TrailView {
     private readonly houses: Houses;
     private readonly instances = new Instances();
     private readonly trees: TreeModels;
+    /** The last regions in reach, where they were read from and at which change of the ground pages. */
+    private reached?: Reach & { east: number; north: number; changes: number };
     private readonly forest: Forest;
     private readonly plants: Plants;
     private readonly rows: Rows;
@@ -137,9 +146,9 @@ export class TrailView {
     private ready = false;
     /** No frame draws before `start` lets it: a frame asks for every tile, and the tiles under the eye come first. */
     private held = true;
-    /** The attach of the other passes, which starts at the first drawn frame (`firstDrawn`); it rejects when one fails. */
+    /** The attach of the other passes, which starts once a frame draws the view about the eye (`eyeDrawn`); it rejects when one fails. */
     private rest: Promise<unknown> = Promise.resolve();
-    private firstDrawn?: () => void;
+    private eyeDrawn?: () => void;
     /** Whether every pass is attached; `completed` until a frame draws them all. */
     private complete = false;
     private completed = false;
@@ -195,27 +204,29 @@ export class TrailView {
     }
 
     /**
-     * Compiles the pipelines of the first frame on a device, without a view and without pools: on a cold
+     * Compiles the pipelines of the first frames on a device, without a view and without pools: on a cold
      * shader cache that takes seconds. Call it as soon as a view is likely, such as when a drag toward one
      * starts; `start` on the same device takes what it compiled, also while it still compiles.
      */
-    static prepare(gpu: Gpu): Promise<void> {
-        return Promise.all(FIRST.map(make => gpu.once(make))).then(() => {});
+    static prepare(gpu: Gpu, plan = false): Promise<void> {
+        return Promise.all(first(plan).map(make => gpu.once(make))).then(() => {});
     }
 
     /**
      * Starts the terrain and feature tiles under the eye, reads the ruleset and opens the ground layers,
      * attaches what the first frame draws, then starts the other tile loads once the tiles under the eye
      * are in, or after EYE_WAIT_MS: on a slow link the other loads would share it with them. The other
-     * passes draw once they attach after the first frame. `scale` is the render scale; `plan` builds the
+     * passes draw once they attach after the view about the eye. `scale` is the render scale; `plan` builds the
      * ground plan beside the old ground (`ground=plan`); `finest` caps the terrain's finest level (`finest=`).
+     * All but the attach run while `gpu` comes: the frames before it ask for the view's records and stamps.
      */
-    static async start(canvas: HTMLCanvasElement, gpu: Gpu, config: PlannerConfig, view: View, scale: number, plan = false, finest = FINEST): Promise<TrailView> {
+    static async start(canvas: HTMLCanvasElement, gpu: Gpu | Promise<Gpu>, config: PlannerConfig, view: View, scale: number, plan = false, finest = FINEST): Promise<TrailView> {
         const stop = new AbortController(), tiles = eyeTiles(config, [view.lon, view.lat], stop.signal);
         const ground = await GroundSource.open(config, view.date, stop.signal).catch(error => void console.warn(`TrailView draws no ground: ${error instanceof Error ? error.message : error}`));
         const engine = new TrailView(canvas, config, view, ground ?? undefined, tiles, stop, scale, plan, finest);
+        engine.request();
         // No caller holds an engine whose start fails, so it ends itself: its workers and listeners run already.
-        await engine.attach(gpu).catch(error => {
+        await Promise.resolve(gpu).then(device => engine.attach(device)).catch(error => {
             engine.destroy();
             throw error;
         });
@@ -396,19 +407,19 @@ export class TrailView {
     }
 
     private near(): boolean {
-        return this.drawing && this.complete && this.terrain.near && this.settled() && this.groundLook.nearIdle && this.houses.nearIdle && this.trees.idle && this.forest.idle
-            && this.plants.idle && this.instances.idle && this.shadow.nearDrawn;
+        return this.drawing && this.complete && this.terrain.near && this.settled() && this.groundLook.nearIdle && this.houses.nearIdle && this.trees.nearIdle && this.forest.idle
+            && this.plants.nearIdle && this.instances.idle && this.shadow.nearDrawn;
     }
 
     /**
-     * Resolves when the first frame can draw. The other passes attach at the first drawn frame, or after
-     * REST_WAIT_MS: their compiles would share the compiler and the CPU with the first frame. The engine's
+     * Resolves when the first frame can draw. The other passes attach once the view about the eye is drawn, or
+     * after REST_WAIT_MS: their compiles would share the compiler and the CPU with that view. The engine's
      * buffers and textures are made in a scope of the device, which `destroy()` releases.
      */
     private async attach(base: Gpu): Promise<void> {
         const gpu = base.scope();
         // The passes' attaches report a failed compile.
-        TrailView.prepare(gpu).catch(() => {});
+        TrailView.prepare(gpu, this.groundPlan).catch(() => {});
         this.complete = false;
         this.context.configure({ device: gpu.device, format: gpu.format, alphaMode: 'opaque' });
         const uniform = gpu.buffer('uniforms', FRAME_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
@@ -422,7 +433,7 @@ export class TrailView {
         const surface = this.terrain.surface!, features = this.terrain.features!;
         await Promise.all([this.groundLook.attach(gpu, look, surface, this.shadow.entries()), this.sky.attach(gpu), this.resolve.attach(gpu)]);
         const drawn = new Promise<void>(resolve => {
-            this.firstDrawn = resolve;
+            this.eyeDrawn = resolve;
             setTimeout(resolve, REST_WAIT_MS);
         });
         // A device lost before the first frame leaves the other passes to the next attach.
@@ -459,7 +470,7 @@ export class TrailView {
             }
             if (this.destroyed) return;
             // The other passes attach before the next frame: until they do, they hold the lost device's resources.
-            this.firstDrawn?.();
+            this.eyeDrawn?.();
             this.recoveries++;
             this.request();
         });
@@ -535,6 +546,18 @@ export class TrailView {
         return near;
     }
 
+    /**
+     * The regions where trees and plants can stand about the eye, and those of the near field, each read REACH_MARGIN_M
+     * wider: the last answer holds until the pages change or the eye moves past that margin.
+     */
+    private reach(): Reach {
+        const { east, north } = this.pose, last = this.reached, changes = this.groundLook.changes;
+        if (last && last.changes === changes && Math.abs(east - last.east) <= REACH_MARGIN_M && Math.abs(north - last.north) <= REACH_MARGIN_M) return last;
+        const [lon, lat] = this.frame.lonLat(east, north), wider = (metres: number) => this.groundLook.regionsNear(lon, lat, metres + REACH_MARGIN_M);
+        this.reached = { east, north, changes, reach: wider(TREE_REACH_M), near: wider(NEAR_M) };
+        return this.reached;
+    }
+
     /** Degrees clockwise from the frame's north to true north at a point. */
     private convergence(east: number, north: number): number {
         const [lon, lat] = this.frame.lonLat(east, north), [e, n] = this.frame.local(lon, lat + 1e-4);
@@ -548,7 +571,11 @@ export class TrailView {
 
     private render(now: number): void {
         this.pending = false;
-        if (!this.ready || this.held) return;
+        if (!this.ready) {
+            if (!this.destroyed) this.ask();
+            return;
+        }
+        if (this.held) return;
         if (!this.pacer.due(now)) return this.request();
         const start = performance.now();
         const steer = this.controls.steer(), dt = this.last ? Math.min(0.1, (now - this.last) / 1000) : 0;
@@ -578,9 +605,10 @@ export class TrailView {
         const { drawn, wanted, arrived, origins } = this.terrain.selected;
         this.groundLook.update(drawn, wanted, arrived, origins, this.extras.date, lonLat, this.forest.regionPages(lonLat));
         this.houses.update(lonLat, eye && { viewProj, eye: [eye.east, eye.north, eye.z] });
-        this.trees.update(this.extras.date);
+        const reach = this.reach();
+        this.trees.update(this.extras.date, reach);
         this.forest.update(lonLat);
-        this.plants.update(lonLat, this.extras.date, place.above);
+        this.plants.update(lonLat, this.extras.date, place.above, reach);
         this.rows.update(lonLat);
         this.dressing.update(lonLat);
         const group = this.groundLook.group;
@@ -664,7 +692,7 @@ export class TrailView {
         }
         const read = times.resolve(encoder, { ...this.terrain.stats.jobs, frame: start });
         gpu.device.queue.submit([encoder.finish()]);
-        if (step) this.firstDrawn?.();
+        if (step && this.eyeFinal()) this.eyeDrawn?.();
         read();
         probed();
         counted();
@@ -724,10 +752,24 @@ export class TrailView {
         return this.houses.readCasters(encoder);
     }
 
+    /**
+     * A frame before the device draws: it selects the view's nodes only for the records and the meshes' stamps, so that
+     * their workers start before the pipelines are compiled.
+     */
+    private ask(): void {
+        const place = this.place(), [width, height] = this.size();
+        this.terrain.update({ lonLat: this.frame.lonLat(place.east, place.north), above: place.above, viewProj: viewProjection(this.pose.heading, this.pose.pitch, width / height), pixels: Math.max(1, Math.round(height * this.scale)), ahead: ahead(this.pose) });
+    }
+
+    /** The canvas's size in pixels. */
+    private size(): [number, number] {
+        const ratio = Math.min(devicePixelRatio, MAX_PIXEL_RATIO);
+        return [Math.max(1, Math.round(this.canvas.clientWidth * ratio)), Math.max(1, Math.round(this.canvas.clientHeight * ratio))];
+    }
+
     /** Fits the canvas and the targets to the element; true when the targets are new. */
     private fit(): boolean {
-        const ratio = Math.min(devicePixelRatio, MAX_PIXEL_RATIO);
-        const width = Math.max(1, Math.round(this.canvas.clientWidth * ratio)), height = Math.max(1, Math.round(this.canvas.clientHeight * ratio));
+        const [width, height] = this.size();
         if (!this.gpuState.targets.fit(width, height, Math.max(this.scaleNow, MAX_SCALE))) return false;
         this.canvas.width = width;
         this.canvas.height = height;

@@ -10,7 +10,7 @@ import { TREES } from '../models/library';
 import { PLANTS } from '../models/plant-library';
 import { bits, named, seasonOf, type Region, type Rules, type Season, type Vocabulary } from '../rules/regions';
 import type { BuiltMesh, PlantJob } from './plant-worker';
-import type { TreeModels } from './tree-models';
+import { meets, type Reach, type TreeModels } from './tree-models';
 
 /** As plants.wgsl: the units of a cell of each grid, the reaches in metres, the list slots per region, vec4 per region and shapes per ground plant. */
 const GROUND_UNITS = 32, SHRUB_UNITS = 256, GROUND_M = 60, SHRUB_M = 500;
@@ -57,17 +57,23 @@ export function groundList<T extends { share: number }>(plants: T[]): T[] {
 
 /**
  * The ground plants and the shrubs about the eye (plants.wgsl): a producer of instances whose models
- * come from the packs of the regions, built for the date's season. A tree that stands as a shrub is
+ * come from the packs of the regions, built for the date's season once their region is in reach. A tree that stands as a shrub is
  * a model of the forest's (tree-models.ts).
  */
 export class Plants implements Producer {
     private resources?: Resources;
     private readonly list: Model[] = [];
     private readonly indexes: number[] = [];
+    /** Per model of the list: the regions that plant it, and the seasons that its mesh was asked for and that it holds. */
+    private readonly users: Set<number>[] = [];
+    private readonly asked: (Season | undefined)[] = [];
+    private readonly built: (Season | undefined)[] = [];
     private readonly data: Uint32Array<ArrayBuffer>;
     private readonly worker = new Worker(new URL('./plant-worker.ts', import.meta.url), { type: 'module' });
+    /** The jobs in the worker by id: their season and their models of the list. */
+    private readonly jobs = new Map<number, { season: Season; models: number[] }>();
     private season?: Season;
-    private building = 0;
+    private reach: Reach = { reach: new Set(), near: new Set() };
     private next = 0;
     private surface?: GPUBindGroup;
     private features?: GPUBindGroup;
@@ -86,7 +92,7 @@ export class Plants implements Producer {
             const at = 64 + r * REGION_WORDS * 4;
             const ground = groundRules(region, rules.vocabulary).flatMap(rule => {
                 const tie = rule.own ? OWN_TIE : TIE;
-                const first = this.models(Array.from({ length: SEEDS }, (_, k) => ({ model: rule.model, seed: k + 1, evergreen: false, shrub: false, tie })));
+                const first = this.models(r, Array.from({ length: SEEDS }, (_, k) => ({ model: rule.model, seed: k + 1, evergreen: false, shrub: false, tie })));
                 return first === undefined ? [] : [{ ...rule, first }];
             });
             ground.forEach((rule, k) => {
@@ -97,7 +103,7 @@ export class Plants implements Producer {
             });
             const shrubs = region.trees.filter(rule => rule.cover === 'shrub' && (rule.model in PLANTS || rule.model in TREES)).sort((a, b) => b.weight - a.weight).slice(0, SLOTS).flatMap(rule => {
                 const plant = rule.model in PLANTS;
-                const model = plant ? this.models([{ model: rule.model, seed: 1, evergreen: !!rule.evergreen, shrub: true, tie: OWN_TIE }]) : trees.index(rule.model, rule.evergreen, OWN_TIE);
+                const model = plant ? this.models(r, [{ model: rule.model, seed: 1, evergreen: !!rule.evergreen, shrub: true, tie: OWN_TIE }]) : trees.index(r, rule.model, rule.evergreen, OWN_TIE);
                 return model === undefined ? [] : [{ ...rule, index: model, height: plant ? PLANTS[rule.model].ground.height : SHRUB_HEIGHT_M }];
             });
             shrubs.forEach((rule, k) => {
@@ -108,33 +114,50 @@ export class Plants implements Producer {
         });
         this.data = data;
         this.worker.onmessage = ({ data: message }: MessageEvent<{ id: number; built?: BuiltMesh[]; error?: string }>) => {
-            this.building--;
+            const job = this.jobs.get(message.id)!;
+            this.jobs.delete(message.id);
             if (message.error || !message.built) return void console.warn(`Plant models: ${message.error}`);
-            if (message.id !== this.next - 1) return;
-            this.list.forEach((entry, i) => this.instances.replace(this.indexes[i], spec(entry, message.built![i])));
+            if (job.season !== this.season) return;
+            job.models.forEach((i, k) => {
+                this.instances.replace(this.indexes[i], spec(this.list[i], message.built![k]));
+                this.built[i] = job.season;
+            });
             this.newContent = true;
             this.wake();
         };
     }
 
     get idle(): boolean {
-        return this.building === 0;
+        return this.jobs.size === 0 && this.list.every((_, i) => this.asked[i] === this.season || !this.plants(i, this.reach.reach));
     }
 
-    /** The first of SEEDS models of a plant that stands in rows (rows.ts), in its own colour; ask before the first update. */
-    rowModel(model: string): number | undefined {
-        return this.models(Array.from({ length: SEEDS }, (_, k) => ({ model, seed: k + 1, evergreen: false, shrub: true, tie: OWN_TIE })));
+    /** Whether the models of the near regions hold their meshes of the season. */
+    get nearIdle(): boolean {
+        return this.list.every((_, i) => this.built[i] === this.season || !this.plants(i, this.reach.near));
     }
 
-    /** The first of a run of models, one per entry: a run that the list already holds whole, else a new one. */
-    private models(entries: Model[]): number | undefined {
+    /** The first of SEEDS models of a plant that stands in rows (rows.ts) of region `region`, in its own colour; ask before the first update. */
+    rowModel(region: number, model: string): number | undefined {
+        return this.models(region, Array.from({ length: SEEDS }, (_, k) => ({ model, seed: k + 1, evergreen: false, shrub: true, tie: OWN_TIE })));
+    }
+
+    /** Whether one of these regions plants model `i` of the list. */
+    private plants(i: number, regions: Set<number>): boolean {
+        return meets(this.users[i], regions);
+    }
+
+    /** The first of a run of models of region `region`, one per entry: a run that the list already holds whole, else a new one. */
+    private models(region: number, entries: Model[]): number | undefined {
         const same = (m: Model | undefined, e: Model) => m?.model === e.model && m.seed === e.seed && m.shrub === e.shrub && m.evergreen === e.evergreen && m.tie === e.tie;
-        const at = this.list.findIndex((_, i) => entries.every((entry, k) => same(this.list[i + k], entry) && this.indexes[i + k] === this.indexes[i] + k));
-        if (at >= 0) return this.indexes[at];
-        const first = this.instances.add(...entries.map(() => ({ tiers: [] })));
-        if (first === undefined) return undefined;
-        entries.forEach((entry, k) => (this.list.push(entry), this.indexes.push(first + k)));
-        return first;
+        let at = this.list.findIndex((_, i) => entries.every((entry, k) => same(this.list[i + k], entry) && this.indexes[i + k] === this.indexes[i] + k));
+        if (at < 0) {
+            const first = this.instances.add(...entries.map(() => ({ tiers: [] })));
+            if (first === undefined) return undefined;
+            at = this.list.length;
+            entries.forEach((entry, k) => (this.list.push(entry), this.indexes.push(first + k), this.users.push(new Set())));
+        }
+        entries.forEach((_, k) => this.users[at + k].add(region));
+        return this.indexes[at];
     }
 
     async attach(gpu: Gpu, { surface, features }: Surfaces): Promise<void> {
@@ -152,16 +175,25 @@ export class Plants implements Producer {
         this.features = features;
     }
 
-    /** The models of the date's season, and the windows of the grids about the eye at (lon, lat), `above` metres over the ground. */
-    update(lonLat: [number, number], date: string, above: number): void {
+    /**
+     * The models of the date's season for the regions in reach, and the windows of the grids about the eye at (lon, lat), `above`
+     * metres over the ground.
+     */
+    update(lonLat: [number, number], date: string, above: number, reach: Reach): void {
         this.newContent = false;
         const r = this.resources;
         if (!r) return;
-        const season = seasonOf(date);
-        if (season !== this.season && this.list.length) {
-            this.season = season;
-            this.building++;
-            this.worker.postMessage({ id: this.next++, models: this.list.map(({ model, seed, evergreen }) => ({ model, seed, season: evergreen ? 'summer' : season })) } satisfies PlantJob);
+        const season = seasonOf(date), asking = season !== this.season || reach !== this.reach;
+        this.season = season;
+        this.reach = reach;
+        // A job for the near regions' models first, then one for the others in reach, each in the season.
+        for (const regions of asking ? [reach.near, reach.reach] : []) {
+            const models = this.list.flatMap((_, i) => (this.asked[i] !== season && this.plants(i, regions) ? [i] : []));
+            if (!models.length) continue;
+            models.forEach(i => (this.asked[i] = season));
+            const id = this.next++;
+            this.jobs.set(id, { season, models });
+            this.worker.postMessage({ id, models: models.map(i => ({ model: this.list[i].model, seed: this.list[i].seed, season: this.list[i].evergreen ? 'summer' : season })) } satisfies PlantJob);
         }
         const [ux, uy] = worldPixel(lonLat, UNITS), unit = anchorAt(...lonLat).unit;
         // An eye higher over the ground than a grid's reach dispatches none of it.
