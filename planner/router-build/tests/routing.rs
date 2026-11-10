@@ -696,7 +696,7 @@ fn alternatives_find_a_separate_corridor_without_an_out_and_back_probe() {
 fn an_out_and_back_trip_gets_alternatives_within_one_query_budget() {
     let template = roads(&fixture())[0].clone();
     // A short cycleway crosses a hill; a longer, level cycleway goes through (4).
-    let points: Vec<_> = [(-2_500, 0), (0, 0), (45_000, 0), (47_500, 0), (22_500, 12_000)]
+    let points: Vec<_> = [(-2_500, 0), (0, 0), (45_000, 0), (47_500, 0), (22_500, 22_000)]
         .into_iter()
         .map(|(lon, lat)| Point { lon, lat, elevation: 0.0 })
         .collect();
@@ -743,8 +743,9 @@ fn an_out_and_back_trip_gets_alternatives_within_one_query_budget() {
         end_position: None,
     };
     let routes = router.routes(&request, &Control::default()).unwrap().routes;
-    assert_eq!(routes.iter().map(|r| r.reason).collect::<Vec<_>>(), ["primary", "shorter"]);
-    assert!(routes[1].totals().distance_m + 1000 < routes[0].totals().distance_m);
+    assert_eq!(routes.iter().map(|r| r.reason).collect::<Vec<_>>(), ["primary", "less_climbing"]);
+    assert_eq!(routes[1].profile, "touring/less-climbing");
+    assert_eq!((routes[0].totals().ascent_m, routes[1].totals().ascent_m), (200, 0));
     // The primary route spends the whole query budget, so the alternatives stop and the answer keeps it.
     let alone = Request { alternatives: false, ..request.clone() };
     let needed = (1..)
@@ -919,7 +920,7 @@ fn route_goals_preserve_the_bikes_surface_suitability() {
     graph.forbidden_foot = Default::default();
     let profiles: Vec<_> = Profile::presets()
         .into_iter()
-        .filter(|p| ["road", "road/shorter", "gravel/shorter"].contains(&p.name.as_str()))
+        .filter(|p| ["road", "road/less-climbing", "gravel/less-climbing"].contains(&p.name.as_str()))
         .collect();
     let (source, manifest) = package_with_profiles(&graph, &profiles);
     let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
@@ -933,13 +934,13 @@ fn route_goals_preserve_the_bikes_surface_suitability() {
         start_position: None,
         end_position: None,
     };
-    for profile in ["road", "road/shorter"] {
+    for profile in ["road", "road/less-climbing"] {
         request.profile = profile.into();
         let route = router.route(&request, &Control::default()).unwrap();
         assert_eq!(route.totals().surface_m[Surface::Gravel as usize], 0, "{profile}");
         assert!(route.totals().surface_m[Surface::Paved as usize] > 3000, "{profile}");
     }
-    request.profile = "gravel/shorter".into();
+    request.profile = "gravel/less-climbing".into();
     let route = router.route(&request, &Control::default()).unwrap();
     assert_eq!(route.totals().surface_m[Surface::Paved as usize], 0);
     assert!(route.totals().distance_m < 1200);

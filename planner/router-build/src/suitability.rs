@@ -193,8 +193,8 @@ mod tests {
             let poor = tags(&[("tracktype", "grade5"), ("smoothness", "excellent")]);
             assert!(floor(&road(), &poor, name).unwrap() > base);
             // Variants keep the physical penalties.
-            for variant in ["shorter", "less-climbing"] {
-                assert_eq!(floor(&road(), &poor, &format!("{name}/{variant}")), floor(&road(), &poor, name));
+            for variant in Profile::presets().iter().filter(|p| p.name.starts_with(&format!("{name}/"))) {
+                assert_eq!(floor(&road(), &poor, &variant.name), floor(&road(), &poor, name));
             }
         }
     }
