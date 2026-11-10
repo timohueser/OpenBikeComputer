@@ -10,7 +10,7 @@ use obc_data::release::{manifest_key, List, Release as Manifest, Serving, SERVIN
 use obc_ground_plan::frame::CellKey;
 use obc_ground_plan::terrain::{pages_from_terrarium, StoredPage, Terrain};
 use obc_ground_plan::transport::{FeatureTile, Request};
-use obc_trailview_features::pmtiles::Archive;
+use obc_trailview_features::Archive;
 use serde_json::Value;
 
 use crate::fixture::{self, Fixture};

@@ -12,7 +12,7 @@ mod geometry;
 pub mod kinds;
 mod lifts;
 mod osm;
-pub mod pmtiles;
+mod pmtiles;
 mod rails;
 mod roads;
 mod sea;
@@ -22,6 +22,9 @@ mod structures;
 pub mod terrain;
 mod tiles;
 mod water;
+
+/// The PMTiles reader, for the census's reads of a release.
+pub use pmtiles::Archive;
 
 pub const EQUATOR_M: f64 = 40075016.686;
 

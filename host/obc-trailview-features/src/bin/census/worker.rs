@@ -32,11 +32,13 @@ const BORDER_STEP: i32 = 256;
 /// The faults that a line names per check.
 const FIRST: usize = 3;
 
-/// What the worker does besides the census: a made-up failure of one cell, for the driver's test.
+/// What the worker does besides the census, for the driver's test: a made-up failure of one cell, or
+/// of each worker before its first cell.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Fail {
     Panic,
     Hang,
+    Start,
 }
 
 pub struct Options {
@@ -88,7 +90,7 @@ fn begin(key: CellKey, stage: &str, options: &Options) {
         Some(Fail::Hang) => loop {
             std::thread::sleep(std::time::Duration::from_secs(1));
         },
-        None => {}
+        Some(Fail::Start) | None => {}
     }
 }
 
@@ -306,6 +308,9 @@ pub fn run(options: Options) -> Result<(), String> {
         eprintln!("census worker: panic at {at}: {message}");
         emit(&json!({"panic": {"message": message, "at": at}}));
     }));
+    if options.fail.iter().any(|f| f.1 == Fail::Start) {
+        return Err("a made-up failure before the first cell".into());
+    }
     let mut text = String::new();
     std::io::stdin().lock().read_line(&mut text).map_err(|e| e.to_string())?;
     let job = Job::parse(&text)?;

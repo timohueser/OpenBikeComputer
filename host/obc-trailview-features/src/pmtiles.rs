@@ -195,7 +195,7 @@ pub fn write(path: &Path, tiles: &[(u64, Vec<u8>)], header: &Header, metadata: &
 pub struct Archive {
     file: File,
     gzip: bool,
-    pub tile_compression: u8,
+    pub(crate) tile_compression: u8,
     leaves: u64,
     data: u64,
     pub(crate) root: Vec<Entry>,

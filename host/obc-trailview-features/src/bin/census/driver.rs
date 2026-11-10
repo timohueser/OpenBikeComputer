@@ -2,11 +2,12 @@
 //! in a worker process under its own memory cap, and appends each line to `census.jsonl`. A worker that
 //! panics, passes the time limit of a stage or is killed ends: the driver records the cell that it was
 //! on with the reason, and gives the rest of the job to a new worker that skips that cell. A run
-//! resumes from `census.jsonl`, and it writes `summary.json` at its end.
+//! resumes from `census.jsonl`: it builds again once each cell that a timeout, a kill or a crash
+//! stopped, as the PC can cause those. It writes `summary.json` at its end.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -36,21 +37,31 @@ pub struct Options {
 }
 
 /// The states of a cell that the driver records: the worker ended on it.
-const FAILED: [&str; 4] = ["panic", "timeout", "memory", "crash"];
-/// A worker that ends this often without a line stops the run: the job cannot start.
+const FAILED: [&str; 5] = ["panic", "timeout", "memory", "killed", "crash"];
+/// The failed states that a resume builds again: the PC can cause them.
+const RETRY: [&str; 4] = ["timeout", "memory", "killed", "crash"];
+/// The builds of a cell at most: one more after a failure that a resume retries.
+const ATTEMPTS: u64 = 2;
+/// Workers in a row that end before their first cell stop the run: the source cannot be read.
 const STARTS: u32 = 3;
+/// The wait before a new worker after one that ended before its first cell.
+const BACK_OFF: Duration = Duration::from_secs(1);
 /// Cells that each list of the summary names at most.
 const TOP: usize = 20;
 
 struct Running {
     child: Child,
+    /// The worker's scope, when it runs under a memory cap.
+    unit: Option<String>,
+    started: Instant,
+    /// Whether it began a cell.
+    begun: bool,
     job: Job,
     /// The cell and stage that it began last, and when, until its line.
     current: Option<(CellKey, String, Instant)>,
     panic: Option<Value>,
     fatal: Option<String>,
     timed_out: bool,
-    lines: usize,
 }
 
 fn cell_of(v: &Value) -> Option<CellKey> {
@@ -103,14 +114,16 @@ fn spawn(
     tx: &mpsc::Sender<(usize, Option<String>)>,
 ) -> Result<Running, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let mut command = match &options.memory {
-        Some(max) => {
+    let unit = options.memory.as_ref().map(|_| format!("census-{}-{id}.scope", std::process::id()));
+    let mut command = match (&options.memory, &unit) {
+        (Some(max), Some(unit)) => {
             let mut c = Command::new("systemd-run");
-            c.args(["--user", "--scope", "--quiet", "-p", &format!("MemoryMax={max}"), "-p", "MemorySwapMax=0"]);
+            c.args(["--user", "--scope", "--quiet", "--unit", unit]);
+            c.args(["-p", &format!("MemoryMax={max}"), "-p", "MemorySwapMax=0"]);
             c.arg(&exe);
             c
         }
-        None => Command::new(&exe),
+        _ => Command::new(&exe),
     };
     command.arg("worker").args(worker_args);
     command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(log.try_clone().map_err(|e| e.to_string())?);
@@ -129,7 +142,45 @@ fn spawn(
         }
         let _ = tx.send((id, None));
     });
-    Ok(Running { child, job, current: None, panic: None, fatal: None, timed_out: false, lines: 0 })
+    let started = Instant::now();
+    Ok(Running { child, unit, started, begun: false, job, current: None, panic: None, fatal: None, timed_out: false })
+}
+
+/// The bytes of `MemoryMax`-style sizes: a number with K, M, G or T.
+fn bytes(size: &str) -> Option<f64> {
+    let (number, unit) = size.split_at(size.find(|c: char| c.is_ascii_alphabetic()).unwrap_or(size.len()));
+    let shift = ["", "K", "M", "G", "T"].iter().position(|u| u.eq_ignore_ascii_case(unit))?;
+    Some(number.parse::<f64>().ok()? * (1u64 << (10 * shift)) as f64)
+}
+
+/// Whether the kernel's OOM killer ended a worker's scope (its `Result`), and the scope cleared.
+fn oom_killed(unit: &str) -> bool {
+    let show = Command::new("systemctl").args(["--user", "show", "-p", "Result", "--value", unit]).output();
+    let _ = Command::new("systemctl").args(["--user", "reset-failed", unit]).stderr(Stdio::null()).status();
+    show.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "oom-kill")
+}
+
+/// Opens `census.jsonl` to append, locked for this driver, with a partial last line (a driver that
+/// died in a write) ended so it cannot join the next line.
+fn open_census(path: &Path) -> Result<File, String> {
+    let fail = |e: std::io::Error| format!("{}: {e}", path.display());
+    let mut file = OpenOptions::new().create(true).read(true).append(true).open(path).map_err(fail)?;
+    file.try_lock().map_err(|_| format!("{}: another census writes it", path.display()))?;
+    let length = file.metadata().map_err(fail)?.len();
+    if length > 0 {
+        let mut last = [0u8];
+        file.seek(SeekFrom::Start(length - 1)).map_err(fail)?;
+        file.read_exact(&mut last).map_err(fail)?;
+        if last[0] != b'\n' {
+            file.write_all(b"\n").map_err(fail)?;
+        }
+    }
+    Ok(file)
+}
+
+/// The first line of `census.jsonl`: what the run reads and how. A resume must give the same.
+fn header(place: &Place, worker_args: &[String]) -> Value {
+    json!({"census": 1, "place": format!("{place:?}"), "worker": worker_args})
 }
 
 pub fn run(place: &Place, out: &Path, options: &Options, worker_args: &[String]) -> Result<(), String> {
@@ -147,24 +198,44 @@ pub fn run(place: &Place, out: &Path, options: &Options, worker_args: &[String])
         targets.retain(|k| inside.contains(k));
     }
     let all: BTreeSet<CellKey> = targets.iter().copied().collect();
+    if let Some(max) = options.memory.as_deref() {
+        let need =
+            options.workers as f64 * bytes(max).ok_or_else(|| format!("--memory {max}: a size"))? / (1u64 << 30) as f64;
+        let free = available_gb() - options.min_available_gb;
+        if need > free {
+            return Err(format!(
+                "{} workers of {max} need {need:.1} GB, and {free:.1} GB is free past --min-available-gb",
+                options.workers
+            ));
+        }
+    }
+    let mut file = open_census(&census)?;
+    let head = header(place, worker_args);
+    match std::fs::read_to_string(&census).unwrap_or_default().lines().next() {
+        None => record(&mut file, &head)?,
+        Some(first) if serde_json::from_str::<Value>(first).ok().as_ref() == Some(&head) => {}
+        Some(_) => return Err(format!("{} holds a census of other options: {head}", census.display())),
+    }
     let before = read_lines(&census);
-    let mut done: BTreeSet<CellKey> = before.keys().copied().collect();
-    let mut skip: BTreeSet<CellKey> =
-        (before.iter()).filter(|(_, v)| FAILED.contains(&v["state"].as_str().unwrap_or(""))).map(|(k, _)| *k).collect();
+    let attempts = |v: &Value| v["attempt"].as_u64().unwrap_or(1);
+    let retried = |v: &Value| RETRY.contains(&v["state"].as_str().unwrap_or("")) && attempts(v) < ATTEMPTS;
+    let mut done: BTreeSet<CellKey> = before.iter().filter(|(_, v)| !retried(v)).map(|(k, _)| *k).collect();
+    let mut skip: BTreeSet<CellKey> = (before.iter())
+        .filter(|(_, v)| FAILED.contains(&v["state"].as_str().unwrap_or("")) && !retried(v))
+        .map(|(k, _)| *k)
+        .collect();
+    let mut tried: BTreeMap<CellKey, u64> = before.iter().map(|(k, v)| (*k, attempts(v))).collect();
     targets.retain(|k| !done.contains(k));
     let mut queue = jobs(targets, options);
     let todo: usize = queue.iter().map(Vec::len).sum();
     eprintln!("census: {} cells, {} done before, {todo} to build in {} jobs", all.len(), before.len(), queue.len());
-    let mut file = OpenOptions::new().create(true).append(true).open(&census).map_err(|e| e.to_string())?;
     let log = OpenOptions::new().create(true).append(true).open(out.join("workers.log")).map_err(|e| e.to_string())?;
     let (tx, rx) = mpsc::channel();
     let mut running: BTreeMap<usize, Running> = BTreeMap::new();
     let (mut next_id, mut failed_starts, mut stopped, mut built) = (0, 0, None::<String>, 0usize);
-    let record = |file: &mut File, line: &Value| -> Result<(), String> {
-        writeln!(file, "{line}").and_then(|()| file.flush()).map_err(|e| e.to_string())
-    };
+    let mut next_start = Instant::now();
     loop {
-        while stopped.is_none() && running.len() < options.workers.max(1) {
+        while stopped.is_none() && running.len() < options.workers.max(1) && Instant::now() >= next_start {
             let Some(job) = queue.pop_front() else { break };
             let targets: Vec<CellKey> = job.into_iter().filter(|k| !done.contains(k) && !skip.contains(k)).collect();
             if targets.is_empty() {
@@ -174,17 +245,19 @@ pub fn run(place: &Place, out: &Path, options: &Options, worker_args: &[String])
             running.insert(next_id, spawn(job, worker_args, options, &log, next_id, &tx)?);
             next_id += 1;
         }
-        if running.is_empty() {
+        if running.is_empty() && (queue.is_empty() || stopped.is_some()) {
             break;
         }
         match rx.recv_timeout(Duration::from_millis(250)) {
             Ok((id, Some(text))) => {
                 let Some(w) = running.get_mut(&id) else { continue };
                 let Ok(v) = serde_json::from_str::<Value>(&text) else { continue };
-                w.lines += 1;
                 if let Some(cell) = cell_of(&v["begin"]) {
+                    (w.begun, failed_starts) = (true, 0);
                     w.current = Some((cell, v["stage"].as_str().unwrap_or("").to_string(), Instant::now()));
                 } else if let Some(cell) = cell_of(&v["cell"]) {
+                    let mut v = v;
+                    v["attempt"] = json!(tried.get(&cell).map_or(1, |n| n + 1));
                     record(&mut file, &v)?;
                     done.insert(cell);
                     w.current = None;
@@ -206,10 +279,17 @@ pub fn run(place: &Place, out: &Path, options: &Options, worker_args: &[String])
                     continue;
                 }
                 let Some((cell, stage, since)) = w.current.take() else {
-                    // It ended before its first cell, or between cells.
-                    failed_starts += u32::from(w.lines == 0);
+                    // It ended before its first cell (it could not read its source or job), or
+                    // between cells.
+                    if !w.begun {
+                        failed_starts += 1;
+                        next_start = Instant::now() + BACK_OFF;
+                    }
                     if failed_starts >= STARTS {
-                        stopped = Some(format!("a worker ended with {status}: {}", w.fatal.unwrap_or_default()));
+                        stopped = Some(format!(
+                            "{STARTS} workers in a row ended before their first cell, the last with {status}: {}; can the source be read?",
+                            w.fatal.unwrap_or_default()
+                        ));
                         for other in running.values_mut() {
                             let _ = other.child.kill();
                         }
@@ -228,11 +308,16 @@ pub fn run(place: &Place, out: &Path, options: &Options, worker_args: &[String])
                     "timeout"
                 } else if w.panic.is_some() {
                     "panic"
-                } else if status.signal() == Some(9) {
+                } else if status.signal() == Some(9) && w.unit.as_deref().is_some_and(oom_killed) {
                     "memory"
+                } else if status.signal() == Some(9) {
+                    "killed"
                 } else {
                     "crash"
                 });
+                let attempt = tried.get(&cell).map_or(1, |n| n + 1);
+                line["attempt"] = json!(attempt);
+                tried.insert(cell, attempt);
                 if let Some(panic) = w.panic {
                     line["panic"] = panic;
                 }
@@ -249,7 +334,12 @@ pub fn run(place: &Place, out: &Path, options: &Options, worker_args: &[String])
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
         for w in running.values_mut() {
-            if !w.timed_out && w.current.as_ref().is_some_and(|c| c.2.elapsed() > options.timeout) {
+            // A stage passed its time, or the worker has not begun its first cell in that time.
+            let late = w
+                .current
+                .as_ref()
+                .map_or(!w.begun && w.started.elapsed() > options.timeout, |c| c.2.elapsed() > options.timeout);
+            if !w.timed_out && late {
                 w.timed_out = true;
                 let _ = w.child.kill();
             }
@@ -277,6 +367,11 @@ pub fn run(place: &Place, out: &Path, options: &Options, worker_args: &[String])
         Some(why) => Err(format!("stopped: {why}; run again to resume")),
         None => Ok(()),
     }
+}
+
+/// One line with its newline in one write, so a line of a killed driver ends whole or not at all.
+fn record(file: &mut File, line: &Value) -> Result<(), String> {
+    file.write_all(format!("{line}\n").as_bytes()).map_err(|e| e.to_string())
 }
 
 fn num(v: &Value) -> f64 {

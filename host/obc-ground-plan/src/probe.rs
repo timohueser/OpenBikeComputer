@@ -1,9 +1,10 @@
 //! The caps that a build and the CPU height function hit, counted per thread for the native census
-//! tool (`obc-trailview-features`, example `census`). The WASM build counts nothing: there `hit` and
+//! (the binary `census` of `obc-trailview-features`). The WASM build counts nothing: there `hit` and
 //! `field` are empty.
 
-/// The 16-bit fields that the records pack, and the leg index that a `u8` holds: `field` keeps the
-/// largest value of each since the last `take`. A value past `limit` wrapped or tripped an assert.
+/// The fields that the records pack into 16 bits (8 for a junction's arms), and the leg index that a
+/// `u8` holds: `field` keeps the largest value of each since the last `take`. A value past `limit`
+/// wrapped or tripped an assert.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Field {
     /// A candidate's index in a bin's candidate item.
@@ -22,10 +23,24 @@ pub enum Field {
     OutlineEdges,
     /// The cuts before a point of a line: its leg.
     Leg,
+    /// A record line's index in a segment item or an outline edge's host (asserted there).
+    Line,
+    /// A sample's index in a segment item.
+    Sample,
+    /// A disc's index in a height disc item.
+    Disc,
+    /// The sample offsets from its leg's start of a junction arm.
+    Span,
+    /// The arms of a junction record (8 bits, asserted).
+    JunctionArms,
+    /// A junction record's id (asserted).
+    JunctionId,
+    /// The blend edges of a bin's window (asserted).
+    BlendEdges,
 }
 
 /// The fields in code order, with their names.
-pub const FIELDS: [(Field, &str); 8] = [
+pub const FIELDS: [(Field, &str); 15] = [
     (Field::Candidate, "candidate"),
     (Field::BinCandidates, "bin_candidates"),
     (Field::BinSegments, "bin_segments"),
@@ -34,13 +49,20 @@ pub const FIELDS: [(Field, &str); 8] = [
     (Field::BinItems, "bin_items"),
     (Field::OutlineEdges, "outline_edges"),
     (Field::Leg, "leg"),
+    (Field::Line, "line"),
+    (Field::Sample, "sample"),
+    (Field::Disc, "disc"),
+    (Field::Span, "span"),
+    (Field::JunctionArms, "junction_arms"),
+    (Field::JunctionId, "junction_id"),
+    (Field::BlendEdges, "blend_edges"),
 ];
 
 impl Field {
     /// The largest value that the field holds.
     pub fn limit(self) -> u64 {
         match self {
-            Field::Leg => u64::from(u8::MAX),
+            Field::Leg | Field::JunctionArms => u64::from(u8::MAX),
             _ => u64::from(u16::MAX),
         }
     }

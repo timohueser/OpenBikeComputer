@@ -110,7 +110,7 @@ pub fn centre(key: CellKey) -> (f64, f64) {
 
 const USAGE: &str = "census (--fixture DIR | --release DIR [--id ID]) --out DIR [--workers 3] [--memory 2G|none]
   [--timeout-s 60] [--grid-m 4] [--strip 10] [--rows 48] [--limit N] [--cells X/Y,...] [--bounds W,S,E,N]
-  [--min-available-gb 2] [--fail X/Y=panic|hang]...";
+  [--min-available-gb 2] [--fail X/Y=panic|hang | --fail start]...";
 
 fn main() {
     let worker = std::env::args().nth(1).as_deref() == Some("worker");
@@ -164,6 +164,10 @@ fn run(worker: bool) -> Result<(), String> {
             }
             "--fail" => {
                 let v = value()?;
+                if v == "start" {
+                    fail.push((CellKey { x: 0, y: 0 }, Fail::Start));
+                    continue;
+                }
                 let (cell, how) = v.split_once('=').ok_or("--fail X/Y=panic|hang")?;
                 let how = match how {
                     "panic" => Fail::Panic,
@@ -187,8 +191,12 @@ fn run(worker: bool) -> Result<(), String> {
     let mut worker_args = place.args();
     worker_args.extend(["--grid-m".into(), grid_m.to_string()]);
     for (cell, how) in &fail {
-        let how = if *how == Fail::Panic { "panic" } else { "hang" };
-        worker_args.extend(["--fail".into(), format!("{}/{}={how}", cell.x, cell.y)]);
+        worker_args.push("--fail".into());
+        worker_args.push(match how {
+            Fail::Panic => format!("{}/{}=panic", cell.x, cell.y),
+            Fail::Hang => format!("{}/{}=hang", cell.x, cell.y),
+            Fail::Start => "start".into(),
+        });
     }
     driver::run(&place, &out, &options, &worker_args)
 }

@@ -48,12 +48,28 @@ systemd-run --user --scope -p MemoryMax=1G -p MemorySwapMax=0 nice -n 19 target/
 
 A release is the store folder of a target (`release.json`, `releases/`, `objects/`). Without `--id`,
 the census reads the release that the target serves. A fixture has `features/13/C/R.bin` (gzip),
-`terrain/Z/X/Y.webp`, `config.json` and an optional `cells.json`. A worker that panics, passes
-`--timeout-s` in one stage of a cell or passes its memory cap ends. The census records that cell and
-gives the rest of the job to a new worker. A run continues from its `census.jsonl`. It stops when
-the PC has less memory available than `--min-available-gb`. The mesh check of a shared line needs
-both meshes in one worker, so it leaves out the lines between two strips of `--strip` columns and
-between two runs of `--rows` rows (`"mesh": null`).
+`terrain/Z/X/Y.webp`, `config.json` and an optional `cells.json`.
+
+A worker that panics, passes `--timeout-s` in one stage of a cell or is killed ends. The census
+records that cell and gives the rest of the job to a new worker. It records `memory` only when the
+worker's scope ended by the OOM killer, else `killed`. Three workers in a row that end before their
+first cell stop the run: the source cannot be read. The census refuses to start when `--workers` ×
+`--memory` is more than the available memory less `--min-available-gb`, and it stops when the
+available memory falls under `--min-available-gb`. One driver at a time writes an `OUT` folder.
+
+A run continues from its `census.jsonl`. The first line holds the source and the options, and a
+resume with other ones stops. A resume builds again, once, each cell that a `timeout`, `memory`,
+`killed` or `crash` stopped (`attempt` 2); a `panic` stays.
+
+Limits:
+
+- The mesh check of a shared line needs both meshes in one worker. It leaves out the lines between
+  two strips of `--strip` columns and two runs of `--rows` rows, and after a new worker starts, the
+  lines between the rest of the job and the cells that the old worker built (`"mesh": null`).
+- The census does not run `records::check::agreement`, `heights::check::border`, `edge_steps`,
+  `ripple`, `kinks` and `short_features`.
+- It does not read the feature archive's `features_format`: a release of another format gives
+  errors or wrong cells, where the viewer shows no features.
 
 ## Memory
 
