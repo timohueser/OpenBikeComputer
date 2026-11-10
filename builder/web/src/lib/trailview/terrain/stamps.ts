@@ -1,4 +1,4 @@
-import { featureTile, type NodeStamps } from './bins';
+import { featureTile, NEAR, type NodeStamps } from './bins';
 import { CAPS, DeviceCache } from './device-cache';
 import { key, OWNER, type Node } from './lod';
 import { BAKED, decodeNode, EMPTY_MESHES, encodeNode, unpackNode } from './node-bytes';
@@ -61,8 +61,10 @@ export class Stamps implements StampSource {
     private readonly wishes = new Map<string, Node>();
     /** The last frame's wishes that did not go yet, by rank: each answer sends the next. */
     private queue: Node[] = [];
-    /** The feature tiles of the frame's wishes when they were sent. */
+    /** The feature tiles of the frame's wishes, and of the near levels' nodes that the frame read and the frame before. */
     private queued = new Set<string>();
+    private nearRead = new Set<string>();
+    private nearTiles = new Set<string>();
     private readonly worker?: Worker;
     private readonly waiting = new Map<number, { resolve: (result: unknown) => void; reject: (error: Error) => void }>();
     private next = 0;
@@ -118,6 +120,7 @@ export class Stamps implements StampSource {
         const ranks = new Map([...this.wishes.values()].map(node => [node, rank(node)]));
         this.queue = [...ranks.keys()].sort((a, b) => ranks.get(a)! - ranks.get(b)!);
         this.queued = new Set(this.queue.map(node => key(featureTile(node)!)));
+        [this.nearTiles, this.nearRead] = [this.nearRead, new Set()];
         this.wishes.clear();
         this.refill();
     }
@@ -208,7 +211,9 @@ export class Stamps implements StampSource {
 
     /** The node's stamps and water once they are known, without a request. */
     known(node: Node): NodeFeatures | undefined {
-        if (!this.tiles || !featureTile(node)) return NOTHING;
+        const tile = featureTile(node);
+        if (!this.tiles || !tile) return NOTHING;
+        if (node.level >= NEAR) this.nearRead.add(key(tile));
         const name = key(node), known = this.nodes.get(name);
         if (known) {
             this.nodes.delete(name);
@@ -244,9 +249,12 @@ export class Stamps implements StampSource {
         return this.ask(tile, node, what, meshes);
     }
 
-    /** The feature tiles of the nodes on their way and still wished: the worker keeps them. */
+    /**
+     * The feature tiles of the nodes on their way, still wished, and of the near levels' nodes that the last frame read:
+     * the worker keeps them. The eye's own tile has no wish for seconds between its waves of levels.
+     */
     private wanted(): string[] {
-        const tiles = new Set([...this.pending.values(), ...this.queued]);
+        const tiles = new Set([...this.pending.values(), ...this.queued, ...this.nearTiles]);
         // A tile that no job reads now sends its body again when one does: the worker may have let it go.
         for (const name of this.sent) if (!tiles.has(name)) this.sent.delete(name);
         return [...tiles];

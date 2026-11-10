@@ -30,14 +30,13 @@ describe('feature tiles', () => {
         expect(decodeFeatures(new Uint8Array([0, 0]))).toEqual([]);
     });
 
-    it('keep a wanted tile past the budget, and let it go at the next decode once no job wants it', async () => {
+    it('keep a wanted tile past the budget, and let it go as soon as no job wants it', async () => {
         tileBudget(1);
         wantTiles(['13/1/1']);
         for (const name of ['13/1/1', '13/1/2']) await decodedTile(name, bytes.slice().buffer);
         expect([heldTile('13/1/1') !== undefined, heldTile('13/1/2') !== undefined]).toEqual([true, true]);
         wantTiles([]);
-        await decodedTile('13/1/3', bytes.slice().buffer);
-        expect([heldTile('13/1/1'), heldTile('13/1/2'), heldTile('13/1/3') !== undefined]).toEqual([undefined, undefined, true]);
+        expect([heldTile('13/1/1'), heldTile('13/1/2')]).toEqual([undefined, undefined]);
         tileBudget(32 * 2 ** 20);
     });
 });
