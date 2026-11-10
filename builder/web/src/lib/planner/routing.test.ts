@@ -52,11 +52,11 @@ describe('routing integration', () => {
         expect(line.edges).toEqual({ surfaces: ['Paved', 'Gravel'], pushing: [false, true] });
         expect(line.package).toBe('test');
         expect(JSON.parse(fetch.mock.calls[0][1].body).points).toEqual(plan.points.map(p => p.coordinate));
-        fetch.mockResolvedValueOnce({ ok: true, json: async () => ({ routes: [{ ...answer, id: 'shorter', reason: 'shorter' }] }) });
+        fetch.mockResolvedValueOnce({ ok: true, json: async () => ({ routes: [{ ...answer, id: 'climb', reason: 'less_climbing' }] }) });
         const alternatives = await requestAlternatives(plan, line.primary!, new AbortController().signal);
         const { alternatives: _primaryOnly, ...request } = JSON.parse(fetch.mock.calls[0][1].body);
         expect(JSON.parse(fetch.mock.calls[1][1].body)).toEqual({ ...request, alternatives_only: true });
-        expect(alternatives.map(r => r.id)).toEqual(['primary', 'shorter']);
+        expect(alternatives.map(r => r.id)).toEqual(['primary', 'climb']);
         expect(movingSecondsAt(line, 0.5)).toBeCloseTo(3000);
         expect(line.elevation).toEqual([200, null, 400]);
         expect(line.stops.map(s => s.distance)).toEqual(cumulative(route.geometry));

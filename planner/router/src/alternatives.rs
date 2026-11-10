@@ -35,10 +35,8 @@ impl<P: RoutingData> Router<P> {
         routes: &mut Vec<Route>,
     ) -> Result<()> {
         let base = request.profile.split('/').next().unwrap_or(&request.profile);
-        let skill = self.package.profile(&request.profile)?.max_difficulty;
         let name = format!("{base}/less-climbing");
-        // A variant with another difficulty limit is a different skill choice, not a tradeoff.
-        if name != request.profile && self.package.profile(&name).is_ok_and(|p| p.max_difficulty == skill) {
+        if name != request.profile && self.package.profile(&name).is_ok() {
             let goal = Request { profile: name, alternatives: false, ..request.clone() };
             match self.route_counted(&goal, control, queries) {
                 Ok(mut candidate) => {

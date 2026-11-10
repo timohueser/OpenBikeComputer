@@ -359,6 +359,8 @@ struct PlannerPreviewModelTests {
         let model = PlannerPreviewModel(plan: plan, service: PlannerTestSource())
         #expect(model.dayCount == 3 && model.activity == .road && model.preset == .lessClimbing)
         #expect(model.exportPlan() == plan)
+        var other = plan; other.bike = "mtb"
+        #expect(PlannerPreviewModel(plan: other, service: PlannerTestSource()).preset == .balanced)
     }
 
     @Test func aReverseMovesEachMarkerToTheLegItNowLiesOn() {

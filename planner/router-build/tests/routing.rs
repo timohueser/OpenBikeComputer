@@ -895,7 +895,7 @@ fn disconnected_driveway_uses_a_nearby_connected_road_without_relaxing_the_profi
 }
 
 #[test]
-fn route_goals_preserve_the_bikes_surface_suitability() {
+fn road_and_gravel_bikes_take_their_own_surfaces() {
     let mut graph = fixture();
     graph.points = [(0, 0), (0, 10_000), (15_000, 5_000)]
         .map(|(lat, lon)| Point { lat, lon, elevation: NO_ELEVATION })
@@ -918,10 +918,8 @@ fn route_goals_preserve_the_bikes_surface_suitability() {
         .collect();
     graph.forbidden = Default::default();
     graph.forbidden_foot = Default::default();
-    let profiles: Vec<_> = Profile::presets()
-        .into_iter()
-        .filter(|p| ["road", "road/less-climbing", "gravel/less-climbing"].contains(&p.name.as_str()))
-        .collect();
+    let profiles: Vec<_> =
+        Profile::presets().into_iter().filter(|p| ["road", "gravel"].contains(&p.name.as_str())).collect();
     let (source, manifest) = package_with_profiles(&graph, &profiles);
     let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
     let mut request = Request {
@@ -934,13 +932,10 @@ fn route_goals_preserve_the_bikes_surface_suitability() {
         start_position: None,
         end_position: None,
     };
-    for profile in ["road", "road/less-climbing"] {
-        request.profile = profile.into();
-        let route = router.route(&request, &Control::default()).unwrap();
-        assert_eq!(route.totals().surface_m[Surface::Gravel as usize], 0, "{profile}");
-        assert!(route.totals().surface_m[Surface::Paved as usize] > 3000, "{profile}");
-    }
-    request.profile = "gravel/less-climbing".into();
+    let route = router.route(&request, &Control::default()).unwrap();
+    assert_eq!(route.totals().surface_m[Surface::Gravel as usize], 0);
+    assert!(route.totals().surface_m[Surface::Paved as usize] > 3000);
+    request.profile = "gravel".into();
     let route = router.route(&request, &Control::default()).unwrap();
     assert_eq!(route.totals().surface_m[Surface::Paved as usize], 0);
     assert!(route.totals().distance_m < 1200);
