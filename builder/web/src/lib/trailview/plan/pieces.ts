@@ -207,7 +207,7 @@ export class Pieces {
 
     /**
      * Picks the cells that draw: those in level 18's range whose mesh holds its heights, at the mesh level. A cell `rests` where
-     * a page of the mesh level in it found no room and a page coarser than COARSEST_MESH draws in its place (Pages.fallback);
+     * a page of the mesh level in it found no room and a page coarser than COARSEST_MESH stands in its place (Pages.fallback);
      * then every cell in range rests, as below COARSEST_MESH, and draws again after CALM frames. So inside the range, a shortage
      * leaves every cell with its mesh or none: a resting cell beside a drawing one would show a step or a slit where a road
      * crosses their border. Over a page of level 17 in place of one of 18 a mesh draws as it does in a load: the strip and the

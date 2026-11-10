@@ -280,15 +280,13 @@ export class Pages {
         }
         // A page left out holds no slot that a page that fits needs (`slot` evicts it), and draws until the page that stands in
         // its place does: the finest of its ancestors that fits. Then its slot is free.
-        for (const [name, node] of this.leftOut) {
-            const page = this.pages.get(name);
-            if (page && this.replaced(node, fits)) this.release(page);
-        }
-        // Per level finer than a cell, by cell: the coarsest level that draws in place of a page left out.
+        // Per level finer than a cell, by cell: the coarsest level that stands in place of a page left out.
         this.fallbacks.clear();
-        for (const node of this.leftOut.values()) {
+        for (const [name, node] of this.leftOut) {
+            const stand = this.standIn(node, fits), page = this.pages.get(name);
+            if (page && (!stand || this.pages.get(key(stand))?.drawn !== undefined)) this.release(page);
             if (node.level <= CELL_LEVEL) continue;
-            const level = this.drawing(node)?.level ?? COARSEST, cell = `${node.level}:${key(cellOf(node))}`;
+            const level = stand?.level ?? COARSEST, cell = `${node.level}:${key(cellOf(node))}`;
             this.fallbacks.set(cell, Math.min(level, this.fallbacks.get(cell) ?? level));
         }
         // The masks of drawn pages wait for the copies, which a stored page needs to draw at all.
@@ -648,13 +646,13 @@ export class Pages {
         return this.free[kind].pop();
     }
 
-    /** Whether the page that stands in place of a node left out draws: the finest of its ancestors that fits, where one does. */
-    private replaced(node: Node, fits: Set<string>): boolean {
+    /** The page that stands in place of a node left out: the finest of its ancestors that fits. */
+    private standIn(node: Node, fits: Set<string>): Node | undefined {
         for (let { level, x, y } = node; level > COARSEST;) {
             level--; x >>= 1; y >>= 1;
-            if (fits.has(`${level}/${x}/${y}`)) return this.pages.get(`${level}/${x}/${y}`)?.drawn !== undefined;
+            if (fits.has(`${level}/${x}/${y}`)) return { level, x, y };
         }
-        return true;
+        return undefined;
     }
 
     /** A page leaves its pool, with its copy and its mask. */
@@ -795,8 +793,9 @@ export class Pages {
     }
 
     /**
-     * The coarsest level that draws in place of a page of `level` that the last frame left out in `cell`, a node of
-     * CELL_LEVEL; `level` where it left out none.
+     * The coarsest level that stands in place of a page of `level` that the last frame left out in `cell`, a node of CELL_LEVEL;
+     * `level` where it left out none. It is the level that draws there once the pages that fit are in: while the page in its
+     * place loads, the page left out draws on, unless an allocation needed its slot first, as in a load.
      */
     fallback(cell: Node, level: number): number {
         return this.fallbacks.get(`${level}:${key(cell)}`) ?? level;
