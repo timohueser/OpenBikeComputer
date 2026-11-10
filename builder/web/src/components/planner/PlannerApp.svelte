@@ -148,7 +148,7 @@
     let searchRevision = $state(0);
     let searchViewRevision = $state(0);
     let viewBounds = $state<[number, number, number, number]>(config.bounds);
-    let here = $state<Coordinate | undefined>();
+    let here = $state<{ coordinate: Coordinate; at: number } | undefined>();
     let pointing = $state<Where | undefined>();
     let applyingQuery = $state(false);
     let queryApplyError = $state('');
@@ -225,7 +225,10 @@
     const dayLabels = $derived(Object.fromEntries(itinerary.filter(d => !d.rest).map(d => [d.ridingNumber, d.number])));
     const rests = $derived(itinerary.filter(d => d.rest).map(d => ({ after: d.ridingNumber, name: planned.restNames?.[d.restIndex!], town: d.pinned?.label ?? proposals.get(d.ridingNumber)?.stop.name ?? '' })));
     const queryPlan = $derived(searchPlan(trip, view));
-    const searchContext = $derived<SearchContext>({ view: viewBounds, here, pointing, startDate: trip.startDate, plan: queryPlan });
+    // The rider moves, so a position older than five minutes is left out and the search asks for a new one.
+    // A getter, because time passing changes no dependency of the context.
+    const searchContext = $derived<SearchContext>({ view: viewBounds, get here() { return here && Date.now() - here.at < 300_000 ? here.coordinate : undefined; },
+        pointing, startDate: trip.startDate, plan: queryPlan });
     const conflicts = $derived(multi ? nightOrderConflicts(shown.trip, shown.line) : []);
     const closures = $derived(closureStretches(visualRoute));
     const alpine = $derived(alpineStretches(visualRoute));
@@ -1015,13 +1018,12 @@
     }
 
     function locate() {
-        return new Promise<Coordinate | undefined>(resolve => {
-            if (!navigator.geolocation) { resolve(undefined); return; }
+        return new Promise<'denied' | 'unavailable' | undefined>(resolve => {
+            if (!navigator.geolocation) { resolve('unavailable'); return; }
             navigator.geolocation.getCurrentPosition(({ coords }) => {
-                const position: Coordinate = [coords.longitude, coords.latitude];
-                here = position;
-                resolve(position);
-            }, () => resolve(undefined), { timeout: 10000 });
+                here = { coordinate: [coords.longitude, coords.latitude], at: Date.now() };
+                resolve(undefined);
+            }, error => resolve(error.code === error.PERMISSION_DENIED ? 'denied' : 'unavailable'), { timeout: 10000 });
         });
     }
 

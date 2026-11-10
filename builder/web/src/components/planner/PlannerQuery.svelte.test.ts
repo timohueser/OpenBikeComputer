@@ -58,17 +58,23 @@ describe('planner query requests',()=>{
         pending[2](reply({type:'places',what:['campsite']}));await vi.advanceTimersByTimeAsync(0);await tick();
         expect([...target.querySelectorAll('.chip')].map(chip=>chip.textContent)).toEqual(['In this map view']);
     });
-    it('asks for the position of the rider once when a search needs it',async()=>{
+    it('asks for the position of the rider once and searches again when the context has it',async()=>{
         const near:QueryRequest={type:'places',what:['bakery'],where:{scope:'here'}};
         const fetch=vi.fn(async(_url:string,init:RequestInit)=>({ok:true,json:async()=>JSON.parse(String(init.body)).here
             ?{type:'places',request:near,results:[]}:{type:'unresolved',code:'location',request:near,results:[]}}) as Response);
         vi.stubGlobal('fetch',fetch);
-        const onLocation=vi.fn(async()=>[7.85,48] as [number,number]);
-        const {type}=await setup({onLocation});await type('bakery near me');await vi.advanceTimersByTimeAsync(0);await tick();
+        const view=fromStore(writable(context)), revision=fromStore(writable(0));
+        const onLocation=vi.fn(async()=>{ view.current={...context,here:[7.85,48]}; revision.current++; return undefined; });
+        vi.useFakeTimers({toFake:['setTimeout','clearTimeout','setInterval','clearInterval','Date']});
+        const target=document.createElement('div');document.body.append(target);
+        mounted.push(mount(Query,{target,props:{get context(){return view.current;},get revision(){return revision.current;},onLocation,onSearch:()=>{},onClear:()=>{},onSample:()=>{},onPointing:()=>{}}}));
+        await tick();
+        const input=target.querySelector('input')!;input.value='bakery near me';input.dispatchEvent(new Event('input',{bubbles:true}));await tick();
+        await vi.advanceTimersByTimeAsync(351);await tick();await vi.advanceTimersByTimeAsync(250);await tick();
         expect(onLocation).toHaveBeenCalledOnce();
+        expect(fetch).toHaveBeenCalledTimes(2);
         const sent=JSON.parse(String(fetch.mock.lastCall![1].body));
         expect(sent.here).toEqual([7.85,48]);expect(sent.request).toEqual(near);
-        expect(fetch).toHaveBeenCalledTimes(2);
     });
     it('shows the test route button in development builds only',async()=>{
         const buttons=(target:HTMLElement)=>[...target.querySelectorAll('button')].map(button=>button.textContent);

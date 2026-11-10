@@ -7,7 +7,7 @@
 
     let { text = $bindable(''), searchState = $bindable({ loading: false, error: '', answer: null }), context, selection, revision = 0, viewRevision = 0, onResults, onSearch, onClear, onLocation, onSample, onPointing }: {
         text?: string; searchState?: SearchState; context: SearchContext; selection?: Where;
-        revision?: number; viewRevision?: number; onResults?: (coordinates: Coordinate[]) => void; onSearch: () => void; onClear: () => void; onLocation: () => Promise<Coordinate | undefined>; onSample: () => void; onPointing: (where?: Where) => void;
+        revision?: number; viewRevision?: number; onResults?: (coordinates: Coordinate[]) => void; onSearch: () => void; onClear: () => void; onLocation: () => Promise<'denied' | 'unavailable' | undefined>; onSample: () => void; onPointing: (where?: Where) => void;
     } = $props();
     let edited = $state(false);
     let request = $state<QueryRequest | undefined>();
@@ -40,19 +40,16 @@
         onSearch(); searchedView = viewRevision;
         searchState = { loading: true, error: '', answer: searchState.answer };
         try {
-            const ask = (at: SearchContext, typed?: QueryRequest) => searchPlaces(input, at, limit, signal, typed && $state.snapshot(typed));
-            let answer = await ask(searchContext, parsed);
+            const answer = await searchPlaces(input, searchContext, limit, signal, parsed ? $state.snapshot(parsed) : undefined);
             if (id !== serial) return;
+            request = answer.request;
             if (answer.code === 'location') {
-                request = answer.request;
-                const here = await onLocation();
-                if (id !== serial) return;
-                if (!here) throw new Error('Allow location access to search near you.');
-                requestContext = { ...searchContext, here };
-                answer = await ask(requestContext, answer.request);
-                if (id !== serial) return;
+                // A new position changes the context, and `revision` runs the search again.
+                const failure = await onLocation();
+                if (id !== serial || !failure) return;
+                throw new Error(failure === 'denied' ? 'Allow location access to search near you.' : 'Your position is not available.');
             }
-            request = answer.request; searchState = { loading: false, error: '', answer };
+            searchState = { loading: false, error: '', answer };
             if (framePending && answer.type === 'places' && answer.results?.length) onResults?.(answer.results.map(p => [p.lon, p.lat]));
             framePending = false;
         } catch (error) {
