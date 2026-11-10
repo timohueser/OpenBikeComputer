@@ -76,6 +76,8 @@ pub(crate) fn approaches(net: &Network, sides_of: &Sides, classes: &Classes) -> 
         // Walk the side to the next junction, or as far as it can decide a pin.
         let unit = metres(net.vertex_xy[j][1]);
         let reach = sides_of.distance[i] + 1.01;
+        // The nodes within the approach distance take the through road's height; a millimetre for rounding.
+        let within = sides_of.distance[i] + 1e-3;
         let (mut p, mut along, mut run) = (j, 0.0, f64::INFINITY);
         let (mut walking, mut inside, mut steps, mut link) = (true, true, 0, false);
         // (segment, metres along at its far end) within the approach distance, and the walked segments.
@@ -86,7 +88,7 @@ pub(crate) fn approaches(net: &Network, sides_of: &Sides, classes: &Classes) -> 
             walking &= ahead >= net.way_first[way] as i64 && ahead <= net.way_last[way] as i64;
             let ahead = if walking { ahead as usize } else { p };
             along += hypot(sub(net.vertex_xy[ahead], net.vertex_xy[p])) * unit;
-            if inside && walking && along <= reach {
+            if inside && walking && along <= within {
                 near.push((segment[p.min(ahead)], along));
             }
             if ramps && walking && along - hypot(sub(net.vertex_xy[ahead], net.vertex_xy[p])) * unit < RAMP_M {
@@ -101,7 +103,7 @@ pub(crate) fn approaches(net: &Network, sides_of: &Sides, classes: &Classes) -> 
                 run = along;
             }
             link |= back && along <= 2.0 * reach + 1.0;
-            inside &= walking && !meets && along <= reach;
+            inside &= walking && !meets && along <= within;
             if found.len() <= steps {
                 found.push(Vec::new());
             }
