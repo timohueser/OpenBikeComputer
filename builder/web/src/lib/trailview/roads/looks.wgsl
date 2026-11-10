@@ -213,7 +213,7 @@ fn zebra_look(mat: u32, code: u32, region: u32, w: WayPixel) -> WayLook {
             out = pavers_look(region, w);
         }
         case LOOK_ZEBRA_CONCRETE: {
-            out = concrete_look(code, region, w, false);
+            out = concrete_look(code, region, w, false, false);
         }
         default: {
             out.albedo = asphalt(code, region, w.p, w.pw);
@@ -238,28 +238,32 @@ fn give_way_look(code: u32, region: u32, w: WayPixel) -> WayLook {
     return WayLook(c, vec2f(0.0), 0.0, 0.0, 0.0);
 }
 
-// Concrete: slabs 5 m long with sealed joints; on a narrow track two strips on the way's asphalt.
-fn concrete_look(code: u32, region: u32, w: WayPixel, track: bool) -> WayLook {
+// A lane's width, by which a concrete way counts its lanes for the tyre tracks.
+const CONCRETE_LANE_M: f32 = 4.0;
+
+// Concrete: one pale grey with fine grain and faint tyre tracks; on a narrow track two strips on the way's asphalt.
+// Its tone is a function of the place, so the faces of a junction show one surface; only the tracks read the frame,
+// `framed` where `across` is the road's own, not a zebra's. Every detail has a mean of about 1, so the far paint keeps
+// the slot's colour.
+fn concrete_look(code: u32, region: u32, w: WayPixel, track: bool, framed: bool) -> WayLook {
     var out = WayLook(vec3f(0.0), vec2f(0.0), 0.0, 0.0, 0.0);
     let p = w.p;
-    let across = w.across;
-    let along = w.along;
-    let wide = w.half > 2.2;
-    let slab = vec2f(floor(along / 5.0), select(0.0, sign(across), wide));
-    var c = rule(region, slot_concrete()).rgb * (0.95 + 0.1 * hash(slab)) * (0.95 + 0.1 * noise(p / 3.0));
-    // Brushed across, fine.
-    c *= 1.0 + 0.08 * seen(0.03, w.pw) * (noise(vec2f(along / 0.015, across / 0.5)) - 0.5) + 0.12 * seen(0.02, w.pw) * (noise(p / 0.009) - 0.5);
-    let joint = max(band((fract(along / 5.0 + 0.5) - 0.5) * 5.0, -0.008, 0.008, w.aw), select(0.0, band(across, -0.008, 0.008, w.cw), wide));
-    c = mix(c, vec3f(0.04), 0.85 * joint);
-    // A crack across a corner of some slabs.
-    let local = vec2f(fract(along / 5.0) * 5.0, abs(across));
-    let diag = abs(local.x * 0.6 + local.y - 1.2 - 2.0 * hash(slab + 4.0)) * 0.8;
-    c *= 1.0 - 0.5 * step(hash(slab + 8.0), 0.3) * band(diag + 0.05 * (noise(p / 0.2) - 0.5), -0.005, 0.005, w.cw + w.aw) * seen(0.05, w.pw);
-    c *= 1.0 - 0.15 * smoothstep(0.5, 0.0, w.half - abs(across));
+    // Where the frame runs faster than the world, as between two arms' frames in a junction, nothing follows it.
+    let frame = select(0.0, 1.0 - smoothstep(2.5, 5.0, max(w.aw, w.cw) * look.screen.z / max(w.pw, 1e-5)), framed);
+    var c = rule(region, slot_concrete()).rgb * (0.975 + 0.035 * noise(p / 11.0) + 0.02 * noise(p / 43.0 + 7.0));
+    // Cement paste and aggregate: mottled at a few cm, grains at 1 cm, each its mean once a pixel spans it.
+    c *= 1.0 + 0.05 * seen(0.15, w.pw) * (noise(p / 0.07 + 5.0) - 0.5) + 0.1 * seen(0.03, w.pw) * (noise(p / 0.011) - 0.5);
+    c *= 1.0 + seen(0.02, w.pw) * (0.25 * step(0.93, hash(floor(p / 0.009))) - 0.0175);
+    // Worn tyre tracks, soft bands about 1 m wide 0.8 m each side of a lane's middle, faint and darker in long patches.
+    let lanes = max(1.0, round(2.0 * w.half / CONCRETE_LANE_M));
+    let lane = 2.0 * w.half / lanes;
+    let u = (fract((w.across + w.half) / lane) - 0.5) * lane;
+    let tyre = smoothstep(0.55, 0.05, abs(abs(u) - 0.8));
+    c *= 1.0 - 0.028 * frame * tyre * (0.6 + 0.8 * noise(p / 7.0 + 3.0));
     out.albedo = c;
-    if (track && !wide) {
+    if (track && w.half <= 2.2) {
         // 0.55 m wide, their middles 0.75 m out.
-        out.albedo = mix(asphalt(code, region, p, w.pw), out.albedo * (0.95 + 0.1 * smoothstep(0.2, 0.0, abs(abs(across) - 0.75))), band(abs(across), 0.48, 1.03, w.cw));
+        out.albedo = mix(asphalt(code, region, p, w.pw), out.albedo, band(abs(w.across), 0.48, 1.03, w.cw));
     }
     return out;
 }
@@ -476,7 +480,7 @@ fn way_look(mat: u32, code: u32, region: u32, su: vec2f, w: WayPixel, flags: u32
             return give_way_look(code, region, w);
         }
         case LOOK_CONCRETE, LOOK_STRIPS: {
-            return concrete_look(code, region, w, mat == LOOK_STRIPS);
+            return concrete_look(code, region, w, mat == LOOK_STRIPS, true);
         }
         case LOOK_SETT: {
             return sett_look(region, w);
