@@ -2355,9 +2355,9 @@ Else the fetch fails with `the disk has <free> GB free; the install needs <need>
 
 An install stays when serve starts and stops, and when a service stops: a restart installs
 nothing again. Serve deletes an install only when neither a planner release that it follows nor
-a release that the two files name has it, after its services stopped, and only after it read the
-two files: a start without a network deletes nothing. `obc data clean` does not touch the
-installs. The objects are in a store of serve alone, `<store>/follower/<target>/`. After the
+a release that the two files name has it, after its services stopped, and only after a look
+read the two files and each release that they name: a start without a network deletes nothing.
+`obc data clean` does not touch the installs. The objects are in a store of serve alone, `<store>/follower/<target>/`. After the
 releases that the two files name change, and after fetches, serve deletes there each object and
 each unfinished download that the services of none of them read, once no fetch runs. A `gzip`
 object of a planner release with an install goes too: the install holds its decoded file. A fetch
