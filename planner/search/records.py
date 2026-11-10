@@ -32,6 +32,8 @@ def category(p):
             return 'picnic_site'
         if shelter in OTHER_SHELTERS:
             return f'{shelter}_shelter'
+    if v == 'camp_site' and p.get('extra', {}).get('tents') == 'no':
+        return 'caravan_site'
     if k == 'mountain_pass':
         return 'pass'
     if v == 'yes':
@@ -76,7 +78,8 @@ def has_poi(p):
     if not usable(p):
         return False
     kind, ns = category(p), names(p.get('name', {}))
-    return kind != 'street' and (bool(ns) or kind in unnamed_kinds()) and not (
+    # A rider cannot pitch a tent at a caravan site. The place tiles read this database, so they leave it out too.
+    return kind not in ('street', 'caravan_site') and (bool(ns) or kind in unnamed_kinds()) and not (
         p['osm_key'] == 'building' and p.get('housenumber') and not ns)
 
 
