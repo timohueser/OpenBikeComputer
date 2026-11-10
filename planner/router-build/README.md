@@ -94,12 +94,11 @@ tags.
 
 ## Profiles
 
-The `profiles` option names the profile IDs, or `all` for all 17 metrics.
+The `profiles` option names the profile IDs, or `all` for all 10 metrics.
 
 | Road profile | Preference |
 | --- | --- |
 | `road` | BRouter fastbike surfaces, traffic stress, turns and downhill costs; trunk roads cost 10 times more |
-| `road/shorter` | Same road suitability; no terrain penalty; lower turn cost |
 | `road/less-climbing` | Additional uphill cost above the slope threshold |
 
 Road weights derive from the MIT-licensed BRouter
@@ -122,9 +121,8 @@ profiles.
 | Steps and via ferrata | Cycling profiles never use steps; no profile uses a via ferrata |
 
 Touring, gravel, MTB and hiking use separate surface and road-class tables, and add smoothness,
-track grade, trail grade and traffic. Hiking also adds trail visibility. Each has shorter and
-less-climbing variants. Shorter ignores climb preferences and signed cycle routes but keeps road
-and surface preferences. A signed cycle route discounts only the preference above the physical and
+track grade, trail grade and traffic. Hiking also adds trail visibility. Touring and gravel have a
+less-climbing variant with three times the climb cost. A signed cycle route discounts only the preference above the physical and
 traffic cost, in the direction that its member role gives. Access rules apply to every variant.
 MTB permits S2 at most and `mtb/technical` every grade; hiking permits T2 at most and
 `hiking/alpine` T4. Alternatives keep the difficulty limit of the request.

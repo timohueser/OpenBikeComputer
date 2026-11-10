@@ -3,7 +3,7 @@
     import Select from './PlannerSelect.svelte';
     import VersionsMenu from './VersionsMenu.svelte';
     import { onMount } from 'svelte';
-    import { ridingProfiles, servedPresets, type BikeType } from '../../lib/planner/riding-profiles';
+    import { planPreset, ridingProfiles, servedPresets, type BikeType } from '../../lib/planner/riding-profiles';
     import { planTitle, type Trip } from '../../lib/planner/editor';
     import { regionProfiles, type RoutingLine } from '../../lib/planner/routing';
     import type { Version } from '../../lib/planner/versions';
@@ -54,7 +54,7 @@
             }} />
         </div>
         <div class="preference"><span>Preset</span>
-            <Select label="Preset" value={trip.preset ?? 'Balanced'} options={servedPresets(bike, profiles).map(value => ({ value, label: value, icon: value === 'Less climbing' ? 'less-climbing' : value === 'Shorter' ? 'arrow' : 'sliders' }))}
+            <Select label="Preset" value={planPreset(bike, trip.preset)} options={servedPresets(bike, profiles).map(value => ({ value, label: value, icon: value === 'Less climbing' ? 'less-climbing' : 'sliders' }))}
                 onChange={(preset) => onChange({ preset }, 'Route preference changed')} />
         </div>
     </div>

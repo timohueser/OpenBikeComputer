@@ -48,10 +48,10 @@ public struct PlannerRelease: Decodable, Equatable, Sendable {
 
 /// Technical (MTB) and Alpine (hiking) are skill choices that allow harder trails.
 public enum RoutePreference: String, CaseIterable, Sendable {
-    case balanced, shorter, lessClimbing = "less-climbing", technical, alpine
+    case balanced, lessClimbing = "less-climbing", technical, alpine
     public var title: String {
         switch self {
-        case .balanced: "Balanced"; case .shorter: "Shorter"; case .lessClimbing: "Less climbing"
+        case .balanced: "Balanced"; case .lessClimbing: "Less climbing"
         case .technical: "Technical"; case .alpine: "Alpine"
         }
     }
@@ -90,7 +90,7 @@ public struct PlannedPath: Sendable {
 /// One route of an alternatives answer (`specs/route-api.md`): the plan with `preference`, through `via` when there is
 /// one, has this route.
 public struct RouteOption: Sendable {
-    public enum Reason: String, Sendable { case primary, shorter, lessClimbing = "less_climbing", smoother, corridor }
+    public enum Reason: String, Sendable { case primary, lessClimbing = "less_climbing", corridor }
     public let reason: Reason
     public let preference: RoutePreference
     /// Only on a corridor route: the route of start, `via` and finish.

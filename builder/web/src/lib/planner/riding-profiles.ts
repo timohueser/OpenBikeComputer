@@ -8,22 +8,37 @@ export const ridingProfiles = {
 };
 export type BikeType = keyof typeof ridingProfiles;
 
-/** The preset title of each profile ID suffix: `touring/shorter` is the Shorter preset of the touring bike. The routing
- * region says which profiles it serves (`GET /v1/region`). Technical (MTB) and Alpine (hiking) allow harder trails. */
-const presetTitles: Record<string, string> = { '': 'Balanced', shorter: 'Shorter', 'less-climbing': 'Less climbing', technical: 'Technical', alpine: 'Alpine' };
-const skillSuffixes = ['technical', 'alpine'];
-/** Every preset title that a plan can keep. */
-export const presetNames = Object.values(presetTitles);
+/** The preset title of each profile ID suffix: `touring/less-climbing` is the Less climbing preset of the touring bike. The
+ * routing region says which profiles it serves (`GET /v1/region`). Technical (MTB) and Alpine (hiking) allow harder trails. */
+const presetTitles: Record<string, string> = { '': 'Balanced', 'less-climbing': 'Less climbing', technical: 'Technical', alpine: 'Alpine' };
+/** The presets of each activity, Balanced first (`specs/planner-plan.md`). */
+const activityPresets: Record<BikeType, string[]> = {
+    road: ['Balanced', 'Less climbing'],
+    gravel: ['Balanced', 'Less climbing'],
+    touring: ['Balanced', 'Less climbing'],
+    mtb: ['Balanced', 'Technical'],
+    hiking: ['Balanced', 'Alpine'],
+};
+const skillPresets = ['Technical', 'Alpine'];
 
 export function presetName(profile: string): string {
     return presetTitles[profile.split('/')[1] ?? ''] ?? 'Balanced';
 }
-export function presetSuffix(name = 'Balanced'): string {
-    return Object.entries(presetTitles).find(([, title]) => title === name)?.[0] ?? '';
+
+/** The preset that a plan routes with: its own preset when its activity has it, else Balanced. A saved plan can hold a
+ * preset that its activity does not have. */
+export function planPreset(bike: BikeType = 'touring', preset = 'Balanced'): string {
+    return activityPresets[bike].includes(preset) ? preset : 'Balanced';
 }
 
-/** The preset titles of `bike` that the region's `profiles` serve; while the region is unknown, the presets of every activity. */
+/** The profile ID that a plan with `bike` and `preset` routes with. */
+export function presetProfile(bike: BikeType = 'touring', preset?: string): string {
+    const title = planPreset(bike, preset);
+    const suffix = Object.entries(presetTitles).find(([, name]) => name === title)![0];
+    return suffix ? `${bike}/${suffix}` : bike;
+}
+
+/** The presets of `bike` that the region's `profiles` serve; while the region is unknown, its presets without a skill preset. */
 export function servedPresets(bike: BikeType, profiles: string[] | undefined): string[] {
-    return Object.entries(presetTitles).filter(([suffix]) => profiles ? profiles.includes(suffix ? `${bike}/${suffix}` : bike) : !skillSuffixes.includes(suffix))
-        .map(([, title]) => title);
+    return activityPresets[bike].filter(title => profiles ? profiles.includes(presetProfile(bike, title)) : !skillPresets.includes(title));
 }

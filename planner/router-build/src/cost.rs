@@ -78,9 +78,9 @@ impl<'a> Costing<'a> {
                 let source = graph.osm.ways.get(road.way);
                 let country = source.as_ref().map(|source| graph.osm.country(source)).unwrap_or_default();
                 match &profile.weighting {
-                    Weighting::RoadBike(variant) => {
+                    Weighting::RoadBike(_) => {
                         let source = source.ok_or("Road lacks source OSM way")?;
-                        road_bike::way(road, &source.tags, country, *variant, mode == PUSH)
+                        road_bike::way(road, &source.tags, country, mode == PUSH)
                     }
                     Weighting::Weighted { .. } => {
                         let empty = Default::default();
@@ -341,7 +341,6 @@ mod tests {
         let ascent = road(descent.shape.iter().rev().copied().collect());
         assert_eq!(cost(&ascent, "road").total(), ascent.length_m as u64);
         assert_eq!(cost(&ascent, "road/less-climbing").total(), expected);
-        assert_eq!(cost(&descent, "road/shorter").total(), descent.length_m as u64);
         let unknown = road(vec![point(0, NO_ELEVATION), point(10_000, 0.0)]);
         assert_eq!(cost(&unknown, "road").total(), unknown.length_m as u64);
     }

@@ -3,7 +3,7 @@
 The routing package of one region: a content-addressed manifest and page store that holds the road
 graph, its metrics and its geometry, and the grid selections of it.
 
-- Version: manifest format `8`; index magic `OBCRIDX3`; `routing/blocks.json` `format: 2`. A format
+- Version: manifest format `9`; index magic `OBCRIDX3`; `routing/blocks.json` `format: 2`. A format
   change requires a new manifest format value.
 - Writers: [`planner/router-build`](../planner/router-build/README.md) (the `planner/routing` layer
   of `obc data`).
@@ -19,7 +19,7 @@ SHA-256 as 64 hexadecimal characters. Each object name is the digest of its comp
 The package ID is the digest of the exact UTF-8 manifest bytes. Reformatting a manifest changes its
 ID.
 
-The manifest format is `8`. Its JSON fields are defined by `Manifest` and `Metric` in
+The manifest format is `9`. Its JSON fields are defined by `Manifest` and `Metric` in
 `planner/router/src/package.rs`. Bounds are `[west, south, east, north]` in degrees. Metric IDs
 equal their profile names. Source digests identify the input data. Attribution and warnings travel
 with the package.
@@ -147,7 +147,7 @@ saturates at 65535. The exact search still uses all prepared road and turn costs
 ## Grid selections
 
 `routing/blocks.json` has `format: 2`. `source` is the source manifest SHA-256. `data` uses the
-format 8 manifest structure with selected bounds and region. Each sparse table adds `pages`, an
+format 9 manifest structure with selected bounds and region. Each sparse table adds `pages`, an
 ascending list of source page numbers, parallel to `blocks`. `len` remains the source column length.
 An absent page is unavailable, not an empty page.
 

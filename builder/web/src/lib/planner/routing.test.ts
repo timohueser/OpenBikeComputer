@@ -30,13 +30,16 @@ function trip(): Trip {
 afterEach(() => vi.unstubAllGlobals());
 describe('routing integration', () => {
     it('offers the presets of the profiles that the region serves, each with its own profile ID', async () => {
-        const profiles = ['gravel', 'gravel/shorter', 'hiking/less-climbing', 'mtb/technical'];
+        const profiles = ['gravel', 'gravel/less-climbing', 'hiking/alpine', 'mtb/technical'];
         vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ package: 'test', profiles }) }));
         const served = await regionProfiles();
-        expect([servedPresets('gravel', served), servedPresets('hiking', served), servedPresets('mtb', served), servedPresets('road', served), servedPresets('road', undefined)])
-            .toEqual([['Balanced', 'Shorter'], ['Less climbing'], ['Technical'], [], ['Balanced', 'Shorter', 'Less climbing']]);
+        expect([servedPresets('gravel', served), servedPresets('hiking', served), servedPresets('mtb', served), servedPresets('road', served), servedPresets('road', undefined), servedPresets('mtb', undefined)])
+            .toEqual([['Balanced', 'Less climbing'], ['Alpine'], ['Technical'], [], ['Balanced', 'Less climbing'], ['Balanced']]);
         for (const id of profiles) expect(profileId({ ...trip(), bike: id.split('/')[0] as BikeType, preset: presetName(id) })).toBe(id);
-        expect(profileId({ ...trip(), bike: 'road', preset: 'Quieter' })).toBe('road');
+        // A saved plan with a preset that its activity does not have routes with Balanced.
+        expect(profileId({ ...trip(), bike: 'road', preset: 'Shorter' })).toBe('road');
+        expect(profileId({ ...trip(), bike: 'mtb', preset: 'Less climbing' })).toBe('mtb');
+        expect(routingKey({ ...trip(), bike: 'mtb', preset: 'Less climbing' })).toBe(routingKey({ ...trip(), bike: 'mtb' }));
     });
     it('keeps directed shaping context in one request and preserves unknown elevation', async () => {
         const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ routes: [answer] }) });
@@ -49,11 +52,11 @@ describe('routing integration', () => {
         expect(line.edges).toEqual({ surfaces: ['Paved', 'Gravel'], pushing: [false, true] });
         expect(line.package).toBe('test');
         expect(JSON.parse(fetch.mock.calls[0][1].body).points).toEqual(plan.points.map(p => p.coordinate));
-        fetch.mockResolvedValueOnce({ ok: true, json: async () => ({ routes: [{ ...answer, id: 'shorter', reason: 'shorter' }] }) });
+        fetch.mockResolvedValueOnce({ ok: true, json: async () => ({ routes: [{ ...answer, id: 'climb', reason: 'less_climbing' }] }) });
         const alternatives = await requestAlternatives(plan, line.primary!, new AbortController().signal);
         const { alternatives: _primaryOnly, ...request } = JSON.parse(fetch.mock.calls[0][1].body);
         expect(JSON.parse(fetch.mock.calls[1][1].body)).toEqual({ ...request, alternatives_only: true });
-        expect(alternatives.map(r => r.id)).toEqual(['primary', 'shorter']);
+        expect(alternatives.map(r => r.id)).toEqual(['primary', 'climb']);
         expect(movingSecondsAt(line, 0.5)).toBeCloseTo(3000);
         expect(line.elevation).toEqual([200, null, 400]);
         expect(line.stops.map(s => s.distance)).toEqual(cumulative(route.geometry));
@@ -70,7 +73,7 @@ describe('routing integration', () => {
         expect(unmarked.splits).toEqual(edited.splits);
         const moved = { ...edited, points: edited.points.map(p => p.id === 'shape' ? { ...p, coordinate: [8.1, 48] as [number, number] } : p) };
         expect(routingKey(moved)).not.toBe(routingKey(plan));
-        expect(routingKey({ ...plan, preset: 'Shorter' })).not.toBe(routingKey(plan));
+        expect(routingKey({ ...plan, preset: 'Less climbing' })).not.toBe(routingKey(plan));
     });
     it('requests only the legs that an edit changes, pinned to the cached legs on both sides', async () => {
         const fetch = vi.fn<(url: string, init: RequestInit) => Promise<unknown>>(routeService('one'));

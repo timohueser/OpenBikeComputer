@@ -13,7 +13,7 @@ struct PlannerServiceTests {
     /// The climb is measured on the heights; the service's totals round each piece down.
     @Test func decodesCoordinatesElevationAndServerTotals() async throws {
         let service = client(), release = try await service.release()
-        let route = try await service.route(points: [a, b], activity: .gravel, preference: .shorter, release: release)
+        let route = try await service.route(points: [a, b], activity: .gravel, preference: .lessClimbing, release: release)
         #expect(release.contains(a))
         #expect(route.points.map(\.coordinate) == [a, b])
         #expect(route.points.map(\.elevationMeters) == [270, 300])
@@ -23,7 +23,7 @@ struct PlannerServiceTests {
     func rejectsUnrelatedOrMalformedRoutes(_ kind: String) async throws {
         let service = client(route: kind), release = try await service.release()
         await #expect(throws: PlannerFailure.invalidData) {
-            try await service.route(points: [a, b], activity: .gravel, preference: .shorter, release: release)
+            try await service.route(points: [a, b], activity: .gravel, preference: .lessClimbing, release: release)
         }
     }
     @Test(arguments: [(422, "no_path", PlannerFailure.noRoad), (503, "busy", .busy), (422, "missing_region", .outsideRegion)])
@@ -33,7 +33,7 @@ struct PlannerServiceTests {
     }
     @Test func eachActivityNamesItsRoutingProfile() {
         #expect(RouteActivity.allCases.map { RoutePreference.balanced.profile(for: $0) } == ["road", "gravel", "mtb", "touring", "hiking"])
-        #expect(RoutePreference.lessClimbing.profile(for: .hiking) == "hiking/less-climbing")
+        #expect(RoutePreference.lessClimbing.profile(for: .road) == "road/less-climbing")
         #expect(RoutePreference.technical.profile(for: .mtb) == "mtb/technical")
         #expect(BikeType.allCases.allSatisfy { RouteActivity($0).bikeType == $0 } && RouteActivity.hiking.bikeType == nil)
     }
@@ -123,21 +123,21 @@ struct PlannerServiceTests {
         let service = PlannerService(release: release) { request in
             let ok = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
             guard request.url!.lastPathComponent == "route" else {
-                return (try JSONSerialization.data(withJSONObject: ["routing_package": packageID, "profiles": ["gravel", "gravel/shorter"]]), ok)
+                return (try JSONSerialization.data(withJSONObject: ["routing_package": packageID, "profiles": ["gravel", "gravel/less-climbing"]]), ok)
             }
             await sent.append(request.httpBody!)
-            let routes = [route("primary", profile: "gravel", unknown: 0), route("smoother", profile: "gravel/shorter", unknown: 120),
+            let routes = [route("primary", profile: "gravel", unknown: 0), route("less_climbing", profile: "gravel/less-climbing", unknown: 120),
                           route("corridor", profile: "gravel", via: [8.05, 48.02], unknown: 0), route("corridor", profile: "gravel", unknown: 0)]
             return (try JSONSerialization.data(withJSONObject: ["routes": routes]), ok)
         }
         let options = try await service.options(points: [a, b], activity: .gravel, preference: .balanced, release: release)
-        #expect(options.map(\.reason) == [.primary, .smoother, .corridor])
-        #expect(options.map(\.preference) == [.balanced, .shorter, .balanced])
+        #expect(options.map(\.reason) == [.primary, .lessClimbing, .corridor])
+        #expect(options.map(\.preference) == [.balanced, .lessClimbing, .balanced])
         #expect(options.map(\.via) == [nil, nil, Coordinate(latitude: 48.02, longitude: 8.05)])
         #expect(options[1].unknownSurfaceMeters == 120 && options[1].path.points.map(\.coordinate) == [a, b])
         let query = try #require(try JSONSerialization.jsonObject(with: await sent.values[0]) as? [String: Any])
         #expect(query["alternatives"] as? Bool == true)
-        _ = try await service.route(points: [a, b], activity: .gravel, preference: .shorter, release: release)
+        _ = try await service.route(points: [a, b], activity: .gravel, preference: .lessClimbing, release: release)
         #expect(await sent.values.count == 1)
     }
     @Test func searchUsesCanonicalFiltersAndRouteDistances() async throws {
@@ -326,7 +326,7 @@ private final class StubHTTP: URLProtocol, @unchecked Sendable {
                 "basemap": host + "/basemap.json", "places": host + "/places.json", "glyphs": host + "/fonts/{fontstack}/{range}.pbf", "sprites": host + "/sprites", "terrain": host + "/{z}/{x}/{y}.webp", "terrain_attribution": "Terrain", "search": host + "/search", "routing": host + "/" + kind, "manifest": host + "/manifest.json" + suffix, "overlays": host + "/overlays.json"]
             data = try! JSONSerialization.data(withJSONObject: ["format": 1, "active": release])
         } else if url.lastPathComponent == "manifest.json" {
-            data = try! JSONSerialization.data(withJSONObject: ["routing_package": packageID, "profiles": ["gravel", "gravel/shorter"]])
+            data = try! JSONSerialization.data(withJSONObject: ["routing_package": packageID, "profiles": ["gravel", "gravel/less-climbing"]])
         } else if url.lastPathComponent == "query" {
             let query = body()
             let criteria = query["request"] as! [String: Any]
@@ -355,10 +355,10 @@ private final class StubHTTP: URLProtocol, @unchecked Sendable {
             else {
                 let query = body()
                 // This fake server requires longitude first and the requested profile.
-                guard (query["profile"] as? String) == "gravel/shorter", (query["points"] as? [[Double]]) == [[8, 48], [8.1, 48.1]], query["alternatives"] as? Bool == false else { fatalError("Wrong route request") }
+                guard (query["profile"] as? String) == "gravel/less-climbing", (query["points"] as? [[Double]]) == [[8, 48], [8.1, 48.1]], query["alternatives"] as? Bool == false else { fatalError("Wrong route request") }
                 let heights: [Any] = kind == "short-elevation" ? [2700] : [2700, 300]
                 let route: [String: Any] = ["reason": "primary", "package": kind == "wrong-package" ? "other" : packageID,
-                    "profile": kind == "wrong-profile" ? "road" : "gravel/shorter",
+                    "profile": kind == "wrong-profile" ? "road" : "gravel/less-climbing",
                     "coordinates_udeg": kind == "bad-coordinate" ? [800_000_000, 48_000_000, -791_900_000, 100_000] : [8_000_000, 48_000_000, 100_000, 100_000],
                     "elevation_dm": heights, "elapsed_s": kind == "short-elapsed" ? [0] : [0,400], "legs": [["from_index": 0, "to_index": kind == "bad-leg" ? 2 : 1,
                         "start": "a", "end": "b", "totals": ["distance_m": 900, "ascent_m": 25, "seconds": 400]]],
