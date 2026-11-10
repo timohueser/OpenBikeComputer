@@ -30,6 +30,8 @@ mod chain;
 mod chains;
 mod curve;
 mod fit;
+#[cfg(test)]
+mod heights;
 mod network;
 mod rows;
 mod sidewalks;

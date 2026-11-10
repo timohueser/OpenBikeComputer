@@ -403,19 +403,19 @@ pub struct Chains {
 }
 
 /// The OSM segments of the features: per way part its points, and the number of its first segment.
-struct Segments<'a> {
+pub(crate) struct Segments<'a> {
     features: &'a [&'a Feature],
-    parts: Vec<(usize, usize, Vec<[f64; 2]>, usize)>,
-    index: HashMap<(u32, u32), usize>,
+    pub parts: Vec<(usize, usize, Vec<[f64; 2]>, usize)>,
+    pub index: HashMap<(u32, u32), usize>,
     /// Per segment its part.
-    part: Vec<usize>,
+    pub part: Vec<usize>,
 }
 
 /// An end of a segment (segment, 0 its first vertex or 1 its last).
-type Tip = (usize, usize);
+pub(crate) type Tip = (usize, usize);
 
 impl<'a> Segments<'a> {
-    fn new(features: &'a [&'a Feature]) -> Self {
+    pub fn new(features: &'a [&'a Feature]) -> Self {
         let (mut parts, mut index, mut part) = (Vec::new(), HashMap::new(), Vec::new());
         for (f, feature) in features.iter().enumerate() {
             for (p, points) in feature.parts.iter().enumerate() {
@@ -432,7 +432,7 @@ impl<'a> Segments<'a> {
     }
 
     /// The end of the segment that an arm points into.
-    fn end(&self, ((f, p, k), step): Arm) -> Tip {
+    pub fn end(&self, ((f, p, k), step): Arm) -> Tip {
         let first = self.parts[self.index[&(f, p)]].3;
         if step > 0 {
             (first + k as usize, 0)
