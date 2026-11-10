@@ -11,8 +11,8 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
-/// The window along the route that smooths the heights of an answer before its time and climb.
-/// The grade colours of the web planner use the same window.
+/// The window along each leg that smooths the heights of an answer before its time and climb.
+/// The grade colours of the web planner take their grade over a second window of 100 m of these heights.
 const HEIGHT_WINDOW_M: f64 = 100.0;
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -428,7 +428,11 @@ impl<P: RoutingData> Router<P> {
         if points.is_empty() {
             points.push(paths[0].0.projected);
         }
-        geometry::smooth_heights(&mut points, HEIGHT_WINDOW_M);
+        // Each leg on its own, so a leg that a client keeps from an earlier answer keeps its figures.
+        // A request point ends one leg and starts the next, and keeps its height in both.
+        for leg in &legs {
+            geometry::smooth_heights(&mut points[leg.from_index..=leg.to_index], HEIGHT_WINDOW_M);
+        }
         let mut elapsed = Vec::with_capacity(points.len());
         elapsed.push(0.0);
         // Climb rounds once per leg, so the sub-metre rises of short steps add up.

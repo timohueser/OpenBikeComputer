@@ -640,6 +640,58 @@ fn a_leg_adds_the_sub_metre_climb_of_its_pieces_before_it_rounds() {
 }
 
 #[test]
+fn each_leg_smooths_its_own_heights() {
+    let template = roads(&fixture())[0].clone();
+    // Heights that alternate by ±0.5 m every 15 m, and climb at 2 % in the second half.
+    let shape: Vec<_> = (0..=100)
+        .map(|i| Point { lon: i * 135, lat: 0, elevation: (i % 2) as f32 - 0.5 + 0.3 * (i - 50).max(0) as f32 })
+        .collect();
+    let mut back = shape.clone();
+    back.reverse();
+    let roads = [(0, 1, shape.clone()), (1, 0, back)].map(|(from, to, shape)| Road {
+        from,
+        to,
+        way: 0,
+        length_m: 1_500,
+        shape,
+        ..template.clone()
+    });
+    let graph = Graph {
+        points: [shape[0], shape[100]].into_iter().collect(),
+        roads: roads.into_iter().collect(),
+        ..Graph::default()
+    };
+    let (source, manifest) = package(&graph);
+    let mut router = Router::new(routing(source, &manifest), 768 << 20);
+    let mut route = |points: &[[f64; 2]]| {
+        let request = Request {
+            points: points.to_vec(),
+            profile: "touring".into(),
+            pace: Pace::default(),
+            alternatives: false,
+            alternatives_only: false,
+            turnarounds: vec![],
+            start_position: None,
+            end_position: None,
+        };
+        router.route(&request, &Control::default()).unwrap()
+    };
+    let (start, middle, end) = ([0.0002, 0.0], [0.00681, 0.0], [0.0133, 0.0]);
+    let whole = route(&[start, middle, end]);
+    let raw: f32 = shape.windows(2).map(|p| (p[1].elevation - p[0].elevation).max(0.0)).sum();
+    // The 2 % climb rises about 15 m; the noise adds most of the raw rises.
+    assert!((14.0..raw / 2.0).contains(&(whole.totals().ascent_m as f32)));
+    let mut seconds = 0.0;
+    for (leg, ends) in whole.legs.iter().zip([[start, middle], [middle, end]]) {
+        let alone = route(&ends).totals();
+        assert_eq!((leg.totals.ascent_m, leg.totals.descent_m), (alone.ascent_m, alone.descent_m));
+        assert!((leg.totals.seconds - alone.seconds).abs() < 1e-6);
+        seconds += leg.totals.seconds;
+        assert!((whole.elapsed[leg.to_index] - seconds).abs() < 1e-6);
+    }
+}
+
+#[test]
 fn alternatives_find_a_separate_corridor_without_an_out_and_back_probe() {
     let template = roads(&fixture())[0].clone();
     let points: Vec<_> = [(0, 0), (0, 9000), (60000, 9000), (60000, 0), (0, -9000), (60000, -9000)]
