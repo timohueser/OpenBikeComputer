@@ -41,6 +41,8 @@ export const size = (level: number) => 2 ** (30 - level);
 export const OWNER = 15, CHILD = 16;
 /** The level of the squares of a corridor's details, which draw only near the eye. */
 export const DETAIL = 18;
+/** The level of the ground plan's cells: each has its records and its mesh (plan/pieces.ts). */
+export const CELL_LEVEL = 16;
 export const key = ({ level, x, y }: Node) => `${level}/${x}/${y}`;
 
 /**

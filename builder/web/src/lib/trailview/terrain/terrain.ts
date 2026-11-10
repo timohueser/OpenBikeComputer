@@ -27,9 +27,9 @@ import { BOX } from '../structures/node';
 
 /**
  * GPU memory for pages: the stored and the synthesized budgets for a laptop, in MiB. The feature masks
- * take their share of the synthesized budget. On a usual screen the range is the least, so the first
- * shortage of synthesized pages takes away the finest level, whose mesh alone holds a path's edges:
- * the pool holds what a frame wants at the least range, whichever way it looks.
+ * take their share of the synthesized budget. A shortage of synthesized pages leaves out the farthest
+ * pages of the finest level, and their parents draw in their place: the pool holds what a frame wants at
+ * the least range, whichever way it looks.
  */
 const BUDGET: Record<Kind, number> = { stored: 104 * 2 ** 20, synth: 67 * 2 ** 20 };
 /**
@@ -51,8 +51,6 @@ const MAX_HOLES = 32;
 const MAX_NODES = 4096;
 /** The grid cell that a level has at the far end of its range, in pixels. */
 const CELL_PIXELS = 4;
-/** The share of each pool that it fills at most when the quality rises again after CALM frames without a shortage. */
-const ROOM = 0.6;
 /** Heights that a node of unknown range may have, and the margin about a known range: micro-relief and bicubic overshoot. */
 const ANY_HEIGHT: [number, number] = [-500, 9000];
 const MARGIN = 50;
@@ -99,6 +97,8 @@ export interface TerrainStats {
     capacity: Record<Kind, number>;
     /** 0 is the best; each step draws coarser to stay in the pools. */
     quality: number;
+    /** Per level, the pages that the last frame left out: they found no room in their pool. */
+    left: number[];
     /** The stamp jobs of the last frame: heights on near pages, heights on coarser pages (lakes), and masks only. */
     jobs: { near: number; coarse: number; masks: number };
     /** Masks in use. */
@@ -222,8 +222,10 @@ export class Terrain {
     private cliffs: CliffJob[] = [];
     private readonly masked = new Map<string, [number, Node]>();
     private anchor?: Anchor;
+    /** The quality, its calm frames, and whether it holds until the camera moves (stepQuality). */
     private quality = 0;
     private calm = 0;
+    private held = false;
     private selection = 0;
     private frameNumber = 0;
     private probing = 0;
@@ -242,17 +244,20 @@ export class Terrain {
     private lonLat: [number, number] = [0, 0];
     /** The camera of the last frame, for the audit: only what the frame shows counts. */
     private seen?: { viewProj: Float32Array; z: number; forward: Float64Array };
+    /** The anchor and the view projection of the last frame: the pages rank with a margin while they change. */
+    private camera: number[] = [];
     private floor = 0;
     private instances = new Int32Array(0);
     /** The road and path profiles, as stamp-core.wgsl reads them. */
     private readonly profileTable: Float32Array<ArrayBuffer>;
 
     /**
-     * An abort of `stop` ends the stamp worker. `plan` builds the ground plan; `finest` caps the finest level (a debug option).
-     * The stamps read the nodes that `baked` holds. `cache` names the data of the tiles and the versions of the stamp code and
-     * of the plan's input preparation, under which the nodes' stamps and the plan's cells are cached on the device.
+     * An abort of `stop` ends the stamp worker. `plan` builds the ground plan; `finest` caps the finest level and `pool` scales
+     * the page pools (debug options). The stamps read the nodes that `baked` holds. `cache` names the data of the tiles and the
+     * versions of the stamp code and of the plan's input preparation, under which the nodes' stamps and the plan's cells are
+     * cached on the device.
      */
-    constructor(private readonly frame: Frame, source: TerrainSource, features: FeatureTiles | undefined, bounds: Bounds, private readonly changed: () => void, stop: AbortSignal, plan = false, private readonly finest = FINEST, baked?: BakedNodes, cache?: { release: string; version: string; plan: string }) {
+    constructor(private readonly frame: Frame, source: TerrainSource, features: FeatureTiles | undefined, bounds: Bounds, private readonly changed: () => void, stop: AbortSignal, plan = false, private readonly finest = FINEST, baked?: BakedNodes, cache?: { release: string; version: string; plan: string }, pool = 1) {
         const [west, north] = worldPixel([bounds[0], bounds[3]], UNITS), [east, south] = worldPixel([bounds[2], bounds[1]], UNITS);
         this.bounds = [west, north, east, south];
         // Whole layers inside the two budgets; the synthesized pool takes its share, the stored pool the rest.
@@ -272,7 +277,7 @@ export class Terrain {
         // to hold its heights: until then the coarser page draws, never the far look up close.
         const waits = (node: Node) => records!.waits(node) || (node.level === pieces!.level && (records!.meshComing(cellOf(node)) || pieces!.ready(cellOf(node)) === false));
         const stamps = records ? { get: (node: Node) => (waits(node) ? undefined : this.stamps.get(node)), known: (node: Node) => (waits(node) ? undefined : this.stamps.known(node)) } : this.stamps;
-        this.pages = new Pages(source, { stored: pages - SYNTH_PAGES, synth: SYNTH_PAGES }, this.bounds, changed, stamps, MASKS);
+        this.pages = new Pages(source, { stored: Math.round(pool * (pages - SYNTH_PAGES)), synth: Math.round(pool * SYNTH_PAGES) }, this.bounds, changed, stamps, MASKS);
     }
 
     get idle(): boolean {
@@ -314,15 +319,10 @@ export class Terrain {
 
     /** True while the terrain needs frames that no tile load, feature tile or probe will ask for. */
     get working(): boolean {
-        // A frame that changed nothing while feature tiles are on their way waits for them. Only frames
-        // count the calm that raises the quality, and the calm that brings the meshes back, so a still view goes on until both do.
-        return (!this.pages.idle && this.pages.loads === 0 && (this.newContent || !this.stamps.loading)) || this.calm === 0 || this.raisable || !!this.pieces?.returning;
-    }
-
-    /** Whether the quality can rise: each pool would still have room. */
-    private get raisable(): boolean {
-        const { capacity, wanted } = this.pages;
-        return this.quality > 0 && wanted.stored < ROOM * capacity.stored && wanted.synth < ROOM * capacity.synth;
+        // A frame that changed nothing while feature tiles are on their way waits for them. A still view takes the frame after a
+        // quality step, in which a finer quality is tried (stepQuality). Only frames count the calm that brings the meshes back, so
+        // a still view goes on until they do.
+        return (!this.pages.idle && this.pages.loads === 0 && (this.newContent || !this.stamps.loading)) || this.calm === 0 || !!this.pieces?.returning;
     }
 
     /** A new view: a probe from before it never sets the ground. */
@@ -344,7 +344,7 @@ export class Terrain {
             if (page.mask !== undefined) masks++;
         }
         return {
-            nodes: this.nodes.length, triangles: 2 * GRID * GRID * this.nodes.length, selection: this.selection, resident, capacity: { ...this.pages.capacity }, quality: this.quality,
+            nodes: this.nodes.length, triangles: 2 * GRID * GRID * this.nodes.length, selection: this.selection, resident, capacity: { ...this.pages.capacity }, quality: this.quality, left: [...this.pages.left],
             jobs: this.jobs, masks, waterDropped: this.water.dropped, structuresDropped: this.structures.dropped, stampLimits: this.stamps.limits, roads: this.roads.stats,
             ...(this.records ? { records: this.records.stats } : {}),
             ...(this.pieces ? { pieces: this.pieces.stats } : {}),
@@ -489,9 +489,10 @@ export class Terrain {
 
     /**
      * Selects the nodes for a view and takes the pages that they want, and the pages of `reads`, which
-     * the ground's relief reads. A frame that wants more pages than a pool holds draws coarser from the
-     * next frame on: quality goes down before memory goes up. Before `attach` it only asks for the
-     * records and the stamps of the meshes, so that their workers start before the device draws.
+     * the ground's relief reads. A page that finds no room in its pool is left out, the finest and
+     * farthest first (Pages.fit), and the coarser page draws in its place; the quality goes down only
+     * as `stepQuality` has it. Before `attach` it only asks for the records and the stamps of the meshes,
+     * so that their workers start before the device draws.
      */
     update(view: View, reads: Node[] = []): void {
         const r = this.resources;
@@ -518,11 +519,13 @@ export class Terrain {
         const nearField = new Set(field(NEAR_M).map(key));
         // The eye field: its nodes and the parents that they morph toward.
         const eyeField = new Set(field(EYE_M).flatMap(({ level, x, y }) => [key({ level, x, y }), key({ level: level - 1, x: x >> 1, y: y >> 1 })]).filter(name => keys.has(name)));
-        const work = this.pages.update([...wanted, ...reads.filter(node => !keys.has(key(node)))].sort(order), anchor, nearField, eyeField);
+        const camera = [...anchor.whole, ...anchor.part, ...view.viewProj], moving = camera.some((v, i) => v !== this.camera[i]);
+        this.camera = camera;
+        const work = this.pages.update([...wanted, ...reads.filter(node => !keys.has(key(node)))].sort(order), anchor, nearField, eyeField, moving);
         // After the update, so that a page draws in the frame that it arrives in. The nodes that draw the
         // detail of the look come first, those with a tunnel's portal first of all, with its hole. A node
-        // coarser than NEAR draws without the detail only when its distance keeps it from splitting: a
-        // shortage can make a coarser level the finest, under the eye. Each pipeline draws near to far,
+        // coarser than NEAR draws without the detail only when its distance keeps it from splitting: the
+        // option `finest` can make a coarser level the finest, under the eye. Each pipeline draws near to far,
         // so that a GPU without hidden-surface removal shades few hidden fragments.
         const drawn = nodes.slice(0, MAX_NODES).filter(node => this.pages.covers(node));
         const group = drawn.map(node => (node.level < Math.min(NEAR, rule.finest) ? 2 : this.stamps.known(node)?.portals ? 0 : 1)), near = drawn.map(node => distances(eye, node)[0]);
@@ -541,14 +544,14 @@ export class Terrain {
         const records = this.records;
         // The corners read the drawn and the raw stored heights of the finest level and coarser: the LOD map changes with them.
         const meshed = !!records && !!this.pieces?.update(rule, eye, node => records.block(node), (box, stored) => this.pages.reads(box, FINEST, stored), work.touched,
-            node => this.visible(node, eye, forward, view), node => records.settled(node));
-        if (this.pages.shortage > 0) {
-            this.quality++;
-            this.calm = 0;
-        } else if (++this.calm > CALM && this.raisable) {
-            this.quality--;
-            this.calm = 0;
-        }
+            node => this.visible(node, eye, forward, view), node => records.settled(node), cell => this.pages.fallback(cell, rule.finest) < COARSEST_MESH);
+        // The slots per pool that the pages coarser than the meshes' levels need at a quality, from its own selection.
+        const coarse = (quality: number) => this.pages.demand([...select(this.rule(eye, view.pixels, quality), this.bounds, node => this.visible(node, eye, forward, view)).wanted, ...reads],
+            anchor, COARSEST_MESH);
+        const short = this.pages.left.some((pages, level) => pages > 0 && level < COARSEST_MESH), { capacity } = this.pages;
+        ({ quality: this.quality, calm: this.calm, held: this.held } = stepQuality({ quality: this.quality, calm: this.calm, held: this.held }, short, this.pages.missing === 0, moving,
+            () => this.quality < qualitySteps(view.pixels) && lowers(coarse(this.quality), coarse(this.quality + 1), capacity),
+            () => fits(coarse(this.quality - 1), capacity)));
         const probeReads = this.probeKey(rule, anchor);
         if (probeReads !== this.probeReads) {
             this.probeReads = probeReads;
@@ -920,11 +923,9 @@ export class Terrain {
         return clip[2] > 0 && Math.abs(clip[0]) < 0.98 * clip[2] && Math.abs(clip[1]) < 0.98 * clip[2];
     }
 
-    private rule(eye: { anchor: Anchor; above: number }, pixels: number): Rule {
-        // The range at which a level's grid cell spans CELL_PIXELS, a quarter step smaller per quality step.
-        const best = Math.min(RANGE.most, Math.max(RANGE.least, pixels / (2 * Math.tan(VFOV * RAD / 2)) / (GRID * CELL_PIXELS)));
-        const steps = Math.ceil(4 * Math.log2(best / RANGE.least));
-        return cdlod(eye, Math.max(RANGE.least, best * 2 ** (-this.quality / 4)), Math.min(this.finest, FINEST - Math.max(0, this.quality - steps)));
+    /** The rule at a quality: each step makes the range a quarter step smaller, down to the least. No step lowers the finest level. */
+    private rule(eye: { anchor: Anchor; above: number }, pixels: number, quality = this.quality): Rule {
+        return cdlod(eye, Math.max(RANGE.least, bestRange(pixels) * 2 ** (-quality / 4)), this.finest);
     }
 
     /** Whether a node's box can show: render space corners at its range of heights, against the frustum. */
@@ -1057,6 +1058,39 @@ export class Terrain {
         this.pieces?.write({ anchor, above });
         return changed;
     }
+}
+
+/** The range at which a level's grid cell spans CELL_PIXELS on a render target `pixels` high, within RANGE. */
+const bestRange = (pixels: number) => Math.min(RANGE.most, Math.max(RANGE.least, pixels / (2 * Math.tan(VFOV * RAD / 2)) / (GRID * CELL_PIXELS)));
+
+/** The quality steps that make the range smaller: 0 on a usual screen, whose best range is the least already. */
+const qualitySteps = (pixels: number) => Math.ceil(4 * Math.log2(bestRange(pixels) / RANGE.least));
+
+/** Whether a demand of slots per pool lowers that of `now` in every pool that `now` overfills. */
+const lowers = (now: Record<Kind, number>, next: Record<Kind, number>, capacity: Record<Kind, number>) =>
+    (['stored', 'synth'] as const).some(kind => now[kind] > capacity[kind]) && (['stored', 'synth'] as const).every(kind => now[kind] <= capacity[kind] || next[kind] < now[kind]);
+
+/** Whether a demand of slots per pool fits in the pools. */
+const fits = (demand: Record<Kind, number>, capacity: Record<Kind, number>) => demand.stored <= capacity.stored && demand.synth <= capacity.synth;
+
+/** The quality, its calm frames, and whether it holds until the camera moves. */
+export interface QualityState { quality: number; calm: number; held: boolean }
+
+/**
+ * The quality after a frame. The pages of the meshes' levels leave a page at a time (Pages.fit), and those of coarser levels
+ * too; a quality step makes the range of every level smaller (`rule`). It steps down when a page of a coarser level than
+ * the meshes' was left out (`short`) once the pages that fit are in (`settled`: while pages load, their ranges are not known
+ * and the selection is wider), and only where the step lowers the demand of the pool that is short (`lowers`). It steps up
+ * after CALM frames, or at once in a still view whose pages are in, where the demand of the finer quality fits (`fits`);
+ * where it does not, it holds until the camera moves. Down needs a demand that does not fit, up one that fits: for fixed
+ * pages and pools the quality comes to a fixed point, and a still view's frames stop. `lowers` and `fits` select at another
+ * quality, so they run only then.
+ */
+export function stepQuality({ quality, calm, held }: QualityState, short: boolean, settled: boolean, moving: boolean, lowers: () => boolean, fits: () => boolean): QualityState {
+    held &&= !moving;
+    if (short && settled && lowers()) return { quality: quality + 1, calm: 0, held: false };
+    if (!short && quality > 0 && !held && (calm >= CALM || (settled && !moving))) return fits() ? { quality: quality - 1, calm: 0, held: false } : { quality, calm: 0, held: true };
+    return { quality, calm: calm + 1, held };
 }
 
 /** The terrain's own bind group layouts; groups 1 to 3 are those of gpu/layouts.ts. */
