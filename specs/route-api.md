@@ -39,7 +39,7 @@ these fields:
 | Field | Value |
 | --- | --- |
 | `id` | 64-character lowercase hex route identity |
-| `reason` | `primary`, `shorter`, `less_climbing`, `smoother` or `corridor` |
+| `reason` | `primary`, `less_climbing` or `corridor` |
 | `package` | Routing package identity |
 | `profile` | Profile ID of this route |
 | `coordinates_udeg` | Integer microdegrees: longitude and latitude of each point, flat |
@@ -174,8 +174,9 @@ route request. The deadline is 30 s.
 | `attribution` | Data credits |
 | `warnings` | Strings that name known limits of the package data |
 
-A profile ID is an activity, such as `touring`, or an activity, `/` and a variant: `touring/shorter`
-or `touring/less-climbing`. Two variants are skill choices. `mtb/technical` permits every MTB grade;
+A profile ID is an activity, such as `touring`, or an activity, `/` and a variant. Each activity
+has one variant: `touring/less-climbing`, `road/less-climbing`, `gravel/less-climbing`,
+`mtb/technical` and `hiking/alpine`. Two variants are skill choices. `mtb/technical` permits every MTB grade;
 `mtb` permits S2 at most. `hiking/alpine` permits T4; `hiking` permits T2 at most. Cycling profiles
 never use steps. The clients offer the presets of the profiles that the region serves.
 
