@@ -12,7 +12,7 @@ import { testTrip } from '../../../test-support/planner/trip';
 const totals = (metres: number, unknown = 0, pushing = 0): RouteTotals =>
     ({ distance_m: metres, ascent_m: 0, seconds: metres, surface_m: [unknown, metres - unknown, 0, 0, 0, 0], unknown_elevation_m: metres, pushing_m: pushing });
 const answer: AnswerRoute = {
-    id: 'test-route', edges: { surfaces: [['Paved', 1], ['Gravel', 1]], pushing: [[false, 1], [true, 1]] }, elapsed_s: [0, 3000, 1000], package: 'test', profile: 'touring',
+    edges: { surfaces: [['Paved', 1], ['Gravel', 1]], pushing: [[false, 1], [true, 1]] }, elapsed_s: [0, 3000, 1000], package: 'test', profile: 'touring',
     coordinates_udeg: [7_800_000, 48_000_000, 100_000, 0, 100_000, 0], elevation_dm: [2000, null, 2000],
     totals: { ...totals(15000, 1000, 100), seconds: 4000 },
     legs: [{ from_index: 0, to_index: 1, start: 'a', end: 'b', totals: { ...totals(7500, 1000), seconds: 3000 } },
@@ -168,7 +168,7 @@ describe('joins beside manual legs', () => {
         const { points } = JSON.parse(init.body as string) as { points: Coordinate[] };
         const snapped = points.map(([lon, lat]): Coordinate => [lon, lat + .000045]);
         const legTotals = { ...totals(1000), unknown_elevation_m: 0 };
-        const routes: AnswerRoute[] = [{ id: 'snapped', package: 'p', profile: 'touring', snap_truncated: false,
+        const routes: AnswerRoute[] = [{ package: 'p', profile: 'touring', snap_truncated: false,
             coordinates_udeg: snapped.flat().map((value, i, flat) => Math.round(value * 1e6) - (i > 1 ? Math.round(flat[i - 2] * 1e6) : 0)),
             elevation_dm: snapped.map(() => 2000), elapsed_s: snapped.map((_, i) => i && 1000), totals: { ...totals(1000 * (points.length - 1)), unknown_elevation_m: 0 },
             legs: snapped.slice(1).map((_, k) => ({ from_index: k, to_index: k + 1, start: `${k}`, end: `${k + 1}`, totals: legTotals })) }];

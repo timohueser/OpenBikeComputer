@@ -66,7 +66,7 @@ describe('signed route plans', () => {
         const udeg = plan.points.flatMap(([lon, lat], i) => i ? [Math.round((lon - plan.points[i - 1][0]) * 1e6), Math.round((lat - plan.points[i - 1][1]) * 1e6)]
             : [Math.round(lon * 1e6), Math.round(lat * 1e6)]);
         const totals = { distance_m: 1, ascent_m: 0, seconds: 1, surface_m: [0, 1, 0, 0, 0, 0], unknown_elevation_m: 0, pushing_m: 0 };
-        const answer = { id: 'route', package: 'test', profile: 'hiking', coordinates_udeg: udeg, elevation_dm: plan.points.map(() => 0),
+        const answer = { package: 'test', profile: 'hiking', coordinates_udeg: udeg, elevation_dm: plan.points.map(() => 0),
             elapsed_s: plan.points.map(() => 1), edges: {}, totals, snap_truncated: false,
             legs: plan.points.slice(1).map((_, i) => ({ from_index: i, to_index: i + 1, start: `${i}`, end: `${i + 1}`, totals })) };
         const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ routes: [answer] }) });

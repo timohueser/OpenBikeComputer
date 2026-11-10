@@ -57,7 +57,7 @@ function route(points, profile) {
   const [lon, lat] = [0, 1].map(axis => deltas(geometry.map(p => Math.round(p[axis] * 1e6))));
   const edges = geometry.length - 1;
   return {
-    id: 'route', package: 'budget-test', profile,
+    package: 'budget-test', profile,
     coordinates_udeg: lon.flatMap((x, i) => [x, lat[i]]),
     elevation_dm: deltas(geometry.map((_, i) => Math.round(3000 + 400 * Math.sin(i / 3)))),
     elapsed_s: deltas(distance.map(d => Math.round(d / 5))),

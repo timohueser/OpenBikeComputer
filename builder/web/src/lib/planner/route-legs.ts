@@ -25,8 +25,7 @@ function cut(route: EngineRoute, { from_index: from, to_index: to, start, end, t
 /** A leg starts at the last point of the leg before it, as in one route answer. */
 function stitch(legs: Leg[], profile: string): EngineRoute {
     const totals: RouteTotals = { distance_m: 0, ascent_m: 0, seconds: 0, surface_m: [0, 0, 0, 0, 0, 0], unknown_elevation_m: 0, pushing_m: 0 };
-    // The server id needs the whole geometry, so a stitched route has none.
-    const route: EngineRoute = { id: '', package: legs[0].package, profile, geometry: [], elevation: [], elapsed: [],
+    const route: EngineRoute = { package: legs[0].package, profile, geometry: [], elevation: [], elapsed: [],
         edges: {}, legs: [], snap_truncated: false, totals };
     for (const leg of legs) {
         const skip = route.geometry.length ? 1 : 0;

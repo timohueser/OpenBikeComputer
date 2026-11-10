@@ -6,7 +6,7 @@ describe('alpine paths', () => {
     it('sums the T4 stretches into one quiet line and keeps T3 silent', () => {
         // Seven points along the equator, 0.01° (1.11 km) apart.
         const [route] = decodeRoutes({ routes: [{
-            id: 'r', package: 'p', profile: 'hiking', snap_truncated: false, legs: [],
+            package: 'p', profile: 'hiking', snap_truncated: false, legs: [],
             coordinates_udeg: [0, 0, ...Array(6).fill([10_000, 0]).flat()], elevation_dm: Array(7).fill(null), elapsed_s: Array(7).fill(0),
             edges: { sac_scale: [[null, 1], [4, 2], [3, 1], [4, 1], [2, 1]] },
             totals: { distance_m: 0, ascent_m: 0, seconds: 0, surface_m: [0, 0, 0, 0, 0, 0], unknown_elevation_m: 0, pushing_m: 0 },

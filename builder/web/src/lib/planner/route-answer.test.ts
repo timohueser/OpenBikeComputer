@@ -11,7 +11,7 @@ describe('route answer', () => {
         expect(routes).toHaveLength(vector.routes.length);
         routes.forEach((route, r) => {
             const source = vector.routes[r];
-            expect(route).toMatchObject({ id: source.id, package: source.package, profile: source.profile, snap_truncated: source.snap_truncated });
+            expect(route).toMatchObject({ package: source.package, profile: source.profile, snap_truncated: source.snap_truncated });
             expect(route.geometry).toEqual(source.geometry);
             expect(route.elevation.map(h => h === null)).toEqual(source.elevation.map((h: number | null) => h === null));
             route.elevation.forEach((h, i) => h !== null && expect(Math.abs(h - source.elevation[i])).toBeLessThanOrEqual(0.05));

@@ -55,7 +55,6 @@ export function appendEdges(target: Edges, length: number, source: Edges | undef
 }
 
 export interface EngineRoute {
-    id: string;
     package: string;
     profile: string;
     geometry: Coordinate[];
