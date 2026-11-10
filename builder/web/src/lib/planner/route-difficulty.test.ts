@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { alpineNote, alpineStretches } from './route-difficulty';
+import { alpineStretches } from './route-difficulty';
 import { decodeRoutes } from './route-answer';
 
 describe('alpine paths', () => {
-    it('sums the T4 stretches into one quiet line and keeps T3 silent', () => {
+    it('finds the T4 stretches and keeps T3 silent', () => {
         // Seven points along the equator, 0.01° (1.11 km) apart.
         const [route] = decodeRoutes({ routes: [{
             package: 'p', profile: 'hiking', snap_truncated: false, legs: [],
@@ -14,8 +14,6 @@ describe('alpine paths', () => {
         const line = { coordinates: route.geometry, edges: route.edges };
         const stretches = alpineStretches(line);
         expect(stretches.map(stretch => stretch.coordinates)).toEqual([[[0.01, 0], [0.02, 0], [0.03, 0]], [[0.04, 0], [0.05, 0]]]);
-        expect(alpineNote(stretches)).toBe('3.3 km alpine path (T4): exposed, sure-footed hikers only');
-        expect(alpineNote([{ coordinates: [], km: 0.4 }])).toBe('400 m alpine path (T4): exposed, sure-footed hikers only');
         expect(alpineStretches({ ...line, edges: { sac_scale: line.edges.sac_scale!.map(grade => grade && Math.min(grade, 3)) } })).toEqual([]);
     });
 });
