@@ -635,6 +635,8 @@ fn a_leg_adds_the_sub_metre_climb_of_its_pieces_before_it_rounds() {
     assert_eq!(route.legs[0].pieces.len(), 10);
     // 3.84 m from rises of 0.4 m each, so every piece alone rounds to 0.
     assert_eq!((route.totals().ascent_m, route.totals().descent_m), (4, 0));
+    let rise: f64 = route.points.windows(2).map(|p| (p[1].elevation as f64 - p[0].elevation as f64).max(0.0)).sum();
+    assert!((rise - route.totals().ascent_m as f64).abs() <= 1.0);
 }
 
 #[test]
