@@ -1430,39 +1430,36 @@
         --planner-shadow: 0 6px 18px rgba(0, 0, 0, .4);
         --link: var(--wood);
     }
-    .planner-shell :global(.planner-action) {
+    .planner-shell :global(.planner-action),
+    .planner-shell :global(.planner-chip) {
         display: inline-flex;
         align-items: center;
-        justify-content: center;
         min-height: 32px;
-        padding: 5px 10px;
         border: 1px solid var(--line-strong);
         border-radius: 6px;
         background: var(--panel);
         color: var(--ink);
+        cursor: pointer;
+    }
+    .planner-shell :global(.planner-action:hover:not(:disabled)),
+    .planner-shell :global(.planner-chip:hover) { background: var(--parchment-2); border-color: var(--ink-faint); }
+    .planner-shell :global(.planner-action) {
+        justify-content: center;
+        padding: 5px 10px;
         font: inherit;
         font-weight: 600;
         text-decoration: none;
-        cursor: pointer;
     }
-    .planner-shell :global(.planner-action:hover:not(:disabled)) { background: var(--parchment-2); border-color: var(--ink-faint); }
     .planner-shell :global(.planner-action.quiet) {
         color: var(--ink-soft);
     }
     .planner-shell :global(.planner-chip) {
-        display: inline-flex;
-        align-items: center;
         gap: 7px;
-        min-height: 32px;
-        padding: 0 9px 0 10px;
-        border: 1px solid var(--line-strong);
-        border-radius: 6px;
-        background: var(--panel);
+        /* Room for a label that wraps; a one-line chip stays at the minimum height. */
+        padding: 4px 9px 4px 10px;
         font: 600 13px var(--sans);
-        color: var(--ink);
     }
     .planner-shell :global(.planner-chip > svg:first-child) { color: var(--chip-ink, var(--ink-soft)); }
-    .planner-shell :global(.planner-chip:hover) { background: var(--parchment-2); border-color: var(--ink-faint); }
     .planner-shell :global(.planner-chip[aria-expanded="true"]) { border-color: var(--ink); }
     .site-header {
         display: flex;
