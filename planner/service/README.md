@@ -13,7 +13,7 @@ target/release/planner-service --formats
 ```
 
 `--formats` prints the format of the routing package that the service reads, such as
-`{"planner/routing":8}`. `obc data serve` starts no release in another format, and starts one
+`{"planner/routing":9}`. `obc data serve` starts no release in another format, and starts one
 service for each planner release that it serves. The planner calls the `routing` prefix of its
 config; see the [planner README](../../builder/web/src/components/planner/README.md).
 

@@ -11,7 +11,7 @@ export function optionOrder(routes: EngineRoute[], choice: string): EngineRoute[
 
 export const optionLetter = (index: number) => String.fromCharCode(65 + index);
 
-const reasonNames: Record<string, string> = { shorter: 'Shorter', less_climbing: 'Less climbing', smoother: 'Smoother' };
+const reasonNames: Record<string, string> = { less_climbing: 'Less climbing' };
 
 /** A corridor route takes the settlement near its `via` from `places`, else "Other way"; the primary route its preset. */
 export function optionName(route: EngineRoute, places: Record<string, string>): string {

@@ -84,7 +84,6 @@ pub enum Weighting {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RoadBike {
     Balanced,
-    Shorter,
     LessClimbing,
 }
 
@@ -149,29 +148,15 @@ impl Profile {
         profiles.push(mtb);
         let variants: Vec<_> = profiles
             .iter()
-            .flat_map(|profile| {
-                ["shorter", "less-climbing"].map(|variant| {
-                    let mut p = profile.clone();
-                    p.name = format!("{}/{variant}", profile.name);
-                    let shorter = variant == "shorter";
-                    match &mut p.weighting {
-                        Weighting::RoadBike(road) => {
-                            *road = if shorter { RoadBike::Shorter } else { RoadBike::LessClimbing }
-                        }
-                        Weighting::Weighted { climb, .. } => {
-                            if shorter {
-                                *climb = 0.0;
-                            } else {
-                                *climb *= 3.0;
-                            }
-                        }
-                    }
-                    // Shorter keeps road and surface suitability; a signed route is no shortcut.
-                    if shorter {
-                        p.route_bonus = 0.0;
-                    }
-                    p
-                })
+            .filter(|profile| ["touring", "gravel", "road"].contains(&profile.name.as_str()))
+            .map(|profile| {
+                let mut p = profile.clone();
+                p.name = format!("{}/less-climbing", profile.name);
+                match &mut p.weighting {
+                    Weighting::RoadBike(road) => *road = RoadBike::LessClimbing,
+                    Weighting::Weighted { climb, .. } => *climb *= 3.0,
+                }
+                p
             })
             .collect();
         profiles.extend(variants);

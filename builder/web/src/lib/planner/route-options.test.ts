@@ -11,27 +11,26 @@ function route(id: string, reason: string, profile: string, km: number, climb: n
 
 describe('route options', () => {
     const balanced = route('a', 'primary', 'touring', 30.7, 906, 2.4);
-    const shorter = route('b', 'shorter', 'touring/shorter', 25.2, 669, 2.4);
+    const lower = route('b', 'less_climbing', 'touring/less-climbing', 25.2, 669, 2.4);
     const corridor = route('c', 'corridor', 'touring', 30.1, 886, 2.5, 0, [8, 48]);
 
     it('compares every option with the current route, which leads the list', () => {
-        expect(optionOrder([balanced, shorter, corridor], 'b')).toEqual([shorter, balanced, corridor]);
+        expect(optionOrder([balanced, lower, corridor], 'b')).toEqual([lower, balanced, corridor]);
         const row = (r: EngineRoute) => routeRow(r, r.id), base = row(balanced);
-        expect(difference(row(shorter), base)).toBe('5.5 km shorter · 237 m less climbing');
-        expect(difference(base, row(shorter))).toBe('5.5 km longer · 237 m more climbing');
+        expect(difference(row(lower), base)).toBe('5.5 km shorter · 237 m less climbing');
+        expect(difference(base, row(lower))).toBe('5.5 km longer · 237 m more climbing');
         expect(difference(row(corridor), base)).toBe('0.6 km shorter · 20 m less climbing · 0.1 km more unpaved');
-        expect(difference(row(route('e', 'smoother', 'touring', 30.72, 906, 2.4)), base)).toBe('Same distance · same climbing');
-        expect(difference(row(shorter), row(route('d', 'primary', 'touring', 30, 900, 2.4, 120)))).toBe('4.8 km shorter');
+        expect(difference(row(route('e', 'primary', 'touring', 30.72, 906, 2.4)), base)).toBe('Same distance · same climbing');
+        expect(difference(row(lower), row(route('d', 'primary', 'touring', 30, 900, 2.4, 120)))).toBe('4.8 km shorter');
     });
 
     it('says what the other ways offer beside the current route', () => {
-        const [base, short, near] = [balanced, shorter, corridor].map(r => routeRow(r, r.id));
+        const [base, short, near] = [balanced, lower, corridor].map(r => routeRow(r, r.id));
         expect([otherWays([base]), otherWays([base, short]), otherWays([base, short, near])]).toEqual(['', '1 other way, 5.5 km shorter', '2 other ways']);
     });
 
     it('names options by their reason, and a corridor by its settlement or as another way', () => {
-        expect([balanced, shorter, route('s', 'smoother', 'touring', 1, 0, 0), route('l', 'less_climbing', 'touring/less-climbing', 1, 0, 0)]
-            .map(r => optionName(r, {}))).toEqual(['Balanced', 'Shorter', 'Smoother', 'Less climbing']);
+        expect([balanced, lower].map(r => optionName(r, {}))).toEqual(['Balanced', 'Less climbing']);
         expect([optionName(corridor, { c: 'Kirchzarten' }), optionName(corridor, {})]).toEqual(['Via Kirchzarten', 'Other way']);
     });
 

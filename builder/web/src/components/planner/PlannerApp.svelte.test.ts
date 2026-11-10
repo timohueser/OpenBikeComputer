@@ -115,8 +115,11 @@ describe('planner app transitions', () => {
     it('uses walking access and language for a hiking route', async () => {
         const saved = JSON.parse(stored.get('trip')!);
         saved.bike = 'hiking';
+        // A preset that the activity does not have, as in an old plan, shows and routes as Balanced.
+        saved.preset = 'Shorter';
         stored.set('trip', JSON.stringify(saved));
         await startApp(); await tick();
+        expect(button('Preset').textContent?.trim()).toBe('Balanced');
         expect(button('Pan map').dataset.accessMode).toBe('walking');
         await vi.waitFor(() => expect(document.querySelector('.trip-summary')?.textContent).toContain('Walking time'));
         const surface = document.querySelector<HTMLElement>('[aria-label="Surface along route"]')!;
@@ -483,7 +486,7 @@ describe('planner app transitions', () => {
         expect(document.querySelector('.list-head')).toBeNull();
         await vi.waitFor(() => expect(routing.requestAlternatives).toHaveBeenCalled());
         expect(document.querySelector('[data-list="ways"]')?.textContent).toBe('Route options');
-        answer([primary, route('shorter', 106)]);
+        answer([primary, route('less_climbing', 106)]);
         await vi.waitFor(() => expect(button('Route options · 1 other way, 14.0 km shorter')).toBeDefined());
         expect(dayButton(1)).toBeDefined();
     });
