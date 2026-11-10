@@ -62,9 +62,11 @@
     import { routingKey, type RoutingLine } from '../../lib/planner/routing';
     import { importedTrip, readTracks } from '../../lib/planner/gpx-import';
     import { DRAWER_CLOSED, DRAWER_MIN, resizeDrawer } from '../../lib/planner/drawer';
-    import { closureNote, closureStretches, type Stretch } from '../../lib/planner/route-closures';
-    import { alpineNote, alpineStretches } from '../../lib/planner/route-difficulty';
-    import { gapNote, routeGaps } from '../../lib/planner/route-gaps';
+    import { closureStretches } from '../../lib/planner/route-closures';
+    import { alpineStretches } from '../../lib/planner/route-difficulty';
+    import { routeGaps } from '../../lib/planner/route-gaps';
+    import { noteKey, routeNotes as notesOf, type RouteNote } from '../../lib/planner/route-notes';
+    import RouteNotes from './RouteNotes.svelte';
     const defaultLabels: Record<EditableKind, string> = {
         via: 'Shaping point',
         pass: 'Pass here',
@@ -227,24 +229,22 @@
     const queryPlan = $derived(searchPlan(trip, view));
     const searchContext = $derived<SearchContext>({ view: viewBounds, here, pointing, startDate: trip.startDate, plan: queryPlan });
     const conflicts = $derived(multi ? nightOrderConflicts(shown.trip, shown.line) : []);
-    const closures = $derived(closureStretches(visualRoute));
-    const alpine = $derived(alpineStretches(visualRoute));
     const gaps = $derived(visualRoute ? routeGaps(visualStops, coordinates) : []);
-    // A new route makes the shown stretch stale, so the map no longer marks it.
-    let shownStretch = $state.raw<Stretch | null>(null);
-    const shownIndex = (stretches: Stretch[]) => shownStretch ? stretches.indexOf(shownStretch) : -1;
-    function showNext(stretches: Stretch[]) {
-        shownStretch = stretches[shownIndex(stretches) + 1] ?? null;
-        if (shownStretch) map?.fitCoordinates(shownStretch.coordinates);
+    const routeNotes = $derived(notesOf(gaps, closureStretches(visualRoute), alpineStretches(visualRoute)));
+    // Plan edits rebuild the notes without a new route, so the shown note is kept by key; a route without it marks nothing.
+    let shownKey = $state<string | null>(null);
+    const shownNote = $derived(routeNotes.find(note => noteKey(note) === shownKey));
+    function showNote(note: RouteNote) {
+        shownKey = note === shownNote ? null : noteKey(note);
+        if (shownKey) map?.fitCoordinates(note.coordinates);
     }
-    const stepLabel = (stretches: Stretch[]) => shownIndex(stretches) < 0 ? 'Show' : shownIndex(stretches) + 1 < stretches.length ? 'Next' : 'Hide';
     // The ladder and an open day light up the stretch whose towns they list.
     const nightBand = $derived.by(() => {
         const window = pickerNight !== null ? stopWindows[pickerNight] : undefined;
         return window && total ? { from: window[0] / total, to: window[1] / total, blocked: false } : null;
     });
     const highlighted = $derived(nightBand ? routeSlice(coordinates, nightBand.from, nightBand.to)
-        : shownStretch && (shownIndex(closures) >= 0 || shownIndex(alpine) >= 0) ? shownStretch.coordinates : []);
+        : shownNote?.coordinates ?? []);
     const openStop = $derived(pickerNight !== null ? readyStops(pickerNight).find(stop => stop.id === stopId) : undefined);
     const routeHeights = $derived(currentRoute ? profileSamples(currentRoute) : []);
     const nights: NightChoices = {
@@ -1199,15 +1199,7 @@
                 {#if !focusedDay && visualRoute}
                     <div class="trip-summary"><RouteStats distance={view.summary.distance} ascent={view.line?.unknownElevationKm === 0 ? view.summary.ascent : null} descent={view.line?.unknownElevationKm === 0 ? view.summary.descent : null} walking={shown.trip.bike === 'hiking'} hours={view.line ? view.summary.hours : null} /></div>
                 {/if}
-                {#if !focusedDay && gaps.length}
-                    <p class="closure-note"><Icon name="pin" size={15} /><span>{gapNote(gaps)}</span></p>
-                {/if}
-                {#if !focusedDay && closures.length}
-                    <p class="closure-note"><Icon name="calendar" size={15} /><span>{closureNote(closures)}</span><button type="button" class="planner-action quiet" onclick={() => showNext(closures)}>{stepLabel(closures)}</button></p>
-                {/if}
-                {#if !focusedDay && alpine.length}
-                    <p class="closure-note"><Icon name="mountain" size={15} /><span>{alpineNote(alpine)}</span><button type="button" class="planner-action quiet" onclick={() => showNext(alpine)}>{stepLabel(alpine)}</button></p>
-                {/if}
+                {#if !focusedDay}<RouteNotes notes={routeNotes} shown={shownNote} onShow={showNote} />{/if}
                 <div class="pane-scroll" inert={multi && !currentRoute && routingStatus === 'Calculating route…'}>
                     {#if multi && visualRoute && (currentRoute || routingStatus === 'Calculating route…')}
                         <Itinerary
@@ -1521,9 +1513,6 @@
     .trip-summary { padding: 0 16px; }
     .back-to-routes { display: flex; align-items: center; gap: 6px; min-height: 32px; margin: -4px 12px 8px; padding: 0 6px; border-radius: 6px; color: var(--ink-soft); font-size: 13px; text-align: left; }
     .back-to-routes:hover { background: var(--parchment-2); color: var(--ink); }
-    .closure-note { display: flex; align-items: center; gap: 8px; margin: 0 16px 12px; font-size: 13px; color: var(--ink-soft); }
-    .closure-note :global(svg) { flex: none; }
-    .closure-note span { flex: 1; }
     /* Clear of the map controls column, which reaches the bottom on a short map. */
     .layer-date { position: absolute; left: 16px; right: 68px; bottom: 34px; z-index: 2; }
     .pane-scroll {
