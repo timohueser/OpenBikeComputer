@@ -119,6 +119,27 @@ pub struct GroundMetrics {
     pub structure_on_string: usize,
     pub corners: Vec<(f64, [f64; 2])>,
     pub points_apart: Vec<Apart>,
+    /// The held bounds that the stored heights miss by more than 1 mm: kind (0 a ground pass, 1 a cover, 2
+    /// a deck over a way, 3 over water, 4 over a structure, 5 a tunnel under a road, 6 a tunnel under the
+    /// terrain), place, metres.
+    pub held_unmet: usize,
+    pub held_unmet_all: Vec<(u8, [f64; 2], f64)>,
+    /// The ground gate at the nodes: those more than GATE_M off the terrain, outside the stretches where the
+    /// band is cut and the 10 m of a held join, with their places; and those inside the cut stretches.
+    pub ground_gate: usize,
+    pub ground_gate_all: Vec<(f64, [f64; 2])>,
+    pub ground_gate_cut: usize,
+    /// The tunnel gate at the nodes: those more than GATE_M over the terrain; those that a 1:1 line down from
+    /// an origin of their chain cannot bring under the terrain (skipped), with the 10 largest; the origins
+    /// that skip a node (kind: 0 a fixed end, 1 a point shared with another structure, 2 a bridge that runs
+    /// into a tunnel; its place; the largest height over the terrain that it skips); and the nodes that
+    /// fail, every one.
+    pub tunnel_gate_over: usize,
+    pub tunnel_gate_skipped: usize,
+    pub tunnel_gate_skipped_worst: Vec<(f64, [f64; 2])>,
+    pub tunnel_gate_origins: Vec<(u8, [f64; 2], f64)>,
+    pub tunnel_gate_fail: usize,
+    pub tunnel_gate_fail_all: Vec<(f64, [f64; 2])>,
     /// Ground ways that hang on a structure: joins held (the worst by metres off the terrain) and the zone
     /// nodes outside the plain band; joins dropped, out of reach, with metres off the terrain, class, place.
     pub joins_held: usize,
@@ -350,6 +371,8 @@ struct Context<'a> {
     roots: HashMap<Node, Node>,
     /// Per chain: it reads itself.
     reads_itself: Vec<bool>,
+    /// The nodes at points that two structure chains share.
+    shared: HashSet<Node>,
 }
 
 impl Context<'_> {
@@ -413,6 +436,8 @@ impl View<'_> {
 struct Outcome {
     held: Vec<Node>,
     covered: Vec<(Node, f64)>,
+    /// The bounds that the solves held, to check again on the stored heights.
+    bounds: Vec<Held>,
     /// Every read: the reading chain, the node read and the height that it took.
     reads: Vec<(usize, Node, f32)>,
     metrics: GroundMetrics,
@@ -484,6 +509,12 @@ impl Heights {
             ungraded: facts.ungraded.iter().copied().collect(),
             roots: HashMap::new(),
             reads_itself: vec![false; n],
+            shared: chains
+                .meets
+                .iter()
+                .filter(|m| matches!(m.2, ReadKind::Branch | ReadKind::Cross))
+                .flat_map(|m| [m.0, m.1])
+                .collect(),
         };
         for read in chains.reads.iter().filter(|r| r.0 == r.1) {
             context.reads_itself[read.0] = true;
@@ -575,6 +606,7 @@ impl Heights {
         }
         let pool = rayon::ThreadPoolBuilder::new().num_threads(threads.max(1)).build().expect("a thread pool");
         let (mut held, mut covered) = (HashSet::new(), HashMap::new());
+        let mut bounds = Vec::new();
         let mut metrics = GroundMetrics::default();
         let mut kinks: [Vec<f64>; 3] = Default::default();
         let mut reads = Vec::new();
@@ -589,6 +621,7 @@ impl Heights {
                 }
                 held.extend(outcome.held);
                 covered.extend(outcome.covered);
+                bounds.extend(outcome.bounds);
                 reads.extend(outcome.reads);
                 add(&mut metrics, &outcome.metrics);
                 for (all, some) in kinks.iter_mut().zip(outcome.kinks) {
@@ -628,6 +661,55 @@ impl Heights {
             }
         }
         metrics.shared_apart = apart.len();
+        // Every bound that a solve held, again on the stored heights.
+        let at = |m: Node| f64::from(z[m.0 as usize][m.1 as usize][layout.index(m)]);
+        let along = |m: Node, share: f32| at(m) + f64::from(share) * (at(layout.next(m)) - at(m));
+        let segment = |m: Node| [at(m), at(layout.next(m))];
+        for bound in bounds {
+            let (kind, node, short) = match bound {
+                Held::Pass(k) => {
+                    let (upper, lower, u, x, need, upper_reads) = facts.passes[k];
+                    let need = f64::from(need);
+                    if upper_reads {
+                        (0, upper, along(lower, x) + need - segment(upper).into_iter().fold(f64::INFINITY, f64::min))
+                    } else {
+                        (
+                            0,
+                            lower,
+                            segment(lower).into_iter().fold(f64::NEG_INFINITY, f64::max) - along(upper, u) + need,
+                        )
+                    }
+                }
+                Held::Cover(k) => {
+                    let (node, least, _, _) = facts.covers[k];
+                    (1, node, least - segment(node).into_iter().fold(f64::INFINITY, f64::min))
+                }
+                Held::Deck(deck, k) => {
+                    let (node, least) = match deck {
+                        0 => {
+                            let (node, under, share, least) = facts.over_ways[k];
+                            (node, along(under, share) + f64::from(least))
+                        }
+                        1 => facts.over_water[k],
+                        _ => {
+                            let (upper, lower, _, x, need) = facts.stacks[k];
+                            (upper, along(lower, x) + f64::from(need))
+                        }
+                    };
+                    (2 + deck, node, least - segment(node).into_iter().fold(f64::INFINITY, f64::min))
+                }
+                Held::Under(k) => {
+                    let (bore, road, share, need) = facts.unders[k];
+                    let most = along(road, share) - f64::from(need);
+                    (5, bore, segment(bore).into_iter().fold(f64::NEG_INFINITY, f64::max) - most)
+                }
+                Held::Terrain(node, h) => (6, node, at(node) - h),
+            };
+            if short > 1e-3 {
+                metrics.held_unmet += 1;
+                metrics.held_unmet_all.push((kind, degrees(point_of(features, &layout, node)), short));
+            }
+        }
         metrics.reads = reads.len();
         for &(_, m, v) in &reads {
             let now = z[m.0 as usize][m.1 as usize][layout.index(m)];
@@ -662,6 +744,14 @@ impl Heights {
         }
         metrics.tunnel_over_worst.truncate(100);
         metrics.corners.sort_by(|a, b| b.0.total_cmp(&a.0));
+        for worst in
+            [&mut metrics.ground_gate_all, &mut metrics.tunnel_gate_skipped_worst, &mut metrics.tunnel_gate_fail_all]
+        {
+            worst.sort_by(|a, b| b.0.total_cmp(&a.0));
+        }
+        metrics.tunnel_gate_skipped_worst.truncate(10);
+        metrics.tunnel_gate_origins.sort_by(|a, b| b.2.total_cmp(&a.2));
+        metrics.held_unmet_all.sort_by(|a, b| b.2.total_cmp(&a.2));
         metrics.points_apart.sort_by(|a, b| (b.own - b.owner).abs().total_cmp(&(a.own - a.owner).abs()));
         for a in &metrics.points_apart {
             eprintln!(
@@ -757,6 +847,15 @@ fn add(all: &mut GroundMetrics, one: &GroundMetrics) {
     all.tunnel_over_worst.extend(one.tunnel_over_worst.iter().copied());
     all.structure_on_string += one.structure_on_string;
     all.points_apart.extend(one.points_apart.iter().copied());
+    all.ground_gate += one.ground_gate;
+    all.ground_gate_all.extend(one.ground_gate_all.iter().copied());
+    all.ground_gate_cut += one.ground_gate_cut;
+    all.tunnel_gate_over += one.tunnel_gate_over;
+    all.tunnel_gate_skipped += one.tunnel_gate_skipped;
+    all.tunnel_gate_skipped_worst.extend(one.tunnel_gate_skipped_worst.iter().copied());
+    all.tunnel_gate_origins.extend(one.tunnel_gate_origins.iter().copied());
+    all.tunnel_gate_fail += one.tunnel_gate_fail;
+    all.tunnel_gate_fail_all.extend(one.tunnel_gate_fail_all.iter().copied());
     all.corners.extend(one.corners.iter().copied());
     all.structure_over_cap += one.structure_over_cap;
     all.structure_over_cap_worst.extend(one.structure_over_cap_worst.iter().copied());
@@ -806,6 +905,17 @@ struct Cycle {
     read: HashSet<Node>,
     weights: HashMap<usize, Vec<f64>>,
     cycle: bool,
+}
+
+/// A bound that a solve held, by its fact: a ground pass, a cover, a deck (over a way, over water, over a
+/// structure), a tunnel under a road, and a tunnel node under the terrain (its node and the terrain there).
+#[derive(Clone, Copy, Debug)]
+enum Held {
+    Pass(usize),
+    Cover(usize),
+    Deck(u8, usize),
+    Under(usize),
+    Terrain(Node, f64),
 }
 
 /// What a read takes: heights, nothing yet, or a node of the reading chain itself (its index, or none
@@ -1213,6 +1323,49 @@ fn solve_structure(
             m.tunnel_over_at_1_1 += usize::from(loose.terrain[k] <= 1e-9);
             m.tunnel_over_worst.push((held.terrain[k], degrees(nodes.xy[i])));
         }
+        // The tunnel gate: a tunnel node more than GATE_M over the terrain fails, unless a 1:1 line down from
+        // an origin of the chain cannot bring it under the terrain there.
+        let tunnel_at = |s: usize| context.features[nodes.feature[s]].tunnel;
+        let shared = |i: usize| nodes.names[i].iter().any(|m| context.shared.contains(m));
+        let origins: Vec<(usize, u8)> = (0..n)
+            .filter_map(|i| {
+                let fixed_end = (i == 0 || i == n - 1) && fixed[i].is_finite();
+                let joint = i > 0 && i < n - 1 && tunnel_at(i - 1) != tunnel_at(i);
+                [(fixed_end, 0), (shared(i), 1), (joint, 2)].into_iter().find(|f| f.0).map(|(_, kind)| (i, kind))
+            })
+            .collect();
+        let mut skipping: BTreeMap<usize, f64> = BTreeMap::new();
+        for i in (0..n).filter(|&i| on(i, true) && h[i].is_finite() && z[i] - h[i] > crate::gate::GATE_M) {
+            let over = z[i] - h[i];
+            m.tunnel_gate_over += 1;
+            let origin = origins.iter().find(|&&(o, _)| h[i] < z[o] - (along[o] - along[i]).abs());
+            match origin {
+                Some(&(o, _)) => {
+                    m.tunnel_gate_skipped += 1;
+                    m.tunnel_gate_skipped_worst.push((over, degrees(nodes.xy[i])));
+                    let largest = skipping.entry(o).or_insert(0.0);
+                    *largest = largest.max(over);
+                }
+                None => {
+                    m.tunnel_gate_fail += 1;
+                    m.tunnel_gate_fail_all.push((over, degrees(nodes.xy[i])));
+                }
+            }
+        }
+        for (o, largest) in skipping {
+            let kind = origins.iter().find(|f| f.0 == o).map_or(0, |f| f.1);
+            m.tunnel_gate_origins.push((kind, degrees(nodes.xy[o]), largest));
+        }
+        // The bounds that this solve holds, to check again on the stored heights.
+        for (_, deck) in decks.iter().enumerate().filter(|&(k, _)| held.decks[k] <= 1e-9) {
+            out.bounds.push(Held::Deck(deck.0, deck.4));
+        }
+        for (_, crossing) in crossings.iter().enumerate().filter(|&(k, _)| held.bores[k] <= 1e-9) {
+            out.bounds.extend(crossing.iter().map(|b| Held::Under(b.3)));
+        }
+        for (_, &(i, height)) in terrain.iter().enumerate().filter(|&(k, _)| held.terrain[k] <= 1e-9) {
+            out.bounds.push(Held::Terrain(nodes.names[i][0], height));
+        }
     }
     #[cfg(test)]
     out.pieces.push(Piece { h, l, tube, z, structure: true, plain: straight });
@@ -1421,6 +1574,7 @@ fn solve_chain(
     let (mut pass_lo, mut pass_hi) = (vec![f64::NEG_INFINITY; n], vec![f64::INFINITY; n]);
     let mut passed = vec![false; n];
     let (mut held, mut dropped, mut left_out) = (0, Vec::new(), Vec::new());
+    let mut held_passes = Vec::new();
     for &k in &context.passes[c] {
         let (upper, lower, u, x, need, upper_reads) = context.facts.passes[k];
         let pair = |m: Node| [m, context.layout.next(m)];
@@ -1462,6 +1616,7 @@ fn solve_chain(
             continue;
         }
         held += 1;
+        held_passes.push(k);
         for i in mine {
             passed[i] = true;
             if upper_reads {
@@ -1509,7 +1664,8 @@ fn solve_chain(
         if end > start {
             let joins: Vec<(usize, f64)> =
                 hangers.iter().copied().filter(|&(j, _)| (start..=end).contains(&j)).collect();
-            let piece = Span { context, nodes: &nodes, c, range: start..end + 1, h: &h, l: &l, joins: &joins };
+            let last = second || !waited;
+            let piece = Span { context, nodes: &nodes, c, range: start..end + 1, h: &h, l: &l, joins: &joins, last };
             let mut dropped = Vec::new();
             let solved = piece.solve(
                 &fixed,
@@ -1541,6 +1697,19 @@ fn solve_chain(
     }
     // The numbers of a chain from its last solve.
     if second || !waited {
+        out.bounds.extend(held_passes.into_iter().map(Held::Pass));
+        // The ground gate: a node more than GATE_M off the terrain counts, but within HANG_M of a held join.
+        let along: Vec<f64> = std::iter::once(0.0)
+            .chain(l.iter().scan(0.0, |x, l| {
+                *x += l;
+                Some(*x)
+            }))
+            .collect();
+        let near_join = |i: usize| hangers.iter().any(|&(j, _)| (along[i] - along[j]).abs() <= HANG_M);
+        for i in (0..n).filter(|&i| (z[i] - h[i]).abs() > crate::gate::GATE_M && !near_join(i)) {
+            out.metrics.ground_gate += 1;
+            out.metrics.ground_gate_all.push((z[i] - h[i], degrees(nodes.xy[i])));
+        }
         measure(context, (c, &nodes), &l, &z, &h, state.cycle, out);
         out.metrics.approach_ended += ended.len();
         out.metrics.approach_ended_worst.extend(ended);
@@ -1613,6 +1782,8 @@ struct Span<'a> {
     l: &'a [f64],
     /// The joins on structures in the piece: the node and the structure's height there.
     joins: &'a [(usize, f64)],
+    /// Its solve is the chain's last: it records the bounds that it holds.
+    last: bool,
 }
 
 impl Span<'_> {
@@ -1693,6 +1864,7 @@ impl Span<'_> {
         }
         let mut lo3 = vec![f64::NEG_INFINITY; n];
         let mut covered = vec![false; n];
+        let mut covers = Vec::new();
         let local = |m: Node| self.nodes.names[r.clone()].iter().position(|names| names.contains(&m));
         for &k in &context.covers[self.c] {
             let (node, least, lift, _) = context.facts.covers[k];
@@ -1703,6 +1875,7 @@ impl Span<'_> {
                 lo3[b] = lo3[b].max(least);
                 covered[a] = true;
                 out.covered.push((node, up));
+                covers.push(k);
             }
         }
         let (mut slo, mut shi) = (vec![f64::NEG_INFINITY; n - 1], vec![f64::INFINITY; n - 1]);
@@ -1750,6 +1923,9 @@ impl Span<'_> {
                 return z0;
             }
         };
+        if self.last {
+            out.bounds.extend(covers.into_iter().map(Held::Cover));
+        }
         for &(j, zj) in self.joins {
             let rule = context.features[self.nodes.feature[j.min(self.nodes.feature.len() - 1)]].rule;
             joined.push(((zj - h[j - r.start]).abs(), rule, degrees(self.nodes.xy[j])));
@@ -1912,7 +2088,10 @@ mod tests {
         };
         let facts = AreaFacts::join(each_area(&refs, &[], false, (usize::MAX, 4), &job));
         let chains = assemble(&refs, &facts.facts);
-        (Heights::solve(&refs, &classes, terrain, &chains, &facts, threads), chains)
+        let heights = Heights::solve(&refs, &classes, terrain, &chains, &facts, threads);
+        // Every held bound is met on the stored heights.
+        assert_eq!(heights.metrics.held_unmet, 0, "{:?}", heights.metrics.held_unmet_all);
+        (heights, chains)
     }
 
     /// The stored heights of every node of a feature's first part.

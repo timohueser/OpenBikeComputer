@@ -221,6 +221,7 @@ pub fn bake(
 
     let (mut ground_census, mut tunnel_census, mut water_census) =
         (Census::default(), Census::default(), Census::default());
+    let mut node_gate = None;
     // The heights of a junction need every road that meets there, a river level its whole network, a
     // crossing the water that it crosses, and a platform its tracks.
     if !(waters.is_empty() && ways.is_empty() && stations.is_empty()) {
@@ -271,6 +272,21 @@ pub fn bake(
         drop((road_features, around, beyond));
         eprintln!("roads: {:.1} s", started.elapsed().as_secs_f64());
         let mut road_metrics = road_metrics(&solved.metrics, &solved.ground, &options.class_names);
+        let g = &solved.ground;
+        let places = |list: &[(f64, [f64; 2])]| {
+            list.iter().take(5).map(|(m, [la, lo])| format!("{la:.5},{lo:.5} {m:+.1} m")).collect::<Vec<_>>().join("; ")
+        };
+        node_gate = (g.ground_gate > 0 || g.tunnel_gate_fail > 0 || g.held_unmet > 0).then(|| {
+            format!(
+                "the gate at the nodes: {} ground nodes more than {GATE_M} m off the terrain ({}), {} tunnel nodes \
+                 more than {GATE_M} m over it that no origin skips ({}), {} held bounds not met",
+                g.ground_gate,
+                places(&g.ground_gate_all),
+                g.tunnel_gate_fail,
+                places(&g.tunnel_gate_fail_all),
+                g.held_unmet
+            )
+        });
         let phase = |(s, peak): (f64, usize)| json!({"s": round(s, 1), "peak_gb": round(peak as f64 / 1e9, 2)});
         road_metrics.insert(
             "phases".into(),
@@ -444,19 +460,20 @@ pub fn bake(
         "census".into(),
         json!({"ground": ground_census.metrics(), "tunnels": tunnel_census.metrics(), "water": water_census.metrics()}),
     );
-    // The gate: no vertex of a way on the ground lies more than GATE_M off the terrain, and no vertex of
-    // a tunnel more than GATE_M over it, where the viewer would draw its bore in the air. The census of
-    // the rivers and streams is in the metrics only.
+    // The gate is at the nodes of the heights: no way on the ground lies more than GATE_M off the terrain,
+    // and no tunnel more than GATE_M over it where the viewer would draw its bore in the air, and every
+    // held bound holds on the stored heights. The census of the vertices is printed and in the metrics.
     let past = ground_census.over() + ground_census.under();
-    if past + tunnel_census.over() > 0 {
-        return Err(format!(
-            "the census gate: {past} vertices of ways on the ground lie more than {GATE_M} m off the terrain, and {} \
-             of tunnels more than {GATE_M} m over it. Highest: {}. Lowest: {}. Tunnels: {}",
-            tunnel_census.over(),
-            ground_census.places(true),
-            ground_census.places(false),
-            tunnel_census.places(true)
-        ));
+    eprintln!(
+        "census: {past} vertices of ways on the ground more than {GATE_M} m off the terrain, {} of tunnels more than \
+         {GATE_M} m over it. Highest: {}. Lowest: {}. Tunnels: {}",
+        tunnel_census.over(),
+        ground_census.places(true),
+        ground_census.places(false),
+        tunnel_census.places(true)
+    );
+    if let Some(gate) = node_gate {
+        return Err(gate);
     }
     low_zooms(&mut placer);
     let size = write(&placer, options, output)?;
@@ -781,6 +798,14 @@ fn ground_metrics(g: &roads::GroundMetrics, names: &[String]) -> Value {
             "all": shorts(&g.bore_exposed_all)},
         "tunnel_over": {"count": g.tunnel_over, "at_1_1": g.tunnel_over_at_1_1, "worst": worst(&g.tunnel_over_worst)},
         "on_string": g.structure_on_string,
+        "held_unmet": {"count": g.held_unmet, "all": g.held_unmet_all.iter().map(|(kind, p, m)| json!({"kind": kind,
+            "at": at(p), "m": round(*m, 3)})).collect::<Vec<_>>()},
+        "ground_gate": {"count": g.ground_gate, "in_cut_stretches": g.ground_gate_cut, "all": worst(&g.ground_gate_all)},
+        "tunnel_gate": {"over": g.tunnel_gate_over, "skipped": g.tunnel_gate_skipped,
+            "skipped_worst": worst(&g.tunnel_gate_skipped_worst), "fail": g.tunnel_gate_fail,
+            "fail_all": worst(&g.tunnel_gate_fail_all),
+            "origins": g.tunnel_gate_origins.iter().map(|(kind, p, m)| (["fixed end", "shared point", "bridge to tunnel"][usize::from(*kind)], p, m))
+                .map(|(kind, p, m)| json!({"kind": kind, "at": at(p), "largest_m": round(*m, 2)})).collect::<Vec<_>>()},
         "points_apart": g.points_apart.iter().map(|a| json!({"at": at(&a.place), "owner_m": round(a.owner, 2),
             "own_m": round(a.own, 2), "owner": {"feature": a.by.0, "class": names[a.by.1], "fixed_ends": a.by.2},
             "reader": {"feature": a.reader.0, "class": names[a.reader.1], "fixed_ends": a.reader.2}})).collect::<Vec<_>>(),
