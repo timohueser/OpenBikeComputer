@@ -101,8 +101,12 @@ when it has `roundtrip=yes` and its ends are within 200 m. A loop plan ends at i
 last vertex equals vertex 0.
 
 `length_m`, `ascent_m` and `descent_m` are the totals of the route engine for the plan route. The
-router smooths the heights of each leg over 100 m along the leg. The ascent is the sum of the
-smoothed height rises between consecutive points, and the descent is the sum of the drops.
+router smooths the heights of each leg first. Each height becomes the mean, over 100 m of the leg
+centred on its point, of the straight line between the points. Near an end of the leg, or next to a
+point without a height, the window gets shorter so that it stays centred. So those points keep
+their own height. The ascent of a leg is the sum of the smoothed height rises between consecutive
+points, and the descent is the sum of the drops. A rise or a drop next to a point without a height
+does not count. The climb of each leg is rounded to whole metres before the legs are added.
 
 ### Line
 
