@@ -187,8 +187,8 @@ fn model_mask(mp: ModelPoint, s: Stamp) -> vec4f {
 
 // The paint of a texel in the mask's format, read by mask_in of features.wgsl: the distance to the paved
 // outline, the walk byte (or a track's sleepers), the metres across from the host's middle (a road's on the
-// distance's asinh scale), and the finish code of the painted label (0 none). A road of a lesser class
-// paints in the main road's asphalt.
+// distance's asinh scale), and the finish code of the painted label (0 none) in the low 4 bits of a byte with
+// its top's material (sections::Material, at most 15) above them. A road of a lesser class paints in the main road's asphalt.
 fn paint_texel(mp: ModelPoint) -> vec4f {
     let finish = painted_finish(mp);
     var code = select(finish & 0xffu, 1u, (finish & 0xffu) == 2u);
@@ -201,7 +201,8 @@ fn paint_texel(mp: ModelPoint) -> vec4f {
     // Lines on the asphalt of a way that wears them (the records' flag); a soil path is trodden.
     let marked = (finish & M_MARKED) != 0u;
     let walk = f32(walk_byte(0.0, false, code == 6u, marked)) / 255.0;
-    return vec4f(distance_code(mp.d_paved), select(walk, fract(mp.along / SLEEPER_M), track), across, f32(code) / 255.0);
+    let material = select(0u, (finish >> M_MATERIAL_SHIFT) & 0xffu, code != 0u);
+    return vec4f(distance_code(mp.d_paved), select(walk, fract(mp.along / SLEEPER_M), track), across, f32(code | (material << 4u)) / 255.0);
 }
 
 // The rise per metre of a value at the four texels about a vertex's corner.
