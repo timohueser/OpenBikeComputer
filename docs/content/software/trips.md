@@ -76,7 +76,7 @@ for the length of the days. A bar for the riding time of each day shows the hard
 "Stay here" on a town moves the night there, and so does a drag of the day end. "Stay here" on a
 campsite or a hotel keeps the night. A kept night is a place, with a filled marker. A moved night
 is a point on the route, with a dotted marker on the map. The planner keeps both. "Let the planner
-choose" makes the night a suggestion again. The night list sets other kinds for that night
+choose" makes the night a suggestion again. An open night sets other kinds for that night
 only. A night of one kind only (campsites, huts or shelters) ends at a place of that kind. Other
 nights end in the town, as "Around Ulrichen", because the planner cannot pick a hotel in the
 rider's price range. With a start date, each night shows its sunset and its usual night
