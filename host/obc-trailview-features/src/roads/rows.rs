@@ -286,7 +286,7 @@ pub(crate) fn parallels(net: &Network, classes: &Classes, terrain: &dyn Terrain)
     let length: Vec<f64> = d.iter().map(|&d| hypot(d)).collect();
     let unit: Vec<f64> = pa.iter().map(|p| metres(p[1])).collect();
     let widest = (0..ground.len()).filter(|&w| ground[w]).map(|w| net.half[w]).fold(0.0, f64::max);
-    let reach = (PARALLEL_M.max(2.0 * widest) + VERTEX_M / 2.0) / unit.iter().copied().fold(f64::INFINITY, f64::min);
+    let reach = (PARALLEL_M.max(2.0 * widest) + NODE_M / 2.0) / unit.iter().copied().fold(f64::INFINITY, f64::min);
     let tree: RTree<GeomWithData<[f64; 2], usize>> = RTree::bulk_load(
         (0..segments.len())
             .map(|k| GeomWithData::new([pa[k][0] + d[k][0] / 2.0, pa[k][1] + d[k][1] / 2.0], k))

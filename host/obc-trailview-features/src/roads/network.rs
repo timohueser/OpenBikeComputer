@@ -1,6 +1,6 @@
 //! The ways of a solve as arrays: its variables, vertices and segments.
 
-use super::{Classes, Feature, APPROACH_M, APPROACH_PATH_M, VERTEX_M};
+use super::{Classes, Feature, APPROACH_M, APPROACH_PATH_M, NODE_M};
 use crate::metres;
 
 /// Two ways out run on in the look when they open at least this far: the cosine of their angle.
@@ -12,9 +12,9 @@ const LOOK_M: f64 = 8.0;
 const FOLD_COS: f64 = 0.25;
 
 /// The ways as arrays. An OSM vertex is an occurrence of a point in a way; ways that share a point
-/// share its variable. Between two occurrences a way gets vertices so that no segment is longer
-/// than VERTEX_M, and one at the approach distance of a side road. `vertex_*` lists every vertex of
-/// every way in order; `a`, `b` are the variables of each segment between two vertices of a way.
+/// share its variable. Between two occurrences a way gets the even cuts of `pieces`, so its vertices
+/// are its nodes and depend only on its own geometry. `vertex_*` lists every vertex of every way in
+/// order; `a`, `b` are the variables of each segment between two vertices of a way.
 pub(crate) struct Network {
     /// Per way: its feature and part.
     pub way_feature: Vec<(usize, usize)>,
@@ -102,6 +102,12 @@ pub(crate) fn unique(points: &[[f64; 2]]) -> (Vec<usize>, usize) {
         rank[i] = count;
     }
     (rank, if points.is_empty() { 0 } else { count + 1 })
+}
+
+/// The pieces of an OSM segment of `metres`: none longer than NODE_M. A bridge or a tunnel of one
+/// segment (`alone`) has at least two, so that it has a node of its own, which its ends do not hold.
+pub(crate) fn pieces(metres: f64, alone: bool) -> usize {
+    (metres / NODE_M).ceil().max(if alone { 2.0 } else { 1.0 }) as usize
 }
 
 pub(crate) fn hypot(d: [f64; 2]) -> f64 {
@@ -204,46 +210,14 @@ impl Network {
             length: Vec::new(),
         };
         net.junction_sides(classes);
-        // The cuts of each OSM segment: evenly spaced, and at the approach distance of a side road.
-        // An approach cut within a metre of the one before it on its segment goes, and so does a
-        // regular cut within a metre of an approach cut.
-        let mut approach: Vec<(usize, f64)> = Vec::new();
-        for i in 0..net.sides.occurrence.len() {
-            let (occurrence, step, distance) = (net.sides.occurrence[i], net.sides.step[i], net.sides.distance[i]);
-            let s = segment_of[if step == 1 { occurrence } else { occurrence - 1 }];
-            if lengths[s] > distance + 1.0 {
-                approach.push((s, if step == 1 { distance / lengths[s] } else { 1.0 - distance / lengths[s] }));
-            }
-        }
-        approach.sort_by(|p, q| p.partial_cmp(q).unwrap());
-        let mut kept: Vec<(usize, f64)> = Vec::with_capacity(approach.len());
-        for (n, &(s, t)) in approach.iter().enumerate() {
-            if n == 0 || !(approach[n - 1].0 == s && (t - approach[n - 1].1) * lengths[s] < 1.0) {
-                kept.push((s, t));
-            }
-        }
-        // Per OSM segment, its cuts in order. A bridge or a tunnel of one segment has a cut in its
-        // middle: a vertex of its own, which its ends do not hold.
-        let mut cuts: Vec<Vec<f64>> = vec![Vec::new(); sa.len()];
-        let mut at = 0;
-        for (s, cut) in cuts.iter_mut().enumerate() {
-            let begin = at;
-            while at < kept.len() && kept[at].0 == s {
-                at += 1;
-            }
-            let approaches = &kept[begin..at];
-            let w = net.osm_way[sa[s]];
-            let least = if net.free[w] && counts[w] == 2 { 2.0 } else { 1.0 };
-            let regular = (lengths[s] / VERTEX_M).ceil().max(least) as usize;
-            for k in 1..regular {
-                let t = k as f64 / regular as f64;
-                if !approaches.iter().any(|&(_, other)| (t - other).abs() * lengths[s] <= 1.0) {
-                    cut.push(t);
-                }
-            }
-            cut.extend(approaches.iter().map(|&(_, t)| t));
-            cut.sort_by(|p, q| p.partial_cmp(q).unwrap());
-        }
+        // Per OSM segment, its even cuts.
+        let cuts: Vec<Vec<f64>> = (0..sa.len())
+            .map(|s| {
+                let w = net.osm_way[sa[s]];
+                let count = pieces(lengths[s], net.free[w] && counts[w] == 2);
+                (1..count).map(|k| k as f64 / count as f64).collect()
+            })
+            .collect();
         let cut_count: usize = cuts.iter().map(Vec::len).sum();
         let total = net.osm_xy.len() + cut_count;
         net.osm_position = Vec::with_capacity(net.osm_xy.len());

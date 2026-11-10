@@ -164,14 +164,23 @@ fn marks(net: &Network, links: &[[Option<(usize, bool)>; 2]], classes: &Classes)
             calm[net.way_first[w]..=net.way_last[w]].fill(true);
         }
     }
-    // The approach of a side road lies on the surface of the through road: its end stays too.
+    // The approach of a side road lies on the surface of the through road: its last vertex within the
+    // approach distance stays too.
     for (i, &o) in net.sides.occurrence.iter().enumerate() {
-        let j = net.osm_position[o];
-        let next = (j as i64 + net.sides.step[i]) as usize;
-        let span = hypot(sub(net.vertex_xy[next], net.vertex_xy[j])) * metres(net.vertex_xy[j][1]);
-        if span <= net.sides.distance[i] + APPROACH_SLACK_M {
-            pin[next] = true;
-            calm[next] |= calm[j];
+        let (w, j, step) = (net.osm_way[o], net.osm_position[o], net.sides.step[i]);
+        let (mut v, mut along, mut last) = (j, 0.0, None);
+        while let Some(next) =
+            v.checked_add_signed(step as isize).filter(|&n| n >= net.way_first[w] && n <= net.way_last[w])
+        {
+            along += hypot(sub(net.vertex_xy[next], net.vertex_xy[v])) * metres(net.vertex_xy[v][1]);
+            if along > net.sides.distance[i] + APPROACH_SLACK_M {
+                break;
+            }
+            (v, last) = (next, Some(next));
+        }
+        if let Some(end) = last {
+            pin[end] = true;
+            calm[end] |= calm[j];
         }
     }
     Marks { pin, calm }

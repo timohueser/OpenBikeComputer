@@ -332,7 +332,7 @@ pub fn bake(
             let (mut floating, mut shallow) = (None, None);
             // Where a deck or a tunnel runs through a point (two of its segments meet), the segments of a way
             // on the ground that meets it there take its height, as in the road solver: the census leaves
-            // out what lies within a segment of the solve (roads::VERTEX_M) of such a point.
+            // out what lies within roads::JOINT_M of such a point.
             let mut deck_ends: HashMap<[u64; 2], u8> = HashMap::new();
             let tunnels = (0..ways.len()).filter(|&n| kinds[ways[n].0].kind == "tunnel");
             for part in decks.iter().copied().chain(tunnels).flat_map(|n| &ways[n].2) {
@@ -347,7 +347,7 @@ pub fn bake(
                 parts.iter().flat_map(|p| p.points.iter().copied().filter(through)).collect()
             };
             let near = |joints: &[[f64; 2]], q: [f64; 2]| {
-                let reach = roads::VERTEX_M / metres(q[1]);
+                let reach = roads::JOINT_M / metres(q[1]);
                 joints.iter().any(|j| (j[0] - q[0]).hypot(j[1] - q[1]) <= reach)
             };
             for (n, (e, tags, parts)) in ways.iter().enumerate() {

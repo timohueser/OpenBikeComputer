@@ -88,9 +88,11 @@ fn a_junction_a_deck_and_the_end_of_an_approach_stay_where_osm_has_them() {
     assert!(ways[0].points.contains(&place.at(0.0, 0.0)));
     assert!(ways[1].points.contains(&place.at(0.0, 0.0)));
     assert!(ways[2].points.contains(&place.at(340.0, 60.0)));
-    // The first vertex of the side road after its junction is the end of its approach.
+    // The first vertex of the side road after its junction is the end of its approach: its last node
+    // within the approach distance and the slack.
     let (e, n) = place.east_north(ways[1].points[1]);
-    assert!((e.hypot(n) - 4.0).abs() < 0.1 && (e - n * 0.05).abs() < 1e-6, "{e} {n}");
+    let reach = APPROACH_M + 0.5;
+    assert!(e.hypot(n) <= reach && e.hypot(n) > reach - NODE_M && (e - n * 0.05).abs() < 1e-6, "{e} {n}");
 }
 
 /// The solve of ways of (class, corners), and per way its `side` at the vertex on `at`.

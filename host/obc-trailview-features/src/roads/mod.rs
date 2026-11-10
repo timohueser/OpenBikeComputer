@@ -53,8 +53,12 @@ use crate::structures::{BORE_M, BORE_PATH_M, BORE_RAIL_M};
 use crate::{degrees, metres, Plan, Terrain};
 
 const SAMPLE_M: f64 = 2.0;
-/// While it solves, a way has a vertex at least every VERTEX_M.
-pub const VERTEX_M: f64 = 10.0;
+/// A way has a node at each of its distinct OSM vertices and so many even cuts between two that no
+/// piece is longer than NODE_M (`network::pieces`).
+pub(crate) const NODE_M: f64 = SAMPLE_M;
+/// The structure stage moves a point where a structure runs through a way on the ground; the census
+/// gate of the bake leaves out this far of the way from it.
+pub const JOINT_M: f64 = 10.0;
 /// A side road lies on the surface of the through road for this far from their junction; a path
 /// that meets a path, for APPROACH_PATH_M.
 const APPROACH_M: f64 = 4.0;
