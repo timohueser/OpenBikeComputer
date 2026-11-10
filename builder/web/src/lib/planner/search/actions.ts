@@ -111,7 +111,7 @@ export async function applyQueryChanges(
         makePoint(p, i === 0 ? 'start' : i === resolved.length - 1 ? 'finish' : 'pass'),
       );
       const bike = (change.bike ?? trip.bike) as Trip['bike'];
-      const preset = change.goal ? presets[change.goal] : trip.preset;
+      const preset = change.goal ? presets[change.goal] : trip.preset && planPreset(trip.bike, trip.preset);
       trip = await refresh({
         ...trip,
         name: undefined,
