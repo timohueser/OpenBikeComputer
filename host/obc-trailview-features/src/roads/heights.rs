@@ -7,7 +7,7 @@ use rayon::prelude::*;
 
 use super::chain::{self, Step};
 use super::chains::{AreaFacts, Arm, Chains, Fact, Node, Place, ReadKind, Segments};
-use super::network::{hypot, pieces, sub};
+use super::network::{distinct, hypot, pieces, sub};
 use super::{Classes, Feature, APPROACH_M, APPROACH_PATH_M, HUBER_M, RAMP_GRADE};
 use crate::{degrees, metres, Terrain};
 
@@ -70,6 +70,8 @@ pub struct GroundMetrics {
     pub read_changed: usize,
     pub read_changed_max: f64,
     pub reads_skipped: usize,
+    /// Points that several parts share, with two heights in the store: 0.
+    pub shared_apart: usize,
     /// Segments whose class grade opened to over twice the grade: count, metres, and the worst.
     pub grade_broken: usize,
     pub grade_broken_m: f64,
@@ -441,6 +443,30 @@ impl Heights {
                 solved_pieces.extend(outcome.pieces);
             }
         }
+        // A point that the parts of several ways share: one height in the store.
+        let mut at: HashMap<[u64; 2], f32> = HashMap::new();
+        let mut apart = HashSet::new();
+        for (f, feature) in features.iter().enumerate() {
+            for (p, part) in feature.parts.iter().enumerate() {
+                for (k, &point) in distinct(part).iter().enumerate() {
+                    let v = z[f][p][layout.index((f as u32, p as u32, k as u32, 0))];
+                    if !v.is_finite() {
+                        continue;
+                    }
+                    let key = crate::geometry::key(point);
+                    match at.get(&key) {
+                        Some(w) if w.to_bits() != v.to_bits() => {
+                            apart.insert(key);
+                        }
+                        Some(_) => {}
+                        None => {
+                            at.insert(key, v);
+                        }
+                    }
+                }
+            }
+        }
+        metrics.shared_apart = apart.len();
         metrics.reads = reads.len();
         for &(_, m, v) in &reads {
             let now = z[m.0 as usize][m.1 as usize][layout.index(m)];
@@ -1182,6 +1208,7 @@ mod tests {
         let shared: Vec<&Vec<u32>> = at.values().filter(|v| v.len() >= 2).collect();
         assert_eq!(shared.len(), 5);
         assert!(shared.iter().all(|v| v.iter().all(|&b| b == v[0])), "{shared:?}");
+        assert_eq!(heights.metrics.shared_apart, 0);
     }
 
     #[test]
@@ -1453,6 +1480,7 @@ mod tests {
         assert!(heights.metrics.reads > 0, "{name}: no read");
         assert_eq!(chains.order.iter().any(|c| c.len() > 1), cycle, "{name}");
         assert_eq!(heights.metrics.read_changed, 0, "{name}: worst {}", heights.metrics.read_changed_max);
+        assert_eq!(heights.metrics.shared_apart, 0, "{name}");
     }
 
     #[test]

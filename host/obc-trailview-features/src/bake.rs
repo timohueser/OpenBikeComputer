@@ -732,7 +732,7 @@ fn ground_metrics(g: &roads::GroundMetrics, names: &[String]) -> Value {
         "approach_ended": {"count": g.approach_ended,
             "worst": g.approach_ended_worst.iter().map(|(m, p)| json!({"m": round(*m, 2), "at": at(p)})).collect::<Vec<_>>()},
         "reads": g.reads, "read_changed": g.read_changed, "read_changed_max_m": round(g.read_changed_max, 4),
-        "reads_skipped": g.reads_skipped,
+        "reads_skipped": g.reads_skipped, "shared_apart": g.shared_apart,
         "passes_held": g.passes_held,
         "passes_dropped": {"count": g.passes_dropped,
             "by_need_m": g.passes_dropped_by_need.iter().map(|(dm, n)| (format!("{:.1}", f64::from(*dm) / 10.0), json!(n))).collect::<Map<_, _>>(),
