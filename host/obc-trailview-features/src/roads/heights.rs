@@ -17,6 +17,10 @@ pub(crate) const BAND_M: f64 = crate::gate::GATE_M / 2.0;
 const KINK: f64 = 0.05;
 /// A node this far off the terrain counts in the metrics by its cause.
 const OFF_M: f64 = 3.0;
+/// A structure rises or sinks at most this much per metre: 1:1.
+const STRUCTURE_GRADE: f64 = 1.0;
+/// The fit of a structure chain that no read fixes to the terrain, per metre.
+const LOOSE_FIT: f64 = 1e-4;
 
 /// The metrics of the ground heights.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -88,6 +92,40 @@ pub struct GroundMetrics {
     pub grade_broken: usize,
     pub grade_broken_m: f64,
     pub grade_broken_worst: Vec<Broken>,
+    /// Structure chains: count, plain, steps (sum, largest), unconverged, pivot errors, by kind (bridge,
+    /// tunnel, mixed) and by fixed ends (0, 1, 2).
+    pub structure_chains: usize,
+    pub structure_plain: usize,
+    pub structure_steps: usize,
+    pub structure_steps_max: usize,
+    pub structure_unconverged: usize,
+    pub structure_pivots: usize,
+    pub structure_kinds: [usize; 3],
+    pub structure_ends: [usize; 3],
+    /// Chains whose 1:1 opened between two fixed nodes: count, metres, the steepest slope, the worst places.
+    pub structure_opened: usize,
+    pub structure_opened_m: f64,
+    pub structure_opened_worst: Vec<(f64, [f64; 2])>,
+    /// Decks short of their least height by kind (over a way, over water, over a structure), and every one.
+    pub deck_short: [usize; 3],
+    pub deck_short_all: Vec<Short>,
+    /// Tunnels less than their need under a road, every one; and tunnel nodes over the terrain, the worst.
+    pub bore_exposed: usize,
+    pub bore_exposed_all: Vec<Short>,
+    pub tunnel_over: usize,
+    pub tunnel_over_worst: Vec<(f64, [f64; 2])>,
+}
+
+/// A crossing of a structure that misses its bound: its kind (0 over a way, 1 over water, 2 over a
+/// structure, 3 a tunnel under a road), the metres that it misses by, its place, the metres along the
+/// structure to its nearer fixed node, and the classes of the structure and of the other way.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Short {
+    pub kind: u8,
+    pub metres: f64,
+    pub place: [f64; 2],
+    pub to_end: f64,
+    pub rules: [usize; 2],
 }
 
 /// A segment whose class grade opened to over twice the grade: its opened slope bound, its class, its
@@ -134,6 +172,9 @@ pub(crate) struct Piece {
     pub l: Vec<f64>,
     pub tube: Tube,
     pub z: Vec<f64>,
+    /// The piece is a structure chain, and its profile is the plain solve.
+    pub structure: bool,
+    pub plain: bool,
 }
 
 /// The point of a node.
@@ -261,6 +302,16 @@ struct Context<'a> {
     copies: Vec<Vec<(Node, Node, f32)>>,
     passes: Vec<Vec<usize>>,
     covers: Vec<Vec<usize>>,
+    /// Per structure chain the indices of its facts in `facts`: its ends on the ground, its loose ends,
+    /// its branch ends, its decks over ways and over water, its tunnels under roads, and the structures
+    /// under it.
+    ends: Vec<Vec<usize>>,
+    loose: Vec<Vec<usize>>,
+    branches: Vec<Vec<usize>>,
+    over_ways: Vec<Vec<usize>>,
+    over_water: Vec<Vec<usize>>,
+    unders: Vec<Vec<usize>>,
+    stacks: Vec<Vec<usize>>,
     facts: &'a AreaFacts,
     leaders: HashSet<(usize, usize)>,
     ramps: HashSet<Node>,
@@ -391,6 +442,13 @@ impl Heights {
             copies: vec![Vec::new(); n],
             passes: vec![Vec::new(); n],
             covers: vec![Vec::new(); n],
+            ends: vec![Vec::new(); n],
+            loose: vec![Vec::new(); n],
+            branches: vec![Vec::new(); n],
+            over_ways: vec![Vec::new(); n],
+            over_water: vec![Vec::new(); n],
+            unders: vec![Vec::new(); n],
+            stacks: vec![Vec::new(); n],
             facts,
             leaders: chains.reads.iter().filter(|r| r.2 == ReadKind::Copy).map(|r| (r.0, r.1)).collect(),
             ramps: facts.ramps.iter().copied().collect(),
@@ -431,6 +489,49 @@ impl Heights {
         for (i, cover) in facts.covers.iter().enumerate() {
             for c in context.chains_of(cover.0) {
                 context.covers[c].push(i);
+            }
+        }
+        // The facts of each structure chain, by the chain of its own node.
+        let structures = |context: &Context, m: Node| -> Vec<usize> {
+            context.chains_of(m).into_iter().filter(|&c| chains.chains[c].structure).collect()
+        };
+        let mut lists: [Vec<(usize, usize)>; 7] = Default::default();
+        for (i, fact) in facts.ends.iter().enumerate() {
+            lists[0].extend(structures(&context, fact.0).into_iter().map(|c| (c, i)));
+        }
+        for (i, &m) in facts.loose.iter().enumerate() {
+            lists[1].extend(structures(&context, m).into_iter().map(|c| (c, i)));
+        }
+        for (i, fact) in facts.branches.iter().enumerate() {
+            lists[2].extend(structures(&context, fact.0).into_iter().map(|c| (c, i)));
+        }
+        for (i, fact) in facts.over_ways.iter().enumerate() {
+            lists[3].extend(structures(&context, fact.0).into_iter().map(|c| (c, i)));
+        }
+        for (i, fact) in facts.over_water.iter().enumerate() {
+            lists[4].extend(structures(&context, fact.0).into_iter().map(|c| (c, i)));
+        }
+        for (i, fact) in facts.unders.iter().enumerate() {
+            lists[5].extend(structures(&context, fact.0).into_iter().map(|c| (c, i)));
+        }
+        for (i, fact) in facts.stacks.iter().enumerate() {
+            lists[6].extend(structures(&context, fact.0).into_iter().map(|c| (c, i)));
+        }
+        let [ends, loose, branches, over_ways, over_water, unders, stacks] = lists;
+        for (list, into) in [
+            (ends, &mut context.ends),
+            (loose, &mut context.loose),
+            (branches, &mut context.branches),
+            (over_ways, &mut context.over_ways),
+            (over_water, &mut context.over_water),
+            (unders, &mut context.unders),
+            (stacks, &mut context.stacks),
+        ] {
+            for (c, i) in list {
+                into[c].push(i);
+            }
+            for facts in into.iter_mut() {
+                facts.dedup();
             }
         }
         let mut z: Vec<Vec<Vec<f32>>> = layout
@@ -524,6 +625,13 @@ impl Heights {
         metrics.passes_dropped_worst.sort_by(|a, b| b.miss.total_cmp(&a.miss));
         metrics.passes_dropped_worst.truncate(10);
         metrics.passes_left_out_worst.truncate(10);
+        for worst in [&mut metrics.structure_opened_worst, &mut metrics.tunnel_over_worst] {
+            worst.sort_by(|a, b| b.0.total_cmp(&a.0));
+            worst.truncate(10);
+        }
+        for all in [&mut metrics.deck_short_all, &mut metrics.bore_exposed_all] {
+            all.sort_by(|a, b| b.metres.total_cmp(&a.metres));
+        }
         metrics.passes = facts.passes.len();
         debug_assert_eq!(
             metrics.passes_held + metrics.passes_dropped + metrics.passes_left_out,
@@ -588,29 +696,54 @@ fn add(all: &mut GroundMetrics, one: &GroundMetrics) {
     all.grade_broken += one.grade_broken;
     all.grade_broken_m += one.grade_broken_m;
     all.grade_broken_worst.extend(one.grade_broken_worst.iter().copied());
+    all.structure_chains += one.structure_chains;
+    all.structure_plain += one.structure_plain;
+    all.structure_steps += one.structure_steps;
+    all.structure_steps_max = all.structure_steps_max.max(one.structure_steps_max);
+    all.structure_unconverged += one.structure_unconverged;
+    all.structure_pivots += one.structure_pivots;
+    for k in 0..3 {
+        all.structure_kinds[k] += one.structure_kinds[k];
+        all.structure_ends[k] += one.structure_ends[k];
+        all.deck_short[k] += one.deck_short[k];
+    }
+    all.structure_opened += one.structure_opened;
+    all.structure_opened_m += one.structure_opened_m;
+    all.structure_opened_worst.extend(one.structure_opened_worst.iter().copied());
+    all.deck_short_all.extend(one.deck_short_all.iter().copied());
+    all.bore_exposed += one.bore_exposed;
+    all.bore_exposed_all.extend(one.bore_exposed_all.iter().copied());
+    all.tunnel_over += one.tunnel_over;
+    all.tunnel_over_worst.extend(one.tunnel_over_worst.iter().copied());
 }
 
 /// A component of the read graph: its ground chains in its order; a cycle in two rounds. Returns its writes,
 /// its outcome and its seconds.
 fn component(context: &Context, store: &[Vec<Vec<f32>>], members: &[usize]) -> Done {
     let clock = std::time::Instant::now();
-    let ground: Vec<usize> = members.iter().copied().filter(|&c| !context.chains.chains[c].structure).collect();
     let mut view = View { store, layout: context.layout, own: HashMap::new() };
     let mut outcome = Outcome::default();
     let cycle = members.len() > 1
-        || ground.iter().any(|&c| context.chains.chains[c].closed)
+        || members.iter().any(|&c| context.chains.chains[c].closed)
         || context.reads_itself[members[0]];
     let mut state = Cycle { solved: HashSet::new(), read: HashSet::new(), weights: HashMap::new(), cycle };
+    let solve = |view: &mut View, state: &mut Cycle, c: usize, second: bool, outcome: &mut Outcome| {
+        if context.chains.chains[c].structure {
+            solve_structure(context, view, state, c, second, outcome)
+        } else {
+            solve_chain(context, view, state, c, second, outcome)
+        }
+    };
     let mut again = Vec::new();
-    for &c in &ground {
-        let waited = solve_chain(context, &mut view, &mut state, c, false, &mut outcome);
+    for &c in members {
+        let waited = solve(&mut view, &mut state, c, false, &mut outcome);
         state.solved.insert(c);
         if waited {
             again.push(c);
         }
     }
     for &c in &again {
-        solve_chain(context, &mut view, &mut state, c, true, &mut outcome);
+        solve(&mut view, &mut state, c, true, &mut outcome);
     }
     (view.own, outcome, clock.elapsed().as_secs_f64())
 }
@@ -637,6 +770,295 @@ enum Took {
 enum Fix {
     Read,
     Frozen,
+}
+
+/// Solves one structure chain into the view; returns whether a read waited for a chain of its component.
+/// Its ends take the heights of the ground ways, of the terrain where a bridge meets no way, or of the
+/// main chain of a branch. It fits the line between its fixed ends (level from one; the terrain, weakly,
+/// from none), rises or sinks at most 1:1, and its decks hold over what they cross and its tunnels under
+/// the terrain and the roads over them, as far as the tube reaches.
+fn solve_structure(
+    context: &Context,
+    view: &mut View,
+    state: &mut Cycle,
+    c: usize,
+    second: bool,
+    out: &mut Outcome,
+) -> bool {
+    let chain = &context.chains.chains[c];
+    let nodes = Nodes::new(&chain.arms, context.segments, context.layout);
+    let n = nodes.xy.len();
+    let index: HashMap<Node, usize> =
+        nodes.names.iter().enumerate().flat_map(|(i, names)| names.iter().map(move |&m| (m, i))).collect();
+    let h = context.terrain.heights(&nodes.xy);
+    let l: Vec<f64> = (0..n - 1).map(|s| span(nodes.xy[s], nodes.xy[s + 1]).max(chain::MIN_STEP_M)).collect();
+    let along: Vec<f64> = std::iter::once(0.0)
+        .chain(l.iter().scan(0.0, |x, l| {
+            *x += l;
+            Some(*x)
+        }))
+        .collect();
+    let (mut fixed, mut cause) = (vec![f64::NAN; n], vec![None; n]);
+    let mut frozen = vec![false; n];
+    if second {
+        for i in 0..n {
+            if nodes.names[i].iter().any(|m| state.read.contains(m)) {
+                (fixed[i], cause[i], frozen[i]) = (view.at(nodes.names[i][0]), Some(Fix::Frozen), true);
+            }
+        }
+    }
+    let (mut waited, mut log, mut skipped) = (false, Vec::new(), 0);
+    let mut take = |source: &[Node], from: &[usize], state: &mut Cycle| {
+        read(context, view, (c, second, &index), (source, from), state, (&mut waited, &mut log))
+    };
+    let pair = |m: Node| [m, context.layout.next(m)];
+    // The nodes of the chain on the segment from node m of its way, in either direction.
+    let segment = |m: Node| -> Option<[usize; 2]> { Some([*index.get(&m)?, *index.get(&context.layout.next(m))?]) };
+    let end = |m: Node| [0, n - 1].into_iter().find(|&e| nodes.names[e].contains(&m)).or(index.get(&m).copied());
+    // The fixed ends: on a ground way, on the terrain, on the main chain.
+    let reads: Vec<(Node, Node)> = context.ends[c]
+        .iter()
+        .map(|&k| context.facts.ends[k])
+        .chain(context.branches[c].iter().map(|&k| context.facts.branches[k]))
+        .collect();
+    for (mine, from) in reads {
+        let Some(i) = end(mine) else { continue };
+        if frozen[i] {
+            skipped += 1;
+            continue;
+        }
+        match take(&[from], &context.chains_of(from), state) {
+            Took::Height(z) => (fixed[i], cause[i]) = (z[0], Some(Fix::Read)),
+            Took::Own(_) => skipped += 1,
+            Took::Waits => {}
+        }
+    }
+    for &k in &context.loose[c] {
+        if let Some(i) = end(context.facts.loose[k]).filter(|&i| !frozen[i] && h[i].is_finite()) {
+            (fixed[i], cause[i]) = (h[i], Some(Fix::Read));
+        }
+    }
+    // The line of the chain, and the soft terms: a fit to it by node metres, or weakly to the terrain.
+    let (first, last) = (fixed[0], fixed[n - 1]);
+    let line: Vec<f64> = (0..n)
+        .map(|i| match (first.is_finite(), last.is_finite()) {
+            (true, true) => first + (last - first) * along[i] / along[n - 1],
+            (true, false) => first,
+            (false, true) => last,
+            (false, false) => h[i],
+        })
+        .collect();
+    let held = first.is_finite() || last.is_finite();
+    if !held && h.iter().all(|h| !h.is_finite()) {
+        out.reads.extend(log.into_iter().map(|(m, v)| (c, m, v)));
+        return waited;
+    }
+    let metres = |i: usize| (if i > 0 { l[i - 1] } else { 0.0 } + if i + 1 < n { l[i] } else { 0.0 }) / 2.0;
+    let fit: Vec<f64> = (0..n)
+        .map(|i| {
+            if held {
+                metres(i)
+            } else if h[i].is_finite() {
+                LOOSE_FIT * metres(i)
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let target: Vec<f64> = line.iter().map(|v| if v.is_finite() { *v } else { 0.0 }).collect();
+    let feature = |s: usize| context.features[nodes.feature[s.min(n - 2)]];
+    let class = |s: usize| &context.classes.rows[feature(s).rule];
+    let bend: Vec<f64> = (0..n).map(|i| class(i).smooth_m.powi(4)).collect();
+    let flat = vec![0.0; n - 1];
+    let soft = chain::Chain { l: &l, fit: &fit, target: &target, slope: &flat, bend: &bend };
+    // 1:1 on every segment but between two fixed nodes.
+    let both = |s: usize| fixed[s].is_finite() && fixed[s + 1].is_finite();
+    let (slo, shi): (Vec<f64>, Vec<f64>) = (0..n - 1)
+        .map(|s| if both(s) { (f64::NEG_INFINITY, f64::INFINITY) } else { (-STRUCTURE_GRADE, STRUCTURE_GRADE) })
+        .unzip();
+    let on = |i: usize, tunnel: bool| {
+        [i.checked_sub(1), (i + 1 < n).then_some(i)].into_iter().flatten().any(|s| {
+            let f = context.features[nodes.feature[s]];
+            f.tunnel == tunnel
+        })
+    };
+    // The decks: the line between two fixed ends, and the least heights over what they cross.
+    let mut lo = vec![f64::NEG_INFINITY; n];
+    let mut decks: Vec<(u8, [usize; 2], f64, usize)> = Vec::new();
+    if first.is_finite() && last.is_finite() {
+        for i in (0..n).filter(|&i| on(i, false)) {
+            lo[i] = lo[i].max(line[i]);
+        }
+    }
+    let rule = |m: Node| context.features[m.0 as usize].rule;
+    for &k in &context.over_ways[c] {
+        let (deck, under, share, least) = context.facts.over_ways[k];
+        let Some(i) = segment(deck) else { continue };
+        if let Took::Height(z) = take(&pair(under), &context.chains_of(under), state) {
+            decks.push((0, i, z[0] + f64::from(share) * (z[1] - z[0]) + f64::from(least), rule(under)));
+        }
+    }
+    for &k in &context.over_water[c] {
+        let (deck, least) = context.facts.over_water[k];
+        if let Some(i) = segment(deck) {
+            decks.push((1, i, least, context.features[deck.0 as usize].rule));
+        }
+    }
+    for &k in &context.stacks[c] {
+        let (upper, lower, _, x, need) = context.facts.stacks[k];
+        let Some(i) = segment(upper) else { continue };
+        if let Took::Height(z) = take(&pair(lower), &context.chains_of(lower), state) {
+            decks.push((2, i, z[0] + f64::from(x) * (z[1] - z[0]) + f64::from(need), rule(lower)));
+        }
+    }
+    for &(_, pair, bound, _) in &decks {
+        for i in pair {
+            lo[i] = lo[i].max(bound);
+        }
+    }
+    // The tunnels: under the terrain, and under each road over them by its need.
+    let mut hi = vec![f64::INFINITY; n];
+    for i in (0..n).filter(|&i| on(i, true) && h[i].is_finite()) {
+        hi[i] = h[i];
+    }
+    let mut bores: Vec<([usize; 2], f64, usize)> = Vec::new();
+    for &k in &context.unders[c] {
+        let (bore, road, share, need) = context.facts.unders[k];
+        let Some(i) = segment(bore) else { continue };
+        if let Took::Height(z) = take(&pair(road), &context.chains_of(road), state) {
+            bores.push((i, z[0] + f64::from(share) * (z[1] - z[0]) - f64::from(need), rule(road)));
+        }
+    }
+    for &(pair, bound, _) in &bores {
+        for i in pair {
+            hi[i] = hi[i].min(bound);
+        }
+    }
+    let (infinite, none) = (vec![f64::INFINITY; n], vec![f64::NEG_INFINITY; n]);
+    let steps = [
+        Step::Fixed(&fixed),
+        Step::Slopes { layer: 1, lo: &slo, hi: &shi },
+        Step::Bounds { layer: 2, lo: &lo, hi: &infinite },
+        Step::Bounds { layer: 3, lo: &none, hi: &hi },
+    ];
+    let tube = chain::tube(&soft, &steps);
+    let profile = chain::profile(&soft, &tube, None);
+    let z = match &profile {
+        Ok(profile) => profile.z.clone(),
+        Err(_) => vec![f64::NAN; n],
+    };
+    for (i, names) in nodes.names.iter().enumerate() {
+        for &m in names {
+            view.set(m, z[i] as f32);
+        }
+    }
+    if second || !waited {
+        let m = &mut out.metrics;
+        m.reads_skipped += skipped;
+        m.structure_chains += 1;
+        let tunnels = (0..n - 1).filter(|&s| context.features[nodes.feature[s]].tunnel).count();
+        m.structure_kinds[if tunnels == 0 {
+            0
+        } else if tunnels == n - 1 {
+            1
+        } else {
+            2
+        }] += 1;
+        m.structure_ends[usize::from(first.is_finite()) + usize::from(last.is_finite())] += 1;
+        match &profile {
+            Ok(profile) => {
+                m.structure_plain += usize::from(profile.plain);
+                m.structure_steps += profile.steps;
+                m.structure_steps_max = m.structure_steps_max.max(profile.steps);
+                m.structure_unconverged += usize::from(!profile.converged);
+                for i in (0..n).filter(|&i| profile.at_lo[i] || profile.at_hi[i]) {
+                    out.held.extend(nodes.names[i].iter().copied());
+                }
+            }
+            Err(_) => m.structure_pivots += 1,
+        }
+        let opened: Vec<usize> = tube.opened.iter().filter(|o| o.layer == 1).map(|o| o.segment).collect();
+        if !opened.is_empty() {
+            m.structure_opened += 1;
+            m.structure_opened_m += opened.iter().map(|&s| l[s]).sum::<f64>();
+            let steepest = opened.iter().map(|&s| ((z[s + 1] - z[s]) / l[s]).abs()).fold(0.0, f64::max);
+            m.structure_opened_worst.push((steepest, degrees(nodes.xy[opened[0]])));
+        }
+        // The metres along the chain from node i to its nearest fixed node.
+        let fixed_at: Vec<f64> = (0..n).filter(|&i| fixed[i].is_finite()).map(|i| along[i]).collect();
+        let to_end = |i: usize| fixed_at.iter().map(|a| (a - along[i]).abs()).fold(f64::NAN, f64::min);
+        for &(kind, [i, j], bound, other) in &decks {
+            let short = (bound - z[i]).max(bound - z[j]);
+            if short > 1e-6 {
+                m.deck_short[usize::from(kind)] += 1;
+                let place = degrees(nodes.xy[i]);
+                let rules = [feature(i.min(j)).rule, other];
+                m.deck_short_all.push(Short { kind, metres: short, place, to_end: to_end(i).min(to_end(j)), rules });
+            }
+        }
+        for &([i, j], bound, other) in &bores {
+            let short = (z[i] - bound).max(z[j] - bound);
+            if short > 1e-6 {
+                m.bore_exposed += 1;
+                let place = degrees(nodes.xy[i]);
+                let rules = [feature(i.min(j)).rule, other];
+                m.bore_exposed_all.push(Short {
+                    kind: 3,
+                    metres: short,
+                    place,
+                    to_end: to_end(i).min(to_end(j)),
+                    rules,
+                });
+            }
+        }
+        for i in (0..n).filter(|&i| on(i, true) && h[i].is_finite() && z[i] - h[i] > 1e-6) {
+            m.tunnel_over += 1;
+            m.tunnel_over_worst.push((z[i] - h[i], degrees(nodes.xy[i])));
+        }
+    }
+    #[cfg(test)]
+    out.pieces.push(Piece { h, l, tube, z, structure: true, plain: profile.as_ref().is_ok_and(|p| p.plain) });
+    out.reads.extend(log.into_iter().map(|(m, v)| (c, m, v)));
+    waited
+}
+
+/// The index of a node that only chain c holds: its own node.
+fn own(context: &Context, index: &HashMap<Node, usize>, c: usize, m: Node) -> Option<usize> {
+    index.get(&m).copied().filter(|_| context.chains_of(m).iter().all(|&b| b == c))
+}
+
+/// One read of chain c: the heights of `source`, which the chains `from` hold. A read takes a height that
+/// exists; one from a chain of this component that is not solved yet waits. A read of a junction reads its
+/// root. A read of a node that only this chain holds is its own: the caller resolves it after its other
+/// reads, or leaves it out. Each height taken is logged, and its node is marked as read.
+fn read(
+    context: &Context,
+    view: &View,
+    (c, second, index): (usize, bool, &HashMap<Node, usize>),
+    (source, from): (&[Node], &[usize]),
+    state: &mut Cycle,
+    (waited, log): (&mut bool, &mut Vec<(Node, f32)>),
+) -> Took {
+    let roots: Vec<Node> = source.iter().map(|&m| context.root(m)).collect();
+    if let [root] = roots[..] {
+        if let Some(j) = own(context, index, c, root) {
+            return Took::Own(j);
+        }
+    }
+    if roots.iter().any(|&m| own(context, index, c, m).is_some()) {
+        return Took::Own(usize::MAX);
+    }
+    let moved: Vec<usize> =
+        roots.iter().zip(source).filter(|(r, m)| r != m).flat_map(|(&r, _)| context.chains_of(r)).collect();
+    let z: Vec<f64> = roots.iter().map(|&m| view.at(m)).collect();
+    if z.iter().any(|v| v.is_nan()) {
+        let pending = from.iter().chain(&moved).any(|&b| b == c || state.cycle && !state.solved.contains(&b));
+        *waited |= pending && !second;
+        return Took::Waits;
+    }
+    state.read.extend(roots.iter().copied());
+    log.extend(roots.iter().zip(&z).map(|(&m, &v)| (m, v as f32)));
+    Took::Height(z)
 }
 
 /// Solves one ground chain into the view; returns whether a read waited for a chain of its component.
@@ -670,33 +1092,8 @@ fn solve_chain(
     let mut waited = false;
     // Every read: its node and the height that it took.
     let mut log: Vec<(Node, f32)> = Vec::new();
-    // A read takes a height that exists; one from a chain of this component that is not solved yet waits.
-    // A read of a junction reads its root. A node that only this chain holds is its own: such a read is
-    // resolved after the others, or left out.
-    let own = |m: Node| index.get(&m).copied().filter(|_| context.chains_of(m).iter().all(|&b| b == c));
-    let mut take = |source: &[Node], from_chains: &[usize], state: &mut Cycle| -> Took {
-        let roots: Vec<Node> = source.iter().map(|&m| context.root(m)).collect();
-        if let [root] = roots[..] {
-            if let Some(j) = own(root) {
-                return Took::Own(j);
-            }
-        }
-        if roots.iter().any(|&m| own(m).is_some()) {
-            return Took::Own(usize::MAX);
-        }
-        let moved: Vec<usize> =
-            roots.iter().zip(source).filter(|(r, m)| r != m).flat_map(|(&r, _)| context.chains_of(r)).collect();
-        let source = roots;
-        let z: Vec<f64> = source.iter().map(|&m| view.at(m)).collect();
-        if z.iter().any(|v| v.is_nan()) {
-            let pending =
-                from_chains.iter().chain(&moved).any(|&b| b == c || state.cycle && !state.solved.contains(&b));
-            waited |= pending && !second;
-            return Took::Waits;
-        }
-        state.read.extend(source.iter().copied());
-        log.extend(source.iter().zip(&z).map(|(&m, &v)| (m, v as f32)));
-        Took::Height(z)
+    let mut take = |source: &[Node], from_chains: &[usize], state: &mut Cycle| {
+        read(context, view, (c, second, &index), (source, from_chains), state, (&mut waited, &mut log))
     };
     // Reads of a node of this chain: (the node that reads, the node read).
     let mut deferred: Vec<(usize, usize)> = Vec::new();
@@ -1160,7 +1557,14 @@ impl Span<'_> {
             }
         }
         #[cfg(test)]
-        out.pieces.push(Piece { h: h.to_vec(), l: l.to_vec(), tube, z: z.clone() });
+        out.pieces.push(Piece {
+            h: h.to_vec(),
+            l: l.to_vec(),
+            tube,
+            z: z.clone(),
+            structure: false,
+            plain: profile.plain,
+        });
         profile.z
     }
 
@@ -1202,18 +1606,24 @@ mod tests {
     use super::super::area::{area_of, each_area, Area};
     use super::super::chains::{area_facts, assemble};
     use super::super::network::Network;
-    use super::super::tests::{corner_network, engelberg, plain, table, way};
-    use super::super::{CLEAR_PATH_M, DECK_M};
+    use super::super::tests::{bridge, corner_network, engelberg, plain, table, tunnel, way};
+    use super::super::{River, CLEAR_PATH_M, DECK_M};
     use super::*;
     use std::collections::BTreeSet;
 
     /// Phases A and B of features on one terrain, by area, on `threads` threads.
     fn ground(features: &[Feature], terrain: &dyn Terrain, threads: usize) -> (Heights, Chains) {
+        over(features, terrain, &[], threads)
+    }
+
+    /// As `ground`, with rivers.
+    fn over(features: &[Feature], terrain: &dyn Terrain, rivers: &[River], threads: usize) -> (Heights, Chains) {
         let refs: Vec<&Feature> = features.iter().collect();
+        let near: Vec<&River> = rivers.iter().collect();
         let classes = table().1;
         let job = |subset: &[&Feature], chosen: &[usize], area: Area| {
             let net = Network::new(subset, &classes).unwrap();
-            area_facts(&net, &classes, terrain, (&[], &[]), chosen, &|xy| area_of(xy) == area)
+            area_facts(&net, &classes, terrain, (&near, &[]), chosen, &|xy| area_of(xy) == area)
         };
         let facts = AreaFacts::join(each_area(&refs, &[], (usize::MAX, 4), &job));
         let chains = assemble(&refs, &facts.facts);
@@ -1673,5 +2083,349 @@ mod tests {
         reads_hold("three layers", &layers, &place.terrain(flat), false);
         let (features, _, terrain) = corner_network(&place);
         reads_hold("corner network", &features, &terrain, false);
+        // Structures: a deck over a road, and a shaft that branches off a tunnel.
+        let deck = [
+            way("primary", place.line(&[(-200.0, 0.0), (-100.0, 0.0)], Some(20.0)), plain),
+            way("primary", place.line(&[(-100.0, 0.0), (100.0, 0.0)], Some(20.0)), bridge),
+            way("primary", place.line(&[(100.0, 0.0), (200.0, 0.0)], Some(20.0)), plain),
+            way("residential", place.line(&[(0.0, -50.0), (0.0, 50.0)], Some(20.0)), plain),
+        ];
+        reads_hold("deck", &deck, &place.terrain(flat), false);
+        let shaft = [
+            way("primary", place.line(&[(-50.0, 0.0), (0.0, 0.0)], Some(20.0)), plain),
+            way("primary", place.line(&[(0.0, 0.0), (200.0, 0.0), (400.0, 0.0)], Some(20.0)), tunnel),
+            way("primary", place.line(&[(400.0, 0.0), (450.0, 0.0)], Some(20.0)), plain),
+            way("steps", place.line(&[(200.0, 0.0), (200.0, 30.0)], Some(20.0)), tunnel),
+            way("path", place.line(&[(200.0, 30.0), (200.0, 80.0)], Some(20.0)), plain),
+        ];
+        reads_hold("shaft", &shaft, &place.terrain(|_, n| 1000.0 + 2.0 * n.max(0.0)), false);
+    }
+
+    /// The structure pieces of a solve.
+    fn structures(heights: &Heights) -> Vec<&Piece> {
+        heights.pieces.iter().filter(|p| p.structure).collect()
+    }
+
+    /// The heights of a feature's nodes, every 2 m from its first point, as f64.
+    fn nodes_of(heights: &Heights, f: u32) -> Vec<f64> {
+        of(heights, f).iter().map(|v| f64::from(*v)).collect()
+    }
+
+    /// A straight line with a vertex every 20 m.
+    fn line20(place: &super::super::tests::Place, from: (f64, f64), to: (f64, f64)) -> Vec<[f64; 2]> {
+        place.line(&[from, to], Some(20.0))
+    }
+
+    /// The line of a structure: its heights against the straight line between its ends.
+    fn off_line(z: &[f64]) -> f64 {
+        let n = z.len() - 1;
+        (0..=n).map(|i| (z[i] - (z[0] + (z[n] - z[0]) * i as f64 / n as f64)).abs()).fold(0.0, f64::max)
+    }
+
+    #[test]
+    fn a_bridge_over_a_gorge_runs_straight_between_its_ends() {
+        let place = engelberg();
+        let terrain = place.terrain(|e, _| if e > 5.0 && e < 55.0 { 970.0 } else { 1000.0 });
+        let roads = [
+            way("primary", line20(&place, (-100.0, 0.0), (0.0, 0.0)), plain),
+            way("primary", line20(&place, (60.0, 0.0), (160.0, 0.0)), plain),
+        ];
+        let deck = way("primary", line20(&place, (0.0, 0.0), (60.0, 0.0)), bridge);
+        let (alone, _) = ground(&roads, &terrain, 1);
+        let (heights, _) = ground(&[roads[0].clone(), roads[1].clone(), deck], &terrain, 1);
+        let z = nodes_of(&heights, 2);
+        assert_eq!(z[0].to_bits(), heights.at((0, 0, 5, 0)).to_bits());
+        assert_eq!(z[z.len() - 1].to_bits(), heights.at((1, 0, 0, 0)).to_bits());
+        assert!(off_line(&z) < 1e-6, "{z:?}");
+        assert!(structures(&heights).iter().all(|p| p.plain));
+        for f in 0..2 {
+            assert_eq!(of(&alone, f), of(&heights, f));
+        }
+    }
+
+    /// A primary road with a bridge from east −100 to 100, and a residential road under it at `east`.
+    fn deck_over_road(east: f64) -> (Heights, Chains) {
+        let place = engelberg();
+        let features = [
+            way("primary", line20(&place, (-200.0, 0.0), (-100.0, 0.0)), plain),
+            way("primary", line20(&place, (-100.0, 0.0), (100.0, 0.0)), bridge),
+            way("primary", line20(&place, (100.0, 0.0), (200.0, 0.0)), plain),
+            way("residential", place.line(&[(east, -50.0), (east, 50.0)], Some(20.0)), plain),
+        ];
+        ground(&features, &place.terrain(flat), 1)
+    }
+
+    #[test]
+    fn a_deck_rises_over_the_road_that_it_crosses() {
+        let (heights, _) = deck_over_road(0.0);
+        let z = nodes_of(&heights, 1);
+        let over = z[50] - 1000.0;
+        assert!((5.5 - 1e-4..=5.8).contains(&over), "{over}");
+        let steepest = z.windows(2).map(|w| ((w[1] - w[0]) / 2.0).abs()).fold(0.0, f64::max);
+        assert!(steepest < 0.2, "{steepest}");
+        assert!(nodes_of(&heights, 3).iter().all(|z| (z - 1000.0).abs() < 1e-6));
+        assert!(structures(&heights).iter().all(|p| p.tube.cuts.is_empty()));
+    }
+
+    #[test]
+    fn a_deck_beside_its_landing_rises_as_far_as_1_to_1_allows() {
+        let (heights, _) = deck_over_road(-95.0);
+        let z = nodes_of(&heights, 1);
+        assert!((z[1] - 1002.0).abs() < 1e-3 && (z[2] - 1004.0).abs() < 1e-3, "{:?}", &z[..5]);
+        assert!(z[3] >= 1005.5 - 1e-9 && z[3] <= 1006.0 + 1e-9, "{}", z[3]);
+        assert_eq!(heights.metrics.deck_short, [1, 0, 0]);
+        assert!((heights.metrics.deck_short_all[0].metres - 1.5).abs() < 1e-3);
+        assert!(z.windows(2).all(|w| (w[1] - w[0]).abs() <= 2.0 + 1e-9));
+        assert_eq!(z[0].to_bits(), heights.at((0, 0, 5, 0)).to_bits());
+    }
+
+    /// A primary road with a tunnel from east 0 to 200, and a residential road over it at `east`.
+    fn tunnel_under_road(east: f64) -> (Heights, Chains) {
+        let place = engelberg();
+        let features = [
+            way("primary", line20(&place, (-100.0, 0.0), (0.0, 0.0)), plain),
+            way("primary", line20(&place, (0.0, 0.0), (200.0, 0.0)), tunnel),
+            way("primary", line20(&place, (200.0, 0.0), (300.0, 0.0)), plain),
+            way("residential", place.line(&[(east, -50.0), (east, 50.0)], Some(20.0)), plain),
+        ];
+        ground(&features, &place.terrain(flat), 1)
+    }
+
+    #[test]
+    fn a_tunnel_sinks_under_the_road_over_it_and_only_there() {
+        let (heights, _) = tunnel_under_road(100.0);
+        let z = nodes_of(&heights, 1);
+        for i in [48, 49, 50, 51, 52] {
+            assert!(1000.0 - z[i] >= 6.0 - 1e-4, "{i}: {}", z[i]);
+        }
+        for i in [25, 75] {
+            assert!((995.5..=999.5).contains(&z[i]), "{i}: {}", z[i]);
+        }
+        for i in [10, 90] {
+            assert!((z[i] - 1000.0).abs() <= 1.0, "{i}: {}", z[i]);
+        }
+        assert!(z.iter().all(|z| *z <= 1000.0 + 1e-9));
+        assert!(nodes_of(&heights, 3).iter().all(|z| (z - 1000.0).abs() < 1e-6));
+        assert!(structures(&heights).iter().all(|p| p.tube.cuts.is_empty()));
+    }
+
+    #[test]
+    fn a_tunnel_whose_portal_lies_right_under_a_road_sinks_as_far_as_1_to_1_allows() {
+        let (heights, _) = tunnel_under_road(3.0);
+        let z = nodes_of(&heights, 1);
+        assert!((z[1] - 998.0).abs() < 1e-3 && (z[2] - 996.0).abs() < 1e-3, "{:?}", &z[..5]);
+        assert!(z[3] <= 994.0 + 1e-9, "{}", z[3]);
+        assert!(heights.metrics.bore_exposed >= 1);
+        assert_eq!(z[0].to_bits(), heights.at((0, 0, 5, 0)).to_bits());
+        assert!(nodes_of(&heights, 3).iter().all(|z| (z - 1000.0).abs() < 1e-6));
+        let n = z.len() - 1;
+        let line = |i: usize| z[0] + (z[n] - z[0]) * i as f64 / n as f64;
+        assert!((75..=n).all(|i| (z[i] - line(i)).abs() <= 0.5));
+    }
+
+    #[test]
+    fn a_shaft_opens_the_1_to_1_between_its_fixed_ends() {
+        let place = engelberg();
+        let terrain = place.terrain(|_, n| 1000.0 + 2.0 * n.max(0.0));
+        let main = [
+            way("primary", place.line(&[(-50.0, 0.0), (0.0, 0.0)], Some(20.0)), plain),
+            way("primary", place.line(&[(0.0, 0.0), (200.0, 0.0), (400.0, 0.0)], Some(20.0)), tunnel),
+            way("primary", place.line(&[(400.0, 0.0), (450.0, 0.0)], Some(20.0)), plain),
+        ];
+        let shaft = [
+            way("steps", place.line(&[(200.0, 0.0), (200.0, 30.0)], Some(20.0)), tunnel),
+            way("path", place.line(&[(200.0, 30.0), (200.0, 80.0)], Some(20.0)), plain),
+        ];
+        let (alone, _) = ground(&main, &terrain, 1);
+        let all: Vec<Feature> = main.iter().chain(&shaft).cloned().collect();
+        let (heights, chains) = ground(&all, &terrain, 1);
+        let chain_of = |f: u32| chains.chains.iter().position(|c| c.arms.iter().any(|a| a.0 .0 == f)).unwrap();
+        let (main_chain, steps, path) = (chain_of(1), chain_of(3), chain_of(4));
+        assert!(chains.reads.contains(&(steps, main_chain, ReadKind::Branch)), "{:?}", chains.reads);
+        assert!(chains.reads.contains(&(steps, path, ReadKind::End)), "{:?}", chains.reads);
+        assert_eq!(heights.metrics.structure_opened, 1);
+        // 30 m to 1 mm: the scale of the map changes over the 30 m north.
+        assert!((heights.metrics.structure_opened_m - 30.0).abs() < 1e-3, "{}", heights.metrics.structure_opened_m);
+        assert!((heights.metrics.structure_opened_worst[0].0 - 2.0).abs() < 0.1);
+        assert!(off_line(&nodes_of(&heights, 3)) < 1e-3);
+        assert_eq!(of(&alone, 1), of(&heights, 1));
+    }
+
+    #[test]
+    fn steps_in_a_tunnel_between_two_ground_heights_far_apart() {
+        let place = engelberg();
+        let terrain = place.terrain(|e, _| {
+            if e <= 0.0 {
+                1000.0
+            } else if e < 10.0 {
+                1000.0 - 1.2 * e
+            } else {
+                988.0
+            }
+        });
+        let features = [
+            way("footway", place.line(&[(-40.0, 0.0), (0.0, 0.0)], Some(20.0)), plain),
+            way("steps", place.line(&[(0.0, 0.0), (10.0, 0.0)], None), tunnel),
+            way("footway", place.line(&[(10.0, 0.0), (50.0, 0.0)], Some(20.0)), plain),
+        ];
+        let (heights, _) = ground(&features, &terrain, 1);
+        let z = nodes_of(&heights, 1);
+        assert_eq!(z[0].to_bits(), heights.at((0, 0, 2, 0)).to_bits());
+        assert_eq!(z[z.len() - 1].to_bits(), heights.at((2, 0, 0, 0)).to_bits());
+        assert_eq!(heights.metrics.structure_opened, 1);
+        assert!((heights.metrics.structure_opened_m - 10.0).abs() < 1e-6);
+        assert!(off_line(&z) < 1e-3, "{z:?}");
+        assert_eq!((heights.metrics.structure_pivots, heights.metrics.structure_unconverged), (0, 0));
+    }
+
+    #[test]
+    fn three_stacked_bridges_are_solved_from_the_bottom_up() {
+        let place = engelberg();
+        let deck = |degrees: f64, layer: i64| {
+            let (e, n) = (50.0 * degrees.to_radians().cos(), 50.0 * degrees.to_radians().sin());
+            way("primary", place.line(&[(-0.9 * e, -0.9 * n), (1.1 * e, 1.1 * n)], None), move |f: &mut Feature| {
+                bridge(f);
+                (f.layer, f.layered) = (layer, true);
+            })
+        };
+        let (heights, chains) = ground(&[deck(0.0, 1), deck(60.0, 2), deck(120.0, 3)], &place.terrain(flat), 1);
+        // The centre lies 45 m along each way, between its nodes 22 and 23 (2 m apart, 50 pieces).
+        let at = |f: u32| (nodes_of(&heights, f)[22] + nodes_of(&heights, f)[23]) / 2.0;
+        assert!(nodes_of(&heights, 0).iter().all(|z| (z - 1000.0).abs() < 1e-6));
+        assert!((1005.5 - 1e-6..=1005.8).contains(&at(1)), "{}", at(1));
+        assert!((1011.0 - 1e-6..=1011.3).contains(&at(2)), "{}", at(2));
+        assert!(structures(&heights).iter().all(|p| p.tube.cuts.is_empty()));
+        assert_eq!(chains.order.len(), 3);
+        assert_eq!(chains.depth, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn a_bridge_that_runs_into_a_tunnel_is_one_chain() {
+        let place = engelberg();
+        let terrain = place.terrain(|e, _| {
+            if e > 5.0 && e < 35.0 {
+                970.0
+            } else if e > 40.0 && e <= 90.0 {
+                1000.0 + 0.5 * (e - 40.0)
+            } else if e > 90.0 && e < 140.0 {
+                1025.0 - 0.5 * (e - 90.0)
+            } else {
+                1000.0
+            }
+        });
+        let features = [
+            way("primary", line20(&place, (-100.0, 0.0), (0.0, 0.0)), plain),
+            way("primary", line20(&place, (0.0, 0.0), (40.0, 0.0)), bridge),
+            way("primary", line20(&place, (40.0, 0.0), (140.0, 0.0)), tunnel),
+            way("primary", line20(&place, (140.0, 0.0), (240.0, 0.0)), plain),
+        ];
+        let (heights, chains) = ground(&features, &terrain, 1);
+        let structure: Vec<&super::super::chains::Chain> = chains.chains.iter().filter(|c| c.structure).collect();
+        assert_eq!(structure.len(), 1);
+        assert!((structure[0].metres - 140.0).abs() < 1e-6);
+        for f in [1, 2] {
+            assert!(nodes_of(&heights, f).iter().all(|z| (z - 1000.0).abs() < 1e-3), "{f}");
+        }
+        assert!(structures(&heights).iter().all(|p| p.plain && p.tube.cuts.is_empty()));
+    }
+
+    #[test]
+    fn a_tunnel_that_meets_nothing_lies_at_the_terrain() {
+        let place = engelberg();
+        let (heights, _) =
+            ground(&[way("primary", line20(&place, (0.0, 0.0), (100.0, 0.0)), tunnel)], &place.terrain(flat), 1);
+        assert!(nodes_of(&heights, 0).iter().all(|z| (z - 1000.0).abs() < 0.01 && *z <= 1000.0 + 1e-9));
+    }
+
+    #[test]
+    fn a_deck_over_a_stream_clears_the_water() {
+        let place = engelberg();
+        let terrain = place.terrain(|e, _| if e > 5.0 && e < 55.0 { 970.0 } else { 1000.0 });
+        let features = [
+            way("primary", line20(&place, (-100.0, 0.0), (0.0, 0.0)), plain),
+            way("primary", line20(&place, (0.0, 0.0), (60.0, 0.0)), bridge),
+            way("primary", line20(&place, (60.0, 0.0), (160.0, 0.0)), plain),
+        ];
+        let river = |level: f64| River {
+            points: vec![place.at(30.0, -40.0), place.at(30.0, 40.0)],
+            levels: vec![level, level],
+            half: 2.0,
+            cover: 1.0,
+            lift: 1.5,
+            untagged_culvert: false,
+        };
+        let (heights, _) = over(&features, &terrain, &[river(990.0)], 1);
+        let z = nodes_of(&heights, 1);
+        assert!(z[15] >= 992.5 && off_line(&z) < 1e-6);
+        assert!(structures(&heights).iter().all(|p| p.tube.cuts.is_empty()));
+        let (heights, _) = over(&features, &terrain, &[river(999.5)], 1);
+        let z = nodes_of(&heights, 1);
+        assert!(z[14].min(z[15]) >= 1002.0 - 1e-4, "{:?}", &z[12..18]);
+        assert!(z.windows(2).all(|w| (w[1] - w[0]).abs() <= 2.0 + 1e-9));
+    }
+
+    #[test]
+    fn the_heights_of_structures_do_not_depend_on_the_areas() {
+        let place = engelberg();
+        let n = (1u64 << super::super::area::AREA_ZOOM) as f64;
+        let corner = (((place.x0 * n).floor() + 1.0) / n - place.x0) / place.unit;
+        let corner = (corner, (place.y0 - (place.y0 * n).floor() / n) / place.unit);
+        // The features of the deck over a road, turned by 30 degrees about the corner of four areas.
+        let (sin, cos) = 30f64.to_radians().sin_cos();
+        let near = |points: &[(f64, f64)]| {
+            points
+                .iter()
+                .map(|&(e, n)| (corner.0 + e * cos - n * sin, corner.1 + e * sin + n * cos))
+                .collect::<Vec<_>>()
+        };
+        let features = [
+            way("primary", place.line(&near(&[(-200.0, 0.0), (-100.0, 0.0)]), Some(20.0)), plain),
+            way("primary", place.line(&near(&[(-100.0, 0.0), (100.0, 0.0)]), Some(20.0)), bridge),
+            way("primary", place.line(&near(&[(100.0, 0.0), (200.0, 0.0)]), Some(20.0)), plain),
+            way("residential", place.line(&near(&[(0.0, -50.0), (0.0, 50.0)]), Some(20.0)), plain),
+        ];
+        let refs: Vec<&Feature> = features.iter().collect();
+        let areas: HashSet<(i64, i64)> = refs.iter().flat_map(|f| &f.parts[0]).map(|&p| area_of(p)).collect();
+        assert_eq!(areas.len(), 4);
+        let terrain = place.terrain(|e, n| 1000.0 + 0.01 * e + 0.02 * n);
+        let classes = table().1;
+        let net = Network::new(&refs, &classes).unwrap();
+        let numbers: Vec<usize> = (0..refs.len()).collect();
+        let one = AreaFacts::join(vec![area_facts(&net, &classes, &terrain, (&[], &[]), &numbers, &|_| true)]);
+        let whole = Heights::solve(&refs, &classes, &terrain, &assemble(&refs, &one.facts), &one, 1);
+        let (apart, _) = ground(&features, &terrain, 4);
+        let bits = |h: &Heights| h.z.iter().flatten().flatten().map(|v| v.to_bits()).collect::<Vec<_>>();
+        assert!(of(&whole, 1).iter().all(|v| v.is_finite()));
+        assert_eq!(bits(&whole), bits(&apart));
+    }
+
+    /// A long structure from east 0 to `length` between two roads, vertices every 50 m, and a residential
+    /// road across it at `east`.
+    fn long_structure(class: &str, length: f64, edit: fn(&mut Feature), east: f64) -> Vec<f64> {
+        let place = engelberg();
+        let line = |a: f64, b: f64| place.line(&[(a, 0.0), (b, 0.0)], Some(50.0));
+        let features = [
+            way(class, line(-50.0, 0.0), plain),
+            way(class, line(0.0, length), edit),
+            way(class, line(length, length + 50.0), plain),
+            way("residential", place.line(&[(east, -50.0), (east, 50.0)], Some(20.0)), plain),
+        ];
+        nodes_of(&ground(&features, &place.terrain(flat), 1).0, 1)
+    }
+
+    #[test]
+    fn a_bound_near_one_end_does_not_bend_a_long_tunnel() {
+        let z = long_structure("rail", 4000.0, tunnel, 40.0);
+        assert!(1000.0 - z[20] >= 7.5 - 1e-6, "{}", z[20]);
+        assert!(z[400..].iter().all(|z| (z - 1000.0).abs() <= 0.05));
+        assert!(z.iter().all(|z| *z >= 990.0));
+    }
+
+    #[test]
+    fn a_clearance_near_one_landing_does_not_hump_a_long_bridge() {
+        let z = long_structure("primary", 500.0, bridge, 20.0);
+        assert!(z[10] - 1000.0 >= 5.5 - 1e-6, "{}", z[10]);
+        assert!(z[150..].iter().all(|z| (z - 1000.0).abs() <= 0.05));
+        assert!(z.iter().all(|z| *z <= 1008.0));
     }
 }

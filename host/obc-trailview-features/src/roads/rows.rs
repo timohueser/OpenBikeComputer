@@ -670,6 +670,8 @@ pub(crate) fn clearances(
                 let at = along[v - first] + u * (along[v - first + 1] - along[v - first]);
                 let (va, vb) = (net.vertex_var[v], net.vertex_var[v + 1]);
                 let (other, k) = match *crossed {
+                    // A crossing at a node belongs to the segment that starts there.
+                    Below::Water(..) if u >= 1.0 => continue,
                     Below::Water(z0, z1) => {
                         let value = z0 + (z1 - z0) * tr + CLEAR_WATER_M + deck(w);
                         add([va, vb, va, va], [1.0 - u, u, 0.0, 0.0], value, value, at, (v, None));

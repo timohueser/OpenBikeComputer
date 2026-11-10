@@ -108,7 +108,9 @@ pub(crate) fn unique(points: &[[f64; 2]]) -> (Vec<usize>, usize) {
 /// The pieces of an OSM segment of `metres`: none longer than NODE_M. A bridge or a tunnel of one
 /// segment (`alone`) has at least two, so that it has a node of its own, which its ends do not hold.
 pub(crate) fn pieces(metres: f64, alone: bool) -> usize {
-    (metres / NODE_M).ceil().max(if alone { 2.0 } else { 1.0 }) as usize
+    // A segment of a whole number of NODE_M keeps that number of pieces through the rounding of its metres
+    // (a few nanometres where the points are world coordinates).
+    (metres / NODE_M - 1e-6).ceil().max(if alone { 2.0 } else { 1.0 }) as usize
 }
 
 pub(crate) fn hypot(d: [f64; 2]) -> f64 {
