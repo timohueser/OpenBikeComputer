@@ -39,6 +39,8 @@ pub struct GroundMetrics {
     pub opened_m: [f64; 3],
     /// Nodes over OFF_M off the terrain: band with a held grade, fixed by a read, pass, cover.
     pub off: [usize; 4],
+    /// Of those, the nodes outside the band (over BAND_M off).
+    pub off_band: [usize; 4],
     /// The change of grade at fixed nodes, frozen nodes and string contacts: count over KINK, p99, max.
     pub kinks: [usize; 3],
     pub kink_p99: [f64; 3],
@@ -72,6 +74,9 @@ pub struct GroundMetrics {
     pub reads_skipped: usize,
     /// Points that several parts share, with two heights in the store: 0.
     pub shared_apart: usize,
+    /// The worst reads that changed and shared points apart: metres, place.
+    pub read_changed_worst: Vec<(f64, [f64; 2])>,
+    pub shared_apart_worst: Vec<(f64, [f64; 2])>,
     /// Segments whose class grade opened to over twice the grade: count, metres, and the worst.
     pub grade_broken: usize,
     pub grade_broken_m: f64,
@@ -122,6 +127,17 @@ pub(crate) struct Piece {
     pub l: Vec<f64>,
     pub tube: Tube,
     pub z: Vec<f64>,
+}
+
+/// The point of a node.
+fn point_of(features: &[&Feature], layout: &Layout, (f, p, k, c): Node) -> [f64; 2] {
+    let points = distinct(&features[f as usize].parts[p as usize]);
+    let a = points[k as usize];
+    if c == 0 {
+        return a;
+    }
+    let (b, t) = (points[k as usize + 1], f64::from(c) / layout.pieces(f as usize, p as usize, k as usize) as f64);
+    [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]
 }
 
 /// Per feature, per part: the index of the first node of each OSM vertex, and one past the last node.
@@ -456,7 +472,9 @@ impl Heights {
                     let key = crate::geometry::key(point);
                     match at.get(&key) {
                         Some(w) if w.to_bits() != v.to_bits() => {
-                            apart.insert(key);
+                            if apart.insert(key) {
+                                metrics.shared_apart_worst.push((f64::from((w - v).abs()), degrees(point)));
+                            }
                         }
                         Some(_) => {}
                         None => {
@@ -473,6 +491,8 @@ impl Heights {
             if now.to_bits() != v.to_bits() {
                 metrics.read_changed += 1;
                 metrics.read_changed_max = metrics.read_changed_max.max(f64::from((now - v).abs()));
+                let at = degrees(point_of(features, &layout, m));
+                metrics.read_changed_worst.push((f64::from((now - v).abs()), at));
             }
         }
         for (k, values) in kinks.iter_mut().enumerate() {
@@ -480,7 +500,12 @@ impl Heights {
             metrics.kink_p99[k] = crate::geometry::percentile(values, 99.0).unwrap_or(0.0);
             metrics.kink_max[k] = values.iter().copied().fold(0.0, f64::max);
         }
-        for worst in [&mut metrics.frozen_worst, &mut metrics.approach_ended_worst] {
+        for worst in [
+            &mut metrics.frozen_worst,
+            &mut metrics.approach_ended_worst,
+            &mut metrics.read_changed_worst,
+            &mut metrics.shared_apart_worst,
+        ] {
             worst.sort_by(|a, b| b.0.total_cmp(&a.0));
             worst.truncate(10);
         }
@@ -522,6 +547,7 @@ fn add(all: &mut GroundMetrics, one: &GroundMetrics) {
     }
     for k in 0..4 {
         all.off[k] += one.off[k];
+        all.off_band[k] += one.off_band[k];
     }
     for k in 0..2 {
         all.split_km[k] += one.split_km[k];
@@ -577,6 +603,14 @@ struct Cycle {
     cycle: bool,
 }
 
+/// What a read takes: heights, nothing yet, or a node of the reading chain itself (its index, or none
+/// when the read mixes it with another chain's node).
+enum Took {
+    Height(Vec<f64>),
+    Waits,
+    Own(usize),
+}
+
 /// Why a node is fixed.
 #[derive(Clone, Copy, PartialEq)]
 enum Fix {
@@ -616,9 +650,19 @@ fn solve_chain(
     // Every read: its node and the height that it took.
     let mut log: Vec<(Node, f32)> = Vec::new();
     // A read takes a height that exists; one from a chain of this component that is not solved yet waits.
-    // A read of a junction reads its root.
-    let mut take = |source: &[Node], from_chains: &[usize], state: &mut Cycle| -> Option<Vec<f64>> {
+    // A read of a junction reads its root. A node that only this chain holds is its own: such a read is
+    // resolved after the others, or left out.
+    let own = |m: Node| index.get(&m).copied().filter(|_| context.chains_of(m).iter().all(|&b| b == c));
+    let mut take = |source: &[Node], from_chains: &[usize], state: &mut Cycle| -> Took {
         let roots: Vec<Node> = source.iter().map(|&m| context.root(m)).collect();
+        if let [root] = roots[..] {
+            if let Some(j) = own(root) {
+                return Took::Own(j);
+            }
+        }
+        if roots.iter().any(|&m| own(m).is_some()) {
+            return Took::Own(usize::MAX);
+        }
         let moved: Vec<usize> =
             roots.iter().zip(source).filter(|(r, m)| r != m).flat_map(|(&r, _)| context.chains_of(r)).collect();
         let source = roots;
@@ -627,23 +671,34 @@ fn solve_chain(
             let pending =
                 from_chains.iter().chain(&moved).any(|&b| b == c || state.cycle && !state.solved.contains(&b));
             waited |= pending && !second;
-            return None;
+            return Took::Waits;
         }
         state.read.extend(source.iter().copied());
         log.extend(source.iter().zip(&z).map(|(&m, &v)| (m, v as f32)));
-        Some(z)
+        Took::Height(z)
     };
+    // Reads of a node of this chain: (the node that reads, the node read).
+    let mut deferred: Vec<(usize, usize)> = Vec::new();
+    // The names of a junction that the through chain holds: that chain writes them.
+    let mut borrowed: HashSet<Node> = HashSet::new();
     for &(place, from) in &context.side[c] {
         let (Some(&i), source) = (index.get(&(place.0, place.1, place.2, 0)), (from.0 .0, from.0 .1, from.0 .2, 0))
         else {
             continue;
         };
+        let b = context.chain_of_arm(from);
+        if b != c {
+            borrowed.extend(nodes.names[i].iter().copied().filter(|&m| context.chains_of(m).contains(&b)));
+        }
         if frozen[i] {
             skipped += 1;
             continue;
         }
-        if let Some(z) = take(&[source], &[context.chain_of_arm(from)], state) {
-            (fixed[i], cause[i]) = (z[0], Some(Fix::Read));
+        match take(&[source], &[b], state) {
+            Took::Height(z) => (fixed[i], cause[i]) = (z[0], Some(Fix::Read)),
+            Took::Own(j) if j != usize::MAX => deferred.push((i, j)),
+            Took::Own(_) => skipped += 1,
+            Took::Waits => {}
         }
     }
     // The approach nodes of each side junction, from the junction outward. An approach holds only inside
@@ -671,8 +726,14 @@ fn solve_chain(
             }
             let b = context.chain_of_arm(through);
             let Some((pair, share)) = foot(context, nodes.xy[i], through, b) else { continue };
-            let Some(z) = take(&pair, &[b], state) else { continue };
-            let z = z[0] + share * (z[1] - z[0]);
+            let z = match take(&pair, &[b], state) {
+                Took::Height(z) => z[0] + share * (z[1] - z[0]),
+                Took::Own(_) => {
+                    skipped += 1;
+                    continue;
+                }
+                Took::Waits => continue,
+            };
             if h[i].is_finite() && (z - h[i]).abs() > BAND_M {
                 ended.push(((z - h[i]).abs() - BAND_M, degrees(nodes.xy[i])));
                 break;
@@ -690,17 +751,15 @@ fn solve_chain(
             skipped += usize::from(frozen[i]);
             continue;
         }
-        if let Some(z) = take(&[from, context.layout.next(from)], &[b], state) {
-            (fixed[i], cause[i]) = (z[0] + f64::from(share) * (z[1] - z[0]), Some(Fix::Read));
+        match take(&[from, context.layout.next(from)], &[b], state) {
+            Took::Height(z) => (fixed[i], cause[i]) = (z[0] + f64::from(share) * (z[1] - z[0]), Some(Fix::Read)),
+            Took::Own(_) => skipped += 1,
+            Took::Waits => {}
         }
     }
-    if chain.closed && frozen[n - 1] {
-        skipped += 1;
-    } else if chain.closed {
+    if chain.closed {
         // The last node of a closed chain reads its first.
-        if let Some(z) = take(&[nodes.names[0][0]], &[c], state) {
-            (fixed[n - 1], cause[n - 1]) = (z[0], Some(Fix::Read));
-        }
+        deferred.push((n - 1, 0));
     }
     // A ground pass holds whole or not at all: its bound must lie inside the band of both nodes of the
     // reader's crossing segment. The other way's height is read either way, as the decision rests on it.
@@ -717,7 +776,14 @@ fn solve_chain(
             _ => continue,
         };
         let b = context.chains_of(other)[0];
-        let Some(z) = take(&pair(other), &[b], state) else { continue };
+        let z = match take(&pair(other), &[b], state) {
+            Took::Height(z) => z,
+            Took::Own(_) => {
+                skipped += 1;
+                continue;
+            }
+            Took::Waits => continue,
+        };
         let (at, need) = (z[0] + f64::from(other_share) * (z[1] - z[0]), f64::from(need));
         let bound = if upper_reads { at + need } else { at - need };
         let past = |i: usize| if upper_reads { bound - (h[i] + BAND_M) } else { h[i] - BAND_M - bound };
@@ -738,13 +804,24 @@ fn solve_chain(
             }
         }
     }
-    if second {
-        // A node of this chain that its own read took in this solve keeps that height too.
-        for i in 0..n {
-            if fixed[i].is_nan() && nodes.names[i].iter().any(|m| state.read.contains(m)) {
-                (fixed[i], cause[i]) = (view.at(nodes.names[i][0]), Some(Fix::Frozen));
-            }
+    // A read of a node of this chain takes the height that the node has in this solve: fixed by a read, or
+    // its height so far, which it then keeps. A shared point so keeps one height.
+    for (i, j) in deferred {
+        if frozen[i] {
+            skipped += 1;
+            continue;
         }
+        let v = if fixed[j].is_nan() { view.at(nodes.names[j][0]) } else { fixed[j] };
+        if v.is_nan() {
+            waited |= !second;
+            continue;
+        }
+        if fixed[j].is_nan() {
+            (fixed[j], cause[j]) = (v, Some(Fix::Frozen));
+        }
+        (fixed[i], cause[i]) = (v, Some(Fix::Read));
+        state.read.insert(nodes.names[j][0]);
+        log.push((nodes.names[j][0], v as f32));
     }
     out.reads.extend(log.into_iter().map(|(m, v)| (c, m, v)));
     // Each piece between nodes without terrain is a chain of its own.
@@ -769,7 +846,7 @@ fn solve_chain(
     }
     for (i, names) in nodes.names.iter().enumerate() {
         let v = z[i] as f32;
-        for &m in names {
+        for &m in names.iter().filter(|m| !borrowed.contains(m)) {
             view.set(m, v);
         }
     }
@@ -1019,6 +1096,7 @@ impl Span<'_> {
                     0
                 };
                 out.metrics.off[k] += 1;
+                out.metrics.off_band[k] += usize::from((z[i] - h[i]).abs() > BAND_M);
             }
             if profile.at_lo[i] || profile.at_hi[i] {
                 out.held.extend(self.nodes.names[r.start + i].iter().copied());
