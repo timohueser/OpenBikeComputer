@@ -468,7 +468,14 @@
     }
 
     function nameVisits(trip: Trip) {
-        trip.points.filter(point => point.autoLabel).forEach(point => void session.nameVisit(point));
+        trip.points.filter(point => point.autoLabel).forEach(point => { void session.nameVisit(point); void nameEndpoint(point); });
+    }
+
+    /** Names a start or finish that the planner labelled after the nearest town in the map tiles, else from the search. */
+    async function nameEndpoint(point: RoutePoint) {
+        if (!point.autoLabel || (point.kind !== 'start' && point.kind !== 'finish')) return;
+        const label = map?.placeName(point.coordinate) ?? await townName(point.coordinate);
+        if (label) session.autoName(point.id, point.coordinate, label);
     }
 
     async function openLibrary() {
@@ -938,7 +945,7 @@
         session.movePoint(id, coordinate);
         afterEdit('Point moved');
         const point = trip.points.find(p => p.id === id);
-        if (point) void session.nameVisit(point);
+        if (point) { void session.nameVisit(point); void nameEndpoint(point); }
     }
 
     function removePoint() {
@@ -953,6 +960,7 @@
         const coordinate = spot?.coordinate ?? selectedPlace?.coordinate;
         if (!coordinate) return;
         commit(setEndpoint(trip, kind, coordinate, selectedPlace?.label), kind === 'start' ? 'Start set' : 'Finish set');
+        void nameEndpoint(trip.points.find(p => p.kind === kind)!);
         showRoute = true;
         clearSelection();
         exitSearch();
