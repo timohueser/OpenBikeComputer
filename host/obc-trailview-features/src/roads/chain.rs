@@ -1669,14 +1669,10 @@ mod tests {
                 }
                 start = end + 1;
             }
-            for s in 0..n - 1 {
-                let near = |x: f64, y: f64| x == y || (x - y).abs() < 1e-4;
-                assert!(
-                    near(after.a[s], want[s].0) && near(after.b[s], want[s].1),
-                    "case {case} segment {s}: {:?} {:?}",
-                    (after.a[s], after.b[s]),
-                    want[s]
-                );
+            let near = |x: f64, y: f64| x == y || (x - y).abs() < 1e-4;
+            for (s, &(a, b)) in want.iter().enumerate() {
+                let got = (after.a[s], after.b[s]);
+                assert!(near(got.0, a) && near(got.1, b), "case {case} segment {s}: {got:?} {:?}", (a, b));
             }
             opened += after.opened.len();
         }
