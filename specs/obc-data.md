@@ -1565,6 +1565,10 @@ switch to a new release, an update of an R2 target does this; a `dir` target ski
    next heartbeat of the lock. The next phase clears it.
 3. After the switch, the run deletes `planner/next.json`.
 
+While `planner/next.json` names a release, the follower runs the services of the serving release
+and of that release. Once that release has an install, the services of the rollback stop, and its
+`ready` answers 503 with `{"state": "installed"}` until the file goes.
+
 The run waits at most 24 hours (`GIVE_UP` in `ready.rs`). After that, or when the run stops or
 another run takes the lock, it fails with `<target> unchanged: <last reason>`. `release.json` and
 the pointers stay as they were; the next collection deletes the release that it uploaded. The run
@@ -2279,8 +2283,8 @@ each origin.
 | Path | Answer |
 | --- | --- |
 | `/planner-api/version` | `{"commit", "formats", "manifest"}`: the commit that the build of serve names in `OBC_DATA_COMMIT`, or `null`, the format of each layer that its services read, and the format of the release manifest that it reads. Never cached |
-| `/planner-api/releases/<id>/ready` | `{"state": "ready"}` while the services of the planner release `<id>` answer. 503 with `{"state": "starting"}` while its objects download and its services start, or `{"state": "failed", "reason": "not ready: <why>"}` after they failed. 404 with `{"state": "unknown", "reason"}` while serve does not know `<id>` yet: a publisher that waits for `<id>` keeps waiting, as on 503. Never cached |
-| `/planner-api/releases/<id>/<service>/<path>` | `<path>` of the `routing`, `search` or `downloads` service of the planner release `<id>`. Search gets `/api/planner-search/<path>`. 404 when the services of `<id>` do not answer |
+| `/planner-api/releases/<id>/ready` | `{"state": "ready"}` while each service of the planner release `<id>` answers. 503 with `{"state": "starting"}` while its objects download or a service starts, `{"state": "installed"}` while its files are on disk and its services do not run, or `{"state": "failed", "reason": "not ready: <why>"}` with the reason of each failed service or of the failed fetch. 404 with `{"state": "unknown", "reason"}` while serve does not know `<id>` yet: a publisher that waits for `<id>` keeps waiting, as on 503. Never cached |
+| `/planner-api/releases/<id>/<service>/<path>` | `<path>` of the `routing`, `search` or `downloads` service of the planner release `<id>`, while that service answers, also while another service of `<id>` failed. Search gets `/api/planner-search/<path>`. 503 with `{"code": "busy", "message": "The <service> service restarts. Try again shortly."}` while that service does not answer. 404 when serve does not know `<id>` |
 | `/planner-offline/<path>` | `<path>` of the downloads service of the current release, for apps that name no planner release. 503 while it does not answer |
 | `/cell-catalog/catalog.json` | `dir` only: the device pointer of the current release |
 | `/planner/catalog.json` | `dir` only: the planner pointer of the current release. Each string that starts with one of its `origins`, followed by `/` or nothing, starts with the origin of the request instead: `http://` and the `Host` of the request |
@@ -2290,27 +2294,33 @@ Serve reads `release.json` and `planner/next.json` of a `dir` target each second
 target every 30 seconds. It reads the manifest, the pointers and the list of the named files of a
 release once: a rollback reads nothing else. It reads no other list. A `planner/next.json` that cannot be read, or whose release cannot be read,
 names no release: serve writes why, reads it again at each look, and loads the other releases.
-When one of the two files changes:
+The planner release of a release is `active.id` of its planner pointer. Serve orders the releases
+current, serving, release of `planner/next.json`, rollback, and counts each planner release once:
 
-1. Serve loads the planner release of the serving release, of the rollback and of the release of
-   `planner/next.json`, unless it runs. The planner release of a release is `active.id` of its
-   planner pointer.
-   First it compares the formats of the layers of the release with the formats that the services
-   read (see [Service runtimes](#service-runtimes)). A layer in another format fails the planner
-   release before anything downloads: `needs a routing service that reads planner/routing format
-   9; it reads 8`. Then a thread downloads its objects into the store, and its services start once
-   they are there. Serve keeps reading the two files and checking the other services meanwhile.
-2. Clients get the serving release once each service of its planner release answers: routing
+1. One fetch runs at a time, on a thread of its own. It is for the first planner release of the
+   order that has no install and does not wait after a failure. While `planner/next.json` names a
+   release, the rollback does not fetch; a fetch of the rollback that runs when the file appears
+   stops between two files, and goes on after the file goes. A fetch first compares the formats of
+   the layers of the release with the formats that the services read (see
+   [Service runtimes](#service-runtimes)). A layer in another format fails the planner release
+   before anything downloads: `needs a routing service that reads planner/routing format 9; it
+   reads 8`. Then the fetch downloads the objects and installs the files. Serve keeps reading the
+   two files and checking the services meanwhile.
+2. The services of the first two planner releases of the order that have an install run. The
+   services of each other installed planner release stop, and its files stay.
+3. Clients get the serving release once each service of its planner release answers: routing
    `GET /health`, search `GET /api/planner-search/status` with `parser.ready` true, and downloads
    `GET /catalog`. Until then clients keep the current release. No client gets the release of
    `planner/next.json`.
-3. A planner release fails when its start fails, when one of its services stops, or when its
-   services do not answer within 120 seconds after they start. Its other services stop, and its
-   API answers 404. Clients keep the current release, also when the failed planner release is the
-   one of the current release. A planner release that failed starts again after 60 seconds, after
-   each later failure in a row twice the wait before, up to 30 minutes. It starts again at once
-   only when the two files name other releases.
-4. The services of a planner release that neither the serving release, the rollback, the release
+4. Each service has its own state and wait. A service fails when its start fails, when it stops
+   within 60 seconds after its first answer, or when it does not answer within 120 seconds after
+   it starts. It starts again after 60 seconds, after each later failure in a row twice the wait
+   before, up to 30 minutes. A service that stops 60 seconds or more after its first answer starts
+   again at the next check, and its wait is 60 seconds again. The other services of its planner
+   release keep answering, and clients keep the current release.
+5. A fetch that fails waits as a failed service does. It fetches again at once only when the two
+   files name other releases.
+6. The services of a planner release that neither the serving release, the rollback, the release
    of `planner/next.json` nor the current release names stop.
 
 When the serving release and the rollback fail one after the other, clients keep a release that
@@ -2318,20 +2328,40 @@ When the serving release and the rollback fail one after the other, clients keep
 then writes a warning: an update can delete the files of that release.
 
 The services of a planner release read its files under `routing/`, `search/` and `offline/` in
-`<store>/serve/<target>/<planner id>/`. The document `releases/<planner id>/release.json`, which the list
+its install, `<store>/serve/<target>/<planner id>/`. The document `releases/<planner id>/release.json`, which the list
 of the named files names, lists them: format 1 in `files`; format 2 in the step indexes whose `folders` hold
 one of those folders, and in `files`. Serve downloads those indexes as objects after the document,
 checks their size and SHA-256, and keeps them with the files. Each file comes from an object of the store of serve, which downloads
-an object that it lacks from `objects/` of the target and checks its SHA-256: a link to an `identity`
-object, or the decoded bytes of a `gzip` object under a temporary name. No write opens an
-existing file. Each file must have the SHA-256 and the size that the planner release gives. When
-serve stops, it ends each download at its next read and waits for it within the 10 seconds of its
-grace; a wait before a retry, a connection or a hash does not see the stop.
-Serve removes `<store>/serve/<target>/` when it starts and when it stops; `obc data clean` does
-not touch it. The objects are in a store of serve alone, `<store>/follower/<target>/`. After the
-releases that the two files name change, and after downloads, serve deletes there each object and
-each unfinished download that the services of none of them read, once no download runs. A
-download for a planner release that no release names any more stops at its next object. For a
+an object that it lacks from `objects/` of the target, 8 at a time, and checks its SHA-256: a link
+to an `identity` object, or the decoded bytes of a `gzip` object under a temporary name. No write
+opens an existing file. Each file must have the SHA-256 and the size that the planner release
+gives. After the files, the install gets the document as `release.json`, the data of the file
+system goes to the disk, and the install writes the marker `installed` last, which holds the
+planner release id. Only a folder whose marker names it is an install; a fetch deletes the content
+of a folder without one first. The services read the region of the release from `release.json`.
+When serve stops, it ends each download at its next read and each install between two files, and
+waits for them within the 10 seconds of its grace; a wait before a retry, a connection or a hash
+does not see the stop.
+
+Before the objects of the files download, the fetch checks the disk. The install needs the bytes
+of each object that the store lacks, the decoded bytes of each file that is not `identity`, and a
+reserve of 5 % of the file system for the logs, the downloads cache and the file system. When the
+free bytes of the file system of the store are fewer, nothing downloads. Then, when the planner
+release is not the one of the rollback, and no other release names the planner release of the
+rollback, serve stops the services of the rollback, deletes its install, writes `WARNING: no
+rollback during the install of <planner>: deleted the files of planner release <rollback>; the
+disk has <free> GB free and the install needs <need> GB`, and fetches again at its next check.
+Else the fetch fails with `the disk has <free> GB free; the install needs <need> GB`.
+
+An install stays when serve starts and stops, and when a service stops: a restart installs
+nothing again. Serve deletes an install only when neither a planner release that it follows nor
+a release that the two files name has it, after its services stopped, and only after it read the
+two files: a start without a network deletes nothing. `obc data clean` does not touch the
+installs. The objects are in a store of serve alone, `<store>/follower/<target>/`. After the
+releases that the two files name change, and after fetches, serve deletes there each object and
+each unfinished download that the services of none of them read, once no fetch runs. A `gzip`
+object of a planner release with an install goes too: the install holds its decoded file. A fetch
+for a planner release that no release names any more stops between two files. For a
 `dir` target, download bundles name the origin of the machine on its network when serve starts,
 else `http://127.0.0.1:8710`. For an R2 target, they name `api_origin` and
 `<objects_origin>/objects` of the planner pointer.
