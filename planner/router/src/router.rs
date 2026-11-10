@@ -23,11 +23,6 @@ pub struct Request {
     pub profile: String,
     #[serde(default)]
     pub pace: Pace,
-    #[serde(default)]
-    pub alternatives: bool,
-    /// Asks for alternatives and leaves the primary route out of the response.
-    #[serde(default)]
-    pub alternatives_only: bool,
     /// Interior point indices where the rider explicitly permits a reversal.
     #[serde(default)]
     pub turnarounds: Vec<usize>,
@@ -38,11 +33,6 @@ pub struct Request {
     /// Pins the last point in the same way.
     #[serde(default)]
     pub end_position: Option<String>,
-}
-
-#[derive(Debug)]
-pub struct Response {
-    pub routes: Vec<Route>,
 }
 
 /// The part of a road that a path uses, between two fractions of its length.
@@ -87,7 +77,6 @@ pub struct Leg {
 #[derive(Clone, Debug)]
 pub struct Route {
     pub id: String,
-    pub reason: &'static str,
     pub package: String,
     pub profile: String,
     pub cost: u64,
@@ -96,9 +85,6 @@ pub struct Route {
     pub elapsed: Vec<f64>,
     pub legs: Vec<Leg>,
     pub snap_truncated: bool,
-    /// The middle request point of a corridor alternative: a request through the start, this point
-    /// and the finish gives the same line.
-    pub via: Option<[f64; 2]>,
 }
 
 impl Route {
@@ -144,12 +130,9 @@ struct Work {
 }
 
 pub struct Router<P> {
-    pub(crate) package: P,
+    package: P,
     workspace: Workspace,
     metric: String,
-    /// The last primary route, by its request without the alternatives flags: the web asks for the
-    /// alternatives of a route right after the route.
-    primary: Option<(Request, Route)>,
     /// Snaps by point and profile.
     snaps: VecDeque<(i32, i32, String, snap::Candidates)>,
 }
@@ -161,39 +144,13 @@ impl<P: RoutingData> Router<P> {
 
     pub fn new(mut package: P, memory_budget_bytes: usize) -> Self {
         package.set_memory_budget(memory_budget_bytes);
-        Self { package, workspace: Workspace::default(), metric: String::new(), primary: None, snaps: VecDeque::new() }
+        Self { package, workspace: Workspace::default(), metric: String::new(), snaps: VecDeque::new() }
     }
 
     /// Snapping attaches only to roads in a large connected part of the profile's graph, so a leg
     /// without a path means the points are truly disconnected and the client plans around it.
     pub fn route(&mut self, request: &Request, control: &Control<'_>) -> Result<Route> {
-        self.route_counted(request, control, &mut 0)
-    }
-
-    /// The primary route of `request`, from the last primary route when only the alternatives
-    /// flags differ.
-    pub(crate) fn primary(&mut self, request: &Request, control: &Control<'_>, queries: &mut usize) -> Result<Route> {
-        let key = Request { alternatives: false, alternatives_only: false, ..request.clone() };
-        let route = match self.primary.take().filter(|(cached, _)| *cached == key) {
-            Some((_, route)) => route,
-            None => self.route_counted(request, control, queries)?,
-        };
-        self.primary = Some((key, route.clone()));
-        Ok(route)
-    }
-
-    /// Routes after `queries` attachment queries of the same request, and adds the queries of
-    /// this route to it.
-    pub(crate) fn route_counted(
-        &mut self,
-        request: &Request,
-        control: &Control<'_>,
-        queries: &mut usize,
-    ) -> Result<Route> {
-        let mut work = Work { queries: *queries, ..Work::default() };
-        let result = self.search(request, control, &mut work);
-        *queries = work.queries;
-        result
+        self.search(request, control, &mut Work::default())
     }
 
     fn search(&mut self, request: &Request, control: &Control<'_>, work: &mut Work) -> Result<Route> {
@@ -341,7 +298,6 @@ impl<P: RoutingData> Router<P> {
         }
         Ok(Route {
             id: digest(&identity),
-            reason: "primary",
             package: self.package.identity().to_owned(),
             profile: request.profile.clone(),
             cost,
@@ -349,7 +305,6 @@ impl<P: RoutingData> Router<P> {
             elapsed,
             legs,
             snap_truncated: truncated,
-            via: None,
         })
     }
 
