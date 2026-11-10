@@ -139,8 +139,8 @@ pub(crate) fn approaches(net: &Network, classes: &Classes) -> (Pins<3>, Vec<bool
 /// keeps a bridge from sagging. Where the ends of member ways meet, a chain runs on through the two
 /// that continue most nearly straight, and the others are side tunnels. So a side tunnel or a shaft
 /// follows the tunnel that it joins and never lifts it: nothing but its ends gives a long tunnel its
-/// heights.
-pub(crate) fn chains(net: &Network, members: &[bool]) -> Pins<3> {
+/// heights. A chain ends at each variable that `stops` marks.
+pub(crate) fn chains(net: &Network, members: &[bool], stops: &[bool]) -> Pins<3> {
     let chained: Vec<usize> = (0..members.len()).filter(|&w| members[w]).collect();
     let mut meetings: Vec<Vec<(usize, usize, [f64; 2])>> = Vec::new();
     let mut slot: HashMap<usize, usize> = HashMap::new();
@@ -202,22 +202,32 @@ pub(crate) fn chains(net: &Network, members: &[bool]) -> Pins<3> {
             let Some(&(next, next_end)) = partner.get(&(w, if flipped { 0 } else { 1 })) else { break };
             (w, flipped) = (next, next_end == 1);
         }
-        let (a, b) = (net.vertex_var[chain[0]], net.vertex_var[chain[chain.len() - 1]]);
-        if chain.len() < 3 || a == b {
-            continue;
-        }
-        let mut along = vec![0.0];
-        for pair in chain.windows(2) {
-            let (p, q) = (net.vertex_xy[pair[0]], net.vertex_xy[pair[1]]);
-            along.push(along[along.len() - 1] + hypot(sub(q, p)) * metres((p[1] + q[1]) / 2.0));
-        }
-        let total = along[along.len() - 1];
-        for (n, &v) in chain.iter().enumerate().take(chain.len() - 1).skip(1) {
-            let tau = along[n] / total;
-            pins.push([net.vertex_var[v], a, b], [1.0, -(1.0 - tau), -tau], 0.0);
+        let cut = |i: usize| i + 1 < chain.len() && stops.get(net.vertex_var[chain[i]]).copied().unwrap_or(false);
+        let mut first = 0;
+        for last in (1..chain.len()).filter(|&i| i + 1 == chain.len() || cut(i)) {
+            straight(net, &chain[first..=last], &mut pins);
+            first = last;
         }
     }
     pins
+}
+
+/// The rows of `chains` for one chain of vertices.
+fn straight(net: &Network, chain: &[usize], pins: &mut Pins<3>) {
+    let (a, b) = (net.vertex_var[chain[0]], net.vertex_var[chain[chain.len() - 1]]);
+    if chain.len() < 3 || a == b {
+        return;
+    }
+    let mut along = vec![0.0];
+    for pair in chain.windows(2) {
+        let (p, q) = (net.vertex_xy[pair[0]], net.vertex_xy[pair[1]]);
+        along.push(along[along.len() - 1] + hypot(sub(q, p)) * metres((p[1] + q[1]) / 2.0));
+    }
+    let total = along[along.len() - 1];
+    for (n, &v) in chain.iter().enumerate().take(chain.len() - 1).skip(1) {
+        let tau = along[n] / total;
+        pins.push([net.vertex_var[v], a, b], [1.0, -(1.0 - tau), -tau], 0.0);
+    }
 }
 
 /// Rows z_P − (1 − τ)·z_A − τ·z_B = 0 for each vertex P of a way on the ground and the nearest
@@ -770,30 +780,41 @@ pub(crate) fn passes(net: &Network, classes: &Classes) -> Passes {
             return;
         }
         let above = ([va, vb], [1.0 - u, u]);
-        let mut places = vec![r];
+        let mut places = vec![(k, r)];
         let tunnel_under_road = net.tunnel[lower] && !net.free[upper];
         if tunnel_under_road {
-            // Where the tunnel's line meets each edge of the road, on this segment of the tunnel at most.
+            // Where the tunnel's line meets each edge of the road, on the segment of the tunnel nearest to it.
             let e = sub(q, p);
             let (norm, half, unit) = (hypot(e), net.half[upper], metres(p[1]));
             let side = [-e[1] / norm * half / unit, e[0] / norm * half / unit];
+            let (start, end) = (net.vertex_xy[k], net.vertex_xy[k + 1]);
             for offset in [side, [-side[0], -side[1]]] {
-                let Some((edge, _)) =
-                    lines(net.vertex_xy[k], net.vertex_xy[k + 1], [p[0] + offset[0], p[1] + offset[1]], e)
+                let Some((edge, _)) = lines(start, end, [p[0] + offset[0], p[1] + offset[1]], e) else { continue };
+                let at = [start[0] + edge * (end[0] - start[0]), start[1] + edge * (end[1] - start[1])];
+                let foot = |j: usize| {
+                    let (a, d) = (net.vertex_xy[j], sub(net.vertex_xy[j + 1], net.vertex_xy[j]));
+                    dot(sub(at, a), d) / dot(d, d).max(1e-300)
+                };
+                let gap = |j: usize| {
+                    let (a, d, x) =
+                        (net.vertex_xy[j], sub(net.vertex_xy[j + 1], net.vertex_xy[j]), foot(j).clamp(0.0, 1.0));
+                    hypot(sub(at, [a[0] + x * d[0], a[1] + x * d[1]]))
+                };
+                let Some(j) = (net.way_first[lower]..net.way_last[lower]).min_by(|&i, &j| gap(i).total_cmp(&gap(j)))
                 else {
                     continue;
                 };
-                let x = edge.clamp(0.0, 1.0);
+                let x = foot(j).clamp(0.0, 1.0);
                 // An edge past a portal would pin the portal, and with it the way on the ground that leaves it.
-                if x != edge && grounded[under[x as usize]] {
+                if x != foot(j) && grounded[net.vertex_var[j + x as usize]] {
                     continue;
                 }
-                places.push(x);
+                places.push((j, x));
             }
         }
-        for x in places {
+        for (j, x) in places {
             out.upper.push(above);
-            out.lower.push((under, [1.0 - x, x]));
+            out.lower.push(([net.vertex_var[j], net.vertex_var[j + 1]], [1.0 - x, x]));
             out.margin.push(margin);
             out.lower_way.push(lower);
             out.moves.push(!tunnel_under_road);
