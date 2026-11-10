@@ -2,8 +2,10 @@
 //! with no rule and slopes steeper than a rock face do not grow, no cap acts, every paved face finds
 //! its host, and two cells give a point on their shared line the same bits. The scan's steps with
 //! no rule and the ripple of the carriageways are guidelines: printed, not gated. A fault within the
-//! reach of a water line whose baked level lies far off the terrain is the bake's: those are counted
-//! apart, printed and not gated.
+//! reach of a water sample whose level lies far off the terrain is the bake's: the bake solves a level at
+//! each vertex of the water's line, and between two vertices the level is the line between them, which on
+//! a long span can lie metres over or under the terrain. Those faults are counted apart, printed and not
+//! gated.
 
 #[path = "fixture/mod.rs"]
 mod fixture;
@@ -22,23 +24,25 @@ use obc_ground_plan::CellInput;
 
 /// The grid of the step scan, metres.
 const GRID_M: f64 = 0.5;
-/// Steps inside faces, measured with the slopes from the paved outline and line water: the count must
-/// not grow. Line water added 3 (3 cm, where a released path's distance narrows a river's budget round).
+/// Steps inside faces, measured with the slopes from the paved outline and line water (steps of 3 cm
+/// where a released path's distance narrows a river's budget round): the count must not grow.
 const INSIDE_MAX: usize = 10;
 /// Steps at label edges with no rule (`check::edge_steps`), measured with the slopes from the paved
 /// outline, walls up to the highest wall, faces past it as steep as their need, and line water: the count
 /// must not grow.
-const EDGE_MAX: usize = 123;
+const EDGE_MAX: usize = 122;
 /// Pairs of grid points on a slope steeper than a rock face where the terrain is not (`Scan::steep`),
 /// measured with cones on their outward side, faces past the highest wall as steep as their need, and the
-/// banks of line water: the count must not grow.
-const STEEP_MAX: usize = 2540;
+/// banks of line water, whose cuts climb as steep as the terrain asks beside a gorge: the count must not
+/// grow.
+const STEEP_MAX: usize = 3241;
 /// Of those, the pairs steeper than 6 m/m and 12 m/m, measured the same way: a river's cut in a gorge
 /// that its release lifts to the terrain. A near-vertical rim that the total hides must not come back.
-const STEEP_6_MAX: usize = 62;
+const STEEP_6_MAX: usize = 69;
 const STEEP_12_MAX: usize = 3;
 /// A water sample whose level lies more than this off the terrain at its line has a level that the bake
-/// broke: the design keeps the water at most `freeboard_m` (0.8 m) under its bank and `depth_m` (1 m) deep.
+/// does not hold to its line: the design keeps the water at most `freeboard_m` (0.8 m) under its bank and
+/// `depth_m` (1 m) deep.
 const LEVEL_OFF_M: f64 = 3.0;
 /// The faults within this of such a sample are its: a river's bank reach (15 m) and a half-width.
 const LEVEL_REACH_M: f64 = 20.0;
