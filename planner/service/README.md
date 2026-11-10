@@ -20,7 +20,7 @@ config; see the [planner README](../../builder/web/src/components/planner/README
 ```sh
 curl http://127.0.0.1:8788/v1/route \
   -H 'Content-Type: application/json' \
-  --data '{"points":[[7.849,47.997],[8.154,47.902]],"profile":"touring","alternatives":true}'
+  --data '{"points":[[7.849,47.997],[8.154,47.902]],"profile":"touring"}'
 ```
 
 ## Phone library

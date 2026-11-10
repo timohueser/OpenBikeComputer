@@ -1,14 +1,14 @@
 # Route API
 
-`POST /v1/route` calculates routes. `POST /v1/shape` finds the plan points of a route that follows a
-line. `GET /v1/region` describes the routing package. Request and answer bodies are UTF-8 JSON.
+`POST /v1/route` calculates a route. `POST /v1/shape` finds the plan points of a route that follows
+a line. `GET /v1/region` describes the routing package. Request and answer bodies are UTF-8 JSON.
 
 - Writers: the [route service](../planner/service/README.md); the native provider answers `route`
   and `shape` with the same code (`planner_router_call` with the call `route` or `shape`). The
   answer encoder is `planner/router/src/answer.rs`.
 - Readers: the web planner (`builder/web/src/lib/planner/routing.ts`, `route-answer.ts`), the
   companion app (`OBCPlanner/PlannerService.swift`, `RouteAnswer.swift`).
-- Test vectors: [`vectors/route-answer.json`](vectors/route-answer.json): two routes before and
+- Test vectors: [`vectors/route-answer.json`](vectors/route-answer.json): one route before and
   after encoding. The encoder test and each decoder test read it.
 - Related: [route package](route-package.md), [route catalog](route-catalog.md).
 
@@ -19,8 +19,6 @@ line. `GET /v1/region` describes the routing package. Request and answer bodies 
 | `points` | 2 to 64 ordered `[longitude, latitude]` pairs in degrees |
 | `profile` | A profile ID from `GET /v1/region` |
 | `pace` | Optional: `cycling_kmh` (1 to 80, default 19), `walking_kmh` (0.5 to 15, default 4.5) and `personal_multiplier` (0.25 to 4, default 1) |
-| `alternatives` | Optional, default `false`. `true` asks for alternative routes |
-| `alternatives_only` | Optional, default `false`. `true` asks for alternative routes and leaves out the primary route |
 | `turnarounds` | Optional interior point indices where a reversal is deliberate |
 | `start_position` | Optional leg position from an earlier answer. It pins the first point to that road position |
 | `end_position` | Optional leg position from an earlier answer. It pins the last point to that road position |
@@ -29,17 +27,11 @@ The service rejects unknown fields.
 
 ## Answer
 
-The answer is `{"routes": [...]}`. The first route is the primary route. With `alternatives_only`,
-the answer holds only the alternative routes, and it can be empty. `alternatives_only` overrides
-`alternatives` when both are `true`. When the primary route fails, an `alternatives_only` request
-fails with that error, not with an empty answer. When the deadline or a limit stops the search for
-alternatives after the primary route, the answer holds the routes found before it. Each route has
-these fields:
+The answer is `{"routes": [...]}`. It holds one route. The route has these fields:
 
 | Field | Value |
 | --- | --- |
 | `id` | 64-character lowercase hex route identity |
-| `reason` | `primary`, `less_climbing` or `corridor` |
 | `package` | Routing package identity |
 | `profile` | Profile ID of this route |
 | `coordinates_udeg` | Integer microdegrees: longitude and latitude of each point, flat |
@@ -49,7 +41,6 @@ these fields:
 | `legs` | `{"from_index", "to_index", "start", "end", "totals"}` for each pair of request points |
 | `snap_truncated` | `true` when the service dropped road candidates for a request point |
 | `totals` | `distance_m`, `ascent_m`, `seconds`, `surface_m`, `unknown_elevation_m` and `pushing_m`, all integers |
-| `via` | Only on a `corridor` route: a `[longitude, latitude]` pair in degrees. A request with the points start, `via` and finish, and the other fields unchanged, gives the same line |
 
 ### Deltas
 

@@ -13,7 +13,7 @@ const [CLIMB, , STEEP] = gradeThresholds;
 const GAIN_M = 80, LENGTH_KM = .4, DROP_M = 25, FLAT_KM = .3;
 // Steep runs use the profile's 10 % band; its grades use a 100 m window, so a shorter run is window noise.
 const SHORTEST_KM = .1;
-/** The surfaces that search and the route options count as unpaved. */
+/** The surfaces that search counts as unpaved. */
 export const UNPAVED: (Surface | null)[] = ['Gravel', 'Dirt', 'Rough'];
 
 const known = new WeakMap<object, RouteSegment[]>();

@@ -10,10 +10,7 @@
     import Itinerary from './Itinerary.svelte';
     import RouteList from './RouteList.svelte';
     import RouteStats from './RouteStats.svelte';
-    import CompareList from './CompareList.svelte';
-    import CompareProfile from './CompareProfile.svelte';
     import CompareScreen from './CompareScreen.svelte';
-    import { optionLetter, optionName, otherWays, routeRow, type Compared } from '../../lib/planner/route-options';
     import QueryResults from './QueryResults.svelte';
     import MapCallout, { type CalloutKind, type EditableKind } from './MapCallout.svelte';
     import LayerMenu from './LayerMenu.svelte';
@@ -28,7 +25,7 @@
     import { addDays, type DataLayer } from '../../lib/planner/layers/data-layer';
     import type { OverlayOptions } from '../../lib/planner/route-overlays';
     import SignedRoutes from './SignedRoutes.svelte';
-    import { presetName, ridingProfiles, type BikeType } from '../../lib/planner/riding-profiles';
+    import { ridingProfiles, type BikeType } from '../../lib/planner/riding-profiles';
     import { RouteFinder, recordLine, type RouteStart } from '../../lib/planner/route-finder.svelte';
     import { planTrip, routeBase, type RoutePlan } from '../../lib/planner/signed-route-plan';
     import type { CatalogRecord } from '../../lib/planner/signed-routes';
@@ -62,7 +59,7 @@
     import { appearance, startTheme, toggleTheme } from '../../lib/theme.svelte';
 
     const siteBase = import.meta.env.VITE_SITE_BASE || '/';
-    import { routingKey, type EngineRoute, type RoutingLine } from '../../lib/planner/routing';
+    import { routingKey, type RoutingLine } from '../../lib/planner/routing';
     import { importedTrip, readTracks } from '../../lib/planner/gpx-import';
     import { DRAWER_CLOSED, DRAWER_MIN, resizeDrawer } from '../../lib/planner/drawer';
     import { closureNote, closureStretches, type Stretch } from '../../lib/planner/route-closures';
@@ -89,10 +86,6 @@
     const currentRoute = $derived(session.stale ? undefined : shown.line);
     const visualRoute = $derived(shown.line);
     const routingStatus = $derived(!hasEndpoints ? 'Choose a start and finish' : session.routeError || 'Calculating route…');
-    function useOption(route: EngineRoute, name: string) {
-        const preset = presetName(route.profile);
-        if (session.pickAlternative(route)) afterEdit(name === preset ? `Using ${preset}` : `Using ${name} · ${preset} preset`);
-    }
     $effect(() => {
         if (fitPlan && currentRoute && map) {
             const id = planId;
@@ -103,39 +96,8 @@
     const routingMessage = $derived(session.dragging ? session.previewStatus : currentRoute
         ? `${currentRoute.unknownSurfaceKm.toFixed(1)} km unknown surface${trip.bike !== 'hiking' && currentRoute.pushingKm ? ` · ${currentRoute.pushingKm.toFixed(1)} km pushing` : ''}${currentRoute.unroutedKm ? ` · ${currentRoute.unroutedKm.toFixed(1)} km manual / access unverified` : ''}${currentRoute.unknownElevationKm ? ' · elevation incomplete' : ''}`
         : routingStatus);
-    let list = $state<'plan' | 'ways'>('plan');
     // The compare screen of saved versions replaces the trip bar and the planner below it.
     let comparing = $state(false);
-    const options = $derived(session.routeOptions);
-    // The first route of a plan asks for its options once, so the Route options link can say what they offer.
-    let firstOptions = $state(false);
-    $effect(() => {
-        if ((list === 'ways' || firstOptions) && !session.dragging && session.line) untrack(() => { firstOptions = false; session.findAlternatives(); });
-    });
-    const optionStatus = { unavailable: 'Route options need one routed line from start to finish.', loading: 'Finding route options…',
-        stale: 'Your plan changed. Finding route options for it…' };
-    const optionRows = $derived(options.state === 'ready' ? options.routes.map((route, i) =>
-        i ? routeRow(route, optionName(route, session.optionPlaces)) : { ...routeRow(route, 'Your route'), detail: presetName(route.profile) }) : []);
-    const optionsReason = $derived(otherWays(optionRows));
-    // The previewed row and your route; the map and the drawer show them until the rider leaves the list.
-    const comparison = $derived.by(() => {
-        const index = list === 'ways' ? optionRows.findIndex(row => row.id === session.compared?.id) : -1;
-        return index > 0 ? { option: optionRows[index], current: optionRows[0], letter: optionLetter(index) } : null;
-    });
-    $effect(() => { if (list !== 'ways' || searching || routesOpen) untrack(() => session.previewOption(null)); });
-
-    let listLinks = $state<HTMLDivElement>();
-    /** An applied row ends its comparison, so the link that opens the comparison takes the focus. */
-    async function focusLink() {
-        await tick();
-        listLinks?.querySelector<HTMLElement>('[data-list="ways"]')?.focus();
-    }
-
-    function useOptionRow(row: Compared) {
-        const route = options.state === 'ready' && options.routes.find(r => r.id === row.id);
-        if (route) useOption(route, row.name);
-        void focusLink();
-    }
 
     let searching = $state(false);
     // Riding numbers stay stable when the itinerary includes rest days.
@@ -234,7 +196,7 @@
     // then move them. A drag preview changes the line but not the trip, so they follow the line of the trip.
     const evenDays = $derived(planView(trip, session.line).days);
     // An open day lists the towns of its night until that night is pinned; the ladder lists the night the rider opened.
-    const pickerNight = $derived(!multi || !currentRoute || searching || list !== 'plan' ? null
+    const pickerNight = $derived(!multi || !currentRoute || searching ? null
         : expandedDay !== null ? (night < evenDays.length && (!evenDays[night - 1]?.pinned || choosingNight === night) ? night : null)
         : choosingNight !== null && choosingNight < evenDays.length ? choosingNight : null);
     // Towns are searched for every night still to choose, so the ladder can suggest a place for each.
@@ -259,7 +221,7 @@
     // A suggested night is not a day end the rider moved.
     const days = $derived(view.days.map(day => day.split && trip.splits?.[day.number] === undefined ? { ...day, split: false } : day));
     const itinerary = $derived(view.itinerary);
-    const focusedDay = $derived(multi && list === 'plan' && !searching ? itinerary.find(d => !d.rest && d.ridingNumber === expandedDay) ?? null : null);
+    const focusedDay = $derived(multi && !searching ? itinerary.find(d => !d.rest && d.ridingNumber === expandedDay) ?? null : null);
     const dayLabels = $derived(Object.fromEntries(itinerary.filter(d => !d.rest).map(d => [d.ridingNumber, d.number])));
     const rests = $derived(itinerary.filter(d => d.rest).map(d => ({ after: d.ridingNumber, name: planned.restNames?.[d.restIndex!], town: d.pinned?.label ?? proposals.get(d.ridingNumber)?.stop.name ?? '' })));
     const queryPlan = $derived(searchPlan(trip, view));
@@ -502,8 +464,6 @@
         visibleRange = null;
         hoverProgress = null;
         fitPlan = true;
-        list = 'plan';
-        firstOptions = false;
         nameVisits(plan.trip);
     }
 
@@ -568,9 +528,7 @@
         afterEdit(description);
     }
 
-    // An edit ends a comparison, whose rows would be of the plan before it.
     function afterEdit(description: string) {
-        list = 'plan';
         if (!hasEndpoints) { expandedDay = null; hoverProgress = null; }
         message = description;
         statusUndo = null;
@@ -613,7 +571,6 @@
         if (ridingDay !== null && multi) {
             night = ridingDay;
             expandedDay = ridingDay;
-            list = 'plan';
             stopChoosing();
             exitSearch();
         }
@@ -644,7 +601,7 @@
     function clearSearch() {
         if (!searching) return;
         searching = false;
-        if (multi && list === 'plan' && expandedDay !== null) showDay(expandedDay);
+        if (multi && expandedDay !== null) showDay(expandedDay);
         else { clearSelection(); map?.fitRoute(); }
     }
 
@@ -652,7 +609,6 @@
     function showDay(riding: number) {
         night = riding;
         expandedDay = riding;
-        list = 'plan';
         stopChoosing();
         exitSearch();
         clearSelection();
@@ -663,7 +619,6 @@
     /** Opens a night in the day list, with its towns. */
     function openNight(number: number) {
         expandedDay = null;
-        list = 'plan';
         exitSearch();
         nights.choose(number);
     }
@@ -703,7 +658,6 @@
         if (number && multi) {
             night = number;
             expandedDay = number;
-            list = 'plan';
             stopChoosing();
             exitSearch();
         }
@@ -998,13 +952,10 @@
     function chooseEndpoint(kind: 'start' | 'finish') {
         const coordinate = spot?.coordinate ?? selectedPlace?.coordinate;
         if (!coordinate) return;
-        const first = !hasEndpoints;
         commit(setEndpoint(trip, kind, coordinate, selectedPlace?.label), kind === 'start' ? 'Start set' : 'Finish set');
         showRoute = true;
         clearSelection();
         exitSearch();
-        list = 'plan';
-        if (first && hasEndpoints) firstOptions = true;
         if (autoCenter) map?.centerOn(coordinate);
     }
 
@@ -1054,7 +1005,6 @@
         if (!('mode' in change)) return;
         night = 1;
         expandedDay = null;
-        list = 'plan';
         exitSearch();
         clearSelection();
     }
@@ -1142,7 +1092,6 @@
             else (statusUndo ?? undo)();
         }
         if (event.key === 'Escape') {
-            session.previewOption(null);
             if (!selectedId && !mapMode && focusedDay) showAllDays();
             clearSelection();
         }
@@ -1259,23 +1208,8 @@
                 {#if !focusedDay && alpine.length}
                     <p class="closure-note"><Icon name="mountain" size={15} /><span>{alpineNote(alpine)}</span><button type="button" class="planner-action quiet" onclick={() => showNext(alpine)}>{stepLabel(alpine)}</button></p>
                 {/if}
-                {#if list !== 'plan'}
-                    <header class="list-head">
-                        <button type="button" class="planner-action quiet" onclick={() => list = 'plan'}><Icon name="back" size={15} />{multi ? 'Days' : 'Route'}</button>
-                        <h2>Route options</h2>
-                    </header>
-                    <p class="list-lead">Compare other ways from start to finish, or keep your route.</p>
-                {:else if visualRoute && !focusedDay}
-                    <div class="list-links" bind:this={listLinks}>
-                        <button type="button" data-list="ways" onclick={() => list = 'ways'}><Icon name="route" size={15} />Route options{optionsReason ? ` · ${optionsReason}` : ''}</button>
-                    </div>
-                {/if}
                 <div class="pane-scroll" inert={multi && !currentRoute && routingStatus === 'Calculating route…'}>
-                    {#if list === 'ways'}
-                        <CompareList label="Route options" rows={optionRows} status={options.state === 'ready' ? null : options.state === 'error' ? options.message : optionStatus[options.state]}
-                            retry={options.state === 'error' ? () => session.findAlternatives() : undefined} applyLabel="Use this route" previewId={session.compared?.id ?? null}
-                            note={optionRows.length < 2 ? 'No useful alternative to your route was found.' : 'Differences compare with your route.'} onPreview={id => session.previewOption(id)} onApply={useOptionRow} />
-                    {:else if multi && visualRoute && (currentRoute || routingStatus === 'Calculating route…')}
+                    {#if multi && visualRoute && (currentRoute || routingStatus === 'Calculating route…')}
                         <Itinerary
                             trip={planned} line={visualRoute} {itinerary} {days} {theme} {expandedDay} {nights} {conflicts} {selectedId} {revealId} {hoveredId} onHover={(id) => hoveredId = id}
                             onToggle={showDay} onOverview={showAllDays}
@@ -1301,7 +1235,7 @@
                 ondragleave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) dropping = false; }}>
                 <PlannerMap
                     bind:this={map} {segments} gaps={gaps.map(gap => gap.coordinates)} {coordinates} points={routesOpen ? [] : mapPoints} {selectedId} {hoveredId} onPointHover={(id) => hoveredId = id} callout={calloutCoordinate} {drawing}
-                    {theme} {hillshade} {contours} {mapOverlays} dataLayer={{ layers: dataLayers, shown: dataLayer, date: shownDate, notes: layerNotes }} bottomInset={dataLayer ? dateBarHeight + 34 : 0} accessMode={trip.bike === 'hiking' ? 'walking' : 'cycling'} {showRoute} planMuted={routesOpen} compare={comparison && { line: comparison.option.line.coordinates, letter: comparison.letter }} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking || mapMode?.kind === 'transfer'} routingPackage={currentRoute?.package}
+                    {theme} {hillshade} {contours} {mapOverlays} dataLayer={{ layers: dataLayers, shown: dataLayer, date: shownDate, notes: layerNotes }} bottomInset={dataLayer ? dateBarHeight + 34 : 0} accessMode={trip.bike === 'hiking' ? 'walking' : 'cycling'} {showRoute} planMuted={routesOpen} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking || mapMode?.kind === 'transfer'} routingPackage={currentRoute?.package}
                     onPick={mapMode?.kind === 'look' ? openTrailView : null}
                     highlightedPlaceIds={searching ? results.map(result => result.place.id) : []}
                     shownCategories={categoryIds.filter(category => !hiddenCategories.includes(category))} {highlightedPlaces}
@@ -1378,8 +1312,6 @@
                 <Profile lineData={finder.preview} walking={bike === 'hiking'} height={drawerHeight} open={profileOpen} onToggle={() => profileOpen = !profileOpen} total={previewKm} {theme}
                     days={[{ number: 1, from: 0, to: 1, pinned: undefined }]} dayLabels={{ 1: 1 }}
                     activeNight={0} band={null} onNight={() => {}} onDayEndDrag={() => {}} onHover={() => {}} />
-            {:else if comparison}
-                <CompareProfile option={comparison.option} current={comparison.current} letter={comparison.letter} height={drawerHeight} open={profileOpen} onToggle={() => profileOpen = !profileOpen} />
             {:else if routesOpen || !visualRoute}
                 <section class="empty-profile" aria-label="Elevation profile" style:height={`${drawerHeight}px`}>
                     <DrawerTitle title="Elevation & surface" open={emptyOpen} onToggle={() => emptyOpen = !emptyOpen} />
@@ -1594,13 +1526,6 @@
     .closure-note span { flex: 1; }
     /* Clear of the map controls column, which reaches the bottom on a short map. */
     .layer-date { position: absolute; left: 16px; right: 68px; bottom: 34px; z-index: 2; }
-    .list-head { display: flex; align-items: center; gap: 12px; padding: 12px 16px 4px; border-top: 1px solid var(--line); }
-    .list-head h2 { margin: 0; font: 600 15px var(--sans); }
-    .list-head :global(.planner-action) { gap: 4px; padding-left: 6px; }
-    .list-lead { margin: 4px 16px 0; font-size: 13px; color: var(--ink-soft); }
-    .list-links { display: flex; flex-wrap: wrap; gap: 4px 16px; padding: 6px 16px 8px; border-top: 1px solid var(--line); }
-    .list-links button { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; font-size: 13px; color: var(--ink-soft); }
-    .list-links button:hover { color: var(--ink); }
     .pane-scroll {
         flex: 1;
         min-height: 0;
