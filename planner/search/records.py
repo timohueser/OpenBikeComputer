@@ -78,7 +78,7 @@ def has_poi(p):
     # database, so they leave both out too.
     if kind == 'caravan_site' or (kind == 'campsite' and p.get('extra', {}).get('tents') == 'no'):
         return False
-    # A bus shelter, a smoking shelter and the like give a rider no shelter, and no client has a kind for them.
+    # A bus shelter, a smoking shelter and the like give a rider no shelter.
     if kind == 'shelter' and p.get('extra', {}).get('shelter_type') in OTHER_SHELTERS:
         return False
     return kind != 'street' and (bool(ns) or kind in unnamed_kinds()) and not (
