@@ -32,9 +32,9 @@ The service rejects unknown fields.
 The answer is `{"routes": [...]}`. The first route is the primary route. With `alternatives_only`,
 the answer holds only the alternative routes, and it can be empty. `alternatives_only` overrides
 `alternatives` when both are `true`. When the primary route fails, an `alternatives_only` request
-fails with that error, not with an empty answer. When the deadline or a limit stops the search for
-alternatives after the primary route, the answer holds the routes found before it. Each route has
-these fields:
+fails with that error, not with an empty answer. When the deadline, a limit or a lack of memory
+stops the search for alternatives after the primary route, the answer holds the routes found before
+it. Each route has these fields:
 
 | Field | Value |
 | --- | --- |
