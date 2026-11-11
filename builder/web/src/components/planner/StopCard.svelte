@@ -8,13 +8,14 @@
     import { stopCounts, stopKm, suitable, type Stop, type StopPlace } from '../../lib/planner/stops';
     import type { Day, Place, Stay } from '../../lib/planner/editor';
 
-    let { stop, kinds, days, labels, theme, date, elevation, onBack, onEndHere, onStay, onSelectPlace }: {
+    let { stop, kinds, days, labels, back = 'All towns', theme, date, elevation, onBack, onEndHere, onStay, onSelectPlace }: {
         stop: Stop;
         /** The kinds of place to sleep of the night: the card lists only places of these kinds. */
         kinds: Stay[];
         /** The day that ends here and the day that starts here. */
         days: [Day, Day];
         labels: [number, number];
+        back?: string;
         theme: 'light' | 'dark';
         date?: string;
         elevation: number | null;
@@ -54,8 +55,9 @@
     }
 </script>
 
-<div class="card">
-    <button type="button" class="back" onclick={onBack} {@attach node => node.focus({ preventScroll: true })}><Icon name="back" size={15} />All towns</button>
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="card" onkeydown={event => { if (event.key === 'Escape') { event.stopPropagation(); onBack(); } }}>
+    <button type="button" class="back" onclick={onBack} {@attach node => node.focus({ preventScroll: true })}><Icon name="back" size={15} />{back}</button>
     <header>
         <h3>{stop.name}</h3>
         <p>{stopKm(stop, kinds)} · {stopCounts(stop, kinds)}</p>

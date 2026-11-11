@@ -9,13 +9,15 @@
     import type { Place, Stay, Trip } from '../../lib/planner/editor';
     import type { RoutingLine } from '../../lib/planner/routing';
 
-    let { trip, line, night, labels, theme, found, window, stopId, date, elevationAt, kinds, onOpen, onEndHere, onStay, onSelectPlace, onPick, onRetry, onCancel, onKinds, onRelease }: {
+    let { trip, line, night, labels, back, theme, found, window, stopId, date, elevationAt, kinds, onOpen, onEndHere, onStay, onSelectPlace, onPick, onRetry, onCancel, onKinds, onRelease }: {
         trip: Trip;
         line: RoutingLine;
         /** The riding day that ends at this night. */
         night: number;
         /** Calendar numbers of the day that ends and the day that starts here. */
         labels: [number, number];
+        /** The text of the back row of a town card. */
+        back?: string;
         theme: 'light' | 'dark';
         found: NightStops | undefined;
         /** The stretch searched, in km. */
@@ -32,7 +34,7 @@
         onSelectPlace: (place: Place) => void;
         onPick: () => void;
         onRetry: () => void;
-        /** Closes the towns where no close button of a night does, in an open day. */
+        /** Closes the towns of an open day. */
         onCancel?: () => void;
         /** Sets the kinds of this night; null follows the trip. */
         onKinds: (kinds: Stay[] | null) => void;
@@ -57,10 +59,17 @@
 </script>
 
 {#if open}
-    <StopCard stop={open} {kinds} days={daysAround(trip, line, night, open.km)} {labels} {theme} {date} elevation={elevationAt(open.km)}
+    <StopCard stop={open} {kinds} days={daysAround(trip, line, night, open.km)} {labels} {back} {theme} {date} elevation={elevationAt(open.km)}
         onBack={() => { returnTo = open.id; onOpen(null); }} {onEndHere} {onStay} {onSelectPlace} />
 {:else}
     <div class="picker">
+        <div class="tools">
+            <StayChip value={kinds} label={`Places to sleep on night ${labels[0]}`} onChange={onKinds} onReset={trip.nightStay?.[night] ? () => onKinds(null) : undefined} resetLabel="Same as the trip" />
+            <div class="actions">
+                <button type="button" class="planner-action" onclick={onPick}>Pick on the map</button>
+                {#if onCancel}<button type="button" class="planner-action quiet" onclick={onCancel}>Cancel</button>{/if}
+            </div>
+        </div>
         {#if found?.state === 'ready'}
             {#if rows.length}
                 <ul aria-label={`Towns for night ${labels[0]}`}>
@@ -69,7 +78,7 @@
                             <button type="button" class="town" onclick={() => onOpen(stop.id)} {@attach node => { if (stop.id === returnTo) { returnTo = null; node.focus(); } }}
                                 aria-label={`${stop.name}, ${stopCounts(stop, kinds)}. Day ${labels[0]} ${duration(days[0].hours)}, day ${labels[1]} ${duration(days[1].hours)}${stop === even ? '. Even days' : ''}`}>
                                 <strong>{stop.name}{#if stop === even}<em>Even days</em>{/if}</strong>
-                                <small>{stopKm(stop, kinds)} · {stopCounts(stop, kinds)}
+                                <small>{stopKm(stop, kinds)} · {stopCounts(stop, kinds, true)}
                                     <span class="services" aria-hidden="true">{#each services as service}{#if stop[service].length}<Icon path={placeCategories[service].icon} size={13} />{/if}{/each}</span>
                                 </small>
                                 <span class="bar" aria-hidden="true">
@@ -92,13 +101,6 @@
             <p class="state" role="status">Finding towns with somewhere to sleep…</p>
         {/if}
         {#if onRelease}<button type="button" class="planner-action release" onclick={onRelease}>Let the planner choose</button>{/if}
-        <div class="footer">
-            <StayChip value={kinds} label={`Places to sleep on night ${labels[0]}`} onChange={onKinds} onReset={trip.nightStay?.[night] ? () => onKinds(null) : undefined} resetLabel="Same as the trip" />
-            <div class="actions">
-                <button type="button" class="planner-action" onclick={onPick}>Pick on the map</button>
-                {#if onCancel}<button type="button" class="planner-action quiet" onclick={onCancel}>Cancel</button>{/if}
-            </div>
-        </div>
     </div>
 {/if}
 
@@ -204,13 +206,13 @@
     .stay:hover {
         background: var(--parchment-2);
     }
-    .footer {
+    .tools {
         display: flex;
         flex-wrap: wrap;
         align-items: center;
         gap: 8px;
-        padding-top: 10px;
-        border-top: 1px solid var(--line);
+        padding-bottom: 10px;
+        border-bottom: 1px solid var(--line);
     }
     .release {
         align-self: flex-start;

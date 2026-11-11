@@ -1,5 +1,4 @@
 <script lang="ts">
-    import type { Snippet } from 'svelte';
     import Icon from './PlannerIcon.svelte';
     import { kindLabel, sleepIcon } from '../../lib/planner/search/presentation';
     import { proposalTitle, stayNouns, stopCounts, suits } from '../../lib/planner/stops';
@@ -8,7 +7,7 @@
     import type { Coordinate } from '../../lib/planner/geo';
     import type { NightChoices } from '../../lib/planner/night-stops.svelte';
 
-    let { day, label, nights, end, elevation, onShow, onActive, children }: {
+    let { day, label, nights, end, elevation, onShow, onActive }: {
         /** The riding day that ends at this night. */
         day: Day;
         /** Calendar number of the night. */
@@ -21,12 +20,9 @@
         onShow: () => void;
         /** The pointer or the keyboard focus enters or leaves the row. */
         onActive?: (active: boolean) => void;
-        /** The towns, shown while this night is chosen. */
-        children: Snippet;
     } = $props();
 
     const pinned = $derived(day.pinned);
-    const open = $derived(nights.choosing === day.number);
     const around = $derived(pinned ? undefined : nights.around(day.number));
     const [earlier, later] = $derived(pinned ? [undefined, undefined] : nights.neighbours(day.number));
     const found = $derived(nights.found(day.number));
@@ -38,13 +34,7 @@
         : towns ? `No ${wanted} near the day end · ${towns} ${towns === 1 ? 'town' : 'towns'} to choose from` : `No ${wanted} nearby`);
     const detail = $derived(!around ? status
         : around.place ? `${around.stop.name} · ${around.place.off < .15 ? 'on the route' : `${around.place.off.toFixed(1)} km off the route`}`
-        : stopCounts(around.stop, kinds));
-    // The close button goes with the panel, so the Choose or Change button takes the focus.
-    let refocus = false;
-    function close() {
-        refocus = true;
-        nights.choose(null);
-    }
+        : stopCounts(around.stop, kinds, true));
     const date = $derived(nights.date(day.number));
     const sunset = $derived(date && end ? sunsetAt(end, date) : null);
     let low = $state('');
@@ -57,52 +47,34 @@
     });
 </script>
 
-{#snippet row()}
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="night" class:chosen={!!pinned} onmouseenter={() => onActive?.(true)} onmouseleave={() => onActive?.(false)}
-        onfocusin={() => onActive?.(true)} onfocusout={() => onActive?.(false)} {@attach node => { if (open) node.scrollIntoView({ block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }); }}>
-        <span class="mark" aria-hidden="true">{#if pinned}<Icon name={icon} size={14} />{:else}{label}{/if}</span>
-        {#if pinned}
-            <button type="button" class="text" onclick={onShow}>
-                <strong>{pinned.label}</strong>
-                <small>Night {label}{pinned.placeKind ? ` · ${kindLabel(pinned.placeKind)}` : ''}</small>
-                {@render evening()}
-            </button>
-        {:else}
-            <div class="text">
-                <strong>{around ? proposalTitle(around) : `Night ${label}`}</strong>
-                <small><span class="sr-only">Suggested. </span>{detail}</small>
-                {@render evening()}
-            </div>
-        {/if}
-        {#if open}
-            <button type="button" class="icon" aria-label="Close" title="Close (Esc)" onclick={close}><Icon name="close" size={17} /></button>
-        {:else}
-            {#if !pinned}
-                {@const back = earlier ? `Move night ${label} to ${earlier.name}` : 'No earlier town'}
-                {@const ahead = later ? `Move night ${label} to ${later.name}` : 'No later town'}
-                <span class="step">
-                    <button type="button" class="icon" disabled={!earlier} aria-label={back} title={back} onclick={() => nights.step(day.number, -1)}><Icon name="back" size={15} /></button>
-                    <button type="button" class="icon" disabled={!later} aria-label={ahead} title={ahead} onclick={() => nights.step(day.number, 1)}><Icon name="arrow" size={15} /></button>
-                </span>
-            {/if}
-            <button type="button" class="choose" aria-expanded="false" aria-label={`${pinned ? 'Change' : 'Choose'} night ${label}`} onclick={() => nights.choose(day.number)}
-                {@attach node => { if (refocus) { refocus = false; node.focus(); } }}>{pinned ? 'Change' : 'Choose'}<Icon name="down" size={13} /></button>
-        {/if}
-    </div>
-{/snippet}
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="night" class:chosen={!!pinned} onmouseenter={() => onActive?.(true)} onmouseleave={() => onActive?.(false)}
+    onfocusin={() => onActive?.(true)} onfocusout={() => onActive?.(false)}>
+    <span class="mark" aria-hidden="true">{#if pinned}<Icon name={icon} size={14} />{:else}{label}{/if}</span>
+    {#if pinned}
+        <button type="button" class="text" onclick={onShow}>
+            <strong>{pinned.label}</strong>
+            <small>Night {label}{pinned.placeKind ? ` · ${kindLabel(pinned.placeKind)}` : ''}</small>
+            {@render evening()}
+        </button>
+    {:else}
+        <div class="text">
+            <strong>{around ? proposalTitle(around) : `Night ${label}`}</strong>
+            <small><span class="sr-only">Suggested. </span>{detail}</small>
+            {@render evening()}
+        </div>
+        {@const back = earlier ? `Move night ${label} to ${earlier.name}` : 'No earlier town'}
+        {@const ahead = later ? `Move night ${label} to ${later.name}` : 'No later town'}
+        <span class="step">
+            <button type="button" class="icon" disabled={!earlier} aria-label={back} title={back} onclick={() => nights.step(day.number, -1)}><Icon name="back" size={15} /></button>
+            <button type="button" class="icon" disabled={!later} aria-label={ahead} title={ahead} onclick={() => nights.step(day.number, 1)}><Icon name="arrow" size={15} /></button>
+        </span>
+    {/if}
+    <button type="button" class="choose" data-night={day.number} aria-label={`${pinned ? 'Change' : 'Choose'} night ${label}`} onclick={() => nights.choose(day.number)}>{pinned ? 'Change' : 'Choose'}<Icon name="down" size={13} /></button>
+</div>
 {#snippet evening()}
     {#if date && end}<small class="evening">{sunset ? `Sunset ${clockTime(sunset)}` : 'No sunset'}{low ? ` · ${low}` : ''}</small>{/if}
 {/snippet}
-{#if open}
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="night-panel" onkeydown={event => { if (event.key === 'Escape') close(); }}>
-        {@render row()}
-        <div class="towns">{@render children()}</div>
-    </div>
-{:else}
-    {@render row()}
-{/if}
 
 <style>
     .night {
@@ -221,23 +193,5 @@
         overflow: hidden;
         clip-path: inset(50%);
         white-space: nowrap;
-    }
-    .night-panel {
-        position: relative;
-        z-index: 1;
-        margin: 0 0 8px;
-        border: 1px solid var(--line-strong);
-        border-radius: 10px;
-        background: var(--parchment);
-    }
-    /* The mark stays on the rail of the day list. */
-    .night-panel > .night {
-        padding: 6px 8px 6px 7px;
-        border-bottom: 1px solid var(--line);
-        border-radius: 9px 9px 0 0;
-        background: var(--panel);
-    }
-    .towns {
-        padding: 2px 12px 12px;
     }
 </style>
