@@ -70,21 +70,21 @@ A value that the planner guessed has a dashed line. A day count or a date that t
 solid line. The planner guesses the day count from the riding time. After each route change, it
 guesses the count and the suggested nights again. It never changes a value that the rider set. So a
 new plan needs no settings, and the rider's choices stay. The day count is the only control
-for the length of the days. A bar for the riding time of each day shows the hard days.
+for the length of the days. A riding-time bar on each day shows the hard days.
 
-"Choose" or "Change" on a night, or its profile marker, shows only that night in the panel, and a
-town shows only that town. A back row or Escape goes back one level. "Stay here" on a town moves the
-night there, and so does a drag of the day end. "Stay here" on a campsite or a hotel keeps the
-night. A kept night is a place, with a filled marker. A moved night is a point on the route, with a
-dotted marker. "Let the planner choose" makes the night a suggestion again. A night page sets other
-kinds for that night only. A night of one kind only (campsites, huts or shelters) ends at a place
-of that kind. Other nights end in the town, as "Around Ulrichen", because the planner cannot pick a
-hotel in the rider's price range. With a start date, each night shows its sunset and its usual
-night temperature.
+"Choose" or "Change" on a night, or its profile marker, shows only that night in the panel. A town
+replaces its town list, also in an open day. A back row or Escape goes back one level. "Stay here"
+on a town moves the night there, and so does a drag of the day end. "Stay here" on a campsite or a
+hotel keeps the night. A kept night is a place, with a filled marker. A moved night is a point on
+the route, with a dotted marker. "Let the planner choose" makes the night a suggestion again. The
+town list sets other kinds for its night only. A night of one kind only (campsites, huts or
+shelters) ends at a place of that kind. Other nights end in the town, as "Around Ulrichen", because
+the planner cannot pick a hotel in the rider's price range. With a start date, each night shows its
+sunset and usual night temperature.
 
 The plus sign between two days adds a rest day or a train or bus. The next day starts where the
-train or bus arrives. When it arrives on the route ahead, it skips the route between. A night that a train or bus leaves from is kept, and it cannot move until the rider
-removes the train or bus.
+train or bus arrives. When it arrives on the route ahead, it skips the route between. A night that a
+train or bus leaves from is kept, and it cannot move until the rider removes the train or bus.
 
 The plan stores which values the rider set ([planner plan](src:specs/planner-plan.md)).
 
