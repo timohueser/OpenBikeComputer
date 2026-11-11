@@ -74,6 +74,8 @@ class DocsToCheckTests(unittest.TestCase):
             docs = [cairn.Doc("routing", "system", "Device", "", ("route/**",), status="approved")]
             with self.assertRaisesRegex(OSError, "^git log -1 failed$"):
                 report.docs_to_check(Path(folder), docs, {**CONFIG, "docs": "docs/design"})
+        with self.assertRaisesRegex(OSError, "^git log --first-parent failed$"):
+            report.merges(self.repository.root, "0" * 40)
 
     def test_a_doc_change_starts_the_list_again(self):
         self.repository.merge(6, {"docs/design/routing.md": header("routing", "route/**", "approved") + "Body.\n"})

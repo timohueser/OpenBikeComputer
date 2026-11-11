@@ -98,7 +98,7 @@ def merges(root: Path, since: str) -> list[tuple[str, int]]:
     """The merge commits of pull requests after `since` on the first-parent line of HEAD, newest
     first, with their numbers."""
     found = []
-    for line in (git(root, "log", "--first-parent", "--format=%H %s", f"{since}..HEAD") or "").splitlines():
+    for line in history(root, "log", "--first-parent", "--format=%H %s", f"{since}..HEAD").splitlines():
         commit, _, subject = line.partition(" ")
         match = MERGE.match(subject)
         if match:
