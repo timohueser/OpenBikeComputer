@@ -304,7 +304,7 @@ impl Span {
     /// A span with its own end tangents and handle (`water_spans`).
     pub(super) fn shaped(a: &Vertex, b: &Vertex, chord: bool, ends: [f64; 2], handle: f64, along0_m: f64) -> Span {
         let (len_m, knots) = arc(&shaped(a, b, chord, ends, handle));
-        Span { len_m, knots, along0_m, chord, ends, handle, linear_z: false, owner: [0; 3] }
+        Span { len_m, knots, along0_m, chord, ends, handle, water_z: false, owner: [0; 3] }
     }
 }
 
@@ -369,7 +369,7 @@ fn point_of(of: &Of, u: f64) -> SpanPoint {
     let length = (dp[0] * dp[0] + dp[1] * dp[1]).sqrt();
     let tangent = if length > 0.0 { [dp[0] / length, dp[1] / length] } else { [1.0, 0.0] };
     let c_m = g.c * g.mpu;
-    let (z_m, grade) = if of.span.linear_z {
+    let (z_m, grade) = if of.span.water_z {
         let len = of.span.len_m;
         water_level([a.z_m, b.z_m], [a.grade, b.grade], len, s_at(of.span, u) / len)
     } else if g.chord {
@@ -513,8 +513,8 @@ fn sample(part: &Part, g: Geo, span: usize, pt: Pt, cell: CellKey) -> Sample {
     }
 }
 
-/// The samples of one span: its vertices, its cell-line breaks and, but for water, the dyadic grid
-/// refined until each chord holds the sag rules.
+/// The samples of one span: its vertices, its cell-line breaks and the dyadic grid refined until each
+/// chord holds the sag rules.
 fn span_samples(part: &Part, rule: &Rule<'_>, span: usize) -> Vec<Pt> {
     let (a, b) = (&part.vertices[span], &part.vertices[span + 1]);
     let data = &part.spans[span];

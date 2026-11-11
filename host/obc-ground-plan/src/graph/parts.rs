@@ -108,10 +108,11 @@ type WaterShape = Option<([f64; 2], f64)>;
 
 /// A joined part before cleaning: its vertices, per span the stroke metres at its start, whether it
 /// has no alignment, its owner and its water shape, and the tile's two vertices before and after it with
-/// their heights, in the chain's order, where the tile holds them.
+/// their heights, in the chain's order, where the tile holds them; the tiles of its first and its last run.
 struct Chain {
     feature: usize,
     backward: bool,
+    tiles: [(u32, u32); 2],
     vertices: Vec<Raw>,
     spans: Vec<(f64, bool, [u32; 3], WaterShape)>,
     before: Vec<([i64; 2], Option<f64>)>,
@@ -237,6 +238,7 @@ fn chains(input: &CellInput, line: &[bool]) -> Vec<Chain> {
         let mut chain = Chain {
             feature: r0.feature,
             backward: false,
+            tiles: [part(&r0).tile; 2],
             vertices: Vec::new(),
             spans: Vec::new(),
             before,
@@ -248,6 +250,7 @@ fn chains(input: &CellInput, line: &[bool]) -> Vec<Chain> {
             let r = runs[i];
             let p = part(&r);
             chain.backward = p.plan.as_ref().is_some_and(|plan| plan.backward);
+            chain.tiles[1] = p.tile;
             let vertices = tile_vertices(p);
             let along = tile_along(p, &vertices);
             let skip = usize::from(!chain.vertices.is_empty());
@@ -295,6 +298,7 @@ fn trim(chain: Chain, [x0, y0, x1, y1]: [i64; 4]) -> Vec<Chain> {
         out.push(Chain {
             feature: chain.feature,
             backward: chain.backward,
+            tiles: chain.tiles,
             vertices: chain.vertices[start..=k].to_vec(),
             spans: chain.spans[start..k].to_vec(),
             before: before[before.len().saturating_sub(2)..].to_vec(),
@@ -321,6 +325,46 @@ fn neighbours(chain: &Chain, i: usize) -> (Option<[i64; 2]>, Option<[i64; 2]>) {
     let prev = if i > 0 { Some(chain.vertices[i - 1].v.pos) } else { chain.before.last().map(|p| p.0) };
     let next = if i + 1 < n { Some(chain.vertices[i + 1].v.pos) } else { chain.after.first().map(|p| p.0) };
     (prev.filter(|&q| q != here), next.filter(|&q| q != here))
+}
+
+/// The tile's two vertices past an end of a water chain on the one other water line that ends there, in
+/// the chain's order (`at_start`: before its first vertex, else after its last): where the map splits a
+/// stream into two ways, the curve and the grades read on through the shared vertex. None where no other
+/// line or more than one ends there (a confluence). Only the tile of the chain's end run counts, so every
+/// cell decides alike.
+fn through(input: &CellInput, water: &[bool], chain: &Chain, at_start: bool) -> Option<Vec<([i64; 2], Option<f64>)>> {
+    let n = chain.vertices.len();
+    let tile = chain.tiles[usize::from(!at_start)];
+    let (end, own) = if at_start {
+        (chain.vertices[0].v.pos, chain.vertices.get(1).map(|r| r.v.pos))
+    } else {
+        (chain.vertices[n - 1].v.pos, n.checked_sub(2).map(|i| chain.vertices[i].v.pos))
+    };
+    let mut found: Vec<Vec<([i64; 2], Option<f64>)>> = Vec::new();
+    let parts = (input.features.iter().enumerate()).filter(|(f, _)| water[*f]).flat_map(|(_, f)| &f.parts);
+    let parts = parts.filter(|p| p.tile == tile);
+    for part in parts {
+        let m = part.points.len();
+        let at = |i: usize| (key(part.points[i]), part.heights.as_ref().and_then(|h| h[i]));
+        let away: Vec<usize> = if m >= 2 && key(part.points[0]) == end {
+            (1..m.min(3)).collect()
+        } else if m >= 2 && key(part.points[m - 1]) == end {
+            (m.saturating_sub(3)..m - 1).rev().collect()
+        } else {
+            continue;
+        };
+        let next: Vec<_> = away.into_iter().map(at).collect();
+        // A copy of the chain's own line, or a second copy of a line already found.
+        if Some(next[0].0) == own || found.iter().any(|f| f[0].0 == next[0].0) {
+            continue;
+        }
+        found.push(next);
+    }
+    let mut next = found.pop().filter(|_| found.is_empty())?;
+    if at_start {
+        next.reverse();
+    }
+    Some(next)
 }
 
 /// The tangents, corners, span shapes and grades of water (`water_tangents`, `water_spans`,
@@ -378,9 +422,18 @@ pub(crate) fn parts<'a>(
 ) -> (Vec<Part>, Vec<Rule<'a>>) {
     let classes: Vec<_> = input.features.iter().map(|f| classify(f, sections)).collect();
     let line: Vec<bool> = classes.iter().map(Option::is_some).collect();
+    let water: Vec<bool> = classes.iter().map(|c| matches!(c, Some((Family::Water, _, Level::Ground, _)))).collect();
     let mut chains = chains(input, &line);
     for chain in &mut chains {
         repeated(chain, stats);
+        if water[chain.feature] {
+            if chain.before.is_empty() {
+                chain.before = through(input, &water, chain, true).unwrap_or_default();
+            }
+            if chain.after.is_empty() {
+                chain.after = through(input, &water, chain, false).unwrap_or_default();
+            }
+        }
         // A spike stays, and its two spans are chords: the test reads only the part.
         for i in 0..chain.vertices.len() {
             let (prev, next) = neighbours(chain, i);
@@ -419,7 +472,7 @@ pub(crate) fn parts<'a>(
                                 Some((ends, handle)) => Span::shaped(&pair[0], &pair[1], false, ends, handle, along0),
                                 None => Span::new(&pair[0], &pair[1], true, along0),
                             };
-                            return Span { linear_z: true, owner, ..span };
+                            return Span { water_z: true, owner, ..span };
                         }
                         let d = [(pair[1].pos[0] - pair[0].pos[0]) as f64, (pair[1].pos[1] - pair[0].pos[1]) as f64];
                         let chord = corner[k] || corner[k + 1] || chord;

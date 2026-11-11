@@ -138,9 +138,8 @@ pub struct Span {
     /// The length of the end tangents as a share of the chord: 1, or less where a water curve would
     /// leave its chord too far.
     pub handle: f64,
-    /// The heights run along the arc between the vertices, a cubic of their levels and grades: the levels
-    /// of water (`water_grades`).
-    pub linear_z: bool,
+    /// The heights are the level of water along the arc between the vertices (`water_level`).
+    pub water_z: bool,
     /// The zoom-13 tile (column, row) that owns the span, and the feature's position in that tile.
     pub owner: [u32; 3],
 }

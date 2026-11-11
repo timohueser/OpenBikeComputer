@@ -612,10 +612,10 @@ fn a_road_keeps_its_paved_heights_bit_for_bit_beside_a_stream_and_the_stream_its
 }
 
 #[test]
-fn a_fords_approach_has_no_step_at_the_road_edge_and_a_bank_below_a_road_fill_steepens_with_no_step() {
-    // A road crosses a stream at a shared vertex (a ford, the road 0.2 m under W at the vertex): within
-    // the stream's reach past its bank, the road's edge has no step, as the stream's dyke counts for no
-    // road's budget. Over the water itself the road lies under W until the ford's wet face.
+fn a_crossings_approach_has_no_step_at_the_road_edge_and_a_bank_below_a_road_fill_steepens_with_no_step() {
+    // A road crosses a stream at a shared vertex (the road 0.2 m under W at the vertex): within the
+    // stream's reach past its bank, the road's edge has no step, as the stream's dyke counts for no road's
+    // budget.
     let mut r = road(&[[-200.0, 0.0], [0.0, 0.0], [200.0, 0.0]]);
     r.z = vec![500.0, 499.8, 500.0];
     let c = ways(&[r, stream(&[[0.0, -200.0], [0.0, 0.0], [0.0, 200.0]], 500.0)], &|_, _| 500.4);

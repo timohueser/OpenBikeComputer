@@ -178,7 +178,7 @@ fn a_stream_is_a_curve_through_its_vertices_with_its_levels_smooth_and_falling_a
     }]);
     let part = &g.parts[0];
     let (v, s) = (&part.vertices, &part.spans);
-    assert!(s.iter().all(|s| !s.chord && s.linear_z));
+    assert!(s.iter().all(|s| !s.chord && s.water_z));
     let direction = |a: [i64; 2], b: [i64; 2]| libm::atan2((b[1] - a[1]) as f64, (b[0] - a[0]) as f64);
     let half = (direction(v[0].pos, v[1].pos) + direction(v[1].pos, v[2].pos)) / 2.0;
     assert!((v[1].tangent - half).abs() < 1e-12, "the bisector of its chords");
@@ -243,6 +243,33 @@ fn a_waters_end_at_a_tile_line_reads_the_tiles_next_vertex() {
         v.tangent
     };
     assert_eq!(tangent_at(west), tangent_at(both));
+}
+
+#[test]
+fn water_reads_on_through_a_vertex_where_the_map_splits_it_into_two_ways_but_not_at_a_confluence() {
+    // A stream mapped as two ways that meet at (0, 0): the curve and the grade at the shared vertex are
+    // those of one line, so the water turns and falls smoothly there.
+    let up = Line { z: vec![Some(12.0), Some(10.0)], ..stream(&[], &[[-40.0, -10.0], [0.0, 0.0]], 0.0) };
+    let down = Line { z: vec![Some(10.0), Some(9.0)], ..stream(&[("name", "Bach")], &[[0.0, 0.0], [50.0, -5.0]], 0.0) };
+    let joint = |g: &WayGraph| -> Vec<(f64, f64)> {
+        let o = at([0.0, 0.0]);
+        (g.parts.iter().flat_map(|p| &p.vertices))
+            .filter(|v| v.pos == [o.x, o.y])
+            .map(|v| (v.tangent, v.grade))
+            .collect()
+    };
+    let one = joint(&graph(&[up.clone(), down.clone()]));
+    assert_eq!(one.len(), 2);
+    assert!((one[0].0 - one[1].0).abs() < 1e-12 && (one[0].1 - one[1].1).abs() < 1e-12, "{one:?}");
+    let whole = joint(&graph(&[Line {
+        z: vec![Some(12.0), Some(10.0), Some(9.0)],
+        ..stream(&[], &[[-40.0, -10.0], [0.0, 0.0], [50.0, -5.0]], 0.0)
+    }]));
+    assert!((one[0].0 - whole[0].0).abs() < 1e-12 && (one[0].1 - whole[0].1).abs() < 1e-12);
+    // A third line that ends there makes a confluence: each line keeps its own chord.
+    let side = stream(&[], &[[0.0, 0.0], [10.0, 40.0]], 0.0);
+    let three = joint(&graph(&[up, down, side]));
+    assert!(three.iter().all(|t| (t.0 - one[0].0).abs() > 1e-3), "{three:?}");
 }
 
 #[test]
