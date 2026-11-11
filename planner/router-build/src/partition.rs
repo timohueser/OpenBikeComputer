@@ -331,9 +331,11 @@ impl Part<'_> {
 
     /// Dinic's maximum flow from the `k` sources at the start of `queue` to the junctions marked
     /// `SINK`. Returns `None` when the flow passes `bound`. Afterwards the levels of the junctions
-    /// that the sources reach are below `UNSEEN`. Each maximum flow gives this set, so the work of a
-    /// phase covers only the junctions that it reaches: from the sources with an arc to another
-    /// junction, up to the first sink.
+    /// that the sources reach are below `UNSEEN`. Each maximum flow gives this set. The search of a
+    /// phase starts at the sources with an arc to another junction and runs until it reaches no new
+    /// junction; it does not expand a sink, and it resets only the junctions that it reached. It
+    /// does not stop at the level of the first sink: each phase would then push flow on the
+    /// shortest paths only, which costs more phases.
     fn flow(&mut self, graph: &Junctions, k: usize, bound: Option<u64>) -> Option<u64> {
         for place in 0..self.at.len() {
             self.set_level(place, UNSEEN);
