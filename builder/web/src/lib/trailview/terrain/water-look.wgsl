@@ -10,7 +10,7 @@ const BODY: vec3f = vec3f(0.025, 0.098, 0.175);
 // The water turns white where it falls more steeply than FOAM_LOW along its flow, up to FOAM_MOST at FOAM_HIGH.
 const FOAM_LOW: f32 = 0.4;
 const FOAM_HIGH: f32 = 1.0;
-const FOAM_MOST: f32 = 0.7;
+const FOAM_MOST: f32 = 0.35;
 
 fn water_look(relative: vec3f, lod: vec2f, fall: f32, sea: bool, pixel: f32, curvature: f32) -> vec3f {
     let dir = normalize(relative);
