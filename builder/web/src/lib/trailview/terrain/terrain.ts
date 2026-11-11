@@ -505,7 +505,8 @@ export class Terrain {
         // Below COARSEST_MESH the meshes rest: their cells stay, but build after the target and wish for no stamp.
         const meshes = this.pieces ? meshCells(rule, eye) : [], resting = rule.finest < COARSEST_MESH;
         if (this.records) {
-            this.records.update(nearCells(wanted, { anchor, above: 0 }), meshes, resting);
+            const ground = { anchor, above: 0 };
+            this.records.update(nearCells(wanted, ground), meshes, resting, node => distances(ground, node)[0]);
             for (const cell of this.records.takeChanged()) this.pages.restamp(cell);
         }
         if (!r) return this.sendStamps(resting ? [] : meshes, eye, forward, view);

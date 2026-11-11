@@ -21,7 +21,7 @@ use crate::sections::{Reach, Sections};
 use crate::CellInput;
 
 pub use crossings::end_on_chord;
-pub use curve::{point, s_at, u_at, SpanPoint};
+pub use curve::{curve_point, folds, off_chord, point, s_at, u_at, water_tangents, SpanPoint};
 
 /// The coarsest sample step: the grid of level l is `BASE_STEP_M / 2^l` along a span.
 pub const BASE_STEP_M: f64 = 16.0;

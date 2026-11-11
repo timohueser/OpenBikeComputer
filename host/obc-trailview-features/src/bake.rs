@@ -11,7 +11,7 @@ use serde_json::{json, Map, Value};
 use crate::gate::{Census, GATE_M};
 use crate::geometry::{area, bounds, contains, key, Boxes};
 use crate::kinds::{kind_of, Entry, Waterway};
-use crate::osm::{self, Selected, LANDUSE, LIFT_REACH_M, USES};
+use crate::osm::{self, Selected, LANDUSE, LIFT_REACH_M};
 use crate::pmtiles::{self, Header};
 use crate::roads::{self, Classes, River, Surroundings};
 use crate::structures::{self, is_bridge, GROUND};
@@ -117,18 +117,14 @@ pub fn bake(
     // The lifts wait for the buildings and the other lifts: a station shares their places. The buildings
     // of the region wait for the landuse areas that hold them; the features of the solvers for all of
     // their kind.
-    let (mut lift_ways, mut lift_entry, mut buildings, mut houses, mut landuse, mut uses) =
-        (Vec::new(), None, Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut lift_ways, mut lift_entry, mut buildings, mut houses, mut landuse) =
+        (Vec::new(), None, Vec::new(), Vec::new(), Vec::new());
     let (mut waters, mut ways, mut stations, mut beyond, mut river_areas, mut culverts) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     osm::objects(kinds, &cut, &binary, |(selected, mut tags, mut parts)| {
         let Selected::Entry(e) = selected else {
             if placer.tiles.meets(MAX_ZOOM, &parts) {
-                if selected == Selected::Use {
-                    uses.push((tags, parts))
-                } else {
-                    landuse.push((tags, parts))
-                }
+                landuse.push((tags, parts));
             }
             return;
         };
@@ -177,20 +173,12 @@ pub fn bake(
     std::fs::remove_file(&cut).map_err(|e| e.to_string())?;
     eprintln!("osm: {:.1} s", started.elapsed().as_secs_f64());
     let values = landuse_of(&houses.iter().map(|(_, _, parts)| parts).collect::<Vec<_>>(), &landuse);
-    let shown = uses_of(&houses.iter().map(|(_, tags, parts)| (tags, parts)).collect::<Vec<_>>(), &uses);
-    for (((e, mut tags, parts), value), shows) in houses.into_iter().zip(&values).zip(&shown) {
+    for ((e, mut tags, parts), value) in houses.into_iter().zip(&values) {
         if let Some(value) = value {
             tags.insert("landuse".into(), value.clone());
         }
-        if let Some(shows) = shows {
-            tags.insert("use".into(), shows.clone());
-        }
         placer.entry(&kinds[e], tags, parts);
     }
-    let use_counts: Map<String, Value> =
-        USES.iter().map(|u| (u.to_string(), shown.iter().filter(|v| v.as_deref() == Some(u)).count().into())).collect();
-    metrics.insert("uses".into(), use_counts.into());
-    drop(uses);
     let landuse_counts: Map<String, Value> = LANDUSE
         .iter()
         .map(|l| (l.to_string(), values.iter().filter(|v| v.as_deref() == Some(l)).count().into()))
@@ -226,13 +214,14 @@ pub fn bake(
             .map(|(e, tags, parts)| water_feature(&kinds[*e].kind, tags, std::mem::take(parts), options))
             .collect();
         let pool = rayon::ThreadPoolBuilder::new().build().map_err(|e| e.to_string())?;
-        let (levels, _, water_metrics) = pool.install(|| water::solve_by_network(&mut features, terrain));
+        let (levels, drawn, _, water_metrics) = pool.install(|| water::solve_by_network(&mut features, terrain));
         // The threads of the roads take over the memory of these.
         drop(pool);
         metrics.insert(
             "water".into(),
             json!({"lakes": water_metrics.lakes, "lakes_spilling": water_metrics.lakes_spilling,
-                   "river_parts": water_metrics.river_parts, "turned": water_metrics.turned}),
+                   "river_parts": water_metrics.river_parts, "turned": water_metrics.turned,
+                   "added_vertices": water_metrics.added}),
         );
         // A waterway that OSM draws uphill has turned round in `features`.
         for ((_, _, parts), (feature, z)) in waters.iter_mut().zip(features.into_iter().zip(levels)) {
@@ -278,11 +267,18 @@ pub fn bake(
                 }
             }
         }
-        for (e, tags, parts) in &waters {
+        // The roads read the levels at the map's vertices, the tiles and the census the vertices that the levels
+        // add: this road solver's active set moves places far from any changed input. The cost: at a crossing a
+        // road reads the straight level between two vertices of the map, which on a long span can lie metres off
+        // the water of the tiles.
+        for ((e, tags, parts), drawn) in waters.iter().zip(drawn) {
+            let parts: Vec<Part> = (parts.iter().zip(drawn))
+                .map(|(p, k)| k.map_or_else(|| p.clone(), |(points, z)| Part { points, z: Some(z), ..p.clone() }))
+                .collect();
             if is_river(*e) && tags.get("bridge").is_none_or(|b| GROUND.contains(&b.as_str())) {
-                water_census.add(&kinds[*e].kind, parts, terrain, &|_| false);
+                water_census.add(&kinds[*e].kind, &parts, terrain, &|_| false);
             }
-            placer.entry(&kinds[*e], tags.clone(), parts.clone());
+            placer.entry(&kinds[*e], tags.clone(), parts);
         }
         let mut tracks: Vec<(String, Tags, Part)> = Vec::new();
         if !ways.is_empty() {
@@ -635,11 +631,12 @@ fn water_feature(name: &str, tags: &Tags, parts: Vec<Part>, options: &Options) -
     } else {
         Level::Natural
     };
-    let (half, bank, freeboard) = if kind == Kind::River {
+    let (half, bank, freeboard, curve) = if kind == Kind::River {
         let rules = waterway(name, tags, options);
-        (half_width(rules, tags), rules.bank_m, rules.freeboard_m)
+        let curve = water::Curve { turn_max_deg: rules.curve_turn_max_deg, off_max_m: rules.curve_off_max_m };
+        (half_width(rules, tags), rules.bank_m, rules.freeboard_m, curve)
     } else {
-        (0.0, 0.0, 0.0)
+        (0.0, 0.0, 0.0, water::Curve::default())
     };
     water::Feature {
         kind,
@@ -647,6 +644,7 @@ fn water_feature(name: &str, tags: &Tags, parts: Vec<Part>, options: &Options) -
         half,
         bank,
         freeboard,
+        curve,
         ele: tags.get("ele").and_then(|e| leading_number(e)).unwrap_or(f64::NAN),
         parts,
     }
@@ -726,43 +724,6 @@ fn landuse_of(buildings: &[&Vec<Part>], areas: &[(Tags, Vec<Part>)]) -> Vec<Opti
         .collect()
 }
 
-/// Per building, the use that it shows: the first in USES of its own, those of the points of `uses` in or
-/// on its outer ring, and those of the areas of `uses` that hold the middle of that ring.
-fn uses_of(buildings: &[(&Tags, &Vec<Part>)], uses: &[(Tags, Vec<Part>)]) -> Vec<Option<String>> {
-    let rank = |u: &str| USES.iter().position(|v| *v == u).unwrap_or(USES.len());
-    let mut shown: Vec<Option<String>> = buildings.iter().map(|(tags, _)| tags.get("use").cloned()).collect();
-    let mut offer = |k: usize, value: &String| {
-        if shown[k].as_deref().is_none_or(|old| rank(value) < rank(old)) {
-            shown[k] = Some(value.clone());
-        }
-    };
-    let rings: Vec<&[[f64; 2]]> = buildings.iter().map(|(_, parts)| parts[0].points.as_slice()).collect();
-    let houses = Boxes::new(&rings.iter().map(|ring| bounds(ring.iter())).collect::<Vec<_>>());
-    let (points, areas): (Vec<_>, Vec<_>) = uses.iter().partition(|(_, parts)| !parts[0].outer);
-    for (tags, parts) in points {
-        let p = parts[0].points[0];
-        for k in houses.overlapping([p[0], p[1], p[0], p[1]]) {
-            // A shop is often a node of the outline, its entrance: on the ring, which the even-odd test leaves out half the time.
-            if contains(&[rings[k]], p) || rings[k].contains(&p) {
-                offer(k, &tags["use"]);
-            }
-        }
-    }
-    let about =
-        Boxes::new(&areas.iter().map(|(_, parts)| bounds(parts.iter().flat_map(|p| &p.points))).collect::<Vec<_>>());
-    for (k, ring) in rings.iter().enumerate() {
-        let (sx, sy) = ring.iter().fold((0.0, 0.0), |(x, y), p| (x + p[0], y + p[1]));
-        let middle = [sx / ring.len() as f64, sy / ring.len() as f64];
-        for a in about.overlapping([middle[0], middle[1], middle[0], middle[1]]) {
-            let area_rings: Vec<&[[f64; 2]]> = areas[a].1.iter().map(|p| p.points.as_slice()).collect();
-            if contains(&area_rings, middle) {
-                offer(k, &areas[a].0["use"]);
-            }
-        }
-    }
-    shown
-}
-
 /// The area of the region in km².
 fn area_km2([west, south, east, north]: [f64; 4]) -> f64 {
     EARTH_RADIUS_KM.powi(2) * (east - west).to_radians() * (north.to_radians().sin() - south.to_radians().sin())
@@ -818,15 +779,6 @@ mod tests {
 
     fn tags(pairs: &[(&str, &str)]) -> Tags {
         pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
-    }
-
-    fn square(x: f64, y: f64, side: f64) -> Vec<Part> {
-        vec![Part {
-            outer: true,
-            points: vec![[x, y], [x + side, y], [x + side, y + side], [x, y + side]],
-            z: None,
-            plan: None,
-        }]
     }
 
     #[test]
@@ -941,28 +893,5 @@ mod tests {
         let mut kept = tags(&[("highway", "residential"), ("sidewalk", "left"), ("sidewalk:left", "yes")]);
         decided(&mut kept);
         assert_eq!(kept, tags(&[("highway", "residential")]));
-    }
-
-    #[test]
-    fn a_building_shows_the_strongest_use_of_its_own_its_points_and_the_areas_about_it() {
-        let point = |x: f64, y: f64, u: &str| {
-            (tags(&[("use", u)]), vec![Part { outer: false, points: vec![[x, y]], z: None, plan: None }])
-        };
-        // A shop with a pharmacy in it; a building in a hospital's grounds with a kiosk in it; a shop of its
-        // own; a building with nothing but a shop at a corner of its outline.
-        let (own, plain) = (tags(&[("use", "shop")]), tags(&[]));
-        let houses =
-            [square(0.0, 0.0, 10.0), square(100.0, 0.0, 10.0), square(200.0, 0.0, 10.0), square(300.0, 0.0, 10.0)];
-        let buildings: Vec<(&Tags, &Vec<Part>)> =
-            vec![(&plain, &houses[0]), (&plain, &houses[1]), (&own, &houses[2]), (&plain, &houses[3])];
-        let uses = vec![
-            point(2.0, 2.0, "shop"),
-            point(5.0, 5.0, "pharmacy"),
-            point(105.0, 5.0, "shop"),
-            (tags(&[("use", "hospital")]), square(90.0, -10.0, 40.0)),
-            point(310.0, 0.0, "shop"),
-        ];
-        let shown = uses_of(&buildings, &uses);
-        assert_eq!(shown, [Some("pharmacy".into()), Some("hospital".into()), Some("shop".into()), Some("shop".into())]);
     }
 }

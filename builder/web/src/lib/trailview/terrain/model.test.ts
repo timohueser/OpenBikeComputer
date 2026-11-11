@@ -42,41 +42,161 @@ const A = { level: CELL_LEVEL, x: 4286 * 8, y: 2888 * 8 }, B = { level: CELL_LEV
 describe('the records store', () => {
     afterEach(() => vi.unstubAllGlobals());
 
-    it('counts known blocks in the target, asks again for a block without room once a farther cell can leave, counts a refused far block, and nothing waits once the records failed', async () => {
+    /** A records store with its two workers ready; `features` gives a feature tile's body. */
+    async function store(features: () => Promise<ArrayBuffer> = async () => new ArrayBuffer(4)) {
         FakeWorker.all = [];
         vi.stubGlobal('Worker', FakeWorker);
         vi.stubGlobal('fetch', async () => new Response(readFileSync(new URL('../plan/pkg/obc_ground_plan_bridge_bg.wasm', import.meta.url))));
-        const records = new Records(async () => new ArrayBuffer(4), async () => undefined, () => {}, new AbortController().signal);
-        for (let i = 0; i < 20 && !FakeWorker.all.length; i++) await settle();
+        const records = new Records(features, async () => undefined, () => {}, new AbortController().signal);
+        for (let i = 0; i < 20 && FakeWorker.all.length < 2; i++) await settle();
         await settle();
-        const worker = FakeWorker.all[0];
+        /** The builds that the workers hold, taken from them. */
+        const posted = () => FakeWorker.all.flatMap(worker => worker.builds.splice(0).map(build => ({ worker, build })));
+        return { records, posted };
+    }
+    const at = (dx: number, dy = 0) => ({ level: CELL_LEVEL, x: B.x + dx, y: B.y + dy });
+
+    it('gives the rows to the nearest cells, asks again for a block without rows once it is nearer, counts a refused far block, and nothing waits once the records failed', async () => {
+        const { records, posted } = await store();
         const frame = async (cells: { node: typeof A; distance: number }[]) => {
             records.update(cells);
             await settle();
-            return worker.builds.splice(0);
+            return posted();
         };
-        // Both fit the guess; their blocks of 1200 rows do not both fit the 2047 rows.
+        // Both have the reserve; their blocks of 1200 rows, over the reserve, do not both fit the 2047 rows.
         const [a, b] = await frame([{ node: A, distance: 100 }, { node: B, distance: 200 }]);
         expect(records.waits(B)).toBe(true);
-        worker.answer(a, 1200);
-        worker.answer(b, 1200, undefined, undefined, { error: 'a run of too many samples' });
-        expect([records.stats.cells, records.stats.failed]).toEqual([1, 1]);
+        a.worker.answer(a.build, 1200);
+        b.worker.answer(b.build, 1200, undefined, undefined, { error: 'a run of too many samples' });
+        expect([records.stats.cells, records.stats.failed, records.stats.refused, records.stats.large]).toEqual([1, 1, 1, 2]);
         // B's known size keeps it out of the target: its pages draw without records, and it is not built again.
         expect(await frame([{ node: A, distance: 100 }, { node: B, distance: 200 }])).toEqual([]);
         expect(records.waits(B)).toBe(false);
-        // The eye moves on: B comes first, A leaves for it, and B builds again.
+        // The eye moves on: B comes first, and builds again; A leaves for it.
         const [again] = await frame([{ node: B, distance: 50 }, { node: A, distance: 150 }]);
-        expect(again.cell).toMatchObject({ x: B.x, y: B.y });
+        expect(again.build.cell).toMatchObject({ x: B.x, y: B.y });
         expect(records.waits(B)).toBe(true);
         records.takeChanged();
-        worker.answer(again, 1200);
+        again.worker.answer(again.build, 1200);
         expect(records.takeChanged()).toEqual([A, B]);
-        expect([records.stats.cells, records.stats.failed]).toEqual([1, 0]);
-        expect(records.loading).toBe(false);
+        expect([records.stats.cells, records.stats.failed, records.loading]).toEqual([1, 0, false]);
         // Without feature tiles, no page waits and the store does not count as loading.
         const none = new Records(undefined, async () => undefined, () => {}, new AbortController().signal);
         none.update([{ node: A, distance: 100 }]);
         expect([none.waits(A), none.loading, none.stats.error]).toEqual([false, false, 'the release has no feature tiles']);
+    });
+
+    it('starts a build only with the reserve free after the nearer blocks, and holds a block that arrives before them', async () => {
+        const { records, posted } = await store();
+        // Seven cells in a row, 100 m apart: the reserve of 384 rows fits five times into the 2047 rows.
+        const cells = [1, 2, 3, 4, 5, 6, 7].map(i => ({ node: at(4 * i), distance: 100 * i }));
+        const open = new Map<number, ReturnType<typeof posted>[number]>();
+        /** A frame; returns the cells whose builds went to a worker in it, as their place in the row. */
+        const frame = async () => {
+            records.update(cells);
+            await settle();
+            const sent = posted().map(job => [(job.build.cell.x - B.x) / 4, job] as const);
+            sent.forEach(([i, job]) => open.set(i, job));
+            return sent.map(([i]) => i).sort();
+        };
+        const answer = (i: number, rows: number) => open.get(i)!.worker.answer(open.get(i)!.build, rows);
+        expect(await frame()).toEqual([1, 2]);
+        // With 700 rows of the first, the reserves of the next three leave none for the fifth: it is not asked for.
+        answer(1, 700);
+        expect(await frame()).toEqual([3]);
+        answer(3, 300);
+        expect(await frame()).toEqual([4]);
+        // The fourth block arrives before the second. It fits only if the second is small: it waits, without rows, and its pages wait.
+        answer(4, 900);
+        expect([records.stats.cells, records.waits(at(16)), records.waits(at(20)), records.loading]).toEqual([2, true, false, true]);
+        answer(2, 100);
+        // 2000 rows are known: the fourth has its rows without a second build, and 47 rows are no reserve for the fifth.
+        expect(await frame()).toEqual([]);
+        expect([records.stats.cells, records.stats.builds, records.stats.refused, records.loading]).toEqual([4, 4, 0, false]);
+        expect(cells.map(({ node }) => records.block(node) !== undefined)).toEqual([true, true, true, true, false, false, false]);
+    });
+
+    it('fills the rows past the reserve one cell at a time while the mean block fits, and counts the block that ends the rank', async () => {
+        const cells = [1, 2, 3, 4, 5, 6, 7, 8, 9].map(i => ({ node: at(4 * i), distance: 100 * i }));
+        /** A load in which each block has 280 rows, and the seventh has `seventh`: the cells built, and the store. */
+        const load = async (seventh: number) => {
+            const { records, posted } = await store();
+            const built: number[] = [];
+            for (let frame = 0; frame < 12; frame++) {
+                records.update(cells);
+                await settle();
+                const sent = posted();
+                // Past the reserve, a build starts only when no other is on its way.
+                if (sent.some(({ build }) => (build.cell.x - B.x) / 4 > 6)) expect([sent.length, records.stats.building]).toEqual([1, 1]);
+                for (const { worker, build } of sent) {
+                    const i = (build.cell.x - B.x) / 4;
+                    built.push(i);
+                    worker.answer(build, i === 7 ? seventh : 280);
+                }
+            }
+            return { built, records };
+        };
+        // Six blocks of 280 rows leave 367: no reserve, but the mean fits, so the seventh is tried. Its 250 rows leave 117:
+        // the mean of 276 does not fit, so the eighth is not tried.
+        const fits = await load(250);
+        expect(fits.built).toEqual([1, 2, 3, 4, 5, 6, 7]);
+        expect([fits.records.stats.cells, fits.records.stats.refused, fits.records.loading]).toEqual([7, 0, false]);
+        // A seventh block of 380 rows finds none: it is counted, and it ends the rank.
+        const ends = await load(380);
+        expect(ends.built).toEqual([1, 2, 3, 4, 5, 6, 7]);
+        expect([ends.records.stats.cells, ends.records.stats.refused, ends.records.stats.large, ends.records.waits(at(32)), ends.records.loading]).toEqual([6, 1, 0, false, false]);
+    });
+
+    it('builds the eye\'s cell first, then its neighbours, the nearer first, then the other cells, also when the inputs of the eye\'s cell come last', async () => {
+        // The first tile read, of the eye's cell, takes longer than the others.
+        let first = true;
+        const { records, posted } = await store(async () => {
+            const slow = first;
+            first = false;
+            if (slow) await new Promise(resolve => setTimeout(resolve, 20));
+            return new ArrayBuffer(4);
+        });
+        const eye = at(3, 3), mesh = [{ node: eye, distance: 0 }];
+        // The eye stands in the north-east of its cell.
+        const near = ({ x, y }: typeof A) => Math.hypot(Math.max(0, eye.x - x) * 300 + Math.max(0, x - eye.x) * 100, Math.max(0, y - eye.y) * 200 + Math.max(0, eye.y - y) * 50);
+        const order: number[][] = [], running: ReturnType<typeof posted> = [];
+        for (let round = 0; round < 12; round++) {
+            records.update([{ node: eye, distance: 0 }, { node: at(6, 3), distance: 250 }], mesh, false, near);
+            await new Promise(resolve => setTimeout(resolve, 30));
+            const sent = posted();
+            order.push(...sent.map(({ build: { cell } }) => [cell.x - eye.x, cell.y - eye.y]));
+            running.push(...sent);
+            // The build that started first ends first.
+            const done = running.shift();
+            done?.worker.answer(done.build, 1);
+        }
+        // A worker stays free for the eye's cell while the nearest neighbour, whose inputs came first, starts.
+        expect(order).toEqual([[0, -1], [0, 0], [1, 0], [1, -1], [0, 1], [1, 1], [-1, 0], [-1, -1], [-1, 1], [3, 0]]);
+        expect(FakeWorker.all.flatMap(w => w.meshes)).toHaveLength(1);
+    });
+
+    it('does not build a cell that left before its build started, gives no rows to one that left while it ran, and builds the cells of a jump in their order', async () => {
+        const { records, posted } = await store();
+        const far = at(40, 40);
+        records.update([{ node: B, distance: 0 }], [{ node: B, distance: 0 }]);
+        await settle();
+        const old = posted();
+        expect([old.length, records.stats.building]).toEqual([2, 4]);
+        // The eye jumps: the two builds that wait for a worker leave, and two cells about the new eye wait in their place.
+        records.update([{ node: far, distance: 0 }], [{ node: far, distance: 0 }]);
+        await settle();
+        expect([posted(), records.stats.building, records.waits(B), records.waits(far)]).toEqual([[], 4, false, true]);
+        // The old builds arrive: no block takes rows, none counts as refused, and the eye's new cell is the next build.
+        const next: number[][] = [];
+        for (const { worker, build } of old) {
+            worker.answer(build, 1);
+            await settle();
+            next.push(...posted().map(({ build: { cell } }) => [cell.x - far.x, cell.y - far.y]));
+        }
+        expect([records.stats.cells, records.stats.builds, records.stats.refused, records.block(B)]).toEqual([0, 2, 0, undefined]);
+        expect(next).toHaveLength(2);
+        expect(next[0]).toEqual([0, 0]);
+        expect(Math.max(...next[1].map(Math.abs))).toBe(1);
     });
 
     it('asks for a mesh once each of the eight neighbours of the cell has a rim, with all their rims, and once only, as the workers answer', async () => {
@@ -113,12 +233,18 @@ describe('the records store', () => {
         for (let i = 0; i < 20 && FakeWorker.all.length < 2; i++) await settle();
         await settle();
         const far = { level: CELL_LEVEL, x: B.x + 4, y: B.y };
-        records.update([{ node: far, distance: 300 }], [{ node: B, distance: 0 }]);
-        await settle();
-        const asked = FakeWorker.all.flatMap(w => w.builds).map(({ cell }) => [cell.x - B.x, cell.y - B.y]);
-        // Two workers hold two builds each: all go to the mesh's ring.
-        expect(asked).toHaveLength(4);
-        expect(asked.every(([dx, dy]) => Math.abs(dx) <= 1 && Math.abs(dy) <= 1)).toBe(true);
+        const sent: number[][] = [];
+        for (let round = 0; round < 2; round++) {
+            records.update([{ node: far, distance: 300 }], [{ node: B, distance: 0 }]);
+            await settle();
+            for (const worker of FakeWorker.all) for (const build of worker.builds.splice(0)) {
+                sent.push([build.cell.x - B.x, build.cell.y - B.y]);
+                worker.answer(build, 1);
+            }
+        }
+        // Two workers, and two builds asked for per worker: all four go to the mesh's ring.
+        expect(sent).toHaveLength(4);
+        expect(sent.every(([dx, dy]) => Math.abs(dx) <= 1 && Math.abs(dy) <= 1)).toBe(true);
     });
 
     it('keeps a full worker while it holds the input of a mesh not asked yet, and draws the pages of a cell whose kept input was lost', async () => {
@@ -165,7 +291,6 @@ describe('the records store', () => {
         const records = new Records(async () => new ArrayBuffer(4), async () => undefined, () => {}, new AbortController().signal);
         for (let i = 0; i < 20 && FakeWorker.all.length < 2; i++) await settle();
         await settle();
-        const worker = FakeWorker.all[0];
         // Cells in the middle of tile 4286/2888 read it alone; cells at its east edge read 4287/2888 too.
         const [C, D, E] = [3, 4, 5].map(dx => ({ level: CELL_LEVEL, x: A.x + dx, y: A.y + 3 }));
         const [F, G] = [3, 4].map(dy => ({ level: CELL_LEVEL, x: A.x + 7, y: A.y + dy }));
@@ -173,23 +298,25 @@ describe('the records store', () => {
         const ask = async (...nodes: (typeof A)[]) => {
             records.update(nodes.map(node => ({ node, distance: 0 })));
             await settle();
-            return FakeWorker.all.filter(w => !w.dead).flatMap(w => w.builds.splice(0));
+            return FakeWorker.all.filter(w => !w.dead).flatMap(worker => worker.builds.splice(0).map(build => ({ worker, build })));
         };
-        // Both jobs go to one worker before either builds: each carries the body.
+        // No worker parsed the tile: each of the two builds carries the body to its worker.
         const [c, d] = await ask(C, D);
-        expect([bodies(c), bodies(d)]).toEqual([[true], [true]]);
-        worker.answer(c, 1);
-        worker.answer(d, 1);
+        expect([bodies(c.build), bodies(d.build), c.worker === d.worker]).toEqual([[true], [true], false]);
+        c.worker.answer(c.build, 1);
+        d.worker.answer(d.build, 1);
         const [f] = await ask(C, D, F);
-        expect(bodies(f)).toEqual([false, true]);
-        worker.answer(f, 1);
-        // The worker let tile 4287/2888 go: the job comes again with every body, also the held one, so it cannot miss again.
+        expect(bodies(f.build)).toEqual([false, true]);
+        f.worker.answer(f.build, 1);
+        // Only F's worker parsed 4287/2888: it gets G with both tiles by name.
         const [g] = await ask(C, D, F, G);
-        expect(bodies(g)).toEqual([false, false]);
-        worker.onmessage?.({ data: { id: g.id, ok: true, missing: new Uint32Array([4287, 2888]) } });
+        expect([g.worker === f.worker, bodies(g.build)]).toEqual([true, [false, false]]);
+        // The worker let tile 4287/2888 go: the job comes again with every body, also the held one, so it cannot miss again.
+        const worker = g.worker;
+        worker.onmessage?.({ data: { id: g.build.id, ok: true, missing: new Uint32Array([4287, 2888]) } });
         await settle();
         const [again] = worker.builds.splice(0);
-        expect([again.id, bodies(again)]).toEqual([g.id, [true, true]]);
+        expect([again.id, bodies(again)]).toEqual([g.build.id, [true, true]]);
         // A trap ends the worker and fails its cell: the worker after it gets the body with its first job.
         worker.onmessage?.({ data: { id: again.id, ok: false, error: 'unreachable', trapped: true } });
         for (let i = 0; i < 5; i++) await settle();

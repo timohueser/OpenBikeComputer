@@ -3,11 +3,8 @@
 // #include ../terrain/records.wgsl
 // #include ../roads/look-codes.wgsl
 
-// As sections::Material.
-const MATERIAL_SETT: u32 = 1u;
-const MATERIAL_PAVERS: u32 = 2u;
-const MATERIAL_CONCRETE: u32 = 3u;
-const MATERIAL_STRIPS: u32 = 4u;
+// As CODE_PATH of ground/roads.wgsl: the drawn code of a concrete path, which has no vehicle tracks.
+const LINE_PATH_CODE: u32 = 6u;
 // The band's priority field of a look word, which a piece takes for its frame's clamp.
 const PIECE_INSIDE: u32 = 65536u;
 
@@ -25,7 +22,7 @@ fn line_look(finish: u32) -> vec2u {
         return vec2u(LOOK_SETT, code);
     }
     if (material == MATERIAL_CONCRETE || material == MATERIAL_STRIPS) {
-        return vec2u(select(LOOK_CONCRETE, LOOK_STRIPS, material == MATERIAL_STRIPS), code);
+        return vec2u(select(LOOK_CONCRETE, LOOK_STRIPS, material == MATERIAL_STRIPS), select(code, LINE_PATH_CODE, (finish & M_PATH) != 0u));
     }
     if ((finish & M_MARKED) != 0u) {
         return vec2u(select(LOOK_MAIN, LOOK_MOTORWAY, (finish & M_MOTORWAY) != 0u), code);
