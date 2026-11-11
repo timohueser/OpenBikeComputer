@@ -421,25 +421,36 @@ RULES_SECTION = re.compile(r"^## Rules[^\n]*\n(.*?)(?=^## |\Z)", re.S | re.M)
 #: A test or function name: snake case with at least one `_`, alone between backticks.
 NAME = re.compile(r"`([a-z][a-z0-9]*(?:_[a-z0-9]+)+)`")
 LINK = re.compile(r"\]\(([^)#\s]+)")
+#: "`name` in [file](link)": any name, with the link that must hold it.
+NAME_IN = re.compile(r"`([^`]+)` in \[[^\]]*\]\(([^)#\s]+)[^)]*\)")
 
 
 def lost_names(root: Path, folder: str) -> list[str]:
-    """The names in the last column of a doc's Rules table that no file linked in their cell holds.
+    """The names in the last column of a doc's Rules table that their linked file does not hold.
 
     A rule in a doc points at the test that enforces it. When that test is renamed or removed, the
-    doc must follow in the same change.
+    doc must follow in the same change. A name in backticks that is followed by " in " and a link
+    must be in the file of that link. Any other snake_case name must be in a file that its cell links.
     """
+    def holds(file: Path, name: str) -> bool:
+        # The whole name: a renamed test often keeps the old name as its start. A title of several
+        # words ends at a quote or at the end of its line, not at a space.
+        text = file.read_text(encoding="utf-8", errors="replace") if file.is_file() else ""
+        end = r"(?![\w ])" if " " in name else r"(?!\w)"
+        return re.search(rf"(?<!\w){re.escape(name)}{end}", text) is not None
+
     out = []
     for path in sorted((root / folder).glob("*.md")):
         section = RULES_SECTION.search(path.read_text(encoding="utf-8"))
         rows = [row.rstrip() for row in section.group(1).splitlines() if row.startswith("|")] if section else []
         for row in rows:
             cell = row.removesuffix("|").rsplit("|", 1)[-1]
+            placed = NAME_IN.findall(cell)
+            lost = [name for name, link in placed if not holds(path.parent / link, name)]
             linked = [path.parent / link for link in LINK.findall(cell)]
-            texts = [file.read_text(encoding="utf-8", errors="replace") for file in linked if file.is_file()]
-            # The whole name: a renamed test often keeps the old name as its start.
-            out += [f"{path.relative_to(root)}: no file linked beside `{name}` in the Rules table holds that name"
-                    for name in NAME.findall(cell) if not any(re.search(rf"\b{name}\b", text) for text in texts)]
+            lost += [name for name in NAME.findall(cell)
+                     if name not in dict(placed) and not any(holds(file, name) for file in linked)]
+            out += [f"{path.relative_to(root)}: no file linked beside `{name}` in the Rules table holds that name" for name in lost]
     return out
 
 

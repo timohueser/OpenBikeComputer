@@ -80,8 +80,8 @@
    "name": "companion-ios",
    "kind": "shell",
    "area": "Shells",
-   "purpose": "Runs the companion app on the rider's phone.",
-   "status": "draft",
+   "purpose": "Runs the iPhone app that plans routes, sends them to the device and gets rides back.",
+   "status": "approved",
    "depends_on": [],
    "test_depends_on": [],
    "violations": 0,
@@ -133,7 +133,7 @@
    "depends_on": [],
    "test_depends_on": [],
    "violations": 1,
-   "lines": 33085,
+   "lines": 33229,
    "problems": [
     {
      "rule": "R4",
@@ -145,8 +145,8 @@
    "name": "data-registry",
    "kind": "system",
    "area": "Data and services",
-   "purpose": "Declares every external source, region and target that a build may use.",
-   "status": "draft",
+   "purpose": "Declares the external sources, regions, targets and options that `obc data` reads.",
+   "status": "approved",
    "depends_on": [],
    "test_depends_on": [],
    "violations": 0,
@@ -158,7 +158,7 @@
    "kind": "shell",
    "area": "Shells",
    "purpose": "Builds the nRF54L board image from the device systems.",
-   "status": "draft",
+   "status": "approved",
    "depends_on": [
     "board-inputs",
     "card-storage",
@@ -254,7 +254,7 @@
     "repository-tooling"
    ],
    "violations": 7,
-   "lines": 60407,
+   "lines": 60411,
    "problems": [
     {
      "rule": "cycle",
@@ -290,8 +290,8 @@
    "name": "device-map-builder",
    "kind": "shell",
    "area": "Shells",
-   "purpose": "Runs the map builder that a rider opens in the browser or on the desktop.",
-   "status": "draft",
+   "purpose": "Runs the map builder, where a rider builds a device map and manages the device, in the browser or as a desktop app.",
+   "status": "approved",
    "depends_on": [
     "device-link",
     "firmware-update",
@@ -470,8 +470,8 @@
    "name": "hardware",
    "kind": "system",
    "area": "Hardware",
-   "purpose": "Holds the board's schematics, layouts and component models.",
-   "status": "draft",
+   "purpose": "Holds the board's schematics, layouts and component models, and makes its parts list with prices.",
+   "status": "approved",
    "depends_on": [],
    "test_depends_on": [],
    "violations": 0,
@@ -666,7 +666,7 @@
    "kind": "shell",
    "area": "Shells",
    "purpose": "Runs the `obc data` command and its operator page.",
-   "status": "draft",
+   "status": "approved",
    "depends_on": [
     "data-engine",
     "device-map-baking",
@@ -684,7 +684,7 @@
     "repository-tooling"
    ],
    "violations": 4,
-   "lines": 9943,
+   "lines": 9955,
    "problems": [
     {
      "rule": "R1",
@@ -713,7 +713,7 @@
    "depends_on": [],
    "test_depends_on": [],
    "violations": 2,
-   "lines": 5940,
+   "lines": 6068,
    "problems": [
     {
      "rule": "R1",
@@ -729,8 +729,8 @@
    "name": "planner-tile-server",
    "kind": "shell",
    "area": "Shells",
-   "purpose": "Serves the released planner tile archives from the storage bucket.",
-   "status": "draft",
+   "purpose": "Serves the map tiles of a planner release from the storage bucket or from a local folder.",
+   "status": "approved",
    "depends_on": [],
    "test_depends_on": [],
    "violations": 0,
@@ -768,7 +768,7 @@
    ],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 18739,
+   "lines": 18794,
    "problems": []
   },
   {
@@ -858,7 +858,7 @@
    ],
    "test_depends_on": [],
    "violations": 1,
-   "lines": 16258,
+   "lines": 16938,
    "problems": [
     {
      "rule": "R4",
@@ -896,8 +896,8 @@
    "name": "simulators",
    "kind": "shell",
    "area": "Shells",
-   "purpose": "Runs the device core away from the board, for development and demonstration.",
-   "status": "draft",
+   "purpose": "Runs the device core on a computer, a phone or a web page, and sends test input to a real board.",
+   "status": "approved",
    "depends_on": [
     "board-inputs",
     "card-storage",
@@ -990,8 +990,8 @@
    "name": "trailview-page",
    "kind": "shell",
    "area": "Shells",
-   "purpose": "Opens TrailView as its own page in the browser.",
-   "status": "draft",
+   "purpose": "Opens TrailView, the 3-D view of a region, as its own page in the browser.",
+   "status": "approved",
    "depends_on": [
     "route-planning",
     "trailview"
@@ -1017,8 +1017,8 @@
    "name": "web-planner",
    "kind": "shell",
    "area": "Shells",
-   "purpose": "Opens Route planning as its own page in the browser.",
-   "status": "draft",
+   "purpose": "Opens the route planner as its own page in the browser.",
+   "status": "approved",
    "depends_on": [
     "device-map-builder",
     "route-planning"
@@ -1033,7 +1033,7 @@
    "kind": "shell",
    "area": "Shells",
    "purpose": "Publishes the project site, the guide and the blog.",
-   "status": "draft",
+   "status": "approved",
    "depends_on": [],
    "test_depends_on": [],
    "violations": 0,
