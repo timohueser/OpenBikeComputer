@@ -50,6 +50,7 @@ The bake keeps its large tables in memory-mapped work files and sorts them on di
 | Work folder | `OBC_DATA_WORK`, else `TMPDIR`, else the temporary folder of the system; `obc data` sets `TMPDIR` to a folder beside the output |
 | Bake folder | `obc-router-build-<process ID>-<n>` in the work folder, with the first free `n`; the bake removes it at the end, also after an error |
 | Sort run | 4 GiB, or `OBC_DATA_MEMORY_BYTES` when it is lower, at least 1 MiB; a value that is not a number of bytes stops the bake |
+| Order buckets | The roads of one bucket, with their shapes before and after the terrain, take about one sort run; 1 to 256 buckets |
 | Disk need | About 5 GB per GB of PBF; Europe about 200 GB (estimated) |
 
 Put the work folder on a disk, not on a tmpfs: the files of a tmpfs take RAM. A killed bake
@@ -67,7 +68,8 @@ countries before the import.
 
 ## Terrain
 
-`terrain::apply` takes a height callback. The step reads heights from the Copernicus GLO-30 tiles
+The import samples the terrain while it puts the roads into their final order (`layout::Buckets`).
+`terrain::sample` takes a height callback. The step reads heights from the Copernicus GLO-30 tiles
 of the bounds through `obc-dem`. Terrain samples are at most 20 m apart. A symmetric 20 m filter
 leaves junction heights and missing samples intact. Bridges and tunnels interpolate between their
 endpoints. Without a height, climb and slope remain unknown.

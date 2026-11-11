@@ -110,10 +110,13 @@ impl<T: Plain> Column<T> {
         }
     }
 
-    /// Value `i` of the result is value `order[i]` of `self`.
-    pub fn permuted(&self, order: &[u32]) -> Self {
-        let values = self.values();
-        order.iter().map(|&i| values[i as usize]).collect()
+    /// Appends value `order[i]` of `source` for each `i`.
+    pub fn extend_permuted(&mut self, source: &Self, order: &[u32]) {
+        self.reserve(order.len());
+        let values = source.values();
+        for &i in order {
+            self.push(values[i as usize]);
+        }
     }
 
     fn capacity(&self) -> usize {
@@ -195,17 +198,13 @@ impl<T: Plain> Lists<T> {
         self.ends.push(self.values.values().len() as u64);
     }
 
-    /// Lists of the given lengths, each value `value`.
-    pub fn filled(lengths: impl IntoIterator<Item = usize>, value: T) -> Self {
-        let mut end = 0;
-        let ends = lengths
-            .into_iter()
-            .map(|length| {
-                end += length as u64;
-                end
-            })
-            .collect();
-        Self { ends, values: std::iter::repeat_n(value, end as usize).collect() }
+    /// Appends a list of `length` copies of `value`, a slot that `get_mut` fills later.
+    pub fn push_filled(&mut self, length: usize, value: T) {
+        self.values.reserve(length);
+        for _ in 0..length {
+            self.values.push(value);
+        }
+        self.ends.push(self.values.len() as u64);
     }
 
     pub fn get(&self, index: usize) -> &[T] {
@@ -230,13 +229,11 @@ impl<T: Plain> Lists<T> {
         self.values.values()
     }
 
-    /// List `i` of the result is list `order[i]` of `self`.
-    pub fn permuted(&self, order: &[u32]) -> Self {
-        let mut lists = Self::default();
+    /// Appends list `order[i]` of `source` for each `i`.
+    pub fn extend_permuted(&mut self, source: &Self, order: &[u32]) {
         for &i in order {
-            lists.push(self.get(i as usize));
+            self.push(source.get(i as usize));
         }
-        lists
     }
 }
 
