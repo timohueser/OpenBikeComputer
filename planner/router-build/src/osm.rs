@@ -1041,6 +1041,8 @@ mod tests {
             BIKE | FOOT | PUSH
         );
         assert_eq!(crossing(&tags(&[("barrier", "gate"), ("access", "no")]), &mut Counts::new()), 0);
+        let gate = |value| node_closures([("barrier", "gate"), ("access", value)].into_iter()).len();
+        assert_eq!([gate("destination"), gate("private")], [0, 1]);
     }
 
     #[test]
