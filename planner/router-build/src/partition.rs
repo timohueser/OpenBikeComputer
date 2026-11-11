@@ -221,6 +221,8 @@ struct Junctions {
 const UNSEEN: u32 = (1 << 30) - 1;
 /// The level of a junction on the sink side after a flow.
 const SINK_SIDE: u32 = UNSEEN - 1;
+/// The level of a dead end of a phase of the flow.
+const DEAD: u32 = UNSEEN - 3;
 const LEVEL: u32 = (1 << 30) - 1;
 /// A sink of the flow.
 const SINK: u32 = 1 << 30;
@@ -324,51 +326,100 @@ impl Part<'_> {
 
     /// Dinic's maximum flow from the `k` sources at the start of `queue` to the junctions marked
     /// `SINK`. Returns `None` when the flow passes `bound`. Afterwards the levels of the junctions
-    /// that the sources reach are below `UNSEEN`.
+    /// that the sources reach are below `UNSEEN`. Each maximum flow gives this set, so the work of a
+    /// phase covers only the junctions that it reaches: from the sources with an arc to another
+    /// junction, up to the first sink.
     fn flow(&mut self, graph: &Junctions, k: usize, bound: Option<u64>) -> Option<u64> {
-        let n = self.at.len();
+        for place in 0..self.at.len() {
+            self.set_level(place, UNSEEN);
+        }
+        for i in 0..k {
+            let place = self.place(graph, self.queue[i]).expect("a source of the part");
+            self.set_level(place, 0);
+        }
+        // The border sources first in `queue`: an inner source has only arcs to sources.
+        let mut border = 0;
+        for i in 0..k {
+            let source = self.queue[i];
+            let inner = graph
+                .arcs(source)
+                .all(|arc| self.place(graph, graph.adj[arc]).is_none_or(|other| self.level[other] & LEVEL == 0));
+            if !inner {
+                self.queue.swap(border, i);
+                border += 1;
+            }
+        }
         let mut flow = 0u64;
         loop {
-            for place in 0..n {
-                self.set_level(place, UNSEEN);
+            let mut tail = k;
+            for i in 0..border {
+                let source = self.queue[i];
+                let place = self.place(graph, source).expect("a source of the part");
+                self.current[place] = graph.first[source as usize];
+                tail = self.expand(graph, source, tail);
             }
-            for i in 0..k {
-                let place = self.place(graph, self.queue[i]).expect("a source of the part");
-                self.set_level(place, 0);
-            }
-            let (mut head, mut tail, mut reached) = (0, k, false);
+            let (mut head, mut reached) = (k, false);
             while head < tail {
                 let junction = self.queue[head];
                 head += 1;
-                let place = self.place(graph, junction).expect("a queued junction of the part");
-                if self.level[place] & SINK != 0 {
+                if self.level[self.place(graph, junction).expect("a queued junction")] & SINK != 0 {
                     reached = true;
-                    continue;
+                    break;
                 }
-                let next = (self.level[place] & LEVEL) + 1;
-                for arc in graph.arcs(junction) {
-                    let neighbour = graph.adj[arc];
-                    let Some(other) = self.place(graph, neighbour) else { continue };
-                    if graph.residual[arc].load(Relaxed) > 0 && self.level[other] & LEVEL == UNSEEN {
-                        self.set_level(other, next);
-                        self.queue[tail] = neighbour;
-                        tail += 1;
-                    }
-                }
+                tail = self.expand(graph, junction, tail);
             }
             if !reached {
                 return Some(flow);
             }
-            for place in 0..n {
-                self.current[place] = graph.first[self.at[place] as usize];
-            }
-            for i in 0..k {
+            for i in 0..border {
                 flow += self.blocking(graph, self.queue[i], k);
                 if bound.is_some_and(|bound| flow > bound) {
                     return None;
                 }
             }
+            // The junctions of this phase: each is linked to a source by junctions of the phase.
+            let mut tail = k;
+            for i in 0..border {
+                tail = self.clear(graph, self.queue[i], tail);
+            }
+            let mut head = k;
+            while head < tail {
+                head += 1;
+                tail = self.clear(graph, self.queue[head - 1], tail);
+            }
         }
+    }
+
+    /// Gives the next level to each neighbour of `junction` over an arc with residual that no
+    /// search reached, and queues it at `tail`. Returns the new tail.
+    fn expand(&mut self, graph: &Junctions, junction: u32, mut tail: usize) -> usize {
+        let next = (self.level[self.place(graph, junction).expect("a junction of the part")] & LEVEL) + 1;
+        for arc in graph.arcs(junction) {
+            let neighbour = graph.adj[arc];
+            let Some(other) = self.place(graph, neighbour) else { continue };
+            if graph.residual[arc].load(Relaxed) > 0 && self.level[other] & LEVEL == UNSEEN {
+                self.set_level(other, next);
+                self.current[other] = graph.first[neighbour as usize];
+                self.queue[tail] = neighbour;
+                tail += 1;
+            }
+        }
+        tail
+    }
+
+    /// Gives `UNSEEN` to each neighbour of `junction` with a level of a phase, and queues it at
+    /// `tail`. Returns the new tail.
+    fn clear(&mut self, graph: &Junctions, junction: u32, mut tail: usize) -> usize {
+        for arc in graph.arcs(junction) {
+            let neighbour = graph.adj[arc];
+            let Some(other) = self.place(graph, neighbour) else { continue };
+            if !matches!(self.level[other] & LEVEL, 0 | UNSEEN) {
+                self.set_level(other, UNSEEN);
+                self.queue[tail] = neighbour;
+                tail += 1;
+            }
+        }
+        tail
     }
 
     /// Pushes flow from `source` along paths of rising level until no path is left. The path after
@@ -404,11 +455,11 @@ impl Part<'_> {
                     depth += 1;
                 }
                 None => {
-                    // A dead end: no path passes here again in this phase.
-                    self.set_level(place, UNSEEN);
                     if depth == 0 {
                         return flow;
                     }
+                    // A dead end: no path passes here again in this phase.
+                    self.set_level(place, DEAD);
                     depth -= 1;
                     let parent = if depth == 0 { source } else { self.queue[k + depth - 1] };
                     let parent = self.place(graph, parent).expect("a junction of the path");
