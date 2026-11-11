@@ -1,7 +1,7 @@
 # Regional route builder
 
-`obc data` builds the `planner/routing` layer of a region with this crate (`step::step`). The
-[package contract](../../specs/route-package.md) defines the output.
+`obc data` builds the `planner/routing` layer of a region with this crate, in four steps
+(`step.rs`). The [package contract](../../specs/route-package.md) defines the output.
 
 ## Build
 
@@ -16,9 +16,41 @@ obc data update local --only planner/routing
 
 The step writes a new layer directory. Do not edit an installed package in place.
 
-After the import, the step prints the counts of ways, node references, directed roads, turns and
-junctions, and an estimate of the manifest size. It stops when the region passes a limit of the
-package format.
+The roads step prints the counts of the roads and turns, the costs step the manifest estimate.
+Each stops at a limit of the package format.
+
+## Layers
+
+The store keeps only the newest work layer of each step and options (`cache`).
+
+| Step | Runs | Layer |
+| --- | --- | --- |
+| `planner/routing-source` | Pass 1, the node join, the way facts, the turn rules | `source/` |
+| `planner/routing-roads` | The walks of the roads with the terrain, the turn restrictions, the topology | `roads/` |
+| `planner/routing-costs` | The way bases, the road pass, the snap bits | `costs/` |
+| `planner/routing` | The landmarks, the package, the overlay index, the route catalog, the blocks and the routes | `routing/`, `blocks/`, `routes/` |
+
+| Change | Steps that run |
+| --- | --- |
+| A stop or a crash in a step | That step and the steps after it |
+| The profile list, or the revision of `planner/routing-costs` | Costs, package |
+| `region`, `countries`, `attribution`, the package format | Package |
+| The GLO-30 tiles or the reference, or the revision of `planner/routing-roads` | Roads, costs, package |
+| The OSM cut or the bounds, or the revision of `planner/routing-source` | All four |
+
+A change of the bytes of a work layer changes its format, of its content its revision. Each
+column is one file of little-endian values; `layout.json` gives its type and count, which the
+reader checks (`column::Layout`).
+
+Europe: North Rhine-Westphalia scaled to 300 million roads.
+
+| Layer | Switzerland (7.7 M roads) | North Rhine-Westphalia (10.2 M roads) | Europe (estimate) |
+| --- | --- | --- | --- |
+| `planner/routing-source` | 0.75 GB | 0.83 GB | 25 GB |
+| `planner/routing-roads` | 1.25 GB | 1.45 GB | 43 GB |
+| `planner/routing-costs`, 10 profiles | 1.40 GB | 1.86 GB | 56 GB |
+
+A Europe bake also needs the package (about 90 GB) and the OSM cut (about 41 GB).
 
 ```sh
 obc test -p planner-router-build
@@ -48,7 +80,7 @@ The bake keeps its large tables in memory-mapped work files and sorts them on di
 | Setting | Value |
 | --- | --- |
 | Work folder | `OBC_DATA_WORK`, else `TMPDIR`, else the temporary folder of the system; `obc data` sets `TMPDIR` to a folder beside the output |
-| Bake folder | `obc-router-build-<process ID>-<n>` in the work folder, with the first free `n`; the bake removes it at the end, also after an error |
+| Bake folder | `obc-router-build-<process ID>-<n>` in the work folder, with the first free `n`; a step removes it at the end, also after an error. A step moves the columns that it keeps into its layer by a rename |
 | Page budget | The smallest of the free memory of the bake's cgroup v2 or of a parent (`memory.max` less `anon`), `MemAvailable`, and `OBC_DATA_MEMORY_BYTES` less the bake's own `RssAnon`; read once at the start, and printed with its source; a value that is not a number of bytes stops the bake |
 | Sort run | A quarter of the page budget, from 1 MiB to 4 GiB |
 | Order buckets | The roads of one bucket, with their shapes before and after the terrain, take about one sort run; 1 to 256 buckets |
@@ -56,16 +88,17 @@ The bake keeps its large tables in memory-mapped work files and sorts them on di
 | Road pass | The profiles of one group at a time; the way bases of a group take at most a quarter of the page budget |
 | Profile jobs | The snap bits and the landmarks of one profile in each job; the page budget sets how many jobs run at a time |
 | Own memory | 4 GiB; the step samples `RssAnon` every 100 ms and stops at the first sample above it, with the name of the stage; `catalog` and `blocks` are exempt |
-| Disk need | About 7 GB per GB of PBF, at the profile jobs: Switzerland 4.8 GB, North Rhine-Westphalia 6.0 GB; Europe about 190 GB (estimated from 300 million roads) |
+| Disk need | The stored layers above, and the work files of the step that runs: at most 2.5 GB for Switzerland and 2.8 GB for North Rhine-Westphalia, in the roads step |
 
 Put the work folder on a disk, not on a tmpfs: the files of a tmpfs take RAM. A killed bake
 leaves its bake folder; remove it. A bake that the memory guard stops also leaves it.
 
-The work files of all profiles stay until the writer ends: for each profile, 8.125 B for each
-road, 4 B for each turn and 24 B for each junction. The page budget changes only the speed of the
-bake, never its bytes. The step prints the time and
-the peak own memory of each stage: `import`, `emit`, `way-bases`, `road-pass`, `profiles`,
-`writer`, `overlays`, `catalog` and `blocks`.
+The costs layer holds the columns of each profile: 8.125 B for each road and 4 B for each turn.
+The package step maps them and adds the landmarks, 24 B for each junction and profile, until the
+writer ends. The page budget changes only the speed of the bake, never its bytes. Each step prints
+the time and the peak own memory of each stage: `import` and `emit` (source and roads), `open`,
+`way-bases`, `road-pass` and `snap` (costs), `open`, `landmarks`, `writer`, `overlays`, `catalog`
+and `blocks` (package).
 
 ## Route catalog
 
