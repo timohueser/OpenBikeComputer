@@ -303,7 +303,7 @@
         },
         endHere: (night, stop) => endDayIn(night, stop),
         stay: (night, place) => stayAt(night, place),
-        selectPlace: place => selectPlace(place),
+        selectPlace: place => place ? selectPlace(place) : clearSelection(),
         pick: () => pickOnMap(),
         retry: night => { const window = stopWindows[night]; if (window) stopFinder.retry(stretchKey(routeKey, window)); },
     };

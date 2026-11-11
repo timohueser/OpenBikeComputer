@@ -22,11 +22,21 @@
         onBack: () => void;
         onEndHere: (stop: Stop) => void;
         onStay: (place: Place) => void;
-        onSelectPlace: (place: Place) => void;
+        onSelectPlace: (place: Place | null) => void;
     } = $props();
 
     const groups = $derived(stayOptions.map(({ kind, label }) => ({ title: label, places: kinds.includes(kind) ? suitable(stop, [kind]) : [] }))
         .filter(group => group.places.length));
+    const radios = $props.id();
+    // The id of the selected place; null selects the town itself.
+    let picked = $state<string | null>(null);
+    const selected = $derived(groups.flatMap(group => group.places).find(p => p.place.id === picked));
+    // A place of another town, or one that the stay kinds hide, gives the selection back to the town.
+    $effect(() => { if (picked !== null && !selected) picked = null; });
+    function select(entry: StopPlace | null) {
+        picked = entry?.place.id ?? null;
+        onSelectPlace(entry?.place ?? null);
+    }
     const center = $derived(stop.sleep[0].place.coordinate);
     const sunset = $derived(date ? sunsetAt(center, date) : null);
     let low = $state('');
@@ -70,34 +80,46 @@
             </div>
         {/each}
     </dl>
-    <button type="button" class="end-here" onclick={() => onEndHere(stop)}>End day {labels[0]} in {stop.name}</button>
 
-    {#each groups as group (group.title)}
-        <h4>{group.title}</h4>
-        <ul>
-            {#each group.places as entry (entry.place.id)}
-                <li>
-                    <button type="button" class="place" onclick={() => onSelectPlace(entry.place)}>
-                        <Icon path={placeCategories[entry.place.category].icon} size={16} />
-                        <span><strong>{named(entry) ? entry.place.label : `Unnamed ${kind(entry)}`}</strong><small>{named(entry) ? `${kind(entry)} · ` : ''}{away(entry)}</small></span>
-                    </button>
-                    <button type="button" class="planner-action stay" onclick={() => onStay(entry.place)} aria-label={`Stay at ${entry.place.label}`}>Stay here</button>
-                </li>
-            {/each}
-        </ul>
-    {/each}
+    <h4>Where you sleep</h4>
+    <div role="radiogroup" aria-label={`Where you sleep on night ${labels[0]}`}>
+        <label class="option" class:checked={!selected}>
+            <input type="radio" name={radios} checked={!selected} onchange={() => select(null)} />
+            <span><strong>Somewhere in {stop.name}</strong><small>decide the place later</small></span>
+        </label>
+        {#each groups as group (group.title)}
+            <h4>{group.title}</h4>
+            <ul>
+                {#each group.places as entry (entry.place.id)}
+                    <li>
+                        <label class="option" class:checked={selected === entry}>
+                            <input type="radio" name={radios} checked={selected === entry} onchange={() => select(entry)} />
+                            <span><strong>{named(entry) ? entry.place.label : `Unnamed ${kind(entry)}`}</strong><small>{named(entry) ? `${kind(entry)} · ` : ''}{away(entry)}</small></span>
+                            <Icon path={placeCategories[entry.place.category].icon} size={16} />
+                        </label>
+                    </li>
+                {/each}
+            </ul>
+        {/each}
+    </div>
 
     <h4>Evening and morning</h4>
     <ul class="facts">
         <li><Icon path={placeCategories.food.icon} size={15} /><span><b>Food</b> {stop.food.length ? names(stop.food) : 'None mapped nearby'}</span></li>
         <li><Icon path={placeCategories.shop.icon} size={15} /><span><b>Shops</b> {stop.shop.length ? shops(stop.shop) : 'None mapped nearby'}</span></li>
-        <li><Icon path={placeCategories.water.icon} size={15} /><span><b>Water</b> {stop.water.length ? `${stop.water[0].place.label}${stop.water.length > 1 ? ` and ${stop.water.length - 1} more` : ''}` : 'None mapped nearby'}</span></li>
         {#if date}
             <li><Icon name="moon" size={15} /><span><b>Night</b> {sunset ? `Sunset ${clockTime(sunset)}` : 'No sunset'}{low ? ` · ${low}` : ''}</span></li>
         {:else}
             <li><Icon name="moon" size={15} /><span>Set a start date to see the sunset and the usual night temperature.</span></li>
         {/if}
     </ul>
+    <!-- Sticky inside the scrolling side panel, so the one way to confirm stays in view; it ends the card, so it never
+         covers the last row. -->
+    <div class="confirm">
+        <button type="button" onclick={() => selected ? onStay(selected.place) : onEndHere(stop)}>
+            End day {labels[0]} {selected ? `at ${named(selected) ? selected.place.label : `this ${kind(selected)}`}` : `in ${stop.name}`}
+        </button>
+    </div>
 </div>
 
 <style>
@@ -178,19 +200,6 @@
         color: var(--panel);
         font: 700 11px var(--sans);
     }
-    .end-here {
-        align-self: flex-start;
-        min-height: 32px;
-        padding: 0 12px;
-        border: 1px solid var(--line-strong);
-        border-radius: 6px;
-        background: var(--panel);
-        font-size: 13px;
-        font-weight: 600;
-    }
-    .end-here:hover {
-        background: var(--parchment-2);
-    }
     h4 {
         margin: 12px 0 0;
         font: 600 13px var(--sans);
@@ -209,7 +218,7 @@
     li + li {
         border-top: 1px solid var(--line);
     }
-    .place {
+    .option {
         flex: 1;
         min-width: 0;
         display: flex;
@@ -218,34 +227,63 @@
         margin-left: -8px;
         padding: 8px;
         border-radius: 6px;
-        text-align: left;
+        cursor: pointer;
     }
-    .place:hover {
+    .option:hover,
+    .option.checked {
         background: var(--parchment-2);
     }
-    .place > :global(svg) {
+    .option:has(:focus-visible) {
+        outline: 2px solid var(--ink);
+        outline-offset: 2px;
+    }
+    .option input {
+        flex: none;
+        width: 16px;
+        height: 16px;
+        margin: 0;
+        accent-color: var(--ink);
+    }
+    .option > span {
+        flex: 1;
+        min-width: 0;
+    }
+    .option > :global(svg) {
         flex: none;
         color: var(--ink-soft);
     }
-    .place span {
-        min-width: 0;
-    }
-    .place strong,
-    .place small {
+    .option strong,
+    .option small {
         display: block;
         overflow-wrap: anywhere;
     }
-    .place strong {
+    .option strong {
         font: 600 14px/1.3 var(--sans);
     }
-    .place small {
+    .option small {
         margin-top: 2px;
         font-size: 13px;
         color: var(--ink-soft);
     }
-    .stay {
-        flex: none;
-        font-size: 13px;
+    .confirm {
+        position: sticky;
+        bottom: 0;
+        margin-top: 4px;
+        padding: 12px 0;
+        background: var(--panel);
+    }
+    .confirm button {
+        width: 100%;
+        min-height: 40px;
+        padding: 8px 12px;
+        border-radius: 6px;
+        background: var(--ink);
+        color: var(--panel);
+        font-weight: 600;
+        overflow-wrap: anywhere;
+    }
+    .confirm button:hover {
+        filter: brightness(1.15);
     }
     .facts li {
         align-items: flex-start;

@@ -6,7 +6,7 @@ import type { SearchPlace } from './search/types';
 /** A place of a stop with its position along the route and its straight-line distance off it, in km. */
 export interface StopPlace { place: Place; km: number; off: number }
 
-/** A town along the route where the rider can sleep: its places to sleep, and food, shops and water around them. */
+/** A town along the route where the rider can sleep: its places to sleep, and food and shops around them. */
 export interface Stop {
     id: string;
     name: string;
@@ -17,14 +17,13 @@ export interface Stop {
     sleep: StopPlace[];
     food: StopPlace[];
     shop: StopPlace[];
-    water: StopPlace[];
 }
 
 /** Places to sleep further apart along the route than this belong to different stops, unless they are in the same
  * town and no further apart than `townGap`. A stop of places in different towns spans at most `townGap`, so a valley of
  * villages does not chain into one stop. */
 const stopGap = 2.5, townGap = 6;
-/** Food, shops and water count for a stop within this distance of its places, along and off the route. */
+/** Food and shops count for a stop within this distance of its places, along and off the route. */
 const serviceReach = 1.5;
 
 const stopPlace = (result: SearchPlace): StopPlace | null => result.position
@@ -50,7 +49,6 @@ export function groupStops(sleep: SearchPlace[], services: SearchPlace[]): Stop[
             sleep: [...group].sort((a, b) => a.off - b.off),
             food: around.filter(p => p.place.category === 'food'),
             shop: around.filter(p => p.place.category === 'shop'),
-            water: around.filter(p => p.place.category === 'water'),
         };
     });
 }
