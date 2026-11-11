@@ -18,6 +18,10 @@ use crate::graph::WayGraph;
 use crate::sections::{Reach, HALF_MAX_M};
 use crate::CellInput;
 
+/// LOOK STUDY (throwaway, compile-time): 0 = water A alone (no zones); 1 = the zone over the way's slope band;
+/// 2 = the zone under the way's footprint only, open water in the culvert up to it, and a plain pipe mouth.
+pub const CULVERT_LOOK: u8 = 1;
+
 /// A zone reads the water this far along from its crossing: it holds a road's whole slope band (at most 15 m
 /// from its curve) down to a crossing angle of about 37°.
 pub const ZONE_ALONG_M: f64 = 25.0;
@@ -108,6 +112,9 @@ pub(crate) fn build(
     let ctx = Ctx { graph, input, rules, lines, of_way };
     let near = |p: P| p[0] >= bx[0] && p[0] <= bx[2] && p[1] >= bx[1] && p[1] <= bx[3];
     let mut out = WaterCrossings::default();
+    if CULVERT_LOOK == 0 {
+        return out;
+    }
     out.zones = zones::zones(&ctx, &near, &mut out.stats);
     out
 }

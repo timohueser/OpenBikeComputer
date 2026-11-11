@@ -46,6 +46,8 @@ const MAT_WATER: u32 = 50u;
 // In a piece's wall's word, the code bit (1 << CODE_SHIFT) that its look does not read: its road stands on its higher
 // side (plan/piece.wgsl).
 const WALL_FILL: u32 = 128u;
+// LOOK STUDY (throwaway): the next code bit: the wall is a plain pipe mouth, dark.
+const WALL_MOUTH: u32 = 256u;
 const CF_SAMPLE: u32 = 1u;
 const CF_MESH: u32 = 2u;
 const CF_FILL: u32 = 3u;
@@ -386,6 +388,9 @@ fn corridor_fragment(raw: CorridorOut) -> @location(0) vec4f {
     }
     // A piece's wall in a cliff is a rock cut (wall_rock).
     var rock = WallRock(0.0, vec3f(0.0, 0.0, 1.0));
+    if (PIECE && mat == MAT_WALL && (in.word & WALL_MOUTH) != 0u) {
+        return vec4f(atmosphere(vec3f(0.03, 0.03, 0.035), in.relative, in.altitude), 1.0);
+    }
     if (PIECE && mat == MAT_WALL) {
         rock = wall_rock(in, su);
         if (rock.share >= 1.0) {

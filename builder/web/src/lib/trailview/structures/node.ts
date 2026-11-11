@@ -14,6 +14,8 @@ import { MeshBuilder, type StructureMesh } from './mesh';
 import { rails } from './rails';
 import { boreHalf, portalBox, tunnels, twins } from './tunnels';
 import { culvertMouths } from '../roads/mouths';
+/** LOOK STUDY (throwaway): 0 = water A alone, with the culvert mouth models. */
+const CULVERT_LOOK: number = 1;
 import { streetLamps } from '../roads/lamps';
 
 /** A portal's box reaches this far from it. */
@@ -99,7 +101,7 @@ export function structureMeshes(list: Feature[], tile: Node, node: Node, plan = 
     kind = 'road';
     streetLamps(out);
     kind = 'stream';
-    if (!plan) culvertMouths(out, shapes);
+    if (!plan || CULVERT_LOOK === 0) culvertMouths(out, shapes);
     const meshes = ({ mesh, anchored }: typeof far): Meshes => ({ structures: mesh.mesh(), anchored: anchored.mesh() });
     return { far: meshes(far), near: meshes(near), anchors: words.length ? anchorBytes(words) : null, points: points.length ? packPoints(points.filter(p => p.model >= 0)) : null };
 }

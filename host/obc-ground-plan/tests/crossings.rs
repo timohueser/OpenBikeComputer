@@ -121,8 +121,6 @@ fn every_zone_holds_no_water_meets_water_with_no_step_stays_near_its_seed_and_ag
         }
     }
     println!("zones in the cells {zones}: water points in them {water}, vertices past the reach {far}");
-    println!(
-        "zone and water or bank edges with a step: {unnamed}; crossings two cells build apart: {differ:?}"
-    );
+    println!("zone and water or bank edges with a step: {unnamed}; crossings two cells build apart: {differ:?}");
     assert_eq!((water, far, unnamed, differ.len()), (0, 0, 0, 0));
 }

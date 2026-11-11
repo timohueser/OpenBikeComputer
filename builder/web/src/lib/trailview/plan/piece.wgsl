@@ -25,6 +25,9 @@ const NO_LABEL: u32 = 33554431u;
 const CRACKS_VIEW: u32 = 3u;
 // A step beside a paved face this high is a stone wall.
 const WALL_STEP_M: f32 = 0.5;
+// LOOK STUDY (throwaway): 2 draws a step from water up to dry ground as a dark pipe mouth (WALL_MOUTH).
+const CULVERT_LOOK: u32 = 1u;
+const MOUTH_STEP_M: f32 = 0.2;
 // A bank this high or lower shades as the ground beside it, this high or higher as a face of its own.
 const BANK_LOW_M: f32 = 0.05;
 const BANK_HIGH_M: f32 = 0.5;
@@ -171,6 +174,12 @@ fn slot_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
     if (on_water(upper.x) || on_water(upper.y)) {
         mat = MAT_WATER;
     }
+    // LOOK STUDY V2 (throwaway): a step from water up to dry ground is a plain pipe mouth, dark.
+    let lower = select(vec2u(piece[w], piece[w + 1u]), vec2u(piece[w + 2u], piece[w + 3u]), rise > 0.0);
+    let mouth = CULVERT_LOOK >= 2u && mat != MAT_WATER && (on_water(lower.x) || on_water(lower.y)) && max(abs(dp), abs(dq)) >= MOUTH_STEP_M;
+    if (mouth) {
+        mat = MAT_WALL;
+    }
     // A bank's level normal is as long as its share of the light: a step of millimetres shades as the ground
     // beside it, a real one as a face of its own (corridor_ground).
     let share = select(smoothstep(BANK_LOW_M, BANK_HIGH_M, step), 1.0, mat == MAT_WALL || mat == MAT_WATER);
@@ -178,7 +187,7 @@ fn slot_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
     // A wall whose road stands on its higher side holds the road up, and the face that it continues lies below it; else
     // that face lies above it (wall_rock of roads/corridor.wgsl).
     let fill = select(on_road(piece[w + 3u]), on_road(piece[w]), rise > 0.0);
-    let word = mat | (480u << HALF_SHIFT) | select(0u, WALL_FILL, mat == MAT_WALL && fill);
+    let word = mat | (480u << HALF_SHIFT) | select(0u, WALL_FILL, mat == MAT_WALL && fill) | select(0u, WALL_MOUTH, mouth);
     if (mat == MAT_WALL) {
         place = CornerPlace(vec2f(v.h - min(c[0].h, c[3].h), half_of(word)), length(v.s - c[0].s));
     }

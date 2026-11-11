@@ -488,7 +488,54 @@ pub fn build(cell: CellKey, input: &CellInput, rules: &Sections) -> WayGraph {
     let plan = points::pieces(&parts, &sampled, input, &mut stats);
     let plan = crossings::crossings(cell, area, &parts, &part_rules, &mut samples, plan, &mut stats);
     let plan = snap::snap(cell, area, &mut parts, &mut part_rules, &mut samples, plan, &mut stats);
-    points::assemble(cell, area, parts, &part_rules, samples, plan, stats)
+    let mut g = points::assemble(cell, area, parts, &part_rules, samples, plan, stats);
+    if crate::water_crossings::CULVERT_LOOK >= 2 {
+        open_culverts(&mut g);
+    }
+    g
+}
+
+/// LOOK STUDY V2 (throwaway): the water of a culvert under a way on the ground is open water. Its level runs
+/// straight between the levels of the open water at the culvert's two ends (one end: flat).
+fn open_culverts(g: &mut WayGraph) {
+    let mut tunnels: Vec<u32> = (g.crossings.iter())
+        .filter(|c| matches!(c.kind, CrossingKind::Culvert | CrossingKind::PipeInStones))
+        .filter(|c| g.way_at(&c.over, Level::Ground).is_some_and(|w| g.ways[w as usize].family != Family::Water))
+        .filter_map(|c| g.way_at(&c.under, Level::Tunnel))
+        .filter(|&t| g.ways[t as usize].family == Family::Water)
+        .collect();
+    tunnels.sort_unstable();
+    tunnels.dedup();
+    for t in tunnels {
+        let r = g.ways[t as usize].samples.clone();
+        let level = |pos: [i32; 2]| {
+            (g.joints.iter().filter(|j| j.network == Network::Water && j.pos == pos)).find_map(|j| {
+                (j.arms.iter().find(|a| a.way != t && g.ways[a.way as usize].level == Level::Ground))
+                    .map(|a| g.samples[g.sample_near(a.way, pos) as usize].z_m)
+            })
+        };
+        let (a, b) = (r.start as usize, r.end as usize - 1);
+        let (z0, z1) = match (level(g.samples[a].pos), level(g.samples[b].pos)) {
+            (Some(x), Some(y)) => (x, y),
+            (Some(x), None) | (None, Some(x)) => (x, x),
+            (None, None) => continue,
+        };
+        let (s0, s1) = (g.samples[a].s_m, g.samples[b].s_m);
+        let len = if (s1 - s0).abs() > 1e-6 { s1 - s0 } else { 1.0 };
+        for k in a..=b {
+            let f = ((g.samples[k].s_m - s0) / len).clamp(0.0, 1.0);
+            g.samples[k].z_m = z0 + f * (z1 - z0);
+            g.samples[k].grade = (z1 - z0) / len;
+        }
+        g.ways[t as usize].level = Level::Ground;
+        for arm in (g.joints.iter_mut().flat_map(|j| j.arms.iter_mut()))
+            .chain(g.junctions.iter_mut().flat_map(|j| j.arms.iter_mut()))
+            .chain(g.ends.iter_mut().map(|e| &mut e.arm))
+            .filter(|arm| arm.way == t)
+        {
+            arm.level = Level::Ground;
+        }
+    }
 }
 
 /// The rows of the graph in the reach table: (R_d, own R_e) of each decision.

@@ -56,7 +56,8 @@ pub(super) fn zones(ctx: &Ctx, near: &dyn Fn(P) -> bool, stats: &mut CrossingSta
         stats.water_ends += u32::from(zone.is_some());
         zones.extend(zone);
     }
-    for j in g.joints.iter().filter(|j| j.network == Network::Water && near(j.pos)) {
+    // LOOK STUDY V2: no chain zones; a culvert under a way is open water up to the way's footprint.
+    for j in g.joints.iter().filter(|j| super::CULVERT_LOOK < 2 && j.network == Network::Water && near(j.pos)) {
         let level = |k: usize| g.ways[j.arms[k].way as usize].level;
         let Some(k) = (0..2).find(|&k| level(k) == Level::Tunnel && level(1 - k) == Level::Ground) else { continue };
         zones.push(chain_zone(ctx, j.pos, &j.arms[k], j.arms[1 - k].way));
@@ -96,7 +97,8 @@ fn way_at_end(ctx: &Ctx, pos: P, bank: f64) -> Option<u32> {
 fn crossing_zone(ctx: &Ctx, seed: &Seed) -> Option<Zone> {
     let sec = ctx.way_section(seed.w);
     let band_s = water_band(ctx, seed, ctx.water_section(seed.s).crossing.mouth_bank_m);
-    let band_w = ctx.band(seed.w, seed.ws, sec.verge_m + sec.reach_m, bounds(&band_s))?;
+    let d = if super::CULVERT_LOOK >= 2 { 0.0 } else { sec.verge_m + sec.reach_m };
+    let band_w = ctx.band(seed.w, seed.ws, d, bounds(&band_s))?;
     let q2 = [2 * i64::from(seed.pos[0]), 2 * i64::from(seed.pos[1])];
     let rings = shapes(&band_w, &band_s, OverlayRule::Intersect, seed.pos).into_iter().find(|s| winding(s, q2) != 0)?;
     Some(Zone { rings, way: Some(seed.w), seed: ctx.global(seed.pos) })

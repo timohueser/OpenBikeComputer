@@ -161,7 +161,9 @@ pub fn run() -> Result<(), String> {
     let wanted: Vec<CellKey> = if all {
         known.clone()
     } else {
-        let views = root.join("builder/web/tests/browser/trailview/road-views-top.json");
+        let views = std::env::var("OBC_DEBUG_VIEWS")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| root.join("builder/web/tests/browser/trailview/road-views-top.json"));
         let chosen = crate::named_places(&views, &places)?;
         let mut keys: Vec<CellKey> =
             chosen.iter().flat_map(|(_, lat, lon)| crate::square_cells(*lat, *lon, size_m)).collect();
@@ -350,7 +352,9 @@ pub fn run() -> Result<(), String> {
         "checks": checks.then(|| json!({"faults": faults.len(), "borders": borders, "sub_mm": sub_mm, "labels": format!("{labels:?}"), "first": faults.iter().take(20).collect::<Vec<_>>()})),
     });
     if !all {
-        let views = root.join("builder/web/tests/browser/trailview/road-views-top.json");
+        let views = std::env::var("OBC_DEBUG_VIEWS")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| root.join("builder/web/tests/browser/trailview/road-views-top.json"));
         for (name, lat, lon) in crate::named_places(&views, &places)? {
             picture(&out.join(format!("{name}.png")), from_lon_lat(lon, lat), size_m, &meshes, &cells)?;
         }

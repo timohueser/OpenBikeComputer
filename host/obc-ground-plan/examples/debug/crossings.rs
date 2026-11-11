@@ -69,11 +69,19 @@ pub fn layer(canvas: &mut Canvas, cells: &BTreeMap<CellKey, CellInput>, rules: &
                 "lat": lat,
                 "w": water.map(|s| rules.sections.water(&feature(s).kind, &feature(s).tags).width_m),
                 "class": way.map(|w| rules.sections.way(&feature(w).kind, &feature(w).tags, false).class.to_string()),
+                "angle_deg": c.angle_rad.to_degrees(),
+                "way_heading": way.map(|w| heading(g.samples[g.sample_near(w, c.pos) as usize].tangent)),
+                "water_heading": water.map(|s| heading(g.samples[g.sample_near(s, c.pos) as usize].tangent)),
             }));
         }
         total = add(total, wc.stats);
     }
     json!({"crossings": owned, "counters": total.counters().iter().map(|(n, v)| (n.to_string(), json!(v))).collect::<serde_json::Map<_, _>>()})
+}
+
+/// LOOK STUDY: a compass heading (degrees) of a tangent (x east, y south).
+fn heading(t: [f64; 2]) -> f64 {
+    t[0].atan2(-t[1]).to_degrees().rem_euclid(360.0)
 }
 
 fn add(mut a: CrossingStats, b: CrossingStats) -> CrossingStats {
