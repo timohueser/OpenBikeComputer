@@ -20,8 +20,8 @@ Open one pull request, and fill the pull request template. Its `Mode:` line is `
 
 Some `Done when` steps only the user can do, such as a test on real hardware or a manual check in the app. Ask the user for each one now, so that it runs during the review. Say exactly what to check, and what a pass and a fail look like. If a step fails, fix the cause and ask again.
 
-Then review it as [review.md](review.md) says. It merges only after those steps pass. When the pull request merges, set `Status: done`.
+Then review it as [review.md](review.md) says. It merges only after those steps pass.
 
 ## Epics
 
-Build each sub-issue as above, on its own branch with its own pull request. A sub-issue can start when each of its `Depends on` issues has merged. Sub-issues that do not depend on each other can run in parallel: start one `implementer` subagent for each, in its own worktree, as the router's Subagents rules say. Give it the sub-issue and this reference. When the last sub-issue merges, set `Status: done` on the epic, but not on a tracker, which has no `Status:` line.
+Build each sub-issue as above, on its own branch with its own pull request. A sub-issue can start when each of its `Depends on` issues has merged. Sub-issues that do not depend on each other can run in parallel: start one `implementer` subagent for each, in its own worktree, as the router's Subagents rules say. Give it the sub-issue and this reference.

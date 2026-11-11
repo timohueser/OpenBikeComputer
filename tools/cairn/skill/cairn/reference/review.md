@@ -6,11 +6,12 @@
 
 Find the base: `base=$(gh api repos/{owner}/{repo}/pulls/N --jq .base.ref)`, then `git fetch origin "$base"`. Write the diff to a file outside the checkout: `git diff "origin/$base"...HEAD > FILE`. Note the HEAD commit for a later delta review.
 
-Start one fresh subagent with the role `code-review`, as the router's Subagents rules say. Give it the file path, not the pasted diff, and the intent: the bug, the list of findings, or the issue's TL;DR.
+Start one fresh subagent with the role `code-review`, as the router's Subagents rules say. Give it the file path, not the pasted diff, the intent (the bug, the list of findings, or the issue's TL;DR) and the paths of the approved system docs (`status: approved`) of the systems that the diff touches.
 
 ```text
 Review this pull request. The diff is in <FILE>. Its intent:
 <the bug, the findings list, or the issue TL;DR>
+The approved system docs of the systems it touches: <the paths, or none>
 
 You may read any file in the repository. Change no file. Do not trust the pull request text, the author's reasons or the tests: check the code.
 
@@ -22,7 +23,8 @@ Hunt for:
 - Tests: a test that would still pass if the change were broken, and a changed behavior that no test covers.
 - Simplicity: code that a simpler design would not need, a workaround where the system itself should change, duplicated logic.
 - Readability: a name or a comment that misleads, and a place where a new reader needs a comment that is missing: a non-obvious reason, an invariant or a gotcha.
-- Rules: the project's agent instructions (such as AGENTS.md) and the rules of the system docs that the diff touches.
+- Rules: the project's agent instructions (such as AGENTS.md) and the rules of those system docs.
+- Docs: a statement in one of those system docs that this diff makes false, and behavior that the diff adds and the doc must state.
 
 Each finding needs a concrete scenario: an input or a state that shows the problem. For a readability or duplication finding, the scenario is the misreading or the double change that it causes. Do not report style or taste, or a doubt that you cannot show.
 

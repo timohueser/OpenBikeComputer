@@ -18,7 +18,7 @@ description: Keeps one design document for each system of this repository, and m
 
 Before the first edit, sort the task: a fix, a change, or a prototype.
 
-- A change moves through its issue's `Status:` line: `explored`, `designed`, `approved`, `done`. A new session reads the line and knows the next step.
+- A change moves through its issue's `Status:` line: `explored`, `designed`, `approved`. A new session reads the line and knows the next step. A closed issue is done.
 - Approval is a status, not a command. When the user approves a design in conversation, set `Status: approved` on the issue and say so. For a size S design, the user's clear intent to build ("build it") is the approval.
 - A fix needs no issue and no design. If it grows past a small change, offer `design`.
 - A prototype never merges. Its findings go into the issue.
@@ -31,17 +31,13 @@ Choose the command from the request. If two commands fit, ask once. Read the com
 
 | Command | Use it when | Reference |
 | --- | --- | --- |
-| `init` | once per project: the config, an empty map, a glossary draft | not written yet |
 | `explore` | a new feature, or a problem whose direction is still open | [explore.md](reference/explore.md) |
 | `design #N` | the direction is clear and the change needs a plan | [design.md](reference/design.md) |
 | `build #N` | the design is approved | [build.md](reference/build.md) |
 | `fix` | a bug, a small tweak, or the small findings of a findings issue | [fix.md](reference/fix.md) |
 | `prototype` | an idea needs a quick test, with no quality bar | [prototype.md](reference/prototype.md) |
-| `improve-architecture` | structural problems: cycles, mixed roles, code in the wrong place | not written yet |
 | `document <system>` | a system doc needs to be written or reworked | [document.md](reference/document.md) |
 | `review-doc <doc>` | a document needs a test by fresh readers | [review-doc.md](reference/review-doc.md) |
-
-For a command with no reference, do the task with your own judgment.
 
 ## Subagents
 
@@ -65,12 +61,11 @@ A Goldfish is a fresh subagent that tests one document. [goldfish.md](reference/
 | `docs/design/README.md` | the map: every system, its purpose and its dependencies. Read it first to find the systems that a task touches. |
 | `docs/design/map.json` | the map as data, with the line counts and the violations of each system. `cairn map` writes it. |
 | `docs/design/<system>.md` | one system doc: a header (`owns`, `depends_on`, `status`) and the body |
-| `docs/design/glossary.md` | the words to use and the words to avoid, when the file exists |
 | `tools/cairn/README.md` | the tool's commands and rules |
 
 `cairn <command>` means `python3 tools/cairn/cairn.py <command>`.
 
-- `cairn check` finds files with no owner, undeclared dependencies, cycles and the R1 to R4 violations. Run it in CI.
+- `cairn check` finds files with no owner, undeclared dependencies, cycles, the violations of the layout rules, and names in a Rules table that their linked file does not hold. Run it in CI.
 - `cairn map` writes the generated part of the map.
 - `cairn leaves <system>` cuts a system's files into small leaves, for `document`.
 - `cairn model <role>` prints the model and effort of a role.
