@@ -355,11 +355,28 @@ impl<'a> Ctx<'a> {
     }
 
     /// The nearest point of one way to q, over all its samples.
-    fn foot(&self, w: u32, q: [f64; 2]) -> Option<Foot> {
+    fn foot(&self, w: u32, (lo, hi): (usize, usize), q: [f64; 2]) -> Option<Foot> {
+        (lo..hi).map(|k| self.foot_on(w, k, q)).min_by(|a, b| a.d.total_cmp(&b.d).then(a.k.cmp(&b.k)))
+    }
+
+    /// The segments of way w about station st up to the first sample past `reach_m` from p on each
+    /// side: (first, end) segment starts.
+    fn window(&self, w: u32, st: &Station, p: [f64; 2], reach_m: f64) -> (usize, usize) {
         let r = &self.g.ways[w as usize].samples;
-        (r.start as usize..r.end as usize - 1)
-            .map(|k| self.foot_on(w, k, q))
-            .min_by(|a, b| a.d.total_cmp(&b.d).then(a.k.cmp(&b.k)))
+        let (a, b) = (r.start as usize, r.end as usize - 1);
+        let k0 = (a + self.g.samples[a..=b].partition_point(|s| (s.span, s.u) < (st.span, st.u))).min(b);
+        let far = |k: usize| {
+            let e = sub(self.global(&self.g.samples[k]), p);
+            dot(e, e).sqrt() * self.mpu(p) > reach_m
+        };
+        let (mut lo, mut hi) = (k0, k0);
+        while lo > a && !far(lo) {
+            lo -= 1;
+        }
+        while hi < b && !far(hi) {
+            hi += 1;
+        }
+        (lo, hi.max(lo + 1))
     }
 
     /// The surface of the way at its foot: its curve's height there plus the bank times the metres across.
@@ -404,7 +421,7 @@ impl<'a> Ctx<'a> {
     /// Whether q lies over the body of way `g`: its paved stroke and, for a ground way, its bank down
     /// to the terrain.
     fn in_body(&self, g: u32, q: [f64; 2]) -> bool {
-        let Some(f) = self.foot(g, q) else { return false };
+        let Some(f) = self.feet(q, HALF_MAX_M + BODY_M).into_iter().find(|f| f.way == g) else { return false };
         let past = f.d * self.mpu(q) - self.foot_half(&f);
         if past <= 0.0 {
             return true;
@@ -439,15 +456,16 @@ impl<'a> Ctx<'a> {
     }
 
     /// The raw state of a tunnel station: BORE, OPEN or HIDDEN, before the run rules.
-    fn tunnel_state(&self, w: u32, a: &At, tag_m: f64) -> State {
-        if self.bore(w, a).0 >= 0.0 {
-            return State::Bore;
+    /// The raw state of a tunnel station, and the bore test's margin there.
+    fn tunnel_state(&self, w: u32, a: &At, tag_m: f64) -> (State, f64) {
+        let margin = self.bore(w, a).0;
+        if margin >= 0.0 {
+            return (State::Bore, margin);
         }
-        let (_, paved) = self.ground(a.p, w);
-        if a.z <= self.terrain(a.p) && !paved && tag_m <= self.s.open_max_m {
-            State::Open
+        if tag_m > self.s.open_max_m || a.z > self.terrain(a.p) || self.ground(a.p, w).1 {
+            (State::Hidden, margin)
         } else {
-            State::Hidden
+            (State::Open, margin)
         }
     }
 
@@ -475,6 +493,8 @@ impl<'a> Ctx<'a> {
 
 /// A body read past the widest half-width: the widest class reach and widening.
 const BODY_M: f64 = 12.0;
+/// The farthest read of a state from its way: a bore's side, a deck stroke, a body and its reach.
+const GRID_M: f64 = 40.0;
 /// The steps of the search for an end line A, metres.
 const A_STEP_M: f64 = 0.1;
 /// End lines are placed to this, metres.
@@ -485,21 +505,6 @@ pub(crate) fn levels(g: &mut WayGraph, input: &CellInput, rules: &[Rule<'_>], s:
     let o = g.cell.origin();
     let origin = [o.x as f64, o.y as f64];
     let size = super::BUCKET_M / metres_per_unit_at(origin[1]);
-    let mut grid = Vec::new();
-    for w in &g.ways {
-        for k in w.samples.start..w.samples.end.saturating_sub(1) {
-            let (a, b) = (&g.samples[k as usize], &g.samples[k as usize + 1]);
-            let p = |s: &Sample, i: usize| origin[i] + f64::from(s.pos[i]);
-            let lo = |i| (p(a, i).min(p(b, i)) / size).floor() as i64;
-            let hi = |i| (p(a, i).max(p(b, i)) / size).floor() as i64;
-            for y in lo(1)..=hi(1) {
-                for x in lo(0)..=hi(0) {
-                    grid.push(([x, y], w.id, k));
-                }
-            }
-        }
-    }
-    grid.sort_unstable();
     let mut nodes: BTreeMap<(u32, bool), Vec<(u32, bool)>> = BTreeMap::new();
     let arm_sets = (g.junctions.iter().map(|j| j.arms.iter().collect::<Vec<_>>()))
         .chain(g.joints.iter().map(|j| j.arms.iter().collect()))
@@ -512,8 +517,9 @@ pub(crate) fn levels(g: &mut WayGraph, input: &CellInput, rules: &[Rule<'_>], s:
     }
     let lengths = g.ways.iter().map(|w| between(&g.parts, &w.from, &w.to)).collect();
     let (ladders, levels, counts) = {
-        let ctx = Ctx { g: &*g, input, rules, s, origin, grid, size, nodes, lengths };
+        let mut ctx = Ctx { g: &*g, input, rules, s, origin, grid: Vec::new(), size, nodes, lengths };
         let ladders: Vec<Option<Ladder>> = g.crossings.iter().map(|c| ladder(&ctx, c)).collect();
+        ctx.grid = grid(&ctx, &ladders);
         let mut levels = Levels { open_max_m: s.open_max_m, deck_min_m: s.deck_min_m, ..Levels::default() };
         states(&ctx, &ladders, &mut levels);
         sheets(&ctx, &mut levels);
@@ -525,6 +531,45 @@ pub(crate) fn levels(g: &mut WayGraph, input: &CellInput, rules: &[Rule<'_>], s:
     }
     g.levels = levels;
     g.stats.levels = counts;
+}
+
+/// The sample segments of every way near a way that gets a state, in buckets: the reads of the
+/// states reach no farther than `GRID_M` from such a way.
+fn grid(ctx: &Ctx, ladders: &[Option<Ladder>]) -> Vec<([i64; 2], u32, u32)> {
+    let g = ctx.g;
+    let ended = ladders.iter().flatten().filter_map(|l| l.ends);
+    let mut boxes: Vec<[f64; 4]> = Vec::new();
+    for w in (0..g.ways.len() as u32).filter(|&w| ctx.tagged(w)).chain(ended) {
+        let pts: Vec<[f64; 2]> = ctx.samples(w).iter().map(|s| ctx.global(s)).collect();
+        let grow = GRID_M / ctx.mpu(pts[0]);
+        let lo = |i: usize| pts.iter().map(|p| p[i]).fold(f64::INFINITY, f64::min) - grow;
+        let hi = |i: usize| pts.iter().map(|p| p[i]).fold(f64::NEG_INFINITY, f64::max) + grow;
+        boxes.push([lo(0), lo(1), hi(0), hi(1)]);
+    }
+    let mut grid = Vec::new();
+    if boxes.is_empty() {
+        return grid;
+    }
+    for w in &g.ways {
+        for k in w.samples.start..w.samples.end.saturating_sub(1) {
+            let (a, b) = (ctx.global(&g.samples[k as usize]), ctx.global(&g.samples[k as usize + 1]));
+            let near = |x: &[f64; 4]| {
+                a[0].max(b[0]) >= x[0] && a[0].min(b[0]) <= x[2] && a[1].max(b[1]) >= x[1] && a[1].min(b[1]) <= x[3]
+            };
+            if !boxes.iter().any(near) {
+                continue;
+            }
+            let lo = |i: usize| (a[i].min(b[i]) / ctx.size).floor() as i64;
+            let hi = |i: usize| (a[i].max(b[i]) / ctx.size).floor() as i64;
+            for y in lo(1)..=hi(1) {
+                for x in lo(0)..=hi(0) {
+                    grid.push(([x, y], w.id, k));
+                }
+            }
+        }
+    }
+    grid.sort_unstable();
+    grid
 }
 
 /// The way of a crossing's station.
@@ -559,10 +604,12 @@ fn ladder(ctx: &Ctx, c: &super::Crossing) -> Option<Ladder> {
     let sin = cross(au.tangent, al.tangent).abs().max(1e-9);
     let along = |h: f64| (h / sin).min(PLACE_M) / mpu;
     let (hu, hl) = (ctx.half(upper, au.widen), ctx.half(lower, al.widen));
+    let reach = 2.0 * PLACE_M + HALF_MAX_M;
+    let (wu, wl) = (ctx.window(upper, &c.over, p, reach), ctx.window(lower, &c.under, p, reach));
     let mut r = f64::INFINITY;
     for (a, b) in [(0.0, 0.0), (1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)] {
         let q = add(add(p, au.tangent, a * along(hl)), al.tangent, b * along(hu));
-        let (Some(fu), Some(fl)) = (ctx.foot(upper, q), ctx.foot(lower, q)) else { return None };
+        let (Some(fu), Some(fl)) = (ctx.foot(upper, wu, q), ctx.foot(lower, wl, q)) else { return None };
         r = r.min(ctx.surface(&fu, q) - ctx.surface(&fl, q));
     }
     let Rule::Way(su, _) = ctx.rule(upper) else { return None };
@@ -638,20 +685,24 @@ fn states(ctx: &Ctx, ladders: &[Option<Ladder>], out: &mut Levels) {
     let mut ground: Vec<bool> = (0..g.ways.len() as u32)
         .map(|w| !ctx.deck_tagged(w) || culvert[w as usize] || ended.contains_key(&w))
         .collect();
+    // A deck way that turns ground changes the A lines of the deck ways at its ends only.
+    let mut ends_of: BTreeMap<u32, DeckEnds> = BTreeMap::new();
+    let mut dirty: Vec<u32> = ways.iter().copied().filter(|&w| !ground[w as usize]).collect();
     for _ in 0..4 {
-        let mut changed = false;
-        for &w in &ways {
-            if !ctx.deck_tagged(w) || ground[w as usize] {
-                continue;
-            }
-            let (a, len) = deck_ends(ctx, w, &ground);
-            let _ = a;
-            if len < ctx.s.deck_min_m {
+        let mut turned = Vec::new();
+        for &w in &dirty {
+            let ends = deck_ends(ctx, w, &ground);
+            if ends.1 < ctx.s.deck_min_m {
                 ground[w as usize] = true;
-                changed = true;
+                turned.push(w);
             }
+            ends_of.insert(w, ends);
         }
-        if !changed {
+        let next = turned.iter().flat_map(|&w| [(w, true), (w, false)]).flat_map(|k| ctx.nodes.get(&k)).flatten();
+        dirty = next.map(|&(o, _)| o).filter(|&o| !ground[o as usize]).collect();
+        dirty.sort_unstable();
+        dirty.dedup();
+        if dirty.is_empty() {
             break;
         }
     }
@@ -684,8 +735,7 @@ fn states(ctx: &Ctx, ladders: &[Option<Ladder>], out: &mut Levels) {
         if tunnel {
             for (i, sample) in samples.iter().enumerate() {
                 let a = ctx.at_station(ctx.station(w, sample));
-                t.state[i] = ctx.tunnel_state(w, &a, t.tag_m[i]);
-                t.margin[i] = ctx.bore(w, &a).0;
+                (t.state[i], t.margin[i]) = ctx.tunnel_state(w, &a, t.tag_m[i]);
             }
             // A tunnel never becomes an open way between two bores.
             let bores: Vec<usize> = (0..t.state.len()).filter(|&i| t.state[i] == State::Bore).collect();
@@ -697,7 +747,7 @@ fn states(ctx: &Ctx, ladders: &[Option<Ladder>], out: &mut Levels) {
                 }
             }
         } else if ctx.deck_tagged(w) && !ground[w as usize] {
-            let (a, len) = deck_ends(ctx, w, &ground);
+            let (a, len) = ends_of[&w];
             let lo = a[0].map_or(0.0, |x| x.0);
             let hi = a[1].map_or(t.m.last().copied().unwrap_or(0.0), |x| x.0);
             for i in 0..t.m.len() {
@@ -731,7 +781,9 @@ fn states(ctx: &Ctx, ladders: &[Option<Ladder>], out: &mut Levels) {
 
 /// The A lines of a DECK way at its tag ends, (metres along, clearance), and the metres between them
 /// read on through deck joints up to `deck_min_m`.
-fn deck_ends(ctx: &Ctx, w: u32, ground: &[bool]) -> ([Option<(f64, f64)>; 2], f64) {
+type DeckEnds = ([Option<(f64, f64)>; 2], f64);
+
+fn deck_ends(ctx: &Ctx, w: u32, ground: &[bool]) -> DeckEnds {
     let len = ctx.lengths[w as usize];
     let deck = |o: u32| ctx.deck_tagged(o) && !ground[o as usize];
     let mut a = [None, None];
@@ -825,7 +877,7 @@ fn runs(ctx: &Ctx, t: &Track, ended: &BTreeMap<u32, Vec<(usize, u32)>>, out: &mu
         }
         if tunnel {
             let tag = t.m.iter().zip(&t.tag_m).map(|(x, d)| d + (x - m).abs()).fold(f64::INFINITY, f64::min);
-            ctx.tunnel_state(w, &a, tag)
+            ctx.tunnel_state(w, &a, tag).0
         } else {
             State::Open
         }
@@ -1174,6 +1226,7 @@ fn count(ctx: &Ctx, ladders: &[Option<Ladder>], levels: &Levels) -> BTreeMap<Str
     let cell = g.cell;
     let owned = |p: [f64; 2]| cell.contains(GlobalPoint { x: libm::round(p[0]) as i64, y: libm::round(p[1]) as i64 });
     let mut c: BTreeMap<String, u32> = BTreeMap::new();
+    let mut metres_of: BTreeMap<String, f64> = BTreeMap::new();
     let mut add_to = |name: String, n: u32| *c.entry(name).or_default() += n;
     let family = |w: u32| match g.ways[w as usize].family {
         Family::Road => "road",
@@ -1236,9 +1289,9 @@ fn count(ctx: &Ctx, ladders: &[Option<Ladder>], levels: &Levels) -> BTreeMap<Str
             }
         }
         let tagged = if ctx.tagged(r.way) { "tagged" } else { "untagged" };
-        add_to(format!("metres {tagged} {:?}", r.state), libm::round(metres) as u32);
+        *metres_of.entry(format!("decimetres {tagged} {:?}", r.state)).or_default() += metres * 10.0;
         if ctx.tunnel(r.way) && g.ways[r.way as usize].family == Family::Rail && r.state == State::Hidden {
-            add_to("rail tunnel hidden metres".into(), libm::round(metres) as u32);
+            *metres_of.entry("decimetres rail tunnel hidden".into()).or_default() += metres * 10.0;
         }
         add_to("bore stations within a slope reach of a ground way".into(), near);
     }
@@ -1296,5 +1349,6 @@ fn count(ctx: &Ctx, ladders: &[Option<Ladder>], levels: &Levels) -> BTreeMap<Str
             }
         }
     }
+    c.extend(metres_of.into_iter().map(|(k, v)| (k, libm::round(v) as u32)));
     c
 }
