@@ -180,6 +180,7 @@ The options of the [planner layers](#planner) that are the same for each region.
 | --- | --- | --- |
 | `osm.margin_m` | number | `planner/osm/bounds` of a region with a box reaches at least this far around the region, in metres: the search puts a place in the town of a place node up to 15 km away |
 | `routing.profiles` | array of strings | The profiles of the routing package. The route catalog needs `touring`, `road`, `gravel`, `mtb/technical` and `hiking/alpine` |
+| `routing.cell_sizes` | array of integers | The largest number of junctions in a routing cell of level 1, 2, …: the option `cell_sizes` of `planner/routing-roads` |
 | `climate.first_year` | integer | The first of the ten years of ERA5-Land that the climate layer reads |
 | `snow.seasons` | array of 2 integers | The first and the last season of the snow layer, and of a version of [`snow`](#snow) |
 
