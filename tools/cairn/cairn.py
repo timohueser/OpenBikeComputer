@@ -3,16 +3,16 @@
 
 Each doc under `docs/design/` has a header that names the files its system or shell owns and the
 systems it depends on. `check` finds the violations of the ownership rule, the dependency rule and
-the rules R1 to R4, and compares them with the baseline. A violation that is not in the baseline,
-or that grew, fails only when it touches a system whose doc has `status: approved`. A stale map
-always fails. `--base REF` also fails when the baseline grew since the merge base with REF.
+the rules R1, R2 and R4, and compares them with the baseline. A violation that is not in the
+baseline fails only when it touches a system whose doc has `status: approved`. A stale map always
+fails. `--base REF` also fails when the baseline grew since the merge base with REF.
 
 Usage: python3 tools/cairn/cairn.py
          check [--base REF] [--update | --accept]
          map
          leaves SYSTEM
          model ROLE [--harness claude-code|codex]
-         report [--publish] [--drift]
+         report [--publish]
 """
 
 from __future__ import annotations
@@ -67,8 +67,6 @@ class Violation:
     id: str
     systems: frozenset[str]
     message: str
-    # R1 and R4 count files, R3 counts lines. A size above the baseline is a new violation.
-    size: int = 1
 
 
 @dataclass
@@ -240,7 +238,6 @@ def analyse(
     files: list[str],
     units: list[dict],
     edges: list[tuple[str, str, bool]],
-    lines: dict[str, int],
     config: dict,
 ) -> Result:
     by_name = {doc.system: doc for doc in docs}
@@ -295,7 +292,7 @@ def analyse(
             foreign[key] = foreign.get(key, 0) + 1
     for (crate, other), count in sorted(foreign.items()):
         base = unit_owner[crate]
-        out.append(Violation("R1", f"R1 {crate} {other}", frozenset({base, other}), f"crate {crate} ({base}) holds {count} file(s) of {other}", count))
+        out.append(Violation("R1", f"R1 {crate} {other}", frozenset({base, other}), f"crate {crate} ({base}) holds {count} file(s) of {other}"))
 
     # R2: one root for each place that a system's code runs.
     runtimes = config["runtimes"]
@@ -310,14 +307,6 @@ def analyse(
                 others = ", ".join(sorted(found_roots - {root}))
                 out.append(Violation("R2", f"R2 {system} {runtime} {root}", frozenset({system}), f"{system} has {runtime} code in {root}, and also in {others}"))
 
-    # R3: a shell's own lines, which are the files that no system owns. The baseline records each
-    # count, and a count may not grow.
-    for doc in docs:
-        if doc.kind == "shell":
-            count = sum(lines.get(path, 0) for path, system in owner.items() if system == doc.system)
-            if count:
-                out.append(Violation("R3", f"R3 {doc.system}", frozenset({doc.system}), f"shell {doc.system} holds {count:,} lines of its own", count))
-
     # R4: only the tooling area keeps files in the tooling folder.
     folder, area = config["tooling"]["path"], config["tooling"]["area"]
     counts: dict[str, int] = {}
@@ -325,7 +314,7 @@ def analyse(
         if path.startswith(folder) and by_name[system].area != area:
             counts[system] = counts.get(system, 0) + 1
     for system, count in sorted(counts.items()):
-        out.append(Violation("R4", f"R4 {system}", frozenset({system}), f"{system} ({by_name[system].area}) has {count} file(s) under {folder}", count))
+        out.append(Violation("R4", f"R4 {system}", frozenset({system}), f"{system} ({by_name[system].area}) has {count} file(s) under {folder}"))
 
     return Result(out, loops, {(a, b, test) for (a, b), test in pairs.items()}, undeclared)
 
@@ -436,11 +425,38 @@ def skill_tokens(root: Path, settings: dict) -> list[tuple[str, int, int]]:
     return [(path.relative_to(folder).as_posix(), path.stat().st_size // 4, limit) for path, limit in files]
 
 
+# ── the rules tables ─────────────────────────────────────────────────────────
+
+
+RULES_SECTION = re.compile(r"^## Rules[^\n]*\n(.*?)(?=^## |\Z)", re.S | re.M)
+#: A test or function name: snake case with at least one `_`, alone between backticks.
+NAME = re.compile(r"`([a-z][a-z0-9]*(?:_[a-z0-9]+)+)`")
+LINK = re.compile(r"\]\(([^)#\s]+)")
+
+
+def lost_names(root: Path, folder: str) -> list[str]:
+    """The names in the last column of a doc's Rules table that no file linked in their cell holds.
+
+    A rule in a doc points at the test that enforces it. When that test is renamed or removed, the
+    doc must follow in the same change.
+    """
+    out = []
+    for path in sorted((root / folder).glob("*.md")):
+        section = RULES_SECTION.search(path.read_text(encoding="utf-8"))
+        for row in section.group(1).splitlines() if section else []:
+            cell = row.rstrip().removesuffix("|").rsplit("|", 1)[-1]
+            linked = [path.parent / link for link in LINK.findall(cell)]
+            texts = [file.read_text(encoding="utf-8", errors="replace") for file in linked if file.is_file()]
+            out += [f"{path.relative_to(root)}: no file linked beside `{name}` in the Rules table holds that name"
+                    for name in NAME.findall(cell) if not any(name in text for text in texts)]
+    return out
+
+
 # ── the ratchet ──────────────────────────────────────────────────────────────
 
 
-def new_violations(violations: list[Violation], baseline: dict[str, int]) -> list[Violation]:
-    return [v for v in violations if v.size > baseline.get(v.id, 0)]
+def new_violations(violations: list[Violation], baseline: set[str]) -> list[Violation]:
+    return [v for v in violations if v.id not in baseline]
 
 
 def fails(systems: frozenset[str], approved: set[str]) -> bool:
@@ -456,21 +472,18 @@ def touched(key: str, violations: list[Violation], names: set[str]) -> frozenset
     return found if found is not None else frozenset(set(key.split()) & names)
 
 
-def updated(violations: list[Violation], baseline: dict[str, int]) -> dict[str, int]:
-    """Drop the entries that disappeared and lower the sizes that shrank. Never add or raise one."""
-    sizes = {v.id: v.size for v in violations}
-    return {key: min(size, sizes[key]) for key, size in sorted(baseline.items()) if key in sizes}
+def updated(violations: list[Violation], baseline: set[str]) -> set[str]:
+    """Drop the entries that disappeared. Never add one."""
+    return baseline & {v.id for v in violations}
 
 
-def grown(head: dict[str, int], base: dict[str, int] | None, violations: list[Violation]) -> list[str]:
-    """The baseline entries that a change added or raised by hand.
+def grown(head: set[str], base: set[str] | None, violations: list[Violation]) -> list[str]:
+    """The baseline entries that a change added by hand.
 
-    Only `--update` changes an existing baseline, and it only removes and lowers. A base with no
-    baseline allows exactly the first baseline that `--accept` writes.
+    Only `--update` changes an existing baseline, and it only removes. A base with no baseline
+    allows exactly the first baseline that `--accept` writes.
     """
-    if base is None:
-        base = {v.id: v.size for v in violations}
-    return [f"{key}: {size}" for key, size in sorted(head.items()) if size > base.get(key, 0)]
+    return sorted(head - ({v.id for v in violations} if base is None else base))
 
 
 # ── input ────────────────────────────────────────────────────────────────────
@@ -482,7 +495,7 @@ def tracked_sources(root: Path, sources: dict) -> list[str]:
     return [f for f in out.splitlines() if (f.endswith(extensions) or f in sources["files"]) and (root / f).is_file()]
 
 
-def base_baseline(show: Callable[[str], str | None]) -> dict[str, int] | None:
+def base_baseline(show: Callable[[str], str | None]) -> set[str] | None:
     """The baseline at the base commit, or None when it has none.
 
     The path comes from the base commit's own config, so a change that moves the baseline cannot
@@ -490,7 +503,7 @@ def base_baseline(show: Callable[[str], str | None]) -> dict[str, int] | None:
     """
     config = show(CONFIG)
     text = show(json.loads(config)["baseline"]) if config is not None else None
-    return json.loads(text) if text is not None else None
+    return set(json.loads(text)) if text is not None else None
 
 
 def approved_at(root: Path, commit: str, folder: str) -> set[str]:
@@ -541,22 +554,21 @@ def gather(root: Path, config: dict) -> tuple[list[Doc], list[str], list[dict], 
 # ── output ───────────────────────────────────────────────────────────────────
 
 
-RULES = ("ownership", "dependency", "cycle", "R1", "R2", "R3", "R4")
+RULES = ("ownership", "dependency", "cycle", "R1", "R2", "R4")
 
 
-def report(result: Result, baseline: dict[str, int], docs: list[Doc], approved: set[str]) -> list[str]:
+def report(result: Result, baseline: set[str], docs: list[Doc], approved: set[str]) -> list[str]:
     """Print the report and return what fails.
 
-    A new or grown violation fails when it touches an approved system. So does a baseline entry
-    that shrank or disappeared: the baseline must follow it, or the violation could grow back
-    unseen. For a draft system, the entry is only a hint to run `--update`.
+    A new violation fails when it touches an approved system. So does a baseline entry whose
+    violation is gone: the baseline must follow it, or the violation could come back unseen. For
+    a draft system, the entry is only a hint to run `--update`.
     """
     names = {doc.system for doc in docs}
     fresh = new_violations(result.violations, baseline)
     failing = [v.message for v in fresh if fails(v.systems, approved)]
-    sizes = {v.id: v.size for v in result.violations}
-    shrunk = [key for key, size in sorted(baseline.items()) if sizes.get(key, 0) < size]
-    stale = [key for key in shrunk if fails(touched(key, result.violations, names), approved)]
+    gone = sorted(baseline - {v.id for v in result.violations})
+    stale = [key for key in gone if fails(touched(key, result.violations, names), approved)]
     systems = sum(doc.kind == "system" for doc in docs)
     print(f"cairn: {systems} systems, {len(docs) - systems} shells, {len(approved)} approved")
     for rule in RULES:
@@ -566,15 +578,15 @@ def report(result: Result, baseline: dict[str, int], docs: list[Doc], approved: 
     for members in result.cycles:
         print(f"  cycle between {', '.join(members)}")
     if fresh:
-        print("\nnew or grown since the baseline:")
+        print("\nnew since the baseline:")
         for v in fresh:
             print(f"  {'FAIL' if v.message in failing else '    '} {v.message}")
-    if shrunk:
-        print("\nshrunk or gone; `obc cairn check --update` records them in the baseline:")
-        for key in shrunk:
-            print(f"  {'FAIL' if key in stale else '    '} {key}: {baseline[key]} -> {sizes.get(key, 0)}")
+    if gone:
+        print("\ngone; `obc cairn check --update` removes them from the baseline:")
+        for key in gone:
+            print(f"  {'FAIL' if key in stale else '    '} {key}")
     print(f"\ncairn: {len(result.violations)} violation(s), baseline {len(baseline)}, "
-          f"{len(fresh)} new, {len(shrunk)} shrunk, {len(failing) + len(stale)} fail")
+          f"{len(fresh)} new, {len(gone)} gone, {len(failing) + len(stale)} fail")
     return failing + stale
 
 
@@ -723,7 +735,7 @@ def harness() -> str | None:
 
 def model_for(config: dict, role: str, harness: str | None) -> tuple[str, str] | None:
     """The model of a role in a harness and its effort, or None when the role runs on the
-    session's own model. An `api` model is a family prefix, or an exact model ID as a pin."""
+    session's own model."""
     roles = config["roles"]
     if role not in roles:
         raise CairnError(f"unknown role `{role}`; the roles are {', '.join(roles)}")
@@ -751,7 +763,7 @@ def main(argv: list[str] | None = None) -> int:
     check = commands.add_parser("check", help="check the code against the system docs")
     check.add_argument("--base", metavar="REF", help="also fail when the baseline grew since the merge base with REF")
     write = check.add_mutually_exclusive_group()
-    write.add_argument("--update", action="store_true", help="remove gone entries and lower shrunk sizes in the baseline")
+    write.add_argument("--update", action="store_true", help="remove gone entries from the baseline")
     write.add_argument("--accept", action="store_true", help="write the first baseline from the current state")
     commands.add_parser("map", help="rewrite the generated block of the system map, and its JSON")
     leaf = commands.add_parser("leaves", help="print a system's files in leaves, with the systems that each leaf's crate uses")
@@ -759,9 +771,8 @@ def main(argv: list[str] | None = None) -> int:
     model = commands.add_parser("model", help="print the model and effort of a role in the current harness")
     model.add_argument("role")
     model.add_argument("--harness", choices=HARNESSES, help="the harness, instead of the one the environment shows")
-    weekly = commands.add_parser("report", help="print the weekly report on skipped pull requests, sizes, the ratchet and drift")
+    weekly = commands.add_parser("report", help="print the weekly report on skipped pull requests, the ratchet and the docs to check")
     weekly.add_argument("--publish", action="store_true", help="also write it to the open issue labelled cairn-report")
-    weekly.add_argument("--drift", action="store_true", help="run step 2, which spends tokens of the Anthropic API")
     args = parser.parse_args(argv)
 
     if args.command == "model":
@@ -770,7 +781,7 @@ def main(argv: list[str] | None = None) -> int:
         # Not `import report`: that name is the ratchet report below.
         from report import main as weekly
 
-        return weekly(args.publish, args.drift)
+        return weekly(args.publish)
 
     try:
         config = json.loads((ROOT / CONFIG).read_text())
@@ -785,7 +796,7 @@ def main(argv: list[str] | None = None) -> int:
             found = leaves(args.system, docs, files, units, edges, lines, limit, most, skip)
             print_leaves(args.system, found, units, lines, limit, most)
             return 0
-        result = analyse(docs, files, units, edges, lines, config)
+        result = analyse(docs, files, units, edges, config)
         page = ROOT / config["docs"] / MAP
         drawn = page.read_text(encoding="utf-8")
         current = with_map(drawn, system_map(docs, result), str(page.relative_to(ROOT)))
@@ -804,21 +815,22 @@ def main(argv: list[str] | None = None) -> int:
         # An approval at the base still holds, so a change cannot lift it to hide its own violation.
         was_approved = approved_at(ROOT, commit, config["docs"].rstrip("/")) if commit else set()
         skill = skill_tokens(ROOT, config["skill"]) if "skill" in config else []
+        lost = lost_names(ROOT, config["docs"])
     except (CairnError, OSError, RuntimeError, KeyError, ValueError, subprocess.CalledProcessError) as error:
         print(f"cairn: {error}", file=sys.stderr)
         return 1
 
     path = ROOT / config["baseline"]
-    baseline = json.loads(path.read_text()) if path.exists() else {}
+    baseline = set(json.loads(path.read_text())) if path.exists() else set()
     if args.accept:
         if path.exists():
             print(f"cairn: {config['baseline']} exists; --accept writes only the first baseline", file=sys.stderr)
             return 1
-        baseline = {v.id: v.size for v in sorted(result.violations, key=lambda v: v.id)}
+        baseline = {v.id for v in result.violations}
     elif args.update:
         baseline = updated(result.violations, baseline)
     if args.accept or args.update:
-        path.write_text(json.dumps(baseline, indent=2) + "\n")
+        path.write_text(json.dumps(sorted(baseline), indent=2) + "\n")
         print(f"cairn: baseline holds {len(baseline)} entries")
 
     approved = {doc.system for doc in docs if doc.status == "approved"} | was_approved
@@ -834,9 +846,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\ncairn: skill tokens (bytes / 4) in {config['skill']['path']}:")
         for name, tokens, limit in skill:
             print(f"  {'FAIL' if name in over else '    '} {name}: {tokens:,} of {limit:,}")
+    for line in lost:
+        print(f"\ncairn: {line}")
     for p in stale:
         print(f"\ncairn: {p.relative_to(ROOT)} is out of date; run `obc cairn map` or `python3 tools/cairn/cairn.py map`")
-    return 1 if failing or added or over or stale else 0
+    return 1 if failing or added or over or lost or stale else 0
 
 
 if __name__ == "__main__":
