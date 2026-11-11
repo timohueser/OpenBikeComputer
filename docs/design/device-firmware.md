@@ -22,9 +22,9 @@ status: approved
 
 ## What it does
 
-The board image is the program that runs on the device's nRF54L microcontroller. A developer flashes it with `obc flash`, after the bootloader. The image runs on the nRF54LM20 development kit. It moves to the project's own board when the chip is available in the QFN package.
+The board image is the program that runs on the device's nRF54L microcontroller. A developer flashes it with `obc flash`, after the bootloader. The image runs on the nRF54LM20 development kit, not on the project's own board.
 
-The entry point [`main.rs`](../../firmware/obc-fw-nrf54l/src/main.rs) starts the hardware and runs three tasks: the ride loop, the Bluetooth link and the USB link. The image puts together the device runtime, map reading, navigation, the renderer, card storage, the device link, firmware update and the sensor inputs. Its own glue code holds one RAM block that several large users take in turn ([`arena.rs`](../../firmware/obc-fw-nrf54l/src/arena.rs)), the one task that writes to the card, and the settings in the chip's RRAM.
+The entry point [`main.rs`](../../firmware/obc-fw-nrf54l/src/main.rs) starts the hardware and the tasks: the ride loop, the Bluetooth link, the USB link, and the tasks of the sensors, the buttons and the card. The image puts together the device runtime, map reading, navigation, the renderer, card storage, the device link, firmware update and the sensor inputs. Its own glue code holds one RAM block that several large users take in turn ([`arena.rs`](../../firmware/obc-fw-nrf54l/src/arena.rs)), the one task that writes to the card, and the settings in the chip's RRAM.
 
 Board support owns the drivers for the radio, USB, card, panel and sensors. The build script [`build.rs`](../../firmware/obc-fw-nrf54l/build.rs) generates the memory layout and builds the program of the display coprocessor.
 

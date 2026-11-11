@@ -22,7 +22,7 @@ The data registry is a set of TOML and JSON files in `data/`, with no code. `obc
 - `archive/` describes the datasets of the archive. `planner.toml` and `planner-runtime.toml` hold the options of the planner. `machines.toml` names the build machines for the operator page.
 - [`trailview/`](../../data/trailview/README.md) holds the rules of the TrailView ground and features.
 
-The data engine reads the registry with [`sources.rs`](../../host/obc-data/src/sources.rs). Python steps read it with [`data_registry.py`](../../tools/data_registry.py). The [data contract](../../specs/obc-data.md) defines the format.
+The data engine reads `sources.toml` with [`sources.rs`](../../host/obc-data/src/sources.rs), and the other files with its modules for regions, targets, machines and datasets. Python steps read it with [`data_registry.py`](../../tools/data_registry.py). The [data contract](../../specs/obc-data.md) defines the format.
 
 ## Rules that must hold
 
@@ -30,7 +30,7 @@ The data engine reads the registry with [`sources.rs`](../../host/obc-data/src/s
 | --- | --- |
 | A data source with no licence is blocked. | `a_missing_licence_blocks_but_credentials_only_gate_selected_fetches` in [`sources.rs`](../../host/obc-data/src/sources.rs) |
 | A licence is an SPDX expression. | `a_licence_is_an_spdx_expression` in [`sources.rs`](../../host/obc-data/src/sources.rs) |
-| The registry in the repository loads. | `the_checked_in_registry_loads` in [`sources.rs`](../../host/obc-data/src/sources.rs) |
+| The sources file in the repository loads. | `the_checked_in_registry_loads` in [`sources.rs`](../../host/obc-data/src/sources.rs) |
 | Only the OSM sources and the prepared sources refresh by age. | `only_osm_and_prepared_sources_refresh_by_age` in [`sources.rs`](../../host/obc-data/src/sources.rs) |
 
 ## Decisions

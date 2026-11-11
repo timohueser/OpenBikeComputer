@@ -61,9 +61,9 @@ The shell puts together map assembly, map style, route planning, TrailView, the 
 
 | Rule | Check |
 | --- | --- |
-| The web site's bundle contains no map-build code and no style editor. | `keeps build and style-editor code out of the web target` in [`bundle.test.ts`](../../builder/web/src/lib/platform/bundle.test.ts) |
+| The web site's bundle contains no server client, no desktop code and no style editor. | `keeps build and style-editor code out of the web target` in [`bundle.test.ts`](../../builder/web/src/lib/platform/bundle.test.ts) |
 | Each host capability has a reason and a next step that the rider sees. | `has a reason for every capability flag` in [`gating.test.ts`](../../builder/web/src/lib/platform/gating.test.ts) |
-| The built app refers to its files with relative paths, so it works under any path of a server. | `references its own assets relatively` in [`bundle.test.ts`](../../builder/web/src/lib/platform/bundle.test.ts); the step "Mountable at any prefix" in [`deploy-site.yml`](../../.github/workflows/deploy-site.yml) |
+| The built app refers to its files with relative paths, so it works under any path of a server. | `references its own assets relatively` in [`bundle.test.ts`](../../builder/web/src/lib/platform/bundle.test.ts); the step `Mountable at any prefix` in [`deploy-site.yml`](../../.github/workflows/deploy-site.yml) |
 
 ## Decisions
 

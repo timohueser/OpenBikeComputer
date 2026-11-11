@@ -25,7 +25,7 @@ The app does not define the wire format. The [Bluetooth contract](../../specs/bl
 | --- | --- |
 | Only the Bluetooth folder of `OBCTransport` imports CoreBluetooth. | `testCoreBluetoothConfinedToTheBLEFolder` in [`CoreBluetoothSeamTests.swift`](../../companion-ios/Packages/OBCKit/Tests/OBCTransportTests/CoreBluetoothSeamTests.swift) |
 | The app entry point does not import CoreBluetooth. | `testAppCompositionRootNeverImportsCoreBluetooth` in [`CoreBluetoothSeamTests.swift`](../../companion-ios/Packages/OBCKit/Tests/OBCTransportTests/CoreBluetoothSeamTests.swift) |
-| A Release build contains no test-double code. | The step "Mock marker absent from Release" in [`ci.yml`](../../.github/workflows/ci.yml), with `testDebugBuildMarkerIsCompiledIn` in [`MockTransportTests.swift`](../../companion-ios/Packages/OBCKit/Tests/OBCMockTests/MockTransportTests.swift) |
+| A Release build contains no test-double code. | The step `Mock marker absent from Release` in [`ci.yml`](../../.github/workflows/ci.yml), with `testDebugBuildMarkerIsCompiledIn` in [`MockTransportTests.swift`](../../companion-ios/Packages/OBCKit/Tests/OBCMockTests/MockTransportTests.swift) |
 
 ## Decisions
 
