@@ -10,7 +10,6 @@
     import Itinerary from './Itinerary.svelte';
     import TripRow from './TripRow.svelte';
     import RouteList from './RouteList.svelte';
-    import RouteStats from './RouteStats.svelte';
     import CompareScreen from './CompareScreen.svelte';
     import QueryResults from './QueryResults.svelte';
     import MapCallout, { type CalloutKind, type EditableKind } from './MapCallout.svelte';
@@ -1219,9 +1218,6 @@
                         {/if}
                     </div>
                 {/if}
-                {#if !focusedDay && visualRoute}
-                    <div class="trip-summary"><RouteStats distance={view.summary.distance} ascent={view.line?.unknownElevationKm === 0 ? view.summary.ascent : null} descent={view.line?.unknownElevationKm === 0 ? view.summary.descent : null} walking={shown.trip.bike === 'hiking'} hours={view.line ? view.summary.hours : null} /></div>
-                {/if}
                 {#if !focusedDay}<RouteNotes notes={routeNotes} shown={shownNote} onShow={showNote} />{/if}
                 <div class="pane-scroll" inert={multi && !currentRoute && routingStatus === 'Calculating route…'}>
                     {#if multi && visualRoute && (currentRoute || routingStatus === 'Calculating route…')}
@@ -1547,7 +1543,6 @@
         min-height: 0;
         background: var(--panel);
     }
-    .trip-summary { padding: 0 16px; }
     .trip-settings { padding: 4px 16px 12px; border-bottom: 1px solid var(--line); }
     .back-to-routes { display: flex; align-items: center; gap: 6px; min-height: 32px; margin: -4px 12px 8px; padding: 0 6px; border-radius: 6px; color: var(--ink-soft); font-size: 13px; text-align: left; }
     .back-to-routes:hover { background: var(--parchment-2); color: var(--ink); }
