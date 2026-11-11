@@ -198,11 +198,16 @@ impl Cells {
     }
 }
 
-/// The junction graph in RAM. The arrays never move: a part of a bisection is a range of
-/// positions, and an arc to a junction outside the part is skipped. Parts that run at the same time
+/// The junction graph in RAM, with its own junction numbers in Morton order of the points, so that
+/// the junctions of a part are near in memory. The order keys, their ties, the islands and the
+/// order of a split use the walk-1 IDs, so these numbers change only the speed. The arrays never
+/// move: a part of a bisection is a range of positions, and an arc to a junction outside the part
+/// is skipped. Parts that run at the same time
 /// touch disjoint entries of `residual` and `pos`, so relaxed atomics suffice. A read of `pos` of a
 /// junction of another part gives a position in that part, before or after its split: outside.
 struct Junctions {
+    /// The walk-1 ID of each junction.
+    walk1: Vec<u32>,
     /// Longitude and latitude in microdegrees.
     point: Vec<[i32; 2]>,
     /// The first arc of each junction, and the end.
@@ -254,10 +259,10 @@ impl Junctions {
         arcs.start + self.adj[arcs.clone()].binary_search(&from).expect("each arc has its twin")
     }
 
-    /// The order key of a junction in direction `direction`, with its ID: a strict order.
+    /// The order key of a junction in direction `direction`, with its walk-1 ID: a strict order.
     fn key(&self, direction: usize, junction: u32) -> (i64, u32) {
         let [lon, lat] = self.point[junction as usize].map(i64::from);
-        ([lon, lat, lon + lat, lon - lat][direction], junction)
+        ([lon, lat, lon + lat, lon - lat][direction], self.walk1[junction as usize])
     }
 }
 
@@ -364,7 +369,7 @@ impl Part<'_> {
                 head += 1;
                 if self.level[self.place(graph, junction).expect("a queued junction")] & SINK != 0 {
                     reached = true;
-                    break;
+                    continue;
                 }
                 tail = self.expand(graph, junction, tail);
             }
@@ -508,7 +513,10 @@ impl Part<'_> {
             self.set_level(place, ISLAND);
             self.queue[0] = self.at[place];
             let end = self.spread(graph, 0, 1, ISLAND);
-            let lowest = *self.queue[..end].iter().min().expect("the island holds a junction");
+            let lowest = *self.queue[..end]
+                .iter()
+                .min_by_key(|&&junction| graph.walk1[junction as usize])
+                .expect("the island holds a junction");
             let side = if graph.key(direction, lowest) <= median { 0 } else { SINK_SIDE };
             for i in 0..end {
                 let place = self.place(graph, self.queue[i]).expect("a junction of the island");
@@ -571,6 +579,16 @@ fn level_starts(tree: &[[u32; 2]], size: u32) -> Vec<u32> {
     starts
 }
 
+/// The bits of `value` spread to the even bits.
+fn spread(value: u32) -> u64 {
+    let mut value = u64::from(value);
+    value = (value | value << 16) & 0x0000_ffff_0000_ffff;
+    value = (value | value << 8) & 0x00ff_00ff_00ff_00ff;
+    value = (value | value << 4) & 0x0f0f_0f0f_0f0f_0f0f;
+    value = (value | value << 2) & 0x3333_3333_3333_3333;
+    (value | value << 1) & 0x5555_5555_5555_5555
+}
+
 /// The bits of `value`.
 fn bits(value: u32) -> u8 {
     (32 - value.leading_zeros()) as u8
@@ -588,32 +606,47 @@ pub fn partition(points: &Column<Point>, ends: &Column<(u32, u32)>, sizes: &[u32
     let edges: Column<((u32, u32), u8)> =
         sort::sorted(pairs).counted().map(|(pair, count)| (pair, count.min(127) as u8)).collect();
     let arcs = 2 * edges.len();
-    let need = 32 * j as u64 + 6 * arcs as u64;
+    let need = 36 * j as u64 + 6 * arcs as u64;
     let budget = work::page_budget()?.0;
     if need > budget {
         return Err(format!("The partition needs {need} bytes; the page budget is {budget}"));
     }
     u32::try_from(arcs).map_err(|_| format!("The partition has {arcs} arcs; it allows fewer than 2^32"))?;
     work::Guard::stage_within("partition", need + (256 << 20));
+    let morton = |point: &Point| {
+        spread(point.lon.wrapping_add(i32::MIN) as u32) | spread(point.lat.wrapping_add(i32::MIN) as u32) << 1
+    };
+    let keys: Column<(u64, u32)> = points.values().iter().zip(0..).map(|(point, id)| (morton(point), id)).collect();
+    let walk1: Vec<u32> = sort::sorted(keys).map(|(_, id)| id).collect();
+    // The own number of each walk-1 ID, and the first order of the positions: walk-1 order.
+    let mut at = vec![0u32; j];
+    for (junction, &id) in walk1.iter().enumerate() {
+        at[id as usize] = junction as u32;
+    }
     let mut level = vec![0u32; j];
     let mut graph = Junctions {
-        point: points.values().iter().map(|point| [point.lon, point.lat]).collect(),
+        point: walk1.iter().map(|&id| points.values()[id as usize]).map(|point| [point.lon, point.lat]).collect(),
+        walk1,
         first: vec![0; j + 1],
         adj: vec![0; arcs],
         capacity: vec![0; arcs],
         residual: (0..arcs).map(|_| AtomicU8::new(0)).collect(),
-        pos: (0..j as u32).map(AtomicU32::new).collect(),
+        pos: (0..j as u32).map(|_| AtomicU32::new(0)).collect(),
     };
+    for (place, &junction) in at.iter().enumerate() {
+        graph.pos[junction as usize] = AtomicU32::new(place as u32);
+    }
     for &((a, b), _) in edges.values() {
-        graph.first[a as usize + 1] += 1;
-        graph.first[b as usize + 1] += 1;
+        graph.first[at[a as usize] as usize + 1] += 1;
+        graph.first[at[b as usize] as usize + 1] += 1;
     }
     for i in 0..j {
         graph.first[i + 1] += graph.first[i];
     }
-    // `level` is the cursor of each list here. The pairs come sorted, so each list is sorted.
+    // `level` is the cursor of each list here.
     level.copy_from_slice(&graph.first[..j]);
     for &((a, b), capacity) in edges.values() {
+        let (a, b) = (at[a as usize], at[b as usize]);
         for (from, to) in [(a, b), (b, a)] {
             let arc = level[from as usize] as usize;
             (graph.adj[arc], graph.capacity[arc]) = (to, capacity);
@@ -621,14 +654,27 @@ pub fn partition(points: &Column<Point>, ends: &Column<(u32, u32)>, sizes: &[u32
         }
     }
     drop(edges);
-    let mut at: Vec<u32> = (0..j as u32).collect();
+    // Each list sorted by neighbour, for `twin`.
+    let mut list = Vec::new();
+    for junction in 0..j as u32 {
+        let arcs = graph.arcs(junction);
+        list.clear();
+        list.extend(arcs.clone().map(|arc| (graph.adj[arc], graph.capacity[arc])));
+        list.sort_unstable();
+        for (arc, &(neighbour, capacity)) in arcs.zip(&list) {
+            (graph.adj[arc], graph.capacity[arc]) = (neighbour, capacity);
+        }
+    }
     let (mut current, mut queue) = (vec![0u32; j], vec![0u32; j]);
     let part = Part { lo: 0, at: &mut at, level: &mut level, current: &mut current, queue: &mut queue };
     let tree = split(&graph, sizes[0] as usize, part);
     drop((level, current, queue));
-    let rank = graph.pos.iter().map(|pos| pos.load(Relaxed)).collect();
+    let mut rank = Column::filled(j, 0u32);
+    for (junction, pos) in graph.pos.iter().enumerate() {
+        rank.values_mut()[graph.walk1[junction] as usize] = pos.load(Relaxed);
+    }
+    let order: Column<u32> = at.iter().map(|&junction| graph.walk1[junction as usize]).collect();
     drop(graph);
-    let order: Column<u32> = at.into_iter().collect();
 
     let mut starts = vec![level_starts(&tree, sizes[0])];
     for &size in &sizes[1..] {
