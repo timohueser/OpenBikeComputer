@@ -371,12 +371,7 @@ fn point_of(of: &Of, u: f64) -> SpanPoint {
     let c_m = g.c * g.mpu;
     let (z_m, grade) = if of.span.linear_z {
         let len = of.span.len_m;
-        let t = s_at(of.span, u) / len;
-        let (t2, t3) = (t * t, t * t * t);
-        let h = [2.0 * t3 - 3.0 * t2 + 1.0, t3 - 2.0 * t2 + t, 3.0 * t2 - 2.0 * t3, t3 - t2];
-        let dh = [6.0 * t2 - 6.0 * t, 3.0 * t2 - 4.0 * t + 1.0, 6.0 * t - 6.0 * t2, 3.0 * t2 - 2.0 * t];
-        let z = |w: [f64; 4]| w[0] * a.z_m + w[1] * len * a.grade + w[2] * b.z_m + w[3] * len * b.grade;
-        (z(h), z(dh) / len)
+        water_level([a.z_m, b.z_m], [a.grade, b.grade], len, s_at(of.span, u) / len)
     } else if g.chord {
         (a.z_m + u * (b.z_m - a.z_m), (b.z_m - a.z_m) / c_m)
     } else {
