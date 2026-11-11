@@ -366,6 +366,26 @@ const SPLIT_NEED_M: f64 = 0.5;
 /// The quarters find a field that crosses the line at the middle. Its offset there grows with the
 /// cube of the piece's length, so a shorter piece reads its middle alone.
 const QUARTER_M: f64 = 1.0;
+/// A wall's top is a profile along the outline, not the ground read at single points: an end's no-room
+/// wall (`heights::wall_room`) rises to the greatest wall within `WALL_LOOK_M` along the outline, less
+/// `WALL_GRADE` per metre between, or less that wall's height over `WALL_LOOK_M` where that falls faster.
+/// So a wall's height changes along it by at most the greater of both (0.45 m/m for the highest wall), and
+/// a hump in the ground raises the top over metres, never as a step. It only raises a wall, so the
+/// ground never stands above its top.
+const WALL_GRADE: f64 = 0.2;
+const WALL_LOOK_M: f64 = 10.0;
+
+/// A piece of a rim with its host, the paved height and the plain terrain where the cones let go at its
+/// ends, the terrain's grade outward, and whether a bin lists it.
+struct Piece {
+    a: P,
+    b: P,
+    host: u32,
+    h: [f64; 2],
+    t: [f64; 2],
+    grade: i16,
+    listed: bool,
+}
 
 /// The outline edges' words (`EDGE` each) of the near plan's rims (a, b, paved label, the paved face on
 /// the left): the host line, the paved field at both ends (`heights::paved_end`) from the block so far
@@ -373,7 +393,7 @@ const QUARTER_M: f64 = 1.0;
 /// where the host's cones start to let go. The host is the face's material line, else the paved field's
 /// host at the middle of the rim's piece. A rim splits where the paved field is not linear along it
 /// (`SPLIT_M`). An edge with an end where the face has no height of its own stays out: a fault that
-/// `heights::check` counts.
+/// `heights::check` counts. The pieces within `WALL_LOOK_M` past the listed ones give the walls' tops.
 fn outline_edges<'a>(
     words: &[u32],
     input: &CellInput,
@@ -395,7 +415,7 @@ fn outline_edges<'a>(
     };
     // Whole-unit middles, the same in every cell.
     let mid = |p: P, q: P| [(p[0] + q[0]).div_euclid(2), (p[1] + q[1]).div_euclid(2)];
-    let mut out = Vec::with_capacity(EDGE * rims.len());
+    let mut all: Vec<Piece> = Vec::with_capacity(rims.len());
     let cell = f64::from(CELL_UNITS as i32);
     for &(a, b, id) in rims {
         let material = label(words, id)[2];
@@ -413,9 +433,10 @@ fn outline_edges<'a>(
             if host == u32::MAX {
                 continue;
             }
-            // A bin lists the edge within its host's reach: else the cell has no use for it.
+            // A bin lists the edge within its host's reach; a wall's top reads it `WALL_LOOK_M` on.
             let reach = f32w(words[words[6] as usize + LINE * host as usize + 6]);
-            if seg_box(r0, r1, [0.0, 0.0, cell, cell]) > outline_units(input.key, reach) {
+            let off = seg_box(r0, r1, [0.0, 0.0, cell, cell]);
+            if off > outline_units(input.key, reach + WALL_LOOK_M) {
                 continue;
             }
             // The cones let go from this many metres.
@@ -456,6 +477,7 @@ fn outline_edges<'a>(
                 pieces.push((q, hq));
                 ahead.pop();
             }
+            let listed = off <= outline_units(input.key, reach);
             let t: Vec<f64> = pieces.iter().map(|&(p, _)| ground(p)).collect();
             for (k, w) in pieces.windows(2).enumerate() {
                 let ((p, Some(hp)), (q, Some(hq))) = (w[0], w[1]) else { continue };
@@ -466,13 +488,70 @@ fn outline_edges<'a>(
                 } else {
                     libm::round(grade * GRADE_STEPS).clamp(-32767.0, 32767.0) as i16
                 };
-                let d = [q[0] - p[0], q[1] - p[1]].map(|v| u32::from(v as i16 as u16));
-                crate::probe::field(crate::probe::Field::Line, host as usize);
-                assert!(host < 1 << 16, "a cell's record lines overflow an outline edge's half word");
-                out.extend([p[0] as u32, p[1] as u32, d[0] | d[1] << 16, host | u32::from(grade as u16) << 16]);
-                out.extend([f(hp.h), f(hq.h), f(t[k]), f(t[k + 1])]);
+                let (h, t) = ([hp.h, hq.h], [t[k], t[k + 1]]);
+                all.push(Piece { a: p, b: q, host, h, t, grade, listed });
             }
         }
+    }
+    // Per end the fill's and the cut's no-room wall, up to the highest wall (none for a class without).
+    let room: Vec<([f64; 2], f64)> = all.iter().map(|e| heights::wall_room(words, e.host)).collect();
+    let asks: Vec<[[f64; 2]; 2]> = (all.iter().zip(&room))
+        .map(|(e, &(r, most))| {
+            [0, 1].map(|k| [e.h[k] - e.t[k] - r[0], e.t[k] - e.h[k] - r[1]].map(|w| w.clamp(0.0, most)))
+        })
+        .collect();
+    let len: Vec<f64> = all.iter().map(|e| metres(e.a, e.b)).collect();
+    let (mut from, mut to): (BTreeMap<P, Vec<usize>>, BTreeMap<P, Vec<usize>>) = Default::default();
+    for (i, e) in all.iter().enumerate() {
+        from.entry(e.a).or_default().push(i);
+        to.entry(e.b).or_default().push(i);
+    }
+    fn next(m: &BTreeMap<P, Vec<usize>>, p: P, d: f64) -> impl Iterator<Item = (usize, f64)> + '_ {
+        m.get(&p).into_iter().flatten().map(move |&j| (j, d))
+    }
+    // The greatest fill and cut wall, less its fall, along the outline about metres x of piece i.
+    let top = |i: usize, x: f64| {
+        let mut best = [0.0f64; 2];
+        let mut take = |j: usize, k: usize, d: f64| {
+            for (b, w) in best.iter_mut().zip(asks[j][k]) {
+                *b = b.max(w - WALL_GRADE.max(w / WALL_LOOK_M) * d.abs());
+            }
+        };
+        // Ahead: a piece and the metres to its start; behind: a piece and the metres back to its end.
+        let mut ahead = vec![(i, -x)];
+        while let Some((j, d)) = ahead.pop() {
+            take(j, 0, d);
+            take(j, 1, d + len[j]);
+            if d + len[j] < WALL_LOOK_M {
+                ahead.extend(next(&from, all[j].b, d + len[j]));
+            }
+        }
+        let mut behind: Vec<(usize, f64)> = next(&to, all[i].a, x).collect();
+        while let Some((j, d)) = behind.pop() {
+            take(j, 1, d);
+            take(j, 0, d + len[j]);
+            if d + len[j] < WALL_LOOK_M {
+                behind.extend(next(&to, all[j].a, d + len[j]));
+            }
+        }
+        best
+    };
+    let mut out = Vec::with_capacity(EDGE * all.len());
+    for (i, e) in all.iter().enumerate().filter(|(_, e)| e.listed) {
+        let ((r, most), d) = (room[i], [e.b[0] - e.a[0], e.b[1] - e.a[1]].map(|v| u32::from(v as i16 as u16)));
+        // An end's own side (cut where the ground stands above the paved height) takes the profile's wall.
+        let t = [0, 1].map(|k| {
+            let w = top(i, k as f64 * len[i]).map(|w| w.min(most));
+            match e.t[k] >= e.h[k] {
+                true if w[1] > asks[i][k][1] => e.h[k] + r[1] + w[1],
+                false if w[0] > asks[i][k][0] => e.h[k] - r[0] - w[0],
+                _ => e.t[k],
+            }
+        });
+        crate::probe::field(crate::probe::Field::Line, e.host as usize);
+        assert!(e.host < 1 << 16, "a cell's record lines overflow an outline edge's half word");
+        out.extend([e.a[0] as u32, e.a[1] as u32, d[0] | d[1] << 16, e.host | u32::from(e.grade as u16) << 16]);
+        out.extend([f(e.h[0]), f(e.h[1]), f(t[0]), f(t[1])]);
     }
     out
 }
@@ -856,8 +935,9 @@ fn encode(
     let mpu = metres_per_unit(origin.y + CELL_UNITS / 2);
     let units = |m: f64| m / mpu;
     // The window's bins reach past the cell square as far as the ends of the outline edges that a bin
-    // lists: an edge reaches a bin's square within `outline_m`, and is a bin long at most (`bin_cuts`).
-    let reach_units = outline_units(cell, outline_m(&rules.sections));
+    // lists and of the pieces that their walls read: an edge reaches a bin's square within `outline_m`, a
+    // wall reads `WALL_LOOK_M` on, and a piece is a bin long at most (`bin_cuts`).
+    let reach_units = outline_units(cell, outline_m(&rules.sections) + WALL_LOOK_M);
     let wide = if with_outline { (reach_units / f64::from(BIN_UNITS)).ceil() as i32 + 1 } else { 0 };
     let window = Window { wide };
     // The paved outline with the circles of its fans and rounds: one union, so the distance to the

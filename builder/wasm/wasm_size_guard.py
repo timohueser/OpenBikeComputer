@@ -21,8 +21,10 @@ from pathlib import Path
 BUDGETS = {
     "builder": {"gzipped": (62 + 352 + 128) * 1024, "raw_wasm": (112 + 944 + 272) * 1024},
     # Measured on the build with the outline slopes (715,120 B gzipped with the glue, 1,868,263 B raw),
-    # plus about 2 % margin, rounded to whole KiB. Raised by the owner for the outline slopes.
-    "ground-plan": {"gzipped": 714 * 1024, "raw_wasm": 1860 * 1024},
+    # plus about 2 % margin, rounded to whole KiB. Raised by the owner for the outline slopes. The gzip cap
+    # grows by 4 KiB for the wall tops along the outline (733,350 B with them), within the few percent that
+    # the owner allows for a justified rule.
+    "ground-plan": {"gzipped": 718 * 1024, "raw_wasm": 1860 * 1024},
 }
 
 ADVICE = {

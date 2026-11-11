@@ -9,7 +9,9 @@ mod fixture;
 use std::collections::BTreeMap;
 
 use fixture::{default_dir, Fixture};
-use obc_ground_plan::faces::heights::check::{at, border, edge_steps, ripple, scan, Class, EDGE_GRID_M, RIPPLE_M};
+use obc_ground_plan::faces::heights::check::{
+    at, border, edge_steps, ripple, scan, wall_steps, Class, EDGE_GRID_M, RIPPLE_M,
+};
 use obc_ground_plan::faces::records;
 use obc_ground_plan::faces::Rules;
 use obc_ground_plan::frame::{from_lon_lat, metres_per_unit, CellKey, GlobalPoint};
@@ -26,12 +28,18 @@ const INSIDE_MAX: usize = 7;
 const EDGE_MAX: usize = 114;
 /// Pairs of grid points on a slope steeper than a rock face where the terrain is not (`Scan::steep`),
 /// measured on the revision 15 fixture with cones on their outward side, outline edges cut at the bin grid and
-/// split where their need varies, and faces past the highest wall as steep as their need: the count must not
-/// grow.
-const STEEP_MAX: usize = 1316;
+/// split where their need varies, walls with a top along the outline, and faces past the highest wall as steep as
+/// their need: the count must not grow.
+const STEEP_MAX: usize = 1280;
 /// Of those, the pairs steeper than 6 m/m, measured the same way; none is steeper than 12 m/m. A
 /// near-vertical rim that the total hides must not come back.
 const STEEP_6_MAX: usize = 5;
+/// A no-room wall's height changes along it by at most 0.45 m per metre (`records::WALL_GRADE`, or the highest
+/// wall over `WALL_LOOK_M`). Where the ground stands lower than that top or a face ends the wall, it changes
+/// faster: pairs of points over `WALL_STEP_GRADE`, measured on the revision 15 fixture with that top: the count
+/// must not grow.
+const WALL_STEP_GRADE: f64 = 0.5;
+const WALL_STEPS_MAX: usize = 13;
 /// The places of the ripple report (latitude, longitude).
 const PLACES: [(&str, f64, f64); 5] = [
     ("v17-sharp-corners", 46.821753, 8.404913),
@@ -70,16 +78,17 @@ fn every_fixture_cell_keeps_its_steps_on_face_edges_and_agrees_with_its_neighbou
         let ours = cells[..scanned].contains(&key);
         let s = if ours { scan(&words, &input.terrain, key, GRID_M) } else { Default::default() };
         let edges = if ours { edge_steps(&words, &input.terrain, key, EDGE_GRID_M).len() } else { 0 };
+        let walls = if ours { wall_steps(&words, &input.terrain, key, WALL_STEP_GRADE).len() } else { 0 };
         let line = if ours { border(&words, &input.terrain, key, 512) } else { Vec::new() };
-        (key, s, edges, line, Cell { words, input })
+        (key, s, [edges, walls], line, Cell { words, input })
     });
-    let (mut inside, mut unnamed, mut edges, mut full, mut missing) = (0, 0, 0, 0, 0);
+    let (mut inside, mut unnamed, mut edges, mut walls, mut full, mut missing) = (0, 0, 0, 0, 0, 0);
     let mut steep = Vec::new();
     let mut lines: BTreeMap<_, Vec<_>> = BTreeMap::new();
     let mut by_key = BTreeMap::new();
     for (key, s, e, line, cell) in built {
         inside += s.steps.iter().filter(|st| st.class == Class::Inside).count();
-        edges += e;
+        (edges, walls) = (edges + e[0], walls + e[1]);
         unnamed += s.steps.iter().filter(|st| st.class == Class::Unnamed).count();
         steep.extend(s.steep.iter().map(|st| st.1));
         (full, missing) = (full + s.slots_full.len(), missing + s.host_missing.len());
@@ -91,11 +100,12 @@ fn every_fixture_cell_keeps_its_steps_on_face_edges_and_agrees_with_its_neighbou
     let over = |m: f64| steep.iter().filter(|&&c| c > m).count();
     let (over_6, over_12) = (over(6.0), over(12.0));
     println!(
-        "inside {inside}, unnamed {unnamed}, edge steps {edges}, steep {} (over 6 m/m {over_6}, over 12 m/m {over_12}), slots full {full}, host missing {missing}",
+        "inside {inside}, unnamed {unnamed}, edge steps {edges}, wall-top steps {walls}, steep {} (over 6 m/m {over_6}, over 12 m/m {over_12}), slots full {full}, host missing {missing}",
         steep.len()
     );
     assert!(inside <= INSIDE_MAX, "{inside} steps inside faces");
     assert!(edges <= EDGE_MAX, "{edges} steps at label edges with no rule");
+    assert!(walls <= WALL_STEPS_MAX, "{walls} wall-top steps over {WALL_STEP_GRADE} m/m");
     assert!(steep.len() <= STEEP_MAX, "{} slope pairs steeper than a rock face", steep.len());
     assert!(over_6 <= STEEP_6_MAX, "{over_6} slope pairs steeper than 6 m/m");
     assert_eq!(over_12, 0, "slope pairs steeper than 12 m/m");

@@ -962,21 +962,30 @@ fn cone(s: f64, d: f64, p: &HeightRules) -> f64 {
 /// does not meet the terrain where it starts to let go steepens up to the greatest slope `max`; the
 /// rest is a wall at that end, up to `wall` high. Past that the face steepens on, as steep as the need
 /// asks: with no cap, it meets a cliff inside the run and the release has nothing left to take. The
-/// slope, and the wall at each end.
+/// slope, and the wall at each end. An end's wall comes from the slope before that steepening, so it
+/// depends on that end alone and two edges give their shared end one wall.
 fn fit(s: f64, max: f64, need: [f64; 2], wall: f64, p: &HeightRules, reach: f64) -> (f64, [f64; 2]) {
     let run = run(reach, p);
     let most = need.iter().filter(|n| !n.is_nan()).fold(f64::NEG_INFINITY, |m, &n| m.max(n));
     let (s, max) = (s.min(p.face_max), max.min(p.face_max));
-    let mut s = if most <= s * run { s } else { (most / run).min(max.max(s)) };
-    if most - s * run > wall {
-        s = (most - wall) / run;
-    }
-    (s, need.map(|n| if n.is_nan() { 0.0 } else { (n - s * run).clamp(0.0, wall) }))
+    let s = if most <= s * run { s } else { (most / run).min(max.max(s)) };
+    let walls = need.map(|n| if n.is_nan() { 0.0 } else { (n - s * run).clamp(0.0, wall) });
+    (if most - s * run > wall { (most - wall) / run } else { s }, walls)
 }
 
 /// The metres over which a cone from its round foot should meet the terrain: up to where it lets go.
 fn run(reach: f64, p: &HeightRules) -> f64 {
     (reach * (1.0 - p.fade_share) - p.round_m / 2.0).max(1e-3)
+}
+
+/// Of line l: how far its fill and its cut cones fall and rise over their run at their greatest slope,
+/// and its highest wall. An edge end whose need passes that rise stands on a no-room wall of the rest
+/// (`fit`), up to the highest wall.
+pub(crate) fn wall_room(words: &[u32], l: u32) -> ([f64; 2], f64) {
+    let p = HeightRules::of(words);
+    let ln = Block { w: words, mpu: 1.0 }.line(l as usize);
+    let rise = |s: f64, max: f64| max.min(p.face_max).max(s.min(p.face_max)) * run(ln.reach, &p);
+    ([rise(ln.fill, ln.fill_max), rise(ln.cut, ln.cut_max)], ln.wall_max(&p))
 }
 
 /// The toe and crest round's width in height for a cone pair of slopes sf (fill) and sc (cut) over

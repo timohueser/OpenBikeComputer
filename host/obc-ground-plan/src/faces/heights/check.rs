@@ -3,7 +3,9 @@
 //! points on the cell's lines, which two cells must give alike.
 
 use super::{height_at, height_at_sides, Block, Height, HeightRules, Kind, Step as Rule};
-use crate::faces::records::{find, label, CAND, DISC, JUNCTION, LABEL, LINE, PLATFORM};
+use crate::faces::records::{
+    edge_ends, edge_line, find, label, outline_words, CAND, DISC, EDGE, JUNCTION, LABEL, LINE, PLATFORM,
+};
 use crate::faces::Surface;
 use crate::frame::{metres_per_unit, CellKey, GlobalPoint, CELL_UNITS};
 use crate::terrain::Terrain;
@@ -250,6 +252,46 @@ pub fn edge_steps(words: &[u32], terrain: &Terrain, cell: CellKey, grid_m: f64) 
             }
             let class = if apart(words, labels[k]) || apart(words, lb) { Class::Apart } else { Class::Unnamed };
             out.push(Step { a, b, dh, labels: [labels[k], lb], class, sides });
+        }
+    }
+    out
+}
+
+/// The points of `wall_steps` along an outline edge lie this far apart, at most.
+pub const WALL_TOP_M: f64 = 0.25;
+/// A step this high beside a wall class's road draws as a wall (`WALL_STEP_M` of `plan/piece.wgsl`).
+pub const WALL_M: f64 = 0.5;
+
+/// The wall-top steps of a cell: along each outline edge of a wall class that lies in the cell by its middle,
+/// points up to `WALL_TOP_M` apart (edges under 0.1 m left out); two neighbours on one no-room wall at least
+/// `WALL_M` high whose wall height changes by more than `grade` per metre: the first point and that change.
+pub fn wall_steps(words: &[u32], terrain: &Terrain, cell: CellKey, grade: f64) -> Vec<([f64; 2], f64)> {
+    let b = Block::at(words, [0.0, 0.0]);
+    let mut out = Vec::new();
+    for e in outline_words(words).chunks(EDGE) {
+        let (a, z) = edge_ends(e);
+        let (a, z) = ([f64::from(a[0]), f64::from(a[1])], [f64::from(z[0]), f64::from(z[1])]);
+        let (len, m) = (libm::hypot(z[0] - a[0], z[1] - a[1]), [(a[0] + z[0]) / 2.0, (a[1] + z[1]) / 2.0]);
+        let inside = |v: f64| (0.0..CELL_UNITS as f64).contains(&v);
+        if len * b.mpu < 0.1 || !inside(m[0]) || !inside(m[1]) || !b.line(edge_line(e) as usize).wall {
+            continue;
+        }
+        let (n, steps) = ([(z[1] - a[1]) / len, (a[0] - z[0]) / len], (len * b.mpu / WALL_TOP_M).ceil() as usize);
+        let wall = |k: usize| {
+            let q = [a[0] + (z[0] - a[0]) * k as f64 / steps as f64, a[1] + (z[1] - a[1]) * k as f64 / steps as f64];
+            let labels = [-2.0, 2.0].map(|o| find(words, [q[0] + o * n[0], q[1] + o * n[1]]));
+            let s = height_at_sides(words, q, labels, terrain_at(terrain, cell, q)?);
+            let w = s[1].h - s[0].h;
+            (s[1].step == Rule::NoRoom && w.abs() >= WALL_M).then_some((q, w))
+        };
+        let walls: Vec<_> = (0..=steps).map(wall).collect();
+        for pair in walls.windows(2) {
+            if let [Some((q, w0)), Some((_, w1))] = pair {
+                let climb = (w1 - w0).abs() * steps as f64 / (len * b.mpu);
+                if climb > grade {
+                    out.push((*q, climb));
+                }
+            }
         }
     }
     out

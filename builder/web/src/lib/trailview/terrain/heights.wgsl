@@ -639,17 +639,14 @@ fn h_cone(s: f32, d: f32) -> f32 {
 // The no-room rule of a cone of slope s from an edge whose ends stand `need` above (a fill) or below
 // (a cut) the plain terrain where the cone should meet it (`known`: which ends know it), with walls up
 // to `wall` before the face steepens on as steep as the need asks, as heights::fit: (the slope, the
-// wall at each end).
+// wall at each end). An end's wall comes from the slope before that steepening.
 fn h_fit(s: f32, most: f32, need: vec2f, known: vec2<bool>, wall: f32, reach: f32) -> vec3f {
     let run = max(reach * (1.0 - H.fade_share) - H.round * 0.5, 1e-3);
     let top = max(select(-H_BIG, need.x, known.x), select(-H_BIG, need.y, known.y));
     let s0 = min(s, H.face_max);
-    var sc = select(min(top / run, max(min(most, H.face_max), s0)), s0, top <= s0 * run);
-    if (top - sc * run > wall) {
-        sc = (top - wall) / run;
-    }
+    let sc = select(min(top / run, max(min(most, H.face_max), s0)), s0, top <= s0 * run);
     let w = select(vec2f(0.0), clamp(need - sc * run, vec2f(0.0), vec2f(wall)), known);
-    return vec3f(sc, w);
+    return vec3f(select(sc, (top - wall) / run, top - sc * run > wall), w);
 }
 
 // The greatest of top(x) − c |q − x| over an edge whose top runs linearly (sign 1, a fill), or the least
