@@ -410,11 +410,13 @@ impl Planner {
         };
         // The last part of the id: the old planner names its files after it.
         let name = region.id.rsplit('/').next();
-        // A bad profile or country fails before any bake.
-        let profiles: Vec<&str> = config.routing.profiles.iter().map(String::as_str).collect();
-        planner_router_build::profiles(&profiles)
-            .and_then(|profiles| planner_router_build::catalog::check(&countries, &profiles))
-            .map_err(|reason| invalid(format!("the routing of region `{id}`: {reason}")))?;
+        // A bad profile or country of the routing fails before any bake.
+        if on("routing") {
+            let profiles: Vec<&str> = config.routing.profiles.iter().map(String::as_str).collect();
+            planner_router_build::profiles(&profiles)
+                .and_then(|profiles| planner_router_build::catalog::check(&countries, &profiles))
+                .map_err(|reason| invalid(format!("the routing of region `{id}`: {reason}")))?;
+        }
         let work = |layer: &'static Layer, inputs: Vec<Input>, options, run| Step {
             layer,
             name: layer.name.into(),
@@ -1357,6 +1359,7 @@ mod tests {
             region("no-countries", "kind = \"geofabrik\"\nareas = [\"europe/test\"]\ntime_zone = \"Europe/Berlin\"\n"),
             region("no-time-zone", "kind = \"geofabrik\"\nareas = [\"europe/test\"]\ncountries = [\"DE\"]\n"),
             region("boxed", "kind = \"box\"\nbox = [7.79, 47.99, 7.82, 48.02]\ncountries = [\"DE\"]\n"),
+            region("border", "kind = \"box\"\nbox = [7.79, 47.99, 7.82, 48.02]\ncountries = [\"DE\", \"FR\"]\n"),
         ])
         .unwrap()
     }
@@ -1583,6 +1586,17 @@ mod tests {
             let reads = |input: &Input| matches!(input, Input::Step { name, .. } if name == "planner/reference");
             assert!(step.inputs.iter().any(reads), "{reader} reads the national models");
         }
+    }
+
+    #[test]
+    fn only_a_plan_with_routing_checks_the_countries_of_the_route_catalog() {
+        let temp = temp("planner-border");
+        let store = store(&temp, &["2026-10-01"]);
+        let mut inputs = inputs("border", &[]);
+        let result = Planner.steps(&root(), &inputs, &regions(), &store);
+        assert!(matches!(result, Err(Unplanned::Invalid(reason)) if reason.contains("routing of region `border`")));
+        inputs.settings.layers = vec!["map".into()];
+        assert!(Planner.steps(&root(), &inputs, &regions(), &store).is_ok(), "France and Germany have a map");
     }
 
     #[test]
