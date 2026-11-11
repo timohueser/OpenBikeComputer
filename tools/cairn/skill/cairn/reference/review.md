@@ -54,7 +54,7 @@ Fix the findings. If the fixes are large, send the same reviewer only the delta:
 
 A project can have a review bot, such as CodeRabbit. It reviews last, and once: it does not read a draft.
 
-When no fix-now finding of your reviewer is open, mark the pull request ready: `gh pr ready N`. When CI is green, read the bot's review, if it is there, and route each finding as above. Do not wait for the bot after CI is green: it can be at its rate limit. Its findings start no new round of your reviewer.
+When no fix-now finding of your reviewer is open, mark the pull request that you opened as a draft ready: `gh pr ready N`. Leave the state of a pull request that the user opened. When CI is green, read the bot's review, if it is there, and route each finding as above. Do not wait for the bot after CI is green: it can be at its rate limit. Its findings start no new round of your reviewer.
 
 ## Merge and close
 

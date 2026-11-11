@@ -96,9 +96,9 @@ Write the body below the header, in these sections:
 3. Decisions, each with its reason and the alternative we rejected
 4. Words it introduces, when no spec and no guide page defines them
 
-The doc holds what the code cannot show. Do not list the parts: each module's purpose comment states them. Add a picture or a walk-through of one example only when a reader cannot follow section 1 without it. A figure is generated, Mermaid, or an SVG with one line that says why the other two are not enough.
+Do not list the parts: each module's purpose comment states them. Add a picture or a walk-through of one example only when a reader cannot follow section 1 without it. A figure is generated, Mermaid, or an SVG with one line that says why the other two are not enough.
 
-In the Rules table, the last column gives the name of the test or function between backticks, and links its file in the same cell. `cairn check` fails when the linked file does not hold the name.
+In the Rules table, the last column gives the name of the test or function between backticks, and links its file in the same cell. `cairn check` tests only a snake_case name with a `_`: a linked file must hold it.
 
 Aim for about 1,200 words. Link a spec; do not copy its tables.
 

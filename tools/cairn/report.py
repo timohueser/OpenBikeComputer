@@ -106,6 +106,14 @@ def merges(root: Path, since: str) -> list[tuple[str, int]]:
     return found
 
 
+def history(root: Path, *args: str) -> str:
+    """The output of a git command that the report needs. A failure must not read as "no change"."""
+    out = git(root, *args)
+    if out is None:
+        raise OSError(f"git {' '.join(args[:2])} failed")
+    return out
+
+
 def docs_to_check(root: Path, docs: list[cairn.Doc], config: dict) -> list[tuple[str, list[int]]]:
     """For each approved doc, the pull requests merged since the doc last changed that touch the
     files of its system outside the `tests` globs and the map, newest first."""
@@ -113,10 +121,10 @@ def docs_to_check(root: Path, docs: list[cairn.Doc], config: dict) -> list[tuple
     found = []
     for doc in docs:
         path = f"{folder}/{doc.system}.md"
-        since = git(root, "log", "-1", "--first-parent", "--format=%H", "HEAD", "--", path) if doc.status == "approved" else None
+        since = history(root, "log", "-1", "--first-parent", "--format=%H", "HEAD", "--", path) if doc.status == "approved" else None
         numbers = []
         for commit, number in merges(root, since) if since else []:
-            changed = (git(root, "diff", "--name-only", "--no-renames", "-z", f"{commit}^1", commit) or "").split("\0")
+            changed = history(root, "diff", "--name-only", "--no-renames", "-z", f"{commit}^1", commit).split("\0")
             kept = [f for f in changed if f and f not in (f"{folder}/{cairn.MAP}", f"{folder}/{cairn.MAP_DATA}")
                     and not cairn.is_test(f, config["tests"])]
             if any(doc.system in hits for hits in cairn.owners(kept, docs).values()):

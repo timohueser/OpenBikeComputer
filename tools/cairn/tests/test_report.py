@@ -69,6 +69,12 @@ class DocsToCheckTests(unittest.TestCase):
     def test_an_approved_doc_lists_the_pull_requests_that_touch_its_system_outside_tests(self):
         self.assertEqual(self.found(), [("routing", [3, 2])])
 
+    def test_a_failed_history_read_is_an_error_and_not_an_empty_list(self):
+        with tempfile.TemporaryDirectory() as folder:
+            docs = [cairn.Doc("routing", "system", "Device", "", ("route/**",), status="approved")]
+            with self.assertRaisesRegex(OSError, "^git log -1 failed$"):
+                report.docs_to_check(Path(folder), docs, {**CONFIG, "docs": "docs/design"})
+
     def test_a_doc_change_starts_the_list_again(self):
         self.repository.merge(6, {"docs/design/routing.md": header("routing", "route/**", "approved") + "Body.\n"})
         self.assertEqual(self.found(), [])
