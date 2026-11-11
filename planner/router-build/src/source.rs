@@ -470,6 +470,14 @@ impl Sets {
     pub fn get(&self, id: u32) -> &[(u8, Closure)] {
         self.sets.get(id as usize).map_or(&[], Vec::as_slice)
     }
+
+    pub fn len(&self) -> usize {
+        self.sets.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.sets.is_empty()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -584,7 +592,7 @@ impl<C: Columns> Table<C> {
         self.select((0..self.len()).filter(|&index| keep(&self.row(index))))
     }
 
-    fn row(&self, index: usize) -> C::Row<'_> {
+    pub(crate) fn row(&self, index: usize) -> C::Row<'_> {
         self.columns.row(self.ids.values()[index], index)
     }
 

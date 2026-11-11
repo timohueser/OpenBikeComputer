@@ -22,14 +22,22 @@ mod work;
 use base::{Dictionary, Topology};
 use column::{Column, Lists};
 use planner_router::{
-    closures::{self, Closures},
+    closures,
     model::{Point, Profile, Road, Surface},
     package::{self, Manifest, CELL, ROADS_PER_PAGE},
     storage,
     table::Table,
 };
+use rayon::prelude::*;
 use std::collections::BTreeMap;
 use terrain::Height;
+
+/// The ways or roads of one job of a parallel pass. Each job writes its own range of each output,
+/// so the bytes do not depend on the thread count.
+#[cfg(not(test))]
+const CHUNK: usize = 65_536;
+#[cfg(test)]
+const CHUNK: usize = 8;
 
 /// The imported region: directed roads, their junctions and turn rules, and the source OSM
 /// objects that costs, closures, the overlay index and the route catalog read.
@@ -244,6 +252,10 @@ impl Roads {
         self.shapes.get(index)
     }
 
+    pub fn reversed(&self, index: usize) -> bool {
+        self.reversed.values()[index]
+    }
+
     pub fn way_row(&self, index: usize) -> u32 {
         self.way_row.values()[index]
     }
@@ -376,7 +388,60 @@ pub fn prepare(
         }
     }
     let count = u32::try_from(roads.len()).map_err(|_| "Too many roads")?;
+    if (0..roads.len()).any(|id| roads.shape(id).len() < 2 || roads.class(id) > 6) {
+        return Err("Road lacks valid geometry or class".into());
+    }
+    if (0..roads.len()).any(|id| roads.way_row(id) as usize >= graph.osm.ways.len()) {
+        return Err("Road lacks source OSM way".into());
+    }
+    for (i, profile) in profiles.iter().enumerate() {
+        if profiles[..i].iter().any(|other| other.name == profile.name) {
+            return Err("Duplicate metric identity".into());
+        }
+        profile.validate()?;
+    }
+    cost::check_nodes(graph)?;
     let topology = Topology::new(roads, points)?;
+    let budget = work::page_budget()?.0;
+    work::Guard::stage("way-bases");
+    let bases = cost::way_bases(&graph.osm, profiles)?;
+    work::Guard::stage("road-pass");
+    // The random reads of a road group go to the way bases of its profiles: they take a quarter
+    // of the budget at most.
+    let ways = graph.osm.ways.len().max(1) as u64;
+    let group = (budget / 4 / (8 * ways)).clamp(1, profiles.len().max(1) as u64) as usize;
+    let mut costs = cost::road_pass(graph, &topology, profiles, &bases, group)?;
+    // The IDs of the package dictionary: each new basis in profile order and road order.
+    let mut dictionary = Dictionary::default();
+    for costs in &mut costs {
+        for id in costs.bases.values_mut() {
+            if let Some(basis) = bases.value(*id) {
+                *id = dictionary.insert(basis)?;
+            }
+        }
+    }
+    drop(bases);
+    work::Guard::stage("profiles");
+    let junctions = landmarks::Junctions::new((0..roads.len()).map(|id| (roads.from(id), roads.to(id))))?;
+    let states = connectivity::States::new(&topology, roads, points);
+    // The columns of all profiles stay, and each job adds its own.
+    let (r, a, j) = (roads.len() as u64, topology.head.len() as u64, points as u64);
+    let threads = rayon::current_num_threads() as u64;
+    let jobs = (budget.saturating_sub(8 * r + 4 * a) / (25 * r + 4 * a + 45 * j).max(1)).clamp(1, threads) as usize;
+    eprintln!("Road pass: {group} profiles at a time; profile jobs: {jobs} at a time");
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(jobs).build().map_err(|e| e.to_string())?;
+    let prepared = pool.install(|| {
+        costs
+            .par_iter()
+            .with_max_len(1)
+            .map(|costs| {
+                let distances = junctions.compute(costs.totals.values())?;
+                Ok((states.snappable(costs.totals.values(), costs.turns.values()), distances))
+            })
+            .collect::<Result<Vec<_>, String>>()
+    })?;
+    drop(states);
+    work::Guard::stage("writer");
     let mut manifest = Manifest {
         landmarks: None,
         closures: None,
@@ -393,21 +458,19 @@ pub fn prepare(
         metrics: BTreeMap::new(),
         costs: Table::default(),
     };
-    let mut cells = Column::<([i32; 2], u32)>::default();
+    drop(topology);
+    // The (1° group, cell, road) of each cell that a road passes.
+    let mut cells = Column::<(([i32; 2], [i32; 2]), u32)>::default();
     let mut road_cells = Vec::new();
     for id in 0..roads.len() {
-        let shape = roads.shape(id);
-        if shape.len() < 2 || roads.class(id) > 6 {
-            return Err("Road lacks valid geometry or class".into());
-        }
-        for pair in shape.windows(2) {
+        for pair in roads.shape(id).windows(2) {
             let (a, b) = (package::cell(pair[0]), package::cell(pair[1]));
             if (a.0.abs_diff(b.0) as u64 + 1) * (a.1.abs_diff(b.1) as u64 + 1) > 4096 {
                 return Err(format!("Road segment spans more than 4096 spatial cells of {} microdegrees", CELL));
             }
             for lat in a.0.min(b.0)..=a.0.max(b.0) {
                 for lon in a.1.min(b.1)..=a.1.max(b.1) {
-                    road_cells.push(([lat, lon], id as u32));
+                    road_cells.push((([lat.div_euclid(100), lon.div_euclid(100)], [lat, lon]), id as u32));
                 }
             }
         }
@@ -427,59 +490,51 @@ pub fn prepare(
         geometry.push(write(&planner_router::geometry::encode(&page)?)?);
     }
     manifest.geometry = Table::write(&geometry, &mut write)?;
-    // The package stores its objects in write order: the road lists in cell order, then the
-    // directories in key order, so the directories wait until the last road list.
-    let mut groups = BTreeMap::<String, BTreeMap<String, String>>::new();
-    // Unique (cell, road) pairs, by cell and then road.
+    // Each group writes the road lists of its cells, then its directory.
     let mut cells = sort::sorted(cells).peekable();
-    let mut ids = Vec::new();
-    while let Some(([lat, lon], id)) = cells.next() {
+    let (mut ids, mut directory, mut current) = (Vec::new(), BTreeMap::new(), None);
+    loop {
+        let next = cells.next();
+        let group = next.map(|((group, _), _)| group);
+        if let Some([lat, lon]) = current.filter(|&current| Some(current) != group) {
+            let directory = storage::encode(&std::mem::take(&mut directory))?;
+            manifest.spatial.insert(package::cell_key((lat, lon)), write(&directory)?);
+        }
+        let Some(((group, [lat, lon]), id)) = next else { break };
+        current = Some(group);
         ids.clear();
         ids.push(id);
-        while let Some((_, id)) = cells.next_if(|&(cell, _)| cell == [lat, lon]) {
+        while let Some((_, id)) = cells.next_if(|&((_, cell), _)| cell == [lat, lon]) {
             ids.push(id);
         }
-        let group = package::cell_key((lat.div_euclid(100), lon.div_euclid(100)));
-        groups.entry(group).or_default().insert(package::cell_key((lat, lon)), write(&storage::encode(&ids)?)?);
+        directory.insert(package::cell_key((lat, lon)), write(&storage::encode(&ids)?)?);
     }
     drop(cells);
-    for (group, cells) in groups {
-        manifest.spatial.insert(group, write(&storage::encode(&cells)?)?);
-    }
-    let closures = Closures::build((0..roads.len()).map(|id| graph.sets.get(roads.closures(id)).to_vec()))?;
-    let bases = cost::way_bases(&graph.osm, profiles)?;
-    let mut dictionary = Dictionary::default();
-    let junctions = landmarks::Junctions::new((0..roads.len()).map(|id| (roads.from(id), roads.to(id))))?;
     let mut landmarks = junctions.index(&mut write)?;
-    let states = connectivity::States::new(&topology);
-    for profile in profiles {
-        eprintln!("Preparing profile {}", profile.name);
-        if manifest.metrics.contains_key(&profile.name) {
-            return Err("Duplicate metric identity".into());
-        }
-        let costing = cost::Costing::new(graph, profile, &bases, &mut dictionary)?;
-        let road_costs = costing.totals.values();
-        let columns = junctions.prepare(road_costs, &mut write)?;
-        let turns: Column<u32> = topology
-            .edges()
-            .map(|(before, after)| base::narrow(costing.transition(before, after)))
-            .collect::<Result<_, _>>()?;
-        let allowed = states.snappable(road_costs, turns.values());
+    for ((profile, costs), (allowed, distances)) in profiles.iter().zip(&costs).zip(&prepared) {
+        let road_costs = costs.totals.values();
         let fragments = road_costs.iter().filter(|&&c| c != u32::MAX).count()
-            - allowed.iter().map(|word| word.count_ones() as usize).sum::<usize>();
+            - allowed.values().iter().map(|word| word.count_ones() as usize).sum::<usize>();
         eprintln!(
             "Profile {}: {fragments} roads in fragments are not snappable; landmark scale {}",
-            profile.name, columns.scale
+            profile.name, distances.scale
         );
-        landmarks.profiles.insert(profile.name.clone(), columns);
+        landmarks.profiles.insert(profile.name.clone(), distances.write(&mut write)?);
         manifest.metrics.insert(
             profile.name.clone(),
-            base::metric(profile, costing.bases.values(), road_costs, turns.values(), &allowed, &mut write)?,
+            base::metric(
+                profile,
+                costs.bases.values(),
+                road_costs,
+                costs.turns.values(),
+                allowed.values(),
+                &mut write,
+            )?,
         );
     }
     manifest.costs = Table::write(&dictionary.into_values(), &mut write)?;
     manifest.landmarks = Some(landmarks);
-    manifest.closures = write_closures(&closures, &mut write)?;
+    manifest.closures = write_closures(graph, &mut write)?;
     Ok(manifest)
 }
 
@@ -554,18 +609,28 @@ pub fn check_closures(graph: &Graph) -> Result<(), String> {
     Ok(())
 }
 
-/// Writes the sets object and the per-road column only when a road has a possible closure.
+/// Writes the sets object and the per-road column only when a road has a possible closure. A set
+/// gets its ID at its first use in road order.
 fn write_closures(
-    closures: &Closures,
+    graph: &Graph,
     write: &mut impl FnMut(&[u8]) -> Result<String, String>,
 ) -> Result<Option<closures::Index>, String> {
-    let ids = (0..closures.roads.len()).map(|road| closures.roads.get(road));
-    if ids.clone().all(|id| id == u64::MAX) {
+    let roads = &graph.roads;
+    let (mut ids, mut sets) = (vec![u32::MAX; graph.sets.len()], Vec::new());
+    for road in 0..roads.len() {
+        let set = roads.closures(road);
+        if let Some(id) = ids.get_mut(set as usize).filter(|id| **id == u32::MAX) {
+            *id = sets.len() as u32;
+            sets.push(graph.sets.get(set));
+        }
+    }
+    if sets.is_empty() {
         return Ok(None);
     }
+    let id = |road| ids.get(roads.closures(road) as usize).map_or(u64::MAX, |&id| u64::from(id));
     Ok(Some(closures::Index {
-        sets: write(&storage::encode(&closures.sets)?)?,
-        roads: planner_router::base::write_column(ids, write)?,
+        sets: write(&storage::encode(&sets)?)?,
+        roads: planner_router::base::write_column((0..roads.len()).map(id), write)?,
     }))
 }
 

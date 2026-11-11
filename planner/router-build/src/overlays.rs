@@ -2,6 +2,8 @@
 //! SQLite layout of `specs/planner-release.md`.
 mod access;
 
+use crate::column::Column;
+use crate::sort::{self, Sorted};
 use crate::source::{Data, Id, Relations, Table, Tags};
 use rusqlite::{params, Connection, Transaction};
 use serde_json::{json, Value};
@@ -53,10 +55,10 @@ fn access_zoom(status: &str) -> Option<f64> {
     })
 }
 
-type Memberships = BTreeMap<i64, Vec<i64>>;
-
-fn memberships(relations: &Table<Relations>) -> (Memberships, BTreeMap<i64, Value>) {
-    let mut members = Memberships::new();
+/// The (way ID, relation ID) pair of each way of each active route, in order, and the properties of
+/// each route.
+fn memberships(relations: &Table<Relations>) -> (Sorted<(i64, i64)>, BTreeMap<i64, Value>) {
+    let mut members = Column::default();
     let mut routes = BTreeMap::new();
     for relation in relations.iter().filter(|r| active(&r.tags)) {
         let Some(activity) = kind(&relation.tags) else { continue };
@@ -89,11 +91,11 @@ fn memberships(relations: &Table<Relations>) -> (Memberships, BTreeMap<i64, Valu
             }
         }
         for id in ways {
-            members.entry(id).or_default().push(relation.id);
+            members.push((id, relation.id));
         }
         routes.insert(relation.id, route);
     }
-    (members, routes)
+    (sort::sorted(members), routes)
 }
 
 /// Writes a new index for the routing package whose manifest identity is `package`.
@@ -118,6 +120,7 @@ pub fn write(path: &Path, package: &str, bounds: [f64; 4], osm: &Data) -> Result
         .execute("INSERT INTO metadata VALUES (?,?)", params![package, serde_json::to_string(&bounds).map_err(text)?])
         .map_err(text)?;
     let (members, routes) = memberships(&osm.relations);
+    let mut members = members.peekable();
     for (id, properties) in &routes {
         transaction
             .execute(
@@ -126,10 +129,14 @@ pub fn write(path: &Path, package: &str, bounds: [f64; 4], osm: &Data) -> Result
             )
             .map_err(text)?;
     }
-    let mut attributes = HashMap::new();
+    let (mut attributes, mut memberships) = (HashMap::new(), Vec::new());
     for way in osm.ways.iter() {
         let access = access::feature(&way, way.facts.country);
-        let memberships = members.get(&way.id).map_or(&[][..], Vec::as_slice);
+        while members.next_if(|&(id, _)| id < way.id).is_some() {}
+        memberships.clear();
+        while let Some((_, relation)) = members.next_if(|&(id, _)| id == way.id) {
+            memberships.push(relation);
+        }
         if access.is_none() && memberships.is_empty() {
             continue;
         }
@@ -304,10 +311,8 @@ mod tests {
             (3, "bicycle", "lcn", &[Id::Way(20)], "proposed"),
         ]);
         let (members, routes) = memberships(&relations);
-        assert_eq!(
-            members[&10].iter().map(|id| routes[id]["network"].as_str().unwrap()).collect::<Vec<_>>(),
-            ["icn", "rcn"]
-        );
-        assert!(!members.contains_key(&20));
+        let members: Vec<_> = members.collect();
+        let networks = members.iter().map(|(way, id)| (*way, routes[id]["network"].as_str().unwrap()));
+        assert_eq!(networks.collect::<Vec<_>>(), [(10, "icn"), (10, "rcn")]);
     }
 }
