@@ -34,7 +34,7 @@ describe('possible closures', () => {
         expect(label(closure('conditional', 'wet'), closure('conditional', 'Mo-Fr 07:00-19:00'))).toBe('May be closed (Mo–Fr 07:00–19:00, wet)');
         expect(label(closure('conditional', 'snow'), closure('conditional', 'wet'))).toBe(label(closure('conditional', 'wet'), closure('conditional', 'snow')));
         expect(label(closure('limited', 'customers'))).toBe('Customers only');
-        expect(label(closure('limited', 'destination'), closure('limited', 'customers;psv;motor_vehicle'))).toBe('Only for customers or motor vehicles or destination');
+        expect(label(closure('limited', 'residents'), closure('limited', 'customers;psv;motor_vehicle'))).toBe('Only for customers or motor vehicles or residents');
         expect(label(closure('unclear', 'unknown'))).toBe('Access unclear (unknown)');
         expect(label(closure('private', 'private'), closure('farm', 'agricultural;forestry'), closure('discouraged', 'discouraged')))
             .toBe('Private road · Farm or forest traffic only · Access discouraged');
