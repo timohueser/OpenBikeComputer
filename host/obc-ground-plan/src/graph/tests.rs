@@ -170,7 +170,7 @@ fn samples_break_at_cell_lines_and_a_grid_point_near_a_break_goes() {
 }
 
 #[test]
-fn a_stream_is_a_curve_through_its_vertices_with_its_levels_linear_along_it() {
+fn a_stream_is_a_curve_through_its_vertices_with_its_levels_smooth_and_falling_along_it() {
     // Chords of 30 m and 60 m: the tangent bisects their directions and does not lean to the longer.
     let g = graph(&[Line {
         z: vec![Some(10.0), Some(8.0), Some(7.0)],
@@ -191,13 +191,20 @@ fn a_stream_is_a_curve_through_its_vertices_with_its_levels_linear_along_it() {
         assert!((p.tangent[0] - t[0]).abs() < 1e-9 && (p.tangent[1] - t[1]).abs() < 1e-9, "{span} {u}");
         assert!((p.z_m - v[vertex].z_m).abs() < 1e-9);
     }
-    let mid = point(part, 0, u_at(&s[0], s[0].len_m / 2.0));
-    assert!((mid.z_m - 9.0).abs() < 1e-9, "half way along the arc, half the fall");
+    // The level falls all along, and its grade has no break at the middle vertex.
+    let z: Vec<f64> = (0..=40).map(|j| point(part, j / 21, (j % 21) as f64 / 20.0).z_m).collect();
+    assert!(z.windows(2).all(|w| w[1] <= w[0] + 1e-12), "{z:?}");
+    assert!((point(part, 0, 1.0).grade - point(part, 1, 0.0).grade).abs() < 1e-9);
+    assert!(point(part, 1, 0.0).grade < 0.0, "a vertex between two falls keeps falling");
     assert!(g.samples.iter().any(|s| s.kind == SampleKind::Grid), "the sag rule refines it");
-    // A turn over `curve_turn_max_deg` (60°) is a corner: both its spans are chords, the next one not.
+    // A turn over `curve_turn_max_deg` (60°) is a corner: both its spans are chords, the next one not, and
+    // that curve leaves vertex 2 along the chord before it, so the line does not kink there.
     let g = graph(&[stream(&[], &[[-30.0, 0.0], [0.0, 0.0], [-20.0, 25.0], [-25.0, 60.0]], 0.0)]);
-    let chords: Vec<bool> = g.parts[0].spans.iter().map(|s| s.chord).collect();
-    assert_eq!(chords, [true, true, false]);
+    let (v, s) = (&g.parts[0].vertices, &g.parts[0].spans);
+    assert_eq!(s.iter().map(|s| s.chord).collect::<Vec<_>>(), [true, true, false]);
+    let t = point(&g.parts[0], 2, 0.0).tangent;
+    let chord = direction(v[1].pos, v[2].pos);
+    assert!((t[0] - libm::cos(chord)).abs() < 1e-9 && (t[1] - libm::sin(chord)).abs() < 1e-9);
     // Spans of 300 m whose curves would leave their chords by more than `curve_off_max_m` (2 m).
     let g = graph(&[stream(&[], &[[-300.0, -60.0], [0.0, 0.0], [300.0, -60.0]], 0.0)]);
     assert!(g.parts[0].spans.iter().all(|s| s.chord));

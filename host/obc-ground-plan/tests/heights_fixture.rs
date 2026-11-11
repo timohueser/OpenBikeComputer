@@ -30,15 +30,15 @@ const INSIDE_MAX: usize = 7;
 /// Steps at label edges with no rule (`check::edge_steps`), measured with the slopes from the paved
 /// outline, walls up to the highest wall, faces past it as steep as their need, and line water: the count
 /// must not grow.
-const EDGE_MAX: usize = 125;
+const EDGE_MAX: usize = 117;
 /// Pairs of grid points on a slope steeper than a rock face where the terrain is not (`Scan::steep`),
 /// measured with cones on their outward side, faces past the highest wall as steep as their need, and the
 /// banks of line water, whose cuts climb as steep as the terrain asks beside a gorge: the count must not
 /// grow.
-const STEEP_MAX: usize = 3914;
+const STEEP_MAX: usize = 3681;
 /// Of those, the pairs steeper than 6 m/m and 12 m/m, measured the same way: a river's cut in a gorge
 /// that its release lifts to the terrain. A near-vertical rim that the total hides must not come back.
-const STEEP_6_MAX: usize = 78;
+const STEEP_6_MAX: usize = 76;
 const STEEP_12_MAX: usize = 3;
 /// A water sample whose level lies more than this off the terrain at its line has a level that the bake
 /// holds away from its line (a pit, or the low ground beside it): the design keeps the water at most

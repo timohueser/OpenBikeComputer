@@ -26,22 +26,35 @@ pub(super) struct Geo {
     pub c: f64,
     t0: [f64; 2],
     t1: [f64; 2],
+    /// The length of the end tangents: the chord's length times the span's handle.
+    k: f64,
     /// Metres per frame unit at the chord's middle.
     pub mpu: f64,
     chord: bool,
 }
 
+/// The plan of a span from its vertices' tangents, with a full handle.
 pub(super) fn geo(a: &Vertex, b: &Vertex, chord: bool) -> Geo {
-    let d = [(b.pos[0] - a.pos[0]) as f64, (b.pos[1] - a.pos[1]) as f64];
-    let mpu = metres_per_unit((a.pos[1] + b.pos[1]).div_euclid(2));
-    Geo { p0: a.pos, mpu, chord, ..curve(d, a.tangent, b.tangent) }
+    shaped(a, b, chord, [a.tangent, b.tangent], 1.0)
 }
 
-/// The curve of a span from its start: chord `d`, tangent angles t0 and t1, in the units of `d`.
-fn curve(d: [f64; 2], t0: f64, t1: f64) -> Geo {
+/// The plan of a span of a part.
+pub(super) fn geo_of(a: &Vertex, b: &Vertex, span: &Span) -> Geo {
+    shaped(a, b, span.chord, span.ends, span.handle)
+}
+
+fn shaped(a: &Vertex, b: &Vertex, chord: bool, ends: [f64; 2], handle: f64) -> Geo {
+    let d = [(b.pos[0] - a.pos[0]) as f64, (b.pos[1] - a.pos[1]) as f64];
+    let mpu = metres_per_unit((a.pos[1] + b.pos[1]).div_euclid(2));
+    Geo { p0: a.pos, mpu, chord, ..curve(d, ends[0], ends[1], handle) }
+}
+
+/// The curve of a span from its start: chord `d`, tangent angles t0 and t1 and the handle, in the units
+/// of `d`.
+fn curve(d: [f64; 2], t0: f64, t1: f64, handle: f64) -> Geo {
     let c = (d[0] * d[0] + d[1] * d[1]).sqrt();
     let unit = |angle: f64| [libm::cos(angle), libm::sin(angle)];
-    Geo { p0: [0; 2], d, c, t0: unit(t0), t1: unit(t1), mpu: 1.0, chord: false }
+    Geo { p0: [0; 2], d, c, t0: unit(t0), t1: unit(t1), k: c * handle, mpu: 1.0, chord: false }
 }
 
 impl Geo {
@@ -54,7 +67,7 @@ impl Geo {
         let h = [u3 - 2.0 * u2 + u, 3.0 * u2 - 2.0 * u3, u3 - u2];
         let dh = [3.0 * u2 - 4.0 * u + 1.0, 6.0 * u - 6.0 * u2, 3.0 * u2 - 2.0 * u];
         let ddh = [6.0 * u - 4.0, 6.0 - 12.0 * u, 6.0 * u - 2.0];
-        let at = |w: [f64; 3], i: usize| w[0] * self.c * self.t0[i] + w[1] * self.d[i] + w[2] * self.c * self.t1[i];
+        let at = |w: [f64; 3], i: usize| w[0] * self.k * self.t0[i] + w[1] * self.d[i] + w[2] * self.k * self.t1[i];
         [[at(h, 0), at(h, 1)], [at(dh, 0), at(dh, 1)], [at(ddh, 0), at(ddh, 1)]]
     }
 
@@ -64,7 +77,7 @@ impl Geo {
         } else {
             let u2 = u * u;
             let dh = [3.0 * u2 - 4.0 * u + 1.0, 6.0 * u - 6.0 * u2, 3.0 * u2 - 2.0 * u];
-            let at = |i: usize| dh[0] * self.c * self.t0[i] + dh[1] * self.d[i] + dh[2] * self.c * self.t1[i];
+            let at = |i: usize| dh[0] * self.k * self.t0[i] + dh[1] * self.d[i] + dh[2] * self.k * self.t1[i];
             [at(0), at(1)]
         };
         (d[0] * d[0] + d[1] * d[1]).sqrt() * self.mpu
@@ -75,15 +88,9 @@ impl Geo {
         if self.chord {
             return [[0.0; 2], self.d, self.d, self.d];
         }
-        let k = self.c / 3.0;
+        let k = self.k / 3.0;
         [[0.0; 2], [k * self.t0[0], k * self.t0[1]], [self.d[0] - k * self.t1[0], self.d[1] - k * self.t1[1]], self.d]
     }
-}
-
-/// The most that the curve of a span leaves its chord, in metres.
-pub(super) fn off_chord_m(a: &Vertex, b: &Vertex) -> f64 {
-    let g = geo(a, b, false);
-    off_chord(g.d, a.tangent, b.tangent) * g.mpu
 }
 
 /// The tangents of water, which the tiles do not hold, per point its angle and whether it is a corner:
@@ -116,18 +123,87 @@ pub fn water_tangents(points: &[[f64; 2]], turn_max_deg: f64) -> Vec<(f64, bool)
 
 /// The point at u of the curve of a span with chord `d` and tangent angles t0 and t1, from its start.
 pub fn curve_point(d: [f64; 2], t0: f64, t1: f64, u: f64) -> [f64; 2] {
-    curve(d, t0, t1).eval(u)[0]
+    curve(d, t0, t1, 1.0).eval(u)[0]
 }
 
 /// The most that this curve leaves its chord, in the units of `d`, at 32 steps of u.
 pub fn off_chord(d: [f64; 2], t0: f64, t1: f64) -> f64 {
-    let g = curve(d, t0, t1);
+    let g = curve(d, t0, t1, 1.0);
     let unit = [g.d[0] / g.c, g.d[1] / g.c];
     let off = |j: u32| {
         let q = g.eval(f64::from(j) / 32.0)[0];
         (unit[0] * q[1] - unit[1] * q[0]).abs()
     };
     (1..32).map(off).fold(0.0, f64::max)
+}
+
+/// The shapes of the spans of water through `points`, with their tangents and corners
+/// (`water_tangents`) and `metres` per unit of a span from its two points: per span None where it is
+/// its chord (a corner at an end, no length, its curve leaves the chord by more than `off_max_m`, or it
+/// folds back), else its end tangents and handle. A curve's end at a vertex whose other span is a chord
+/// takes that chord's direction, so the outline turns smoothly there; where the curve then leaves its
+/// chord by more than `off_max_m`, its tangents shorten until it leaves by that much. The curve's
+/// distance from its chord scales with the handle.
+pub fn water_spans(
+    points: &[[f64; 2]],
+    tangents: &[(f64, bool)],
+    metres: impl Fn([f64; 2], [f64; 2]) -> f64,
+    off_max_m: f64,
+) -> Vec<Option<([f64; 2], f64)>> {
+    let n = points.len().saturating_sub(1);
+    let chord_of = |k: usize| [points[k + 1][0] - points[k][0], points[k + 1][1] - points[k][1]];
+    let off_m = |k: usize, t0: f64, t1: f64| off_chord(chord_of(k), t0, t1) * metres(points[k], points[k + 1]);
+    let chord: Vec<bool> = (0..n)
+        .map(|k| {
+            let (d, (t0, c0), (t1, c1)) = (chord_of(k), tangents[k], tangents[k + 1]);
+            c0 || c1 || d == [0.0; 2] || off_m(k, t0, t1) > off_max_m || folds(d, t0, t1)
+        })
+        .collect();
+    let along = |k: usize| {
+        let d = chord_of(k);
+        libm::atan2(d[1], d[0])
+    };
+    (0..n)
+        .map(|k| {
+            if chord[k] {
+                return None;
+            }
+            let start = if k > 0 && chord[k - 1] { along(k - 1) } else { tangents[k].0 };
+            let end = if k + 1 < n && chord[k + 1] { along(k + 1) } else { tangents[k + 1].0 };
+            if folds(chord_of(k), start, end) {
+                return None;
+            }
+            let off = off_m(k, start, end);
+            Some(([start, end], if off > off_max_m { off_max_m / off } else { 1.0 }))
+        })
+        .collect()
+}
+
+/// The grades (rise per metre) of water at `points` with levels `z` along its line: the harmonic mean of
+/// the grades of its two chords where they fall the same way, else 0, and at an end or beside an unknown
+/// level its one chord's. Heights between two vertices then follow a cubic through their levels and
+/// grades, which never rises past either level and turns smoothly at a vertex.
+pub fn water_grades(points: &[[f64; 2]], z: &[Option<f64>], metres: impl Fn([f64; 2], [f64; 2]) -> f64) -> Vec<f64> {
+    let chord = |k: usize| match (z[k], z[k + 1]) {
+        (Some(a), Some(b)) => {
+            let (p, q) = (points[k], points[k + 1]);
+            let m = libm::hypot(q[0] - p[0], q[1] - p[1]) * metres(p, q);
+            (m > 0.0).then(|| (b - a) / m)
+        }
+        _ => None,
+    };
+    let n = points.len();
+    (0..n)
+        .map(|k| {
+            let before = if k > 0 { chord(k - 1) } else { None };
+            let after = if k + 1 < n { chord(k) } else { None };
+            match (before, after) {
+                (Some(a), Some(b)) if a * b > 0.0 => 2.0 * a * b / (a + b),
+                (Some(_), Some(_)) | (None, None) => 0.0,
+                (Some(g), None) | (None, Some(g)) => g,
+            }
+        })
+        .collect()
 }
 
 /// Whether a tangent points back against the chord: the curve folds, and the span is its chord.
@@ -152,7 +228,12 @@ pub(super) fn length(a: &Vertex, b: &Vertex, chord: bool) -> f64 {
 
 impl Span {
     pub(super) fn new(a: &Vertex, b: &Vertex, chord: bool, along0_m: f64) -> Span {
-        let g = geo(a, b, chord);
+        Span::shaped(a, b, chord, [a.tangent, b.tangent], 1.0, along0_m)
+    }
+
+    /// A span with its own end tangents and handle (`water_spans`).
+    pub(super) fn shaped(a: &Vertex, b: &Vertex, chord: bool, ends: [f64; 2], handle: f64, along0_m: f64) -> Span {
+        let g = shaped(a, b, chord, ends, handle);
         let f: Vec<f64> = (0..=4 * KNOTS).map(|j| g.speed_m(j as f64 / (4 * KNOTS) as f64)).collect();
         let len_m = if chord { g.c * g.mpu } else { simpson(1.0, &[f[0], f[16], f[32], f[48], f[64]]) };
         let mut knots = [0.0; KNOTS + 1];
@@ -163,7 +244,7 @@ impl Span {
         let scale = len_m / knots[KNOTS];
         knots.iter_mut().for_each(|k| *k *= scale);
         knots[KNOTS] = len_m;
-        Span { len_m, knots, along0_m, chord, linear_z: false, owner: [0; 3] }
+        Span { len_m, knots, along0_m, chord, ends, handle, linear_z: false, owner: [0; 3] }
     }
 }
 
@@ -187,7 +268,7 @@ pub fn u_at(span: &Span, s: f64) -> f64 {
 pub fn point(part: &Part, span: usize, u: f64) -> SpanPoint {
     let (a, b) = (&part.vertices[span], &part.vertices[span + 1]);
     let data = &part.spans[span];
-    point_of(&Of { g: geo(a, b, data.chord), a, b, span: data }, u)
+    point_of(&Of { g: geo_of(a, b, data), a, b, span: data }, u)
 }
 
 /// A span with its vertices and its plan.
@@ -206,7 +287,12 @@ fn point_of(of: &Of, u: f64) -> SpanPoint {
     let c_m = g.c * g.mpu;
     let (z_m, grade) = if of.span.linear_z {
         let len = of.span.len_m;
-        (a.z_m + (b.z_m - a.z_m) * s_at(of.span, u) / len, (b.z_m - a.z_m) / len)
+        let t = s_at(of.span, u) / len;
+        let (t2, t3) = (t * t, t * t * t);
+        let h = [2.0 * t3 - 3.0 * t2 + 1.0, t3 - 2.0 * t2 + t, 3.0 * t2 - 2.0 * t3, t3 - t2];
+        let dh = [6.0 * t2 - 6.0 * t, 3.0 * t2 - 4.0 * t + 1.0, 6.0 * t - 6.0 * t2, 3.0 * t2 - 2.0 * t];
+        let z = |w: [f64; 4]| w[0] * a.z_m + w[1] * len * a.grade + w[2] * b.z_m + w[3] * len * b.grade;
+        (z(h), z(dh) / len)
     } else if g.chord {
         (a.z_m + u * (b.z_m - a.z_m), (b.z_m - a.z_m) / c_m)
     } else {
@@ -267,7 +353,7 @@ struct Pt {
 
 /// Whether the box of a span's control points meets the closed square.
 pub(super) fn meets(part: &Part, span: usize, [x0, y0, x1, y1]: [i64; 4]) -> bool {
-    let g = geo(&part.vertices[span], &part.vertices[span + 1], part.spans[span].chord);
+    let g = geo_of(&part.vertices[span], &part.vertices[span + 1], &part.spans[span]);
     let hull = g.hull();
     let lo = |i: usize| hull.iter().map(|p| p[i]).fold(f64::INFINITY, f64::min).floor() as i64 + g.p0[i];
     let hi = |i: usize| hull.iter().map(|p| p[i]).fold(f64::NEG_INFINITY, f64::max).ceil() as i64 + g.p0[i];
@@ -290,7 +376,7 @@ pub(super) fn samples(part: &Part, rule: &Rule<'_>, cell: CellKey, area: [i64; 4
         if before {
             out.pop();
         }
-        let g = geo(&part.vertices[span], &part.vertices[span + 1], part.spans[span].chord);
+        let g = geo_of(&part.vertices[span], &part.vertices[span + 1], &part.spans[span]);
         out.extend(span_samples(part, rule, span).into_iter().map(|pt| sample(part, g, span, pt, cell)));
         sampled[span] = true;
     }
@@ -322,7 +408,7 @@ pub(super) fn insert(part: &Part, samples: &mut Vec<Sample>, st: super::Station,
 
 /// A sample at a station of a span: the curve point rounded.
 pub(super) fn station_sample(part: &Part, span: usize, u: f64, cell: CellKey) -> Sample {
-    let g = geo(&part.vertices[span], &part.vertices[span + 1], part.spans[span].chord);
+    let g = geo_of(&part.vertices[span], &part.vertices[span + 1], &part.spans[span]);
     let pos = round(&g, g.eval(u)[0]);
     sample(part, g, span, Pt { u, s: s_at(&part.spans[span], u), kind: SampleKind::Station, pos }, cell)
 }
@@ -353,7 +439,7 @@ fn sample(part: &Part, g: Geo, span: usize, pt: Pt, cell: CellKey) -> Sample {
 fn span_samples(part: &Part, rule: &Rule<'_>, span: usize) -> Vec<Pt> {
     let (a, b) = (&part.vertices[span], &part.vertices[span + 1]);
     let data = &part.spans[span];
-    let g = geo(a, b, data.chord);
+    let g = geo_of(a, b, data);
     let at = |u: f64, kind: SampleKind, pos: [i64; 2]| Pt { u, s: s_at(data, u), kind, pos };
     let mut breaks = vec![at(0.0, SampleKind::Vertex, a.pos), at(1.0, SampleKind::Vertex, b.pos)];
     let hull = g.hull();

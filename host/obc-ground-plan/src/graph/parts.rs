@@ -3,8 +3,11 @@
 
 use std::collections::BTreeMap;
 
-use super::{folds, water_tangents, Family, FeatureRef, GraphStats, Level, Part, Span, Vertex, SPIKE_DEG};
-use crate::frame::GlobalPoint;
+use super::{
+    folds, water_grades, water_spans, water_tangents, Family, FeatureRef, GraphStats, Level, Part, Span, Vertex,
+    SPIKE_DEG,
+};
+use crate::frame::{metres_per_unit, GlobalPoint};
 use crate::sections::{is_track, Sections, WaterSection, WaySection, WATER_KINDS};
 use crate::tile::{self, Feature, Geometry};
 use crate::CellInput;
@@ -100,15 +103,19 @@ struct Raw {
     corner: bool,
 }
 
-/// A joined part before cleaning: its vertices, per span the stroke metres at its start and
-/// whether it has no alignment, and the tile's vertex before and after it, where the tile holds one.
+/// A water span's shape (`water_spans`): None for its chord, else its end tangents and handle.
+type WaterShape = Option<([f64; 2], f64)>;
+
+/// A joined part before cleaning: its vertices, per span the stroke metres at its start, whether it
+/// has no alignment, its owner and its water shape, and the tile's two vertices before and after it with
+/// their heights, in the chain's order, where the tile holds them.
 struct Chain {
     feature: usize,
     backward: bool,
     vertices: Vec<Raw>,
-    spans: Vec<(f64, bool, [u32; 3])>,
-    before: Option<[i64; 2]>,
-    after: Option<[i64; 2]>,
+    spans: Vec<(f64, bool, [u32; 3], WaterShape)>,
+    before: Vec<([i64; 2], Option<f64>)>,
+    after: Vec<([i64; 2], Option<f64>)>,
 }
 
 /// The vertices of a tile part in the graph's form; a part with no alignment takes its chords.
@@ -225,14 +232,15 @@ fn chains(input: &CellInput, line: &[bool]) -> Vec<Chain> {
             continue;
         }
         let r0 = runs[first];
-        let before = r0.from.checked_sub(1).map(|i| key(part(&r0).points[i]));
+        let past = |p: &tile::Part, i: usize| (key(p.points[i]), p.heights.as_ref().and_then(|h| h[i]));
+        let before = (r0.from.saturating_sub(2)..r0.from).map(|i| past(part(&r0), i)).collect();
         let mut chain = Chain {
             feature: r0.feature,
             backward: false,
             vertices: Vec::new(),
             spans: Vec::new(),
             before,
-            after: None,
+            after: Vec::new(),
         };
         let mut at = Some(first);
         while let Some(i) = at.filter(|&i| !seen[i]) {
@@ -245,8 +253,8 @@ fn chains(input: &CellInput, line: &[bool]) -> Vec<Chain> {
             let skip = usize::from(!chain.vertices.is_empty());
             chain.vertices.extend(vertices[r.from + skip..=r.to].iter().cloned());
             let owner = [p.tile.0, p.tile.1, input.features[r.feature].index];
-            chain.spans.extend((r.from..r.to).map(|k| (along[k], p.plan.is_none(), owner)));
-            chain.after = p.points.get(r.to + 1).map(|&q| key(q));
+            chain.spans.extend((r.from..r.to).map(|k| (along[k], p.plan.is_none(), owner, None)));
+            chain.after = (r.to + 1..(r.to + 3).min(p.points.len())).map(|i| past(p, i)).collect();
             at = next[i];
         }
         out.push(chain);
@@ -282,13 +290,20 @@ fn trim(chain: Chain, [x0, y0, x1, y1]: [i64; 4]) -> Vec<Chain> {
         while k < n && keep[k] {
             k += 1;
         }
+        let before: Vec<([i64; 2], Option<f64>)> =
+            chain.before.iter().copied().chain(chain.vertices[..start].iter().map(|r| (r.v.pos, r.z))).collect();
         out.push(Chain {
             feature: chain.feature,
             backward: chain.backward,
             vertices: chain.vertices[start..=k].to_vec(),
             spans: chain.spans[start..k].to_vec(),
-            before: if start > 0 { Some(chain.vertices[start - 1].v.pos) } else { chain.before },
-            after: if k < n { Some(chain.vertices[k + 1].v.pos) } else { chain.after },
+            before: before[before.len().saturating_sub(2)..].to_vec(),
+            after: chain.vertices[k + 1..]
+                .iter()
+                .map(|r| (r.v.pos, r.z))
+                .chain(chain.after.iter().copied())
+                .take(2)
+                .collect(),
         });
     }
     out
@@ -303,25 +318,35 @@ fn turn_deg(a: [i64; 2], b: [i64; 2], c: [i64; 2]) -> f64 {
 /// The neighbours of vertex i on its chain: the tile's vertices past the chain's ends included.
 fn neighbours(chain: &Chain, i: usize) -> (Option<[i64; 2]>, Option<[i64; 2]>) {
     let (n, here) = (chain.vertices.len(), chain.vertices[i].v.pos);
-    let prev = if i > 0 { Some(chain.vertices[i - 1].v.pos) } else { chain.before };
-    let next = if i + 1 < n { Some(chain.vertices[i + 1].v.pos) } else { chain.after };
+    let prev = if i > 0 { Some(chain.vertices[i - 1].v.pos) } else { chain.before.last().map(|p| p.0) };
+    let next = if i + 1 < n { Some(chain.vertices[i + 1].v.pos) } else { chain.after.first().map(|p| p.0) };
     (prev.filter(|&q| q != here), next.filter(|&q| q != here))
 }
 
-/// The tangents and corners of water (`water_tangents`). A chain end that is no end of the way reads
-/// the tile's vertex past it, so every cell that samples a span gives it one curve.
-fn curve_water(chain: &mut Chain, turn_max_deg: f64) {
-    let points: Vec<[f64; 2]> = chain
-        .before
-        .into_iter()
-        .chain(chain.vertices.iter().map(|r| r.v.pos))
-        .chain(chain.after)
-        .map(|p| p.map(|c| c as f64))
+/// The tangents, corners, span shapes and grades of water (`water_tangents`, `water_spans`,
+/// `water_grades`). A chain end that is no end of the way reads the tile's two vertices past it, so every
+/// cell that samples a span gives it one curve and one profile: a span reads the spans beside it.
+fn curve_water(chain: &mut Chain, turn_max_deg: f64, off_max_m: f64) {
+    let all: Vec<([i64; 2], Option<f64>)> = (chain.before.iter().copied())
+        .chain(chain.vertices.iter().map(|r| (r.v.pos, r.z)))
+        .chain(chain.after.iter().copied())
         .collect();
-    let tangents = water_tangents(&points, turn_max_deg).into_iter().skip(usize::from(chain.before.is_some()));
-    for (r, (tangent, corner)) in chain.vertices.iter_mut().zip(tangents) {
-        r.v.tangent = tangent;
-        r.corner |= corner;
+    let points: Vec<[f64; 2]> = all.iter().map(|p| p.0.map(|c| c as f64)).collect();
+    let skip = chain.before.len();
+    let mut tangents = water_tangents(&points, turn_max_deg);
+    for (r, (tangent, corner)) in chain.vertices.iter_mut().zip(&mut tangents[skip..]) {
+        r.v.tangent = *tangent;
+        r.corner |= *corner;
+        *corner = r.corner;
+    }
+    let metres = |a: [f64; 2], b: [f64; 2]| metres_per_unit(((a[1] + b[1]) / 2.0).floor() as i64);
+    let shapes = water_spans(&points, &tangents, metres, off_max_m);
+    for (span, shape) in chain.spans.iter_mut().zip(&shapes[skip..]) {
+        span.3 = *shape;
+    }
+    let z: Vec<Option<f64>> = all.iter().map(|p| p.1).collect();
+    for (r, grade) in chain.vertices.iter_mut().zip(&water_grades(&points, &z, metres)[skip..]) {
+        r.v.grade = *grade;
     }
 }
 
@@ -366,7 +391,7 @@ pub(crate) fn parts<'a>(
             }
         }
         if let Some((_, _, _, Rule::Water(w))) = classes[chain.feature] {
-            curve_water(chain, w.curve_turn_max_deg);
+            curve_water(chain, w.curve_turn_max_deg, w.curve_off_max_m);
         }
     }
     let chains: Vec<Chain> = chains.into_iter().flat_map(|c| trim(c, input.key.grown())).collect();
@@ -375,31 +400,32 @@ pub(crate) fn parts<'a>(
         let (family, class, level, rule) = classes[chain.feature].expect("a chain of a line feature");
         let keep_unknown = family == Family::Water && level == Level::Tunnel;
         let mut piece: Vec<Raw> = Vec::new();
-        let mut spans: Vec<(f64, bool, [u32; 3])> = Vec::new();
-        let mut flush = |piece: &mut Vec<Raw>, spans: &mut Vec<(f64, bool, [u32; 3])>, stats: &mut GraphStats| {
+        let mut spans: Vec<(f64, bool, [u32; 3], WaterShape)> = Vec::new();
+        let mut flush = |piece: &mut Vec<Raw>,
+                         spans: &mut Vec<(f64, bool, [u32; 3], WaterShape)>,
+                         stats: &mut GraphStats| {
             if piece.len() >= 2 {
                 // Water in a tunnel has no level: 0 marks it, it is no height.
                 let vertices: Vec<Vertex> =
                     piece.iter().map(|r| Vertex { z_m: r.z.unwrap_or(0.0), ..r.v.clone() }).collect();
-                let water = family == Family::Water;
                 let corner: Vec<bool> = piece.iter().map(|r| r.corner).collect();
                 let spans = vertices
                     .windows(2)
                     .zip(spans.iter())
                     .enumerate()
-                    .map(|(k, (pair, &(along0, chord, owner)))| {
-                        let off_max = match rule {
-                            Rule::Water(w) => w.curve_off_max_m,
-                            Rule::Way(..) => f64::INFINITY,
-                        };
-                        let chord = corner[k]
-                            || corner[k + 1]
-                            || (chord && !water)
-                            || (water && super::curve::off_chord_m(&pair[0], &pair[1]) > off_max);
+                    .map(|(k, (pair, &(along0, chord, owner, shape)))| {
+                        if let Rule::Water(_) = rule {
+                            let span = match shape {
+                                Some((ends, handle)) => Span::shaped(&pair[0], &pair[1], false, ends, handle, along0),
+                                None => Span::new(&pair[0], &pair[1], true, along0),
+                            };
+                            return Span { linear_z: true, owner, ..span };
+                        }
                         let d = [(pair[1].pos[0] - pair[0].pos[0]) as f64, (pair[1].pos[1] - pair[0].pos[1]) as f64];
+                        let chord = corner[k] || corner[k + 1] || chord;
                         let folded = !chord && folds(d, pair[0].tangent, pair[1].tangent);
                         stats.folded += u32::from(folded);
-                        Span { linear_z: water, owner, ..Span::new(&pair[0], &pair[1], chord || folded, along0) }
+                        Span { owner, ..Span::new(&pair[0], &pair[1], chord || folded, along0) }
                     })
                     .collect();
                 let part = Part {
