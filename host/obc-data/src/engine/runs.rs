@@ -1817,6 +1817,7 @@ open(os.path.join(request['output'], 'out.txt'), 'w').write(f'{start} {time.time
                 step: step.into(),
                 format: 1,
                 revision: 1,
+                cache: false,
                 key: crate::store::sha256_hex(b"old"),
                 inputs: Vec::new(),
                 options: serde_json::json!({}),

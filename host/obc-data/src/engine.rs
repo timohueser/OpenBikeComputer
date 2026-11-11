@@ -41,6 +41,9 @@ pub struct Layer {
     pub revision: u32,
     /// The programs that read its files.
     pub readers: &'static [&'static Reader],
+    /// The store keeps only the newest layer of each step and options: a work layer that a later
+    /// step reads, which a new version of its inputs makes worthless.
+    pub cache: bool,
 }
 
 /// A program that reads the files of a layer.
@@ -189,6 +192,9 @@ pub struct Receipt {
     pub step: String,
     pub format: u32,
     pub revision: u32,
+    /// The `cache` of the layer: a collection keeps only the newest layer of the step and options.
+    #[serde(default)]
+    pub cache: bool,
     pub key: String,
     pub inputs: Vec<InputRecord>,
     pub options: Value,
@@ -662,6 +668,7 @@ fn prepare(store: &Store, step: &Step, layers: &HashMap<&str, Output>) -> Result
         step: step.name.clone(),
         format: step.layer.format,
         revision: step.layer.revision,
+        cache: step.layer.cache,
         key: String::new(),
         inputs,
         options: step.options.clone(),
@@ -821,14 +828,14 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
     pub(crate) static TESTS: super::Reader = super::Reader { name: "tests", on_new_format: "The tests read it." };
     /// The layer of the test steps.
     pub(crate) static TEST: Layer =
-        Layer { name: "test", shape: Shape::Whole, format: 1, revision: 1, readers: &[&TESTS] };
+        Layer { name: "test", shape: Shape::Whole, format: 1, revision: 1, readers: &[&TESTS], cache: false };
     /// The layer that [`revise`] gives a step.
     pub(crate) static REVISED: Layer =
-        Layer { name: "revised", shape: Shape::Whole, format: 1, revision: 1, readers: &[&TESTS] };
+        Layer { name: "revised", shape: Shape::Whole, format: 1, revision: 1, readers: &[&TESTS], cache: false };
 
     /// The layer of `test/upper` in [`layered`].
     pub(crate) static UPPER: Layer =
-        Layer { name: "upper", shape: Shape::Whole, format: 1, revision: 1, readers: &[&TESTS] };
+        Layer { name: "upper", shape: Shape::Whole, format: 1, revision: 1, readers: &[&TESTS], cache: false };
 
     /// The test pipeline, with `test/upper` in its own layer.
     pub(crate) fn layered() -> Vec<Step> {
@@ -1159,8 +1166,9 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
 
     #[test]
     fn the_version_of_its_layer_keys_a_step_and_its_code_does_not() {
-        static JOINED: Layer = Layer { name: "joined", shape: Shape::Whole, format: 1, revision: 1, readers: &[] };
-        static REVISION: Layer = Layer { name: "joined", shape: Shape::Whole, format: 1, revision: 2, readers: &[] };
+        static JOINED: Layer =
+            Layer { name: "joined", shape: Shape::Whole, format: 1, revision: 1, readers: &[], cache: false };
+        static REVISION: Layer = Layer { revision: 2, ..JOINED };
         let fixture = fixture("engine-version");
         let mut steps = pipeline();
         steps[1].layer = &JOINED;

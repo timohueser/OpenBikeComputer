@@ -108,7 +108,8 @@ pub struct Kept {
 /// of a release or a fixture names it, or a reached record or layer has it. A layer is reached when each input
 /// is: a snapshot input whose digest is of the files that it names of a reached record of its
 /// source, and a step input whose digest is of the files that it selects (all when it names
-/// none) of a reached layer of its step.
+/// none) of a reached layer of its step. A layer of a cache layer is reached only when it is also
+/// the newest of its step and options.
 pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
     let named = &roots.sha256s;
     // The objects of the kept records and layers.
@@ -168,6 +169,17 @@ pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
     // A receipt that this build cannot read can be of a newer build: its objects stay.
     let receipts: Vec<engine::Receipt> = read_records(&store.root().join("layers"), read_record)
         .map_err(|e| format!("{e}; a newer obc data may have written it, so nothing is collected"))?;
+    // Of the layers of a cache step with the same options, only the newest by `built` can be
+    // reached, whatever else is; the key decides a tie, so the order of the receipts does not.
+    let mut newest = HashMap::<(&str, String), &engine::Receipt>::new();
+    for receipt in receipts.iter().filter(|receipt| receipt.cache) {
+        let group = (receipt.step.as_str(), engine::sorted(receipt.options.clone()).to_string());
+        let entry = newest.entry(group).or_insert(receipt);
+        if (&receipt.built, &receipt.key) > (&entry.built, &entry.key) {
+            *entry = receipt;
+        }
+    }
+    let newest: HashSet<&str> = newest.values().map(|receipt| receipt.key.as_str()).collect();
     let mut keys = HashSet::new();
     // The reached layers of each step.
     let mut layers = HashMap::<&str, Vec<&engine::Receipt>>::new();
@@ -175,6 +187,9 @@ pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
     loop {
         let before = keys.len();
         for receipt in &receipts {
+            if receipt.cache && !newest.contains(receipt.key.as_str()) {
+                continue;
+            }
             let inputs_reached = receipt.inputs.iter().all(|input| match input.kind {
                 InputKind::Snapshot => kept_snapshots.get(input.name.as_str()).is_some_and(|snapshots| {
                     let names: HashSet<&str> = input.files.iter().map(String::as_str).collect();
@@ -421,6 +436,7 @@ mod tests {
     use crate::engine::{InputRecord, LayerFile, Receipt};
     use crate::store::tests::Scratch;
     use crate::store::{sha256_hex, write_atomic, FileRecord, Requested, Snapshot};
+    use serde_json::json;
 
     fn object(store: &Store, bytes: &[u8]) -> String {
         let sha256 = sha256_hex(bytes);
@@ -453,6 +469,16 @@ mod tests {
 
     /// A layer of `files`, `(path, bytes)`, that reads `inputs`; its digest.
     fn layer_of(store: &Store, key: &str, inputs: Vec<InputRecord>, files: &[(&str, &[u8])]) -> String {
+        put(store, Receipt { step: key.into(), key: key.into(), ..receipt(store, inputs, files) })
+    }
+
+    fn put(store: &Store, receipt: Receipt) -> String {
+        store.put_layer(&receipt).unwrap();
+        receipt.digest
+    }
+
+    /// The receipt of a test layer of `files` that reads `inputs`.
+    fn receipt(store: &Store, inputs: Vec<InputRecord>, files: &[(&str, &[u8])]) -> Receipt {
         let files: Vec<LayerFile> = files
             .iter()
             .map(|(path, bytes)| LayerFile {
@@ -462,12 +488,13 @@ mod tests {
             })
             .collect();
         let digest = engine::digest(files.iter().map(|file| (file.path.as_str(), file.sha256.as_str())));
-        let receipt = Receipt {
+        Receipt {
             layer: "test".into(),
-            step: key.into(),
+            step: String::new(),
             format: 1,
             revision: 1,
-            key: key.into(),
+            cache: false,
+            key: String::new(),
             inputs,
             options: serde_json::json!({}),
             digest: digest.clone(),
@@ -480,9 +507,7 @@ mod tests {
             bytes_in: 0,
             bytes_out: 0,
             metrics: Default::default(),
-        };
-        store.put_layer(&receipt).unwrap();
-        digest
+        }
     }
 
     fn input(kind: InputKind, name: &str, digest: String, files: &[&str]) -> InputRecord {
@@ -641,5 +666,35 @@ mod tests {
         assert_eq!((plan.remove_bytes, plan.keep_bytes), (3, 3));
         apply(&store, &roots, &plan).unwrap().unwrap();
         assert!(store.unpacked("aa").is_dir() && !store.unpacked("bb").exists());
+    }
+
+    #[test]
+    fn a_collection_keeps_the_newest_cache_layer_of_each_step_and_options() {
+        // Two costs layers on one roads layer, the older first and then last in key order, and a
+        // costs layer of other bounds.
+        let collected = |scratch: &str, old: &str, new: &str| {
+            let scratch = Scratch::new(scratch);
+            let (repo, store) = (scratch.0.join("repo"), Store::at(scratch.0.join("store")));
+            fs::create_dir_all(&repo).unwrap();
+            snapshot(&store, "osm", "1", "2026-10-05", &[("cut.pbf", b"cut")]);
+            let cut = engine::digest([("cut.pbf", sha256_hex(b"cut").as_str())]);
+            let cache = |step: &str, key: &str, inputs, options, day: &str, bytes: &[u8]| {
+                let built = format!("2026-10-{day}T00:00:00Z");
+                let receipt = receipt(&store, inputs, &[("out", bytes)]);
+                put(&store, Receipt { step: step.into(), key: key.into(), cache: true, options, built, ..receipt })
+            };
+            let osm = vec![input(InputKind::Snapshot, "osm", cut, &["cut.pbf"])];
+            let roads = cache("roads", "roads", osm, json!({"bounds": [1]}), "05", b"roads");
+            let on_roads = || vec![input(InputKind::Step, "roads", roads.clone(), &[])];
+            let swiss = json!({"bounds": [1], "profiles": ["all"]});
+            cache("costs", old, on_roads(), swiss.clone(), "06", b"costs old");
+            cache("costs", new, on_roads(), swiss, "07", b"costs new");
+            cache("costs", "other", on_roads(), json!({"bounds": [2], "profiles": ["all"]}), "06", b"costs other");
+            let plan = plan(&store, &Roots::from_repo(&repo).unwrap()).unwrap();
+            plan.objects.into_iter().map(|(sha256, _)| sha256).collect::<Vec<_>>()
+        };
+        let old = [sha256_hex(b"costs old")];
+        assert_eq!(collected("gc-cache-a", "costs-a", "costs-b"), old);
+        assert_eq!(collected("gc-cache-b", "costs-b", "costs-a"), old);
     }
 }

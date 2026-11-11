@@ -662,6 +662,7 @@ impl<'a> Job<'a> {
             step: step.into(),
             format: 0,
             revision: 0,
+            cache: false,
             key: String::new(),
             inputs: Vec::new(),
             options: serde_json::Value::Null,
