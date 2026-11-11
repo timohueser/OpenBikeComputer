@@ -116,11 +116,16 @@ const tees = new WeakMap<Line[], (line: Line, total: number) => [number, number]
 export function teesOf(all: Line[]): (line: Line, total: number) => [number, number] {
     const known = tees.get(all);
     if (known) return known;
-    // The inner vertices of the roads on the ground and of the decks, with the half-width that a deck leaving them starts past.
+    // The bridges' ends, with the widest half-width of a road on the ground or a deck that runs through them: a deck
+    // leaving there starts past it. The map stays with the tile, so it holds only the keys that `made` reads.
     const through = new Map<string, number>();
+    for (const line of all) if (line.kind === BRIDGE) for (const v of [0, line.z.length - 1]) through.set(pointKey(line, v), 0);
     for (const line of all) {
         const half = line.kind === BRIDGE ? deckHalf(line) : line.kind === ROAD || line.kind === PATH ? line.h : 0;
-        for (let v = 1; half && v + 1 < line.z.length; v++) through.set(pointKey(line, v), Math.max(through.get(pointKey(line, v)) ?? 0, half));
+        for (let v = 1; half && v + 1 < line.z.length; v++) {
+            const most = through.get(pointKey(line, v));
+            if (most !== undefined) through.set(pointKey(line, v), Math.max(most, half));
+        }
     }
     const made = (line: Line, total: number): [number, number] => {
         const cuts = [through.get(pointKey(line, 0)) ?? 0, through.get(pointKey(line, line.z.length - 1)) ?? 0];
