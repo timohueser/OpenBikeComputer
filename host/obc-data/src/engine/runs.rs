@@ -31,12 +31,12 @@ pub struct Limits {
 
 impl Limits {
     /// One step per core that the process can use, and three quarters of the smaller of the
-    /// physical memory and the `memory.max` of the cgroup: the rest is for the engine, the page
-    /// cache and the other programs, which the cgroup limit counts too.
+    /// physical memory and the least `memory.max` of its cgroups: the rest is for the engine, the
+    /// page cache and the other programs, which the cgroup limit counts too.
     pub fn machine() -> Self {
         // `available_parallelism` already honours the affinity mask and the cgroup `cpu.max`.
         let jobs = std::thread::available_parallelism().map_or(1, |n| n.get());
-        let cgroup = super::cgroup::memory().and_then(|cgroup| cgroup.max);
+        let cgroup = super::cgroup::limit();
         let memory = memory().into_iter().chain(cgroup).min();
         Self { jobs, memory_bytes: memory.map(|memory| memory - memory / 4) }
     }
