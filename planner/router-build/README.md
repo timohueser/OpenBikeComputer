@@ -49,19 +49,21 @@ The bake keeps its large tables in memory-mapped work files and sorts them on di
 | --- | --- |
 | Work folder | `OBC_DATA_WORK`, else `TMPDIR`, else the temporary folder of the system; `obc data` sets `TMPDIR` to a folder beside the output |
 | Bake folder | `obc-router-build-<process ID>-<n>` in the work folder, with the first free `n`; the bake removes it at the end, also after an error |
-| Page budget | The smallest of the cgroup v2 limit less the cgroup's anonymous memory, `MemAvailable`, and `OBC_DATA_MEMORY_BYTES` less the bake's own `RssAnon`; read once at the start, and printed with its source; a value that is not a number of bytes stops the bake |
+| Page budget | The smallest of the free memory of the bake's cgroup v2 or of a parent (`memory.max` less `anon`), `MemAvailable`, and `OBC_DATA_MEMORY_BYTES` less the bake's own `RssAnon`; read once at the start, and printed with its source; a value that is not a number of bytes stops the bake |
 | Sort run | A quarter of the page budget, from 1 MiB to 4 GiB |
 | Order buckets | The roads of one bucket, with their shapes before and after the terrain, take about one sort run; 1 to 256 buckets |
 | Threads | All cores, or `RAYON_NUM_THREADS`; the bytes of the package are the same for each thread count |
 | Road pass | The profiles of one group at a time; the way bases of a group take at most a quarter of the page budget |
 | Profile jobs | The snap bits and the landmarks of one profile in each job; the page budget sets how many jobs run at a time |
 | Own memory | 4 GiB; the step samples `RssAnon` every 100 ms and stops at the first sample above it, with the name of the stage; `catalog` and `blocks` are exempt |
-| Disk need | About 5 GB per GB of PBF; Europe about 200 GB (estimated) |
+| Disk need | About 7 GB per GB of PBF, at the profile jobs: Switzerland 4.8 GB, North Rhine-Westphalia 6.0 GB; Europe about 190 GB (estimated from 300 million roads) |
 
 Put the work folder on a disk, not on a tmpfs: the files of a tmpfs take RAM. A killed bake
 leaves its bake folder; remove it. A bake that the memory guard stops also leaves it.
 
-The page budget changes only the speed of the bake, never its bytes. The step prints the time and
+The work files of all profiles stay until the writer ends: for each profile, 8.125 B for each
+road, 4 B for each turn and 24 B for each junction. The page budget changes only the speed of the
+bake, never its bytes. The step prints the time and
 the peak own memory of each stage: `import`, `emit`, `way-bases`, `road-pass`, `profiles`,
 `writer`, `overlays`, `catalog` and `blocks`.
 
