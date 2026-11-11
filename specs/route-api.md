@@ -72,7 +72,8 @@ channel is `null` on every edge. A client accepts a channel that it does not kno
 
 The router blocks a mode only for the access value `no`; `dismount` blocks riding only. It uses an
 edge that is possibly closed for the mode that the route uses on it, and reports it. A way or a
-node with the access value `destination` carries no closure. A closure on a node, such as a gate,
+node whose access value is `destination`, alone, in a list with other groups or in a conditional
+clause, carries no closure. A closure on a node, such as a gate,
 belongs to the edges of the road that arrives at the node. A closure applies
 only to the direction of travel that its tag names. A closure from an access value makes the road
 cost three times its length, and a node cost as much as 300 m of good road. A `seasonal` or

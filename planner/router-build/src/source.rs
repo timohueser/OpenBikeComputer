@@ -41,10 +41,13 @@ pub fn granted(value: &str) -> bool {
 }
 
 /// The closure kind that an access value records. The owner decided that a rider and a walker pass
-/// a way or a barrier signed for traffic to a destination, so `destination` records none.
+/// a way or a barrier signed for traffic to a destination, so a `limited` value that lists
+/// `destination`, such as `destination;delivery`, records none. A list that gives another kind,
+/// such as `private;destination`, keeps it.
 pub fn doubt(value: &str) -> Option<Kind> {
     match classify(value) {
-        Access::Uncertain(kind) if value.trim() != "destination" => Some(kind),
+        Access::Uncertain(Kind::Limited) if value.split(';').any(|v| v.trim() == "destination") => None,
+        Access::Uncertain(kind) => Some(kind),
         _ => None,
     }
 }
@@ -243,7 +246,9 @@ pub fn closures<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>, directions: 
         if modes == 0 || key.starts_with("oneway") || other.is_some() {
             continue;
         }
-        for (_, condition) in clauses.into_iter().filter(|(value, _)| !granted(value)) {
+        for (_, condition) in
+            clauses.into_iter().filter(|(value, _)| classify(value) == Access::Closed || doubt(value).is_some())
+        {
             found.push((modes, if seasonal(condition) { Kind::Seasonal } else { Kind::Conditional }, condition));
         }
     }
@@ -853,6 +858,18 @@ mod tests {
         assert_eq!(
             closures([("access", "private;destination")].into_iter(), &["forward"]),
             vec![(BIKE | FOOT | PUSH, Closure { kind: Kind::Private, condition: "private;destination".into() })]
+        );
+        let lists = ["destination;delivery", "private;destination", "customers;delivery"];
+        assert_eq!(lists.map(doubt), [None, Some(Kind::Private), Some(Kind::Limited)]);
+        for tag in [
+            ("vehicle:conditional", "destination @ (Mo-Fr 06:00-20:00)"),
+            ("bicycle:conditional", "destination @ (wet)"),
+        ] {
+            assert_eq!(closures([("highway", "residential"), tag].into_iter(), &["forward", "backward"]), vec![]);
+        }
+        assert_eq!(
+            closures([("access:conditional", "no @ (Oct-May)")].into_iter(), &["forward"]),
+            vec![(BIKE | FOOT | PUSH, Closure { kind: Kind::Seasonal, condition: "Oct-May".into() })]
         );
     }
 
