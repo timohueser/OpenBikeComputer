@@ -21,13 +21,12 @@ const GRID_M: f64 = 0.5;
 /// Steps inside faces, measured with the slopes from the paved outline: the count must not grow.
 const INSIDE_MAX: usize = 7;
 /// Steps at label edges with no rule (`check::edge_steps`), measured on the revision 15 fixture with the
-/// slopes from the paved outline cut at the bin grid, walls up to the highest wall and faces past it as
-/// steep as their need: the count must not grow.
+/// slopes from the outline pieces of `records::outline_edges`, walls up to the highest wall and faces past it
+/// as steep as their need: the count must not grow.
 const EDGE_MAX: usize = 114;
 /// Pairs of grid points on a slope steeper than a rock face where the terrain is not (`Scan::steep`),
-/// measured on the revision 15 fixture with cones on their outward side, outline edges cut at the bin grid and
-/// split where their need varies, and faces past the highest wall as steep as their need: the count must not
-/// grow.
+/// measured on the revision 15 fixture with cones on their outward side, the outline pieces of
+/// `records::outline_edges`, and faces past the highest wall as steep as their need: the count must not grow.
 const STEEP_MAX: usize = 1316;
 /// Of those, the pairs steeper than 6 m/m, measured the same way; none is steeper than 12 m/m. A
 /// near-vertical rim that the total hides must not come back.

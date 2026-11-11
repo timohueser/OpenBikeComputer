@@ -371,8 +371,9 @@ const QUARTER_M: f64 = 1.0;
 /// the left): the host line, the paved field at both ends (`heights::paved_end`) from the block so far
 /// through the window's bins (`items`), so two cells give an end the same bits, and the plain terrain
 /// where the host's cones start to let go. The host is the face's material line, else the paved field's
-/// host at the middle of the rim's piece. A rim splits where the paved field is not linear along it
-/// (`SPLIT_M`). An edge with an end where the face has no height of its own stays out: a fault that
+/// host at the middle of the rim's piece. A rim splits at the bin grid (`bin_cuts`), then while the paved
+/// field or the ground where its cones let go leaves the line between a piece's ends, or their need varies
+/// (`SPLIT_*`). An edge with an end where the face has no height of its own stays out: a fault that
 /// `heights::check` counts.
 fn outline_edges<'a>(
     words: &[u32],
