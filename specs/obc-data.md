@@ -369,7 +369,8 @@ it runs in, and the store:
   newest version of each request record (`requests/`), by the latest `retrieved` of its files, such as the extract of each Geofabrik area, and each version
   that `obc data source refresh` took (`refreshed/`).
 - An object is reached when a reached snapshot record or a reached layer has it, or when its
-  SHA-256 is a file of an output of a root release, or is in `fixtures/catalog.toml` or a JSON or
+  SHA-256 is a file of an output of a root release (for an output of a `cache` layer, only a file
+  that a client reads), or is in `fixtures/catalog.toml` or a JSON or
   TOML file below `fixtures/sources/`.
 - An unpacked copy (`unpacked/<sha256>/`) is reached while a manifest of the
   [archive](#archive) lists a file with that SHA-256. While `OBC_DATA_ARCHIVE` names no root, a
@@ -379,10 +380,11 @@ it runs in, and the store:
   digest of the files that it names (`files`) of a reached record of its source, and a step input
   whose digest is the digest of the files that it selects of a reached layer of its step: the
   `files` of the input, or all files when it names none.
-- Of the receipts with `cache` of one step and the same options, only the newest by `built` (then
-  by key) can be reached, and it is reached when its inputs are. So a new OSM cut or a new
-  revision of a work layer deletes the older work layers of that region at the next collection,
-  and the work layers of other regions stay. This has known costs. A collection between a failed
+- Of the receipts with `cache` of one step and the same options, only the one with the latest
+  `used`, else `built` (then by key), can be reached, and it is reached when its inputs are. So a
+  new OSM cut or a new version of a work layer deletes the older work layers of that region at the
+  next collection, also those that a release read, and the work layers of other regions stay. An
+  update back to an older set keeps that set. This has known costs. A collection between a failed
   bake and the next bake can delete the last complete set of work layers while the new set is not
   complete. A region that no target lists any more keeps its work layers until its extract
   request goes, as its `osm` layers do. When the work layers of a target are gone, a later update
@@ -744,7 +746,7 @@ The `obc data` binary declares each layer beside the steps that make it:
 | `format` | The number that the readers of its files check. Where a reader has a constant, the layer uses it: `obct::SURFACE_VERSION` for `device/terrain`, `obcm::VERSION` for `device/map`, the router `FORMAT` and `CATALOG_SCHEMA_VERSION`. `device/landmarks` has the sum of `obcm::landmarks::SECTION_VERSION` and `obcm::peaks::VERSION`: each only grows. Another layer has the format that its spec states, or 1 |
 | `revision` | The number that a person changes in the change that improves the output. It starts at 1 |
 | `readers` | The programs or layers that read its files. An internal layer has none |
-| `cache` | `true` for a work layer that a later step reads: a [collection](#clean) keeps only the newest layer of each of its steps and options. `false` for each other layer |
+| `cache` | `true` for a work layer that a later step reads: a [collection](#clean) keeps only the layer of each of its steps and options that a run used last, and a release does not keep it. `false` for each other layer |
 
 | Layer | Steps |
 | --- | --- |
@@ -757,7 +759,7 @@ The `obc data` binary declares each layer beside the steps that make it:
 | `planner/terrain` | `planner/reference`, `planner/terrain` and its grid |
 | `planner/places`, `planner/climate`, `planner/snow`, `planner/trailview-features`, `planner/trailview-rules`, `planner/trailview-colour` | The step of the same name and its grids |
 | `planner/trailview-ground` | `planner/trailview-material`, `planner/trailview-lithology`, `planner/trailview-region`, `planner/trailview-ground` and its grid |
-| `planner/routing-source`, `planner/routing-roads`, `planner/routing-costs` | The step of the same name. Internal, `cache` |
+| `planner/routing-source`, `planner/routing-roads`, `planner/routing-costs` | The step of the same name. Internal, `cache`. Their files hold router types, so their format is the router `FORMAT` plus 1 |
 | `planner/routing` | `planner/routing`, `planner/overlays` and their grids |
 | `planner/search` | `planner/search/…`, `planner/model` and their grids |
 | `planner/index` | `planner/fonts/grid`, `planner/offline/grid`, `planner/index`, `planner/catalog` |
@@ -879,6 +881,7 @@ ends.
 | `cpu_ms` | User and system time in milliseconds of the process of the step and of the children that it waited for, such as Osmium (`wait4`). `null` when the system does not report it |
 | `peak_rss_bytes` | The peak resident set of the process of the step, or of the largest child that it waited for. It is not the sum of processes that run at the same time. `null` when the system does not report it |
 | `cache` | The `cache` of the layer (`false` when absent) |
+| `used` | For a `cache` layer, `YYYY-MM-DDTHH:MM:SSZ` when the last run that built or read it ended. Absent before that |
 | `own_process` | Whether the step ran in a process of its own. Without it (`false` when absent), `cpu_ms` and `peak_rss_bytes` can be those of the engine, and no estimate reads the peak |
 | `bytes_in` | The size of the input files |
 | `bytes_out` | The size of `files` |

@@ -17,7 +17,8 @@ obc data update local --only planner/routing
 The step writes a new layer directory. Do not edit an installed package in place.
 
 The roads step prints the counts of the roads and turns, the costs step the manifest estimate.
-Each stops at a limit of the package format.
+Each stops at a limit of the package format. A region whose manifest passes the limit of format 9
+fails in the costs step, after the source and the roads steps.
 
 ## Layers
 
@@ -34,23 +35,19 @@ The store keeps only the newest work layer of each step and options (`cache`).
 | --- | --- |
 | A stop or a crash in a step | That step and the steps after it |
 | The profile list, or the revision of `planner/routing-costs` | Costs, package |
-| `region`, `countries`, `attribution`, the package format | Package |
+| `region`, `countries`, `attribution` | Package |
 | The GLO-30 tiles or the reference, or the revision of `planner/routing-roads` | Roads, costs, package |
-| The OSM cut or the bounds, or the revision of `planner/routing-source` | All four |
+| The OSM cut, the bounds, the router `FORMAT`, or the revision of `planner/routing-source` | All four |
 
-A change of the bytes of a work layer changes its format, of its content its revision. Each
-column is one file of little-endian values; `layout.json` gives its type and count, which the
-reader checks (`column::Layout`).
+A change of the bytes of a work layer changes its format, of its content its revision. A column
+is one file of little-endian values; `layout.json` gives its type and count (`column::Layout`).
+The columns take, without the tags and the closure sets:
 
-Europe: North Rhine-Westphalia scaled to 300 million roads.
-
-| Layer | Switzerland (7.7 M roads) | North Rhine-Westphalia (10.2 M roads) | Europe (estimate) |
-| --- | --- | --- | --- |
-| `planner/routing-source` | 0.75 GB | 0.83 GB | 25 GB |
-| `planner/routing-roads` | 1.25 GB | 1.45 GB | 43 GB |
-| `planner/routing-costs`, 10 profiles | 1.40 GB | 1.86 GB | 56 GB |
-
-A Europe bake also needs the package (about 90 GB) and the OSM cut (about 41 GB).
+| Layer | Bytes |
+| --- | --- |
+| `planner/routing-source` | 48 for each way, 24 for each node reference |
+| `planner/routing-roads` | 55 for each road, 12 for each shape point, 4 for each turn, 27 for each junction |
+| `planner/routing-costs` | For each profile, 8.125 for each road and 4 for each turn |
 
 ```sh
 obc test -p planner-router-build
@@ -88,7 +85,7 @@ The bake keeps its large tables in memory-mapped work files and sorts them on di
 | Road pass | The profiles of one group at a time; the way bases of a group take at most a quarter of the page budget |
 | Profile jobs | The snap bits and the landmarks of one profile in each job; the page budget sets how many jobs run at a time |
 | Own memory | 4 GiB; the step samples `RssAnon` every 100 ms and stops at the first sample above it, with the name of the stage; `catalog` and `blocks` are exempt |
-| Disk need | The stored layers above, and the work files of the step that runs: at most 2.5 GB for Switzerland and 2.8 GB for North Rhine-Westphalia, in the roads step |
+| Disk need | The stored layers above, and the work files of the step that runs; the roads step needs the most |
 
 Put the work folder on a disk, not on a tmpfs: the files of a tmpfs take RAM. A killed bake
 leaves its bake folder; remove it. A bake that the memory guard stops also leaves it.
