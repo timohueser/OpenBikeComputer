@@ -666,7 +666,7 @@ pub(crate) async fn run_app(
     // The in-flight route plan's bookkeeping: `Some` while a plan is being stepped, one bounded step
     // per pass. It guards the planner slot's initialization.
     let mut nav_run: Option<NavRun> = None;
-    let mut review_publication: Option<obc_formats::assistant::PayloadFingerprint> = None;
+    let mut review_publication: Option<obc_formats::navigator::PayloadFingerprint> = None;
     let mut review_original: Option<obc_storage::flat::StoreSource<'static, crate::flat_store::FlatCard>> = None;
     let mut detour = crate::detour::Executor::new();
     let mut visit = crate::visit::Executor::new();

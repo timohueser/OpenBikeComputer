@@ -45,8 +45,9 @@ The system depends on no other system. Its tests use `obcm-testkit` from map rea
 | A trip start record never replaces a finished trip record. | `a_start_record_moves_the_stored_record_and_never_replaces_it` in [`trip_progress.rs`](../../firmware/obc-formats/src/trip_progress.rs) |
 | A map style stays at 12 bytes or less, because a source keeps 256 of them in RAM. | `size_of::<Style>` in [`lib.rs`](../../firmware/obc-map-scene/src/lib.rs) (a `const` assert) |
 | A file source refuses a read past the end of the file. | `reads_at_an_offset_and_refuses_the_end` in [`lib.rs`](../../host/obc-file-source/src/lib.rs) |
+| A foundation crate depends only on `heapless`, `libm` and other foundation crates. | `check_closed_dependencies` in [`check_dependencies.py`](../../firmware/tools/check_dependencies.py) |
 
-The `no_std` and `forbid(unsafe_code)` attributes in each crate root are checked by the compiler. No check yet stops a crate with product policy from being added as a dependency of these crates. The findings issue asks for one.
+The `no_std` and `forbid(unsafe_code)` attributes in each crate root are checked by the compiler. `cairn check` refuses a dependency on a crate of another system, and `check_closed_dependencies` refuses a third-party crate other than `heapless` and `libm`.
 
 ## Decisions
 
@@ -56,6 +57,7 @@ The `no_std` and `forbid(unsafe_code)` attributes in each crate root are checked
 - **The `obc-ports` traits are synchronous and own no driver.** A sensor poll takes the newest value from a mailbox that the board fills. It does not start a bus transfer. So the app core runs the same way on the device, in the simulators and in tests, and needs no executor.
 - **The `MapScene` walk methods are generic, not trait objects.** The renderer calls them once for each feature in a frame. A generic call is compiled for each concrete source, so the hot loop pays no dynamic dispatch.
 - **`obc-file-source` is a separate host crate.** A host tool that needs to read a file takes this crate without taking a reader, a packer or a renderer with it.
+- **The sound cue (`Cue`) crosses the port.** The app chooses which cue plays. Each platform ([`sound.rs`](../../firmware/obc-platform/src/sound.rs)) chooses how it sounds.
 
 ## Words it introduces
 

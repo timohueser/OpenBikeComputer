@@ -16,6 +16,20 @@
       "reason": "the BLE host formats bond keys and identities in its logs; the board owns connection diagnostics"
     }
   ],
+  "closed_dependencies": {
+    "packages": [
+      "obc-crc",
+      "obc-file-source",
+      "obc-formats",
+      "obc-map-scene",
+      "obc-ports"
+    ],
+    "allowed": [
+      "heapless",
+      "libm"
+    ],
+    "reason": "the foundations system carries no product policy, so its crates take only heapless, libm and each other"
+  },
   "groups": {
     "foundation": [
       "obc-crc",
