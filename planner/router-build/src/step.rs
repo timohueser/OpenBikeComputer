@@ -46,7 +46,8 @@ fn start() -> Result<Guard, String> {
     Ok(guard)
 }
 
-fn folder_name(step: &str) -> &str {
+/// The folder of the layer of a work step in its output: the last part of the step name.
+pub fn folder_name(step: &str) -> &str {
     step.rsplit('-').next().expect("a step name")
 }
 

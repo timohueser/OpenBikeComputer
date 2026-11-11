@@ -45,9 +45,9 @@ pub static PLANNER_BASEMAP: Layer = whole("planner/basemap", 1, &[&WEB_PLANNER, 
 pub static PLANNER_TERRAIN: Layer =
     Layer { revision: 4, ..whole("planner/terrain", 2, &[&WEB_PLANNER, &readers::PLANNER_TRAILVIEW_FEATURES]) };
 /// The work layers of the routing bake, each of the step of its name: the source, the roads and the
-/// costs of `planner_router_build::step`. A change of their bytes changes their format, a change of
-/// their content their revision: of the import rules the source, of the split, the order or the
-/// terrain the roads, of the cost code the costs.
+/// costs of `planner_router_build::step`. A change of their bytes changes their format (`work`), a
+/// change of their content their revision: of the import rules the source, of the split, the order
+/// or the terrain the roads, of the cost code the costs.
 pub static PLANNER_ROUTING_SOURCE: Layer = work(step::SOURCE);
 pub static PLANNER_ROUTING_ROADS: Layer = work(step::ROADS);
 pub static PLANNER_ROUTING_COSTS: Layer = work(step::COSTS);
@@ -93,8 +93,18 @@ const fn whole(name: &'static str, format: u32, readers: &'static [&'static Read
     Layer { name, shape: Shape::Whole, format, revision: 1, readers, cache: false }
 }
 
+/// The files of a work layer hold router types: the closure sets, `Point` and the postcard
+/// `CostBasis` of the dictionary. Its format is the sum of the router `FORMAT` and the format of
+/// its own files, 1; each only grows.
 const fn work(name: &'static str) -> Layer {
-    Layer { name, shape: Shape::Whole, format: 1, revision: 1, readers: &[], cache: true }
+    Layer {
+        name,
+        shape: Shape::Whole,
+        format: planner_router::package::FORMAT + 1,
+        revision: 1,
+        readers: &[],
+        cache: true,
+    }
 }
 const BASEMAP_SOURCES: [&str; 7] = [
     "protomaps-basemaps",
@@ -422,7 +432,7 @@ impl Planner {
             name: layer.name.into(),
             inputs,
             options,
-            outputs: vec![layer.name.rsplit('-').next().expect("a layer name").into()],
+            outputs: vec![step::folder_name(layer.name).into()],
             run: Run::Rust(run),
             client: Client::None,
         };
@@ -1600,7 +1610,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_costs_and_the_package_read_the_profiles() {
+    fn the_profiles_are_an_option_of_the_costs_step_alone() {
         let temp = temp("planner-routing-steps");
         let store = store(&temp, &["2026-10-01"]);
         let steps = Planner.steps(&root(), &inputs(AREA, &[]), &regions(), &store).unwrap().steps;

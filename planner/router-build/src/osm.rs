@@ -966,6 +966,20 @@ mod tests {
     }
 
     #[test]
+    fn the_count_check_fails_before_the_terrain() {
+        // 2^16 paths from one hub: 2^16 roads arrive at the hub and 2^16 leave it, 2^32 turns.
+        let ids: Vec<[i64; 2]> = (1..=1 << 16).map(|node| [0, node]).collect();
+        let ways: Vec<_> = ids.iter().map(|nodes| (nodes[1], &nodes[..], tags(&[("highway", "path")]))).collect();
+        let present: Vec<_> = (0..=1 << 16).map(|id| (id, [0, id as i32 * 10])).collect();
+        let bounds = [-1.0, -1.0, 1.0, 1.0];
+        let (ways, members, sets, counts) = join(&ways, &present, &[], &Table::default(), bounds).unwrap();
+        let mut height = |_| -> Result<Option<f64>, String> { panic!("the terrain runs after the count check") };
+        let source = scan(Data { ways, relations: Table::default(), members }, sets, counts);
+        let error = roads(source, Some(&mut height));
+        assert!(error.is_err_and(|e| e.contains("Too many road transitions")));
+    }
+
+    #[test]
     fn a_profile_list_that_passes_the_manifest_limit_fails() {
         let graph = fixture(&[way(10, &[1, 2], &[("highway", "path")])], &[1, 2], &[], Default::default());
         // A million profiles need a manifest larger than format 9 allows.
