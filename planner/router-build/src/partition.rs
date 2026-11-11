@@ -7,6 +7,51 @@ use crate::{sort, work, Roads};
 use planner_router::model::Point;
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicU32, AtomicU8, Ordering::Relaxed};
+use std::sync::Mutex;
+
+/// The work of the cuts of one level of the recursion, or of one direction of the first cut.
+#[derive(Clone, Copy, Default, Debug)]
+struct Work {
+    cuts: u64,
+    junctions: u64,
+    directions: u64,
+    stopped: u64,
+    phases: u64,
+    visits: u64,
+    seconds: f64,
+}
+
+impl Work {
+    fn add(&mut self, other: &Work) {
+        self.cuts += other.cuts;
+        self.junctions += other.junctions;
+        self.directions += other.directions;
+        self.stopped += other.stopped;
+        self.phases += other.phases;
+        self.visits += other.visits;
+        self.seconds += other.seconds;
+    }
+
+    fn line(&self) -> String {
+        format!(
+            "{} cuts, {} junctions, {} directions ({} stopped), {} phases, {} visits ({:.1} for each junction), {:.1} s",
+            self.cuts,
+            self.junctions,
+            self.directions,
+            self.stopped,
+            self.phases,
+            self.visits,
+            self.visits as f64 / self.junctions.max(1) as f64,
+            self.seconds
+        )
+    }
+}
+
+/// The work of each level of the recursion, then of each direction of the first cut.
+static WORK: Mutex<(Vec<Work>, [Work; 4])> = Mutex::new((
+    Vec::new(),
+    [Work { cuts: 0, junctions: 0, directions: 0, stopped: 0, phases: 0, visits: 0, seconds: 0.0 }; 4],
+));
 
 /// The largest number of levels: a road keeps its border level in a byte of its order key.
 pub const MAX_LEVELS: usize = 8;
@@ -279,13 +324,16 @@ impl Part<'_> {
 
     /// Splits the part at the smallest of the cuts of four directions. Returns the size of the
     /// source side, which comes first in `at`.
-    fn bisect(&mut self, graph: &Junctions) -> usize {
+    fn bisect(&mut self, graph: &Junctions, depth: usize) -> usize {
         let n = self.at.len();
+        let mut total = Work { cuts: 1, junctions: n as u64, ..Work::default() };
         let k = (n / 4).max(1);
         self.level.fill(UNSEEN);
         // (cut, smaller side) of the best direction.
         let mut best: Option<(u64, usize)> = None;
         for direction in 0..4 {
+            let started = std::time::Instant::now();
+            let mut work = Work { cuts: 1, junctions: n as u64, directions: 1, ..Work::default() };
             let key = |&junction: &u32| graph.key(direction, junction);
             self.queue.copy_from_slice(self.at);
             self.queue.select_nth_unstable_by_key(n - k, key);
@@ -304,7 +352,14 @@ impl Part<'_> {
                     graph.residual[arc].store(graph.capacity[arc], Relaxed);
                 }
             }
-            let Some(cut) = self.flow(graph, k, best.map(|(cut, _)| cut)) else { continue };
+            let found = self.flow(graph, k, best.map(|(cut, _)| cut), &mut work);
+            work.stopped = u64::from(found.is_none());
+            work.seconds = started.elapsed().as_secs_f64();
+            total.add(&Work { cuts: 0, junctions: 0, ..work });
+            if depth == 0 {
+                WORK.lock().unwrap().1[direction] = work;
+            }
+            let Some(cut) = found else { continue };
             let sources = self.sides(graph, direction, median);
             let smaller = sources.min(n - sources);
             if best.is_none_or(|best| (cut, std::cmp::Reverse(smaller)) < (best.0, std::cmp::Reverse(best.1))) {
@@ -313,6 +368,13 @@ impl Part<'_> {
                     *level = if *level & LEVEL == SINK_SIDE { *level & !BEST } else { *level | BEST };
                 }
             }
+        }
+        {
+            let mut all = WORK.lock().unwrap();
+            if all.0.len() <= depth {
+                all.0.resize(depth + 1, Work::default());
+            }
+            all.0[depth].add(&total);
         }
         // A stable split of `at`, the source side first.
         let sources = self.level.iter().filter(|&&level| level & BEST != 0).count();
@@ -336,7 +398,7 @@ impl Part<'_> {
     /// junction; it does not expand a sink, and it resets only the junctions that it reached. It
     /// does not stop at the level of the first sink: each phase would then push flow on the
     /// shortest paths only, which costs more phases.
-    fn flow(&mut self, graph: &Junctions, k: usize, bound: Option<u64>) -> Option<u64> {
+    fn flow(&mut self, graph: &Junctions, k: usize, bound: Option<u64>, work: &mut Work) -> Option<u64> {
         for place in 0..self.at.len() {
             self.set_level(place, UNSEEN);
         }
@@ -375,6 +437,8 @@ impl Part<'_> {
                 }
                 tail = self.expand(graph, junction, tail);
             }
+            work.phases += 1;
+            work.visits += (tail - k) as u64;
             if !reached {
                 return Some(flow);
             }
@@ -549,19 +613,19 @@ impl Part<'_> {
 
 /// Splits the part until each piece has at most `size` junctions. Returns the tree: the range of
 /// positions of each node, each node before its source side and then its sink side.
-fn split(graph: &Junctions, size: usize, mut part: Part) -> Vec<[u32; 2]> {
+fn split(graph: &Junctions, size: usize, mut part: Part, depth: usize) -> Vec<[u32; 2]> {
     let n = part.at.len();
     let node = [part.lo, part.lo + n as u32];
     if n <= size {
         return vec![node];
     }
-    let m = part.bisect(graph);
+    let m = part.bisect(graph, depth);
     let Part { lo, at, level, current, queue } = part;
     let (at, level, current, queue) =
         (at.split_at_mut(m), level.split_at_mut(m), current.split_at_mut(m), queue.split_at_mut(m));
     let source = Part { lo, at: at.0, level: level.0, current: current.0, queue: queue.0 };
     let sink = Part { lo: lo + m as u32, at: at.1, level: level.1, current: current.1, queue: queue.1 };
-    let (source, sink) = rayon::join(|| split(graph, size, source), || split(graph, size, sink));
+    let (source, sink) = rayon::join(|| split(graph, size, source, depth + 1), || split(graph, size, sink, depth + 1));
     let mut tree = Vec::with_capacity(1 + source.len() + sink.len());
     tree.push(node);
     tree.extend(source);
@@ -669,7 +733,17 @@ pub fn partition(points: &Column<Point>, ends: &Column<(u32, u32)>, sizes: &[u32
     }
     let (mut current, mut queue) = (vec![0u32; j], vec![0u32; j]);
     let part = Part { lo: 0, at: &mut at, level: &mut level, current: &mut current, queue: &mut queue };
-    let tree = split(&graph, sizes[0] as usize, part);
+    *WORK.lock().unwrap() = Default::default();
+    let tree = split(&graph, sizes[0] as usize, part, 0);
+    {
+        let work = WORK.lock().unwrap();
+        for (depth, level) in work.0.iter().enumerate() {
+            eprintln!("Partition depth {depth}: {}", level.line());
+        }
+        for (direction, first) in work.1.iter().enumerate() {
+            eprintln!("Partition first cut, direction {direction}: {}", first.line());
+        }
+    }
     drop((level, current, queue));
     let mut rank = Column::filled(j, 0u32);
     for (junction, pos) in graph.pos.iter().enumerate() {
