@@ -21,16 +21,20 @@ describe('possible closures', () => {
         expect(others).toEqual([]);
         expect(stretch.coordinates).toEqual([[0.01, 0], [0.02, 0], [0.03, 0], [0.04, 0]]);
         expect(stretch.at).toBeCloseTo(1.11, 2);
-        expect(closureLabel(stretch)).toBe('Permit needed · May be closed seasonally (Oct 14–May 31)');
+        expect(closureLabel(stretch)).toBe('Permit needed · May be closed Oct 14–May 31');
         expect(closureStretches({ ...line, edges: {} })).toEqual([]);
     });
 
     it('words each kind honestly', () => {
         const label = (...closures: ClosureStretch['closures']) => closureLabel({ closures, coordinates: [], km: 0.4, at: 0 });
-        expect(label(closure('seasonal', 'dec-mar'))).toBe('May be closed seasonally (Dec–Mar)');
-        expect(label(closure('conditional', 'wet'), closure('conditional', 'Mo-Fr 07:00-19:00'))).toBe('May be closed (wet, Mo–Fr 07:00–19:00)');
+        expect(label(closure('seasonal', 'dec-mar'))).toBe('May be closed Dec–Mar');
+        expect(label(closure('seasonal', ''))).toBe('May be closed seasonally');
+        expect(label(closure('seasonal', 'Winter'))).toBe('May be closed in winter');
+        expect(label(closure('seasonal', 'nov-may'), closure('conditional', 'wet'))).toBe('May be closed Nov–May · May be closed (wet)');
+        expect(label(closure('conditional', 'wet'), closure('conditional', 'Mo-Fr 07:00-19:00'))).toBe('May be closed (Mo–Fr 07:00–19:00, wet)');
+        expect(label(closure('conditional', 'snow'), closure('conditional', 'wet'))).toBe(label(closure('conditional', 'wet'), closure('conditional', 'snow')));
         expect(label(closure('limited', 'customers'))).toBe('Customers only');
-        expect(label(closure('limited', 'residents'), closure('limited', 'customers;psv;motor_vehicle'))).toBe('Only for residents or customers or motor vehicles');
+        expect(label(closure('limited', 'residents'), closure('limited', 'customers;psv;motor_vehicle'))).toBe('Only for customers or motor vehicles or residents');
         expect(label(closure('unclear', 'unknown'))).toBe('Access unclear (unknown)');
         expect(label(closure('private', 'private'), closure('farm', 'agricultural;forestry'), closure('discouraged', 'discouraged')))
             .toBe('Private road · Farm or forest traffic only · Access discouraged');
