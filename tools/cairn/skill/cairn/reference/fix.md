@@ -19,7 +19,7 @@ Run the checks that the project's agent instructions (such as AGENTS.md) ask for
 
 ## 3. Pull request
 
-Open one pull request, and fill the pull request template. Its `Mode:` line is `fix`, or the `skip` of step 1. Its body says what was wrong, what changed, and the checks that ran.
+Open one pull request as a draft, and fill the pull request template. When the user's pull request is already open, leave its state. Its `Mode:` line is `fix`, or the `skip` of step 1. Its body says what was wrong, what changed, and the checks that ran.
 
 For findings, edit the issue now: mark each fixed finding with the pull request link. Write `Closes #N` in the pull request body only when the issue has no `fix` or `refactor issue` item left.
 

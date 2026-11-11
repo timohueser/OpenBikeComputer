@@ -12,7 +12,7 @@ There are three tests. The command that calls Goldfish says which ones run:
 | critic | `goldfish-critic` | What is missing or wrong? |
 | readiness | `goldfish-readiness` | Which decisions would you still have to make? |
 
-An S design runs the critic with the role `goldfish-critic-s`.
+An S design runs the critic with the role `goldfish-critic-s`. No design runs comprehension: a builder reads a design once, and readiness tests that reading.
 
 ## Run the tests
 

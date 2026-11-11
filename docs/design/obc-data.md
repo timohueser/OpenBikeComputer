@@ -5,10 +5,15 @@ purpose: "Runs the `obc data` command and its operator page."
 owns:
   - host/obc-data-steps/**
   - builder/web/src/data.ts
+  - builder/web/src/lib/data/**
+  - builder/web/src/components/data/**
 depends_on:
   - data-engine
   - device-map-baking
+  - device-map-builder
   - foundations
+  - map-assembly
+  - route-planning
   - routing
   - search
   - source-preparation

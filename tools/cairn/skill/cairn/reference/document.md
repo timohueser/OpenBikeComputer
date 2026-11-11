@@ -14,15 +14,15 @@ A question that the doc needs is content, not a finding: for example a rejected 
 
 ## 1. Measure
 
-Run `cairn check` and `cairn leaves <system>`. If `cairn leaves` says there is no doc, stop and tell the user. The leaves leave out tests and vendored code; the draft links tests as evidence for rules.
+Run `cairn check` and `cairn leaves <system>`. If `cairn leaves` says there is no doc, stop and tell the user. The leaves leave out tests and vendored code.
 
 The system's violations are its entries in `.cairn/baseline.json` (the IDs that name it) and the `cycle between` lines of `cairn check` that name it.
 
-If the system has more than 10 leaves, give the user the count and ask whether to start. Ask nothing else before step 9.
+If the system has more than 10 leaves, give the user the count and ask whether to start. Ask nothing else before step 8.
 
-If the system has no leaves, skip steps 2 to 4. Write the doc from the files that the system owns, such as a registry, and the top-down view of step 5. Say why in the start message.
+**A short doc.** For a shell, and for a system with one leaf or none, skip steps 2 to 4, step 7 and the Goldfish test. Read the entry points or the registry yourself. Write only section 1 of the draft, in at most 150 words, and add a rule or a decision only when you found one.
 
-On a rework, a leaf needs no peanut when each of its modules has a purpose comment and no file changed since the last commit of the system doc, committed or not. Its purpose comments are its summary; its rules are already in the doc.
+On a rework, a leaf needs no peanut when each of its modules has a purpose comment and no file changed since the last commit of the system doc, committed or not.
 
 ## 2. Peanuts
 
@@ -55,6 +55,8 @@ Compare each peanut's `Uses` with its leaf's `uses` and `tests use` lines. Treat
 Mark a summary with a wrong claim `UNRELIABLE`, with the claim. It goes up to the hay.
 
 ## 4. Hay
+
+If the system has 5 leaves or fewer, skip this step: the peanut summaries are the bottom-up view.
 
 Each distinct `level:` folder is a level. Its children are its leaves and the levels inside it. Above them come the crate, then the system. Skip a level with one child. Go bottom-up: start one `doc-hay` subagent for each level after its children are done. Give it each child summary, with the child's `leaf` line or level name before it, the `UNRELIABLE` marks, and the module file of its folder if it has one: `lib.rs`, `main.rs`, `mod.rs`, `x.rs` for a folder `x/`, `__init__.py` or `index.ts`.
 
@@ -90,16 +92,15 @@ Compare the two views: each difference is drift between intent and code.
 Write the body below the header, in these sections:
 
 1. What it does
-2. A picture
-3. A walk-through of one concrete example
-4. Its parts: the top level of the hay
-5. Rules that must hold, each linked to the check or test that enforces it
-6. Decisions, each with its reason and the alternative we rejected
-7. Words it introduces
+2. Rules that must hold, each linked to the check or test that enforces it
+3. Decisions, each with its reason and the alternative we rejected
+4. Words it introduces, when no spec and no guide page defines them
 
-Aim for about 1,200 words; write no filler. Link a spec; do not copy its tables. Use the words of the glossary.
+Do not list the parts: each module's purpose comment states them. Add a picture or a walk-through of one example only when a reader cannot follow section 1 without it. A figure is generated, Mermaid, or an SVG with one line that says why the other two are not enough.
 
-A figure is one of three kinds: a generated figure, Mermaid, or a hand-drawn SVG with one line that says why the other two are not enough.
+In the Rules table, the last column gives the name of the test or function between backticks, and links its file in the same cell. `cairn check` tests only a snake_case name with a `_`: a linked file must hold it.
+
+Aim for about 1,200 words. Link a spec; do not copy its tables.
 
 If the hay found a better purpose sentence, correct `purpose:` in the header.
 
@@ -107,28 +108,23 @@ If the hay found a better purpose sentence, correct `purpose:` in the header.
 
 Write each module's purpose sentence from `Parts` into its file: `//!` in Rust, the module docstring in Python, otherwise a one-line comment at the top. Do this only where the comment is missing or wrong, and only from a summary that passed step 3.
 
-## 8. Start message
+## 8. Walk-through
 
-At most 5 lines, with no list. Name the system, and give the number of sections, the word count and the number of findings for the issue. Then show the first section.
+Send one message. Start with at most 5 lines: the system, the word count and the number of findings. Then show `purpose:` and the whole draft in the chat, not only a link.
 
-## 9. Section by section
+After the draft, ask the `(inferred: …)` and `(open: …)` questions together. Each stands alone: what it is, why it matters, your best guess. End with this line: "Approve, or tell me what to change, including any sentence you had to read twice."
 
-Send one message for each section, in order:
+Wait. Apply the changes and remove the answered markers.
 
-1. Show the section's text in the chat, not only a link. Show `purpose:` with section 1.
-2. Ask the `(inferred: …)` and `(open: …)` questions of the section. Each stands alone: what it is, why it matters, your best guess. Here questions go by section, not all together.
-3. End with this line: "Approve and continue, or tell me what to change, including any sentence you had to read twice."
-4. Wait. Apply the changes and remove the answered markers. Show the section again only when the user asks.
+## 9. Goldfish and approval
 
-## 10. Goldfish and approval
-
-Run the comprehension test of [goldfish.md](goldfish.md) on the doc. Fix gaps in facts silently. Ask only what needs the user, as standalone questions.
+Run the comprehension test of [goldfish.md](goldfish.md) on the doc. Fix gaps in facts silently. Ask only what needs the user.
 
 When the user approves the doc, set `status: approved`, then run `cairn map` and `cairn check`. If it fails, show the failures, and keep `draft` until the user decides.
 
-## 11. File and finish
+## 10. File and finish
 
-Write the findings to a file, as [writing.md](writing.md) says, grouped by kind, each with its `file:line`, description and action. Open the issue with `gh api repos/{owner}/{repo}/issues -X POST -f title="Findings from documenting <system>" -F body=@FILE`.
+Write the findings to a file, as [writing.md](writing.md) says, grouped by kind. Open the issue with `gh api repos/{owner}/{repo}/issues -X POST -f title="Findings from documenting <system>" -F body=@FILE`.
 
 Run `cairn map`. Then open one pull request with the doc, the map and the purpose comments. Its body links the findings issue. Its `Mode:` line is `change #N` when an issue asked for the doc, otherwise `fix`.
 

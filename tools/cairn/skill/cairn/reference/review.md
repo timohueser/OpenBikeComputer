@@ -1,16 +1,17 @@
 # Code review
 
-`fix` and `build` use this review after the pull request is open.
+`fix` and `build` use this review after the draft pull request is open.
 
 ## Start the reviewer
 
 Find the base: `base=$(gh api repos/{owner}/{repo}/pulls/N --jq .base.ref)`, then `git fetch origin "$base"`. Write the diff to a file outside the checkout: `git diff "origin/$base"...HEAD > FILE`. Note the HEAD commit for a later delta review.
 
-Start one fresh subagent with the role `code-review`, as the router's Subagents rules say. Give it the file path, not the pasted diff, and the intent: the bug, the list of findings, or the issue's TL;DR.
+Start one fresh subagent with the role `code-review`, as the router's Subagents rules say. Give it the file path, not the pasted diff, the intent (the bug, the list of findings, or the issue's TL;DR) and the paths of the approved system docs (`status: approved`) of the systems that the diff touches.
 
 ```text
 Review this pull request. The diff is in <FILE>. Its intent:
 <the bug, the findings list, or the issue TL;DR>
+The approved system docs of the systems it touches: <the paths, or none>
 
 You may read any file in the repository. Change no file. Do not trust the pull request text, the author's reasons or the tests: check the code.
 
@@ -22,7 +23,8 @@ Hunt for:
 - Tests: a test that would still pass if the change were broken, and a changed behavior that no test covers.
 - Simplicity: code that a simpler design would not need, a workaround where the system itself should change, duplicated logic.
 - Readability: a name or a comment that misleads, and a place where a new reader needs a comment that is missing: a non-obvious reason, an invariant or a gotcha.
-- Rules: the project's agent instructions (such as AGENTS.md) and the rules of the system docs that the diff touches.
+- Rules: the project's agent instructions (such as AGENTS.md) and the rules of those system docs.
+- Docs: a statement in one of those system docs that this diff makes false, and behavior that the diff adds and the doc must state.
 
 Each finding needs a concrete scenario: an input or a state that shows the problem. For a readability or duplication finding, the scenario is the misreading or the double change that it causes. Do not report style or taste, or a doubt that you cannot show.
 
@@ -48,8 +50,14 @@ You decide the route. The reviewer's severity is a hint: it does not know the de
 
 Fix the findings. If the fixes are large, send the same reviewer only the delta: `git diff <the noted commit>..HEAD`. Continue that subagent (Claude Code: `SendMessage`; Codex: `followup_task`). If it is gone, start a new reviewer with the earlier findings and the delta. When the same finding comes back a third time, stop and ask the user.
 
+## The review bot
+
+A project can have a review bot, such as CodeRabbit. It reviews last, and once: it does not read a draft.
+
+When no fix-now finding of your reviewer is open, mark the pull request that you opened as a draft ready: `gh pr ready N`. Leave the state of a pull request that the user opened. When CI is green, read the bot's review, if it is there, and route each finding as above. Do not wait for the bot after CI is green: it can be at its rate limit. Its findings start no new round of your reviewer.
+
 ## Merge and close
 
-Merge the pull request with `gh pr merge N --merge` when CI is green and no fix-now or ask-the-user finding is open. Do not merge when the user asked to look at the change first, when a decision waits for the user, or when a step that only the user can do has not passed. In those cases, tell the user that the change is ready and what it waits for.
+Merge the pull request with `gh pr merge N --merge` when it is ready, CI is green and no fix-now or ask-the-user finding is open. Do not merge when the user asked to look at the change first, when a decision waits for the user, or when a step that only the user can do has not passed. In those cases, tell the user that the change is ready and what it waits for.
 
 After the merge, check each issue that the pull request finished with `gh issue view N --json state`, and close it if GitHub did not: `gh issue close N`. For a sub-issue, also tick its line in the epic. Close the epic when its last sub-issue is closed, but not a tracker (see the Trackers section of design.md).
