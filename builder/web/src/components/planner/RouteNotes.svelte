@@ -5,6 +5,11 @@
 
     let { notes, shown, onShow }: { notes: RouteNote[]; shown?: RouteNote; onShow: (note: RouteNote) => void } = $props();
     let open = $state(false);
+    // A merged note whose start and end print the same shows its length instead.
+    function place(note: RouteNote) {
+        const from = note.km.toFixed(1), to = note.end?.toFixed(1);
+        return `km ${from}${to && to !== from ? ` – ${to}` : note.length !== undefined ? ` · ${noteDistance(note.length)}` : ''}`;
+    }
 </script>
 
 {#if notes.length}
@@ -16,7 +21,7 @@
             <ul>
                 {#each notes as note}
                     <li><button type="button" class="note" aria-pressed={note === shown} onclick={() => onShow(note)}>
-                        <Icon name={note.icon} size={15} /><span>{note.label}</span><small>km {note.km.toFixed(1)}{note.end !== undefined ? ` – ${note.end.toFixed(1)}` : note.length !== undefined ? ` · ${noteDistance(note.length)}` : ''}</small>
+                        <Icon name={note.icon} size={15} /><span>{note.label}</span><small>{place(note)}</small>
                     </button></li>
                 {/each}
             </ul>

@@ -50,6 +50,9 @@ export function closureStretches(line?: Pick<RoutingLine, 'coordinates' | 'edges
 // OSM writes `nov-may` as often as `Nov-May`, and `Oct 14th` as often as `Oct 14`.
 const dates = (condition: string) => condition.replace(/\s*-\s*/g, '–').replace(/(\d)(st|nd|rd|th)\b/g, '$1')
     .replace(/\b[a-z]/g, letter => letter.toUpperCase());
+// The route build marks these season names as seasonal too (`seasonal` in `planner/router-build/src/source.rs`).
+const seasons = new Set(['winter', 'spring', 'summer', 'autumn']);
+const season = (condition: string) => seasons.has(condition.toLowerCase()) ? `in ${condition.toLowerCase()}` : dates(condition);
 const listed = (conditions: string[]) => conditions.length ? ` (${[...new Set(conditions)].join(', ')})` : '';
 const motorGroups = new Set(['psv', 'bus', 'hgv', 'taxi', 'motorcar', 'motor_vehicle']);
 const group = (value: string) => motorGroups.has(value) ? 'motor vehicles' : value.replace(/_/g, ' ');
@@ -60,7 +63,7 @@ const phrases: Record<Warning, (conditions: string[]) => string> = {
     farm: () => 'Farm or forest traffic only',
     discouraged: () => 'Access discouraged',
     limited: values => groups(values).join() === 'customers' ? 'Customers only' : `Only for ${groups(values).join(' or ')}`,
-    seasonal: conditions => `May be closed ${conditions.length ? [...new Set(conditions.map(dates))].join(', ') : 'seasonally'}`,
+    seasonal: conditions => `May be closed ${conditions.length ? [...new Set(conditions.map(season))].join(', ') : 'seasonally'}`,
     conditional: conditions => `May be closed${listed(conditions.map(condition => condition.replace(/\s*-\s*/g, '–')))}`,
     unclear: values => `Access unclear${listed(values)}`,
 };
@@ -73,5 +76,6 @@ export function closureLabel(stretch: ClosureStretch): string {
         if (condition) known.add(condition);
     }
     const kinds = (Object.keys(phrases) as Warning[]).filter(kind => conditions.has(kind));
-    return kinds.map(kind => phrases[kind]([...conditions.get(kind)!])).join(' · ');
+    // Sorted, so that two pieces of one road with the same conditions in another edge order get one text and merge.
+    return kinds.map(kind => phrases[kind]([...conditions.get(kind)!].sort())).join(' · ');
 }

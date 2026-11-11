@@ -31,7 +31,7 @@
     import { SignedRoutesLayer, type SignedRoutesView } from "../../lib/planner/signed-routes-map";
 
     let {
-        segments = [], gaps = [], coordinates = [], highlightedCoordinates = [], points = [], selectedId = null, hoveredId = null, callout = null,
+        segments = [], gaps = [], coordinates = [], highlightedLines = [], points = [], selectedId = null, hoveredId = null, callout = null,
         drawing = null, highlightedPlaceIds = [], theme = "light", hillshade = true, contours = true, pickMode = false,
         showRoute = true, hoverProgress = null, center = [8.8, 48.65], zoom = 7,
         shownCategories = categoryIds, highlightedPlaces = [], mapOverlays = { network: 'none', access: false }, accessMode = 'cycling', routingPackage, dataLayer, bottomInset = 0,
@@ -61,7 +61,7 @@
         segments?: MapSegment[];
         /** Dashed connectors from the route to points that it does not reach. */
         gaps?: Coordinate[][];
-        coordinates?: Coordinate[]; highlightedCoordinates?: Coordinate[][]; points?: MapPoint[];
+        coordinates?: Coordinate[]; highlightedLines?: Coordinate[][]; points?: MapPoint[];
         selectedId?: string | null; callout?: Coordinate | null; drawing?: string | null; highlightedPlaceIds?: string[];
         hoveredId?: string | null;
         /** While picking, any map click places the overnight; the line takes no edits. */
@@ -289,7 +289,7 @@
     }
 
     function highlightData() {
-        return lineData(highlightedCoordinates.filter(line => line.length >= 2).map(line => lineFeature(line)));
+        return lineData(highlightedLines.filter(line => line.length >= 2).map(line => lineFeature(line)));
     }
 
     function setSketch(line: Coordinate[]) {
@@ -639,7 +639,7 @@
     });
     $effect(() => { const routing = routingPackage; if (ready) overlayLayer?.verify(routing); });
     $effect(() => {
-        highlightedCoordinates;
+        highlightedLines;
         if (map && ready) (map.getSource("trip-highlight") as GeoJSONSource | undefined)?.setData(highlightData());
     });
     $effect(() => {

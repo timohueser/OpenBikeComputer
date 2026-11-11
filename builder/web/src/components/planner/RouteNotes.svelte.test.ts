@@ -32,6 +32,14 @@ describe('route notes', () => {
         expect(entries.map(entry => entry.getAttribute('aria-pressed'))).toEqual(['true', 'false', 'false']);
     });
 
+    it('shows the length of a merged note whose start and end print the same', () => {
+        const note: RouteNote = { icon: 'lock', label: 'Private road', km: 10.01, end: 10.04, length: 0.02, coordinates: [] };
+        notes = mount(RouteNotes, { target: document.body, props: { notes: [note], onShow: () => {} } });
+        flushSync();
+        document.querySelector<HTMLButtonElement>('[aria-expanded]')!.click(); flushSync();
+        expect(document.querySelector('li small')!.textContent).toBe('km 10.0 · 20 m');
+    });
+
     it('says "1 thing" for one note and draws nothing for none', async () => {
         const note: RouteNote = { icon: 'mountain', label: 'Alpine path (T4)', km: 3, length: 2.1, coordinates: [] };
         notes = mount(RouteNotes, { target: document.body, props: { notes: [note], onShow: () => {} } });
