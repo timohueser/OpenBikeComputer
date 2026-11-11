@@ -7,8 +7,6 @@
 //! of a station, the ways along a tagged way up to `open_max_m` or `deck_min_m`, and the samples of
 //! the two ways at a crossing within `PLACE_M`.
 
-use std::collections::BTreeMap;
-
 use super::curve::point;
 use super::parts::Rule;
 use super::points::{advance, between, exact, key, Piece};
@@ -152,6 +150,10 @@ pub struct Sheet {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Levels {
     pub runs: Vec<Run>,
+    /// Where a DECK run ends on a tunnel way whose first stations lie over the terrain: the station of
+    /// that end, and the metres along the tunnel way until the terrain rises over its floor (infinite
+    /// where the tunnel way ends first).
+    pub deck_into_tunnel: Vec<(Station, f64)>,
     pub end_lines: Vec<EndLine>,
     pub sheets: Vec<Sheet>,
     pub open_max_m: f64,
@@ -220,15 +222,22 @@ struct Ctx<'a> {
     rules: &'a [Rule<'a>],
     s: &'a Structures,
     origin: [f64; 2],
-    /// Sample segments by bucket: (bucket, way, first sample index).
-    grid: Vec<([i64; 2], u32, u32)>,
+    /// Sample segments by bucket: (bucket, first sample index).
+    grid: Vec<([i64; 2], u32)>,
+    /// The way of each sample.
+    way_of: Vec<u32>,
     size: f64,
     /// The other arms at each end of a way: (way, at its start).
-    nodes: BTreeMap<(u32, bool), Vec<(u32, bool)>>,
+    nodes: Vec<Option<Vec<(u32, bool)>>>,
     lengths: Vec<f64>,
 }
 
 impl<'a> Ctx<'a> {
+    /// The other arms at an end of way w, or None where the graph holds no point there.
+    fn others(&self, w: u32, start: bool) -> Option<&[(u32, bool)]> {
+        self.nodes[2 * w as usize + usize::from(start)].as_deref()
+    }
+
     fn rule(&self, w: u32) -> &Rule<'a> {
         &self.rules[self.g.ways[w as usize].part as usize]
     }
@@ -318,7 +327,8 @@ impl<'a> Ctx<'a> {
         for y in b(q[1] - r)..=b(q[1] + r) {
             for x in b(q[0] - r)..=b(q[0] + r) {
                 let from = self.grid.partition_point(|e| e.0 < [x, y]);
-                out.extend(self.grid[from..].iter().take_while(|e| e.0 == [x, y]).map(|e| (e.1, e.2)));
+                let segs = self.grid[from..].iter().take_while(|e| e.0 == [x, y]);
+                out.extend(segs.map(|e| (self.way_of[e.1 as usize], e.1)));
             }
         }
         out.sort_unstable();
@@ -472,7 +482,7 @@ impl<'a> Ctx<'a> {
     /// Metres from an end of way w on through the ways that `same` accepts to the first end where
     /// none goes on: 0 there; infinite where the graph does not hold the point or past `limit`.
     fn onward(&self, w: u32, start: bool, limit: f64, same: &dyn Fn(u32) -> bool, depth: u32) -> f64 {
-        let Some(others) = self.nodes.get(&(w, start)) else { return f64::INFINITY };
+        let Some(others) = self.others(w, start) else { return f64::INFINITY };
         let on: Vec<&(u32, bool)> = others.iter().filter(|(o, _)| same(*o)).collect();
         if on.is_empty() {
             return 0.0;
@@ -505,37 +515,40 @@ pub(crate) fn levels(g: &mut WayGraph, input: &CellInput, rules: &[Rule<'_>], s:
     let o = g.cell.origin();
     let origin = [o.x as f64, o.y as f64];
     let size = super::BUCKET_M / metres_per_unit_at(origin[1]);
-    let mut nodes: BTreeMap<(u32, bool), Vec<(u32, bool)>> = BTreeMap::new();
+    let mut nodes: Vec<Option<Vec<(u32, bool)>>> = vec![None; 2 * g.ways.len()];
     let arm_sets = (g.junctions.iter().map(|j| j.arms.iter().collect::<Vec<_>>()))
         .chain(g.joints.iter().map(|j| j.arms.iter().collect()))
         .chain(g.ends.iter().map(|e| vec![&e.arm]));
     for arms in arm_sets {
         for a in &arms {
             let others = arms.iter().filter(|b| !std::ptr::eq(**b, *a)).map(|b| (b.way, b.dir > 0)).collect();
-            nodes.insert((a.way, a.dir > 0), others);
+            nodes[2 * a.way as usize + usize::from(a.dir > 0)] = Some(others);
         }
     }
     let lengths = g.ways.iter().map(|w| between(&g.parts, &w.from, &w.to)).collect();
-    let (ladders, levels, counts) = {
-        let mut ctx = Ctx { g: &*g, input, rules, s, origin, grid: Vec::new(), size, nodes, lengths };
+    let (ladders, levels) = {
+        let mut way_of = vec![0; g.samples.len()];
+        for w in &g.ways {
+            way_of[w.samples.start as usize..w.samples.end as usize].fill(w.id);
+        }
+        let mut ctx = Ctx { g: &*g, input, rules, s, origin, grid: Vec::new(), way_of, size, nodes, lengths };
         let ladders: Vec<Option<Ladder>> = g.crossings.iter().map(|c| ladder(&ctx, c)).collect();
         ctx.grid = grid(&ctx, &ladders);
         let mut levels = Levels { open_max_m: s.open_max_m, deck_min_m: s.deck_min_m, ..Levels::default() };
         states(&ctx, &ladders, &mut levels);
         sheets(&ctx, &mut levels);
-        let counts = count(&ctx, &ladders, &levels);
-        (ladders, levels, counts)
+        levels.deck_into_tunnel = deck_into_tunnel(&ctx, &levels);
+        (ladders, levels)
     };
     for (c, l) in g.crossings.iter_mut().zip(ladders) {
         c.ladder = l;
     }
     g.levels = levels;
-    g.stats.levels = counts;
 }
 
 /// The sample segments of every way near a way that gets a state, in buckets: the reads of the
 /// states reach no farther than `GRID_M` from such a way.
-fn grid(ctx: &Ctx, ladders: &[Option<Ladder>]) -> Vec<([i64; 2], u32, u32)> {
+fn grid(ctx: &Ctx, ladders: &[Option<Ladder>]) -> Vec<([i64; 2], u32)> {
     let g = ctx.g;
     let ended = ladders.iter().flatten().filter_map(|l| l.ends);
     let mut boxes: Vec<[f64; 4]> = Vec::new();
@@ -563,7 +576,7 @@ fn grid(ctx: &Ctx, ladders: &[Option<Ladder>]) -> Vec<([i64; 2], u32, u32)> {
             let hi = |i: usize| (a[i].max(b[i]) / ctx.size).floor() as i64;
             for y in lo(1)..=hi(1) {
                 for x in lo(0)..=hi(0) {
-                    grid.push(([x, y], w.id, k));
+                    grid.push(([x, y], k));
                 }
             }
         }
@@ -668,25 +681,25 @@ struct Track {
 fn states(ctx: &Ctx, ladders: &[Option<Ladder>], out: &mut Levels) {
     let g = ctx.g;
     // The step-3 crossings by the way that ends: (crossing, the way that stays).
-    let mut ended: BTreeMap<u32, Vec<(usize, u32)>> = BTreeMap::new();
+    let mut ended: Vec<Vec<(usize, u32)>> = vec![Vec::new(); g.ways.len()];
     let mut culvert: Vec<bool> = vec![false; g.ways.len()];
     for (i, l) in ladders.iter().enumerate() {
         let Some(l) = l else { continue };
         if matches!(l.step, Step::Closed | Step::Inverted) {
             match l.ends {
-                Some(e) => ended.entry(e).or_default().push((i, if e == l.upper { l.lower } else { l.upper })),
+                Some(e) => ended[e as usize].push((i, if e == l.upper { l.lower } else { l.upper })),
                 None => culvert[l.upper as usize] = true,
             }
         }
     }
-    let ways: Vec<u32> = (0..g.ways.len() as u32).filter(|&w| ctx.tagged(w) || ended.contains_key(&w)).collect();
+    let ways: Vec<u32> = (0..g.ways.len() as u32).filter(|&w| ctx.tagged(w) || !ended[w as usize].is_empty()).collect();
     let mut tracks: Vec<Track> = Vec::new();
     // Deck ways that are not DECK: on step 3 under it, over a culvert, or too short between A and A.
     let mut ground: Vec<bool> = (0..g.ways.len() as u32)
-        .map(|w| !ctx.deck_tagged(w) || culvert[w as usize] || ended.contains_key(&w))
+        .map(|w| !ctx.deck_tagged(w) || culvert[w as usize] || !ended[w as usize].is_empty())
         .collect();
     // A deck way that turns ground changes the A lines of the deck ways at its ends only.
-    let mut ends_of: BTreeMap<u32, DeckEnds> = BTreeMap::new();
+    let mut ends_of: Vec<Option<DeckEnds>> = vec![None; g.ways.len()];
     let mut dirty: Vec<u32> = ways.iter().copied().filter(|&w| !ground[w as usize]).collect();
     for _ in 0..4 {
         let mut turned = Vec::new();
@@ -696,9 +709,10 @@ fn states(ctx: &Ctx, ladders: &[Option<Ladder>], out: &mut Levels) {
                 ground[w as usize] = true;
                 turned.push(w);
             }
-            ends_of.insert(w, ends);
+            ends_of[w as usize] = Some(ends);
         }
-        let next = turned.iter().flat_map(|&w| [(w, true), (w, false)]).flat_map(|k| ctx.nodes.get(&k)).flatten();
+        let next =
+            turned.iter().flat_map(|&w| [(w, true), (w, false)]).flat_map(|(w, start)| ctx.others(w, start)).flatten();
         dirty = next.map(|&(o, _)| o).filter(|&o| !ground[o as usize]).collect();
         dirty.sort_unstable();
         dirty.dedup();
@@ -747,7 +761,7 @@ fn states(ctx: &Ctx, ladders: &[Option<Ladder>], out: &mut Levels) {
                 }
             }
         } else if ctx.deck_tagged(w) && !ground[w as usize] {
-            let (a, len) = ends_of[&w];
+            let (a, len) = ends_of[w as usize].expect("each DECK way has its ends");
             let lo = a[0].map_or(0.0, |x| x.0);
             let hi = a[1].map_or(t.m.last().copied().unwrap_or(0.0), |x| x.0);
             for i in 0..t.m.len() {
@@ -759,7 +773,7 @@ fn states(ctx: &Ctx, ladders: &[Option<Ladder>], out: &mut Levels) {
             t.deck_len = len;
         }
         // Step 3: not drawn over the body of the way that stays.
-        for &(i, stay) in ended.get(&w).into_iter().flatten() {
+        for &(i, stay) in &ended[w as usize] {
             let c = &g.crossings[i];
             let st = if way_of(g, &c.over) == Some(w) { c.over } else { c.under };
             let m0 = ctx.metres(w, &st);
@@ -788,7 +802,7 @@ fn deck_ends(ctx: &Ctx, w: u32, ground: &[bool]) -> DeckEnds {
     let deck = |o: u32| ctx.deck_tagged(o) && !ground[o as usize];
     let mut a = [None, None];
     for (i, start) in [(0, true), (1, false)] {
-        let Some(others) = ctx.nodes.get(&(w, start)) else { continue };
+        let Some(others) = ctx.others(w, start) else { continue };
         if others.iter().any(|(o, _)| deck(*o)) {
             continue;
         }
@@ -864,12 +878,12 @@ fn place_a(ctx: &Ctx, w: u32, start: bool, arms: &[u32], len: f64) -> (f64, f64)
 
 /// The runs and end lines of a track: a change between two samples lies where the state of the
 /// side before ends, bisected; an A lies where `deck_ends` put it.
-fn runs(ctx: &Ctx, t: &Track, ended: &BTreeMap<u32, Vec<(usize, u32)>>, out: &mut Levels) {
+fn runs(ctx: &Ctx, t: &Track, ended: &[Vec<(usize, u32)>], out: &mut Levels) {
     let g = ctx.g;
     let w = t.way;
     let samples = ctx.samples(w);
     let tunnel = ctx.tunnel(w);
-    let stays: Vec<u32> = ended.get(&w).into_iter().flatten().map(|&(_, s)| s).collect();
+    let stays: Vec<u32> = ended[w as usize].iter().map(|&(_, s)| s).collect();
     let state_at = |m: f64| -> State {
         let a = ctx.at(w, m);
         if stays.iter().any(|&s| ctx.in_body(s, a.p)) {
@@ -947,7 +961,7 @@ fn runs(ctx: &Ctx, t: &Track, ended: &BTreeMap<u32, Vec<(usize, u32)>>, out: &mu
     // A change at a tag end: the way's end state against the ground way beyond it.
     for (start, k) in [(true, 0), (false, samples.len() - 1)] {
         let state = t.state[k];
-        let Some(others) = ctx.nodes.get(&(w, start)) else { continue };
+        let Some(others) = ctx.others(w, start) else { continue };
         let same = |o: u32| if tunnel { ctx.tunnel(o) } else { ctx.deck_tagged(o) };
         if state == State::Open || others.iter().any(|(o, _)| same(*o)) {
             continue;
@@ -984,16 +998,18 @@ fn line_at(ctx: &Ctx, w: u32, st: Station, kind: EndKind, structure: State, clea
 fn sheets(ctx: &Ctx, out: &mut Levels) {
     let pieces: Vec<usize> =
         (0..out.runs.len()).filter(|&i| matches!(out.runs[i].state, State::Deck | State::Bore)).collect();
-    // The samples of each piece: (bucket, piece, sample index).
+    // The samples of each piece, (piece, sample index), by bucket.
     let size = super::BUCKET_M / metres_per_unit_at(ctx.origin[1]);
-    let mut grid: Vec<([i64; 2], usize, usize)> = Vec::new();
+    let mut entries: Vec<(usize, usize)> = Vec::new();
+    let mut grid: Vec<([i64; 2], u32)> = Vec::new();
     for (p, &i) in pieces.iter().enumerate() {
         let r = &out.runs[i];
         for (k, s) in ctx.samples(r.way).iter().enumerate() {
             let st = ctx.station(r.way, s);
             if key(&st) >= key(&r.from) && key(&st) <= key(&r.to) {
                 let q = ctx.global(s);
-                grid.push(([(q[0] / size).floor() as i64, (q[1] / size).floor() as i64], p, k));
+                grid.push(([(q[0] / size).floor() as i64, (q[1] / size).floor() as i64], entries.len() as u32));
+                entries.push((p, k));
             }
         }
     }
@@ -1007,9 +1023,10 @@ fn sheets(ctx: &Ctx, out: &mut Levels) {
         i
     }
     // (lower piece, upper piece) of pieces that overlap in plan a storey apart.
-    let mut above: Vec<(usize, usize)> = Vec::new();
+    let mut above: Vec<(u32, u32)> = Vec::new();
     let reach = 2.0 * (HALF_MAX_M + ctx.s.edge_band_m);
-    for &(cell, p, k) in &grid {
+    for &(cell, e) in &grid {
+        let (p, k) = entries[e as usize];
         let rp = &out.runs[pieces[p]];
         let sp = &ctx.samples(rp.way)[k];
         let q = ctx.global(sp);
@@ -1018,7 +1035,8 @@ fn sheets(ctx: &Ctx, out: &mut Levels) {
         for y in cell[1] - r..=cell[1] + r {
             for x in cell[0] - r..=cell[0] + r {
                 let from = grid.partition_point(|e| e.0 < [x, y]);
-                for &(_, p2, k2) in grid[from..].iter().take_while(|e| e.0 == [x, y]) {
+                for &(_, e2) in grid[from..].iter().take_while(|e| e.0 == [x, y]) {
+                    let (p2, k2) = entries[e2 as usize];
                     if p2 <= p {
                         continue;
                     }
@@ -1047,26 +1065,28 @@ fn sheets(ctx: &Ctx, out: &mut Levels) {
                         let (a, b) = (find(&mut root, p), find(&mut root, p2));
                         root[a.max(b)] = a.min(b);
                     } else if paved {
-                        let pair = if sp.z_m <= s2.z_m { (p, p2) } else { (p2, p) };
+                        let pair = if sp.z_m <= s2.z_m { (p as u32, p2 as u32) } else { (p2 as u32, p as u32) };
                         above.push(pair);
                     }
                 }
             }
         }
     }
-    let mut ids: BTreeMap<usize, u32> = BTreeMap::new();
+    let mut ids: Vec<u32> = vec![u32::MAX; pieces.len()];
     for (p, &piece) in pieces.iter().enumerate() {
         let r = find(&mut root, p);
-        let next = ids.len() as u32;
-        let id = *ids.entry(r).or_insert(next);
+        if ids[r] == u32::MAX {
+            ids[r] = out.sheets.len() as u32;
+        }
+        let id = ids[r];
         if id as usize == out.sheets.len() {
             out.sheets.push(Sheet { runs: Vec::new(), storey: 0 });
         }
         out.sheets[id as usize].runs.push(piece as u32);
         out.runs[piece].sheet = Some(id);
     }
-    let sheet_of = |p: usize| out.runs[pieces[p]].sheet.unwrap() as usize;
-    let mut pairs: Vec<(usize, usize)> = above.iter().map(|&(a, b)| (sheet_of(a), sheet_of(b))).collect();
+    let sheet_of = |p: u32| out.runs[pieces[p as usize]].sheet.unwrap();
+    let mut pairs: Vec<(u32, u32)> = above.iter().map(|&(a, b)| (sheet_of(a), sheet_of(b))).collect();
     pairs.sort_unstable();
     pairs.dedup();
     pairs.retain(|(a, b)| a != b);
@@ -1075,6 +1095,7 @@ fn sheets(ctx: &Ctx, out: &mut Levels) {
     for _ in 0..out.sheets.len().min(8) {
         let mut changed = false;
         for &(lo, hi) in &pairs {
+            let (lo, hi) = (lo as usize, hi as usize);
             let bore = out.runs[out.sheets[lo].runs[0] as usize].state == State::Bore;
             let (from, to) = if bore { (hi, lo) } else { (lo, hi) };
             if depth[to] < depth[from].saturating_add(1) {
@@ -1133,13 +1154,13 @@ fn merge(ctx: &Ctx, out: &mut Levels) {
             }
         }
     }
-    let mut groups: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    let mut groups: Vec<Vec<usize>> = vec![Vec::new(); n];
     for i in 0..n {
-        groups.entry(find(&mut root, i)).or_default().push(i);
+        groups[find(&mut root, i)].push(i);
     }
-    let mut lines = Vec::with_capacity(groups.len());
+    let mut lines = Vec::with_capacity(n);
     let mut shifts: Vec<(u32, Station, Station)> = Vec::new();
-    for members in groups.into_values() {
+    for members in groups.into_iter().filter(|m| !m.is_empty()) {
         if members.len() == 1 {
             lines.push(out.end_lines[members[0]].clone());
             continue;
@@ -1170,7 +1191,11 @@ fn merge(ctx: &Ctx, out: &mut Levels) {
             // The way's station on the merged line: its own, moved in along the way to the line.
             let (w, st) = l.ways[0];
             let (p0, d0) = into(i);
-            let gap = (dot(sub(centre, p0), mean) / dot(d0, mean).max(1e-6)).max(0.0);
+            let gap = dot(sub(centre, p0), mean) / dot(d0, mean).max(1e-6);
+            if gap <= 0.0 {
+                ways.push((w, st));
+                continue;
+            }
             let m = ctx.metres(w, &st);
             let sign = if dot(d0, ctx.at_station(st).tangent) >= 0.0 { 1.0 } else { -1.0 };
             let moved = (m + sign * gap * ctx.mpu(p0)).clamp(0.0, ctx.lengths[w as usize]);
@@ -1189,7 +1214,7 @@ fn merge(ctx: &Ctx, out: &mut Levels) {
     }
     out.end_lines = lines;
     // A way whose own line lay farther out keeps a ground stretch up to the merged line.
-    for (w, own, to) in shifts.into_iter().filter(|s| s.1 != s.2) {
+    for (w, own, to) in shifts {
         let way = &ctx.g.ways[w as usize];
         let Some(i) = out.runs.iter().position(|r| r.way == w && r.sheet.is_some() && (r.from == own || r.to == own))
         else {
@@ -1220,135 +1245,32 @@ fn merge(ctx: &Ctx, out: &mut Levels) {
     }
 }
 
-/// The counters of the levels: owned elements only, so a sum over cells counts each once.
-fn count(ctx: &Ctx, ladders: &[Option<Ladder>], levels: &Levels) -> BTreeMap<String, u32> {
+fn deck_into_tunnel(ctx: &Ctx, levels: &Levels) -> Vec<(Station, f64)> {
     let g = ctx.g;
-    let cell = g.cell;
-    let owned = |p: [f64; 2]| cell.contains(GlobalPoint { x: libm::round(p[0]) as i64, y: libm::round(p[1]) as i64 });
-    let mut c: BTreeMap<String, u32> = BTreeMap::new();
-    let mut metres_of: BTreeMap<String, f64> = BTreeMap::new();
-    let mut add_to = |name: String, n: u32| *c.entry(name).or_default() += n;
-    let family = |w: u32| match g.ways[w as usize].family {
-        Family::Road => "road",
-        Family::Path => "path",
-        Family::Rail => "rail",
-        Family::Water => "water",
-    };
-    let class = |w: u32| match ctx.rule(w) {
-        Rule::Way(s, _) => s.class.to_string(),
-        Rule::Water(_) => "water".to_string(),
-    };
-    for (x, l) in g.crossings.iter().zip(ladders) {
-        if x.owned && x.kind == CrossingKind::Bore && l.is_none() {
-            // Water over a tunnel way: free ground for the state rule, no ladder.
-            add_to("bore under water".into(), 1);
-        }
-        let Some(l) = l else { continue };
-        if !x.owned {
-            continue;
-        }
-        let kind = if x.kind == CrossingKind::LevelCrossing {
-            "level_crossing".to_string()
-        } else if ctx.tunnel(l.lower) {
-            format!("bore_{}_under_{}", family(l.lower), family(l.upper))
-        } else {
-            format!("deck_over_{}", family(l.lower))
-        };
-        add_to(format!("ladder {kind} {:?}", l.step), 1);
-        add_to(format!("ladder all {:?}", l.step), 1);
-        if let Some(e) = l.ends {
-            let stay = if e == l.upper { l.lower } else { l.upper };
-            add_to(format!("closed {} over {} ends {}", class(l.upper), class(l.lower), class(e)), 1);
-            if ctx.tunnel(e) && g.ways[e as usize].family == Family::Rail {
-                add_to("rail tunnel closed (a) hidden, (b) open and ends ".to_string() + &class(stay), 1);
-            }
-        }
-    }
-    for r in &levels.runs {
-        let samples = ctx.samples(r.way);
-        let mut metres = 0.0;
-        let mut near = 0;
-        for pair in samples.windows(2) {
-            let (sa, sb) = (ctx.station(r.way, &pair[0]), ctx.station(r.way, &pair[1]));
-            if key(&sa) < key(&r.from) || key(&sb) > key(&r.to) {
-                continue;
-            }
-            let mid = add(ctx.global(&pair[0]), sub(ctx.global(&pair[1]), ctx.global(&pair[0])), 0.5);
-            if owned(mid) {
-                metres += between(&g.parts, &sa, &sb);
-                if r.state == State::Bore
-                    && ctx.feet(mid, HALF_MAX_M + BODY_M).iter().any(|f| {
-                        f.way != r.way
-                            && !ctx.water(f.way)
-                            && g.ways[f.way as usize].level == Level::Ground
-                            && f.d * ctx.mpu(mid) <= ctx.foot_half(f) + BODY_M
-                    })
-                {
-                    near += 1;
-                }
-            }
-        }
-        let tagged = if ctx.tagged(r.way) { "tagged" } else { "untagged" };
-        *metres_of.entry(format!("decimetres {tagged} {:?}", r.state)).or_default() += metres * 10.0;
-        if ctx.tunnel(r.way) && g.ways[r.way as usize].family == Family::Rail && r.state == State::Hidden {
-            *metres_of.entry("decimetres rail tunnel hidden".into()).or_default() += metres * 10.0;
-        }
-        add_to("bore stations within a slope reach of a ground way".into(), near);
-    }
-    for s in &levels.sheets {
-        let first = &levels.runs[s.runs[0] as usize];
-        if !owned(ctx.at_station(first.from).p) {
-            continue;
-        }
-        let mut ways: Vec<u32> = s.runs.iter().map(|&r| levels.runs[r as usize].way).collect();
-        ways.sort_unstable();
-        ways.dedup();
-        add_to("sheets".into(), 1);
-        add_to("sheets with more than one way".into(), u32::from(ways.len() > 1));
-        add_to("sheets beyond storey 1".into(), u32::from(s.storey.abs() > 1));
-    }
-    for l in &levels.end_lines {
-        let p = ctx.at_station(l.ways[0].1).p;
-        if owned(p) {
-            add_to(format!("end lines {:?}", l.kind), 1);
-            add_to("end lines merged".into(), u32::from(l.ways.len() > 1));
-        }
-    }
-    // T15: a DECK end that goes on as a tunnel way whose first stations lie over the terrain, and
-    // the metres until the terrain rises over its floor.
+    let mut out = Vec::new();
     for r in levels.runs.iter().filter(|r| r.state == State::Deck) {
         let w = r.way;
         for (start, st) in [(true, g.ways[w as usize].from), (false, g.ways[w as usize].to)] {
-            if (start && r.from != st) || (!start && r.to != st) {
+            if (if start { r.from } else { r.to }) != st {
                 continue;
             }
-            for &(o, o_start) in ctx.nodes.get(&(w, start)).into_iter().flatten() {
-                if !ctx.tunnel(o) || !owned(ctx.at_station(st).p) {
+            for &(o, o_start) in ctx.others(w, start).into_iter().flatten() {
+                if !ctx.tunnel(o) {
                     continue;
                 }
-                let len = ctx.lengths[o as usize];
-                let over = |m: f64| {
-                    let a = ctx.at(o, if o_start { m } else { len - m });
-                    a.z > ctx.terrain(a.p)
-                };
-                if !over(0.0) {
+                // Its samples from the change on, until the terrain rises over the floor.
+                let samples = ctx.samples(o);
+                let under = |s: &&Sample| s.z_m <= ctx.terrain(ctx.global(s));
+                let first = if o_start { samples.iter().find(under) } else { samples.iter().rev().find(under) };
+                let s0 = if o_start { samples.first() } else { samples.last() };
+                if first.is_some() && first == s0 {
                     continue;
                 }
-                let mut m = 0.0;
-                while m < len && over(m) {
-                    m += 1.0;
-                }
-                let bin = match m {
-                    x if x >= len => "the tunnel way ends first",
-                    x if x <= 10.0 => "0-10 m",
-                    x if x <= 30.0 => "10-30 m",
-                    x if x <= 100.0 => "30-100 m",
-                    _ => "over 100 m",
-                };
-                add_to(format!("t15 {bin}"), 1);
+                let first = first.map(|s| ctx.station(o, s));
+                let end = if o_start { ctx.g.ways[o as usize].from } else { ctx.g.ways[o as usize].to };
+                out.push((st, first.map_or(f64::INFINITY, |f| between(&ctx.g.parts, &end, &f))));
             }
         }
     }
-    c.extend(metres_of.into_iter().map(|(k, v)| (k, libm::round(v) as u32)));
-    c
+    out
 }

@@ -323,14 +323,12 @@ pub struct GraphStats {
     pub implicit_junctions: u32,
     pub crossings: BTreeMap<(CrossingKind, Source), u32>,
     pub samples: u32,
-    /// The counts of the levels, of the elements that the cell owns.
-    pub levels: BTreeMap<String, u32>,
 }
 
 impl GraphStats {
-    /// Every counter but the crossings by type, by name; the levels' as `levels <name>`.
-    pub fn counters(&self) -> Vec<(String, u32)> {
-        let fixed = [
+    /// Every counter but the crossings by type, by name.
+    pub fn counters(&self) -> [(&'static str, u32); 22] {
+        [
             ("repeated", self.repeated),
             ("spikes", self.spikes),
             ("folded", self.folded),
@@ -353,9 +351,7 @@ impl GraphStats {
             ("implicit_junctions", self.implicit_junctions),
             ("crossings", self.crossings.values().sum()),
             ("samples", self.samples),
-        ];
-        let levels = self.levels.iter().map(|(name, &n)| (format!("levels {name}"), n));
-        fixed.into_iter().map(|(name, n)| (name.to_string(), n)).chain(levels).collect()
+        ]
     }
 }
 

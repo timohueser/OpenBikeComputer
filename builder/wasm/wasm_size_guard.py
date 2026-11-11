@@ -20,9 +20,10 @@ from pathlib import Path
 # increase the permitted production download or raw WASM size.
 BUDGETS = {
     "builder": {"gzipped": (62 + 352 + 128) * 1024, "raw_wasm": (112 + 944 + 272) * 1024},
-    # Measured on the build with the outline slopes (715,120 B gzipped with the glue, 1,868,263 B raw),
-    # plus about 2 % margin, rounded to whole KiB. Raised by the owner for the outline slopes.
-    "ground-plan": {"gzipped": 714 * 1024, "raw_wasm": 1860 * 1024},
+    # Measured on the build with the levels of the way graph (753,117 B gzipped with the glue,
+    # 1,957,330 B raw), rounded up to whole KiB. The owner allows about 15 to 25 kB of gzip for the
+    # crossing block; the levels take 24,598 B of it (728,519 B before).
+    "ground-plan": {"gzipped": 736 * 1024, "raw_wasm": 1912 * 1024},
 }
 
 ADVICE = {

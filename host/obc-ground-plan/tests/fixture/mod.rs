@@ -176,5 +176,121 @@ pub fn levels_detail(g: &obc_ground_plan::graph::WayGraph) -> serde_json::Value 
             owned(c).then(|| json!({"at": lon_lat(c[0], c[1]), "kind": format!("{:?}", l.kind), "ways": l.ways.iter().map(|w| w.0).collect::<Vec<_>>()}))
         })
         .collect();
-    json!({"crossings": crossings, "runs": runs, "end_lines": lines})
+    json!({"crossings": crossings, "runs": runs, "end_lines": lines, "counts": levels_counts(g)})
+}
+
+/// The census counts of the levels of the elements that a cell owns, so that a sum over cells counts
+/// each once. Classes are rows of `roads.json` by number.
+#[allow(clippy::disallowed_methods)]
+pub fn levels_counts(g: &obc_ground_plan::graph::WayGraph) -> std::collections::BTreeMap<String, u32> {
+    use obc_ground_plan::frame::{metres_per_unit, GlobalPoint};
+    use obc_ground_plan::graph::{point, CrossingKind, Family, Level, State, Station};
+    let o = g.cell.origin();
+    let at = |p: [i32; 2]| [o.x + i64::from(p[0]), o.y + i64::from(p[1])];
+    let owned = |p: [i64; 2]| g.cell.contains(GlobalPoint { x: p[0], y: p[1] });
+    let mut c = std::collections::BTreeMap::new();
+    let mut add = |name: String, n: u32| *c.entry(name).or_insert(0) += n;
+    let tunnel = |w: u32| g.ways[w as usize].level == Level::Tunnel && g.ways[w as usize].family != Family::Water;
+    let family = |w: u32| format!("{:?}", g.ways[w as usize].family).to_lowercase();
+    let class = |w: u32| match g.ways[w as usize].family {
+        Family::Water => "water".to_string(),
+        _ => g.ways[w as usize].class.to_string(),
+    };
+    for x in g.crossings.iter().filter(|x| x.owned) {
+        let Some(l) = &x.ladder else {
+            if x.kind == CrossingKind::Bore {
+                add("bore under water (free ground)".into(), 1);
+            }
+            continue;
+        };
+        let kind = if x.kind == CrossingKind::LevelCrossing {
+            "level_crossing".to_string()
+        } else if tunnel(l.lower) {
+            format!("bore_{}_under_{}", family(l.lower), family(l.upper))
+        } else {
+            format!("deck_over_{}", family(l.lower))
+        };
+        add(format!("ladder {kind} {:?}", l.step), 1);
+        add(format!("ladder all {:?}", l.step), 1);
+        if let Some(e) = l.ends {
+            let stay = if e == l.upper { l.lower } else { l.upper };
+            add(format!("closed {} over {} ends {}", class(l.upper), class(l.lower), class(e)), 1);
+            if tunnel(e) && g.ways[e as usize].family == Family::Rail {
+                add(format!("rail tunnel closed: (a) hidden, (b) open and class {} ends", class(stay)), 1);
+            }
+        }
+    }
+    let mut decimetres = std::collections::BTreeMap::<String, f64>::new();
+    for r in &g.levels.runs {
+        let way = &g.ways[r.way as usize];
+        let samples = &g.samples[way.samples.start as usize..way.samples.end as usize];
+        let inside = |s: &obc_ground_plan::graph::Sample| {
+            (s.span, s.u) >= (r.from.span, r.from.u) && (s.span, s.u) <= (r.to.span, r.to.u)
+        };
+        let tagged =
+            if tunnel(r.way) || g.parts[way.part as usize].level == Level::Deck { "tagged" } else { "untagged" };
+        for pair in samples.windows(2).filter(|p| inside(&p[0]) && inside(&p[1])) {
+            let (a, b) = (at(pair[0].pos), at(pair[1].pos));
+            let mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+            if !owned(mid) {
+                continue;
+            }
+            let d = (((b[0] - a[0]) as f64).powi(2) + ((b[1] - a[1]) as f64).powi(2)).sqrt() * metres_per_unit(mid[1]);
+            *decimetres.entry(format!("decimetres {tagged} {:?}", r.state)).or_default() += d * 10.0;
+            if r.state == State::Hidden && tunnel(r.way) && way.family == Family::Rail {
+                *decimetres.entry("decimetres rail tunnel hidden".into()).or_default() += d * 10.0;
+            }
+            if r.state == State::Bore {
+                // A ground way's centre line within 15 m: its slope can reach over the bore.
+                let near = (g.ways.iter().filter(|w| w.level == Level::Ground && w.family != Family::Water)).any(|w| {
+                    g.samples[w.samples.start as usize..w.samples.end as usize].iter().any(|s| {
+                        let q = at(s.pos);
+                        (((q[0] - a[0]) as f64).powi(2) + ((q[1] - a[1]) as f64).powi(2)).sqrt() * metres_per_unit(a[1])
+                            <= 15.0
+                    })
+                });
+                add("bore segments with a ground way within 15 m".into(), u32::from(near));
+                add("bore segments".into(), 1);
+            }
+        }
+    }
+    for (k, v) in decimetres {
+        add(k, v.round() as u32);
+    }
+    let station = |st: &Station| {
+        let part = &g.parts[st.part as usize];
+        let p = point(part, st.span as usize, st.u);
+        let v = part.vertices[st.span as usize].pos;
+        [v[0] + p.d[0].round() as i64, v[1] + p.d[1].round() as i64]
+    };
+    for s in &g.levels.sheets {
+        if !owned(station(&g.levels.runs[s.runs[0] as usize].from)) {
+            continue;
+        }
+        let mut ways: Vec<u32> = s.runs.iter().map(|&r| g.levels.runs[r as usize].way).collect();
+        ways.sort_unstable();
+        ways.dedup();
+        add("sheets".into(), 1);
+        add("sheets with more than one way".into(), u32::from(ways.len() > 1));
+        add("sheets beyond storey 1".into(), u32::from(s.storey.abs() > 1));
+    }
+    for l in &g.levels.end_lines {
+        if owned(station(&l.ways[0].1)) {
+            add(format!("end lines {:?}", l.kind), 1);
+            add("end lines merged".into(), u32::from(l.ways.len() > 1));
+        }
+    }
+    for (st, m) in &g.levels.deck_into_tunnel {
+        if owned(station(st)) {
+            let bin = match *m {
+                x if x.is_infinite() => "the tunnel way ends first",
+                x if x <= 10.0 => "0-10 m",
+                x if x <= 30.0 => "10-30 m",
+                x if x <= 100.0 => "30-100 m",
+                _ => "over 100 m",
+            };
+            add(format!("t15 deck into a tunnel over the terrain: {bin}"), 1);
+        }
+    }
+    c
 }

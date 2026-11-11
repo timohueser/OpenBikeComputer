@@ -106,8 +106,8 @@ fn probe_json(p: &Probe) -> Value {
     json!({"slots": p.slots, "quads": p.quads, "regions": p.regions, "slice_fallback": p.slice_fallback, "fields": fields})
 }
 
-fn counters<S: AsRef<str>>(list: &[(S, u32)]) -> Value {
-    Value::Object(list.iter().filter(|c| c.1 > 0).map(|c| (c.0.as_ref().to_string(), json!(c.1))).collect())
+fn counters(list: &[(&'static str, u32)]) -> Value {
+    Value::Object(list.iter().filter(|c| c.1 > 0).map(|c| (c.0.to_string(), json!(c.1))).collect())
 }
 
 fn rss_kb() -> u64 {
