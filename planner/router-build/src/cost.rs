@@ -113,15 +113,15 @@ pub(crate) fn way_basis(way: &Way, reversed: bool, profile: &Profile) -> Option<
     let road = Road {
         way: way.id,
         reversed,
-        surface: facts.surface,
+        surface: facts.surface(),
         class: facts.class,
         access,
         difficulty: facts.difficulty,
-        hiking_difficulty: facts.hiking_difficulty,
-        structure: facts.structure,
+        hiking_difficulty: facts.hiking_difficulty(),
+        structure: facts.structure(),
         ..Road::default()
     };
-    (facts.routable && access != 0).then(|| basis(&road, way, profile)).flatten()
+    (facts.routable() && access != 0).then(|| basis(&road, way, profile)).flatten()
 }
 
 /// The results of the chunks of a parallel pass, or the first error in chunk order: the same
@@ -137,8 +137,8 @@ fn basis(road: &Road, way: &Way, profile: &Profile) -> Option<CostBasis> {
     }
     let (facts, mode) = (way.facts, profile.mode(road));
     let suitability = match &profile.weighting {
-        Weighting::RoadBike(_) => road_bike::way(road, &way.tags, facts.country, mode == PUSH),
-        Weighting::Weighted { .. } => suitability::way(road, &way.tags, facts.country, profile),
+        Weighting::RoadBike(_) => road_bike::way(road, &way.tags, facts.country(), mode == PUSH),
+        Weighting::Weighted { .. } => suitability::way(road, &way.tags, facts.country(), profile),
     }?;
     let mut cost = suitability.basis;
     // A signed route discounts only the preference above the physical and traffic floor.
@@ -216,7 +216,7 @@ pub(crate) fn transition(
     }
     let (arrival, departure) = (roads.shape(before as usize), roads.shape(after as usize));
     let mut cost = doubt + turn(arrival[arrival.len() - 2], arrival[arrival.len() - 1], departure[1], wb.turn);
-    if graph.signals.values()[junction] {
+    if graph.signals.values()[junction] != 0 {
         cost += 20.0;
     }
     if wb.ferry && !wa.ferry {
@@ -520,7 +520,7 @@ mod tests {
             node_access: Column::filled(3, BIKE | FOOT | PUSH),
             roads: roads.iter().cloned().collect(),
             points: points.iter().copied().collect(),
-            forbidden_foot: [(0, 1)].into_iter().collect(),
+            forbidden_foot: [crate::Turn { from: 0, to: 1 }].into_iter().collect(),
             ..Graph::default()
         };
         graph.osm.ways = ways(&[(1, &[0, 1]), (2, &[1, 2])], &[("highway", "residential")]);

@@ -10,7 +10,7 @@ use planner_router::{
 };
 use planner_router_build::cost::{way_bases, Costing};
 use planner_router_build::source::{Builder, Tags, Ways};
-use planner_router_build::{base::Dictionary, Graph};
+use planner_router_build::{base::Dictionary, Graph, Turn};
 use serde_json::{json, Value};
 use std::{
     cmp::Reverse,
@@ -109,15 +109,16 @@ fn fixture() -> Graph {
     let forbidden = (0..roads.len())
         .flat_map(|a| {
             let roads = &roads;
-            (0..roads.len())
-                .filter_map(move |b| (roads[a].to == roads[b].from && (a + b) % 7 == 0).then_some((a as u32, b as u32)))
+            (0..roads.len()).filter_map(move |b| {
+                (roads[a].to == roads[b].from && (a + b) % 7 == 0).then_some(Turn { from: a as u32, to: b as u32 })
+            })
         })
         .collect();
     let forbidden_foot = (0..roads.len())
         .flat_map(|a| {
             let roads = &roads;
             (0..roads.len()).filter_map(move |b| {
-                (roads[a].to == roads[b].from && (a + b) % 11 == 0).then_some((a as u32, b as u32))
+                (roads[a].to == roads[b].from && (a + b) % 11 == 0).then_some(Turn { from: a as u32, to: b as u32 })
             })
         })
         .collect();
@@ -239,8 +240,11 @@ fn prepared_coordinate_routes_match_independent_arrival_road_search() {
     for (actual, expected) in
         [(&graph.forbidden, &original.forbidden), (&graph.forbidden_foot, &original.forbidden_foot)]
     {
-        let mut restored: Vec<_> =
-            actual.values().iter().map(|&(a, b)| (order[a as usize], order[b as usize])).collect();
+        let mut restored: Vec<_> = actual
+            .values()
+            .iter()
+            .map(|&Turn { from, to }| Turn { from: order[from as usize], to: order[to as usize] })
+            .collect();
         restored.sort_unstable();
         assert_eq!(restored, expected.values());
     }

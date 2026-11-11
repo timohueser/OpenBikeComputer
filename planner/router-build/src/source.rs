@@ -1,6 +1,6 @@
 //! The source OSM model and the tag rules that the import, the overlay index and the route
 //! catalog share. No source object enters the routing package.
-use crate::column::{Column, Lists};
+use crate::column::{Column, Layout, Lists};
 use crate::country::Country;
 use crate::sort;
 use planner_router::closures::{Closure, Kind, Set};
@@ -360,6 +360,7 @@ impl Tags<'_> {
 }
 
 /// What one node reference of a way gets from its node: the point and what the node's tags give.
+#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct NodeRef {
     /// Microdegrees, as in `Point`.
@@ -370,7 +371,10 @@ pub struct NodeRef {
     /// The modes that pass the node (`osm::crossing`); all modes for an untagged node.
     pub access: u8,
     pub flags: u8,
+    pub padding: [u8; 2],
 }
+
+const _: () = assert!(size_of::<NodeRef>() == 4 + 4 + 4 + 1 + 1 + 2);
 
 impl NodeRef {
     /// The node is in the input and inside the bounds.
@@ -384,7 +388,7 @@ impl NodeRef {
     /// A reference to a node that is not in the input or not inside the bounds.
     pub fn missing(shared: bool) -> Self {
         let flags = if shared { Self::SHARED } else { 0 };
-        NodeRef { lat: 0, lon: 0, closures: u32::MAX, access: BIKE | FOOT | PUSH, flags }
+        NodeRef { lat: 0, lon: 0, closures: u32::MAX, access: BIKE | FOOT | PUSH, flags, padding: [0; 2] }
     }
 
     pub fn present(&self) -> bool {
@@ -396,46 +400,120 @@ impl NodeRef {
     }
 }
 
-/// What the tags of a way give with no profile.
+/// What the tags of a way give with no profile. Each field is a byte or a `u32`, so a stored
+/// column holds it; the methods decode them.
+#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WayFacts {
-    /// `osm::attributes` gave attributes: the way can have roads.
-    pub routable: bool,
-    pub class: u8,
-    pub surface: Surface,
-    pub difficulty: u8,
-    pub hiking_difficulty: Option<u8>,
-    pub structure: bool,
-    /// The modes forward and backward, after the exclusions of the via-way restrictions.
-    pub access: [u8; 2],
-    /// The country of the first present node.
-    pub country: Country,
     /// The `Sets` IDs of `closures` forward and backward, or `u32::MAX`.
     pub closures: [u32; 2],
+    /// 1 when `osm::attributes` gave attributes: the way can have roads.
+    pub routable: u8,
+    pub class: u8,
+    /// A `Surface` (`surface_byte`).
+    pub surface: u8,
+    /// The modes forward and backward, after the exclusions of the via-way restrictions.
+    pub access: [u8; 2],
+    pub difficulty: u8,
+    /// `hiking_byte` of the hiking difficulty.
+    pub hiking_difficulty: u8,
+    /// 1 for a bridge or a tunnel.
+    pub structure: u8,
+    /// The `Country` of the first present node: its row of defaults, and 1 for left-hand traffic.
+    pub defaults: u8,
+    pub left_hand: u8,
     /// The doubtful modes of those sets (`cost::doubts`).
     pub doubts: [u8; 2],
     /// The highest cycle route rank forward and backward, 0 for none. A way in a cycle route has a
     /// rank in at least one direction.
     pub ranks: [u8; 2],
+    pub padding: [u8; 2],
 }
+
+const _: () = assert!(size_of::<WayFacts>() == 8 + 1 + 1 + 1 + 2 + 1 + 1 + 1 + 1 + 1 + 2 + 2 + 2);
 
 impl Default for WayFacts {
     fn default() -> Self {
+        let (defaults, left_hand) = Country::default().parts();
         WayFacts {
-            routable: false,
-            class: 0,
-            surface: Surface::Unknown,
-            difficulty: 255,
-            hiking_difficulty: None,
-            structure: false,
-            access: [0; 2],
-            country: Country::default(),
             closures: [u32::MAX; 2],
+            routable: 0,
+            class: 0,
+            surface: surface_byte(Surface::Unknown),
+            access: [0; 2],
+            difficulty: 255,
+            hiking_difficulty: hiking_byte(None),
+            structure: 0,
+            defaults,
+            left_hand,
             doubts: [0; 2],
             ranks: [0; 2],
+            padding: [0; 2],
         }
     }
 }
+
+impl WayFacts {
+    pub fn routable(&self) -> bool {
+        self.routable != 0
+    }
+
+    pub fn surface(&self) -> Surface {
+        surface(self.surface)
+    }
+
+    pub fn hiking_difficulty(&self) -> Option<u8> {
+        hiking(self.hiking_difficulty)
+    }
+
+    pub fn structure(&self) -> bool {
+        self.structure != 0
+    }
+
+    pub fn country(&self) -> Country {
+        Country::from_parts(self.defaults, self.left_hand)
+    }
+}
+
+pub fn surface_byte(surface: Surface) -> u8 {
+    surface as u8
+}
+
+pub fn surface(byte: u8) -> Surface {
+    match byte {
+        1 => Surface::Paved,
+        2 => Surface::Compacted,
+        3 => Surface::Gravel,
+        4 => Surface::Dirt,
+        5 => Surface::Rough,
+        _ => Surface::Unknown,
+    }
+}
+
+/// The byte of a hiking difficulty: `0xFE` for none. An unknown classification is 255.
+pub fn hiking_byte(difficulty: Option<u8>) -> u8 {
+    difficulty.unwrap_or(0xFE)
+}
+
+pub fn hiking(byte: u8) -> Option<u8> {
+    (byte != 0xFE).then_some(byte)
+}
+
+/// A turn rule of a relation: from way `from` over node `via` to way `to`. `only` forbids the
+/// other turns, `u_turn` takes only the reverse road of `to`, and `walking` binds the foot modes.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rule {
+    pub from: i64,
+    pub to: i64,
+    pub via: i64,
+    pub only: u8,
+    pub u_turn: u8,
+    pub walking: u8,
+    pub padding: [u8; 5],
+}
+
+const _: () = assert!(size_of::<Rule>() == 8 + 8 + 8 + 1 + 1 + 1 + 5);
 
 /// The distinct closure sets of the bake: of the ways, of the nodes and of the roads. An empty set
 /// has the ID `u32::MAX`.
@@ -477,6 +555,17 @@ impl Sets {
 
     pub fn is_empty(&self) -> bool {
         self.sets.is_empty()
+    }
+
+    /// The sets in ID order, as postcard.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        postcard::to_allocvec(&self.sets).expect("closure sets encode")
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
+        let sets: Vec<Set> = postcard::from_bytes(bytes).map_err(|e| format!("closure sets: {e}"))?;
+        let ids = sets.iter().enumerate().map(|(id, set)| (set.clone(), id as u32)).collect();
+        Ok(Sets { sets, ids })
     }
 }
 
@@ -737,6 +826,44 @@ pub struct Data {
     pub relations: Table<Relations>,
     /// The node members of the relations that a way references and that are present, sorted.
     pub members: Column<i64>,
+}
+
+impl Data {
+    /// Saves each column as a file whose name starts with `ways.`, `relations.` or `members`.
+    pub(crate) fn save(self, layout: &mut Layout) -> Result<(), String> {
+        let Data { ways, relations, members } = self;
+        let Ways { nodes, points, tags, facts } = ways.columns;
+        layout.save("ways.ids", ways.ids)?;
+        layout.save_lists("ways.nodes", nodes)?;
+        layout.save("ways.points", points)?;
+        layout.save_lists("ways.tags", tags)?;
+        layout.save("ways.facts", facts)?;
+        let Relations { members: ids, roles, tags } = relations.columns;
+        layout.save("relations.ids", relations.ids)?;
+        layout.save_lists("relations.members", ids)?;
+        layout.save_lists("relations.roles", roles)?;
+        layout.save_lists("relations.tags", tags)?;
+        layout.save("members", members)
+    }
+
+    pub(crate) fn open(layout: &Layout) -> Result<Self, String> {
+        let ways = Ways {
+            nodes: layout.open_lists("ways.nodes")?,
+            points: layout.open("ways.points")?,
+            tags: layout.open_lists("ways.tags")?,
+            facts: layout.open("ways.facts")?,
+        };
+        let relations = Relations {
+            members: layout.open_lists("relations.members")?,
+            roles: layout.open_lists("relations.roles")?,
+            tags: layout.open_lists("relations.tags")?,
+        };
+        Ok(Data {
+            ways: Table { ids: layout.open("ways.ids")?, columns: ways },
+            relations: Table { ids: layout.open("relations.ids")?, columns: relations },
+            members: layout.open("members")?,
+        })
+    }
 }
 
 #[cfg(test)]

@@ -104,7 +104,7 @@ pub fn order(graph: &mut Graph, terrain: Option<Height>) -> Result<Column<u32>, 
         inverse[old as usize] = new as u32;
     }
     for turns in [graph.forbidden.values_mut(), graph.forbidden_foot.values_mut()] {
-        for (from, to) in turns.iter_mut() {
+        for crate::Turn { from, to } in turns.iter_mut() {
             *from = *inverse.get(*from as usize).ok_or("Unknown restriction road")?;
             *to = *inverse.get(*to as usize).ok_or("Unknown restriction road")?;
         }

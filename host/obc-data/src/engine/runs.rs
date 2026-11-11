@@ -710,6 +710,16 @@ impl Run {
         if let Some(step) = pending.first() {
             return Err(format!("step `{}` reads a layer that the run did not build; plan again", step.name));
         }
+        // A collection keeps the layer of a cache step that a run used last, also when the run
+        // reused an older one.
+        let used = crate::date::timestamp(crate::date::now());
+        for output in steps.iter().filter(|step| step.layer.cache).filter_map(|step| done.get(step.name.as_str())) {
+            let _lock = store.lock(&format!("layer-{}", output.key))?;
+            if let Some(mut receipt) = store.layer(&output.key)? {
+                receipt.used = Some(used.clone());
+                store.put_layer(&receipt)?;
+            }
+        }
         self.count_leaves()?;
         built.sort_by_key(|built| position[built.receipt.step.as_str()]);
         Ok(built)
@@ -1522,6 +1532,28 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_run_marks_the_cache_layers_that_it_used() {
+        static CACHE: crate::engine::Layer =
+            crate::engine::Layer { name: "cache", cache: true, ..crate::engine::tests::TEST };
+        let fixture = fixture("runs-cache");
+        let steps = |after: u32| {
+            let cache = step("test/cache", vec![snapshot("head", "1", &[])], "out.txt", StepRun::Rust(&NAMED));
+            let next = step("test/after", vec![Input::step("test/cache")], "out.txt", StepRun::Rust(&NAMED));
+            vec![Step { layer: &CACHE, ..cache }, Step { options: serde_json::json!({ "after": after }), ..next }]
+        };
+        let built = fixture.build(&steps(1)).unwrap();
+        let key = built.iter().find(|built| built.receipt.step == "test/cache").unwrap().receipt.key.clone();
+        let mut receipt = fixture.store.layer(&key).unwrap().unwrap();
+        assert!(receipt.used.is_some(), "the run that built it used it");
+        receipt.used = None;
+        fixture.store.put_layer(&receipt).unwrap();
+        // A run that reads the cache layer and builds only the step after it.
+        let built = fixture.build(&steps(2)).unwrap();
+        assert!(built.iter().all(|built| built.receipt.step != "test/cache"));
+        assert!(fixture.store.layer(&key).unwrap().unwrap().used.is_some(), "a run that read it used it");
+    }
+
+    #[test]
     fn a_run_shows_the_leaves_of_a_tiled_layer_that_bake_and_that_finished() {
         static TILED: crate::engine::Layer = crate::engine::Layer { shape: Shape::Tiled, ..crate::engine::tests::TEST };
         let fixture = fixture("runs-leaves");
@@ -1817,12 +1849,14 @@ open(os.path.join(request['output'], 'out.txt'), 'w').write(f'{start} {time.time
                 step: step.into(),
                 format: 1,
                 revision: 1,
+                cache: false,
                 key: crate::store::sha256_hex(b"old"),
                 inputs: Vec::new(),
                 options: serde_json::json!({}),
                 digest: String::new(),
                 files: Vec::new(),
                 built: "2026-10-01T00:00:00Z".into(),
+                used: None,
                 wall_ms: 0,
                 cpu_ms: None,
                 peak_rss_bytes: Some(peak),

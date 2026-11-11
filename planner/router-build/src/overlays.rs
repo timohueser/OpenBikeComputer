@@ -131,7 +131,7 @@ pub fn write(path: &Path, package: &str, bounds: [f64; 4], osm: &Data) -> Result
     }
     let (mut attributes, mut memberships) = (HashMap::new(), Vec::new());
     for way in osm.ways.iter() {
-        let access = access::feature(&way, way.facts.country);
+        let access = access::feature(&way, way.facts.country());
         while members.next_if(|&(id, _)| id < way.id).is_some() {}
         memberships.clear();
         while let Some((_, relation)) = members.next_if(|&(id, _)| id == way.id) {

@@ -20,10 +20,11 @@ mod traffic;
 mod work;
 
 use base::{Dictionary, Topology};
-use column::{Column, Lists};
+use column::{Column, Layout, Lists};
 use planner_router::{
     closures,
-    model::{Point, Profile, Road, Surface},
+    cost::CostBasis,
+    model::{Point, Profile, Road},
     package::{self, Manifest, CELL, ROADS_PER_PAGE},
     storage,
     table::Table,
@@ -39,6 +40,9 @@ const CHUNK: usize = 65_536;
 #[cfg(test)]
 const CHUNK: usize = 8;
 
+/// The file of the closure sets in the roads layer.
+pub(crate) const SETS: &str = "sets.postcard";
+
 /// The imported region: directed roads, their junctions and turn rules, and the source OSM
 /// objects that costs, closures, the overlay index and the route catalog read.
 #[derive(Clone, Debug, Default)]
@@ -47,8 +51,8 @@ pub struct Graph {
     pub points: Column<Point>,
     pub node_ids: Column<i64>,
     pub node_access: Column<u8>,
-    /// A traffic signal at the junction.
-    pub signals: Column<bool>,
+    /// 1 for a traffic signal at the junction.
+    pub signals: Column<u8>,
     /// The `sets` ID of the closures of the junction's node, or `u32::MAX`.
     pub node_closures: Column<u32>,
     /// The doubtful modes of those closures (`cost::doubts`).
@@ -57,15 +61,61 @@ pub struct Graph {
     pub osm: source::Data,
     pub roads: Roads,
     /// Forbidden transitions between directed roads. Sorted for binary search.
-    pub forbidden: Column<(u32, u32)>,
-    pub forbidden_foot: Column<(u32, u32)>,
+    pub forbidden: Column<Turn>,
+    pub forbidden_foot: Column<Turn>,
     pub warnings: Vec<String>,
 }
+
+/// A transition from road `from` to road `to`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Turn {
+    pub from: u32,
+    pub to: u32,
+}
+
+const _: () = assert!(size_of::<Turn>() == 4 + 4);
 
 impl Graph {
     pub fn permits_turn(&self, from: u32, to: u32, walking: bool) -> bool {
         let forbidden = if walking { &self.forbidden_foot } else { &self.forbidden };
-        forbidden.values().binary_search(&(from, to)).is_err()
+        forbidden.values().binary_search(&Turn { from, to }).is_err()
+    }
+
+    /// Saves the junctions, the roads, the turn rules and the closure sets: all but the source
+    /// objects and the warnings.
+    pub(crate) fn save(self, layout: &mut Layout) -> Result<(), String> {
+        layout.save("points", self.points)?;
+        layout.save("node_ids", self.node_ids)?;
+        layout.save("node_access", self.node_access)?;
+        layout.save("signals", self.signals)?;
+        layout.save("node_closures", self.node_closures)?;
+        layout.save("node_doubts", self.node_doubts)?;
+        self.roads.save(layout)?;
+        layout.save("forbidden", self.forbidden)?;
+        layout.save("forbidden_foot", self.forbidden_foot)?;
+        let path = layout.path(SETS)?;
+        std::fs::write(&path, self.sets.to_bytes()).map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    /// The graph that `save` saved, over the source objects `osm`.
+    pub(crate) fn open(layout: &Layout, osm: source::Data, warnings: Vec<String>) -> Result<Self, String> {
+        let path = layout.path(SETS)?;
+        let sets = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(Graph {
+            points: layout.open("points")?,
+            node_ids: layout.open("node_ids")?,
+            node_access: layout.open("node_access")?,
+            signals: layout.open("signals")?,
+            node_closures: layout.open("node_closures")?,
+            node_doubts: layout.open("node_doubts")?,
+            sets: source::Sets::from_bytes(&sets)?,
+            osm,
+            roads: Roads::open(layout)?,
+            forbidden: layout.open("forbidden")?,
+            forbidden_foot: layout.open("forbidden_foot")?,
+            warnings,
+        })
     }
 
     /// For a graph that a test builds by hand; the import does this itself. Gives each road the
@@ -75,7 +125,7 @@ impl Graph {
     pub fn link_ways(&mut self) {
         let points = self.points.len();
         if self.signals.is_empty() {
-            self.signals = Column::filled(points, false);
+            self.signals = Column::filled(points, 0);
         }
         if self.node_closures.is_empty() {
             self.node_closures = Column::filled(points, u32::MAX);
@@ -93,9 +143,11 @@ impl Graph {
             let row = self.osm.ways.index(road.way).unwrap_or_else(|| panic!("road {id} has no way {}", road.way));
             let way = &mut facts[row];
             let side = usize::from(road.reversed);
-            way.routable = true;
-            (way.class, way.surface, way.difficulty) = (road.class, road.surface, road.difficulty);
-            (way.hiking_difficulty, way.structure) = (road.hiking_difficulty, road.structure);
+            way.routable = 1;
+            (way.class, way.surface, way.difficulty) =
+                (road.class, source::surface_byte(road.surface), road.difficulty);
+            way.hiking_difficulty = source::hiking_byte(road.hiking_difficulty);
+            way.structure = u8::from(road.structure);
             way.access[side] = road.access;
             let junction = self.node_closures.values()[road.to as usize];
             let closures = osm::road_closures(&mut self.sets, way.closures[side], junction);
@@ -128,22 +180,89 @@ pub struct Roads {
     from: Column<u32>,
     to: Column<u32>,
     way: Column<i64>,
-    reversed: Column<bool>,
+    /// 1 for the direction against the nodes of the way.
+    reversed: Column<u8>,
     length_m: Column<u32>,
     ascent_m: Column<u32>,
     descent_m: Column<u32>,
-    surface: Column<Surface>,
+    /// `source::surface_byte`.
+    surface: Column<u8>,
     class: Column<u8>,
     access: Column<u8>,
     difficulty: Column<u8>,
-    hiking_difficulty: Column<Option<u8>>,
-    structure: Column<bool>,
+    /// `source::hiking_byte`.
+    hiking_difficulty: Column<u8>,
+    structure: Column<u8>,
     shapes: Lists<Point>,
     way_row: Column<u32>,
     closures: Column<u32>,
 }
 
 impl Roads {
+    fn save(self, layout: &mut Layout) -> Result<(), String> {
+        let Self {
+            from,
+            to,
+            way,
+            reversed,
+            length_m,
+            ascent_m,
+            descent_m,
+            surface,
+            class,
+            access,
+            difficulty,
+            hiking_difficulty,
+            structure,
+            shapes,
+            way_row,
+            closures,
+        } = self;
+        layout.save("roads.from", from)?;
+        layout.save("roads.to", to)?;
+        layout.save("roads.way", way)?;
+        layout.save("roads.reversed", reversed)?;
+        layout.save("roads.length_m", length_m)?;
+        layout.save("roads.ascent_m", ascent_m)?;
+        layout.save("roads.descent_m", descent_m)?;
+        layout.save("roads.surface", surface)?;
+        layout.save("roads.class", class)?;
+        layout.save("roads.access", access)?;
+        layout.save("roads.difficulty", difficulty)?;
+        layout.save("roads.hiking_difficulty", hiking_difficulty)?;
+        layout.save("roads.structure", structure)?;
+        layout.save_lists("roads.shapes", shapes)?;
+        layout.save("roads.way_row", way_row)?;
+        layout.save("roads.closures", closures)
+    }
+
+    fn open(layout: &Layout) -> Result<Self, String> {
+        let roads = Self {
+            from: layout.open("roads.from")?,
+            to: layout.open("roads.to")?,
+            way: layout.open("roads.way")?,
+            reversed: layout.open("roads.reversed")?,
+            length_m: layout.open("roads.length_m")?,
+            ascent_m: layout.open("roads.ascent_m")?,
+            descent_m: layout.open("roads.descent_m")?,
+            surface: layout.open("roads.surface")?,
+            class: layout.open("roads.class")?,
+            access: layout.open("roads.access")?,
+            difficulty: layout.open("roads.difficulty")?,
+            hiking_difficulty: layout.open("roads.hiking_difficulty")?,
+            structure: layout.open("roads.structure")?,
+            shapes: layout.open_lists("roads.shapes")?,
+            way_row: layout.open("roads.way_row")?,
+            closures: layout.open("roads.closures")?,
+        };
+        let len = roads.len();
+        let shapes = roads.shapes.len();
+        if [roads.to.len(), roads.way_row.len(), roads.closures.len(), shapes].iter().any(|&n| n != len) {
+            return Err("the road columns differ in length".into());
+        }
+        Ok(roads)
+    }
+
     pub fn push(&mut self, road: Road, source: RoadSource) {
         let Road {
             from,
@@ -164,16 +283,16 @@ impl Roads {
         self.from.push(from);
         self.to.push(to);
         self.way.push(way);
-        self.reversed.push(reversed);
+        self.reversed.push(u8::from(reversed));
         self.length_m.push(length_m);
         self.ascent_m.push(ascent_m);
         self.descent_m.push(descent_m);
-        self.surface.push(surface);
+        self.surface.push(source::surface_byte(surface));
         self.class.push(class);
         self.access.push(access);
         self.difficulty.push(difficulty);
-        self.hiking_difficulty.push(hiking_difficulty);
-        self.structure.push(structure);
+        self.hiking_difficulty.push(source::hiking_byte(hiking_difficulty));
+        self.structure.push(u8::from(structure));
         self.shapes.push(&shape);
         self.way_row.push(source.way_row);
         self.closures.push(source.closures);
@@ -197,16 +316,16 @@ impl Roads {
             from: self.from.values()[index],
             to: self.to.values()[index],
             way: self.way.values()[index],
-            reversed: self.reversed.values()[index],
+            reversed: self.reversed(index),
             length_m: self.length_m.values()[index],
             ascent_m: self.ascent_m.values()[index],
             descent_m: self.descent_m.values()[index],
-            surface: self.surface.values()[index],
+            surface: self.surface(index),
             class: self.class.values()[index],
             access: self.access.values()[index],
             difficulty: self.difficulty.values()[index],
-            hiking_difficulty: self.hiking_difficulty.values()[index],
-            structure: self.structure.values()[index],
+            hiking_difficulty: source::hiking(self.hiking_difficulty.values()[index]),
+            structure: self.structure.values()[index] != 0,
             shape,
         }
     }
@@ -240,8 +359,8 @@ impl Roads {
         self.way.values()[index]
     }
 
-    pub fn surface(&self, index: usize) -> Surface {
-        self.surface.values()[index]
+    pub fn surface(&self, index: usize) -> planner_router::model::Surface {
+        source::surface(self.surface.values()[index])
     }
 
     pub fn class(&self, index: usize) -> u8 {
@@ -253,7 +372,7 @@ impl Roads {
     }
 
     pub fn reversed(&self, index: usize) -> bool {
-        self.reversed.values()[index]
+        self.reversed.values()[index] != 0
     }
 
     pub fn way_row(&self, index: usize) -> u32 {
@@ -323,7 +442,7 @@ impl Roads {
         for (_, slot) in sort::sorted(visits) {
             let (new, old) = (start + slot as usize, order[slot as usize] as usize);
             let shape = bucket.shape(old);
-            let structure = bucket.structure.values()[old];
+            let structure = bucket.structure.values()[old] != 0;
             let (ascent, descent) = terrain::sample(shape, structure, &mut *height, shapes.get_mut(new))?;
             ascent_m.values_mut()[new] = ascent;
             descent_m.values_mut()[new] = descent;
@@ -358,17 +477,73 @@ pub fn sort_keys(value: serde_json::Value) -> serde_json::Value {
     }
 }
 
-/// Writes a closed regional package with all legal transitions and complete road geometry.
-/// The caller publishes the manifest only after all objects have been written.
-pub fn prepare(
-    graph: &Graph,
-    region: String,
-    bounds: [f64; 4],
-    profiles: &[Profile],
-    source_sha256: Vec<String>,
-    attribution: String,
-    mut write: impl FnMut(&[u8]) -> Result<String, String>,
-) -> Result<Manifest, String> {
+/// The costs of the profiles of a package: the content of the costs layer.
+pub struct Costs {
+    pub profiles: Vec<Profile>,
+    /// The costs of each profile, with the IDs of `dictionary`.
+    roads: Vec<cost::RoadCosts>,
+    /// The snap bits of each profile (`connectivity::States::snappable`).
+    snap: Vec<Column<u64>>,
+    /// The cost bases that the `bases` columns name, from ID 1.
+    dictionary: Vec<CostBasis>,
+}
+
+impl Costs {
+    const FILE: &'static str = "costs.json";
+    const DICTIONARY: &'static str = "dictionary.postcard";
+
+    /// Saves the dictionary, the columns of profile `i` as `<i>.bases`, `<i>.totals`, `<i>.turns`
+    /// and `<i>.snap`, and `costs.json` with the profile IDs in their order.
+    pub(crate) fn save(self, layout: &mut Layout) -> Result<(), String> {
+        let write = |name: &str, bytes: Vec<u8>| {
+            let path = layout.path(name)?;
+            std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))
+        };
+        write(Self::DICTIONARY, postcard::to_allocvec(&self.dictionary).expect("cost bases encode"))?;
+        let ids: Vec<&str> = self.profiles.iter().map(|profile| profile.name.as_str()).collect();
+        write(Self::FILE, serde_json::to_vec(&serde_json::json!({"profiles": ids})).expect("JSON values"))?;
+        for (i, (costs, snap)) in self.roads.into_iter().zip(self.snap).enumerate() {
+            layout.save(&format!("{i}.bases"), costs.bases)?;
+            layout.save(&format!("{i}.totals"), costs.totals)?;
+            layout.save(&format!("{i}.turns"), costs.turns)?;
+            layout.save(&format!("{i}.snap"), snap)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn open(layout: &Layout) -> Result<Self, String> {
+        let read = |name: &str| {
+            let path = layout.path(name)?;
+            std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))
+        };
+        let dictionary = postcard::from_bytes(&read(Self::DICTIONARY)?).map_err(|e| format!("cost bases: {e}"))?;
+        let ids: serde_json::Value = serde_json::from_slice(&read(Self::FILE)?).map_err(|e| e.to_string())?;
+        let ids = ids["profiles"].as_array().ok_or("costs.json lists no profiles")?;
+        let names: Vec<&str> = ids.iter().filter_map(serde_json::Value::as_str).collect();
+        let profiles = profiles(&names)?;
+        let (mut roads, mut snap) = (Vec::new(), Vec::new());
+        for i in 0..profiles.len() {
+            let bases = layout.open(&format!("{i}.bases"))?;
+            let totals = layout.open(&format!("{i}.totals"))?;
+            roads.push(cost::RoadCosts { totals, bases, turns: layout.open(&format!("{i}.turns"))? });
+            snap.push(layout.open(&format!("{i}.snap"))?);
+        }
+        Ok(Self { profiles, roads, snap, dictionary })
+    }
+}
+
+/// The preset profiles that `names` lists, in preset order; `all` lists every preset.
+pub fn profiles(names: &[&str]) -> Result<Vec<Profile>, String> {
+    let listed = |name: &str| names.iter().any(|listed| *listed == "all" || *listed == name);
+    let profiles: Vec<_> = Profile::presets().into_iter().filter(|p| listed(&p.name)).collect();
+    if profiles.is_empty() || names.iter().any(|name| *name != "all" && !profiles.iter().any(|p| p.name == *name)) {
+        return Err("Unknown profile ID".into());
+    }
+    Ok(profiles)
+}
+
+/// Fails where `graph` and `profiles` cannot give a package.
+pub fn check(graph: &Graph, profiles: &[Profile]) -> Result<(), String> {
     let roads = &graph.roads;
     let points = graph.points.values().len();
     if (0..roads.len()).any(|id| roads.from(id) as usize >= points || roads.to(id) as usize >= points) {
@@ -378,7 +553,7 @@ pub fn prepare(
         if !restrictions.is_sorted() {
             return Err("Unsorted turn restrictions".into());
         }
-        for &(before, after) in restrictions {
+        for &Turn { from: before, to: after } in restrictions {
             if before as usize >= roads.len() || after as usize >= roads.len() {
                 return Err("Unknown restriction road".into());
             }
@@ -387,7 +562,7 @@ pub fn prepare(
             }
         }
     }
-    let count = u32::try_from(roads.len()).map_err(|_| "Too many roads")?;
+    u32::try_from(roads.len()).map_err(|_| "Too many roads")?;
     if (0..roads.len()).any(|id| roads.shape(id).len() < 2 || roads.class(id) > 6) {
         return Err("Road lacks valid geometry or class".into());
     }
@@ -397,8 +572,21 @@ pub fn prepare(
         }
         profile.validate()?;
     }
-    cost::check_nodes(graph)?;
-    let topology = Topology::new(roads, points)?;
+    cost::check_nodes(graph)
+}
+
+/// The profile jobs that run at once: the shared topology and the `place` column of `States` take
+/// 8 B for each road and 4 B for each arc once; each job adds its own columns.
+fn profile_jobs(budget: u64, graph: &Graph, topology: &Topology) -> usize {
+    let (r, a, j) = (graph.roads.len() as u64, topology.head.len() as u64, graph.points.len() as u64);
+    let threads = rayon::current_num_threads() as u64;
+    (budget.saturating_sub(8 * r + 4 * a) / (25 * r + 4 * a + 45 * j).max(1)).clamp(1, threads) as usize
+}
+
+/// The costs of `profiles` on `graph`, which `check` accepted, with its road-state graph
+/// `topology`.
+pub fn costs(graph: &Graph, topology: &Topology, profiles: &[Profile]) -> Result<Costs, String> {
+    let roads = &graph.roads;
     let budget = work::page_budget()?.0;
     work::Guard::stage("way-bases");
     let bases = cost::way_bases(&graph.osm, profiles)?;
@@ -407,32 +595,64 @@ pub fn prepare(
     // of the budget at most.
     let ways = graph.osm.ways.len().max(1) as u64;
     let group = (budget / 4 / (8 * ways)).clamp(1, profiles.len().max(1) as u64) as usize;
-    let mut costs = cost::road_pass(graph, &topology, profiles, &bases, group)?;
+    let mut costs = cost::road_pass(graph, topology, profiles, &bases, group)?;
     let mut dictionary = Dictionary::default();
     cost::renumber(&mut costs, &bases, &mut dictionary)?;
     drop(bases);
-    work::Guard::stage("profiles");
-    let junctions = landmarks::Junctions::new((0..roads.len()).map(|id| (roads.from(id), roads.to(id))))?;
-    let states = connectivity::States::new(&topology, roads, points);
-    // The shared topology and the `place` column of `States` take 8 B for each road and 4 B for
-    // each arc once; each job adds its own columns.
-    let (r, a, j) = (roads.len() as u64, topology.head.len() as u64, points as u64);
-    let threads = rayon::current_num_threads() as u64;
-    let jobs = (budget.saturating_sub(8 * r + 4 * a) / (25 * r + 4 * a + 45 * j).max(1)).clamp(1, threads) as usize;
+    work::Guard::stage("snap");
+    let states = connectivity::States::new(topology, roads, graph.points.len());
+    let jobs = profile_jobs(budget, graph, topology);
     eprintln!("Road pass: {group} profiles at a time; profile jobs: {jobs} at a time");
     let pool = rayon::ThreadPoolBuilder::new().num_threads(jobs).build().map_err(|e| e.to_string())?;
-    let prepared = pool.install(|| {
+    let snap = pool.install(|| {
         costs
             .par_iter()
             .with_max_len(1)
-            .map(|costs| {
-                let distances = junctions.compute(costs.totals.values())?;
-                Ok((states.snappable(costs.totals.values(), costs.turns.values()), distances))
-            })
-            .collect::<Vec<Result<_, String>>>()
+            .map(|costs| states.snappable(costs.totals.values(), costs.turns.values()))
+            .collect()
     });
-    let prepared = cost::in_order(prepared)?;
-    drop(states);
+    Ok(Costs { profiles: profiles.to_vec(), roads: costs, snap, dictionary: dictionary.into_values() })
+}
+
+/// Writes a closed regional package with all legal transitions and complete road geometry.
+/// The caller publishes the manifest only after all objects have been written.
+pub fn prepare(
+    graph: &Graph,
+    region: String,
+    bounds: [f64; 4],
+    profiles: &[Profile],
+    source_sha256: Vec<String>,
+    attribution: String,
+    write: impl FnMut(&[u8]) -> Result<String, String>,
+) -> Result<Manifest, String> {
+    check(graph, profiles)?;
+    let topology = Topology::new(&graph.roads, graph.points.len())?;
+    let costs = costs(graph, &topology, profiles)?;
+    package(graph, topology, costs, (region, bounds), source_sha256, attribution, write)
+}
+
+/// Writes the package of `graph` with `costs`, which `costs` computed on `topology`: the landmark
+/// distances of each profile, then the objects in profile order.
+pub fn package(
+    graph: &Graph,
+    topology: Topology,
+    costs: Costs,
+    (region, bounds): (String, [f64; 4]),
+    source_sha256: Vec<String>,
+    attribution: String,
+    mut write: impl FnMut(&[u8]) -> Result<String, String>,
+) -> Result<Manifest, String> {
+    let roads = &graph.roads;
+    let count = u32::try_from(roads.len()).map_err(|_| "Too many roads")?;
+    work::Guard::stage("landmarks");
+    let junctions = landmarks::Junctions::new((0..roads.len()).map(|id| (roads.from(id), roads.to(id))))?;
+    let jobs = profile_jobs(work::page_budget()?.0, graph, &topology);
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(jobs).build().map_err(|e| e.to_string())?;
+    let distances = pool.install(|| {
+        costs.roads.par_iter().with_max_len(1).map(|costs| junctions.compute(costs.totals.values())).collect()
+    });
+    let distances = cost::in_order(distances)?;
+    let Costs { profiles, roads: costs, snap, dictionary } = costs;
     work::Guard::stage("writer");
     let mut manifest = Manifest {
         landmarks: None,
@@ -503,7 +723,7 @@ pub fn prepare(
     }
     drop(cells);
     let mut landmarks = junctions.index(&mut write)?;
-    for ((profile, costs), (allowed, distances)) in profiles.iter().zip(&costs).zip(&prepared) {
+    for ((profile, costs), (allowed, distances)) in profiles.iter().zip(&costs).zip(snap.iter().zip(&distances)) {
         let road_costs = costs.totals.values();
         let fragments = road_costs.iter().filter(|&&c| c != u32::MAX).count()
             - allowed.values().iter().map(|word| word.count_ones() as usize).sum::<usize>();
@@ -524,15 +744,41 @@ pub fn prepare(
             )?,
         );
     }
-    manifest.costs = Table::write(&dictionary.into_values(), &mut write)?;
+    manifest.costs = Table::write(&dictionary, &mut write)?;
     manifest.landmarks = Some(landmarks);
     manifest.closures = write_closures(graph, &mut write)?;
     Ok(manifest)
 }
 
-/// The limits of the package format that the import checks after walk 1, before the roads and
-/// their terrain: the import of a region that is too large fails before the hours of the terrain
-/// and the preparation.
+/// The transitions of the roads with the (from, to) junctions `ends`: the roads that arrive at
+/// each junction times those that depart.
+pub fn turns(ends: impl Iterator<Item = (u32, u32)>, junctions: usize) -> u64 {
+    let [mut arriving, mut departing] = [(); 2].map(|_| Column::filled(junctions, 0u32));
+    for (from, to) in ends {
+        arriving.values_mut()[to as usize] += 1;
+        departing.values_mut()[from as usize] += 1;
+    }
+    arriving.values().iter().zip(departing.values()).map(|(&a, &d)| u64::from(a) * u64::from(d)).sum()
+}
+
+/// Prints the counts of the import, and fails when the 32-bit IDs of format 9 cannot number the
+/// roads and the transitions. The import checks them after walk 1, before the roads and their
+/// terrain. `ways` and `references` are the counts of the ways, `ends` the (from, to) junction of
+/// each road.
+pub fn check_counts((ways, references): (usize, usize), ends: &[(u32, u32)], junctions: usize) -> Result<(), String> {
+    let turns = turns(ends.iter().copied(), junctions);
+    let (r, j) = (ends.len() as u64, junctions as u64);
+    eprintln!("Imported: {ways} ways, {references} node references, {r} directed roads, {turns} turns, {j} junctions");
+    if r >= u64::from(u32::MAX) {
+        return Err(format!("Too many roads: {r}; format 9 allows fewer than 2^32 - 1"));
+    }
+    if turns >= 1 << 32 {
+        return Err(format!("Too many road transitions: {turns}; format 9 allows fewer than 2^32"));
+    }
+    Ok(())
+}
+
+/// The manifest limit of format 9, which the costs step checks before its passes.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
     pub profiles: usize,
@@ -541,33 +787,13 @@ pub struct Limits {
 }
 
 impl Limits {
-    /// Prints the counts of the import, and fails when the package of format 9 cannot hold the
-    /// graph. `ways` and `references` are the counts of the ways, `ends` the (from, to) junction of
-    /// each road. Returns the estimate of the manifest size in bytes.
-    pub fn check(
-        self,
-        (ways, references): (usize, usize),
-        ends: &[(u32, u32)],
-        junctions: usize,
-    ) -> Result<u64, String> {
+    /// Fails when the manifest of a package of `graph` passes the limit of format 9. Returns the
+    /// estimate of the manifest size in bytes.
+    pub fn check(self, graph: &Graph) -> Result<u64, String> {
         let Self { profiles, bounds } = self;
-        let [mut arriving, mut departing] = [(); 2].map(|_| Column::filled(junctions, 0u32));
-        for &(from, to) in ends {
-            arriving.values_mut()[to as usize] += 1;
-            departing.values_mut()[from as usize] += 1;
-        }
-        let turns: u64 =
-            arriving.values().iter().zip(departing.values()).map(|(&a, &d)| u64::from(a) * u64::from(d)).sum();
-        let (r, j) = (ends.len() as u64, junctions as u64);
-        eprintln!(
-            "Imported: {ways} ways, {references} node references, {r} directed roads, {turns} turns, {j} junctions"
-        );
-        if r >= u64::from(u32::MAX) {
-            return Err(format!("Too many roads: {r}; format 9 allows fewer than 2^32 - 1"));
-        }
-        if turns >= 1 << 32 {
-            return Err(format!("Too many road transitions: {turns}; format 9 allows fewer than 2^32"));
-        }
+        let roads = &graph.roads;
+        let turns = turns((0..roads.len()).map(|id| (roads.from(id), roads.to(id))), graph.points.len());
+        let (r, j) = (roads.len() as u64, graph.points.len() as u64);
         // Each page reference of the manifest takes about 70 bytes: a hash and its JSON.
         let pages = |n: u64| n.div_ceil(4096);
         let squares = |low: f64, high: f64| (high.floor() - low.floor()) as u64 + 1;
@@ -629,10 +855,7 @@ fn write_closures(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use planner_router::{
-        cost::CostBasis,
-        model::{BIKE, FOOT, NO_ELEVATION, PUSH},
-    };
+    use planner_router::model::{Surface, BIKE, FOOT, NO_ELEVATION, PUSH};
     use source::{Builder, Tags, Ways};
 
     /// A ladder: junction `i` meets `i + 1` and `i + 2`, each pair by a way in both directions.
@@ -734,10 +957,7 @@ mod tests {
         let graph = ladder();
         let profiles: Vec<_> = Profile::presets().into_iter().take(2).collect();
         let bounds = [0.0, 0.0, 0.01, 0.01];
-        let ends: Vec<_> = (0..graph.roads.len()).map(|id| (graph.roads.from(id), graph.roads.to(id))).collect();
-        let counts = (graph.osm.ways.len(), graph.osm.ways.references().len());
-        let limits = Limits { profiles: profiles.len(), bounds };
-        let estimate = limits.check(counts, &ends, graph.points.len()).unwrap();
+        let estimate = Limits { profiles: profiles.len(), bounds }.check(&graph).unwrap();
         check_closures(&graph).unwrap();
         let manifest = prepare(&graph, "test".into(), bounds, &profiles, vec![], "test".into(), |bytes| {
             Ok(package::digest(bytes))

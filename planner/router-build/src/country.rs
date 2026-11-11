@@ -68,6 +68,15 @@ impl Default for Country {
 }
 
 impl Country {
+    /// The row of defaults and 1 for left-hand traffic, as `WayFacts` stores them.
+    pub fn parts(self) -> (u8, u8) {
+        (self.defaults, u8::from(self.left_hand))
+    }
+
+    pub fn from_parts(defaults: u8, left_hand: u8) -> Self {
+        Country { defaults, left_hand: left_hand != 0 }
+    }
+
     pub fn at(point: Point) -> Self {
         let Ok(position) = LatLon::new(point.lat as f64 * 1e-6, point.lon as f64 * 1e-6) else {
             return Self::default();

@@ -15,6 +15,7 @@ pub static DEVICE_CATALOG: Layer = Layer {
     format: obc_pack::catalog::CATALOG_SCHEMA_VERSION,
     revision: 2,
     readers: &[&crate::readers::MAP_BUILDER, &crate::readers::DESKTOP_APP],
+    cache: false,
 };
 
 #[allow(clippy::too_many_arguments)]

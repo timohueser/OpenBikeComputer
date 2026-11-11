@@ -169,6 +169,9 @@ time_zone = "Europe/Berlin"
             "planner/osm",
             "planner/osm/bounds",
             "planner/terrain",
+            "planner/routing-source",
+            "planner/routing-roads",
+            "planner/routing-costs",
             "planner/routing",
         ];
         steps.retain(|step| python || rust.contains(&step.name.as_str()));
@@ -204,7 +207,7 @@ time_zone = "Europe/Berlin"
 
     let built = build(&steps(false, &inputs));
     let names: Vec<&str> = built.iter().map(|built| built.receipt.step.as_str()).collect();
-    assert_eq!(names.len(), 6);
+    assert_eq!(names.len(), 9);
     for name in ["planner/osm", "planner/osm/bounds", "planner/terrain", "planner/routing"] {
         assert!(names.contains(&name), "{name} is not built");
     }
