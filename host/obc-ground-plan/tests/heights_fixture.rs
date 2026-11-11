@@ -20,14 +20,14 @@ use obc_ground_plan::CellInput;
 const GRID_M: f64 = 0.5;
 /// Steps inside faces, measured with the slopes from the paved outline: the count must not grow.
 const INSIDE_MAX: usize = 7;
-/// Steps at label edges with no rule (`check::edge_steps`), measured with the slopes from the paved
-/// outline, walls up to the highest wall and faces past it as steep as their need: the count must not
-/// grow.
-const EDGE_MAX: usize = 116;
-/// Pairs of grid points on a slope steeper than a rock face where the terrain is not (`Scan::steep`),
-/// measured with cones on their outward side and faces past the highest wall as steep as their need:
+/// Steps at label edges with no rule (`check::edge_steps`), measured on the revision 16 fixture with the
+/// slopes from the paved outline, walls up to the highest wall and faces past it as steep as their need:
 /// the count must not grow.
-const STEEP_MAX: usize = 1295;
+const EDGE_MAX: usize = 114;
+/// Pairs of grid points on a slope steeper than a rock face where the terrain is not (`Scan::steep`),
+/// measured on the revision 16 fixture with cones on their outward side and faces past the highest wall as
+/// steep as their need: the count must not grow.
+const STEEP_MAX: usize = 1285;
 /// Of those, the pairs steeper than 6 m/m, measured the same way; none is steeper than 12 m/m. A
 /// near-vertical rim that the total hides must not come back.
 const STEEP_6_MAX: usize = 12;

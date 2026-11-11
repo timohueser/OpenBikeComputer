@@ -29,6 +29,8 @@ const ONEWAY: [&str; 7] = ["yes", "true", "1", "-1", "reverse", "reversible", "a
 const CLASS_FIELDS: [&str; 9] =
     ["half_m", "shoulder_m", "sidewalk_m", "kerb_m", "kerb_top_m", "cut", "fill", "reach", "widen_m"];
 const WATER_FIELDS: [&str; 4] = ["width_m", "cut", "fill", "reach"];
+/// The feature kinds of line water.
+pub const WATER_KINDS: [&str; 2] = ["river", "stream"];
 /// The fields of the way graph: none is an option of the feature step.
 const GRAPH_FIELDS: [&str; 5] = ["snap_m", "snap_height_m", "sag_plan_m", "sag_height_m", "clearance_m"];
 /// The numeric fields of the faces: none is an option of the feature step.
