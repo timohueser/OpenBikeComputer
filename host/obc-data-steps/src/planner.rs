@@ -95,12 +95,13 @@ const fn whole(name: &'static str, format: u32, readers: &'static [&'static Read
 
 /// The files of a work layer hold router types: the closure sets, `Point` and the postcard
 /// `CostBasis` of the dictionary. Its format is the sum of the router `FORMAT` and the format of
-/// its own files, 1; each only grows.
+/// its own files, 2; each only grows. The three work layers share this format, so a change of the
+/// files of one bakes all three again.
 const fn work(name: &'static str) -> Layer {
     Layer {
         name,
         shape: Shape::Whole,
-        format: planner_router::package::FORMAT + 1,
+        format: planner_router::package::FORMAT + 2,
         revision: 1,
         readers: &[],
         cache: true,
@@ -155,6 +156,7 @@ struct Osm {
 #[serde(deny_unknown_fields)]
 struct Routing {
     profiles: Vec<String>,
+    cell_sizes: Vec<u32>,
 }
 
 pub(crate) mod catalog;
@@ -448,7 +450,7 @@ impl Planner {
                 .chain(tiles(bounds, &land, &glo30))
                 .chain(reference.iter().map(|step| Input::step(&step.name)))
                 .collect(),
-            json!({"bounds": bounds, "terrain_attribution": attribution(GLO30)}),
+            json!({"bounds": bounds, "terrain_attribution": attribution(GLO30), "cell_sizes": config.routing.cell_sizes}),
             &functions::ROUTING_ROADS,
         );
         let routing_costs = work(
@@ -1630,7 +1632,7 @@ mod tests {
         // The key holds the options and the digests of the inputs: a new profile list changes the
         // key of the costs, and so of the package, and no other.
         assert_eq!(options(step::SOURCE), ["bounds"]);
-        assert_eq!(options(step::ROADS), ["bounds", "terrain_attribution"]);
+        assert_eq!(options(step::ROADS), ["bounds", "cell_sizes", "terrain_attribution"]);
         assert_eq!(options(step::COSTS), ["bounds", "profiles"]);
         assert_eq!(options("planner/routing"), ["attribution", "bounds", "countries", "region"]);
         assert_eq!(reads(step::SOURCE), ["planner/osm/bounds"]);

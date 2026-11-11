@@ -3,7 +3,7 @@
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -62,13 +62,16 @@ pub const OWN_BYTES: u64 = 4 << 30;
 
 struct Stage {
     name: &'static str,
-    exempt: bool,
+    /// The own memory that the stage may use; `None` for a stage that the guard does not check.
+    budget: Option<u64>,
     started: Instant,
     peak: u64,
 }
 
 /// The stage of a running guard; `None` without a guard.
 static STAGE: Mutex<Option<Stage>> = Mutex::new(None);
+/// The budget of a stage that names none: that of `Guard::start`.
+static BUDGET: AtomicU64 = AtomicU64::new(u64::MAX);
 
 /// Samples the own memory of the bake every 100 ms, and ends the bake at the first sample above
 /// the budget in a stage that is not exempt. A guard that only reads the peak at the end of a
@@ -81,7 +84,8 @@ pub struct Guard {
 
 impl Guard {
     pub fn start(budget: u64) -> Self {
-        *lock() = Some(Stage { name: "start", exempt: true, started: Instant::now(), peak: 0 });
+        BUDGET.store(budget, Ordering::Relaxed);
+        *lock() = Some(Stage { name: "start", budget: None, started: Instant::now(), peak: 0 });
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = Arc::clone(&stop);
         let thread = std::thread::spawn(move || {
@@ -91,7 +95,7 @@ impl Guard {
                 let Some(stage) = stage.as_mut() else { return };
                 let sample = rss_anon().unwrap_or(0);
                 stage.peak = stage.peak.max(sample);
-                if let Some(message) = over(stage.name, stage.exempt, sample, budget) {
+                if let Some(message) = over(stage.name, stage.budget, sample) {
                     eprintln!("{message}");
                     std::process::exit(1);
                 }
@@ -102,12 +106,18 @@ impl Guard {
 
     /// Starts the next stage, and prints the time and the peak of the stage before it.
     pub fn stage(name: &'static str) {
-        next(name, false);
+        next(name, Some(BUDGET.load(Ordering::Relaxed)));
+    }
+
+    /// Starts the next stage, which the guard checks against `budget` in place of the budget of
+    /// `start`.
+    pub fn stage_within(name: &'static str, budget: u64) {
+        next(name, Some(budget));
     }
 
     /// Starts the next stage, which the guard measures but does not check.
     pub fn exempt(name: &'static str) {
-        next(name, true);
+        next(name, None);
     }
 }
 
@@ -127,12 +137,12 @@ fn lock() -> std::sync::MutexGuard<'static, Option<Stage>> {
     STAGE.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn next(name: &'static str, exempt: bool) {
+fn next(name: &'static str, budget: Option<u64>) {
     let mut stage = lock();
     let Some(old) = stage.as_mut() else { return };
     old.peak = old.peak.max(rss_anon().unwrap_or(0));
     report(old);
-    *old = Stage { name, exempt, started: Instant::now(), peak: 0 };
+    *old = Stage { name, budget, started: Instant::now(), peak: 0 };
 }
 
 fn report(stage: &Stage) {
@@ -142,11 +152,11 @@ fn report(stage: &Stage) {
     }
 }
 
-/// The message that ends the bake when `sample` bytes of own memory pass `budget` in a stage
-/// that is not exempt.
-fn over(stage: &str, exempt: bool, sample: u64, budget: u64) -> Option<String> {
+/// The message that ends the bake when `sample` bytes of own memory pass the `budget` of a stage.
+fn over(stage: &str, budget: Option<u64>, sample: u64) -> Option<String> {
     let gib = |bytes: u64| bytes as f64 / f64::from(1u32 << 30);
-    (!exempt && sample > budget).then(|| {
+    let budget = budget?;
+    (sample > budget).then(|| {
         format!("stage {stage} used {:.2} GiB of own memory, above the budget of {:.2} GiB", gib(sample), gib(budget))
     })
 }
@@ -219,9 +229,9 @@ mod tests {
 
     #[test]
     fn a_sample_above_the_budget_names_the_stage() {
-        let message = over("road-pass", false, 2, 1).unwrap();
+        let message = over("road-pass", Some(1), 2).unwrap();
         assert!(message.starts_with("stage road-pass used"), "{message}");
-        assert_eq!(over("road-pass", false, 1, 1), None);
-        assert_eq!(over("catalog", true, 2, 1), None);
+        assert_eq!(over("road-pass", Some(1), 1), None);
+        assert_eq!(over("catalog", None, 2), None);
     }
 }

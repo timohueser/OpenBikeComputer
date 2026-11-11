@@ -10,6 +10,7 @@ pub mod landmarks;
 pub mod layout;
 pub mod osm;
 pub mod overlays;
+pub mod partition;
 mod road_bike;
 pub mod sort;
 pub mod source;
@@ -20,7 +21,7 @@ mod traffic;
 mod work;
 
 use base::{Dictionary, Topology};
-use column::{Column, Layout, Lists};
+use column::{Column, Layout, Lists, Plain};
 use planner_router::{
     closures,
     cost::CostBasis,
@@ -47,7 +48,7 @@ pub(crate) const SETS: &str = "sets.postcard";
 /// objects that costs, closures, the overlay index and the route catalog read.
 #[derive(Clone, Debug, Default)]
 pub struct Graph {
-    /// The junctions, in the order of their first use by a road.
+    /// The junctions, in the order of their cells (`partition`).
     pub points: Column<Point>,
     pub node_ids: Column<i64>,
     pub node_access: Column<u8>,
@@ -64,6 +65,7 @@ pub struct Graph {
     pub forbidden: Column<Turn>,
     pub forbidden_foot: Column<Turn>,
     pub warnings: Vec<String>,
+    pub cells: partition::Cells,
 }
 
 /// A transition from road `from` to road `to`.
@@ -94,6 +96,7 @@ impl Graph {
         self.roads.save(layout)?;
         layout.save("forbidden", self.forbidden)?;
         layout.save("forbidden_foot", self.forbidden_foot)?;
+        self.cells.save(layout)?;
         let path = layout.path(SETS)?;
         std::fs::write(&path, self.sets.to_bytes()).map_err(|e| format!("{}: {e}", path.display()))
     }
@@ -115,7 +118,27 @@ impl Graph {
             forbidden: layout.open("forbidden")?,
             forbidden_foot: layout.open("forbidden_foot")?,
             warnings,
+            cells: partition::Cells::open(layout)?,
         })
+    }
+
+    /// Puts each junction column into the order `order`: the old ID of each new junction ID.
+    pub fn permute_junctions(&mut self, order: &Column<u32>) -> Result<(), String> {
+        fn permute<T: Plain>(column: &mut Column<T>, order: &Column<u32>) -> Result<(), String> {
+            if column.len() != order.len() {
+                return Err(format!("a junction column has {} entries, not {}", column.len(), order.len()));
+            }
+            let mut permuted = Column::default();
+            permuted.extend_permuted(column, order.values());
+            *column = permuted;
+            Ok(())
+        }
+        permute(&mut self.points, order)?;
+        permute(&mut self.node_ids, order)?;
+        permute(&mut self.node_access, order)?;
+        permute(&mut self.signals, order)?;
+        permute(&mut self.node_closures, order)?;
+        permute(&mut self.node_doubts, order)
     }
 
     /// For a graph that a test builds by hand; the import does this itself. Gives each road the

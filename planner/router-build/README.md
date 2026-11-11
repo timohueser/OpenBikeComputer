@@ -27,7 +27,7 @@ The store keeps only the work layer of each step and options that a run used las
 | Step | Runs | Layer |
 | --- | --- | --- |
 | `planner/routing-source` | Pass 1, the node join, the way facts, the turn rules | `source/` |
-| `planner/routing-roads` | The walks of the roads with the terrain, the turn restrictions, the topology | `roads/` |
+| `planner/routing-roads` | The walks, the partition into cells, the order with the terrain, the turn restrictions, the topology | `roads/` |
 | `planner/routing-costs` | The way bases, the road pass, the snap bits | `costs/` |
 | `planner/routing` | The landmarks, the package, the overlay index, the route catalog, the blocks and the routes | `routing/`, `blocks/`, `routes/` |
 
@@ -36,7 +36,7 @@ The store keeps only the work layer of each step and options that a run used las
 | A stop or a crash in a step | That step and the steps after it |
 | The profile list, or the revision of `planner/routing-costs` | Costs, package |
 | `region`, `countries`, `attribution` | Package |
-| The GLO-30 tiles or the reference, or the revision of `planner/routing-roads` | Roads, costs, package |
+| The GLO-30 tiles or the reference, `cell_sizes`, or the revision of `planner/routing-roads` | Roads, costs, package |
 | The OSM cut, the bounds, the router `FORMAT`, or the revision of `planner/routing-source` | All four |
 
 A change of the bytes of a work layer changes its format, of its content its revision. A column
@@ -46,7 +46,7 @@ The columns take, without the tags and the closure sets:
 | Layer | Bytes |
 | --- | --- |
 | `planner/routing-source` | 48 for each way, 24 for each node reference |
-| `planner/routing-roads` | 55 for each road, 12 for each shape point, 4 for each turn, 27 for each junction |
+| `planner/routing-roads` | 56 for each road, 12 for each shape point, 4 for each turn, 27 for each junction, 4 for each leaving border road of each level |
 | `planner/routing-costs` | For each profile, 8.125 for each road and 4 for each turn |
 
 ```sh
@@ -85,15 +85,16 @@ The bake keeps its large tables in memory-mapped work files and sorts them on di
 | Road pass | The profiles of one group at a time; the way bases of a group take at most a quarter of the page budget |
 | Profile jobs | The snap bits and the landmarks of one profile in each job; the page budget sets how many jobs run at a time |
 | Own memory | 4 GiB; the step samples `RssAnon` every 100 ms and stops at the first sample above it, with the name of the stage; `catalog` and `blocks` are exempt |
+| Partition | 36 B of RAM for each junction and 6 B for each arc, about 52 B for each junction, outside the 4 GiB: the stage `partition` has the budget of this need plus 256 MiB. A need above the page budget stops the roads step |
 | Disk need | The stored layers above, and the work files of the step that runs; the roads step needs the most |
 
-Put the work folder on a disk, not on a tmpfs: the files of a tmpfs take RAM. A killed bake
+Put the work folder on a disk, not on a tmpfs, whose files take RAM. A killed bake
 leaves its bake folder; remove it. A bake that the memory guard stops also leaves it.
 
 The costs layer holds the columns of each profile: 8.125 B for each road and 4 B for each turn.
 The package step maps them and adds the landmarks, 24 B for each junction and profile, until the
 writer ends. The page budget changes only the speed of the bake, never its bytes. Each step prints
-the time and the peak own memory of each stage: `import` and `emit` (source and roads), `open`,
+the time and the peak own memory of each stage: `import` (source and roads), `partition` and `emit` (roads), `open`,
 `way-bases`, `road-pass` and `snap` (costs), `open`, `landmarks`, `writer`, `overlays`, `catalog`
 and `blocks` (package).
 
