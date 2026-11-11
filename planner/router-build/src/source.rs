@@ -40,6 +40,15 @@ pub fn granted(value: &str) -> bool {
     classify(value) == Access::Open
 }
 
+/// The closure kind that an access value records. The owner decided that a rider and a walker pass
+/// a way or a barrier signed for traffic to a destination, so `destination` records none.
+pub fn doubt(value: &str) -> Option<Kind> {
+    match classify(value) {
+        Access::Uncertain(kind) if value.trim() != "destination" => Some(kind),
+        _ => None,
+    }
+}
+
 /// Road class and default access, before explicit tags and one-way rules. The modes are the
 /// worldwide defaults, unless the way's country differs.
 pub fn highway_access(highway: &str, country: Country) -> Option<(u8, u8)> {
@@ -218,7 +227,7 @@ pub fn closures<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>, directions: 
     for (mode, bits) in [("foot", FOOT | PUSH), ("bicycle", BIKE)] {
         for &direction in directions {
             if let Some(value) = inherited(&get, mode, direction) {
-                if let Access::Uncertain(kind) = classify(value) {
+                if let Some(kind) = doubt(value) {
                     found.push((bits, kind, value));
                 }
             }
@@ -799,8 +808,8 @@ mod tests {
             vec![(all, closure(Kind::Permit, "permit")), (all, closure(Kind::Seasonal, "Oct 14th - May 31st"))]
         );
         assert_eq!(
-            closures(&[("access", "destination"), ("bicycle", "yes"), ("bicycle:conditional", "no @ (wet)")]),
-            vec![(FOOT | PUSH, closure(Kind::Limited, "destination")), (BIKE, closure(Kind::Conditional, "wet"))]
+            closures(&[("access", "customers"), ("bicycle", "yes"), ("bicycle:conditional", "no @ (wet)")]),
+            vec![(FOOT | PUSH, closure(Kind::Limited, "customers")), (BIKE, closure(Kind::Conditional, "wet"))]
         );
         assert_eq!(
             closures(&[("access", "private"), ("bicycle", "use_sidepath")]),
@@ -828,6 +837,23 @@ mod tests {
         ] {
             assert_eq!(closures(&[tag]), vec![], "{tag:?}");
         }
+    }
+
+    #[test]
+    fn destination_opens_the_modes_of_a_doubtful_value_and_records_no_closure() {
+        let tags = |pairs: &'static [(&'static str, &'static str)]| {
+            move |key: &str| pairs.iter().find(|(k, _)| *k == key).map(|(_, v)| *v)
+        };
+        let footway = highway_access("footway", Country::default()).unwrap().1;
+        let destination = tags(&[("highway", "footway"), ("access", "destination")]);
+        assert_eq!(access(destination, footway, "forward", true), BIKE | FOOT | PUSH);
+        assert_eq!(closures([("access", "destination")].into_iter(), &["forward", "backward"]), vec![]);
+        let motor_road = tags(&[("highway", "primary"), ("motorroad", "yes"), ("bicycle", "destination")]);
+        assert_eq!(access(motor_road, BIKE | FOOT | PUSH, "forward", true) & BIKE, 0);
+        assert_eq!(
+            closures([("access", "private;destination")].into_iter(), &["forward"]),
+            vec![(BIKE | FOOT | PUSH, Closure { kind: Kind::Private, condition: "private;destination".into() })]
+        );
     }
 
     #[test]
