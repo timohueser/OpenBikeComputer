@@ -975,7 +975,8 @@ when they are unchanged.
   end of the run starts first: its estimated `wall_ms` and that of the longest chain of the steps
   that read it. A step without an estimate counts as the longest.
 - The memory that the steps that run at the same time reserve is not more than three quarters of
-  the physical memory of the machine. A step reserves its estimated peak (`peak_rss_bytes` of the estimate).
+  the physical memory of the machine, or of the `memory.max` of the cgroup v2 of the process (or of
+  a parent) when that is less. A step reserves its estimated peak (`peak_rss_bytes` of the estimate).
   A step with a guess, or without a peak, reserves from its measured runs too, the larger of the
   two: the receipts of the step, also with other options or of another leaf of its tiled step,
   with `own_process`, a peak and input bytes, in the store or of this run. They give their
