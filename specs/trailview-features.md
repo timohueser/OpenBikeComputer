@@ -441,18 +441,21 @@ Where the terrain is unknown, a sample takes the level before it. Between two ve
 the bake adds vertices at samples until the level that the ground plan draws between the kept
 vertices lies within 0.2 m of the level of every sample, so the level holds along the line and not only
 at the vertices of the map. In each round, each span between two kept vertices whose drawn level lies
-more than 0.2 m off a sample keeps its farthest sample. The drawn level at share t of the arc of a span
-of length L is the cubic Hermite of the levels z0, z1 and the grades g0, g1 of its vertices:
-z0·(2t³ − 3t² + 1) + L·g0·(t³ − 2t² + t) + z1·(3t² − 2t³) + L·g1·(t³ − t²). The grade at a vertex is
-the harmonic mean of the grades of its two chords where they fall the same way, else 0, and at an end
-of the way or beside an unknown level its one chord's. A sample's share t is its share of the span along
-the chords of the map. An added vertex lies on the curve of its span that the ground plan draws through
-the vertices of the map, at the sample's share of the curve's length: the cubic Hermite whose tangents
-are the bisectors of the unit chords at each vertex, and the chord at an end of the way; the chord where
-a vertex turns by more than `curve_turn_max_deg`, where the curve leaves the chord by more than
-`curve_off_max_m` of the kind in `data/trailview/waterways.json`, or where it folds back. A curve beside
-a chord takes that chord's direction at their shared vertex, and its tangents shorten until it leaves
-its chord by at most `curve_off_max_m`. The rules of the ways at water (fords, covers, culverts) read the
+more than 0.2 m off a sample keeps its farthest sample. An added vertex lies on the curve of its span
+that the ground plan draws through the vertices of the map, at the sample's share of the span along the
+chords of the map, taken as a share of the curve's length. The drawn level is read on the curve that the
+ground plan draws through the kept vertices: a span of that curve of length L (metres along the curve)
+has at share t of its length the cubic Hermite of the levels z0, z1 and the grades g0, g1 of its
+vertices: z0·(2t³ − 3t² + 1) + L·g0·(t³ − 2t² + t) + z1·(3t² − 2t³) + L·g1·(t³ − t²). The grade at a
+vertex is the harmonic mean of the grades of its two chords where they fall the same way, else 0, and at
+an end of the way or beside an unknown level its one chord's. A sample reads the level at the point of
+that curve nearest to its own point. The curve of a span is the cubic Hermite whose tangents are the
+bisectors of the unit chords at each vertex, and the chord at an end of the way; the chord where a vertex
+turns by more than `curve_turn_max_deg`, where the curve leaves the chord by more than `curve_off_max_m`
+of the kind in `data/trailview/waterways.json`, or where it folds back. A curve beside a chord takes that
+chord's direction at their shared vertex, and its tangents shorten until it leaves its chord by at most
+`curve_off_max_m`. The bake works on the points and levels before the tiles round them to tile units and
+centimetres. The rules of the ways at water (fords, covers, culverts) read the
 levels at the vertices of the map and the straight line between them: at a crossing between two of
 them, that level can lie off the level of the tiles. Near a junction, within the bank
 top's distance of the widest waterway there, the bank tops lie in the other waterway's bed and do

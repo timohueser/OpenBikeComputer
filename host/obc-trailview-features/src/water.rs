@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use obc_ground_plan::graph::{water_grades, water_level, water_spans, water_tangents, WaterCurve};
+use obc_ground_plan::graph::{water_curves, water_grades, water_level, WaterCurve};
 use rayon::prelude::*;
 
 use crate::geometry::{arange, area, bounds, key, percentile, Boxes};
@@ -44,7 +44,7 @@ pub struct Feature {
 }
 
 /// The rules of the curve that the ground plan draws through the vertices of a waterway
-/// (`obc_ground_plan::graph::water_spans`): per span a cubic Hermite, or the chord where a vertex turns by
+/// (`obc_ground_plan::graph::water_curves`): per span a cubic Hermite, or the chord where a vertex turns by
 /// more than `turn_max_deg`, where the curve leaves the chord by more than `off_max_m`, or where it folds
 /// back.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -269,8 +269,9 @@ fn solve_group(features: &[Feature], group: &[usize], terrain: &dyn Terrain) -> 
     let (mut kept_parts, mut added) = (Vec::with_capacity(ways.len()), 0);
     for (way, z) in ways.iter().zip(&levels) {
         heights.get_mut(&way.feature).unwrap()[way.part] = Some(way.vertices.iter().map(|&v| z[v]).collect());
-        let curves = curves(&way.points, features[way.feature].curve);
-        let samples = kept(way, z, &curves);
+        let curve = features[way.feature].curve;
+        let curves = curves(&way.points, curve);
+        let samples = kept(way, z, &curves, curve);
         added += samples.len() - way.vertices.len();
         let points = samples.iter().map(|&i| way.point(i, &curves)).collect();
         kept_parts.push(((way.feature, way.part), (points, samples.iter().map(|&i| z[i]).collect())));
@@ -298,26 +299,25 @@ fn chord_metres(a: [f64; 2], b: [f64; 2]) -> f64 {
     metres((a[1] + b[1]) / 2.0)
 }
 
-/// Per span of `points` the curve that the ground plan draws (`water_spans`), from the span's start.
+/// Per span of `points` the curve that the ground plan draws, from the span's start.
 fn curves(points: &[[f64; 2]], curve: Curve) -> Vec<WaterCurve> {
-    let tangents = water_tangents(points, curve.turn_max_deg);
-    let shapes = water_spans(points, &tangents, chord_metres, curve.off_max_m);
-    let chord = |w: &[[f64; 2]]| [w[1][0] - w[0][0], w[1][1] - w[0][1]];
-    points.windows(2).zip(shapes).map(|(w, shape)| WaterCurve::new(chord(w), shape)).collect()
+    water_curves(points, curve.turn_max_deg, curve.off_max_m, chord_metres)
 }
 
-/// The samples of a way that it keeps as vertices: its own vertices, and the samples that the level drawn
-/// between the kept ones (`water_level` with `water_grades`, at the sample's share of its span) leaves by
-/// more than LEVEL_TOL_M: in each round the farthest of each such span, until none is left. So the levels
-/// hold along the line, not only at the vertices of the map. A kept vertex changes the grades of its
-/// neighbours, so the rounds test every span again.
-fn kept(way: &Way, z: &[f64], curves: &[WaterCurve]) -> Vec<usize> {
-    let arc_m: Vec<f64> =
-        curves.iter().zip(way.points.windows(2)).map(|(c, w)| c.length() * chord_metres(w[0], w[1])).collect();
+/// The samples of a way that it keeps as vertices: its own vertices, and the samples that the level that
+/// the ground plan draws between the kept ones leaves by more than LEVEL_TOL_M: in each round the farthest
+/// of each such span, until none is left. So the levels hold along the line, not only at the vertices of
+/// the map. The drawn level is the ground plan's: its curve through the kept vertices (`water_curves`),
+/// the cubic `water_level` with `water_grades` over that curve's length, read at the foot of each sample
+/// on it (`WaterCurve::share_near`). A kept vertex changes the curve and the grades beside it, so the
+/// rounds test every span again.
+fn kept(way: &Way, z: &[f64], curves: &[WaterCurve], curve: Curve) -> Vec<usize> {
+    let at: Vec<[f64; 2]> = (0..z.len()).map(|i| way.point(i, curves)).collect();
     let level = |i: usize| z[i].is_finite().then_some(z[i]);
     let mut out = way.vertices.clone();
     loop {
-        let points: Vec<[f64; 2]> = out.iter().map(|&i| way.point(i, curves)).collect();
+        let points: Vec<[f64; 2]> = out.iter().map(|&i| at[i]).collect();
+        let drawn = self::curves(&points, curve);
         let grades = water_grades(&points, &out.iter().map(|&i| level(i)).collect::<Vec<_>>(), chord_metres);
         let mut more = Vec::new();
         for (j, pair) in out.windows(2).enumerate() {
@@ -326,15 +326,14 @@ fn kept(way: &Way, z: &[f64], curves: &[WaterCurve]) -> Vec<usize> {
             if b <= a + 1 || !(z[a].is_finite() && z[b].is_finite()) || sb <= sa {
                 continue;
             }
-            let k = way.span_of(a);
-            let len = (sb - sa) / (way.along[way.vertices[k + 1]] - way.along[way.vertices[k]]) * arc_m[k];
-            let drawn = |i: usize| {
-                water_level([z[a], z[b]], [grades[j], grades[j + 1]], len, (way.along[i] - sa) / (sb - sa)).0
+            let (c, p0) = (&drawn[j], points[j]);
+            let len = c.length() * chord_metres(p0, points[j + 1]);
+            let off = |i: usize| {
+                let t = c.share_near([at[i][0] - p0[0], at[i][1] - p0[1]], (way.along[i] - sa) / (sb - sa));
+                (z[i] - water_level([z[a], z[b]], [grades[j], grades[j + 1]], len, t).0).abs()
             };
-            let worst = (a + 1..b)
-                .filter(|&i| z[i].is_finite())
-                .map(|i| (i, (z[i] - drawn(i)).abs()))
-                .max_by(|x, y| x.1.total_cmp(&y.1));
+            let worst =
+                (a + 1..b).filter(|&i| z[i].is_finite()).map(|i| (i, off(i))).max_by(|x, y| x.1.total_cmp(&y.1));
             more.extend(worst.filter(|w| w.1 > LEVEL_TOL_M).map(|w| w.0));
         }
         if more.is_empty() {
@@ -991,10 +990,12 @@ mod tests {
 
     #[test]
     fn the_added_vertices_lie_on_the_curve_that_the_reader_draws_through_the_map_s_vertices() {
-        // A bend of 400 m and a corner of 90° over the meadow that falls steeply, then gently.
+        // A meander of 800 m and a corner of 90° over the meadow that falls steeply, then gently. The spans
+        // before 400 m east are curves beside curves; the span to the corner is a curve beside a chord.
         let fall =
             |e: f64, s: f64| if e + s < 100.0 { 1000.0 - 0.4 * (e + s) } else { 960.0 - 0.0133 * (e + s - 100.0) };
-        let map = vec![at(0.0, 0.0), at(200.0, 12.0), at(400.0, 0.0), at(400.0, 200.0)];
+        let map =
+            vec![at(0.0, 0.0), at(200.0, 12.0), at(400.0, 0.0), at(600.0, 12.0), at(800.0, 0.0), at(800.0, 200.0)];
         let stream = Feature { half: 0.5, bank: 0.6, freeboard: 0.4, ..river(map.clone()) };
         let (kept, _) = lines_of(&[stream], &terrain(fall)).remove(0);
         assert!(kept.len() > map.len(), "{} vertices", kept.len());
@@ -1012,12 +1013,15 @@ mod tests {
         };
         // The added vertices lie on the curve through the map's vertices.
         assert!(off_of(&kept) < 0.01, "a kept vertex lies {} m off the curve", off_of(&kept));
-        let off = off_of(&after);
-        // The reader takes the tangents at the kept vertices from their new, nearer neighbours. On a span that it
-        // drew as its chord, a sub-span next to a vertex that is no corner can become a curve, and the curve
-        // beside it then leaves that chord's direction: both move by up to `curve_off_max_m` (here the chord
-        // after the bend's middle vertex).
-        assert!(off < 2.0, "the curve moves {off} m");
+        // The reader takes the tangents at the kept vertices from their new, nearer neighbours: a curve beside
+        // curves moves by decimetres (most where a long sub-span leaves an added vertex along the bisector of
+        // its new chords), where vertices on the chords would move it by its bulge (here 1.5 m). On a
+        // span that it drew as its chord, a sub-span next to a vertex that is no corner can become a curve, and
+        // the curve beside it then leaves that chord's direction: by up to `curve_off_max_m`.
+        let (x0, _, _) = origin();
+        let (curved, rest): (Vec<[f64; 2]>, Vec<[f64; 2]>) = after.iter().partition(|q| (q[0] - x0) * scale < 400.0);
+        assert!(off_of(&curved) < 0.5, "a curve beside curves moves {} m", off_of(&curved));
+        assert!(off_of(&rest) <= 2.0, "the line beside a chord moves {} m", off_of(&rest));
     }
 
     #[test]
