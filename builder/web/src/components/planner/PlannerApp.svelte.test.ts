@@ -93,6 +93,8 @@ function button(label: string, scope: ParentNode = document) {
     return found;
 }
 
+const escape = (target: Element) => target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+
 /** The checkbox of a kind of place to sleep in the open stay chip. */
 function stayBox(label: string, scope: ParentNode = document) {
     return [...scope.querySelectorAll('label')].find(row => row.textContent === label)!.querySelector('input')!;
@@ -565,6 +567,41 @@ describe('planner app transitions', () => {
         expect(document.querySelector('.night-page h2')?.textContent).toBe('Night 1');
     });
 
+    it('goes back one level with Escape wherever the focus is: the pick on the map, the callout, then the night page', async () => {
+        await startApp();
+        button('Choose night 1').click(); await tick();
+        await vi.waitFor(() => button('Pick on the map').click()); await tick();
+        escape(button('Pick on the map')); await tick();
+        expect(document.querySelector('.night-page')).not.toBeNull();
+        button('Pick map location').click(); await tick();
+        expect(document.querySelector('[role="dialog"] h2')?.textContent).toBe('Add point here');
+        escape(button('Pan map')); await tick();
+        expect(document.querySelector('.night-page')).not.toBeNull();
+        escape(button('Pan map')); await tick(); await tick();
+        expect(document.querySelector('.night-page')).toBeNull();
+        expect(document.activeElement).toBe(button('Choose night 1'));
+    });
+
+    it('closes only the town with Escape on its card in an open day', async () => {
+        await startApp();
+        dayButton(1).click(); await tick();
+        await vi.waitFor(() => document.querySelector<HTMLButtonElement>('.choose button.town')!.click()); await tick();
+        escape(button('All towns')); await tick();
+        expect(document.querySelector('.choose button.town')).not.toBeNull();
+        expect(document.querySelector('[aria-label="Selected day"]')).not.toBeNull();
+    });
+
+    it('does not open a night again that an Undo removed', async () => {
+        await startApp();
+        await setRidingDays(4);
+        button('Choose night 3').click(); await tick();
+        expect(document.querySelector('.night-page h2')?.textContent).toBe('Night 3');
+        document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true, bubbles: true })); await tick();
+        expect(document.querySelector('.night-page')).toBeNull();
+        await setRidingDays(4);
+        expect(document.querySelector('.night-page')).toBeNull();
+    });
+
     it('compares two saved versions and opens one in the planner', async () => {
         await startApp();
         // The menu stays open after a save.
@@ -617,9 +654,15 @@ describe('planner app transitions', () => {
     });
 
     it('opens a night of the timeline in the day list and sets the start date in the trip row', async () => {
+        // An alpine path gives the route a note.
+        const measured = vi.mocked(routing.calculateLine).getMockImplementation()!;
+        vi.mocked(routing.calculateLine).mockImplementation(async (...args) => {
+            const line = await measured(...args);
+            return { ...line, edges: { ...line.edges, sac_scale: line.coordinates.slice(1).map(() => 6) } };
+        });
         await startApp();
         await vi.waitFor(() => expect(document.querySelectorAll('.handle')).toHaveLength(2));
-        const hidden = ['[data-day]', '.trip-row', '.trip-summary'];
+        const hidden = ['[data-day]', '.trip-row', '.trip-summary', '.route-notes'];
         for (const row of hidden) expect(document.querySelector(row)).not.toBeNull();
         document.querySelector<HTMLButtonElement>('.handle')!.click(); await tick(); await tick();
         expect(document.querySelector('.night-page h2')?.textContent).toBe('Night 1');

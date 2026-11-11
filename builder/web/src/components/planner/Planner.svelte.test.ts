@@ -183,11 +183,30 @@ describe('planner day views', () => {
         expect(nights.stopId).toBeNull();
         expect(document.activeElement).toBe(rows()[0]);
 
-        rows()[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        button('All days').click();
         await tick(); await tick();
         expect(document.querySelectorAll('[data-day]')).toHaveLength(3);
         expect(document.querySelector('.keep')).not.toBeNull();
         expect(document.activeElement).toBe(button('Choose night 1'));
+    });
+
+    it('keeps the scroll position of the day list under a night page, but not of an open day', async () => {
+        const pane = document.body.appendChild(Object.assign(document.createElement('div'), { className: 'pane-scroll' }));
+        Object.defineProperty(pane, 'scrollTop', { value: 0, writable: true });
+        let page = $state<number | null>(null), day = $state<number | null>(null);
+        mounted.push(mount(Itinerary, { target: pane, props: { ...itineraryProps(null), get nightPage() { return page; }, get expandedDay() { return day; } } }));
+        const settle = async () => { await tick(); await tick(); };
+        await settle();
+        pane.scrollTop = 400;
+        page = 1; await settle();
+        expect(pane.scrollTop).toBe(0);
+        page = null; await settle();
+        expect(pane.scrollTop).toBe(400);
+        day = 2; await settle();
+        pane.scrollTop = 300;
+        day = null; page = 1; await settle();
+        page = null; await settle();
+        expect(pane.scrollTop).toBe(0);
     });
 
     it('adds a rest day or a train after a night, and sets the kinds of place of one night', async () => {

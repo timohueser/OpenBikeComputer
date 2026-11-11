@@ -71,17 +71,19 @@
         });
     });
 
-    // The day list keeps its scroll position under a night page; the page and its towns open at the top. A closed page
-    // gives the focus back to the button that opens it.
-    let shownPage: number | null = null, listTop = 0, scroller: Element | null = null;
+    // The day list keeps its scroll position under a night page; a page opened from an open day returns to the top of the
+    // list, as leaving the day does. The page and its towns open at the top. A closed page gives the focus back to the
+    // button that opens it.
+    let shownPage: number | null = null, shownDay: number | null = null, listTop = 0, scroller: Element | null = null;
     const pane = () => scroller ??= [root, page].find(node => node?.isConnected)?.closest('.pane-scroll') ?? null;
     $effect.pre(() => {
-        const next = nightPage, town = next !== null && nights.stopId !== null;
+        const next = nightPage, day = expandedDay, town = next !== null && nights.stopId !== null;
         untrack(() => {
-            const was = shownPage;
+            const was = shownPage, fromDay = shownDay !== null;
             shownPage = next;
+            shownDay = day;
             if (was === next && !town) return;
-            if (was === null) listTop = pane()?.scrollTop ?? 0;
+            if (was === null) listTop = fromDay ? 0 : pane()?.scrollTop ?? 0;
             tick().then(() => {
                 const scroll = pane();
                 if (next !== null) {
@@ -89,7 +91,7 @@
                     if (was !== next) page?.querySelector<HTMLElement>('.overview')?.focus({ preventScroll: true });
                 } else if (!focused) {
                     if (scroll) scroll.scrollTop = listTop;
-                    root?.querySelector<HTMLElement>(`[data-night="${was}"]`)?.focus({ preventScroll: true });
+                    root?.querySelector<HTMLElement>(`[data-night="${was}"]`)?.focus();
                 }
             });
         });
@@ -160,8 +162,7 @@
 {/snippet}
 
 {#if nightPage !== null}
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="night-page" bind:this={page} onkeydown={event => { if (event.key === 'Escape') nights.choose(null); }}>
+    <div class="night-page" bind:this={page}>
         {#if nights.stopId === null}
             <nav class="day-nav" aria-label="Night navigation">
                 <button type="button" class="overview" onclick={() => nights.choose(null)}><Icon name="back" size={16} />All days</button>

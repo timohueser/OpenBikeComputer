@@ -475,6 +475,7 @@
         showRoute = true;
         night = 1;
         expandedDay = null;
+        stopChoosing();
         visibleRange = null;
         hoverProgress = null;
         fitPlan = true;
@@ -576,8 +577,11 @@
 
     /** Keeps the day the rider works on after the number of days changed. */
     function clampNight() {
-        night = Math.max(1, Math.min(night, planView(trip, session.line).days.length));
+        const days = planView(trip, session.line).days.length;
+        night = Math.max(1, Math.min(night, days));
         if (expandedDay !== null) expandedDay = night;
+        // A night that is gone must not open again when its day comes back.
+        if (choosingNight !== null && choosingNight >= days) stopChoosing();
     }
 
     function afterHistory(description: string) {
@@ -1043,6 +1047,7 @@
         if (!('mode' in change)) return;
         night = 1;
         expandedDay = null;
+        stopChoosing();
         exitSearch();
         clearSelection();
     }
@@ -1117,8 +1122,13 @@
             if (event.shiftKey) redo();
             else (statusUndo ?? undo)();
         }
+        // Escape goes back one level wherever the focus is: a town, then a night page, then an open day.
         if (event.key === 'Escape') {
-            if (!selectedId && !mapMode && focusedDay) showAllDays();
+            if (!selectedId && !mapMode) {
+                if (openStop) stopId = null;
+                else if (nightPage !== null) stopChoosing();
+                else if (focusedDay) showAllDays();
+            }
             clearSelection();
         }
     }
