@@ -4,7 +4,9 @@ kind: shell
 purpose: "Opens Route planning as its own page in the browser."
 owns:
   - builder/web/src/planner.ts
-depends_on: []
+depends_on:
+  - device-map-builder
+  - route-planning
 test_depends_on: []
 status: draft
 ---

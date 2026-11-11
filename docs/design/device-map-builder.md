@@ -19,7 +19,14 @@ owns:
   - builder/build-wasm-bridges.sh
 depends_on:
   - device-link
-test_depends_on: []
+  - firmware-update
+  - map-assembly
+  - map-style
+  - route-planning
+  - trailview
+  - website
+test_depends_on:
+  - repository-tooling
 status: draft
 ---
 
