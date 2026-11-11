@@ -127,7 +127,7 @@
         background: var(--parchment-2);
     }
     /* Narrower, the middle column beside the panel-wide name has no room for Activity and Preset. */
-    @media (max-width: 1200px) {
+    @media (max-width: 1210px) {
         .trip-bar { grid-template-columns: minmax(0, 1fr) auto; gap: 8px 16px; }
         .ride { grid-column: 1 / -1; grid-row: 2; }
         .actions { grid-column: 2; grid-row: 1; }
