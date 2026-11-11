@@ -18,10 +18,10 @@
 //!
 //! The push is async: it rings the doorbell and awaits the FLPR's EGU20 frame ack, so the scan costs
 //! the M33 nothing. The wait is bounded by [`FRAME_DEADLINE`], and a timeout reads as a transport
-//! fault: the caller keeps the last frame, re-arms the diff and retries. The overlay push
-//! deliberately blocks ([`run_spans_blocking`](Ls021Flpr::run_spans_blocking)): its ~9 KB composite
-//! and save scratch must stay stack transients, because alive across an `await` they become task
-//! future state in a static and permanently shrink the residual stack.
+//! fault: the presenter re-arms its diff, and the caller keeps the last frame and retries. The
+//! overlay push deliberately blocks ([`run_spans_blocking`](Ls021Flpr::run_spans_blocking)): its
+//! ~9 KB composite and save scratch must stay stack transients, because alive across an `await`
+//! they become task future state in a static and permanently shrink the residual stack.
 //!
 //! COM stays on the M33 and is not here. If the FLPR ever faults, COM must keep alternating so the
 //! panel never takes a DC bias.
@@ -46,14 +46,13 @@ use embassy_time::{with_deadline, Duration, Instant, Timer};
 // `ls021_wire::pack_pair` and `pack_row`, so the seam geometry is pinned to it below.
 use obc_display::ls021::wire::WIDTH;
 // The LS021 pairing's shared substance: `RowDiff`, the self-diffing present store; the
-// `RowDamage` and `RowWindow` vocabulary; and `composite_into_resident`, the shared overlay engine.
+// `RowWindow` overlay window; and `composite_into_resident`, the shared overlay engine.
 // The FLPR scans the resident frame directly, so a composited window must transiently live in it.
 use obc_display::display_contracts::{Device64Frame, OverlayPresenter, PresentStats, Presenter};
-use obc_display::ls021::{composite_into_resident, OverlayScratch, RowDamage, RowDiff, RowWindow};
+use obc_display::ls021::{composite_into_resident, OverlayScratch, RowDiff, RowWindow};
 use obc_display::Band;
 
 use embedded_graphics::prelude::*;
-use embedded_graphics::primitives::Rectangle;
 
 /// The FLPR program image, cross-compiled by `build.rs` into `$OUT_DIR/flpr.bin`.
 static FLPR_BLOB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/flpr.bin"));
@@ -347,10 +346,11 @@ pub fn launch_flpr_blocking() -> Result<(), FlprError> {
 /// configured, so the glass holds its last image while the FLPR is down. That property is
 /// load-bearing: keep COM off the FLPR whatever else moves there.
 ///
-/// After an `Ok(())` the caller must force a full repaint: the fresh FLPR has no history, and rows
-/// the diff store thinks are on glass may have missed it while the old FLPR was wedged. The
-/// M33-side `Ls021Flpr::seq` deliberately keeps counting across the relaunch, because the blob
-/// services any `m33_seq` different from the last one it saw.
+/// After an `Ok(())` the caller must present again: rows may have missed glass while the old FLPR
+/// was wedged, and the failed pushes that led here already reset the presenter's row store, so that
+/// present repaints every row outside the bulge. The M33-side `Ls021Flpr::seq` deliberately keeps
+/// counting across the relaunch, because the blob services any `m33_seq` different from the last
+/// one it saw.
 pub async fn relaunch_flpr() -> Result<(), FlprError> {
     // If storage holds the hart, quiesce the sEMMC peripheral first — latched completions cleared,
     // the shared VPR00 interrupt gate disarmed, the pads handed back — so the halt below lands on a
@@ -595,15 +595,6 @@ impl<'b> Ls021Flpr<'b> {
     pub async fn push_frame(&mut self, frame: &Frame64) -> bool {
         self.push_spans(frame, &[(0, FB_H as u16)]).await
     }
-
-    /// Re-arm the self-diffing present so the next present pushes the whole frame again and re-seeds
-    /// the store: the recovery path when a push failed to reach glass. The present advances the
-    /// row-hash store before the push, so after a fault the store already records the un-pushed
-    /// frame, and a plain retry would diff an identical frame against an up-to-date store and push
-    /// nothing, stranding the rows that missed glass.
-    pub fn reset_diff(&mut self) {
-        self.diff.reset();
-    }
 }
 
 // The display contracts, as thin adapters over the panel methods above. The FLPR launch and the
@@ -612,35 +603,22 @@ impl<'b> Ls021Flpr<'b> {
 // is the wire pack the pushes drive on the FLPR; the diff, clip and overlay composite are the
 // shared, conformance-tested `obc_display::ls021` pieces.
 
-impl Presenter<Frame64> for Ls021Flpr<'_> {
-    type Damage = RowDamage;
+impl Presenter<FB_W, FB_H> for Ls021Flpr<'_> {
     type Error = Stalled;
 
-    fn damage_full() -> RowDamage {
-        RowDamage::Full
-    }
-
-    fn damage_unknown() -> RowDamage {
-        RowDamage::SelfDiff { exclude: None }
-    }
-
     /// The self-diffing present: re-hash every frame row against the [`RowDiff`] store and push only
-    /// the rows that changed, optionally clipping the live hold bulge's rows out so the overlay
-    /// present owns them. `RowDamage::Full` re-seeds the store and pushes the whole frame, and the
-    /// first present after boot or a [`reset_diff`](Ls021Flpr::reset_diff) does the same through the
-    /// store's priming flag.
+    /// the rows that changed, with the live hold bulge's `exclude` rows clipped out so the overlay
+    /// present owns them. The first present after boot pushes every row through the store's
+    /// priming flag.
     ///
     /// The diff, clip and fallback skeleton is the shared [`RowDiff::diff_clipped`]. The shared
     /// borrow of the frame held across the ack is what statically keeps the renderer off the bytes
     /// the FLPR is scanning. `Err(Stalled)` is a transport fault: the caller keeps the last frame.
-    async fn present(&mut self, frame: &Frame64, damage: RowDamage) -> Result<PresentStats, Stalled> {
-        let exclude = match damage {
-            RowDamage::Full => {
-                self.diff.reset(); // full = re-seed the store + push every row (recovery/re-init)
-                None
-            }
-            RowDamage::SelfDiff { exclude } => exclude,
-        };
+    async fn present(
+        &mut self,
+        frame: &Device64Frame<'_, FB_W, FB_H>,
+        exclude: Option<(u16, u16)>,
+    ) -> Result<PresentStats, Stalled> {
         let mut scratch = [(0u16, 0u16); MAX_DIRTY_SPANS];
         let spans = self.diff.diff_clipped(frame.bytes(), FB_W, exclude, &mut scratch);
         if spans.is_empty() {
@@ -652,24 +630,16 @@ impl Presenter<Frame64> for Ls021Flpr<'_> {
         if self.run_spans(frame.bytes(), spans).await {
             Ok(PresentStats { pushed_units: pushed, total_units: FB_H as u32, regions })
         } else {
+            // The store already records this frame, so without the reset a retry would push
+            // nothing and strand the rows that missed glass.
+            self.diff.reset();
             Err(Stalled)
         }
     }
 }
 
-impl OverlayPresenter<Frame64> for Ls021Flpr<'_> {
-    type Region = RowWindow;
-    type OverlayTarget<'t> = Band<'t>;
-
-    fn region(rect: Rectangle) -> RowWindow {
-        RowWindow::from_rect(rect, FB_W as u32, FB_H as u32)
-    }
-
-    fn damage_around(region: RowWindow) -> RowDamage {
-        RowDamage::SelfDiff { exclude: Some(region.exclude_span()) }
-    }
-
-    /// Re-present only the rows of the overlay region, with `draw` composited over the clean frame
+impl OverlayPresenter<FB_W, FB_H> for Ls021Flpr<'_> {
+    /// Re-present only the rows of the overlay window, with `draw` composited over the clean frame
     /// backdrop: the few-millisecond partial push the hold bulge rides over a static map. The LS021
     /// is row-addressed, so touching a row re-latches all 240 columns; this rewrites the full-width
     /// rows `[y0, y0+rows)` while only the `[x0, x0+w)` columns carry the overlay, and the FLPR
@@ -679,9 +649,10 @@ impl OverlayPresenter<Frame64> for Ls021Flpr<'_> {
     /// shared [`composite_into_resident`] engine saves the clean window bytes, writes the composited
     /// window in, re-quantised to device-64 by the same packer the frame was rendered with, pushes
     /// the rows, and restores. That is sound because the map plane owns the frame and is inside this
-    /// call for the whole push, and the input plane never touches the frame. The [`RowDiff`] store
-    /// keeps tracking the clean frame throughout: after the restore the frame is byte-identical, so
-    /// the store is never touched. On a push fault the window is still restored.
+    /// call for the whole push, and the input plane never touches the frame. After the restore the
+    /// frame is byte-identical, so a successful push leaves the [`RowDiff`] store as it is. On a
+    /// push fault the window is still restored, and the store is reset: a stalled scan may have
+    /// left any row half-drawn, and a relaunch can follow failed overlay pushes alone.
     ///
     /// The overlay is rendered into a small RGB565 window scratch once, so the caller's `InputPlane`
     /// lock is taken once per strip and not once per row.
@@ -691,30 +662,33 @@ impl OverlayPresenter<Frame64> for Ls021Flpr<'_> {
     /// and permanently shrink the residual stack.
     async fn present_overlay(
         &mut self,
-        frame: &mut Frame64,
-        region: RowWindow,
-        draw: impl for<'t> FnOnce(&mut Band<'t>),
+        frame: &mut Device64Frame<'_, FB_W, FB_H>,
+        window: RowWindow,
+        draw: impl FnOnce(&mut Band<'_>),
     ) -> Result<PresentStats, Stalled> {
-        let (x0, y0, w, rows) = (region.x0 as usize, region.y0 as usize, region.w as usize, region.rows as usize);
+        let (x0, y0, w, rows) = (window.x0 as usize, window.y0 as usize, window.w as usize, window.rows as usize);
         assert!(
             w <= MAX_OVERLAY_COLS && rows <= MAX_OVERLAY_ROWS && x0 + w <= FB_W && y0 + rows <= FB_H,
-            "overlay region out of bounds / larger than the composite scratch"
+            "overlay window out of bounds / larger than the composite scratch"
         );
         let mut win = [0u16; MAX_OVERLAY_COLS * MAX_OVERLAY_ROWS];
         let mut save = [0u8; MAX_OVERLAY_COLS * MAX_OVERLAY_ROWS];
         let mut draw = Some(draw);
-        composite_into_resident(
+        let pushed = composite_into_resident(
             frame.bytes_mut(),
             Size::new(FB_W as u32, FB_H as u32),
-            region,
+            window,
             OverlayScratch { win: &mut win, save: &mut save },
             &mut |band| {
                 if let Some(d) = draw.take() {
                     d(band)
                 }
             },
-            |fb| if self.run_spans_blocking(fb, &[(region.y0, region.rows)]) { Ok(()) } else { Err(Stalled) },
-        )
-        .map(|()| PresentStats { pushed_units: region.rows as u32, total_units: FB_H as u32, regions: 1 })
+            |fb| if self.run_spans_blocking(fb, &[(window.y0, window.rows)]) { Ok(()) } else { Err(Stalled) },
+        );
+        if pushed.is_err() {
+            self.diff.reset();
+        }
+        pushed.map(|()| PresentStats { pushed_units: window.rows as u32, total_units: FB_H as u32, regions: 1 })
     }
 }

@@ -1,43 +1,23 @@
-//! The generic display contracts: the compile-time seam between what a frame is and what a panel
-//! can do with it, so a display with different geometry, native pixel storage or presentation
-//! grain is a new (frame, presenter) pairing at the board's composition edge, never a change to
-//! the rendering stack and never a runtime pixel conversion.
+//! The presenter contracts: how a presenter puts the one resident [`Device64Frame`] on the LS021.
 //!
-//! Four concerns, four owners:
+//! Borrowing rule: the frame is a value the host owns next to its presenter. Rendering needs
+//! `&mut` access, and [`Presenter::present`] borrows the frame shared for the whole push, so the
+//! type system rejects a render into a frame a present is still scanning.
+//! [`OverlayPresenter::present_overlay`] takes `&mut`, because the board composites into the
+//! resident frame for the scan and restores the clean bytes before it returns. Either way the
+//! frame is the clean base image when a presenter method returns.
 //!
-//! 1. Frame specification and storage, [`NativeFrame`](frame::NativeFrame): geometry, the
-//!    device-native storage cells, stride and validated backing length, and a `DrawTarget` view
-//!    writing directly into the backing.
-//! 2. Base-frame presentation, [`Presenter`](presenter::Presenter): put the clean resident frame
-//!    on glass, accept damage at a neutral level or through the presenter's own associated type,
-//!    and report the transport outcome.
-//! 3. Transient overlay presentation, [`OverlayPresenter`](presenter::OverlayPresenter): read the
-//!    clean frame as the backdrop, composite a bounded region, coordinate exclusion and the
-//!    trailing clear with the base present, and stay callable from the preemptive overlay plane
-//!    with no map render in the path.
-//! 4. Damage strategy, deliberately not a contract. How a presenter decides what changed is the
-//!    pairing's own business, owned next to that pairing's transport, and there is no universal
-//!    fallback the generic layer substitutes.
+//! Recovery rule: after a failed `present` or `present_overlay`, the next `present` pushes every
+//! row outside its `exclude`. The presenter repairs itself; the caller only presents again.
 //!
-//! Borrowing model: the frame is a value the host owns next to its presenter, not inside it.
-//! Rendering needs `&mut F`, and a base present borrows the frame shared for the whole push, so
-//! the type system rejects a render into a frame a present is still scanning. An overlay present
-//! takes `&mut F`, because a backend may transiently composite into the resident frame for the
-//! scan and restore the clean bytes before returning. Either way the frame is always the clean
-//! base image when a presenter method returns.
-//!
-//! Everything here is compile-time: const-generic geometry, monomorphized `impl Trait` draw
-//! targets, `async fn` in traits with no `Send` bound and no boxed futures, and no trait objects.
-//! A pairing the board never names is never monomorphized.
-//!
-//! [`conformance`] holds the reusable, backend-agnostic checks of the mandatory invariants. The
-//! desktop presenter and this crate's host double run them. The board's presenter runs on hardware
-//! only, and shares the [`ls021`](crate::ls021) diff and overlay code the double exercises.
+//! [`conformance`] holds the checks the host double and the simulator presenter run. The board's
+//! presenter runs on hardware only, and shares the [`ls021`](crate::ls021) diff and overlay code
+//! the double exercises.
 
 #[cfg(feature = "conformance")]
 pub mod conformance;
 pub mod frame;
 pub mod presenter;
 
-pub use frame::{Device64Frame, NativeFrame};
+pub use frame::Device64Frame;
 pub use presenter::{OverlayPresenter, PresentStats, Presenter};
