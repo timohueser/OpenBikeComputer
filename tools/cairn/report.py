@@ -151,7 +151,10 @@ def write(root: Path, config: dict, docs: list[cairn.Doc], result: cairn.Result,
 
     lines += ["", "## System docs to check", "",
               "The pull requests merged since each approved doc last changed that touch its system.", ""]
-    found = docs_to_check(root, docs, config)
+    try:
+        found = docs_to_check(root, docs, config)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        return "\n".join([*lines, f"The history cannot be read: {error}"]), True
     lines += [f"- {system}: {', '.join(f'#{n}' for n in numbers)}" for system, numbers in found]
     if not found:
         approved = sum(doc.status == "approved" for doc in docs)

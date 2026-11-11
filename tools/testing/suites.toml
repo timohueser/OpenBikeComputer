@@ -650,8 +650,8 @@ command = "python3 tools/prose.py --check"
 jobs = ["guards"]
 triggers = ["tools/prose.py", "tools/testing/prose-baseline.json"]
 
-# Report only: `cairn check` fails only for a new violation of a system whose doc is approved,
-# and whenever the system map is stale.
+# `cairn check` fails for a new violation of a system whose doc is approved. For every doc, it
+# fails for a stale system map, a lost name in a Rules table and a skill file over its budget.
 # It reads source paths (ownership), system docs (the Rules tables) and Cargo manifests (dependencies), so any
 # change to one of them selects it, and a documentation-only or data-only change does not.
 [[suite]]

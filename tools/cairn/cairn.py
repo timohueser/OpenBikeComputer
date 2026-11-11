@@ -432,12 +432,14 @@ def lost_names(root: Path, folder: str) -> list[str]:
     out = []
     for path in sorted((root / folder).glob("*.md")):
         section = RULES_SECTION.search(path.read_text(encoding="utf-8"))
-        for row in section.group(1).splitlines() if section else []:
-            cell = row.rstrip().removesuffix("|").rsplit("|", 1)[-1]
+        rows = [row.rstrip() for row in section.group(1).splitlines() if row.startswith("|")] if section else []
+        for row in rows:
+            cell = row.removesuffix("|").rsplit("|", 1)[-1]
             linked = [path.parent / link for link in LINK.findall(cell)]
             texts = [file.read_text(encoding="utf-8", errors="replace") for file in linked if file.is_file()]
+            # The whole name: a renamed test often keeps the old name as its start.
             out += [f"{path.relative_to(root)}: no file linked beside `{name}` in the Rules table holds that name"
-                    for name in NAME.findall(cell) if not any(name in text for text in texts)]
+                    for name in NAME.findall(cell) if not any(re.search(rf"\b{name}\b", text) for text in texts)]
     return out
 
 

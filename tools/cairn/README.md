@@ -48,8 +48,8 @@ python3 -m unittest discover -s tools/cairn/tests
 A violation whose ID is not in the baseline is new. The ID of an R1 or R4 violation names the
 crate or the system, not the number of files, so more files under a known ID are not new. A new
 violation fails only when it touches a system whose doc has `status: approved`. An unowned file
-touches no system, so it fails when any doc has `status: approved`. While no doc is approved, the
-check only reports, but a stale map fails.
+touches no system, so it fails when any doc has `status: approved`. Three faults fail for every
+doc, approved or not: a stale map, a lost name in a Rules table, and a skill file over its budget.
 
 A baseline entry whose violation is gone must be removed with `--update`. For an approved system
 it fails like a new violation. For a draft system the report only lists it. A gone entry touches

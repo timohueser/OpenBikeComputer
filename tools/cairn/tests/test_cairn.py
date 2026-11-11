@@ -194,12 +194,12 @@ class RulesTableTests(unittest.TestCase):
             root = Path(folder)
             (root / "docs/design").mkdir(parents=True)
             (root / "src").mkdir()
-            (root / "src/a.rs").write_text("fn a_frame_keeps_its_size() {}\n")
+            (root / "src/a.rs").write_text("fn a_frame_keeps_its_size() {}\nfn a_renamed_test_v2() {}\n")
             (root / "docs/design/nav.md").write_text(
                 "## Rules that must hold\n\n| Rule | Check |\n| --- | --- |\n"
                 "| `some_function` keeps the size. | `a_frame_keeps_its_size` in [`a.rs`](../../src/a.rs) |\n"
                 "| The order holds. | `a_renamed_test` in [`a.rs`](../../src/a.rs); `obc shot --check` |\n"
-                "| No link. | `a_test_with_no_link` |\n\n"
+                "| No link. | `a_test_with_no_link` |\n\nA sentence with `some_command` is not a row.\n\n"
                 "## Decisions\n\n`not_a_rule` is outside the table.\n")
             found = cairn.lost_names(root, "docs/design")
         self.assertEqual([line.split("`")[1] for line in found], ["a_renamed_test", "a_test_with_no_link"])
