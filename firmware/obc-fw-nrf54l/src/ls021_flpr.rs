@@ -18,10 +18,11 @@
 //!
 //! The push is async: it rings the doorbell and awaits the FLPR's EGU20 frame ack, so the scan costs
 //! the M33 nothing. The wait is bounded by [`FRAME_DEADLINE`], and a timeout reads as a transport
-//! fault: the presenter re-arms its diff, and the caller keeps the last frame and retries. The
-//! overlay push deliberately blocks ([`run_spans_blocking`](Ls021Flpr::run_spans_blocking)): its
-//! ~9 KB composite and save scratch must stay stack transients, because alive across an `await`
-//! they become task future state in a static and permanently shrink the residual stack.
+//! fault: the presenter leaves its diff unconfirmed, and the caller keeps the last frame and
+//! retries. The overlay push deliberately blocks
+//! ([`run_spans_blocking`](Ls021Flpr::run_spans_blocking)): its ~9 KB composite and save scratch
+//! must stay stack transients, because alive across an `await` they become task future state in a
+//! static and permanently shrink the residual stack.
 //!
 //! COM stays on the M33 and is not here. If the FLPR ever faults, COM must keep alternating so the
 //! panel never takes a DC bias.
@@ -347,10 +348,10 @@ pub fn launch_flpr_blocking() -> Result<(), FlprError> {
 /// load-bearing: keep COM off the FLPR whatever else moves there.
 ///
 /// After an `Ok(())` the caller must present again: rows may have missed glass while the old FLPR
-/// was wedged, and the failed pushes that led here already reset the presenter's row store, so that
-/// present repaints every row outside the bulge. The M33-side `Ls021Flpr::seq` deliberately keeps
-/// counting across the relaunch, because the blob services any `m33_seq` different from the last
-/// one it saw.
+/// was wedged. The presenter's row store is unconfirmed after failed pushes, or still fresh at
+/// boot, so that present repaints every row outside the bulge. The M33-side `Ls021Flpr::seq`
+/// deliberately keeps counting across the relaunch, because the blob services any `m33_seq`
+/// different from the last one it saw.
 pub async fn relaunch_flpr() -> Result<(), FlprError> {
     // If storage holds the hart, quiesce the sEMMC peripheral first — latched completions cleared,
     // the shared VPR00 interrupt gate disarmed, the pads handed back — so the halt below lands on a
@@ -608,8 +609,8 @@ impl Presenter<FB_W, FB_H> for Ls021Flpr<'_> {
 
     /// The self-diffing present: re-hash every frame row against the [`RowDiff`] store and push only
     /// the rows that changed, with the live hold bulge's `exclude` rows clipped out so the overlay
-    /// present owns them. The first present after boot pushes every row through the store's
-    /// priming flag.
+    /// present owns them. Only a push that reached glass confirms the store, so the first present
+    /// after boot and the present after a failed one push every row outside `exclude`.
     ///
     /// The diff, clip and fallback skeleton is the shared [`RowDiff::diff_clipped`]. The shared
     /// borrow of the frame held across the ack is what statically keeps the renderer off the bytes
@@ -628,11 +629,9 @@ impl Presenter<FB_W, FB_H> for Ls021Flpr<'_> {
         let pushed: u32 = spans.iter().map(|&(_, n)| n as u32).sum();
         let regions = spans.len() as u32;
         if self.run_spans(frame.bytes(), spans).await {
+            self.diff.confirm();
             Ok(PresentStats { pushed_units: pushed, total_units: FB_H as u32, regions })
         } else {
-            // The store already records this frame, so without the reset a retry would push
-            // nothing and strand the rows that missed glass.
-            self.diff.reset();
             Err(Stalled)
         }
     }
@@ -651,8 +650,8 @@ impl OverlayPresenter<FB_W, FB_H> for Ls021Flpr<'_> {
     /// the rows, and restores. That is sound because the map plane owns the frame and is inside this
     /// call for the whole push, and the input plane never touches the frame. After the restore the
     /// frame is byte-identical, so a successful push leaves the [`RowDiff`] store as it is. On a
-    /// push fault the window is still restored, and the store is reset: a stalled scan may have
-    /// left any row half-drawn, and a relaunch can follow failed overlay pushes alone.
+    /// push fault the window is still restored, and the store is reset: a relaunch can follow
+    /// failed overlay pushes alone, and a relaunch needs a full repaint.
     ///
     /// The overlay is rendered into a small RGB565 window scratch once, so the caller's `InputPlane`
     /// lock is taken once per strip and not once per row.

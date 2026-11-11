@@ -58,7 +58,6 @@ impl<const W: usize, const H: usize> Presenter<W, H> for SpanPresenter<W, H> {
         let spans = self.diff.diff_clipped(frame.bytes(), W, exclude, &mut scratch);
         // The board fails here too: after the diff advanced the store, before the rows land.
         if std::mem::take(&mut self.fail_next) {
-            self.diff.reset();
             return Err(Fault);
         }
         let regions = spans.len() as u32;
@@ -75,6 +74,7 @@ impl<const W: usize, const H: usize> Presenter<W, H> for SpanPresenter<W, H> {
         }
         let mut covered = vec![false; H];
         assert_eq!(spans_missed_changes(&self.glass, frame.bytes(), W, H, &oracle, &mut covered), 0);
+        self.diff.confirm();
         Ok(PresentStats { pushed_units: pushed, total_units: H as u32, regions })
     }
 }

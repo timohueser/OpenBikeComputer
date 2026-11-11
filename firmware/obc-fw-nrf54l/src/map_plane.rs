@@ -313,9 +313,9 @@ impl MapDisplay {
         );
         match relaunch_flpr().await {
             Ok(()) => {
-                // Fresh core, and rows may have missed glass. The failed pushes that led here
-                // already reset the row store, so the next present repaints every row; tell the
-                // ride loop to schedule it even if nothing else dirtied the map.
+                // Fresh core, and rows may have missed glass. The failed pushes that led here left
+                // the row store unconfirmed, so the next present repaints every row; tell the ride
+                // loop to schedule it even if nothing else dirtied the map.
                 self.relaunch_repaint = true;
                 defmt::info!("FLPR: relaunch OK — alive again, full repaint armed");
             }

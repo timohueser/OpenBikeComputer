@@ -31,9 +31,10 @@ pub struct PresentStats {
 ///
 /// Recovery rule: after a failed [`present`](Self::present) or
 /// [`present_overlay`](OverlayPresenter::present_overlay), the next `present` pushes every row
-/// outside its `exclude`. The first `present` of a new presenter also pushes every row. A presenter
-/// that advances its row store before the push must reset the store when the push fails, or a
-/// retry diffs against rows that never reached glass and pushes nothing.
+/// outside its `exclude`. The first `present` of a new presenter also pushes every row. The LS021
+/// presenters confirm a push to their [`RowDiff`](crate::ls021::RowDiff) only when it reached
+/// glass, so the rows of an unconfirmed push are pushed again; a failed overlay push resets the
+/// store.
 #[allow(async_fn_in_trait)] // single-core executors on-device + a synchronous host backend — no Send bound wanted
 pub trait Presenter<const W: usize, const H: usize> {
     /// A transport fault: the push did not reach glass; the caller keeps the frame and may retry.

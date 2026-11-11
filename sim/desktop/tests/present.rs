@@ -40,7 +40,7 @@ fn rgb(raw: u16) -> Rgb565 {
     Rgb565::from(RawU16::new(raw))
 }
 
-// The generic conformance suite, the same checks the board-semantics double runs, against this
+// The conformance suite, the same checks the board-semantics double runs, against this
 // backend: the simulator presenter paired with `Device64Frame`, through the real contract impls.
 
 const CW: usize = 16;
