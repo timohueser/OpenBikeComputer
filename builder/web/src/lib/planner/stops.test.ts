@@ -39,6 +39,8 @@ describe('stops', () => {
         expect(suitable(stop, ['hostel'])).toEqual([]);
         expect(stopCounts(stop, allStay)).toBe('1 campsite · 1 hut · 2 hotels · 1 shelter');
         expect(stopCounts(stop, ['camp', 'shelter'])).toBe('1 campsite · 1 shelter');
+        expect(stopCounts(stop, allStay, true)).toBe('5 places to sleep');
+        expect(stopCounts(stop, ['camp', 'shelter'], true)).toBe('1 campsite · 1 shelter');
         expect(stopKm(stop, allStay)).toBe('km 42–46');
         expect(stopKm(stop, ['camp'])).toBe('km 44');
     });

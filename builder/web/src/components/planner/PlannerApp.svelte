@@ -199,10 +199,17 @@
     // The days of the trip without its suggested nights. The towns are searched around their ends, and the suggestions
     // then move them. A drag preview changes the line but not the trip, so they follow the line of the trip.
     const evenDays = $derived(planView(trip, session.line).days);
-    // An open day lists the towns of its night until that night is pinned; the ladder lists the night the rider opened.
+    // The page of the night the rider opened replaces the day list. It stays while the route is recalculated.
+    const nightPage = $derived(multi && !searching && expandedDay === null && choosingNight !== null && choosingNight < evenDays.length ? choosingNight : null);
+    // An open day lists the towns of its night until that night is pinned; a night page lists its own night.
     const pickerNight = $derived(!multi || !currentRoute || searching ? null
         : expandedDay !== null ? (night < evenDays.length && (!evenDays[night - 1]?.pinned || choosingNight === night) ? night : null)
-        : choosingNight !== null && choosingNight < evenDays.length ? choosingNight : null);
+        : nightPage);
+    // A night that the plan no longer has must not open again when a later change brings its day back. A route that is
+    // still calculated keeps the night, so the page stays open while it is recalculated.
+    $effect(() => {
+        if (currentRoute && choosingNight !== null && choosingNight >= evenDays.length) untrack(stopChoosing);
+    });
     // Towns are searched for every night still to choose, so the ladder can suggest a place for each.
     const stopWindows = $derived(multi ? nightWindows(trip, session.line, pickerNight) : {});
     const routeKey = $derived(routingKey(trip));
@@ -262,7 +269,7 @@
     const routeHeights = $derived(currentRoute ? profileSamples(currentRoute) : []);
     const nights: NightChoices = {
         get choosing() { return pickerNight; },
-        get stopId() { return stopId; },
+        get stopId() { return openStop?.id ?? null; },
         found: nightStops,
         window: night => stopWindows[night] ?? null,
         kinds: night => nightKinds(trip, night),
@@ -473,6 +480,7 @@
         showRoute = true;
         night = 1;
         expandedDay = null;
+        stopChoosing();
         visibleRange = null;
         hoverProgress = null;
         fitPlan = true;
@@ -1041,6 +1049,7 @@
         if (!('mode' in change)) return;
         night = 1;
         expandedDay = null;
+        stopChoosing();
         exitSearch();
         clearSelection();
     }
@@ -1115,8 +1124,13 @@
             if (event.shiftKey) redo();
             else (statusUndo ?? undo)();
         }
+        // Escape goes back one level wherever the focus is: a town, then a night page, then an open day.
         if (event.key === 'Escape') {
-            if (!selectedId && !mapMode && focusedDay) showAllDays();
+            if (!selectedId && !mapMode) {
+                if (openStop) stopId = null;
+                else if (nightPage !== null) stopChoosing();
+                else if (focusedDay) showAllDays();
+            }
             clearSelection();
         }
     }
@@ -1184,8 +1198,8 @@
                 onGpx={roads => roads === null ? session.gpxLines = null : importGpx(roads)} onDownload={plan => session.download(plan)} />
         {/if}
         <aside class="planner-pane" aria-label="Trip planning" inert={!session.ready || session.busy}>
-            <div class="query-slot" style:display={routesOpen ? 'none' : 'contents'}><Query bind:this={searchBox} bind:text={query} bind:searchState={searchState} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} revision={searchRevision} viewRevision={searchViewRevision} onResults={coordinates => { deselect(); map?.fitSearchResults(coordinates); }} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} onPointing={where => pointing = where} /></div>
-            {#if fromRoutes && hasEndpoints && finder.start && !routesOpen && !searching}
+            <div class="query-slot" style:display={routesOpen || nightPage !== null ? 'none' : 'contents'}><Query bind:this={searchBox} bind:text={query} bind:searchState={searchState} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} revision={searchRevision} viewRevision={searchViewRevision} onResults={coordinates => { deselect(); map?.fitSearchResults(coordinates); }} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} onPointing={where => pointing = where} /></div>
+            {#if fromRoutes && hasEndpoints && finder.start && !routesOpen && !searching && nightPage === null}
                 <button type="button" class="back-to-routes" onclick={() => openRoutes()}><Icon name="back" size={15} />Find another route</button>
             {/if}
             {#if routesOpen}
@@ -1219,16 +1233,16 @@
                         {/if}
                     </div>
                 {/if}
-                {#if !focusedDay && visualRoute}
+                {#if !focusedDay && nightPage === null && visualRoute}
                     <div class="trip-summary"><RouteStats distance={view.summary.distance} ascent={view.line?.unknownElevationKm === 0 ? view.summary.ascent : null} descent={view.line?.unknownElevationKm === 0 ? view.summary.descent : null} walking={shown.trip.bike === 'hiking'} hours={view.line ? view.summary.hours : null} /></div>
                 {/if}
-                {#if !focusedDay}<RouteNotes notes={routeNotes} shown={shownNote} onShow={showNote} />{/if}
+                {#if !focusedDay && nightPage === null}<RouteNotes notes={routeNotes} shown={shownNote} onShow={showNote} />{/if}
                 <div class="pane-scroll" inert={multi && !currentRoute && routingStatus === 'Calculating route…'}>
                     {#if multi && visualRoute && (currentRoute || routingStatus === 'Calculating route…')}
                         <!-- The rider's trip, not `planned`: a change must not keep the suggested nights as day ends. -->
-                        {#if !focusedDay}<div class="trip-settings"><TripRow {trip} onChange={changePlan} /></div>{/if}
+                        {#if !focusedDay && nightPage === null}<div class="trip-settings"><TripRow {trip} onChange={changePlan} /></div>{/if}
                         <Itinerary
-                            trip={planned} line={visualRoute} {itinerary} {days} {theme} {expandedDay} {nights} {conflicts} {selectedId} {revealId} {hoveredId} onHover={(id) => hoveredId = id}
+                            trip={planned} line={visualRoute} {itinerary} {days} {theme} {expandedDay} {nightPage} {nights} {conflicts} {selectedId} {revealId} {hoveredId} onHover={(id) => hoveredId = id}
                             onToggle={showDay} onOverview={showAllDays}
                             onInspect={inspectPoint}
                             onShowEnd={showDayEnd}
