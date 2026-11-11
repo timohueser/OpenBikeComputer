@@ -1166,6 +1166,28 @@ class EnglandSquares(TempCase):
         self.assertIn("is deleted", str(refusal.exception))
         self.assertEqual(asked, ["/TF3010"])
 
+    def test_a_square_outside_england_is_not_asked_and_a_404_inside_is_refused(self):
+        asked = []
+
+        class Absent(SimpleHTTPRequestHandler):
+            def do_GET(self):
+                asked.append(self.path)
+                self.send_error(404)
+
+            def log_message(self, *args):
+                pass
+
+        server = serve(self, Absent)
+        source = gb_module.SquareZips("gb-eng", "England", "p", 1.0, "l", "Ordnance Datum Newlyn",
+                                      base=f"http://127.0.0.1:{server.server_address[1]}/")
+        source.shared = self.root / "shared"
+        # In OV7565, North Sea east of the NZ square.
+        self.assertEqual(source.fetch((0.8000, 54.9500, 0.8100, 54.9550), self.root / "a"), [])
+        self.assertEqual(asked, [])
+        with self.assertRaises(ingest.Refuse):
+            source.fetch((-0.0400, 52.6980, -0.0300, 52.7020), self.root / "b")  # TF3010
+        self.assertEqual(asked, ["/TF3010"])
+
 
 class Slovakia(unittest.TestCase):
     """The one service of ellipsoidal heights, and the one envelope stated northing first."""
