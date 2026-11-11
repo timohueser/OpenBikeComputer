@@ -22,7 +22,7 @@ fails in the costs step, after the source and the roads steps.
 
 ## Layers
 
-The store keeps only the newest work layer of each step and options (`cache`).
+The store keeps only the work layer of each step and options that a run used last (`cache`).
 
 | Step | Runs | Layer |
 | --- | --- | --- |

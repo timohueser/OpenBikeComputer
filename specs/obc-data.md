@@ -384,7 +384,9 @@ it runs in, and the store:
   `used`, else `built` (then by key), can be reached, and it is reached when its inputs are. So a
   new OSM cut or a new version of a work layer deletes the older work layers of that region at the
   next collection, also those that a release read, and the work layers of other regions stay. An
-  update back to an older set keeps that set. This has known costs. A collection between a failed
+  update that ends without an error marks the work layers that it built or read, so an update back
+  to an older set keeps that set. After a failed or stopped update, a collection can delete a set
+  that the update read, and the next update makes it again. This has known costs. A collection between a failed
   bake and the next bake can delete the last complete set of work layers while the new set is not
   complete. A region that no target lists any more keeps its work layers until its extract
   request goes, as its `osm` layers do. When the work layers of a target are gone, a later update
