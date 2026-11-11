@@ -18,10 +18,7 @@ SPEC.loader.exec_module(cairn)
 
 from adapters import cargo  # noqa: E402 — cairn.py puts its own folder on the path
 
-CONFIG = {
-    "runtimes": {"firmware/": "device", "host/": "host", "tools/": "host"},
-    "tooling": {"path": "tools/", "area": "Tooling"},
-}
+CONFIG = {"tooling": {"path": "tools/", "area": "Tooling"}}
 
 
 def doc(name, owns, kind="system", area="Device", depends_on=(), status="draft"):
@@ -244,13 +241,6 @@ class RuleTests(unittest.TestCase):
         self.assertEqual(messages(more, "R1"), ["crate app (runtime) holds 2 file(s) of nav"])
         # The baseline holds the name, so more files of the same system in the same crate are not new.
         self.assertEqual(cairn.new_violations(more.violations, {"R1 app nav"}), [])
-
-    def test_r2_one_root_for_each_runtime(self):
-        docs = [doc("maps", ["host/bake/**", "tools/bake.py", "firmware/read/**"])]
-        result = analyse(docs, ["host/bake/lib.rs", "tools/bake.py", "firmware/read/lib.rs"])
-        self.assertEqual(ids(result, "R2"), ["R2 maps host host/", "R2 maps host tools/"])
-        self.assertEqual(sorted(v.message for v in result.violations if v.rule == "R2"),
-                         ["maps has host code in host/, and also in tools/", "maps has host code in tools/, and also in host/"])
 
     def test_r4_only_the_tooling_area_lives_in_tools(self):
         docs = [doc("tooling", ["tools/ci.py"], area="Tooling"), doc("maps", ["tools/maps.py", "tools/tiles.py"])]

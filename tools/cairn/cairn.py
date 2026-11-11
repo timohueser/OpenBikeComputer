@@ -3,7 +3,7 @@
 
 Each doc under `docs/design/` has a header that names the files its system or shell owns and the
 systems it depends on. `check` finds the violations of the ownership rule, the dependency rule and
-the rules R1, R2 and R4, and compares them with the baseline. A violation that is not in the
+the rules R1 and R4, and compares them with the baseline. A violation that is not in the
 baseline fails only when it touches a system whose doc has `status: approved`. A stale map always
 fails. `--base REF` also fails when the baseline grew since the merge base with REF.
 
@@ -228,11 +228,6 @@ def crate_dir(path: str, dirs: list[str]) -> str | None:
     return next((d for d in dirs if path.startswith(d + "/")), None)
 
 
-def runtime_root(path: str, runtimes: dict[str, str]) -> str | None:
-    matches = [root for root in runtimes if path.startswith(root)]
-    return max(matches, key=len) if matches else None
-
-
 def analyse(
     docs: list[Doc],
     files: list[str],
@@ -293,19 +288,6 @@ def analyse(
     for (crate, other), count in sorted(foreign.items()):
         base = unit_owner[crate]
         out.append(Violation("R1", f"R1 {crate} {other}", frozenset({base, other}), f"crate {crate} ({base}) holds {count} file(s) of {other}"))
-
-    # R2: one root for each place that a system's code runs.
-    runtimes = config["runtimes"]
-    roots: dict[tuple[str, str], set[str]] = {}
-    for path, system in owner.items():
-        root = runtime_root(path, runtimes)
-        if root and by_name[system].kind == "system":
-            roots.setdefault((system, runtimes[root]), set()).add(root)
-    for (system, runtime), found_roots in sorted(roots.items()):
-        if len(found_roots) > 1:
-            for root in sorted(found_roots):
-                others = ", ".join(sorted(found_roots - {root}))
-                out.append(Violation("R2", f"R2 {system} {runtime} {root}", frozenset({system}), f"{system} has {runtime} code in {root}, and also in {others}"))
 
     # R4: only the tooling area keeps files in the tooling folder.
     folder, area = config["tooling"]["path"], config["tooling"]["area"]
@@ -554,7 +536,7 @@ def gather(root: Path, config: dict) -> tuple[list[Doc], list[str], list[dict], 
 # ── output ───────────────────────────────────────────────────────────────────
 
 
-RULES = ("ownership", "dependency", "cycle", "R1", "R2", "R4")
+RULES = ("ownership", "dependency", "cycle", "R1", "R4")
 
 
 def report(result: Result, baseline: set[str], docs: list[Doc], approved: set[str]) -> list[str]:

@@ -14,17 +14,6 @@
       "ignore": ["**/vendor/**"]
     }
   },
-  "runtimes": {
-    "firmware/": "device",
-    "firmware/tools/": "host",
-    "host/": "host",
-    "planner/": "host",
-    "sim/": "host",
-    "tools/": "host",
-    "builder/web/": "web",
-    "builder/wasm/": "web",
-    "companion-ios/": "ios"
-  },
   "tooling": {
     "path": "tools/",
     "area": "Tooling"

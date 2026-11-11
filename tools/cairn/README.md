@@ -23,7 +23,7 @@ python3 -m unittest discover -s tools/cairn/tests
 | `docs/design/README.md` | the system map. `cairn map` rewrites the block between its two comments. `check` fails when the block is stale. Two merged pull requests can leave it stale on `develop`; `obc cairn map` fixes it. |
 | `docs/design/map.json` | the same map as data: for each system its purpose, dependencies, line count and violations, then the edges and the cycles. `cairn map` writes it, and the system explorer on the docs site shows it. Agents read it directly. `check` fails when it is stale, but ignores `lines`, `violations` and `problems`, because most code changes alter them. So those three can lag in git; the site deploy writes the file again. |
 | `docs/design/<system>.md` | the header of one system or shell: `kind`, `area` (systems only), `purpose`, `owns`, `depends_on`, `test_depends_on`, `status` |
-| `.cairn/config.json` | the source file types, the adapters, the runtime table for R2, the tooling folder for R4, the globs of test files, the leaf limits, the skill budget, and the model roles and tiers |
+| `.cairn/config.json` | the source file types, the adapters, the tooling folder for R4, the globs of test files, the leaf limits, the skill budget, and the model roles and tiers |
 | `.cairn/baseline.json` | the IDs of the known violations |
 | `report.py` | `cairn report` |
 | `skill/cairn/` | the agent skill: `SKILL.md` routes to one file in `reference/` for each command. `.claude/skills/cairn` and `.agents/skills/cairn` link to it. |
@@ -40,7 +40,6 @@ python3 -m unittest discover -s tools/cairn/tests
 | Dependency | a production edge between two systems that `depends_on` does not list, or a test edge that neither `depends_on` nor `test_depends_on` lists. The system that owns a crate's entry file (`src/lib.rs` or `src/main.rs`) owns all of its edges. |
 | Cycle | each production edge inside a cycle between systems. A cycle is a violation even when the docs declare its edges. |
 | R1 | a Rust crate that holds files of a system other than the owner of its entry file, with the number of those files |
-| R2 | a system with code under two roots of the same runtime in the `runtimes` table. The longest matching root applies. The check ignores a file under no root. |
 | R4 | a file under `tooling.path` whose owner is outside `tooling.area` |
 
 ## Ratchet
