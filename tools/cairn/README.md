@@ -70,9 +70,10 @@ between its own crate groups, which do not follow the system cut.
 
 ## Rules tables
 
-`check` reads the `## Rules` section of each doc. In the last column of its table, a name between
-backticks in snake case with a `_` is a test or a function. `check` fails when no file that the same
-cell links holds the name. So a change that renames or removes a cited test must update the doc.
+`check` reads the last column of the table in the `## Rules` section of each doc. A name in backticks
+that is followed by ` in ` and a link must be in the file of that link: a test, a function or a test title. A snake_case
+name with a `_` that is not written this way must be in a file that the same cell links. So a
+change that renames or removes a cited test must update the doc.
 
 ## Leaves
 

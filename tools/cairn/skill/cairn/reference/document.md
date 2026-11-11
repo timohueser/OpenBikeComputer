@@ -98,7 +98,7 @@ Write the body below the header, in these sections:
 
 Do not list the parts: each module's purpose comment states them. Add a picture or a walk-through of one example only when a reader cannot follow section 1 without it. A figure is generated, Mermaid, or an SVG with one line that says why the other two are not enough.
 
-In the Rules table, the last column gives the name of the test or function between backticks, and links its file in the same cell. `cairn check` tests only a snake_case name with a `_`: a linked file must hold it.
+In the last column of the Rules table, write each test or function in backticks, then ` in `, then the link to its file. `cairn check` fails when that file does not hold the name.
 
 Aim for about 1,200 words. Link a spec; do not copy its tables.
 
