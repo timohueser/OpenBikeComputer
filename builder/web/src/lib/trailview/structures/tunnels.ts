@@ -8,7 +8,7 @@ import { LIFT_M, metresPerUnit, RAIL_CODE, RULES, TUNNEL, type Line } from '../t
 import { BORE, curveStops, LAMP, MeshBuilder, PAINT, paintOf, posts, rgb, VOID, type Corner, type Station } from './mesh';
 import type { Owns } from './node';
 import { mouthMesh } from '../proto/mouth';
-import { mouthAt } from '../proto/places';
+import { mouthAt, place } from '../proto/places';
 import { mix } from './mesh';
 
 /** A portal of a road and of a path: the bore's margin past the road and the facade's wings past the opening. */
@@ -140,12 +140,26 @@ export function tunnels(b: MeshBuilder, lines: Line[], owns: Owns): void {
         const stops = curveStops(line);
         // PROTOTYPE: a mouth's end has no portal of today; the bore begins on its portal line, with the mouth's opening as its section.
         const mouths = [mouthAt(line.xy[0], line.xy[1]), mouthAt(line.xy[2 * n - 2], line.xy[2 * n - 1])], total = stops[stops.length - 1].along;
-        const lo = mouths[0]?.L ?? 0, hi = total - (mouths[1]?.L ?? 0), section = mouths[0] ?? mouths[1];
-        for (let k = 0; k + 1 < stops.length; k++) {
+        const lo = mouths[0]?.inset ?? mouths[0]?.L ?? 0, hi = total - (mouths[1]?.inset ?? mouths[1]?.L ?? 0), section = mouths[0] ?? mouths[1];
+        // PROTOTYPE: between two mouths that face each other, the bore runs straight from portal line to portal line.
+        const [m0, m1] = mouths, direct = m0 && m1 && !m0.side && !m1.side && m0.profile;
+        if (direct && owns(m0.o[0], m0.o[1])) {
+            const [ax, ay] = place(m0, m0.L, 0), [bx, by] = place(m1, m1.L, 0), unit = metresPerUnit(ay), length = Math.hypot(bx - ax, by - ay) * unit, dx = (bx - ax) * unit / length, dy = (by - ay) * unit / length;
+            const p = m0.profile!, level = (along: number) => { const i = Math.max(1, p.findIndex(([at]) => at >= along)); return p[i - 1][1] + (p[i][1] - p[i - 1][1]) * (along - p[i - 1][0]) / (p[i][0] - p[i - 1][0]); };
+            const at = (u: number): Station => ({ x: ax + (bx - ax) * u, y: ay + (by - ay) * u, z: level(m0.L + u * length), ax: dy / unit, ay: -dx / unit });
+            const cuts = [0, ...p.map(([along]) => (along - m0.L) / length).filter(u => u > 0 && u < 1), 1];
+            for (let k = 0; k + 1 < cuts.length; k++) bore(b, at(cuts[k]), at(cuts[k + 1]), line, m0.oh, road, (cuts[k + 1] - cuts[k]) * length, [m0.hh, m0.chamfer]);
+        }
+        for (let k = 0; k + 1 < stops.length && !direct; k++) {
             let [s, t] = [stops[k], stops[k + 1]];
             if (t.along <= lo || s.along >= hi) continue;
             if (s.along < lo) s = { ...mix(s, t, (lo - s.along) / (t.along - s.along)), along: lo };
             if (t.along > hi) t = { ...mix(stops[k], t, (hi - stops[k].along) / (t.along - stops[k].along)), along: hi };
+            if (section?.boreZ !== undefined) [s, t] = [{ ...s, z: section.boreZ }, { ...t, z: section.boreZ }];
+            if (section?.profile) {
+                const level = (along: number) => { const p = section.profile!, i = Math.max(1, p.findIndex(([at]) => at >= along)); return p[i - 1][1] + (p[i][1] - p[i - 1][1]) * (along - p[i - 1][0]) / (p[i][0] - p[i - 1][0]); };
+                [s, t] = [{ ...s, z: level(s.along) }, { ...t, z: level(t.along) }];
+            }
             if (owns(stops[k].x, stops[k].y)) bore(b, s, t, line, section?.oh ?? boreHalf(line), road, t.along - s.along, section && [section.hh, section.chamfer]);
         }
         mouths.forEach((mouth, end) => { if (mouth && owns(mouth.o[0], mouth.o[1])) mouthMesh(b, mouth, line, end ? -1 : 1); });

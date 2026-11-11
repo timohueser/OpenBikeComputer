@@ -59,6 +59,7 @@ export function portalBoxes(list: Feature[], tile: Node, node: Node): Float64Arr
             if (!line.abut[end] || pair === null || x < x0 - m || x >= x0 + side + m || y < y0 - m || y >= y0 + side + m) continue;
             // PROTOTYPE: a mouth's box begins on its portal line: the bore's daylight comes from there.
             const mouth = mouthAt(x, y);
+            if (mouth?.side) continue;
             if (mouth) {
                 const zL = floor(mouth, mouth.L);
                 out.push(...place(mouth, mouth.L, 0), mouth.d[0], mouth.d[1], mouth.back + 30, mouth.oh + 0.3, zL + mouth.hh + 0.3, zL + LIFT_M, mouth.grade);
