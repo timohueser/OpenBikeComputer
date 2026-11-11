@@ -1,6 +1,7 @@
 <script lang="ts">
-    import type { Snippet } from 'svelte';
+    import type { ComponentProps, Snippet } from 'svelte';
     import DrawerTitle from './DrawerTitle.svelte';
+    import PlanTotals from './PlanTotals.svelte';
     import Surface from './PlannerSurface.svelte';
     import Segmented from './Segmented.svelte';
     import Icon from './PlannerIcon.svelte';
@@ -15,7 +16,7 @@
 
     let {
         lineData, total, days, dayLabels, walking = false, singleRoute = true, theme = 'light', activeNight, band, focus = null, window: view = { from: 0, to: 1 }, height = 260, open = true,
-        rests = [], onToggle, onNight, onDayEndDrag, onHover, strip,
+        rests = [], totals = null, onToggle, onNight, onDayEndDrag, onHover, strip,
     }: {
         /** Route length in km. */
         lineData?: RoutingLine;
@@ -37,6 +38,8 @@
         open?: boolean;
         /** Each rest day: the riding day it follows, the rider's name for it and the place of that night. */
         rests?: { after: number; name?: string; town: string }[];
+        /** The totals of the whole plan, whatever stretch the profile shows. */
+        totals?: ComponentProps<typeof PlanTotals> | null;
         onToggle: () => void;
         onNight: (night: number) => void;
         onDayEndDrag: (night: number, progress: number) => void;
@@ -153,9 +156,11 @@
     }
 </script>
 
-<section class="elevation" class:open style:height={`${height}px`} aria-label="Elevation profile">
+<!-- Closed, the title row sets the height, so the drawer grows where the totals wrap below the title. -->
+<section class="elevation" class:open style:height={open ? `${height}px` : undefined} aria-label="Elevation profile">
     <div class="title">
         <DrawerTitle title="Elevation" {open} {onToggle} />
+        {#if totals}<PlanTotals {...totals} />{/if}
         {#if open}
         <Segmented compact label="Profile range" value={range} onChange={(value) => range = value}
             options={[{ value: 'map', label: focus?.label ?? 'Map view' }, { value: 'route', label: 'Whole route' }]} />

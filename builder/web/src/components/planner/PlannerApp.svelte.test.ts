@@ -127,7 +127,7 @@ describe('planner app transitions', () => {
         await startApp(); await tick();
         expect(button('Preset').textContent?.trim()).toBe('Balanced');
         expect(button('Pan map').dataset.accessMode).toBe('walking');
-        await vi.waitFor(() => expect(document.querySelector('.trip-summary')?.textContent).toContain('Walking time'));
+        await vi.waitFor(() => expect(document.querySelector('.plan-totals')?.textContent).toContain('Walking time'));
         const surface = document.querySelector<HTMLElement>('[aria-label="Surface along route"]')!;
         surface.focus(); await tick();
         expect(surface.getAttribute('aria-valuetext')).toContain('Walking');
@@ -405,6 +405,15 @@ describe('planner app transitions', () => {
         await tick();
         const draft = [...stored.values()].map(value => JSON.parse(value)).find(value => value.points);
         expect(draft.points).toContainEqual(expect.objectContaining({ label: tilePlace.label, kind: 'waypoint' }));
+    });
+
+    it('keeps the totals of the whole plan in the title of the closed elevation drawer', async () => {
+        await startApp();
+        await vi.waitFor(() => expect(document.querySelector('.elevation .title .plan-totals')).not.toBeNull());
+        const totals = document.querySelector('.plan-totals')!.textContent;
+        button('Elevation').click(); await tick();
+        expect(button('Elevation').getAttribute('aria-expanded')).toBe('false');
+        expect(document.querySelector('.elevation .title .plan-totals')?.textContent).toBe(totals);
     });
 
     it('restores the focused day after a different-day search', async () => {

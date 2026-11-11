@@ -223,6 +223,12 @@
     const campsites = $derived([...proposals].flatMap(([night, { place }]) => place && stayKind(place.place.placeKind) === 'camp' ? [{ night, place: place.place }] : []));
     const planned = $derived(withProposals(shown.trip, shown.line, proposals));
     const view = $derived(planView(planned, shown.line));
+    // Ascent and descent stay unknown while a part of the line has no elevation.
+    const totals = $derived.by(() => {
+        if (!visualRoute) return null;
+        const known = visualRoute.unknownElevationKm === 0;
+        return { ...view.summary, ascent: known ? view.summary.ascent : null, descent: known ? view.summary.descent : null, walking: shown.trip.bike === 'hiking' };
+    });
     const coordinates = $derived(view.coordinates);
     const lengths = $derived(cumulative(coordinates));
     const total = $derived(view.total);
@@ -1335,7 +1341,7 @@
             {:else}
             <Profile
                 lineData={visualRoute} walking={shown.trip.bike === 'hiking'} singleRoute={!multi} height={drawerHeight} open={profileOpen} onToggle={() => profileOpen = !profileOpen} {total} {days} {dayLabels} {theme}
-                activeNight={focusedDay?.ridingNumber ?? 0} band={nightBand} window={profileWindow} {rests}
+                activeNight={focusedDay?.ridingNumber ?? 0} band={nightBand} window={profileWindow} {rests} {totals}
                 focus={focusedDay ? { from: focusedDay.from, to: focusedDay.to, label: `Day ${focusedDay.number}` } : null}
                 onNight={openNight} onDayEndDrag={moveDayEnd} onHover={(progress) => hoverProgress = progress}
             >
