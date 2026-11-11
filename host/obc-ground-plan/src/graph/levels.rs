@@ -1248,10 +1248,14 @@ fn merge(ctx: &Ctx, out: &mut Levels) {
 fn deck_into_tunnel(ctx: &Ctx, levels: &Levels) -> Vec<(Station, f64)> {
     let g = ctx.g;
     let mut out = Vec::new();
-    for r in levels.runs.iter().filter(|r| r.state == State::Deck) {
-        let w = r.way;
+    let mut ways: Vec<u32> = levels.runs.iter().filter(|r| r.state == State::Deck).map(|r| r.way).collect();
+    ways.dedup();
+    for w in ways {
+        let runs: Vec<&Run> = levels.runs.iter().filter(|r| r.way == w && r.state != State::Open).collect();
         for (start, st) in [(true, g.ways[w as usize].from), (false, g.ways[w as usize].to)] {
-            if (if start { r.from } else { r.to }) != st {
+            // The DECK run nearest this end, past the ground stretch before its A line.
+            let near = if start { runs.first() } else { runs.last() };
+            if near.is_none_or(|r| r.state != State::Deck) {
                 continue;
             }
             for &(o, o_start) in ctx.others(w, start).into_iter().flatten() {

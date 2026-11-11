@@ -150,8 +150,12 @@ pub fn levels_detail(g: &obc_ground_plan::graph::WayGraph) -> serde_json::Value 
         .filter_map(|c| {
             let l = c.ladder.as_ref()?;
             let p = at(c.pos);
+            let z = |st: &obc_ground_plan::graph::Station| {
+                obc_ground_plan::graph::point(&g.parts[st.part as usize], st.span as usize, st.u).z_m
+            };
+            let dz = z(&c.over) - z(&c.under);
             Some(json!({"at": lon_lat(p[0], p[1]), "kind": format!("{:?}", c.kind), "upper": way(l.upper),
-                "lower": way(l.lower), "room_m": (l.room_m * 100.0).round() / 100.0, "full_m": l.full_m, "least_m": l.least_m,
+                "lower": way(l.lower), "room_m": (l.room_m * 100.0).round() / 100.0, "centre_dz_m": (dz * 100.0).round() / 100.0, "full_m": l.full_m, "least_m": l.least_m,
                 "step": format!("{:?}", l.step), "ends": l.ends.map(way)}))
         })
         .collect();

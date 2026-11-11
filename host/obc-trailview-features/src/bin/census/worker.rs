@@ -44,6 +44,8 @@ pub enum Fail {
 pub struct Options {
     pub place: Place,
     pub grid_m: f64,
+    /// Only the graph's counters and levels per cell: no mesh and no checks.
+    pub levels: bool,
     pub fail: Vec<(CellKey, Fail)>,
 }
 
@@ -187,6 +189,12 @@ impl Worker<'_> {
             }
         };
         let build = &b.build;
+        line["levels"] = crate::fixture::levels_detail(&build.graph);
+        if self.options.levels {
+            line["state"] = json!("ok");
+            line["graph"] = counters(&build.graph.stats.counters());
+            return line;
+        }
         begin(key, "mesh", self.options);
         let rims: Vec<Rim> = around(key).filter_map(|k| self.built(k).map(|n| n.rim.clone())).collect();
         let reads = Reads::of(&build.faces, &rims);
@@ -286,7 +294,6 @@ impl Worker<'_> {
         line["caps"] = probe_json(&b.probe);
         line["audit"] = audit;
         line["graph"] = counters(&graph.stats.counters());
-        line["levels"] = crate::fixture::levels_detail(graph);
         line["face_stats"] = counters(&plan.stats.counters());
         line["checks"] = json!({"partition": faults, "artefacts": thin, "first": first});
         line["borders"] = Value::Object(borders);
