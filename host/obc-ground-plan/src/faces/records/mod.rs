@@ -260,12 +260,42 @@ pub fn edge_line(e: &[u32]) -> u32 {
     e[3] & 0xffff
 }
 
-/// Segment ab cut into equal pieces of at most a bin: its ends and the cuts in order from a, in whole
-/// units from a, the same in every cell. So an edge's ends lie within a bin of where a bin lists it.
+/// Segment ab cut where it crosses the lines of the bin grid: its ends and the crossings in order from a,
+/// each rounded to the nearest unit from the exact line. Each piece lies in one bin. The cell origins lie
+/// on the grid, so the grid is global, and two cells that hold segments of one line cut them at the same
+/// points, whatever ends each of them sees.
 fn bin_cuts(a: P, b: P) -> Vec<P> {
-    let d = [i64::from(b[0] - a[0]), i64::from(b[1] - a[1])];
-    let n = libm::ceil(libm::hypot(d[0] as f64, d[1] as f64) / f64::from(BIN_UNITS)).max(1.0) as i64;
-    (0..=n).map(|k| [0, 1].map(|i| a[i] + (2 * k * d[i] + n).div_euclid(2 * n) as i32)).collect()
+    let (a64, d) = (a.map(i64::from), [i64::from(b[0] - a[0]), i64::from(b[1] - a[1])]);
+    let unit = i64::from(BIN_UNITS);
+    // The crossings of one axis's grid lines in order from a: the share num / |d[axis]| of ab and the point.
+    let crossings = |axis: usize| -> Vec<(i64, P)> {
+        let (lo, hi) = (a64[axis].min(a64[axis] + d[axis]), a64[axis].max(a64[axis] + d[axis]));
+        let (den, o) = (d[axis].abs(), 1 - axis);
+        let mut out: Vec<(i64, P)> = (lo.div_euclid(unit) + 1..=(hi - 1).div_euclid(unit))
+            .map(|k| {
+                let num = (k * unit - a64[axis]) * d[axis].signum();
+                // The other coordinate on the line through a and b, (a·den + num·d) / den, rounded half up.
+                let other = (2 * (a64[o] * den + num * d[o]) + den).div_euclid(2 * den);
+                let mut q = [(k * unit) as i32; 2];
+                q[o] = other as i32;
+                (num, q)
+            })
+            .collect();
+        if d[axis] < 0 {
+            out.reverse();
+        }
+        out
+    };
+    let (x, y) = (crossings(0), crossings(1));
+    let (mut i, mut j, mut out) = (0, 0, vec![a]);
+    while i < x.len() || j < y.len() {
+        let take_x = j == y.len() || (i < x.len() && x[i].0 * d[1].abs() <= y[j].0 * d[0].abs());
+        out.push(if take_x { x[i].1 } else { y[j].1 });
+        (i, j) = if take_x { (i + 1, j) } else { (i, j + 1) };
+    }
+    out.push(b);
+    out.dedup();
+    out
 }
 
 /// Per bin the outline edges (by index, under 2^16) within their host's reach of its square, in the
@@ -1588,6 +1618,20 @@ fn decide(words: &[u32], covered: &[u32], q: [f64; 2], segs: &[u32]) -> Option<u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn two_segments_of_one_line_are_cut_at_the_same_points_whatever_their_far_ends() {
+        // From a point on a cell line, along one exact line, to two far ends; north-south and oblique.
+        for (a, step, far) in [([1000, 0], [0, 1], [32222, 32768]), ([5, 40], [3, 7], [4600, 4681])] {
+            let end = |n: i32| [a[0] + n * step[0], a[1] + n * step[1]];
+            let (p, q) = (bin_cuts(a, end(far[0])), bin_cuts(a, end(far[1])));
+            let shared = p.len().min(q.len()) - 1;
+            assert!(shared >= 3, "{p:?}");
+            assert_eq!(p[..shared], q[..shared]);
+            // Each piece spans at most a bin.
+            assert!(q.windows(2).all(|w| (0..2).all(|i| (w[1][i] - w[0][i]).abs() <= BIN_UNITS)), "{q:?}");
+        }
+    }
 
     #[test]
     fn a_guest_stops_where_its_look_is_not_the_hosts_or_its_finish_keeps_its_tread() {
