@@ -73,9 +73,9 @@
         grid-template-columns: calc(var(--side-width) - 16px) minmax(0, 1fr) auto;
         align-items: center;
         gap: 16px;
-        height: 56px;
+        min-height: 56px;
         flex: none;
-        padding: 0 16px;
+        padding: 8px 16px;
         border-bottom: 1px solid var(--line);
         background: var(--panel);
     }
@@ -92,10 +92,12 @@
         white-space: nowrap;
         font: 700 17px var(--sans);
     }
+    /* Preset wraps below Activity where a wide side panel leaves the middle column too narrow. */
     .ride {
         display: flex;
         align-items: center;
-        gap: 16px;
+        flex-wrap: wrap;
+        gap: 4px 16px;
     }
     .preference {
         display: flex;
@@ -124,15 +126,15 @@
     .icon:hover:not(:disabled) {
         background: var(--parchment-2);
     }
-    @media (max-width: 1050px) {
-        .trip-bar { grid-template-columns: minmax(0, 1fr) auto; height: auto; min-height: 56px; padding-block: 8px; gap: 8px 16px; }
-        .ride { grid-column: 1; grid-row: 2; }
-        .actions { grid-column: 2; grid-row: 1 / span 2; }
+    /* Narrower, the middle column beside the panel-wide name has no room for Activity and Preset. */
+    @media (max-width: 1200px) {
+        .trip-bar { grid-template-columns: minmax(0, 1fr) auto; gap: 8px 16px; }
+        .ride { grid-column: 1 / -1; grid-row: 2; }
+        .actions { grid-column: 2; grid-row: 1; }
     }
     @media (max-width: 760px) {
         .trip-bar { grid-template-columns: minmax(0, 1fr); }
         .trip-name h1 { flex: 1; }
-        .ride { flex-wrap: wrap; }
         .actions { grid-column: 1; grid-row: 3; justify-content: flex-end; }
     }
     .actions > :global(.versions) {
