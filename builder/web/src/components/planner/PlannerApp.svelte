@@ -10,7 +10,6 @@
     import Itinerary from './Itinerary.svelte';
     import TripRow from './TripRow.svelte';
     import RouteList from './RouteList.svelte';
-    import RouteStats from './RouteStats.svelte';
     import CompareScreen from './CompareScreen.svelte';
     import QueryResults from './QueryResults.svelte';
     import MapCallout, { type CalloutKind, type EditableKind } from './MapCallout.svelte';
@@ -233,6 +232,12 @@
     const campsites = $derived([...proposals].flatMap(([night, { place }]) => place && stayKind(place.place.placeKind) === 'camp' ? [{ night, place: place.place }] : []));
     const planned = $derived(withProposals(shown.trip, shown.line, proposals));
     const view = $derived(planView(planned, shown.line));
+    // Ascent and descent stay unknown while a part of the line has no elevation.
+    const totals = $derived.by(() => {
+        if (!visualRoute) return null;
+        const known = visualRoute.unknownElevationKm === 0;
+        return { ...view.summary, ascent: known ? view.summary.ascent : null, descent: known ? view.summary.descent : null, walking: shown.trip.bike === 'hiking' };
+    });
     const coordinates = $derived(view.coordinates);
     const lengths = $derived(cumulative(coordinates));
     const total = $derived(view.total);
@@ -1241,9 +1246,6 @@
                         {/if}
                     </div>
                 {/if}
-                {#if !focusedDay && nightPage === null && visualRoute}
-                    <div class="trip-summary"><RouteStats distance={view.summary.distance} ascent={view.line?.unknownElevationKm === 0 ? view.summary.ascent : null} descent={view.line?.unknownElevationKm === 0 ? view.summary.descent : null} walking={shown.trip.bike === 'hiking'} hours={view.line ? view.summary.hours : null} /></div>
-                {/if}
                 {#if !focusedDay && nightPage === null}<RouteNotes notes={routeNotes} shown={shownNote} onShow={showNote} />{/if}
                 <div class="pane-scroll" inert={multi && !currentRoute && routingStatus === 'Calculating route…'}>
                     {#if multi && visualRoute && (currentRoute || routingStatus === 'Calculating route…')}
@@ -1361,7 +1363,7 @@
             {:else}
             <Profile
                 lineData={visualRoute} walking={shown.trip.bike === 'hiking'} singleRoute={!multi} height={drawerHeight} open={profileOpen} onToggle={() => profileOpen = !profileOpen} {total} {days} {dayLabels} {theme}
-                activeNight={focusedDay?.ridingNumber ?? 0} band={nightBand} window={profileWindow} {rests}
+                activeNight={focusedDay?.ridingNumber ?? 0} band={nightBand} window={profileWindow} {rests} {totals}
                 focus={focusedDay ? { from: focusedDay.from, to: focusedDay.to, label: `Day ${focusedDay.number}` } : null}
                 onNight={openNight} onDayEndDrag={moveDayEnd} onHover={(progress) => hoverProgress = progress}
             >
@@ -1569,7 +1571,6 @@
         min-height: 0;
         background: var(--panel);
     }
-    .trip-summary { padding: 0 16px; }
     .trip-settings { padding: 4px 16px 12px; border-bottom: 1px solid var(--line); }
     .back-to-routes { display: flex; align-items: center; gap: 6px; min-height: 32px; margin: -4px 12px 8px; padding: 0 6px; border-radius: 6px; color: var(--ink-soft); font-size: 13px; text-align: left; }
     .back-to-routes:hover { background: var(--parchment-2); color: var(--ink); }

@@ -1,6 +1,7 @@
 <script lang="ts">
-    import type { Snippet } from 'svelte';
+    import type { ComponentProps, Snippet } from 'svelte';
     import DrawerTitle from './DrawerTitle.svelte';
+    import PlanTotals from './PlanTotals.svelte';
     import Surface from './PlannerSurface.svelte';
     import Segmented from './Segmented.svelte';
     import Icon from './PlannerIcon.svelte';
@@ -15,7 +16,7 @@
 
     let {
         lineData, total, days, dayLabels, walking = false, singleRoute = true, theme = 'light', activeNight, band, focus = null, window: view = { from: 0, to: 1 }, height = 260, open = true,
-        rests = [], onToggle, onNight, onDayEndDrag, onHover, strip,
+        rests = [], totals = null, onToggle, onNight, onDayEndDrag, onHover, strip,
     }: {
         /** Route length in km. */
         lineData?: RoutingLine;
@@ -37,6 +38,8 @@
         open?: boolean;
         /** Each rest day: the riding day it follows, the rider's name for it and the place of that night. */
         rests?: { after: number; name?: string; town: string }[];
+        /** The totals of the whole plan, whatever stretch the profile shows. */
+        totals?: ComponentProps<typeof PlanTotals> | null;
         onToggle: () => void;
         onNight: (night: number) => void;
         onDayEndDrag: (night: number, progress: number) => void;
@@ -45,6 +48,9 @@
         strip?: Snippet<[number, number, number[], (progress: number | null) => void]>;
     } = $props();
 
+    // The drawer height counts one title row: the top padding, the row of the range switch and its margin.
+    // A wrapped title row takes its height from the map, so the plot keeps its size.
+    const bodyHeight = $derived(height - 42);
     const samples = $derived(profileSamples(lineData));
     const known = $derived(samples.flatMap(s => s.height === null ? [] : [s.height]));
     const { low, high } = $derived(heightRange(samples));
@@ -153,9 +159,10 @@
     }
 </script>
 
-<section class="elevation" class:open style:height={`${height}px`} aria-label="Elevation profile">
+<section class="elevation" class:open aria-label="Elevation profile">
     <div class="title">
-        <DrawerTitle title="Elevation" {open} {onToggle} />
+        <DrawerTitle title="Elevation" {open} {onToggle} iconOnly={!!totals} />
+        {#if totals}<PlanTotals {...totals} />{/if}
         {#if open}
         <Segmented compact label="Profile range" value={range} onChange={(value) => range = value}
             options={[{ value: 'map', label: focus?.label ?? 'Map view' }, { value: 'route', label: 'Whole route' }]} />
@@ -164,7 +171,7 @@
     </div>
     {#if open}
     <!-- Scrolls when the strips do not fit, so they never cover the line below the drawer. -->
-    <div class="body" class:more bind:this={body} onscroll={measure}><div class="content" bind:this={content}>
+    <div class="body" class:more style:height={`${bodyHeight}px`} bind:this={body} onscroll={measure}><div class="content" bind:this={content}>
     {#if !known.length}<p class="unavailable">Elevation unavailable</p>{/if}
     {#if restColumns.length}
         <div class="rests" aria-hidden="true">
@@ -245,14 +252,16 @@
         --band: color-mix(in srgb, var(--amber) 24%, var(--panel));
         display: flex;
         flex-direction: column;
-        flex: none;
+        /* At a short window, the map holds its minimum height and the body scrolls. */
+        flex: 0 1 auto;
+        min-height: 0;
         container-type: inline-size;
         padding: 8px 24px;
         background: var(--panel);
     }
     .elevation.open { padding-bottom: 0; }
     .body {
-        flex: 1;
+        flex: 0 1 auto;
         min-height: 0;
         overflow-y: auto;
         scrollbar-width: thin;
@@ -277,6 +286,7 @@
     }
     .title {
         display: flex;
+        flex: none;
         align-items: center;
         gap: 12px;
         flex-wrap: wrap;
