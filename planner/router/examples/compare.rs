@@ -1,9 +1,16 @@
 //! Routes one request set on two packages and prints each request whose cost or error differs:
 //! `compare OLD NEW COUNT SEED`. A request runs from the middle of one road of OLD to the middle of
-//! another, at most 75 km away. A request with `snap_truncated` in either answer is skipped: its
-//! snap candidates depend on the road IDs. Exits with 1 on a difference, with 2 when the packages
-//! have other profiles.
-use planner_router::{data::RoutingData, model::Point, Control, Error, Request, Router};
+//! another, at most 75 km away. When more candidates are near a point than the snap keeps
+//! (`snap_truncated`), the snap cuts them by distance, then by road ID: so only where the last kept
+//! and the first cut candidate are at the same distance can other road IDs keep other candidates.
+//! A difference is a fault unless a point of its request has such a tie. Exits with 1 on a fault,
+//! with 2 when the packages have other profiles.
+use planner_router::{
+    data::RoutingData,
+    model::{Point, NO_ELEVATION},
+    snap::Policy,
+    Control, Error, Request, Router,
+};
 use std::path::Path;
 
 /// The point at half the length of `shape`.
@@ -53,27 +60,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             requests.push([a, b].map(|p| [f64::from(p.lon) * 1e-6, f64::from(p.lat) * 1e-6]));
         }
     }
+    // Whether the snap of `point` on `package` cuts between two candidates at the same distance.
+    let tie = |package: &planner_router::data::Selection<_>, [lon, lat]: [f64; 2], profile: &str| {
+        let point = Point { lat: (lat * 1e6).round() as i32, lon: (lon * 1e6).round() as i32, elevation: NO_ELEVATION };
+        let kept = Policy::default().max_candidates;
+        let found = package.snap(point, profile, Policy { max_candidates: kept + 1, ..Policy::default() })?;
+        let distance = |i: usize| found.retained.get(i).map(|candidate| candidate.snap_distance_m);
+        Ok::<_, Error>(distance(kept).is_some() && distance(kept - 1) == distance(kept))
+    };
     let (old_budget, new_budget) = (old.default_budget(), new.default_budget());
-    let mut routers = [Router::new(old, old_budget), Router::new(new, new_budget)];
-    let (mut skipped, mut differences) = (0, 0);
+    let mut routers = [Router::new(old.fork(), old_budget), Router::new(new.fork(), new_budget)];
+    let (mut truncated, mut differences, mut truncated_differences, mut ties) = (0, 0, 0, 0);
     for profile in &profiles {
         for points in &requests {
             let request: Request = serde_json::from_value(serde_json::json!({"points": points, "profile": profile}))?;
             let answers = routers.each_mut().map(|router| router.routes(&request, &Control::default()));
-            if answers.iter().any(|answer| answer.as_ref().is_ok_and(|response| response.routes[0].snap_truncated)) {
-                skipped += 1;
-                continue;
-            }
-            let [old, new] = answers.map(|answer| match answer {
+            let cut =
+                answers.iter().any(|answer| answer.as_ref().is_ok_and(|response| response.routes[0].snap_truncated));
+            truncated += usize::from(cut);
+            let [old_cost, new_cost] = answers.map(|answer| match answer {
                 Ok(response) => response.routes[0].cost.to_string(),
                 Err(error) => kind(&error),
             });
-            if old != new {
-                println!("{profile}, {points:?}, {old}, {new}");
-                differences += 1;
+            if old_cost == new_cost {
+                continue;
             }
+            if !cut {
+                println!("{profile}, {points:?}, {old_cost}, {new_cost}");
+                differences += 1;
+                continue;
+            }
+            let mut at_tie = false;
+            for &point in points {
+                at_tie |= tie(&old, point, profile)? || tie(&new, point, profile)?;
+            }
+            println!("truncated, tie at the cut {at_tie}: {profile}, {points:?}, {old_cost}, {new_cost}");
+            truncated_differences += 1;
+            ties += usize::from(at_tie);
         }
     }
-    println!("{} requests, {skipped} skipped, {differences} differences", profiles.len() * requests.len());
-    std::process::exit(i32::from(differences > 0));
+    println!(
+        "{} requests, {differences} differences; {truncated} truncated, {truncated_differences} differences, {ties} of them at a tie",
+        profiles.len() * requests.len()
+    );
+    std::process::exit(i32::from(differences + truncated_differences > ties));
 }
