@@ -431,7 +431,7 @@ pub fn prepare(
             })
             .collect::<Vec<Result<_, String>>>()
     });
-    let prepared = prepared.into_iter().collect::<Result<Vec<_>, _>>()?;
+    let prepared = cost::in_order(prepared)?;
     drop(states);
     work::Guard::stage("writer");
     let mut manifest = Manifest {

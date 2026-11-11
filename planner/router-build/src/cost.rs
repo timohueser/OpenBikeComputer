@@ -126,7 +126,7 @@ pub(crate) fn way_basis(way: &Way, reversed: bool, profile: &Profile) -> Option<
 
 /// The results of the chunks of a parallel pass, or the first error in chunk order: the same
 /// error for each thread count.
-fn in_order<T>(results: Vec<Result<T, String>>) -> Result<Vec<T>, String> {
+pub(crate) fn in_order<T>(results: Vec<Result<T, String>>) -> Result<Vec<T>, String> {
     results.into_iter().collect()
 }
 
@@ -293,9 +293,12 @@ pub(crate) fn road_pass(
                     }
                 }
             }
-            Ok(())
+            Ok::<_, String>(())
         });
-        in_order(results.collect())?;
+        // The first error in chunk order; rayon skips the chunks after it that have not started.
+        if let Some(Err(error)) = results.find_first(Result::is_err) {
+            return Err(error);
+        }
     }
     Ok(costs)
 }
