@@ -1,17 +1,20 @@
 <script lang="ts">
     import Icon from './PlannerIcon.svelte';
+    import PlanTotals from './PlanTotals.svelte';
     import Select from './PlannerSelect.svelte';
     import VersionsMenu from './VersionsMenu.svelte';
-    import { onMount } from 'svelte';
+    import { onMount, type ComponentProps } from 'svelte';
     import { planPreset, ridingProfiles, servedPresets, type BikeType } from '../../lib/planner/riding-profiles';
     import { planTitle, type Trip } from '../../lib/planner/editor';
     import { regionProfiles, type RoutingLine } from '../../lib/planner/routing';
     import type { Version } from '../../lib/planner/versions';
 
-    let { trip, line, name, versions, openId, canUndo, canRedo, draftSavedAt, draftError, onChange, onUndo, onRedo, onOpen, onSaveNew, onVersions, onCompare, onNew, onLibrary, ready }: {
+    let { trip, line, name, totals, versions, openId, canUndo, canRedo, draftSavedAt, draftError, onChange, onUndo, onRedo, onOpen, onSaveNew, onVersions, onCompare, onNew, onLibrary, ready }: {
         trip: Trip;
         line?: RoutingLine;
         name: string;
+        /** The totals of the whole plan, or null while it has no route. */
+        totals: ComponentProps<typeof PlanTotals> | null;
         versions: Version[];
         openId?: string;
         ready: boolean;
@@ -57,6 +60,7 @@
             <Select label="Preset" value={planPreset(bike, trip.preset)} options={servedPresets(bike, profiles).map(value => ({ value, label: value, icon: value === 'Less climbing' ? 'less-climbing' : 'sliders' }))}
                 onChange={(preset) => onChange({ preset }, 'Route preference changed')} />
         </div>
+        {#if totals}<PlanTotals {...totals} />{/if}
     </div>
     <div class="actions">
         <button type="button" class="planner-action quiet" disabled={!ready || !trip.points.length} onclick={onNew}>New {trip.mode === 'route' ? 'route' : 'trip'}</button>
@@ -73,9 +77,9 @@
         grid-template-columns: calc(var(--side-width) - 16px) minmax(0, 1fr) auto;
         align-items: center;
         gap: 16px;
-        height: 56px;
+        min-height: 56px;
         flex: none;
-        padding: 0 16px;
+        padding: 8px 16px;
         border-bottom: 1px solid var(--line);
         background: var(--panel);
     }
@@ -92,10 +96,12 @@
         white-space: nowrap;
         font: 700 17px var(--sans);
     }
+    /* The totals go to a row of their own where they do not fit beside Activity and Preset. */
     .ride {
         display: flex;
         align-items: center;
-        gap: 16px;
+        flex-wrap: wrap;
+        gap: 4px 16px;
     }
     .preference {
         display: flex;
@@ -124,15 +130,15 @@
     .icon:hover:not(:disabled) {
         background: var(--parchment-2);
     }
-    @media (max-width: 1050px) {
-        .trip-bar { grid-template-columns: minmax(0, 1fr) auto; height: auto; min-height: 56px; padding-block: 8px; gap: 8px 16px; }
-        .ride { grid-column: 1; grid-row: 2; }
-        .actions { grid-column: 2; grid-row: 1 / span 2; }
+    /* Narrower, the middle column beside the panel-wide name has no room for Activity and Preset. */
+    @media (max-width: 1200px) {
+        .trip-bar { grid-template-columns: minmax(0, 1fr) auto; gap: 8px 16px; }
+        .ride { grid-column: 1 / -1; grid-row: 2; }
+        .actions { grid-column: 2; grid-row: 1; }
     }
     @media (max-width: 760px) {
         .trip-bar { grid-template-columns: minmax(0, 1fr); }
         .trip-name h1 { flex: 1; }
-        .ride { flex-wrap: wrap; }
         .actions { grid-column: 1; grid-row: 3; justify-content: flex-end; }
     }
     .actions > :global(.versions) {
