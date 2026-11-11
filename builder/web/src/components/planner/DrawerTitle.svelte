@@ -1,11 +1,11 @@
 <script lang="ts">
     import Icon from './PlannerIcon.svelte';
 
-    /** The title of the elevation drawer, which opens and closes it. */
-    let { title, open, onToggle }: { title: string; open: boolean; onToggle: () => void } = $props();
+    /** The title of the elevation drawer, which opens and closes it. `iconOnly` shows the chevron alone; the title stays for a screen reader and a pointer. */
+    let { title, open, onToggle, iconOnly = false }: { title: string; open: boolean; onToggle: () => void; iconOnly?: boolean } = $props();
 </script>
 
-<button type="button" aria-expanded={open} title={open ? 'Close the drawer' : 'Open the drawer'} onclick={onToggle}>
+<button type="button" class:icon-only={iconOnly} aria-expanded={open} title={iconOnly ? title : open ? 'Close the drawer' : 'Open the drawer'} onclick={onToggle}>
     <Icon name="down" size={16} /><strong>{title}</strong>
 </button>
 
@@ -17,5 +17,8 @@
     button:hover :global(svg) { color: var(--ink); }
     button:focus-visible { outline: 2px solid var(--forest); outline-offset: 2px; }
     strong { font-weight: 600; }
+    /* The chevron stays at the content edge, in a target of 28 px. */
+    .icon-only { justify-content: center; min-width: 28px; margin-left: -6px; padding: 0; }
+    .icon-only strong { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
     @media (prefers-reduced-motion: reduce) { button :global(svg) { transition: none; } }
 </style>

@@ -161,7 +161,7 @@
 
 <section class="elevation" class:open aria-label="Elevation profile">
     <div class="title">
-        <DrawerTitle title="Elevation" {open} {onToggle} />
+        <DrawerTitle title="Elevation" {open} {onToggle} iconOnly={!!totals} />
         {#if totals}<PlanTotals {...totals} />{/if}
         {#if open}
         <Segmented compact label="Profile range" value={range} onChange={(value) => range = value}

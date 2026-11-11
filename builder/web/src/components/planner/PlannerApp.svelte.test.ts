@@ -418,6 +418,16 @@ describe('planner app transitions', () => {
         expect(document.querySelector('.elevation .title .plan-totals')?.textContent).toBe(totals);
     });
 
+    it('names the drawer button Elevation while the totals hide its label', async () => {
+        await startApp();
+        await vi.waitFor(() => expect(document.querySelector('.elevation .title .plan-totals')).not.toBeNull());
+        const toggle = document.querySelector<HTMLButtonElement>('.elevation .title > button')!;
+        expect(toggle.classList.contains('icon-only')).toBe(true);
+        expect(toggle.textContent?.trim()).toBe('Elevation');
+        expect(toggle.title).toBe('Elevation');
+        expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    });
+
     it('restores the focused day after a different-day search', async () => {
         await startApp();
         await tick();
