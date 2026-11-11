@@ -246,6 +246,13 @@ mod tests {
         let mut corner = Vec::new();
         grid_points([-4, -4], [4, 4], CELL_UNITS, &mut corner);
         assert_eq!(corner, [[0, 0]]);
+        // Along a tile line and along a cell line: the tile corners, exact, with no step.
+        let mut along = Vec::new();
+        grid_points([64, u - 70], [64, u + 70], 64, &mut along);
+        assert_eq!(along, [[64, u - 64], [64, u], [64, u + 64]]);
+        let mut on = Vec::new();
+        grid_points([-70, u], [70, u], 64, &mut on);
+        assert_eq!(on, [[-64, u], [0, u], [64, u]]);
         // The line y = 64 crossed 0.3 units east or west of the cell line x = 0: one unit nearer the
         // exact point, not onto the line.
         for (b, x) in [([1, 29], 1), ([-1, 29], -1)] {

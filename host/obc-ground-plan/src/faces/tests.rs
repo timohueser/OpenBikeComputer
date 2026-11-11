@@ -697,10 +697,12 @@ fn two_cells_give_one_side_to_their_line_where_an_edge_passes_a_tile_corner_on_i
     // A ring's edge leaves the cell line x = C at y = t + 27 or t + 15 and crosses the tile line y = t
     // 0.53 or 0.30 units off the cell line, beside the tile corner (C, t); or it crosses the cell line
     // at that corner. Each also mirrored and reversed. Per window, the segments on the cell line after
-    // the snap rounding, each with whether its patch lies in the prepared ring.
+    // the snap rounding, each with whether its patch lies in the ring, which goes through `prepare`
+    // twice (as `split_legs` does) and then gets its tile-line points, as `candidates` gives them.
     let (c, t) = (CELL_UNITS as i32, 7 * slice::TILE as i32);
     let sides = |window: [i32; 4], ring: &[P]| {
-        let rings = prepare(&vec![ring.to_vec()]);
+        let rings: Rings =
+            prepare(&prepare(&vec![ring.to_vec()])).iter().map(|r| geom::with_grid_lines(r, slice::TILE)).collect();
         let (patches, _) = slice(window, &rings, &[]);
         let snapped = snap_round(&patches);
         let at = |i: u32| snapped.verts[i as usize];
