@@ -64,7 +64,7 @@ fn every_fixture_cell_keeps_its_steps_on_face_edges_and_agrees_with_its_neighbou
     let scanned = cells.len();
     cells.extend(places);
     let built = fixture.map(&cells, |key, input| {
-        let graph = graph::build(key, &input, &rules.sections, &rules.structures);
+        let graph = graph::build(key, &input, &rules.sections);
         let words = records::build(&graph, &input, rules, key, 0, true).near.words;
         let ours = cells[..scanned].contains(&key);
         let s = if ours { scan(&words, &input.terrain, key, GRID_M) } else { Default::default() };

@@ -208,7 +208,8 @@ impl Rules {
             return Err("roads.json: a return_grade of 0".into());
         }
         let mut reaches = reach_rows(&plan, band_m(&sections), inner_max_m(&sections), radius_max_m(&sections));
-        reaches.push(structures.reach());
+        let graph_m = (sections.reaches().iter()).filter(|r| r.owner == "graph").map(Reach::metres).fold(0.0, f64::max);
+        reaches.push(structures.reach(graph_m));
         for row in reaches.iter().filter(|r| r.chain) {
             if row.metres() > CHAIN_MAX_M {
                 return Err(format!(

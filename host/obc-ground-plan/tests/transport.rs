@@ -138,8 +138,7 @@ fn a_cell_build_gives_the_faces_and_near_records_of_the_whole_records_build_and_
     let rules = Rules::embedded();
     let cell = build_cell(&bytes, rules, &mut || 0.0).unwrap();
     let input = Request::decode(&bytes).unwrap().input(&mut TileCache::new(1)).unwrap();
-    let whole =
-        records::build(&graph::build(CELL, &input, &rules.sections, &rules.structures), &input, rules, CELL, 0, true);
+    let whole = records::build(&graph::build(CELL, &input, &rules.sections), &input, rules, CELL, 0, true);
     assert_eq!(cell.faces, whole.faces);
     assert_eq!(cell.records, whole.near.words);
     // The second build reads the tiles that the first parsed: a load of one would panic.

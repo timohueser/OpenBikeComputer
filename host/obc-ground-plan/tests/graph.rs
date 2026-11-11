@@ -1,6 +1,6 @@
-//! The way graph over every cell of the TrailView fixture: the invariants G1 to G4 and G7 to G9 of
-//! `check`, equal graphs and levels near the border of two neighbouring cells (G5), and the same bytes
-//! twice (G6).
+//! The way graph over every cell of the TrailView fixture: the invariants G1 to G4 of `check` and G7
+//! to G9 of `check_levels`, equal graphs and levels near the border of two neighbouring cells (G5),
+//! and the same bytes twice (G6).
 
 #[path = "fixture/mod.rs"]
 mod fixture;
@@ -8,14 +8,16 @@ mod fixture;
 use std::collections::{BTreeMap, BTreeSet};
 
 use fixture::{default_dir, Fixture};
+use obc_ground_plan::faces::Rules;
 use obc_ground_plan::frame::{metres_per_unit, CellKey, CELL_UNITS};
-use obc_ground_plan::graph::{build, check, Arm, Sample, WayGraph};
+use obc_ground_plan::graph::{build, check, check_levels, levels, Arm, Sample, WayGraph};
 use obc_ground_plan::sections::Sections;
+use obc_ground_plan::CellInput;
 
 /// The band on each side of a shared border where two cells must agree.
 const BAND_M: f64 = 100.0;
 
-/// The fixture's cells whose feature tiles the fixture holds, built.
+/// The fixture's cells whose feature tiles the fixture holds, built, with their levels.
 fn graphs() -> BTreeMap<CellKey, WayGraph> {
     let mut fixture = Fixture::open(&default_dir());
     let dir = default_dir();
@@ -23,20 +25,13 @@ fn graphs() -> BTreeMap<CellKey, WayGraph> {
         .filter(|k| k.feature_tiles().iter().all(|&(c, r)| fixture::feature_tile(&dir, c, r).is_some()))
         .collect();
     assert!(cells.len() > 100, "{} cells", cells.len());
-    cells
-        .into_iter()
-        .map(|key| {
-            (
-                key,
-                build(
-                    key,
-                    &fixture.cell(key),
-                    Sections::embedded(),
-                    &obc_ground_plan::faces::Rules::embedded().structures,
-                ),
-            )
-        })
-        .collect()
+    cells.into_iter().map(|key| (key, built(key, &fixture.cell(key)))).collect()
+}
+
+fn built(key: CellKey, input: &CellInput) -> WayGraph {
+    let mut g = build(key, input, Sections::embedded());
+    levels(&mut g, input, Sections::embedded(), &Rules::embedded().structures);
+    g
 }
 
 #[test]
@@ -46,19 +41,16 @@ fn every_fixture_cell_holds_g1_to_g4_and_g6() {
     let mut faults = Vec::new();
     let (mut junctions, mut crossings) = (0, 0);
     for (key, graph) in &graphs {
-        faults.extend(check(graph).into_iter().map(|f| format!("{key:?} {}: {}", f.check, f.what)));
+        let input = fixture.cell(*key);
+        let lv = check_levels(graph, &input, Sections::embedded(), &Rules::embedded().structures);
+        faults.extend(check(graph).into_iter().chain(lv).map(|f| format!("{key:?} {}: {}", f.check, f.what)));
         junctions += graph.junctions.iter().filter(|j| j.owned).count();
         crossings += graph.crossings.iter().filter(|c| c.owned).count();
     }
     println!("{} cells, {junctions} owned junctions, {crossings} owned crossings", graphs.len());
     assert!(faults.is_empty(), "{} faults:\n{}", faults.len(), faults[..faults.len().min(40)].join("\n"));
     for key in graphs.keys().step_by(7) {
-        let again = build(
-            *key,
-            &fixture.cell(*key),
-            Sections::embedded(),
-            &obc_ground_plan::faces::Rules::embedded().structures,
-        );
+        let again = built(*key, &fixture.cell(*key));
         assert_eq!(format!("{again:?}"), format!("{:?}", graphs[key]), "G6: {key:?} builds twice the same");
     }
     assert!(junctions > 100 && crossings > 10);
@@ -130,25 +122,24 @@ fn band(graph: &WayGraph, near: &dyn Fn([i64; 2]) -> bool) -> BTreeSet<String> {
         out.insert(format!("end {:?} {:?} {:?}", global(e.pos), e.network, arms(std::slice::from_ref(&e.arm))));
     }
     for c in graph.crossings.iter().filter(|c| near(global(c.pos))) {
-        let step = c.ladder.as_ref().map(|l| l.step);
+        // The step and whether the upper way is the one that ends.
+        let step = c.ladder.as_ref().map(|l| (l.step, l.ends.map(|e| e == l.upper)));
         out.insert(format!("crossing {:?} {:?} {:?} {} {step:?}", global(c.pos), c.kind, c.source, c.angle_rad));
     }
-    // The levels: the state and storey at each sample of a way with a state, and the end lines.
-    let lv = &graph.levels;
-    for r in &lv.runs {
-        let storey = r.sheet.map_or(0, |s| lv.sheets[s as usize].storey);
+    // The levels: the state at each sample of a way with a state, and the end lines.
+    for r in &graph.levels.runs {
         let way = &graph.ways[r.way as usize];
         let inside = |s: &&Sample| (s.span, s.u) >= (r.from.span, r.from.u) && (s.span, s.u) <= (r.to.span, r.to.u);
         for s in graph.samples[way.samples.start as usize..way.samples.end as usize].iter().filter(inside) {
             if near(global(s.pos)) {
-                out.insert(format!("state {:?} {:?} {storey}", global(s.pos), r.state));
+                out.insert(format!("state {:?} {:?}", global(s.pos), r.state));
             }
         }
     }
-    for l in &lv.end_lines {
+    for l in &graph.levels.end_lines {
         let ends = [global(l.ends[0]), global(l.ends[1])];
         if near(ends[0]) || near(ends[1]) {
-            out.insert(format!("end line {:?} {ends:?} {}", l.kind, l.ways.len()));
+            out.insert(format!("end line {:?} {ends:?}", l.kind));
         }
     }
     out

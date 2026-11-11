@@ -105,8 +105,12 @@ fn graph(lines: &[Line]) -> WayGraph {
 }
 
 fn graph_of(key: CellKey, lines: &[Line]) -> WayGraph {
-    let g = build(key, &input_of(key, lines), Sections::embedded(), &crate::faces::Rules::embedded().structures);
+    let input = input_of(key, lines);
+    let mut g = build(key, &input, Sections::embedded());
     assert_eq!(check(&g), Vec::new());
+    let structures = &crate::faces::Rules::embedded().structures;
+    levels(&mut g, &input, Sections::embedded(), structures);
+    assert_eq!(check_levels(&g, &input, Sections::embedded(), structures), Vec::new());
     g
 }
 
@@ -231,12 +235,7 @@ fn a_waters_end_at_a_tile_line_reads_the_tiles_next_vertex() {
         if let Some(e) = e {
             features.push(copy(&tiles, e, -2..=3));
         }
-        let g = build(
-            key,
-            &CellInput { key, features, terrain: Terrain::new(key, Vec::new()) },
-            Sections::embedded(),
-            &crate::faces::Rules::embedded().structures,
-        );
+        let g = build(key, &CellInput { key, features, terrain: Terrain::new(key, Vec::new()) }, Sections::embedded());
         let v = g.parts.iter().flat_map(|part| &part.vertices).find(|v| v.pos == [p(0).x, p(0).y]).unwrap();
         v.tangent
     };
@@ -291,12 +290,7 @@ fn a_way_across_a_tile_line_is_one_part_with_each_spans_along_from_its_owner() {
     };
     let (west, east) = (holding(p(-1)), holding(p(1)));
     let features = vec![copy(west, -4..=1, 0.0), copy(east, -1..=4, 30.1)];
-    let g = build(
-        key,
-        &CellInput { key, features, terrain: Terrain::new(key, Vec::new()) },
-        Sections::embedded(),
-        &crate::faces::Rules::embedded().structures,
-    );
+    let g = build(key, &CellInput { key, features, terrain: Terrain::new(key, Vec::new()) }, Sections::embedded());
     assert_eq!((g.parts.len(), g.joints.len()), (1, 0));
     let along: Vec<f64> = g.parts[0].spans.iter().map(|s| s.along0_m).collect();
     // The west tile owns the four spans before the line and the one that meets it.
@@ -777,4 +771,26 @@ fn the_ladder_follows_the_room_by_the_class_rows_at_every_boundary() {
             assert_eq!(ladder.ends, Some(ends), "{what}");
         }
     }
+}
+
+#[test]
+fn the_room_reads_each_way_on_its_own_curve() {
+    // A residential deck on a hairpin of radius 12 m over a road, both level: the room at every corner
+    // of the overlap is the height difference, though the hairpin's far leg passes within 24 m.
+    let arc: Vec<[f64; 2]> = (0..=12)
+        .map(|i| {
+            let a = core::f64::consts::PI * f64::from(i) / 12.0;
+            [12.0 * libm::cos(a) - 12.0, 12.0 * libm::sin(a) - 30.0]
+        })
+        .collect();
+    let mut points = vec![[0.0, -60.0]];
+    points.extend(arc.iter().rev().map(|p| [p[0] + 24.0, -p[1] - 60.0]));
+    let deck = line("road", &[("highway", "residential"), ("bridge", "yes"), ("deck", "1")], &points, 6.0);
+    let road = line("road", &[("highway", "residential")], &[[-40.0, -40.0], [40.0, -40.0]], 0.0);
+    let g = graph(&[deck, road]);
+    for c in g.crossings.iter().filter_map(|c| c.ladder.as_ref()) {
+        assert!((c.room_m - 6.0).abs() < 0.05, "room {}", c.room_m);
+        assert_eq!(c.step, Step::Full);
+    }
+    assert!(g.crossings.iter().any(|c| c.ladder.is_some()));
 }

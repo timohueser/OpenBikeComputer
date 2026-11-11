@@ -218,14 +218,8 @@ mod tests {
         let key = CellKey { x: 34_307, y: 23_107 };
         let input = crate::CellInput { key, features: Vec::new(), terrain: Terrain::new(key, Vec::new()) };
         let rules = Rules::embedded();
-        let (plan, near, _) = records::near(
-            &crate::graph::build(key, &input, &rules.sections, &rules.structures),
-            &input,
-            rules,
-            key,
-            0,
-            true,
-        );
+        let (plan, near, _) =
+            records::near(&crate::graph::build(key, &input, &rules.sections), &input, rules, key, 0, true);
         let mut seed = 0x2545_f491_4f6c_dd1du64;
         let mut next = |n: u64| {
             seed ^= seed << 13;

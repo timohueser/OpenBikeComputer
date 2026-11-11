@@ -39,7 +39,7 @@ impl Place {
         let mut cells = BTreeMap::new();
         for key in crate::square_cells(lat, lon, size_m + 2.0) {
             let Ok(input) = fix.try_cell(key) else { continue };
-            let graph = graph::build(key, &input, &rules.sections, &rules.structures);
+            let graph = graph::build(key, &input, &rules.sections);
             cells.insert(key, (records::build(&graph, &input, rules, key, 0, true).near.words, input));
         }
         Place { cells }

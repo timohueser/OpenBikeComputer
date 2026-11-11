@@ -31,8 +31,7 @@ const GLYPHS: [(CrossingKind, char, [u8; 7]); 9] = [
 ];
 
 /// The levels of each cell, under the cell's mask: the runs of each way with a state by colour (DECK
-/// blue, BORE violet, OPEN grey, HIDDEN red), wider by storey; the end lines black (A), white
-/// (portal) or red (closed), thicker where merged.
+/// blue, BORE violet, OPEN grey, HIDDEN red); the end lines black (A), white (portal) or red (closed).
 pub fn levels(canvas: &mut Canvas, graphs: &BTreeMap<CellKey, WayGraph>) {
     use obc_ground_plan::graph::{EndKind, State};
     for (&key, g) in graphs {
@@ -52,10 +51,8 @@ pub fn levels(canvas: &mut Canvas, graphs: &BTreeMap<CellKey, WayGraph>) {
                 State::Open => paint(120, 120, 120, 200),
                 State::Hidden => paint(230, 30, 30, 200),
             };
-            let storey = r.sheet.map_or(0, |s| g.levels.sheets[s as usize].storey.unsigned_abs());
             if let Some(p) = path(canvas, &points, false) {
-                let width = 6.0 + 3.0 * f32::from(storey);
-                canvas.pixmap.stroke_path(&p, &colour, &stroke(width, false), Transform::identity(), Some(&mask));
+                canvas.pixmap.stroke_path(&p, &colour, &stroke(6.0, false), Transform::identity(), Some(&mask));
             }
         }
         for l in &g.levels.end_lines {
@@ -64,7 +61,7 @@ pub fn levels(canvas: &mut Canvas, graphs: &BTreeMap<CellKey, WayGraph>) {
                 EndKind::Portal => paint(255, 255, 255, 255),
                 EndKind::Closed => paint(230, 30, 30, 255),
             };
-            let width = if l.ways.len() > 1 { 4.0 } else { 2.0 };
+            let width = 2.0;
             if let Some(p) = path(canvas, &[global(l.ends[0]), global(l.ends[1])], false) {
                 canvas.pixmap.stroke_path(&p, &colour, &stroke(width, false), Transform::identity(), Some(&mask));
             }
@@ -366,19 +363,14 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], sections: &Sections, runs
         let mut ms: Vec<f64> = (0..runs)
             .map(|_| {
                 let start = Instant::now();
-                std::hint::black_box(build(
-                    key,
-                    &input,
-                    sections,
-                    &obc_ground_plan::faces::Rules::embedded().structures,
-                ));
+                std::hint::black_box(build(key, &input, sections));
                 start.elapsed().as_secs_f64() * 1e3
             })
             .collect();
         firsts.push(ms[0]);
         let first = ms[0];
         ms.sort_by(f64::total_cmp);
-        let g = build(key, &input, sections, &obc_ground_plan::faces::Rules::embedded().structures);
+        let g = build(key, &input, sections);
         let median = ms[ms.len() / 2];
         times.push(median);
         heaps.push(heap(&g));

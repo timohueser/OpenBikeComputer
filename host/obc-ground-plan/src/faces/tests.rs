@@ -93,7 +93,7 @@ pub(crate) fn input_of(key: CellKey, lines: &[Line]) -> CellInput {
 fn plan_of(key: CellKey, lines: &[Line]) -> (FacePlan, WayGraph) {
     let input = input_of(key, lines);
     let rules = Rules::embedded();
-    let graph = build(key, &input, &rules.sections, &rules.structures);
+    let graph = build(key, &input, &rules.sections);
     let plan = super::build(&graph, &input, rules, key, 0, true);
     let faults = partition(&plan, window(key, 0.0));
     assert!(faults.is_empty(), "{} faults: {:?}", faults.len(), &faults[..faults.len().min(10)]);
@@ -406,7 +406,7 @@ fn outline_rounds_depend_on_no_order_of_rings_or_ring_starts() {
     // ring and vertex come first.
     let input = input_of(cell(), &[line("road", &[("highway", "primary")], &[[-100.0, 0.0], [100.0, 0.0]])]);
     let rules = Rules::embedded();
-    let graph = build(cell(), &input, &rules.sections, &rules.structures);
+    let graph = build(cell(), &input, &rules.sections);
     let lines = level_lines(&graph, &input, rules, cell(), 0);
     let k = 1.0 / mpu();
     let (x0, edge) = ((CELL_UNITS / 2) as i32, f64::from(lines[0].p[0][1]) - lines[0].h[0]);
@@ -447,7 +447,7 @@ fn outline_rounds_depend_on_no_order_of_rings_or_ring_starts() {
 fn records_of(key: CellKey, lines: &[Line]) -> (Vec<u32>, WayGraph, Vec<[u32; 3]>) {
     let input = input_of(key, lines);
     let rules = Rules::embedded();
-    let graph = build(key, &input, &rules.sections, &rules.structures);
+    let graph = build(key, &input, &rules.sections);
     let words = records::build(&graph, &input, rules, key, 0, true).near.words;
     (words, graph, check::feature_names(&input))
 }
@@ -461,7 +461,7 @@ fn the_records_give_each_point_its_face_label_and_the_far_level_keeps_every_othe
     let lines =
         [road(&[[-200.0, -40.0], [0.0, -38.0], [180.0, -60.0]]), primary, rail, road(&[[60.0, 63.5], [150.0, 63.5]])];
     let (key, input, rules) = (cell(), input_of(cell(), &lines), Rules::embedded());
-    let graph = build(key, &input, &rules.sections, &rules.structures);
+    let graph = build(key, &input, &rules.sections);
     let built = records::build(&graph, &input, rules, key, 0, true);
     let (plan, near) = (built.faces, built.near.words);
     let a =
@@ -478,7 +478,7 @@ fn the_records_give_each_point_its_face_label_and_the_far_level_keeps_every_othe
 fn the_far_block_check_finds_a_way_in_reach_that_the_block_leaves_out() {
     let lines = [road(&[[-200.0, -40.0], [0.0, -38.0], [180.0, -60.0]]), road(&[[-20.0, -200.0], [30.0, 200.0]])];
     let (key, input, rules) = (cell(), input_of(cell(), &lines), Rules::embedded());
-    let graph = build(key, &input, &rules.sections, &rules.structures);
+    let graph = build(key, &input, &rules.sections);
     let built = records::build(&graph, &input, rules, key, 0, true);
     let near = built.near.words;
     let (faults, counts) = records_check::far_matches_near(&near, &built.far_block.unwrap(), key);

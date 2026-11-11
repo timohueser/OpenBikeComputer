@@ -69,7 +69,7 @@ pub fn build_request(
 pub fn far_request(request: Request, cache: &mut TileCache, rules: &Rules) -> Result<Vec<u32>, String> {
     let key = request.key;
     let input = request.input(cache)?;
-    records::far_block(&graph::build(key, &input, &rules.sections, &rules.structures), &input, rules, key)
+    records::far_block(&graph::build(key, &input, &rules.sections), &input, rules, key)
 }
 
 fn stages(
@@ -89,7 +89,7 @@ fn stages(
     let (key, tiles, pages) = (request.key, request.tiles.len(), request.pages.len());
     let input = request.input(cache)?;
     lap(&mut times);
-    let graph = graph::build(key, &input, &rules.sections, &rules.structures);
+    let graph = graph::build(key, &input, &rules.sections);
     lap(&mut times);
     let (faces, records, far) = records::near(&graph, &input, rules, key, 0, true);
     lap(&mut times);

@@ -37,7 +37,7 @@ fn every_fixture_cell_gives_its_points_the_faces_labels_alike_near_far_and_acros
         .collect();
     assert!(cells.len() > 100, "{} cells", cells.len());
     let built = fixture.map(&cells, |key, input| {
-        let graph = graph::build(key, &input, &rules.sections, &rules.structures);
+        let graph = graph::build(key, &input, &rules.sections);
         let built = records::build(&graph, &input, rules, key, 0, true);
         let (near, far, plan) = (built.near.words, built.far_records.words, built.faces);
         // The viewer's cell-only pass gives the records' faces.
@@ -96,7 +96,7 @@ fn every_fixture_cell_gives_its_points_the_faces_labels_alike_near_far_and_acros
     );
     let again: Vec<CellKey> = cells.iter().step_by(17).copied().collect();
     let differ = fixture.map(&again, |key, input| {
-        let graph = graph::build(key, &input, &rules.sections, &rules.structures);
+        let graph = graph::build(key, &input, &rules.sections);
         (records::build(&graph, &input, rules, key, 0, true).near.words != cells_of[&key].0)
             .then(|| format!("{key:?}: a second build differs"))
     });

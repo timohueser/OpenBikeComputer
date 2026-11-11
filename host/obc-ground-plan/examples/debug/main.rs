@@ -209,24 +209,19 @@ fn run() -> Result<(), String> {
             println!("faces bench of {} cells -> {}", cells.len(), path.display());
         }
         if o.census {
-            let graphs: BTreeMap<CellKey, _> = cells
-                .iter()
-                .map(|&k| {
-                    (
-                        k,
-                        obc_ground_plan::graph::build(
-                            k,
-                            &fix.cell(k),
-                            sections,
-                            &obc_ground_plan::faces::Rules::embedded().structures,
-                        ),
-                    )
-                })
-                .collect();
+            let structures = &obc_ground_plan::faces::Rules::embedded().structures;
+            let mut levels = serde_json::Map::new();
+            let mut graphs: BTreeMap<CellKey, _> = BTreeMap::new();
+            for &k in &cells {
+                let input = fix.cell(k);
+                let g = obc_ground_plan::graph::build(k, &input, sections);
+                let mut lv = g.clone();
+                obc_ground_plan::graph::levels(&mut lv, &input, sections, structures);
+                levels.insert(format!("{}/{}", k.x, k.y), fixture::levels_detail(&lv, &input.terrain));
+                graphs.insert(k, g);
+            }
             let path = o.out.join("junctions.json");
             write(&path, serde_json::to_string_pretty(&graph::census(&graphs, sections)).unwrap().as_bytes())?;
-            let levels: serde_json::Map<String, serde_json::Value> =
-                graphs.iter().map(|(k, g)| (format!("{}/{}", k.x, k.y), fixture::levels_detail(g))).collect();
             write(&o.out.join("levels.json"), serde_json::to_string(&levels).unwrap().as_bytes())?;
             println!("census of {} cells -> {}", cells.len(), path.display());
         }
@@ -306,7 +301,11 @@ fn run() -> Result<(), String> {
         if o.layers.iter().any(|l| l == "graph" || l == "levels") {
             let structures = &obc_ground_plan::faces::Rules::embedded().structures;
             let graphs: BTreeMap<CellKey, _> = (cells.iter())
-                .map(|(&k, input)| (k, obc_ground_plan::graph::build(k, input, sections, structures)))
+                .map(|(&k, input)| {
+                    let mut g = obc_ground_plan::graph::build(k, input, sections);
+                    obc_ground_plan::graph::levels(&mut g, input, sections, structures);
+                    (k, g)
+                })
                 .collect();
             if o.layers.iter().any(|l| l == "levels") {
                 graph::levels(&mut canvas, &graphs);
