@@ -640,9 +640,8 @@ mod tests {
     use planner_router::model::{BIKE, FOOT, NO_ELEVATION, PUSH};
     use source::{Builder, Tags, Ways};
 
-    #[test]
-    fn the_manifest_estimate_is_not_below_the_manifest() {
-        // A ladder: junction `i` meets `i + 1` and `i + 2`, each pair by a way in both directions.
+    /// A ladder: junction `i` meets `i + 1` and `i + 2`, each pair by a way in both directions.
+    fn ladder() -> Graph {
         let points: Vec<_> =
             (0..20).map(|i| Point { lat: i % 2 * 1000, lon: i / 2 * 1000, elevation: NO_ELEVATION }).collect();
         let (mut roads, mut ways) = (Vec::new(), Builder::<Ways>::default());
@@ -677,6 +676,31 @@ mod tests {
         };
         graph.osm.ways = ways.finish().0;
         graph.link_ways();
+        graph
+    }
+
+    #[test]
+    fn one_and_four_threads_give_the_same_package() {
+        let graph = ladder();
+        let profiles: Vec<_> = Profile::presets().into_iter().take(3).collect();
+        let package = |threads| {
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            let mut objects = Vec::new();
+            let manifest = pool.install(|| {
+                prepare(&graph, "test".into(), [0.0, 0.0, 0.01, 0.01], &profiles, vec![], "test".into(), |bytes| {
+                    objects.push(bytes.to_vec());
+                    Ok(package::digest(bytes))
+                })
+            });
+            (serde_json::to_vec(&manifest.unwrap()).unwrap(), objects)
+        };
+        assert!(graph.roads.len() > 4 * CHUNK, "the roads fill several chunks");
+        assert_eq!(package(1), package(4));
+    }
+
+    #[test]
+    fn the_manifest_estimate_is_not_below_the_manifest() {
+        let graph = ladder();
         let profiles: Vec<_> = Profile::presets().into_iter().take(2).collect();
         let bounds = [0.0, 0.0, 0.01, 0.01];
         let ends: Vec<_> = (0..graph.roads.len()).map(|id| (graph.roads.from(id), graph.roads.to(id))).collect();
