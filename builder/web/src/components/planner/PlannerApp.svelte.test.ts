@@ -673,8 +673,11 @@ describe('planner app transitions', () => {
         await vi.waitFor(() => expect(document.querySelectorAll('.handle')).toHaveLength(2));
         const hidden = ['[data-day]', '.trip-row', '.route-notes'];
         for (const row of hidden) expect(document.querySelector(row)).not.toBeNull();
+        // The totals of the whole plan stay in the drawer on a night page and with a day open.
+        const totals = document.querySelector('.plan-totals')!.textContent;
         document.querySelector<HTMLButtonElement>('.handle')!.click(); await tick(); await tick();
         expect(document.querySelector('.night-page h2')?.textContent).toBe('Night 1');
+        expect(document.querySelector('.plan-totals')?.textContent).toBe(totals);
         expect(document.activeElement).toBe(button('All days'));
         for (const row of hidden) expect(document.querySelector(row)).toBeNull();
         expect(document.querySelector<HTMLElement>('.query-slot')!.style.display).toBe('none');
@@ -691,5 +694,6 @@ describe('planner app transitions', () => {
         expect(document.querySelector('[data-day="2"] strong')?.textContent).toBe('Day 2 · Sun 20');
         dayButton(2).click(); await tick();
         expect(document.querySelector('.trip-row')).toBeNull();
+        expect(document.querySelector('.plan-totals')?.textContent).toBe(totals);
     });
 });
