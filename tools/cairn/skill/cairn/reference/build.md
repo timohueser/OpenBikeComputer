@@ -16,7 +16,7 @@ When the change grows past its size, touches a system that is not on its `System
 
 ## 3. Pull request
 
-Open one pull request, and fill the pull request template. Its `Mode:` line is `change #N`, or the skip of step 1. Its body says what changed and the checks that ran, and has `Closes #N`.
+Open one pull request as a draft, and fill the pull request template. Its `Mode:` line is `change #N`, or the skip of step 1. Its body says what changed and the checks that ran, and has `Closes #N`.
 
 Some `Done when` steps only the user can do, such as a test on real hardware or a manual check in the app. Ask the user for each one now, so that it runs during the review. Say exactly what to check, and what a pass and a fail look like. If a step fails, fix the cause and ask again.
 
