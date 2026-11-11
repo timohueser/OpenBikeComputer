@@ -20,9 +20,10 @@ from pathlib import Path
 # increase the permitted production download or raw WASM size.
 BUDGETS = {
     "builder": {"gzipped": (62 + 352 + 128) * 1024, "raw_wasm": (112 + 944 + 272) * 1024},
-    # Measured on the build with the outline slopes (715,120 B gzipped with the glue, 1,868,263 B raw),
-    # plus about 2 % margin, rounded to whole KiB. Raised by the owner for the outline slopes.
-    "ground-plan": {"gzipped": 716 * 1024, "raw_wasm": 1860 * 1024},
+    # Measured on the build with line water (734,456 B gzipped with the glue, 1,907,180 B raw), rounded up
+    # to whole KiB. The owner allows a few per cent for line water when stated; the outline slopes' raise
+    # held about 2 % margin before it.
+    "ground-plan": {"gzipped": 718 * 1024, "raw_wasm": 1863 * 1024},
 }
 
 ADVICE = {
