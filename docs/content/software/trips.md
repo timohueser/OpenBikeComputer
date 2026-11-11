@@ -62,8 +62,8 @@ a drawn leg.
 ### Days in the planner
 
 In the web planner, a "Multi-day trip" plan splits its route into riding days. The trip values
-stand at the top of the day list: the start date, the day count and the kinds of places to sleep
-in. With a start date, each day shows its weekday. The elevation profile is the timeline.
+stand at the top of the day list: the start date, the day count and the stay kinds. With a start
+date, each day shows its weekday. The elevation profile is the timeline.
 It shows the days by colour, a marker at each night and a column for each rest day.
 
 A guessed value has a dashed line. A day count or a date that the rider set has a solid line. The
@@ -80,7 +80,7 @@ night is a point on the route, with a dotted marker. "Let the planner choose" ma
 suggestion again. The town list sets other kinds for its night only. A night of one kind only
 (campsites, huts or shelters) ends at a place of that kind. Other nights end in the town, as "Around
 Ulrichen", because the planner cannot pick a hotel in the rider's price range. With a start date,
-each night shows its sunset and usual temperature.
+each night shows its sunset and usual night temperature.
 
 The plus sign between two days adds a rest day or a train or bus. The next day starts where the
 train or bus arrives. When it arrives on the route ahead, it skips the route between. A night that a
