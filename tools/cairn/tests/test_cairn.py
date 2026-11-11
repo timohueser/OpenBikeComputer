@@ -16,7 +16,7 @@ assert SPEC.loader is not None
 sys.modules[SPEC.name] = cairn
 SPEC.loader.exec_module(cairn)
 
-from adapters import cargo  # noqa: E402 — cairn.py puts its own folder on the path
+from adapters import cargo, imports  # noqa: E402 — cairn.py puts its own folder on the path
 
 CONFIG = {"tooling": {"path": "tools/", "area": "Tooling"}}
 
@@ -229,6 +229,35 @@ class CargoAdapterTests(unittest.TestCase):
         self.assertEqual({u["name"]: u["entry"] for u in units},
                          {"a": "a/src/lib.rs", "b": "b/src/lib.rs", "tool": "tool/src/main.rs"})
         self.assertEqual(edges, [("a", "b", False), ("a", "tool", True)])
+
+
+class ImportAdapterTests(unittest.TestCase):
+    def test_a_relative_import_is_an_edge_between_two_tracked_files(self):
+        texts = {
+            "web/src/plan/app.ts": 'import { a } from "../view/engine.js";\nimport Map from "./Map.svelte";\n'
+                                   'import "leaflet";\nimport x from "$lib/x";\nconst p = await import("../view");\n'
+                                   'new Worker(new URL("./plan.worker.ts", import.meta.url));\nimport gone from "./gone";\n',
+            "web/src/view/engine.ts": 'export * from "./store.svelte";\n',
+        }
+        tracked = {*texts, "web/src/plan/Map.svelte", "web/src/plan/plan.worker.ts", "web/src/view/index.ts",
+                   "web/src/view/store.svelte.ts"}
+        self.assertEqual(imports.collect(texts, tracked), [
+            ("web/src/plan/app.ts", "web/src/plan/Map.svelte", False),
+            ("web/src/plan/app.ts", "web/src/plan/plan.worker.ts", False),
+            ("web/src/plan/app.ts", "web/src/view/engine.ts", False),
+            ("web/src/plan/app.ts", "web/src/view/index.ts", False),
+            ("web/src/view/engine.ts", "web/src/view/store.svelte.ts", False),
+        ])
+
+    def test_a_file_edge_counts_for_the_owners_of_the_two_files_and_a_test_file_gives_a_test_edge(self):
+        docs = [doc("plan", ["web/plan/**"], depends_on=["view"]), doc("view", ["web/view/**"])]
+        files = ["web/plan/app.ts", "web/plan/app.test.ts", "web/view/engine.ts"]
+        edges = [("web/plan/app.ts", "web/view/engine.ts", False), ("web/view/engine.ts", "web/plan/app.ts", False),
+                 ("web/plan/app.test.ts", "web/view/engine.ts", False)]
+        result = cairn.analyse(docs, files, [], edges, {**CONFIG, "tests": ["*.test.ts"]})
+        self.assertEqual(ids(result, "cycle"), ["cycle plan -> view", "cycle view -> plan"])
+        only_test = cairn.analyse(docs, files, [], edges[2:], {**CONFIG, "tests": ["*.test.ts"]})
+        self.assertEqual(only_test.edges, {("plan", "view", True)})
 
 
 class RuleTests(unittest.TestCase):

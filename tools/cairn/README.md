@@ -29,6 +29,7 @@ python3 -m unittest discover -s tools/cairn/tests
 | `skill/cairn/` | the agent skill: `SKILL.md` routes to one file in `reference/` for each command. `.claude/skills/cairn` and `.agents/skills/cairn` link to it. |
 | `.github/workflows/cairn-report.yml` | runs `cairn report --publish` each week |
 | `adapters/cargo.py` | the Rust crates and their path dependencies. Each tracked `Cargo.toml` with a `[workspace]` table is a Cargo root. Every other tracked `Cargo.toml` outside `ignore` must be a member of a root. |
+| `adapters/imports.py` | the relative imports of the web source files with the `extensions` of its settings: `from`, `import`, `import()` and `new URL()`. Many systems share one npm package, so an edge joins two files. An import of a package or through an alias is not an edge. |
 
 `owns` uses the glob rule of the test plan: `*` also matches `/`, and `**/` also matches no folder.
 
@@ -37,7 +38,7 @@ python3 -m unittest discover -s tools/cairn/tests
 | Rule | The check reports |
 | --- | --- |
 | Ownership | a tracked source file that no doc owns, or that two docs own. A system beats a shell: a shell owns only the files that no system owns. |
-| Dependency | a production edge between two systems that `depends_on` does not list, or a test edge that neither `depends_on` nor `test_depends_on` lists. The system that owns a crate's entry file (`src/lib.rs` or `src/main.rs`) owns all of its edges. |
+| Dependency | a production edge between two systems that `depends_on` does not list, or a test edge that neither `depends_on` nor `test_depends_on` lists. The system that owns a crate's entry file (`src/lib.rs` or `src/main.rs`) owns all of its edges. A file edge counts for the owners of the two files, and an edge from a file that matches the `tests` globs is a test edge. A doc lists what its system may use: an edge that the owner did not intend stays out of the doc and in the baseline. |
 | Cycle | each production edge inside a cycle between systems. A cycle is a violation even when the docs declare its edges. |
 | R1 | a Rust crate that holds files of a system other than the owner of its entry file, with the number of those files |
 | R4 | a file under `tooling.path` whose owner is outside `tooling.area` |

@@ -228,6 +228,10 @@ def crate_dir(path: str, dirs: list[str]) -> str | None:
     return next((d for d in dirs if path.startswith(d + "/")), None)
 
 
+#: The most edges that a message names.
+VIA = 3
+
+
 def analyse(
     docs: list[Doc],
     files: list[str],
@@ -246,12 +250,15 @@ def analyse(
         elif len(hits) > 1:
             out.append(Violation("ownership", f"owned twice {path}", frozenset(hits), f"{path} is owned by {', '.join(hits)}"))
 
-    # Dependencies: a crate edge counts for the systems that own the two crates' entry files.
+    # Dependencies: a crate edge counts for the systems that own the two crates' entry files, and
+    # a file edge for the owners of the two files. An edge from a test file is a test edge.
     unit_owner = {u["name"]: owner.get(u["entry"]) for u in units}
+    ends = {**owner, **unit_owner}
     pairs: dict[tuple[str, str], bool] = {}
     via: dict[tuple[str, str], list[str]] = {}
     for source, target, test in edges:
-        a, b = unit_owner.get(source), unit_owner.get(target)
+        a, b = ends.get(source), ends.get(target)
+        test = test or is_test(source, config.get("tests", []))
         if a and b and a != b:
             pairs[(a, b)] = pairs.get((a, b), True) and test
             via.setdefault((a, b), []).append(f"{source} -> {target}" + (" (test)" if test else ""))
@@ -262,7 +269,7 @@ def analyse(
     loops = cycles(graph)
     undeclared = set()
     for (a, b), test in sorted(pairs.items()):
-        crates = ", ".join(via[(a, b)])
+        crates = ", ".join(via[(a, b)][:VIA]) + (f", and {len(via[(a, b)]) - VIA} more" if len(via[(a, b)]) > VIA else "")
         if b not in by_name[a].depends_on + (by_name[a].test_depends_on if test else ()):
             undeclared.add((a, b, test))
         if not test and cyclic(loops, a, b):
@@ -391,7 +398,7 @@ def print_leaves(system: str, found: list[Leaf], units: list[dict], lines: dict[
             print(f"  uses: {', '.join(leaf.uses) or 'none'}")
             print(f"  tests use: {', '.join(leaf.test_uses) or 'none'}")
         else:
-            print("  crate: none, so no adapter measures its uses")
+            print("  crate: none")
         for path in leaf.files:
             print(f"  {lines[path]:>6,}  {path}")
 

@@ -12,6 +12,9 @@
   "adapters": {
     "cargo": {
       "ignore": ["**/vendor/**"]
+    },
+    "imports": {
+      "extensions": [".ts", ".svelte", ".js", ".mjs"]
     }
   },
   "tooling": {
