@@ -260,12 +260,42 @@ pub fn edge_line(e: &[u32]) -> u32 {
     e[3] & 0xffff
 }
 
-/// Segment ab cut into equal pieces of at most a bin: its ends and the cuts in order from a, in whole
-/// units from a, the same in every cell. So an edge's ends lie within a bin of where a bin lists it.
+/// Segment ab cut where it crosses the lines of the bin grid: its ends and the crossings in order from a,
+/// each rounded to the nearest unit from the exact line. Each piece lies in one bin. The cell origins lie
+/// on the grid, so the grid is global, and two cells that hold segments of one line cut them at the same
+/// points, whatever ends each of them sees.
 fn bin_cuts(a: P, b: P) -> Vec<P> {
-    let d = [i64::from(b[0] - a[0]), i64::from(b[1] - a[1])];
-    let n = libm::ceil(libm::hypot(d[0] as f64, d[1] as f64) / f64::from(BIN_UNITS)).max(1.0) as i64;
-    (0..=n).map(|k| [0, 1].map(|i| a[i] + (2 * k * d[i] + n).div_euclid(2 * n) as i32)).collect()
+    let (a64, d) = (a.map(i64::from), [i64::from(b[0] - a[0]), i64::from(b[1] - a[1])]);
+    let unit = i64::from(BIN_UNITS);
+    // The crossings of one axis's grid lines in order from a: the share num / |d[axis]| of ab and the point.
+    let crossings = |axis: usize| -> Vec<(i64, P)> {
+        let (lo, hi) = (a64[axis].min(a64[axis] + d[axis]), a64[axis].max(a64[axis] + d[axis]));
+        let (den, o) = (d[axis].abs(), 1 - axis);
+        let mut out: Vec<(i64, P)> = (lo.div_euclid(unit) + 1..=(hi - 1).div_euclid(unit))
+            .map(|k| {
+                let num = (k * unit - a64[axis]) * d[axis].signum();
+                // The other coordinate on the line through a and b, (a·den + num·d) / den, rounded half up.
+                let other = (2 * (a64[o] * den + num * d[o]) + den).div_euclid(2 * den);
+                let mut q = [(k * unit) as i32; 2];
+                q[o] = other as i32;
+                (num, q)
+            })
+            .collect();
+        if d[axis] < 0 {
+            out.reverse();
+        }
+        out
+    };
+    let (x, y) = (crossings(0), crossings(1));
+    let (mut i, mut j, mut out) = (0, 0, vec![a]);
+    while i < x.len() || j < y.len() {
+        let take_x = j == y.len() || (i < x.len() && x[i].0 * d[1].abs() <= y[j].0 * d[0].abs());
+        out.push(if take_x { x[i].1 } else { y[j].1 });
+        (i, j) = if take_x { (i + 1, j) } else { (i, j + 1) };
+    }
+    out.push(b);
+    out.dedup();
+    out
 }
 
 /// Per bin the outline edges (by index, under 2^16) within their host's reach of its square, in the
@@ -326,6 +356,13 @@ fn near_box(a: [f64; 2], b: [f64; 2], bx: [f64; 4], r: f64) -> bool {
 /// (`check::STEP_M`).
 const SPLIT_M: f64 = 0.005;
 const SPLIT_MIN_M: f64 = 0.25;
+/// A rim also splits while the ground where its cones let go leaves the line between its ends by more than
+/// this: the cones fit the need at the ends, so a ground they did not see would move the slope with the
+/// cuts.
+const SPLIT_GROUND_M: f64 = 0.25;
+/// And while the need of its cones (the paved height less that ground) differs between its ends by more
+/// than this.
+const SPLIT_NEED_M: f64 = 0.5;
 /// The quarters find a field that crosses the line at the middle. Its offset there grows with the
 /// cube of the piece's length, so a shorter piece reads its middle alone.
 const QUARTER_M: f64 = 1.0;
@@ -334,8 +371,9 @@ const QUARTER_M: f64 = 1.0;
 /// the left): the host line, the paved field at both ends (`heights::paved_end`) from the block so far
 /// through the window's bins (`items`), so two cells give an end the same bits, and the plain terrain
 /// where the host's cones start to let go. The host is the face's material line, else the paved field's
-/// host at the middle of the rim's piece. A rim splits where the paved field is not linear along it
-/// (`SPLIT_M`). An edge with an end where the face has no height of its own stays out: a fault that
+/// host at the middle of the rim's piece. A rim splits at the bin grid (`bin_cuts`), then while the paved
+/// field or the ground where its cones let go leaves the line between a piece's ends, or their need varies
+/// (`SPLIT_*`). An edge with an end where the face has no height of its own stays out: a fault that
 /// `heights::check` counts.
 fn outline_edges<'a>(
     words: &[u32],
@@ -381,8 +419,15 @@ fn outline_edges<'a>(
             if seg_box(r0, r1, [0.0, 0.0, cell, cell]) > outline_units(input.key, reach) {
                 continue;
             }
-            // The piece's edges from r0: an edge splits while the paved field leaves the line between
-            // its ends.
+            // The cones let go from this many metres.
+            let go = reach * (1.0 - rules.plan.heights.fade_share);
+            let outward = |p: [f64; 2], m: f64| {
+                let u = m / metres_per_unit(origin.y + libm::round(p[1]) as i64);
+                terrain([p[0] + n[0] * u, p[1] + n[1] * u])
+            };
+            let ground = |x: P| outward(fp(x), go);
+            // The piece's edges from r0: an edge splits while the paved field, or the ground where its
+            // cones let go, leaves the line between its ends.
             let mut pieces = vec![(r0, end(r0, id))];
             let mut ahead = vec![(r1, end(r1, id))];
             while let Some(&(q, hq)) = ahead.last() {
@@ -392,28 +437,31 @@ fn outline_edges<'a>(
                     (Some(hp), Some(hq), Some(hx)) => (hx.h - (hp.h + f * (hq.h - hp.h))).abs() > SPLIT_M,
                     (hp, hq, hx) => hx.is_some() != (hp.is_some() && hq.is_some()),
                 };
+                let (gp, gq) = (ground(p), ground(q));
+                let bent = |x: P, f: f64| (ground(x) - (gp + f * (gq - gp))).abs() > SPLIT_GROUND_M;
                 let long = metres(p, q);
                 let quarters = |end: &mut dyn FnMut(P, u32) -> Option<Height>| {
-                    long > QUARTER_M && (off(mid(p, m), 0.25, end) || off(mid(m, q), 0.75, end))
+                    long > QUARTER_M
+                        && (off(mid(p, m), 0.25, end)
+                            || off(mid(m, q), 0.75, end)
+                            || bent(mid(p, m), 0.25)
+                            || bent(mid(m, q), 0.75))
                 };
-                if long > SPLIT_MIN_M && (off(m, 0.5, &mut end) || quarters(&mut end)) {
+                // The cones take one slope per edge from the greater need of its ends (`heights::fit`).
+                let need = |h: Option<Height>, g: f64| h.map_or(f64::NAN, |h| h.h - g);
+                let varies = (need(hp, gp) - need(hq, gq)).abs() > SPLIT_NEED_M;
+                if long > SPLIT_MIN_M && (off(m, 0.5, &mut end) || bent(m, 0.5) || varies || quarters(&mut end)) {
                     ahead.push((m, end(m, id)));
                     continue;
                 }
                 pieces.push((q, hq));
                 ahead.pop();
             }
-            // The cones let go from this many metres.
-            let go = reach * (1.0 - rules.plan.heights.fade_share);
-            let off = |p: [f64; 2], m: f64| {
-                let u = m / metres_per_unit(origin.y + libm::round(p[1]) as i64);
-                terrain([p[0] + n[0] * u, p[1] + n[1] * u])
-            };
-            let t: Vec<f64> = pieces.iter().map(|&(p, _)| off(fp(p), go)).collect();
+            let t: Vec<f64> = pieces.iter().map(|&(p, _)| ground(p)).collect();
             for (k, w) in pieces.windows(2).enumerate() {
                 let ((p, Some(hp)), (q, Some(hq))) = (w[0], w[1]) else { continue };
                 let mid = [(f64::from(p[0]) + f64::from(q[0])) / 2.0, (f64::from(p[1]) + f64::from(q[1])) / 2.0];
-                let grade = (off(mid, go) - off(mid, go / 2.0)) / (go / 2.0);
+                let grade = (outward(mid, go) - outward(mid, go / 2.0)) / (go / 2.0);
                 let grade = if grade.is_nan() {
                     i16::MIN
                 } else {
@@ -1588,6 +1636,20 @@ fn decide(words: &[u32], covered: &[u32], q: [f64; 2], segs: &[u32]) -> Option<u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn two_segments_of_one_line_are_cut_at_the_same_points_whatever_their_far_ends() {
+        // From a point on a cell line, along one exact line, to two far ends; north-south and oblique.
+        for (a, step, far) in [([1000, 0], [0, 1], [32222, 32768]), ([5, 40], [3, 7], [4600, 4681])] {
+            let end = |n: i32| [a[0] + n * step[0], a[1] + n * step[1]];
+            let (p, q) = (bin_cuts(a, end(far[0])), bin_cuts(a, end(far[1])));
+            let shared = p.len().min(q.len()) - 1;
+            assert!(shared >= 3, "{p:?}");
+            assert_eq!(p[..shared], q[..shared]);
+            // Each piece spans at most a bin.
+            assert!(q.windows(2).all(|w| (0..2).all(|i| (w[1][i] - w[0][i]).abs() <= BIN_UNITS)), "{q:?}");
+        }
+    }
 
     #[test]
     fn a_guest_stops_where_its_look_is_not_the_hosts_or_its_finish_keeps_its_tread() {
