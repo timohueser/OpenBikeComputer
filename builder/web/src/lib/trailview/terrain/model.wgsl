@@ -40,7 +40,7 @@ struct ModelPoint {
     // the nearest change within the reach; M_NONE for none.
     painted: u32,
     // Metres to the paved outline and the rail beds (negative inside) and to the core's outline: those
-    // and the band layers but the slope.
+    // and the ways' band layers but the slope.
     d_paved: f32,
     core: f32,
     // Metres across from the middle of the painted label's host line (signed by side), along it, and its
@@ -362,7 +362,9 @@ fn model_point(block: u32, q: vec2i, reach: f32) -> ModelPoint {
             count++;
         }
         let label = mw(k + 3u);
-        if (kind == M_BAND && m_surface(block, label) != M_SURFACE_SLOPE) {
+        // The core is a way's: line water is no way, so its face and its bank stay out of the mask.
+        let surface = m_surface(block, label);
+        if (kind == M_BAND && surface != M_SURFACE_SLOPE && surface != M_SURFACE_WATER && surface != M_SURFACE_BANK) {
             out.core = min(out.core, sd * mpu);
         }
         // The paved outline holds the carriageways; the paint draws the rail beds too.
