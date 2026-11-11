@@ -691,3 +691,47 @@ fn a_stop_mouth_between_two_widths_widens_the_narrow_arm_without_a_step() {
     // The other side has no stop arm: the junction keeps its own look there.
     assert_eq!(keeps_route(&words, jr, [0.2, narrow + 0.1]), None);
 }
+
+#[test]
+fn two_cells_give_one_side_to_their_line_where_an_edge_passes_a_tile_corner_on_it() {
+    // A ring's edge leaves the cell line x = C at y = t + 27 or t + 15 and crosses the tile line y = t
+    // 0.53 or 0.30 units off the cell line, beside the tile corner (C, t); or it crosses the cell line
+    // at that corner. Each also mirrored and reversed. Per window, the segments on the cell line after
+    // the snap rounding, each with whether its patch lies in the prepared ring.
+    let (c, t) = (CELL_UNITS as i32, 7 * slice::TILE as i32);
+    let sides = |window: [i32; 4], ring: &[P]| {
+        let rings = prepare(&vec![ring.to_vec()]);
+        let (patches, _) = slice(window, &rings, &[]);
+        let snapped = snap_round(&patches);
+        let at = |i: u32| snapped.verts[i as usize];
+        let mut on: Vec<([P; 2], bool)> = (patches.iter().zip(&snapped.patches))
+            .flat_map(|(patch, segs)| {
+                let inside = inner_point(patch).is_some_and(|q| geom::winding(&rings, q) != 0);
+                segs.iter().map(move |&[a, b]| ([at(a), at(b)], inside))
+            })
+            .filter(|([a, b], _)| a[0] == c && b[0] == c)
+            .map(|([a, b], inside)| (if a < b { [a, b] } else { [b, a] }, inside))
+            .collect();
+        on.sort_unstable();
+        on
+    };
+    let wedge = |on: [P; 2], low: P| {
+        vec![[c - 40, t + 300], on[0], on[1], low, [c + 300, t - 379], [c + 300, t + 300], [c, t + 300]]
+    };
+    let mut rings = Vec::new();
+    for ring in [
+        wedge([[c - 20, t + 200], [c, t + 27]], [c + 8, t - 379]),
+        wedge([[c - 20, t + 200], [c, t + 15]], [c + 8, t - 379]),
+        wedge([[c - 8, t + 8], [c, t]], [c + 8, t - 8]),
+    ] {
+        rings.push(ring.iter().map(|p| [2 * c - p[0], p[1]]).collect::<Vec<P>>());
+        rings.push(ring.iter().rev().copied().collect());
+        rings.push(ring);
+    }
+    for ring in rings {
+        let west = sides([c - 400, t - 400, c, t + 400], &ring);
+        let east = sides([c, t - 400, c + 400, t + 400], &ring);
+        assert!(west.len() >= 3, "{west:?}");
+        assert_eq!(west, east, "ring {ring:?}");
+    }
+}

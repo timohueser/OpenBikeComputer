@@ -26,7 +26,7 @@ pub use rules::{input_m, Mouth, Pair, PlanRules, Rank, Rules};
 pub use types::*;
 
 use cover::Cover;
-use geom::{cell_line_points, inner_point, with_cell_lines, P};
+use geom::{grid_points, inner_point, with_grid_lines, P};
 use points::{Arm, Circle, Part, Rounded};
 use slice::{on_cell_line, slice, snap_round, Loop, Map, NONE};
 use stroke::{pieces_along, union, Rings};
@@ -693,7 +693,10 @@ fn snap(p: P) -> P {
     [snap(p[0]), snap(p[1])]
 }
 
-/// Each ring's vertices snapped to the cell lines, with an exact vertex where it crosses one.
+/// Each ring's vertices snapped to the cell lines, with a vertex where it crosses a tile line of the
+/// slice (cell lines are tile lines). No tile of the slice then rounds a crossing of its own side,
+/// which the overlay would snap onto a tile corner that the next cell holds without the ring, and
+/// the faces' labels read the very edges that the slice cuts.
 fn prepare(rings: &Rings) -> Rings {
     rings
         .iter()
@@ -703,7 +706,7 @@ fn prepare(rings: &Rings) -> Rings {
             if s.len() > 1 && s[0] == s[s.len() - 1] {
                 s.pop();
             }
-            with_cell_lines(&s)
+            with_grid_lines(&s, slice::TILE)
         })
         .filter(|r| r.len() >= 3)
         .collect()
@@ -1225,12 +1228,12 @@ fn candidates<'a>(
     // A seam off the window cuts nothing of it.
     seams.retain(|&(_, [a, b], _)| geom::meets(win, a, b));
     let seams = seams_on_carriageways(&mut cands, &seams);
-    // A seam meets the cell lines where the carriageway's ring does.
+    // A seam meets the tile lines where the carriageway's ring does.
     let seams: Vec<[P; 2]> = seams
         .iter()
         .flat_map(|&[a, b]| {
             let mut pts = vec![a];
-            cell_line_points(a, b, &mut pts);
+            grid_points(a, b, slice::TILE, &mut pts);
             pts.push(b);
             pts.dedup();
             pts.windows(2).map(|w| [w[0], w[1]]).collect::<Vec<_>>()

@@ -125,14 +125,15 @@ fn inner_point_at(rings: &[Vec<P>], step: i64, clear: i128) -> Option<[i64; 2]> 
     None
 }
 
-/// The cell lines (x or y a whole multiple of `CELL_UNITS` in the cell frame) that segment ab crosses
-/// strictly, as exact points in the order from a: for x = X, y = y0 + round((X − x0)(y1 − y0) /
-/// (x1 − x0)), half away from zero, from the segment's lesser end. The rule reads only the segment, in
-/// either direction.
-pub fn cell_line_points(a: P, b: P, out: &mut Vec<P>) {
+/// The grid lines (x or y a whole multiple of `step`) that segment ab crosses strictly, as points in
+/// the order from a: for x = X, y = y0 + round((X − x0)(y1 − y0) / (x1 − x0)), half away from zero,
+/// from the segment's lesser end; but where that lands on a cell line and the exact y does not, one
+/// unit nearer the exact y, so a point that one cell holds alone never lies on the line two cells
+/// share. The rule reads only the segment, in either direction, and integer differences.
+pub fn grid_points(a: P, b: P, step: i64, out: &mut Vec<P>) {
     if a > b {
         let mut back = Vec::new();
-        cell_line_points(b, a, &mut back);
+        grid_points(b, a, step, &mut back);
         out.extend(back.into_iter().rev());
         return;
     }
@@ -144,21 +145,24 @@ pub fn cell_line_points(a: P, b: P, out: &mut Vec<P>) {
             continue;
         }
         let (lo, hi) = (a0.min(a1), a0.max(a1));
-        let mut line = (lo.div_euclid(CELL_UNITS) + 1) * CELL_UNITS;
+        let mut line = (lo.div_euclid(step) + 1) * step;
         while line < hi {
-            if line > lo {
-                let num = i128::from(line - a0) * i128::from(o1 - o0);
-                let den = i128::from(a1 - a0);
-                let q = div_round(num, den);
-                let mut p = [0i32; 2];
-                p[axis] = line as i32;
-                p[1 - axis] = (i128::from(o0) + q) as i32;
-                // The parameter along ab as the fraction (line − a0) / (a1 − a0), compared exactly.
-                let (n, d) = (i128::from(line - a0), den);
-                let (n, d) = if d < 0 { (-n, -d) } else { (n, d) };
-                found.push((n, d, p));
+            let num = i128::from(line - a0) * i128::from(o1 - o0);
+            let den = i128::from(a1 - a0);
+            let q = div_round(num, den);
+            let mut o = i128::from(o0) + q;
+            let rest = (num - q * den) * den.signum();
+            if o.rem_euclid(i128::from(CELL_UNITS)) == 0 && rest != 0 {
+                o += rest.signum();
             }
-            line += CELL_UNITS;
+            let mut p = [0i32; 2];
+            p[axis] = line as i32;
+            p[1 - axis] = o as i32;
+            // The parameter along ab as the fraction (line − a0) / (a1 − a0), compared exactly.
+            let (n, d) = (i128::from(line - a0), den);
+            let (n, d) = if d < 0 { (-n, -d) } else { (n, d) };
+            found.push((n, d, p));
+            line += step;
         }
     }
     found.sort_by(|x, y| (x.0 * y.1).cmp(&(y.0 * x.1)).then(x.2.cmp(&y.2)));
@@ -176,12 +180,12 @@ fn div_round(num: i128, den: i128) -> i128 {
     }
 }
 
-/// The ring with an exact vertex at each crossing of a cell line.
-pub fn with_cell_lines(ring: &[P]) -> Vec<P> {
+/// The ring with a vertex at each crossing of a grid line of `step` (`grid_points`).
+pub fn with_grid_lines(ring: &[P], step: i64) -> Vec<P> {
     let mut out = Vec::with_capacity(ring.len() + 4);
     for (i, &a) in ring.iter().enumerate() {
         out.push(a);
-        cell_line_points(a, ring[(i + 1) % ring.len()], &mut out);
+        grid_points(a, ring[(i + 1) % ring.len()], step, &mut out);
     }
     out.dedup();
     while out.len() > 1 && out.first() == out.last() {
@@ -231,17 +235,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cell_line_points_are_exact_and_in_order() {
+    fn grid_points_are_exact_in_order_and_off_the_cell_lines() {
         let u = CELL_UNITS as i32;
         let mut out = Vec::new();
-        cell_line_points([-10, -7], [u + 10, 3], &mut out);
+        grid_points([-10, -7], [u + 10, 3], CELL_UNITS, &mut out);
         assert_eq!(out, [[0, -7], [183505, 0], [u, 3]]);
         let mut back = Vec::new();
-        cell_line_points([u + 10, 3], [-10, -7], &mut back);
+        grid_points([u + 10, 3], [-10, -7], CELL_UNITS, &mut back);
         assert_eq!(back, [[u, 3], [183505, 0], [0, -7]]);
         let mut corner = Vec::new();
-        cell_line_points([-4, -4], [4, 4], &mut corner);
+        grid_points([-4, -4], [4, 4], CELL_UNITS, &mut corner);
         assert_eq!(corner, [[0, 0]]);
+        // The line y = 64 crossed 0.3 units east or west of the cell line x = 0: one unit nearer the
+        // exact point, not onto the line.
+        for (b, x) in [([1, 29], 1), ([-1, 29], -1)] {
+            let mut near = Vec::new();
+            grid_points([0, 79], b, 64, &mut near);
+            assert_eq!(near, [[x, 64]]);
+        }
         assert_eq!(div_round(5, 2), 3);
         assert_eq!(div_round(-5, 2), -3);
     }
