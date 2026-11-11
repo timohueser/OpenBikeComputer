@@ -38,31 +38,47 @@ const place = (s: number, a: number): [number, number] => [A1[0] + (D[0] * s - D
 export function underpassMesh(b: MeshBuilder, lines: Line[]): void {
     const right: V3 = [-D[1], -D[0], 0], into: V3 = [D[0], -D[1], 0], up: V3 = [0, 0, 1], down: V3 = [0, 0, -1];
     const v = (s: number, a: number, z: number, colour: number) => b.vertex(...place(s, a), z, colour);
-    // Each way as a straight strip from end face to end face: its middle, its level and its half-width at each end.
+    // Each way as a straight strip through the box and past its end faces: its middle, its level and its half-width at each end.
     const ways = lines.map(line => {
         const n = line.z.length, [s0, a0] = local(line.xy[0], line.xy[1]), [s1, a1] = local(line.xy[2 * n - 2], line.xy[2 * n - 1]);
         const at = (s: number) => { const u = (s - s0) / (s1 - s0); return { a: a0 + (a1 - a0) * u, z: line.z[0] + (line.z[n - 1] - line.z[0]) * u }; };
-        return { line, h: line.h, west: at(-BOX_HALF_M - SILL_M), east: at(BOX_HALF_M + SILL_M), forward: s1 > s0 };
-    }).sort((p, q) => p.west.a - q.west.a);
-    const ends = [-BOX_HALF_M - SILL_M, BOX_HALF_M + SILL_M], faces = [-BOX_HALF_M, BOX_HALF_M], lowest = Math.min(...ways.flatMap(w => [w.west.z, w.east.z]));
+        return { line, h: line.h, ends: [at(-BOX_HALF_M - SILL_M), at(BOX_HALF_M + SILL_M)], forward: s1 > s0 };
+    }).sort((p, q) => p.ends[0].a - q.ends[0].a);
+    const ends = [-BOX_HALF_M - SILL_M, BOX_HALF_M + SILL_M], faces = [-BOX_HALF_M, BOX_HALF_M], lowest = Math.min(...ways.flatMap(w => w.ends.map(end => end.z)));
     // The side walls stand where the shaders end the ground: the ways' own edges lie within.
     const low = -BOX_WIDE_M, high = BOX_WIDE_M;
-    ways.forEach((w, i) => {
-        // The way's own surface.
-        const paint = paintOf(w.line, PAINT | BORE), sign = w.forward ? 1 : -1;
-        const at = (end: typeof w.west, s: number, across: number) => b.vertex(...place(s, end.a + across), end.z + LIFT_M, paint, -sign * across, w.h, sign * s);
-        b.quad([at(w.west, ends[0], -w.h), at(w.west, ends[0], w.h), at(w.east, ends[1], w.h), at(w.east, ends[1], -w.h)], up);
-        // To each side: where the neighbour's edge leaves a gap (or the wall stands off), a strip at the way's level to the gap's middle
-        // (or to the wall); where the way lies over its neighbour there, a riser down to it, at the strip's edge or at the way's own.
+    // The ways' strokes overlap, as on the ground before the box. There the plan's rank decides: the wider way keeps its surface and
+    // the narrower one (a cycleway) shows only past its edge; two ways of one width meet on the middle of their overlap, at one level.
+    const spans = ways.map((w, i) => w.ends.map((end, k) => {
+        const span = { lo: end.a - w.h, hi: end.a + w.h, zLo: end.z + LIFT_M, zHi: end.z + LIFT_M };
         for (const side of [-1, 1]) {
             const other = ways[i + side];
-            const span = (['west', 'east'] as const).map((end, k) => {
-                const inner = w[end].a + side * w.h, far = other ? other[end].a - side * other.h : side < 0 ? low : high, gap = side * (far - inner) > 0;
-                return { s: ends[k], inner, outer: gap ? (other ? (inner + far) / 2 : far) : inner, z: w[end].z + LIFT_M, under: other ? other[end].z + LIFT_M : NaN };
+            if (!other) continue;
+            const mine = side < 0 ? span.lo : span.hi, theirs = other.ends[k].a - side * other.h, overlap = side * (mine - theirs) > 0;
+            if (!overlap) continue;
+            const edge = other.h > w.h ? theirs : other.h === w.h ? (mine + theirs) / 2 : mine, z = other.h === w.h ? (end.z + other.ends[k].z) / 2 + LIFT_M : end.z + LIFT_M;
+            if (side < 0) [span.lo, span.zLo] = [edge, z];
+            else [span.hi, span.zHi] = [edge, z];
+        }
+        return span;
+    }));
+    ways.forEach((w, i) => {
+        // The way's own surface.
+        const paint = paintOf(w.line, PAINT | BORE), sign = w.forward ? 1 : -1, [p, q] = spans[i];
+        const at = (k: number, a: number, z: number) => b.vertex(...place(ends[k], a), z, paint, -sign * (a - w.ends[k].a), w.h, sign * ends[k]);
+        b.quad([at(0, p.lo, p.zLo), at(0, p.hi, p.zHi), at(1, q.hi, q.zHi), at(1, q.lo, q.zLo)], up);
+        // To each side: where the neighbour's edge leaves a gap (or the wall stands off), a strip at the way's level to the gap's middle
+        // (or to the wall); where the way lies over its neighbour there, a riser down to it.
+        for (const side of [-1, 1]) {
+            const other = spans[i + side];
+            const edge = [0, 1].map(k => {
+                const mine = side < 0 ? spans[i][k].lo : spans[i][k].hi, z = side < 0 ? spans[i][k].zLo : spans[i][k].zHi;
+                const far = other ? (side < 0 ? other[k].hi : other[k].lo) : side < 0 ? low : high, gap = side * (far - mine) > 0.02;
+                return { s: ends[k], inner: mine, outer: gap ? (other ? (mine + far) / 2 : far) : mine, z, under: other ? (side < 0 ? other[k].zHi : other[k].zLo) : NaN };
             });
-            const [p, q] = span;
-            if (Math.abs(p.outer - p.inner) > 0.02 || Math.abs(q.outer - q.inner) > 0.02) b.quad([v(p.s, p.inner, p.z, KERB), v(p.s, p.outer, p.z, KERB), v(q.s, q.outer, q.z, KERB), v(q.s, q.inner, q.z, KERB)], up);
-            if (other && (p.z > p.under + 0.02 || q.z > q.under + 0.02)) b.quad([v(p.s, p.outer, Math.min(p.under, p.z), KERB), v(q.s, q.outer, Math.min(q.under, q.z), KERB), v(q.s, q.outer, q.z, KERB), v(p.s, p.outer, p.z, KERB)], [side * right[0], side * right[1], 0]);
+            const [e, f] = edge;
+            if (Math.abs(e.outer - e.inner) > 0.02 || Math.abs(f.outer - f.inner) > 0.02) b.quad([v(e.s, e.inner, e.z, KERB), v(e.s, e.outer, e.z, KERB), v(f.s, f.outer, f.z, KERB), v(f.s, f.inner, f.z, KERB)], up);
+            if (other && (e.z > e.under + 0.02 || f.z > f.under + 0.02)) b.quad([v(e.s, e.outer, Math.min(e.under, e.z), KERB), v(f.s, f.outer, Math.min(f.under, f.z), KERB), v(f.s, f.outer, f.z, KERB), v(e.s, e.outer, e.z, KERB)], [side * right[0], side * right[1], 0]);
         }
     });
     // The side walls and the roof, seen from inside; the roof's top, which shows where the railway's bank lies lower.
@@ -73,10 +89,10 @@ export function underpassMesh(b: MeshBuilder, lines: Line[]): void {
     const fill = (s: number, a: number) => b.vertex(...place(s, a), TOP_Z - 0.37, CONCRETE, 0, -15, -2e9);
     b.quad([fill(faces[0], low), fill(faces[0], high), fill(faces[1], high), fill(faces[1], low)], up);
     // Under each way's end a sill down to the lowest floor: the ground before the box may lie lower than a raised way.
-    for (const w of ways) for (const [k, end] of [w.west, w.east].entries()) {
-        const s = ends[k], out: V3 = [(k ? 1 : -1) * into[0], (k ? 1 : -1) * into[1], 0];
-        b.quad([v(s, end.a - w.h - 0.4, lowest - 0.3, KERB), v(s, end.a + w.h + 0.4, lowest - 0.3, KERB), v(s, end.a + w.h + 0.4, end.z, KERB), v(s, end.a - w.h - 0.4, end.z, KERB)], out);
-    }
+    spans.forEach((pair, i) => pair.forEach((span, k) => {
+        const s = ends[k], out: V3 = [(k ? 1 : -1) * into[0], (k ? 1 : -1) * into[1], 0], l = i ? span.lo : low, r = i + 1 < ways.length ? span.hi : high;
+        b.quad([v(s, l, lowest - 0.3, KERB), v(s, r, lowest - 0.3, KERB), v(s, r, span.zHi, KERB), v(s, l, span.zLo, KERB)], out);
+    }));
     // The end faces: over the opening from the roof's underside to the top, beside it two wings from under the floor; a coping; a railing.
     for (const end of [-1, 1]) {
         const s = end * BOX_HALF_M, back = end * (BOX_HALF_M - FACE_M), out: V3 = [end * into[0], end * into[1], 0], l = low - WING_M, r = high + WING_M;

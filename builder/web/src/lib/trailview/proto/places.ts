@@ -2,8 +2,8 @@
 // the ground that the prototype opens, as the mesh (proto/mouth.ts) and the shaders (protoWgsl) read it.
 import { UNITS } from '../frame/space';
 
-/** The variant of the build: '' today, 'A' or 'B'; 'B2' is B without the bank round the end of a road's mouth. */
-export const VARIANT = ((import.meta as unknown as { env?: Record<string, string> }).env?.VITE_PROTO ?? '') as '' | 'A' | 'B' | 'B2';
+/** The variant of the build: '' today, 'A' or 'B'; 'B2' is B without the bank round the end of a road's mouth; '0' is B with the bake's own heights at A1. */
+export const VARIANT = ((import.meta as unknown as { env?: Record<string, string> }).env?.VITE_PROTO ?? '') as '' | '0' | 'A' | 'B' | 'B2';
 
 export const world = (lat: number, lon: number): [number, number] => [(lon + 180) / 360 * UNITS, (1 - Math.asinh(Math.tan(lat * Math.PI / 180)) / Math.PI) / 2 * UNITS];
 

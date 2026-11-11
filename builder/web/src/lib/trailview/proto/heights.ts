@@ -29,7 +29,7 @@ let checked = false;
 
 /** A feature tile's body, with the heights of the variant where the tile comes near A1. */
 export function protoTile(z: number, x: number, y: number, body: ArrayBuffer | undefined): ArrayBuffer | undefined {
-    if (!body || !VARIANT) return body;
+    if (!body || (!A1_ROAD && !A1_RAIL)) return body;
     const side = 2 ** (30 - z), reach = RAIL_M[1] / A1_M;
     if (A1[0] < x * side - reach || A1[0] > (x + 1) * side + reach || A1[1] < y * side - reach || A1[1] > (y + 1) * side + reach) return body;
     const bytes = new Uint8Array(body);
