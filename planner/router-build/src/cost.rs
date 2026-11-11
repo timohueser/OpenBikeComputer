@@ -100,15 +100,15 @@ pub fn way_bases(osm: &Data, profiles: &[Profile]) -> Result<WayBases, String> {
             Ok(dictionary.into_values())
         })
         .collect::<Result<Vec<_>, String>>()?;
+    u32::try_from(dictionaries.iter().map(Vec::len).sum::<usize>()).map_err(|_| "Too many cost factors")?;
     let offsets: Vec<u32> = dictionaries
         .iter()
-        .scan(0usize, |offset, values| {
+        .scan(0, |offset, values| {
             let start = *offset;
-            *offset += values.len();
-            Some(u32::try_from(start).map_err(|_| "Too many cost factors"))
+            *offset += values.len() as u32;
+            Some(start)
         })
-        .collect::<Result<_, _>>()?;
-    u32::try_from(dictionaries.iter().map(Vec::len).sum::<usize>()).map_err(|_| "Too many cost factors")?;
+        .collect();
     for column in &mut columns {
         column.values_mut().par_chunks_mut(2 * CHUNK).zip(&offsets).for_each(|(ids, &offset)| {
             ids.iter_mut().filter(|id| **id != 0).for_each(|id| *id += offset);
