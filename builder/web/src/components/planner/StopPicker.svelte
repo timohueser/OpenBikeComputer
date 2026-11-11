@@ -9,7 +9,7 @@
     import type { Place, Stay, Trip } from '../../lib/planner/editor';
     import type { RoutingLine } from '../../lib/planner/routing';
 
-    let { trip, line, night, labels, back, theme, found, window, stopId, date, elevationAt, kinds, onOpen, onEndHere, onStay, onSelectPlace, onPick, onRetry, onCancel, onKinds, onRelease }: {
+    let { trip, line, night, labels, back, theme, found, window, stopId, shownId, date, elevationAt, kinds, onOpen, onEndHere, onStay, onSelectPlace, onPick, onRetry, onCancel, onKinds, onRelease }: {
         trip: Trip;
         line: RoutingLine;
         /** The riding day that ends at this night. */
@@ -23,6 +23,8 @@
         /** The stretch searched, in km. */
         window: [number, number];
         stopId: string | null;
+        /** The id of the place or point that the map shows. */
+        shownId: string | null;
         /** The date of this night, when the trip has a start date. */
         date?: string;
         elevationAt: (km: number) => number | null;
@@ -31,7 +33,8 @@
         onOpen: (id: string | null) => void;
         onEndHere: (stop: Stop) => void;
         onStay: (place: Place) => void;
-        onSelectPlace: (place: Place) => void;
+        /** Shows a place on the map; null shows none. */
+        onSelectPlace: (place: Place | null) => void;
         onPick: () => void;
         onRetry: () => void;
         /** Closes the towns of an open day. */
@@ -48,7 +51,7 @@
     // The longest pair of days fills the bar, so the bars compare across towns.
     const longest = $derived(Math.max(1e-9, ...rows.map(({ days }) => days[0].hours + days[1].hours)));
     const open = $derived(stops.find(stop => stop.id === stopId));
-    const services = ['food', 'shop', 'water'] as const;
+    const services = ['food', 'shop'] as const;
     // The town whose card closed, so its button takes the focus back.
     let returnTo: string | null = null;
 
@@ -59,7 +62,7 @@
 </script>
 
 {#if open}
-    <StopCard stop={open} {kinds} days={daysAround(trip, line, night, open.km)} {labels} {back} {theme} {date} elevation={elevationAt(open.km)}
+    <StopCard stop={open} {kinds} days={daysAround(trip, line, night, open.km)} {labels} {back} {shownId} {theme} {date} elevation={elevationAt(open.km)}
         onBack={() => { returnTo = open.id; onOpen(null); }} {onEndHere} {onStay} {onSelectPlace} />
 {:else}
     <div class="picker">
@@ -87,7 +90,6 @@
                                 </span>
                                 <small class="hours" aria-hidden="true"><span>Day {labels[0]} · {duration(days[0].hours)}</span><span>Day {labels[1]} · {duration(days[1].hours)}</span></small>
                             </button>
-                            <button type="button" class="stay" aria-label={`Stay in ${stop.name}`} onclick={() => onEndHere(stop)}>Stay here</button>
                         </li>
                     {/each}
                 </ul>
@@ -191,20 +193,6 @@
         display: flex;
         gap: 12px;
         font-size: 12px;
-    }
-    .stay {
-        flex: none;
-        min-height: 32px;
-        padding: 0 10px;
-        border: 1px solid var(--line-strong);
-        border-radius: 6px;
-        background: var(--panel);
-        color: var(--ink);
-        font: 600 13px var(--sans);
-        cursor: pointer;
-    }
-    .stay:hover {
-        background: var(--parchment-2);
     }
     .tools {
         display: flex;
