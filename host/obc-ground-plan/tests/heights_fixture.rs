@@ -36,7 +36,7 @@ const EDGE_MAX: usize = 120;
 /// measured on the revision 16 fixture with cones on their outward side, faces past the highest wall as steep as their need, and the
 /// banks of line water, whose cuts climb as steep as the terrain asks beside a gorge: the count must not
 /// grow.
-const STEEP_MAX: usize = 3922;
+const STEEP_MAX: usize = 3894;
 /// Of those, the pairs steeper than 6 m/m and 12 m/m, measured the same way: a river's cut in a gorge
 /// that its release lifts to the terrain. A near-vertical rim that the total hides must not come back.
 const STEEP_6_MAX: usize = 87;
@@ -50,7 +50,7 @@ const LEVEL_OFF_M: f64 = 3.0;
 const LEVEL_REACH_M: f64 = 20.0;
 /// The faults near such levels (steps, edge steps, steep pairs), measured on the revision 16 fixture: the
 /// counts must not grow.
-const LEVEL_MAX: [usize; 3] = [30, 86, 12805];
+const LEVEL_MAX: [usize; 3] = [30, 59, 11623];
 /// The places of the ripple report (latitude, longitude).
 const PLACES: [(&str, f64, f64); 5] = [
     ("v17-sharp-corners", 46.821753, 8.404913),
