@@ -76,30 +76,18 @@ pub fn way_bases(osm: &Data, profiles: &[Profile]) -> Result<WayBases, String> {
             let start = chunk * CHUNK;
             for row in start..ways.min(start + CHUNK) {
                 let way = osm.ways.row(row);
-                let facts = way.facts;
                 for reversed in [false, true] {
-                    let access = facts.access[usize::from(reversed)];
-                    let road = (facts.routable && access != 0).then(|| Road {
-                        way: way.id,
-                        reversed,
-                        surface: facts.surface,
-                        class: facts.class,
-                        access,
-                        difficulty: facts.difficulty,
-                        hiking_difficulty: facts.hiking_difficulty,
-                        structure: facts.structure,
-                        ..Road::default()
-                    });
                     let entry = 2 * (row - start) + usize::from(reversed);
                     for (profile, ids) in profiles.iter().zip(&mut parts) {
-                        let basis = road.as_ref().and_then(|road| basis(road, &way, profile));
+                        let basis = way_basis(&way, reversed, profile);
                         ids[entry] = basis.map(|basis| dictionary.intern(basis)).transpose()?.unwrap_or(0);
                     }
                 }
             }
             Ok(dictionary.into_values())
         })
-        .collect::<Result<Vec<_>, String>>()?;
+        .collect::<Vec<Result<_, String>>>();
+    let dictionaries = in_order(dictionaries)?;
     u32::try_from(dictionaries.iter().map(Vec::len).sum::<usize>()).map_err(|_| "Too many cost factors")?;
     let offsets: Vec<u32> = dictionaries
         .iter()
@@ -116,6 +104,30 @@ pub fn way_bases(osm: &Data, profiles: &[Profile]) -> Result<WayBases, String> {
     }
     let profiles = profiles.iter().map(|profile| profile.name.clone()).collect();
     Ok(WayBases { profiles, columns, values: dictionaries.concat() })
+}
+
+/// The basis of `way` in one direction, or `None` where the profile excludes it.
+pub(crate) fn way_basis(way: &Way, reversed: bool, profile: &Profile) -> Option<CostBasis> {
+    let facts = way.facts;
+    let access = facts.access[usize::from(reversed)];
+    let road = Road {
+        way: way.id,
+        reversed,
+        surface: facts.surface,
+        class: facts.class,
+        access,
+        difficulty: facts.difficulty,
+        hiking_difficulty: facts.hiking_difficulty,
+        structure: facts.structure,
+        ..Road::default()
+    };
+    (facts.routable && access != 0).then(|| basis(&road, way, profile)).flatten()
+}
+
+/// The results of the chunks of a parallel pass, or the first error in chunk order: the same
+/// error for each thread count.
+fn in_order<T>(results: Vec<Result<T, String>>) -> Result<Vec<T>, String> {
+    results.into_iter().collect()
 }
 
 /// The basis of `road`, a direction of `way` with an empty shape.
@@ -153,11 +165,7 @@ pub(crate) fn road_cost(
     if road.shape.len() < 2 {
         return Err("Road has no geometry".into());
     }
-    let way_row = graph.roads.way_row(id);
-    if way_row as usize >= graph.osm.ways.len() {
-        return Err("Road lacks source OSM way".into());
-    }
-    let basis_id = bases.id(index, way_row, road.reversed);
+    let basis_id = bases.id(index, graph.roads.way_row(id), road.reversed);
     let total = bases.value(basis_id).map(|basis| basis.compile(road, profile)).transpose()?.map(|cost| cost.total());
     Ok((narrow(total)?, basis_id))
 }
@@ -232,7 +240,7 @@ pub(crate) struct RoadCosts {
 
 /// The costs of `profiles`, `group` profiles at a time. The chunks of `CHUNK` roads run in
 /// parallel; a chunk reads each road and its shape once for the group, and writes its own range of
-/// each column. The way row of each road is in `graph.osm.ways`.
+/// each column.
 pub(crate) fn road_pass(
     graph: &Graph,
     topology: &Topology,
@@ -241,6 +249,9 @@ pub(crate) fn road_pass(
     group: usize,
 ) -> Result<Vec<RoadCosts>, String> {
     let (roads, (first, head)) = (&graph.roads, (topology.first.values(), topology.head.values()));
+    if (0..roads.len()).any(|id| roads.way_row(id) as usize >= graph.osm.ways.len()) {
+        return Err("Road lacks source OSM way".into());
+    }
     let mut costs: Vec<RoadCosts> = profiles
         .iter()
         .map(|_| RoadCosts {
@@ -264,7 +275,7 @@ pub(crate) fn road_pass(
                 part.push([totals, ids, turns]);
             }
         }
-        parts.into_par_iter().enumerate().try_for_each(|(chunk, mut outputs)| {
+        let results = parts.into_par_iter().enumerate().map(|(chunk, mut outputs)| {
             let (start, end) = (starts[chunk], starts[chunk + 1]);
             let mut road = Road::default();
             for id in start..end {
@@ -282,14 +293,27 @@ pub(crate) fn road_pass(
                     }
                 }
             }
-            Ok::<_, String>(())
-        })?;
+            Ok(())
+        });
+        in_order(results.collect())?;
     }
     Ok(costs)
 }
 
-/// The costs of one profile, road after road, with the IDs of the package dictionary: the costs
-/// that the bake computes in parallel, for a test.
+/// Gives each way-bases ID of `costs` the ID of its basis in `dictionary`: each new basis in
+/// profile order and road order.
+pub(crate) fn renumber(costs: &mut [RoadCosts], bases: &WayBases, dictionary: &mut Dictionary) -> Result<(), String> {
+    for costs in costs {
+        for id in costs.bases.values_mut() {
+            if let Some(basis) = bases.value(*id) {
+                *id = dictionary.insert(basis)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The costs of one profile from the passes of the bake, for a test.
 pub struct Costing<'a> {
     graph: &'a Graph,
     profile: &'a Profile,
@@ -312,16 +336,11 @@ impl<'a> Costing<'a> {
     ) -> Result<Self, String> {
         profile.validate()?;
         check_nodes(graph)?;
-        let index = bases.profile(&profile.name)?;
-        let (mut totals, mut road_bases) = (Column::default(), Column::default());
-        let mut road = Road::default();
-        for id in 0..graph.roads.len() {
-            graph.roads.get(id, &mut road);
-            let (total, basis) = road_cost(graph, profile, (bases, index), id, &road)?;
-            totals.push(total);
-            road_bases.push(bases.value(basis).map(|basis| dictionary.insert(basis)).transpose()?.unwrap_or(0));
-        }
-        Ok(Self { graph, profile, dictionary, totals, bases: road_bases })
+        let topology = Topology::new(&graph.roads, graph.points.len())?;
+        let mut costs = road_pass(graph, &topology, std::slice::from_ref(profile), bases, 1)?;
+        renumber(&mut costs, bases, dictionary)?;
+        let RoadCosts { totals, bases, .. } = costs.pop().expect("one profile");
+        Ok(Self { graph, profile, dictionary, totals, bases })
     }
 
     /// The exact factors of `road`, or `None` where the profile excludes it.

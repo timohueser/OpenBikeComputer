@@ -391,9 +391,6 @@ pub fn prepare(
     if (0..roads.len()).any(|id| roads.shape(id).len() < 2 || roads.class(id) > 6) {
         return Err("Road lacks valid geometry or class".into());
     }
-    if (0..roads.len()).any(|id| roads.way_row(id) as usize >= graph.osm.ways.len()) {
-        return Err("Road lacks source OSM way".into());
-    }
     for (i, profile) in profiles.iter().enumerate() {
         if profiles[..i].iter().any(|other| other.name == profile.name) {
             return Err("Duplicate metric identity".into());
@@ -411,20 +408,14 @@ pub fn prepare(
     let ways = graph.osm.ways.len().max(1) as u64;
     let group = (budget / 4 / (8 * ways)).clamp(1, profiles.len().max(1) as u64) as usize;
     let mut costs = cost::road_pass(graph, &topology, profiles, &bases, group)?;
-    // The IDs of the package dictionary: each new basis in profile order and road order.
     let mut dictionary = Dictionary::default();
-    for costs in &mut costs {
-        for id in costs.bases.values_mut() {
-            if let Some(basis) = bases.value(*id) {
-                *id = dictionary.insert(basis)?;
-            }
-        }
-    }
+    cost::renumber(&mut costs, &bases, &mut dictionary)?;
     drop(bases);
     work::Guard::stage("profiles");
     let junctions = landmarks::Junctions::new((0..roads.len()).map(|id| (roads.from(id), roads.to(id))))?;
     let states = connectivity::States::new(&topology, roads, points);
-    // The columns of all profiles stay, and each job adds its own.
+    // The shared topology and the `place` column of `States` take 8 B for each road and 4 B for
+    // each arc once; each job adds its own columns.
     let (r, a, j) = (roads.len() as u64, topology.head.len() as u64, points as u64);
     let threads = rayon::current_num_threads() as u64;
     let jobs = (budget.saturating_sub(8 * r + 4 * a) / (25 * r + 4 * a + 45 * j).max(1)).clamp(1, threads) as usize;
@@ -438,8 +429,9 @@ pub fn prepare(
                 let distances = junctions.compute(costs.totals.values())?;
                 Ok((states.snappable(costs.totals.values(), costs.turns.values()), distances))
             })
-            .collect::<Result<Vec<_>, String>>()
-    })?;
+            .collect::<Vec<Result<_, String>>>()
+    });
+    let prepared = prepared.into_iter().collect::<Result<Vec<_>, _>>()?;
     drop(states);
     work::Guard::stage("writer");
     let mut manifest = Manifest {
@@ -637,7 +629,10 @@ fn write_closures(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use planner_router::model::{BIKE, FOOT, NO_ELEVATION, PUSH};
+    use planner_router::{
+        cost::CostBasis,
+        model::{BIKE, FOOT, NO_ELEVATION, PUSH},
+    };
     use source::{Builder, Tags, Ways};
 
     /// A ladder: junction `i` meets `i + 1` and `i + 2`, each pair by a way in both directions.
@@ -648,7 +643,13 @@ mod tests {
         for a in 0..20u32 {
             for b in [a + 1, a + 2].into_iter().filter(|&b| b < 20) {
                 let way = i64::from(100 * a + b);
-                ways.push(way, &[i64::from(a), i64::from(b)], &Tags::from_pairs([("highway", "residential")]));
+                // Classes and surfaces that cycle with another period than the chunks, so each
+                // chunk has its own first bases.
+                let class = (a + b) % 5;
+                let highway = ["cycleway", "residential", "primary", "track", "path"][class as usize];
+                let surface = [(Surface::Paved, "asphalt"), (Surface::Gravel, "gravel")][(a * b % 2) as usize];
+                let tags = Tags::from_pairs([("highway", highway), ("surface", surface.1)]);
+                ways.push(way, &[i64::from(a), i64::from(b)], &tags);
                 for (from, to) in [(a, b), (b, a)] {
                     let shape = vec![points[from as usize], points[to as usize]];
                     roads.push(Road {
@@ -657,8 +658,8 @@ mod tests {
                         way,
                         reversed: from > to,
                         length_m: shape[0].distance(shape[1]).round() as u32,
-                        surface: Surface::Paved,
-                        class: 1,
+                        surface: surface.0,
+                        class: class as u8,
                         access: BIKE | FOOT | PUSH,
                         difficulty: 255,
                         shape,
@@ -696,6 +697,36 @@ mod tests {
         };
         assert!(graph.roads.len() > 4 * CHUNK, "the roads fill several chunks");
         assert_eq!(package(1), package(4));
+    }
+
+    #[test]
+    fn the_chunks_give_the_costs_of_each_road_computed_alone() {
+        let graph = ladder();
+        let profiles: Vec<_> = Profile::presets().into_iter().take(3).collect();
+        let topology = Topology::new(&graph.roads, graph.points.len()).unwrap();
+        let bases = cost::way_bases(&graph.osm, &profiles).unwrap();
+        assert!(graph.osm.ways.len() > 2 * CHUNK, "the ways fill several chunks");
+        let costs = cost::road_pass(&graph, &topology, &profiles, &bases, 2).unwrap();
+        let bits = |basis: Option<CostBasis>| basis.map(|b| (b.factor.to_bits(), b.turn.to_bits(), b.ferry));
+        for (profile, costs) in profiles.iter().zip(&costs) {
+            let alone = |road: u32| {
+                let way = graph.osm.ways.row(graph.roads.way_row(road as usize) as usize);
+                cost::way_basis(&way, graph.roads.reversed(road as usize), profile)
+            };
+            let mut distinct = std::collections::BTreeSet::new();
+            for (road, shaped) in graph.roads.iter().enumerate() {
+                let basis = alone(road as u32);
+                distinct.insert(bits(basis));
+                assert_eq!(bits(bases.value(costs.bases.values()[road])), bits(basis), "{}", profile.name);
+                let total = basis.map(|basis| basis.compile(&shaped, profile).unwrap().total());
+                assert_eq!(costs.totals.values()[road], base::narrow(total).unwrap());
+            }
+            assert!(distinct.len() > 3, "{}: the ways have different bases", profile.name);
+            for (arc, (before, after)) in topology.edges().enumerate() {
+                let turn = cost::transition(&graph, profile, (alone(before), alone(after)), before, after);
+                assert_eq!(costs.turns.values()[arc], base::narrow(turn).unwrap(), "{}", profile.name);
+            }
+        }
     }
 
     #[test]
