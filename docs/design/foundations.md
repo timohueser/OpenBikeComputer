@@ -12,7 +12,7 @@ owns:
 depends_on: []
 test_depends_on:
   - map-reading
-status: draft
+status: approved
 ---
 
 # Foundations

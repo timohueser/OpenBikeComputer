@@ -457,7 +457,7 @@
    "kind": "system",
    "area": "Device",
    "purpose": "Holds the shared building blocks that have no product policy: the byte layouts of the file formats, the byte-reading interface, CRC-32, the host interfaces and the map-scene interface.",
-   "status": "draft",
+   "status": "approved",
    "depends_on": [],
    "test_depends_on": [
     "map-reading"
