@@ -3,6 +3,7 @@
 //! builds it, and the state of each layer is computed when asked. `specs/obc-data.md` describes
 //! layers, steps, keys, receipts, plans, runs and states.
 
+pub mod cgroup;
 pub mod changes;
 pub mod plan;
 mod process;

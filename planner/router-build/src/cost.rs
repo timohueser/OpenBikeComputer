@@ -1,16 +1,17 @@
 //! Compile source attributes and terrain into additive routing costs.
 use crate::{
-    base::{narrow, Dictionary},
-    column::Column,
+    base::{narrow, Dictionary, Topology},
+    column::{split_mut, Column},
     road_bike,
     source::{Data, Way},
-    suitability, Graph,
+    suitability, Graph, CHUNK,
 };
 use planner_router::{
     closures::Closure,
     cost::{turn, CostBasis},
     model::{Profile, Road, Weighting, BIKE, FOOT, PUSH},
 };
+use rayon::prelude::*;
 
 /// A road that the rider may have no access to costs three times its length. An ordinary route
 /// takes it only where every other way is more than three times as long as the road; a shaping
@@ -31,46 +32,102 @@ pub fn doubts(closures: &[(u8, Closure)]) -> u8 {
 /// The cost basis of each way, direction and profile, before the shape of a road adds its curve.
 pub struct WayBases {
     profiles: Vec<String>,
-    /// For each profile, entry `2 × row + direction` holds the ID in `dictionary`, 0 for none.
+    /// For each profile, entry `2 × row + direction` holds the ID in `values`, 0 for none. A basis
+    /// has one ID for each chunk of ways that uses it.
     columns: Vec<Column<u32>>,
-    /// It does not check a basis: the package dictionary checks each basis that a road uses.
-    dictionary: Dictionary,
+    /// They are not checked: the package dictionary checks each basis that a road uses.
+    values: Vec<CostBasis>,
 }
 
 impl WayBases {
-    fn get(&self, profile: usize, way_row: u32, reversed: bool) -> Option<CostBasis> {
-        let entry = 2 * way_row as usize + usize::from(reversed);
-        self.dictionary.get(self.columns[profile].values()[entry])
+    pub(crate) fn id(&self, profile: usize, way_row: u32, reversed: bool) -> u32 {
+        self.columns[profile].values()[2 * way_row as usize + usize::from(reversed)]
+    }
+
+    /// The basis of `id`; `id` 0 is no basis.
+    pub(crate) fn value(&self, id: u32) -> Option<CostBasis> {
+        Some(self.values[id.checked_sub(1)? as usize])
+    }
+
+    pub(crate) fn get(&self, profile: usize, way_row: u32, reversed: bool) -> Option<CostBasis> {
+        self.value(self.id(profile, way_row, reversed))
+    }
+
+    pub(crate) fn profile(&self, name: &str) -> Result<usize, String> {
+        Ok(self.profiles.iter().position(|profile| profile == name).ok_or("Profile lacks way bases")?)
     }
 }
 
-/// One scan of the ways in ID order: the basis of each routable way, direction with access and
-/// profile, from the facts and the tags of the way.
+/// The basis of each routable way, direction with access and profile, from the facts and the tags
+/// of the way. The chunks of `CHUNK` ways run in parallel, each with a dictionary of its own; the
+/// dictionaries are joined in chunk order, so the IDs do not depend on the thread count.
 pub fn way_bases(osm: &Data, profiles: &[Profile]) -> Result<WayBases, String> {
-    let mut columns: Vec<Column<u32>> = profiles.iter().map(|_| Column::default()).collect();
-    let mut dictionary = Dictionary::default();
-    for way in osm.ways.iter() {
-        let facts = way.facts;
-        for reversed in [false, true] {
-            let access = facts.access[usize::from(reversed)];
-            let road = (facts.routable && access != 0).then(|| Road {
-                way: way.id,
-                reversed,
-                surface: facts.surface,
-                class: facts.class,
-                access,
-                difficulty: facts.difficulty,
-                hiking_difficulty: facts.hiking_difficulty,
-                structure: facts.structure,
-                ..Road::default()
-            });
-            for (profile, column) in profiles.iter().zip(&mut columns) {
-                let basis = road.as_ref().and_then(|road| basis(road, &way, profile));
-                column.push(basis.map(|basis| dictionary.intern(basis)).transpose()?.unwrap_or(0));
-            }
-        }
+    let ways = osm.ways.len();
+    let mut columns: Vec<Column<u32>> = profiles.iter().map(|_| Column::filled(2 * ways, 0)).collect();
+    let mut parts: Vec<Vec<&mut [u32]>> = (0..ways.div_ceil(CHUNK)).map(|_| Vec::new()).collect();
+    for column in &mut columns {
+        parts.iter_mut().zip(column.values_mut().chunks_mut(2 * CHUNK)).for_each(|(part, ids)| part.push(ids));
     }
-    Ok(WayBases { profiles: profiles.iter().map(|profile| profile.name.clone()).collect(), columns, dictionary })
+    let dictionaries = parts
+        .into_par_iter()
+        .enumerate()
+        .map(|(chunk, mut parts)| {
+            let mut dictionary = Dictionary::default();
+            let start = chunk * CHUNK;
+            for row in start..ways.min(start + CHUNK) {
+                let way = osm.ways.row(row);
+                for reversed in [false, true] {
+                    let entry = 2 * (row - start) + usize::from(reversed);
+                    for (profile, ids) in profiles.iter().zip(&mut parts) {
+                        let basis = way_basis(&way, reversed, profile);
+                        ids[entry] = basis.map(|basis| dictionary.intern(basis)).transpose()?.unwrap_or(0);
+                    }
+                }
+            }
+            Ok(dictionary.into_values())
+        })
+        .collect::<Vec<Result<_, String>>>();
+    let dictionaries = in_order(dictionaries)?;
+    u32::try_from(dictionaries.iter().map(Vec::len).sum::<usize>()).map_err(|_| "Too many cost factors")?;
+    let offsets: Vec<u32> = dictionaries
+        .iter()
+        .scan(0, |offset, values| {
+            let start = *offset;
+            *offset += values.len() as u32;
+            Some(start)
+        })
+        .collect();
+    for column in &mut columns {
+        column.values_mut().par_chunks_mut(2 * CHUNK).zip(&offsets).for_each(|(ids, &offset)| {
+            ids.iter_mut().filter(|id| **id != 0).for_each(|id| *id += offset);
+        });
+    }
+    let profiles = profiles.iter().map(|profile| profile.name.clone()).collect();
+    Ok(WayBases { profiles, columns, values: dictionaries.concat() })
+}
+
+/// The basis of `way` in one direction, or `None` where the profile excludes it.
+pub(crate) fn way_basis(way: &Way, reversed: bool, profile: &Profile) -> Option<CostBasis> {
+    let facts = way.facts;
+    let access = facts.access[usize::from(reversed)];
+    let road = Road {
+        way: way.id,
+        reversed,
+        surface: facts.surface,
+        class: facts.class,
+        access,
+        difficulty: facts.difficulty,
+        hiking_difficulty: facts.hiking_difficulty,
+        structure: facts.structure,
+        ..Road::default()
+    };
+    (facts.routable && access != 0).then(|| basis(&road, way, profile)).flatten()
+}
+
+/// The results of the chunks of a parallel pass, or the first error in chunk order: the same
+/// error for each thread count.
+pub(crate) fn in_order<T>(results: Vec<Result<T, String>>) -> Result<Vec<T>, String> {
+    results.into_iter().collect()
 }
 
 /// The basis of `road`, a direction of `way` with an empty shape.
@@ -96,6 +153,170 @@ fn basis(road: &Road, way: &Way, profile: &Profile) -> Option<CostBasis> {
     Some(cost)
 }
 
+/// The total cost of road `id`, which `road` holds with its shape, and the way-bases ID of its
+/// basis for profile `index` of `bases`: `u32::MAX` and 0 where the profile excludes it.
+pub(crate) fn road_cost(
+    graph: &Graph,
+    profile: &Profile,
+    (bases, index): (&WayBases, usize),
+    id: usize,
+    road: &Road,
+) -> Result<(u32, u32), String> {
+    if road.shape.len() < 2 {
+        return Err("Road has no geometry".into());
+    }
+    let basis_id = bases.id(index, graph.roads.way_row(id), road.reversed);
+    let total = bases.value(basis_id).map(|basis| basis.compile(road, profile)).transpose()?.map(|cost| cost.total());
+    Ok((narrow(total)?, basis_id))
+}
+
+/// Fails where the graph lacks a column that the costs read.
+pub(crate) fn check_nodes(graph: &Graph) -> Result<(), String> {
+    let points = graph.points.len();
+    if [graph.node_access.len(), graph.node_ids.len(), graph.signals.len(), graph.node_doubts.len()]
+        .iter()
+        .any(|&len| len != points)
+    {
+        return Err("Graph nodes lack source identities or access".into());
+    }
+    Ok(())
+}
+
+/// The cost of the turn from road `before` to road `after`, whose bases are `wa` and `wb`, or
+/// `None` where the profile may not take it.
+pub(crate) fn transition(
+    graph: &Graph,
+    profile: &Profile,
+    (wa, wb): (Option<CostBasis>, Option<CostBasis>),
+    before: u32,
+    after: u32,
+) -> Option<u64> {
+    let roads = &graph.roads;
+    let (a, b) = (&roads.attributes(before as usize), &roads.attributes(after as usize));
+    if a.to != b.from || !graph.permits_turn(before, after, profile.walking) {
+        return None;
+    }
+    // A U-turn onto the reverse of the same road does not pass the node, so a closed gate at
+    // the end of a spur still lets the rider turn back; its access and doubt do not apply.
+    let passes = !(a.way == b.way && a.from == b.to && a.to == b.from);
+    let junction = b.from as usize;
+    let access = if passes { graph.node_access.values()[junction] } else { BIKE | FOOT | PUSH };
+    if access & profile.modes() == 0 {
+        return None;
+    }
+    let (wa, wb) = (wa?, wb?);
+    let pushing = |road: &Road| profile.mode(road) == PUSH;
+    if (pushing(a) || pushing(b) || access & BIKE == 0) && !graph.permits_turn(before, after, true) {
+        return None;
+    }
+    let doubt = passes && graph.node_doubts.values()[junction] & profile.mode(b) != 0;
+    let doubt = if doubt { UNCERTAIN_NODE } else { 0.0 };
+    if !matches!(profile.weighting, Weighting::RoadBike(_)) {
+        return Some(doubt as u64);
+    }
+    let (arrival, departure) = (roads.shape(before as usize), roads.shape(after as usize));
+    let mut cost = doubt + turn(arrival[arrival.len() - 2], arrival[arrival.len() - 1], departure[1], wb.turn);
+    if graph.signals.values()[junction] {
+        cost += 20.0;
+    }
+    if wb.ferry && !wa.ferry {
+        cost += 10_000.0;
+    }
+    if !pushing(a) && (pushing(b) || access & BIKE == 0) {
+        cost += 300.0;
+    }
+    Some(cost.round() as u64)
+}
+
+/// The costs of one profile, with the IDs of `WayBases`.
+pub(crate) struct RoadCosts {
+    /// The total cost of each road; `u32::MAX` where the profile excludes it.
+    pub totals: Column<u32>,
+    /// The way-bases ID of each road's basis; 0 where the profile excludes it.
+    pub bases: Column<u32>,
+    /// The cost of each arc of the topology; `u32::MAX` where the profile may not turn.
+    pub turns: Column<u32>,
+}
+
+/// The costs of `profiles`, `group` profiles at a time. The chunks of `CHUNK` roads run in
+/// parallel; a chunk reads each road and its shape once for the group, and writes its own range of
+/// each column.
+pub(crate) fn road_pass(
+    graph: &Graph,
+    topology: &Topology,
+    profiles: &[Profile],
+    bases: &WayBases,
+    group: usize,
+) -> Result<Vec<RoadCosts>, String> {
+    let (roads, (first, head)) = (&graph.roads, (topology.first.values(), topology.head.values()));
+    if (0..roads.len()).any(|id| roads.way_row(id) as usize >= graph.osm.ways.len()) {
+        return Err("Road lacks source OSM way".into());
+    }
+    let mut costs: Vec<RoadCosts> = profiles
+        .iter()
+        .map(|_| RoadCosts {
+            totals: Column::filled(roads.len(), 0),
+            bases: Column::filled(roads.len(), 0),
+            turns: Column::filled(head.len(), 0),
+        })
+        .collect();
+    let starts: Vec<usize> = (0..roads.len()).step_by(CHUNK).chain([roads.len()]).collect();
+    let road_lengths = starts.windows(2).map(|ends| ends[1] - ends[0]);
+    let arc_lengths = starts.windows(2).map(|ends| (first[ends[1]] - first[ends[0]]) as usize);
+    let indices = profiles.iter().map(|profile| bases.profile(&profile.name)).collect::<Result<Vec<_>, _>>()?;
+    for ((members, profiles), indices) in costs.chunks_mut(group).zip(profiles.chunks(group)).zip(indices.chunks(group))
+    {
+        let mut parts: Vec<Vec<[&mut [u32]; 3]>> = starts.windows(2).map(|_| Vec::new()).collect();
+        for costs in members {
+            let totals = split_mut(costs.totals.values_mut(), road_lengths.clone());
+            let ids = split_mut(costs.bases.values_mut(), road_lengths.clone());
+            let turns = split_mut(costs.turns.values_mut(), arc_lengths.clone());
+            for (part, ((totals, ids), turns)) in parts.iter_mut().zip(totals.into_iter().zip(ids).zip(turns)) {
+                part.push([totals, ids, turns]);
+            }
+        }
+        let results = parts.into_par_iter().enumerate().map(|(chunk, mut outputs)| {
+            let (start, end) = (starts[chunk], starts[chunk + 1]);
+            let mut road = Road::default();
+            for id in start..end {
+                roads.get(id, &mut road);
+                let arcs = first[id] as usize..first[id + 1] as usize;
+                for ((profile, &index), [totals, ids, turns]) in profiles.iter().zip(indices).zip(&mut outputs) {
+                    let (total, basis) = road_cost(graph, profile, (bases, index), id, &road)?;
+                    (totals[id - start], ids[id - start]) = (total, basis);
+                    let wa = bases.value(basis);
+                    for arc in arcs.clone() {
+                        let after = head[arc];
+                        let wb = bases.get(index, roads.way_row(after as usize), roads.reversed(after as usize));
+                        let cost = transition(graph, profile, (wa, wb), id as u32, after);
+                        turns[arc - first[start] as usize] = narrow(cost)?;
+                    }
+                }
+            }
+            Ok::<_, String>(())
+        });
+        // The first error in chunk order; rayon skips the chunks after it that have not started.
+        if let Some(Err(error)) = results.find_first(Result::is_err) {
+            return Err(error);
+        }
+    }
+    Ok(costs)
+}
+
+/// Gives each way-bases ID of `costs` the ID of its basis in `dictionary`: each new basis in
+/// profile order and road order.
+pub(crate) fn renumber(costs: &mut [RoadCosts], bases: &WayBases, dictionary: &mut Dictionary) -> Result<(), String> {
+    for costs in costs {
+        for id in costs.bases.values_mut() {
+            if let Some(basis) = bases.value(*id) {
+                *id = dictionary.insert(basis)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The costs of one profile from the passes of the bake, for a test.
 pub struct Costing<'a> {
     graph: &'a Graph,
     profile: &'a Profile,
@@ -117,32 +338,12 @@ impl<'a> Costing<'a> {
         dictionary: &'a mut Dictionary,
     ) -> Result<Self, String> {
         profile.validate()?;
-        let points = graph.points.len();
-        if [graph.node_access.len(), graph.node_ids.len(), graph.signals.len(), graph.node_doubts.len()]
-            .iter()
-            .any(|&len| len != points)
-        {
-            return Err("Graph nodes lack source identities or access".into());
-        }
-        let index = bases.profiles.iter().position(|name| *name == profile.name).ok_or("Profile lacks way bases")?;
-        let mut totals = Column::default();
-        let mut road_bases = Column::default();
-        let mut road = Road::default();
-        for id in 0..graph.roads.len() {
-            graph.roads.get(id, &mut road);
-            if road.shape.len() < 2 {
-                return Err("Road has no geometry".into());
-            }
-            let way_row = graph.roads.way_row(id);
-            if way_row as usize >= graph.osm.ways.len() {
-                return Err("Road lacks source OSM way".into());
-            }
-            let basis = bases.get(index, way_row, road.reversed);
-            let total = basis.map(|basis| basis.compile(&road, profile)).transpose()?.map(|cost| cost.total());
-            totals.push(narrow(total)?);
-            road_bases.push(basis.map(|basis| dictionary.insert(basis)).transpose()?.unwrap_or(0));
-        }
-        Ok(Self { graph, profile, dictionary, totals, bases: road_bases })
+        check_nodes(graph)?;
+        let topology = Topology::new(&graph.roads, graph.points.len())?;
+        let mut costs = road_pass(graph, &topology, std::slice::from_ref(profile), bases, 1)?;
+        renumber(&mut costs, bases, dictionary)?;
+        let RoadCosts { totals, bases, .. } = costs.pop().expect("one profile");
+        Ok(Self { graph, profile, dictionary, totals, bases })
     }
 
     /// The exact factors of `road`, or `None` where the profile excludes it.
@@ -151,41 +352,7 @@ impl<'a> Costing<'a> {
     }
 
     pub fn transition(&self, before: u32, after: u32) -> Option<u64> {
-        let roads = &self.graph.roads;
-        let (a, b) = (&roads.attributes(before as usize), &roads.attributes(after as usize));
-        if a.to != b.from || !self.graph.permits_turn(before, after, self.profile.walking) {
-            return None;
-        }
-        // A U-turn onto the reverse of the same road does not pass the node, so a closed gate at
-        // the end of a spur still lets the rider turn back; its access and doubt do not apply.
-        let passes = !(a.way == b.way && a.from == b.to && a.to == b.from);
-        let junction = b.from as usize;
-        let access = if passes { self.graph.node_access.values()[junction] } else { BIKE | FOOT | PUSH };
-        if access & self.profile.modes() == 0 {
-            return None;
-        }
-        let (wa, wb) = (self.basis(before)?, self.basis(after)?);
-        let pushing = |road: &Road| self.profile.mode(road) == PUSH;
-        if (pushing(a) || pushing(b) || access & BIKE == 0) && !self.graph.permits_turn(before, after, true) {
-            return None;
-        }
-        let doubt = passes && self.graph.node_doubts.values()[junction] & self.profile.mode(b) != 0;
-        let doubt = if doubt { UNCERTAIN_NODE } else { 0.0 };
-        if !matches!(self.profile.weighting, Weighting::RoadBike(_)) {
-            return Some(doubt as u64);
-        }
-        let (arrival, departure) = (roads.shape(before as usize), roads.shape(after as usize));
-        let mut cost = doubt + turn(arrival[arrival.len() - 2], arrival[arrival.len() - 1], departure[1], wb.turn);
-        if self.graph.signals.values()[junction] {
-            cost += 20.0;
-        }
-        if wb.ferry && !wa.ferry {
-            cost += 10_000.0;
-        }
-        if !pushing(a) && (pushing(b) || access & BIKE == 0) {
-            cost += 300.0;
-        }
-        Some(cost.round() as u64)
+        transition(self.graph, self.profile, (self.basis(before), self.basis(after)), before, after)
     }
 }
 

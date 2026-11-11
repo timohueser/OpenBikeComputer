@@ -5,7 +5,6 @@ use crate::{
     table::{valid_digest, Table},
 };
 use serde::{Deserialize, Serialize};
-use std::collections::hash_map::{Entry, HashMap};
 
 /// Why the rider may have no access to a road that the router keeps open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -82,35 +81,6 @@ impl Default for Closures {
 }
 
 impl Closures {
-    /// The table from the closures of each road, in road order. A set keeps the order of its
-    /// first mentions: access values before conditions, as the source lists them.
-    pub fn build(roads: impl IntoIterator<Item = Set>) -> Result<Self, String> {
-        let mut sets: Vec<Set> = Vec::new();
-        let mut known: HashMap<Set, u64> = HashMap::new();
-        let mut ids = Vec::new();
-        for closures in roads {
-            let mut set: Set = Vec::with_capacity(closures.len());
-            for closure in closures {
-                if !set.contains(&closure) {
-                    set.push(closure);
-                }
-            }
-            ids.push(if set.is_empty() {
-                u64::MAX
-            } else {
-                match known.entry(set) {
-                    Entry::Occupied(id) => *id.get(),
-                    Entry::Vacant(slot) => {
-                        sets.push(slot.key().clone());
-                        *slot.insert(sets.len() as u64 - 1)
-                    }
-                }
-            });
-        }
-        u32::try_from(sets.len()).map_err(|_| "Too many closure sets")?;
-        Ok(Self { sets, roads: Numbers::U64(ids) })
-    }
-
     pub fn valid(&self) -> bool {
         (0..self.roads.len()).all(|road| {
             let set = self.roads.get(road);
@@ -140,24 +110,12 @@ mod tests {
         let closure = |kind, condition: &str| Closure { kind, condition: condition.into() };
         let (permit, season, wet) =
             (closure(Kind::Permit, "permit"), closure(Kind::Seasonal, "Nov-May"), closure(Kind::Conditional, "wet"));
-        let table = Closures::build([
-            vec![],
+        let sets = vec![
             vec![(BIKE, season.clone())],
-            vec![],
-            vec![
-                (BIKE | FOOT | PUSH, permit.clone()),
-                (BIKE, season.clone()),
-                (FOOT | PUSH, wet.clone()),
-                (BIKE, season.clone()),
-            ],
-            vec![],
-            vec![],
-            vec![],
-            vec![(BIKE, season.clone())],
-        ])
-        .unwrap();
-        assert_eq!(table.sets.len(), 2);
-        assert_eq!(table.sets[1].len(), 3);
+            vec![(BIKE | FOOT | PUSH, permit.clone()), (BIKE, season.clone()), (FOOT | PUSH, wet.clone())],
+        ];
+        let table =
+            Closures { sets, roads: Numbers::U64(vec![u64::MAX, 0, u64::MAX, 1, u64::MAX, u64::MAX, u64::MAX, 0]) };
         assert!(table.valid());
         assert_eq!(table.closing(3, BIKE), Some(vec![permit.clone(), season.clone()]));
         assert_eq!(table.closing(3, PUSH), Some(vec![permit.clone(), wet]));

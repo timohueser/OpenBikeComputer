@@ -15,6 +15,7 @@ use planner_router::{
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use crate::work::{Guard, OWN_BYTES};
 use crate::{catalog, grid, overlays};
 
 struct Build {
@@ -34,7 +35,8 @@ struct Build {
 /// Write the package, its overlay index and its route catalog into the empty directory `output`.
 /// `terrain` gives the heights of the roads. Returns the report of the catalog.
 fn build(args: Build, terrain: Terrain, output: &Path) -> Result<catalog::Report, String> {
-    crate::work::sort_run_bytes()?;
+    let (budget, source) = crate::work::page_budget()?;
+    eprintln!("Page budget: {} MiB, from {source}", budget >> 20);
     let profiles: Vec<_> = Profile::presets()
         .into_iter()
         .filter(|p| args.profiles.iter().any(|name| name == "all" || name == &p.name))
@@ -89,8 +91,10 @@ fn build(args: Build, terrain: Terrain, output: &Path) -> Result<catalog::Report
     // freed here, so the catalog routers get its memory.
     let osm = std::mem::take(&mut graph.osm);
     drop(graph);
+    Guard::stage("overlays");
     eprintln!("Writing the overlay index");
     overlays::write(&output.join(overlays::FILE), &package::digest(&manifest), args.bounds, &osm)?;
+    Guard::exempt("catalog");
     eprintln!("Writing the route catalog");
     catalog::write(output, osm, france)
 }
@@ -117,6 +121,8 @@ pub fn step(request: &Request) -> Result<(), String> {
             .map(|value| value.as_str().map(str::to_string).ok_or(format!("option `{name}` lists a non-string")))
             .collect()
     };
+    let _guard = Guard::start(OWN_BYTES);
+    Guard::stage("import");
     let bounds = obc_dem::step::bounds(options)?;
     let countries = list("countries")?;
     if countries.is_empty() {
@@ -134,6 +140,7 @@ pub fn step(request: &Request) -> Result<(), String> {
     let report = build(args, terrain, &routing)?;
 
     let cells = grid::cells(bounds);
+    Guard::exempt("blocks");
     crate::blocks::publish(&routing, &cells, &request.output.join("blocks")).map_err(|e| e.to_string())?;
     let catalog = fs::read(routing.join(catalog::FILE)).map_err(|e| e.to_string())?;
     let catalog: Value = serde_json::from_slice(&catalog).map_err(|e| e.to_string())?;

@@ -86,6 +86,12 @@ impl<T: Plain> Column<T> {
         self.len += values.len();
     }
 
+    pub fn pop(&mut self) -> Option<T> {
+        let value = *self.values().last()?;
+        self.len -= 1;
+        Some(value)
+    }
+
     pub fn len(&self) -> usize {
         self.len
     }
@@ -177,6 +183,16 @@ impl<T: Plain + std::fmt::Debug> std::fmt::Debug for Column<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_list().entries(self.values()).finish()
     }
+}
+
+/// `values` cut into consecutive parts of `lengths`.
+pub fn split_mut<T>(mut values: &mut [T], lengths: impl IntoIterator<Item = usize>) -> Vec<&mut [T]> {
+    let parts = lengths.into_iter().map(|length| {
+        let (part, rest) = std::mem::take(&mut values).split_at_mut(length);
+        values = rest;
+        part
+    });
+    parts.collect()
 }
 
 /// Many variable-length lists in one column.

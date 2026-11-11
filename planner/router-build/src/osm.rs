@@ -784,6 +784,7 @@ fn build_graph(
     vias.dedup();
     let (ends, via_junctions, [shape_points, resampled]) = junctions(&osm, &vias, &mut graph)?;
     limits.check((osm.ways.len(), osm.ways.references().len()), ends.values(), graph.points.len())?;
+    crate::work::Guard::stage("emit");
     let points = graph.points.values();
     let keys = layout::keys(&ends, |_, to| layout::spatial_key(points[to as usize]))?;
     let points = shape_points + if terrain.is_some() { resampled } else { 0 };
