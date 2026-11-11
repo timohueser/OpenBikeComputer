@@ -456,7 +456,7 @@
    "name": "foundations",
    "kind": "system",
    "area": "Device",
-   "purpose": "Holds the policy-free building blocks that every crate uses: byte codecs, CRC, host interfaces, the map-scene contract.",
+   "purpose": "Holds the shared building blocks that have no product policy: the byte layouts of the file formats, the byte-reading interface, CRC-32, the host interfaces and the map-scene interface.",
    "status": "draft",
    "depends_on": [],
    "test_depends_on": [
@@ -768,7 +768,7 @@
    ],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 18794,
+   "lines": 18799,
    "problems": []
   },
   {
