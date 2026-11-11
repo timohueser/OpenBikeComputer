@@ -145,7 +145,7 @@ pub fn run() -> Result<(), String> {
     }
     let rules = Rules::embedded();
     let scans: Vec<Cell> = fix.map(&cells, |key, input| {
-        let graph = graph::build(key, &input, &rules.sections);
+        let graph = graph::build(key, &input, &rules.sections, &rules.structures);
         let words = records::build(&graph, &input, rules, key, 0, true).near.words;
         let s = scan(&words, &input.terrain, key, grid);
         let steps = (s.steps.into_iter())
@@ -326,7 +326,7 @@ fn gpu_check(out: &std::path::Path, places: &[(String, f64, f64)]) -> Result<(),
                 let key = CellKey::of(GlobalPoint { x: g[0].floor() as i64, y: g[1].floor() as i64 });
                 if let std::collections::btree_map::Entry::Vacant(e) = at.entry(key) {
                     let Ok(input) = fix.try_cell(key) else { continue };
-                    let graph = graph::build(key, &input, &rules.sections);
+                    let graph = graph::build(key, &input, &rules.sections, &rules.structures);
                     let words = records::build(&graph, &input, rules, key, 0, true).near.words;
                     e.insert((blocks.len(), input));
                     blocks.extend(words);
@@ -408,7 +408,7 @@ fn why(lat: f64, lon: f64) -> Result<(), String> {
     let mut fix = Fixture::open(&default_dir());
     let input = fix.try_cell(key).map_err(|e| format!("{key:?}: {e:?}"))?;
     let rules = Rules::embedded();
-    let graph = graph::build(key, &input, &rules.sections);
+    let graph = graph::build(key, &input, &rules.sections, &rules.structures);
     let words = records::build(&graph, &input, rules, key, 0, true).near.words;
     let o = key.origin();
     let q = [(g.x - o.x) as f64, (g.y - o.y) as f64];
@@ -452,7 +452,7 @@ fn why_global(g: [f64; 2]) -> Result<(), String> {
             continue;
         }
         let Ok(input) = fix.try_cell(key) else { continue };
-        let graph = graph::build(key, &input, &rules.sections);
+        let graph = graph::build(key, &input, &rules.sections, &rules.structures);
         let words = records::build(&graph, &input, rules, key, 0, true).near.words;
         let l = find(&words, q);
         println!("cell {key:?} q {q:?} label {}", label_name(&words, l));
@@ -484,7 +484,7 @@ fn cost(out: &std::path::Path) -> Result<(), String> {
     let mut rows = Vec::new();
     for key in cells {
         let input = fix.cell(key);
-        let graph = graph::build(key, &input, &rules.sections);
+        let graph = graph::build(key, &input, &rules.sections, &rules.structures);
         let words = records::build(&graph, &input, rules, key, 0, true).near.words;
         let plan = obc_ground_plan::faces::build(&graph, &input, rules, key, 0, true);
         let mpu = metres_per_unit(key.origin().y + CELL_UNITS / 2);

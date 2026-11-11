@@ -186,7 +186,7 @@ pub fn run() -> Result<(), String> {
         let t0 = now();
         let input = fixture.try_cell(key).map_err(|e| format!("{key:?}: {e}"))?;
         let t1 = now();
-        let graph = obc_ground_plan::graph::build(key, &input, &rules.sections);
+        let graph = obc_ground_plan::graph::build(key, &input, &rules.sections, &rules.structures);
         let t2 = now();
         let built = records::build(&graph, &input, rules, key, 0, true);
         let t3 = now();

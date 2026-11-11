@@ -1,12 +1,14 @@
 //! The way graph of one cell: every way and waterway as its curve with samples at global parameters,
 //! split at the cell lines; the junctions with their hosts, the joints and the ends; snapped ends and
-//! their links; a level per way piece; and every crossing with its type.
+//! their links; a level per way piece; every crossing with its type and its step of the ladder; and the
+//! states, end lines and sheets of the bridge and tunnel ways.
 //!
 //! Every decision reads only data within its reach of the element it decides (the rows of
 //! `reach_rows`), so two cells give the same graph where both hold complete data.
 
 mod crossings;
 mod curve;
+mod levels;
 mod parts;
 mod points;
 mod snap;
@@ -22,6 +24,7 @@ use crate::CellInput;
 
 pub use crossings::end_on_chord;
 pub use curve::{curve_point, folds, off_chord, point, s_at, u_at, water_tangents, SpanPoint};
+pub use levels::{step, EndKind, EndLine, Ladder, Levels, Run, Sheet, State, Step, Structures};
 
 /// The coarsest sample step: the grid of level l is `BASE_STEP_M / 2^l` along a span.
 pub const BASE_STEP_M: f64 = 16.0;
@@ -261,6 +264,8 @@ pub enum CrossingKind {
     Footbridge,
     LevelCrossing,
     Stacked,
+    /// A tunnel way under another way, from their tags.
+    Bore,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -282,6 +287,8 @@ pub struct Crossing {
     pub angle_rad: f64,
     pub deck: Option<u32>,
     pub owned: bool,
+    /// The room and the step of the ladder, where one applies.
+    pub ladder: Option<Ladder>,
 }
 
 /// Deck ways that share a point, or one synthetic stretch.
@@ -316,12 +323,14 @@ pub struct GraphStats {
     pub implicit_junctions: u32,
     pub crossings: BTreeMap<(CrossingKind, Source), u32>,
     pub samples: u32,
+    /// The counts of the levels, of the elements that the cell owns.
+    pub levels: BTreeMap<String, u32>,
 }
 
 impl GraphStats {
-    /// Every counter but the crossings by type, by name.
-    pub fn counters(&self) -> [(&'static str, u32); 22] {
-        [
+    /// Every counter but the crossings by type, by name; the levels' as `levels <name>`.
+    pub fn counters(&self) -> Vec<(String, u32)> {
+        let fixed = [
             ("repeated", self.repeated),
             ("spikes", self.spikes),
             ("folded", self.folded),
@@ -344,7 +353,9 @@ impl GraphStats {
             ("implicit_junctions", self.implicit_junctions),
             ("crossings", self.crossings.values().sum()),
             ("samples", self.samples),
-        ]
+        ];
+        let levels = self.levels.iter().map(|(name, &n)| (format!("levels {name}"), n));
+        fixed.into_iter().map(|(name, n)| (name.to_string(), n)).chain(levels).collect()
     }
 }
 
@@ -359,6 +370,7 @@ pub struct WayGraph {
     pub ends: Vec<End>,
     pub crossings: Vec<Crossing>,
     pub decks: Vec<Deck>,
+    pub levels: Levels,
     pub stats: GraphStats,
 }
 
@@ -382,7 +394,7 @@ fn inside([x0, y0, x1, y1]: [i64; 4], p: [i64; 2]) -> bool {
 }
 
 /// The graph of a cell from its input and the rule tables, in the order of the stages.
-pub fn build(cell: CellKey, input: &CellInput, rules: &Sections) -> WayGraph {
+pub fn build(cell: CellKey, input: &CellInput, rules: &Sections, structures: &Structures) -> WayGraph {
     let area = work_area(cell);
     let mut stats = GraphStats::default();
     let (mut parts, mut part_rules) = parts::parts(input, rules, &mut stats);
@@ -391,7 +403,9 @@ pub fn build(cell: CellKey, input: &CellInput, rules: &Sections) -> WayGraph {
     let plan = points::pieces(&parts, &sampled, input, &mut stats);
     let plan = crossings::crossings(cell, area, &parts, &part_rules, &mut samples, plan, &mut stats);
     let plan = snap::snap(cell, area, &mut parts, &mut part_rules, &mut samples, plan, &mut stats);
-    points::assemble(cell, area, parts, &part_rules, samples, plan, stats)
+    let mut graph = points::assemble(cell, area, parts, &part_rules, samples, plan, stats);
+    levels::levels(&mut graph, input, &part_rules, structures);
+    graph
 }
 
 /// The rows of the graph in the reach table: (R_d, own R_e) of each decision.
@@ -418,7 +432,7 @@ pub fn reach_rows(culvert_max_m: f64) -> Vec<Reach> {
     ]
 }
 
-/// The invariants G1 to G4 of a graph.
+/// The invariants G1 to G4 of a graph, and of its levels G7 to G9.
 pub fn check(graph: &WayGraph) -> Vec<Fault> {
     let mut faults = Vec::new();
     let mut fault = |check: &'static str, what: String| faults.push(Fault { check, what });
@@ -483,5 +497,63 @@ pub fn check(graph: &WayGraph) -> Vec<Fault> {
             }
         }
     }
+    check_levels(graph, &mut fault);
     faults
+}
+
+/// G7: the runs of a bridge or tunnel way cover it once, in order; OPEN lies within `open_max_m` of
+/// a tag end and never between two BORE runs. G8: a BORE run has its room, a DECK run its length.
+/// G9: an A line lies outside the paved stroke of every ground arm.
+fn check_levels(graph: &WayGraph, fault: &mut dyn FnMut(&'static str, String)) {
+    let lv = &graph.levels;
+    let tolerance = 1e-6;
+    for way in &graph.ways {
+        let part = &graph.parts[way.part as usize];
+        let tunnel = way.level == Level::Tunnel && way.family != Family::Water;
+        let tagged = tunnel || (way.level == Level::Deck && part.level == Level::Deck);
+        let runs: Vec<&Run> = lv.runs.iter().filter(|r| r.way == way.id).collect();
+        if !tagged && runs.is_empty() {
+            continue;
+        }
+        let k = |st: &Station| (st.span, st.u);
+        let joined = runs.windows(2).all(|p| p[0].to == p[1].from);
+        let ordered = runs.iter().all(|r| k(&r.from) <= k(&r.to));
+        if runs.first().map(|r| r.from) != Some(way.from)
+            || runs.last().map(|r| r.to) != Some(way.to)
+            || !joined
+            || !ordered
+        {
+            fault("G7", format!("way {}: its runs do not cover it once in order", way.id));
+        }
+        for r in &runs {
+            let wrong = match r.state {
+                State::Deck => tunnel,
+                State::Bore => !tunnel,
+                State::Open => tunnel && r.tag_m > lv.open_max_m + tolerance,
+                State::Hidden => false,
+            };
+            if wrong {
+                fault("G7", format!("way {}: a {:?} run {} m from a tag end", way.id, r.state, r.tag_m));
+            }
+            let short = match r.state {
+                State::Bore => r.margin_m < -tolerance,
+                State::Deck => r.margin_m < lv.deck_min_m - tolerance,
+                _ => false,
+            };
+            if short {
+                fault("G8", format!("way {}: a {:?} run lacks {} m", way.id, r.state, r.margin_m));
+            }
+        }
+        let bores: Vec<usize> = (0..runs.len()).filter(|&i| runs[i].state == State::Bore).collect();
+        if let (Some(&a), Some(&b)) = (bores.first(), bores.last()) {
+            if runs[a..b].iter().any(|r| r.state == State::Open) {
+                fault("G7", format!("way {}: an OPEN run between two BORE runs", way.id));
+            }
+        }
+    }
+    for line in lv.end_lines.iter().filter(|l| l.kind == EndKind::A) {
+        if line.clear_m < -tolerance {
+            fault("G9", format!("an A line at {:?} lies {} m inside a ground arm", line.ends, -line.clear_m));
+        }
+    }
 }

@@ -30,16 +30,28 @@ const CLASS_FIELDS: [&str; 9] =
     ["half_m", "shoulder_m", "sidewalk_m", "kerb_m", "kerb_top_m", "cut", "fill", "reach", "widen_m"];
 const WATER_FIELDS: [&str; 4] = ["width_m", "cut", "fill", "reach"];
 /// The fields of the way graph: none is an option of the feature step.
-const GRAPH_FIELDS: [&str; 5] = ["snap_m", "snap_height_m", "sag_plan_m", "sag_height_m", "clearance_m"];
+const GRAPH_FIELDS: [&str; 10] = [
+    "snap_m",
+    "snap_height_m",
+    "sag_plan_m",
+    "sag_height_m",
+    "clearance_m",
+    "clearance_least_m",
+    "bore_m",
+    "bore_least_m",
+    "deck_least_m",
+    "roof_least_m",
+];
 /// The numeric fields of the faces: none is an option of the feature step.
 const FACE_FIELDS: [&str; 7] =
     ["inner_radius_m", "verge_m", "return_grade", "corner_radius_m", "corner_radius_walk_m", "fill_max", "cut_max"];
-const WATER_GRAPH_FIELDS: [&str; 9] = [
+const WATER_GRAPH_FIELDS: [&str; 10] = [
     "culvert_max_m",
     "culvert_width_m",
     "pipe_width_m",
     "stones_width_m",
     "clearance_m",
+    "clearance_least_m",
     "sag_plan_m",
     "sag_height_m",
     "curve_turn_max_deg",
@@ -402,8 +414,15 @@ pub struct WaySection<'a> {
     /// The most that a sample chord may leave the curve at the outer edge, and in height.
     pub sag_plan_m: f64,
     pub sag_height_m: f64,
-    /// The height that this way needs under a deck.
+    /// The height that this way needs under a deck, and the least opening that still reads as one.
     pub clearance_m: f64,
+    pub clearance_least_m: f64,
+    /// The height of this way's tunnel bore, and the least one.
+    pub bore_m: f64,
+    pub bore_least_m: f64,
+    /// The thinnest deck of this way, and the thinnest roof plate over its bore.
+    pub deck_least_m: f64,
+    pub roof_least_m: f64,
     /// The class group of the junction pair rules of `plan.json`.
     pub group: &'a str,
     /// A way of a path class (`group` path or steps): its dirt or grass wears a trail's tread, as
@@ -468,8 +487,9 @@ pub struct WaterSection {
     /// An untagged path crosses water up to this width on a pipe in stones, then on stepping stones.
     pub pipe_width_m: f64,
     pub stones_width_m: f64,
-    /// The height over the water that a deck needs.
+    /// The height over the water that a deck needs, and the least that still reads as an opening.
     pub clearance_m: f64,
+    pub clearance_least_m: f64,
     /// The most that a sample chord may leave the curve at the bank, and in height.
     pub sag_plan_m: f64,
     pub sag_height_m: f64,
@@ -509,7 +529,7 @@ struct Row {
     /// The most that a bend's alignment widens the half-width.
     widen_m: f64,
     /// `GRAPH_FIELDS`.
-    graph: [f64; 5],
+    graph: [f64; 10],
     group: String,
     shoulder_paved: bool,
     leg_wall: bool,
@@ -525,7 +545,7 @@ struct WaterRow {
     fill: f64,
     reach_m: f64,
     /// `WATER_GRAPH_FIELDS`.
-    graph: [f64; 9],
+    graph: [f64; 10],
 }
 
 /// The rule tables of the cross-sections.
@@ -707,6 +727,11 @@ impl Sections {
             sag_plan_m: row.graph[2],
             sag_height_m: row.graph[3],
             clearance_m: row.graph[4],
+            clearance_least_m: row.graph[5],
+            bore_m: row.graph[6],
+            bore_least_m: row.graph[7],
+            deck_least_m: row.graph[8],
+            roof_least_m: row.graph[9],
             group: &row.group,
             path: matches!(row.group.as_str(), "path" | "steps"),
             inner_radius_m: row.face[0],
@@ -737,7 +762,7 @@ impl Sections {
             .expect("parse keeps the rows river and stream");
         let row = &self.waters[rank];
         let width = water_width_m(tags, row.width_m);
-        let [culvert_max_m, culvert_width_m, pipe_width_m, stones_width_m, clearance_m, sag_plan_m, sag_height_m, curve_turn_max_deg, curve_off_max_m] =
+        let [culvert_max_m, culvert_width_m, pipe_width_m, stones_width_m, clearance_m, clearance_least_m, sag_plan_m, sag_height_m, curve_turn_max_deg, curve_off_max_m] =
             row.graph;
         WaterSection {
             rank,
@@ -751,6 +776,7 @@ impl Sections {
             pipe_width_m,
             stones_width_m,
             clearance_m,
+            clearance_least_m,
             sag_plan_m,
             sag_height_m,
             curve_turn_max_deg,

@@ -1,5 +1,6 @@
-//! The way graph over every cell of the TrailView fixture: the invariants G1 to G4 of `check`, equal
-//! graphs near the border of two neighbouring cells (G5), and the same bytes twice (G6).
+//! The way graph over every cell of the TrailView fixture: the invariants G1 to G4 and G7 to G9 of
+//! `check`, equal graphs and levels near the border of two neighbouring cells (G5), and the same bytes
+//! twice (G6).
 
 #[path = "fixture/mod.rs"]
 mod fixture;
@@ -8,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use fixture::{default_dir, Fixture};
 use obc_ground_plan::frame::{metres_per_unit, CellKey, CELL_UNITS};
-use obc_ground_plan::graph::{build, check, Arm, WayGraph};
+use obc_ground_plan::graph::{build, check, Arm, Sample, WayGraph};
 use obc_ground_plan::sections::Sections;
 
 /// The band on each side of a shared border where two cells must agree.
@@ -22,7 +23,20 @@ fn graphs() -> BTreeMap<CellKey, WayGraph> {
         .filter(|k| k.feature_tiles().iter().all(|&(c, r)| fixture::feature_tile(&dir, c, r).is_some()))
         .collect();
     assert!(cells.len() > 100, "{} cells", cells.len());
-    cells.into_iter().map(|key| (key, build(key, &fixture.cell(key), Sections::embedded()))).collect()
+    cells
+        .into_iter()
+        .map(|key| {
+            (
+                key,
+                build(
+                    key,
+                    &fixture.cell(key),
+                    Sections::embedded(),
+                    &obc_ground_plan::faces::Rules::embedded().structures,
+                ),
+            )
+        })
+        .collect()
 }
 
 #[test]
@@ -39,7 +53,12 @@ fn every_fixture_cell_holds_g1_to_g4_and_g6() {
     println!("{} cells, {junctions} owned junctions, {crossings} owned crossings", graphs.len());
     assert!(faults.is_empty(), "{} faults:\n{}", faults.len(), faults[..faults.len().min(40)].join("\n"));
     for key in graphs.keys().step_by(7) {
-        let again = build(*key, &fixture.cell(*key), Sections::embedded());
+        let again = build(
+            *key,
+            &fixture.cell(*key),
+            Sections::embedded(),
+            &obc_ground_plan::faces::Rules::embedded().structures,
+        );
         assert_eq!(format!("{again:?}"), format!("{:?}", graphs[key]), "G6: {key:?} builds twice the same");
     }
     assert!(junctions > 100 && crossings > 10);
@@ -111,7 +130,26 @@ fn band(graph: &WayGraph, near: &dyn Fn([i64; 2]) -> bool) -> BTreeSet<String> {
         out.insert(format!("end {:?} {:?} {:?}", global(e.pos), e.network, arms(std::slice::from_ref(&e.arm))));
     }
     for c in graph.crossings.iter().filter(|c| near(global(c.pos))) {
-        out.insert(format!("crossing {:?} {:?} {:?} {}", global(c.pos), c.kind, c.source, c.angle_rad));
+        let step = c.ladder.as_ref().map(|l| l.step);
+        out.insert(format!("crossing {:?} {:?} {:?} {} {step:?}", global(c.pos), c.kind, c.source, c.angle_rad));
+    }
+    // The levels: the state and storey at each sample of a way with a state, and the end lines.
+    let lv = &graph.levels;
+    for r in &lv.runs {
+        let storey = r.sheet.map_or(0, |s| lv.sheets[s as usize].storey);
+        let way = &graph.ways[r.way as usize];
+        let inside = |s: &&Sample| (s.span, s.u) >= (r.from.span, r.from.u) && (s.span, s.u) <= (r.to.span, r.to.u);
+        for s in graph.samples[way.samples.start as usize..way.samples.end as usize].iter().filter(inside) {
+            if near(global(s.pos)) {
+                out.insert(format!("state {:?} {:?} {storey}", global(s.pos), r.state));
+            }
+        }
+    }
+    for l in &lv.end_lines {
+        let ends = [global(l.ends[0]), global(l.ends[1])];
+        if near(ends[0]) || near(ends[1]) {
+            out.insert(format!("end line {:?} {ends:?} {}", l.kind, l.ways.len()));
+        }
     }
     out
 }

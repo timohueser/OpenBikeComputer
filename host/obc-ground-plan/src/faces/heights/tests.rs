@@ -44,7 +44,7 @@ struct Built {
 fn built(key: CellKey, lines: &[Line], z: &dyn Fn(f64, f64) -> f64, rules: &Rules) -> Built {
     let mut input = input_of(key, lines);
     input.terrain = plane(key, z);
-    let graph = build(key, &input, &rules.sections);
+    let graph = build(key, &input, &rules.sections, &rules.structures);
     let words = records::build(&graph, &input, rules, key, 0, true).near.words;
     Built { key, words, input }
 }

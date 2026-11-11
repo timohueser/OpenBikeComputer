@@ -105,9 +105,9 @@ fn options() -> Result<Options, String> {
         }
     }
     if let Some(layer) =
-        o.layers.iter().find(|l| !["terrain", "inputs", "cells", "graph", "faces"].contains(&l.as_str()))
+        o.layers.iter().find(|l| !["terrain", "inputs", "cells", "graph", "faces", "levels"].contains(&l.as_str()))
     {
-        return Err(format!("unknown layer {layer}: the layers are terrain, inputs, cells, graph, faces"));
+        return Err(format!("unknown layer {layer}: the layers are terrain, inputs, cells, graph, faces, levels"));
     }
     Ok(o)
 }
@@ -209,10 +209,25 @@ fn run() -> Result<(), String> {
             println!("faces bench of {} cells -> {}", cells.len(), path.display());
         }
         if o.census {
-            let graphs: BTreeMap<CellKey, _> =
-                cells.iter().map(|&k| (k, obc_ground_plan::graph::build(k, &fix.cell(k), sections))).collect();
+            let graphs: BTreeMap<CellKey, _> = cells
+                .iter()
+                .map(|&k| {
+                    (
+                        k,
+                        obc_ground_plan::graph::build(
+                            k,
+                            &fix.cell(k),
+                            sections,
+                            &obc_ground_plan::faces::Rules::embedded().structures,
+                        ),
+                    )
+                })
+                .collect();
             let path = o.out.join("junctions.json");
             write(&path, serde_json::to_string_pretty(&graph::census(&graphs, sections)).unwrap().as_bytes())?;
+            let levels: serde_json::Map<String, serde_json::Value> =
+                graphs.iter().map(|(k, g)| (format!("{}/{}", k.x, k.y), fixture::levels_detail(g))).collect();
+            write(&o.out.join("levels.json"), serde_json::to_string(&levels).unwrap().as_bytes())?;
             println!("census of {} cells -> {}", cells.len(), path.display());
         }
         if o.bench {
@@ -288,11 +303,18 @@ fn run() -> Result<(), String> {
         }
         // Over the cells' marks, so that a crossing's letter at the centre shows.
         let mut points = Value::Null;
-        if o.layers.iter().any(|l| l == "graph") {
-            let graphs: BTreeMap<CellKey, _> =
-                cells.iter().map(|(&k, input)| (k, obc_ground_plan::graph::build(k, input, sections))).collect();
-            graph::layer(&mut canvas, &graphs);
-            points = graph::points(&canvas, &graphs, sections);
+        if o.layers.iter().any(|l| l == "graph" || l == "levels") {
+            let structures = &obc_ground_plan::faces::Rules::embedded().structures;
+            let graphs: BTreeMap<CellKey, _> = (cells.iter())
+                .map(|(&k, input)| (k, obc_ground_plan::graph::build(k, input, sections, structures)))
+                .collect();
+            if o.layers.iter().any(|l| l == "levels") {
+                graph::levels(&mut canvas, &graphs);
+            }
+            if o.layers.iter().any(|l| l == "graph") {
+                graph::layer(&mut canvas, &graphs);
+                points = graph::points(&canvas, &graphs, sections);
+            }
         }
         let png = o.out.join(format!("{name}.png"));
         // The background is opaque, so the premultiplied pixels are the straight ones.

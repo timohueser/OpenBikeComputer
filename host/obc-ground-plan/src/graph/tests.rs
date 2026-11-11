@@ -105,7 +105,7 @@ fn graph(lines: &[Line]) -> WayGraph {
 }
 
 fn graph_of(key: CellKey, lines: &[Line]) -> WayGraph {
-    let g = build(key, &input_of(key, lines), Sections::embedded());
+    let g = build(key, &input_of(key, lines), Sections::embedded(), &crate::faces::Rules::embedded().structures);
     assert_eq!(check(&g), Vec::new());
     g
 }
@@ -231,7 +231,12 @@ fn a_waters_end_at_a_tile_line_reads_the_tiles_next_vertex() {
         if let Some(e) = e {
             features.push(copy(&tiles, e, -2..=3));
         }
-        let g = build(key, &CellInput { key, features, terrain: Terrain::new(key, Vec::new()) }, Sections::embedded());
+        let g = build(
+            key,
+            &CellInput { key, features, terrain: Terrain::new(key, Vec::new()) },
+            Sections::embedded(),
+            &crate::faces::Rules::embedded().structures,
+        );
         let v = g.parts.iter().flat_map(|part| &part.vertices).find(|v| v.pos == [p(0).x, p(0).y]).unwrap();
         v.tangent
     };
@@ -286,7 +291,12 @@ fn a_way_across_a_tile_line_is_one_part_with_each_spans_along_from_its_owner() {
     };
     let (west, east) = (holding(p(-1)), holding(p(1)));
     let features = vec![copy(west, -4..=1, 0.0), copy(east, -1..=4, 30.1)];
-    let g = build(key, &CellInput { key, features, terrain: Terrain::new(key, Vec::new()) }, Sections::embedded());
+    let g = build(
+        key,
+        &CellInput { key, features, terrain: Terrain::new(key, Vec::new()) },
+        Sections::embedded(),
+        &crate::faces::Rules::embedded().structures,
+    );
     assert_eq!((g.parts.len(), g.joints.len()), (1, 0));
     let along: Vec<f64> = g.parts[0].spans.iter().map(|s| s.along0_m).collect();
     // The west tile owns the four spans before the line and the one that meets it.
@@ -684,4 +694,87 @@ fn crossings_take_the_first_row_of_the_table() {
     let deck = &g.decks[0];
     assert!(deck.synthetic && g.ways[deck.ways[0] as usize].level == Level::Deck);
     assert_eq!(g.joints.len(), 2, "the deck's two ends");
+}
+
+#[test]
+fn the_ladder_follows_the_room_by_the_class_rows_at_every_boundary() {
+    use Step::*;
+    let upper = |kind, tags: &[(&'static str, &'static str)], z| line(kind, tags, &[[0.0, -40.0], [0.0, 40.0]], z);
+    let lower = |kind, tags: &[(&'static str, &'static str)], z| line(kind, tags, &[[-40.0, 0.0], [40.0, 0.0]], z);
+    let bridge = [("highway", "residential"), ("bridge", "yes"), ("deck", "1")];
+    let footbridge = [("highway", "footway"), ("bridge", "yes"), ("deck", "0.4")];
+    let street = [("highway", "residential")];
+    let foot = [("highway", "footway")];
+    let rail = [("railway", "rail")];
+    let tunnel = [("highway", "residential"), ("tunnel", "yes")];
+    let rail_tunnel = [("railway", "rail"), ("tunnel", "yes")];
+    // (what, upper, lower, step, whether the upper way ends on step 3). A residential deck over a
+    // residential road: full 4.5 + 1.0, least 3.0 + 0.4; a residential bore: full 5.0 + 1.0, least
+    // 3.0 + 0.3; snap 0.5 everywhere.
+    type Row = (&'static str, Line, Line, Step, bool);
+    let rows: Vec<Row> = vec![
+        ("deck, full", upper("road", &bridge, 5.5), lower("road", &street, 0.0), Full, false),
+        ("deck, thin", upper("road", &bridge, 5.45), lower("road", &street, 0.0), Thin, false),
+        ("deck, least", upper("road", &bridge, 3.4), lower("road", &street, 0.0), Thin, false),
+        (
+            "deck, closed: the lower way of one class ends",
+            upper("road", &bridge, 3.35),
+            lower("road", &street, 0.0),
+            Closed,
+            false,
+        ),
+        ("deck, closed over snap", upper("road", &bridge, 0.55), lower("road", &street, 0.0), Closed, false),
+        ("deck, at grade", upper("road", &bridge, 0.5), lower("road", &street, 0.0), AtGrade, false),
+        ("deck, at grade under", upper("road", &bridge, -0.5), lower("road", &street, 0.0), AtGrade, false),
+        ("deck, inverted", upper("road", &bridge, -0.55), lower("road", &street, 0.0), Inverted, false),
+        (
+            "footbridge over a railway, closed: the footway ends",
+            upper("path", &footbridge, 4.95),
+            lower("railway", &rail, 0.0),
+            Closed,
+            true,
+        ),
+        (
+            "footbridge over a railway, least",
+            upper("path", &footbridge, 5.0),
+            lower("railway", &rail, 0.0),
+            Thin,
+            false,
+        ),
+        (
+            "railway bridge over a road, closed: the road ends",
+            upper("railway", &[("railway", "rail"), ("bridge", "yes"), ("deck", "1")], 3.0),
+            lower("road", &street, 0.0),
+            Closed,
+            false,
+        ),
+        ("bore, full", upper("road", &street, 6.0), lower("tunnel", &tunnel, 0.0), Full, false),
+        ("bore, thin", upper("road", &street, 5.95), lower("tunnel", &tunnel, 0.0), Thin, false),
+        ("bore, least", upper("road", &street, 3.3), lower("tunnel", &tunnel, 0.0), Thin, false),
+        (
+            "bore, closed: the tunnel way ends",
+            upper("road", &street, 3.25),
+            lower("tunnel", &tunnel, 0.0),
+            Closed,
+            false,
+        ),
+        ("bore, inverted", upper("road", &street, -0.55), lower("tunnel", &tunnel, 0.0), Inverted, false),
+        (
+            "railway bore under a footway, closed: the railway ends",
+            upper("path", &foot, 5.05),
+            lower("tunnel", &rail_tunnel, 0.0),
+            Closed,
+            false,
+        ),
+    ];
+    for (what, u, l, want, upper_ends) in rows {
+        let g = graph(&[u, l]);
+        let c = g.crossings.iter().find(|c| c.ladder.is_some()).unwrap_or_else(|| panic!("{what}: {:?}", g.crossings));
+        let ladder = c.ladder.as_ref().unwrap();
+        assert_eq!(ladder.step, want, "{what}: room {}", ladder.room_m);
+        if matches!(want, Closed | Inverted) {
+            let ends = if upper_ends { ladder.upper } else { ladder.lower };
+            assert_eq!(ladder.ends, Some(ends), "{what}");
+        }
+    }
 }

@@ -169,7 +169,7 @@ struct Built {
 
 /// A cell's build of least time of `runs` and its check 1 and kinks; None if a build panics.
 fn bench_cell(key: CellKey, input: &obc_ground_plan::CellInput, rules: &Rules, runs: usize) -> Option<Built> {
-    let graph = graph::build(key, input, &rules.sections);
+    let graph = graph::build(key, input, &rules.sections, &rules.structures);
     let (mut best, mut plan) = (f64::INFINITY, None);
     for _ in 0..runs {
         let start = Instant::now();
@@ -343,7 +343,7 @@ pub fn plans(
     cells
         .iter()
         .map(|(&k, input)| {
-            let graph = graph::build(k, input, &rules.sections);
+            let graph = graph::build(k, input, &rules.sections, &rules.structures);
             (k, (faces::build(&graph, input, rules, k, 0, true), graph))
         })
         .collect()

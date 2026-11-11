@@ -376,6 +376,17 @@ pub fn floating(points: &[[f64; 2]], z: &[f64], terrain: &dyn Terrain) -> bool {
 mod tests {
     use super::*;
 
+    #[test]
+    fn every_class_row_has_the_bore_of_the_bake() {
+        let rows: serde_json::Value = serde_json::from_str(include_str!("../../../data/trailview/roads.json")).unwrap();
+        let sections = obc_ground_plan::sections::Sections::embedded();
+        for (class, row) in rows.as_object().unwrap() {
+            let key = if row["group"] == "rail" { "railway" } else { "highway" };
+            let tags = Tags::from([(key.to_string(), class.clone()), ("tunnel".to_string(), "yes".to_string())]);
+            assert_eq!(sections.way("tunnel", &tags, false).bore_m, bore(&tags), "{class}");
+        }
+    }
+
     /// Metres east and north of a point at about 46.7° N, in world units.
     const Y: f64 = 0.3218;
 

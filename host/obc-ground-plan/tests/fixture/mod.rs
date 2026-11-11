@@ -124,3 +124,57 @@ impl Fixture {
         (a.y + 1..b.y).flat_map(|y| (a.x + 1..b.x).map(move |x| CellKey { x, y })).collect()
     }
 }
+
+/// Longitude and latitude of a global point, for tables only: no byte of a plan depends on it.
+#[allow(clippy::disallowed_methods)]
+pub fn lon_lat(x: f64, y: f64) -> [f64; 2] {
+    let square = (1u64 << obc_ground_plan::frame::FRAME_BITS) as f64;
+    let lat = (core::f64::consts::PI * (1.0 - 2.0 * y / square)).sinh().atan();
+    [x / square * 360.0 - 180.0, lat.to_degrees()]
+}
+
+/// The levels that a cell owns, for the census tables: each crossing with a ladder, each run of a
+/// way with a state (from its middle sample's cell), each end line; places in degrees, classes as
+/// rows of `roads.json`.
+pub fn levels_detail(g: &obc_ground_plan::graph::WayGraph) -> serde_json::Value {
+    use serde_json::json;
+    let o = g.cell.origin();
+    let at = |p: [i32; 2]| [o.x as f64 + f64::from(p[0]), o.y as f64 + f64::from(p[1])];
+    let owned = |p: [f64; 2]| g.cell.contains(obc_ground_plan::frame::GlobalPoint { x: p[0] as i64, y: p[1] as i64 });
+    let way = |w: u32| {
+        let way = &g.ways[w as usize];
+        json!([format!("{:?}", way.family), way.class, format!("{:?}", way.level), w])
+    };
+    let crossings: Vec<_> = (g.crossings.iter())
+        .filter(|c| c.owned)
+        .filter_map(|c| {
+            let l = c.ladder.as_ref()?;
+            let p = at(c.pos);
+            Some(json!({"at": lon_lat(p[0], p[1]), "kind": format!("{:?}", c.kind), "upper": way(l.upper),
+                "lower": way(l.lower), "room_m": (l.room_m * 100.0).round() / 100.0, "full_m": l.full_m, "least_m": l.least_m,
+                "step": format!("{:?}", l.step), "ends": l.ends.map(way)}))
+        })
+        .collect();
+    let mut runs = Vec::new();
+    for r in &g.levels.runs {
+        let w = &g.ways[r.way as usize];
+        let inside: Vec<[f64; 2]> = (g.samples[w.samples.start as usize..w.samples.end as usize].iter())
+            .filter(|s| (s.span, s.u) >= (r.from.span, r.from.u) && (s.span, s.u) <= (r.to.span, r.to.u))
+            .map(|s| at(s.pos))
+            .collect();
+        let Some(mid) = inside.get(inside.len() / 2) else { continue };
+        if owned(*mid) {
+            let storey = r.sheet.map_or(0, |s| g.levels.sheets[s as usize].storey);
+            let ends = [inside[0], inside[inside.len() - 1]].map(|p| lon_lat(p[0], p[1]));
+            runs.push(json!({"way": way(r.way), "state": format!("{:?}", r.state), "storey": storey, "from": ends[0], "to": ends[1]}));
+        }
+    }
+    let lines: Vec<_> = (g.levels.end_lines.iter())
+        .filter_map(|l| {
+            let (a, b) = (at(l.ends[0]), at(l.ends[1]));
+            let c = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
+            owned(c).then(|| json!({"at": lon_lat(c[0], c[1]), "kind": format!("{:?}", l.kind), "ways": l.ways.iter().map(|w| w.0).collect::<Vec<_>>()}))
+        })
+        .collect();
+    json!({"crossings": crossings, "runs": runs, "end_lines": lines})
+}

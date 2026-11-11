@@ -21,7 +21,7 @@ fn every_fixture_cell_meshes_validly_with_the_records_labels_and_agrees_with_its
         .filter(|k| k.feature_tiles().iter().all(|&(c, r)| fixture::feature_tile(&dir, c, r).is_some()))
         .collect();
     let built = fixture.map(&cells, |key, input| {
-        let graph = graph::build(key, &input, &rules.sections);
+        let graph = graph::build(key, &input, &rules.sections, &rules.structures);
         let built = records::build(&graph, &input, rules, key, 0, true);
         (key, Rim::of(&built.faces), built.faces, built.near.words, input.terrain)
     });

@@ -106,8 +106,8 @@ fn probe_json(p: &Probe) -> Value {
     json!({"slots": p.slots, "quads": p.quads, "regions": p.regions, "slice_fallback": p.slice_fallback, "fields": fields})
 }
 
-fn counters(list: &[(&'static str, u32)]) -> Value {
-    Value::Object(list.iter().filter(|c| c.1 > 0).map(|c| (c.0.to_string(), json!(c.1))).collect())
+fn counters<S: AsRef<str>>(list: &[(S, u32)]) -> Value {
+    Value::Object(list.iter().filter(|c| c.1 > 0).map(|c| (c.0.as_ref().to_string(), json!(c.1))).collect())
 }
 
 fn rss_kb() -> u64 {
@@ -286,6 +286,7 @@ impl Worker<'_> {
         line["caps"] = probe_json(&b.probe);
         line["audit"] = audit;
         line["graph"] = counters(&graph.stats.counters());
+        line["levels"] = crate::fixture::levels_detail(graph);
         line["face_stats"] = counters(&plan.stats.counters());
         line["checks"] = json!({"partition": faults, "artefacts": thin, "first": first});
         line["borders"] = Value::Object(borders);

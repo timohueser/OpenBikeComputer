@@ -138,7 +138,8 @@ fn a_cell_build_gives_the_faces_and_near_records_of_the_whole_records_build_and_
     let rules = Rules::embedded();
     let cell = build_cell(&bytes, rules, &mut || 0.0).unwrap();
     let input = Request::decode(&bytes).unwrap().input(&mut TileCache::new(1)).unwrap();
-    let whole = records::build(&graph::build(CELL, &input, &rules.sections), &input, rules, CELL, 0, true);
+    let whole =
+        records::build(&graph::build(CELL, &input, &rules.sections, &rules.structures), &input, rules, CELL, 0, true);
     assert_eq!(cell.faces, whole.faces);
     assert_eq!(cell.records, whole.near.words);
     // The second build reads the tiles that the first parsed: a load of one would panic.
@@ -164,7 +165,7 @@ fn the_vocabulary_names_every_code_with_its_colour() {
     let colour = |c: &serde_json::Value| c.as_str().is_some_and(|c| c.len() == 7 && c.starts_with('#'));
     assert!(families.iter().all(|f| colour(&f["colour"])));
     assert!(v["colours"].as_object().unwrap().values().all(colour));
-    assert_eq!(v["crossings"].as_array().unwrap().len(), 8);
+    assert_eq!(v["crossings"].as_array().unwrap().len(), 9);
     let names = |key: &str| {
         v[key].as_array().unwrap().iter().map(|e| e["name"].as_str().unwrap().to_string()).collect::<Vec<_>>()
     };

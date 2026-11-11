@@ -380,7 +380,7 @@ impl Flat {
             })
             .collect();
         let mut counters: serde_json::Map<String, Value> =
-            g.stats.counters().iter().map(|&(name, n)| (name.to_string(), json!(n))).collect();
+            g.stats.counters().into_iter().map(|(name, n)| (name, json!(n))).collect();
         let types: serde_json::Map<String, Value> = (g.stats.crossings.iter())
             .map(|(&(kind, source), &n)| (format!("{kind:?} {}", SOURCES[code(&SOURCES, source) as usize].1), json!(n)))
             .collect();

@@ -24,7 +24,7 @@ fn every_fixture_cell_is_a_planar_partition_that_its_neighbours_agree_with() {
     assert!(cells.len() > 100, "{} cells", cells.len());
     let start = std::time::Instant::now();
     let built = fixture.map(&cells, |key, input| {
-        let graph = graph::build(key, &input, &rules.sections);
+        let graph = graph::build(key, &input, &rules.sections, &rules.structures);
         let plan = faces::build(&graph, &input, rules, key, 0, true);
         let faults: Vec<String> =
             partition(&plan, window(key, 0.0)).into_iter().map(|f| format!("{key:?} 1: {}", f.what)).collect();
@@ -53,7 +53,7 @@ fn every_fixture_cell_is_a_planar_partition_that_its_neighbours_agree_with() {
     println!("{borders} borders");
     let again: Vec<CellKey> = cells.iter().step_by(17).copied().collect();
     let differ = fixture.map(&again, |key, input| {
-        let graph = graph::build(key, &input, &rules.sections);
+        let graph = graph::build(key, &input, &rules.sections, &rules.structures);
         (format!("{:?}", faces::build(&graph, &input, rules, key, 0, true)) != format!("{:?}", plans[&key].0))
             .then(|| format!("{key:?} 4: a second build differs"))
     });
@@ -101,7 +101,7 @@ fn the_land_between_the_legs_of_the_i07_hairpin_stays_land_past_its_turn() {
     let turn = (46.8216499, 8.4049561);
     let key = CellKey::of(from_lon_lat(turn.1, turn.0));
     let input = fixture.cell(key);
-    let graph = graph::build(key, &input, &rules.sections);
+    let graph = graph::build(key, &input, &rules.sections, &rules.structures);
     let plan = faces::build(&graph, &input, rules, key, 0, true);
     for (lat, lon) in between {
         let s = surface_at(&plan, lat, lon);

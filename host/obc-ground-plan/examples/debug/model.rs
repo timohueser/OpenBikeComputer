@@ -85,7 +85,7 @@ pub fn run() -> Result<(), String> {
         let mut ms = [f64::INFINITY; 3];
         let mut last = None;
         for _ in 0..runs {
-            let (graph, g) = time(|| graph::build(key, &input, &rules.sections));
+            let (graph, g) = time(|| graph::build(key, &input, &rules.sections, &rules.structures));
             let (built, b) = time(|| records::build(&graph, &input, rules, key, 0, true));
             let (_, p) = time(|| faces::build(&graph, &input, rules, key, 0, true));
             ms = [ms[0].min(g), ms[1].min(b), ms[2].min(p)];
