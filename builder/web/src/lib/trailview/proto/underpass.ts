@@ -11,6 +11,8 @@ import { VARIANT } from './places';
 const D: [number, number] = [0.978, -0.209];
 /** The end faces stand this far from the middle: at the edges of the railway's body. The box's half-width for the shaders. */
 export const BOX_HALF_M = 10.3, BOX_WIDE_M = 8.35;
+/** The floors reach this far past the end faces, and the shaders end the plan's ground there: the plan builds a wall across each tunnel way's end, against the railway's bank. */
+const SILL_M = 1.6;
 /** The roof's underside: 4.5 m over the higher carriageway end (448.96 m in the bake); the roof is 0.6 m thick. */
 export const ROOF_Z = 448.96 + 4.5 + A1_ROAD, ROOF_M = 0.6;
 /** The end faces' top: a quarter of a metre over the rails (454.33 m in the bake). */
@@ -40,9 +42,9 @@ export function underpassMesh(b: MeshBuilder, lines: Line[]): void {
     const ways = lines.map(line => {
         const n = line.z.length, [s0, a0] = local(line.xy[0], line.xy[1]), [s1, a1] = local(line.xy[2 * n - 2], line.xy[2 * n - 1]);
         const at = (s: number) => { const u = (s - s0) / (s1 - s0); return { a: a0 + (a1 - a0) * u, z: line.z[0] + (line.z[n - 1] - line.z[0]) * u }; };
-        return { line, h: line.h, west: at(-BOX_HALF_M), east: at(BOX_HALF_M), forward: s1 > s0 };
+        return { line, h: line.h, west: at(-BOX_HALF_M - SILL_M), east: at(BOX_HALF_M + SILL_M), forward: s1 > s0 };
     }).sort((p, q) => p.west.a - q.west.a);
-    const ends = [-BOX_HALF_M, BOX_HALF_M], lowest = Math.min(...ways.flatMap(w => [w.west.z, w.east.z]));
+    const ends = [-BOX_HALF_M - SILL_M, BOX_HALF_M + SILL_M], faces = [-BOX_HALF_M, BOX_HALF_M], lowest = Math.min(...ways.flatMap(w => [w.west.z, w.east.z]));
     // The side walls stand where the shaders end the ground: the ways' own edges lie within.
     const low = -BOX_WIDE_M, high = BOX_WIDE_M;
     ways.forEach((w, i) => {
@@ -64,12 +66,12 @@ export function underpassMesh(b: MeshBuilder, lines: Line[]): void {
         }
     });
     // The side walls and the roof, seen from inside; the roof's top, which shows where the railway's bank lies lower.
-    for (const [a, side] of [[low, 1], [high, -1]]) b.quad([v(ends[0], a, lowest - 0.3, LINING), v(ends[1], a, lowest - 0.3, LINING), v(ends[1], a, ROOF_Z, LINING), v(ends[0], a, ROOF_Z, LINING)], [side * right[0], side * right[1], 0]);
-    b.quad([v(ends[0], low, ROOF_Z, LINING), v(ends[0], high, ROOF_Z, LINING), v(ends[1], high, ROOF_Z, LINING), v(ends[1], low, ROOF_Z, LINING)], down);
+    for (const [a, side] of [[low, 1], [high, -1]]) b.quad([v(faces[0], a, lowest - 0.3, LINING), v(faces[1], a, lowest - 0.3, LINING), v(faces[1], a, ROOF_Z, LINING), v(faces[0], a, ROOF_Z, LINING)], [side * right[0], side * right[1], 0]);
+    b.quad([v(faces[0], low, ROOF_Z, LINING), v(faces[0], high, ROOF_Z, LINING), v(faces[1], high, ROOF_Z, LINING), v(faces[1], low, ROOF_Z, LINING)], down);
     // Over the roof the railway's body is whole. Between the ballast and each end face the plan's bank lies lower than the body: there
     // the fill behind the end face shows, in the ground's look, just under the rails' level.
     const fill = (s: number, a: number) => b.vertex(...place(s, a), TOP_Z - 0.37, CONCRETE, 0, -15, -2e9);
-    b.quad([fill(ends[0], low), fill(ends[0], high), fill(ends[1], high), fill(ends[1], low)], up);
+    b.quad([fill(faces[0], low), fill(faces[0], high), fill(faces[1], high), fill(faces[1], low)], up);
     // Under each way's end a sill down to the lowest floor: the ground before the box may lie lower than a raised way.
     for (const w of ways) for (const [k, end] of [w.west, w.east].entries()) {
         const s = ends[k], out: V3 = [(k ? 1 : -1) * into[0], (k ? 1 : -1) * into[1], 0];
@@ -103,7 +105,7 @@ export function boxWgsl(): string {
     return `
 fn proto_box(u: vec2f, h: f32) -> bool {
     let q = proto_local(u, vec2i(${A1[0]}, ${A1[1]}), vec2f(${D[0]}, ${D[1]}), ${A1_M});
-    return abs(q.x) < ${BOX_HALF_M} && abs(q.y) < ${BOX_WIDE_M} && h < ${(ROOF_Z + ROOF_M - 0.05).toFixed(3)};
+    return abs(q.x) < ${BOX_HALF_M + SILL_M} && abs(q.y) < ${BOX_WIDE_M} && h < ${(ROOF_Z + ROOF_M - 0.05).toFixed(3)};
 }
 `;
 }
