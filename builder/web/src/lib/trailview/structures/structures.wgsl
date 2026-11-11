@@ -106,6 +106,7 @@ fn structure_vertex(v: StructureIn) -> StructureOut {
         let h = plain_height(s);
         z += select(frame.eye - surface.above, h, known(h));
     }
+    // #proto vertex
     var p = vec3f(to_render(s), z - frame.eye);
     p.z -= frame.curvature * dot(p.xy, p.xy);
     out.clip = frame.view_proj * vec4f(p, 1.0);
@@ -242,6 +243,7 @@ fn structure_fragment(in: StructureOut) -> @location(0) vec4f {
     let w = max(length(dpdx(in.relative)), length(dpdy(in.relative)));
     // A pixel's span along a track: the rate of its count of sleepers.
     let along_w = max(abs(dpdx(in.sleepers)), abs(dpdy(in.sleepers))) * SLEEPER_SPACING_M;
+    // #proto fragment
     if ((flags & ROAD_FACE) != 0u) {
         let across = abs(in.road.x);
         let code = u32(round(in.colour.r * 255.0));

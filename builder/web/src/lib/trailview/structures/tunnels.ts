@@ -7,6 +7,9 @@
 import { LIFT_M, metresPerUnit, RAIL_CODE, RULES, TUNNEL, type Line } from '../terrain/bins';
 import { BORE, curveStops, LAMP, MeshBuilder, PAINT, paintOf, posts, rgb, VOID, type Corner, type Station } from './mesh';
 import type { Owns } from './node';
+import { mouthMesh } from '../proto/mouth';
+import { mouthAt } from '../proto/places';
+import { mix } from './mesh';
 
 /** A portal of a road and of a path: the bore's margin past the road and the facade's wings past the opening. */
 const ROAD_PORTAL = { margin: 0.6, wings: 3 }, PATH_PORTAL = { margin: 0.3, wings: 1.2 };
@@ -135,10 +138,21 @@ export function tunnels(b: MeshBuilder, lines: Line[], owns: Owns): void {
         if (line.kind !== TUNNEL || !line.abut) continue;
         const n = line.z.length, road = line.deck! > 3, size = road ? ROAD_PORTAL : PATH_PORTAL;
         const stops = curveStops(line);
-        for (let k = 0; k + 1 < stops.length; k++) if (owns(stops[k].x, stops[k].y)) bore(b, stops[k], stops[k + 1], line, boreHalf(line), road, stops[k + 1].along - stops[k].along);
+        // PROTOTYPE: a mouth's end has no portal of today; the bore begins on its portal line, with the mouth's opening as its section.
+        const mouths = [mouthAt(line.xy[0], line.xy[1]), mouthAt(line.xy[2 * n - 2], line.xy[2 * n - 1])], total = stops[stops.length - 1].along;
+        const lo = mouths[0]?.L ?? 0, hi = total - (mouths[1]?.L ?? 0), section = mouths[0] ?? mouths[1];
+        for (let k = 0; k + 1 < stops.length; k++) {
+            let [s, t] = [stops[k], stops[k + 1]];
+            if (t.along <= lo || s.along >= hi) continue;
+            if (s.along < lo) s = { ...mix(s, t, (lo - s.along) / (t.along - s.along)), along: lo };
+            if (t.along > hi) t = { ...mix(stops[k], t, (hi - stops[k].along) / (t.along - stops[k].along)), along: hi };
+            if (owns(stops[k].x, stops[k].y)) bore(b, s, t, line, section?.oh ?? boreHalf(line), road, t.along - s.along, section && [section.hh, section.chamfer]);
+        }
+        mouths.forEach((mouth, end) => { if (mouth && owns(mouth.o[0], mouth.o[1])) mouthMesh(b, mouth, line, end ? -1 : 1); });
         for (const [end, from, to] of [[0, 0, n - 1], [1, n - 1, 0]]) {
             const x = line.xy[2 * from], y = line.xy[2 * from + 1];
             const pair = twin.get(line)?.[end];
+            if (mouths[end]) continue;
             if (!line.abut[end] || !owns(x, y) || pair === null) continue;
             portal(b, line, from, to, size, road, pair);
         }
@@ -174,8 +188,10 @@ function portal(b: MeshBuilder, line: Line, from: number, to: number, size: type
 }
 
 /** The bore from station s to t, `length` metres long, `half` metres wide on each side, seen from inside. */
-function bore(b: MeshBuilder, s: Station, t: Station, line: Line, half: number, road: boolean, length: number): void {
-    const h = line.h, height = line.deck!, spring = SPRING * height, arch = outline(half, height);
+function bore(b: MeshBuilder, s: Station, t: Station, line: Line, half: number, road: boolean, length: number, box?: [number, number]): void {
+    const h = line.h, height = box?.[0] ?? line.deck!, spring = SPRING * height;
+    // PROTOTYPE: a mouth's bore has two walls, a flat roof and two cut corners.
+    const arch: Corner[] = box ? [[-half, spring], [-half, height - box[1]], [-half + box[1], height], [half - box[1], height], [half, height - box[1]], [half, spring]] : outline(half, height);
     if (road) {
         const paint = paintOf(line, PAINT | BORE);
         b.quad([b.at(s, [-h, LIFT_M], paint, -h, h), b.at(s, [h, LIFT_M], paint, h, h), b.at(t, [h, LIFT_M], paint, h, h), b.at(t, [-h, LIFT_M], paint, -h, h)], b.outward(s, t, [0, 1]));
@@ -187,9 +203,9 @@ function bore(b: MeshBuilder, s: Station, t: Station, line: Line, half: number, 
         b.strip(s, t, [half, LIFT_M], [-half, LIFT_M], ROCK_FLOOR, [0, 1]);
     }
     // A track's bore is lined in concrete and dark.
-    const track = line.code >= RAIL_CODE, wall = track ? LINING : road ? TILES : ROCK, vault = track ? LINING : road ? ARCH_LINING : ROCK;
+    const track = line.code >= RAIL_CODE, wall = track || box ? LINING : road ? TILES : ROCK, vault = track || box ? LINING : road ? ARCH_LINING : ROCK;
     for (const side of [1, -1]) b.strip(s, t, [side * half, 0], [side * half, spring], wall, [-side, 0]);
-    for (let k = 0; k < ARCH; k++) b.strip(s, t, arch[k], arch[k + 1], vault, [-(arch[k][0] + arch[k + 1][0]), -(arch[k][1] + arch[k + 1][1] - 2 * spring)]);
+    for (let k = 0; k + 1 < arch.length; k++) b.strip(s, t, arch[k], arch[k + 1], vault, [-(arch[k][0] + arch[k + 1][0]), -(arch[k][1] + arch[k + 1][1] - 2 * spring)]);
     if (!road || track) return;
     // A lamp under the crown about every LAMPS_M.
     posts(s, t, length, (p, q) => b.quad([b.at(p, [-0.15, height - 0.05], LIGHT), b.at(p, [0.15, height - 0.05], LIGHT), b.at(q, [0.15, height - 0.05], LIGHT), b.at(q, [-0.15, height - 0.05], LIGHT)], b.outward(p, q, [0, -1])), LAMP_M, LAMPS_M);

@@ -1,5 +1,6 @@
 // The stamp data of a terrain node from the feature tile above it: the segments, lake edges and
 // junctions near the node, binned into a grid of cells, as stamp.wgsl reads them. A worker uses it.
+import { isProto } from '../proto/places';
 import { EARTH_RADIUS } from '../frame/frame';
 import { DEEPEST, EXTENT, SIDE_BACK, SIDE_ON, unitScale, type Feature, type FeaturePart } from '../stream/features';
 import { PAGE } from '../stream/heights';
@@ -1098,6 +1099,8 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
         // With `plan` the records shape the ways on the near levels only (model.wgsl).
         const way = plan && (line.kind === ROAD || line.kind === PATH || line.kind === RAIL);
         if (line.kind === STREAM || ((!stamps || way) && node.level < NEAR)) continue;
+        // PROTOTYPE: no stamp of today shapes the ground at a mouth.
+        if (line.kind === TUNNEL && isProto(line.xy)) continue;
         const reach = reachOf(line, node.level), n = line.z.length, end = (v: number) => v === 0 || v === n - 1;
         // A bridge's or a tunnel's metres from its start at each vertex: it rests on its abutments, or runs on the ground into its portal, a few mesh cells from an end that meets the ground.
         const along = [0];

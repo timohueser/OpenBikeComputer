@@ -14,6 +14,7 @@ import { MeshBuilder, type StructureMesh } from './mesh';
 import { rails } from './rails';
 import { boreHalf, portalBox, tunnels, twins } from './tunnels';
 import { culvertMouths } from '../roads/mouths';
+import { floor, mouthAt, place } from '../proto/places';
 import { streetLamps } from '../roads/lamps';
 
 /** A portal's box reaches this far from it. */
@@ -56,6 +57,13 @@ export function portalBoxes(list: Feature[], tile: Node, node: Node): Float64Arr
         for (const end of [0, 1]) {
             const v = end ? line.z.length - 1 : 0, w = end ? v - 1 : 1, x = line.xy[2 * v], y = line.xy[2 * v + 1], pair = twin.get(line)?.[end];
             if (!line.abut[end] || pair === null || x < x0 - m || x >= x0 + side + m || y < y0 - m || y >= y0 + side + m) continue;
+            // PROTOTYPE: a mouth's box begins on its portal line: the bore's daylight comes from there.
+            const mouth = mouthAt(x, y);
+            if (mouth) {
+                const zL = floor(mouth, mouth.L);
+                out.push(...place(mouth, mouth.L, 0), mouth.d[0], mouth.d[1], mouth.back + 30, mouth.oh + 0.3, zL + mouth.hh + 0.3, zL + LIFT_M, mouth.grade);
+                continue;
+            }
             // A portal over two tracks: its middle moves to the left of the way in, as `portal` of tunnels.ts moves it.
             const dx = line.xy[2 * w] - x, dy = line.xy[2 * w + 1] - y, l = Math.hypot(dx, dy) || 1, shift = (pair?.shift ?? 0) / metresPerUnit(y);
             out.push(x + dy / l * shift, y - dx / l * shift, dx / l, dy / l, ...portalBox(line, v, end ? 0 : line.z.length - 1, pair?.widen));

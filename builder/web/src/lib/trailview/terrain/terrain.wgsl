@@ -122,6 +122,7 @@ fn hue(level: f32) -> vec3f {
 @fragment
 fn fragment_main(in: Fragment) -> @location(0) vec4f {
     drop_unknown(in);
+    // #proto terrain
     // Per fragment, the cut is exact: `s` and `h` are linear on the drawn triangle. The distance to a
     // footprint changes by at most a metre per metre, so where a point of a triangle lies in a box, `near`
     // stays under the triangle's span: the test runs only there.

@@ -62,6 +62,8 @@ fn lod_space(u: vec2f) -> vec2f {
     return vec2f(d.x, -d.y) * surface.unit;
 }
 
+// #proto field
+
 fn coefficient(i: u32) -> f32 {
     return surface.forward[i / 4u][i % 4u];
 }

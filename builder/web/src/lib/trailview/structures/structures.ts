@@ -10,6 +10,7 @@ import { ANCHOR_WORDS, ANCHORED_VERTEX } from './anchored';
 import { STRUCTURE_VERTEX } from './mesh';
 import { FLOOR, type NodeMeshes } from './node';
 import { Pool, type Mesh } from './pool';
+import { VARIANT } from '../proto/places';
 
 /**
  * The structure meshes and the anchored meshes on the GPU, fixed pools; the anchors of the anchored
@@ -237,7 +238,7 @@ async function structurePipelines(gpu: Gpu) {
     const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout, surface, ground, features] });
     const render = (entryPoint: string, buffers: GPUVertexBufferLayout[], cullMode: GPUCullMode) => device.createRenderPipelineAsync({
         label: entryPoint, layout: pipelineLayout, vertex: { module, entryPoint, buffers },
-        fragment: { module, entryPoint: 'structure_fragment', targets: [{ format: sceneFormat(gpu) }] },
+        fragment: { module, entryPoint: 'structure_fragment', targets: [{ format: sceneFormat(gpu) }], ...(VARIANT ? { constants: { BAND: 1, MODEL: 1 } } : {}) },
         primitive: { topology: 'triangle-list', cullMode },
         depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: 'greater' },
     });

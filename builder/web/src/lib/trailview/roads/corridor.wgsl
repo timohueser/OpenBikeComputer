@@ -341,6 +341,7 @@ fn wall_rock(in: CorridorOut, su: vec2f) -> WallRock {
 @fragment
 fn corridor_fragment(raw: CorridorOut) -> @location(0) vec4f {
     var in = raw;
+    // #proto piece
     if (MOUTH) {
         in = corridor_in(raw);
     }
