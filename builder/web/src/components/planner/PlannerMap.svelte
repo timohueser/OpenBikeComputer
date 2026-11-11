@@ -61,7 +61,7 @@
         segments?: MapSegment[];
         /** Dashed connectors from the route to points that it does not reach. */
         gaps?: Coordinate[][];
-        coordinates?: Coordinate[]; highlightedCoordinates?: Coordinate[]; points?: MapPoint[];
+        coordinates?: Coordinate[]; highlightedCoordinates?: Coordinate[][]; points?: MapPoint[];
         selectedId?: string | null; callout?: Coordinate | null; drawing?: string | null; highlightedPlaceIds?: string[];
         hoveredId?: string | null;
         /** While picking, any map click places the overnight; the line takes no edits. */
@@ -289,7 +289,7 @@
     }
 
     function highlightData() {
-        return lineData(highlightedCoordinates.length < 2 ? [] : [lineFeature(highlightedCoordinates)]);
+        return lineData(highlightedCoordinates.filter(line => line.length >= 2).map(line => lineFeature(line)));
     }
 
     function setSketch(line: Coordinate[]) {

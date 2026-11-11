@@ -16,7 +16,7 @@
             <ul>
                 {#each notes as note}
                     <li><button type="button" class="note" aria-pressed={note === shown} onclick={() => onShow(note)}>
-                        <Icon name={note.icon} size={15} /><span>{note.label}</span><small>km {note.km.toFixed(1)}{note.length === undefined ? '' : ` · ${noteDistance(note.length)}`}</small>
+                        <Icon name={note.icon} size={15} /><span>{note.label}</span><small>km {note.km.toFixed(1)}{note.end !== undefined ? ` – ${note.end.toFixed(1)}` : note.length !== undefined ? ` · ${noteDistance(note.length)}` : ''}</small>
                     </button></li>
                 {/each}
             </ul>

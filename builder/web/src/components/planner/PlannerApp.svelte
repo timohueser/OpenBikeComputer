@@ -249,14 +249,14 @@
     const shownNote = $derived(routeNotes.find(note => noteKey(note) === shownKey));
     function showNote(note: RouteNote) {
         shownKey = note === shownNote ? null : noteKey(note);
-        if (shownKey) map?.fitCoordinates(note.coordinates);
+        if (shownKey) map?.fitCoordinates(note.coordinates.flat());
     }
     // The ladder and an open day light up the stretch whose towns they list.
     const nightBand = $derived.by(() => {
         const window = pickerNight !== null ? stopWindows[pickerNight] : undefined;
         return window && total ? { from: window[0] / total, to: window[1] / total, blocked: false } : null;
     });
-    const highlighted = $derived(nightBand ? routeSlice(coordinates, nightBand.from, nightBand.to)
+    const highlighted = $derived(nightBand ? [routeSlice(coordinates, nightBand.from, nightBand.to)]
         : shownNote?.coordinates ?? []);
     const openStop = $derived(pickerNight !== null ? readyStops(pickerNight).find(stop => stop.id === stopId && suits(stop, nightKinds(trip, pickerNight))) : undefined);
     const routeHeights = $derived(currentRoute ? profileSamples(currentRoute) : []);
