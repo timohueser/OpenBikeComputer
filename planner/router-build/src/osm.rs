@@ -909,7 +909,8 @@ mod tests {
     }
 
     /// The graph of `ways` over the nodes `present`, outside every country; the nodes of `tagged`
-    /// have tags.
+    /// have tags. Node `id` lies at longitude −50 × `id` µdeg, and a cell holds at most 2 junctions:
+    /// so the partition moves the junctions away from their node ID order.
     fn fixture(
         ways: &[(i64, &[i64], Tags)],
         present: &[i64],
@@ -918,9 +919,9 @@ mod tests {
     ) -> Graph {
         let mut present = present.to_vec();
         present.sort_unstable();
-        let present: Vec<_> = present.iter().map(|&id| (id, [0, id as i32 * 500])).collect();
+        let present: Vec<_> = present.iter().map(|&id| (id, [0, -id as i32 * 500])).collect();
         let (ways, members, sets, counts) = join(ways, &present, tagged, &relations, [-1.0, -1.0, 1.0, 1.0]).unwrap();
-        roads(scan(Data { ways, relations, members }, sets, counts), &[512], None).unwrap()
+        roads(scan(Data { ways, relations, members }, sets, counts), &[2], None).unwrap()
     }
 
     #[test]
@@ -945,13 +946,15 @@ mod tests {
     }
 
     #[test]
-    fn the_junctions_of_one_cell_are_in_node_id_order() {
+    fn the_junctions_are_in_cell_order_and_in_node_id_order_in_a_cell() {
         let ways = [way(10, &[9, 5, 1], &[("highway", "path")]), way(20, &[1, 3], &[("highway", "path")])];
         let graph = fixture(&ways, &[1, 3, 5, 9], &[], Default::default());
-        assert_eq!(graph.node_ids.values(), [1, 3, 9]);
+        // The westmost junction, node 9, is the first cell; nodes 1 and 3 the second.
+        assert_eq!(graph.node_ids.values(), [9, 1, 3]);
+        assert_eq!(graph.cells.level1.values(), [[0, 0], [1, 1], [3, 4]]);
         let mut ends: Vec<_> = graph.roads.iter().map(|road| (road.from, road.to, road.reversed)).collect();
         ends.sort_unstable();
-        assert_eq!(ends, [(0, 1, false), (0, 2, true), (1, 0, true), (2, 0, false)]);
+        assert_eq!(ends, [(0, 1, false), (1, 0, true), (1, 2, false), (2, 1, true)]);
         for road in graph.roads.iter() {
             let ends = [road.from, road.to].map(|junction| graph.points.values()[junction as usize]);
             assert_eq!(ends, [road.shape[0], road.shape[road.shape.len() - 1]]);
