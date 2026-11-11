@@ -5,6 +5,8 @@
     export const tiles = { placeName: (_coordinate: Coordinate): string | undefined => undefined };
     /** The arguments of each `showNight` call. */
     export const nightCalls: [Coordinate, Coordinate[][]][] = [];
+    /** How often the view moved to a route, coordinates or a place. */
+    export const moves = { count: 0 };
 </script>
 
 <script lang="ts">
@@ -13,10 +15,10 @@
 
     let { accessMode = 'cycling', popup, points = [], onPointSelect, onPointMove, onPointHover, hoveredId, onEmptyClick, onBounds }: { accessMode?: 'cycling' | 'walking'; onPointMove?: (id: string, coordinate: Coordinate) => void; onBounds?: (bounds: [number, number, number, number], preserveSearch: boolean) => void; hoveredId?: string | null; onPointHover?: (id: string | null) => void; popup?: Snippet; points?: MapPoint[]; onPointSelect?: (id: string) => void; onEmptyClick?: (coordinate: Coordinate) => void } = $props();
     export function fitSearchResults() {}
-    export function fitRoute() {}
-    export function fitCoordinates() {}
+    export function fitRoute() { moves.count++; }
+    export function fitCoordinates() { moves.count++; }
     export function showNight(spot: Coordinate, towns: Coordinate[][]) { nightCalls.push([spot, towns]); }
-    export function showPlace() {}
+    export function showPlace() { moves.count++; }
     export function zoomBy() {}
     export function centerOn() {}
     export function underTrees() { return false; }

@@ -121,7 +121,7 @@ describe('route stop handles', () => {
 });
 
 function nightChoices(choices: Partial<NightChoices> = {}): NightChoices {
-    return { choosing: null, stopId: null, kinds: () => allStay, found: () => undefined, window: () => null, around: () => undefined, neighbours: () => [undefined, undefined],
+    return { choosing: null, stopId: null, shownId: null, kinds: () => allStay, found: () => undefined, window: () => null, around: () => undefined, neighbours: () => [undefined, undefined],
         campsites: 0, keepCampsites: vi.fn(),
         date: () => undefined, elevationAt: () => null, choose: vi.fn(), open: vi.fn(), step: vi.fn(), endHere: vi.fn(), stay: vi.fn(),
         selectPlace: vi.fn(), pick: vi.fn(), retry: vi.fn(), setKinds: vi.fn(), release: vi.fn(), ...choices };
@@ -195,7 +195,7 @@ describe('planner day views', () => {
         const props = itineraryProps(null), total = props.days.at(-1)!.to * planView(props.trip, props.line).total;
         const bern = town('Bern', total * .45);
         const hotel: Place = { id: 'Bern-hotel', kind: 'place', category: 'hotel', placeKind: 'hotel', label: 'Hotel Bären', description: '', coordinate: [7.6, 47.2], locality: 'Bern' };
-        bern.sleep.push({ place: hotel, km: bern.km, off: 1 });
+        bern.sleep.push({ place: hotel, km: bern.km, off: 1 }, { place: { ...bern.sleep[0].place, id: 'Bern-unnamed', label: 'campsite' }, km: bern.km, off: .5 });
         let kinds = $state<Stay[]>(['camp', 'hotel']);
         const endHere = vi.fn(), stay = vi.fn(), selectPlace = vi.fn();
         props.nights = nightChoices({ choosing: 1, stopId: 'Bern', kinds: () => kinds, found: () => ({ state: 'ready', stops: [bern] }),
@@ -213,12 +213,17 @@ describe('planner day views', () => {
         expect(endHere).toHaveBeenCalledWith(1, bern);
 
         radio('Hotel Bären').click(); await tick();
-        expect(selectPlace).toHaveBeenLastCalledWith(hotel);
+        expect(selectPlace).toHaveBeenCalledExactlyOnceWith(hotel);
         expect(confirm().textContent?.trim()).toBe('End day 1 at Hotel Bären');
         confirm().click();
         expect(stay).toHaveBeenCalledWith(1, hotel);
+        // A click on the checked place shows it on the map again.
+        radio('Hotel Bären').click(); await tick();
+        expect(selectPlace).toHaveBeenCalledTimes(2);
         radio('Somewhere in Bern').click(); await tick();
         expect(selectPlace).toHaveBeenLastCalledWith(null);
+        radio('Unnamed campsite').click(); await tick();
+        expect(confirm().textContent?.trim()).toBe('End day 1 at this campsite');
 
         radio('Hotel Bären').click(); await tick();
         kinds = ['camp']; await tick(); await tick();

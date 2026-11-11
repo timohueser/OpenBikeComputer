@@ -75,6 +75,8 @@ export interface NightChoices {
     choosing: number | null;
     /** The open town of that night. */
     stopId: string | null;
+    /** The id of the place or point that the map shows. */
+    shownId: string | null;
     found(night: number): NightStops | undefined;
     window(night: number): [number, number] | null;
     /** The kinds of place to sleep of a night (`nightKinds`). */

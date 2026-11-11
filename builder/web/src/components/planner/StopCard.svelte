@@ -8,7 +8,7 @@
     import { stopCounts, stopKm, suitable, type Stop, type StopPlace } from '../../lib/planner/stops';
     import type { Day, Place, Stay } from '../../lib/planner/editor';
 
-    let { stop, kinds, days, labels, back = 'All towns', theme, date, elevation, onBack, onEndHere, onStay, onSelectPlace }: {
+    let { stop, kinds, days, labels, back = 'All towns', shownId = null, theme, date, elevation, onBack, onEndHere, onStay, onSelectPlace }: {
         stop: Stop;
         /** The kinds of place to sleep of the night: the card lists only places of these kinds. */
         kinds: Stay[];
@@ -16,6 +16,8 @@
         days: [Day, Day];
         labels: [number, number];
         back?: string;
+        /** The id of the place or point that the map shows. */
+        shownId?: string | null;
         theme: 'light' | 'dark';
         date?: string;
         elevation: number | null;
@@ -30,12 +32,19 @@
     const radios = $props.id();
     // The id of the selected place; null selects the town itself.
     let picked = $state<string | null>(null);
-    const selected = $derived(groups.flatMap(group => group.places).find(p => p.place.id === picked));
+    const places = $derived(groups.flatMap(group => group.places));
+    const selected = $derived(places.find(p => p.place.id === picked));
     // A place of another town, or one that the stay kinds hide, gives the selection back to the town.
     $effect(() => { if (picked !== null && !selected) picked = null; });
+    // A place of the card picked on the map selects it here too; a closed callout keeps the selection.
+    $effect(() => { if (shownId && places.some(p => p.place.id === shownId)) picked = shownId; });
     function select(entry: StopPlace | null) {
         picked = entry?.place.id ?? null;
         onSelectPlace(entry?.place ?? null);
+    }
+    // A checked radio fires no change, so a click on it shows its place again.
+    function again(entry: StopPlace | null) {
+        if ((entry ?? undefined) === selected) select(entry);
     }
     const center = $derived(stop.sleep[0].place.coordinate);
     const sunset = $derived(date ? sunsetAt(center, date) : null);
@@ -84,7 +93,7 @@
     <h4>Where you sleep</h4>
     <div role="radiogroup" aria-label={`Where you sleep on night ${labels[0]}`}>
         <label class="option" class:checked={!selected}>
-            <input type="radio" name={radios} checked={!selected} onchange={() => select(null)} />
+            <input type="radio" name={radios} checked={!selected} onchange={() => select(null)} onclick={() => again(null)} />
             <span><strong>Somewhere in {stop.name}</strong><small>decide the place later</small></span>
         </label>
         {#each groups as group (group.title)}
@@ -93,7 +102,7 @@
                 {#each group.places as entry (entry.place.id)}
                     <li>
                         <label class="option" class:checked={selected === entry}>
-                            <input type="radio" name={radios} checked={selected === entry} onchange={() => select(entry)} />
+                            <input type="radio" name={radios} checked={selected === entry} onchange={() => select(entry)} onclick={() => again(entry)} />
                             <span><strong>{named(entry) ? entry.place.label : `Unnamed ${kind(entry)}`}</strong><small>{named(entry) ? `${kind(entry)} · ` : ''}{away(entry)}</small></span>
                             <Icon path={placeCategories[entry.place.category].icon} size={16} />
                         </label>

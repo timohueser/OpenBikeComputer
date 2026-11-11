@@ -9,7 +9,7 @@
     import type { Place, Stay, Trip } from '../../lib/planner/editor';
     import type { RoutingLine } from '../../lib/planner/routing';
 
-    let { trip, line, night, labels, back, theme, found, window, stopId, date, elevationAt, kinds, onOpen, onEndHere, onStay, onSelectPlace, onPick, onRetry, onCancel, onKinds, onRelease }: {
+    let { trip, line, night, labels, back, theme, found, window, stopId, shownId, date, elevationAt, kinds, onOpen, onEndHere, onStay, onSelectPlace, onPick, onRetry, onCancel, onKinds, onRelease }: {
         trip: Trip;
         line: RoutingLine;
         /** The riding day that ends at this night. */
@@ -23,6 +23,8 @@
         /** The stretch searched, in km. */
         window: [number, number];
         stopId: string | null;
+        /** The id of the place or point that the map shows. */
+        shownId: string | null;
         /** The date of this night, when the trip has a start date. */
         date?: string;
         elevationAt: (km: number) => number | null;
@@ -60,7 +62,7 @@
 </script>
 
 {#if open}
-    <StopCard stop={open} {kinds} days={daysAround(trip, line, night, open.km)} {labels} {back} {theme} {date} elevation={elevationAt(open.km)}
+    <StopCard stop={open} {kinds} days={daysAround(trip, line, night, open.km)} {labels} {back} {shownId} {theme} {date} elevation={elevationAt(open.km)}
         onBack={() => { returnTo = open.id; onOpen(null); }} {onEndHere} {onStay} {onSelectPlace} />
 {:else}
     <div class="picker">

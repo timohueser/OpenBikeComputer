@@ -10,7 +10,7 @@ import { newPlan, type Plan } from '../../lib/planner/library';
 import { isTrip } from '../../lib/planner/trip-validation';
 import type { RoutingLine } from '../../lib/planner/routing';
 
-import { nightCalls, tiles } from '../../../test-support/planner/MapStub.svelte';
+import { moves, nightCalls, tiles } from '../../../test-support/planner/MapStub.svelte';
 import { routeService } from '../../../test-support/planner/route-service';
 import { testTrip } from '../../../test-support/planner/trip';
 import { testConfig } from '../../../test-support/planner/config';
@@ -580,6 +580,33 @@ describe('planner app transitions', () => {
         escape(button('Pan map')); await tick(); await tick();
         expect(document.querySelector('.night-page')).toBeNull();
         expect(document.activeElement).toBe(button('Choose night 1'));
+    });
+
+    it('selects where to sleep in a town with the arrow keys and on the map, with the focus kept in the card', async () => {
+        await startApp();
+        button('Choose night 1').click(); await tick();
+        await vi.waitFor(() => document.querySelector<HTMLButtonElement>('button.town')!.click()); await tick();
+        const radios = [...document.querySelectorAll<HTMLInputElement>('[role="radiogroup"] input')];
+        const confirm = () => document.querySelector('.confirm button')!.textContent!.trim();
+        // An arrow key focuses and checks the next radio, and fires its change.
+        const arrow = async (radio: HTMLInputElement) => {
+            radio.focus(); radio.checked = true;
+            radio.dispatchEvent(new Event('change', { bubbles: true }));
+            await tick(); await new Promise(requestAnimationFrame);
+        };
+        expect(confirm()).toBe('End day 1 in Tile town');
+        await arrow(radios[1]);
+        expect(document.querySelector('[role="dialog"] h2')?.textContent).toBe(tilePlace.label);
+        expect(document.activeElement).toBe(radios[1]);
+        expect(confirm()).toBe(`End day 1 at ${tilePlace.label}`);
+        const moved = moves.count;
+        await arrow(radios[0]);
+        expect(document.activeElement).toBe(radios[0]);
+        expect(document.querySelector('[role="dialog"]')).toBeNull();
+        expect(moves.count).toBe(moved);
+        button(`Map place: ${tilePlace.label}`).click(); await tick();
+        expect(radios[1].checked).toBe(true);
+        expect(confirm()).toBe(`End day 1 at ${tilePlace.label}`);
     });
 
     it('closes only the town with Escape on its card in an open day', async () => {
