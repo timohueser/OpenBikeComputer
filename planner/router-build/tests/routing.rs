@@ -4,7 +4,6 @@ use planner_router::{
     data::{RoutingData, Selection},
     model::{Pace, Point, Profile, Road, Surface, BIKE, FOOT, NO_ELEVATION, PUSH},
     package::{digest, Package, Source},
-    router::Response,
     snap::{Candidate, Policy, Position, REACH_M},
     Control, Error, Request, Route, Router,
 };
@@ -53,7 +52,7 @@ fn package_with_profiles(graph: &Graph, profiles: &[Profile]) -> (Memory, Vec<u8
 }
 /// One value for each edge of the route, from the runs of one edge channel of its answer.
 fn edges(route: &Route, channel: &str) -> Value {
-    let answer = answer(&Response { routes: vec![route.clone()] });
+    let answer = answer(route);
     let runs = answer["routes"][0]["edges"][channel].as_array().unwrap().clone();
     runs.iter().flat_map(|run| vec![run[0].clone(); run[1].as_u64().unwrap() as usize]).collect()
 }
@@ -268,8 +267,6 @@ fn prepared_coordinate_routes_match_independent_arrival_road_search() {
                         points: vec![from, to],
                         profile: profile.name.clone(),
                         pace: Pace::default(),
-                        alternatives: false,
-                        alternatives_only: false,
                         turnarounds: vec![],
                         start_position: None,
                         end_position: None,
@@ -345,8 +342,6 @@ fn an_idle_service_drops_the_profiles_that_no_router_holds_before_it_answers_mem
         points: vec![coordinate(&roads[0], 0.2), coordinate(&roads[15], 0.8)],
         profile: "touring".into(),
         pace: Pace::default(),
-        alternatives: false,
-        alternatives_only: false,
         turnarounds: vec![],
         start_position: None,
         end_position: None,
@@ -385,8 +380,6 @@ fn via_direction_pace_and_failure_states_are_explicit() {
         points: vec![coordinate(&roads[0], 0.2), coordinate(&roads[7], 0.5), coordinate(&roads[15], 0.8)],
         profile: "touring".into(),
         pace: Pace::default(),
-        alternatives: false,
-        alternatives_only: false,
         turnarounds: vec![],
         start_position: None,
         end_position: None,
@@ -449,8 +442,6 @@ fn a_point_without_a_road_nearby_attaches_to_the_nearest_road_within_reach() {
         points: vec![[0.001, 0.0], [0.015, -0.006]],
         profile: "touring".into(),
         pace: Pace::default(),
-        alternatives: false,
-        alternatives_only: false,
         turnarounds: vec![],
         start_position: None,
         end_position: None,
@@ -476,8 +467,6 @@ fn a_shape_keeps_direction_and_only_an_explicit_visit_can_reverse() {
         points: vec![coordinate(road, 0.2), coordinate(road, 0.8), coordinate(road, 0.2)],
         profile: "touring".into(),
         pace: Pace::default(),
-        alternatives: false,
-        alternatives_only: false,
         turnarounds: vec![],
         start_position: None,
         end_position: None,
@@ -504,8 +493,6 @@ fn a_window_pinned_to_its_neighbour_legs_repeats_the_whole_trip() {
             .to_vec(),
         profile: "touring".into(),
         pace: Pace::default(),
-        alternatives: false,
-        alternatives_only: false,
         turnarounds: vec![],
         start_position: None,
         end_position: None,
@@ -616,15 +603,11 @@ fn closed_packages_route_across_multiple_checked_blocks() {
         points: vec![[0.00002, 0.0], [0.21988, 0.0]],
         profile: "touring".into(),
         pace: Pace::default(),
-        alternatives: true,
-        alternatives_only: false,
         turnarounds: vec![],
         start_position: None,
         end_position: None,
     };
-    let result = router.routes(&request, &Control::default()).unwrap();
-    assert_eq!(result.routes.len(), 1, "A single corridor does not need invented alternatives");
-    let route = &result.routes[0];
+    let route = router.route(&request, &Control::default()).unwrap();
     assert_eq!(route.cost, oracle(&graph, &Profile::presets()[0], route.legs[0].start, route.legs[0].end).unwrap());
     assert_eq!(route.legs[0].pieces.len(), 2199);
 }
@@ -654,8 +637,6 @@ fn a_leg_adds_the_sub_metre_climb_of_its_pieces_before_it_rounds() {
         points: vec![[0.00002, 0.0], [0.00098, 0.0]],
         profile: "touring".into(),
         pace: Pace::default(),
-        alternatives: false,
-        alternatives_only: false,
         turnarounds: vec![],
         start_position: None,
         end_position: None,
@@ -697,8 +678,6 @@ fn each_leg_smooths_its_own_heights() {
             points: points.to_vec(),
             profile: "touring".into(),
             pace: Pace::default(),
-            alternatives: false,
-            alternatives_only: false,
             turnarounds: vec![],
             start_position: None,
             end_position: None,
@@ -718,127 +697,6 @@ fn each_leg_smooths_its_own_heights() {
         seconds += leg.totals.seconds;
         assert!((whole.elapsed[leg.to_index] - seconds).abs() < 1e-6);
     }
-}
-
-#[test]
-fn alternatives_find_a_separate_corridor_without_an_out_and_back_probe() {
-    let template = roads(&fixture())[0].clone();
-    let points: Vec<_> = [(0, 0), (0, 9000), (60000, 9000), (60000, 0), (0, -9000), (60000, -9000)]
-        .into_iter()
-        .map(|(lon, lat)| Point { lon, lat, elevation: NO_ELEVATION })
-        .collect();
-    let mut roads = vec![];
-    for (a, b) in [(0, 1), (1, 2), (2, 3), (0, 4), (4, 5), (5, 3)] {
-        for (from, to) in [(a, b), (b, a)] {
-            roads.push(Road {
-                from: from as u32,
-                to: to as u32,
-                way: (a * 10 + b) as i64,
-                shape: vec![points[from], points[to]],
-                length_m: points[from].distance(points[to]).round() as u32,
-                ..template.clone()
-            });
-        }
-    }
-    let graph = Graph {
-        points: points.iter().copied().collect(),
-        roads: roads.into_iter().collect(),
-        forbidden: Default::default(),
-        forbidden_foot: Default::default(),
-        warnings: vec![],
-        ..Graph::default()
-    };
-    let (source, manifest) = package(&graph);
-    let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
-    let request = Request {
-        points: vec![[0.0, 0.0], [0.06, 0.0]],
-        profile: "touring".into(),
-        pace: Pace::default(),
-        alternatives: true,
-        alternatives_only: false,
-        turnarounds: vec![],
-        start_position: None,
-        end_position: None,
-    };
-    let routes = router.routes(&request, &Control::default()).unwrap().routes;
-    assert_eq!(routes.len(), 2);
-    assert_eq!(routes[1].reason, "corridor");
-    assert_eq!(routes[1].legs.len(), 1);
-    assert_ne!(routes[0].id, routes[1].id);
-    assert_eq!(routes[0].totals().distance_m, routes[1].totals().distance_m);
-    // One shaping point keeps the corridor.
-    assert!(routes[0].via.is_none());
-    let via = Request { points: vec![request.points[0], routes[1].via.unwrap(), request.points[1]], ..request.clone() };
-    assert_eq!(router.route(&via, &Control::default()).unwrap().points, routes[1].points);
-    let only = Request { alternatives: false, alternatives_only: true, ..request };
-    let alternatives = router.routes(&only, &Control::default()).unwrap().routes;
-    assert_eq!(alternatives.iter().map(|r| &r.id).collect::<Vec<_>>(), [&routes[1].id]);
-}
-
-#[test]
-fn an_out_and_back_trip_gets_alternatives_within_one_query_budget() {
-    let template = roads(&fixture())[0].clone();
-    // A short cycleway crosses a hill; a longer, level cycleway goes through (4).
-    let points: Vec<_> = [(-2_500, 0), (0, 0), (45_000, 0), (47_500, 0), (22_500, 22_000)]
-        .into_iter()
-        .map(|(lon, lat)| Point { lon, lat, elevation: 0.0 })
-        .collect();
-    let mut roads = vec![];
-    for (a, b) in [(0, 1), (1, 2), (1, 4), (4, 2), (2, 3)] {
-        for (from, to) in [(a, b), (b, a)] {
-            let hill = a == 1 && b == 2;
-            let mut shape = vec![points[from], points[to]];
-            if hill {
-                shape.insert(1, Point { lon: 22_500, lat: 0, elevation: 100.0 });
-            }
-            roads.push(Road {
-                from: from as u32,
-                to: to as u32,
-                class: 0,
-                surface: Surface::Paved,
-                shape,
-                length_m: points[from].distance(points[to]).round() as u32,
-                ascent_m: if hill { 100 } else { 0 },
-                descent_m: if hill { 100 } else { 0 },
-                ..template.clone()
-            });
-        }
-    }
-    let graph = Graph {
-        points: points.iter().copied().collect(),
-        roads: roads.into_iter().collect(),
-        forbidden: Default::default(),
-        forbidden_foot: Default::default(),
-        warnings: vec![],
-        ..Graph::default()
-    };
-    let profiles: Vec<_> = Profile::presets().into_iter().filter(|p| p.name.starts_with("touring")).collect();
-    let (source, manifest) = package_with_profiles(&graph, &profiles);
-    let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
-    let request = Request {
-        points: vec![[-0.0015, 0.0], [0.0465, 0.0], [-0.0015, 0.0]],
-        profile: "touring".into(),
-        pace: Pace::default(),
-        alternatives: true,
-        alternatives_only: false,
-        turnarounds: vec![1],
-        start_position: None,
-        end_position: None,
-    };
-    let routes = router.routes(&request, &Control::default()).unwrap().routes;
-    assert_eq!(routes.iter().map(|r| r.reason).collect::<Vec<_>>(), ["primary", "less_climbing"]);
-    assert_eq!(routes[1].profile, "touring/less-climbing");
-    // The mean over 100 m lowers the summit between two 4 % slopes by 1 m.
-    assert_eq!((routes[0].totals().ascent_m, routes[1].totals().ascent_m), (198, 0));
-    // The primary route spends the whole query budget, so the alternatives stop and the answer keeps it.
-    let alone = Request { alternatives: false, ..request.clone() };
-    let needed = (1..)
-        .find(|&queries| router.route(&alone, &Control { max_queries: queries, ..Control::default() }).is_ok())
-        .unwrap();
-    // A new router, because a router answers a repeated request from its last primary route.
-    let mut fresh = Router::new(router.package().fork(), 768 * 1024 * 1024);
-    let kept = fresh.routes(&request, &Control { max_queries: needed, ..Control::default() }).unwrap().routes;
-    assert_eq!(kept.iter().map(|r| &r.id).collect::<Vec<_>>(), [&routes[0].id]);
 }
 
 #[test]
@@ -947,8 +805,6 @@ fn disconnected_driveway_uses_a_nearby_connected_road_without_relaxing_the_profi
         points: vec![[0.0, 0.0], [0.005, 0.0002], [0.01, 0.0]],
         profile: "road".into(),
         pace: Pace::default(),
-        alternatives: false,
-        alternatives_only: false,
         turnarounds: vec![1],
         start_position: None,
         end_position: None,
@@ -1010,8 +866,6 @@ fn road_and_gravel_bikes_take_their_own_surfaces() {
         points: vec![[0.0, 0.0], [0.01, 0.0]],
         profile: "road".into(),
         pace: Pace::default(),
-        alternatives: false,
-        alternatives_only: false,
         turnarounds: vec![],
         start_position: None,
         end_position: None,
@@ -1068,8 +922,6 @@ fn riding_bans_allow_a_pushing_connection_unless_pushing_is_also_banned() {
         points: vec![[0.0001, 0.0], [0.0029, 0.0]],
         profile: "road".into(),
         pace: Pace::default(),
-        alternatives: false,
-        alternatives_only: false,
         turnarounds: vec![],
         start_position: None,
         end_position: None,
@@ -1125,8 +977,6 @@ fn a_route_reports_its_possible_closures_only_for_the_mode_it_uses() {
         points: vec![[0.0001, 0.0], [0.0029, 0.0]],
         profile: "road".into(),
         pace: Pace::default(),
-        alternatives: false,
-        alternatives_only: false,
         turnarounds: vec![],
         start_position: None,
         end_position: None,
@@ -1192,8 +1042,6 @@ fn a_route_avoids_a_private_road_unless_a_shaping_point_is_on_it() {
         points: vec![[-0.0005, 0.0], [0.0025, 0.0]],
         profile: "touring".into(),
         pace: Pace::default(),
-        alternatives: false,
-        alternatives_only: false,
         turnarounds: vec![],
         start_position: None,
         end_position: None,
@@ -1257,8 +1105,6 @@ fn a_spur_that_ends_at_a_closed_gate_stays_snappable_through_its_u_turn() {
         points: vec![[-0.0015, 0.0], [0.0015, 0.0]],
         profile: "touring".into(),
         pace: Pace::default(),
-        alternatives: false,
-        alternatives_only: false,
         turnarounds: vec![],
         start_position: None,
         end_position: None,
@@ -1298,8 +1144,6 @@ fn shared_pages_preserve_routes_costs_and_guidance_for_every_profile() {
                 points,
                 profile: name.clone(),
                 pace: Pace::default(),
-                alternatives: false,
-                alternatives_only: false,
                 turnarounds: vec![],
                 start_position: None,
                 end_position: None,

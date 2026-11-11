@@ -4,10 +4,15 @@ import type { RouteClosure, RoutingLine } from './routing';
 export interface Stretch {
     coordinates: Coordinate[];
     km: number;
+    /** The km along the route where the stretch starts. */
+    at: number;
 }
 
+type Warning = Exclude<RouteClosure['kind'], 'sidepath'>;
+type WarningClosure = RouteClosure & { kind: Warning };
+
 export interface ClosureStretch extends Stretch {
-    closures: RouteClosure[];
+    closures: WarningClosure[];
 }
 
 /** The runs of consecutive edges that `keep` accepts, as edge ranges with their coordinates and length. */
@@ -19,51 +24,58 @@ export function edgeStretches<T>(coordinates: Coordinate[], edges: readonly T[] 
         if (last?.to === i) last.to = i + 1;
         else runs.push({ from: i, to: i + 1 });
     });
+    const along = cumulative(coordinates);
     return runs.map(({ from, to }) => {
         const stretch = coordinates.slice(from, to + 1);
-        return { from, to, coordinates: stretch, km: cumulative(stretch).at(-1)! };
+        return { from, to, coordinates: stretch, km: cumulative(stretch).at(-1)!, at: along[from] };
     });
 }
 
 export const noteDistance = (km: number) => km < 1 ? `${Math.round(km * 1000)} m` : `${km.toFixed(1)} km`;
 
+// A signed cycle path beside the road is a choice for the router, not a warning for the rider.
+const warns = (closure: RouteClosure): closure is WarningClosure => closure.kind !== 'sidepath';
+
 /** The stretches of the line where the rider may have no access. The router uses them, because nothing says for sure that the road is closed. */
 export function closureStretches(line?: Pick<RoutingLine, 'coordinates' | 'edges'>): ClosureStretch[] {
     const edges = line?.edges.closures ?? [];
-    return edgeStretches(line?.coordinates ?? [], edges, Boolean).map(({ from, to, coordinates, km }) => {
-        const closures: RouteClosure[] = [];
-        for (const closure of edges.slice(from, to).flatMap(edge => edge ?? []))
+    return edgeStretches(line?.coordinates ?? [], edges, edge => !!edge?.some(warns)).map(({ from, to, coordinates, km, at }) => {
+        const closures: WarningClosure[] = [];
+        for (const closure of edges.slice(from, to).flatMap(edge => edge ?? []).filter(warns))
             if (!closures.some(known => known.kind === closure.kind && known.condition === closure.condition)) closures.push(closure);
-        return { closures, coordinates, km };
+        return { closures, coordinates, km, at };
     });
 }
 
 // OSM writes `nov-may` as often as `Nov-May`, and `Oct 14th` as often as `Oct 14`.
 const dates = (condition: string) => condition.replace(/\s*-\s*/g, '–').replace(/(\d)(st|nd|rd|th)\b/g, '$1')
     .replace(/\b[a-z]/g, letter => letter.toUpperCase());
+// The route build marks these season names as seasonal too (`seasonal` in `planner/router-build/src/source.rs`).
+const seasons = new Set(['winter', 'spring', 'summer', 'autumn']);
+const season = (condition: string) => seasons.has(condition.toLowerCase()) ? `in ${condition.toLowerCase()}` : dates(condition);
 const listed = (conditions: string[]) => conditions.length ? ` (${[...new Set(conditions)].join(', ')})` : '';
 const motorGroups = new Set(['psv', 'bus', 'hgv', 'taxi', 'motorcar', 'motor_vehicle']);
 const group = (value: string) => motorGroups.has(value) ? 'motor vehicles' : value.replace(/_/g, ' ');
-const phrases: Record<RouteClosure['kind'], (conditions: string[]) => string> = {
+const groups = (values: string[]) => [...new Set(values.flatMap(value => value.split(';')).map(group))];
+const phrases: Record<Warning, (conditions: string[]) => string> = {
     permit: () => 'Permit needed',
     private: () => 'Private road',
     farm: () => 'Farm or forest traffic only',
-    sidepath: () => 'Use the side path',
     discouraged: () => 'Access discouraged',
-    limited: values => `Access for ${[...new Set(values.flatMap(value => value.split(';')).map(group))].join(' or ')} only`,
-    seasonal: conditions => `May be closed seasonally${listed(conditions.map(dates))}`,
+    limited: values => groups(values).join() === 'customers' ? 'Customers only' : `Only for ${groups(values).join(' or ')}`,
+    seasonal: conditions => `May be closed ${conditions.length ? [...new Set(conditions.map(season))].join(', ') : 'seasonally'}`,
     conditional: conditions => `May be closed${listed(conditions.map(condition => condition.replace(/\s*-\s*/g, '–')))}`,
     unclear: values => `Access unclear${listed(values)}`,
 };
 
-/** One quiet line, such as "Permit needed · May be closed seasonally (Nov–May) · 12.3 km". */
-export function closureNote(stretches: ClosureStretch[]): string {
-    const km = stretches.reduce((sum, stretch) => sum + stretch.km, 0);
-    const conditions = new Map<RouteClosure['kind'], Set<string>>();
-    for (const { kind, condition } of stretches.flatMap(stretch => stretch.closures)) {
+/** The phrases of one stretch, such as "Permit needed · May be closed Nov–May". */
+export function closureLabel(stretch: ClosureStretch): string {
+    const conditions = new Map<Warning, Set<string>>();
+    for (const { kind, condition } of stretch.closures) {
         const known = conditions.get(kind) ?? conditions.set(kind, new Set()).get(kind)!;
         if (condition) known.add(condition);
     }
-    const kinds = (Object.keys(phrases) as RouteClosure['kind'][]).filter(kind => conditions.has(kind));
-    return [...kinds.map(kind => phrases[kind]([...conditions.get(kind)!])), noteDistance(km)].join(' · ');
+    const kinds = (Object.keys(phrases) as Warning[]).filter(kind => conditions.has(kind));
+    // Sorted, so that two pieces of one road with the same conditions in another edge order get one text and merge.
+    return kinds.map(kind => phrases[kind]([...conditions.get(kind)!].sort())).join(' · ');
 }

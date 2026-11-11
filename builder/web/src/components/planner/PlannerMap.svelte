@@ -26,26 +26,23 @@
     import { RouteOverlays, type AccessMode, type OverlayOptions, type OverlaySelection } from "../../lib/planner/route-overlays";
     import type { DataLayer } from "../../lib/planner/layers/data-layer";
     import { placeCallout } from "../../lib/planner/callout-placement";
+    import { nightView } from "../../lib/planner/view-change";
     import MapOverlayDetails from './MapOverlayDetails.svelte';
     import { SignedRoutesLayer, type SignedRoutesView } from "../../lib/planner/signed-routes-map";
-    import { divergence } from "../../lib/planner/route-options";
 
     let {
-        segments = [], gaps = [], coordinates = [], highlightedCoordinates = [], points = [], selectedId = null, hoveredId = null, callout = null,
+        segments = [], gaps = [], coordinates = [], highlightedLines = [], points = [], selectedId = null, hoveredId = null, callout = null,
         drawing = null, highlightedPlaceIds = [], theme = "light", hillshade = true, contours = true, pickMode = false,
         showRoute = true, hoverProgress = null, center = [8.8, 48.65], zoom = 7,
         shownCategories = categoryIds, highlightedPlaces = [], mapOverlays = { network: 'none', access: false }, accessMode = 'cycling', routingPackage, dataLayer, bottomInset = 0,
-        signedRoutes = null, signedHovered = null, planMuted = false, compare = null, lines = [], onPick = null, onIdle, onSignedRoute, onSignedHover, canPlanRoute, onPlanRoute,
-        onEmptyClick, onPointSelect, onPointHover, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, popup,
+        signedRoutes = null, signedHovered = null, planMuted = false, lines = [], onPick = null, onIdle, onSignedRoute, onSignedHover, canPlanRoute, onPlanRoute,
+        onEmptyClick, onPointSelect, onPointHover, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, onRiderMove, popup,
     }: {
         /** The Routes view: while it is open, a click on one of its routes selects that route. */
         signedRoutes?: SignedRoutesView | null;
         signedHovered?: number | null;
         /** The plan draws in a quiet tone and takes no edits, as behind the Routes view. */
         planMuted?: boolean;
-        /** A previewed route option and its letter. It draws in ink over the plan, which draws as a dotted line without day
-         * colours; a letter marks each line where they part. */
-        compare?: { line: Coordinate[]; letter: string } | null;
         /** Lines that take no edits, such as the days of two saved versions, each in its colour and width; a later line
          * draws on top. A transfer draws dashed. */
         lines?: { coordinates: Coordinate[]; color: string; width: number; transfer: boolean }[];
@@ -64,7 +61,7 @@
         segments?: MapSegment[];
         /** Dashed connectors from the route to points that it does not reach. */
         gaps?: Coordinate[][];
-        coordinates?: Coordinate[]; highlightedCoordinates?: Coordinate[]; points?: MapPoint[];
+        coordinates?: Coordinate[]; highlightedLines?: Coordinate[][]; points?: MapPoint[];
         selectedId?: string | null; callout?: Coordinate | null; drawing?: string | null; highlightedPlaceIds?: string[];
         hoveredId?: string | null;
         /** While picking, any map click places the overnight; the line takes no edits. */
@@ -97,6 +94,8 @@
         onPlaceClick?: (place: Place) => void;
         onBounds?: (bounds: [number, number, number, number], preserveSearch: boolean) => void;
         onVisibleRange?: (range: [number, number]) => void; popup?: Snippet;
+        /** The rider starts to move the map, by pointer, wheel or keyboard. */
+        onRiderMove?: () => void;
     } = $props();
 
     type LineHit = { legEndId: string; coordinate: Coordinate };
@@ -193,6 +192,21 @@
         fitBounds(region, 13, motionDuration());
     }
 
+    /** Shows the end of a day and the places of the towns listed for its night, nearest first, as `nightView` says. */
+    export function showNight(spot: Coordinate, towns: Coordinate[][]) {
+        if (!map) return;
+        // Inside the view means inside the fit padding, clear of the controls and of a bar over the bottom.
+        const { clientWidth: width, clientHeight: height } = map.getContainer(), bottom = fitPadding.bottom + bottomInset;
+        const northWest = map.unproject([fitPadding.left, fitPadding.top]), southEast = map.unproject([width - fitPadding.right, height - bottom]);
+        const shown = nightView([northWest.lng, southEast.lat, southEast.lng, northWest.lat], spot, towns);
+        if (shown.action === 'stay') return;
+        wholeRoute = false;
+        const [west, south, east, north] = shown.box;
+        // The centre of the box goes to the centre of the padded view.
+        if (shown.action === 'pan') map.panTo([(west + east) / 2, (south + north) / 2], { offset: [(fitPadding.left - fitPadding.right) / 2, (fitPadding.top - bottom) / 2], duration: motionDuration() });
+        else fitBounds([[west, south], [east, north]], map.getZoom(), motionDuration());
+    }
+
     export function fitSearchResults(region: Coordinate[]) {
         if (!map || !region.length) return;
         fittedInitialRoute = true;
@@ -270,16 +284,12 @@
         };
     }
 
-    function compareData() {
-        return lineData(compare ? [lineFeature(compare.line)] : []);
-    }
-
     function linesData() {
         return lineData(lines.map(({ coordinates, color, width, transfer }, order) => ({ ...lineFeature(coordinates), properties: { color, width, transfer, order } })));
     }
 
     function highlightData() {
-        return lineData(highlightedCoordinates.length < 2 ? [] : [lineFeature(highlightedCoordinates)]);
+        return lineData(highlightedLines.filter(line => line.length >= 2).map(line => lineFeature(line)));
     }
 
     function setSketch(line: Coordinate[]) {
@@ -305,9 +315,6 @@
         map.addLayer({ id: "trip-gap", type: "line", source: "trip", filter: ["==", ["get", "leg"], "gap"], paint: { "line-color": dark ? "#bdb47e" : "#5c5a2e", "line-width": 3, "line-dasharray": [1, 0.8] } });
         map.addLayer({ id: "trip-line", type: "line", source: "trip", filter: ["!", ["in", ["get", "leg"], ["literal", ["gap", "transfer"]]]], layout: round, paint: { "line-color": ["get", "color"], "line-width": 4 } });
         map.addLayer({ id: "trip-transfer", type: "line", source: "trip", filter: ["==", ["get", "leg"], "transfer"], paint: { "line-color": dark ? "#8f8a6e" : "#9a9681", "line-width": 3, "line-dasharray": [2, 2] } });
-        map.addSource("compare", { type: "geojson", data: compareData() });
-        map.addLayer({ id: "compare-casing", type: "line", source: "compare", layout: round, paint: { "line-color": casing, "line-width": 9 } });
-        map.addLayer({ id: "compare-line", type: "line", source: "compare", layout: round, paint: { "line-color": dark ? "#f2efe3" : "#1c1b14", "line-width": 4.5 } });
         map.addSource("lines", { type: "geojson", data: linesData() });
         const ridden: maplibregl.FilterSpecification = ["!", ["get", "transfer"]];
         const sorted: maplibregl.LineLayerSpecification["layout"] = { ...round, "line-sort-key": ["get", "order"] };
@@ -331,16 +338,13 @@
 
     function syncRouteVisibility() {
         if (!map?.getLayer("trip-line")) return;
-        const quiet = planMuted || !!compare;
         for (const id of ["trip-line", "trip-casing", "trip-casing-drawn", "trip-gap", "trip-transfer", "trip-highlight"]) {
-            map.setLayoutProperty(id, "visibility", showRoute && (!quiet || id === "trip-line") ? "visible" : "none");
+            map.setLayoutProperty(id, "visibility", showRoute && (!planMuted || id === "trip-line") ? "visible" : "none");
         }
         // Magenta stays for the selected signed route, so the muted plan takes the amber token.
         const token = (name: string, fallback: string) => getComputedStyle(container).getPropertyValue(name).trim() || fallback;
-        map.setPaintProperty("trip-line", "line-color", planMuted ? token("--amber", "#f4a81d") : compare ? token("--route", "#cc2a93") : ["get", "color"]);
+        map.setPaintProperty("trip-line", "line-color", planMuted ? token("--amber", "#f4a81d") : ["get", "color"]);
         map.setPaintProperty("trip-line", "line-opacity", planMuted ? 0.6 : 1);
-        map.setPaintProperty("trip-line", "line-width", compare ? 3 : 4);
-        map.setPaintProperty("trip-line", "line-dasharray", compare ? [0, 2] : undefined);
     }
 
     function syncTerrainAndOverlays() {
@@ -555,7 +559,7 @@
                 overSigned = false;
                 if (signedHover !== null) onSignedHover?.(signedHover = null);
             });
-            map.on("movestart", (event) => { if (event.originalEvent) wholeRoute = false; overOverlay = false; overlayLayer?.hover(); });
+            map.on("movestart", (event) => { if (event.originalEvent) { wholeRoute = false; onRiderMove?.(); } overOverlay = false; overlayLayer?.hover(); });
             map.on("moveend", reportView);
             map.on("idle", () => onIdle?.());
             map.on("move", () => fitCallout(false));
@@ -611,19 +615,7 @@
     $effect(() => { const options = { ...mapOverlays }; const mode = accessMode; if (ready) { overlaySelection = null; overOverlay = false; overlayLayer?.set(options, mode); } });
     $effect(() => { void [showRoute, planMuted]; if (ready) syncRouteVisibility(); });
     $effect(() => { const view = signedRoutes; if (ready) signedLayer?.set(view); });
-    $effect(() => { void compare; if (ready) (map?.getSource("compare") as GeoJSONSource | undefined)?.setData(compareData()); });
     $effect(() => { void lines; if (ready) (map?.getSource("lines") as GeoJSONSource | undefined)?.setData(linesData()); });
-    const letters: maplibregl.Marker[] = [];
-    $effect(() => {
-        const marks = compare ? [{ text: compare.letter, at: divergence(compare.line, coordinates) }, { text: "A", at: divergence(coordinates, compare.line) }] : [];
-        if (!map) return;
-        for (const marker of letters.splice(0)) marker.remove();
-        for (const { text, at } of marks) {
-            if (!at) continue;
-            const element = Object.assign(document.createElement("div"), { className: `planner-map-letter${text === "A" ? " current" : ""}`, textContent: text });
-            letters.push(new maplibregl.Marker({ element }).setLngLat(at).addTo(map));
-        }
-    });
     $effect(() => { const id = signedHovered; if (ready) signedLayer?.hover(id); });
     const routesShown = $derived(!!signedRoutes);
     $effect(() => { const faded = routesShown; if (ready) overlayLayer?.fade(faded); });
@@ -647,7 +639,7 @@
     });
     $effect(() => { const routing = routingPackage; if (ready) overlayLayer?.verify(routing); });
     $effect(() => {
-        highlightedCoordinates;
+        highlightedLines;
         if (map && ready) (map.getSource("trip-highlight") as GeoJSONSource | undefined)?.setData(highlightData());
     });
     $effect(() => {
@@ -822,12 +814,6 @@
             onplan={id => { const at = overlaySelection!.coordinate; overlaySelection = null; onPlanRoute?.(id, at); }}
             onuse={() => { const coordinate = overlaySelection!.coordinate; overlaySelection = null; onEmptyClick?.(coordinate); }} />
     {/if}
-    {#if compare}
-        <div class="compare-key" aria-hidden="true">
-            <span><svg width="26" height="6"><path d="M2 3H24" class="option" /></svg>{compare.letter} · Preview</span>
-            <span><svg width="26" height="6"><path d="M2 3H24" class="current" /></svg>A · Your route</span>
-        </div>
-    {/if}
     {#if overlayStatus && !failure && !overlaySelection}
         <div class="overlay-status" role="status">{overlayStatus}{#if overlayRetry}<button onclick={() => overlayLayer?.retry()}>Retry</button>{/if}</div>
     {/if}
@@ -848,11 +834,6 @@
     .popup-storage { display: none; }
     .overlay-status { position: absolute; left: 12px; bottom: 34px; max-width: calc(100% - 80px); padding: 7px 10px; border-radius: 6px; color: var(--ink); background: var(--panel); font-size: 12px; }
     .overlay-status button { margin-left: 8px; border: 0; background: none; color: var(--link); font: inherit; text-decoration: underline; cursor: pointer; }
-    .compare-key { position: absolute; left: 12px; top: 12px; display: flex; gap: 14px; padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: 6px; color: var(--ink); background: var(--panel); font: 600 12px var(--sans); }
-    .compare-key span { display: flex; align-items: center; gap: 6px; }
-    .compare-key path { stroke-width: 4; stroke-linecap: round; }
-    .compare-key .option { stroke: var(--ink); }
-    .compare-key .current { stroke: var(--route); stroke-width: 3; stroke-dasharray: 0 6; }
     .map-status { position: absolute; bottom: 32px; left: 12px; right: 12px; padding: 10px 12px; background: var(--panel, white); color: var(--ink, #1c1b14); border: 1px solid var(--line-strong, #bcb9aa); font-size: 13px; }
     .map-status button { color: inherit; background: transparent; border: 0; text-decoration: underline; cursor: pointer; font: inherit; }
     :global(.planner-map-pin) { width: 28px; height: 28px; display: grid; place-items: center; padding: 0; border: 2px solid var(--panel, #fff); border-radius: 50%; background: #a4501e; color: #fff; font: 700 13px var(--sans, sans-serif); cursor: pointer; box-shadow: var(--planner-shadow, 0 6px 18px rgba(28, 27, 20, .12)); }
@@ -881,8 +862,6 @@
     :global(.planner-map-pin.highlighted) { outline: 3px solid var(--ink, #1c1b14); outline-offset: 3px; }
     :global(.planner-map-pin:hover) { filter: brightness(1.08); }
     :global(.planner-map-pin:focus-visible) { outline: 3px solid var(--amber, #f4a81d); outline-offset: 3px; }
-    :global(.planner-map-letter) { width: 22px; height: 22px; display: grid; place-items: center; border-radius: 50%; color: var(--panel, #fff); background: var(--ink, #1c1b14); font: 700 12px var(--sans, sans-serif); box-shadow: var(--planner-shadow, 0 6px 18px rgba(28, 27, 20, .12)); pointer-events: none; }
-    :global(.planner-map-letter.current) { background: var(--route, #cc2a93); }
     :global(.planner-map-note) { padding: 2px 8px; border-radius: 6px; color: var(--ink, #1c1b14); background: var(--panel, #fff); font: 600 12px/20px var(--sans, sans-serif); font-variant-numeric: tabular-nums; white-space: nowrap; box-shadow: var(--planner-shadow, 0 6px 18px rgba(28, 27, 20, .12)); pointer-events: none; }
     :global(.planner-hover-dot) { width: 12px; height: 12px; border: 3px solid var(--panel, #fff); border-radius: 50%; background: var(--ink, #1c1b14); pointer-events: none; }
     :global(.planner-insert-dot) { width: 14px; height: 14px; border: 2.5px solid var(--route, #cc2a93); border-radius: 50%; background: var(--panel, #fff); pointer-events: none; }

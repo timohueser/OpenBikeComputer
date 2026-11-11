@@ -1,14 +1,14 @@
 # Route API
 
-`POST /v1/route` calculates routes. `POST /v1/shape` finds the plan points of a route that follows a
-line. `GET /v1/region` describes the routing package. Request and answer bodies are UTF-8 JSON.
+`POST /v1/route` calculates a route. `POST /v1/shape` finds the plan points of a route that follows
+a line. `GET /v1/region` describes the routing package. Request and answer bodies are UTF-8 JSON.
 
 - Writers: the [route service](../planner/service/README.md); the native provider answers `route`
   and `shape` with the same code (`planner_router_call` with the call `route` or `shape`). The
   answer encoder is `planner/router/src/answer.rs`.
 - Readers: the web planner (`builder/web/src/lib/planner/routing.ts`, `route-answer.ts`), the
   companion app (`OBCPlanner/PlannerService.swift`, `RouteAnswer.swift`).
-- Test vectors: [`vectors/route-answer.json`](vectors/route-answer.json): two routes before and
+- Test vectors: [`vectors/route-answer.json`](vectors/route-answer.json): one route before and
   after encoding. The encoder test and each decoder test read it.
 - Related: [route package](route-package.md), [route catalog](route-catalog.md).
 
@@ -19,8 +19,6 @@ line. `GET /v1/region` describes the routing package. Request and answer bodies 
 | `points` | 2 to 64 ordered `[longitude, latitude]` pairs in degrees |
 | `profile` | A profile ID from `GET /v1/region` |
 | `pace` | Optional: `cycling_kmh` (1 to 80, default 19), `walking_kmh` (0.5 to 15, default 4.5) and `personal_multiplier` (0.25 to 4, default 1) |
-| `alternatives` | Optional, default `false`. `true` asks for alternative routes |
-| `alternatives_only` | Optional, default `false`. `true` asks for alternative routes and leaves out the primary route |
 | `turnarounds` | Optional interior point indices where a reversal is deliberate |
 | `start_position` | Optional leg position from an earlier answer. It pins the first point to that road position |
 | `end_position` | Optional leg position from an earlier answer. It pins the last point to that road position |
@@ -29,17 +27,11 @@ The service rejects unknown fields.
 
 ## Answer
 
-The answer is `{"routes": [...]}`. The first route is the primary route. With `alternatives_only`,
-the answer holds only the alternative routes, and it can be empty. `alternatives_only` overrides
-`alternatives` when both are `true`. When the primary route fails, an `alternatives_only` request
-fails with that error, not with an empty answer. When the deadline, a limit or a lack of memory
-stops the search for alternatives after the primary route, the answer holds the routes found before
-it. Each route has these fields:
+The answer is `{"routes": [...]}`. It holds one route. The route has these fields:
 
 | Field | Value |
 | --- | --- |
 | `id` | 64-character lowercase hex route identity |
-| `reason` | `primary`, `less_climbing` or `corridor` |
 | `package` | Routing package identity |
 | `profile` | Profile ID of this route |
 | `coordinates_udeg` | Integer microdegrees: longitude and latitude of each point, flat |
@@ -49,7 +41,6 @@ it. Each route has these fields:
 | `legs` | `{"from_index", "to_index", "start", "end", "totals"}` for each pair of request points |
 | `snap_truncated` | `true` when the service dropped road candidates for a request point |
 | `totals` | `distance_m`, `ascent_m`, `seconds`, `surface_m`, `unknown_elevation_m` and `pushing_m`, all integers |
-| `via` | Only on a `corridor` route: a `[longitude, latitude]` pair in degrees. A request with the points start, `via` and finish, and the other fields unchanged, gives the same line |
 
 ### Deltas
 
@@ -80,8 +71,10 @@ channel is `null` on every edge. A client accepts a channel that it does not kno
 | `sac_scale` | The OSM `sac_scale` as an integer from `0` (`strolling`) through `1` (`hiking`, T1) to `6` (`difficult_alpine_hiking`, T6), or `null` when the way has none |
 
 The router blocks a mode only for the access value `no`; `dismount` blocks riding only. It uses an
-edge that is possibly closed for the mode that the route uses on it, and reports it. A closure on a
-node, such as a gate, belongs to the edges of the road that arrives at the node. A closure applies
+edge that is possibly closed for the mode that the route uses on it, and reports it. A way or a
+node whose access value is `destination`, alone, in a list with other groups or in a conditional
+clause, carries no closure. A closure on a node, such as a gate,
+belongs to the edges of the road that arrives at the node. A closure applies
 only to the direction of travel that its tag names. A closure from an access value makes the road
 cost three times its length, and a node cost as much as 300 m of good road. A `seasonal` or
 `conditional` closure adds no cost:
@@ -93,7 +86,7 @@ cost three times its length, and a node cost as much as 300 m of good road. A `s
 | `farm` | Access value `agricultural` or `forestry` | The value |
 | `sidepath` | Access value `use_sidepath` | `use_sidepath` |
 | `discouraged` | Access value `discouraged` | `discouraged` |
-| `limited` | Access value for another group: `destination`, `customers`, `delivery`, `residents`, `military`, or a motor group such as `psv` | The value |
+| `limited` | Access value for another group: `customers`, `delivery`, `residents`, `military`, or a motor group such as `psv` | The value |
 | `seasonal` | A conditional restriction that names only months, days or seasons | The OSM condition, such as `Nov-May` |
 | `conditional` | Any other conditional restriction | The OSM condition, such as `wet` |
 | `unclear` | An access value or a barrier that the router does not know, or a reversible one-way | The value, `barrier=VALUE`, or `oneway=reversible` |
@@ -198,8 +191,8 @@ plan the route in shorter parts. `busy` means that no worker became free within 
 worker had no memory for the request at that moment. `internal` means that the service failed, not
 the request or the data. For `busy` and `internal`, send the request again later.
 
-A route request with `alternatives` or `alternatives_only`, and a shape request, can use at most
-`max(1, workers / 2)` workers. With 1 worker, a light request waits behind a heavy request. A body larger than the limit is an
+Shape requests can use at most `max(1, workers / 2)` workers. With 1 worker, a route request waits
+behind a shape request. A body larger than the limit is an
 `invalid_request`. A call other than `route` and `shape` is `not_found`.
 
 | Code | Status |

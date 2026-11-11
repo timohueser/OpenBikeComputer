@@ -95,8 +95,6 @@
 {#if onLoop && !loop && listed.at(-1)?.point.kind === 'finish'}
     <button type="button" class="stop back" onclick={onLoop}><Icon name="loop" size={17} />Back to start</button>
 {/if}
-{#if measured}<p class="note">Cumulative from the start</p>{/if}
-{#if stops.some(stop => stop.point.kind === 'via' || stop.point.leg === 'drawn')}<p class="note">Edit shaping points on the map. Reordering stops clears shapes on changed legs. Undo restores them.</p>{/if}
 <span class="sr-only" id={helpId}>Drag to reorder. Use the up and down arrow keys when focused.</span>
 <span class="sr-only" role="status">{announcement}</span>
 
@@ -180,9 +178,4 @@
         background: var(--parchment-2);
     }
     .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-    .note {
-        margin: 8px 16px 16px;
-        font-size: 13px;
-        color: var(--ink-soft);
-    }
 </style>

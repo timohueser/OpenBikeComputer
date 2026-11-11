@@ -4,7 +4,8 @@
     import Icon from './PlannerIcon.svelte';
     import RouteStats from './RouteStats.svelte';
     import { dayColor } from '../../lib/planner/day-colors';
-    import { kindLabel, sleepIcon } from '../../lib/planner/search/presentation';
+    import { addDays, weekdayLabel } from '../../lib/planner/layers/data-layer';
+    import { sleepIcon } from '../../lib/planner/search/presentation';
     import { dayStops, duration, planView, type ItineraryDay, type RoutePoint, type Trip, type Day } from '../../lib/planner/editor';
     import type { RoutingLine } from '../../lib/planner/routing';
 
@@ -52,6 +53,7 @@
     const endId = $derived(last ? finish.id : day.pinned?.id ?? null);
     const ascentKnown = $derived(line?.unknownElevationKm === 0);
     const stops = $derived(expanded ? dayStops(trip, line, day) : []);
+    const title = $derived(`Day ${day.number}${trip.startDate ? ` · ${weekdayLabel(addDays(trip.startDate, day.number - 1))}` : ''}`);
     const stopKinds: Record<string, { label: string; icon: string }> = {
         waypoint: { label: 'Visit', icon: 'flag' },
         detour: { label: 'Visit', icon: 'flag' },
@@ -70,7 +72,7 @@
     {#if expanded}
         <header class="detail-heading">
             <span class="badge">{day.number}</span>
-            <h2>{start} → {end}</h2>
+            <div><small>{title}</small><h2>{start} → {end}</h2></div>
         </header>
         <RouteStats distance={day.distance} ascent={ascentKnown ? day.ascent : null} descent={ascentKnown ? day.descent : null} walking={trip.bike === 'hiking'} hours={line ? day.hours : null} />
     {:else}
@@ -78,8 +80,8 @@
         <span class="heading-content">
         <span class="badge">{day.number}</span>
         <span class="title">
-            <strong>Day {day.number}</strong>
-            <small>{duration(day.hours)} · ↑ {ascentKnown ? day.ascent : '—'} m · ↓ {ascentKnown ? day.descent : '—'} m{day.pinned?.placeKind ? ` · ${kindLabel(day.pinned.placeKind)}` : ''}</small>
+            <strong>{title}</strong>
+            <small>{duration(day.hours)} · ↑ {ascentKnown ? day.ascent : '—'} m · ↓ {ascentKnown ? day.descent : '—'} m</small>
         </span>
         <span class="distance">{day.distance.toFixed(1)}<small>km</small></span>
         <Icon name="chevron" size={14} />
@@ -110,7 +112,7 @@
             {#if stops.length && !last && !day.pinned}
                 <button type="button" class="stop end" onclick={onShowEnd}><Icon name="camp" size={15} /><span>Suggested day end<small>Choose an overnight below</small></span><small>{day.distance.toFixed(1)} km</small></button>
             {/if}
-            <p class="help">{stops.length ? 'Click the map to add a stop. Drag the route to reshape it.' : 'No stops yet. Click the map to add one.'}</p>
+            {#if !stops.length}<p class="help">Click the map to add a stop.</p>{/if}
             {#if choosing && !last}
                 <div class="choose">
                     <div class="choose-head">
@@ -134,6 +136,7 @@
     .expanded { padding: 4px 8px 12px; }
     .day:not(.expanded) { border-bottom: 1px solid var(--line); border-radius: 0; }
     .detail-heading { display: flex; align-items: center; gap: 10px; }
+    .detail-heading small { display: block; font-size: 13px; color: var(--ink-soft); }
     h2 { margin: 0; font: 600 17px/1.35 var(--sans); overflow-wrap: anywhere; }
     h3 { margin: 0; font: 600 14px var(--sans); }
     .help { margin: 6px 0 12px; font-size: 13px; color: var(--ink-soft); }

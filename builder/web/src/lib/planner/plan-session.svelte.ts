@@ -1,14 +1,12 @@
 import { SvelteMap } from 'svelte/reactivity';
-import { anchorMarker, emptyTrip, guessedTrip, hasEndpoints, insertPoint, orderedRoutePoints, pinNight, planTitle, routeLegsAround, type RoutePoint, type Trip } from './editor';
+import { anchorMarker, emptyTrip, endpointLabel, guessedTrip, hasEndpoints, pinNight, planTitle, routeLegsAround, type RoutePoint, type Trip } from './editor';
 import type { Coordinate } from './geo';
 import { importedTrip, planOnRoads, readTracks, type ImportedLine } from './gpx-import';
 import { downloadPlan, importPlan, newPlan, PlanLibrary, type Plan } from './library';
-import { coordinateName, townName, visitName } from './point-names';
-import { presetName } from './riding-profiles';
-import { optionOrder } from './route-options';
+import { coordinateName, visitName } from './point-names';
 import { LegCache } from './route-legs';
 import { routePreview } from './route-preview';
-import { calculateLine, profileId, requestAlternatives, requestShape, routingKey, type EngineRoute, type RoutingLine } from './routing';
+import { calculateLine, profileId, requestShape, routingKey, type RoutingLine } from './routing';
 import { planTrip, routeBase, type RoutePlan } from './signed-route-plan';
 import type { CatalogRecord } from './signed-routes';
 import { isTrip } from './trip-validation';
@@ -17,8 +15,6 @@ import { newVersion, versionSummary, writeBack, type Version } from './versions'
 type Routed = { trip: Trip; line?: RoutingLine };
 /** An Undo step: a trip and the saved version it belongs to. */
 type Step = { trip: Trip; open?: string };
-export type RouteOptions = { state: 'unavailable' | 'loading' | 'stale' } | { state: 'error'; message: string }
-    | { state: 'ready'; routes: EngineRoute[]; choice: string };
 type Created = { plan: Plan; versions?: Version[] };
 type PlaceName = (coordinate: Coordinate) => string | undefined;
 
@@ -32,12 +28,14 @@ function storageError(error: unknown): string {
 }
 
 // A moved night keeps its number, and a moved marker takes the leg nearest to it. A moved point no longer stands for its
-// mapped place. Moving a point routes its drawn legs again.
+// mapped place, and an automatic label is the coordinate, "Start" or "Finish" until the page names the point again. Moving a
+// point routes its drawn legs again.
 function movedPoint(trip: Trip, line: RoutingLine | undefined, id: string, coordinate: Coordinate): Trip {
     const point = trip.points.find(p => p.id === id);
     if (!point) return trip;
     if (point.kind === 'night') return routeLegsAround(pinNight(trip, line, point.night!, coordinate, point.label), id);
-    const moved = { ...point, coordinate, label: point.autoLabel ? coordinateName(coordinate) : point.label, placeId: undefined, placeKind: undefined };
+    const label = !point.autoLabel ? point.label : point.kind === 'start' || point.kind === 'finish' ? endpointLabel(point.kind) : coordinateName(coordinate);
+    const moved = { ...point, coordinate, label, placeId: undefined, placeKind: undefined };
     return routeLegsAround({ ...trip, points: trip.points.map(p => p !== point ? p : p.kind === 'marker' ? anchorMarker(trip, line, moved) : moved) }, id);
 }
 
@@ -89,30 +87,6 @@ export class PlanSession {
     /** The shown line belongs to an earlier trip. */
     readonly stale = $derived(this.shown.trip !== (this.preview?.trip ?? this.trip));
 
-    // The alternatives found for one trip, and by routing key the trips that it and its picks gave: the checked route and
-    // the shaping point that a corridor pick added.
-    private options = $state.raw<{ routes: EngineRoute[]; picks: Record<string, { id: string; via?: string }> } | null>(null);
-    private optionsRequest?: { key: string; abort: AbortController };
-    private optionsError = $state.raw<{ key: string; message: string } | null>(null);
-    /** The route options of the trip, the rider's current route (`choice`) first. Options found for another trip are
-     * `stale` and never apply. */
-    readonly routeOptions = $derived.by((): RouteOptions => {
-        const key = routingKey(this.trip), pick = this.options?.picks[key];
-        if (pick) return { state: 'ready', routes: optionOrder(this.options!.routes, pick.id), choice: pick.id };
-        if (this.routeError || (this.line && !this.line.primary)) return { state: 'unavailable' };
-        if (this.optionsError?.key === key) return { state: 'error', message: this.optionsError.message };
-        return { state: this.options ? 'stale' : 'loading' };
-    });
-    /** Settlement names near the `via` of corridor options, by route id. */
-    optionPlaces = $state.raw<Record<string, string>>({});
-    // The option the rider previews. Only `pickAlternative` changes the trip.
-    private previewId = $state<string | null>(null);
-    /** The previewed option, while it is an option of the trip other than the current route. */
-    readonly compared = $derived.by(() => {
-        const options = this.routeOptions;
-        return options.state === 'ready' && this.previewId !== options.choice ? options.routes.find(route => route.id === this.previewId) : undefined;
-    });
-
     /** The lines of the saved versions by routing key, or the message of a failed calculation. */
     versionLines = $state.raw<Record<string, RoutingLine | string>>({});
     private versionsRequest?: AbortController;
@@ -150,7 +124,6 @@ export class PlanSession {
         this.closed = true;
         this.cancelPreview();
         this.request?.abort.abort();
-        this.optionsRequest?.abort.abort();
         this.versionsRequest?.abort();
         void this.library?.close();
     }
@@ -221,45 +194,17 @@ export class PlanSession {
         if (!point.autoLabel || !['waypoint', 'detour'].includes(point.kind) || point.label !== coordinateName(point.coordinate)) return;
         const coordinate: Coordinate = [...point.coordinate];
         const label = await visitName(coordinate);
-        const current = this.trip.points.find(p => p.id === point.id);
-        if (!label || this.closed || !current?.autoLabel || current.coordinate[0] !== coordinate[0] || current.coordinate[1] !== coordinate[1]) return;
-        const named = { ...this.trip, points: this.trip.points.map(p => p.id === point.id ? { ...p, label } : p) };
+        if (label) this.autoName(point.id, coordinate, label);
+    }
+
+    /** Writes a found name on point `id` while it keeps its automatic label at `coordinate`, so a late answer names no point
+     * that moved. A name is metadata: no Undo step. */
+    autoName(id: string, coordinate: Coordinate, label: string): void {
+        const current = this.trip.points.find(p => p.id === id);
+        if (this.closed || !current?.autoLabel || current.coordinate[0] !== coordinate[0] || current.coordinate[1] !== coordinate[1]) return;
+        const named = { ...this.trip, points: this.trip.points.map(p => p.id === id ? { ...p, label } : p) };
         this.show(this.history.map((step, i) => i === this.at ? { ...step, trip: named } : step), this.at);
         this.autosave();
-    }
-
-    /** Requests the alternatives of the line when they are not known and no request for the trip is in flight. A request
-     * for another trip stops, and an answer for another trip is dropped. A corridor without `via` cannot become a plan, so
-     * it is no option. A corridor option is named once its settlement is known. */
-    findAlternatives(): void {
-        const trip = this.trip, primary = this.line?.primary, key = routingKey(trip);
-        if (this.optionsRequest && this.optionsRequest.key !== key) {
-            this.optionsRequest.abort.abort();
-            this.optionsRequest = undefined;
-        }
-        if (!primary || this.routeOptions.state === 'ready' || this.optionsRequest) return;
-        const request = this.optionsRequest = { key, abort: new AbortController() };
-        this.optionsError = null;
-        requestAlternatives(trip, primary, request.abort.signal).then(answer => {
-            if (request.abort.signal.aborted) return;
-            this.optionsRequest = undefined;
-            if (routingKey(this.trip) !== key) return;
-            const routes = answer.filter(route => route.reason !== 'corridor' || route.via);
-            this.options = { routes, picks: { [key]: { id: primary.id } } };
-            for (const route of routes) {
-                if (route.via && !this.optionPlaces[route.id]) void townName(route.via).then(name => { if (name) this.optionPlaces = { ...this.optionPlaces, [route.id]: name }; });
-            }
-        }, error => {
-            if (request.abort.signal.aborted) return;
-            this.optionsRequest = undefined;
-            if (routingKey(this.trip) === key) this.optionsError = { key, message: error instanceof Error ? error.message : 'Route options are unavailable.' };
-        });
-    }
-
-    /** Shows option `id` beside the current route, or ends the preview with null. The trip, its history and the saved
-     * plan stay as they are. */
-    previewOption(id: string | null): void {
-        this.previewId = id;
     }
 
     /** Calculates the lines of the saved versions that have none, and with `retry` the failed ones. One request runs at a
@@ -277,24 +222,6 @@ export class PlanSession {
             const kept = new Set(this.versions.filter(v => isTrip(v.trip)).map(v => routingKey(v.trip)));
             this.versionLines = Object.fromEntries(Object.entries(lines).filter(([key]) => kept.has(key)));
         });
-    }
-
-    /** Applies one of the alternatives to the trip they were found for, as one Undo step: a corridor becomes one shaping
-     * point at its `via`, the profile of the route becomes the preset. The list stays, with the pick as the current
-     * route. A profile route keeps its legs, so its line needs no request. False when the route is already the current
-     * one or the options belong to another trip. */
-    pickAlternative(route: EngineRoute): boolean {
-        const options = this.options, current = options?.picks[routingKey(this.trip)];
-        if (!options || !current || current.id === route.id || !options.routes.includes(route)) return false;
-        const { trip } = this, via = current.via;
-        const found = via ? { ...trip, points: trip.points.filter(p => p.id !== via), routeOrder: trip.routeOrder.filter(id => id !== via) } : trip;
-        const preset = { ...found, preset: presetName(route.profile) };
-        const next = route.via ? insertPoint(preset, orderedRoutePoints(preset).at(-1)!.id, route.via) : preset;
-        if (!route.via) this.legs.add(orderedRoutePoints(next).map(p => p.coordinate), route);
-        const added = next.points.find(p => !found.points.some(q => q.id === p.id));
-        this.options = { ...options, picks: { ...options.picks, [routingKey(next)]: { id: route.id, via: added?.id } } };
-        this.commit(next);
-        return true;
     }
 
     retry(): void {
@@ -505,7 +432,6 @@ export class PlanSession {
         this.plan = plan;
         this.versions = versions;
         this.last = null;
-        this.options = null;
         this.savedAt = plan.revision ? plan.updatedAt : null;
         this.saveError = '';
         this.show([{ trip: plan.trip, open: plan.open }], 0);
@@ -527,12 +453,11 @@ export class PlanSession {
         this.route();
     }
 
-    /** Ends the drag preview and the option preview. */
+    /** Ends the drag preview. */
     private cancelPreview(): void {
         this.previews.cancel();
         this.preview = null;
         this.dragging = false;
-        this.previewId = null;
     }
 
     private remember(key: string, line: RoutingLine): void {

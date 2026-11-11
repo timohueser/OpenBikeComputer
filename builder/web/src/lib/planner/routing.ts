@@ -5,7 +5,6 @@ import { config } from './map-data';
 import { releaseFetch } from './release';
 import { decodeRoutes } from './route-answer';
 import type { LegCache } from './route-legs';
-import { UNPAVED } from './search/segments';
 
 /** The surfaces in the order of `surface_m` (`specs/route-api.md`). */
 export const SURFACES = ['Unknown', 'Paved', 'Compacted', 'Gravel', 'Dirt', 'Rough'] as const;
@@ -20,8 +19,6 @@ export interface RouteTotals {
     pushing_m: number;
 }
 
-/** Metres on the surfaces that search and the route options count as unpaved. */
-export const unpavedMetres = (totals: RouteTotals) => totals.surface_m.reduce((sum, m, i) => UNPAVED.includes(SURFACES[i]) ? sum + m : sum, 0);
 /** `start` and `end` are opaque road positions (`specs/route-api.md`). */
 export interface RouteLeg {
     from_index: number;
@@ -58,8 +55,6 @@ export function appendEdges(target: Edges, length: number, source: Edges | undef
 }
 
 export interface EngineRoute {
-    id: string;
-    reason: string;
     package: string;
     profile: string;
     geometry: Coordinate[];
@@ -69,8 +64,6 @@ export interface EngineRoute {
     totals: RouteTotals;
     legs: RouteLeg[];
     snap_truncated: boolean;
-    /** A corridor alternative's shaping point: a request through the start, this point and the finish gives the same line. */
-    via?: Coordinate;
 }
 /** The calculated line of a plan. It is not part of the plan: the planner calculates it again from the plan's points. */
 export interface RoutingLine {
@@ -80,12 +73,8 @@ export interface RoutingLine {
     edges: Edges;
     stops: { id: string; distance: number }[];
     seconds: number;
-    /** The route of a line that is one routed run through all points of its plan; only such a line has alternatives. */
-    primary?: EngineRoute;
     profile: string;
     unknownSurfaceKm: number;
-    /** Ridden kilometres on gravel, dirt or rough surfaces, from the route service's totals. */
-    unpavedKm: number;
     pushingKm: number;
     unroutedKm: number;
     /** Ridden kilometres whose ascent is unknown; a transfer is not ridden, so it never counts. */
@@ -128,13 +117,11 @@ export function regionProfiles(): Promise<string[]> {
     })().catch(error => { region = undefined; throw error; });
 }
 
-/** With `'only'`, the answer leaves out the primary route and can be empty. */
-export async function requestRoute(points: Coordinate[], profile: string, signal: AbortSignal, alternatives: boolean | 'only' = false, turnarounds: number[] = [],
-    pins: { start_position?: string; end_position?: string } = {}): Promise<EngineRoute[]> {
-    const body = { points, profile, ...(alternatives === 'only' ? { alternatives_only: true } : { alternatives }), turnarounds, ...pins };
-    const routes = decodeRoutes(await post('/v1/route', body, signal) as Parameters<typeof decodeRoutes>[0]);
-    if (!routes.length && alternatives !== 'only') throw new Error('The routing service returned no route.');
-    return routes;
+export async function requestRoute(points: Coordinate[], profile: string, signal: AbortSignal, turnarounds: number[] = [],
+    pins: { start_position?: string; end_position?: string } = {}): Promise<EngineRoute> {
+    const [route] = decodeRoutes(await post('/v1/route', { points, profile, turnarounds, ...pins }, signal) as Parameters<typeof decodeRoutes>[0]);
+    if (!route) throw new Error('The routing service returned no route.');
+    return route;
 }
 
 /** Points that `/v1/route` routes along `line` (`specs/route-api.md`); a turnaround is an index into `points`. */
@@ -151,12 +138,6 @@ export async function requestShape(line: Coordinate[], profile: string): Promise
         || !Array.isArray(turnarounds) || !turnarounds.every(i => Number.isInteger(i) && i > 0 && i < points.length - 1))
         throw new Error('The routing service returned an invalid response.');
     return { points, turnarounds };
-}
-
-/** The primary route of the line of `trip`, then its alternatives. */
-export async function requestAlternatives(trip: Trip, primary: EngineRoute, signal: AbortSignal): Promise<EngineRoute[]> {
-    const points = orderedRoutePoints(trip).map(point => point.coordinate);
-    return [primary, ...await requestRoute(points, primary.profile, signal, 'only')];
 }
 
 export function profileId(trip: Trip): string {
@@ -179,7 +160,7 @@ export function routingKey(trip: Trip): string {
 export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCache): Promise<RoutingLine> {
     const points = orderedRoutePoints(trip);
     if (points.length < 2) throw new Error('Choose a start and finish to calculate a route.');
-    const result: RoutingLine = { coordinates: [], elevation: [], elapsed: [], edges: {}, stops: [], seconds: 0, profile: profileId(trip), unknownSurfaceKm: 0, unpavedKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0 };
+    const result: RoutingLine = { coordinates: [], elevation: [], elapsed: [], edges: {}, stops: [], seconds: 0, profile: profileId(trip), unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0 };
     // Seconds per kilometre on a manual leg or connector.
     const pace = 3600 / ridingProfiles[trip.bike ?? 'touring'].kmh;
     let distance = 0;
@@ -252,14 +233,11 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCa
                 if (point.turnaround && p < until) turnarounds.push(expanded.length - 1);
             }
         }
-        const canOfferAlternatives = i === 1 && until === points.length - 1 && !turnarounds.length;
         const route = await legs.route(expanded, turnarounds, result.profile, signal);
         result.package = route.package;
-        if (canOfferAlternatives) result.primary = route;
         const start = append(route.geometry, route.elevation, route.elapsed, route.edges);
         const lengths = cumulative(route.geometry);
         result.unknownSurfaceKm += route.totals.surface_m[0] / 1000;
-        result.unpavedKm += unpavedMetres(route.totals) / 1000;
         result.pushingKm += route.totals.pushing_m / 1000;
         result.unknownElevationKm += route.totals.unknown_elevation_m / 1000;
         for (let leg = 0; leg < route.legs.length; leg++) {

@@ -42,7 +42,7 @@
         {#if position !== null && current}
             <span class="detail"><span class="swatch" style:background={colors[current.surface]}></span>{current.surface}<b>{Math.round((data.shares.get(current.surface) ?? 0) * 100) || '<1'}% <span>of route</span></b><span class="access">{access}</span></span>
         {:else}
-            <span class="hint">{hasPushing ? `${pushingDistance} pushing · ` : ''}{visible.length ? 'Hover to inspect' : 'Surface unavailable'}</span>
+            <span class="hint">{[hasPushing && `${pushingDistance} pushing`, !visible.length && 'Surface unavailable'].filter(Boolean).join(' · ')}</span>
         {/if}
     </div>
     <span class="sr-only" id={helpId}>Use the arrow keys to inspect adjacent surface and access sections. Percentages refer to the whole route. {#if !walking}The Push strip marks sections where you must push your bike.{/if}</span>

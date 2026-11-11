@@ -43,7 +43,7 @@ pub fn respond(router: &mut Engine, call: &str, body: &[u8], cancelled: &AtomicB
         }
         if call == "route" {
             let request: Request = serde_json::from_slice(body).map_err(|_| invalid())?;
-            router.routes(&request, &control).map(|response| planner_router::answer::answer(&response))
+            router.route(&request, &control).map(|route| planner_router::answer::answer(&route))
         } else {
             let request: LineRequest = serde_json::from_slice(body).map_err(|_| invalid())?;
             planner_router::shape::answer(router, &request, control)

@@ -60,13 +60,6 @@ public actor LocalFirstPlanner: PlannerDataSource {
         }
     }
 
-    public func options(points: [Coordinate], activity: RouteActivity, preference: RoutePreference,
-                        release: PlannerRelease) async throws -> [RouteOption] {
-        try await routing(points, release: release) {
-            try await $0.options(points: points, activity: activity, preference: preference, release: $1)
-        }
-    }
-
     /// The first installed map that covers `points` answers `call`, else the online source.
     private func routing<T>(_ points: [Coordinate], release: PlannerRelease,
                             _ call: (any PlannerDataSource, PlannerRelease) async throws -> T) async throws -> T {
