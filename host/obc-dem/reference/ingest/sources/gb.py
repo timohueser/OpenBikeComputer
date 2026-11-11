@@ -4,7 +4,7 @@ England is the Environment Agency's LIDAR Composite DTM, one zip per 5 km square
 from the tiles endpoint that the agency's download portal uses. The endpoint is not documented,
 but the square's name is arithmetic and the pixels are those of Defra's WCS, which needs about
 nine requests where a square needs one. A square the agency does not publish answers an empty
-zip. The year in the URL and the attribution is the composite release, and the agency asks for
+zip, or a 404 outside its grid letters, such as OV off Kent. The year in the URL and the attribution is the composite release, and the agency asks for
 it verbatim. Change both when the composite is re-released.
 
 Scotland is the Scottish Public Sector LiDAR, every open survey of the Remote Sensing Portal.
@@ -166,7 +166,7 @@ class SquareZips(CogWindows):
 
     def square(self, name: str) -> Path | None:
         """The square's GeoTIFF, downloaded and unpacked if it is not here yet, or `None` for a
-        square the server answers with an empty zip."""
+        square the server does not publish."""
 
         raster, empty = self.folder / f"{name}.tif", self.folder / f"{name}.none"
         if not raster.exists() and not empty.exists():
@@ -178,8 +178,9 @@ class SquareZips(CogWindows):
 
     def unpack(self, name: str, raster: Path, empty: Path) -> None:
         archive = self.folder / f"{name}.zip"
-        if not archive.exists():
-            self.download(name, archive)
+        if not archive.exists() and not self.download(name, archive):
+            empty.touch()
+            return
         unpacked = self.folder / name
         try:
             with zipfile.ZipFile(archive) as bundle:
@@ -197,7 +198,9 @@ class SquareZips(CogWindows):
         shutil.rmtree(unpacked, ignore_errors=True)
         archive.unlink()
 
-    def download(self, name: str, archive: Path) -> None:
+    def download(self, name: str, archive: Path) -> bool:
+        """Whether the server holds the square: a 404 is a square outside its grid letters."""
+
         stopped, asked = self.folder / "stopped", self.folder / "asked"
         if stopped.exists():
             raise Refuse(f"{self.key}: the server refused this prepare ({stopped.read_text(encoding='utf-8').strip()}); "
@@ -206,7 +209,8 @@ class SquareZips(CogWindows):
             time.sleep(max(0.0, asked.stat().st_mtime + GAP - time.time()))
         asked.touch()
         try:
-            http_download(self.base + name, archive, what=f"{self.key} {name}", stop=(403, 429))
+            return http_download(self.base + name, archive, optional=True, what=f"{self.key} {name}",
+                                 stop=(403, 429)) is not None
         except Stopped as refusal:
             stopped.write_text(f"{refusal}\n", encoding="utf-8")
             raise

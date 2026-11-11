@@ -1167,6 +1167,28 @@ class EnglandSquares(TempCase):
         self.assertEqual(asked, ["/TF3010"])
 
 
+    def test_a_404_is_a_square_outside_the_grid_letters_and_asked_once(self):
+        asked = []
+
+        class Absent(SimpleHTTPRequestHandler):
+            def do_GET(self):
+                asked.append(self.path)
+                self.send_error(404)
+
+            def log_message(self, *args):
+                pass
+
+        server = serve(self, Absent)
+        source = gb_module.SquareZips("gb-eng", "England", "p", 1.0, "l", "Ordnance Datum Newlyn",
+                                      base=f"http://127.0.0.1:{server.server_address[1]}/")
+        source.shared = self.root / "shared"
+        box = (-0.0400, 52.6980, -0.0300, 52.7020)  # in TF3010 alone
+        self.assertEqual(source.fetch(box, self.root / "a"), [])
+        self.assertEqual(source.fetch(box, self.root / "b"), [])
+        self.assertTrue((source.shared / "gb-eng" / "TF3010.none").exists())
+        self.assertEqual(asked, ["/TF3010"])
+
+
 class Slovakia(unittest.TestCase):
     """The one service of ellipsoidal heights, and the one envelope stated northing first."""
 
