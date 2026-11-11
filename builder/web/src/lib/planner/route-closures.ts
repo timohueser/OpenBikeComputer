@@ -60,12 +60,12 @@ const phrases: Record<Warning, (conditions: string[]) => string> = {
     farm: () => 'Farm or forest traffic only',
     discouraged: () => 'Access discouraged',
     limited: values => groups(values).join() === 'customers' ? 'Customers only' : `Only for ${groups(values).join(' or ')}`,
-    seasonal: conditions => `May be closed seasonally${listed(conditions.map(dates))}`,
+    seasonal: conditions => `May be closed ${conditions.length ? [...new Set(conditions.map(dates))].join(', ') : 'seasonally'}`,
     conditional: conditions => `May be closed${listed(conditions.map(condition => condition.replace(/\s*-\s*/g, '–')))}`,
     unclear: values => `Access unclear${listed(values)}`,
 };
 
-/** The phrases of one stretch, such as "Permit needed · May be closed seasonally (Nov–May)". */
+/** The phrases of one stretch, such as "Permit needed · May be closed Nov–May". */
 export function closureLabel(stretch: ClosureStretch): string {
     const conditions = new Map<Warning, Set<string>>();
     for (const { kind, condition } of stretch.closures) {
