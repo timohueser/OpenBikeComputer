@@ -205,6 +205,11 @@
     const pickerNight = $derived(!multi || !currentRoute || searching ? null
         : expandedDay !== null ? (night < evenDays.length && (!evenDays[night - 1]?.pinned || choosingNight === night) ? night : null)
         : nightPage);
+    // A night that the plan no longer has must not open again when a later change brings its day back. A route that is
+    // still calculated keeps the night, so the page stays open while it is recalculated.
+    $effect(() => {
+        if (currentRoute && choosingNight !== null && choosingNight >= evenDays.length) untrack(stopChoosing);
+    });
     // Towns are searched for every night still to choose, so the ladder can suggest a place for each.
     const stopWindows = $derived(multi ? nightWindows(trip, session.line, pickerNight) : {});
     const routeKey = $derived(routingKey(trip));
@@ -577,11 +582,8 @@
 
     /** Keeps the day the rider works on after the number of days changed. */
     function clampNight() {
-        const days = planView(trip, session.line).days.length;
-        night = Math.max(1, Math.min(night, days));
+        night = Math.max(1, Math.min(night, planView(trip, session.line).days.length));
         if (expandedDay !== null) expandedDay = night;
-        // A night that is gone must not open again when its day comes back.
-        if (choosingNight !== null && choosingNight >= days) stopChoosing();
     }
 
     function afterHistory(description: string) {
