@@ -203,6 +203,10 @@ pub struct Receipt {
     pub files: Vec<LayerFile>,
     /// `YYYY-MM-DDTHH:MM:SSZ`
     pub built: String,
+    /// When the last run that read or built a layer of a cache layer ended: a collection keeps the
+    /// one that a run used last.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub used: Option<String>,
     pub wall_ms: u64,
     pub cpu_ms: Option<u64>,
     pub peak_rss_bytes: Option<u64>,
@@ -675,6 +679,7 @@ fn prepare(store: &Store, step: &Step, layers: &HashMap<&str, Output>) -> Result
         digest: String::new(),
         files: Vec::new(),
         built: String::new(),
+        used: None,
         wall_ms: 0,
         cpu_ms: None,
         peak_rss_bytes: None,

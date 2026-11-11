@@ -669,6 +669,7 @@ impl<'a> Job<'a> {
             digest: String::new(),
             files: Vec::new(),
             built: crate::date::timestamp(crate::date::now()),
+            used: None,
             wall_ms: usage.wall_ms,
             cpu_ms: usage.cpu_ms,
             peak_rss_bytes: usage.peak_rss_bytes,
