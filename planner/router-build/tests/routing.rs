@@ -228,15 +228,20 @@ fn coordinate(road: &Road, fraction: f64) -> [f64; 2] {
 fn prepared_coordinate_routes_match_independent_arrival_road_search() {
     let original = with_sources(fixture());
     let mut graph = original.clone();
-    let order = planner_router_build::layout::order(&mut graph, None).unwrap();
+    let order = planner_router_build::layout::order(&mut graph, &[4, 8], None).unwrap();
     let order = order.values();
+    // `with_sources` gives junction `i` the node ID `i`, so the node IDs give the new junction IDs.
+    let mut rank = vec![0; graph.points.len()];
+    for (new, &old) in graph.node_ids.values().iter().enumerate() {
+        rank[old as usize] = new as u32;
+    }
     let (reordered, original_roads) = (roads(&graph), roads(&original));
     for (new, &old) in order.iter().enumerate() {
-        assert_eq!(
-            serde_json::to_value(&reordered[new]).unwrap(),
-            serde_json::to_value(&original_roads[old as usize]).unwrap()
-        );
+        let mut road = original_roads[old as usize].clone();
+        (road.from, road.to) = (rank[road.from as usize], rank[road.to as usize]);
+        assert_eq!(serde_json::to_value(&reordered[new]).unwrap(), serde_json::to_value(&road).unwrap());
     }
+    check_cells(&graph);
     for (actual, expected) in
         [(&graph.forbidden, &original.forbidden), (&graph.forbidden_foot, &original.forbidden_foot)]
     {
@@ -530,12 +535,64 @@ fn a_window_pinned_to_its_neighbour_legs_repeats_the_whole_trip() {
     assert_eq!(router.route(&foreign, &Control::default()).unwrap().points, route.points);
 }
 
-/// Orders the roads of `graph` with the heights of `height`, and returns the old ID of each road.
-/// The tests drop roads, so the turn rules of `fixture` go.
+/// Checks the cells of an ordered graph against a direct scan: the cell of each road, its border
+/// level, the entering roads first in each level-1 cell, and the leaving lists.
+fn check_cells(graph: &Graph) {
+    let cells = &graph.cells;
+    let (level1, counts) = (cells.level1.values(), cells.counts.values());
+    let levels = cells.levels();
+    assert!(levels >= 2, "the fixture has two levels");
+    // The level-`level` cell of each junction, from the first junctions of the cells.
+    let cell = |level: usize, junction: u32| {
+        let level1 = (0..level1.len() - 1).find(|&c| level1[c][0] <= junction && junction < level1[c + 1][0]).unwrap();
+        if level == 1 {
+            return level1;
+        }
+        let start: usize = counts[1..level - 1].iter().map(|&n| n as usize + 1).sum();
+        let upper = &cells.upper.values()[start..=start + counts[level - 1] as usize];
+        (0..counts[level - 1] as usize)
+            .find(|&c| upper[c] as usize <= level1 && level1 < upper[c + 1] as usize)
+            .unwrap()
+    };
+    let mut global = 0;
+    for level in 1..=levels {
+        for c in 0..counts[level - 1] as usize {
+            let leaving: Vec<u32> = (0..graph.roads.len() as u32)
+                .filter(|&road| {
+                    let (from, to) = (graph.roads.from(road as usize), graph.roads.to(road as usize));
+                    cell(level, from) == c && cell(level, to) != c
+                })
+                .collect();
+            let first = cells.leaving_first.values();
+            assert_eq!(&cells.leaving.values()[first[global] as usize..first[global + 1] as usize], leaving);
+            global += 1;
+        }
+    }
+    for road in 0..graph.roads.len() {
+        let (from, to) = (graph.roads.from(road), graph.roads.to(road));
+        let c = cell(1, to);
+        assert!((level1[c][1] as usize..level1[c + 1][1] as usize).contains(&road), "road {road} in its cell");
+        let border = (1..=levels).filter(|&level| cell(level, from) != cell(level, to)).max().unwrap_or(0);
+        assert_eq!(cells.border.values()[road] as usize, border, "road {road}");
+    }
+    for c in 0..level1.len() - 1 {
+        let border = &cells.border.values()[level1[c][1] as usize..level1[c + 1][1] as usize];
+        assert!(border.is_sorted_by(|a, b| a >= b), "the entering roads come first in cell {c}");
+    }
+}
+
+/// Orders the roads of `graph` in one cell with the heights of `height`, and returns the old ID of
+/// each road. The tests drop roads, so the turn rules of `fixture` go.
 fn order_with_terrain(graph: &mut Graph, mut height: impl FnMut(Point) -> Result<Option<f64>, String>) -> Vec<u32> {
     graph.forbidden = Default::default();
     graph.forbidden_foot = Default::default();
-    planner_router_build::layout::order(graph, Some(&mut height)).unwrap().values().to_vec()
+    let junctions = graph.points.len();
+    graph.node_ids = (0..junctions as i64).collect();
+    graph.node_access = std::iter::repeat_n(0, junctions).collect();
+    graph.signals = std::iter::repeat_n(0, junctions).collect();
+    graph.node_doubts = std::iter::repeat_n(0, junctions).collect();
+    graph.node_closures = std::iter::repeat_n(u32::MAX, junctions).collect();
+    planner_router_build::layout::order(graph, &[4096], Some(&mut height)).unwrap().values().to_vec()
 }
 
 #[test]

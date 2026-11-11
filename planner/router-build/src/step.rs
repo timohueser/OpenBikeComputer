@@ -37,6 +37,18 @@ fn list(options: &Value, name: &str) -> Result<Vec<String>, String> {
         .collect()
 }
 
+/// The option `cell_sizes`: the largest number of junctions in a cell of level 1, 2, ….
+fn cell_sizes(options: &Value) -> Result<Vec<u32>, String> {
+    let values = options["cell_sizes"].as_array().ok_or("option `cell_sizes` is not a list")?;
+    let sizes = values
+        .iter()
+        .map(|value| value.as_u64().and_then(|size| u32::try_from(size).ok()))
+        .collect::<Option<Vec<_>>>()
+        .ok_or("option `cell_sizes` lists a value that is not a 32-bit count")?;
+    crate::partition::check_sizes(&sizes)?;
+    Ok(sizes)
+}
+
 /// Starts the memory guard, and reads the page budget first, so that a bad value fails before the
 /// work.
 fn start() -> Result<Guard, String> {
@@ -112,11 +124,13 @@ pub fn source(request: &Request) -> Result<(), String> {
 
 /// The roads step. It reads the source layer, the GLO-30 tiles of its bounds and, when the request
 /// has it, the layer `planner/reference`: the heights of the planner terrain without its shapes.
-/// The options are `bounds` and `terrain_attribution`, the credit of GLO-30. The layer `roads/`
-/// holds the junctions, the roads in their final order with their heights, the forbidden turns,
-/// the closure sets with those of the roads, the topology (`first`, `head`), and `roads.json`: the
+/// The options are `bounds`, `terrain_attribution`, the credit of GLO-30, and `cell_sizes`
+/// (`partition::check_sizes`). The layer `roads/` holds the junctions and the roads in their final
+/// order, the roads with their heights, the cells (`partition::Cells`), the forbidden turns, the
+/// closure sets with those of the roads, the topology (`first`, `head`), and `roads.json`: the
 /// warnings of the manifest and the identities of its inputs, the OSM files and then the terrain.
 pub fn roads(request: &Request) -> Result<(), String> {
+    let sizes = cell_sizes(&request.options)?;
     let _guard = start()?;
     Guard::stage("import");
     let bounds = obc_dem::step::bounds(&request.options)?;
@@ -131,7 +145,7 @@ pub fn roads(request: &Request) -> Result<(), String> {
     eprintln!("Building the roads");
     let mut recent = Recent::default();
     let mut height = |point: Point| terrain.height(point.lat, point.lon, &mut recent);
-    let mut graph = crate::osm::roads(source, Some(&mut height))?;
+    let mut graph = crate::osm::roads(source, &sizes, Some(&mut height))?;
     crate::check_closures(&graph)?;
     let mut warnings = std::mem::take(&mut graph.warnings);
     warnings.retain(|w| !w.starts_with("No DEM applied"));

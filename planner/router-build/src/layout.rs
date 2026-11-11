@@ -2,17 +2,22 @@
 //! roads are copied once into their final columns.
 
 use crate::column::Column;
+use crate::partition::{self, Partition};
 use crate::terrain::Height;
 use crate::{sort, Graph, RoadSource, Roads};
-use planner_router::model::{Point, Road};
+use planner_router::model::Road;
 
-/// The Morton key of a road's arrival point: nearby arrival states share graph, cost and geometry
-/// pages.
-pub fn spatial_key(point: Point) -> Result<u64, String> {
-    if point.lon.unsigned_abs() > 180_000_000 || point.lat.unsigned_abs() > 85_000_000 {
-        return Err("Road coordinate outside supported bounds".into());
-    }
-    Ok(spread((point.lon as i64 + 180_000_000) as u64) | (spread((point.lat as i64 + 90_000_000) as u64) << 1))
+/// The order key of a road between the walk-1 junctions `from` and `to`: its level-1 cell, which
+/// is that of its arrival junction, then its border level, highest first, then its arrival
+/// junction. So the roads of a cell are one range, and its entering border roads of each level
+/// come first.
+pub fn partition_key(from: u32, to: u32, partition: &Partition) -> u64 {
+    let rank = partition.rank.values();
+    let (from, to) = (rank[from as usize], rank[to as usize]);
+    let cells = &partition.cells;
+    let cell = cells.cell(to);
+    let first = cells.level1.values()[cell][0];
+    (cell as u64) << 32 | u64::from(255 - cells.border(from, to)) << 24 | u64::from(to - first)
 }
 
 /// `key(from, to)` of each road of `ends`, in emit order.
@@ -80,19 +85,22 @@ impl Buckets {
     }
 }
 
-/// Puts the roads of a graph that a test builds in memory into the order of the bake, with the
-/// heights of `terrain`, and the turn rules onto the new road IDs. The bake orders its roads in
-/// the import. Returns the old ID of each road.
-pub fn order(graph: &mut Graph, terrain: Option<Height>) -> Result<Column<u32>, String> {
+/// Puts the junctions and the roads of a graph that a test builds in memory into the order of the
+/// bake, with cells of at most `sizes` junctions and the heights of `terrain`, and the turn rules
+/// onto the new road IDs. The bake orders its roads in the import. Returns the old ID of each road.
+pub fn order(graph: &mut Graph, sizes: &[u32], terrain: Option<Height>) -> Result<Column<u32>, String> {
+    partition::check_sizes(sizes)?;
     let old = std::mem::take(&mut graph.roads);
-    let keys = (0..old.len())
-        .map(|road| spatial_key(*old.shape(road).last().ok_or("Road lacks geometry")?))
-        .collect::<Result<Column<_>, String>>()?;
+    let ends = (0..old.len()).map(|road| (old.from(road), old.to(road))).collect();
+    let partition = partition::partition(&graph.points, &ends, sizes)?;
+    let keys = keys(&ends, |from, to| Ok(partition_key(from, to, &partition)))?;
     let points = old.shapes.values().len() as u64;
     let mut buckets = Buckets::new(bounds(&keys, bucket_count(old.len() as u64, points)?));
+    let rank = partition.rank.values();
     for (id, &key) in keys.values().iter().enumerate() {
         let mut road = Road::default();
         old.get(id, &mut road);
+        (road.from, road.to) = (rank[road.from as usize], rank[road.to as usize]);
         buckets.push(road, RoadSource { way_row: old.way_row(id), closures: old.closures(id) }, key)?;
     }
     drop(old);
@@ -110,22 +118,18 @@ pub fn order(graph: &mut Graph, terrain: Option<Height>) -> Result<Column<u32>, 
         }
         turns.sort_unstable();
     }
+    graph.permute_junctions(&partition.order)?;
+    let mut cells = partition.cells;
+    cells.finish(&graph.roads)?;
+    graph.cells = cells;
     Ok(order)
-}
-
-fn spread(mut value: u64) -> u64 {
-    value = (value | value << 16) & 0x0000ffff0000ffff;
-    value = (value | value << 8) & 0x00ff00ff00ff00ff;
-    value = (value | value << 4) & 0x0f0f0f0f0f0f0f0f;
-    value = (value | value << 2) & 0x3333333333333333;
-    (value | value << 1) & 0x5555555555555555
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::terrain;
-    use planner_router::model::NO_ELEVATION;
+    use planner_router::model::{Point, NO_ELEVATION};
 
     #[test]
     fn buckets_give_the_order_of_one_sort() {
