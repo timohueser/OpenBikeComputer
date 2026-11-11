@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -129,7 +129,13 @@ fn spawn(
     command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(log.try_clone().map_err(|e| e.to_string())?);
     let mut child = command.spawn().map_err(|e| format!("cannot start a worker: {e}"))?;
     let mut stdin = child.stdin.take().expect("a piped stdin");
-    writeln!(stdin, "{}", job.to_line()).map_err(|e| format!("the job of a worker: {e}"))?;
+    // A worker that ends before it reads its job closes the pipe: the run counts it as a worker that
+    // ended before its first cell, so a broken pipe is not an error.
+    if let Err(e) = writeln!(stdin, "{}", job.to_line()) {
+        if e.kind() != ErrorKind::BrokenPipe {
+            return Err(format!("the job of a worker: {e}"));
+        }
+    }
     drop(stdin);
     let stdout = child.stdout.take().expect("a piped stdout");
     let tx = tx.clone();

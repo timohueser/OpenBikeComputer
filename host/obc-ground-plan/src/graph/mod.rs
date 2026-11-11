@@ -21,7 +21,9 @@ use crate::sections::{Reach, Sections};
 use crate::CellInput;
 
 pub use crossings::end_on_chord;
-pub use curve::{point, s_at, u_at, SpanPoint};
+pub use curve::{
+    curve_point, folds, off_chord, point, s_at, u_at, water_grades, water_spans, water_tangents, SpanPoint,
+};
 
 /// The coarsest sample step: the grid of level l is `BASE_STEP_M / 2^l` along a span.
 pub const BASE_STEP_M: f64 = 16.0;
@@ -132,7 +134,13 @@ pub struct Span {
     pub along0_m: f64,
     /// The span is its chord with linear heights: no alignment, or a folded span.
     pub chord: bool,
-    /// The heights run linear along the arc between the vertices: the levels of water.
+    /// The tangent angles at its start and its end: its vertices', or for water `water_spans`'s.
+    pub ends: [f64; 2],
+    /// The length of the end tangents as a share of the chord: 1, or less where a water curve would
+    /// leave its chord too far.
+    pub handle: f64,
+    /// The heights run along the arc between the vertices, a cubic of their levels and grades: the levels
+    /// of water (`water_grades`).
     pub linear_z: bool,
     /// The zoom-13 tile (column, row) that owns the span, and the feature's position in that tile.
     pub owner: [u32; 3],

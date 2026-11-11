@@ -4,6 +4,7 @@
 // `rule()` and `noise()` of look.wgsl: an include composes each file once.
 // #include ../terrain/features.wgsl
 // #include look.wgsl
+// #include ../roads/look-codes.wgsl
 
 // The look of the one road model (`ground=plan`): the paint and the ground terms of the stamp's textures, as
 // model_road draws them, and the rock of its steep cuts (look.wgsl). The terrain and the pieces set it on that path.
@@ -53,6 +54,8 @@ const CODE_PATH: u32 = 6u;
 const CODE_ONEWAY: u32 = 7u;
 // Paving lies in square slabs of SLAB_M; their joints show only near the eye.
 const SLAB_M: f32 = 0.6;
+// A track's top narrower than this on each side carries two concrete strips on its own surface.
+const STRIPS_HALF_M: f32 = 2.2;
 
 // The tracks, from RAIL_CODE on as SURFACES of bins.ts: standard and narrow gauge, each without and with
 // a rack. A track painted where nothing counts its sleepers, on a deck or in a bore, takes NO_SLEEPERS
@@ -132,6 +135,38 @@ fn paving(region: u32, p: vec2f, w: f32) -> vec3f {
         c *= 1.0 + near * (0.08 * (hash(floor(slab)) - 0.5) - 0.15 * band(joint, -0.008, 0.008, w));
     }
     return c;
+}
+
+// The share of a pixel `cross_w` metres wide on a track's concrete strips, `across` metres from its middle.
+fn on_strips(across: f32, cross_w: f32) -> f32 {
+    return band(abs(across), 0.48, 1.03, cross_w);
+}
+
+// The broad tones of concrete and of pavers, about 1: their looks in roads/looks.wgsl and material_top share them.
+fn concrete_tone(p: vec2f) -> f32 {
+    return 0.975 + 0.035 * noise(p / 11.0) + 0.02 * noise(p / 43.0 + 7.0);
+}
+
+fn pavers_tone(p: vec2f) -> f32 {
+    return 0.97 + 0.06 * noise(p / 4.0);
+}
+
+// The base colour of a way's top of a material (MATERIAL_ of look-codes.wgsl): the colour of its look in
+// roads/looks.wgsl far off, where its joints and courses fade to their mean. Narrow strips lie on the colour of
+// the way's code.
+fn material_top(region: u32, material: u32, code: u32, across: f32, half: f32, p: vec2f, cross_w: f32) -> vec3f {
+    if (material == MATERIAL_SETT) {
+        return rule(region, slot_setts()).rgb;
+    }
+    if (material == MATERIAL_PAVERS) {
+        return rule(region, slot_roads() + i32(PAVING_CODE) - 1).rgb * pavers_tone(p);
+    }
+    let tone = concrete_tone(p);
+    let concrete = rule(region, slot_concrete()).rgb * tone;
+    if (material == MATERIAL_STRIPS && half <= STRIPS_HALF_M) {
+        return mix(rule(region, slot_roads() + i32(code) - 1).rgb * tone, concrete, on_strips(across, cross_w));
+    }
+    return concrete;
 }
 
 // A road's surface with its sidewalk, `walk` metres wide past its edge, at `edge` metres out from the edge:
@@ -239,18 +274,21 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, 
     let shaped = reach * (1.0 - smoothstep(0.75 * shaped_m, shaped_m, edge - walk));
     // The bench reaches a metre past the edge: the band and a texel of the heights about it.
     let bench = select(0.0, reach * (1.0 - smoothstep(0.75, 1.25, edge)), half < PATH_HALF_M);
-    return mask_paint(mask, ds, p, w, distance, region, pixel, flat, reach, vec3f(wall, shaped, bench));
+    return mask_paint(mask, 0u, ds, p, w, distance, region, pixel, flat, reach, vec3f(wall, shaped, bench));
 }
 
-// The paint of the road that a mask holds at a point, over the ground terms (wall, shaped, bench), faded by `reach`.
-fn mask_paint(mask: Mask, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, pixel: vec2f, flat: f32, reach: f32, ground: vec3f) -> Road {
+// The paint of the road that a mask holds at a point, its top of `material` (0 for its finish's own), over the ground
+// terms (wall, shaped, bench), faded by `reach`.
+fn mask_paint(mask: Mask, material: u32, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, pixel: vec2f, flat: f32, reach: f32, ground: vec3f) -> Road {
     var edge = mask.edge;
     let walk = mask.walk;
     if (mask.kind.x == 0u || edge - walk > w + 0.5) {
         return Road(vec3f(0.0), 0.0, 0.0, ground.x, ground.y, ground.z);
     }
     let code = mask.kind.x;
-    let paved = code <= 2u || code == 7u || code == PAVING_CODE;
+    // As line_look: a track and paving keep their own looks, and a top of a material is paved whatever its code.
+    let top = select(material, 0u, code == PAVING_CODE || code >= RAIL_CODE);
+    let paved = code <= 2u || code == 7u || code == PAVING_CODE || top != 0u;
     let half = max(mask.half, 0.05);
     let across = abs(mask.across);
     // The pixel's span across the road: far off, a pixel is long along the view and narrow across it,
@@ -260,7 +298,10 @@ fn mask_paint(mask: Mask, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: 
     let ahead = vec2f(-mask.axis.y, mask.axis.x);
     let along_w = select(w, max(length(vec2f(dot(ds[0], ahead), dot(ds[1], ahead))), 1e-3), known);
     var surface = road_surface(region, code, max(-edge, 0.0), across, half, select(NO_SLEEPERS, mask.sleepers, code >= RAIL_CODE), p, w, cross_w, along_w, mask.marked);
-    if (code >= CODE_DIRT && code <= CODE_PATH) {
+    if (top != 0u) {
+        surface = vec4f(material_top(region, top, code, across, half, p, cross_w), 0.0);
+    }
+    if (code >= CODE_DIRT && code <= CODE_PATH && !paved) {
         surface.w = mix(surface.w, ground_mean(code, half, mask.trodden), smoothstep(0.1, 0.4, cross_w));
     }
     if (walk > 0.0) {
@@ -296,7 +337,9 @@ fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u3
     if (mask.level == 0u || mask.kind.x == 0u || mask.edge > w + 0.5) {
         return Road(vec3f(0.0), 0.0, 0.0, ground.x, ground.y, ground.z);
     }
-    return mask_paint(mask_in(paint_texels, s, mask.level, mask.page, true), ds, p, w, distance, region, pixel, flat, reach, ground);
+    // Its `kind.y` is the material of the way's top, not flags (Mask).
+    let paint = mask_in(paint_texels, s, mask.level, mask.page, true);
+    return mask_paint(paint, paint.kind.y, ds, p, w, distance, region, pixel, flat, reach, ground);
 }
 
 // The share of the one road model's look at a LOD and a distance: it fades out before the reach of the mask pool.

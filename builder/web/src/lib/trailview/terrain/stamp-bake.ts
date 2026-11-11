@@ -10,8 +10,9 @@ import { STRUCTURE_VERTEX } from '../structures/mesh';
 import { ANCHORED_VERTEX } from '../structures/anchored';
 import type { NodeMeshes } from '../structures/node';
 import type { NodeFeatures } from './stamps';
+import type { Request } from './stamp-worker';
 
-const worker = self as unknown as { onmessage: (event: { data: unknown }) => void; postMessage: (message: { result?: NodeFeatures; error?: string }) => void };
+const worker = self as unknown as { onmessage: (event: { data: unknown }) => void; postMessage: (message: { result?: unknown; error?: string }) => void };
 
 /** The nodes that read feature tile `tile` and that the layer holds: the BAKED levels, and the owner level for its structure meshes. */
 function nodesOf(tile: Node): Node[] {
@@ -21,13 +22,17 @@ function nodesOf(tile: Node): Node[] {
     return Array.from({ length: side * side }, (_, i) => ({ level, x: tile.x * side + (i % side), y: tile.y * side + Math.floor(i / side) }));
 }
 
-/** What the stamp worker posts for `node` with the ground plan. */
-export function stamps(tile: Node, node: Node, body: ArrayBuffer): Promise<NodeFeatures> {
+/** What the stamp worker posts for a job of `node` with the ground plan. */
+function posted<T>(what: Request, tile: Node, node: Node, body: ArrayBuffer): Promise<T> {
     return new Promise((resolve, reject) => {
-        worker.postMessage = ({ result, error }) => (error === undefined ? resolve(result!) : reject(new Error(error)));
-        worker.onmessage({ data: { id: 0, tile, node, body, what: 'stamps', plan: true } });
+        worker.postMessage = ({ result, error }) => (error === undefined ? resolve(result as T) : reject(new Error(error)));
+        worker.onmessage({ data: { id: 0, tile, node, body, what, plan: true } });
     });
 }
+
+/** The stamps of `node`, and the structure meshes of an owner node, as the stamp worker posts them. */
+export const stamps = (tile: Node, node: Node, body: ArrayBuffer) => posted<NodeFeatures>('stamps', tile, node, body);
+export const meshes = (tile: Node, node: Node, body: ArrayBuffer) => posted<NodeMeshes>('meshes', tile, node, body);
 
 const code = (values: Uint32Array) => MeshoptEncoder.encodeIndexSequence(new Uint8Array(values.buffer, values.byteOffset, values.byteLength), values.length, 4);
 
@@ -75,15 +80,17 @@ export async function bakeTile(tile: Node, body: ArrayBuffer): Promise<[Node, Ui
     const out: [Node, Uint8Array][] = [], empty = encodeNode(EMPTY_MESHES);
     let mask = 0;
     for (const [k, node] of nodesOf(tile).entries()) {
-        const result = await stamps(tile, node, body), middle: [number, number] = [(node.x + 0.5) * size(node.level), (node.y + 0.5) * size(node.level)];
+        const middle: [number, number] = [(node.x + 0.5) * size(node.level), (node.y + 0.5) * size(node.level)];
         if (node.level !== OWNER) {
+            const result = await stamps(tile, node, body);
             out.push([node, encodeNode({ ...result, water: result.water && packMesh(result.water, 4 * WATER_VERTEX, middle) })]);
             continue;
         }
-        const meshes = encodeNode(result.meshes);
-        if (meshes.length === empty.length && meshes.every((byte, i) => byte === empty[i])) continue;
+        // The layer holds an owner node's structure meshes alone: the bake asks for no other job of it.
+        const made = await meshes(tile, node, body), bytes = encodeNode(made);
+        if (bytes.length === empty.length && bytes.every((byte, i) => byte === empty[i])) continue;
         mask |= 1 << k;
-        out.push([node, encodeNode(packMeshes(result.meshes!, middle))]);
+        out.push([node, encodeNode(packMeshes(made, middle))]);
     }
     if (tile.level === DEEPEST) out.push([tile, new Uint8Array(new Uint16Array([mask]).buffer)]);
     return out;
