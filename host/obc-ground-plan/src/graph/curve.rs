@@ -2,7 +2,9 @@
 //! the cell lines, and its samples on a dyadic grid of span metres.
 
 use super::parts::Rule;
-use super::{Part, Sample, SampleKind, Span, Vertex, BASE_STEP_M, KNOTS, LEVELS, MIN_STEP_M, ROOT_STEPS, SPIKE_DEG};
+use super::{
+    Part, Sample, SampleKind, Span, Vertex, BASE_STEP_M, KNOTS, LEVELS, MIN_STEP_M, NEWTON_STEPS, ROOT_STEPS, SPIKE_DEG,
+};
 use crate::frame::{metres_per_unit, CellKey, CELL_UNITS};
 
 /// A point of a span's curve.
@@ -97,7 +99,7 @@ impl Geo {
 /// the bisector of its unit chords to the nearest other points, which leans to neither chord's length;
 /// at an end its one chord. A point where the water turns by more than `turn_max_deg` (at most
 /// `SPIKE_DEG`) is a corner. The reader and the bake's added water vertices share this curve.
-pub fn water_tangents(points: &[[f64; 2]], turn_max_deg: f64) -> Vec<(f64, bool)> {
+pub(crate) fn water_tangents(points: &[[f64; 2]], turn_max_deg: f64) -> Vec<(f64, bool)> {
     let cos_max = libm::cos(turn_max_deg.min(SPIKE_DEG).to_radians());
     let unit = |a: [f64; 2], b: [f64; 2]| {
         let d = [b[0] - a[0], b[1] - a[1]];
@@ -121,13 +123,8 @@ pub fn water_tangents(points: &[[f64; 2]], turn_max_deg: f64) -> Vec<(f64, bool)
     (0..points.len()).map(tangent).map(|(t, corner)| (libm::atan2(t[1], t[0]), corner)).collect()
 }
 
-/// The point at u of the curve of a span with chord `d` and tangent angles t0 and t1, from its start.
-pub fn curve_point(d: [f64; 2], t0: f64, t1: f64, u: f64) -> [f64; 2] {
-    curve(d, t0, t1, 1.0).eval(u)[0]
-}
-
 /// The most that this curve leaves its chord, in the units of `d`, at 32 steps of u.
-pub fn off_chord(d: [f64; 2], t0: f64, t1: f64) -> f64 {
+pub(crate) fn off_chord(d: [f64; 2], t0: f64, t1: f64) -> f64 {
     let g = curve(d, t0, t1, 1.0);
     let unit = [g.d[0] / g.c, g.d[1] / g.c];
     let off = |j: u32| {
@@ -144,7 +141,7 @@ pub fn off_chord(d: [f64; 2], t0: f64, t1: f64) -> f64 {
 /// takes that chord's direction, so the outline turns smoothly there; where the curve then leaves its
 /// chord by more than `off_max_m`, its tangents shorten until it leaves by that much. The curve's
 /// distance from its chord scales with the handle.
-pub fn water_spans(
+pub(crate) fn water_spans(
     points: &[[f64; 2]],
     tangents: &[(f64, bool)],
     metres: impl Fn([f64; 2], [f64; 2]) -> f64,
@@ -181,8 +178,8 @@ pub fn water_spans(
 
 /// The grades (rise per metre) of water at `points` with levels `z` along its line: the harmonic mean of
 /// the grades of its two chords where they fall the same way, else 0, and at an end or beside an unknown
-/// level its one chord's. Heights between two vertices then follow a cubic through their levels and
-/// grades, which never rises past either level and turns smoothly at a vertex.
+/// level its one chord's. Heights between two vertices then follow `water_level`, which never rises past
+/// either level and turns smoothly at a vertex.
 pub fn water_grades(points: &[[f64; 2]], z: &[Option<f64>], metres: impl Fn([f64; 2], [f64; 2]) -> f64) -> Vec<f64> {
     let chord = |k: usize| match (z[k], z[k + 1]) {
         (Some(a), Some(b)) => {
@@ -206,8 +203,81 @@ pub fn water_grades(points: &[[f64; 2]], z: &[Option<f64>], metres: impl Fn([f64
         .collect()
 }
 
+/// The level of water and its grade at share t of the arc of a span `len_m` long, between the levels
+/// `z` and the grades `grade` (`water_grades`) of its vertices: the cubic Hermite of both.
+pub fn water_level(z: [f64; 2], grade: [f64; 2], len_m: f64, t: f64) -> (f64, f64) {
+    let (t2, t3) = (t * t, t * t * t);
+    let h = [2.0 * t3 - 3.0 * t2 + 1.0, t3 - 2.0 * t2 + t, 3.0 * t2 - 2.0 * t3, t3 - t2];
+    let dh = [6.0 * t2 - 6.0 * t, 3.0 * t2 - 4.0 * t + 1.0, 6.0 * t - 6.0 * t2, 3.0 * t2 - 2.0 * t];
+    let at = |w: [f64; 4]| w[0] * z[0] + w[1] * len_m * grade[0] + w[2] * z[1] + w[3] * len_m * grade[1];
+    (at(h), at(dh) / len_m)
+}
+
+/// Per span of water through `points` its curve (`water_tangents`, `water_spans`), from the span's start,
+/// with `metres` per unit of a span from its two points.
+pub fn water_curves(
+    points: &[[f64; 2]],
+    turn_max_deg: f64,
+    off_max_m: f64,
+    metres: impl Fn([f64; 2], [f64; 2]) -> f64,
+) -> Vec<WaterCurve> {
+    let shapes = water_spans(points, &water_tangents(points, turn_max_deg), metres, off_max_m);
+    let chord = |w: &[[f64; 2]]| [w[1][0] - w[0][0], w[1][1] - w[0][1]];
+    points.windows(2).zip(shapes).map(|(w, shape)| WaterCurve::new(chord(w), shape)).collect()
+}
+
+/// The curve of a span of water with chord `d` and its shape from `water_spans` (None: its chord), in the
+/// units of `d`, with its arc measured as a span's knots measure it.
+pub struct WaterCurve {
+    g: Geo,
+    len: f64,
+    knots: [f64; KNOTS + 1],
+}
+
+impl WaterCurve {
+    fn new(d: [f64; 2], shape: Option<([f64; 2], f64)>) -> WaterCurve {
+        let g = match shape {
+            Some((ends, handle)) => curve(d, ends[0], ends[1], handle),
+            None => Geo { chord: true, ..curve(d, 0.0, 0.0, 1.0) },
+        };
+        let (len, knots) = arc(&g);
+        WaterCurve { g, len, knots }
+    }
+
+    /// The length of its arc in the units of `d`.
+    pub fn length(&self) -> f64 {
+        self.len
+    }
+
+    /// The point at a share of its arc's length, from its start.
+    pub fn at_share(&self, share: f64) -> [f64; 2] {
+        self.g.eval(u_of(&self.knots, self.len, share * self.len))[0]
+    }
+
+    /// The share of its arc's length at the point nearest to `p` (from its start), from a first share:
+    /// the Newton steps of the reader's foot of a point on a span.
+    pub fn share_near(&self, p: [f64; 2], share: f64) -> f64 {
+        let mut u = u_of(&self.knots, self.len, share * self.len);
+        for _ in 0..NEWTON_STEPS {
+            let [q, d, dd] = self.g.eval(u);
+            let v = [q[0] - p[0], q[1] - p[1]];
+            let f = v[0] * d[0] + v[1] * d[1];
+            let df = d[0] * d[0] + d[1] * d[1] + v[0] * dd[0] + v[1] * dd[1];
+            if df <= 0.0 {
+                break;
+            }
+            u = (u - f / df).clamp(0.0, 1.0);
+        }
+        if self.len > 0.0 {
+            s_of(&self.knots, u) / self.len
+        } else {
+            0.0
+        }
+    }
+}
+
 /// Whether a tangent points back against the chord: the curve folds, and the span is its chord.
-pub fn folds(d: [f64; 2], t0: f64, t1: f64) -> bool {
+pub(crate) fn folds(d: [f64; 2], t0: f64, t1: f64) -> bool {
     let dot = |t: f64| libm::cos(t) * d[0] + libm::sin(t) * d[1];
     dot(t0) <= 0.0 || dot(t1) <= 0.0
 }
@@ -233,33 +303,47 @@ impl Span {
 
     /// A span with its own end tangents and handle (`water_spans`).
     pub(super) fn shaped(a: &Vertex, b: &Vertex, chord: bool, ends: [f64; 2], handle: f64, along0_m: f64) -> Span {
-        let g = shaped(a, b, chord, ends, handle);
-        let f: Vec<f64> = (0..=4 * KNOTS).map(|j| g.speed_m(j as f64 / (4 * KNOTS) as f64)).collect();
-        let len_m = if chord { g.c * g.mpu } else { simpson(1.0, &[f[0], f[16], f[32], f[48], f[64]]) };
-        let mut knots = [0.0; KNOTS + 1];
-        for k in 0..KNOTS {
-            let width = 1.0 / KNOTS as f64;
-            knots[k + 1] = knots[k] + if chord { width } else { simpson(width, &f[4 * k..4 * k + 5]) };
-        }
-        let scale = len_m / knots[KNOTS];
-        knots.iter_mut().for_each(|k| *k *= scale);
-        knots[KNOTS] = len_m;
+        let (len_m, knots) = arc(&shaped(a, b, chord, ends, handle));
         Span { len_m, knots, along0_m, chord, ends, handle, linear_z: false, owner: [0; 3] }
     }
 }
 
+/// The length of a curve in metres and its metres at the knots: a 5-point Simpson rule over the curve and
+/// over each knot interval, scaled to the curve's length.
+fn arc(g: &Geo) -> (f64, [f64; KNOTS + 1]) {
+    let f: Vec<f64> = (0..=4 * KNOTS).map(|j| g.speed_m(j as f64 / (4 * KNOTS) as f64)).collect();
+    let len_m = if g.chord { g.c * g.mpu } else { simpson(1.0, &[f[0], f[16], f[32], f[48], f[64]]) };
+    let mut knots = [0.0; KNOTS + 1];
+    for k in 0..KNOTS {
+        let width = 1.0 / KNOTS as f64;
+        knots[k + 1] = knots[k] + if g.chord { width } else { simpson(width, &f[4 * k..4 * k + 5]) };
+    }
+    let scale = len_m / knots[KNOTS];
+    knots.iter_mut().for_each(|k| *k *= scale);
+    knots[KNOTS] = len_m;
+    (len_m, knots)
+}
+
 /// The span metres at u: linear between the knots.
 pub fn s_at(span: &Span, u: f64) -> f64 {
+    s_of(&span.knots, u)
+}
+
+fn s_of(knots: &[f64; KNOTS + 1], u: f64) -> f64 {
     let x = u.clamp(0.0, 1.0) * KNOTS as f64;
     let k = (x as usize).min(KNOTS - 1);
-    span.knots[k] + (x - k as f64) * (span.knots[k + 1] - span.knots[k])
+    knots[k] + (x - k as f64) * (knots[k + 1] - knots[k])
 }
 
 /// The u at span metres s: the inverse of `s_at`.
 pub fn u_at(span: &Span, s: f64) -> f64 {
-    let s = s.clamp(0.0, span.len_m);
-    let k = span.knots[1..KNOTS].partition_point(|&knot| knot <= s);
-    let (a, b) = (span.knots[k], span.knots[k + 1]);
+    u_of(&span.knots, span.len_m, s)
+}
+
+fn u_of(knots: &[f64; KNOTS + 1], len_m: f64, s: f64) -> f64 {
+    let s = s.clamp(0.0, len_m);
+    let k = knots[1..KNOTS].partition_point(|&knot| knot <= s);
+    let (a, b) = (knots[k], knots[k + 1]);
     let f = if b > a { (s - a) / (b - a) } else { 0.0 };
     ((k as f64 + f) / KNOTS as f64).clamp(0.0, 1.0)
 }

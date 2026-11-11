@@ -28,11 +28,12 @@ describe('the cores of the ways', () => {
     });
 
     it('hold a point on a way\'s curve that lies far from its vertices', () => {
-        const y = 2 ** 29, m = 1 / metresPerUnit(y), turn = Math.PI / 4, flat = [0, 0];
-        // A road of two vertices 100 m apart that leaves east by north and comes in east by south: its curve passes 17.7 m north of its middle.
-        const line = { kind: ROAD, xy: [-50 * m, y, 50 * m, y], z: flat, h: 2.5, code: 2, ford: false, profile: Object.keys(PROFILES).indexOf('residential'), plan: { tangent: [-turn, turn], grade: flat, bank: flat, widen: flat } } as Line;
+        const y = 2 ** 29, m = 1 / metresPerUnit(y), turn = Math.PI / 2, flat = [0, 0];
+        // A road of two vertices 400 m apart that leaves north and comes in heading south: its curve passes 100 m, a quarter of
+        // the segment, north of its middle. The most that a curve can leave its segment.
+        const line = { kind: ROAD, xy: [-200 * m, y, 200 * m, y], z: flat, h: 2.5, code: 2, ford: false, profile: Object.keys(PROFILES).indexOf('residential'), plan: { tangent: [-turn, turn], grade: flat, bank: flat, widen: flat } } as Line;
         const cores = coresOf({ lines: [line], lakes: [], seas: [], pads: [], areas: [], buildings: [] } as unknown as Shapes);
-        expect(coreAt(cores, 0, y - 17.7 * m)).toBeDefined();
+        expect(coreAt(cores, 0, y - 100 * m)).toBeDefined();
         expect(coreAt(cores, 0, y)).toBeUndefined();
     });
 

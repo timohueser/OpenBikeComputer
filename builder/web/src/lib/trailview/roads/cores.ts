@@ -27,7 +27,6 @@ export interface Cores {
     meetings: { x: number; y: number; lines: Line[] }[];
     /** The points that two ways or more share, where a junction's corner can lie. */
     joints: { x: number; y: number }[];
-    buildings: Shapes['buildings'];
     town: Town;
 }
 
@@ -65,14 +64,14 @@ export function coresOf(shapes: Shapes): Cores {
     const joints = [...at].filter(([, here]) => new Set(here).size > 1).map(([key]) => key.split(',').map(Number)).map(([x, y]) => ({ x, y }));
     const half = Float64Array.from(lines, ({ h }) => h), bulge = new Float64Array(lines.length), widest = { half: 0, bulge: 0 };
     lines.forEach((line, k) => {
-        for (let v = 0; isWay(line) && v < line.z.length; v++) {
+        if (isWay(line)) for (let v = 0; v < line.z.length; v++) {
             half[k] = Math.max(half[k], halfAt(line, v, partners));
             if (v) bulge[k] = Math.max(bulge[k], Math.hypot(line.xy[2 * v] - line.xy[2 * v - 2], line.xy[2 * v + 1] - line.xy[2 * v - 1]) / 4);
         }
         widest.half = Math.max(widest.half, half[k]);
         widest.bulge = Math.max(widest.bulge, bulge[k]);
     });
-    coresByTile.set(shapes, (cores = { shapes, half, bulge, widest, partners, meetings, joints, buildings, town: townOf(buildings) }));
+    coresByTile.set(shapes, (cores = { shapes, half, bulge, widest, partners, meetings, joints, town: townOf(buildings) }));
     return cores;
 }
 
@@ -215,7 +214,7 @@ function groundAt(cores: Cores, { ways, rings, streams }: Near, cornered: (x: nu
     const unit = metresPerUnit(y);
     if (rings.some(ring => insideRings(ring, x, y)) || streams.some(line => lineMetres(line, x, y) < line.h + WATER_M)) return 'blocked';
     let walled = false;
-    near(cores.town, x, y, x, y, WALL_M / unit, b => (walled ||= insideRings(cores.buildings[b].rings, x, y) || ringsDistance(cores.buildings[b].rings, x, y) * unit < WALL_M));
+    near(cores.town, x, y, x, y, WALL_M / unit, b => (walled ||= insideRings(cores.shapes.buildings[b].rings, x, y) || ringsDistance(cores.shapes.buildings[b].rings, x, y) * unit < WALL_M));
     if (walled) return 'blocked';
     return deepest(cores, ways, x, y, firstRow) || cornered(x, y) ? 'way' : 'free';
 }
