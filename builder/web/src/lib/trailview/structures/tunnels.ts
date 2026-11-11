@@ -9,6 +9,8 @@ import { BORE, curveStops, LAMP, MeshBuilder, PAINT, paintOf, posts, rgb, VOID, 
 import type { Owns } from './node';
 import { mouthMesh } from '../proto/mouth';
 import { mouthAt, place } from '../proto/places';
+import { isUnderpass, underpassMesh } from '../proto/underpass';
+import { A1 } from '../proto/heights';
 import { mix } from './mesh';
 
 /** A portal of a road and of a path: the bore's margin past the road and the facade's wings past the opening. */
@@ -134,8 +136,11 @@ function along(line: Line, from: number, to: number, s: number): Station {
 /** The tunnels of a node. A bore follows the curve of the road that runs into it. */
 export function tunnels(b: MeshBuilder, lines: Line[], owns: Owns): void {
     const twin = twins(lines);
+    // PROTOTYPE: the ways of the underpass at A1 share one box.
+    const under = lines.filter(line => line.kind === TUNNEL && isUnderpass(line.xy));
+    if (under.length && owns(A1[0], A1[1])) underpassMesh(b, under);
     for (const line of lines) {
-        if (line.kind !== TUNNEL || !line.abut) continue;
+        if (line.kind !== TUNNEL || !line.abut || under.includes(line)) continue;
         const n = line.z.length, road = line.deck! > 3, size = road ? ROAD_PORTAL : PATH_PORTAL;
         const stops = curveStops(line);
         // PROTOTYPE: a mouth's end has no portal of today; the bore begins on its portal line, with the mouth's opening as its section.

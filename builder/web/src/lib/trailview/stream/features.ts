@@ -244,3 +244,113 @@ export function decodeFeatures(bytes: Uint8Array): Feature[] {
     if (at !== bytes.length) throw new Error('The feature tile has bytes after its last feature.');
     return features;
 }
+
+/**
+ * PROTOTYPE (crossing look study, never merged): the bytes of a feature tile with other heights. `offset` gives the
+ * metres to add at a vertex of a feature of `kind` at world units x, y; the grades of a moved line follow. Every other
+ * byte stays. The decoder above is the format's reference: this walks the same streams.
+ */
+export function movedHeights(bytes: Uint8Array, tile: { level: number; x: number; y: number }, offset: (kind: string, x: number, y: number) => number): Uint8Array {
+    let at = 0;
+    const read = (): number => {
+        let value = 0, scale = 1, byte: number;
+        do {
+            byte = bytes[at++];
+            value += (byte & 0x7f) * scale;
+            scale *= 128;
+        } while (byte & 0x80);
+        return value;
+    };
+    const signed = (value: number) => (value % 2 ? -(value + 1) / 2 : value / 2), zigzag = (n: number) => (n < 0 ? -2 * n - 1 : 2 * n);
+    const out: number[] = [];
+    const write = (value: number) => {
+        do {
+            const low = value % 128;
+            value = Math.floor(value / 128);
+            out.push(value ? low | 0x80 : low);
+        } while (value);
+    };
+    const copy = (from: number, to: number) => { for (let i = from; i < to; i++) out.push(bytes[i]); };
+    const text = new TextDecoder(), strings: string[] = [];
+    for (let count = read(); count > 0; count--) {
+        const length = read();
+        strings.push(text.decode(bytes.subarray(at, at + length)));
+        at += length;
+    }
+    const heads = Array.from({ length: read() }, () => ({ kind: strings[read()], header: read() }));
+    for (let f = 0; f < heads.length; f++) for (let pairs = read(); pairs > 0; pairs--) { read(); read(); }
+    const counts = heads.map(({ header }) => Array.from({ length: Math.floor(header / 16) }, () => Math.floor(read() / 2)));
+    copy(0, at);
+    const scale = unitScale(tile.level), ox = tile.x * EXTENT, oy = tile.y * EXTENT, metres = 2 * Math.PI * 6378137 / 2 ** 30 / Math.cosh(Math.PI * (1 - 2 * (oy * scale) / 2 ** 30));
+    /** Per part of a moved feature: the metres added at each vertex, and the metres along the part there. */
+    const moved = new Map<string, { add: number[]; along: number[] }>();
+    for (const [f, { kind, header }] of heads.entries()) {
+        const solved = Math.floor(header / 4) % 2 === 1, fine = Math.floor(header / 8) % 2 === 1 ? FINE : 1, from = at;
+        let x = 0, y = 0, height = 0, any = false;
+        const parts = counts[f].map(vertices => {
+            const raw: number[] = [], z: number[] = [], add: number[] = [], along: number[] = [];
+            let px = 0, py = 0;
+            for (let v = 0; v < vertices; v++) {
+                const dx = read(), dy = read();
+                x += signed(dx);
+                y += signed(dy);
+                raw.push(dx, dy);
+                const wx = (ox + x / fine) * scale, wy = (oy + y / fine) * scale;
+                along.push(v ? along[v - 1] + Math.hypot(wx - px, wy - py) * metres : 0);
+                [px, py] = [wx, wy];
+                if (!solved) continue;
+                const code = read();
+                if (code) height += signed(code - 1);
+                z.push(code ? height : NaN);
+                add.push(code ? offset(kind, wx, wy) : 0);
+                any ||= add[v] !== 0;
+            }
+            return { raw, z, add, along };
+        });
+        if (!any) {
+            copy(from, at);
+            continue;
+        }
+        let now = 0;
+        parts.forEach(({ raw, z, add, along }, p) => {
+            moved.set(`${f}/${p}`, { add, along });
+            for (let v = 0; v < z.length; v++) {
+                write(raw[2 * v]);
+                write(raw[2 * v + 1]);
+                if (Number.isNaN(z[v])) {
+                    write(0);
+                    continue;
+                }
+                const cm = z[v] + Math.round(100 * add[v]);
+                write(1 + zigzag(cm - now));
+                now = cm;
+            }
+        });
+    }
+    // The alignments: which parts have one, then the tangents, the grades, the banks and the words, a stream each.
+    const aligned: { key: string; vertices: number }[] = [], start = at;
+    for (const [f, { header }] of heads.entries()) {
+        if (Math.floor(header / 8) % 2 === 0) continue;
+        counts[f].forEach((vertices, p) => { if (read()) aligned.push({ key: `${f}/${p}`, vertices }); });
+    }
+    for (const { vertices } of aligned) for (let v = 0; v < vertices; v++) read();
+    copy(start, at);
+    for (const { key, vertices } of aligned) {
+        const from = at, part = moved.get(key), grades: number[] = [];
+        let sum = 0;
+        for (let v = 0; v < vertices; v++) grades.push((sum += signed(read())));
+        if (!part) {
+            copy(from, at);
+            continue;
+        }
+        let now = 0;
+        for (let v = 0; v < vertices; v++) {
+            const a = Math.max(v - 1, 0), b = Math.min(v + 1, vertices - 1), run = part.along[b] - part.along[a];
+            const grade = grades[v] + Math.round(GRADE * (run > 0 ? (part.add[b] - part.add[a]) / run : 0));
+            write(zigzag(grade - now));
+            now = grade;
+        }
+    }
+    copy(at, bytes.length);
+    return new Uint8Array(out);
+}

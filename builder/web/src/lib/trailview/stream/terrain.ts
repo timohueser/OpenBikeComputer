@@ -1,3 +1,4 @@
+import { protoTile } from '../proto/heights';
 import { PMTiles } from 'pmtiles';
 import STAMP_VERSION from 'virtual:stamp-version';
 import type { PlannerConfig } from '../../planner/config';
@@ -144,7 +145,8 @@ export function featureTiles(config: PlannerConfig, stop = new AbortController()
         source.catch(() => (source = undefined));
         return (await source)?.get(z, x, y, AbortSignal.any([signal, stop]));
     }, body => body.buffer, FEATURE_BODIES, body => body.byteLength);
-    return async (z, x, y) => (await tiles.tile(z, x, y))?.slice(0);
+    // PROTOTYPE: heights set by hand at a prototype place.
+    return async (z, x, y) => protoTile(z, x, y, (await tiles.tile(z, x, y))?.slice(0));
 }
 
 /**

@@ -200,12 +200,12 @@ ${MOUTHS.map(k => `    m = ${call(k)};\n    if (m.y == 1.0) { return vec2f(PROTO
 
 /** The lines that take the place of each \`// #proto NAME\` line of a shader, in a variant's build. */
 export const PROTO_LINES: Record<string, string> = {
-    // drawn-height.wgsl: the field's declarations.
+    // drawn-height.wgsl: the field's declarations, and the box at A1 (set by proto/underpass.ts: it reads this file).
     field: protoWgsl(),
     // terrain.wgsl: the terrain draws nothing over the cut.
-    terrain: 'if (proto_cut(units_of(in.s)).x + 0.1 < in.h) { discard; }',
+    terrain: 'if (proto_cut(units_of(in.s)).x + 0.1 < in.h || proto_box(units_of(in.s), in.h)) { discard; }',
     // corridor.wgsl: the plan's pieces draw nothing over the cut, and nothing on its floor.
-    piece: 'let proto = proto_cut(raw.u); if (proto.x + 0.1 < raw.altitude || proto.y == 2.0) { discard; }',
+    piece: 'let proto = proto_cut(raw.u); if (proto.x + 0.1 < raw.altitude || proto.y == 2.0 || proto_box(raw.u, raw.altitude)) { discard; }',
     // structures.wgsl, vertex: a prototype vertex stands at most `half` under the plain ground.
     vertex: 'if (v.sleepers < -1.5e9) { z = min(v.z, plain_height(s) - v.road.y * ROAD_RANGE_M); }',
     // structures.wgsl, fragment: a prototype ground face wears the ground's look with its own normal.
