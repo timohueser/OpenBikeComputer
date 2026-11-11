@@ -1166,8 +1166,7 @@ class EnglandSquares(TempCase):
         self.assertIn("is deleted", str(refusal.exception))
         self.assertEqual(asked, ["/TF3010"])
 
-
-    def test_a_404_is_a_square_outside_the_grid_letters_and_asked_once(self):
+    def test_a_square_outside_england_is_not_asked_and_a_404_inside_is_refused(self):
         asked = []
 
         class Absent(SimpleHTTPRequestHandler):
@@ -1182,10 +1181,11 @@ class EnglandSquares(TempCase):
         source = gb_module.SquareZips("gb-eng", "England", "p", 1.0, "l", "Ordnance Datum Newlyn",
                                       base=f"http://127.0.0.1:{server.server_address[1]}/")
         source.shared = self.root / "shared"
-        box = (-0.0400, 52.6980, -0.0300, 52.7020)  # in TF3010 alone
-        self.assertEqual(source.fetch(box, self.root / "a"), [])
-        self.assertEqual(source.fetch(box, self.root / "b"), [])
-        self.assertTrue((source.shared / "gb-eng" / "TF3010.none").exists())
+        # In OV7565, North Sea east of the NZ square.
+        self.assertEqual(source.fetch((0.8000, 54.9500, 0.8100, 54.9550), self.root / "a"), [])
+        self.assertEqual(asked, [])
+        with self.assertRaises(ingest.Refuse):
+            source.fetch((-0.0400, 52.6980, -0.0300, 52.7020), self.root / "b")  # TF3010
         self.assertEqual(asked, ["/TF3010"])
 
 

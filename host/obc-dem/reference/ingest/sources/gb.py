@@ -3,8 +3,9 @@
 England is the Environment Agency's LIDAR Composite DTM, one zip per 5 km square of the OS grid
 from the tiles endpoint that the agency's download portal uses. The endpoint is not documented,
 but the square's name is arithmetic and the pixels are those of Defra's WCS, which needs about
-nine requests where a square needs one. A square the agency does not publish answers an empty
-zip, or a 404 outside its grid letters, such as OV off Kent. The year in the URL and the attribution is the composite release, and the agency asks for
+nine requests where a square needs one. Open sea inside the 100 km squares that England reaches
+answers an empty zip; a square outside them, such as OV in the North Sea, answers 404 and is not
+asked for. The year in the URL and the attribution is the composite release, and the agency asks for
 it verbatim. Change both when the composite is re-released.
 
 Scotland is the Scottish Public Sector LiDAR, every open survey of the Remote Sensing Portal.
@@ -46,6 +47,9 @@ from .protocols import projected_box
 # Seconds between the starts of two square downloads of one prepare: 6 a minute, under the
 # 10 a minute that Defra's fair use allows a bot. Its gateway refuses a faster client for hours.
 GAP = 10.0
+# The 100 km squares that England reaches. A 404 inside them is a fault, such as a moved endpoint.
+ENGLAND_LETTERS = frozenset("NT NU NX NY NZ SD SE SJ SK SO SP SS ST SU SV SW SX SY SZ "
+                            "TA TF TG TL TM TQ TR TV".split())
 
 # The OS grid letters: `I` is never used. A 100 km square has two of them, the 500 km square
 # first, counted from the false origin's square `S`.
@@ -159,14 +163,15 @@ class SquareZips(CogWindows):
         # South or west of the grid's false origin there are no letters and no England.
         names = (f"{letters_at(east, north)}{east % 100_000 // 1000:02}{north % 100_000 // 1000:02}"
                  for east, north in grid_squares(bbox, self.epsg, 5000) if east >= 0 and north >= 0)
-        return [(name, str(raster)) for name in names if (raster := self.square(name))]
+        return [(name, str(raster)) for name in names
+                if name[:2] in ENGLAND_LETTERS and (raster := self.square(name))]
 
     def published(self, url: str) -> bool:
         return True
 
     def square(self, name: str) -> Path | None:
         """The square's GeoTIFF, downloaded and unpacked if it is not here yet, or `None` for a
-        square the server does not publish."""
+        square the server answers with an empty zip."""
 
         raster, empty = self.folder / f"{name}.tif", self.folder / f"{name}.none"
         if not raster.exists() and not empty.exists():
@@ -178,9 +183,8 @@ class SquareZips(CogWindows):
 
     def unpack(self, name: str, raster: Path, empty: Path) -> None:
         archive = self.folder / f"{name}.zip"
-        if not archive.exists() and not self.download(name, archive):
-            empty.touch()
-            return
+        if not archive.exists():
+            self.download(name, archive)
         unpacked = self.folder / name
         try:
             with zipfile.ZipFile(archive) as bundle:
@@ -198,19 +202,17 @@ class SquareZips(CogWindows):
         shutil.rmtree(unpacked, ignore_errors=True)
         archive.unlink()
 
-    def download(self, name: str, archive: Path) -> bool:
-        """Whether the server holds the square: a 404 is a square outside its grid letters."""
-
+    def download(self, name: str, archive: Path) -> None:
         stopped, asked = self.folder / "stopped", self.folder / "asked"
         if stopped.exists():
-            raise Refuse(f"{self.key}: the server refused this prepare ({stopped.read_text(encoding='utf-8').strip()}); "
+            reason = stopped.read_text(encoding="utf-8").strip()
+            raise Refuse(f"{self.key}: the server refused this prepare ({reason}); "
                          f"nothing is asked until {stopped} is deleted")
         if asked.exists():
             time.sleep(max(0.0, asked.stat().st_mtime + GAP - time.time()))
         asked.touch()
         try:
-            return http_download(self.base + name, archive, optional=True, what=f"{self.key} {name}",
-                                 stop=(403, 429)) is not None
+            http_download(self.base + name, archive, what=f"{self.key} {name}", stop=(403, 429))
         except Stopped as refusal:
             stopped.write_text(f"{refusal}\n", encoding="utf-8")
             raise
