@@ -39,8 +39,7 @@ export const WORKERS = 2;
 const JOBS = 2;
 /**
  * The rows that a build for rows starts with: free for its block, after the blocks of the nearer cells.
- * It is over the largest block of a dense town centre. A larger block, and the block of a cell that is
- * tried with fewer free rows, can find no rows: it is counted.
+ * A larger block (`large`), and the block of a cell that is tried with fewer free rows, can find no rows.
  */
 export const RESERVE_ROWS = 384;
 
@@ -95,7 +94,8 @@ export interface RecordsStats {
     failed: number;
     /**
      * The builds that the workers answered; the blocks of ranked cells that found no rows and whose rim no mesh reads;
-     * the blocks that arrived over RESERVE_ROWS, for which a build can end without rows.
+     * each arrival of a block over RESERVE_ROWS, from a worker or the cache and again for each build of the same cell:
+     * a build for such a block can end without rows.
      */
     builds: number;
     refused: number;
@@ -271,10 +271,11 @@ export class Records {
         slot.carried.delete(data.id);
         if ('missing' in data) {
             for (let i = 0; i < data.missing.length; i += 2) slot.tiles.delete(`${data.missing[i]}/${data.missing[i + 1]}`);
-            const cell = this.cells.get(slot.jobs.get(data.id) ?? '');
-            // The job goes again with every body, so it cannot miss twice.
-            if (cell?.job === data.id) void this.resend(k, data.id, cell);
+            const name = slot.jobs.get(data.id) ?? '', cell = this.cells.get(name);
+            // The job goes again with every body, so it cannot miss twice. The job of a cell that left the rank ends.
+            if (cell?.job === data.id && this.rank.has(name)) void this.resend(k, data.id, cell);
             else {
+                if (cell?.job === data.id) cell.job = undefined;
                 slot.jobs.delete(data.id);
                 slot.build = undefined;
                 this.answered();
@@ -504,22 +505,22 @@ export class Records {
         const ranked = new Map([...cells, ...mesh].map(entry => [key(entry.node), entry]));
         for (const { node } of mesh) for (const other of around(node)) if (!ranked.has(key(other))) ranked.set(key(other), { node: other, distance: near(other) });
         this.rank = new Map([...ranked].sort(([a, ca], [b, cb]) => ca.distance - cb.distance || (a < b ? -1 : 1)));
-        for (const [name, cell] of this.cells) {
-            const own = this.rank.get(name);
-            if (own) cell.distance = own.distance;
-            // A cell past the rank keeps its block until a target cell takes its rows, and its build on its way.
-            else if (cell.state !== 'built' && cell.state !== 'asked') {
-                this.unmesh(cell);
-                this.cells.delete(name);
-            }
-        }
         // A build not posted yet whose cell left the rank is not built.
         this.asked = this.asked.filter(({ name, cell }) => {
             if (this.rank.has(name)) return true;
             cell.job = undefined;
-            if (cell.state === 'asked') this.cells.delete(name);
             return false;
         });
+        for (const [name, cell] of this.cells) {
+            const own = this.rank.get(name);
+            if (own) cell.distance = own.distance;
+            // A cell past the rank keeps its block until a target cell takes its rows, and its posted build until it
+            // answers: the answer drops the mesh input that the worker kept for it.
+            else if (cell.state !== 'built' && cell.job === undefined) {
+                this.unmesh(cell);
+                this.cells.delete(name);
+            }
+        }
         this.wantedM = cells.length ? cells[cells.length - 1].distance : 0;
         this.decide();
         // A mesh cell built without its input builds again first.

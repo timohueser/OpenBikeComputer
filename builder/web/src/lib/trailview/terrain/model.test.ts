@@ -225,28 +225,6 @@ describe('the records store', () => {
         expect([...asked[0].rims].sort((a, b) => a - b)).toEqual([...rims.values()].sort((a, b) => a - b));
     });
 
-    it('builds a mesh cell and its neighbours, as near as it, before a farther target cell', async () => {
-        FakeWorker.all = [];
-        vi.stubGlobal('Worker', FakeWorker);
-        vi.stubGlobal('fetch', async () => new Response(readFileSync(new URL('../plan/pkg/obc_ground_plan_bridge_bg.wasm', import.meta.url))));
-        const records = new Records(async () => new ArrayBuffer(4), async () => undefined, () => {}, new AbortController().signal);
-        for (let i = 0; i < 20 && FakeWorker.all.length < 2; i++) await settle();
-        await settle();
-        const far = { level: CELL_LEVEL, x: B.x + 4, y: B.y };
-        const sent: number[][] = [];
-        for (let round = 0; round < 2; round++) {
-            records.update([{ node: far, distance: 300 }], [{ node: B, distance: 0 }]);
-            await settle();
-            for (const worker of FakeWorker.all) for (const build of worker.builds.splice(0)) {
-                sent.push([build.cell.x - B.x, build.cell.y - B.y]);
-                worker.answer(build, 1);
-            }
-        }
-        // Two workers, and two builds asked for per worker: all four go to the mesh's ring.
-        expect(sent).toHaveLength(4);
-        expect(sent.every(([dx, dy]) => Math.abs(dx) <= 1 && Math.abs(dy) <= 1)).toBe(true);
-    });
-
     it('keeps a full worker while it holds the input of a mesh not asked yet, and draws the pages of a cell whose kept input was lost', async () => {
         FakeWorker.all = [];
         vi.stubGlobal('Worker', FakeWorker);

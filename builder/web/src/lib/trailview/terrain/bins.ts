@@ -278,7 +278,8 @@ export interface TileIndex { lines: Grid; reach: number; waterHalf: number; outl
 const indexes = new WeakMap<Shapes, TileIndex>();
 /**
  * The cells of a tile's index, 2^13 world units (about 200 m in the Alps): a level-18 node asks a few, and a lake's box
- * takes few. A structure asks about a point with a reach of some tens of metres: one cell, or two to four at a cell's edge.
+ * takes few. Most structures ask about a point with a reach of some tens of metres: one cell, or two to four at a cell's
+ * edge. `coreAt` asks with a quarter of the tile's longest way segment, which can be hundreds of metres and many cells.
  */
 const INDEX_SHIFT = 13;
 
