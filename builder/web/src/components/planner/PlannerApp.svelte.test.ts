@@ -535,18 +535,34 @@ describe('planner app transitions', () => {
         const release = holdTownSearch();
         await startApp();
         button('Choose night 1').click(); await tick();
-        expect(document.body.textContent).toContain('Finding towns nearby…');
+        expect(document.body.textContent).toContain('Finding towns with somewhere to sleep…');
         expect(nightCalls).toEqual([]);
         release(false);
         await vi.waitFor(() => expect(nightCalls).toHaveLength(1));
         expect(nightCalls[0][1]).toEqual([[tilePlace.coordinate]]);
-        const panel = document.querySelector('.night-panel')!;
-        button('Places to sleep on night 1: Any place', panel).click(); await tick();
-        stayBox('Huts', panel).click(); await tick();
-        expect(stayBox('Huts', panel).checked).toBe(false);
-        button('Close', panel).click(); await tick();
-        expect(document.querySelector('.night-panel')).toBeNull();
+        const page = document.querySelector('.night-page')!;
+        button('Places to sleep on night 1: Any place', page).click(); await tick();
+        stayBox('Huts', page).click(); await tick();
+        expect(stayBox('Huts', page).checked).toBe(false);
+        button('All days', page).click(); await tick();
+        expect(document.querySelector('.night-page')).toBeNull();
         expect(nightCalls).toHaveLength(1);
+    });
+
+    it('keeps a night page while the route is recalculated', async () => {
+        const measured = vi.mocked(routing.calculateLine).getMockImplementation()!;
+        let line!: RoutingLine, finish!: (line: RoutingLine) => void;
+        vi.mocked(routing.calculateLine)
+            .mockImplementationOnce(async (...args) => line = await measured(...args))
+            .mockImplementation(() => new Promise(resolve => finish = resolve));
+        await startApp();
+        button('Choose night 1').click(); await tick();
+        button('Move start').click(); await tick();
+        expect(document.querySelector('.route-status')?.textContent).toContain('Calculating route');
+        expect(document.querySelector('.night-page h2')?.textContent).toBe('Night 1');
+        finish(line);
+        await vi.waitFor(() => expect(document.querySelector('.route-status')).toBeNull());
+        expect(document.querySelector('.night-page h2')?.textContent).toBe('Night 1');
     });
 
     it('compares two saved versions and opens one in the planner', async () => {
@@ -603,9 +619,15 @@ describe('planner app transitions', () => {
     it('opens a night of the timeline in the day list and sets the start date in the trip row', async () => {
         await startApp();
         await vi.waitFor(() => expect(document.querySelectorAll('.handle')).toHaveLength(2));
-        document.querySelector<HTMLButtonElement>('.handle')!.click(); await tick();
-        expect(document.querySelector('.night-panel')).not.toBeNull();
-        expect(document.querySelector('[aria-label="Choose night 1"]')).toBeNull();
+        const hidden = ['[data-day]', '.trip-row', '.trip-summary'];
+        for (const row of hidden) expect(document.querySelector(row)).not.toBeNull();
+        document.querySelector<HTMLButtonElement>('.handle')!.click(); await tick(); await tick();
+        expect(document.querySelector('.night-page h2')?.textContent).toBe('Night 1');
+        expect(document.activeElement).toBe(button('All days'));
+        for (const row of hidden) expect(document.querySelector(row)).toBeNull();
+        expect(document.querySelector<HTMLElement>('.query-slot')!.style.display).toBe('none');
+        button('All days').click(); await tick(); await tick();
+        expect(document.activeElement).toBe(button('Choose night 1'));
         button('Trip dates: Start date').click(); await tick();
         const date = document.querySelector<HTMLInputElement>('.trip-row input[type="date"]')!;
         date.value = '2027-06-19';

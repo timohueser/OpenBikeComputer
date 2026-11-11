@@ -133,7 +133,7 @@ const town = (name: string, km: number): Stop => ({ id: name, name, km, from: km
 function itineraryProps(expandedDay: number | null) {
     const trip = addRestDay(testTrip(), 1), line = testLine(trip);
     return {
-        trip, line, expandedDay, itinerary: planView(trip, line).itinerary, days: planView(trip, line).days, theme: 'light' as const,
+        trip, line, expandedDay, nightPage: null as number | null, itinerary: planView(trip, line).itinerary, days: planView(trip, line).days, theme: 'light' as const,
         nights: nightChoices(), conflicts: [], selectedId: null, revealId: null,
         onToggle: vi.fn(), onOverview: vi.fn(), onInspect: vi.fn(), onShowEnd: vi.fn(),
         onShowConflict: vi.fn(), onAddRest: vi.fn(), onTransfer: vi.fn(), onRemoveRest: vi.fn(), onNameRest: vi.fn(),
@@ -154,33 +154,40 @@ describe('planner day views', () => {
         expect(props.onToggle).toHaveBeenCalledWith(2);
     });
 
-    it('lists the towns of a chosen night with both days, only by the kinds of place of the night, in a panel that closes', async () => {
+    it('lists the towns of a night on its own page, by the kinds of place of the night, and goes back one level', async () => {
         const props = itineraryProps(null), total = props.days.at(-1)!.to * planView(props.trip, props.line).total;
         const [laufen, olten, bern] = [town('Laufen', total * .2), town('Olten', total * .3), town('Bern', total * .45)];
         Object.assign(olten.sleep[0].place, { placeKind: 'hotel', category: 'hotel' });
         bern.sleep.push({ ...olten.sleep[0], km: bern.km });
-        const stops = [laufen, olten, bern], open = vi.fn();
-        const nights: NightChoices = $state(nightChoices({ choosing: 1, kinds: () => ['camp'], around: () => proposal(bern, ['camp']),
-            found: () => ({ state: 'ready', stops }), window: () => [0, total * .6], open, choose: night => { nights.choosing = night; } }));
+        const stops = [laufen, olten, bern];
+        const nights: NightChoices = $state(nightChoices({ choosing: 1, campsites: 2, kinds: () => ['camp'], around: () => proposal(bern, ['camp']),
+            found: () => ({ state: 'ready', stops }), window: () => [0, total * .6], open: id => { nights.stopId = id; },
+            choose: night => { nights.choosing = page = night; } }));
+        let page = $state<number | null>(1);
         props.nights = nights;
-        mounted.push(mount(Itinerary, { target: document.body, props }));
-        await tick();
+        mounted.push(mount(Itinerary, { target: document.body, props: { ...props, get nightPage() { return page; } } }));
+        await tick(); await tick();
 
-        const towns = [...document.querySelectorAll<HTMLButtonElement>('ul[aria-label="Towns for night 1"] button.town')];
+        expect(document.querySelector('[data-day]')).toBeNull();
+        expect(document.querySelector('.keep')).toBeNull();
+        expect(document.activeElement).toBe(button('All days'));
+        const rows = () => [...document.querySelectorAll<HTMLButtonElement>('ul[aria-label="Towns for night 1"] button.town')];
+        const towns = rows();
         expect(towns.map(b => b.querySelector('strong')?.textContent)).toEqual(['Laufen', 'BernEven days']);
         expect(towns[1].getAttribute('aria-label')).toMatch(/^Bern, 1 campsite\. Day 1 \d+h \d\dm, day 3 \d+h \d\dm\. Even days$/);
-        towns[0].click();
-        expect(open).toHaveBeenCalledWith('Laufen');
-        expect(document.body.textContent).toContain('Start');
-        expect(document.body.textContent).toContain('Finish');
+        expect(document.querySelector('.tools')!.compareDocumentPosition(towns[0]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
-        expect(document.querySelector('.night-panel [aria-label="Close"]')?.getAttribute('title')).toBe('Close (Esc)');
-        expect(document.querySelector('[aria-label="Choose night 1"]')).toBeNull();
-        towns[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-        await tick();
-        expect(document.querySelector('.night-panel')).toBeNull();
+        towns[0].click(); await tick();
+        expect(document.querySelector('h2')).toBeNull();
+        button('Night 1').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await tick();
+        expect(nights.stopId).toBeNull();
+        expect(document.activeElement).toBe(rows()[0]);
+
+        rows()[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        await tick(); await tick();
+        expect(document.querySelectorAll('[data-day]')).toHaveLength(3);
+        expect(document.querySelector('.keep')).not.toBeNull();
         expect(document.activeElement).toBe(button('Choose night 1'));
-        expect(button('Choose night 1').getAttribute('aria-expanded')).toBe('false');
     });
 
     it('adds a rest day or a train after a night, and sets the kinds of place of one night', async () => {
@@ -189,7 +196,8 @@ describe('planner day views', () => {
         props.trip = { ...props.trip, nightStay: { 2: ['camp'] } };
         props.days = props.days.map(day => day.number === 2 ? { ...day, pinned: kept } : day);
         props.nights = nightChoices({ choosing: 2, kinds: () => ['camp'], window: () => [0, 50], found: () => ({ state: 'ready', stops: [] }), setKinds, release });
-        mounted.push(mount(Itinerary, { target: document.body, props }));
+        let page = $state<number | null>(null);
+        mounted.push(mount(Itinerary, { target: document.body, props: { ...props, get nightPage() { return page; } } }));
         await tick();
 
         // Night 1 has a rest day after it already.
@@ -199,6 +207,9 @@ describe('planner day views', () => {
         button('Rest day after night 3').click();
         expect(props.onAddRest).toHaveBeenCalledWith(2);
 
+        page = 2; await tick();
+        expect(document.querySelector('h2')?.textContent).toBe('Night 3');
+        expect(document.querySelector('h2 + p')?.textContent).toBe('Where day 3 ends and day 4 starts');
         expect(document.querySelector('[role="status"]')?.textContent).toBe('No campsite between km 0 and 50.');
         button('Places to sleep on night 3: Campsites').click(); await tick();
         const huts = [...document.querySelectorAll('label')].find(row => row.textContent === 'Huts')!.querySelector('input')!;
