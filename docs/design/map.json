@@ -132,33 +132,9 @@
    "status": "draft",
    "depends_on": [],
    "test_depends_on": [],
-   "violations": 7,
-   "lines": 40777,
+   "violations": 1,
+   "lines": 33085,
    "problems": [
-    {
-     "rule": "cycle",
-     "message": "data-engine -> device-map-builder closes a cycle: builder/web/src/components/data/DataApp.svelte -> builder/web/src/lib/theme.svelte.ts"
-    },
-    {
-     "rule": "cycle",
-     "message": "data-engine -> map-assembly closes a cycle: builder/web/src/components/data/DataMap.svelte -> builder/web/src/lib/map/coverageMap.ts, builder/web/src/lib/data/areas.ts -> builder/web/src/lib/map/coverageMap.ts, builder/web/src/lib/data/leaf.ts -> builder/web/src/lib/map/coverageMap.ts"
-    },
-    {
-     "rule": "cycle",
-     "message": "data-engine -> route-planning closes a cycle: builder/web/src/components/data/Bake.svelte -> builder/web/src/components/planner/PlannerIcon.svelte, builder/web/src/components/data/BakeArea.svelte -> builder/web/src/components/planner/PlannerIcon.svelte, builder/web/src/components/data/DataApp.svelte -> builder/web/src/components/planner/PlannerIcon.svelte"
-    },
-    {
-     "rule": "cycle",
-     "message": "device-map-baking -> data-engine closes a cycle: obc-bake -> obc-data, obc-draw -> obc-data, obc-pack -> obc-data"
-    },
-    {
-     "rule": "cycle",
-     "message": "source-preparation -> data-engine closes a cycle: obc-dem -> obc-data, obc-osm -> obc-data"
-    },
-    {
-     "rule": "cycle",
-     "message": "trailview -> data-engine closes a cycle: obc-trailview-features -> obc-data"
-    },
     {
      "rule": "R4",
      "message": "data-engine (Data and services) has 5 file(s) under tools/"
@@ -218,7 +194,7 @@
    "test_depends_on": [
     "map-reading"
    ],
-   "violations": 10,
+   "violations": 9,
    "lines": 40052,
    "problems": [
     {
@@ -240,10 +216,6 @@
     {
      "rule": "cycle",
      "message": "device-link -> map-assembly closes a cycle: builder/web/src/lib/device/flows.test.ts -> builder/web/src/lib/convert/bridge.ts (test), builder/web/src/lib/device/library.test.ts -> builder/web/src/lib/convert/bridge.ts (test), builder/web/src/lib/device/library.ts -> builder/web/src/lib/convert/bridge.ts, and 4 more"
-    },
-    {
-     "rule": "cycle",
-     "message": "device-link -> navigation closes a cycle: obc-link -> obc-route (test), obc-vectors -> obc-route"
     },
     {
      "rule": "cycle",
@@ -281,7 +253,7 @@
     "navigation",
     "repository-tooling"
    ],
-   "violations": 9,
+   "violations": 7,
    "lines": 60407,
    "problems": [
     {
@@ -294,19 +266,11 @@
     },
     {
      "rule": "cycle",
-     "message": "device-map-baking -> data-engine closes a cycle: obc-bake -> obc-data, obc-draw -> obc-data, obc-pack -> obc-data"
-    },
-    {
-     "rule": "cycle",
      "message": "device-map-baking -> map-reading closes a cycle: obc-bake -> obc-elevation, obc-bake -> obc-reader, obc-bake -> obcm-testkit (test), and 11 more"
     },
     {
      "rule": "cycle",
      "message": "device-map-baking -> source-preparation closes a cycle: obc-bake -> obc-dem, obc-pack -> obc-dem (test), obcm-assemble -> obc-dem"
-    },
-    {
-     "rule": "cycle",
-     "message": "map-assembly -> device-map-baking closes a cycle: obc-builder-bridge -> obc-bake (test), obc-builder-bridge -> obc-draw (test), obc-builder-bridge -> obc-map-core (test), and 2 more"
     },
     {
      "rule": "cycle",
@@ -340,13 +304,9 @@
    "test_depends_on": [
     "repository-tooling"
    ],
-   "violations": 11,
+   "violations": 10,
    "lines": 18580,
    "problems": [
-    {
-     "rule": "cycle",
-     "message": "data-engine -> device-map-builder closes a cycle: builder/web/src/components/data/DataApp.svelte -> builder/web/src/lib/theme.svelte.ts"
-    },
     {
      "rule": "cycle",
      "message": "device-link -> device-map-builder closes a cycle: builder/web/src/lib/device/dashboard.svelte.test.ts -> builder/web/test-support/flat-device/load.ts (test), builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/bytes.ts (test), builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/flat-device/load.ts (test), and 15 more"
@@ -405,21 +365,9 @@
     "data-engine",
     "repository-tooling"
    ],
-   "violations": 11,
+   "violations": 8,
    "lines": 24335,
    "problems": [
-    {
-     "rule": "cycle",
-     "message": "device-runtime -> map-reading closes a cycle: obc-app -> obc-elevation, obc-app -> obc-reader, obc-app -> obcm-testkit (test)"
-    },
-    {
-     "rule": "cycle",
-     "message": "device-runtime -> navigation closes a cycle: obc-app -> obc-route"
-    },
-    {
-     "rule": "cycle",
-     "message": "host-runtime -> device-runtime closes a cycle: obc-host-core -> obc-app"
-    },
     {
      "rule": "R1",
      "message": "crate obc-app (device-runtime) holds 1 file(s) of board-inputs"
@@ -550,24 +498,12 @@
     "device-map-baking",
     "repository-tooling"
    ],
-   "violations": 5,
+   "violations": 2,
    "lines": 17284,
    "problems": [
     {
      "rule": "cycle",
      "message": "host-runtime -> card-storage closes a cycle: obc-host-core -> obc-storage"
-    },
-    {
-     "rule": "cycle",
-     "message": "host-runtime -> device-runtime closes a cycle: obc-host-core -> obc-app"
-    },
-    {
-     "rule": "cycle",
-     "message": "host-runtime -> map-reading closes a cycle: obc-host-core -> obc-elevation, obc-host-core -> obc-reader, obc-host-core -> obcm-testkit (test), and 1 more"
-    },
-    {
-     "rule": "cycle",
-     "message": "host-runtime -> navigation closes a cycle: obc-host-core -> obc-route"
     },
     {
      "rule": "cycle",
@@ -594,13 +530,9 @@
    "test_depends_on": [
     "content"
    ],
-   "violations": 14,
+   "violations": 10,
    "lines": 25807,
    "problems": [
-    {
-     "rule": "cycle",
-     "message": "data-engine -> map-assembly closes a cycle: builder/web/src/components/data/DataMap.svelte -> builder/web/src/lib/map/coverageMap.ts, builder/web/src/lib/data/areas.ts -> builder/web/src/lib/map/coverageMap.ts, builder/web/src/lib/data/leaf.ts -> builder/web/src/lib/map/coverageMap.ts"
-    },
     {
      "rule": "cycle",
      "message": "device-link -> map-assembly closes a cycle: builder/web/src/lib/device/flows.test.ts -> builder/web/src/lib/convert/bridge.ts (test), builder/web/src/lib/device/library.test.ts -> builder/web/src/lib/convert/bridge.ts (test), builder/web/src/lib/device/library.ts -> builder/web/src/lib/convert/bridge.ts, and 4 more"
@@ -619,10 +551,6 @@
     },
     {
      "rule": "cycle",
-     "message": "map-assembly -> device-map-baking closes a cycle: obc-builder-bridge -> obc-bake (test), obc-builder-bridge -> obc-draw (test), obc-builder-bridge -> obc-map-core (test), and 2 more"
-    },
-    {
-     "rule": "cycle",
      "message": "map-assembly -> device-map-builder closes a cycle: builder/web/src/components/coverage/CorridorPanel.svelte -> builder/web/src/lib/core/gpx.ts, builder/web/src/components/coverage/CorridorPanel.svelte -> builder/web/src/lib/format.ts, builder/web/src/components/coverage/CorridorPanel.svelte -> builder/web/src/lib/ui/confirm.svelte.ts, and 39 more"
     },
     {
@@ -631,15 +559,7 @@
     },
     {
      "rule": "cycle",
-     "message": "map-assembly -> map-reading closes a cycle: obc-builder-bridge -> obc-reader, obc-builder-bridge -> obcm-testkit (test)"
-    },
-    {
-     "rule": "cycle",
      "message": "map-assembly -> map-style closes a cycle: builder/web/src/components/coverage/SkinStep.svelte -> builder/web/src/components/skin/SkinEditor.svelte, builder/web/src/components/coverage/SkinStep.svelte -> builder/web/src/components/skin/SkinPreviewThumbnail.svelte, builder/web/src/components/coverage/SkinStep.svelte -> builder/web/src/lib/skin/custom.ts, and 4 more"
-    },
-    {
-     "rule": "cycle",
-     "message": "map-assembly -> navigation closes a cycle: obc-builder-bridge -> obc-route"
     },
     {
      "rule": "cycle",
@@ -668,7 +588,7 @@
     "rendering-display",
     "repository-tooling"
    ],
-   "violations": 8,
+   "violations": 4,
    "lines": 15535,
    "problems": [
     {
@@ -681,23 +601,7 @@
     },
     {
      "rule": "cycle",
-     "message": "device-runtime -> map-reading closes a cycle: obc-app -> obc-elevation, obc-app -> obc-reader, obc-app -> obcm-testkit (test)"
-    },
-    {
-     "rule": "cycle",
-     "message": "host-runtime -> map-reading closes a cycle: obc-host-core -> obc-elevation, obc-host-core -> obc-reader, obc-host-core -> obcm-testkit (test), and 1 more"
-    },
-    {
-     "rule": "cycle",
-     "message": "map-assembly -> map-reading closes a cycle: obc-builder-bridge -> obc-reader, obc-builder-bridge -> obcm-testkit (test)"
-    },
-    {
-     "rule": "cycle",
      "message": "map-reading -> device-map-baking closes a cycle: obcm-testkit -> obc-tree-walk"
-    },
-    {
-     "rule": "cycle",
-     "message": "navigation -> map-reading closes a cycle: obc-route -> obc-elevation, obc-route -> obc-reader, obc-route -> obcm-testkit (test)"
     },
     {
      "rule": "cycle",
@@ -748,29 +652,9 @@
     "device-map-baking",
     "repository-tooling"
    ],
-   "violations": 6,
+   "violations": 1,
    "lines": 25645,
    "problems": [
-    {
-     "rule": "cycle",
-     "message": "device-link -> navigation closes a cycle: obc-link -> obc-route (test), obc-vectors -> obc-route"
-    },
-    {
-     "rule": "cycle",
-     "message": "device-runtime -> navigation closes a cycle: obc-app -> obc-route"
-    },
-    {
-     "rule": "cycle",
-     "message": "host-runtime -> navigation closes a cycle: obc-host-core -> obc-route"
-    },
-    {
-     "rule": "cycle",
-     "message": "map-assembly -> navigation closes a cycle: obc-builder-bridge -> obc-route"
-    },
-    {
-     "rule": "cycle",
-     "message": "navigation -> map-reading closes a cycle: obc-route -> obc-elevation, obc-route -> obc-reader, obc-route -> obcm-testkit (test)"
-    },
     {
      "rule": "R1",
      "message": "crate obc-app (device-runtime) holds 11 file(s) of navigation"
@@ -786,7 +670,10 @@
    "depends_on": [
     "data-engine",
     "device-map-baking",
+    "device-map-builder",
     "foundations",
+    "map-assembly",
+    "route-planning",
     "routing",
     "search",
     "source-preparation",
@@ -797,7 +684,7 @@
     "repository-tooling"
    ],
    "violations": 4,
-   "lines": 2251,
+   "lines": 9943,
    "problems": [
     {
      "rule": "R1",
@@ -881,7 +768,7 @@
    ],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 18701,
+   "lines": 18739,
    "problems": []
   },
   {
@@ -926,13 +813,9 @@
    "status": "draft",
    "depends_on": [],
    "test_depends_on": [],
-   "violations": 8,
+   "violations": 7,
    "lines": 27219,
    "problems": [
-    {
-     "rule": "cycle",
-     "message": "data-engine -> route-planning closes a cycle: builder/web/src/components/data/Bake.svelte -> builder/web/src/components/planner/PlannerIcon.svelte, builder/web/src/components/data/BakeArea.svelte -> builder/web/src/components/planner/PlannerIcon.svelte, builder/web/src/components/data/DataApp.svelte -> builder/web/src/components/planner/PlannerIcon.svelte"
-    },
     {
      "rule": "cycle",
      "message": "device-map-builder -> route-planning closes a cycle: builder/web/scripts/road-census.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/platform/web.ts -> builder/web/src/lib/planner/release.ts, builder/web/test-support/planner/MapStub.svelte -> builder/web/src/lib/planner/geo.ts, and 14 more"
@@ -1047,16 +930,12 @@
    "test_depends_on": [
     "repository-tooling"
    ],
-   "violations": 5,
+   "violations": 4,
    "lines": 18630,
    "problems": [
     {
      "rule": "cycle",
      "message": "device-map-baking -> source-preparation closes a cycle: obc-bake -> obc-dem, obc-pack -> obc-dem (test), obcm-assemble -> obc-dem"
-    },
-    {
-     "rule": "cycle",
-     "message": "source-preparation -> data-engine closes a cycle: obc-dem -> obc-data, obc-osm -> obc-data"
     },
     {
      "rule": "cycle",
@@ -1082,7 +961,7 @@
     "data-engine"
    ],
    "test_depends_on": [],
-   "violations": 6,
+   "violations": 5,
    "lines": 55060,
    "problems": [
     {
@@ -1092,10 +971,6 @@
     {
      "rule": "cycle",
      "message": "route-planning -> trailview closes a cycle: builder/web/src/components/planner/TrailViewConditions.svelte -> builder/web/src/lib/trailview/view.ts, builder/web/src/components/planner/TrailViewWindow.svelte -> builder/web/src/lib/trailview/engine.ts, builder/web/src/components/planner/TrailViewWindow.svelte -> builder/web/src/lib/trailview/frame/camera.ts, and 12 more"
-    },
-    {
-     "rule": "cycle",
-     "message": "trailview -> data-engine closes a cycle: obc-trailview-features -> obc-data"
     },
     {
      "rule": "dependency",
@@ -1226,24 +1101,6 @@
    "to": "rendering-display",
    "test": false,
    "undeclared": false
-  },
-  {
-   "from": "data-engine",
-   "to": "device-map-builder",
-   "test": false,
-   "undeclared": true
-  },
-  {
-   "from": "data-engine",
-   "to": "map-assembly",
-   "test": false,
-   "undeclared": true
-  },
-  {
-   "from": "data-engine",
-   "to": "route-planning",
-   "test": false,
-   "undeclared": true
   },
   {
    "from": "device-firmware",
@@ -1721,7 +1578,19 @@
   },
   {
    "from": "obc-data",
+   "to": "device-map-builder",
+   "test": false,
+   "undeclared": false
+  },
+  {
+   "from": "obc-data",
    "to": "foundations",
+   "test": false,
+   "undeclared": false
+  },
+  {
+   "from": "obc-data",
+   "to": "map-assembly",
    "test": false,
    "undeclared": false
   },
@@ -1735,6 +1604,12 @@
    "from": "obc-data",
    "to": "repository-tooling",
    "test": true,
+   "undeclared": false
+  },
+  {
+   "from": "obc-data",
+   "to": "route-planning",
+   "test": false,
    "undeclared": false
   },
   {
@@ -2005,21 +1880,20 @@
  "cycles": [
   [
    "card-storage",
-   "content",
-   "data-engine",
    "device-link",
-   "device-map-baking",
    "device-map-builder",
-   "device-runtime",
    "firmware-update",
    "host-runtime",
    "map-assembly",
-   "map-reading",
    "map-style",
-   "navigation",
    "route-planning",
-   "source-preparation",
    "trailview"
+  ],
+  [
+   "content",
+   "device-map-baking",
+   "map-reading",
+   "source-preparation"
   ]
  ]
 }
