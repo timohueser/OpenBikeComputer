@@ -355,6 +355,13 @@ pub fn point(part: &Part, span: usize, u: f64) -> SpanPoint {
     point_of(&Of { g: geo_of(a, b, data), a, b, span: data }, u)
 }
 
+/// The global point and the height at u of a span from its vertices.
+pub(super) fn level_at(a: &Vertex, b: &Vertex, span: &Span, u: f64) -> ([i64; 2], f64) {
+    let g = geo_of(a, b, span);
+    let p = point_of(&Of { g, a, b, span }, u);
+    (round(&g, p.d), p.z_m)
+}
+
 /// A span with its vertices and its plan.
 struct Of<'a> {
     g: Geo,

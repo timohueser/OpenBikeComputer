@@ -304,6 +304,8 @@ pub struct GraphStats {
     pub spikes: u32,
     pub folded: u32,
     pub no_height: u32,
+    /// Water spans under the terrain by more than their `underground_m`.
+    pub underground: u32,
     pub shared_runs: u32,
     pub end_on_other: u32,
     pub water_water: u32,
@@ -326,12 +328,13 @@ pub struct GraphStats {
 
 impl GraphStats {
     /// Every counter but the crossings by type, by name.
-    pub fn counters(&self) -> [(&'static str, u32); 22] {
+    pub fn counters(&self) -> [(&'static str, u32); 23] {
         [
             ("repeated", self.repeated),
             ("spikes", self.spikes),
             ("folded", self.folded),
             ("no_height", self.no_height),
+            ("underground", self.underground),
             ("shared_runs", self.shared_runs),
             ("end_on_other", self.end_on_other),
             ("water_water", self.water_water),

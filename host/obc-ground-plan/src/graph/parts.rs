@@ -1,8 +1,10 @@
 //! Stage 1: the parts of a cell. The owned runs of the read tiles join across tile lines, then each
-//! part gets its family, class and level, its cleaning, and splits where its heights are unknown.
+//! part gets its family, class and level, its cleaning, and splits where its heights are unknown or its
+//! water lies underground.
 
 use std::collections::BTreeMap;
 
+use super::curve::level_at;
 use super::{
     folds, water_grades, water_spans, water_tangents, Family, FeatureRef, GraphStats, Level, Part, Span, Vertex,
     SPIKE_DEG,
@@ -17,6 +19,8 @@ const WAYS: [&str; 6] = ["main-road", "road", "path", "railway", "tunnel", "gall
 const PATH_CLASSES: [&str; 7] = ["path", "footway", "cycleway", "bridleway", "steps", "pedestrian", "via_ferrata"];
 /// Spans kept past each span that may meet the work area: the cleaning of a vertex reads its two spans.
 const TRIM_SPANS: usize = 2;
+/// The step of `underground`'s test points along a span, metres.
+const UNDERGROUND_STEP_M: f64 = 2.0;
 
 /// The rules of a part: the cross-section of its class and whether it fords, or of its water kind.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -394,6 +398,29 @@ fn curve_water(chain: &mut Chain, turn_max_deg: f64, off_max_m: f64) {
     }
 }
 
+/// A span of water: its chord, or its curve with the end tangents and handle of `water_spans`.
+fn water_span(a: &Vertex, b: &Vertex, along0_m: f64, owner: [u32; 3], shape: WaterShape) -> Span {
+    let span = match shape {
+        Some((ends, handle)) => Span::shaped(a, b, false, ends, handle, along0_m),
+        None => Span::new(a, b, true, along0_m),
+    };
+    Span { water_z: true, owner, ..span }
+}
+
+/// Whether water lies underground on a span: at a point of it in the cell's grown square, every
+/// `UNDERGROUND_STEP_M` along it, its level lies more than `depth_m` under the terrain. The grown square
+/// holds the finest terrain of every cell that reads the point, so every cell decides alike where a cell
+/// draws the span. Such a span is no part: the water ends at its vertices.
+fn underground(input: &CellInput, a: &Vertex, b: &Vertex, span: &Span, depth_m: f64) -> bool {
+    let [x0, y0, x1, y1] = input.key.grown();
+    let n = (span.len_m / UNDERGROUND_STEP_M).ceil().max(1.0) as u32;
+    (0..=n).any(|k| {
+        let (p, z) = level_at(a, b, span, f64::from(k) / f64::from(n));
+        let inside = (x0..=x1).contains(&p[0]) && (y0..=y1).contains(&p[1]);
+        inside && input.terrain.height(GlobalPoint { x: p[0], y: p[1] }).is_some_and(|t| t - z > depth_m)
+    })
+}
+
 /// Remove repeated vertices: the later one goes, its `side` joins the one that stays.
 fn repeated(chain: &mut Chain, stats: &mut GraphStats) -> bool {
     let mut changed = false;
@@ -468,11 +495,7 @@ pub(crate) fn parts<'a>(
                     .enumerate()
                     .map(|(k, (pair, &(along0, chord, owner, shape)))| {
                         if let Rule::Water(_) = rule {
-                            let span = match shape {
-                                Some((ends, handle)) => Span::shaped(&pair[0], &pair[1], false, ends, handle, along0),
-                                None => Span::new(&pair[0], &pair[1], true, along0),
-                            };
-                            return Span { water_z: true, owner, ..span };
+                            return water_span(&pair[0], &pair[1], along0, owner, shape);
                         }
                         let d = [(pair[1].pos[0] - pair[0].pos[0]) as f64, (pair[1].pos[1] - pair[0].pos[1]) as f64];
                         let chord = corner[k] || corner[k + 1] || chord;
@@ -497,7 +520,15 @@ pub(crate) fn parts<'a>(
         };
         for (k, &span) in chain.spans.iter().enumerate() {
             let (a, b) = (&chain.vertices[k], &chain.vertices[k + 1]);
-            if keep_unknown || (a.z.is_some() && b.z.is_some()) {
+            let deep = match (rule, a.z.zip(b.z)) {
+                (Rule::Water(w), Some((za, zb))) if level == Level::Ground => {
+                    let (va, vb) = (Vertex { z_m: za, ..a.v.clone() }, Vertex { z_m: zb, ..b.v.clone() });
+                    underground(input, &va, &vb, &water_span(&va, &vb, span.0, span.2, span.3), w.underground_m)
+                }
+                _ => false,
+            };
+            stats.underground += u32::from(deep);
+            if keep_unknown || (a.z.is_some() && b.z.is_some() && !deep) {
                 if piece.is_empty() {
                     piece.push(a.clone());
                 }
