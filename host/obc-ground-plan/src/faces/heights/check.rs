@@ -307,21 +307,26 @@ pub fn wall_steps(words: &[u32], terrain: &Terrain, cell: CellKey, grade: f64) -
     out
 }
 
-/// `slope_steps` reads the ground this many metres out from the rim, and this far along it to each side.
+/// `slope_steps` reads the ground this many metres out from the rim, and these metres along it to each side.
 pub const SLOPE_OUT_M: [f64; 3] = [1.0, 2.0, 4.0];
-pub const SLOPE_SIDE_M: f64 = 0.25;
+pub const SLOPE_SIDE_M: [f64; 2] = [0.25, 0.05];
+/// An end that two outline edges share and where the next edge turns by less than this (radians, as the
+/// record's turn) lies on a straight rim: a cut at the bin grid, a split, or a point that a tile line adds,
+/// bent by the rounding.
+pub const SLOPE_TURN: f64 = 0.05;
 
-/// The slope steps of a cell (the shading bands): at each end in the cell that two outline edges of one host
-/// share on one straight rim (a cut at the bin grid or a split), the ground's grade along the rim over
-/// `SLOPE_SIDE_M` before and after the end, at each of `SLOPE_OUT_M` out where all three points lie on a slope;
-/// where the grade changes by more than `grade`: the end and the greatest change.
+/// The slope steps of a cell (the shading bands, a groove or a ridge): at each end in the cell that two
+/// outline edges of one host share on a straight rim (`SLOPE_TURN`), the ground's grade along the rim over each
+/// of `SLOPE_SIDE_M` before and after the end, at each of `SLOPE_OUT_M` out where all three points lie on a
+/// slope; where the grade changes by more than `grade`: the end and the greatest change.
 pub fn slope_steps(words: &[u32], terrain: &Terrain, cell: CellKey, grade: f64) -> Vec<([f64; 2], f64)> {
     let mpu = Block::at(words, [0.0, 0.0]).mpu;
     let edges: Vec<_> = cell_edges(words).collect();
     let mut out = Vec::new();
     for pair in edges.windows(2) {
         let [(_, v, u, l0), (a1, _, u1, l1)] = [pair[0], pair[1]];
-        if v != a1 || l0 != l1 || (u[0] * u1[1] - u[1] * u1[0]).abs() > 1e-3 {
+        let turn = libm::atan2(u[0] * u1[1] - u[1] * u1[0], u[0] * u1[0] + u[1] * u1[1]);
+        if v != a1 || l0 != l1 || turn.abs() >= SLOPE_TURN {
             continue;
         }
         let n = [u[1], -u[0]];
@@ -329,11 +334,10 @@ pub fn slope_steps(words: &[u32], terrain: &Terrain, cell: CellKey, grade: f64) 
             let q = [v[0] + (n[0] * out + u[0] * side) / mpu, v[1] + (n[1] * out + u[1] * side) / mpu];
             at(words, terrain, cell, q).filter(|(h, _)| h.kind == Kind::Slope).map(|(h, _)| h.h)
         };
-        let change = SLOPE_OUT_M
-            .iter()
-            .filter_map(|&o| {
-                let (l, c, r) = (ground(o, -SLOPE_SIDE_M)?, ground(o, 0.0)?, ground(o, SLOPE_SIDE_M)?);
-                Some(((r - c) - (c - l)).abs() / SLOPE_SIDE_M)
+        let change = (SLOPE_OUT_M.iter().flat_map(|&o| SLOPE_SIDE_M.map(|d| (o, d))))
+            .filter_map(|(o, d)| {
+                let (l, c, r) = (ground(o, -d)?, ground(o, 0.0)?, ground(o, d)?);
+                Some(((r - c) - (c - l)).abs() / d)
             })
             .fold(0.0, f64::max);
         if change > grade {

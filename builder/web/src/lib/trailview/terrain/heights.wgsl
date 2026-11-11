@@ -15,11 +15,10 @@ const H_QUADS: u32 = 4u;
 const H_REGIONS: u32 = 2u;
 // The heights' rule words follow the block's head (heights::RULES of the crate).
 const H_RULES_AT: u32 = 15u;
-// The words of an outline edge, its grade's steps per metre, and the flags of the ends where the next edge
-// of a straight rim goes on (records::EDGE, GRADE_STEPS, ON_A, ON_B).
-const H_EDGE: u32 = 9u;
-const H_ON_A: u32 = 0x10000u;
-const H_ON_B: u32 = 0x20000u;
+// The words of an outline edge, its grade's steps per metre and its turn's steps per π (records::EDGE,
+// GRADE_STEPS, TURN_STEPS).
+const H_EDGE: u32 = 10u;
+const H_TURN_STEPS: f32 = 32767.0;
 const H_GRADE_STEPS: f32 = 4096.0;
 // An outline edge's cone reaches this many frame units past its line into its paved face before it falls
 // on at face_max (heights::SIDE_UNITS).
@@ -661,17 +660,38 @@ fn h_at_share(v: vec2f, known: vec2<bool>, f: f32) -> f32 {
     return mix(select(v.y, v.x, known.x), select(v.x, v.y, known.y), f);
 }
 
-// The greatest of top(x) − c |q − x| over an edge whose top runs linearly (sign 1, a fill), or the least
-// of top(x) + c |q − x| (sign −1, a cut), with c = √(s² + g²) for the edge's grade g, as
-// heights::edge_cone: q lies `along` metres along the edge and `off` metres off its line. At an end where
-// the next edge of a straight rim goes on (`on`), the straight line's envelope, falling on by `steep` more
-// than the edge climbs per metre past the end's normal.
-fn h_edge_cone(along: f32, off: f32, len: f32, top: vec2f, s: f32, sign: f32, on: vec2<bool>, steep: f32) -> f32 {
+// Where q lies past an end of an outline edge within the cone of that end, as heights::fan: (1 or 0 for the
+// end b or a, the metres to it), or x < 0. `turn`: the outline's turn at a and b (`known`: whether an edge
+// goes on there).
+fn h_fan(along: f32, out: f32, len: f32, turn: vec2f, known: vec2<bool>) -> vec2f {
+    var x = along;
+    var end = 0u;
+    if (along > len) {
+        x = along - len;
+        end = 1u;
+    } else if (along >= 0.0) {
+        return vec2f(-1.0);
+    }
+    let t = turn[end];
+    let before = select(x * cos(t) + out * sin(t) >= 0.0, x * cos(t) - out * sin(t) <= 0.0, end == 1u);
+    if (!known[end] || (t > 0.0 && before)) {
+        return vec2f(f32(end), length(vec2f(x, out)));
+    }
+    return vec2f(-1.0);
+}
+
+// The cone of an outline edge at q (sign 1 a fill, −1 a cut) whose top runs linearly, as heights::edge_cone:
+// the line across its strip, falling on by `steep` more than it climbs past the ends' normals, and within an
+// end's fan the end's own cone.
+fn h_edge_cone(along: f32, out: f32, len: f32, top: vec2f, s: f32, sign: f32, fan: vec2f, steep: f32) -> f32 {
     let g = select(0.0, (top.y - top.x) / len, len > 0.0);
-    let u = clamp(along + sign * off * g / s, select(0.0, -H_BIG, on.x), select(len, H_BIG, on.y));
-    let past = max(max(select(0.0, -along, on.x), select(0.0, along - len, on.y)), 0.0);
-    let d = sqrt((u - along) * (u - along) + off * off);
-    return top.x + g * u - sign * (sqrt(s * s + g * g) * d + (steep + abs(g)) * past);
+    let past = max(max(-along, along - len), 0.0);
+    let line = top.x + g * along - sign * (s * abs(out) + (steep + abs(g)) * past);
+    if (fan.x < 0.0) {
+        return line;
+    }
+    let cone = select(top.x, top.y, fan.x > 0.5) - sign * s * fan.y;
+    return select(min(line, cone), max(line, cone), sign > 0.0);
 }
 
 // How much the round of a cone of slope s at its foot holds it back at d metres, as heights::round_back.
@@ -825,7 +845,8 @@ fn h_groups(block: u32, q: vec2f, mpu: f32) -> HGroups {
         let last = mw(e + 8u);
         let gq = vec2i(bitcast<i32>(mw(e + 3u)) >> 16u, bitcast<i32>(last << 16u) >> 16u);
         let graded = gq != vec2i(-32768);
-        let on = vec2<bool>((last & H_ON_A) != 0u, (last & H_ON_B) != 0u);
+        let tq = vec2i(bitcast<i32>(mw(e + 9u) << 16u) >> 16u, bitcast<i32>(last) >> 16u);
+        let fan = h_fan(along, side * mpu, len, vec2f(tq) / H_TURN_STEPS * 3.14159265, tq != vec2i(-32768));
         let fr = h_release(d, ln.reach);
         let wall = select(0.0, H.wall_max, (ln.rank & H_WALL) != 0u);
         // The slope and the wall at q's foot on the edge, from the need there.
@@ -835,19 +856,19 @@ fn h_groups(block: u32, q: vec2f, mpu: f32) -> HGroups {
         let f = h_fit(ln.fill, ln.fill_max, need, any(known), wall, ln.reach);
         let c = h_fit(ln.cut, ln.cut_max, -need, any(known), wall, ln.reach);
         g.d = min(g.d, d);
-        let beyond = max(max(select(0.0, -along, on.x), select(0.0, along - len, on.y)), 0.0);
-        let w = h_toe_width(d, h_span_k(f.x, c.x, grade)) + H.face_max * beyond;
+        let past = select(max(max(-along, along - len), 0.0), 0.0, fan.x >= 0.0);
+        let w = h_toe_width(d, h_span_k(f.x, c.x, grade)) + H.face_max * past;
         g.toe = min(g.toe, w + fr.x * (H.toe_max - w));
         // Past its line into its paved face (from H_SIDE_UNITS on) an edge's cone falls on at face_max,
         // as heights::groups.
         let inside = select(0.0, max(-side - H_SIDE_UNITS, 0.0) * mpu * H.face_max, lu > 0.0);
-        g.fill = max(g.fill, h_edge_cone(along, off, len, h - f.y, f.x, 1.0, on, H.face_max) - fr.y - inside);
-        g.cut = min(g.cut, h_edge_cone(along, off, len, h + c.y, c.x, -1.0, on, H.face_max) + fr.y + inside);
+        g.fill = max(g.fill, h_edge_cone(along, side * mpu, len, h - f.y, f.x, 1.0, fan, H.face_max) - fr.y - inside);
+        g.cut = min(g.cut, h_edge_cone(along, side * mpu, len, h + c.y, c.x, -1.0, fan, H.face_max) + fr.y + inside);
         // The highest cut toward the budget: a wall class's wall up to wall_max at its edge, then a face
         // at the steepest cut from the wall's top.
         let steep = min(max(ln.cut_max, ln.cut), H.face_max);
         let s = h_fit(steep, steep, -need - wall, any(known), 0.0, ln.reach);
-        g.steep = min(g.steep, h_edge_cone(along, off, len, h + wall, s.x, -1.0, on, H.face_max) + fr.y + inside);
+        g.steep = min(g.steep, h_edge_cone(along, side * mpu, len, h + wall, s.x, -1.0, fan, H.face_max) + fr.y + inside);
     }
     if (g.line != M_NONE) {
         h_close(&gs, g, ln);

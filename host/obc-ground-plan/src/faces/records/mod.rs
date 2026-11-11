@@ -15,7 +15,7 @@
 //! | extras | discs (`DISC` words), beyond cuts (a cut and a label), parts (a way and two cuts, each with a flag) |
 //! | junctions | the table, a word per junction record: its offset; then the records (`junction`) |
 //! | blend edges | `BLEND` words each: the ends a (x, y) and b (x, y) as i32 bits, the label of the blend face, the label of the face beyond (u32::MAX for terrain) |
-//! | outline edges | `EDGE` words each (`edge_ends`, `edge_line`): the end a (x, y) as i32 bits with the paved face on the left; b − a as two i16 (x low); the host line, low half, and the terrain's grade outward at a in 1/`GRADE_STEPS` (i16, `i16::MIN` unknown), high half; the paved height at a and at b; the plain terrain where the cones from a and from b start to let go (NaN unknown); the grade at b, low half, and `ON_A`, `ON_B` |
+//! | outline edges | `EDGE` words each (`edge_ends`, `edge_line`): the end a (x, y) as i32 bits with the paved face on the left; b − a as two i16 (x low); the host line, low half, and the terrain's grade outward at a in 1/`GRADE_STEPS` (i16, `i16::MIN` unknown), high half; the paved height at a and at b; the plain terrain where the cones from a and from b start to let go (NaN unknown); the grade at b, low half, and the turn at b in 1/`TURN_STEPS` of π (i16, `i16::MIN` none), high half; the turn at a, low half |
 //! | bins | `BINS`² headers of `HEADER` words (the first word of the bin's items; the counts of items and segments; of height segments and height discs; the words of the items and the count of blend edges), then per bin its candidate items, segments, height segments, height discs, blend edges, and in half words (the first low) the count of its outline edges followed by them |
 //!
 //! Floats are f32 bits. A side is right or left of the line's direction in frame axes (y south).
@@ -54,7 +54,7 @@ use crate::sections::{Finish, Material, WaySection};
 use crate::CellInput;
 
 /// "OBR" and the layout's version.
-pub const MAGIC: u32 = 0x4f42_5213;
+pub const MAGIC: u32 = 0x4f42_5214;
 
 /// Whether a junction's guest `g` stops at its best host `h`: a way with round corners whose pair's
 /// mouth in `plan.json` is `stop`, and whose look (finish and material) is not the host's or whose
@@ -87,11 +87,9 @@ pub const DISC: usize = 5;
 pub const BEYOND: usize = 5;
 pub const PART: usize = 11;
 pub const BLEND: usize = 6;
-pub const EDGE: usize = 9;
-/// An outline edge's flags in its last word: at a (b) it goes on into the next edge of its straight rim, with
-/// the same host (a cut at the bin grid or a split), not round a corner of the outline.
-pub const ON_A: u32 = 1 << 16;
-pub const ON_B: u32 = 1 << 17;
+pub const EDGE: usize = 10;
+/// An outline edge's turn at an end in these steps per π radians (`i16`; `i16::MIN`: no edge goes on there).
+pub const TURN_STEPS: f64 = 32767.0;
 /// A junction record: node x, y; the arm count (bits 0-7) and the graph junction (bits 16-31); then
 /// `JR_ARM` words per arm in the graph's order: its record line (bits 0-15) with `ARM_HOST` and
 /// `ARM_STOP`; its node sample (bits 0-15) and its last sample (bits 16-31), the first past its seam,
@@ -371,10 +369,11 @@ const QUARTER_M: f64 = 1.0;
 /// The outline edges' words (`EDGE` each) of the near plan's rims (a, b, paved label, the paved face on
 /// the left): the host line, the paved field at both ends (`heights::paved_end`) from the block so far
 /// through the window's bins (`items`), so two cells give an end the same bits, and the plain terrain
-/// where the host's cones start to let go (`ground`). The host is the face's material line, else the paved
-/// field's host at the middle of the rim's piece. A rim splits at the bin grid (`bin_cuts`), then while the
-/// paved field or that ground leaves the line between a piece's ends (`SPLIT_*`). An edge with an end where
-/// the face has no height of its own stays out: a fault that `heights::check` counts.
+/// where the host's cones start to let go (`ground`), and each end's turn to the edge that goes on from it.
+/// The host is the face's material line, else the paved field's host at the middle of the rim's piece. A rim
+/// splits at the bin grid (`bin_cuts`), then while the paved field or that ground leaves the line between a
+/// piece's ends (`SPLIT_*`). An edge with an end where the face has no height of its own stays out: a fault
+/// that `heights::check` counts.
 fn outline_edges<'a>(
     words: &[u32],
     input: &CellInput,
@@ -420,22 +419,15 @@ fn outline_edges<'a>(
     };
     // Whole-unit middles, the same in every cell.
     let mid = |p: P, q: P| [(p[0] + q[0]).div_euclid(2), (p[1] + q[1]).div_euclid(2)];
-    let mut out = Vec::with_capacity(EDGE * rims.len());
+    // The rims' edges with a height at both ends: ends, host, paved heights.
+    let mut edges: Vec<(P, P, u32, [f64; 2])> = Vec::with_capacity(rims.len());
     let cell = f64::from(CELL_UNITS as i32);
     for &(a, b, id) in rims.iter().filter(|(a, b, _)| a != b) {
         let material = label(words, id)[2];
         let cuts = bin_cuts(a, b);
-        // The host of each piece between two cuts: its middle is the first point that the split reads.
-        let host_of = |(&r0, &r1): (&P, &P)| {
-            if material != u32::MAX {
-                material
-            } else {
-                end(mid(r0, r1), id).map_or(u32::MAX, |h| h.owner)
-            }
-        };
-        let hosts: Vec<u32> = cuts.iter().zip(&cuts[1..]).map(host_of).collect();
-        for (i, (&r0, &r1)) in cuts.iter().zip(&cuts[1..]).enumerate() {
-            let host = hosts[i];
+        for (&r0, &r1) in cuts.iter().zip(&cuts[1..]) {
+            // The middle is the first point that the split reads.
+            let host = if material != u32::MAX { material } else { end(mid(r0, r1), id).map_or(u32::MAX, |h| h.owner) };
             if host == u32::MAX {
                 continue;
             }
@@ -475,34 +467,44 @@ fn outline_edges<'a>(
                 pieces.push((q, hq));
                 ahead.pop();
             }
-            // The rim goes on with the same host at a split, or at a cut between two pieces of one host.
-            let on = |at: P, j: Option<usize>, flag: u32| {
-                let goes_on = (at != r0 && at != r1) || j.and_then(|j| hosts.get(j)) == Some(&host);
-                if goes_on {
-                    flag
-                } else {
-                    0
-                }
-            };
             for w in pieces.windows(2) {
-                let ((p, Some(hp)), (q, Some(hq))) = (w[0], w[1]) else { continue };
-                let flags = on(p, i.checked_sub(1), ON_A) | on(q, Some(i + 1), ON_B);
-                let ([tp, gp], [tq, gq]) = (ground(p, host, go), ground(q, host, go));
-                let grade = |g: f64| {
-                    let g = if g.is_nan() {
-                        i16::MIN
-                    } else {
-                        libm::round(g * GRADE_STEPS).clamp(-32767.0, 32767.0) as i16
-                    };
-                    u32::from(g as u16)
-                };
-                let d = [q[0] - p[0], q[1] - p[1]].map(|v| u32::from(v as i16 as u16));
-                crate::probe::field(crate::probe::Field::Line, host as usize);
-                assert!(host < 1 << 16, "a cell's record lines overflow an outline edge's half word");
-                out.extend([p[0] as u32, p[1] as u32, d[0] | d[1] << 16, host | grade(gp) << 16]);
-                out.extend([f(hp.h), f(hq.h), f(tp), f(tq), grade(gq) | flags]);
+                if let ((p, Some(hp)), (q, Some(hq))) = (w[0], w[1]) {
+                    if p != q {
+                        edges.push((p, q, host, [hp.h, hq.h]));
+                    }
+                }
             }
         }
+    }
+    // Each end's turn to the one edge of the same host that goes on from it (a cut, a split or the rim's
+    // corner): the angle between the two edges' integer directions, so two cells that hold both give it alike.
+    let mut at: BTreeMap<(P, u32, bool), Vec<usize>> = BTreeMap::new();
+    for (k, e) in edges.iter().enumerate() {
+        at.entry((e.0, e.2, true)).or_default().push(k);
+        at.entry((e.1, e.2, false)).or_default().push(k);
+    }
+    let dir = |k: usize| [f64::from(edges[k].1[0] - edges[k].0[0]), f64::from(edges[k].1[1] - edges[k].0[1])];
+    let turn = |from: [f64; 2], to: [f64; 2]| {
+        let t = libm::atan2(from[0] * to[1] - from[1] * to[0], from[0] * to[0] + from[1] * to[1]);
+        u32::from(libm::round(t / PI * TURN_STEPS).clamp(-TURN_STEPS, TURN_STEPS) as i16 as u16)
+    };
+    let none = u32::from(i16::MIN as u16);
+    let mut out = Vec::with_capacity(EDGE * edges.len());
+    for (k, &(p, q, host, h)) in edges.iter().enumerate() {
+        let one = |key: (P, u32, bool)| at.get(&key).filter(|v| v.len() == 1).map(|v| v[0]);
+        let turn_a = one((p, host, false)).map_or(none, |j| turn(dir(j), dir(k)));
+        let turn_b = one((q, host, true)).map_or(none, |j| turn(dir(k), dir(j)));
+        let go = f32w(words[words[6] as usize + LINE * host as usize + 6]) * (1.0 - rules.plan.heights.fade_share);
+        let ([tp, gp], [tq, gq]) = (ground(p, host, go), ground(q, host, go));
+        let grade = |g: f64| {
+            let g = if g.is_nan() { i16::MIN } else { libm::round(g * GRADE_STEPS).clamp(-32767.0, 32767.0) as i16 };
+            u32::from(g as u16)
+        };
+        let d = [q[0] - p[0], q[1] - p[1]].map(|v| u32::from(v as i16 as u16));
+        crate::probe::field(crate::probe::Field::Line, host as usize);
+        assert!(host < 1 << 16, "a cell's record lines overflow an outline edge's half word");
+        out.extend([p[0] as u32, p[1] as u32, d[0] | d[1] << 16, host | grade(gp) << 16]);
+        out.extend([f(h[0]), f(h[1]), f(tp), f(tq), grade(gq) | turn_b << 16, turn_a]);
     }
     out
 }

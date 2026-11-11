@@ -18,7 +18,7 @@ mod tests;
 
 use super::records::{
     blend_edge, edge_ends, edge_line, junction, label as label_words, skip_item, BAND, BINS, BIN_UNITS, CAND, DISC,
-    EDGE, FILL, GRADE_STEPS, HEAD, HEADER, JR, JR_ARM, LABEL, LEVEL, LINE, MARGIN_M, ON_A, ON_B, RAIL, SAMPLE, WALL,
+    EDGE, FILL, GRADE_STEPS, HEAD, HEADER, JR, JR_ARM, LABEL, LEVEL, LINE, MARGIN_M, RAIL, SAMPLE, TURN_STEPS, WALL,
 };
 use super::Surface;
 use crate::frame::{metres_per_unit_at, CELL_UNITS};
@@ -1042,7 +1042,8 @@ fn release(d: f64, reach: f64, p: &HeightRules) -> (f64, f64) {
 
 /// An edge of the paved outline (`records`): its ends with the paved face on the left, its host line,
 /// the paved height at each end, the plain terrain where the cones from each end start to let go and the
-/// terrain's grade outward there (NaN unknown), and at which ends the next edge of a straight rim goes on.
+/// terrain's grade outward there (NaN unknown), and the outline's turn at each end to the edge that goes on
+/// from it (radians, positive toward the paved face; NaN where none goes on).
 #[derive(Clone, Copy, Debug)]
 struct Edge {
     a: [f64; 2],
@@ -1051,17 +1052,18 @@ struct Edge {
     h: [f64; 2],
     t: [f64; 2],
     grade: [f64; 2],
-    on: [bool; 2],
+    turn: [f64; 2],
 }
 
 impl Block<'_> {
     fn edge(&self, k: u32) -> Edge {
         let w = &self.w[self.w[14] as usize + EDGE * k as usize..][..EDGE];
         let (a, b) = edge_ends(w);
-        let grade = |g: u32| match g as u16 as i16 {
+        let half = |g: u32, steps: f64| match g as u16 as i16 {
             i16::MIN => f64::NAN,
-            g => f64::from(g) / GRADE_STEPS,
+            g => f64::from(g) / steps,
         };
+        let (grade, turn) = (|g: u32| half(g, GRADE_STEPS), |t: u32| half(t, TURN_STEPS) * std::f64::consts::PI);
         Edge {
             a: [f64::from(a[0]), f64::from(a[1])],
             b: [f64::from(b[0]), f64::from(b[1])],
@@ -1069,28 +1071,47 @@ impl Block<'_> {
             h: [f32w(w[4]), f32w(w[5])],
             t: [f32w(w[6]), f32w(w[7])],
             grade: [grade(w[3] >> 16), grade(w[8])],
-            on: [w[8] & ON_A != 0, w[8] & ON_B != 0],
+            turn: [turn(w[9]), turn(w[8] >> 16)],
         }
     }
 }
 
-/// The greatest of top(x) − c |q − x| over the points x of an edge whose top runs linearly from `top[0]`
-/// to `top[1]` (sign 1, a fill), or the least of top(x) + c |q − x| (sign −1, a cut): exact. The cone's
-/// slope c is √(s² + g²) for the edge's grade g, so over a straight edge the envelope falls at s across
-/// it, and a cone is always steeper than its edge climbs: a neighbour edge up or down the outline never
-/// passes the foot's own height. q lies `along` metres along the edge from its start and `off` metres
-/// off its line; the edge is `len` metres long. At an end where the next edge of a straight rim goes on
-/// (`on`), the envelope is the straight line's, not round the end, and past the end's normal it falls on
-/// by `steep` (a rock face) more than the edge climbs, per metre: so it never holds the next edge's ground,
-/// and a rim cut anywhere gives the ground of the uncut rim.
+/// Where q lies past an end of an outline edge, within the cone of that end: the end (0 a, 1 b) and the metres
+/// to it. q lies `along` metres along the edge and `out` metres out from its line (negative into its paved
+/// face); the edge is `len` metres long and turns by `turn` at its ends (`Edge::turn`). Past an end the outline
+/// turns toward the paved face by t > 0 there, the end's cone covers the fan between the two edges' normals,
+/// which the next edge's own cone covers too; where it turns the other way or goes on straight, the next edge
+/// holds the ground; where no edge goes on, the cone covers all past the end.
+fn fan(along: f64, out: f64, len: f64, turn: [f64; 2]) -> Option<(usize, f64)> {
+    let (x, end) = if along > len {
+        (along - len, 1)
+    } else if along < 0.0 {
+        (along, 0)
+    } else {
+        return None;
+    };
+    let t = turn[end];
+    // The next edge's direction at the end, as (along, out): its normal bounds the fan.
+    let (c, s) = (libm::cos(t), libm::sin(t));
+    let before = if end == 1 { x * c - out * s <= 0.0 } else { x * c + out * s >= 0.0 };
+    (t.is_nan() || (t > 0.0 && before)).then(|| (end, libm::hypot(x, out)))
+}
+
+/// The cone of an outline edge at q (sign 1 a fill, −1 a cut) whose top runs linearly from `top[0]` to
+/// `top[1]`: across its strip the top falls at s, the line goes on past the ends' normals falling by `steep`
+/// (a rock face) more than the edge climbs per metre, so it never holds the next edge's ground; within an
+/// end's fan (`fan`) the end's own cone at s. So a rim cut or bent anywhere gives the ground of the uncut rim,
+/// and the ground is continuous. q lies `along` metres along the edge and `out` metres out from its line.
 #[allow(clippy::too_many_arguments)]
-fn edge_cone(along: f64, off: f64, len: f64, top: [f64; 2], s: f64, sign: f64, on: [bool; 2], steep: f64) -> f64 {
+fn edge_cone(along: f64, out: f64, len: f64, top: [f64; 2], s: f64, sign: f64, turn: [f64; 2], steep: f64) -> f64 {
     let g = if len > 0.0 { (top[1] - top[0]) / len } else { 0.0 };
-    let (lo, hi) = (if on[0] { f64::NEG_INFINITY } else { 0.0 }, if on[1] { f64::INFINITY } else { len });
-    let u = (along + sign * off * g / s).clamp(lo, hi);
-    let past = if on[0] { -along } else { 0.0 }.max(if on[1] { along - len } else { 0.0 }).max(0.0);
-    let d = ((u - along) * (u - along) + off * off).sqrt();
-    top[0] + g * u - sign * ((s * s + g * g).sqrt() * d + (steep + g.abs()) * past)
+    let past = (-along).max(along - len).max(0.0);
+    let line = top[0] + g * along - sign * (s * out.abs() + (steep + g.abs()) * past);
+    match fan(along, out, len, turn) {
+        Some((end, r)) if sign > 0.0 => line.max(top[end] - s * r),
+        Some((end, r)) => line.min(top[end] + s * r),
+        None => line,
+    }
 }
 
 /// How much the round of a cone of slope s at its foot (`cone`) holds it back at d metres from its
@@ -1169,10 +1190,11 @@ fn groups(b: &Block, q: [f64; 2], p: &HeightRules) -> (Vec<Group>, bool) {
         let (sc, wc) = fit(ln.cut, ln.cut_max, -need, ln.wall_max(p), p, ln.reach);
         g.d = g.d.min(d);
         // An edge's toe width lets go with its cone, so an edge that leaves at the reach leaves no step
-        // in the least width; past an end where its rim goes on it widens at a rock face's slope, as its
-        // cone falls on (`edge_cone`).
-        let beyond = if e.on[0] { -along } else { 0.0 }.max(if e.on[1] { along - len } else { 0.0 }).max(0.0);
-        let w = toe_width(d, span_k(sf, sc, at_share(e.grade, share), p), p) + p.face_max * beyond;
+        // in the least width; past an end's normal outside the end's fan it widens at a rock face's slope, as
+        // its cone falls on (`edge_cone`).
+        let past =
+            if fan(along, out * b.mpu, len, e.turn).is_some() { 0.0 } else { (-along).max(along - len).max(0.0) };
+        let w = toe_width(d, span_k(sf, sc, at_share(e.grade, share), p), p) + p.face_max * past;
         g.toe = g.toe.min(w + fade * (p.toe_max_m - w));
         // An edge's cone stands on its outward side, the side of its slope face. Past its line into its
         // paved face (from `SIDE_UNITS` on, where a face's own whole-unit rim and a point read beside it
@@ -1181,7 +1203,7 @@ fn groups(b: &Block, q: [f64; 2], p: &HeightRules) -> (Vec<Group>, bool) {
         let inside = if len > 0.0 { (-out - SIDE_UNITS).max(0.0) * b.mpu * p.face_max } else { 0.0 };
         // The cone from the paved height moved by `rise` (a wall's top), sign 1 a fill, −1 a cut.
         let cone = |rise: f64, s: f64, sign: f64| {
-            edge_cone(along, off, len, [e.h[0] + rise, e.h[1] + rise], s, sign, e.on, p.face_max)
+            edge_cone(along, out * b.mpu, len, [e.h[0] + rise, e.h[1] + rise], s, sign, e.turn, p.face_max)
         };
         let (fill, cut) = (cone(-wf, sf, 1.0), cone(wc, sc, -1.0));
         g.fill = g.fill.max(fill - relax - inside);

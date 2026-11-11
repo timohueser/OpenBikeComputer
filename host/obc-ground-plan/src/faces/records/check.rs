@@ -522,9 +522,10 @@ pub fn border(a: Cell, b: Cell, east: bool, step: i32) -> (u64, u64, Vec<(f64, S
 /// edge of the other block with the same words, its host line named by its class and its sample nearest
 /// the edge (two cells number a way's legs from its own start). The edges compared, and the ones that
 /// differ within `MARGIN_M` of the shared line and past it: only up to `MARGIN_M` past a cell are its
-/// inputs the neighbours' own.
+/// inputs the neighbours' own. An end's turn counts only within that listing reach: past it, the end's cone
+/// reaches no point of the other cell, and the other cell may not hold the edge that goes on there.
 pub fn outline_border(a: (&[u32], CellKey), b: (&[u32], CellKey)) -> (u64, [Vec<String>; 2]) {
-    type Edge = ([i64; 4], [u32; 6], [i64; 3]);
+    type Edge = ([i64; 4], [u32; 8], [i64; 3]);
     let edges = |(w, key): (&[u32], CellKey)| -> Vec<Edge> {
         let o = key.origin();
         let line = |l: u32| &w[w[6] as usize + LINE * l as usize..][..LINE];
@@ -543,7 +544,7 @@ pub fn outline_border(a: (&[u32], CellKey), b: (&[u32], CellKey)) -> (u64, [Vec<
                     .min_by_key(|s| (s[0] - g[0]).pow(2) + (s[1] - g[1]).pow(2))
                     .unwrap_or([0, 0]);
                 let name = [i64::from(host[7]), near[0], near[1]];
-                (g, [e[3] >> 16, e[4], e[5], e[6], e[7], e[8]], name)
+                (g, [e[3] >> 16, e[4], e[5], e[6], e[7], e[8] & 0xffff, e[9] & 0xffff, e[8] >> 16], name)
             })
             .collect()
     };
@@ -552,7 +553,7 @@ pub fn outline_border(a: (&[u32], CellKey), b: (&[u32], CellKey)) -> (u64, [Vec<
     let mut differ = [Vec::new(), Vec::new()];
     let mut checked = 0;
     for ((from, from_edges), (to, to_edges)) in [((a, &ea), (b, &eb)), ((b, &eb), (a, &ea))] {
-        let theirs: BTreeMap<[i64; 4], ([u32; 6], [i64; 3])> = to_edges.iter().map(|e| (e.0, (e.1, e.2))).collect();
+        let theirs: BTreeMap<[i64; 4], ([u32; 8], [i64; 3])> = to_edges.iter().map(|e| (e.0, (e.1, e.2))).collect();
         let o = to.1.origin();
         let sq = [o.x, o.y, o.x + CELL_UNITS, o.y + CELL_UNITS].map(|v| v as f64);
         let corners = [[sq[0], sq[1]], [sq[2], sq[1]], [sq[0], sq[3]], [sq[2], sq[3]]];
@@ -575,7 +576,16 @@ pub fn outline_border(a: (&[u32], CellKey), b: (&[u32], CellKey)) -> (u64, [Vec<
                 continue;
             }
             checked += 1;
-            if theirs.get(&e.0) != Some(&(e.1, e.2)) {
+            // The turns at a and at b, the last two words.
+            let turns = |mut w: [u32; 8]| {
+                for (t, v) in [(6, p), (7, q)] {
+                    if to_box(v) >= listed {
+                        w[t] = 0;
+                    }
+                }
+                w
+            };
+            if theirs.get(&e.0).map(|(w, n)| (turns(*w), *n)) != Some((turns(e.1), e.2)) {
                 // Within `MARGIN_M` of the shared line: within it of both squares.
                 let off =
                     |sq: [f64; 4], v: [f64; 2]| (sq[0] - v[0]).max(v[0] - sq[2]).max(sq[1] - v[1]).max(v[1] - sq[3]);
