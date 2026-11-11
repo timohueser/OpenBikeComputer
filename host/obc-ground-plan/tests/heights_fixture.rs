@@ -25,12 +25,13 @@ const INSIDE_MAX: usize = 7;
 /// steep as their need: the count must not grow.
 const EDGE_MAX: usize = 114;
 /// Pairs of grid points on a slope steeper than a rock face where the terrain is not (`Scan::steep`),
-/// measured on the revision 15 fixture with cones on their outward side, outline edges cut at the bin grid
-/// and faces past the highest wall as steep as their need: the count must not grow.
-const STEEP_MAX: usize = 1291;
+/// measured on the revision 15 fixture with cones on their outward side, outline edges cut at the bin grid and
+/// split where their need varies, and faces past the highest wall as steep as their need: the count must not
+/// grow.
+const STEEP_MAX: usize = 1316;
 /// Of those, the pairs steeper than 6 m/m, measured the same way; none is steeper than 12 m/m. A
 /// near-vertical rim that the total hides must not come back.
-const STEEP_6_MAX: usize = 14;
+const STEEP_6_MAX: usize = 5;
 /// The places of the ripple report (latitude, longitude).
 const PLACES: [(&str, f64, f64); 5] = [
     ("v17-sharp-corners", 46.821753, 8.404913),

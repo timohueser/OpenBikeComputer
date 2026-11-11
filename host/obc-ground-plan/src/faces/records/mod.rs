@@ -356,6 +356,13 @@ fn near_box(a: [f64; 2], b: [f64; 2], bx: [f64; 4], r: f64) -> bool {
 /// (`check::STEP_M`).
 const SPLIT_M: f64 = 0.005;
 const SPLIT_MIN_M: f64 = 0.25;
+/// A rim also splits while the ground where its cones let go leaves the line between its ends by more than
+/// this: the cones fit the need at the ends, so a ground they did not see would move the slope with the
+/// cuts.
+const SPLIT_GROUND_M: f64 = 0.25;
+/// And while the need of its cones (the paved height less that ground) differs between its ends by more
+/// than this.
+const SPLIT_NEED_M: f64 = 0.5;
 /// The quarters find a field that crosses the line at the middle. Its offset there grows with the
 /// cube of the piece's length, so a shorter piece reads its middle alone.
 const QUARTER_M: f64 = 1.0;
@@ -411,8 +418,15 @@ fn outline_edges<'a>(
             if seg_box(r0, r1, [0.0, 0.0, cell, cell]) > outline_units(input.key, reach) {
                 continue;
             }
-            // The piece's edges from r0: an edge splits while the paved field leaves the line between
-            // its ends.
+            // The cones let go from this many metres.
+            let go = reach * (1.0 - rules.plan.heights.fade_share);
+            let outward = |p: [f64; 2], m: f64| {
+                let u = m / metres_per_unit(origin.y + libm::round(p[1]) as i64);
+                terrain([p[0] + n[0] * u, p[1] + n[1] * u])
+            };
+            let ground = |x: P| outward(fp(x), go);
+            // The piece's edges from r0: an edge splits while the paved field, or the ground where its
+            // cones let go, leaves the line between its ends.
             let mut pieces = vec![(r0, end(r0, id))];
             let mut ahead = vec![(r1, end(r1, id))];
             while let Some(&(q, hq)) = ahead.last() {
@@ -422,28 +436,31 @@ fn outline_edges<'a>(
                     (Some(hp), Some(hq), Some(hx)) => (hx.h - (hp.h + f * (hq.h - hp.h))).abs() > SPLIT_M,
                     (hp, hq, hx) => hx.is_some() != (hp.is_some() && hq.is_some()),
                 };
+                let (gp, gq) = (ground(p), ground(q));
+                let bent = |x: P, f: f64| (ground(x) - (gp + f * (gq - gp))).abs() > SPLIT_GROUND_M;
                 let long = metres(p, q);
                 let quarters = |end: &mut dyn FnMut(P, u32) -> Option<Height>| {
-                    long > QUARTER_M && (off(mid(p, m), 0.25, end) || off(mid(m, q), 0.75, end))
+                    long > QUARTER_M
+                        && (off(mid(p, m), 0.25, end)
+                            || off(mid(m, q), 0.75, end)
+                            || bent(mid(p, m), 0.25)
+                            || bent(mid(m, q), 0.75))
                 };
-                if long > SPLIT_MIN_M && (off(m, 0.5, &mut end) || quarters(&mut end)) {
+                // The cones take one slope per edge from the greater need of its ends (`heights::fit`).
+                let need = |h: Option<Height>, g: f64| h.map_or(f64::NAN, |h| h.h - g);
+                let varies = (need(hp, gp) - need(hq, gq)).abs() > SPLIT_NEED_M;
+                if long > SPLIT_MIN_M && (off(m, 0.5, &mut end) || bent(m, 0.5) || varies || quarters(&mut end)) {
                     ahead.push((m, end(m, id)));
                     continue;
                 }
                 pieces.push((q, hq));
                 ahead.pop();
             }
-            // The cones let go from this many metres.
-            let go = reach * (1.0 - rules.plan.heights.fade_share);
-            let off = |p: [f64; 2], m: f64| {
-                let u = m / metres_per_unit(origin.y + libm::round(p[1]) as i64);
-                terrain([p[0] + n[0] * u, p[1] + n[1] * u])
-            };
-            let t: Vec<f64> = pieces.iter().map(|&(p, _)| off(fp(p), go)).collect();
+            let t: Vec<f64> = pieces.iter().map(|&(p, _)| ground(p)).collect();
             for (k, w) in pieces.windows(2).enumerate() {
                 let ((p, Some(hp)), (q, Some(hq))) = (w[0], w[1]) else { continue };
                 let mid = [(f64::from(p[0]) + f64::from(q[0])) / 2.0, (f64::from(p[1]) + f64::from(q[1])) / 2.0];
-                let grade = (off(mid, go) - off(mid, go / 2.0)) / (go / 2.0);
+                let grade = (outward(mid, go) - outward(mid, go / 2.0)) / (go / 2.0);
                 let grade = if grade.is_nan() {
                     i16::MIN
                 } else {
