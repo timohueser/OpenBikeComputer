@@ -426,15 +426,14 @@ fn outline_edges<'a>(
         let material = label(words, id)[2];
         let cuts = bin_cuts(a, b);
         // The host of each piece between two cuts: its middle is the first point that the split reads.
-        let hosts: Vec<u32> = (cuts.iter().zip(&cuts[1..]))
-            .map(|(&r0, &r1)| {
-                if material != u32::MAX {
-                    material
-                } else {
-                    end(mid(r0, r1), id).map_or(u32::MAX, |h| h.owner)
-                }
-            })
-            .collect();
+        let host_of = |(&r0, &r1): (&P, &P)| {
+            if material != u32::MAX {
+                material
+            } else {
+                end(mid(r0, r1), id).map_or(u32::MAX, |h| h.owner)
+            }
+        };
+        let hosts: Vec<u32> = cuts.iter().zip(&cuts[1..]).map(host_of).collect();
         for (i, (&r0, &r1)) in cuts.iter().zip(&cuts[1..]).enumerate() {
             let host = hosts[i];
             if host == u32::MAX {
@@ -477,13 +476,24 @@ fn outline_edges<'a>(
                 ahead.pop();
             }
             // The rim goes on with the same host at a split, or at a cut between two pieces of one host.
-            let on = |at: P, j: Option<usize>| at != r0 && at != r1 || j.and_then(|j| hosts.get(j)) == Some(&host);
+            let on = |at: P, j: Option<usize>, flag: u32| {
+                let goes_on = (at != r0 && at != r1) || j.and_then(|j| hosts.get(j)) == Some(&host);
+                if goes_on {
+                    flag
+                } else {
+                    0
+                }
+            };
             for w in pieces.windows(2) {
                 let ((p, Some(hp)), (q, Some(hq))) = (w[0], w[1]) else { continue };
-                let flags = u32::from(on(p, i.checked_sub(1))) * ON_A | u32::from(on(q, Some(i + 1))) * ON_B;
+                let flags = on(p, i.checked_sub(1), ON_A) | on(q, Some(i + 1), ON_B);
                 let ([tp, gp], [tq, gq]) = (ground(p, host, go), ground(q, host, go));
                 let grade = |g: f64| {
-                    let g = if g.is_nan() { i16::MIN } else { libm::round(g * GRADE_STEPS).clamp(-32767.0, 32767.0) as i16 };
+                    let g = if g.is_nan() {
+                        i16::MIN
+                    } else {
+                        libm::round(g * GRADE_STEPS).clamp(-32767.0, 32767.0) as i16
+                    };
                     u32::from(g as u16)
                 };
                 let d = [q[0] - p[0], q[1] - p[1]].map(|v| u32::from(v as i16 as u16));
