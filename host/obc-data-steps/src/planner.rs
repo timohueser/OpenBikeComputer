@@ -95,7 +95,8 @@ const fn whole(name: &'static str, format: u32, readers: &'static [&'static Read
 
 /// The files of a work layer hold router types: the closure sets, `Point` and the postcard
 /// `CostBasis` of the dictionary. Its format is the sum of the router `FORMAT` and the format of
-/// its own files, 2; each only grows.
+/// its own files, 2; each only grows. The three work layers share this format, so a change of the
+/// files of one bakes all three again.
 const fn work(name: &'static str) -> Layer {
     Layer {
         name,
