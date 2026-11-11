@@ -126,6 +126,8 @@
     let spot = $state<{ coordinate: Coordinate; legEndId?: string } | null>(null);
     // The selected place when it is not a fixture: a basemap place.
     let mapPlace = $state<Place | null>(null);
+    // A place selected in a town card opens its callout without the focus, so the arrow keys stay in the card.
+    let quietCallout = $state(false);
     let hiddenCategories = $state<PlaceCategory[]>([]);
     let highlightedCategories = $state<PlaceCategory[]>([]);
     let corridor = $state<Place[]>([]);
@@ -275,6 +277,7 @@
     const nights: NightChoices = {
         get choosing() { return pickerNight; },
         get stopId() { return openStop?.id ?? null; },
+        get shownId() { return selectedId; },
         found: nightStops,
         window: night => stopWindows[night] ?? null,
         kinds: night => nightKinds(trip, night),
@@ -308,7 +311,11 @@
         },
         endHere: (night, stop) => endDayIn(night, stop),
         stay: (night, place) => stayAt(night, place),
-        selectPlace: place => selectPlace(place),
+        selectPlace: place => {
+            if (!place) return clearSelection();
+            selectPlace(place);
+            quietCallout = true;
+        },
         pick: () => pickOnMap(),
         retry: night => { const window = stopWindows[night]; if (window) stopFinder.retry(stretchKey(routeKey, window)); },
     };
@@ -578,6 +585,7 @@
         pending = null;
         pendingSource = null;
         spot = null;
+        quietCallout = false;
     }
 
     function clearSelection() {
@@ -1283,7 +1291,7 @@
                         {#if calloutKind}
                             {#key selectedId}
                                 <MapCallout
-                                    kind={calloutKind} trip={withProposals(trip, session.line, proposals)} line={session.line} {days} {dayLabels} {night} {legMode}
+                                    kind={calloutKind} trip={withProposals(trip, session.line, proposals)} line={session.line} {days} {dayLabels} {night} {legMode} takeFocus={!quietCallout}
                                     onEndpoint={chooseEndpoint} point={selectedPoint} place={selectedPoint ? pointPlace : selectedPlace} coordinate={previewCoordinate} {detailsError}
                                     onRoutes={config.routes ? () => openRoutes(selectedPlace ? { coordinate: [...selectedPlace.coordinate], name: selectedPlace.label }
                                         : { coordinate: [...spot!.coordinate], near: map?.placeName(spot!.coordinate) }) : undefined}

@@ -19,7 +19,7 @@
     import type { RoutingLine } from '../../lib/planner/routing';
 
     let {
-        kind, trip, line, days, detailsError = '', dayLabels, night, point, place, coordinate, legMode,
+        kind, trip, line, days, detailsError = '', dayLabels, night, point, place, coordinate, legMode, takeFocus = true,
         onClose, onEndpoint, onRoutes, onAddHere, onLegMode, onInsert, onLoop, onLoopStart, onPick, onChooseNight, onStay, onAddVisit, onRename, onKind, onRemove, children,
     }: {
         detailsError?: string;
@@ -38,6 +38,8 @@
         /** Where a place callout would pin the overnight. */
         coordinate?: Coordinate | null;
         legMode: LegMode;
+        /** False keeps the focus where it is, such as in a radio group that moves on with the arrow keys. */
+        takeFocus?: boolean;
         onEndpoint?: (kind: 'start' | 'finish') => void;
         /** "Signed routes from here" on a place or a map point. */
         onRoutes?: () => void;
@@ -94,7 +96,7 @@
     onMount(() => {
         opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
         // The map moves this content into its popup after mounting.
-        const frame = requestAnimationFrame(() => root.focus({ preventScroll: true }));
+        const frame = requestAnimationFrame(() => { if (takeFocus) root.focus({ preventScroll: true }); });
         return () => cancelAnimationFrame(frame);
     });
 

@@ -2,7 +2,7 @@
 
 import { mount, tick, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { addRestDay, allStay, planView, type Place } from '../../lib/planner/editor';
+import { addRestDay, allStay, planView, type Place, type Stay } from '../../lib/planner/editor';
 import { testLine, testTrip } from '../../../test-support/planner/trip';
 import type { NightChoices } from '../../lib/planner/night-stops.svelte';
 import { proposal, type Stop } from '../../lib/planner/stops';
@@ -121,13 +121,13 @@ describe('route stop handles', () => {
 });
 
 function nightChoices(choices: Partial<NightChoices> = {}): NightChoices {
-    return { choosing: null, stopId: null, kinds: () => allStay, found: () => undefined, window: () => null, around: () => undefined, neighbours: () => [undefined, undefined],
+    return { choosing: null, stopId: null, shownId: null, kinds: () => allStay, found: () => undefined, window: () => null, around: () => undefined, neighbours: () => [undefined, undefined],
         campsites: 0, keepCampsites: vi.fn(),
         date: () => undefined, elevationAt: () => null, choose: vi.fn(), open: vi.fn(), step: vi.fn(), endHere: vi.fn(), stay: vi.fn(),
         selectPlace: vi.fn(), pick: vi.fn(), retry: vi.fn(), setKinds: vi.fn(), release: vi.fn(), ...choices };
 }
 
-const town = (name: string, km: number): Stop => ({ id: name, name, km, from: km, to: km, food: [], shop: [], water: [],
+const town = (name: string, km: number): Stop => ({ id: name, name, km, from: km, to: km, food: [], shop: [],
     sleep: [{ place: { id: `${name}-camp`, kind: 'place', category: 'camp', placeKind: 'campsite', label: `${name} camping`, description: '', coordinate: [7.6, 47.2], locality: name }, km, off: .2 }] });
 
 function itineraryProps(expandedDay: number | null) {
@@ -176,6 +176,7 @@ describe('planner day views', () => {
         expect(towns.map(b => b.querySelector('strong')?.textContent)).toEqual(['Laufen', 'BernEven days']);
         expect(towns[1].getAttribute('aria-label')).toMatch(/^Bern, 1 campsite\. Day 1 \d+h \d\dm, day 3 \d+h \d\dm\. Even days$/);
         expect(document.querySelector('.tools')!.compareDocumentPosition(towns[0]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        expect(document.querySelectorAll('ul[aria-label="Towns for night 1"] li button')).toHaveLength(towns.length);
 
         towns[0].click(); await tick();
         expect(document.querySelector('h2')).toBeNull();
@@ -188,6 +189,46 @@ describe('planner day views', () => {
         expect(document.querySelectorAll('[data-day]')).toHaveLength(3);
         expect(document.querySelector('.keep')).not.toBeNull();
         expect(document.activeElement).toBe(button('Choose night 1'));
+    });
+
+    it('selects where to sleep in a town, and one button ends the day there', async () => {
+        const props = itineraryProps(null), total = props.days.at(-1)!.to * planView(props.trip, props.line).total;
+        const bern = town('Bern', total * .45);
+        const hotel: Place = { id: 'Bern-hotel', kind: 'place', category: 'hotel', placeKind: 'hotel', label: 'Hotel Bären', description: '', coordinate: [7.6, 47.2], locality: 'Bern' };
+        bern.sleep.push({ place: hotel, km: bern.km, off: 1 }, { place: { ...bern.sleep[0].place, id: 'Bern-unnamed', label: 'campsite' }, km: bern.km, off: .5 });
+        let kinds = $state<Stay[]>(['camp', 'hotel']);
+        const endHere = vi.fn(), stay = vi.fn(), selectPlace = vi.fn();
+        props.nights = nightChoices({ choosing: 1, stopId: 'Bern', kinds: () => kinds, found: () => ({ state: 'ready', stops: [bern] }),
+            window: () => [0, total * .6], endHere, stay, selectPlace });
+        mounted.push(mount(Itinerary, { target: document.body, props: { ...props, nightPage: 1 } }));
+        await tick();
+        const confirm = () => document.querySelector<HTMLButtonElement>('.confirm button')!;
+        const radio = (name: string) => [...document.querySelectorAll('label')].find(row => row.textContent?.includes(name))!.querySelector('input')!;
+
+        expect(document.querySelector('[role="radiogroup"]')?.getAttribute('aria-label')).toBe('Where you sleep on night 1');
+        expect(radio('Somewhere in Bern').checked).toBe(true);
+        expect(document.body.textContent).not.toContain('Water');
+        expect(confirm().textContent?.trim()).toBe('End day 1 in Bern');
+        confirm().click();
+        expect(endHere).toHaveBeenCalledWith(1, bern);
+
+        radio('Hotel Bären').click(); await tick();
+        expect(selectPlace).toHaveBeenCalledExactlyOnceWith(hotel);
+        expect(confirm().textContent?.trim()).toBe('End day 1 at Hotel Bären');
+        confirm().click();
+        expect(stay).toHaveBeenCalledWith(1, hotel);
+        // A click on the checked place shows it on the map again.
+        radio('Hotel Bären').click(); await tick();
+        expect(selectPlace).toHaveBeenCalledTimes(2);
+        radio('Somewhere in Bern').click(); await tick();
+        expect(selectPlace).toHaveBeenLastCalledWith(null);
+        radio('Unnamed campsite').click(); await tick();
+        expect(confirm().textContent?.trim()).toBe('End day 1 at this campsite');
+
+        radio('Hotel Bären').click(); await tick();
+        kinds = ['camp']; await tick(); await tick();
+        expect(radio('Somewhere in Bern').checked).toBe(true);
+        expect(confirm().textContent?.trim()).toBe('End day 1 in Bern');
     });
 
     it('keeps the scroll position of the day list under a night page, but not of an open day', async () => {
