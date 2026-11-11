@@ -64,13 +64,15 @@ export const suitable = (stop: Stop, kinds: Stay[]): StopPlace[] => stop.sleep.f
     return !!kind && kinds.includes(kind);
 });
 
-/** What a stop offers of `kinds`: "2 campsites · 1 hut". */
-export function stopCounts(stop: Stop, kinds: Stay[]): string {
+/** What a stop offers of `kinds`: "2 campsites · 1 hut". The `short` form of a row gives only the total of more than two
+ * kinds: "21 places to sleep". */
+export function stopCounts(stop: Stop, kinds: Stay[], short = false): string {
     const places = suitable(stop, kinds);
-    return allStay.flatMap(kind => {
+    const counts = allStay.flatMap(kind => {
         const n = places.filter(p => stayKind(p.place.placeKind) === kind).length;
         return n ? [`${n} ${stayNouns[kind]}${n === 1 ? '' : 's'}`] : [];
-    }).join(' · ');
+    });
+    return short && counts.length > 2 ? `${places.length} places to sleep` : counts.join(' · ');
 }
 
 /** Where the places of `kinds` of a stop are along the route: "km 42–46". */
