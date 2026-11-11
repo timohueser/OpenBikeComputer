@@ -103,13 +103,14 @@ export function mouthMesh(b: MeshBuilder, k: Mouth, line: Line, sign: 1 | -1): v
     for (const side of [1, -1]) b.quad([fixed(s0, side * k.fh, zL - SINK_M, CONCRETE_DARK), fixed(k.L, side * k.fh, zL - SINK_M, CONCRETE_DARK), fixed(k.L, side * k.fh, zL + k.H, CONCRETE_DARK), fixed(s0, side * k.fh, zL + k.H, CONCRETE_DARK)], times(right, side));
     box(b, k, s0 - 0.12, k.L + 0.5, -k.fh - 0.12, k.fh + 0.12, zL + k.H, zL + k.H + 0.22, COPING);
     // The bore's outer shell behind the frame: under the ground wherever the cover holds.
-    box(b, k, k.L, k.L + k.back, -k.oh - 0.4, k.oh + 0.4, zL - SINK_M, zL + k.hh + 0.4, CONCRETE_DARK, false);
+    box(b, k, k.L, k.L + k.back, -k.oh - 0.4, k.oh + 0.4, zL - SINK_M, zL + k.hh + 0.4, CONCRETE_DARK, false, k.grade * k.back);
 }
 
 /** A box in a mouth's local metres, without its bottom. */
-function box(b: MeshBuilder, k: Mouth, s0: number, s1: number, a0: number, a1: number, z0: number, z1: number, colour: number, front = true): void {
+function box(b: MeshBuilder, k: Mouth, s0: number, s1: number, a0: number, a1: number, z0: number, z1: number, colour: number, front = true, rise = 0): void {
     const right: V3 = [-k.d[1], -k.d[0], 0], into: V3 = [k.d[0], -k.d[1], 0];
-    const v = (s: number, a: number, z: number) => b.vertex(...place(k, s, a), z, colour);
+    // `rise` lifts the far end: the shell of a bore that climbs.
+    const v = (s: number, a: number, z: number) => b.vertex(...place(k, s, a), z + (s === s1 ? rise : 0), colour);
     b.quad([v(s0, a0, z1), v(s0, a1, z1), v(s1, a1, z1), v(s1, a0, z1)], [0, 0, 1]);
     if (front) b.quad([v(s0, a0, z0), v(s0, a1, z0), v(s0, a1, z1), v(s0, a0, z1)], [-into[0], -into[1], 0]);
     b.quad([v(s1, a0, z0), v(s1, a1, z0), v(s1, a1, z1), v(s1, a0, z1)], into);
@@ -149,9 +150,8 @@ function pitMesh(b: MeshBuilder, k: Mouth, line: Line): void {
             }
         }
     }
-    // A riser where the way down begins: the ground before it may lie a little over the floor.
-    const own = (s: number, a: number, z: number, on?: number) => b.vertex(...place(k, s, a), z, SHOULDER, 0, on ?? -15, OWN_LOOK);
-    b.quad([own(k.s0, -k.fh, k.z0 - 0.4), own(k.s0, k.fh, k.z0 - 0.4), own(k.s0, k.fh, k.z0 + 0.8, -0.3), own(k.s0, -k.fh, k.z0 + 0.8, -0.3)], [into[0], into[1], 0]);
+    // A riser under the floor's first edge: where the plan dug its own way down, the ground before the pit lies under the floor.
+    b.quad([fixed(k.s0, -k.fh, k.z0 - 1.5, SHOULDER), fixed(k.s0, k.fh, k.z0 - 1.5, SHOULDER), fixed(k.s0, k.fh, k.z0 + LIFT_M, SHOULDER), fixed(k.s0, -k.fh, k.z0 + LIFT_M, SHOULDER)], [-into[0], -into[1], 0]);
     // The end face, and beside it the end of a bank.
     const zL = floor(k, k.L), back: V3 = [-into[0], -into[1], 0];
     if (k.earth) b.quad([earth(k.L, -k.fh, zL), earth(k.L, k.fh, zL), earth(k.L, k.fh, 1e5, 0), earth(k.L, -k.fh, 1e5, 0)], back);
