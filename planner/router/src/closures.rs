@@ -21,7 +21,7 @@ pub enum Kind {
     Sidepath,
     /// `discouraged`.
     Discouraged,
-    /// Access for another group, such as `destination`, `customers` or `psv`.
+    /// Access for another group, such as `customers`, `residents` or `psv`.
     Limited,
     /// A conditional restriction that names only months, days or seasons.
     Seasonal,
