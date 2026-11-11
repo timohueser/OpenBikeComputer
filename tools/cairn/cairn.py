@@ -468,13 +468,22 @@ def updated(violations: list[Violation], baseline: set[str]) -> set[str]:
     return baseline & {v.id for v in violations}
 
 
-def grown(head: set[str], base: set[str] | None, violations: list[Violation]) -> list[str]:
+def grown(head: set[str], base: set[str] | None, violations: list[Violation], widened: bool = False) -> list[str]:
     """The baseline entries that a change added by hand.
 
     Only `--update` changes an existing baseline, and it only removes. A base with no baseline
-    allows exactly the first baseline that `--accept` writes.
+    allows exactly the first baseline that `--accept` writes. A change that is `widened` may also
+    add the violations of HEAD.
     """
-    return sorted(head - ({v.id for v in violations} if base is None else base))
+    current = {v.id for v in violations}
+    return sorted(head - (current if base is None else base | current if widened else base))
+
+
+def widened(show: Callable[[str], str | None], config: dict) -> bool:
+    """Whether the adapters changed since the base commit. A new adapter finds violations that
+    the check could not see before, so the baseline may grow in that change."""
+    text = show(CONFIG)
+    return text is not None and json.loads(text).get("adapters") != config.get("adapters")
 
 
 # ── input ────────────────────────────────────────────────────────────────────
@@ -803,6 +812,7 @@ def main(argv: list[str] | None = None) -> int:
             stale.append(data_page)
         commit = merge_base(ROOT, args.base) if args.base else None
         base = base_baseline(shown_at(ROOT, commit)) if commit else None
+        wider = widened(shown_at(ROOT, commit), config) if commit else False
         # An approval at the base still holds, so a change cannot lift it to hide its own violation.
         was_approved = approved_at(ROOT, commit, config["docs"].rstrip("/")) if commit else set()
         skill = skill_tokens(ROOT, config["skill"]) if "skill" in config else []
@@ -827,7 +837,7 @@ def main(argv: list[str] | None = None) -> int:
     approved = {doc.system for doc in docs if doc.status == "approved"} | was_approved
     failing = report(result, baseline, docs, approved)
     # The ratchet protects itself while every system is still a draft.
-    added = grown(baseline, base, result.violations) if args.base else []
+    added = grown(baseline, base, result.violations, wider) if args.base else []
     if added:
         print(f"\ncairn: the baseline grew since the merge base with {args.base}; only `--update` changes it:")
         for line in added:

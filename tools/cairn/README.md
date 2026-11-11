@@ -57,7 +57,9 @@ the systems that its ID names. `--update` never adds an entry. `--accept` writes
 baseline and refuses when the file exists.
 
 `--base REF` fails when the baseline has an entry that the baseline at the merge base does not
-have. When the merge base has no baseline, the baseline must equal the one `--accept`
+have. One change may add entries: a change to `adapters` in the config, because a new adapter finds
+violations that the check could not see before. In that change the baseline may also hold the
+violations of HEAD: delete the file and run `--accept`. When the merge base has no baseline, the baseline must equal the one `--accept`
 writes. This rule applies also while no doc is approved. The CI job uses `--base`.
 
 With `--base`, a system is approved when its doc has `status: approved` at the merge base or at

@@ -313,6 +313,16 @@ class RatchetTests(unittest.TestCase):
         self.assertEqual(cairn.grown({"R4 maps"}, None, current), [])
         self.assertEqual(cairn.grown({"R4 maps", "R1 new"}, None, current), ["R1 new"])
 
+    def test_a_change_of_the_adapters_may_add_the_violations_of_head_to_the_baseline(self):
+        current = [cairn.Violation("cycle", "cycle a -> b", frozenset({"a", "b"}), "")]
+        base = {"R4 maps"}
+        self.assertEqual(cairn.grown({"R4 maps", "cycle a -> b"}, base, current), ["cycle a -> b"])
+        self.assertEqual(cairn.grown({"R4 maps", "cycle a -> b", "R1 invented"}, base, current, widened=True), ["R1 invented"])
+        config = {"adapters": {"cargo": {}, "imports": {"extensions": [".ts"]}}}
+        self.assertTrue(cairn.widened({cairn.CONFIG: '{"adapters": {"cargo": {}}}'}.get, config))
+        self.assertFalse(cairn.widened({cairn.CONFIG: json.dumps(config)}.get, config))
+        self.assertFalse(cairn.widened({}.get, config))
+
     def test_the_base_baseline_path_comes_from_the_base_config(self):
         files = {
             ".cairn/config.json": '{"baseline": "old/baseline.json"}',
