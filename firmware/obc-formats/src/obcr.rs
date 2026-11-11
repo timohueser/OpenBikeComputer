@@ -3,7 +3,7 @@
 use crate::io::{validate_prefix, DecodeError};
 
 pub const MAGIC: &[u8; 4] = b"OBCR";
-/// The one accepted route version. Older files must be re-imported.
+/// The one accepted route version; the header check refuses every other.
 pub const VERSION: u8 = 5;
 /// The header's ride core — every field the geometry path needs.
 pub const HEADER_LEN: usize = 112;
@@ -38,7 +38,8 @@ pub const VISIT_DESCRIPTOR_LEN: usize = 80;
 pub const FACTS_POLICY: u16 = 1;
 pub const WAYPOINT_ELE_NONE: i16 = i16::MIN;
 /// The waypoint category byte for "no category", the diamond every hand-placed waypoint renders
-/// as. `1..=6` are the OBCM `PoiCategory` wire ids; any other value reads as generic.
+/// as. Any other byte that is an OBCM `PoiCategory` wire id reads as that category; the rest
+/// read as generic. The GPX import writes only `0..=6`.
 pub const WAYPOINT_CATEGORY_GENERIC: u8 = 0;
 
 pub fn validate_header_prefix(bytes: &[u8]) -> Result<u8, DecodeError> {

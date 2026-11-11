@@ -335,7 +335,7 @@ impl RouteRepository for FlatRouteStore {
         source.read_at(0, &mut bytes).ok()?;
         Some(bytes)
     }
-    fn fingerprint(&self, id: CatalogObjectId) -> Option<obc_formats::assistant::PayloadFingerprint> {
+    fn fingerprint(&self, id: CatalogObjectId) -> Option<obc_formats::navigator::PayloadFingerprint> {
         self.owner
             .entries()
             .ok()?
@@ -355,7 +355,7 @@ impl RouteRepository for FlatRouteStore {
     }
     fn read_checkpoint(
         &self,
-    ) -> Result<Option<obc_formats::assistant::NavigatorCheckpoint>, obc_app::metadata::MetadataError> {
+    ) -> Result<Option<obc_formats::navigator::NavigatorCheckpoint>, obc_app::metadata::MetadataError> {
         use obc_app::metadata::MetadataError;
         let owner = self.owner.0.lock().map_err(|_| MetadataError::WriteFailed)?;
         let store = owner.ready().map_err(|_| MetadataError::RemountRequired)?;

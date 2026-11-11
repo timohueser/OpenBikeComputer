@@ -117,7 +117,7 @@ pub struct FindState {
     profile: crate::settings::BikeType,
     local: Option<(u8, u16)>,
     selected_review: bool,
-    invalid_visit: Option<obc_formats::assistant::PayloadFingerprint>,
+    invalid_visit: Option<obc_formats::navigator::PayloadFingerprint>,
     pub(crate) resume_offer: bool,
     /// The catalog row the standing checkpoint names, so the Resume card can say which route.
     pub(crate) resume_route: Option<u8>,
