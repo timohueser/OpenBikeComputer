@@ -71,8 +71,9 @@ channel is `null` on every edge. A client accepts a channel that it does not kno
 | `sac_scale` | The OSM `sac_scale` as an integer from `0` (`strolling`) through `1` (`hiking`, T1) to `6` (`difficult_alpine_hiking`, T6), or `null` when the way has none |
 
 The router blocks a mode only for the access value `no`; `dismount` blocks riding only. It uses an
-edge that is possibly closed for the mode that the route uses on it, and reports it. A closure on a
-node, such as a gate, belongs to the edges of the road that arrives at the node. A closure applies
+edge that is possibly closed for the mode that the route uses on it, and reports it. A way or a
+node with the access value `destination` carries no closure. A closure on a node, such as a gate,
+belongs to the edges of the road that arrives at the node. A closure applies
 only to the direction of travel that its tag names. A closure from an access value makes the road
 cost three times its length, and a node cost as much as 300 m of good road. A `seasonal` or
 `conditional` closure adds no cost:
@@ -84,7 +85,7 @@ cost three times its length, and a node cost as much as 300 m of good road. A `s
 | `farm` | Access value `agricultural` or `forestry` | The value |
 | `sidepath` | Access value `use_sidepath` | `use_sidepath` |
 | `discouraged` | Access value `discouraged` | `discouraged` |
-| `limited` | Access value for another group: `destination`, `customers`, `delivery`, `residents`, `military`, or a motor group such as `psv` | The value |
+| `limited` | Access value for another group: `customers`, `delivery`, `residents`, `military`, or a motor group such as `psv` | The value |
 | `seasonal` | A conditional restriction that names only months, days or seasons | The OSM condition, such as `Nov-May` |
 | `conditional` | Any other conditional restriction | The OSM condition, such as `wet` |
 | `unclear` | An access value or a barrier that the router does not know, or a reversible one-way | The value, `barrier=VALUE`, or `oneway=reversible` |
