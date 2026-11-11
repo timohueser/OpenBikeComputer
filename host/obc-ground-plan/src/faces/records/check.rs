@@ -524,7 +524,7 @@ pub fn border(a: Cell, b: Cell, east: bool, step: i32) -> (u64, u64, Vec<(f64, S
 /// differ within `MARGIN_M` of the shared line and past it: only up to `MARGIN_M` past a cell are its
 /// inputs the neighbours' own.
 pub fn outline_border(a: (&[u32], CellKey), b: (&[u32], CellKey)) -> (u64, [Vec<String>; 2]) {
-    type Edge = ([i64; 4], [u32; 5], [i64; 3]);
+    type Edge = ([i64; 4], [u32; 6], [i64; 3]);
     let edges = |(w, key): (&[u32], CellKey)| -> Vec<Edge> {
         let o = key.origin();
         let line = |l: u32| &w[w[6] as usize + LINE * l as usize..][..LINE];
@@ -543,7 +543,7 @@ pub fn outline_border(a: (&[u32], CellKey), b: (&[u32], CellKey)) -> (u64, [Vec<
                     .min_by_key(|s| (s[0] - g[0]).pow(2) + (s[1] - g[1]).pow(2))
                     .unwrap_or([0, 0]);
                 let name = [i64::from(host[7]), near[0], near[1]];
-                (g, [e[3] >> 16, e[4], e[5], e[6], e[7]], name)
+                (g, [e[3] >> 16, e[4], e[5], e[6], e[7], e[8]], name)
             })
             .collect()
     };
@@ -552,7 +552,7 @@ pub fn outline_border(a: (&[u32], CellKey), b: (&[u32], CellKey)) -> (u64, [Vec<
     let mut differ = [Vec::new(), Vec::new()];
     let mut checked = 0;
     for ((from, from_edges), (to, to_edges)) in [((a, &ea), (b, &eb)), ((b, &eb), (a, &ea))] {
-        let theirs: BTreeMap<[i64; 4], ([u32; 5], [i64; 3])> = to_edges.iter().map(|e| (e.0, (e.1, e.2))).collect();
+        let theirs: BTreeMap<[i64; 4], ([u32; 6], [i64; 3])> = to_edges.iter().map(|e| (e.0, (e.1, e.2))).collect();
         let o = to.1.origin();
         let sq = [o.x, o.y, o.x + CELL_UNITS, o.y + CELL_UNITS].map(|v| v as f64);
         let corners = [[sq[0], sq[1]], [sq[2], sq[1]], [sq[0], sq[3]], [sq[2], sq[3]]];

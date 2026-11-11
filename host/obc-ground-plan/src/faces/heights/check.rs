@@ -3,7 +3,9 @@
 //! points on the cell's lines, which two cells must give alike.
 
 use super::{height_at, height_at_sides, Block, Height, HeightRules, Kind, Step as Rule};
-use crate::faces::records::{find, label, CAND, DISC, JUNCTION, LABEL, LINE, PLATFORM};
+use crate::faces::records::{
+    edge_ends, edge_line, find, label, outline_words, CAND, DISC, EDGE, JUNCTION, LABEL, LINE, PLATFORM,
+};
 use crate::faces::Surface;
 use crate::frame::{metres_per_unit, CellKey, GlobalPoint, CELL_UNITS};
 use crate::terrain::Terrain;
@@ -250,6 +252,92 @@ pub fn edge_steps(words: &[u32], terrain: &Terrain, cell: CellKey, grid_m: f64) 
             }
             let class = if apart(words, labels[k]) || apart(words, lb) { Class::Apart } else { Class::Unnamed };
             out.push(Step { a, b, dh, labels: [labels[k], lb], class, sides });
+        }
+    }
+    out
+}
+
+/// The points of `wall_steps` along an outline edge lie this far apart, at most.
+pub const WALL_TOP_M: f64 = 0.25;
+/// A step this high beside a wall class's road draws as a wall (`WALL_STEP_M` of `plan/piece.wgsl`).
+pub const WALL_M: f64 = 0.5;
+
+/// The outline edges of a cell's records that lie in the cell by their middle: their ends (frame units), their
+/// unit direction and their host line, in the records' order.
+fn cell_edges(words: &[u32]) -> impl Iterator<Item = ([f64; 2], [f64; 2], [f64; 2], u32)> + '_ {
+    let inside = |v: f64| (0.0..CELL_UNITS as f64).contains(&v);
+    outline_words(words).chunks(EDGE).filter_map(move |e| {
+        let (a, b) = edge_ends(e);
+        let (a, b) = ([f64::from(a[0]), f64::from(a[1])], [f64::from(b[0]), f64::from(b[1])]);
+        let len = libm::hypot(b[0] - a[0], b[1] - a[1]);
+        let u = [(b[0] - a[0]) / len, (b[1] - a[1]) / len];
+        (inside((a[0] + b[0]) / 2.0) && inside((a[1] + b[1]) / 2.0)).then_some((a, b, u, edge_line(e)))
+    })
+}
+
+/// The wall-top steps of a cell: along each outline edge of a wall class that lies in the cell by its middle,
+/// points up to `WALL_TOP_M` apart (edges under 0.1 m left out); two neighbours on one no-room wall at least
+/// `WALL_M` high whose wall height changes by more than `grade` per metre: the first point and that change.
+pub fn wall_steps(words: &[u32], terrain: &Terrain, cell: CellKey, grade: f64) -> Vec<([f64; 2], f64)> {
+    let b = Block::at(words, [0.0, 0.0]);
+    let mut out = Vec::new();
+    for (a, z, u, line) in cell_edges(words) {
+        let len = libm::hypot(z[0] - a[0], z[1] - a[1]) * b.mpu;
+        if len < 0.1 || !b.line(line as usize).wall {
+            continue;
+        }
+        let (n, steps) = ([u[1], -u[0]], (len / WALL_TOP_M).ceil() as usize);
+        let wall = |k: usize| {
+            let q = [a[0] + (z[0] - a[0]) * k as f64 / steps as f64, a[1] + (z[1] - a[1]) * k as f64 / steps as f64];
+            let labels = [-2.0, 2.0].map(|o| find(words, [q[0] + o * n[0], q[1] + o * n[1]]));
+            let s = height_at_sides(words, q, labels, terrain_at(terrain, cell, q)?);
+            let w = s[1].h - s[0].h;
+            (s[1].step == Rule::NoRoom && w.abs() >= WALL_M).then_some((q, w))
+        };
+        let walls: Vec<_> = (0..=steps).map(wall).collect();
+        for pair in walls.windows(2) {
+            if let [Some((q, w0)), Some((_, w1))] = pair {
+                let climb = (w1 - w0).abs() * steps as f64 / len;
+                if climb > grade {
+                    out.push((*q, climb));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// `slope_steps` reads the ground this many metres out from the rim, and this far along it to each side.
+pub const SLOPE_OUT_M: [f64; 3] = [1.0, 2.0, 4.0];
+pub const SLOPE_SIDE_M: f64 = 0.25;
+
+/// The slope steps of a cell (the shading bands): at each end in the cell that two outline edges of one host
+/// share on one straight rim (a cut at the bin grid or a split), the ground's grade along the rim over
+/// `SLOPE_SIDE_M` before and after the end, at each of `SLOPE_OUT_M` out where all three points lie on a slope;
+/// where the grade changes by more than `grade`: the end and the greatest change.
+pub fn slope_steps(words: &[u32], terrain: &Terrain, cell: CellKey, grade: f64) -> Vec<([f64; 2], f64)> {
+    let mpu = Block::at(words, [0.0, 0.0]).mpu;
+    let edges: Vec<_> = cell_edges(words).collect();
+    let mut out = Vec::new();
+    for pair in edges.windows(2) {
+        let [(_, v, u, l0), (a1, _, u1, l1)] = [pair[0], pair[1]];
+        if v != a1 || l0 != l1 || (u[0] * u1[1] - u[1] * u1[0]).abs() > 1e-3 {
+            continue;
+        }
+        let n = [u[1], -u[0]];
+        let ground = |out: f64, side: f64| {
+            let q = [v[0] + (n[0] * out + u[0] * side) / mpu, v[1] + (n[1] * out + u[1] * side) / mpu];
+            at(words, terrain, cell, q).filter(|(h, _)| h.kind == Kind::Slope).map(|(h, _)| h.h)
+        };
+        let change = SLOPE_OUT_M
+            .iter()
+            .filter_map(|&o| {
+                let (l, c, r) = (ground(o, -SLOPE_SIDE_M)?, ground(o, 0.0)?, ground(o, SLOPE_SIDE_M)?);
+                Some(((r - c) - (c - l)).abs() / SLOPE_SIDE_M)
+            })
+            .fold(0.0, f64::max);
+        if change > grade {
+            out.push((v, change));
         }
     }
     out
