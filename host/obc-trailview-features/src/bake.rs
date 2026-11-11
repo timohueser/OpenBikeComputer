@@ -214,13 +214,14 @@ pub fn bake(
             .map(|(e, tags, parts)| water_feature(&kinds[*e].kind, tags, std::mem::take(parts), options))
             .collect();
         let pool = rayon::ThreadPoolBuilder::new().build().map_err(|e| e.to_string())?;
-        let (levels, _, water_metrics) = pool.install(|| water::solve_by_network(&mut features, terrain));
+        let (levels, drawn, _, water_metrics) = pool.install(|| water::solve_by_network(&mut features, terrain));
         // The threads of the roads take over the memory of these.
         drop(pool);
         metrics.insert(
             "water".into(),
             json!({"lakes": water_metrics.lakes, "lakes_spilling": water_metrics.lakes_spilling,
-                   "river_parts": water_metrics.river_parts, "turned": water_metrics.turned}),
+                   "river_parts": water_metrics.river_parts, "turned": water_metrics.turned,
+                   "added_vertices": water_metrics.added}),
         );
         // A waterway that OSM draws uphill has turned round in `features`.
         for ((_, _, parts), (feature, z)) in waters.iter_mut().zip(features.into_iter().zip(levels)) {
@@ -266,11 +267,18 @@ pub fn bake(
                 }
             }
         }
-        for (e, tags, parts) in &waters {
+        // The roads read the levels at the map's vertices, the tiles and the census the vertices that the levels
+        // add: this road solver's active set moves places far from any changed input. The cost: at a crossing a
+        // road reads the straight level between two vertices of the map, which on a long span can lie metres off
+        // the water of the tiles.
+        for ((e, tags, parts), drawn) in waters.iter().zip(drawn) {
+            let parts: Vec<Part> = (parts.iter().zip(drawn))
+                .map(|(p, k)| k.map_or_else(|| p.clone(), |(points, z)| Part { points, z: Some(z), ..p.clone() }))
+                .collect();
             if is_river(*e) && tags.get("bridge").is_none_or(|b| GROUND.contains(&b.as_str())) {
-                water_census.add(&kinds[*e].kind, parts, terrain, &|_| false);
+                water_census.add(&kinds[*e].kind, &parts, terrain, &|_| false);
             }
-            placer.entry(&kinds[*e], tags.clone(), parts.clone());
+            placer.entry(&kinds[*e], tags.clone(), parts);
         }
         let mut tracks: Vec<(String, Tags, Part)> = Vec::new();
         if !ways.is_empty() {
@@ -623,11 +631,12 @@ fn water_feature(name: &str, tags: &Tags, parts: Vec<Part>, options: &Options) -
     } else {
         Level::Natural
     };
-    let (half, bank, freeboard) = if kind == Kind::River {
+    let (half, bank, freeboard, curve) = if kind == Kind::River {
         let rules = waterway(name, tags, options);
-        (half_width(rules, tags), rules.bank_m, rules.freeboard_m)
+        let curve = water::Curve { turn_max_deg: rules.curve_turn_max_deg, off_max_m: rules.curve_off_max_m };
+        (half_width(rules, tags), rules.bank_m, rules.freeboard_m, curve)
     } else {
-        (0.0, 0.0, 0.0)
+        (0.0, 0.0, 0.0, water::Curve::default())
     };
     water::Feature {
         kind,
@@ -635,6 +644,7 @@ fn water_feature(name: &str, tags: &Tags, parts: Vec<Part>, options: &Options) -
         half,
         bank,
         freeboard,
+        curve,
         ele: tags.get("ele").and_then(|e| leading_number(e)).unwrap_or(f64::NAN),
         parts,
     }

@@ -435,7 +435,16 @@ bake turns a way whose terrain rises by more than 5 m from end to end. The level
 terrain at the waterway's own line, every 5 m: the highest level that never rises downstream and lies
 under the lowest terrain within ±(w/2 + 2 m) across the line and at least `freeboard_m` of the kind
 under the lower terrain at ±(w/2 + `bank_m`), so that the water lies in a channel under its banks.
-Where the terrain is unknown, a sample takes the level before it. Near a junction, within the bank
+Where the terrain is unknown, a sample takes the level before it. Between two vertices of the OSM way,
+the bake adds a vertex at a sample where the straight level between the vertices around it lies more
+than 0.2 m off the level of that sample, the farthest first, so the level holds along the line and not
+only at the vertices of the map. An added vertex lies on the curve of its span that the ground plan
+draws through the vertices of the map: the cubic Hermite whose tangents are the bisectors of the unit
+chords at each vertex, and the chord at an end of the way; the chord where a vertex turns by more than
+`curve_turn_max_deg`, where the curve leaves the chord by more than `curve_off_max_m` of the kind in
+`data/trailview/waterways.json`, or where it folds back. The rules of the ways at water (fords, covers, culverts) read the
+levels at the vertices of the map and the straight line between them: at a crossing between two of
+them, that level can lie off the level of the tiles. Near a junction, within the bank
 top's distance of the widest waterway there, the bank tops lie in the other waterway's bed and do
 not count. A pit on the line lowers the level there and after it, until the terrain falls under it.
 The width w of a waterway is its `width` tag where it is above 0, else `width_m` of its `waterway`

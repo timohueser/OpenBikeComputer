@@ -35,10 +35,20 @@ pub const SIDEWALK_MAX_M: f64 = 2.0;
 const FINISH_FIELDS: [&str; 2] = ["half_m", "shoulder_m"];
 /// The fields of a waterway kind that the bake reads: its width without a `width` tag, the cover of a road
 /// or a track over a culvert of it, the most that the cover may lift that way, the longest culvert, the
-/// widest water that an untagged way crosses on a culvert, and the bank top that the level keeps under:
-/// `freeboard_m` under the terrain `bank_m` past the waterline.
-const WATERWAY_FIELDS: [&str; 7] =
-    ["width_m", "cover_m", "cover_lift_max_m", "culvert_max_m", "culvert_width_m", "freeboard_m", "bank_m"];
+/// widest water that an untagged way crosses on a culvert, the bank top that the level keeps under:
+/// `freeboard_m` under the terrain `bank_m` past the waterline, and the reader's curve of the water's
+/// spans (`curve_turn_max_deg`, `curve_off_max_m`), on which the vertices that the levels add lie.
+const WATERWAY_FIELDS: [&str; 9] = [
+    "width_m",
+    "cover_m",
+    "cover_lift_max_m",
+    "culvert_max_m",
+    "culvert_width_m",
+    "freeboard_m",
+    "bank_m",
+    "curve_turn_max_deg",
+    "curve_off_max_m",
+];
 /// The classes of the tracks.
 const RAILS: [&str; 5] = ["rail", "light_rail", "narrow_gauge", "rack", "funicular"];
 
@@ -175,6 +185,10 @@ pub struct Waterway {
     pub culvert_width_m: f64,
     pub freeboard_m: f64,
     pub bank_m: f64,
+    /// A vertex where the water turns by more than this is a corner of its curve.
+    pub curve_turn_max_deg: f64,
+    /// A span whose curve leaves its chord by more than this is its chord.
+    pub curve_off_max_m: f64,
 }
 
 /// Each row of an object table with only the fields of `fields`, in the table's order.
@@ -232,15 +246,17 @@ pub fn waterways(rows: &Value) -> Result<BTreeMap<String, Waterway>, String> {
         .map(|(name, row)| {
             let field = |key: &str| row[key].as_f64().filter(|v| *v >= 0.0);
             let fields = row.as_object().is_some_and(|r| r.len() == WATERWAY_FIELDS.len());
-            let [width_m, cover_m, cover_lift_max_m, culvert_max_m, culvert_width_m, freeboard_m, bank_m] =
+            let [width_m, cover_m, cover_lift_max_m, culvert_max_m, culvert_width_m, freeboard_m, bank_m, turn, off] =
                 WATERWAY_FIELDS.map(field);
             let widths = (width_m.filter(|w| *w > 0.0), culvert_width_m.filter(|w| *w > 0.0));
             let lengths = (cover_m, cover_lift_max_m, culvert_max_m, freeboard_m, bank_m);
-            match (fields, widths, lengths) {
+            let curve = (turn.filter(|t| *t <= 180.0), off);
+            match (fields, widths, lengths, curve) {
                 (
                     true,
                     (Some(width_m), Some(culvert_width_m)),
                     (Some(cover_m), Some(cover_lift_max_m), Some(culvert_max_m), Some(freeboard_m), Some(bank_m)),
+                    (Some(curve_turn_max_deg), Some(curve_off_max_m)),
                 ) => Ok((
                     name.clone(),
                     Waterway {
@@ -251,10 +267,12 @@ pub fn waterways(rows: &Value) -> Result<BTreeMap<String, Waterway>, String> {
                         culvert_width_m,
                         freeboard_m,
                         bank_m,
+                        curve_turn_max_deg,
+                        curve_off_max_m,
                     },
                 )),
                 _ => Err(format!(
-                    "Waterway {name:?}: the fields are {WATERWAY_FIELDS:?}, numbers of 0 or more, the widths over 0"
+                    "Waterway {name:?}: the fields are {WATERWAY_FIELDS:?}, numbers of 0 or more, the widths over 0, the turn at most 180"
                 )),
             }
         })
@@ -361,7 +379,9 @@ mod tests {
                 culvert_max_m: 60.0,
                 culvert_width_m: 3.0,
                 freeboard_m: 0.4,
-                bank_m: 0.6
+                bank_m: 0.6,
+                curve_turn_max_deg: 60.0,
+                curve_off_max_m: 2.0
             }
         );
         table["river"]["cut"] = 0.3.into();
