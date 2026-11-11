@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Reject forbidden production dependency edges and features in the firmware workspace.
 
+A closed crate list may depend only on its allowed crates and on each other, so no third-party
+crate enters it either.
+
 Rules are group-to-group so later architecture issues can tighten one allowlist entry instead of
 rewriting a graph snapshot. Development-only edges are deliberately ignored: test fixtures may
 depend on their consumers, while production `normal`/`build` dependencies must point downward.
@@ -10,7 +13,7 @@ Feature rules inspect the effective dependency graph of the Cargo root they name
 from __future__ import annotations
 
 GOVERNS = ['**/Cargo.toml', 'firmware/tools/dependency_rules.json']
-RULE = 'Production dependencies point downward, and forbidden dependency features stay disabled.'
+RULE = 'Production dependencies point downward, closed crates take only allowed dependencies, and forbidden dependency features stay disabled.'
 
 import argparse
 import json
@@ -145,6 +148,27 @@ def check_edges(edges: set[Edge], rules: dict[str, object], packages: set[str] |
     return violations
 
 
+def check_closed_dependencies(metadatas: list[dict[str, object]], policy: dict[str, object]) -> list[str]:
+    closed = set(policy["packages"])
+    allowed = closed | set(policy["allowed"])
+    violations: list[str] = []
+    found: set[str] = set()
+    for metadata in metadatas:
+        members = set(metadata.get("workspace_members", ()))
+        for package in metadata.get("packages", ()):
+            if package["id"] not in members or package["name"] not in closed:
+                continue
+            found.add(package["name"])
+            for dependency in package.get("dependencies", ()):
+                if dependency.get("kind") != "dev" and dependency["name"] not in allowed:
+                    violations.append(
+                        f"dependency `{package['name']} -> {dependency['name']}` is outside the closed list: "
+                        f"{policy['reason']}"
+                    )
+    violations.extend(f"closed dependency package `{name}` is not in the workspace" for name in sorted(closed - found))
+    return violations
+
+
 def cargo_metadata(manifest: Path, *, resolve_all_features: bool = False) -> dict[str, object]:
     command = [
         "cargo",
@@ -216,6 +240,7 @@ def main() -> int:
         metadatas = [cargo_metadata(manifest) for manifest in metadata_manifests(args.manifest_path, rules)]
         packages, edges = dependency_graph(metadatas)
         violations = check_edges(edges, rules, packages)
+        violations.extend(check_closed_dependencies(metadatas, rules["closed_dependencies"]))
         feature_policies = rules.get("forbidden_features", ())
         policies_by_manifest: dict[Path, list[dict[str, object]]] = {}
         for policy in feature_policies:
