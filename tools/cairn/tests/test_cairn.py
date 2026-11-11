@@ -195,7 +195,8 @@ class RulesTableTests(unittest.TestCase):
             (root / "docs/design").mkdir(parents=True)
             (root / "src").mkdir()
             (root / "src/a.rs").write_text("fn a_frame_keeps_its_size() {}\nfn a_renamed_test_v2() {}\n")
-            (root / "src/b.ts").write_text('it("keeps the web target small", () => {});\nfunc testSeamHolds() {}\n')
+            (root / "src/b.ts").write_text('it("keeps the web target small", () => {});\nfunc testSeamHolds() {}\n'
+                                           'it("serves a tile from the cache", () => {});\n- name: Mountable at any prefix\n')
             (root / "docs/design/nav.md").write_text(
                 "## Rules that must hold\n\n| Rule | Check |\n| --- | --- |\n"
                 "| `some_function` keeps the size. | `a_frame_keeps_its_size` in [`a.rs`](../../src/a.rs) |\n"
@@ -203,11 +204,13 @@ class RulesTableTests(unittest.TestCase):
                 "| No link. | `a_test_with_no_link` |\n"
                 "| Any name. | `keeps the web target small` in [`b.ts`](../../src/b.ts), `testSeamHolds` in [`b.ts`](../../src/b.ts) |\n"
                 "| Its own file. | `testSeamHolds` in [`a.rs`](../../src/a.rs), with [`b.ts`](../../src/b.ts); `a lost title` in [`b.ts`](../../src/b.ts) |\n"
+                "| A link with an anchor, a title that grew, a step name. | `testGone` in [`b.ts`](../../src/b.ts#L3), "
+                "`serves a tile` in [`b.ts`](../../src/b.ts), `Mountable at any prefix` in [`b.ts`](../../src/b.ts) |\n"
                 "\nA sentence with `some_command` is not a row.\n\n"
                 "## Decisions\n\n`not_a_rule` is outside the table.\n")
             found = cairn.lost_names(root, "docs/design")
         self.assertEqual([line.split("`")[1] for line in found],
-                         ["a_renamed_test", "a_test_with_no_link", "testSeamHolds", "a lost title"])
+                         ["a_renamed_test", "a_test_with_no_link", "testSeamHolds", "a lost title", "testGone", "serves a tile"])
 
 
 class CargoAdapterTests(unittest.TestCase):

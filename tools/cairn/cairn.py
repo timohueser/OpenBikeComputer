@@ -422,7 +422,7 @@ RULES_SECTION = re.compile(r"^## Rules[^\n]*\n(.*?)(?=^## |\Z)", re.S | re.M)
 NAME = re.compile(r"`([a-z][a-z0-9]*(?:_[a-z0-9]+)+)`")
 LINK = re.compile(r"\]\(([^)#\s]+)")
 #: "`name` in [file](link)": any name, with the link that must hold it.
-NAME_IN = re.compile(r"`([^`]+)` in \[[^\]]*\]\(([^)#\s]+)\)")
+NAME_IN = re.compile(r"`([^`]+)` in \[[^\]]*\]\(([^)#\s]+)[^)]*\)")
 
 
 def lost_names(root: Path, folder: str) -> list[str]:
@@ -433,9 +433,11 @@ def lost_names(root: Path, folder: str) -> list[str]:
     must be in the file of that link. Any other snake_case name must be in a file that its cell links.
     """
     def holds(file: Path, name: str) -> bool:
-        # The whole name: a renamed test often keeps the old name as its start.
+        # The whole name: a renamed test often keeps the old name as its start. A title of several
+        # words ends at a quote or at the end of its line, not at a space.
         text = file.read_text(encoding="utf-8", errors="replace") if file.is_file() else ""
-        return re.search(rf"(?<!\w){re.escape(name)}(?!\w)", text) is not None
+        end = r"(?![\w ])" if " " in name else r"(?!\w)"
+        return re.search(rf"(?<!\w){re.escape(name)}{end}", text) is not None
 
     out = []
     for path in sorted((root / folder).glob("*.md")):
