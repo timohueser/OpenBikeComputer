@@ -8,7 +8,7 @@
 // colour of the regions about the eye. The haze is that of the ground, from the look in group 2; a ribbon
 // blends in linear light. A ribbon passes under a way on the ground: it stops at the way's mask, which a bridge
 // and a tunnel past its ends leave out, and lies over a ford. Where a ground plan mesh draws whole, its water
-// faces are the water, and a ribbon draws only for a stream thinner than RIBBON_PIXELS.
+// faces are the water, and a ribbon draws only for a stream narrower on screen than THIN_PIXELS.
 // #include drawn-mesh.wgsl
 // #include stamp-core.wgsl
 // #include ../ground/look.wgsl
@@ -52,8 +52,8 @@ override SEA_DRAW: bool = false;
 // area or a ribbon in the sea lies on its bed, under it, on the levels that cut the sea.
 const SEA_LIFT: f32 = 0.5;
 const RIBBON_PIXELS: f32 = 1.5;
-// Over a ground plan mesh, a ribbon draws whole for a stream of this share of RIBBON_PIXELS or less.
-const THIN_SHARE: f32 = 0.67;
+// Over a ground plan mesh, a ribbon draws for a stream narrower on screen than this, whole at a pixel less.
+const THIN_PIXELS: f32 = 2.0 * RIBBON_PIXELS;
 // A ribbon stops this far past a way's edge or its sidewalk, as GIVE_WAY_M of culverts.ts: past a guard rail's posts, 0.67 m (roads/details.ts).
 // Where a stream crosses the way, its ribbon has ended before this at a mouth's wall (standMouths of culverts.ts).
 const GIVE_WAY_M: f32 = 0.8;
@@ -156,6 +156,8 @@ fn water_fragment(in: WaterFragment) -> @location(0) vec4f {
 
 @fragment
 fn ribbon_fragment(in: WaterFragment) -> @location(0) vec4f {
+    // The ribbon's width on screen, across it: `side` runs from -1 to 1 over it.
+    let across = 2.0 / max(fwidth(in.side), 1e-6);
     drop_cut(in);
     let edge = clamp((1.0 - abs(in.side)) * in.pixels + 0.5, 0.0, 1.0);
     let m = mask_at(in.lod, u32(ceil(lod(in.lod))), true);
@@ -163,9 +165,9 @@ fn ribbon_fragment(in: WaterFragment) -> @location(0) vec4f {
     if (m.level != 0u && m.kind.x != 0u && (m.kind.y & FORDED) == 0u) {
         open = clamp((m.edge - m.walk - select(GIVE_WAY_M, 0.0, m.half < FOOT_HALF_M)) / (frame.pixel * length(in.relative)) + 0.5, 0.0, 1.0);
     }
-    // A stream thinner than RIBBON_PIXELS, whose face a ground plan mesh draws, keeps its ribbon on top:
-    // `share` is its width over the ribbon's, and the ribbon fades in as it narrows.
-    let thin = 1.0 - smoothstep(THIN_SHARE, 1.0, in.share);
+    // Over a ground plan mesh, a stream narrower on screen than THIN_PIXELS keeps its ribbon on top: at a
+    // grazing view its own bank hides its face. The ribbon fades in as the stream narrows.
+    let thin = 1.0 - smoothstep(THIN_PIXELS - 1.0, THIN_PIXELS, across);
     let drawn = select(1.0, thin, plan_near(vec2i(floor(in.u))));
     return vec4f(atmosphere(water_colour(in), in.relative, in.altitude), in.share * edge * open * drawn);
 }
