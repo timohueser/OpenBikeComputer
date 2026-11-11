@@ -98,7 +98,7 @@ flowchart LR
 | --- | --- | --- | --- | --- |
 | [content](content.md) | Collects facts about places (names, articles, photos) for the device and the planner. | draft | device-map-baking, foundations, map-reading, rendering-display | device-map-baking, search |
 | [data-engine](data-engine.md) | Runs any product's steps: it fetches, stores, versions and publishes, with no knowledge of maps. | draft |  | device-map-baking, obc-data, routing, search, simulators, source-preparation, trailview |
-| [data-registry](data-registry.md) | Declares every external source, region and target that a build may use. | draft |  |  |
+| [data-registry](data-registry.md) | Declares the external sources, regions, targets and options that `obc data` reads. | approved |  |  |
 | [device-map-baking](device-map-baking.md) | Turns prepared sources into the device's map cells. | draft | content, data-engine, foundations, map-reading, rendering-display, source-preparation | content, map-assembly, map-reading, obc-data |
 | [planner-map-baking](planner-map-baking.md) | Turns prepared sources into the planner's map releases. | draft |  |  |
 | [routing](routing.md) | Finds a bike route between points. | draft | data-engine, source-preparation | obc-data |
@@ -128,7 +128,7 @@ flowchart LR
 
 | System | Purpose | Status | Uses (production code) | Used by (production code) |
 | --- | --- | --- | --- | --- |
-| [hardware](hardware.md) | Holds the board's schematics, layouts and component models. | draft |  |  |
+| [hardware](hardware.md) | Holds the board's schematics, layouts and component models, and makes its parts list with prices. | approved |  |  |
 
 ### Tooling
 
@@ -141,15 +141,15 @@ flowchart LR
 
 | System | Purpose | Status | Uses (production code) | Used by (production code) |
 | --- | --- | --- | --- | --- |
-| [companion-ios](companion-ios.md) | Runs the companion app on the rider's phone. | draft |  |  |
-| [device-firmware](device-firmware.md) | Builds the nRF54L board image from the device systems. | draft | board-inputs, card-storage, device-link, device-runtime, firmware-update, foundations, map-reading, navigation, rendering-display |  |
-| [device-map-builder](device-map-builder.md) | Runs the map builder that a rider opens in the browser or on the desktop. | draft | device-link, firmware-update, map-assembly, map-style, route-planning, trailview, website | device-link, map-assembly, map-style, obc-data, route-planning, search, web-planner |
-| [obc-data](obc-data.md) | Runs the `obc data` command and its operator page. | draft | data-engine, device-map-baking, device-map-builder, foundations, map-assembly, route-planning, routing, search, source-preparation, trailview |  |
-| [planner-tile-server](planner-tile-server.md) | Serves the released planner tile archives from the storage bucket. | draft |  |  |
-| [simulators](simulators.md) | Runs the device core away from the board, for development and demonstration. | draft | board-inputs, card-storage, data-engine, device-link, device-runtime, firmware-update, foundations, host-runtime, map-reading, navigation, rendering-display, repository-tooling |  |
-| [trailview-page](trailview-page.md) | Opens TrailView as its own page in the browser. | draft | route-planning, trailview |  |
-| [web-planner](web-planner.md) | Opens Route planning as its own page in the browser. | draft | device-map-builder, route-planning |  |
-| [website](website.md) | Publishes the project site, the guide and the blog. | draft |  | device-map-builder |
+| [companion-ios](companion-ios.md) | Runs the iPhone app that plans routes, sends them to the device and gets rides back. | approved |  |  |
+| [device-firmware](device-firmware.md) | Builds the nRF54L board image from the device systems. | approved | board-inputs, card-storage, device-link, device-runtime, firmware-update, foundations, map-reading, navigation, rendering-display |  |
+| [device-map-builder](device-map-builder.md) | Runs the map builder, where a rider builds a device map and manages the device, in the browser or as a desktop app. | approved | device-link, firmware-update, map-assembly, map-style, route-planning, trailview, website | device-link, map-assembly, map-style, obc-data, route-planning, search, web-planner |
+| [obc-data](obc-data.md) | Runs the `obc data` command and its operator page. | approved | data-engine, device-map-baking, device-map-builder, foundations, map-assembly, route-planning, routing, search, source-preparation, trailview |  |
+| [planner-tile-server](planner-tile-server.md) | Serves the map tiles of a planner release from the storage bucket or from a local folder. | approved |  |  |
+| [simulators](simulators.md) | Runs the device core on a computer, a phone or a web page, and sends test input to a real board. | approved | board-inputs, card-storage, data-engine, device-link, device-runtime, firmware-update, foundations, host-runtime, map-reading, navigation, rendering-display, repository-tooling |  |
+| [trailview-page](trailview-page.md) | Opens TrailView, the 3-D view of a region, as its own page in the browser. | approved | route-planning, trailview |  |
+| [web-planner](web-planner.md) | Opens the route planner as its own page in the browser. | approved | device-map-builder, route-planning |  |
+| [website](website.md) | Publishes the project site, the guide and the blog. | approved |  | device-map-builder |
 
 ## Tangles
 
