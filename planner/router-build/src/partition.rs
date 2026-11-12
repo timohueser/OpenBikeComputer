@@ -105,14 +105,19 @@ impl Cells {
 
     /// The cells of level `level - 1` in cell `cell` of `level`, from 2 (rule 4).
     pub fn children(&self, level: usize, cell: usize) -> Range<usize> {
-        let range = self.level1_cells(level, cell);
-        if level == 2 {
-            return range;
+        self.within(level - 1, self.level1_cells(level, cell))
+    }
+
+    /// The cells of `level` whose level-1 cells lie in `level1`, a range of whole cells of a higher
+    /// level.
+    pub fn within(&self, level: usize, level1: Range<usize>) -> Range<usize> {
+        if level == 1 {
+            return level1;
         }
-        let firsts = self.firsts(level - 1);
+        let firsts = self.firsts(level);
         let firsts = &firsts[..firsts.len() - 1];
-        firsts.partition_point(|&first| (first as usize) < range.start)
-            ..firsts.partition_point(|&first| (first as usize) < range.end)
+        firsts.partition_point(|&first| (first as usize) < level1.start)
+            ..firsts.partition_point(|&first| (first as usize) < level1.end)
     }
 
     /// The roads of level-1 cell `cell`.
@@ -127,6 +132,19 @@ impl Cells {
         self.level1_cells(level, cell).flat_map(move |l1| {
             self.roads(l1).take_while(move |&road| usize::from(border[road]) >= level).map(|road| road as u32)
         })
+    }
+
+    /// The place of `road`, the target of a turn from a road of level-1 cell `cell`: its index in the
+    /// cell, or the road count of the cell plus its place in the leaving list.
+    pub fn target(&self, cell: usize, road: u32) -> Result<u32, String> {
+        let roads = self.roads(cell);
+        if roads.contains(&(road as usize)) {
+            return Ok(road - roads.start as u32);
+        }
+        let place = self.leaving_list(1, cell).binary_search(&road).map_err(|_| {
+            format!("the turn target {road} is outside the leaving list of level-1 cell ID {:08x}", self.id(1, cell))
+        })?;
+        Ok((roads.len() + place) as u32)
     }
 
     /// The leaving list of cell `cell` of `level` (rule 3).

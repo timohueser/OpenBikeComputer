@@ -91,7 +91,7 @@ The bake keeps its large tables in memory-mapped work files and sorts them on di
 | Threads | All cores, or `RAYON_NUM_THREADS`; the bytes of the package are the same for each thread count |
 | Road pass | The profiles of one group at a time; the way bases of a group take at most a quarter of the page budget |
 | Profile jobs | The snap bits and the landmarks of one profile in each job; the page budget sets how many jobs run at a time |
-| Cost tables | The stage `tables` builds the tables level after level, in batches of cells whose values take at most 64 MiB at 8 B each, plus the scratch of each worker for one cell |
+| Cost tables | The stage `tables` builds the tables level after level, one table of one cell and profile in each task, in batches whose values take at most 64 MiB at 8 B each, or one table for each thread when that is more, plus the scratch of each worker for one cell |
 | Own memory | 4 GiB; the step samples `RssAnon` every 100 ms and stops at the first sample above it, with the name of the stage; `catalog` and `blocks` are exempt |
 | Partition | 36 B of RAM for each junction and 6 B for each arc, about 52 B for each junction, outside the 4 GiB: the stage `partition` has the budget of this need plus 256 MiB. A need above the page budget stops the roads step |
 | Disk need | The stored layers above, and the work files of the step that runs; the roads step needs the most |
@@ -100,7 +100,10 @@ Put the work folder on a disk, not on a tmpfs, whose files take RAM. A killed ba
 leaves its bake folder; remove it. A bake that the memory guard stops also leaves it.
 
 The costs layer holds the columns of each profile: 8.125 B for each road and 4 B for each turn.
-The package step maps them and adds the landmarks, 24 B for each junction and profile, until the
+It also holds the cost tables: for each cell of each level and each profile, 16 B and 1, 2 or 4 B
+for each pair of an entering and a leaving road, twice where a table has its copy by column. The
+stage `tables` holds the values of one batch of tables at 8 B each: at most 64 MiB, or more where
+one table for each thread needs it. The package step maps the columns and adds the landmarks, 24 B for each junction and profile, until the
 writer ends. The page budget changes only the speed of the bake, never its bytes. Each step prints
 the time and the peak own memory of each stage: `import` (source and roads), `partition` and `emit` (roads), `open`,
 `way-bases`, `road-pass`, `snap` and `tables` (costs), `open`, `landmarks`, `writer`, `overlays`, `catalog`

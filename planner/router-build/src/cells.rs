@@ -168,8 +168,6 @@ struct Tree<'a> {
     cells: &'a Cells,
     level1: &'a [[u32; 2]],
     ids: &'a [u32],
-    /// For each level, the first level-1 cell of each cell and then the count.
-    firsts: Vec<Vec<u32>>,
     /// The first road of each download cell.
     download_roads: Vec<u32>,
     download_ids: Vec<u32>,
@@ -177,15 +175,6 @@ struct Tree<'a> {
 }
 
 impl Tree<'_> {
-    /// The level-1 cells of cell `cell` of `level`.
-    fn range(&self, level: usize, cell: usize) -> std::ops::Range<usize> {
-        self.firsts[level - 1][cell] as usize..self.firsts[level - 1][cell + 1] as usize
-    }
-
-    fn roads(&self, l1: usize) -> std::ops::Range<usize> {
-        self.level1[l1][1] as usize..self.level1[l1 + 1][1] as usize
-    }
-
     /// The reference of the road with run-time ID `road`.
     fn reference(&self, road: u32) -> Reference {
         let cell = self.download_roads.partition_point(|&first| first <= road) - 1;
@@ -285,7 +274,7 @@ fn download(input: &Input, tree: &Tree, groups: &[Vec<usize>], d: usize) -> Resu
     let (roads, costs) = (&input.graph.roads, input.costs);
     let (first, head) = (input.topology.first.values(), input.topology.head.values());
     let level = tree.download_level;
-    let l1s = tree.range(level, d);
+    let l1s = tree.cells.level1_cells(level, d);
     let first_road = tree.level1[l1s.start][1] as usize;
     let mut stats = Summary::default();
 
@@ -293,7 +282,7 @@ fn download(input: &Input, tree: &Tree, groups: &[Vec<usize>], d: usize) -> Resu
     let mut topology = vec![0; PART_HEADER + TOPOLOGY_RECORD * l1s.len()];
     let (mut records, mut arcs) = (Vec::new(), Vec::new());
     for l1 in l1s.clone() {
-        let range = tree.roads(l1);
+        let range = tree.cells.roads(l1);
         let count = range.len() as u32;
         let leaving = tree.cells.leaving_list(1, l1);
         let mut order = Vec::with_capacity((first[range.end] - first[range.start]) as usize);
@@ -301,16 +290,7 @@ fn download(input: &Input, tree: &Tree, groups: &[Vec<usize>], d: usize) -> Resu
         for road in range.clone() {
             let start = order.len();
             for arc in first[road]..first[road + 1] {
-                let target = head[arc as usize];
-                let local = if range.contains(&(target as usize)) {
-                    target - range.start as u32
-                } else {
-                    let k = leaving.binary_search(&target).map_err(|_| {
-                        format!("the turn {road} to {target} leaves level-1 cell {l1} by a road that its leaving list lacks")
-                    })?;
-                    count + k as u32
-                };
-                order.push((local, arc));
+                order.push((tree.cells.target(l1, head[arc as usize])?, arc));
             }
             order[start..].sort_unstable();
             firsts.push(order.len() as u32);
@@ -349,14 +329,8 @@ fn download(input: &Input, tree: &Tree, groups: &[Vec<usize>], d: usize) -> Resu
         records.push(Level1 { block: offset(block)?, ..cell });
         arcs.push(order.into_iter().map(|(_, arc)| arc).collect::<Vec<_>>());
     }
-    let inside: Vec<(usize, usize)> = (2..=level)
-        .flat_map(|upper| {
-            let firsts = &tree.firsts[upper - 1];
-            let cells = firsts.partition_point(|&f| (f as usize) < l1s.start)
-                ..firsts.partition_point(|&f| (f as usize) < l1s.end);
-            cells.map(move |cell| (upper, cell))
-        })
-        .collect();
+    let inside: Vec<(usize, usize)> =
+        (2..=level).flat_map(|upper| tree.cells.within(upper, l1s.clone()).map(move |cell| (upper, cell))).collect();
     let upper_at = uppers(tree, &inside, &mut topology, &mut stats)?;
     let mut header = Vec::new();
     let turns: usize = records.iter().map(|cell| cell.turns as usize).sum();
@@ -389,7 +363,7 @@ fn download(input: &Input, tree: &Tree, groups: &[Vec<usize>], d: usize) -> Resu
         let mut part = vec![0; PART_HEADER + format::group_record(profiles) * l1s.len()];
         let mut cells = Vec::new();
         for (l1, arcs) in l1s.clone().zip(&arcs) {
-            let range = tree.roads(l1);
+            let range = tree.cells.roads(l1);
             let finite = |value: u32| (value != u32::MAX).then_some(value);
             let turns = costs.turns(group[0]);
             let classes: Vec<u32> = range
@@ -457,7 +431,7 @@ fn download(input: &Input, tree: &Tree, groups: &[Vec<usize>], d: usize) -> Resu
     let mut set_offsets = vec![0u32];
     let (mut road, mut records) = (Road::default(), Vec::new());
     for l1 in l1s.clone() {
-        let range = tree.roads(l1);
+        let range = tree.cells.roads(l1);
         let mut cell_bounds = None;
         for id in range.clone() {
             let shape = roads.shape(id);
@@ -589,25 +563,17 @@ pub fn write(input: &Input, output: &Path) -> Result<Summary, String> {
     let (order, groups) = groups(input.costs)?;
     let level1 = cells.level1.values();
     let counts = cells.counts.values();
-    let mut firsts = vec![(0..counts[0]).chain([counts[0]]).collect::<Vec<u32>>()];
-    let mut start = 0;
-    for level in 2..=levels {
-        let count = counts[level - 1] as usize;
-        firsts.push(cells.upper.values()[start..start + count + 1].to_vec());
-        start += count + 1;
-    }
-    let mut tree = Tree {
+    let downloads = counts[download_level - 1] as usize;
+    let tree = Tree {
         cells,
         level1,
         ids: cells.ids.values(),
-        firsts,
-        download_roads: Vec::new(),
-        download_ids: Vec::new(),
+        download_roads: (0..downloads)
+            .map(|d| cells.roads(cells.level1_cells(download_level, d).start).start as u32)
+            .collect(),
+        download_ids: (0..downloads).map(|d| cells.id(download_level, d)).collect(),
         download_level,
     };
-    let downloads = counts[download_level - 1] as usize;
-    tree.download_roads = (0..downloads).map(|d| level1[tree.firsts[download_level - 1][d] as usize][1]).collect();
-    tree.download_ids = (0..downloads).map(|d| cells.id(download_level, d)).collect();
     if !tree.download_ids.is_sorted_by(|a, b| a < b) || !tree.download_roads.is_sorted() {
         return Err("the download cell IDs do not ascend with their first road".into());
     }
@@ -631,7 +597,7 @@ pub fn write(input: &Input, output: &Path) -> Result<Summary, String> {
                 for part in &parts.groups {
                     entries.push(publish(part, "group", compressor, output, &mut stats)?);
                 }
-                let range = tree.range(download_level, d);
+                let range = tree.cells.level1_cells(download_level, d);
                 let mut bounds = None;
                 parts.bounds.iter().for_each(|&b| union(&mut bounds, b));
                 let cell = Cell {
@@ -679,7 +645,7 @@ pub fn write(input: &Input, output: &Path) -> Result<Summary, String> {
                     part[..PART_HEADER].copy_from_slice(&fields.map(u32::to_le_bytes).concat());
                     parts.push(publish(&part, "group", compressor, output, &mut stats)?);
                 }
-                let range = tree.range(level, c);
+                let range = tree.cells.level1_cells(level, c);
                 let mut bounds = None;
                 level1_bounds[range.clone()].iter().for_each(|&b| union(&mut bounds, b));
                 let cell = Cell {

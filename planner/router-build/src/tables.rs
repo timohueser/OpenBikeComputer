@@ -16,8 +16,8 @@ use std::time::Instant;
 /// A table whose values by row take more bytes than this also holds them by column. Then a column
 /// read with a stride touches more than 4 pages of 4 KiB or more than one page of 16 KiB.
 pub const COLUMNS_FROM: usize = 16_384;
-/// The values of one batch of cells, at 8 bytes each, take at most this: the own memory of the
-/// stage, outside the scratch of the workers.
+/// The values of one batch of tables, at 8 bytes each, take at most this, unless the batch needs
+/// more to give each thread one table.
 const BATCH_BYTES: u64 = 64 << 20;
 
 /// The cost columns of one profile of the costs layer.
@@ -151,6 +151,8 @@ struct Scratch {
     cost: Vec<u64>,
     heap: BinaryHeap<Reverse<(u64, u32)>>,
     values: Vec<u64>,
+    /// The level and the cell of `graph`.
+    mapped: Option<(usize, usize)>,
 }
 
 struct Input<'a> {
@@ -165,29 +167,15 @@ struct Input<'a> {
 /// the roads of the cell, in topology order.
 fn level1(input: &Input, cell: usize, graph: &mut Graph) -> Result<(), String> {
     let (cells, first, head) = (input.cells, input.first, input.head);
-    let (roads, leaving) = (cells.roads(cell), cells.leaving_list(1, cell));
     graph.clear();
-    for road in roads.clone() {
+    for road in cells.roads(cell) {
         for arc in first[road]..first[road + 1] {
-            let target = head[arc as usize];
-            let node = match roads.contains(&(target as usize)) {
-                true => target as usize - roads.start,
-                false => {
-                    roads.len()
-                        + leaving.binary_search(&target).map_err(|_| {
-                            format!(
-                                "a turn target outside the leaving list of level-1 cell ID {:08x}",
-                                cells.id(1, cell)
-                            )
-                        })?
-                }
-            };
-            graph.head.push(node as u32);
+            graph.head.push(cells.target(cell, head[arc as usize])?);
         }
         graph.first.push(graph.head.len() as u32);
     }
     graph.rows.extend(0..cells.entering(1, cell).count() as u32);
-    graph.leaving = leaving.len();
+    graph.leaving = cells.leaving_list(1, cell).len();
     Ok(())
 }
 
@@ -278,59 +266,61 @@ fn search(graph: &Graph, cost: &mut Vec<u64>, heap: &mut BinaryHeap<Reverse<(u64
     }
 }
 
-/// The tables of cell `cell` of `level` for each profile, from the store of the level below.
+/// The table of cell `cell` of `level` for profile `p`, from the store of the level below.
 fn task(
     input: &Input,
     below: &Tables,
     level: usize,
     cell: usize,
+    p: usize,
     scratch: &mut Scratch,
-) -> Result<Vec<Vec<u8>>, String> {
-    match level {
-        1 => level1(input, cell, &mut scratch.graph)?,
-        _ => upper(input, level, cell, scratch)?,
-    }
-    let cells = input.cells;
-    let (rows, columns) = (scratch.graph.rows.len() as u32, scratch.graph.leaving as u32);
-    let mut tables = Vec::with_capacity(input.profiles.len());
-    for (p, costs) in input.profiles.iter().enumerate() {
-        let Scratch { graph, starts, cost, heap, values, .. } = &mut *scratch;
-        graph.weight.clear();
-        if level == 1 {
-            let arcs = input.first[cells.roads(cell).start]..input.first[cells.roads(cell).end];
-            graph.weight.extend(arcs.map(|arc| {
-                let (turn, total) = (costs.turns[arc as usize], costs.totals[input.head[arc as usize] as usize]);
-                match turn == u32::MAX || total == u32::MAX {
-                    true => u64::MAX,
-                    false => u64::from(turn) + u64::from(total),
-                }
-            }));
-        } else {
-            for (k, child) in cells.children(level, cell).enumerate() {
-                let child_columns = cells.leaving_list(level - 1, child).len() as u32;
-                let table =
-                    Table::parse(below.table(level - 1, child, p), (starts[k + 1] - starts[k]) as u32, child_columns)
-                        .map_err(|e| e.to_string())?;
-                (0..table.rows).for_each(|row| graph.weight.extend(table.row(row)));
-            }
+) -> Result<Vec<u8>, String> {
+    if scratch.mapped != Some((level, cell)) {
+        scratch.mapped = None;
+        match level {
+            1 => level1(input, cell, &mut scratch.graph)?,
+            _ => upper(input, level, cell, scratch)?,
         }
-        search(graph, cost, heap, values);
-        let mut table = Vec::new();
-        encode_table(rows, columns, values, input.columns_from, &mut table).map_err(|value| {
-            let id = cells.id(level, cell);
-            format!(
-                "the cost table of profile {p}, level {level}, cell ID {id:08x} holds the value {value}, above 32 bits"
-            )
-        })?;
-        tables.push(table);
+        scratch.mapped = Some((level, cell));
     }
-    Ok(tables)
+    let (cells, costs) = (input.cells, &input.profiles[p]);
+    let Scratch { graph, starts, cost, heap, values, .. } = scratch;
+    graph.weight.clear();
+    if level == 1 {
+        let arcs = input.first[cells.roads(cell).start]..input.first[cells.roads(cell).end];
+        graph.weight.extend(arcs.map(|arc| {
+            let (turn, total) = (costs.turns[arc as usize], costs.totals[input.head[arc as usize] as usize]);
+            match turn == u32::MAX || total == u32::MAX {
+                true => u64::MAX,
+                false => u64::from(turn) + u64::from(total),
+            }
+        }));
+    } else {
+        for (k, child) in cells.children(level, cell).enumerate() {
+            let columns = cells.leaving_list(level - 1, child).len() as u32;
+            let table = Table::parse(below.table(level - 1, child, p), (starts[k + 1] - starts[k]) as u32, columns)
+                .map_err(|e| e.to_string())?;
+            (0..table.rows).for_each(|row| graph.weight.extend(table.row(row)));
+        }
+    }
+    search(graph, cost, heap, values);
+    let (rows, columns) = (graph.rows.len() as u32, graph.leaving as u32);
+    let mut table = Vec::new();
+    encode_table(rows, columns, values, input.columns_from, &mut table).map_err(|value| {
+        let id = cells.id(level, cell);
+        format!("the cost table of profile {p}, level {level}, cell ID {id:08x} holds the value {value}, above 32 bits")
+    })?;
+    Ok(table)
 }
 
-/// Builds the tables of each level on the `rayon` pool, level after level. The cells of a level go
-/// in batches whose values take at most `BATCH_BYTES`; each table is a function of its cell alone,
-/// so the bytes do not depend on the thread count. A table holds its values by column too when they
-/// take more than `columns_from` bytes by row. Prints the figures of each level.
+/// Builds the tables of each level on the `rayon` pool, level after level. The tables of a level,
+/// by cell and then profile, go in batches whose values take at most `BATCH_BYTES`, or more when
+/// the batch needs it to hold one table for each thread. So the own memory of the stage is at most
+/// about twice the larger of `BATCH_BYTES` and the values of the largest table times the threads,
+/// with the values and their encoding; the memory guard stops the stage `tables` above its
+/// budget. Each table is a function of its cell and profile alone, so the bytes do not depend on
+/// the thread count, and an error is the first in table order. A table holds its values by column
+/// too when they take more than `columns_from` bytes by row. Prints the figures of each level.
 pub fn build(
     cells: &Cells,
     first: &[u32],
@@ -344,25 +334,28 @@ pub fn build(
     for level in 1..=cells.levels() {
         let started = Instant::now();
         let count = cells.counts.values()[level - 1] as usize;
-        let size = |cell: usize| {
-            let rows = cells.entering(level, cell).count() as u64;
-            rows * cells.leaving_list(level, cell).len() as u64 * 8 * profiles.len() as u64
-        };
+        let sizes: Vec<u64> = (0..count)
+            .map(|cell| cells.entering(level, cell).count() as u64 * cells.leaving_list(level, cell).len() as u64 * 8)
+            .collect();
+        let (units, threads, size) =
+            (count * profiles.len(), rayon::current_num_threads(), |unit: usize| sizes[unit / profiles.len()]);
         let (mut bytes, mut at) = (Column::default(), Column::default());
         at.push(0u64);
         let mut start = 0;
-        while start < count {
+        while start < units {
             let (mut end, mut batch) = (start + 1, size(start));
-            while end < count && batch + size(end) <= BATCH_BYTES {
+            while end < units && (batch + size(end) <= BATCH_BYTES || end - start < threads) {
                 batch += size(end);
                 end += 1;
             }
             let built: Vec<_> = (start..end)
                 .into_par_iter()
                 .with_max_len(1)
-                .map_init(Scratch::default, |scratch, cell| task(&input, &tables, level, cell, scratch))
+                .map_init(Scratch::default, |scratch, unit| {
+                    task(&input, &tables, level, unit / profiles.len(), unit % profiles.len(), scratch)
+                })
                 .collect();
-            for table in crate::cost::in_order(built)?.into_iter().flatten() {
+            for table in crate::cost::in_order(built)? {
                 bytes.extend(&table);
                 at.push(bytes.len() as u64);
             }

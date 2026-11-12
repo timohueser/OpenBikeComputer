@@ -736,8 +736,13 @@ pub const TABLE_HEADER: usize = 16;
 /// The largest finite value of a cost table.
 pub const TABLE_MAX: u64 = u32::MAX as u64 - 1;
 
-/// The cost table of one cell and profile: the value at (row, column) is the least cost of a path
-/// in the cell from an entering to a leaving road, without the cost of the entering road.
+/// The cost table of one cell and profile (rule T1 of `specs/route-package.md`). The value at
+/// (row, column) is the least cost of a path from the entering road of the row to the leaving road
+/// of the column whose roads between the two arrive in the cell. It holds the cost of each turn of
+/// the path and the full total cost of each road after the entering road, the leaving road
+/// included, and not the cost of the entering road. A road between two child cells counts once:
+/// the table of the first child holds it as a leaving road, the row of the next child starts after
+/// it. `u64::MAX` (all ones in the bytes) means that no such path exists.
 #[derive(Clone, Copy, Debug)]
 pub struct Table<'a> {
     bytes: &'a [u8],
