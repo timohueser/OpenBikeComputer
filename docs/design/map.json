@@ -520,7 +520,7 @@
    "depends_on": [],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 0,
+   "lines": 782,
    "problems": []
   },
   {
@@ -1697,6 +1697,12 @@
    "to": "device-map-builder",
    "test": false,
    "undeclared": true
+  },
+  {
+   "from": "route-planning",
+   "to": "library",
+   "test": false,
+   "undeclared": false
   },
   {
    "from": "route-planning",
