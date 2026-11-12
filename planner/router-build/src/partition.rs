@@ -226,8 +226,10 @@ struct Junctions {
 const UNSEEN: u32 = (1 << 30) - 1;
 /// The level of a junction on the sink side after a flow.
 const SINK_SIDE: u32 = UNSEEN - 1;
-/// Above each level of a phase of the flow.
-const PHASE_END: u32 = UNSEEN - 3;
+/// Above each level of a phase of the flow, and below the levels of the sides (`ISLAND`,
+/// `SINK_SIDE`, `UNSEEN`). Small in tests, so that their flows reset the levels; a part of
+/// 200 junctions or more then resets them at each phase.
+const PHASE_END: u32 = if cfg!(test) { 200 } else { UNSEEN - 3 };
 const LEVEL: u32 = (1 << 30) - 1;
 /// A sink of the flow.
 const SINK: u32 = 1 << 30;
@@ -336,9 +338,10 @@ impl Part<'_> {
     /// junction; it does not expand a sink. It does not stop at the level of the first sink: each
     /// phase would then push flow on the shortest paths only, which costs more phases.
     ///
-    /// The sources have level 0. The levels of a phase start above those of the phases before it,
-    /// so a level below the start counts as unseen, and no phase walks its junctions again to reset
-    /// them. A dead end gets level 1.
+    /// The sources have level 0. The levels of a phase start at `start`, above those of the phases
+    /// before it, so the levels `1..start` count as unseen, and no phase walks its junctions again
+    /// to reset them. `start` is at least 2, so a dead end gets level 1 and is unseen in the next
+    /// phase. When the levels come near `PHASE_END`, all but the sources go back to 1.
     fn flow(&mut self, graph: &Junctions, k: usize, bound: Option<u64>) -> Option<u64> {
         let n = self.at.len();
         for place in 0..n {
