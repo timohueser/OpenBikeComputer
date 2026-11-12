@@ -23,8 +23,8 @@ export const GROUND = 1, PAINT = 2, VOID = 4, INSIDE = 8, LAMP = 16, BORE = 128;
 export interface StructureMesh {
     vertices: ArrayBuffer;
     indices: Uint32Array<ArrayBuffer>;
-    /** The count of the last indices, which the ground plan does not draw: a bridge's abutments, where its end faces stand. */
-    offPlan: number;
+    /** The count of the last indices, which the ground plan does not draw: a bridge's abutments, where its end faces stand. None: 0. */
+    offPlan?: number;
 }
 
 /** A point of a cross-section: metres across to the left of the line, and metres up. */

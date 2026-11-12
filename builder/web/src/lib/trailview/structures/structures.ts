@@ -208,7 +208,7 @@ export class Structures {
         pass.setIndexBuffer(r.structures.indices, 'uint32');
         for (const mesh of this.draws) {
             const at = r.structures.at(mesh);
-            if (at) pass.drawIndexed(mesh.indices.length - (this.stamps.plan ? mesh.offPlan : 0), 1, at.first, at.base);
+            if (at) pass.drawIndexed(mesh.indices.length - (this.stamps.plan ? (mesh.offPlan ?? 0) : 0), 1, at.first, at.base);
         }
         pass.setPipeline(anchored);
         pass.setVertexBuffer(0, r.anchored.vertices);
