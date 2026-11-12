@@ -6,8 +6,8 @@
  * deployed. `VITE_SITE_BASE` is that fact:
  *
  *   * unset — the default — means the site is somewhere else, so name it
- *     absolutely. That is the dev server and the desktop app: neither is served
- *     from the site, and a relative link there would point at nothing.
+ *     absolutely. That is the dev server: it is not served from the site, and a
+ *     relative link there would point at nothing.
  *   * set to a relative prefix (the deploy passes `../`, because the builder is
  *     published at `/builder/` beside `/docs/`) means the site is right here.
  *     Nothing absolute is baked in, so the whole artifact survives the move to a
@@ -35,12 +35,9 @@ export const LINKS = {
     github: "https://github.com/timohueser/OpenBikeComputer",
     /**
      * The bundle's own third-party notices, emitted beside it at build time by
-     * `vite/third-party-licenses.ts` — so it stays relative in every tier, including the
-     * desktop app, where the file sits next to `index.html` inside the Tauri bundle.
+     * `vite/third-party-licenses.ts` — so it stays relative in every tier.
      * `vite dev` has no bundle and therefore no file; the link 404s there by design,
      * because a stale checked-in copy would be worse than an absent one.
      */
     licenses: "./third-party-licenses.txt",
-    /** Where the desktop installers are published. */
-    releases: "https://github.com/timohueser/OpenBikeComputer/releases",
 };

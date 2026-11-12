@@ -19,7 +19,6 @@ use serde_json::Value;
 
 use super::{print_json, Code, Error};
 use crate::engine::runs;
-use crate::release;
 use crate::serve::http::{self, Shared};
 use crate::serve::services::{self, Origins, Process, Programs};
 use crate::serve::{look, Fetched, Follower, Load, Seen, Served, PLANNER};
@@ -66,14 +65,13 @@ pub struct Link {
 pub fn listening(root: &Path, name: &str, dir: bool) -> Listening {
     let url = format!("http://127.0.0.1:{PORT}");
     let network = dir.then(network_address).flatten().map(|address| format!("http://{address}:{PORT}"));
-    let (planner, device) = (format!("{url}/{PLANNER}"), format!("{url}/{}", release::POINTERS[0]));
+    let planner = format!("{url}/{PLANNER}");
     let web = root.join("builder/web").display().to_string();
     let link = |app: &str, how: String| Link { app: app.into(), how };
     let mut links = vec![
         link("web planner", format!("cd '{web}' && VITE_PLANNER_CATALOG={planner} npm run dev -- --mode planner, then open /planner.html; once before: npm ci && npm run build:wasm")),
         link("map builder", format!("VITE_PLANNER_CATALOG={planner} obc site")),
-        link("desktop app", format!("OBC_CATALOG_URL={device} obc desktop")),
-        link("simulator", "obc sim MAP.obcm, with a map that the map builder or the desktop app assembles".into()),
+        link("simulator", "obc sim MAP.obcm, with a map that the map builder assembles".into()),
     ];
     links.extend(network.as_ref().map(|network| {
         link("iPhone", format!("the Debug app with the launch argument -OBCPlannerCatalog {network}/{PLANNER}"))

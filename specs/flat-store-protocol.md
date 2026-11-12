@@ -9,7 +9,7 @@ phone, a cable client or the simulator (§3, §4), and its bindings to BLE and U
   `firmware/obc-fw-nrf54l` (`src/ble/v4.rs`, `src/usb/`); the store seam in `firmware/obc-storage`
   (`src/flat/seam.rs`); the simulator device `sim/flat-device`; the clients: the companion app
   (`OBCProtocolV4` in `companion-ios/Packages/OBCKit`), the web builder (`builder/web/src/lib/usb/`)
-  and the desktop app (`builder/usb`).
+  and the card-format command (`builder/usb`).
 - Readers: the same crates.
 - Test vectors: §3.11, and [`vectors/flat-store-v4/`](vectors/flat-store-v4/manifest.json), produced
   by `firmware/obc-link/src/flat/vectors.rs`.
@@ -604,8 +604,8 @@ invalidated first, so the running in-memory store must not continue serving requ
 reboots after that response. A preflight refusal (busy, stale identity, malformed request) does not
 change the card and does not reboot.
 
-The empty store contains no map. Boot must still enumerate USB in that state so the web or desktop
-client can upload the first map; showing a no-map fault on the display must not take the recovery
+The empty store contains no map. Boot must still enumerate USB in that state so a USB client can
+upload the first map; showing a no-map fault on the display must not take the recovery
 transport down.
 
 ### 3.11 Vectors

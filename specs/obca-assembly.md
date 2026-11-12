@@ -596,7 +596,7 @@ one order. The two skins may change the other seven bytes of each record and the
 and nothing else (§4.7).
 
 The hosted catalog has **exactly one** schema: the 14-LOD bikepacking ladder. Hosted "presets" are
-therefore skins. Custom schemas are local bakes in the desktop app.
+therefore skins. Custom schemas are local bakes on the maintainer dev server.
 
 ### 6.3 Lockstep and the bake guard
 
