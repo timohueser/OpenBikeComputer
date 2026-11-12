@@ -3653,6 +3653,7 @@ dependencies = [
  "js-sys",
  "obc-bake",
  "obc-draw",
+ "obc-fit",
  "obc-flat-device",
  "obc-formats",
  "obc-host-core",
@@ -3801,6 +3802,13 @@ version = "0.1.0"
 dependencies = [
  "obc-formats",
  "obcm-testkit",
+]
+
+[[package]]
+name = "obc-fit"
+version = "0.1.0"
+dependencies = [
+ "obc-fixtures",
 ]
 
 [[package]]

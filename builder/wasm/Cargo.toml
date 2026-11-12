@@ -19,6 +19,7 @@ obc-map-scene = { workspace = true }
 obc-reader = { workspace = true, features = ["alloc"] }
 obc-render = { workspace = true }
 obc-host-core = { workspace = true }
+obc-fit = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 sha2 = { workspace = true }
