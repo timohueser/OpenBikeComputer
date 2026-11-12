@@ -211,9 +211,9 @@ both. The device walks the same flat quadtree, so the packer's decision is the r
 ### The builder
 
 The product builder assembles published cells; it does not run the packer. A selection can mix
-named regions, boxes, lassos, and GPX corridors, and the builder unions them before it prices or
-downloads anything, so overlapping parts do not pay twice. It verifies every object against the
-catalog, and the assembler verifies the finished map with the production readers.
+named regions and boxes, and the builder unions them before it prices or downloads anything, so
+overlapping parts do not pay twice. It verifies every object against the catalog, and the
+assembler verifies the finished map with the production readers.
 
 One Svelte application serves the website and the maintainer server; the host modules differ in
 transport and storage, never in the selection or assembly algorithm. The website

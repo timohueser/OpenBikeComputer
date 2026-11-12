@@ -1,8 +1,6 @@
-//! Browser GPX import: full planner points and the bounded corridor preview.
+//! Browser GPX import: the points and waypoints of a GPX file.
 
 use serde::Serialize;
-
-pub const MAX_ROUTE_POINTS: usize = 2048;
 
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct Point {
@@ -26,14 +24,6 @@ pub struct Import {
     pub name: String,
     pub points: Vec<Point>,
     pub waypoints: Vec<Waypoint>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Route {
-    pub name: String,
-    pub points: Vec<Point>,
-    pub distance_km: f64,
 }
 
 fn whitespace(c: char) -> bool {
@@ -245,24 +235,6 @@ pub fn read(text: &str, fallback: &str) -> Result<Import, String> {
     Ok(Import { name, points, waypoints })
 }
 
-pub fn parse(text: &str, fallback: &str) -> Result<Route, String> {
-    let Import { name, points, .. } = read(text, fallback)?;
-    let count = points.len().min(MAX_ROUTE_POINTS);
-    let step = (points.len() - 1) as f64 / (count - 1) as f64;
-    let points: Vec<_> = (0..count).map(|k| Point { ele: None, ..points[round(k as f64 * step) as usize] }).collect();
-    let distance_km = points
-        .windows(2)
-        .map(|p| {
-            let cos = (((p[0].lat + p[1].lat) / 2.0) * std::f64::consts::PI / 180e6).cos();
-            let dlat = (p[1].lat - p[0].lat) * 111_320.0 / 1e6;
-            let dlon = (p[1].lon - p[0].lon) * 111_320.0 * cos / 1e6;
-            dlat.hypot(dlon)
-        })
-        .sum::<f64>()
-        / 1000.0;
-    Ok(Route { name, points, distance_km })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,32 +249,5 @@ mod tests {
         assert_eq!(import.points[0].ele, Some(1.23456789123));
         assert_eq!(import.waypoints[0].name.as_deref(), Some("Water"));
         assert_eq!(import.waypoints[0].note.as_deref(), Some("Open & free"));
-    }
-
-    #[test]
-    fn corridor_keeps_endpoints_and_uniform_source_points() {
-        let text: String =
-            (0..10_000).map(|i| format!("<trkpt lat='{}' lon='8'/>", 47.0 + i as f64 / 10_000.0)).collect();
-        let full = read(&text, "fallback").unwrap();
-        let route = parse(&text, "fallback").unwrap();
-        assert_eq!(full.points.len(), 10_000);
-        assert_eq!(route.points.len(), MAX_ROUTE_POINTS);
-        let samples: Vec<_> =
-            [0, 1, 2, 3, 512, 1023, 1024, 2046, 2047].into_iter().map(|i| route.points[i].lat).collect();
-        assert_eq!(
-            samples,
-            [
-                47_000_000.0,
-                47_000_500.0,
-                47_001_000.0,
-                47_001_500.0,
-                47_250_100.0,
-                47_499_700.0,
-                47_500_200.0,
-                47_999_400.0,
-                47_999_900.0
-            ]
-        );
-        assert!(route.points.iter().all(|point| point.ele.is_none()));
     }
 }
