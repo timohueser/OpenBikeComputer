@@ -266,6 +266,7 @@ describe('planner day views', () => {
         expect([...document.querySelectorAll('.stats dd')].map(figure => figure.textContent).slice(0, 3)).toEqual(['29.8mi', '3281ft', '—ft']);
         expect(document.querySelector('.title small')?.textContent).toContain('↑ — ft · ↓ — ft');
         expect([...document.querySelectorAll('.axis span')].map(tick => tick.textContent)).toEqual(['0 mi', '22 mi', '45 mi', '67 mi', '89 mi']);
+        expect([...document.querySelectorAll('.height')].map(label => label.textContent)).toEqual(['100 ft', '0 ft']);
     });
 });
 

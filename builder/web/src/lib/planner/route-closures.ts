@@ -1,4 +1,4 @@
-import { distanceIn } from '../settings/format';
+import { formatDistance } from '../settings/format';
 import { settings } from '../settings/settings.svelte';
 import { cumulative, type Coordinate } from './geo';
 import type { RouteClosure, RoutingLine } from './routing';
@@ -29,7 +29,7 @@ export function edgeStretches<T>(coordinates: Coordinate[], edges: readonly T[] 
 
 /** Metres under 1 km, rounded to `step`, with kilometres; tenths of a mile, at least "0.1 mi", with miles. */
 export function noteDistance(km: number, step = 1): string {
-    if (settings.units === 'mi') return `${Math.max(distanceIn(km * 1000), km > 0 ? .1 : 0).toFixed(1)} mi`;
+    if (settings.units === 'mi') return formatDistance(km * 1000);
     return km < 1 ? `${Math.round(km * 1000 / step) * step} m` : `${km.toFixed(1)} km`;
 }
 
