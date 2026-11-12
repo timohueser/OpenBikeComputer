@@ -1,7 +1,7 @@
 //! The records over every cell of the TrailView fixture: each sampled point gets its face's label,
 //! the far level keeps every label but the band layers', the far block holds the near lines in reach
-//! and is the far-only build's, two neighbouring cells give one label on their shared line, and a
-//! second build gives the same words.
+//! and is the far-only build's, two neighbouring cells give one label on their shared line, an outline
+//! end with a turn has one edge going on at its paved height, and a second build gives the same words.
 
 #[path = "fixture/mod.rs"]
 mod fixture;
@@ -12,7 +12,7 @@ use fixture::{default_dir, Fixture};
 use obc_ground_plan::faces::check::feature_names;
 use obc_ground_plan::faces::records;
 use obc_ground_plan::faces::records::check::{
-    agreement, border, far_agreement, far_matches_near, outline_border, Overlay,
+    agreement, border, far_agreement, far_matches_near, outline_border, outline_turns, Overlay,
 };
 use obc_ground_plan::faces::Rules;
 use obc_ground_plan::frame::CellKey;
@@ -64,6 +64,7 @@ fn every_fixture_cell_gives_its_points_the_faces_labels_alike_near_far_and_acros
             faults.push(format!("{key:?}: faces::build differs from the records' faces"));
         }
         faults.extend(lines.iter().map(|l| format!("{key:?} far block: {l}")));
+        faults.extend(outline_turns(&near).iter().map(|l| format!("{key:?} outline {l}")));
         counts.into_iter().for_each(|(case, n)| *blocks.entry(case).or_default() += n);
         (points, edge, arc, patch) = (points + a.points, edge + a.edge, arc + a.arc, patch + a.patch);
         faults
