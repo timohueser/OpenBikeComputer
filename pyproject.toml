@@ -96,13 +96,11 @@ search-training = [
     "typer==0.27.2",
     "typing-extensions==4.16.0",
 ]
-desktop-e2e = ["selenium==4.35.0"]
 
 [tool.uv]
 package = false
 default-groups = []
 conflicts = [
-    [{ group = "desktop-e2e" }, { group = "search-training" }],
     [{ group = "dev" }, { group = "search-runtime" }],
     [{ group = "dev" }, { group = "search-test" }],
     [{ group = "dev" }, { group = "search-training" }],

@@ -24,10 +24,6 @@ pub static MAP_BUILDER: Reader = Reader {
     name: "map builder",
     on_new_format: "An old map builder reads no new data: it needs a build that reads the new format.",
 };
-pub static DESKTOP_APP: Reader = Reader {
-    name: "desktop app",
-    on_new_format: "An old desktop app reads no new data: it needs a build that reads the new format.",
-};
 pub static WEB_PLANNER: Reader = Reader {
     name: "web planner",
     on_new_format: "The web planner reads the new data after a deploy of code that reads the new format.",

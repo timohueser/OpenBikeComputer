@@ -1,7 +1,7 @@
 //! The `obc-pack` CLI: flags in, [`obc_bake::pipeline::pack`] out.
 //!
-//! The pipeline itself lives in the library, because the desktop app links the packer rather than
-//! spawning it and the two must not be able to diverge. This file owns the command line and nothing
+//! The pipeline itself lives in the library, because an in-process caller links the packer rather
+//! than spawning it and the two must not be able to diverge. This file owns the command line and nothing
 //! else.
 //!
 //! Positional CLI: `<pbf...> <config.json> <out.obcm>`, plus `--bbox W,S,E,N` to crop the sources

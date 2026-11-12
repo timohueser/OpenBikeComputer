@@ -253,12 +253,12 @@ beforeAll(loadFlatDevice);
 
 describe("browser support", () => {
     it("reports no WebUSB rather than pretending", () => {
-        // Firefox and Safari take this path. The answer is the desktop app, not a retry.
+        // Firefox and Safari take this path. The answer is another browser, not a retry.
         const watcher = new WebUsbWatcher({ usb: undefined });
         // No `navigator.usb` under Node, so the default lookup finds nothing.
         expect(webUsb()).toBeNull();
         expect(watcher.current.status).toBe("unsupported");
-        expect(watcher.current.error).toMatch(/desktop app/);
+        expect(watcher.current.error).toBe("This browser cannot use the USB cable. Use Chrome or Edge.");
     });
 
     it("cannot prompt where there is no API", async () => {

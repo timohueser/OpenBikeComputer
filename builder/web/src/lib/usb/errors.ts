@@ -7,14 +7,14 @@ import { Detail, ErrorCode, opcodeName, refusalName, type Refusal } from "./prot
  *
  * The wire's fourteen refusal codes each get their own member, because a client's response to them
  * differs: `no-space` asks the rider to delete something, `busy` retries, `catalog-changed` restarts
- * a listing. The last five are this side of the wire, not the device's.
+ * a listing. `link`, `timeout`, `aborted`, `protocol` and `device-error` are this side of the wire,
+ * not the device's.
  */
 export type DeviceErrorCode =
     | "link"
     | "timeout"
     | "aborted"
     | "protocol"
-    | "unavailable"
     | "unsupported"
     | "invalid-frame"
     | "invalid-request"

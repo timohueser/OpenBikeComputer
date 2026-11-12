@@ -3,8 +3,7 @@
 //! and the two guards below are tested natively.
 
 use obc_formats::io::{ByteSink, Error, SliceSource};
-use obc_formats::obcr::WAYPOINT_ELE_NONE;
-use obc_route::{for_each_waypoint, BikeType, RouteIndex, RouteReader, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS};
+use obc_route::{BikeType, RouteIndex, RouteReader, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS};
 
 /// Largest point count an `.obcr` can store, and so the ceiling [`gpx_to_obcr`] converts up to:
 /// every chunk full, with consecutive chunks sharing their seam vertex.
@@ -185,47 +184,6 @@ pub fn obcr_to_track(obcr: &[u8]) -> Result<Vec<f64>, ConvertFailure> {
                 )
             })?;
     }
-    Ok(out)
-}
-
-/// One waypoint read back out of an `.obcr` route, with the wire encodings already unfolded:
-/// microdegrees to degrees, and the elevation sentinel to `None`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct RouteWaypoint {
-    /// The stored UTF-8 short name, at most 24 bytes, and possibly empty.
-    pub name: String,
-    /// The waypoint's own coordinate in degrees. It can sit off the polyline.
-    pub lat: f64,
-    pub lon: f64,
-    /// Elevation in meters, or `None` where the source carried none.
-    pub ele: Option<f64>,
-    /// The stored category byte, raw: `0` is generic and `1..=6` are the POI category ids. A
-    /// consumer renders any other value as generic.
-    pub category: u8,
-    /// Meters from the route start to the waypoint's position on the track: the stored field, not
-    /// a recomputation.
-    pub dist_along_m: u32,
-}
-
-/// Decode an `.obcr` route's waypoint table, in ascending distance order: name, position, raw
-/// category byte and along-track distance for each stored waypoint.
-///
-/// `dist_along_m` is returned as stored. The format fixes it at conversion time against the raw
-/// geometry the converter saw, which a reader of the decimated file could not reproduce.
-pub fn obcr_to_waypoints(obcr: &[u8]) -> Result<Vec<RouteWaypoint>, ConvertFailure> {
-    let src = SliceSource(obcr);
-    let mut out: Vec<RouteWaypoint> = Vec::new();
-    for_each_waypoint(&src, |w| {
-        out.push(RouteWaypoint {
-            name: w.name.as_str().into(),
-            lat: f64::from(w.lat) * 1e-6,
-            lon: f64::from(w.lon) * 1e-6,
-            ele: (w.ele != WAYPOINT_ELE_NONE).then(|| f64::from(w.ele)),
-            category: w.category_id,
-            dist_along_m: w.dist_along_m,
-        });
-    })
-    .map_err(describe_route_read_error)?;
     Ok(out)
 }
 
@@ -412,58 +370,6 @@ mod tests {
             assert!((got[1] - want[1]).abs() < 1e-5, "lon {got:?} vs {want:?}");
             assert!((got[2] - want[2]).abs() < 1.0, "ele {got:?} vs {want:?}");
         }
-    }
-
-    /// The tiny track with two waypoints ahead of it: one categorized with an elevation, one with
-    /// an unmapped symbol and no elevation. They sit near different ends of the track, so the
-    /// stored distances must differ.
-    const WPT_GPX: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
-<gpx version="1.1" creator="test">
-  <wpt lat="48.0002" lon="7.8264"><name>Aussicht</name><sym>Viewpoint</sym></wpt>
-  <wpt lat="48.0001" lon="7.8201"><ele>238.0</ele><name>Brunnen</name><sym>Drinking Water</sym></wpt>
-  <trk><name>t</name><trkseg>
-    <trkpt lat="48.0000" lon="7.8200"><ele>236.0</ele></trkpt>
-    <trkpt lat="48.0005" lon="7.8230"><ele>241.0</ele></trkpt>
-    <trkpt lat="48.0002" lon="7.8265"><ele>249.5</ele></trkpt>
-  </trkseg></trk>
-</gpx>
-"#;
-
-    /// What the converter stored, `obcr_to_waypoints` returns, sorted by distance along.
-    #[test]
-    fn obcr_round_trips_the_waypoints_it_stored() {
-        let obcr = gpx_to_obcr(WPT_GPX.as_bytes(), "Tiny", BikeType::Road).unwrap();
-        let wps = obcr_to_waypoints(&obcr).unwrap();
-        assert_eq!(wps.len(), 2);
-
-        // Sorted ascending by distance along: Brunnen sits by the start, Aussicht by the end.
-        let (near, far) = (&wps[0], &wps[1]);
-        assert_eq!(near.name, "Brunnen");
-        assert_eq!(near.category, 1, "Drinking Water maps to water (§4.1)");
-        assert_eq!(near.ele, Some(238.0));
-        assert!((near.lat - 48.0001).abs() < 1e-5);
-        assert!((near.lon - 7.8201).abs() < 1e-5);
-
-        assert_eq!(far.name, "Aussicht");
-        assert_eq!(far.category, 0, "Viewpoint is deliberately unmapped — generic");
-        assert_eq!(far.ele, None, "no <ele> comes back as None, not as the sentinel");
-        assert!(near.dist_along_m < far.dist_along_m, "route order: {near:?} vs {far:?}");
-        // The track is about 500 m long, and the far waypoint's anchor is near its end.
-        assert!(far.dist_along_m > 300 && far.dist_along_m < 700, "{far:?}");
-    }
-
-    /// A route without waypoints is an empty list, which is the common case and not an error.
-    #[test]
-    fn a_waypoint_free_route_decodes_to_no_waypoints() {
-        let obcr = gpx_to_obcr(TINY_GPX.as_bytes(), "Tiny", BikeType::Road).unwrap();
-        assert_eq!(obcr_to_waypoints(&obcr).unwrap(), Vec::new());
-    }
-
-    /// The waypoint direction shares the track direction's error vocabulary.
-    #[test]
-    fn obcr_to_waypoints_refuses_what_is_not_a_route() {
-        assert_eq!(code_of(obcr_to_waypoints(&[0u8; 200])), ErrorCode::NotRoute);
-        assert_eq!(code_of(obcr_to_waypoints(b"short")), ErrorCode::InputTruncated);
     }
 
     #[test]

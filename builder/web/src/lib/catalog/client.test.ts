@@ -62,9 +62,9 @@ describe("CatalogClient.load", () => {
     });
 
     it("refuses a relative URL rather than guessing a base", async () => {
-        // Resolving one is a host's job: the web host has a `document.baseURI`,
-        // the desktop host does not, and a client that guessed would resolve a
-        // CDN path against a Tauri asset scheme.
+        // Resolving one is a host's job: the web host resolves it against its
+        // `document.baseURI`, and a client that guessed could resolve a CDN path
+        // against the wrong base.
         await expect(CatalogClient.load("./data/catalog.json", { fetchImpl: serving({}).impl })).rejects.toThrow(
             CatalogFormatError,
         );

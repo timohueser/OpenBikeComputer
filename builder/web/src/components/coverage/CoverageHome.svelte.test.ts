@@ -14,8 +14,7 @@ vi.mock("./CoverageMap.svelte", async () => ({ default: (await import("../../../
 vi.mock("./SkinStep.svelte", async () => ({ default: (await import("./ToolIcon.svelte")).default }));
 vi.mock("../device/DeviceStep.svelte", async () => ({ default: (await import("./ToolIcon.svelte")).default }));
 const host = vi.hoisted(() => ({ catalog: vi.fn(), catalogFetch: vi.fn(async () => new Response("gone", { status: 404 })) }));
-vi.mock("../../lib/platform", () => ({ platform: { ...host, name: "web", caps: { deviceDashboard: false }, openMapOutput: null } }));
-vi.mock("../../lib/platform/gating", () => ({ available: () => false }));
+vi.mock("../../lib/platform", () => ({ platform: { ...host, name: "web" } }));
 
 const client = (body: string, url: string) => CatalogClient.fromBody(body, url, { fetchImpl: host.catalogFetch, attempts: 1 });
 async function settle() { for (let n = 0; n < 20; n++) { await Promise.resolve(); await tick(); } }

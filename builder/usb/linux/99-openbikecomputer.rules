@@ -1,16 +1,17 @@
-# OpenBikeComputer — let a logged-in desktop session open the device (#909).
+# OpenBikeComputer — let the person at the machine open the device over USB,
+# from Chrome or Edge (WebUSB) or from `obc format-card`.
 #
 # Linux is the only platform that needs anything. The device declares a
-# vendor-specific interface (class 0xFF, #889), and:
+# vendor-specific interface (class 0xFF), and:
 #
 #   * macOS lets an application open one with no driver, no entitlement and no
 #     kext — IOKit hands it over as long as nothing else has claimed it.
 #   * Windows binds WinUSB automatically from the MS OS 2.0 BOS descriptors the
 #     firmware ships, so there is no .inf, no Zadig and no driver install.
 #   * Linux exposes it through usbfs at /dev/bus/usb/BBB/DDD, which is
-#     root-owned by default. Without a rule the app can enumerate the device and
-#     then fail to open it, which reads as "Permission denied" and looks like a
-#     bug in the app.
+#     root-owned by default. Without a rule a program can enumerate the device
+#     and then fail to open it, which reads as "Permission denied" and looks like
+#     a bug in the program.
 #
 # TAG+="uaccess" is the modern answer: systemd-logind grants the *currently
 # active local session* an ACL on the node, so the person sitting at the machine
