@@ -57,6 +57,8 @@
         version++;
         try {
             for await (const file of readFiles(items, library, readers, current.signal)) {
+                // A file of a run that a new drop or Cancel stopped.
+                if (current.signal.aborted) return;
                 found.push(file);
                 counts[file.kind]++;
                 version++;
@@ -110,7 +112,6 @@
     }
 
     const plural = (n: number, one: string, many: string) => `${n.toLocaleString('en')} ${n === 1 ? one : many}`;
-    const close = (event: Event) => (event.currentTarget as HTMLElement).closest('dialog')?.close();
 
     function detail(file: Found): string {
         switch (file.kind) {
@@ -123,62 +124,64 @@
 </script>
 
 <Window title="Add files" {onClose}>
-    <div
-        class="drop"
-        class:over
-        role="region"
-        aria-label="Drop files or a folder"
-        ondragover={event => { event.preventDefault(); over = true; }}
-        ondragleave={() => over = false}
-        ondrop={drop}
-    >
-        <strong>Drop files or a folder here</strong>
-        <p>GPX and FIT files, one or many. Also the ZIP file that Strava, Komoot or Garmin gives you with all your data.</p>
-        <button type="button" onclick={() => input.click()} disabled={phase === 'adding'}>Choose files</button>
-        <input bind:this={input} type="file" multiple hidden aria-label="Choose files"
-            onchange={() => { void read([...input.files ?? []]); input.value = ''; }} />
-    </div>
+    {#snippet children(close)}
+        <div
+            class="drop"
+            class:over
+            role="region"
+            aria-label="Drop files or a folder"
+            ondragover={event => { event.preventDefault(); over = true; }}
+            ondragleave={() => over = false}
+            ondrop={drop}
+        >
+            <strong>Drop files or a folder here</strong>
+            <p>GPX and FIT files, one or many. Also the ZIP file that Strava, Komoot or Garmin gives you with all your data.</p>
+            <button type="button" onclick={() => input.click()} disabled={phase === 'adding'}>Choose files</button>
+            <input bind:this={input} type="file" multiple hidden aria-label="Choose files"
+                onchange={() => { void read([...input.files ?? []]); input.value = ''; }} />
+        </div>
 
-    {#if phase !== 'empty'}
-        <section aria-label="Files read">
-            <p class="head"><strong>{plural(total, 'file', 'files')} read</strong>{#if source}<span>from {source}</span>{/if}{#if phase === 'reading'}<span>reading…</span>{/if}</p>
-            <div class="bar" aria-hidden="true">
-                {#each KINDS as { kind } (kind)}<span class={kind} style:flex-grow={counts[kind]}></span>{/each}
-            </div>
-            <dl class="counts">
-                {#each KINDS as { kind, label } (kind)}
-                    <div><dt><i class={kind}></i>{label}</dt><dd>{counts[kind].toLocaleString('en')}</dd></div>
-                {/each}
-            </dl>
-            <p class="rule">A file with times is a ride. A file with no times is a planned route.</p>
-            {#if shown.length}
-                <ul class:expanded>
-                    {#each shown as file, i (i)}
-                        <li><span class="name" title={file.file}>{file.name}</span><span class="detail" class:unreadable={file.kind === 'unreadable'}>{detail(file)}</span></li>
+        {#if phase !== 'empty'}
+            <section aria-label="Files read">
+                <p class="head"><strong>{plural(total, 'file', 'files')} read</strong>{#if source}<span>from {source}</span>{/if}{#if phase === 'reading'}<span>reading…</span>{/if}</p>
+                <div class="bar" aria-hidden="true">
+                    {#each KINDS as { kind } (kind)}<span class={kind} style:flex-grow={counts[kind]}></span>{/each}
+                </div>
+                <dl class="counts">
+                    {#each KINDS as { kind, label } (kind)}
+                        <div><dt><i class={kind}></i>{label}</dt><dd>{counts[kind].toLocaleString('en')}</dd></div>
                     {/each}
-                </ul>
-                {#if hidden > 0}
-                    <button type="button" class="more" onclick={() => expanded = true}>and {hidden.toLocaleString('en')} more ›</button>
+                </dl>
+                <p class="rule">A file with times is a ride. A file with no times is a planned route.</p>
+                {#if shown.length}
+                    <ul class:expanded>
+                        {#each shown as file, i (i)}
+                            <li><span class="name" title={file.file}>{file.name}</span><span class="detail" class:unreadable={file.kind === 'unreadable'}>{detail(file)}</span></li>
+                        {/each}
+                    </ul>
+                    {#if hidden > 0}
+                        <button type="button" class="more" onclick={() => expanded = true}>and {hidden.toLocaleString('en')} more ›</button>
+                    {/if}
                 {/if}
-            {/if}
-        </section>
-    {/if}
-
-    {#if message}<p class="message" role="alert">{message}</p>{/if}
-    {#if phase === 'added'}
-        <p class="message" role="status">Added {plural(added.ride, 'ride', 'rides')} and {plural(added.route, 'planned route', 'planned routes')}.</p>
-    {/if}
-
-    <footer>
-        {#if phase === 'added'}
-            <button type="button" class="primary" onclick={close}>Close</button>
-        {:else}
-            <button type="button" onclick={event => { controller.abort(); close(event); }}>Cancel</button>
-            <button type="button" class="primary" onclick={add} disabled={phase !== 'read' || toAdd === 0}>
-                {phase === 'adding' ? `Adding… ${toAdd.toLocaleString('en')} left` : `Add ${toAdd.toLocaleString('en')} to the library`}
-            </button>
+            </section>
         {/if}
-    </footer>
+
+        {#if message}<p class="message" role="alert">{message}</p>{/if}
+        {#if phase === 'added'}
+            <p class="message" role="status">Added {plural(added.ride, 'ride', 'rides')} and {plural(added.route, 'planned route', 'planned routes')}.</p>
+        {/if}
+
+        <footer>
+            {#if phase === 'added'}
+                <button type="button" class="primary" onclick={close}>Close</button>
+            {:else}
+                <button type="button" onclick={() => { controller.abort(); close(); }}>Cancel</button>
+                <button type="button" class="primary" onclick={add} disabled={phase !== 'read' || toAdd === 0}>
+                    {phase === 'adding' ? `Adding… ${toAdd.toLocaleString('en')} left` : `Add ${toAdd.toLocaleString('en')} to the library`}
+                </button>
+            {/if}
+        </footer>
+    {/snippet}
 </Window>
 
 <style>

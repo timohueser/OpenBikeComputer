@@ -61,12 +61,13 @@ const wanted = (name: string) => !name.startsWith('._') && (counted.test(name) |
 const isZip = (name: string) => /\.zip$/i.test(name);
 
 /** Lists the files to read and the CSV files of `item`. It inflates each ZIP in a ZIP, one level deep, and keeps it. */
-async function list(item: Item | Blob, path: string, sources: Source[], failed: Found[], inZip = false): Promise<void> {
+async function list(item: Item | Blob, path: string, sources: Source[], failed: Found[], signal: AbortSignal, inZip = false): Promise<void> {
+    signal.throwIfAborted();
     const name = baseName(path);
     if (!(item instanceof Blob) && item.isDirectory) {
         const reader = (item as FileSystemDirectoryEntry).createReader();
         for (let batch; (batch = await new Promise<FileSystemEntry[]>((resolve, reject) => reader.readEntries(resolve, reject))).length;) {
-            for (const child of batch) await list(child, `${path}/${child.name}`, sources, failed);
+            for (const child of batch) await list(child, `${path}/${child.name}`, sources, failed, signal);
         }
         return;
     }
@@ -80,9 +81,10 @@ async function list(item: Item | Blob, path: string, sources: Source[], failed: 
         if (entry.name.endsWith('/') || !wanted(baseName(entry.name))) continue;
         if (!isZip(entry.name)) sources.push({ path: inner, get: () => open(entry) });
         else if (!inZip) {
+            signal.throwIfAborted();
             let content;
             try { content = await open(entry); } catch (error) { failed.push(failure(inner, error)); continue; }
-            await list(content, inner, sources, failed, true);
+            await list(content, inner, sources, failed, signal, true);
         }
     }
 }
@@ -109,15 +111,29 @@ export function csvRows(text: string): string[][] {
     return rows;
 }
 
-/** Strava's `activities.csv`: the name and the type of each activity, by the base name of its file. */
+// The columns of Strava's export in English. Another language has the same order with other headers.
+const stravaColumns = { name: 2, type: 3, file: 12 };
+
+/** Strava's `activities.csv`: the name and the type of each activity, by the base name of its file. With no English
+ * headers, it finds the file column by its values, and uses the CSV only when that column is where the English one is.
+ * Then it keeps only a type that names a bike or a walk, so that a type in another language refuses no file. */
 async function strava(source: Source, into: Map<string, { name: string; type: string }>): Promise<void> {
-    const [header, ...rows] = csvRows(await (await source.get()).text());
-    const [name, type, file] = ['Activity Name', 'Activity Type', 'Filename'].map(column => header?.indexOf(column) ?? -1);
-    if (file < 0) return;
-    for (const row of rows) if (row[file]) into.set(baseName(row[file]), { name: row[name] ?? '', type: row[type] ?? '' });
+    const [header = [], ...rows] = csvRows(await (await source.get()).text());
+    let [name, type, file] = ['Activity Name', 'Activity Type', 'Filename'].map(column => header.indexOf(column));
+    const english = file >= 0;
+    if (!english) {
+        file = header.findIndex((_, i) => rows.some(row => row[i]?.startsWith('activities/')));
+        if (file !== stravaColumns.file) return;
+        ({ name, type } = stravaColumns);
+    }
+    for (const row of rows) {
+        const kind = row[type] ?? '';
+        if (row[file]) into.set(baseName(row[file]), { name: row[name] ?? '', type: english || bikeOf(kind) ? kind : '' });
+    }
 }
 
-/** The bike of an activity type of a file or of Strava, such as `cycling`, `Gravel Ride` or `Hike`. */
+/** The bike of an activity type of a file or of Strava, such as `cycling`, `Gravel Ride` or `Hike`. `touring` is the
+ * match of a type that names no kind of bike. */
 function bikeOf(type = ''): Bike | undefined {
     const t = type.toLowerCase();
     if (/hik|walk|run|trek/.test(t)) return 'hiking';
@@ -127,7 +143,23 @@ function bikeOf(type = ''): Bike | undefined {
     return /cycl|bik|ride/.test(t) ? 'touring' : undefined;
 }
 
+/** A specific bike of Strava, else the bike of the file, else touring. Null when Strava names a sport that is not by
+ * bike or on foot, or when the FIT file does and Strava names none. */
+function chooseBike(stravaType: string | undefined, fromFile: Bike | null | undefined): Bike | null {
+    const fromStrava = stravaType ? bikeOf(stravaType) ?? null : undefined;
+    if (fromStrava === null) return null;
+    if (fromStrava && fromStrava !== 'touring') return fromStrava;
+    if (fromFile === null) return fromStrava ?? null;
+    return fromFile ?? 'touring';
+}
+
 const fitBikes: Record<string, Bike | null> = { road: 'road', gravel: 'gravel', mtb: 'mtb', bike: 'touring', unknown: 'touring', foot: 'hiking', other: null };
+
+/** A name that the rider knows: not a number such as `12345` or `12345_ACTIVITY`, and not a file name with an email
+ * address. */
+const usable = (name: string | undefined): name is string => !!name && !name.includes('@') && /[^\d\s_.-]/.test(name.replace(/activity/gi, ''));
+const dateName = (start: number, bike: Bike) =>
+    `${bike === 'hiking' ? 'Hike' : 'Ride'}, ${new Date(start * 1000).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`;
 
 /** `YYYYMMDDTHHMMSSZ` of a Unix time. */
 const rideKey = (seconds: number) => new Date(Math.floor(seconds) * 1000).toISOString().replace(/[-:]|\.\d+/g, '');
@@ -148,7 +180,7 @@ export async function* readFiles(items: Item[], library: Library, readers: Reade
     const sources: Source[] = [], failed: Found[] = [];
     for (const item of items) {
         signal.throwIfAborted();
-        await list(item, item instanceof Blob ? item.name : item.fullPath.replace(/^\//, ''), sources, failed);
+        await list(item, item instanceof Blob ? item.name : item.fullPath.replace(/^\//, ''), sources, failed, signal);
     }
     yield* failed;
     const activities = new Map<string, { name: string; type: string }>();
@@ -182,26 +214,25 @@ export async function* readFiles(items: Item[], library: Library, readers: Reade
         const timed = 'points' in file && file.points.every(p => p.time !== undefined);
         const samples = 'samples' in file ? file.samples
             : file.points.map(p => ({ timeS: p.time ?? 0, lat: p.lat, lon: p.lon, elevationM: p.ele, segmentStart: !!p.segmentStart }));
-        // `null`: a FIT sport that is not a ride by bike or on foot.
-        const fileBike = 'sport' in file ? fitBikes[file.sport] : bikeOf(file.kind);
-        const bike = bikeOf(strava?.type) ?? (fileBike === null ? null : fileBike ?? 'touring');
+        const bike = chooseBike(strava?.type, 'sport' in file ? fitBikes[file.sport] : bikeOf(file.kind));
         if (bike === null) { yield { ...found, kind: 'unreadable', reason: reasons.sport }; continue; }
         if (samples.length < 2) { yield { ...found, kind: 'unreadable', reason: reasons.track }; continue; }
         // A route's summary here gives only its line and its length: the planner makes the stored one.
         const summary = rideSummary(samples, bike);
         if ('samples' in file || timed) {
             const key = rideKey(summary.start);
-            const ride: RideRecord = { key, name: strava?.name || ('name' in file ? file.name : fallback), source: 'file', format: format as 'gpx' | 'fit',
-                summary, maxHr: settings.maxHr?.value ?? null, ftp: settings.ftp?.value ?? null };
+            const title = [strava?.name, 'name' in file ? file.name : fallback].find(usable) ?? dateName(summary.start, bike);
+            const ride: RideRecord = { key, name: title, source: 'file', format: format as 'gpx' | 'fit', summary,
+                maxHr: settings.maxHr?.value ?? null, ftp: settings.ftp?.value ?? null };
             const known = seen.has(key) || deleted.has(key) || !!await library.ride(key);
             seen.add(key);
             yield known ? { ...found, kind: 'known' } : { ...found, name: ride.name, kind: 'ride', ride, open: content };
         } else {
-            const track = file as Track, id = await lineId(summary.line);
+            const id = await lineId(summary.line), title = usable(file.name) ? file.name : 'Planned route';
             const known = seen.has(id) || !!await library.item(id);
             seen.add(id);
             yield known ? { ...found, kind: 'known' }
-                : { ...found, name: track.name, kind: 'route', id, lengthM: summary.lengthM, bike, open: () => read() as Promise<Track> };
+                : { ...found, name: title, kind: 'route', id, lengthM: summary.lengthM, bike, open: async () => ({ ...await read() as Track, name: title }) };
         }
     }
 }

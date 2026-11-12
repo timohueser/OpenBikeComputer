@@ -28,16 +28,27 @@ const crcTable = Uint32Array.from({ length: 256 }, (_, i) => {
     return c >>> 0;
 });
 
-/** The CRC-32 and the length of a stream. `keep` gets each chunk. */
-async function measure(stream: ReadableStream<Uint8Array<ArrayBuffer>>, keep?: Uint8Array<ArrayBuffer>[]): Promise<{ crc: number; length: number }> {
-    const reader = stream.getReader();
-    let c = 0xffffffff, length = 0;
+// Chunks become one Blob part at this size, so the browser can move a large entry to disk while it inflates.
+const partBytes = 4 << 20;
+
+/** The CRC-32 and the length of a stream, and with `keep` its content. It stops with an error past `limit` bytes, so a
+ * small entry that inflates to gigabytes cannot fill the memory. */
+async function measure(stream: ReadableStream<Uint8Array<ArrayBuffer>>, limit = Infinity, keep = false): Promise<{ crc: number; length: number; content: Blob }> {
+    const reader = stream.getReader(), parts: Blob[] = [];
+    let c = 0xffffffff, length = 0, chunks: Uint8Array<ArrayBuffer>[] = [], held = 0;
     for (;;) {
         const { done, value } = await reader.read();
-        if (done) return { crc: (c ^ 0xffffffff) >>> 0, length };
-        for (let i = 0; i < value.length; i++) c = crcTable[(c ^ value[i]) & 0xff] ^ (c >>> 8);
+        if (done) return { crc: (c ^ 0xffffffff) >>> 0, length, content: new Blob([...parts, ...chunks]) };
         length += value.length;
-        keep?.push(value);
+        if (length > limit) {
+            await reader.cancel();
+            throw damaged();
+        }
+        for (let i = 0; i < value.length; i++) c = crcTable[(c ^ value[i]) & 0xff] ^ (c >>> 8);
+        if (!keep) continue;
+        chunks.push(value);
+        held += value.length;
+        if (held >= partBytes) { parts.push(new Blob(chunks)); chunks = []; held = 0; }
     }
 }
 
@@ -106,6 +117,14 @@ function uint64(view: DataView, at: number): number {
 // The characters 128 to 255 of code page 437, the encoding of a name without the UTF-8 flag.
 const cp437 = 'ÇüéâäàåçêëèïîìÄÅÉæÆôöòûùÿÖÜ¢£¥₧ƒáíóúñÑªº¿⌐¬½¼¡«»░▒▓│┤╡╢╖╕╣║╗╝╜╛┐└┴┬├─┼╞╟╚╔╩╦╠═╬╧╨╤╥╙╘╒╓╫╪┘┌█▄▌▐▀αßΓπΣσµτΦΘΩδ∞φε∩≡±≥≤⌠⌡÷≈°∙·√ⁿ²■ ';
 
+const strict = new TextDecoder('utf-8', { fatal: true }), lenient = new TextDecoder();
+
+/** A name with no UTF-8 flag is CP437, unless it is valid UTF-8: the macOS Finder writes UTF-8 with no flag. */
+function decodeName(bytes: Uint8Array, flagged: boolean): string {
+    if (flagged) return lenient.decode(bytes);
+    try { return strict.decode(bytes); } catch { return Array.from(bytes, c => c < 128 ? String.fromCharCode(c) : cp437[c - 128]).join(''); }
+}
+
 /** The entries of a ZIP file. It reads only the central directory, also of a ZIP64 file. */
 export async function entries(file: Blob): Promise<ZipEntry[]> {
     const tailStart = Math.max(0, file.size - 22 - 0xffff);
@@ -120,7 +139,7 @@ export async function entries(file: Blob): Promise<ZipEntry[]> {
         if (record.getUint32(0, true) !== 0x06064b50) throw damaged();
         [count, size, start] = [32, 40, 48].map(at => uint64(record, at));
     }
-    const directory = await view(file, start, size), decoder = new TextDecoder();
+    const directory = await view(file, start, size);
     const list: ZipEntry[] = [];
     let at = 0;
     for (let i = 0; i < count; i++) {
@@ -139,8 +158,7 @@ export async function entries(file: Blob): Promise<ZipEntry[]> {
             if (packed === max32) packed = take();
             if (offset === max32) offset = take();
         }
-        const name = new Uint8Array(directory.buffer, at + 46, nameLength);
-        list.push({ name: flags & utf8 ? decoder.decode(name) : Array.from(name, c => c < 128 ? String.fromCharCode(c) : cp437[c - 128]).join(''),
+        list.push({ name: decodeName(new Uint8Array(directory.buffer, at + 46, nameLength), !!(flags & utf8)),
             file, method, encrypted: !!(flags & 1), crc, packed, size: unpacked, at: offset });
         at = next;
     }
@@ -155,12 +173,11 @@ export async function open(entry: ZipEntry): Promise<Blob> {
     if (local.getUint32(0, true) !== 0x04034b50) throw damaged();
     const dataAt = entry.at + 30 + local.getUint16(26, true) + local.getUint16(28, true);
     if (dataAt + entry.packed > entry.file.size) throw damaged();
-    const data = entry.file.slice(dataAt, dataAt + entry.packed);
-    const chunks: Uint8Array<ArrayBuffer>[] | undefined = entry.method === deflated ? [] : undefined;
-    const content = chunks ? data.stream().pipeThrough(new DecompressionStream('deflate-raw')) : data.stream();
-    const { crc, length } = await measure(content, chunks).catch(() => { throw damaged(); });
+    const data = entry.file.slice(dataAt, dataAt + entry.packed), inflate = entry.method === deflated;
+    const stream = inflate ? data.stream().pipeThrough(new DecompressionStream('deflate-raw')) : data.stream();
+    const { crc, length, content } = await measure(stream, entry.size, inflate).catch(() => { throw damaged(); });
     if (crc !== entry.crc || length !== entry.size) throw damaged();
-    return chunks ? new Blob(chunks) : data;
+    return inflate ? content : data;
 }
 
 /** Each entry of a ZIP file by name, after a check of its CRC-32. */
