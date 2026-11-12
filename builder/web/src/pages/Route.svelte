@@ -215,7 +215,7 @@
                             {#if mapLarge}<button type="button" class="swap" aria-label="Show the picture large" onclick={() => swapped = false}></button>{/if}
                         </div>
                     {/if}
-                    {#if !mapLarge}<Credits {credits} side="left" />{/if}
+                    {#if covered}<Credits {credits} side="left" />{/if}
                     <div class="slot map">
                         <RouteMap {summary} mark={share} onpoint={next => share = next ?? undefined} />
                         {#if !mapLarge}<button type="button" class="swap" aria-label="Show the map large" onclick={() => swapped = true}></button>{/if}

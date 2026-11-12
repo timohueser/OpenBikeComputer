@@ -146,28 +146,31 @@ export class Library {
         });
     }
 
-    /** Gives a stored route a new name and the next revision. */
+    /** Gives a stored route a new name and the next revision. This tab then knows the new revision only when it knew the
+     * stored one, so a rename does not hide a save of another tab from a later save or removal of this tab. */
     renameRoute(id: string, name: string): Promise<RouteRecord> {
         return this.write(['routes'], (tx, fail, changed) => {
             const store = tx.objectStore('routes'), request = store.get(id);
-            let next: RouteRecord;
+            let next: RouteRecord, current = false;
             request.onsuccess = () => {
                 if (!isRouteRecord(request.result)) return fail(new Error('This route is not in the library.'));
+                current = this.revisions.get(id) === request.result.revision;
                 next = { ...request.result, name, revision: request.result.revision + 1, updatedAt: Date.now() };
                 store.put(next);
                 changed('routes', id);
             };
-            return () => { this.revisions.set(id, next.revision); return next; };
+            return () => { if (current) this.revisions.set(id, next.revision); return next; };
         });
     }
 
     /** Removes a route with its versions and its cover, and takes it out of the routes that wait for the device. With
-     * `revision`, it refuses a route that changed since then. */
+     * `revision`, it refuses a route that changed since then, or since the newest revision that this tab knows, as
+     * `saveRoute` does. */
     removeRoute(id: string, revision?: number): Promise<void> {
         return this.write(['routes', 'versions', 'covers', 'state'], (tx, fail, changed) => {
             const store = tx.objectStore('routes'), request = store.get(id), state = tx.objectStore('state');
             request.onsuccess = () => {
-                if (revision !== undefined && request.result && request.result.revision !== revision) return fail(conflict());
+                if (revision !== undefined && request.result && request.result.revision !== Math.max(this.revisions.get(id) ?? 0, revision)) return fail(conflict());
                 store.delete(id);
                 tx.objectStore('versions').delete(id);
                 tx.objectStore('covers').delete(id);

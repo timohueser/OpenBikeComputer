@@ -443,14 +443,14 @@ export class PlanSession {
         return done;
     }
 
-    /** Takes the stored name and revision of the open plan after a write of this tab; a removed plan gives a new empty
-     * plan, and its failed save shows no error, as the error belongs to another plan. */
+    /** Takes the stored name of the open plan after a write of this tab; a removed plan gives a new empty plan, and its
+     * failed save shows no error, as the error belongs to another plan. The library keeps the revision that this tab
+     * knows. */
     private async follow(id: string): Promise<void> {
         const record = await this.library!.item(id).catch(() => null);
         if (this.closed || this.plan.id !== id || record === null) return;
-        if (!record || !('revision' in record)) return this.install(newPlan(emptyTrip(this.trip.mode)), []);
-        const revision = Math.max(this.plan.revision, record.revision);
-        if (record.name !== this.plan.name || revision !== this.plan.revision) this.plan = { ...this.plan, name: record.name, revision };
+        if (!record) this.install(newPlan(emptyTrip(this.trip.mode)), []);
+        else if (record.name !== this.plan.name) this.plan = { ...this.plan, name: record.name };
     }
 
     private snapshot(versions = this.versions): Plan {

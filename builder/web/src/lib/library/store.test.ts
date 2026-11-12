@@ -34,7 +34,22 @@ describe('library store', () => {
         expect(later).toMatchObject({ name: 'Lake loop', revision: 3, updatedAt: 5 });
         expect(await library.route('a')).toMatchObject({ name: 'Lake loop', revision: 3 });
         await expect(library.renameRoute('gone', 'x')).rejects.toThrow('not in the library');
+        await library.renameRoute('a', 'Lake round');
+        // The copy of the route still has revision 1: the tab knows the revisions of its own save and rename.
+        await library.removeRoute('a', saved.revision);
+        expect(await library.route('a')).toBeUndefined();
         await library.close();
+    });
+
+    it('does not hide a save of another tab behind a rename', async () => {
+        const factory = new IDBFactory(), stale = new Library(factory), other = new Library(factory);
+        const saved = await stale.saveRoute(route('a'));
+        await other.saveRoute({ ...(await other.route('a'))!, trip: { points: [], edited: true } });
+        expect(await stale.renameRoute('a', 'Lake loop')).toMatchObject({ name: 'Lake loop', revision: 3 });
+        await expect(stale.saveRoute({ ...saved, updatedAt: 2 })).rejects.toThrow('another tab');
+        await expect(stale.removeRoute('a', saved.revision)).rejects.toThrow('changed');
+        expect(await other.route('a')).toMatchObject({ name: 'Lake loop', trip: { edited: true } });
+        await stale.close(); await other.close();
     });
 
     it('changes a state value in one transaction, and a removed route stops waiting for the device', async () => {
