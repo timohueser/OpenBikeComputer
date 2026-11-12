@@ -77,11 +77,12 @@ fn an_install_from_the_store_goes_on_after_a_stop() {
     let install = || run(&[target.as_path(), &directory_path, &info_path, &objects], "--install", &["2"]);
     assert_eq!(missing(), 4 * 13);
 
-    // The store lacks the objects of the second cell: the install stops with the first.
+    // The store lacks the objects of the second cell: the install stops with the first, and the
+    // exit status 3 names a missing or damaged object.
     publish(&published[..2]);
     let stopped = install();
     let said = String::from_utf8_lossy(&stopped.stderr);
-    assert!(!stopped.status.success() && said.starts_with("object "), "{said}");
+    assert!(stopped.status.code() == Some(3) && said.starts_with("object "), "{said}");
     let files: Vec<String> = std::fs::read_dir(target.join("cells"))
         .unwrap()
         .map(|entry| entry.unwrap().file_name().into_string().unwrap())

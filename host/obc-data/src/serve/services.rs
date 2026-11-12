@@ -377,29 +377,43 @@ pub fn start(
     let name = SERVICES[service].name;
     let mapped =
         (programs.reads.iter()).any(|(reader, layer, _)| *reader == "routing" && layer == "planner/routing-cells");
+    let workers = match name == "routing" && cells.is_some() && mapped {
+        true => Some(workers(&programs.routing)?),
+        false => None,
+    };
     #[cfg(target_os = "linux")]
-    limit(&mut command, name, cells.is_some() && mapped);
+    limit(&mut command, name, workers);
     #[cfg(not(target_os = "linux"))]
-    let _ = mapped;
+    let _ = workers;
     let mut child =
         spawn(command.stderr(Stdio::piped())).map_err(|e| format!("cannot start the {name} service: {e}"))?;
     let said = crate::engine::copy_lines(child.stderr.take(), "");
     Ok(Process { child, port, service, signalled: None, said })
 }
 
+/// The workers of the routing program `routing`, by its own rule: `routing --workers`.
+fn workers(routing: &Path) -> Result<u64, String> {
+    let output = Command::new(routing).arg("--workers").output();
+    let output = output.map_err(|e| format!("the routing service gives no worker count: {e}"))?;
+    let count = output.status.success().then(|| String::from_utf8_lossy(&output.stdout).trim().parse().ok());
+    count.flatten().ok_or_else(|| {
+        format!("the routing service gives no worker count: {}", String::from_utf8_lossy(&output.stderr).trim())
+    })
+}
+
 /// Keep one service that grows from taking the memory of the unit from the routing service. The
 /// RSS of a routing service that maps the files of `route-cells/` counts its mapped pages, so the
 /// kernel would kill it first when the unit runs out of memory: search and downloads get
 /// `oom_score_adj` 1000, which the kernel kills before it. A routing service that maps the files
-/// (`mapped`) gets `RLIMIT_DATA` of 1 GiB for each worker and 1 GiB for the shared part; the limit
+/// gets `RLIMIT_DATA` of 1 GiB for each of its `workers` and 1 GiB for the shared part; the limit
 /// counts its private writable memory, not the read-only maps of the files.
 #[cfg(target_os = "linux")]
-fn limit(command: &mut Command, service: &str, mapped: bool) {
+fn limit(command: &mut Command, service: &str, workers: Option<u64>) {
     use std::os::unix::process::CommandExt;
-    match service {
-        "routing" if mapped => {
-            let workers = std::thread::available_parallelism().map_or(1, |n| n.get()) as libc::rlim_t;
-            let limit = libc::rlimit { rlim_cur: (workers + 1) << 30, rlim_max: (workers + 1) << 30 };
+    match (service, workers) {
+        ("routing", Some(workers)) => {
+            let bytes = ((workers + 1) << 30) as libc::rlim_t;
+            let limit = libc::rlimit { rlim_cur: bytes, rlim_max: bytes };
             // SAFETY: setrlimit is async-signal-safe, and the closure allocates nothing.
             unsafe {
                 command.pre_exec(move || match libc::setrlimit(libc::RLIMIT_DATA, &limit) {
@@ -408,7 +422,7 @@ fn limit(command: &mut Command, service: &str, mapped: bool) {
                 });
             }
         }
-        "search" | "downloads" => {
+        ("search" | "downloads", _) => {
             // SAFETY: open, write and close are async-signal-safe, and the closure allocates nothing.
             unsafe {
                 command.pre_exec(|| {
@@ -533,7 +547,8 @@ impl super::Process for Process {
         match self.child.try_wait() {
             Ok(None) => None,
             Ok(Some(status)) => {
-                let said = last(&self.said).map(|said| format!(": {said}")).unwrap_or_default();
+                let said = crate::engine::last_line(status, &self.said).map(|said| format!(": {said}"));
+                let said = said.unwrap_or_default();
                 Some(format!("the {name} service stopped: {status}{said}"))
             }
             Err(e) => Some(format!("the {name} service: {e}")),
@@ -785,7 +800,9 @@ impl Package {
         let output = (self.command(routing, store, target, "--missing").output())
             .map_err(|e| format!("cannot start the installer of the routing cells: {e}"))?;
         if !output.status.success() {
-            return Err(format!("the routing cells: {}", String::from_utf8_lossy(&output.stderr).trim()));
+            let said = String::from_utf8_lossy(&output.stderr);
+            let last = said.lines().map(str::trim).rfind(|line| !line.is_empty() && output.status.code().is_some());
+            return Err(failed(output.status, last.map(String::from)));
         }
         let said = String::from_utf8_lossy(&output.stdout);
         said.trim().parse().map_err(|_| format!("the installer of the routing cells gives no byte count: {said}"))
@@ -794,7 +811,8 @@ impl Package {
     /// Install all cells and profile groups in `target` from the objects of `store`, in a process at
     /// nice 10 whose installer drops each file from the page cache after its sync, so that the
     /// install does not evict the files of the serving release. It stops when `go` fails; the next
-    /// call goes on from the complete files.
+    /// call goes on from the complete files. An object that the installer refuses leaves the store,
+    /// so that the next fetch downloads it again.
     fn install(
         &self,
         routing: &Path,
@@ -829,16 +847,28 @@ impl Package {
                 Err(e) => return Err(format!("the installer of the routing cells: {e}")),
             }
         };
-        match status.success() {
-            true => Ok(()),
-            false => Err(format!("the routing cells: {}", last(&said).unwrap_or_else(|| status.to_string()))),
+        let last = crate::engine::last_line(status, &said);
+        if status.success() {
+            return Ok(());
         }
+        let object = last.as_deref().and_then(|line| line.strip_prefix("object ")?.split(':').next());
+        if let Some(object) = object.filter(|object| status.code() == Some(OBJECT) && is_sha256(object)) {
+            let _ = fs::remove_file(store.object(object));
+        }
+        Err(failed(status, last))
     }
 }
 
-/// The last line of standard error of a process that ended.
-fn last(said: &Receiver<String>) -> Option<String> {
-    said.recv_timeout(Duration::from_secs(1)).ok()
+/// The exit status of the installer of the routing cells when a published object is missing or
+/// damaged. Its last line is then `object <SHA-256>: <why>`.
+const OBJECT: i32 = 3;
+
+/// Why the installer of the routing cells failed: its exit status and its last line, if any.
+fn failed(status: std::process::ExitStatus, last: Option<String>) -> String {
+    match last {
+        Some(last) => format!("the routing cells ({status}): {last}"),
+        None => format!("the routing cells: {status}"),
+    }
 }
 
 /// Delete the content of `dir`, a folder without the marker of an install, except [`CELLS`]: its
@@ -1026,6 +1056,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let scratch = Scratch::new("serve-cells");
         let (target, log, flag) = (scratch.0.join("target"), scratch.0.join("log"), scratch.0.join("stop"));
+        let damaged = scratch.0.join("damaged");
         let object = |bytes: &[u8]| {
             let sha256 = sha256_hex(bytes);
             fs::create_dir_all(target.join("objects")).unwrap();
@@ -1059,6 +1090,7 @@ mod tests {
 echo "$*" >> {log}
 target=$1 action=$2 directory=$3 objects=$5 missing=0
 [ "$action" = --install ] && mkdir -p "$target/cells"
+[ "$action" = --install ] && [ -f {damaged} ] && {{ echo "object $(head -n 1 "$directory"): damaged" >&2; exit 3; }}
 for sha in $(cat "$directory"); do
   [ -f "$target/cells/$sha" ] && continue
   if [ "$action" = --missing ]; then missing=$((missing + 6)); continue; fi
@@ -1070,6 +1102,7 @@ if [ "$action" = --missing ]; then echo $missing; else touch "$target/install.bi
 "#,
             log = log.display(),
             flag = flag.display(),
+            damaged = damaged.display(),
         );
         let routing = scratch.0.join("routing");
         fs::write(&routing, script).unwrap();
@@ -1081,9 +1114,16 @@ if [ "$action" = --missing ]; then echo $missing; else touch "$target/install.bi
         let disk = |_: &Path| Ok(Disk { free: free.get(), size: 0 });
         let fetched = |dir: &Path| fetch(&programs, &store, &dir_target, &served, dir, &AtomicBool::new(true), &disk);
 
+        // A damaged object leaves the store, so that the next fetch downloads it again.
+        fs::write(&damaged, b"").unwrap();
+        let Fetched::Failed(refused) = fetched(&dir) else { panic!("the install takes a damaged object") };
+        assert_eq!(refused, format!("the routing cells (exit status: 3): object {}: damaged", a.0));
+        assert!(!store.object(&a.0).exists() && store.object(&b.0).is_file());
+        fs::remove_file(&damaged).unwrap();
+
         fs::write(&flag, b"").unwrap();
         let Fetched::Failed(stopped) = fetched(&dir) else { panic!("the install does not stop") };
-        assert_eq!(stopped, format!("the routing cells: stopped after {}", a.0));
+        assert_eq!(stopped, format!("the routing cells (exit status: 1): stopped after {}", a.0));
         let cells = dir.join("route-cells/cells");
         assert!(cells.join(&a.0).is_file() && !cells.join(&b.0).exists() && !installed(&dir));
         assert_eq!(fs::read(dir.join("routing/pages.bin")).unwrap(), b"pages");
@@ -1117,5 +1157,61 @@ if [ "$action" = --missing ]; then echo $missing; else touch "$target/install.bi
         for sha256 in [&a.0, &b.0, &directory.0] {
             assert!(!store.object(sha256).exists(), "{sha256} stays");
         }
+    }
+
+    /// A process that a signal ended, or that wrote nothing, gives only its status: what it wrote
+    /// last is not why it ended.
+    #[cfg(unix)]
+    #[test]
+    fn a_stopped_service_gives_its_last_line_only_after_an_exit_with_a_reason() {
+        let stopped = |script: &str| {
+            let mut child = spawn(Command::new("sh").args(["-c", script]).stderr(Stdio::piped())).unwrap();
+            let said = crate::engine::copy_lines(child.stderr.take(), "");
+            child.wait().unwrap();
+            super::super::Process::stopped(&mut Process { child, port: 0, service: 0, signalled: None, said }).unwrap()
+        };
+        assert_eq!(stopped("echo listening >&2; kill -9 $$"), "the routing service stopped: signal: 9 (SIGKILL)");
+        assert_eq!(stopped("exit 3"), "the routing service stopped: exit status: 3");
+        assert_eq!(
+            stopped("echo listening >&2; echo why >&2; exit 1"),
+            "the routing service stopped: exit status: 1: why"
+        );
+    }
+
+    /// The routing service that maps `route-cells/` gets a data limit from its own worker count;
+    /// search and downloads go first when the unit runs out of memory.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_services_start_with_their_memory_limits() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = Scratch::new("serve-limits");
+        let (out, dir) = (scratch.0.join("out"), scratch.0.join("install"));
+        fs::create_dir_all(dir.join(CELLS)).unwrap();
+        let script = format!(
+            "#!/bin/sh\n[ \"$1\" = --workers ] && {{ echo 3; exit 0; }}\necho \"$(ulimit -d) $ROUTE_CELLS\" > {}\n",
+            out.display()
+        );
+        let routing = scratch.0.join("routing");
+        fs::write(&routing, script).unwrap();
+        fs::set_permissions(&routing, fs::Permissions::from_mode(0o755)).unwrap();
+        let reads = vec![("routing", "planner/routing-cells".into(), 1)];
+        let programs = Programs { routing, ..Programs::reading(reads) };
+        let served = Served {
+            id: String::new(),
+            planner: String::new(),
+            document: Named { key: String::new(), size: 0, sha256: String::new() },
+            pointers: BTreeMap::new(),
+            formats: BTreeMap::new(),
+        };
+        let origins = Origins { api: String::new(), objects: String::new() };
+        let mut process = start(&programs, &dir, &served, &origins, 0).unwrap();
+        process.child.wait().unwrap();
+        let limited = fs::read_to_string(&out).unwrap();
+        assert_eq!(limited.trim(), format!("{} {}", 4 << 20, dir.join(CELLS).display()), "4 GiB in KiB for 3 workers");
+
+        let mut search = Command::new("sh");
+        search.args(["-c", "cat /proc/self/oom_score_adj"]);
+        limit(&mut search, "search", None);
+        assert_eq!(String::from_utf8(search.output().unwrap().stdout).unwrap().trim(), "1000");
     }
 }

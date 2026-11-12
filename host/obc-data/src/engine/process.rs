@@ -174,16 +174,22 @@ fn segment(pipe: &mut impl BufRead) -> Vec<u8> {
 }
 
 /// Wait until the copy of `errors` ends, and give the error of the program `name` that ended
-/// with `status`, with its last error line, such as a Python exception. A program that a signal
-/// ended gets no line: what it wrote last is not why it ended. A grandchild that keeps the pipe
-/// open delays this by two seconds at most.
+/// with `status`, with its [`last_line`].
 pub fn ended(name: &str, status: ExitStatus, errors: Receiver<String>) -> Result<(), String> {
-    let last = errors.recv_timeout(Duration::from_secs(2)).unwrap_or_default();
-    match status.code() {
+    match last_line(status, &errors) {
         _ if status.success() => Ok(()),
-        Some(_) if !last.is_empty() => Err(format!("`{name}` failed ({status}): {last}")),
-        _ => Err(format!("`{name}` failed: {status}")),
+        Some(last) => Err(format!("`{name}` failed ({status}): {last}")),
+        None => Err(format!("`{name}` failed: {status}")),
     }
+}
+
+/// Wait until the copy of `errors` ends, and give the last error line of a program that ended with
+/// `status`, such as a Python exception. A program that a signal ended gets no line: what it wrote
+/// last is not why it ended. A grandchild that keeps the pipe open delays this by two seconds at
+/// most.
+pub fn last_line(status: ExitStatus, errors: &Receiver<String>) -> Option<String> {
+    let last = errors.recv_timeout(Duration::from_secs(2)).unwrap_or_default();
+    (status.code().is_some() && !last.is_empty()).then_some(last)
 }
 
 /// The interpreter of a Python step: the system Python that `uv python find` selects for the
