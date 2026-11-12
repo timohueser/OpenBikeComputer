@@ -122,7 +122,8 @@ export class Library {
     }
 
     /** Saves the route with the next revision, and its versions when they are given. It refuses a route that another tab
-     * saved after this tab read it. */
+     * saved after this tab read it. A stored route keeps its stored name: only `renameRoute` changes it, so a save that
+     * was queued before a rename does not write the old name. */
     saveRoute<R extends RouteRecord>(route: R, versions?: unknown[]): Promise<R> {
         const snapshot = structuredClone(route), kept = versions && structuredClone(versions);
         return this.write(kept ? ['routes', 'versions'] : ['routes'], (tx, fail, changed) => {
@@ -131,6 +132,7 @@ export class Library {
             const next = { ...snapshot, revision: expected + 1 };
             request.onsuccess = () => {
                 if ((request.result?.revision ?? 0) !== expected) return fail(conflict());
+                if (request.result) next.name = request.result.name;
                 try {
                     store.put(next);
                     if (kept) tx.objectStore('versions').put(kept, next.id);
@@ -141,7 +143,23 @@ export class Library {
         });
     }
 
-    /** Removes a route with its versions and its cover. With `revision`, it refuses a route that changed since then. */
+    /** Gives a stored route a new name and the next revision. */
+    renameRoute(id: string, name: string): Promise<RouteRecord> {
+        return this.write(['routes'], (tx, fail, changed) => {
+            const store = tx.objectStore('routes'), request = store.get(id);
+            let next: RouteRecord;
+            request.onsuccess = () => {
+                if (!isRouteRecord(request.result)) return fail(new Error('This route is not in the library.'));
+                next = { ...request.result, name, revision: request.result.revision + 1, updatedAt: Date.now() };
+                store.put(next);
+                changed('routes', id);
+            };
+            return () => { this.revisions.set(id, next.revision); return next; };
+        });
+    }
+
+    /** Removes a route with its versions and its cover, and takes it out of the routes that wait for the device. With
+     * `revision`, it refuses a route that changed since then. */
     removeRoute(id: string, revision?: number): Promise<void> {
         return this.write(['routes', 'versions', 'covers', 'state'], (tx, fail, changed) => {
             const store = tx.objectStore('routes'), request = store.get(id), state = tx.objectStore('state');
@@ -152,8 +170,13 @@ export class Library {
                 tx.objectStore('covers').delete(id);
                 changed('routes', id);
             };
-            const active = state.get('active');
+            const active = state.get('active'), waiting = state.get('waiting');
             active.onsuccess = () => { if (active.result === id) state.put(null, 'active'); };
+            waiting.onsuccess = () => {
+                if (!stateChecks.waiting(waiting.result) || !waiting.result.includes(id)) return;
+                state.put(waiting.result.filter(other => other !== id), 'waiting');
+                changed('state', 'waiting');
+            };
             return () => {};
         });
     }
@@ -267,6 +290,23 @@ export class Library {
             tx.objectStore('state').put(value, key);
             changed('state', key);
             return () => {};
+        });
+    }
+
+    /** Reads a state value and writes `change` of it, in one transaction, so two changes of one tab or of two tabs do not
+     * lose each other. */
+    changeState<K extends keyof LibraryState>(key: K, change: (value: LibraryState[K] | undefined) => LibraryState[K]): Promise<LibraryState[K]> {
+        return this.write(['state'], (tx, fail, changed) => {
+            const store = tx.objectStore('state'), request = store.get(key);
+            let next: LibraryState[K];
+            request.onsuccess = () => {
+                try {
+                    next = change(stateChecks[key](request.result) ? request.result as LibraryState[K] : undefined);
+                    store.put(next, key);
+                    changed('state', key);
+                } catch (error) { fail(error); }
+            };
+            return () => next;
         });
     }
 

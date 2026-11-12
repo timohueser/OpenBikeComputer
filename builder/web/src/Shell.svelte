@@ -19,6 +19,8 @@
     const PAGES: Partial<Record<Route, Page>> = {
         // The planner reads the live catalogue as it loads.
         planner: { label: 'Planner', keep: true, load: () => initCore().then(() => import('./components/planner/PlannerApp.svelte')) },
+        // The page writes GPX and FIT.
+        route: { load: () => initCore().then(() => import('./pages/Route.svelte')) },
     };
 </script>
 

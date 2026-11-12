@@ -17,14 +17,37 @@ describe('library store', () => {
         const saved = await first.saveRoute(route('a'), [{ id: 'v' }]);
         await first.setState('active', saved.id);
         const stale = (await second.route('a'))!;
-        await Promise.all([first.saveRoute({ ...saved, name: 'First' }), first.saveRoute({ ...saved, name: 'Last' })]);
-        expect((await first.routes())[0]).toMatchObject({ name: 'Last', revision: 3 });
+        await Promise.all([first.saveRoute({ ...saved, updatedAt: 2 }), first.saveRoute({ ...saved, updatedAt: 3 })]);
+        expect((await first.routes())[0]).toMatchObject({ updatedAt: 3, revision: 3 });
         expect(await first.versions('a')).toEqual([{ id: 'v' }]);
         await expect(second.saveRoute({ ...stale, name: 'Unseen' })).rejects.toThrow('another tab');
         await expect(second.removeRoute('a', stale.revision)).rejects.toThrow('changed');
         await second.removeRoute('a', (await second.route('a'))!.revision);
         expect([await first.routes(), await first.versions('a'), await first.state('active')]).toEqual([[], [], null]);
         await first.close(); await second.close();
+    });
+
+    it('keeps a rename over a save that was queued before it', async () => {
+        const library = new Library(new IDBFactory()), saved = await library.saveRoute(route('a'));
+        const [renamed, later] = await Promise.all([library.renameRoute('a', 'Lake loop'), library.saveRoute({ ...saved, updatedAt: 5 })]);
+        expect(renamed).toMatchObject({ name: 'Lake loop', revision: 2 });
+        expect(later).toMatchObject({ name: 'Lake loop', revision: 3, updatedAt: 5 });
+        expect(await library.route('a')).toMatchObject({ name: 'Lake loop', revision: 3 });
+        await expect(library.renameRoute('gone', 'x')).rejects.toThrow('not in the library');
+        await library.close();
+    });
+
+    it('changes a state value in one transaction, and a removed route stops waiting for the device', async () => {
+        const library = new Library(new IDBFactory()), heard: string[] = [];
+        library.onChange((store, key) => heard.push(`${store}:${key}`));
+        await library.saveRoute(route('a'));
+        const add = (id: string) => library.changeState('waiting', ids => [...ids ?? [], id]);
+        await Promise.all([add('a'), add('b')]);
+        expect(await library.state('waiting')).toEqual(['a', 'b']);
+        await library.removeRoute('a');
+        expect(await library.state('waiting')).toEqual(['b']);
+        expect(heard).toEqual(['routes:a', 'state:waiting', 'state:waiting', 'routes:a', 'state:waiting']);
+        await library.close();
     });
 
     it('adds a ride once, and refuses a stored or a deleted key but keeps its device id', async () => {
