@@ -19,6 +19,9 @@
     }
     h2 {
         margin: 0 0 12px;
-        font: 600 15px/1.3 var(--sans);
+        color: var(--ink-soft);
+        font: 700 11px/1.3 var(--sans);
+        letter-spacing: .06em;
+        text-transform: uppercase;
     }
 </style>
