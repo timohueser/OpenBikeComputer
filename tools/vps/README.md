@@ -48,6 +48,14 @@ tools/vps/deploy-services.sh HOST [COMMIT]     # COMMIT defaults to HEAD
   installs nothing again. A rollback after a failed update downloads nothing while the disk kept
   its files.
 - `journalctl -u obc-data-serve` shows why a release did not start.
+- After a disk fault, read the installed routing cells of each release again. The command fails
+  and names each file whose SHA-256 differs from the directory of its package:
+
+  ```sh
+  /opt/obc-data/current/target/release/planner-service ROUTE_CELLS --scrub
+  ```
+
+  `ROUTE_CELLS` is the folder of the installed routing cells of the release.
 - `/planner-api/version` gives the commit of the build, the layer formats that its services read
   and the format of the release manifest that it reads.
 

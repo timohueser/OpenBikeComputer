@@ -64,6 +64,8 @@ Physical phone performance and complete-country preparation need separate valida
 | `router` | Ordered points, direction continuity, route pieces and leg totals |
 | `answer` | The wire answer of [the route API](../../specs/route-api.md) |
 | `directory` | Native packed storage and `open` |
+| `cells` | Format 10: read views of the cell directory and of the parts of a cell, the road record |
+| `install` | Format 10, native only: installs a set of cells as files, checks the objects, reads the files again |
 
 - Snapping uses only roads that the prepared profile permits. A disconnected leg returns `NoPath`;
   it does not retry other roads.
