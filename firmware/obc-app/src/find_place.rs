@@ -1135,8 +1135,8 @@ mod tests {
                 limit * 2
             );
             assert_eq!((0..PLAN_LIMIT as u8).filter(|&id| find.candidate(id, &nearby, &[]).is_some()).count(), limit);
-            for i in 0..limit * 2 {
-                find.costs[i] = cost(10_000 - i as u32 * 100, Some(100), 100);
+            for (i, slot) in find.costs[..limit * 2].iter_mut().enumerate() {
+                *slot = cost(10_000 - i as u32 * 100, Some(100), 100);
             }
             find.rank();
             assert_eq!(
