@@ -146,6 +146,20 @@ export class Library {
         });
     }
 
+    /** Adds a route as it is. False when its id is stored: one transaction checks and writes, so two tabs add it once. */
+    addRoute(route: RouteRecord): Promise<boolean> {
+        const record = structuredClone(route);
+        return this.write(['routes'], (tx, _, changed) => {
+            const store = tx.objectStore('routes'), stored = store.getKey(record.id);
+            stored.onsuccess = () => {
+                if (stored.result !== undefined) return;
+                store.put(record);
+                changed('routes', record.id);
+            };
+            return () => stored.result === undefined;
+        });
+    }
+
     /** Gives a stored route a new name and the next revision. This tab then knows the new revision only when it knew the
      * stored one, so a rename does not hide a save of another tab from a later save or removal of this tab. */
     renameRoute(id: string, name: string): Promise<RouteRecord> {

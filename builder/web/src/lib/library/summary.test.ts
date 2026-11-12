@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { RouteSummary } from './records';
-import { summarize, type Point } from './summary';
+import { rideSummary, summarize, type Point } from './summary';
 
 const metresPerDegree = 6_371_008.8 * Math.PI / 180;
 const numbers = { lengthM: 0, climbM: 0, seconds: 0, days: 1, bike: 'road' } as const;
@@ -29,5 +29,15 @@ describe('summary', () => {
         const { line } = summarize<RouteSummary>(winding, numbers);
         expect(line.length / 2).toBeLessThanOrEqual(1000);
         expect(Math.max(...winding.map(p => offset(p, line)))).toBeLessThan(41);
+    });
+
+    it('measures a ride with a stop and a pause: no length to the segment start, no moving time while it stands', () => {
+        // Points every 500 m to the east; the pause starts 1 km farther.
+        const at = (metres: number) => 8e6 + Math.round(metres / (metresPerDegree * Math.cos(47 * Math.PI / 180)) * 1e6);
+        const t = 1_785_571_200;
+        const steps: [number, number, number, boolean?][] = [[0, 0, 400], [60, 500, 403], [120, 1000, 406], [720, 1000, 406],
+            [1000, 2000, 404, true], [1060, 2500, 408], [1120, 3000, 410]];
+        const ride = rideSummary(steps.map(([s, m, h, pause]) => ({ timeS: t + s + .4, lat: 47e6, lon: at(m), elevationM: h, segmentStart: !s || !!pause })), 'gravel');
+        expect(ride).toMatchObject({ lengthM: 2000, climbM: 12, seconds: 1120, movingS: 240, start: t, bike: 'gravel', highestM: 410 });
     });
 });

@@ -1,9 +1,26 @@
-/** Writes and reads ZIP files whose entries are stored with no compression, so the file is made of the entry blobs. */
+/** Writes ZIP files whose entries are stored with no compression, and reads ZIP files of stored or deflated entries. */
 
 export interface Entry {
     name: string;
     data: Blob;
 }
+
+/** An entry of a ZIP file, as its central directory gives it. `open` gives its content. */
+export interface ZipEntry {
+    name: string;
+    /** The ZIP file. */
+    file: Blob;
+    method: number;
+    encrypted: boolean;
+    crc: number;
+    packed: number;
+    size: number;
+    /** The offset of the local header in `file`. */
+    at: number;
+}
+
+/** An entry that is encrypted, or packed with a method other than stored or deflated. */
+export class UnsupportedPacking extends Error {}
 
 const crcTable = Uint32Array.from({ length: 256 }, (_, i) => {
     let c = i;
@@ -11,14 +28,31 @@ const crcTable = Uint32Array.from({ length: 256 }, (_, i) => {
     return c >>> 0;
 });
 
-async function crc32(blob: Blob): Promise<number> {
-    const bytes = new Uint8Array(await blob.arrayBuffer());
-    let c = 0xffffffff;
-    for (let i = 0; i < bytes.length; i++) c = crcTable[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
-    return (c ^ 0xffffffff) >>> 0;
+// Chunks become one Blob part at this size, so the browser can move a large entry to disk while it inflates.
+const partBytes = 4 << 20;
+
+/** The CRC-32 and the length of a stream, and with `keep` its content. It stops with an error past `limit` bytes, so a
+ * small entry that inflates to gigabytes cannot fill the memory. */
+async function measure(stream: ReadableStream<Uint8Array<ArrayBuffer>>, limit = Infinity, keep = false): Promise<{ crc: number; length: number; content: Blob }> {
+    const reader = stream.getReader(), parts: Blob[] = [];
+    let c = 0xffffffff, length = 0, chunks: Uint8Array<ArrayBuffer>[] = [], held = 0;
+    for (;;) {
+        const { done, value } = await reader.read();
+        if (done) return { crc: (c ^ 0xffffffff) >>> 0, length, content: new Blob([...parts, ...chunks]) };
+        length += value.length;
+        if (length > limit) {
+            await reader.cancel();
+            throw damaged();
+        }
+        for (let i = 0; i < value.length; i++) c = crcTable[(c ^ value[i]) & 0xff] ^ (c >>> 8);
+        if (!keep) continue;
+        chunks.push(value);
+        held += value.length;
+        if (held >= partBytes) { parts.push(new Blob(chunks)); chunks = []; held = 0; }
+    }
 }
 
-const utf8 = 0x0800, stored = 0, needed = 10;
+const utf8 = 0x0800, stored = 0, deflated = 8, needed = 10, max32 = 0xffffffff;
 // 1980-01-01 00:00, the first date that a ZIP file can hold.
 const dosTime = 0, dosDate = (1 << 5) | 1;
 const tooLarge = () => new Error('The library is too large for one backup file.');
@@ -39,8 +73,8 @@ export async function zip(entries: Entry[]): Promise<Blob> {
     const parts: BlobPart[] = [], central: Uint8Array<ArrayBuffer>[] = [];
     let offset = 0;
     for (const { name, data } of entries) {
-        const path = new TextEncoder().encode(name), crc = await crc32(data);
-        if (offset + 30 + path.length + data.size > 0xffffffff) throw tooLarge();
+        const path = new TextEncoder().encode(name), { crc } = await measure(data.stream());
+        if (offset + 30 + path.length + data.size > max32) throw tooLarge();
         const local = new Uint8Array(30 + path.length), view = new DataView(local.buffer);
         view.setUint32(0, 0x04034b50, true);
         shared(view, 4, crc, data.size, path.length);
@@ -56,7 +90,7 @@ export async function zip(entries: Entry[]): Promise<Blob> {
         offset += local.length + data.size;
     }
     const size = central.reduce((sum, header) => sum + header.length, 0);
-    if (offset + size > 0xffffffff) throw tooLarge();
+    if (offset + size > max32) throw tooLarge();
     const end = new DataView(new ArrayBuffer(22));
     end.setUint32(0, 0x06054b50, true);
     end.setUint16(8, entries.length, true);
@@ -66,35 +100,92 @@ export async function zip(entries: Entry[]): Promise<Blob> {
     return new Blob([...parts, ...central, end], { type: 'application/zip' });
 }
 
-const damaged = () => new Error('The file is damaged or is not a ZIP file of stored entries.');
+const damaged = () => new Error('The file is damaged or is not a ZIP file.');
 
-/** Each entry of a ZIP file of stored entries, as a slice of `file`, after a check of its CRC-32. */
-export async function unzip(file: Blob): Promise<Map<string, Blob>> {
+async function view(file: Blob, at: number, length: number): Promise<DataView> {
+    const bytes = await file.slice(at, at + length).arrayBuffer();
+    if (bytes.byteLength !== length) throw damaged();
+    return new DataView(bytes);
+}
+
+function uint64(view: DataView, at: number): number {
+    const value = Number(view.getBigUint64(at, true));
+    if (!Number.isSafeInteger(value)) throw damaged();
+    return value;
+}
+
+// The characters 128 to 255 of code page 437, the encoding of a name without the UTF-8 flag.
+const cp437 = 'ÇüéâäàåçêëèïîìÄÅÉæÆôöòûùÿÖÜ¢£¥₧ƒáíóúñÑªº¿⌐¬½¼¡«»░▒▓│┤╡╢╖╕╣║╗╝╜╛┐└┴┬├─┼╞╟╚╔╩╦╠═╬╧╨╤╥╙╘╒╓╫╪┘┌█▄▌▐▀αßΓπΣσµτΦΘΩδ∞φε∩≡±≥≤⌠⌡÷≈°∙·√ⁿ²■ ';
+
+const strict = new TextDecoder('utf-8', { fatal: true }), lenient = new TextDecoder();
+
+/** A name with no UTF-8 flag is CP437, unless it is valid UTF-8: the macOS Finder writes UTF-8 with no flag. */
+function decodeName(bytes: Uint8Array, flagged: boolean): string {
+    if (flagged) return lenient.decode(bytes);
+    try { return strict.decode(bytes); } catch { return Array.from(bytes, c => c < 128 ? String.fromCharCode(c) : cp437[c - 128]).join(''); }
+}
+
+/** The entries of a ZIP file. It reads only the central directory, also of a ZIP64 file. */
+export async function entries(file: Blob): Promise<ZipEntry[]> {
     const tailStart = Math.max(0, file.size - 22 - 0xffff);
     const tail = new DataView(await file.slice(tailStart).arrayBuffer());
     let end = tail.byteLength - 22;
     while (end >= 0 && tail.getUint32(end, true) !== 0x06054b50) end--;
     if (end < 0) throw damaged();
-    const count = tail.getUint16(end + 10, true), size = tail.getUint32(end + 12, true), start = tail.getUint32(end + 16, true);
-    if (start + size > tailStart + end) throw damaged();
-    const directory = new DataView(await file.slice(start, start + size).arrayBuffer()), decoder = new TextDecoder('utf-8', { fatal: true });
-    const entries = new Map<string, Blob>();
+    let count = tail.getUint16(end + 10, true), size = tail.getUint32(end + 12, true), start = tail.getUint32(end + 16, true);
+    // The ZIP64 locator comes just before the end record and points to the ZIP64 end record.
+    if (end >= 20 && tail.getUint32(end - 20, true) === 0x07064b50) {
+        const record = await view(file, uint64(tail, end - 12), 56);
+        if (record.getUint32(0, true) !== 0x06064b50) throw damaged();
+        [count, size, start] = [32, 40, 48].map(at => uint64(record, at));
+    }
+    const directory = await view(file, start, size);
+    const list: ZipEntry[] = [];
     let at = 0;
     for (let i = 0; i < count; i++) {
         if (at + 46 > size || directory.getUint32(at, true) !== 0x02014b50) throw damaged();
-        const method = directory.getUint16(at + 10, true), crc = directory.getUint32(at + 16, true);
-        const length = directory.getUint32(at + 20, true), unpacked = directory.getUint32(at + 24, true);
-        const nameLength = directory.getUint16(at + 28, true), next = at + 46 + nameLength + directory.getUint16(at + 30, true) + directory.getUint16(at + 32, true);
-        const headerAt = directory.getUint32(at + 42, true);
-        if (method !== stored || length !== unpacked || next > size) throw damaged();
-        const name = decoder.decode(new Uint8Array(directory.buffer, at + 46, nameLength));
-        const local = new DataView(await file.slice(headerAt, headerAt + 30).arrayBuffer());
-        if (local.byteLength < 30 || local.getUint32(0, true) !== 0x04034b50) throw damaged();
-        const dataAt = headerAt + 30 + local.getUint16(26, true) + local.getUint16(28, true);
-        const data = file.slice(dataAt, dataAt + length);
-        if (entries.has(name) || dataAt + length > start || await crc32(data) !== crc) throw damaged();
-        entries.set(name, data);
+        const flags = directory.getUint16(at + 8, true), method = directory.getUint16(at + 10, true), crc = directory.getUint32(at + 16, true);
+        const nameLength = directory.getUint16(at + 28, true), extraAt = at + 46 + nameLength, extraEnd = extraAt + directory.getUint16(at + 30, true);
+        const next = extraEnd + directory.getUint16(at + 32, true);
+        if (next > size) throw damaged();
+        let packed = directory.getUint32(at + 20, true), unpacked = directory.getUint32(at + 24, true), offset = directory.getUint32(at + 42, true);
+        // The ZIP64 field holds 8 bytes for each of these three values that is 0xffffffff, in this order.
+        for (let x = extraAt; x + 4 <= extraEnd; x += 4 + directory.getUint16(x + 2, true)) {
+            if (directory.getUint16(x, true) !== 1) continue;
+            let y = x + 4;
+            const take = () => { if (y + 8 > extraEnd) throw damaged(); y += 8; return uint64(directory, y - 8); };
+            if (unpacked === max32) unpacked = take();
+            if (packed === max32) packed = take();
+            if (offset === max32) offset = take();
+        }
+        list.push({ name: decodeName(new Uint8Array(directory.buffer, at + 46, nameLength), !!(flags & utf8)),
+            file, method, encrypted: !!(flags & 1), crc, packed, size: unpacked, at: offset });
         at = next;
     }
-    return entries;
+    return list;
+}
+
+/** The content of an entry, after a check of its CRC-32. A stored entry is a slice of the ZIP file; a deflated one
+ * is a new Blob, which the browser can keep on disk. */
+export async function open(entry: ZipEntry): Promise<Blob> {
+    if (entry.encrypted || (entry.method !== stored && entry.method !== deflated)) throw new UnsupportedPacking('This packing is not supported.');
+    const local = await view(entry.file, entry.at, 30);
+    if (local.getUint32(0, true) !== 0x04034b50) throw damaged();
+    const dataAt = entry.at + 30 + local.getUint16(26, true) + local.getUint16(28, true);
+    if (dataAt + entry.packed > entry.file.size) throw damaged();
+    const data = entry.file.slice(dataAt, dataAt + entry.packed), inflate = entry.method === deflated;
+    const stream = inflate ? data.stream().pipeThrough(new DecompressionStream('deflate-raw')) : data.stream();
+    const { crc, length, content } = await measure(stream, entry.size, inflate).catch(() => { throw damaged(); });
+    if (crc !== entry.crc || length !== entry.size) throw damaged();
+    return inflate ? content : data;
+}
+
+/** Each entry of a ZIP file by name, after a check of its CRC-32. */
+export async function unzip(file: Blob): Promise<Map<string, Blob>> {
+    const contents = new Map<string, Blob>();
+    for (const entry of await entries(file)) {
+        if (contents.has(entry.name)) throw damaged();
+        contents.set(entry.name, await open(entry));
+    }
+    return contents;
 }

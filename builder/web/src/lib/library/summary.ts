@@ -1,5 +1,15 @@
 /** Makes the summary of a route or a ride: its line simplified to about 1,000 points, its bounds and its numbers. */
-import type { Summary } from './records';
+import type { Bike, RideSummary, Summary } from './records';
+
+/** One recorded point of a ride: Unix seconds and microdegrees. `segmentStart` marks the first point and the first
+ * point after a pause. */
+export interface RideSample {
+    timeS: number;
+    lat: number;
+    lon: number;
+    elevationM?: number | null;
+    segmentStart: boolean;
+}
 
 /** Longitude, latitude, and the height in metres or null. */
 export type Point = readonly [number, number, (number | null)?];
@@ -11,7 +21,39 @@ const maxPoints = 1000;
 const firstToleranceM = 10, lastToleranceM = 40;
 const metresPerDegree = 6_371_008.8 * Math.PI / 180;
 
+// Start values, to test on real rides.
+const climbStepM = 5, movingMps = 2 / 3.6;
+
 const round = (value: number, scale: number) => Math.round(value * scale) / scale;
+
+function metres(a: RideSample, b: RideSample): number {
+    const rad = Math.PI / 180e6, dLat = (b.lat - a.lat) * rad, dLon = (b.lon - a.lon) * rad;
+    const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(dLon / 2) ** 2;
+    return 2 * metresPerDegree * 180 / Math.PI * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+/** The summary of a recorded ride. The length skips the step to a segment start. The climb counts a rise when the
+ * height is 5 m above the last low. The moving time adds the steps at 2 km/h or more that do not start a segment.
+ * `samples` holds at least one sample. */
+export function rideSummary(samples: RideSample[], bike: Bike): RideSummary {
+    let lengthM = 0, climbM = 0, movingS = 0, low: number | null = null;
+    samples.forEach((sample, i) => {
+        const height = sample.elevationM;
+        if (height != null) {
+            if (low === null || height < low) low = height;
+            else if (height - low >= climbStepM) { climbM += height - low; low = height; }
+        }
+        if (!i || sample.segmentStart) return;
+        const step = metres(samples[i - 1], sample), seconds = sample.timeS - samples[i - 1].timeS;
+        lengthM += step;
+        if (seconds > 0 && step / seconds >= movingMps) movingS += seconds;
+    });
+    const start = samples[0].timeS;
+    return summarize<RideSummary>(samples.map(s => [s.lon / 1e6, s.lat / 1e6, s.elevationM]), {
+        lengthM: Math.round(lengthM), climbM: Math.round(climbM), seconds: Math.round(samples.at(-1)!.timeS - start),
+        movingS: Math.round(movingS), start: Math.floor(start), bike,
+    });
+}
 
 /** Douglas–Peucker at 10 m. While more than 1,000 points remain, the tolerance doubles, to 40 m at most; at 40 m the
  * line keeps its points. `points` holds at least one point. */

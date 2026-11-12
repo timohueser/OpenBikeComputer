@@ -6,9 +6,11 @@ export interface LatLon {
     lon: number;
 }
 
-export type GpxPoint = LatLon & { ele?: number };
+/** `time` is in Unix seconds. `segmentStart` marks the first point of the file and of each track and track segment. */
+export type GpxPoint = LatLon & { ele?: number; time?: number; segmentStart?: true };
 export type GpxWaypoint = LatLon & { name?: string; note?: string };
-export interface GpxImport { name: string; points: GpxPoint[]; waypoints: GpxWaypoint[] }
+/** `kind` is the `<type>` of the first track, such as `cycling`. */
+export interface GpxImport { name: string; points: GpxPoint[]; waypoints: GpxWaypoint[]; kind?: string }
 
 export class GpxError extends Error {
     constructor(message: string) { super(message); this.name = "GpxError"; }

@@ -3,11 +3,18 @@
 use serde::Serialize;
 
 #[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Point {
     pub lat: f64,
     pub lon: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ele: Option<f64>,
+    /// Unix seconds, with the fraction of the file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time: Option<f64>,
+    /// The first point of the file, and of each `trk` and `trkseg`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub segment_start: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -24,6 +31,9 @@ pub struct Import {
     pub name: String,
     pub points: Vec<Point>,
     pub waypoints: Vec<Waypoint>,
+    /// The `<type>` of the first track, such as `cycling`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 fn whitespace(c: char) -> bool {
@@ -125,6 +135,8 @@ fn point(attributes: &str) -> Option<Point> {
         lat: round(lat * 1e6),
         lon: round(lon * 1e6),
         ele: None,
+        time: None,
+        segment_start: false,
     })
 }
 
@@ -138,6 +150,55 @@ fn round(value: f64) -> f64 {
     } else {
         floor + 1.0
     }
+}
+
+/// `YYYY-MM-DDTHH:MM:SS`, an optional fraction, then `Z`, `±HH:MM` or no zone, which is UTC.
+fn time(text: &str) -> Option<f64> {
+    let b = text.as_bytes();
+    let digits = |at: usize, len: usize| -> Option<i64> {
+        let part = b.get(at..at + len)?;
+        part.iter().all(u8::is_ascii_digit).then(|| part.iter().fold(0, |n, c| n * 10 + i64::from(c - b'0')))
+    };
+    let [year, month, day, hour, minute, second] =
+        [(0, 4), (5, 2), (8, 2), (11, 2), (14, 2), (17, 2)].map(|(at, len)| digits(at, len));
+    let (year, month, day, hour, minute, second) = (year?, month?, day?, hour?, minute?, second?);
+    if b[4] != b'-' || b[7] != b'-' || !matches!(b[10], b'T' | b't' | b' ') || b[13] != b':' || b[16] != b':' {
+        return None;
+    }
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || minute > 59 || second > 60 {
+        return None;
+    }
+    let mut rest = &b[19..];
+    let mut fraction = 0.0;
+    if let Some(after) = rest.strip_prefix(b".") {
+        let end = after.iter().position(|c| !c.is_ascii_digit()).unwrap_or(after.len());
+        fraction = after[..end].iter().rev().fold(0.0, |f, c| (f + f64::from(c - b'0')) / 10.0);
+        rest = &after[end..];
+    }
+    let offset = match rest {
+        b"" | b"Z" | b"z" => 0,
+        [sign @ (b'+' | b'-'), h1, h2, b':', m1, m2] | [sign @ (b'+' | b'-'), h1, h2, m1, m2] => {
+            let zone = [h1, h2, m1, m2];
+            if !zone.iter().all(|c| c.is_ascii_digit()) {
+                return None;
+            }
+            let [h1, h2, m1, m2] = zone.map(|c| i64::from(c - b'0'));
+            let seconds = (h1 * 10 + h2) * 3600 + (m1 * 10 + m2) * 60;
+            if *sign == b'-' {
+                -seconds
+            } else {
+                seconds
+            }
+        }
+        _ => return None,
+    };
+    // Days since 1970-01-01 in the Gregorian calendar (`days_from_civil` of Howard Hinnant).
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
+    let days = era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468;
+    Some((days * 86_400 + hour * 3600 + minute * 60 + second - offset) as f64 + fraction)
 }
 
 fn first_text(text: &str, tag: &str) -> Option<String> {
@@ -176,10 +237,21 @@ fn scoped_name(text: &str) -> Option<String> {
 
 pub fn read(text: &str, fallback: &str) -> Result<Import, String> {
     let entries = elements(text, &["trkpt", "rtept"]);
-    let mut tracks = Vec::new();
-    let mut routes = Vec::new();
+    let trks = elements(text, &["trk"]);
+    // The openers of the tracks and their segments, in the order of the file.
+    let mut openers: Vec<usize> = trks.iter().chain(&elements(text, &["trkseg"])).map(|e| e.start).collect();
+    openers.sort_unstable();
+    let mut openers = openers.into_iter().peekable();
+    let mut tracks: Vec<Point> = Vec::new();
+    let mut routes: Vec<Point> = Vec::new();
     let mut malformed = 0;
+    let mut segment_start = true;
     for entry in &entries {
+        if entry.kind == "trkpt" {
+            while openers.next_if(|&at| at < entry.start).is_some() {
+                segment_start = true;
+            }
+        }
         let Some(mut p) = point(entry.attributes) else {
             malformed += 1;
             continue;
@@ -195,9 +267,12 @@ pub fn read(text: &str, fallback: &str) -> Result<Import, String> {
                 break;
             }
         }
+        p.time = first_text(entry.body, "time").and_then(|t| time(&t));
         if entry.kind == "trkpt" {
+            p.segment_start = std::mem::take(&mut segment_start);
             tracks.push(p);
         } else {
+            p.segment_start = routes.is_empty();
             routes.push(p);
         }
     }
@@ -232,7 +307,12 @@ pub fn read(text: &str, fallback: &str) -> Result<Import, String> {
     }
     file.push_str(&text[at..]);
     let name = scoped.or_else(|| first_text(&file, "name")).unwrap_or_else(|| fallback.into());
-    Ok(Import { name, points, waypoints })
+    // Only the head of the track: a point can have a `<type>` too.
+    let kind = trks.first().and_then(|trk| {
+        let head = ["<trkseg", "<trkpt"].iter().filter_map(|tag| trk.body.find(tag)).min().unwrap_or(trk.body.len());
+        first_text(&trk.body[..head], "type")
+    });
+    Ok(Import { name, points, waypoints, kind })
 }
 
 #[cfg(test)]

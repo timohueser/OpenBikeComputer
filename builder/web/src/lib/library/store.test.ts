@@ -27,6 +27,14 @@ describe('library store', () => {
         await first.close(); await second.close();
     });
 
+    it('adds a route only when its id is not stored', async () => {
+        const library = new Library(new IDBFactory());
+        expect(await library.addRoute(route('file-a'))).toBe(true);
+        expect(await library.addRoute({ ...route('file-a'), name: 'Other' })).toBe(false);
+        expect((await library.routes()).map(r => r.name)).toEqual(['file-a']);
+        await library.close();
+    });
+
     it('keeps a rename over a save that was queued before it', async () => {
         const library = new Library(new IDBFactory()), saved = await library.saveRoute(route('a'));
         const [renamed, later] = await Promise.all([library.renameRoute('a', 'Lake loop'), library.saveRoute({ ...saved, updatedAt: 5 })]);

@@ -5,7 +5,7 @@ describe("writeGpx", () => {
     it("writes a file that readGpx reads back unchanged", () => {
         const route: GpxImport = {
             name: "Lake <Uri> & \"back\"",
-            points: [{ lat: 46_912_345, lon: -8_600_001, ele: 434.5 }, { lat: 46_950_000, lon: 8_610_000 }, { lat: -46_960_000, lon: 8_620_000, ele: -2 }],
+            points: [{ lat: 46_912_345, lon: -8_600_001, ele: 434.5, segmentStart: true }, { lat: 46_950_000, lon: 8_610_000 }, { lat: -46_960_000, lon: 8_620_000, ele: -2 }],
             waypoints: [{ lat: 46_950_000, lon: 8_610_000, name: "Tell's chapel", note: "swim here" }, { lat: 46_960_000, lon: 8_620_000, name: undefined }],
         };
         expect(readGpx(writeGpx(route), "fallback")).toEqual(route);
@@ -25,7 +25,7 @@ describe("readGpx", () => {
             "file",
         );
         expect(route.points).toEqual([
-            { lat: 47_500_000, lon: 7_750_000, ele: 210 },
+            { lat: 47_500_000, lon: 7_750_000, ele: 210, segmentStart: true },
             { lat: 47_600_000, lon: 7_800_000 },
         ]);
     });
@@ -36,12 +36,25 @@ describe("readGpx", () => {
             "file",
         );
         expect(route.points).toHaveLength(2);
-        expect(route.points[0]).toEqual({ lat: 47_000_000, lon: 8_000_000 });
+        expect(route.points[0]).toEqual({ lat: 47_000_000, lon: 8_000_000, segmentStart: true });
     });
 
-    it("joins multiple segments — a recorder losing fix is one ride, not two", () => {
-        const body = `${HEADER}<trk><trkseg><trkpt lat="47" lon="8"/></trkseg><trkseg><trkpt lat="47.1" lon="8"/></trkseg></trk></gpx>`;
-        expect(readGpx(body, "file").points).toHaveLength(2);
+    it("joins the segments and the tracks of a file, and marks the first point of each", () => {
+        const body = `${HEADER}<trk><trkseg><trkpt lat="x" lon="8"/><trkpt lat="47" lon="8"/><trkpt lat="47.05" lon="8"/></trkseg><trkseg><trkpt lat="47.1" lon="8"/></trkseg></trk>`
+            + '<trk><trkpt lat="47.2" lon="8"/><trkpt lat="47.3" lon="8"/></trk></gpx>';
+        expect(readGpx(body, "file").points.map(p => p.segmentStart ?? false)).toEqual([true, false, true, true, false]);
+    });
+
+    it("reads the time of each point as UTC Unix seconds, and the type of the track", () => {
+        const at = (time: string) => `<trkpt lat="47" lon="8"><time>${time}</time></trkpt>`;
+        const body = `${HEADER}<trk><name>Ride</name><type>cycling</type><trkseg>${
+            ["2026-08-01T07:00:00Z", "2026-08-01T09:00:01.5+02:00", "2026-08-01T07:00:02", " 2026-08-01T06:30:03-00:30 ", "1 August", "2026-13-01T00:00:00Z"].map(at).join("")
+        }<trkpt lat="47" lon="8"><type>other</type></trkpt></trkseg></trk></gpx>`;
+        const imported = readGpx(body, "file");
+        const start = Date.UTC(2026, 7, 1, 7) / 1000;
+        expect(imported.points.map(p => p.time)).toEqual([start, start + 1.5, start + 2, start + 3, undefined, undefined, undefined]);
+        expect(imported.kind).toBe("cycling");
+        expect(readGpx(track('<trkpt lat="47" lon="8"/><trkpt lat="47.1" lon="8"/>'), "file").kind).toBeUndefined();
     });
 
     it("falls back to route points when there are no track points", () => {
@@ -96,7 +109,7 @@ describe("readGpx", () => {
         const body = `${HEADER}<wpt lat="47" lon="8"><name>Water</name><cmt>Open &amp; free</cmt></wpt><wpt lat="48" lon="9"/><trk><name>Track</name><trkpt lat="-0.0000005" lon="-0.0000015"><ele>1.23456789123</ele></trkpt><trkpt lat="47.1" lon="8"/></trk></gpx>`;
         const imported = readGpx(body, "fallback");
         expect(imported.name).toBe("Track");
-        expect(imported.points).toEqual([{ lat: -0, lon: -1, ele: 1.23456789123 }, { lat: 47_100_000, lon: 8_000_000 }]);
+        expect(imported.points).toEqual([{ lat: -0, lon: -1, ele: 1.23456789123, segmentStart: true }, { lat: 47_100_000, lon: 8_000_000 }]);
         expect(imported.waypoints).toEqual([
             { lat: 47_000_000, lon: 8_000_000, name: "Water", note: "Open & free" },
             { lat: 48_000_000, lon: 9_000_000, name: undefined },
