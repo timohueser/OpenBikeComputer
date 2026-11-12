@@ -6,7 +6,9 @@
     import { saveBlob } from '../lib/download';
     import { loadBackup, saveBackup } from '../lib/library/backup';
     import type { Library } from '../lib/library/store';
-    import { readSettings, settings, updateSettings, type RiderValue, type Units } from '../lib/settings/settings.svelte';
+    import RiderValue from './RiderValue.svelte';
+    import { RANGES, readSettings, settings, updateSettings, type Units } from '../lib/settings/settings.svelte';
+    import { heartRateZones, powerZones } from '../lib/settings/zones';
     import { appearance, setLook, type Look } from '../lib/theme.svelte';
 
     let { library }: { library: Library; active: boolean } = $props();
@@ -14,8 +16,8 @@
     const units: { value: Units; label: string }[] = [{ value: 'km', label: 'Kilometres' }, { value: 'mi', label: 'Miles' }];
     const looks: { value: Look; label: string }[] = [{ value: 'system', label: 'As the computer' }, { value: 'light', label: 'Light' }, { value: 'dark', label: 'Dark' }];
     const values = [
-        { key: 'maxHr', label: 'Maximum heart rate', unit: 'bpm' },
-        { key: 'ftp', label: 'Threshold power (FTP)', unit: 'W' },
+        { key: 'maxHr', label: 'Maximum heart rate', unit: 'bpm', zones: heartRateZones, ramp: 'hr' },
+        { key: 'ftp', label: 'Threshold power (FTP)', unit: 'W', zones: powerZones, ramp: 'power' },
     ] as const;
 
     let counts = $state<{ routes: number; rides: number } | null>(null);
@@ -27,7 +29,6 @@
 
     const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
     const text = (error: unknown) => error instanceof Error ? error.message : String(error);
-    const day = (at: number) => new Date(at * 1000).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
 
     async function count() {
         const [routes, rides] = await Promise.all([library.routes(), library.rides()]);
@@ -35,17 +36,8 @@
     }
     onMount(() => { count().catch(error => message = text(error)); });
 
-    /** Empty is "not set"; `readSettings` moves a value out of range to the nearest end, and the field shows it. */
-    function setValue(key: 'maxHr' | 'ftp', field: HTMLInputElement) {
-        // An entry that the browser cannot read as a number also has an empty value.
-        if (field.validity.badInput) {
-            field.value = String(settings[key]?.value ?? '');
-            return;
-        }
-        const value: RiderValue | null = field.value === '' ? null : { value: Math.round(Number(field.value)), at: Math.floor(Date.now() / 1000), device: false };
-        updateSettings({ [key]: value });
-        field.value = String(settings[key]?.value ?? '');
-    }
+    const setValue = (key: 'maxHr' | 'ftp', value: number | null) =>
+        updateSettings({ [key]: value === null ? null : { value, at: Math.floor(Date.now() / 1000), device: false } });
 
     async function run(work: () => Promise<string | void>) {
         busy = true;
@@ -99,18 +91,8 @@
                 <strong>Look</strong>
                 <Segmented label="Look" options={looks} value={appearance.look} onChange={setLook} />
             </div>
-            {#each values as { key, label, unit } (key)}
-                {@const value = settings[key]}
-                <div class="row">
-                    <div>
-                        <label for={key}><strong>{label}</strong></label>
-                        {#if value?.device}<p>From the OpenBikeComputer, with the ride of {day(value.at)}</p>{/if}
-                    </div>
-                    <span class="value">
-                        <input id={key} type="number" inputmode="numeric" value={value?.value ?? ''} onchange={event => setValue(key, event.currentTarget)} />
-                        <span class="unit">{unit}</span>
-                    </span>
-                </div>
+            {#each values as { key, label, unit, zones, ramp } (key)}
+                <RiderValue id={key} {label} {unit} value={settings[key]} range={RANGES[key]} {zones} {ramp} onSet={value => setValue(key, value)} />
             {/each}
             <p class="note">The zones come from these two values. A new ride from the OpenBikeComputer brings the values of the device, and they replace the values here. A ride from a file takes the values that are here. A ride keeps its values when you change them later.</p>
         </Card>
@@ -176,27 +158,6 @@
         margin: 0;
         padding-top: 12px;
         border-top: 1px solid var(--line);
-    }
-    .value {
-        display: flex;
-        flex: none;
-        align-items: center;
-        gap: 10px;
-    }
-    input {
-        width: 72px;
-        min-height: 32px;
-        padding: 4px 8px;
-        border: 1px solid var(--line-strong);
-        border-radius: 6px;
-        background: var(--panel);
-        color: var(--ink);
-        text-align: right;
-    }
-    .unit {
-        width: 28px;
-        color: var(--ink-soft);
-        font-size: 12.5px;
     }
     .count {
         margin: 0 0 12px;

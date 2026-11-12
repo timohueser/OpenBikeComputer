@@ -15,9 +15,10 @@ export interface Settings {
 }
 
 const KEY = 'obc-settings';
-// The ranges of the device (`firmware/obc-app/src/effort.rs`).
-const MAX_HR = [120, 220] as const;
-const FTP = [50, 600] as const;
+/** The ranges of the device (`firmware/obc-app/src/effort.rs`). */
+export const RANGES = { maxHr: { min: 120, max: 220 }, ftp: { min: 50, max: 600 } } as const;
+const MAX_HR = [RANGES.maxHr.min, RANGES.maxHr.max] as const;
+const FTP = [RANGES.ftp.min, RANGES.ftp.max] as const;
 
 function riderValue(value: unknown, [low, high]: readonly [number, number]): RiderValue | null {
     if (typeof value !== 'object' || value === null) return null;

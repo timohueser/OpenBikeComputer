@@ -23,6 +23,15 @@ test('the settings set the look and the units, and a backup brings the library b
   await expect(page.getByRole('button', { name: 'Save a backup file' })).toBeDisabled();
   await page.getByRole('radio', { name: 'Dark' }).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await expect(page.getByText('Set a value to see your zones.')).toHaveCount(2);
+  await page.getByLabel('Maximum heart rate', { exact: true }).fill('185');
+  await page.getByLabel('Threshold power (FTP)', { exact: true }).fill('250');
+  await page.getByLabel('Threshold power (FTP)', { exact: true }).press('Tab');
+  await expect(page.getByRole('list', { name: 'Maximum heart rate zones' }).getByRole('listitem'))
+    .toHaveText(['Z1 ≤ 110', 'Z2 111–129', 'Z3 130–147', 'Z4 148–166', 'Z5 ≥ 167']);
+  await expect(page.getByRole('list', { name: 'Threshold power (FTP) zones' }).getByRole('listitem'))
+    .toHaveText(['Z1 ≤ 137', 'Z2 138–187', 'Z3 188–225', 'Z4 226–262', 'Z5 ≥ 263']);
+  await expect(page.getByText('Set a value to see your zones.')).toHaveCount(0);
 
   // The test page of a cover gives the library of the app.
   await page.goto('/planner.html?cover=none');
