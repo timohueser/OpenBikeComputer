@@ -90,7 +90,7 @@ flowchart LR
 | System | Purpose | Status | Uses (production code) | Used by (production code) |
 | --- | --- | --- | --- | --- |
 | [host-runtime](host-runtime.md) | Runs the device core on a computer or phone instead of the board. | draft | card-storage, device-runtime, foundations, map-reading, navigation, rendering-display | map-assembly, simulators |
-| [library](library.md) | Keeps the rider's routes and rides in the browser, each with a summary, and saves and loads them as one backup file. | draft |  | route-planning |
+| [library](library.md) | Keeps the rider's routes and rides in the browser, each with a summary, and saves and loads them as one backup file. | draft |  | route-planning, web-planner |
 | [map-assembly](map-assembly.md) | Assembles a device map from published cells. | draft | card-storage, device-link, device-map-baking, device-map-builder, foundations, host-runtime, map-reading, map-style, navigation, rendering-display, route-planning | device-link, device-map-builder, map-style, obc-data, route-planning |
 | [map-style](map-style.md) | Defines how map features look on the device. | draft | device-map-builder, map-assembly | device-map-builder, map-assembly |
 | [route-planning](route-planning.md) | Lets a rider plan a route on a map, in the browser or on the phone. | draft | device-map-builder, library, map-assembly, trailview | device-map-builder, map-assembly, obc-data, trailview, trailview-page, web-planner |
@@ -107,7 +107,7 @@ flowchart LR
 | [routing](routing.md) | Finds a bike route between points. | draft | data-engine, source-preparation | obc-data |
 | [search](search.md) | Finds places by name. | draft | content, data-engine, device-map-builder | obc-data |
 | [source-preparation](source-preparation.md) | Turns raw external datasets into the prepared sources that products build from. | draft | data-engine, foundations, map-reading | device-map-baking, obc-data, routing |
-| [trailview](trailview.md) | Renders a region as an explorable 3-D landscape in the browser. | draft | data-engine, route-planning | device-map-builder, obc-data, route-planning, trailview-page |
+| [trailview](trailview.md) | Renders a region as an explorable 3-D landscape in the browser. | draft | data-engine, route-planning | device-map-builder, obc-data, route-planning, trailview-page, web-planner |
 
 ### Device
 
@@ -151,7 +151,7 @@ flowchart LR
 | [planner-tile-server](planner-tile-server.md) | Serves the map tiles of a planner release from the storage bucket or from a local folder. | approved |  |  |
 | [simulators](simulators.md) | Runs the device core on a computer, a phone or a web page, and sends test input to a real board. | approved | board-inputs, card-storage, data-engine, device-link, device-runtime, firmware-update, foundations, host-runtime, map-reading, navigation, rendering-display, repository-tooling |  |
 | [trailview-page](trailview-page.md) | Opens TrailView, the 3-D view of a region, as its own page in the browser. | approved | route-planning, trailview |  |
-| [web-planner](web-planner.md) | Opens the route planner as its own page in the browser. | approved | device-map-builder, route-planning |  |
+| [web-planner](web-planner.md) | Opens the route planner as its own page in the browser. | approved | device-map-builder, library, route-planning, trailview |  |
 | [website](website.md) | Publishes the project site, the guide and the blog. | approved |  | device-map-builder |
 
 ## Tangles
