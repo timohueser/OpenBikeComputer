@@ -4,14 +4,14 @@
     import Icon from '../planner/PlannerIcon.svelte';
     import ElevationRow from './ElevationRow.svelte';
     import type { RouteSummary } from '../../lib/library/records';
-    import { distanceIn, formatDistance, formatHeight } from '../../lib/settings/format';
+    import { distanceIn, formatDistance, formatHeight, formatPercent } from '../../lib/settings/format';
     import { settings } from '../../lib/settings/settings.svelte';
     import { duration, orderedRoutePoints, planView, type RoutePoint, type Trip } from '../../lib/planner/editor';
     import type { Coordinate } from '../../lib/planner/geo';
     import { profileHeightAt, profileSamples } from '../../lib/planner/profile-data';
     import type { RoutingLine } from '../../lib/planner/routing';
     import { townName } from '../../lib/planner/point-names';
-    import type { Climb, RouteFacts, Waypoint } from '../../lib/planner/route-facts';
+    import { STEEPEST_KM, type Climb, type RouteFacts, type Waypoint } from '../../lib/planner/route-facts';
     import { kindLabel } from '../../lib/planner/search/presentation';
 
     /** The left card of the Route page: the numbers of the stored summary, then the days, the climbs and the waypoints
@@ -55,7 +55,7 @@
 
     /** "km 19", or "mi 12" with miles. */
     const at = (km: number) => `${settings.units} ${Math.round(distanceIn(km * 1000))}`;
-    const grade = (climb: Climb) => `${Math.round(climb.gradient)} %`;
+    const grade = (climb: Climb) => formatPercent(climb.gradient);
     const about = (point: RoutePoint) => point.note ? `“${point.note}”` : point.placeKind ? kindLabel(point.placeKind) : '';
     const dayTitle = (from: string | undefined, to: string | undefined) => from && to ? `${from} to ${to}` : to ? `To ${to}` : from ? `From ${from}` : '';
 </script>
@@ -98,7 +98,7 @@
         {@render number('Length', formatDistance((climb.to - climb.from) * 1000))}
         {@render number('Climb', formatHeight(climb.ascent))}
         {@render number('Mean grade', grade(climb))}
-        {@render number('Steepest', `${Math.round(climb.steepest)} %`)}
+        {@render number(`Steepest ${formatDistance(STEEPEST_KM * 1000)}`, formatPercent(climb.steepest))}
         {@render number('Top', top === null ? '–' : formatHeight(top))}
     </dl>
     <div class="profile"><ElevationRow {line} from={climb.from / total} to={climb.to / total} /></div>
@@ -318,11 +318,15 @@
     .more[aria-expanded="true"] :global(svg) {
         transform: rotate(90deg);
     }
+    /* The card scrolls inside; its buttons stay in sight and cover the padding of the card under them. */
     .actions {
+        position: sticky;
+        bottom: -16px;
         display: flex;
         justify-content: space-between;
         gap: 8px;
-        margin-top: auto;
-        padding-top: 16px;
+        margin: auto 0 -16px;
+        padding: 16px 0;
+        background: var(--panel);
     }
 </style>

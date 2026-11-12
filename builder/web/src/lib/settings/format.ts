@@ -39,6 +39,13 @@ export function formatHeight(metres: number): string {
     return Number.isFinite(metres) ? `${number(heightIn(metres), 0)} ${heightUnit()}` : NONE;
 }
 
+/** "7 %", "−4 %": a grade in whole percent. */
+export function formatPercent(percent: number): string {
+    if (!Number.isFinite(percent)) return NONE;
+    const rounded = Math.round(percent) + 0;
+    return `${rounded < 0 ? '−' : ''}${Math.abs(rounded)} %`;
+}
+
 /** "19.0 km/h", "11.8 mph". */
 export function formatSpeed(metresPerSecond: number): string {
     if (!Number.isFinite(metresPerSecond)) return NONE;

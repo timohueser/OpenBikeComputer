@@ -1,16 +1,20 @@
 /** The days, the climbs and the waypoints of a plan along its calculated line, as the Route page lists them. */
 import { dayStops, planView, stopKinds, type ItineraryDay, type RoutePoint, type Trip } from './editor';
 import { coordinateAt, cumulative, nearestProgress, type Coordinate } from './geo';
-import { profileGrades } from './grade-data';
-import { profileSamples } from './profile-data';
+import { profileHeightAt, profileSamples } from './profile-data';
 import type { RoutingLine } from './routing';
 import { routeSegments } from './search/segments';
 
 /** A waypoint of the route, numbered from 1 in route order, with its kilometres from the start. */
 export interface Waypoint { point: RoutePoint; number: number; km: number }
 
-/** A climb by the rule of the device, in kilometres from the start, with its mean and its largest grade in percent and its top. */
+/** A climb by the rule of the device, in kilometres from the start, with its mean grade in percent, the mean grade of its
+ * steepest STEEPEST_KM, and its top. */
 export interface Climb { from: number; to: number; ascent: number; gradient: number; steepest: number; top: Coordinate }
+
+/** The length of the stretch that `Climb.steepest` measures. Chosen: a shorter stretch shows the errors of single heights,
+ * such as a bridge in the terrain model. */
+export const STEEPEST_KM = .5;
 
 export interface RouteFacts {
     /** The days of the itinerary; a riding day has its waypoints, a rest day none. */
@@ -27,11 +31,19 @@ export function routeFacts(trip: Trip, line: RoutingLine): RouteFacts {
     const stops = dayStops(trip, line, { from: 0, to: 1 }).map(({ point, km }, i) => ({ point, km, number: i + 1 }));
     const byId = new Map(stops.map(stop => [stop.point.id, stop]));
     const days = view.itinerary.map(day => ({ ...day, stops: day.rest ? [] : dayStops(trip, line, day).map(({ point }) => byId.get(point.id)!) }));
-    const km = cumulative(line.coordinates), grades = profileGrades(profileSamples(line), km.at(-1) ?? 0);
-    const steepest = (from: number, to: number) => grades.reduce<number>((most, grade, i) =>
-        grade !== null && (km[i] + km[i + 1]) / 2 >= from && (km[i] + km[i + 1]) / 2 <= to ? Math.max(most, grade) : most, 0);
+    const km = cumulative(line.coordinates), samples = profileSamples(line), total = km.at(-1) || 1;
+    // The heights are linear between the points, so the steepest window starts or ends at a point.
+    const steepest = (from: number, to: number, gradient: number) => {
+        let most = -Infinity;
+        for (const start of km.flatMap(at => [at, at - STEEPEST_KM])) {
+            if (start < from || start + STEEPEST_KM > to) continue;
+            const low = profileHeightAt(start / total, samples), high = profileHeightAt((start + STEEPEST_KM) / total, samples);
+            if (low !== null && high !== null) most = Math.max(most, (high - low) / STEEPEST_KM / 10);
+        }
+        return Number.isFinite(most) ? most : gradient;
+    };
     const climbs = routeSegments(line).filter(segment => segment.kind === 'climb').map(({ from, to, ascent, gradient }) =>
-        ({ from, to, ascent: ascent!, gradient: gradient!, steepest: steepest(from, to), top: coordinateAt(line.coordinates, view.total ? to / view.total : 0) }));
+        ({ from, to, ascent: ascent!, gradient: gradient!, steepest: steepest(from, to, gradient!), top: coordinateAt(line.coordinates, view.total ? to / view.total : 0) }));
     return { days, climbs, stops };
 }
 

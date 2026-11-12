@@ -5,6 +5,7 @@
     import type { Summary } from '../../lib/library/records';
     import { lineCoordinates } from '../../lib/library/summary';
     import { coordinateAt, nearestOnLine, nearestProgress, type Coordinate } from '../../lib/planner/geo';
+    import { crowded } from '../../lib/covers/line';
     import { basemapStyle } from '../../lib/planner/map-style';
     import { styleConfig, useMapProtocols } from '../../lib/planner/map-setup';
     import { appearance } from '../../lib/theme.svelte';
@@ -76,13 +77,22 @@
     });
     $effect(() => {
         if (!map || coordinates.length < 2) return;
-        const markers = pins.map(pin => {
-            const element = Object.assign(document.createElement('div'), { className: 'route-pin' });
-            if (pin.number) element.append(Object.assign(document.createElement('b'), { textContent: String(pin.number) }), pin.label);
-            else element.textContent = pin.label ? `Night · ${pin.label}` : 'Night';
-            return new maplibregl.Marker({ element, anchor: 'bottom', offset: [0, -6] }).setLngLat(coordinateAt(coordinates, pin.share)).addTo(map!);
-        });
-        return () => markers.forEach(marker => marker.remove());
+        const shown = map, markers = pins.map(pin => new maplibregl.Marker({ element: Object.assign(document.createElement('div'), { className: 'route-pin' }), anchor: 'bottom', offset: [0, -6] })
+            .setLngLat(coordinateAt(coordinates, pin.share)).addTo(shown));
+        // A crowded waypoint shows its number only, a crowded night nothing.
+        const label = () => {
+            const short = crowded(markers.map(marker => shown.project(marker.getLngLat())));
+            pins.forEach((pin, i) => {
+                const element = markers[i].getElement();
+                element.classList.toggle('short', short[i]);
+                element.hidden = short[i] && !pin.number;
+                if (pin.number) element.replaceChildren(Object.assign(document.createElement('b'), { textContent: String(pin.number) }), short[i] ? '' : pin.label);
+                else element.textContent = pin.label ? `Night · ${pin.label}` : 'Night';
+            });
+        };
+        label();
+        const events = [shown.on('moveend', label), shown.on('resize', label)];
+        return () => { events.forEach(event => event.unsubscribe()); markers.forEach(marker => marker.remove()); };
     });
     $effect(() => {
         if (!map) return;

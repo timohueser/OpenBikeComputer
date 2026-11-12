@@ -54,8 +54,12 @@ test('the rows of a route of two days: a day, the pointer, a climb, places and t
   await expect(lanes.locator('.pin')).toHaveText(['2']);
   await expect(lanes.locator('.ticks span').first()).toHaveText('Inn');
 
-  await page.getByRole('radio', { name: 'Both days' }).click();
   const elevation = await lanes.locator('.lane').nth(1).boundingBox();
+  // Day 2 starts at the night, at 7.6 km: a quarter of its width is 9.5 km from the start.
+  await page.mouse.move(elevation.x + elevation.width * 0.25, elevation.y + elevation.height / 2);
+  await expect(lanes.locator('.chip')).toContainText('9.5 km');
+
+  await page.getByRole('radio', { name: 'Both days' }).click();
   const mark = page.locator('.route-map-mark');
   await page.mouse.move(elevation.x + elevation.width * 0.25, elevation.y + elevation.height / 2);
   await expect(mark).toBeVisible();
@@ -71,6 +75,7 @@ test('the rows of a route of two days: a day, the pointer, a climb, places and t
   await page.locator('.facts .climb button').first().click();
   await expect(page.getByRole('button', { name: '‹ Climbs' })).toBeVisible();
   await expect(page.locator('.facts dl > div').filter({ hasText: 'Steepest' })).toContainText('5 %');
+  await expect(page.locator('.facts')).toContainText('Steepest 500 m');
 
   await page.evaluate(() => new Promise(resolve => {
     const open = indexedDB.open('obc-library');

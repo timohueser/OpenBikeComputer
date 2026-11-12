@@ -10,7 +10,7 @@
     import { phoneLink, phoneNumbers, websiteLink } from '../../lib/planner/contact-links';
     import { orderedRoutePoints, planView, type Place, type RoutePoint, type Trip } from '../../lib/planner/editor';
     import { cumulative, nearestProgress, routeSlice } from '../../lib/planner/geo';
-    import { formatGrade, profileGrades } from '../../lib/planner/grade-data';
+    import { profileGrades } from '../../lib/planner/grade-data';
     import { config } from '../../lib/planner/map-data';
     import { corridorPlaces } from '../../lib/planner/place-index';
     import { categoryIds, placeCategories, type PlaceCategory } from '../../lib/planner/poi-kinds';
@@ -20,7 +20,7 @@
     import { kindLabel } from '../../lib/planner/search/presentation';
     import { placeDetails, type SearchPlace } from '../../lib/planner/search/types';
     import { surfaceBarColors, surfaceRuns, surfaceWindow } from '../../lib/planner/surface-data';
-    import { distanceIn, formatDistance, formatHeight } from '../../lib/settings/format';
+    import { distanceIn, formatDistance, formatHeight, formatPercent } from '../../lib/settings/format';
     import { settings } from '../../lib/settings/settings.svelte';
 
     /** The bottom card of the Route page: the waypoints, the heights, the surface and the places along the route or one
@@ -36,12 +36,13 @@
         onpoint: (share: number | null) => void;
     } = $props();
 
-    /** Places load within PLACE_M of the shown stretch, for at most PLACES_KM of it. Icons closer than JOIN_PX join into one. */
-    const PLACE_M = 1000, PLACES_KM = 300, JOIN_PX = 12;
+    /** Places load within PLACE_M of the shown stretch, for at most PLACES_KM of it. Icons closer than JOIN_PX join into one.
+     * A tick label is about TICK_CHAR_PX wide for each character, and keeps TICK_GAP_PX from the next one. */
+    const PLACE_M = 1000, PLACES_KM = 300, JOIN_PX = 12, TICK_CHAR_PX = 7, TICK_GAP_PX = 12, PANEL_PX = 260;
     const searchable = /^(?:[nwr]|Q)[1-9]\d*$/;
 
-    let day = $state('all'), category = $state<PlaceCategory | ''>(''), open = $state<number>();
-    let placeLane = $state<HTMLElement>(), placeWidth = $state(0), seen = $state(false);
+    let day = $state('all'), category = $state<PlaceCategory | ''>(''), open = $state<number>(), shift = $state(0);
+    let placeLane = $state<HTMLElement>(), width = $state(0), seen = $state(false);
     let places = $state.raw<{ found?: Place[]; failed?: boolean }>({});
     let details = $state.raw<Record<string, SearchPlace | null>>({});
 
@@ -55,44 +56,56 @@
     const span = $derived(Math.max(1e-6, shown.to - shown.from));
     const x = (share: number) => (share - shown.from) / span;
     const inside = (share: number) => share >= shown.from && share <= shown.to;
-    const shownPins = $derived(pins.filter(pin => inside(pin.share)));
+    // A night at an end of the shown stretch belongs to the next or the last day.
+    const shownPins = $derived(pins.filter(pin => pin.number ? inside(pin.share) : pin.share > shown.from && pin.share < shown.to));
+    const slice = $derived(routeSlice(coordinates, shown.from, shown.to));
     const nights = $derived(pins.filter(pin => !pin.number).map(pin => pin.share));
     const runs = $derived(line ? surfaceWindow(surfaceRuns(line).runs, shown.from, shown.to) : []);
     const surfaces = $derived([...new Set(runs.map(run => run.surface))]);
     const tooLong = $derived(span * totalM / 1000 > PLACES_KM);
 
+    // The start, the end, the nights, then the distances: a tick that would touch a kept one is left out.
     const ticks = $derived.by(() => {
         const nightName = (share: number) => pins.find(pin => !pin.number && Math.abs(pin.share - share) < 1e-6)?.label || 'Night';
-        const named = [
-            { at: 0, label: shown.from ? nightName(shown.from) : orderedRoutePoints(trip)[0]?.label ?? '' },
-            ...nights.filter(share => share > shown.from && share < shown.to).map(share => ({ at: x(share), label: nightName(share) })),
-            { at: 1, label: formatDistance(shown.to * totalM) },
-        ];
-        const length = distanceIn(span * totalM), step = [1, 2, 5, 10, 20, 50, 100, 200, 500].find(size => length / size <= 8) ?? 1000;
-        const first = distanceIn(shown.from * totalM);
+        const length = distanceIn(span * totalM), first = distanceIn(shown.from * totalM);
+        const step = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000].find(size => length / size <= Math.max(1, width / 80)) ?? 2000;
         const numbers = [];
-        for (let value = Math.ceil(first / step) * step; value < first + length; value += step) {
-            const at = (value - first) / length;
-            if (named.every(tick => Math.abs(tick.at - at) > .08)) numbers.push({ at, label: `${settings.units} ${value}` });
+        for (let value = Math.ceil(first / step) * step; value < first + length; value += step) numbers.push({ at: (value - first) / length, label: `${settings.units} ${value}` });
+        const wanted = [
+            { at: 0, label: shown.from ? nightName(shown.from) : orderedRoutePoints(trip)[0]?.label ?? '' },
+            { at: 1, label: formatDistance(shown.to * totalM) },
+            ...nights.filter(share => share > shown.from && share < shown.to).map(share => ({ at: x(share), label: nightName(share) })),
+            ...numbers,
+        ];
+        // A label sits as `Lanes` places it: shifted left by its share of the axis.
+        const extent = ({ at, label }: { at: number; label: string }) => {
+            const size = label.length * TICK_CHAR_PX;
+            return [at * width - at * size, at * width + (1 - at) * size];
+        };
+        const kept: typeof wanted = [];
+        for (const tick of wanted) {
+            const [left, right] = extent(tick);
+            if (kept.every(other => { const [a, b] = extent(other); return right + TICK_GAP_PX <= a || left >= b + TICK_GAP_PX; })) kept.push(tick);
         }
-        return [...named, ...numbers];
+        return kept;
     });
-    const labels = $derived(facts?.climbs.map(climb => ({ from: climb.from * 1000 / totalM, to: climb.to * 1000 / totalM, text: `${Math.round(climb.gradient)} %` })) ?? []);
+    const labels = $derived(facts?.climbs.map(climb => ({ from: climb.from * 1000 / totalM, to: climb.to * 1000 / totalM, text: formatPercent(climb.gradient) })) ?? []);
 
     const chip = $derived.by(() => {
         if (mark === undefined) return '';
         const height = profileHeightAt(mark, samples);
-        return [formatDistance(mark * totalM), height === null ? '' : formatHeight(height), formatGrade(grades[Math.max(0, sampleIndex(samples, mark) - 1)] ?? null)].filter(Boolean).join(' · ');
+        const grade = grades[Math.max(0, sampleIndex(samples, mark) - 1)] ?? null;
+        return [formatDistance(mark * totalM), height === null ? '' : formatHeight(height), grade === null ? '' : formatPercent(grade)].filter(Boolean).join(' · ');
     });
 
     /** The places of the chosen category, joined where their icons would overlap. */
     const groups = $derived.by(() => {
-        const found = (places.found ?? []).map(place => ({ place, at: x(nearestProgress(coordinates, place.coordinate)) }))
-            .filter(item => item.at >= 0 && item.at <= 1).sort((a, b) => a.at - b.at);
+        // On the shown slice, so that a place on a loop does not land on another day.
+        const found = (places.found ?? []).map(place => ({ place, at: nearestProgress(slice, place.coordinate) })).sort((a, b) => a.at - b.at);
         const joined: { at: number; names: string[] }[] = [];
         for (const { place, at } of found) {
             const last = joined.at(-1);
-            if (last && (at - last.at) * placeWidth < JOIN_PX) last.names.push(place.label);
+            if (last && (at - last.at) * width < JOIN_PX) last.names.push(place.label);
             else joined.push({ at, names: [place.label] });
         }
         return joined;
@@ -110,7 +123,7 @@
         const wanted = category;
         if (!seen || !wanted || tooLong) return;
         let live = true;
-        corridorPlaces(config.places, routeSlice(coordinates, shown.from, shown.to), PLACE_M / 1000).then(
+        corridorPlaces(config.places, slice, PLACE_M / 1000).then(
             found => { if (live) places = { found: found.filter(place => place.category === wanted) }; },
             () => { if (live) places = { failed: true }; });
         return () => { live = false; };
@@ -125,13 +138,20 @@
         return () => abort.abort();
     });
 
+    /** Opens the panel of a pin, moved left where it would leave the window. */
+    function show(pin: HTMLElement, number: number | undefined) {
+        const box = pin.getBoundingClientRect(), panel = Math.min(PANEL_PX, innerWidth * .9);
+        shift = Math.max(8 - box.left, Math.min(-8, innerWidth - 8 - panel - box.left));
+        open = number;
+    }
+
     const surfaceName = (surface: Surface) => surface === 'Unknown' ? 'unknown' : surface.toLowerCase();
 </script>
 
 {#snippet about(point: RoutePoint)}
     {@const found = point.placeId ? details[point.placeId] : undefined}
     {@const website = websiteLink(found?.website)}
-    <div class="panel" role="tooltip">
+    <div class="panel" style:left={`${shift}px`}>
         <strong>{point.label}</strong>
         {#if point.placeKind}<small>{kindLabel(point.placeKind)}</small>{/if}
         {#if point.note}<p>{point.note}</p>{/if}
@@ -149,12 +169,16 @@
 {/snippet}
 
 {#snippet waypoints()}
-    {#each shownPins as pin (pin.share)}
+    {#each shownPins as pin, i (i)}
         {#if pin.number}
+            <!-- A link in the panel takes the focus: the panel closes only when the focus leaves the pin and its panel. -->
             <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <span class="pin" class:flip={x(pin.share) > .7} style:left={`${x(pin.share) * 100}%`} onpointerenter={() => open = pin.number} onpointerleave={() => open = undefined}>
-                <button type="button" aria-label={pin.label} aria-expanded={open === pin.number} onclick={() => open = open === pin.number ? undefined : pin.number}
-                    onblur={() => open = undefined}>{pin.number}</button>
+            <span class="pin" style:left={`${x(pin.share) * 100}%`}
+                onpointerenter={event => { if (event.pointerType === 'mouse') show(event.currentTarget, pin.number); }}
+                onpointerleave={event => { if (event.pointerType === 'mouse' && !event.currentTarget.contains(document.activeElement)) open = undefined; }}
+                onfocusout={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) open = undefined; }}
+                onkeydown={event => { if (event.key === 'Escape') open = undefined; }}>
+                <button type="button" aria-label={pin.label} aria-expanded={open === pin.number} onclick={event => show(event.currentTarget.parentElement!, pin.number)}>{pin.number}</button>
                 {#if open === pin.number && pin.point}{@render about(pin.point)}{/if}
             </span>
         {:else}
@@ -184,7 +208,7 @@
 {/snippet}
 
 {#snippet placeRow()}
-    <div class="places" bind:this={placeLane} bind:clientWidth={placeWidth}>
+    <div class="places" bind:this={placeLane} bind:clientWidth={width}>
         {#if category && tooLong}
             <span class="note">{days.length > 1 && day === 'all' ? 'Choose one day to see places' : 'Too long to show places'}</span>
         {:else if places.failed}
@@ -192,7 +216,7 @@
         {:else if places.found && !groups.length}
             <span class="note">None within {formatDistance(PLACE_M)}</span>
         {:else if category}
-            {#each groups as group (group.at)}
+            {#each groups as group, i (i)}
                 <span class="place" style:left={`${group.at * 100}%`} title={group.names.join('\n')}>
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d={placeCategories[category].icon} /></svg>
                     {#if group.names.length > 1}<b>{group.names.length}</b>{/if}
@@ -265,21 +289,16 @@
     .panel {
         position: absolute;
         top: calc(100% + 6px);
-        left: -8px;
         display: flex;
         flex-direction: column;
         gap: 4px;
-        width: 260px;
+        width: min(260px, 90vw);
         padding: 12px 14px;
         border: 1px solid var(--line);
         border-radius: 8px;
         background: var(--panel);
         box-shadow: 0 8px 24px rgb(28 27 20 / 0.18);
         font-size: 13px;
-    }
-    .flip .panel {
-        right: -8px;
-        left: auto;
     }
     .panel small {
         color: var(--ink-soft);

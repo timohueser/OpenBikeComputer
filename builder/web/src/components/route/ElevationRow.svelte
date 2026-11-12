@@ -1,12 +1,13 @@
 <script lang="ts">
-    import { gradeBand, gradeBands, profileGrades } from '../../lib/planner/grade-data';
+    import { gradeBands, gradePaths, profileGrades } from '../../lib/planner/grade-data';
     import { cumulative } from '../../lib/planner/geo';
-    import { heightRange, profileSamples, sampleIndex, type ProfileLine } from '../../lib/planner/profile-data';
+    import { heightRange, profilePaths, profileSamples, sampleIndex, type ProfileLine } from '../../lib/planner/profile-data';
     import { formatHeight } from '../../lib/settings/format';
     import { appearance } from '../../lib/theme.svelte';
 
-    /** The heights of a stretch of a line: the area under them in the colour of the steepness band of each segment, the
-     * lowest and the highest height of the scale to the left of the box, and labels at the foot. Shares are 0 to 1 of the line. */
+    /** The heights of a stretch of a line as the planner profile draws them: a plain area, and the line in the colour of
+     * the steepness band of each segment. The lowest and the highest height of the scale show to the left of the box, and
+     * labels at the foot. Shares are 0 to 1 of the line. */
     let { line, from = 0, to = 1, labels = [], lines = [] }: {
         line: ProfileLine;
         from?: number;
@@ -25,29 +26,8 @@
     const span = $derived(Math.max(1e-6, to - from));
     // The scale fits the shown stretch, with the samples just outside it.
     const { low, high } = $derived(heightRange(samples.slice(Math.max(0, sampleIndex(samples, from) - 1), sampleIndex(samples, to) + 1)));
-    // For each band, the outline of its segments and the area under them; consecutive segments of one band make one piece.
-    const bands = $derived.by(() => {
-        const paths = gradeBands.map(() => ({ line: '', area: '' }));
-        const y = (height: number) => 100 - (height - low) / (high - low) * 100;
-        let previous = -1, foot = '';
-        for (let i = 0; i < grades.length; i++) {
-            const a = samples[i], b = samples[i + 1];
-            const band = a.height === null || b.height === null ? -1 : gradeBand(grades[i]);
-            if (band !== previous && previous >= 0) paths[previous].area += `${foot}Z`;
-            if (band < 0) { previous = -1; continue; }
-            if (band !== previous) {
-                paths[band].line += `M${a.progress * 1000} ${y(a.height!)}`;
-                paths[band].area += `M${a.progress * 1000} 100L${a.progress * 1000} ${y(a.height!)}`;
-            }
-            const point = `L${b.progress * 1000} ${y(b.height!)}`;
-            paths[band].line += point;
-            paths[band].area += point;
-            foot = `L${b.progress * 1000} 100`;
-            previous = band;
-        }
-        if (previous >= 0) paths[previous].area += `${foot}Z`;
-        return paths;
-    });
+    const area = $derived(profilePaths(samples, low, high).area);
+    const bands = $derived(gradePaths(samples, grades, low, high));
     const shownLabels = $derived(labels.filter(label => label.to > from && label.from < to && (label.to - label.from) / span * width >= LABEL_PX));
     const left = (share: number) => `${(share - from) / span * 100}%`;
 </script>
@@ -55,19 +35,16 @@
 <div class="elevation" bind:clientWidth={width}>
     <span class="scale" style:top="0">{formatHeight(high)}</span>
     <span class="scale" style:bottom="0">{formatHeight(low)}</span>
-    <svg viewBox={`${from * 1000} 0 ${span * 1000} 100`} preserveAspectRatio="none" aria-hidden="true">
+    <svg viewBox={`${from * 1000} 0 ${span * 1000} 105`} preserveAspectRatio="none" aria-hidden="true">
+        <path class="area" d={area} />
         {#each bands as path, band (band)}
-            {#if path.line}
-                {@const colour = appearance.dark ? gradeBands[band].dark : gradeBands[band].color}
-                <path class="area" d={path.area} style:fill={colour} />
-                <path class="line" d={path.line} style:stroke={colour} />
-            {/if}
+            {#if path}<path class="line" d={path} style:stroke={appearance.dark ? gradeBands[band].dark : gradeBands[band].color} />{/if}
         {/each}
     </svg>
-    {#each lines as share (share)}
+    {#each lines as share, i (i)}
         {#if share > from && share < to}<i style:left={left(share)}></i>{/if}
     {/each}
-    {#each shownLabels as label (label.from)}
+    {#each shownLabels as label, i (i)}
         <span class="label" style:left={left((Math.max(from, label.from) + Math.min(to, label.to)) / 2)}>{label.text}</span>
     {/each}
 </div>
@@ -84,11 +61,11 @@
         overflow: hidden;
     }
     .area {
-        fill-opacity: .3;
+        fill: color-mix(in srgb, var(--ink-faint) 10%, var(--panel));
     }
     .line {
         fill: none;
-        stroke-width: 2;
+        stroke-width: 2.5;
         stroke-linejoin: round;
         vector-effect: non-scaling-stroke;
     }

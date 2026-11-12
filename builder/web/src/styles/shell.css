@@ -52,6 +52,15 @@ summary:focus-visible {
     white-space: nowrap;
     pointer-events: none;
 }
+.route-pin[hidden] {
+    display: none;
+}
+.route-pin.short {
+    padding: 3px;
+}
+.route-pin.short b {
+    margin-left: 0;
+}
 .route-pin b {
     display: grid;
     flex: none;
