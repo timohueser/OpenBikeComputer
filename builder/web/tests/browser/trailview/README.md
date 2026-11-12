@@ -11,9 +11,9 @@ has the keys, the manifest and the times of the images. Run the commands from
 
 | Field | Value |
 | --- | --- |
-| `date` | The date of the set: the 15th of the middle month of the season |
+| `date` | The date of the set. Use the 15th of the middle month of the season. |
 | `id` | Lowercase letters, digits and hyphens: the folder of the images |
-| `view` | The query string that Ctrl+C copies in the TrailView page. Its date and time are not used. |
+| `view` | The address that Ctrl+C copies in the TrailView page; the list keeps the part from the `?`. Its date and time are not used. |
 | `night` | `true` adds an image at 23:00. Use it only where lights show. |
 
 ## Steps
@@ -46,12 +46,14 @@ For a new season, change `date`, then do steps 4 to 7.
 
 ## Pitfalls
 
-- `render` skips a view whose images exist and whose `view.json` has the same `view` and `night`.
-  A changed view renders all its images again.
+- `render` skips a view whose images exist and whose `view.json` has the same `view`, `night` and
+  release. A changed view or a new release renders all its images again. `--fixture` writes the
+  release `fixture`; `upload` takes only images of the active production release.
 - `npm run test:trailview` builds the page against the fixture. Build it again for production
   before you render.
 - After a failed tile, `render` waits one minute and tries the image one more time: the tile host
   answers 429 to too many requests. After a second failure it stops; the next run starts at that
   view.
 - `upload` and `switch` call `obc data r2`, which needs `OBC_R2_*`. An image key is never replaced,
-  so a changed image gives a new set id.
+  so a changed image gives a new set id. `switch` checks the images in the bucket, because the
+  public host keeps a deleted image in its cache for a year.

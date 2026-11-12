@@ -29,7 +29,8 @@ blocks a query string.
 | `home-views/<set>/<id>/<slot>.webp` | The image of the view `<id>` in the slot `<slot>` | `public, max-age=31536000, immutable` |
 
 The writer never replaces a key under `home-views/<set>/`. Only the live manifest changes: the
-writer puts the manifest of a set there to make that set live.
+writer puts the manifest of a set there to make that set live, after it checks in the bucket that
+each image of the set is there. The public host is no proof: its cache keeps an image for a year.
 
 ## 2. Manifest
 
@@ -39,7 +40,7 @@ A UTF-8 JSON object.
 | --- | --- |
 | `format` | `1` |
 | `set` | 16 lowercase hexadecimal digits: the start of the SHA-256 of the images and of this manifest with an empty `set`. A changed image, name or credit gives a new id. |
-| `date` | `YYYY-MM-DD`: the date of every image of the set, the 15th of the middle month of a season |
+| `date` | `YYYY-MM-DD`: the date of every image of the set |
 | `width`, `height` | `2560`, `1440`: the size of each image in pixels |
 | `credits` | Array of strings: each credit of each image, one time each. The page shows them with the image. |
 | `views` | Array of [views](#3-view), each with a unique `id` |
@@ -67,8 +68,9 @@ Each image is a WebP of `width` × `height` pixels. A view has the slots `mornin
 | `evening` | One hour before sunset |
 | `night` | 23:00. The sun is at least 6° under the horizon then. |
 
-The writer refuses a view where the sun does not rise or does not set on `date`, or where the day
-is shorter than 4 hours.
+The writer refuses a view where the sun does not rise or does not set on `date`, where the sun is
+up at midnight on the clock, or where the day is shorter than 4 hours. It uses only images of the
+active production release.
 
 ## 5. Choice on the page
 
