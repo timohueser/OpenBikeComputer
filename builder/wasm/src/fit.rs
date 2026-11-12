@@ -10,13 +10,14 @@ use wasm_bindgen::prelude::*;
 /// elevation, speed, heart rate, cadence, power and temperature.
 const SAMPLE_VALUES: usize = 10;
 
-const SPORTS: [(Sport, &str); 6] = [
+const SPORTS: [(Sport, &str); 7] = [
     (Sport::Road, "road"),
     (Sport::Gravel, "gravel"),
     (Sport::Mtb, "mtb"),
     (Sport::Bike, "bike"),
     (Sport::Foot, "foot"),
     (Sport::Other, "other"),
+    (Sport::Unknown, "unknown"),
 ];
 
 fn error(name: &str, message: &str, code: Option<&str>) -> JsValue {
@@ -88,11 +89,12 @@ pub fn obc_fit_read(bytes: &[u8], fallback: &str) -> Result<js_sys::Object, JsVa
 #[wasm_bindgen]
 pub fn obc_fit_write_ride(sport: &str, samples: &[f64]) -> Result<Vec<u8>, JsValue> {
     let sport = SPORTS.iter().find(|(_, code)| *code == sport).ok_or_else(|| error("Error", "unknown sport", None))?.0;
-    if !samples.len().is_multiple_of(SAMPLE_VALUES) {
+    let (samples, rest) = samples.as_chunks::<SAMPLE_VALUES>();
+    if !rest.is_empty() {
         return Err(error("Error", "a sample has 10 values", None));
     }
     let samples = samples
-        .chunks_exact(SAMPLE_VALUES)
+        .iter()
         .map(|v| Sample {
             time: v[0] as i64,
             lat: v[1].round() as i32,
@@ -118,17 +120,19 @@ pub fn obc_fit_write_course(
     names: Vec<String>,
     elapsed_s: f64,
 ) -> Result<Vec<u8>, JsValue> {
-    if !points.len().is_multiple_of(3) || waypoints.len() != 2 * names.len() {
+    let (points, rest) = points.as_chunks::<3>();
+    let (waypoints, odd) = waypoints.as_chunks::<2>();
+    if !rest.is_empty() || !odd.is_empty() || waypoints.len() != names.len() {
         return Err(error("Error", "a point has 3 values, and a waypoint has 2 values and a name", None));
     }
     Ok(obc_fit::write_course(&Course {
         name,
         points: points
-            .chunks_exact(3)
+            .iter()
             .map(|p| Point { lat: p[0].round() as i32, lon: p[1].round() as i32, elevation: present(p[2]) })
             .collect(),
         waypoints: waypoints
-            .chunks_exact(2)
+            .iter()
             .zip(names)
             .map(|(w, name)| Waypoint {
                 lat: w[0].round() as i32,

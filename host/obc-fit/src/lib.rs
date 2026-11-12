@@ -39,6 +39,8 @@ pub enum Sport {
     Bike,
     Foot,
     Other,
+    /// The file has no `session`, as after a power loss.
+    Unknown,
 }
 
 impl Sport {
@@ -68,7 +70,7 @@ impl Sport {
             Sport::Mtb => (2, 8),
             Sport::Bike => (2, 0),
             Sport::Foot => (17, 0),
-            Sport::Other => (0, 0),
+            Sport::Other | Sport::Unknown => (0, 0),
         }
     }
 }
@@ -243,7 +245,7 @@ pub fn read(bytes: &[u8]) -> Result<File, Error> {
         return Err(Error::NoPositions);
     }
     if !is_course {
-        return Ok(File::Ride(Ride { sport: sport.unwrap_or(Sport::Other), samples }));
+        return Ok(File::Ride(Ride { sport: sport.unwrap_or(Sport::Unknown), samples }));
     }
     Ok(File::Course(Course {
         name: name.unwrap_or_default(),
@@ -500,6 +502,9 @@ mod tests {
             let ride = Ride { sport, samples: samples.clone() };
             assert_eq!(read(&write_ride(&ride)), Ok(File::Ride(ride)));
         }
+        // A written ride has a session, so an unknown sport reads back as generic.
+        let unknown = Ride { sport: Sport::Unknown, samples };
+        assert_eq!(read(&write_ride(&unknown)), Ok(File::Ride(Ride { sport: Sport::Other, ..unknown })));
     }
 
     #[test]
@@ -531,7 +536,7 @@ mod tests {
         bytes.truncate(bytes.len() / 2);
         let File::Ride(cut) = read(&bytes).unwrap() else { panic!() };
         assert!((40..60).contains(&cut.samples.len()));
-        assert_eq!(cut, Ride { sport: Sport::Other, samples: ride.samples[..cut.samples.len()].to_vec() });
+        assert_eq!(cut, Ride { sport: Sport::Unknown, samples: ride.samples[..cut.samples.len()].to_vec() });
     }
 
     #[test]

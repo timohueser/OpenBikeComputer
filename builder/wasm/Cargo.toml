@@ -19,7 +19,6 @@ obc-map-scene = { workspace = true }
 obc-reader = { workspace = true, features = ["alloc"] }
 obc-render = { workspace = true }
 obc-host-core = { workspace = true }
-obc-fit = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 sha2 = { workspace = true }
@@ -28,6 +27,7 @@ obc-link = { workspace = true, features = ["client"] }
 obc-storage = { workspace = true, features = ["std"], optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+obc-fit = { workspace = true }
 wasm-bindgen = { workspace = true }
 js-sys = { workspace = true }
 console_error_panic_hook = { workspace = true }

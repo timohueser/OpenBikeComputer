@@ -1,7 +1,8 @@
 import { core } from "./bridge";
 import type { GpxImport, GpxPoint, GpxWaypoint } from "./gpx";
 
-export type FitSport = "road" | "gravel" | "mtb" | "bike" | "foot" | "other";
+/** `unknown`: the file has no session, as after a power loss. It is written as `other`. */
+export type FitSport = "road" | "gravel" | "mtb" | "bike" | "foot" | "other" | "unknown";
 
 /** One recorded point of a ride, in microdegrees. An absent value has no key. */
 export interface FitSample {
