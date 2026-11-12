@@ -2,19 +2,21 @@
     import { onMount, type Snippet } from 'svelte';
     import Icon from '../../components/planner/PlannerIcon.svelte';
 
-    let { title, onClose, children }: { title: string; onClose: () => void; children: Snippet } = $props();
+    /** `children` gets `close`, which closes the dialog as Esc and the close button do: the focus goes back. */
+    let { title, onClose, children }: { title: string; onClose: () => void; children: Snippet<[() => void]> } = $props();
     let dialog: HTMLDialogElement;
     const heading = $props.id();
     onMount(() => dialog.showModal());
+    const close = () => dialog.close();
 </script>
 
 <!-- Esc closes a modal dialog by itself, and each way of closing ends in `onclose`. -->
 <dialog bind:this={dialog} aria-labelledby={heading} onclose={onClose}>
     <header>
         <h2 id={heading}>{title}</h2>
-        <button type="button" class="close" aria-label="Close" onclick={() => dialog.close()}><Icon name="close" /></button>
+        <button type="button" class="close" aria-label="Close" onclick={close}><Icon name="close" /></button>
     </header>
-    {@render children()}
+    {@render children(close)}
 </dialog>
 
 <style>

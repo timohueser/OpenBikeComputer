@@ -19,6 +19,7 @@
     const PAGES: Partial<Record<Route, Page>> = {
         // The planner reads the live catalogue as it loads.
         planner: { label: 'Planner', keep: true, load: () => initCore().then(() => import('./components/planner/PlannerApp.svelte')) },
+        settings: { load: () => import('./pages/Settings.svelte') },
     };
 </script>
 
@@ -66,7 +67,7 @@
 </script>
 
 <div class="shell">
-    <TopBar {links} />
+    <TopBar {links} settings={current === 'settings'} />
     <div class="pages">
         {#each Object.entries(pages) as [route, page] (route)}
             {#if route === current || (PAGES[route as Route]!.keep && page.component)}

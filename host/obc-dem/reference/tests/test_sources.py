@@ -86,7 +86,8 @@ def split(key):
     """The sub-boxes `fetch` would ask for, for one source's verification box."""
 
     source = ingest.SOURCES[key]
-    return list(request_boxes(BOXES[key], source.resolution_m, getattr(source, "epsg", None)))
+    return request_boxes(BOXES[key], source.resolution_m, getattr(source, "epsg", None),
+                         getattr(source, "cap", MAX_PIXELS))
 
 
 class TempCase(unittest.TestCase):
@@ -130,8 +131,8 @@ class Requests(unittest.TestCase):
                 self.assertGreaterEqual(len(boxes), 1)
                 for box in boxes:
                     span_x, span_y = ingest.sources.protocols.spans(box, source.epsg)
-                    self.assertLessEqual(span_x / source.resolution_m, MAX_PIXELS + 1)
-                    self.assertLessEqual(span_y / source.resolution_m, MAX_PIXELS + 1)
+                    self.assertLessEqual(span_x / source.resolution_m, source.cap + 1)
+                    self.assertLessEqual(span_y / source.resolution_m, source.cap + 1)
                 # The sub-boxes tile the box exactly.
                 self.assertAlmostEqual(min(b[0] for b in boxes), BOXES[key][0])
                 self.assertAlmostEqual(min(b[1] for b in boxes), BOXES[key][1])
@@ -149,6 +150,15 @@ class Requests(unittest.TestCase):
             ingest.sources.protocols.output_size(box, source.resolution_m, "no", source.epsg)
         self.assertAlmostEqual(min(b[0] for b in boxes), tile[0])
         self.assertAlmostEqual(max(b[3] for b in boxes), tile[3])
+
+    def test_denmark_asks_for_boxes_its_gateway_answers_in_time(self):
+        """Dataforsyningen's gateway times out a 2000-pixel request while it is busy."""
+
+        source = ingest.SOURCES["dk"]
+        self.assertEqual(source.cap, 1000)
+        for box in split("dk"):
+            px, py = ingest.sources.protocols.output_size(box, source.resolution_m, "dk", source.epsg)
+            self.assertLessEqual(max(px, py), 1000)
 
     def test_a_request_over_the_cap_is_refused_and_not_coarsened(self):
         """Asking a service for fewer pixels than the box holds gets a coarser raster

@@ -50,4 +50,20 @@ describe('library store', () => {
         expect(await library.deviceRides()).toEqual(new Set(['1:5', '1:6']));
         await library.close();
     });
+
+    it('clears all stores after the writes before it, and then refuses each write', async () => {
+        const factory = new IDBFactory(), library = new Library(factory);
+        await library.saveRoute(route('a'), [{ id: 'v' }]);
+        await library.addRide(ride('20260801T070000Z'), new Blob(['ride']));
+        await library.saveCover({ id: 'a', lineKey: 'k', state: 'none', tries: 0 });
+        await library.setState('active', 'a');
+        const before = library.saveRoute(route('b'));
+        await library.clear();
+        await expect(before).resolves.toMatchObject({ id: 'b' });
+        await expect(library.saveRoute(route('c'))).rejects.toThrow('deleted');
+        const fresh = new Library(factory), contents = await fresh.contents();
+        expect([contents.routes, contents.versions, contents.rides, contents.files.size, contents.state, await fresh.cover('a')])
+            .toEqual([[], {}, [], 0, {}, undefined]);
+        await library.close(); await fresh.close();
+    });
 });
