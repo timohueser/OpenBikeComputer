@@ -23,12 +23,13 @@ pub enum Rank {
     WaterLine,
     Shoulder,
     Verge,
+    Zone,
     Bank,
     Slope,
     Terrain,
 }
 
-const RANKS: [(&str, Rank); 10] = [
+const RANKS: [(&str, Rank); 11] = [
     ("carriageway", Rank::Carriageway),
     ("platform", Rank::Platform),
     ("rail_bed", Rank::RailBed),
@@ -36,6 +37,7 @@ const RANKS: [(&str, Rank); 10] = [
     ("water_line", Rank::WaterLine),
     ("shoulder", Rank::Shoulder),
     ("verge", Rank::Verge),
+    ("zone", Rank::Zone),
     ("bank", Rank::Bank),
     ("slope", Rank::Slope),
     ("terrain", Rank::Terrain),

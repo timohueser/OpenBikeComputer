@@ -33,6 +33,9 @@ pub enum Surface {
     Water = 9,
     /// The band from a waterline to the bank top.
     Bank = 10,
+    /// Ground over line water at a culvert under a way (`culverts`): the water does not show there, and the
+    /// slopes shape it.
+    Zone = 11,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

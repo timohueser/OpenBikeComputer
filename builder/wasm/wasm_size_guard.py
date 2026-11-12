@@ -21,10 +21,10 @@ from pathlib import Path
 BUDGETS = {
     "builder": {"gzipped": (62 + 352 + 128) * 1024, "raw_wasm": (112 + 944 + 272) * 1024},
     # Measured on the build with the outline's turns, the levels of the way graph, the faces' tile-line
-    # vertices, the shared water level and curve of the feature bake, and line water (745,626 B gzipped with
-    # the glue, 1,932,152 B raw), the next whole KiB. The owner allows a few per cent for line water when
-    # stated.
-    "ground-plan": {"gzipped": 729 * 1024, "raw_wasm": 1887 * 1024},
+    # vertices, the shared water level and curve of the feature bake, line water and its culverts (752,652 B
+    # gzipped with the glue, 1,954,029 B raw), the next whole KiB. The owner allows a few per cent for line water
+    # and 15 to 25 kB for the crossing block when stated.
+    "ground-plan": {"gzipped": 736 * 1024, "raw_wasm": 1909 * 1024},
 }
 
 ADVICE = {

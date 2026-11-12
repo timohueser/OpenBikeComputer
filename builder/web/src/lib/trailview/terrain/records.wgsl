@@ -31,12 +31,14 @@ const M_WALL: u32 = 2048u;
 const M_WATER: u32 = 4096u;
 const M_PATH: u32 = 16384u;
 const M_MATERIAL_SHIFT: u32 = 16u;
-// Candidate kinds and the surfaces of the slope, line water and its bank, as records.rs and faces::Surface.
+// Candidate kinds and the surfaces of the slope, line water, its bank and a culvert's zone, as records.rs and
+// faces::Surface.
 const M_BAND: u32 = 3u;
 const M_FILL: u32 = 4u;
 const M_SURFACE_SLOPE: u32 = 1u;
 const M_SURFACE_WATER: u32 = 9u;
 const M_SURFACE_BANK: u32 = 10u;
+const M_SURFACE_ZONE: u32 = 11u;
 // As MARGIN_M of records.rs: a bin lists every candidate edge within this of its square.
 const M_MARGIN: f32 = 3.0;
 

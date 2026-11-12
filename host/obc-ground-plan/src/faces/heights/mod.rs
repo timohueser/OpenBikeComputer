@@ -45,6 +45,8 @@ pub enum Step {
     Unrelated,
     /// The end line of a line at a level change (a bridge, tunnel or gallery end).
     StructureEnd,
+    /// Line water's end at a culvert's zone (`faces::culverts`), which takes no cone from it: the mouth.
+    Mouth,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1467,7 +1469,11 @@ pub fn height_at_sides(words: &[u32], q: [f64; 2], labels: [Option<u32>; 2], t: 
     let recs = items.as_ref().map_or(Vec::new(), |i| present(&b, q, &p, labels.map(|l| material(words, l)), i).recs);
     let blend = items.as_ref().map_or(&[][..], |i| i.blend);
     let sides = labels.map(|l| by_label(&b, q, &recs, blend, l, t, &p));
-    let step = step(&b, q, &recs, &sides, &p);
+    let surface = |l: Option<u32>| l.map(|id| label_words(words, id)[0] & 0xff);
+    let ends = labels.map(surface);
+    let [water, zone] = [Surface::Water, Surface::Zone].map(|s| Some(s as u32));
+    let mouth = (ends == [water, zone] || ends == [zone, water]) && (sides[0].0.h - sides[1].0.h).abs() > p.step_m;
+    let step = if mouth { Step::Mouth } else { step(&b, q, &recs, &sides, &p) };
     sides.map(|(h, _)| Height { step, ..h })
 }
 

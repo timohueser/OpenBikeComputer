@@ -39,12 +39,16 @@ const MAT_GROUND: u32 = 1u;
 const MAT_WATER: u32 = 50u;
 const S_SHOULDER: u32 = 3u;
 const S_WATER: u32 = 9u;
+const S_ZONE: u32 = 11u;
 // The code of a ground-looking shoulder without a line, until its nearest way gives its class.
 const CODE_ROAD_SURFACE: u32 = 1u;
 // In a corner's look word, the bit of the corridors' fine offset (1 << FINE_SHIFT), which pieces do not read:
 // the face lies on the road surface of a wall class (the line's M_WALL, from `leg_wall` of roads.json), so a step
 // beside it is a wall (piece.wgsl's WALL_SIDE).
 const LOOK_WALL_SIDE: u32 = 268435456u;
+// The next bit of the fine offset: the face is a culvert's zone, so a step from water up to it is the culvert's
+// mouth (piece.wgsl's ZONE_SIDE).
+const LOOK_ZONE: u32 = 536870912u;
 const S_CORNER_FILL: u32 = 5u;
 const S_PLATFORM: u32 = 8u;
 // A face without a frame has no edge in its look: this far across a way this wide on each side, as a junction's faces in section.ts.
@@ -169,6 +173,9 @@ fn may_pave(label: u32) -> bool {
 // platform are one surface without edges. A water face is water. Every other face is ground.
 fn corner_look(q: vec2i, label: u32, mpu: f32) -> vec2u {
     let ground = vec2u(MAT_GROUND, 0u);
+    if (label != M_NONE && (mw(m_label(params.block, label)) & 0xffu) == S_ZONE) {
+        return vec2u(MAT_GROUND | LOOK_ZONE, 0u);
+    }
     if (!may_pave(label)) {
         return ground;
     }
@@ -286,10 +293,11 @@ fn corners(@builtin(local_invocation_index) lane: u32, @builtin(workgroup_id) gr
             n = normalize(vec3f(-east, -north, 1.0));
         }
     } else {
-        // Ground: its nearest way, for the ground terms; a shoulder takes that way's wall class.
+        // Ground: its nearest way, for the ground terms; a shoulder takes that way's wall class, a zone keeps its bit.
         let way = nearest_way(q, mpu);
         let wall = ((look.x >> 7u) & 15u) == CODE_ROAD_SURFACE && way.z > 0.5;
-        look = vec2u(look_word(MAT_GROUND, 0u, way.y) | select(0u, LOOK_WALL_SIDE, wall), place_word(way.x, 0.0));
+        let side = select(0u, LOOK_WALL_SIDE, wall) | (look.x & LOOK_ZONE);
+        look = vec2u(look_word(MAT_GROUND, 0u, way.y) | side, place_word(way.x, 0.0));
     }
     // Octahedral, as piece.wgsl decodes it.
     let e = n.xy / (abs(n.x) + abs(n.y) + n.z);

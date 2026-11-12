@@ -708,3 +708,25 @@ fn a_rim_bent_by_its_cuts_gives_the_ground_of_the_straight_rim() {
         }
     }
 }
+
+#[test]
+fn a_culvert_hides_the_water_under_a_road_and_its_fill_and_leaves_a_low_mouth_where_the_water_ends() {
+    // A residential road (edge 2.9 m from its curve) 2.5 m over a stream 1 m under flat terrain, at 90° and 45°:
+    // the water ends past the verge, where the fill stands about the mouth's height over it, and the ground
+    // there stands at most the bank's steepest cut (2 m/m) at the half-width (0.5 m) over the water.
+    for deg in [90.0f64, 45.0] {
+        let (s, c) = (libm::sin(deg.to_radians()), libm::cos(deg.to_radians()));
+        let mut way = line("road", &[("highway", "residential")], &[[-200.0 * s, -200.0 * c], [200.0 * s, 200.0 * c]]);
+        way.z = vec![501.5; 2];
+        let c = ways(&[stream(&[[0.0, -200.0], [0.0, 200.0]], 499.0), way], &|_, _| 500.0);
+        let water = |y: f64| surface_at(&c, [0.0, y]) == Some(crate::faces::Surface::Water as u32);
+        let end = (0..400).map(|k| f64::from(k) * 0.025).find(|&y| water(y)).unwrap() * s;
+        assert!((3.5..8.0).contains(&end), "{deg}°: the water ends {end} m from the road's curve");
+        for y in [-1.0, 1.0] {
+            assert!(!water(y * (end / s - 0.1)) && water(y * (end / s + 0.1)), "{deg}°: the water ends at {y}");
+            let mouth = c.h([0.0, y * (end / s - 0.05)]).h - 499.0;
+            assert!((0.5..1.3).contains(&mouth), "{deg}°: the ground {mouth} m over the water at its end");
+        }
+        assert_eq!(count(&c.scan(), Class::Inside), 0, "{deg}°");
+    }
+}

@@ -719,6 +719,7 @@ impl Sections {
         }
         let mut reaches = reach_rows(&classes, &widths, &waters);
         reaches.extend(crate::graph::reach_rows(waters.iter().map(|row| row.graph[0]).fold(0.0, f64::max)));
+        reaches.extend(crate::faces::culverts::reach_rows(waters.iter().map(|row| row.bank[2]).fold(0.0, f64::max)));
         for row in reaches.iter().filter(|row| row.chain) {
             if row.metres() > CHAIN_MAX_M {
                 let terms: Vec<String> = row.terms.iter().map(|(what, m)| format!("{what} {m} m")).collect();

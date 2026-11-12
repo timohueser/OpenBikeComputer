@@ -6,6 +6,7 @@
 
 pub mod check;
 mod cover;
+pub mod culverts;
 mod geom;
 pub mod heights;
 pub mod legs;
@@ -877,12 +878,22 @@ impl Sliced {
 
 /// Whether a candidate is a band layer.
 fn band(c: &Cand) -> bool {
-    c.relabel.is_none() && c.fill.is_none() && c.glob.is_some() && c.label.owner == Owner::Terrain
+    c.relabel.is_none()
+        && c.fill.is_none()
+        && c.glob.is_some()
+        && c.label.owner == Owner::Terrain
+        && c.label.surface != Surface::Zone
 }
 
-/// Whether the far level leaves a candidate out: a band layer or water (whose bank is a band layer).
+/// Whether the far level leaves a label out: water (whose bank is a band layer) and a culvert's zone, until the
+/// far records hold water.
+fn wet_or_zone(l: &Label) -> bool {
+    matches!(l.surface, Surface::Water | Surface::Zone)
+}
+
+/// Whether the far level leaves a candidate out: a band layer, water or a zone.
 fn near_only(c: &Cand) -> bool {
-    band(c) || c.label.surface == Surface::Water
+    band(c) || wet_or_zone(&c.label)
 }
 
 impl Candidates<'_> {
@@ -897,8 +908,7 @@ impl Candidates<'_> {
                 .collect();
             self.cands[k].label = decide(&self.cands, &self.lines, at, q);
         }
-        let banded =
-            |l: &Label| (l.owner == Owner::Terrain && l.surface != Surface::Terrain) || l.surface == Surface::Water;
+        let banded = |l: &Label| (l.owner == Owner::Terrain && l.surface != Surface::Terrain) || wet_or_zone(l);
         (s.patches.iter().zip(&s.labels))
             .map(|(p, l)| if banded(l) { label(&self.cands, &self.cover, &self.lines, p, true) } else { *l })
             .collect()
@@ -1125,6 +1135,8 @@ fn candidates<'a>(
     stats.ways = lines.len() as u32;
     if level == 0 {
         cands.extend(platform::candidates(&ctx, input, bx, &mut stats));
+        // A culvert's zone lies within `REACH_M` of its crossing.
+        cands.extend(culverts::candidates(&ctx, &lines, reach(culverts::REACH_M)));
     }
     // The points' fans and regions, and the band fans.
     let mut fan_of: Vec<Option<usize>> = vec![None; points.len()];
@@ -1623,8 +1635,17 @@ fn label(cands: &[Cand], cover: &Cover, lines: &[WayLine], patch: &[Vec<P>], far
     }
 }
 
-/// The label at a doubled point q that the candidates `at` cover.
+/// Whether a label's material way is line water.
+fn of_water(lines: &[WayLine], l: &Label) -> bool {
+    l.material.is_some_and(|m| lines.iter().any(|x| x.way == m && x.sec.water))
+}
+
+/// The label at a doubled point q that the candidates `at` cover. Where a zone covers q, a candidate of line
+/// water does not count: the water ends at the zone.
 fn decide(cands: &[Cand], lines: &[WayLine], mut at: Vec<u32>, q: [i64; 2]) -> Label {
+    if at.iter().any(|&c| cands[c as usize].label.surface == Surface::Zone) {
+        at.retain(|&c| !of_water(lines, &cands[c as usize].label));
+    }
     let regions: Vec<u32> = at.iter().copied().filter(|&c| cands[c as usize].relabel.is_some()).collect();
     at.retain(|&c| cands[c as usize].relabel.is_none());
     let Some(&first) = at.iter().min_by_key(|&&c| cands[c as usize].key) else { return TERRAIN };
@@ -1642,8 +1663,8 @@ fn decide(cands: &[Cand], lines: &[WayLine], mut at: Vec<u32>, q: [i64; 2]) -> L
         label = other;
     }
     // A patch of a way of the point in its region takes the point's label, unless it lies past one
-    // of the way's seams.
-    if let (Owner::Way(w), None) = (label.owner, across) {
+    // of the way's seams. A zone keeps itself.
+    if let (Owner::Way(w), None, false) = (label.owner, across, label.surface == Surface::Zone) {
         let of = (regions.iter().map(|&c| &cands[c as usize]))
             .filter(|c| {
                 let mut parts = c.relabel.iter().flatten().filter(|part| lines[part.line].way == w).peekable();

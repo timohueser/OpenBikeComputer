@@ -187,12 +187,24 @@ fn m_glob(block: u32, ci: u32, q: vec2i, segs: u32, n: u32) -> u32 {
 // The overlay's decision at q over the candidates that cover it, as records::decide: the least key,
 // then the least glob; a fan's label past a seam; a junction's region over its arms; a carriageway
 // over a rail bed is a crossing.
+// Whether a candidate's label is of line water: its material line has M_WATER.
+fn m_of_water(block: u32, k: u32) -> bool {
+    let line = mw(m_label(block, mw(k + 3u)) + 2u);
+    return line != M_NONE && (m_line_finish(block, line) & M_WATER) != 0u;
+}
+
 fn m_decide(block: u32, cover: array<u32, M_COVER>, count: u32, q: vec2i, segs: u32, n: u32) -> u32 {
+    // Where a zone covers q, line water does not count, as records::decide.
+    var zone = false;
+    for (var i = 0u; i < count; i++) {
+        let k = m_cand(block, cover[i]);
+        zone = zone || (mw(k) != M_REGION && mw(k) != M_OUTLINE && m_surface(block, mw(k + 3u)) == M_SURFACE_ZONE);
+    }
     var best = M_NONE;
     var rail = M_NONE;
     for (var i = 0u; i < count; i++) {
         let k = m_cand(block, cover[i]);
-        if (mw(k) == M_REGION || mw(k) == M_OUTLINE) {
+        if (mw(k) == M_REGION || mw(k) == M_OUTLINE || (zone && m_of_water(block, k))) {
             continue;
         }
         best = min(best, mw(k + 1u));
@@ -207,7 +219,7 @@ fn m_decide(block: u32, cover: array<u32, M_COVER>, count: u32, q: vec2i, segs: 
     var win_glob = M_NONE;
     for (var i = 0u; i < count; i++) {
         let k = m_cand(block, cover[i]);
-        if (mw(k) == M_REGION || mw(k) == M_OUTLINE || mw(k + 1u) != best) {
+        if (mw(k) == M_REGION || mw(k) == M_OUTLINE || mw(k + 1u) != best || (zone && m_of_water(block, k))) {
             continue;
         }
         let g = m_glob(block, cover[i], q, segs, n);
@@ -232,7 +244,8 @@ fn m_decide(block: u32, cover: array<u32, M_COVER>, count: u32, q: vec2i, segs: 
         }
     }
     let l = m_label(block, id);
-    if (((mw(l) >> 8u) & 0xffu) == 1u && !across) {
+    // A zone keeps itself in a region of its owner way, as records::decide.
+    if (((mw(l) >> 8u) & 0xffu) == 1u && !across && (mw(l) & 0xffu) != M_SURFACE_ZONE) {
         let w = mw(l + 1u);
         var region = M_NONE;
         var region_key = vec2u(M_NONE);

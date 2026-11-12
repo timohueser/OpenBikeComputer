@@ -81,6 +81,13 @@ fn on_road(k: u32) -> bool {
     return (piece[params.out + 4u * k + 1u] & WALL_SIDE) != 0u;
 }
 
+// Whether corner k lies on a culvert's zone (LOOK_ZONE of plan/corners.wgsl), in the next bit.
+const ZONE_SIDE: u32 = 2u << FINE_SHIFT;
+
+fn on_zone(k: u32) -> bool {
+    return (piece[params.out + 4u * k + 1u] & ZONE_SIDE) != 0u;
+}
+
 // Whether corner k lies on water (MAT_WATER of corners.wgsl).
 fn on_water(k: u32) -> bool {
     return (piece[params.out + 4u * k + 1u] & MAT_BITS) == MAT_WATER;
@@ -171,6 +178,13 @@ fn slot_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
     if (on_water(upper.x) || on_water(upper.y)) {
         mat = MAT_WATER;
     }
+    // A step from water up to a culvert's zone is the culvert's mouth: its bank's ground, shaded dark toward the
+    // water (MOUTH_SHADE of roads/corridor.wgsl), by its share of the step from the water up in `along`.
+    let lower = select(vec2u(piece[w], piece[w + 1u]), vec2u(piece[w + 2u], piece[w + 3u]), rise > 0.0);
+    let mouth = mat == MAT_GROUND && (on_water(lower.x) || on_water(lower.y)) && (on_zone(upper.x) || on_zone(upper.y));
+    if (mouth) {
+        place.along = select(0.0, 1.0, (at < 2u) == (rise > 0.0));
+    }
     // A bank's level normal is as long as its share of the light: a step of millimetres shades as the ground
     // beside it, a real one as a face of its own (corridor_ground).
     let share = select(smoothstep(BANK_LOW_M, BANK_HIGH_M, step), 1.0, mat == MAT_WALL || mat == MAT_WATER);
@@ -178,7 +192,7 @@ fn slot_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
     // A wall whose road stands on its higher side holds the road up, and the face that it continues lies below it; else
     // that face lies above it (wall_rock of roads/corridor.wgsl).
     let fill = select(on_road(piece[w + 3u]), on_road(piece[w]), rise > 0.0);
-    let word = mat | (480u << HALF_SHIFT) | select(0u, WALL_FILL, mat == MAT_WALL && fill);
+    let word = mat | (480u << HALF_SHIFT) | select(0u, WALL_FILL, mat == MAT_WALL && fill) | select(0u, MOUTH_SHADE, mouth);
     if (mat == MAT_WALL) {
         place = CornerPlace(vec2f(v.h - min(c[0].h, c[3].h), half_of(word)), length(v.s - c[0].s));
     }

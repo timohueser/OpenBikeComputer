@@ -1018,7 +1018,9 @@ fn encode(
         let (a, b) = (plan.vertices[e.a as usize], plan.vertices[e.b as usize]);
         let eb = [a[0].min(b[0]), a[1].min(b[1]), a[0].max(b[0]), a[1].max(b[1])].map(f64::from);
         let paved = |l: &Label| l.rule as u8 >= HeightRule::Owner as u8;
-        if with_outline && paved(&l) != paved(&r) && bins_of(eb, reach_units).is_some() {
+        // Water casts no cone into a culvert's zone: the slopes there rise from its sides only (`culverts`).
+        let hidden = [(l, r), (r, l)].iter().any(|(a, b)| a.surface == Surface::Water && b.surface == Surface::Zone);
+        if with_outline && paved(&l) != paved(&r) && !hidden && bins_of(eb, reach_units).is_some() {
             rims.push(if paved(&l) { (a, b, label_id(&l)) } else { (b, a, label_id(&r)) });
         }
         let Some((ec, er)) = bins_in(eb, margin + 1.0, window.wide).filter(|_| l != r) else { continue };
@@ -1645,7 +1647,15 @@ fn decide(words: &[u32], covered: &[u32], q: [f64; 2], segs: &[u32]) -> Option<u
             k[2]
         }
     };
-    let rest: Vec<u32> = covered.iter().copied().filter(|&c| !matches!(cand(words, c)[0], REGION | OUTLINE)).collect();
+    let surface = |c: u32| label(words, cand(words, c)[3])[0] & 0xff;
+    let own = |c: u32| !matches!(cand(words, c)[0], REGION | OUTLINE);
+    let zone = covered.iter().any(|&c| own(c) && surface(c) == Surface::Zone as u32);
+    // Where a zone covers q, line water does not count: the water ends at the zone.
+    let water = |c: u32| {
+        let line = label(words, cand(words, c)[3])[2];
+        line != u32::MAX && words[words[6] as usize + LINE * line as usize + 1] & WATER != 0
+    };
+    let rest: Vec<u32> = covered.iter().copied().filter(|&c| own(c) && !(zone && water(c))).collect();
     let best = rest.iter().map(|&c| cand(words, c)[1]).min()?;
     let win = rest.iter().copied().filter(|&c| cand(words, c)[1] == best).min_by_key(|&c| glob(c))?;
     let k = cand(words, win);
@@ -1655,7 +1665,8 @@ fn decide(words: &[u32], covered: &[u32], q: [f64; 2], segs: &[u32]) -> Option<u
     let across = (0..k[8] as usize).map(|b| &extras[k[7] as usize + BEYOND * b..][..BEYOND]).find(|e| past(e, q));
     let mut id = across.map_or(k[3], |e| e[4]);
     let l = label(words, id);
-    if (l[0] >> 8) & 0xff == WAY_OWNER && across.is_none() {
+    // A zone keeps itself in a region of its owner way, as the overlay's.
+    if (l[0] >> 8) & 0xff == WAY_OWNER && across.is_none() && l[0] & 0xff != Surface::Zone as u32 {
         let w = l[1];
         let outside = |p: &[u32]| !(p[1] == 1 && past(&p[2..6], q)) && !(p[6] == 1 && past(&p[7..11], q));
         let region = (covered.iter().copied())

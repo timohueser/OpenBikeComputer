@@ -73,8 +73,11 @@ export interface Meshes { structures: StructureMesh | null; anchored: AnchoredMe
  */
 export interface NodeMeshes { far: Meshes; near: Meshes; anchors: ArrayBuffer | null; points: Uint32Array<ArrayBuffer> | null }
 
-/** The meshes of a node of the OWNER level from the features of its feature tile: the structures, then the kinds of the registry. */
-export function structureMeshes(list: Feature[], tile: Node, node: Node): NodeMeshes {
+/**
+ * The meshes of a node of the OWNER level from the features of its feature tile: the structures, then the kinds of the
+ * registry. With the ground plan (`plan`) a culvert's mouth is a step of the plan's mesh: no mouth model stands.
+ */
+export function structureMeshes(list: Feature[], tile: Node, node: Node, plan = false): NodeMeshes {
     const none = { structures: null, anchored: null };
     if (node.level !== OWNER) return { far: none, near: none, anchors: null, points: null };
     const side = 2 ** (30 - node.level), x0 = node.x * side, y0 = node.y * side;
@@ -96,7 +99,7 @@ export function structureMeshes(list: Feature[], tile: Node, node: Node): NodeMe
     kind = 'road';
     streetLamps(out);
     kind = 'stream';
-    culvertMouths(out, shapes);
+    if (!plan) culvertMouths(out, shapes);
     const meshes = ({ mesh, anchored }: typeof far): Meshes => ({ structures: mesh.mesh(), anchored: anchored.mesh() });
     return { far: meshes(far), near: meshes(near), anchors: words.length ? anchorBytes(words) : null, points: points.length ? packPoints(points.filter(p => p.model >= 0)) : null };
 }
