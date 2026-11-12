@@ -22,6 +22,7 @@
  * The VID/PID is still provisional on purpose — see {@link OBC_USB_FILTERS}.
  */
 
+import { initCore } from "../core/bridge";
 import { PipeError, withAbort, type BytePipe, type DeviceLink } from "./pipe";
 import { FlatStoreClient, isFormatRecoveryState, type ClientOptions } from "./client";
 import { USB_BINDING_MAJOR, type DeviceInfo } from "./records";
@@ -642,6 +643,9 @@ export class WebUsbWatcher {
         let link: WebUsbLink | null = null;
         try {
             link = await openWebUsbLink(device, this.options.layout);
+            // The client runs in the shared core, which loads only now that a device connects: a page such as
+            // Settings does not load it. A failed load ends in `error`, and the next connect loads it again.
+            await initCore();
             const client = new FlatStoreClient(link, { timeoutMs: this.options.timeoutMs });
             // The identity strings first, because they sit below the record framing and the firmware
             // revision is what "an update is available" compares against. Then `LIST`, which every
