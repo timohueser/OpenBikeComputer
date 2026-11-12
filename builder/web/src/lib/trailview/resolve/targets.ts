@@ -56,7 +56,8 @@ export class Targets {
         const make = (format: GPUTextureFormat, bytes: number, [w, h]: number[]) => gpu.texture('targets', { size: [w, h], format, usage }, bytes * w * h);
         const render = this.viewport(top), output = [width, height];
         this.scene = make(this.format, this.format === 'rg11b10ufloat' ? 4 : 8, render);
-        this.depth = make(DEPTH, 4, render);
+        // PROTOTYPE route-still: the depth is read back, so it is a copy source.
+        this.depth = gpu.texture('targets', { size: render, format: DEPTH, usage: usage | GPUTextureUsage.COPY_SRC }, 4 * render[0] * render[1]);
         this.history = [make(HISTORY, 4, output), make(HISTORY, 4, output)];
         this.historyDepth = [make(HISTORY_DEPTH, 2, output), make(HISTORY_DEPTH, 2, output)];
         this.version++;

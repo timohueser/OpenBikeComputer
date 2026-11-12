@@ -5,6 +5,10 @@ import { Gpu } from './lib/trailview/gpu/device';
 import { hud } from './lib/trailview/hud';
 import { scaleOf } from './lib/trailview/resolve/targets';
 import { defaultView, formatView, parseView } from './lib/trailview/view';
+import * as prototypeRouteStill from './lib/trailview/prototype-route-still';
+
+// PROTOTYPE route-still: the page's own drawing of a route over a still, for the headless script.
+Object.assign(window, { prototypeRouteStill });
 
 /** The address follows the view at most this often. */
 const ADDRESS_MS = 200;
@@ -58,4 +62,5 @@ async function main(): Promise<void> {
     Object.assign(window, { trailView: engine });
 }
 
-main().catch((error: unknown) => notice(error instanceof Error ? error.message : String(error)));
+// PROTOTYPE route-still: `?prototype=still` loads the page without the engine.
+if (new URLSearchParams(location.search).get('prototype') !== 'still') main().catch((error: unknown) => notice(error instanceof Error ? error.message : String(error)));

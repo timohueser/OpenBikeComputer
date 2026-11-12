@@ -1,7 +1,9 @@
 import type { PlannerConfig } from '../planner/config';
 import type { Coordinate } from '../planner/geo';
 import { instantAt } from '../planner/solar';
-import { eyeAltitude, follow, groundOf, MIN_CLEARANCE, move, VFOV, viewProjection, type Footing, type Pose } from './frame/camera';
+import { eyeAltitude, follow, groundOf, MIN_CLEARANCE, move, NEAR, VFOV, viewProjection, type Footing, type Pose } from './frame/camera';
+import { worldPixel } from '../planner/layers/mercator';
+import { UNITS } from './frame/space';
 import { Controls } from './frame/controls';
 import { CURVATURE, frameAt, type Frame } from './frame/frame';
 import { Gpu } from './gpu/device';
@@ -150,6 +152,8 @@ export class TrailView {
     private lastFrame?: Omit<LastFrame, 'moved'> & { eye: number[] };
     /** Whether the last frame that placed the instances moved or changed: the next one places them again, culled by a depth of the same view. */
     private unrest = true;
+    /** PROTOTYPE route-still: the camera of the last drawn frame without its jitter, and the jitter in render pixels. */
+    private prototypeLast?: { viewProj: Float32Array; jitter: [number, number] };
     /**
      * The brightness of the sky at the eye on a moonless night, in magnitudes per square arcsecond, as
      * a sky quality meter reads it: about 22 far from lights, 18 in a town. It sets the faintest
@@ -284,6 +288,38 @@ export class TrailView {
     /** drawnHeight at points from the probe and from an instance shader, and the share of the sun there, with the state of the last frame. */
     check(points: [number, number][]): Promise<{ probe: number[]; instance: number[]; sun: number[] }> {
         return this.terrain.check(points, this.groundLook.group!);
+    }
+
+    /**
+     * PROTOTYPE route-still (never merges). What a page needs to draw a route over a still of the last
+     * frame without the engine: call it after `waitForIdle()`. `viewProj` is column-major and takes
+     * metres east, north and up of the eye to clip space, without the jitter; the depth frame is drawn
+     * `jitter` render pixels off it. `eye` is east, north (metres in the azimuthal frame about `origin`,
+     * lon and lat) and metres above sea level. `depth` is the reversed-Z depth (near / distance along the
+     * view axis, 0 the sky) of the `size` render pixels, rows from the top; the still has `output` pixels.
+     */
+    async prototypeStill(): Promise<{ viewProj: number[]; jitter: [number, number]; eye: number[]; origin: [number, number]; size: [number, number]; output: [number, number]; near: number; curvature: number; vfov: number; view: View; depth: Float32Array }> {
+        const last = this.lastFrame, camera = this.prototypeLast;
+        if (!last || !camera) throw new Error('No frame is drawn yet.');
+        // WebGPU copies a depth texture only whole: the frame is the top left `width` × `height` of the target, which is made for MAX_SCALE.
+        const { device } = this.gpu, { targets } = this.gpuState, [width, height] = last.pixels, bytesPerRow = Math.ceil(4 * last.depth.width / 256) * 256;
+        const buffer = device.createBuffer({ size: bytesPerRow * last.depth.height, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+        const encoder = device.createCommandEncoder();
+        encoder.copyTextureToBuffer({ texture: last.depth, aspect: 'depth-only' }, { buffer, bytesPerRow }, [last.depth.width, last.depth.height]);
+        device.queue.submit([encoder.finish()]);
+        await buffer.mapAsync(GPUMapMode.READ);
+        const rows = new Float32Array(buffer.getMappedRange()), depth = new Float32Array(width * height);
+        for (let y = 0; y < height; y++) depth.set(rows.subarray(y * bytesPerRow / 4, y * bytesPerRow / 4 + width), y * width);
+        buffer.destroy();
+        return {
+            viewProj: Array.from(camera.viewProj), jitter: camera.jitter, eye: last.eye, origin: [this.frame.lon, this.frame.lat], size: [width, height],
+            output: [targets.width, targets.height], near: NEAR, curvature: CURVATURE, vfov: VFOV, view: this.view, depth,
+        };
+    }
+
+    /** PROTOTYPE route-still: drawnHeight at any number of lon, lat points with the state of the last frame; NaN where no page knows it. */
+    async prototypeHeights(points: [number, number][]): Promise<number[]> {
+        return Array.from(await this.terrain.probeAt(Float64Array.from(points.flatMap(point => worldPixel(point, UNITS)))));
     }
 
     /** The invariant audit of the drawn terrain, with the state of the last frame: call it after `waitForIdle()`. */
@@ -638,6 +674,7 @@ export class TrailView {
                 { viewProj, eye: [eye.east, eye.north, eye.z], render: [width, height], jitter: offset }, { weight: step.weight, clip: step.clip, copy: debug }, times.writes('resolve'));
             targets.swap();
             this.lastFrame = { depth: targets.depth!, pixels: [width, height], viewProj: jittered(viewProj, ndc), eye: [eye.east, eye.north, eye.z] };
+            this.prototypeLast = { viewProj, jitter: offset };
         }
         const read = times.resolve(encoder, { ...this.terrain.stats.jobs, frame: start });
         gpu.device.queue.submit([encoder.finish()]);
