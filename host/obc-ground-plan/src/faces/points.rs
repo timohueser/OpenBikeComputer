@@ -843,8 +843,8 @@ pub fn round(
     let mut far = vec![0.0f64; arms.len()];
     if gaps {
         fill_gaps(lines, pos, arms, 0, &mut out.fans);
-        for k in 0..LAYERS {
-            fill_gaps(lines, pos, arms, k + 1, &mut out.rings[k]);
+        for (k, ring) in out.rings.iter_mut().enumerate() {
+            fill_gaps(lines, pos, arms, k + 1, ring);
         }
     }
     // A round lies off every carriageway: its arms' runs, and the other lines but for those runs.
