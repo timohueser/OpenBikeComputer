@@ -810,8 +810,9 @@ pub(crate) fn record_lines<'a>(
     lines(&ctx, input, &|w| in_level(graph, w, 0), grown(cell, rules::ways_m(&rules.plan, &rules.sections), true)).0
 }
 
-/// The ceiling lines of a cell's records: its deck ways whose stroke and the ceiling's release reach a bin of
-/// the cell, each one leg, with the half-width of the deck's stroke: its paved layers' and `edge_band_m`.
+/// The ceiling lines of a cell's records: its deck ways whose ceiling reaches a bin of the cell (at most
+/// `records::ceiling_end_reach` from the centre line), each one leg, with the half-width of the deck's stroke: its
+/// paved layers' and `edge_band_m`.
 pub(crate) fn ceiling_lines<'a>(
     graph: &'a WayGraph,
     input: &CellInput,
@@ -819,8 +820,8 @@ pub(crate) fn ceiling_lines<'a>(
     cell: CellKey,
 ) -> Vec<WayLine<'a>> {
     let ctx = Ctx { graph, rules, origin: cell.origin() };
-    let h = &rules.plan.heights;
-    let m = HALF_MAX_M + rules.structures.edge_band_m + h.ceiling_release_m + records::HEIGHT_PAD_M;
+    let half = HALF_MAX_M + rules.structures.edge_band_m;
+    let m = records::ceiling_end_reach(half, rules.plan.heights.ceiling_release_m) + records::HEIGHT_PAD_M;
     let mut out = lines(&ctx, input, &|w| on_deck(graph, w), grown(cell, m, true)).0;
     for line in &mut out {
         line.cuts.clear();

@@ -423,15 +423,42 @@ fn at_label(words: &[u32], q: [f64; 2], t: f64) -> (Height, Option<u32>) {
     (height_at(words, q, label, t), label)
 }
 
+/// The joints of two decks of a block: where two ceiling lines end at one point, the point and the lesser
+/// half-width of their strokes (metres).
+fn deck_joints(words: &[u32]) -> Vec<([f64; 2], f64)> {
+    let b = Block::at(words, [0.0, 0.0]);
+    let mut ends = Vec::new();
+    for l in 0..words[3] as usize {
+        let ln = b.line(l);
+        for i in [0, ln.count - 1].into_iter().filter(|_| ln.ceiling) {
+            let p = b.position(&ln, i);
+            ends.push((l, p, Block::at(words, p).sample(&ln, i).h));
+        }
+    }
+    let mut out = Vec::new();
+    for (k, &(l, p, h)) in ends.iter().enumerate() {
+        out.extend(ends[k + 1..].iter().filter(|e| e.0 != l && e.1 == p).map(|e| (p, h.min(e.2))));
+    }
+    out
+}
+
 /// Over a grid of `grid_m` on the cell, the points that a deck's stroke holds: their count, the ground points
-/// (terrain and slope rules) over the deck's underside less the gap, and the paved points over it.
-pub fn under_decks(words: &[u32], terrain: &Terrain, cell: CellKey, grid_m: f64) -> [usize; 3] {
+/// (terrain and slope rules) over the deck's underside less the gap, and the paved points over it; and the points
+/// within the lesser half-width of a joint of two decks that no stroke holds (a notch between their ends).
+pub fn under_decks(words: &[u32], terrain: &Terrain, cell: CellKey, grid_m: f64) -> [usize; 4] {
     let step = grid_m / metres_per_unit(cell.origin().y + CELL_UNITS / 2);
     let n = (CELL_UNITS as f64 / step) as usize;
-    let mut out = [0; 3];
+    let joints = deck_joints(words);
+    let mut out = [0; 4];
     for k in 0..n * n {
         let q = [((k % n) as f64 + 0.5) * step, ((k / n) as f64 + 0.5) * step];
-        let (Some((under, _)), Some(t)) = (super::under_deck(words, q), terrain_at(terrain, cell, q)) else { continue };
+        let Some(t) = terrain_at(terrain, cell, q) else { continue };
+        let Some((under, _)) = super::under_deck(words, q) else {
+            let mpu = Block::at(words, q).mpu;
+            let notch = joints.iter().any(|(j, r)| libm::hypot(q[0] - j[0], q[1] - j[1]) * mpu < r - 0.01);
+            out[3] += usize::from(notch);
+            continue;
+        };
         let (h, _) = at_label(words, q, t);
         out[0] += 1;
         if h.h > under + 1e-9 {

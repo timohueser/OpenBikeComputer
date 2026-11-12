@@ -109,13 +109,13 @@ fn every_fixture_cell_keeps_its_steps_on_face_edges_and_agrees_with_its_neighbou
     let mut steep = Vec::new();
     let mut lines: BTreeMap<_, Vec<_>> = BTreeMap::new();
     let mut by_key = BTreeMap::new();
-    let (mut held, mut ends, mut points, mut under, mut faults) = (Vec::new(), 0, 0, [0; 3], Vec::new());
+    let (mut held, mut ends, mut points, mut under, mut faults) = (Vec::new(), 0, 0, [0; 4], Vec::new());
     let (mut uncovered, mut paved_beyond, mut short) = (0, 0, Vec::new());
     for (key, s, e, line, (h, decks), cell) in built {
         held.extend(h.into_iter().map(|h| (key, h)));
         if let Some((d, u)) = decks {
             (ends, points) = (ends + d.ends, points + d.points);
-            under = [under[0] + u[0], under[1] + u[1], under[2] + u[2]];
+            under = [0, 1, 2, 3].map(|k| under[k] + u[k]);
             faults.extend(d.over.iter().map(|(q, m)| format!("{key:?} {q:?}: ground {m:.3} m over the deck's bound")));
             let named = d.short.iter().filter(|s| s.3 != Step::EndFace);
             faults.extend(named.map(|(q, m, drop, r)| format!("{key:?} {q:?}: end face {m:.3} m of {drop:.3}, {r:?}")));
@@ -139,7 +139,7 @@ fn every_fixture_cell_keeps_its_steps_on_face_edges_and_agrees_with_its_neighbou
         steep.len()
     );
     println!(
-        "deck ends {ends} ({points} end line points, {uncovered} under no deck, {paved_beyond} with a paved face beyond), {} faults, end faces short of the drop {} (over {SHORT_M} m {}, most {:.3} m); under the decks {} points, ground over {}, paved over {}; held over the cap {}",
+        "deck ends {ends} ({points} end line points, {uncovered} under no deck, {paved_beyond} with a paved face beyond), {} faults, end faces short of the drop {} (over {SHORT_M} m {}, most {:.3} m); under the decks {} points, ground over {}, paved over {}, notches at deck joints {}; held over the cap {}",
         faults.len(),
         short.len(),
         short.iter().filter(|&&m| m > SHORT_M).count(),
@@ -147,6 +147,7 @@ fn every_fixture_cell_keeps_its_steps_on_face_edges_and_agrees_with_its_neighbou
         under[0],
         under[1],
         under[2],
+        under[3],
         held.len()
     );
     for (key, h) in &held {
@@ -164,6 +165,7 @@ fn every_fixture_cell_keeps_its_steps_on_face_edges_and_agrees_with_its_neighbou
     assert!(ends > 0, "no deck end in the fixture");
     assert!(faults.is_empty(), "{} deck end faults: {:#?}", faults.len(), &faults[..faults.len().min(10)]);
     assert_eq!(under[1], 0, "ground points over a deck's bound");
+    assert_eq!(under[3], 0, "points at a joint of two decks under no deck");
     assert!(short.iter().filter(|&&m| m > SHORT_M).count() <= SHORT_MAX, "end faces short by over {SHORT_M} m");
     assert!(held.len() <= HELD_OVER_CAP_MAX, "{} held steps over the cap", held.len());
     let shared: Vec<_> = lines.values().filter(|v| v.len() == 2).collect();

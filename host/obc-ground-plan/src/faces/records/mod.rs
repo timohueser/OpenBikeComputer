@@ -130,14 +130,25 @@ pub const WALL: u32 = 1 << 11;
 /// A deck way over storey 0, after every line of storey 0: the ground stays under its underside
 /// (`heights::ceiling`). Its word 10 holds the drop from its surface to that bound, the deck's depth and
 /// `ceiling_gap_m`; its words 4 and 5 the unit normal into it of its stroke's flat end at its start and at its
-/// end (`pack2x16snorm`): the end line of the ground way that ends there, where its chord lies within
-/// `FLAT_TURN_DEG` of the deck's, else square to the deck's own chord. Its samples' half-width is its stroke's:
-/// its paved layers' and `edge_band_m`. No reader of storey 0 takes it as a way.
+/// end (`pack2x16snorm`): the end line of the ground way that ends there, or the mitre with another deck that
+/// ends there, whichever lies nearest the deck's chord and within `FLAT_TURN_DEG` of it, else square to the
+/// deck's own chord. Its samples' half-width is its stroke's: its paved layers' and `edge_band_m`. No reader of
+/// storey 0 takes it as a way.
 pub const CEILING: u32 = 1 << 12;
 pub const PATH: u32 = 1 << 14;
-/// A deck's stroke ends on the end line of a ground way that meets it within this turn: past it the two meet
-/// side by side, and the stroke ends square to its own chord.
+/// A deck's stroke ends flat on an end line within this turn of its chord: past it the two ways meet side by
+/// side, and the stroke ends square to its own chord.
 pub const FLAT_TURN_DEG: f64 = 45.0;
+
+/// The farthest from a ceiling line's end segment that its term in `heights::decks` holds the ground, for its
+/// stroke's half-width `half` and the release `release` (one unit for both). The end segment goes on along its
+/// chord until q lies `release` past the flat end, whose normal turns up to `FLAT_TURN_DEG` (θ) from the chord,
+/// and holds q within `half + release` across the chord: so q lies at most `(release + (half + release)·sin θ) /
+/// cos θ` along the chord behind the end sample. Every other segment holds q within `half + release` of itself.
+pub(crate) fn ceiling_end_reach(half: f64, release: f64) -> f64 {
+    let theta = FLAT_TURN_DEG.to_radians();
+    libm::hypot((release + (half + release) * libm::sin(theta)) / libm::cos(theta), half + release)
+}
 pub const MATERIAL_SHIFT: u32 = 16;
 /// The leg of a line's way, from 0 in the way's direction, in the bits from this one of its finish word.
 pub const LEG_SHIFT: u32 = 24;
@@ -949,17 +960,31 @@ fn encode(
     let heights = &rules.plan.heights;
     // The ground ways' deck end lines: their end point, the unit direction into the way.
     let ends: Vec<[f64; 5]> = lines.iter().flat_map(super::deck_ends).collect();
-    for line in ceilings {
+    let unit = |v: [f64; 2]| {
+        let len = libm::hypot(v[0], v[1]);
+        (len > 1e-9).then(|| [v[0] / len, v[1] / len])
+    };
+    // Each ceiling line's ends: the end point and the unit chord into the line. Two decks that end at one point
+    // end on their mitre, the bisector of their chords, so their strokes leave no notch on the outside of a bend.
+    let chord = |line: &WayLine, at: usize, next: usize| {
+        let (a, b) = (line.p[at], line.p[next]);
+        let own = unit([f64::from(b[0] - a[0]), f64::from(b[1] - a[1])]).unwrap_or([1.0, 0.0]);
+        (a, own)
+    };
+    let deck_chords: Vec<(usize, (P, [f64; 2]))> = (ceilings.iter().enumerate())
+        .flat_map(|(k, l)| [(k, chord(l, 0, 1)), (k, chord(l, l.p.len() - 1, l.p.len() - 2))])
+        .collect();
+    for (c, line) in ceilings.iter().enumerate() {
         let (mut w, s) = line_words(line, (0, line.p.len() - 1), graph, input, rules, &|_| 0);
         let n = line.p.len();
         for (k, (at, next)) in [(0, 1), (n - 1, n - 2)].into_iter().enumerate() {
-            let (a, b) = (line.p[at], line.p[next]);
-            let own = [f64::from(b[0] - a[0]), f64::from(b[1] - a[1])];
-            let len = libm::hypot(own[0], own[1]).max(1e-9);
-            let own = [own[0] / len, own[1] / len];
-            let flat = (ends.iter())
-                .filter(|e| e[0] == f64::from(a[0]) && e[1] == f64::from(a[1]))
-                .map(|e| [-e[2], -e[3]])
+            let (a, own) = chord(line, at, next);
+            let grounds =
+                (ends.iter()).filter(|e| e[0] == f64::from(a[0]) && e[1] == f64::from(a[1])).map(|e| [-e[2], -e[3]]);
+            let mitres = (deck_chords.iter())
+                .filter(|&&(m, (p, _))| m != c && p == a)
+                .filter_map(|&(_, (_, other))| unit([own[0] - other[0], own[1] - other[1]]));
+            let flat = (grounds.chain(mitres))
                 .map(|n| (n[0] * own[0] + n[1] * own[1], n))
                 .filter(|&(c, _)| c >= libm::cos(FLAT_TURN_DEG.to_radians()))
                 .max_by(|x, y| x.0.total_cmp(&y.0))
@@ -1352,14 +1377,18 @@ fn encode(
             }
         }
     }
-    // A ceiling line's segments within its stroke and its release, and HEIGHT_PAD_M, of a bin of the cell: last
-    // in each bin, so a reader of storey 0 stops before them and the ceiling walks them from the end.
-    let release = units(heights.ceiling_release_m) + hpad;
+    // A ceiling line's segments within their reach (`ceiling_end_reach` for the first and the last) and
+    // HEIGHT_PAD_M of a bin of the cell: last in each bin, so a reader of storey 0 stops before them and the
+    // ceiling walks them from the end.
+    let release = units(heights.ceiling_release_m);
     for (k, line) in ceilings.iter().enumerate() {
         let li = rec.len() + k;
-        for i in 0..line.p.len() - 1 {
+        let n = line.p.len();
+        for i in 0..n - 1 {
             let (a, b) = (line.p[i], line.p[i + 1]);
-            let reach = line.h[i].max(line.h[i + 1]) + release;
+            let half = line.h[i].max(line.h[i + 1]);
+            let end = i == 0 || i + 2 == n;
+            let reach = if end { ceiling_end_reach(half, release) } else { half + release } + hpad;
             let Some((c, r)) = bins_of(seg_box_of(a, b), reach) else { continue };
             crate::probe::field(crate::probe::Field::Line, li);
             crate::probe::field(crate::probe::Field::Sample, i);
