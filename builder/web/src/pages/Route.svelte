@@ -6,15 +6,17 @@
     import Facts from '../components/route/Facts.svelte';
     import RouteMap from '../components/route/RouteMap.svelte';
     import Cover from '../lib/covers/Cover.svelte';
-    import { hasCover, wantCover } from '../lib/covers/job';
+    import { settled, wantCover } from '../lib/covers/job';
+    import Credits from '../components/planner/Credits.svelte';
     import { writeFitCourse } from '../lib/core/fit';
     import { writeGpx, type GpxImport } from '../lib/core/gpx';
-    import type { RouteRecord } from '../lib/library/records';
+    import type { CoverRecord, RouteRecord } from '../lib/library/records';
     import type { Library } from '../lib/library/store';
     import { hasEndpoints, planTitle, planView } from '../lib/planner/editor';
     import { downloadPlan, isPlan, isVersion, newPlan } from '../lib/planner/library';
     import { routeFacts } from '../lib/planner/route-facts';
     import { LegCache } from '../lib/planner/route-legs';
+    import { creditsWith } from '../lib/planner/map-setup';
     import { calculateLine, routingKey, type RoutingLine } from '../lib/planner/routing';
     import type { Version } from '../lib/planner/versions';
     import { router } from '../lib/router.svelte';
@@ -26,7 +28,7 @@
     const legs = new LegCache();
     // Raw: `planView` freezes the trip that it reads.
     let record = $state.raw<RouteRecord | null>();
-    let waiting = $state(false), covered = $state(false), swapped = $state(false);
+    let waiting = $state(false), cover = $state.raw<CoverRecord>(), swapped = $state(false);
     let routed = $state.raw<{ key: string; line?: RoutingLine; error?: string }>();
     /** The pointer, as a share of the summary line from 0 to 1. */
     let share = $state<number>();
@@ -40,6 +42,9 @@
     const error = $derived(!key ? 'This plan has no start and finish.' : routed?.key === key ? routed?.error : undefined);
     const facts = $derived(plan && line ? routeFacts(plan.trip, line) : undefined);
     const changed = $derived(!!plan && !!line && (!summary || Math.abs(planView(plan.trip, line).summary.distance * 1000 - summary.lengthM) > summary.lengthM / 100));
+    const covered = $derived(!!cover?.image);
+    // The small map draws the basemap too. A cover made before its credits were kept has the credits of the release.
+    const credits = $derived(creditsWith(cover?.credits ?? []));
     // A cover takes the large place, unless the rider swapped by hand.
     const mapLarge = $derived(!covered || swapped);
 
@@ -47,15 +52,16 @@
         const target = id;
         let live = true;
         record = undefined;
-        [covered, swapped, share, renaming, deleting, exportOpen, failure] = [false, false, undefined, false, false, false, ''];
+        [cover, swapped, share, renaming, deleting, exportOpen, failure] = [undefined, false, undefined, false, false, false, ''];
         const load = async () => {
-            const [item, ids, cover] = await Promise.all([library.item(target), library.state('waiting'), hasCover(library, target)]);
+            const [item, ids, stored] = await Promise.all([library.item(target), library.state('waiting'), library.cover(target)]);
             if (!live) return;
             record = item && 'revision' in item ? item : null;
             waiting = !!ids?.includes(target);
-            covered = cover;
+            cover = stored;
         };
-        void load().then(() => { if (live && record?.summary && !covered) wantCover(target); });
+        // Also the cover of an earlier line, which shows until the new one arrives.
+        void load().then(() => { if (live && record?.summary && !settled(record, cover)) wantCover(target); });
         const stop = library.onChange((store, changedKey) => {
             if (changedKey === target || (store === 'state' && changedKey === 'waiting')) void load();
         });
@@ -81,7 +87,7 @@
     async function rename(input: HTMLInputElement) {
         renaming = false;
         const next = input.value.trim().slice(0, 120);
-        if (next !== record?.name) await act(() => library.renameRoute(id, next));
+        if (next && next !== record?.name) await act(() => library.renameRoute(id, next));
     }
 
     const send = (on: boolean) => act(() => library.changeState('waiting', ids => on ? [...(ids ?? []).filter(other => other !== id), id] : (ids ?? []).filter(other => other !== id)));
@@ -209,6 +215,7 @@
                             {#if mapLarge}<button type="button" class="swap" aria-label="Show the picture large" onclick={() => swapped = false}></button>{/if}
                         </div>
                     {/if}
+                    {#if !mapLarge}<Credits {credits} side="left" />{/if}
                     <div class="slot map">
                         <RouteMap {summary} mark={share} onpoint={next => share = next ?? undefined} />
                         {#if !mapLarge}<button type="button" class="swap" aria-label="Show the map large" onclick={() => swapped = true}></button>{/if}

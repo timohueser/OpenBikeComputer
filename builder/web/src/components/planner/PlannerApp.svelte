@@ -524,11 +524,15 @@
         const id = router.route === 'planner' ? router.id : undefined;
         if (!id || !session.ready) return;
         router.replace(ROUTES.planner);
-        untrack(() => void openPlan(id));
+        // The open plan keeps its Undo history and its map view.
+        if (id !== untrack(() => session.plan.id)) untrack(() => void openPlan(id));
     });
 
     async function openPlan(id: string) {
-        if (!await session.open(id, () => window.confirm('Some edits are not saved. Download a backup before reopening a plan. Discard the unsaved edits?'))) return;
+        if (!await session.open(id, () => window.confirm('Some edits are not saved. Download a backup before reopening a plan. Discard the unsaved edits?'))) {
+            if (session.libraryError) message = session.libraryError;
+            return;
+        }
         libraryOpen = false;
         message = 'Plan opened';
     }

@@ -8,6 +8,10 @@ import { releaseProtocol, releaseUrl } from './release';
 // MapLibre loads the release objects of the style through `releaseProtocol`.
 export const styleConfig = { ...config, basemap: releaseUrl(config.basemap), glyphs: releaseUrl(config.glyphs), sprites: releaseUrl(config.sprites) };
 
+/** The credits of a view of the map: the basemap (OSM data, its land cover, Protomaps), the terrain and `layers`. */
+export const creditsWith = (layers: string[]) =>
+    [...new Set([config.attribution, config.landcover_attribution ?? '', 'Protomaps', config.terrain_attribution, ...layers].filter(Boolean))];
+
 let registered = false;
 
 /** Sets the worker of MapLibre and its protocols `pmtiles` and `release`, once for the page. */

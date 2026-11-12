@@ -120,7 +120,7 @@ describe('plan session', () => {
         expect(routes.fetch).toHaveBeenCalledTimes(3);
     });
 
-    it('takes a rename of another page over its own later save, and opens an empty plan when another page removes its plan', async () => {
+    it('takes a rename of another page over its own later save, deletes its plan after a rename, and opens an empty plan when another page removes its plan', async () => {
         service();
         const library = new Library(new IDBFactory()), session = new PlanSession();
         await session.start(library);
@@ -133,9 +133,18 @@ describe('plan session', () => {
         session.commit(moved(plan, 8.2));
         expect(await session.saved()).toBe(true);
         expect(await library.route(id)).toMatchObject({ name: 'Lake loop', trip: { points: moved(plan, 8.2).points } });
+        await session.rename(session.plan, 'Lake round');
+        await vi.waitFor(() => expect(session.plan.name).toBe('Lake round'));
+        expect(await session.remove(session.plan)).toBe(true);
+        expect(await library.route(id)).toBeUndefined();
 
-        await library.removeRoute(id);
-        await vi.waitFor(() => expect(session.plan.id).not.toBe(id));
+        session.commit(plan);
+        await vi.waitFor(() => expect(session.line).toBeDefined());
+        await session.saved();
+        const second = session.plan.id;
+
+        await library.removeRoute(second);
+        await vi.waitFor(() => expect(session.plan.id).not.toBe(second));
         expect([session.trip.points, session.saveError]).toEqual([[], '']);
         session.close();
     });

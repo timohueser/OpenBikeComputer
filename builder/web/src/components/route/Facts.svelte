@@ -25,11 +25,19 @@
     } = $props();
 
     let climbsOpen = $state(false);
-    // One place search for each climb top while the page lives.
-    const towns = new Map<string, Promise<string | null>>();
+    // One place search for each shown climb top while the page lives, at most SEARCHES at a time: each search has a time limit.
+    const SEARCHES = 3;
+    const towns = new Map<string, Promise<string | null>>(), waiting: (() => void)[] = [];
+    let searching = 0;
     const town = (top: Coordinate) => {
         const key = top.join();
-        if (!towns.has(key)) towns.set(key, townName(top));
+        if (!towns.has(key)) towns.set(key, new Promise(resolve => {
+            const search = () => {
+                searching++;
+                void townName(top).then(resolve).finally(() => { searching--; waiting.shift()?.(); });
+            };
+            if (searching < SEARCHES) search(); else waiting.push(search);
+        }));
         return towns.get(key)!;
     };
 
