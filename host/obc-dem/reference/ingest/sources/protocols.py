@@ -61,8 +61,8 @@ def request_boxes(bbox, resolution_m: float, epsg=None) -> list[tuple[float, flo
 
     The cut is even in degrees. Far from its central meridian a projected grid is turned against
     them, so each piece's footprint keeps a share of the other axis that more pieces of this axis
-    do not shrink. Every piece is measured as `output_size` will measure it, and the cut is made
-    finer until all of them fit.
+    do not shrink. Every piece is measured as `output_size` will measure it, and while one is over
+    the cap the cut is made finer on both axes, which shrinks that share too.
     """
 
     west, south, east, north = bbox
@@ -74,11 +74,10 @@ def request_boxes(bbox, resolution_m: float, epsg=None) -> list[tuple[float, flo
                   west + (east - west) * (j + 1) / nx, south + (north - south) * (i + 1) / ny)
                  for i in range(ny) for j in range(nx)]
         measured = [spans(box, epsg) for box in boxes]
-        wide = any(round(x / resolution_m) > MAX_PIXELS for x, _ in measured)
-        tall = any(round(y / resolution_m) > MAX_PIXELS for _, y in measured)
-        if not (wide or tall):
+        if all(round(x / resolution_m) <= MAX_PIXELS and round(y / resolution_m) <= MAX_PIXELS
+               for x, y in measured):
             return boxes
-        nx, ny = nx + wide, ny + tall
+        nx, ny = nx + 1, ny + 1
 
 
 def pixels(count: float, what: str) -> int:

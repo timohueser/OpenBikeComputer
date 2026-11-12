@@ -140,7 +140,7 @@ class Requests(unittest.TestCase):
 
     def test_a_box_far_from_its_grids_central_meridian_is_cut_until_every_piece_fits(self):
         """Norway's west coast is 10° from the middle of UTM 33, where the grid is turned against
-        the degrees: an even cut by the box's own span left pieces of 2004 pixels."""
+        the degrees, so an even cut by the box's span is not enough: every piece must fit."""
 
         source = ingest.SOURCES["no"]
         tile = (4.653056, 59.179008, 4.718592, 59.244544)  # the lattice tile 4999/4167
