@@ -1091,10 +1091,16 @@ fn fan(along: f64, out: f64, len: f64, turn: [f64; 2]) -> Option<(usize, f64)> {
         return None;
     };
     let t = turn[end];
+    if t.is_nan() {
+        return Some((end, libm::hypot(x, out)));
+    }
+    if t <= 0.0 {
+        return None;
+    }
     // The next edge's direction at the end, as (along, out): its normal bounds the fan.
     let (c, s) = (libm::cos(t), libm::sin(t));
     let before = if end == 1 { x * c - out * s <= 0.0 } else { x * c + out * s >= 0.0 };
-    (t.is_nan() || (t > 0.0 && before)).then(|| (end, libm::hypot(x, out)))
+    before.then(|| (end, libm::hypot(x, out)))
 }
 
 /// The cone of an outline edge at q (sign 1 a fill, −1 a cut) whose top runs linearly from `top[0]` to

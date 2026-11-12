@@ -263,15 +263,17 @@ pub const WALL_TOP_M: f64 = 0.25;
 pub const WALL_M: f64 = 0.5;
 
 /// The outline edges of a cell's records that lie in the cell by their middle: their ends (frame units), their
-/// unit direction and their host line, in the records' order.
-fn cell_edges(words: &[u32]) -> impl Iterator<Item = ([f64; 2], [f64; 2], [f64; 2], u32)> + '_ {
+/// unit direction, their host line and their turn at b (`Edge::turn`), in the records' order.
+fn cell_edges(words: &[u32]) -> impl Iterator<Item = ([f64; 2], [f64; 2], [f64; 2], u32, f64)> + '_ {
     let inside = |v: f64| (0.0..CELL_UNITS as f64).contains(&v);
-    outline_words(words).chunks(EDGE).filter_map(move |e| {
+    let block = Block::at(words, [0.0, 0.0]);
+    outline_words(words).chunks(EDGE).enumerate().filter_map(move |(k, e)| {
         let (a, b) = edge_ends(e);
         let (a, b) = ([f64::from(a[0]), f64::from(a[1])], [f64::from(b[0]), f64::from(b[1])]);
         let len = libm::hypot(b[0] - a[0], b[1] - a[1]);
         let u = [(b[0] - a[0]) / len, (b[1] - a[1]) / len];
-        (inside((a[0] + b[0]) / 2.0) && inside((a[1] + b[1]) / 2.0)).then_some((a, b, u, edge_line(e)))
+        (inside((a[0] + b[0]) / 2.0) && inside((a[1] + b[1]) / 2.0))
+            .then(|| (a, b, u, edge_line(e), block.edge(k as u32).turn[1]))
     })
 }
 
@@ -281,7 +283,7 @@ fn cell_edges(words: &[u32]) -> impl Iterator<Item = ([f64; 2], [f64; 2], [f64; 
 pub fn wall_steps(words: &[u32], terrain: &Terrain, cell: CellKey, grade: f64) -> Vec<([f64; 2], f64)> {
     let b = Block::at(words, [0.0, 0.0]);
     let mut out = Vec::new();
-    for (a, z, u, line) in cell_edges(words) {
+    for (a, z, u, line, _) in cell_edges(words) {
         let len = libm::hypot(z[0] - a[0], z[1] - a[1]) * b.mpu;
         if len < 0.1 || !b.line(line as usize).wall {
             continue;
@@ -310,23 +312,20 @@ pub fn wall_steps(words: &[u32], terrain: &Terrain, cell: CellKey, grade: f64) -
 /// `slope_steps` reads the ground this many metres out from the rim, and these metres along it to each side.
 pub const SLOPE_OUT_M: [f64; 3] = [1.0, 2.0, 4.0];
 pub const SLOPE_SIDE_M: [f64; 2] = [0.25, 0.05];
-/// An end that two outline edges share and where the next edge turns by less than this (radians, as the
-/// record's turn) lies on a straight rim: a cut at the bin grid, a split, or a point that a tile line adds,
-/// bent by the rounding.
-pub const SLOPE_TURN: f64 = 0.05;
-
-/// The slope steps of a cell (the shading bands, a groove or a ridge): at each end in the cell that two
-/// outline edges of one host share on a straight rim (`SLOPE_TURN`), the ground's grade along the rim over each
-/// of `SLOPE_SIDE_M` before and after the end, at each of `SLOPE_OUT_M` out where all three points lie on a
-/// slope; where the grade changes by more than `grade`: the end and the greatest change.
+/// The slope steps of a cell (the shading bands, a groove or a ridge): at each end in the cell where the
+/// record's turn goes on to the next edge on a straight rim, the ground's grade along the rim over each of
+/// `SLOPE_SIDE_M` before and after the end, at each of `SLOPE_OUT_M` out where all three points lie on a slope;
+/// where the grade changes by more than `grade`: the end and the greatest change. The rim is straight where
+/// the turn is within what a shift of each whole-unit end by one unit across the rim gives (2 / length per
+/// edge, in units): a cut at the bin grid rounds its point and a split floors its middle.
 pub fn slope_steps(words: &[u32], terrain: &Terrain, cell: CellKey, grade: f64) -> Vec<([f64; 2], f64)> {
     let mpu = Block::at(words, [0.0, 0.0]).mpu;
     let edges: Vec<_> = cell_edges(words).collect();
     let mut out = Vec::new();
     for pair in edges.windows(2) {
-        let [(_, v, u, l0), (a1, _, u1, l1)] = [pair[0], pair[1]];
-        let turn = libm::atan2(u[0] * u1[1] - u[1] * u1[0], u[0] * u1[0] + u[1] * u1[1]);
-        if v != a1 || l0 != l1 || turn.abs() >= SLOPE_TURN {
+        let [(a0, v, u, l0, turn), (a1, z, _, l1, _)] = [pair[0], pair[1]];
+        let rounding = 2.0 / libm::hypot(v[0] - a0[0], v[1] - a0[1]) + 2.0 / libm::hypot(z[0] - a1[0], z[1] - a1[1]);
+        if v != a1 || l0 != l1 || !(turn.abs() <= rounding) {
             continue;
         }
         let n = [u[1], -u[0]];

@@ -673,8 +673,14 @@ fn h_fan(along: f32, out: f32, len: f32, turn: vec2f, known: vec2<bool>) -> vec2
         return vec2f(-1.0);
     }
     let t = turn[end];
+    if (!known[end]) {
+        return vec2f(f32(end), length(vec2f(x, out)));
+    }
+    if (t <= 0.0) {
+        return vec2f(-1.0);
+    }
     let before = select(x * cos(t) + out * sin(t) >= 0.0, x * cos(t) - out * sin(t) <= 0.0, end == 1u);
-    if (!known[end] || (t > 0.0 && before)) {
+    if (before) {
         return vec2f(f32(end), length(vec2f(x, out)));
     }
     return vec2f(-1.0);

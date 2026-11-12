@@ -358,6 +358,9 @@ fn near_box(a: [f64; 2], b: [f64; 2], bx: [f64; 4], r: f64) -> bool {
 /// the slope side meet there with no step where the paved field bends. Half of the least step that the
 /// heights check counts (`check::STEP_M`).
 const SPLIT_M: f64 = 0.005;
+/// The paved split stops at this length: a break of k m/m in the paved grade leaves k · L / 4 at a piece's
+/// middle, so a shorter piece leaves its line by at most `check::STEP_M` where the grade breaks by up to
+/// 2 m/m.
 const SPLIT_PAVED_MIN_M: f64 = 0.02;
 /// The ground's split (`SPLIT_GROUND_M`) goes down to this.
 const SPLIT_MIN_M: f64 = 0.25;
@@ -478,7 +481,9 @@ fn outline_edges<'a>(
         }
     }
     // Each end's turn to the one edge of the same host that goes on from it (a cut, a split or the rim's
-    // corner): the angle between the two edges' integer directions, so two cells that hold both give it alike.
+    // corner) with the same paved height bits there: the angle between the two edges' integer directions, so
+    // two cells that hold both give it alike. Where two faces of one host meet with two heights, the end has
+    // none: a fan's far ray would be a step there, and a free end's full cone is continuous.
     let mut at: BTreeMap<(P, u32, bool), Vec<usize>> = BTreeMap::new();
     for (k, e) in edges.iter().enumerate() {
         at.entry((e.0, e.2, true)).or_default().push(k);
@@ -492,9 +497,12 @@ fn outline_edges<'a>(
     let none = u32::from(i16::MIN as u16);
     let mut out = Vec::with_capacity(EDGE * edges.len());
     for (k, &(p, q, host, h)) in edges.iter().enumerate() {
-        let one = |key: (P, u32, bool)| at.get(&key).filter(|v| v.len() == 1).map(|v| v[0]);
-        let turn_a = one((p, host, false)).map_or(none, |j| turn(dir(j), dir(k)));
-        let turn_b = one((q, host, true)).map_or(none, |j| turn(dir(k), dir(j)));
+        let one = |key: (P, u32, bool), h: f64| {
+            let there = |j: usize| edges[j].3[usize::from(!key.2)];
+            at.get(&key).filter(|v| v.len() == 1).map(|v| v[0]).filter(|&j| f(there(j)) == f(h))
+        };
+        let turn_a = one((p, host, false), h[0]).map_or(none, |j| turn(dir(j), dir(k)));
+        let turn_b = one((q, host, true), h[1]).map_or(none, |j| turn(dir(k), dir(j)));
         let go = f32w(words[words[6] as usize + LINE * host as usize + 6]) * (1.0 - rules.plan.heights.fade_share);
         let ([tp, gp], [tq, gq]) = (ground(p, host, go), ground(q, host, go));
         let grade = |g: f64| {
