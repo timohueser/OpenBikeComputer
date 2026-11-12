@@ -38,7 +38,9 @@ tools/vps/deploy-services.sh HOST [COMMIT]     # COMMIT defaults to HEAD
 - Each commit builds from nothing in `/opt/obc-data/<commit>`. The first build also installs the
   toolchain of `rust-toolchain.toml`.
 - The deploy installs the unit of its commit and `obc-data.sysctl` as
-  `/etc/sysctl.d/90-obc-data.conf`, applies the limit, then restarts the follower.
+  `/etc/sysctl.d/90-obc-data.conf`, and applies the limit when the kernel has a lower one. Then it
+  switches to the new build and restarts the follower. A failed step before the switch leaves the
+  build that runs.
 - The routing service maps each file of its routing cells. When `vm.max_map_count` is lower than
   the files of an install need, the routing service does not start, and `journalctl -u
   obc-data-serve` shows its message. Install the sysctl file and run `sysctl --system`: the

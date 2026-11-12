@@ -2377,8 +2377,11 @@ serve, and `OBJECTS` is `objects/` of that store, which holds each object as
 while it writes, and drops each file from the page cache after its sync, so that an install does
 not evict the files of the serving release. A stop of the fetch kills it. A fetch keeps
 `route-cells/` of a folder without the marker, and the next install goes on from its complete
-files. A failed install fails the fetch with the last line of the installer: `the routing cells:
-<why>`. The marker `installed` comes after the routing cells.
+files. A failed install fails the fetch with its exit status and, after an exit that is not
+from a signal, the last line of the installer: `the routing cells (exit status: 1): <why>`. The
+exit status 3 means that a published object is missing or damaged, and the last line is
+`object <SHA-256>: <why>`: serve deletes that object from its store, so that the next fetch
+downloads it again. The marker `installed` comes after the routing cells.
 
 Before the objects of the files download, the fetch checks the disk. The install needs the bytes
 of each object that the store lacks, the decoded bytes of each file that is not `identity`, and a
@@ -2415,13 +2418,16 @@ Two limits keep one service that grows from taking the memory of the unit from i
 - Search and downloads start with `oom_score_adj` 1000, so when the unit runs out of memory the
   kernel kills one of them first, not the routing service with its larger RSS.
 - When the routing service also reads `planner/routing-cells` (`--formats`), it starts with
-  `RLIMIT_DATA` of (CPUs + 1) GiB: 1 GiB for each worker and 1 GiB for the shared part. The
-  limit counts private writable memory, not the read-only maps of the files.
+  `RLIMIT_DATA` of (workers + 1) GiB: 1 GiB for each worker and 1 GiB for the shared part.
+  `planner-service --workers` prints the worker count by the rule of the service:
+  `ROUTE_WORKERS`, else one for each CPU up to its largest count. The limit counts private
+  writable memory, not the read-only maps of the files.
 
 The kernel limits the maps of each process with `vm.max_map_count`. The VPS sets it to 1,048,576
 (`tools/vps/obc-data.sysctl`). An install with more files than
 the limit allows does not start its routing service. The reason of a failed service ends with the
-last line of its standard error, so the release fails with the message of the routing service.
+last line of its standard error, unless a signal ended it, so the release fails with the message
+of the routing service.
 
 For a `dir` target, serve builds the routing service with cargo when it starts. For an R2 target,
 the routing service is the `planner-service` program beside the program of serve, and serve
