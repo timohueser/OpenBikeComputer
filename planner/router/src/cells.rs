@@ -88,6 +88,13 @@ fn slice(bytes: &[u8], at: u64, len: u64) -> Result<&[u8]> {
     range.and_then(|(at, end)| bytes.get(at..end)).ok_or_else(|| invalid("an offset outside the part"))
 }
 
+/// The unsigned integers of `width` bytes of a column.
+pub fn values(column: &[u8], width: u8) -> impl Iterator<Item = u32> + '_ {
+    column
+        .chunks_exact(width.into())
+        .map(|value| value.iter().rev().fold(0, |value, &byte| value << 8 | u32::from(byte)))
+}
+
 /// The unsigned integer of `width` bytes at `at`.
 pub fn int(bytes: &[u8], at: u64, width: u8) -> Result<u32> {
     let field = slice(bytes, at, width.into())?;
@@ -387,6 +394,20 @@ pub fn meets(a: [i32; 4], b: [i32; 4]) -> bool {
     a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3]
 }
 
+/// The install marker `install.bin` of an install of `directory` with the profile groups `groups`
+/// (bit `g` for group `g`) and the records `records`.
+pub fn encode_marker(directory: &[u8], groups: u32, records: &[u32]) -> Vec<u8> {
+    use sha2::{Digest, Sha256};
+    let mut records = records.to_vec();
+    records.sort_unstable();
+    let mut marker = INSTALL_MAGIC.to_vec();
+    marker.extend(Sha256::digest(directory));
+    marker.extend(groups.to_le_bytes());
+    marker.extend((records.len() as u32).to_le_bytes());
+    records.iter().for_each(|record| marker.extend(record.to_le_bytes()));
+    marker
+}
+
 /// The installed profile groups (bit `g` for group `g`) and the installed records that the
 /// install marker `install.bin` names, when it names `directory`.
 pub fn marker(directory: &[u8], marker: &[u8]) -> Result<(u32, Vec<u32>)> {
@@ -516,6 +537,21 @@ impl<'a> Topology<'a> {
         }
         within(self.bytes, cell.columns()?[3], 0, 0)?;
         Ok(cell)
+    }
+
+    /// `first_road` of level-1 record `index`, without the other fields.
+    pub fn first_road(&self, index: u32) -> Result<u32> {
+        if index >= self.cells {
+            return Err(invalid("a level-1 cell outside the part"));
+        }
+        u32_at(self.bytes, offset(PART_HEADER as u64, index.into(), TOPOLOGY_RECORD as u64)? + 4)
+    }
+
+    /// The columns `first` and `head` of `cell`.
+    pub fn columns(&self, cell: &Level1) -> Result<(&'a [u8], &'a [u8])> {
+        let first = offset(0, u64::from(cell.roads) + 1, cell.first_width.into())?;
+        let head = offset(0, cell.turns.into(), cell.head_width.into())?;
+        Ok((slice(self.bytes, cell.block.into(), first)?, slice(self.bytes, cell.columns()?[0], head)?))
     }
 
     /// The turns of road `road` of `cell`, counted from the first turn of the cell.

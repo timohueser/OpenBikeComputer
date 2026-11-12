@@ -79,7 +79,7 @@ pub struct Candidates {
 
 /// The box (west, south, east, north) in microdegrees that holds each point within `radius` metres
 /// of `point`.
-pub(crate) fn window(point: Point, radius: f64) -> std::result::Result<[i32; 4], String> {
+pub fn window(point: Point, radius: f64) -> std::result::Result<[i32; 4], String> {
     if !radius.is_finite()
         || !(0.0..=5_000.0).contains(&radius)
         || point.lat.unsigned_abs() > 85_000_000

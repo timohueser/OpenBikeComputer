@@ -53,7 +53,12 @@ impl Host for Memory {
         lend(part, span)
     }
 
-    fn announce(&self, _spans: &[Span]) {}
+    fn announce(&self, spans: &[Span]) {
+        debug_assert!(
+            spans.iter().all(|span| self.range(*span).is_ok()),
+            "an announced span outside its part: {spans:?}"
+        );
+    }
 }
 
 fn missing(part: Part) -> Error {
@@ -76,8 +81,8 @@ mod maps {
     /// host is dropped, also when the installer removes the file.
     pub struct Maps {
         folder: PathBuf,
-        /// The name prefix `LEVEL-ID-` of each record.
-        names: Vec<String>,
+        /// The level and the ID of each record.
+        cells: Vec<(u8, u32)>,
         parts: usize,
         /// The size of each part of each record, from the directory.
         bytes: Vec<u32>,
@@ -88,17 +93,21 @@ mod maps {
     impl Maps {
         /// The host of the install in `folder` with the directory `directory`.
         pub fn new(folder: &Path, directory: &[u8]) -> Result<Self> {
+            let (installed, plan) = install::installed(folder).map_err(|e| Error::InvalidData(e.to_string()))?;
+            if installed != directory {
+                return Err(Error::InvalidData(format!("{} holds another directory", folder.display())));
+            }
+            map_limit(plan.files.len() as u64)?;
             let directory = Directory::new(directory)?;
             let parts = directory.parts();
-            let (mut names, mut bytes) = (Vec::with_capacity(directory.len()), Vec::new());
+            let (mut cells, mut bytes) = (Vec::with_capacity(directory.len()), Vec::new());
             for record in 0..directory.len() {
                 let cell = directory.cell(record)?;
-                names.push(format!("{}-{:08x}-", cell.level, cell.id));
+                cells.push((cell.level, cell.id));
                 bytes.extend(cell.parts.iter().map(|part| part.bytes));
             }
-            map_limit(&folder.join(install::CELLS))?;
             let maps = (0..bytes.len()).map(|_| OnceLock::new()).collect();
-            Ok(Self { folder: folder.join(install::CELLS), names, parts, bytes, maps, silent: false })
+            Ok(Self { folder: folder.join(install::CELLS), cells, parts, bytes, maps, silent: false })
         }
 
         /// A host whose `announce` does nothing, for a measurement.
@@ -117,21 +126,23 @@ mod maps {
 
         fn map(&self, part: Part) -> Result<&Mmap> {
             let (record, number) = (part.record as usize, usize::from(part.part));
-            if record >= self.names.len() || number >= self.parts {
+            if record >= self.cells.len() || number >= self.parts {
                 return Err(missing(part));
             }
             let index = record * self.parts + number;
             if let Some(map) = self.maps[index].get() {
                 return Ok(map);
             }
-            let path = self.folder.join(format!("{}{number}", self.names[record]));
-            let file = match File::open(&path) {
-                Ok(file) => file,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(missing(part)),
-                Err(e) => return Err(Error::InvalidData(format!("{}: {e}", path.display()))),
+            let (level, id) = self.cells[record];
+            let path = self.folder.join(install::name(level, id, number));
+            let failed = |e: std::io::Error| match e.kind() {
+                std::io::ErrorKind::NotFound => missing(part),
+                _ if refused(&e) => Error::Memory,
+                _ => Error::InvalidData(format!("{}: {e}", path.display())),
             };
+            let file = File::open(&path).map_err(failed)?;
             // SAFETY: the installer never changes a file under its name; it only adds and removes.
-            let map = unsafe { Mmap::map(&file) }.map_err(|_| Error::Memory)?;
+            let map = unsafe { Mmap::map(&file) }.map_err(failed)?;
             if map.len() as u64 != u64::from(self.bytes[index]) {
                 return Err(Error::InvalidData(format!("{} does not have the size of its part", path.display())));
             }
@@ -151,6 +162,7 @@ mod maps {
             for span in spans {
                 #[cfg(unix)]
                 if let Ok(map) = self.map(span.part) {
+                    debug_assert!(lend(map, *span).is_ok(), "an announced span outside its part: {span:?}");
                     if lend(map, *span).is_ok() && span.bytes > 0 {
                         let _ = map.advise_range(memmap2::Advice::WillNeed, span.at as usize, span.bytes as usize);
                     }
@@ -159,13 +171,18 @@ mod maps {
         }
     }
 
-    /// Fails when the files of `cells` and the maps of the process itself do not fit the map
-    /// limit of the system, so that the service does not start rather than fail a request later.
-    fn map_limit(cells: &Path) -> Result<()> {
+    /// Whether the system refused a file or a map for a lack of descriptors or memory, which a
+    /// retry can end: ENFILE, EMFILE and ENOMEM have these numbers on Linux, Android, macOS and iOS.
+    fn refused(error: &std::io::Error) -> bool {
+        error.kind() == std::io::ErrorKind::OutOfMemory || matches!(error.raw_os_error(), Some(12 | 23 | 24))
+    }
+
+    /// Fails when the installed files and the maps of the process itself do not fit the map limit
+    /// of the system, so that the service does not start rather than fail a request later.
+    fn map_limit(files: u64) -> Result<()> {
         #[cfg(target_os = "linux")]
         if let Ok(limit) = std::fs::read_to_string("/proc/sys/vm/max_map_count") {
             let limit: u64 = limit.trim().parse().unwrap_or(u64::MAX);
-            let files = std::fs::read_dir(cells).map(|entries| entries.count() as u64).unwrap_or(0);
             if files + 4096 > limit {
                 return Err(Error::InvalidData(format!(
                     "The install has {files} files and a process can hold {limit} memory maps: set \
@@ -175,7 +192,7 @@ mod maps {
             }
         }
         #[cfg(not(target_os = "linux"))]
-        let _ = cells;
+        let _ = files;
         Ok(())
     }
 }
@@ -200,8 +217,10 @@ mod tests {
             Cell { level: 1, id, parts, ..Cell::default() }.encode(&mut directory);
         }
         for (k, bytes) in files.iter().enumerate() {
-            std::fs::write(folder.join(format!("cells/1-00000005-{k}")), bytes).unwrap();
+            std::fs::write(folder.join("cells").join(crate::install::name(1, 5, k)), bytes).unwrap();
         }
+        std::fs::write(folder.join("directory.bin"), &directory).unwrap();
+        std::fs::write(folder.join("install.bin"), crate::cells::encode_marker(&directory, 0, &[0])).unwrap();
         let maps = Maps::new(&folder, &directory).unwrap();
         let mut memory = Memory::default();
         for (k, bytes) in files.iter().enumerate() {
@@ -214,7 +233,7 @@ mod tests {
             assert_eq!(host.range(span(0, 1, 0, 7)).unwrap(), &files[1][..]);
             assert!(matches!(host.range(span(0, 1, 3, 5)), Err(Error::InvalidData(_))));
             assert!(matches!(host.range(span(1, 0, 0, 0)), Err(Error::MissingRegion(_))));
-            host.announce(&[span(0, 0, 0, 100), span(1, 0, 0, 1)]);
+            host.announce(&[span(0, 0, 0, 100), span(0, 1, 2, 5)]);
         }
         // A map stays when its file is removed.
         std::fs::remove_dir_all(&folder).unwrap();

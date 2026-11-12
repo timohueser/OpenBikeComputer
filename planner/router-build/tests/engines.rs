@@ -7,7 +7,7 @@ use planner_router::install;
 use planner_router::model::{Point, Profile, Road, Surface, BIKE, FOOT, PUSH};
 use planner_router::package::{digest, Endpoint, Package, Source};
 use planner_router::region::Region;
-use planner_router::snap::{Candidates, Policy, REACH_M};
+use planner_router::snap::{self, Candidates, Policy, REACH_M};
 use planner_router::{Control, Error, Request, Router};
 use planner_router_build::cells::{write, Info, Input};
 use planner_router_build::source::{Builder, Tags, Ways};
@@ -202,12 +202,26 @@ fn bake(name: &str) -> Bake {
 }
 
 impl Bake {
-    /// The data of an install of the download cells `cells`, or all, read from memory.
-    fn region(&self, cells: Option<&[u32]>) -> Region<host::Memory> {
+    /// The folder of an install of the download cells `cells`, or all.
+    fn install(&self, cells: Option<&[u32]>) -> PathBuf {
         let target = self.scratch.0.join(format!("install-{}", cells.map_or(0, |c| c.len())));
         let objects = self.scratch.0.join("objects");
         let fetch = |name: &str| File::open(objects.join(name));
         install::install(&target, (&self.directory, &self.info), (cells, None), 2, fetch).unwrap();
+        target
+    }
+
+    /// The data of an install of the download cells `cells`, or all, through memory maps.
+    fn region(&self, cells: Option<&[u32]>) -> Region<host::Maps> {
+        let target = self.install(cells);
+        let marker = fs::read(target.join(install::MARKER)).unwrap();
+        let maps = host::Maps::new(&target, &self.directory).unwrap();
+        Region::open(maps, self.directory.clone(), self.info.clone(), &marker).unwrap()
+    }
+
+    /// The data of the install of all cells, held in memory.
+    fn memory(&self) -> Region<host::Memory> {
+        let target = self.install(None);
         let (directory, plan) = install::installed(&target).unwrap();
         let mut memory = host::Memory::default();
         for item in &plan.files {
@@ -286,6 +300,12 @@ fn the_data_of_format_10_is_the_data_of_format_9() {
         }
     }
     assert!(closures > 0, "the town has closures");
+    // The parts in memory give the same roads, and each span that the data announces fits its part.
+    let memory = bake.memory();
+    for road in 0..roads {
+        assert_eq!(memory.with_road(road, fields).unwrap(), new.with_road(road, fields).unwrap());
+    }
+    memory.announce(&(0..roads).collect::<Vec<_>>());
     let profiles = old.profiles();
     let mut kinds = [0; 2];
     for (k, &point) in snap_points(&bake.graph).iter().enumerate() {
@@ -310,21 +330,31 @@ fn a_missing_cell_is_a_missing_region_and_gives_no_turn() {
     let (full, half) = (bake.region(None), bake.region(Some(&ids)));
     let installed = |road: u32| directory.download_of_road(road).unwrap().unwrap() < downloads / 2;
     let profile = "touring";
-    let (mut missing, mut same) = (0, 0);
-    for point in snap_points(&bake.graph) {
-        let all = full.snap(point, profile, Policy::default()).unwrap();
-        match half.snap(point, profile, Policy::default()) {
-            Err(Error::MissingRegion(_)) => missing += 1,
-            Ok(found) => {
-                if all.retained.iter().all(|c| installed(c.position.road)) {
-                    assert_eq!(candidates(&found), candidates(&all));
-                    same += 1;
+    for radius_m in [Policy::default().radius_m, REACH_M] {
+        let policy = Policy { radius_m, ..Policy::default() };
+        let (mut missing, mut found) = (0, 0);
+        for point in snap_points(&bake.graph) {
+            // A download cell whose box meets the window and that the install lacks.
+            let window = snap::window(point, radius_m).unwrap();
+            let lacks = directory.meeting(window).unwrap().iter().any(|&record| record >= downloads / 2);
+            let all = full.snap(point, profile, policy).unwrap();
+            match half.snap(point, profile, policy) {
+                Err(Error::MissingRegion(_)) if lacks => missing += 1,
+                Ok(some) if !lacks => {
+                    assert!(some.retained.iter().all(|c| installed(c.position.road)));
+                    if all.retained.iter().all(|c| installed(c.position.road)) {
+                        assert_eq!(candidates(&some), candidates(&all), "{point:?} {radius_m} m");
+                    }
+                    found += 1;
                 }
+                other => panic!(
+                    "{point:?} {radius_m} m: {:?} where a cell is missing: {lacks}",
+                    other.map(|c| c.retained.len())
+                ),
             }
-            Err(error) => panic!("{error}"),
         }
+        assert!(missing > 0 && found > 0, "{radius_m} m: {missing} missing, {found} found");
     }
-    assert!(missing > 0 && same > 0, "{missing} missing, {same} the same");
     let mut cut = 0;
     for road in (0..bake.graph.roads.len() as u32).filter(|&road| installed(road)) {
         let (a, b) = (full.endpoint(profile, road).unwrap(), half.endpoint(profile, road).unwrap());

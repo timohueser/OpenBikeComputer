@@ -115,8 +115,9 @@ fn hex(hash: &[u8; 32]) -> String {
     hash.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn name(cell: &cells::Cell, part: usize) -> String {
-    format!("{}-{:08x}-{part}", cell.level, cell.id)
+/// The name in `cells/` of part `part` of the cell of `level` and `id`.
+pub(crate) fn name(level: u8, id: u32, part: usize) -> String {
+    format!("{level}-{id:08x}-{part}")
 }
 
 /// The group of each profile of `package.json`, by name.
@@ -148,7 +149,7 @@ fn items(directory: &Directory, records: &[u32], mask: u32) -> Result<Vec<Item>>
             items.push(Item {
                 record,
                 part: part as u8,
-                name: name(&cell, part),
+                name: name(cell.level, cell.id, part),
                 object: entry.object,
                 object_bytes: entry.object_bytes,
                 sha256: entry.sha256,
@@ -434,14 +435,7 @@ where
         fs::rename(&part, &path).map_err(io(&path))
     })?;
     sync(&dir)?;
-    let mut marker = cells::INSTALL_MAGIC.to_vec();
-    marker.extend(Sha256::digest(directory));
-    marker.extend(plan.groups.to_le_bytes());
-    let mut records = plan.records.clone();
-    records.sort_unstable();
-    marker.extend((records.len() as u32).to_le_bytes());
-    records.iter().for_each(|record| marker.extend(record.to_le_bytes()));
-    replace(&target.join(MARKER), &marker)?;
+    replace(&target.join(MARKER), &cells::encode_marker(directory, plan.groups, &plan.records))?;
     sync(target)?;
     let named: std::collections::HashSet<&str> = plan.files.iter().map(|item| item.name.as_str()).collect();
     let mut removed = 0;
