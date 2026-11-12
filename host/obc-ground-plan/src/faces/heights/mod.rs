@@ -1577,14 +1577,18 @@ fn step(b: &Block, q: [f64; 2], recs: &[Rec], sides: &[(Height, Cause); 2], p: &
     if (sides[0].0.h - sides[1].0.h).abs() <= p.step_m {
         return Step::None;
     }
-    // An end face: on a deck end line of a paved side's host, whatever the lower side, or where the ceiling
-    // holds the lower side.
+    // An end face: beside a paved side on the deck end line of a line present (one of several ways that end
+    // there need not host the face), whatever the lower side; or where the ceiling holds the lower side.
     let lower = if sides[0].0.h < sides[1].0.h { &sides[0] } else { &sides[1] };
-    let on_deck_end = |i: usize| {
-        let ln = b.line(recs[i].line as usize);
-        (0..2).any(|e| ln.deck[e] && b.past_end(&ln, e, q).abs() <= END_UNITS * b.mpu)
+    let on_deck_end = |r: &Rec| {
+        let ln = b.line(r.line as usize);
+        (0..2).any(|e| {
+            let i = if e == 0 { 0 } else { ln.count - 1 };
+            let across = cross(b.mitre(&ln, i), sub(q, b.position(&ln, i))).abs() * b.mpu;
+            ln.deck[e] && b.past_end(&ln, e, q).abs() <= END_UNITS * b.mpu && across <= b.half(&ln, i) + ln.side
+        })
     };
-    if lower.1.ceiling || sides.iter().any(|(h, c)| h.kind == Kind::Paved && c.hosts(recs).any(on_deck_end)) {
+    if lower.1.ceiling || (sides.iter().any(|(h, _)| h.kind == Kind::Paved) && recs.iter().any(on_deck_end)) {
         return Step::EndFace;
     }
     let within = |rise: f64, size: f64| rise * size > 0.0 && rise.abs() <= size.abs() + p.step_m;
