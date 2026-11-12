@@ -110,7 +110,7 @@ pub fn centre(key: CellKey) -> (f64, f64) {
 
 const USAGE: &str = "census (--fixture DIR | --release DIR [--id ID]) --out DIR [--workers 3] [--memory 2G|none]
   [--timeout-s 60] [--grid-m 4] [--strip 10] [--rows 48] [--limit N] [--cells X/Y,...] [--bounds W,S,E,N]
-  [--min-available-gb 2] [--fail X/Y=panic|hang | --fail start]...";
+  [--min-available-gb 2] [--levels] [--fail X/Y=panic|hang | --fail start]...";
 
 fn main() {
     let worker = std::env::args().nth(1).as_deref() == Some("worker");
@@ -137,7 +137,7 @@ fn run(worker: bool) -> Result<(), String> {
         bounds: None,
         min_available_gb: 2.0,
     };
-    let (mut grid_m, mut fail) = (4.0, Vec::new());
+    let (mut grid_m, mut fail, mut levels) = (4.0, Vec::new(), false);
     while let Some(arg) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{arg} needs a value\n{USAGE}"));
         let number = |v: String| v.parse::<f64>().map_err(|_| format!("{arg}: a number"));
@@ -150,6 +150,7 @@ fn run(worker: bool) -> Result<(), String> {
             "--memory" => options.memory = Some(value()?).filter(|m| m != "none"),
             "--timeout-s" => options.timeout = Duration::from_secs_f64(number(value()?)?),
             "--grid-m" => grid_m = number(value()?)?,
+            "--levels" => levels = true,
             "--strip" => options.strip = number(value()?)? as u32,
             "--rows" => options.rows = number(value()?)? as u32,
             "--limit" => options.limit = Some(number(value()?)? as usize),
@@ -185,11 +186,14 @@ fn run(worker: bool) -> Result<(), String> {
         _ => return Err(format!("give --fixture or --release\n{USAGE}")),
     };
     if worker {
-        return worker::run(worker::Options { place, grid_m, fail });
+        return worker::run(worker::Options { place, grid_m, fail, levels });
     }
     let out = out.ok_or_else(|| format!("give --out\n{USAGE}"))?;
     let mut worker_args = place.args();
     worker_args.extend(["--grid-m".into(), grid_m.to_string()]);
+    if levels {
+        worker_args.push("--levels".into());
+    }
     for (cell, how) in &fail {
         worker_args.push("--fail".into());
         worker_args.push(match how {

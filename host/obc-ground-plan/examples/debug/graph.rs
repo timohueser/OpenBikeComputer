@@ -18,7 +18,7 @@ fn rgb((r, g, b): palette::Rgb, a: u8) -> tiny_skia::Paint<'static> {
 }
 
 /// 5 × 7 glyphs, a row per byte, the high bit of the 5 at the left.
-const GLYPHS: [(CrossingKind, char, [u8; 7]); 8] = [
+const GLYPHS: [(CrossingKind, char, [u8; 7]); 9] = [
     (CrossingKind::Deck, 'D', [0x1e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1e]),
     (CrossingKind::Culvert, 'C', [0x0e, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0e]),
     (CrossingKind::Ford, 'F', [0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x10]),
@@ -27,7 +27,47 @@ const GLYPHS: [(CrossingKind, char, [u8; 7]); 8] = [
     (CrossingKind::Footbridge, 'B', [0x1e, 0x11, 0x11, 0x1e, 0x11, 0x11, 0x1e]),
     (CrossingKind::LevelCrossing, 'L', [0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1f]),
     (CrossingKind::Stacked, 'X', [0x11, 0x11, 0x0a, 0x04, 0x0a, 0x11, 0x11]),
+    (CrossingKind::Bore, 'T', [0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04]),
 ];
+
+/// The levels of each cell, under the cell's mask: the runs of each way with a state by colour (DECK
+/// blue, BORE violet, OPEN grey, HIDDEN red); the end lines black (A), white (portal) or red (closed).
+pub fn levels(canvas: &mut Canvas, graphs: &BTreeMap<CellKey, WayGraph>) {
+    use obc_ground_plan::graph::{EndKind, State};
+    for (&key, g) in graphs {
+        let Some(mask) = canvas.mask(cell_square(key)) else { continue };
+        let o = key.origin();
+        let global = |p: [i32; 2]| GlobalPoint { x: o.x + i64::from(p[0]), y: o.y + i64::from(p[1]) };
+        for r in &g.levels.runs {
+            let way = &g.ways[r.way as usize];
+            let inside = |s: &&obc_ground_plan::graph::Sample| {
+                (s.span, s.u) >= (r.from.span, r.from.u) && (s.span, s.u) <= (r.to.span, r.to.u)
+            };
+            let samples = &g.samples[way.samples.start as usize..way.samples.end as usize];
+            let points: Vec<GlobalPoint> = samples.iter().filter(inside).map(|s| global(s.pos)).collect();
+            let colour = match r.state {
+                State::Deck => paint(30, 90, 230, 200),
+                State::Bore => paint(140, 40, 200, 200),
+                State::Open => paint(120, 120, 120, 200),
+                State::Hidden => paint(230, 30, 30, 200),
+            };
+            if let Some(p) = path(canvas, &points, false) {
+                canvas.pixmap.stroke_path(&p, &colour, &stroke(6.0, false), Transform::identity(), Some(&mask));
+            }
+        }
+        for l in &g.levels.end_lines {
+            let colour = match l.kind {
+                EndKind::A => paint(0, 0, 0, 255),
+                EndKind::Portal => paint(255, 255, 255, 255),
+                EndKind::Closed => paint(230, 30, 30, 255),
+            };
+            let width = 2.0;
+            if let Some(p) = path(canvas, &[global(l.ends[0]), global(l.ends[1])], false) {
+                canvas.pixmap.stroke_path(&p, &colour, &stroke(width, false), Transform::identity(), Some(&mask));
+            }
+        }
+    }
+}
 
 /// The graph of each cell, drawn under the cell's mask: samples by family (dashed on a deck, dotted in
 /// a tunnel, a tick at a cell line), links red, synthetic decks orange, host arms thick and guest arms

@@ -456,6 +456,7 @@ pub(crate) fn assemble(
         ends: Vec::new(),
         crossings: Vec::new(),
         decks: Vec::new(),
+        levels: Default::default(),
         stats: GraphStats::default(),
     };
     for (id, piece) in plan.pieces.iter().enumerate() {
@@ -626,6 +627,7 @@ pub(crate) fn assemble(
             angle_rad: angle,
             deck: None,
             owned: false,
+            ladder: None,
         });
     }
     // Decks: deck pieces that share a point, and each synthetic stretch.
