@@ -138,6 +138,18 @@ class Requests(unittest.TestCase):
                 self.assertAlmostEqual(max(b[2] for b in boxes), BOXES[key][2])
                 self.assertAlmostEqual(max(b[3] for b in boxes), BOXES[key][3])
 
+    def test_a_box_far_from_its_grids_central_meridian_is_cut_until_every_piece_fits(self):
+        """Norway's west coast is 10° from the middle of UTM 33, where the grid is turned against
+        the degrees: an even cut by the box's own span left pieces of 2004 pixels."""
+
+        source = ingest.SOURCES["no"]
+        tile = (4.653056, 59.179008, 4.718592, 59.244544)  # the lattice tile 4999/4167
+        boxes = request_boxes(tile, source.resolution_m, source.epsg)
+        for box in boxes:
+            ingest.sources.protocols.output_size(box, source.resolution_m, "no", source.epsg)
+        self.assertAlmostEqual(min(b[0] for b in boxes), tile[0])
+        self.assertAlmostEqual(max(b[3] for b in boxes), tile[3])
+
     def test_a_request_over_the_cap_is_refused_and_not_coarsened(self):
         """Asking a service for fewer pixels than the box holds gets a coarser raster
         back, and a quietly coarser reference is the failure this archive must not have."""
