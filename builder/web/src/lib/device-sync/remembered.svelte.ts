@@ -1,4 +1,5 @@
 /** Remembers the one device that the sync works with, and what the last sync found on it, in `localStorage`. */
+import { deviceHolder } from '../device/session.svelte';
 
 /** Bytes on the card by the kind of object. */
 export interface DeviceBytes { map: number; routes: number; rides: number; other: number }
@@ -77,3 +78,9 @@ export function rememberDevice(info: { serialNumber: string }, store: { storeId:
 
 /** The factory name of a device: `OBC-` and the last four hex digits of its serial, as the device names itself. */
 export const deviceName = (serial: string) => `OBC-${serial.slice(-4).toUpperCase()}`;
+
+/** Whether the remembered device is the `ready` device of the session. Reactive where a component reads it. */
+export function rememberedReady(): boolean {
+    const session = deviceHolder.session;
+    return session?.status === 'ready' && !!remembered.device && session.info?.serialNumber === remembered.device.serial;
+}

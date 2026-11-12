@@ -35,8 +35,7 @@
     import { startTheme } from './lib/theme.svelte';
     import { startCoverJob } from './lib/covers/job';
     import { startDeviceSync } from './lib/device-sync/state.svelte';
-    import { deviceName, remembered } from './lib/device-sync/remembered.svelte';
-    import { deviceHolder } from './lib/device/session.svelte';
+    import { deviceName, remembered, rememberedReady } from './lib/device-sync/remembered.svelte';
 
     const siteBase = import.meta.env.VITE_SITE_BASE || '/';
     // One library for all pages: a listener of `onChange` hears only the writes of its own object.
@@ -47,7 +46,7 @@
     let coversStarted = false;
     const device = $derived(remembered.device && {
         name: deviceName(remembered.device.serial),
-        connected: deviceHolder.session?.status === 'ready' && deviceHolder.session.info?.serialNumber === remembered.device.serial,
+        connected: rememberedReady(),
     });
     const links = $derived(Object.entries(PAGES).flatMap(([route, page]) =>
         page.label ? [{ href: ROUTES[route as Route], label: page.label, current: route === current }] : []));

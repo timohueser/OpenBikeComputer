@@ -3,7 +3,7 @@
     import Card from '../lib/ui/Card.svelte';
     import Drawing from './device/Drawing.svelte';
     import { deviceHolder } from '../lib/device/session.svelte';
-    import { deviceName, rememberDevice, remembered } from '../lib/device-sync/remembered.svelte';
+    import { deviceName, rememberDevice, remembered, rememberedReady } from '../lib/device-sync/remembered.svelte';
     import { deviceSync } from '../lib/device-sync/state.svelte';
     import { formatBytes } from '../lib/format';
     import type { Library } from '../lib/library/store';
@@ -14,32 +14,40 @@
     let { library }: { library: Library; active: boolean } = $props();
 
     const siteBase = import.meta.env.VITE_SITE_BASE || '/';
-    let waits = $state.raw<{ count: number; names: string[]; leaving: number }>({ count: 0, names: [], leaving: 0 });
+    /** The names of the routes that wait; a waiting id with no route does not count. */
+    let waits = $state.raw<{ names: string[]; leaving: number }>({ names: [], leaving: 0 });
+    let reads = 0;
 
     const session = $derived(deviceHolder.session);
     const status = $derived(session?.status);
     const device = $derived(remembered.device);
-    const error = $derived(deviceHolder.error ?? (status === 'error' ? session?.error : null));
+    const raw = $derived(deviceHolder.error ?? (status === 'error' ? session?.error : null));
+    // Chrome names `claimInterface` when another page holds the device.
+    const error = $derived(raw && /claim/i.test(raw) ? 'Another tab or the map builder uses the device. Close it, then connect again.' : raw);
     const view = $derived(
         status === 'unsupported' ? 'cannot'
             : !session && !deviceHolder.error ? 'loading'
-            : status === 'ready' && device && session?.info?.serialNumber === device.serial ? 'connected'
+            : rememberedReady() ? 'connected'
             : device ? 'before' : 'never');
+    /** A device on the cable that is not the remembered one; Connect uses it with no chooser. */
+    const other = $derived(view !== 'connected' && status === 'ready' && session?.info ? { name: deviceName(session.info.serialNumber), formatted: !!session.store } : null);
 
     const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
     const day = (date: Date) => date.toLocaleDateString('en-GB', { day: 'numeric', month: 'long' });
     const today = () => new Date().toLocaleDateString('en-CA');
     const came = $derived(!device?.came ? 'None came in yet'
         : `${device.came.count} came in ${device.came.day === today() ? 'today' : `on ${day(new Date(`${device.came.day}T12:00`))}`}`);
-    const sends = $derived(waits.count || waits.leaving
-        ? [waits.count && `${waits.count} wait${waits.count === 1 ? 's' : ''}`, waits.leaving && `${waits.leaving} leave${waits.leaving === 1 ? 's' : ''}`].filter(Boolean).join(' · ')
+    const count = $derived(waits.names.length);
+    const sends = $derived(count || waits.leaving
+        ? [count && `${count} wait${count === 1 ? 's' : ''}`, waits.leaving && `${waits.leaving} leave${waits.leaving === 1 ? 's' : ''}`].filter(Boolean).join(' · ')
         : 'Nothing waits');
 
     async function read() {
+        const mine = ++reads;
         const [waiting, leaving] = await Promise.all([library.state('waiting'), library.state('leaving')]);
         const routes = await Promise.all((waiting ?? []).map(id => library.item(id)));
         const names = routes.flatMap(route => route && 'revision' in route ? [route.name || (isPlan(route) ? planTitle(route.trip) : 'Route')] : []);
-        waits = { count: waiting?.length ?? 0, names, leaving: leaving?.length ?? 0 };
+        if (mine === reads) waits = { names, leaving: leaving?.length ?? 0 };
     }
 
     onMount(() => {
@@ -60,9 +68,14 @@
 </script>
 
 {#snippet connectButton(label: string)}
-    <button type="button" class="button primary" onclick={connect} disabled={status === 'connecting'}>
-        {status === 'connecting' ? 'Connecting' : label}
-    </button>
+    {#if other && !other.formatted}
+        <p>The memory card of {other.name} needs a format. <a href={`${siteBase}builder/`}>The map builder</a> formats it.</p>
+    {:else}
+        {#if other}<p>{other.name} is on the cable.</p>{/if}
+        <button type="button" class="button primary" onclick={connect} disabled={status === 'connecting'}>
+            {status === 'connecting' ? 'Connecting' : other ? `Use ${other.name}` : label}
+        </button>
+    {/if}
 {/snippet}
 
 {#snippet problem(text: string | null | undefined)}
@@ -74,13 +87,14 @@
         <header>
             <h1>{deviceName(device.serial)}</h1>
             <span class="state"><span class="dot"></span>{deviceSync.running ? 'Updating' : 'Connected'}</span>
-            <button type="button" class="button primary update" onclick={() => deviceSync.run()} disabled={deviceSync.running}>Update the device</button>
+            <button type="button" class="button disconnect" onclick={() => void session?.disconnect()} disabled={deviceSync.running}>Disconnect</button>
+            <button type="button" class="button primary" onclick={() => deviceSync.run()} disabled={deviceSync.running}>Update the device</button>
         </header>
         {@render problem(deviceSync.problem)}
         <div class="columns">
             <Card label="The update sends">
                 <div class="rows">
-                    <div class="row"><strong>Routes</strong><span class="tag" class:quiet={!waits.count && !waits.leaving}>{sends}</span></div>
+                    <div class="row"><strong>Routes</strong><span class="tag" class:quiet={!count && !waits.leaving}>{sends}</span></div>
                 </div>
                 <h2>On the device</h2>
                 <div class="rows">
@@ -107,18 +121,18 @@
                         <div class="box foot"><strong>What works here</strong>Plan routes, keep rides, and export GPX and FIT files. Only the cable connection is missing.</div>
                     {:else if view === 'before' && device}
                         <h1>Your device is not connected</h1>
-                        {#if device.at !== null}<p>You connected it last on {day(new Date(device.at))}.</p>{/if}
+                        {#if device.at !== null}<p>Last update on {day(new Date(device.at))}.</p>{/if}
                         {@render connectButton('Connect it again')}
                         {@render problem(error)}
                         <div class="box">
                             <strong>Waits for the next connection</strong>
-                            {#if waits.names.length}<span>{plural(waits.names.length, 'route')}: {waits.names.map(name => `“${name}”`).join(', ')}</span>{/if}
+                            {#if waits.names.length}<span>{plural(count, 'route')}: {waits.names.map(name => `“${name}”`).join(', ')}</span>{/if}
                             {#if waits.leaving}<span>{plural(waits.leaving, 'route')} to remove from the device</span>{/if}
-                            {#if !waits.names.length && !waits.leaving}<span>Nothing</span>{/if}
+                            {#if !count && !waits.leaving}<span>Nothing</span>{/if}
                         </div>
                         {#if device.at !== null}
                             <div class="box">
-                                <strong>On the device when you connected last</strong>
+                                <strong>On the device at the last update</strong>
                                 {#if device.map}<span>Map: {device.map}</span>{/if}
                                 <span>{plural(device.routes, 'route')}</span>
                             </div>
@@ -126,7 +140,7 @@
                         {@render problem(deviceSync.problem)}
                     {:else}
                         <h1>Connect your OpenBikeComputer</h1>
-                        <p>Connect it with the USB cable. Then press the button, and choose the device in the window of the browser.</p>
+                        {#if !other}<p>Connect it with the USB cable. Then press the button, and choose the device in the window of the browser.</p>{/if}
                         {@render connectButton('Connect a device')}
                         {@render problem(error)}
                         <div class="box foot">
@@ -195,10 +209,9 @@
         width: 9px;
         height: 9px;
         border-radius: 50%;
-        /* The theme has no green; this one reads in both looks. */
-        background: #3f8f5a;
+        background: var(--forest);
     }
-    .update {
+    .disconnect {
         margin-left: auto;
     }
     .columns {
