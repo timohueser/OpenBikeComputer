@@ -23,11 +23,6 @@ export function planPace(trip: { pace?: string }): Pace {
     return trip.pace !== undefined && Object.hasOwn(paces, trip.pace) ? trip.pace as Pace : 'moderate';
 }
 
-/** The factor of the pace of a plan on its riding time. On foot there is no pace. */
-export function paceFactor(trip: { bike?: BikeType; pace?: string }): number {
-    return trip.bike === 'hiking' ? 1 : paces[planPace(trip)].factor;
-}
-
 /** The preset title of each profile ID suffix: `touring/less-climbing` is the Less climbing preset of the touring bike. The
  * routing region says which profiles it serves (`GET /v1/region`). Technical (MTB) and Alpine (hiking) allow harder trails. */
 const presetTitles: Record<string, string> = { '': 'Balanced', 'less-climbing': 'Less climbing', technical: 'Technical', alpine: 'Alpine' };

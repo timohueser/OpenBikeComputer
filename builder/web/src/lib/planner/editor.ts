@@ -1,6 +1,6 @@
 import { movingSecondsAt, pacedLine, progressAtSeconds, type RoutingLine } from './routing';
 import { profileAscent, profileDescent } from './profile-data';
-import { paceFactor, ridingProfiles } from './riding-profiles';
+import { ridingProfiles } from './riding-profiles';
 import { coordinateAt, cumulative, firstIndex, nearestOnLine, nearestProgress, routeSlice, segmentDistances, type Coordinate } from './geo';
 import type { MapSegment } from './map-types';
 import type { PlaceCategory } from './poi-kinds';
@@ -77,7 +77,7 @@ export interface Trip {
     nightStay?: Record<number, Stay[]>;
 }
 /** Figures of a day or of the whole route. Ascent and descent count known heights only. Without a routed line, the
- * climb is 0 and the hours follow the flat speed of the activity at the pace of the plan. */
+ * climb is 0 and the hours follow the activity's pace. */
 export interface Figures {
     distance: number;
     hours: number;
@@ -352,7 +352,7 @@ function figures(trip: Trip, { line, stops, total }: Layout, from: number, to: n
     const distance = Math.max(0, to - from) * total - transferKm(stops, from * total, to * total);
     return {
         distance,
-        hours: line ? (movingSecondsAt(line, to) - movingSecondsAt(line, from)) / 3600 : distance / ridingProfiles[trip.bike ?? 'touring'].kmh * paceFactor(trip),
+        hours: line ? (movingSecondsAt(line, to) - movingSecondsAt(line, from)) / 3600 : distance / ridingProfiles[trip.bike ?? 'touring'].kmh,
         ascent: profileAscent(from, to, line),
         descent: profileDescent(from, to, line),
     };

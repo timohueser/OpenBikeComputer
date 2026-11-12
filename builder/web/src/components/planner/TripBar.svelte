@@ -33,6 +33,7 @@
 
     const bike = $derived(trip.bike ?? 'touring');
     const pace = $derived(planPace(trip));
+    const hint = $props.id();
     const title = $derived(name || planTitle(trip));
     // The profiles of the routing region; until they arrive, every activity and preset shows.
     let profiles = $state<string[]>();
@@ -61,9 +62,10 @@
         </div>
         {#if bike !== 'hiking'}
             <div class="preference"><span>Pace</span>
-                <Select label="Pace" value={pace} options={Object.entries(paces).map(([value, { label }]) => ({ value, label }))}
+                <Select label="Pace" value={pace} describedby={hint} options={Object.entries(paces).map(([value, { label }]) => ({ value, label }))}
                     onChange={(value) => onChange({ pace: value as Trip['pace'] }, 'Pace changed')} />
-                <small>about {formatSpeed(ridingProfiles[bike].kmh / paces[pace].factor / 3.6)} on the flat</small>
+                <!-- A hidden hint still describes the select. -->
+                <small id={hint}>about {formatSpeed(ridingProfiles[bike].kmh / paces[pace].factor / 3.6)} on the flat</small>
             </div>
         {/if}
     </div>
@@ -82,9 +84,9 @@
         grid-template-columns: calc(var(--side-width) - 16px) minmax(0, 1fr) auto;
         align-items: center;
         gap: 16px;
-        height: 56px;
+        min-height: 56px;
         flex: none;
-        padding: 0 16px;
+        padding: 8px 16px;
         border-bottom: 1px solid var(--line);
         background: var(--panel);
     }
@@ -104,7 +106,8 @@
     .ride {
         display: flex;
         align-items: center;
-        gap: 16px;
+        flex-wrap: wrap;
+        gap: 8px 16px;
         container-type: inline-size;
     }
     .preference {
@@ -139,21 +142,18 @@
     .icon:hover:not(:disabled) {
         background: var(--parchment-2);
     }
-    /* One row holds the three controls from this width; the hint shows only where the row has room for it. */
-    @media (min-width: 1361px) {
-        @container (max-width: 650px) {
-            .preference small { display: none; }
-        }
+    /* Without room for the hint, the controls stay on one line. With less room, Pace wraps to a second line with its hint. */
+    @container (min-width: 580px) and (max-width: 670px) {
+        .preference small { display: none; }
     }
-    @media (max-width: 1360px) {
-        .trip-bar { grid-template-columns: minmax(0, 1fr) auto; height: auto; min-height: 56px; padding-block: 8px; gap: 8px 16px; }
+    @media (max-width: 1050px) {
+        .trip-bar { grid-template-columns: minmax(0, 1fr) auto; gap: 8px 16px; }
         .ride { grid-column: 1; grid-row: 2; }
         .actions { grid-column: 2; grid-row: 1 / span 2; }
     }
     @media (max-width: 760px) {
         .trip-bar { grid-template-columns: minmax(0, 1fr); }
         .trip-name h1 { flex: 1; }
-        .ride { flex-wrap: wrap; }
         .actions { grid-column: 1; grid-row: 3; justify-content: flex-end; }
     }
     .actions > :global(.versions) {

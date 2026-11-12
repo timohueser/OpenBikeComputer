@@ -261,13 +261,14 @@ describe('trip pace', () => {
         await tick();
         const firstDay = () => document.querySelector('[data-day="1"]')!.textContent;
         const moderate = firstDay();
-        expect(document.body.textContent).toContain('about 19.0 km/h on the flat');
+        const hint = () => document.getElementById(button('Pace').getAttribute('aria-describedby')!)?.textContent;
+        expect(hint()).toBe('about 19.0 km/h on the flat');
         button('Pace').click();
         await tick();
         [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(option => option.textContent?.includes('Fast'))!.click();
         await tick();
         expect(onChange).toHaveBeenCalledExactlyOnceWith({ pace: 'fast' }, 'Pace changed');
-        expect(document.body.textContent).toContain('about 27.0 km/h on the flat');
+        expect(hint()).toBe('about 27.0 km/h on the flat');
         expect(firstDay()).not.toBe(moderate);
         onChange({ bike: 'hiking' });
         await tick();

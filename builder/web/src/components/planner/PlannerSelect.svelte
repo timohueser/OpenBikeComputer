@@ -1,8 +1,10 @@
 <script lang="ts">
     import Icon from './PlannerIcon.svelte';
 
-    let { label, value, options, onChange }: {
+    let { label, value, options, onChange, describedby }: {
         label: string;
+        /** The id of a hint that describes the value. */
+        describedby?: string;
         value: string;
         options: { value: string; label: string; icon?: string }[];
         onChange: (value: string) => void;
@@ -55,7 +57,7 @@
 <svelte:window onpointerdown={(event) => { if (!root.contains(event.target as Node)) open = false; }} onblur={() => open = false} />
 
 <div class="selector" class:open bind:this={root}>
-    <button type="button" class="trigger" role="combobox" aria-label={label} aria-expanded={open}
+    <button type="button" class="trigger" role="combobox" aria-label={label} aria-describedby={describedby} aria-expanded={open}
         aria-controls={`${id}-options`} aria-haspopup="listbox" aria-activedescendant={open ? `${id}-${active}` : undefined}
         onclick={() => open ? open = false : show()} onkeydown={keydown} onblur={() => open = false}>
         <span class="label">{#if options[selected]?.icon}<Icon name={options[selected].icon} size={20} />{/if}{options[selected]?.label ?? value}</span><Icon name="down" size={14} />
