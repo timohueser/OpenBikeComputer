@@ -32,7 +32,7 @@ async function readBackup(file: Blob): Promise<{ contents: Contents; settings: R
     if (!Array.isArray(rides) || !rides.every(isRideRecord) || new Set(rides.map(r => r.key)).size !== rides.length) throw damaged;
     const ids = new Set(routes.map(r => r.id));
     if (!isObject(versions) || !Object.entries(versions).every(([id, list]) => ids.has(id) && Array.isArray(list))) throw damaged;
-    if (!isObject(state) || !Object.entries(state).every(([key, value]) => key in stateChecks && stateChecks[key as keyof LibraryState](value))) throw damaged;
+    if (!isObject(state) || !Object.entries(state).every(([key, value]) => Object.hasOwn(stateChecks, key) && stateChecks[key as keyof LibraryState](value))) throw damaged;
     if (!isObject(settings)) throw damaged;
     const files = new Map<string, Blob>();
     for (const ride of rides) {

@@ -308,8 +308,9 @@ export class PlanSession {
         if (!this.ready) return Promise.resolve();
         const plan = this.plan = this.snapshot(versions);
         if (!plan.trip.points.length && !plan.revision) return Promise.resolve();
-        const library = this.library;
-        this.lastSave = library ? library.saveRoute(plan, versions).then(async saved => {
+        // `ready` is set after `start` gave the library.
+        const library = this.library!;
+        this.lastSave = library.saveRoute(plan, versions).then(async saved => {
             await library.setState('active', saved.id);
             if (this.plan.id !== saved.id) return;
             this.plan = { ...this.plan, revision: saved.revision };
@@ -317,7 +318,7 @@ export class PlanSession {
             this.savedAt = saved.updatedAt;
             this.saveError = '';
             this.plans = this.plans.map(p => p.id === saved.id ? saved : p);
-        }) : Promise.reject(new Error('Browser storage is unavailable. Download your plan to keep it.'));
+        });
         this.lastSave.catch(error => { if (this.plan.id === plan.id) this.saveError = storageError(error); });
         return this.lastSave;
     }
@@ -371,14 +372,14 @@ export class PlanSession {
 
     duplicate(plan: Plan): Promise<boolean> {
         const open = plan.id === this.plan.id, source = open ? this.snapshot() : plan;
-        return this.create(async library => ({ plan: newPlan(source.trip, `${source.name || planTitle(source.trip)} (copy)`),
+        return this.create(async library => ({ plan: { ...newPlan(source.trip, `${source.name || planTitle(source.trip)} (copy)`), summary: source.summary },
             versions: open ? this.versions : await this.versionsOf(library, plan.id) }));
     }
 
     /** Deletes the records of the library that are not valid plans. */
     removeUnreadable(): Promise<boolean> {
         return this.act(async library => {
-            for (const route of await library.routes()) if (!isPlan(route)) await library.removeRoute(route.id, route.revision);
+            for (const id of await this.unreadableIds(library)) await library.removeRoute(id);
             await this.list(library);
         });
     }
@@ -500,9 +501,14 @@ export class PlanSession {
 
     /** The routes of the library that are plans, most recently edited first, and the number of the others. */
     private async list(library: Library): Promise<void> {
-        const routes = await library.routes(), plans = routes.filter(isPlan);
-        this.plans = plans.sort((a, b) => b.updatedAt - a.updatedAt);
-        this.unreadable = routes.length - plans.length;
+        const routes = await library.routes();
+        this.plans = routes.filter(isPlan).sort((a, b) => b.updatedAt - a.updatedAt);
+        this.unreadable = routes.length - this.plans.length + (await library.unreadableRoutes()).length;
+    }
+
+    /** The ids of the records that are no route, and of the routes that are no plan. */
+    private async unreadableIds(library: Library): Promise<string[]> {
+        return [...await library.unreadableRoutes(), ...(await library.routes()).filter(route => !isPlan(route)).map(route => route.id)];
     }
 
     private async get(library: Library, id: string): Promise<Plan | undefined> {

@@ -26,11 +26,12 @@ export class Library {
     private listeners = new Set<(store: StoreName, key: string) => void>();
     private written = false;
 
-    constructor(private factory: IDBFactory = indexedDB) {}
+    /** Without `factory`, `open` reads `indexedDB`, so a browser that blocks storage gives a rejected promise. */
+    constructor(private factory?: IDBFactory) {}
 
     private open(): Promise<IDBDatabase> {
         return this.database ??= new Promise<IDBDatabase>((resolve, reject) => {
-            const request = this.factory.open('obc-library', 1);
+            const request = (this.factory ?? indexedDB).open('obc-library', 1);
             request.onupgradeneeded = () => {
                 const db = request.result;
                 db.createObjectStore('routes', { keyPath: 'id' });
@@ -95,6 +96,15 @@ export class Library {
     async routes(): Promise<RouteRecord[]> {
         await this.pending;
         return (await this.read('routes') as unknown[]).filter(isRouteRecord);
+    }
+
+    /** The ids of the records of `routes` that are not route records. `routes()` and a backup leave them out. */
+    async unreadableRoutes(): Promise<string[]> {
+        await this.pending;
+        return this.run(['routes'], 'readonly', tx => {
+            const keys = tx.objectStore('routes').getAllKeys(), values = tx.objectStore('routes').getAll();
+            return () => keys.result.filter((_, i) => !isRouteRecord(values.result[i])) as string[];
+        });
     }
 
     async route(id: string): Promise<RouteRecord | undefined> {
@@ -260,7 +270,7 @@ export class Library {
                 versions: Object.fromEntries(pairs(versions).filter(([, value]) => Array.isArray(value))) as Record<string, unknown[]>,
                 rides: rides.result.filter(isRideRecord),
                 files: new Map(pairs(files).filter((pair): pair is readonly [string, Blob] => pair[1] instanceof Blob)),
-                state: Object.fromEntries(pairs(state).filter(([key, value]) => key in stateChecks && stateChecks[key as keyof LibraryState](value))),
+                state: Object.fromEntries(pairs(state).filter(([key, value]) => Object.hasOwn(stateChecks, key) && stateChecks[key as keyof LibraryState](value))),
             });
         });
     }

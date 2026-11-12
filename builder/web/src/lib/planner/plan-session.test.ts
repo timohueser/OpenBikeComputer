@@ -307,12 +307,32 @@ describe('plan session', () => {
         const session = new PlanSession();
         await session.start(new Library(new IDBFactory()));
         session.commit(plan);
+        await vi.waitFor(() => expect(session.line).toBeDefined());
         await session.saveVersions([newVersion(plan, undefined, 'Valley')]);
         const first = session.plan;
         expect(await session.newPlan()).toBe(true);
         expect(session.versions).toEqual([]);
         expect(await session.duplicate(first)).toBe(true);
         expect([session.plan.id === first.id, session.versions.map(v => v.name)]).toEqual([false, ['Valley']]);
+        expect(session.plan.summary).toEqual(first.summary);
+        expect(first.summary).not.toBeNull();
+        session.close();
+    });
+
+    it('counts the saved records that are not plans, and deletes them on request', async () => {
+        service();
+        const factory = new IDBFactory(), library = new Library(factory), session = new PlanSession();
+        await session.start(library);
+        await library.saveRoute({ id: 'no-trip', revision: 0, name: '', updatedAt: 1, summary: null, trip: {} });
+        const db = await new Promise<IDBDatabase>(resolve => { const request = factory.open('obc-library'); request.onsuccess = () => resolve(request.result); });
+        const tx = db.transaction('routes', 'readwrite');
+        tx.objectStore('routes').put({ id: 'no-record' });
+        await new Promise(resolve => tx.oncomplete = resolve);
+        db.close();
+        expect(await session.listPlans()).toBe(true);
+        expect(session.unreadable).toBe(2);
+        expect(await session.removeUnreadable()).toBe(true);
+        expect([session.unreadable, await library.unreadableRoutes(), await library.routes()]).toEqual([0, [], []]);
         session.close();
     });
 
