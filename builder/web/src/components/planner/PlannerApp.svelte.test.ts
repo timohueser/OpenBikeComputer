@@ -88,8 +88,8 @@ function button(label: string, scope: ParentNode = document) {
     return found;
 }
 
-async function startApp() {
-    app = mount(PlannerApp, { target: document.body, props: { library: new Library() } });
+async function startApp(props: { library: Library; active?: boolean } = { library: new Library() }) {
+    app = mount(PlannerApp, { target: document.body, props });
     await vi.waitFor(() => expect(document.querySelector('main')?.getAttribute('aria-busy')).toBe('false'));
     await tick();
 }
@@ -301,6 +301,21 @@ describe('planner app transitions', () => {
         expect(calculate.mock.calls[0][1].aborted).toBe(true);
         finish({} as RoutingLine); await tick();
         expect(document.body.textContent).toContain('Choose your start');
+    });
+
+    it('reads no keys while another page shows', async () => {
+        const props = $state({ library: new Library(), active: true });
+        await startApp(props);
+        button('Map point: Basel').click(); await tick();
+        button('Remove point').click(); await tick();
+        const edited = stored.get('trip');
+        const undoKey = () => document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
+        props.active = false; await tick();
+        undoKey(); await tick();
+        expect(stored.get('trip')).toBe(edited);
+        props.active = true; await tick();
+        undoKey(); await tick();
+        expect(stored.get('trip')).not.toBe(edited);
     });
 
     it('returns to an earlier bike and undoes without a route request', async () => {

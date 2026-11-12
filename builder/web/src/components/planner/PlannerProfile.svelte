@@ -2,7 +2,7 @@
     import type { Snippet } from 'svelte';
     import DrawerTitle from './DrawerTitle.svelte';
     import Surface from './PlannerSurface.svelte';
-    import Segmented from './Segmented.svelte';
+    import Segmented from '../../lib/ui/Segmented.svelte';
     import TripRow from './TripRow.svelte';
     import Icon from './PlannerIcon.svelte';
     import { formatGrade, gradeBand, gradeBands, profileGrades } from '../../lib/planner/grade-data';

@@ -1,23 +1,18 @@
 import { mount } from 'svelte';
 import './styles/tokens.css';
-import { initCore } from './lib/core/bridge';
-import { lineKey, startCoverJob } from './lib/covers/job';
+import { lineKey } from './lib/covers/job';
 import { Library } from './lib/library/store';
 
 const target = document.getElementById('app')!;
-// One library for the page: a listener of `onChange` hears only the writes of its own object.
-const library = new Library();
 const cover = new URLSearchParams(location.search).get('cover');
 if (cover !== null) {
     // The page of the browser test of a cover; the test fills the library through `window.coverTest`.
+    const library = new Library();
     Object.assign(window, { coverTest: { library, lineKey } });
     void import('./lib/covers/CoverPage.svelte').then(({ default: CoverPage }) => mount(CoverPage, { target, props: { library, id: cover } }));
 } else {
-    // The planner reads the live catalogue as it loads. A catalogue that it cannot use leaves a short message.
-    initCore().then(() => import('./components/planner/PlannerApp.svelte')).then(({ default: PlannerApp }) => {
-        mount(PlannerApp, { target, props: { library } });
-        startCoverJob(library);
-    }, (error: unknown) => {
+    // A dynamic import, so the test page of a cover has none of the shell's base rules.
+    import('./Shell.svelte').then(({ default: Shell }) => mount(Shell, { target }), (error: unknown) => {
         const message = document.createElement('p');
         message.setAttribute('role', 'alert');
         message.style.cssText = 'margin: 32px 16px; font-family: var(--sans);';
