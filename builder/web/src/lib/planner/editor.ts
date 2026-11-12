@@ -1,6 +1,6 @@
-import { movingSecondsAt, progressAtSeconds, type RoutingLine } from './routing';
+import { movingSecondsAt, pacedLine, progressAtSeconds, type RoutingLine } from './routing';
 import { profileAscent, profileDescent } from './profile-data';
-import { ridingProfiles } from './riding-profiles';
+import { paceFactor, ridingProfiles } from './riding-profiles';
 import { coordinateAt, cumulative, firstIndex, nearestOnLine, nearestProgress, routeSlice, segmentDistances, type Coordinate } from './geo';
 import type { MapSegment } from './map-types';
 import type { PlaceCategory } from './poi-kinds';
@@ -56,6 +56,8 @@ export interface Trip {
     startDate?: string;
     bike?: import('./riding-profiles').BikeType;
     preset?: string;
+    /** A stored plan can hold a pace that this reader does not know: `planPace` reads it as Moderate. */
+    pace?: import('./riding-profiles').Pace;
     /** Every route point between the start and the finish, in route order. Markers are not route points. */
     routeOrder: string[];
     restNames?: string[];
@@ -75,7 +77,7 @@ export interface Trip {
     nightStay?: Record<number, Stay[]>;
 }
 /** Figures of a day or of the whole route. Ascent and descent count known heights only. Without a routed line, the
- * climb is 0 and the hours follow the activity's pace. */
+ * climb is 0 and the hours follow the flat speed of the activity at the pace of the plan. */
 export interface Figures {
     distance: number;
     hours: number;
@@ -238,7 +240,7 @@ type Stop = { point: RoutePoint; distance: number };
 
 /** What the panel, the map and the profile show of a plan. */
 export interface PlanView {
-    /** The routed line of the current points, when it is calculated. */
+    /** The routed line of the current points at the pace of the plan, when it is calculated. */
     line?: RoutingLine;
     coordinates: Coordinate[];
     /** Each route point by position, with its kilometres along `coordinates`. A loop lists its start twice. */
@@ -263,12 +265,13 @@ function freeze(...values: object[]): void {
 
 /** The view of `trip` along `line`, which must be the line calculated for the trip's points (`routingKey`). Without a
  * line, a route has no length. */
-export function planView(trip: Trip, line: RoutingLine | undefined): PlanView {
+export function planView(trip: Trip, routed: RoutingLine | undefined): PlanView {
     let byLine = views.get(trip);
     if (!byLine) views.set(trip, byLine = new WeakMap());
-    const known = byLine.get(line ?? unrouted);
+    const known = byLine.get(routed ?? unrouted);
     if (known) return known;
     freeze(trip, trip.points, ...trip.points);
+    const line = routed && pacedLine(routed, trip);
     const points = orderedRoutePoints(trip);
     // By position: a loop lists its start twice.
     const coordinates = points.length < 2 ? [] : line?.coordinates ?? [points[0].coordinate];
@@ -277,7 +280,7 @@ export function planView(trip: Trip, line: RoutingLine | undefined): PlanView {
     const days = points.length < 2 ? [] : splitDays(trip, layout);
     const view: PlanView = { ...layout, summary: figures(trip, layout, 0, 1), days, itinerary: itinerary(trip, days) };
     freeze(view, view.stops, view.days, view.itinerary);
-    byLine.set(line ?? unrouted, view);
+    byLine.set(routed ?? unrouted, view);
     return view;
 }
 
@@ -324,7 +327,7 @@ function nightCount(trip: Trip): number {
 
 /** The stretch around the even end of day `night`, `width` of a day on either side, within the fixed nights around it. */
 export function overnightWindow(trip: Trip, line: RoutingLine | undefined, night: number, width = .2): { from: number; to: number; center: number; blocked: boolean } {
-    const { stops } = planView(trip, line);
+    const { stops, line: paced } = planView(trip, line);
     const count = nightCount(trip);
     const fixed = fixedNights(trip, stops);
     fixed.delete(night);
@@ -335,7 +338,7 @@ export function overnightWindow(trip: Trip, line: RoutingLine | undefined, night
     const hi = after === undefined ? 1 : fixed.get(after)!;
     const daysBefore = night - (before ?? 0);
     const daysAfter = (after ?? count) - night;
-    const effort = effortScale(line), start = effort.at(lo);
+    const effort = effortScale(paced), start = effort.at(lo);
     const dayEffort = (effort.at(hi) - start) / (daysBefore + daysAfter);
     const center = Math.max(0, Math.min(1, effort.progress(start + dayEffort * daysBefore)));
     if (night <= 0 || night >= count || hi <= lo) return { from: center, to: center, center, blocked: true };
@@ -349,7 +352,7 @@ function figures(trip: Trip, { line, stops, total }: Layout, from: number, to: n
     const distance = Math.max(0, to - from) * total - transferKm(stops, from * total, to * total);
     return {
         distance,
-        hours: line ? (movingSecondsAt(line, to) - movingSecondsAt(line, from)) / 3600 : distance / ridingProfiles[trip.bike ?? 'touring'].kmh,
+        hours: line ? (movingSecondsAt(line, to) - movingSecondsAt(line, from)) / 3600 : distance / ridingProfiles[trip.bike ?? 'touring'].kmh * paceFactor(trip),
         ascent: profileAscent(from, to, line),
         descent: profileDescent(from, to, line),
     };

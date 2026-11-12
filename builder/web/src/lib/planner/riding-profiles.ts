@@ -8,6 +8,26 @@ export const ridingProfiles = {
 };
 export type BikeType = keyof typeof ridingProfiles;
 
+/** The factor of each pace on the riding time of the route engine. Moderate is the pace of the engine: a bike that rides
+ * at 19 km/h on the flat at Moderate rides at 27 km/h at Fast. */
+export const paces = {
+    easy: { label: 'Easy', factor: 19 / 15 },
+    moderate: { label: 'Moderate', factor: 1 },
+    sporty: { label: 'Sporty', factor: 19 / 23 },
+    fast: { label: 'Fast', factor: 19 / 27 },
+};
+export type Pace = keyof typeof paces;
+
+/** The pace of a plan: Moderate when the plan has none or one that this reader does not know (`specs/planner-plan.md`). */
+export function planPace(trip: { pace?: string }): Pace {
+    return trip.pace !== undefined && Object.hasOwn(paces, trip.pace) ? trip.pace as Pace : 'moderate';
+}
+
+/** The factor of the pace of a plan on its riding time. On foot there is no pace. */
+export function paceFactor(trip: { bike?: BikeType; pace?: string }): number {
+    return trip.bike === 'hiking' ? 1 : paces[planPace(trip)].factor;
+}
+
 /** The preset title of each profile ID suffix: `touring/less-climbing` is the Less climbing preset of the touring bike. The
  * routing region says which profiles it serves (`GET /v1/region`). Technical (MTB) and Alpine (hiking) allow harder trails. */
 const presetTitles: Record<string, string> = { '': 'Balanced', 'less-climbing': 'Less climbing', technical: 'Technical', alpine: 'Alpine' };

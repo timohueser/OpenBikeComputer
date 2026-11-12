@@ -12,12 +12,16 @@
     import { RADII, recordLine, type RouteFilter, type RouteFinder } from '../../lib/planner/route-finder.svelte';
     import { kindLabel } from '../../lib/planner/search/presentation';
     import type { SearchPlace } from '../../lib/planner/search/types';
-    import type { RoutePlan } from '../../lib/planner/signed-route-plan';
+    import { routeBase, type RoutePlan } from '../../lib/planner/signed-route-plan';
     import type { Bounds, CatalogRecord, RouteShape, RouteSort } from '../../lib/planner/signed-routes';
     import type { BikeType } from '../../lib/planner/riding-profiles';
+    import { pacedLine } from '../../lib/planner/routing';
+    import type { Trip } from '../../lib/planner/editor';
 
-    let { finder, activity, theme = 'light', current = null, placeName, findPlaces, onClose, onPlan, attribution }: {
+    let { finder, activity, trip, theme = 'light', current = null, placeName, findPlaces, onClose, onPlan, attribution }: {
         finder: RouteFinder;
+        /** The open plan. */
+        trip: Trip;
         /** The map data credit of the release. */
         attribution: string;
         activity: BikeType;
@@ -94,13 +98,14 @@
     const detail = $derived(finder.detail);
     const plan = $derived(finder.plan);
     const km = (metres: number) => `${(metres / 1000).toFixed(1)} km`;
-    // The routed plan gives all four figures once it is ready, so the time never belongs to other figures.
+    // The routed plan gives all four figures once it is ready, so the time never belongs to other figures. The time is at
+    // the pace of the open plan, which the picked route keeps.
     function figures(route: CatalogRecord) {
         const line = finder.preview;
         if (!line) return { distance: route.length_m / 1000, ascent: route.ascent_m, descent: route.descent_m, hours: null };
         const known = line.elevation.every(height => height !== null);
         return { distance: cumulative(line.coordinates).at(-1)!, ascent: known ? profileAscent(0, 1, line) : null,
-            descent: known ? profileDescent(0, 1, line) : null, hours: line.seconds / 3600 };
+            descent: known ? profileDescent(0, 1, line) : null, hours: pacedLine(line, routeBase(route, trip)).seconds / 3600 };
     }
 
     function kindLine(route: CatalogRecord, short = false): string {

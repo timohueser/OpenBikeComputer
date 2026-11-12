@@ -192,6 +192,22 @@ describe('planning modes', () => {
         expect(guessedTrip(kept, riding(kept, 25)).days).toBe(6);
         expect(routeToTrip({ ...route, mode: 'route' }, riding(route, 40))).toMatchObject({ mode: 'trip', days: 6 });
     });
+
+    it('rides at the pace of the plan, which moves the guessed days but no day that the rider fixed', () => {
+        const route: Trip = { ...testTrip(), daysSet: undefined };
+        const line = testLine(route), fast: Trip = { ...route, pace: 'fast' };
+        const hours = line.seconds / 3600;
+        expect(planView(route, line).summary.hours).toBe(hours);
+        expect(planView(fast, line).summary.hours).toBeCloseTo(hours * 19 / 27);
+        expect(planView({ ...fast, bike: 'hiking' }, line).summary.hours).toBe(hours);
+        const long = { ...line, elapsed: line.elapsed.map(s => s * 25 / hours), seconds: 25 * 3600 };
+        expect([guessedTrip(route, long).days, guessedTrip(fast, long).days]).toEqual([4, 3]);
+        expect(guessedTrip(setDays(fast, 4), long).days).toBe(4);
+        const kept = pinNight({ ...route, days: 4 }, long, 1, along(.3), 'Hut'), keptLine = testLine(kept);
+        const faster = guessedTrip({ ...kept, pace: 'fast' }, { ...keptLine, elapsed: keptLine.elapsed.map(s => s * 25 / hours), seconds: 25 * 3600 });
+        expect(faster.days).toBe(3);
+        expect(faster.points.find(p => p.id === 'night-1')?.coordinate).toEqual(along(.3));
+    });
 });
 
 describe('day count', () => {

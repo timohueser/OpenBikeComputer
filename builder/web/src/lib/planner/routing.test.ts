@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { calculateLine, profileId, regionProfiles, requestAlternatives, requestRoute, routingKey, movingSecondsAt, type RouteTotals } from './routing';
+import { calculateLine, pacedLine, profileId, regionProfiles, requestAlternatives, requestRoute, routingKey, movingSecondsAt, type RouteTotals, type RoutingLine } from './routing';
 import { LegCache } from './route-legs';
 import { routeService } from '../../../test-support/planner/route-service';
 import { decodeRoutes, type AnswerRoute } from './route-answer';
@@ -145,6 +145,19 @@ describe('routing integration', () => {
         expect(surfaceRuns(line).shares.get('Unknown')).toBe(1);
         const mixed = await calculateLine(legs([undefined, 'straight', 'routed']), new AbortController().signal, new LegCache());
         expect(mixed.edges).toEqual({ surfaces: [null, null, 'Paved', 'Gravel'], pushing: [null, null, false, true] });
+    });
+    it('scales the riding time of a routed or drawn segment at the pace of the plan, but not of a pushed segment', async () => {
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ routes: [{ ...answer, legs: [{ ...answer.legs[0], to_index: 2 }] }] }) }));
+        const plan: Trip = { ...trip(), points: trip().points.map(p => p.id === 'shape' ? { ...p, leg: 'straight' } : p) };
+        const line = await calculateLine(plan, new AbortController().signal, new LegCache());
+        const fast: Trip = { ...plan, pace: 'fast' }, paced = pacedLine(line, fast);
+        const time = (l: RoutingLine, i: number) => l.elapsed[i + 1] - l.elapsed[i];
+        expect(line.edges.pushing).toEqual([null, null, false, true]);
+        expect(time(line, 0)).toBeGreaterThan(0);
+        line.edges.pushing!.forEach((pushed, i) => expect(time(paced, i)).toBeCloseTo(time(line, i) * (pushed ? 1 : 19 / 27)));
+        expect(paced.seconds).toBe(paced.elapsed.at(-1));
+        const lines = [pacedLine(line, fast), pacedLine(paced, fast), pacedLine(paced, plan), pacedLine(line, { ...fast, bike: 'hiking' })];
+        expect(lines.map(l => l === paced ? 'paced' : l === line ? 'line' : 'copy')).toEqual(['paced', 'paced', 'line', 'line']);
     });
     it('aligns surface sections by distance and clips the view without changing route shares', () => {
         const line = { coordinates: route.geometry, edges: route.edges };

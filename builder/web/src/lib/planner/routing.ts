@@ -1,4 +1,4 @@
-import { planPreset, presetProfile, ridingProfiles } from './riding-profiles';
+import { paceFactor, planPace, planPreset, presetProfile, ridingProfiles, type Pace } from './riding-profiles';
 import { orderedRoutePoints, type DrawnCoordinate, type Trip } from './editor';
 import { cumulative, firstIndex, type Coordinate } from './geo';
 import { config } from './map-data';
@@ -269,6 +269,27 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCa
         i = until + 1;
     }
     return result;
+}
+
+const pacedLines = new WeakMap<RoutingLine, Map<Pace, RoutingLine>>();
+const pacedSources = new WeakMap<RoutingLine, RoutingLine>();
+
+/** `line` with the riding time at the pace of `trip`; a pushed segment keeps its walking time. Each line has one copy for
+ * each pace, so a cache by the identity of `elapsed` keeps working. A paced copy is paced again from its source line. */
+export function pacedLine(line: RoutingLine, trip: Trip): RoutingLine {
+    const source = pacedSources.get(line) ?? line, pace = planPace(trip), factor = paceFactor(trip);
+    if (factor === 1) return source;
+    let byPace = pacedLines.get(source);
+    if (!byPace) pacedLines.set(source, byPace = new Map());
+    let paced = byPace.get(pace);
+    if (!paced) {
+        const elapsed = [...source.elapsed];
+        for (let i = 1; i < elapsed.length; i++)
+            elapsed[i] = elapsed[i - 1] + (source.elapsed[i] - source.elapsed[i - 1]) * (source.edges.pushing?.[i - 1] ? 1 : factor);
+        byPace.set(pace, paced = { ...source, elapsed, seconds: elapsed.at(-1) ?? 0 });
+        pacedSources.set(paced, source);
+    }
+    return paced;
 }
 
 /** The progress at which `seconds` of riding are done: the inverse of `movingSecondsAt`. */

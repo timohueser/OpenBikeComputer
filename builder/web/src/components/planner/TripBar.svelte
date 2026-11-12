@@ -3,7 +3,8 @@
     import Select from './PlannerSelect.svelte';
     import VersionsMenu from './VersionsMenu.svelte';
     import { onMount } from 'svelte';
-    import { planPreset, ridingProfiles, servedPresets, type BikeType } from '../../lib/planner/riding-profiles';
+    import { paces, planPace, planPreset, ridingProfiles, servedPresets, type BikeType } from '../../lib/planner/riding-profiles';
+    import { formatSpeed } from '../../lib/settings/format';
     import { planTitle, type Trip } from '../../lib/planner/editor';
     import { regionProfiles, type RoutingLine } from '../../lib/planner/routing';
     import type { Version } from '../../lib/planner/versions';
@@ -31,6 +32,7 @@
     } = $props();
 
     const bike = $derived(trip.bike ?? 'touring');
+    const pace = $derived(planPace(trip));
     const title = $derived(name || planTitle(trip));
     // The profiles of the routing region; until they arrive, every activity and preset shows.
     let profiles = $state<string[]>();
@@ -57,6 +59,13 @@
             <Select label="Preset" value={planPreset(bike, trip.preset)} options={servedPresets(bike, profiles).map(value => ({ value, label: value, icon: value === 'Less climbing' ? 'less-climbing' : 'sliders' }))}
                 onChange={(preset) => onChange({ preset }, 'Route preference changed')} />
         </div>
+        {#if bike !== 'hiking'}
+            <div class="preference"><span>Pace</span>
+                <Select label="Pace" value={pace} options={Object.entries(paces).map(([value, { label }]) => ({ value, label }))}
+                    onChange={(value) => onChange({ pace: value as Trip['pace'] }, 'Pace changed')} />
+                <small>about {formatSpeed(ridingProfiles[bike].kmh / paces[pace].factor / 3.6)} on the flat</small>
+            </div>
+        {/if}
     </div>
     <div class="actions">
         <button type="button" class="planner-action quiet" disabled={!ready || !trip.points.length} onclick={onNew}>New {trip.mode === 'route' ? 'route' : 'trip'}</button>
@@ -96,6 +105,7 @@
         display: flex;
         align-items: center;
         gap: 16px;
+        container-type: inline-size;
     }
     .preference {
         display: flex;
@@ -103,6 +113,11 @@
         gap: 8px;
         font-size: 13px;
         color: var(--ink-soft);
+    }
+    .preference small {
+        max-width: 8em;
+        font-size: 11px;
+        line-height: 1.25;
     }
     .actions {
         display: flex;
@@ -124,7 +139,13 @@
     .icon:hover:not(:disabled) {
         background: var(--parchment-2);
     }
-    @media (max-width: 1050px) {
+    /* One row holds the three controls from this width; the hint shows only where the row has room for it. */
+    @media (min-width: 1361px) {
+        @container (max-width: 650px) {
+            .preference small { display: none; }
+        }
+    }
+    @media (max-width: 1360px) {
         .trip-bar { grid-template-columns: minmax(0, 1fr) auto; height: auto; min-height: 56px; padding-block: 8px; gap: 8px 16px; }
         .ride { grid-column: 1; grid-row: 2; }
         .actions { grid-column: 2; grid-row: 1 / span 2; }
