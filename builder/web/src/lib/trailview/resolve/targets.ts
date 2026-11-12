@@ -53,10 +53,11 @@ export class Targets {
         for (const texture of [this.scene, this.depth, ...this.history, ...this.historyDepth]) if (texture) gpu.destroy('targets', texture);
         Object.assign(this, { width, height, top });
         const usage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING;
-        const make = (format: GPUTextureFormat, bytes: number, [w, h]: number[]) => gpu.texture('targets', { size: [w, h], format, usage }, bytes * w * h);
+        const make = (format: GPUTextureFormat, bytes: number, [w, h]: number[], extra = 0) => gpu.texture('targets', { size: [w, h], format, usage: usage | extra }, bytes * w * h);
         const render = this.viewport(top), output = [width, height];
         this.scene = make(this.format, this.format === 'rg11b10ufloat' ? 4 : 8, render);
-        this.depth = make(DEPTH, 4, render);
+        // A still reads the depth back.
+        this.depth = make(DEPTH, 4, render, GPUTextureUsage.COPY_SRC);
         this.history = [make(HISTORY, 4, output), make(HISTORY, 4, output)];
         this.historyDepth = [make(HISTORY_DEPTH, 2, output), make(HISTORY_DEPTH, 2, output)];
         this.version++;
