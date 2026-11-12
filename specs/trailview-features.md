@@ -252,7 +252,7 @@ shorter than 8 m whose deck lies no more than 1 m above the terrain after the fi
 `bridge` tag, as a road on the ground, and it holds the cover over the water that it crosses. A tunnel whose terrain lies less
 than its bore (5 m, 2.6 m for a path, 6.5 m for a track) over it everywhere, and that rises nowhere
 more than 5 m over the terrain, runs under something that the terrain leaves out, such as a
-building: the tiles keep it without its `tunnel` tag, as a way of its class. A tunnel under a road,
+building: the tiles keep it as a way of its class, with its `tunnel` tag. A tunnel under a road,
 a path or a track stays a tunnel.
 The tiles leave out a part of a tunnel that rises more than 5 m over the terrain anywhere farther
 than 20 m from its ends.
