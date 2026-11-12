@@ -1,14 +1,8 @@
 /**
  * "Are you sure?", asked by the app rather than by the browser.
  *
- * `window.confirm()` **does not work in the desktop app**, and it does not fail loudly — it returns
- * `false`. WKWebView has no built-in UI for the JavaScript dialogs: it asks its `WKUIDelegate`, and
- * wry's delegate implements `runOpenPanel`, the media-capture permission and the new-window request,
- * but not `runJavaScriptConfirmPanel`. So every `if (!confirm(...)) return;` in this frontend is,
- * inside the app, a statement that reads *"never do this"*.
- *
- * WebView2 and a browser tab do show the native dialog, so the bug was invisible on two of the three
- * places this frontend runs. Owning the dialog makes all three behave alike.
+ * The app owns the dialog, so a question can name its action on the button and offer a second
+ * affirmative ({@link ConfirmRequest.extra}), which `window.confirm()` cannot.
  *
  * One question at a time, held here rather than in whichever component asked, so the markup is
  * mounted once at the app root. The promise resolves `false` for every way of declining — Cancel,

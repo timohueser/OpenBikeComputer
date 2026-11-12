@@ -4,11 +4,9 @@
     import { setupSiteNavigation } from "../../../../docs/assets/site-navigation.js";
     import { appearance, startTheme, toggleTheme } from "../lib/theme.svelte";
 
-    import DeviceChip from "./DeviceChip.svelte";
     import { platform } from "../lib/platform";
-    import { available } from "../lib/platform/gating";
     import { router, type Route } from "../lib/router.svelte";
-    import { ADVANCED_ROUTE, DEVICE_ROUTE, RIDES_ROUTE } from "../lib/routes";
+    import { ADVANCED_ROUTE } from "../lib/routes";
 
     let header: HTMLElement;
     onMount(startTheme);
@@ -23,18 +21,11 @@
         ...(platform.styleEditor
             ? [{ route: "advanced" as const, href: ADVANCED_ROUTE, label: "Style editor" }]
             : []),
-        ...(available("deviceDashboard")
-            ? [{ route: "device" as const, href: DEVICE_ROUTE, label: "Device" }]
-            : []),
-        ...(available("rideLibrary")
-            ? [{ route: "rides" as const, href: RIDES_ROUTE, label: "Ride library" }]
-            : []),
     ];
     const tabbed = tabs.length > 1;
 
-    // Links out of the app, present only where there is a site around it (the
-    // desktop app has none — `platform.siteNav` is absent there, and so are
-    // these). Orthogonal to the tabs: the dev server shows both.
+    // Links out of the app, present only where there is a site around it.
+    // Orthogonal to the tabs: the dev server shows both.
     const siteNav = platform.siteNav;
 </script>
 
@@ -83,9 +74,6 @@
                 {/if}
             </svg>
         </button>
-        {#if available("deviceDashboard")}
-            <DeviceChip />
-        {/if}
     </div>
     {#if siteNav && tabbed}
         <div class="app-tools">

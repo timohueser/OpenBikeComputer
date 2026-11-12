@@ -1,11 +1,9 @@
 <!--
-  The app's own confirmation, mounted once at the root — see `lib/ui/confirm.svelte.ts` for why the
-  browser's is not usable in the desktop app.
+  The app's own confirmation, mounted once at the root — see `lib/ui/confirm.svelte.ts`.
 
   Deliberately **not** a `<dialog>` element. That would come with focus trapping and Escape for
-  free, and it is also the one thing this component must not get wrong: `<dialog>.showModal()` is
-  Safari 15.4 / WebKitGTK 2.36 and newer, and the bug being fixed here is precisely a modal that
-  silently never appears on an older webview. A plain overlay renders everywhere a `div` does.
+  free, but `<dialog>.showModal()` is Safari 15.4 and newer, and an older browser would silently
+  never show the modal. A plain overlay renders everywhere a `div` does.
 -->
 <script lang="ts">
     import { confirmQueue } from "../lib/ui/confirm.svelte";

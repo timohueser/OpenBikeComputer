@@ -2,7 +2,7 @@
  * Pulling a recorded ride off the device and handing it to the browser as a GPX.
  *
  * This is the hosted tier's **only** ride feature, and it is deliberately a dead end: a file lands
- * in a Downloads folder and nothing else happens anywhere. The managed library is the desktop app's.
+ * in a Downloads folder and nothing else happens anywhere.
  *
  * {@link RideSource} holds exactly two reads: list the catalog, download one ride. There is no
  * delete and no arm — not as discipline, but because the object {@link rideAccess} hands over does

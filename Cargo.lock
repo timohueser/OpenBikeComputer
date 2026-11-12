@@ -4184,7 +4184,6 @@ dependencies = [
  "nusb",
  "obc-flat-device",
  "obc-link",
- "serde",
  "tokio",
 ]
 

@@ -1,7 +1,6 @@
 /**
  * The byte-channel seam under the USB stack: `records.ts` turns these bytes into records and
- * `client.ts` speaks the protocol above them. WebUSB, the desktop `nusb` bridge and the loopback
- * device implement it.
+ * `client.ts` speaks the protocol above them. WebUSB and the loopback device implement it.
  *
  * There is no barrel over the stack. Every consumer imports the module it needs, which keeps the
  * simulated `loopback.ts` device out of the hosted bundle.
@@ -36,7 +35,7 @@ export class PipeError extends Error {
  * client serialises them.
  */
 export interface BytePipe {
-    /** Diagnostics only, never a branch target: `"webusb"`, `"loopback"`, `"native"`. */
+    /** Diagnostics only, never a branch target: `"webusb"`, `"loopback"`. */
     readonly transport: string;
 
     /** False once {@link close} has run or the device has disappeared. */
@@ -84,9 +83,9 @@ export interface DeviceLink {
     /**
      * One EP0 vendor device-to-host request, recipient interface.
      *
-     * Present only on a transport that can issue one. The desktop bridge exposes no control-transfer
-     * command, so it omits this rather than answering with a fabricated payload. Resolves with
-     * however many bytes the device returned, which can be short of `length`.
+     * Present only on a transport that can issue one; another transport omits it rather than
+     * answering with a fabricated payload. Resolves with however many bytes the device returned,
+     * which can be short of `length`.
      */
     vendorIn?(request: number, value: number, length: number, signal?: AbortSignal): Promise<Uint8Array>;
 
