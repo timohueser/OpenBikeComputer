@@ -330,9 +330,9 @@ mod tests {
             (MIN_ZOOM..=MAX_ZOOM).collect()
         );
         assert_eq!(find(left, "dam").parts[0].xy.len(), 2, "a closed dam way is an area, not a ring line");
-        // A tunnel with no terrain over it runs on the ground, as a road.
+        // A tunnel with no terrain over it runs on the ground, as a road with its tunnel tag.
         let tunnel = find(left, "main-road");
-        assert_eq!(tunnel.tags, tags(&[("highway", "secondary")]));
+        assert_eq!(tunnel.tags, tags(&[("highway", "secondary"), ("tunnel", "yes")]));
         let road = find(left, "road");
         assert_eq!(road.tags, tags(&[("highway", "track"), ("surface", "gravel")]));
         // A cut keeps the segment whole, so both tiles hold the same one, and its heights follow the terrain.
@@ -401,5 +401,9 @@ mod tests {
         assert!(lake.parts[0].xy.contains(river.parts[0].xy.last().unwrap()));
         let metrics = table(&std::fs::read_to_string(root.join("metrics.json")).unwrap());
         assert_eq!(metrics["tiles"], tiles.len());
+        assert_eq!(
+            metrics["roads"]["shallow_tunnels"], 1,
+            "each way on the ground with a tunnel tag is a shallow tunnel"
+        );
     }
 }

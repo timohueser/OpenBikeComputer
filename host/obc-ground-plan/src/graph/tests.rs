@@ -105,8 +105,12 @@ fn graph(lines: &[Line]) -> WayGraph {
 }
 
 fn graph_of(key: CellKey, lines: &[Line]) -> WayGraph {
-    let g = build(key, &input_of(key, lines), Sections::embedded());
+    let input = input_of(key, lines);
+    let mut g = build(key, &input, Sections::embedded());
     assert_eq!(check(&g), Vec::new());
+    let structures = &crate::faces::Rules::embedded().structures;
+    levels(&mut g, &input, Sections::embedded(), structures);
+    assert_eq!(check_levels(&g, &input, Sections::embedded(), structures), Vec::new());
     g
 }
 
@@ -684,4 +688,109 @@ fn crossings_take_the_first_row_of_the_table() {
     let deck = &g.decks[0];
     assert!(deck.synthetic && g.ways[deck.ways[0] as usize].level == Level::Deck);
     assert_eq!(g.joints.len(), 2, "the deck's two ends");
+}
+
+#[test]
+fn the_ladder_follows_the_room_by_the_class_rows_at_every_boundary() {
+    use Step::*;
+    let upper = |kind, tags: &[(&'static str, &'static str)], z| line(kind, tags, &[[0.0, -40.0], [0.0, 40.0]], z);
+    let lower = |kind, tags: &[(&'static str, &'static str)], z| line(kind, tags, &[[-40.0, 0.0], [40.0, 0.0]], z);
+    let bridge = [("highway", "residential"), ("bridge", "yes"), ("deck", "1")];
+    let footbridge = [("highway", "footway"), ("bridge", "yes"), ("deck", "0.4")];
+    let street = [("highway", "residential")];
+    let foot = [("highway", "footway")];
+    let rail = [("railway", "rail")];
+    let tunnel = [("highway", "residential"), ("tunnel", "yes")];
+    let rail_tunnel = [("railway", "rail"), ("tunnel", "yes")];
+    // (what, upper, lower, step, whether the upper way ends on step 3). A residential deck over a
+    // residential road: full 4.5 + 1.0, least 3.0 + 0.4; a residential bore: full 5.0 + 1.0, least
+    // 3.0 + 0.3; snap 0.5 everywhere.
+    type Row = (&'static str, Line, Line, Step, bool);
+    let rows: Vec<Row> = vec![
+        ("deck, full", upper("road", &bridge, 5.5), lower("road", &street, 0.0), Full, false),
+        ("deck, thin", upper("road", &bridge, 5.45), lower("road", &street, 0.0), Thin, false),
+        ("deck, least", upper("road", &bridge, 3.4), lower("road", &street, 0.0), Thin, false),
+        (
+            "deck, closed: the lower way of one class ends",
+            upper("road", &bridge, 3.35),
+            lower("road", &street, 0.0),
+            Closed,
+            false,
+        ),
+        ("deck, closed over snap", upper("road", &bridge, 0.55), lower("road", &street, 0.0), Closed, false),
+        ("deck, at grade", upper("road", &bridge, 0.5), lower("road", &street, 0.0), AtGrade, false),
+        ("deck, at grade under", upper("road", &bridge, -0.5), lower("road", &street, 0.0), AtGrade, false),
+        ("deck, inverted", upper("road", &bridge, -0.55), lower("road", &street, 0.0), Inverted, false),
+        (
+            "footbridge over a railway, closed: the footway ends",
+            upper("path", &footbridge, 4.95),
+            lower("railway", &rail, 0.0),
+            Closed,
+            true,
+        ),
+        (
+            "footbridge over a railway, least",
+            upper("path", &footbridge, 5.0),
+            lower("railway", &rail, 0.0),
+            Thin,
+            false,
+        ),
+        (
+            "railway bridge over a road, closed: the road ends",
+            upper("railway", &[("railway", "rail"), ("bridge", "yes"), ("deck", "1")], 3.0),
+            lower("road", &street, 0.0),
+            Closed,
+            false,
+        ),
+        ("bore, full", upper("road", &street, 6.0), lower("tunnel", &tunnel, 0.0), Full, false),
+        ("bore, thin", upper("road", &street, 5.95), lower("tunnel", &tunnel, 0.0), Thin, false),
+        ("bore, least", upper("road", &street, 3.3), lower("tunnel", &tunnel, 0.0), Thin, false),
+        (
+            "bore, closed: the tunnel way ends",
+            upper("road", &street, 3.25),
+            lower("tunnel", &tunnel, 0.0),
+            Closed,
+            false,
+        ),
+        ("bore, inverted", upper("road", &street, -0.55), lower("tunnel", &tunnel, 0.0), Inverted, false),
+        (
+            "railway bore under a footway, closed: the railway ends",
+            upper("path", &foot, 5.05),
+            lower("tunnel", &rail_tunnel, 0.0),
+            Closed,
+            false,
+        ),
+    ];
+    for (what, u, l, want, upper_ends) in rows {
+        let g = graph(&[u, l]);
+        let c = g.crossings.iter().find(|c| c.ladder.is_some()).unwrap_or_else(|| panic!("{what}: {:?}", g.crossings));
+        let ladder = c.ladder.as_ref().unwrap();
+        assert_eq!(ladder.step, want, "{what}: room {}", ladder.room_m);
+        if matches!(want, Closed | Inverted) {
+            let ends = if upper_ends { ladder.upper } else { ladder.lower };
+            assert_eq!(ladder.ends, Some(ends), "{what}");
+        }
+    }
+}
+
+#[test]
+fn the_room_reads_each_way_on_its_own_curve() {
+    // A residential deck on a hairpin of radius 12 m over a road, both level: the room at every corner
+    // of the overlap is the height difference, though the hairpin's far leg passes within 24 m.
+    let arc: Vec<[f64; 2]> = (0..=12)
+        .map(|i| {
+            let a = core::f64::consts::PI * f64::from(i) / 12.0;
+            [12.0 * libm::cos(a) - 12.0, 12.0 * libm::sin(a) - 30.0]
+        })
+        .collect();
+    let mut points = vec![[0.0, -60.0]];
+    points.extend(arc.iter().rev().map(|p| [p[0] + 24.0, -p[1] - 60.0]));
+    let deck = line("road", &[("highway", "residential"), ("bridge", "yes"), ("deck", "1")], &points, 6.0);
+    let road = line("road", &[("highway", "residential")], &[[-40.0, -40.0], [40.0, -40.0]], 0.0);
+    let g = graph(&[deck, road]);
+    for c in g.crossings.iter().filter_map(|c| c.ladder.as_ref()) {
+        assert!((c.room_m - 6.0).abs() < 0.05, "room {}", c.room_m);
+        assert_eq!(c.step, Step::Full);
+    }
+    assert!(g.crossings.iter().any(|c| c.ladder.is_some()));
 }

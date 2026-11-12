@@ -15,7 +15,7 @@
 //! | extras | discs (`DISC` words), beyond cuts (a cut and a label), parts (a way and two cuts, each with a flag) |
 //! | junctions | the table, a word per junction record: its offset; then the records (`junction`) |
 //! | blend edges | `BLEND` words each: the ends a (x, y) and b (x, y) as i32 bits, the label of the blend face, the label of the face beyond (u32::MAX for terrain) |
-//! | outline edges | `EDGE` words each (`edge_ends`, `edge_line`): the end a (x, y) as i32 bits with the paved face on the left; b − a as two i16 (x low); the host line, low half, and the terrain's grade outward in 1/`GRADE_STEPS` (i16, `i16::MIN` unknown), high half; the paved height at a and at b; the plain terrain where the cones from a and from b start to let go (NaN unknown) |
+//! | outline edges | `EDGE` words each (`edge_ends`, `edge_line`): the end a (x, y) as i32 bits with the paved face on the left; b − a as two i16 (x low); the host line, low half, and the terrain's grade outward at a in 1/`GRADE_STEPS` (i16, `i16::MIN` unknown), high half; the paved height at a and at b; the plain terrain where the cones from a and from b start to let go (NaN unknown); the grade at b, low half, and the turn at b in 1/`TURN_STEPS` of π (i16, `i16::MIN` none), high half; the turn at a, low half |
 //! | bins | `BINS`² headers of `HEADER` words (the first word of the bin's items; the counts of items and segments; of height segments and height discs; the words of the items and the count of blend edges), then per bin its candidate items, segments, height segments, height discs, blend edges, and in half words (the first low) the count of its outline edges followed by them |
 //!
 //! Floats are f32 bits. A side is right or left of the line's direction in frame axes (y south).
@@ -54,7 +54,7 @@ use crate::sections::{Finish, Material, WaySection};
 use crate::CellInput;
 
 /// "OBR" and the layout's version.
-pub const MAGIC: u32 = 0x4f42_5212;
+pub const MAGIC: u32 = 0x4f42_5214;
 
 /// Whether a junction's guest `g` stops at its best host `h`: a way with round corners whose pair's
 /// mouth in `plan.json` is `stop`, and whose look (finish and material) is not the host's or whose
@@ -87,7 +87,9 @@ pub const DISC: usize = 5;
 pub const BEYOND: usize = 5;
 pub const PART: usize = 11;
 pub const BLEND: usize = 6;
-pub const EDGE: usize = 8;
+pub const EDGE: usize = 10;
+/// An outline edge's turn at an end in these steps per π radians (`i16`; `i16::MIN`: no edge goes on there).
+pub const TURN_STEPS: f64 = 32767.0;
 /// A junction record: node x, y; the arm count (bits 0-7) and the graph junction (bits 16-31); then
 /// `JR_ARM` words per arm in the graph's order: its record line (bits 0-15) with `ARM_HOST` and
 /// `ARM_STOP`; its node sample (bits 0-15) and its last sample (bits 16-31), the first past its seam,
@@ -352,17 +354,20 @@ fn near_box(a: [f64; 2], b: [f64; 2], bx: [f64; 4], r: f64) -> bool {
 
 /// An outline edge's height runs linearly between its ends: a rim splits at its middle while the paved
 /// field leaves that line by more than this at the middle, or on a piece longer than `QUARTER_M` at
-/// either quarter, down to `SPLIT_MIN_M`. Half of the least step that the heights check counts
-/// (`check::STEP_M`).
+/// either quarter, down to `SPLIT_PAVED_MIN_M`: the slope starts from that line, so the paved side and
+/// the slope side meet there with no step where the paved field bends. Half of the least step that the
+/// heights check counts (`check::STEP_M`).
 const SPLIT_M: f64 = 0.005;
+/// The paved split stops at this length: a break of k m/m in the paved grade leaves k · L / 4 at a piece's
+/// middle, so a shorter piece leaves its line by at most `check::STEP_M` where the grade breaks by up to
+/// 2 m/m.
+const SPLIT_PAVED_MIN_M: f64 = 0.02;
+/// The ground's split (`SPLIT_GROUND_M`) goes down to this.
 const SPLIT_MIN_M: f64 = 0.25;
 /// A rim also splits while the ground where its cones let go leaves the line between its ends by more than
-/// this: the cones fit the need at the ends, so a ground they did not see would move the slope with the
-/// cuts.
+/// this: the cones read the need linearly between the ends, so a ground they did not see would move the
+/// slope with the cuts.
 const SPLIT_GROUND_M: f64 = 0.25;
-/// And while the need of its cones (the paved height less that ground) differs between its ends by more
-/// than this.
-const SPLIT_NEED_M: f64 = 0.5;
 /// The quarters find a field that crosses the line at the middle. Its offset there grows with the
 /// cube of the piece's length, so a shorter piece reads its middle alone.
 const QUARTER_M: f64 = 1.0;
@@ -370,11 +375,11 @@ const QUARTER_M: f64 = 1.0;
 /// The outline edges' words (`EDGE` each) of the near plan's rims (a, b, paved label, the paved face on
 /// the left): the host line, the paved field at both ends (`heights::paved_end`) from the block so far
 /// through the window's bins (`items`), so two cells give an end the same bits, and the plain terrain
-/// where the host's cones start to let go. The host is the face's material line, else the paved field's
-/// host at the middle of the rim's piece. A rim splits at the bin grid (`bin_cuts`), then while the paved
-/// field or the ground where its cones let go leaves the line between a piece's ends, or their need varies
-/// (`SPLIT_*`). An edge with an end where the face has no height of its own stays out: a fault that
-/// `heights::check` counts.
+/// where the host's cones start to let go (`ground`), and each end's turn to the edge that goes on from it.
+/// The host is the face's material line, else the paved field's host at the middle of the rim's piece. A rim
+/// splits at the bin grid (`bin_cuts`), then while the paved field or that ground leaves the line between a
+/// piece's ends (`SPLIT_*`). An edge with an end where the face has no height of its own stays out: a fault
+/// that `heights::check` counts.
 fn outline_edges<'a>(
     words: &[u32],
     input: &CellInput,
@@ -384,29 +389,47 @@ fn outline_edges<'a>(
 ) -> Vec<u32> {
     let origin = input.key.origin();
     let fp = |p: P| [f64::from(p[0]), f64::from(p[1])];
-    let terrain = |q: [f64; 2]| {
-        let g = GlobalPoint { x: origin.x + libm::round(q[0]) as i64, y: origin.y + libm::round(q[1]) as i64 };
+    // The terrain at whole-unit point x moved by d units: global whatever the cell.
+    let terrain = |x: P, d: [f64; 2]| {
+        let at = |o: i64, x: i32, d: f64| o + i64::from(x) + libm::round(d) as i64;
+        let g = GlobalPoint { x: at(origin.x, x[0], d[0]), y: at(origin.y, x[1], d[1]) };
         input.terrain.height(g).unwrap_or(f64::NAN)
     };
+    let mpu = |x: P| metres_per_unit(origin.y + i64::from(x[1]));
     let mut ends: BTreeMap<(P, u32), Option<Height>> = BTreeMap::new();
     let mut end =
         |p: P, id: u32| *ends.entry((p, id)).or_insert_with(|| heights::paved_end(words, fp(p), id, &items(fp(p))));
+    // At point x of host line l's outline, along the line's frame there (not along the rim, so every rim
+    // through x reads the same): the plain terrain where its cones start to let go, `go` metres out, as a mean
+    // along the way with a tent weight over `go` metres each side, so the cones and walls follow the hillside
+    // and not each bump of it; and the terrain's grade outward there. NaN unknown.
+    let mut grounds: BTreeMap<(P, u32), [f64; 2]> = BTreeMap::new();
+    let mut ground = |x: P, l: u32, go: f64| {
+        *grounds.entry((x, l)).or_insert_with(|| {
+            let Some((out, along)) = heights::frame(words, fp(x), l, &items(fp(x))) else { return [f64::NAN; 2] };
+            let u = go / mpu(x);
+            let at = |m: f64, s: f64| terrain(x, [out[0] * m + along[0] * s, out[1] * m + along[1] * s]);
+            let (mut sw, mut sz) = (0.0, 0.0);
+            for k in -2i32..=2 {
+                let z = at(u, f64::from(k) * u / 3.0);
+                if !z.is_nan() {
+                    let w = f64::from(3 - k.abs());
+                    (sw, sz) = (sw + w, sz + w * z);
+                }
+            }
+            [if sw > 0.0 { sz / sw } else { f64::NAN }, (at(u, 0.0) - at(u / 2.0, 0.0)) / (go / 2.0)]
+        })
+    };
     let metres = |p: P, q: P| {
         libm::hypot(f64::from(q[0] - p[0]), f64::from(q[1] - p[1])) * metres_per_unit(origin.y + i64::from(p[1]))
     };
     // Whole-unit middles, the same in every cell.
     let mid = |p: P, q: P| [(p[0] + q[0]).div_euclid(2), (p[1] + q[1]).div_euclid(2)];
-    let mut out = Vec::with_capacity(EDGE * rims.len());
+    // The rims' edges with a height at both ends: ends, host, paved heights.
+    let mut edges: Vec<(P, P, u32, [f64; 2])> = Vec::with_capacity(rims.len());
     let cell = f64::from(CELL_UNITS as i32);
-    for &(a, b, id) in rims {
+    for &(a, b, id) in rims.iter().filter(|(a, b, _)| a != b) {
         let material = label(words, id)[2];
-        // Outward: the right of a to b, toward the ground.
-        let (fa, fb) = (fp(a), fp(b));
-        let len = libm::hypot(fb[0] - fa[0], fb[1] - fa[1]);
-        if len <= 0.0 {
-            continue;
-        }
-        let n = [(fb[1] - fa[1]) / len, -(fb[0] - fa[0]) / len];
         let cuts = bin_cuts(a, b);
         for (&r0, &r1) in cuts.iter().zip(&cuts[1..]) {
             // The middle is the first point that the split reads.
@@ -421,11 +444,6 @@ fn outline_edges<'a>(
             }
             // The cones let go from this many metres.
             let go = reach * (1.0 - rules.plan.heights.fade_share);
-            let outward = |p: [f64; 2], m: f64| {
-                let u = m / metres_per_unit(origin.y + libm::round(p[1]) as i64);
-                terrain([p[0] + n[0] * u, p[1] + n[1] * u])
-            };
-            let ground = |x: P| outward(fp(x), go);
             // The piece's edges from r0: an edge splits while the paved field, or the ground where its
             // cones let go, leaves the line between its ends.
             let mut pieces = vec![(r0, end(r0, id))];
@@ -437,43 +455,65 @@ fn outline_edges<'a>(
                     (Some(hp), Some(hq), Some(hx)) => (hx.h - (hp.h + f * (hq.h - hp.h))).abs() > SPLIT_M,
                     (hp, hq, hx) => hx.is_some() != (hp.is_some() && hq.is_some()),
                 };
-                let (gp, gq) = (ground(p), ground(q));
-                let bent = |x: P, f: f64| (ground(x) - (gp + f * (gq - gp))).abs() > SPLIT_GROUND_M;
+                let (gp, gq) = (ground(p, host, go)[0], ground(q, host, go)[0]);
+                let mut bent = |x: P, f: f64| (ground(x, host, go)[0] - (gp + f * (gq - gp))).abs() > SPLIT_GROUND_M;
                 let long = metres(p, q);
-                let quarters = |end: &mut dyn FnMut(P, u32) -> Option<Height>| {
-                    long > QUARTER_M
-                        && (off(mid(p, m), 0.25, end)
-                            || off(mid(m, q), 0.75, end)
-                            || bent(mid(p, m), 0.25)
-                            || bent(mid(m, q), 0.75))
-                };
-                // The cones take one slope per edge from the greater need of its ends (`heights::fit`).
-                let need = |h: Option<Height>, g: f64| h.map_or(f64::NAN, |h| h.h - g);
-                let varies = (need(hp, gp) - need(hq, gq)).abs() > SPLIT_NEED_M;
-                if long > SPLIT_MIN_M && (off(m, 0.5, &mut end) || bent(m, 0.5) || varies || quarters(&mut end)) {
+                let quarters = long > QUARTER_M;
+                let split = (long > SPLIT_PAVED_MIN_M
+                    && (off(m, 0.5, &mut end)
+                        || (quarters && (off(mid(p, m), 0.25, &mut end) || off(mid(m, q), 0.75, &mut end)))))
+                    || (long > SPLIT_MIN_M
+                        && (bent(m, 0.5) || (quarters && (bent(mid(p, m), 0.25) || bent(mid(m, q), 0.75)))));
+                if split {
                     ahead.push((m, end(m, id)));
                     continue;
                 }
                 pieces.push((q, hq));
                 ahead.pop();
             }
-            let t: Vec<f64> = pieces.iter().map(|&(p, _)| ground(p)).collect();
-            for (k, w) in pieces.windows(2).enumerate() {
-                let ((p, Some(hp)), (q, Some(hq))) = (w[0], w[1]) else { continue };
-                let mid = [(f64::from(p[0]) + f64::from(q[0])) / 2.0, (f64::from(p[1]) + f64::from(q[1])) / 2.0];
-                let grade = (outward(mid, go) - outward(mid, go / 2.0)) / (go / 2.0);
-                let grade = if grade.is_nan() {
-                    i16::MIN
-                } else {
-                    libm::round(grade * GRADE_STEPS).clamp(-32767.0, 32767.0) as i16
-                };
-                let d = [q[0] - p[0], q[1] - p[1]].map(|v| u32::from(v as i16 as u16));
-                crate::probe::field(crate::probe::Field::Line, host as usize);
-                assert!(host < 1 << 16, "a cell's record lines overflow an outline edge's half word");
-                out.extend([p[0] as u32, p[1] as u32, d[0] | d[1] << 16, host | u32::from(grade as u16) << 16]);
-                out.extend([f(hp.h), f(hq.h), f(t[k]), f(t[k + 1])]);
+            for w in pieces.windows(2) {
+                if let ((p, Some(hp)), (q, Some(hq))) = (w[0], w[1]) {
+                    if p != q {
+                        edges.push((p, q, host, [hp.h, hq.h]));
+                    }
+                }
             }
         }
+    }
+    // Each end's turn to the one edge of the same host that goes on from it (a cut, a split or the rim's
+    // corner) with the same paved height bits there: the angle between the two edges' integer directions, so
+    // two cells that hold both give it alike. Where two faces of one host meet with two heights, the end has
+    // none: a fan's far ray would be a step there, and a free end's full cone is continuous.
+    let mut at: BTreeMap<(P, u32, bool), Vec<usize>> = BTreeMap::new();
+    for (k, e) in edges.iter().enumerate() {
+        at.entry((e.0, e.2, true)).or_default().push(k);
+        at.entry((e.1, e.2, false)).or_default().push(k);
+    }
+    let dir = |k: usize| [f64::from(edges[k].1[0] - edges[k].0[0]), f64::from(edges[k].1[1] - edges[k].0[1])];
+    let turn = |from: [f64; 2], to: [f64; 2]| {
+        let t = libm::atan2(from[0] * to[1] - from[1] * to[0], from[0] * to[0] + from[1] * to[1]);
+        u32::from(libm::round(t / PI * TURN_STEPS).clamp(-TURN_STEPS, TURN_STEPS) as i16 as u16)
+    };
+    let none = u32::from(i16::MIN as u16);
+    let mut out = Vec::with_capacity(EDGE * edges.len());
+    for (k, &(p, q, host, h)) in edges.iter().enumerate() {
+        let one = |key: (P, u32, bool), h: f64| {
+            let there = |j: usize| edges[j].3[usize::from(!key.2)];
+            at.get(&key).filter(|v| v.len() == 1).map(|v| v[0]).filter(|&j| f(there(j)) == f(h))
+        };
+        let turn_a = one((p, host, false), h[0]).map_or(none, |j| turn(dir(j), dir(k)));
+        let turn_b = one((q, host, true), h[1]).map_or(none, |j| turn(dir(k), dir(j)));
+        let go = f32w(words[words[6] as usize + LINE * host as usize + 6]) * (1.0 - rules.plan.heights.fade_share);
+        let ([tp, gp], [tq, gq]) = (ground(p, host, go), ground(q, host, go));
+        let grade = |g: f64| {
+            let g = if g.is_nan() { i16::MIN } else { libm::round(g * GRADE_STEPS).clamp(-32767.0, 32767.0) as i16 };
+            u32::from(g as u16)
+        };
+        let d = [q[0] - p[0], q[1] - p[1]].map(|v| u32::from(v as i16 as u16));
+        crate::probe::field(crate::probe::Field::Line, host as usize);
+        assert!(host < 1 << 16, "a cell's record lines overflow an outline edge's half word");
+        out.extend([p[0] as u32, p[1] as u32, d[0] | d[1] << 16, host | grade(gp) << 16]);
+        out.extend([f(h[0]), f(h[1]), f(tp), f(tq), grade(gq) | turn_b << 16, turn_a]);
     }
     out
 }
