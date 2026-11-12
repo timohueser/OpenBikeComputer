@@ -14,11 +14,9 @@ import {
     emptySelection,
     resolveSelection,
     SelectionResolver,
-    withCorridorRadius,
     withoutPart,
     withPart,
     type BoxPart,
-    type CorridorPart,
     type RegionPart,
     type SelectionContext,
 } from "./selection";
@@ -74,7 +72,7 @@ const region: RegionPart = {
 
 describe("selection composition", () => {
     it("adds, replaces by id, and removes", () => {
-        let selection = emptySelection(5000);
+        let selection = emptySelection();
         selection = withPart(selection, insideA);
         selection = withPart(selection, region);
         expect(selection.parts.map((p) => p.id)).toEqual(["box-1", "region-1"]);
@@ -87,16 +85,11 @@ describe("selection composition", () => {
         // Nothing mutates: a stale reference is still the selection it was.
         expect(selection.parts).toHaveLength(2);
     });
-
-    it("keeps one global corridor width, never a negative one", () => {
-        expect(withCorridorRadius(emptySelection(0), 2500).corridorRadiusM).toBe(2500);
-        expect(withCorridorRadius(emptySelection(0), -10).corridorRadiusM).toBe(0);
-    });
 });
 
 describe("resolveSelection", () => {
     it("resolves a box per band, precisely at fine and generously at coarse", () => {
-        const r = resolveSelection({ parts: [insideA], corridorRadiusM: 0 }, ctx);
+        const r = resolveSelection({ parts: [insideA] }, ctx);
         expect(r.cellsByBand.get("fine")).toEqual(["18/1204/1052"]);
         expect(r.cellsByBand.get("network")).toEqual(["18/1204/1052"]);
         expect(r.cellsByBand.get("mid")).toEqual(["19/0602/0526"]);
@@ -106,35 +99,9 @@ describe("resolveSelection", () => {
     });
 
     it("reads a region's stored cell list rather than deriving one", () => {
-        const r = resolveSelection({ parts: [region], corridorRadiusM: 0 }, ctx);
+        const r = resolveSelection({ parts: [region] }, ctx);
         expect(r.cellsByBand.get("fine")).toEqual(["18/1204/1052", "18/1204/1053", "18/1204/1055"]);
         expect(r.parts[0].bytes).toBe(2088 + 1064 + 552 + 424 + 296 + 168);
-    });
-
-    it("resolves a lasso ring per band through the same union", () => {
-        // A triangle strictly inside cell A: one fine cell, generous coarse
-        // coverage — the same consequence-of-cell-size the box test pins.
-        const r = resolveSelection(
-            {
-                parts: [
-                    {
-                        kind: "lasso",
-                        id: "lasso-1",
-                        name: "Drawn ring",
-                        points: [
-                            { lat: A.minLat + 1000, lon: A.minLon + 1000 },
-                            { lat: A.minLat + 1000, lon: A.maxLon - 1000 },
-                            { lat: A.maxLat - 1000, lon: (A.minLon + A.maxLon) / 2 },
-                        ],
-                    },
-                ],
-                corridorRadiusM: 0,
-            },
-            ctx,
-        );
-        expect(r.cellsByBand.get("fine")).toEqual(["18/1204/1052"]);
-        expect(r.cellsByBand.get("coarse")).toEqual(["20/0301/0263"]);
-        expect(r.missingByBand.size).toBe(0);
     });
 
     it("treats verified-empty ground as zero-byte coverage rather than a hole", () => {
@@ -149,14 +116,14 @@ describe("resolveSelection", () => {
                 maxLon: EMPTY.maxLon - 1,
             },
         };
-        const r = resolveSelection({ parts: [emptyBox], corridorRadiusM: 0 }, ctx);
+        const r = resolveSelection({ parts: [emptyBox] }, ctx);
         expect(r.cellsByBand.get("fine")).toEqual(["18/1204/1055"]);
         expect(r.missingByBand.get("fine")).toBeUndefined();
         expect(r.parts[0].cellsByBand.get("fine")).toEqual(["18/1204/1055"]);
     });
 
     it("counts a shared cell once in the union and in both parts' gross bytes", () => {
-        const r = resolveSelection({ parts: [insideA, region], corridorRadiusM: 0 }, ctx);
+        const r = resolveSelection({ parts: [insideA, region] }, ctx);
         expect(r.cellsByBand.get("fine")).toEqual(["18/1204/1052", "18/1204/1053", "18/1204/1055"]);
         const [box, whole] = r.parts;
         // Gross: everything the part covers, shared or not — so these overlap.
@@ -182,33 +149,15 @@ describe("resolveSelection", () => {
             name: "Over the edge",
             box: { minLat: A.minLat + 1000, minLon: A.minLon - 1000, maxLat: A.maxLat - 1000, maxLon: A.minLon + 1000 },
         };
-        const r = resolveSelection({ parts: [westOfA], corridorRadiusM: 0 }, ctx);
+        const r = resolveSelection({ parts: [westOfA] }, ctx);
         expect(r.cellsByBand.get("fine")).toEqual(["18/1204/1052"]);
         expect(r.missingByBand.get("fine")).toEqual(["18/1204/1051"]);
         expect(r.parts[0].missingCount).toBeGreaterThan(0);
     });
 
-    it("buffers a corridor by the selection's global radius", () => {
-        const route: CorridorPart = {
-            kind: "corridor",
-            id: "route-1",
-            name: "Day 3 — Basel to Olten",
-            points: [
-                { lat: (A.minLat + A.maxLat) / 2, lon: A.maxLon - 200 },
-                { lat: (A.minLat + A.maxLat) / 2, lon: A.maxLon - 100 },
-            ],
-        };
-        const tight = resolveSelection({ parts: [route], corridorRadiusM: 0 }, ctx);
-        expect(tight.cellsByBand.get("fine")).toEqual(["18/1204/1052"]);
-        // Widen the one slider and the neighbour joins — with no change to the
-        // part itself, which is what "one global width" means.
-        const wide = resolveSelection({ parts: [route], corridorRadiusM: 4000 }, ctx);
-        expect(wide.cellsByBand.get("fine")).toEqual(["18/1204/1052", "18/1204/1053"]);
-    });
-
     it("contributes nothing for a region whose cell list has not arrived, and says so", () => {
         const pending: SelectionContext = { ...ctx, regionCells: new Map() };
-        const r = resolveSelection({ parts: [region], corridorRadiusM: 0 }, pending);
+        const r = resolveSelection({ parts: [region] }, pending);
         expect(r.cellsByBand.size).toBe(0);
         expect(r.parts[0].cellCount).toBe(0);
         // 0 B is a perfectly ordinary number, and a card that prints it without
@@ -218,11 +167,11 @@ describe("resolveSelection", () => {
         expect(r.unresolvedParts).toEqual(["region-1"]);
 
         // Once the list is in hand the flag clears, with no other change.
-        const arrived = resolveSelection({ parts: [region], corridorRadiusM: 0 }, ctx);
+        const arrived = resolveSelection({ parts: [region] }, ctx);
         expect(arrived.parts[0].pending).toBe(false);
         expect(arrived.unresolvedParts).toEqual([]);
-        // Boxes and corridors are never pending: their answer is arithmetic.
-        expect(resolveSelection({ parts: [insideA], corridorRadiusM: 0 }, pending).unresolvedParts).toEqual([]);
+        // Boxes are never pending: their answer is arithmetic.
+        expect(resolveSelection({ parts: [insideA] }, pending).unresolvedParts).toEqual([]);
     });
 
     it("names the bands whose index is missing instead of pricing without them", () => {
@@ -230,7 +179,7 @@ describe("resolveSelection", () => {
             ...ctx,
             indices: new Map([["fine", indices.get("fine")!]]),
         };
-        const r = resolveSelection({ parts: [insideA], corridorRadiusM: 0 }, partial);
+        const r = resolveSelection({ parts: [insideA] }, partial);
         expect(r.unresolvedBands).toEqual(["coarse", "mid", "network"]);
         expect(r.cellsByBand.get("fine")).toEqual(["18/1204/1052"]);
     });
@@ -255,15 +204,15 @@ describe("resolveSelection", () => {
                 ],
             }),
         };
-        expect(() => resolveSelection({ parts: [region], corridorRadiusM: 0 }, broken)).toThrow(
+        expect(() => resolveSelection({ parts: [region] }, broken)).toThrow(
             CatalogFormatError,
         );
-        expect(() => resolveSelection({ parts: [region], corridorRadiusM: 0 }, broken)).toThrow(
+        expect(() => resolveSelection({ parts: [region] }, broken)).toThrow(
             /18\/1204\/1053 is not in band "fine"'s index/,
         );
         // Composed with other parts, and with the region second: still refused,
         // rather than quietly counted once as a hole.
-        expect(() => resolveSelection({ parts: [insideA, region], corridorRadiusM: 0 }, broken)).toThrow(
+        expect(() => resolveSelection({ parts: [insideA, region] }, broken)).toThrow(
             CatalogFormatError,
         );
         // A band whose index has not loaded is not evidence of anything, so it
@@ -272,27 +221,24 @@ describe("resolveSelection", () => {
             ...broken,
             indices: new Map([["network", broken.indices.get("network")!]]),
         };
-        expect(() => resolveSelection({ parts: [region], corridorRadiusM: 0 }, stillLoading)).not.toThrow();
+        expect(() => resolveSelection({ parts: [region] }, stillLoading)).not.toThrow();
     });
 
     it("has nothing to resolve for an empty selection", () => {
-        const r = resolveSelection(emptySelection(5000), ctx);
+        const r = resolveSelection(emptySelection(), ctx);
         expect(r.parts).toEqual([]);
         expect(r.cellsByBand.size).toBe(0);
     });
 });
 
 describe("SelectionResolver", () => {
-    const route: CorridorPart = {
-        kind: "corridor",
-        id: "route-1",
+    const edge: BoxPart = {
+        kind: "box",
+        id: "box-2",
         name: "Day 3",
-        points: [
-            { lat: (A.minLat + A.maxLat) / 2, lon: A.maxLon - 200 },
-            { lat: (A.minLat + A.maxLat) / 2, lon: A.maxLon - 100 },
-        ],
+        box: { minLat: A.minLat + 1000, minLon: A.maxLon - 200, maxLat: A.maxLat - 1000, maxLon: A.maxLon - 100 },
     };
-    const selection = { parts: [insideA, region, route], corridorRadiusM: 2000 };
+    const selection = { parts: [insideA, region, edge] };
     const bands = exampleCatalog.schema.bands.length;
 
     /** Every list in a resolution, flattened, so two answers can be compared
@@ -320,21 +266,6 @@ describe("SelectionResolver", () => {
         expect(shape(resolver.resolve(selection, ctx))).toEqual(shape(resolveSelection(selection, ctx)));
         expect(resolver.stats.computed).toBe(3 * bands);
         expect(resolver.stats.reused).toBe(3 * bands);
-    });
-
-    it("recomputes only the corridors when the one global width moves", () => {
-        // The slider case, and the whole reason this class exists: a map of a
-        // region and a box recomputing three parts to answer a question about
-        // none of them is tens of milliseconds per frame.
-        const resolver = new SelectionResolver();
-        resolver.resolve(selection, ctx);
-        resolver.stats.computed = 0;
-        resolver.stats.reused = 0;
-        const wider = withCorridorRadius(selection, 6000);
-        const memoised = resolver.resolve(wider, ctx);
-        expect(resolver.stats.computed).toBe(bands);
-        expect(resolver.stats.reused).toBe(2 * bands);
-        expect(shape(memoised)).toEqual(shape(resolveSelection(wider, ctx)));
     });
 
     it("recomputes only the part that was edited", () => {
@@ -386,12 +317,12 @@ describe("SelectionResolver", () => {
         const resolver = new SelectionResolver();
         resolver.resolve(selection, ctx);
         expect(resolver.size).toBe(3 * bands);
-        resolver.resolve(withoutPart(selection, "route-1"), ctx);
+        resolver.resolve(withoutPart(selection, "box-2"), ctx);
         expect(resolver.size).toBe(2 * bands);
 
         resolver.stats.computed = 0;
         resolver.invalidate("box-1");
-        resolver.resolve(withoutPart(selection, "route-1"), ctx);
+        resolver.resolve(withoutPart(selection, "box-2"), ctx);
         expect(resolver.stats.computed).toBe(bands);
 
         resolver.invalidateAll();
@@ -410,7 +341,7 @@ describe("SelectionResolver", () => {
             name: "Terrain box",
             box: { minLat: first.minLat + 1, minLon: first.minLon + 1, maxLat: first.maxLat - 1, maxLon: first.maxLon + 2 * 8192 },
         };
-        const r = resolveSelection({ parts: [wide], corridorRadiusM: 0 }, { ...ctx, terrain });
+        const r = resolveSelection({ parts: [wide] }, { ...ctx, terrain });
         expect(r.terrain.cells).toEqual(["13/38528/33664", "13/38528/33665"]);
         expect(r.terrain.knownEmpty).toEqual(["13/38528/33667"]);
         expect(r.terrain.missing).toEqual(["13/38528/33666"]);
@@ -420,7 +351,7 @@ describe("SelectionResolver", () => {
 
     it("takes a region's terrain from its published list, never from its outline", () => {
         const terrain = exampleTerrainIndex();
-        const r = resolveSelection({ parts: [region], corridorRadiusM: 0 }, { ...ctx, terrain });
+        const r = resolveSelection({ parts: [region] }, { ...ctx, terrain });
         // Exactly the region satellite's `terrain` array — two objects and the
         // one canonically void square.
         expect([...r.terrain.cells, ...r.terrain.knownEmpty].sort()).toEqual(swissCells.terrain);
@@ -428,7 +359,7 @@ describe("SelectionResolver", () => {
     });
 
     it("names no terrain at all when the catalog publishes none (§13)", () => {
-        const r = resolveSelection({ parts: [region], corridorRadiusM: 0 }, ctx);
+        const r = resolveSelection({ parts: [region] }, ctx);
         expect(r.terrain.cells).toEqual([]);
         expect(r.terrain.bytes).toBe(0);
     });
@@ -444,7 +375,7 @@ describe("SelectionResolver", () => {
             }),
         };
         const resolver = new SelectionResolver();
-        expect(() => resolver.resolve({ parts: [region], corridorRadiusM: 0 }, broken)).toThrow(
+        expect(() => resolver.resolve({ parts: [region] }, broken)).toThrow(
             CatalogFormatError,
         );
     });

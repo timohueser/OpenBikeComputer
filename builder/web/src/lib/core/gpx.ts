@@ -1,11 +1,14 @@
 import { core } from "./bridge";
-import type { LatLon } from "../catalog/corridor";
+
+/** A coordinate in integer microdegrees, `lat, lon` — the catalog's order. */
+export interface LatLon {
+    lat: number;
+    lon: number;
+}
 
 export type GpxPoint = LatLon & { ele?: number };
 export type GpxWaypoint = LatLon & { name?: string; note?: string };
-export interface GpxRoute { name: string; points: LatLon[]; distanceKm: number }
 export interface GpxImport { name: string; points: GpxPoint[]; waypoints: GpxWaypoint[] }
-export const MAX_ROUTE_POINTS = core().obc_builder_constants()[5];
 
 export class GpxError extends Error {
     constructor(message: string) { super(message); this.name = "GpxError"; }
@@ -22,8 +25,4 @@ export function readGpx(text: string, fallback: string): GpxImport {
     const imported = read<GpxImport>(() => core().obc_gpx_read(text, fallback));
     for (const waypoint of imported.waypoints) waypoint.name ??= undefined;
     return imported;
-}
-
-export function parseGpx(text: string, fallback: string): GpxRoute {
-    return read(() => core().obc_gpx_parse(text, fallback));
 }

@@ -62,7 +62,7 @@ describe("MapSummary", () => {
 
     it.each([
         { label: "a region border", kind: "region", drawnCells: ["border"], warns: false },
-        ...["box", "lasso", "corridor"].flatMap((kind) => [
+        ...["box"].flatMap((kind) => [
             { label: `a region and a fully covered ${kind}`, kind, drawnCells: ["full"], warns: false },
             { label: `a region and a partly covered ${kind}`, kind, drawnCells: ["full", "border"], warns: true },
         ]),
