@@ -35,12 +35,20 @@ export interface Naming {
 }
 
 /** A plan with no name has the title of its plan. A route that is not a plan has no line. Without `naming`, a route with
- * no name has an empty name. */
+ * no name has the names of its start and its finish. */
 export function routeItem(route: RouteRecord, naming?: Naming): Item {
     const { id, name, summary, updatedAt } = route;
-    if (!naming) return { id, name, summary, updatedAt };
+    if (!naming) return { id, name: name || endNames(route.trip), summary, updatedAt };
     if (!naming.isPlan(route)) return { id, name: name || 'Route that cannot be read', summary: null, updatedAt };
     return { id, name: name || naming.planTitle(route.trip as never), summary, updatedAt };
+}
+
+/** "Start → Finish" from the points of a trip that no check read yet, else "Route". */
+function endNames(trip: unknown): string {
+    const points = (trip as { points?: unknown } | null)?.points;
+    const label = (kind: string) => Array.isArray(points)
+        ? points.find(point => point?.kind === kind && typeof point.label === 'string' && point.label)?.label as string | undefined : undefined;
+    return [label('start'), label('finish')].filter(Boolean).join(' → ') || 'Route';
 }
 
 /** The distance from a place within which a line matches it, by the kind of the place. */
@@ -132,4 +140,19 @@ export async function findPlaces(text: string, view: Box, signal: AbortSignal): 
         name, kind, lon, lat, region: [city, region].filter(part => part && part !== name).join(', '),
         box: west === undefined || south === undefined || east === undefined || north === undefined ? [lon, lat, lon, lat] : [west, south, east, north],
     }));
+}
+
+const isLetter = (char: string | undefined) => !!char && /[\p{L}\p{N}]/u.test(char);
+
+/** Turns the text of the search field into chips and the rest of the text. Today it finds a place that the text names as
+ * whole words; a search that understands requests can later fill the same chips. */
+export async function readSearch(text: string, view: Box, signal: AbortSignal): Promise<{ chips: Chips; rest: string }> {
+    const folded = fold(text);
+    for (const { name, kind, box } of await findPlaces(text, view, signal)) {
+        const at = name ? folded.indexOf(fold(name)) : -1;
+        // `fold` keeps the length of composed text, so `at` is an index of `text` too.
+        if (at < 0 || isLetter(folded[at - 1]) || isLetter(folded[at + name.length])) continue;
+        return { chips: { place: { name, kind, box } }, rest: `${text.slice(0, at)} ${text.slice(at + name.length)}`.replace(/\s+/g, ' ').trim() };
+    }
+    return { chips: {}, rest: text.trim() };
 }

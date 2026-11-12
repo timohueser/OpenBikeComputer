@@ -39,7 +39,7 @@ test('the Routes page lists the routes, filters them with a chip, shows the sele
   await page.goto('/planner.html#/routes');
   const list = page.locator('ul').filter({ hasText: 'Lake test' });
   await expect(page.getByText('3 routes')).toBeVisible();
-  await expect(list.getByRole('button')).toHaveText([/Lake test.*Waits/, /Start → Finish.*3 days · 150 km.*Changed/, /Route that cannot be read/]);
+  await expect(list.getByRole('button')).toHaveText([/Lake test.*Waits/, /Start → Finish.*3 days · 150\skm.*Changed/, /Route that cannot be read/]);
 
   await list.getByRole('button', { name: 'Route that cannot be read' }).click();
   const card = page.getByRole('region', { name: 'Route that cannot be read' });
@@ -60,6 +60,13 @@ test('the Routes page lists the routes, filters them with a chip, shows the sele
   await expect(page.getByText('1 of 3 routes')).toBeVisible();
   await expect(list.getByRole('button')).toHaveText([/Lake test/]);
   await expect(plan).toHaveCount(0);
+
+  // Back from a route brings the search again.
+  await list.getByRole('button', { name: /Lake test/ }).click();
+  await page.getByRole('region', { name: 'Lake test' }).getByRole('link', { name: 'Open' }).click();
+  await expect(page.getByRole('heading', { name: 'Lake test', level: 1 })).toBeVisible();
+  await page.goBack();
+  await expect(page.getByText('1 of 3 routes')).toBeVisible();
 
   await page.getByRole('link', { name: 'New route' }).click();
   await expect(page).toHaveURL(/#\/planner$/);

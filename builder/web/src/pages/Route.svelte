@@ -10,7 +10,7 @@
     import Credits from '../components/planner/Credits.svelte';
     import { writeFitCourse } from '../lib/core/fit';
     import { writeGpx, type GpxImport } from '../lib/core/gpx';
-    import type { CoverRecord, RouteRecord } from '../lib/library/records';
+    import type { CoverRecord, RouteRecord, SentRoute } from '../lib/library/records';
     import type { Library } from '../lib/library/store';
     import { hasEndpoints, planTitle, planView } from '../lib/planner/editor';
     import { downloadPlan, isPlan, isVersion, newPlan } from '../lib/planner/library';
@@ -21,7 +21,7 @@
     import type { Version } from '../lib/planner/versions';
     import { router } from '../lib/router.svelte';
     import { ROUTES } from '../lib/routes';
-    import { deviceState, stateText, waitingWith, type DeviceState } from './routes/state';
+    import { deviceState, stateText, waitingWith } from './routes/state';
 
     let { library }: { library: Library; active: boolean } = $props();
 
@@ -29,13 +29,15 @@
     const legs = new LegCache();
     // Raw: `planView` freezes the trip that it reads.
     let record = $state.raw<RouteRecord | null>();
-    let device = $state<DeviceState>(), cover = $state.raw<CoverRecord>(), swapped = $state(false);
+    let waiting = $state.raw<string[]>(), sent = $state.raw<Record<string, SentRoute>>(), cover = $state.raw<CoverRecord>(), swapped = $state(false);
     let routed = $state.raw<{ key: string; line?: RoutingLine; error?: string }>();
     /** The pointer, as a share of the summary line from 0 to 1. */
     let share = $state<number>();
     let renaming = $state(false), deleting = $state(false), exportOpen = $state(false), failure = $state('');
 
     const plan = $derived(record && isPlan(record) ? record : undefined);
+    // Derived, so the remembered device of a first connection shows at once.
+    const device = $derived(record ? deviceState(record, waiting, sent) : undefined);
     const summary = $derived(record?.summary ?? null);
     const name = $derived(plan ? plan.name || planTitle(plan.trip) : record?.name ?? '');
     const key = $derived(plan && hasEndpoints(plan.trip) ? routingKey(plan.trip) : undefined);
@@ -55,10 +57,10 @@
         record = undefined;
         [cover, swapped, share, renaming, deleting, exportOpen, failure] = [undefined, false, undefined, false, false, false, ''];
         const load = async () => {
-            const [item, waiting, sent, stored] = await Promise.all([library.item(target), library.state('waiting'), library.state('sent'), library.cover(target)]);
+            const [item, ids, copies, stored] = await Promise.all([library.item(target), library.state('waiting'), library.state('sent'), library.cover(target)]);
             if (!live) return;
             record = item && 'revision' in item ? item : null;
-            device = record ? deviceState(record, waiting, sent) : undefined;
+            [waiting, sent] = [ids, copies];
             cover = stored;
         };
         // Also the cover of an earlier line, which shows until the new one arrives.

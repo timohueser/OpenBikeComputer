@@ -35,8 +35,8 @@ describe('route gaps', () => {
             .toBe('Route misses 2 selected points by up to 1.2 km — no accessible path');
         settings.units = 'mi';
         onTestFinished(() => { settings.units = 'km'; });
-        expect(gapNote([gap])).toBe('Route ends 0.1 mi before the selected point — no accessible path');
-        expect(gapNote([{ ...gap, km: 1.24 }])).toBe('Route ends 0.8 mi before the selected point — no accessible path');
+        expect(gapNote([gap])).toBe('Route ends 0.1\u00a0mi before the selected point — no accessible path');
+        expect(gapNote([{ ...gap, km: 1.24 }])).toBe('Route ends 0.8\u00a0mi before the selected point — no accessible path');
     });
 
     it('leaves the join to a manual leg to that leg', async () => {

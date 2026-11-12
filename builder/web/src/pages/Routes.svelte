@@ -12,7 +12,7 @@
     import { ROUTES } from '../lib/routes';
     import { formatDistance, formatHeight } from '../lib/settings/format';
     import Chips from './routes/Chips.svelte';
-    import { results, routeItem, type Box, type Chips as ChipValues, type Naming } from './routes/filter';
+    import { readSearch, results, routeItem, type Box, type Chips as ChipValues, type Naming } from './routes/filter';
     import SelectedCard from './routes/SelectedCard.svelte';
     import { deviceState, type DeviceState } from './routes/state';
 
@@ -35,11 +35,18 @@
     const states = $derived(new Map(records?.map(record => [record.id, deviceState(record, waiting, sent)])));
     const chosen = $derived(shown.find(item => item.id === selected));
     const routes = (count: number) => `${count.toLocaleString('en')} route${count === 1 ? '' : 's'}`;
+    const listed = $derived(records !== undefined);
 
-    // The map fits the results when the list first shows and after a chip change, unless it keeps its view.
+    // The map fits the results when the list first shows and after a chip change, unless it keeps its view. A reload of
+    // the library after a write does not move it.
     $effect(() => {
-        void [records !== undefined, JSON.stringify(chips)];
-        if (records && !untrack(() => onlyView)) untrack(() => fit++);
+        void JSON.stringify(chips);
+        if (listed && !untrack(() => onlyView)) untrack(() => fit++);
+    });
+
+    // Back from another page brings the search again.
+    $effect(() => {
+        history.replaceState({ ...history.state, search: $state.snapshot({ chips, text }) }, '');
     });
 
     async function load() {
@@ -54,7 +61,8 @@
         void load();
         // The planner modules wait for the map catalogue, so the list shows before the titles of plans with no name.
         Promise.all([import('../lib/planner/library'), import('../lib/planner/versions')])
-            .then(([{ isPlan }, { planTitle }]) => { naming = { isPlan, planTitle }; }, () => {});
+            .then(([{ isPlan }, { planTitle }]) => { naming = { isPlan, planTitle }; },
+                reason => { failure = reason instanceof Error ? reason.message : String(reason); });
         let timer: ReturnType<typeof setTimeout> | undefined;
         const stop = library.onChange((store, key) => {
             if (store !== 'routes' && !(store === 'state' && (key === 'waiting' || key === 'sent'))) return;
@@ -78,6 +86,16 @@
         return { destroy: () => { observer.unobserve(node); near.delete(node.dataset.id!); } };
     }
 
+    /** Enter turns a place that the text names into a chip. */
+    async function understand() {
+        try {
+            const read = await readSearch(text, view ?? [-180, -85, 180, 85], AbortSignal.timeout(10_000));
+            [chips, text] = [{ ...chips, ...read.chips }, read.rest];
+        } catch (reason) {
+            failure = reason instanceof Error ? reason.message : String(reason);
+        }
+    }
+
     const addFiles = () => initCore().then(() => import('./AddFiles.svelte')).then(module => module.default);
 </script>
 
@@ -99,7 +117,8 @@
                 {:else if !records.length}
                     <p class="note">No routes yet. Plan one, or add GPX and FIT files.</p>
                 {:else}
-                    <input class="search" type="search" aria-label="Search your routes" placeholder="Search your routes" bind:value={text} />
+                    <input class="search" type="search" aria-label="Search your routes" placeholder="Search your routes, or a place"
+                        bind:value={text} onkeydown={event => { if (event.key === 'Enter' && text.trim()) void understand(); }} />
                     <Chips bind:chips {view} />
                     <p class="count">{shown.length === items.length ? routes(items.length) : `${shown.length.toLocaleString('en')} of ${routes(items.length)}`}</p>
                     <ul>
@@ -120,7 +139,7 @@
                                 </button>
                             </li>
                         {:else}
-                            <li class="note">No route matches.</li>
+                            <li class="note">No route matches. Remove a chip or change the text.</li>
                         {/each}
                     </ul>
                     <div class="switch"><Switch bind:checked={onlyView} label="Only in this map view" /></div>

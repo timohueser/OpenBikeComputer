@@ -1,7 +1,14 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { readSettings, updateSettings } from '../../lib/settings/settings.svelte';
-import { distanceToBox, results, routeItem, type Item } from './filter';
+import { distanceToBox, readSearch, results, routeItem, type Item } from './filter';
+
+vi.mock('../../lib/planner/search/types', () => ({
+    searchPlaces: async () => ({ type: 'places', request: {}, results: [
+        { name: 'Zürichberg', kind: 'hill', lon: 8.57, lat: 47.38 },
+        { name: 'Zürich', kind: 'city', lon: 8.54, lat: 47.37, west: 8.45, south: 47.32, east: 8.63, north: 47.43 },
+    ] }),
+}));
 
 const stored = new Map<string, string>();
 beforeEach(() => {
@@ -71,5 +78,19 @@ describe('routeItem', () => {
     it('names a plan with no name by its title, and a route that is not a plan', () => {
         expect(routeItem(route, { isPlan: () => true, planTitle: () => 'Loop from Bern' }).name).toBe('Loop from Bern');
         expect(routeItem(route, { isPlan: () => false, planTitle: () => '' })).toEqual({ id: 'r', name: 'Route that cannot be read', summary: null, updatedAt: 5 });
+    });
+
+    it('without the planner functions, names a route by the start and the finish of its trip', () => {
+        expect(routeItem({ ...route, trip: { points: [{ kind: 'finish', label: 'Chur' }, { kind: 'start', label: 'Bern' }] } }).name).toBe('Bern → Chur');
+        expect(routeItem(route).name).toBe('Route');
+    });
+});
+
+describe('readSearch', () => {
+    it('turns a place that the text names as whole words into a chip, and keeps the rest of the text', async () => {
+        const signal = new AbortController().signal, view: [number, number, number, number] = [5, 45, 11, 48];
+        expect(await readSearch('gravel zurich  loop', view, signal))
+            .toEqual({ chips: { place: { name: 'Zürich', kind: 'city', box: [8.45, 47.32, 8.63, 47.43] } }, rest: 'gravel loop' });
+        expect(await readSearch(' zurichsee loop ', view, signal)).toEqual({ chips: {}, rest: 'zurichsee loop' });
     });
 });
