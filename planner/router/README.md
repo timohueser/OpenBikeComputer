@@ -66,6 +66,8 @@ Physical phone performance and complete-country preparation need separate valida
 | `directory` | Native packed storage and `open` |
 | `cells` | Format 10: read views of the cell directory and of the parts of a cell, the road record |
 | `install` | Format 10, native only: installs a set of cells as files, checks the objects, reads the files again |
+| `host` | Format 10: lends the bytes of the installed parts. `Maps` (native) maps each file at its first use; `Memory` (WebAssembly, tests) holds the parts |
+| `region` | Format 10: the request data of an install through a host: snapping, roads, costs, turns, closures |
 
 - Snapping uses only roads that the prepared profile permits. A disconnected leg returns `NoPath`;
   it does not retry other roads.

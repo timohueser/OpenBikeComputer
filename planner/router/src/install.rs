@@ -15,7 +15,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
-pub const MAGIC: [u8; 8] = *b"OBCRINST";
 pub const LOCK: &str = "install.lock";
 pub const MARKER: &str = "install.bin";
 pub const CELLS: &str = "cells";
@@ -231,7 +230,7 @@ impl<R: Read> Read for Hashing<R> {
 }
 
 /// Asks the kernel to drop the cached pages of `file`, where it can.
-fn drop_cache(file: &File) {
+pub(crate) fn drop_cache(file: &File) {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         use std::os::fd::AsRawFd;
@@ -435,7 +434,7 @@ where
         fs::rename(&part, &path).map_err(io(&path))
     })?;
     sync(&dir)?;
-    let mut marker = MAGIC.to_vec();
+    let mut marker = cells::INSTALL_MAGIC.to_vec();
     marker.extend(Sha256::digest(directory));
     marker.extend(plan.groups.to_le_bytes());
     let mut records = plan.records.clone();
@@ -487,14 +486,7 @@ where
 pub fn installed(target: &Path) -> Result<(Vec<u8>, Plan)> {
     let read = |name: &str| fs::read(target.join(name)).map_err(io(target));
     let (directory, marker) = (read("directory.bin")?, read(MARKER)?);
-    let field = |at: usize| marker.get(at..at + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
-    let count = field(44).ok_or_else(|| invalid("install.bin is short"))? as u64;
-    if marker.len() as u64 != 48 + 4 * count || marker[..8] != MAGIC || marker[8..40] != Sha256::digest(&directory)[..]
-    {
-        return Err(invalid("install.bin does not name the directory"));
-    }
-    let groups = field(40).unwrap();
-    let records: Vec<u32> = (0..count as usize).map(|k| field(48 + 4 * k).unwrap()).collect();
+    let (groups, records) = cells::marker(&directory, &marker).map_err(invalid)?;
     let files = items(&Directory::new(&directory).map_err(invalid)?, &records, groups)?;
     Ok((directory, Plan { groups, records, files }))
 }

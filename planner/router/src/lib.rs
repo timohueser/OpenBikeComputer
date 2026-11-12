@@ -10,12 +10,14 @@ pub mod data;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod directory;
 pub mod geometry;
+pub mod host;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod install;
 pub mod landmarks;
 pub mod model;
 pub mod package;
 mod queue;
+pub mod region;
 pub mod router;
 pub mod search;
 pub mod shape;

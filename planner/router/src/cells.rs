@@ -11,6 +11,8 @@ use crate::{Error, Result};
 
 pub const FORMAT: u32 = 10;
 pub const MAGIC: [u8; 8] = *b"OBCROUTE";
+/// The magic of the install marker `install.bin`.
+pub const INSTALL_MAGIC: [u8; 8] = *b"OBCRINST";
 /// The bytes of the directory header.
 pub const HEADER: usize = 64;
 pub const MAX_LEVELS: usize = 8;
@@ -213,9 +215,9 @@ impl Header {
 /// The cell directory, `directory.bin`.
 #[derive(Clone, Copy, Debug)]
 pub struct Directory<'a> {
-    bytes: &'a [u8],
+    pub(crate) bytes: &'a [u8],
     pub header: Header,
-    downloads: usize,
+    pub(crate) downloads: usize,
 }
 
 impl<'a> Directory<'a> {
@@ -287,17 +289,7 @@ impl<'a> Directory<'a> {
             return Err(invalid("a cell outside the directory"));
         }
         let at = self.at(index);
-        let parts = (0..self.parts() as u64)
-            .map(|part| {
-                let at = at + 48 + part * PART as u64;
-                Ok(Part {
-                    object: hash_at(self.bytes, at)?,
-                    object_bytes: u32_at(self.bytes, at + 32)?,
-                    sha256: hash_at(self.bytes, at + 36)?,
-                    bytes: u32_at(self.bytes, at + 68)?,
-                })
-            })
-            .collect::<Result<_>>()?;
+        let parts = (0..self.parts()).map(|part| self.part(index, part)).collect::<Result<_>>()?;
         Ok(Cell {
             level: self.level(index),
             id: u32_at(self.bytes, at + 4)?,
@@ -307,6 +299,39 @@ impl<'a> Directory<'a> {
             long_bounds: bounds_at(self.bytes, at + 32)?,
             parts,
         })
+    }
+
+    /// Part entry `part` of record `index`.
+    pub fn part(&self, index: usize, part: usize) -> Result<Part> {
+        if index >= self.len() || part >= self.parts() {
+            return Err(invalid("a part outside the directory"));
+        }
+        let at = self.at(index) + 48 + (part * PART) as u64;
+        Ok(Part {
+            object: hash_at(self.bytes, at)?,
+            object_bytes: u32_at(self.bytes, at + 32)?,
+            sha256: hash_at(self.bytes, at + 36)?,
+            bytes: u32_at(self.bytes, at + 68)?,
+        })
+    }
+
+    /// The `box` and the `long_box` of record `index`.
+    pub fn boxes(&self, index: usize) -> Result<([i32; 4], [i32; 4])> {
+        if index >= self.len() {
+            return Err(invalid("a cell outside the directory"));
+        }
+        Ok((bounds_at(self.bytes, self.at(index) + 16)?, bounds_at(self.bytes, self.at(index) + 32)?))
+    }
+
+    /// The records of the download cells whose `box` meets `window`.
+    pub fn meeting(&self, window: [i32; 4]) -> Result<Vec<usize>> {
+        let mut records = Vec::new();
+        for index in 0..self.downloads {
+            if meets(self.boxes(index)?.0, window) {
+                records.push(index);
+            }
+        }
+        Ok(records)
     }
 
     fn field(&self, index: usize, at: u64) -> Result<u32> {
@@ -355,6 +380,27 @@ impl<'a> Directory<'a> {
         }
         Ok((low < end && key(low)? == (level, id)).then_some(low))
     }
+}
+
+/// Whether two boxes (west, south, east, north) share a point.
+pub fn meets(a: [i32; 4], b: [i32; 4]) -> bool {
+    a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3]
+}
+
+/// The installed profile groups (bit `g` for group `g`) and the installed records that the
+/// install marker `install.bin` names, when it names `directory`.
+pub fn marker(directory: &[u8], marker: &[u8]) -> Result<(u32, Vec<u32>)> {
+    use sha2::{Digest, Sha256};
+    let wrong = || Error::InvalidData("install.bin does not name the directory".into());
+    let count = u32_at(marker, 44).map_err(|_| wrong())?;
+    if marker.len() as u64 != 48 + 4 * u64::from(count)
+        || marker[..8] != INSTALL_MAGIC
+        || marker[8..40] != Sha256::digest(directory)[..]
+    {
+        return Err(wrong());
+    }
+    let records = (0..u64::from(count)).map(|k| u32_at(marker, 48 + 4 * k)).collect::<Result<_>>()?;
+    Ok((u32_at(marker, 40)?, records))
 }
 
 /// A road named by its download cell ID and its index in that cell.

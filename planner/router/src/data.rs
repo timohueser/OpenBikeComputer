@@ -2,10 +2,11 @@
 use crate::{
     base::{Column, Costs, Graph},
     blocks::{self, Ids, Union},
-    closures::Closures,
+    closures::{Closure, Closures},
     landmarks::{self, Guide, Junctions},
     model::{Point, Profile, Road},
     package::{cell_key, digest, Departure, Endpoint, Manifest, Package, Source, MAX_MANIFEST_BYTES, ROADS_PER_PAGE},
+    search::{Found, Query, Workspace},
     snap::{self, Candidates, Policy},
     Error, Result,
 };
@@ -27,26 +28,18 @@ pub trait RoutingData {
     fn snap(&self, point: Point, metric: &str, policy: Policy) -> Result<Candidates>;
     /// Applies `f` to a road without a copy of its shape.
     fn with_road<T>(&self, road: u32, f: impl FnOnce(&Road) -> T) -> Result<T>;
-    fn closures(&self) -> Result<Arc<Closures>>;
+    /// The closures that concern `mode` on `road`, or `None`.
+    fn closing(&self, road: u32, mode: u8) -> Result<Option<Vec<Closure>>>;
     fn endpoint(&self, metric: &str, road: u32) -> Result<Endpoint>;
-    /// A metric's graph, costs and landmark columns, loaded and budgeted together.
-    fn prepared(&self, metric: &str) -> Result<Arc<Prepared>>;
-    /// This router's estimated working set with `metric` prepared: its own label blocks and the
-    /// data the forks hold together.
-    fn routing_bytes(&self, metric: &str) -> Result<usize>;
-    /// The working set of `routing_bytes` on an idle service: only `metric` prepared.
-    fn idle_bytes(&self, metric: &str) -> Result<usize>;
-    /// Drops the cached metrics other than `metric` that no router holds, so that an idle service
-    /// has the room of `idle_bytes`. Returns whether it dropped one.
-    fn release(&self, metric: &str) -> bool;
+    /// The cheapest path of `query` with `metric`. `query.heap_bytes` caps the search queues; the
+    /// engine applies its own budget below it.
+    fn search(&mut self, metric: &str, query: Query<'_>) -> Result<Option<Found>>;
+    /// The router reads these roads next.
+    fn announce(&self, _roads: &[u32]) {}
     fn memory_budget(&self) -> usize;
     fn set_memory_budget(&mut self, bytes: usize);
-    /// The budget native hosts give a router: the costliest profile's routing bytes plus room
-    /// for the search queues and the other cached profiles, at least `MINIMUM_BUDGET`.
-    fn default_budget(&self) -> usize {
-        let costliest = self.profiles().into_iter().filter_map(|profile| self.routing_bytes(profile).ok()).max();
-        MINIMUM_BUDGET.max(costliest.unwrap_or(0).saturating_add(SEARCH_HEAP))
-    }
+    /// The budget native hosts give a router.
+    fn default_budget(&self) -> usize;
 }
 
 /// Room above the costliest profile for search labels and queues and for the cached costs of
@@ -123,6 +116,9 @@ pub struct Selection<S> {
     turn_groups: Arc<BTreeMap<String, usize>>,
     shared: Arc<Shared>,
     memory_budget: usize,
+    workspace: Workspace,
+    /// The metric of the queues in `workspace`.
+    searched: String,
 }
 
 fn turn_groups(manifest: &Manifest) -> BTreeMap<String, usize> {
@@ -152,6 +148,8 @@ impl<S: Source> Selection<S> {
             snap: Arc::new(snap),
             shared: Arc::new(Shared { state: Mutex::new(state), ..Default::default() }),
             memory_budget: usize::MAX,
+            workspace: Workspace::default(),
+            searched: String::new(),
         }
     }
 
@@ -201,6 +199,8 @@ impl<S: Source> Selection<S> {
             turn_groups: Arc::clone(&self.turn_groups),
             shared: Arc::clone(&self.shared),
             memory_budget: self.memory_budget,
+            workspace: Workspace::default(),
+            searched: String::new(),
         }
     }
 
@@ -413,6 +413,72 @@ impl<S: Source> Selection<S> {
         };
         Ok(Prepared { graph: Arc::clone(&union.graph), costs, guide })
     }
+
+    /// The closures of the selected roads, decoded once from their pages and shared by forks.
+    pub fn closures(&self) -> Result<Arc<Closures>> {
+        if let Some(closures) = self.shared.closures.get() {
+            return Ok(Arc::clone(closures));
+        }
+        let package = &self.package;
+        let closures = match &package.manifest().closures {
+            None => Closures::default(),
+            Some(index) => Closures {
+                sets: package.read(&index.sets)?,
+                roads: blocks::numbers(package, &index.roads, self.ids.iter(), self.ids.count as usize)?,
+            },
+        };
+        if !closures.valid() {
+            return Err(Error::InvalidData("Invalid closures".into()));
+        }
+        Ok(Arc::clone(self.shared.closures.get_or_init(|| Arc::new(closures))))
+    }
+
+    /// A metric's graph, costs and landmark columns, loaded and budgeted together.
+    pub fn prepared(&self, metric: &str) -> Result<Arc<Prepared>> {
+        self.package.metric(metric)?;
+        if let Some(prepared) = self.cached(metric) {
+            return Ok(prepared);
+        }
+        {
+            // Make room first, so a metric that cannot fit fails before any page is read.
+            let mut state = lock(&self.shared.state);
+            self.retain(&mut state, metric)?;
+            if self.share(&state, metric)? > self.memory_budget
+                && (!drop_unheld(&mut state, metric) || self.share(&state, metric)? > self.memory_budget)
+            {
+                return Err(if self.idle_bytes(metric)? > self.memory_budget { Error::Limit } else { Error::Memory });
+            }
+        }
+        let _loading = lock(&self.shared.loading);
+        if let Some(prepared) = self.cached(metric) {
+            return Ok(prepared);
+        }
+        let prepared = Arc::new(self.load(metric)?);
+        let mut state = lock(&self.shared.state);
+        self.retain(&mut state, metric)?;
+        state.profiles.push_back((metric.into(), Arc::clone(&prepared)));
+        Ok(prepared)
+    }
+
+    /// This router's estimated working set with `metric` prepared: its own label blocks and the
+    /// data the forks hold together.
+    pub fn routing_bytes(&self, metric: &str) -> Result<usize> {
+        self.package.metric(metric)?;
+        let state = lock(&self.shared.state);
+        self.share(&state, metric)
+    }
+
+    /// The working set of `routing_bytes` on an idle service: only `metric` prepared.
+    pub fn idle_bytes(&self, metric: &str) -> Result<usize> {
+        self.package.metric(metric)?;
+        Ok(self.router_bytes().saturating_add(self.shared_bytes([metric])?))
+    }
+
+    /// Drops the cached metrics other than `metric` that no router holds, so that an idle service
+    /// has the room of `idle_bytes`. Returns whether it dropped one.
+    pub fn release(&self, metric: &str) -> bool {
+        drop_unheld(&mut lock(&self.shared.state), metric)
+    }
 }
 
 impl<S> Drop for Selection<S> {
@@ -491,25 +557,6 @@ impl<S: Source> RoutingData for Selection<S> {
         self.package.with_road(self.ids.source(road)?, f)
     }
 
-    /// The closures of the selected roads, decoded once from their pages and shared by forks.
-    fn closures(&self) -> Result<Arc<Closures>> {
-        if let Some(closures) = self.shared.closures.get() {
-            return Ok(Arc::clone(closures));
-        }
-        let package = &self.package;
-        let closures = match &package.manifest().closures {
-            None => Closures::default(),
-            Some(index) => Closures {
-                sets: package.read(&index.sets)?,
-                roads: blocks::numbers(package, &index.roads, self.ids.iter(), self.ids.count as usize)?,
-            },
-        };
-        if !closures.valid() {
-            return Err(Error::InvalidData("Invalid closures".into()));
-        }
-        Ok(Arc::clone(self.shared.closures.get_or_init(|| Arc::new(closures))))
-    }
-
     fn endpoint(&self, metric: &str, road: u32) -> Result<Endpoint> {
         let source = self.ids.source(road)?;
         let Some(basis) = self.package.prepared_cost(metric, source)? else {
@@ -521,45 +568,34 @@ impl<S: Source> RoutingData for Selection<S> {
         Ok(Endpoint { cost: Some(cost), departures: departures(&prepared.graph, &prepared.costs, road) })
     }
 
-    fn prepared(&self, metric: &str) -> Result<Arc<Prepared>> {
-        self.package.metric(metric)?;
-        if let Some(prepared) = self.cached(metric) {
-            return Ok(prepared);
+    fn closing(&self, road: u32, mode: u8) -> Result<Option<Vec<Closure>>> {
+        Ok(self.closures()?.closing(road, mode))
+    }
+
+    fn search(&mut self, metric: &str, query: Query<'_>) -> Result<Option<Found>> {
+        if self.searched != metric {
+            self.workspace.clear_heaps();
+            self.searched = metric.into();
         }
-        {
-            // Make room first, so a metric that cannot fit fails before any page is read.
-            let mut state = lock(&self.shared.state);
-            self.retain(&mut state, metric)?;
-            if self.share(&state, metric)? > self.memory_budget
-                && (!drop_unheld(&mut state, metric) || self.share(&state, metric)? > self.memory_budget)
-            {
-                return Err(if self.idle_bytes(metric)? > self.memory_budget { Error::Limit } else { Error::Memory });
+        let prepared = self.prepared(metric)?;
+        let (budget, cap) = (self.memory_budget, query.heap_bytes);
+        let heap_bytes = budget.saturating_sub(self.routing_bytes(metric)?).min(cap);
+        let heap_limit = budget.saturating_sub(self.idle_bytes(metric)?).min(cap);
+        let query = Query { heap_bytes, heap_limit, ..query };
+        let potential = match &prepared.guide {
+            Some(guide) => Some(guide.potential(query.starts, query.ends)?),
+            None => None,
+        };
+        let (graph, costs) = (&prepared.graph, &prepared.costs);
+        match self.workspace.run_with_potential(graph, costs, query, potential.as_ref()) {
+            // Cached metrics that no router holds go first, so that an idle service has the room
+            // of `heap_limit` and answers `Memory` only for memory that other requests hold.
+            Err(Error::Memory) if self.release(metric) => {
+                let heap_bytes = budget.saturating_sub(self.routing_bytes(metric)?).min(cap);
+                self.workspace.run_with_potential(graph, costs, Query { heap_bytes, ..query }, potential.as_ref())
             }
+            result => result,
         }
-        let _loading = lock(&self.shared.loading);
-        if let Some(prepared) = self.cached(metric) {
-            return Ok(prepared);
-        }
-        let prepared = Arc::new(self.load(metric)?);
-        let mut state = lock(&self.shared.state);
-        self.retain(&mut state, metric)?;
-        state.profiles.push_back((metric.into(), Arc::clone(&prepared)));
-        Ok(prepared)
-    }
-
-    fn routing_bytes(&self, metric: &str) -> Result<usize> {
-        self.package.metric(metric)?;
-        let state = lock(&self.shared.state);
-        self.share(&state, metric)
-    }
-
-    fn idle_bytes(&self, metric: &str) -> Result<usize> {
-        self.package.metric(metric)?;
-        Ok(self.router_bytes().saturating_add(self.shared_bytes([metric])?))
-    }
-
-    fn release(&self, metric: &str) -> bool {
-        drop_unheld(&mut lock(&self.shared.state), metric)
     }
 
     fn memory_budget(&self) -> usize {
@@ -571,6 +607,13 @@ impl<S: Source> RoutingData for Selection<S> {
             *budget = bytes;
         }
         self.memory_budget = bytes;
+    }
+
+    /// The costliest profile's routing bytes plus room for the search queues and the other cached
+    /// profiles, at least `MINIMUM_BUDGET`.
+    fn default_budget(&self) -> usize {
+        let costliest = self.profiles().into_iter().filter_map(|profile| self.routing_bytes(profile).ok()).max();
+        MINIMUM_BUDGET.max(costliest.unwrap_or(0).saturating_add(SEARCH_HEAP))
     }
 }
 
