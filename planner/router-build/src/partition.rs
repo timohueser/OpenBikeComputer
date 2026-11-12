@@ -226,8 +226,10 @@ struct Junctions {
 const UNSEEN: u32 = (1 << 30) - 1;
 /// The level of a junction on the sink side after a flow.
 const SINK_SIDE: u32 = UNSEEN - 1;
-/// The level of a dead end of a phase of the flow.
-const DEAD: u32 = UNSEEN - 3;
+/// Above each level of a phase of the flow, and below the levels of the sides (`ISLAND`,
+/// `SINK_SIDE`, `UNSEEN`). Small in tests, so that their flows reset the levels; a part of
+/// 200 junctions or more then resets them at each phase.
+const PHASE_END: u32 = if cfg!(test) { 200 } else { UNSEEN - 3 };
 const LEVEL: u32 = (1 << 30) - 1;
 /// A sink of the flow.
 const SINK: u32 = 1 << 30;
@@ -333,12 +335,17 @@ impl Part<'_> {
     /// `SINK`. Returns `None` when the flow passes `bound`. Afterwards the levels of the junctions
     /// that the sources reach are below `UNSEEN`. Each maximum flow gives this set. The search of a
     /// phase starts at the sources with an arc to another junction and runs until it reaches no new
-    /// junction; it does not expand a sink, and it resets only the junctions that it reached. It
-    /// does not stop at the level of the first sink: each phase would then push flow on the
-    /// shortest paths only, which costs more phases.
+    /// junction; it does not expand a sink. It does not stop at the level of the first sink: each
+    /// phase would then push flow on the shortest paths only, which costs more phases.
+    ///
+    /// The sources have level 0. The levels of a phase start at `start`, above those of the phases
+    /// before it, so the levels `1..start` count as unseen, and no phase walks its junctions again
+    /// to reset them. `start` is at least 2, so a dead end gets level 1 and is unseen in the next
+    /// phase. When the levels come near `PHASE_END`, all but the sources go back to 1.
     fn flow(&mut self, graph: &Junctions, k: usize, bound: Option<u64>) -> Option<u64> {
-        for place in 0..self.at.len() {
-            self.set_level(place, UNSEEN);
+        let n = self.at.len();
+        for place in 0..n {
+            self.set_level(place, 1);
         }
         for i in 0..k {
             let place = self.place(graph, self.queue[i]).expect("a source of the part");
@@ -357,13 +364,22 @@ impl Part<'_> {
             }
         }
         let mut flow = 0u64;
+        let mut start = 2;
         loop {
+            if start as usize + n >= PHASE_END as usize {
+                for place in 0..n {
+                    if self.level[place] & LEVEL != 0 {
+                        self.set_level(place, 1);
+                    }
+                }
+                start = 2;
+            }
             let mut tail = k;
             for i in 0..border {
                 let source = self.queue[i];
                 let place = self.place(graph, source).expect("a source of the part");
                 self.current[place] = graph.first[source as usize];
-                tail = self.expand(graph, source, tail);
+                tail = self.expand(graph, source, tail, start);
             }
             let (mut head, mut reached) = (k, false);
             while head < tail {
@@ -373,38 +389,45 @@ impl Part<'_> {
                     reached = true;
                     continue;
                 }
-                tail = self.expand(graph, junction, tail);
+                tail = self.expand(graph, junction, tail, start);
             }
             if !reached {
+                for place in 0..n {
+                    if (1..start).contains(&(self.level[place] & LEVEL)) {
+                        self.set_level(place, UNSEEN);
+                    }
+                }
                 return Some(flow);
             }
+            // The highest level of this phase; `blocking` writes its path over the queue.
+            let last = self.queue[tail - 1];
+            let top = self.level[self.place(graph, last).expect("a queued junction")] & LEVEL;
             for i in 0..border {
-                flow += self.blocking(graph, self.queue[i], k);
+                flow += self.blocking(graph, self.queue[i], k, start);
                 if bound.is_some_and(|bound| flow > bound) {
                     return None;
                 }
             }
-            // The junctions of this phase: each is linked to a source by junctions of the phase.
-            let mut tail = k;
-            for i in 0..border {
-                tail = self.clear(graph, self.queue[i], tail);
-            }
-            let mut head = k;
-            while head < tail {
-                head += 1;
-                tail = self.clear(graph, self.queue[head - 1], tail);
-            }
+            start = top + 1;
         }
     }
 
-    /// Gives the next level to each neighbour of `junction` over an arc with residual that no
-    /// search reached, and queues it at `tail`. Returns the new tail.
-    fn expand(&mut self, graph: &Junctions, junction: u32, mut tail: usize) -> usize {
-        let next = (self.level[self.place(graph, junction).expect("a junction of the part")] & LEVEL) + 1;
+    /// The level after that of the junction at `place` in the phase whose levels start at `start`.
+    fn next(&self, place: usize, start: u32) -> u32 {
+        match self.level[place] & LEVEL {
+            0 => start,
+            level => level + 1,
+        }
+    }
+
+    /// Gives the next level to each neighbour of `junction` over an arc with residual that this
+    /// phase did not reach, and queues it at `tail`. Returns the new tail.
+    fn expand(&mut self, graph: &Junctions, junction: u32, mut tail: usize, start: u32) -> usize {
+        let next = self.next(self.place(graph, junction).expect("a junction of the part"), start);
         for arc in graph.arcs(junction) {
             let neighbour = graph.adj[arc];
             let Some(other) = self.place(graph, neighbour) else { continue };
-            if graph.residual[arc].load(Relaxed) > 0 && self.level[other] & LEVEL == UNSEEN {
+            if graph.residual[arc].load(Relaxed) > 0 && (1..start).contains(&(self.level[other] & LEVEL)) {
                 self.set_level(other, next);
                 self.current[other] = graph.first[neighbour as usize];
                 self.queue[tail] = neighbour;
@@ -414,24 +437,9 @@ impl Part<'_> {
         tail
     }
 
-    /// Gives `UNSEEN` to each neighbour of `junction` with a level of a phase, and queues it at
-    /// `tail`. Returns the new tail.
-    fn clear(&mut self, graph: &Junctions, junction: u32, mut tail: usize) -> usize {
-        for arc in graph.arcs(junction) {
-            let neighbour = graph.adj[arc];
-            let Some(other) = self.place(graph, neighbour) else { continue };
-            if !matches!(self.level[other] & LEVEL, 0 | UNSEEN) {
-                self.set_level(other, UNSEEN);
-                self.queue[tail] = neighbour;
-                tail += 1;
-            }
-        }
-        tail
-    }
-
     /// Pushes flow from `source` along paths of rising level until no path is left. The path after
     /// the source is in `queue[k..]`. Returns the flow.
-    fn blocking(&mut self, graph: &Junctions, source: u32, k: usize) -> u64 {
+    fn blocking(&mut self, graph: &Junctions, source: u32, k: usize, start: u32) -> u64 {
         let mut flow = 0;
         let mut depth = 0;
         loop {
@@ -443,7 +451,7 @@ impl Part<'_> {
                 continue;
             }
             let end = graph.first[junction as usize + 1];
-            let next = (self.level[place] & LEVEL) + 1;
+            let next = self.next(place, start);
             let mut found = None;
             while self.current[place] < end {
                 let arc = self.current[place] as usize;
@@ -466,7 +474,7 @@ impl Part<'_> {
                         return flow;
                     }
                     // A dead end: no path passes here again in this phase.
-                    self.set_level(place, DEAD);
+                    self.set_level(place, 1);
                     depth -= 1;
                     let parent = if depth == 0 { source } else { self.queue[k + depth - 1] };
                     let parent = self.place(graph, parent).expect("a junction of the path");
@@ -854,6 +862,122 @@ mod tests {
             })
         };
         assert_eq!(run(1), run(4));
+    }
+
+    /// Junctions `0..n` in their own order, with the roads `(a, b, capacity)`, each pair once.
+    fn junctions(n: u32, roads: &[(u32, u32, u8)]) -> Junctions {
+        let mut lists = vec![Vec::new(); n as usize];
+        for &(a, b, capacity) in roads {
+            lists[a as usize].push((b, capacity));
+            lists[b as usize].push((a, capacity));
+        }
+        let (mut first, mut adj, mut capacity) = (vec![0], Vec::new(), Vec::new());
+        for list in &mut lists {
+            list.sort_unstable();
+            adj.extend(list.iter().map(|&(b, _)| b));
+            capacity.extend(list.iter().map(|&(_, c)| c));
+            first.push(adj.len() as u32);
+        }
+        Junctions {
+            walk1: (0..n).collect(),
+            point: vec![[0, 0]; n as usize],
+            first,
+            adj,
+            residual: capacity.iter().map(|&c| AtomicU8::new(c)).collect(),
+            capacity,
+            pos: (0..n).map(AtomicU32::new).collect(),
+        }
+    }
+
+    /// The maximum flow from `sources` to `sinks` by shortest augmenting paths, and the junctions
+    /// that the sources reach after it.
+    fn plain_flow(n: usize, roads: &[(u32, u32, u8)], sources: &[u32], sinks: &[u32]) -> (u64, Vec<bool>) {
+        let mut residual = vec![vec![0i32; n]; n];
+        for &(a, b, capacity) in roads {
+            residual[a as usize][b as usize] += i32::from(capacity);
+            residual[b as usize][a as usize] += i32::from(capacity);
+        }
+        let mut flow = 0;
+        loop {
+            let mut parent = vec![usize::MAX; n];
+            let mut queue: std::collections::VecDeque<usize> = sources.iter().map(|&s| s as usize).collect();
+            for &source in sources {
+                parent[source as usize] = source as usize;
+            }
+            let mut sink = None;
+            while let Some(u) = queue.pop_front() {
+                if sinks.contains(&(u as u32)) {
+                    sink = Some(u);
+                    break;
+                }
+                for v in 0..n {
+                    if residual[u][v] > 0 && parent[v] == usize::MAX {
+                        parent[v] = u;
+                        queue.push_back(v);
+                    }
+                }
+            }
+            let Some(sink) = sink else {
+                return (flow, parent.iter().map(|&p| p != usize::MAX).collect());
+            };
+            let mut path = vec![sink];
+            while parent[path[path.len() - 1]] != path[path.len() - 1] {
+                path.push(parent[path[path.len() - 1]]);
+            }
+            let bottleneck = path.windows(2).map(|w| residual[w[1]][w[0]]).min().unwrap();
+            for w in path.windows(2) {
+                residual[w[1]][w[0]] -= bottleneck;
+                residual[w[0]][w[1]] += bottleneck;
+            }
+            flow += bottleneck as u64;
+        }
+    }
+
+    #[test]
+    fn the_flow_gives_the_cut_of_a_plain_maximum_flow() {
+        let mut seed = 7u64;
+        let mut random = |below: u32| {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as u32 % below
+        };
+        for round in 0..300 {
+            // A 7 × 7 grid with some roads missing (dead ends and islands), parallel roads, and some
+            // roads made chains of junctions with unequal capacities. Every 3rd graph has
+            // capacity 1 everywhere, so that many cuts are minimal.
+            let mut n = 49;
+            let mut roads = Vec::new();
+            for i in 0..49u32 {
+                for next in [i + 1, i + 7].into_iter().filter(|&next| next < 49 && (next == i + 7 || i % 7 != 6)) {
+                    if random(6) == 0 {
+                        continue;
+                    }
+                    let capacity =
+                        |random: &mut dyn FnMut(u32) -> u32| if round % 3 == 0 { 1 } else { 1 + random(3) as u8 };
+                    let mut from = i;
+                    for _ in 0..[0, 0, 1, 3][random(4) as usize] {
+                        roads.push((from, n, capacity(&mut random)));
+                        (from, n) = (n, n + 1);
+                    }
+                    roads.push((from, next, capacity(&mut random)));
+                }
+            }
+            let sources: Vec<u32> = (0..49).filter(|i| i % 7 < 2).collect();
+            let sinks: Vec<u32> = (0..49).filter(|i| i % 7 > 4).collect();
+            let (expected, reached) = plain_flow(n as usize, &roads, &sources, &sinks);
+
+            let graph = junctions(n, &roads);
+            let (mut at, mut level) = ((0..n).collect::<Vec<_>>(), vec![0u32; n as usize]);
+            let (mut current, mut queue) = (vec![0u32; n as usize], vec![0u32; n as usize]);
+            queue[..sources.len()].copy_from_slice(&sources);
+            for &sink in &sinks {
+                level[sink as usize] |= SINK;
+            }
+            let mut part = Part { lo: 0, at: &mut at, level: &mut level, current: &mut current, queue: &mut queue };
+            let flow = part.flow(&graph, sources.len(), None);
+            assert_eq!(flow, Some(expected), "round {round}");
+            let found: Vec<bool> = level.iter().map(|&level| level & LEVEL != UNSEEN).collect();
+            assert_eq!(found, reached, "round {round}");
+        }
     }
 
     #[test]
