@@ -183,13 +183,15 @@ deleted after seven days, as described there.
 
 ## 9. Storage on your device
 
-The light/dark switch of the website and of the map builder stores your chosen appearance
-locally in `localStorage` under `obc-theme`. Without a choice, your browser setting applies.
+The light/dark switch of the website and of the map builder, and the row "Look" on the
+Settings page of the route planner, store your chosen appearance locally in `localStorage`
+under `obc-theme`. Without a choice, your browser setting applies.
 The value is not sent to a server. It stays stored until you delete the website data in your
 browser.
 
 The web application uses local device storage. The map builder
-uses `localStorage` and the browser's *Origin Private File System* (OPFS). This data stays on
+uses `localStorage` and the browser's *Origin Private File System* (OPFS). The route planner
+uses `localStorage` and the browser database *IndexedDB*. This data stays on
 the device that you use. It is not transmitted to the controller.
 
 | Data | Purpose and duration |
@@ -200,12 +202,12 @@ the device that you use. It is not transmitted to the controller.
 | Map cells kept for reuse (optional) | Only if you enable "Keep downloaded map cells for future builds". Kept until you disable the option, until you choose "Delete stored map data", until you delete browser data, or until a new catalog generation replaces the old one. |
 | Your choice to reuse map cells | So that the setting you chose is kept at a later visit. Kept until the next change or until you delete the website data. |
 | Answered firmware notices, with device serial number and offered version | Only after you close or open a notice, so that the same question does not appear again for the same device. At most the 32 most recent answers. Kept until you delete the website data. |
-| Current trip plan of the route planner (`obc-planner-routing-v2`) | Automatically saved draft with waypoints and stages, so that it survives a reload. Kept until it is replaced or you delete the website data. It leaves the browser only as a search request under section 7.1. |
-| Saved plan versions of the route planner (`obc-planner-lab-versions-v1`) | Only when you save one. Kept until you delete it in the version list or delete the website data. |
+| Library of the route planner (IndexedDB `obc-library`): routes and their versions, rides with their files, and cover images | Saved when you save a route or add a ride, so that your library stays in this browser. Kept until you delete it, use "Delete all" on the Settings page, or delete the website data. It leaves the browser only in a backup file that you save, and as a search request under section 7.1. |
+| Settings of the route planner (`obc-settings`): units, pace, maximum heart rate and threshold power | So that the settings you chose are kept at a later visit. Kept until the next change or until you delete the website data. The values go into a backup file that you save. |
 | Chosen bike profile for routes (`obcm.routeBikeType`) | So that the setting you chose is kept at a later visit. Kept until the next change or until you delete the website data. |
 
-Saving and reading the working data for a short time, saving the trip plan, saved plan
-versions and chosen settings, and saving a skin or an answered firmware notice that you
+Saving and reading the working data for a short time, saving the library of the route
+planner and chosen settings, and saving a skin or an answered firmware notice that you
 explicitly saved are necessary for the function that you requested (§ 25(2) no. 2 TDDDG).
 These processes need no consent.
 
