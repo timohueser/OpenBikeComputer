@@ -6,15 +6,13 @@
     import { saveBlob } from '../lib/download';
     import { loadBackup, saveBackup } from '../lib/library/backup';
     import type { Library } from '../lib/library/store';
-    import { formatSpeed } from '../lib/settings/format';
-    import { PACES, readSettings, settings, updateSettings, type Pace, type RiderValue, type Units } from '../lib/settings/settings.svelte';
+    import { readSettings, settings, updateSettings, type RiderValue, type Units } from '../lib/settings/settings.svelte';
     import { appearance, setLook, type Look } from '../lib/theme.svelte';
 
     let { library }: { library: Library; active: boolean } = $props();
 
     const units: { value: Units; label: string }[] = [{ value: 'km', label: 'Kilometres' }, { value: 'mi', label: 'Miles' }];
     const looks: { value: Look; label: string }[] = [{ value: 'system', label: 'As the computer' }, { value: 'light', label: 'Light' }, { value: 'dark', label: 'Dark' }];
-    const paces = Object.entries(PACES).map(([value, { label }]) => ({ value: value as Pace, label }));
     const values = [
         { key: 'maxHr', label: 'Maximum heart rate', unit: 'bpm' },
         { key: 'ftp', label: 'Threshold power (FTP)', unit: 'W' },
@@ -87,13 +85,6 @@
             <div class="row">
                 <strong>Look</strong>
                 <Segmented label="Look" options={looks} value={appearance.look} onChange={setLook} />
-            </div>
-            <div class="row">
-                <div>
-                    <strong>Pace</strong>
-                    <p>For the times that the planner gives. {PACES[settings.pace].label} is {formatSpeed(PACES[settings.pace].kmh / 3.6)} on a flat gravel road.</p>
-                </div>
-                <Segmented label="Pace" options={paces} value={settings.pace} onChange={value => updateSettings({ pace: value })} />
             </div>
             {#each values as { key, label, unit } (key)}
                 {@const value = settings[key]}

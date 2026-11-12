@@ -1,5 +1,3 @@
-import type { Bike } from '../library/records';
-import { plannedSeconds } from '../settings/format';
 import { duration, type ItineraryDay, type PlanView, type Trip } from './editor';
 import { addDays, weekdayLabel } from './layers/data-layer';
 import { sleepIcon } from './search/presentation';
@@ -40,9 +38,9 @@ export function compareDays(trip: Trip, view: PlanView, proposals: Map<number, P
     }) };
 }
 
-/** One line about a version: "6 days with 1 rest day · 3h 10m to 5h 40m of riding a day", at the pace of the rider. */
-export function compareSummary(days: CompareDay[], bike: Bike): string {
-    const rests = days.filter(d => d.rest).length, hours = days.flatMap(d => d.rest ? [] : [plannedSeconds(d.day.hours * 3600, bike) / 3600]);
+/** One line about a version: "6 days with 1 rest day · 3h 10m to 5h 40m of riding a day". */
+export function compareSummary(days: CompareDay[]): string {
+    const rests = days.filter(d => d.rest).length, hours = days.flatMap(d => d.rest ? [] : [d.day.hours]);
     const range = hours.length ? `${duration(Math.min(...hours))} to ${duration(Math.max(...hours))} of riding a day` : '';
     return [`${days.length} ${days.length === 1 ? 'day' : 'days'}${rests ? ` with ${rests} rest ${rests === 1 ? 'day' : 'days'}` : ''}`, range].filter(Boolean).join(' · ');
 }

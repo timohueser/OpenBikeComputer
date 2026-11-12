@@ -7,14 +7,11 @@
     import { clockTime, nightLow, sunsetAt } from '../../lib/planner/evening';
     import { stopCounts, type Stop, type StopPlace } from '../../lib/planner/stops';
     import type { Day, Place } from '../../lib/planner/editor';
-    import type { Bike } from '../../lib/library/records';
-    import { plannedSeconds } from '../../lib/settings/format';
 
-    let { stop, days, bike, labels, theme, date, elevation, onBack, onEndHere, onStay, onSelectPlace }: {
+    let { stop, days, labels, theme, date, elevation, onBack, onEndHere, onStay, onSelectPlace }: {
         stop: Stop;
         /** The day that ends here and the day that starts here. */
         days: [Day, Day];
-        bike: Bike;
         labels: [number, number];
         theme: 'light' | 'dark';
         date?: string;
@@ -52,8 +49,8 @@
             return hours ? `${place.label} (${hours.days} ${hours.periods.join(', ')})` : place.label;
         }).join(', ');
     }
-    function plannedTime(hours: number) {
-        const minutes = Math.round(plannedSeconds(hours * 3600, bike) / 60);
+    function duration(hours: number) {
+        const minutes = Math.round(hours * 60);
         return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`;
     }
 </script>
@@ -68,7 +65,7 @@
         {#each days as day, i}
             <div style:--day={dayColor(day.number, theme)}>
                 <dt><span class="badge">{labels[i]}</span>Day {labels[i]} {i ? 'starts here' : 'ends here'}</dt>
-                <dd>{day.distance.toFixed(1)} km · {plannedTime(day.hours)} · ↑ {Math.round(day.ascent)} m</dd>
+                <dd>{day.distance.toFixed(1)} km · {duration(day.hours)} · ↑ {Math.round(day.ascent)} m</dd>
             </div>
         {/each}
     </dl>

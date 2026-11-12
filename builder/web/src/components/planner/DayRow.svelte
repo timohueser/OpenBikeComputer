@@ -7,7 +7,6 @@
     import { kindLabel, sleepIcon } from '../../lib/planner/search/presentation';
     import { dayStops, duration, planView, type ItineraryDay, type RoutePoint, type Trip, type Day } from '../../lib/planner/editor';
     import type { RoutingLine } from '../../lib/planner/routing';
-    import { plannedSeconds } from '../../lib/settings/format';
 
     let {
         trip, line, day, days, theme, scale, expanded, choosing, conflict, selectedId, revealId, hoveredId = null, onHover, calendar,
@@ -73,14 +72,14 @@
             <span class="badge">{day.number}</span>
             <h2>{start} → {end}</h2>
         </header>
-        <RouteStats distance={day.distance} ascent={ascentKnown ? day.ascent : null} descent={ascentKnown ? day.descent : null} bike={trip.bike ?? 'touring'} hours={line ? day.hours : null} />
+        <RouteStats distance={day.distance} ascent={ascentKnown ? day.ascent : null} descent={ascentKnown ? day.descent : null} walking={trip.bike === 'hiking'} hours={line ? day.hours : null} />
     {:else}
     <button type="button" class="heading" data-day={riding} onclick={onToggle} aria-label={`Open day ${day.number}: ${start} to ${end}`}>
         <span class="heading-content">
         <span class="badge">{day.number}</span>
         <span class="title">
             <strong>Day {day.number}</strong>
-            <small>{duration(plannedSeconds(day.hours * 3600, trip.bike ?? 'touring') / 3600)} · ↑ {ascentKnown ? day.ascent : '—'} m · ↓ {ascentKnown ? day.descent : '—'} m{day.pinned?.placeKind ? ` · ${kindLabel(day.pinned.placeKind)}` : ''}</small>
+            <small>{duration(day.hours)} · ↑ {ascentKnown ? day.ascent : '—'} m · ↓ {ascentKnown ? day.descent : '—'} m{day.pinned?.placeKind ? ` · ${kindLabel(day.pinned.placeKind)}` : ''}</small>
         </span>
         <span class="distance">{day.distance.toFixed(1)}<small>km</small></span>
         <Icon name="chevron" size={14} />

@@ -1,7 +1,6 @@
-import type { Bike } from '../library/records';
-import { PACES, settings } from './settings.svelte';
+import { settings } from './settings.svelte';
 
-// Each function reads `settings.units` or `settings.pace`, so markup that calls it follows a change.
+// Each function reads `settings.units`, so markup that calls it follows a change.
 
 const MILE = 1609.344;
 const FOOT = 0.3048;
@@ -44,9 +43,4 @@ export function formatHeight(metres: number): string {
 export function formatSpeed(metresPerSecond: number): string {
     if (!Number.isFinite(metresPerSecond)) return NONE;
     return settings.units === 'mi' ? `${number(metresPerSecond * 3600 / MILE, 1)} mph` : `${number(metresPerSecond * 3.6, 1)} km/h`;
-}
-
-/** A routing time at the pace of the rider. The pace is a cycling speed, so a time on foot does not change. */
-export function plannedSeconds(seconds: number, bike: Bike): number {
-    return bike === 'hiking' ? seconds : seconds * PACES.moderate.kmh / PACES[settings.pace].kmh;
 }
