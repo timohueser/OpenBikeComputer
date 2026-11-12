@@ -20,11 +20,11 @@ from pathlib import Path
 # increase the permitted production download or raw WASM size.
 BUDGETS = {
     "builder": {"gzipped": (62 + 352 + 128) * 1024, "raw_wasm": (112 + 944 + 272) * 1024},
-    # Measured on the build with the outline's turns, the levels of the way graph, the faces' tile-line
-    # vertices, the shared water level and curve of the feature bake, line water and its culverts (752,652 B
-    # gzipped with the glue, 1,954,029 B raw), the next whole KiB. The owner allows a few per cent for line water
-    # and 15 to 25 kB for the crossing block when stated.
-    "ground-plan": {"gzipped": 736 * 1024, "raw_wasm": 1909 * 1024},
+    # Measured in CI on the build with the outline's turns, the levels of the way graph, the faces' tile-line
+    # vertices, the shared water level and curve of the feature bake, line water and its culverts (755,925 B
+    # gzipped with the glue, 1,957,326 B raw; a local build of the same tree is about 3 KB smaller), the next whole
+    # KiB. The owner allows a few per cent for line water and 15 to 25 kB for the crossing block when stated.
+    "ground-plan": {"gzipped": 739 * 1024, "raw_wasm": 1912 * 1024},
 }
 
 ADVICE = {
