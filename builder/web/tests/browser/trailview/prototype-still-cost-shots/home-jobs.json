@@ -1,0 +1,74 @@
+[
+ {
+  "name": "home-engelberg-titlis-08",
+  "view": "?lat=46.8205&lon=8.403&heading=160&pitch=5&eye=1.6&date=2026-08-15&time=08:00&weather=sunny&scale=0.75",
+  "width": 2560,
+  "height": 1440
+ },
+ {
+  "name": "home-engelberg-titlis-13",
+  "view": "?lat=46.8205&lon=8.403&heading=160&pitch=5&eye=1.6&date=2026-08-15&time=13:00&weather=sunny&scale=0.75",
+  "width": 2560,
+  "height": 1440
+ },
+ {
+  "name": "home-engelberg-titlis-18",
+  "view": "?lat=46.8205&lon=8.403&heading=160&pitch=5&eye=1.6&date=2026-08-15&time=18:00&weather=sunny&scale=0.75",
+  "width": 2560,
+  "height": 1440
+ },
+ {
+  "name": "home-engelberg-titlis-23",
+  "view": "?lat=46.8205&lon=8.403&heading=160&pitch=5&eye=1.6&date=2026-08-15&time=23:00&weather=sunny&scale=0.75",
+  "width": 2560,
+  "height": 1440
+ },
+ {
+  "name": "home-lauterbrunnen-08",
+  "view": "?lat=46.5935&lon=7.9086&heading=170&pitch=4&eye=1.6&date=2026-08-15&time=08:00&weather=sunny&scale=0.75",
+  "width": 2560,
+  "height": 1440
+ },
+ {
+  "name": "home-lauterbrunnen-13",
+  "view": "?lat=46.5935&lon=7.9086&heading=170&pitch=4&eye=1.6&date=2026-08-15&time=13:00&weather=sunny&scale=0.75",
+  "width": 2560,
+  "height": 1440
+ },
+ {
+  "name": "home-lauterbrunnen-18",
+  "view": "?lat=46.5935&lon=7.9086&heading=170&pitch=4&eye=1.6&date=2026-08-15&time=18:00&weather=sunny&scale=0.75",
+  "width": 2560,
+  "height": 1440
+ },
+ {
+  "name": "home-lauterbrunnen-23",
+  "view": "?lat=46.5935&lon=7.9086&heading=170&pitch=4&eye=1.6&date=2026-08-15&time=23:00&weather=sunny&scale=0.75",
+  "width": 2560,
+  "height": 1440
+ },
+ {
+  "name": "home-rigi-kulm-08",
+  "view": "?lat=47.0565&lon=8.4855&heading=215&pitch=-2&eye=1.6&date=2026-08-15&time=08:00&weather=sunny&scale=0.75",
+  "width": 2560,
+  "height": 1440
+ },
+ {
+  "name": "home-rigi-kulm-13",
+  "view": "?lat=47.0565&lon=8.4855&heading=215&pitch=-2&eye=1.6&date=2026-08-15&time=13:00&weather=sunny&scale=0.75",
+  "width": 2560,
+  "height": 1440
+ },
+ {
+  "name": "home-rigi-kulm-18",
+  "view": "?lat=47.0565&lon=8.4855&heading=215&pitch=-2&eye=1.6&date=2026-08-15&time=18:00&weather=sunny&scale=0.75",
+  "width": 2560,
+  "height": 1440
+ },
+ {
+  "name": "home-rigi-kulm-23",
+  "view": "?lat=47.0565&lon=8.4855&heading=215&pitch=-2&eye=1.6&date=2026-08-15&time=23:00&weather=sunny&scale=0.75",
+  "width": 2560,
+  "height": 1440
+ }
+]

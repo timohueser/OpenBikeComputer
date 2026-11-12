@@ -1,0 +1,44 @@
+[
+ {
+  "name": "r15-engelberg-top",
+  "view": "?lat=46.871474&lon=8.388194&heading=0.0&pitch=-89.0&alt=13324&date=2026-08-15&time=15:00&weather=sunny&scale=0.75",
+  "width": 1920,
+  "height": 1080,
+  "route": "r15-engelberg.json"
+ },
+ {
+  "name": "r15-engelberg-angle",
+  "view": "?lat=46.790327&lon=8.418798&heading=345.5&pitch=-35.0&alt=7201&date=2026-08-15&time=15:00&weather=sunny&scale=0.75",
+  "width": 1920,
+  "height": 1080,
+  "route": "r15-engelberg.json"
+ },
+ {
+  "name": "r80-luzern-interlaken-top",
+  "view": "?lat=46.868260&lon=8.096714&heading=0.0&pitch=-89.0&alt=41166&date=2026-08-15&time=15:00&weather=sunny&scale=0.75",
+  "width": 1920,
+  "height": 1080,
+  "route": "r80-luzern-interlaken.json"
+ },
+ {
+  "name": "r80-luzern-interlaken-angle",
+  "view": "?lat=47.156131&lon=8.433021&heading=218.6&pitch=-35.0&alt=29287&date=2026-08-15&time=15:00&weather=sunny&scale=0.75",
+  "width": 1920,
+  "height": 1080,
+  "route": "r80-luzern-interlaken.json"
+ },
+ {
+  "name": "rlong-thun-andermatt-top",
+  "view": "?lat=46.908017&lon=8.185298&heading=0.0&pitch=-89.0&alt=62726&date=2026-08-15&time=15:00&weather=sunny&scale=0.75",
+  "width": 1920,
+  "height": 1080,
+  "route": "rlong-thun-andermatt.json"
+ },
+ {
+  "name": "rlong-thun-andermatt-angle",
+  "view": "?lat=46.660330&lon=7.265210&heading=68.5&pitch=-35.0&alt=53256&date=2026-08-15&time=15:00&weather=sunny&scale=0.75",
+  "width": 1920,
+  "height": 1080,
+  "route": "rlong-thun-andermatt.json"
+ }
+]
