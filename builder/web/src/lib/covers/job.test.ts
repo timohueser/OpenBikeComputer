@@ -1,9 +1,10 @@
 import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { RouteRecord } from '../library/records';
+import type { CoverRecord, RouteRecord } from '../library/records';
 import { Library } from '../library/store';
 import type { Still, StillJob } from '../trailview/still';
 import { lineKey, settled, startCoverJob, wantCover, type Renderer } from './job';
+import type { MapPictureMaker, MapPictureResult } from './map-picture';
 
 const route = (id: string, name = id, line = [8.38, 46.82, 8.42, 46.81]): RouteRecord => ({
     id, revision: 0, name, updatedAt: Date.UTC(2026, 7, 15), trip: {},
@@ -14,6 +15,7 @@ const result: Still = {
     points: { x: Float32Array.of(10, 20), y: Float32Array.of(10, 20), distance: Float32Array.of(900, 1200), visible: Uint8Array.of(1, 1) },
     credits: ['Terrain test data'],
 };
+const picture: MapPictureResult = { image: new Blob(['map']), points: { x: Float32Array.of(1, 2), y: Float32Array.of(1, 2), eye: Uint8Array.of(129, 129) }, credits: ['Map test data'] };
 const failure = (name: string) => Object.assign(new Error(name), { name });
 
 /** A fake TrailView: each still waits until the test settles it, or rejects as `still` does when its signal aborts. */
@@ -35,6 +37,16 @@ function fake() {
     return { renderer, stills, setOpen };
 }
 
+/** A fake map picture: each one waits until the test settles it. */
+function fakePicture() {
+    const calls: { resolve: (made: MapPictureResult | 'none') => void; reject: (error: Error) => void }[] = [];
+    const maker: MapPictureMaker = (_, __, signal) => new Promise((resolve, reject) => {
+        calls.push({ resolve, reject });
+        signal.addEventListener('abort', () => reject(failure('aborted')));
+    });
+    return { maker, calls };
+}
+
 /** Lets the fake database and the job run, with no move of the fake clock. */
 const settle = async () => { for (let i = 0; i < 30; i++) await new Promise(resolve => setImmediate(resolve)); };
 
@@ -52,6 +64,7 @@ beforeEach(() => {
     // One lock for all the jobs, as the browser has for all its tabs.
     vi.stubGlobal('navigator', {
         onLine: true,
+        gpu: {},
         locks: {
             async request<T>(_: string, __: unknown, work: (lock: object | null) => Promise<T>) {
                 if (held) return work(null);
@@ -72,8 +85,8 @@ afterEach(() => {
     vi.restoreAllMocks();
 });
 
-async function start(renderer: Renderer, on = library) {
-    stops.push(startCoverJob(on, async () => renderer));
+async function start(renderer: Renderer, on = library, picture = fakePicture().maker) {
+    stops.push(startCoverJob(on, async () => renderer, async () => picture));
     await settle();
 }
 
@@ -96,11 +109,11 @@ describe('the cover job', () => {
         await saved('a');
         const first = fake(), second = fake();
         await start(first.renderer);
-        wantCover('a');
+        wantCover('a', 'page');
         await settle();
         // The second tab asks for the same cover while the first renders it.
         await start(second.renderer, new Library(factory));
-        wantCover('a');
+        wantCover('a', 'page');
         await settle();
         expect([first.stills.length, second.stills.length]).toEqual([1, 0]);
         first.stills[0].resolve(result);
@@ -119,7 +132,7 @@ describe('the cover job', () => {
         const { renderer, stills } = fake();
         document.hidden = true;
         await start(renderer);
-        wantCover('a');
+        wantCover('a', 'page');
         await settle();
         expect(stills).toHaveLength(0);
         document.hidden = false;
@@ -132,7 +145,7 @@ describe('the cover job', () => {
         await saved('a');
         const { renderer, stills, setOpen } = fake();
         await start(renderer);
-        wantCover('a');
+        wantCover('a', 'page');
         await settle();
         setOpen(true);
         await settle();
@@ -151,7 +164,7 @@ describe('the cover job', () => {
         await saved('a');
         const { renderer, stills } = fake();
         await start(renderer);
-        wantCover('a');
+        wantCover('a', 'page');
         await settle();
         // A hidden page waits; here it is visible again at once.
         stills[0].reject(failure(name));
@@ -162,21 +175,34 @@ describe('the cover job', () => {
         expect(stills).toHaveLength(renders);
     });
 
-    it('goes on to the next record after tiles fail, and stops for the session after a time limit', async () => {
+    it('goes on to the next record after tiles fail, and renders no cover after a time limit', async () => {
         await saved('a', 'b', 'c');
         const { renderer, stills } = fake();
         await start(renderer);
-        wantCover('b');
-        wantCover('a');
+        wantCover('b', 'page');
+        wantCover('a', 'page');
         await settle();
         stills[0].reject(failure('tiles-failed'));
         await settle();
         expect(stills.map(still => still.job.line)).toHaveLength(2);
         stills[1].reject(failure('timeout'));
         await settle();
-        wantCover('c');
+        wantCover('c', 'page');
         await settle();
         expect(stills).toHaveLength(2);
+    });
+
+    it('makes a map picture and no still for a card ask after a time limit', async () => {
+        await saved('a', 'b');
+        const { renderer, stills } = fake(), { maker, calls } = fakePicture();
+        await start(renderer, library, maker);
+        wantCover('a', 'page');
+        await settle();
+        stills[0].reject(failure('timeout'));
+        await settle();
+        wantCover('b', 'card');
+        await settle();
+        expect([stills.length, calls.length]).toEqual([1, 1]);
     });
 
     it('marks a cover as failed after three tries, also of earlier sessions', async () => {
@@ -184,12 +210,12 @@ describe('the cover job', () => {
         await library.saveCover({ id: 'a', lineKey: lineKey(route('a')), state: 'waiting', tries: 2 });
         const { renderer, stills } = fake();
         await start(renderer);
-        wantCover('a');
+        wantCover('a', 'page');
         await settle();
         stills[0].reject(failure('tiles-failed'));
         await settle();
         expect(await library.cover('a')).toMatchObject({ state: 'failed', tries: 3 });
-        wantCover('a');
+        wantCover('a', 'page');
         await settle();
         expect(stills).toHaveLength(1);
     });
@@ -237,11 +263,11 @@ describe('the cover job', () => {
         await saved('a');
         const { renderer, stills } = fake();
         await start(renderer);
-        wantCover('a');
+        wantCover('a', 'page');
         await settle();
         const line = [8.38, 46.82, 8.45, 46.8];
         await library.saveRoute(route('a', 'a', line));
-        wantCover('a');
+        wantCover('a', 'page');
         stills[0].resolve(result);
         await settle();
         expect(stills).toHaveLength(2);
@@ -252,7 +278,7 @@ describe('the cover job', () => {
         await saved('a');
         const { renderer, stills } = fake();
         await start(renderer);
-        wantCover('a');
+        wantCover('a', 'page');
         await settle();
         await library.removeRoute('a');
         stills[0].resolve(result);
@@ -263,8 +289,109 @@ describe('the cover job', () => {
     it('keeps an ask that comes before the job starts', async () => {
         await saved('a');
         const { renderer, stills } = fake();
-        wantCover('a');
+        wantCover('a', 'page');
         await start(renderer);
         expect(stills).toHaveLength(1);
+    });
+});
+
+describe('the map picture', () => {
+    /** A job with no WebGPU. */
+    async function noGpu() {
+        delete (navigator as { gpu?: object }).gpu;
+        const renderer = vi.fn<() => Promise<Renderer>>(), { maker, calls } = fakePicture();
+        stops.push(startCoverJob(library, renderer, async () => maker));
+        await settle();
+        return { renderer, calls };
+    }
+
+    it('comes with no WebGPU for a card and not for a page, and TrailView does not load', async () => {
+        await saved('a', 'b');
+        const { renderer, calls } = await noGpu();
+        wantCover('b', 'page');
+        wantCover('a', 'card');
+        await settle();
+        expect(calls).toHaveLength(1);
+        calls[0].resolve(picture);
+        await settle();
+        expect(calls).toHaveLength(1);
+        expect(renderer).not.toHaveBeenCalled();
+        expect(await library.cover('a')).toMatchObject({
+            state: 'waiting', tries: 0, map: { lineKey: lineKey(route('a')), tries: 0, light: expect.any(Blob), credits: ['Map test data'] },
+        });
+        expect(await library.cover('b')).toBeUndefined();
+    });
+
+    it('waits while a cover renders, and comes after a cover that is not possible', async () => {
+        const { renderer, stills } = fake(), { maker, calls } = fakePicture(), view = renderer.view;
+        renderer.view = async (line, when) => line[0][0] === 9 ? undefined : view(line, when);
+        await library.saveRoute(route('a'));
+        await library.saveRoute(route('b', 'b', [9, 47, 9.1, 47]));
+        await start(renderer, library, maker);
+        wantCover('a', 'card');
+        await settle();
+        expect([stills.length, calls.length]).toEqual([1, 0]);
+        wantCover('b', 'card');
+        stills[0].resolve(result);
+        await settle();
+        expect(calls).toHaveLength(1);
+        calls[0].resolve(picture);
+        await settle();
+        expect(await library.cover('b')).toMatchObject({ state: 'none', map: { light: expect.any(Blob) } });
+        expect((await library.cover('a'))?.map).toBeUndefined();
+    });
+
+    it.each([
+        ['none', 1, { none: true }],
+        ['tiles-failed', 3, { tries: 3 }],
+    ])('stops for its line after %s, at %i pictures', async (end, count, map) => {
+        await saved('a');
+        const { calls } = await noGpu();
+        for (let i = 0; i < 4; i++) {
+            wantCover('a', 'card');
+            await settle();
+            if (end === 'none') calls[i]?.resolve('none');
+            else calls[i]?.reject(failure(end));
+            await settle();
+        }
+        expect(calls).toHaveLength(count);
+        expect((await library.cover('a'))?.map).toMatchObject(map);
+    });
+
+    it('goes when the cover is done', async () => {
+        await saved('a');
+        const key = lineKey(route('a')), waiting: CoverRecord = { id: 'a', lineKey: key, state: 'waiting', tries: 1, map: { lineKey: key, tries: 0, light: new Blob(['map']) } };
+        await library.saveCover(waiting);
+        const { renderer, stills } = fake();
+        await start(renderer);
+        wantCover('a', 'card');
+        await settle();
+        stills[0].resolve(result);
+        await settle();
+        expect(await library.cover('a')).toMatchObject({ state: 'done' });
+        expect((await library.cover('a'))?.map).toBeUndefined();
+    });
+
+    it('comes with a software renderer, which loads one time', async () => {
+        await saved('a', 'b');
+        const { renderer, stills } = fake(), { maker, calls } = fakePicture(), load = vi.fn(async () => renderer);
+        renderer.canRender = async () => false;
+        stops.push(startCoverJob(library, load, async () => maker));
+        wantCover('a', 'card');
+        await settle();
+        calls[0].resolve(picture);
+        await settle();
+        wantCover('b', 'card');
+        await settle();
+        expect([load.mock.calls.length, stills.length, calls.length]).toEqual([1, 0, 2]);
+    });
+
+    it('counts no try when its code fails to load', async () => {
+        await saved('a');
+        delete (navigator as { gpu?: object }).gpu;
+        stops.push(startCoverJob(library, vi.fn(), () => Promise.reject(new Error('Failed to fetch dynamically imported module'))));
+        wantCover('a', 'card');
+        await settle();
+        expect(await library.cover('a')).toBeUndefined();
     });
 });
