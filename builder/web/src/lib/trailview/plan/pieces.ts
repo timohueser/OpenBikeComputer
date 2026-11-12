@@ -373,7 +373,7 @@ export class Pieces {
         const gpu = piece.gpu!, n = piece.mesh.corners.length / 2, s = size(CELL_LEVEL);
         const params = new ArrayBuffer(PARAMS_BYTES), ints = new Int32Array(params), words = new Uint32Array(params);
         ints.set([piece.node.x * s, piece.node.y * s]);
-        words.set([n, 6 * n, 2 * n, piece.mesh.steps.length / 4, piece.block, (first | (make === 'terrain' ? TERRAIN_BIT : 0)) >>> 0], 2);
+        words.set([n, 6 * n, 2 * n, piece.mesh.steps.length / 4 - piece.mesh.endFaces, piece.block, (first | (make === 'terrain' ? TERRAIN_BIT : 0)) >>> 0], 2);
         r.gpu.device.queue.writeBuffer(gpu.params, 0, params);
         if (first === 0 || gpu.bound !== make) this.bindStamps(r, piece, make === 'terrain');
         gpu.bound = make;

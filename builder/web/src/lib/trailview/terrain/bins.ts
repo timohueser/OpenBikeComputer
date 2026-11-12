@@ -1095,8 +1095,9 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
     // Only the lines whose box comes within their reach of the node can touch its cells.
     for (const id of nearBoxes(index.lines, square, index.reach * units + 1)) {
         const line = lines[id], stamps = shows(line, gateTexel(node.level));
-        // With `plan` the records shape the ways on the near levels only (model.wgsl).
-        const way = plan && (line.kind === ROAD || line.kind === PATH || line.kind === RAIL);
+        // With `plan` the records shape the ways on the near levels only (model.wgsl), and the ground under a bridge
+        // there (the decks' ceilings): its deck terms stay off those levels.
+        const way = plan && (line.kind === ROAD || line.kind === PATH || line.kind === RAIL || (line.kind === BRIDGE && node.level >= NEAR));
         if (line.kind === STREAM || ((!stamps || way) && node.level < NEAR)) continue;
         const reach = reachOf(line, node.level), n = line.z.length, end = (v: number) => v === 0 || v === n - 1;
         // A bridge's or a tunnel's metres from its start at each vertex: it rests on its abutments, or runs on the ground into its portal, a few mesh cells from an end that meets the ground.

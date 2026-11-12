@@ -45,7 +45,7 @@ self.onmessage = async ({ data: { id, tile, node, body, what, plan, wanted = [] 
             const result = { samples: auditSamples(features, tile, node), ...waterLevels(features, tile) };
             self.postMessage({ id, result }, { transfer: [result.samples.buffer] });
         } else if (what === 'meshes') {
-            const result = structureMeshes(features, tile, node), { far, near, anchors, points } = result;
+            const result = structureMeshes(features, tile, node, plan), { far, near, anchors, points } = result;
             const buffers = [far.structures, far.anchored, near.structures, near.anchored].flatMap(mesh => (mesh ? [mesh.vertices, mesh.indices.buffer] : []));
             self.postMessage({ id, result }, { transfer: [...buffers, ...(anchors ? [anchors] : []), ...(points ? [points.buffer] : [])] });
         } else {

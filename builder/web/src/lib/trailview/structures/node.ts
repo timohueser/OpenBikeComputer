@@ -73,15 +73,15 @@ export interface Meshes { structures: StructureMesh | null; anchored: AnchoredMe
  */
 export interface NodeMeshes { far: Meshes; near: Meshes; anchors: ArrayBuffer | null; points: Uint32Array<ArrayBuffer> | null }
 
-/** The meshes of a node of the OWNER level from the features of its feature tile: the structures, then the kinds of the registry. */
-export function structureMeshes(list: Feature[], tile: Node, node: Node): NodeMeshes {
+/** The meshes of a node of the OWNER level from the features of its feature tile: the structures, then the kinds of the registry. With `plan` the ground plan holds the ground under a bridge's end. */
+export function structureMeshes(list: Feature[], tile: Node, node: Node, plan = false): NodeMeshes {
     const none = { structures: null, anchored: null };
     if (node.level !== OWNER) return { far: none, near: none, anchors: null, points: null };
     const side = 2 ** (30 - node.level), x0 = node.x * side, y0 = node.y * side;
     const owns: Owns = (x, y) => x >= x0 && x < x0 + side && y >= y0 && y < y0 + side;
     const words: number[] = [], far = { mesh: new MeshBuilder(), anchored: new AnchoredBuilder(words) }, near = { mesh: new MeshBuilder(), anchored: new AnchoredBuilder(words) };
     const shapes = features(list, tile), { lines } = shapes;
-    bridges(far.mesh, list, tile, lines, owns);
+    bridges(far.mesh, list, tile, lines, owns, plan);
     tunnels(far.mesh, lines, owns);
     galleries(far.mesh, lines, owns);
     rails(far.mesh, far.anchored, list, tile, lines, owns, [x0, y0, x0 + side, y0 + side]);

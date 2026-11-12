@@ -33,7 +33,7 @@ use stroke::{pieces_along, union, Rings};
 
 use crate::frame::{metres_per_unit, CellKey, GlobalPoint, CELL_UNITS, FRAME_BITS};
 use crate::graph::{Family, Level, Station, WayGraph};
-use crate::sections::WaySection;
+use crate::sections::{WaySection, HALF_MAX_M};
 use crate::CellInput;
 
 /// A way of the level: all its samples in cell units, with its half-width and band offsets.
@@ -51,6 +51,8 @@ pub(crate) struct WayLine<'a> {
     /// Per sample, the sides of the segment from it on with a sidewalk: 1 left, 2 right.
     pub walk: Vec<u8>,
     pub round: [bool; 2],
+    /// Whether each end is a deck end: a ground way's end at a joint or junction with a deck arm.
+    pub deck: [bool; 2],
     /// The box of its carriageway: its samples' box grown by its widest half-width.
     pub bbox: [i32; 4],
     /// The boxes of the carriageway of each `CHUNK` segments in order.
@@ -205,12 +207,23 @@ fn in_level(graph: &WayGraph, way: u32, level: i8) -> bool {
     }
 }
 
+/// A deck way: a ceiling line of storey 0 (`ceiling_lines`).
+fn on_deck(graph: &WayGraph, way: u32) -> bool {
+    let w = &graph.ways[way as usize];
+    w.family != Family::Water && w.level == Level::Deck
+}
+
 fn station_key(way: u32, dir: i8, st: &Station) -> (u32, i8, u32, u64) {
     (way, dir, st.span, st.u.to_bits())
 }
 
-/// The lines of the level's ways whose centre line meets the box `bx`.
-fn lines<'a>(ctx: &Ctx<'a>, input: &CellInput, level: i8, bx: [i32; 4]) -> (Vec<WayLine<'a>>, BTreeMap<u32, usize>) {
+/// The lines of the ways that `keep` keeps whose centre line meets the box `bx`.
+fn lines<'a>(
+    ctx: &Ctx<'a>,
+    input: &CellInput,
+    keep: &dyn Fn(u32) -> bool,
+    bx: [i32; 4],
+) -> (Vec<WayLine<'a>>, BTreeMap<u32, usize>) {
     let g = ctx.graph;
     // The round ends: free ends. A way ends square at a junction or a joint, whose face fills the
     // gaps between its arms; and at a level change.
@@ -218,10 +231,17 @@ fn lines<'a>(ctx: &Ctx<'a>, input: &CellInput, level: i8, bx: [i32; 4]) -> (Vec<
     for e in &g.ends {
         ends.insert(station_key(e.arm.way, e.arm.dir, &e.arm.at), true);
     }
+    // The deck ends: the ground arms of a joint or junction with a deck arm.
+    let mut decks = std::collections::BTreeSet::new();
+    for arms in g.junctions.iter().map(|j| &j.arms[..]).chain(g.joints.iter().map(|j| &j.arms[..])) {
+        if arms.iter().any(|a| a.level == Level::Deck) {
+            decks.extend(arms.iter().filter(|a| a.level == Level::Ground).map(|a| station_key(a.way, a.dir, &a.at)));
+        }
+    }
     let mut out = Vec::new();
     let mut of_way = BTreeMap::new();
     for way in &g.ways {
-        if !in_level(g, way.id, level) {
+        if !keep(way.id) {
             continue;
         }
         let samples = &g.samples[way.samples.start as usize..way.samples.end as usize];
@@ -243,6 +263,10 @@ fn lines<'a>(ctx: &Ctx<'a>, input: &CellInput, level: i8, bx: [i32; 4]) -> (Vec<
             round: [
                 ends.get(&station_key(way.id, 1, &way.from)).copied().unwrap_or(false),
                 ends.get(&station_key(way.id, -1, &way.to)).copied().unwrap_or(false),
+            ],
+            deck: [
+                decks.contains(&station_key(way.id, 1, &way.from)),
+                decks.contains(&station_key(way.id, -1, &way.to)),
             ],
             bbox: [i32::MAX, i32::MAX, i32::MIN, i32::MIN],
             chunks: Vec::new(),
@@ -783,7 +807,29 @@ pub(crate) fn record_lines<'a>(
     cell: CellKey,
 ) -> Vec<WayLine<'a>> {
     let ctx = Ctx { graph, rules, origin: cell.origin() };
-    lines(&ctx, input, 0, grown(cell, rules::ways_m(&rules.plan, &rules.sections), true)).0
+    lines(&ctx, input, &|w| in_level(graph, w, 0), grown(cell, rules::ways_m(&rules.plan, &rules.sections), true)).0
+}
+
+/// The ceiling lines of a cell's records: its deck ways whose stroke and the ceiling's release reach a bin of
+/// the cell, each one leg, with the half-width of the deck's stroke: its paved layers' and `edge_band_m`.
+pub(crate) fn ceiling_lines<'a>(
+    graph: &'a WayGraph,
+    input: &CellInput,
+    rules: &'a Rules,
+    cell: CellKey,
+) -> Vec<WayLine<'a>> {
+    let ctx = Ctx { graph, rules, origin: cell.origin() };
+    let h = &rules.plan.heights;
+    let m = HALF_MAX_M + rules.structures.edge_band_m + h.ceiling_release_m + records::HEIGHT_PAD_M;
+    let mut out = lines(&ctx, input, &|w| on_deck(graph, w), grown(cell, m, true)).0;
+    for line in &mut out {
+        line.cuts.clear();
+        line.spans.clear();
+        for i in 0..line.p.len() {
+            line.h[i] = line.bands[i][VERGE] + ctx.units(rules.structures.edge_band_m, line.p[i]);
+        }
+    }
+    out
 }
 
 /// The lines of a cell's level whose faces reach its window: within `input_m`.
@@ -795,7 +841,7 @@ pub(crate) fn level_lines<'a>(
     level: i8,
 ) -> Vec<WayLine<'a>> {
     let ctx = Ctx { graph, rules, origin: cell.origin() };
-    lines(&ctx, input, level, window(cell, input_m(&rules.plan, &rules.sections))).0
+    lines(&ctx, input, &|w| in_level(graph, w, level), window(cell, input_m(&rules.plan, &rules.sections))).0
 }
 
 /// The candidates of a cell and level, the one source of its shapes: the overlay slices and labels
@@ -848,6 +894,17 @@ impl Sliced {
         let labels: Vec<Label> = own.iter().map(|&k| self.labels[k]).collect();
         let mut plan = self.plan(cell, level, &Map::new(snap_round(&patches)), &labels);
         plan.corners = c.corners.clone();
+        let ends: Vec<[f64; 5]> = c.lines.iter().flat_map(deck_ends).collect();
+        let on = |v: P, e: &[f64; 5]| {
+            let r = [f64::from(v[0]) - e[0], f64::from(v[1]) - e[1]];
+            (r[0] * e[2] + r[1] * e[3]).abs() <= END_UNITS && (r[1] * e[2] - r[0] * e[3]).abs() <= e[4] + END_UNITS
+        };
+        for e in plan.edges.iter_mut().filter(|e| e.kind == EdgeKind::Continuous) {
+            let (a, b) = (plan.vertices[e.a as usize], plan.vertices[e.b as usize]);
+            if ends.iter().any(|end| on(a, end) && on(b, end)) {
+                e.kind = EdgeKind::DeckEdge;
+            }
+        }
         plan
     }
 
@@ -862,6 +919,30 @@ impl Sliced {
         stats.patches = labels.len() as u32;
         output(cell, level, map, labels, stats)
     }
+}
+
+/// A face edge lies on a line's end line where its ends lie within this many units of it: the slice rounds
+/// the stroke's whole-unit corners.
+const END_UNITS: f64 = 2.0;
+
+/// A line's deck end lines: the end point, the unit direction into the line and the half-width of its
+/// paved layers (units).
+fn deck_ends(line: &WayLine) -> Vec<[f64; 5]> {
+    let n = line.p.len();
+    let end = |at: usize, next: usize| {
+        let (p, q) = (line.p[at], line.p[next]);
+        let d = [f64::from(q[0] - p[0]), f64::from(q[1] - p[1])];
+        let len = libm::hypot(d[0], d[1]).max(1e-9);
+        [f64::from(p[0]), f64::from(p[1]), d[0] / len, d[1] / len, line.bands[at][VERGE]]
+    };
+    let mut out = Vec::new();
+    if n >= 2 && line.deck[0] {
+        out.push(end(0, 1));
+    }
+    if n >= 2 && line.deck[1] {
+        out.push(end(n - 1, n - 2));
+    }
+    out
 }
 
 /// Whether a candidate is a band layer.
@@ -920,7 +1001,8 @@ fn candidates<'a>(
     // The carriageways reach farther than the points: the outline rounds read them. The ways reach
     // farther still: the off-line test of the points' rounds reads them.
     let lx = reach(rules::lines_m(plan, &rules.sections));
-    let (lines, of_way) = lines(&ctx, input, level, reach(rules::ways_m(plan, &rules.sections)));
+    let (lines, of_way) =
+        lines(&ctx, input, &|w| in_level(graph, w, level), reach(rules::ways_m(plan, &rules.sections)));
     // The points within `bx` round their arms; the points past it only end their runs.
     let all = graph_points(&ctx, &lines, &of_way, reach(rules::points_m(plan, &rules.sections)));
     let (mut points, outer): (Vec<Point>, Vec<Point>) = all.into_iter().partition(|pt| near(pt.pos));
@@ -1091,6 +1173,9 @@ fn candidates<'a>(
             discs: Vec::new(),
         });
         let mut own = (!line.cuts.is_empty()).then(|| own_layers.entry(li).or_default());
+        // At a deck end the slope takes the round end of a free end, so its bank runs round the end: the
+        // paved layers end square on the end line.
+        let deck = [line.deck[0] && first == 0, line.deck[1] && last == line.p.len()];
         for k in 0..bands {
             let inner = |i: usize| if k == 0 { line.h[i] } else { line.bands[i][k - 1] };
             let d: Vec<f64> = (first..last).map(|i| line.bands[i][k]).collect();
@@ -1102,6 +1187,7 @@ fn candidates<'a>(
                 Some(own) if BAND_LABELS[k].2 == HeightRule::Owner => &mut own[k],
                 _ => &mut layers[k],
             };
+            let ends = if k == SLOPE { [ends[0] || deck[0], ends[1] || deck[1]] } else { ends };
             pieces_along(p, &d, &[], cuts, ends, false, layer);
         }
     }
