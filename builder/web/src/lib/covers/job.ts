@@ -188,8 +188,11 @@ export function startCoverJob(library: Library, renderer: () => Promise<Renderer
         const map: MapPicture = old?.map?.lineKey === key ? old.map : { lineKey: key, tries: 0 };
         // A record with a picture and no cover waits for a cover.
         const cover: CoverRecord = old ?? { id, lineKey: key, state: 'waiting', tries: 0 };
+        // The browser keeps a failed import until the page loads again, so it counts no try; the next ask tries again.
+        const make = await picture().catch((error: unknown) => void console.info('Map picture code:', error));
+        if (!make) return 'next';
         try {
-            const made = await (await picture())(item.summary!, dark, controller.signal);
+            const made = await make(item.summary!, dark, controller.signal);
             const next: MapPicture = made === 'none' ? { lineKey: key, tries: 0, none: true }
                 : { ...map, tries: 0, points: made.points, credits: made.credits, [dark ? 'dark' : 'light']: made.image };
             await library.saveCover({ ...cover, map: next });

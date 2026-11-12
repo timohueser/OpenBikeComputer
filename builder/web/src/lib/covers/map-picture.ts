@@ -6,7 +6,7 @@ import { mapStyle } from '../planner/map-style';
 import type { StillFailure } from '../trailview/still';
 import { pack } from './line';
 
-export const PICTURE_WIDTH = 768, PICTURE_HEIGHT = 512;
+const PICTURE_WIDTH = 768, PICTURE_HEIGHT = 512;
 /** The line fits inside the middle 720 × 300 pixels, the band that `crop` shows in each box from 3:2 to 2.2:1. */
 const PADDING = { top: 106, bottom: 106, left: 24, right: 24 };
 /** A short loop keeps the tiles of the basemap. */
@@ -42,6 +42,7 @@ export const mapPicture: MapPictureMaker = async (summary, dark, signal) => {
             const aborted = () => signal.aborted && fail('aborted', 'The map picture was aborted.');
             hidden();
             aborted();
+            if (document.hidden || signal.aborted) return;
             document.addEventListener('visibilitychange', hidden, { signal: done.signal });
             signal.addEventListener('abort', aborted, { signal: done.signal });
             map = new maplibregl.Map({

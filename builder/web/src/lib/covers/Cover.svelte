@@ -36,9 +36,9 @@
         return image && map?.points ? { image, points: map.points, summary } : undefined;
     }
 
-    // It loads again after a change of the theme, and a card asks for the picture of the new theme.
+    // A card loads again after a change of the theme, and asks for the picture of the new theme.
     $effect(() => {
-        const target = id, dark = appearance.dark;
+        const target = id, dark = place === 'card' && appearance.dark;
         let live = true;
         const load = async (first: boolean) => {
             const [nextItem, nextCover] = await Promise.all([library.item(target), library.cover(target)]);

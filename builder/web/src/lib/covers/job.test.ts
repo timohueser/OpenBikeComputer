@@ -192,6 +192,19 @@ describe('the cover job', () => {
         expect(stills).toHaveLength(2);
     });
 
+    it('makes a map picture and no still for a card ask after a time limit', async () => {
+        await saved('a', 'b');
+        const { renderer, stills } = fake(), { maker, calls } = fakePicture();
+        await start(renderer, library, maker);
+        wantCover('a', 'page');
+        await settle();
+        stills[0].reject(failure('timeout'));
+        await settle();
+        wantCover('b', 'card');
+        await settle();
+        expect([stills.length, calls.length]).toEqual([1, 1]);
+    });
+
     it('marks a cover as failed after three tries, also of earlier sessions', async () => {
         await saved('a');
         await library.saveCover({ id: 'a', lineKey: lineKey(route('a')), state: 'waiting', tries: 2 });
@@ -357,5 +370,28 @@ describe('the map picture', () => {
         await settle();
         expect(await library.cover('a')).toMatchObject({ state: 'done' });
         expect((await library.cover('a'))?.map).toBeUndefined();
+    });
+
+    it('comes with a software renderer, which loads one time', async () => {
+        await saved('a', 'b');
+        const { renderer, stills } = fake(), { maker, calls } = fakePicture(), load = vi.fn(async () => renderer);
+        renderer.canRender = async () => false;
+        stops.push(startCoverJob(library, load, async () => maker));
+        wantCover('a', 'card');
+        await settle();
+        calls[0].resolve(picture);
+        await settle();
+        wantCover('b', 'card');
+        await settle();
+        expect([load.mock.calls.length, stills.length, calls.length]).toEqual([1, 0, 2]);
+    });
+
+    it('counts no try when its code fails to load', async () => {
+        await saved('a');
+        delete (navigator as { gpu?: object }).gpu;
+        stops.push(startCoverJob(library, vi.fn(), () => Promise.reject(new Error('Failed to fetch dynamically imported module'))));
+        wantCover('a', 'card');
+        await settle();
+        expect(await library.cover('a')).toBeUndefined();
     });
 });
