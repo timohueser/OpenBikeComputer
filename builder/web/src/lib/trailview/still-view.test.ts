@@ -55,8 +55,9 @@ describe('the cover view', () => {
             const view = chooseView(route, grid(8, () => 0), { ...SIZE, sun })!;
             expect(view.mode).toBe('fly');
             for (const [x, y] of screen(view, route, 0)) {
-                expect(Math.abs(x)).toBeLessThan(0.905);
-                expect(Math.abs(y)).toBeLessThan(0.905);
+                // The fit holds a point inside 0.9 of the frame, and the room moves it further in.
+                expect(Math.abs(x)).toBeLessThan(0.85);
+                expect(Math.abs(y)).toBeLessThan(0.85);
             }
         }
     });

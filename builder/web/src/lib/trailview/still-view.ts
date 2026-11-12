@@ -17,6 +17,9 @@ const FLAT = -20, STEEP = -89, TILT_STEP = 2;
 const SHOWN = 0.85;
 /** Each point of the route stays inside this share of the half width and the half height. */
 const FILL = 0.9;
+/** The eye of the chosen view stands this much farther from its aim than the fit, for room around the route; the owner chose
+ * the room by eye. The search judges each view at the fit, so the room does not change its tilts. */
+const ROOM = 1.07;
 /** The points of the route that the search tests: 200 resolve the shown share to 0.5 %. */
 const POINTS = 200;
 /** A point stands this far above the ground. The ground hides it when it comes this near the line of sight: the clearance stands for trees. */
@@ -46,7 +49,8 @@ interface Candidate { eye: Vec; distance: number; heading: number; pitch: number
  * The cover view of a line of [lon, lat] points for an image of `width` × `height` pixels, with the sun
  * at bearing `sun` in degrees: for each heading every HEADING_STEP that does not look within SUN_DEG of
  * the sun, the lowest tilt that shows SHOWN of the route, with the route centred and as near as the frame
- * permits. Of these views it takes the one that draws the route longest on the screen. The search works
+ * permits. Of these views it takes the one that draws the route longest on the screen, and moves its eye
+ * back by ROOM. The search works
  * in metres about the centre of the route, with the curvature of the Earth taken off, as the engine
  * draws it. Undefined when the route is less than LEAST_M across, when no view fits, or when the eye
  * must be higher than MAX_ALTITUDE.
@@ -126,8 +130,9 @@ export function chooseView(line: readonly [number, number][], grid: HeightGrid, 
         for (let i = 1; i < screen.length; i++) sum += Math.hypot((screen[i][0] - screen[i - 1][0]) * width, (screen[i][1] - screen[i - 1][1]) * height) / 2;
         return sum;
     };
+    const stand = ({ eye, axes, distance }: Candidate) => eye.map((e, j) => e - axes.forward[j] * distance * (ROOM - 1)) as Vec;
     /** Heights in the search lie on the plane about the centre: the eye's altitude adds the drop back. */
-    const altitude = ({ eye }: Candidate) => eye[2] + drop(eye[0], eye[1]);
+    const altitude = (candidate: Candidate) => { const eye = stand(candidate); return eye[2] + drop(eye[0], eye[1]); };
 
     let best: { candidate: Candidate; length: number } | undefined;
     for (let heading = 0; heading < 360; heading += HEADING_STEP) {
@@ -148,7 +153,7 @@ export function chooseView(line: readonly [number, number][], grid: HeightGrid, 
         if (!best || drawn > best.length) best = { candidate: lowest, length: drawn };
     }
     if (!best) return undefined;
-    const { eye, heading, pitch } = best.candidate, [lon, lat] = frame.lonLat(eye[0], eye[1]);
+    const eye = stand(best.candidate), { heading, pitch } = best.candidate, [lon, lat] = frame.lonLat(eye[0], eye[1]);
     // A view's heading is from true north at the eye; the frame's north turns from it away from the centre.
     const [east, north] = frame.local(lon, lat + 1e-4), convergence = Math.atan2(east - eye[0], north - eye[1]) / RAD;
     return { lat, lon, heading: ((heading - convergence) % 360 + 360) % 360, pitch, mode: 'fly', height: altitude(best.candidate) };
