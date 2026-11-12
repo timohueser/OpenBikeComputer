@@ -4,6 +4,8 @@
     import type { RouteSummary } from '../../lib/library/records';
     import type { Plan } from '../../lib/planner/library';
     import Icon from './PlannerIcon.svelte';
+    import { distanceIn, heightIn, heightUnit } from '../../lib/settings/format';
+    import { settings } from '../../lib/settings/settings.svelte';
 
     let { plans, unreadable, onDeleteUnreadable, activeId, busy, error, gpxNames, onClose, onOpen, onRename, onDuplicate, onDelete, onDownload, onImport, onGpx }: {
         plans: Plan[];
@@ -21,7 +23,7 @@
     } = $props();
 
     const figures = ({ days, lengthM, climbM }: RouteSummary) =>
-        [...days > 1 ? [`${days} days`] : [], `${(lengthM / 1000).toFixed(1)} km`, `↑ ${climbM} m`].join(' · ');
+        [...days > 1 ? [`${days} days`] : [], `${distanceIn(lengthM).toFixed(1)} ${settings.units}`, `↑ ${Math.round(heightIn(climbM))} ${heightUnit()}`].join(' · ');
 
     let renaming = $state<string | null>(null);
     let name = $state('');

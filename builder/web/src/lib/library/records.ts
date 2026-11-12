@@ -84,6 +84,22 @@ export interface CoverRecord {
     /** The credits of the data in `image`, as `still` gives them. A cover made before they were kept has none. */
     credits?: string[];
     tries: number;
+    /** The picture of the map for a card whose record gets no cover. */
+    map?: MapPicture;
+}
+
+/**
+ * A still picture of the planner map around the summary line, with no labels, in each theme. `tries` belongs to
+ * `lineKey`, as in a cover; `none`: the line is outside the map data. Both images share `points` and `credits`.
+ */
+export interface MapPicture {
+    lineKey: string;
+    tries: number;
+    none?: true;
+    points?: CoverPoints;
+    credits?: string[];
+    light?: Blob;
+    dark?: Blob;
 }
 
 export interface DeletedRide {

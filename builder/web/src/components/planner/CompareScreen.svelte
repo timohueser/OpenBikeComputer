@@ -15,6 +15,8 @@
     import { routingKey, type RoutingLine } from '../../lib/planner/routing';
     import { versionTitle, type Version } from '../../lib/planner/versions';
     import type { MapPoint } from '../../lib/planner/map-types';
+    import { distanceIn, heightIn, heightUnit } from '../../lib/settings/format';
+    import { settings } from '../../lib/settings/settings.svelte';
 
     let { name, trip, line, routeError, openId, versions, versionLines, theme, onBack, onOpen, onFindLines }: {
         /** The name of the plan. */
@@ -195,7 +197,7 @@
                         </div>
                         {#if s}
                             <p>{compareSummary(s.days)}</p>
-                            <p class="totals">{km(s.view.summary.distance)} km{side.line?.unknownElevationKm === 0 ? ` · ↑ ${km(s.view.summary.ascent)} m` : ''} · {duration(s.view.summary.hours)} riding</p>
+                            <p class="totals">{km(distanceIn(s.view.summary.distance * 1000))} {settings.units}{side.line?.unknownElevationKm === 0 ? ` · ↑ ${km(heightIn(s.view.summary.ascent))} ${heightUnit()}` : ''} · {duration(s.view.summary.hours)} riding</p>
                             {#if failed[i].length}
                                 <p role="alert">Some towns for the nights could not load, so some nights end at even points.</p>
                                 <button type="button" class="planner-action" onclick={() => failed[i].forEach(key => finders[i].retry(key))}>Retry</button>
@@ -231,7 +233,7 @@
                                 {...pointer(i, row)} onclick={() => keep(i, row)}>
                                 {#if cell.date}<small>{cell.date}</small>{/if}
                                 <strong>{cell.from} → {cell.to}</strong>
-                                <span class="figures">{km(cell.day.distance)} km · {duration(cell.day.hours)}{side.line?.unknownElevationKm === 0 ? ` · ↑ ${km(cell.day.ascent)} m` : ''}</span>
+                                <span class="figures">{km(distanceIn(cell.day.distance * 1000))} {settings.units} · {duration(cell.day.hours)}{side.line?.unknownElevationKm === 0 ? ` · ↑ ${km(heightIn(cell.day.ascent))} ${heightUnit()}` : ''}</span>
                                 <span class="time" aria-hidden="true"><span style:width={`${cell.day.hours / longestDay * 100}%`} style:background={color(i, riding)}></span></span>
                                 {#each cell.trains as train (train)}<span class="stay"><Icon name="train" size={14} />Train or bus {train}</span>{/each}
                                 <span class="stay"><Icon name={cell.stay.icon} size={14} />{cell.stay.label}</span>
@@ -276,12 +278,12 @@
                             </svg>
                             {#each drawn.days.slice(0, -1) as { day } (day.number)}<span class="night" style:left={`${x(i, day.to) / 10}%`}></span>{/each}
                             {#each drawn.rests as at (at)}<span class="rest-mark" style:left={`${x(i, at) / 10}%`}>Rest</span>{/each}
-                            {#if drawn.top}<span class="top" style:left={`${x(i, drawn.top.progress) / 10}%`} style:top={`${y(drawn.top.height) / 112 * 100}%`}>{km(drawn.top.height!)} m</span>{/if}
-                            <span class="caption"><span class="dot" style:background={tone(i)}></span><strong>{side.title}</strong> · {km(shown[i].view.summary.distance)} km ridden</span>
+                            {#if drawn.top}<span class="top" style:left={`${x(i, drawn.top.progress) / 10}%`} style:top={`${y(drawn.top.height) / 112 * 100}%`}>{km(heightIn(drawn.top.height!))} {heightUnit()}</span>{/if}
+                            <span class="caption"><span class="dot" style:background={tone(i)}></span><strong>{side.title}</strong> · {km(distanceIn(shown[i].view.summary.distance * 1000))} {settings.units} ridden</span>
                         </div>
                     {/if}
                 {/each}
-                <div class="axis"><span>0 km</span><span>{km(longestRoute)} km</span></div>
+                <div class="axis"><span>0 {settings.units}</span><span>{km(distanceIn(longestRoute * 1000))} {settings.units}</span></div>
             </section>
         </div>
     </div>

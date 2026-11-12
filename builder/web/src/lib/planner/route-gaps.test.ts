@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
+import { settings } from '../settings/settings.svelte';
 import { calculateLine, type EngineRoute } from './routing';
 import { emptyTrip, planView, type RoutePoint, type Trip } from './editor';
 import type { LegCache } from './route-legs';
@@ -32,6 +33,10 @@ describe('route gaps', () => {
         expect(gapNote([gap])).toBe('Route ends 220 m before the selected point — no accessible path');
         expect(gapNote([{ ...gap, point: { ...gap.point, kind: 'start' } }, { ...gap, km: 1.24 }]))
             .toBe('Route misses 2 selected points by up to 1.2 km — no accessible path');
+        settings.units = 'mi';
+        onTestFinished(() => { settings.units = 'km'; });
+        expect(gapNote([gap])).toBe('Route ends 0.1 mi before the selected point — no accessible path');
+        expect(gapNote([{ ...gap, km: 1.24 }])).toBe('Route ends 0.8 mi before the selected point — no accessible path');
     });
 
     it('leaves the join to a manual leg to that leg', async () => {

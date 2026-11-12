@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import { mount, tick, unmount } from 'svelte';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { addRestDay, allStay, planView, type Place, type Trip } from '../../lib/planner/editor';
 import { testLine, testTrip } from '../../../test-support/planner/trip';
 import type { NightChoices } from '../../lib/planner/night-stops.svelte';
@@ -12,9 +12,11 @@ import MapCallout from './MapCallout.svelte';
 import VersionsMenu from './VersionsMenu.svelte';
 import Select from './PlannerSelect.svelte';
 import RouteList from './RouteList.svelte';
+import RouteStats from './RouteStats.svelte';
 import TripBar from './TripBar.svelte';
 import type { RoutingLine } from '../../lib/planner/routing';
 import { newVersion } from '../../lib/planner/versions';
+import { settings } from '../../lib/settings/settings.svelte';
 
 const places: Place[] = [{id:'test-camp',kind:'place',label:'Test camp',category:'camp',description:'',coordinate:[7.5,47.5]}];
 
@@ -244,6 +246,27 @@ describe('planner day views', () => {
         await tick();
         expect(axis()).toEqual(['0 km', '36 km', '72 km', '108 km', '144 km']);
         expect(document.querySelector('.distance')?.textContent).toBe('144.0 km');
+    });
+
+    it('writes miles and feet for a rider on miles, and a missing ascent as a dash', async () => {
+        settings.units = 'mi';
+        onTestFinished(() => { settings.units = 'km'; });
+        const props = itineraryProps(null);
+        mounted.push(mount(RouteStats, { target: document.body, props: { distance: 48, ascent: 1000, descent: null, hours: 2 } }));
+        mounted.push(mount(Itinerary, { target: document.body, props: { ...props, line: { ...props.line, unknownElevationKm: 1 } } }));
+        mounted.push(mount(Profile, {
+            target: document.body,
+            props: {
+                total: 144, days: planView(testTrip(), testLine(testTrip())).days, dayLabels: { 1: 1, 2: 3, 3: 4 },
+                activeNight: 2, band: null, window: { from: 0, to: 1 }, onToggle: vi.fn(), onNight: vi.fn(), onDayEndDrag: vi.fn(), onHover: vi.fn(),
+            },
+        }));
+        await tick();
+
+        expect([...document.querySelectorAll('.stats dd')].map(figure => figure.textContent).slice(0, 3)).toEqual(['29.8mi', '3281ft', '—ft']);
+        expect(document.querySelector('.title small')?.textContent).toContain('↑ — ft · ↓ — ft');
+        expect([...document.querySelectorAll('.axis span')].map(tick => tick.textContent)).toEqual(['0 mi', '22 mi', '45 mi', '67 mi', '89 mi']);
+        expect([...document.querySelectorAll('.height')].map(label => label.textContent)).toEqual(['100 ft', '0 ft']);
     });
 });
 

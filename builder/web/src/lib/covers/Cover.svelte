@@ -1,11 +1,12 @@
 <script lang="ts">
-    import type { CoverRecord, RideRecord, RouteRecord } from '../library/records';
+    import type { CoverPoints, CoverRecord, RideRecord, RouteRecord, Summary } from '../library/records';
     import type { Library } from '../library/store';
+    import { appearance } from '../theme.svelte';
     import { drawCover, type Crop } from './draw';
-    import { lineKey, wantCover } from './job';
+    import { lineKey, settled, wantCover, wantsPicture, type Place } from './job';
     import { nearest } from './line';
 
-    let { library, id, mark, part, line = true, ask = false, onpoint }: {
+    let { library, id, mark, part, line = true, place = 'row', onpoint }: {
         library: Library;
         /** The id of a route or the key of a ride. */
         id: string;
@@ -13,29 +14,40 @@
         mark?: number;
         part?: [number, number];
         line?: boolean;
-        /** Asks the cover job for a cover when the record has none for its line. */
-        ask?: boolean;
+        /** A card shows the map picture when the record has no cover. A card and a page ask the cover job for what is missing. */
+        place?: Place;
         /** The metres along the route of the point nearest to the pointer, or null when the pointer leaves. */
         onpoint?: (metres: number | null) => void;
     } = $props();
 
     /** The pointer marks the line only within this many CSS pixels of it. */
     const NEAR_PX = 24;
-    let item = $state<RouteRecord | RideRecord>(), cover = $state<CoverRecord>(), bitmap = $state<ImageBitmap>();
+    /** The image that the part shows, with the points of its line, and the summary that the points belong to. */
+    interface Shown { bitmap: ImageBitmap; points: CoverPoints; summary?: Summary }
+    let item = $state<RouteRecord | RideRecord>(), shown = $state<Shown>();
     let canvas = $state<HTMLCanvasElement>(), width = $state(0), height = $state(0), cut: Crop | undefined;
-    // The points of a cover of an earlier line draw no mark and no part.
-    const summary = $derived(item?.summary && cover?.state === 'done' && cover.lineKey === lineKey(item) ? item.summary : undefined);
 
+    /** The cover, else on a card the map picture of the theme for the line. */
+    function source(item: RouteRecord | RideRecord, cover: CoverRecord, dark: boolean) {
+        const current = cover.lineKey === lineKey(item), summary = item.summary ?? undefined;
+        // The points of a cover of an earlier line draw no mark and no part.
+        if (cover.image && cover.points) return { image: cover.image, points: cover.points, summary: current && cover.state === 'done' ? summary : undefined };
+        const map = place === 'card' && cover.map?.lineKey === lineKey(item) ? cover.map : undefined, image = map?.[dark ? 'dark' : 'light'];
+        return image && map?.points ? { image, points: map.points, summary } : undefined;
+    }
+
+    // A card loads again after a change of the theme, and asks for the picture of the new theme.
     $effect(() => {
-        const target = id;
+        const target = id, dark = place === 'card' && appearance.dark;
         let live = true;
         const load = async (first: boolean) => {
             const [nextItem, nextCover] = await Promise.all([library.item(target), library.cover(target)]);
-            const nextBitmap = nextCover?.image && nextCover.points ? await createImageBitmap(nextCover.image).catch(() => undefined) : undefined;
-            if (!live) return nextBitmap?.close();
-            [item, cover, bitmap] = [nextItem, nextCover, nextBitmap];
-            const done = nextCover?.state !== 'waiting' && nextItem && nextCover?.lineKey === lineKey(nextItem);
-            if (first && ask && nextItem?.summary && !done) wantCover(target);
+            const from = nextItem && nextCover && source(nextItem, nextCover, dark);
+            const bitmap = from ? await createImageBitmap(from.image).catch(() => undefined) : undefined;
+            if (!live) return bitmap?.close();
+            [item, shown] = [nextItem, from && bitmap && { bitmap, points: from.points, summary: from.summary }];
+            if (!first || place === 'row' || !nextItem?.summary) return;
+            if (!settled(nextItem, nextCover) || (place === 'card' && wantsPicture(nextItem, nextCover, dark))) wantCover(target, place);
         };
         void load(true);
         const stop = library.onChange((store, key) => { if (key === target && store !== 'state') void load(false); });
@@ -43,22 +55,23 @@
     });
 
     $effect(() => {
-        const shown = bitmap;
-        return () => shown?.close();
+        const bitmap = shown?.bitmap;
+        return () => bitmap?.close();
     });
 
     $effect(() => {
-        if (!canvas || !bitmap || !cover?.points || !width || !height) return;
+        if (!canvas || !shown || !width || !height) return;
         canvas.width = Math.round(width * devicePixelRatio);
         canvas.height = Math.round(height * devicePixelRatio);
-        cut = drawCover(canvas.getContext('2d')!, { image: bitmap, width: bitmap.width, height: bitmap.height, points: cover.points, summary },
+        const { bitmap, points, summary } = shown;
+        cut = drawCover(canvas.getContext('2d')!, { image: bitmap, width: bitmap.width, height: bitmap.height, points, summary },
             { box: [canvas.width, canvas.height], mark, part, line });
     });
 
     function point(event: PointerEvent) {
-        if (!cut || !summary || !cover?.points || !canvas) return;
+        if (!cut || !shown?.summary || !canvas) return;
         const box = canvas.getBoundingClientRect(), ratio = canvas.width / box.width;
-        const metres = nearest(cover.points, summary, (event.clientX - box.left) * ratio / cut.scale + cut.left, (event.clientY - box.top) * ratio / cut.scale + cut.top,
+        const metres = nearest(shown.points, shown.summary, (event.clientX - box.left) * ratio / cut.scale + cut.left, (event.clientY - box.top) * ratio / cut.scale + cut.top,
             NEAR_PX * ratio / cut.scale);
         onpoint?.(metres ?? null);
     }
@@ -79,7 +92,7 @@
 </script>
 
 <div class="cover" bind:clientWidth={width} bind:clientHeight={height}>
-    {#if bitmap && cover?.points}
+    {#if shown}
         <canvas bind:this={canvas} onpointermove={point} onpointerleave={() => onpoint?.(null)}></canvas>
     {:else if fallback && line}
         <svg viewBox={fallback.box} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
