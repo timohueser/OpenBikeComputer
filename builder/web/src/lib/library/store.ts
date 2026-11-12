@@ -73,8 +73,8 @@ export class Library {
 
     /** A write in the order of this tab. `changed` names each record that it writes, for the listeners of `onChange`. */
     private write<T>(stores: StoreName[], work: (tx: IDBTransaction, fail: Fail, changed: (store: StoreName, key: string) => void) => () => T): Promise<T> {
-        if (this.cleared) return Promise.reject(new Error('The library was deleted. Reload the page.'));
         const result = this.pending.then(async () => {
+            if (this.cleared) throw new Error('The library was deleted. Reload the page.');
             const changes: [StoreName, string][] = [];
             const value = await this.run(stores, 'readwrite', (tx, fail) => work(tx, fail, (store, key) => changes.push([store, key])));
             for (const [store, key] of changes) for (const listener of this.listeners) listener(store, key);
@@ -322,15 +322,13 @@ export class Library {
         });
     }
 
-    /** Empties all stores after the writes before it. This object then refuses each write, so a later save of a page
-     * brings nothing back: the page reloads. */
+    /** Empties all stores after the writes before it. After it commits, this object refuses each write, so a later save
+     * of a page brings nothing back: the page reloads. */
     clear(): Promise<void> {
-        const done = this.write(STORES, tx => {
+        return this.write(STORES, tx => {
             for (const store of STORES) tx.objectStore(store).clear();
-            return () => {};
+            return () => { this.cleared = true; };
         });
-        this.cleared = true;
-        return done;
     }
 
     async close(): Promise<void> { (await this.database)?.close(); }

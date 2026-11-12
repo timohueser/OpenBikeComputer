@@ -45,7 +45,7 @@ test('the settings set the look and the units, and a backup brings the library b
   await page.getByRole('button', { name: 'Delete all' }).click();
   const confirm = page.getByRole('dialog', { name: 'Delete all?' });
   await expect(confirm).toContainText('Close other tabs of this app first.');
-  await confirm.getByRole('button', { name: 'Delete all' }).click();
+  await Promise.all([page.waitForEvent('load'), confirm.getByRole('button', { name: 'Delete all' }).click()]);
   await expect(counts(page)).toContainText('0 routes and 0 rides');
   await expect(page.getByRole('radio', { name: 'Miles' })).toHaveAttribute('aria-checked', 'true');
 

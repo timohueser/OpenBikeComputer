@@ -22,6 +22,7 @@
     let message = $state('');
     let busy = $state(false);
     let confirming = $state(false);
+    let failure = $state('');
     let file: HTMLInputElement;
 
     const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
@@ -36,6 +37,11 @@
 
     /** Empty is "not set"; `readSettings` moves a value out of range to the nearest end, and the field shows it. */
     function setValue(key: 'maxHr' | 'ftp', field: HTMLInputElement) {
+        // An entry that the browser cannot read as a number also has an empty value.
+        if (field.validity.badInput) {
+            field.value = String(settings[key]?.value ?? '');
+            return;
+        }
         const value: RiderValue | null = field.value === '' ? null : { value: Math.round(Number(field.value)), at: Math.floor(Date.now() / 1000), device: false };
         updateSettings({ [key]: value });
         field.value = String(settings[key]?.value ?? '');
@@ -68,10 +74,17 @@
         });
     }
 
-    const deleteAll = () => run(async () => {
-        await library.clear();
-        location.reload();
-    });
+    async function deleteAll() {
+        busy = true;
+        failure = '';
+        try {
+            await library.clear();
+            location.reload();
+        } catch (error) {
+            failure = text(error);
+            busy = false;
+        }
+    }
 </script>
 
 <main>
@@ -117,12 +130,15 @@
 </main>
 
 {#if confirming}
-    <Window title="Delete all?" onClose={() => confirming = false}>
+    <Window title="Delete all?" onClose={() => { confirming = false; failure = ''; }}>
+        {#snippet children(close)}
         <p>Your routes and rides leave this browser. The device keeps its own, and its rides come in again at the next connection. Close other tabs of this app first.</p>
+        {#if failure}<p class="message" role="alert">{failure}</p>{/if}
         <div class="buttons end">
-            <button type="button" onclick={() => confirming = false}>Cancel</button>
+            <button type="button" onclick={close}>Cancel</button>
             <button type="button" class="danger" onclick={deleteAll} disabled={busy}>Delete all</button>
         </div>
+        {/snippet}
     </Window>
 {/if}
 
