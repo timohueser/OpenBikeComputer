@@ -21,6 +21,7 @@
         planner: { label: 'Planner', keep: true, load: () => initCore().then(() => import('./components/planner/PlannerApp.svelte')) },
         // The page writes GPX and FIT.
         route: { load: () => initCore().then(() => import('./pages/Route.svelte')) },
+        settings: { load: () => import('./pages/Settings.svelte') },
     };
 </script>
 
@@ -68,7 +69,7 @@
 </script>
 
 <div class="shell">
-    <TopBar {links} />
+    <TopBar {links} settings={current === 'settings'} />
     <div class="pages">
         {#each Object.entries(pages) as [route, page] (route)}
             {#if route === current || (PAGES[route as Route]!.keep && page.component)}

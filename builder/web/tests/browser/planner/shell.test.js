@@ -19,7 +19,7 @@ async function start(page, path) {
 
 test('the shell shows the planner with no hash and for a page that does not exist', async ({ page }) => {
   await start(page, '/planner.html');
-  await start(page, '/planner.html#/settings');
+  await start(page, '/planner.html#/nowhere');
 });
 
 test('a change of the hash closes an open window of the planner', async ({ page }) => {
@@ -31,5 +31,7 @@ test('a change of the hash closes an open window of the planner', async ({ page 
   await expect(view).toBeVisible();
   await page.evaluate(() => { location.hash = '#/settings'; });
   await expect(view).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Settings', level: 1 })).toBeVisible();
+  await page.getByRole('link', { name: 'Planner' }).click();
   await expect(page.locator('.maplibregl-canvas')).toBeVisible();
 });

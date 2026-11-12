@@ -17,6 +17,7 @@ export interface Contents {
 type Fail = (error: unknown) => void;
 
 const conflict = () => new Error('This route changed in another tab. Download your edits before reopening it.');
+const STORES: StoreName[] = ['routes', 'versions', 'rides', 'ride-files', 'covers', 'state'];
 
 /** Writes are ordered within a tab; revisions prevent a second tab from replacing unseen edits of a route. */
 export class Library {
@@ -25,6 +26,7 @@ export class Library {
     private revisions = new Map<string, number>();
     private listeners = new Set<(store: StoreName, key: string) => void>();
     private written = false;
+    private cleared = false;
 
     /** Without `factory`, `open` reads `indexedDB`, so a browser that blocks storage gives a rejected promise. */
     constructor(private factory?: IDBFactory) {}
@@ -72,6 +74,7 @@ export class Library {
     /** A write in the order of this tab. `changed` names each record that it writes, for the listeners of `onChange`. */
     private write<T>(stores: StoreName[], work: (tx: IDBTransaction, fail: Fail, changed: (store: StoreName, key: string) => void) => () => T): Promise<T> {
         const result = this.pending.then(async () => {
+            if (this.cleared) throw new Error('The library was deleted. Reload the page.');
             const changes: [StoreName, string][] = [];
             const value = await this.run(stores, 'readwrite', (tx, fail) => work(tx, fail, (store, key) => changes.push([store, key])));
             for (const [store, key] of changes) for (const listener of this.listeners) listener(store, key);
@@ -356,6 +359,15 @@ export class Library {
                 }
             };
             return () => result;
+        });
+    }
+
+    /** Empties all stores after the writes before it. After it commits, this object refuses each write, so a later save
+     * of a page brings nothing back: the page reloads. */
+    clear(): Promise<void> {
+        return this.write(STORES, tx => {
+            for (const store of STORES) tx.objectStore(store).clear();
+            return () => { this.cleared = true; };
         });
     }
 

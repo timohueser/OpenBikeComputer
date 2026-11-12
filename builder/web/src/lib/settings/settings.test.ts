@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { distanceIn, formatDistance, formatHeight, formatSpeed, heightIn, heightUnit, plannedSeconds } from './format';
+import { distanceIn, formatDistance, formatHeight, formatSpeed, heightIn, heightUnit } from './format';
 import { readSettings, settings, takeDeviceValues, updateSettings } from './settings.svelte';
 
 const stored = new Map<string, string>();
@@ -17,21 +17,21 @@ const otherTab = (value: object) => {
 
 describe('readSettings', () => {
     it('keeps the valid fields, takes the defaults for the others, and keeps rider values inside the device ranges', () => {
-        expect(readSettings('nonsense')).toEqual({ units: 'km', pace: 'moderate', maxHr: null, ftp: null });
-        expect(readSettings({ units: 'yards', pace: 'toString', maxHr: { value: '180', at: 1, device: true }, ftp: { value: 250, at: 1 } }))
-            .toEqual({ units: 'km', pace: 'moderate', maxHr: null, ftp: null });
-        expect(readSettings({ units: 'mi', pace: 'fast', maxHr: { value: 250, at: 5, device: false }, ftp: { value: 10, at: 6, device: true } }))
-            .toEqual({ units: 'mi', pace: 'fast', maxHr: { value: 220, at: 5, device: false }, ftp: { value: 50, at: 6, device: true } });
+        expect(readSettings('nonsense')).toEqual({ units: 'km', maxHr: null, ftp: null });
+        expect(readSettings({ units: 'yards', pace: 'fast', maxHr: { value: '180', at: 1, device: true }, ftp: { value: 250, at: 1 } }))
+            .toEqual({ units: 'km', maxHr: null, ftp: null });
+        expect(readSettings({ units: 'mi', maxHr: { value: 250, at: 5, device: false }, ftp: { value: 10, at: 6, device: true } }))
+            .toEqual({ units: 'mi', maxHr: { value: 220, at: 5, device: false }, ftp: { value: 50, at: 6, device: true } });
     });
 });
 
 describe('updateSettings', () => {
     it('keeps the newer write of another tab, and takes it into this tab', () => {
         stored.set('obc-settings', JSON.stringify({ ...readSettings(null), units: 'mi' }));
-        updateSettings({ pace: 'fast' });
-        expect(JSON.parse(stored.get('obc-settings')!)).toMatchObject({ units: 'mi', pace: 'fast' });
-        otherTab({ pace: 'easy' });
-        expect(settings).toMatchObject({ units: 'mi', pace: 'easy' });
+        updateSettings({ maxHr: { value: 180, at: 1, device: false } });
+        expect(JSON.parse(stored.get('obc-settings')!)).toMatchObject({ units: 'mi', maxHr: { value: 180 } });
+        otherTab({ units: 'km' });
+        expect(settings).toMatchObject({ units: 'km', maxHr: { value: 180 } });
     });
 });
 
@@ -67,11 +67,5 @@ describe('format', () => {
         expect([formatHeight(1240), heightUnit()]).toEqual(['4,068 ft', 'ft']);
         expect(distanceIn(1609.344)).toBe(1);
         expect(formatSpeed(19 / 3.6)).toBe('11.8 mph');
-    });
-
-    it('plans a ride at the pace of the rider, and leaves a time on foot as it is', () => {
-        updateSettings({ pace: 'fast' });
-        expect(plannedSeconds(2700, 'gravel')).toBe(1900);
-        expect(plannedSeconds(2700, 'hiking')).toBe(2700);
     });
 });
