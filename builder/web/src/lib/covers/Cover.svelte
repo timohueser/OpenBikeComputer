@@ -2,12 +2,12 @@
     import type { CoverPoints, CoverRecord, RideRecord, RouteRecord, Summary } from '../library/records';
     import type { Library } from '../library/store';
     import { appearance } from '../theme.svelte';
-    import { drawCover, type Crop } from './draw';
+    import { crop, drawCover, type Crop } from './draw';
     import { lineKey } from '../library/summary';
     import { settled, wantCover, wantsPicture, type Place } from './job';
-    import { nearest } from './line';
+    import { along, nearest } from './line';
 
-    let { library, id, mark, part, line = true, place = 'row', onpoint }: {
+    let { library, id, mark, part, line = true, place = 'row', pins = [], onpoint }: {
         library: Library;
         /** The id of a route or the key of a ride. */
         id: string;
@@ -17,6 +17,8 @@
         line?: boolean;
         /** A card shows the map picture when the record has no cover. A card and a page ask the cover job for what is missing. */
         place?: Place;
+        /** Labels at shares of the summary line from 0 to 1: a numbered waypoint, or a night without a number. */
+        pins?: { share: number; label: string; number?: number }[];
         /** The metres along the route of the point nearest to the pointer, or null when the pointer leaves. */
         onpoint?: (metres: number | null) => void;
     } = $props();
@@ -77,6 +79,19 @@
         onpoint?.(metres ?? null);
     }
 
+    /** The pins at visible points of the line, in CSS pixels of the box. */
+    const shownPins = $derived.by(() => {
+        const summary = shown?.summary;
+        if (!summary || !width || !height) return [];
+        const { bitmap, points } = shown!, ratio = devicePixelRatio;
+        const cut = crop({ width: bitmap.width, height: bitmap.height, points }, [Math.round(width * ratio), Math.round(height * ratio)]);
+        return pins.flatMap(pin => {
+            const at = along(points, summary, pin.share * summary.lengthM);
+            const x = at && (at.x - cut.left) * cut.scale / ratio, y = at && (at.y - cut.top) * cut.scale / ratio;
+            return at?.visible && x! >= 0 && x! <= width && y! >= 0 && y! <= height ? [{ ...pin, x: x!, y: y! }] : [];
+        });
+    });
+
     /** The line on a plain ground, in a box of 100 by the shape of the line, with the north up. */
     const fallback = $derived.by(() => {
         const flat = item?.summary?.line;
@@ -95,6 +110,11 @@
 <div class="cover" bind:clientWidth={width} bind:clientHeight={height}>
     {#if shown}
         <canvas bind:this={canvas} onpointermove={point} onpointerleave={() => onpoint?.(null)}></canvas>
+        {#each shownPins as pin (pin.share)}
+            <span class="route-pin" style:left={`${pin.x}px`} style:top={`${pin.y}px`}>
+                {#if pin.number}<b>{pin.number}</b>{pin.label}{:else}Night{pin.label ? ` · ${pin.label}` : ''}{/if}
+            </span>
+        {/each}
     {:else if fallback && line}
         <svg viewBox={fallback.box} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
             <polyline points={fallback.points} />
@@ -115,6 +135,11 @@
         display: block;
         width: 100%;
         height: 100%;
+    }
+
+    .route-pin {
+        position: absolute;
+        transform: translate(-50%, calc(-100% - 10px));
     }
 
     polyline {

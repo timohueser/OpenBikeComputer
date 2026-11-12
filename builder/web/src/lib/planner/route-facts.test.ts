@@ -31,4 +31,18 @@ describe('routeFacts', () => {
         expect(facts.climbs[0].to).toBeCloseTo(3.8, 1);
         expect(facts.climbs[0].top[0]).toBeCloseTo(8.05, 3);
     });
+
+    it('gives a climb its steepest grade, the grade of its steep ramp', async () => {
+        // 50 m over 3.8 km, then a ramp of 300 m over 3.8 km: one climb, its mean grade 4.6 % and its ramp 7.9 %.
+        const trip: Trip = { ...emptyTrip('route'), days: 1, routeOrder: ['foot'], points: [
+            point('start', 'start', 8, 400, 400),
+            point('foot', 'waypoint', 8.05, 400, 450),
+            point('finish', 'finish', 8.1, 450, 750),
+        ] };
+        const facts = routeFacts(trip, await calculateLine(trip, new AbortController().signal, new LegCache()));
+
+        expect(facts.climbs).toHaveLength(1);
+        expect(facts.climbs[0].gradient).toBeCloseTo(4.6, 1);
+        expect(facts.climbs[0].steepest).toBeCloseTo(7.9, 1);
+    });
 });

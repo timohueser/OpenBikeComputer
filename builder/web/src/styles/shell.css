@@ -35,3 +35,32 @@ summary:focus-visible {
     outline: 2px solid var(--forest);
     outline-offset: 2px;
 }
+
+/* A label at a point of a route on the cover or the map: a waypoint has its number in a disc. */
+.route-pin {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 200px;
+    overflow: hidden;
+    padding: 3px 9px;
+    border-radius: 12px;
+    background: rgb(28 27 20 / 0.85);
+    color: #fff;
+    font: 500 12.5px/1.2 var(--sans);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    pointer-events: none;
+}
+.route-pin b {
+    display: grid;
+    flex: none;
+    place-items: center;
+    width: 18px;
+    height: 18px;
+    margin-left: -5px;
+    border-radius: 50%;
+    background: var(--rust);
+    color: var(--cream);
+    font: 700 11px/1 var(--sans);
+}

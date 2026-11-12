@@ -5,16 +5,19 @@
     import Icon from '../components/planner/PlannerIcon.svelte';
     import Facts from '../components/route/Facts.svelte';
     import RouteMap from '../components/route/RouteMap.svelte';
+    import Rows from '../components/route/Rows.svelte';
     import Cover from '../lib/covers/Cover.svelte';
     import { settled, wantCover } from '../lib/covers/job';
     import Credits from '../components/planner/Credits.svelte';
     import { writeFitCourse } from '../lib/core/fit';
     import { writeGpx, type GpxImport } from '../lib/core/gpx';
-    import type { CoverRecord, RouteRecord } from '../lib/library/records';
+    import type { CoverRecord, RouteRecord, SentRoute } from '../lib/library/records';
     import type { Library } from '../lib/library/store';
+    import { lineCoordinates, lineKey } from '../lib/library/summary';
+    import { remembered } from '../lib/device-sync/remembered.svelte';
     import { hasEndpoints, planTitle, planView } from '../lib/planner/editor';
     import { downloadPlan, isPlan, isVersion, newPlan } from '../lib/planner/library';
-    import { routeFacts } from '../lib/planner/route-facts';
+    import { routeFacts, routePins } from '../lib/planner/route-facts';
     import { LegCache } from '../lib/planner/route-legs';
     import { creditsWith } from '../lib/planner/map-setup';
     import { calculateLine, routingKey, type RoutingLine } from '../lib/planner/routing';
@@ -28,7 +31,7 @@
     const legs = new LegCache();
     // Raw: `planView` freezes the trip that it reads.
     let record = $state.raw<RouteRecord | null>();
-    let waiting = $state(false), cover = $state.raw<CoverRecord>(), swapped = $state(false);
+    let waiting = $state(false), sent = $state.raw<SentRoute>(), cover = $state.raw<CoverRecord>(), swapped = $state(false);
     let routed = $state.raw<{ key: string; line?: RoutingLine; error?: string }>();
     /** The pointer, as a share of the summary line from 0 to 1. */
     let share = $state<number>();
@@ -41,6 +44,11 @@
     const line = $derived(routed?.key === key ? routed?.line : undefined);
     const error = $derived(!key ? 'This plan has no start and finish.' : routed?.key === key ? routed?.error : undefined);
     const facts = $derived(plan && line ? routeFacts(plan.trip, line) : undefined);
+    const pins = $derived(plan && summary ? routePins(plan.trip, lineCoordinates(summary), line) : []);
+    // Only an entry of the card of the remembered device counts.
+    const sentHere = $derived(sent && remembered.device && sent.device.startsWith(`${remembered.device.storeId}:`) ? sent : undefined);
+    // The device has the route as it is stored now.
+    const onDevice = $derived(!!sentHere && !!record && sentHere.line === lineKey(record));
     const changed = $derived(!!plan && !!line && (!summary || Math.abs(planView(plan.trip, line).summary.distance * 1000 - summary.lengthM) > summary.lengthM / 100));
     const covered = $derived(!!cover?.image);
     // The small map draws the basemap too. A cover made before its credits were kept has the credits of the release.
@@ -54,16 +62,17 @@
         record = undefined;
         [cover, swapped, share, renaming, deleting, exportOpen, failure] = [undefined, false, undefined, false, false, false, ''];
         const load = async () => {
-            const [item, ids, stored] = await Promise.all([library.item(target), library.state('waiting'), library.cover(target)]);
+            const [item, ids, routes, stored] = await Promise.all([library.item(target), library.state('waiting'), library.state('sent'), library.cover(target)]);
             if (!live) return;
             record = item && 'revision' in item ? item : null;
             waiting = !!ids?.includes(target);
+            sent = routes?.[target];
             cover = stored;
         };
         // Also the cover of an earlier line, which shows until the new one arrives.
         void load().then(() => { if (live && record?.summary && !settled(record, cover)) wantCover(target, 'page'); });
         const stop = library.onChange((store, changedKey) => {
-            if (changedKey === target || (store === 'state' && changedKey === 'waiting')) void load();
+            if (changedKey === target || (store === 'state' && (changedKey === 'waiting' || changedKey === 'sent'))) void load();
         });
         return () => { live = false; stop(); };
     });
@@ -169,12 +178,13 @@
                     <button type="button" class="icon" aria-label="Rename" onclick={startRename}><Icon name="pencil" size={16} /></button>
                 {/if}
                 {#if summary && summary.days > 1}<span class="tag">{summary.days} days</span>{/if}
-                {#if waiting}<span class="tag">Waits for the device</span>{/if}
+                {#if waiting}<span class="tag">Waits for the device</span>
+                {:else if sentHere}<span class="tag">{onDevice ? 'On the device' : 'Changed since it was sent'}</span>{/if}
             </div>
             {#if plan}
                 <nav class="buttons" aria-label="Route">
                     <a class="button primary" href={`${ROUTES.planner}/${id}`}>Open in the planner</a>
-                    <button type="button" class="button" onclick={() => send(!waiting)}>{waiting ? 'Do not send' : 'Send to device'}</button>
+                    <button type="button" class="button" disabled={!waiting && onDevice} onclick={() => send(!waiting)}>{waiting ? 'Do not send' : 'Send to device'}</button>
                     <div class="export">
                         <button type="button" class="button" aria-expanded={exportOpen} onclick={() => exportOpen = !exportOpen}>Export ▾</button>
                         {#if exportOpen}
@@ -196,7 +206,7 @@
 
         <div class="cards">
             {#if plan}
-                <Facts {summary} trip={plan.trip} {facts} {error} {changed}>
+                <Facts {summary} trip={plan.trip} {line} {facts} {error} {changed}>
                     <button type="button" class="button" onclick={duplicate}>Duplicate</button>
                     {@render remover()}
                 </Facts>
@@ -210,19 +220,22 @@
                 <div class="picture" class:map-large={mapLarge}>
                     {#if covered}
                         <div class="slot cover">
-                            <Cover {library} {id} mark={share === undefined ? undefined : share * summary.lengthM}
+                            <Cover {library} {id} {pins} mark={share === undefined ? undefined : share * summary.lengthM}
                                 onpoint={metres => share = metres === null || !summary.lengthM ? undefined : metres / summary.lengthM} />
                             {#if mapLarge}<button type="button" class="swap" aria-label="Show the picture large" onclick={() => swapped = false}></button>{/if}
                         </div>
                     {/if}
                     {#if covered}<Credits {credits} side="left" />{/if}
                     <div class="slot map">
-                        <RouteMap {summary} mark={share} onpoint={next => share = next ?? undefined} />
+                        <RouteMap {summary} {pins} mark={share} onpoint={next => share = next ?? undefined} />
                         {#if !mapLarge}<button type="button" class="swap" aria-label="Show the map large" onclick={() => swapped = true}></button>{/if}
                     </div>
                 </div>
             {/if}
         </div>
+        {#if plan && summary}
+            {#key id}<Rows {summary} trip={plan.trip} {line} {facts} {pins} mark={share} onpoint={next => share = next ?? undefined} />{/key}
+        {/if}
     {/if}
 </div>
 
@@ -374,7 +387,7 @@
         grid-template-columns: 300px 1fr;
         grid-template-rows: minmax(0, 1fr);
         gap: 14px;
-        min-height: 0;
+        min-height: 360px;
     }
     .picture {
         position: relative;

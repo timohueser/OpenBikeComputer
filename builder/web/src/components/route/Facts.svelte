@@ -2,20 +2,25 @@
     import type { Snippet } from 'svelte';
     import Card from '../../lib/ui/Card.svelte';
     import Icon from '../planner/PlannerIcon.svelte';
+    import ElevationRow from './ElevationRow.svelte';
     import type { RouteSummary } from '../../lib/library/records';
     import { distanceIn, formatDistance, formatHeight } from '../../lib/settings/format';
     import { settings } from '../../lib/settings/settings.svelte';
-    import { duration, orderedRoutePoints, type RoutePoint, type Trip } from '../../lib/planner/editor';
+    import { duration, orderedRoutePoints, planView, type RoutePoint, type Trip } from '../../lib/planner/editor';
     import type { Coordinate } from '../../lib/planner/geo';
+    import { profileHeightAt, profileSamples } from '../../lib/planner/profile-data';
+    import type { RoutingLine } from '../../lib/planner/routing';
     import { townName } from '../../lib/planner/point-names';
     import type { Climb, RouteFacts, Waypoint } from '../../lib/planner/route-facts';
     import { kindLabel } from '../../lib/planner/search/presentation';
 
     /** The left card of the Route page: the numbers of the stored summary, then the days, the climbs and the waypoints
-     * of the calculated line, or the routing error. */
-    let { summary, trip, facts, error, changed, children }: {
+     * of the calculated line, or the routing error. A climb opens in the card with its profile. */
+    let { summary, trip, line, facts, error, changed, children }: {
         summary: RouteSummary | null;
         trip: Trip;
+        /** The calculated line, which `facts` belongs to. */
+        line?: RoutingLine;
         facts?: RouteFacts;
         error?: string;
         /** The calculated line differs from the stored summary. */
@@ -24,7 +29,9 @@
         children: Snippet;
     } = $props();
 
-    let climbsOpen = $state(false);
+    let climbsOpen = $state(false), opened = $state.raw<Climb>();
+    // A climb of an earlier line or route does not stay open.
+    const shownClimb = $derived(opened && facts?.climbs.includes(opened) ? opened : undefined);
     // One place search for each shown climb top while the page lives, at most SEARCHES at a time: each search has a time limit.
     const SEARCHES = 3;
     const towns = new Map<string, Promise<string | null>>(), waiting: (() => void)[] = [];
@@ -64,68 +71,97 @@
 {#snippet climbRow(climb: Climb)}
     {@const numbers = `${at(climb.from)} · ${formatDistance((climb.to - climb.from) * 1000)} · ${grade(climb)}`}
     <li class="climb">
-        {#await town(climb.top)}
-            <strong>{numbers}</strong>
-        {:then name}
-            {#if name}<strong>To {name}</strong><small>{numbers}</small>{:else}<strong>{numbers}</strong>{/if}
-        {/await}
+        <button type="button" onclick={() => opened = climb}>
+            <span>
+                {#await town(climb.top)}
+                    <strong>{numbers}</strong>
+                {:then name}
+                    {#if name}<strong>To {name}</strong><small>{numbers}</small>{:else}<strong>{numbers}</strong>{/if}
+                {/await}
+            </span>
+            <Icon name="chevron" size={14} />
+        </button>
     </li>
+{/snippet}
+
+{#snippet climbCard(climb: Climb, line: RoutingLine)}
+    {@const total = planView(trip, line).total}
+    {@const top = profileHeightAt(climb.to / total, profileSamples(line))}
+    <button type="button" class="back" onclick={() => opened = undefined}>‹ Climbs</button>
+    {#await town(climb.top)}
+        <h3 class="climb-name">Climb</h3>
+    {:then name}
+        <h3 class="climb-name">{name ? `To ${name}` : 'Climb'}</h3>
+    {/await}
+    <p class="note">{at(climb.from)} to {at(climb.to)}</p>
+    <dl class="numbers">
+        {@render number('Length', formatDistance((climb.to - climb.from) * 1000))}
+        {@render number('Climb', formatHeight(climb.ascent))}
+        {@render number('Mean grade', grade(climb))}
+        {@render number('Steepest', `${Math.round(climb.steepest)} %`)}
+        {@render number('Top', top === null ? '–' : formatHeight(top))}
+    </dl>
+    <div class="profile"><ElevationRow {line} from={climb.from / total} to={climb.to / total} /></div>
 {/snippet}
 
 <div class="facts">
     <Card>
-        <dl class="numbers">
-            {@render number('Length', summary ? formatDistance(summary.lengthM) : '–')}
-            {@render number('Climb', summary ? formatHeight(summary.climbM) : '–')}
-            {#if !days}
-                {@render number('Time', summary ? duration(summary.seconds / 3600) : '–')}
-                {@render number('Highest point', summary?.highestM != null ? formatHeight(summary.highestM) : '–')}
-            {/if}
-        </dl>
-        {#if changed}<p class="note">Changed since the last save</p>{/if}
-
-        {#if error}
-            <p class="note" role="alert">{error}</p>
-        {:else if !facts}
-            <p class="note">Finding the climbs…</p>
-        {:else if days}
-            <h3>Days</h3>
-            <ol class="days">
-                {#each days as day (day.number)}
-                    {#if day.rest}
-                        <li class="day"><span class="chip">Day {day.number}</span><strong>{trip.restNames?.[day.restIndex!] || 'Rest day'}</strong></li>
-                    {:else}
-                        {@const from = day.ridingNumber === 1 ? ends[0]?.label : trip.points.find(p => p.kind === 'night' && p.night === day.ridingNumber - 1)?.label}
-                        {@const last = day.ridingNumber === days.filter(d => !d.rest).length}
-                        <li class="day">
-                            <span class="chip">Day {day.number}</span>
-                            <span>
-                                <strong>{dayTitle(from, last ? finish?.label : day.pinned?.label)}</strong>
-                                <small>{formatDistance(day.distance * 1000)} · {formatHeight(day.ascent)} up · {duration(day.hours)}</small>
-                            </span>
-                        </li>
-                        {#each day.stops as stop (stop.point.id)}{@render pin(stop, about(stop.point))}{/each}
-                        {#if !last}
-                            <li class="day"><span class="chip">Night</span><span>{day.pinned?.label ?? 'Not chosen'}</span></li>
-                        {/if}
-                    {/if}
-                {/each}
-            </ol>
-            {#if longest}
-                <button type="button" class="more" aria-expanded={climbsOpen} onclick={() => climbsOpen = !climbsOpen}>
-                    <span><strong>{facts.climbs.length} {facts.climbs.length === 1 ? 'climb' : 'climbs'}</strong> · the longest: {formatDistance((longest.to - longest.from) * 1000)} at {grade(longest)}</span>
-                    <Icon name="chevron" size={14} />
-                </button>
-                {#if climbsOpen}<ul class="rows">{#each facts.climbs as climb (climb.from)}{@render climbRow(climb)}{/each}</ul>{/if}
-            {/if}
+        {#if shownClimb && line}
+            {@render climbCard(shownClimb, line)}
         {:else}
-            {#if facts.climbs.length}
-                <h3>Climbs</h3>
-                <ul class="rows">{#each facts.climbs as climb (climb.from)}{@render climbRow(climb)}{/each}</ul>
-            {/if}
-            {#if facts.stops.length}
-                <h3>Waypoints</h3>
-                <ol class="rows">{#each facts.stops as stop (stop.point.id)}{@render pin(stop, [about(stop.point), at(stop.km)].filter(Boolean).join(' · '))}{/each}</ol>
+            <dl class="numbers">
+                {@render number('Length', summary ? formatDistance(summary.lengthM) : '–')}
+                {@render number('Climb', summary ? formatHeight(summary.climbM) : '–')}
+                {#if !days}
+                    {@render number('Time', summary ? duration(summary.seconds / 3600) : '–')}
+                    {@render number('Highest point', summary?.highestM != null ? formatHeight(summary.highestM) : '–')}
+                {/if}
+            </dl>
+            {#if changed}<p class="note">Changed since the last save</p>{/if}
+
+            {#if error}
+                <p class="note" role="alert">{error}</p>
+            {:else if !facts}
+                <p class="note">Finding the climbs…</p>
+            {:else if days}
+                <h3>Days</h3>
+                <ol class="days">
+                    {#each days as day (day.number)}
+                        {#if day.rest}
+                            <li class="day"><span class="chip">Day {day.number}</span><strong>{trip.restNames?.[day.restIndex!] || 'Rest day'}</strong></li>
+                        {:else}
+                            {@const from = day.ridingNumber === 1 ? ends[0]?.label : trip.points.find(p => p.kind === 'night' && p.night === day.ridingNumber - 1)?.label}
+                            {@const last = day.ridingNumber === days.filter(d => !d.rest).length}
+                            <li class="day">
+                                <span class="chip">Day {day.number}</span>
+                                <span>
+                                    <strong>{dayTitle(from, last ? finish?.label : day.pinned?.label)}</strong>
+                                    <small>{formatDistance(day.distance * 1000)} · {formatHeight(day.ascent)} up · {duration(day.hours)}</small>
+                                </span>
+                            </li>
+                            {#each day.stops as stop (stop.point.id)}{@render pin(stop, about(stop.point))}{/each}
+                            {#if !last}
+                                <li class="day"><span class="chip">Night</span><span>{day.pinned?.label ?? 'Not chosen'}</span></li>
+                            {/if}
+                        {/if}
+                    {/each}
+                </ol>
+                {#if longest}
+                    <button type="button" class="more" aria-expanded={climbsOpen} onclick={() => climbsOpen = !climbsOpen}>
+                        <span><strong>{facts.climbs.length} {facts.climbs.length === 1 ? 'climb' : 'climbs'}</strong> · the longest: {formatDistance((longest.to - longest.from) * 1000)} at {grade(longest)}</span>
+                        <Icon name="chevron" size={14} />
+                    </button>
+                    {#if climbsOpen}<ul class="rows">{#each facts.climbs as climb (climb.from)}{@render climbRow(climb)}{/each}</ul>{/if}
+                {/if}
+            {:else}
+                {#if facts.climbs.length}
+                    <h3>Climbs</h3>
+                    <ul class="rows">{#each facts.climbs as climb (climb.from)}{@render climbRow(climb)}{/each}</ul>
+                {/if}
+                {#if facts.stops.length}
+                    <h3>Waypoints</h3>
+                    <ol class="rows">{#each facts.stops as stop (stop.point.id)}{@render pin(stop, [about(stop.point), at(stop.km)].filter(Boolean).join(' · '))}{/each}</ol>
+                {/if}
             {/if}
         {/if}
 
@@ -183,8 +219,53 @@
         border-bottom: 1px solid var(--line);
     }
     .climb {
+        padding: 0;
+    }
+    .climb button, .back {
+        border: 0;
+        background: none;
+        color: var(--ink);
+        text-align: left;
+    }
+    .climb button {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        width: 100%;
+        padding: 9px 0;
+    }
+    .climb button > span {
+        display: flex;
         flex-direction: column;
         gap: 2px;
+    }
+    .climb button:hover strong {
+        text-decoration: underline;
+    }
+    .back {
+        align-self: flex-start;
+        padding: 0;
+        color: var(--ink-soft);
+    }
+    .back:hover {
+        color: var(--ink);
+    }
+    .climb-name {
+        margin: 10px 0 0;
+        padding: 0;
+        border: 0;
+        color: var(--ink);
+        font: 700 17px/1.3 var(--sans);
+        letter-spacing: 0;
+        text-transform: none;
+    }
+    .climb-name + .note {
+        margin: 2px 0 14px;
+    }
+    .profile {
+        height: 96px;
+        margin: 18px 0 0 46px;
     }
     li > span:not(.chip, .pin) {
         display: flex;

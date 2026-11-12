@@ -3,15 +3,18 @@
     import * as maplibregl from 'maplibre-gl';
     import 'maplibre-gl/dist/maplibre-gl.css';
     import type { Summary } from '../../lib/library/records';
+    import { lineCoordinates } from '../../lib/library/summary';
     import { coordinateAt, nearestOnLine, nearestProgress, type Coordinate } from '../../lib/planner/geo';
     import { basemapStyle } from '../../lib/planner/map-style';
     import { styleConfig, useMapProtocols } from '../../lib/planner/map-setup';
     import { appearance } from '../../lib/theme.svelte';
 
     /** A map that the rider can move, with the summary line of a route and the mark. A share is 0 to 1 along the line. */
-    let { summary, mark, onpoint }: {
+    let { summary, mark, pins = [], onpoint }: {
         summary: Summary;
         mark?: number;
+        /** Labels at shares of the line: a numbered waypoint, or a night without a number. */
+        pins?: { share: number; label: string; number?: number }[];
         /** The share of the point of the line nearest to the pointer, or null when the pointer is not near the line. */
         onpoint?: (share: number | null) => void;
     } = $props();
@@ -21,7 +24,7 @@
     let container: HTMLElement;
     let map = $state.raw<maplibregl.Map>();
     const theme = $derived(appearance.dark ? 'dark' : 'light');
-    const coordinates = $derived(Array.from({ length: summary.line.length / 2 }, (_, i): Coordinate => [summary.line[2 * i], summary.line[2 * i + 1]]));
+    const coordinates = $derived(lineCoordinates(summary));
     const dot = Object.assign(document.createElement('div'), { className: 'route-map-mark' });
     const marker = new maplibregl.Marker({ element: dot });
     let shown: typeof theme;
@@ -70,6 +73,16 @@
     $effect(() => {
         const source = map?.getSource<maplibregl.GeoJSONSource>('route');
         source?.setData({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates } });
+    });
+    $effect(() => {
+        if (!map || coordinates.length < 2) return;
+        const markers = pins.map(pin => {
+            const element = Object.assign(document.createElement('div'), { className: 'route-pin' });
+            if (pin.number) element.append(Object.assign(document.createElement('b'), { textContent: String(pin.number) }), pin.label);
+            else element.textContent = pin.label ? `Night · ${pin.label}` : 'Night';
+            return new maplibregl.Marker({ element, anchor: 'bottom', offset: [0, -6] }).setLngLat(coordinateAt(coordinates, pin.share)).addTo(map!);
+        });
+        return () => markers.forEach(marker => marker.remove());
     });
     $effect(() => {
         if (!map) return;

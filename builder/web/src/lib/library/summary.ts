@@ -20,6 +20,11 @@ export function lineKey(item: RouteRecord | RideRecord): string {
     return (hash >>> 0).toString(16).padStart(8, '0');
 }
 
+/** The points of the summary line as [longitude, latitude]. */
+export function lineCoordinates({ line }: Summary): [number, number][] {
+    return Array.from({ length: line.length / 2 }, (_, i) => [line[2 * i], line[2 * i + 1]]);
+}
+
 /** Longitude, latitude, and the height in metres or null. */
 export type Point = readonly [number, number, (number | null)?];
 /** The numbers that the caller knows; `summarize` finds the others from the points. */
