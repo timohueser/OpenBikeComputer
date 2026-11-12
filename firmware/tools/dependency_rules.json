@@ -2,8 +2,7 @@
   "schema_version": 1,
   "standalone_manifests": [
     "firmware/obc-fw-nrf54l/Cargo.toml",
-    "firmware/obc-boot/Cargo.toml",
-    "builder/desktop/Cargo.toml"
+    "firmware/obc-boot/Cargo.toml"
   ],
   "forbidden_features": [
     {
@@ -62,7 +61,6 @@
       "obc-data",
       "obc-data-steps",
       "obc-dem",
-      "obc-desktop",
       "obc-draw",
       "obc-file-source",
       "obc-fit",

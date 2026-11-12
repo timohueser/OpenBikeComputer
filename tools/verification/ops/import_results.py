@@ -11,7 +11,7 @@ import urllib.request
 import uuid
 import xml.etree.ElementTree as ET
 
-ARTIFACT = re.compile(r"(?:rust-(?:test|fixtures)|python-.+|web-.+|desktop-tests-.+|ios-tests-coverage)-[0-9]+")
+ARTIFACT = re.compile(r"(?:rust-(?:test|fixtures)|python-.+|web-.+|ios-tests-coverage)-[0-9]+")
 ASSETS = {"UPDATE.BIN", "manifest.json", "SHA256SUMS.txt", "obc-boot.elf", "obc-fw-nrf54l.elf"}
 
 

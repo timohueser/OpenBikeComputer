@@ -38,8 +38,6 @@
     import { projectedRunDiskBytes } from "../../lib/cells/quota";
     import { acquireMapWorkStorage } from "../../lib/cells/workBarrier";
     import { saveBlob } from "../../lib/download";
-    import { platform } from "../../lib/platform";
-    import type { MapOutputSession } from "../../lib/platform/types";
     import {
         downloadCells,
         planCells,
@@ -130,7 +128,7 @@
         // owner's outstanding put or a newly mounted component.
         if (phase !== "finalizing") {
             // Direct delivery is cancelled through the DeviceJob so the same signal reaches the
-            // in-flight PUT; its one abort listener enters failRun. Browser/desktop delivery has
+            // in-flight PUT; its one abort listener enters failRun. Browser delivery has
             // no outer controller, so it enters that owner path directly.
             if (output?.kind === "device" && !output.settled) output.ctx.cancel(cause);
             else void failRun(cause);
@@ -164,9 +162,8 @@
     let asmFraction = $state(0);
     /** When each assembly phase began, for the run's debug ledger. */
     let asmPhaseStart: Partial<Record<AssemblePhase, number>> = {};
-    /** The map, once there is one: what it is called, how big it is, and where it
-     *  went if the host had somewhere to put it. */
-    let savedFile = $state<{ name: string; byteLength: number; path?: string } | null>(null);
+    /** The map, once there is one: what it is called and how big it is. */
+    let savedFile = $state<{ name: string; byteLength: number } | null>(null);
     /** Whether the file actually reached the disk. Not `savedFile !== null`: it is
      *  set the moment the map is delivered, and a cancel that raced the delivery
      *  must not tell someone to go and discard a file nobody has. */
@@ -192,12 +189,9 @@
     // mount maintenance has joined the origin-global map-work barrier.
     let clearingCells = $state(true);
     let cellStorageNotice = $state<string | null>(null);
-    let outputPath = $state<string | null>(null);
     let runWarnings = $state<string[]>([]);
     let errorMessage = $state<string | null>(null);
     let abortCtl: AbortController | null = null;
-    let downloadOutput: MapOutputSession | null = null;
-    let outputCleanupFailed = $state(false);
     /** The name this run's file will be saved under, fixed when the run starts, so editing the
      *  selection mid-download cannot rename the map that is already being built from the old one.
      *
@@ -299,7 +293,7 @@
                 phase = "saving";
                 delivery = output?.kind === "device"
                     ? deliverResidentMap(msg.bytes, msg.byteLength)
-                    : deliverMap(new Blob([msg.bytes as unknown as BlobPart]), msg.byteLength, msg.bytes);
+                    : deliverMap(new Blob([msg.bytes as unknown as BlobPart]), msg.byteLength);
                 void delivery.catch(() => {});
                 break;
             case "done":
@@ -324,7 +318,6 @@
                         output.ctx.phase("finalizing");
                         phase = "finalizing";
                     }
-                    await closeDownloadOutput(false);
                 } catch (cause) {
                     await failRun(cause);
                     break;
@@ -380,9 +373,6 @@
      * The map the assembly wrote into OPFS: its bytes were never in wasm memory and never crossed
      * the worker port, and on the browser host they never enter the tab's heap either — a `Blob` on
      * an OPFS file is a handle, and that is what the save is given.
-     *
-     * The desktop host does read it back, because its output session takes bytes to write into a
-     * real folder. That is one map resident, which is the residency that host always had.
      */
     async function deliverStoredMap(byteLength: number) {
         const blob = await readMapOutput();
@@ -392,7 +382,7 @@
                     `assembler wrote. Free some disk space and try again.`,
             );
         }
-        await deliverMap(blob, byteLength, null);
+        await deliverMap(blob, byteLength);
     }
 
     /** Deliver the explicitly memory-priced fallback without creating a second full-map Blob. */
@@ -411,7 +401,7 @@
     /** Deliver the verified one-file result without ever materialising an OPFS
      * map in the tab heap. Device PUT reads the Blob twice in bounded slices
      * (CRC then transfer); browser download hands the same Blob to the browser. */
-    async function deliverMap(blob: Blob, byteLength: number, bytes: Uint8Array | null) {
+    async function deliverMap(blob: Blob, byteLength: number) {
         if (sinkClosed) return;
         if (blob.size !== byteLength) {
             throw new Error(
@@ -422,13 +412,6 @@
         if (output?.kind === "device") {
             const { sendMapBlob } = await import("../../lib/device/write");
             output.result = await sendMapBlob(output.client, blob, name, output.ctx);
-        } else if (downloadOutput) {
-                // A picked directory (or the desktop's native folder) takes the map
-                // where the rider wants it, to be sent on to the device later — the card
-                // itself carries a flat store, not a filesystem a host can write. The
-                // session streams a Blob without buffering it.
-            const path = await downloadOutput.write(name, bytes ?? blob);
-            savedFile = { name, byteLength, path };
         } else {
             // No picker here: one file, one ordinary download, one prompt.
             saveBlob(blob, name);
@@ -444,12 +427,6 @@
         current.removeAbort();
         if (failed) current.reject(result);
         else current.resolve(result as PutResponse);
-    }
-
-    async function closeDownloadOutput(discard: boolean) {
-        const current = downloadOutput;
-        downloadOutput = null;
-        if (current) await (discard ? current.discard() : current.finish());
     }
 
     async function cleanupTransientCells(owner: Output | null = output) {
@@ -551,8 +528,7 @@
         // returned; only then may cleanup run and the next map action become available.
         await waitForRunOperations(owner);
         // A delivery that has not begun is now a no-op, but one may already be in
-        // flight — let it land before the output is discarded, or the discard races
-        // the write into the folder it removes. It is bounded by one file's write.
+        // flight — let it land before cleanup. It is bounded by one file's write.
         const deliveryCause = await delivery.then(
             () => null,
             (error: unknown) => error,
@@ -561,7 +537,6 @@
         // unwinding. Preserve that stable cause so the DeviceJob can surface interruption.
         if ((deliveryCause as { code?: unknown } | null)?.code === "link") cause = deliveryCause;
         const cancelled = cause instanceof DOMException && cause.name === "AbortError";
-        await closeDownloadOutput(true).catch(() => (outputCleanupFailed = true));
         await cleanupTransientCells(owner);
         if (direct) await cleanupDirectOutput();
         owner.releaseWork?.();
@@ -695,21 +670,8 @@
         const admittedEstimate = estimate;
         const admissionId = estimateGeneration;
         const requireDisk = estimateOnDisk;
-        // Native desktop saving still opens its output session under the click
-        // that started a download. Direct device delivery never opens a save
-        // destination, and the web host uses an ordinary browser download.
-        let picked: MapOutputSession | null = null;
-        if (out.kind === "download" && platform.openMapOutput) {
-            try {
-                picked = await platform.openMapOutput(mapName());
-            } catch (cause) {
-                if (cause instanceof DOMException && cause.name === "AbortError") return;
-                throw cause;
-            }
-        }
         if (destroyed) throw new DOMException("the map builder was closed", "AbortError");
         if (estimateGeneration !== admissionId || estimate !== admittedEstimate || !ready) {
-            await picked?.discard();
             throw new Error("The map selection changed. Wait for its memory check before trying again.");
         }
         const runId = ++nextRunId;
@@ -723,9 +685,6 @@
         persisted = false;
         delivery = Promise.resolve();
         sinkClosed = false;
-        outputPath = picked?.path ?? null;
-        downloadOutput = picked;
-        outputCleanupFailed = false;
         runWarnings = [];
         dlProgress = null;
         asmFraction = 0;
@@ -1094,8 +1053,6 @@
         if (estimate.headroomBytes >= estimate.budgetBytes * 0.15) return null;
         return (
             `Close to the browser's memory budget: about ${formatBytes(estimate.peakBytes)} projected of ` +
-                // No "use the desktop app" here: the desktop host runs this very worker in
-                // its webview, so it carries the identical wasm32 ceiling.
             `${formatBytes(estimate.budgetBytes)}. It will probably assemble; a smaller area is the sure thing.`
         );
     });
@@ -1218,12 +1175,6 @@
         );
     });
     $effect(() => onSendReadyChange?.(ready));
-    /** Whether a failed run left a file behind that someone has to delete. Counted from what
-     *  actually reached the disk, and only where nothing cleaned it up: a picked directory's
-     *  session removes what it wrote. */
-    const incompleteFileRemains = $derived(
-        persisted && (!platform.openMapOutput || outputCleanupFailed),
-    );
 
     const dlPct = $derived(
         dlProgress && dlProgress.totalBytes > 0
@@ -1355,14 +1306,7 @@
                     {#if lastRunKind === "device"}
                         <p class="line small">Assembled and sent <span class="mono">{runFileName}</span>.</p>
                     {:else}
-                        <p class="line small">
-                            {#if outputPath}
-                                Saved <span class="mono">{savedFile?.name}</span> in
-                                <span class="mono">{outputPath}</span>.
-                            {:else}
-                                Downloaded <span class="mono">{savedFile?.name}</span>.
-                            {/if}
-                        </p>
+                        <p class="line small">Downloaded <span class="mono">{savedFile?.name}</span>.</p>
                     {/if}
                     {#if savedFile}
                         <p class="line faint small mono">{formatBytes(savedFile.byteLength)}</p>
@@ -1381,7 +1325,7 @@
                 </div>
             {:else if phase === "error"}
                 <p class="line warn small">
-                    {#if incompleteFileRemains}
+                    {#if persisted}
                         The map was not completed. Discard the file it left behind: {errorMessage}
                     {:else}
                         Nothing was saved: {errorMessage}
@@ -1389,7 +1333,7 @@
                 </p>
             {:else if phase === "cancelled"}
                 <p class="line faint small">
-                    {#if incompleteFileRemains}
+                    {#if persisted}
                         Cancelled — discard the incomplete file it left behind.
                     {:else}
                         Cancelled — nothing was saved.

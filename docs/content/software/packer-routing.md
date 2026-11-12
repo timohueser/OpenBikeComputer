@@ -215,8 +215,8 @@ named regions, boxes, lassos, and GPX corridors, and the builder unions them bef
 downloads anything, so overlapping parts do not pay twice. It verifies every object against the
 catalog, and the assembler verifies the finished map with the production readers.
 
-One Svelte application serves the website, the desktop app, and the maintainer server; the host
-modules differ in transport and storage, never in the selection or assembly algorithm. The website
+One Svelte application serves the website and the maintainer server; the host modules differ in
+transport and storage, never in the selection or assembly algorithm. The website
 is static and the cells live in object storage, so publishing a new region does not deploy the
 website.
 

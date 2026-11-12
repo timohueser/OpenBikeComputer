@@ -272,9 +272,6 @@
 >
     <div class="head">
         <h4>Add corridor</h4>
-        <!-- The mock's state-B tag was "web · no device yet"; the tier name is
-             dropped because this panel also renders in the desktop app, where
-             "web" would be a lie about where it is running (#1041 A12). -->
         <span class="small faint">
             {deviceHolder.session?.status === "ready" ? "device connected" : "device optional"}
         </span>

@@ -86,8 +86,8 @@ export class CatalogClient {
      * Fetch and parse the root.
      *
      * `url` must be absolute: resolving a relative one is a host's job — the web host
-     * has a `document.baseURI`, the desktop host does not — and a client that guessed
-     * would resolve a CDN path against a Tauri asset scheme.
+     * resolves it against its `document.baseURI` — and a client that guessed could
+     * resolve a CDN path against the wrong base.
      *
      * The root is fetched on trust, since there is no document above it to pin it,
      * which is why it is short-cached and everything else is content-addressed.

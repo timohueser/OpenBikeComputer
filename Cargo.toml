@@ -56,13 +56,13 @@ members = [
     "sim/phone/host",
     "sim/desktop",
     "sim/web-demo",
-    # Product bridges. obc-desktop carries its own [workspace].
+    # Product bridges.
     "planner/service",
     "builder/wasm",
 ]
 # obc-fw-nrf54l is a standalone board crate (own target + .cargo/config.toml, own empty
 # [workspace]); it's built on its own, not as part of this host workspace (which builds its
-# members for the host target). obc-boot, obc-desktop and obc-sensor-sim carry their own
+# members for the host target). obc-boot and obc-sensor-sim carry their own
 # [workspace] tables, which excludes them automatically for the same reason.
 exclude = ["firmware/obc-fw-nrf54l"]
 resolver = "2"
