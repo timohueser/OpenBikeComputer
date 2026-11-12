@@ -98,7 +98,7 @@ export function scopeKey(scope: RideScope): string {
     return `${scope.serial}:${scope.storeId ?? "no-store"}`;
 }
 
-/** Shared with the desktop index: full StoreId hex and decimal u64 ObjectId. */
+/** The key of a ride in one scope: full StoreId hex and decimal u64 ObjectId. */
 export function rideKey(scope: RideScope, objectId: bigint): string {
     return `${scopeKey(scope)}:${objectId}`;
 }

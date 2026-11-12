@@ -10,12 +10,11 @@
 
     let header: HTMLElement;
     onMount(startTheme);
-    onMount(() => siteNav ? setupSiteNavigation(header) : undefined);
+    onMount(() => setupSiteNavigation(header));
 
-    // The header has two shapes, decided by capability rather than host name:
-    // an app with more than one place to be gets tabs; a single-page site keeps
-    // links. Each tab exists exactly where its route does (`App.svelte` gates
-    // the same way), so a tab can never point at a page that falls back home.
+    // A host with more than one place to be gets tabs under the site links. Each
+    // tab exists exactly where its route does (`App.svelte` gates the same way),
+    // so a tab can never point at a page that falls back home.
     const tabs: Array<{ route: Route; href: string; label: string }> = [
         { route: "home", href: "#/", label: "Maps" },
         ...(platform.styleEditor
@@ -24,8 +23,6 @@
     ];
     const tabbed = tabs.length > 1;
 
-    // Links out of the app, present only where there is a site around it.
-    // Orthogonal to the tabs: the dev server shows both.
     const siteNav = platform.siteNav;
 </script>
 
@@ -48,20 +45,15 @@
 
 <header class="site-head" bind:this={header}>
     <div class="head-inner">
-        {#if siteNav}
-            <a class="brand" href={siteNav.home} aria-label="OpenBikeComputer home">{@render brand()}</a>
-            <button class="site-menu-toggle" type="button" aria-controls="site-navigation" aria-expanded="false">Menu</button>
-            <nav class="head-links" id="site-navigation" aria-label="Main navigation">
-                <a href={siteNav.docs}>Docs</a>
-                <a href={siteNav.blog}>Blog</a>
-                <a href="#/" aria-current="page">Maps</a>
-                <a href={`${siteNav.home}plan/`}>Route planner</a>
-                <a href={siteNav.github}>GitHub</a>
-            </nav>
-        {:else}
-            <div class="brand" aria-label="OpenBikeComputer">{@render brand()}</div>
-            {@render appTabs()}
-        {/if}
+        <a class="brand" href={siteNav.home} aria-label="OpenBikeComputer home">{@render brand()}</a>
+        <button class="site-menu-toggle" type="button" aria-controls="site-navigation" aria-expanded="false">Menu</button>
+        <nav class="head-links" id="site-navigation" aria-label="Main navigation">
+            <a href={siteNav.docs}>Docs</a>
+            <a href={siteNav.blog}>Blog</a>
+            <a href="#/" aria-current="page">Maps</a>
+            <a href={`${siteNav.home}plan/`}>Route planner</a>
+            <a href={siteNav.github}>GitHub</a>
+        </nav>
         <button class="theme-toggle" type="button" aria-label="Dark mode"
             aria-pressed={appearance.dark} title={appearance.dark ? "Switch to light mode" : "Switch to dark mode"}
             onclick={toggleTheme}>
@@ -75,7 +67,7 @@
             </svg>
         </button>
     </div>
-    {#if siteNav && tabbed}
+    {#if tabbed}
         <div class="app-tools">
             {@render appTabs()}
         </div>
@@ -90,8 +82,5 @@
     @media (max-width: 1100px) {
         .site-head:has(.tabs) :global(.name) { display: none; }
         .site-head:has(.tabs) :global(.short-name) { display: inline; }
-    }
-    @media (max-width: 760px) {
-        .head-inner > .tabs { order: 3; width: 100%; }
     }
 </style>

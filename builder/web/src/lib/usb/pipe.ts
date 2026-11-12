@@ -69,28 +69,28 @@ export interface BytePipe {
 }
 
 /**
- * The pair of channels one device speaks over, plus USB's one out-of-band read.
+ * The pair of channels one device speaks over.
  *
  * `control` carries control frames and `stream` carries stream frames. Both are record-framed by
  * `records.ts`; neither is a message pipe.
  */
-export interface DeviceLink {
+export interface RecordLink {
     /** Control frames: requests out, responses in, one frame per record. */
     readonly control: BytePipe;
     /** Stream frames: a 16-byte frame and its payload, one frame per record. */
     readonly stream: BytePipe;
 
-    /**
-     * One EP0 vendor device-to-host request, recipient interface.
-     *
-     * Present only on a transport that can issue one; another transport omits it rather than
-     * answering with a fabricated payload. Resolves with however many bytes the device returned,
-     * which can be short of `length`.
-     */
-    vendorIn?(request: number, value: number, length: number, signal?: AbortSignal): Promise<Uint8Array>;
-
     /** Close both pipes. Idempotent. */
     close(): Promise<void>;
+}
+
+/** The host's end of a link: the two channels, plus USB's one out-of-band read. */
+export interface DeviceLink extends RecordLink {
+    /**
+     * One EP0 vendor device-to-host request, recipient interface. Resolves with however many bytes
+     * the device returned, which can be short of `length`.
+     */
+    vendorIn(request: number, value: number, length: number, signal?: AbortSignal): Promise<Uint8Array>;
 }
 
 /** Throw `PipeError("aborted")` if `signal` has already fired. */
