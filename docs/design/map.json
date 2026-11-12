@@ -305,7 +305,7 @@
     "repository-tooling"
    ],
    "violations": 10,
-   "lines": 10464,
+   "lines": 10475,
    "problems": [
     {
      "rule": "cycle",
@@ -520,7 +520,7 @@
    "depends_on": [],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 1831,
+   "lines": 1836,
    "problems": []
   },
   {
@@ -1043,7 +1043,7 @@
    ],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 4774,
+   "lines": 4839,
    "problems": []
   },
   {
