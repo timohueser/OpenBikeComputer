@@ -1,12 +1,11 @@
 /** Remembers the one device that the sync works with, and what the last sync found on it, in `localStorage`. */
-import type { Library } from '../library/store';
 
 /** Bytes on the card by the kind of object. */
 export interface DeviceBytes { map: number; routes: number; rides: number; other: number }
 
 export interface RememberedDevice {
     serial: string;
-    /** The card of the device. Another card makes `sent`, `leaving` and `skipped` void. */
+    /** The card of the device. Another card makes `skipped` void. */
     storeId: string;
     /** Unix milliseconds of the end of the last sync, or null before the first. */
     at: number | null;
@@ -63,18 +62,16 @@ export function onRemember(listener: () => void): () => void {
     return () => listeners.delete(listener);
 }
 
-/** Remembers the card `storeId` of the device `serial`. For a new serial or card, the library forgets the routes that it
- * sent and the routes to remove, as they were on another card. */
-export async function rememberCard(serial: string, storeId: string, library: Library): Promise<void> {
+/** Remembers the card `storeId` of the device `serial`, with a new record for a new serial or card. */
+export function rememberCard(serial: string, storeId: string): void {
     const device = remembered.device;
     if (device?.serial === serial && device.storeId === storeId) return;
-    await Promise.all([library.setState('sent', {}), library.setState('leaving', [])]);
     save({ serial, storeId, at: null, map: null, routes: 0, bytes: { map: 0, routes: 0, rides: 0, other: 0 }, came: null, skipped: [] });
 }
 
 /** Remembers the connected device. Only the Connect button of the Device page calls it; a sync follows. */
-export async function rememberDevice(info: { serialNumber: string }, store: { storeId: string }, library: Library): Promise<void> {
-    await rememberCard(info.serialNumber, store.storeId, library);
+export function rememberDevice(info: { serialNumber: string }, store: { storeId: string }): void {
+    rememberCard(info.serialNumber, store.storeId);
     for (const listener of listeners) listener();
 }
 
