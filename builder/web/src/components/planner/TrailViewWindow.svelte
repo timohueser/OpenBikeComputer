@@ -69,7 +69,7 @@
         (async () => {
             const chunk = await loadTrailView();
             if (abort.signal.aborted) return;
-            const started = await chunk.startTrailView(canvas, config, { ...defaultView([at[0], at[1], at[0], at[1]]), heading: FIRST_HEADING }, near);
+            const started = await chunk.startTrailView(canvas, config, { ...defaultView([at[0], at[1], at[0], at[1]]), heading: FIRST_HEADING }, near, abort.signal);
             if (!started) {
                 failure = 'gpu' in navigator ? 'TrailView cannot use the graphics card of this device.'
                     : 'TrailView needs WebGPU. Open the planner in a current version of Chrome, Edge or Safari.';

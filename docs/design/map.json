@@ -195,7 +195,7 @@
     "map-reading"
    ],
    "violations": 9,
-   "lines": 36306,
+   "lines": 36181,
    "problems": [
     {
      "rule": "cycle",
@@ -305,7 +305,7 @@
     "repository-tooling"
    ],
    "violations": 10,
-   "lines": 9075,
+   "lines": 9092,
    "problems": [
     {
      "rule": "cycle",
@@ -520,7 +520,7 @@
    "depends_on": [],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 792,
+   "lines": 816,
    "problems": []
   },
   {
@@ -543,7 +543,7 @@
     "content"
    ],
    "violations": 10,
-   "lines": 25741,
+   "lines": 25498,
    "problems": [
     {
      "rule": "cycle",
@@ -828,7 +828,7 @@
    ],
    "test_depends_on": [],
    "violations": 7,
-   "lines": 27021,
+   "lines": 27042,
    "problems": [
     {
      "rule": "cycle",
@@ -856,7 +856,7 @@
     },
     {
      "rule": "cycle",
-     "message": "trailview -> route-planning closes a cycle: builder/web/src/lib/trailview/dressing/dressing.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/trailview/engine.ts -> builder/web/src/lib/planner/config.ts, builder/web/src/lib/trailview/engine.ts -> builder/web/src/lib/planner/geo.ts, and 29 more"
+     "message": "trailview -> route-planning closes a cycle: builder/web/src/lib/trailview/dressing/dressing.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/trailview/engine.ts -> builder/web/src/lib/planner/config.ts, builder/web/src/lib/trailview/engine.ts -> builder/web/src/lib/planner/geo.ts, and 36 more"
     }
    ]
   },
@@ -976,7 +976,7 @@
    ],
    "test_depends_on": [],
    "violations": 5,
-   "lines": 55060,
+   "lines": 55562,
    "problems": [
     {
      "rule": "cycle",
@@ -992,7 +992,7 @@
     },
     {
      "rule": "cycle",
-     "message": "trailview -> route-planning closes a cycle: builder/web/src/lib/trailview/dressing/dressing.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/trailview/engine.ts -> builder/web/src/lib/planner/config.ts, builder/web/src/lib/trailview/engine.ts -> builder/web/src/lib/planner/geo.ts, and 29 more"
+     "message": "trailview -> route-planning closes a cycle: builder/web/src/lib/trailview/dressing/dressing.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/trailview/engine.ts -> builder/web/src/lib/planner/config.ts, builder/web/src/lib/trailview/engine.ts -> builder/web/src/lib/planner/geo.ts, and 36 more"
     },
     {
      "rule": "R4",
@@ -1012,7 +1012,7 @@
    ],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 61,
+   "lines": 85,
    "problems": []
   },
   {
@@ -1035,11 +1035,13 @@
    "status": "approved",
    "depends_on": [
     "device-map-builder",
-    "route-planning"
+    "library",
+    "route-planning",
+    "trailview"
    ],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 13,
+   "lines": 787,
    "problems": []
   },
   {
@@ -1892,7 +1894,19 @@
   },
   {
    "from": "web-planner",
+   "to": "library",
+   "test": false,
+   "undeclared": false
+  },
+  {
+   "from": "web-planner",
    "to": "route-planning",
+   "test": false,
+   "undeclared": false
+  },
+  {
+   "from": "web-planner",
+   "to": "trailview",
    "test": false,
    "undeclared": false
   }

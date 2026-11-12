@@ -34,7 +34,7 @@
     import type { CatalogRecord } from '../../lib/planner/signed-routes';
     import LibraryPanel from './PlanLibrary.svelte';
     import type { Plan } from '../../lib/planner/library';
-    import { Library } from '../../lib/library/store';
+    import type { Library } from '../../lib/library/store';
     import { PlanSession } from '../../lib/planner/plan-session.svelte';
     import { isTrip } from '../../lib/planner/trip-validation';
     import {
@@ -77,6 +77,8 @@
         marker: 'Marker',
     };
 
+    // The page gives the library, so that the cover job hears the saves of the planner.
+    let { library }: { library: Library } = $props();
     const session = new PlanSession(opened);
     const trip = $derived(session.trip);
     const planId = $derived(session.plan.id);
@@ -477,12 +479,11 @@
     $effect(() => { void [queryPlan, here, pointing, trip.startDate]; untrack(() => searchRevision++); });
 
     onMount(() => {
-        const library = new Library();
         void session.start(library);
         beforeReload(() => session.saved());
         try { autoCenter = localStorage.getItem('obc-planner-auto-center') === 'true'; } catch { /* Optional browser preference. */ }
         const stopTheme = startTheme();
-        return () => { stopTheme(); session.close(); void library.close(); };
+        return () => { stopTheme(); session.close(); };
     });
 
     $effect(() => {

@@ -5,6 +5,7 @@ import { emptyTrip, maxRidingDays, type Place } from '../../lib/planner/editor';
 import { coordinateAt, cumulative, type Coordinate } from '../../lib/planner/geo';
 import { corridorPlaces } from '../../lib/planner/place-index';
 import PlannerApp from './PlannerApp.svelte';
+import { Library } from '../../lib/library/store';
 import * as routing from '../../lib/planner/routing';
 import { newPlan, type Plan } from '../../lib/planner/library';
 import type { RoutingLine } from '../../lib/planner/routing';
@@ -88,7 +89,7 @@ function button(label: string, scope: ParentNode = document) {
 }
 
 async function startApp() {
-    app = mount(PlannerApp, { target: document.body });
+    app = mount(PlannerApp, { target: document.body, props: { library: new Library() } });
     await vi.waitFor(() => expect(document.querySelector('main')?.getAttribute('aria-busy')).toBe('false'));
     await tick();
 }
