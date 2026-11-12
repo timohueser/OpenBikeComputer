@@ -34,6 +34,7 @@
     import type { CatalogRecord } from '../../lib/planner/signed-routes';
     import LibraryPanel from './PlanLibrary.svelte';
     import type { Plan } from '../../lib/planner/library';
+    import { Library } from '../../lib/library/store';
     import { PlanSession } from '../../lib/planner/plan-session.svelte';
     import { isTrip } from '../../lib/planner/trip-validation';
     import {
@@ -476,11 +477,12 @@
     $effect(() => { void [queryPlan, here, pointing, trip.startDate]; untrack(() => searchRevision++); });
 
     onMount(() => {
-        void session.start();
+        const library = new Library();
+        void session.start(library);
         beforeReload(() => session.saved());
         try { autoCenter = localStorage.getItem('obc-planner-auto-center') === 'true'; } catch { /* Optional browser preference. */ }
         const stopTheme = startTheme();
-        return () => { stopTheme(); session.close(); };
+        return () => { stopTheme(); session.close(); void library.close(); };
     });
 
     $effect(() => {

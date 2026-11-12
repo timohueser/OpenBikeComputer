@@ -512,6 +512,18 @@
    ]
   },
   {
+   "name": "library",
+   "kind": "system",
+   "area": "Apps",
+   "purpose": "Keeps the rider's routes and rides in the browser, each with a summary, and saves and loads them as one backup file.",
+   "status": "draft",
+   "depends_on": [],
+   "test_depends_on": [],
+   "violations": 0,
+   "lines": 792,
+   "problems": []
+  },
+  {
    "name": "map-assembly",
    "kind": "system",
    "area": "Apps",
@@ -811,10 +823,12 @@
    "area": "Apps",
    "purpose": "Lets a rider plan a route on a map, in the browser or on the phone.",
    "status": "draft",
-   "depends_on": [],
+   "depends_on": [
+    "library"
+   ],
    "test_depends_on": [],
    "violations": 7,
-   "lines": 27219,
+   "lines": 27021,
    "problems": [
     {
      "rule": "cycle",
@@ -931,7 +945,7 @@
     "repository-tooling"
    ],
    "violations": 4,
-   "lines": 18653,
+   "lines": 18719,
    "problems": [
     {
      "rule": "cycle",
@@ -1683,6 +1697,12 @@
    "to": "device-map-builder",
    "test": false,
    "undeclared": true
+  },
+  {
+   "from": "route-planning",
+   "to": "library",
+   "test": false,
+   "undeclared": false
   },
   {
    "from": "route-planning",

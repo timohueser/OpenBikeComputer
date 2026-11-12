@@ -7,7 +7,6 @@ import { corridorPlaces } from '../../lib/planner/place-index';
 import PlannerApp from './PlannerApp.svelte';
 import * as routing from '../../lib/planner/routing';
 import { newPlan, type Plan } from '../../lib/planner/library';
-import { isTrip } from '../../lib/planner/trip-validation';
 import type { RoutingLine } from '../../lib/planner/routing';
 
 import { routeService } from '../../../test-support/planner/route-service';
@@ -20,21 +19,17 @@ let app: ReturnType<typeof mount> | undefined;
 const stored = new Map<string, string>();
 let savedPlan: Plan | undefined;
 
-vi.mock('../../lib/planner/library', async original => ({
-    ...await original<object>(),
-    PlanLibrary: class {
-        async active() {
-            const value: unknown = JSON.parse(stored.get('trip') ?? 'null'), trip = isTrip(value) ? value : undefined;
-            if (!trip && stored.has('trip')) throw new Error('Saved plan is invalid. Open another plan or import a backup.');
-            return trip ? { ...newPlan(trip), revision: 1 } : undefined;
-        }
+vi.mock('../../lib/library/store', () => ({
+    Library: class {
+        async state() { return stored.has('trip') ? 'stored' : null; }
+        async route() { return { ...newPlan(emptyTrip()), id: 'stored', revision: 1, trip: JSON.parse(stored.get('trip')!) }; }
         async versions() { return []; }
-        async save(plan: Plan) {
+        async saveRoute(plan: Plan) {
             stored.set('trip', JSON.stringify(plan.trip));
             savedPlan = { ...plan, revision: plan.revision + 1 };
             return savedPlan;
         }
-        async activate(id: string | null) { if (!id) { stored.set('trip', JSON.stringify(emptyTrip())); savedPlan = undefined; } }
+        async setState(_key: string, id: string | null) { if (!id) { stored.set('trip', JSON.stringify(emptyTrip())); savedPlan = undefined; } }
         async close() {}
     },
 }));
