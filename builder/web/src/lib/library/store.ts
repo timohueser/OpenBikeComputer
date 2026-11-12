@@ -158,6 +158,13 @@ export class Library {
         });
     }
 
+    /** A route or a ride by its id or key. It does not record the revision as `route` does, so a reader such as the cover
+     * job does not hide the edits of another tab from the planner. */
+    async item(id: string): Promise<RouteRecord | RideRecord | undefined> {
+        const route = await this.read('routes', id);
+        return isRouteRecord(route) ? route : this.ride(id);
+    }
+
     async rides(): Promise<RideRecord[]> {
         await this.pending;
         return (await this.read('rides') as unknown[]).filter(isRideRecord);
@@ -237,10 +244,15 @@ export class Library {
         return await this.read('covers', id) as CoverRecord | undefined;
     }
 
+    /** Saves a cover only while its route or ride exists: a cover that renders while the rider deletes its record is dropped. */
     saveCover(cover: CoverRecord): Promise<void> {
-        return this.write(['covers'], (tx, _, changed) => {
-            tx.objectStore('covers').put(cover);
-            changed('covers', cover.id);
+        return this.write(['covers', 'routes', 'rides'], (tx, _, changed) => {
+            const route = tx.objectStore('routes').getKey(cover.id), ride = tx.objectStore('rides').getKey(cover.id);
+            ride.onsuccess = () => {
+                if (route.result === undefined && ride.result === undefined) return;
+                tx.objectStore('covers').put(cover);
+                changed('covers', cover.id);
+            };
             return () => {};
         });
     }

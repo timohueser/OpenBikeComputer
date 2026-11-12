@@ -8,6 +8,10 @@ const PORT = await loopbackPort('OBC_PLANNER_BROWSER_PORT');
 export default defineConfig({
   testDir: 'planner',
   testMatch: '*.test.js',
+  // One stored image for each screenshot on every system. A pixel differs when its colour moves more than the
+  // threshold; the few pixels allowed take the edges that two rasterizers smooth differently, but not a lost mark.
+  snapshotPathTemplate: '{testDir}/{testFileName}-snapshots/{arg}{ext}',
+  expect: { toHaveScreenshot: { threshold: 0.2, maxDiffPixels: 50 } },
   timeout: 180_000,
   workers: 1,
   retries: 0,
