@@ -207,4 +207,18 @@ describe('the cover job', () => {
         await settle();
         expect(stills).toHaveLength(2);
     });
+
+    it('renders no cover for a saved route that is not the open plan, such as an imported one', async () => {
+        const { renderer, stills } = fake();
+        await start(renderer);
+        await library.setState('active', 'a');
+        await saved('a', 'b');
+        await settle();
+        await vi.advanceTimersByTimeAsync(30_000);
+        await settle();
+        expect(stills.map(still => still.job.line)).toHaveLength(1);
+        stills[0].resolve(result);
+        await settle();
+        expect(await library.cover('b')).toBeUndefined();
+    });
 });
