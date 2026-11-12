@@ -1,5 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { GpxError, readGpx } from "./gpx";
+import { GpxError, readGpx, writeGpx, type GpxImport } from "./gpx";
+
+describe("writeGpx", () => {
+    it("writes a file that readGpx reads back unchanged", () => {
+        const route: GpxImport = {
+            name: "Lake <Uri> & \"back\"",
+            points: [{ lat: 46_912_345, lon: -8_600_001, ele: 434.5 }, { lat: 46_950_000, lon: 8_610_000 }, { lat: -46_960_000, lon: 8_620_000, ele: -2 }],
+            waypoints: [{ lat: 46_950_000, lon: 8_610_000, name: "Tell's chapel", note: "swim here" }, { lat: 46_960_000, lon: 8_620_000, name: undefined }],
+        };
+        expect(readGpx(writeGpx(route), "fallback")).toEqual(route);
+    });
+});
 
 const HEADER = '<?xml version="1.0" encoding="UTF-8"?><gpx version="1.1" xmlns="http://www.topografix.com/GPX/1/1">';
 

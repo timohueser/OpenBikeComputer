@@ -81,6 +81,8 @@ export interface CoverRecord {
     state: 'waiting' | 'done' | 'failed' | 'none';
     image?: Blob;
     points?: CoverPoints;
+    /** The credits of the data in `image`, as `still` gives them. A cover made before they were kept has none. */
+    credits?: string[];
     tries: number;
 }
 

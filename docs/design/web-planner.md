@@ -8,6 +8,7 @@ owns:
   - builder/web/src/components/TopBar.svelte
   - builder/web/src/styles/shell.css
   - builder/web/src/pages/**
+  - builder/web/src/components/route/**
   - builder/web/src/lib/covers/**
 depends_on:
   - device-map-builder
@@ -32,7 +33,15 @@ The shell makes the one library of the app (`Library`) and gives it to each page
 
 The Settings page ([`Settings.svelte`](../../builder/web/src/pages/Settings.svelte)) has no link in the top bar; the gear at its right end opens it. It sets the units, the look, the maximum heart rate and the threshold power, and it saves and loads a backup of the library. "Delete all" empties the library with `clear` and loads the page again, because after `clear` the `Library` object of the tab refuses each write.
 
-`npm run build:planner` builds the page into `builder/web/dist/planner`. The site deploy copies it to the path `/plan/` of the project site ([`deploy-site.yml`](../../.github/workflows/deploy-site.yml)). Route planning owns all the planner code. This shell owns the entry point, the shell, the top bar, the pages and the covers in `lib/covers`.
+`npm run build:planner` builds the page into `builder/web/dist/planner`. The site deploy copies it to the path `/plan/` of the project site ([`deploy-site.yml`](../../.github/workflows/deploy-site.yml)). Route planning owns all the planner code. This shell owns the entry point, the shell, the top bar, the pages, their parts in `components/route` and the covers in `lib/covers`.
+
+## Route page
+
+The page `#/route/ID` ([`Route.svelte`](../../builder/web/src/pages/Route.svelte)) shows one planned route. The numbers come from the stored summary, and the time is the stored time. The page calculates the line again from the plan, with its own cache of legs, for the days, the climbs, the waypoints and the GPX and FIT export ([`Facts.svelte`](../../builder/web/src/components/route/Facts.svelte), `routeFacts`). When the calculated length differs from the stored length by more than 1 %, the card says so; the planner saves the new summary when it opens the plan. With no network, the card shows the routing error, and Export gives only the plan file.
+
+The picture has two places. With a cover, the cover is large and the map ([`RouteMap.svelte`](../../builder/web/src/components/route/RouteMap.svelte)) is small in a corner; a click on the small one swaps them. With no cover, the map is large and no picture shows. The cover record keeps the credits that the still gives; with the cover large, a button on the picture shows them with the credits of the basemap. A cover made before the credits were kept shows the credits of the release. The pointer is a share of the summary line from 0 to 1, so the cover and the map mark the same place.
+
+A rename calls `renameRoute`, which is the only write that changes the name of a stored route. "Send to device" and "Do not send" change the list `waiting` of the library with `changeState`. "Open in the planner" goes to `#/planner/ID`: the planner opens that plan and then replaces the address with `#/planner`, so Back returns to the page.
 
 ## Covers
 

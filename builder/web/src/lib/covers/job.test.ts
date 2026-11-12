@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteRecord } from '../library/records';
 import { Library } from '../library/store';
 import type { Still, StillJob } from '../trailview/still';
-import { lineKey, startCoverJob, wantCover, type Renderer } from './job';
+import { lineKey, settled, startCoverJob, wantCover, type Renderer } from './job';
 
 const route = (id: string, name = id, line = [8.38, 46.82, 8.42, 46.81]): RouteRecord => ({
     id, revision: 0, name, updatedAt: Date.UTC(2026, 7, 15), trip: {},
@@ -12,7 +12,7 @@ const route = (id: string, name = id, line = [8.38, 46.82, 8.42, 46.81]): RouteR
 const result: Still = {
     image: new Blob(['cover']),
     points: { x: Float32Array.of(10, 20), y: Float32Array.of(10, 20), distance: Float32Array.of(900, 1200), visible: Uint8Array.of(1, 1) },
-    credits: [],
+    credits: ['Terrain test data'],
 };
 const failure = (name: string) => Object.assign(new Error(name), { name });
 
@@ -81,6 +81,16 @@ async function saved(...ids: string[]) {
     for (const id of ids) await library.saveRoute(route(id));
 }
 
+describe('settled', () => {
+    it('is false for the image of an earlier line and for a waiting cover, so a page asks for them', () => {
+        const item = route('a'), key = lineKey(item), image = new Blob(['cover']);
+        expect(settled(item, undefined)).toBe(false);
+        expect(settled(item, { id: 'a', lineKey: lineKey(route('a', 'a', [8, 46, 8.1, 46])), state: 'done', image, tries: 0 })).toBe(false);
+        expect(settled(item, { id: 'a', lineKey: key, state: 'waiting', image, tries: 1 })).toBe(false);
+        for (const state of ['done', 'none', 'failed'] as const) expect(settled(item, { id: 'a', lineKey: key, state, tries: 0 })).toBe(true);
+    });
+});
+
 describe('the cover job', () => {
     it('renders one cover at a time in the whole browser, and skips a cover that another tab made', async () => {
         await saved('a');
@@ -99,7 +109,7 @@ describe('the cover job', () => {
         await settle();
         expect(second.stills).toHaveLength(0);
         const cover = await library.cover('a');
-        expect(cover).toMatchObject({ state: 'done', lineKey: lineKey(route('a')), tries: 0 });
+        expect(cover).toMatchObject({ state: 'done', lineKey: lineKey(route('a')), tries: 0, credits: ['Terrain test data'] });
         expect(cover?.points?.x).toEqual(Float32Array.of(10, 20));
         expect(first.stills[0].job).toMatchObject({ width: 1920, height: 1280, view: { date: '2026-08-15', time: '10:00', weather: 'sunny' } });
     });

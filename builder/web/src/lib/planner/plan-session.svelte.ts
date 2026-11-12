@@ -126,6 +126,7 @@ export class PlanSession {
     // A line arrived while `busy`; its summary is saved afterwards, so a failed version save leaves no trace.
     private unsaved = false;
     private closed = false;
+    private stopFollowing = () => {};
     private readonly previews = routePreview((draft: Trip, signal: AbortSignal) => this.calculate(draft, signal), (trip, line) => {
         this.preview = this.last = { trip, line };
         this.previewStatus = 'Route preview · release to keep';
@@ -134,9 +135,10 @@ export class PlanSession {
     /** `opened` runs after another plan replaces the trip, so the page can reset its view. */
     constructor(private readonly opened: (plan: Plan) => void = () => {}) {}
 
-    /** Opens the plan that was active when the planner closed. */
+    /** Opens the plan that was active when the planner closed, and follows the changes of the open plan by other pages. */
     async start(library: Library): Promise<void> {
         this.library = library;
+        this.stopFollowing = library.onChange((store, key) => { if (store === 'routes' && key === this.plan.id) void this.follow(key); });
         try {
             const id = await library.state('active');
             const plan = id ? await this.get(library, id) : undefined;
@@ -150,6 +152,7 @@ export class PlanSession {
 
     close(): void {
         this.closed = true;
+        this.stopFollowing();
         this.cancelPreview();
         this.request?.abort.abort();
         this.optionsRequest?.abort.abort();
@@ -348,11 +351,11 @@ export class PlanSession {
         });
     }
 
-    /** Opens a plan of the library. When the open plan has unsaved edits, only `discard` lets them go. */
-    open(plan: Plan, discard: () => boolean): Promise<boolean> {
+    /** Opens plan `id` of the library. When the open plan has unsaved edits, only `discard` lets them go. */
+    open(id: string, discard: () => boolean): Promise<boolean> {
         return this.act(async library => {
             try { await this.lastSave; } catch { if (!discard()) return false; }
-            const latest = await this.get(library, plan.id);
+            const latest = await this.get(library, id);
             if (!latest) throw new Error('This plan was deleted. Reopen My plans.');
             const versions = await this.versionsOf(library, latest.id);
             await library.setState('active', latest.id);
@@ -360,12 +363,10 @@ export class PlanSession {
         });
     }
 
+    /** `follow` gives the open plan its new name. */
     rename(plan: Plan, name: string): Promise<boolean> {
         return this.act(async library => {
-            await this.lastSave;
-            const active = plan.id === this.plan.id;
-            const saved = await library.saveRoute({ ...(active ? this.snapshot() : plan), name, updatedAt: Date.now() });
-            if (active) this.plan = { ...this.plan, name, revision: saved.revision };
+            await library.renameRoute(plan.id, name);
             await this.list(library);
         });
     }
@@ -440,6 +441,16 @@ export class PlanSession {
         });
         if (!done) this.saveError = this.libraryError;
         return done;
+    }
+
+    /** Takes the stored name of the open plan after a write of this tab; a removed plan gives a new empty plan, and its
+     * failed save shows no error, as the error belongs to another plan. The library keeps the revision that this tab
+     * knows. */
+    private async follow(id: string): Promise<void> {
+        const record = await this.library!.item(id).catch(() => null);
+        if (this.closed || this.plan.id !== id || record === null) return;
+        if (!record) this.install(newPlan(emptyTrip(this.trip.mode)), []);
+        else if (record.name !== this.plan.name) this.plan = { ...this.plan, name: record.name };
     }
 
     private snapshot(versions = this.versions): Plan {

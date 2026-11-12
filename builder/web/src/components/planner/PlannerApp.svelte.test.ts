@@ -31,6 +31,7 @@ vi.mock('../../lib/library/store', () => ({
             return savedPlan;
         }
         async setState(_key: string, id: string | null) { if (!id) { stored.set('trip', JSON.stringify(emptyTrip())); savedPlan = undefined; } }
+        onChange() { return () => {}; }
         async close() {}
     },
 }));

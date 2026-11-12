@@ -305,7 +305,7 @@
     "repository-tooling"
    ],
    "violations": 10,
-   "lines": 10051,
+   "lines": 10245,
    "problems": [
     {
      "rule": "cycle",
@@ -345,7 +345,7 @@
     },
     {
      "rule": "cycle",
-     "message": "route-planning -> device-map-builder closes a cycle: builder/web/src/components/planner/CompareList.svelte -> builder/web/src/lib/ui/Segmented.svelte, builder/web/src/components/planner/CompareScreen.svelte.test.ts -> builder/web/test-support/planner/MapStub.svelte (test), builder/web/src/components/planner/CompareScreen.svelte.test.ts -> builder/web/test-support/planner/trip.ts (test), and 31 more"
+     "message": "route-planning -> device-map-builder closes a cycle: builder/web/src/components/planner/CompareList.svelte -> builder/web/src/lib/ui/Segmented.svelte, builder/web/src/components/planner/CompareScreen.svelte.test.ts -> builder/web/test-support/planner/MapStub.svelte (test), builder/web/src/components/planner/CompareScreen.svelte.test.ts -> builder/web/test-support/planner/trip.ts (test), and 33 more"
     }
    ]
   },
@@ -520,7 +520,7 @@
    "depends_on": [],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 1030,
+   "lines": 1138,
    "problems": []
   },
   {
@@ -828,7 +828,7 @@
    ],
    "test_depends_on": [],
    "violations": 7,
-   "lines": 26847,
+   "lines": 26964,
    "problems": [
     {
      "rule": "cycle",
@@ -840,7 +840,7 @@
     },
     {
      "rule": "cycle",
-     "message": "route-planning -> device-map-builder closes a cycle: builder/web/src/components/planner/CompareList.svelte -> builder/web/src/lib/ui/Segmented.svelte, builder/web/src/components/planner/CompareScreen.svelte.test.ts -> builder/web/test-support/planner/MapStub.svelte (test), builder/web/src/components/planner/CompareScreen.svelte.test.ts -> builder/web/test-support/planner/trip.ts (test), and 31 more"
+     "message": "route-planning -> device-map-builder closes a cycle: builder/web/src/components/planner/CompareList.svelte -> builder/web/src/lib/ui/Segmented.svelte, builder/web/src/components/planner/CompareScreen.svelte.test.ts -> builder/web/test-support/planner/MapStub.svelte (test), builder/web/src/components/planner/CompareScreen.svelte.test.ts -> builder/web/test-support/planner/trip.ts (test), and 33 more"
     },
     {
      "rule": "cycle",
@@ -945,7 +945,7 @@
     "repository-tooling"
    ],
    "violations": 4,
-   "lines": 18719,
+   "lines": 18734,
    "problems": [
     {
      "rule": "cycle",
@@ -1041,7 +1041,7 @@
    ],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 1089,
+   "lines": 2240,
    "problems": []
   },
   {

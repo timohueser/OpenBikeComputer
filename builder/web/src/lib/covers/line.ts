@@ -64,8 +64,9 @@ export function along(points: CoverPoints, summary: Summary, metres: number): { 
     return { x: mix(points.x[i - 1], points.x[i]), y: mix(points.y[i - 1], points.y[i]), distance: mix(distanceAt(points, i - 1), distanceAt(points, i)) };
 }
 
-/** The metres along the route of the point of the line that is nearest to pixel (x, y) of the image; undefined when no segment has a place. */
-export function nearest(points: CoverPoints, summary: Summary, x: number, y: number): number | undefined {
+/** The metres along the route of the point of the line that is nearest to pixel (x, y) of the image; undefined when no
+ * segment has a place within `within` pixels of the image. A hidden stretch counts as line. */
+export function nearest(points: CoverPoints, summary: Summary, x: number, y: number, within = Infinity): number | undefined {
     const at = metresAlong(summary);
     let best: number | undefined, closest = Infinity;
     for (let i = 1; i < at.length; i++) {
@@ -75,5 +76,5 @@ export function nearest(points: CoverPoints, summary: Summary, x: number, y: num
         const away = (ax + t * dx - x) ** 2 + (ay + t * dy - y) ** 2;
         if (away < closest) [closest, best] = [away, at[i - 1] + t * (at[i] - at[i - 1])];
     }
-    return best;
+    return closest <= within * within ? best : undefined;
 }
