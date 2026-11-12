@@ -16,3 +16,9 @@ thiserror = "2"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 memmap2 = "0.9.11"
+# The installer of format 10. The Rust decoder keeps `cargo check` for iOS working on Linux.
+ruzstd = { version = "0.8", default-features = false, features = ["std"] }
+
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
+# `posix_fadvise` of the installer.
+libc = "0.2"

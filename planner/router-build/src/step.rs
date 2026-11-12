@@ -2,8 +2,9 @@
 //! that a stop or a new profile list repeats only the steps after it: `planner/routing-source`
 //! (the OSM objects with their facts), `planner/routing-roads` (the roads with their terrain and
 //! their topology) and `planner/routing-costs` (the costs of each profile). `planner/routing`
-//! writes the package, its overlay index, its route catalog, the routing blocks and the routes of
-//! each grid cell.
+//! writes the package of format 9 and of format 10, its overlay index, its route catalog, the routing
+//! blocks and the routes of each grid cell. `planner/routing/cells/grid` publishes the files of
+//! format 10.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -47,6 +48,15 @@ fn cell_sizes(options: &Value) -> Result<Vec<u32>, String> {
         .ok_or("option `cell_sizes` lists a value that is not a 32-bit count")?;
     crate::partition::check_sizes(&sizes)?;
     Ok(sizes)
+}
+
+/// The option `download_level`: the level of the download cells of format 10, 1 to 8.
+fn download_level(options: &Value) -> Result<u8, String> {
+    let level = options["download_level"].as_u64().ok_or("option `download_level` is not a number")?;
+    u8::try_from(level)
+        .ok()
+        .filter(|level| (1..=crate::partition::MAX_LEVELS as u8).contains(level))
+        .ok_or(format!("option `download_level` is {level}; it needs 1 to {}", crate::partition::MAX_LEVELS))
 }
 
 /// Starts the memory guard, and reads the page budget first, so that a bad value fails before the
@@ -177,6 +187,24 @@ fn graph(request: &Request) -> Result<(Graph, Topology, Vec<String>), String> {
     Ok((graph, topology, strings(&summary["identities"])))
 }
 
+/// The graph, the topology and the costs of a roads layer and a costs layer in the folders
+/// `roads` and `costs`, without the source objects: the input of `cells::write` for a tool.
+pub fn layers(roads: &Path, costs: &Path) -> Result<(Graph, Topology, Costs), String> {
+    let read = |dir: &Path| {
+        let entries = fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let paths = entries
+            .map(|entry| entry.map(|entry| (entry.file_name().to_string_lossy().into_owned(), entry.path())))
+            .collect::<Result<_, _>>()
+            .map_err(|e| e.to_string())?;
+        Layout::read(paths)
+    };
+    let roads = read(roads)?;
+    let summary = read_json(&roads, "roads.json")?;
+    let graph = Graph::open(&roads, Data::default(), strings(&summary["warnings"]))?;
+    let topology = Topology { first: roads.open("first")?, head: roads.open("head")? };
+    Ok((graph, topology, Costs::open(&read(costs)?)?))
+}
+
 /// The costs step. It reads the source and the roads layers and the options `bounds` and
 /// `profiles`, the profile IDs or `all`. The layer `costs/` holds the costs of each profile
 /// (`Costs::save`).
@@ -197,10 +225,12 @@ pub fn costs(request: &Request) -> Result<(), String> {
 }
 
 /// The package step. It reads the three work layers and the options `region`, `bounds`,
-/// `countries`, the ISO codes of the countries of the region for the route catalog, and
-/// `attribution`, the credit of the OSM data. The layer:
+/// `countries`, the ISO codes of the countries of the region for the route catalog,
+/// `attribution`, the credit of the OSM data, `cell_sizes` of the roads layer and `download_level`.
+/// The layer:
 ///
 /// - `routing/`: the package, `overlays.sqlite` and `route-catalog.json`;
+/// - `cells/`: the objects, `package.json` and `directory.bin` of format 10 (`cells::write`);
 /// - `blocks/`: the routing blocks of the grid cells (`blocks::publish`);
 /// - `routes/<cell>.json`: the routes of each grid cell.
 ///
@@ -215,13 +245,37 @@ pub fn step(request: &Request) -> Result<(), String> {
         return Err("option `countries` is empty: the routes of each cell come from the route catalog".into());
     }
     let (region, attribution) = (text(options, "region")?, text(options, "attribution")?);
+    let (sizes, level) = (cell_sizes(options)?, download_level(options)?);
     let costs = Costs::open(&folder(request, COSTS)?)?;
     let france = catalog::check(&countries, &costs.profiles)?;
     let (mut graph, topology, identities) = graph(request)?;
     let routing = request.output.join("routing");
     fs::create_dir(&routing).map_err(|e| format!("{}: {e}", routing.display()))?;
     eprintln!("Writing the package of {} profiles", costs.profiles.len());
+    let info = crate::cells::Info {
+        region: region.clone(),
+        bounds,
+        source_sha256: identities.clone(),
+        attribution: attribution.clone(),
+    };
     let manifest = write_package(&graph, topology, costs, (region, bounds), identities, attribution, &routing)?;
+    Guard::stage("cells");
+    eprintln!("Writing the package of format 10");
+    let costs = Costs::open(&folder(request, COSTS)?)?;
+    let roads = folder(request, ROADS)?;
+    let topology = Topology { first: roads.open("first")?, head: roads.open("head")? };
+    let input = crate::cells::Input {
+        graph: &graph,
+        topology: &topology,
+        costs: &costs,
+        sizes: &sizes,
+        download_level: level,
+        info,
+        level: crate::cells::LEVEL,
+    };
+    let summary = crate::cells::write(&input, &request.output.join("cells"))?;
+    eprintln!("Cells: {}", summary.to_json());
+    drop((costs, topology));
     // The overlay index and the route catalog read only the source objects. The road graph is
     // freed here, so the catalog routers get its memory.
     let osm = std::mem::take(&mut graph.osm);
@@ -269,4 +323,42 @@ fn write_package(
     writer.finish().map_err(|e| e.to_string())?;
     fs::write(output.join("manifest.json"), &manifest).map_err(|e| e.to_string())?;
     Ok(manifest)
+}
+
+/// The grid step of format 10. It reads `cells/` of `planner/routing` and writes `objects/`, each
+/// file under its SHA-256, and `index.json` with the files `routing/package.json`,
+/// `routing/directory.bin` and `routing/objects/SHA256`, each with the transport `identity`.
+pub fn cells_step(request: &Request) -> Result<(), String> {
+    const STEP: &str = "planner/routing";
+    let files = request.layers.get(STEP).ok_or("the step reads no planner/routing")?;
+    let records = request.layer_files.get(STEP).ok_or("the request gives no receipts of planner/routing")?;
+    let objects = request.output.join("objects");
+    fs::create_dir_all(&objects).map_err(|e| format!("{}: {e}", objects.display()))?;
+    let mut index = serde_json::Map::new();
+    for (path, source) in files {
+        let Some(name) = path.strip_prefix("cells/") else { continue };
+        let record = records.iter().find(|file| &file.path == path).ok_or(format!("no receipt of {path}"))?;
+        let logical = match name {
+            crate::cells::PACKAGE | crate::cells::DIRECTORY => format!("routing/{name}"),
+            object if object == record.sha256 => format!("routing/objects/{object}"),
+            _ => return Err(format!("{path} is not named by its SHA-256")),
+        };
+        let target = objects.join(&record.sha256);
+        if !target.exists() && fs::hard_link(source, &target).is_err() {
+            fs::copy(source, &target).map_err(|e| format!("{}: {e}", target.display()))?;
+        }
+        let transport = json!({"bytes": record.size, "sha256": record.sha256, "encoding": "identity"});
+        index.insert(logical, json!({"bytes": record.size, "sha256": record.sha256, "transport": transport}));
+    }
+    for name in [crate::cells::PACKAGE, crate::cells::DIRECTORY] {
+        if !index.contains_key(&format!("routing/{name}")) {
+            return Err(format!("planner/routing has no cells/{name}"));
+        }
+    }
+    let count = index.len();
+    let document = crate::sort_keys(json!({"format": 1, "kind": "routing-cells", "files": index}));
+    let mut bytes = serde_json::to_vec(&document).map_err(|e| e.to_string())?;
+    bytes.push(b'\n');
+    fs::write(request.output.join("index.json"), bytes).map_err(|e| e.to_string())?;
+    fs::write(&request.metrics, json!({"files": count}).to_string()).map_err(|e| e.to_string())
 }
