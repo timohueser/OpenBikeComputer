@@ -52,10 +52,11 @@ export class Library {
     }
 
     /** Runs `work` in one transaction and resolves with the value of the function it returns, after the commit. */
-    private async run<T>(stores: StoreName[], mode: IDBTransactionMode, work: (tx: IDBTransaction, fail: Fail) => () => T): Promise<T> {
+    private async run<T>(stores: StoreName[], mode: IDBTransactionMode, work: (tx: IDBTransaction, fail: Fail) => () => T,
+        durability: IDBTransactionDurability = 'default'): Promise<T> {
         const db = await this.open();
         return new Promise<T>((resolve, reject) => {
-            const tx = db.transaction(stores, mode);
+            const tx = db.transaction(stores, mode, { durability });
             let failure: unknown, result: () => T = () => undefined as T;
             const fail: Fail = error => { failure = error; tx.abort(); };
             try { result = work(tx, fail); } catch (error) { fail(error); }
@@ -72,11 +73,12 @@ export class Library {
     }
 
     /** A write in the order of this tab. `changed` names each record that it writes, for the listeners of `onChange`. */
-    private write<T>(stores: StoreName[], work: (tx: IDBTransaction, fail: Fail, changed: (store: StoreName, key: string) => void) => () => T): Promise<T> {
+    private write<T>(stores: StoreName[], work: (tx: IDBTransaction, fail: Fail, changed: (store: StoreName, key: string) => void) => () => T,
+        durability?: IDBTransactionDurability): Promise<T> {
         const result = this.pending.then(async () => {
             if (this.cleared) throw new Error('The library was deleted. Reload the page.');
             const changes: [StoreName, string][] = [];
-            const value = await this.run(stores, 'readwrite', (tx, fail) => work(tx, fail, (store, key) => changes.push([store, key])));
+            const value = await this.run(stores, 'readwrite', (tx, fail) => work(tx, fail, (store, key) => changes.push([store, key])), durability);
             for (const [store, key] of changes) for (const listener of this.listeners) listener(store, key);
             if (!this.written) { this.written = true; void this.persist(); }
             return value;
@@ -177,9 +179,9 @@ export class Library {
         });
     }
 
-    /** Removes a route with its versions and its cover, and takes it out of the routes that wait for the device. With
-     * `revision`, it refuses a route that changed since then, or since the newest revision that this tab knows, as
-     * `saveRoute` does. */
+    /** Removes a route with its versions and its cover, and takes it out of the routes that wait for the device. A route
+     * on the device goes into `leaving`, so the next sync removes it there. With `revision`, it refuses a route that
+     * changed since then, or since the newest revision that this tab knows, as `saveRoute` does. */
     removeRoute(id: string, revision?: number): Promise<void> {
         return this.write(['routes', 'versions', 'covers', 'state'], (tx, fail, changed) => {
             const store = tx.objectStore('routes'), request = store.get(id), state = tx.objectStore('state');
@@ -190,12 +192,18 @@ export class Library {
                 tx.objectStore('covers').delete(id);
                 changed('routes', id);
             };
-            const active = state.get('active'), waiting = state.get('waiting');
+            const active = state.get('active'), waiting = state.get('waiting'), sent = state.get('sent'), leaving = state.get('leaving');
             active.onsuccess = () => { if (active.result === id) state.put(null, 'active'); };
             waiting.onsuccess = () => {
                 if (!stateChecks.waiting(waiting.result) || !waiting.result.includes(id)) return;
                 state.put(waiting.result.filter(other => other !== id), 'waiting');
                 changed('state', 'waiting');
+            };
+            leaving.onsuccess = () => {
+                const ids = stateChecks.leaving(leaving.result) ? leaving.result : [];
+                if (!stateChecks.sent(sent.result) || !Object.hasOwn(sent.result, id) || ids.includes(id)) return;
+                state.put([...ids, id], 'leaving');
+                changed('state', 'leaving');
             };
             return () => {};
         });
@@ -235,7 +243,8 @@ export class Library {
     }
 
     /** Adds a ride and its source file. False when the key is stored or deleted: then it only writes the device id of
-     * `ride`, so `deviceRides` skips it. One transaction checks and writes, so two tabs add a ride once. */
+     * `ride`, so `deviceRides` skips it. One transaction checks and writes, so two tabs add a ride once. It resolves only
+     * after the data is on disk, as the device sync marks the ride as taken on the device after it. */
     addRide(ride: RideRecord, file: Blob): Promise<boolean> {
         const record = structuredClone(ride);
         return this.write(['rides', 'ride-files', 'state'], (tx, _, changed) => {
@@ -257,7 +266,7 @@ export class Library {
                 }
             };
             return () => added;
-        });
+        }, 'strict');
     }
 
     /** Removes a ride, its file and its cover, and adds its key to the deleted rides. */

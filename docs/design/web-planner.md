@@ -10,9 +10,12 @@ owns:
   - builder/web/src/pages/**
   - builder/web/src/components/route/**
   - builder/web/src/lib/covers/**
+  - builder/web/src/lib/device-sync/**
 depends_on:
+  - device-link
   - device-map-builder
   - library
+  - map-assembly
   - route-planning
   - trailview
 test_depends_on: []
@@ -41,7 +44,22 @@ The page `#/route/ID` ([`Route.svelte`](../../builder/web/src/pages/Route.svelte
 
 The picture has two places. With a cover, the cover is large and the map ([`RouteMap.svelte`](../../builder/web/src/components/route/RouteMap.svelte)) is small in a corner; a click on the small one swaps them. With no cover, the map is large and no picture shows. The cover record keeps the credits that the still gives; with the cover large, a button on the picture shows them with the credits of the basemap. A cover made before the credits were kept shows the credits of the release. The pointer is a share of the summary line from 0 to 1, so the cover and the map mark the same place.
 
-A rename calls `renameRoute`, which is the only write that changes the name of a stored route. "Send to device" and "Do not send" change the list `waiting` of the library with `changeState`. "Open in the planner" goes to `#/planner/ID`: the planner opens that plan and then replaces the address with `#/planner`, so Back returns to the page.
+A rename calls `renameRoute`, which is the only write that changes the name of a stored route. "Send to device" and "Do not send" change the list `waiting` of the library with `changeState`, and the device sync sends the routes of that list. "Open in the planner" goes to `#/planner/ID`: the planner opens that plan and then replaces the address with `#/planner`, so Back returns to the page.
+
+## Device sync
+
+The shell syncs routes and rides with one device on the cable: the remembered device ([`remembered.svelte.ts`](../../builder/web/src/lib/device-sync/remembered.svelte.ts)). Only the Connect button of the Device page remembers a device (`rememberDevice`). `localStorage` keeps it in the key `obc-device`. With no remembered device, the shell opens no device session, and no sync runs.
+
+A sync ([`state.svelte.ts`](../../builder/web/src/lib/device-sync/state.svelte.ts)) starts on each `ready` of the remembered device, after `rememberDevice`, on `deviceSync.run()`, and when a route starts to wait or to leave. It holds the Web Lock `obc-device-sync`, so one tab syncs at a time. The sync ([`sync.ts`](../../builder/web/src/lib/device-sync/sync.ts)) does these steps in this order:
+
+1. It lists the card. For a new `StoreId`, the library empties `sent` and `leaving`, because they belong to the old card.
+2. It takes each finished ride that the library does not hold and did not delete, the oldest first, and stores it with its file. The ride brings the maximum heart rate and the threshold power of the device to the settings. A demo ride, a ride with no points and a ride with no clock stay on the device, and `skipped` remembers them.
+3. When the browser keeps the library on a full disk (`persist`), the sync marks the stored rides on the device as taken (`ARCHIVE_RIDE`). It marks a ride only when the stored file has the length and the CRC of the object on the card.
+4. It removes each route of `leaving` from the device.
+5. It sends each route of `waiting` as one OBCR route, also a plan of several days. It calculates the line again with the routing service, because the summary line is too coarse for the device. The waypoints are the nights, then the stops, 32 at most. A route keeps its object on the device, so a new send replaces it. With no network, the route waits.
+6. It remembers the map, the number of routes and the bytes on the card, and the rides that came in today.
+
+A pulled cable stops the sync. The library stores a ride only after its whole download, and a route goes into `sent` only after its upload, so the next connection continues. After "Delete all", the next connection takes each ride again, and the sent routes stay on the device.
 
 ## Covers
 

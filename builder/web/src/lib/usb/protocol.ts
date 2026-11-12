@@ -246,6 +246,12 @@ export interface ArmResponse {
     readonly commitSequence: bigint;
 }
 
+/** The ARCHIVE_RIDE response. `timestamp` is the stored archive time of the proof; zero means unknown. */
+export interface ArchiveResponse {
+    readonly commitSequence: bigint;
+    readonly timestamp: number;
+}
+
 /** The FORMAT response: the new identity, durable before the device reboots. */
 export interface FormatResponse {
     readonly storeId: string;

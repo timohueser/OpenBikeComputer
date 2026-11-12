@@ -195,7 +195,7 @@
     "map-reading"
    ],
    "violations": 9,
-   "lines": 36181,
+   "lines": 36212,
    "problems": [
     {
      "rule": "cycle",
@@ -520,7 +520,7 @@
    "depends_on": [],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 1793,
+   "lines": 1830,
    "problems": []
   },
   {
@@ -543,7 +543,7 @@
     "content"
    ],
    "violations": 10,
-   "lines": 24385,
+   "lines": 24574,
    "problems": [
     {
      "rule": "cycle",
@@ -1034,14 +1034,16 @@
    "purpose": "Opens the app at /plan/: the top bar, the pages, and the route planner as one page.",
    "status": "approved",
    "depends_on": [
+    "device-link",
     "device-map-builder",
     "library",
+    "map-assembly",
     "route-planning",
     "trailview"
    ],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 2939,
+   "lines": 3587,
    "problems": []
   },
   {
@@ -1888,6 +1890,12 @@
   },
   {
    "from": "web-planner",
+   "to": "device-link",
+   "test": false,
+   "undeclared": false
+  },
+  {
+   "from": "web-planner",
    "to": "device-map-builder",
    "test": false,
    "undeclared": false
@@ -1895,6 +1903,12 @@
   {
    "from": "web-planner",
    "to": "library",
+   "test": false,
+   "undeclared": false
+  },
+  {
+   "from": "web-planner",
+   "to": "map-assembly",
    "test": false,
    "undeclared": false
   },

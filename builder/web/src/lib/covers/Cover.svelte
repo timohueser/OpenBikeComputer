@@ -3,7 +3,8 @@
     import type { Library } from '../library/store';
     import { appearance } from '../theme.svelte';
     import { drawCover, type Crop } from './draw';
-    import { lineKey, settled, wantCover, wantsPicture, type Place } from './job';
+    import { lineKey } from '../library/summary';
+    import { settled, wantCover, wantsPicture, type Place } from './job';
     import { nearest } from './line';
 
     let { library, id, mark, part, line = true, place = 'row', onpoint }: {

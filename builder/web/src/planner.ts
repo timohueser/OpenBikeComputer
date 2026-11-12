@@ -1,6 +1,7 @@
 import { mount } from 'svelte';
 import './styles/tokens.css';
-import { lineKey, startCoverJob } from './lib/covers/job';
+import { startCoverJob } from './lib/covers/job';
+import { lineKey } from './lib/library/summary';
 import { Library } from './lib/library/store';
 import { setLook } from './lib/theme.svelte';
 

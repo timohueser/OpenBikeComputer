@@ -60,7 +60,7 @@ describe('library store', () => {
         await stale.close(); await other.close();
     });
 
-    it('changes a state value in one transaction, and a removed route stops waiting for the device', async () => {
+    it('changes a state value in one transaction, and a removed route stops waiting and leaves the device', async () => {
         const library = new Library(new IDBFactory()), heard: string[] = [];
         library.onChange((store, key) => heard.push(`${store}:${key}`));
         await library.saveRoute(route('a'));
@@ -70,6 +70,12 @@ describe('library store', () => {
         await library.removeRoute('a');
         expect(await library.state('waiting')).toEqual(['b']);
         expect(heard).toEqual(['routes:a', 'state:waiting', 'state:waiting', 'routes:a', 'state:waiting']);
+        // Only a route on the device has to leave it.
+        expect(await library.state('leaving')).toBeUndefined();
+        await library.saveRoute(route('c'));
+        await library.setState('sent', { c: { device: '7', line: 'k' } });
+        await library.removeRoute('c');
+        expect(await library.state('leaving')).toEqual(['c']);
         await library.close();
     });
 
