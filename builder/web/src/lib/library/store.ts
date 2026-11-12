@@ -141,6 +141,20 @@ export class Library {
         });
     }
 
+    /** Adds a route as it is. False when its id is stored: one transaction checks and writes, so two tabs add it once. */
+    addRoute(route: RouteRecord): Promise<boolean> {
+        const record = structuredClone(route);
+        return this.write(['routes'], (tx, _, changed) => {
+            const store = tx.objectStore('routes'), stored = store.getKey(record.id);
+            stored.onsuccess = () => {
+                if (stored.result !== undefined) return;
+                store.put(record);
+                changed('routes', record.id);
+            };
+            return () => stored.result === undefined;
+        });
+    }
+
     /** Removes a route with its versions and its cover. With `revision`, it refuses a route that changed since then. */
     removeRoute(id: string, revision?: number): Promise<void> {
         return this.write(['routes', 'versions', 'covers', 'state'], (tx, fail, changed) => {

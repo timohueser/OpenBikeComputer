@@ -27,6 +27,14 @@ describe('library store', () => {
         await first.close(); await second.close();
     });
 
+    it('adds a route only when its id is not stored', async () => {
+        const library = new Library(new IDBFactory());
+        expect(await library.addRoute(route('file-a'))).toBe(true);
+        expect(await library.addRoute({ ...route('file-a'), name: 'Other' })).toBe(false);
+        expect((await library.routes()).map(r => r.name)).toEqual(['file-a']);
+        await library.close();
+    });
+
     it('adds a ride once, and refuses a stored or a deleted key but keeps its device id', async () => {
         const library = new Library(new IDBFactory()), file = new Blob(['ride']);
         expect(await library.addRide(ride('20260801T070000Z'), file)).toBe(true);
