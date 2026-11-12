@@ -522,13 +522,15 @@
         await session.listPlans();
     }
 
-    // `#/planner/ID` opens plan ID. The address then drops the id, so Back does not open it again.
+    // `#/planner/ID` opens plan ID, and `#/planner/new` a new plan. The address then drops the id, so Back does not open
+    // it again.
     $effect(() => {
         const id = router.route === 'planner' ? router.id : undefined;
         if (!id || !session.ready) return;
         router.replace(ROUTES.planner);
+        if (id === 'new') untrack(() => void newPlan());
         // The open plan keeps its Undo history and its map view.
-        if (id !== untrack(() => session.plan.id)) untrack(() => void openPlan(id));
+        else if (id !== untrack(() => session.plan.id)) untrack(() => void openPlan(id));
     });
 
     async function openPlan(id: string) {

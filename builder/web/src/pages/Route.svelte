@@ -21,6 +21,7 @@
     import type { Version } from '../lib/planner/versions';
     import { router } from '../lib/router.svelte';
     import { ROUTES } from '../lib/routes';
+    import { deviceState, stateText, waitingWith, type DeviceState } from './routes/state';
 
     let { library }: { library: Library; active: boolean } = $props();
 
@@ -28,7 +29,7 @@
     const legs = new LegCache();
     // Raw: `planView` freezes the trip that it reads.
     let record = $state.raw<RouteRecord | null>();
-    let waiting = $state(false), cover = $state.raw<CoverRecord>(), swapped = $state(false);
+    let device = $state<DeviceState>(), cover = $state.raw<CoverRecord>(), swapped = $state(false);
     let routed = $state.raw<{ key: string; line?: RoutingLine; error?: string }>();
     /** The pointer, as a share of the summary line from 0 to 1. */
     let share = $state<number>();
@@ -54,16 +55,16 @@
         record = undefined;
         [cover, swapped, share, renaming, deleting, exportOpen, failure] = [undefined, false, undefined, false, false, false, ''];
         const load = async () => {
-            const [item, ids, stored] = await Promise.all([library.item(target), library.state('waiting'), library.cover(target)]);
+            const [item, waiting, sent, stored] = await Promise.all([library.item(target), library.state('waiting'), library.state('sent'), library.cover(target)]);
             if (!live) return;
             record = item && 'revision' in item ? item : null;
-            waiting = !!ids?.includes(target);
+            device = record ? deviceState(record, waiting, sent) : undefined;
             cover = stored;
         };
         // Also the cover of an earlier line, which shows until the new one arrives.
         void load().then(() => { if (live && record?.summary && !settled(record, cover)) wantCover(target, 'page'); });
         const stop = library.onChange((store, changedKey) => {
-            if (changedKey === target || (store === 'state' && changedKey === 'waiting')) void load();
+            if (changedKey === target || (store === 'state' && (changedKey === 'waiting' || changedKey === 'sent'))) void load();
         });
         return () => { live = false; stop(); };
     });
@@ -90,7 +91,7 @@
         if (next && next !== record?.name) await act(() => library.renameRoute(id, next));
     }
 
-    const send = (on: boolean) => act(() => library.changeState('waiting', ids => on ? [...(ids ?? []).filter(other => other !== id), id] : (ids ?? []).filter(other => other !== id)));
+    const send = (on: boolean) => act(() => library.changeState('waiting', waitingWith(id, on)));
 
     async function versions(): Promise<Version[]> {
         return (await library.versions(id)).filter((v): v is Version => isVersion(v) && typeof v.summary === 'string');
@@ -169,12 +170,12 @@
                     <button type="button" class="icon" aria-label="Rename" onclick={startRename}><Icon name="pencil" size={16} /></button>
                 {/if}
                 {#if summary && summary.days > 1}<span class="tag">{summary.days} days</span>{/if}
-                {#if waiting}<span class="tag">Waits for the device</span>{/if}
+                {#if device}<span class="tag">{stateText[device]}</span>{/if}
             </div>
             {#if plan}
                 <nav class="buttons" aria-label="Route">
                     <a class="button primary" href={`${ROUTES.planner}/${id}`}>Open in the planner</a>
-                    <button type="button" class="button" onclick={() => send(!waiting)}>{waiting ? 'Do not send' : 'Send to device'}</button>
+                    <button type="button" class="button" disabled={device === 'sent'} onclick={() => send(device !== 'waiting')}>{device === 'waiting' ? 'Do not send' : 'Send to device'}</button>
                     <div class="export">
                         <button type="button" class="button" aria-expanded={exportOpen} onclick={() => exportOpen = !exportOpen}>Export ▾</button>
                         {#if exportOpen}

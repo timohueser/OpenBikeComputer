@@ -19,6 +19,8 @@
     const PAGES: Partial<Record<Route, Page>> = {
         // The planner reads the live catalogue as it loads.
         planner: { label: 'Planner', keep: true, load: () => initCore().then(() => import('./components/planner/PlannerApp.svelte')) },
+        // The list shows from the library alone; the map and the place search load the map catalogue after it.
+        routes: { label: 'Routes', load: () => import('./pages/Routes.svelte') },
         // The page writes GPX and FIT.
         route: { load: () => initCore().then(() => import('./pages/Route.svelte')) },
         settings: { load: () => import('./pages/Settings.svelte') },
