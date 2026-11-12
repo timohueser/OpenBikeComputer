@@ -327,9 +327,8 @@ fetch or graft an object for it. `cell_count` continues to count downloadable ar
 
 ## 9. URLs and integrity
 
-Object URLs are either absolute HTTP(S) URLs or root-relative paths. A desktop consumer MUST
-restrict all satellite and cell requests to the configured catalog origin; it MUST NOT follow the
-catalog to an unrelated origin. Plain HTTP is permitted only for loopback development.
+Object URLs are either absolute HTTP(S) URLs or root-relative paths. Plain HTTP is permitted only
+for loopback development.
 
 A pinned URL MUST end in `.<sha256>.<extension>` or `/objects/<sha256>`. The digest MUST be the
 pin's exact lowercase SHA-256. The URL MUST NOT have a query or fragment. Producers MUST NOT serve

@@ -604,8 +604,8 @@ invalidated first, so the running in-memory store must not continue serving requ
 reboots after that response. A preflight refusal (busy, stale identity, malformed request) does not
 change the card and does not reboot.
 
-The empty store contains no map. Boot must still enumerate USB in that state so the web or desktop
-client can upload the first map; showing a no-map fault on the display must not take the recovery
+The empty store contains no map. Boot must still enumerate USB in that state so a USB client can
+upload the first map; showing a no-map fault on the display must not take the recovery
 transport down.
 
 ### 3.11 Vectors
