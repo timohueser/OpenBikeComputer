@@ -35,11 +35,8 @@ const isTrack = (line: Line) => line.code >= RAIL_CODE;
 /** A bridge without a corridor's plan. */
 const NO_DECK: DeckPlan = { walks: [0, 0], yields: [[0, 0], [0, 0]] };
 
-/**
- * The bridges of a feature tile's `list` and `lines` whose pieces a square `owns`. Corridors draw the decks of road bridges, and these hand over to them.
- * With `plan` the ground plan's end faces stand under the deck ends: no abutment.
- */
-export function bridges(b: MeshBuilder, list: Feature[], tile: Node, all: Line[], owns: Owns, plan = false): void {
+/** The bridges of a feature tile's `list` and `lines` whose pieces a square `owns`. Corridors draw the decks of road bridges, and these hand over to them. */
+export function bridges(b: MeshBuilder, list: Feature[], tile: Node, all: Line[], owns: Owns): void {
     const lines = all.filter(line => line.kind === BRIDGE);
     if (!lines.length) return;
     // Ends that two bridge lines share are joints: no cap there.
@@ -105,9 +102,10 @@ export function bridges(b: MeshBuilder, list: Feature[], tile: Node, all: Line[]
                 if (walks[i]) cap(side * h, side * (h + walks[i]), top, LIFT_M + KERB_RISE_M);
                 cap(side * (h + walks[i]), side * edge, top, PARAPET[1]);
             }
-            if (line.abut?.[v ? 1 : 0] && !plan) {
+            if (line.abut?.[v ? 1 : 0]) {
                 const depth = Math.min(ABUTMENT_M, (to - from) / 2);
-                abutment(b, s, point(v ? to - depth : from + depth), Math.max(wl, wr), t, out);
+                // The ground plan's end faces stand under the deck ends instead.
+                b.offPlan(() => abutment(b, s, point(v ? to - depth : from + depth), Math.max(wl, wr), t, out));
             }
         }
     }

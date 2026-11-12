@@ -7,7 +7,7 @@ import { metresPerUnit } from '../terrain/bins';
 import { key, OWNER, size, type Node } from '../terrain/lod';
 import type { Stamps } from '../terrain/stamps';
 import { ANCHOR_WORDS, ANCHORED_VERTEX } from './anchored';
-import { STRUCTURE_VERTEX } from './mesh';
+import { STRUCTURE_VERTEX, type StructureMesh } from './mesh';
 import { FLOOR, type NodeMeshes } from './node';
 import { Pool, type Mesh } from './pool';
 
@@ -50,7 +50,7 @@ interface Resources {
  */
 export class Structures {
     private resources?: Resources;
-    private draws: Mesh[] = [];
+    private draws: StructureMesh[] = [];
     /** The anchored meshes of the frame, with the first anchor of their node. */
     private hung: { mesh: Mesh; anchor: number }[] = [];
     private anchorWords = new Uint32Array(0);
@@ -208,7 +208,7 @@ export class Structures {
         pass.setIndexBuffer(r.structures.indices, 'uint32');
         for (const mesh of this.draws) {
             const at = r.structures.at(mesh);
-            if (at) pass.drawIndexed(mesh.indices.length, 1, at.first, at.base);
+            if (at) pass.drawIndexed(mesh.indices.length - (this.stamps.plan ? mesh.offPlan : 0), 1, at.first, at.base);
         }
         pass.setPipeline(anchored);
         pass.setVertexBuffer(0, r.anchored.vertices);
