@@ -184,12 +184,6 @@ name = "obc-boot"
 command = "cargo build --manifest-path firmware/obc-boot/Cargo.toml --release --locked"
 platforms = ["linux"]
 
-[[package]]
-name = "obc-desktop"
-command = "cargo test --manifest-path builder/desktop/Cargo.toml --release --locked"
-# A web change reaches the shell only as the bundle that desktop-frontend builds and checks.
-triggers = ["planner/search/place-kinds.json"]
-
 # ── Suites no Cargo package owns ────────────────────────────────────────────
 
 [[suite]]
@@ -232,8 +226,7 @@ triggers = [
 ]
 
 # The whole app is the subject, the bridge fixture is the input, and the shared catalog
-# generator is what publishes it. The schema examples are not here: this catalog is cut
-# from the bridge fixture, and only the desktop smoke reads the examples.
+# generator is what publishes it. This catalog is cut from the bridge fixture.
 [[suite]]
 id = "web.verification"
 route = "ordinary"
@@ -490,7 +483,7 @@ triggers = [
 id = "ci.rust-workspace-tests"
 route = "ordinary"
 command = "obc check test"
-jobs = ["desktop", "test"]
+jobs = ["test"]
 foundation = true
 triggers = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "tools/fixtures.py"]
 
@@ -514,7 +507,7 @@ triggers = [".rustfmt.toml"]
 id = "ci.rust-clippy"
 route = "ordinary"
 command = "obc check clippy"
-jobs = ["boot", "clippy", "desktop", "embedded"]
+jobs = ["boot", "clippy", "embedded"]
 foundation = true
 triggers = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml"]
 
@@ -522,7 +515,7 @@ triggers = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml"]
 id = "ci.rust-builds"
 route = "ordinary"
 command = "obc check device board wasm"
-jobs = ["boot", "builder-python", "desktop", "device", "embedded", "ui-snapshots", "wasm"]
+jobs = ["boot", "builder-python", "device", "embedded", "ui-snapshots", "wasm"]
 foundation = true
 triggers = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "tools/install-riscv.sh"]
 
@@ -597,7 +590,7 @@ triggers = [
 id = "ci.web-build"
 route = "ordinary"
 command = "obc check frontend"
-jobs = ["desktop-frontend", "web"]
+jobs = ["web"]
 triggers = ["planner/search/place-kinds.json", "docs/assets/theme.css", "docs/assets/fonts/**", "builder/web/package.json", "builder/web/package-lock.json", "builder/web/src/**"]
 
 [[suite]]
@@ -828,12 +821,6 @@ triggers = [
   "host/obc-pack/src/landmarks/**",
   "fixtures/sources/peak-view/peak-articles-source.json",
 ]
-
-[[suite]]
-id = "manual.desktop-linux-launch"
-route = "manual"
-command = "xvfb-run -a dbus-run-session -- uv run --locked --group desktop-e2e python builder/desktop/e2e/launch.py"
-platforms = ["linux"]
 
 [[suite]]
 id = "manual.obc-link"

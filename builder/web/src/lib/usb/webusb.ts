@@ -9,7 +9,7 @@
  * taken off the page.
  *
  * WebUSB is Chromium-only and needs a secure context. Firefox and Safari get {@link PipeError}
- * `unsupported`, and the honest answer for them is the desktop app.
+ * `unsupported`, and the honest answer for them is another browser.
  *
  * The endpoint layout — a vendor-specific interface, lowest IN/OUT pair control, next pair stream —
  * is what the firmware descriptors declare, so {@link discoverLayout}'s rule is a contract rather
@@ -550,9 +550,9 @@ export interface WatcherOptions extends ClientOptions {
 /**
  * Finds the device, keeps up with plugging and unplugging, and owns the {@link FlatStoreClient}.
  *
- * Framework-free on purpose — `session.svelte.ts` is a thin reactive shell over this, and the
- * desktop app reuses it unchanged behind a native transport. Subscribers get an immutable snapshot
- * per change, so a consumer can hold one without watching it mutate underneath.
+ * Framework-free on purpose — `session.svelte.ts` is a thin reactive shell over this. Subscribers
+ * get an immutable snapshot per change, so a consumer can hold one without watching it mutate
+ * underneath.
  */
 export class WebUsbWatcher {
     private readonly usb: UsbLike | null;
@@ -572,8 +572,7 @@ export class WebUsbWatcher {
             info: null,
             error: this.usb
                 ? null
-                : "This browser cannot talk to USB devices. Chrome, Edge and other Chromium browsers can — " +
-                  "or use the desktop app, which works everywhere.",
+                : "This browser cannot use the USB cable. Use Chrome or Edge.",
         };
     }
 

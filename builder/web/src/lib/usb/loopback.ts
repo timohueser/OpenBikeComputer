@@ -15,7 +15,7 @@
  * Timing, stalls and enumeration are not here: those belong to the WebUSB pipe and its own suite.
  */
 
-import { PipeError, throwIfAborted, type BytePipe, type DeviceLink } from "./pipe";
+import { PipeError, throwIfAborted, type BytePipe, type DeviceLink, type RecordLink } from "./pipe";
 import { encodeDeviceInfo, type DeviceInfo } from "./records";
 
 /** The identity strings a link answers with unless a test names others. */
@@ -198,7 +198,7 @@ export interface LoopbackOptions {
 /** The two ends of a link: `host` for the client, `device` for the simulated device. */
 export interface LoopbackLink {
     host: DeviceLink;
-    device: DeviceLink;
+    device: RecordLink;
     /** Bytes queued but unread on the stream channel in one direction — the backpressure gauge. */
     streamDepth(direction: "to-device" | "to-host"): number;
 }
@@ -231,7 +231,7 @@ export function loopbackLink(options: LoopbackOptions & { deviceInfo?: DeviceInf
             await this.stream.close();
         },
     };
-    const device: DeviceLink = {
+    const device: RecordLink = {
         control: new LoopbackPipe(hostToDeviceControl, deviceToHostControl),
         stream: new LoopbackPipe(hostToDeviceStream, deviceToHostStream),
         async close() {
