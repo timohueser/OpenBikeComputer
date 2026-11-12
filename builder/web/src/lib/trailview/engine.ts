@@ -122,7 +122,7 @@ export class TrailView {
     private readonly shadow = new Shadow();
     private readonly resolve = new Resolve();
     private readonly temporal = new Temporal();
-    private readonly controls: Controls;
+    private readonly controls?: Controls;
     private destroyed = false;
     private pose: Pose;
     private extras: Pick<View, 'date' | 'time' | 'weather' | 'debug'>;
@@ -181,6 +181,8 @@ export class TrailView {
         this.rows = new Rows(this.groundLook.rules, this.trees, this.plants, this.instances);
         this.kindPoints = new KindPoints(this.instances);
         this.dressing = new Dressing(this.groundLook.rules, this.instances);
+        // A still has a size of its own and no input: the controls listen for keys on the whole window.
+        if (size) return;
         this.controls = new Controls(canvas, {
             pose: () => this.pose,
             moved: pose => { this.pose = pose; this.moved = true; this.request(); },
@@ -435,10 +437,10 @@ export class TrailView {
         TrailView.prepare(gpu).catch(() => {});
         this.complete = false;
         // A still copies the canvas.
-        this.context.configure({ device: gpu.device, format: gpu.format, alphaMode: 'opaque', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
+        this.context.configure({ device: gpu.device, format: gpu.format, alphaMode: 'opaque', usage: GPUTextureUsage.RENDER_ATTACHMENT | (this.size ? GPUTextureUsage.COPY_SRC : 0) });
         const uniform = gpu.buffer('uniforms', FRAME_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
         const look = gpu.buffer('uniforms', LOOK_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
-        const targets = new Targets(gpu);
+        const targets = new Targets(gpu, !!this.size);
         this.gpuState = { gpu, uniform, look, times: new PassTimes(gpu, PASSES, { resolve: 'terrain' }), targets };
         this.temporal.reset();
         // The maps at once: the ground's group binds them.
@@ -576,7 +578,7 @@ export class TrailView {
         if (!this.ready || this.held) return;
         if (!this.pacer.due(now)) return this.request();
         const start = performance.now();
-        const steer = this.controls.steer(), dt = this.last ? Math.min(0.1, (now - this.last) / 1000) : 0;
+        const steer = this.controls?.steer(), dt = this.last ? Math.min(0.1, (now - this.last) / 1000) : 0;
         if (steer) this.pose = move(this.pose, steer, dt, this.ground());
         const probe = this.terrain.ground;
         if (probe && !Number.isNaN(probe.height)) {
@@ -611,6 +613,11 @@ export class TrailView {
         this.dressing.update(lonLat);
         const group = this.groundLook.group;
         this.drawing = !!(eye && group);
+        // A frame that cannot draw asks for no next frame: a capture would wait forever.
+        if (this.grab && !this.drawing) {
+            this.grab.reject(new Error(eye ? 'The still draws nothing: the ground layers are not ready.' : 'The still draws nothing: no terrain is known under the eye.'));
+            this.grab = undefined;
+        }
         let step: Step | undefined, offset: [number, number] = [0, 0], ndc: [number, number] = [0, 0], moved = true, changed = false, cascade = -1;
         let lights: Lights | undefined, grabbed: Grabbed | undefined;
         if (eye && group) {

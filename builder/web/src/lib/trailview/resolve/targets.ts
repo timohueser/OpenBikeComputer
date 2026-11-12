@@ -37,7 +37,8 @@ export class Targets {
     historyDepth: GPUTexture[] = [];
     parity = 0;
 
-    constructor(private readonly gpu: Gpu) {
+    /** `still`: the depth can be copied, for a still. */
+    constructor(private readonly gpu: Gpu, private readonly still = false) {
         this.format = sceneFormat(gpu);
     }
 
@@ -56,8 +57,7 @@ export class Targets {
         const make = (format: GPUTextureFormat, bytes: number, [w, h]: number[], extra = 0) => gpu.texture('targets', { size: [w, h], format, usage: usage | extra }, bytes * w * h);
         const render = this.viewport(top), output = [width, height];
         this.scene = make(this.format, this.format === 'rg11b10ufloat' ? 4 : 8, render);
-        // A still reads the depth back.
-        this.depth = make(DEPTH, 4, render, GPUTextureUsage.COPY_SRC);
+        this.depth = make(DEPTH, 4, render, this.still ? GPUTextureUsage.COPY_SRC : 0);
         this.history = [make(HISTORY, 4, output), make(HISTORY, 4, output)];
         this.historyDepth = [make(HISTORY_DEPTH, 2, output), make(HISTORY_DEPTH, 2, output)];
         this.version++;

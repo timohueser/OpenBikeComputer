@@ -4,7 +4,7 @@ import { TrailView } from './lib/trailview/engine';
 import { Gpu } from './lib/trailview/gpu/device';
 import { hud } from './lib/trailview/hud';
 import { scaleOf } from './lib/trailview/resolve/targets';
-import { still, type StillJob } from './lib/trailview/still';
+import { canRenderStills, still, type StillJob } from './lib/trailview/still';
 import { coverView } from './lib/trailview/still-view';
 import { defaultView, formatView, parseView } from './lib/trailview/view';
 
@@ -42,6 +42,7 @@ async function stills(): Promise<void> {
         trailviewStill: {
             still: (job: StillJob, options?: Parameters<typeof still>[3]) => still(gpu, release, job, options),
             coverView: (line: [number, number][], when: Parameters<typeof coverView>[2]) => coverView(line, release, when),
+            canRenderStills,
         },
     });
 }

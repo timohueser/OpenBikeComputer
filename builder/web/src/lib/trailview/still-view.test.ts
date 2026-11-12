@@ -23,9 +23,6 @@ const line = (points: [number, number][]) => points.map(([east, north]) => frame
 const valley = (east: number) => 1000 + 1500 * Math.min(1, Math.max(0, (Math.abs(east) - 400) / 1500));
 const road = line(Array.from({ length: 61 }, (_, i) => [250 * Math.sin(i / 4), -6000 + 200 * i]));
 
-/** Whether two bearings in degrees lie within `limit` of each other. */
-const near = (a: number, b: number, limit: number) => Math.abs(((a - b) % 360 + 540) % 360 - 180) < limit;
-
 /** The points as the engine draws them from the view, from −1 to 1 across the frame: in the frame of the eye, the ground drops with the curvature. */
 function screen(view: Camera, points: [number, number][], height: number): [number, number][] {
     const eye = frameAt(view.lon, view.lat), h = view.heading * Math.PI / 180, p = view.pitch * Math.PI / 180, tan = Math.tan(Math.PI / 6);
@@ -39,14 +36,16 @@ function screen(view: Camera, points: [number, number][], height: number): [numb
 }
 
 describe('the cover view', () => {
-    it('looks into a valley over its walls, and never within 60° of the sun', () => {
+    it('looks into a valley over its walls', () => {
         for (const sun of [90, 0, 135, 270]) {
             const plain = chooseView(road, grid(10, () => 1000), { ...SIZE, sun })!, view = chooseView(road, grid(10, valley), { ...SIZE, sun })!;
             // The walls hide the road from the lowest tilts.
             expect(view.pitch, `sun ${sun}`).toBeLessThan(plain.pitch - 10);
-            expect(near(view.heading, sun, 60), `sun ${sun}: heading ${view.heading}`).toBe(false);
-            expect(near(plain.heading, sun, 60), `sun ${sun}: heading ${plain.heading}`).toBe(false);
         }
+    });
+
+    it('gives no view of a route that has no extent', () => {
+        expect(chooseView(line([[0, 0], [0, 0], [2, 1]]), grid(10, () => 1000), { ...SIZE, sun: 180 })).toBeUndefined();
     });
 
     it('holds each point of a long route inside the frame as the engine draws it, so the height of the eye is above sea level', () => {

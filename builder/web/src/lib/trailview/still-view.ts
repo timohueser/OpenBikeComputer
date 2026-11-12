@@ -23,6 +23,8 @@ const POINTS = 200;
 const POINT_M = 1, TREES_M = 20;
 /** The line of sight leaves out this many cells at the point: they hold the point's own ground. */
 const OWN_CELLS = 2;
+/** A route less than this many metres across has no view: the frame would hold it with the eye on it. */
+const LEAST_M = 10;
 /** The farthest that the search moves the eye from its aim, in metres. */
 const FARTHEST_M = 2_000_000;
 /** The grid reaches this share of the route's box beyond it on each side: the eye of a low tilt stands outside the route. */
@@ -46,7 +48,8 @@ interface Candidate { eye: Vec; distance: number; heading: number; pitch: number
  * the sun, the lowest tilt that shows SHOWN of the route, with the route centred and as near as the frame
  * permits. Of these views it takes the one that draws the route longest on the screen. The search works
  * in metres about the centre of the route, with the curvature of the Earth taken off, as the engine
- * draws it. Undefined when no view fits, or when the eye must be higher than MAX_ALTITUDE.
+ * draws it. Undefined when the route is less than LEAST_M across, when no view fits, or when the eye
+ * must be higher than MAX_ALTITUDE.
  */
 export function chooseView(line: readonly [number, number][], grid: HeightGrid, { width, height, sun }: { width: number; height: number; sun: number }): Camera | undefined {
     if (line.length < 2) return undefined;
@@ -67,6 +70,8 @@ export function chooseView(line: readonly [number, number][], grid: HeightGrid, 
         return { at: [east, north, groundAt(x, y) + POINT_M - drop(east, north)] as Vec, x, y };
     });
     if (points.some(({ at }) => Number.isNaN(at[2]))) return undefined;
+    const across = (axis: 0 | 1) => Math.max(...points.map(({ at }) => at[axis])) - Math.min(...points.map(({ at }) => at[axis]));
+    if (Math.max(across(0), across(1)) < LEAST_M) return undefined;
     const allowed = Math.floor((1 - SHOWN) * points.length);
 
     /** Whether no more than `allowed` points are hidden from `eye`: a point is hidden where the ground comes within TREES_M of its line of sight. */

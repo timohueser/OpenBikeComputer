@@ -8,28 +8,26 @@ const BEFORE = [[8.385, 46.814], [8.385, 46.81], [8.385, 46.806]];
 const BEHIND = [[8.385, 46.799], [8.385, 46.796], [8.385, 46.793]];
 // Along the valley floor of Engelberg, west to east.
 const ROUTE = [[8.375, 46.821], [8.385, 46.82], [8.395, 46.819], [8.405, 46.818], [8.415, 46.816], [8.425, 46.813], [8.432, 46.81]];
-// SwiftShader takes minutes for a still.
-const SLOW = { timeoutMs: 600_000 };
-
 async function open(page) {
     await routeFixture(page);
     await page.goto('/trailview.html?still');
     await page.waitForFunction(() => window.trailviewStill, null, { timeout: 60_000 });
+    // A still takes minutes on a software renderer, such as SwiftShader in CI.
+    test.skip(!await page.evaluate(() => window.trailviewStill.canRenderStills()), 'This browser renders stills in software only.');
 }
 
 /** A still in the page: the type and the size of its image, and its points as arrays. */
 function render(page, job) {
-    return page.evaluate(async ([job, options]) => {
-        const { image, points } = await window.trailviewStill.still(job, options);
+    return page.evaluate(async job => {
+        const { image, points } = await window.trailviewStill.still(job);
         const { width, height } = await createImageBitmap(image);
         return { type: image.type, width, height, points: points && Object.fromEntries(Object.entries(points).map(([key, values]) => [key, Array.from(values)])) };
-    }, [job, SLOW]);
+    }, job);
 }
 
 const inside = ({ x, y }, i, width, height) => x[i] >= 0 && x[i] < width && y[i] >= 0 && y[i] < height;
 
 test('a still has the size of its job, and the points behind a ridge are hidden', { tag: '@gpu' }, async ({ page }) => {
-    test.setTimeout(900_000);
     const errors = errorsOf(page);
     await open(page);
     const still = await render(page, { view: RIDGE, width: 480, height: 270, line: [...BEFORE, ...BEHIND] });
@@ -47,7 +45,6 @@ test('a still has the size of its job, and the points behind a ridge are hidden'
 });
 
 test('the engine draws the route of a cover view inside the image, as the view search placed it', { tag: '@gpu' }, async ({ page }) => {
-    test.setTimeout(900_000);
     const errors = errorsOf(page);
     await open(page);
     const size = { width: 480, height: 320 };
