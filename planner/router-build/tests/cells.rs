@@ -198,6 +198,17 @@ fn an_install_gives_back_each_road() {
     assert_eq!(summary.long_roads, 2, "the long road has two directions");
 
     let info: serde_json::Value = serde_json::from_slice(&info).unwrap();
+    let levels = graph.cells.levels();
+    assert_eq!(info["levels"], serde_json::json!([8, 25, 50][..levels]));
+    assert_eq!(
+        (info["download_level"].as_u64(), info["counts"]["cells"].clone()),
+        (Some(2), serde_json::json!(graph.cells.counts.values()))
+    );
+    let counts = &info["counts"];
+    assert_eq!(
+        (counts["roads"].as_u64(), counts["turns"].as_u64(), counts["long_roads"].as_u64()),
+        (Some(graph.roads.len() as u64), Some(bake.topology.head.len() as u64), Some(2))
+    );
     // The place of each profile in its group, by its index in `costs`.
     let mut places = BTreeMap::new();
     for entry in info["profiles"].as_array().unwrap() {
@@ -212,6 +223,11 @@ fn an_install_gives_back_each_road() {
     let bits = |road: &Road| road.shape.iter().map(|p| (p.lat, p.lon, p.elevation.to_bits())).collect::<Vec<_>>();
     let (first, head) = (bake.topology.first.values(), bake.topology.head.values());
     let mut found = BTreeMap::new();
+    let union = |boxes: &mut dyn Iterator<Item = [i32; 4]>| {
+        boxes.reduce(|a, b| [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])]).unwrap_or_default()
+    };
+    // The level-1 boxes of each download cell, by record.
+    let mut level1_boxes = Vec::new();
     let (mut seen, mut closures) = (0, 0);
     let (mut road, mut expected) = (Road::default(), Road::default());
     for record in 0..downloads {
@@ -222,6 +238,11 @@ fn an_install_gives_back_each_road() {
         let topology = Topology::new(&topology_bytes).unwrap();
         let geometry = Geometry::new(&geometry_bytes).unwrap();
         let group_views: Vec<_> = group_bytes.iter().map(|bytes| Group::new(bytes).unwrap()).collect();
+        let boxes: Vec<[i32; 4]> = (0..geometry.cells).map(|i| geometry.level1(i).unwrap().bounds).collect();
+        assert_eq!(cell.bounds, union(&mut boxes.iter().copied()), "the box of record {record}");
+        let longs = &mut (0..geometry.long).map(|k| geometry.long(k).unwrap().1);
+        assert_eq!(cell.long_bounds, union(longs), "the long box of record {record}");
+        level1_boxes.push(boxes);
         for k in 0..geometry.long {
             let (index, shape) = geometry.long(k).unwrap();
             let id = (cell.first_road + index) as usize;
@@ -270,16 +291,16 @@ fn an_install_gives_back_each_road() {
                     let cell = view.level1(i, &level1).unwrap();
                     for (&(_, t), &(_, arc)) in targets.iter().zip(&turns) {
                         let turn = costs.turns(*profile)[arc as usize];
-                        assert_eq!(view.turn(&level1, &cell, t).unwrap(), (turn != u32::MAX).then_some(turn));
+                        assert_eq!(view.turn(&cell, t).unwrap(), (turn != u32::MAX).then_some(turn));
                     }
                     let total = costs.total(*profile, id);
-                    assert_eq!(view.cost(&level1, &cell, place, j).unwrap(), (total != u32::MAX).then_some(total));
-                    let class = view.class(&level1, &cell, j).unwrap();
+                    assert_eq!(view.cost(&cell, place, j).unwrap(), (total != u32::MAX).then_some(total));
+                    let class = view.class(&cell, j).unwrap();
                     let basis = |b: Option<planner_router::cost::CostBasis>| {
                         b.map(|b| (b.factor.to_bits(), b.turn.to_bits(), b.ferry))
                     };
                     assert_eq!(basis(view.basis(class, place).unwrap()), basis(costs.basis(*profile, id)));
-                    assert_eq!(view.allowed(&level1, &cell, place, j).unwrap(), costs.snappable(*profile, id));
+                    assert_eq!(view.allowed(&cell, place, j).unwrap(), costs.snappable(*profile, id));
                     assert_eq!(view.slot(place, i).unwrap().1, 0);
                 }
                 // The record.
@@ -309,7 +330,7 @@ fn an_install_gives_back_each_road() {
         for k in 0..topology.upper {
             let upper = topology.upper(k).unwrap();
             let list =
-                |at, n| (0..n).map(|k| road_id(&directory, topology.reference(at as usize, k).unwrap())).collect();
+                |at, n| (0..n).map(|k| road_id(&directory, topology.reference(u64::from(at), k).unwrap())).collect();
             found.insert(
                 (upper.level, upper.id),
                 (list(upper.entering_at, upper.entering), list(upper.leaving_at, upper.leaving)),
@@ -324,7 +345,15 @@ fn an_install_gives_back_each_road() {
         let topology = Topology::new(&bytes).unwrap();
         let upper = topology.upper(0).unwrap();
         assert_eq!(topology.cells, 0);
-        let list = |at, n| (0..n).map(|k| road_id(&directory, topology.reference(at as usize, k).unwrap())).collect();
+        let cell = directory.cell(record).unwrap();
+        let below: Vec<usize> = (0..downloads)
+            .filter(|&d| directory.cell(d).unwrap().id & !directory.below(cell.level) == cell.id)
+            .collect();
+        let first = directory.cell(below[0]).unwrap().first_road;
+        let roads: u32 = below.iter().map(|&d| directory.cell(d).unwrap().roads).sum();
+        assert_eq!((cell.first_road, cell.roads, cell.long_bounds), (first, roads, [0; 4]));
+        assert_eq!(cell.bounds, union(&mut below.iter().flat_map(|&d| level1_boxes[d].iter().copied())));
+        let list = |at, n| (0..n).map(|k| road_id(&directory, topology.reference(u64::from(at), k).unwrap())).collect();
         found.insert(
             (upper.level, upper.id),
             (list(upper.entering_at, upper.entering), list(upper.leaving_at, upper.leaving)),
@@ -371,8 +400,17 @@ fn an_install_of_some_cells_holds_those_cells() {
         names
     };
     let level = directory.header.download_level;
-    let two = install::install(&target, (&directory_bytes, &info), (Some(&ids[..2]), None), 2, fetch(&output)).unwrap();
-    let plan = install::plan(&directory_bytes, &info, Some(&ids[..2]), None).unwrap();
+    // The profile `hiking` and its group only.
+    let hiking = ["hiking".to_string()];
+    let selection = (Some(&ids[..2]), Some(&hiking[..]));
+    let two = install::install(&target, (&directory_bytes, &info), selection, 2, fetch(&output)).unwrap();
+    let plan = install::plan(&directory_bytes, &info, Some(&ids[..2]), Some(&hiking)).unwrap();
+    let package: serde_json::Value = serde_json::from_slice(&info).unwrap();
+    let entry = package["profiles"].as_array().unwrap().iter().find(|p| p["profile"]["name"] == "hiking").unwrap();
+    let group = entry["group"].as_u64().unwrap() as u8;
+    assert_eq!(plan.groups, 1 << group);
+    assert!(plan.files.iter().all(|file| file.part < 2 || file.part == 2 + group));
+    assert_eq!(plan.files.len(), 2 * 3, "topology, geometry and one group of two cells");
     assert_eq!(plan.records, [0, last as u32], "no upper cell is complete");
     assert_eq!(install::installed_bytes(&plan.missing(&target)), 0);
     assert_eq!(two.files as usize, plan.files.len());
@@ -381,7 +419,9 @@ fn an_install_of_some_cells_holds_those_cells() {
     assert_eq!(names(&target).len(), plan.files.len());
 
     fs::write(target.join("notes"), b"kept").unwrap();
-    let one = install::install(&target, (&directory_bytes, &info), (Some(&ids[..1]), None), 1, fetch(&output)).unwrap();
+    let one =
+        install::install(&target, (&directory_bytes, &info), (Some(&ids[..1]), Some(&hiking[..])), 1, fetch(&output))
+            .unwrap();
     assert_eq!(
         (one.files, one.removed as usize),
         (0, plan.files.len() - plan.files.iter().filter(|f| f.record == 0).count())
@@ -429,7 +469,7 @@ fn an_install_refuses_what_it_cannot_trust() {
     bytes[last] ^= 1;
     fs::write(damaged.join(&name), bytes).unwrap();
     let error = install::install(&target, (&directory_bytes, &info), (None, None), 2, fetch(&damaged)).unwrap_err();
-    assert!(error.contains(&name), "{error}");
+    assert!(matches!(&error, install::Error::Object { object, .. } if *object == name), "{error}");
     assert!(!target.join(install::MARKER).exists());
     assert!(install::check(&directory_bytes, &info, 2, fetch(&damaged)).is_err());
 
@@ -439,14 +479,46 @@ fn an_install_refuses_what_it_cannot_trust() {
     let (other_directory, other_info) = read(&other);
     assert_ne!(other_directory, directory_bytes);
     let error = install::install(&target, (&other_directory, &other_info), (None, None), 2, fetch(&other)).unwrap_err();
-    assert!(error.contains("another package"), "{error}");
+    assert!(matches!(&error, install::Error::Invalid(text) if text.contains("another package")), "{error}");
 
     // A second call while the lock is held.
     let lock = File::create(target.join(install::LOCK)).unwrap();
     lock.try_lock().unwrap();
     let error = install::install(&target, (&directory_bytes, &info), (None, None), 2, fetch(&output)).unwrap_err();
-    assert!(error.contains("another install"), "{error}");
+    assert!(matches!(error, install::Error::Locked(_)), "{error}");
     drop(lock);
+
+    // A frame that decodes to more than its part, with the content size of the part, writes no
+    // more than the part; a later install deletes the leftover `.part` file.
+    let item = &all.files[0];
+    let part = fs::read(output.join(item.object.iter().map(|b| format!("{b:02x}")).collect::<String>())).unwrap();
+    let part = zstd::stream::decode_all(&part[..]).unwrap();
+    let mut longer = part.clone();
+    longer.extend(vec![7u8; 1 << 20]);
+    let mut frame = zstd::bulk::Compressor::new(3).unwrap();
+    frame.include_contentsize(false).unwrap();
+    let mut frame = frame.compress(&longer).unwrap();
+    // A frame header without a size: magic, a descriptor with the single-segment bit clear, a
+    // window byte. Insert a size field of 4 bytes with the size of the part.
+    assert_eq!(frame[4] & 0xC0, 0);
+    frame[4] |= 0x80;
+    let size = (item.bytes as u32).to_le_bytes();
+    frame.splice(6..6, size);
+    let lying = scratch.0.join("lying");
+    fs::create_dir(&lying).unwrap();
+    for entry in fs::read_dir(&output).unwrap() {
+        let entry = entry.unwrap();
+        fs::copy(entry.path(), lying.join(entry.file_name())).unwrap();
+    }
+    let object: String = item.object.iter().map(|b| format!("{b:02x}")).collect();
+    fs::write(lying.join(&object), &frame).unwrap();
+    let fresh = scratch.0.join("fresh");
+    let error = install::install(&fresh, (&directory_bytes, &info), (None, None), 1, fetch(&lying)).unwrap_err();
+    assert!(matches!(&error, install::Error::Object { object: o, .. } if *o == object), "{error}");
+    let leftover = fresh.join("cells").join(format!("{}.part", item.name));
+    assert!(fs::metadata(&leftover).unwrap().len() <= u64::from(item.bytes));
+    install::install(&fresh, (&directory_bytes, &info), (None, None), 1, fetch(&output)).unwrap();
+    assert!(!leftover.exists());
 
     // One changed byte in an installed file.
     install::install(&target, (&directory_bytes, &info), (None, None), 2, fetch(&output)).unwrap();
@@ -473,4 +545,20 @@ fn the_bytes_do_not_depend_on_the_threads() {
         })
         .collect();
     assert_eq!(packages[0], packages[1]);
+}
+
+#[test]
+fn a_download_level_above_the_levels_takes_the_top_level() {
+    let bake = bake();
+    let scratch = Scratch::new("clamp");
+    let output = scratch.0.join("out");
+    package(&bake, 8, &output);
+    let (directory_bytes, info) = read(&output);
+    let directory = Directory::new(&directory_bytes).unwrap();
+    let levels = bake.graph.cells.levels();
+    assert_eq!(usize::from(directory.header.download_level), levels);
+    assert_eq!(directory.downloads(), directory.len(), "no upper cell");
+    assert_eq!(directory.len(), bake.graph.cells.counts.values()[levels - 1] as usize);
+    let info: serde_json::Value = serde_json::from_slice(&info).unwrap();
+    assert_eq!(info["download_level"].as_u64(), Some(levels as u64));
 }

@@ -5,8 +5,8 @@ use crate::base::Topology;
 use crate::partition::Cells;
 use crate::{Costs, Graph};
 use planner_router::cells::{
-    self as format, align, class_entry, encode_road, encode_set, width, Cell, GeometryCell, GroupCell, Header, Level1,
-    Part, Reference, Upper, GEOMETRY_RECORD, LONG_ROAD_M, PART_HEADER, TOPOLOGY_RECORD, UPPER_RECORD,
+    self as format, align, class_entry, encode_group_cell, encode_road, encode_set, width, Cell, GeometryCell, Header,
+    Level1, Part, Reference, Upper, GEOMETRY_RECORD, LONG_ROAD_M, PART_HEADER, TOPOLOGY_RECORD, UPPER_RECORD,
 };
 use planner_router::model::{Point, Road};
 use rayon::prelude::*;
@@ -166,18 +166,8 @@ struct Tree<'a> {
 }
 
 impl Tree<'_> {
-    /// The bits of a cell ID below `level`.
-    fn below(&self, level: usize) -> u32 {
-        let bits: u32 = self.cells.widths.values()[..level - 1].iter().map(|&w| u32::from(w)).sum();
-        if bits >= 32 {
-            u32::MAX
-        } else {
-            (1 << bits) - 1
-        }
-    }
-
     fn id(&self, level: usize, cell: usize) -> u32 {
-        self.ids[self.firsts[level - 1][cell] as usize] & !self.below(level)
+        self.ids[self.firsts[level - 1][cell] as usize] & !format::below(self.cells.widths.values(), level)
     }
 
     /// The level-1 cells of cell `cell` of `level`.
@@ -370,7 +360,7 @@ fn download(input: &Input, tree: &Tree, groups: &[Vec<usize>], d: usize) -> Resu
         let index: HashMap<Vec<u8>, u32> = distinct.iter().cloned().zip(0..).collect();
         let mut part = vec![0; PART_HEADER + format::group_record(profiles) * l1s.len()];
         let mut cells = Vec::new();
-        for (l1, (topo, arcs)) in l1s.clone().zip(records.iter().zip(&arcs)) {
+        for (l1, arcs) in l1s.clone().zip(&arcs) {
             let range = tree.roads(l1);
             let finite = |value: u32| (value != u32::MAX).then_some(value);
             let turns = costs.turns(group[0]);
@@ -381,27 +371,24 @@ fn download(input: &Input, tree: &Tree, groups: &[Vec<usize>], d: usize) -> Resu
                     index[&key]
                 })
                 .collect();
-            let cell = GroupCell {
-                block: 0,
-                turn_width: width(arcs.iter().filter_map(|&arc| finite(turns[arc as usize])).max()),
-                class_width: width(classes.iter().copied().max()),
-                cost_widths: group
-                    .iter()
-                    .map(|&p| width(range.clone().filter_map(|road| finite(costs.total(p, road))).max()))
-                    .collect(),
-            };
+            let turn_width = width(arcs.iter().filter_map(|&arc| finite(turns[arc as usize])).max());
+            let class_width = width(classes.iter().copied().max());
+            let cost_widths: Vec<u8> = group
+                .iter()
+                .map(|&p| width(range.clone().filter_map(|road| finite(costs.total(p, road))).max()))
+                .collect();
             pad(&mut part, 4);
             let block = part.len();
             let all_ones = |w| format::all_ones(w);
             for &arc in arcs {
-                put(&mut part, finite(turns[arc as usize]).unwrap_or(all_ones(cell.turn_width)), cell.turn_width);
+                put(&mut part, finite(turns[arc as usize]).unwrap_or(all_ones(turn_width)), turn_width);
             }
             stats.column("group", "turns", part.len() - block);
-            pad(&mut part, cell.class_width.into());
+            pad(&mut part, class_width.into());
             let at = part.len();
-            classes.iter().for_each(|&class| put(&mut part, class, cell.class_width));
+            classes.iter().for_each(|&class| put(&mut part, class, class_width));
             stats.column("group", "classes", part.len() - at);
-            for (&p, &w) in group.iter().zip(&cell.cost_widths) {
+            for (&p, &w) in group.iter().zip(&cost_widths) {
                 pad(&mut part, w.into());
                 let at = part.len();
                 range.clone().for_each(|road| put(&mut part, finite(costs.total(p, road)).unwrap_or(all_ones(w)), w));
@@ -415,8 +402,7 @@ fn download(input: &Input, tree: &Tree, groups: &[Vec<usize>], d: usize) -> Resu
                 }
                 stats.column("group", "allowed", part.len() - at);
             }
-            debug_assert_eq!(part.len() - block, format::GroupBlock::new(topo.roads, topo.turns, &cell).end);
-            cells.push(GroupCell { block: offset(block)?, ..cell });
+            cells.push((offset(block)?, turn_width, class_width, cost_widths));
         }
         pad(&mut part, 8);
         let classes_at = part.len();
@@ -435,7 +421,9 @@ fn download(input: &Input, tree: &Tree, groups: &[Vec<usize>], d: usize) -> Resu
         let fields =
             [l1s.len() as u32, inside.len() as u32, profiles as u32, distinct.len() as u32, offset(classes_at)?];
         fields.iter().chain([&offset(slots_at)?]).for_each(|value| header.extend(value.to_le_bytes()));
-        cells.iter().for_each(|cell| cell.encode(&mut header));
+        cells
+            .iter()
+            .for_each(|(block, turns, classes, costs)| encode_group_cell(*block, *turns, *classes, costs, &mut header));
         part[..header.len()].copy_from_slice(&header);
         stats.column("group", "records", header.len());
         parts.push(part);
@@ -559,9 +547,12 @@ fn publish(
     Ok(Part { object: name, object_bytes: offset(object.len())?, sha256: Sha256::digest(part).into(), bytes })
 }
 
-/// The first error of `results` in their order, or their values.
-fn in_order<T>(results: Vec<Result<T, String>>) -> Result<Vec<T>, String> {
-    results.into_iter().collect()
+/// A download level of the setting: 1 to 8.
+pub fn download_level(level: u64) -> Result<u8, String> {
+    u8::try_from(level)
+        .ok()
+        .filter(|level| (1..=format::MAX_LEVELS as u8).contains(level))
+        .ok_or(format!("`download_level` is {level}; it needs 1 to {}", format::MAX_LEVELS))
 }
 
 /// Writes the objects, `package.json` and `directory.bin` of the package of `input` into the
@@ -569,9 +560,7 @@ fn in_order<T>(results: Vec<Result<T, String>>) -> Result<Vec<T>, String> {
 pub fn write(input: &Input, output: &Path) -> Result<Summary, String> {
     let (graph, cells) = (input.graph, &input.graph.cells);
     let levels = cells.levels();
-    if !(1..=format::MAX_LEVELS as u8).contains(&input.download_level) {
-        return Err(format!("`download_level` is {}; it needs 1 to {}", input.download_level, format::MAX_LEVELS));
-    }
+    download_level(input.download_level.into())?;
     if input.sizes.len() < levels {
         return Err(format!("`cell_sizes` has {} values; the partition has {levels} levels", input.sizes.len()));
     }
@@ -638,7 +627,7 @@ pub fn write(input: &Input, output: &Path) -> Result<Summary, String> {
             },
         )
         .collect();
-    let built = in_order(built)?;
+    let built = crate::cost::in_order(built)?;
     let level1_bounds: Vec<Bounds> = built.iter().flat_map(|(_, bounds, _)| bounds.iter().copied()).collect();
     let mut summary = Summary::default();
     let mut records = Vec::new();
@@ -680,7 +669,7 @@ pub fn write(input: &Input, output: &Path) -> Result<Summary, String> {
             },
         )
         .collect();
-    for (cell, stats) in in_order(built)? {
+    for (cell, stats) in crate::cost::in_order(built)? {
         summary.add(stats);
         records.push(cell);
     }

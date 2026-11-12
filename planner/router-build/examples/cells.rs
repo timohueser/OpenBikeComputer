@@ -117,7 +117,8 @@ fn install(out: &Path, target: &Path, threads: usize) -> Result<(), String> {
         let report = measured(&format!("{name}, {threads} workers"), || match run {
             true => install::install(target, (&directory, &info), (None, None), threads, fetch),
             false => install::check(&directory, &info, threads, fetch),
-        })?;
+        })
+        .map_err(|e| e.to_string())?;
         let rate = report.bytes as f64 / started.elapsed().as_secs_f64() / threads as f64 / 1e6;
         println!("{name}: {report:?}; {rate:.0} MB/s of parts for each worker");
     }

@@ -50,13 +50,9 @@ fn cell_sizes(options: &Value) -> Result<Vec<u32>, String> {
     Ok(sizes)
 }
 
-/// The option `download_level`: the level of the download cells of format 10, 1 to 8.
+/// The option `download_level`: the level of the download cells of format 10.
 fn download_level(options: &Value) -> Result<u8, String> {
-    let level = options["download_level"].as_u64().ok_or("option `download_level` is not a number")?;
-    u8::try_from(level)
-        .ok()
-        .filter(|level| (1..=crate::partition::MAX_LEVELS as u8).contains(level))
-        .ok_or(format!("option `download_level` is {level}; it needs 1 to {}", crate::partition::MAX_LEVELS))
+    crate::cells::download_level(options["download_level"].as_u64().ok_or("option `download_level` is not a number")?)
 }
 
 /// Starts the memory guard, and reads the page budget first, so that a bad value fails before the
@@ -332,12 +328,13 @@ pub fn cells_step(request: &Request) -> Result<(), String> {
     const STEP: &str = "planner/routing";
     let files = request.layers.get(STEP).ok_or("the step reads no planner/routing")?;
     let records = request.layer_files.get(STEP).ok_or("the request gives no receipts of planner/routing")?;
+    let records: std::collections::HashMap<&str, _> = records.iter().map(|file| (file.path.as_str(), file)).collect();
     let objects = request.output.join("objects");
     fs::create_dir_all(&objects).map_err(|e| format!("{}: {e}", objects.display()))?;
     let mut index = serde_json::Map::new();
     for (path, source) in files {
         let Some(name) = path.strip_prefix("cells/") else { continue };
-        let record = records.iter().find(|file| &file.path == path).ok_or(format!("no receipt of {path}"))?;
+        let record = records.get(path.as_str()).ok_or(format!("no receipt of {path}"))?;
         let logical = match name {
             crate::cells::PACKAGE | crate::cells::DIRECTORY => format!("routing/{name}"),
             object if object == record.sha256 => format!("routing/objects/{object}"),

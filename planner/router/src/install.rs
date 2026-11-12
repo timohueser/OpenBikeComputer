@@ -10,7 +10,7 @@ use crate::cells::{self, Directory};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -21,6 +21,35 @@ pub const MARKER: &str = "install.bin";
 pub const CELLS: &str = "cells";
 /// The read buffer of an object and the write buffer of a part.
 const BUFFER: usize = 256 * 1024;
+/// The largest zstd window of an object.
+const WINDOW: u64 = 8 << 20;
+
+/// Why an install or a check failed. Each case asks the caller for another action.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    /// Another install holds the lock of the folder: try again later.
+    #[error("another install holds {0}")]
+    Locked(PathBuf),
+    /// A published object is missing, damaged or of another package: fetch it again.
+    #[error("object {object}: {reason}")]
+    Object { object: String, reason: String },
+    /// A file of the folder could not be read or written, for example on a full disk.
+    #[error("{path}: {error}")]
+    Io { path: PathBuf, error: io::Error },
+    /// The directory, `package.json`, the selection or the folder does not fit the package.
+    #[error("{0}")]
+    Invalid(String),
+}
+
+pub type Result<T> = std::result::Result<T, Error>;
+
+fn invalid(error: impl std::fmt::Display) -> Error {
+    Error::Invalid(error.to_string())
+}
+
+fn io(path: &Path) -> impl Fn(io::Error) -> Error + '_ {
+    move |error| Error::Io { path: path.to_path_buf(), error }
+}
 
 /// One file of an install.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,6 +63,12 @@ pub struct Item {
     pub object_bytes: u32,
     pub sha256: [u8; 32],
     pub bytes: u32,
+}
+
+impl Item {
+    fn wrong(&self, reason: impl std::fmt::Display) -> Error {
+        Error::Object { object: hex(&self.object), reason: reason.to_string() }
+    }
 }
 
 /// The files of an install: the cells, the groups and a file for each part.
@@ -86,27 +121,26 @@ fn name(cell: &cells::Cell, part: usize) -> String {
 }
 
 /// The group of each profile of `package.json`, by name.
-fn groups(info: &[u8]) -> Result<BTreeMap<String, u32>, String> {
-    let info: serde_json::Value = serde_json::from_slice(info).map_err(|e| format!("package.json: {e}"))?;
-    let profiles = info["profiles"].as_array().ok_or("package.json lists no profiles")?;
+fn groups(info: &[u8]) -> Result<BTreeMap<String, u32>> {
+    let info: serde_json::Value = serde_json::from_slice(info).map_err(|e| invalid(format!("package.json: {e}")))?;
+    let profiles = info["profiles"].as_array().ok_or_else(|| invalid("package.json lists no profiles"))?;
     profiles
         .iter()
         .map(|entry| {
             let group = entry["group"].as_u64().filter(|&g| g < cells::MAX_GROUPS as u64);
-            let name = entry["profile"]["name"].as_str();
-            match (name, group) {
+            match (entry["profile"]["name"].as_str(), group) {
                 (Some(name), Some(group)) => Ok((name.to_string(), group as u32)),
-                _ => Err("package.json has a bad profile entry".to_string()),
+                _ => Err(invalid("package.json has a bad profile entry")),
             }
         })
         .collect()
 }
 
 /// The files of the cells `records` with the parts of the groups of `mask`.
-fn items(directory: &Directory, records: &[u32], mask: u32) -> Result<Vec<Item>, String> {
+fn items(directory: &Directory, records: &[u32], mask: u32) -> Result<Vec<Item>> {
     let mut items = Vec::new();
     for &record in records {
-        let cell = directory.cell(record as usize).map_err(|e| e.to_string())?;
+        let cell = directory.cell(record as usize).map_err(invalid)?;
         for (part, entry) in cell.parts.iter().enumerate() {
             let group = part.checked_sub(2).map(|g| mask >> g & 1 != 0);
             if entry.absent() || group == Some(false) {
@@ -129,15 +163,18 @@ fn items(directory: &Directory, records: &[u32], mask: u32) -> Result<Vec<Item>,
 /// The plan of an install of the download cells with the IDs `cells`, or all, with the groups of
 /// `profiles`, or all, of the package of `directory` and `info` (`package.json`). It adds each
 /// upper cell whose download cells are all in the install.
-pub fn plan(directory: &[u8], info: &[u8], cells: Option<&[u32]>, profiles: Option<&[String]>) -> Result<Plan, String> {
-    let directory = Directory::new(directory).map_err(|e| e.to_string())?;
+pub fn plan(directory: &[u8], info: &[u8], cells: Option<&[u32]>, profiles: Option<&[String]>) -> Result<Plan> {
+    let directory = Directory::new(directory).map_err(invalid)?;
     let header = directory.header;
     let groups = groups(info)?;
     let all = if header.groups == 32 { u32::MAX } else { (1u32 << header.groups) - 1 };
     let mask = match profiles {
         None => all,
         Some(names) => names.iter().try_fold(0, |mask, name| {
-            groups.get(name).map(|&g| mask | 1 << g).ok_or(format!("the package has no profile {name}"))
+            groups
+                .get(name)
+                .map(|&g| mask | 1 << g)
+                .ok_or_else(|| invalid(format!("the package has no profile {name}")))
         })?,
     };
     let downloads = directory.downloads();
@@ -145,11 +182,11 @@ pub fn plan(directory: &[u8], info: &[u8], cells: Option<&[u32]>, profiles: Opti
         None => (0..downloads as u32).collect(),
         Some(ids) => ids
             .iter()
-            .map(|&id| match directory.find(header.download_level, id).map_err(|e| e.to_string())? {
-                Some(record) if directory.cell(record).map_err(|e| e.to_string())?.id == id => Ok(record as u32),
-                _ => Err(format!("the package has no download cell {id:08x}")),
+            .map(|&id| match directory.find(header.download_level, id).map_err(invalid)? {
+                Some(record) if directory.cell(record).map_err(invalid)?.id == id => Ok(record as u32),
+                _ => Err(invalid(format!("the package has no download cell {id:08x}"))),
             })
-            .collect::<Result<_, String>>()?,
+            .collect::<Result<_>>()?,
     };
     records.sort_unstable();
     records.dedup();
@@ -157,7 +194,7 @@ pub fn plan(directory: &[u8], info: &[u8], cells: Option<&[u32]>, profiles: Opti
     let mut below: BTreeMap<(u8, u32), (u32, u32)> = BTreeMap::new();
     let mut chosen = records.iter().peekable();
     for record in 0..downloads as u32 {
-        let id = directory.cell(record as usize).map_err(|e| e.to_string())?.id;
+        let id = directory.cell(record as usize).map_err(invalid)?.id;
         let selected = chosen.next_if(|&&r| r == record).is_some();
         for level in header.download_level + 1..=header.levels {
             let count = below.entry((level, id & !directory.below(level))).or_default();
@@ -167,9 +204,10 @@ pub fn plan(directory: &[u8], info: &[u8], cells: Option<&[u32]>, profiles: Opti
     }
     for ((level, id), (all, selected)) in below {
         if all == selected {
-            if let Some(record) = directory.find(level, id).map_err(|e| e.to_string())? {
-                records.push(record as u32);
-            }
+            let record = directory.find(level, id).map_err(invalid)?;
+            let record =
+                record.ok_or_else(|| invalid(format!("the directory has no cell {id:08x} of level {level}")))?;
+            records.push(record as u32);
         }
     }
     let files = items(&directory, &records, mask)?;
@@ -204,49 +242,82 @@ fn drop_cache(file: &File) {
     let _ = file;
 }
 
+/// The window, the content size and the dictionary flag of the zstd frame header at the start of
+/// `bytes`, or `None` for bytes that do not start with one.
+fn frame_header(bytes: &[u8]) -> Option<(u64, Option<u64>, bool)> {
+    if bytes.get(..4)? != [0x28, 0xB5, 0x2F, 0xFD] {
+        return None;
+    }
+    let descriptor = *bytes.get(4)?;
+    let single = descriptor >> 5 & 1 == 1;
+    let mut at = 5;
+    let mut window = 0;
+    if !single {
+        let byte = *bytes.get(5)?;
+        let base = 1u64 << (10 + (byte >> 3));
+        window = base + base / 8 * u64::from(byte & 7);
+        at += 1;
+    }
+    at += [0, 1, 2, 4][usize::from(descriptor & 3)];
+    let size = match descriptor >> 6 {
+        0 if !single => None,
+        flag => {
+            let width = [1, 2, 4, 8][usize::from(flag)];
+            let field = bytes.get(at..at + width)?;
+            let value = field.iter().rev().fold(0u64, |value, &byte| value << 8 | u64::from(byte));
+            Some(if width == 2 { value + 256 } else { value })
+        }
+    };
+    Some((if single { size? } else { window }, size, descriptor & 3 != 0))
+}
+
 /// Decompresses the object of `item` from `object` into `out`, and fails unless the object and the
-/// part have their hashes and sizes. `buffer` holds the part bytes between the reads and writes.
+/// part have their hashes and sizes. Before it decodes, it requires the content size of the part
+/// and a window of at most 8 MiB. `buffer` holds the part bytes between the reads and writes.
 fn stream(
     item: &Item,
     object: &File,
     decoder: &mut ruzstd::decoding::FrameDecoder,
     buffer: &mut [u8],
-    mut out: impl FnMut(&[u8]) -> io::Result<()>,
-) -> Result<(), String> {
-    let wrong = |why: &str| format!("object {}: {why}", hex(&item.object));
+    mut out: impl FnMut(&[u8]) -> Result<()>,
+) -> Result<()> {
     let mut source = Hashing { inner: io::BufReader::with_capacity(BUFFER, object), hash: Sha256::new(), bytes: 0 };
+    match frame_header(source.inner.fill_buf().map_err(|e| item.wrong(e))?) {
+        Some((window, Some(size), false)) if window <= WINDOW && size == u64::from(item.bytes) => {}
+        _ => return Err(item.wrong("not one zstd frame of its part with a window of at most 8 MiB")),
+    }
     let mut part = (Sha256::new(), 0u64);
     {
         let mut frame = ruzstd::decoding::StreamingDecoder::new_with_decoder(&mut source, &mut *decoder)
-            .map_err(|e| wrong(&format!("not a zstd frame: {e}")))?;
+            .map_err(|e| item.wrong(format!("not a zstd frame: {e}")))?;
         loop {
-            let read = frame.read(buffer).map_err(|e| wrong(&format!("bad zstd data: {e}")))?;
+            let read = frame.read(buffer).map_err(|e| item.wrong(format!("bad zstd data: {e}")))?;
             if read == 0 {
                 break;
             }
             part.1 += read as u64;
             if part.1 > u64::from(item.bytes) {
-                return Err(wrong("it holds more bytes than its part"));
+                return Err(item.wrong("it holds more bytes than its part"));
             }
             part.0.update(&buffer[..read]);
-            out(&buffer[..read]).map_err(|e| format!("{}: {e}", item.name))?;
+            out(&buffer[..read])?;
         }
     }
-    io::copy(&mut source, &mut io::sink()).map_err(|e| wrong(&e.to_string()))?;
+    io::copy(&mut source, &mut io::sink()).map_err(|e| item.wrong(e))?;
     if <[u8; 32]>::from(source.hash.finalize()) != item.object || source.bytes != u64::from(item.object_bytes) {
-        return Err(wrong("its bytes differ from the directory"));
+        return Err(item.wrong("its bytes differ from the directory"));
     }
     if <[u8; 32]>::from(part.0.finalize()) != item.sha256 || part.1 != u64::from(item.bytes) {
-        return Err(wrong("its part differs from the directory"));
+        return Err(item.wrong("its part differs from the directory"));
     }
     Ok(())
 }
 
 /// Runs `work` on each item on `threads` workers, each with its own decoder and buffer. Returns the
 /// error of the first item in plan order that failed; the workers stop at the first error.
-fn each<F>(items: &[Item], threads: usize, work: F) -> Result<(), String>
+fn each<F>(items: &[Item], threads: usize, work: F) -> Result<()>
 where
-    F: Fn(&Item, &mut ruzstd::decoding::FrameDecoder, &mut [u8]) -> Result<(), String> + Sync,
+    F: Fn(&Item, &mut ruzstd::decoding::FrameDecoder, &mut [u8]) -> Result<()> + Sync,
 {
     let (next, stop, errors) = (AtomicUsize::new(0), AtomicBool::new(false), Mutex::new(Vec::new()));
     std::thread::scope(|scope| {
@@ -266,15 +337,11 @@ where
         }
     });
     let errors = errors.into_inner().unwrap_or_else(|e| e.into_inner());
-    errors.into_iter().min().map_or(Ok(()), |(_, error)| Err(error))
-}
-
-fn io(path: &Path) -> impl Fn(io::Error) -> String + '_ {
-    move |e| format!("{}: {e}", path.display())
+    errors.into_iter().min_by_key(|(index, _)| *index).map_or(Ok(()), |(_, error)| Err(error))
 }
 
 /// Writes `bytes` to `path` through a temporary file, a sync and a rename.
-fn replace(path: &Path, bytes: &[u8]) -> Result<(), String> {
+fn replace(path: &Path, bytes: &[u8]) -> Result<()> {
     let temporary = path.with_extension("tmp");
     let mut file = File::create(&temporary).map_err(io(&temporary))?;
     file.write_all(bytes).and_then(|_| file.sync_all()).map_err(io(&temporary))?;
@@ -282,25 +349,29 @@ fn replace(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 /// Keeps a file with the same bytes; writes a missing one. Fails on a file with other bytes.
-fn keep(path: &Path, bytes: &[u8]) -> Result<(), String> {
+fn keep(path: &Path, bytes: &[u8]) -> Result<()> {
     match fs::read(path) {
         Ok(found) if found == bytes => Ok(()),
-        Ok(_) => Err(format!("{} holds another package", path.display())),
+        Ok(_) => Err(invalid(format!("{} holds another package", path.display()))),
         Err(e) if e.kind() == io::ErrorKind::NotFound => replace(path, bytes),
         Err(e) => Err(io(path)(e)),
     }
 }
 
-fn sync(path: &Path) -> Result<(), String> {
+fn sync(path: &Path) -> Result<()> {
     File::open(path).and_then(|dir| dir.sync_all()).map_err(io(path))
 }
 
-fn check_info(directory: &[u8], info: &[u8]) -> Result<(), String> {
-    let header = Directory::new(directory).map_err(|e| e.to_string())?.header;
+fn check_info(directory: &[u8], info: &[u8]) -> Result<()> {
+    let header = Directory::new(directory).map_err(invalid)?.header;
     if <[u8; 32]>::from(Sha256::digest(info)) != header.info {
-        return Err("package.json is not that of the directory".into());
+        return Err(invalid("package.json is not that of the directory"));
     }
     Ok(())
+}
+
+fn open<F: Fn(&str) -> io::Result<File>>(fetch: &F, item: &Item) -> Result<File> {
+    fetch(&hex(&item.object)).map_err(|e| item.wrong(e))
 }
 
 /// Installs the download cells `cells`, or all, with the groups of `profiles`, or all, of the
@@ -312,7 +383,7 @@ pub fn install<F>(
     (cells, profiles): (Option<&[u32]>, Option<&[String]>),
     threads: usize,
     fetch: F,
-) -> Result<Report, String>
+) -> Result<Report>
 where
     F: Fn(&str) -> io::Result<File> + Sync,
 {
@@ -320,7 +391,11 @@ where
     let lock_path = target.join(LOCK);
     let lock =
         fs::OpenOptions::new().create(true).truncate(false).write(true).open(&lock_path).map_err(io(&lock_path))?;
-    lock.try_lock().map_err(|_| format!("another install holds {}", lock_path.display()))?;
+    match lock.try_lock() {
+        Ok(()) => {}
+        Err(fs::TryLockError::WouldBlock) => return Err(Error::Locked(lock_path)),
+        Err(fs::TryLockError::Error(error)) => return Err(io(&lock_path)(error)),
+    }
     check_info(directory, info)?;
     let plan = plan(directory, info, cells, profiles)?;
     keep(&target.join("directory.bin"), directory)?;
@@ -335,10 +410,10 @@ where
     }
     let missing = plan.missing(target);
     each(&missing.files, threads, |item, decoder, buffer| {
-        let object = fetch(&hex(&item.object)).map_err(|e| format!("object {}: {e}", hex(&item.object)))?;
+        let object = open(&fetch, item)?;
         let (part, path) = (dir.join(format!("{}.part", item.name)), dir.join(&item.name));
         let mut file = File::create(&part).map_err(io(&part))?;
-        stream(item, &object, decoder, buffer, |bytes| file.write_all(bytes))?;
+        stream(item, &object, decoder, buffer, |bytes| file.write_all(bytes).map_err(io(&part)))?;
         file.sync_all().map_err(io(&part))?;
         drop_cache(&file);
         drop_cache(&object);
@@ -373,14 +448,14 @@ where
 }
 
 /// Checks each object of the package of `directory` and `info` as `install` does, without a file.
-pub fn check<F>(directory: &[u8], info: &[u8], threads: usize, fetch: F) -> Result<Report, String>
+pub fn check<F>(directory: &[u8], info: &[u8], threads: usize, fetch: F) -> Result<Report>
 where
     F: Fn(&str) -> io::Result<File> + Sync,
 {
     check_info(directory, info)?;
     let plan = plan(directory, info, None, None)?;
     each(&plan.files, threads, |item, decoder, buffer| {
-        let object = fetch(&hex(&item.object)).map_err(|e| format!("object {}: {e}", hex(&item.object)))?;
+        let object = open(&fetch, item)?;
         stream(item, &object, decoder, buffer, |_| Ok(()))?;
         drop_cache(&object);
         Ok(())
@@ -395,27 +470,28 @@ where
 
 /// The installed cells and groups that `install.bin` of `target` names, when it names the
 /// directory of `target`.
-pub fn installed(target: &Path) -> Result<(Vec<u8>, Plan), String> {
-    let directory = fs::read(target.join("directory.bin")).map_err(io(target))?;
-    let marker = fs::read(target.join(MARKER)).map_err(io(target))?;
+pub fn installed(target: &Path) -> Result<(Vec<u8>, Plan)> {
+    let read = |name: &str| fs::read(target.join(name)).map_err(io(target));
+    let (directory, marker) = (read("directory.bin")?, read(MARKER)?);
     let field = |at: usize| marker.get(at..at + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
-    let count = field(44).ok_or("install.bin is short")? as usize;
-    if marker.len() != 48 + 4 * count || marker[..8] != MAGIC || marker[8..40] != Sha256::digest(&directory)[..] {
-        return Err("install.bin does not name the directory".into());
+    let count = field(44).ok_or_else(|| invalid("install.bin is short"))? as u64;
+    if marker.len() as u64 != 48 + 4 * count || marker[..8] != MAGIC || marker[8..40] != Sha256::digest(&directory)[..]
+    {
+        return Err(invalid("install.bin does not name the directory"));
     }
     let groups = field(40).unwrap();
-    let records: Vec<u32> = (0..count).map(|k| field(48 + 4 * k).unwrap()).collect();
-    let files = items(&Directory::new(&directory).map_err(|e| e.to_string())?, &records, groups)?;
+    let records: Vec<u32> = (0..count as usize).map(|k| field(48 + 4 * k).unwrap()).collect();
+    let files = items(&Directory::new(&directory).map_err(invalid)?, &records, groups)?;
     Ok((directory, Plan { groups, records, files }))
 }
 
 /// Reads each installed file of `target` again. Returns the names of the files whose SHA-256 or
 /// size differs from the directory, or that are missing.
-pub fn scrub(target: &Path) -> Result<Vec<String>, String> {
+pub fn scrub(target: &Path) -> Result<Vec<String>> {
     let (_, plan) = installed(target)?;
     let mut differ = Vec::new();
     for item in &plan.files {
-        let path: PathBuf = target.join(CELLS).join(&item.name);
+        let path = target.join(CELLS).join(&item.name);
         let same = File::open(&path).and_then(|file| {
             let mut source =
                 Hashing { inner: io::BufReader::with_capacity(BUFFER, &file), hash: Sha256::new(), bytes: 0 };
