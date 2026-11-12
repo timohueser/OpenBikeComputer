@@ -64,7 +64,7 @@ A pulled cable stops the sync. The library stores a ride only after its whole do
 
 ## Device page
 
-The page `#/device` ([`Device.svelte`](../../builder/web/src/pages/Device.svelte)) shows the remembered device and the device sync. It does not run a step of the sync itself. It opens the one device session of the tab (`deviceHolder`), and the sync uses the same session, so the tab has one link to the device. The session loads the shared core, because the client of the device runs in it. The first state that applies shows:
+The page `#/device` ([`Device.svelte`](../../builder/web/src/pages/Device.svelte)) shows the remembered device and the device sync. It does not run a step of the sync itself. It opens the one device session of the tab (`deviceHolder`), and the sync uses the same session, so the tab has one link to the device. The first state that applies shows:
 
 | State | When | The page shows |
 | --- | --- | --- |
@@ -73,7 +73,7 @@ The page `#/device` ([`Device.svelte`](../../builder/web/src/pages/Device.svelte
 | Before | A device is remembered. | The date of the last sync, "Connect it again", the routes that wait and leave, and what was on the device. |
 | Never | No device is remembered. | "Connect a device", and a note that the product works with no device. |
 
-A Connect button calls `requestDevice()` in the click, and remembers the device when it is `ready`. A device that the session adopted with no click is remembered as it is, because a second chooser would open a second link to it. An error of the session shows under the button.
+A Connect button calls `requestDevice()` in the click, and remembers the device when it is `ready`. When another device is `ready` on the cable, the button names it and remembers it with no chooser, because a second chooser would open a second link to it. A device whose card has no format cannot be remembered; the page sends the rider to the map builder. "Disconnect" frees the device for another page; the sync takes it again at its next `ready`. An error of the session shows under the button, and the error of a device that another page holds is one plain sentence.
 
 The drawing ([`Drawing.svelte`](../../builder/web/src/pages/device/Drawing.svelte)) shows a sample map in the catalog skins `default` (Day) and `dusk` (Night), with `openLiveSkinPreview` of map style, on a square screen of 240 × 240 pixels. It loads only in the state Connected. The top bar shows a chip with the name of the remembered device, with a filled dot while it is connected.
 
