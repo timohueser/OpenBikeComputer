@@ -27,10 +27,11 @@ export interface Readers {
 export type Item = File | FileSystemEntry;
 
 /** One file that was read. `name` is the name of the record, or else the name of the file. `open` reads the file
- * again: a ride gives its source file, a route its track. */
+ * again: a ride gives its source file, a route its track. A GPX file with times can be a ride or a route, as a planned
+ * tour of Komoot has times too: each of its two forms holds the other in `other`. */
 export type Found = { file: string; name: string } & (
-    | { kind: 'ride'; ride: RideRecord; open: () => Promise<Blob> }
-    | { kind: 'route'; id: string; lengthM: number; bike: Bike; open: () => Promise<Track> }
+    | { kind: 'ride'; ride: RideRecord; open: () => Promise<Blob>; other?: Found }
+    | { kind: 'route'; id: string; lengthM: number; bike: Bike; open: () => Promise<Track>; other?: Found }
     | { kind: 'known' }
     | { kind: 'unreadable'; reason: string });
 
@@ -172,8 +173,9 @@ async function lineId(line: number[]): Promise<string> {
 /**
  * Reads each GPX and FIT file of `items`, also inside folders, ZIP files, a ZIP in a ZIP and `.gz` files, one file at a
  * time, and gives one `Found` for each. Other files are not counted. A GPX file with a time at each point and a FIT
- * activity are rides; another file is a route. A ride is known when its key is stored or deleted, a route when its id
- * is stored, and both when an earlier file of `items` had the same key or id. The names and types of Strava's
+ * activity are rides, except a GPX file whose first time is later than now; another file is a route. A ride is known when
+ * its key is stored or deleted, a route when its id is stored, a timed GPX file when either is, and each when an
+ * earlier file of `items` had the same key or id. The names and types of Strava's
  * `activities.csv` apply to its files.
  */
 export async function* readFiles(items: Item[], library: Library, readers: Readers, signal: AbortSignal): AsyncGenerator<Found> {
@@ -219,20 +221,25 @@ export async function* readFiles(items: Item[], library: Library, readers: Reade
         if (samples.length < 2) { yield { ...found, kind: 'unreadable', reason: reasons.track }; continue; }
         // A route's summary here gives only its line and its length: the planner makes the stored one.
         const summary = rideSummary(samples, bike);
-        if ('samples' in file || timed) {
-            const key = rideKey(summary.start);
+        const key = 'samples' in file || timed ? rideKey(summary.start) : undefined;
+        const id = 'points' in file ? await lineId(summary.line) : undefined;
+        // A timed GPX file is known when either of its forms is stored or came before.
+        const known = (key !== undefined && (seen.has(key) || deleted.has(key) || !!await library.ride(key)))
+            || (id !== undefined && (seen.has(id) || !!await library.item(id)));
+        for (const value of [key, id]) if (value) seen.add(value);
+        if (known) { yield { ...found, kind: 'known' }; continue; }
+        let ride: (Found & { kind: 'ride' }) | undefined, route: (Found & { kind: 'route' }) | undefined;
+        if (key) {
             const title = [strava?.name, 'name' in file ? file.name : fallback].find(usable) ?? dateName(summary.start, bike);
-            const ride: RideRecord = { key, name: title, source: 'file', format: format as 'gpx' | 'fit', summary,
-                maxHr: settings.maxHr?.value ?? null, ftp: settings.ftp?.value ?? null };
-            const known = seen.has(key) || deleted.has(key) || !!await library.ride(key);
-            seen.add(key);
-            yield known ? { ...found, kind: 'known' } : { ...found, name: ride.name, kind: 'ride', ride, open: content };
-        } else {
-            const id = await lineId(summary.line), title = usable(file.name) ? file.name : 'Planned route';
-            const known = seen.has(id) || !!await library.item(id);
-            seen.add(id);
-            yield known ? { ...found, kind: 'known' }
-                : { ...found, name: title, kind: 'route', id, lengthM: summary.lengthM, bike, open: async () => ({ ...await read() as Track, name: title }) };
+            ride = { ...found, name: title, kind: 'ride', open: content, ride: { key, name: title, source: 'file', format: format as 'gpx' | 'fit',
+                summary, maxHr: settings.maxHr?.value ?? null, ftp: settings.ftp?.value ?? null } };
         }
+        if (id) {
+            const title = usable((file as Track).name) ? (file as Track).name : 'Planned route';
+            route = { ...found, name: title, kind: 'route', id, lengthM: summary.lengthM, bike, open: async () => ({ ...await read() as Track, name: title }) };
+        }
+        if (ride && route) { ride.other = route; route.other = ride; }
+        // A timed file that starts later than now is a planned tour.
+        yield route && (!ride || summary.start > Date.now() / 1000) ? route : ride!;
     }
 }

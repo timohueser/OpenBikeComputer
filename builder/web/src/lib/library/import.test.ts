@@ -69,7 +69,7 @@ const file = (name: string, value: unknown) => new File([value instanceof Uint8A
 const gz = (value: unknown) => new Uint8Array(gzipSync(encode(value)));
 
 const evening = file('evening.gpx', { name: 'Evening', points: points(t), waypoints: [], kind: 'mountain_biking' });
-const jura = file('jura.gpx', { name: 'Jura', points: points(), waypoints: [] });
+const jura = file('jura.gpx', { name: 'Jura', points: points(undefined, 2000), waypoints: [] });
 const morning = file('1.fit.gz', gz({ sport: 'bike', samples: samples(t + 3600) }));
 
 /** A dropped folder with `files`, as `FileSystemDirectoryEntry` gives it. */
@@ -191,5 +191,19 @@ describe('readFiles', () => {
         const run = readFiles([folder('rides', [evening], () => controller.abort()), later], new Library(new IDBFactory()), readers, controller.signal);
         await expect(run.next()).rejects.toThrow(/abort/i);
         expect(reads).toBe(0);
+    });
+
+    it('finds a GPX file with times as a ride that can become a route, as a route when it starts later than now, and as known in either form once stored', async () => {
+        const library = new Library(new IDBFactory());
+        const tour = file('tour.gpx', { name: 'Tour', points: points(Date.now() / 1000 + 86400, 3000), waypoints: [] });
+        const [ride, planned] = await collect([evening, tour], library) as [Found & { kind: 'ride' }, Found & { kind: 'route' }];
+        expect([ride.kind, ride.other?.kind, planned.kind, planned.other?.kind]).toEqual(['ride', 'route', 'route', 'ride']);
+        const route = ride.other as Found & { kind: 'route' }, recorded = planned.other as Found & { kind: 'ride' };
+        expect(route).toMatchObject({ name: 'Evening', bike: 'mtb', lengthM: ride.ride.summary.lengthM });
+        expect((await route.open()).points.map(p => p.time)).toEqual(points(t).map(p => p.time));
+        await library.addRoute({ id: route.id, revision: 0, name: route.name, updatedAt: 0, summary: null, trip: {} });
+        await library.addRide(recorded.ride, await recorded.open());
+        expect((await collect([evening, tour], library)).map(found => found.kind)).toEqual(['known', 'known']);
+        await library.close();
     });
 });

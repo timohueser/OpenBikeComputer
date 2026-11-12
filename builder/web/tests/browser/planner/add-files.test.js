@@ -62,6 +62,12 @@ test('adds the rides and the route of files and a ZIP file once, and gives the r
   await open(page);
   await expect(page.locator('dl > div')).toHaveText(['rides2', 'planned routes1', 'are in your library already0', 'not readable1']);
   await expect(page.getByRole('listitem').filter({ hasText: 'old.tcx' })).toContainText('not readable: TCX files cannot be read');
+  // A GPX file with times can also be a planned route.
+  const form = page.getByRole('radiogroup', { name: 'ride: ride or planned route' });
+  await form.getByRole('radio', { name: 'planned route' }).click();
+  await expect(page.locator('dl > div')).toHaveText(['rides1', 'planned routes2', 'are in your library already0', 'not readable1']);
+  await form.getByRole('radio', { name: 'ride', exact: true }).click();
+  await expect(page.locator('dl > div')).toHaveText(['rides2', 'planned routes1', 'are in your library already0', 'not readable1']);
   await page.getByRole('button', { name: 'Add 3 to the library' }).click();
   await expect(page.getByRole('status')).toHaveText('Added 2 rides and 1 planned route.');
   const stored = await page.evaluate(async () => {

@@ -8,6 +8,7 @@
     import type { Library } from '../lib/library/store';
     import { planFromFile } from '../lib/planner/gpx-import';
     import { formatDistance } from '../lib/settings/format';
+    import Segmented from '../lib/ui/Segmented.svelte';
     import Window from '../lib/ui/Window.svelte';
 
     let { library, onClose }: { library: Library; onClose: () => void } = $props();
@@ -111,6 +112,18 @@
         if (!signal.aborted) phase = 'added';
     }
 
+    const FORMS = [{ value: 'ride', label: 'ride' }, { value: 'route', label: 'planned route' }] as const;
+
+    /** A GPX file with times becomes a ride or a planned route, as the rider chooses. */
+    function swap(i: number): void {
+        const file = found[i];
+        if (file.kind !== 'ride' && file.kind !== 'route' || !file.other) return;
+        counts[file.kind]--;
+        counts[file.other.kind as 'ride' | 'route']++;
+        found[i] = file.other;
+        version++;
+    }
+
     const plural = (n: number, one: string, many: string) => `${n.toLocaleString('en')} ${n === 1 ? one : many}`;
 
     function detail(file: Found): string {
@@ -152,11 +165,21 @@
                         <div><dt><i class={kind}></i>{label}</dt><dd>{counts[kind].toLocaleString('en')}</dd></div>
                     {/each}
                 </dl>
-                <p class="rule">A file with times is a ride. A file with no times is a planned route.</p>
+                <p class="rule">A file with times comes in as a ride. You can change it to a planned route.</p>
                 {#if shown.length}
                     <ul class:expanded>
                         {#each shown as file, i (i)}
-                            <li><span class="name" title={file.file}>{file.name}</span><span class="detail" class:unreadable={file.kind === 'unreadable'}>{detail(file)}</span></li>
+                            <li>
+                                <span class="name" title={file.file}>{file.name}</span>
+                                {#if (file.kind === 'ride' || file.kind === 'route') && file.other && (phase === 'reading' || phase === 'read') && !done.has(file)}
+                                    <span class="detail choice">
+                                        <Segmented compact label={`${file.name}: ride or planned route`} options={[...FORMS]} value={file.kind} onChange={() => swap(i)} />
+                                        {formatDistance(file.kind === 'ride' ? file.ride.summary.lengthM : file.lengthM)}
+                                    </span>
+                                {:else}
+                                    <span class="detail" class:unreadable={file.kind === 'unreadable'}>{detail(file)}</span>
+                                {/if}
+                            </li>
                         {/each}
                     </ul>
                     {#if hidden > 0}
@@ -287,6 +310,7 @@
         display: flex;
         justify-content: space-between;
         gap: 12px;
+        align-items: center;
         padding: 7px 0;
         border-top: 1px solid var(--line);
         font-size: 13px;
@@ -300,6 +324,11 @@
         flex: none;
         color: var(--ink-soft);
         font-size: 12px;
+    }
+    .choice {
+        display: flex;
+        align-items: center;
+        gap: 8px;
     }
     .detail.unreadable {
         background: none;
