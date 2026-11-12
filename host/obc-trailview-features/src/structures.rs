@@ -43,8 +43,8 @@ pub(crate) const BORE_RAIL_M: f64 = 6.5;
 const BORE_STEP_M: f64 = 2.0;
 /// Farther than PORTAL_M from its ends, a tunnel that rises FLOAT_M over the terrain lies where the
 /// solver could not put it under the hill: a network of shafts and caverns, or a bore that the
-/// terrain misses. Nearer its ends, the limit is the census gate's GATE_M, so that a tunnel shorter
-/// than twice PORTAL_M is tested too.
+/// terrain misses. A tunnel shorter than twice PORTAL_M has no such sample: it floats where it rises
+/// more than the census gate's GATE_M over the terrain anywhere.
 const FLOAT_M: f64 = 5.0;
 const PORTAL_M: f64 = 20.0;
 
@@ -366,11 +366,12 @@ pub fn shallow(tags: &Tags, points: &[[f64; 2]], z: &[f64], terrain: &dyn Terrai
     })
 }
 
-/// Whether a tunnel rises more than FLOAT_M over the terrain farther than PORTAL_M from its ends, or
-/// more than GATE_M anywhere.
+/// Whether a tunnel rises more than FLOAT_M over the terrain farther than PORTAL_M from its ends, or,
+/// with no sample that far from its ends, more than GATE_M anywhere.
 pub fn floating(points: &[[f64; 2]], z: &[f64], terrain: &dyn Terrain) -> bool {
     cover(points, z, terrain).is_some_and(|(depth, end)| {
-        depth.iter().zip(&end).any(|(&d, &e)| d < if e > PORTAL_M { -FLOAT_M } else { -GATE_M })
+        let short = end.iter().all(|&e| e <= PORTAL_M);
+        depth.iter().zip(&end).any(|(&d, &e)| if short { d < -GATE_M } else { e > PORTAL_M && d < -FLOAT_M })
     })
 }
 
@@ -416,6 +417,12 @@ mod tests {
         let short = [at(0.0, 0.0), at(20.0, 0.0)];
         assert!(!floating(&short, &[500.0, 500.0], &|_, _| 510.0));
         assert!(floating(&short, &[500.0, 600.0], &flat));
+        // Near the portal of a long tunnel the terrain can miss a cliff: a bore over it there stays.
+        let long = [at(0.0, 0.0), at(100.0, 0.0)];
+        let hill = |x: f64, _: f64| if east([x, Y]) > 4.0 { 600.0 } else { 500.0 };
+        for portal in [507.0, 520.0] {
+            assert!(!floating(&long, &[portal, portal], &hill));
+        }
     }
 
     #[test]

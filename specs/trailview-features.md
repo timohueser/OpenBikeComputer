@@ -255,7 +255,8 @@ more than 5 m over the terrain, runs under something that the terrain leaves out
 building: the tiles keep it as a way of its class, with its `tunnel` tag. A tunnel under a road,
 a path or a track stays a tunnel.
 The tiles leave out a part of a tunnel that rises more than 5 m over the terrain anywhere farther
-than 20 m from its ends, or more than 10 m over the terrain anywhere.
+than 20 m from its ends, tested every 2 m. A shorter tunnel part, with no such sample, is left
+out where it rises more than 10 m over the terrain anywhere.
 
 ### Alignment
 
