@@ -7,7 +7,7 @@ import { Library } from '../library/store';
 import { lineKey, summarize } from '../library/summary';
 import { emptyTrip, type DrawnCoordinate, type RoutePoint, type Trip } from '../planner/editor';
 import { newPlan, type Plan } from '../planner/library';
-import type { FlatStoreClient } from '../usb/client';
+import { DeviceError, type FlatStoreClient } from '../usb/client';
 import { flatDevice, streamCeilingFor } from '../usb/flat-device';
 import { encodeRideObject, type RideObject } from '../usb/objects';
 import { ObjectKind } from '../usb/protocol';
@@ -162,11 +162,31 @@ describe('syncDevice', () => {
         await library.removeRoute(deleted.id);
         await library.changeState('waiting', ids => [...ids ?? [], kept.id]);
         const report = await syncDevice(other.rig.client, SERIAL, library, new AbortController().signal);
-        expect(report).toMatchObject({ problem: null, sent: 1, removed: 1 });
+        expect(report).toMatchObject({ problem: null, sent: 1, removed: 0 });
         const [first, second, created] = other.routes();
         expect([first, second]).toMatchObject(phone.map(entry => ({ objectId: entry.objectId, revision: entry.revision })));
         expect([await library.state('sent'), await library.state('leaving')]).toEqual([{ [kept.id]: { device: `${OTHER_CARD}:${created.objectId}`, line: lineKey(kept) } }, []]);
         await other.rig.close();
+    });
+
+    it('sends the routes that wait after the device refuses a ride and a mark', async () => {
+        const { rig, library, sync, routes, send, seedRide } = setup();
+        rememberCard(SERIAL, CARD);
+        seedRide(ride(1_780_000_000));
+        await sync();
+        seedRide(ride(1_780_100_000));
+        vi.spyOn(library, 'persist').mockResolvedValue(true);
+        await send(plan());
+        const client = rig.client, refusing: Parameters<typeof syncDevice>[0] = {
+            list: options => client.list(options), put: (...args) => client.put(...args), remove: (...args) => client.remove(...args),
+            get: (ref, options) => options?.expectedLength ? Promise.reject(new DeviceError('checksum', 'bad ride')) : client.get(ref, options),
+            archiveRide: () => Promise.reject(new DeviceError('busy', 'device busy')),
+        };
+        const report = await sync(refusing);
+        expect(report).toMatchObject({ rides: 0, marked: 0, sent: 1 });
+        expect(report.problem).toMatch(/bad ride.*device busy/);
+        expect(routes()).toHaveLength(1);
+        await rig.close();
     });
 
     it('keeps a route that waits when the routing service cannot be reached, and names it', async () => {

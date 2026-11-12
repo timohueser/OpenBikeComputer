@@ -105,7 +105,7 @@ export async function syncDevice(client: SyncClient, serial: string, library: Li
             }
             await library.changeState('sent', routes => Object.fromEntries(Object.entries(routes ?? {}).filter(([other]) => other !== id)));
             await library.changeState('leaving', ids => (ids ?? []).filter(other => other !== id));
-            report.removed++;
+            if (entry) report.removed++;
         }
 
         const legs = new LegCache();
