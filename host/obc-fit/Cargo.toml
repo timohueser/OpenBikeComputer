@@ -4,13 +4,3 @@ version = "0.1.0"
 edition = "2021"
 publish = false # internal host crate — not published to crates.io
 description = "Reads a FIT ride or course, and writes both, for the web product."
-
-[features]
-external-fixtures = []
-
-[dev-dependencies]
-obc-fixtures = { workspace = true }
-
-[[test]]
-name = "captures"
-required-features = ["external-fixtures"]

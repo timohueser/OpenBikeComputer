@@ -3807,9 +3807,6 @@ dependencies = [
 [[package]]
 name = "obc-fit"
 version = "0.1.0"
-dependencies = [
- "obc-fixtures",
-]
 
 [[package]]
 name = "obc-fixtures"

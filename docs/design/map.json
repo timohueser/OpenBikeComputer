@@ -540,11 +540,10 @@
     "rendering-display"
    ],
    "test_depends_on": [
-    "content",
-    "repository-tooling"
+    "content"
    ],
    "violations": 10,
-   "lines": 26885,
+   "lines": 26906,
    "problems": [
     {
      "rule": "cycle",
@@ -1511,12 +1510,6 @@
    "from": "map-assembly",
    "to": "rendering-display",
    "test": false,
-   "undeclared": false
-  },
-  {
-   "from": "map-assembly",
-   "to": "repository-tooling",
-   "test": true,
    "undeclared": false
   },
   {

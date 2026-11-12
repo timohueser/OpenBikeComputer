@@ -163,12 +163,13 @@ pub fn decode(bytes: &[u8], mut visit: impl FnMut(&Message)) -> Result<(), Error
         at += definition.size;
         let mut message = Message { global: definition.global, time: None, definition, data };
         message.time = match compressed {
-            Some(offset) => last_time.map(|last| {
+            // A time past the end of u32 is dropped.
+            Some(offset) => last_time.and_then(|last| {
                 let time = (last & !0x1F) + offset;
                 if offset < last & 0x1F {
-                    time + 0x20
+                    time.checked_add(0x20)
                 } else {
-                    time
+                    Some(time)
                 }
             }),
             None => message.int(TIMESTAMP).map(|t| t as u32),
@@ -303,6 +304,17 @@ mod tests {
         let mut seen = Vec::new();
         decode(&file(&data), |m| seen.push((m.time, m.int(3)))).unwrap();
         assert_eq!(seen, [(Some(62), Some(100)), (Some(63), Some(101)), (Some(66), Some(102))]);
+    }
+
+    #[test]
+    fn a_compressed_timestamp_past_the_end_of_u32_is_dropped() {
+        let mut data = vec![0x40, 0, 0, 20, 0, 1, 253, 4, 0x86];
+        data.extend([0x41, 0, 0, 20, 0, 1, 3, 1, 2]);
+        data.extend([0x00, 0xFE, 0xFF, 0xFF, 0xFF]);
+        data.extend([0x80 | 1 << 5 | 1, 100]); // offset 1 < 30: the counter wraps past u32
+        let mut seen = Vec::new();
+        decode(&file(&data), |m| seen.push(m.time)).unwrap();
+        assert_eq!(seen, [Some(0xFFFF_FFFE), None]);
     }
 
     #[test]

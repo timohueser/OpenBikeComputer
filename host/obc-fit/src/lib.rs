@@ -194,7 +194,8 @@ pub fn read(bytes: &[u8]) -> Result<File, Error> {
         FILE_ID => file_type = file_type.or(m.int(0)),
         SESSION => sport = sport.or(Some(Sport::from_fit(m.int(5), m.int(6)))),
         COURSE => name = name.take().or(m.text(5)),
-        COURSE_POINT => {
+        // A turn instruction is no waypoint: left, right, straight, the three forks, slight and sharp left and right, u_turn.
+        COURSE_POINT if !matches!(m.int(5), Some(6..=8 | 16..=23)) => {
             if let Some((lat, lon)) = position(m, 2, 3) {
                 waypoints.push(Waypoint { lat, lon, name: m.text(6) });
             }
@@ -210,8 +211,10 @@ pub fn read(bytes: &[u8]) -> Result<File, Error> {
             if let Some(time) = m.time {
                 times = (times.0.or(Some(time)), Some(time));
             }
-            // A record with no position is dropped, and its segment start moves to the next sample.
-            let (Some(time), Some((lat, lon))) = (m.time, position(m, 0, 1)) else { return };
+            // A record with no position is dropped, and its segment start moves to the next sample. A
+            // ride also drops a record with no time; a course needs no times. `file_id` is the first message.
+            let course = file_type == Some(FILE_COURSE.into());
+            let (Some(time), Some((lat, lon))) = (m.time.or(course.then_some(0)), position(m, 0, 1)) else { return };
             samples.push(Sample {
                 time: i64::from(time) + EPOCH,
                 lat,
@@ -268,7 +271,8 @@ fn altitude(elevation: Option<f64>) -> Option<Value<'static>> {
 }
 
 /// Writes `file_id` and returns the writer.
-fn start_file(file_type: u8, start: u32) -> Writer {
+/// `serial` tells files apart that have the same type and creation time.
+fn start_file(file_type: u8, start: u32, serial: u32) -> Writer {
     let mut writer = Writer::default();
     writer.message(
         FILE_ID,
@@ -276,11 +280,21 @@ fn start_file(file_type: u8, start: u32) -> Writer {
             (0, Value::Enum(file_type)),
             (1, Value::U16(MANUFACTURER_DEVELOPMENT)),
             (2, Value::U16(0)),
-            (3, Value::U32z(start.max(1))),
+            (3, Value::U32z(serial.max(1))),
             (4, Value::U32(start)),
         ],
     );
     writer
+}
+
+/// FNV-1a over the name, the positions and the time of a course, so that the same course gives the same bytes.
+fn hash(course: &Course) -> u32 {
+    let points = course.points.iter().map(|p| (p.lat, p.lon));
+    let positions = points.chain(course.waypoints.iter().map(|w| (w.lat, w.lon)));
+    let bytes =
+        course.name.bytes().chain(positions.flat_map(|(lat, lon)| [lat.to_le_bytes(), lon.to_le_bytes()].concat()));
+    let bytes = bytes.chain(course.seconds.to_le_bytes());
+    bytes.fold(0x811C_9DC5, |hash, byte| (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193))
 }
 
 fn timer(writer: &mut Writer, time: u32, event_type: u8) {
@@ -291,7 +305,7 @@ fn timer(writer: &mut Writer, time: u32, event_type: u8) {
 pub fn write_ride(ride: &Ride) -> Vec<u8> {
     let start = ride.samples.first().map_or(0, |s| fit_time(s.time));
     let end = ride.samples.last().map_or(0, |s| fit_time(s.time));
-    let mut writer = start_file(FILE_ACTIVITY, start);
+    let mut writer = start_file(FILE_ACTIVITY, start, start);
     let (mut distance, mut timer_seconds) = (0.0, 0);
     let mut previous: Option<&Sample> = None;
     for sample in &ride.samples {
@@ -376,7 +390,7 @@ pub fn write_course(course: &Course) -> Vec<u8> {
     let end = time(total);
     let ends = (course.points.first(), course.points.last());
 
-    let mut writer = start_file(FILE_COURSE, COURSE_START);
+    let mut writer = start_file(FILE_COURSE, COURSE_START, hash(course));
     // Sport 2 is cycling.
     let mut fields = vec![(4, Value::Enum(2))];
     if !course.name.is_empty() {
@@ -523,7 +537,7 @@ mod tests {
     #[test]
     fn each_error_has_its_code() {
         let file = |file_type, record: &[(u8, Value)]| {
-            let mut writer = start_file(file_type, 1000);
+            let mut writer = start_file(file_type, 1000, 1);
             if !record.is_empty() {
                 writer.message(RECORD, record);
             }
@@ -541,8 +555,38 @@ mod tests {
     }
 
     #[test]
+    fn a_course_skips_turn_instructions_and_keeps_records_with_no_time() {
+        let mut writer = start_file(FILE_COURSE, 1000, 1);
+        writer.message(RECORD, &[(0, Value::I32(1)), (1, Value::I32(0))]);
+        writer.message(RECORD, &[(0, Value::I32(2)), (1, Value::I32(0))]);
+        // Course point types 7 (right) and 23 (u_turn) are turns; 3 is water.
+        let point =
+            |kind, name| [(2, Value::I32(1)), (3, Value::I32(0)), (5, Value::Enum(kind)), (6, Value::Text(name))];
+        for (kind, name) in [(7, "Right"), (3, "Well"), (23, "Turn")] {
+            writer.message(COURSE_POINT, &point(kind, name));
+        }
+        let File::Course(course) = read(&writer.finish()).unwrap() else { panic!() };
+        assert_eq!((course.points.len(), course.seconds), (2, 0));
+        assert_eq!(course.waypoints, [Waypoint { lat: 0, lon: 0, name: Some("Well".into()) }]);
+    }
+
+    #[test]
+    fn two_courses_have_two_serial_numbers() {
+        let serial = |name: &str| {
+            let point = Point { lat: 46_560_000, lon: 8_400_000, elevation: None };
+            let course = Course { name: name.into(), points: vec![point], waypoints: vec![], seconds: 0 };
+            let mut serial = None;
+            container::decode(&write_course(&course), |m| serial = serial.or(m.int(3).filter(|_| m.global == FILE_ID)))
+                .unwrap();
+            serial.unwrap()
+        };
+        assert_eq!(serial("Furka"), serial("Furka"));
+        assert_ne!(serial("Furka"), serial("Grimsel"));
+    }
+
+    #[test]
     fn a_dropped_record_gives_its_segment_start_to_the_next_sample() {
-        let mut writer = start_file(FILE_ACTIVITY, 1000);
+        let mut writer = start_file(FILE_ACTIVITY, 1000, 1);
         let at = |time, lat: i32| [(253, Value::U32(time)), (0, Value::I32(lat)), (1, Value::I32(0))];
         writer.message(RECORD, &[(253, Value::U32(999))]);
         writer.message(RECORD, &at(1000, 1));
