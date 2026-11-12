@@ -623,7 +623,10 @@ pub fn outline_turns(words: &[u32]) -> Vec<String> {
         for (p, h, turn, next_a) in [(a, e[4], e[9] & 0xffff, false), (b, e[5], e[8] >> 16, true)] {
             let goes_on = heights.get(&(p, super::edge_line(e), next_a));
             if turn != none && goes_on.map(Vec::as_slice) != Some(&[h][..]) {
-                out.push(format!("end {p:?} of line {}: a turn, the edges going on hold {goes_on:?}", super::edge_line(e)));
+                out.push(format!(
+                    "end {p:?} of line {}: a turn, the edges going on hold {goes_on:?}",
+                    super::edge_line(e)
+                ));
             }
         }
     }
