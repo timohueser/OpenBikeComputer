@@ -54,7 +54,7 @@
         if (!current) return;
         const adopted = current.status === 'ready' ? Promise.resolve(true) : current.requestDevice();
         void adopted.then(ok => {
-            if (ok && current.status === 'ready' && current.info && current.store) return rememberDevice(current.info, current.store, library);
+            if (ok && current.status === 'ready' && current.info && current.store) rememberDevice(current.info, current.store);
         });
     }
 </script>

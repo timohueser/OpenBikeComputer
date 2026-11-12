@@ -60,16 +60,22 @@ export async function syncDevice(client: SyncClient, serial: string, library: Li
     if (remembered.device?.serial !== serial) return report;
     try {
         const catalog = await client.list({ signal });
-        await rememberCard(serial, catalog.storeId, library);
+        rememberCard(serial, catalog.storeId);
         const card = catalog.storeId, rides = ofKind(catalog, ObjectKind.Ride).sort(byId);
+        const ref = (entry: CatalogEntry) => `${card}:${entry.objectId}`;
 
         const known = await library.deviceRides(), skipped = new Set(remembered.device!.skipped);
         for (const entry of rides) {
-            const id = entry.objectId.toString(), ref = `${card}:${id}`;
-            if (known.has(ref) || skipped.has(id)) continue;
-            const { bytes } = await client.get(entry, { signal, expectedLength: Number(entry.payloadLength) });
+            const id = entry.objectId.toString();
+            if (known.has(ref(entry)) || skipped.has(id)) continue;
+            let bytes;
+            try { bytes = (await client.get(entry, { signal, expectedLength: Number(entry.payloadLength) })).bytes; } catch (error) {
+                if (cut(error)) throw error;
+                problems.push(text(error));
+                continue;
+            }
             let record;
-            try { record = rideRecord(decodeRideObject(bytes), ref); } catch {
+            try { record = rideRecord(decodeRideObject(bytes), ref(entry)); } catch {
                 problems.push('A ride on the device cannot be read by this page. Reload the page to take it.');
                 continue;
             }
@@ -85,12 +91,13 @@ export async function syncDevice(client: SyncClient, serial: string, library: Li
         }
 
         // The device marks a ride as taken only while the browser keeps the library when the disk is full.
-        if (await library.persist()) report.marked = await mark(client, catalog, rides, library, signal);
+        if (await library.persist()) report.marked = await mark(client, catalog, rides, library, signal, problems);
 
+        // A route sent to another card is not on this one: it has nothing to remove here, and a new send creates it.
         const sent = await library.state('sent') ?? {};
         for (const id of await library.state('leaving') ?? []) {
             report.tried.push(id);
-            const entry = sent[id] && ofKind(catalog, ObjectKind.Route).find(e => e.objectId.toString() === sent[id].device);
+            const entry = ofKind(catalog, ObjectKind.Route).find(e => ref(e) === sent[id]?.device);
             try {
                 if (entry) await client.remove(entry, signal);
             } catch (error) {
@@ -114,9 +121,11 @@ export async function syncDevice(client: SyncClient, serial: string, library: Li
                 continue;
             }
             const crc = Crc32.of(file.bytes), length = BigInt(file.bytes.length), routes = ofKind(catalog, ObjectKind.Route);
-            const object = (await library.state('sent'))?.[id]?.device;
-            const target = routes.find(e => e.objectId.toString() === object)
-                ?? routes.find(e => e.payloadLength === length && e.payloadCrc32 === crc && e.displayName === name);
+            const others = await library.state('sent') ?? {}, object = others[id]?.device;
+            // A lost answer of an earlier put left this copy; the copy of another route of the library is not it.
+            const taken = new Set(Object.entries(others).flatMap(([other, route]) => other === id ? [] : [route.device]));
+            const target = routes.find(e => ref(e) === object)
+                ?? routes.find(e => e.payloadLength === length && e.payloadCrc32 === crc && e.displayName === name && !taken.has(ref(e)));
             // Without a target, the put creates an object.
             const put = (on?: CatalogEntry) =>
                 client.put({ objectId: on?.objectId, expectedRevision: on?.revision, kind: ObjectKind.Route, displayName: name }, file.bytes, { signal });
@@ -128,7 +137,7 @@ export async function syncDevice(client: SyncClient, serial: string, library: Li
                 problems.push(`“${name}” waits: ${text(error)}`);
                 continue;
             }
-            await library.changeState('sent', routes => ({ ...routes, [id]: { device: answer.objectId.toString(), line: lineKey(route) } }));
+            await library.changeState('sent', routes => ({ ...routes, [id]: { device: `${card}:${answer.objectId}`, line: lineKey(route) } }));
             await library.changeState('waiting', ids => (ids ?? []).filter(other => other !== id));
             report.sent++;
             report.waypointsLeft += file.left;
@@ -136,7 +145,7 @@ export async function syncDevice(client: SyncClient, serial: string, library: Li
 
         rememberContents(await client.list({ signal }));
     } catch (error) {
-        problems.push(cut(error) ? CABLE_OUT : text(error));
+        problems.push(cut(error) || signal.aborted ? CABLE_OUT : text(error));
     }
     report.problem = problems.join(' ') || null;
     return report;
@@ -144,7 +153,8 @@ export async function syncDevice(client: SyncClient, serial: string, library: Li
 
 /** Marks each stored ride of `rides` that the Metadata object does not mark, after a check that the stored file is the exact
  * object. It stops when the device has no archive or no room for it. */
-async function mark(client: SyncClient, catalog: Catalog, rides: CatalogEntry[], library: Library, signal: AbortSignal): Promise<number> {
+async function mark(client: SyncClient, catalog: Catalog, rides: CatalogEntry[], library: Library, signal: AbortSignal,
+    problems: string[]): Promise<number> {
     const metadata = ofKind(catalog, ObjectKind.Metadata)[0];
     let rows;
     try { rows = metadata ? archivedRows((await client.get(metadata, { signal })).bytes) : []; } catch (error) {
@@ -163,8 +173,10 @@ async function mark(client: SyncClient, catalog: Catalog, rides: CatalogEntry[],
             await client.archiveRide({ storeId: catalog.storeId, ...entry }, signal);
             marked++;
         } catch (error) {
-            if (refused(error, 'unsupported', 'no-space')) break;
-            if (!refused(error, 'invalid-request')) throw error;
+            if (cut(error)) throw error;
+            if (refused(error, 'invalid-request')) continue;
+            if (!refused(error, 'unsupported', 'no-space')) problems.push(text(error));
+            break;
         }
     }
     return marked;

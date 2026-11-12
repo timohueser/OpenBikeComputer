@@ -53,10 +53,10 @@ The shell syncs routes and rides with one device on the cable: the remembered de
 
 A sync ([`state.svelte.ts`](../../builder/web/src/lib/device-sync/state.svelte.ts)) starts on each `ready` of the remembered device, after `rememberDevice`, on `deviceSync.run()`, and when a route starts to wait or to leave. It holds the Web Lock `obc-device-sync`, so one tab syncs at a time. The sync ([`sync.ts`](../../builder/web/src/lib/device-sync/sync.ts)) does these steps in this order:
 
-1. It lists the card. For a new `StoreId`, the library empties `sent` and `leaving`, because they belong to the old card.
+1. It lists the card. `sent` names each route on a device as `storeId:objectId`, so a route sent to another card is not on this card: the sync removes nothing for it, and a new send creates it.
 2. It takes each finished ride that the library does not hold and did not delete, the oldest first, and stores it with its file. The ride brings the maximum heart rate and the threshold power of the device to the settings. A demo ride, a ride with no points and a ride with no clock stay on the device, and `skipped` remembers them.
 3. When the browser keeps the library on a full disk (`persist`), the sync marks the stored rides on the device as taken (`ARCHIVE_RIDE`). It marks a ride only when the stored file has the length and the CRC of the object on the card.
-4. It removes each route of `leaving` from the device.
+4. It removes each route of `leaving` from the device. A device refusal of one ride, one mark or one route goes into `problem`, and the sync goes on.
 5. It sends each route of `waiting` as one OBCR route, also a plan of several days. It calculates the line again with the routing service, because the summary line is too coarse for the device. The waypoints are the nights, then the stops, 32 at most. A route keeps its object on the device, so a new send replaces it. With no network, the route waits.
 6. It remembers the map, the number of routes and the bytes on the card, and the rides that came in today.
 
