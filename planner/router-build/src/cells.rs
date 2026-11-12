@@ -17,8 +17,9 @@ use std::path::Path;
 
 pub const PACKAGE: &str = "package.json";
 pub const DIRECTORY: &str = "directory.bin";
-/// The zstd level of the objects.
-pub const LEVEL: i32 = 19;
+/// The zstd level of the objects. The owner chose 19 unless it takes more than 4 times the time of
+/// 12 for less than 5 % fewer bytes; on Switzerland it does, so the objects use 12.
+pub const LEVEL: i32 = 12;
 
 /// The texts of `package.json` that the bake does not count.
 pub struct Info {

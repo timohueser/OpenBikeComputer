@@ -1,7 +1,7 @@
 //! Measures the package of format 10 on the layers of a bake.
 //!
 //! `cells write ROADS COSTS OUT [LEVEL]` writes the package of the roads and the costs layer
-//! folders into OUT with zstd level LEVEL (default 19), with `cell_sizes` and `download_level` of
+//! folders into OUT with zstd level LEVEL (default `cells::LEVEL`), with `cell_sizes` and `download_level` of
 //! `data/planner.toml`. `cells install OUT TARGET [THREADS]` installs all cells of OUT into TARGET
 //! and then checks each object. Each prints its summary, the time and the peak `RssAnon`.
 
