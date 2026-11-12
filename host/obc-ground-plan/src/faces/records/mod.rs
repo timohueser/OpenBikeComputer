@@ -354,9 +354,12 @@ fn near_box(a: [f64; 2], b: [f64; 2], bx: [f64; 4], r: f64) -> bool {
 
 /// An outline edge's height runs linearly between its ends: a rim splits at its middle while the paved
 /// field leaves that line by more than this at the middle, or on a piece longer than `QUARTER_M` at
-/// either quarter, down to `SPLIT_MIN_M`. Half of the least step that the heights check counts
-/// (`check::STEP_M`).
+/// either quarter, down to `SPLIT_PAVED_MIN_M`: the slope starts from that line, so the paved side and
+/// the slope side meet there with no step where the paved field bends. Half of the least step that the
+/// heights check counts (`check::STEP_M`).
 const SPLIT_M: f64 = 0.005;
+const SPLIT_PAVED_MIN_M: f64 = 0.02;
+/// The ground's split (`SPLIT_GROUND_M`) goes down to this.
 const SPLIT_MIN_M: f64 = 0.25;
 /// A rim also splits while the ground where its cones let go leaves the line between its ends by more than
 /// this: the cones read the need linearly between the ends, so a ground they did not see would move the
@@ -452,14 +455,12 @@ fn outline_edges<'a>(
                 let (gp, gq) = (ground(p, host, go)[0], ground(q, host, go)[0]);
                 let mut bent = |x: P, f: f64| (ground(x, host, go)[0] - (gp + f * (gq - gp))).abs() > SPLIT_GROUND_M;
                 let long = metres(p, q);
-                let split = long > SPLIT_MIN_M
+                let quarters = long > QUARTER_M;
+                let split = (long > SPLIT_PAVED_MIN_M
                     && (off(m, 0.5, &mut end)
-                        || bent(m, 0.5)
-                        || (long > QUARTER_M
-                            && (off(mid(p, m), 0.25, &mut end)
-                                || off(mid(m, q), 0.75, &mut end)
-                                || bent(mid(p, m), 0.25)
-                                || bent(mid(m, q), 0.75))));
+                        || (quarters && (off(mid(p, m), 0.25, &mut end) || off(mid(m, q), 0.75, &mut end)))))
+                    || (long > SPLIT_MIN_M
+                        && (bent(m, 0.5) || (quarters && (bent(mid(p, m), 0.25) || bent(mid(m, q), 0.75)))));
                 if split {
                     ahead.push((m, end(m, id)));
                     continue;

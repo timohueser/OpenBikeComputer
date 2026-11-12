@@ -24,17 +24,14 @@ const GRID_M: f64 = 0.5;
 const INSIDE_MAX: usize = 7;
 /// Steps at label edges with no rule (`check::edge_steps`), measured on the revision 15 fixture with the
 /// slopes from the outline pieces of `records::outline_edges` and the vertex values of `heights::groups`
-/// (their cones past an end where the rim goes on fall at a rock face's slope), walls up to the highest wall
-/// and faces past it as steep as their need: the count must not grow.
-const EDGE_MAX: usize = 136;
+/// (an end's cone over the fan of its turn only), walls up to the highest wall and faces past it as steep as
+/// their need: the count must not grow.
+const EDGE_MAX: usize = 91;
 /// Pairs of grid points on a slope steeper than a rock face where the terrain is not (`Scan::steep`),
 /// measured on the revision 15 fixture with cones on their outward side, the outline pieces of
 /// `records::outline_edges` and the vertex values of `heights::groups`, and faces past the highest wall as
 /// steep as their need: the count must not grow.
-const STEEP_MAX: usize = 1173;
-/// Of those, the pairs steeper than 6 m/m, measured the same way; none is steeper than 12 m/m. A
-/// near-vertical rim that the total hides must not come back.
-const STEEP_6_MAX: usize = 8;
+const STEEP_MAX: usize = 939;
 /// A no-room wall's height that changes along it by more than this per metre is a step in its top
 /// (`check::wall_steps`): pairs of points measured on the revision 15 fixture with the slope and the wall of
 /// each point from the need at its foot (`heights::fit`): the count must not grow.
@@ -43,7 +40,7 @@ const WALL_STEPS_MAX: usize = 17;
 /// The ground's grade along the rim that changes across a piece end by more than this is a shading band
 /// (`check::slope_steps`), measured the same way: the count must not grow.
 const SLOPE_STEP_GRADE: f64 = 0.1;
-const SLOPE_STEPS_MAX: usize = 2617;
+const SLOPE_STEPS_MAX: usize = 8180;
 /// The places of the ripple report (latitude, longitude).
 const PLACES: [(&str, f64, f64); 5] = [
     ("v17-sharp-corners", 46.821753, 8.404913),
@@ -114,8 +111,9 @@ fn every_fixture_cell_keeps_its_steps_on_face_edges_and_agrees_with_its_neighbou
     assert!(walls <= WALL_STEPS_MAX, "{walls} wall-top steps over {WALL_STEP_GRADE} m/m");
     assert!(slopes <= SLOPE_STEPS_MAX, "{slopes} slope steps over {SLOPE_STEP_GRADE} m/m");
     assert!(steep.len() <= STEEP_MAX, "{} slope pairs steeper than a rock face", steep.len());
-    assert!(over_6 <= STEEP_6_MAX, "{over_6} slope pairs steeper than 6 m/m");
-    assert_eq!(over_12, 0, "slope pairs steeper than 12 m/m");
+    // Measured the same way, no pair is steeper than 6 m/m: a near-vertical rim that the total hides must not
+    // come back.
+    assert_eq!((over_6, over_12), (0, 0), "slope pairs steeper than 6 m/m and 12 m/m");
     assert_eq!((full, missing), (0, 0));
     let shared: Vec<_> = lines.values().filter(|v| v.len() == 2).collect();
     assert!(shared.len() > 100_000, "{} shared points", shared.len());

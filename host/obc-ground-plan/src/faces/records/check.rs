@@ -522,8 +522,8 @@ pub fn border(a: Cell, b: Cell, east: bool, step: i32) -> (u64, u64, Vec<(f64, S
 /// edge of the other block with the same words, its host line named by its class and its sample nearest
 /// the edge (two cells number a way's legs from its own start). The edges compared, and the ones that
 /// differ within `MARGIN_M` of the shared line and past it: only up to `MARGIN_M` past a cell are its
-/// inputs the neighbours' own. An end's turn counts only within that listing reach: past it, the end's cone
-/// reaches no point of the other cell, and the other cell may not hold the edge that goes on there.
+/// inputs the neighbours' own. An end's turn counts only within that listing reach of both cells: past it,
+/// the end's cone reaches no point of that cell, and that cell may not hold the edge that goes on there.
 pub fn outline_border(a: (&[u32], CellKey), b: (&[u32], CellKey)) -> (u64, [Vec<String>; 2]) {
     type Edge = ([i64; 4], [u32; 8], [i64; 3]);
     let edges = |(w, key): (&[u32], CellKey)| -> Vec<Edge> {
@@ -576,10 +576,13 @@ pub fn outline_border(a: (&[u32], CellKey), b: (&[u32], CellKey)) -> (u64, [Vec<
                 continue;
             }
             checked += 1;
-            // The turns at a and at b, the last two words.
+            let own_box = |v: [f64; 2]| {
+                libm::hypot((own[0] - v[0]).max(v[0] - own[2]).max(0.0), (own[1] - v[1]).max(v[1] - own[3]).max(0.0))
+            };
+            // The turns at a and at b, the last two words, where the end lies within both cells' reach.
             let turns = |mut w: [u32; 8]| {
                 for (t, v) in [(6, p), (7, q)] {
-                    if to_box(v) >= listed {
+                    if to_box(v).max(own_box(v)) >= listed {
                         w[t] = 0;
                     }
                 }
