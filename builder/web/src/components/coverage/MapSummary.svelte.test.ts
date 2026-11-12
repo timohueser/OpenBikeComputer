@@ -62,10 +62,8 @@ describe("MapSummary", () => {
 
     it.each([
         { label: "a region border", kind: "region", drawnCells: ["border"], warns: false },
-        ...["box", "lasso", "corridor"].flatMap((kind) => [
-            { label: `a region and a fully covered ${kind}`, kind, drawnCells: ["full"], warns: false },
-            { label: `a region and a partly covered ${kind}`, kind, drawnCells: ["full", "border"], warns: true },
-        ]),
+        { label: "a region and a fully covered box", kind: "box", drawnCells: ["full"], warns: false },
+        { label: "a region and a partly covered box", kind: "box", drawnCells: ["full", "border"], warns: true },
     ])("discloses only affected drawn coverage for $label", async ({ kind, drawnCells, warns }) => {
         const region = { id: "region", kind: "region" };
         const drawn = { id: "drawn", kind };

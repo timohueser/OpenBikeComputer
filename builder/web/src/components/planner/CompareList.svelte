@@ -1,6 +1,6 @@
 <script lang="ts">
     import { tick } from 'svelte';
-    import { radioKey } from './Segmented.svelte';
+    import { radioKey } from '../../lib/ui/Segmented.svelte';
     import { difference, optionLetter, type Compared } from '../../lib/planner/route-options';
 
     let { label, rows, status, retry, note, applyLabel, previewId, onPreview, onApply }: {

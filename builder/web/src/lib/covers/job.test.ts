@@ -12,6 +12,7 @@ const route = (id: string, name = id, line = [8.38, 46.82, 8.42, 46.81]): RouteR
 const result: Still = {
     image: new Blob(['cover']),
     points: { x: Float32Array.of(10, 20), y: Float32Array.of(10, 20), distance: Float32Array.of(900, 1200), visible: Uint8Array.of(1, 1) },
+    credits: [],
 };
 const failure = (name: string) => Object.assign(new Error(name), { name });
 

@@ -6,7 +6,7 @@
 
     import { platform } from "../lib/platform";
     import { router, type Route } from "../lib/router.svelte";
-    import { ADVANCED_ROUTE } from "../lib/routes";
+    import { ROUTES } from "../lib/routes";
 
     let header: HTMLElement;
     onMount(startTheme);
@@ -16,9 +16,9 @@
     // tab exists exactly where its route does (`App.svelte` gates the same way),
     // so a tab can never point at a page that falls back home.
     const tabs: Array<{ route: Route; href: string; label: string }> = [
-        { route: "home", href: "#/", label: "Maps" },
+        { route: "home", href: ROUTES.home, label: "Maps" },
         ...(platform.styleEditor
-            ? [{ route: "advanced" as const, href: ADVANCED_ROUTE, label: "Style editor" }]
+            ? [{ route: "advanced" as const, href: ROUTES.advanced, label: "Style editor" }]
             : []),
     ];
     const tabbed = tabs.length > 1;

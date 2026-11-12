@@ -227,7 +227,7 @@
     },
     {
      "rule": "cycle",
-     "message": "map-assembly -> device-link closes a cycle: obc-builder-bridge -> obc-flat-device, obc-builder-bridge -> obc-link, obc-builder-bridge -> obc-vectors (test), and 14 more"
+     "message": "map-assembly -> device-link closes a cycle: obc-builder-bridge -> obc-flat-device, obc-builder-bridge -> obc-link, obc-builder-bridge -> obc-vectors (test), and 12 more"
     },
     {
      "rule": "R1",
@@ -305,7 +305,7 @@
     "repository-tooling"
    ],
    "violations": 10,
-   "lines": 9217,
+   "lines": 10051,
    "problems": [
     {
      "rule": "cycle",
@@ -321,7 +321,7 @@
     },
     {
      "rule": "cycle",
-     "message": "device-map-builder -> map-assembly closes a cycle: builder/web/src/components/device/DeviceStep.svelte -> builder/web/src/lib/catalog/ledger.ts, builder/web/src/components/device/DeviceSurfaces.svelte -> builder/web/src/lib/catalog/ledger.ts, builder/web/src/components/device/MapSend.svelte -> builder/web/src/lib/catalog/ledger.ts, and 8 more"
+     "message": "device-map-builder -> map-assembly closes a cycle: builder/web/src/components/device/DeviceStep.svelte -> builder/web/src/lib/catalog/ledger.ts, builder/web/src/components/device/DeviceSurfaces.svelte -> builder/web/src/lib/catalog/ledger.ts, builder/web/src/components/device/MapSend.svelte -> builder/web/src/lib/catalog/ledger.ts, and 7 more"
     },
     {
      "rule": "cycle",
@@ -329,7 +329,7 @@
     },
     {
      "rule": "cycle",
-     "message": "device-map-builder -> route-planning closes a cycle: builder/web/scripts/road-census.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/platform/web.ts -> builder/web/src/lib/planner/release.ts, builder/web/test-support/planner/MapStub.svelte -> builder/web/src/lib/planner/geo.ts, and 12 more"
+     "message": "device-map-builder -> route-planning closes a cycle: builder/web/scripts/road-census.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/platform/web.ts -> builder/web/src/lib/planner/release.ts, builder/web/src/lib/ui/Segmented.svelte -> builder/web/src/components/planner/PlannerIcon.svelte, and 15 more"
     },
     {
      "rule": "cycle",
@@ -337,7 +337,7 @@
     },
     {
      "rule": "cycle",
-     "message": "map-assembly -> device-map-builder closes a cycle: builder/web/src/components/coverage/CorridorPanel.svelte -> builder/web/src/lib/core/gpx.ts, builder/web/src/components/coverage/CorridorPanel.svelte -> builder/web/src/lib/format.ts, builder/web/src/components/coverage/CorridorPanel.svelte -> builder/web/src/lib/ui/confirm.svelte.ts, and 35 more"
+     "message": "map-assembly -> device-map-builder closes a cycle: builder/web/src/components/coverage/CoverageHome.svelte -> builder/web/src/components/device/DeviceStep.svelte, builder/web/src/components/coverage/CoverageHome.svelte.test.ts -> builder/web/src/routes/Home.svelte (test), builder/web/src/components/coverage/CoverageHome.svelte.test.ts -> builder/web/test-support/coverage/Selection.svelte (test), and 28 more"
     },
     {
      "rule": "cycle",
@@ -345,7 +345,7 @@
     },
     {
      "rule": "cycle",
-     "message": "route-planning -> device-map-builder closes a cycle: builder/web/src/components/planner/CompareScreen.svelte.test.ts -> builder/web/test-support/planner/MapStub.svelte (test), builder/web/src/components/planner/CompareScreen.svelte.test.ts -> builder/web/test-support/planner/trip.ts (test), builder/web/src/components/planner/Planner.svelte.test.ts -> builder/web/test-support/planner/trip.ts (test), and 24 more"
+     "message": "route-planning -> device-map-builder closes a cycle: builder/web/src/components/planner/CompareList.svelte -> builder/web/src/lib/ui/Segmented.svelte, builder/web/src/components/planner/CompareScreen.svelte.test.ts -> builder/web/test-support/planner/MapStub.svelte (test), builder/web/src/components/planner/CompareScreen.svelte.test.ts -> builder/web/test-support/planner/trip.ts (test), and 31 more"
     }
    ]
   },
@@ -515,12 +515,12 @@
    "name": "library",
    "kind": "system",
    "area": "Apps",
-   "purpose": "Keeps the rider's routes and rides in the browser, each with a summary, and saves and loads them as one backup file.",
+   "purpose": "Keeps the rider's routes, rides and settings in the browser, each route and ride with a summary, and saves and loads them as one backup file.",
    "status": "draft",
    "depends_on": [],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 822,
+   "lines": 1030,
    "problems": []
   },
   {
@@ -543,7 +543,7 @@
     "content"
    ],
    "violations": 10,
-   "lines": 26597,
+   "lines": 24305,
    "problems": [
     {
      "rule": "cycle",
@@ -551,7 +551,7 @@
     },
     {
      "rule": "cycle",
-     "message": "device-map-builder -> map-assembly closes a cycle: builder/web/src/components/device/DeviceStep.svelte -> builder/web/src/lib/catalog/ledger.ts, builder/web/src/components/device/DeviceSurfaces.svelte -> builder/web/src/lib/catalog/ledger.ts, builder/web/src/components/device/MapSend.svelte -> builder/web/src/lib/catalog/ledger.ts, and 8 more"
+     "message": "device-map-builder -> map-assembly closes a cycle: builder/web/src/components/device/DeviceStep.svelte -> builder/web/src/lib/catalog/ledger.ts, builder/web/src/components/device/DeviceSurfaces.svelte -> builder/web/src/lib/catalog/ledger.ts, builder/web/src/components/device/MapSend.svelte -> builder/web/src/lib/catalog/ledger.ts, and 7 more"
     },
     {
      "rule": "cycle",
@@ -559,11 +559,11 @@
     },
     {
      "rule": "cycle",
-     "message": "map-assembly -> device-link closes a cycle: obc-builder-bridge -> obc-flat-device, obc-builder-bridge -> obc-link, obc-builder-bridge -> obc-vectors (test), and 14 more"
+     "message": "map-assembly -> device-link closes a cycle: obc-builder-bridge -> obc-flat-device, obc-builder-bridge -> obc-link, obc-builder-bridge -> obc-vectors (test), and 12 more"
     },
     {
      "rule": "cycle",
-     "message": "map-assembly -> device-map-builder closes a cycle: builder/web/src/components/coverage/CorridorPanel.svelte -> builder/web/src/lib/core/gpx.ts, builder/web/src/components/coverage/CorridorPanel.svelte -> builder/web/src/lib/format.ts, builder/web/src/components/coverage/CorridorPanel.svelte -> builder/web/src/lib/ui/confirm.svelte.ts, and 35 more"
+     "message": "map-assembly -> device-map-builder closes a cycle: builder/web/src/components/coverage/CoverageHome.svelte -> builder/web/src/components/device/DeviceStep.svelte, builder/web/src/components/coverage/CoverageHome.svelte.test.ts -> builder/web/src/routes/Home.svelte (test), builder/web/src/components/coverage/CoverageHome.svelte.test.ts -> builder/web/test-support/coverage/Selection.svelte (test), and 28 more"
     },
     {
      "rule": "cycle",
@@ -828,11 +828,11 @@
    ],
    "test_depends_on": [],
    "violations": 7,
-   "lines": 27042,
+   "lines": 26847,
    "problems": [
     {
      "rule": "cycle",
-     "message": "device-map-builder -> route-planning closes a cycle: builder/web/scripts/road-census.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/platform/web.ts -> builder/web/src/lib/planner/release.ts, builder/web/test-support/planner/MapStub.svelte -> builder/web/src/lib/planner/geo.ts, and 12 more"
+     "message": "device-map-builder -> route-planning closes a cycle: builder/web/scripts/road-census.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/platform/web.ts -> builder/web/src/lib/planner/release.ts, builder/web/src/lib/ui/Segmented.svelte -> builder/web/src/components/planner/PlannerIcon.svelte, and 15 more"
     },
     {
      "rule": "cycle",
@@ -840,7 +840,7 @@
     },
     {
      "rule": "cycle",
-     "message": "route-planning -> device-map-builder closes a cycle: builder/web/src/components/planner/CompareScreen.svelte.test.ts -> builder/web/test-support/planner/MapStub.svelte (test), builder/web/src/components/planner/CompareScreen.svelte.test.ts -> builder/web/test-support/planner/trip.ts (test), builder/web/src/components/planner/Planner.svelte.test.ts -> builder/web/test-support/planner/trip.ts (test), and 24 more"
+     "message": "route-planning -> device-map-builder closes a cycle: builder/web/src/components/planner/CompareList.svelte -> builder/web/src/lib/ui/Segmented.svelte, builder/web/src/components/planner/CompareScreen.svelte.test.ts -> builder/web/test-support/planner/MapStub.svelte (test), builder/web/src/components/planner/CompareScreen.svelte.test.ts -> builder/web/test-support/planner/trip.ts (test), and 31 more"
     },
     {
      "rule": "cycle",
@@ -976,7 +976,7 @@
    ],
    "test_depends_on": [],
    "violations": 5,
-   "lines": 55562,
+   "lines": 55568,
    "problems": [
     {
      "rule": "cycle",
@@ -1012,7 +1012,7 @@
    ],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 85,
+   "lines": 87,
    "problems": []
   },
   {
@@ -1031,7 +1031,7 @@
    "name": "web-planner",
    "kind": "shell",
    "area": "Shells",
-   "purpose": "Opens the route planner as its own page in the browser.",
+   "purpose": "Opens the app at /plan/: the top bar, the pages, and the route planner as one page.",
    "status": "approved",
    "depends_on": [
     "device-map-builder",
@@ -1041,7 +1041,7 @@
    ],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 858,
+   "lines": 1089,
    "problems": []
   },
   {

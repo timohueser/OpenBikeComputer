@@ -18,7 +18,7 @@ async function start(page) {
     const response = respond(route.request());
     return response ? route.fulfill(response) : route.abort();
   });
-  await page.goto('/planner.html');
+  await page.goto('/planner.html#/planner');
   await expect(page.getByRole('button', { name: 'My plans', exact: true })).toBeEnabled();
 }
 

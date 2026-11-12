@@ -20,7 +20,9 @@ The body of this document is not written yet. Only the still function is describ
 
 ## The still function
 
-A page that does not show the 3-D view can still use one image of it: the cover of a route or a ride, or a home view. `still()` in [`still.ts`](../../builder/web/src/lib/trailview/still.ts) starts an engine of its own on a canvas that the page does not show. It waits until the view is complete, takes the image, and ends the engine. The image is WebP, or JPEG in a browser that cannot encode WebP.
+A page that does not show the 3-D view can still use one image of it: the cover of a route or a ride, or a home view. `still()` in [`still.ts`](../../builder/web/src/lib/trailview/still.ts) starts an engine of its own on a canvas that the page does not show. It waits until the view is complete, takes the image, and ends the engine. The image is WebP, or JPEG in a browser that cannot encode WebP. The still also gives the credits of the release and of the layers that the engine opened for the view, so that a page shows them with the image.
+
+The script `home-views.mjs` in `builder/web/tests/browser/trailview/` renders the home views with the still function on a GPU of the owner, and uploads them as one set ([specs/home-views.md](../../specs/home-views.md)).
 
 For a line that the caller gives, the still also gives the place of each point in the image, its distance from the eye, and whether it is visible. The engine puts each point on its drawn terrain and tests it against the depth of the last frame, as it does for the route that it draws. So a page draws the line on the image with no depth image and no camera values.
 

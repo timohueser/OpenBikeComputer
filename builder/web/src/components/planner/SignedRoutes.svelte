@@ -1,7 +1,7 @@
 <script lang="ts">
     import { untrack } from 'svelte';
     import Icon from './PlannerIcon.svelte';
-    import Segmented from './Segmented.svelte';
+    import Segmented from '../../lib/ui/Segmented.svelte';
     import PlannerSelect from './PlannerSelect.svelte';
     import RouteStats from './RouteStats.svelte';
     import TrailMarker from './TrailMarker.svelte';

@@ -3,7 +3,7 @@
 // These are the selection-to-UI adapters on top of the already-tested arithmetic: part
 // lifecycle and naming, the pending/final story a summary card depends on, the refusals
 // that must arrive as sentences rather than crashes, and — measured, not assumed — the
-// resolver reuse that keeps the corridor slider smooth.
+// resolver reuse that keeps an edit of one part from repricing the others.
 
 import { describe, expect, it } from "vitest";
 import { CatalogClient } from "../catalog/client";
@@ -81,34 +81,6 @@ describe("region parts", () => {
         const store = makeStore();
         store.addRegion("europe/switzerland");
         expect(store.selection.parts[0].name).toBe("Switzerland");
-    });
-});
-
-describe("lasso parts", () => {
-    it("adds a drawn ring as a part, named and priced like a box", () => {
-        const store = makeStore();
-        // A triangle over the published column: same ground as PUBLISHED_BOX.
-        store.addLasso([
-            { lat: 47_210_000, lon: 7_360_000 },
-            { lat: 47_210_000, lon: 7_590_000 },
-            { lat: 47_390_000, lon: 7_470_000 },
-        ]);
-        expect(store.selection.parts).toHaveLength(1);
-        expect(store.selection.parts[0].kind).toBe("lasso");
-        expect(store.selection.parts[0].name).toBe("Lasso — Switzerland");
-        expect(store.ledger!.totalBytes).toBeGreaterThan(0);
-    });
-
-    it("refuses a world-sized ring as a sentence, not a crash", () => {
-        const store = makeStore();
-        store.addLasso([
-            { lat: -60_000_000, lon: -85_000_000 },
-            { lat: -60_000_000, lon: 85_000_000 },
-            { lat: 60_000_000, lon: 0 },
-        ]);
-        expect(store.selection.parts).toHaveLength(0);
-        expect(store.drawError).toMatch(/smaller one/);
-        expect(store.ledger).not.toBeNull();
     });
 });
 
@@ -272,54 +244,20 @@ describe("partial-detail hatching (#1041 A9)", () => {
     });
 });
 
-describe("corridor previews", () => {
-    const route = [
-        { lat: 47_200_000, lon: 7_400_000 },
-        { lat: 47_350_000, lon: 7_550_000 },
-    ];
-
-    it("commits one part per route, so the ground between two routes stays a hole", () => {
-        const store = makeStore();
-        store.previewParts = [
-            store.makePreviewPart("r1", "Morning Loop", route),
-            store.makePreviewPart("r2", "Evening Loop", route),
-        ];
-        store.commitPreview();
-        expect(store.previewParts).toHaveLength(0);
-        expect(store.selection.parts.map((p) => p.kind)).toEqual(["corridor", "corridor"]);
-        expect(store.selection.parts.map((p) => p.name)).toEqual(["Morning Loop", "Evening Loop"]);
-    });
-
-    it("prices what a candidate adds on top of the committed selection", () => {
-        const store = makeStore();
-        withSwissList(store);
-        store.previewParts = [store.makePreviewPart("r1", "Loop", route)];
-        const alone = store.previewSummary(1)!;
-        expect(alone.addsBytes).toBeGreaterThan(0);
-
-        // With Switzerland already in the map, the same corridor adds nothing —
-        // its cells are already paid for.
-        store.addRegion("europe/switzerland");
-        const covered = store.previewSummary(1)!;
-        expect(covered.addsBytes).toBe(0);
-        expect(covered.addsCells).toBe(0);
-    });
-
-    it("reuses every non-corridor answer when the width slider moves", () => {
+describe("resolver reuse", () => {
+    it("reuses the region's answers when a box is added", () => {
         const store = makeStore();
         withSwissList(store);
         store.addRegion("europe/switzerland");
-        store.addCorridor("Loop", route);
         void store.ledger; // settle the cache
 
         const before = { ...store.resolverStats };
-        store.setCorridorRadius(25_000);
+        store.addBox(PUBLISHED_BOX);
         void store.ledger;
         const after = store.resolverStats;
         const bands = exampleCatalog.schema.bands.length;
-        // The radius is global, so only the corridor part recomputes — one
-        // answer per band — and the region's four are cache hits. This is the
-        // measurement behind "the slider re-buffers live and stays smooth".
+        // Only the new box computes — one answer per band — and the region's
+        // answers are cache hits.
         expect(after.computed - before.computed).toBe(bands);
         expect(after.reused - before.reused).toBe(bands);
     });
@@ -393,7 +331,7 @@ describe("custom skin admission", () => {
 
 
 describe("catalog refresh", () => {
-    it("preserves every selection kind, radius and compatible custom styles without old catalog caches", () => {
+    it("preserves every selection kind and compatible custom styles without old catalog caches", () => {
         let saved: string | null = null;
         const storage = { getItem: () => saved, setItem: (_key: string, value: string) => { saved = value; } };
         const client = CatalogClient.fromBody(canonicalCatalogBody, ROOT_URL, { fetchImpl: offline });
@@ -402,10 +340,6 @@ describe("catalog refresh", () => {
         withSwissList(store);
         store.addRegion("europe/switzerland");
         store.addBox(PUBLISHED_BOX);
-        const points = [{ lat: 47_200_000, lon: 7_400_000 }, { lat: 47_350_000, lon: 7_550_000 }];
-        store.addCorridor("Weekend GPX", points);
-        store.addLasso([...points, { lat: 47_200_000, lon: 7_550_000 }]);
-        store.setCorridorRadius(25_000);
         store.saveCustomSkin(store.lightSkin, "My light", "default");
         store.saveCustomSkin(store.darkSkin, "My dark", "dusk");
         const root = JSON.parse(canonicalCatalogBody);
@@ -422,8 +356,8 @@ describe("catalog refresh", () => {
         expect(next.darkSkin).toEqual(store.darkSkin);
         expect(next.refreshNotice).toBeNull();
         next.addBox(PUBLISHED_BOX);
-        expect(new Set(next.selection.parts.map((p) => p.id)).size).toBe(5);
-        expect(store.selection.parts).toHaveLength(4);
+        expect(new Set(next.selection.parts.map((p) => p.id)).size).toBe(3);
+        expect(store.selection.parts).toHaveLength(2);
     });
 
     it("keeps removed regions as blocked parts and reports an incompatible selected style", () => {

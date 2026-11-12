@@ -4,7 +4,7 @@ import { TrailView } from './lib/trailview/engine';
 import { Gpu } from './lib/trailview/gpu/device';
 import { hud } from './lib/trailview/hud';
 import { scaleOf } from './lib/trailview/resolve/targets';
-import { canRenderStills, still, type StillJob } from './lib/trailview/still';
+import { canRenderStills, credits, still, type StillJob } from './lib/trailview/still';
 import { coverView } from './lib/trailview/still-view';
 import { defaultView, formatView, parseView } from './lib/trailview/view';
 
@@ -40,6 +40,8 @@ async function stills(): Promise<void> {
     const { gpu, release } = opened;
     Object.assign(window, {
         trailviewStill: {
+            release: release.id,
+            view: (search: string) => parseView(search, defaultView(release.bounds)),
             still: (job: StillJob, options?: Parameters<typeof still>[3]) => still(gpu, release, job, options),
             coverView: (line: [number, number][], when: Parameters<typeof coverView>[2]) => coverView(line, release, when),
             canRenderStills,
@@ -75,9 +77,9 @@ async function main(): Promise<void> {
         engine.view = parseView(text.includes('?') ? text.slice(text.indexOf('?')) : text, engine.view);
         event.preventDefault();
     });
-    const credits = document.querySelector<HTMLElement>('#credits')!;
-    credits.textContent = [release.terrain_attribution, ...engine.attribution].filter(Boolean).join(' · ');
-    credits.hidden = !credits.textContent;
+    const line = document.querySelector<HTMLElement>('#credits')!;
+    line.textContent = credits(release, engine).join(' · ');
+    line.hidden = !line.textContent;
     hud(document.querySelector<HTMLElement>('#hud')!, engine);
     Object.assign(window, { trailView: engine });
 }
