@@ -325,7 +325,7 @@ pub fn slope_steps(words: &[u32], terrain: &Terrain, cell: CellKey, grade: f64) 
     for pair in edges.windows(2) {
         let [(a0, v, u, l0, turn), (a1, z, _, l1, _)] = [pair[0], pair[1]];
         let rounding = 2.0 / libm::hypot(v[0] - a0[0], v[1] - a0[1]) + 2.0 / libm::hypot(z[0] - a1[0], z[1] - a1[1]);
-        if v != a1 || l0 != l1 || !(turn.abs() <= rounding) {
+        if v != a1 || l0 != l1 || turn.is_nan() || turn.abs() > rounding {
             continue;
         }
         let n = [u[1], -u[0]];
