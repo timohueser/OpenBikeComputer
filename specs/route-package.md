@@ -74,7 +74,8 @@ of that ID. A **long road** is a road whose `length_m` is above 10,000.
 An object is one zstd frame of one part of one cell: level 12, a window of at most 8 MiB, with
 the content size, without a checksum or a dictionary, made on one thread. A part is smaller than
 4 GiB. The parts of a download cell are part 0 the topology, part 1 the geometry, and part 2 + g
-profile group g. An upper cell has only a topology part.
+profile group g. An upper cell has part 0, the topology with its two road lists, and part 2 + g
+for each group, with its cost tables. Its part 1 is absent.
 
 Two profiles are one **profile group** when their turn costs are equal. The groups are numbered by
 their first profile in name order. A package has at most 32 groups.
@@ -102,7 +103,7 @@ then the upper cells in the order of level and ID.
 | `first_road`, `roads` | 2 × u32 | The run-time ID of its first road; its road count |
 | `box` | 4 × i32 | West, south, east, north in microdegrees: the union of the boxes of its level-1 cells. No long road is in it |
 | `long_box` | 4 × i32 | The union of the boxes of the long roads of a download cell. All zero when it has none, and in an upper cell |
-| `parts` | 72 bytes each | Part 0 topology, part 1 geometry, part 2 + g profile group g |
+| `parts` | 72 bytes each | Part 0 topology, part 1 geometry, part 2 + g profile group g. Part 1 of an upper cell is absent |
 
 A part entry is `object` (32 bytes, SHA-256 of the object), `object_bytes` (u32), `sha256` (32
 bytes, SHA-256 of the part) and `bytes` (u32). An absent part is all zero. The first digest finds
@@ -274,7 +275,9 @@ An install is one folder: `directory.bin`, `package.json`, `cells/LEVEL-ID-PART`
 installed file is one part, without compression. `install.bin` is `OBCRINST` (8 bytes), the
 SHA-256 of the directory, `groups` (u32, bit g set when group g is installed), `count` (u32) and
 `count` record numbers of the directory (u32, ascending). Each installed cell has the parts of
-each installed group. The server has each cell; a phone has fewer cells in the same layout.
+each installed group: a download cell has 2 files and one for each installed group, an upper cell
+1 file and one for each installed group. The server has each cell; a phone has fewer cells in the same
+layout.
 
 `install::install` installs a set of download cells and profile groups:
 
@@ -291,7 +294,9 @@ each installed group. The server has each cell; a phone has fewer cells in the s
    the folder.
 5. It deletes each file in `cells/` that the install does not name, and nothing outside `cells/`.
 
-The install adds each upper cell whose download cells are all in the install. `install::check`
+The install adds each upper cell whose download cells are all in the install, with its topology part
+and the parts of the installed groups. It takes no part of an upper cell that it holds only in
+part; the search treats that cell as open (rule 3). `install::check`
 checks each object without a file. `install::scrub` reads each installed file again.
 
 The rules of a reader:
