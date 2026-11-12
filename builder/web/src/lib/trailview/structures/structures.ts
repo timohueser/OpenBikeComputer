@@ -15,7 +15,7 @@ import { Pool, type Mesh } from './pool';
  * The structure meshes and the anchored meshes on the GPU, fixed pools; the anchors of the anchored
  * meshes that a frame draws, and their heights.
  */
-const VERTEX_BYTES = 8 * 2 ** 20, INDEX_BYTES = 4 * 2 ** 20, ANCHORED_BYTES = 6 * 2 ** 20, ANCHORED_INDEX_BYTES = 3 * 2 ** 20, ANCHORS = 2 ** 16;
+const VERTEX_BYTES = 16 * 2 ** 20, INDEX_BYTES = 8 * 2 ** 20, ANCHORED_BYTES = 6 * 2 ** 20, ANCHORED_INDEX_BYTES = 3 * 2 ** 20, ANCHORS = 2 ** 16;
 /**
  * A floor reaches this far past the ends of its segments: off a deck or out of a tunnel the ground holds
  * the road's height, and the probe of the ground under the eye, a few frames late, catches up meanwhile.
@@ -58,6 +58,8 @@ export class Structures {
     points: Uint32Array[] = [];
     /** The meshes of the drawn owners, and whether each is near: the last frame's, to compare. */
     private drawn: { meshes: NodeMeshes; near: boolean }[] = [];
+    /** The far structure mesh of each owner node of the frame that has its meshes, by key. */
+    private owned = new Map<string, Mesh | null>();
     /** The anchored meshes of the frame whose anchors did not fit. */
     private unanchored = 0;
     /** Whether the anchors of the frame are not on the GPU yet. */
@@ -112,9 +114,12 @@ export class Structures {
         // whatever node the terrain draws first.
         const away = ({ x, y }: Node) => Math.hypot(Math.max(x * side - eye.x, 0, eye.x - (x + 1) * side), Math.max(y * side - eye.y, 0, eye.y - (y + 1) * side));
         const now: { meshes: NodeMeshes; near: boolean }[] = [];
+        this.owned = new Map();
         for (const { node, near } of [...owners.values()].sort((a, b) => away(a.node) - away(b.node))) {
             const meshes = this.stamps.get(node)?.meshes;
-            if (meshes) now.push({ meshes, near });
+            if (!meshes) continue;
+            now.push({ meshes, near });
+            this.owned.set(key(node), meshes.far.structures);
         }
         if (now.length === this.drawn.length && now.every((o, i) => o.meshes === this.drawn[i].meshes && o.near === this.drawn[i].near)) return false;
         this.drawn = now;
@@ -165,6 +170,15 @@ export class Structures {
             if (z >= low && z <= high && (best === undefined || z > best)) best = z;
         }
         return best;
+    }
+
+    /**
+     * Whether the owner node at world point x, y has its far structure mesh in the pool after this frame's `write`: the mesh
+     * with its tunnels' bores and portals.
+     */
+    holds(x: number, y: number): boolean {
+        const side = size(OWNER), mesh = this.owned.get(key({ level: OWNER, x: Math.floor(x / side), y: Math.floor(y / side) }));
+        return !!mesh && !!this.resources?.structures.at(mesh);
     }
 
     /** Uploads the meshes that the pools lack, and the anchors of the frame. */

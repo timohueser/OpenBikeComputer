@@ -14,7 +14,7 @@ describe('the structures', () => {
             },
         } as unknown as Stamps;
         const structures = new Structures(stamps);
-        // The eye stands far from the squares about it that cast into the near shadow map: in owner 100's square.
+        // The eye stands in owner 100's square. The reach of the near casters is tiny at this unit: only that square is added.
         const node = (x: number): Node => ({ level: OWNER, x, y: 0 });
         structures.update([node(120), node(103), node(100)], { x: 100.5 * side, y: 0.5 * side, unit: 1e6 });
         const order = (structures as unknown as { draws: unknown[] }).draws.map(mesh => [...meshes].find(([, m]) => m.far.structures === mesh)?.[0]);

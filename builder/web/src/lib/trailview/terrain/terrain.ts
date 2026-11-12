@@ -1049,11 +1049,12 @@ export class Terrain {
         const instances = new Int32Array(4 * this.nodes.length);
         this.nodes.forEach(({ level, x, y }, i) => instances.set([x * size(level) - anchor.whole[0], y * size(level) - anchor.whole[1], level, 0], 4 * i));
         device.queue.writeBuffer(r.nodes, 0, instances);
-        device.queue.writeBuffer(r.holes, 0, holes(this.boxes, anchor));
+        // After the structures' upload: a portal opens the ground only where its owner's bore and facade draw in this frame.
+        this.structures.write();
+        device.queue.writeBuffer(r.holes, 0, holes(this.boxes, anchor, (x, y) => this.structures.holds(x, y)));
         const changed = instances.length !== this.instances.length || instances.some((v, i) => v !== this.instances[i]);
         this.instances = instances;
         this.water.write();
-        this.structures.write();
         device.queue.writeBuffer(r.masks, 4, new Float32Array([this.roads.write()]));
         this.records?.write(device, r.model, [anchor.whole[0] + anchor.part[0], anchor.whole[1] + anchor.part[1]]);
         this.pieces?.write({ anchor, above });
@@ -1208,13 +1209,16 @@ function auditPipelines(gpu: Gpu): Promise<GPUComputePipeline[]> {
     return Promise.all(['audit', 'apron'].map(entry => compute(gpu, 'audit', entry, [L.audit, surface, L.empty, features])));
 }
 
-/** The portals' boxes as `holes` of terrain.wgsl reads them, about the anchor; each box once, MAX_HOLES at most. */
-function holes(lists: Float64Array[], anchor: Anchor): Float32Array<ArrayBuffer> {
+/**
+ * The portals' boxes as `holes` of terrain.wgsl reads them, about the anchor; each box once, MAX_HOLES at most. A box
+ * whose facade middle is not `drawn` is left out: without its bore and facade the ground stays closed.
+ */
+function holes(lists: Float64Array[], anchor: Anchor, drawn: (x: number, y: number) => boolean): Float32Array<ArrayBuffer> {
     const out = new Float32Array(4 * (1 + 3 * MAX_HOLES)), seen = new Set<string>();
     let n = 0;
     for (const list of lists) for (let i = 0; i < list.length && n < MAX_HOLES; i += BOX) {
         const name = `${list[i]},${list[i + 1]}`;
-        if (seen.has(name)) continue;
+        if (seen.has(name) || !drawn(list[i], list[i + 1])) continue;
         seen.add(name);
         out.set([list[i] - anchor.whole[0], list[i + 1] - anchor.whole[1], ...list.subarray(i + 2, i + BOX)], 4 + 12 * n++);
     }
