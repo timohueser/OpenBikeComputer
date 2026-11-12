@@ -63,25 +63,24 @@ a drawn leg.
 
 In the web planner, a "Multi-day trip" plan splits its route into riding days. The elevation
 profile is the timeline. Each day has a label with its date, distance and riding time, each night
-has a marker, and each rest day has a narrow column. While the profile is open, one row above it
-holds the trip values: the start date, the number of riding days and the kinds of places to sleep
-in.
+has a marker, and each rest day has a narrow column. While the profile is open, a row above it
+holds the start date, the day count and the kinds of places to sleep.
 
-A value that the planner guessed has a dashed line. A day count or a date that the rider set has a
-solid line. The planner guesses the day count from the riding time. After each route change, it
-guesses the count and the suggested nights again. It never changes a value that the rider set. So a
-new plan needs no settings, and the choices of the rider stay. The day count is the only control
-for the length of the days. A bar for the riding time of each day shows the hard days.
+A guessed value has a dashed line, and a value that the rider set has a solid line. The planner
+guesses the day count from the riding time at the plan's pace. After each route or pace change, it
+guesses the count and the suggested nights again. Pinned nights and a set day count stay. When the
+guess has fewer nights, what the rider set on a lost night goes with it; Undo brings it back. The
+day count is the only control for the length of the days. A bar for the riding time of each day
+shows the hard days.
 
 "Choose" or "Change" on a night, or its marker in the profile, opens the night in the day list.
 "Stay here" on a town moves the night there, and so does a drag of the day end. "Stay here" on a
-campsite or a hotel keeps the night. A kept night is a place, with a filled marker. A moved night
-is a point on the route, with a dotted marker on the map. The planner keeps both. "Let the planner
-choose" makes the night a suggestion again. "This night" sets other kinds of places for this night
-only. A night of one kind only (campsites, huts or shelters) ends at a place of that kind. Other
-nights end in the town, as "Around Ulrichen", because the planner cannot pick a hotel in the
-rider's price range. With a start date, each night shows its sunset and its usual night
-temperature.
+campsite or a hotel keeps the night. A kept night is a place, with a filled marker. A moved night is
+a point on the route, with a dotted marker on the map. "Let the planner choose" makes the night a
+suggestion again. "This night" sets other kinds of places for this night only. A night of one kind
+only (campsites, huts or shelters) ends at a place of that kind. Other nights end in the town, as
+"Around Ulrichen", because the planner cannot pick a hotel in the rider's price range. With a start
+date, each night shows its sunset and its usual night temperature.
 
 The plus sign between two days adds a rest day or a train or bus. The next day starts where the
 train or bus arrives. When the arrival is on the route ahead, the train or bus skips the route
@@ -122,9 +121,9 @@ to the device.
 A trip can have a start date. Dates follow the rides: when the rider rides Day 2 on Wednesday and
 not on Tuesday, Day 3 shows Thursday.
 
-The trip has one of four fixed bike types, and each day route carries it. The phone and the device
-use the same estimate table for each bike type. So the phone's day estimate is the device's
-estimate for the same day route.
+Each day route carries the trip's bike type. The phone and the device show the same estimate, from
+one table for each bike type. The web planner times each bike type at its own flat speed and the
+plan's pace, so its time can differ.
 
 ## Riding a trip on the device
 

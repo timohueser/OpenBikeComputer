@@ -1,18 +1,25 @@
 import { describe, expect, it } from 'vitest';
 import { pinNight, addRestDay, setDrawnLeg } from './editor';
-import { exportPlan, importPlan, newPlan } from './library';
+import { exportPlan, importPlan, newPlan, planSummary } from './library';
 import { newVersion } from './versions';
-import { testTrip } from '../../../test-support/planner/trip';
+import { testLine, testTrip } from '../../../test-support/planner/trip';
 
 describe('plan file', () => {
-    it('round-trips nights, dates, rest days and drawings with its versions under a new identity', () => {
-        const trip = { ...addRestDay(pinNight(testTrip(), undefined, 1, [7.2, 47.5], 'Camp'), 1), startDate: '2026-10-04' };
+    it('round-trips nights, dates, the pace, rest days and drawings with its versions under a new identity', () => {
+        const trip = { ...addRestDay(pinNight(testTrip(), undefined, 1, [7.2, 47.5], 'Camp'), 1), startDate: '2026-10-04', pace: 'easy' as const };
         const drawn = setDrawnLeg(trip, 'finish', [[7, 47.5]]);
         const plan = newPlan(drawn, 'Autumn tour'), versions = [newVersion(trip, undefined, 'Before the detour')];
         const imported = importPlan(exportPlan(plan, versions));
         expect(imported.plan.id).not.toBe(plan.id);
         expect(imported.plan).toMatchObject({ revision: 0, name: plan.name, trip: JSON.parse(JSON.stringify(drawn)) });
         expect(imported.versions).toMatchObject(JSON.parse(JSON.stringify(versions)));
+        expect([imported.plan.trip.pace, imported.versions[0].trip.pace]).toEqual(['easy', 'easy']);
+    });
+
+    it('writes the riding time at the pace of the plan into its summary', () => {
+        const trip = testTrip(), line = testLine(trip);
+        expect(planSummary(trip, line).seconds).toBe(Math.round(line.seconds));
+        expect(planSummary({ ...trip, pace: 'fast' }, line).seconds).toBe(Math.round(line.seconds * 19 / 27));
     });
 
     it('writes the keys the companion app needs into each plan object, and keeps an open version that the file has', () => {

@@ -386,4 +386,25 @@ describe('plan session', () => {
         await vi.waitFor(() => expect(session.line).toBeDefined());
         expect(session.trip).toMatchObject({ days: 5, daysSet: true });
     });
+
+    it('changes the pace and the guessed days in one Undo step with no route request, and starts a new plan at Moderate', async () => {
+        service();
+        const calculate = vi.spyOn(routing, 'calculateLine').mockImplementation(async trip => {
+            const line = testLine(trip), seconds = 25 * 3600;
+            return { ...line, elapsed: line.elapsed.map(s => s * seconds / line.seconds), seconds };
+        });
+        const session = new PlanSession();
+        await session.start(new Library(new IDBFactory()));
+        session.commit({ ...plan, daysSet: undefined });
+        await vi.waitFor(() => expect(session.trip.days).toBe(4));
+        session.commit({ ...session.trip, pace: 'fast' });
+        expect([session.trip.days, session.stale]).toEqual([3, false]);
+        expect(session.undo()).toBe(true);
+        expect([session.trip.pace, session.trip.days]).toEqual([undefined, 4]);
+        expect(calculate).toHaveBeenCalledOnce();
+        session.redo();
+        expect(await session.newPlan()).toBe(true);
+        expect(session.trip.pace).toBeUndefined();
+        session.close();
+    });
 });
