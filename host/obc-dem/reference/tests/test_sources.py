@@ -1144,7 +1144,7 @@ class EnglandSquares(TempCase):
         # File times come from the kernel's coarse clock, a few milliseconds behind.
         self.assertGreater(abs(asked[1][1] - asked[0][1]), 0.25)
         folder = source.shared / "gb-eng"
-        self.assertEqual(sorted(path.name for path in folder.iterdir() if path.name not in ("lock", "asked")),
+        self.assertEqual(sorted(path.name for path in folder.iterdir() if path.name not in ("lock", "asked", "pace")),
                          ["TF2510.none", "TF3010.tif"])
 
         # A zip that another host left in the folder is read and not asked for.
@@ -1152,7 +1152,7 @@ class EnglandSquares(TempCase):
         (self.inputs / "TF3010").rename(folder / "TF3010.zip")
         gb_module.http_download = lambda *a, **kw: self.fail("the row asked the server")
         self.assertTrue(source.fetch(box, self.root / "c"))
-        self.assertEqual(sorted(path.name for path in folder.iterdir() if path.name not in ("lock", "asked")),
+        self.assertEqual(sorted(path.name for path in folder.iterdir() if path.name not in ("lock", "asked", "pace")),
                          ["TF2510.none", "TF3010.tif"])
 
     def test_a_429_stops_every_later_download_of_the_prepare(self):
@@ -1199,6 +1199,37 @@ class EnglandSquares(TempCase):
         with self.assertRaises(ingest.Refuse):
             source.fetch((-0.0400, 52.6980, -0.0300, 52.7020), self.root / "b")  # TF3010
         self.assertEqual(asked, ["/TF3010"])
+
+
+class Busy(unittest.TestCase):
+    """A gateway that answers a burst with "wait a bit" on a 200 is waited for, not refused."""
+
+    def test_the_kartverket_overuse_answer_is_retried(self):
+        with rasterio.MemoryFile() as memory:
+            with memory.open(driver="GTiff", width=2, height=2, count=1, dtype="float32",
+                             crs="EPSG:25833", transform=Affine(1, 0, 0, 0, -1, 0)) as dst:
+                dst.write(np.full((2, 2), 7.0, dtype="float32"), 1)
+            raster = memory.read()
+        answers = [b'<?xml version="1.0"?><ServiceExceptionReport><ServiceException> [99][Interceptor] '
+                   b"Overforbruk p\xe5 kort tid. Vent litt, pr\xf8v igjen. (1) </ServiceException>"
+                   b"</ServiceExceptionReport>", raster]
+
+        class Gateway(SimpleHTTPRequestHandler):
+            def do_GET(self):
+                body = answers.pop(0)
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        server = serve(self, Gateway)
+        with unittest.mock.patch.object(ingest.sources.base, "RETRY_DELAYS", (0,)):
+            body = ingest.sources.protocols.raster_bytes(f"http://127.0.0.1:{server.server_address[1]}/", "no box")
+        self.assertEqual(body, raster)
+        self.assertEqual(answers, [])
 
 
 class Slovakia(unittest.TestCase):

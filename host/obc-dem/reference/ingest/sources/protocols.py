@@ -22,7 +22,7 @@ from rasterio.warp import transform_bounds
 
 from ..lattice import Refuse, WGS84
 from ..pool import read_source
-from .base import MOST_MISSING, TIFF_MAGIC, Source, decode_tiff, each, http_get, redact
+from .base import MOST_MISSING, TIFF_MAGIC, Source, decode_tiff, each, http_get, pace, redact
 
 # One request per sub-box. A failed 4000 x 4000 request wastes far more time than four
 # 2000 x 2000 ones, and every service here caps the pixels it will answer with.
@@ -157,6 +157,11 @@ def projected_box(box, epsg: int):
     return (lo_x, lo_y, hi_x, hi_y), (hi_x - lo_x, hi_y - lo_y)
 
 
+# A service that answers "too many requests" on a 200: Kartverket's gateway says
+# "[99][Interceptor] Overforbruk på kort tid. Vent litt, prøv igjen", so it is retried after a wait.
+BUSY = (b"[Interceptor]",)
+
+
 def raster_bytes(url: str, what: str) -> bytes:
     """One raster from a service, or a refusal that quotes what came back instead.
 
@@ -166,7 +171,12 @@ def raster_bytes(url: str, what: str) -> bytes:
     reads its token out of the URL, so the URL is not something to put in a message.
     """
 
-    body = http_get(url, what=what, check=decode_tiff)
+    def check(body: bytes) -> None:
+        if any(mark in body[:400] for mark in BUSY):
+            raise OSError(f"the service asks to wait: {body[:300].decode('utf-8', 'replace')}")
+        decode_tiff(body)
+
+    body = http_get(url, what=what, check=check)
     if body[:4] not in TIFF_MAGIC:
         # These services answer an error with a 200 and an XML document that quotes the
         # request, token and all, so the body is redacted like any other message.
@@ -190,7 +200,15 @@ def unreadable(refusal: Refuse) -> bool:
 
 
 class TiledService(Source):
-    """A service that answers one box at a time, cached per request in the work directory."""
+    """A service that answers one box at a time, cached per request in the work directory.
+
+    `gap` is the least time between two requests of the whole prepare, for a server that refuses
+    a burst. It needs the shared directory, which every block of a prepare has.
+    """
+
+    def __init__(self, *args, gap: float = 0.0, **kw):
+        super().__init__(*args, **kw)
+        self.gap = gap
 
     #: These services read a key out of the query, which `request` appends.
     credential_style = "query"
@@ -295,6 +313,8 @@ class TiledService(Source):
         url = self.url(box)
         if url is None:
             return None
+        if self.gap and self.shared is not None:
+            pace(self.shared / "pace" / self.key, self.gap)
         credential = self.credential.query() if self.credential else ""
         return raster_bytes(url + credential, f"{self.key} {box}")
 

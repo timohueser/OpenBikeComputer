@@ -13,6 +13,7 @@ and a redirect that leaves the host loses the `Authorization` header.
 """
 
 import base64
+import fcntl
 import gzip
 import hashlib
 import http.client
@@ -306,6 +307,19 @@ def each(one, items, workers: int) -> list:
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         return list(pool.map(guarded, items))
+
+
+def pace(folder: Path, gap: float) -> None:
+    """Wait until `gap` seconds have passed since any block of the prepare started a request in
+    `folder`, then mark this start. The blocks are separate processes, so a file lock orders them."""
+
+    folder.mkdir(parents=True, exist_ok=True)
+    asked = folder / "asked"
+    with (folder / "pace").open("w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if asked.exists():
+            time.sleep(max(0.0, asked.stat().st_mtime + gap - time.time()))
+        asked.touch()
 
 
 def http_get(url: str, headers=None, what: str | None = None, data: bytes | None = None,
