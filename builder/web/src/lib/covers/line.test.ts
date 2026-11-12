@@ -40,6 +40,11 @@ describe('the line of a cover', () => {
         expect(nearest(points, summary, 450, -20)).toBeCloseTo(750);
     });
 
+    it('gives a place only for a pointer within the limit of the line, also of a hidden stretch', () => {
+        expect(nearest(points, summary, 270, 20, 24)).toBeCloseTo(450);
+        expect(nearest(points, summary, 270, 30, 24)).toBeUndefined();
+    });
+
     it('keeps a segment to a point far beside the eye on its line', () => {
         // From the middle of the image toward a point 10 million pixels away, down and to the right at 1 : 5.
         const far = pack({ x: Float32Array.of(960, 960 + 1e7), y: Float32Array.of(640, 640 + 2e6), distance: Float32Array.of(5000, 10), visible: Uint8Array.of(1, 0) });

@@ -19,6 +19,8 @@
         onpoint?: (metres: number | null) => void;
     } = $props();
 
+    /** The pointer marks the line only within this many CSS pixels of it. */
+    const NEAR_PX = 24;
     let item = $state<RouteRecord | RideRecord>(), cover = $state<CoverRecord>(), bitmap = $state<ImageBitmap>();
     let canvas = $state<HTMLCanvasElement>(), width = $state(0), height = $state(0), cut: Crop | undefined;
     // The points of a cover of an earlier line draw no mark and no part.
@@ -56,8 +58,9 @@
     function point(event: PointerEvent) {
         if (!cut || !summary || !cover?.points || !canvas) return;
         const box = canvas.getBoundingClientRect(), ratio = canvas.width / box.width;
-        const metres = nearest(cover.points, summary, (event.clientX - box.left) * ratio / cut.scale + cut.left, (event.clientY - box.top) * ratio / cut.scale + cut.top);
-        if (metres !== undefined) onpoint?.(metres);
+        const metres = nearest(cover.points, summary, (event.clientX - box.left) * ratio / cut.scale + cut.left, (event.clientY - box.top) * ratio / cut.scale + cut.top,
+            NEAR_PX * ratio / cut.scale);
+        onpoint?.(metres ?? null);
     }
 
     /** The line on a plain ground, in a box of 100 by the shape of the line, with the north up. */

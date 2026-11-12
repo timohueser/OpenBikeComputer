@@ -36,13 +36,9 @@ export function lineKey(item: RouteRecord | RideRecord): string {
     return (hash >>> 0).toString(16).padStart(8, '0');
 }
 
-/** Whether the job has nothing left to do for the record: its cover is made, impossible or failed for its line. */
-const settled = (item: RouteRecord | RideRecord, cover: CoverRecord | undefined) => cover?.lineKey === lineKey(item) && cover.state !== 'waiting';
-
-/** Whether a page can show the cover of the route or the ride: then a detail page puts its map in the small place. */
-export async function hasCover(library: Library, id: string): Promise<boolean> {
-    return !!(await library.cover(id))?.image;
-}
+/** Whether the job has nothing left to do for the record: its cover is made, impossible or failed for its line. A page
+ * asks for the cover of a record that is not settled, also when it shows the cover of an earlier line. */
+export const settled = (item: RouteRecord | RideRecord, cover: CoverRecord | undefined) => cover?.lineKey === lineKey(item) && cover.state !== 'waiting';
 
 let asked: ((id: string) => void) | undefined;
 /** The asks that come before a job starts. */
@@ -127,8 +123,8 @@ export function startCoverJob(library: Library, renderer: () => Promise<Renderer
                 return 'next';
             }
             if (controller.signal.aborted) return 'stay';
-            const { image, points } = await loaded.still({ view, width: WIDTH, height: HEIGHT, line }, controller.signal);
-            await library.saveCover({ id, lineKey: key, state: 'done', image, points: pack(points!), tries: 0 });
+            const { image, points, credits } = await loaded.still({ view, width: WIDTH, height: HEIGHT, line }, controller.signal);
+            await library.saveCover({ id, lineKey: key, state: 'done', image, points: pack(points!), credits, tries: 0 });
             return 'next';
         } catch (error) {
             const name = error instanceof Error ? error.name : '';
