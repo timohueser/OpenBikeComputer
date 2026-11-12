@@ -61,7 +61,7 @@
             cover = stored;
         };
         // Also the cover of an earlier line, which shows until the new one arrives.
-        void load().then(() => { if (live && record?.summary && !settled(record, cover)) wantCover(target); });
+        void load().then(() => { if (live && record?.summary && !settled(record, cover)) wantCover(target, 'page'); });
         const stop = library.onChange((store, changedKey) => {
             if (changedKey === target || (store === 'state' && changedKey === 'waiting')) void load();
         });

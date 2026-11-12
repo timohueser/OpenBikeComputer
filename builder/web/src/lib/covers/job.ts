@@ -1,10 +1,13 @@
-/** Renders the covers of routes and rides in the background, one at a time in the whole browser, and stores them in the library. */
-import type { CoverRecord, RideRecord, RouteRecord } from '../library/records';
+/** Renders the covers of routes and rides in the background, one at a time in the whole browser, and stores them in the
+ * library, with a map picture for a card whose record gets no cover. */
+import type { CoverRecord, MapPicture, RideRecord, RouteRecord } from '../library/records';
 import type { Library } from '../library/store';
 import { loadTrailView } from '../planner/trailview';
+import { appearance } from '../theme.svelte';
 import type { Still, StillJob } from '../trailview/still';
 import { TIME_ZONE, type View } from '../trailview/view';
 import { pack } from './line';
+import type { MapPictureMaker } from './map-picture';
 
 export const WIDTH = 1920, HEIGHT = 1280;
 /** A changed route waits this long after its last change, so a rider who edits a route gets one cover at the end. */
@@ -40,36 +43,53 @@ export function lineKey(item: RouteRecord | RideRecord): string {
  * asks for the cover of a record that is not settled, also when it shows the cover of an earlier line. */
 export const settled = (item: RouteRecord | RideRecord, cover: CoverRecord | undefined) => cover?.lineKey === lineKey(item) && cover.state !== 'waiting';
 
-let asked: ((id: string) => void) | undefined;
-/** The asks that come before a job starts. */
-const early: string[] = [];
+/** Where a cover part shows: a row of a list asks for nothing, a card for the cover and else for the map picture, a page
+ * for the cover only. */
+export type Place = 'row' | 'card' | 'page';
+type Asker = Exclude<Place, 'row'>;
 
-/** Asks for the cover of a route or a ride, if it has none for its line. The newest ask renders first. */
-export function wantCover(id: string): void {
-    if (asked) asked(id);
-    else if (!early.includes(id)) early.push(id);
+/** Whether the job can still make the map picture of the theme for the line of the record: it has no cover image, and
+ * the picture of its line has no image of the theme, no `none` and fewer than MAX_TRIES tries. */
+export function wantsPicture(item: RouteRecord | RideRecord, cover: CoverRecord | undefined, dark: boolean): boolean {
+    const map = cover?.map?.lineKey === lineKey(item) ? cover.map : undefined;
+    return !cover?.image && !map?.none && (map?.tries ?? 0) < MAX_TRIES && !map?.[dark ? 'dark' : 'light'];
+}
+
+let asked: ((id: string, place: Asker) => void) | undefined;
+/** The asks that come before a job starts. */
+const early: [string, Asker][] = [];
+
+/** Asks for the cover of a route or a ride, if it has none for its line, and for a card also for the map picture. The
+ * newest ask comes first. */
+export function wantCover(id: string, place: Asker): void {
+    if (asked) asked(id, place);
+    else early.push([id, place]);
 }
 
 /**
  * Starts the cover job of the page. It renders the covers that `wantCover` asks for, and the cover of the planner's
- * route SETTLE_MS after its last change. It renders only while the page is visible and online and while the planner
- * shows no TrailView, and stops for the session after a still that reached its time limit. Returns the function that
- * stops it.
+ * route SETTLE_MS after its last change. For a card whose record gets no cover, it then makes the map picture of the
+ * theme. It works only while the page is visible and online. A cover also waits while the planner shows TrailView; a
+ * picture does not. Covers are off with no WebGPU and, once the job learns it, with a software renderer or after a still
+ * that reached its time limit. Returns the function that stops the job.
  */
-export function startCoverJob(library: Library, renderer: () => Promise<Renderer> = trailView): () => void {
+export function startCoverJob(library: Library, renderer: () => Promise<Renderer> = trailView, picture: () => Promise<MapPictureMaker> = mapPicture): () => void {
     if ((navigator as Navigator & { connection?: { saveData?: boolean } }).connection?.saveData) return () => {};
-    const queue: string[] = [], settling = new Map<string, ReturnType<typeof setTimeout>>(), stops: (() => void)[] = [];
-    let engine: Promise<Renderer | undefined> | undefined, busy = false, stopped = false, rendering: AbortController | undefined, retry: ReturnType<typeof setTimeout> | undefined;
+    const queue: string[] = [], cards = new Set<string>(), parked = new Set<string>(), settling = new Map<string, ReturnType<typeof setTimeout>>(), stops: (() => void)[] = [];
+    let engine: Promise<Renderer | undefined> | undefined, off = !('gpu' in navigator), busy = false, stopped = false;
+    let rendering: AbortController | undefined, drawing: AbortController | undefined, retry: ReturnType<typeof setTimeout> | undefined;
 
     const stop = () => {
         stopped = true;
         rendering?.abort();
+        drawing?.abort();
         clearTimeout(retry);
         for (const timer of settling.values()) clearTimeout(timer);
         for (const end of stops) end();
         if (asked === want) asked = undefined;
     };
-    const want = (id: string) => {
+    const want = (id: string, place: Asker) => {
+        if (place === 'card') cards.add(id);
         if (queue.includes(id)) queue.splice(queue.indexOf(id), 1);
         queue.unshift(id);
         void pump();
@@ -79,27 +99,31 @@ export function startCoverJob(library: Library, renderer: () => Promise<Renderer
     // The renderer loads at the first cover, so a page that asks for none does not load the engine.
     const load = () => engine ??= renderer().then(async loaded => {
         if (!await loaded.canRender()) return undefined;
-        stops.push(loaded.onTrailViewOpen(() => loaded.trailViewOpen() ? rendering?.abort() : void pump()));
+        stops.push(loaded.onTrailViewOpen(() => {
+            if (loaded.trailViewOpen()) return rendering?.abort();
+            for (const id of parked) if (!queue.includes(id)) queue.push(id);
+            parked.clear();
+            void pump();
+        }));
         return loaded;
     });
-    const waits = (loaded?: Renderer) => stopped || document.hidden || !navigator.onLine || !!loaded?.trailViewOpen();
+    const waits = () => stopped || document.hidden || !navigator.onLine;
 
     async function pump(): Promise<void> {
         if (busy || waits() || !queue.length) return;
         busy = true;
         try {
-            const loaded = await load();
-            if (!loaded) return stop();
-            while (queue.length && !waits(loaded)) {
-                // An ask during the render puts the id in the queue again, for the line that it has then.
+            while (queue.length && !waits()) {
+                // An ask during the work puts the id in the queue again, for the line that it has then.
                 const id = queue.shift()!;
-                const outcome = await navigator.locks.request(LOCK, { ifAvailable: true }, lock => lock && render(loaded, id));
-                if ((!outcome || outcome === 'stay') && !queue.includes(id)) queue.unshift(id);
+                const outcome = await navigator.locks.request(LOCK, { ifAvailable: true }, lock => lock && work(id));
+                if (outcome === 'park') parked.add(id);
+                else if (outcome === 'next') { if (!queue.includes(id)) cards.delete(id); }
+                else if (!queue.includes(id)) queue.unshift(id);
                 if (!outcome) {
                     retry = setTimeout(() => void pump(), RETRY_MS);
                     return;
                 }
-                if (outcome === 'stop') return stop();
             }
         } catch (error) {
             console.error('Cover job:', error);
@@ -109,17 +133,35 @@ export function startCoverJob(library: Library, renderer: () => Promise<Renderer
         }
     }
 
-    /** One cover, inside the lock. `stay` puts the record first in the queue again. */
-    async function render(loaded: Renderer, id: string): Promise<'next' | 'stay' | 'stop'> {
-        const [item, old] = await Promise.all([library.item(id), library.cover(id)]);
-        // The cover of another tab, or a record that is gone.
-        if (!item?.summary || settled(item, old)) return 'next';
+    /** The work for one record, inside the lock. `stay` puts the record first in the queue again; `park` keeps it until
+     * the planner closes TrailView. */
+    async function work(id: string): Promise<'next' | 'stay' | 'park'> {
+        const item = await library.item(id);
+        let cover = await library.cover(id);
+        // A record that is gone.
+        if (!item?.summary) return 'next';
+        if (!off && !settled(item, cover)) {
+            const loaded = await load();
+            if (!loaded) off = true;
+            else if (loaded.trailViewOpen()) return 'park';
+            else {
+                const outcome = await render(loaded, id, item, cover);
+                if (outcome !== 'next') return outcome;
+                cover = await library.cover(id);
+            }
+        }
+        const coverless = off || (settled(item, cover) && cover!.state !== 'done');
+        return cards.has(id) && coverless && wantsPicture(item, cover, appearance.dark) ? draw(id, item, cover) : 'next';
+    }
+
+    /** One cover. */
+    async function render(loaded: Renderer, id: string, item: RouteRecord | RideRecord, old: CoverRecord | undefined): Promise<'next' | 'stay'> {
         const key = lineKey(item), tries = old?.lineKey === key ? old.tries : 0, controller = rendering = new AbortController();
-        const line = Array.from({ length: item.summary.line.length / 2 }, (_, i) => [item.summary!.line[2 * i], item.summary!.line[2 * i + 1]] as [number, number]);
+        const line = Array.from({ length: item.summary!.line.length / 2 }, (_, i) => [item.summary!.line[2 * i], item.summary!.line[2 * i + 1]] as [number, number]);
         try {
             const view = await loaded.view(line, when(item));
             if (!view) {
-                await library.saveCover({ id, lineKey: key, state: 'none', tries: 0 });
+                await library.saveCover({ id, lineKey: key, state: 'none', tries: 0, ...old?.map && { map: old.map } });
                 return 'next';
             }
             if (controller.signal.aborted) return 'stay';
@@ -130,12 +172,36 @@ export function startCoverJob(library: Library, renderer: () => Promise<Renderer
             const name = error instanceof Error ? error.name : '';
             if (name === 'aborted' || name === 'hidden') return 'stay';
             console.info(`Cover of ${id}:`, error);
-            // The cover of an earlier line stays.
+            // The cover of an earlier line and the map picture stay.
             await library.saveCover({ ...old, id, lineKey: key, state: tries + 1 >= MAX_TRIES ? 'failed' : 'waiting', tries: tries + 1 });
+            if (name === 'timeout') off = true;
             // After a lost device, the next still asks for a new one.
-            return name === 'timeout' ? 'stop' : name === 'device-lost' ? 'stay' : 'next';
+            return name === 'device-lost' ? 'stay' : 'next';
         } finally {
             rendering = undefined;
+        }
+    }
+
+    /** The map picture of the theme. */
+    async function draw(id: string, item: RouteRecord | RideRecord, old: CoverRecord | undefined): Promise<'next' | 'stay'> {
+        const key = lineKey(item), dark = appearance.dark, controller = drawing = new AbortController();
+        const map: MapPicture = old?.map?.lineKey === key ? old.map : { lineKey: key, tries: 0 };
+        // A record with a picture and no cover waits for a cover.
+        const cover: CoverRecord = old ?? { id, lineKey: key, state: 'waiting', tries: 0 };
+        try {
+            const made = await (await picture())(item.summary!, dark, controller.signal);
+            const next: MapPicture = made === 'none' ? { lineKey: key, tries: 0, none: true }
+                : { ...map, tries: 0, points: made.points, credits: made.credits, [dark ? 'dark' : 'light']: made.image };
+            await library.saveCover({ ...cover, map: next });
+            return 'next';
+        } catch (error) {
+            const name = error instanceof Error ? error.name : '';
+            if (name === 'aborted' || name === 'hidden') return 'stay';
+            console.info(`Map picture of ${id}:`, error);
+            await library.saveCover({ ...cover, map: { ...map, tries: map.tries + 1 } });
+            return 'next';
+        } finally {
+            drawing = undefined;
         }
     }
 
@@ -147,7 +213,7 @@ export function startCoverJob(library: Library, renderer: () => Promise<Renderer
             // Only the planner's route: a restored backup changes many routes, and a row of a list asks for no cover.
             if (await library.state('active') !== id) return;
             const [item, cover] = await Promise.all([library.item(id), library.cover(id)]);
-            if (item?.summary && !settled(item, cover)) want(id);
+            if (item?.summary && !settled(item, cover)) want(id, 'page');
         }, SETTLE_MS));
     }));
     for (const [target, event] of [[document, 'visibilitychange'], [window, 'online']] as const) {
@@ -155,7 +221,7 @@ export function startCoverJob(library: Library, renderer: () => Promise<Renderer
         target.addEventListener(event, listener);
         stops.push(() => target.removeEventListener(event, listener));
     }
-    for (const id of early.splice(0)) want(id);
+    for (const [id, place] of early.splice(0)) want(id, place);
     return stop;
 }
 
@@ -183,3 +249,6 @@ async function trailView(): Promise<Renderer> {
         onTrailViewOpen: start.onTrailViewOpen,
     };
 }
+
+/** The map code loads at the first picture, so the shell does not load MapLibre at its start. */
+const mapPicture = () => import('./map-picture').then(module => module.mapPicture);
