@@ -235,7 +235,7 @@ describe("SelectionResolver", () => {
     const edge: BoxPart = {
         kind: "box",
         id: "box-2",
-        name: "Day 3",
+        name: "Edge of A",
         box: { minLat: A.minLat + 1000, minLon: A.maxLon - 200, maxLat: A.maxLat - 1000, maxLon: A.maxLon - 100 },
     };
     const selection = { parts: [insideA, region, edge] };

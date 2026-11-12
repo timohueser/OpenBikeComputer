@@ -26,7 +26,6 @@ import { initCore } from "../core/bridge";
  * - `not-ride` — the bytes are not one complete ride object.
  * - `ride-no-points` — the finished ride has no recorded samples.
  * - `input-truncated` — a read ran off the end of the file.
- * - `not-route` — the bytes handed to the route read-back are not an OBCR route.
  */
 export type ConvertErrorCode =
     | "empty-file"
@@ -36,7 +35,6 @@ export type ConvertErrorCode =
     | "not-ride"
     | "ride-no-points"
     | "input-truncated"
-    | "not-route"
     | "internal";
 
 /** A conversion failure: a stable {@link ConvertErrorCode} plus a message written for a rider. */
@@ -109,34 +107,6 @@ export async function trackToGpx(ride: Uint8Array, name: string): Promise<string
     }
 }
 
-/** One point of a decoded route polyline, degrees and metres. */
-export interface TrackPoint {
-    readonly lat: number;
-    readonly lon: number;
-    readonly ele: number;
-}
-
-/**
- * Read a `.obcr` route's polyline back out — the preview's direction. The wasm side returns flat
- * `[lat°, lon°, ele m]` triples in one `Float64Array`; this unpacks them into points.
- *
- * @throws {ConvertError} with an actionable message; see {@link ConvertErrorCode}.
- */
-export async function routeTrack(obcr: Uint8Array): Promise<TrackPoint[]> {
-    const mod = await ensure();
-    let flat: Float64Array;
-    try {
-        flat = mod.obc_convert_obcr_to_track(obcr);
-    } catch (cause) {
-        throw asConvertError(cause);
-    }
-    const points: TrackPoint[] = [];
-    for (let i = 0; i + 2 < flat.length; i += 3) {
-        points.push({ lat: flat[i], lon: flat[i + 1], ele: flat[i + 2] });
-    }
-    return points;
-}
-
 function ensure(): Promise<Bridge> {
     return load();
 }
@@ -149,7 +119,6 @@ const CODES: ReadonlySet<string> = new Set<ConvertErrorCode>([
     "not-ride",
     "ride-no-points",
     "input-truncated",
-    "not-route",
     "internal",
 ]);
 

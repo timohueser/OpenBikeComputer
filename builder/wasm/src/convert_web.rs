@@ -31,15 +31,6 @@ mod web {
         crate::convert::track_to_gpx(bytes, name).map_err(to_js)
     }
 
-    /// Decode a `.obcr` route's polyline for the device page's preview: flat `[lat, lon, ele]`
-    /// triples in route order, crossing as one `Float64Array`.
-    ///
-    /// Throws an `Error` carrying `code` and `message` on failure; see [`crate::convert::ErrorCode`].
-    #[wasm_bindgen]
-    pub fn obc_convert_obcr_to_track(bytes: &[u8]) -> Result<Vec<f64>, JsValue> {
-        crate::convert::obcr_to_track(bytes).map_err(to_js)
-    }
-
     /// Build the JS exception as a real `Error` instance, so it carries a stack and survives
     /// `instanceof Error`, with the stable code hung off it as a plain property.
     ///

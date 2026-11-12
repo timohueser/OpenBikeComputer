@@ -4,7 +4,7 @@
 // A map is one file, so there is nothing to order, nothing to package and nothing to
 // acknowledge: the only question left is where it lands.
 
-import type { AssemblePhase, MemoryEstimate } from "../assemble/bridge";
+import { ASSEMBLE_PHASES, type AssemblePhase, type MemoryEstimate } from "../assemble/bridge";
 import {
     isWorkerResponse,
     requestTransferList,
@@ -70,11 +70,9 @@ const SORT_BUDGET_BYTES = 256 * 1024 * 1024;
 const isMobileUa = typeof navigator !== "undefined" && /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent);
 const MOBILE_BUDGET = 1024 ** 3;
 
-const ASM_PHASES: AssemblePhase[] = ["open", "poi", "nav", "plan", "write", "verify", "done"];
-
 /** Milliseconds from each phase's start to the next phase's start, in phase order. */
 function phaseDurations(starts: Partial<Record<AssemblePhase, number>>): Partial<Record<AssemblePhase, number>> {
-    const seen = ASM_PHASES.filter((p) => starts[p] !== undefined);
+    const seen = ASSEMBLE_PHASES.filter((p) => starts[p] !== undefined);
     const out: Partial<Record<AssemblePhase, number>> = {};
     for (let i = 0; i + 1 < seen.length; i++) {
         out[seen[i]] = Math.round(starts[seen[i + 1]]! - starts[seen[i]]!);
