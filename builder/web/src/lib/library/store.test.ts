@@ -17,8 +17,8 @@ describe('library store', () => {
         const saved = await first.saveRoute(route('a'), [{ id: 'v' }]);
         await first.setState('active', saved.id);
         const stale = (await second.route('a'))!;
-        await Promise.all([first.saveRoute({ ...saved, name: 'First' }), first.saveRoute({ ...saved, name: 'Last' })]);
-        expect((await first.routes())[0]).toMatchObject({ name: 'Last', revision: 3 });
+        await Promise.all([first.saveRoute({ ...saved, updatedAt: 2 }), first.saveRoute({ ...saved, updatedAt: 3 })]);
+        expect((await first.routes())[0]).toMatchObject({ updatedAt: 3, revision: 3 });
         expect(await first.versions('a')).toEqual([{ id: 'v' }]);
         await expect(second.saveRoute({ ...stale, name: 'Unseen' })).rejects.toThrow('another tab');
         await expect(second.removeRoute('a', stale.revision)).rejects.toThrow('changed');
@@ -32,6 +32,44 @@ describe('library store', () => {
         expect(await library.addRoute(route('file-a'))).toBe(true);
         expect(await library.addRoute({ ...route('file-a'), name: 'Other' })).toBe(false);
         expect((await library.routes()).map(r => r.name)).toEqual(['file-a']);
+        await library.close();
+    });
+
+    it('keeps a rename over a save that was queued before it', async () => {
+        const library = new Library(new IDBFactory()), saved = await library.saveRoute(route('a'));
+        const [renamed, later] = await Promise.all([library.renameRoute('a', 'Lake loop'), library.saveRoute({ ...saved, updatedAt: 5 })]);
+        expect(renamed).toMatchObject({ name: 'Lake loop', revision: 2 });
+        expect(later).toMatchObject({ name: 'Lake loop', revision: 3, updatedAt: 5 });
+        expect(await library.route('a')).toMatchObject({ name: 'Lake loop', revision: 3 });
+        await expect(library.renameRoute('gone', 'x')).rejects.toThrow('not in the library');
+        await library.renameRoute('a', 'Lake round');
+        // The copy of the route still has revision 1: the tab knows the revisions of its own save and rename.
+        await library.removeRoute('a', saved.revision);
+        expect(await library.route('a')).toBeUndefined();
+        await library.close();
+    });
+
+    it('does not hide a save of another tab behind a rename', async () => {
+        const factory = new IDBFactory(), stale = new Library(factory), other = new Library(factory);
+        const saved = await stale.saveRoute(route('a'));
+        await other.saveRoute({ ...(await other.route('a'))!, trip: { points: [], edited: true } });
+        expect(await stale.renameRoute('a', 'Lake loop')).toMatchObject({ name: 'Lake loop', revision: 3 });
+        await expect(stale.saveRoute({ ...saved, updatedAt: 2 })).rejects.toThrow('another tab');
+        await expect(stale.removeRoute('a', saved.revision)).rejects.toThrow('changed');
+        expect(await other.route('a')).toMatchObject({ name: 'Lake loop', trip: { edited: true } });
+        await stale.close(); await other.close();
+    });
+
+    it('changes a state value in one transaction, and a removed route stops waiting for the device', async () => {
+        const library = new Library(new IDBFactory()), heard: string[] = [];
+        library.onChange((store, key) => heard.push(`${store}:${key}`));
+        await library.saveRoute(route('a'));
+        const add = (id: string) => library.changeState('waiting', ids => [...ids ?? [], id]);
+        await Promise.all([add('a'), add('b')]);
+        expect(await library.state('waiting')).toEqual(['a', 'b']);
+        await library.removeRoute('a');
+        expect(await library.state('waiting')).toEqual(['b']);
+        expect(heard).toEqual(['routes:a', 'state:waiting', 'state:waiting', 'routes:a', 'state:waiting']);
         await library.close();
     });
 

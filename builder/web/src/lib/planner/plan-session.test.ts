@@ -120,6 +120,35 @@ describe('plan session', () => {
         expect(routes.fetch).toHaveBeenCalledTimes(3);
     });
 
+    it('takes a rename of another page over its own later save, deletes its plan after a rename, and opens an empty plan when another page removes its plan', async () => {
+        service();
+        const library = new Library(new IDBFactory()), session = new PlanSession();
+        await session.start(library);
+        session.commit(plan);
+        await vi.waitFor(() => expect(session.line).toBeDefined());
+        await session.saved();
+        const id = session.plan.id;
+        await library.renameRoute(id, 'Lake loop');
+        await vi.waitFor(() => expect(session.plan.name).toBe('Lake loop'));
+        session.commit(moved(plan, 8.2));
+        expect(await session.saved()).toBe(true);
+        expect(await library.route(id)).toMatchObject({ name: 'Lake loop', trip: { points: moved(plan, 8.2).points } });
+        await session.rename(session.plan, 'Lake round');
+        await vi.waitFor(() => expect(session.plan.name).toBe('Lake round'));
+        expect(await session.remove(session.plan)).toBe(true);
+        expect(await library.route(id)).toBeUndefined();
+
+        session.commit(plan);
+        await vi.waitFor(() => expect(session.line).toBeDefined());
+        await session.saved();
+        const second = session.plan.id;
+
+        await library.removeRoute(second);
+        await vi.waitFor(() => expect(session.plan.id).not.toBe(second));
+        expect([session.trip.points, session.saveError]).toEqual([[], '']);
+        session.close();
+    });
+
     it('previews an option without an edit, applies it as one Undo step, and refuses options of an earlier plan', async () => {
         const via: Coordinate = [8.05, 48.02];
         const routes = service([alternative('corridor', 'corridor', 'touring', [[8, 48], via, [8.1, 48]], via)]);
@@ -385,5 +414,26 @@ describe('plan session', () => {
         session.commit(visit(session.trip, 'b'));
         await vi.waitFor(() => expect(session.line).toBeDefined());
         expect(session.trip).toMatchObject({ days: 5, daysSet: true });
+    });
+
+    it('changes the pace and the guessed days in one Undo step with no route request, and starts a new plan at Moderate', async () => {
+        service();
+        const calculate = vi.spyOn(routing, 'calculateLine').mockImplementation(async trip => {
+            const line = testLine(trip), seconds = 25 * 3600;
+            return { ...line, elapsed: line.elapsed.map(s => s * seconds / line.seconds), seconds };
+        });
+        const session = new PlanSession();
+        await session.start(new Library(new IDBFactory()));
+        session.commit({ ...plan, daysSet: undefined });
+        await vi.waitFor(() => expect(session.trip.days).toBe(4));
+        session.commit({ ...session.trip, pace: 'fast' });
+        expect([session.trip.days, session.stale]).toEqual([3, false]);
+        expect(session.undo()).toBe(true);
+        expect([session.trip.pace, session.trip.days]).toEqual([undefined, 4]);
+        expect(calculate).toHaveBeenCalledOnce();
+        session.redo();
+        expect(await session.newPlan()).toBe(true);
+        expect(session.trip.pace).toBeUndefined();
+        session.close();
     });
 });

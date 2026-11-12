@@ -1,4 +1,4 @@
-import { planPreset, presetProfile, ridingProfiles } from './riding-profiles';
+import { paceFactor, planPreset, presetProfile, ridingProfiles } from './riding-profiles';
 import { orderedRoutePoints, type DrawnCoordinate, type Trip } from './editor';
 import { cumulative, firstIndex, type Coordinate } from './geo';
 import { config } from './map-data';
@@ -181,7 +181,7 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCa
     if (points.length < 2) throw new Error('Choose a start and finish to calculate a route.');
     const result: RoutingLine = { coordinates: [], elevation: [], elapsed: [], edges: {}, stops: [], seconds: 0, profile: profileId(trip), unknownSurfaceKm: 0, unpavedKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0 };
     // Seconds per kilometre on a manual leg or connector.
-    const pace = 3600 / ridingProfiles[trip.bike ?? 'touring'].kmh;
+    const pace = 3600 / ridingProfiles[trip.bike ?? 'touring'].engineKmh;
     let distance = 0;
     let afterTransfer = false;
     function append(line: Coordinate[], elevation: (number | null)[], elapsed: number[], edges: Edges, transfer = false) {
@@ -269,6 +269,29 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCa
         i = until + 1;
     }
     return result;
+}
+
+const pacedLines = new WeakMap<RoutingLine, Map<string, RoutingLine>>();
+const pacedSources = new WeakMap<RoutingLine, RoutingLine>();
+
+/** `line` with the time at the activity and pace of `trip` (`paceFactor`). In a bike plan a pushed segment keeps its
+ * walking time. Each line has one copy for each factor and kind of plan, so a cache by the identity of `elapsed` keeps
+ * working. A paced copy is paced again from its source line. */
+export function pacedLine(line: RoutingLine, trip: Trip): RoutingLine {
+    const source = pacedSources.get(line) ?? line, factor = paceFactor(trip), pushed = trip.bike !== 'hiking' && source.edges.pushing;
+    if (factor === 1) return source;
+    let byFactor = pacedLines.get(source);
+    if (!byFactor) pacedLines.set(source, byFactor = new Map());
+    const key = `${factor} ${!!pushed}`;
+    let paced = byFactor.get(key);
+    if (!paced) {
+        const elapsed = [...source.elapsed];
+        for (let i = 1; i < elapsed.length; i++)
+            elapsed[i] = elapsed[i - 1] + (source.elapsed[i] - source.elapsed[i - 1]) * (pushed && pushed[i - 1] ? 1 : factor);
+        byFactor.set(key, paced = { ...source, elapsed, seconds: elapsed.at(-1) ?? 0 });
+        pacedSources.set(paced, source);
+    }
+    return paced;
 }
 
 /** The progress at which `seconds` of riding are done: the inverse of `movingSecondsAt`. */

@@ -5,6 +5,8 @@
     import TrailViewMiniMap from './TrailViewMiniMap.svelte';
     import TrailViewProfile from './TrailViewProfile.svelte';
     import { config } from '../../lib/planner/map-data';
+    import { creditsWith } from '../../lib/planner/map-setup';
+    import Credits from './Credits.svelte';
     import { coordinateAt, cumulative, type Coordinate } from '../../lib/planner/geo';
     import { FIRST_HEADING, loadTrailView } from '../../lib/planner/trailview';
     import { nightBadge, type RouteLook } from '../../lib/planner/trailview-route';
@@ -25,11 +27,7 @@
     let canvas: HTMLCanvasElement;
     let failure = $state('');
     let ground = $state(false);
-    // The mini-map draws the basemap: its credits are the OSM data, its land cover and Protomaps.
-    const creditsWith = (layers: string[]) => [...new Set([config.attribution, config.landcover_attribution ?? '', 'Protomaps', config.terrain_attribution, ...layers].filter(Boolean))];
     let credits = $state(creditsWith([]));
-    let creditsOpen = $state(false);
-    let creditsBox = $state<HTMLElement>();
     // A look-around drag that ends over the margin clicks the dialog too: only a press on the backdrop closes it.
     let pressedBackdrop = false;
     let engine: TrailView | undefined;
@@ -111,7 +109,6 @@
     onpointerdown={event => pressedBackdrop = event.target === dialog}
     onclick={event => {
         if (pressedBackdrop && event.target === dialog) dialog.close();
-        else if (creditsOpen && !creditsBox?.contains(event.target as Node)) creditsOpen = false;
     }}
     onkeydown={event => { if (event.key === 'Escape' || event.ctrlKey || event.metaKey) event.stopPropagation(); }}
     oncopy={event => {
@@ -142,16 +139,7 @@
         {/if}
     {/if}
     <button type="button" class="close" aria-label="Close TrailView" onclick={() => dialog.close()}><Icon name="close" /></button>
-    {#if credits.length}
-        <!-- Touch has no hover, so a tap toggles the credits. -->
-        <div class="credits" class:open={creditsOpen} bind:this={creditsBox}>
-            <small id="trailview-credits" role="tooltip">{credits.join(' · ')}</small>
-            <button type="button" aria-label="Credits" aria-describedby="trailview-credits"
-                onclick={event => { if ('pointerType' in event && event.pointerType === 'touch') creditsOpen = !creditsOpen; }}>
-                <svg viewBox="0 0 20 20" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M4 10a6 6 0 1 0 12 0 6 6 0 1 0-12 0m5-3a1 1 0 1 0 2 0 1 1 0 1 0-2 0m0 3a1 1 0 1 1 2 0v3a1 1 0 1 1-2 0" /></svg>
-            </button>
-        </div>
-    {/if}
+    <Credits {credits} />
 </dialog>
 
 <style>
@@ -300,47 +288,5 @@
     .route button:focus-visible {
         outline: 2px solid var(--forest);
         outline-offset: -2px;
-    }
-    .credits {
-        position: absolute;
-        right: max(10px, env(safe-area-inset-right));
-        bottom: max(10px, env(safe-area-inset-bottom));
-        display: flex;
-        flex-direction: column;
-        align-items: flex-end;
-        gap: 4px;
-    }
-    .credits small {
-        display: none;
-        max-width: min(320px, 70vw);
-        padding: 3px 8px;
-        border-radius: 8px;
-        background: var(--panel);
-        color: var(--ink-soft);
-        font: 11px var(--sans);
-    }
-    .credits button {
-        display: grid;
-        place-items: center;
-        width: 24px;
-        height: 24px;
-        padding: 0;
-        border: 0;
-        border-radius: 12px;
-        background: var(--panel);
-        color: var(--ink);
-    }
-    /* A tap leaves :hover and :focus on the button: only a real hover and keyboard focus show the credits. */
-    .credits:is(.open, :has(:focus-visible)) small {
-        display: block;
-    }
-    @media (hover: hover) {
-        .credits:hover small {
-            display: block;
-        }
-    }
-    .credits svg {
-        width: 24px;
-        height: 24px;
     }
 </style>

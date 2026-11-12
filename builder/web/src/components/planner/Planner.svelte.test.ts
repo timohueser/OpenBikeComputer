@@ -2,7 +2,7 @@
 
 import { mount, tick, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { addRestDay, allStay, planView, type Place } from '../../lib/planner/editor';
+import { addRestDay, allStay, planView, type Place, type Trip } from '../../lib/planner/editor';
 import { testLine, testTrip } from '../../../test-support/planner/trip';
 import type { NightChoices } from '../../lib/planner/night-stops.svelte';
 import { proposal, type Stop } from '../../lib/planner/stops';
@@ -12,6 +12,7 @@ import MapCallout from './MapCallout.svelte';
 import VersionsMenu from './VersionsMenu.svelte';
 import Select from './PlannerSelect.svelte';
 import RouteList from './RouteList.svelte';
+import TripBar from './TripBar.svelte';
 import type { RoutingLine } from '../../lib/planner/routing';
 import { newVersion } from '../../lib/planner/versions';
 
@@ -243,6 +244,36 @@ describe('planner day views', () => {
         await tick();
         expect(axis()).toEqual(['0 km', '36 km', '72 km', '108 km', '144 km']);
         expect(document.querySelector('.distance')?.textContent).toBe('144.0 km');
+    });
+});
+
+describe('trip pace', () => {
+    it('offers the pace, and a pick changes the riding time of the days', async () => {
+        vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
+        const props = itineraryProps(null);
+        let trip = $state.raw<Trip>(props.trip);
+        const onChange = vi.fn((change: Partial<Trip>) => { trip = { ...trip, ...change }; });
+        mounted.push(mount(TripBar, { target: document.body, props: { get trip() { return trip; }, line: props.line, name: '', versions: [], ready: true,
+            canUndo: false, canRedo: false, draftSavedAt: null, draftError: '', onChange, onUndo: vi.fn(), onRedo: vi.fn(),
+            onOpen: vi.fn(), onSaveNew: vi.fn(), onVersions: vi.fn(), onCompare: vi.fn(), onNew: vi.fn(), onLibrary: vi.fn() } }));
+        mounted.push(mount(Itinerary, { target: document.body, props: { ...props, get trip() { return trip; },
+            get itinerary() { return planView(trip, props.line).itinerary; }, get days() { return planView(trip, props.line).days; } } }));
+        await tick();
+        const firstDay = () => document.querySelector('[data-day="1"]')!.textContent;
+        const moderate = firstDay();
+        button('Pace').click();
+        await tick();
+        [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(option => option.textContent?.includes('Fast'))!.click();
+        await tick();
+        expect(onChange).toHaveBeenCalledExactlyOnceWith({ pace: 'fast' }, 'Pace changed');
+        expect(firstDay()).not.toBe(moderate);
+        const fast = firstDay();
+        onChange({ bike: 'hiking' });
+        await tick();
+        expect(button('Pace').textContent).toContain('Fast');
+        onChange({ bike: 'road' });
+        await tick();
+        expect(firstDay()).not.toBe(fast);
     });
 });
 

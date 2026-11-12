@@ -17,6 +17,12 @@ class Router {
         window.addEventListener("hashchange", () => this.read());
     }
 
+    /** Goes to `hash` in place of the current entry of the history, so Back skips the current address. */
+    replace(hash: string) {
+        history.replaceState(history.state, "", hash);
+        this.read();
+    }
+
     private read() {
         ({ route: this.route, id: this.id } = parseRoute(location.hash));
     }

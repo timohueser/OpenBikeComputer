@@ -36,6 +36,8 @@
     import type { Plan } from '../../lib/planner/library';
     import type { Library } from '../../lib/library/store';
     import { PlanSession } from '../../lib/planner/plan-session.svelte';
+    import { router } from '../../lib/router.svelte';
+    import { ROUTES } from '../../lib/routes';
     import { isTrip } from '../../lib/planner/trip-validation';
     import {
         addClickedPoint, addPointNear, addRestDay, addTransfer, allStay, closeLoop, releaseNight, trainAfter, routeToTrip, hasEndpoints as endpointsChosen,
@@ -517,8 +519,20 @@
         await session.listPlans();
     }
 
-    async function openPlan(plan: Plan) {
-        if (!await session.open(plan, () => window.confirm('Some edits are not saved. Download a backup before reopening a plan. Discard the unsaved edits?'))) return;
+    // `#/planner/ID` opens plan ID. The address then drops the id, so Back does not open it again.
+    $effect(() => {
+        const id = router.route === 'planner' ? router.id : undefined;
+        if (!id || !session.ready) return;
+        router.replace(ROUTES.planner);
+        // The open plan keeps its Undo history and its map view.
+        if (id !== untrack(() => session.plan.id)) untrack(() => void openPlan(id));
+    });
+
+    async function openPlan(id: string) {
+        if (!await session.open(id, () => window.confirm('Some edits are not saved. Download a backup before reopening a plan. Discard the unsaved edits?'))) {
+            if (session.libraryError) message = session.libraryError;
+            return;
+        }
         libraryOpen = false;
         message = 'Plan opened';
     }
@@ -1193,7 +1207,7 @@
     <main aria-busy={!session.ready}>
         {#if libraryOpen}
             <LibraryPanel plans={session.plans} unreadable={session.unreadable} onDeleteUnreadable={() => { if (window.confirm('Delete the saved plans that cannot be read? This cannot be undone.')) void session.removeUnreadable(); }} activeId={planId} busy={session.busy} error={session.libraryError}
-                onClose={() => libraryOpen = false} onOpen={openPlan} onRename={(plan, name) => session.rename(plan, name)} onDuplicate={plan => session.duplicate(plan)}
+                onClose={() => libraryOpen = false} onOpen={plan => openPlan(plan.id)} onRename={(plan, name) => session.rename(plan, name)} onDuplicate={plan => session.duplicate(plan)}
                 onDelete={deletePlan} onImport={importFiles} gpxNames={session.gpxLines?.map(line => line.name) ?? null}
                 onGpx={roads => roads === null ? session.gpxLines = null : importGpx(roads)} onDownload={plan => session.download(plan)} />
         {/if}
@@ -1203,7 +1217,7 @@
                 <button type="button" class="back-to-routes" onclick={() => openRoutes()}><Icon name="back" size={15} />Find another route</button>
             {/if}
             {#if routesOpen}
-                <SignedRoutes {finder} activity={bike} {theme} attribution={config.attribution} onClose={closeRoutes} onPlan={planSignedRoute} {placeName}
+                <SignedRoutes {finder} activity={bike} {trip} {theme} attribution={config.attribution} onClose={closeRoutes} onPlan={planSignedRoute} {placeName}
                     current={hasEndpoints && total > 0 ? { title: planTitle(trip), km: view.summary.distance } : null}
                     findPlaces={(text, signal) => searchPlaces(text, searchContext, 6, signal).then(answer => routesPlaces(answer.results ?? [], text))} />
             {:else if searching}
