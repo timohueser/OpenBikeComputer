@@ -51,7 +51,7 @@ pub fn hex((r, g, b): Rgb) -> String {
 }
 
 /// The surfaces in code order, with their fills; a terrain face gets none.
-pub const SURFACES: [(Surface, &str, Option<Rgba>); 11] = [
+pub const SURFACES: [(Surface, &str, Option<Rgba>); 12] = [
     (Surface::Terrain, "terrain", None),
     (Surface::Slope, "slope", Some((205, 190, 120, 110))),
     (Surface::Carriageway, "carriageway", Some((105, 105, 110, 255))),
@@ -63,6 +63,7 @@ pub const SURFACES: [(Surface, &str, Option<Rgba>); 11] = [
     (Surface::Platform, "platform", Some((200, 200, 205, 255))),
     (Surface::Water, "water", Some((40, 110, 220, 255))),
     (Surface::Bank, "bank", Some((95, 150, 120, 255))),
+    (Surface::Zone, "zone", Some((150, 110, 190, 255))),
 ];
 /// The fill of a junction's face where it differs from its surface's.
 pub const JUNCTION_SURFACES: [(Surface, Rgba); 2] =
