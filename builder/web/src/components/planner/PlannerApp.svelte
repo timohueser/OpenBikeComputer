@@ -69,6 +69,8 @@
     import { closureNote, closureStretches, type Stretch } from '../../lib/planner/route-closures';
     import { alpineNote, alpineStretches } from '../../lib/planner/route-difficulty';
     import { gapNote, routeGaps } from '../../lib/planner/route-gaps';
+    import { distanceIn } from '../../lib/settings/format';
+    import { settings } from '../../lib/settings/settings.svelte';
     const defaultLabels: Record<EditableKind, string> = {
         via: 'Shaping point',
         pass: 'Pass here',
@@ -104,8 +106,9 @@
             void tick().then(() => { if (planId === id) map?.fitRoute(); });
         }
     });
+    const distance = (km: number) => `${distanceIn(km * 1000).toFixed(1)} ${settings.units}`;
     const routingMessage = $derived(session.dragging ? session.previewStatus : currentRoute
-        ? `${currentRoute.unknownSurfaceKm.toFixed(1)} km unknown surface${trip.bike !== 'hiking' && currentRoute.pushingKm ? ` · ${currentRoute.pushingKm.toFixed(1)} km pushing` : ''}${currentRoute.unroutedKm ? ` · ${currentRoute.unroutedKm.toFixed(1)} km manual / access unverified` : ''}${currentRoute.unknownElevationKm ? ' · elevation incomplete' : ''}`
+        ? `${distance(currentRoute.unknownSurfaceKm)} unknown surface${trip.bike !== 'hiking' && currentRoute.pushingKm ? ` · ${distance(currentRoute.pushingKm)} pushing` : ''}${currentRoute.unroutedKm ? ` · ${distance(currentRoute.unroutedKm)} manual / access unverified` : ''}${currentRoute.unknownElevationKm ? ' · elevation incomplete' : ''}`
         : routingStatus);
     let list = $state<'plan' | 'ways'>('plan');
     // The compare screen of saved versions replaces the trip bar and the planner below it.

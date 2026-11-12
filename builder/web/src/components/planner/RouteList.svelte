@@ -2,6 +2,8 @@
     import { tick } from 'svelte';
     import Icon from './PlannerIcon.svelte';
     import type { RoutePoint } from '../../lib/planner/editor';
+    import { distanceIn } from '../../lib/settings/format';
+    import { settings } from '../../lib/settings/settings.svelte';
 
     let { stops, onInspect, onReorder, onLoop, measured = true, loop = false, hoveredId = null, onHover }: {
         hoveredId?: string | null;
@@ -72,7 +74,7 @@
                 <Icon name={point.kind === 'start' || point.kind === 'finish' ? 'pin' : 'flag'} size={17} />
                 <span>
                     <strong>{point.label}</strong>
-                    {#if measured}<small>{distance.toFixed(1)} km</small>{/if}
+                    {#if measured}<small>{distanceIn(distance * 1000).toFixed(1)} {settings.units}</small>{/if}
                 </span>
             </button>
             {#if index > 0 && index < last}
