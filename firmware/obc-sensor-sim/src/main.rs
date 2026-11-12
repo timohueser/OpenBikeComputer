@@ -91,7 +91,7 @@ async fn buttons(
         let phase = now % 2400;
         // The selected sensor LED counts 1/2/3 pulses for the scenario; stopped is solid.
         let lit = sim.stopped || (phase < (sim.scenario as u64 + 1) * 400 && phase % 400 < 200);
-        for (i, led) in controls.leds.iter_mut().take(3).enumerate() {
+        for (i, led) in controls.leds[..3].iter_mut().enumerate() {
             led.set_level(if i == kind && lit {
                 embassy_nrf::gpio::Level::High
             } else {
