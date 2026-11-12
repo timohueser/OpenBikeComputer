@@ -164,7 +164,7 @@ fn the_vocabulary_names_every_code_with_its_colour() {
     let colour = |c: &serde_json::Value| c.as_str().is_some_and(|c| c.len() == 7 && c.starts_with('#'));
     assert!(families.iter().all(|f| colour(&f["colour"])));
     assert!(v["colours"].as_object().unwrap().values().all(colour));
-    assert_eq!(v["crossings"].as_array().unwrap().len(), 8);
+    assert_eq!(v["crossings"].as_array().unwrap().len(), 9);
     let names = |key: &str| {
         v[key].as_array().unwrap().iter().map(|e| e["name"].as_str().unwrap().to_string()).collect::<Vec<_>>()
     };

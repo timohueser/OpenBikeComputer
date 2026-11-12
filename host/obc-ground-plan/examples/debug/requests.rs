@@ -89,7 +89,19 @@ pub fn run() -> Result<(), String> {
             .collect::<Result<Vec<_>, _>>()?;
         let last = &builds[runs - 1];
         let fail = |e: String| format!("cell {}/{}: {e}", key.x, key.y);
-        let digest = Flat::of(last).digest(last).map_err(fail)?;
+        let flat = Flat::of(last);
+        let digest = flat.digest(last).map_err(fail)?;
+        // What the GPU reads, without the graph: the near records and the faces that the mesh builds on.
+        let le = |words: &mut dyn Iterator<Item = u32>| -> Vec<u8> { words.flat_map(u32::to_le_bytes).collect() };
+        let records = fnv(&le(&mut last.records.iter().copied()));
+        let f = &flat.faces;
+        let faces = fnv(&le(&mut (f.vertices.iter().map(|&v| v as u32))
+            .chain(f.faces.iter().copied())
+            .chain(f.rings.iter().copied())
+            .chain(f.ring_vertices.iter().copied())
+            .chain(f.edges.iter().copied())
+            .chain(f.corners.iter().copied())
+            .chain(f.corner_points.iter().map(|&v| v as u32))));
         // The far-only build as `build_cell` does a full one: from the bytes, with a new tile cache.
         let mut far_ms = Vec::with_capacity(runs);
         for _ in 0..runs {
@@ -128,6 +140,7 @@ pub fn run() -> Result<(), String> {
         native.insert("far".into(), json!(median(far_ms)));
         index.push(json!({
             "cell": [key.x, key.y], "file": file, "places": names, "request": fnv(&bytes), "digest": digest,
+            "records": records, "faces": faces,
             "far": far, "far_bytes": far_bytes, "far_check": counts, "native": native, "sources": sources(&fixture_dir, key),
         }));
     }
