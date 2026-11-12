@@ -1,6 +1,7 @@
 <script lang="ts">
     import { onMount, tick } from 'svelte';
     import { planTitle } from '../../lib/planner/versions';
+    import type { RouteSummary } from '../../lib/library/records';
     import type { Plan } from '../../lib/planner/library';
     import Icon from './PlannerIcon.svelte';
 
@@ -18,6 +19,9 @@
         /** `true` plans the files on roads, `false` keeps their lines, `null` cancels. */
         onGpx: (roads: boolean | null) => void;
     } = $props();
+
+    const figures = ({ days, lengthM, climbM }: RouteSummary) =>
+        [...days > 1 ? [`${days} days`] : [], `${(lengthM / 1000).toFixed(1)} km`, `↑ ${climbM} m`].join(' · ');
 
     let renaming = $state<string | null>(null);
     let name = $state('');
@@ -98,7 +102,7 @@
                     {:else}
                         <button type="button" class="open" disabled={busy} aria-current={plan.id === activeId ? 'true' : undefined} onclick={() => onOpen(plan)}>
                             <strong>{plan.name || planTitle(plan.trip)}</strong>
-                            <span>{plan.summary}</span>
+                            <span>{plan.summary ? figures(plan.summary) : 'No route yet'}</span>
                             <small>{plan.id === activeId ? 'Open · ' : ''}Edited {new Date(plan.updatedAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</small>
                         </button>
                         <div class="actions">

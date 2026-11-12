@@ -2,7 +2,7 @@ import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { emptyTrip, orderedRoutePoints, setDays, type RoutePoint, type Trip } from './editor';
 import type { Coordinate } from './geo';
-import { PlanLibrary } from './library';
+import { Library } from '../library/store';
 import { PlanSession } from './plan-session.svelte';
 import { newVersion } from './versions';
 import * as routing from './routing';
@@ -54,6 +54,11 @@ function options(session: PlanSession) {
 const choice = (session: PlanSession) => session.routeOptions.state === 'ready' ? session.routeOptions.choice : undefined;
 
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+const active = async (library: Library) => {
+    const id = await library.state('active');
+    return id ? library.route(id) : undefined;
+};
 
 describe('plan session', () => {
     it('shows the last routed trip while a line is calculated, no line after a failure, and undoes without a request', async () => {
@@ -119,7 +124,7 @@ describe('plan session', () => {
         const via: Coordinate = [8.05, 48.02];
         const routes = service([alternative('corridor', 'corridor', 'touring', [[8, 48], via, [8.1, 48]], via)]);
         const session = new PlanSession();
-        await session.start(new IDBFactory());
+        await session.start(new Library(new IDBFactory()));
         session.commit(plan);
         await vi.waitFor(() => expect(session.line).toBeDefined());
         session.findAlternatives();
@@ -200,7 +205,7 @@ describe('plan session', () => {
     it('calculates each saved version once, a failed one again on retry, and opens a version with its line', async () => {
         const routes = service();
         const session = new PlanSession();
-        await session.start(new IDBFactory());
+        await session.start(new Library(new IDBFactory()));
         session.commit(plan);
         await vi.waitFor(() => expect(session.line).toBeDefined());
         const valley = moved(plan, 8.2), ridge = moved(plan, 8.3);
@@ -224,7 +229,7 @@ describe('plan session', () => {
     it('keeps the edits of the open version when another opens, and saves a plan of no version first', async () => {
         service();
         const session = new PlanSession();
-        await session.start(new IDBFactory());
+        await session.start(new Library(new IDBFactory()));
         session.commit(plan);
         await session.saveNewVersion('A');
         const a = session.openId!;
@@ -255,7 +260,7 @@ describe('plan session', () => {
         service();
         const factory = new IDBFactory();
         const session = new PlanSession();
-        await session.start(factory);
+        await session.start(new Library(factory));
         session.commit(plan);
         await session.saveNewVersion('A');
         const a = session.openId;
@@ -266,14 +271,14 @@ describe('plan session', () => {
         expect(session.undo()).toBe(true);
         expect([session.trip, session.openId]).toEqual([moved(plan, 8.2), b]);
         await session.saved();
-        expect((await new PlanLibrary(factory).active())?.open).toBe(b);
+        expect((await active(new Library(factory)))?.open).toBe(b);
         session.close();
     });
 
     it('keeps the earlier steps with the version saved from them, so Undo makes no copies and no empty version', async () => {
         service();
         const session = new PlanSession();
-        await session.start(new IDBFactory());
+        await session.start(new Library(new IDBFactory()));
         session.commit(plan);
         session.commit(moved(plan, 8.2));
         await session.saveNewVersion('A');
@@ -300,7 +305,7 @@ describe('plan session', () => {
     it('duplicates a plan that is not open with the versions saved for it', async () => {
         service();
         const session = new PlanSession();
-        await session.start(new IDBFactory());
+        await session.start(new Library(new IDBFactory()));
         session.commit(plan);
         await session.saveVersions([newVersion(plan, undefined, 'Valley')]);
         const first = session.plan;
@@ -311,19 +316,22 @@ describe('plan session', () => {
         session.close();
     });
 
-    it('saves the plan without its line and calculates the line again when the plan opens', async () => {
+    it('saves the plan with the summary of its line, and calculates the line again when the plan opens', async () => {
         const routes = service();
         const factory = new IDBFactory();
         const first = new PlanSession();
-        await first.start(factory);
+        await first.start(new Library(factory));
         first.commit(plan);
-        const library = new PlanLibrary(factory);
-        await vi.waitFor(async () => expect((await library.active())?.summary).toMatch(/^Single route · \d+\.\d km$/));
-        expect((await library.active())?.trip).toEqual(plan);
+        const library = new Library(factory);
+        await vi.waitFor(async () => expect((await active(library))?.summary).toBeTruthy());
+        const saved = (await active(library))!;
+        expect(saved.trip).toEqual(plan);
+        expect(saved.summary).toMatchObject({ line: [8, 48, 8.1, 48], days: 1, bike: 'touring', bounds: [8, 48, 8.1, 48] });
+        expect(saved.summary!.lengthM).toBeCloseTo(7440, -2);
         first.close();
         const opened = vi.fn();
         const second = new PlanSession(opened);
-        await second.start(factory);
+        await second.start(new Library(factory));
         expect(opened).toHaveBeenCalledOnce();
         expect([second.trip, second.canUndo]).toEqual([plan, false]);
         await vi.waitFor(() => expect(second.line).toBeDefined());
