@@ -4897,6 +4897,7 @@ dependencies = [
  "planner-router",
  "planner-router-build",
  "serde_json",
+ "sha2 0.10.9",
  "tokio",
  "tower",
  "tower-http",

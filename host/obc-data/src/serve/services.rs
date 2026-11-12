@@ -4,8 +4,9 @@
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::Receiver;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -37,6 +38,20 @@ const RUNTIME: [&str; 3] = ["routing", "search", "offline"];
 
 /// The largest size of the prepared downloads of one planner release.
 const DOWNLOADS_CACHE: u64 = 256 << 20;
+
+/// The folder of an install that holds the routing package of format 10, which the installer of
+/// the routing program writes.
+const CELLS: &str = "route-cells";
+
+/// The workers of that installer. They run at nice 10, so the services of the other releases keep
+/// the CPUs.
+const CELLS_THREADS: usize = 2;
+
+/// Whether the file `name` of a planner release belongs to its routing package of format 10. The
+/// installer reads these files from the store; they are not linked into `routing/`.
+fn cells(name: &str) -> bool {
+    name == "routing/directory.bin" || name == "routing/package.json" || name.starts_with("routing/objects/")
+}
 
 /// The repository whose code runs the search and downloads services, and the routing service.
 pub struct Programs {
@@ -109,6 +124,8 @@ pub struct Process {
     service: usize,
     /// When it was asked to stop.
     signalled: Option<Instant>,
+    /// The last line of its standard error, once it closes.
+    said: Receiver<String>,
 }
 
 /// How many objects download at once. It hides the request time of objects of a few MB; 8
@@ -149,10 +166,11 @@ pub fn disk(_: &Path) -> Result<Disk, String> {
 
 /// Check that the services read the layers of `served` in their formats, then install its files in
 /// `dir`, `<store>/serve/<target>/<planner id>/`. An install with a marker stays as it is. Else the
-/// folder loses its content, `store` gets the document of the planner release and its step indexes
-/// from `target`, the disk check compares the bytes that the install needs with `disk` of `store`,
-/// and the missing objects download before [`install`]. It stops between two files when `wanted`
-/// is false or serve stops.
+/// folder loses its content except [`CELLS`], `store` gets the document of the planner release, its
+/// step indexes and the directory and `package.json` of a routing package of format 10 from
+/// `target`, the disk check compares the bytes that the install needs with `disk` of `store`, and
+/// the missing objects download before [`install`]. It stops between two files when `wanted` is
+/// false or serve stops.
 pub fn fetch(
     programs: &Programs,
     store: &Store,
@@ -172,9 +190,7 @@ pub fn fetch(
         if installed(dir) {
             return Ok(Fetched::Installed);
         }
-        if dir.exists() {
-            fs::remove_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        }
+        clear(dir)?;
         let document = &served.document;
         download(store, target, vec![(document.key.clone(), document.sha256.clone())], &go)?;
         let document = read(store, document)?;
@@ -186,6 +202,13 @@ pub fn fetch(
             &go,
         )?;
         let runtime = runtime(store, &document)?;
+        let package = package(&runtime)?;
+        let mut installed = 0;
+        if let Some(package) = &package {
+            let first = [&package.directory, &package.info].map(|sha256| (format!("objects/{sha256}"), sha256.clone()));
+            download(store, target, first.to_vec(), &go)?;
+            installed = package.missing(&programs.routing, store, &dir.join(CELLS))?;
+        }
         let missing: BTreeMap<&str, u64> = (runtime.iter())
             .filter(|(_, entry)| !store.object(&entry.transport.sha256).is_file())
             .map(|(_, entry)| (entry.transport.sha256.as_str(), entry.transport.bytes))
@@ -193,13 +216,21 @@ pub fn fetch(
         let decoded = runtime.iter().filter(|(_, entry)| entry.transport.encoding != "identity");
         let Disk { free, size } = disk(store.root())?;
         // The reserve keeps room for the logs, the downloads cache and the file system itself.
-        let need = missing.values().sum::<u64>() + decoded.map(|(_, entry)| entry.bytes).sum::<u64>() + size / 20;
+        let need =
+            missing.values().sum::<u64>() + decoded.map(|(_, entry)| entry.bytes).sum::<u64>() + installed + size / 20;
         if need > free {
             return Ok(Fetched::NoRoom { need, free });
         }
         let missing = missing.keys().map(|sha256| (format!("objects/{sha256}"), sha256.to_string())).collect();
         download(store, target, missing, &go)?;
-        install(store, dir, served, &go)?;
+        install(
+            store,
+            dir,
+            served,
+            &runtime,
+            package.as_ref().map(|package| (programs.routing.as_path(), package)),
+            &go,
+        )?;
         Ok(Fetched::Installed)
     };
     fetched().unwrap_or_else(Fetched::Failed)
@@ -255,9 +286,10 @@ fn objects(store: &Store, served: &Served) -> Result<Vec<(String, String)>, Stri
 }
 
 /// Delete from `store`, the store of a follower of `target`, each object and each unfinished
-/// download that the services of none of `wanted` read. A `gzip` object of a release with an
-/// install in `work` goes too: its install holds the decoded file. An `identity` object is a link
-/// that takes no space, and the next release can need it.
+/// download that the services of none of `wanted` read. A `gzip` object and a file of the routing
+/// package of format 10 of a release with an install in `work` go too: its install holds the
+/// decoded file. Any other `identity` object is a link that takes no space, and the next release can
+/// need it.
 pub fn prune(store: &Store, target: &Target, work: &Path, wanted: &[&Served]) -> Result<(), String> {
     let mut keep = Vec::new();
     for served in wanted {
@@ -265,7 +297,7 @@ pub fn prune(store: &Store, target: &Target, work: &Path, wanted: &[&Served]) ->
         if installed(&work.join(&served.planner)) {
             let runtime = runtime(store, &read(store, &served.document)?)?;
             let decoded: Vec<String> = (runtime.into_iter())
-                .filter(|(_, entry)| entry.transport.encoding != "identity")
+                .filter(|(name, entry)| entry.transport.encoding != "identity" || cells(name))
                 .map(|(_, entry)| entry.transport.sha256)
                 .collect();
             objects.retain(|(_, sha256)| !decoded.contains(sha256));
@@ -303,7 +335,8 @@ pub fn remove(dir: &Path) -> Result<bool, String> {
 }
 
 /// Start the service `service` of [`SERVICES`] of the planner release `served`, installed in `dir`,
-/// on a free port of this machine.
+/// on a free port of this machine. The routing service gets the folder [`CELLS`] in `ROUTE_CELLS`
+/// when the install has it.
 pub fn start(
     programs: &Programs,
     dir: &Path,
@@ -313,8 +346,12 @@ pub fn start(
 ) -> Result<Process, String> {
     let port = free_port()?;
     let mut command = commands(&programs.root, &programs.routing).into_iter().nth(service).expect("a service");
+    let cells = Some(dir.join(CELLS)).filter(|cells| cells.is_dir());
     match SERVICES[service].name {
         "routing" => {
+            if let Some(cells) = &cells {
+                command.env("ROUTE_CELLS", cells);
+            }
             command.arg(dir.join("routing")).env("ROUTE_LISTEN", format!("127.0.0.1:{port}")).env_remove("ROUTE_ORIGIN")
         }
         "search" => {
@@ -338,17 +375,78 @@ pub fn start(
             .args(["--objects-url", &origins.objects]),
     };
     let name = SERVICES[service].name;
-    let child = spawn(&mut command).map_err(|e| format!("cannot start the {name} service: {e}"))?;
-    Ok(Process { child, port, service, signalled: None })
+    let mapped =
+        (programs.reads.iter()).any(|(reader, layer, _)| *reader == "routing" && layer == "planner/routing-cells");
+    #[cfg(target_os = "linux")]
+    limit(&mut command, name, cells.is_some() && mapped);
+    #[cfg(not(target_os = "linux"))]
+    let _ = mapped;
+    let mut child =
+        spawn(command.stderr(Stdio::piped())).map_err(|e| format!("cannot start the {name} service: {e}"))?;
+    let said = crate::engine::copy_lines(child.stderr.take(), "");
+    Ok(Process { child, port, service, signalled: None, said })
 }
 
-/// Install the files of the planner release of `served` in `dir` from the objects that [`fetch`]
-/// gave `store`: each file, then the document as `release.json`, then the marker, after the data of
-/// the file system is on the disk. It stops between two files when `go` fails.
-fn install(store: &Store, dir: &Path, served: &Served, go: &dyn Fn() -> Result<(), String>) -> Result<(), String> {
+/// Keep one service that grows from taking the memory of the unit from the routing service. The
+/// RSS of a routing service that maps the files of `route-cells/` counts its mapped pages, so the
+/// kernel would kill it first when the unit runs out of memory: search and downloads get
+/// `oom_score_adj` 1000, which the kernel kills before it. A routing service that maps the files
+/// (`mapped`) gets `RLIMIT_DATA` of 1 GiB for each worker and 1 GiB for the shared part; the limit
+/// counts its private writable memory, not the read-only maps of the files.
+#[cfg(target_os = "linux")]
+fn limit(command: &mut Command, service: &str, mapped: bool) {
+    use std::os::unix::process::CommandExt;
+    match service {
+        "routing" if mapped => {
+            let workers = std::thread::available_parallelism().map_or(1, |n| n.get()) as libc::rlim_t;
+            let limit = libc::rlimit { rlim_cur: (workers + 1) << 30, rlim_max: (workers + 1) << 30 };
+            // SAFETY: setrlimit is async-signal-safe, and the closure allocates nothing.
+            unsafe {
+                command.pre_exec(move || match libc::setrlimit(libc::RLIMIT_DATA, &limit) {
+                    0 => Ok(()),
+                    _ => Err(std::io::Error::last_os_error()),
+                });
+            }
+        }
+        "search" | "downloads" => {
+            // SAFETY: open, write and close are async-signal-safe, and the closure allocates nothing.
+            unsafe {
+                command.pre_exec(|| {
+                    let file = libc::open(c"/proc/self/oom_score_adj".as_ptr(), libc::O_WRONLY);
+                    if file < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    let written = libc::write(file, b"1000".as_ptr().cast(), 4);
+                    libc::close(file);
+                    match written {
+                        4 => Ok(()),
+                        _ => Err(std::io::Error::last_os_error()),
+                    }
+                });
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Install the files `runtime` of the planner release of `served` in `dir` from the objects that
+/// [`fetch`] gave `store`: each file, then with the installer of the routing program the routing
+/// package of format 10 in [`CELLS`], then the document as `release.json`, then the marker, after
+/// the data of the file system is on the disk. It stops between two files when `go` fails.
+fn install(
+    store: &Store,
+    dir: &Path,
+    served: &Served,
+    runtime: &[(String, Entry)],
+    package: Option<(&Path, &Package)>,
+    go: &dyn Fn() -> Result<(), String>,
+) -> Result<(), String> {
     let fail = |e: std::io::Error| format!("{}: {e}", dir.display());
     fs::create_dir_all(dir).map_err(fail)?;
-    materialize(store, &served.document, dir, go)?;
+    materialize(store, runtime, dir, go)?;
+    if let Some((routing, package)) = package {
+        package.install(routing, store, &dir.join(CELLS), go)?;
+    }
     crate::target::link(&store.object(&served.document.sha256), &dir.join("release.json")).map_err(fail)?;
     let folder = File::open(dir).map_err(fail)?;
     sync(&folder).map_err(fail)?;
@@ -434,7 +532,10 @@ impl super::Process for Process {
         let name = SERVICES[self.service].name;
         match self.child.try_wait() {
             Ok(None) => None,
-            Ok(Some(status)) => Some(format!("the {name} service stopped: {status}")),
+            Ok(Some(status)) => {
+                let said = last(&self.said).map(|said| format!(": {said}")).unwrap_or_default();
+                Some(format!("the {name} service stopped: {status}{said}"))
+            }
             Err(e) => Some(format!("the {name} service: {e}")),
         }
     }
@@ -610,14 +711,18 @@ fn runtime(store: &Store, document: &Value) -> Result<Vec<(String, Entry)>, Stri
         .collect()
 }
 
-/// Install each file under [`RUNTIME`] of the planner release whose document is `document` in
-/// `dir`, from the objects of `store`, while `go` passes. A gzip object is decoded; each file must
-/// have the SHA-256 of the release.
-fn materialize(store: &Store, document: &Named, dir: &Path, go: &dyn Fn() -> Result<(), String>) -> Result<(), String> {
-    let document = read(store, document)?;
-    for (name, entry) in runtime(store, &document)? {
+/// Install each file of `runtime`, the files under [`RUNTIME`] of a planner release, in `dir`, from
+/// the objects of `store`, while `go` passes. A gzip object is decoded; each file must have the
+/// SHA-256 of the release. The files of the routing package of format 10 are left to its installer.
+fn materialize(
+    store: &Store,
+    runtime: &[(String, Entry)],
+    dir: &Path,
+    go: &dyn Fn() -> Result<(), String>,
+) -> Result<(), String> {
+    for (name, entry) in runtime.iter().filter(|(name, _)| !cells(name)) {
         go()?;
-        let (object, path) = (store.object(&entry.transport.sha256), dir.join(&name));
+        let (object, path) = (store.object(&entry.transport.sha256), dir.join(name));
         fs::create_dir_all(path.parent().expect("a file has a folder")).map_err(|e| e.to_string())?;
         let written = match entry.transport.encoding.as_str() {
             "identity" => crate::target::link(&object, &path),
@@ -646,6 +751,111 @@ fn decode(object: &Path, path: &Path, bytes: u64) -> std::io::Result<()> {
         let _ = fs::remove_file(&part);
     }
     renamed
+}
+
+/// The routing package of format 10 of a planner release: the objects of its `directory.bin` and
+/// `package.json`.
+struct Package {
+    directory: String,
+    info: String,
+}
+
+/// The [`Package`] of `runtime`, the files under [`RUNTIME`] of a planner release, when it has
+/// `routing/directory.bin`.
+fn package(runtime: &[(String, Entry)]) -> Result<Option<Package>, String> {
+    let object = |name: &str| runtime.iter().find(|(file, _)| file == name).map(|(_, entry)| &entry.transport.sha256);
+    match (object("routing/directory.bin"), object("routing/package.json")) {
+        (None, _) => Ok(None),
+        (Some(directory), Some(info)) => Ok(Some(Package { directory: directory.clone(), info: info.clone() })),
+        (Some(_), None) => Err("the routing package has routing/directory.bin and no routing/package.json".into()),
+    }
+}
+
+impl Package {
+    /// The arguments of the installer of the routing program `routing` for `target`: the folder, the
+    /// action and the directory and `package.json` in `store`.
+    fn command(&self, routing: &Path, store: &Store, target: &Path, action: &str) -> Command {
+        let mut command = Command::new(routing);
+        command.arg(target).arg(action).arg(store.object(&self.directory)).arg(store.object(&self.info));
+        command
+    }
+
+    /// The installed bytes of the files of all cells and profile groups that `target` lacks.
+    fn missing(&self, routing: &Path, store: &Store, target: &Path) -> Result<u64, String> {
+        let output = (self.command(routing, store, target, "--missing").output())
+            .map_err(|e| format!("cannot start the installer of the routing cells: {e}"))?;
+        if !output.status.success() {
+            return Err(format!("the routing cells: {}", String::from_utf8_lossy(&output.stderr).trim()));
+        }
+        let said = String::from_utf8_lossy(&output.stdout);
+        said.trim().parse().map_err(|_| format!("the installer of the routing cells gives no byte count: {said}"))
+    }
+
+    /// Install all cells and profile groups in `target` from the objects of `store`, in a process at
+    /// nice 10 whose installer drops each file from the page cache after its sync, so that the
+    /// install does not evict the files of the serving release. It stops when `go` fails; the next
+    /// call goes on from the complete files.
+    fn install(
+        &self,
+        routing: &Path,
+        store: &Store,
+        target: &Path,
+        go: &dyn Fn() -> Result<(), String>,
+    ) -> Result<(), String> {
+        let mut command = self.command(routing, store, target, "--install");
+        command.arg(store.root().join("objects")).arg(CELLS_THREADS.to_string()).stderr(Stdio::piped());
+        #[cfg(unix)]
+        // SAFETY: setpriority is async-signal-safe, and the closure allocates nothing.
+        unsafe {
+            std::os::unix::process::CommandExt::pre_exec(&mut command, || {
+                match libc::setpriority(libc::PRIO_PROCESS, 0, 10) {
+                    0 => Ok(()),
+                    _ => Err(std::io::Error::last_os_error()),
+                }
+            });
+        }
+        let mut child =
+            spawn(&mut command).map_err(|e| format!("cannot start the installer of the routing cells: {e}"))?;
+        let said = crate::engine::copy_lines(child.stderr.take(), "");
+        let status = loop {
+            if let Err(e) = go() {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(e);
+            }
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+                Err(e) => return Err(format!("the installer of the routing cells: {e}")),
+            }
+        };
+        match status.success() {
+            true => Ok(()),
+            false => Err(format!("the routing cells: {}", last(&said).unwrap_or_else(|| status.to_string()))),
+        }
+    }
+}
+
+/// The last line of standard error of a process that ended.
+fn last(said: &Receiver<String>) -> Option<String> {
+    said.recv_timeout(Duration::from_secs(1)).ok()
+}
+
+/// Delete the content of `dir`, a folder without the marker of an install, except [`CELLS`]: its
+/// installer goes on from the complete files.
+fn clear(dir: &Path) -> Result<(), String> {
+    let Ok(entries) = fs::read_dir(dir) else { return Ok(()) };
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("{}: {e}", dir.display()))?;
+        let path = entry.path();
+        let removed = match entry.file_type().map_err(|e| format!("{}: {e}", path.display()))?.is_dir() {
+            _ if entry.file_name() == CELLS => continue,
+            true => fs::remove_dir_all(&path),
+            false => fs::remove_file(&path),
+        };
+        removed.map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -792,9 +1002,10 @@ mod tests {
             fs::create_dir_all(again.join(name).parent().unwrap()).unwrap();
             fs::hard_link(&object, again.join(name)).unwrap();
         }
-        assert!(super::materialize(&store, &named, &again, &|| Ok(())).unwrap_err().contains("exists"));
+        let files = runtime(&store, &read(&store, &named).unwrap()).unwrap();
+        assert!(super::materialize(&store, &files, &again, &|| Ok(())).unwrap_err().contains("exists"));
         fs::remove_file(again.join("routing/pages.bin")).unwrap();
-        super::materialize(&store, &named, &again, &|| Ok(())).unwrap();
+        super::materialize(&store, &files, &again, &|| Ok(())).unwrap();
         assert_eq!(fs::read(again.join("search/tiles/pois/9-1-1.sqlite")).unwrap(), b"places");
         assert_eq!(fs::read(&object).unwrap(), b"store object");
 
@@ -805,5 +1016,106 @@ mod tests {
         document["files"]["routing/../x"] = document["files"]["routing/pages.bin"].clone();
         let refused = materialize(&release(&document), &scratch.0.join("third")).unwrap_err();
         assert!(refused.contains("does not name"), "{refused}");
+    }
+
+    /// The routing program installs the routing package of format 10. Here a script stands in for
+    /// it: `directory.bin` lists the objects, and each object installs as one file of `cells/`.
+    #[cfg(unix)]
+    #[test]
+    fn a_routing_package_of_format_10_installs_and_goes_on_after_a_stop() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = Scratch::new("serve-cells");
+        let (target, log, flag) = (scratch.0.join("target"), scratch.0.join("log"), scratch.0.join("stop"));
+        let object = |bytes: &[u8]| {
+            let sha256 = sha256_hex(bytes);
+            fs::create_dir_all(target.join("objects")).unwrap();
+            fs::write(target.join("objects").join(&sha256), bytes).unwrap();
+            let transport = json!({"bytes": bytes.len(), "sha256": sha256, "encoding": "identity"});
+            (sha256.clone(), json!({"bytes": bytes.len(), "sha256": sha256, "transport": transport}))
+        };
+        let (a, b) = (object(b"cell a"), object(b"cell b"));
+        let directory = object(format!("{}\n{}\n", a.0, b.0).as_bytes());
+        let document = serde_json::to_vec(&json!({"format": 1, "region": "test", "files": {
+            "routing/pages.bin": object(b"pages").1,
+            "routing/directory.bin": directory.1,
+            "routing/package.json": object(b"{}").1,
+            format!("routing/objects/{}", a.0): a.1,
+            format!("routing/objects/{}", b.0): b.1,
+        }}))
+        .unwrap();
+        let planner = "a".repeat(64);
+        let key = format!("releases/{planner}/release.json");
+        fs::create_dir_all(target.join(&key).parent().unwrap()).unwrap();
+        fs::write(target.join(&key), &document).unwrap();
+        let served = Served {
+            id: String::new(),
+            planner: planner.clone(),
+            document: Named { key, size: document.len() as u64, sha256: sha256_hex(&document) },
+            pointers: BTreeMap::new(),
+            formats: BTreeMap::new(),
+        };
+        let script = format!(
+            r#"#!/bin/sh
+echo "$*" >> {log}
+target=$1 action=$2 directory=$3 objects=$5 missing=0
+[ "$action" = --install ] && mkdir -p "$target/cells"
+for sha in $(cat "$directory"); do
+  [ -f "$target/cells/$sha" ] && continue
+  if [ "$action" = --missing ]; then missing=$((missing + 6)); continue; fi
+  cp "$objects/$(echo "$sha" | cut -c1-2)/$sha" "$target/cells/$sha"
+  echo "wrote $sha" >> {log}
+  [ -f {flag} ] && {{ echo "stopped after $sha" >&2; exit 1; }}
+done
+if [ "$action" = --missing ]; then echo $missing; else touch "$target/install.bin"; fi
+"#,
+            log = log.display(),
+            flag = flag.display(),
+        );
+        let routing = scratch.0.join("routing");
+        fs::write(&routing, script).unwrap();
+        fs::set_permissions(&routing, fs::Permissions::from_mode(0o755)).unwrap();
+        let programs = Programs { routing, ..Programs::reading(Vec::new()) };
+        let (store, dir_target) = (Store::at(scratch.0.join("store")), Target::Dir(target.clone()));
+        let (work, free) = (scratch.0.join("work"), std::cell::Cell::new(u64::MAX));
+        let dir = work.join(&planner);
+        let disk = |_: &Path| Ok(Disk { free: free.get(), size: 0 });
+        let fetched = |dir: &Path| fetch(&programs, &store, &dir_target, &served, dir, &AtomicBool::new(true), &disk);
+
+        fs::write(&flag, b"").unwrap();
+        let Fetched::Failed(stopped) = fetched(&dir) else { panic!("the install does not stop") };
+        assert_eq!(stopped, format!("the routing cells: stopped after {}", a.0));
+        let cells = dir.join("route-cells/cells");
+        assert!(cells.join(&a.0).is_file() && !cells.join(&b.0).exists() && !installed(&dir));
+        assert_eq!(fs::read(dir.join("routing/pages.bin")).unwrap(), b"pages");
+        let routing: Vec<_> = fs::read_dir(dir.join("routing")).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(routing, ["pages.bin"], "the installer reads the package from the store");
+
+        fs::remove_file(&flag).unwrap();
+        assert!(matches!(fetched(&dir), Fetched::Installed));
+        assert!(installed(&dir) && dir.join("route-cells/install.bin").is_file());
+        let calls = fs::read_to_string(&log).unwrap();
+        let wrote: Vec<&str> = calls.lines().filter(|line| line.starts_with("wrote")).collect();
+        assert_eq!(wrote, [format!("wrote {}", a.0), format!("wrote {}", b.0)], "the second install goes on");
+        let objects = store.root().join("objects");
+        let install = format!(
+            "{} --install {} {} {} 2",
+            dir.join("route-cells").display(),
+            store.object(&directory.0).display(),
+            store.object(&sha256_hex(b"{}")).display(),
+            objects.display()
+        );
+        assert!(calls.lines().any(|line| line == install), "{calls}");
+
+        // The disk check counts the installed bytes of the cells that an install lacks.
+        free.set(0);
+        let Fetched::NoRoom { need, .. } = fetched(&scratch.0.join("fresh")) else { panic!("the disk has room") };
+        assert_eq!(need, 12, "the store has each object, and the install lacks two cells of 6 bytes");
+
+        // Once the install has its marker, its cells hold the package: its objects go from the store.
+        prune(&store, &dir_target, &work, &[&served]).unwrap();
+        assert!(store.object(&sha256_hex(b"pages")).is_file());
+        for sha256 in [&a.0, &b.0, &directory.0] {
+            assert!(!store.object(sha256).exists(), "{sha256} stays");
+        }
     }
 }
