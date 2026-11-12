@@ -100,7 +100,7 @@ test('GPX files open as a new trip with a transfer and leave the open plan in th
   await expect(page.getByRole('heading', { name: 'north ride', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'My plans', exact: true }).click();
   await expect(library(page).locator('li')).toHaveCount(2);
-  await expect(row(page, 'north ride')).toContainText('2 days · 1 night pinned');
+  await expect(row(page, 'north ride')).toContainText('2 days · 6.2 km');
   await expect(row(page, 'Keep me')).toBeVisible();
 });
 
