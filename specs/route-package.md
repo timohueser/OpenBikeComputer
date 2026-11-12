@@ -287,3 +287,23 @@ A part and an object are smaller than 4 GiB. A level-1 cell has fewer than 65,53
 IDs of at most 32 bits, and at most 32 profile groups. A closure set has at most 255 entries. An
 MTB or SAC scale that the record cannot hold fails the bake. These limits do not set the size of a
 region or a phone performance target.
+
+## Grid selections
+
+This section is of format 9; it goes with format 9. `routing/blocks.json` has `format: 2`. `source`
+is the SHA-256 of the format 9 manifest. `data` has the structure of that manifest, with the bounds
+and the region of the selection. Each sparse table adds `pages`, an ascending list of source page
+numbers, parallel to `blocks`. `len` stays the length of the source column. An absent page is
+unavailable, not an empty page.
+
+`roads` holds sorted, disjoint half-open ranges of source roads. `arcs` is the number of source
+turns of those roads, before the turns to absent roads are removed. `snap` maps source spatial
+keys to page hashes. `archives` is the sorted list of pack IDs, each once. Each pack is
+`packs/ID/{pages.idx,pages.bin}`, with the objects of format 9.
+
+A selection keeps the source geometry, weights, turn costs, snap bits and landmark values. Its
+run-time road IDs are compact indices in source road order. A query uses only the turns whose two
+roads are present. The snap bits come from the whole region, so a road near the edge of a
+selection can be snappable although the selection has no path to it; such a query returns
+`no_path`. The source junction IDs join the kept roads to the landmark columns. The hash of the
+selection manifest is its package identity. Selections of different source releases do not mix.
