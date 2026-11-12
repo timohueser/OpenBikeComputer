@@ -256,6 +256,7 @@ triggers = [
   "builder/web/src/lib/planner/**",
   "builder/web/src/planner.ts",
   "builder/web/src/Shell.svelte",
+  "builder/web/src/pages/**",
   "builder/web/src/components/TopBar.svelte",
   "builder/web/src/styles/shell.css",
   "builder/web/src/lib/ui/**",
