@@ -195,7 +195,7 @@
     "map-reading"
    ],
    "violations": 9,
-   "lines": 36212,
+   "lines": 36239,
    "problems": [
     {
      "rule": "cycle",
@@ -207,7 +207,7 @@
     },
     {
      "rule": "cycle",
-     "message": "device-link -> device-map-builder closes a cycle: builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/bytes.ts (test), builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/flat-device/load.ts (test), builder/web/src/lib/device/rides.test.ts -> builder/web/test-support/flat-device/load.ts (test), and 8 more"
+     "message": "device-link -> device-map-builder closes a cycle: builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/bytes.ts (test), builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/flat-device/load.ts (test), builder/web/src/lib/device/rides.test.ts -> builder/web/test-support/flat-device/load.ts (test), and 10 more"
     },
     {
      "rule": "cycle",
@@ -309,7 +309,7 @@
    "problems": [
     {
      "rule": "cycle",
-     "message": "device-link -> device-map-builder closes a cycle: builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/bytes.ts (test), builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/flat-device/load.ts (test), builder/web/src/lib/device/rides.test.ts -> builder/web/test-support/flat-device/load.ts (test), and 8 more"
+     "message": "device-link -> device-map-builder closes a cycle: builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/bytes.ts (test), builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/flat-device/load.ts (test), builder/web/src/lib/device/rides.test.ts -> builder/web/test-support/flat-device/load.ts (test), and 10 more"
     },
     {
      "rule": "cycle",
@@ -1043,7 +1043,7 @@
    ],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 3690,
+   "lines": 3710,
    "problems": []
   },
   {
