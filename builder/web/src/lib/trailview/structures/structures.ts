@@ -108,8 +108,11 @@ export class Structures {
         for (let y = Math.floor((eye.y - reach) / side); y <= Math.floor((eye.y + reach) / side); y++) {
             for (let x = Math.floor((eye.x - reach) / side); x <= Math.floor((eye.x + reach) / side); x++) owners.set(key({ level: OWNER, x, y }), { node: { level: OWNER, x, y }, near: true });
         }
+        // Nearest first: the pools and the anchors give room in this order, so where they are full the farthest meshes drop,
+        // whatever node the terrain draws first.
+        const away = ({ x, y }: Node) => Math.hypot(Math.max(x * side - eye.x, 0, eye.x - (x + 1) * side), Math.max(y * side - eye.y, 0, eye.y - (y + 1) * side));
         const now: { meshes: NodeMeshes; near: boolean }[] = [];
-        for (const { node, near } of owners.values()) {
+        for (const { node, near } of [...owners.values()].sort((a, b) => away(a.node) - away(b.node))) {
             const meshes = this.stamps.get(node)?.meshes;
             if (meshes) now.push({ meshes, near });
         }
