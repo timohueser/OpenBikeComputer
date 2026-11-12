@@ -11,7 +11,6 @@
  * a click, is what shows the chooser the first time. Neither can substitute for the other.
  */
 
-import { initCore } from "../core/bridge";
 import type { DeviceSession } from "../usb/session";
 
 /** Reactive holder for the shared session. */
@@ -57,8 +56,7 @@ class DeviceHolder {
         try {
             // Dynamic, so the transport, the protocol codecs and the client stay in their own chunk:
             // a visitor who only downloads a map never loads the device code.
-            // The client of a device runs in the shared core, which a page such as Settings does not load.
-            const [{ openDeviceSession }] = await Promise.all([import("../usb/session.svelte"), "usb" in navigator ? initCore() : null]);
+            const { openDeviceSession } = await import("../usb/session.svelte");
             const session = await openDeviceSession();
             this.session = session;
             return session;
