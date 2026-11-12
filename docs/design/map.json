@@ -30,7 +30,7 @@
    "depends_on": [],
    "test_depends_on": [],
    "violations": 1,
-   "lines": 17129,
+   "lines": 17102,
    "problems": [
     {
      "rule": "R1",
@@ -133,7 +133,7 @@
    "depends_on": [],
    "test_depends_on": [],
    "violations": 1,
-   "lines": 33229,
+   "lines": 33260,
    "problems": [
     {
      "rule": "R4",
@@ -172,7 +172,7 @@
    ],
    "test_depends_on": [],
    "violations": 1,
-   "lines": 13702,
+   "lines": 13694,
    "problems": [
     {
      "rule": "R1",
@@ -195,7 +195,7 @@
     "map-reading"
    ],
    "violations": 9,
-   "lines": 40052,
+   "lines": 36306,
    "problems": [
     {
      "rule": "cycle",
@@ -207,7 +207,7 @@
     },
     {
      "rule": "cycle",
-     "message": "device-link -> device-map-builder closes a cycle: builder/web/src/lib/device/dashboard.svelte.test.ts -> builder/web/test-support/flat-device/load.ts (test), builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/bytes.ts (test), builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/flat-device/load.ts (test), and 15 more"
+     "message": "device-link -> device-map-builder closes a cycle: builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/bytes.ts (test), builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/flat-device/load.ts (test), builder/web/src/lib/device/rides.test.ts -> builder/web/test-support/flat-device/load.ts (test), and 8 more"
     },
     {
      "rule": "cycle",
@@ -215,11 +215,11 @@
     },
     {
      "rule": "cycle",
-     "message": "device-link -> map-assembly closes a cycle: builder/web/src/lib/device/flows.test.ts -> builder/web/src/lib/convert/bridge.ts (test), builder/web/src/lib/device/library.test.ts -> builder/web/src/lib/convert/bridge.ts (test), builder/web/src/lib/device/library.ts -> builder/web/src/lib/convert/bridge.ts, and 4 more"
+     "message": "device-link -> map-assembly closes a cycle: builder/web/src/lib/device/flows.test.ts -> builder/web/src/lib/convert/bridge.ts (test), builder/web/src/lib/device/rides.test.ts -> builder/web/src/lib/convert/bridge.ts (test), builder/web/src/lib/device/rides.ts -> builder/web/src/lib/convert/bridge.ts, and 1 more"
     },
     {
      "rule": "cycle",
-     "message": "device-map-builder -> device-link closes a cycle: obc-desktop -> obc-usb, builder/web/src/components/DeviceChip.svelte -> builder/web/src/lib/device/job.svelte.ts, builder/web/src/components/DeviceChip.svelte -> builder/web/src/lib/device/session.svelte.ts, and 101 more"
+     "message": "device-map-builder -> device-link closes a cycle: builder/web/src/components/UpdatePrompt.svelte -> builder/web/src/lib/device/job.svelte.ts, builder/web/src/components/UpdatePrompt.svelte -> builder/web/src/lib/device/session.svelte.ts, builder/web/src/components/device/CardFormat.svelte -> builder/web/src/lib/usb/client.ts, and 40 more"
     },
     {
      "rule": "cycle",
@@ -254,7 +254,7 @@
     "repository-tooling"
    ],
    "violations": 7,
-   "lines": 60411,
+   "lines": 60410,
    "problems": [
     {
      "rule": "cycle",
@@ -290,7 +290,7 @@
    "name": "device-map-builder",
    "kind": "shell",
    "area": "Shells",
-   "purpose": "Runs the map builder, where a rider builds a device map and manages the device, in the browser or as a desktop app.",
+   "purpose": "Runs the map builder, where a rider builds a device map and manages the device, in the browser.",
    "status": "approved",
    "depends_on": [
     "device-link",
@@ -305,15 +305,15 @@
     "repository-tooling"
    ],
    "violations": 10,
-   "lines": 18580,
+   "lines": 9075,
    "problems": [
     {
      "rule": "cycle",
-     "message": "device-link -> device-map-builder closes a cycle: builder/web/src/lib/device/dashboard.svelte.test.ts -> builder/web/test-support/flat-device/load.ts (test), builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/bytes.ts (test), builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/flat-device/load.ts (test), and 15 more"
+     "message": "device-link -> device-map-builder closes a cycle: builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/bytes.ts (test), builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/flat-device/load.ts (test), builder/web/src/lib/device/rides.test.ts -> builder/web/test-support/flat-device/load.ts (test), and 8 more"
     },
     {
      "rule": "cycle",
-     "message": "device-map-builder -> device-link closes a cycle: obc-desktop -> obc-usb, builder/web/src/components/DeviceChip.svelte -> builder/web/src/lib/device/job.svelte.ts, builder/web/src/components/DeviceChip.svelte -> builder/web/src/lib/device/session.svelte.ts, and 101 more"
+     "message": "device-map-builder -> device-link closes a cycle: builder/web/src/components/UpdatePrompt.svelte -> builder/web/src/lib/device/job.svelte.ts, builder/web/src/components/UpdatePrompt.svelte -> builder/web/src/lib/device/session.svelte.ts, builder/web/src/components/device/CardFormat.svelte -> builder/web/src/lib/usb/client.ts, and 40 more"
     },
     {
      "rule": "cycle",
@@ -321,7 +321,7 @@
     },
     {
      "rule": "cycle",
-     "message": "device-map-builder -> map-assembly closes a cycle: builder/web/src/components/device/DeviceStep.svelte -> builder/web/src/lib/catalog/ledger.ts, builder/web/src/components/device/DeviceSurfaces.svelte -> builder/web/src/lib/catalog/ledger.ts, builder/web/src/components/device/MapSend.svelte -> builder/web/src/lib/catalog/ledger.ts, and 14 more"
+     "message": "device-map-builder -> map-assembly closes a cycle: builder/web/src/components/device/DeviceStep.svelte -> builder/web/src/lib/catalog/ledger.ts, builder/web/src/components/device/DeviceSurfaces.svelte -> builder/web/src/lib/catalog/ledger.ts, builder/web/src/components/device/MapSend.svelte -> builder/web/src/lib/catalog/ledger.ts, and 8 more"
     },
     {
      "rule": "cycle",
@@ -329,7 +329,7 @@
     },
     {
      "rule": "cycle",
-     "message": "device-map-builder -> route-planning closes a cycle: builder/web/scripts/road-census.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/platform/web.ts -> builder/web/src/lib/planner/release.ts, builder/web/test-support/planner/MapStub.svelte -> builder/web/src/lib/planner/geo.ts, and 14 more"
+     "message": "device-map-builder -> route-planning closes a cycle: builder/web/scripts/road-census.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/platform/web.ts -> builder/web/src/lib/planner/release.ts, builder/web/test-support/planner/MapStub.svelte -> builder/web/src/lib/planner/geo.ts, and 12 more"
     },
     {
      "rule": "cycle",
@@ -337,7 +337,7 @@
     },
     {
      "rule": "cycle",
-     "message": "map-assembly -> device-map-builder closes a cycle: builder/web/src/components/coverage/CorridorPanel.svelte -> builder/web/src/lib/core/gpx.ts, builder/web/src/components/coverage/CorridorPanel.svelte -> builder/web/src/lib/format.ts, builder/web/src/components/coverage/CorridorPanel.svelte -> builder/web/src/lib/ui/confirm.svelte.ts, and 39 more"
+     "message": "map-assembly -> device-map-builder closes a cycle: builder/web/src/components/coverage/CorridorPanel.svelte -> builder/web/src/lib/core/gpx.ts, builder/web/src/components/coverage/CorridorPanel.svelte -> builder/web/src/lib/format.ts, builder/web/src/components/coverage/CorridorPanel.svelte -> builder/web/src/lib/ui/confirm.svelte.ts, and 35 more"
     },
     {
      "rule": "cycle",
@@ -366,7 +366,7 @@
     "repository-tooling"
    ],
    "violations": 8,
-   "lines": 24335,
+   "lines": 24334,
    "problems": [
     {
      "rule": "R1",
@@ -463,7 +463,7 @@
     "map-reading"
    ],
    "violations": 0,
-   "lines": 5178,
+   "lines": 5164,
    "problems": []
   },
   {
@@ -531,15 +531,15 @@
     "content"
    ],
    "violations": 10,
-   "lines": 25807,
+   "lines": 25741,
    "problems": [
     {
      "rule": "cycle",
-     "message": "device-link -> map-assembly closes a cycle: builder/web/src/lib/device/flows.test.ts -> builder/web/src/lib/convert/bridge.ts (test), builder/web/src/lib/device/library.test.ts -> builder/web/src/lib/convert/bridge.ts (test), builder/web/src/lib/device/library.ts -> builder/web/src/lib/convert/bridge.ts, and 4 more"
+     "message": "device-link -> map-assembly closes a cycle: builder/web/src/lib/device/flows.test.ts -> builder/web/src/lib/convert/bridge.ts (test), builder/web/src/lib/device/rides.test.ts -> builder/web/src/lib/convert/bridge.ts (test), builder/web/src/lib/device/rides.ts -> builder/web/src/lib/convert/bridge.ts, and 1 more"
     },
     {
      "rule": "cycle",
-     "message": "device-map-builder -> map-assembly closes a cycle: builder/web/src/components/device/DeviceStep.svelte -> builder/web/src/lib/catalog/ledger.ts, builder/web/src/components/device/DeviceSurfaces.svelte -> builder/web/src/lib/catalog/ledger.ts, builder/web/src/components/device/MapSend.svelte -> builder/web/src/lib/catalog/ledger.ts, and 14 more"
+     "message": "device-map-builder -> map-assembly closes a cycle: builder/web/src/components/device/DeviceStep.svelte -> builder/web/src/lib/catalog/ledger.ts, builder/web/src/components/device/DeviceSurfaces.svelte -> builder/web/src/lib/catalog/ledger.ts, builder/web/src/components/device/MapSend.svelte -> builder/web/src/lib/catalog/ledger.ts, and 8 more"
     },
     {
      "rule": "cycle",
@@ -551,7 +551,7 @@
     },
     {
      "rule": "cycle",
-     "message": "map-assembly -> device-map-builder closes a cycle: builder/web/src/components/coverage/CorridorPanel.svelte -> builder/web/src/lib/core/gpx.ts, builder/web/src/components/coverage/CorridorPanel.svelte -> builder/web/src/lib/format.ts, builder/web/src/components/coverage/CorridorPanel.svelte -> builder/web/src/lib/ui/confirm.svelte.ts, and 39 more"
+     "message": "map-assembly -> device-map-builder closes a cycle: builder/web/src/components/coverage/CorridorPanel.svelte -> builder/web/src/lib/core/gpx.ts, builder/web/src/components/coverage/CorridorPanel.svelte -> builder/web/src/lib/format.ts, builder/web/src/components/coverage/CorridorPanel.svelte -> builder/web/src/lib/ui/confirm.svelte.ts, and 35 more"
     },
     {
      "rule": "cycle",
@@ -684,7 +684,7 @@
     "repository-tooling"
    ],
    "violations": 4,
-   "lines": 9955,
+   "lines": 9951,
    "problems": [
     {
      "rule": "R1",
@@ -750,7 +750,7 @@
     "map-reading"
    ],
    "violations": 0,
-   "lines": 9556,
+   "lines": 9394,
    "problems": []
   },
   {
@@ -768,7 +768,7 @@
    ],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 18799,
+   "lines": 18785,
    "problems": []
   },
   {
@@ -818,7 +818,7 @@
    "problems": [
     {
      "rule": "cycle",
-     "message": "device-map-builder -> route-planning closes a cycle: builder/web/scripts/road-census.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/platform/web.ts -> builder/web/src/lib/planner/release.ts, builder/web/test-support/planner/MapStub.svelte -> builder/web/src/lib/planner/geo.ts, and 14 more"
+     "message": "device-map-builder -> route-planning closes a cycle: builder/web/scripts/road-census.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/platform/web.ts -> builder/web/src/lib/planner/release.ts, builder/web/test-support/planner/MapStub.svelte -> builder/web/src/lib/planner/geo.ts, and 12 more"
     },
     {
      "rule": "cycle",
@@ -914,7 +914,7 @@
    ],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 15001,
+   "lines": 14970,
    "problems": []
   },
   {
@@ -931,7 +931,7 @@
     "repository-tooling"
    ],
    "violations": 4,
-   "lines": 18630,
+   "lines": 18653,
    "problems": [
     {
      "rule": "cycle",

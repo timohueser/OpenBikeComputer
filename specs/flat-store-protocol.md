@@ -9,7 +9,7 @@ phone, a cable client or the simulator (§3, §4), and its bindings to BLE and U
   `firmware/obc-fw-nrf54l` (`src/ble/v4.rs`, `src/usb/`); the store seam in `firmware/obc-storage`
   (`src/flat/seam.rs`); the simulator device `sim/flat-device`; the clients: the companion app
   (`OBCProtocolV4` in `companion-ios/Packages/OBCKit`), the web builder (`builder/web/src/lib/usb/`)
-  and the desktop app (`builder/usb`).
+  and the card-format command (`builder/usb`).
 - Readers: the same crates.
 - Test vectors: §3.11, and [`vectors/flat-store-v4/`](vectors/flat-store-v4/manifest.json), produced
   by `firmware/obc-link/src/flat/vectors.rs`.

@@ -1,13 +1,13 @@
 # OBCC catalog manifest
 
-The JSON contract between the central cell bakery and map-building consumers. The website and
-desktop app read the same catalog, select the same [OBCA](obca-assembly.md) cells, and feed them to
-the same assembler. The device does not read OBCC.
+The JSON contract between the central cell bakery and map-building consumers. The website and the
+maintainer dev server read the same catalog, select the same [OBCA](obca-assembly.md) cells, and
+feed them to the same assembler. The device does not read OBCC.
 
 - Version: `"schema_version": 3`. Consumers MUST reject any other value before interpreting the rest
   of the document.
 - Writers: `host/obc-pack` (`obc-pack catalog`), run by `obc-bake`.
-- Readers: the website and the desktop app (`builder/web/src/lib/catalog/`).
+- Readers: the map builder (`builder/web/src/lib/catalog/`).
 - Code authority: [`host/obc-pack/src/catalog.rs`](../host/obc-pack/src/catalog.rs). Its checked-in
   JSON Schema and worked examples:
   [`catalog.schema.json`](../host/obc-pack/schema/catalog.schema.json),
@@ -397,8 +397,8 @@ identities, and the selected skin are passed to the OBCA assembler. Island pruni
 assembly, seams unify only exact serialized coordinates, and the resulting mounted map follows
 [obca-assembly.md](obca-assembly.md) §4.
 
-The website and desktop app MUST use the same selection arithmetic, verified cell bytes, skin, and
-assembler. Host-specific file saving MUST NOT alter the assembled bytes.
+Every host of the map builder MUST use the same selection arithmetic, verified cell bytes, skin,
+and assembler. Host-specific file saving MUST NOT alter the assembled bytes.
 
 A consumer MAY stream assembler output directly to a connected device instead of first saving it,
 and MUST verify the emitted file's announced length before transfer. A streaming consumer has no
