@@ -59,7 +59,7 @@ the palette of the `world` region.
 | `weather` | `sunny`, `cloudy` or `rainy` |
 | `debug` | `normals`, `lod`, `cracks` (red clear colour), `surface` (red where drawnHeight leaves the mesh by 5 cm), the ground codes `material`, `lithology`, `region`, `snow` (white where snow lies on the date), `albedo` (the ground colour without light), or `mask` (the features of the mask, flat, as `mask_view` in `terrain.wgsl` colours them) |
 | `scale` | The render scale per axis, 0.25 to 0.75 (default 0.7); debug views draw at 1, with the nodes of the scale |
-| `still` | No engine starts. A headless script calls `window.trailviewStill.still(job, options)`, `coverView(line, when)` and `canRenderStills(options)`; `still.test.js` shows how |
+| `still` | No engine starts. A headless script calls `window.trailviewStill.still(job, options)`, `coverView(line, when)`, `canRenderStills(options)`, `view(search)`, the view of a query string, and reads `release`, the id of the release; `still.test.js` and `home-views.mjs` show how |
 
 The HUD lists the keys; Ctrl+C and Ctrl+V copy and paste the view as an address.
 

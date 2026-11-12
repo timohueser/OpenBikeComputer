@@ -15,7 +15,8 @@ export interface StillPoints { x: Float32Array; y: Float32Array; distance: Float
 /** A view (with `debug: 'off'`) to draw at a size in pixels and, for a cover, a line of [lon, lat] points. */
 export interface StillJob { view: View; width: number; height: number; line?: [number, number][] }
 
-export interface Still { image: Blob; points?: StillPoints }
+/** `credits` are those of the release and of the engine once the view is complete: the engine adds a layer's credit when it opens the layer. */
+export interface Still { image: Blob; points?: StillPoints; credits: string[] }
 
 /** Why a still failed; after `device-lost` the caller asks for a new `Gpu`. */
 export type StillFailure = 'aborted' | 'timeout' | 'hidden' | 'device-lost' | 'tiles-failed';
@@ -60,13 +61,18 @@ export async function still(gpu: Gpu, config: PlannerConfig, job: StillJob, { si
             const tiles = engine.stats().failed;
             if (tiles) throw new StillError('tiles-failed', `${tiles} tiles failed to load.`);
             const { colour, points } = await engine.capture(job.line);
-            return { image: await encode(colour), points };
+            return { image: await encode(colour), points, credits: credits(config, engine) };
         })]);
     } finally {
         done.abort();
         // A start that ends after a failure ends its engine too.
         started.then(engine => engine.destroy(), () => {});
     }
+}
+
+/** The credits of the release and of the layers that the engine opened. */
+export function credits(config: PlannerConfig, engine: TrailView): string[] {
+    return [config.terrain_attribution, ...engine.attribution].filter(Boolean);
 }
 
 async function encode(colour: ImageData): Promise<Blob> {
