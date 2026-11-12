@@ -202,8 +202,9 @@ def unreadable(refusal: Refuse) -> bool:
 class TiledService(Source):
     """A service that answers one box at a time, cached per request in the work directory.
 
-    `gap` is the least time between two requests of the whole prepare, for a server that refuses
-    a burst. It needs the shared directory, which every block of a prepare has.
+    `gap` is the least time between the starts of two requests of the whole prepare, for a server
+    that refuses a burst; a retry waits its own, longer delay. It needs the shared directory, which
+    every block of a prepare has.
     """
 
     def __init__(self, *args, gap: float = 0.0, **kw):

@@ -318,7 +318,8 @@ def pace(folder: Path, gap: float) -> None:
     with (folder / "pace").open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if asked.exists():
-            time.sleep(max(0.0, asked.stat().st_mtime + gap - time.time()))
+            # At most `gap`: a clock that stepped back must not stall every block.
+            time.sleep(min(gap, max(0.0, asked.stat().st_mtime + gap - time.time())))
         asked.touch()
 
 
