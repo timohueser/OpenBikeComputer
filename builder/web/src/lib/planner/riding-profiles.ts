@@ -1,4 +1,4 @@
-/** `kmh` is the speed on the flat at Moderate; the owner can still change these values. `engineKmh` is the speed on the
+/** `kmh` is the speed on the flat at Moderate, chosen by the owner for each activity. `engineKmh` is the speed on the
  * flat of the route engine for the activity (`specs/route-api.md`, `cycling_pace` in route-engine `model.rs`), which times
  * a manual leg before the pace. */
 export const ridingProfiles = {
