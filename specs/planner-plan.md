@@ -45,6 +45,7 @@ does not require them and the web planner ignores their values. A reader ignores
 | `name` | Optional signed-route name |
 | `bike` | Optional activity: `road`, `gravel`, `touring`, `mtb` or `hiking` |
 | `preset` | Optional preset: `Balanced`, `Less climbing` (`touring`, `road` and `gravel` only), `Technical` (`mtb` only) or `Alpine` (`hiking` only). A reader uses `Balanced` for a preset that the activity does not have |
+| `pace` | Optional pace of a ride: `easy`, `moderate`, `sporty` or `fast`. A reader shows the times at `moderate` for a missing or unknown value. It does not apply to `hiking` |
 | `startDate` | Optional valid calendar date in `YYYY-MM-DD` form |
 | `loop` | Optional `true`; the start also ends the route |
 | `restAfter` | Optional array of riding-day numbers from 1 to `days` |

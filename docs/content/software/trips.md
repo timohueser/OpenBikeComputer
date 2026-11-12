@@ -63,15 +63,14 @@ a drawn leg.
 
 In the web planner, a "Multi-day trip" plan splits its route into riding days. The elevation
 profile is the timeline. Each day has a label with its date, distance and riding time, each night
-has a marker, and each rest day has a narrow column. While the profile is open, one row above it
-holds the trip values: the start date, the number of riding days and the kinds of places to sleep
-in.
+has a marker, and each rest day has a narrow column. While the profile is open, a row above it
+holds the start date, the day count and the kinds of places to sleep in.
 
 A value that the planner guessed has a dashed line. A day count or a date that the rider set has a
-solid line. The planner guesses the day count from the riding time. After each route change, it
-guesses the count and the suggested nights again. It never changes a value that the rider set. So a
-new plan needs no settings, and the choices of the rider stay. The day count is the only control
-for the length of the days. A bar for the riding time of each day shows the hard days.
+solid line. The planner guesses the day count from the riding time at the pace of the plan. After
+each route or pace change, it guesses the count and the suggested nights again. It never changes a
+value that the rider set, so a new plan needs no settings. The day count is the only control for
+the length of the days. A bar for the riding time of each day shows the hard days.
 
 "Choose" or "Change" on a night, or its marker in the profile, opens the night in the day list.
 "Stay here" on a town moves the night there, and so does a drag of the day end. "Stay here" on a
@@ -122,9 +121,9 @@ to the device.
 A trip can have a start date. Dates follow the rides: when the rider rides Day 2 on Wednesday and
 not on Tuesday, Day 3 shows Thursday.
 
-The trip has one of four fixed bike types, and each day route carries it. The phone and the device
-use the same estimate table for each bike type. So the phone's day estimate is the device's
-estimate for the same day route.
+The trip has one of four bike types, and each day route carries it. The phone and the device show
+the same estimate, from one table for each bike type. The web planner shows the router's time at
+the pace of the plan, which can differ.
 
 ## Riding a trip on the device
 
