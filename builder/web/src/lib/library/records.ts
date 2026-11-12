@@ -107,7 +107,8 @@ export interface DeletedRide {
     device?: string;
 }
 
-/** A route on the device: the decimal `ObjectId` of its object, and the `lineKey` of the route when it was sent. */
+/** A route on a device: `storeId:objectId` of its object, as the `device` of a ride, and the `lineKey` of the route when it
+ * was sent. */
 export interface SentRoute {
     device: string;
     line: string;
@@ -121,7 +122,7 @@ export interface LibraryState {
     waiting: string[];
     /** Routes to remove from the device. */
     leaving: string[];
-    /** The routes on the remembered device, by route id. They belong to its card: another card makes them void. */
+    /** The routes sent to a device, by route id. */
     sent: Record<string, SentRoute>;
     /** Rides that the rider deleted; no import adds them again. */
     deleted: DeletedRide[];

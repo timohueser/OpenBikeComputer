@@ -29,7 +29,12 @@ export const deviceSync = new DeviceSync();
  * that stops it.
  */
 export function startDeviceSync(library: Library): () => void {
+    /** A change of `waiting` or `leaving` came during a sync. */
     let again = false;
+    /** A connection or a new remembered device came during a sync: the next sync runs with no check. */
+    let fresh = false;
+    /** Aborts the sync that runs when the device leaves `ready`. */
+    let running: AbortController | null = null;
     /** The ids that the last sync tried and left in `waiting` or `leaving`, such as a route that the routing could not
      * calculate offline: only a new id, or the next connection, tries them again. */
     let tried = new Set<string>();
@@ -45,9 +50,10 @@ export function startDeviceSync(library: Library): () => void {
         if (session?.status !== 'ready' || !client || !serial || remembered.device?.serial !== serial) return;
         if (deviceSync.running) { again = true; return; }
         deviceSync.running = true;
+        const controller = running = new AbortController();
         try {
             const { syncDevice } = await import('./sync');
-            const work = () => syncDevice(client, serial, library, new AbortController().signal);
+            const work = () => syncDevice(client, serial, library, controller.signal);
             const report = navigator.locks ? await navigator.locks.request(LOCK, { ifAvailable: true }, lock => lock ? work() : null) : await work();
             if (report) {
                 deviceSync.report = report;
@@ -58,19 +64,32 @@ export function startDeviceSync(library: Library): () => void {
             deviceSync.problem = error instanceof Error ? error.message : String(error);
         } finally {
             deviceSync.running = false;
+            running = null;
         }
-        if (again) {
+        if (fresh) {
+            fresh = again = false;
+            void run();
+        } else if (again) {
             again = false;
             if (await pending()) void run();
         }
     }
 
-    deviceSync.setStart(() => void run());
+    /** A sync now, or one more after the sync that runs, with no check of `tried`. */
+    function connected(): void {
+        if (deviceSync.running) fresh = true;
+        else void run();
+    }
+
+    deviceSync.setStart(connected);
     if (remembered.device) void deviceHolder.open();
     const stopEffect = $effect.root(() => {
-        $effect(() => { if (deviceHolder.session?.status === 'ready') untrack(() => void run()); });
+        $effect(() => {
+            const session = deviceHolder.session, ready = session?.status === 'ready' && session.client;
+            untrack(() => { if (ready) connected(); else running?.abort(); });
+        });
     });
-    const stopRemember = onRemember(() => { tried.clear(); void run(); });
+    const stopRemember = onRemember(connected);
     const stopChange = library.onChange((store, key) => {
         if (store !== 'state' || (key !== 'waiting' && key !== 'leaving')) return;
         if (deviceSync.running) again = true;

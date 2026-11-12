@@ -66,10 +66,12 @@ function setup(storeId = CARD) {
 describe('syncDevice', () => {
     it('takes each new ride once, keeps deleted and demo rides out, and counts what came in today', async () => {
         const { rig, library, sync, seedRide } = setup();
-        await rememberCard(SERIAL, CARD, library);
+        rememberCard(SERIAL, CARD);
         seedRide(ride(1_780_000_000));
         const demo = seedRide(ride(1_780_050_000, { isDemo: true }));
         seedRide(ride(1_780_100_000));
+        // A ride that the device still records cannot be fetched: a `get` of it would give a problem.
+        rig.device.seed({ kind: ObjectKind.Ride, displayName: 'recording' });
         expect(await sync()).toMatchObject({ rides: 2, problem: null });
         const keys = (await library.rides()).map(r => r.key).sort();
         expect(keys).toEqual([rideKeyAt(1_780_000_000), rideKeyAt(1_780_100_000)]);
@@ -89,7 +91,7 @@ describe('syncDevice', () => {
 
     it('marks only stored rides whose file is the exact object, and only with persistent storage', async () => {
         const { rig, library, sync, seedRide } = setup();
-        await rememberCard(SERIAL, CARD, library);
+        rememberCard(SERIAL, CARD);
         const persist = vi.spyOn(library, 'persist').mockResolvedValue(false);
         const first = seedRide(ride(1_780_000_000));
         expect(await sync()).toMatchObject({ rides: 1, marked: 0 });
@@ -99,6 +101,10 @@ describe('syncDevice', () => {
         const fromFile = { ...(await library.ride(rideKeyAt(1_780_000_000)))!, key: rideKeyAt(1_780_300_000), source: 'file' as const, device: undefined };
         await library.addRide({ ...fromFile, format: 'gpx' }, new Blob(['<gpx/>']));
         seedRide(ride(1_780_300_000));
+        // The rider deleted this ride, so the library rejects it and the device keeps it as not taken.
+        await library.addRide({ ...fromFile, key: rideKeyAt(1_780_400_000) }, new Blob(['<gpx/>']));
+        await library.removeRide(rideKeyAt(1_780_400_000));
+        seedRide(ride(1_780_400_000));
         persist.mockResolvedValue(true);
         expect(await sync()).toMatchObject({ rides: 0, marked: 1 });
         const metadata = rig.device.entries.find(entry => entry.kind === ObjectKind.Metadata)!;
@@ -109,7 +115,7 @@ describe('syncDevice', () => {
 
     it('sends a route that waits, replaces it when it changed, creates it again when it is gone, and removes a deleted one', async () => {
         const { rig, library, sync, routes, send } = setup();
-        await rememberCard(SERIAL, CARD, library);
+        rememberCard(SERIAL, CARD);
         const route = plan();
         await send(route);
         expect(await sync()).toMatchObject({ sent: 1, waypointsLeft: 0, problem: null });
@@ -120,7 +126,7 @@ describe('syncDevice', () => {
         const table = view.getUint32(112, true), waypoints = Array.from({ length: view.getUint16(116, true) }, (_, i) => table + i * 80);
         expect(waypoints.map(at => [new TextDecoder().decode(obcr.subarray(at + 20, at + 20 + obcr[at + 15])), obcr[at + 14]]))
             .toEqual([['Camp', 2], ['Spring', 1]]);
-        expect(await library.state('sent')).toEqual({ [route.id]: { device: first.objectId.toString(), line: lineKey(route) } });
+        expect(await library.state('sent')).toEqual({ [route.id]: { device: `${CARD}:${first.objectId}`, line: lineKey(route) } });
         expect(await library.state('waiting')).toEqual([]);
 
         const changed = { ...(await library.route(route.id))!, trip: plan(8.2).trip };
@@ -134,7 +140,7 @@ describe('syncDevice', () => {
         await sync();
         const [again] = routes();
         expect(again.objectId).not.toBe(first.objectId);
-        expect((await library.state('sent'))![route.id].device).toBe(again.objectId.toString());
+        expect((await library.state('sent'))![route.id].device).toBe(`${CARD}:${again.objectId}`);
 
         await library.removeRoute(route.id);
         expect(await sync()).toMatchObject({ removed: 1, tried: [route.id] });
@@ -142,23 +148,30 @@ describe('syncDevice', () => {
         await rig.close();
     });
 
-    it('forgets the routes it sent when the card changes', async () => {
+    it('touches no object of another card that has the ObjectIds of the routes it sent', async () => {
         const { rig, library, sync, send } = setup();
-        await rememberCard(SERIAL, CARD, library);
-        await send(plan());
+        rememberCard(SERIAL, CARD);
+        const kept = plan(), deleted = plan(8.2);
+        await send(kept);
+        await send(deleted);
         await sync();
-        expect(Object.keys(await library.state('sent') ?? {})).toHaveLength(1);
         await rig.close();
-        const other = setup(OTHER_CARD);
+        // The card is formatted, and the phone puts two routes with the same ObjectIds on it.
+        const other = setup(OTHER_CARD), phone = [1, 2].map(() => other.rig.device.seed({ kind: ObjectKind.Route, displayName: 'Phone', bytes: new Uint8Array(64) }));
+        expect(phone.map(entry => entry.objectId)).toEqual(Object.values((await library.state('sent'))!).map(route => BigInt(route.device.split(':')[1])));
+        await library.removeRoute(deleted.id);
+        await library.changeState('waiting', ids => [...ids ?? [], kept.id]);
         const report = await syncDevice(other.rig.client, SERIAL, library, new AbortController().signal);
-        expect(report.problem).toBeNull();
-        expect([remembered.device!.storeId, await library.state('sent'), other.routes()]).toEqual([OTHER_CARD, {}, []]);
+        expect(report).toMatchObject({ problem: null, sent: 1, removed: 1 });
+        const [first, second, created] = other.routes();
+        expect([first, second]).toMatchObject(phone.map(entry => ({ objectId: entry.objectId, revision: entry.revision })));
+        expect([await library.state('sent'), await library.state('leaving')]).toEqual([{ [kept.id]: { device: `${OTHER_CARD}:${created.objectId}`, line: lineKey(kept) } }, []]);
         await other.rig.close();
     });
 
     it('keeps a route that waits when the routing service cannot be reached, and names it', async () => {
         const { rig, library, sync, routes, send } = setup();
-        await rememberCard(SERIAL, CARD, library);
+        rememberCard(SERIAL, CARD);
         vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('offline'));
         const route = plan(8.15, 'routed');
         await send(route);
@@ -173,14 +186,14 @@ describe('syncDevice', () => {
         const { library } = setup();
         const list = vi.fn();
         expect(await syncDevice({ list } as unknown as FlatStoreClient, SERIAL, library, new AbortController().signal)).toMatchObject({ rides: 0 });
-        await rememberCard('0000000000000001', CARD, library);
+        rememberCard('0000000000000001', CARD);
         await syncDevice({ list } as unknown as FlatStoreClient, SERIAL, library, new AbortController().signal);
         expect(list).not.toHaveBeenCalled();
     });
 
     it('keeps no ride when the cable comes out during its download', async () => {
         const { rig, library, sync, seedRide } = setup();
-        await rememberCard(SERIAL, CARD, library);
+        rememberCard(SERIAL, CARD);
         seedRide(ride(1_780_000_000, {}, 400));
         const client = rig.client, cut: Parameters<typeof syncDevice>[0] = {
             list: options => client.list(options), put: (...args) => client.put(...args), remove: (...args) => client.remove(...args),
