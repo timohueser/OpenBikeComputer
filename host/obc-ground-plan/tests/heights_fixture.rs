@@ -30,17 +30,19 @@ const EDGE_MAX: usize = 91;
 /// Pairs of grid points on a slope steeper than a rock face where the terrain is not (`Scan::steep`),
 /// measured on the revision 15 fixture with cones on their outward side, the outline pieces of
 /// `records::outline_edges` and the vertex values of `heights::groups`, and faces past the highest wall as
-/// steep as their need: the count must not grow.
-const STEEP_MAX: usize = 939;
+/// steep as their need, and the faces' rings with a vertex at each tile line (it moves piece ends by a few
+/// units): the count must not grow.
+const STEEP_MAX: usize = 940;
 /// A no-room wall's height that changes along it by more than this per metre is a step in its top
 /// (`check::wall_steps`): pairs of points measured on the revision 15 fixture with the slope and the wall of
 /// each point from the need at its foot (`heights::fit`): the count must not grow.
 const WALL_STEP_GRADE: f64 = 0.5;
 const WALL_STEPS_MAX: usize = 17;
 /// The ground's grade along the rim that changes across a piece end by more than this is a shading band
-/// (`check::slope_steps`), measured the same way: the count must not grow.
+/// (`check::slope_steps`), measured the same way, with the faces' rings with a vertex at each tile line (it
+/// moves piece ends by a few units): the count must not grow.
 const SLOPE_STEP_GRADE: f64 = 0.1;
-const SLOPE_STEPS_MAX: usize = 9792;
+const SLOPE_STEPS_MAX: usize = 9796;
 /// The places of the ripple report (latitude, longitude).
 const PLACES: [(&str, f64, f64); 5] = [
     ("v17-sharp-corners", 46.821753, 8.404913),
