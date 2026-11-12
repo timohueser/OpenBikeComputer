@@ -18,7 +18,8 @@ mod tests;
 
 use super::records::{
     blend_edge, edge_ends, edge_line, junction, label as label_words, skip_item, BAND, BINS, BIN_UNITS, CAND, DISC,
-    EDGE, FILL, GRADE_STEPS, HEAD, HEADER, JR, JR_ARM, LABEL, LEVEL, LINE, MARGIN_M, RAIL, SAMPLE, WALL, WATER,
+    EDGE, FILL, GRADE_STEPS, HEAD, HEADER, JR, JR_ARM, LABEL, LEVEL, LINE, MARGIN_M, RAIL, SAMPLE, TURN_STEPS, WALL,
+    WATER,
 };
 use super::Surface;
 use crate::frame::{metres_per_unit_at, CELL_UNITS};
@@ -989,21 +990,40 @@ pub(crate) fn cone_reach(s: f64, rise: f64, p: &HeightRules) -> f64 {
     }
 }
 
-/// The no-room rule of a cone of slope s from an edge whose ends stand `need` above (a fill) or below
-/// (a cut) the plain terrain where the cone should meet it (NaN unknown): a cone that at its own slope
-/// does not meet the terrain where it starts to let go steepens up to the greatest slope `max`; the
-/// rest is a wall at that end, up to `wall` high. Past that the face steepens on, as steep as the need
-/// asks: with no cap, it meets a cliff inside the run and the release has nothing left to take. A cone
-/// that starts `crest` metres past its edge has that much less run. The slope, and the wall at each end.
-fn fit(s: f64, max: f64, need: [f64; 2], wall: f64, p: &HeightRules, reach: f64, crest: f64) -> (f64, [f64; 2]) {
+/// The no-room rule of a cone of slope s from a point of the outline that stands `need` above (a fill) or
+/// below (a cut) the plain terrain where the cone should meet it (NaN unknown): a cone that at its own
+/// slope does not meet the terrain where it starts to let go steepens up to the greatest slope `max`; the
+/// rest is a wall, up to `wall` high. Past that the face steepens on, as steep as the need asks: with no
+/// cap, it meets a cliff inside the run and the release has nothing left to take. A cone that starts
+/// `crest` metres past its edge has that much less run. The slope and the wall, both continuous in the
+/// need, so a need that runs on continuously along the outline gives a slope and a wall top with no step.
+fn fit(s: f64, max: f64, need: f64, wall: f64, p: &HeightRules, reach: f64, crest: f64) -> (f64, f64) {
     let run = (run(reach, p) - crest).max(1e-3);
-    let most = need.iter().filter(|n| !n.is_nan()).fold(f64::NEG_INFINITY, |m, &n| m.max(n));
     let (s, max) = (s.min(p.face_max), max.min(p.face_max));
-    let mut s = if most <= s * run { s } else { (most / run).min(max.max(s)) };
-    if most - s * run > wall {
-        s = (most - wall) / run;
+    if need.is_nan() {
+        return (s, 0.0);
     }
-    (s, need.map(|n| if n.is_nan() { 0.0 } else { (n - s * run).clamp(0.0, wall) }))
+    let mut s = if need <= s * run { s } else { (need / run).min(max.max(s)) };
+    if need - s * run > wall {
+        s = (need - wall) / run;
+    }
+    (s, (need - s * run).clamp(0.0, wall))
+}
+
+/// A value of an outline edge's ends at share f of it: linear between them, so two edges that share an end
+/// give it alike there; an unknown end (NaN) takes the other end's.
+fn at_share(v: [f64; 2], f: f64) -> f64 {
+    let [a, b] = match (v[0].is_nan(), v[1].is_nan()) {
+        (true, false) => [v[1]; 2],
+        (false, true) => [v[0]; 2],
+        _ => v,
+    };
+    (1.0 - f) * a + f * b
+}
+
+/// The fill's need at share f of an outline edge: the paved height less the terrain where its cones let go.
+fn need_at(e: &Edge, f: f64) -> f64 {
+    at_share([e.h[0] - e.t[0], e.h[1] - e.t[1]], f)
 }
 
 /// The metres over which a cone from its round foot should meet the terrain: up to where it lets go.
@@ -1054,8 +1074,9 @@ fn release(d: f64, reach: f64, p: &HeightRules) -> (f64, f64) {
 }
 
 /// An edge of the paved outline (`records`): its ends with the paved face on the left, its host line,
-/// the paved height at each end, the plain terrain where the cones from each end start to let go (NaN
-/// unknown) and the terrain's grade outward.
+/// the paved height at each end, the plain terrain where the cones from each end start to let go and the
+/// terrain's grade outward there (NaN unknown), and the outline's turn at each end to the edge that goes on
+/// from it (radians, positive toward the paved face; NaN where none goes on).
 #[derive(Clone, Copy, Debug)]
 struct Edge {
     a: [f64; 2],
@@ -1063,46 +1084,84 @@ struct Edge {
     line: u32,
     h: [f64; 2],
     t: [f64; 2],
-    grade: f64,
+    grade: [f64; 2],
+    turn: [f64; 2],
 }
 
 impl Block<'_> {
     fn edge(&self, k: u32) -> Edge {
         let w = &self.w[self.w[14] as usize + EDGE * k as usize..][..EDGE];
         let (a, b) = edge_ends(w);
-        let grade = (w[3] >> 16) as u16 as i16;
+        let half = |g: u32, steps: f64| match g as u16 as i16 {
+            i16::MIN => f64::NAN,
+            g => f64::from(g) / steps,
+        };
+        let (grade, turn) = (|g: u32| half(g, GRADE_STEPS), |t: u32| half(t, TURN_STEPS) * std::f64::consts::PI);
         Edge {
             a: [f64::from(a[0]), f64::from(a[1])],
             b: [f64::from(b[0]), f64::from(b[1])],
             line: edge_line(w),
             h: [f32w(w[4]), f32w(w[5])],
             t: [f32w(w[6]), f32w(w[7])],
-            grade: if grade == i16::MIN { f64::NAN } else { f64::from(grade) / GRADE_STEPS },
+            grade: [grade(w[3] >> 16), grade(w[8])],
+            turn: [turn(w[9]), turn(w[8] >> 16)],
         }
     }
 }
 
-/// The greatest of top(x) − c |q − x| over the points x of an edge whose top runs linearly from `top[0]`
-/// to `top[1]` (sign 1, a fill), or the least of top(x) + c |q − x| (sign −1, a cut): exact. The cone's
-/// slope c is √(s² + g²) for the edge's grade g, so over a straight edge the envelope falls at s across
-/// it, and a cone is always steeper than its edge climbs: a neighbour edge up or down the outline never
-/// passes the foot's own height. q lies `along` metres along the edge from its start and `off` metres
-/// off its line; the edge is `len` metres long. With a crest b the cone measures max(0, |q − x| − b):
-/// the cone of the edge grown by b, level within b of it. The extreme is then the point where the cone's
-/// slope matches the edge's grade, or within b of q the crest's end toward the better top: exact, as the
-/// function of x is concave (a fill) or convex (a cut) along the edge.
-fn edge_cone(along: f64, off: f64, len: f64, top: [f64; 2], s: f64, sign: f64, crest: f64) -> f64 {
-    let g = if len > 0.0 { (top[1] - top[0]) / len } else { 0.0 };
-    let c = (s * s + g * g).sqrt();
-    let up = if g >= 0.0 { 1.0 } else { -1.0 };
-    let u = if off * c > crest * s {
-        along + sign * off * g / s
+/// Where q lies past an end of an outline edge, within the cone of that end: the end (0 a, 1 b) and the metres
+/// to it. q lies `along` metres along the edge and `out` metres out from its line (negative into its paved
+/// face); the edge is `len` metres long and turns by `turn` at its ends (`Edge::turn`). Past an end the outline
+/// turns toward the paved face by t > 0 there, the end's cone covers the fan between the two edges' normals,
+/// which the next edge's own cone covers too; where it turns the other way or goes on straight, the next edge
+/// holds the ground; where no edge goes on, the cone covers all past the end.
+fn fan(along: f64, out: f64, len: f64, turn: [f64; 2]) -> Option<(usize, f64)> {
+    let (x, end) = if along > len {
+        (along - len, 1)
+    } else if along < 0.0 {
+        (along, 0)
     } else {
-        along + sign * up * (crest * crest - off * off).sqrt()
+        return None;
     };
-    let u = u.clamp(0.0, len);
-    let d = ((u - along) * (u - along) + off * off).sqrt();
-    top[0] + g * u - sign * c * (d - crest).max(0.0)
+    let t = turn[end];
+    if t.is_nan() {
+        return Some((end, libm::hypot(x, out)));
+    }
+    if t <= 0.0 {
+        return None;
+    }
+    // The next edge's direction at the end, as (along, out): its normal bounds the fan.
+    let (c, s) = (libm::cos(t), libm::sin(t));
+    let before = if end == 1 { x * c - out * s <= 0.0 } else { x * c + out * s >= 0.0 };
+    before.then(|| (end, libm::hypot(x, out)))
+}
+
+/// The cone of an outline edge at q (sign 1 a fill, −1 a cut) whose top runs linearly from `top[0]` to
+/// `top[1]`: across its strip the top falls at s, the line goes on past the ends' normals falling by `steep`
+/// (a rock face) more than the edge climbs per metre, so it never holds the next edge's ground; within an
+/// end's fan (`fan`) the end's own cone at s. So a rim cut or bent anywhere gives the ground of the uncut rim,
+/// and the ground is continuous. q lies `along` metres along the edge and `out` metres out from its line. With
+/// a crest b the cone falls from b metres out: the cone of the outline grown by b, level within b of it.
+#[allow(clippy::too_many_arguments)]
+fn edge_cone(
+    along: f64,
+    out: f64,
+    len: f64,
+    top: [f64; 2],
+    s: f64,
+    sign: f64,
+    turn: [f64; 2],
+    steep: f64,
+    crest: f64,
+) -> f64 {
+    let g = if len > 0.0 { (top[1] - top[0]) / len } else { 0.0 };
+    let past = (-along).max(along - len).max(0.0);
+    let line = top[0] + g * along - sign * (s * (out.abs() - crest).max(0.0) + (steep + g.abs()) * past);
+    match fan(along, out, len, turn) {
+        Some((end, r)) if sign > 0.0 => line.max(top[end] - s * (r - crest).max(0.0)),
+        Some((end, r)) => line.min(top[end] + s * (r - crest).max(0.0)),
+        None => line,
+    }
 }
 
 /// How much the round of a cone of slope s at its foot (`cone`) holds it back at d metres from its
@@ -1139,7 +1198,8 @@ struct Group {
 
 /// The host lines of the outline edges near q (q's bin), at most `SLOTS` in the painter's order, and
 /// whether that cap left some out. Per edge within its host's reach: its fill and its cut, each the
-/// extreme over the edge's points, by the no-room rule of its ends and released by its own distance.
+/// extreme over the edge's points, by the no-room rule of the need at q's foot on it and released by its
+/// own distance.
 fn groups(b: &Block, q: [f64; 2], p: &HeightRules) -> (Vec<Group>, bool) {
     let mut out: Vec<Group> = Vec::new();
     let mut at: Option<(Line, Group)> = None;
@@ -1191,36 +1251,45 @@ fn groups(b: &Block, q: [f64; 2], p: &HeightRules) -> (Vec<Group>, bool) {
             continue;
         }
         let (fade, relax) = release(d, ln.reach, p);
-        // The fill starts `rise` over the edge and `crest` past it.
-        let fill_at = |rise: f64, crest: f64| {
-            let top = [e.h[0] + rise, e.h[1] + rise];
-            let need = [top[0] - e.t[0], top[1] - e.t[1]];
-            let (sf, wf) = fit(ln.fill, ln.fill_max, need, ln.wall_max(p), p, ln.reach, crest);
-            (sf, edge_cone(along, off, len, [top[0] - wf[0], top[1] - wf[1]], sf, 1.0, crest))
-        };
-        let (sf, fill) = fill_at(ln.rise, ln.crest);
-        let (sc, wc) = fit(ln.cut, ln.cut_max, [e.t[0] - e.h[0], e.t[1] - e.h[1]], ln.wall_max(p), p, ln.reach, 0.0);
+        // The slope and the wall at q's foot on the edge, from the need there. The fill starts `rise` over
+        // the edge and `crest` past it.
+        let share = if len > 0.0 { (along / len).clamp(0.0, 1.0) } else { 0.0 };
+        let need = need_at(&e, share);
+        let (sf, wf) = fit(ln.fill, ln.fill_max, need + ln.rise, ln.wall_max(p), p, ln.reach, ln.crest);
+        let (sc, wc) = fit(ln.cut, ln.cut_max, -need, ln.wall_max(p), p, ln.reach, 0.0);
         g.d = g.d.min(d);
         // An edge's toe width lets go with its cone, so an edge that leaves at the reach leaves no step
-        // in the least width.
-        let w = toe_width(d, span_k(sf, sc, e.grade, p), p);
+        // in the least width; past an end's normal outside the end's fan it widens at a rock face's slope, as
+        // its cone falls on (`edge_cone`).
+        let past =
+            if fan(along, out * b.mpu, len, e.turn).is_some() { 0.0 } else { (-along).max(along - len).max(0.0) };
+        let w = toe_width(d, span_k(sf, sc, at_share(e.grade, share), p), p) + p.face_max * past;
         g.toe = g.toe.min(w + fade * (p.toe_max_m - w));
         // An edge's cone stands on its outward side, the side of its slope face. Past its line into its
         // paved face (from `SIDE_UNITS` on, where a face's own whole-unit rim and a point read beside it
         // lie) it falls on at a rock face's slope: a cone from the far side of a face never holds the
         // near edge's slope at its own fit, and the ground stays continuous where an edge's line passes.
         let inside = if len > 0.0 { (-out - SIDE_UNITS).max(0.0) * b.mpu * p.face_max } else { 0.0 };
-        let cut = edge_cone(along, off, len, [e.h[0] + wc[0], e.h[1] + wc[1]], sc, -1.0, 0.0);
-        let plain = if ln.rise > 0.0 || ln.crest > 0.0 { fill_at(0.0, 0.0).1 } else { fill };
+        // The cone from the paved height moved by `rise` (a wall's top), sign 1 a fill, −1 a cut.
+        let cone = |rise: f64, s: f64, sign: f64, crest: f64| {
+            let top = [e.h[0] + rise, e.h[1] + rise];
+            edge_cone(along, out * b.mpu, len, top, s, sign, e.turn, p.face_max, crest)
+        };
+        let (fill, cut) = (cone(ln.rise - wf, sf, 1.0, ln.crest), cone(wc, sc, -1.0, 0.0));
+        let plain = if ln.rise > 0.0 || ln.crest > 0.0 {
+            let (sp, wp) = fit(ln.fill, ln.fill_max, need, ln.wall_max(p), p, ln.reach, 0.0);
+            cone(-wp, sp, 1.0, 0.0)
+        } else {
+            fill
+        };
         g.fill = g.fill.max(fill - relax - inside);
         g.plain = g.plain.max(plain - relax - inside);
         g.cut = g.cut.min(cut + relax + inside);
         // The highest cut toward the budget: a wall class's wall up to `wall_max_m` at its edge, then for
         // every class a face at its steepest cut from the wall's top (from the edge where it has none).
         let (steep, rise) = (ln.steepest_cut(p), ln.wall_max(p));
-        let top = [e.h[0] + rise, e.h[1] + rise];
-        let (ss, ws) = fit(steep, steep, [e.t[0] - top[0], e.t[1] - top[1]], 0.0, p, ln.reach, 0.0);
-        let cut = edge_cone(along, off, len, [top[0] + ws[0], top[1] + ws[1]], ss, -1.0, 0.0);
+        let (ss, _) = fit(steep, steep, -need - rise, 0.0, p, ln.reach, 0.0);
+        let cut = cone(rise, ss, -1.0, 0.0);
         g.steep = g.steep.min(cut + relax + inside);
     }
     close(at, &mut out);
@@ -1358,11 +1427,10 @@ fn walls(b: &Block, q: [f64; 2], l: u32, p: &HeightRules) -> Option<([(f64, f64)
         if best.is_some_and(|w| w.0 <= d) {
             continue;
         }
-        let need = [e.h[0] + ln.rise - e.t[0], e.h[1] + ln.rise - e.t[1]];
-        let (_, wf) = fit(ln.fill, ln.fill_max, need, ln.wall_max(p), p, ln.reach, ln.crest);
-        let (_, wc) = fit(ln.cut, ln.cut_max, [e.t[0] - e.h[0], e.t[1] - e.h[1]], ln.wall_max(p), p, ln.reach, 0.0);
-        let at = |v: [f64; 2]| v[0] + f * (v[1] - v[0]);
-        best = Some((d, at(wf), at(wc), at(e.h)));
+        let need = need_at(&e, f);
+        let (_, wf) = fit(ln.fill, ln.fill_max, need + ln.rise, ln.wall_max(p), p, ln.reach, ln.crest);
+        let (_, wc) = fit(ln.cut, ln.cut_max, -need, ln.wall_max(p), p, ln.reach, 0.0);
+        best = Some((d, wf, wc, e.h[0] + f * (e.h[1] - e.h[0])));
     }
     // The fill's wall stands under its top, which the rise lifts.
     best.map(|(d, wf, wc, h)| ([(wf, h + ln.rise - wf), (wc, h + wc)], p.face_max * d * b.mpu))
@@ -1419,6 +1487,40 @@ pub(crate) fn paved_end(words: &[u32], q: [f64; 2], id: u32, items: &Items) -> O
         h.owner != u32::MAX
     };
     own.then_some(h)
+}
+
+/// Record line l's frame at q from the segments of `items` (`paved_end`'s): the unit direction from the line
+/// toward q and the unit direction along the line. In the mitre quad that holds q (the one nearest across
+/// where quads overlap) these are across and along the frame's mitre at q's share, so they turn
+/// continuously from quad to quad; past the line's first or last sample, the direction from that sample,
+/// which turns continuously round a free end. None where no listed segment of l holds q.
+pub(crate) fn frame(words: &[u32], q: [f64; 2], l: u32, items: &Items) -> Option<([f64; 2], [f64; 2])> {
+    let b = Block::at(words, q);
+    let ln = b.line(l as usize);
+    let mut best: Option<(f64, [f64; 2], [f64; 2])> = None;
+    for i in items.segs.iter().filter(|&&s| s & 0xffff == l).map(|&s| (s >> 16) as usize) {
+        let (pa, pb, ta, tb) = (b.position(&ln, i), b.position(&ln, i + 1), b.mitre(&ln, i), b.mitre(&ln, i + 1));
+        let (v, ab) = (sub(q, pa), sub(pb, pa));
+        let (da, db) = (dot(v, ta), dot(sub(pb, q), tb));
+        let (out, along) = if da >= 0.0 && db >= 0.0 {
+            let t = if da + db > 0.0 { da / (da + db) } else { 0.5 };
+            let m = unit([ta[0] + t * (tb[0] - ta[0]), ta[1] + t * (tb[1] - ta[1])]);
+            let along = dot(ab, m);
+            let f = if along != 0.0 { dot(v, m) / along } else { 0.0 };
+            ([v[0] - f * ab[0], v[1] - f * ab[1]], m)
+        } else if i == 0 && da < 0.0 && db >= 0.0 {
+            (v, unit(ab))
+        } else if i + 2 == ln.count && db < 0.0 && da >= 0.0 {
+            (sub(q, pb), unit(ab))
+        } else {
+            continue;
+        };
+        let d = norm(out);
+        if d > 0.0 && best.is_none_or(|(least, ..)| d < least) {
+            best = Some((d, [out[0] / d, out[1] / d], along));
+        }
+    }
+    best.map(|(_, out, along)| (out, along))
 }
 
 /// Within this many frame units of a line's end line, a point lies on it: the stroke's corners are

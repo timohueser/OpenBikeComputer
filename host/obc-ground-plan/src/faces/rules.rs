@@ -9,7 +9,7 @@ use serde_json::{Map, Value};
 use super::heights::{HeightRules, Legs, RULE_FIELDS};
 use super::records::MARGIN_M;
 use crate::frame::CHAIN_MAX_M;
-use crate::graph::{HEADING_M, ROOM_MAX_M, SNAP_REACH_M};
+use crate::graph::{Structures, HEADING_M, ROOM_MAX_M, SNAP_REACH_M};
 use crate::sections::HALF_MAX_M;
 use crate::sections::{Finish, Reach, Sections};
 
@@ -104,6 +104,8 @@ impl PlanRules {
 pub struct Rules {
     pub sections: Sections,
     pub plan: PlanRules,
+    /// The block `structures`: the levels of the way graph.
+    pub structures: Structures,
     reaches: Vec<Reach>,
 }
 
@@ -189,6 +191,12 @@ impl Rules {
             let at = Finish::ALL.iter().position(|f| Some(f.name()) == name.as_str());
             tread[at.ok_or_else(|| format!("plan.json tread_finishes: {name} is no finish"))?] = true;
         }
+        let block = top.get("structures").and_then(Value::as_object).ok_or("plan.json: no object structures")?;
+        let mut parts = [0.0; 6];
+        for (v, field) in parts.iter_mut().zip(Structures::FIELDS) {
+            *v = number(block, field).map_err(|e| e.replace("plan.json ", "plan.json structures."))?;
+        }
+        let structures = Structures::new(parts);
         let f = |field: &str| number(top, field);
         let plan = PlanRules {
             extent_m: f("extent_m")?,
@@ -204,7 +212,9 @@ impl Rules {
         if classes.iter().any(|c| c.return_grade <= 0.0) {
             return Err("roads.json: a return_grade of 0".into());
         }
-        let reaches = reach_rows(&plan, band_m(&sections), inner_max_m(&sections), radius_max_m(&sections));
+        let mut reaches = reach_rows(&plan, band_m(&sections), inner_max_m(&sections), radius_max_m(&sections));
+        let graph_m = (sections.reaches().iter()).filter(|r| r.owner == "graph").map(Reach::metres).fold(0.0, f64::max);
+        reaches.push(structures.reach(graph_m));
         for row in reaches.iter().filter(|r| r.chain) {
             if row.metres() > CHAIN_MAX_M {
                 return Err(format!(
@@ -214,7 +224,7 @@ impl Rules {
                 ));
             }
         }
-        Ok(Rules { sections, plan, reaches })
+        Ok(Rules { sections, plan, structures, reaches })
     }
 
     /// The reach table: the rows of `Sections` and those of the faces.

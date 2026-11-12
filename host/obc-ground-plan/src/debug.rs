@@ -24,7 +24,7 @@ pub const END: Rgb = (0, 0, 0);
 pub const CROSSING: Rgb = (255, 255, 255);
 
 /// The crossing kinds in code order, with their letters.
-pub const CROSSINGS: [(CrossingKind, char); 8] = [
+pub const CROSSINGS: [(CrossingKind, char); 9] = [
     (CrossingKind::Deck, 'D'),
     (CrossingKind::Culvert, 'C'),
     (CrossingKind::Ford, 'F'),
@@ -33,6 +33,7 @@ pub const CROSSINGS: [(CrossingKind, char); 8] = [
     (CrossingKind::Footbridge, 'B'),
     (CrossingKind::LevelCrossing, 'L'),
     (CrossingKind::Stacked, 'X'),
+    (CrossingKind::Bore, 'T'),
 ];
 
 pub fn family_colour(family: Family) -> Rgb {

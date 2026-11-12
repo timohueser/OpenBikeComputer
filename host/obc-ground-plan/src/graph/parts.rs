@@ -65,7 +65,7 @@ impl<'a> Rule<'a> {
 }
 
 /// The family, rank, level and rules of a line feature, or None for another kind.
-fn classify<'a>(feature: &Feature, sections: &'a Sections) -> Option<(Family, u8, Level, Rule<'a>)> {
+pub(crate) fn classify<'a>(feature: &Feature, sections: &'a Sections) -> Option<(Family, u8, Level, Rule<'a>)> {
     let tag = |key: &str| feature.tags.get(key).map(String::as_str);
     let kind = feature.kind.as_str();
     if feature.geometry != Geometry::Line {

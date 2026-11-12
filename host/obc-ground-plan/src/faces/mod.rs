@@ -26,7 +26,7 @@ pub use rules::{input_m, Mouth, Pair, PlanRules, Rank, Rules};
 pub use types::*;
 
 use cover::Cover;
-use geom::{cell_line_points, inner_point, with_cell_lines, P};
+use geom::{grid_points, inner_point, with_grid_lines, P};
 use points::{Arm, Circle, Part, Rounded};
 use slice::{on_cell_line, slice, snap_round, Loop, Map, NONE};
 use stroke::{pieces_along, union, Rings};
@@ -699,7 +699,7 @@ fn snap(p: P) -> P {
     [snap(p[0]), snap(p[1])]
 }
 
-/// Each ring's vertices snapped to the cell lines, with an exact vertex where it crosses one.
+/// Each ring's vertices snapped to the cell lines, with a vertex where it crosses one.
 fn prepare(rings: &Rings) -> Rings {
     rings
         .iter()
@@ -709,7 +709,7 @@ fn prepare(rings: &Rings) -> Rings {
             if s.len() > 1 && s[0] == s[s.len() - 1] {
                 s.pop();
             }
-            with_cell_lines(&s)
+            with_grid_lines(&s, CELL_UNITS)
         })
         .filter(|r| r.len() >= 3)
         .collect()
@@ -1242,21 +1242,30 @@ fn candidates<'a>(
     // A seam off the window cuts nothing of it.
     seams.retain(|&(_, [a, b], _)| geom::meets(win, a, b));
     let seams = seams_on_carriageways(&mut cands, &seams);
+    // The seams and rings split at grid lines of `step`, as `grid_points` puts their points.
+    let split = |seams: &[[P; 2]], step: i64| -> Vec<[P; 2]> {
+        (seams.iter())
+            .flat_map(|&[a, b]| {
+                let mut pts = vec![a];
+                grid_points(a, b, step, &mut pts);
+                pts.push(b);
+                pts.dedup();
+                pts.windows(2).map(|w| [w[0], w[1]]).collect::<Vec<_>>()
+            })
+            .collect()
+    };
     // A seam meets the cell lines where the carriageway's ring does.
-    let seams: Vec<[P; 2]> = seams
-        .iter()
-        .flat_map(|&[a, b]| {
-            let mut pts = vec![a];
-            cell_line_points(a, b, &mut pts);
-            pts.push(b);
-            pts.dedup();
-            pts.windows(2).map(|w| [w[0], w[1]]).collect::<Vec<_>>()
-        })
-        .collect();
-    let mut seams = seams;
+    let mut seams = split(&seams, CELL_UNITS);
     let square = window(cell, 0.0);
     merge_crossings(square, &mut cands.iter_mut().map(|c| &mut c.rings).collect::<Vec<_>>(), &mut seams);
     cands.retain(|c| !c.rings.is_empty());
+    // The last change of the rings and seams: a vertex at each tile line they cross. No tile of the slice
+    // then rounds a crossing of its own side, which the overlay would snap onto a tile corner that the
+    // next cell holds without the ring, and the cover and the labels read the edges that the slice cuts.
+    for c in &mut cands {
+        c.rings = c.rings.iter().map(|r| with_grid_lines(r, slice::TILE)).collect();
+    }
+    let seams = split(&seams, slice::TILE);
     stats.candidates = cands.len() as u32;
     let rings: Vec<&[Vec<P>]> = cands.iter().map(|c| c.rings.as_slice()).collect();
     let cover = Cover::new(win, &rings);

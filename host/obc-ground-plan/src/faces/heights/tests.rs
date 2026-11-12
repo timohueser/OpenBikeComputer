@@ -660,12 +660,51 @@ fn a_confluence_blends_in_one_region_and_two_streams_that_cross_apart_meet_in_a_
 }
 
 #[test]
-fn an_edge_cone_with_a_crest_is_level_within_it_and_the_grown_edges_cone_past_it() {
-    let cone = super::edge_cone;
-    // A level edge: within the crest the top, past it the plain cone of the edge grown by the crest.
-    assert_eq!(cone(2.0, 0.4, 4.0, [500.4, 500.4], 0.5, 1.0, 0.6), 500.4);
-    assert!((cone(2.0, 1.6, 4.0, [500.4, 500.4], 0.5, 1.0, 0.6) - 499.9).abs() < 1e-12);
-    // A rising edge: within the crest the point of the edge with the higher top that the crest reaches.
-    let up = 500.0 + 0.1 * (2.0 + (0.6f64 * 0.6 - 0.3 * 0.3).sqrt());
-    assert!((cone(2.0, 0.3, 4.0, [500.0, 500.4], 0.5, 1.0, 0.6) - up).abs() < 1e-12);
+fn an_edge_cone_with_a_crest_is_level_within_it_and_falls_at_its_slope_past_it() {
+    let cone =
+        |along: f64, out: f64, top: [f64; 2]| super::edge_cone(along, out, 4.0, top, 0.5, 1.0, [f64::NAN; 2], 2.5, 0.6);
+    // Across a level edge: the top within the crest, then the slope from the crest's line.
+    assert_eq!(cone(2.0, 0.4, [500.4; 2]), 500.4);
+    assert!((cone(2.0, 1.6, [500.4; 2]) - 499.9).abs() < 1e-12);
+    // Across a rising edge: the top at q's foot. Past a free end: the end's round cone grown by the crest.
+    assert!((cone(2.0, 0.3, [500.0, 500.4]) - 500.2).abs() < 1e-12);
+    assert!((cone(4.3, 0.4, [500.0, 500.4]) - 500.4).abs() < 1e-12);
+    assert!((cone(4.6, 0.8, [500.0, 500.4]) - 500.2).abs() < 1e-12);
+}
+
+/// A rim whose cut points are rounded off its line by half a unit (0.8 mm) turns a little at every cut. The
+/// cones of its ends cover the thin fans of those turns, so the ground beside it is the straight rim's: no
+/// groove in a fill, no ridge in a cut.
+#[test]
+fn a_rim_bent_by_its_cuts_gives_the_ground_of_the_straight_rim() {
+    let s = 0.667;
+    // Metres; the slope lies on the side of −y (out of a to b on the right).
+    let pts: Vec<[f64; 2]> = (0..8).map(|k| [0.158 * f64::from(k), if k % 2 == 1 { 0.0008 } else { 0.0 }]).collect();
+    let dir = |k: usize| super::unit(super::sub(pts[k + 1], pts[k]));
+    let turn = |a: [f64; 2], b: [f64; 2]| libm::atan2(super::cross(a, b), super::dot(a, b));
+    let edges = pts.len() - 1;
+    for sign in [1.0, -1.0] {
+        for off in [1.0, 2.0, 5.0, 10.0] {
+            for i in 0..=400 {
+                let q = [0.2 + 0.002 * f64::from(i), -off];
+                let ground = (0..edges)
+                    .map(|k| {
+                        let (u, v) = (dir(k), super::sub(q, pts[k]));
+                        let len = super::norm(super::sub(pts[k + 1], pts[k]));
+                        let t = [
+                            if k > 0 { turn(dir(k - 1), u) } else { f64::NAN },
+                            if k + 1 < edges { turn(u, dir(k + 1)) } else { f64::NAN },
+                        ];
+                        let out = -super::cross(u, v);
+                        super::edge_cone(super::dot(v, u), out, len, [0.0; 2], s, sign, t, 2.5, 0.0)
+                    })
+                    .fold(-sign * f64::INFINITY, |m, h| if sign > 0.0 { m.max(h) } else { m.min(h) });
+                assert!(
+                    (ground + sign * s * off).abs() < 1e-3,
+                    "sign {sign} at {q:?}: {ground} for {}",
+                    -sign * s * off
+                );
+            }
+        }
+    }
 }
