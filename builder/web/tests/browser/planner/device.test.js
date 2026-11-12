@@ -42,7 +42,7 @@ test('a remembered device that is not connected shows what waits and what was on
 
   const { errors, requests } = await open(page);
   await expect(page.getByRole('heading', { name: 'Your device is not connected', level: 1 })).toBeVisible();
-  await expect(page.getByText('You connected it last on 7 November.')).toBeVisible();
+  await expect(page.getByText('Last update on 7 November.')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Connect it again' })).toBeEnabled();
   await expect(page.getByText('2 routes: “Lake loop”, “Pass day”')).toBeVisible();
   await expect(page.getByText('1 route to remove from the device')).toBeVisible();
