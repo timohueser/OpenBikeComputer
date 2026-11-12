@@ -719,6 +719,119 @@ impl<'a> Group<'a> {
         let at = offset(self.slots_at.into(), u64::from(profile) * per_profile + u64::from(index), 8)?;
         Ok((u32_at(self.bytes, at)?, u32_at(self.bytes, at + 4)?))
     }
+
+    /// The cost table of slot `index` of profile `profile`, of a cell with `rows` entering and
+    /// `columns` leaving roads; `None` for a slot of 0 bytes.
+    pub fn table(&self, profile: u32, index: u32, rows: u32, columns: u32) -> Result<Option<Table<'a>>> {
+        let (at, bytes) = self.slot(profile, index)?;
+        if bytes == 0 {
+            return Ok(None);
+        }
+        Table::parse(slice(self.bytes, at.into(), bytes.into())?, rows, columns).map(Some)
+    }
+}
+
+/// The bytes of the header of a cost table.
+pub const TABLE_HEADER: usize = 16;
+/// The largest finite value of a cost table.
+pub const TABLE_MAX: u64 = u32::MAX as u64 - 1;
+
+/// The cost table of one cell and profile: the value at (row, column) is the least cost of a path
+/// in the cell from an entering to a leaving road, without the cost of the entering road.
+#[derive(Clone, Copy, Debug)]
+pub struct Table<'a> {
+    bytes: &'a [u8],
+    pub rows: u32,
+    pub columns: u32,
+    pub width: u8,
+    /// 0: the values by row; 1: by row, then by column.
+    pub layout: u8,
+}
+
+impl<'a> Table<'a> {
+    /// Checks the header against `rows` and `columns`, and the size of the values.
+    pub fn parse(bytes: &'a [u8], rows: u32, columns: u32) -> Result<Self> {
+        if bytes.len() < TABLE_HEADER || u32_at(bytes, 0)? != rows || u32_at(bytes, 4)? != columns {
+            return Err(invalid("a cost table of another size"));
+        }
+        let (width, layout) = (bytes[8], bytes[9]);
+        if ![1, 2, 4].contains(&width) || layout > 1 || bytes[10..TABLE_HEADER] != [0; 6] {
+            return Err(invalid("a bad cost table header"));
+        }
+        let values = offset(0, rows.into(), columns.into())?;
+        if offset(TABLE_HEADER as u64, values, u64::from(width) * (1 + u64::from(layout)))? != bytes.len() as u64 {
+            return Err(invalid("a cost table of another size"));
+        }
+        Ok(Self { bytes, rows, columns, width, layout })
+    }
+
+    /// Value `index` of the values by row, or of the copy by column after them.
+    fn value(&self, index: usize) -> u64 {
+        let width = usize::from(self.width);
+        let field = &self.bytes[TABLE_HEADER + index * width..][..width];
+        let raw = field.iter().rev().fold(0, |value, &byte| value << 8 | u32::from(byte));
+        if raw == all_ones(self.width) {
+            u64::MAX
+        } else {
+            raw.into()
+        }
+    }
+
+    /// The value at (`row`, `column`); `u64::MAX` for no path. Panics outside the table.
+    pub fn get(&self, row: u32, column: u32) -> u64 {
+        assert!(row < self.rows && column < self.columns, "a place outside the cost table");
+        self.value(row as usize * self.columns as usize + column as usize)
+    }
+
+    pub fn row(&self, row: u32) -> impl Iterator<Item = u64> + '_ {
+        assert!(row < self.rows, "a row outside the cost table");
+        let start = row as usize * self.columns as usize;
+        (start..start + self.columns as usize).map(|index| self.value(index))
+    }
+
+    /// The values of `column`, from the copy by column when the table has one.
+    pub fn column(&self, column: u32) -> impl Iterator<Item = u64> + '_ {
+        assert!(column < self.columns, "a column outside the cost table");
+        let (rows, columns, column) = (self.rows as usize, self.columns as usize, column as usize);
+        let copy = self.layout == 1;
+        (0..rows).map(move |row| match copy {
+            true => self.value(rows * columns + column * rows + row),
+            false => self.value(row * columns + column),
+        })
+    }
+}
+
+/// Appends the cost table of `values`, by row with `u64::MAX` for no path. It takes the narrowest
+/// width, and adds the copy by column when the values by row take more than `columns_from` bytes
+/// and the table has more than one row and column. Returns the first value above `TABLE_MAX`.
+pub fn encode_table(
+    rows: u32,
+    columns: u32,
+    values: &[u64],
+    columns_from: usize,
+    out: &mut Vec<u8>,
+) -> std::result::Result<(), u64> {
+    assert_eq!(values.len(), rows as usize * columns as usize, "the values of a cost table");
+    let finite = values.iter().copied().filter(|&value| value != u64::MAX);
+    if let Some(value) = finite.clone().find(|&value| value > TABLE_MAX) {
+        return Err(value);
+    }
+    let width = width(finite.max().map(|value| value as u32));
+    let layout = u8::from(values.len() * usize::from(width) > columns_from && rows > 1 && columns > 1);
+    out.extend(rows.to_le_bytes());
+    out.extend(columns.to_le_bytes());
+    out.extend([width, layout, 0, 0, 0, 0, 0, 0]);
+    let put = |out: &mut Vec<u8>, value: u64| {
+        let value = if value == u64::MAX { all_ones(width) } else { value as u32 };
+        out.extend(&value.to_le_bytes()[..usize::from(width)]);
+    };
+    values.iter().for_each(|&value| put(out, value));
+    if layout == 1 {
+        for column in 0..columns as usize {
+            (0..rows as usize).for_each(|row| put(out, values[row * columns as usize + column]));
+        }
+    }
+    Ok(())
 }
 
 /// The class entry of one profile: 24 bytes, all zero where the profile excludes the road.
@@ -1090,6 +1203,10 @@ mod tests {
         let mut group = fields(&[1, u32::MAX, 1, 0, 0, 24]);
         group.extend([0; 8]);
         assert!(Group::new(&group).is_err());
+        let mut table = fields(&[u32::MAX, u32::MAX]);
+        table.extend([4, 1, 0, 0, 0, 0, 0, 0]);
+        assert!(Table::parse(&table[..TABLE_HEADER - 1], u32::MAX, u32::MAX).is_err());
+        assert!(Table::parse(&table, u32::MAX, u32::MAX).is_err());
         // A position that passes 64 bits: way 1, no scales, 1 m, no closure, 2 points.
         let mut record = vec![1, 0, 0xFF, 1, 0, 2];
         put_varint(&mut record, u64::MAX - 1);

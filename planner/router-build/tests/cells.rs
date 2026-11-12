@@ -3,6 +3,7 @@ use planner_router::install::{self, Plan};
 use planner_router::model::{Point, Profile, Road, Surface, BIKE, FOOT, NO_ELEVATION, PUSH};
 use planner_router_build::cells::{write, Info, Input, Summary};
 use planner_router_build::source::{Builder, Tags, Ways};
+use planner_router_build::tables::{self, Tables};
 use planner_router_build::{base, Costs, Graph};
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -113,23 +114,28 @@ impl Drop for Scratch {
     }
 }
 
-fn package(bake: &Bake, download_level: u8, output: &Path) -> Summary {
+/// Builds the cost tables, with copies by column from 16 bytes, and writes the package.
+fn package(bake: &Bake, download_level: u8, output: &Path) -> (Summary, Tables) {
     let info = Info {
         region: "test".into(),
         bounds: [7.0, 46.0, 7.1, 46.1],
         source_sha256: vec![],
         attribution: "test".into(),
     };
+    let (first, head) = (bake.topology.first.values(), bake.topology.head.values());
+    let tables = tables::build(&bake.graph.cells, first, head, &bake.costs.columns(), 16).unwrap();
     let input = Input {
         graph: &bake.graph,
         topology: &bake.topology,
         costs: &bake.costs,
+        tables: &tables,
         sizes: &[8, 25, 50],
         download_level,
         info,
         level: 3,
     };
-    write(&input, output).unwrap()
+    let summary = write(&input, output).unwrap();
+    (summary, tables)
 }
 
 fn read(dir: &Path) -> (Vec<u8>, Vec<u8>) {
@@ -187,7 +193,7 @@ fn an_install_gives_back_each_road() {
     let (graph, costs) = (&bake.graph, &bake.costs);
     let scratch = Scratch::new("roads");
     let (output, target) = (scratch.0.join("out"), scratch.0.join("target"));
-    let summary = package(&bake, 2, &output);
+    let (summary, tables) = package(&bake, 2, &output);
     let (directory_bytes, info) = read(&output);
     let report = install::install(&target, (&directory_bytes, &info), (None, None), 2, fetch(&output)).unwrap();
     assert_eq!(report.files as usize, summary.objects.len());
@@ -228,7 +234,7 @@ fn an_install_gives_back_each_road() {
     };
     // The level-1 boxes of each download cell, by record.
     let mut level1_boxes = Vec::new();
-    let (mut seen, mut closures) = (0, 0);
+    let (mut seen, mut closures, mut copies) = (0, 0, 0);
     let (mut road, mut expected) = (Road::default(), Road::default());
     for record in 0..downloads {
         let cell = directory.cell(record).unwrap();
@@ -301,7 +307,6 @@ fn an_install_gives_back_each_road() {
                     };
                     assert_eq!(basis(view.basis(class, place).unwrap()), basis(costs.basis(*profile, id)));
                     assert_eq!(view.allowed(&cell, place, j).unwrap(), costs.snappable(*profile, id));
-                    assert_eq!(view.slot(place, i).unwrap().1, 0);
                 }
                 // The record.
                 let closure = geometry.road(&shapes, j, &mut road).unwrap();
@@ -327,6 +332,31 @@ fn an_install_gives_back_each_road() {
                 }
             }
         }
+        // The table of each level-1 cell and upper record for each profile.
+        let cells = &graph.cells;
+        let mut tabled: Vec<_> = (0..topology.cells)
+            .map(|i| {
+                let level1 = topology.level1(i).unwrap();
+                let cell = cells.ids.values().binary_search(&level1.id).unwrap();
+                (1, cell, u32::from(level1.entering), u32::from(level1.leaving))
+            })
+            .collect();
+        for k in 0..topology.upper {
+            let upper = topology.upper(k).unwrap();
+            let level = usize::from(upper.level);
+            let cell =
+                (0..cells.counts.values()[level - 1] as usize).find(|&c| cells.id(level, c) == upper.id).unwrap();
+            tabled.push((level, cell, upper.entering, upper.leaving));
+        }
+        for (index, &(level, cell, rows, columns)) in tabled.iter().enumerate() {
+            for (profile, &(g, place)) in &places {
+                let (at, bytes) = group_views[g].slot(place, index as u32).unwrap();
+                let slot = &group_bytes[g][at as usize..(at + bytes) as usize];
+                assert_eq!(slot, tables.table(level, cell, *profile), "level {level}, cell {cell}");
+                let table = group_views[g].table(place, index as u32, rows, columns).unwrap().unwrap();
+                copies += usize::from(table.layout);
+            }
+        }
         for k in 0..topology.upper {
             let upper = topology.upper(k).unwrap();
             let list =
@@ -346,6 +376,19 @@ fn an_install_gives_back_each_road() {
         let upper = topology.upper(0).unwrap();
         assert_eq!(topology.cells, 0);
         let cell = directory.cell(record).unwrap();
+        let level = usize::from(cell.level);
+        let index = (0..graph.cells.counts.values()[level - 1] as usize)
+            .find(|&c| graph.cells.id(level, c) == cell.id)
+            .unwrap();
+        for (profile, &(g, place)) in &places {
+            let bytes = file(&target, &directory, record, 2 + g).unwrap();
+            let view = Group::new(&bytes).unwrap();
+            assert_eq!((view.cells, view.upper, view.classes), (0, 1, 0));
+            let table = view.table(place, 0, upper.entering, upper.leaving).unwrap().unwrap();
+            copies += usize::from(table.layout);
+            let (at, size) = view.slot(place, 0).unwrap();
+            assert_eq!(&bytes[at as usize..(at + size) as usize], tables.table(level, index, *profile));
+        }
         let below: Vec<usize> = (0..downloads)
             .filter(|&d| directory.cell(d).unwrap().id & !directory.below(cell.level) == cell.id)
             .collect();
@@ -359,6 +402,7 @@ fn an_install_gives_back_each_road() {
             (list(upper.entering_at, upper.entering), list(upper.leaving_at, upper.leaving)),
         );
     }
+    assert!(copies > 0, "an installed table holds the copy by column");
     let expected = borders(graph);
     for (key, lists) in &expected {
         assert_eq!(found.get(key), Some(lists), "the border roads of cell {key:?}");

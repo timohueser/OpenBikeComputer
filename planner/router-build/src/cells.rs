@@ -3,6 +3,7 @@
 
 use crate::base::Topology;
 use crate::partition::Cells;
+use crate::tables::Tables;
 use crate::{Costs, Graph};
 use planner_router::cells::{
     self as format, align, class_entry, encode_group_cell, encode_road, encode_set, width, Cell, GeometryCell, Header,
@@ -34,6 +35,8 @@ pub struct Input<'a> {
     pub graph: &'a Graph,
     pub topology: &'a Topology,
     pub costs: &'a Costs,
+    /// The cost tables of the costs layer.
+    pub tables: &'a Tables,
     /// `cell_sizes` of the roads layer.
     pub sizes: &'a [u32],
     /// The setting; the package takes the smaller of it and the levels of the partition.
@@ -61,6 +64,11 @@ pub struct Summary {
     pub long_roads: u64,
     /// The longest long list of one download cell.
     pub largest_long_list: u64,
+    /// The installed bytes of the cost tables of each level.
+    pub tables: Vec<u64>,
+    /// The installed bytes of the tables that are equal to the table of an earlier profile of the
+    /// same group and cell.
+    pub equal_tables: u64,
     /// The SHA-256 of `directory.bin`: the identity of the package.
     pub identity: String,
 }
@@ -76,6 +84,9 @@ impl Summary {
             entry[1] += published;
         }
         self.objects.extend(other.objects);
+        self.tables.resize(self.tables.len().max(other.tables.len()), 0);
+        self.tables.iter_mut().zip(other.tables).for_each(|(bytes, other)| *bytes += other);
+        self.equal_tables += other.equal_tables;
         self.long_roads += other.long_roads;
         self.largest_long_list = self.largest_long_list.max(other.largest_long_list);
     }
@@ -98,6 +109,7 @@ impl Summary {
             "objects": {"count": sizes.len(), "bytes": sizes.iter().sum::<u64>(),
                         "smallest": smallest, "median": median, "largest": largest},
             "long_roads": self.long_roads, "largest_long_list": self.largest_long_list,
+            "tables": self.tables, "equal_tables": self.equal_tables,
         })
     }
 }
@@ -156,7 +168,6 @@ struct Tree<'a> {
     cells: &'a Cells,
     level1: &'a [[u32; 2]],
     ids: &'a [u32],
-    border: &'a [u8],
     /// For each level, the first level-1 cell of each cell and then the count.
     firsts: Vec<Vec<u32>>,
     /// The first road of each download cell.
@@ -166,10 +177,6 @@ struct Tree<'a> {
 }
 
 impl Tree<'_> {
-    fn id(&self, level: usize, cell: usize) -> u32 {
-        self.ids[self.firsts[level - 1][cell] as usize] & !format::below(self.cells.widths.values(), level)
-    }
-
     /// The level-1 cells of cell `cell` of `level`.
     fn range(&self, level: usize, cell: usize) -> std::ops::Range<usize> {
         self.firsts[level - 1][cell] as usize..self.firsts[level - 1][cell + 1] as usize
@@ -185,26 +192,47 @@ impl Tree<'_> {
         Reference { cell: self.download_ids[cell], index: road - self.download_roads[cell] }
     }
 
-    /// The entering roads of level-1 cell `l1` at `level`: its first roads with that border level.
-    fn entering(&self, l1: usize, level: usize) -> std::ops::Range<usize> {
-        let roads = self.roads(l1);
-        let count = self.border[roads.clone()].iter().take_while(|&&b| usize::from(b) >= level).count();
-        roads.start..roads.start + count
-    }
-
-    fn leaving(&self, level: usize, cell: usize) -> &[u32] {
-        let global = self.cells.global(level, cell);
-        let first = self.cells.leaving_first.values();
-        &self.cells.leaving.values()[first[global] as usize..first[global + 1] as usize]
-    }
-
     /// The entering and the leaving list of cell `cell` of `level`, from 2.
     fn lists(&self, level: usize, cell: usize) -> (Vec<Reference>, Vec<Reference>) {
-        let entering =
-            self.range(level, cell).flat_map(|l1| self.entering(l1, level)).map(|road| self.reference(road as u32));
-        let leaving = self.leaving(level, cell).iter().map(|&road| self.reference(road));
+        let entering = self.cells.entering(level, cell).map(|road| self.reference(road));
+        let leaving = self.cells.leaving_list(level, cell).iter().map(|&road| self.reference(road));
         (entering.collect(), leaving.collect())
     }
+}
+
+/// Appends the slots and then the tables of group `group` to the group part `out`: for each profile
+/// of the group, the table of each cell of `cells` (level, cell), each at a multiple of 4. Returns
+/// the offset of the slots.
+fn slots(
+    tables: &Tables,
+    group: &[usize],
+    cells: &[(usize, usize)],
+    out: &mut Vec<u8>,
+    stats: &mut Summary,
+) -> Result<u32, String> {
+    pad(out, 4);
+    let slots_at = out.len();
+    out.resize(slots_at + 8 * group.len() * cells.len(), 0);
+    stats.column("group", "slots", out.len() - slots_at);
+    let start = out.len();
+    for (k, &p) in group.iter().enumerate() {
+        for (i, &(level, cell)) in cells.iter().enumerate() {
+            let table = tables.table(level, cell, p);
+            if group[..k].iter().any(|&earlier| tables.table(level, cell, earlier) == table) {
+                stats.equal_tables += table.len() as u64;
+            }
+            stats.tables.resize(stats.tables.len().max(level), 0);
+            stats.tables[level - 1] += table.len() as u64;
+            pad(out, 4);
+            let slot = slots_at + 8 * (k * cells.len() + i);
+            let at = offset(out.len())?;
+            out[slot..slot + 4].copy_from_slice(&at.to_le_bytes());
+            out[slot + 4..slot + 8].copy_from_slice(&offset(table.len())?.to_le_bytes());
+            out.extend(table);
+        }
+    }
+    stats.column("group", "tables", out.len() - start);
+    offset(slots_at)
 }
 
 fn references(list: &[Reference], out: &mut Vec<u8>) {
@@ -226,7 +254,7 @@ fn uppers(tree: &Tree, uppers: &[(usize, usize)], out: &mut Vec<u8>, stats: &mut
         at = leaving_at + format::REFERENCE * leaving.len();
         let upper = Upper {
             level: level as u8,
-            id: tree.id(level, cell),
+            id: tree.cells.id(level, cell),
             entering_at: offset(entering_at)?,
             entering: entering.len() as u32,
             leaving_at: offset(leaving_at)?,
@@ -267,7 +295,7 @@ fn download(input: &Input, tree: &Tree, groups: &[Vec<usize>], d: usize) -> Resu
     for l1 in l1s.clone() {
         let range = tree.roads(l1);
         let count = range.len() as u32;
-        let leaving = tree.leaving(1, l1);
+        let leaving = tree.cells.leaving_list(1, l1);
         let mut order = Vec::with_capacity((first[range.end] - first[range.start]) as usize);
         let mut firsts = vec![0u32];
         for road in range.clone() {
@@ -287,7 +315,7 @@ fn download(input: &Input, tree: &Tree, groups: &[Vec<usize>], d: usize) -> Resu
             order[start..].sort_unstable();
             firsts.push(order.len() as u32);
         }
-        let entering = tree.entering(l1, 1);
+        let entering: Vec<u32> = tree.cells.entering(1, l1).collect();
         let too_many = |n: usize| u16::try_from(n).map_err(|_| format!("level-1 cell {l1} has {n} border roads"));
         let cell = Level1 {
             id: tree.ids[l1],
@@ -314,7 +342,7 @@ fn download(input: &Input, tree: &Tree, groups: &[Vec<usize>], d: usize) -> Resu
         stats.column("topology", "leaving", topology.len() - at);
         let at = topology.len();
         for road in entering {
-            let departure = tree.ids[tree.cells.cell(roads.from(road))];
+            let departure = tree.ids[tree.cells.cell(roads.from(road as usize))];
             topology.extend(departure.to_le_bytes());
         }
         stats.column("topology", "departure", topology.len() - at);
@@ -408,19 +436,12 @@ fn download(input: &Input, tree: &Tree, groups: &[Vec<usize>], d: usize) -> Resu
         let classes_at = part.len();
         distinct.iter().for_each(|key| part.extend(key));
         stats.column("group", "class table", part.len() - classes_at);
-        pad(&mut part, 4);
-        let slots_at = part.len();
-        let slots = profiles * (l1s.len() + inside.len());
-        let tables_at = offset(slots_at + 8 * slots)?;
-        for _ in 0..slots {
-            part.extend(tables_at.to_le_bytes());
-            part.extend(0u32.to_le_bytes());
-        }
-        stats.column("group", "slots", part.len() - slots_at);
+        let tabled: Vec<(usize, usize)> = l1s.clone().map(|l1| (1, l1)).chain(inside.iter().copied()).collect();
+        let slots_at = slots(input.tables, group, &tabled, &mut part, &mut stats)?;
         let mut header = Vec::new();
         let fields =
             [l1s.len() as u32, inside.len() as u32, profiles as u32, distinct.len() as u32, offset(classes_at)?];
-        fields.iter().chain([&offset(slots_at)?]).for_each(|value| header.extend(value.to_le_bytes()));
+        fields.iter().chain([&slots_at]).for_each(|value| header.extend(value.to_le_bytes()));
         cells
             .iter()
             .for_each(|(block, turns, classes, costs)| encode_group_cell(*block, *turns, *classes, costs, &mut header));
@@ -579,7 +600,6 @@ pub fn write(input: &Input, output: &Path) -> Result<Summary, String> {
         cells,
         level1,
         ids: cells.ids.values(),
-        border: cells.border.values(),
         firsts,
         download_roads: Vec::new(),
         download_ids: Vec::new(),
@@ -587,7 +607,7 @@ pub fn write(input: &Input, output: &Path) -> Result<Summary, String> {
     };
     let downloads = counts[download_level - 1] as usize;
     tree.download_roads = (0..downloads).map(|d| level1[tree.firsts[download_level - 1][d] as usize][1]).collect();
-    tree.download_ids = (0..downloads).map(|d| tree.id(download_level, d)).collect();
+    tree.download_ids = (0..downloads).map(|d| cells.id(download_level, d)).collect();
     if !tree.download_ids.is_sorted_by(|a, b| a < b) || !tree.download_roads.is_sorted() {
         return Err("the download cell IDs do not ascend with their first road".into());
     }
@@ -651,14 +671,20 @@ pub fn write(input: &Input, output: &Path) -> Result<Summary, String> {
                 let mut header = Vec::new();
                 format::part_header([0, 0, 0, 1, upper_at], &mut header);
                 part[..PART_HEADER].copy_from_slice(&header);
-                let mut parts = vec![Part::default(); 2 + groups.len()];
-                parts[format::TOPOLOGY] = publish(&part, "topology", compressor, output, &mut stats)?;
+                let mut parts = vec![publish(&part, "topology", compressor, output, &mut stats)?, Part::default()];
+                for group in &groups {
+                    let mut part = vec![0; PART_HEADER];
+                    let slots_at = slots(input.tables, group, &[(level, c)], &mut part, &mut stats)?;
+                    let fields = [0, 1, group.len() as u32, 0, PART_HEADER as u32, slots_at];
+                    part[..PART_HEADER].copy_from_slice(&fields.map(u32::to_le_bytes).concat());
+                    parts.push(publish(&part, "group", compressor, output, &mut stats)?);
+                }
                 let range = tree.range(level, c);
                 let mut bounds = None;
                 level1_bounds[range.clone()].iter().for_each(|&b| union(&mut bounds, b));
                 let cell = Cell {
                     level: level as u8,
-                    id: tree.id(level, c),
+                    id: cells.id(level, c),
                     first_road: level1[range.start][1],
                     roads: level1[range.end][1] - level1[range.start][1],
                     bounds: bounds.unwrap_or_default(),
