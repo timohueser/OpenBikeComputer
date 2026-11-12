@@ -351,20 +351,9 @@ impl<H: Host> Shared<H> {
             let costs_cell = costs.level1(index, &level1)?;
             (cell, topology, level1, level1.roads + k, (costs, costs_cell))
         };
-        // One pass over `head`; `first` gives the road of each turn that enters the target.
         let (first, head) = topology.columns(&level1)?;
-        let mut ends = values(first, level1.first_width);
-        if ends.next() != Some(0) {
-            return Err(invalid("a turn column that does not start at 0"));
-        }
-        let (mut from, mut end) = (0, ends.next().ok_or_else(|| invalid("a short turn column"))?);
         let mut departures = Vec::new();
-        let turns = values(head, level1.head_width).zip(0u32..).filter(|&(value, _)| value == target);
-        for turn in turns.map(|(_, turn)| turn) {
-            while end <= turn {
-                from += 1;
-                end = ends.next().ok_or_else(|| invalid("a turn after the last road"))?;
-            }
+        for (from, turn) in entering((first, level1.first_width), (head, level1.head_width), target)? {
             if let Some(penalty) = costs.turn(&costs_cell, turn)? {
                 departures
                     .push(Departure { state: cell.first_road + level1.first_road + from, penalty: penalty.into() });
@@ -372,6 +361,39 @@ impl<H: Host> Shared<H> {
         }
         Ok(departures)
     }
+}
+
+/// The turns of a level-1 cell whose `head` is `target`, each with its road: one pass over the
+/// `head` column, and a walk of the `first` column in step. Each column is a slice and its width.
+fn entering(first: (&[u8], u8), head: (&[u8], u8), target: u32) -> Result<Vec<(u32, u32)>> {
+    let mut ends = values(first.0, first.1);
+    if ends.next() != Some(0) {
+        return Err(invalid("a turn column that does not start at 0"));
+    }
+    // The road of the walk, and the end of its turns once read.
+    let (mut road, mut end, mut last) = (0, None, 0);
+    let mut found = Vec::new();
+    for (_, turn) in values(head.0, head.1).zip(0u32..).filter(|&(value, _)| value == target) {
+        loop {
+            let value = match end {
+                Some(value) => value,
+                None => {
+                    let value = ends.next().ok_or_else(|| invalid("a turn after the last road"))?;
+                    if value < last {
+                        return Err(invalid("a turn column that goes down"));
+                    }
+                    (last, end) = (value, Some(value));
+                    value
+                }
+            };
+            if turn < value {
+                break;
+            }
+            (road, end) = (road + 1, None);
+        }
+        found.push((road, turn));
+    }
+    Ok(found)
 }
 
 /// The `k` below `count` where `compare(k)` is `Equal`, for a `compare` that ascends with `k`.
@@ -386,4 +408,19 @@ fn search(count: u32, compare: impl Fn(u32) -> Result<std::cmp::Ordering>) -> Re
         }
     }
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_walk_of_the_turn_columns_finds_each_road_and_refuses_a_column_that_goes_down() {
+        // A level-1 cell with no road: `first` is one 0 and `head` is empty.
+        assert_eq!(entering((&[0], 1), (&[], 1), 0).unwrap(), []);
+        // Roads 0 and 2 turn into target 5; road 1 has no turn.
+        assert_eq!(entering((&[0, 2, 2, 4], 1), (&[5, 1, 0, 5], 1), 5).unwrap(), [(0, 0), (2, 3)]);
+        assert!(entering((&[0, 3, 1, 4], 1), (&[5, 5, 5, 5], 1), 5).is_err());
+        assert!(entering((&[1, 2], 1), (&[5], 1), 5).is_err());
+    }
 }

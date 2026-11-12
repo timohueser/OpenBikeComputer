@@ -55,7 +55,7 @@ impl Host for Memory {
 
     fn announce(&self, spans: &[Span]) {
         debug_assert!(
-            spans.iter().all(|span| self.range(*span).is_ok()),
+            spans.iter().all(|span| self.parts.get(&span.part).is_none_or(|part| lend(part, *span).is_ok())),
             "an announced span outside its part: {spans:?}"
         );
     }
@@ -172,9 +172,14 @@ mod maps {
     }
 
     /// Whether the system refused a file or a map for a lack of descriptors or memory, which a
-    /// retry can end: ENFILE, EMFILE and ENOMEM have these numbers on Linux, Android, macOS and iOS.
+    /// retry can end. ENOMEM, ENFILE and EMFILE are 12, 23 and 24 on Linux, Android, macOS and iOS;
+    /// on Windows these numbers mean other errors.
     fn refused(error: &std::io::Error) -> bool {
-        error.kind() == std::io::ErrorKind::OutOfMemory || matches!(error.raw_os_error(), Some(12 | 23 | 24))
+        #[cfg(unix)]
+        let numbers = matches!(error.raw_os_error(), Some(12 | 23 | 24));
+        #[cfg(not(unix))]
+        let numbers = false;
+        error.kind() == std::io::ErrorKind::OutOfMemory || numbers
     }
 
     /// Fails when the installed files and the maps of the process itself do not fit the map limit
@@ -233,7 +238,7 @@ mod tests {
             assert_eq!(host.range(span(0, 1, 0, 7)).unwrap(), &files[1][..]);
             assert!(matches!(host.range(span(0, 1, 3, 5)), Err(Error::InvalidData(_))));
             assert!(matches!(host.range(span(1, 0, 0, 0)), Err(Error::MissingRegion(_))));
-            host.announce(&[span(0, 0, 0, 100), span(0, 1, 2, 5)]);
+            host.announce(&[span(0, 0, 0, 100), span(0, 1, 2, 5), span(1, 0, 0, 1)]);
         }
         // A map stays when its file is removed.
         std::fs::remove_dir_all(&folder).unwrap();
