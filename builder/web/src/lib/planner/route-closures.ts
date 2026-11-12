@@ -1,3 +1,5 @@
+import { distanceIn } from '../settings/format';
+import { settings } from '../settings/settings.svelte';
 import { cumulative, type Coordinate } from './geo';
 import type { RouteClosure, RoutingLine } from './routing';
 
@@ -25,7 +27,11 @@ export function edgeStretches<T>(coordinates: Coordinate[], edges: readonly T[] 
     });
 }
 
-export const noteDistance = (km: number) => km < 1 ? `${Math.round(km * 1000)} m` : `${km.toFixed(1)} km`;
+/** Metres under 1 km, rounded to `step`, with kilometres; tenths of a mile, at least "0.1 mi", with miles. */
+export function noteDistance(km: number, step = 1): string {
+    if (settings.units === 'mi') return `${Math.max(distanceIn(km * 1000), km > 0 ? .1 : 0).toFixed(1)} mi`;
+    return km < 1 ? `${Math.round(km * 1000 / step) * step} m` : `${km.toFixed(1)} km`;
+}
 
 /** The stretches of the line where the rider may have no access. The router uses them, because nothing says for sure that the road is closed. */
 export function closureStretches(line?: Pick<RoutingLine, 'coordinates' | 'edges'>): ClosureStretch[] {

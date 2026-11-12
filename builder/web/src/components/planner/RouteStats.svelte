@@ -1,12 +1,15 @@
 <script lang="ts">
+    import { distanceIn, heightIn, heightUnit } from '../../lib/settings/format';
+    import { settings } from '../../lib/settings/settings.svelte';
     let { distance, ascent, descent, hours, walking = false }: { distance: number; ascent: number | null; descent: number | null; walking?: boolean; hours: number | null } = $props();
     const minutes = $derived(hours === null ? null : Math.round(hours * 60));
+    const height = (metres: number | null) => metres === null ? '—' : Math.round(heightIn(metres));
 </script>
 
 <dl class="stats">
-    <div><dt>Distance</dt><dd>{distance.toFixed(1)}<small>km</small></dd></div>
-    <div><dt>Ascent</dt><dd>{ascent ?? '—'}<small>m</small></dd></div>
-    <div><dt>Descent</dt><dd>{descent ?? '—'}<small>m</small></dd></div>
+    <div><dt>Distance</dt><dd>{distanceIn(distance * 1000).toFixed(1)}<small>{settings.units}</small></dd></div>
+    <div><dt>Ascent</dt><dd>{height(ascent)}<small>{heightUnit()}</small></dd></div>
+    <div><dt>Descent</dt><dd>{height(descent)}<small>{heightUnit()}</small></dd></div>
     <div><dt>{walking ? 'Walking time' : 'Riding time'}</dt><dd>{minutes === null ? '—' : minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`}</dd></div>
 </dl>
 

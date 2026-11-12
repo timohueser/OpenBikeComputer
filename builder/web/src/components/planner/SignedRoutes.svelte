@@ -17,6 +17,8 @@
     import type { BikeType } from '../../lib/planner/riding-profiles';
     import { pacedLine } from '../../lib/planner/routing';
     import type { Trip } from '../../lib/planner/editor';
+    import { distanceIn, heightIn, heightUnit } from '../../lib/settings/format';
+    import { settings } from '../../lib/settings/settings.svelte';
 
     let { finder, activity, trip, theme = 'light', current = null, placeName, findPlaces, onClose, onPlan, attribution }: {
         finder: RouteFinder;
@@ -97,7 +99,7 @@
     const listed = $derived(finder.matches.slice(0, finder.shown));
     const detail = $derived(finder.detail);
     const plan = $derived(finder.plan);
-    const km = (metres: number) => `${(metres / 1000).toFixed(1)} km`;
+    const km = (metres: number) => `${distanceIn(metres).toFixed(1)} ${settings.units}`;
     // The routed plan gives all four figures once it is ready, so the time never belongs to other figures. The time is at
     // the pace of the open plan, which the picked route keeps.
     function figures(route: CatalogRecord) {
@@ -149,7 +151,7 @@
         <button type="button" class="back" aria-label="Back to the planner" onclick={onClose}><Icon name="back" size={18} /></button>
         <h2>Signed routes</h2>
     </header>
-    {#if current}<p class="current">Your plan: {current.title}, {current.km.toFixed(1)} km · <button type="button" onclick={onClose}>Show</button></p>{/if}
+    {#if current}<p class="current">Your plan: {current.title}, {km(current.km * 1000)} · <button type="button" onclick={onClose}>Show</button></p>{/if}
     {#if detail}
         {@const route = detail.route}
         {@const website = routeWebsite(route.website)}
@@ -287,7 +289,7 @@
                             <span class="n">{i + 1}</span>
                             <span class="marker"><TrailMarker symbol={route.symbol} ref={route.ref} /></span>
                             <span class="body"><strong>{title(route)}</strong><small>{rowLine(route)}</small><span class="detail-line">{km(distanceM)} from {place}</span></span>
-                            <span class="figure">{km(route.length_m)}<small>↑ {route.ascent_m} m</small></span>
+                            <span class="figure">{km(route.length_m)}<small>↑ {Math.round(heightIn(route.ascent_m))} {heightUnit()}</small></span>
                             <Icon name="chevron" size={13} />
                         </button>
                     {/each}
