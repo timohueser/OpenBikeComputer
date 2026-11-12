@@ -305,7 +305,7 @@
     "repository-tooling"
    ],
    "violations": 10,
-   "lines": 18435,
+   "lines": 18556,
    "problems": [
     {
      "rule": "cycle",
@@ -520,7 +520,7 @@
    "depends_on": [],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 782,
+   "lines": 792,
    "problems": []
   },
   {
@@ -540,10 +540,11 @@
     "rendering-display"
    ],
    "test_depends_on": [
-    "content"
+    "content",
+    "repository-tooling"
    ],
    "violations": 10,
-   "lines": 25807,
+   "lines": 26885,
    "problems": [
     {
      "rule": "cycle",
@@ -828,7 +829,7 @@
    ],
    "test_depends_on": [],
    "violations": 7,
-   "lines": 26995,
+   "lines": 27021,
    "problems": [
     {
      "rule": "cycle",
@@ -945,7 +946,7 @@
     "repository-tooling"
    ],
    "violations": 4,
-   "lines": 18653,
+   "lines": 18719,
    "problems": [
     {
      "rule": "cycle",
@@ -1510,6 +1511,12 @@
    "from": "map-assembly",
    "to": "rendering-display",
    "test": false,
+   "undeclared": false
+  },
+  {
+   "from": "map-assembly",
+   "to": "repository-tooling",
+   "test": true,
    "undeclared": false
   },
   {

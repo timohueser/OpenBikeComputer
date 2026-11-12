@@ -25,6 +25,7 @@ depends_on:
   - rendering-display
 test_depends_on:
   - content
+  - repository-tooling
 status: draft
 ---
 
