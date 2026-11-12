@@ -32,8 +32,9 @@ fn options() -> IntOverlayOptions<u64> {
 
 /// The slice works in tiles of this many frame units: a cell is 8 × 8 tiles, each sliced by the
 /// segments that reach it. A pass of the overlay's solver then reads one tile, so a place that needs
-/// many passes costs them in its tile only. Two tiles compute a segment's crossing of their shared
-/// side from the same two segments; the snap rounding of all patches together joins them.
+/// many passes costs them in its tile only. The faces' rings and seams get a vertex at each tile line
+/// they cross as their last change (`geom::grid_points`), so no tile rounds a crossing of its own side;
+/// the snap rounding of all patches together joins the tiles.
 pub const TILE: i64 = CELL_UNITS / 8;
 
 /// Whether coordinate x lies on a cell line.
