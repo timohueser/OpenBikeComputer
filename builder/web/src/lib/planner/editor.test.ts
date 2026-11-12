@@ -199,9 +199,10 @@ describe('planning modes', () => {
         const hours = line.seconds / 3600;
         expect(planView(route, line).summary.hours).toBe(hours);
         expect(planView(fast, line).summary.hours).toBeCloseTo(hours * 19 / 27);
-        expect(planView({ ...fast, bike: 'hiking' }, line).summary.hours).toBe(hours);
+        expect(planView({ ...route, bike: 'mtb' }, line).summary.hours).toBe(hours);
+        expect(planView({ ...route, bike: 'road' }, line).summary.hours).toBeCloseTo(hours * 19 / 25);
         const long = { ...line, elapsed: line.elapsed.map(s => s * 25 / hours), seconds: 25 * 3600 };
-        expect([guessedTrip(route, long).days, guessedTrip(fast, long).days]).toEqual([4, 3]);
+        expect([route, fast, { ...route, bike: 'road' as const }].map(trip => guessedTrip(trip, long).days)).toEqual([4, 3, 3]);
         expect(guessedTrip(setDays(fast, 4), long).days).toBe(4);
         const kept = pinNight({ ...route, days: 4 }, long, 1, along(.3), 'Hut'), keptLine = testLine(kept);
         const faster = guessedTrip({ ...kept, pace: 'fast' }, { ...keptLine, elapsed: keptLine.elapsed.map(s => s * 25 / hours), seconds: 25 * 3600 });

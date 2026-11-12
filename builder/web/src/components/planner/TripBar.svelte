@@ -4,7 +4,6 @@
     import VersionsMenu from './VersionsMenu.svelte';
     import { onMount } from 'svelte';
     import { paces, planPace, planPreset, ridingProfiles, servedPresets, type BikeType } from '../../lib/planner/riding-profiles';
-    import { formatSpeed } from '../../lib/settings/format';
     import { planTitle, type Trip } from '../../lib/planner/editor';
     import { regionProfiles, type RoutingLine } from '../../lib/planner/routing';
     import type { Version } from '../../lib/planner/versions';
@@ -32,8 +31,6 @@
     } = $props();
 
     const bike = $derived(trip.bike ?? 'touring');
-    const pace = $derived(planPace(trip));
-    const hint = $props.id();
     const title = $derived(name || planTitle(trip));
     // The profiles of the routing region; until they arrive, every activity and preset shows.
     let profiles = $state<string[]>();
@@ -60,14 +57,10 @@
             <Select label="Preset" value={planPreset(bike, trip.preset)} options={servedPresets(bike, profiles).map(value => ({ value, label: value, icon: value === 'Less climbing' ? 'less-climbing' : 'sliders' }))}
                 onChange={(preset) => onChange({ preset }, 'Route preference changed')} />
         </div>
-        {#if bike !== 'hiking'}
-            <div class="preference"><span>Pace</span>
-                <Select label="Pace" value={pace} describedby={hint} options={Object.entries(paces).map(([value, { label }]) => ({ value, label }))}
-                    onChange={(value) => onChange({ pace: value as Trip['pace'] }, 'Pace changed')} />
-                <!-- A hidden hint still describes the select. -->
-                <small id={hint}>about {formatSpeed(ridingProfiles[bike].kmh / paces[pace].factor / 3.6)} on the flat</small>
-            </div>
-        {/if}
+        <div class="preference"><span>Pace</span>
+            <Select label="Pace" value={planPace(trip)} options={Object.entries(paces).map(([value, { label }]) => ({ value, label }))}
+                onChange={(value) => onChange({ pace: value as Trip['pace'] }, 'Pace changed')} />
+        </div>
     </div>
     <div class="actions">
         <button type="button" class="planner-action quiet" disabled={!ready || !trip.points.length} onclick={onNew}>New {trip.mode === 'route' ? 'route' : 'trip'}</button>
@@ -108,7 +101,6 @@
         align-items: center;
         flex-wrap: wrap;
         gap: 8px 16px;
-        container-type: inline-size;
     }
     .preference {
         display: flex;
@@ -116,11 +108,6 @@
         gap: 8px;
         font-size: 13px;
         color: var(--ink-soft);
-    }
-    .preference small {
-        max-width: 8em;
-        font-size: 11px;
-        line-height: 1.25;
     }
     .actions {
         display: flex;
@@ -141,10 +128,6 @@
     }
     .icon:hover:not(:disabled) {
         background: var(--parchment-2);
-    }
-    /* Without room for the hint, the controls stay on one line. With less room, Pace wraps to a second line with its hint. */
-    @container (min-width: 580px) and (max-width: 670px) {
-        .preference small { display: none; }
     }
     @media (max-width: 1050px) {
         .trip-bar { grid-template-columns: minmax(0, 1fr) auto; gap: 8px 16px; }

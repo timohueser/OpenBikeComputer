@@ -248,7 +248,7 @@ describe('planner day views', () => {
 });
 
 describe('trip pace', () => {
-    it('offers the pace for a bike and not on foot, and a pick changes the riding time of the days', async () => {
+    it('offers the pace, and a pick changes the riding time of the days', async () => {
         vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
         const props = itineraryProps(null);
         let trip = $state.raw<Trip>(props.trip);
@@ -261,18 +261,19 @@ describe('trip pace', () => {
         await tick();
         const firstDay = () => document.querySelector('[data-day="1"]')!.textContent;
         const moderate = firstDay();
-        const hint = () => document.getElementById(button('Pace').getAttribute('aria-describedby')!)?.textContent;
-        expect(hint()).toBe('about 19.0 km/h on the flat');
         button('Pace').click();
         await tick();
         [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(option => option.textContent?.includes('Fast'))!.click();
         await tick();
         expect(onChange).toHaveBeenCalledExactlyOnceWith({ pace: 'fast' }, 'Pace changed');
-        expect(hint()).toBe('about 27.0 km/h on the flat');
         expect(firstDay()).not.toBe(moderate);
+        const fast = firstDay();
         onChange({ bike: 'hiking' });
         await tick();
-        expect(() => button('Pace')).toThrow();
+        expect(button('Pace').textContent).toContain('Fast');
+        onChange({ bike: 'road' });
+        await tick();
+        expect(firstDay()).not.toBe(fast);
     });
 });
 
