@@ -24,7 +24,9 @@ the palette of the `world` region.
 
 | Path | Holds |
 | --- | --- |
-| `engine.ts` | The frame loop, the view, `prepare()`, `waitForIdle()`, `nearReady()`, `eyeReady()`, `destroy()`, the recovery from a lost device |
+| `engine.ts` | The frame loop, the view, `prepare()`, `waitForIdle()`, `nearReady()`, `eyeReady()`, `capture()`, `destroy()`, the recovery from a lost device |
+| `still.ts` | `still()`: one view to an image and, for a line, the place of each point in the image and whether it is visible, with an engine of its own that ends after it; `canRenderStills()`: false with no GPU or a software renderer |
+| `still-view.ts` | The view of a cover from the route and the terrain tiles (`coverView()`, `chooseView()`): not toward the sun, as low as shows 85 % of the route |
 | `pacer.ts` | The frame rate, `FRAME_RATE`, and the display frames that draw. Headless Chromium runs at 60 Hz, so flights and shots draw each display frame |
 | `frame/` | The local metric frame, the walk and fly camera, the input |
 | `gpu/` | The device, its pools and shared layouts, the GPU time per pass, the WGSL `// #include` |
@@ -57,6 +59,7 @@ the palette of the `world` region.
 | `weather` | `sunny`, `cloudy` or `rainy` |
 | `debug` | `normals`, `lod`, `cracks` (red clear colour), `surface` (red where drawnHeight leaves the mesh by 5 cm), the ground codes `material`, `lithology`, `region`, `snow` (white where snow lies on the date), `albedo` (the ground colour without light), or `mask` (the features of the mask, flat, as `mask_view` in `terrain.wgsl` colours them) |
 | `scale` | The render scale per axis, 0.25 to 0.75 (default 0.7); debug views draw at 1, with the nodes of the scale |
+| `still` | No engine starts. A headless script calls `window.trailviewStill.still(job, options)`, `coverView(line, when)` and `canRenderStills(options)`; `still.test.js` shows how |
 
 The HUD lists the keys; Ctrl+C and Ctrl+V copy and paste the view as an address.
 
