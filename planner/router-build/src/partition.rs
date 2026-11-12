@@ -7,51 +7,6 @@ use crate::{sort, work, Roads};
 use planner_router::model::Point;
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicU32, AtomicU8, Ordering::Relaxed};
-use std::sync::Mutex;
-
-/// The work of the cuts of one level of the recursion, or of one direction of the first cut.
-#[derive(Clone, Copy, Default, Debug)]
-struct Work {
-    cuts: u64,
-    junctions: u64,
-    directions: u64,
-    stopped: u64,
-    phases: u64,
-    visits: u64,
-    seconds: f64,
-}
-
-impl Work {
-    fn add(&mut self, other: &Work) {
-        self.cuts += other.cuts;
-        self.junctions += other.junctions;
-        self.directions += other.directions;
-        self.stopped += other.stopped;
-        self.phases += other.phases;
-        self.visits += other.visits;
-        self.seconds += other.seconds;
-    }
-
-    fn line(&self) -> String {
-        format!(
-            "{} cuts, {} junctions, {} directions ({} stopped), {} phases, {} visits ({:.1} for each junction), {:.1} s",
-            self.cuts,
-            self.junctions,
-            self.directions,
-            self.stopped,
-            self.phases,
-            self.visits,
-            self.visits as f64 / self.junctions.max(1) as f64,
-            self.seconds
-        )
-    }
-}
-
-/// The work of each level of the recursion, then of each direction of the first cut.
-static WORK: Mutex<(Vec<Work>, [Work; 4])> = Mutex::new((
-    Vec::new(),
-    [Work { cuts: 0, junctions: 0, directions: 0, stopped: 0, phases: 0, visits: 0, seconds: 0.0 }; 4],
-));
 
 /// The largest number of levels: a road keeps its border level in a byte of its order key.
 pub const MAX_LEVELS: usize = 8;
@@ -324,16 +279,13 @@ impl Part<'_> {
 
     /// Splits the part at the smallest of the cuts of four directions. Returns the size of the
     /// source side, which comes first in `at`.
-    fn bisect(&mut self, graph: &Junctions, depth: usize) -> usize {
+    fn bisect(&mut self, graph: &Junctions) -> usize {
         let n = self.at.len();
-        let mut total = Work { cuts: 1, junctions: n as u64, ..Work::default() };
         let k = (n / 4).max(1);
         self.level.fill(UNSEEN);
         // (cut, smaller side) of the best direction.
         let mut best: Option<(u64, usize)> = None;
         for direction in 0..4 {
-            let started = std::time::Instant::now();
-            let mut work = Work { cuts: 1, junctions: n as u64, directions: 1, ..Work::default() };
             let key = |&junction: &u32| graph.key(direction, junction);
             self.queue.copy_from_slice(self.at);
             self.queue.select_nth_unstable_by_key(n - k, key);
@@ -352,14 +304,7 @@ impl Part<'_> {
                     graph.residual[arc].store(graph.capacity[arc], Relaxed);
                 }
             }
-            let found = self.flow(graph, k, best.map(|(cut, _)| cut), &mut work);
-            work.stopped = u64::from(found.is_none());
-            work.seconds = started.elapsed().as_secs_f64();
-            total.add(&Work { cuts: 0, junctions: 0, ..work });
-            if depth == 0 {
-                WORK.lock().unwrap().1[direction] = work;
-            }
-            let Some(cut) = found else { continue };
+            let Some(cut) = self.flow(graph, k, best.map(|(cut, _)| cut)) else { continue };
             let sources = self.sides(graph, direction, median);
             let smaller = sources.min(n - sources);
             if best.is_none_or(|best| (cut, std::cmp::Reverse(smaller)) < (best.0, std::cmp::Reverse(best.1))) {
@@ -368,13 +313,6 @@ impl Part<'_> {
                     *level = if *level & LEVEL == SINK_SIDE { *level & !BEST } else { *level | BEST };
                 }
             }
-        }
-        {
-            let mut all = WORK.lock().unwrap();
-            if all.0.len() <= depth {
-                all.0.resize(depth + 1, Work::default());
-            }
-            all.0[depth].add(&total);
         }
         // A stable split of `at`, the source side first.
         let sources = self.level.iter().filter(|&&level| level & BEST != 0).count();
@@ -401,7 +339,7 @@ impl Part<'_> {
     /// The sources have level 0. The levels of a phase start above those of the phases before it,
     /// so a level below the start counts as unseen, and no phase walks its junctions again to reset
     /// them. A dead end gets level 1.
-    fn flow(&mut self, graph: &Junctions, k: usize, bound: Option<u64>, work: &mut Work) -> Option<u64> {
+    fn flow(&mut self, graph: &Junctions, k: usize, bound: Option<u64>) -> Option<u64> {
         let n = self.at.len();
         for place in 0..n {
             self.set_level(place, 1);
@@ -450,8 +388,6 @@ impl Part<'_> {
                 }
                 tail = self.expand(graph, junction, tail, start);
             }
-            work.phases += 1;
-            work.visits += (tail - k) as u64;
             if !reached {
                 for place in 0..n {
                     if (1..start).contains(&(self.level[place] & LEVEL)) {
@@ -618,19 +554,19 @@ impl Part<'_> {
 
 /// Splits the part until each piece has at most `size` junctions. Returns the tree: the range of
 /// positions of each node, each node before its source side and then its sink side.
-fn split(graph: &Junctions, size: usize, mut part: Part, depth: usize) -> Vec<[u32; 2]> {
+fn split(graph: &Junctions, size: usize, mut part: Part) -> Vec<[u32; 2]> {
     let n = part.at.len();
     let node = [part.lo, part.lo + n as u32];
     if n <= size {
         return vec![node];
     }
-    let m = part.bisect(graph, depth);
+    let m = part.bisect(graph);
     let Part { lo, at, level, current, queue } = part;
     let (at, level, current, queue) =
         (at.split_at_mut(m), level.split_at_mut(m), current.split_at_mut(m), queue.split_at_mut(m));
     let source = Part { lo, at: at.0, level: level.0, current: current.0, queue: queue.0 };
     let sink = Part { lo: lo + m as u32, at: at.1, level: level.1, current: current.1, queue: queue.1 };
-    let (source, sink) = rayon::join(|| split(graph, size, source, depth + 1), || split(graph, size, sink, depth + 1));
+    let (source, sink) = rayon::join(|| split(graph, size, source), || split(graph, size, sink));
     let mut tree = Vec::with_capacity(1 + source.len() + sink.len());
     tree.push(node);
     tree.extend(source);
@@ -738,17 +674,7 @@ pub fn partition(points: &Column<Point>, ends: &Column<(u32, u32)>, sizes: &[u32
     }
     let (mut current, mut queue) = (vec![0u32; j], vec![0u32; j]);
     let part = Part { lo: 0, at: &mut at, level: &mut level, current: &mut current, queue: &mut queue };
-    *WORK.lock().unwrap() = Default::default();
-    let tree = split(&graph, sizes[0] as usize, part, 0);
-    {
-        let work = WORK.lock().unwrap();
-        for (depth, level) in work.0.iter().enumerate() {
-            eprintln!("Partition depth {depth}: {}", level.line());
-        }
-        for (direction, first) in work.1.iter().enumerate() {
-            eprintln!("Partition first cut, direction {direction}: {}", first.line());
-        }
-    }
+    let tree = split(&graph, sizes[0] as usize, part);
     drop((level, current, queue));
     let mut rank = Column::filled(j, 0u32);
     for (junction, pos) in graph.pos.iter().enumerate() {
@@ -933,6 +859,122 @@ mod tests {
             })
         };
         assert_eq!(run(1), run(4));
+    }
+
+    /// Junctions `0..n` in their own order, with the roads `(a, b, capacity)`, each pair once.
+    fn junctions(n: u32, roads: &[(u32, u32, u8)]) -> Junctions {
+        let mut lists = vec![Vec::new(); n as usize];
+        for &(a, b, capacity) in roads {
+            lists[a as usize].push((b, capacity));
+            lists[b as usize].push((a, capacity));
+        }
+        let (mut first, mut adj, mut capacity) = (vec![0], Vec::new(), Vec::new());
+        for list in &mut lists {
+            list.sort_unstable();
+            adj.extend(list.iter().map(|&(b, _)| b));
+            capacity.extend(list.iter().map(|&(_, c)| c));
+            first.push(adj.len() as u32);
+        }
+        Junctions {
+            walk1: (0..n).collect(),
+            point: vec![[0, 0]; n as usize],
+            first,
+            adj,
+            residual: capacity.iter().map(|&c| AtomicU8::new(c)).collect(),
+            capacity,
+            pos: (0..n).map(AtomicU32::new).collect(),
+        }
+    }
+
+    /// The maximum flow from `sources` to `sinks` by shortest augmenting paths, and the junctions
+    /// that the sources reach after it.
+    fn plain_flow(n: usize, roads: &[(u32, u32, u8)], sources: &[u32], sinks: &[u32]) -> (u64, Vec<bool>) {
+        let mut residual = vec![vec![0i32; n]; n];
+        for &(a, b, capacity) in roads {
+            residual[a as usize][b as usize] += i32::from(capacity);
+            residual[b as usize][a as usize] += i32::from(capacity);
+        }
+        let mut flow = 0;
+        loop {
+            let mut parent = vec![usize::MAX; n];
+            let mut queue: std::collections::VecDeque<usize> = sources.iter().map(|&s| s as usize).collect();
+            for &source in sources {
+                parent[source as usize] = source as usize;
+            }
+            let mut sink = None;
+            while let Some(u) = queue.pop_front() {
+                if sinks.contains(&(u as u32)) {
+                    sink = Some(u);
+                    break;
+                }
+                for v in 0..n {
+                    if residual[u][v] > 0 && parent[v] == usize::MAX {
+                        parent[v] = u;
+                        queue.push_back(v);
+                    }
+                }
+            }
+            let Some(sink) = sink else {
+                return (flow, parent.iter().map(|&p| p != usize::MAX).collect());
+            };
+            let mut path = vec![sink];
+            while parent[path[path.len() - 1]] != path[path.len() - 1] {
+                path.push(parent[path[path.len() - 1]]);
+            }
+            let bottleneck = path.windows(2).map(|w| residual[w[1]][w[0]]).min().unwrap();
+            for w in path.windows(2) {
+                residual[w[1]][w[0]] -= bottleneck;
+                residual[w[0]][w[1]] += bottleneck;
+            }
+            flow += bottleneck as u64;
+        }
+    }
+
+    #[test]
+    fn the_flow_gives_the_cut_of_a_plain_maximum_flow() {
+        let mut seed = 7u64;
+        let mut random = |below: u32| {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as u32 % below
+        };
+        for round in 0..300 {
+            // A 7 × 7 grid with some roads missing (dead ends and islands), parallel roads, and some
+            // roads made chains of junctions with unequal capacities. Every 3rd graph has
+            // capacity 1 everywhere, so that many cuts are minimal.
+            let mut n = 49;
+            let mut roads = Vec::new();
+            for i in 0..49u32 {
+                for next in [i + 1, i + 7].into_iter().filter(|&next| next < 49 && (next == i + 7 || i % 7 != 6)) {
+                    if random(6) == 0 {
+                        continue;
+                    }
+                    let capacity =
+                        |random: &mut dyn FnMut(u32) -> u32| if round % 3 == 0 { 1 } else { 1 + random(3) as u8 };
+                    let mut from = i;
+                    for _ in 0..[0, 0, 1, 3][random(4) as usize] {
+                        roads.push((from, n, capacity(&mut random)));
+                        (from, n) = (n, n + 1);
+                    }
+                    roads.push((from, next, capacity(&mut random)));
+                }
+            }
+            let sources: Vec<u32> = (0..49).filter(|i| i % 7 < 2).collect();
+            let sinks: Vec<u32> = (0..49).filter(|i| i % 7 > 4).collect();
+            let (expected, reached) = plain_flow(n as usize, &roads, &sources, &sinks);
+
+            let graph = junctions(n, &roads);
+            let (mut at, mut level) = ((0..n).collect::<Vec<_>>(), vec![0u32; n as usize]);
+            let (mut current, mut queue) = (vec![0u32; n as usize], vec![0u32; n as usize]);
+            queue[..sources.len()].copy_from_slice(&sources);
+            for &sink in &sinks {
+                level[sink as usize] |= SINK;
+            }
+            let mut part = Part { lo: 0, at: &mut at, level: &mut level, current: &mut current, queue: &mut queue };
+            let flow = part.flow(&graph, sources.len(), None);
+            assert_eq!(flow, Some(expected), "round {round}");
+            let found: Vec<bool> = level.iter().map(|&level| level & LEVEL != UNSEEN).collect();
+            assert_eq!(found, reached, "round {round}");
+        }
     }
 
     #[test]
