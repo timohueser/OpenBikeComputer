@@ -5,7 +5,6 @@
     import PlannerSelect from './PlannerSelect.svelte';
     import RouteStats from './RouteStats.svelte';
     import TrailMarker from './TrailMarker.svelte';
-    import { gradeBands } from '../../lib/planner/grade-data';
     import { cumulative, type Coordinate } from '../../lib/planner/geo';
     import { profileAscent, profileDescent } from '../../lib/planner/profile-data';
     import { routeWebsite } from '../../lib/planner/route-overlays';
@@ -39,8 +38,9 @@
         const names = Array.from({ length: to - from + 1 }, (_, i) => grade(from + i));
         return names.length > 1 ? `${names.slice(0, -1).join(', ')} or ${names.at(-1)}` : names[0];
     };
-    // T1, T2, T3, T4 follow the grade bands of the profile; T5 and T6 take the two steepest climb bands.
-    const gradeColors = [5, 7, 8, 10, 0, 1].map(band => gradeBands[band][theme === 'dark' ? 'dark' : 'color']);
+    // The hiking and trail grades keep colours of their own: green to dark red, then two purples for T5 and T6.
+    const gradeColors = [['#38834b', '#86ca8f'], ['#c4ac16', '#eed558'], ['#ec5036', '#ff987d'], ['#95162c', '#ed4967'],
+        ['#7030a0', '#d79bef'], ['#5757b6', '#b4a1ed']].map(([light, dark]) => theme === 'dark' ? dark : light);
     const levels = ['', 'Local', 'Regional', 'National', 'International'];
     const kindWords: Record<CatalogRecord['kind'], string> = { hiking: 'hiking route', foot: 'hiking route', bicycle: 'cycling route', mtb: 'mountain bike route' };
     const activityWord = $derived(activity === 'hiking' ? 'hiking' : activity === 'mtb' ? 'mountain bike' : 'cycling');

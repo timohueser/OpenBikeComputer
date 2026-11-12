@@ -28,29 +28,23 @@ export function profileGrades(samples: readonly { progress: number; height: numb
     return grades;
 }
 
+// The steepness bands of the device; the colours are those of the phone app, readable on a light page.
 export const gradeBands = [
-    { label: '20%+', color: '#7030a0', dark: '#d79bef' },
-    { label: '15–20%', color: '#5757b6', dark: '#b4a1ed' },
-    { label: '10–15%', color: '#356cc1', dark: '#8eacf1' },
-    { label: '6–10%', color: '#2187bb', dark: '#6fc4ee' },
-    { label: '3–6%', color: '#349eac', dark: '#68d0d9' },
-    { label: 'Flat · <3%', color: '#38834b', dark: '#86ca8f' },
-    { label: '3–6%', color: '#78a528', dark: '#b5d76c' },
-    { label: '6–10%', color: '#c4ac16', dark: '#eed558' },
-    { label: '10–15%', color: '#ec5036', dark: '#ff987d' },
-    { label: '15–20%', color: '#c72232', dark: '#ff7080' },
-    { label: '20%+', color: '#95162c', dark: '#ed4967' },
-    { label: 'Unknown', color: '#77746a', dark: '#b8b5ac' },
+    { color: '#4e9a55', dark: '#6cc47a' },
+    { color: '#d2ae2a', dark: '#e8c44a' },
+    { color: '#f4a81d', dark: '#f2a93a' },
+    { color: '#e0782a', dark: '#f29248' },
+    { color: '#c43a2c', dark: '#f06a55' },
+    { color: '#77746a', dark: '#b8b5ac' },
 ];
 
-export const gradeThresholds = [3, 6, 10, 15, 20];
+const thresholds = [3, 6, 9, 12];
 
+/** Rounds like `formatGrade`, then cuts toward zero to whole percent like the device; a descent is band 0. */
 export function gradeBand(grade: number | null): number {
-    if (grade === null || !Number.isFinite(grade)) return 11;
-    const magnitude = Math.round(Math.abs(grade) * 10) / 10;
-    let level = 0;
-    while (level < gradeThresholds.length && magnitude >= gradeThresholds[level]) level++;
-    return 5 + (grade < 0 ? -level : level);
+    if (grade === null || !Number.isFinite(grade)) return 5;
+    const percent = Math.trunc(Math.round(grade * 10) / 10);
+    return thresholds.filter(threshold => percent >= threshold).length;
 }
 
 export function formatGrade(grade: number | null): string {

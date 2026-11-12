@@ -1,5 +1,5 @@
 import { cumulative } from '../geo';
-import { gradeThresholds, profileGrades } from '../grade-data';
+import { profileGrades } from '../grade-data';
 import type { RoutingLine, Surface } from '../routing';
 
 /** A run of the route with one fact, which search stretch questions read (`planner/search/README.md`). `from` and
@@ -9,9 +9,9 @@ export interface RouteSegment { kind: string; from: number; to: number; ascent?:
 
 // The device's climb rule (`firmware/obc-route/src/climb.rs`): a climb gains at least 80 m over at least 400 m at a
 // mean grade of 3 % or more. It ends at its summit when the height falls 25 m below it or 300 m pass without a new one.
-const [CLIMB, , STEEP] = gradeThresholds;
-const GAIN_M = 80, LENGTH_KM = .4, DROP_M = 25, FLAT_KM = .3;
-// Steep runs use the profile's 10 % band; its grades use a 100 m window, so a shorter run is window noise.
+const CLIMB = 3, GAIN_M = 80, LENGTH_KM = .4, DROP_M = 25, FLAT_KM = .3;
+// A steep run has a grade of 10 % or more; its grades use a 100 m window, so a shorter run is window noise.
+const STEEP = 10;
 const SHORTEST_KM = .1;
 /** The surfaces that search and the route options count as unpaved. */
 export const UNPAVED: (Surface | null)[] = ['Gravel', 'Dirt', 'Rough'];
