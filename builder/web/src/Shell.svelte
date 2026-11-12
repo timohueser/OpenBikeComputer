@@ -21,6 +21,7 @@
         planner: { label: 'Planner', keep: true, load: () => initCore().then(() => import('./components/planner/PlannerApp.svelte')) },
         // The page writes GPX and FIT.
         route: { load: () => initCore().then(() => import('./pages/Route.svelte')) },
+        device: { label: 'Device', load: () => import('./pages/Device.svelte') },
         settings: { load: () => import('./pages/Settings.svelte') },
     };
 </script>
@@ -34,6 +35,8 @@
     import { startTheme } from './lib/theme.svelte';
     import { startCoverJob } from './lib/covers/job';
     import { startDeviceSync } from './lib/device-sync/state.svelte';
+    import { deviceName, remembered } from './lib/device-sync/remembered.svelte';
+    import { deviceHolder } from './lib/device/session.svelte';
 
     const siteBase = import.meta.env.VITE_SITE_BASE || '/';
     // One library for all pages: a listener of `onChange` hears only the writes of its own object.
@@ -42,6 +45,10 @@
     // A page enters at its first visit. A failed load keeps its message: the next try is a reload of the page.
     let pages = $state.raw<Partial<Record<Route, { component?: Component<PageProps>; error?: string }>>>({});
     let coversStarted = false;
+    const device = $derived(remembered.device && {
+        name: deviceName(remembered.device.serial),
+        connected: deviceHolder.session?.status === 'ready' && deviceHolder.session.info?.serialNumber === remembered.device.serial,
+    });
     const links = $derived(Object.entries(PAGES).flatMap(([route, page]) =>
         page.label ? [{ href: ROUTES[route as Route], label: page.label, current: route === current }] : []));
 
@@ -71,7 +78,7 @@
 </script>
 
 <div class="shell">
-    <TopBar {links} settings={current === 'settings'} />
+    <TopBar {links} {device} settings={current === 'settings'} />
     <div class="pages">
         {#each Object.entries(pages) as [route, page] (route)}
             {#if route === current || (PAGES[route as Route]!.keep && page.component)}

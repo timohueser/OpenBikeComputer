@@ -16,6 +16,7 @@ depends_on:
   - device-map-builder
   - library
   - map-assembly
+  - map-style
   - route-planning
   - trailview
 test_depends_on: []
@@ -60,6 +61,23 @@ A sync ([`state.svelte.ts`](../../builder/web/src/lib/device-sync/state.svelte.t
 6. It remembers the map, the number of routes and the bytes on the card, and the rides that came in today.
 
 A pulled cable stops the sync. The library stores a ride only after its whole download, and a route goes into `sent` only after its upload, so the next connection continues. After "Delete all", the next connection takes each ride again, and the sent routes stay on the device.
+
+## Device page
+
+The page `#/device` ([`Device.svelte`](../../builder/web/src/pages/Device.svelte)) shows the remembered device and the device sync. It does not run a step of the sync itself. It opens the one device session of the tab (`deviceHolder`), and the sync uses the same session, so the tab has one link to the device. The session loads the shared core, because the client of the device runs in it. The first state that applies shows:
+
+| State | When | The page shows |
+| --- | --- | --- |
+| Cannot | The browser has no WebUSB. | That the cable works in Chrome and Edge, and what works here. No button. |
+| Connected | The remembered device is `ready`. | The name, "Connected" or "Updating", "Update the device" (`deviceSync.run()`), the problem of the last sync, the card of what the update sends and what is on the device, and the drawing. |
+| Before | A device is remembered. | The date of the last sync, "Connect it again", the routes that wait and leave, and what was on the device. |
+| Never | No device is remembered. | "Connect a device", and a note that the product works with no device. |
+
+A Connect button calls `requestDevice()` in the click, and remembers the device when it is `ready`. A device that the session adopted with no click is remembered as it is, because a second chooser would open a second link to it. An error of the session shows under the button.
+
+The drawing ([`Drawing.svelte`](../../builder/web/src/pages/device/Drawing.svelte)) shows a sample map in the catalog skins `default` (Day) and `dusk` (Night), with `openLiveSkinPreview` of map style, on a square screen of 240 × 240 pixels. It loads only in the state Connected. The top bar shows a chip with the name of the remembered device, with a filled dot while it is connected.
+
+`planner.html?fake-device` on the dev server puts the wasm test device on a pretend cable ([`fake-device.ts`](../../builder/web/test-support/device-sync/fake-device.ts)), with `window.deviceTest.plug()` and `unplug()`. A build has no path to it.
 
 ## Covers
 

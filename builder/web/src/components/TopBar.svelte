@@ -2,7 +2,12 @@
     import Icon from './planner/PlannerIcon.svelte';
     import { ROUTES } from '../lib/routes';
 
-    let { links, settings }: { links: { href: string; label: string; current: boolean }[]; settings: boolean } = $props();
+    let { links, device, settings }: {
+        links: { href: string; label: string; current: boolean }[];
+        /** The remembered device; null before a first connection. */
+        device: { name: string; connected: boolean } | null;
+        settings: boolean;
+    } = $props();
     // A host that the browser tests do not stub fails the request test, so the address is not `LINKS`.
     const siteBase = import.meta.env.VITE_SITE_BASE || '/';
 </script>
@@ -14,6 +19,11 @@
             <a href={link.href} aria-current={link.current ? 'page' : undefined}>{link.label}</a>
         {/each}
     </nav>
+    {#if device}
+        <a class="chip" href={ROUTES.device} title={device.connected ? 'Connected' : 'Not connected'}>
+            <span class="dot" class:connected={device.connected}></span>{device.name}
+        </a>
+    {/if}
     <a class="settings" href={ROUTES.settings} aria-label="Settings" aria-current={settings ? 'page' : undefined}><Icon name="gear" /></a>
 </header>
 
@@ -70,6 +80,34 @@
         border-bottom: 3px solid var(--amber);
     }
     nav a[aria-current="page"]:hover { text-decoration: none; }
+    .chip {
+        display: flex;
+        flex: none;
+        align-items: center;
+        gap: 7px;
+        margin-left: auto;
+        padding: 4px 10px;
+        border: 1px solid color-mix(in srgb, var(--cream) 70%, transparent);
+        border-radius: 6px;
+        color: inherit;
+        font-size: 13px;
+        text-decoration: none;
+    }
+    .chip:hover {
+        background: color-mix(in srgb, var(--rust) 80%, var(--on-amber));
+    }
+    .dot {
+        width: 8px;
+        height: 8px;
+        border: 1.5px solid var(--cream);
+        border-radius: 50%;
+    }
+    .dot.connected {
+        background: var(--cream);
+    }
+    .chip + .settings {
+        margin-left: 0;
+    }
     .settings {
         display: grid;
         flex: none;
