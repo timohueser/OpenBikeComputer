@@ -31,8 +31,8 @@ test('a cover shows its line at a card size and at a large size, with the mark a
   const { errors } = await open(page, 'covered');
   const large = page.locator('.large canvas');
   await expect(page.locator('canvas')).toHaveCount(2);
-  // The mark goes to the point of the line nearest to the pointer, on both covers.
-  await large.hover({ position: { x: 480, y: 240 } });
+  // The mark goes to the point of the line nearest to the pointer, on both covers; the pointer is near the line.
+  await large.hover({ position: { x: 432, y: 345 } });
   await expect(page.locator('main')).toHaveScreenshot('cover.png');
   expect(errors).toEqual([]);
 });
