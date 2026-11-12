@@ -50,7 +50,8 @@ const files = [
 ];
 
 async function open(page) {
-  await page.goto('/planner.html?add-files');
+  await page.goto('/planner.html#/routes');
+  await page.getByRole('button', { name: 'Add files' }).click();
   await expect(page.getByRole('heading', { name: 'Add files' })).toBeVisible();
   await page.getByLabel('Choose files').setInputFiles(files);
   await expect(page.getByText('4 files read')).toBeVisible();
@@ -70,8 +71,15 @@ test('adds the rides and the route of files and a ZIP file once, and gives the r
   await expect(page.locator('dl > div')).toHaveText(['rides2', 'planned routes1', 'are in your library already0', 'not readable1']);
   await page.getByRole('button', { name: 'Add 3 to the library' }).click();
   await expect(page.getByRole('status')).toHaveText('Added 2 rides and 1 planned route.');
+  await page.keyboard.press('Escape');
+  // The Routes page shows the planned route only.
+  await expect(page.getByText('1 route', { exact: true })).toBeVisible();
+  await expect(page.locator('ul').getByRole('button')).toHaveCount(1);
+
+  await page.goto('/planner.html?cover=none');
+  await page.waitForFunction(() => window.coverTest);
   const stored = await page.evaluate(async () => {
-    const { library } = window.addFilesTest;
+    const { library } = window.coverTest;
     return { rides: (await library.rides()).map(ride => ride.key), routes: (await library.routes()).map(route => [route.id.slice(0, 5), route.summary.days, route.trip.mode]) };
   });
   expect(stored).toEqual({ rides: ['20260801T070000Z', '20260802T070000Z'], routes: [['file-', 1, 'route']] });

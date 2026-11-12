@@ -90,8 +90,10 @@
         useMapProtocols();
         const created = new maplibregl.Map({
             container, style: basemapStyle(styled = theme, styleConfig), bounds: styleConfig.bounds,
-            attributionControl: { compact: true }, maxPitch: 0, renderWorldCopies: false,
+            attributionControl: false, maxPitch: 0, renderWorldCopies: false,
         });
+        // The selected card covers the bottom of the map.
+        created.addControl(new maplibregl.AttributionControl({ compact: true }), 'top-left');
         created.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
         created.dragRotate.disable();
         created.touchZoomRotate.disableRotation();
