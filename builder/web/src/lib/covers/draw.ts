@@ -23,7 +23,7 @@ export interface CoverImage {
 /** The cut for a box of `width` × `height`: it fills the box as CSS `cover` does, and moves toward the middle of the route as far as the image permits. */
 export function crop(cover: Pick<CoverImage, 'width' | 'height' | 'points'>, [width, height]: [number, number]): Crop {
     const scale = Math.max(width / cover.width, height / cover.height), { points } = cover;
-    const middle = (axis: Int16Array, size: number) => {
+    const middle = (axis: Float32Array, size: number) => {
         let low = Infinity, high = -Infinity;
         for (let i = 0; i < axis.length; i++) if (placed(points, i)) [low, high] = [Math.min(low, axis[i]), Math.max(high, axis[i])];
         return low <= high ? (Math.max(low, 0) + Math.min(high, size)) / 2 : size / 2;

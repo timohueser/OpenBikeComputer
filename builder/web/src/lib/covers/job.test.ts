@@ -99,7 +99,7 @@ describe('the cover job', () => {
         expect(second.stills).toHaveLength(0);
         const cover = await library.cover('a');
         expect(cover).toMatchObject({ state: 'done', lineKey: lineKey(route('a')), tries: 0 });
-        expect(cover?.points?.x).toEqual(Int16Array.of(10, 20));
+        expect(cover?.points?.x).toEqual(Float32Array.of(10, 20));
         expect(first.stills[0].job).toMatchObject({ width: 1920, height: 1280, view: { date: '2026-08-15', time: '10:00', weather: 'sunny' } });
     });
 
@@ -220,5 +220,40 @@ describe('the cover job', () => {
         stills[0].resolve(result);
         await settle();
         expect(await library.cover('b')).toBeUndefined();
+    });
+
+    it('renders a record again when it is asked for during its render, for the new line', async () => {
+        await saved('a');
+        const { renderer, stills } = fake();
+        await start(renderer);
+        wantCover('a');
+        await settle();
+        const line = [8.38, 46.82, 8.45, 46.8];
+        await library.saveRoute(route('a', 'a', line));
+        wantCover('a');
+        stills[0].resolve(result);
+        await settle();
+        expect(stills).toHaveLength(2);
+        expect(stills[1].job.line?.flat()).toEqual(line);
+    });
+
+    it('stores no cover for a route that is deleted during its render', async () => {
+        await saved('a');
+        const { renderer, stills } = fake();
+        await start(renderer);
+        wantCover('a');
+        await settle();
+        await library.removeRoute('a');
+        stills[0].resolve(result);
+        await settle();
+        expect(await library.cover('a')).toBeUndefined();
+    });
+
+    it('keeps an ask that comes before the job starts', async () => {
+        await saved('a');
+        const { renderer, stills } = fake();
+        wantCover('a');
+        await start(renderer);
+        expect(stills).toHaveLength(1);
     });
 });

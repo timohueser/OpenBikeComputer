@@ -9,13 +9,11 @@ const JOIN_PX = 16;
 const NEAREST_M = 10, STEPS = 8, VISIBLE = 128;
 
 export function pack({ x, y, distance, visible }: StillPoints): CoverPoints {
-    const points = { x: new Int16Array(x.length), y: new Int16Array(x.length), eye: new Uint8Array(x.length) };
-    const pixel = (value: number) => Math.max(-32767, Math.min(32767, Math.round(value)));
+    // Floats keep a point far outside the image on its line: a clamp of each axis would turn the segment to it.
+    const points = { x: Float32Array.from(x), y: Float32Array.from(y), eye: new Uint8Array(x.length) };
     for (let i = 0; i < x.length; i++) {
         if (![x[i], y[i], distance[i]].every(Number.isFinite)) continue;
         const code = 1 + Math.round(STEPS * Math.log2(Math.max(distance[i], NEAREST_M) / NEAREST_M));
-        points.x[i] = pixel(x[i]);
-        points.y[i] = pixel(y[i]);
         points.eye[i] = Math.min(code, 127) | (visible[i] ? VISIBLE : 0);
     }
     return points;

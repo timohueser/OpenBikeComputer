@@ -45,10 +45,13 @@ export async function hasCover(library: Library, id: string): Promise<boolean> {
 }
 
 let asked: ((id: string) => void) | undefined;
+/** The asks that come before a job starts. */
+const early: string[] = [];
 
-/** Asks for the cover of a route or a ride, if it has none for its line. The newest ask renders first. With no job, nothing happens. */
+/** Asks for the cover of a route or a ride, if it has none for its line. The newest ask renders first. */
 export function wantCover(id: string): void {
-    asked?.(id);
+    if (asked) asked(id);
+    else if (!early.includes(id)) early.push(id);
 }
 
 /**
@@ -92,14 +95,15 @@ export function startCoverJob(library: Library, renderer: () => Promise<Renderer
             const loaded = await load();
             if (!loaded) return stop();
             while (queue.length && !waits(loaded)) {
-                const id = queue[0];
+                // An ask during the render puts the id in the queue again, for the line that it has then.
+                const id = queue.shift()!;
                 const outcome = await navigator.locks.request(LOCK, { ifAvailable: true }, lock => lock && render(loaded, id));
+                if ((!outcome || outcome === 'stay') && !queue.includes(id)) queue.unshift(id);
                 if (!outcome) {
                     retry = setTimeout(() => void pump(), RETRY_MS);
                     return;
                 }
                 if (outcome === 'stop') return stop();
-                if (outcome === 'next' && queue.includes(id)) queue.splice(queue.indexOf(id), 1);
             }
         } catch (error) {
             console.error('Cover job:', error);
@@ -109,7 +113,7 @@ export function startCoverJob(library: Library, renderer: () => Promise<Renderer
         }
     }
 
-    /** One cover, inside the lock. `stay` keeps the record first in the queue. */
+    /** One cover, inside the lock. `stay` puts the record first in the queue again. */
     async function render(loaded: Renderer, id: string): Promise<'next' | 'stay' | 'stop'> {
         const [item, old] = await Promise.all([library.item(id), library.cover(id)]);
         // The cover of another tab, or a record that is gone.
@@ -155,6 +159,7 @@ export function startCoverJob(library: Library, renderer: () => Promise<Renderer
         target.addEventListener(event, listener);
         stops.push(() => target.removeEventListener(event, listener));
     }
+    for (const id of early.splice(0)) want(id);
     return stop;
 }
 

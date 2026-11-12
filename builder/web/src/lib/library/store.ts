@@ -244,10 +244,15 @@ export class Library {
         return await this.read('covers', id) as CoverRecord | undefined;
     }
 
+    /** Saves a cover only while its route or ride exists: a cover that renders while the rider deletes its record is dropped. */
     saveCover(cover: CoverRecord): Promise<void> {
-        return this.write(['covers'], (tx, _, changed) => {
-            tx.objectStore('covers').put(cover);
-            changed('covers', cover.id);
+        return this.write(['covers', 'routes', 'rides'], (tx, _, changed) => {
+            const route = tx.objectStore('routes').getKey(cover.id), ride = tx.objectStore('rides').getKey(cover.id);
+            ride.onsuccess = () => {
+                if (route.result === undefined && ride.result === undefined) return;
+                tx.objectStore('covers').put(cover);
+                changed('covers', cover.id);
+            };
             return () => {};
         });
     }

@@ -39,4 +39,13 @@ describe('the line of a cover', () => {
         expect(nearest(points, summary, 105, 3)).toBeCloseTo(150);
         expect(nearest(points, summary, 450, -20)).toBeCloseTo(750);
     });
+
+    it('keeps a segment to a point far beside the eye on its line', () => {
+        // From the middle of the image toward a point 10 million pixels away, down and to the right at 1 : 5.
+        const far = pack({ x: Float32Array.of(960, 960 + 1e7), y: Float32Array.of(640, 640 + 2e6), distance: Float32Array.of(5000, 10), visible: Uint8Array.of(1, 0) });
+        const at = along(far, { ...summary, line: [0, 0, 0.001, 0], heights: [null, null], lengthM: 1e7 }, 1000);
+        expect(at!.x).toBeCloseTo(1960, 0);
+        expect(at!.y).toBeCloseTo(840, 0);
+    });
 });
+

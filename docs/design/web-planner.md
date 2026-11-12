@@ -20,7 +20,7 @@ status: approved
 
 This page shows the route planner alone in a browser window. The entry point [`planner.ts`](../../builder/web/src/planner.ts) loads the shared WebAssembly core of the map builder, then shows the planner app of route planning (`PlannerApp`). When the core or the planner catalogue cannot load, the page shows a short message. The entry point makes the one library of the page (`Library`) and gives it to the planner, because a listener of the library hears only the writes of its own object.
 
-`npm run build:planner` builds the page into `builder/web/dist/planner`. The site deploy copies it to the path `/plan/` of the project site ([`deploy-site.yml`](../../.github/workflows/deploy-site.yml)). Route planning owns all the planner code; this shell owns only the entry point.
+`npm run build:planner` builds the page into `builder/web/dist/planner`. The site deploy copies it to the path `/plan/` of the project site ([`deploy-site.yml`](../../.github/workflows/deploy-site.yml)). Route planning owns all the planner code. This shell owns the entry point and the covers in `lib/covers`.
 
 ## Covers
 

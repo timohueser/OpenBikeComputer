@@ -61,11 +61,12 @@ export interface RideRecord {
 }
 
 /**
- * The place of each point of the summary line in a cover image, 5 bytes for each point (`pack` of `lib/covers/line.ts`).
- * `x` and `y` are pixels of the image. In `eye`, the low 7 bits code the distance from the eye, 0 where the point has
- * no place (behind the eye, or terrain with no data), and the high bit is set where the point is visible.
+ * The place of each point of the summary line in a cover image, 9 bytes for each point (`pack` of `lib/covers/line.ts`).
+ * `x` and `y` are pixels of the image; a point beside the eye can be millions of pixels outside it. In `eye`, the low
+ * 7 bits code the distance from the eye, 0 where the point has no place (behind the eye, or terrain with no data), and
+ * the high bit is set where the point is visible.
  */
-export interface CoverPoints { x: Int16Array; y: Int16Array; eye: Uint8Array }
+export interface CoverPoints { x: Float32Array; y: Float32Array; eye: Uint8Array }
 
 /**
  * The cover of a route or a ride. `state` and `tries` belong to `lineKey`, the line of the route or the ride when the
