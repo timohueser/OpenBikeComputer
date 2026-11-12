@@ -10,6 +10,7 @@ The figure leaves out the shells, and each arrow that a longer path implies. A t
 flowchart LR
   subgraph area0["Apps"]
     s_host_runtime["host-runtime"]
+    s_library["library"]
     s_map_assembly["map-assembly"]
     s_map_style["map-style"]
     s_route_planning["route-planning"]
@@ -72,6 +73,7 @@ flowchart LR
   s_navigation --> s_map_reading
   s_rendering_display --> s_foundations
   s_repository_tooling --> s_card_storage
+  s_route_planning -.-> s_library
   s_route_planning ==> s_map_assembly
   s_route_planning ==> s_trailview
   s_routing --> s_source_preparation
@@ -88,6 +90,7 @@ flowchart LR
 | System | Purpose | Status | Uses (production code) | Used by (production code) |
 | --- | --- | --- | --- | --- |
 | [host-runtime](host-runtime.md) | Runs the device core on a computer or phone instead of the board. | draft | card-storage, device-runtime, foundations, map-reading, navigation, rendering-display | map-assembly, simulators |
+| [library](library.md) | Keeps the rider's routes and rides in the browser, each with a summary, and saves and loads them as one backup file. | draft |  |  |
 | [map-assembly](map-assembly.md) | Assembles a device map from published cells. | draft | card-storage, device-link, device-map-baking, device-map-builder, foundations, host-runtime, map-reading, map-style, navigation, rendering-display, route-planning | device-link, device-map-builder, map-style, obc-data, route-planning |
 | [map-style](map-style.md) | Defines how map features look on the device. | draft | device-map-builder, map-assembly | device-map-builder, map-assembly |
 | [route-planning](route-planning.md) | Lets a rider plan a route on a map, in the browser or on the phone. | draft | device-map-builder, map-assembly, trailview | device-map-builder, map-assembly, obc-data, trailview, trailview-page, web-planner |
