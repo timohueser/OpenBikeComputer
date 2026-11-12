@@ -8,6 +8,9 @@ const PORT = await loopbackPort('OBC_PLANNER_BROWSER_PORT');
 export default defineConfig({
   testDir: 'planner',
   testMatch: '*.test.js',
+  // One stored image for each screenshot on every system; the tolerance takes the small differences of the rasterizers.
+  snapshotPathTemplate: '{testDir}/{testFileName}-snapshots/{arg}{ext}',
+  expect: { toHaveScreenshot: { maxDiffPixelRatio: 0.02 } },
   timeout: 180_000,
   workers: 1,
   retries: 0,

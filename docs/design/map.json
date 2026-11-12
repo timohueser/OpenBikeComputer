@@ -305,7 +305,7 @@
     "repository-tooling"
    ],
    "violations": 10,
-   "lines": 18435,
+   "lines": 18494,
    "problems": [
     {
      "rule": "cycle",
@@ -520,7 +520,7 @@
    "depends_on": [],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 782,
+   "lines": 816,
    "problems": []
   },
   {
@@ -828,7 +828,7 @@
    ],
    "test_depends_on": [],
    "violations": 7,
-   "lines": 26995,
+   "lines": 27042,
    "problems": [
     {
      "rule": "cycle",
@@ -856,7 +856,7 @@
     },
     {
      "rule": "cycle",
-     "message": "trailview -> route-planning closes a cycle: builder/web/src/lib/trailview/dressing/dressing.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/trailview/engine.ts -> builder/web/src/lib/planner/config.ts, builder/web/src/lib/trailview/engine.ts -> builder/web/src/lib/planner/geo.ts, and 29 more"
+     "message": "trailview -> route-planning closes a cycle: builder/web/src/lib/trailview/dressing/dressing.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/trailview/engine.ts -> builder/web/src/lib/planner/config.ts, builder/web/src/lib/trailview/engine.ts -> builder/web/src/lib/planner/geo.ts, and 36 more"
     }
    ]
   },
@@ -945,7 +945,7 @@
     "repository-tooling"
    ],
    "violations": 4,
-   "lines": 18653,
+   "lines": 18719,
    "problems": [
     {
      "rule": "cycle",
@@ -976,7 +976,7 @@
    ],
    "test_depends_on": [],
    "violations": 5,
-   "lines": 55060,
+   "lines": 55562,
    "problems": [
     {
      "rule": "cycle",
@@ -992,7 +992,7 @@
     },
     {
      "rule": "cycle",
-     "message": "trailview -> route-planning closes a cycle: builder/web/src/lib/trailview/dressing/dressing.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/trailview/engine.ts -> builder/web/src/lib/planner/config.ts, builder/web/src/lib/trailview/engine.ts -> builder/web/src/lib/planner/geo.ts, and 29 more"
+     "message": "trailview -> route-planning closes a cycle: builder/web/src/lib/trailview/dressing/dressing.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/trailview/engine.ts -> builder/web/src/lib/planner/config.ts, builder/web/src/lib/trailview/engine.ts -> builder/web/src/lib/planner/geo.ts, and 36 more"
     },
     {
      "rule": "R4",
@@ -1012,7 +1012,7 @@
    ],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 61,
+   "lines": 85,
    "problems": []
   },
   {
@@ -1035,11 +1035,13 @@
    "status": "approved",
    "depends_on": [
     "device-map-builder",
-    "route-planning"
+    "library",
+    "route-planning",
+    "trailview"
    ],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 13,
+   "lines": 27,
    "problems": []
   },
   {
@@ -1887,6 +1889,12 @@
   {
    "from": "web-planner",
    "to": "device-map-builder",
+   "test": false,
+   "undeclared": false
+  },
+  {
+   "from": "web-planner",
+   "to": "library",
    "test": false,
    "undeclared": false
   },

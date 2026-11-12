@@ -60,10 +60,27 @@ export interface RideRecord {
     device?: string;
 }
 
+/**
+ * The place of each point of the summary line in a cover image, 5 bytes for each point (`pack` of `lib/covers/line.ts`).
+ * `x` and `y` are pixels of the image. In `eye`, the low 7 bits code the distance from the eye, 0 where the point has
+ * no place (behind the eye, or terrain with no data), and the high bit is set where the point is visible.
+ */
+export interface CoverPoints { x: Int16Array; y: Int16Array; eye: Uint8Array }
+
+/**
+ * The cover of a route or a ride. `state` and `tries` belong to `lineKey`, the line of the route or the ride when the
+ * cover job last worked on it. `waiting`: the job renders it again; `none`: no cover is possible for this line, as no
+ * view holds it or TrailView has no data there; `failed`: three tries failed. With `waiting` and `failed`, `image` and
+ * `points` can be the cover of an earlier line.
+ */
 export interface CoverRecord {
     /** The id of the route or the key of the ride. */
     id: string;
-    state: string;
+    lineKey: string;
+    state: 'waiting' | 'done' | 'failed' | 'none';
+    image?: Blob;
+    points?: CoverPoints;
+    tries: number;
 }
 
 export interface DeletedRide {
