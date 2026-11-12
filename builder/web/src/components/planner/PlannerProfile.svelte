@@ -13,6 +13,7 @@
     import { axisColumn, axisLeft, axisPieces, axisRest, axisProgress, axisWidth, type ProfileAxis } from '../../lib/planner/profile-axis';
     import { addDays, weekdayLabel } from '../../lib/planner/layers/data-layer';
     import { sleepIcon } from '../../lib/planner/search/presentation';
+    import { plannedSeconds } from '../../lib/settings/format';
     type ProfileDay = Pick<Day, 'number' | 'from' | 'to' | 'pinned' | 'split'> & Partial<Pick<Day, 'distance' | 'hours'>>;
 
     let {
@@ -191,7 +192,7 @@
                 {@const start = Math.max(day.from, shown.from)}
                 <div class="label" style:left={axisLeft(axis, start, true)} style:width={axisWidth(axis, start, Math.min(endAt(day), shown.to))} style:--day-color={dayColor(day.number, theme)}>
                     <span><strong>Day {dayLabels[day.number] ?? day.number}</strong>{#if trip?.startDate}<span>{dayDate(day)}</span>{/if}</span>
-                    {#if day.distance !== undefined && day.hours !== undefined}<small>{Math.round(day.distance)} km · {duration(day.hours)}</small>{/if}
+                    {#if day.distance !== undefined && day.hours !== undefined}<small>{Math.round(day.distance)} km · {duration(plannedSeconds(day.hours * 3600, trip?.bike ?? 'touring') / 3600)}</small>{/if}
                 </div>
             {/each}
         </div>

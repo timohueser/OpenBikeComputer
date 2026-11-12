@@ -155,7 +155,7 @@
                 <h3>{title(route)}<small>{[kindLine(route), detail.distanceM === undefined ? '' : `${km(detail.distanceM)} from ${place}`].filter(Boolean).join(' · ')}</small></h3>
             </div>
             <p class="kind">{route.stage && detail.family ? `Official stage ${route.stage} of ${detail.family.stages!.length} · ${title(detail.family)}, ${km(detail.family.length_m)} · ` : ''}{network(route)}</p>
-            <RouteStats {...figures(route)} walking={activity === 'hiking'} />
+            <RouteStats {...figures(route)} bike={activity} />
             {#if ends}<p class="ends"><Icon name="flag" size={16} />{ends}</p>{/if}
             {#if detail.stages && detail.family}
                 <p class="sub">{title(detail.family)} stages</p>

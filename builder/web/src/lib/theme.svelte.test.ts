@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { appearance, startTheme, toggleTheme } from "./theme.svelte";
+import { appearance, setLook, startTheme, toggleTheme } from "./theme.svelte";
 
 let stop: (() => void) | undefined;
 let system: EventTarget & { matches: boolean };
@@ -55,6 +55,15 @@ describe("page appearance", () => {
         systemTheme(false);
         window.dispatchEvent(new StorageEvent("storage", { key: "obc-theme" }));
         expect(appearance.dark).toBe(false);
+    });
+
+    it("sets a look, and the look of the computer removes the key", () => {
+        system.matches = true;
+        stop = startTheme();
+        setLook("light");
+        expect([localStorage.getItem("obc-theme"), appearance.look, appearance.dark]).toEqual(["light", "light", false]);
+        setLook("system");
+        expect([localStorage.getItem("obc-theme"), appearance.look, appearance.dark]).toEqual([null, "system", true]);
     });
 
     it("still follows the browser and accepts a toggle when storage is unavailable", () => {

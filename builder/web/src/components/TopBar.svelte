@@ -1,9 +1,8 @@
 <script lang="ts">
     import Icon from './planner/PlannerIcon.svelte';
     import { ROUTES } from '../lib/routes';
-    import { appearance, toggleTheme } from '../lib/theme.svelte';
 
-    let { links }: { links: { href: string; label: string; current: boolean }[] } = $props();
+    let { links, settings }: { links: { href: string; label: string; current: boolean }[]; settings: boolean } = $props();
     // A host that the browser tests do not stub fails the request test, so the address is not `LINKS`.
     const siteBase = import.meta.env.VITE_SITE_BASE || '/';
 </script>
@@ -15,9 +14,7 @@
             <a href={link.href} aria-current={link.current ? 'page' : undefined}>{link.label}</a>
         {/each}
     </nav>
-    <button type="button" class="theme" aria-label={appearance.dark ? 'Use light theme' : 'Use dark theme'} onclick={toggleTheme}>
-        <Icon name={appearance.dark ? 'sun' : 'moon'} />
-    </button>
+    <a class="settings" href={ROUTES.settings} aria-label="Settings" aria-current={settings ? 'page' : undefined}><Icon name="gear" /></a>
 </header>
 
 <style>
@@ -73,20 +70,17 @@
         border-bottom: 3px solid var(--amber);
     }
     nav a[aria-current="page"]:hover { text-decoration: none; }
-    .theme {
+    .settings {
         display: grid;
         flex: none;
         place-items: center;
         width: 32px;
         height: 32px;
         margin-left: auto;
-        padding: 0;
-        border: 0;
         border-radius: 6px;
-        background: none;
         color: inherit;
     }
-    .theme:hover {
+    .settings:hover, .settings[aria-current="page"] {
         background: color-mix(in srgb, var(--rust) 80%, var(--on-amber));
     }
     @media (max-width: 1150px) {

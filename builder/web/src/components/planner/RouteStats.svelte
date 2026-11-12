@@ -1,13 +1,17 @@
 <script lang="ts">
-    let { distance, ascent, descent, hours, walking = false }: { distance: number; ascent: number | null; descent: number | null; walking?: boolean; hours: number | null } = $props();
-    const minutes = $derived(hours === null ? null : Math.round(hours * 60));
+    import type { Bike } from '../../lib/library/records';
+    import { plannedSeconds } from '../../lib/settings/format';
+
+    /** `hours` is the routing time; the stats show it at the pace of the rider. */
+    let { distance, ascent, descent, hours, bike }: { distance: number; ascent: number | null; descent: number | null; bike: Bike; hours: number | null } = $props();
+    const minutes = $derived(hours === null ? null : Math.round(plannedSeconds(hours * 3600, bike) / 60));
 </script>
 
 <dl class="stats">
     <div><dt>Distance</dt><dd>{distance.toFixed(1)}<small>km</small></dd></div>
     <div><dt>Ascent</dt><dd>{ascent ?? '—'}<small>m</small></dd></div>
     <div><dt>Descent</dt><dd>{descent ?? '—'}<small>m</small></dd></div>
-    <div><dt>{walking ? 'Walking time' : 'Riding time'}</dt><dd>{minutes === null ? '—' : minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`}</dd></div>
+    <div><dt>{bike === 'hiking' ? 'Walking time' : 'Riding time'}</dt><dd>{minutes === null ? '—' : minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`}</dd></div>
 </dl>
 
 <style>

@@ -15,6 +15,8 @@
     import { routingKey, type RoutingLine } from '../../lib/planner/routing';
     import { versionTitle, type Version } from '../../lib/planner/versions';
     import type { MapPoint } from '../../lib/planner/map-types';
+    import type { Bike } from '../../lib/library/records';
+    import { plannedSeconds } from '../../lib/settings/format';
 
     let { name, trip, line, routeError, openId, versions, versionLines, theme, onBack, onOpen, onFindLines }: {
         /** The name of the plan. */
@@ -37,6 +39,7 @@
     } = $props();
 
     const tones = ['var(--version-a)', 'var(--version-b)'];
+    const planned = (hours: number, bike: Bike) => plannedSeconds(hours * 3600, bike) / 3600;
     const grey = 'var(--ink-faint)';
 
     // The rider's picks; a pick that is no longer a version falls back to the open version and the next one.
@@ -57,7 +60,7 @@
 
     const sides = $derived(pair.map(version => {
         const open = version.id === openId, plan = open ? trip : version.trip, known = open ? line : versionLines[routingKey(plan)];
-        return { id: version.id, title: versionTitle(version), open, trip: plan, line: typeof known === 'object' ? known : undefined,
+        return { id: version.id, title: versionTitle(version), open, trip: plan, bike: plan.bike ?? 'touring', line: typeof known === 'object' ? known : undefined,
             error: typeof known === 'string' ? known : open && !line ? routeError || undefined : undefined };
     }));
     $effect(() => { void [versions, versionLines]; untrack(() => onFindLines()); });
@@ -194,8 +197,8 @@
                             {#if side.open}<span class="open">open</span>{:else}<button type="button" class="planner-action" onclick={() => onOpen(side.id, side.title)}>Open in planner</button>{/if}
                         </div>
                         {#if s}
-                            <p>{compareSummary(s.days)}</p>
-                            <p class="totals">{km(s.view.summary.distance)} km{side.line?.unknownElevationKm === 0 ? ` · ↑ ${km(s.view.summary.ascent)} m` : ''} · {duration(s.view.summary.hours)} riding</p>
+                            <p>{compareSummary(s.days, side.bike)}</p>
+                            <p class="totals">{km(s.view.summary.distance)} km{side.line?.unknownElevationKm === 0 ? ` · ↑ ${km(s.view.summary.ascent)} m` : ''} · {duration(planned(s.view.summary.hours, side.bike))} riding</p>
                             {#if failed[i].length}
                                 <p role="alert">Some towns for the nights could not load, so some nights end at even points.</p>
                                 <button type="button" class="planner-action" onclick={() => failed[i].forEach(key => finders[i].retry(key))}>Retry</button>
@@ -231,7 +234,7 @@
                                 {...pointer(i, row)} onclick={() => keep(i, row)}>
                                 {#if cell.date}<small>{cell.date}</small>{/if}
                                 <strong>{cell.from} → {cell.to}</strong>
-                                <span class="figures">{km(cell.day.distance)} km · {duration(cell.day.hours)}{side.line?.unknownElevationKm === 0 ? ` · ↑ ${km(cell.day.ascent)} m` : ''}</span>
+                                <span class="figures">{km(cell.day.distance)} km · {duration(planned(cell.day.hours, side.bike))}{side.line?.unknownElevationKm === 0 ? ` · ↑ ${km(cell.day.ascent)} m` : ''}</span>
                                 <span class="time" aria-hidden="true"><span style:width={`${cell.day.hours / longestDay * 100}%`} style:background={color(i, riding)}></span></span>
                                 {#each cell.trains as train (train)}<span class="stay"><Icon name="train" size={14} />Train or bus {train}</span>{/each}
                                 <span class="stay"><Icon name={cell.stay.icon} size={14} />{cell.stay.label}</span>

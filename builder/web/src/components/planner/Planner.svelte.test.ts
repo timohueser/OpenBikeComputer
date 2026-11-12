@@ -2,7 +2,8 @@
 
 import { mount, tick, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { addRestDay, allStay, planView, type Place } from '../../lib/planner/editor';
+import { addRestDay, allStay, guessDays, planView, type Place } from '../../lib/planner/editor';
+import { updateSettings } from '../../lib/settings/settings.svelte';
 import { testLine, testTrip } from '../../../test-support/planner/trip';
 import type { NightChoices } from '../../lib/planner/night-stops.svelte';
 import { proposal, type Stop } from '../../lib/planner/stops';
@@ -243,6 +244,27 @@ describe('planner day views', () => {
         await tick();
         expect(axis()).toEqual(['0 km', '36 km', '72 km', '108 km', '144 km']);
         expect(document.querySelector('.distance')?.textContent).toBe('144.0 km');
+    });
+});
+
+describe('planner pace', () => {
+    it('shows a shorter time at Fast and keeps the days of the trip', async () => {
+        const props = itineraryProps(null);
+        mounted.push(mount(Itinerary, { target: document.body, props }));
+        await tick();
+        const minutes = () => {
+            const [, hours, rest] = document.querySelector('[data-day] small')!.textContent!.match(/^(\d+)h (\d+)m/)!;
+            return Number(hours) * 60 + Number(rest);
+        };
+        const moderate = minutes(), days = guessDays(props.trip, props.line);
+        try {
+            updateSettings({ pace: 'fast' });
+            await tick();
+            expect(minutes()).toBeLessThan(moderate);
+            expect(guessDays(props.trip, props.line)).toBe(days);
+        } finally {
+            updateSettings({ pace: 'moderate' });
+        }
     });
 });
 

@@ -8,6 +8,7 @@
     import { allStay, type Place, type Stay, type Trip } from '../../lib/planner/editor';
     import { stayOptions } from '../../lib/planner/search/presentation';
     import type { RoutingLine } from '../../lib/planner/routing';
+    import { plannedSeconds } from '../../lib/settings/format';
 
     let { trip, line, night, labels, theme, found, window, stopId, date, elevationAt, kinds, onOpen, onEndHere, onStay, onSelectPlace, onPick, onRetry, onCancel, onKinds, onRelease }: {
         trip: Trip;
@@ -49,14 +50,15 @@
     // The town whose card closed, so its button takes the focus back.
     let returnTo: string | null = null;
 
-    function duration(hours: number) {
-        const minutes = Math.round(hours * 60);
+    // The bars compare routing times: the pace scales all days the same.
+    function plannedTime(hours: number) {
+        const minutes = Math.round(plannedSeconds(hours * 3600, trip.bike ?? 'touring') / 60);
         return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`;
     }
 </script>
 
 {#if open}
-    <StopCard stop={open} days={daysAround(trip, line, night, open.km)} {labels} {theme} {date} elevation={elevationAt(open.km)}
+    <StopCard stop={open} days={daysAround(trip, line, night, open.km)} bike={trip.bike ?? 'touring'} {labels} {theme} {date} elevation={elevationAt(open.km)}
         onBack={() => { returnTo = open.id; onOpen(null); }} {onEndHere} {onStay} {onSelectPlace} />
 {:else}
     <div class="picker">
@@ -67,7 +69,7 @@
                     {#each rows as { stop, days } (stop.id)}
                         <li>
                             <button type="button" class="town" onclick={() => onOpen(stop.id)} {@attach node => { if (stop.id === returnTo) { returnTo = null; node.focus(); } }}
-                                aria-label={`${stop.name}, ${stopCounts(stop)}. Day ${labels[0]} ${duration(days[0].hours)}, day ${labels[1]} ${duration(days[1].hours)}${stop === even ? '. Even days' : ''}`}>
+                                aria-label={`${stop.name}, ${stopCounts(stop)}. Day ${labels[0]} ${plannedTime(days[0].hours)}, day ${labels[1]} ${plannedTime(days[1].hours)}${stop === even ? '. Even days' : ''}`}>
                                 <strong>{stop.name}{#if stop === even}<em>Even days</em>{/if}</strong>
                                 <small>km {Math.round(stop.from)}{Math.round(stop.to) !== Math.round(stop.from) ? `–${Math.round(stop.to)}` : ''} · {stopCounts(stop)}
                                     <span class="services" aria-hidden="true">{#each services as service}{#if stop[service].length}<Icon path={placeCategories[service].icon} size={13} />{/if}{/each}</span>
@@ -76,7 +78,7 @@
                                     <span style:width={`${days[0].hours / longest * 100}%`} style:background={dayColor(night, theme)}></span>
                                     <span style:width={`${days[1].hours / longest * 100}%`} style:background={dayColor(night + 1, theme)}></span>
                                 </span>
-                                <small class="hours" aria-hidden="true"><span>Day {labels[0]} · {duration(days[0].hours)}</span><span>Day {labels[1]} · {duration(days[1].hours)}</span></small>
+                                <small class="hours" aria-hidden="true"><span>Day {labels[0]} · {plannedTime(days[0].hours)}</span><span>Day {labels[1]} · {plannedTime(days[1].hours)}</span></small>
                             </button>
                             <button type="button" class="stay" aria-label={`Stay in ${stop.name}`} onclick={() => onEndHere(stop)}>Stay here</button>
                         </li>
