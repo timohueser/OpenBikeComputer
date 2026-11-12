@@ -402,6 +402,8 @@ where
     keep(&target.join("package.json"), info)?;
     let dir = target.join(CELLS);
     fs::create_dir_all(&dir).map_err(io(&dir))?;
+    // The files of a stopped install: step 5 deletes them too, but only after a complete install,
+    // so a failed one would keep their disk.
     for entry in fs::read_dir(&dir).map_err(io(&dir))? {
         let path = entry.map_err(io(&dir))?.path();
         if path.extension().is_some_and(|extension| extension == "part") {
@@ -412,8 +414,20 @@ where
     each(&missing.files, threads, |item, decoder, buffer| {
         let object = open(&fetch, item)?;
         let (part, path) = (dir.join(format!("{}.part", item.name)), dir.join(&item.name));
-        let mut file = File::create(&part).map_err(io(&part))?;
-        stream(item, &object, decoder, buffer, |bytes| file.write_all(bytes).map_err(io(&part)))?;
+        // The file starts with the first bytes of the part, so an object that `stream` refuses at
+        // its header leaves no file.
+        let mut file = None;
+        stream(item, &object, decoder, buffer, |bytes| {
+            let file = match &mut file {
+                Some(file) => file,
+                None => file.insert(File::create(&part).map_err(io(&part))?),
+            };
+            file.write_all(bytes).map_err(io(&part))
+        })?;
+        let file = match file {
+            Some(file) => file,
+            None => File::create(&part).map_err(io(&part))?,
+        };
         file.sync_all().map_err(io(&part))?;
         drop_cache(&file);
         drop_cache(&object);

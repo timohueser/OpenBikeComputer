@@ -1014,7 +1014,8 @@ pub fn decode_set(bytes: &[u8]) -> Result<Set> {
         let (modes, kind) = (get(bytes, at)?, get(bytes, at + 1)?);
         at += 2;
         let kind = *KINDS.get(usize::from(kind)).ok_or_else(|| invalid("a bad closure kind"))?;
-        let length = varint(bytes, &mut at)? as usize;
+        let length =
+            usize::try_from(varint(bytes, &mut at)?).map_err(|_| invalid("a closure condition above the target"))?;
         let text = bytes.get(at..at.saturating_add(length)).ok_or_else(|| invalid("a short closure condition"))?;
         let condition = std::str::from_utf8(text).map_err(|_| invalid("a closure condition that is not UTF-8"))?.into();
         at += length;
@@ -1085,7 +1086,10 @@ mod tests {
             .encode(&mut geometry);
         geometry.extend([0; 4]);
         assert!(Geometry::new(&geometry).unwrap().level1(0).is_err());
-        assert!(Group::new(&fields(&[1, u32::MAX, u32::MAX, 0, 0, 24])).is_err());
+        // One profile, so the count of the slots overflows only at `cells + upper`.
+        let mut group = fields(&[1, u32::MAX, 1, 0, 0, 24]);
+        group.extend([0; 8]);
+        assert!(Group::new(&group).is_err());
         // A position that passes 64 bits: way 1, no scales, 1 m, no closure, 2 points.
         let mut record = vec![1, 0, 0xFF, 1, 0, 2];
         put_varint(&mut record, u64::MAX - 1);

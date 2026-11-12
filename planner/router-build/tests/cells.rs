@@ -489,7 +489,7 @@ fn an_install_refuses_what_it_cannot_trust() {
     drop(lock);
 
     // A frame that decodes to more than its part, with the content size of the part, writes no
-    // more than the part; a later install deletes the leftover `.part` file.
+    // more than the part.
     let item = &all.files[0];
     let part = fs::read(output.join(item.object.iter().map(|b| format!("{b:02x}")).collect::<String>())).unwrap();
     let part = zstd::stream::decode_all(&part[..]).unwrap();
@@ -516,7 +516,23 @@ fn an_install_refuses_what_it_cannot_trust() {
     let error = install::install(&fresh, (&directory_bytes, &info), (None, None), 1, fetch(&lying)).unwrap_err();
     assert!(matches!(&error, install::Error::Object { object: o, .. } if *o == object), "{error}");
     let leftover = fresh.join("cells").join(format!("{}.part", item.name));
-    assert!(fs::metadata(&leftover).unwrap().len() <= u64::from(item.bytes));
+    assert!(fs::metadata(&leftover).map_or(true, |file| file.len() <= u64::from(item.bytes)));
+    // A failed install deletes the `.part` files of an earlier stop before it fails.
+    let stale = fresh.join("cells").join("stale.part");
+    fs::write(&stale, b"stale").unwrap();
+    install::install(&fresh, (&directory_bytes, &info), (None, None), 1, fetch(&lying)).unwrap_err();
+    assert!(!stale.exists());
+    // An object without a content size fails before a `.part` file exists.
+    let mut sizeless = zstd::bulk::Compressor::new(3).unwrap();
+    sizeless.include_contentsize(false).unwrap();
+    fs::write(lying.join(&object), sizeless.compress(&part).unwrap()).unwrap();
+    let bare = scratch.0.join("bare");
+    let error = install::install(&bare, (&directory_bytes, &info), (None, None), 1, fetch(&lying)).unwrap_err();
+    assert!(matches!(&error, install::Error::Object { object: o, .. } if *o == object), "{error}");
+    let parts = fs::read_dir(bare.join("cells"))
+        .unwrap()
+        .filter(|e| e.as_ref().unwrap().path().extension().is_some_and(|x| x == "part"));
+    assert_eq!(parts.count(), 0);
     install::install(&fresh, (&directory_bytes, &info), (None, None), 1, fetch(&output)).unwrap();
     assert!(!leftover.exists());
 
