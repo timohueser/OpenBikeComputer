@@ -6,6 +6,8 @@ This contract defines the iOS archive boundary and the device archive-proof boun
 
 - Writers: the iOS companion app: `FileLibraryStore` (local archive), `RideSyncCoordinator`
   (receipt delivery and retry), in `companion-ios/Packages/OBCKit/Sources/`.
+- Writers: the web app: `Library.addRide` (local archive) and `syncDevice` (receipt delivery), in
+  `builder/web/src/lib/`. See [Web archive](#web-archive).
 - Readers: the device, through `ARCHIVE_RIDE`.
 - Related: [ride archive metadata](ride-archive-metadata.md).
 
@@ -105,6 +107,20 @@ later reconnect revalidates the archives and retries without downloading them ag
 absent source is terminal for that receipt; a fresh catalog decides any later download. There is no
 persistent receipt queue or local device-acknowledgment mirror. Sync counts describe local saves,
 never device proof.
+
+## Web archive
+
+The web library keeps a device ride in the browser database with its source file, the ride
+object bytes unchanged. The `device` field of the ride record is `StoreId:ObjectId`, with no
+serial: a card never gives an `ObjectId` twice, and a new card has a new `StoreId`.
+
+`Library.addRide` commits the record and the file in one transaction with strict durability. The
+web sends `ARCHIVE_RIDE` only after that commit, and only while the browser grants persistent
+storage. On each sync, the web compares each finished ride entry with the rows of the Metadata
+object. For an entry with no row, it sends the receipt when a stored ride has the entry's
+`StoreId:ObjectId` and its stored file has the entry's length and CRC-32. A file from another
+source, such as a GPX file of the same ride, gets no receipt. There is no receipt queue: the next
+sync sends a receipt that had no answer.
 
 ## Device archive proof
 

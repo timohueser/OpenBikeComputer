@@ -97,6 +97,7 @@ Each field is optional.
 | `active` | String or `null`: the id of the route that the planner opens |
 | `waiting` | Array of route ids: the routes that wait to go to the device |
 | `leaving` | Array of route ids: the routes to remove from the device |
+| `sent` | Object: for a route id, an object with `device`, the decimal `ObjectId` of the route on the device, and `line`, the line key of the route when it was sent. It belongs to the card of the remembered device. |
 | `deleted` | Array of objects with `key` and an optional `device`: the rides that the rider deleted |
 
 ## 7. Load
