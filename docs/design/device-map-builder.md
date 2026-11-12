@@ -19,6 +19,7 @@ owns:
   - builder/web/src/lib/palette.ts
   - builder/web/src/lib/platform/**
   - builder/web/src/lib/router.svelte.ts
+  - builder/web/src/lib/routes.test.ts
   - builder/web/src/lib/routes.ts
   - builder/web/src/lib/theme.svelte.test.ts
   - builder/web/src/lib/theme.svelte.ts

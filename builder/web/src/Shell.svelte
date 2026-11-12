@@ -47,9 +47,10 @@
         pages = { ...untrack(() => pages), [route]: {} };
         PAGES[route]!.load().then(async ({ default: component }) => {
             pages = { ...pages, [route]: { component } };
-            await tick();
-            if (!coversStarted) startCoverJob(library);
+            if (coversStarted) return;
             coversStarted = true;
+            await tick();
+            startCoverJob(library);
         }, (error: unknown) => {
             pages = { ...pages, [route]: { error: error instanceof Error ? error.message : String(error) } };
         });
@@ -95,6 +96,12 @@
         display: flex;
         flex-direction: column;
         height: 100dvh;
+    }
+    /* The narrow breakpoint of the planner: the document scrolls, so a phone browser can hide its toolbar. */
+    @media (max-width: 760px) {
+        .shell { height: auto; min-height: 100dvh; }
+        .pages { flex: 1 0 auto; }
+        .page { height: auto; overflow: visible; }
     }
     .pages {
         flex: 1;

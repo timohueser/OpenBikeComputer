@@ -46,18 +46,27 @@ export function readSettings(value: unknown): Settings {
     };
 }
 
-function stored(): Settings {
+/** The stored settings, or null when the browser has no storage. */
+function stored(): Settings | null {
     try {
         return readSettings(JSON.parse(localStorage.getItem(KEY) ?? 'null'));
     } catch {
-        return readSettings(null);
+        return null;
     }
 }
 
-export const settings: Settings = $state(stored());
+export const settings: Settings = $state(stored() ?? readSettings(null));
 
+// Another tab wrote the settings.
+if (typeof window !== 'undefined') {
+    window.addEventListener('storage', event => {
+        if (event.key === KEY || event.key === null) Object.assign(settings, stored() ?? readSettings(null));
+    });
+}
+
+/** Merges onto the stored settings, so that a change does not undo a newer write of another tab. */
 export function updateSettings(change: Partial<Settings>): void {
-    Object.assign(settings, readSettings({ ...$state.snapshot(settings), ...change }));
+    Object.assign(settings, readSettings({ ...(stored() ?? $state.snapshot(settings)), ...change }));
     try { localStorage.setItem(KEY, JSON.stringify(settings)); } catch { /* The settings still apply to this page without storage. */ }
 }
 
@@ -65,5 +74,6 @@ export function updateSettings(change: Partial<Settings>): void {
 export function takeDeviceValues(start: number, maxHr: number | null, ftp: number | null): void {
     const newer = (current: RiderValue | null, value: number | null) =>
         value !== null && (current === null || current.at < start) ? { value, at: start, device: true } : current;
-    updateSettings({ maxHr: newer(settings.maxHr, maxHr), ftp: newer(settings.ftp, ftp) });
+    const current = stored() ?? settings;
+    updateSettings({ maxHr: newer(current.maxHr, maxHr), ftp: newer(current.ftp, ftp) });
 }

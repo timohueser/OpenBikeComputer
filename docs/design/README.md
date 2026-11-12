@@ -146,12 +146,12 @@ flowchart LR
 | --- | --- | --- | --- | --- |
 | [companion-ios](companion-ios.md) | Runs the iPhone app that plans routes, sends them to the device and gets rides back. | approved |  |  |
 | [device-firmware](device-firmware.md) | Builds the nRF54L board image from the device systems. | approved | board-inputs, card-storage, device-link, device-runtime, firmware-update, foundations, map-reading, navigation, rendering-display |  |
-| [device-map-builder](device-map-builder.md) | Runs the map builder, where a rider builds a device map and manages the device, in the browser. | approved | device-link, firmware-update, map-assembly, map-style, route-planning, trailview, website | device-link, map-assembly, map-style, obc-data, route-planning, search |
+| [device-map-builder](device-map-builder.md) | Runs the map builder, where a rider builds a device map and manages the device, in the browser. | approved | device-link, firmware-update, map-assembly, map-style, route-planning, trailview, website | device-link, map-assembly, map-style, obc-data, route-planning, search, web-planner |
 | [obc-data](obc-data.md) | Runs the `obc data` command and its operator page. | approved | data-engine, device-map-baking, device-map-builder, foundations, map-assembly, route-planning, routing, search, source-preparation, trailview |  |
 | [planner-tile-server](planner-tile-server.md) | Serves the map tiles of a planner release from the storage bucket or from a local folder. | approved |  |  |
 | [simulators](simulators.md) | Runs the device core on a computer, a phone or a web page, and sends test input to a real board. | approved | board-inputs, card-storage, data-engine, device-link, device-runtime, firmware-update, foundations, host-runtime, map-reading, navigation, rendering-display, repository-tooling |  |
 | [trailview-page](trailview-page.md) | Opens TrailView, the 3-D view of a region, as its own page in the browser. | approved | route-planning, trailview |  |
-| [web-planner](web-planner.md) | Opens the app at /plan/: the top bar, the pages, and the route planner as one page. | approved | library, route-planning, trailview |  |
+| [web-planner](web-planner.md) | Opens the app at /plan/: the top bar, the pages, and the route planner as one page. | approved | device-map-builder, library, route-planning, trailview |  |
 | [website](website.md) | Publishes the project site, the guide and the blog. | approved |  | device-map-builder |
 
 ## Tangles

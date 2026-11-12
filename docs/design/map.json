@@ -305,7 +305,7 @@
     "repository-tooling"
    ],
    "violations": 10,
-   "lines": 9205,
+   "lines": 9873,
    "problems": [
     {
      "rule": "cycle",
@@ -329,7 +329,7 @@
     },
     {
      "rule": "cycle",
-     "message": "device-map-builder -> route-planning closes a cycle: builder/web/scripts/road-census.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/platform/web.ts -> builder/web/src/lib/planner/release.ts, builder/web/src/lib/ui/Segmented.svelte -> builder/web/src/components/planner/PlannerIcon.svelte, and 13 more"
+     "message": "device-map-builder -> route-planning closes a cycle: builder/web/scripts/road-census.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/platform/web.ts -> builder/web/src/lib/planner/release.ts, builder/web/src/lib/ui/Segmented.svelte -> builder/web/src/components/planner/PlannerIcon.svelte, and 15 more"
     },
     {
      "rule": "cycle",
@@ -520,7 +520,7 @@
    "depends_on": [],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 822,
+   "lines": 1030,
    "problems": []
   },
   {
@@ -832,7 +832,7 @@
    "problems": [
     {
      "rule": "cycle",
-     "message": "device-map-builder -> route-planning closes a cycle: builder/web/scripts/road-census.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/platform/web.ts -> builder/web/src/lib/planner/release.ts, builder/web/src/lib/ui/Segmented.svelte -> builder/web/src/components/planner/PlannerIcon.svelte, and 13 more"
+     "message": "device-map-builder -> route-planning closes a cycle: builder/web/scripts/road-census.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/platform/web.ts -> builder/web/src/lib/planner/release.ts, builder/web/src/lib/ui/Segmented.svelte -> builder/web/src/components/planner/PlannerIcon.svelte, and 15 more"
     },
     {
      "rule": "cycle",
@@ -976,7 +976,7 @@
    ],
    "test_depends_on": [],
    "violations": 5,
-   "lines": 55562,
+   "lines": 55568,
    "problems": [
     {
      "rule": "cycle",
@@ -1012,7 +1012,7 @@
    ],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 85,
+   "lines": 87,
    "problems": []
   },
   {
@@ -1041,7 +1041,7 @@
    ],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 847,
+   "lines": 1089,
    "problems": []
   },
   {
@@ -1883,6 +1883,12 @@
   {
    "from": "trailview-page",
    "to": "trailview",
+   "test": false,
+   "undeclared": false
+  },
+  {
+   "from": "web-planner",
+   "to": "device-map-builder",
    "test": false,
    "undeclared": false
   },
