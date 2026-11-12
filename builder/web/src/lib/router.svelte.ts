@@ -4,22 +4,21 @@
 // The hashes themselves live in `lib/routes.ts`, which has no side effects —
 // this module reads `location` and subscribes to `hashchange` on import.
 
-import { ADVANCED_ROUTE } from "./routes";
+import { parseRoute, type Route } from "./routes";
 
-export type Route = "home" | "advanced";
-
-function parse(): Route {
-    if (location.hash.startsWith(ADVANCED_ROUTE)) return "advanced";
-    return "home";
-}
+export type { Route };
 
 class Router {
-    route = $state<Route>(parse());
+    route = $state<Route>("home");
+    id = $state<string | undefined>();
 
     constructor() {
-        window.addEventListener("hashchange", () => {
-            this.route = parse();
-        });
+        this.read();
+        window.addEventListener("hashchange", () => this.read());
+    }
+
+    private read() {
+        ({ route: this.route, id: this.id } = parseRoute(location.hash));
     }
 }
 

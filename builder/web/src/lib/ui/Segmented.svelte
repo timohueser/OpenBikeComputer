@@ -11,7 +11,7 @@
 </script>
 
 <script lang="ts" generics="T extends string">
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../components/planner/PlannerIcon.svelte';
 
     let { label, options, value, onChange, compact = false, columns = 0 }: {
         label: string;

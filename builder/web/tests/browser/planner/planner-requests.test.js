@@ -36,7 +36,7 @@ async function countRequests(page) {
 /** One rider's session: look around, plan a trip, change bike, search, and show places along the route. */
 test('a planning session stays inside the request budget', async ({ page }) => {
   const { counts, phases, order, idle, phase } = await countRequests(page);
-  await page.goto('/planner.html');
+  await page.goto('/planner.html#/planner');
   const canvas = page.locator('.maplibregl-canvas');
   await expect(canvas).toBeVisible();
   // Terrain and overlays wait for the basemap. Every total stays the same when they do not, so only the order shows it.

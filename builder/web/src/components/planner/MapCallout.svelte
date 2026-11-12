@@ -12,7 +12,7 @@
     import PlaceContent from './PlaceContent.svelte';
     import { kindLabel } from '../../lib/planner/search/presentation';
     import { websiteLink, phoneNumbers, phoneLink } from '../../lib/planner/contact-links';
-    import Segmented from './Segmented.svelte';
+    import Segmented from '../../lib/ui/Segmented.svelte';
     import { placeCategories } from '../../lib/planner/poi-kinds';
     import { canMoveLoopStart, hasEndpoints as endpointsChosen, maxRidingDays, planView, provisionalDays, type Day, type LegMode, type Place, type RoutePoint, type Trip } from '../../lib/planner/editor';
     import { nearestProgress, type Coordinate } from '../../lib/planner/geo';
