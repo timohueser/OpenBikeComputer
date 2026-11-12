@@ -1,0 +1,44 @@
+[
+ {
+  "name": "r15-engelberg-a-h0-p20",
+  "view": "?lat=46.792691&lon=8.388194&heading=0.0&pitch=-20.0&alt=3853&date=2026-08-15&time=15:00&weather=sunny&scale=0.75",
+  "width": 1920,
+  "height": 1080,
+  "route": "r15-engelberg.json"
+ },
+ {
+  "name": "r15-engelberg-b-h90-p35",
+  "view": "?lat=46.871474&lon=8.313878&heading=90.0&pitch=-35.0&alt=4620&date=2026-08-15&time=15:00&weather=sunny&scale=0.75",
+  "width": 1920,
+  "height": 1080,
+  "route": "r15-engelberg.json"
+ },
+ {
+  "name": "r80-luzern-interlaken-a-h0-p20",
+  "view": "?lat=46.545946&lon=8.096714&heading=0.0&pitch=-20.0&alt=13604&date=2026-08-15&time=15:00&weather=sunny&scale=0.75",
+  "width": 1920,
+  "height": 1080,
+  "route": "r80-luzern-interlaken.json"
+ },
+ {
+  "name": "r80-luzern-interlaken-b-h300-p25",
+  "view": "?lat=46.741296&lon=8.418368&heading=300.0&pitch=-25.0&alt=13726&date=2026-08-15&time=15:00&weather=sunny&scale=0.75",
+  "width": 1920,
+  "height": 1080,
+  "route": "r80-luzern-interlaken.json"
+ },
+ {
+  "name": "rlong-thun-andermatt-a-h270-p20",
+  "view": "?lat=46.908017&lon=9.028810&heading=270.0&pitch=-20.0&alt=23876&date=2026-08-15&time=15:00&weather=sunny&scale=0.75",
+  "width": 1920,
+  "height": 1080,
+  "route": "rlong-thun-andermatt.json"
+ },
+ {
+  "name": "rlong-thun-andermatt-b-h270-p20",
+  "view": "?lat=46.908017&lon=9.028810&heading=270.0&pitch=-20.0&alt=23876&date=2026-08-15&time=15:00&weather=sunny&scale=0.75",
+  "width": 1920,
+  "height": 1080,
+  "route": "rlong-thun-andermatt.json"
+ }
+]
