@@ -121,9 +121,9 @@ to the device.
 A trip can have a start date. Dates follow the rides: when the rider rides Day 2 on Wednesday and
 not on Tuesday, Day 3 shows Thursday.
 
-The trip has one of four bike types, and each day route carries it. The phone and the device show
-the same estimate, from one table for each bike type. The web planner shows the router's time at
-the pace of the plan, which can differ.
+Each day route carries the trip's bike type. The phone and the device show the same estimate, from
+one table for each bike type. The web planner times each bike type at its own flat speed and the
+plan's pace, so its time can differ.
 
 ## Riding a trip on the device
 
