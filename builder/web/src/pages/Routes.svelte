@@ -20,7 +20,7 @@
 
     /** A page that sends the rider here can give the search to start with. */
     const start = history.state?.search as { chips?: ChipValues; text?: string } | undefined;
-    const READ_AFTER_MS = 200;
+    const READ_AFTER_MS = 200, KEEP_AFTER_MS = 300;
     const BADGES: Record<DeviceState, string> = { waiting: 'Waits', sent: 'On the device', changed: 'Changed' };
 
     let records = $state.raw<RouteRecord[]>(), waiting = $state.raw<LibraryState['waiting']>(), sent = $state.raw<LibraryState['sent']>();
@@ -44,9 +44,12 @@
         if (listed && !untrack(() => onlyView)) untrack(() => fit++);
     });
 
-    // Back from another page brings the search again.
+    // Back from another page brings the search again. WebKit refuses many history writes in a short time, so the page
+    // writes once after the last key.
     $effect(() => {
-        history.replaceState({ ...history.state, search: $state.snapshot({ chips, text }) }, '');
+        const search = $state.snapshot({ chips, text });
+        const timer = setTimeout(() => history.replaceState({ ...history.state, search }, ''), KEEP_AFTER_MS);
+        return () => clearTimeout(timer);
     });
 
     async function load() {
@@ -69,7 +72,7 @@
             clearTimeout(timer);
             timer = setTimeout(load, READ_AFTER_MS);
         });
-        return () => { stop(); clearTimeout(timer); };
+        return () => { stop(); clearTimeout(timer); reading?.abort(); };
     });
 
     const observer = new IntersectionObserver(entries => {
@@ -87,12 +90,17 @@
     }
 
     /** Enter turns a place that the text names into a chip. */
+    let reading: AbortController | undefined;
+    /** Only the answer for the text that is still in the field changes the search; a failure keeps the text. */
     async function understand() {
+        reading?.abort();
+        const current = reading = new AbortController(), sent = text;
+        failure = '';
         try {
-            const read = await readSearch(text, view ?? [-180, -85, 180, 85], AbortSignal.timeout(10_000));
-            [chips, text] = [{ ...chips, ...read.chips }, read.rest];
+            const read = await readSearch(sent, view ?? [-180, -85, 180, 85], AbortSignal.any([current.signal, AbortSignal.timeout(10_000)]));
+            if (!current.signal.aborted && text === sent) [chips, text] = [{ ...chips, ...read.chips }, read.rest];
         } catch (reason) {
-            failure = reason instanceof Error ? reason.message : String(reason);
+            if (!current.signal.aborted) failure = reason instanceof Error ? reason.message : String(reason);
         }
     }
 
