@@ -50,12 +50,13 @@ A release of `obc data` uses the layout of [Canonical grid storage](#canonical-g
 `maps/` contains `basemap.pmtiles`, `places.pmtiles`, `overlays.pmtiles`, `terrain.pmtiles`, map
 assets, and their manifest. When the region recipe names a snow source, it also contains
 `snow.pmtiles`, `snow-levels.pmtiles` and `snow-seasons.pmtiles` from the [snow tile
-contract](planner-snow-tiles.md). When the recipe has a `climate`
-field, it also contains `climate.pmtiles` from the [climate tile
-contract](planner-climate-tiles.md). The files of the release are exactly the files of the map
-manifest and the manifest itself. `routing/` contains the three files in the [route package
-contract](route-package.md), plus `overlays.sqlite`. The overlay index stores the routing manifest
-identity and has the same OSM source. `search/` contains `pois/REGION.sqlite`,
+contract](planner-snow-tiles.md). When the recipe has a `climate` field, it also contains
+`climate.pmtiles` from the [climate tile contract](planner-climate-tiles.md). The files of the
+release are exactly the files of the map manifest and the manifest itself. `routing/` contains the
+three files of format 9, plus `overlays.sqlite`. It also contains the files of format 10 of the
+[route package contract](route-package.md): `routing/package.json`, `routing/directory.bin` and
+`routing/objects/SHA256`. Each object is an `identity` file. The overlay index stores the routing
+manifest identity and has the same OSM source. `search/` contains `pois/REGION.sqlite`,
 `addresses/REGION.sqlite`, and `model/`. Local combined packages use `REGION.sqlite`. `routes/`
 contains `REGION.json` from the [route catalog contract](route-catalog.md). `device/catalog.json` is
 a snapshot. Its file references are absolute URLs to the original immutable cell objects.

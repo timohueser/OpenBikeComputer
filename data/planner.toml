@@ -27,6 +27,9 @@ profiles = [
 # The cell IDs have at most 32 bits: the bake of a region that needs more fails. The list is the same
 # for each region, so an operator then removes a level here.
 cell_sizes = [512, 4096, 32768, 262144, 2097152, 16777216, 134217728]
+# The level of the download cells of the routing package: 1 to 8. A package with fewer levels takes
+# its top level. A change bakes only the package again.
+download_level = 4
 
 [climate]
 # The first of the ten years of ERA5-Land that the climate layer reads.

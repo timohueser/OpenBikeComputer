@@ -4,10 +4,21 @@ use tower_http::cors::CorsLayer;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let usage = "Usage: planner-service PACKAGE_DIRECTORY [--verify] | planner-service --formats";
+    let usage = "Usage: planner-service PACKAGE_DIRECTORY [--verify] | planner-service INSTALL_DIRECTORY --scrub | \
+                 planner-service --formats";
     let directory = std::env::args().nth(1).ok_or(usage)?;
     if directory == "--formats" {
         println!("{}", serde_json::json!({ "planner/routing": planner_router::package::FORMAT }));
+        return Ok(());
+    }
+    if std::env::args().nth(2).as_deref() == Some("--scrub") {
+        let differ = planner_router::install::scrub(Path::new(&directory))?;
+        if !differ.is_empty() {
+            return Err(
+                format!("{} installed files differ from the directory: {}", differ.len(), differ.join(", ")).into()
+            );
+        }
+        eprintln!("Each installed file has its SHA-256");
         return Ok(());
     }
     if std::env::args().nth(2).as_deref() == Some("--verify") {

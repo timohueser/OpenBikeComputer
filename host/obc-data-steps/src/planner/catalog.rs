@@ -180,7 +180,7 @@ pub fn verify(root: &Path, previous: Option<&Release>, release: &Release, store:
         std::fs::create_dir_all(target.parent().unwrap()).map_err(|e| e.to_string())?;
         std::fs::hard_link(path, target).map_err(|e| e.to_string())?;
     }
-    if let Some(previous) = previous {
+    if let Some(previous) = &previous {
         let previous = serde_json::to_vec(&json!({"files": previous})).map_err(|e| e.to_string())?;
         std::fs::write(source.join("previous.json"), previous).map_err(|e| e.to_string())?;
     }
@@ -233,6 +233,22 @@ pub fn verify(root: &Path, previous: Option<&Release>, release: &Release, store:
         planner_router::open(&source.join("runtime/routing"))
             .and_then(|graph| graph.verify())
             .map_err(|e| e.to_string())?;
+    }
+    let cells = |name: &str| {
+        name == "routing/directory.bin" || name == "routing/package.json" || name.starts_with("routing/objects/")
+    };
+    if files.keys().any(|name| cells(name) && changed(name)) {
+        let read = |name: &str| {
+            let file = files.get(name).ok_or(format!("the planner has no {name}"))?;
+            let file: File = serde_json::from_value(file.clone()).map_err(|e| format!("{name}: {e}"))?;
+            std::fs::read(store.ensure(&file.transport.sha256)?).map_err(|e| format!("{name}: {e}"))
+        };
+        let (directory, info) = (read("routing/directory.bin")?, read("routing/package.json")?);
+        let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+        planner_router::install::check(&directory, &info, threads, |sha256| {
+            std::fs::File::open(store.ensure(sha256).map_err(std::io::Error::other)?)
+        })
+        .map_err(|e| format!("the routing cells: {e}"))?;
     }
     Ok(())
 }

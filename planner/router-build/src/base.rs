@@ -50,7 +50,7 @@ pub struct Topology {
 
 impl Topology {
     /// `roads` fits u32, and each road ends at one of `points`.
-    pub(crate) fn new(roads: &Roads, points: usize) -> Result<Self, String> {
+    pub fn new(roads: &Roads, points: usize) -> Result<Self, String> {
         let (start, departures) = group(roads.from.values(), points);
         let (start, departures) = (start.values(), departures.values());
         let mut first = Column::default();

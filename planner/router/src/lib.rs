@@ -3,12 +3,15 @@ mod alternatives;
 pub mod answer;
 pub mod base;
 pub mod blocks;
+pub mod cells;
 pub mod closures;
 pub mod cost;
 pub mod data;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod directory;
 pub mod geometry;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod install;
 pub mod landmarks;
 pub mod model;
 pub mod package;

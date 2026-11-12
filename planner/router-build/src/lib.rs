@@ -1,6 +1,7 @@
 pub mod base;
 pub mod blocks;
 pub mod catalog;
+pub mod cells;
 mod column;
 pub mod connectivity;
 pub mod cost;
@@ -532,6 +533,27 @@ impl Costs {
             layout.save(&format!("{i}.snap"), snap)?;
         }
         Ok(())
+    }
+
+    /// The cost basis of road `road` for profile `profile`; `None` where the profile excludes it.
+    pub fn basis(&self, profile: usize, road: usize) -> Option<CostBasis> {
+        let id = self.roads[profile].bases.values()[road];
+        Some(self.dictionary[id.checked_sub(1)? as usize])
+    }
+
+    /// The total cost of road `road` for profile `profile`; `u32::MAX` where it excludes the road.
+    pub fn total(&self, profile: usize, road: usize) -> u32 {
+        self.roads[profile].totals.values()[road]
+    }
+
+    /// The cost of each arc of the topology for profile `profile`; `u32::MAX` where it may not turn.
+    pub fn turns(&self, profile: usize) -> &[u32] {
+        self.roads[profile].turns.values()
+    }
+
+    /// The snap bit of road `road` for profile `profile`.
+    pub fn snappable(&self, profile: usize, road: usize) -> bool {
+        self.snap[profile].values()[road / 64] >> (road % 64) & 1 != 0
     }
 
     pub(crate) fn open(layout: &Layout) -> Result<Self, String> {

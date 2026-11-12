@@ -29,13 +29,13 @@ The store keeps only the work layer of each step and options that a run used las
 | `planner/routing-source` | Pass 1, the node join, the way facts, the turn rules | `source/` |
 | `planner/routing-roads` | The walks, the partition into cells, the order with the terrain, the turn restrictions, the topology | `roads/` |
 | `planner/routing-costs` | The way bases, the road pass, the snap bits | `costs/` |
-| `planner/routing` | The landmarks, the package, the overlay index, the route catalog, the blocks and the routes | `routing/`, `blocks/`, `routes/` |
+| `planner/routing` | The landmarks, the package of format 9 and of format 10, the overlay index, the route catalog, the blocks and the routes | `routing/`, `cells/`, `blocks/`, `routes/` |
 
 | Change | Steps that run |
 | --- | --- |
 | A stop or a crash in a step | That step and the steps after it |
 | The profile list, or the revision of `planner/routing-costs` | Costs, package |
-| `region`, `countries`, `attribution` | Package |
+| `region`, `countries`, `attribution`, `download_level` | Package |
 | The GLO-30 tiles or the reference, `cell_sizes`, or the revision of `planner/routing-roads` | Roads, costs, package |
 | The OSM cut, the bounds, the router `FORMAT`, or the revision of `planner/routing-source` | All four |
 
@@ -52,6 +52,13 @@ The columns take, without the tags and the closure sets:
 ```sh
 obc test -p planner-router-build
 cargo clippy -p planner-router-build --all-targets --all-features -- -D warnings
+```
+
+```sh
+# Format 10 on the roads/ and costs/ folders of a bake: the bytes of each part and column, the
+# objects, the long roads and the boxes; then the install of all cells and the check of each object.
+cargo run --release -p planner-router-build --example cells -- write ROADS COSTS OUT [ZSTD_LEVEL]
+cargo run --release -p planner-router-build --example cells -- install OUT TARGET [THREADS]
 ```
 
 The builder also writes `overlays.sqlite` into the package directory: the route

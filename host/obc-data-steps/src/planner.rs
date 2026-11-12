@@ -53,7 +53,7 @@ pub static PLANNER_ROUTING_ROADS: Layer = work(step::ROADS);
 pub static PLANNER_ROUTING_COSTS: Layer = work(step::COSTS);
 /// The routing package, its grid and the route network overlays.
 pub static PLANNER_ROUTING: Layer = Layer {
-    revision: 3,
+    revision: 4,
     ..whole("planner/routing", planner_router::package::FORMAT, &[&ROUTER_SERVICE, &IOS_OFFLINE_ROUTER])
 };
 /// The search databases and the query model. Its format is the search schema of
@@ -157,6 +157,7 @@ struct Osm {
 struct Routing {
     profiles: Vec<String>,
     cell_sizes: Vec<u32>,
+    download_level: u8,
 }
 
 pub(crate) mod catalog;
@@ -468,8 +469,10 @@ impl Planner {
                 "bounds": bounds,
                 "countries": countries,
                 "attribution": attribution("osm-planet"),
+                "cell_sizes": config.routing.cell_sizes,
+                "download_level": config.routing.download_level,
             }),
-            outputs: vec!["routing".into(), "blocks".into(), "routes".into()],
+            outputs: vec!["routing".into(), "blocks".into(), "routes".into(), "cells".into()],
             run: Run::Rust(&functions::ROUTING),
             client: Client::All,
         };
@@ -678,6 +681,15 @@ impl Planner {
             });
         }
         steps.push(Step {
+            layer: &PLANNER_ROUTING,
+            name: "planner/routing/cells/grid".into(),
+            inputs: vec![Input::step("planner/routing")],
+            options: json!({}),
+            outputs: vec!["objects".into(), "index.json".into()],
+            run: Run::Rust(&functions::ROUTING_CELLS),
+            client: Client::Paths(vec!["objects".into(), "index.json".into()]),
+        });
+        steps.push(Step {
             client: Client::Paths(vec!["objects".into(), "index.json".into()]),
             ..python(
                 &PLANNER_INDEX,
@@ -757,7 +769,7 @@ impl Planner {
 /// steps are listed only while they are on.
 const PARTS: [(&str, &[&str]); 3] = [
     ("map", &["planner/basemap/grid", "planner/places/grid", "planner/assets/grid", "planner/terrain/grid"]),
-    ("routing", &["planner/routing/grid", "planner/overlays/grid"]),
+    ("routing", &["planner/routing/grid", "planner/routing/cells/grid", "planner/overlays/grid"]),
     ("search", &["planner/model/grid", "planner/search/pois/grid", "planner/search/addresses/grid"]),
 ];
 
@@ -1634,7 +1646,10 @@ mod tests {
         assert_eq!(options(step::SOURCE), ["bounds"]);
         assert_eq!(options(step::ROADS), ["bounds", "cell_sizes", "terrain_attribution"]);
         assert_eq!(options(step::COSTS), ["bounds", "profiles"]);
-        assert_eq!(options("planner/routing"), ["attribution", "bounds", "countries", "region"]);
+        assert_eq!(
+            options("planner/routing"),
+            ["attribution", "bounds", "cell_sizes", "countries", "download_level", "region"]
+        );
         assert_eq!(reads(step::SOURCE), ["planner/osm/bounds"]);
         assert_eq!(reads(step::ROADS), [step::SOURCE]);
         assert_eq!(reads(step::COSTS), [step::SOURCE, step::ROADS]);
@@ -1742,6 +1757,7 @@ mod tests {
             "model/grid",
             "search/pois/grid",
             "search/addresses/grid",
+            "routing/cells/grid",
             "fonts/grid",
             "offline/grid",
             "index",
