@@ -10,8 +10,8 @@ folder: `obc data update prod` publishes it.
 `obc data deploy`, and Services on the prod screen of `obc data ui`, check the one-time setup over
 SSH and print each missing step with its command: the user `obc-data`, `/opt/obc-data`, Rust,
 uv and the uv Python of [`.python-version`](../../.python-version) of that user, `build-essential`,
-Node of [`data/planner-runtime.toml`](../../data/planner-runtime.toml), the unit, and after the first
-deploy the Caddy route. The site block imports `/etc/caddy/planner/*.caddy`.
+Node of [`data/planner-runtime.toml`](../../data/planner-runtime.toml), the unit, the limit of
+memory maps, and after the first deploy the Caddy route. The site block imports `/etc/caddy/planner/*.caddy`.
 
 The machine of the page logs in as root with an SSH key, without a prompt. The screen shows the
 line of its public key to add on the VPS, and the fingerprint of the host key to compare with the
@@ -37,7 +37,14 @@ tools/vps/deploy-services.sh HOST [COMMIT]     # COMMIT defaults to HEAD
 
 - Each commit builds from nothing in `/opt/obc-data/<commit>`. The first build also installs the
   toolchain of `rust-toolchain.toml`.
-- The deploy installs the unit of its commit, then restarts the follower.
+- The deploy installs the unit of its commit and `obc-data.sysctl` as
+  `/etc/sysctl.d/90-obc-data.conf`, and applies the limit when the kernel has a lower one. Then it
+  switches to the new build and restarts the follower. A failed step before the switch leaves the
+  build that runs.
+- The routing service maps each file of its routing cells. When `vm.max_map_count` is lower than
+  the files of an install need, the routing service does not start, and `journalctl -u
+  obc-data-serve` shows its message. Install the sysctl file and run `sysctl --system`: the
+  follower starts the service again at its next retry, with no download.
 - `/opt/obc-data/previous` keeps the build before. To go back, deploy that commit again.
 - A planner release in a format that the services do not read does not start. Deploy services
   that read it before `obc data update prod` publishes it: the update waits up to 24 h for the
@@ -65,4 +72,5 @@ tools/vps/deploy-services.sh HOST [COMMIT]     # COMMIT defaults to HEAD
 | --- | --- |
 | `deploy-services.sh` | Builds a commit on the VPS and restarts the follower; `obc data deploy services` runs it |
 | `obc-data-serve.service` | The unit of the follower |
+| `obc-data.sysctl` | `vm.max_map_count` for the memory maps of the routing service |
 | `obc-data-serve.caddy` | The Caddy route of `/planner-api/*` |

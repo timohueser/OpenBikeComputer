@@ -211,6 +211,7 @@ echo "node=$(node -p 'process.versions.node.split(".").slice(0, 2).join(".")' 2>
 command -v npm >/dev/null && echo npm
 systemctl is-enabled obc-data-serve >/dev/null 2>&1 && echo unit
 [ -f /etc/caddy/planner/obc-data-serve.caddy ] && echo caddy
+[ "$(sysctl -n vm.max_map_count 2>/dev/null || echo 0)" -ge 1048576 ] && echo maps
 true"#;
 
 /// The options of every SSH check: no prompt, no host key that this machine does not know, and an
@@ -245,11 +246,17 @@ pub fn services(home: Option<&Path>, (python, node): (&str, &str)) -> Vec<Check>
         Ok(output) => return vec![credential, refused(login, &host, &String::from_utf8_lossy(&output.stderr), home)],
         Err(e) => return vec![credential, Check::failed(login, e, "Check the host and the network.", Vec::new())],
     };
-    let said = String::from_utf8_lossy(&output.stdout);
+    let mut checks = vec![credential, Check::passed(login)];
+    checks.extend(setup(&String::from_utf8_lossy(&output.stdout), &host, (python, node)));
+    checks
+}
+
+/// The checks of the one-time setup of the VPS `host` from `said`, the lines of [`PROBE`].
+fn setup(said: &str, host: &str, (python, node): (&str, &str)) -> Vec<Check> {
     let has: BTreeSet<&str> = said.lines().map(str::trim).collect();
     let ssh = |command: &str| format!("ssh {host} '{command}'");
     let as_user = |command: &str| format!("ssh {host} \"runuser -u obc-data -- sh -c '{command}'\"");
-    let mut checks = vec![credential, Check::passed(login)];
+    let mut checks = Vec::new();
     let mut need = |name: &str, line: &str, fix: &str, commands: Vec<String>| {
         checks.push(match has.contains(line) {
             true => Check::passed(name),
@@ -276,6 +283,10 @@ pub fn services(home: Option<&Path>, (python, node): (&str, &str)) -> Vec<Check>
         ssh("systemctl daemon-reload && systemctl enable obc-data-serve"),
     ];
     need("unit obc-data-serve", "unit", here, unit);
+    // The routing service maps each file of its routing cells, and refuses to start above the limit.
+    let maps =
+        vec![format!("scp tools/vps/obc-data.sysctl {host}:/etc/sysctl.d/90-obc-data.conf"), ssh("sysctl --system")];
+    need("vm.max_map_count", "maps", here, maps);
     let caddy = vec![
         format!("scp tools/vps/obc-data-serve.caddy {host}:/etc/caddy/planner/"),
         ssh("caddy validate --config /etc/caddy/Caddyfile && systemctl reload caddy"),
@@ -465,6 +476,21 @@ fn public_key(home: Option<&Path>) -> Option<(PathBuf, String)> {
 mod tests {
     use super::*;
     use crate::store::tests::Scratch;
+
+    #[test]
+    fn a_vps_without_the_map_limit_gets_its_fix() {
+        let maps = |said: &str| {
+            setup(said, "root@vps.test", ("3.14", "22.12")).into_iter().find(|c| c.name == "vm.max_map_count")
+        };
+        let check = maps("user\nopt\nunit\n").unwrap();
+        assert_eq!(check.problem.as_deref(), Some("the VPS lacks it"));
+        let fix = [
+            "scp tools/vps/obc-data.sysctl root@vps.test:/etc/sysctl.d/90-obc-data.conf",
+            "ssh root@vps.test 'sysctl --system'",
+        ];
+        assert_eq!(check.commands, fix);
+        assert!(maps("user\nmaps\n").unwrap().ok());
+    }
 
     #[test]
     fn a_refused_login_shows_the_key_to_add_or_how_to_make_one() {
