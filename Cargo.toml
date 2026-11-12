@@ -25,6 +25,7 @@ members = [
     "planner/router",
     "planner/router-build",
     "host/obc-file-source",
+    "host/obc-fit",
     "host/obc-inspect",
     "host/obc-fixtures",
     "host/obc-pack",
@@ -94,6 +95,7 @@ obc-app = { path = "firmware/obc-app" }
 obc-dem = { path = "host/obc-dem", default-features = false }
 obc-dfu = { path = "firmware/obc-dfu" }
 obc-file-source = { path = "host/obc-file-source" }
+obc-fit = { path = "host/obc-fit" }
 obc-host-core = { path = "sim/host-core" }
 obc-places = { path = "host/obc-places" }
 obc-platform = { path = "firmware/obc-platform" }
