@@ -203,7 +203,7 @@ the device that you use. It is not transmitted to the controller.
 | Your choice to reuse map cells | So that the setting you chose is kept at a later visit. Kept until the next change or until you delete the website data. |
 | Answered firmware notices, with device serial number and offered version | Only after you close or open a notice, so that the same question does not appear again for the same device. At most the 32 most recent answers. Kept until you delete the website data. |
 | Library of the route planner (IndexedDB `obc-library`): routes and their versions, rides with their files, and cover images | Saved when you save a route or add a ride, so that your library stays in this browser. Kept until you delete it, use "Delete all" on the Settings page, or delete the website data. It leaves the browser only in a backup file that you save, and as a search request under section 7.1. |
-| Settings of the route planner (`obc-settings`): units, pace, maximum heart rate and threshold power | So that the settings you chose are kept at a later visit. Kept until the next change or until you delete the website data. The values go into a backup file that you save. |
+| Settings of the route planner (`obc-settings`): units, maximum heart rate and threshold power | So that the settings you chose are kept at a later visit. Kept until the next change or until you delete the website data. The values go into a backup file that you save. |
 | Chosen bike profile for routes (`obcm.routeBikeType`) | So that the setting you chose is kept at a later visit. Kept until the next change or until you delete the website data. |
 
 Saving and reading the working data for a short time, saving the library of the route
