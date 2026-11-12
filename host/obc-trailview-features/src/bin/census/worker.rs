@@ -44,6 +44,8 @@ pub enum Fail {
 pub struct Options {
     pub place: Place,
     pub grid_m: f64,
+    /// Only the graph's counters and levels per cell: no mesh and no checks.
+    pub levels: bool,
     pub fail: Vec<(CellKey, Fail)>,
 }
 
@@ -55,6 +57,8 @@ struct Built {
     heap: usize,
     probe: Probe,
     mesh: Option<CellMesh>,
+    /// The cell's levels (`graph::levels`), for the census of the crossings.
+    levels: Value,
 }
 
 impl Built {
@@ -156,7 +160,19 @@ impl Worker<'_> {
                 let input = request.input(&mut self.cache)?;
                 let rim = Rim::of(&build.faces);
                 let names = feature_names(&input);
-                Slot::Built(Box::new(Built { build, terrain: input.terrain, names, rim, heap, probe, mesh: None }))
+                let mut graph = build.graph.clone();
+                obc_ground_plan::graph::levels(&mut graph, &input, &self.rules.sections, &self.rules.structures);
+                let levels = crate::fixture::levels_detail(&graph, &input.terrain);
+                Slot::Built(Box::new(Built {
+                    build,
+                    terrain: input.terrain,
+                    names,
+                    rim,
+                    heap,
+                    probe,
+                    mesh: None,
+                    levels,
+                }))
             }
         };
         self.cells.insert(key, slot);
@@ -187,6 +203,12 @@ impl Worker<'_> {
             }
         };
         let build = &b.build;
+        line["levels"] = b.levels.clone();
+        if self.options.levels {
+            line["state"] = json!("ok");
+            line["graph"] = counters(&build.graph.stats.counters());
+            return line;
+        }
         begin(key, "mesh", self.options);
         let rims: Vec<Rim> = around(key).filter_map(|k| self.built(k).map(|n| n.rim.clone())).collect();
         let reads = Reads::of(&build.faces, &rims);

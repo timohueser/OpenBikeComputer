@@ -329,7 +329,7 @@ pub fn bake(
             let on_deck: HashSet<[u64; 2]> =
                 decks.iter().flat_map(|&n| ways[n].2.iter().flat_map(|p| p.points.iter().map(|&q| key(q)))).collect();
             for (n, (e, tags, parts)) in ways.iter().enumerate() {
-                let (mut entry, mut tags, mut parts) = (&kinds[*e], tags.clone(), parts.clone());
+                let (mut entry, mut parts) = (&kinds[*e], parts.clone());
                 if entry.kind == "gallery" && parts[0].z.is_some() {
                     let side = structures::uphill(&parts[0].points, terrain);
                     extra.insert(n, Tags::from([("uphill".to_string(), side.to_string())]));
@@ -347,10 +347,10 @@ pub fn bake(
                 if tunnel
                     && !underpasses.contains(&n)
                     && heights().next().is_some()
-                    && heights().all(|(p, z)| structures::shallow(&tags, &p.points, z, terrain))
+                    && heights().all(|(p, z)| structures::shallow(tags, &p.points, z, terrain))
                 {
-                    // A tunnel under what the terrain leaves out, such as a building, is a way on the ground.
-                    tags.remove("tunnel");
+                    // A tunnel under what the terrain leaves out, such as a building, is a way on the ground. It
+                    // keeps its tunnel tag: the kind decides how it draws, the tag where the drawing may hide it.
                     let mut ground = tags.clone();
                     ground.insert("tunnel".into(), "no".into());
                     entry = kind_of(kinds, Geometry::Line, &ground).map_or(entry, |i| &kinds[i]);
@@ -361,7 +361,7 @@ pub fn bake(
                 }
                 let mut all = tags.clone();
                 all.extend(extra.get(&n).cloned().unwrap_or_default());
-                if is_track(&tags) {
+                if is_track(tags) {
                     let curves = parts.iter().filter(|p| p.z.is_some()).map(roads::polyline);
                     tracks.extend(curves.map(|p| (entry.kind.clone(), tags.clone(), p)));
                 }

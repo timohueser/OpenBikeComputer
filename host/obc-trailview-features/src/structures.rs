@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 use obc_ground_plan::sections::is_track;
 
+use crate::gate::GATE_M;
 use crate::geometry::{arange, bounds, contains, interp, key, Boxes};
 use crate::{metres, Tags, Terrain};
 
@@ -42,7 +43,8 @@ pub(crate) const BORE_RAIL_M: f64 = 6.5;
 const BORE_STEP_M: f64 = 2.0;
 /// Farther than PORTAL_M from its ends, a tunnel that rises FLOAT_M over the terrain lies where the
 /// solver could not put it under the hill: a network of shafts and caverns, or a bore that the
-/// terrain misses.
+/// terrain misses. A tunnel shorter than twice PORTAL_M has no such sample: it floats where it rises
+/// more than the census gate's GATE_M over the terrain anywhere.
 const FLOAT_M: f64 = 5.0;
 const PORTAL_M: f64 = 20.0;
 
@@ -364,17 +366,29 @@ pub fn shallow(tags: &Tags, points: &[[f64; 2]], z: &[f64], terrain: &dyn Terrai
     })
 }
 
-/// Whether a tunnel rises more than FLOAT_M over the terrain farther than PORTAL_M from its ends.
+/// Whether a tunnel rises more than FLOAT_M over the terrain farther than PORTAL_M from its ends, or,
+/// with no sample that far from its ends, more than GATE_M anywhere.
 pub fn floating(points: &[[f64; 2]], z: &[f64], terrain: &dyn Terrain) -> bool {
     cover(points, z, terrain).is_some_and(|(depth, end)| {
-        let inner = depth.iter().zip(&end).filter(|(d, &e)| e > PORTAL_M && !d.is_nan());
-        inner.fold(f64::INFINITY, |m, (&d, _)| m.min(d)) < -FLOAT_M
+        let short = end.iter().all(|&e| e <= PORTAL_M);
+        depth.iter().zip(&end).any(|(&d, &e)| if short { d < -GATE_M } else { e > PORTAL_M && d < -FLOAT_M })
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_class_row_has_the_bore_of_the_bake() {
+        let rows: serde_json::Value = serde_json::from_str(include_str!("../../../data/trailview/roads.json")).unwrap();
+        let sections = obc_ground_plan::sections::Sections::embedded();
+        for (class, row) in rows.as_object().unwrap() {
+            let key = if row["group"] == "rail" { "railway" } else { "highway" };
+            let tags = Tags::from([(key.to_string(), class.clone()), ("tunnel".to_string(), "yes".to_string())]);
+            assert_eq!(sections.way("tunnel", &tags, false).bore_m, bore(&tags), "{class}");
+        }
+    }
 
     /// Metres east and north of a point at about 46.7° N, in world units.
     const Y: f64 = 0.3218;
@@ -393,12 +407,22 @@ mod tests {
     }
 
     #[test]
-    fn a_tunnel_under_a_mountain_does_not_float_and_over_a_valley_it_does() {
+    fn a_tunnel_under_a_mountain_does_not_float_and_over_a_valley_or_up_a_cliff_it_does() {
         let mountain = |x: f64, _: f64| if (x - 0.53).abs() < 2995.0 / metres(Y) { 2500.0 } else { 1000.0 };
         let points = [at(-3000.0, 0.0), at(-1000.0, 0.0), at(0.0, 0.0), at(3000.0, 0.0)];
         let z = [1000.0; 4];
         assert!(!floating(&points, &z, &mountain));
         assert!(floating(&points, &z, &flat));
+        // A short tunnel has no sample farther than PORTAL_M from its ends.
+        let short = [at(0.0, 0.0), at(20.0, 0.0)];
+        assert!(!floating(&short, &[500.0, 500.0], &|_, _| 510.0));
+        assert!(floating(&short, &[500.0, 600.0], &flat));
+        // Near the portal of a long tunnel the terrain can miss a cliff: a bore over it there stays.
+        let long = [at(0.0, 0.0), at(100.0, 0.0)];
+        let hill = |x: f64, _: f64| if east([x, Y]) > 4.0 { 600.0 } else { 500.0 };
+        for portal in [507.0, 520.0] {
+            assert!(!floating(&long, &[portal, portal], &hill));
+        }
     }
 
     #[test]

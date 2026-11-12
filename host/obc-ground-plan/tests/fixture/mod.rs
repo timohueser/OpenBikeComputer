@@ -124,3 +124,190 @@ impl Fixture {
         (a.y + 1..b.y).flat_map(|y| (a.x + 1..b.x).map(move |x| CellKey { x, y })).collect()
     }
 }
+
+/// Longitude and latitude of a global point, for tables only: no byte of a plan depends on it.
+#[allow(clippy::disallowed_methods)]
+pub fn lon_lat(x: f64, y: f64) -> [f64; 2] {
+    let square = (1u64 << obc_ground_plan::frame::FRAME_BITS) as f64;
+    let lat = (core::f64::consts::PI * (1.0 - 2.0 * y / square)).sinh().atan();
+    [x / square * 360.0 - 180.0, lat.to_degrees()]
+}
+
+/// The levels that a cell owns, for the census tables: each crossing with a ladder, each run of a
+/// way with a state (from its middle sample's cell), each end line; places in degrees, classes as
+/// rows of `roads.json`; and the counts.
+pub fn levels_detail(g: &obc_ground_plan::graph::WayGraph, terrain: &Terrain) -> serde_json::Value {
+    use serde_json::json;
+    let o = g.cell.origin();
+    let at = |p: [i32; 2]| [o.x as f64 + f64::from(p[0]), o.y as f64 + f64::from(p[1])];
+    let owned = |p: [f64; 2]| g.cell.contains(obc_ground_plan::frame::GlobalPoint { x: p[0] as i64, y: p[1] as i64 });
+    let way = |w: u32| {
+        let way = &g.ways[w as usize];
+        json!([format!("{:?}", way.family), way.class, format!("{:?}", way.level), w])
+    };
+    let z = |st: &obc_ground_plan::graph::Station| {
+        obc_ground_plan::graph::point(&g.parts[st.part as usize], st.span as usize, st.u).z_m
+    };
+    let crossings: Vec<_> = (g.crossings.iter())
+        .filter(|c| c.owned)
+        .filter_map(|c| {
+            let l = c.ladder.as_ref()?;
+            let p = at(c.pos);
+            Some(json!({"at": lon_lat(p[0], p[1]), "kind": format!("{:?}", c.kind), "upper": way(l.upper),
+                "lower": way(l.lower), "room_m": (l.room_m * 100.0).round() / 100.0,
+                "centre_dz_m": ((z(&c.over) - z(&c.under)) * 100.0).round() / 100.0, "full_m": l.full_m,
+                "least_m": l.least_m, "step": format!("{:?}", l.step), "ends": l.ends.map(way)}))
+        })
+        .collect();
+    let mut runs = Vec::new();
+    for r in &g.levels.runs {
+        let w = &g.ways[r.way as usize];
+        let inside: Vec<[f64; 2]> = (g.samples[w.samples.start as usize..w.samples.end as usize].iter())
+            .filter(|s| (s.span, s.u) >= (r.from.span, r.from.u) && (s.span, s.u) <= (r.to.span, r.to.u))
+            .map(|s| at(s.pos))
+            .collect();
+        let Some(mid) = inside.get(inside.len() / 2) else { continue };
+        if owned(*mid) {
+            let ends = [inside[0], inside[inside.len() - 1]].map(|p| lon_lat(p[0], p[1]));
+            runs.push(json!({"way": way(r.way), "state": format!("{:?}", r.state), "samples": inside.len(), "from": ends[0], "to": ends[1]}));
+        }
+    }
+    let lines: Vec<_> = (g.levels.end_lines.iter())
+        .filter_map(|l| {
+            let (a, b) = (at(l.ends[0]), at(l.ends[1]));
+            let c = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
+            owned(c).then(|| json!({"at": lon_lat(c[0], c[1]), "kind": format!("{:?}", l.kind), "way": l.way}))
+        })
+        .collect();
+    json!({"crossings": crossings, "runs": runs, "end_lines": lines, "counts": levels_counts(g, terrain)})
+}
+
+/// The census counts of the levels of the elements that a cell owns, so that a sum over cells counts
+/// each once. Classes are rows of `roads.json` by number.
+#[allow(clippy::disallowed_methods)]
+pub fn levels_counts(g: &obc_ground_plan::graph::WayGraph, terrain: &Terrain) -> BTreeMap<String, u32> {
+    use obc_ground_plan::frame::{metres_per_unit, GlobalPoint};
+    use obc_ground_plan::graph::{CrossingKind, Family, Level, State};
+    let o = g.cell.origin();
+    let at = |p: [i32; 2]| [o.x + i64::from(p[0]), o.y + i64::from(p[1])];
+    let owned = |p: [i64; 2]| g.cell.contains(GlobalPoint { x: p[0], y: p[1] });
+    let mut c = BTreeMap::new();
+    let mut add = |name: String, n: u32| *c.entry(name).or_insert(0) += n;
+    let tunnel = |w: u32| g.ways[w as usize].level == Level::Tunnel && g.ways[w as usize].family != Family::Water;
+    let family = |w: u32| format!("{:?}", g.ways[w as usize].family).to_lowercase();
+    let class = |w: u32| match g.ways[w as usize].family {
+        Family::Water => "water".to_string(),
+        _ => g.ways[w as usize].class.to_string(),
+    };
+    for x in g.crossings.iter().filter(|x| x.owned) {
+        let Some(l) = &x.ladder else {
+            if x.kind == CrossingKind::Bore {
+                add("bore under water (free ground)".into(), 1);
+            }
+            continue;
+        };
+        let kind = if x.kind == CrossingKind::LevelCrossing {
+            "level_crossing".to_string()
+        } else if tunnel(l.lower) {
+            format!("bore_{}_under_{}", family(l.lower), family(l.upper))
+        } else {
+            format!("deck_over_{}", family(l.lower))
+        };
+        add(format!("ladder {kind} {:?}", l.step), 1);
+        add(format!("ladder all {:?}", l.step), 1);
+        if let Some(e) = l.ends {
+            let stay = if e == l.upper { l.lower } else { l.upper };
+            add(format!("closed {} over {} ends {}", class(l.upper), class(l.lower), class(e)), 1);
+            if tunnel(e) && g.ways[e as usize].family == Family::Rail {
+                add(format!("rail tunnel closed: (a) hidden, (b) open and class {} ends", class(stay)), 1);
+            }
+        }
+    }
+    let mut decimetres = BTreeMap::<String, f64>::new();
+    let samples_of = |w: u32| {
+        let way = &g.ways[w as usize];
+        &g.samples[way.samples.start as usize..way.samples.end as usize]
+    };
+    for r in &g.levels.runs {
+        let way = &g.ways[r.way as usize];
+        let inside = |s: &obc_ground_plan::graph::Sample| {
+            (s.span, s.u) >= (r.from.span, r.from.u) && (s.span, s.u) <= (r.to.span, r.to.u)
+        };
+        let tagged =
+            if tunnel(r.way) || g.parts[way.part as usize].level == Level::Deck { "tagged" } else { "untagged" };
+        let kept: Vec<_> = samples_of(r.way).iter().filter(|s| inside(s)).collect();
+        if let Some(mid) = kept.get(kept.len() / 2) {
+            if owned(at(mid.pos)) && r.state == State::Hidden && tunnel(r.way) {
+                add("tunnel hidden runs".into(), 1);
+                add("tunnel hidden runs of one sample".into(), u32::from(kept.len() == 1));
+            }
+        }
+        for pair in kept.windows(2) {
+            let (a, b) = (at(pair[0].pos), at(pair[1].pos));
+            let mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+            if !owned(mid) {
+                continue;
+            }
+            let d = (((b[0] - a[0]) as f64).powi(2) + ((b[1] - a[1]) as f64).powi(2)).sqrt() * metres_per_unit(mid[1]);
+            *decimetres.entry(format!("decimetres {tagged} {:?}", r.state)).or_default() += d * 10.0;
+            if r.state == State::Hidden && tunnel(r.way) && way.family == Family::Rail {
+                *decimetres.entry("decimetres rail tunnel hidden".into()).or_default() += d * 10.0;
+            }
+        }
+    }
+    for (k, v) in decimetres {
+        add(k, v.round() as u32);
+    }
+    for l in &g.levels.end_lines {
+        let p = at([(l.ends[0][0] + l.ends[1][0]) / 2, (l.ends[0][1] + l.ends[1][1]) / 2]);
+        if owned(p) {
+            add(format!("end lines {:?}", l.kind), 1);
+        }
+    }
+    // T15: a DECK run at a way end that goes on as a tunnel way whose first samples lie over the
+    // terrain, and the metres along it until the terrain rises over its floor.
+    let arms = || (g.junctions.iter().map(|j| j.arms.as_slice())).chain(g.joints.iter().map(|j| j.arms.as_slice()));
+    for set in arms() {
+        for d in set.iter().filter(|a| g.levels.runs.iter().any(|r| r.way == a.way && r.state == State::Deck)) {
+            let near = (g.levels.runs.iter().filter(|r| r.way == d.way && r.state != State::Open)).min_by(|x, y| {
+                let k = |r: &&obc_ground_plan::graph::Run| if d.dir > 0 { r.from } else { r.to };
+                let dist = |r: &&obc_ground_plan::graph::Run| {
+                    ((k(r).span as f64 + k(r).u) - (d.at.span as f64 + d.at.u)).abs()
+                };
+                dist(x).total_cmp(&dist(y))
+            });
+            if near.is_none_or(|r| r.state != State::Deck) {
+                continue;
+            }
+            for t in set.iter().filter(|a| tunnel(a.way)) {
+                let ss = samples_of(t.way);
+                let seq: Vec<_> = if t.dir > 0 { ss.iter().collect() } else { ss.iter().rev().collect() };
+                let under = |s: &&obc_ground_plan::graph::Sample| {
+                    terrain.height(GlobalPoint { x: at(s.pos)[0], y: at(s.pos)[1] }).is_some_and(|h| s.z_m <= h)
+                };
+                if seq.first().is_none_or(under) || !owned(at(seq[0].pos)) {
+                    continue;
+                }
+                let first = seq.iter().position(under);
+                let m = first.map(|k| {
+                    (1..=k)
+                        .map(|i| {
+                            let (a, b) = (at(seq[i - 1].pos), at(seq[i].pos));
+                            (((b[0] - a[0]) as f64).powi(2) + ((b[1] - a[1]) as f64).powi(2)).sqrt()
+                                * metres_per_unit(a[1])
+                        })
+                        .sum::<f64>()
+                });
+                let bin = match m {
+                    None => "the tunnel way ends first",
+                    Some(x) if x <= 10.0 => "0-10 m",
+                    Some(x) if x <= 30.0 => "10-30 m",
+                    Some(x) if x <= 100.0 => "30-100 m",
+                    _ => "over 100 m",
+                };
+                add(format!("t15 deck into a tunnel over the terrain: {bin}"), 1);
+            }
+        }
+    }
+    c
+}

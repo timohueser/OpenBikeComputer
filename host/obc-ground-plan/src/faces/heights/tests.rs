@@ -538,3 +538,40 @@ fn a_rail_bed_above_a_road_gives_the_road_no_wall() {
         .collect();
     assert!(road_edge.is_empty(), "steps at the road's edge: {:?}", &road_edge[..road_edge.len().min(4)]);
 }
+
+/// A rim whose cut points are rounded off its line by half a unit (0.8 mm) turns a little at every cut. The
+/// cones of its ends cover the thin fans of those turns, so the ground beside it is the straight rim's: no
+/// groove in a fill, no ridge in a cut.
+#[test]
+fn a_rim_bent_by_its_cuts_gives_the_ground_of_the_straight_rim() {
+    let s = 0.667;
+    // Metres; the slope lies on the side of −y (out of a to b on the right).
+    let pts: Vec<[f64; 2]> = (0..8).map(|k| [0.158 * f64::from(k), if k % 2 == 1 { 0.0008 } else { 0.0 }]).collect();
+    let dir = |k: usize| super::unit(super::sub(pts[k + 1], pts[k]));
+    let turn = |a: [f64; 2], b: [f64; 2]| libm::atan2(super::cross(a, b), super::dot(a, b));
+    let edges = pts.len() - 1;
+    for sign in [1.0, -1.0] {
+        for off in [1.0, 2.0, 5.0, 10.0] {
+            for i in 0..=400 {
+                let q = [0.2 + 0.002 * f64::from(i), -off];
+                let ground = (0..edges)
+                    .map(|k| {
+                        let (u, v) = (dir(k), super::sub(q, pts[k]));
+                        let len = super::norm(super::sub(pts[k + 1], pts[k]));
+                        let t = [
+                            if k > 0 { turn(dir(k - 1), u) } else { f64::NAN },
+                            if k + 1 < edges { turn(u, dir(k + 1)) } else { f64::NAN },
+                        ];
+                        let out = -super::cross(u, v);
+                        super::edge_cone(super::dot(v, u), out, len, [0.0; 2], s, sign, t, 2.5)
+                    })
+                    .fold(-sign * f64::INFINITY, |m, h| if sign > 0.0 { m.max(h) } else { m.min(h) });
+                assert!(
+                    (ground + sign * s * off).abs() < 1e-3,
+                    "sign {sign} at {q:?}: {ground} for {}",
+                    -sign * s * off
+                );
+            }
+        }
+    }
+}

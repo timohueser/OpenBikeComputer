@@ -1,12 +1,14 @@
 //! The way graph of one cell: every way and waterway as its curve with samples at global parameters,
 //! split at the cell lines; the junctions with their hosts, the joints and the ends; snapped ends and
-//! their links; a level per way piece; and every crossing with its type.
+//! their links; a level per way piece; and every crossing with its type. `levels` adds the step of the
+//! ladder of each crossing and the states and end lines of the bridge and tunnel ways.
 //!
 //! Every decision reads only data within its reach of the element it decides (the rows of
 //! `reach_rows`), so two cells give the same graph where both hold complete data.
 
 mod crossings;
 mod curve;
+mod levels;
 mod parts;
 mod points;
 mod snap;
@@ -23,6 +25,7 @@ use crate::CellInput;
 pub use crossings::end_on_chord;
 pub(crate) use curve::{folds, water_tangents};
 pub use curve::{point, s_at, u_at, water_curves, water_grades, water_level, SpanPoint, WaterCurve};
+pub use levels::{check_levels, levels, step, EndKind, EndLine, Ladder, Levels, Run, State, Step, Structures};
 
 /// The coarsest sample step: the grid of level l is `BASE_STEP_M / 2^l` along a span.
 pub const BASE_STEP_M: f64 = 16.0;
@@ -262,6 +265,8 @@ pub enum CrossingKind {
     Footbridge,
     LevelCrossing,
     Stacked,
+    /// A tunnel way under another way, from their tags.
+    Bore,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -283,6 +288,8 @@ pub struct Crossing {
     pub angle_rad: f64,
     pub deck: Option<u32>,
     pub owned: bool,
+    /// The room and the step of the ladder, where one applies.
+    pub ladder: Option<Ladder>,
 }
 
 /// Deck ways that share a point, or one synthetic stretch.
@@ -360,6 +367,8 @@ pub struct WayGraph {
     pub ends: Vec<End>,
     pub crossings: Vec<Crossing>,
     pub decks: Vec<Deck>,
+    /// Empty from `build`: `levels` fills it.
+    pub levels: Levels,
     pub stats: GraphStats,
 }
 
