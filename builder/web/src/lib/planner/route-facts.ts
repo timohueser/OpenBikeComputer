@@ -1,7 +1,7 @@
 /** The days, the climbs and the waypoints of a plan along its calculated line, as the Route page lists them. */
 import { dayStops, planView, stopKinds, type ItineraryDay, type RoutePoint, type Trip } from './editor';
 import { coordinateAt, cumulative, nearestProgress, type Coordinate } from './geo';
-import { profileHeightAt, profileSamples } from './profile-data';
+import { profileHeightAt, profileSamples, sampleIndex } from './profile-data';
 import type { RoutingLine } from './routing';
 import { routeSegments } from './search/segments';
 
@@ -15,6 +15,7 @@ export interface Climb { from: number; to: number; ascent: number; gradient: num
 /** The length of the stretch that `Climb.steepest` measures. Chosen: a shorter stretch shows the errors of single heights,
  * such as a bridge in the terrain model. */
 export const STEEPEST_KM = .5;
+const EPSILON = 1e-6;
 
 export interface RouteFacts {
     /** The days of the itinerary; a riding day has its waypoints, a rest day none. */
@@ -35,8 +36,10 @@ export function routeFacts(trip: Trip, line: RoutingLine): RouteFacts {
     // The heights are linear between the points, so the steepest window starts or ends at a point.
     const steepest = (from: number, to: number, gradient: number) => {
         let most = -Infinity;
-        for (const start of km.flatMap(at => [at, at - STEEPEST_KM])) {
-            if (start < from || start + STEEPEST_KM > to) continue;
+        // `routeSegments` rounds the ends of a climb to 1 m.
+        const first = sampleIndex(samples, (from - EPSILON) / total), last = sampleIndex(samples, (to + EPSILON) / total);
+        for (const start of km.slice(first, last).flatMap(at => [at, at - STEEPEST_KM])) {
+            if (start < from - EPSILON || start + STEEPEST_KM > to + EPSILON) continue;
             const low = profileHeightAt(start / total, samples), high = profileHeightAt((start + STEEPEST_KM) / total, samples);
             if (low !== null && high !== null) most = Math.max(most, (high - low) / STEEPEST_KM / 10);
         }

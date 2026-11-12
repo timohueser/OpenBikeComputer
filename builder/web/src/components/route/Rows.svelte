@@ -56,8 +56,8 @@
     const span = $derived(Math.max(1e-6, shown.to - shown.from));
     const x = (share: number) => (share - shown.from) / span;
     const inside = (share: number) => share >= shown.from && share <= shown.to;
-    // A night at an end of the shown stretch belongs to the next or the last day.
-    const shownPins = $derived(pins.filter(pin => pin.number ? inside(pin.share) : pin.share > shown.from && pin.share < shown.to));
+    // The start tick names the night at the start of the shown stretch.
+    const shownPins = $derived(pins.filter(pin => pin.number ? inside(pin.share) : pin.share > shown.from && pin.share <= shown.to));
     const slice = $derived(routeSlice(coordinates, shown.from, shown.to));
     const nights = $derived(pins.filter(pin => !pin.number).map(pin => pin.share));
     const runs = $derived(line ? surfaceWindow(surfaceRuns(line).runs, shown.from, shown.to) : []);
@@ -148,6 +148,9 @@
     const surfaceName = (surface: Surface) => surface === 'Unknown' ? 'unknown' : surface.toLowerCase();
 </script>
 
+<!-- iOS Safari does not focus a tapped button, so a tap outside closes the panel here, not by `focusout`. -->
+<svelte:document onpointerdown={event => { if (open !== undefined && !(event.target as Element).closest('.pin')) open = undefined; }} />
+
 {#snippet about(point: RoutePoint)}
     {@const found = point.placeId ? details[point.placeId] : undefined}
     {@const website = websiteLink(found?.website)}
@@ -177,7 +180,7 @@
                 onpointerenter={event => { if (event.pointerType === 'mouse') show(event.currentTarget, pin.number); }}
                 onpointerleave={event => { if (event.pointerType === 'mouse' && !event.currentTarget.contains(document.activeElement)) open = undefined; }}
                 onfocusout={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) open = undefined; }}
-                onkeydown={event => { if (event.key === 'Escape') open = undefined; }}>
+                onkeydown={event => { if (event.key === 'Escape') { event.currentTarget.querySelector('button')!.focus(); open = undefined; } }}>
                 <button type="button" aria-label={pin.label} aria-expanded={open === pin.number} onclick={event => show(event.currentTarget.parentElement!, pin.number)}>{pin.number}</button>
                 {#if open === pin.number && pin.point}{@render about(pin.point)}{/if}
             </span>
@@ -275,6 +278,10 @@
         background: var(--rust);
         color: var(--cream);
         font: 700 11px/1 var(--sans);
+    }
+    /* A pin keeps its disc in sight over a night label. */
+    .pin {
+        z-index: 1;
     }
     .pin:hover, .pin:focus-within {
         z-index: 5;

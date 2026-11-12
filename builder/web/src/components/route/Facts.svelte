@@ -264,8 +264,9 @@
         margin: 2px 0 14px;
     }
     .profile {
-        height: 96px;
-        margin: 18px 0 0 46px;
+        flex: none;
+        height: 72px;
+        margin: 14px 0 4px 46px;
     }
     li > span:not(.chip, .pin) {
         display: flex;

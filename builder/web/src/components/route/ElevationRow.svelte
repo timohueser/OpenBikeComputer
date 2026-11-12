@@ -42,7 +42,7 @@
         {/each}
     </svg>
     {#each lines as share, i (i)}
-        {#if share > from && share < to}<i style:left={left(share)}></i>{/if}
+        {#if share > from && share <= to}<i style:left={left(share)}></i>{/if}
     {/each}
     {#each shownLabels as label, i (i)}
         <span class="label" style:left={left((Math.max(from, label.from) + Math.min(to, label.to)) / 2)}>{label.text}</span>
