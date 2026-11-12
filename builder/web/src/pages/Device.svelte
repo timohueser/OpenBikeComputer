@@ -17,6 +17,8 @@
     /** The names of the routes that wait; a waiting id with no route does not count. */
     let waits = $state.raw<{ names: string[]; leaving: number }>({ names: [], leaving: 0 });
     let reads = 0;
+    /** The rider clicked Disconnect, and the device did not connect again since. */
+    let released = $state(false);
 
     const session = $derived(deviceHolder.session);
     const status = $derived(session?.status);
@@ -29,6 +31,20 @@
             : !session && !deviceHolder.error ? 'loading'
             : rememberedReady() ? 'connected'
             : device ? 'before' : 'never');
+    $effect(() => { if (status === 'ready') released = false; });
+
+    function release() {
+        released = true;
+        void session?.disconnect();
+    }
+
+    /** The map builder can claim the device only after this tab lets it go. */
+    function openBuilder(event: MouseEvent) {
+        event.preventDefault();
+        const href = (event.currentTarget as HTMLAnchorElement).href;
+        void Promise.resolve(session?.disconnect()).finally(() => location.assign(href));
+    }
+
     /** A device on the cable that is not the remembered one; Connect uses it with no chooser. */
     const other = $derived(view !== 'connected' && status === 'ready' && session?.info ? { name: deviceName(session.info.serialNumber), formatted: !!session.store } : null);
 
@@ -69,7 +85,7 @@
 
 {#snippet connectButton(label: string)}
     {#if other && !other.formatted}
-        <p>The memory card of {other.name} needs a format. <a href={`${siteBase}builder/`}>The map builder</a> formats it.</p>
+        <p>The memory card of {other.name} needs a format. <a href={`${siteBase}builder/`} onclick={openBuilder}>The map builder</a> formats it.</p>
     {:else}
         {#if other}<p>{other.name} is on the cable.</p>{/if}
         <button type="button" class="button primary" onclick={connect} disabled={status === 'connecting'}>
@@ -87,7 +103,7 @@
         <header>
             <h1>{deviceName(device.serial)}</h1>
             <span class="state"><span class="dot"></span>{deviceSync.running ? 'Updating' : 'Connected'}</span>
-            <button type="button" class="button disconnect" onclick={() => void session?.disconnect()} disabled={deviceSync.running}>Disconnect</button>
+            <button type="button" class="button disconnect" onclick={release} disabled={deviceSync.running}>Disconnect</button>
             <button type="button" class="button primary" onclick={() => deviceSync.run()} disabled={deviceSync.running}>Update the device</button>
         </header>
         {@render problem(deviceSync.problem)}
@@ -120,7 +136,8 @@
                         <p>The cable connection works in Chrome and in Edge. Your routes and rides are stored in this browser, and another browser does not have them.</p>
                         <div class="box foot"><strong>What works here</strong>Plan routes, keep rides, and export GPX and FIT files. Only the cable connection is missing.</div>
                     {:else if view === 'before' && device}
-                        <h1>Your device is not connected</h1>
+                        <h1>{released ? 'Your device is disconnected' : 'Your device is not connected'}</h1>
+                        {#if released}<p>The map builder can use it now. “Connect it again” takes it back.</p>{/if}
                         {#if device.at !== null}<p>Last update on {day(new Date(device.at))}.</p>{/if}
                         {@render connectButton('Connect it again')}
                         {@render problem(error)}
