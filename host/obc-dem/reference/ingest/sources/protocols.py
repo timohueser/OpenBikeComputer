@@ -56,17 +56,28 @@ def spans(bbox, epsg=None) -> tuple[float, float]:
     return span_x, span_y
 
 
-def request_boxes(bbox, resolution_m: float, epsg=None):
-    """A WGS84 box cut into requests no larger than `MAX_PIXELS` on a side."""
+def request_boxes(bbox, resolution_m: float, epsg=None) -> list[tuple[float, float, float, float]]:
+    """A WGS84 box cut into requests no larger than `MAX_PIXELS` on a side.
+
+    The cut is even in degrees. Far from its central meridian a projected grid is turned against
+    them, so each piece's footprint keeps a share of the other axis that more pieces of this axis
+    do not shrink. Every piece is measured as `output_size` will measure it, and while one is over
+    the cap the cut is made finer on both axes, which shrinks that share too.
+    """
 
     west, south, east, north = bbox
     span_x, span_y = spans(bbox, epsg)
     nx = max(1, math.ceil(span_x / resolution_m / MAX_PIXELS))
     ny = max(1, math.ceil(span_y / resolution_m / MAX_PIXELS))
-    for i in range(ny):
-        for j in range(nx):
-            yield (west + (east - west) * j / nx, south + (north - south) * i / ny,
-                   west + (east - west) * (j + 1) / nx, south + (north - south) * (i + 1) / ny)
+    while True:
+        boxes = [(west + (east - west) * j / nx, south + (north - south) * i / ny,
+                  west + (east - west) * (j + 1) / nx, south + (north - south) * (i + 1) / ny)
+                 for i in range(ny) for j in range(nx)]
+        measured = [spans(box, epsg) for box in boxes]
+        if all(round(x / resolution_m) <= MAX_PIXELS and round(y / resolution_m) <= MAX_PIXELS
+               for x, y in measured):
+            return boxes
+        nx, ny = nx + 1, ny + 1
 
 
 def pixels(count: float, what: str) -> int:
