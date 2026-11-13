@@ -439,15 +439,16 @@ terrain at the waterway's own line, every 5 m: the highest level that never rise
 under the lowest terrain within ±(w/2 + 2 m) across the line and at least `freeboard_m` of the kind
 under the lower terrain at ±(w/2 + `bank_m`), so that the water lies in a channel under its banks.
 Where the terrain is unknown, a sample takes the level before it. Between two vertices of the OSM way,
-the bake adds vertices at samples until the level that the ground plan draws between the kept
-vertices lies within 0.2 m of the level of every sample, so the level holds along the line and not only
-at the vertices of the map. In each round, each span between two kept vertices whose drawn level lies
-more than 0.2 m off a sample keeps its farthest sample. An added vertex lies on the curve of its span
+the bake adds vertices at samples until both drawn levels between the kept vertices lie within 0.2 m
+of the level of every sample, so the level holds along the line and not only at the vertices of the map.
+In each round, each span between two kept vertices where a drawn level lies more than 0.2 m off a
+sample keeps its farthest sample. An added vertex lies on the curve of its span
 that the ground plan draws through the vertices of the map, at the sample's share of the span along the
 chords of the map, taken as a share of the curve's length. The drawn level is read on the curve that the
 ground plan draws through the kept vertices: a span of that curve of length L (metres along the curve)
 has at share t of its length the cubic Hermite of the levels z0, z1 and the grades g0, g1 of its
-vertices: z0·(2t³ − 3t² + 1) + L·g0·(t³ − 2t² + t) + z1·(3t² − 2t³) + L·g1·(t³ − t²). The grade at a
+vertices: z0·(2t³ − 3t² + 1) + L·g0·(t³ − 2t² + t) + z1·(3t² − 2t³) + L·g1·(t³ − t²); a reader
+without the ground plan draws the straight level z0 + t·(z1 − z0) at the same t. The grade at a
 vertex is the harmonic mean of the grades of its two chords where they fall the same way, else 0, and at
 an end of the way or beside an unknown level its one chord's. A sample reads the level at the point of
 that curve nearest to its own point. The curve of a span is the cubic Hermite whose tangents are the

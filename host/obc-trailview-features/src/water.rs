@@ -86,9 +86,9 @@ impl std::ops::AddAssign for Metrics {
 /// A river observes the terrain every STEP_M along it, at its lowest within ±(w/2 + BESIDE_M)
 /// across it, at the ACROSS points.
 const STEP_M: f64 = 5.0;
-/// A waterway keeps a sample as a vertex where the level that the ground plan draws between the vertices
-/// around it leaves the sample's level by more than this: half the least freeboard (a stream's 0.4 m), so
-/// the water between two vertices stays under its banks.
+/// A waterway keeps a sample as a vertex where a level drawn between the vertices around it (`kept`)
+/// leaves the sample's level by more than this: half the least freeboard (a stream's 0.4 m), so the water
+/// between two vertices stays under its banks.
 const LEVEL_TOL_M: f64 = 0.2;
 const BESIDE_M: f64 = 2.0;
 const ACROSS: [f64; 5] = [-1.0, -0.5, 0.0, 0.5, 1.0];
@@ -304,13 +304,13 @@ fn curves(points: &[[f64; 2]], curve: Curve) -> Vec<WaterCurve> {
     water_curves(points, curve.turn_max_deg, curve.off_max_m, chord_metres)
 }
 
-/// The samples of a way that it keeps as vertices: its own vertices, and the samples that the level that
-/// the ground plan draws between the kept ones leaves by more than LEVEL_TOL_M: in each round the farthest
-/// of each such span, until none is left. So the levels hold along the line, not only at the vertices of
-/// the map. The drawn level is the ground plan's: its curve through the kept vertices (`water_curves`),
-/// the cubic `water_level` with `water_grades` over that curve's length, read at the foot of each sample
-/// on it (`WaterCurve::share_near`). A kept vertex changes the curve and the grades beside it, so the
-/// rounds test every span again.
+/// The samples of a way that it keeps as vertices: its own vertices, and the samples that a level drawn
+/// between the kept ones leaves by more than LEVEL_TOL_M: in each round the farthest of each such span,
+/// until none is left. So the levels hold along the line, not only at the vertices of the map. Two readers
+/// draw a level, both read at the foot of each sample on the ground plan's curve through the kept vertices
+/// (`water_curves`, `WaterCurve::share_near`): the ground plan's cubic `water_level` with `water_grades`
+/// over that curve's length, and the straight level of the water ribbons and the stamp's channel. A kept
+/// vertex changes the curve and the grades beside it, so the rounds test every span again.
 fn kept(way: &Way, z: &[f64], curves: &[WaterCurve], curve: Curve) -> Vec<usize> {
     let at: Vec<[f64; 2]> = (0..z.len()).map(|i| way.point(i, curves)).collect();
     let level = |i: usize| z[i].is_finite().then_some(z[i]);
@@ -330,7 +330,8 @@ fn kept(way: &Way, z: &[f64], curves: &[WaterCurve], curve: Curve) -> Vec<usize>
             let len = c.length() * chord_metres(p0, points[j + 1]);
             let off = |i: usize| {
                 let t = c.share_near([at[i][0] - p0[0], at[i][1] - p0[1]], (way.along[i] - sa) / (sb - sa));
-                (z[i] - water_level([z[a], z[b]], [grades[j], grades[j + 1]], len, t).0).abs()
+                let cubic = water_level([z[a], z[b]], [grades[j], grades[j + 1]], len, t).0;
+                (z[i] - cubic).abs().max((z[i] - (z[a] + t * (z[b] - z[a]))).abs())
             };
             let worst =
                 (a + 1..b).filter(|&i| z[i].is_finite()).map(|i| (i, off(i))).max_by(|x, y| x.1.total_cmp(&y.1));
@@ -974,15 +975,17 @@ mod tests {
         let mut map = vec![stream.clone()];
         let at_map = levels(&solve(&mut map, &terrain(move |e, _| fall(e))).0, 0);
         assert_eq!([z[0], z[z.len() - 1]], [at_map[0], at_map[1]]);
-        // Every 5 m the level that the ground plan draws between the kept vertices lies within the tolerance
-        // of the level there.
+        // Every 5 m both levels drawn between the kept vertices, the ground plan's cubic and the straight one,
+        // lie within the tolerance of the level there.
         let points: Vec<[f64; 2]> = east.iter().map(|&e| [e, 0.0]).collect();
         let grades = water_grades(&points, &z.iter().map(|&z| Some(z)).collect::<Vec<_>>(), |_, _| 1.0);
         for e in (0..=400).step_by(5).map(f64::from) {
             let k = east.partition_point(|&x| x <= e).clamp(1, east.len() - 1);
-            let len = east[k] - east[k - 1];
-            let level = water_level([z[k - 1], z[k]], [grades[k - 1], grades[k]], len, (e - east[k - 1]) / len).0;
-            assert!((level - (fall(e) - 0.4)).abs() <= LEVEL_TOL_M + 0.01, "{e} m: {level} over {}", fall(e));
+            let (len, t) = (east[k] - east[k - 1], (e - east[k - 1]) / (east[k] - east[k - 1]));
+            let cubic = water_level([z[k - 1], z[k]], [grades[k - 1], grades[k]], len, t).0;
+            for level in [cubic, z[k - 1] + t * (z[k] - z[k - 1])] {
+                assert!((level - (fall(e) - 0.4)).abs() <= LEVEL_TOL_M + 0.01, "{e} m: {level} over {}", fall(e));
+            }
         }
         let plane = kept_of(&[stream], &terrain(|e, _| 1000.0 - 0.1 * e)).remove(0);
         assert_eq!(plane.0.len(), 2);
