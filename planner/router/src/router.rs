@@ -4,7 +4,7 @@ use crate::{
     geometry,
     model::{Pace, Point, Profile, Surface, Totals, BIKE, NO_ELEVATION, PUSH},
     package::digest,
-    search::{Query, Seed, Workspace},
+    search::{Query, Seed},
     snap::{self, Candidate, Policy, Position},
     Error, Result,
 };
@@ -145,7 +145,6 @@ struct Work {
 
 pub struct Router<P> {
     pub(crate) package: P,
-    workspace: Workspace,
     metric: String,
     /// Snaps by point and profile.
     snaps: VecDeque<(i32, i32, String, snap::Candidates)>,
@@ -158,7 +157,7 @@ impl<P: RoutingData> Router<P> {
 
     pub fn new(mut package: P, memory_budget_bytes: usize) -> Self {
         package.set_memory_budget(memory_budget_bytes);
-        Self { package, workspace: Workspace::default(), metric: String::new(), snaps: VecDeque::new() }
+        Self { package, metric: String::new(), snaps: VecDeque::new() }
     }
 
     /// Snapping attaches only to roads in a large connected part of the profile's graph, so a leg
@@ -190,10 +189,7 @@ impl<P: RoutingData> Router<P> {
         }
         request.pace.validate().map_err(Error::InvalidRequest)?;
         let profile = self.package.profile(&request.profile)?.clone();
-        if self.metric != request.profile {
-            self.workspace.clear_heaps();
-            self.metric = request.profile.clone();
-        }
+        self.metric.clone_from(&request.profile);
         let bounds = self.package.bounds();
         let mut candidates = Vec::new();
         let mut truncated = false;
@@ -347,7 +343,8 @@ impl<P: RoutingData> Router<P> {
         control: &Control<'_>,
         paths: &[(&Candidate, Position, Vec<Slice>)],
     ) -> Result<(Vec<Point>, Vec<f64>, Vec<Leg>)> {
-        let closures = self.package.closures()?;
+        let roads: Vec<u32> = paths.iter().flat_map(|(_, _, slices)| slices.iter().map(|slice| slice.road)).collect();
+        self.package.announce(&roads);
         let mut points: Vec<Point> = Vec::new();
         // The leg and the walking pace of the step into each point after the first.
         let mut steps: Vec<(usize, bool)> = Vec::new();
@@ -376,7 +373,7 @@ impl<P: RoutingData> Router<P> {
                     };
                     (geometry::cut(&road.shape, &along, slice.from * total, slice.to * total), total, piece)
                 })?;
-                piece.closures = closures.closing(slice.road, piece.mode);
+                piece.closures = self.package.closing(slice.road, piece.mode)?;
                 let length = (total * (slice.to - slice.from)).round() as u64;
                 totals.distance_m += length;
                 totals.surface_m[piece.surface as usize] += length;
@@ -500,35 +497,16 @@ impl<P: RoutingData> Router<P> {
                 }
             }
         }
-        let prepared = self.package.prepared(&self.metric)?;
-        let budget = self.package.memory_budget();
-        let heap_bytes = budget.saturating_sub(self.package.routing_bytes(&self.metric)?).min(control.max_heap_bytes);
-        let heap_limit = budget.saturating_sub(self.package.idle_bytes(&self.metric)?).min(control.max_heap_bytes);
         let query = Query {
             starts: &starts,
             ends: &ends,
             ceiling: best.as_ref().map_or(u64::MAX, |b| b.cost),
             max_roads: control.max_geometry,
-            heap_bytes,
-            heap_limit,
+            heap_bytes: control.max_heap_bytes,
+            heap_limit: control.max_heap_bytes,
             cancelled: control.cancelled,
         };
-        let potential = match &prepared.guide {
-            Some(guide) => Some(guide.potential(&starts, &ends)?),
-            None => None,
-        };
-        let found = match self.workspace.run_with_potential(&prepared.graph, &prepared.costs, query, potential.as_ref())
-        {
-            // Cached metrics that no router holds go first, so that an idle service has the room
-            // of `heap_limit` and answers `Memory` only for memory that other requests hold.
-            Err(Error::Memory) if self.package.release(&self.metric) => {
-                let heap_bytes =
-                    budget.saturating_sub(self.package.routing_bytes(&self.metric)?).min(control.max_heap_bytes);
-                let query = Query { heap_bytes, ..query };
-                self.workspace.run_with_potential(&prepared.graph, &prepared.costs, query, potential.as_ref())?
-            }
-            result => result?,
-        };
+        let found = self.package.search(&self.metric, query)?;
         if let Some(found) = found {
             let &(source, from, _) = &sources[found.source];
             let &(target, to) = &targets[end_targets[found.target]];

@@ -1210,7 +1210,6 @@ mod tests {
                 self.0.get(key).cloned().ok_or_else(|| planner_router::Error::MissingRegion(key.into()))
             }
         }
-        use planner_router::data::RoutingData;
         let package = planner_router::package::Package::open(Memory(objects), &serde_json::to_vec(&manifest).unwrap());
         let table = planner_router::data::Selection::whole(package.unwrap()).closures().unwrap();
         let arriving =
