@@ -1,6 +1,7 @@
 use planner_router::cells::{self, Directory, Geometry, Group, Topology};
 use planner_router::install::{self, Plan};
 use planner_router::model::{Point, Profile, Road, Surface, BIKE, FOOT, NO_ELEVATION, PUSH};
+use planner_router::snap;
 use planner_router_build::cells::{write, Info, Input, Summary};
 use planner_router_build::source::{Builder, Tags, Ways};
 use planner_router_build::tables::{self, Tables};
@@ -621,4 +622,39 @@ fn a_download_level_above_the_levels_takes_the_top_level() {
     assert_eq!(directory.len(), bake.graph.cells.counts.values()[levels - 1] as usize);
     let info: serde_json::Value = serde_json::from_slice(&info).unwrap();
     assert_eq!(info["download_level"].as_u64(), Some(levels as u64));
+}
+
+#[test]
+fn an_area_holds_the_cells_of_each_snap_window_in_it() {
+    let bake = bake();
+    let scratch = Scratch::new("area");
+    let output = scratch.0.join("out");
+    package(&bake, 3, &output);
+    let (directory_bytes, _) = read(&output);
+    let directory = Directory::new(&directory_bytes).unwrap();
+    let boxes: Vec<[i32; 4]> = (0..directory.downloads()).map(|r| directory.boxes(r).unwrap().0).collect();
+    assert_eq!(boxes.len(), 3);
+    // The cell with the northernmost south side: the area ends 50 microdegrees south of its box,
+    // grown by the snap window.
+    let beyond = (0..boxes.len()).max_by_key(|&r| boxes[r][1]).unwrap();
+    let reach = |point: Point| snap::window(point, snap::REACH_M).unwrap();
+    let probe = Point { lat: boxes[beyond][1], lon: 0, elevation: 0.0 };
+    let north = boxes[beyond][1] - 50 - (probe.lat - reach(probe)[1]);
+    let (west, south, east) = (7_025_000, north - 20_000, 7_045_000);
+    let area = [west, south, east, north].map(|micro| f64::from(micro) * 1e-6);
+    let inside = |b: [i32; 4]| cells::meets(b, [west, south, east, north]);
+    assert_eq!(boxes.iter().filter(|&&b| inside(b)).count(), 2, "the area touches two cells");
+    let cells = install::area_cells(&directory, &[area]).unwrap();
+    let id = |record: usize| directory.cell(record).unwrap().id;
+    for i in 0..=8 {
+        for j in 0..=8 {
+            let point =
+                Point { lat: south + (north - south) * j / 8, lon: west + (east - west) * i / 8, elevation: 0.0 };
+            for record in directory.meeting(reach(point)).unwrap() {
+                assert!(cells.contains(&id(record)), "the window of {point:?} meets cell {:08x}", id(record));
+            }
+        }
+    }
+    assert!(!cells.contains(&id(beyond)));
+    assert_eq!(install::area_cells(&directory, &[area, area]).unwrap(), cells);
 }
