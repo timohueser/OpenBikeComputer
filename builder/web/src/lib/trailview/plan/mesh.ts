@@ -1,8 +1,12 @@
 // A cell's near mesh as the plan worker hands it over (`CellMesh::to_bytes` of `mesh/mod.rs` in
-// obc-ground-plan): the one reader of those bytes, in the form that pieces.ts uploads.
+// obc-ground-plan), then the meshes of its storeys over the ground (`StoreyMesh::to_bytes` of `mesh/shell.rs`)
+// where it has any: the one reader of those bytes, in the form that pieces.ts uploads.
 
 const MAGIC = 0x4f424d05;
 const HEAD = 12;
+const STOREY_MAGIC = 0x4f425301;
+/** The storey mesh's head: its magic, cell, counts and top slots, then the triangles of each of its 7 parts (`PARTS`). */
+const STOREY_HEAD = 16;
 /** Region cells (2 × 2 grid cells) along a side of a cell, as `params::CELLS`, and the words of R on the cell and one ring. */
 const CELLS = 128;
 const REGION_WORDS = Math.ceil(((CELLS + 2) * (CELLS + 2)) / 32);
@@ -30,6 +34,23 @@ export interface CellMesh {
     sunk: Uint32Array<ArrayBuffer>;
     /** Four words per culvert mouth: its corner on the water, its corner in the zone, the outline's direction and the water's half-width. */
     culverts: Uint32Array<ArrayBuffer>;
+    /** The meshes of the cell's storeys over the ground, where it has any. */
+    storeys?: StoreyMesh;
+}
+
+/**
+ * The storeys' meshes of a cell: the sheets and the shells about them. A corner's height is that of its label plus its
+ * offset; the top's triangles come first, then the shell's (underside, edges, parapets, railings, posts, piers).
+ */
+export interface StoreyMesh {
+    /** Two words per corner, as the cell mesh's (never a terrain vertex), and each corner's offset in metres (f32 bits). */
+    corners: Uint32Array<ArrayBuffer>;
+    offsets: Uint32Array<ArrayBuffer>;
+    /** Three whole corner indices per triangle, and the count of the top's. */
+    triangles: Uint32Array<ArrayBuffer>;
+    top: number;
+    /** Four whole corner indices per slot (a_p, a_q, b_q, b_p): the tops' steps between two labels, then the undersides' risers. */
+    slots: Uint32Array<ArrayBuffer>;
 }
 
 export function cellMesh(bytes: ArrayBuffer): CellMesh {
@@ -45,13 +66,40 @@ export function cellMesh(bytes: ArrayBuffer): CellMesh {
         const table = take(2 * runs), short = new Uint16Array(bytes.slice(4 * at, 4 * (at += Math.ceil((size * count) / 2))), 0, size * count);
         return { short, runs: Array.from({ length: runs }, (_, r) => ({ count: table[2 * r], base: table[2 * r + 1] })) };
     };
-    const triangle = items(triangles, triangleRuns, 3), step = items(steps, stepRuns, 4), region = take(REGION_WORDS), culverts = words.slice(at, at + 4 * mouths);
+    const triangle = items(triangles, triangleRuns, 3), step = items(steps, stepRuns, 4), region = take(REGION_WORDS), culverts = take(4 * mouths).slice();
     if (region.length !== REGION_WORDS || culverts.length !== 4 * mouths) throw new Error('a ground plan mesh ends early');
-    // The slots read their corners in the vertex stage, by whole index.
-    const slots = new Uint32Array(step.short.length);
+    const storeys = at < words.length ? storeyMesh(bytes, at) : undefined;
+    return { x, y, corners: corner, triangles: triangle.short, runs: triangle.runs, level18Runs, steps: whole(step, 4), endFaces, sunk: sunkOf(region), culverts, storeys };
+}
+
+/** Items of runs as whole corner indices: the vertex stage reads them by index. */
+function whole({ short, runs }: { short: Uint16Array; runs: { count: number; base: number }[] }, size: number): Uint32Array<ArrayBuffer> {
+    const out = new Uint32Array(short.length);
     let k = 0;
-    for (const { count, base } of step.runs) for (let n = 0; n < 4 * count; n++, k++) slots[k] = step.short[k] + base;
-    return { x, y, corners: corner, triangles: triangle.short, runs: triangle.runs, level18Runs, steps: slots, endFaces, sunk: sunkOf(region), culverts };
+    for (const { count, base } of runs) for (let n = 0; n < size * count; n++, k++) out[k] = short[k] + base;
+    return out;
+}
+
+/** The storey meshes from word `start` of `bytes` on. */
+function storeyMesh(bytes: ArrayBuffer, start: number): StoreyMesh {
+    const words = new Uint32Array(bytes, 4 * start);
+    const [magic, , , corners, triangles, triangleRuns, slots, slotRuns] = words.subarray(0, STOREY_HEAD);
+    if (magic !== STOREY_MAGIC) throw new Error(`not a storey mesh: ${magic.toString(16)}`);
+    let at = STOREY_HEAD;
+    const take = (n: number) => words.subarray(at, (at += n));
+    const corner = take(3 * corners), packed = new Uint32Array(2 * corners), offsets = new Uint32Array(corners);
+    for (let k = 0; k < corners; k++) {
+        packed[2 * k] = corner[3 * k];
+        packed[2 * k + 1] = corner[3 * k + 1];
+        offsets[k] = corner[3 * k + 2];
+    }
+    const items = (count: number, runs: number, size: number) => {
+        const table = take(2 * runs), short = new Uint16Array(bytes.slice(4 * (start + at), 4 * (start + (at += Math.ceil((size * count) / 2))))).subarray(0, size * count);
+        return { short, runs: Array.from({ length: runs }, (_, r) => ({ count: table[2 * r], base: table[2 * r + 1] })) };
+    };
+    const triangle = items(triangles, triangleRuns, 3), slot = items(slots, slotRuns, 4);
+    if (at > words.length) throw new Error('a storey mesh ends early');
+    return { corners: packed, offsets, triangles: whole(triangle, 3), top: words[STOREY_HEAD - 7], slots: whole(slot, 4) };
 }
 
 /** The grid points whose region cells all lie in R: cells ⌊(i − 1) / 2⌋ to ⌊i / 2⌋ across, the same down. */

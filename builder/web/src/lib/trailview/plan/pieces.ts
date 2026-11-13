@@ -3,15 +3,18 @@
 // terrain with the corridors' fragment stage (piece.wgsl). A cell's mesh draws over the nodes of the finest
 // level, 18 or 17, within level 18's range; the terrain's vertices there take no snap of their own and sink
 // inside the mesh's owned region (cells.wgsl), and the strip, made of the terrain's own vertices at the
-// region's border, closes the mesh against it. Past them the terrain draws the records' far look.
+// region's border, closes the mesh against it. Past them the terrain draws the records' far look. A cell's storeys
+// over the ground draw with it: their corners from the same pass, their sheets and shells with piece.wgsl, and they
+// cast into the shadow map.
 import type { Gpu } from '../gpu/device';
 import { MOUTH } from '../gpu/include';
 import { layouts } from '../gpu/layouts';
 import { wgsl } from '../gpu/wgsl';
+import { CASTER_DEPTH, CASTER_PRIMITIVE } from '../light/shadow';
 import { DEPTH, sceneFormat } from '../resolve/targets';
 import { CALM, CELL_LEVEL, distances, key, MORPH, size, type Eye, type Node, type Rule } from '../terrain/lod';
 import { touches } from '../terrain/pages';
-import { cellMesh, SUNK_WORDS, type CellMesh } from './mesh';
+import { cellMesh, SUNK_WORDS, type CellMesh, type StoreyMesh } from './mesh';
 
 /** The cells per side of the window about the eye's cell, the words before the slots, and the slots of sunk points: as cells.wgsl. */
 export const WINDOW = 7;
@@ -51,7 +54,7 @@ interface Piece {
     /** The first word of the cell's records block that its labels index. */
     block: number;
     /** Its buffers, and the compute bind group with the stamp data of the pass that it was made for (`bound`). */
-    gpu?: { data: GPUBuffer; indices: GPUBuffer; params: GPUBuffer; draw: GPUBindGroup; compute?: GPUBindGroup; stamps?: GPUBuffer; bound?: Make };
+    gpu?: { data: GPUBuffer; indices: GPUBuffer; params: GPUBuffer; draw: GPUBindGroup; compute?: GPUBindGroup; stamps?: GPUBuffer; bound?: Make; storeys?: StoreysGpu };
     /** Whether its corners hold their heights, what a pass must make, and how many corners the pass made so far. */
     computed: boolean;
     stale?: Make;
@@ -65,6 +68,9 @@ interface Piece {
     /** Whether the stamp data of its stampNodes is known: a labelled corner reads it, so the pass waits for it. */
     stamped: boolean;
 }
+
+/** A cell's storeys on the device: their buffer (as a piece's, with the triangles and the offsets after the slots), parameters, draw and cast groups, and the compute group of the last stamps. */
+interface StoreysGpu { data: GPUBuffer; params: GPUBuffer; draw: GPUBindGroup; cast?: GPUBindGroup; compute?: GPUBindGroup; computed: boolean }
 
 interface Resources {
     gpu: Gpu;
@@ -84,6 +90,9 @@ interface Resources {
     /** The culvert mouths' models (`culvert_vertex` of plan/piece.wgsl). */
     culverts: GPURenderPipeline;
     cutCulverts: GPURenderPipeline;
+    /** The storeys' triangles, whole and cut, and their caster into the shadow map. */
+    storeys: GPURenderPipeline[];
+    storeyCaster: GPURenderPipeline;
     corners: GPUComputePipeline;
     drawLayout: GPUBindGroupLayout;
     computeLayout: GPUBindGroupLayout;
@@ -96,7 +105,9 @@ export interface PiecesStats {
     inView: number;
     triangles: number;
     steps: number;
-    /** The pieces' GPU bytes. */
+    /** The storeys' triangles and slots in view. */
+    storeyTriangles: number;
+    /** The pieces' GPU bytes, the storeys' among them. */
     bytes: number;
     /** Milliseconds from the first frame with a wanted cell that does not draw to the next frame in which all draw. */
     ready: number;
@@ -162,6 +173,8 @@ export class Pieces {
     private calm = CALM;
     /** Whether the terrain's finest level is coarser than COARSEST_MESH: the meshes ask for no stamp and make no corner. */
     private resting = false;
+    /** The frame uniform of the sun's view, for the storeys' casters. */
+    private sun?: GPUBuffer;
 
     /** `stamps` gives a node's stamp data, null for none, undefined while it is on its way, and asks for it. */
     constructor(private readonly stamps: (node: Node) => Uint32Array<ArrayBuffer> | null | undefined) {}
@@ -191,7 +204,7 @@ export class Pieces {
 
     private release(piece: Piece): void {
         const r = this.resources;
-        if (r && piece.gpu) for (const buffer of [piece.gpu.data, piece.gpu.indices, piece.gpu.params, piece.gpu.stamps]) if (buffer) r.gpu.destroy('plan', buffer);
+        if (r && piece.gpu) for (const buffer of [piece.gpu.data, piece.gpu.indices, piece.gpu.params, piece.gpu.stamps, piece.gpu.storeys?.data, piece.gpu.storeys?.params]) if (buffer) r.gpu.destroy('plan', buffer);
         piece.gpu = undefined;
         piece.computed = false;
         piece.stale = 'all';
@@ -208,6 +221,12 @@ export class Pieces {
         const made = await gpu.once(piecePipelines);
         this.resources = { gpu, frame, cells, records, profiles, ...made };
         this.cellsDirty = true;
+    }
+
+    /** Takes the frame uniform of the sun's view: the storeys then cast into the shadow map. */
+    castWith(sun: GPUBuffer): void {
+        this.sun = sun;
+        for (const piece of this.pieces.values()) if (piece.gpu?.storeys) piece.gpu.storeys.cast = undefined;
     }
 
     /**
@@ -316,14 +335,29 @@ export class Pieces {
         device.queue.writeBuffer(data, 4 * 6 * n, steps);
         device.queue.writeBuffer(data, 4 * (6 * n + steps.length), culverts);
         device.queue.writeBuffer(indices, 0, triangles.buffer, triangles.byteOffset, 4 * Math.ceil(triangles.length / 2));
-        const draw = device.createBindGroup({ layout: r.drawLayout, entries: [
-            { binding: 0, resource: { buffer: r.frame } }, { binding: 1, resource: { buffer: data } }, { binding: 2, resource: { buffer: params } }, { binding: 3, resource: { buffer: r.cells } },
-            { binding: 8, resource: r.records.createView() },
-        ] });
-        piece.gpu = { data, indices, params, draw };
+        piece.gpu = { data, indices, params, draw: this.drawGroup(r, data, params, r.frame), storeys: piece.mesh.storeys && this.uploadStoreys(r, piece.mesh.storeys) };
         piece.computed = false;
         piece.stale = 'all';
         piece.done = 0;
+    }
+
+    /** A cell's storeys: their corners, out words, slots, triangles and offsets in one buffer, as their parameters name them. */
+    private uploadStoreys(r: Resources, storeys: StoreyMesh): StoreysGpu {
+        const { device } = r.gpu, { corners, slots, triangles, offsets } = storeys, n = offsets.length;
+        const data = r.gpu.buffer('plan', 4 * Math.max(4, 7 * n + slots.length + triangles.length), GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+        const params = r.gpu.buffer('plan', PARAMS_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+        device.queue.writeBuffer(data, 0, corners);
+        device.queue.writeBuffer(data, 4 * 6 * n, slots);
+        device.queue.writeBuffer(data, 4 * (6 * n + slots.length), triangles);
+        device.queue.writeBuffer(data, 4 * (6 * n + slots.length + triangles.length), offsets);
+        return { data, params, draw: this.drawGroup(r, data, params, r.frame), computed: false };
+    }
+
+    private drawGroup(r: Resources, data: GPUBuffer, params: GPUBuffer, frame: GPUBuffer): GPUBindGroup {
+        return r.gpu.device.createBindGroup({ layout: r.drawLayout, entries: [
+            { binding: 0, resource: { buffer: frame } }, { binding: 1, resource: { buffer: data } }, { binding: 2, resource: { buffer: params } }, { binding: 3, resource: { buffer: r.cells } },
+            { binding: 8, resource: r.records.createView() },
+        ] });
     }
 
     /**
@@ -339,6 +373,7 @@ export class Pieces {
             if (piece.stale || !piece.gpu?.stamps) continue;
             r.gpu.destroy('plan', piece.gpu.stamps);
             piece.gpu.stamps = piece.gpu.compute = piece.gpu.bound = undefined;
+            if (piece.gpu.storeys) piece.gpu.storeys.compute = undefined;
         }
         const shown = new Set(this.inView), near = (piece: Piece) => distances(eye, piece.node)[0];
         const stale = [...this.pieces.values()].filter(piece => piece.stale && piece.gpu && piece.block >= 0).sort((a, b) => +shown.has(b) - +shown.has(a) || near(a) - near(b));
@@ -385,6 +420,16 @@ export class Pieces {
         gpu.bound = make;
         pass.setBindGroup(0, gpu.compute!);
         pass.dispatchWorkgroups(Math.ceil(count / GROUP_CORNERS));
+        // The storeys' corners carry labels only, and are few: all of them with the first dispatch of an `all` pass.
+        const storeys = gpu.storeys, mesh = piece.mesh.storeys;
+        if (make !== 'all' || first !== 0 || !storeys?.compute || !mesh) return;
+        const m = mesh.offsets.length, slots = mesh.slots.length, tris = 6 * m + slots;
+        // The storeys' slots are all plain concrete: their end faces start at 0.
+        words.set([m, 6 * m, 2 * m, 0, piece.block, 0, 0, tris + mesh.triangles.length, tris, mesh.top], 2);
+        r.gpu.device.queue.writeBuffer(storeys.params, 0, params);
+        pass.setBindGroup(0, storeys.compute);
+        pass.dispatchWorkgroups(Math.ceil(m / GROUP_CORNERS));
+        storeys.computed = true;
     }
 
     private made(piece: Piece): void {
@@ -410,10 +455,12 @@ export class Pieces {
         if (gpu.stamps) r.gpu.destroy('plan', gpu.stamps);
         gpu.stamps = r.gpu.buffer('plan', packed.byteLength, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
         r.gpu.device.queue.writeBuffer(gpu.stamps, 0, packed);
-        gpu.compute = r.gpu.device.createBindGroup({ layout: r.computeLayout, entries: [
-            { binding: 0, resource: { buffer: gpu.data } }, { binding: 1, resource: { buffer: gpu.stamps } }, { binding: 2, resource: { buffer: gpu.params } },
+        const compute = (data: GPUBuffer, params: GPUBuffer) => r.gpu.device.createBindGroup({ layout: r.computeLayout, entries: [
+            { binding: 0, resource: { buffer: data } }, { binding: 1, resource: { buffer: gpu.stamps! } }, { binding: 2, resource: { buffer: params } },
             { binding: 4, resource: { buffer: r.profiles } }, { binding: 8, resource: r.records.createView() },
         ] });
+        gpu.compute = compute(gpu.data, gpu.params);
+        if (gpu.storeys) gpu.storeys.compute = terrain ? undefined : compute(gpu.storeys.data, gpu.storeys.params);
     }
 
     /** For the determinism check, per computed piece: its mesh from the worker, and the GPU buffer range of the corners that the pass made. */
@@ -458,6 +505,36 @@ export class Pieces {
                 pass.setBindGroup(0, piece.gpu!.draw);
                 pass.draw(CULVERT_VERTICES * (piece.mesh.culverts.length / 4));
             }
+            const storeyed = pieces.filter(piece => piece.gpu!.storeys?.computed);
+            pass.setPipeline(r.storeys[+cut]);
+            for (const piece of storeyed) {
+                pass.setBindGroup(0, piece.gpu!.storeys!.draw);
+                pass.draw(piece.mesh.storeys!.triangles.length);
+            }
+            pass.setPipeline(cut ? r.cutSlots : r.slots);
+            for (const piece of storeyed) {
+                if (!piece.mesh.storeys!.slots.length) continue;
+                pass.setBindGroup(0, piece.gpu!.storeys!.draw);
+                pass.draw(6 * (piece.mesh.storeys!.slots.length / 4));
+            }
+        }
+    }
+
+    /** Draws the storeys of the cells that draw into the shadow map as casters, with the sun's frame (`castWith`). */
+    cast(pass: GPURenderPassEncoder, surface: GPUBindGroup, empty: GPUBindGroup, features: GPUBindGroup): void {
+        const r = this.resources;
+        if (!r || !this.sun) return;
+        const storeyed = this.drawn.filter(piece => piece.gpu?.storeys?.computed);
+        if (!storeyed.length) return;
+        pass.setPipeline(r.storeyCaster);
+        pass.setBindGroup(1, surface);
+        pass.setBindGroup(2, empty);
+        pass.setBindGroup(3, features);
+        for (const piece of storeyed) {
+            const storeys = piece.gpu!.storeys!;
+            storeys.cast ??= this.drawGroup(r, storeys.data, storeys.params, this.sun);
+            pass.setBindGroup(0, storeys.cast);
+            pass.draw(piece.mesh.storeys!.triangles.length);
         }
     }
 
@@ -487,10 +564,12 @@ export class Pieces {
     }
 
     get stats(): PiecesStats {
-        const bytes = [...this.pieces.values()].reduce((sum, { mesh }) => sum + 4 * (3 * mesh.corners.length + mesh.steps.length + mesh.culverts.length) + 2 * mesh.triangles.length, 0);
+        const storeyBytes = ({ storeys: s }: CellMesh) => (s ? 4 * (7 * s.offsets.length + s.slots.length + s.triangles.length) : 0);
+        const bytes = [...this.pieces.values()].reduce((sum, { mesh }) => sum + 4 * (3 * mesh.corners.length + mesh.steps.length + mesh.culverts.length) + 2 * mesh.triangles.length + storeyBytes(mesh), 0);
         return {
             cells: this.pieces.size, drawn: this.drawn.length, inView: this.inView.length,
             triangles: this.inView.reduce((sum, piece) => sum + piece.mesh.runs.slice(0, this.drawnRuns(piece)).reduce((n, run) => n + run.count, 0), 0), steps: this.inView.reduce((sum, { mesh }) => sum + mesh.steps.length / 4, 0),
+            storeyTriangles: this.inView.reduce((sum, { mesh: { storeys: s } }) => sum + (s ? s.triangles.length / 3 + 2 * (s.slots.length / 4) : 0), 0),
             bytes, ready: this.readyMs,
         };
     }
@@ -518,17 +597,24 @@ export async function piecePipelines(gpu: Gpu) {
         primitive: { topology: 'triangle-list', cullMode },
         depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: 'greater' },
     });
+    // The casters' vertices read no group 2, which holds the shadow map that they draw.
+    const empty = device.createBindGroupLayout({ entries: [] });
+    const caster = device.createRenderPipelineAsync({
+        label: 'plan storey caster', layout: device.createPipelineLayout({ bindGroupLayouts: [drawLayout, surface, empty, features] }),
+        vertex: { module: modules[0], entryPoint: 'storey_caster' }, primitive: CASTER_PRIMITIVE, depthStencil: CASTER_DEPTH,
+    });
     // A step faces its lower side from either side of its edge.
-    const [triangles, slots, cutTriangles, cutSlots, mouthTriangles, cutMouthTriangles, culverts, cutCulverts, corners] = await Promise.all([
+    const [triangles, slots, cutTriangles, cutSlots, mouthTriangles, cutMouthTriangles, culverts, cutCulverts, storeys, cutStoreys, storeyCaster, corners] = await Promise.all([
         render('piece_vertex', 'back', false), render('slot_vertex', 'none', false), render('piece_vertex', 'back', true), render('slot_vertex', 'none', true),
         render('piece_vertex', 'back', false, true), render('piece_vertex', 'back', true, true),
         render('culvert_vertex', 'none', false), render('culvert_vertex', 'none', true),
+        render('storey_vertex', 'back', false), render('storey_vertex', 'back', true), caster,
         device.createComputePipelineAsync({
             label: 'plan corners', layout: device.createPipelineLayout({ bindGroupLayouts: [computeLayout, surface] }),
             compute: { module: device.createShaderModule({ label: 'plan corners', code: wgsl('plan/corners.wgsl') }), entryPoint: 'corners' },
         }),
     ]);
-    return { triangles, slots, cutTriangles, cutSlots, mouthTriangles, cutMouthTriangles, culverts, cutCulverts, corners, drawLayout, computeLayout };
+    return { triangles, slots, cutTriangles, cutSlots, mouthTriangles, cutMouthTriangles, culverts, cutCulverts, storeys: [storeys, cutStoreys], storeyCaster, corners, drawLayout, computeLayout };
 }
 
 /**

@@ -1,6 +1,6 @@
 // The ground plan's mesh of a cell (pieces.ts), drawn before the terrain with the corridors' fragment stage
 // (PIECE): its triangles at the corners' heights from corners.wgsl, and its step slots, two triangles each
-// on the slot's four corners. A terrain vertex of the strip is the terrain's own
+// on the slot's four corners; and the meshes of its storeys over the ground, their slots all plain concrete. A terrain vertex of the strip is the terrain's own
 // vertex at its level-18 grid point, made by the same code, so the strip meets the terrain without a crack.
 // #include ../roads/corridor.wgsl
 // #include cells.wgsl
@@ -15,6 +15,9 @@ struct Piece {
     block: u32,
     first: u32,
     culverts: u32,
+    offsets: u32,
+    tris: u32,
+    top: u32,
 }
 
 @group(0) @binding(1) var<storage, read> piece: array<u32>;
@@ -285,4 +288,47 @@ fn culvert_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
     let v = PieceVertex(surface.part + vec2f(s.x, -s.y) / surface.unit, s, cw.h + l.z);
     let place = CornerPlace(vec2f(l.z - f.zc, half_of(word)), l.x);
     return piece_out(v, word, place, vec3f(n.x * ex + n.y * ey, n.z));
+}
+
+// A storey mesh's triangle corner (three corners a triangle from `tris`): its top takes its corners' looks and
+// normals; its shell (underside, edges, parapets, railings, posts, piers) is plain concrete, each triangle flat.
+@vertex
+fn storey_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
+    let t = params.tris + 3u * (index / 3u);
+    let k = piece[t + index % 3u];
+    let v = corner_at(k);
+    let a = corner_at(piece[t]);
+    let b = corner_at(piece[t + 1u]);
+    let c = corner_at(piece[t + 2u]);
+    var out: CorridorOut;
+    if (index / 3u < params.top) {
+        let o = params.out + 4u * k;
+        out = piece_out(v, piece[o + 1u], place_at(k), octahedral(unpack2x16snorm(piece[o + 3u])));
+    } else {
+        // Counter-clockwise from outside in lod space (east, north, up): the normal points out.
+        let n = normalize(cross(vec3f(b.s - a.s, b.h - a.h), vec3f(c.s - a.s, c.h - a.h)) + vec3f(0.0, 0.0, 1e-9));
+        let word = MAT_CAP | (480u << HALF_SHIFT);
+        out = piece_out(v, word, CornerPlace(vec2f(v.h, half_of(word)), v.s.x + v.s.y), n);
+    }
+    // A storey stands on no terrain vertex: a triangle with a corner of no height yet draws nothing.
+    if (!known(a.h) || !known(b.h) || !known(c.h)) {
+        out.clip = vec4f(0.0, 0.0, 2.0, 1.0);
+    }
+    return out;
+}
+
+// A storey mesh's corner height, NONE before the corners pass.
+fn storey_height(k: u32) -> f32 {
+    return bitcast<f32>(piece[params.out + 4u * k]);
+}
+
+// A storey mesh's triangle corner in the sun's frame, as a caster of the shadow map: at its stored height.
+@vertex
+fn storey_caster(@builtin(vertex_index) index: u32) -> @builtin(position) vec4f {
+    let t = params.tris + 3u * (index / 3u);
+    let k = piece[t + index % 3u];
+    let q = vec2u(piece[2u * k] & 0x7ffffu, piece[2u * k + 1u] & 0x7ffffu);
+    let u = vec2f(params.origin - surface.anchor) + vec2f(q) / 16.0;
+    let all = known(storey_height(piece[t])) && known(storey_height(piece[t + 1u])) && known(storey_height(piece[t + 2u]));
+    return select(vec4f(0.0, 0.0, 2.0, 1.0), frame.view_proj * vec4f(corner_point(PieceVertex(u, lod_space(u), storey_height(k))), 1.0), all);
 }

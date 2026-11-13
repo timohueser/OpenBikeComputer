@@ -34,7 +34,7 @@ pub fn storeys(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey
         *near = merge(near, &sub.words, k);
         for w in faces.faces.iter().filter_map(|f| f.material) {
             if let Err(k) = out.ways.binary_search_by_key(&w, |x| x.0) {
-                out.ways.insert(k, (w, DeckWay::of(graph, input, rules, w, decks.storey[w as usize])));
+                out.ways.insert(k, (w, DeckWay::of(graph, input, rules, w, &decks)));
             }
         }
         out.plans.push(faces);

@@ -493,40 +493,43 @@ pub fn mesh_storeys(
             b.tris[TOP].push(top);
             b.tris[UNDER].push([under[0], under[2], under[1]]);
         }
-        // Slots between two labels; the free outline's edge faces; the open pieces.
+        // Slots between two labels; the free outline's edge faces; the open pieces. Two runs side by side on the
+        // sheet each have their own edge: a slot between them would be a wall from one deck to the other.
         let mut free: Vec<(P, P, u32)> = Vec::new();
+        let run = |f: u32| way(label(f)).map(|w| w.run);
         for &(pa, pc, left, right, kind) in &pieces {
-            match (sheet(left), sheet(right)) {
-                (true, true) => {
-                    let (la, lb) = (label(left), label(right));
-                    if la != lb {
-                        let (da, db) = (-depth(la), -depth(lb));
-                        let top = [
-                            b.corner(pa, la, 0.0),
-                            b.corner(pc, la, 0.0),
-                            b.corner(pc, lb, 0.0),
-                            b.corner(pa, lb, 0.0),
-                        ];
-                        let under =
-                            [b.corner(pa, la, da), b.corner(pc, la, da), b.corner(pc, lb, db), b.corner(pa, lb, db)];
-                        b.slots[0].push(top);
-                        b.slots[1].push(under);
-                    }
+            let torn = sheet(left) && sheet(right) && run(left).zip(run(right)).is_some_and(|(a, c)| a != c);
+            let sides: &[bool] = match (sheet(left), sheet(right)) {
+                _ if torn => &[true, false],
+                (true, true) => &[],
+                (s_left, _) => &[s_left],
+            };
+            if sides.is_empty() {
+                let (la, lb) = (label(left), label(right));
+                if la != lb {
+                    let (da, db) = (-depth(la), -depth(lb));
+                    let top =
+                        [b.corner(pa, la, 0.0), b.corner(pc, la, 0.0), b.corner(pc, lb, 0.0), b.corner(pa, lb, 0.0)];
+                    let under =
+                        [b.corner(pa, la, da), b.corner(pc, la, da), b.corner(pc, lb, db), b.corner(pa, lb, db)];
+                    b.slots[0].push(top);
+                    b.slots[1].push(under);
                 }
-                (s_left, _) => {
-                    if kind == EdgeKind::DeckEdge || kind == EdgeKind::CellBorder || on_cell_line(pa, pc) {
-                        open.push([pa, pc]);
-                        continue;
-                    }
-                    let f = if s_left { left } else { right };
-                    let l = label(f);
-                    let d = -depth(l);
-                    wall(&mut b, EDGE, (pa, pc), s_left, (l, l), ([d; 2], [0.0; 2]));
-                    // The parapet or the railing stands on the band: across a deck's free end it would stand on
-                    // the carriageway.
-                    if plan.faces[f as usize].surface == Surface::DeckEdge {
-                        free.push(if s_left { (pa, pc, l) } else { (pc, pa, l) });
-                    }
+                continue;
+            }
+            if !torn && (kind == EdgeKind::DeckEdge || kind == EdgeKind::CellBorder || on_cell_line(pa, pc)) {
+                open.push([pa, pc]);
+                continue;
+            }
+            for &s_left in sides {
+                let f = if s_left { left } else { right };
+                let l = label(f);
+                let d = -depth(l);
+                wall(&mut b, EDGE, (pa, pc), s_left, (l, l), ([d; 2], [0.0; 2]));
+                // The parapet or the railing stands on the band: across a deck's free end it would stand on
+                // the carriageway.
+                if plan.faces[f as usize].surface == Surface::DeckEdge {
+                    free.push(if s_left { (pa, pc, l) } else { (pc, pa, l) });
                 }
             }
         }
@@ -703,7 +706,9 @@ fn posts(
 
 /// The piers at the baked pier points: each under the highest sheet that holds its point, along the deck's line
 /// there, from the underside to `pier_depth_m` under the ground; left out where its foot stands in a paved face of
-/// storey 0 or on a lower storey's sheet.
+/// storey 0 or on a lower storey's sheet. A pier on a cell line is one solid in two halves: each cell reads its
+/// sheet at the point of its own square nearest the pier's point, and the line, the ground and the tests of the
+/// foot at the pier's whole ring, the same in both cells.
 fn piers(
     b: &mut Build,
     storeys: &Storeys,
@@ -718,8 +723,9 @@ fn piers(
     let c = CELL_UNITS as f64;
     for &pt in &storeys.piers {
         let q = [f64::from(pt[0]), f64::from(pt[1])];
+        let own = [q[0].clamp(1.0, c - 1.0), q[1].clamp(1.0, c - 1.0)];
         let Some((k, top)) =
-            (0..storeys.plans.len()).rev().find_map(|k| sheet_at(&storeys.plans[k], &labels[k], q).map(|l| (k, l)))
+            (0..storeys.plans.len()).rev().find_map(|k| sheet_at(&storeys.plans[k], &labels[k], own).map(|l| (k, l)))
         else {
             continue;
         };
@@ -730,14 +736,11 @@ fn piers(
         let (along, across) = (w.pier_m[0] / 2.0 / mpu, w.pier_m[1] / 2.0 / mpu);
         let n = [-d[1], d[0]];
         let corner = |u: f64, v: f64| [u * along * d[0] + v * across * n[0], u * along * d[1] + v * across * n[1]];
-        let ring = clip(pt, &[corner(-1.0, -1.0), corner(1.0, -1.0), corner(1.0, 1.0), corner(-1.0, 1.0)]);
+        let whole = [corner(-1.0, -1.0), corner(1.0, -1.0), corner(1.0, 1.0), corner(-1.0, 1.0)];
+        let ring = clip(pt, &whole);
         if ring.len() < 3 {
             continue;
         }
-        let centre = {
-            let s = ring.iter().fold([0.0, 0.0], |s, p| [s[0] + f64::from(p[0]), s[1] + f64::from(p[1])]);
-            [(s[0] / ring.len() as f64).clamp(0.0, c), (s[1] / ring.len() as f64).clamp(0.0, c)]
-        };
         let paved = |p: [f64; 2]| {
             find(words, p).is_some_and(|l| {
                 let s = records::label(words, l)[0] & 0xff;
@@ -745,12 +748,12 @@ fn piers(
             })
         };
         let lower = |p: [f64; 2]| (0..k).any(|j| sheet_at(&storeys.plans[j], &labels[j], p).is_some());
-        let foot: Vec<[f64; 2]> = ring.iter().map(|p| [f64::from(p[0]), f64::from(p[1])]).chain([centre]).collect();
+        let foot: Vec<[f64; 2]> = whole.iter().map(|p| [q[0] + p[0], q[1] + p[1]]).chain([q]).collect();
         if foot.iter().any(|&p| paved(p) || lower(p)) {
             stats.piers_left_out += 1;
             continue;
         }
-        let ground = find(words, centre).unwrap_or(NO_LABEL);
+        let ground = find(words, q).unwrap_or(NO_LABEL);
         prism(b, PIER, &ring, (top, -w.depth_m), (ground, -structures.pier_depth_m));
         stats.piers += 1;
     }

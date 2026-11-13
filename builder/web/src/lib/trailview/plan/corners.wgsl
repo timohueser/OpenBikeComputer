@@ -9,7 +9,8 @@
 // #include line-look.wgsl
 
 // A piece's words: its corners (2 words each, as `mesh/mod.rs` of obc-ground-plan packs them), at `out` the
-// corners' height, look word, place word and normal, at `slots` its step slots; as pieces.ts lays them out.
+// corners' height, look word, place word and normal, at `slots` its step slots; as pieces.ts lays them out. A
+// storey mesh's corners take their offsets (`mesh/shell.rs`).
 struct Piece {
     // The cell's north-west corner in whole world units.
     origin: vec2i,
@@ -24,6 +25,11 @@ struct Piece {
     first: u32,
     // The first word of the culvert mouths (piece.wgsl).
     culverts: u32,
+    // A storey mesh's: the first word of its corners' height offsets (f32 metres; 0 for a cell's mesh), of its
+    // triangles (three corners each) and the count of its top's triangles (piece.wgsl).
+    offsets: u32,
+    tris: u32,
+    top: u32,
 }
 
 @group(0) @binding(0) var<storage, read_write> piece: array<u32>;
@@ -67,11 +73,13 @@ fn cell_stamp(u: vec2i) -> Stamp {
     return stamp_at(18u, node << vec2u(8u), select(NO_DATA, entry - 1u, entry != 0u), u);
 }
 
-fn height_of(q: vec2i, label: u32) -> f32 {
+// A storey's corner lies on no ground: no stamp bounds it. Its plain terrain (a pier's foot) is the stamp's ground,
+// which reads no drawn page: the storeys' corners are made in `all` passes only.
+fn height_of(q: vec2i, label: u32, storey: bool) -> f32 {
     let u = params.origin + q / 16;
     // The plain terrain's rule: the drawn page, which holds the water's bed and the structures' ground as
     // the terrain beside the mesh draws them.
-    if (label == M_NONE) {
+    if (label == M_NONE && !storey) {
         return units_height(u, 18u);
     }
     // Under a label, the stamp's ground of the level-18 page: the bicubic of the stored pages after the water and
@@ -81,8 +89,11 @@ fn height_of(q: vec2i, label: u32) -> f32 {
         return NONE;
     }
     let s = cell_stamp(u);
+    if (label == M_NONE) {
+        return stamped_ground(base, s);
+    }
     let h = height_at(params.block, vec2f(q), label, stamped_ground(base, s), 0u);
-    return stamp_bounded(h.x, h.y == H_PAVED, s);
+    return select(stamp_bounded(h.x, h.y == H_PAVED, s), h.x, storey);
 }
 
 // Whether a line's finish word is of a wall class: the one flag that heights reads for a wall at its edge.
@@ -258,7 +269,7 @@ fn corners(@builtin(local_invocation_index) lane: u32, @builtin(workgroup_id) gr
     let cell = vec2i(i32(M_CELL));
     var h = NONE;
     if (makes && (tap == 0u || (!terrain_only && may_pave(label))) && (!terrain_only || label == M_NONE)) {
-        h = height_of(clamp(q + taps[tap], vec2i(0), cell), label);
+        h = height_of(clamp(q + taps[tap], vec2i(0), cell), label, params.offsets != 0u);
     }
     corner_heights[lane] = h;
     workgroupBarrier();
@@ -302,6 +313,9 @@ fn corners(@builtin(local_invocation_index) lane: u32, @builtin(workgroup_id) gr
     }
     // Octahedral, as piece.wgsl decodes it.
     let e = n.xy / (abs(n.x) + abs(n.y) + n.z);
+    if (params.offsets != 0u && known(h)) {
+        h += bitcast<f32>(piece[params.offsets + k]);
+    }
     piece[o] = bitcast<u32>(h);
     piece[o + 1u] = look.x;
     piece[o + 2u] = look.y;

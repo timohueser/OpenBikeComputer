@@ -315,7 +315,9 @@ pub(crate) fn split(cell: CellKey, parts: &[Part], input: &CellInput, samples: &
         // The station at metres m along the piece: on the first of its spans whose metres hold m.
         let at = |m: f64| {
             let span = (piece.from.span..=piece.to.span)
-                .find(|&k| (0.0..=part.spans[k as usize].len_m).contains(&(sign * (m - part.spans[k as usize].along0_m))))
+                .find(|&k| {
+                    (0.0..=part.spans[k as usize].len_m).contains(&(sign * (m - part.spans[k as usize].along0_m)))
+                })
                 .unwrap_or(piece.to.span);
             let s = sign * (m - part.spans[span as usize].along0_m);
             norm(part, Station { part: piece.part as u32, span, u: u_at(&part.spans[span as usize], s) })
@@ -337,7 +339,9 @@ pub(crate) fn split(cell: CellKey, parts: &[Part], input: &CellInput, samples: &
                 State::Hidden => continue,
             };
             match out.last_mut() {
-                Some(p) if p.part == piece.part && p.to == c[0].0 && p.level == level && p.link == piece.link => p.to = c[1].0,
+                Some(p) if p.part == piece.part && p.to == c[0].0 && p.level == level && p.link == piece.link => {
+                    p.to = c[1].0
+                }
                 _ => out.push(Piece { from: c[0].0, to: c[1].0, level, ..piece.clone() }),
             }
         }

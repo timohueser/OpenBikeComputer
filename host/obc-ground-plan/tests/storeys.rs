@@ -65,7 +65,9 @@ fn open_without_ground(key: CellKey, g: &WayGraph, decks: &[i8], open: &[[[i32; 
             let m = [f64::from(a[0] + b[0]) / 2.0, f64::from(a[1] + b[1]) / 2.0];
             !ends.iter().any(|(o, d, on)| {
                 let v = [m[0] - o[0], m[1] - o[1]];
-                (v[0] * d[0] + v[1] * d[1]).abs() * mpu <= ON_END_M && libm::hypot(v[0], v[1]) * mpu <= END_REACH_M && *on
+                (v[0] * d[0] + v[1] * d[1]).abs() * mpu <= ON_END_M
+                    && libm::hypot(v[0], v[1]) * mpu <= END_REACH_M
+                    && *on
             })
         })
         .map(|p| format!("{key:?}: the open piece {p:?} has nothing behind it"))

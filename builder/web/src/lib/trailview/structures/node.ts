@@ -84,7 +84,7 @@ export function structureMeshes(list: Feature[], tile: Node, node: Node, plan = 
     const owns: Owns = (x, y) => x >= x0 && x < x0 + side && y >= y0 && y < y0 + side;
     const words: number[] = [], far = { mesh: new MeshBuilder(), anchored: new AnchoredBuilder(words) }, near = { mesh: new MeshBuilder(), anchored: new AnchoredBuilder(words) };
     const shapes = features(list, tile), { lines } = shapes;
-    bridges(far.mesh, list, tile, lines, owns);
+    far.mesh.bridge(() => bridges(far.mesh, list, tile, lines, owns));
     tunnels(far.mesh, lines, owns);
     galleries(far.mesh, lines, owns);
     rails(far.mesh, far.anchored, list, tile, lines, owns, [x0, y0, x0 + side, y0 + side]);

@@ -39,8 +39,8 @@ export interface CellBuilt { id: number; ok: true; words: Uint32Array; rim: Uint
 /** A cell's far block from a `far` job: the `far` of its `cell` job. */
 export interface FarBuilt { id: number; ok: true; far: Uint32Array; ms: number; heap: number }
 /**
- * A cell's near mesh (`mesh/mod.rs` of obc-ground-plan gives the bytes), or `gone` when the worker no
- * longer keeps its input; `ms` is the mesh stage.
+ * A cell's near mesh (`mesh/mod.rs` of obc-ground-plan gives the bytes), then the meshes of its storeys over the
+ * ground (`mesh/shell.rs`) where it has any, or `gone` when the worker no longer keeps its input; `ms` is the mesh stage.
  */
 export type Meshed = { id: number; ok: true; mesh: ArrayBuffer; ms: number } | { id: number; ok: true; gone: true };
 /**
@@ -199,14 +199,32 @@ function meshCell({ id, cell, rims }: Extract<PlanRequest, { type: 'mesh' }>): v
     const start = performance.now();
     try {
         // A first mesh of an input always gives its bytes.
-        const mesh = input.mesh(rims)!;
-        post({ id, ok: true, mesh: mesh.buffer as ArrayBuffer, ms: performance.now() - start } satisfies Meshed, [mesh.buffer]);
+        const mesh = withStoreys(input.mesh(rims)!, input);
+        post({ id, ok: true, mesh, ms: performance.now() - start } satisfies Meshed, [mesh]);
     } catch (error) {
         failed(id, error);
     } finally {
         input.free();
         kept.delete(name);
     }
+}
+
+/** A cell's mesh bytes, then its storeys' mesh bytes where it has a storey over the ground. A storey mesh that the crate refuses draws none. */
+function withStoreys(mesh: Uint8Array, input: MeshInput): ArrayBuffer {
+    let storeys: Uint8Array;
+    try {
+        storeys = input.storeys();
+    } catch (error) {
+        if (trapped(error)) throw error;
+        console.warn(`Ground plan storeys: ${message(error)}`);
+        return mesh.buffer as ArrayBuffer;
+    }
+    // A storey mesh's corner count, after its magic and its cell.
+    if (!new Uint32Array(storeys.buffer, storeys.byteOffset, 4)[3]) return mesh.buffer as ArrayBuffer;
+    const out = new Uint8Array(mesh.byteLength + storeys.byteLength);
+    out.set(mesh);
+    out.set(storeys, mesh.byteLength);
+    return out.buffer;
 }
 
 function time({ id, request, runs }: Extract<PlanRequest, { type: 'time' }>): void {

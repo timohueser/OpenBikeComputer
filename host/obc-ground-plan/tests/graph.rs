@@ -209,7 +209,11 @@ fn the_tiles_carry_the_levels_of_each_cell() {
         let levelled = build_levelled(key, &input, Sections::embedded());
         let k = |st: &Station| (st.span, st.u);
         let state = |st: &Station| {
-            let run = computed.levels.runs.iter().find(|r| r.from.part == st.part && k(&r.from) <= k(st) && k(st) <= k(&r.to));
+            let run = computed
+                .levels
+                .runs
+                .iter()
+                .find(|r| r.from.part == st.part && k(&r.from) <= k(st) && k(st) <= k(&r.to));
             run.map(|r| r.state)
         };
         // A point strictly inside the way: an end sample lies on a run boundary, where rounding picks either run.
@@ -238,7 +242,9 @@ fn the_tiles_carry_the_levels_of_each_cell() {
                 faults.push(format!("{key:?} way {w}: on {:?}, its stretch's state gives {want:?}", way.level));
             }
         }
-        for r in computed.levels.runs.iter().filter(|r| r.state == State::Hidden && level_tags::inside(&computed, r.way)) {
+        for r in
+            computed.levels.runs.iter().filter(|r| r.state == State::Hidden && level_tags::inside(&computed, r.way))
+        {
             let st = Station { part: r.from.part, span: (r.from.span + r.to.span) / 2, u: 0.5 };
             if k(&st) > k(&r.from) && k(&st) < k(&r.to) && levelled.way_at(&st, Level::Ground).is_some() {
                 faults.push(format!("{key:?} way {}: a way of the storeys' graph lies on its HIDDEN stretch", r.way));

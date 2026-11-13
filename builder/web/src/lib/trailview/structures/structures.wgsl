@@ -6,6 +6,7 @@
 // #include ../terrain/drawn-mesh.wgsl
 // #include ../terrain/portal-box.wgsl
 // #include ../ground/look.wgsl
+// #include ../plan/cells.wgsl
 
 // As Frame and Node of terrain.wgsl, which share their buffers.
 struct Frame {
@@ -233,8 +234,15 @@ fn stones(p: vec3f, n: vec3f, pixel: f32) -> f32 {
     return mix(stone, 0.77, smoothstep(0.02, 0.08, pixel));
 }
 
+// A bridge's faces with the ground plan: where its meshes draw, their storeys draw the bridge, and these hand over to
+// them by the dither of a cut piece's fade.
+override BRIDGES: bool = false;
+
 @fragment
 fn structure_fragment(in: StructureOut) -> @location(0) vec4f {
+    if (BRIDGES && dither(in.clip.xy + PLAN_DITHER) < plan_share(in.u)) {
+        discard;
+    }
     var n = normalize(cross(dpdx(in.relative), dpdy(in.relative)));
     n *= -sign(dot(n, in.relative));
     let flags = u32(round(in.colour.a * 255.0));
@@ -274,4 +282,12 @@ fn structure_fragment(in: StructureOut) -> @location(0) vec4f {
         lit = albedo;
     }
     return vec4f(atmosphere(lit, in.relative, in.altitude), 1.0);
+}
+
+// A bridge's faces as casters with the ground plan: none where the storeys of its meshes cast.
+@fragment
+fn bridge_caster(in: StructureOut) {
+    if (plan_share(in.u) > 0.5) {
+        discard;
+    }
 }
