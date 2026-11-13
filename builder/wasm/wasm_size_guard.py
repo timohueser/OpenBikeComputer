@@ -23,10 +23,10 @@ BUDGETS = {
     # Measured on the build with the outline's turns, the levels that the tiles carry, the faces' tile-line
     # vertices, the decks' ceilings and end faces, the shared water level and curve of the feature bake, line water
     # and its culverts with their mouths, the classifier's ford rule, and the storeys over the ground (the crate's
-    # feature `storeys`, on: 794,148 B gzipped with the glue, 2,058,217 B raw, local build of GP12.3b part B; the
-    # storeys take 27,125 B of it), the next whole KiB plus 2 KiB for the codegen's noise between builds. The owner
+    # feature `storeys`, on: 795,419 B gzipped with the glue, 2,060,123 B raw, local build of GP12.3b part B; the
+    # storeys take 28,396 B of it), the next whole KiB plus 2 KiB for the codegen's noise between builds. The owner
     # allows a few per cent for line water and about 60 kB for the crossing block when stated.
-    "ground-plan": {"gzipped": 778 * 1024, "raw_wasm": 2012 * 1024},
+    "ground-plan": {"gzipped": 779 * 1024, "raw_wasm": 2014 * 1024},
 }
 
 ADVICE = {
