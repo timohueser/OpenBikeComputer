@@ -200,7 +200,8 @@ const isDeleted = (value: unknown): value is DeletedRide =>
     isRecord(value) && isString(value.key) && rideKey.test(value.key) && optional(value.device, isString);
 
 const isBox = (value: unknown): value is MapBox =>
-    isRecord(value) && [value.minLat, value.minLon, value.maxLat, value.maxLon].every(Number.isInteger);
+    isRecord(value) && [value.minLat, value.minLon, value.maxLat, value.maxLon].every(Number.isInteger)
+    && (value.minLat as number) < (value.maxLat as number) && (value.minLon as number) < (value.maxLon as number);
 
 const isNextMap = (value: unknown): value is NextMap => isRecord(value) && isStrings(value.regions)
     && Array.isArray(value.boxes) && value.boxes.every(isBox) && isString(value.light) && isString(value.dark) && isNumber(value.bytes);

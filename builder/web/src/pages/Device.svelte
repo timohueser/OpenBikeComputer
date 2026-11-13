@@ -24,8 +24,9 @@
      * rides that came from its card, and the map that waits. */
     let held = $state.raw<{ waiting: Named[]; leaving: number; sent: Named[]; rides: number; last: number | null; next: NextMap | null }>(
         { waiting: [], leaving: 0, sent: [], rides: 0, last: null, next: null });
-    /** What the map that waits changes against the map on the device; null until the map catalog says it. */
-    let news = $state<'New area' | 'New colours' | null>(null);
+    /** The regions of the map catalog, loaded one time when a map waits: a region of it can be the map on the device. */
+    let regions = $state.raw<{ id: string; name: string }[] | null>(null);
+    let asked = false;
     let reads = 0;
     /** The rider clicked Disconnect, and the device did not connect again since. */
     let released = $state(false);
@@ -93,17 +94,17 @@
     });
     $effect(() => { void read(device?.storeId); });
 
-    // The map catalog loads only for a map that waits: a region of it can be the map on the device.
     $effect(() => {
-        const next = held.next, on = device;
-        news = null;
-        if (!next) return;
-        let live = true;
-        void platform.catalog().then(({ body }) => JSON.parse(body).regions as { id: string; name: string }[], () => []).then(regions => {
-            const known = deviceArea(on, regions);
-            if (live) news = known && sameArea(next, known) ? 'New colours' : 'New area';
-        });
-        return () => { live = false; };
+        if (!held.next || asked) return;
+        asked = true;
+        void platform.catalog().then(({ body }) => (JSON.parse(body).regions as { id: string; name: string }[]).map(({ id, name }) => ({ id, name })), () => [])
+            .then(list => { regions = list; });
+    });
+    /** What the map that waits changes against the map on the device; null until the regions are there. */
+    const news = $derived.by(() => {
+        if (!held.next || !regions) return null;
+        const known = deviceArea(device, regions);
+        return known && sameArea(held.next, known) ? 'New colours' : 'New area';
     });
 
     /** A device that this page adopted is remembered as it is: a second chooser would open a second link to it. */

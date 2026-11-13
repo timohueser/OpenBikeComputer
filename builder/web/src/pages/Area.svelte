@@ -7,7 +7,7 @@
     import { CoverageStore } from '../lib/coverage/store.svelte';
     import { remembered } from '../lib/device-sync/remembered.svelte';
     import { formatBytes } from '../lib/format';
-    import type { RouteRecord } from '../lib/library/records';
+    import type { NextMap, RouteRecord } from '../lib/library/records';
     import type { Library } from '../lib/library/store';
     import { planTitle } from '../lib/planner/editor';
     import { isPlan } from '../lib/planner/library';
@@ -17,7 +17,7 @@
     import { formatDistance } from '../lib/settings/format';
     import Segmented from '../lib/ui/Segmented.svelte';
     import Window from '../lib/ui/Window.svelte';
-    import { deviceArea, sameMap, type MapArea } from './area/area';
+    import { deviceArea, sameMap } from './area/area';
     import { routesOutside } from './area/outside';
 
     let { library, active }: { library: Library; active: boolean } = $props();
@@ -31,8 +31,8 @@
     let unsaved = $state('');
     let tool = $state<Tool | 'none'>('region');
     let colours = $state(false);
-    /** The area and the colours as the page opened them: Done writes only a change of them. */
-    let opened: MapArea | null = null;
+    /** The stored map that waits: Done writes only a value that differs from it. */
+    let stored: NextMap | null = null;
     let routes = $state.raw<RouteRecord[]>([]);
     /** The ids of the routes that wait for the device or are on its card: the warning is about them. */
     let onDevice = $state.raw(new Set<string>());
@@ -63,7 +63,7 @@
             const made = new CoverageStore(CatalogClient.fromBody(body, url, { fetchImpl: platform.catalogFetch }), body);
             const start = next ?? deviceArea(remembered.device, made.catalog.regions);
             if (start) made.setArea(start);
-            opened = made.area();
+            stored = next ?? null;
             const card = remembered.device?.storeId;
             onDevice = new Set([...waiting ?? [], ...Object.entries(sent ?? {}).filter(([, copy]) => copy.device.startsWith(`${card}:`)).map(([id]) => id)]);
             routes = all;
@@ -74,11 +74,12 @@
 
     /** Writes the map that the device gets next, or none when it is the map on the device or has no part. */
     async function done() {
-        if (store && opened) {
+        if (store) {
             const area = store.area(), known = deviceArea(remembered.device, store.catalog.regions);
-            const same = !parts.length || (known && sameMap(area, known));
+            const next = !parts.length || bytes === null || (known && sameMap(area, known)) ? null : { ...area, bytes };
+            const same = next && stored ? sameMap(next, stored) && next.bytes === stored.bytes : next === stored;
             try {
-                if (!sameMap(area, opened)) await library.setState('nextMap', same || bytes === null ? null : { ...area, bytes });
+                if (!same) await library.setState('nextMap', next);
             } catch (error) {
                 unsaved = error instanceof Error ? error.message : String(error);
                 return;
@@ -124,7 +125,7 @@
                             {#each leaving as route (route.id)}
                                 <p>“{route.name}” has {formatDistance(route.metres)} {route.region ? `in ${route.region.name}` : 'outside it'}.</p>
                                 <div class="answers">
-                                    <button type="button" class="button" onclick={() => store!.addBox(route.box)}>Add the box around it</button>
+                                    <button type="button" class="button" onclick={() => route.boxes.forEach(box => store!.addBox(box))}>{route.boxes.length === 1 ? 'Add the box around it' : 'Add the boxes around it'}</button>
                                     {#if route.region}
                                         {@const region = route.region}
                                         <button type="button" class="link" onclick={() => store!.addRegion(region.id)}>All of {region.name}</button>

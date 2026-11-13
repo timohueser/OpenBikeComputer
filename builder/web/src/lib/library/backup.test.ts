@@ -47,7 +47,9 @@ describe('library backup', () => {
         bytes[45] ^= 0xff;
         const files = [new Blob([bytes]), backup.slice(0, backup.size / 2), await edited(backup, json => ({ ...json, version: 2 })),
             await edited(backup, json => ({ ...json, rides: [...json.rides as RideRecord[], ride('20260809T070000Z')] })),
-            await edited(backup, json => ({ ...json, state: { nextMap: { regions: [], boxes: [{ minLat: 46.5 }], light: 'default', dark: 'dusk', bytes: 1 } } }))];
+            await edited(backup, json => ({ ...json, state: { nextMap: { regions: [], boxes: [{ minLat: 46.5 }], light: 'default', dark: 'dusk', bytes: 1 } } })),
+            // A box with no height.
+            await edited(backup, json => ({ ...json, state: { nextMap: { regions: [], boxes: [{ minLat: 46_000_000, minLon: 8_000_000, maxLat: 46_000_000, maxLon: 9_000_000 }], light: 'default', dark: 'dusk', bytes: 1 } } }))];
         for (const file of files) await expect(loadBackup(target, file)).rejects.toThrow();
         expect(await target.contents()).toEqual({ routes: [], versions: {}, rides: [], files: new Map(), state: {} });
     });

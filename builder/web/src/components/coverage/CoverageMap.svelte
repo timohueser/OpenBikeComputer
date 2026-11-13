@@ -495,13 +495,11 @@
 
     {#if store.drawError}
         <div class="overlay bottom-left chip error">{store.drawError}</div>
-    {:else if !rail}
-        <!-- The page says what a click does. -->
-    {:else if tool === "box"}
+    {:else if rail && tool === "box"}
         <div class="overlay bottom-left chip">Drag a box. Esc to cancel.</div>
-    {:else if tool === "region"}
+    {:else if rail && tool === "region"}
         <div class="overlay bottom-left chip">Click a region to add it.</div>
-    {:else if partCount === 0 && tool === "none"}
+    {:else if rail && partCount === 0 && tool === "none"}
         <div class="overlay bottom-left chip">
             Choose a region or draw an area.
         </div>
@@ -760,10 +758,8 @@
         font-size: 13px;
     }
 
-    /* app.css drops Leaflet's zoom control 58px for the old panel's search bar;
-       this pane has the tool rail there instead. The offset tucks the control
-       directly under the rail (2 × 40px buttons + gap + padding + 12px top
-       ≈ 106px) rather than parking it mid-pane. */
+    /* Leaflet's zoom control stands under the rail: 2 × 40px buttons, the gap, the padding and 12px at the top
+       are about 106px. */
     .railed :global(.leaflet-top.leaflet-left) {
         top: 116px;
     }
