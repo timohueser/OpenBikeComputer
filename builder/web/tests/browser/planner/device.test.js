@@ -28,29 +28,86 @@ test('with no device remembered, the page offers the first connection and the no
   expect(errors).toEqual([]);
 });
 
-test('a remembered device that is not connected shows what waits and what was on it', async ({ page }) => {
-  // The test page of a cover gives the library of the app.
+/** Fills the library through the test page of a cover, which gives the library of the app. */
+async function fill(page, state, remembered = null) {
   await page.goto('/planner.html?cover=none');
   await page.waitForFunction(() => window.coverTest);
-  await page.evaluate(async ({ summary, device }) => {
+  await page.evaluate(async ({ summary, state, remembered }) => {
     const { library } = window.coverTest;
     for (const [id, name] of [['lake', 'Lake loop'], ['pass', 'Pass day']]) await library.saveRoute({ id, revision: 0, name, updatedAt: 0, trip: {}, summary });
-    await library.setState('waiting', ['lake', 'pass']);
-    await library.setState('leaving', ['old']);
-    localStorage.setItem('obc-device', JSON.stringify(device));
-  }, { summary, device });
+    for (const [key, value] of Object.entries(state)) await library.setState(key, value);
+    if (remembered) localStorage.setItem('obc-device', JSON.stringify(remembered));
+  }, { summary, state, remembered });
+}
 
+const row = (page, label) => page.locator('.row', { has: page.getByText(label, { exact: true }) });
+
+test('a remembered device that is not connected shows the last sync and what waits', async ({ page }) => {
+  await fill(page, { waiting: ['lake', 'pass'], leaving: ['old'] }, device);
   const { errors, requests } = await open(page);
-  await expect(page.getByRole('heading', { name: 'Your device is not connected', level: 1 })).toBeVisible();
-  await expect(page.getByText('Last update on 7 November.')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Connect it again' })).toBeEnabled();
-  await expect(page.getByText('2 routes: “Lake loop”, “Pass day”')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'OBC-4F2A', level: 1 })).toBeVisible();
+  await expect(page.getByText('Not connected', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Connect', exact: true })).toBeEnabled();
+  await expect(row(page, 'Sync')).toContainText('Last sync on 7 November');
+  await expect(row(page, 'Waits for the device')).toContainText('2 routes: Lake loop · Pass day');
+  await expect(row(page, 'Waits for the device').getByRole('link', { name: 'Lake loop' })).toHaveAttribute('href', '#/route/lake');
   await expect(page.getByText('1 route to remove from the device')).toBeVisible();
-  await expect(page.getByText('Map: Alps')).toBeVisible();
-  await expect(page.getByText('6 routes', { exact: true })).toBeVisible();
+  await expect(page.getByText('Routes go to the device when you connect it.')).toBeVisible();
   await expect(chip(page)).toHaveAttribute('href', '#/device');
   expect(requests.filter(url => /catalog|\.obcm/.test(url))).toEqual([]);
   expect(errors).toEqual([]);
+});
+
+test('connected, the rows show the sync, the routes, the rides, the memory card, the map and the software', async ({ page }) => {
+  // The pretend device holds "Lake loop", which the library sent to its card.
+  await fill(page, { sent: { lake: { device: `${device.storeId}:9`, line: '' } } });
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.route(url => url.hostname !== '127.0.0.1', route => route.abort());
+  await page.goto('/planner.html?fake-device#/device');
+  await page.getByRole('button', { name: 'Connect a device' }).click();
+  await expect(page.getByText('Connected', { exact: true })).toBeVisible();
+  await expect(row(page, 'Sync')).toContainText(/In sync\. Last sync today at \d\d:\d\d\./);
+  await expect(row(page, 'Sync')).toContainText('2 rides came in');
+  await expect(row(page, 'Sync').getByRole('button', { name: 'Sync now' })).toBeEnabled();
+  await expect(row(page, 'Routes')).toContainText('1 on the device');
+  await expect(row(page, 'Routes').getByRole('link', { name: 'Lake loop' })).toHaveAttribute('href', '#/route/lake');
+  await expect(row(page, 'Rides')).toContainText('2 in your library came from this device');
+  await expect(row(page, 'Rides')).toContainText('The last on');
+  await expect(row(page, 'Memory card')).toContainText('Map 39.1 KB');
+  await expect(row(page, 'Memory card')).toContainText('Routes 1.2 KB');
+  await expect(row(page, 'Map')).toContainText('Baden-Württemberg');
+  await expect(row(page, 'Software')).toContainText('Version 0.9.2');
+  await expect(row(page, 'Software').getByRole('button')).toHaveCount(0);
+  await page.evaluate(() => window.deviceTest.offer('0.9.3'));
+  await expect(row(page, 'Software')).toContainText('Version 0.9.3 is ready');
+  await expect(row(page, 'Software')).toContainText('The device has version 0.9.2');
+  await expect(row(page, 'Software').getByRole('button', { name: 'Update' })).toBeEnabled();
+  await expect(chip(page).locator('.dot')).toHaveClass(/connected/);
+  expect(errors).toEqual([]);
+});
+
+test('a sync turns the icon beside the chip, and after a problem the icon starts the sync again', async ({ page }) => {
+  // A waiting id with no route is a problem of the sync.
+  await fill(page, { waiting: ['missing'] });
+  await page.route(url => url.hostname !== '127.0.0.1', route => route.abort());
+  await page.goto('/planner.html?fake-device#/device');
+  await page.waitForFunction(() => window.deviceTest);
+  await page.evaluate(() => window.deviceTest.hold());
+  await page.getByRole('button', { name: 'Connect a device' }).click();
+  const banner = page.getByRole('banner');
+  await expect(banner.getByRole('img', { name: 'Syncing' })).toBeVisible();
+  await expect(row(page, 'Sync')).toContainText('Syncing');
+  await expect(row(page, 'Sync').getByRole('button', { name: 'Sync now' })).toBeDisabled();
+  await page.evaluate(() => window.deviceTest.release());
+  await expect(row(page, 'Sync')).toContainText('A route that waits cannot be read.');
+  await expect(row(page, 'Sync').getByRole('button', { name: 'Try again' })).toBeEnabled();
+  await expect(banner.getByRole('img', { name: 'Syncing' })).toHaveCount(0);
+  await page.evaluate(() => window.deviceTest.hold());
+  await banner.getByRole('button', { name: 'Sync again' }).click();
+  await expect(banner.getByRole('img', { name: 'Syncing' })).toBeVisible();
+  await page.evaluate(() => window.deviceTest.release());
+  await expect(banner.getByRole('button', { name: 'Sync again' })).toBeVisible();
 });
 
 test('a browser with no WebUSB says that the cable works in Chrome and Edge, and offers no button', async ({ page }) => {

@@ -1,20 +1,27 @@
 <script lang="ts">
     import { onMount } from 'svelte';
     import Card from '../lib/ui/Card.svelte';
+    import Icon from '../components/planner/PlannerIcon.svelte';
     import Drawing from './device/Drawing.svelte';
+    import Software from './device/Software.svelte';
     import { deviceHolder } from '../lib/device/session.svelte';
     import { deviceName, rememberDevice, remembered, rememberedReady } from '../lib/device-sync/remembered.svelte';
     import { deviceSync } from '../lib/device-sync/state.svelte';
     import { formatBytes } from '../lib/format';
+    import type { RouteRecord } from '../lib/library/records';
     import type { Library } from '../lib/library/store';
     import { planTitle } from '../lib/planner/editor';
     import { isPlan } from '../lib/planner/library';
+    import { ROUTES } from '../lib/routes';
 
     let { library }: { library: Library; active: boolean } = $props();
 
+    type Named = { id: string; name: string };
     const siteBase = import.meta.env.VITE_SITE_BASE || '/';
-    /** The names of the routes that wait; a waiting id with no route does not count. */
-    let waits = $state.raw<{ names: string[]; leaving: number }>({ names: [], leaving: 0 });
+    /** What the library holds for the remembered device: the routes that wait or leave, the routes on its card, and the
+     * rides that came from its card. */
+    let held = $state.raw<{ waiting: Named[]; leaving: number; sent: Named[]; rides: number; last: number | null }>(
+        { waiting: [], leaving: 0, sent: [], rides: 0, last: null });
     let reads = 0;
     /** The rider clicked Disconnect, and the device did not connect again since. */
     let released = $state(false);
@@ -30,7 +37,65 @@
             : !session && !deviceHolder.error ? 'loading'
             : rememberedReady() ? 'connected'
             : device ? 'before' : 'never');
+    /** A device on the cable that is not the remembered one; Connect uses it with no chooser. */
+    const other = $derived(view !== 'connected' && status === 'ready' && session?.info ? { name: deviceName(session.info.serialNumber), formatted: !!session.store } : null);
     $effect(() => { if (status === 'ready') released = false; });
+
+    const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
+    const day = (date: Date) => date.toLocaleDateString('en-GB', { day: 'numeric', month: 'long' });
+    function lastSync(at: number | null): string {
+        if (at === null) return 'No sync yet';
+        const date = new Date(at);
+        return date.toDateString() === new Date().toDateString()
+            ? `Last sync today at ${date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`
+            : `Last sync on ${day(date)}`;
+    }
+    const report = $derived(deviceSync.report);
+    const did = $derived(report ? [
+        report.rides && `${plural(report.rides, 'ride')} came in`,
+        report.sent && `${plural(report.sent, 'route')} sent`,
+        report.removed && `${plural(report.removed, 'route')} removed`,
+    ].filter(Boolean).join(' · ') : '');
+    const more = $derived(device ? device.routes - held.sent.length : 0);
+    const parts = $derived(device ? [
+        { label: 'Map', bytes: device.bytes.map, colour: 'var(--water)' },
+        { label: 'Routes', bytes: device.bytes.routes, colour: 'var(--route)' },
+        { label: 'Rides', bytes: device.bytes.rides, colour: 'var(--rust)' },
+    ] : []);
+
+    const nameOf = (route: RouteRecord) => route.name || (isPlan(route) ? planTitle(route.trip) : 'Route');
+    async function named(ids: string[]): Promise<Named[]> {
+        const routes = await Promise.all(ids.map(id => library.item(id)));
+        return routes.flatMap(route => route && 'revision' in route ? [{ id: route.id, name: nameOf(route) }] : []);
+    }
+
+    /** The rides come from `library.rides()`: a ride record names its card in `device`, and the library has no index of it. */
+    async function read(card: string | undefined) {
+        const mine = ++reads;
+        const [waiting, leaving, sent, rides] = await Promise.all([library.state('waiting'), library.state('leaving'), library.state('sent'),
+            card ? library.rides() : []]);
+        const onCard = Object.entries(sent ?? {}).filter(([, copy]) => copy.device.startsWith(`${card}:`)).map(([id]) => id);
+        const fromCard = rides.filter(ride => ride.device?.startsWith(`${card}:`));
+        const next = { waiting: await named(waiting ?? []), leaving: leaving?.length ?? 0, sent: await named(onCard),
+            rides: fromCard.length, last: fromCard.length ? Math.max(...fromCard.map(ride => ride.summary.start)) : null };
+        if (mine === reads) held = next;
+    }
+
+    onMount(() => {
+        void deviceHolder.open();
+        return library.onChange(store => { if (store !== 'covers' && store !== 'versions') void read(remembered.device?.storeId); });
+    });
+    $effect(() => { void read(device?.storeId); });
+
+    /** A device that this page adopted is remembered as it is: a second chooser would open a second link to it. */
+    function connect() {
+        const current = session;
+        if (!current) return;
+        const adopted = current.status === 'ready' ? Promise.resolve(true) : current.requestDevice();
+        void adopted.then(ok => {
+            if (ok && current.status === 'ready' && current.info && current.store) rememberDevice(current.info, current.store);
+        });
+    }
 
     function release() {
         released = true;
@@ -43,83 +108,116 @@
         const href = (event.currentTarget as HTMLAnchorElement).href;
         void Promise.resolve(session?.disconnect()).finally(() => location.assign(href));
     }
-
-    /** A device on the cable that is not the remembered one; Connect uses it with no chooser. */
-    const other = $derived(view !== 'connected' && status === 'ready' && session?.info ? { name: deviceName(session.info.serialNumber), formatted: !!session.store } : null);
-
-    const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
-    const day = (date: Date) => date.toLocaleDateString('en-GB', { day: 'numeric', month: 'long' });
-    const today = () => new Date().toLocaleDateString('en-CA');
-    const came = $derived(!device?.came ? 'None came in yet'
-        : `${device.came.count} came in ${device.came.day === today() ? 'today' : `on ${day(new Date(`${device.came.day}T12:00`))}`}`);
-    const count = $derived(waits.names.length);
-    const sends = $derived(count || waits.leaving
-        ? [count && `${count} wait${count === 1 ? 's' : ''}`, waits.leaving && `${waits.leaving} leave${waits.leaving === 1 ? 's' : ''}`].filter(Boolean).join(' · ')
-        : 'Nothing waits');
-
-    async function read() {
-        const mine = ++reads;
-        const [waiting, leaving] = await Promise.all([library.state('waiting'), library.state('leaving')]);
-        const routes = await Promise.all((waiting ?? []).map(id => library.item(id)));
-        const names = routes.flatMap(route => route && 'revision' in route ? [route.name || (isPlan(route) ? planTitle(route.trip) : 'Route')] : []);
-        if (mine === reads) waits = { names, leaving: leaving?.length ?? 0 };
-    }
-
-    onMount(() => {
-        void deviceHolder.open();
-        void read();
-        return library.onChange(store => { if (store === 'state') void read(); });
-    });
-
-    /** A device that this page adopted is remembered as it is: a second chooser would open a second link to it. */
-    function connect() {
-        const current = session;
-        if (!current) return;
-        const adopted = current.status === 'ready' ? Promise.resolve(true) : current.requestDevice();
-        void adopted.then(ok => {
-            if (ok && current.status === 'ready' && current.info && current.store) rememberDevice(current.info, current.store);
-        });
-    }
 </script>
 
 {#snippet connectButton(label: string)}
-    {#if other && !other.formatted}
-        <p>The memory card of {other.name} needs a format. <a href={`${siteBase}builder/`} onclick={openBuilder}>The map builder</a> formats it.</p>
+    {#if !other?.formatted && other}
+        <p class="note">The memory card of {other.name} needs a format. <a href={`${siteBase}builder/`} onclick={openBuilder}>The map builder</a> formats it.</p>
     {:else}
-        {#if other}<p>{other.name} is on the cable.</p>{/if}
         <button type="button" class="button primary" onclick={connect} disabled={status === 'connecting'}>
             {status === 'connecting' ? 'Connecting' : other ? `Use ${other.name}` : label}
         </button>
     {/if}
 {/snippet}
 
-{#snippet problem(text: string | null | undefined)}
-    {#if text}<p class="problem" role="alert">{text}</p>{/if}
+{#snippet links(routes: Named[])}
+    {#each routes as route, i (route.id)}{#if i}{' · '}{/if}<a href={`${ROUTES.route}/${route.id}`}>{route.name}</a>{/each}
 {/snippet}
 
-{#if view === 'connected' && device}
-    <main class="connected">
+{#if (view === 'connected' || view === 'before') && device}
+    {@const connected = view === 'connected'}
+    <main class="known">
         <header>
             <h1>{deviceName(device.serial)}</h1>
-            <span class="state"><span class="dot"></span>{deviceSync.running ? 'Updating' : 'Connected'}</span>
-            <button type="button" class="button disconnect" onclick={release} disabled={deviceSync.running}>Disconnect</button>
-            <button type="button" class="button primary" onclick={() => deviceSync.run()} disabled={deviceSync.running}>Update the device</button>
+            <span class="state"><span class="dot" class:on={connected}></span>{connected ? 'Connected' : released ? 'Disconnected' : 'Not connected'}</span>
+            <span class="actions">
+                {#if connected}
+                    <button type="button" class="button" onclick={release} disabled={deviceSync.running}>Disconnect</button>
+                {:else}
+                    {@render connectButton('Connect')}
+                {/if}
+            </span>
         </header>
-        {@render problem(deviceSync.problem)}
+        {#if !connected && (other?.formatted || released || error)}
+            <p class="note" class:problem={!!error} role={error ? 'alert' : undefined}>
+                {error ?? (other ? `${other.name} is on the cable.` : 'The map builder can use the device now. Connect takes it back.')}
+            </p>
+        {/if}
         <div class="columns">
-            <Card label="The update sends">
+            <div class="stage">{#key connected}<Drawing live={connected} />{/key}</div>
+            <Card>
                 <div class="rows">
-                    <div class="row"><strong>Routes</strong><span class="tag" class:quiet={!count && !waits.leaving}>{sends}</span></div>
-                </div>
-                <h2>On the device</h2>
-                <div class="rows">
-                    <div class="row"><strong>Rides</strong><span>{came}</span></div>
-                    {#if device.at !== null}
-                        <div class="row"><strong>Memory card</strong><span>map {formatBytes(device.bytes.map)} · routes {formatBytes(device.bytes.routes)} · rides {formatBytes(device.bytes.rides)}</span></div>
+                    <div class="row">
+                        <strong>Sync</strong>
+                        <div>
+                            {#if connected && deviceSync.running}
+                                <p class="syncing"><span class="turning"><Icon name="sync" size={16} /></span>Syncing</p>
+                                <p class="second">{lastSync(device.at)}</p>
+                            {:else if deviceSync.problem}
+                                {#if !connected}<p>{lastSync(device.at)}</p>{/if}
+                                <p class="problem" class:second={!connected} role="alert">{deviceSync.problem}</p>
+                            {:else if connected}
+                                <p>{held.waiting.length || held.leaving ? `${plural(held.waiting.length + held.leaving, 'route')} to sync.` : 'In sync.'} {lastSync(device.at)}.</p>
+                                {#if did}<p class="second">{did}</p>{/if}
+                            {:else}
+                                <p>{lastSync(device.at)}</p>
+                            {/if}
+                        </div>
+                        {#if connected}
+                            <div><button type="button" class="button" onclick={() => deviceSync.run()} disabled={deviceSync.running}>{deviceSync.problem ? 'Try again' : 'Sync now'}</button></div>
+                        {/if}
+                    </div>
+                    {#if connected}
+                        {#if device.at !== null}
+                        <div class="row">
+                            <strong>Routes</strong>
+                            <div>
+                                <p>{device.routes} on the device</p>
+                                {#if held.sent.length}<p class="second">{@render links(held.sent)}{#if more > 0}{` and ${more} more`}{/if}</p>{/if}
+                            </div>
+                        </div>
+                        {/if}
+                        <div class="row">
+                            <strong>Rides</strong>
+                            <div>
+                                <p>{held.rides ? `${held.rides} in your library came from this device` : 'None in your library came from this device'}</p>
+                                {#if held.last !== null}<p class="second">The last on {day(new Date(held.last * 1000))}</p>{/if}
+                            </div>
+                        </div>
+                        {#if device.at !== null}
+                            <div class="row">
+                                <strong>Memory card</strong>
+                                <div>
+                                    <div class="bar">
+                                        {#each parts as part (part.label)}
+                                            {#if part.bytes}<span style:flex-grow={part.bytes} style:background={part.colour}></span>{/if}
+                                        {/each}
+                                    </div>
+                                    <p class="second legend">
+                                        {#each parts as part (part.label)}<span><i style:background={part.colour}></i>{part.label} {formatBytes(part.bytes)}</span>{/each}
+                                    </p>
+                                </div>
+                            </div>
+                            <div class="row"><strong>Map</strong><div><p>{device.map ?? 'No map'}</p></div></div>
+                        {/if}
+                        {#if session?.client}
+                            <div class="row">
+                                <strong>Software</strong>
+                                <Software client={session.client} running={session.info?.firmwareRevision ?? null} busy={deviceSync.running} />
+                            </div>
+                        {/if}
+                    {:else}
+                        <div class="row">
+                            <strong>Waits for the device</strong>
+                            <div>
+                                <p>{#if held.waiting.length}{plural(held.waiting.length, 'route')}: {@render links(held.waiting)}{:else}Nothing{/if}</p>
+                                {#if held.leaving}<p class="second">{plural(held.leaving, 'route')} to remove from the device</p>{/if}
+                            </div>
+                        </div>
+                        <p class="hint">Routes go to the device when you connect it.</p>
                     {/if}
                 </div>
             </Card>
-            <div class="stage"><Drawing /></div>
         </div>
     </main>
 {:else}
@@ -129,36 +227,16 @@
         {:else}
             <Card>
                 <div class="part">
-                    <div class="device" class:known={view === 'before'}><span></span></div>
+                    <div class="device"><span></span></div>
                     {#if view === 'cannot'}
                         <h1>This browser cannot connect to the device</h1>
                         <p>The cable connection works in Chrome and in Edge. Your routes and rides are stored in this browser, and another browser does not have them.</p>
                         <div class="box foot"><strong>What works here</strong>Plan routes, keep rides, and export GPX and FIT files. Only the cable connection is missing.</div>
-                    {:else if view === 'before' && device}
-                        <h1>{released ? 'Your device is disconnected' : 'Your device is not connected'}</h1>
-                        {#if released}<p>The map builder can use it now. “Connect it again” takes it back.</p>{/if}
-                        {#if device.at !== null}<p>Last update on {day(new Date(device.at))}.</p>{/if}
-                        {@render connectButton('Connect it again')}
-                        {@render problem(error)}
-                        <div class="box">
-                            <strong>Waits for the next connection</strong>
-                            {#if waits.names.length}<span>{plural(count, 'route')}: {waits.names.map(name => `“${name}”`).join(', ')}</span>{/if}
-                            {#if waits.leaving}<span>{plural(waits.leaving, 'route')} to remove from the device</span>{/if}
-                            {#if !count && !waits.leaving}<span>Nothing</span>{/if}
-                        </div>
-                        {#if device.at !== null}
-                            <div class="box">
-                                <strong>On the device at the last update</strong>
-                                {#if device.map}<span>Map: {device.map}</span>{/if}
-                                <span>{plural(device.routes, 'route')}</span>
-                            </div>
-                        {/if}
-                        {@render problem(deviceSync.problem)}
                     {:else}
                         <h1>Connect your OpenBikeComputer</h1>
-                        {#if !other}<p>Connect it with the USB cable. Then press the button, and choose the device in the window of the browser.</p>{/if}
+                        <p>{other ? `${other.name} is on the cable.` : 'Connect it with the USB cable. Then press the button, and choose the device in the window of the browser.'}</p>
                         {@render connectButton('Connect a device')}
-                        {@render problem(error)}
+                        {#if error}<p class="problem" role="alert">{error}</p>{/if}
                         <div class="box foot">
                             <strong>You have no OpenBikeComputer?</strong>
                             All of this product works without one. Take a route to another device as a GPX or FIT file from its page.
@@ -183,15 +261,18 @@
         margin: 0;
     }
     .button {
-        min-height: 36px;
-        padding: 6px 16px;
+        min-height: 34px;
+        padding: 5px 14px;
         border: 1px solid var(--line-strong);
         border-radius: 6px;
         background: var(--panel);
         color: var(--ink);
-        font-size: 15px;
+        white-space: nowrap;
     }
-    .primary {
+    .button:hover:not(:disabled) {
+        background: var(--parchment-2);
+    }
+    .primary, .primary:hover:not(:disabled) {
         border-color: var(--rust);
         background: var(--rust);
         color: var(--cream);
@@ -203,7 +284,7 @@
         color: var(--coral);
     }
 
-    .connected {
+    .known {
         display: flex;
         flex-direction: column;
         gap: 14px;
@@ -224,59 +305,110 @@
     .dot {
         width: 9px;
         height: 9px;
+        border: 1.5px solid var(--ink-soft);
         border-radius: 50%;
-        background: var(--forest);
     }
-    .disconnect {
+    .dot.on {
+        border-color: var(--connected);
+        background: var(--connected);
+    }
+    .actions {
+        display: flex;
+        align-items: center;
+        gap: 12px;
         margin-left: auto;
+    }
+    .note {
+        color: var(--ink-soft);
     }
     .columns {
         display: grid;
         flex: 1;
-        grid-template-columns: 300px 1fr;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr);
         gap: 14px;
+        align-items: start;
         min-height: 0;
-    }
-    h2 {
-        margin: 20px 0 0;
-        color: var(--ink-soft);
-        font: 700 11px/1.3 var(--sans);
-        letter-spacing: .06em;
-        text-transform: uppercase;
-    }
-    .rows {
-        margin-top: 8px;
-    }
-    .row {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        justify-content: space-between;
-        gap: 4px 12px;
-        padding: 10px 0;
-        border-top: 1px solid var(--line);
-        color: var(--ink);
-        text-decoration: none;
-    }
-    .row span {
-        color: var(--ink-soft);
-        font-size: 13px;
-    }
-    .tag {
-        padding: 1px 7px;
-        border-radius: 4px;
-        background: color-mix(in srgb, var(--amber) 28%, var(--panel));
-    }
-    .tag.quiet {
-        background: none;
     }
     .stage {
         display: grid;
         place-items: center;
-        padding: 24px;
+        align-self: stretch;
+        padding: 32px 24px;
         border: 1px solid var(--line);
         border-radius: 10px;
         background: var(--parchment-2);
+    }
+    .rows {
+        margin: -16px 0;
+    }
+    .row {
+        display: grid;
+        grid-template-columns: 150px minmax(0, 1fr) auto;
+        gap: 4px 20px;
+        align-items: start;
+        padding: 16px 0;
+    }
+    .row + .row {
+        border-top: 1px solid var(--line);
+    }
+    .row strong {
+        padding-top: 1px;
+    }
+    .second {
+        margin-top: 4px;
+        color: var(--ink-soft);
+        font-size: 13.5px;
+    }
+    .rows a {
+        color: var(--ink);
+    }
+    .hint {
+        padding: 14px 0 16px;
+        border-top: 1px solid var(--line);
+        color: var(--ink-soft);
+        font-size: 13.5px;
+    }
+    .syncing {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
+    .turning {
+        display: inline-grid;
+        animation: turn 1.2s linear infinite;
+    }
+    @keyframes turn {
+        to { transform: rotate(360deg); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .turning { animation: none; }
+    }
+    /* The used parts only: the cable reports no card size. A small part keeps a few pixels. */
+    .bar {
+        display: flex;
+        gap: 2px;
+        height: 10px;
+        margin-top: 5px;
+    }
+    .bar span {
+        flex-basis: 0;
+        min-width: 4px;
+        border-radius: 2px;
+    }
+    .legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 16px;
+    }
+    .legend span {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
+    .legend i {
+        width: 10px;
+        height: 10px;
+        border-radius: 2px;
     }
 
     .alone {
@@ -297,7 +429,7 @@
     .part p {
         color: var(--ink-soft);
     }
-    /* A device with no picture: grey, or dark with a green screen once it was connected. */
+    /* A device with no picture. */
     .device {
         display: grid;
         place-items: center;
@@ -311,12 +443,6 @@
         height: 124px;
         border-radius: 3px;
         background: color-mix(in srgb, var(--ink-faint) 40%, var(--panel));
-    }
-    .device.known {
-        background: #55534a;
-    }
-    .device.known span {
-        background: #cdeebd;
     }
     .box {
         display: flex;
@@ -338,5 +464,7 @@
     @media (max-width: 760px) {
         main { padding-inline: 16px; }
         .columns { grid-template-columns: minmax(0, 1fr); }
+        .row { grid-template-columns: minmax(0, 1fr) auto; }
+        .row strong { grid-column: 1 / -1; }
     }
 </style>

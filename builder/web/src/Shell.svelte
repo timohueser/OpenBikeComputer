@@ -34,7 +34,7 @@
     import { router } from './lib/router.svelte';
     import { startTheme } from './lib/theme.svelte';
     import { startCoverJob } from './lib/covers/job';
-    import { startDeviceSync } from './lib/device-sync/state.svelte';
+    import { deviceSync, startDeviceSync } from './lib/device-sync/state.svelte';
     import { deviceName, remembered, rememberedReady } from './lib/device-sync/remembered.svelte';
 
     const siteBase = import.meta.env.VITE_SITE_BASE || '/';
@@ -47,6 +47,8 @@
     const device = $derived(remembered.device && {
         name: deviceName(remembered.device.serial),
         connected: rememberedReady(),
+        // The sync can run again only with the device on the cable.
+        sync: deviceSync.running ? 'running' as const : rememberedReady() && deviceSync.problem ? 'problem' as const : null,
     });
     const links = $derived(Object.entries(PAGES).flatMap(([route, page]) =>
         page.label ? [{ href: ROUTES[route as Route], label: page.label, current: route === current }] : []));
@@ -77,7 +79,7 @@
 </script>
 
 <div class="shell">
-    <TopBar {links} {device} settings={current === 'settings'} />
+    <TopBar {links} {device} onsync={() => deviceSync.run()} settings={current === 'settings'} />
     <div class="pages">
         {#each Object.entries(pages) as [route, page] (route)}
             {#if route === current || (PAGES[route as Route]!.keep && page.component)}

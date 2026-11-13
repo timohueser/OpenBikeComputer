@@ -119,7 +119,7 @@ flowchart LR
 | [device-link](device-link.md) | Moves objects between the device and a phone or computer. | draft | card-storage, device-map-builder, firmware-update, foundations, map-assembly, navigation | card-storage, device-firmware, device-map-builder, firmware-update, map-assembly, simulators, web-planner |
 | [device-runtime](device-runtime.md) | Drives each frame of the device core. | draft | foundations, map-reading, navigation, rendering-display | device-firmware, host-runtime, repository-tooling, simulators |
 | [discovery](discovery.md) | Tells the rider what is around them: places, summits, landmarks. | draft |  |  |
-| [firmware-update](firmware-update.md) | Installs a verified firmware image on the device, with rollback. | draft | device-link, foundations | device-firmware, device-link, device-map-builder, simulators |
+| [firmware-update](firmware-update.md) | Installs a verified firmware image on the device, with rollback. | draft | device-link, foundations | device-firmware, device-link, device-map-builder, simulators, web-planner |
 | [foundations](foundations.md) | Holds the shared building blocks that have no product policy: the byte layouts of the file formats, the byte-reading interface, CRC-32, the host interfaces and the map-scene interface. | approved |  | board-inputs, card-storage, content, device-firmware, device-link, device-map-baking, device-runtime, firmware-update, host-runtime, map-assembly, map-reading, navigation, obc-data, rendering-display, repository-tooling, simulators, source-preparation |
 | [map-reading](map-reading.md) | Reads the device's map content from the card: OBCM maps, OBCT terrain. | draft | device-map-baking, foundations | content, device-firmware, device-map-baking, device-runtime, host-runtime, map-assembly, navigation, repository-tooling, simulators, source-preparation |
 | [navigation](navigation.md) | Guides the rider along a route. | draft | foundations, map-reading | device-firmware, device-link, device-runtime, host-runtime, map-assembly, repository-tooling, simulators |
@@ -151,7 +151,7 @@ flowchart LR
 | [planner-tile-server](planner-tile-server.md) | Serves the map tiles of a planner release from the storage bucket or from a local folder. | approved |  |  |
 | [simulators](simulators.md) | Runs the device core on a computer, a phone or a web page, and sends test input to a real board. | approved | board-inputs, card-storage, data-engine, device-link, device-runtime, firmware-update, foundations, host-runtime, map-reading, navigation, rendering-display, repository-tooling |  |
 | [trailview-page](trailview-page.md) | Opens TrailView, the 3-D view of a region, as its own page in the browser. | approved | route-planning, trailview |  |
-| [web-planner](web-planner.md) | Opens the app at /plan/: the top bar, the pages, and the route planner as one page. | approved | device-link, device-map-builder, library, map-assembly, map-style, route-planning, trailview |  |
+| [web-planner](web-planner.md) | Opens the app at /plan/: the top bar, the pages, and the route planner as one page. | approved | device-link, device-map-builder, firmware-update, library, map-assembly, map-style, route-planning, trailview |  |
 | [website](website.md) | Publishes the project site, the guide and the blog. | approved |  | device-map-builder |
 
 ## Tangles

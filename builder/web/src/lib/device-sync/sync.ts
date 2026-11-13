@@ -35,7 +35,7 @@ export interface SyncReport {
     problem: string | null;
 }
 
-export const CABLE_OUT = 'The update stopped when the cable came out. It goes on at the next connection.';
+export const CABLE_OUT = 'The sync stopped when the cable came out. It goes on at the next connection.';
 
 const unused = (entry: CatalogEntry) => (entry.flags & (EntryFlags.Recording | EntryFlags.Retained)) === 0;
 const ofKind = (catalog: Catalog, kind: number) => catalog.entries.filter(entry => entry.kind === kind && unused(entry));

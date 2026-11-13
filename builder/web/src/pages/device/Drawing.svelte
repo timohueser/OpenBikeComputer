@@ -6,6 +6,8 @@
 
     type Theme = 'day' | 'night';
     const themes: { value: Theme; label: string }[] = [{ value: 'day', label: 'Day' }, { value: 'night', label: 'Night' }];
+    /** Not live: the device is not connected, so the drawing is dim and its screen empty. */
+    let { live = true }: { live?: boolean } = $props();
     /** The panel of the device. */
     const WIDTH = 240, HEIGHT = 320;
 
@@ -32,19 +34,20 @@
     }
 
     onMount(() => {
-        let live = true;
+        if (!live) return;
+        let open = true;
         // A sample map in the catalog skins, not the map of the rider. After an error the screen stays empty.
         void (async () => {
             const { body } = await platform.catalog();
             const skins: { id: string }[] = JSON.parse(body).skins;
             const skin = (id: string) => JSON.stringify(skins.find(entry => entry.id === id));
             const opened = await openLiveSkinPreview(body, skin('default'), skin('dusk'));
-            if (!live) return opened.free();
+            if (!open) return opened.free();
             preview = opened;
             paint();
         })().catch(() => {});
         return () => {
-            live = false;
+            open = false;
             preview?.free();
             preview = null;
         };
@@ -52,13 +55,13 @@
 </script>
 
 <div class="drawing">
-    <div class="device">
+    <div class="device" class:dim={!live}>
         <div class="bezel"><canvas bind:this={canvas} width={WIDTH} height={HEIGHT} aria-label="The map screen of the device"></canvas></div>
         <span class="mark" aria-hidden="true">OBC</span>
         <span class="button left top"></span><span class="button left bottom"></span>
         <span class="button right top"></span><span class="button right bottom"></span>
     </div>
-    <Segmented label="Day or night" options={themes} value={theme} onChange={choose} compact />
+    {#if live}<Segmented label="Day or night" options={themes} value={theme} onChange={choose} compact />{/if}
 </div>
 
 <style>
@@ -86,6 +89,13 @@
         box-shadow: 0 0 0 calc(6 * var(--u)) var(--rim), 0 calc(14 * var(--u)) calc(26 * var(--u)) rgb(47 99 80 / 0.3);
     }
     /* 240 + 2 × 16 wide, centred; the screen top is 32 below the body top. */
+    .dim {
+        opacity: .5;
+        filter: grayscale(.4);
+    }
+    .dim canvas {
+        background: #e4e4e0;
+    }
     .bezel {
         position: absolute;
         top: calc(16 * var(--u));

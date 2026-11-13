@@ -305,7 +305,7 @@
     "repository-tooling"
    ],
    "violations": 10,
-   "lines": 10507,
+   "lines": 10574,
    "problems": [
     {
      "rule": "cycle",
@@ -317,7 +317,7 @@
     },
     {
      "rule": "cycle",
-     "message": "device-map-builder -> firmware-update closes a cycle: builder/web/src/components/UpdatePrompt.svelte -> builder/web/src/lib/firmware/check.svelte.ts, builder/web/src/components/device/FirmwareCard.svelte -> builder/web/src/lib/firmware/check.svelte.ts, builder/web/src/components/device/FirmwareCard.svelte -> builder/web/src/lib/firmware/release.ts"
+     "message": "device-map-builder -> firmware-update closes a cycle: builder/web/src/components/UpdatePrompt.svelte -> builder/web/src/lib/firmware/check.svelte.ts, builder/web/src/components/device/FirmwareCard.svelte -> builder/web/src/lib/firmware/check.svelte.ts, builder/web/src/components/device/FirmwareCard.svelte -> builder/web/src/lib/firmware/release.ts, and 1 more"
     },
     {
      "rule": "cycle",
@@ -440,7 +440,7 @@
     },
     {
      "rule": "cycle",
-     "message": "device-map-builder -> firmware-update closes a cycle: builder/web/src/components/UpdatePrompt.svelte -> builder/web/src/lib/firmware/check.svelte.ts, builder/web/src/components/device/FirmwareCard.svelte -> builder/web/src/lib/firmware/check.svelte.ts, builder/web/src/components/device/FirmwareCard.svelte -> builder/web/src/lib/firmware/release.ts"
+     "message": "device-map-builder -> firmware-update closes a cycle: builder/web/src/components/UpdatePrompt.svelte -> builder/web/src/lib/firmware/check.svelte.ts, builder/web/src/components/device/FirmwareCard.svelte -> builder/web/src/lib/firmware/check.svelte.ts, builder/web/src/components/device/FirmwareCard.svelte -> builder/web/src/lib/firmware/release.ts, and 1 more"
     },
     {
      "rule": "cycle",
@@ -828,7 +828,7 @@
    ],
    "test_depends_on": [],
    "violations": 7,
-   "lines": 27300,
+   "lines": 27301,
    "problems": [
     {
      "rule": "cycle",
@@ -1036,6 +1036,7 @@
    "depends_on": [
     "device-link",
     "device-map-builder",
+    "firmware-update",
     "library",
     "map-assembly",
     "map-style",
@@ -1044,7 +1045,7 @@
    ],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 4180,
+   "lines": 4515,
    "problems": []
   },
   {
@@ -1898,6 +1899,12 @@
   {
    "from": "web-planner",
    "to": "device-map-builder",
+   "test": false,
+   "undeclared": false
+  },
+  {
+   "from": "web-planner",
+   "to": "firmware-update",
    "test": false,
    "undeclared": false
   },

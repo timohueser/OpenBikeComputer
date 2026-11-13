@@ -59,6 +59,8 @@ export default defineConfig(({ mode }) => {
         base: "./",
             // The licence notices ride along with the bundle, which is a distribution.
         plugins: [svelte(), thirdPartyLicenses()],
+        // Always a string, so a build without it drops the pretend device of `planner.ts` with its wasm.
+        define: { "import.meta.env.VITE_FAKE_DEVICE": JSON.stringify(process.env.VITE_FAKE_DEVICE ?? "") },
         resolve: {
             // Root-relative rather than an absolute path so the config needs no
             // node: builtins (and so no @types/node just to type-check itself).

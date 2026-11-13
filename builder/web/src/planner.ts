@@ -23,8 +23,8 @@ if (cover !== null) {
         mount(AddFiles, { target, props: { library, onClose: () => {} } });
     });
 } else {
-    // The dev server can put a pretend device on the cable; a build drops this branch.
-    const fake = import.meta.env.DEV && search.has('fake-device')
+    // The dev server and the build of the browser tests can put a pretend device on the cable; another build drops this branch.
+    const fake = (import.meta.env.DEV || import.meta.env.VITE_FAKE_DEVICE) && search.has('fake-device')
         ? import('../test-support/device-sync/fake-device').then(({ fakeDevice }) => fakeDevice()) : Promise.resolve();
     // A dynamic import, so the test page of a cover has none of the shell's base rules.
     fake.then(() => import('./Shell.svelte')).then(({ default: Shell }) => mount(Shell, { target }), (error: unknown) => {

@@ -2,10 +2,11 @@
     import Icon from './planner/PlannerIcon.svelte';
     import { ROUTES } from '../lib/routes';
 
-    let { links, device, settings }: {
+    let { links, device, onsync, settings }: {
         links: { href: string; label: string; current: boolean }[];
-        /** The remembered device; null before a first connection. */
-        device: { name: string; connected: boolean } | null;
+        /** The remembered device; null before a first connection. `sync` is `problem` after a problem of the last sync. */
+        device: { name: string; connected: boolean; sync: 'running' | 'problem' | null } | null;
+        onsync: () => void;
         settings: boolean;
     } = $props();
     // A host that the browser tests do not stub fails the request test, so the address is not `LINKS`.
@@ -23,6 +24,11 @@
         <a class="chip" href={ROUTES.device} title={device.connected ? 'Connected' : 'Not connected'}>
             <span class="dot" class:connected={device.connected}></span>{device.name}
         </a>
+        {#if device.sync === 'running'}
+            <span class="sync turning" role="img" aria-label="Syncing"><Icon name="sync" /></span>
+        {:else if device.sync === 'problem'}
+            <button type="button" class="sync problem" aria-label="Sync again" title="The last sync had a problem. Sync again." onclick={onsync}><Icon name="sync" /></button>
+        {/if}
     {/if}
     <a class="settings" href={ROUTES.settings} aria-label="Settings" aria-current={settings ? 'page' : undefined}><Icon name="gear" /></a>
 </header>
@@ -103,9 +109,49 @@
         border-radius: 50%;
     }
     .dot.connected {
-        background: var(--cream);
+        border-color: var(--connected-on-rust);
+        background: var(--connected-on-rust);
     }
-    .chip + .settings {
+    .sync {
+        display: grid;
+        flex: none;
+        place-items: center;
+        width: 32px;
+        height: 32px;
+        margin: 0 -16px 0 -8px;
+        padding: 0;
+        border: 0;
+        border-radius: 6px;
+        background: none;
+        color: inherit;
+    }
+    .turning :global(svg) {
+        animation: turn 1.2s linear infinite;
+    }
+    @keyframes turn {
+        to { transform: rotate(360deg); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .turning :global(svg) { animation: none; }
+    }
+    .problem {
+        position: relative;
+        background: var(--cream);
+        color: var(--rust);
+    }
+    /* The mark of a sync that needs the rider. */
+    .problem::after {
+        position: absolute;
+        top: -3px;
+        right: -3px;
+        width: 8px;
+        height: 8px;
+        border: 2px solid var(--rust);
+        border-radius: 50%;
+        background: var(--cream);
+        content: '';
+    }
+    .chip + .settings, .sync + .settings {
         margin-left: 0;
     }
     .settings {

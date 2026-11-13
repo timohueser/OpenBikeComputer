@@ -14,6 +14,7 @@ owns:
 depends_on:
   - device-link
   - device-map-builder
+  - firmware-update
   - library
   - map-assembly
   - map-style
@@ -64,20 +65,26 @@ A pulled cable stops the sync. The library stores a ride only after its whole do
 
 ## Device page
 
-The page `#/device` ([`Device.svelte`](../../builder/web/src/pages/Device.svelte)) shows the remembered device and the device sync. It does not run a step of the sync itself. It opens the one device session of the tab (`deviceHolder`), and the sync uses the same session, so the tab has one link to the device. The first state that applies shows:
+The page `#/device` ([`Device.svelte`](../../builder/web/src/pages/Device.svelte)) shows the remembered device and the device sync. "Sync" means that routes go to the device and rides come from it; "update" means only a software update. The page does not run a step of the sync itself. It opens the one device session of the tab (`deviceHolder`), and the sync uses the same session, so the tab has one link to the device. The first state that applies shows:
 
 | State | When | The page shows |
 | --- | --- | --- |
 | Cannot | The browser has no WebUSB. | That the cable works in Chrome and Edge, and what works here. No button. |
-| Connected | The remembered device is `ready`. | The name, "Connected" or "Updating", "Update the device" (`deviceSync.run()`), the problem of the last sync, the card of what the update sends and what is on the device, and the drawing. |
-| Before | A device is remembered. | The date of the last sync, "Connect it again", the routes that wait and leave, and what was on the device. |
+| Connected | The remembered device is `ready`. | The name, "Connected", "Disconnect", the live drawing, and one card of rows: Sync, Routes, Rides, Memory card, Map and Software. |
+| Not connected | A device is remembered. | The name, "Not connected", "Connect", the dim drawing, the last sync and the routes that wait for the device. |
 | Never | No device is remembered. | "Connect a device", and a note that the product works with no device. |
 
-A Connect button calls `requestDevice()` in the click, and remembers the device when it is `ready`. When another device is `ready` on the cable, the button names it and remembers it with no chooser, because a second chooser would open a second link to it. A device whose card has no format cannot be remembered; the page sends the rider to the map builder. "Disconnect" frees the device for another page; the sync takes it again at its next `ready`. An error of the session shows under the button, and the error of a device that another page holds is one plain sentence.
+The row Sync shows the time of the last sync (`at` of the remembered device) and what the last sync of this page did (`deviceSync.report`). "Sync now" and, after a problem, "Try again" call `deviceSync.run()`. The row Routes counts the routes on the card and names the routes of the library whose `sent` entry names this card. The row Rides counts the rides of the library that came from this card, from `library.rides()`, because a ride record names its card and the library has no index of it. The memory card bar shows only the used parts, because the cable does not report the size of the card.
 
-The drawing ([`Drawing.svelte`](../../builder/web/src/pages/device/Drawing.svelte)) shows a sample map in the catalog skins `default` (Day) and `dusk` (Night), with `openLiveSkinPreview` of map style, on a square screen of 240 × 240 pixels. It loads only in the state Connected. The top bar shows a chip with the name of the remembered device, with a filled dot while it is connected.
+The row Software ([`Software.svelte`](../../builder/web/src/pages/device/Software.svelte)) compares the version that the cable reports with the published one (`firmwareCheck`). "Update" sends the package to the card (`stageFirmware`) and asks the device to install it (`armUpdate`). The row says that the device installs it only when the device agreed. The firmware refuses that step today, and the row says so in one sentence.
 
-`planner.html?fake-device` on the dev server puts the wasm test device on a pretend cable ([`fake-device.ts`](../../builder/web/test-support/device-sync/fake-device.ts)), with `window.deviceTest.plug()` and `unplug()`. A build has no path to it.
+A Connect button calls `requestDevice()` in the click, and remembers the device when it is `ready`. When another device is `ready` on the cable, the button names it and remembers it with no chooser, because a second chooser would open a second link to it. A device whose card has no format cannot be remembered; the page sends the rider to the map builder. "Disconnect" frees the device for another page; the sync takes it again at its next `ready`. The error of a device that another page holds is one plain sentence.
+
+The drawing ([`Drawing.svelte`](../../builder/web/src/pages/device/Drawing.svelte)) is the device as the iOS app draws it. Its screen shows a sample map in the catalog skins `default` (Day) and `dusk` (Night), with `openLiveSkinPreview` of map style. The preview draws 240 × 240 pixels, so the page adds the lower 80 rows of the 240 × 320 screen from a second frame with the camera moved down.
+
+The top bar shows a chip with the name of the remembered device: a hollow dot, or a green dot while it is connected. While a sync runs, a sync icon turns beside it. After a problem of the last sync, the icon is a button that starts the sync again.
+
+`planner.html?fake-device` puts the wasm test device on a pretend cable ([`fake-device.ts`](../../builder/web/test-support/device-sync/fake-device.ts)), with `window.deviceTest`. The dev server has it, and the build of the browser tests has it through `VITE_FAKE_DEVICE=1`. Another build has no path to it.
 
 ## Covers
 
