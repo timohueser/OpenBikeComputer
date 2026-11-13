@@ -46,7 +46,7 @@ const WALL_STEPS_MAX: usize = 17;
 /// moves piece ends by a few units) and the crease where a deck's ceiling takes the ground: the count must not
 /// grow.
 const SLOPE_STEP_GRADE: f64 = 0.1;
-const SLOPE_STEPS_MAX: usize = 9831;
+const SLOPE_STEPS_MAX: usize = 9829;
 /// Steps that another line's cone holds higher than the paved side's wall cap (`check::held_over_cap`), measured
 /// the same way with a rail bed's fill counted past its wall cap: all at the edge of a class without a wall, most
 /// where the two outlines leave no room for the steep face (the gap is printed): the count must not grow.
