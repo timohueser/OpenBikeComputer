@@ -1,0 +1,69 @@
+{
+ "steps": [
+  {
+   "step": "planner/routing-source",
+   "key": "a8fd6cf92fc6b51f",
+   "reused": true,
+   "layer_mib": 753
+  },
+  {
+   "step": "planner/routing-roads",
+   "key": "9800f2311a520f7a",
+   "seconds": 98.0,
+   "rss_anon_mib": 659,
+   "work_mib": 2493,
+   "exit": 0,
+   "layer_mib": 1252
+  },
+  {
+   "step": "planner/routing-costs",
+   "key": "f5042a1af938aa30",
+   "seconds": 48.4,
+   "rss_anon_mib": 51,
+   "work_mib": 1709,
+   "exit": 0,
+   "layer_mib": 1600
+  },
+  {
+   "step": "planner/routing",
+   "key": "df7f97547d2bd341",
+   "seconds": 194.1,
+   "rss_anon_mib": 1417,
+   "work_mib": 1031,
+   "exit": 0
+  }
+ ],
+ "layers": "/home/user/obc-bake/switzerland/run-base/layers",
+ "seconds": 340.5,
+ "stages": [
+  "Imported: 2163060 ways, 20845423 node references, 7725271 directed roads, 21932168 turns, 3094858 junctions",
+  "Stage import: 6.1 s, own memory peak 2 MiB",
+  "Stage partition: 51.2 s, own memory peak 152 MiB",
+  "Stage emit: 40.6 s, own memory peak 645 MiB",
+  "Manifest estimate: 10425536 bytes",
+  "Stage open: 0.1 s, own memory peak 1 MiB",
+  "Stage way-bases: 2.9 s, own memory peak 5 MiB",
+  "Stage road-pass: 21.3 s, own memory peak 5 MiB",
+  "Stage snap: 5.8 s, own memory peak 4 MiB",
+  "Stage tables: 18.2 s, own memory peak 52 MiB",
+  "Stage open: 0.0 s, own memory peak 1 MiB",
+  "Stage landmarks: 13.0 s, own memory peak 2 MiB",
+  "Stage writer: 28.4 s, own memory peak 51 MiB",
+  "Stage cells: 12.9 s, own memory peak 506 MiB",
+  "Stage overlays: 19.9 s, own memory peak 281 MiB",
+  "Stage catalog: 94.8 s, own memory peak 1416 MiB",
+  "Stage blocks: 24.9 s, own memory peak 812 MiB"
+ ],
+ "sha256": {
+  "manifest.json": "49cae62a21cae66c55d7fccec5d9d6dcc58c9e8cce3e6af8bd311a901bf85928",
+  "overlays.sqlite": "b050d332d4c505d7436d3e1ceb6b77d0df9bd6576dd883feebb580ae2cf307b1",
+  "route-catalog.json": "5257bbe31d35adbb2df168d53889cfdbf8fbb99b96c193157f378a07957328df"
+ },
+ "manifest_bytes": 9924824,
+ "roads": 7725271,
+ "cells": {
+  "identity": "bd3c681e8053b5906ec4f8f51a1d3095f2328d8f9bc322a80c0b01a2c97cf25d",
+  "files": 323,
+  "bytes": 608742730
+ }
+}
