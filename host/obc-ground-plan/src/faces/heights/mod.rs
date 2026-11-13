@@ -18,8 +18,8 @@ mod tests;
 
 use super::records::{
     blend_edge, edge_ends, edge_line, junction, label as label_words, skip_item, BAND, BINS, BIN_UNITS, CAND, CEILING,
-    DECK, DISC, EDGE, FILL, GRADE_STEPS, HEAD, HEADER, JR, JR_ARM, LABEL, LEVEL, LINE, MARGIN_M, RAIL, SAMPLE,
-    TURN_STEPS, WALL, WATER,
+    DECK, DISC, EDGE, FILL, GRADE_STEPS, HEAD, HEADER, JR, JR_ARM, LABEL, LEG_SHIFT, LEVEL, LINE, MARGIN_M, RAIL,
+    SAMPLE, STOREY, TURN_STEPS, WALL, WATER,
 };
 use super::Surface;
 use crate::frame::{metres_per_unit_at, CELL_UNITS};
@@ -402,6 +402,8 @@ struct Line {
     /// flat end at its start and at its end, into the line (`pack2x16snorm`).
     ceiling: bool,
     flat: [u32; 2],
+    /// The storey of a line over the ground (`STOREY`), else 0.
+    storey: i8,
 }
 
 impl Line {
@@ -453,6 +455,7 @@ impl Block<'_> {
             deck: [w[12] == DECK, w[13] == DECK],
             ceiling: w[1] & CEILING != 0,
             flat: [w[4], w[5]],
+            storey: if w[1] & STOREY != 0 { (w[1] >> LEG_SHIFT) as i8 } else { 0 },
         }
     }
 
@@ -748,7 +751,10 @@ fn slope_edge(b: &Block, q: [f64; 2]) -> f64 {
 /// The lines present at q (from `items`): per line, its surface from the quads that hold q with some
 /// health, kept while its core lies within its feather or its reach. `keep`: the material lines of the
 /// labels asked for, never skipped as absent: a face's host is its material line wherever the face lies.
+/// The lines are those of the first kept line's storey: storey 0's come first and end at the first ceiling
+/// line; a storey over the ground reads only its own, which come last.
 fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2], items: &Items) -> Present {
+    let storey = if keep[0] == u32::MAX { 0 } else { b.line(keep[0] as usize).storey };
     let (hs, ds) = (items.segs, items.discs);
     let (nh, nd) = (hs.len(), ds.len());
     let mut out: Vec<Rec> = Vec::with_capacity(SLOTS);
@@ -757,9 +763,13 @@ fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2], items: &Item
     while k < nh {
         let l = (hs[k] & 0xffff) as usize;
         let ln = b.line(l);
-        // The ceiling lines come last: no line of storey 0 follows.
-        if ln.ceiling {
+        // The ceiling lines and the storeys over the ground come last: no line of storey 0 follows.
+        if storey == 0 && (ln.ceiling || ln.storey > 0) {
             break;
+        }
+        if ln.storey != storey {
+            k += 1;
+            continue;
         }
         // A line whose core lies a feather or more from q is not present: skip it before its frames.
         // Every listed segment by its nearest point: the least metres to the core and to the centre.
@@ -1503,10 +1513,9 @@ fn decks<'a>(
     segs: &'a [u32],
     p: &'a HeightRules,
 ) -> impl Iterator<Item = (f64, f64, f64)> + 'a {
-    let ceilings = segs.iter().rev().map_while(move |&item| {
-        let ln = b.line((item & 0xffff) as usize);
-        ln.ceiling.then_some((ln, (item >> 16) as usize))
-    });
+    // The storeys' lines over the ground come after the ceiling lines.
+    let lines = segs.iter().rev().map(move |&item| (b.line((item & 0xffff) as usize), (item >> 16) as usize));
+    let ceilings = lines.skip_while(|(ln, _)| ln.storey > 0).map_while(|(ln, i)| ln.ceiling.then_some((ln, i)));
     ceilings.filter_map(move |(ln, i)| {
         let (sa, sb) = (b.sample(&ln, i), b.sample(&ln, i + 1));
         let ab = sub(sb.p, sa.p);

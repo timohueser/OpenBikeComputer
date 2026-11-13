@@ -194,7 +194,7 @@ impl Rules {
             tread[at.ok_or_else(|| format!("plan.json tread_finishes: {name} is no finish"))?] = true;
         }
         let block = top.get("structures").and_then(Value::as_object).ok_or("plan.json: no object structures")?;
-        let mut parts = [0.0; 6];
+        let mut parts = [0.0; Structures::FIELDS.len()];
         for (v, field) in parts.iter_mut().zip(Structures::FIELDS) {
             *v = number(block, field).map_err(|e| e.replace("plan.json ", "plan.json structures."))?;
         }

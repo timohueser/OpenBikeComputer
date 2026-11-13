@@ -33,8 +33,10 @@
 
 pub mod check;
 pub mod far;
+mod storeys;
 
 pub use far::far_block;
+pub use storeys::storeys;
 
 use std::collections::BTreeMap;
 use std::f64::consts::PI;
@@ -138,6 +140,9 @@ pub const CEILING: u32 = 1 << 12;
 /// Line water: a painter reads only the records of its host's kind, water or not.
 pub const WATER: u32 = 1 << 13;
 pub const PATH: u32 = 1 << 14;
+/// A line of a storey over the ground (`storeys`), after the ceiling lines: one leg, whose leg bits (from
+/// `LEG_SHIFT`) hold its storey. Only a reader of that storey's labels takes it as a way.
+pub const STOREY: u32 = 1 << 15;
 /// A deck's stroke ends flat on an end line within this turn of its chord: past it the two ways meet side by
 /// side, and the stroke ends square to its own chord.
 pub const FLAT_TURN_DEG: f64 = 45.0;
@@ -157,8 +162,19 @@ pub const LEG_SHIFT: u32 = 24;
 // The fields of a line's finish word: the finish code, each flag, the material and the leg. No two
 // overlap; a new flag joins this list.
 const _: () = {
-    let fields =
-        [0xff, RAIL, MARKED, MOTORWAY, WALL, CEILING, WATER, PATH, 0xff << MATERIAL_SHIFT, u32::MAX << LEG_SHIFT];
+    let fields = [
+        0xff,
+        RAIL,
+        MARKED,
+        MOTORWAY,
+        WALL,
+        CEILING,
+        WATER,
+        PATH,
+        STOREY,
+        0xff << MATERIAL_SHIFT,
+        u32::MAX << LEG_SHIFT,
+    ];
     let (mut seen, mut i) = (0u32, 0);
     while i < fields.len() {
         assert!(seen & fields[i] == 0, "two fields of a line's finish word overlap");

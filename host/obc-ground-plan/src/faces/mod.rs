@@ -7,6 +7,7 @@
 pub mod check;
 mod cover;
 pub mod culverts;
+pub mod deck;
 mod geom;
 pub mod heights;
 pub mod legs;
@@ -23,6 +24,7 @@ mod types;
 
 use std::collections::BTreeMap;
 
+pub use deck::{DeckWay, Storeys};
 pub use rules::{input_m, Mouth, Pair, PlanRules, Rank, Rules};
 pub use types::*;
 
@@ -196,12 +198,16 @@ impl Ctx<'_> {
     }
 }
 
-/// Water lies on the ground or in a tunnel, never on a deck: it comes in at level 0 only.
-fn in_level(graph: &WayGraph, way: u32, level: i8) -> bool {
-    let w = &graph.ways[way as usize];
-    match level {
-        0 => w.level == Level::Ground,
-        k => w.level == Level::Deck && w.deck == Some(k as u32 - 1),
+/// A way of storey 0. Water lies on the ground or in a tunnel, never on a deck.
+fn in_level(graph: &WayGraph, way: u32) -> bool {
+    graph.ways[way as usize].level == Level::Ground
+}
+
+/// The ways of a level's lines: storey 0's (`in_level`), or those of a storey over the ground (`deck::Decks`).
+fn keep<'a>(graph: &'a WayGraph, decks: Option<&'a deck::Decks>, level: i8) -> impl Fn(u32) -> bool + 'a {
+    move |w| match decks {
+        Some(d) => d.storey[w as usize] == level,
+        None => in_level(graph, w),
     }
 }
 
@@ -816,8 +822,7 @@ pub(crate) fn record_lines<'a>(
 ) -> Vec<WayLine<'a>> {
     let ctx = Ctx { graph, rules, origin: cell.origin() };
     let mut lines =
-        lines(&ctx, input, &|w| in_level(graph, w, 0), grown(cell, rules::ways_m(&rules.plan, &rules.sections), true))
-            .0;
+        lines(&ctx, input, &|w| in_level(graph, w), grown(cell, rules::ways_m(&rules.plan, &rules.sections), true)).0;
     lines.retain(|l| !l.sec.water);
     lines
 }
@@ -854,7 +859,15 @@ pub(crate) fn level_lines<'a>(
     level: i8,
 ) -> Vec<WayLine<'a>> {
     let ctx = Ctx { graph, rules, origin: cell.origin() };
-    lines(&ctx, input, &|w| in_level(graph, w, level), window(cell, input_m(&rules.plan, &rules.sections))).0
+    let decks = (level > 0).then(|| deck::Decks::of(graph));
+    let mut out =
+        lines(&ctx, input, &keep(graph, decks.as_ref(), level), window(cell, input_m(&rules.plan, &rules.sections))).0;
+    if decks.is_some() {
+        for line in &mut out {
+            deck::deck_bands(line, &|p| ctx.units(rules.structures.edge_band_m, p));
+        }
+    }
+    out
 }
 
 /// The candidates of a cell and level, the one source of its shapes: the overlay slices and labels
@@ -869,12 +882,16 @@ struct Candidates<'a> {
     cover: Cover,
     corners: Vec<CornerArc>,
     mouths: Vec<CulvertMouth>,
+    /// The end lines on which storey 0 and a deck meet: the end point, the unit direction into the line and the
+    /// half-width of its stroke there (units). A face edge on one is a `DeckEdge`.
+    ends: Vec<[f64; 5]>,
     stats: FaceStats,
 }
 
-/// The face plan of one cell and level. `slopes = false` leaves out the slope layer (decks).
+/// The face plan of one cell and level. `slopes = false` leaves out storey 0's slope layer; a storey over the
+/// ground holds its decks' edge band there.
 pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, level: i8, slopes: bool) -> FacePlan {
-    let c = candidates(graph, input, rules, cell, level, if slopes { LAYERS } else { SLOPE }, false);
+    let c = candidates(graph, input, rules, cell, level, if slopes || level > 0 { LAYERS } else { SLOPE }, false);
     Sliced::new(&c).cell(&c, cell, level)
 }
 
@@ -911,10 +928,12 @@ impl Sliced {
         let mut plan = self.plan(cell, level, &Map::new(snap_round(&patches)), &labels);
         plan.corners = c.corners.clone();
         plan.mouths = c.mouths.clone();
-        let ends: Vec<[f64; 5]> = c.lines.iter().flat_map(deck_ends).collect();
+        let ends = &c.ends;
+        // A deck's end passes the rounded corners of every layer of its stroke.
+        let tol = if level > 0 { DECK_END_UNITS } else { END_UNITS };
         let on = |v: P, e: &[f64; 5]| {
             let r = [f64::from(v[0]) - e[0], f64::from(v[1]) - e[1]];
-            (r[0] * e[2] + r[1] * e[3]).abs() <= END_UNITS && (r[1] * e[2] - r[0] * e[3]).abs() <= e[4] + END_UNITS
+            (r[0] * e[2] + r[1] * e[3]).abs() <= tol && (r[1] * e[2] - r[0] * e[3]).abs() <= e[4] + tol
         };
         for e in plan.edges.iter_mut().filter(|e| e.kind == EdgeKind::Continuous) {
             let (a, b) = (plan.vertices[e.a as usize], plan.vertices[e.b as usize]);
@@ -941,6 +960,9 @@ impl Sliced {
 /// A face edge lies on a line's end line where its ends lie within this many units of it: the slice rounds
 /// the stroke's whole-unit corners.
 const END_UNITS: f64 = 2.0;
+/// The same for a deck's end on its end line, whose corners are those of each layer of its stroke, each rounded
+/// apart (measured on the fixture: under 3 units).
+const DECK_END_UNITS: f64 = 4.0;
 
 /// A line's deck end lines: the end point, the unit direction into the line and the half-width of its
 /// paved layers (units).
@@ -1033,10 +1055,25 @@ fn candidates<'a>(
     // The carriageways reach farther than the points: the outline rounds read them. The ways reach
     // farther still: the off-line test of the points' rounds reads them.
     let lx = reach(rules::lines_m(plan, &rules.sections));
-    let (lines, of_way) =
-        lines(&ctx, input, &|w| in_level(graph, w, level), reach(rules::ways_m(plan, &rules.sections)));
+    // A storey over the ground holds the pieces of its deck ways: each a deck's stroke between its end lines.
+    let decks = (level > 0).then(|| deck::Decks::of(graph));
+    let (mut lines, of_way) =
+        lines(&ctx, input, &keep(graph, decks.as_ref(), level), reach(rules::ways_m(plan, &rules.sections)));
+    let stretches: Vec<Vec<deck::Stretch>> = match &decks {
+        Some(d) => {
+            for line in &mut lines {
+                deck::deck_bands(line, &|p| ctx.units(rules.structures.edge_band_m, p));
+            }
+            lines.iter().map(|l| deck::stretches(l, &d.pieces[&l.way])).collect()
+        }
+        None => Vec::new(),
+    };
+    // A point of a storey over the ground lies on the pieces of all its arms.
+    let held =
+        |a: &Arm| stretches.is_empty() || stretches[a.line].iter().any(|s| s.inner.0 <= a.at && a.at <= s.inner.1);
     // The points within `bx` round their arms; the points past it only end their runs.
-    let all = graph_points(&ctx, &lines, &of_way, reach(rules::points_m(plan, &rules.sections)));
+    let mut all = graph_points(&ctx, &lines, &of_way, reach(rules::points_m(plan, &rules.sections)));
+    all.retain(|pt| pt.arms.iter().all(&held));
     let (mut points, outer): (Vec<Point>, Vec<Point>) = all.into_iter().partition(|pt| near(pt.pos));
     let mut stats = FaceStats::default();
     let junction = |pt: &&Point| matches!(pt.label.owner, Owner::Junction(_));
@@ -1107,7 +1144,7 @@ fn candidates<'a>(
         }
     }
     let first_turn = points.len();
-    points.extend(turn_points(&ctx, &lines, &taken, bx));
+    points.extend(turn_points(&ctx, &lines, &taken, bx).into_iter().filter(|pt| pt.arms.iter().all(&held)));
     stats.turns = points[first_turn..].iter().filter(|pt| own(pt.pos)).count() as u32;
     let all = stops(&points);
     rounded.extend(points[first_turn..].iter().map(|pt| round(pt, &all)));
@@ -1183,6 +1220,46 @@ fn candidates<'a>(
             pieces_along(p, h, &[], [&cut(first, 0), &cut(last - 1, 0)], ends, false, &mut own);
             own
         };
+        // A deck's stretches: its carriageway and its own band layers, ending square on their end lines.
+        if !stretches.is_empty() {
+            if run(bx).is_none() {
+                continue;
+            }
+            let mut own = Vec::new();
+            let layers = own_layers.entry(li).or_default();
+            for s in &stretches[li] {
+                let last = s.p.len() - 1;
+                let ends = |k: usize| -> [Vec<f64>; 2] {
+                    [(0, s.inner.0), (last, s.inner.1)].map(|(at, i)| match s.lines[usize::from(at == last)] {
+                        Some(_) => s.o[at][..k].to_vec(),
+                        None => cut(i, k),
+                    })
+                };
+                let h: Vec<f64> = s.o.iter().map(|o| o[0]).collect();
+                let c = ends(0);
+                pieces_along(&s.p, &h, &s.dirs, [&c[0], &c[1]], [false, false], false, &mut own);
+                for (k, layer) in layers.iter_mut().enumerate().take(bands) {
+                    let d: Vec<f64> = s.o.iter().map(|o| o[k + 1]).collect();
+                    if s.o.iter().all(|o| o[k + 1] <= o[k]) {
+                        continue;
+                    }
+                    let c = ends(k + 1);
+                    pieces_along(&s.p, &d, &s.dirs, [&c[0], &c[1]], [false, false], false, layer);
+                }
+            }
+            cands.push(Cand {
+                rings: union(&own, [0, 0]),
+                label: way_label(rules, line, 0).0,
+                key: way_key(rules, line),
+                glob: None,
+                line: li,
+                relabel: None,
+                beyond: Vec::new(),
+                fill: None,
+                discs: Vec::new(),
+            });
+            continue;
+        }
         // The paved outline holds no water.
         let outer = if line.sec.water { None } else { run(lx) };
         let Some((first, last)) = run(bx) else {
@@ -1261,13 +1338,16 @@ fn candidates<'a>(
             let (key, discs) = (pt.key, Vec::new());
             cands.push(Cand { rings, label: pt.label, key, glob, line: 0, relabel: spans, beyond, fill: None, discs });
         }
-        // A point's rings belong to the one way with legs among its arms, if there is one.
+        // A point's rings belong to the one way with legs among its arms, if there is one; on a deck, to the way
+        // of its label.
         let mut legged: Vec<usize> = pt.arms.iter().map(|a| a.line).filter(|&l| !lines[l].cuts.is_empty()).collect();
         legged.sort_unstable();
         legged.dedup();
+        let deck_owner = pt.label.material.and_then(|m| of_way.get(&m).copied()).filter(|_| decks.is_some());
         for k in 0..bands {
-            let layer = match legged[..] {
-                [l] if BAND_LABELS[k].2 == HeightRule::Owner => &mut own_layers.entry(l).or_default()[k],
+            let layer = match (deck_owner, &legged[..]) {
+                (Some(l), _) => &mut own_layers.entry(l).or_default()[k],
+                (None, [l]) if BAND_LABELS[k].2 == HeightRule::Owner => &mut own_layers.entry(*l).or_default()[k],
                 _ => &mut layers[k],
             };
             layer.extend(r.rings[k].iter().cloned());
@@ -1279,7 +1359,7 @@ fn candidates<'a>(
         if layer.is_empty() {
             continue;
         }
-        let (rank, surface, rule) = BAND_LABELS[k];
+        let (rank, surface, rule) = band_label(k, decks.is_some());
         let rank = plan.rank(rank);
         let material = line.map(|l| lines[l].way);
         let label = Label { rank, surface, rule, material, ..TERRAIN };
@@ -1319,7 +1399,8 @@ fn candidates<'a>(
     let fill_key = (plan.rank(Rank::RailBed), u8::MAX, u8::MAX);
     for (k, &(rank, surface, rule)) in BAND_LABELS.iter().enumerate() {
         let rings: Vec<Vec<P>> = fills.iter().flat_map(|f| f.bands[k].iter().cloned()).collect();
-        if rings.is_empty() || k >= bands {
+        // A deck's band layers are its ways' own: a round's shared band would name no way.
+        if rings.is_empty() || k >= bands || decks.is_some() {
             continue;
         }
         let rank = plan.rank(rank);
@@ -1394,7 +1475,13 @@ fn candidates<'a>(
         }
     }
     let ways = lines.iter().take_while(|l| !l.sec.water).count();
-    Candidates { lines, ways, cands, seams, win, cover, corners, mouths, stats }
+    let ends: Vec<[f64; 5]> = if decks.is_some() {
+        let open = stretches.iter().flatten().flat_map(|s| s.lines.iter().flatten()).filter(|e| e.open);
+        open.map(|e| [f64::from(e.at[0]), f64::from(e.at[1]), e.into[0], e.into[1], e.half]).collect()
+    } else {
+        lines.iter().flat_map(deck_ends).collect()
+    };
+    Candidates { lines, ways, cands, seams, win, cover, corners, mouths, ends, stats }
 }
 
 /// Splits every candidate that gives the label of a way with legs (`legs`), or that is one of its own
@@ -1498,6 +1585,16 @@ const BAND_LABELS: [(Rank, Surface, HeightRule); LAYERS] = [
     (Rank::Bank, Surface::Bank, HeightRule::Slope),
     (Rank::Slope, Surface::Slope, HeightRule::Slope),
 ];
+
+/// The label of band layer k; on a deck, the slope's place holds the deck's edge band, of the sheet's lowest rank,
+/// at its way's height.
+fn band_label(k: usize, deck: bool) -> (Rank, Surface, HeightRule) {
+    if deck && k == SLOPE {
+        (Rank::Slope, Surface::DeckEdge, HeightRule::Owner)
+    } else {
+        BAND_LABELS[k]
+    }
+}
 
 /// The step of a medial line between two legs along a leg.
 const LEG_STEP_M: f64 = 0.5;

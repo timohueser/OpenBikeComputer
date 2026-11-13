@@ -29,14 +29,41 @@ pub struct Structures {
     pub edge_band_m: f64,
     /// A closed end gets a door from this step on.
     pub door_min_m: f64,
+    /// A deck narrower than this, band to band, gets a railing in place of a parapet (`mesh::shell`).
+    pub railing_width_m: f64,
+    /// A railing's posts stand at every multiple of this along its deck way.
+    pub post_spacing_m: f64,
+    /// A pier stands this far into the ground under it.
+    pub pier_depth_m: f64,
 }
 
 impl Structures {
-    pub const FIELDS: [&'static str; 6] =
-        ["cover_m", "lift_max_m", "open_max_m", "deck_min_m", "edge_band_m", "door_min_m"];
+    pub const FIELDS: [&'static str; 9] = [
+        "cover_m",
+        "lift_max_m",
+        "open_max_m",
+        "deck_min_m",
+        "edge_band_m",
+        "door_min_m",
+        "railing_width_m",
+        "post_spacing_m",
+        "pier_depth_m",
+    ];
 
-    pub fn new([cover_m, lift_max_m, open_max_m, deck_min_m, edge_band_m, door_min_m]: [f64; 6]) -> Structures {
-        Structures { cover_m, lift_max_m, open_max_m, deck_min_m, edge_band_m, door_min_m }
+    pub fn new(
+        [cover_m, lift_max_m, open_max_m, deck_min_m, edge_band_m, door_min_m, railing_width_m, post_spacing_m, pier_depth_m]: [f64; 9],
+    ) -> Structures {
+        Structures {
+            cover_m,
+            lift_max_m,
+            open_max_m,
+            deck_min_m,
+            edge_band_m,
+            door_min_m,
+            railing_width_m,
+            post_spacing_m,
+            pier_depth_m,
+        }
     }
 
     /// The row of the reach table: the graph's own longest chain, then a station's read along its way,
