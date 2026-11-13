@@ -9,7 +9,6 @@
     import type { Library } from '../lib/library/store';
     import { planTitle } from '../lib/planner/editor';
     import { isPlan } from '../lib/planner/library';
-    import { ROUTES } from '../lib/routes';
 
     let { library }: { library: Library; active: boolean } = $props();
 
@@ -114,7 +113,7 @@
                 </div>
                 <h2>On the device</h2>
                 <div class="rows">
-                    <a class="row" href={ROUTES.routes}><strong>Rides</strong><span>{came} ›</span></a>
+                    <div class="row"><strong>Rides</strong><span>{came}</span></div>
                     {#if device.at !== null}
                         <div class="row"><strong>Memory card</strong><span>map {formatBytes(device.bytes.map)} · routes {formatBytes(device.bytes.routes)} · rides {formatBytes(device.bytes.rides)}</span></div>
                     {/if}
@@ -174,7 +173,7 @@
 
 <style>
     main {
-        padding: 16px 18px 24px;
+        padding: 16px 20px 24px;
     }
     h1 {
         margin: 0;
@@ -262,9 +261,6 @@
     .row span {
         color: var(--ink-soft);
         font-size: 13px;
-    }
-    a.row:hover strong {
-        text-decoration: underline;
     }
     .tag {
         padding: 1px 7px;
