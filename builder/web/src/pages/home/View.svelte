@@ -192,10 +192,10 @@
         .shade {
             background: linear-gradient(180deg, rgb(0 0 0 / 0.5), rgb(0 0 0 / 0.24) 40%, transparent 65%);
         }
-        /* The peak stays in the narrow hero. */
+        /* The top of the peak stays in the narrow hero, to the right of the text. */
         .hills {
-            left: -67%;
-            width: 167%;
+            left: -30%;
+            width: 130%;
         }
         .box {
             position: relative;
