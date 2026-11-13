@@ -7,7 +7,7 @@
     import { townOf } from './towns';
     import type { FitSample } from '../../lib/core/fit';
     import { duration } from '../../lib/planner/editor';
-    import { distanceAxis, extent, outOfStops, range, sampleAt, smooth, speeds, stops, thin, timeAxis } from '../../lib/ride/lines';
+    import { distanceAxis, extent, outOfStops, range, sampleAt, samplesIn, smooth, speeds, stops, thin, timeAxis } from '../../lib/ride/lines';
     import { partNumbers, type Channels, type RideClimb } from '../../lib/ride/numbers';
     import { formatAlong, formatDistance, formatHeight, formatSpeed } from '../../lib/settings/format';
 
@@ -145,10 +145,11 @@
     })));
 
     /** The zones of a large line, its sensor and the numbers under it: of a stretch of the distance axis, else of the
-     * whole ride. The stretch has no end in a stop, as a part. */
+     * whole ride. The stretch of the selected part is the samples of the part; any other stretch has no end in a stop,
+     * as a part. */
     function largeOf(key: Key, stretch: [number, number] | null) {
         const { format, limit } = series[key];
-        const inside = stretch && outOfStops(halts, [sampleAt(axis.xs, stretch[0]), sampleAt(axis.xs, stretch[1])]);
+        const inside = stretch && (part && stretch[0] === axis.xs[part[0]] && stretch[1] === axis.xs[part[1]] ? part : outOfStops(halts, samplesIn(axis.xs, stretch)));
         const facts = inside && partNumbers(samples, inside, limits);
         const whole = key === 'hr' || key === 'power' || key === 'cadence' ? channels?.[key] : undefined;
         const sensor = whole && facts ? facts.channels[key as keyof Channels] : whole;

@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { untrack } from 'svelte';
+    import { onDestroy, untrack } from 'svelte';
     import Window from '../../lib/ui/Window.svelte';
     import Lanes from './Lanes.svelte';
     import Plot from './Plot.svelte';
@@ -28,7 +28,7 @@
         /** The smoothed value of each sample. */
         values: (number | undefined)[];
         /** The zones of the line, its sensor for the time in each zone and the numbers under the line: of a stretch of
-         * the axis, else of the whole ride. */
+         * the axis, which can be `part`, else of the whole ride. */
         of: (stretch: [number, number] | null) => { zones?: Zone[]; times?: Channel; numbers: { label: string; value: string }[] };
         /** The unit of the zones, and the limit that they need (`ZoneTimes`). */
         unit?: string;
@@ -61,8 +61,9 @@
     const length = $derived(view[1] - view[0]);
     const zoomed = $derived(view[0] > 0 || view[1] < 1);
     const columns = $derived(viewColumns(xs, values, view, Math.max(1, Math.round(width))));
+    const wholeSpan = $derived(range(values) ?? { low: 0, high: 1 });
     const span = $derived.by(() => {
-        const whole = range(values) ?? { low: 0, high: 1 }, here = zoomed ? range(columns) : undefined;
+        const whole = wholeSpan, here = zoomed ? range(columns) : undefined;
         if (!here) return whole;
         const room = Math.max(here.high - here.low, (whole.high - whole.low) * LEAST_RANGE);
         const low = Math.min(whole.high - room, Math.max(whole.low, (here.low + here.high - room) / 2));
@@ -71,7 +72,7 @@
     const ticks = $derived(fitTicks([
         { at: 0, label: view[0] > 0 ? formatAlong(view[0] * lengthM) : start },
         { at: 1, label: view[1] < 1 ? formatAlong(view[1] * lengthM) : formatDistance(lengthM) },
-        ...distanceTicks(view[0] * lengthM, view[1] * lengthM, width, true),
+        ...distanceTicks(view[0] * lengthM, view[1] * lengthM, width, zoomed),
     ], width));
     /** The pale layers: the stretch of a drag, else the selected part where the view shows more than the part. */
     const band = $derived.by((): Stretch | null => {
@@ -81,9 +82,12 @@
         return shown[1] - shown[0] >= 1 || shown[1] === shown[0] ? null : shown;
     });
     const all = (stretch: Stretch) => stretch[0] <= 0 && stretch[1] >= 1;
-    const shown = $derived(of(all(counted) ? null : counted));
-    const stretchText = $derived(all(counted) ? ''
-        : `${formatAlong(counted[0] * lengthM)} to ${formatAlong(counted[1] * lengthM)} · ${formatDistance((counted[1] - counted[0]) * lengthM)}`);
+    const partView = $derived(part && fitView(part, least));
+    /** The stretch of the numbers and of their range: the part itself while the view is the view of the part, so the
+     * window and the left card agree, also for a part shorter than the least view. */
+    const told = $derived(all(counted) ? null : partView && counted[0] === partView[0] && counted[1] === partView[1] ? part : counted);
+    const shown = $derived(of(told));
+    const stretchText = $derived(told ? `${formatAlong(told[0] * lengthM)} to ${formatAlong(told[1] * lengthM)} · ${formatDistance((told[1] - told[0]) * lengthM)}` : '');
     const rows = $derived([{
         label: '', draw: plot, height: innerWidth > NARROW_PX ? PLOT_PX : LOW_PLOT_PX,
         // The rules of the zones are the scale of a line with zones; the numbers under the elevation are its scale.
@@ -109,6 +113,7 @@
         };
         moving = requestAnimationFrame(step);
     }
+    onDestroy(() => cancelAnimationFrame(moving));
     /** The button leaves with the view, so the focus goes to the line. */
     function showWhole() {
         show(WHOLE);
@@ -124,7 +129,7 @@
     /** A click on the selected part shows the part; Enter shows the stretch that Shift with the arrow keys made. */
     function click(x: number) {
         if (drag) release();
-        else if (part && band && x >= band[0] && x <= band[1]) show(fitView(part, least));
+        else if (partView && band && x >= band[0] && x <= band[1]) show(partView);
     }
     // In the capture phase and with no default, so that the window stays open.
     function escape(event: KeyboardEvent) {
@@ -134,15 +139,17 @@
     }
 
     // A pinch on a trackpad arrives as a wheel with Ctrl. A scroll up or down stays the scroll of the window. The
-    // listener is not passive, so that the browser neither zooms the page nor goes back in its history.
+    // listener is not passive: at a pinch the browser does not zoom the page, and at a sideways scroll on the line it
+    // does not go back in its history, also while the whole line shows and the view cannot move.
     $effect(() => {
         const target = frame;
         if (!target) return;
         const wheel = (event: WheelEvent) => {
-            const box = target.querySelector('.lane')!.getBoundingClientRect(), sideways = Math.abs(event.deltaX) > Math.abs(event.deltaY);
-            if (!event.ctrlKey && !(zoomed && sideways)) return;
+            if (!event.ctrlKey && Math.abs(event.deltaX) <= Math.abs(event.deltaY)) return;
             event.preventDefault();
+            if (!event.ctrlKey && !zoomed) return;
             cancelAnimationFrame(moving);
+            const box = target.querySelector('.lane')!.getBoundingClientRect();
             if (event.ctrlKey) {
                 // The place under the pointer stays under the pointer.
                 const x = Math.min(1, Math.max(0, (event.clientX - box.left) / box.width));

@@ -190,3 +190,10 @@ export function lineShares(samples: FitSample[], line: Coordinate[]): number[] {
 
 /** The first sample whose place reaches `place`, or the last sample; `places` do not go back (`xs`, `lineShares`). */
 export const sampleAt = (places: number[], place: number): number => Math.min(places.length - 1, firstIndex(places.length, i => places[i] >= place));
+
+/** The samples in the stretch `from` to `to` of the axis, from the first to the last. A stretch between two samples is
+ * those two samples, so it has numbers. */
+export function samplesIn(xs: number[], [from, to]: [number, number]): [number, number] {
+    const first = sampleAt(xs, from), last = firstIndex(xs.length, i => xs[i] > to) - 1;
+    return first <= last ? [first, last] : [Math.max(0, last), first];
+}

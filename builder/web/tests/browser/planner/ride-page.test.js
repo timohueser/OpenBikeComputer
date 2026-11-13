@@ -172,7 +172,7 @@ test('the lines of a ride: a row for each line with values, the pointer, and a p
   await expect(large.locator('dl > div')).toHaveText(['Average150 bpm', 'Highest160 bpm']);
   await expect(whole).toHaveCount(0);
   // A drag across the line shows that stretch large: the ticks, the numbers and the zone times are of the stretch,
-  // and the zone times of a short stretch are in minutes and seconds.
+  // and the zone times of a short stretch are in minutes and seconds. The stretch holds the samples 140 to 179: 39 steps of 10 s.
   const line = await large.locator('.lane').boundingBox();
   const dragLine = async () => {
     await page.mouse.move(line.x + line.width * 0.7, line.y + line.height / 2);
@@ -184,7 +184,7 @@ test('the lines of a ride: a row for each line with values, the pointer, and a p
   await dragLine();
   await expect(large.locator('.ticks span')).toHaveText(['km 7.0', 'km 9.0', 'km 7.5', 'km 8.0', 'km 8.5']);
   await expect(large.getByText('km 7.0 to km 9.0 · 2.0 km')).toBeVisible();
-  await expect(large.locator('li')).toHaveText(['Z50m 0s', 'Z46m 40s', 'Z30m 0s', 'Z20m 0s', 'Z10m 0s']);
+  await expect(large.locator('li')).toHaveText(['Z50m 0s', 'Z46m 30s', 'Z30m 0s', 'Z20m 0s', 'Z10m 0s']);
   await expect(large.locator('dl > div')).toHaveText(['Average160 bpm', 'Highest160 bpm']);
   // "Whole ride" beside the title shows the whole line again, and is there only for a stretch.
   await whole.click();

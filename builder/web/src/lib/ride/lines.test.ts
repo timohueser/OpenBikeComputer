@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { FitSample } from '../core/fit';
 import { rideSummary, lineCoordinates } from '../library/summary';
 import { heartRateZones } from '../settings/zones';
-import { distanceAxis, extent, fitView, lineShares, outOfStops, range, sampleAt, slice, smooth, speeds, stops, thin, timeAxis, viewColumns, zoneStretches } from './lines';
+import { distanceAxis, extent, fitView, lineShares, outOfStops, range, sampleAt, samplesIn, slice, smooth, speeds, stops, thin, timeAxis, viewColumns, zoneStretches } from './lines';
 
 const T = 1_792_828_800;
 /** Microdegrees of latitude for about 50 m. */
@@ -160,6 +160,14 @@ describe('a view of a stretch of the axis', () => {
         expect(fitView([-.2, .3], .1)).toEqual([0, .5]);
         expect(fitView([.8, 1.3], .1)).toEqual([.5, 1]);
         expect(fitView([0, 1], 2)).toEqual([0, 1]);
+    });
+
+    it('holds the samples from its start to its end, and the two samples around a stretch with none', () => {
+        const xs = [0, .2, .4, .4, .6, 1];
+        expect(samplesIn(xs, [.1, .5])).toEqual([1, 3]);
+        expect(samplesIn(xs, [.2, .6])).toEqual([1, 4]);
+        expect(samplesIn(xs, [.7, .9])).toEqual([4, 5]);
+        expect(samplesIn(xs, [0, 1])).toEqual([0, 5]);
     });
 
     it('draws the line to each edge of the stretch, with the value between the two samples around the edge', () => {
