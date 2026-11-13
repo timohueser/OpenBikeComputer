@@ -1262,8 +1262,9 @@ All producers are intermediate layers. Grid steps select their `objects/` and th
 | `planner/index` | Only `index.json` of each grid step | Packed `search/<region>.grid.json` in `objects/`; `release.json`, which names the index of each grid step, and the small tile pointers in `public/` |
 | `planner/catalog` | `planner/index`, and `index.json` of each grid step | `catalog.json`: the pointer that a planner client reads first. Its `active.id` is the planner release id: the digest of the named files of the planner. `origins` is the `[publication]` table of `data/planner-runtime.toml` |
 
-The overlay grid reads only `index.json` of the routing grid too. It checks the source routing
-package and changes its TileJSON `routing_package` to the grid package hash. The final index
+The overlay grid reads only `index.json` of the routing cells grid too. It fails when
+`routing_package` of its archive is not the SHA-256 of `routing/directory.bin` in that index, and
+keeps the value in its TileJSON. The final index
 checks the OSM source, region, coverage, search schema and time zone, routing cell bounds, terrain
 inputs. It reads no payload to compose metadata. A climate change builds
 only its producer, its grid, the final index and the pointer. The named files of the planner are
@@ -1287,9 +1288,9 @@ are under `<tiles_origin>/releases/<id>/`: the tile Worker reads `releases/<id>/
 `objects/` of the bucket.
 
 Each service prints the formats of the layers that it reads with `--formats`, as one JSON object
-of layer and format, and reads no data: `planner-service --formats` gives `planner/routing`,
-`node planner/search/server.mjs --formats` gives `planner/search` and `planner/index`, and
-`python3 -m tools.planner_downloads --formats` gives `planner/index`. The format of
+of layer and format, and reads no data: `planner-service --formats` gives `planner/routing` and
+`planner/routing-cells`, `node planner/search/server.mjs --formats` gives `planner/search` and
+`planner/index`, and `python3 -m tools.planner_downloads --formats` gives `planner/index`. The format of
 `planner/index` is that of the two files of it that the services check: the offline catalog and
 `search/<region>.grid.json`.
 

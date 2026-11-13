@@ -10,7 +10,7 @@ use planner_router::model::{Point, Profile, Road, Surface, BIKE, FOOT, PUSH};
 use planner_router::package::{digest, Endpoint, Package, Source};
 use planner_router::region::Region;
 use planner_router::snap::{self, Candidates, Policy, REACH_M};
-use planner_router::{Control, Error, Request, Router};
+use planner_router::{Control, Error, Request, Route, Router};
 use planner_router_build::cells::{write, Info, Input};
 use planner_router_build::source::{Builder, Tags, Ways};
 use planner_router_build::{base, Graph, Turn};
@@ -442,19 +442,46 @@ fn the_engine_on_format_10_gives_the_costs_and_candidates_of_format_9() {
     let bake = bake("search");
     let mut old = Router::new(bake.old.fork(), usize::MAX);
     let mut new = Router::new(bake.region(None), usize::MAX);
+    // The two ends of the long road. The road is a candidate at both, so its cost is the ceiling of
+    // the search of the other candidates.
+    let graph = &bake.graph;
+    let long = (0..graph.roads.len()).find(|&id| graph.roads.attributes(id).length_m > 10_000).unwrap();
+    let ends =
+        [graph.roads.shape(long)[0], graph.roads.shape(long)[2]].map(|p| [p.lon as f64 * 1e-6, p.lat as f64 * 1e-6]);
     let (mut requests, mut ties, mut routed) = (0, 0, 0);
+    // The requests of each kind, and the long road alone as the answer, with a label that a cost
+    // table set.
+    let (mut tables, mut under_ceiling) = ([0; 8], 0);
     for profile in Profile::presets() {
-        for request in compare::requests(&old, &profile.name, 40, 17, 10_000.0) {
+        let mut set = compare::requests(&old, &profile.name, 40, 17, 10_000.0);
+        for points in [[ends[0], ends[1]], [ends[1], ends[0]]] {
+            set.push(serde_json::from_value(serde_json::json!({"points": points, "profile": profile.name})).unwrap());
+        }
+        for (k, request) in set.iter().enumerate() {
+            new.package().take_stats();
             let (outcome, _) =
-                compare::check(&mut old, &mut new, &request).unwrap_or_else(|e| panic!("{request:?}: {e}"));
+                compare::check(&mut old, &mut new, request).unwrap_or_else(|e| panic!("{request:?}: {e}"));
+            let crossed = new.package().take_stats().levels[1..].iter().sum::<usize>() > 0;
             ties += usize::from(outcome == Outcome::Tie);
-            routed += usize::from(old.routes(&request, &Control::default()).is_ok());
+            let route = old.route(request, &Control::default());
+            routed += usize::from(route.is_ok());
             requests += 1;
+            let long = |route: Route| {
+                route.pieces().count() == 1
+                    && graph.roads.attributes(route.legs[0].pieces[0].road as usize).length_m > 10_000
+            };
+            if k < 40 {
+                tables[k % 8] += usize::from(crossed);
+            } else if route.is_ok_and(long) {
+                under_ceiling += usize::from(crossed);
+            }
         }
     }
-    assert_eq!(requests, 400);
+    assert_eq!(requests, 420);
     assert!(routed > 300, "{routed} of {requests} requests give a route");
     assert!(ties * 20 <= requests, "{ties} ties in {requests} requests");
+    assert!(tables[2] > 0 && tables[3] > 0 && tables[4] > 0, "requests with a label of a table, by kind: {tables:?}");
+    assert!(under_ceiling > 0, "no search under the ceiling of the long road set a label by a table");
 }
 
 #[test]
@@ -464,7 +491,7 @@ fn an_install_of_some_cells_routes_on_its_roads() {
     let half = directory.downloads() / 2;
     let ids: Vec<u32> = (0..half).map(|record| directory.cell(record).unwrap().id).collect();
     let installed = |road: u32| directory.download_of_road(road).unwrap().unwrap() < half;
-    let on_installed = |route: &planner_router::Route| route.pieces().all(|piece| installed(piece.road));
+    let on_installed = |route: &Route| route.pieces().all(|piece| installed(piece.road));
     let mut full = Router::new(bake.region(None), usize::MAX);
     let mut some = Router::new(bake.region(Some(&ids)), usize::MAX);
     // Points whose snap windows meet only installed cells.
@@ -495,4 +522,31 @@ fn an_install_of_some_cells_routes_on_its_roads() {
         }
     }
     assert!(same > 0, "{same} routes as on the full install, {dearer} dearer");
+}
+
+#[test]
+fn only_the_chosen_legs_are_unpacked() {
+    let bake = bake("unpack");
+    let points = bake.graph.points.values();
+    let junction = |k: usize| [points[k].lon as f64 * 1e-6, points[k].lat as f64 * 1e-6];
+    let mut router = Router::new(bake.region(None), usize::MAX);
+    // The via point is a junction, so each road at it is a candidate and the first leg runs one
+    // search for each.
+    let request: Request = serde_json::from_value(serde_json::json!({
+        "points": [junction(0), junction(points.len() / 2), junction(points.len() - 1)], "profile": "touring",
+    }))
+    .unwrap();
+    router.package().take_stats();
+    let route = router.route(&request, &Control::default()).unwrap();
+    let stats = router.package().take_stats();
+    assert!(stats.searches > 3, "{stats:?}");
+    assert_eq!(stats.legs, 2, "{stats:?}");
+    assert!(route.legs.iter().all(|leg| leg.pieces.len() > 1));
+    // Each piece is a road of its leg, and a leg has at most one road before its first piece.
+    let pieces = route.pieces().count();
+    assert!((pieces..=pieces + 2).contains(&stats.roads), "{stats:?} for {pieces} pieces");
+    // The roads of the chosen legs and the steps of one search have their own limits.
+    for control in [Control { max_roads: 1, ..Control::default() }, Control { max_steps: 1, ..Control::default() }] {
+        assert!(matches!(router.route(&request, &control), Err(Error::Limit)));
+    }
 }

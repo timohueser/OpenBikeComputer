@@ -318,7 +318,7 @@ time_zone = "Europe/Berlin"
             "python",
             "-c",
             r#"
-import copy, json, pathlib, sqlite3, sys
+import copy, hashlib, json, pathlib, sqlite3, sys
 from tools import planner_offline as offline, planner_downloads as downloads, planner_grid_index as grid_index
 source = pathlib.Path(sys.argv[1])
 document = json.loads((source / 'release.json').read_bytes())
@@ -338,7 +338,10 @@ for kind, field, value in [('places', 'osm_sha256', '0' * 64), ('addresses', 'bo
 assert 'routing/blocks.json' not in document['files']
 files = {name: entry for path in (source / 'indexes').rglob('index.json')
     for name, entry in json.loads(path.read_bytes())['files'].items()} | document['files']
-offline.materialize(source, source / 'runtime', {'files': files}, ('offline/', 'routing/', 'search/'))
+offline.materialize(source, source / 'runtime', {'files': files}, ('offline/', 'routing/', 'search/', 'maps/overlays.json'))
+package = hashlib.sha256((source / 'runtime/routing/directory.bin').read_bytes()).hexdigest()
+assert document['routing_package'] == package
+assert json.loads((source / 'runtime/maps/overlays.json').read_bytes())['routing_package'] == package
 catalog = json.loads((source / 'runtime/offline/catalog.json').read_bytes())
 cells = [json.loads((source / f'runtime/offline/cells/{cell}.json').read_bytes()) for cell in catalog['cells']]
 assert cells and not any(name.startswith('maps/tiles/terrain/') for cell in cells for name in cell['packs'])

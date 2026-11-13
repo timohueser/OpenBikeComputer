@@ -227,8 +227,11 @@ def verify(source):
             or json.loads((output / grid).read_bytes()) != search):
         raise ValueError('Offline or search catalog differs from its grid indexes')
     graph = json.loads((output / 'routing/blocks.json').read_bytes())
-    if graph != indexes['routing']['graph'] or runtime.digest(output / 'routing/blocks.json') != document['routing_package']:
-        raise ValueError('Routing graph differs from the planner descriptor')
+    # An unchanged directory is not in `runtime/`; the release that changed it checked its bytes.
+    directory = output / 'routing/directory.bin'
+    if graph != indexes['routing']['graph'] or (
+            changed('routing/directory.bin') and runtime.digest(directory) != document['routing_package']):
+        raise ValueError('Routing graph or package differs from the planner descriptor')
     for cell in indexes['routing']['cells']:
         path = output / 'offline' / cell['manifest']
         descriptor = json.loads(path.read_bytes())

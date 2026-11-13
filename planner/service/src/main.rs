@@ -10,7 +10,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                  planner-service --formats | planner-service --workers";
     let directory = std::env::args().nth(1).ok_or(usage)?;
     if directory == "--formats" {
-        println!("{}", serde_json::json!({ "planner/routing": planner_router::package::FORMAT }));
+        let formats = serde_json::json!({
+            "planner/routing": planner_router::package::FORMAT,
+            "planner/routing-cells": planner_router::cells::FORMAT,
+        });
+        println!("{formats}");
         return Ok(());
     }
     if directory == "--workers" {
@@ -43,7 +47,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let address = std::env::var("ROUTE_LISTEN").unwrap_or_else(|_| "127.0.0.1:8788".into());
     let workers = workers()?;
-    let mut app = planner_service::app(Path::new(&directory), workers)?;
+    // The install of format 10 that the follower names goes before the package of the argument.
+    let cells = std::env::var_os("ROUTE_CELLS");
+    let mut app = planner_service::app(cells.as_deref().map_or(Path::new(&directory), Path::new), workers)?;
     if let Ok(origin) = std::env::var("ROUTE_ORIGIN") {
         app = app.layer(
             CorsLayer::new()

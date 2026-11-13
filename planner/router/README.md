@@ -35,7 +35,7 @@ cargo run --release -p planner-router --example query -- /data/freiburg < reques
 ```
 
 `compare` routes one request set on format 9 and on an install of format 10 of one bake, and
-prints the time and the settled labels of each request. It exits with 1 on a difference:
+prints the times and the search work of each request. It exits with 1 on a difference:
 
 ```sh
 cargo run --release -p planner-router --example compare -- OLD NEW 48 1 --max-km 40
@@ -59,8 +59,8 @@ Physical phone performance and complete-country preparation need separate valida
 
 The old engine (format 9) is `data::Selection`, `package`, `blocks`, `search`, `queue`,
 `landmarks`, `table`, `storage`, `directory` and the graph of `base`. The new engine (format 10) is
-`cells`, `install`, `host`, `region` and `overlay`. `open`, `router`, `snap` and the other modules
-serve both.
+`cells`, `install`, `host`, `region`, `overlay` and `overlay/unpack`. `open`, `router`, `snap` and
+the other modules serve both.
 
 | Module | Responsibility |
 | --- | --- |
@@ -82,8 +82,13 @@ serve both.
 | `cells` | Format 10: read views of the cell directory and of the parts of a cell, the road record |
 | `install` | Format 10, native only: installs a set of cells as files, checks the objects, reads the files again |
 | `host` | Format 10: lends the bytes of the installed parts. `Maps` (native) maps each file at its first use; `Memory` (WebAssembly, tests) holds the parts |
-| `region` | Format 10: the request data of an install through a host: snapping, roads, costs, turns, closures |
-| `overlay` | Format 10: the search over the turns of the level-1 cells. Labels in a hash table by road ID, the reverse turns of a cell built when the backward side enters it |
+| `region` | Format 10: the request data of an install through a host: snapping, roads, costs, turns, closures, and the cells with a cost table |
+| `overlay` | Format 10: the search from both ends. Labels in a hash table by road ID, the reverse turns of an open cell built when the backward side enters it |
+| `overlay/unpack` | Format 10: the roads of the chosen legs. Level by level, it announces what the steps read, then finds the path of each step in its cell |
+
+A cell is closed for a search when it has a cost table and holds no level-1 cell of a seed road.
+The search crosses the highest closed cell of a junction in one step with the table, and uses the
+turns at each other junction.
 
 - Snapping uses only roads that the prepared profile permits. A disconnected leg returns `NoPath`;
   it does not retry other roads.
@@ -109,7 +114,7 @@ mappings, results and host serialization add memory. Search labels allocate visi
 keep a small reuse pool. Prepared profiles share identical turn columns.
 
 On format 10 the budget is the search limit: the most bytes of the labels, the queues and the
-reverse turns of one search, 768 MiB by default. Above it a search returns `Limit`.
+reverse turns of one search, 64 MiB by default. Above it a search returns `Limit`.
 
 `Selection::fork` gives a worker its own page caches. Forks share the graph, the junction mapping,
 the closures and one cache of prepared profiles. That cache is budgeted like one router: the shared
@@ -122,5 +127,6 @@ profiles that no router holds and tries once before it answers `Memory`.
 
 The router retains 32 snap results. The geometry
 cache has a 32 MiB ceiling. A decoded page is at most 8 MiB. Default request limits are 64 points,
-8,192 batched attachment queries and 250,000 geometry vertices. `Control` can lower these limits,
-cap the search queues and supply a cancellation callback. These are service budgets.
+8,192 batched attachment queries, and 250,000 each for the steps of one search path, the roads of
+the chosen legs of a route and the points of an answer. `Control` can lower these limits, cap the
+search queues and supply a cancellation callback. These are service budgets.

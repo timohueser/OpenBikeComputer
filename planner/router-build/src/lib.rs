@@ -536,6 +536,27 @@ impl Costs {
         Ok(())
     }
 
+    /// Costs of chosen columns, for a test of the search: for each profile the total cost of each
+    /// road and the cost of each arc of the topology, with `u32::MAX` for none. Each road with a
+    /// cost has the same cost basis, and its snap bit.
+    pub fn of_columns(profiles: Vec<Profile>, columns: Vec<(Vec<u32>, Vec<u32>)>) -> Self {
+        let (mut roads, mut snap) = (Vec::new(), Vec::new());
+        for (totals, turns) in columns {
+            let mut bits = vec![0u64; totals.len().div_ceil(64)];
+            for road in (0..totals.len()).filter(|&road| totals[road] != u32::MAX) {
+                bits[road / 64] |= 1 << (road % 64);
+            }
+            snap.push(bits.into_iter().collect());
+            let bases = totals.iter().map(|&total| u32::from(total != u32::MAX)).collect();
+            roads.push(cost::RoadCosts {
+                bases,
+                totals: totals.into_iter().collect(),
+                turns: turns.into_iter().collect(),
+            });
+        }
+        Self { profiles, roads, snap, dictionary: vec![CostBasis { factor: 1.0, turn: 0.0, ferry: false }] }
+    }
+
     /// The cost basis of road `road` for profile `profile`; `None` where the profile excludes it.
     pub fn basis(&self, profile: usize, road: usize) -> Option<CostBasis> {
         let id = self.roads[profile].bases.values()[road];

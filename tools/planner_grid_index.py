@@ -14,7 +14,8 @@ GRID = {"format": 3, "zoom": grid.ZOOM}
 
 
 def compose(indexes, options):
-    required = {"basemap", "places", "overlays", "terrain", "routing", "pois", "addresses", "assets", "model", "fonts"}
+    required = {"basemap", "places", "overlays", "terrain", "routing", "routing-cells", "pois", "addresses", "assets",
+                "model", "fonts"}
     if not required <= indexes.keys():
         raise ValueError("Missing mandatory grid index")
     files = {}
@@ -38,6 +39,8 @@ def compose(indexes, options):
     if data["bounds"] != options["bounds"] or data["region"] != options["region"]:
         raise ValueError("Routing region or coverage differs")
     osm = data["source_sha256"][0]
+    # The identity of the route package: specs/route-package.md.
+    package = files["routing/directory.bin"]["sha256"]
     metadata, cells = {}, {}
     for component in ("pois", "addresses"):
         index = indexes[component]
@@ -80,7 +83,7 @@ def compose(indexes, options):
             raise ValueError("Incomplete optional map metadata")
         if kind == "places" and info["osm_sha256"] != osm:
             raise ValueError("Places use another OSM snapshot")
-        if kind == "overlays" and info["routing_package"] != files["routing/blocks.json"]["sha256"]:
+        if kind == "overlays" and info["routing_package"] != package:
             raise ValueError("Overlay tiles use another routing package")
     terrain = indexes["terrain"]
     identities = json.loads(terrain["metadata"]["source_sha256"])
@@ -90,7 +93,7 @@ def compose(indexes, options):
         if name not in files:
             raise ValueError(f"Missing grid file {name}")
     release = {"format": 1, **options, "osm_sha256": osm,
-        "routing_package": files["routing/blocks.json"]["sha256"], "profiles": sorted(data["metrics"]),
+        "routing_package": package, "profiles": sorted(data["metrics"]),
         "terrain_bounds": terrain["metadata"]["bounds"], "terrain_attribution": terrain["metadata"]["attribution"]}
     search = {"format": runtime.INDEX_FORMAT, "metadata": metadata, "cells": [
         {"id": cell["id"], "bounds": cell["bounds"],

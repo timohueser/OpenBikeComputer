@@ -1,19 +1,27 @@
-//! The road search on an install of format 10: a search from both ends over the turns of the
-//! level-1 cells, with all cells open. It gives the least (cost, end choice, start choice) path.
+//! The search on an install of format 10: a search from both ends that gives the least (cost, end
+//! choice, start choice) path.
+//!
+//! The seed cells of a search are the level-1 cells of the roads of its seeds. A cell is closed
+//! when no seed cell lies in it and it has a cost table; each other cell is open. The search
+//! crosses the highest closed cell of a junction in one step, with the table, and uses the turns at
+//! a junction whose cells are all open. Both sides search this one graph, and each of its arcs
+//! costs what its roads cost, so the result is that of a search on the roads.
 mod store;
+mod unpack;
 
 use crate::{
-    cells::values,
+    cells::{values, Group, GroupCell, MAX_LEVELS},
     host::Host,
-    region::{Installed, Junction, Shared},
+    region::{Closed, Home, Installed, Junction, Place, Shared},
     Error, Result,
 };
 use std::{cell::Cell, collections::HashMap};
 use store::{Entry, Label, Labels, Queue};
+pub(crate) use unpack::unpack;
 
 /// The search limit of a worker: the most bytes of the labels, queues and reverse turns of one
-/// search.
-pub const SEARCH_BYTES: usize = 768 * 1024 * 1024;
+/// search. A search with cost tables holds a small part of it, so only a defect reaches it.
+pub const SEARCH_BYTES: usize = 64 * 1024 * 1024;
 
 /// A search enters or leaves at the arrival state of a road, which is its road id.
 pub struct Seed {
@@ -27,7 +35,8 @@ pub struct Query<'a> {
     pub starts: &'a [Seed],
     pub ends: &'a [Seed],
     pub ceiling: u64,
-    pub max_roads: usize,
+    /// The most steps of the path.
+    pub max_steps: usize,
     /// The room of both search queues now.
     pub heap_bytes: usize,
     /// The room of both search queues on an idle service, at least `heap_bytes`.
@@ -35,18 +44,55 @@ pub struct Query<'a> {
     pub cancelled: &'a dyn Fn() -> bool,
 }
 
+/// One step of a path: the road that it leads to and its level. Level 0 is a turn, or the first
+/// road of the path; a higher level crosses a cell of that level by its cost table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Step {
+    pub road: u32,
+    pub level: u8,
+}
+
 pub struct Found {
     pub cost: u64,
-    pub roads: Vec<u32>,
+    /// The cost of the steps: `cost` less the costs of the two seeds.
+    pub arcs: u64,
+    pub path: Vec<Step>,
     pub source: usize,
     pub target: usize,
 }
 
-/// The work of searches: the labels that they settled and the most bytes that one held.
+/// The work of searches and of the unpacking of their paths.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
+    pub searches: usize,
+    /// The labels that the searches settled.
     pub settled: usize,
+    /// The settled labels by the level of their expansion: 0 by the turns of the road, else by a
+    /// cost table of that level.
+    pub levels: [usize; MAX_LEVELS + 1],
+    /// The values of the cost tables that the searches read.
+    pub values: usize,
+    /// The most bytes that one search held.
     pub peak_bytes: usize,
+    /// The legs that were unpacked, their roads, and the labels that the unpacking settled.
+    pub legs: usize,
+    pub roads: usize,
+    pub unpack_settled: usize,
+    /// The nanoseconds of the searches and of the unpacking; 0 on WebAssembly, which has no clock.
+    pub search_ns: u64,
+    pub unpack_ns: u64,
+}
+
+/// Starts a clock; the call of the result gives the nanoseconds since then.
+fn clock() -> impl FnOnce() -> u64 {
+    #[cfg(not(target_arch = "wasm32"))]
+    let started = std::time::Instant::now();
+    move || {
+        #[cfg(not(target_arch = "wasm32"))]
+        return started.elapsed().as_nanos() as u64;
+        #[cfg(target_arch = "wasm32")]
+        0
+    }
 }
 
 /// The turns into the roads of one level-1 cell: target `t` has the pairs (source road, turn) at
@@ -67,8 +113,8 @@ impl Reverse {
 pub struct Workspace {
     labels: [Labels; 2],
     queues: [Queue; 2],
-    /// The reverse turns of the level-1 cells that the backward side entered, by download cell
-    /// record and level-1 index.
+    /// The reverse turns of the open level-1 cells where the backward side used the turns, by
+    /// download cell record and level-1 index.
     entered: HashMap<(u32, u32), Reverse>,
     entered_bytes: usize,
     arcs: Vec<(u32, u64)>,
@@ -79,6 +125,12 @@ impl Workspace {
     /// The counts of the searches since the last call.
     pub fn take_stats(&self) -> Stats {
         self.stats.take()
+    }
+
+    fn count(&self, add: impl FnOnce(&mut Stats)) {
+        let mut stats = self.stats.get();
+        add(&mut stats);
+        self.stats.set(stats);
     }
 
     fn bytes(&self) -> usize {
@@ -99,16 +151,68 @@ fn invalid(what: &str) -> Error {
     Error::InvalidData(format!("Invalid route cell data: {what}"))
 }
 
+/// The costs of the level-1 cell of `place` for the profile `installed`.
+fn costs<'a, H: Host>(shared: &'a Shared<H>, installed: &Installed, place: &Place<'a>) -> Result<Costs<'a>> {
+    let (group, cell) = shared.group(&place.cell, place.index, &place.level1, installed.group)?;
+    Ok(Costs { group, cell, profile: installed.place })
+}
+
+/// The costs of one level-1 cell for one profile.
+struct Costs<'a> {
+    group: Group<'a>,
+    cell: GroupCell<'a>,
+    profile: u32,
+}
+
+/// Adds the arcs of the turns of the road of `place` to `arcs`, each with its weight: the cost of
+/// its target road plus the turn cost. `costs` are those of the level-1 cell of the road.
+/// `leaving` gives the ID and the cost of a leaving road of the cell by its place in the list, or
+/// `None` for a road that the caller leaves out.
+fn turns(
+    place: &Place<'_>,
+    costs: &Costs<'_>,
+    mut leaving: impl FnMut(u32) -> Result<Option<(u32, Option<u32>)>>,
+    arcs: &mut Vec<(u32, u64)>,
+) -> Result<()> {
+    let (topology, level1) = (place.topology, place.level1);
+    let Costs { group, cell, profile } = costs;
+    for turn in topology.turns(&level1, place.road)? {
+        let Some(penalty) = group.turn(cell, turn)? else { continue };
+        let head = topology.head(&level1, turn)?;
+        let (to, cost) = if head < level1.roads {
+            (place.cell.first_road + level1.first_road + head, group.cost(cell, *profile, head)?)
+        } else {
+            let Some(found) = leaving(head - level1.roads)? else { continue };
+            found
+        };
+        if let Some(cost) = cost {
+            arcs.push((to, u64::from(cost) + u64::from(penalty)));
+        }
+    }
+    Ok(())
+}
+
+/// The ID and the cost of road `to` for the profile `installed`.
+fn target<H: Host>(shared: &Shared<H>, installed: &Installed, to: u32) -> Result<(u32, Option<u32>)> {
+    let place = shared.place(to)?;
+    let Costs { group, cell, profile } = costs(shared, installed, &place)?;
+    Ok((to, group.cost(&cell, profile, place.road)?))
+}
+
 struct Search<'a, H> {
     shared: &'a Shared<H>,
     installed: &'a Installed,
     work: &'a mut Workspace,
     limit: usize,
+    /// The IDs of the seed cells.
+    seeds: Vec<u32>,
     best: u64,
     /// The choices of the end and the start seed of `best`.
     roots: (u8, u8),
     meeting: Option<u32>,
     pops: usize,
+    levels: [usize; MAX_LEVELS + 1],
+    values: usize,
     peak: usize,
 }
 
@@ -124,6 +228,7 @@ pub(crate) fn search<H: Host>(
     if query.starts.is_empty() || query.ends.is_empty() {
         return Ok(None);
     }
+    let clock = clock();
     work.queues = Default::default();
     work.entered = HashMap::new();
     work.entered_bytes = 0;
@@ -135,31 +240,47 @@ pub(crate) fn search<H: Host>(
         installed,
         work,
         limit,
+        seeds: Vec::new(),
         best: query.ceiling,
         roots: (u8::MAX, u8::MAX),
         meeting: None,
         pops: 0,
+        levels: [0; MAX_LEVELS + 1],
+        values: 0,
         peak: 0,
     };
     let result = search.run(query);
-    let Search { work, pops, peak, .. } = search;
-    let stats = work.stats.get();
-    work.stats.set(Stats { settled: stats.settled + pops, peak_bytes: stats.peak_bytes.max(peak) });
+    let Search { work, pops, levels, values, peak, .. } = search;
+    work.count(|stats| {
+        stats.searches += 1;
+        stats.settled += pops;
+        stats.levels.iter_mut().zip(levels).for_each(|(sum, count)| *sum += count);
+        stats.values += values;
+        stats.peak_bytes = stats.peak_bytes.max(peak);
+        stats.search_ns += clock();
+    });
     result
 }
 
-impl<H: Host> Search<'_, H> {
+impl<'a, H: Host> Search<'a, H> {
     fn run(&mut self, query: Query<'_>) -> Result<Option<Found>> {
-        let Query { starts, ends, max_roads, cancelled, .. } = query;
+        let Query { starts, ends, max_steps, cancelled, .. } = query;
         self.peak = self.work.bytes();
         for (side, seeds) in [starts, ends].into_iter().enumerate() {
             for seed in seeds {
                 if seed.cost == u64::MAX || !self.shared.has(seed.node) {
                     return Err(Error::InvalidData("Invalid search seed".into()));
                 }
+                // The cell of the arrival junction of the seed road is a seed cell on both sides,
+                // also for a seed that sets no label.
+                let cell = self.shared.place(seed.node)?.level1.id;
+                if !self.seeds.contains(&cell) {
+                    self.seeds.push(cell);
+                }
                 let label = self.work.labels[side].get(seed.node);
                 if (seed.cost, seed.choice) < (label.cost, label.origin) {
-                    self.set(side, seed.node, Label { cost: seed.cost, parent: u32::MAX, origin: seed.choice })?;
+                    let label = Label { cost: seed.cost, parent: u32::MAX, origin: seed.choice, level: 0 };
+                    self.set(side, seed.node, label)?;
                 }
             }
         }
@@ -189,21 +310,6 @@ impl<H: Host> Search<'_, H> {
         }
         let Some(meeting) = self.meeting else { return Ok(None) };
         let labels = &self.work.labels;
-        let mut roads = vec![meeting];
-        let parent = |side: usize, road: u32, roads: &Vec<u32>| {
-            let label = labels[side].get(road);
-            if label.parent == u32::MAX {
-                return Ok(None);
-            }
-            if roads.len() > max_roads {
-                return Err(Error::Limit);
-            }
-            Ok(Some(label.parent))
-        };
-        while let Some(road) = parent(0, *roads.last().unwrap_or(&meeting), &roads)? {
-            roads.push(road);
-        }
-        roads.reverse();
         let witness = |side: usize, seeds: &[Seed], road: u32| {
             let label = labels[side].get(road);
             seeds
@@ -211,25 +317,52 @@ impl<H: Host> Search<'_, H> {
                 .position(|seed| seed.node == road && (seed.cost, seed.choice) == (label.cost, label.origin))
                 .ok_or_else(|| Error::InvalidData(format!("Missing {} witness", ["source", "target"][side])))
         };
-        let source = witness(0, starts, roads[0])?;
-        while let Some(road) = parent(1, *roads.last().unwrap_or(&meeting), &roads)? {
-            roads.push(road);
+        // The level of a step is that of the label that it set: the forward label of its road, or
+        // the backward label of the road before it.
+        let mut path = Vec::new();
+        let mut road = meeting;
+        loop {
+            let label = labels[0].get(road);
+            if path.len() > max_steps {
+                return Err(Error::Limit);
+            }
+            path.push(Step { road, level: label.level });
+            if label.parent == u32::MAX {
+                break;
+            }
+            road = label.parent;
         }
-        let target = witness(1, ends, *roads.last().unwrap_or(&meeting))?;
-        let mut check = starts[source].cost.checked_add(ends[target].cost).ok_or(Error::Limit)?;
-        let mut arcs = std::mem::take(&mut self.work.arcs);
-        for pair in roads.windows(2) {
-            arcs.clear();
-            self.arcs(0, pair[0], &mut arcs)?;
-            let weight = arcs.iter().filter(|arc| arc.0 == pair[1]).map(|arc| arc.1).min();
-            let weight = weight.ok_or_else(|| Error::InvalidData("A path road without its turn".into()))?;
-            check = check.checked_add(weight).ok_or(Error::Limit)?;
+        path.reverse();
+        let source = witness(0, starts, road)?;
+        road = meeting;
+        loop {
+            let label = labels[1].get(road);
+            if label.parent == u32::MAX {
+                break;
+            }
+            if path.len() > max_steps {
+                return Err(Error::Limit);
+            }
+            path.push(Step { road: label.parent, level: label.level });
+            road = label.parent;
         }
-        self.work.arcs = arcs;
-        if check != self.best {
-            return Err(Error::InvalidData("Base path witness cost differs".into()));
+        let target = witness(1, ends, road)?;
+        let seeds = starts[source].cost.checked_add(ends[target].cost).ok_or(Error::Limit)?;
+        let arcs = self.best.checked_sub(seeds).ok_or_else(|| invalid("a path below its seed costs"))?;
+        Ok(Some(Found { cost: self.best, arcs, path, source, target }))
+    }
+
+    /// The highest closed cell of a junction of the level-1 cell `home`, with its level: the
+    /// highest cell of the junction that holds no seed cell and has a cost table. `None` when each
+    /// cell of the junction is open.
+    fn closed(&self, home: &Home<'a>) -> Result<Option<(u8, Closed<'a>)>> {
+        let differ = self.seeds.iter().map(|&seed| seed ^ home.level1.id).min().unwrap_or(0);
+        for level in (1..=self.shared.apart(differ)).rev() {
+            if let Some(closed) = self.shared.closed(home, level, self.installed)? {
+                return Ok(Some((level, closed)));
+            }
         }
-        Ok(Some(Found { cost: self.best, roads, source, target }))
+        Ok(None)
     }
 
     /// The bytes that the search may hold besides those of a store that holds `own`.
@@ -270,14 +403,15 @@ impl<H: Host> Search<'_, H> {
     fn expand(&mut self, side: usize, entry: Entry) -> Result<()> {
         let mut arcs = std::mem::take(&mut self.work.arcs);
         arcs.clear();
-        let result = self.arcs(side, entry.road, &mut arcs).and_then(|()| {
+        let result = self.arcs(side, entry.road, &mut arcs).and_then(|level| {
+            self.levels[usize::from(level)] += 1;
             for &(road, weight) in &arcs {
                 let next = entry.cost.checked_add(weight).filter(|&n| n != u64::MAX).ok_or(Error::Limit)?;
                 let label = self.work.labels[side].get(road);
                 if next > self.best || (next, entry.origin) >= (label.cost, label.origin) {
                     continue;
                 }
-                self.set(side, road, Label { cost: next, parent: entry.road, origin: entry.origin })?;
+                self.set(side, road, Label { cost: next, parent: entry.road, origin: entry.origin, level })?;
                 self.meet(road)?;
             }
             Ok(())
@@ -286,33 +420,49 @@ impl<H: Host> Search<'_, H> {
         result
     }
 
-    /// Forward, the arcs `road → v`; backward, the arcs `u → road`. Each with its weight: the
-    /// cost of the arc's target road plus the turn cost.
-    fn arcs(&mut self, side: usize, road: u32, arcs: &mut Vec<(u32, u64)>) -> Result<()> {
-        let (shared, group, profile) = (self.shared, self.installed.group, self.installed.place);
+    /// The arcs of the popped road on its side, and their level. The forward side takes the arrival
+    /// junction of the road and gives the arcs `road → v`; the backward side takes its departure
+    /// junction and gives the arcs `u → road`. Level 0: the turns at the junction, each with the
+    /// cost of the target road of the arc plus the turn cost. A higher level: the finite values of
+    /// the table of the highest closed cell of the junction, forward the row of the road to the
+    /// leaving roads, backward its column to the entering roads. A road in a download cell that is
+    /// not installed has no arc.
+    fn arcs(&mut self, side: usize, road: u32, arcs: &mut Vec<(u32, u64)>) -> Result<u8> {
+        let (shared, installed) = (self.shared, self.installed);
         let place = shared.place(road)?;
-        let (costs, cell) = shared.group(&place.cell, place.index, &place.level1, group)?;
+        let mut ids = shared.ids();
         if side == 0 {
-            let (topology, level1) = (place.topology, place.level1);
-            for turn in topology.turns(&level1, place.road)? {
-                let Some(penalty) = costs.turn(&cell, turn)? else { continue };
-                let head = topology.head(&level1, turn)?;
-                let (to, cost) = if head < level1.roads {
-                    (place.cell.first_road + level1.first_road + head, costs.cost(&cell, profile, head)?)
-                } else {
-                    let Some(to) = shared.road_id(topology.leaving(&level1, head - level1.roads)?) else { continue };
-                    let target = shared.place(to)?;
-                    let (costs, cell) = shared.group(&target.cell, target.index, &target.level1, group)?;
-                    (to, costs.cost(&cell, profile, target.road)?)
+            let Some((level, cell)) = self.closed(&place.home())? else {
+                let leaving = |k| match ids.get(place.topology.leaving(&place.level1, k)?) {
+                    Some(to) => target(shared, installed, to).map(Some),
+                    None => Ok(None),
                 };
-                if let Some(cost) = cost {
-                    arcs.push((to, u64::from(cost) + u64::from(penalty)));
+                turns(&place, &costs(shared, installed, &place)?, leaving, arcs)?;
+                return Ok(0);
+            };
+            let row = cell.row(place.reference())?;
+            for (column, value) in (0..).zip(cell.table.row(row)).filter(|&(_, value)| value != u64::MAX) {
+                if let Some(to) = ids.get(cell.leaving(column)?) {
+                    arcs.push((to, value));
                 }
             }
-            return Ok(());
+            self.values += cell.table.columns as usize;
+            return Ok(level);
         }
-        let Some(cost) = costs.cost(&cell, profile, place.road)? else { return Ok(()) };
-        let Some(junction) = shared.junction(&place, road)? else { return Ok(()) };
+        let Some(junction) = shared.junction(&place)? else { return Ok(0) };
+        if let Some((level, cell)) = self.closed(&junction.home())? {
+            let column = cell.column(place.reference())?;
+            for (row, value) in (0..).zip(cell.table.column(column)).filter(|&(_, value)| value != u64::MAX) {
+                if let Some(from) = ids.get(cell.entering(row)?) {
+                    arcs.push((from, value));
+                }
+            }
+            self.values += cell.table.rows as usize;
+            return Ok(level);
+        }
+        let (group, profile) = (installed.group, installed.place);
+        let (costs, cell) = shared.group(&place.cell, place.index, &place.level1, group)?;
+        let Some(cost) = costs.cost(&cell, profile, place.road)? else { return Ok(0) };
         let Junction { cell: download, topology, index, level1, target } = junction;
         let key = (download.record, index);
         if !self.work.entered.contains_key(&key) {
@@ -330,7 +480,7 @@ impl<H: Host> Search<'_, H> {
                 arcs.push((download.first_road + level1.first_road + source, u64::from(cost) + u64::from(penalty)));
             }
         }
-        Ok(())
+        Ok(0)
     }
 
     /// The reverse turns of a level-1 cell: a counting sort of its `head` column.

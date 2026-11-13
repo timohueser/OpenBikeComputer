@@ -1,4 +1,4 @@
-pub use crate::overlay::{Found, Query, Seed};
+pub use crate::overlay::{Found, Query, Seed, Step};
 use crate::queue::Queue;
 use crate::{
     base::{Costs, Graph},
@@ -128,7 +128,7 @@ impl Workspace {
         query: Query<'_>,
         potential: Option<&Potential<'_>>,
     ) -> Result<Option<Found>> {
-        let Query { starts, ends, ceiling, max_roads, heap_bytes, heap_limit, cancelled } = query;
+        let Query { starts, ends, ceiling, max_steps, heap_bytes, heap_limit, cancelled } = query;
         let rooms = (heap_bytes, heap_limit);
         self.pops = 0;
         if starts.is_empty() || ends.is_empty() {
@@ -233,7 +233,7 @@ impl Workspace {
         let mut node = meeting;
         while self.labels[0].parent(node as usize) != u32::MAX {
             let arc = self.labels[0].parent(node as usize);
-            if arcs.len() >= max_roads {
+            if arcs.len() >= max_steps {
                 return Err(Error::Limit);
             }
             arcs.push(arc);
@@ -251,7 +251,7 @@ impl Workspace {
         node = meeting;
         while self.labels[1].parent(node as usize) != u32::MAX {
             let arc = self.labels[1].parent(node as usize);
-            if arcs.len() >= max_roads {
+            if arcs.len() >= max_steps {
                 return Err(Error::Limit);
             }
             arcs.push(arc);
@@ -265,17 +265,18 @@ impl Workspace {
                     && s.choice == self.labels[1].origin(node as usize)
             })
             .ok_or_else(|| Error::InvalidData("Missing target witness".into()))?;
-        let mut roads = Vec::with_capacity(arcs.len() + 1);
-        roads.push(starts[source].node);
-        let mut check = starts[source].cost.checked_add(ends[target].cost).ok_or(Error::Limit)?;
+        let mut path = Vec::with_capacity(arcs.len() + 1);
+        path.push(Step { road: starts[source].node, level: 0 });
+        let seeds = starts[source].cost.checked_add(ends[target].cost).ok_or(Error::Limit)?;
+        let mut check = seeds;
         for arc in arcs {
             check = check.checked_add(costs.arc(graph, arc as usize)).ok_or(Error::Limit)?;
-            roads.push(graph.head[arc as usize]);
+            path.push(Step { road: graph.head[arc as usize], level: 0 });
         }
         if check != best {
             return Err(Error::InvalidData("Base path witness cost differs".into()));
         }
-        Ok(Some(Found { cost: best, roads, source, target }))
+        Ok(Some(Found { cost: best, arcs: best - seeds, path, source, target }))
     }
 }
 
@@ -283,6 +284,10 @@ impl Workspace {
 mod tests {
     use super::*;
     use crate::base::Numbers;
+
+    fn path(found: &Found) -> Vec<u32> {
+        found.path.iter().map(|step| step.road).collect()
+    }
 
     fn graph(nodes: usize, edges: &[(u32, u32)]) -> Graph {
         let mut first = vec![0; nodes + 1];
@@ -328,7 +333,7 @@ mod tests {
                         starts: &starts,
                         ends: &ends,
                         ceiling: u64::MAX,
-                        max_roads: nodes,
+                        max_steps: nodes,
                         heap_bytes,
                         heap_limit: heap_bytes,
                         cancelled: &|| false,
@@ -341,7 +346,7 @@ mod tests {
                 } else {
                     let found = result.unwrap().unwrap();
                     assert_eq!(found.cost, (nodes - 1) as u64);
-                    assert_eq!(found.roads, (0..nodes as u32).collect::<Vec<_>>());
+                    assert_eq!(path(&found), (0..nodes as u32).collect::<Vec<_>>());
                 }
             }
         }
@@ -433,7 +438,7 @@ mod tests {
                                 starts: &starts,
                                 ends: &ends,
                                 ceiling: u64::MAX,
-                                max_roads: 1000,
+                                max_steps: 1000,
                                 heap_bytes: 1024 * 1024,
                                 heap_limit: 1024 * 1024,
                                 cancelled: &|| false,
@@ -446,10 +451,12 @@ mod tests {
                         expected
                     );
                     if let Some(result) = result {
-                        assert_eq!(result.roads[0], starts[result.source].node);
-                        assert_eq!(result.roads.last().copied(), Some(ends[result.target].node));
+                        let path = path(&result);
+                        assert_eq!(path[0], starts[result.source].node);
+                        assert_eq!(path.last().copied(), Some(ends[result.target].node));
                         let mut total = starts[result.source].cost + ends[result.target].cost;
-                        for pair in result.roads.windows(2) {
+                        assert_eq!(total + result.arcs, result.cost);
+                        for pair in path.windows(2) {
                             let arc = edges.binary_search(&(pair[0], pair[1])).unwrap();
                             assert_ne!(turns[arc], u64::MAX);
                             total += roads[pair[1] as usize] + turns[arc];
@@ -471,7 +478,7 @@ mod tests {
                     starts: &starts,
                     ends: &ends,
                     ceiling: u64::MAX,
-                    max_roads: 100,
+                    max_steps: 100,
                     heap_bytes: 1024,
                     heap_limit: 1024,
                     cancelled: &|| true
@@ -488,7 +495,7 @@ mod tests {
                     starts: &starts,
                     ends: &ends,
                     ceiling: u64::MAX,
-                    max_roads: 100,
+                    max_steps: 100,
                     heap_bytes: 0,
                     heap_limit: 0,
                     cancelled: &|| false
@@ -507,7 +514,7 @@ mod tests {
                     starts: &starts,
                     ends: &ends,
                     ceiling: u64::MAX,
-                    max_roads: 100,
+                    max_steps: 100,
                     heap_bytes: 1024,
                     heap_limit: 1024,
                     cancelled: &|| false,

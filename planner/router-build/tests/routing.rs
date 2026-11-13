@@ -1409,7 +1409,7 @@ fn shared_pages_preserve_routes_costs_and_guidance_for_every_profile() {
                     starts: &starts,
                     ends: &ends,
                     ceiling: u64::MAX,
-                    max_roads: usize::MAX,
+                    max_steps: usize::MAX,
                     heap_bytes: 1_000_000,
                     heap_limit: 1_000_000,
                     cancelled: &|| false,

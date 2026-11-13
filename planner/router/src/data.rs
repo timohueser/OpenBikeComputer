@@ -7,6 +7,7 @@ use crate::{
     model::{Point, Profile, Road},
     overlay::{Found, Query, Stats},
     package::{cell_key, digest, Departure, Endpoint, Manifest, Package, Source, MAX_MANIFEST_BYTES, ROADS_PER_PAGE},
+    router::Control,
     search::Workspace,
     snap::{self, Candidates, Policy},
     Error, Result,
@@ -35,12 +36,35 @@ pub trait RoutingData {
     /// The cheapest path of `query` with `metric`. `query.heap_bytes` caps the search queues; the
     /// engine applies its own budget below it.
     fn search(&mut self, metric: &str, query: Query<'_>) -> Result<Option<Found>>;
+    /// The roads of each leg of one route, from the paths that `search` found with `metric`. More
+    /// than `control.max_roads` roads in all is a `Limit`.
+    fn unpack(&mut self, _metric: &str, legs: &[&Found], control: &Control<'_>) -> Result<Vec<Vec<u32>>> {
+        roads(legs, control)
+    }
     /// The router reads these roads next.
     fn announce(&self, _roads: &[u32]) {}
     fn memory_budget(&self) -> usize;
     fn set_memory_budget(&mut self, bytes: usize);
     /// The budget native hosts give a router.
     fn default_budget(&self) -> usize;
+}
+
+/// The roads of paths whose steps are all turns.
+pub(crate) fn roads(legs: &[&Found], control: &Control<'_>) -> Result<Vec<Vec<u32>>> {
+    if legs.iter().map(|leg| leg.path.len()).sum::<usize>() > control.max_roads {
+        return Err(Error::Limit);
+    }
+    legs.iter()
+        .map(|leg| {
+            if (control.cancelled)() {
+                return Err(Error::Cancelled);
+            }
+            if leg.path.iter().any(|step| step.level != 0) {
+                return Err(Error::InvalidData("A path step of a cost table without its cells".into()));
+            }
+            Ok(leg.path.iter().map(|step| step.road).collect())
+        })
+        .collect()
 }
 
 /// Room above the costliest profile for search labels and queues and for the cached costs of
@@ -266,7 +290,7 @@ impl<S: Source> Selection<S> {
 
     /// The counts of the searches since the last call. The labels are not counted in bytes.
     pub fn take_stats(&self) -> Stats {
-        Stats { settled: self.settled.take(), peak_bytes: 0 }
+        Stats { settled: self.settled.take(), ..Stats::default() }
     }
 
     /// Check the complete object closure before publishing or installing.
