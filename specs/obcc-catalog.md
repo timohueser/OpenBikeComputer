@@ -1,13 +1,13 @@
 # OBCC catalog manifest
 
-The JSON contract between the central cell bakery and map-building consumers. The website and
-desktop app read the same catalog, select the same [OBCA](obca-assembly.md) cells, and feed them to
-the same assembler. The device does not read OBCC.
+The JSON contract between the central cell bakery and map-building consumers. The website and the
+maintainer dev server read the same catalog, select the same [OBCA](obca-assembly.md) cells, and
+feed them to the same assembler. The device does not read OBCC.
 
 - Version: `"schema_version": 3`. Consumers MUST reject any other value before interpreting the rest
   of the document.
 - Writers: `host/obc-pack` (`obc-pack catalog`), run by `obc-bake`.
-- Readers: the website and the desktop app (`builder/web/src/lib/catalog/`).
+- Readers: the map builder (`builder/web/src/lib/catalog/`).
 - Code authority: [`host/obc-pack/src/catalog.rs`](../host/obc-pack/src/catalog.rs). Its checked-in
   JSON Schema and worked examples:
   [`catalog.schema.json`](../host/obc-pack/schema/catalog.schema.json),
@@ -327,9 +327,8 @@ fetch or graft an object for it. `cell_count` continues to count downloadable ar
 
 ## 9. URLs and integrity
 
-Object URLs are either absolute HTTP(S) URLs or root-relative paths. A desktop consumer MUST
-restrict all satellite and cell requests to the configured catalog origin; it MUST NOT follow the
-catalog to an unrelated origin. Plain HTTP is permitted only for loopback development.
+Object URLs are either absolute HTTP(S) URLs or root-relative paths. Plain HTTP is permitted only
+for loopback development.
 
 A pinned URL MUST end in `.<sha256>.<extension>` or `/objects/<sha256>`. The digest MUST be the
 pin's exact lowercase SHA-256. The URL MUST NOT have a query or fragment. Producers MUST NOT serve
@@ -375,7 +374,7 @@ A failure before step 4 leaves the previously published root authoritative. An e
 refresh replaces the complete accepted root and its satellite client. It MUST NOT combine objects or
 schema bytes from two roots in one assembly. The builder stops and drains old preparation before it
 accepts a replacement. It MUST NOT replace the builder during an active device transfer. Refresh
-keeps the coverage parts and corridor radius. It resolves them against the new catalog and shows
+keeps the coverage parts. It resolves them against the new catalog and shows
 unavailable coverage without dropping parts. Chosen skins remain selected when they are compatible
 with the new schema.
 
@@ -388,7 +387,7 @@ JSON spelling is stable, and the root pins the exact serialized satellite bytes.
 ## 12. Consumption and assembly
 
 A consumer first validates the root, then fetches only the region satellites and band indexes needed
-by the user's coverage. Regions, drawn boxes, and buffered route corridors all reduce to cell-id
+by the user's coverage. Regions and drawn boxes both reduce to cell-id
 sets. Set union deduplicates overlapping parts before pricing and downloading.
 
 The displayed byte estimate MUST sum the real `bytes` values of the deduplicated artifact entries;
@@ -397,8 +396,8 @@ identities, and the selected skin are passed to the OBCA assembler. Island pruni
 assembly, seams unify only exact serialized coordinates, and the resulting mounted map follows
 [obca-assembly.md](obca-assembly.md) §4.
 
-The website and desktop app MUST use the same selection arithmetic, verified cell bytes, skin, and
-assembler. Host-specific file saving MUST NOT alter the assembled bytes.
+Every host of the map builder MUST use the same selection arithmetic, verified cell bytes, skin,
+and assembler. Host-specific file saving MUST NOT alter the assembled bytes.
 
 A consumer MAY stream assembler output directly to a connected device instead of first saving it,
 and MUST verify the emitted file's announced length before transfer. A streaming consumer has no

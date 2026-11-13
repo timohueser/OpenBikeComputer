@@ -1,11 +1,16 @@
 import { core } from "./bridge";
-import type { LatLon } from "../catalog/corridor";
 
-export type GpxPoint = LatLon & { ele?: number };
+/** A coordinate in integer microdegrees, `lat, lon` — the catalog's order. */
+export interface LatLon {
+    lat: number;
+    lon: number;
+}
+
+/** `time` is in Unix seconds. `segmentStart` marks the first point of the file and of each track and track segment. */
+export type GpxPoint = LatLon & { ele?: number; time?: number; segmentStart?: true };
 export type GpxWaypoint = LatLon & { name?: string; note?: string };
-export interface GpxRoute { name: string; points: LatLon[]; distanceKm: number }
-export interface GpxImport { name: string; points: GpxPoint[]; waypoints: GpxWaypoint[] }
-export const MAX_ROUTE_POINTS = core().obc_builder_constants()[5];
+/** `kind` is the `<type>` of the first track, such as `cycling`. */
+export interface GpxImport { name: string; points: GpxPoint[]; waypoints: GpxWaypoint[]; kind?: string }
 
 export class GpxError extends Error {
     constructor(message: string) { super(message); this.name = "GpxError"; }
@@ -18,12 +23,28 @@ function read<T>(fn: () => string): T {
     }
 }
 
+// The five entities that `readGpx` reads.
+const ENTITIES: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" };
+const escape = (text: string) => text.replace(/[&<>"']/g, c => ENTITIES[c]);
+const place = ({ lat, lon }: LatLon) => `lat="${(lat / 1e6).toFixed(6)}" lon="${(lon / 1e6).toFixed(6)}"`;
+const text = (tag: string, value: string | undefined) => value ? `<${tag}>${escape(value)}</${tag}>` : "";
+
+/** A GPX 1.1 file with one track and a `wpt` for each waypoint; a waypoint's note is its `desc`. */
+export function writeGpx(route: GpxImport): string {
+    return [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<gpx version="1.1" creator="OpenBikeComputer" xmlns="http://www.topografix.com/GPX/1/1">',
+        ...route.waypoints.map(w => `<wpt ${place(w)}>${text("name", w.name)}${text("desc", w.note)}</wpt>`),
+        `<trk>${text("name", route.name)}<trkseg>`,
+        ...route.points.map(p => `<trkpt ${place(p)}>${p.ele === undefined ? "" : `<ele>${p.ele}</ele>`}</trkpt>`),
+        "</trkseg></trk>",
+        "</gpx>",
+        "",
+    ].join("\n");
+}
+
 export function readGpx(text: string, fallback: string): GpxImport {
     const imported = read<GpxImport>(() => core().obc_gpx_read(text, fallback));
     for (const waypoint of imported.waypoints) waypoint.name ??= undefined;
     return imported;
-}
-
-export function parseGpx(text: string, fallback: string): GpxRoute {
-    return read(() => core().obc_gpx_parse(text, fallback));
 }

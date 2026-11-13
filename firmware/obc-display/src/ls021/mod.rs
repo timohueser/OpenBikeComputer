@@ -1,10 +1,8 @@
 //! The LS021B7DD02 pairing: everything specific to the shipping Sharp memory-LCD panel and the
-//! row-span presentation strategy built around it, so the generic
-//! [`display_contracts`](crate::display_contracts) stay free of any panel's width, wire format or
-//! damage model.
+//! row-span presentation strategy built around it.
 //!
-//! It owns the panel-native frame geometry, [`rowdiff`]'s per-row hash damage strategy, [`wire`]'s
-//! source-bus pack, the [`RowDamage`] and [`RowWindow`] vocabulary both backends share, and
+//! It owns the panel-native frame geometry, [`rowdiff`]'s per-row hash diff, [`wire`]'s
+//! source-bus pack, the [`RowWindow`] overlay window both backends share, and
 //! [`composite_into_resident`], the mutate-and-restore overlay composite the FLPR transport needs
 //! because the coprocessor scans the resident frame directly.
 
@@ -29,26 +27,10 @@ pub const FRAME_H: usize = 320;
 // The wire pack consumes one `WIDTH`-pixel row per framebuffer row, so pin them together here.
 const _: () = assert!(wire::WIDTH == FRAME_W, "ls021::wire::WIDTH diverged from ls021::FRAME_W");
 
-/// The LS021 pairing's damage description. Callers construct it only through the contracts'
-/// neutral constructors, so rows never leak into generic code.
-pub enum RowDamage {
-    /// Forced full repaint: re-seed the row-hash store and push every row. This is the panel-reinit
-    /// and transport-recovery damage.
-    Full,
-    /// Self-diff against the row-hash store, optionally going around a live overlay's rows: the
-    /// half-open row span `exclude = Some((y0, rows))` is clipped out of the pushed spans, while
-    /// the store still tracks the clean frame for them, so a map redraw never flashes a live
-    /// bulge off.
-    SelfDiff {
-        /// A live overlay's rows `(y0, rows)`, owned by the overlay plane this present.
-        exclude: Option<(u16, u16)>,
-    },
-}
-
-/// The LS021 pairing's overlay region, the `OverlayPresenter::Region` type: a bounded column
-/// window on full-width rows. The row-addressed panel re-latches all columns of a touched row, so
-/// exclusion and the row push widen to full-width rows while the composite repaints only the
-/// `[x0, x0 + w)` columns.
+/// The overlay window an [`OverlayPresenter`](crate::display_contracts::OverlayPresenter)
+/// composites and pushes: a bounded column window on full-width rows. The row-addressed panel
+/// re-latches all columns of a touched row, so exclusion and the row push widen to full-width rows
+/// while the composite repaints only the `[x0, x0 + w)` columns.
 #[derive(Clone, Copy)]
 pub struct RowWindow {
     /// First frame column of the overlay window.
@@ -57,23 +39,8 @@ pub struct RowWindow {
     pub y0: u16,
     /// Window width in columns.
     pub w: u16,
-    /// Window height in rows, and the widened region's row span.
+    /// Window height in rows.
     pub rows: u16,
-}
-
-impl RowWindow {
-    /// The smallest window covering `rect`, clamped to a `frame_w × frame_h` frame: the pairing's
-    /// widening rule, shared by both backends.
-    pub fn from_rect(rect: Rectangle, frame_w: u32, frame_h: u32) -> Self {
-        let c = rect.intersection(&Rectangle::new(Point::zero(), Size::new(frame_w, frame_h)));
-        Self { x0: c.top_left.x as u16, y0: c.top_left.y as u16, w: c.size.width as u16, rows: c.size.height as u16 }
-    }
-
-    /// The full-width row span `(y0, rows)` this window's rows occupy, which a base present
-    /// excludes while the overlay is live.
-    pub fn exclude_span(&self) -> (u16, u16) {
-        (self.y0, self.rows)
-    }
 }
 
 /// The paired scratch buffers one [`composite_into_resident`] call borrows. They describe the same
@@ -159,13 +126,6 @@ mod tests {
 
     fn white() -> Rgb565 {
         Rgb565::new(31, 63, 31)
-    }
-
-    #[test]
-    fn window_clamps_to_the_frame() {
-        let w = RowWindow::from_rect(Rectangle::new(Point::new(-2, 6), Size::new(8, 8)), 10, 10);
-        assert_eq!((w.x0, w.y0, w.w, w.rows), (0, 6, 6, 4));
-        assert_eq!(w.exclude_span(), (6, 4));
     }
 
     /// The engine's contract: the composited window is what the transport scans, and the frame is

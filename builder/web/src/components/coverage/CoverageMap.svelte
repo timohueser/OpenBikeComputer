@@ -1,6 +1,6 @@
 <script lang="ts">
     // The coverage step's map pane: tool rail, quiet region affordances, each
-    // part's true stair outline, hatched not-baked ground, and the corridor panel.
+    // part's true stair outline, and hatched not-baked ground.
     //
     // Division of labour: `CoverageMapView` owns Leaflet, `CoverageStore` owns the
     // selection, and this component is the adapter that turns one into drawing
@@ -32,8 +32,6 @@
         type RenderedPart,
         type RenderedWarning,
     } from "../../lib/map/coverageMap";
-    import type { LatLon } from "../../lib/catalog/selection";
-    import CorridorPanel from "./CorridorPanel.svelte";
     import ToolIcon from "./ToolIcon.svelte";
 
     let { store, active = true }: { store: CoverageStore; active?: boolean } = $props();
@@ -41,16 +39,10 @@
     let mapEl: HTMLDivElement;
     let view = $state<CoverageMapView | null>(null);
 
-    type Tool = "none" | "region" | "box" | "corridor" | "lasso";
+    type Tool = "none" | "region" | "box";
     let tool = $state<Tool>("region");
 
     const detailBand = $derived(detailBandId(store.catalog));
-
-    /** [lat, lon] degrees → the catalog's integer microdegrees. */
-    const degToLatLon = ([lat, lon]: DegPoint): LatLon => ({
-        lat: Math.round(lat * 1e6),
-        lon: Math.round(lon * 1e6),
-    });
 
     // Keyed by part id, validated by comparing the cell list itself: the resolver
     // hands fresh array copies every resolve, so identity is useless but content
@@ -86,14 +78,8 @@
             boxDragLabel(south, west, north, east) {
                 return priceBox(south, west, north, east);
             },
-            onLassoDrawn(points) {
-                store.addLasso(points.map(degToLatLon));
-            },
-            lassoDragLabel(points) {
-                return priceLabel(store.priceDraggedLasso(points.map(degToLatLon)));
-            },
             onDrawEnd() {
-                if (tool === "box" || tool === "lasso") tool = "none";
+                if (tool === "box") tool = "none";
             },
             onWarningClick(kind) {
                 store.focusWarnings(kind);
@@ -131,15 +117,11 @@
                 id,
                 kind: partRes.part.kind,
                 rings: ringsFor(id, cells),
-                route:
-                    partRes.part.kind === "corridor"
-                        ? partRes.part.points.map((p): DegPoint => [p.lat / 1e6, p.lon / 1e6])
-                        : undefined,
                 highlighted: store.highlightPartId === id,
             });
         }
         for (const key of [...ringCache.keys()]) {
-            if (!live.has(key) && !key.startsWith("preview ")) ringCache.delete(key);
+            if (!live.has(key)) ringCache.delete(key);
         }
         view.setParts(parts);
     });
@@ -159,25 +141,6 @@
             warnings.push({ bounds: uboxToDegrees(rect), kind: "partial" });
         }
         view.setWarnings(warnings);
-    });
-
-    // The corridor panel's dashed preview.
-    $effect(() => {
-        const previewed = store.previewResolution;
-        if (!view) return;
-        if (!previewed || store.previewParts.length === 0) {
-            view.setPreview(null);
-            return;
-        }
-        const cells = new Set<string>();
-        for (const partRes of previewed.parts) {
-            if (!partRes.part.id.startsWith("preview-")) continue;
-            for (const id of partRes.cellsByBand.get(detailBand) ?? []) cells.add(id);
-        }
-        view.setPreview({
-            rings: ringsFor("preview *", [...cells].sort()),
-            routes: store.previewParts.map((p) => p.points.map((q): DegPoint => [q.lat / 1e6, q.lon / 1e6])),
-        });
     });
 
     // A warning row (here or in the summary card) asked for a look.
@@ -298,31 +261,12 @@
 
     // --- tools ------------------------------------------------------------
 
-    let corridorPanel = $state<{ requestClose(): Promise<boolean> }>();
-    let corridorBtn = $state<HTMLButtonElement>();
-
-    async function setTool(next: Tool) {
+    function setTool(next: Tool) {
         const target = tool === next ? "none" : next;
-        const leavingCorridor = tool === "corridor" && target !== "corridor";
-        if (leavingCorridor) {
-            // The corridor panel may be holding uploaded routes — the one kind of
-            // tool state a user cannot get back by re-arming the tool — so leaving it
-            // asks first. Declining keeps the panel.
-            if (corridorPanel && !(await corridorPanel.requestClose())) return;
-            store.previewParts = [];
-        }
         if (tool === "box" && target !== "box") view?.cancelBoxDraw();
-        if (tool === "lasso" && target !== "lasso") view?.cancelLassoDraw();
         if (tool === "region" && target !== "region") closeLadder();
         tool = target;
         if (target === "box") view?.armBoxDraw();
-        if (target === "lasso") view?.armLassoDraw();
-        if (leavingCorridor) {
-            // The panel held focus; its unmount dropped focus on <body>. Hand it back
-            // to the tool that opened it, but only when nothing else claimed it.
-            await tick();
-            if (document.activeElement === document.body) corridorBtn?.focus();
-        }
     }
 
     function onKey(e: KeyboardEvent) {
@@ -333,7 +277,7 @@
             closeLadder();
             return;
         }
-        if (tool !== "none") void setTool("none");
+        if (tool !== "none") setTool("none");
     }
 
     // The rail is a toolbar, and a toolbar is ONE tab stop: Tab lands on the
@@ -411,29 +355,6 @@
                 onkeydown={onRailKey}
                 onfocus={() => (railAt = 1)}
                 onclick={() => setTool("box")}><ToolIcon kind="box" /></button
-            >
-            <button
-                type="button"
-                class:active={tool === "lasso"}
-                aria-pressed={tool === "lasso"}
-                title="Lasso an area"
-                aria-label="Lasso an area"
-                tabindex={railAt === 2 ? 0 : -1}
-                onkeydown={onRailKey}
-                onfocus={() => (railAt = 2)}
-                onclick={() => setTool("lasso")}><ToolIcon kind="lasso" /></button
-            >
-            <button
-                type="button"
-                bind:this={corridorBtn}
-                class:active={tool === "corridor"}
-                aria-pressed={tool === "corridor"}
-                title="Add a corridor around a route"
-                aria-label="Add a corridor around a route"
-                tabindex={railAt === 3 ? 0 : -1}
-                onkeydown={onRailKey}
-                onfocus={() => (railAt = 3)}
-                onclick={() => setTool("corridor")}><ToolIcon kind="corridor" /></button
             >
         </div>
     </div>
@@ -551,18 +472,10 @@
         </div>
     {/if}
 
-    {#if tool === "corridor"}
-        <div class="overlay corridor">
-            <CorridorPanel bind:this={corridorPanel} {store} onclose={() => void setTool("none")} />
-        </div>
-    {/if}
-
     {#if store.drawError}
         <div class="overlay bottom-left chip error">{store.drawError}</div>
     {:else if tool === "box"}
         <div class="overlay bottom-left chip">Drag a box. Esc to cancel.</div>
-    {:else if tool === "lasso"}
-        <div class="overlay bottom-left chip">Draw an area. Esc to cancel.</div>
     {:else if tool === "region"}
         <div class="overlay bottom-left chip">Click a region to add it.</div>
     {:else if partCount === 0 && tool === "none"}
@@ -792,13 +705,6 @@
         cursor: default;
     }
 
-    .corridor {
-        top: 12px;
-        left: 64px;
-        max-height: calc(100% - 24px);
-        display: flex;
-    }
-
     /* Purely informational: the chip must never eat a click or a draw that
        starts under it — same discipline as the rail wrap above. */
     .bottom-left {
@@ -823,10 +729,9 @@
 
     /* app.css drops Leaflet's zoom control 58px for the old panel's search bar;
        this pane has the tool rail there instead. The offset tucks the control
-       directly under the rail (4 × 40px buttons + gaps + padding + 12px top
-       ≈ 160px) rather than parking it mid-pane — which is where a fixed
-       200px put it on a short phone pane. */
+       directly under the rail (2 × 40px buttons + gap + padding + 12px top
+       ≈ 106px) rather than parking it mid-pane. */
     .map-wrap :global(.leaflet-top.leaflet-left) {
-        top: 204px;
+        top: 116px;
     }
 </style>

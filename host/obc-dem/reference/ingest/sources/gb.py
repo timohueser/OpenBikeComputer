@@ -33,13 +33,12 @@ import math
 import os
 import re
 import shutil
-import time
 import urllib.parse
 import zipfile
 from pathlib import Path
 
 from ..lattice import Refuse
-from .base import RASTER_SUFFIXES, Stopped, http_download, http_get, unpack
+from .base import RASTER_SUFFIXES, Stopped, http_download, http_get, pace, unpack
 from .cog import CogWindows, OneFile
 from .grid import grid_squares
 from .protocols import projected_box
@@ -203,14 +202,12 @@ class SquareZips(CogWindows):
         archive.unlink()
 
     def download(self, name: str, archive: Path) -> None:
-        stopped, asked = self.folder / "stopped", self.folder / "asked"
+        stopped = self.folder / "stopped"
         if stopped.exists():
             reason = stopped.read_text(encoding="utf-8").strip()
             raise Refuse(f"{self.key}: the server refused this prepare ({reason}); "
                          f"nothing is asked until {stopped} is deleted")
-        if asked.exists():
-            time.sleep(max(0.0, asked.stat().st_mtime + GAP - time.time()))
-        asked.touch()
+        pace(self.folder, GAP)
         try:
             http_download(self.base + name, archive, what=f"{self.key} {name}", stop=(403, 429))
         except Stopped as refusal:

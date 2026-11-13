@@ -30,7 +30,7 @@
    "depends_on": [],
    "test_depends_on": [],
    "violations": 1,
-   "lines": 17129,
+   "lines": 17099,
    "problems": [
     {
      "rule": "R1",
@@ -51,7 +51,7 @@
     "map-reading",
     "navigation"
    ],
-   "violations": 3,
+   "violations": 5,
    "lines": 16264,
    "problems": [
     {
@@ -63,6 +63,14 @@
      "message": "device-link -> card-storage closes a cycle: obc-flat-device -> obc-storage, obc-link -> obc-storage (test)"
     },
     {
+     "rule": "cycle",
+     "message": "host-runtime -> card-storage closes a cycle: obc-host-core -> obc-storage"
+    },
+    {
+     "rule": "cycle",
+     "message": "map-assembly -> card-storage closes a cycle: obc-builder-bridge -> obc-storage"
+    },
+    {
      "rule": "R1",
      "message": "crate obc-app (device-runtime) holds 5 file(s) of card-storage"
     }
@@ -72,18 +80,13 @@
    "name": "companion-ios",
    "kind": "shell",
    "area": "Shells",
-   "purpose": "Runs the companion app on the rider's phone.",
-   "status": "draft",
+   "purpose": "Runs the iPhone app that plans routes, sends them to the device and gets rides back.",
+   "status": "approved",
    "depends_on": [],
    "test_depends_on": [],
-   "violations": 1,
-   "lines": 48450,
-   "problems": [
-    {
-     "rule": "R3",
-     "message": "shell companion-ios holds 48,450 lines of its own"
-    }
-   ]
+   "violations": 0,
+   "lines": 48453,
+   "problems": []
   },
   {
    "name": "content",
@@ -96,7 +99,7 @@
     "rendering-display"
    ],
    "test_depends_on": [],
-   "violations": 7,
+   "violations": 5,
    "lines": 6033,
    "problems": [
     {
@@ -109,19 +112,11 @@
     },
     {
      "rule": "cycle",
-     "message": "device-map-baking -> content closes a cycle: obc-bake -> obc-places, obc-draw -> obc-places, obc-network -> obc-places, obc-pack -> obc-places, obcm-assemble -> obc-places (test)"
+     "message": "device-map-baking -> content closes a cycle: obc-bake -> obc-places, obc-draw -> obc-places, obc-network -> obc-places, and 2 more"
     },
     {
      "rule": "R1",
      "message": "crate obc-data-steps (obc-data) holds 3 file(s) of content"
-    },
-    {
-     "rule": "R2",
-     "message": "content has host code in host/, and also in tools/"
-    },
-    {
-     "rule": "R2",
-     "message": "content has host code in tools/, and also in host/"
     },
     {
      "rule": "R4",
@@ -137,17 +132,9 @@
    "status": "draft",
    "depends_on": [],
    "test_depends_on": [],
-   "violations": 3,
-   "lines": 38814,
+   "violations": 1,
+   "lines": 33260,
    "problems": [
-    {
-     "rule": "R2",
-     "message": "data-engine has host code in host/, and also in tools/"
-    },
-    {
-     "rule": "R2",
-     "message": "data-engine has host code in tools/, and also in host/"
-    },
     {
      "rule": "R4",
      "message": "data-engine (Data and services) has 5 file(s) under tools/"
@@ -158,8 +145,8 @@
    "name": "data-registry",
    "kind": "system",
    "area": "Data and services",
-   "purpose": "Declares every external source, region and target that a build may use.",
-   "status": "draft",
+   "purpose": "Declares the external sources, regions, targets and options that `obc data` reads.",
+   "status": "approved",
    "depends_on": [],
    "test_depends_on": [],
    "violations": 0,
@@ -171,7 +158,7 @@
    "kind": "shell",
    "area": "Shells",
    "purpose": "Builds the nRF54L board image from the device systems.",
-   "status": "draft",
+   "status": "approved",
    "depends_on": [
     "board-inputs",
     "card-storage",
@@ -184,16 +171,12 @@
     "rendering-display"
    ],
    "test_depends_on": [],
-   "violations": 2,
-   "lines": 13702,
+   "violations": 1,
+   "lines": 13694,
    "problems": [
     {
      "rule": "R1",
      "message": "crate obc-fw-nrf54l (device-firmware) holds 26 file(s) of board-support"
-    },
-    {
-     "rule": "R3",
-     "message": "shell device-firmware holds 13,702 lines of its own"
     }
    ]
   },
@@ -211,8 +194,8 @@
    "test_depends_on": [
     "map-reading"
    ],
-   "violations": 5,
-   "lines": 40052,
+   "violations": 9,
+   "lines": 36181,
    "problems": [
     {
      "rule": "cycle",
@@ -223,16 +206,32 @@
      "message": "device-link -> card-storage closes a cycle: obc-flat-device -> obc-storage, obc-link -> obc-storage (test)"
     },
     {
+     "rule": "cycle",
+     "message": "device-link -> device-map-builder closes a cycle: builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/bytes.ts (test), builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/flat-device/load.ts (test), builder/web/src/lib/device/rides.test.ts -> builder/web/test-support/flat-device/load.ts (test), and 8 more"
+    },
+    {
+     "rule": "cycle",
+     "message": "device-link -> firmware-update closes a cycle: obc-vectors -> obc-dfu, builder/web/src/lib/device/write.ts -> builder/web/src/lib/firmware/obcu.ts"
+    },
+    {
+     "rule": "cycle",
+     "message": "device-link -> map-assembly closes a cycle: builder/web/src/lib/device/flows.test.ts -> builder/web/src/lib/convert/bridge.ts (test), builder/web/src/lib/device/rides.test.ts -> builder/web/src/lib/convert/bridge.ts (test), builder/web/src/lib/device/rides.ts -> builder/web/src/lib/convert/bridge.ts, and 1 more"
+    },
+    {
+     "rule": "cycle",
+     "message": "device-map-builder -> device-link closes a cycle: builder/web/src/components/UpdatePrompt.svelte -> builder/web/src/lib/device/job.svelte.ts, builder/web/src/components/UpdatePrompt.svelte -> builder/web/src/lib/device/session.svelte.ts, builder/web/src/components/device/CardFormat.svelte -> builder/web/src/lib/usb/client.ts, and 40 more"
+    },
+    {
+     "rule": "cycle",
+     "message": "firmware-update -> device-link closes a cycle: builder/web/src/lib/firmware/obcu.test.ts -> builder/web/src/lib/usb/crc32.ts (test), builder/web/src/lib/firmware/obcu.ts -> builder/web/src/lib/usb/crc32.ts, builder/web/src/lib/firmware/obcu.ts -> builder/web/src/lib/usb/protocol.ts"
+    },
+    {
+     "rule": "cycle",
+     "message": "map-assembly -> device-link closes a cycle: obc-builder-bridge -> obc-flat-device, obc-builder-bridge -> obc-link, obc-builder-bridge -> obc-vectors (test), and 12 more"
+    },
+    {
      "rule": "R1",
      "message": "crate obc-app (device-runtime) holds 1 file(s) of device-link"
-    },
-    {
-     "rule": "R2",
-     "message": "device-link has host code in host/, and also in sim/"
-    },
-    {
-     "rule": "R2",
-     "message": "device-link has host code in sim/, and also in host/"
     }
    ]
   },
@@ -254,8 +253,8 @@
     "navigation",
     "repository-tooling"
    ],
-   "violations": 9,
-   "lines": 60392,
+   "violations": 7,
+   "lines": 60410,
    "problems": [
     {
      "rule": "cycle",
@@ -263,11 +262,11 @@
     },
     {
      "rule": "cycle",
-     "message": "device-map-baking -> content closes a cycle: obc-bake -> obc-places, obc-draw -> obc-places, obc-network -> obc-places, obc-pack -> obc-places, obcm-assemble -> obc-places (test)"
+     "message": "device-map-baking -> content closes a cycle: obc-bake -> obc-places, obc-draw -> obc-places, obc-network -> obc-places, and 2 more"
     },
     {
      "rule": "cycle",
-     "message": "device-map-baking -> map-reading closes a cycle: obc-bake -> obc-elevation, obc-bake -> obc-reader, obc-bake -> obcm-testkit (test), obc-draw -> obc-elevation, obc-draw -> obc-reader, obc-map-core -> obc-elevation, obc-map-core -> obc-reader, obc-network -> obc-elevation, obc-pack -> obc-elevation, obc-pack -> obc-reader (test), obc-pack -> obcm-testkit (test), obcm-assemble -> obc-elevation, obcm-assemble -> obc-reader, obcm-assemble -> obcm-testkit (test)"
+     "message": "device-map-baking -> map-reading closes a cycle: obc-bake -> obc-elevation, obc-bake -> obc-reader, obc-bake -> obcm-testkit (test), and 11 more"
     },
     {
      "rule": "cycle",
@@ -282,14 +281,6 @@
      "message": "crate obc-data-steps (obc-data) holds 3 file(s) of device-map-baking"
     },
     {
-     "rule": "R2",
-     "message": "device-map-baking has host code in host/, and also in tools/"
-    },
-    {
-     "rule": "R2",
-     "message": "device-map-baking has host code in tools/, and also in host/"
-    },
-    {
      "rule": "R4",
      "message": "device-map-baking (Data and services) has 1 file(s) under tools/"
     }
@@ -299,18 +290,62 @@
    "name": "device-map-builder",
    "kind": "shell",
    "area": "Shells",
-   "purpose": "Runs the map builder that a rider opens in the browser or on the desktop.",
-   "status": "draft",
+   "purpose": "Runs the map builder, where a rider builds a device map and manages the device, in the browser.",
+   "status": "approved",
    "depends_on": [
-    "device-link"
+    "device-link",
+    "firmware-update",
+    "map-assembly",
+    "map-style",
+    "route-planning",
+    "trailview",
+    "website"
    ],
-   "test_depends_on": [],
-   "violations": 1,
-   "lines": 17864,
+   "test_depends_on": [
+    "repository-tooling"
+   ],
+   "violations": 10,
+   "lines": 10388,
    "problems": [
     {
-     "rule": "R3",
-     "message": "shell device-map-builder holds 17,864 lines of its own"
+     "rule": "cycle",
+     "message": "device-link -> device-map-builder closes a cycle: builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/bytes.ts (test), builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/flat-device/load.ts (test), builder/web/src/lib/device/rides.test.ts -> builder/web/test-support/flat-device/load.ts (test), and 8 more"
+    },
+    {
+     "rule": "cycle",
+     "message": "device-map-builder -> device-link closes a cycle: builder/web/src/components/UpdatePrompt.svelte -> builder/web/src/lib/device/job.svelte.ts, builder/web/src/components/UpdatePrompt.svelte -> builder/web/src/lib/device/session.svelte.ts, builder/web/src/components/device/CardFormat.svelte -> builder/web/src/lib/usb/client.ts, and 40 more"
+    },
+    {
+     "rule": "cycle",
+     "message": "device-map-builder -> firmware-update closes a cycle: builder/web/src/components/UpdatePrompt.svelte -> builder/web/src/lib/firmware/check.svelte.ts, builder/web/src/components/device/FirmwareCard.svelte -> builder/web/src/lib/firmware/check.svelte.ts, builder/web/src/components/device/FirmwareCard.svelte -> builder/web/src/lib/firmware/release.ts"
+    },
+    {
+     "rule": "cycle",
+     "message": "device-map-builder -> map-assembly closes a cycle: builder/web/src/components/device/DeviceStep.svelte -> builder/web/src/lib/catalog/ledger.ts, builder/web/src/components/device/DeviceSurfaces.svelte -> builder/web/src/lib/catalog/ledger.ts, builder/web/src/components/device/MapSend.svelte -> builder/web/src/lib/catalog/ledger.ts, and 7 more"
+    },
+    {
+     "rule": "cycle",
+     "message": "device-map-builder -> map-style closes a cycle: builder/web/src/lib/api/client.ts -> builder/web/src/lib/config/model.ts, builder/web/src/lib/platform/types.ts -> builder/web/src/lib/config/model.ts, builder/web/src/routes/Advanced.svelte -> builder/web/src/components/advanced/CategoryRail.svelte, and 10 more"
+    },
+    {
+     "rule": "cycle",
+     "message": "device-map-builder -> route-planning closes a cycle: builder/web/scripts/road-census.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/platform/web.ts -> builder/web/src/lib/planner/release.ts, builder/web/src/lib/ui/Segmented.svelte -> builder/web/src/components/planner/PlannerIcon.svelte, and 15 more"
+    },
+    {
+     "rule": "cycle",
+     "message": "device-map-builder -> trailview closes a cycle: builder/web/scripts/check-wgsl.mjs -> builder/web/src/lib/trailview/gpu/include.ts, builder/web/scripts/road-census.ts -> builder/web/src/lib/trailview/frame/space.ts, builder/web/scripts/road-census.ts -> builder/web/src/lib/trailview/terrain/bins.ts, and 26 more"
+    },
+    {
+     "rule": "cycle",
+     "message": "map-assembly -> device-map-builder closes a cycle: builder/web/src/components/coverage/CoverageHome.svelte -> builder/web/src/components/device/DeviceStep.svelte, builder/web/src/components/coverage/CoverageHome.svelte.test.ts -> builder/web/src/routes/Home.svelte (test), builder/web/src/components/coverage/CoverageHome.svelte.test.ts -> builder/web/test-support/coverage/Selection.svelte (test), and 28 more"
+    },
+    {
+     "rule": "cycle",
+     "message": "map-style -> device-map-builder closes a cycle: builder/web/src/components/advanced/ColorControl.svelte -> builder/web/src/lib/palette.ts, builder/web/src/components/advanced/ProfilesTab.svelte -> builder/web/src/lib/ui/confirm.svelte.ts, builder/web/src/components/advanced/SchemaLab.svelte -> builder/web/src/lib/platform/types.ts, and 4 more"
+    },
+    {
+     "rule": "cycle",
+     "message": "route-planning -> device-map-builder closes a cycle: builder/web/src/components/planner/CompareList.svelte -> builder/web/src/lib/ui/Segmented.svelte, builder/web/src/components/planner/CompareScreen.svelte.test.ts -> builder/web/test-support/planner/MapStub.svelte (test), builder/web/src/components/planner/CompareScreen.svelte.test.ts -> builder/web/test-support/planner/trip.ts (test), and 33 more"
     }
    ]
   },
@@ -331,7 +366,7 @@
     "repository-tooling"
    ],
    "violations": 8,
-   "lines": 24335,
+   "lines": 24334,
    "problems": [
     {
      "rule": "R1",
@@ -396,9 +431,21 @@
    "test_depends_on": [
     "map-reading"
    ],
-   "violations": 1,
+   "violations": 4,
    "lines": 7697,
    "problems": [
+    {
+     "rule": "cycle",
+     "message": "device-link -> firmware-update closes a cycle: obc-vectors -> obc-dfu, builder/web/src/lib/device/write.ts -> builder/web/src/lib/firmware/obcu.ts"
+    },
+    {
+     "rule": "cycle",
+     "message": "device-map-builder -> firmware-update closes a cycle: builder/web/src/components/UpdatePrompt.svelte -> builder/web/src/lib/firmware/check.svelte.ts, builder/web/src/components/device/FirmwareCard.svelte -> builder/web/src/lib/firmware/check.svelte.ts, builder/web/src/components/device/FirmwareCard.svelte -> builder/web/src/lib/firmware/release.ts"
+    },
+    {
+     "rule": "cycle",
+     "message": "firmware-update -> device-link closes a cycle: builder/web/src/lib/firmware/obcu.test.ts -> builder/web/src/lib/usb/crc32.ts (test), builder/web/src/lib/firmware/obcu.ts -> builder/web/src/lib/usb/crc32.ts, builder/web/src/lib/firmware/obcu.ts -> builder/web/src/lib/usb/protocol.ts"
+    },
     {
      "rule": "R1",
      "message": "crate obc-app (device-runtime) holds 1 file(s) of firmware-update"
@@ -409,22 +456,22 @@
    "name": "foundations",
    "kind": "system",
    "area": "Device",
-   "purpose": "Holds the policy-free building blocks that every crate uses: byte codecs, CRC, host interfaces, the map-scene contract.",
-   "status": "draft",
+   "purpose": "Holds the shared building blocks that have no product policy: the byte layouts of the file formats, the byte-reading interface, CRC-32, the host interfaces and the map-scene interface.",
+   "status": "approved",
    "depends_on": [],
    "test_depends_on": [
     "map-reading"
    ],
    "violations": 0,
-   "lines": 5178,
+   "lines": 5164,
    "problems": []
   },
   {
    "name": "hardware",
    "kind": "system",
    "area": "Hardware",
-   "purpose": "Holds the board's schematics, layouts and component models.",
-   "status": "draft",
+   "purpose": "Holds the board's schematics, layouts and component models, and makes its parts list with prices.",
+   "status": "approved",
    "depends_on": [],
    "test_depends_on": [],
    "violations": 0,
@@ -451,8 +498,29 @@
     "device-map-baking",
     "repository-tooling"
    ],
-   "violations": 0,
+   "violations": 2,
    "lines": 17284,
+   "problems": [
+    {
+     "rule": "cycle",
+     "message": "host-runtime -> card-storage closes a cycle: obc-host-core -> obc-storage"
+    },
+    {
+     "rule": "cycle",
+     "message": "map-assembly -> host-runtime closes a cycle: obc-builder-bridge -> obc-host-core"
+    }
+   ]
+  },
+  {
+   "name": "library",
+   "kind": "system",
+   "area": "Apps",
+   "purpose": "Keeps the rider's routes, rides and settings in the browser, each route and ride with a summary, and saves and loads them as one backup file.",
+   "status": "draft",
+   "depends_on": [],
+   "test_depends_on": [],
+   "violations": 0,
+   "lines": 1793,
    "problems": []
   },
   {
@@ -474,16 +542,48 @@
    "test_depends_on": [
     "content"
    ],
-   "violations": 2,
-   "lines": 25807,
+   "violations": 10,
+   "lines": 24385,
    "problems": [
     {
-     "rule": "R2",
-     "message": "map-assembly has web code in builder/wasm/, and also in builder/web/"
+     "rule": "cycle",
+     "message": "device-link -> map-assembly closes a cycle: builder/web/src/lib/device/flows.test.ts -> builder/web/src/lib/convert/bridge.ts (test), builder/web/src/lib/device/rides.test.ts -> builder/web/src/lib/convert/bridge.ts (test), builder/web/src/lib/device/rides.ts -> builder/web/src/lib/convert/bridge.ts, and 1 more"
     },
     {
-     "rule": "R2",
-     "message": "map-assembly has web code in builder/web/, and also in builder/wasm/"
+     "rule": "cycle",
+     "message": "device-map-builder -> map-assembly closes a cycle: builder/web/src/components/device/DeviceStep.svelte -> builder/web/src/lib/catalog/ledger.ts, builder/web/src/components/device/DeviceSurfaces.svelte -> builder/web/src/lib/catalog/ledger.ts, builder/web/src/components/device/MapSend.svelte -> builder/web/src/lib/catalog/ledger.ts, and 7 more"
+    },
+    {
+     "rule": "cycle",
+     "message": "map-assembly -> card-storage closes a cycle: obc-builder-bridge -> obc-storage"
+    },
+    {
+     "rule": "cycle",
+     "message": "map-assembly -> device-link closes a cycle: obc-builder-bridge -> obc-flat-device, obc-builder-bridge -> obc-link, obc-builder-bridge -> obc-vectors (test), and 12 more"
+    },
+    {
+     "rule": "cycle",
+     "message": "map-assembly -> device-map-builder closes a cycle: builder/web/src/components/coverage/CoverageHome.svelte -> builder/web/src/components/device/DeviceStep.svelte, builder/web/src/components/coverage/CoverageHome.svelte.test.ts -> builder/web/src/routes/Home.svelte (test), builder/web/src/components/coverage/CoverageHome.svelte.test.ts -> builder/web/test-support/coverage/Selection.svelte (test), and 28 more"
+    },
+    {
+     "rule": "cycle",
+     "message": "map-assembly -> host-runtime closes a cycle: obc-builder-bridge -> obc-host-core"
+    },
+    {
+     "rule": "cycle",
+     "message": "map-assembly -> map-style closes a cycle: builder/web/src/components/coverage/SkinStep.svelte -> builder/web/src/components/skin/SkinEditor.svelte, builder/web/src/components/coverage/SkinStep.svelte -> builder/web/src/components/skin/SkinPreviewThumbnail.svelte, builder/web/src/components/coverage/SkinStep.svelte -> builder/web/src/lib/skin/custom.ts, and 4 more"
+    },
+    {
+     "rule": "cycle",
+     "message": "map-assembly -> route-planning closes a cycle: builder/web/src/lib/map/basemap-config.test.ts -> builder/web/src/lib/planner/map-style.ts (test), builder/web/src/lib/map/basemap-config.ts -> builder/web/src/lib/planner/config.ts, builder/web/src/lib/map/basemap-config.ts -> builder/web/src/lib/planner/release.ts, and 1 more"
+    },
+    {
+     "rule": "cycle",
+     "message": "map-style -> map-assembly closes a cycle: builder/web/src/components/skin/SkinEditor.svelte -> builder/web/src/lib/catalog/manifest.ts, builder/web/src/components/skin/SkinEditor.svelte -> builder/web/src/lib/coverage/store.svelte.ts, builder/web/src/components/skin/SkinLivePreview.svelte -> builder/web/src/lib/catalog/manifest.ts, and 6 more"
+    },
+    {
+     "rule": "cycle",
+     "message": "route-planning -> map-assembly closes a cycle: builder/web/src/lib/planner/map-style.ts -> builder/web/src/lib/map/basemap-config.ts"
     }
    ]
   },
@@ -509,7 +609,7 @@
     },
     {
      "rule": "cycle",
-     "message": "device-map-baking -> map-reading closes a cycle: obc-bake -> obc-elevation, obc-bake -> obc-reader, obc-bake -> obcm-testkit (test), obc-draw -> obc-elevation, obc-draw -> obc-reader, obc-map-core -> obc-elevation, obc-map-core -> obc-reader, obc-network -> obc-elevation, obc-pack -> obc-elevation, obc-pack -> obc-reader (test), obc-pack -> obcm-testkit (test), obcm-assemble -> obc-elevation, obcm-assemble -> obc-reader, obcm-assemble -> obcm-testkit (test)"
+     "message": "device-map-baking -> map-reading closes a cycle: obc-bake -> obc-elevation, obc-bake -> obc-reader, obc-bake -> obcm-testkit (test), and 11 more"
     },
     {
      "rule": "cycle",
@@ -529,9 +629,26 @@
    "status": "draft",
    "depends_on": [],
    "test_depends_on": [],
-   "violations": 0,
+   "violations": 4,
    "lines": 6923,
-   "problems": []
+   "problems": [
+    {
+     "rule": "cycle",
+     "message": "device-map-builder -> map-style closes a cycle: builder/web/src/lib/api/client.ts -> builder/web/src/lib/config/model.ts, builder/web/src/lib/platform/types.ts -> builder/web/src/lib/config/model.ts, builder/web/src/routes/Advanced.svelte -> builder/web/src/components/advanced/CategoryRail.svelte, and 10 more"
+    },
+    {
+     "rule": "cycle",
+     "message": "map-assembly -> map-style closes a cycle: builder/web/src/components/coverage/SkinStep.svelte -> builder/web/src/components/skin/SkinEditor.svelte, builder/web/src/components/coverage/SkinStep.svelte -> builder/web/src/components/skin/SkinPreviewThumbnail.svelte, builder/web/src/components/coverage/SkinStep.svelte -> builder/web/src/lib/skin/custom.ts, and 4 more"
+    },
+    {
+     "rule": "cycle",
+     "message": "map-style -> device-map-builder closes a cycle: builder/web/src/components/advanced/ColorControl.svelte -> builder/web/src/lib/palette.ts, builder/web/src/components/advanced/ProfilesTab.svelte -> builder/web/src/lib/ui/confirm.svelte.ts, builder/web/src/components/advanced/SchemaLab.svelte -> builder/web/src/lib/platform/types.ts, and 4 more"
+    },
+    {
+     "rule": "cycle",
+     "message": "map-style -> map-assembly closes a cycle: builder/web/src/components/skin/SkinEditor.svelte -> builder/web/src/lib/catalog/manifest.ts, builder/web/src/components/skin/SkinEditor.svelte -> builder/web/src/lib/coverage/store.svelte.ts, builder/web/src/components/skin/SkinLivePreview.svelte -> builder/web/src/lib/catalog/manifest.ts, and 6 more"
+    }
+   ]
   },
   {
    "name": "navigation",
@@ -561,11 +678,14 @@
    "kind": "shell",
    "area": "Shells",
    "purpose": "Runs the `obc data` command and its operator page.",
-   "status": "draft",
+   "status": "approved",
    "depends_on": [
     "data-engine",
     "device-map-baking",
+    "device-map-builder",
     "foundations",
+    "map-assembly",
+    "route-planning",
     "routing",
     "search",
     "source-preparation",
@@ -575,8 +695,8 @@
     "map-reading",
     "repository-tooling"
    ],
-   "violations": 5,
-   "lines": 2006,
+   "violations": 4,
+   "lines": 9951,
    "problems": [
     {
      "rule": "R1",
@@ -592,11 +712,7 @@
     },
     {
      "rule": "R1",
-     "message": "crate obc-data-steps (obc-data) holds 7 file(s) of source-preparation"
-    },
-    {
-     "rule": "R3",
-     "message": "shell obc-data holds 2,006 lines of its own"
+     "message": "crate obc-data-steps (obc-data) holds 8 file(s) of source-preparation"
     }
    ]
   },
@@ -608,24 +724,16 @@
    "status": "draft",
    "depends_on": [],
    "test_depends_on": [],
-   "violations": 4,
-   "lines": 5434,
+   "violations": 2,
+   "lines": 6068,
    "problems": [
     {
      "rule": "R1",
      "message": "crate obc-data-steps (obc-data) holds 2 file(s) of planner-map-baking"
     },
     {
-     "rule": "R2",
-     "message": "planner-map-baking has host code in host/, and also in tools/"
-    },
-    {
-     "rule": "R2",
-     "message": "planner-map-baking has host code in tools/, and also in host/"
-    },
-    {
      "rule": "R4",
-     "message": "planner-map-baking (Data and services) has 17 file(s) under tools/"
+     "message": "planner-map-baking (Data and services) has 18 file(s) under tools/"
     }
    ]
   },
@@ -633,18 +741,13 @@
    "name": "planner-tile-server",
    "kind": "shell",
    "area": "Shells",
-   "purpose": "Serves the released planner tile archives from the storage bucket.",
-   "status": "draft",
+   "purpose": "Serves the map tiles of a planner release from the storage bucket or from a local folder.",
+   "status": "approved",
    "depends_on": [],
    "test_depends_on": [],
-   "violations": 1,
-   "lines": 636,
-   "problems": [
-    {
-     "rule": "R3",
-     "message": "shell planner-tile-server holds 636 lines of its own"
-    }
-   ]
+   "violations": 0,
+   "lines": 715,
+   "problems": []
   },
   {
    "name": "rendering-display",
@@ -659,7 +762,7 @@
     "map-reading"
    ],
    "violations": 0,
-   "lines": 9556,
+   "lines": 9394,
    "problems": []
   },
   {
@@ -676,22 +779,9 @@
     "navigation"
    ],
    "test_depends_on": [],
-   "violations": 3,
-   "lines": 18292,
-   "problems": [
-    {
-     "rule": "R2",
-     "message": "repository-tooling has host code in firmware/tools/, and also in host/, tools/"
-    },
-    {
-     "rule": "R2",
-     "message": "repository-tooling has host code in host/, and also in firmware/tools/, tools/"
-    },
-    {
-     "rule": "R2",
-     "message": "repository-tooling has host code in tools/, and also in firmware/tools/, host/"
-    }
-   ]
+   "violations": 0,
+   "lines": 18785,
+   "problems": []
   },
   {
    "name": "ride-recording",
@@ -733,11 +823,42 @@
    "area": "Apps",
    "purpose": "Lets a rider plan a route on a map, in the browser or on the phone.",
    "status": "draft",
-   "depends_on": [],
+   "depends_on": [
+    "library"
+   ],
    "test_depends_on": [],
-   "violations": 0,
-   "lines": 25572,
-   "problems": []
+   "violations": 7,
+   "lines": 27300,
+   "problems": [
+    {
+     "rule": "cycle",
+     "message": "device-map-builder -> route-planning closes a cycle: builder/web/scripts/road-census.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/platform/web.ts -> builder/web/src/lib/planner/release.ts, builder/web/src/lib/ui/Segmented.svelte -> builder/web/src/components/planner/PlannerIcon.svelte, and 15 more"
+    },
+    {
+     "rule": "cycle",
+     "message": "map-assembly -> route-planning closes a cycle: builder/web/src/lib/map/basemap-config.test.ts -> builder/web/src/lib/planner/map-style.ts (test), builder/web/src/lib/map/basemap-config.ts -> builder/web/src/lib/planner/config.ts, builder/web/src/lib/map/basemap-config.ts -> builder/web/src/lib/planner/release.ts, and 1 more"
+    },
+    {
+     "rule": "cycle",
+     "message": "route-planning -> device-map-builder closes a cycle: builder/web/src/components/planner/CompareList.svelte -> builder/web/src/lib/ui/Segmented.svelte, builder/web/src/components/planner/CompareScreen.svelte.test.ts -> builder/web/test-support/planner/MapStub.svelte (test), builder/web/src/components/planner/CompareScreen.svelte.test.ts -> builder/web/test-support/planner/trip.ts (test), and 33 more"
+    },
+    {
+     "rule": "cycle",
+     "message": "route-planning -> map-assembly closes a cycle: builder/web/src/lib/planner/map-style.ts -> builder/web/src/lib/map/basemap-config.ts"
+    },
+    {
+     "rule": "dependency",
+     "message": "route-planning tests use planner-map-baking but test_depends_on does not list it: builder/web/src/lib/planner/mvt-verify.test.ts -> tools/planner_mvt_verify.mjs (test)"
+    },
+    {
+     "rule": "cycle",
+     "message": "route-planning -> trailview closes a cycle: builder/web/src/components/planner/TrailViewConditions.svelte -> builder/web/src/lib/trailview/view.ts, builder/web/src/components/planner/TrailViewWindow.svelte -> builder/web/src/lib/trailview/engine.ts, builder/web/src/components/planner/TrailViewWindow.svelte -> builder/web/src/lib/trailview/frame/camera.ts, and 12 more"
+    },
+    {
+     "rule": "cycle",
+     "message": "trailview -> route-planning closes a cycle: builder/web/src/lib/trailview/dressing/dressing.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/trailview/engine.ts -> builder/web/src/lib/planner/config.ts, builder/web/src/lib/trailview/engine.ts -> builder/web/src/lib/planner/geo.ts, and 36 more"
+    }
+   ]
   },
   {
    "name": "routing",
@@ -750,17 +871,9 @@
     "source-preparation"
    ],
    "test_depends_on": [],
-   "violations": 3,
-   "lines": 13556,
+   "violations": 1,
+   "lines": 16938,
    "problems": [
-    {
-     "rule": "R2",
-     "message": "routing has host code in planner/, and also in tools/"
-    },
-    {
-     "rule": "R2",
-     "message": "routing has host code in tools/, and also in planner/"
-    },
     {
      "rule": "R4",
      "message": "routing (Data and services) has 1 file(s) under tools/"
@@ -780,20 +893,12 @@
    "test_depends_on": [
     "device-map-baking"
    ],
-   "violations": 4,
+   "violations": 2,
    "lines": 11477,
    "problems": [
     {
-     "rule": "R2",
-     "message": "search has host code in host/, and also in planner/, tools/"
-    },
-    {
-     "rule": "R2",
-     "message": "search has host code in planner/, and also in host/, tools/"
-    },
-    {
-     "rule": "R2",
-     "message": "search has host code in tools/, and also in host/, planner/"
+     "rule": "dependency",
+     "message": "search uses device-map-builder but does not list it in depends_on: planner/search/native-build.mjs -> builder/web/vite/third-party-licenses.ts"
     },
     {
      "rule": "R4",
@@ -805,8 +910,8 @@
    "name": "simulators",
    "kind": "shell",
    "area": "Shells",
-   "purpose": "Runs the device core away from the board, for development and demonstration.",
-   "status": "draft",
+   "purpose": "Runs the device core on a computer, a phone or a web page, and sends test input to a real board.",
+   "status": "approved",
    "depends_on": [
     "board-inputs",
     "card-storage",
@@ -822,14 +927,9 @@
     "repository-tooling"
    ],
    "test_depends_on": [],
-   "violations": 1,
-   "lines": 15003,
-   "problems": [
-    {
-     "rule": "R3",
-     "message": "shell simulators holds 15,003 lines of its own"
-    }
-   ]
+   "violations": 0,
+   "lines": 14970,
+   "problems": []
   },
   {
    "name": "source-preparation",
@@ -844,8 +944,8 @@
    "test_depends_on": [
     "repository-tooling"
    ],
-   "violations": 6,
-   "lines": 16765,
+   "violations": 4,
+   "lines": 18734,
    "problems": [
     {
      "rule": "cycle",
@@ -857,15 +957,7 @@
     },
     {
      "rule": "R1",
-     "message": "crate obc-data-steps (obc-data) holds 7 file(s) of source-preparation"
-    },
-    {
-     "rule": "R2",
-     "message": "source-preparation has host code in host/, and also in tools/"
-    },
-    {
-     "rule": "R2",
-     "message": "source-preparation has host code in tools/, and also in host/"
+     "message": "crate obc-data-steps (obc-data) holds 8 file(s) of source-preparation"
     },
     {
      "rule": "R4",
@@ -883,20 +975,28 @@
     "data-engine"
    ],
    "test_depends_on": [],
-   "violations": 3,
-   "lines": 47383,
+   "violations": 5,
+   "lines": 55568,
    "problems": [
     {
-     "rule": "R2",
-     "message": "trailview has host code in host/, and also in tools/"
+     "rule": "cycle",
+     "message": "device-map-builder -> trailview closes a cycle: builder/web/scripts/check-wgsl.mjs -> builder/web/src/lib/trailview/gpu/include.ts, builder/web/scripts/road-census.ts -> builder/web/src/lib/trailview/frame/space.ts, builder/web/scripts/road-census.ts -> builder/web/src/lib/trailview/terrain/bins.ts, and 26 more"
     },
     {
-     "rule": "R2",
-     "message": "trailview has host code in tools/, and also in host/"
+     "rule": "cycle",
+     "message": "route-planning -> trailview closes a cycle: builder/web/src/components/planner/TrailViewConditions.svelte -> builder/web/src/lib/trailview/view.ts, builder/web/src/components/planner/TrailViewWindow.svelte -> builder/web/src/lib/trailview/engine.ts, builder/web/src/components/planner/TrailViewWindow.svelte -> builder/web/src/lib/trailview/frame/camera.ts, and 12 more"
+    },
+    {
+     "rule": "dependency",
+     "message": "trailview tests use device-map-builder but test_depends_on does not list it: builder/web/src/lib/trailview/roads/mesh.test.ts -> builder/web/test-support/trailview/census.ts (test)"
+    },
+    {
+     "rule": "cycle",
+     "message": "trailview -> route-planning closes a cycle: builder/web/src/lib/trailview/dressing/dressing.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/trailview/engine.ts -> builder/web/src/lib/planner/config.ts, builder/web/src/lib/trailview/engine.ts -> builder/web/src/lib/planner/geo.ts, and 36 more"
     },
     {
      "rule": "R4",
-     "message": "trailview (Data and services) has 13 file(s) under tools/"
+     "message": "trailview (Data and services) has 11 file(s) under tools/"
     }
    ]
   },
@@ -904,18 +1004,16 @@
    "name": "trailview-page",
    "kind": "shell",
    "area": "Shells",
-   "purpose": "Opens TrailView as its own page in the browser.",
-   "status": "draft",
-   "depends_on": [],
+   "purpose": "Opens TrailView, the 3-D view of a region, as its own page in the browser.",
+   "status": "approved",
+   "depends_on": [
+    "route-planning",
+    "trailview"
+   ],
    "test_depends_on": [],
-   "violations": 1,
-   "lines": 63,
-   "problems": [
-    {
-     "rule": "R3",
-     "message": "shell trailview-page holds 63 lines of its own"
-    }
-   ]
+   "violations": 0,
+   "lines": 87,
+   "problems": []
   },
   {
    "name": "verification-console",
@@ -926,42 +1024,37 @@
    "depends_on": [],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 6791,
+   "lines": 7278,
    "problems": []
   },
   {
    "name": "web-planner",
    "kind": "shell",
    "area": "Shells",
-   "purpose": "Opens Route planning as its own page in the browser.",
-   "status": "draft",
-   "depends_on": [],
+   "purpose": "Opens the app at /plan/: the top bar, the pages, and the route planner as one page.",
+   "status": "approved",
+   "depends_on": [
+    "device-map-builder",
+    "library",
+    "route-planning",
+    "trailview"
+   ],
    "test_depends_on": [],
-   "violations": 1,
-   "lines": 13,
-   "problems": [
-    {
-     "rule": "R3",
-     "message": "shell web-planner holds 13 lines of its own"
-    }
-   ]
+   "violations": 0,
+   "lines": 2939,
+   "problems": []
   },
   {
    "name": "website",
    "kind": "shell",
    "area": "Shells",
    "purpose": "Publishes the project site, the guide and the blog.",
-   "status": "draft",
+   "status": "approved",
    "depends_on": [],
    "test_depends_on": [],
-   "violations": 1,
+   "violations": 0,
    "lines": 2541,
-   "problems": [
-    {
-     "rule": "R3",
-     "message": "shell website holds 2,541 lines of its own"
-    }
-   ]
+   "problems": []
   }
  ],
  "edges": [
@@ -1087,6 +1180,12 @@
   },
   {
    "from": "device-link",
+   "to": "device-map-builder",
+   "test": false,
+   "undeclared": true
+  },
+  {
+   "from": "device-link",
    "to": "firmware-update",
    "test": false,
    "undeclared": false
@@ -1096,6 +1195,12 @@
    "to": "foundations",
    "test": false,
    "undeclared": false
+  },
+  {
+   "from": "device-link",
+   "to": "map-assembly",
+   "test": false,
+   "undeclared": true
   },
   {
    "from": "device-link",
@@ -1182,6 +1287,48 @@
    "undeclared": false
   },
   {
+   "from": "device-map-builder",
+   "to": "firmware-update",
+   "test": false,
+   "undeclared": false
+  },
+  {
+   "from": "device-map-builder",
+   "to": "map-assembly",
+   "test": false,
+   "undeclared": false
+  },
+  {
+   "from": "device-map-builder",
+   "to": "map-style",
+   "test": false,
+   "undeclared": false
+  },
+  {
+   "from": "device-map-builder",
+   "to": "repository-tooling",
+   "test": true,
+   "undeclared": false
+  },
+  {
+   "from": "device-map-builder",
+   "to": "route-planning",
+   "test": false,
+   "undeclared": false
+  },
+  {
+   "from": "device-map-builder",
+   "to": "trailview",
+   "test": false,
+   "undeclared": false
+  },
+  {
+   "from": "device-map-builder",
+   "to": "website",
+   "test": false,
+   "undeclared": false
+  },
+  {
    "from": "device-runtime",
    "to": "data-engine",
    "test": true,
@@ -1216,6 +1363,12 @@
    "to": "repository-tooling",
    "test": true,
    "undeclared": false
+  },
+  {
+   "from": "firmware-update",
+   "to": "device-link",
+   "test": false,
+   "undeclared": true
   },
   {
    "from": "firmware-update",
@@ -1321,6 +1474,12 @@
   },
   {
    "from": "map-assembly",
+   "to": "device-map-builder",
+   "test": false,
+   "undeclared": true
+  },
+  {
+   "from": "map-assembly",
    "to": "foundations",
    "test": false,
    "undeclared": false
@@ -1339,6 +1498,12 @@
   },
   {
    "from": "map-assembly",
+   "to": "map-style",
+   "test": false,
+   "undeclared": true
+  },
+  {
+   "from": "map-assembly",
    "to": "navigation",
    "test": false,
    "undeclared": false
@@ -1348,6 +1513,12 @@
    "to": "rendering-display",
    "test": false,
    "undeclared": false
+  },
+  {
+   "from": "map-assembly",
+   "to": "route-planning",
+   "test": false,
+   "undeclared": true
   },
   {
    "from": "map-reading",
@@ -1372,6 +1543,18 @@
    "to": "repository-tooling",
    "test": true,
    "undeclared": false
+  },
+  {
+   "from": "map-style",
+   "to": "device-map-builder",
+   "test": false,
+   "undeclared": true
+  },
+  {
+   "from": "map-style",
+   "to": "map-assembly",
+   "test": false,
+   "undeclared": true
   },
   {
    "from": "navigation",
@@ -1411,7 +1594,19 @@
   },
   {
    "from": "obc-data",
+   "to": "device-map-builder",
+   "test": false,
+   "undeclared": false
+  },
+  {
+   "from": "obc-data",
    "to": "foundations",
+   "test": false,
+   "undeclared": false
+  },
+  {
+   "from": "obc-data",
+   "to": "map-assembly",
    "test": false,
    "undeclared": false
   },
@@ -1425,6 +1620,12 @@
    "from": "obc-data",
    "to": "repository-tooling",
    "test": true,
+   "undeclared": false
+  },
+  {
+   "from": "obc-data",
+   "to": "route-planning",
+   "test": false,
    "undeclared": false
   },
   {
@@ -1494,6 +1695,36 @@
    "undeclared": false
   },
   {
+   "from": "route-planning",
+   "to": "device-map-builder",
+   "test": false,
+   "undeclared": true
+  },
+  {
+   "from": "route-planning",
+   "to": "library",
+   "test": false,
+   "undeclared": false
+  },
+  {
+   "from": "route-planning",
+   "to": "map-assembly",
+   "test": false,
+   "undeclared": true
+  },
+  {
+   "from": "route-planning",
+   "to": "planner-map-baking",
+   "test": true,
+   "undeclared": true
+  },
+  {
+   "from": "route-planning",
+   "to": "trailview",
+   "test": false,
+   "undeclared": true
+  },
+  {
    "from": "routing",
    "to": "data-engine",
    "test": false,
@@ -1522,6 +1753,12 @@
    "to": "device-map-baking",
    "test": true,
    "undeclared": false
+  },
+  {
+   "from": "search",
+   "to": "device-map-builder",
+   "test": false,
+   "undeclared": true
   },
   {
    "from": "simulators",
@@ -1624,12 +1861,67 @@
    "to": "data-engine",
    "test": false,
    "undeclared": false
+  },
+  {
+   "from": "trailview",
+   "to": "device-map-builder",
+   "test": true,
+   "undeclared": true
+  },
+  {
+   "from": "trailview",
+   "to": "route-planning",
+   "test": false,
+   "undeclared": true
+  },
+  {
+   "from": "trailview-page",
+   "to": "route-planning",
+   "test": false,
+   "undeclared": false
+  },
+  {
+   "from": "trailview-page",
+   "to": "trailview",
+   "test": false,
+   "undeclared": false
+  },
+  {
+   "from": "web-planner",
+   "to": "device-map-builder",
+   "test": false,
+   "undeclared": false
+  },
+  {
+   "from": "web-planner",
+   "to": "library",
+   "test": false,
+   "undeclared": false
+  },
+  {
+   "from": "web-planner",
+   "to": "route-planning",
+   "test": false,
+   "undeclared": false
+  },
+  {
+   "from": "web-planner",
+   "to": "trailview",
+   "test": false,
+   "undeclared": false
   }
  ],
  "cycles": [
   [
    "card-storage",
-   "device-link"
+   "device-link",
+   "device-map-builder",
+   "firmware-update",
+   "host-runtime",
+   "map-assembly",
+   "map-style",
+   "route-planning",
+   "trailview"
   ],
   [
    "content",

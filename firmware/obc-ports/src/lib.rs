@@ -113,7 +113,8 @@ impl DateTime {
         Self::from_unix_clamped(self.pinned().to_unix_i64() + offset as i64 * 60)
     }
 
-    /// Unix seconds at this stamp's `HH:MM:00`, interpreting it as UTC.
+    /// Unix seconds at this stamp's `HH:MM:00`, interpreting it as UTC. The `u32` wraps after
+    /// 2106-02-07; `to_unix_i64` is the full form.
     pub fn to_unix(self) -> u32 {
         self.to_unix_i64() as u32
     }

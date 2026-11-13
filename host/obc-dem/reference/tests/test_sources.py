@@ -86,7 +86,8 @@ def split(key):
     """The sub-boxes `fetch` would ask for, for one source's verification box."""
 
     source = ingest.SOURCES[key]
-    return list(request_boxes(BOXES[key], source.resolution_m, getattr(source, "epsg", None)))
+    return request_boxes(BOXES[key], source.resolution_m, getattr(source, "epsg", None),
+                         getattr(source, "cap", MAX_PIXELS))
 
 
 class TempCase(unittest.TestCase):
@@ -130,13 +131,34 @@ class Requests(unittest.TestCase):
                 self.assertGreaterEqual(len(boxes), 1)
                 for box in boxes:
                     span_x, span_y = ingest.sources.protocols.spans(box, source.epsg)
-                    self.assertLessEqual(span_x / source.resolution_m, MAX_PIXELS + 1)
-                    self.assertLessEqual(span_y / source.resolution_m, MAX_PIXELS + 1)
+                    self.assertLessEqual(span_x / source.resolution_m, source.cap + 1)
+                    self.assertLessEqual(span_y / source.resolution_m, source.cap + 1)
                 # The sub-boxes tile the box exactly.
                 self.assertAlmostEqual(min(b[0] for b in boxes), BOXES[key][0])
                 self.assertAlmostEqual(min(b[1] for b in boxes), BOXES[key][1])
                 self.assertAlmostEqual(max(b[2] for b in boxes), BOXES[key][2])
                 self.assertAlmostEqual(max(b[3] for b in boxes), BOXES[key][3])
+
+    def test_a_box_far_from_its_grids_central_meridian_is_cut_until_every_piece_fits(self):
+        """Norway's west coast is 10° from the middle of UTM 33, where the grid is turned against
+        the degrees, so an even cut by the box's span is not enough: every piece must fit."""
+
+        source = ingest.SOURCES["no"]
+        tile = (4.653056, 59.179008, 4.718592, 59.244544)  # the lattice tile 4999/4167
+        boxes = request_boxes(tile, source.resolution_m, source.epsg)
+        for box in boxes:
+            ingest.sources.protocols.output_size(box, source.resolution_m, "no", source.epsg)
+        self.assertAlmostEqual(min(b[0] for b in boxes), tile[0])
+        self.assertAlmostEqual(max(b[3] for b in boxes), tile[3])
+
+    def test_denmark_asks_for_boxes_its_gateway_answers_in_time(self):
+        """Dataforsyningen's gateway times out a 2000-pixel request while it is busy."""
+
+        source = ingest.SOURCES["dk"]
+        self.assertEqual(source.cap, 1000)
+        for box in split("dk"):
+            px, py = ingest.sources.protocols.output_size(box, source.resolution_m, "dk", source.epsg)
+            self.assertLessEqual(max(px, py), 1000)
 
     def test_a_request_over_the_cap_is_refused_and_not_coarsened(self):
         """Asking a service for fewer pixels than the box holds gets a coarser raster
@@ -1132,7 +1154,7 @@ class EnglandSquares(TempCase):
         # File times come from the kernel's coarse clock, a few milliseconds behind.
         self.assertGreater(abs(asked[1][1] - asked[0][1]), 0.25)
         folder = source.shared / "gb-eng"
-        self.assertEqual(sorted(path.name for path in folder.iterdir() if path.name not in ("lock", "asked")),
+        self.assertEqual(sorted(path.name for path in folder.iterdir() if path.name not in ("lock", "asked", "pace")),
                          ["TF2510.none", "TF3010.tif"])
 
         # A zip that another host left in the folder is read and not asked for.
@@ -1140,7 +1162,7 @@ class EnglandSquares(TempCase):
         (self.inputs / "TF3010").rename(folder / "TF3010.zip")
         gb_module.http_download = lambda *a, **kw: self.fail("the row asked the server")
         self.assertTrue(source.fetch(box, self.root / "c"))
-        self.assertEqual(sorted(path.name for path in folder.iterdir() if path.name not in ("lock", "asked")),
+        self.assertEqual(sorted(path.name for path in folder.iterdir() if path.name not in ("lock", "asked", "pace")),
                          ["TF2510.none", "TF3010.tif"])
 
     def test_a_429_stops_every_later_download_of_the_prepare(self):
@@ -1187,6 +1209,37 @@ class EnglandSquares(TempCase):
         with self.assertRaises(ingest.Refuse):
             source.fetch((-0.0400, 52.6980, -0.0300, 52.7020), self.root / "b")  # TF3010
         self.assertEqual(asked, ["/TF3010"])
+
+
+class Busy(unittest.TestCase):
+    """A gateway that answers a burst with "wait a bit" on a 200 is waited for, not refused."""
+
+    def test_the_kartverket_overuse_answer_is_retried(self):
+        with rasterio.MemoryFile() as memory:
+            with memory.open(driver="GTiff", width=2, height=2, count=1, dtype="float32",
+                             crs="EPSG:25833", transform=Affine(1, 0, 0, 0, -1, 0)) as dst:
+                dst.write(np.full((2, 2), 7.0, dtype="float32"), 1)
+            raster = memory.read()
+        answers = [b'<?xml version="1.0"?><ServiceExceptionReport><ServiceException> [99][Interceptor] '
+                   b"Overforbruk p\xe5 kort tid. Vent litt, pr\xf8v igjen. (1) </ServiceException>"
+                   b"</ServiceExceptionReport>", raster]
+
+        class Gateway(SimpleHTTPRequestHandler):
+            def do_GET(self):
+                body = answers.pop(0)
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        server = serve(self, Gateway)
+        with unittest.mock.patch.object(ingest.sources.base, "RETRY_DELAYS", (0,)):
+            body = ingest.sources.protocols.raster_bytes(f"http://127.0.0.1:{server.server_address[1]}/", "no box")
+        self.assertEqual(body, raster)
+        self.assertEqual(answers, [])
 
 
 class Slovakia(unittest.TestCase):

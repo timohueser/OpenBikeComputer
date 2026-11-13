@@ -27,6 +27,7 @@ obc-link = { workspace = true, features = ["client"] }
 obc-storage = { workspace = true, features = ["std"], optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+obc-fit = { workspace = true }
 wasm-bindgen = { workspace = true }
 js-sys = { workspace = true }
 console_error_panic_hook = { workspace = true }

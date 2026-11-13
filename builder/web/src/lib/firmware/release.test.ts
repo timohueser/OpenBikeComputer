@@ -59,8 +59,8 @@ describe("fetchFirmwareRelease", () => {
 
     it("asks the mirror rather than GitHub", async () => {
         // Not a style preference: a GitHub release asset 302s to storage that sends no CORS
-        // header, so this fetch fails in a browser and in the desktop webview — the two hosts that
-        // have a browser in them. The manifest is mirrored to R2 for exactly that reason.
+        // header, so this fetch fails in a browser. The manifest is mirrored to R2 for exactly that
+        // reason.
         expect(FIRMWARE_MANIFEST_URL).toBe("https://updates.openbikecomputer.com/fw/manifest.json");
         expect(FIRMWARE_MANIFEST_URL).not.toContain("github");
 

@@ -11,7 +11,6 @@
  * a click, is what shows the chooser the first time. Neither can substitute for the other.
  */
 
-import { platform } from "../platform";
 import type { DeviceSession } from "../usb/session";
 
 /** Reactive holder for the shared session. */
@@ -47,18 +46,18 @@ class DeviceHolder {
 
     private opening: Promise<DeviceSession | null> | null = null;
 
-    /** Open the host's device session, at most once per page. Safe to call from several components' `onMount`. */
+    /** Open the device session, at most once per page. Safe to call from several components' `onMount`. */
     open(): Promise<DeviceSession | null> {
-        this.opening ??= this.start(platform.device);
+        this.opening ??= this.start();
         return this.opening;
     }
 
-    private async start(openDevice: (() => Promise<DeviceSession>) | null): Promise<DeviceSession | null> {
-        // Null on a tier without USB at all. The UI never reaches here in that case — `<Gated>` has
-        // already replaced the control — so this is a guard, not a branch anyone renders.
-        if (!openDevice) return null;
+    private async start(): Promise<DeviceSession | null> {
         try {
-            const session = await openDevice();
+            // Dynamic, so the transport, the protocol codecs and the client stay in their own chunk:
+            // a visitor who only downloads a map never loads the device code.
+            const { openDeviceSession } = await import("../usb/session.svelte");
+            const session = await openDeviceSession();
             this.session = session;
             return session;
         } catch (cause) {

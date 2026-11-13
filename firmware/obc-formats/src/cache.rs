@@ -215,10 +215,9 @@ fn rrip_victim(slots: &mut [IndexBlock]) -> usize {
 /// index. Input is `(is_empty, stamp)` per slot in slot order, where `stamp` is whatever monotonic
 /// recency counter the caller writes on access.
 ///
-/// The LRU counterpart of [`rrip_victim`], shared because it was the one eviction rule written
-/// twice. A rule, not a cache: both callers keep their own slots, keys, payloads and I/O. An empty
-/// iterator answers `0`, an out-of-range index the caller must not dereference; both embedding
-/// caches have `SLOTS >= 1`.
+/// The LRU counterpart of [`rrip_victim`]. A rule, not a cache: both callers keep their own slots,
+/// keys, payloads and I/O. An empty iterator answers `0`, an out-of-range index the caller must
+/// not dereference; both embedding caches have `SLOTS >= 1`.
 pub fn lru_victim<S: Ord>(slots: impl Iterator<Item = (bool, S)>) -> usize {
     let mut victim = 0usize;
     let mut lowest: Option<S> = None;

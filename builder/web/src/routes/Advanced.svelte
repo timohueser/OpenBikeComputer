@@ -76,9 +76,8 @@
         // that happens: there is nothing to reset to without a config.
         if (!preset || !isBuildable(preset)) return;
         // The explicit re-copy the envelope's semantics are built around: a preset never reaches a
-        // working config except by someone asking for it. Asked through the app's own dialog,
-        // because the browser's `confirm()` answers "no" on its own in the desktop webview — which
-        // made this exact button a no-op there (see lib/ui/confirm.svelte.ts).
+        // working config except by someone asking for it, through the app's own dialog
+        // (lib/ui/confirm.svelte.ts).
         const ok = await confirmAction({
             title: `Re-apply “${preset.name}” (v${preset.version})?`,
             body: "Your edits to this style are discarded and the preset is copied in again.",
