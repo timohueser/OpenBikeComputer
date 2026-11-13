@@ -171,8 +171,9 @@ pub struct CulvertMouth {
     /// The unit direction of the water into the zone, and of the zone's outline there (x east, y south).
     pub into: [f64; 2],
     pub edge: [f64; 2],
-    /// The water's half-width, metres: at most half of `culvert_width_m` at an untagged crossing and a ford (the
-    /// classifier's rule), at most `HALF_MAX_M` at a mapped culvert and a tunnel's start, which carry any water.
+    /// The water's half-width, metres: at most half of `culvert_width_m` at an untagged crossing, a road's or a
+    /// railway's ford included (the classifier's rule), at most `HALF_MAX_M` at a mapped culvert and a tunnel's
+    /// start, which carry any water.
     pub half_m: f64,
 }
 
