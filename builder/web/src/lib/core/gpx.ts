@@ -29,14 +29,18 @@ const escape = (text: string) => text.replace(/[&<>"']/g, c => ENTITIES[c]);
 const place = ({ lat, lon }: LatLon) => `lat="${(lat / 1e6).toFixed(6)}" lon="${(lon / 1e6).toFixed(6)}"`;
 const text = (tag: string, value: string | undefined) => value ? `<${tag}>${escape(value)}</${tag}>` : "";
 
-/** A GPX 1.1 file with one track and a `wpt` for each waypoint; a waypoint's note is its `desc`. */
+const point = (p: GpxPoint, i: number) => `${i && p.segmentStart ? "</trkseg><trkseg>\n" : ""}<trkpt ${place(p)}>`
+    + `${p.ele === undefined ? "" : `<ele>${p.ele}</ele>`}${p.time === undefined ? "" : `<time>${new Date(p.time * 1000).toISOString()}</time>`}</trkpt>`;
+
+/** A GPX 1.1 file with one track and a `wpt` for each waypoint; a waypoint's note is its `desc`. A point with
+ * `segmentStart` after the first starts a new `trkseg`. */
 export function writeGpx(route: GpxImport): string {
     return [
         '<?xml version="1.0" encoding="UTF-8"?>',
         '<gpx version="1.1" creator="OpenBikeComputer" xmlns="http://www.topografix.com/GPX/1/1">',
         ...route.waypoints.map(w => `<wpt ${place(w)}>${text("name", w.name)}${text("desc", w.note)}</wpt>`),
         `<trk>${text("name", route.name)}<trkseg>`,
-        ...route.points.map(p => `<trkpt ${place(p)}>${p.ele === undefined ? "" : `<ele>${p.ele}</ele>`}</trkpt>`),
+        ...route.points.map(point),
         "</trkseg></trk>",
         "</gpx>",
         "",

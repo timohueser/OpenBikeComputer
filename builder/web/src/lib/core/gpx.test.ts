@@ -10,6 +10,16 @@ describe("writeGpx", () => {
         };
         expect(readGpx(writeGpx(route), "fallback")).toEqual(route);
     });
+
+    it("keeps the times and the segments of a ride", () => {
+        const ride: GpxImport = {
+            name: "Ride",
+            points: [{ lat: 46_900_000, lon: 8_400_000, ele: 1000, time: 1_792_828_800, segmentStart: true }, { lat: 46_901_000, lon: 8_400_000, time: 1_792_828_801.5 },
+                { lat: 46_902_000, lon: 8_400_000, time: 1_792_829_400, segmentStart: true }],
+            waypoints: [],
+        };
+        expect(readGpx(writeGpx(ride), "fallback")).toEqual(ride);
+    });
 });
 
 const HEADER = '<?xml version="1.0" encoding="UTF-8"?><gpx version="1.1" xmlns="http://www.topografix.com/GPX/1/1">';

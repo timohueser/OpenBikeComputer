@@ -1,33 +1,21 @@
 /** Turns a ride object of the device into its samples and its library record. */
+import type { FitSample } from '../core/fit';
 import { dateName, rideKeyAt } from '../library/import';
 import type { Bike, RideRecord } from '../library/records';
-import { rideSummary, type RideSample } from '../library/summary';
+import { rideSummary } from '../library/summary';
 import type { RideObject } from '../usb/objects';
-
-/** A sample of a device ride, with the sensor values; null where the sensor gave none. */
-export interface DeviceSample extends RideSample {
-    hrBpm: number | null;
-    cadenceRpm: number | null;
-    powerW: number | null;
-}
 
 /** The bike types of the device, by their number in the ride footer. */
 const deviceBikes: Bike[] = ['road', 'gravel', 'mtb', 'touring'];
 
-/** The samples of a ride object. The device and `RideSample` both store positions in microdegrees (`specs/ble-interface.md`
- * §7.2), so the positions copy through. The time of a sample is the start time plus its milliseconds after the first
- * sample, modulo 2³² because the clock of the device wraps there. */
-export function deviceSamples(ride: RideObject): DeviceSample[] {
+/** The samples of a ride object, with no key for a value that the sensor did not give. The device and `FitSample` both
+ * store positions in microdegrees (`specs/ble-interface.md` §7.2), so the positions copy through. The time of a sample is
+ * the start time plus its milliseconds after the first sample, modulo 2³² because the clock of the device wraps there. */
+export function deviceSamples(ride: RideObject): FitSample[] {
     const first = ride.points[0]?.tMs ?? 0;
-    return ride.points.map(point => ({
-        timeS: ride.startTime + ((point.tMs - first) >>> 0) / 1000,
-        lat: point.latMicrodegrees,
-        lon: point.lonMicrodegrees,
-        elevationM: point.elevationM,
-        segmentStart: point.segmentStart,
-        hrBpm: point.hrBpm,
-        cadenceRpm: point.cadenceRpm,
-        powerW: point.powerW,
+    return ride.points.map(({ tMs, latMicrodegrees, lonMicrodegrees, elevationM, segmentStart, hrBpm, cadenceRpm, powerW }) => ({
+        timeS: ride.startTime + ((tMs - first) >>> 0) / 1000, lat: latMicrodegrees, lon: lonMicrodegrees, elevationM, segmentStart,
+        ...hrBpm !== null && { hrBpm }, ...cadenceRpm !== null && { cadenceRpm }, ...powerW !== null && { powerW },
     }));
 }
 
