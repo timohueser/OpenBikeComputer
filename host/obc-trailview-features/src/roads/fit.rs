@@ -9,7 +9,7 @@ use faer::sparse::linalg::cholesky::{factorize_symbolic_cholesky, SymmetricOrder
 use faer::sparse::{SparseColMatRef, SymbolicSparseColMatRef};
 use faer::{Conj, MatMut, Par, Side};
 
-use super::{BISECTIONS, REFINE_M, REFINE_STEPS, ROUNDS, SETTLE_M};
+use super::{ARMIJO, BISECTIONS, REFINE_M, REFINE_STEPS, ROUNDS, SETTLE_M};
 
 /// Sparse rows: per row, its (variable, coefficient) entries.
 #[derive(Clone)]
@@ -40,15 +40,6 @@ impl Rows {
 
     pub fn row(&self, i: usize) -> impl Iterator<Item = (usize, f64)> + '_ {
         (self.ptr[i]..self.ptr[i + 1]).map(|e| (self.col[e], self.val[e]))
-    }
-
-    /// The rows that `keep` marks.
-    pub fn select(&self, keep: &[bool]) -> Rows {
-        let mut out = Rows::default();
-        for i in (0..self.len()).filter(|&i| keep[i]) {
-            out.push(self.row(i));
-        }
-        out
     }
 
     /// A · z.
@@ -237,7 +228,8 @@ impl Holders {
 
     /// The rows that hold a variable of `region`, each once, in order.
     fn of(&self, region: &[usize]) -> Vec<(u32, u32)> {
-        let mut out: Vec<(u32, u32)> = region.iter().flat_map(|&v| &self.rows[self.ptr[v]..self.ptr[v + 1]]).copied().collect();
+        let mut out: Vec<(u32, u32)> =
+            region.iter().flat_map(|&v| &self.rows[self.ptr[v]..self.ptr[v + 1]]).copied().collect();
         out.sort_unstable();
         out.dedup();
         out
@@ -295,7 +287,6 @@ pub(crate) fn settle(
             if region.is_empty() {
                 break;
             }
-            let started = std::time::Instant::now();
             let held = holders.of(&region);
             let lo = (limits.lo)(z);
             // The limits that hold a variable of the region, their values, and those past their band.
@@ -306,22 +297,21 @@ pub(crate) fn settle(
             let chosen: Vec<usize> = (0..near.len()).filter(|&j| excess(near[j], x[j], &lo) > 0.0).collect();
             let mut rows = Rows::default();
             chosen.iter().for_each(|&j| rows.push(limits.rows.row(near[j])));
-            let bound: Vec<f64> =
-                chosen.iter().map(|&j| if x[j] > limits.hi[near[j]] { limits.hi[near[j]] } else { lo[near[j]] }).collect();
+            let bound: Vec<f64> = chosen
+                .iter()
+                .map(|&j| if x[j] > limits.hi[near[j]] { limits.hi[near[j]] } else { lo[near[j]] })
+                .collect();
             let w: Vec<f64> = chosen.iter().map(|&j| scale * limits.cost[near[j]]).collect();
             let mut model: Vec<Term> = terms.iter().map(|t| Term { block: t.block, w: t.w, c: t.c }).collect();
             model.push(Term { block: Block::Rows(&rows), w: &w, c: &bound });
-            let candidates = held.iter().copied().filter(|r| r.0 != last).chain((0..rows.len()).map(|j| (last, j as u32)));
+            let candidates =
+                held.iter().copied().filter(|r| r.0 != last).chain((0..rows.len()).map(|j| (last, j as u32)));
             let (next, converged) = fit_rows(&model, n, Some((&*z, &region[..])), candidates);
             unconverged += usize::from(!converged);
-            let rows_len = rows.len();
             let d: Vec<f64> = next.iter().zip(z.iter()).map(|(next, z)| next - z).collect();
             let (piece, alphas) = steps(terms, limits, scale, (z, &d), (&near, &x, &lo), (&held, &region));
-            let mut most: f64 = 0.0;
             for &v in &region {
-                let step = alphas[piece[v]] * d[v];
-                z[v] += step;
-                most = most.max(step.abs());
+                z[v] += alphas[piece[v]] * d[v];
             }
             rounds += 1;
             // The limits that changed side, by more than a tenth of SETTLE_M in or out, and the pieces that
@@ -329,7 +319,8 @@ pub(crate) fn settle(
             let lo_now = (limits.lo)(z);
             let mut changed: Vec<usize> = (0..near.len())
                 .filter(|&j| {
-                    let (was, is) = (excess(near[j], x[j], &lo), excess(near[j], blocks[last as usize].at(near[j], z), &lo_now));
+                    let (was, is) =
+                        (excess(near[j], x[j], &lo), excess(near[j], blocks[last as usize].at(near[j], z), &lo_now));
                     (was > 0.0) != (is > 0.0) && (is - was).abs() > SETTLE_M / 10.0
                 })
                 .map(|j| near[j])
@@ -340,13 +331,11 @@ pub(crate) fn settle(
             }));
             let mut sources: Vec<usize> = changed.iter().flat_map(|&i| limits.rows.row(i).map(|(v, _)| v)).collect();
             // A piece where the model's step does not fall at all is settled within the solve's precision.
-            sources.extend(region.iter().filter(|&&v| alphas[piece[v]] > 0.0 && ((1.0 - alphas[piece[v]]) * d[v]).abs() >= SETTLE_M));
-            if std::env::var_os("OBC_X_TRACE").is_some() {
-                let short = alphas.iter().filter(|&&a| a < 1.0).count();
-                eprintln!("NEWTON n={n} scale={scale:e} region={} pieces={} short={short} moved={most:.4} active={} sources={} ms={}", region.len(), alphas.len(), rows_len, sources.len(), started.elapsed().as_millis());
-            }
-            // A scale but the last ends where its regions settle; the last ends with a round of all that
-            // changes no side and moves no height by SETTLE_M.
+            sources.extend(
+                region
+                    .iter()
+                    .filter(|&&v| alphas[piece[v]] > 0.0 && ((1.0 - alphas[piece[v]]) * d[v]).abs() >= SETTLE_M),
+            );
             // Where the regions settle, the rest of the network may not have: the next region is around the
             // heights that a step would still move.
             if sources.is_empty() {
@@ -383,12 +372,15 @@ fn unsettled(terms: &[Term], limits: &Limits, z: &[f64], scale: f64, moved: &[us
             });
         }
     }
-    let far = |v: usize| curve[v] > 0.0 && slope[v].abs() >= SETTLE_M * curve[v] && slope[v].powi(2) >= SETTLE_M.powi(2) * curve[v];
+    let far = |v: usize| {
+        curve[v] > 0.0 && slope[v].abs() >= SETTLE_M * curve[v] && slope[v].powi(2) >= SETTLE_M.powi(2) * curve[v]
+    };
     moved.iter().copied().filter(|&v| far(v)).collect()
 }
 
 /// The pieces of `region` that the rows `held` tie, per variable, and per piece how far along z + α·d,
-/// 0 ≤ α ≤ 1, its cost falls: to where its slope turns positive. No row ties two pieces, so each steps alone.
+/// 0 ≤ α ≤ 1, its cost falls: to where its slope turns positive, or all the way where that falls enough. No row
+/// ties two pieces, so each steps alone.
 /// Per piece, the slope is linear in α for the least squares and grows with α for the limits `near`.
 fn steps(
     terms: &[Term],
@@ -471,7 +463,9 @@ fn steps(
             if -slope(0.0) < SETTLE_M * SETTLE_M {
                 return 0.0;
             }
-            if slope(1.0) <= 0.0 || std::env::var_os("OBC_X_ARMIJO").is_some() && fall <= 1e-4 * slope(0.0) {
+            // A full step that falls by ARMIJO of its slope is taken whole: on the box it gives the same heights
+            // as the exact search in fewer rounds.
+            if slope(1.0) <= 0.0 || fall <= ARMIJO * slope(0.0) {
                 return 1.0;
             }
             let (mut low, mut high) = (0.0, 1.0);
@@ -482,11 +476,6 @@ fn steps(
                 } else {
                     low = mid;
                 }
-            }
-            if std::env::var_os("OBC_X_TRACE3").is_some() {
-                let mut top: Vec<(f64, usize, f64, f64)> = acting[k].iter().map(|&j| (limits.cost[near[j]] * beyond(j, low).abs() * q[j].abs(), near[j], beyond(j, 0.0), beyond(j, low))).collect();
-                top.sort_by(|a, b| b.0.total_cmp(&a.0));
-                eprintln!("  SHORT alpha={low:.4} s0={:.3e} s1={:.3e} top={:?}", s0[k], s1[k], &top[..top.len().min(4)]);
             }
             low
         })

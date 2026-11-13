@@ -95,7 +95,8 @@ const LEVEL: f64 = 1e-3;
 /// The cost of a limit per square metre past its band: GROUND for the ground of a sample, LIMIT for a
 /// grade, a deck, a cover and a pass, and HARD for a sample HARD_M off the terrain. So the ground gives way
 /// to the other limits, but not past HARD_M: the census gate (`gate::GATE_M`) less room for the curve
-/// between the samples.
+/// between the samples. A factor of 100 between the tiers lets each win over the one below and keeps the
+/// Newton rounds few; stiffer factors need many more rounds.
 const GROUND: f64 = 1e4;
 const LIMIT: f64 = 1e6;
 const HARD: f64 = 1e8;
@@ -112,8 +113,10 @@ const REFINE_STEPS: usize = 30;
 const ROUNDS: usize = 40;
 const SETTLE_M: f64 = 1e-2;
 const REGION_M: f64 = 300.0;
-/// Halvings of the step in the line search.
+/// Halvings of the step in the line search, and the share of its slope by which a full step must cut the
+/// cost to be taken whole (the usual Armijo value).
 const BISECTIONS: usize = 40;
+const ARMIJO: f64 = 1e-4;
 /// The cell of the grid of the crossings in world units, about 100 m.
 const GRID_UNITS: f64 = 2.5e-6;
 
@@ -684,24 +687,22 @@ pub fn solve(
     // way by no more than its most. The ramps act once the rest is solved: then they bend only their sides.
     let cost: Vec<f64> = (0..lo.len())
         .map(|i| match i {
-            _ if i < limited.len() || i >= passes => dev("OBC_X_LIMIT", LIMIT),
-            _ if i < hard => dev("OBC_X_GROUND", GROUND),
-            _ if i < decks => dev("OBC_X_HARD", HARD),
-            _ if i < covers => dev("OBC_X_LIMIT", LIMIT) * f64::from(u8::from(!deck_way[i - decks].is_some_and(|w| culvert[w]))),
-            _ => dev("OBC_X_LIMIT", LIMIT) * f64::from(u8::from(holds[i - covers])),
+            _ if i < limited.len() || i >= passes => LIMIT,
+            _ if i < hard => GROUND,
+            _ if i < decks => HARD,
+            _ if i < covers => LIMIT * f64::from(u8::from(!deck_way[i - decks].is_some_and(|w| culvert[w]))),
+            _ => LIMIT * f64::from(u8::from(holds[i - covers])),
         })
         .collect();
     let rest: Vec<f64> = (0..lo.len()).map(|i| if is_ramp[i] { 0.0 } else { cost[i] }).collect();
     let terms = terms(&fixed, samples, (&w, &h));
     let all: Vec<usize> = (0..n).collect();
-    let scales: Vec<f64> = std::env::var("OBC_X_SCALES").ok().map(|v| v.split(',').map(|x| x.parse().unwrap()).collect()).unwrap_or(SCALES.to_vec());
     let limit = |cost| Limits { rows: &limits, lo: &lows, hi: &hi, cost };
     // Nothing anchors a bridge or a tunnel but its ends: a region takes it whole.
     let edges: Vec<(usize, usize, f64)> =
         (0..a.len()).map(|s| (a[s], b[s], if free[s] { 1e-6 } else { length[s].max(0.01) })).collect();
     let graph = (&Graph::new(n, &edges), REGION_M);
-    if std::env::var_os("OBC_X_TRACE3").is_some() { eprintln!("RANGES grades<{} ground<{hard} hard<{decks} decks<{covers} covers<{passes} passes<{}", limited.len(), lo.len()); }
-    let (mut rounds, more) = settle(&terms, &limit(&rest), &mut z, &all, graph, &scales);
+    let (mut rounds, more) = settle(&terms, &limit(&rest), &mut z, &all, graph, &SCALES);
     unconverged += more;
     // The ramps, with every vertex fixed but those of the ramps' sides past their approach and before any
     // junction: a ramp bends its side and never moves the road it leaves.
@@ -813,15 +814,14 @@ pub fn solve(
 }
 
 /// The terms of the least squares that every solve holds: the fixed rows and the terrain samples of weights w.
-fn terms<'a>(fixed: &'a [(Rows, Vec<f64>, Vec<f64>)], samples: Block<'a>, (w, h): (&'a [f64], &'a [f64])) -> Vec<Term<'a>> {
+fn terms<'a>(
+    fixed: &'a [(Rows, Vec<f64>, Vec<f64>)],
+    samples: Block<'a>,
+    (w, h): (&'a [f64], &'a [f64]),
+) -> Vec<Term<'a>> {
     let mut terms: Vec<Term> = fixed.iter().map(|(rows, w, c)| Term { block: Block::Rows(rows), w, c }).collect();
     terms.push(Term { block: samples, w, c: h });
     terms
-}
-
-/// DEV ONLY: a constant overridden by an environment variable.
-fn dev(name: &str, value: f64) -> f64 {
-    std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(value)
 }
 
 /// Rows of their weights against 0.
