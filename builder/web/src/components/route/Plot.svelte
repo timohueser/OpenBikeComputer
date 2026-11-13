@@ -9,7 +9,7 @@
      * line has the colour of the steepness band of each stretch, as the profile of the Route page. `climbs` are stretches
      * of the axis that the area fills darker, as that profile fills its climbs. `mark` is a place on the axis from 0 to
      * 1: a dot on the line, and its value beside the pointer. */
-    let { columns, low, high, color, area = false, lengthM, climbs = [], lit, mark, format, width = $bindable(0) }: {
+    let { columns, low, high, color, area = false, lengthM, climbs = [], lit, hover, mark, format, width = $bindable(0) }: {
         columns: (number | null)[];
         low: number;
         high: number;
@@ -19,6 +19,8 @@
         climbs?: { from: number; to: number }[];
         /** The index of the climb that is darker. */
         lit?: number;
+        /** The index of the climb under the pointer. */
+        hover?: number;
         mark?: number;
         format: (value: number) => string;
         width?: number;
@@ -40,7 +42,7 @@
     <svg viewBox="0 0 1000 105" preserveAspectRatio="none" aria-hidden="true">
         {#if area}
             <path class="area" d={paths.area} />
-            <ClimbFills area={paths.area} climbs={climbs.map(({ from, to }, index) => ({ a: from, b: to, index }))} {lit} />
+            <ClimbFills area={paths.area} climbs={climbs.map(({ from, to }, index) => ({ a: from, b: to, index }))} {lit} {hover} />
         {/if}
         {#each bands as path, band (band)}
             {#if path}<path class="line grade" d={path} style:stroke={appearance.dark ? gradeBands[band].dark : gradeBands[band].color} />{/if}

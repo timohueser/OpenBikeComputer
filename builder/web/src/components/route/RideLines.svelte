@@ -50,6 +50,7 @@
 
     let on = $state<Record<Key, boolean>>({ elevation: true, speed: true, hr: true, power: true, cadence: false });
     let width = $state(0), innerHeight = $state(900), start = $state('Start');
+    let over = $state<{ x: number; row?: number | null } | null>(null);
 
     const axis = $derived(distanceAxis(samples));
     const values = $derived<Record<Key, (number | undefined)[]>>({
@@ -87,9 +88,15 @@
         scale: ranges[key] && [series[key].format(ranges[key].high), series[key].format(ranges[key].low)] as [string, string],
     })));
 
+    /** The climb at a place of the elevation row, or of the keys, which have no row. */
+    const climbAt = (x: number, row?: number | null) =>
+        row === null || shown[row ?? -1] === 'elevation' ? stretches.findIndex(climb => x >= climb.from && x <= climb.to) : -1;
+    /** The climb that a click selects: it is a little darker under the pointer. */
+    const hovered = $derived(over ? climbAt(over.x, over.row) : -1);
+
     /** A click on a climb in the elevation row, or Enter, selects the climb; another click clears the part. */
     function click(x: number, row?: number | null) {
-        const index = row === null || shown[row ?? -1] === 'elevation' ? stretches.findIndex(climb => x >= climb.from && x <= climb.to) : -1;
+        const index = climbAt(x, row);
         onpart(index >= 0 ? [climbs[index].first, climbs[index].last] : null);
     }
 
@@ -107,7 +114,7 @@
 {#snippet plot(key: Key)}
     <Plot columns={columns[key] ?? []} low={ranges[key]?.low ?? 0} high={ranges[key]?.high ?? 1} color={series[key].color} area={key === 'elevation'}
         lengthM={key === 'elevation' && ELEVATION_GRADES ? axis.lengthM : undefined} climbs={key === 'elevation' ? stretches : []}
-        lit={chosen >= 0 ? chosen : undefined} mark={pointer} format={series[key].format} bind:width />
+        lit={chosen >= 0 ? chosen : undefined} hover={key === 'elevation' && hovered >= 0 ? hovered : undefined} mark={pointer} format={series[key].format} bind:width />
 {/snippet}
 {#snippet elevationRow()}{@render plot('elevation')}{/snippet}
 {#snippet speedRow()}{@render plot('speed')}{/snippet}
@@ -125,10 +132,10 @@
     </div>
 {/snippet}
 
-<div class="lines">
+<div class="lines" style:cursor={hovered >= 0 ? 'pointer' : undefined}>
     <Card>
         <Lanes label="Lines of the ride" {rows} {ticks} {header} {pointer} {chip} part={shownPart} {partText} onclick={click}
-            onpointer={x => onpoint(x === null ? null : shares[sampleAt(axis.xs, x)])}
+            onpointer={(x, row) => { over = x === null ? null : { x, row }; onpoint(x === null ? null : shares[sampleAt(axis.xs, x)]); }}
             onpart={next => onpart(next && [sampleAt(axis.xs, next[0]), sampleAt(axis.xs, next[1])])} />
     </Card>
 </div>
