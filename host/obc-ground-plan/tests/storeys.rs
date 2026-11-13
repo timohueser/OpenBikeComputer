@@ -16,7 +16,7 @@ use obc_ground_plan::faces::heights::height_at;
 use obc_ground_plan::faces::records::find;
 use obc_ground_plan::faces::{window, Rules};
 use obc_ground_plan::frame::{metres_per_unit, CellKey, CELL_UNITS};
-use obc_ground_plan::graph::{EndKind, Family, Level, State, Station, WayGraph};
+use obc_ground_plan::graph::{Family, Level, Station, WayGraph};
 use obc_ground_plan::mesh::shell::{border, closure, mesh_storeys, on_paved, StoreyMesh};
 use obc_ground_plan::tile::TileCache;
 
@@ -27,51 +27,48 @@ const ON_END_M: f64 = 0.5;
 /// And at most this far from the way there (metres): half the widest deck stroke.
 const END_REACH_M: f64 = 20.0;
 
-/// The open pieces off the cell lines past which nothing of storey 0 goes on. An open piece lies on an A line or
-/// across a deck way's own end, and behind it storey 0 goes on: a ground run of the way, or a ground way that meets
-/// the way there.
-fn open_without_ground(key: CellKey, g: &WayGraph, open: &[[[i32; 2]; 2]]) -> Vec<String> {
+/// The open pieces off the cell lines past which nothing goes on. An open piece lies across a deck way's end (the
+/// graph of the storeys splits each bridge way at its end lines, so its stub is a way on the ground that meets it),
+/// and there a way on the ground or a deck way on another storey meets the end.
+fn open_without_ground(key: CellKey, g: &WayGraph, decks: &[i8], open: &[[[i32; 2]; 2]]) -> Vec<String> {
     let c = CELL_UNITS as i32;
     let mpu = metres_per_unit(key.origin().y + CELL_UNITS / 2);
     let st = |s: &Station| (s.span, s.u);
-    let ground = |w: u32, at: &Station| {
+    let deck = |w: u32| g.ways[w as usize].level == Level::Deck && g.ways[w as usize].family != Family::Water;
+    let goes_on = |w: u32, at: &Station| {
         let arms = g.junctions.iter().map(|j| &j.arms[..]).chain(g.joints.iter().map(|j| &j.arms[..]));
-        (g.levels.runs.iter())
-            .any(|r| r.way == w && r.state == State::Open && (st(&r.from) == st(at) || st(&r.to) == st(at)))
-            || arms.into_iter().any(|arms| {
-                arms.iter().any(|a| a.way == w && st(&a.at) == st(at))
-                    && arms.iter().any(|a| a.level == Level::Ground && g.ways[a.way as usize].family != Family::Water)
-            })
+        arms.into_iter().any(|arms| {
+            arms.iter().any(|a| a.way == w && st(&a.at) == st(at))
+                && arms.iter().any(|a| {
+                    let o = &g.ways[a.way as usize];
+                    a.way != w
+                        && o.family != Family::Water
+                        && (o.level == Level::Ground || deck(a.way) && decks[a.way as usize] != decks[w as usize])
+                })
+        })
     };
     let unit = |a: [f64; 2], b: [f64; 2]| {
         let l = libm::hypot(b[0] - a[0], b[1] - a[1]);
         [(b[0] - a[0]) / l, (b[1] - a[1]) / l]
     };
-    // Each end: its centre, the way's direction there, the way and its station.
+    // Each deck way's end: its point, the way's direction there, whether something goes on past it.
     let mut ends = Vec::new();
-    for l in g.levels.end_lines.iter().filter(|l| l.kind == EndKind::A) {
-        let [a, b] = l.ends.map(|p| p.map(f64::from));
-        let across = unit(a, b);
-        ends.push(([(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0], [-across[1], across[0]], l.way, l.at));
-    }
-    for w in g.ways.iter().filter(|w| w.level == Level::Deck && w.family != Family::Water && w.samples.len() >= 2) {
+    for w in g.ways.iter().filter(|w| deck(w.id) && w.samples.len() >= 2) {
         let p = |k: u32| g.samples[k as usize].pos.map(f64::from);
         let (s, e) = (w.samples.start, w.samples.end - 1);
-        ends.push((p(s), unit(p(s), p(s + 1)), w.id, w.from));
-        ends.push((p(e), unit(p(e - 1), p(e)), w.id, w.to));
+        ends.push((p(s), unit(p(s), p(s + 1)), goes_on(w.id, &w.from)));
+        ends.push((p(e), unit(p(e - 1), p(e)), goes_on(w.id, &w.to)));
     }
     let on_cell_line = |[a, b]: &[[i32; 2]; 2]| (0..2).any(|k| a[k] == b[k] && (a[k] == 0 || a[k] == c));
     (open.iter().filter(|p| !on_cell_line(p)))
         .filter(|[a, b]| {
             let m = [f64::from(a[0] + b[0]) / 2.0, f64::from(a[1] + b[1]) / 2.0];
-            !ends.iter().any(|(o, d, w, at)| {
+            !ends.iter().any(|(o, d, on)| {
                 let v = [m[0] - o[0], m[1] - o[1]];
-                (v[0] * d[0] + v[1] * d[1]).abs() * mpu <= ON_END_M
-                    && libm::hypot(v[0], v[1]) * mpu <= END_REACH_M
-                    && ground(*w, at)
+                (v[0] * d[0] + v[1] * d[1]).abs() * mpu <= ON_END_M && libm::hypot(v[0], v[1]) * mpu <= END_REACH_M && *on
             })
         })
-        .map(|p| format!("{key:?}: the open piece {p:?} has nothing of storey 0 behind it"))
+        .map(|p| format!("{key:?}: the open piece {p:?} has nothing behind it"))
         .collect()
 }
 
@@ -114,7 +111,9 @@ fn the_storeys_close_stand_on_their_sheets_meet_their_neighbours_and_leave_store
         assert_eq!(mesh.stats.unlabelled, 0, "{key:?}: a sheet face has no label");
         faults.extend(closure(&mesh));
         faults.extend(on_paved(&mesh, &with.storeys, &with.records));
-        faults.extend(open_without_ground(key, &with.graph, &mesh.open));
+        let storeys: Vec<i8> =
+            (0..with.graph.ways.len() as u32).map(|w| with.storeys.way(w).map_or(0, |d| d.storey)).collect();
+        faults.extend(open_without_ground(key, &with.graph, &storeys, &mesh.open));
         built.insert(key, (with, mesh));
     }
     for (&key, (b, m)) in &built {

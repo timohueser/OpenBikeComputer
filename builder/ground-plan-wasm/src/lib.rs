@@ -229,10 +229,10 @@ impl CellPlan {
         }
     }
 
-    /// The milliseconds of the levels of the way graph and of the storeys' faces and records.
+    /// The milliseconds of the storeys' faces and records.
     #[cfg(feature = "storeys")]
-    pub fn storey_times(&self) -> Vec<f64> {
-        self.built.storey_times.to_vec()
+    pub fn storey_time(&self) -> f64 {
+        self.built.storey_times
     }
 
     /// The far block of the records' lines (`records::far` of obc-ground-plan), or why the crate

@@ -1,15 +1,16 @@
 //! The levels of the way graph as the feature tiles carry them: the bake runs `levels` on each cell and writes the
-//! tags of each way from what the cells decide (`found`, `merge`); a cell reads its runs and end lines back (`read`).
+//! tags of each way from what the cells decide (`found`, `merge`); a cell's graph splits its ways at the end lines that
+//! the tags give and takes the level of each stretch's state (`split`).
 //!
 //! A place on a way is its metres along its stroke (`Sample::along_m`): the same in every cell, as the spans are.
 
 use std::collections::BTreeMap;
 
-use super::curve::{point, s_at, u_at};
+use super::curve::{insert, point, s_at, u_at};
 use super::parts::{classify, Rule};
-use super::points::{exact, key, norm};
-use super::{CrossingKind, EndKind, EndLine, Family, Level, Run, State, Station, Step, WayGraph};
-use crate::frame::{metres_per_unit_at, GlobalPoint};
+use super::points::{exact, key, norm, Piece, Plan};
+use super::{CrossingKind, EndKind, EndLine, Family, Level, Part, Run, Sample, State, Station, Step, WayGraph};
+use crate::frame::{metres_per_unit_at, CellKey, GlobalPoint};
 use crate::sections::Sections;
 use crate::tile::Tags;
 use crate::CellInput;
@@ -288,62 +289,60 @@ pub fn end_line(
     EndLine { kind, way: w, at: st, ends: [local(1.0), local(-1.0)] }
 }
 
-/// The runs and end lines of every way whose feature carries `levels` (`WayGraph::levels`, as `levels` gives them).
-pub fn read(g: &mut WayGraph, input: &CellInput, sections: &Sections, edge_band_m: f64) {
-    let mut levels = super::Levels::default();
-    for w in 0..g.ways.len() as u32 {
-        let way = &g.ways[w as usize];
-        let tags = &input.features[g.parts[way.part as usize].feature.0 as usize].tags;
-        let Some((first, lines)) = tags.get(LEVELS).filter(|_| aligned(g, input, w)).and_then(|t| parse(t)) else {
+/// The pieces of a plan split at the end lines that the tiles carry (`LEVELS`), each with the level of its state: a
+/// DECK stretch on its deck, an OPEN stretch on the ground (a bridge way's stub, or any way of the road solver), a
+/// HIDDEN stretch not at all. A tunnel way keeps its level, and so does a synthetic deck. Each cut is a sample of its
+/// part, so the stretches meet at a joint.
+pub(crate) fn split(cell: CellKey, parts: &[Part], input: &CellInput, samples: &mut [Vec<Sample>], plan: Plan) -> Plan {
+    let mut out = Vec::with_capacity(plan.pieces.len());
+    for piece in &plan.pieces {
+        let part = &parts[piece.part];
+        let f = &input.features[part.feature.0 as usize];
+        let tag = f.tags.get(LEVELS).filter(|_| f.parts.iter().all(|p| p.plan.is_some()));
+        let levels = tag.and_then(|t| parse(t)).filter(|_| !piece.synthetic && part.level != Level::Tunnel);
+        let Some((first, lines)) = levels else {
+            out.push(piece.clone());
             continue;
         };
-        let state_at = |m: f64| lines.iter().take_while(|l| l.0 <= m).last().map_or(first, |l| l.2);
-        let (a0, a1) = (along(g, &way.from), along(g, &way.to));
-        let at = |m: f64| -> Station {
-            if (m - a0).abs() <= SAME_M {
-                return way.from;
-            }
-            if (m - a1).abs() <= SAME_M {
-                return way.to;
-            }
-            let part = &g.parts[way.part as usize];
-            let sign = if part.backward { -1.0 } else { 1.0 };
-            let span = (way.from.span..=way.to.span)
-                .find(|&k| {
-                    let s = sign * (m - part.spans[k as usize].along0_m);
-                    (0.0..=part.spans[k as usize].len_m).contains(&s)
-                })
-                .unwrap_or(way.to.span);
-            let s = sign * (m - part.spans[span as usize].along0_m);
-            norm(part, Station { part: way.part, span, u: u_at(&part.spans[span as usize], s) })
+        let sign = if part.backward { -1.0 } else { 1.0 };
+        let along = |st: &Station| {
+            let span = &part.spans[st.span as usize];
+            span.along0_m + sign * s_at(span, st.u)
         };
-        let (lo, hi) = (a0.min(a1) - SAME_M, a0.max(a1) + SAME_M);
-        // The lines in rising metres, so in the way's order where its metres rise along it.
-        let mut here: Vec<(Station, EndKind, f64)> =
-            lines.iter().filter(|l| (lo..=hi).contains(&l.0)).map(|l| (at(l.0), l.1, l.0)).collect();
+        let state_at = |m: f64| lines.iter().take_while(|l| l.0 <= m).last().map_or(first, |l| l.2);
+        let (a0, a1) = (along(&piece.from), along(&piece.to));
+        let (lo, hi) = (a0.min(a1) + SAME_M, a0.max(a1) - SAME_M);
+        // The station at metres m along the piece: on the first of its spans whose metres hold m.
+        let at = |m: f64| {
+            let span = (piece.from.span..=piece.to.span)
+                .find(|&k| (0.0..=part.spans[k as usize].len_m).contains(&(sign * (m - part.spans[k as usize].along0_m))))
+                .unwrap_or(piece.to.span);
+            let s = sign * (m - part.spans[span as usize].along0_m);
+            norm(part, Station { part: piece.part as u32, span, u: u_at(&part.spans[span as usize], s) })
+        };
+        let mut cuts: Vec<(Station, f64)> = vec![(piece.from, a0)];
+        let inner = lines.iter().map(|l| l.0).filter(|&m| (lo..=hi).contains(&m));
+        let mut inner: Vec<(Station, f64)> =
+            inner.map(|m| (insert(part, &mut samples[piece.part], at(m), cell), m)).collect();
         if a1 < a0 {
-            here.reverse();
+            inner.reverse();
         }
-        // The runs: split at each line inside the way, each the state at its middle, equal neighbours joined.
-        let mut cuts: Vec<(Station, f64)> = vec![(way.from, a0)];
-        cuts.extend(here.iter().filter(|h| key(&h.0) > key(&way.from) && key(&h.0) < key(&way.to)).map(|h| (h.0, h.2)));
-        cuts.push((way.to, a1));
-        let mut runs: Vec<Run> = Vec::new();
+        cuts.extend(inner.into_iter().filter(|c| key(&c.0) > key(&piece.from) && key(&c.0) < key(&piece.to)));
+        cuts.push((piece.to, a1));
         for c in cuts.windows(2) {
-            let state = state_at((c[0].1 + c[1].1) / 2.0);
-            match runs.last_mut() {
-                Some(r) if r.state == state => r.to = c[1].0,
-                _ => runs.push(Run { way: w, from: c[0].0, to: c[1].0, state }),
+            let level = match state_at((c[0].1 + c[1].1) / 2.0) {
+                State::Deck => Level::Deck,
+                State::Open => Level::Ground,
+                State::Bore => part.level,
+                State::Hidden => continue,
+            };
+            match out.last_mut() {
+                Some(p) if p.part == piece.part && p.to == c[0].0 && p.level == level && p.link == piece.link => p.to = c[1].0,
+                _ => out.push(Piece { from: c[0].0, to: c[1].0, level, ..piece.clone() }),
             }
         }
-        for (st, kind, m) in here {
-            // The structure side: the lower of the states about the line, as `levels` gives the band.
-            let structure = state_at(m - SAME_M * 2.0).min(state_at(m + SAME_M * 2.0));
-            levels.end_lines.push(end_line(g, input, sections, edge_band_m, (w, st, kind, structure)));
-        }
-        levels.runs.extend(runs);
     }
-    g.levels = levels;
+    Plan { pieces: out, ..plan }
 }
 
 #[cfg(test)]

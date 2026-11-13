@@ -19,7 +19,8 @@ pub fn storeys(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey
     if !cfg!(feature = "storeys") {
         return Storeys::default();
     }
-    let top = Decks::of(graph, input).storey.iter().copied().max().unwrap_or(0);
+    let decks = Decks::of(graph, input);
+    let top = decks.storey.iter().copied().max().unwrap_or(0);
     let mut out = Storeys::default();
     for k in 1..=top {
         let c = candidates(graph, input, rules, cell, k, LAYERS, true);
@@ -33,7 +34,7 @@ pub fn storeys(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey
         *near = merge(near, &sub.words, k);
         for w in faces.faces.iter().filter_map(|f| f.material) {
             if let Err(k) = out.ways.binary_search_by_key(&w, |x| x.0) {
-                out.ways.insert(k, (w, DeckWay::of(graph, input, rules, w)));
+                out.ways.insert(k, (w, DeckWay::of(graph, input, rules, w, decks.storey[w as usize])));
             }
         }
         out.plans.push(faces);
