@@ -275,6 +275,12 @@ pub fn verdict<A: RoutingData, B: RoutingData>(
                     x.reason, x.cost, y.reason, y.cost
                 ));
             }
+            // The unpacked roads cost what the search found, each side on its own data; other
+            // roads at the same cost are a tie.
+            let (cx, cy) = (old.cost(x, &x.profile), new.cost(y, &y.profile));
+            if !matches!(cx, Ok(Some(c)) if c == x.cost) || !matches!(cy, Ok(Some(c)) if c == y.cost) {
+                return Err(format!("route {k}: its roads cost old {cx:?}, new {cy:?}, not {}", x.cost));
+            }
             continue;
         }
         let position = |p: &Position| (p.road, p.fraction.to_bits());
@@ -373,7 +379,7 @@ fn tile_box(x: i64, y: i64) -> [i32; 4] {
 }
 
 /// `area` grown by the snap window of `REACH_M` at its side nearer to a pole.
-// TODO(#3309): call `install::area_cells` here once #3309 has merged; it grows an area by the same rule.
+// TODO: call `install::area_cells`, which grows an area by the same rule, once it is on this branch.
 fn grown(area: [i32; 4]) -> Result<[i32; 4], String> {
     let pole = if area[1].unsigned_abs() > area[3].unsigned_abs() { area[1] } else { area[3] };
     let window = snap::window(Point { lat: pole, lon: 0, elevation: NO_ELEVATION }, REACH_M)?;
