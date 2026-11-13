@@ -4,7 +4,7 @@ import type { FitSample } from '../core/fit';
 import { metres, movingSteps, rideTotals } from '../library/summary';
 import { cumulative, firstIndex, type Coordinate } from '../planner/geo';
 import { routeSegments } from '../planner/search/segments';
-import { heartRateZones, powerZones, type Zone } from '../settings/zones';
+import { heartRateZones, powerZones, zoneOf, type Zone } from '../settings/zones';
 
 /** The mean and the maximum of one sensor while the ride moves, and with a limit the seconds in each zone. */
 export interface Channel { mean: number; max: number; zones?: { zone: Zone; seconds: number }[] }
@@ -27,7 +27,7 @@ function channel(samples: FitSample[], steps: number[], value: (sample: FitSampl
         sum += v * w;
         weight += w;
         max = Math.max(max, v);
-        if (zones && seconds) seconds[zones.filter(zone => v >= zone.from).length - 1] += w;
+        if (zones && seconds) seconds[zoneOf(zones, v)] += w;
     });
     if (!weight) return undefined;
     return { mean: sum / weight, max, ...zones && seconds && { zones: zones.map((zone, i) => ({ zone, seconds: seconds[i] })) } };

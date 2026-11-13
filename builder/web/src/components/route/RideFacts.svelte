@@ -3,9 +3,9 @@
     import type { RideSummary } from '../../lib/library/records';
     import { duration } from '../../lib/planner/editor';
     import type { Channel, Channels, PartNumbers, RideClimb } from '../../lib/ride/numbers';
-    import { ROUTES } from '../../lib/routes';
     import { formatDistance, formatHeight, formatSpeed } from '../../lib/settings/format';
     import { townOf } from './towns';
+    import ZoneTimes from './ZoneTimes.svelte';
 
     /** The left card of the Ride page: the numbers of the summary, then heart rate, power and cadence, each sensor with
      * the time in its zones under it, and the climbs, which come from the samples. A sensor with no value shows nothing.
@@ -40,20 +40,6 @@
     <tr><th scope="row">{label}</th><td>{selected}</td><td>{whole}</td></tr>
 {/snippet}
 
-{#snippet zones(channel: Channel, unit: string, missing: string)}
-    {#if channel.zones}
-        {@const parts = channel.zones.map(({ zone, seconds }) =>
-            `${zone.name} · ${Number.isFinite(zone.to) ? `${zone.from}–${zone.to}` : `${zone.from}+`} ${unit} · ${hours(seconds)}`)}
-        <div class="bar" role="img" aria-label={parts.join(', ')}>
-            {#each channel.zones as { seconds }, i (i)}
-                <span style:flex-grow={seconds} style:background={`var(--zone-${i + 1})`} title={parts[i]}></span>
-            {/each}
-        </div>
-    {:else}
-        <p class="note">Set your {missing} in <a href={ROUTES.settings}>Settings</a> to see zones.</p>
-    {/if}
-{/snippet}
-
 <div class="facts">
     <Card>
         {#if part && channels}
@@ -67,7 +53,7 @@
                     {#each sensors as { key, label, unit, zoneUnit, missing } (key)}
                         {#if channels[key]}
                             {@render pair(label, mean(part.channels[key], unit), mean(channels[key], unit))}
-                            {#if missing && part.channels[key]}<tr class="zones"><td colspan="3">{@render zones(part.channels[key], zoneUnit, missing)}</td></tr>{/if}
+                            {#if missing && part.channels[key]}<tr class="zones"><td colspan="3"><ZoneTimes channel={part.channels[key]} unit={zoneUnit} {missing} /></td></tr>{/if}
                         {/if}
                     {/each}
                 </tbody>
@@ -89,7 +75,7 @@
                         {#if channel}
                             <li class="sensor">
                                 <span>{label}</span><strong>{mean(channel, unit)}</strong><small>{missing ? `max ${Math.round(channel.max)}` : ''}</small>
-                                {#if missing}{@render zones(channel, zoneUnit, missing)}{/if}
+                                {#if missing}<div class="zones"><ZoneTimes {channel} unit={zoneUnit} {missing} /></div>{/if}
                             </li>
                         {/if}
                     {/each}
@@ -179,27 +165,12 @@
         margin: 12px 0 0;
         color: var(--ink-soft);
     }
-    .note a {
-        color: inherit;
-    }
-    .sensor .note, td .note {
+    /* The zones of a sensor stand under its row. */
+    .sensor .zones {
         grid-column: 1 / -1;
-        margin: 2px 0 0;
-        font-size: 12.5px;
-        text-align: left;
     }
-    .bar {
-        display: flex;
-        grid-column: 1 / -1;
-        height: 8px;
+    .sensor .zones :global(.bar) {
         margin-top: 7px;
-        overflow: hidden;
-        border-radius: 3px;
-        background: var(--parchment-2);
-    }
-    .bar span {
-        flex-basis: 0;
-        min-width: 0;
     }
     /* The part in ink, the whole ride beside it in the quiet colour. */
     table {
@@ -231,9 +202,7 @@
     .zones td {
         padding: 0 0 9px;
         border: 0;
-    }
-    .zones .bar {
-        margin-top: 0;
+        white-space: normal;
     }
     /* The box is as high as its climbs, or as the card leaves it. Then the list is as high as whole climbs fit under
      * the heading and scrolls by whole climbs, so no climb is cut at the lower edge. The box holds the heading and one

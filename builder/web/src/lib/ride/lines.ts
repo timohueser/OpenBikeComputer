@@ -3,6 +3,7 @@
 import type { FitSample } from '../core/fit';
 import { metres } from '../library/summary';
 import { cumulative, firstIndex, type Coordinate } from '../planner/geo';
+import { zoneOf, type Zone } from '../settings/zones';
 
 /** The metres of each sample from the start; with no `hops`, with no step to a segment start. */
 function along(samples: FitSample[], hops = false): number[] {
@@ -70,6 +71,19 @@ export function range(values: (number | null | undefined)[]): { low: number; hig
     let low = Infinity, high = -Infinity;
     for (const value of values) if (value != null) { low = Math.min(low, value); high = Math.max(high, value); }
     return low > high ? undefined : { low, high: high > low ? high : low + 1 };
+}
+
+/** The stretches of a line by zone: the columns `from` to `to` are in the zone `zone`, an index of `zones`. A column with
+ * no value is in no stretch and ends one. */
+export function zoneStretches(columns: (number | null)[], zones: Zone[]): { zone: number; from: number; to: number }[] {
+    const stretches: { zone: number; from: number; to: number }[] = [];
+    columns.forEach((value, i) => {
+        if (value === null) return;
+        const zone = zoneOf(zones, value), last = stretches.at(-1);
+        if (last && last.to === i - 1 && last.zone === zone) last.to = i;
+        else stretches.push({ zone, from: i, to: i });
+    });
+    return stretches;
 }
 
 /** The share of the summary line `line`, from 0 to 1, at each sample. Each point of the line is a sample of the ride
