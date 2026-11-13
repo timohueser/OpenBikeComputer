@@ -104,7 +104,8 @@ export function bridges(b: MeshBuilder, list: Feature[], tile: Node, all: Line[]
             }
             if (line.abut?.[v ? 1 : 0]) {
                 const depth = Math.min(ABUTMENT_M, (to - from) / 2);
-                abutment(b, s, point(v ? to - depth : from + depth), Math.max(wl, wr), t, out);
+                // The ground plan's end faces stand under the deck ends instead.
+                b.offPlan(() => abutment(b, s, point(v ? to - depth : from + depth), Math.max(wl, wr), t, out));
             }
         }
     }

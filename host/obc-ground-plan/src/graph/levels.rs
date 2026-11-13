@@ -11,7 +11,7 @@ use super::parts::{classify, Rule};
 use super::points::{advance, between, exact, key, Piece};
 use super::{CrossingKind, Family, Fault, Level, Sample, Station, Way, WayGraph, PLACE_M};
 use crate::frame::{metres_per_unit_at, GlobalPoint};
-use crate::sections::{leading_number, Reach, Sections, HALF_MAX_M};
+use crate::sections::{Reach, Sections, HALF_MAX_M};
 use crate::CellInput;
 
 /// The rule values of the structures: `plan.json` `structures`.
@@ -566,12 +566,10 @@ fn way_of(g: &WayGraph, st: &Station) -> Option<u32> {
     g.ways.iter().find(inside).map(|w| w.id)
 }
 
-/// The deck depth of a bridge way's tile tag, else the thinnest deck of its class.
+/// The deck depth of a bridge way (`WayGraph::deck_depth`).
 fn deck_depth(ctx: &Ctx, w: u32) -> f64 {
     let Rule::Way(s, _) = ctx.rule(w) else { return 0.0 };
-    let part = &ctx.g.parts[ctx.g.ways[w as usize].part as usize];
-    let tag = ctx.input.features[part.feature.0 as usize].tags.get("deck");
-    tag.and_then(|t| leading_number(t)).filter(|_| ctx.deck_tagged(w)).unwrap_or(s.deck_least_m)
+    ctx.g.deck_depth(ctx.input, w, s)
 }
 
 fn ladder(ctx: &Ctx, c: &super::Crossing) -> Option<Ladder> {

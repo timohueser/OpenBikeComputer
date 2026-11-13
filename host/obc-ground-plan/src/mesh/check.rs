@@ -193,3 +193,89 @@ pub fn border(a: &Cell, b: &Cell, east: bool) -> (Vec<String>, u32) {
 
 /// GP6 joins two sides whose heights differ by at most `heights.step_m` (1 mm).
 const SUB_MM: f64 = 0.001;
+
+/// Within this many units of a deck end line, a slot's ends lie on it (`faces` rounds the stroke's corners).
+const END_UNITS: f64 = 2.0;
+/// The ground near a deck end line that `deck_ends` reads: within this many metres of it.
+pub const NEAR_END_M: f64 = 3.0;
+
+/// A ground triangle is steeper than `face_max` past this share of it: a face at `face_max` (the ceiling's rise
+/// past a deck's stroke) gives a plane a hair steeper.
+const STEEP_SHARE: f64 = 1.01;
+
+/// The deck ends of a cell's mesh: the end faces that lie on no deck end line of the records
+/// (`heights::check::end_lines`), the slots that lie on one but are not end faces, and the ground triangles
+/// within `NEAR_END_M` of an end line steeper than `face_max` where the plain terrain is not, with their
+/// steepness.
+pub fn deck_ends(
+    mesh: &CellMesh,
+    words: &[u32],
+    terrain: &Terrain,
+    cell: CellKey,
+) -> (Vec<String>, Vec<String>, Vec<String>) {
+    use crate::faces::heights::{check::end_lines, HeightRules};
+    let ends = end_lines(words);
+    let (mut stray, mut missed, mut steep) = (Vec::new(), Vec::new(), Vec::new());
+    if ends.is_empty() && mesh.end_faces == 0 {
+        return (stray, missed, steep);
+    }
+    let at = |c: u32| mesh.corner(c as usize).0.map(f64::from);
+    let on = |q: [f64; 2]| {
+        ends.iter().any(|e| {
+            let [along, across] = e.place(q);
+            along.abs() <= END_UNITS && across.abs() <= e.half + END_UNITS
+        })
+    };
+    let first = mesh.steps.len() - mesh.end_faces as usize;
+    for (k, s) in mesh.steps.iter().enumerate() {
+        match (on(at(s[0])) && on(at(s[1])), k >= first) {
+            (false, true) => stray.push(format!("end face {k} at {:?} on no end line", at(s[0]))),
+            (true, false) => missed.push(format!("slot {k} at {:?} on an end line", at(s[0]))),
+            _ => {}
+        }
+    }
+    let o = cell.origin();
+    let p = HeightRules::of(words);
+    let rule = |l: u32| if l == NO_LABEL { 0 } else { label(words, l)[0] >> 24 };
+    let mpu = crate::frame::metres_per_unit(o.y + CELL_UNITS / 2);
+    let near = |q: [f64; 2]| {
+        ends.iter().any(|e| {
+            let [along, across] = e.place(q);
+            libm::hypot(along, (across.abs() - e.half).max(0.0)) * mpu <= NEAR_END_M
+        })
+    };
+    for t in &mesh.triangles {
+        let corners = t.map(|c| mesh.corner(c as usize));
+        if corners.iter().any(|&(_, l, terrain)| !terrain && rule(l) > 1) {
+            continue;
+        }
+        let q = corners.map(|(p, ..)| p.map(f64::from));
+        if !near([(q[0][0] + q[1][0] + q[2][0]) / 3.0, (q[0][1] + q[1][1] + q[2][1]) / 3.0]) {
+            continue;
+        }
+        let plain = |p: [f64; 2]| terrain.height(GlobalPoint { x: o.x + p[0] as i64, y: o.y + p[1] as i64 });
+        let Some(t) = q.iter().map(|&p| plain(p)).collect::<Option<Vec<f64>>>() else { continue };
+        let h: Vec<f64> = (0..3)
+            .map(|k| {
+                let (_, l, vertex) = corners[k];
+                if vertex {
+                    t[k]
+                } else {
+                    height_at(words, q[k], (l != NO_LABEL).then_some(l), t[k]).h
+                }
+            })
+            .collect();
+        // The plane's rise per metre through three points.
+        let grade = |z: &[f64]| {
+            let (u, v) = ([q[1][0] - q[0][0], q[1][1] - q[0][1]], [q[2][0] - q[0][0], q[2][1] - q[0][1]]);
+            let (du, dv) = (z[1] - z[0], z[2] - z[0]);
+            let det = u[0] * v[1] - u[1] * v[0];
+            libm::hypot(du * v[1] - dv * u[1], dv * u[0] - du * v[0]) / det.abs() / mpu
+        };
+        let (g, gt) = (grade(&h), grade(&t));
+        if g > STEEP_SHARE * p.face_max && gt <= p.face_max {
+            steep.push(format!("ground triangle at {:?}: {g:.3} m/m, terrain {gt:.3}, heights {h:.3?}", q[0]));
+        }
+    }
+    (stray, missed, steep)
+}
