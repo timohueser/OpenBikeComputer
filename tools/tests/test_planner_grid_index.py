@@ -26,6 +26,7 @@ def write_indexes(root):
     routing = files("routing/blocks.json", *(f"routing/packs/{key}/{name}" for key in ARCHIVES.values()
                                              for name in ("pages.bin", "pages.idx")),
                     *(f"{folder}/{cell}.json" for cell in cells for folder in ("offline/routing-cells", "routes/tiles")))
+    package = files("routing/package.json", "routing/directory.bin", "routing/objects/" + "d" * 64)
     # The roads of the western cell reach into the cell west of it.
     geometry = {"9-267-177": [7.5, 48.0, 8.4375, 48.4], "9-268-177": cells["9-268-177"]}
     indexes = {
@@ -38,7 +39,8 @@ def write_indexes(root):
                     "metadata": {"bounds": bounds}},
         "places": {"files": files(*tiles("places", "0-0-0")), "metadata": {"bounds": bounds, "osm_sha256": "o" * 64}},
         "overlays": {"files": files(*tiles("overlays", "6-33-22")),
-                     "metadata": {"bounds": bounds, "routing_package": routing["routing/blocks.json"]["sha256"]}},
+                     "metadata": {"bounds": bounds, "routing_package": package["routing/directory.bin"]["sha256"]}},
+        "routing-cells": {"files": package},
         "terrain": {"files": files(*tiles("terrain", "9-267-177", "9-269-177", "13/9-267-177")),
                     "metadata": {"bounds": [7, 47, 10, 49], "source_sha256": json.dumps(["t" * 64]), "attribution": "GLO-30"}},
         "assets": {"files": files("maps/assets/sprites/v4.json")},
@@ -53,7 +55,8 @@ def write_indexes(root):
                          "component": component, "counts": {"place": 1}}}
     layers = {}
     for kind, index in indexes.items():
-        step = f"planner/search/{kind}/grid" if kind in {"pois", "addresses"} else f"planner/{kind}/grid"
+        step = {"pois": "planner/search/pois/grid", "addresses": "planner/search/addresses/grid",
+                "routing-cells": "planner/routing/cells/grid"}.get(kind, f"planner/{kind}/grid")
         path = root / "indexes" / step / "index.json"
         path.parent.mkdir(parents=True)
         path.write_text(json.dumps({"format": 1, "kind": kind, **index}))
@@ -83,6 +86,8 @@ class PlannerGridIndex(unittest.TestCase):
             self.assertEqual(document["indexes"]["planner/routing/grid"]["folders"], ["offline", "routes", "routing"])
             self.assertEqual(document["indexes"]["planner/offline/grid"]["folders"], ["offline"])
             self.assertEqual(list(document["files"]), ["search/test.grid.json"])
+            directory = json.loads(Path(layers["planner/routing/cells/grid"]["index.json"]).read_bytes())
+            self.assertEqual(document["routing_package"], directory["files"]["routing/directory.bin"]["sha256"])
             self.assertTrue((root / "index/public/maps/tiles/basemap/7-66-44.json").is_file(),
                             "the pointers name the files of the step indexes")
 

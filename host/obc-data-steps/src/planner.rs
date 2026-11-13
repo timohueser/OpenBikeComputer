@@ -53,7 +53,7 @@ pub static PLANNER_ROUTING_ROADS: Layer = work(step::ROADS);
 pub static PLANNER_ROUTING_COSTS: Layer = work(step::COSTS);
 /// The routing package, its grid and the route network overlays.
 pub static PLANNER_ROUTING: Layer = Layer {
-    revision: 5,
+    revision: 6,
     ..whole("planner/routing", planner_router::package::FORMAT, &[&ROUTER_SERVICE, &IOS_OFFLINE_ROUTER])
 };
 /// The search databases and the query model. Its format is the search schema of
@@ -703,7 +703,7 @@ impl Planner {
             )
         });
         let overlays = steps.iter_mut().find(|step| step.name == "planner/overlays/grid").unwrap();
-        overlays.inputs.push(layer_files("planner/routing/grid", &["index.json"]));
+        overlays.inputs.push(layer_files("planner/routing/cells/grid", &["index.json"]));
         let indexes =
             |grids: &[String]| grids.iter().map(|grid| layer_files(grid, &["index.json"])).collect::<Vec<_>>();
         let release = json!({

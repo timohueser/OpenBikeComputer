@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use obc_data::engine::Request;
 use obc_dem::planner::{Recent, Terrain};
-use planner_router::{directory::Writer, model::Point, package};
+use planner_router::{directory::Writer, model::Point};
 use serde_json::{json, Value};
 
 use crate::base::Topology;
@@ -263,7 +263,7 @@ pub fn step(request: &Request) -> Result<(), String> {
         source_sha256: identities.clone(),
         attribution: attribution.clone(),
     };
-    let manifest = write_package(&graph, topology, costs, (region, bounds), identities, attribution, &routing)?;
+    write_package(&graph, topology, costs, (region, bounds), identities, attribution, &routing)?;
     Guard::stage("cells");
     eprintln!("Writing the package of format 10");
     let costs = Costs::open(&folder(request, COSTS)?)?;
@@ -289,7 +289,7 @@ pub fn step(request: &Request) -> Result<(), String> {
     drop(graph);
     Guard::stage("overlays");
     eprintln!("Writing the overlay index");
-    overlays::write(&routing.join(overlays::FILE), &package::digest(&manifest), bounds, &osm)?;
+    overlays::write(&routing.join(overlays::FILE), &summary.identity, bounds, &osm)?;
     Guard::exempt("catalog");
     eprintln!("Writing the route catalog");
     let report = catalog::write(&routing, osm, france)?;
@@ -311,8 +311,7 @@ pub fn step(request: &Request) -> Result<(), String> {
     fs::write(&request.metrics, report.to_json().to_string()).map_err(|e| e.to_string())
 }
 
-/// Writes the package objects and `manifest.json` into the empty directory `output`. Returns the
-/// bytes of the manifest.
+/// Writes the package objects and `manifest.json` into the empty directory `output`.
 fn write_package(
     graph: &Graph,
     topology: Topology,
@@ -321,15 +320,14 @@ fn write_package(
     identities: Vec<String>,
     attribution: String,
     output: &Path,
-) -> Result<Vec<u8>, String> {
+) -> Result<(), String> {
     let mut writer = Writer::create(output).map_err(|e| e.to_string())?;
     let manifest =
         crate::package(graph, topology, costs, (region, bounds), identities, attribution, |bytes| writer.write(bytes))?;
     // Only the bytes outlive this statement, not the decoded manifest.
     let manifest = serde_json::to_vec(&manifest).map_err(|e| e.to_string())?;
     writer.finish().map_err(|e| e.to_string())?;
-    fs::write(output.join("manifest.json"), &manifest).map_err(|e| e.to_string())?;
-    Ok(manifest)
+    fs::write(output.join("manifest.json"), &manifest).map_err(|e| e.to_string())
 }
 
 /// The grid step of format 10. It reads `cells/` of `planner/routing` and writes `objects/`, each
