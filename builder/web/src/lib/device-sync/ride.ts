@@ -27,5 +27,6 @@ export function rideRecord(ride: RideObject, ref: string): RideRecord | null {
     return {
         key: rideKeyAt(summary.start), name: ride.name || dateName(summary.start, bike), source: 'device', format: 'obcride', summary,
         maxHr: ride.effortLimits.maxHrBpm, ftp: ride.effortLimits.ftpW, device: ref,
+        ...ride.trip && { trip: { key: ride.trip.key.toString(), day: ride.trip.dayIndex + 1, name: ride.trip.name } },
     };
 }

@@ -15,7 +15,8 @@ export interface Climb { from: number; to: number; ascent: number; gradient: num
 /** The length of the stretch that `Climb.steepest` measures. Chosen: a shorter stretch shows the errors of single heights,
  * such as a bridge in the terrain model. */
 export const STEEPEST_KM = .5;
-const EPSILON = 1e-6;
+// `routeSegments` rounds the ends of a climb to 1 m, so an end is within half a metre of its point.
+const EPSILON = 5e-4;
 
 export interface RouteFacts {
     /** The days of the itinerary; a riding day has its waypoints, a rest day none. */

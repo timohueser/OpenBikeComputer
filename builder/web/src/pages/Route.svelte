@@ -12,8 +12,7 @@
     import { writeGpx, type GpxImport } from '../lib/core/gpx';
     import type { RouteRecord, SentRoute } from '../lib/library/records';
     import type { Library } from '../lib/library/store';
-    import { lineCoordinates, lineKey } from '../lib/library/summary';
-    import { remembered } from '../lib/device-sync/remembered.svelte';
+    import { lineCoordinates } from '../lib/library/summary';
     import { hasEndpoints, planTitle, planView } from '../lib/planner/editor';
     import { downloadPlan, isPlan, isVersion, newPlan } from '../lib/planner/library';
     import { routeFacts, routePins } from '../lib/planner/route-facts';
@@ -22,6 +21,7 @@
     import type { Version } from '../lib/planner/versions';
     import { router } from '../lib/router.svelte';
     import { ROUTES } from '../lib/routes';
+    import { deviceState, stateText, waitingWith } from './routes/state';
 
     let { library }: { library: Library; active: boolean } = $props();
 
@@ -29,13 +29,15 @@
     const legs = new LegCache();
     // Raw: `planView` freezes the trip that it reads.
     let record = $state.raw<RouteRecord | null>();
-    let waiting = $state(false), sent = $state.raw<SentRoute>();
+    let waiting = $state.raw<string[]>(), sent = $state.raw<Record<string, SentRoute>>();
     let routed = $state.raw<{ key: string; line?: RoutingLine; error?: string }>();
     /** The pointer, as a share of the summary line from 0 to 1. */
     let share = $state<number>();
     let deleting = $state(false), failure = $state('');
 
     const plan = $derived(record && isPlan(record) ? record : undefined);
+    // Derived, so the remembered device of a first connection shows at once.
+    const device = $derived(record ? deviceState(record, waiting, sent) : undefined);
     const summary = $derived(record?.summary ?? null);
     const name = $derived(plan ? plan.name || planTitle(plan.trip) : record?.name ?? '');
     const key = $derived(plan && hasEndpoints(plan.trip) ? routingKey(plan.trip) : undefined);
@@ -43,10 +45,6 @@
     const error = $derived(!key ? 'This plan has no start and finish.' : routed?.key === key ? routed?.error : undefined);
     const facts = $derived(plan && line ? routeFacts(plan.trip, line) : undefined);
     const pins = $derived(plan && summary ? routePins(plan.trip, lineCoordinates(summary), line) : []);
-    // Only an entry of the card of the remembered device counts.
-    const sentHere = $derived(sent && remembered.device && sent.device.startsWith(`${remembered.device.storeId}:`) ? sent : undefined);
-    // The device has the route as it is stored now.
-    const onDevice = $derived(!!sentHere && !!record && sentHere.line === lineKey(record));
     const changed = $derived(!!plan && !!line && (!summary || Math.abs(planView(plan.trip, line).summary.distance * 1000 - summary.lengthM) > summary.lengthM / 100));
 
     $effect(() => {
@@ -55,11 +53,10 @@
         record = undefined;
         [share, deleting, failure] = [undefined, false, ''];
         const load = async () => {
-            const [item, ids, routes] = await Promise.all([library.item(target), library.state('waiting'), library.state('sent')]);
+            const [item, ids, copies] = await Promise.all([library.item(target), library.state('waiting'), library.state('sent')]);
             if (!live) return;
             record = item && 'revision' in item ? item : null;
-            waiting = !!ids?.includes(target);
-            sent = routes?.[target];
+            [waiting, sent] = [ids, copies];
         };
         void load();
         const stop = library.onChange((store, changedKey) => {
@@ -86,7 +83,7 @@
 
     const rename = (next: string) => act(() => library.renameRoute(id, next));
 
-    const send = (on: boolean) => act(() => library.changeState('waiting', ids => on ? [...(ids ?? []).filter(other => other !== id), id] : (ids ?? []).filter(other => other !== id)));
+    const send = (on: boolean) => act(() => library.changeState('waiting', waitingWith(id, on)));
 
     async function versions(): Promise<Version[]> {
         return (await library.versions(id)).filter((v): v is Version => isVersion(v) && typeof v.summary === 'string');
@@ -132,13 +129,12 @@
     {name} nameLabel="Route name" onrename={rename} {failure}>
     {#snippet tags()}
         {#if summary && summary.days > 1}<span class="tag">{summary.days} days</span>{/if}
-        {#if waiting}<span class="tag">Waits for the device</span>
-        {:else if sentHere}<span class="tag">{onDevice ? 'On the device' : 'Changed since it was sent'}</span>{/if}
+        {#if device}<span class="tag">{stateText[device]}</span>{/if}
     {/snippet}
     {#snippet buttons()}
         {#if plan}
             <a class="button primary" href={`${ROUTES.planner}/${id}`}>Open in the planner</a>
-            <button type="button" class="button" disabled={!waiting && onDevice} onclick={() => send(!waiting)}>{waiting ? 'Do not send' : 'Send to device'}</button>
+            <button type="button" class="button" disabled={device === 'sent'} onclick={() => send(device !== 'waiting')}>{device === 'waiting' ? 'Do not send' : 'Send to device'}</button>
             <ExportMenu items={exports} />
         {/if}
     {/snippet}

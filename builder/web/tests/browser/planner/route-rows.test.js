@@ -34,9 +34,9 @@ test('the rows of a route of two days: a day, the pointer, a climb, places and t
   await page.goto('/planner.html?cover=none');
   await page.waitForFunction(() => window.coverTest);
   await page.evaluate(async record => {
-    const { library, lineKey } = window.coverTest;
+    const { library, sentKey } = window.coverTest;
     const saved = await library.saveRoute(record);
-    await library.changeState('sent', () => ({ two: { device: 'card:5', line: lineKey(saved) } }));
+    await library.changeState('sent', () => ({ two: { device: 'card:5', key: sentKey(saved) } }));
     localStorage.setItem('obc-device', JSON.stringify({ serial: 'A1B2', storeId: 'card', at: null, map: null, routes: 1, bytes: { map: 0, routes: 0, rides: 0, other: 0 }, came: null, skipped: [] }));
   }, route);
   await page.goto('/planner.html#/route/two');
@@ -90,7 +90,7 @@ test('the rows of a route of two days: a day, the pointer, a climb, places and t
     const open = indexedDB.open('obc-library');
     open.onsuccess = () => {
       const transaction = open.result.transaction('state', 'readwrite');
-      transaction.objectStore('state').put({ two: { device: 'card:5', line: 'another' } }, 'sent');
+      transaction.objectStore('state').put({ two: { device: 'card:5', key: 'another' } }, 'sent');
       transaction.oncomplete = resolve;
     };
   }));

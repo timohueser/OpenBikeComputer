@@ -26,7 +26,8 @@
     const NEAR_PX = 24;
     let container: HTMLElement;
     let map = $state.raw<maplibregl.Map>();
-    let shownPins = $state.raw<{ share: number; label: string; number?: number; x: number; y: number }[]>([]);
+    /** `index` is the place in `pins`; `left` puts the label on the side with more room. */
+    let shownPins = $state.raw<{ share: number; label: string; number?: number; x: number; y: number; index: number; left: boolean }[]>([]);
     /** The pin whose name shows, by its index; one at a time. */
     let opened = $state<number>();
     const pinName = (pin: { label: string; number?: number }) => pin.number ? pin.label : pin.label ? `Night · ${pin.label}` : 'Night';
@@ -90,7 +91,7 @@
             const { clientWidth: width, clientHeight: height } = shown.getContainer();
             shownPins = pins.flatMap((pin, i) => {
                 const { x, y } = shown.project(at[i]);
-                return x >= 0 && x <= width && y >= 0 && y <= height ? [{ ...pin, x, y }] : [];
+                return x >= 0 && x <= width && y >= 0 && y <= height ? [{ ...pin, x, y, index: i, left: x > width / 2 }] : [];
             });
         };
         place();
@@ -108,14 +109,14 @@
 
 <div class="route-map" bind:this={container}>
     <div class="pins">
-        {#each shownPins as pin, i (i)}
+        {#each shownPins as pin (pin.index)}
             <span class="route-pin" style:left={`${pin.x}px`} style:top={`${pin.y}px`}>
-                <button type="button" class:night={!pin.number} aria-label={pinName(pin)} aria-expanded={opened === i}
-                    onclick={() => opened = i} onfocus={() => opened = i} onblur={() => opened = undefined}
+                <button type="button" class:night={!pin.number} aria-label={pinName(pin)} aria-expanded={opened === pin.index}
+                    onclick={() => opened = pin.index} onfocus={() => opened = pin.index} onblur={() => opened = undefined}
                     onkeydown={event => { if (event.key === 'Escape') opened = undefined; }}>
                     {#if pin.number}{pin.number}{:else}<Icon name="moon" size={12} />{/if}
                 </button>
-                {#if opened === i}<span class="route-pin-label">{pinName(pin)}</span>{/if}
+                {#if opened === pin.index}<span class="route-pin-label" class:left={pin.left}>{pinName(pin)}</span>{/if}
             </span>
         {/each}
     </div>
