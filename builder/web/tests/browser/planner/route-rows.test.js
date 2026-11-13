@@ -68,6 +68,15 @@ test('the rows of a route of two days: a day, the pointer, a climb, places and t
   await page.mouse.move(elevation.x + elevation.width * 0.75, elevation.y + elevation.height / 2);
   await expect.poll(async () => (await mark.boundingBox()).x).toBeGreaterThan(first.x + 20);
 
+  // The pins of the map are icons; a click shows the name, Escape hides it.
+  const mapPins = page.locator('.route-map .route-pin');
+  await expect(mapPins.locator('button')).toHaveText(['1', '2', '']);
+  await expect(mapPins.locator('.route-pin-label')).toHaveCount(0);
+  await mapPins.getByRole('button', { name: 'up' }).click();
+  await expect(mapPins.locator('.route-pin-label')).toHaveText('up');
+  await page.keyboard.press('Escape');
+  await expect(mapPins.locator('.route-pin-label')).toHaveCount(0);
+
   await page.getByRole('combobox', { name: 'Places' }).selectOption('water');
   await expect(lanes).toContainText('None within 1.0 km');
 

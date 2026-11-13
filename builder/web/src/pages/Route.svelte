@@ -220,14 +220,14 @@
                 <div class="picture" class:map-large={mapLarge}>
                     {#if covered}
                         <div class="slot cover">
-                            <Cover {library} {id} {pins} mark={share === undefined ? undefined : share * summary.lengthM}
+                            <Cover {library} {id} pins={mapLarge ? [] : pins} mark={share === undefined ? undefined : share * summary.lengthM}
                                 onpoint={metres => share = metres === null || !summary.lengthM ? undefined : metres / summary.lengthM} />
                             {#if mapLarge}<button type="button" class="swap" aria-label="Show the picture large" onclick={() => swapped = false}></button>{/if}
                         </div>
                     {/if}
                     {#if covered}<Credits {credits} side="left" />{/if}
                     <div class="slot map">
-                        <RouteMap {summary} {pins} mark={share} onpoint={next => share = next ?? undefined} />
+                        <RouteMap {summary} pins={mapLarge ? pins : []} mark={share} onpoint={next => share = next ?? undefined} />
                         {#if !mapLarge}<button type="button" class="swap" aria-label="Show the map large" onclick={() => swapped = true}></button>{/if}
                     </div>
                 </div>

@@ -5,7 +5,8 @@
     import { crop, drawCover, type Crop } from './draw';
     import { lineKey } from '../library/summary';
     import { settled, wantCover, wantsPicture, type Place } from './job';
-    import { along, crowded, nearest } from './line';
+    import { along, nearest } from './line';
+    import Icon from '../../components/planner/PlannerIcon.svelte';
 
     let { library, id, mark, part, line = true, place = 'row', pins = [], onpoint }: {
         library: Library;
@@ -85,14 +86,16 @@
         if (!summary || !width || !height) return [];
         const { bitmap, points } = shown!, ratio = devicePixelRatio;
         const cut = crop({ width: bitmap.width, height: bitmap.height, points }, [Math.round(width * ratio), Math.round(height * ratio)]);
-        const placed = pins.flatMap(pin => {
+        return pins.flatMap(pin => {
             const at = along(points, summary, pin.share * summary.lengthM);
             const x = at && (at.x - cut.left) * cut.scale / ratio, y = at && (at.y - cut.top) * cut.scale / ratio;
             return at?.visible && x! >= 0 && x! <= width && y! >= 0 && y! <= height ? [{ ...pin, x: x!, y: y! }] : [];
         });
-        const short = crowded(placed);
-        return placed.flatMap((pin, i) => short[i] && !pin.number ? [] : [{ ...pin, short: short[i] }]);
     });
+
+    /** The pin whose name shows, by its index; one at a time. */
+    let opened = $state<number>();
+    const pinName = (pin: { label: string; number?: number }) => pin.number ? pin.label : pin.label ? `Night · ${pin.label}` : 'Night';
 
     /** The line on a plain ground, in a box of 100 by the shape of the line, with the north up. */
     const fallback = $derived.by(() => {
@@ -109,12 +112,19 @@
     });
 </script>
 
+<svelte:document onpointerdown={event => { if (!(event.target as Element).closest('.route-pin')) opened = undefined; }} />
+
 <div class="cover" bind:clientWidth={width} bind:clientHeight={height}>
     {#if shown}
         <canvas bind:this={canvas} onpointermove={point} onpointerleave={() => onpoint?.(null)}></canvas>
         {#each shownPins as pin, i (i)}
-            <span class="route-pin" class:short={pin.short} style:left={`${pin.x}px`} style:top={`${pin.y}px`}>
-                {#if pin.number}<b>{pin.number}</b>{#if !pin.short}{pin.label}{/if}{:else}Night{pin.label ? ` · ${pin.label}` : ''}{/if}
+            <span class="route-pin" style:left={`${pin.x}px`} style:top={`${pin.y}px`}>
+                <button type="button" class:night={!pin.number} aria-label={pinName(pin)} aria-expanded={opened === i}
+                    onclick={() => opened = i} onfocus={() => opened = i} onblur={() => opened = undefined}
+                    onkeydown={event => { if (event.key === 'Escape') opened = undefined; }}>
+                    {#if pin.number}{pin.number}{:else}<Icon name="moon" size={12} />{/if}
+                </button>
+                {#if opened === i}<span class="route-pin-label">{pinName(pin)}</span>{/if}
             </span>
         {/each}
     {:else if fallback && line}
@@ -137,11 +147,6 @@
         display: block;
         width: 100%;
         height: 100%;
-    }
-
-    .route-pin {
-        position: absolute;
-        transform: translate(-50%, calc(-100% - 10px));
     }
 
     polyline {
