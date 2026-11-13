@@ -1,5 +1,5 @@
-<!-- The map of the Routes page: the lines of the shown routes from zoom 8, bubbles with a count below it, and the
-     selected route wide at each zoom. -->
+<!-- The map of the Routes page: the lines of the shown routes or rides from zoom 8, bubbles with a count below it, and
+     the selected ones wide at each zoom. Rides draw on a pale map. -->
 <script lang="ts">
     import { onMount, untrack } from 'svelte';
     import * as maplibregl from 'maplibre-gl';
@@ -10,11 +10,12 @@
     import { appearance } from '../../lib/theme.svelte';
     import type { Box, Item } from './filter';
 
-    let { items, shown, selected, onselect, onview, fit }: {
+    let { items, shown, selected, look = 'route', onselect, onview, fit }: {
         items: Item[];
         /** The items of the list. The map draws only these, and the bubbles count only these. */
         shown: Item[];
-        selected?: string;
+        selected: string[];
+        look?: 'route' | 'ride';
         /** Undefined after a click on the map where no route is. */
         onselect: (id: string | undefined) => void;
         onview: (view: Box) => void;
@@ -26,7 +27,7 @@
     let container: HTMLElement;
     let map = $state.raw<maplibregl.Map>(), ready = $state(false);
     const theme = $derived(appearance.dark ? 'dark' : 'light');
-    let styled: typeof theme, fitted = 0;
+    let styled: typeof theme, styledLook: typeof look, fitted = 0;
 
     const pairs = (line: number[]) => Array.from({ length: line.length / 2 }, (_, i) => [line[2 * i], line[2 * i + 1]]);
     // All lines are in one source; a filter of the layers shows the shown ones, so a chip change sets no data.
@@ -39,26 +40,32 @@
         return [{ type: 'Feature', properties: { id }, geometry: { type: 'Point', coordinates: [summary.line[i], summary.line[i + 1]] } }];
     }) });
     const shownFilter = $derived<maplibregl.FilterSpecification>(['in', ['get', 'id'], ['literal', shown.map(item => item.id)]]);
-    const selectedFilter = $derived<maplibregl.FilterSpecification>(['==', ['get', 'id'], selected ?? '']);
+    const selectedFilter = $derived<maplibregl.FilterSpecification>(['in', ['get', 'id'], ['literal', selected]]);
 
     function addLayers() {
         if (!map) return;
         const style = getComputedStyle(container), color = (name: string) => style.getPropertyValue(name).trim();
-        const round = { 'line-join': 'round', 'line-cap': 'round' } as const;
+        const round = { 'line-join': 'round', 'line-cap': 'round' } as const, ride = untrack(() => look) === 'ride';
+        const line = color(ride ? '--ride' : '--route');
         map.addSource('routes', { type: 'geojson', data: untrack(() => lines) });
         map.addSource('middles', { type: 'geojson', data: untrack(() => middles), cluster: true, clusterMaxZoom: LINE_ZOOM - 1, clusterRadius: 48 });
         const shownNow = untrack(() => shownFilter), selectedNow = untrack(() => selectedFilter);
+        if (ride) {
+            map.addLayer({ id: 'pale', type: 'background', paint: { 'background-color': color('--parchment'), 'background-opacity': 0.5 } });
+            map.addLayer({ id: 'casing', type: 'line', source: 'routes', minzoom: LINE_ZOOM, filter: shownNow, layout: round,
+                paint: { 'line-color': color('--panel'), 'line-width': 6 } });
+        }
         map.addLayer({ id: 'routes', type: 'line', source: 'routes', minzoom: LINE_ZOOM, filter: shownNow, layout: round,
-            paint: { 'line-color': color('--route'), 'line-width': 3, 'line-opacity': 0.75 } });
+            paint: { 'line-color': line, 'line-width': 3, 'line-opacity': ride ? 1 : 0.75 } });
         // A wide line with no colour, so a click near a line selects it.
         map.addLayer({ id: 'routes-hit', type: 'line', source: 'routes', minzoom: LINE_ZOOM, filter: shownNow, layout: round,
             paint: { 'line-color': '#000', 'line-width': 14, 'line-opacity': 0 } });
         map.addLayer({ id: 'selected-casing', type: 'line', source: 'routes', filter: selectedNow, layout: round,
             paint: { 'line-color': color('--panel'), 'line-width': 9 } });
         map.addLayer({ id: 'selected', type: 'line', source: 'routes', filter: selectedNow, layout: round,
-            paint: { 'line-color': color('--route'), 'line-width': 5 } });
+            paint: { 'line-color': line, 'line-width': 5 } });
         map.addLayer({ id: 'bubbles', type: 'circle', source: 'middles', maxzoom: LINE_ZOOM,
-            paint: { 'circle-color': color('--route'), 'circle-radius': 13, 'circle-stroke-color': color('--panel'), 'circle-stroke-width': 3 } });
+            paint: { 'circle-color': line, 'circle-radius': 13, 'circle-stroke-color': color('--panel'), 'circle-stroke-width': 3 } });
         map.addLayer({ id: 'bubble-count', type: 'symbol', source: 'middles', maxzoom: LINE_ZOOM,
             layout: { 'text-field': ['coalesce', ['get', 'point_count_abbreviated'], '1'], 'text-font': ['Noto Sans Regular'], 'text-size': 12, 'text-allow-overlap': true },
             paint: { 'text-color': '#fff' } });
@@ -89,6 +96,7 @@
 
     onMount(() => {
         useMapProtocols();
+        styledLook = look;
         const created = new maplibregl.Map({
             container, style: basemapStyle(styled = theme, styleConfig), bounds: styleConfig.bounds,
             attributionControl: false, maxPitch: 0, renderWorldCopies: false,
@@ -119,7 +127,11 @@
     });
 
     $effect(() => {
-        if (map && theme !== styled) map.setStyle(basemapStyle(styled = theme, styleConfig), { diff: false });
+        if (map && (theme !== styled || look !== styledLook)) {
+            styledLook = look;
+            ready = false;
+            map.setStyle(basemapStyle(styled = theme, styleConfig), { diff: false });
+        }
     });
     $effect(() => {
         if (ready) map!.getSource<maplibregl.GeoJSONSource>('routes')?.setData(lines);
@@ -127,7 +139,7 @@
     $effect(() => {
         if (!ready) return;
         map!.getSource<maplibregl.GeoJSONSource>('middles')?.setData(middles);
-        for (const layer of ['routes', 'routes-hit']) if (map!.getLayer(layer)) map!.setFilter(layer, shownFilter);
+        for (const layer of ['casing', 'routes', 'routes-hit']) if (map!.getLayer(layer)) map!.setFilter(layer, shownFilter);
     });
     $effect(() => {
         if (ready) for (const layer of ['selected-casing', 'selected']) if (map!.getLayer(layer)) map!.setFilter(layer, selectedFilter);

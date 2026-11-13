@@ -89,3 +89,59 @@ test('the Routes page lists the routes, filters them with a chip, shows the sele
   await expect(page.locator('.maplibregl-canvas').first()).toBeVisible();
   expect(errors).toEqual([]);
 });
+
+const year = new Date().getFullYear();
+const lake = [8, 48, 8.1, 48, 8.1, 48.1, 8, 48.1, 8, 48];
+function ride(name, line, lengthM, month, day) {
+  const start = new Date(year, month, day, 9).getTime() / 1000;
+  const xs = line.filter((_, i) => i % 2 === 0), ys = line.filter((_, i) => i % 2);
+  return {
+    key: new Date(start * 1000).toISOString().replace(/[-:]|\.\d+/g, ''), name, source: 'file', format: 'gpx', maxHr: null, ftp: null,
+    summary: { line, heights: xs.map(() => 400), bounds: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)],
+      lengthM, climbM: 100, highestM: 400, seconds: 3600, bike: 'road', start, movingS: 3000 },
+  };
+}
+
+test('the ridden view shows a trip, a group of rides on a route, a ride taken out of it, and the year', async ({ page }) => {
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.route(url => url.hostname !== '127.0.0.1', request => {
+    if (request.request().method() === 'OPTIONS') return request.fulfill(CORS_PREFLIGHT);
+    const response = respond(request.request());
+    return response ? request.fulfill(response) : request.abort();
+  });
+  await page.goto('/planner.html#/routes/ridden');
+  await expect(page.getByText('No rides yet.')).toBeVisible();
+  await expect(page.getByRole('radio', { name: 'Ridden 0' })).toBeChecked();
+
+  // Four rides of the lake route, the last taken out of the group, and a trip of two days along the coast.
+  const rides = [...[0, 1, 2, 3].map(month => ride(`Lake ${month + 1}`, lake, 37_000, month, 5)),
+    ride('Coast, day 1', [9, 47, 9.5, 47], 38_000, 5, 1), ride('Coast, day 2', [9.5, 47, 10, 47], 38_000, 5, 2)];
+  await page.goto('/planner.html?cover=none');
+  await page.waitForFunction(() => window.coverTest);
+  await page.evaluate(async ({ rides, route }) => {
+    const { library } = window.coverTest;
+    await library.saveRoute(route);
+    for (const ride of rides) await library.addRide(ride, new Blob(['ride']));
+    await library.setState('apart', [rides[3].key]);
+  }, { rides, route: { id: 'lake', revision: 0, name: 'Lake test', updatedAt: 1, trip: trip(1), summary: { ...rides[0].summary, days: 1 } } });
+
+  await page.goto('/planner.html#/routes/ridden');
+  await expect(page.getByText('6 rides', { exact: true })).toBeVisible();
+  const list = page.locator('.list ul');
+  await expect(list.locator('li')).toHaveText([/Coast, day 1 1 to 2 Jun \d+ · 2 days · 76.0\skm/, /Lake 4 5 Apr \d+ · 37.0\skm · 100\sm up/, /Lake test.*the last time on.*3 rides ›/]);
+  await expect(page.locator('.totals')).toHaveText(new RegExp(`${year} · 224\\skm · 6 rides`));
+
+  await list.locator('.row', { hasText: 'Coast, day 1' }).click();
+  await expect(page.getByRole('region', { name: 'Coast, day 1' }).getByRole('link', { name: 'Open' })).toHaveAttribute('href', `#/ride/${rides[4].key}`);
+
+  await list.getByRole('button', { name: '3 rides ›' }).click();
+  await expect(list.locator('li')).toHaveText([/Lake 3/, /Lake 2/, /Lake 1/]);
+  await page.getByRole('button', { name: '‹ All rides' }).click();
+  await expect(list.locator('li')).toHaveCount(3);
+
+  await page.getByRole('radio', { name: 'Planned 1' }).click();
+  await expect(page).toHaveURL(/#\/routes$/);
+  await expect(page.locator('ul').getByRole('button', { name: /Lake test/ })).toContainText('ridden 3 times');
+  expect(errors).toEqual([]);
+});

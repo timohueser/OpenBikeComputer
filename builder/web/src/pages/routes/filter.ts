@@ -1,17 +1,15 @@
 /** The items of the Routes page, the chips of its search, and the filter that reads both. */
-import type { Bike, RouteRecord, Summary } from '../../lib/library/records';
+import type { Bike, RideRecord, RideSummary, RouteRecord, RouteSummary } from '../../lib/library/records';
 import { distanceIn, heightIn } from '../../lib/settings/format';
 
 /** West, south, east, north. */
 export type Box = [number, number, number, number];
 
-/** A route as the list, the map and the card show it. An item with no summary has no line, and each chip leaves it out. */
-export interface Item {
-    id: string;
-    name: string;
-    summary: (Summary & { days?: number }) | null;
-    updatedAt: number;
-}
+/** A route or a ride as the list, the map and the card show it. A route with no summary has no line, and each chip
+ * leaves it out. `at` is the time in ms of the last change of a route, or of the start of a ride. */
+export type Item = { id: string; name: string; at: number }
+    & ({ kind: 'route'; summary: RouteSummary | null } | { kind: 'ride'; summary: RideSummary });
+export type RideItem = Extract<Item, { kind: 'ride' }>;
 
 /** From `min` to below `max`, in the units of `settings.units`: km or mi for a length, m or ft for a climb. */
 export type Range = [min: number, max: number];
@@ -26,6 +24,8 @@ export interface Chips {
     length?: Range;
     climb?: Range;
     days?: Range;
+    /** The local year of `at`. */
+    year?: number;
 }
 
 /** The planner functions that name a plan. They reach the map catalogue, so the page loads them after its list. */
@@ -37,11 +37,14 @@ export interface Naming {
 /** A plan with no name has the title of its plan. A route that is not a plan has no line. Without `naming`, a route with
  * no name has the names of its start and its finish. */
 export function routeItem(route: RouteRecord, naming?: Naming): Item {
-    const { id, name, summary, updatedAt } = route;
-    if (!naming) return { id, name: name || endNames(route.trip), summary, updatedAt };
-    if (!naming.isPlan(route)) return { id, name: name || 'Route that cannot be read', summary: null, updatedAt };
-    return { id, name: name || naming.planTitle(route.trip as never), summary, updatedAt };
+    const { id, name, summary, updatedAt: at } = route;
+    if (!naming) return { kind: 'route', id, name: name || endNames(route.trip), summary, at };
+    if (!naming.isPlan(route)) return { kind: 'route', id, name: name || 'Route that cannot be read', summary: null, at };
+    return { kind: 'route', id, name: name || naming.planTitle(route.trip as never), summary, at };
 }
+
+export const rideItem = (ride: RideRecord): RideItem =>
+    ({ kind: 'ride', id: ride.key, name: ride.name, summary: ride.summary, at: ride.summary.start * 1000 });
 
 /** "Start → Finish" from the points of a trip that no check read yet, else "Route". */
 function endNames(trip: unknown): string {
@@ -74,13 +77,14 @@ export function results(items: Item[], chips: Chips, text: string, view?: Box): 
         if ((chips.bike && summary.bike !== chips.bike)
             || (chips.length && !within(distanceIn(summary.lengthM), chips.length))
             || (chips.climb && !within(heightIn(summary.climbM), chips.climb))
-            || (chips.days && !within(summary.days ?? 1, chips.days))
+            || (chips.days && !within('days' in summary ? summary.days : 1, chips.days))
+            || (chips.year && new Date(item.at).getFullYear() !== chips.year)
             || (view && !inBox(summary.line, view))) continue;
         const near = chips.place ? distanceToBox(summary.line, chips.place.box) : 0;
         if (chips.place && near > (NEAR_M[chips.place.kind] ?? OTHER_NEAR_M)) continue;
         kept.push({ item, near });
     }
-    return kept.sort((a, b) => a.near - b.near || b.item.updatedAt - a.item.updatedAt).map(({ item }) => item);
+    return kept.sort((a, b) => a.near - b.near || b.item.at - a.item.at).map(({ item }) => item);
 }
 
 function inBox(line: number[], [west, south, east, north]: Box): boolean {

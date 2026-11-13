@@ -6,11 +6,17 @@
     import { settings } from '../../lib/settings/settings.svelte';
     import { findPlaces, type Box, type Chips, type FoundPlace, type Range } from './filter';
 
-    let { chips = $bindable(), view }: { chips: Chips; view?: Box } = $props();
-
     type Key = keyof Chips;
-    const NAMES: Record<Key, string> = { bike: 'Kind of bike', place: 'Place', length: 'Length', climb: 'Climb', days: 'Days' };
-    const KEYS = Object.keys(NAMES) as Key[];
+    let { chips = $bindable(), view, keys, years = [] }: {
+        chips: Chips;
+        view?: Box;
+        /** The chips to offer, in this order. */
+        keys: Key[];
+        /** The options of the year chip. */
+        years?: number[];
+    } = $props();
+
+    const NAMES: Record<Key, string> = { bike: 'Kind of bike', place: 'Place', length: 'Length', climb: 'Climb', days: 'Days', year: 'Year' };
     // The limits between the options, in the units of the rider.
     const LIMITS = { km: { length: [100, 200, 500], climb: [500, 1500, 3000] }, mi: { length: [100, 200, 500], climb: [1500, 5000, 10_000] } };
     const DAYS: { value: Range; label: string }[] = [
@@ -30,6 +36,7 @@
     function options(key: Exclude<Key, 'place'>): { value: Chips[Key]; label: string }[] {
         if (key === 'bike') return bikes.map(bike => ({ value: bike, label: ridingProfiles[bike].label }));
         if (key === 'days') return DAYS;
+        if (key === 'year') return years.map(year => ({ value: year, label: String(year) }));
         const limits = LIMITS[settings.units][key];
         return [0, ...limits].map((min, i): Range => [min, limits[i] ?? Infinity]).map(value => ({ value, label: rangeLabel(key, value) }));
     }
@@ -41,8 +48,8 @@
         return options(key).find(option => JSON.stringify(option.value) === JSON.stringify(value))?.label ?? NAMES[key];
     }
 
-    // The set chips come first, each group in the order of `NAMES`.
-    const ordered = $derived([...KEYS.filter(key => chips[key] !== undefined), ...KEYS.filter(key => chips[key] === undefined)]);
+    // The set chips come first, each group in the order of `keys`.
+    const ordered = $derived([...keys.filter(key => chips[key] !== undefined), ...keys.filter(key => chips[key] === undefined)]);
 
     function choose(key: Key, value: Chips[Key] | undefined) {
         const next: Chips = { ...chips };

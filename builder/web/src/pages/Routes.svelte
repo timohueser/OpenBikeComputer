@@ -1,47 +1,96 @@
-<!-- The Routes page: the planned routes in a list with a search and chips, on a map, and the selected one in a card. -->
+<!-- The Routes page: the planned routes or the rides in a list with a search and chips, on a map, and the selected one in a
+     card. -->
 <script lang="ts">
     import { onMount, untrack } from 'svelte';
     import { SvelteSet } from 'svelte/reactivity';
     import Card from '../lib/ui/Card.svelte';
+    import Segmented from '../lib/ui/Segmented.svelte';
     import Switch from '../lib/ui/Switch.svelte';
     import Cover from '../lib/covers/Cover.svelte';
     import { initCore } from '../lib/core/bridge';
-    import type { LibraryState, RouteRecord } from '../lib/library/records';
+    import { groups } from '../lib/library/groups';
+    import type { LibraryState, RideRecord, RouteRecord } from '../lib/library/records';
+    import { yearTotals } from '../lib/library/statistics';
     import type { Library } from '../lib/library/store';
+    import { trips } from '../lib/library/trips';
     import { ridingProfiles } from '../lib/planner/riding-profiles';
+    import { router } from '../lib/router.svelte';
     import { ROUTES } from '../lib/routes';
     import { formatDistance, formatHeight } from '../lib/settings/format';
     import Chips from './routes/Chips.svelte';
-    import { readSearch, results, routeItem, type Box, type Chips as ChipValues, type Naming } from './routes/filter';
+    import { readSearch, results, rideItem, routeItem, type Box, type Chips as ChipValues, type Item, type Naming, type RideItem } from './routes/filter';
+    import { rideRows, type Row } from './routes/rows';
     import SelectedCard from './routes/SelectedCard.svelte';
     import { deviceState, type DeviceState } from './routes/state';
 
     let { library }: { library: Library; active: boolean } = $props();
 
     /** A page that sends the rider here can give the search to start with. */
-    const start = history.state?.search as { chips?: ChipValues; text?: string } | undefined;
+    const search = () => history.state?.search as { chips?: ChipValues; text?: string } | undefined;
     const READ_AFTER_MS = 200, KEEP_AFTER_MS = 300;
     const BADGES: Record<DeviceState, string> = { waiting: 'Waits', sent: 'On the device', changed: 'Changed' };
+    const KEYS = { planned: ['bike', 'place', 'length', 'climb', 'days'], ridden: ['place', 'year', 'bike', 'length'] } as const;
+    const day = (at: number, parts: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'short', year: 'numeric' }) =>
+        new Date(at).toLocaleDateString('en-GB', parts);
 
-    let records = $state.raw<RouteRecord[]>(), waiting = $state.raw<LibraryState['waiting']>(), sent = $state.raw<LibraryState['sent']>();
+    let records = $state.raw<RouteRecord[]>(), rides = $state.raw<RideRecord[]>(), apart = $state.raw<string[]>([]);
+    let waiting = $state.raw<LibraryState['waiting']>(), sent = $state.raw<LibraryState['sent']>();
     let naming = $state.raw<Naming>(), failure = $state('');
-    let chips = $state<ChipValues>(start?.chips ?? {}), text = $state(start?.text ?? '');
+    let chips = $state<ChipValues>(search()?.chips ?? {}), text = $state(search()?.text ?? '');
     let onlyView = $state(false), view = $state.raw<Box>(), selected = $state<string>(), fit = $state(0), adding = $state(false);
+    /** The ride groups by ride key, once `groups` ends; until then each ride is its own group. */
+    let grouped = $state.raw(new Map<string, string>()), opened = $state<string>();
     /** The rows in view or near it: only these mount their picture. */
     const near = new SvelteSet<string>();
 
-    const items = $derived(records?.map(record => routeItem(record, naming)) ?? []);
+    /** The view of the address. The page keeps it while the address goes to another page. */
+    let ridden = $state(router.id === 'ridden');
+    const routeItems = $derived(records?.map(record => routeItem(record, naming)) ?? []);
+    const rideItems = $derived(rides?.map(rideItem) ?? []);
+    const items: Item[] = $derived(ridden ? rideItems : routeItems);
     const shown = $derived(results(items, chips, text, onlyView ? view : undefined));
+    const tripList = $derived(trips(rides ?? []));
+    const rows = $derived(ridden ? rideRows(shown as RideItem[], tripList, grouped, new Map(routeItems.map(item => [item.id, item.name]))) : []);
+    const group = $derived(rows.find(row => row.kind === 'group' && row.id === opened));
+    /** The rows of the list: the routes, the ride rows, or the rides of the open group. */
+    const listRows: Row[] = $derived(group ? group.rides.map(ride => ({ kind: 'ride', id: ride.id, name: ride.name, rides: [ride], at: ride.at }))
+        : ridden ? rows : []);
+    const mapShown = $derived(ridden ? listRows.flatMap(row => row.rides) : shown);
+    const chosenRow = $derived(listRows.find(row => `${row.kind}:${row.id}` === selected));
+    // Until the full card of a group and a trip: their first ride, under the name of the row.
+    const chosen = $derived(ridden ? chosenRow && { ...chosenRow.rides[0], name: chosenRow.name } : shown.find(item => item.id === selected));
     const states = $derived(new Map(records?.map(record => [record.id, deviceState(record, waiting, sent)])));
-    const chosen = $derived(shown.find(item => item.id === selected));
-    const routes = (count: number) => `${count.toLocaleString('en')} route${count === 1 ? '' : 's'}`;
-    const listed = $derived(records !== undefined);
+    const times = $derived([...grouped.values()].reduce((counts, id) => counts.set(id, (counts.get(id) ?? 0) + 1), new Map<string, number>()));
+    const count = (n: number, one: string) => `${n.toLocaleString('en')} ${one}${n === 1 ? '' : 's'}`;
+    const noun = $derived(ridden ? 'ride' : 'route');
+    const listed = $derived((ridden ? rides : records) !== undefined);
+    const years = $derived([...new Set(rideItems.map(item => new Date(item.at).getFullYear()))].sort((a, b) => b - a));
+    const year = $derived(chips.year ?? new Date().getFullYear());
+    const totals = $derived(yearTotals(rides ?? [], year));
 
-    // The map fits the results when the list first shows and after a chip change, unless it keeps its view. A reload of
-    // the library after a write does not move it.
+    // The map fits the results when the list first shows, after a chip change and in the other view, unless it keeps its
+    // view. A reload of the library after a write does not move it.
     $effect(() => {
         void JSON.stringify(chips);
+        void opened;
         if (listed && !untrack(() => onlyView)) untrack(() => fit++);
+    });
+
+    // Each view has its own entry of the history, with its own search.
+    $effect(() => {
+        const next = router.id === 'ridden';
+        if (router.route !== 'routes' || next === untrack(() => ridden)) return;
+        ridden = next;
+        untrack(() => { [chips, text, selected, opened] = [search()?.chips ?? {}, search()?.text ?? '', undefined, undefined]; });
+    });
+
+    // The groups need the rides and the routes; the list shows before they end.
+    let grouping = 0;
+    $effect(() => {
+        if (!rides || !records) return;
+        const run = ++grouping;
+        groups(rides, records, apart).then(next => { if (run === grouping) grouped = next; },
+            reason => { failure = reason instanceof Error ? reason.message : String(reason); });
     });
 
     // Back from another page brings the search again. WebKit refuses many history writes in a short time, so the page
@@ -56,7 +105,10 @@
 
     async function load() {
         try {
-            [records, waiting, sent] = await Promise.all([library.routes(), library.state('waiting'), library.state('sent')]);
+            let taken;
+            [records, rides, taken, waiting, sent] = await Promise.all([library.routes(), library.rides(), library.state('apart'),
+                library.state('waiting'), library.state('sent')]);
+            apart = taken ?? [];
         } catch (reason) {
             failure = reason instanceof Error ? reason.message : String(reason);
         }
@@ -70,7 +122,7 @@
                 reason => { failure = reason instanceof Error ? reason.message : String(reason); });
         let timer: ReturnType<typeof setTimeout> | undefined;
         const stop = library.onChange((store, key) => {
-            if (store !== 'routes' && !(store === 'state' && (key === 'waiting' || key === 'sent'))) return;
+            if (store !== 'routes' && store !== 'rides' && !(store === 'state' && ['waiting', 'sent', 'apart'].includes(key))) return;
             clearTimeout(timer);
             timer = setTimeout(load, READ_AFTER_MS);
         });
@@ -106,6 +158,19 @@
         }
     }
 
+    /** A click on a line selects its route, or the row that holds the ride. */
+    function select(id: string | undefined) {
+        const row = ridden ? listRows.find(row => row.rides.some(ride => ride.id === id)) : undefined;
+        selected = row ? `${row.kind}:${row.id}` : ridden ? undefined : id;
+    }
+
+    /** "3 to 9 Aug 2026", with the first month and year only where they differ. */
+    function dates(row: Row): string {
+        const [from, to] = [new Date(row.rides[0].at), new Date(row.rides.at(-1)!.at)];
+        const year = from.getFullYear() !== to.getFullYear(), month = year || from.getMonth() !== to.getMonth();
+        return `${day(from.getTime(), { day: 'numeric', ...month && { month: 'short' }, ...year && { year: 'numeric' } })} to ${day(to.getTime())}`;
+    }
+
     const addFiles = () => initCore().then(() => import('./AddFiles.svelte')).then(module => module.default);
 </script>
 
@@ -115,9 +180,17 @@
 
 <div class="routes-page">
     <header>
-        <h1>Routes</h1>
+        <div class="title">
+            <h1>Routes</h1>
+            {#if records && rides}
+                <Segmented label="Routes or rides" value={ridden ? 'ridden' : 'planned'}
+                    options={[{ value: 'planned', label: `Planned ${records.length.toLocaleString('en')}` },
+                        { value: 'ridden', label: `Ridden ${rides.length.toLocaleString('en')}` }]}
+                    onChange={next => { keep?.(); location.hash = next === 'ridden' ? `${ROUTES.routes}/ridden` : ROUTES.routes; }} />
+            {/if}
+        </div>
         <nav class="buttons" aria-label="Routes">
-            <a class="button primary" href={`${ROUTES.planner}/new`}>New route</a>
+            {#if !ridden}<a class="button primary" href={`${ROUTES.planner}/new`}>New route</a>{/if}
             <button type="button" class="button" onclick={() => adding = true}>Add files</button>
         </nav>
     </header>
@@ -126,43 +199,87 @@
     <div class="cards">
         <div class="list">
             <Card>
-                {#if records === undefined}
+                {#if !listed}
                     <p class="note">Loading…</p>
-                {:else if !records.length}
-                    <p class="note">No routes yet. Plan one, or add GPX and FIT files.</p>
+                {:else if !items.length}
+                    <p class="note">{ridden ? 'No rides yet. Connect the device, or add GPX and FIT files.' : 'No routes yet. Plan one, or add GPX and FIT files.'}</p>
                 {:else}
-                    <input class="search" type="search" aria-label="Search your routes" placeholder="Search your routes, or a place"
+                    <input class="search" type="search" aria-label={ridden ? 'Search your rides' : 'Search your routes'}
+                        placeholder={ridden ? 'Search your rides, or a place' : 'Search your routes, or a place'}
                         bind:value={text} onkeydown={event => { if (event.key === 'Enter' && text.trim()) void understand(); }} />
-                    <Chips bind:chips {view} />
-                    <p class="count">{shown.length === items.length ? routes(items.length) : `${shown.length.toLocaleString('en')} of ${routes(items.length)}`}</p>
+                    <Chips bind:chips {view} keys={[...KEYS[ridden ? 'ridden' : 'planned']]} {years} />
+                    {#if group}
+                        <p class="count">
+                            <button type="button" class="back" onclick={() => { opened = undefined; selected = undefined; }}>‹ All rides</button>
+                            · {group.name} · {count(group.rides.length, 'ride')}
+                        </p>
+                    {:else}
+                        <p class="count">{shown.length === items.length ? count(items.length, noun) : `${shown.length.toLocaleString('en')} of ${count(items.length, noun)}`}</p>
+                    {/if}
                     <ul>
-                        {#each shown as item (item.id)}
-                            {@const state = states.get(item.id)}
-                            <li data-id={item.id} use:watch>
-                                <button type="button" class="row" aria-current={item.id === selected} onclick={() => selected = item.id}>
-                                    <span class="thumb">{#if item.summary && near.has(item.id)}<Cover {library} id={item.id} />{/if}</span>
-                                    <span class="text">
-                                        <strong>{item.name}</strong>
-                                        {#if item.summary}
-                                            {@const summary = item.summary}
-                                            <span class="meta">{[ridingProfiles[summary.bike].label, (summary.days ?? 1) > 1 && `${summary.days} days`,
-                                                formatDistance(summary.lengthM), `${formatHeight(summary.climbM)} up`].filter(Boolean).join(' · ')}</span>
-                                        {/if}
-                                    </span>
-                                    {#if state}<span class="badge {state}">{BADGES[state]}</span>{/if}
-                                </button>
-                            </li>
+                        {#if ridden}
+                            {#each listRows as row (`${row.kind}:${row.id}`)}
+                                {@const first = row.rides[0]}
+                                {@const key = `${row.kind}:${row.id}`}
+                                <li data-id={key} use:watch>
+                                    <button type="button" class="row" aria-current={key === selected} onclick={() => selected = key}>
+                                        <span class="thumb">{#if near.has(key)}<Cover {library} id={first.id} />{/if}</span>
+                                        <span class="text">
+                                            <strong>{row.name}</strong>
+                                            <span class="meta">
+                                                {#if row.kind === 'trip'}
+                                                    {[dates(row), count(row.days!, 'day'), formatDistance(row.rides.reduce((sum, ride) => sum + ride.summary.lengthM, 0))].join(' · ')}
+                                                {:else if row.kind === 'group'}
+                                                    {formatDistance(first.summary.lengthM)} · the last time on {day(first.at)}
+                                                {:else}
+                                                    {[day(first.at), formatDistance(first.summary.lengthM), `${formatHeight(first.summary.climbM)} up`].join(' · ')}
+                                                {/if}
+                                            </span>
+                                        </span>
+                                    </button>
+                                    {#if row.kind === 'group'}
+                                        <button type="button" class="open" onclick={() => { opened = row.id; selected = undefined; }}>{count(row.rides.length, 'ride')} ›</button>
+                                    {/if}
+                                </li>
+                            {:else}
+                                <li class="note">No ride matches. Remove a chip or change the text.</li>
+                            {/each}
                         {:else}
-                            <li class="note">No route matches. Remove a chip or change the text.</li>
-                        {/each}
+                            {#each shown as item (item.id)}
+                                {@const state = states.get(item.id)}
+                                {@const runs = times.get(item.id) ?? 0}
+                                <li data-id={item.id} use:watch>
+                                    <button type="button" class="row" aria-current={item.id === selected} onclick={() => selected = item.id}>
+                                        <span class="thumb">{#if item.summary && near.has(item.id)}<Cover {library} id={item.id} />{/if}</span>
+                                        <span class="text">
+                                            <strong>{item.name}</strong>
+                                            {#if item.kind === 'route' && item.summary}
+                                                {@const summary = item.summary}
+                                                <span class="meta">{[ridingProfiles[summary.bike].label, summary.days > 1 && `${summary.days} days`,
+                                                    formatDistance(summary.lengthM), `${formatHeight(summary.climbM)} up`,
+                                                    runs && (runs === 1 ? 'ridden once' : `ridden ${runs} times`)].filter(Boolean).join(' · ')}</span>
+                                            {/if}
+                                        </span>
+                                        {#if state}<span class="badge {state}">{BADGES[state]}</span>{/if}
+                                    </button>
+                                </li>
+                            {:else}
+                                <li class="note">No route matches. Remove a chip or change the text.</li>
+                            {/each}
+                        {/if}
                     </ul>
                     <div class="switch"><Switch bind:checked={onlyView} label="Only in this map view" /></div>
+                    {#if ridden}
+                        <p class="totals"><strong>{year}</strong> · {[formatDistance(totals.lengthM), count(totals.rides, 'ride'),
+                            totals.hikes && count(totals.hikes, 'hike')].filter(Boolean).join(' · ')}</p>
+                    {/if}
                 {/if}
             </Card>
         </div>
         <div class="map">
             {#await import('./routes/RoutesMap.svelte') then { default: RoutesMap }}
-                <RoutesMap {items} {shown} {selected} {fit} onselect={id => selected = id} onview={next => view = next} />
+                <RoutesMap {items} shown={mapShown} selected={ridden ? chosenRow?.rides.map(ride => ride.id) ?? [] : selected ? [selected] : []} {fit}
+                    look={ridden ? 'ride' : 'route'} onselect={select} onview={next => view = next} />
             {:catch error}
                 <p class="note">{error instanceof Error ? error.message : String(error)}</p>
             {/await}
@@ -195,6 +312,12 @@
         align-items: center;
         justify-content: space-between;
         gap: 10px 20px;
+    }
+    .title {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 10px 16px;
     }
     h1 {
         margin: 0;
@@ -313,9 +436,50 @@
         background: var(--amber);
         color: var(--on-amber);
     }
+    li {
+        position: relative;
+    }
+    /* The button that opens a group sits on its row, so the row keeps room for it. */
+    li:has(.open) .row {
+        padding-right: 76px;
+    }
+    .open {
+        position: absolute;
+        top: 50%;
+        right: 8px;
+        padding: 2px 7px;
+        border: 0;
+        border-radius: 4px;
+        background: var(--parchment-3);
+        color: var(--ink);
+        font-size: 12px;
+        transform: translateY(-50%);
+        white-space: nowrap;
+    }
+    .open:hover, .back:hover {
+        background: var(--parchment-2);
+    }
+    .back {
+        padding: 0 4px;
+        border: 0;
+        border-radius: 4px;
+        background: none;
+        color: var(--ink);
+        font: inherit;
+    }
     .switch {
         padding-top: 6px;
         border-top: 1px solid var(--line);
+    }
+    .totals {
+        margin: 0;
+        padding-top: 8px;
+        border-top: 1px solid var(--line);
+        color: var(--ink-soft);
+        font-size: 13px;
+    }
+    .totals strong {
+        color: var(--ink);
     }
     .map {
         position: relative;

@@ -12,6 +12,7 @@ import { flatDevice, streamCeilingFor } from '../usb/flat-device';
 import { encodeRideObject, type RideObject } from '../usb/objects';
 import { ObjectKind } from '../usb/protocol';
 import { archivedRows } from './metadata';
+import { rideRecord } from './ride';
 import { rememberCard, remembered } from './remembered.svelte';
 import { CABLE_OUT, syncDevice } from './sync';
 
@@ -223,5 +224,13 @@ describe('syncDevice', () => {
         expect(await sync(cut)).toMatchObject({ rides: 0, problem: CABLE_OUT });
         expect(await library.rides()).toEqual([]);
         await rig.close().catch(() => undefined);
+    });
+});
+
+describe('rideRecord', () => {
+    it('keeps the trip of the footer, with the key in decimal and the day from 1', () => {
+        const trip = { key: 2n ** 63n + 5n, dayIndex: 1, dayCount: 3, name: 'Alps' };
+        expect(rideRecord(ride(1_780_000_000, { trip }), 'card:1')?.trip).toEqual({ key: '9223372036854775813', day: 2, name: 'Alps' });
+        expect(rideRecord(ride(1_780_000_000), 'card:1')).not.toHaveProperty('trip');
     });
 });

@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { readSettings, updateSettings } from '../../lib/settings/settings.svelte';
-import { distanceToBox, readSearch, results, routeItem, type Item } from './filter';
+import type { RouteSummary } from '../../lib/library/records';
+import { distanceToBox, readSearch, results, rideItem, routeItem, type Item } from './filter';
 
 vi.mock('../../lib/planner/search/types', () => ({
     searchPlaces: async () => ({ type: 'places', request: {}, results: [
@@ -18,8 +19,8 @@ beforeEach(() => {
 });
 
 // A line along the meridian 8° E, from 47° N up 0.1°, about 11 km.
-const item = (id: string, fields: Partial<NonNullable<Item['summary']>> = {}, name = id, updatedAt = 0): Item => ({
-    id, name, updatedAt,
+const item = (id: string, fields: Partial<RouteSummary> = {}, name = id, at = 0): Item => ({
+    kind: 'route', id, name, at,
     summary: { line: [8, 47, 8, 47.1], heights: [400, 500], bounds: [8, 47, 8, 47.1], lengthM: 11_000, climbM: 100, highestM: 500, seconds: 3600, bike: 'gravel', days: 1, ...fields },
 });
 const ids = (list: Item[]) => list.map(entry => entry.id);
@@ -44,7 +45,7 @@ describe('results', () => {
     });
 
     it('keeps a route with no summary for a text, and leaves it out with a chip or the view', () => {
-        const broken: Item = { id: 'broken', name: 'Old plan', summary: null, updatedAt: 0 };
+        const broken: Item = { kind: 'route', id: 'broken', name: 'Old plan', summary: null, at: 0 };
         expect(ids(results([broken], {}, 'old'))).toEqual(['broken']);
         expect(results([broken], { days: [1, 2] }, '')).toEqual([]);
         expect(results([broken], {}, '', [0, 0, 10, 50])).toEqual([]);
@@ -63,6 +64,14 @@ describe('results', () => {
         const items = [item('in'), item('out', { line: [9, 47, 9, 47.1] })];
         expect(ids(results(items, {}, '', [7.9, 46.9, 8.1, 47.01]))).toEqual(['in']);
     });
+
+    it('keeps the rides of the year chip by their local start', () => {
+        const ride = (key: string, start: Date) => rideItem({ key, name: key, source: 'file', format: 'gpx', maxHr: null, ftp: null,
+            summary: { ...item(key).summary!, start: start.getTime() / 1000, movingS: 3000 } });
+        const items = [ride('eve', new Date(2025, 11, 31, 23, 30)), ride('new', new Date(2026, 0, 1, 0, 30))];
+        expect(ids(results(items, { year: 2026 }, ''))).toEqual(['new']);
+        expect(ids(results(items, {}, ''))).toEqual(['new', 'eve']);
+    });
 });
 
 describe('distanceToBox', () => {
@@ -74,10 +83,10 @@ describe('distanceToBox', () => {
 });
 
 describe('routeItem', () => {
-    const route = { id: 'r', revision: 1, name: '', updatedAt: 5, summary: item('r').summary as never, trip: { points: [] } };
+    const route = { id: 'r', revision: 1, name: '', updatedAt: 5, summary: item('r').summary as RouteSummary, trip: { points: [] } };
     it('names a plan with no name by its title, and a route that is not a plan', () => {
         expect(routeItem(route, { isPlan: () => true, planTitle: () => 'Loop from Bern' }).name).toBe('Loop from Bern');
-        expect(routeItem(route, { isPlan: () => false, planTitle: () => '' })).toEqual({ id: 'r', name: 'Route that cannot be read', summary: null, updatedAt: 5 });
+        expect(routeItem(route, { isPlan: () => false, planTitle: () => '' })).toEqual({ kind: 'route', id: 'r', name: 'Route that cannot be read', summary: null, at: 5 });
     });
 
     it('without the planner functions, names a route by the start and the finish of its trip', () => {
