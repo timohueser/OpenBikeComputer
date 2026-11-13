@@ -78,6 +78,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (mut requests_run, mut differences, mut ties) = (0, 0, 0);
     println!("profile, kind, km, old ms, old settled, old ns/label, new ms, new settled, new ns/label, new peak MB, faults, outcome");
     for profile in profiles.iter().filter(|profile| only.as_ref().is_none_or(|only| only == *profile)) {
+        // The decode of a profile of format 9 is not a time of its searches.
+        old.package().warm(profile)?;
         let requests = compare::requests(&old, profile, count, seed, max_km * 1000.0);
         let points: Vec<Point> = requests.iter().flat_map(|request| request.points.iter().map(|&p| point(p))).collect();
         let mut snap_us = [0.0; 2];
