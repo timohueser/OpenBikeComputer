@@ -4,7 +4,7 @@ import { loadFlatDevice } from '../../../test-support/flat-device/load';
 import { rideKeyAt } from '../library/import';
 import type { RouteRecord } from '../library/records';
 import { Library } from '../library/store';
-import { lineKey, summarize } from '../library/summary';
+import { sentKey, summarize } from '../library/summary';
 import { emptyTrip, type DrawnCoordinate, type RoutePoint, type Trip } from '../planner/editor';
 import { newPlan, type Plan } from '../planner/library';
 import { DeviceError, type FlatStoreClient } from '../usb/client';
@@ -127,7 +127,7 @@ describe('syncDevice', () => {
         const table = view.getUint32(112, true), waypoints = Array.from({ length: view.getUint16(116, true) }, (_, i) => table + i * 80);
         expect(waypoints.map(at => [new TextDecoder().decode(obcr.subarray(at + 20, at + 20 + obcr[at + 15])), obcr[at + 14]]))
             .toEqual([['Camp', 2], ['Spring', 1]]);
-        expect(await library.state('sent')).toEqual({ [route.id]: { device: `${CARD}:${first.objectId}`, line: lineKey(route) } });
+        expect(await library.state('sent')).toEqual({ [route.id]: { device: `${CARD}:${first.objectId}`, key: sentKey(route) } });
         expect(await library.state('waiting')).toEqual([]);
 
         const changed = { ...(await library.route(route.id))!, trip: plan(8.2).trip };
@@ -135,8 +135,14 @@ describe('syncDevice', () => {
         await sync();
         expect(routes()).toMatchObject([{ objectId: first.objectId }]);
         expect(routes()[0].revision).toBeGreaterThan(first.revision);
+        // A new name leaves the line as it is, and still makes the device file old.
+        const renamed = await library.renameRoute(route.id, 'Black Forest loop');
+        expect((await library.state('sent'))![route.id].key).not.toBe(sentKey(renamed));
 
+        // The rider deletes the route on the device: the next sync forgets that it was sent.
         await rig.client.remove(routes()[0]);
+        await sync();
+        expect(await library.state('sent')).toEqual({});
         await send((await library.route(route.id))!);
         await sync();
         const [again] = routes();
@@ -145,6 +151,23 @@ describe('syncDevice', () => {
 
         await library.removeRoute(route.id);
         expect(await sync()).toMatchObject({ removed: 1, tried: [route.id] });
+        expect([routes(), await library.state('sent'), await library.state('leaving')]).toEqual([[], {}, []]);
+        await rig.close();
+    });
+
+    it('removes a route that the rider deleted in the library during its first upload', async () => {
+        const { rig, library, sync, routes, send } = setup();
+        rememberCard(SERIAL, CARD);
+        const route = plan();
+        await send(route);
+        const client = rig.client, deleting: Parameters<typeof syncDevice>[0] = {
+            list: options => client.list(options), get: (...args) => client.get(...args), remove: (...args) => client.remove(...args),
+            archiveRide: (...args) => client.archiveRide(...args),
+            put: async (...args) => { const answer = client.put(...args); await library.removeRoute(route.id); return answer; },
+        };
+        await sync(deleting);
+        expect([routes(), await library.state('leaving')]).toMatchObject([[{ displayName: 'Black Forest' }], [route.id]]);
+        expect(await sync()).toMatchObject({ removed: 1 });
         expect([routes(), await library.state('sent'), await library.state('leaving')]).toEqual([[], {}, []]);
         await rig.close();
     });
@@ -166,7 +189,7 @@ describe('syncDevice', () => {
         expect(report).toMatchObject({ problem: null, sent: 1, removed: 0 });
         const [first, second, created] = other.routes();
         expect([first, second]).toMatchObject(phone.map(entry => ({ objectId: entry.objectId, revision: entry.revision })));
-        expect([await library.state('sent'), await library.state('leaving')]).toEqual([{ [kept.id]: { device: `${OTHER_CARD}:${created.objectId}`, line: lineKey(kept) } }, []]);
+        expect([await library.state('sent'), await library.state('leaving')]).toEqual([{ [kept.id]: { device: `${OTHER_CARD}:${created.objectId}`, key: sentKey(kept) } }, []]);
         await other.rig.close();
     });
 

@@ -114,11 +114,11 @@ export interface DeletedRide {
     device?: string;
 }
 
-/** A route on a device: `storeId:objectId` of its object, as the `device` of a ride, and the `lineKey` of the route when it
+/** A route on a device: `storeId:objectId` of its object, as the `device` of a ride, and the `sentKey` of the route when it
  * was sent. */
 export interface SentRoute {
     device: string;
-    line: string;
+    key: string;
 }
 
 /** The values of the `state` store. */
@@ -178,7 +178,7 @@ const isTrip = (value: unknown): value is RideTrip => isRecord(value) && isStrin
     && Number.isInteger(value.day) && (value.day as number) >= 1 && isString(value.name);
 
 const isSent = (value: unknown): value is Record<string, SentRoute> => isRecord(value)
-    && Object.values(value).every(route => isRecord(route) && isString(route.device) && isString(route.line));
+    && Object.values(value).every(route => isRecord(route) && isString(route.device) && isString(route.key));
 
 const isDeleted = (value: unknown): value is DeletedRide =>
     isRecord(value) && isString(value.key) && rideKey.test(value.key) && optional(value.device, isString);

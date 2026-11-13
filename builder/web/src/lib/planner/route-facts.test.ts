@@ -49,6 +49,18 @@ describe('routeFacts', () => {
         expect(facts.climbs[0].steepest).toBeLessThan(10);
     });
 
+    it('finds the steepest 500 m at the top of a climb, whose end is rounded to 1 m', async () => {
+        // Down 10 m in 3.8 km, then 3 km up at 4 % and the last 500 m up 50 m (10 %) to the finish.
+        const finish = point('finish', 'finish', 8.0965932, 400, 570);
+        const trip: Trip = { ...emptyTrip('route'), days: 1, routeOrder: ['foot'], points: [
+            point('start', 'start', 8, 410, 410),
+            point('foot', 'waypoint', 8.05, 410, 400),
+            { ...finish, drawn: [[8.05, 47, 400], [8.09, 47, 520], [8.0965932, 47, 570]] },
+        ] };
+        const [climb] = routeFacts(trip, await calculateLine(trip, new AbortController().signal, new LegCache())).climbs;
+        expect(climb.steepest).toBeCloseTo(10, 0);
+    });
+
     it('places the waypoints and the nights on the calculated line, and with no line at the nearest points of the summary line', async () => {
         const trip: Trip = { ...emptyTrip('trip'), days: 2, daysSet: true, routeOrder: ['up', 'night-1', 'flat'], points: [
             point('start', 'start', 8, 400, 400),

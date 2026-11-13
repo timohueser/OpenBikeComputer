@@ -58,7 +58,8 @@
     const inside = (share: number) => share >= shown.from && share <= shown.to;
     // The start tick names the night at the start of the shown stretch.
     const shownPins = $derived(pins.filter(pin => pin.number ? inside(pin.share) : pin.share > shown.from && pin.share <= shown.to));
-    const slice = $derived(routeSlice(coordinates, shown.from, shown.to));
+    // The shares of a day belong to the calculated line.
+    const slice = $derived(routeSlice(profile.coordinates, shown.from, shown.to));
     const nights = $derived(pins.filter(pin => !pin.number).map(pin => pin.share));
     const runs = $derived(line ? surfaceWindow(surfaceRuns(line).runs, shown.from, shown.to) : []);
     const surfaces = $derived([...new Set(runs.map(run => run.surface))]);
@@ -306,6 +307,15 @@
         background: var(--panel);
         box-shadow: 0 8px 24px rgb(28 27 20 / 0.18);
         font-size: 13px;
+    }
+    /* Covers the gap above the panel, so that the pointer does not leave the pin on its way to a link. */
+    .panel::before {
+        position: absolute;
+        right: 0;
+        bottom: 100%;
+        left: 0;
+        height: 7px;
+        content: '';
     }
     .panel small {
         color: var(--ink-soft);

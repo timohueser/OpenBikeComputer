@@ -1,7 +1,7 @@
 import { mount } from 'svelte';
 import './styles/tokens.css';
 import { startCoverJob } from './lib/covers/job';
-import { lineKey } from './lib/library/summary';
+import { lineKey, sentKey } from './lib/library/summary';
 import { Library } from './lib/library/store';
 import { setLook } from './lib/theme.svelte';
 
@@ -10,7 +10,7 @@ const search = new URLSearchParams(location.search), cover = search.get('cover')
 if (cover !== null) {
     // The page of the browser test of a cover; the test fills the library through `window.coverTest`.
     const library = new Library();
-    Object.assign(window, { coverTest: { library, lineKey, startCoverJob: () => startCoverJob(library), setLook } });
+    Object.assign(window, { coverTest: { library, lineKey, sentKey, startCoverJob: () => startCoverJob(library), setLook } });
     void import('./lib/covers/CoverPage.svelte').then(({ default: CoverPage }) => mount(CoverPage, { target, props: { library, id: cover } }));
 } else {
     // A dynamic import, so the test page of a cover has none of the shell's base rules.

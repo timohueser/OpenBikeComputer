@@ -96,7 +96,7 @@ Each field is optional.
 | `active` | String or `null`: the id of the route that the planner opens |
 | `waiting` | Array of route ids: the routes that wait to go to the device |
 | `leaving` | Array of route ids: the routes to remove from the device |
-| `sent` | Object: for a route id, an object with `device`, the route on the device as `storeId:objectId`, and `line`, the line key of the route when it was sent |
+| `sent` | Object: for a route id, an object with `device`, the route on the device as `storeId:objectId`, and `key`, a hash of the name and the plan of the route when it was sent |
 | `apart` | Array of ride keys: the rides that the rider took out of their group of rides on the same route |
 | `deleted` | Array of objects with `key` and an optional `device`: the rides that the rider deleted |
 

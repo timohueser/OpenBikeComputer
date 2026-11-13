@@ -84,16 +84,17 @@
         onpoint?.(metres ?? null);
     }
 
-    /** The pins at visible points of the line, in CSS pixels of the box. */
+    /** The pins at visible points of the line, in CSS pixels of the box. `index` is the place in `pins`; `left` puts the
+     * label on the side with more room. */
     const shownPins = $derived.by(() => {
         const summary = shown?.summary;
         if (!summary || !width || !height) return [];
         const { bitmap, points } = shown!, ratio = devicePixelRatio;
         const cut = crop({ width: bitmap.width, height: bitmap.height, points }, [Math.round(width * ratio), Math.round(height * ratio)]);
-        return pins.flatMap(pin => {
+        return pins.flatMap((pin, index) => {
             const at = along(points, summary, pin.share * summary.lengthM);
             const x = at && (at.x - cut.left) * cut.scale / ratio, y = at && (at.y - cut.top) * cut.scale / ratio;
-            return at?.visible && x! >= 0 && x! <= width && y! >= 0 && y! <= height ? [{ ...pin, x: x!, y: y! }] : [];
+            return at?.visible && x! >= 0 && x! <= width && y! >= 0 && y! <= height ? [{ ...pin, x: x!, y: y!, index, left: x! > width / 2 }] : [];
         });
     });
 
@@ -121,14 +122,14 @@
 <div class="cover" bind:clientWidth={width} bind:clientHeight={height}>
     {#if shown}
         <canvas bind:this={canvas} onpointermove={point} onpointerleave={() => onpoint?.(null)}></canvas>
-        {#each shownPins as pin, i (i)}
+        {#each shownPins as pin (pin.index)}
             <span class="route-pin" style:left={`${pin.x}px`} style:top={`${pin.y}px`}>
-                <button type="button" class:night={!pin.number} aria-label={pinName(pin)} aria-expanded={opened === i}
-                    onclick={() => opened = i} onfocus={() => opened = i} onblur={() => opened = undefined}
+                <button type="button" class:night={!pin.number} aria-label={pinName(pin)} aria-expanded={opened === pin.index}
+                    onclick={() => opened = pin.index} onfocus={() => opened = pin.index} onblur={() => opened = undefined}
                     onkeydown={event => { if (event.key === 'Escape') opened = undefined; }}>
                     {#if pin.number}{pin.number}{:else}<Icon name="moon" size={12} />{/if}
                 </button>
-                {#if opened === i}<span class="route-pin-label">{pinName(pin)}</span>{/if}
+                {#if opened === pin.index}<span class="route-pin-label" class:left={pin.left}>{pinName(pin)}</span>{/if}
             </span>
         {/each}
     {:else if fallback && line}

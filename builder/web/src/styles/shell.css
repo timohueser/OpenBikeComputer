@@ -37,7 +37,7 @@ summary:focus-visible {
 }
 
 /* A pin at a point of a route on the cover or the map: a waypoint is its number in a disc, a night a moon. A click shows
-   its name in a label beside it. */
+   its name in a label beside it, on the side of the box with more room. */
 .route-pin {
     position: absolute;
     transform: translate(-50%, -50%);
@@ -74,4 +74,8 @@ summary:focus-visible {
     white-space: nowrap;
     transform: translateY(-50%);
     pointer-events: none;
+}
+.route-pin-label.left {
+    right: calc(100% + 6px);
+    left: auto;
 }
