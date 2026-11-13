@@ -200,5 +200,5 @@ function rememberContents(catalog: Catalog): void {
         bytes[kind] += Number(entry.payloadLength);
     }
     const map = ofKind(catalog, ObjectKind.MapShard).sort(byId)[0];
-    remember({ at: Date.now(), map: map?.displayName ?? null, routes: ofKind(catalog, ObjectKind.Route).length, bytes });
+    remember({ at: Date.now(), map: map?.displayName ?? null, mapObject: map ? `${map.objectId}:${map.revision}` : null, routes: ofKind(catalog, ObjectKind.Route).length, bytes });
 }

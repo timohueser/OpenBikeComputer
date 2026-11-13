@@ -9,7 +9,8 @@
     import { renderSkinPreviewFrames, type SkinPreviewFrame } from "../../lib/skin/preview";
     import { confirmAction } from "../../lib/ui/confirm.svelte";
 
-    let { store }: { store: CoverageStore } = $props();
+    /** `plain`: only the choice, each skin with its name, with no note and no editor, for a window of the shell. */
+    let { store, plain = false }: { store: CoverageStore; plain?: boolean } = $props();
     let previewUrls = $state<Record<string, string>>({});
     let customPreviewFrames = $state<Record<string, SkinPreviewFrame>>({});
     let editing = $state<SkinEntry | null>(null);
@@ -44,7 +45,8 @@
     });
 
     $effect(() => {
-        const custom = store.skins.filter((skin) => isCustomSkinId(skin.id));
+        // A catalog skin with no stored picture is drawn here, as a custom skin is.
+        const custom = store.skins.filter((skin) => isCustomSkinId(skin.id) || !skin.preview);
         const controller = new AbortController();
         let live = true;
         if (custom.length === 0) {
@@ -80,11 +82,11 @@
 </script>
 
 <div class="theme-tabs" aria-label="Map style theme">
-    <button type="button" aria-pressed={mode === "light"} class:active={mode === "light"} onclick={() => (mode = "light")}>Light</button>
-    <button type="button" aria-pressed={mode === "dark"} class:active={mode === "dark"} onclick={() => (mode = "dark")}>Dark</button>
+    <button type="button" aria-pressed={mode === "light"} class:active={mode === "light"} onclick={() => (mode = "light")}>Day</button>
+    <button type="button" aria-pressed={mode === "dark"} class:active={mode === "dark"} onclick={() => (mode = "dark")}>Night</button>
 </div>
-<p class="small faint theme-note">Light and dark styles are included.</p>
-<div class="cards">
+{#if !plain}<p class="small faint theme-note">Light and dark styles are included.</p>{/if}
+<div class="cards" class:plain>
     {#each visibleSkins as skin (skin.id)}
         <button
             type="button"
@@ -94,17 +96,13 @@
             aria-pressed={selected.id === skin.id}
             onclick={() => mode === "light" ? (store.lightSkinId = skin.id) : (store.darkSkinId = skin.id)}
         >
-            {#if isCustomSkinId(skin.id)}
-                {#if customPreviewFrames[skin.id]}
-                    <span class="shot">
-                        <SkinPreviewThumbnail
-                            frame={customPreviewFrames[skin.id]}
-                            label={`${skin.name} rendered over Teningen`}
-                        />
-                    </span>
-                {:else}
-                    <span class="shot placeholder" aria-hidden="true"></span>
-                {/if}
+            {#if customPreviewFrames[skin.id]}
+                <span class="shot">
+                    <SkinPreviewThumbnail
+                        frame={customPreviewFrames[skin.id]}
+                        label={`${skin.name} rendered over Teningen`}
+                    />
+                </span>
             {:else if previewUrls[skin.id]}
                 <img
                     class="shot"
@@ -117,15 +115,16 @@
             {:else}
                 <span class="shot placeholder" aria-hidden="true"></span>
             {/if}
-            {#if isCustomSkinId(skin.id)}
+            {#if plain || isCustomSkinId(skin.id)}
                 <span class="label-line">
                     <span class="name">{skin.name}</span>
-                    <span class="custom-tag">custom</span>
+                    {#if isCustomSkinId(skin.id)}<span class="custom-tag">custom</span>{/if}
                 </span>
             {/if}
         </button>
     {/each}
 </div>
+{#if !plain}
 <div class="actions">
     {#if isCustomSkinId(selected.id)}
         <button type="button" class="text-action danger" onclick={removeSelected}>Delete</button>
@@ -134,6 +133,7 @@
         {isCustomSkinId(selected.id) ? `Edit ${mode}` : `Customize ${mode}`}
     </button>
 </div>
+{/if}
 
 {#if editing}
     <SkinEditor {store} base={editing} theme={mode === "light" ? "Light" : "Dark"} onclose={() => (editing = null)} />
@@ -144,6 +144,10 @@
         display: flex;
         flex-wrap: wrap;
         gap: 10px;
+    }
+
+    .cards.plain {
+        margin-top: 12px;
     }
 
     .theme-tabs {

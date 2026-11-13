@@ -8,20 +8,24 @@
     import { deviceName, rememberDevice, remembered, rememberedReady } from '../lib/device-sync/remembered.svelte';
     import { deviceSync } from '../lib/device-sync/state.svelte';
     import { formatBytes } from '../lib/format';
-    import type { RouteRecord } from '../lib/library/records';
+    import type { NextMap, RouteRecord } from '../lib/library/records';
     import type { Library } from '../lib/library/store';
     import { planTitle } from '../lib/planner/editor';
     import { isPlan } from '../lib/planner/library';
+    import { platform } from '../lib/platform';
     import { ROUTES } from '../lib/routes';
+    import { deviceArea, sameArea } from './area/area';
 
     let { library }: { library: Library; active: boolean } = $props();
 
     type Named = { id: string; name: string };
     const siteBase = import.meta.env.VITE_SITE_BASE || '/';
-    /** What the library holds for the remembered device: the routes that wait or leave, the routes on its card, and the
-     * rides that came from its card. */
-    let held = $state.raw<{ waiting: Named[]; leaving: number; sent: Named[]; rides: number; last: number | null }>(
-        { waiting: [], leaving: 0, sent: [], rides: 0, last: null });
+    /** What the library holds for the remembered device: the routes that wait or leave, the routes on its card, the
+     * rides that came from its card, and the map that waits. */
+    let held = $state.raw<{ waiting: Named[]; leaving: number; sent: Named[]; rides: number; last: number | null; next: NextMap | null }>(
+        { waiting: [], leaving: 0, sent: [], rides: 0, last: null, next: null });
+    /** What the map that waits changes against the map on the device; null until the map catalog says it. */
+    let news = $state<'New area' | 'New colours' | null>(null);
     let reads = 0;
     /** The rider clicked Disconnect, and the device did not connect again since. */
     let released = $state(false);
@@ -74,13 +78,13 @@
     /** The rides come from `library.rides()`: a ride record names its card in `device`, and the library has no index of it. */
     async function read(card: string | undefined) {
         const mine = ++reads;
-        const [waiting, leaving, sent, rides] = await Promise.all([library.state('waiting'), library.state('leaving'), library.state('sent'),
-            card ? library.rides() : []]);
+        const [waiting, leaving, sent, next, rides] = await Promise.all([library.state('waiting'), library.state('leaving'), library.state('sent'),
+            library.state('nextMap'), card ? library.rides() : []]);
         const onCard = Object.entries(sent ?? {}).filter(([, copy]) => copy.device.startsWith(`${card}:`)).map(([id]) => id);
         const fromCard = rides.filter(ride => ride.device?.startsWith(`${card}:`));
-        const next = { waiting: await named(waiting ?? []), leaving: leaving?.length ?? 0, sent: await named(onCard),
-            rides: fromCard.length, last: fromCard.length ? Math.max(...fromCard.map(ride => ride.summary.start)) : null };
-        if (mine === reads) held = next;
+        const now = { waiting: await named(waiting ?? []), leaving: leaving?.length ?? 0, sent: await named(onCard),
+            rides: fromCard.length, last: fromCard.length ? Math.max(...fromCard.map(ride => ride.summary.start)) : null, next: next ?? null };
+        if (mine === reads) held = now;
     }
 
     onMount(() => {
@@ -88,6 +92,19 @@
         return library.onChange(store => { if (store === 'state' || store === 'rides' || store === 'routes') void read(remembered.device?.storeId); });
     });
     $effect(() => { void read(device?.storeId); });
+
+    // The map catalog loads only for a map that waits: a region of it can be the map on the device.
+    $effect(() => {
+        const next = held.next, on = device;
+        news = null;
+        if (!next) return;
+        let live = true;
+        void platform.catalog().then(({ body }) => JSON.parse(body).regions as { id: string; name: string }[], () => []).then(regions => {
+            const known = deviceArea(on, regions);
+            if (live) news = known && sameArea(next, known) ? 'New colours' : 'New area';
+        });
+        return () => { live = false; };
+    });
 
     /** A device that this page adopted is remembered as it is: a second chooser would open a second link to it. */
     function connect() {
@@ -120,6 +137,24 @@
             {status === 'connecting' ? 'Connecting' : other ? `Use ${other.name}` : label}
         </button>
     {/if}
+{/snippet}
+
+<!-- The map on the device, or the map that waits for it. A click on "Send the map" is the only start of a map build. -->
+{#snippet mapRow(connected: boolean)}
+    <div class="row">
+        <span class="label">Map</span>
+        <div>
+            {#if held.next}
+                {#if news}<p>{news} · {formatBytes(held.next.bytes)}</p>{/if}
+            {:else if device?.at != null}
+                <p>{device.map ?? 'No map'}</p>
+            {/if}
+            <p class="second"><a href={ROUTES.area}>Change the area of the map</a></p>
+        </div>
+        {#if held.next && connected}
+            <div><button type="button" class="button" disabled>Send the map</button></div>
+        {/if}
+    </div>
 {/snippet}
 
 {#snippet links(routes: Named[])}
@@ -200,8 +235,8 @@
                                     </p>
                                 </div>
                             </div>
-                            <div class="row"><span class="label">Map</span><div><p>{device.map ?? 'No map'}</p></div></div>
                         {/if}
+                        {@render mapRow(true)}
                         {#if session?.client}
                             <div class="row">
                                 <span class="label">Software</span>
@@ -216,6 +251,7 @@
                                 {#if held.leaving}<p class="second">{plural(held.leaving, 'route')} to remove from the device</p>{/if}
                             </div>
                         </div>
+                        {@render mapRow(false)}
                         <p class="hint">Routes go to the device when you connect it.</p>
                     {/if}
                 </div>
@@ -351,6 +387,9 @@
     }
     .second {
         margin-top: 4px;
+    }
+    .second:first-child {
+        margin-top: 0;
     }
     .hint {
         padding: 14px 0 16px;

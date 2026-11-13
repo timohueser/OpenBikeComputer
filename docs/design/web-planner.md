@@ -123,12 +123,14 @@ The page `#/device` ([`Device.svelte`](../../builder/web/src/pages/Device.svelte
 | --- | --- | --- |
 | Cannot | The browser has no WebUSB. | That the cable works in Chrome and Edge, and what works here. No button. |
 | Connected | The remembered device is `ready`. | The name, "Connected", "Disconnect", the live drawing, and one card of rows: Sync, Routes, Rides, Memory card, Map and Software. |
-| Not connected | A device is remembered. | The name, "Not connected", "Connect", the dim drawing, the last sync and the routes that wait for the device. |
+| Not connected | A device is remembered. | The name, "Not connected", "Connect", the dim drawing, the last sync, the routes that wait for the device, and the row Map. |
 | Never | No device is remembered. | "Connect a device", and a note that the product works with no device. |
 
 The row Sync shows the time of the last sync (`at` of the remembered device) and what the last sync of this page did (`deviceSync.report`). "Sync now" and, after a problem, "Try again" call `deviceSync.run()`. The row Routes counts the routes on the card and names the routes of the library whose `sent` entry names this card. The row Rides counts the rides of the library that came from this card, from `library.rides()`, because a ride record names its card and the library has no index of it. The memory card bar shows only the used parts, because the cable does not report the size of the card.
 
 The row Software ([`Software.svelte`](../../builder/web/src/pages/device/Software.svelte)) compares the version that the cable reports with the published one (`firmwareCheck`). "Update" sends the package to the card (`stageFirmware`) and asks the device to install it (`armUpdate`). The row says that the device installs it only when the device agreed. The firmware refuses that step today, and the row says so in one sentence.
+
+The row Map shows the name of the map on the card. When the library state `nextMap` holds a map that waits for the device, the row shows "New area" or "New colours" and the size of its download. It is "New colours" when the map on the device has the same regions and boxes (`deviceArea`, `sameArea`). The page loads the map catalog for this comparison, and only when a map waits. With a connected device the row has the button "Send the map", which does nothing yet. The link "Change the area of the map" opens the map area page.
 
 A Connect button calls `requestDevice()` in the click, and remembers the device when it is `ready`. When another device is `ready` on the cable, the button names it and remembers it with no chooser, because a second chooser would open a second link to it. A device whose card has no format cannot be remembered; the page sends the rider to the map builder. "Disconnect" frees the device for another page; the sync takes it again at its next `ready`. The error of a device that another page holds is one plain sentence.
 
@@ -137,6 +139,16 @@ The drawing ([`Drawing.svelte`](../../builder/web/src/pages/device/Drawing.svelt
 The top bar shows a chip with the name of the remembered device: a hollow dot, or a green dot while it is connected. While a sync runs, a sync icon turns beside it. After a problem of the last sync, the icon is a button that starts the sync again.
 
 `planner.html?fake-device` puts the wasm test device on a pretend cable ([`fake-device.ts`](../../builder/web/test-support/device-sync/fake-device.ts)), with `window.deviceTest`. The dev server has it, and the build of the browser tests has it through `VITE_FAKE_DEVICE=1`. Another build has no path to it.
+
+## Map area page
+
+On the page `#/device/area` ([`Area.svelte`](../../builder/web/src/pages/Area.svelte)) the rider chooses the area and the colours of the device map. The page opens with the map that waits (`nextMap`), else with the area of the map on the device, else with no area. `deviceArea` ([`area.ts`](../../builder/web/src/pages/area/area.ts)) knows the area of the map on the device in two cases: this browser sent the map (`built` of the remembered device names the map object on the card), or the map has the name of one region of the map catalog.
+
+The page shows the coverage map of map assembly (`CoverageMap`) with no tool rail. The switch "Countries and regions" / "A box" of the left card sets the tool of the map: a click adds a region, a drag draws a box. The ground outside the area is pale, one line goes around the area, and each route of the library is a line in the colour of a route. The left card lists the parts of the area, each with a button that removes it.
+
+`routesOutside` ([`outside.ts`](../../builder/web/src/pages/area/outside.ts)) checks the routes that wait for the device and the routes on the card of the remembered device. For each route it gives the length of the summary line outside the detail cells of the area. Ground with no map data in the catalog does not count, because the rider cannot add it. For each such route the card offers two answers: the box around the part outside the area, and the smallest region of the catalog there.
+
+"Colours" opens the choice of the map styles of map assembly (`SkinStep`) in a window, with no editor. The card shows the size of the download of the whole map and the size of the map on the device. "Done" writes `nextMap` when the rider changed the area or the colours: the regions, the boxes, the two style ids and the size of the download. It writes `null` when the map is the map on the device or has no part. The page needs no remembered device, and nothing on it builds a map.
 
 ## Covers
 
