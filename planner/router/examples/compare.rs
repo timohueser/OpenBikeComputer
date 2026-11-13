@@ -1,32 +1,22 @@
 //! Routes one request set on the two formats of one bake and prints each request:
 //! `compare OLD NEW COUNT SEED [--max-km K] [--profile P] [--cold] [--no-announce]`. OLD is format
 //! 9 and NEW an install of format 10 (`cells install`); COUNT is the requests of each profile, or of
-//! `P` only. `--cold` opens NEW
-//! again with its files out of the page cache before each request; `--no-announce` makes its host
-//! silent. Exits with 1 on a difference, with 2 when the packages have other profiles.
+//! `P` only. `--cold` opens NEW again with its files out of the page cache before each request, and
+//! prints the time and the major page faults of that first route of NEW; `--no-announce` makes its
+//! host silent. Exits with 1 on a difference, with 2 when the packages have other profiles.
 use planner_router::{
     compare::{self, Outcome, KINDS},
     data::RoutingData,
     host::Maps,
-    install,
     model::{Point, NO_ELEVATION},
-    region::Region,
     snap::Policy,
-    Error, Opened, Request, Router,
+    Control, Error, Opened, Request, Router,
 };
 use std::{path::Path, time::Instant};
 
 /// Opens NEW; with `silent`, on a host whose `announce` does nothing.
 fn open_new(path: &Path, silent: bool) -> Result<Router<Opened>, Error> {
-    let data = if silent {
-        let read = |name: &str| std::fs::read(path.join(name)).map_err(|e| Error::InvalidData(e.to_string()));
-        let (directory, info, marker) = (read("directory.bin")?, read("package.json")?, read(install::MARKER)?);
-        let maps = Maps::new(path, &directory)?.silent();
-        Opened::Cells(Region::open(maps, directory, info, &marker)?)
-    } else {
-        planner_router::open(path)?
-    };
-    Ok(Router::new(data, usize::MAX))
+    Ok(Router::new(Opened::Cells(planner_router::open::cells(path, silent)?), usize::MAX))
 }
 
 /// The major page faults of this process (field 12 of `/proc/self/stat`).
@@ -76,11 +66,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let started = Instant::now();
     let (mut requests_run, mut differences, mut ties) = (0, 0, 0);
-    println!("profile, kind, km, old ms, old settled, old ns/label, new ms, new settled, new ns/label, new peak MB, faults, outcome");
+    println!("profile, kind, km, old ms, old settled, old ns/label, new ms, new settled, new ns/label, new peak MB, cold ms, cold faults, outcome");
     for profile in profiles.iter().filter(|profile| only.as_ref().is_none_or(|only| only == *profile)) {
         // The decode of a profile of format 9 is not a time of its searches.
         old.package().warm(profile)?;
         let requests = compare::requests(&old, profile, count, seed, max_km * 1000.0);
+        if requests.len() < count {
+            println!("{profile}: only {} of {count} requests, because few points snap", requests.len());
+        }
         let points: Vec<Point> = requests.iter().flat_map(|request| request.points.iter().map(|&p| point(p))).collect();
         let mut snap_us = [0.0; 2];
         for (side, data) in [old.package(), new.as_ref().ok_or(usage)?.package()].into_iter().enumerate() {
@@ -98,11 +91,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 new = Some(open_new(new_path, silent)?);
             }
             let router = new.as_mut().ok_or(usage)?;
-            let faults = major_faults();
+            // The first route of NEW alone, so that its time and faults are those of the cold files.
+            let (mut cold_ms, mut faults) = (0.0, 0);
+            if cold {
+                let (started, before) = (Instant::now(), major_faults());
+                let _ = router.routes(request, &Control::default());
+                (cold_ms, faults) = (started.elapsed().as_secs_f64() * 1e3, major_faults() - before);
+            }
             old.package().take_stats();
             router.package().take_stats();
             let checked = compare::check(&mut old, router, request);
-            let faults = major_faults() - faults;
             let stats = [old.package().take_stats(), router.package().take_stats()];
             requests_run += 1;
             let (outcome, times) = match checked {
@@ -120,7 +118,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 format!("{ms:.1}, {}, {per:.0}", stats[s].settled)
             };
             println!(
-                "{profile}, {}, {:.1}, {}, {}, {:.1}, {faults}, {outcome}",
+                "{profile}, {}, {:.1}, {}, {}, {:.1}, {cold_ms:.1}, {faults}, {outcome}",
                 KINDS[k % KINDS.len()],
                 straight_km(request),
                 side(0),

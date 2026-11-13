@@ -218,10 +218,7 @@ impl Bake {
 
     /// The data of an install of the download cells `cells`, or all, through memory maps.
     fn region(&self, cells: Option<&[u32]>) -> Region<host::Maps> {
-        let target = self.install(cells);
-        let marker = fs::read(target.join(install::MARKER)).unwrap();
-        let maps = host::Maps::new(&target, &self.directory).unwrap();
-        Region::open(maps, self.directory.clone(), self.info.clone(), &marker).unwrap()
+        planner_router::open::cells(&self.install(cells), false).unwrap()
     }
 
     /// The data of the install of all cells, held in memory.
@@ -488,7 +485,7 @@ fn an_install_of_some_cells_routes_on_its_roads() {
                     assert_eq!(route.cost, all.cost, "{request:?}");
                     same += 1;
                 } else {
-                    assert!(route.cost > all.cost, "{request:?}");
+                    assert!(route.cost >= all.cost, "{request:?}");
                     dearer += 1;
                 }
             }

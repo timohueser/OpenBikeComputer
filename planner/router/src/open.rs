@@ -37,6 +37,12 @@ pub fn open(path: &Path) -> Result<Opened> {
     if path.join("manifest.json").exists() || path.join("blocks.json").exists() {
         return directory::open(path).map(Opened::Pages);
     }
+    cells(path, false).map(Opened::Cells)
+}
+
+/// Opens the install of format 10 in `path`; with `silent`, on a host whose `announce` does
+/// nothing, which only a measurement uses.
+pub fn cells(path: &Path, silent: bool) -> Result<Region<Maps>> {
     if !path.join("directory.bin").is_file() || !path.join(install::MARKER).is_file() {
         return Err(Error::MissingRegion(format!("The routing install in {} is not complete", path.display())));
     }
@@ -46,7 +52,7 @@ pub fn open(path: &Path) -> Result<Opened> {
     };
     let (directory, info, marker) = (read("directory.bin")?, read("package.json")?, read(install::MARKER)?);
     let maps = Maps::new(path, &directory)?;
-    Region::open(maps, directory, info, &marker).map(Opened::Cells)
+    Region::open(if silent { maps.silent() } else { maps }, directory, info, &marker)
 }
 
 impl Opened {

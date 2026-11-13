@@ -331,10 +331,14 @@ impl<H: Host> Shared<H> {
         self.cells.binary_search_by_key(&id, |cell| cell.id).ok().map(|k| self.cells[k])
     }
 
-    pub(crate) fn place(&self, road: u32) -> Result<Place<'_>> {
+    /// The installed download cell of road `road`.
+    fn cell_of(&self, road: u32) -> Option<Cell> {
         let k = self.cells.partition_point(|cell| cell.first_road <= road);
-        let cell = k.checked_sub(1).map(|k| self.cells[k]).filter(|cell| road - cell.first_road < cell.roads);
-        let cell = cell.ok_or_else(|| Error::MissingRegion(format!("Road {road} is not installed")))?;
+        k.checked_sub(1).map(|k| self.cells[k]).filter(|cell| road - cell.first_road < cell.roads)
+    }
+
+    pub(crate) fn place(&self, road: u32) -> Result<Place<'_>> {
+        let cell = self.cell_of(road).ok_or_else(|| Error::MissingRegion(format!("Road {road} is not installed")))?;
         let topology = Topology::new(self.part(&cell, TOPOLOGY)?)?;
         let local = road - cell.first_road;
         // The last level-1 cell whose first road is at or before the road.
@@ -405,8 +409,7 @@ impl<H: Host> Shared<H> {
 
     /// Whether the install has road `road`.
     pub(crate) fn has(&self, road: u32) -> bool {
-        let k = self.cells.partition_point(|cell| cell.first_road <= road);
-        k.checked_sub(1).is_some_and(|k| road - self.cells[k].first_road < self.cells[k].roads)
+        self.cell_of(road).is_some()
     }
 
     /// The turns into the road of `place`, which has ID `road`, with the costs of group `group`.

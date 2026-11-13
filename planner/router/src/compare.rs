@@ -56,7 +56,8 @@ fn snap<P: RoutingData>(data: &P, point: Point, profile: &str) -> Option<Candida
 
 /// `count` requests of `profile`. A fixed xorshift from `seed` draws the points in the bounds; a
 /// point counts when it snaps. Request `i` has the kind `KINDS[i % 8]`, and its later spots lie
-/// within `max_m` of its first.
+/// within `max_m` of its first. The list is shorter when 100 tries for each request do not give
+/// `count`, as for a profile that snaps nowhere in the bounds.
 pub fn requests<P: RoutingData>(
     router: &Router<P>,
     profile: &str,
@@ -69,7 +70,10 @@ pub fn requests<P: RoutingData>(
     let mut state = seed.max(1);
     let mut uniform = move || (xorshift(&mut state) >> 11) as f64 / (1u64 << 53) as f64;
     let mut requests = Vec::with_capacity(count);
-    while requests.len() < count {
+    for _ in 0..count.saturating_mul(100) {
+        if requests.len() == count {
+            break;
+        }
         let kind = requests.len() % 8;
         let max_m = if kind == 7 { max_m.min(ALTERNATIVES_M) } else { max_m };
         // A spot: a drawn point that snaps, and its nearest road.

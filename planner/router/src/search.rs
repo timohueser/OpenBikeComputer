@@ -130,6 +130,7 @@ impl Workspace {
     ) -> Result<Option<Found>> {
         let Query { starts, ends, ceiling, max_roads, heap_bytes, heap_limit, cancelled } = query;
         let rooms = (heap_bytes, heap_limit);
+        self.pops = 0;
         if starts.is_empty() || ends.is_empty() {
             return Ok(None);
         }
@@ -157,7 +158,6 @@ impl Workspace {
         let mut best = ceiling;
         let mut meeting = None;
         let mut best_roots = (u8::MAX, u8::MAX);
-        self.pops = 0;
         loop {
             if self.pops.is_multiple_of(1024) && (cancelled)() {
                 return Err(Error::Cancelled);
