@@ -84,7 +84,7 @@ test('the ride page shows a stored ride with its numbers and zones, renames, exp
 
   await facts.getByRole('button', { name: 'Delete' }).click();
   await page.getByRole('dialog', { name: 'Delete this ride?' }).getByRole('button', { name: 'Delete' }).click();
-  await expect(page).toHaveURL(/#\/routes$/);
+  await expect(page).toHaveURL(/#\/routes\/ridden$/);
   await page.evaluate(k => { location.hash = `#/ride/${k}`; }, key);
   await expect(page.getByText('This ride is not in the library.')).toBeVisible();
 

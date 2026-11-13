@@ -12,16 +12,6 @@ if (cover !== null) {
     const library = new Library();
     Object.assign(window, { coverTest: { library, lineKey, sentKey, startCoverJob: () => startCoverJob(library), setLook } });
     void import('./lib/covers/CoverPage.svelte').then(({ default: CoverPage }) => mount(CoverPage, { target, props: { library, id: cover } }));
-} else if (search.has('add-files')) {
-    // The page of the window "Add files", until a page of the product opens it. The test reads the library through
-    // `window.addFilesTest`.
-    const library = new Library();
-    Object.assign(window, { addFilesTest: { library } });
-    void Promise.all([import('./lib/core/bridge').then(({ initCore }) => initCore()), import('./pages/AddFiles.svelte'),
-        import('./lib/theme.svelte'), import('./styles/shell.css')]).then(([, { default: AddFiles }, { startTheme }]) => {
-        startTheme();
-        mount(AddFiles, { target, props: { library, onClose: () => {} } });
-    });
 } else {
     // A dynamic import, so the test page of a cover has none of the shell's base rules.
     import('./Shell.svelte').then(({ default: Shell }) => mount(Shell, { target }), (error: unknown) => {

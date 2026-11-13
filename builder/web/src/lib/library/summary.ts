@@ -37,20 +37,25 @@ export type Numbers<S extends Summary> = Omit<S, 'line' | 'heights' | 'bounds' |
 
 const maxPoints = 1000;
 // The group rule of rides allows 50 m between two lines, so a simplified line stays within 40 m of its points.
-const firstToleranceM = 10, lastToleranceM = 40;
-const metresPerDegree = 6_371_008.8 * Math.PI / 180;
+const firstToleranceM = 10;
+/** A summary line is within this many metres of the points it simplifies. */
+export const lastToleranceM = 40;
+export const metresPerDegree = 6_371_008.8 * Math.PI / 180;
 
 // Start values, to test on real rides.
 const climbStepM = 5, movingMps = 2 / 3.6;
 
 const round = (value: number, scale: number) => Math.round(value * scale) / scale;
 
-/** The great-circle distance between two samples. */
-export function metres(a: RideSample, b: RideSample): number {
-    const rad = Math.PI / 180e6, dLat = (b.lat - a.lat) * rad, dLon = (b.lon - a.lon) * rad;
-    const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(dLon / 2) ** 2;
-    return 2 * metresPerDegree * 180 / Math.PI * Math.asin(Math.min(1, Math.sqrt(h)));
+/** The great-circle distance between two points in degrees. */
+export function distanceM(lon1: number, lat1: number, lon2: number, lat2: number): number {
+    const rad = Math.PI / 180, h = Math.sin((lat2 - lat1) * rad / 2) ** 2
+        + Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin((lon2 - lon1) * rad / 2) ** 2;
+    return 2 * metresPerDegree / rad * Math.asin(Math.min(1, Math.sqrt(h)));
 }
+
+/** The great-circle distance between two samples. */
+export const metres = (a: RideSample, b: RideSample) => distanceM(a.lon / 1e6, a.lat / 1e6, b.lon / 1e6, b.lat / 1e6);
 
 /** For each sample, the seconds of the step that ends at it when that step moves: at 2 km/h or more, and not to a
  * segment start. Else 0. The moving time of a ride is their sum. */
