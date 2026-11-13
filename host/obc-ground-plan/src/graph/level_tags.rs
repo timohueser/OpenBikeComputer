@@ -30,21 +30,22 @@ const STATES: [(State, char); 4] = [(State::Deck, 'D'), (State::Bore, 'B'), (Sta
 const KINDS: [(EndKind, char); 3] = [(EndKind::A, 'A'), (EndKind::Portal, 'P'), (EndKind::Closed, 'C')];
 
 /// What a cell decides of one feature: the runs and end lines of its ways inside the cell's square, in metres along
-/// its stroke; the storey of its deck; the least depth of its slab on ladder step 2.
+/// its stroke; the least depth of its slab on ladder step 2.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Found {
     pub runs: Vec<(f64, f64, State)>,
     pub lines: Vec<(f64, EndKind)>,
-    pub storey: i8,
     pub slab: Option<f64>,
 }
 
-/// What one cell decides: per feature, by its zoom-13 tile and its position there, what `Found` holds; and each deck
-/// group (`WayGraph::decks`) whose ways belong to two features or more, as their keys. One deck group has one storey.
+/// What one cell decides: per feature, by its zoom-13 tile and its position there, what `Found` holds; each deck group
+/// (`WayGraph::decks`) whose ways belong to two features or more, as their keys; and the cell's own crossings of a
+/// deck over a deck, as the keys of the lower and the upper feature. One deck group has one storey.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Cell {
     pub found: BTreeMap<[u32; 3], Found>,
     pub groups: Vec<Vec<[u32; 3]>>,
+    pub over: Vec<([u32; 3], [u32; 3])>,
 }
 
 /// The metres along the stroke at a station.
@@ -65,10 +66,9 @@ fn deck_way(g: &WayGraph, w: u32) -> bool {
     x.level == Level::Deck && x.family != Family::Water
 }
 
-/// The storey of each way after `levels`: 0 off a deck; 1 for a deck group (`WayGraph::decks`), and one more than
-/// each group under it at a crossing whose ladder gives a deck (full or thin). A deck is a DECK run of a bridge way,
-/// or a synthetic deck whole.
-pub(super) fn storeys(g: &WayGraph) -> Vec<i8> {
+/// The crossings of a deck over a deck that the cell owns, whose ladder gives a deck (full or thin), as (lower way,
+/// upper way). A deck is a DECK run of a bridge way, or a synthetic deck whole.
+fn over(g: &WayGraph) -> Vec<(u32, u32)> {
     let mut decked: BTreeMap<u32, Vec<(Station, Station)>> = BTreeMap::new();
     for r in g.levels.runs.iter().filter(|r| r.state == State::Deck && deck_way(g, r.way)) {
         decked.entry(r.way).or_default().push((r.from, r.to));
@@ -80,32 +80,11 @@ pub(super) fn storeys(g: &WayGraph) -> Vec<i8> {
     let inside = |w: u32, st: &Station| {
         decked.get(&w).is_some_and(|ps| ps.iter().any(|(a, b)| key(a) <= key(st) && key(st) <= key(b)))
     };
-    let over: Vec<(usize, usize)> = (g.crossings.iter())
-        .filter(|c| c.kind == CrossingKind::Deck)
+    (g.crossings.iter())
+        .filter(|c| c.kind == CrossingKind::Deck && c.owned)
         .filter_map(|c| {
             let l = c.ladder.as_ref().filter(|l| matches!(l.step, Step::Full | Step::Thin))?;
-            let (up, low) = (g.ways[l.upper as usize].deck?, g.ways[l.lower as usize].deck?);
-            (up != low && inside(l.upper, &c.over) && inside(l.lower, &c.under)).then_some((low as usize, up as usize))
-        })
-        .collect();
-    let mut group = vec![1i8; g.decks.len()];
-    for _ in 0..CHAIN_ROUNDS {
-        let mut changed = false;
-        for &(low, up) in &over {
-            if group[up] <= group[low] {
-                group[up] = group[low] + 1;
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    (0..g.ways.len() as u32)
-        .map(|w| match (decked.contains_key(&w), g.ways[w as usize].deck) {
-            (true, Some(d)) => group[d as usize],
-            (true, None) => 1,
-            (false, _) => 0,
+            (inside(l.upper, &c.over) && inside(l.lower, &c.under)).then_some((l.lower, l.upper))
         })
         .collect()
 }
@@ -138,7 +117,8 @@ pub fn found(g: &WayGraph, input: &CellInput, sections: &Sections) -> Cell {
             groups.push(keys);
         }
     }
-    let storey = storeys(g);
+    let pairs = over(g).into_iter().filter(|&(l, u)| aligned(g, input, l) && aligned(g, input, u));
+    let over = pairs.map(|(l, u)| (feature(l), feature(u))).collect();
     let mut out: BTreeMap<[u32; 3], Found> = BTreeMap::new();
     for w in (0..g.ways.len() as u32).filter(|&w| inside(g, w) && aligned(g, input, w)) {
         let runs: Vec<&Run> = g.levels.runs.iter().filter(|r| r.way == w).collect();
@@ -151,19 +131,18 @@ pub fn found(g: &WayGraph, input: &CellInput, sections: &Sections) -> Cell {
                 (l.room_m - l.least_m + least).max(least)
             })
             .reduce(f64::min);
-        if runs.is_empty() && storey[w as usize] < 2 && thin.is_none() {
+        if runs.is_empty() && thin.is_none() {
             continue;
         }
         let found = out.entry(feature(w)).or_default();
         found.runs.extend(runs.iter().map(|r| (along(g, &r.from), along(g, &r.to), r.state)));
         found.lines.extend(lines.iter().map(|l| (along(g, &l.at), l.kind)));
-        found.storey = found.storey.max(storey[w as usize]);
         found.slab = match (found.slab, thin) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
         };
     }
-    Cell { found: out, groups }
+    Cell { found: out, groups, over }
 }
 
 /// The kind of the end line between two states.
@@ -175,10 +154,12 @@ pub fn kind_between(a: State, b: State) -> EndKind {
     }
 }
 
-/// The tags of each feature id from what the cells found of it, in the order of the cells, and from the deck groups
-/// that join ids: the features of one deck group, joined over all cells, take the highest storey among them.
-pub fn merge(found: &BTreeMap<u32, Vec<Found>>, groups: &[Vec<u32>]) -> BTreeMap<u32, Tags> {
-    let mut ids: Vec<u32> = found.keys().copied().chain(groups.iter().flatten().copied()).collect();
+/// The tags of each feature id from what the cells found of it, in the order of the cells, from the deck groups that
+/// join ids and from the crossings of a deck over a deck (lower id, upper id). The features of one deck group, joined
+/// over all cells, have one storey: 1, and one more than each group under them.
+pub fn merge(found: &BTreeMap<u32, Vec<Found>>, groups: &[Vec<u32>], over: &[(u32, u32)]) -> BTreeMap<u32, Tags> {
+    let ends = over.iter().flat_map(|&(l, u)| [l, u]);
+    let mut ids: Vec<u32> = found.keys().copied().chain(groups.iter().flatten().copied()).chain(ends).collect();
     ids.sort_unstable();
     ids.dedup();
     let at = |id: u32| ids.binary_search(&id).unwrap();
@@ -196,10 +177,20 @@ pub fn merge(found: &BTreeMap<u32, Vec<Found>>, groups: &[Vec<u32>]) -> BTreeMap
             root[a.max(b)] = a.min(b);
         }
     }
-    let mut storey = vec![0i8; ids.len()];
-    for (&id, fs) in found {
-        let r = find(&mut root, at(id));
-        storey[r] = fs.iter().map(|f| f.storey).fold(storey[r], i8::max);
+    // The chain on the joined groups; a crossing of a group over itself lifts nothing.
+    let pairs: Vec<(usize, usize)> = over.iter().map(|&(l, u)| (find(&mut root, at(l)), find(&mut root, at(u)))).collect();
+    let mut storey = vec![1i8; ids.len()];
+    for _ in 0..CHAIN_ROUNDS {
+        let mut changed = false;
+        for &(low, up) in pairs.iter().filter(|p| p.0 != p.1) {
+            if storey[up] <= storey[low] {
+                storey[up] = storey[low] + 1;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
     }
     let mut out = BTreeMap::new();
     for (k, &id) in ids.iter().enumerate() {
@@ -359,17 +350,18 @@ mod tests {
     use super::*;
 
     /// A viaduct of two features joined on its deck, and a third feature joined to the second: only the first crosses
-    /// over another deck, far from the joints, so no cell sees that crossing and the others at once. Every feature of
-    /// the deck group takes the upper storey; a lone deck keeps its own.
+    /// over a deck L, and a deck U crosses over the second, each far from the other and from the joints, so no cell sees
+    /// two of them at once. The viaduct takes storey 2 as a whole and U storey 3; a crossing of the viaduct over itself
+    /// lifts nothing; L and a lone deck keep storey 1.
     #[test]
-    fn the_features_of_one_deck_group_take_one_storey_over_all_cells() {
-        let deck = |storey| Found { runs: vec![(0.0, 50.0, State::Deck)], lines: Vec::new(), storey, slab: None };
-        // Feature 1 in the cell of the crossing and in a cell past it; 3 and 5 in other cells; 7 only in a group.
-        let found = BTreeMap::from([(1, vec![deck(2), deck(1)]), (3, vec![deck(1)]), (5, vec![deck(1)])]);
-        let tags = merge(&found, &[vec![1, 3], vec![3, 7]]);
+    fn the_storey_chain_runs_over_the_deck_groups_of_all_cells() {
+        let deck = || Found { runs: vec![(0.0, 50.0, State::Deck)], lines: Vec::new(), slab: None };
+        let found = BTreeMap::from([(1, vec![deck(), deck()]), (3, vec![deck()]), (5, vec![deck()]), (20, vec![deck()])]);
+        let tags = merge(&found, &[vec![1, 3], vec![3, 7]], &[(10, 1), (3, 20), (1, 7)]);
         let storey = |id: u32| tags.get(&id).and_then(|t| t.get(STOREY)).map(String::as_str);
         assert_eq!([storey(1), storey(3), storey(7)], [Some("2"); 3]);
-        assert_eq!(storey(5), None, "a deck on storey 1 has no tag");
+        assert_eq!(storey(20), Some("3"), "U over the viaduct");
+        assert_eq!([storey(10), storey(5)], [None, None], "a deck on storey 1 has no tag");
         assert_eq!(tags[&7].get(LEVELS), None, "a feature that no cell decides has only the storey");
     }
 }

@@ -429,11 +429,12 @@ of the code of the levels takes a new revision. The bake builds each zoom-16 cel
 way of the road solver as the viewer does: from the zoom-13 tiles of the bake and the terrain tiles of zooms 13 and
 12 of the grid. Each cell decides the ways inside its square. A way has a state where it is a bridge or a tunnel, or
 where it ends at the body of a way that it crosses. The storey is one per deck group, the deck ways that share a
-point: the highest that a cell gives a way of the group. The metres along of a way are those of its stroke (see
-Alignment): `along_code` at the first vertex of each part, and the length of the ground plan's curve of each span
-(`graph::curve`) from there, in the tile that owns the span. Every zoom-13 copy of a way holds the lines of the whole
-way. Two lines at one metre come in the order A, portal, closed. A number is the shortest decimal that gives the same
-64-bit float. A way with a part that has no alignment has none of these tags.
+point, joined over all cells: 1, and one more than each group under it at a crossing that a cell owns and whose
+ladder gives a deck (full or thin). A crossing of a group over itself lifts nothing. The metres along of a way are
+those of its stroke (see Alignment): `along_code` at the first vertex of each part, and the length of the ground
+plan's curve of each span (`graph::curve`) from there, in the tile that owns the span. Every zoom-13 copy of a way
+holds the lines of the whole way. Two lines at one metre come in the order A, portal, closed. A number is the
+shortest decimal that gives the same 64-bit float. A way with a part that has no alignment has none of these tags.
 
 The masts of a track stand evenly along each of its ways, at most 50 m apart, 3 m beside its middle,
 or 2.5 m for a narrow gauge (`gauge` below 1200 mm, else `narrow_gauge` and `funicular`). On a

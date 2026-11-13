@@ -187,7 +187,7 @@ fn the_tiles_carry_the_levels_of_each_cell() {
     let (mut faults, mut ways) = (Vec::new(), 0);
     // A feature by its kind and tags, the same in each tile that holds it; and its level tags.
     let (mut ids, mut carried_tags) = (BTreeMap::<String, u32>::new(), BTreeMap::<u32, Tags>::new());
-    let (mut found, mut groups) = (BTreeMap::<u32, Vec<level_tags::Found>>::new(), Vec::new());
+    let (mut found, mut groups, mut over) = (BTreeMap::<u32, Vec<level_tags::Found>>::new(), Vec::new(), Vec::new());
     for (key, computed) in graphs() {
         let input = fixture.cell(key);
         let cell = level_tags::found(&computed, &input, Sections::embedded());
@@ -204,6 +204,7 @@ fn the_tiles_carry_the_levels_of_each_cell() {
             found.entry(id(k)).or_default().push(f);
         }
         groups.extend(cell.groups.into_iter().map(|g| g.into_iter().map(&mut id).collect::<Vec<_>>()));
+        over.extend(cell.over.into_iter().map(|(l, u)| (id(l), id(u))));
         let mut carried = build(key, &input, Sections::embedded());
         level_tags::read(&mut carried, &input, Sections::embedded(), structures.edge_band_m);
         for w in (0..computed.ways.len() as u32).filter(|&w| level_tags::inside(&computed, w)) {
@@ -229,7 +230,7 @@ fn the_tiles_carry_the_levels_of_each_cell() {
             }
         }
     }
-    let merged = level_tags::merge(&found, &groups);
+    let merged = level_tags::merge(&found, &groups, &over);
     let mut counts = BTreeMap::<String, usize>::new();
     for (id, carried) in &carried_tags {
         let want = merged.get(id).cloned().unwrap_or_default();

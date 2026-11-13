@@ -874,13 +874,17 @@ fn a_deck_over_another_deck_lies_on_storey_2() {
     let bridge = [("highway", "residential"), ("bridge", "yes"), ("deck", "1")];
     let upper = line("road", &bridge, &[[0.0, -40.0], [0.0, 40.0]], 16.0);
     let lower = line("road", &bridge, &[[-40.0, 0.0], [40.0, 0.0]], 10.0);
-    let g = graph(&[upper, lower]);
-    let storey = super::level_tags::storeys(&g);
-    let of = |feature: u32| {
-        let ways = g.ways.iter().filter(|w| g.parts[w.part as usize].feature.0 == feature);
-        ways.map(|w| storey[w.id as usize]).max()
-    };
-    assert_eq!((of(0), of(1)), (Some(2), Some(1)));
+    let lines = [upper, lower];
+    let (g, input) = (graph(&lines), input_of(cell(), &lines));
+    let found = super::level_tags::found(&g, &input, Sections::embedded());
+    let key = |feature: usize| [input.features[feature].parts[0].tile.0, input.features[feature].parts[0].tile.1, feature as u32];
+    assert_eq!(found.over, [(key(1), key(0))], "the lower bridge under the upper one");
+    // The bake's merge, with the features' positions as their ids.
+    let ids = |k: [u32; 3]| k[2];
+    let cells = BTreeMap::from_iter(found.found.into_iter().map(|(k, f)| (ids(k), vec![f])));
+    let tags = super::level_tags::merge(&cells, &[], &[(1, 0)]);
+    let storey = |id: u32| tags.get(&id).and_then(|t| t.get(super::level_tags::STOREY)).cloned();
+    assert_eq!((storey(0), storey(1)), (Some("2".to_string()), None));
 }
 
 #[test]
