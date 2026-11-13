@@ -359,6 +359,7 @@ export class Library {
     /** Adds in one transaction each route whose id is new, and each ride whose key is neither stored nor deleted. It takes
      * the state of `contents` only when the library is empty: no route, no ride and no deleted ride. */
     merge(contents: Contents): Promise<{ routes: number; rides: number; empty: boolean }> {
+        // Strict, as in `addRide`: the device sync can mark a restored device ride as taken after this commit.
         return this.write(['routes', 'versions', 'rides', 'ride-files', 'state'], (tx, _, changed) => {
             const routes = tx.objectStore('routes'), rides = tx.objectStore('rides'), state = tx.objectStore('state');
             const routeIds = routes.getAllKeys(), rideKeys = rides.getAllKeys(), list = state.get('deleted');
@@ -385,7 +386,7 @@ export class Library {
                 }
             };
             return () => result;
-        });
+        }, 'strict');
     }
 
     /** Empties all stores after the writes before it. After it commits, this object refuses each write, so a later save

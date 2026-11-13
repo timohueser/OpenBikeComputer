@@ -23,8 +23,9 @@ A ride source is the tuple `(StoreId, ObjectId, Revision, payloadLength, payload
 | `payloadLength` | The verified `u64` byte length of the served object. |
 | `payloadCRC32` | The verified CRC-32/IEEE of those bytes. |
 
-The library ride key also contains the device serial. The source's store and object must match that
-key. Neither the serial nor ObjectId alone identifies the archived device content.
+The iOS library ride key also contains the device serial; the web ride key is `StoreId:ObjectId`,
+with no serial ([Web archive](#web-archive)). The source's store and object must match that key.
+Neither the serial nor ObjectId alone identifies the archived device content.
 
 The iOS catalog carries this source for each finalized ride. Download requests pin its revision. The
 client checks the expected StoreId with LIST before and after GET, including after a restored link.
@@ -114,8 +115,8 @@ The web library keeps a device ride in the browser database with its source file
 object bytes unchanged. The `device` field of the ride record is `StoreId:ObjectId`, with no
 serial: a card never gives an `ObjectId` twice, and a new card has a new `StoreId`.
 
-`Library.addRide` commits the record and the file in one transaction with strict durability. The
-web sends `ARCHIVE_RIDE` only after that commit, and only while the browser grants persistent
+`Library.addRide`, and `Library.merge` for a loaded backup, commit the record and the file in one
+transaction with strict durability. The web sends `ARCHIVE_RIDE` only after that commit, and only while the browser grants persistent
 storage. On each sync, the web compares each finished ride entry with the rows of the Metadata
 object. For an entry with no row, it sends the receipt when a stored ride has the entry's
 `StoreId:ObjectId` and its stored file has the entry's length and CRC-32. A file from another
