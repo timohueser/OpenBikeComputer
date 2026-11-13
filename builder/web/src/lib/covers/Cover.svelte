@@ -4,7 +4,7 @@
     import { appearance } from '../theme.svelte';
     import { crop, drawCover, type Crop } from './draw';
     import { lineKey } from '../library/summary';
-    import { settled, wantCover, wantsPicture, type Place } from './job';
+    import { coverKey, settled, wantCover, wantsPicture, type Place } from './job';
     import { along, nearest } from './line';
     import Icon from '../../components/planner/PlannerIcon.svelte';
 
@@ -36,7 +36,7 @@
 
     /** The cover, else on a card the map picture of the theme for the line. */
     function source(item: RouteRecord | RideRecord, cover: CoverRecord, dark: boolean) {
-        const current = cover.lineKey === lineKey(item), summary = item.summary ?? undefined;
+        const current = cover.lineKey === coverKey(item), summary = item.summary ?? undefined;
         // The points of a cover of an earlier line draw no mark and no part.
         if (cover.image && cover.points) return { image: cover.image, points: cover.points, summary: current && cover.state === 'done' ? summary : undefined, credits: cover.credits };
         const map = place === 'card' && cover.map?.lineKey === lineKey(item) ? cover.map : undefined, image = map?.[dark ? 'dark' : 'light'];

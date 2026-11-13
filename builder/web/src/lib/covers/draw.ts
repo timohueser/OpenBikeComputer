@@ -13,7 +13,8 @@ const LOOKS = {
 export type Look = 'route' | 'ride';
 /** The glow reaches GLOW_REACH of the widest line beyond it, in GLOW_STEPS strokes of GLOW_ALPHA each; the core is CORE_WIDTH of the line. */
 const GLOW_REACH = 0.6, GLOW_STEPS = 5, GLOW_ALPHA = 0.14, CORE_WIDTH = 0.25, CORE_ALPHA = 0.3;
-const HIDDEN_ALPHA = 0.3;
+/** The strength of a stretch that the terrain hides; 0 draws none of it. */
+const HIDDEN_ALPHA = 0.1;
 /** The width of the line at the point nearest to the eye, as a share of the shorter side of the box, and the least width as a share of it. */
 const WIDEST = 0.012, LEAST = 1 / 3;
 

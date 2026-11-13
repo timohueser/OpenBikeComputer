@@ -32,6 +32,7 @@ import { Dressing } from './dressing/dressing';
 import { KindPoints } from './structures/kind-points';
 import { LightPools } from './structures/light-pools';
 import { Route, type RoutePin } from './route/route';
+import { sampleDistances, terrainHides } from './sight';
 import { Pacer } from './pacer';
 import type { StillPoints } from './still';
 import { DEBUG_VIEWS, TIME_ZONE, type View } from './view';
@@ -53,8 +54,8 @@ const RAD = Math.PI / 180;
 const STEP_M = 1, HEADROOM_M = 2;
 /** A flying eye under the terrain is in a tunnel when a floor lies at most this far below it. */
 const BORE_M = 6;
-/** The ribbon of route.wgsl: its lift above the surface, and the pull of its depth toward the eye. */
-const LIFT_M = 0.3, PULL_M = 0.5, PULL_PIXELS = 4;
+/** The lift of the ribbon of route.wgsl above the surface. */
+const LIFT_M = 0.3;
 
 export interface Stats {
     adapter: string;
@@ -299,8 +300,9 @@ export class TrailView {
     /**
      * The finished image of the view as RGBA and, for a line of [lon, lat] points, the place of each
      * point in it: call it after `waitForIdle()`. It draws the jittered frames of the view again and
-     * copies the canvas and the depth of the last one. A point stands where the route's ribbon would:
-     * LIFT_M above the drawn surface. It is visible where the ribbon's depth test passes there.
+     * copies the canvas of the last one. A point stands where the route's ribbon would: LIFT_M above the
+     * drawn surface. It is visible unless the drawn terrain hides it (`terrainHides`), which it probes at
+     * `sampleDistances` on the way from the eye to the point.
      */
     async capture(line?: readonly [number, number][]): Promise<{ colour: ImageData; points?: StillPoints }> {
         if (this.destroyed) throw new Error('The engine has ended.');
@@ -309,11 +311,22 @@ export class TrailView {
             this.temporal.reset();
             this.request();
         });
-        const { colour, depth, row, depthRow, output: [width, height] } = grabbed;
-        const [heights] = await Promise.all([
-            line && this.terrain.probeAt(Float64Array.from(line.flatMap(point => worldPixel(point, UNITS)))),
-            colour.mapAsync(GPUMapMode.READ), depth.mapAsync(GPUMapMode.READ),
-        ]);
+        const { colour, row, output: [width, height], eye } = grabbed;
+        // The points of the line, then the samples on the way from the eye to each point, in one probe.
+        const along = line?.map(point => {
+            const [east, north] = this.frame.local(...point);
+            return sampleDistances(Math.hypot(east - eye[0], north - eye[1]));
+        });
+        const probes = line && along && new Float64Array(2 * (line.length + along.reduce((sum, list) => sum + list.length, 0)));
+        if (line && along && probes) for (let i = 0, at = 2 * line.length; i < line.length; i++) {
+            probes.set(worldPixel(line[i], UNITS), 2 * i);
+            const [east, north] = this.frame.local(...line[i]), across = Math.hypot(east - eye[0], north - eye[1]);
+            for (const d of along[i]) {
+                probes.set(worldPixel(this.frame.lonLat(eye[0] + d / across * (east - eye[0]), eye[1] + d / across * (north - eye[1])), UNITS), at);
+                at += 2;
+            }
+        }
+        const [heights] = await Promise.all([probes && this.terrain.probeAt(probes), colour.mapAsync(GPUMapMode.READ)]);
         // The canvas holds the device's format, often BGRA, in rows padded to 256 bytes.
         const bytes = new Uint8Array(colour.getMappedRange()), rgba = new Uint8ClampedArray(4 * width * height), bgra = this.gpu.format === 'bgra8unorm';
         for (let y = 0; y < height; y++) for (let x = 0, from = y * row, to = 4 * y * width; x < width; x++, from += 4, to += 4) {
@@ -322,9 +335,8 @@ export class TrailView {
             rgba[to + 2] = bytes[from + (bgra ? 0 : 2)];
             rgba[to + 3] = 255;
         }
-        const points = line && heights && placed(line, heights, this.frame, grabbed, new Float32Array(depth.getMappedRange()), depthRow / 4);
+        const points = line && along && heights && placed(line, along, heights, this.frame, grabbed);
         colour.destroy();
-        depth.destroy();
         return { colour: new ImageData(rgba, width, height), points };
     }
 
@@ -689,7 +701,7 @@ export class TrailView {
                 { viewProj, eye: [eye.east, eye.north, eye.z], render: [width, height], jitter: offset }, { weight: step.weight, clip: step.clip, copy: debug }, times.writes('resolve'));
             targets.swap();
             this.lastFrame = { depth: targets.depth!, pixels: [width, height], viewProj: jittered(viewProj, ndc), eye: [eye.east, eye.north, eye.z] };
-            if (this.grab && !this.converging) grabbed = this.copy(encoder, { viewProj, jitter: offset, eye: [eye.east, eye.north, eye.z], render: [width, height], pixel });
+            if (this.grab && !this.converging) grabbed = this.copy(encoder, { viewProj, eye: [eye.east, eye.north, eye.z], pixel });
         }
         const read = times.resolve(encoder, { ...this.terrain.stats.jobs, frame: start });
         gpu.device.queue.submit([encoder.finish()]);
@@ -755,15 +767,12 @@ export class TrailView {
         return this.houses.readCasters(encoder);
     }
 
-    /** Encodes the copies of the canvas and of the whole depth target, which WebGPU copies only whole, in rows of a multiple of 256 bytes. */
-    private copy(encoder: GPUCommandEncoder, camera: Omit<Grabbed, 'colour' | 'depth' | 'row' | 'depthRow' | 'output'>): Grabbed {
-        const { device } = this.gpu, canvas = this.context.getCurrentTexture(), depth = this.gpuState.targets.depth!;
-        const row = Math.ceil(4 * canvas.width / 256) * 256, depthRow = Math.ceil(4 * depth.width / 256) * 256;
-        const buffer = (size: number) => device.createBuffer({ size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
-        const grabbed: Grabbed = { ...camera, colour: buffer(row * canvas.height), depth: buffer(depthRow * depth.height), row, depthRow, output: [canvas.width, canvas.height] };
-        encoder.copyTextureToBuffer({ texture: canvas }, { buffer: grabbed.colour, bytesPerRow: row }, [canvas.width, canvas.height]);
-        encoder.copyTextureToBuffer({ texture: depth, aspect: 'depth-only' }, { buffer: grabbed.depth, bytesPerRow: depthRow }, [depth.width, depth.height]);
-        return grabbed;
+    /** Encodes the copy of the canvas, in rows of a multiple of 256 bytes. */
+    private copy(encoder: GPUCommandEncoder, camera: Omit<Grabbed, 'colour' | 'row' | 'output'>): Grabbed {
+        const canvas = this.context.getCurrentTexture(), row = Math.ceil(4 * canvas.width / 256) * 256;
+        const colour = this.gpu.device.createBuffer({ size: row * canvas.height, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+        encoder.copyTextureToBuffer({ texture: canvas }, { buffer: colour, bytesPerRow: row }, [canvas.width, canvas.height]);
+        return { ...camera, colour, row, output: [canvas.width, canvas.height] };
     }
 
     /** Fits the canvas and the targets to the element, or to the size of `start`; true when the targets are new. */
@@ -877,17 +886,13 @@ interface Lights {
 
 /** The copies of the last frame of a capture, and its camera. */
 interface Grabbed {
-    /** The canvas and the depth target, in rows of `row` and `depthRow` bytes. */
+    /** The canvas, in rows of `row` bytes. */
     colour: GPUBuffer;
-    depth: GPUBuffer;
     row: number;
-    depthRow: number;
-    /** The image, and the frame in the top left of the depth target, in pixels. */
+    /** The image in pixels. */
     output: [number, number];
-    render: [number, number];
-    /** The view projection without its jitter, and the jitter of the frame in render pixels. */
+    /** The view projection without its jitter. */
     viewProj: Float32Array;
-    jitter: [number, number];
     /** The eye: frame metres east and north, and metres above sea level. */
     eye: [number, number, number];
     /** Metres per output pixel at 1 m from the eye. */
@@ -896,28 +901,26 @@ interface Grabbed {
 
 /**
  * The place of each point of `line` in the image of a capture, from its drawn height (NaN where no page
- * knows it): projected as route.wgsl projects its ribbon, with the curvature term, and tested against
- * the depth of the frame, `stride` floats per row, with the ribbon's pull toward the eye.
+ * knows it): projected as route.wgsl projects its ribbon, with the curvature term. `heights` holds the
+ * drawn heights of the points, then those at the distances `along` on the way to each point, for `terrainHides`.
  */
-function placed(line: readonly [number, number][], heights: Float32Array, frame: Frame, grabbed: Grabbed, depth: Float32Array, stride: number): StillPoints {
-    const n = line.length, { viewProj: m, eye, output: [width, height], render: [w, h], jitter: [jx, jy], pixel } = grabbed;
+function placed(line: readonly [number, number][], along: number[][], heights: Float32Array, frame: Frame, grabbed: Grabbed): StillPoints {
+    const n = line.length, { viewProj: m, eye, output: [width, height], pixel } = grabbed;
     const points: StillPoints = { x: new Float32Array(n).fill(NaN), y: new Float32Array(n).fill(NaN), distance: new Float32Array(n).fill(NaN), visible: new Uint8Array(n) };
-    for (let i = 0; i < n; i++) {
+    for (let i = 0, from = n; i < n; from += along[i].length, i++) {
         if (Number.isNaN(heights[i])) continue;
         const [east, north] = frame.local(...line[i]), x = east - eye[0], y = north - eye[1], z = heights[i] + LIFT_M - eye[2] - CURVATURE * (x * x + y * y);
-        // Reversed Z: clip w is the distance along the view axis, and the depth is NEAR / w.
-        const along = m[3] * x + m[7] * y + m[11] * z + m[15];
-        if (!(along > NEAR)) continue;
-        const u = ((m[0] * x + m[4] * y + m[8] * z + m[12]) / along + 1) / 2, v = (1 - (m[1] * x + m[5] * y + m[9] * z + m[13]) / along) / 2;
+        // Clip w is the distance along the view axis.
+        const ahead = m[3] * x + m[7] * y + m[11] * z + m[15];
+        if (!(ahead > NEAR)) continue;
+        const u = ((m[0] * x + m[4] * y + m[8] * z + m[12]) / ahead + 1) / 2, v = (1 - (m[1] * x + m[5] * y + m[9] * z + m[13]) / ahead) / 2;
         const reach = Math.hypot(x, y, z);
         points.x[i] = u * width;
         points.y[i] = v * height;
         points.distance[i] = reach;
         if (u < 0 || u >= 1 || v < 0 || v >= 1) continue;
-        // The frame of the depth was drawn `jitter` render pixels off the image.
-        const texel = Math.min(h - 1, Math.max(0, Math.floor(v * h + jy))) * stride + Math.min(w - 1, Math.max(0, Math.floor(u * w + jx)));
-        const pulled = along * Math.max(reach - PULL_M - PULL_PIXELS * pixel * reach, 0.5 * reach) / reach;
-        points.visible[i] = pulled <= NEAR / depth[texel] ? 1 : 0;
+        const ground = heights.subarray(from, from + along[i].length).map(h => h - eye[2]);
+        points.visible[i] = terrainHides([x, y, heights[i] + LIFT_M - eye[2]], along[i], ground, pixel) ? 0 : 1;
     }
     return points;
 }
