@@ -296,9 +296,14 @@ pub fn read(text: &str, fallback: &str) -> Result<Import, String> {
         }
         p.time = first_text(entry.body, "time").and_then(|t| time(&t));
         if let Some(extensions) = elements(entry.body, &["extensions"]).first() {
-            let value = |name| sensor(extensions.body, name);
-            (p.hr_bpm, p.cadence_rpm, p.power_w, p.temperature_c) =
-                (value("hr"), value("cad"), value("power"), value("atemp"));
+            // No sensor gives a heart rate of 0 or a negative cadence or power: some apps write 0 without strap contact.
+            let value = |name, min: f64| sensor(extensions.body, name).filter(|v| *v >= min);
+            (p.hr_bpm, p.cadence_rpm, p.power_w, p.temperature_c) = (
+                value("hr", f64::MIN_POSITIVE),
+                value("cad", 0.0),
+                value("power", 0.0),
+                sensor(extensions.body, "atemp"),
+            );
         }
         if entry.kind == "trkpt" {
             p.segment_start = std::mem::take(&mut segment_start);
@@ -377,6 +382,10 @@ mod tests {
         assert_eq!(sensors("<extensions><power>312</power></extensions>"), (None, None, Some(312.0), None));
         let none = "<desc><![CDATA[<p>Climb</p><hr>140]]></desc><extensions><gpxtpx:TrackPointExtension><gpxtpx:hr></gpxtpx:hr><gpxtpx:cad>0x8C</gpxtpx:cad><gpxtpx:atemp>inf</gpxtpx:atemp></gpxtpx:TrackPointExtension><power/></extensions>";
         assert_eq!(sensors(none), (None, None, None, None));
+        let out_of_range = "<extensions><gpxtpx:TrackPointExtension><gpxtpx:hr>0</gpxtpx:hr><gpxtpx:cad>-1</gpxtpx:cad></gpxtpx:TrackPointExtension><power>-5</power></extensions>";
+        assert_eq!(sensors(out_of_range), (None, None, None, None));
+        let zero = "<extensions><gpxtpx:TrackPointExtension><gpxtpx:cad>0</gpxtpx:cad></gpxtpx:TrackPointExtension><power>0</power></extensions>";
+        assert_eq!(sensors(zero), (None, Some(0.0), Some(0.0), None));
         assert_eq!(sensors(""), (None, None, None, None));
     }
 }

@@ -38,11 +38,15 @@ const place = ({ lat, lon }: LatLon) => `lat="${(lat / 1e6).toFixed(6)}" lon="${
 const text = (tag: string, value: string | undefined) => value ? `<${tag}>${escape(value)}</${tag}>` : "";
 
 const number = (tag: string, value: number | undefined) => value === undefined ? "" : `<${tag}>${value}</${tag}>`;
-const whole = (value: number | undefined) => value === undefined ? undefined : Math.round(value);
+/** The schema types `hr` and `cad` as unsigned bytes: a value out of range has no element. */
+const byte = (value: number | undefined) => {
+    const whole = value === undefined ? -1 : Math.round(value);
+    return whole >= 0 && whole <= 255 ? whole : undefined;
+};
 
-/** The shape of the device export. The schema types `hr` and `cad` as unsigned bytes and puts `atemp` first. */
+/** The shape of the device export, with `atemp` first as in the schema. */
 function extensions(p: Sensors): string {
-    const garmin = number("gpxtpx:atemp", p.temperatureC) + number("gpxtpx:hr", whole(p.hrBpm)) + number("gpxtpx:cad", whole(p.cadenceRpm));
+    const garmin = number("gpxtpx:atemp", p.temperatureC) + number("gpxtpx:hr", byte(p.hrBpm)) + number("gpxtpx:cad", byte(p.cadenceRpm));
     const body = (garmin && `<gpxtpx:TrackPointExtension>${garmin}</gpxtpx:TrackPointExtension>`) + number("power", p.powerW);
     return body && `<extensions>${body}</extensions>`;
 }
