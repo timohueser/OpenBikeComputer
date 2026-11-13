@@ -35,10 +35,20 @@ pub(super) struct Geo {
     chord: bool,
 }
 
+/// The plan of a span from its vertices' tangents, with a full handle.
 pub(super) fn geo(a: &Vertex, b: &Vertex, chord: bool) -> Geo {
+    shaped(a, b, chord, [a.tangent, b.tangent], 1.0)
+}
+
+/// The plan of a span of a part.
+pub(super) fn geo_of(a: &Vertex, b: &Vertex, span: &Span) -> Geo {
+    shaped(a, b, span.chord, span.ends, span.handle)
+}
+
+fn shaped(a: &Vertex, b: &Vertex, chord: bool, ends: [f64; 2], handle: f64) -> Geo {
     let d = [(b.pos[0] - a.pos[0]) as f64, (b.pos[1] - a.pos[1]) as f64];
     let mpu = metres_per_unit((a.pos[1] + b.pos[1]).div_euclid(2));
-    Geo { p0: a.pos, mpu, chord, ..curve(d, a.tangent, b.tangent, 1.0) }
+    Geo { p0: a.pos, mpu, chord, ..curve(d, ends[0], ends[1], handle) }
 }
 
 /// The curve of a span from its start: chord `d`, tangent angles t0 and t1 and the handle, in the units
@@ -83,12 +93,6 @@ impl Geo {
         let k = self.k / 3.0;
         [[0.0; 2], [k * self.t0[0], k * self.t0[1]], [self.d[0] - k * self.t1[0], self.d[1] - k * self.t1[1]], self.d]
     }
-}
-
-/// The most that the curve of a span leaves its chord, in metres.
-pub(super) fn off_chord_m(a: &Vertex, b: &Vertex) -> f64 {
-    let g = geo(a, b, false);
-    off_chord(g.d, a.tangent, b.tangent) * g.mpu
 }
 
 /// The tangents of water, which the tiles do not hold, per point its angle and whether it is a corner:
@@ -294,8 +298,13 @@ pub(super) fn length(a: &Vertex, b: &Vertex, chord: bool) -> f64 {
 
 impl Span {
     pub(super) fn new(a: &Vertex, b: &Vertex, chord: bool, along0_m: f64) -> Span {
-        let (len_m, knots) = arc(&geo(a, b, chord));
-        Span { len_m, knots, along0_m, chord, linear_z: false, owner: [0; 3] }
+        Span::shaped(a, b, chord, [a.tangent, b.tangent], 1.0, along0_m)
+    }
+
+    /// A span with its own end tangents and handle (`water_spans`).
+    pub(super) fn shaped(a: &Vertex, b: &Vertex, chord: bool, ends: [f64; 2], handle: f64, along0_m: f64) -> Span {
+        let (len_m, knots) = arc(&shaped(a, b, chord, ends, handle));
+        Span { len_m, knots, along0_m, chord, ends, handle, water_z: false, owner: [0; 3] }
     }
 }
 
@@ -343,7 +352,14 @@ fn u_of(knots: &[f64; KNOTS + 1], len_m: f64, s: f64) -> f64 {
 pub fn point(part: &Part, span: usize, u: f64) -> SpanPoint {
     let (a, b) = (&part.vertices[span], &part.vertices[span + 1]);
     let data = &part.spans[span];
-    point_of(&Of { g: geo(a, b, data.chord), a, b, span: data }, u)
+    point_of(&Of { g: geo_of(a, b, data), a, b, span: data }, u)
+}
+
+/// The global point and the height at u of a span from its vertices.
+pub(super) fn level_at(a: &Vertex, b: &Vertex, span: &Span, u: f64) -> ([i64; 2], f64) {
+    let g = geo_of(a, b, span);
+    let p = point_of(&Of { g, a, b, span }, u);
+    (round(&g, p.d), p.z_m)
 }
 
 /// A span with its vertices and its plan.
@@ -360,9 +376,9 @@ fn point_of(of: &Of, u: f64) -> SpanPoint {
     let length = (dp[0] * dp[0] + dp[1] * dp[1]).sqrt();
     let tangent = if length > 0.0 { [dp[0] / length, dp[1] / length] } else { [1.0, 0.0] };
     let c_m = g.c * g.mpu;
-    let (z_m, grade) = if of.span.linear_z {
+    let (z_m, grade) = if of.span.water_z {
         let len = of.span.len_m;
-        (a.z_m + (b.z_m - a.z_m) * s_at(of.span, u) / len, (b.z_m - a.z_m) / len)
+        water_level([a.z_m, b.z_m], [a.grade, b.grade], len, s_at(of.span, u) / len)
     } else if g.chord {
         (a.z_m + u * (b.z_m - a.z_m), (b.z_m - a.z_m) / c_m)
     } else {
@@ -423,7 +439,7 @@ struct Pt {
 
 /// Whether the box of a span's control points meets the closed square.
 pub(super) fn meets(part: &Part, span: usize, [x0, y0, x1, y1]: [i64; 4]) -> bool {
-    let g = geo(&part.vertices[span], &part.vertices[span + 1], part.spans[span].chord);
+    let g = geo_of(&part.vertices[span], &part.vertices[span + 1], &part.spans[span]);
     let hull = g.hull();
     let lo = |i: usize| hull.iter().map(|p| p[i]).fold(f64::INFINITY, f64::min).floor() as i64 + g.p0[i];
     let hi = |i: usize| hull.iter().map(|p| p[i]).fold(f64::NEG_INFINITY, f64::max).ceil() as i64 + g.p0[i];
@@ -446,7 +462,7 @@ pub(super) fn samples(part: &Part, rule: &Rule<'_>, cell: CellKey, area: [i64; 4
         if before {
             out.pop();
         }
-        let g = geo(&part.vertices[span], &part.vertices[span + 1], part.spans[span].chord);
+        let g = geo_of(&part.vertices[span], &part.vertices[span + 1], &part.spans[span]);
         out.extend(span_samples(part, rule, span).into_iter().map(|pt| sample(part, g, span, pt, cell)));
         sampled[span] = true;
     }
@@ -478,7 +494,7 @@ pub(super) fn insert(part: &Part, samples: &mut Vec<Sample>, st: super::Station,
 
 /// A sample at a station of a span: the curve point rounded.
 pub(super) fn station_sample(part: &Part, span: usize, u: f64, cell: CellKey) -> Sample {
-    let g = geo(&part.vertices[span], &part.vertices[span + 1], part.spans[span].chord);
+    let g = geo_of(&part.vertices[span], &part.vertices[span + 1], &part.spans[span]);
     let pos = round(&g, g.eval(u)[0]);
     sample(part, g, span, Pt { u, s: s_at(&part.spans[span], u), kind: SampleKind::Station, pos }, cell)
 }
@@ -504,12 +520,12 @@ fn sample(part: &Part, g: Geo, span: usize, pt: Pt, cell: CellKey) -> Sample {
     }
 }
 
-/// The samples of one span: its vertices, its cell-line breaks and, but for water, the dyadic grid
-/// refined until each chord holds the sag rules.
+/// The samples of one span: its vertices, its cell-line breaks and the dyadic grid refined until each
+/// chord holds the sag rules.
 fn span_samples(part: &Part, rule: &Rule<'_>, span: usize) -> Vec<Pt> {
     let (a, b) = (&part.vertices[span], &part.vertices[span + 1]);
     let data = &part.spans[span];
-    let g = geo(a, b, data.chord);
+    let g = geo_of(a, b, data);
     let at = |u: f64, kind: SampleKind, pos: [i64; 2]| Pt { u, s: s_at(data, u), kind, pos };
     let mut breaks = vec![at(0.0, SampleKind::Vertex, a.pos), at(1.0, SampleKind::Vertex, b.pos)];
     let hull = g.hull();
@@ -579,7 +595,7 @@ struct Sag {
 impl Sag {
     fn of(rule: &Rule<'_>) -> Sag {
         match rule {
-            Rule::Way(s, _) => Sag { outer_m: s.widths().outer_m(), plan_m: s.sag_plan_m, height_m: s.sag_height_m },
+            Rule::Way(s, _) => Sag { outer_m: s.outer_m(), plan_m: s.sag_plan_m, height_m: s.sag_height_m },
             Rule::Water(w) => Sag { outer_m: w.half_m, plan_m: w.sag_plan_m, height_m: w.sag_height_m },
         }
     }

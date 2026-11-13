@@ -60,7 +60,8 @@ export class Water {
 
     constructor(private readonly stamps: Stamps) {}
 
-    async attach(gpu: Gpu, frame: GPUBuffer, nodes: GPUBuffer): Promise<void> {
+    /** `cells`: the cells whose ground plan meshes draw (plan/cells.wgsl), where a ribbon draws nothing. */
+    async attach(gpu: Gpu, frame: GPUBuffer, nodes: GPUBuffer, cells: GPUBuffer): Promise<void> {
         this.resources = undefined;
         const { device } = gpu, { pipelines, layout } = await gpu.once(waterPipelines);
         // A node index and a level per instance, at most one instance per node.
@@ -69,7 +70,7 @@ export class Water {
         this.vertexEnd = this.indexEnd = 0;
         this.resources = {
             device, pipelines, instances,
-            group: device.createBindGroup({ layout, entries: [{ binding: 0, resource: { buffer: frame } }, { binding: 2, resource: { buffer: nodes } }, { binding: 3, resource: { buffer: instances } }] }),
+            group: device.createBindGroup({ layout, entries: [{ binding: 0, resource: { buffer: frame } }, { binding: 2, resource: { buffer: nodes } }, { binding: 3, resource: { buffer: cells } }, { binding: 4, resource: { buffer: instances } }] }),
             vertices: gpu.buffer('water', VERTEX_BYTES, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST),
             indices: gpu.buffer('water', INDEX_BYTES, GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST),
         };
@@ -163,7 +164,8 @@ async function waterPipelines(gpu: Gpu): Promise<{ pipelines: Record<Kind, GPURe
     const layout = device.createBindGroupLayout({ entries: [
         { binding: 0, visibility: V | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
         { binding: 2, visibility: V, buffer: { type: 'read-only-storage' } },
-        { binding: 3, visibility: V, buffer: { type: 'read-only-storage' } },
+        { binding: 3, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'read-only-storage' } },
+        { binding: 4, visibility: V, buffer: { type: 'read-only-storage' } },
     ] });
     const module = device.createShaderModule({ label: 'water', code: wgsl('terrain/water.wgsl', device.features.has('clip-distances') ? CLIP_DISTANCES : {}) });
     const blend: GPUBlendComponent = { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' };

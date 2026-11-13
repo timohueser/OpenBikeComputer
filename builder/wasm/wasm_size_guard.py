@@ -2,7 +2,7 @@
 """Gate each production wasm bridge on raw WASM and gzipped WASM plus glue.
 
 The test-device variant is measured but does not ship. Raising a cap needs a reason in the PR.
-The ground-plan budget is the bridge with the faces, the records, the near mesh and the outline slopes.
+The ground-plan budget is the bridge with the faces, the records, the near mesh, the outline slopes and line water.
 """
 
 from __future__ import annotations
@@ -20,11 +20,12 @@ from pathlib import Path
 # increase the permitted production download or raw WASM size.
 BUDGETS = {
     "builder": {"gzipped": (62 + 352 + 128) * 1024, "raw_wasm": (112 + 944 + 272) * 1024},
-    # Measured on the build with the outline's turns, the levels of the way graph, the faces' tile-line
-    # vertices, the decks' ceilings and end faces and the shared water level and curve of the feature bake,
-    # measured on CI, stable 1.100.0 (740,508 B gzipped with the glue, 1,921,404 B raw), the next whole KiB,
-    # within the owner's allowance for the crossing block.
-    "ground-plan": {"gzipped": 724 * 1024, "raw_wasm": 1877 * 1024},
+    # Measured in CI on the build with the outline's turns, the levels of the way graph, the faces' tile-line
+    # vertices, the decks' ceilings and end faces, the shared water level and curve of the feature bake, line water
+    # and its culverts with their mouths (765,551 B gzipped with the glue, 1,985,333 B raw, stable 1.100.0), the
+    # next whole KiB. The owner allows a few per cent for line water and 15 to 25 kB for the crossing block when
+    # stated.
+    "ground-plan": {"gzipped": 748 * 1024, "raw_wasm": 1939 * 1024},
 }
 
 ADVICE = {

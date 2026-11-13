@@ -21,6 +21,7 @@ describe('splitMouths', () => {
             steps: new Uint32Array(0),
             endFaces: 0,
             sunk: new Uint32Array(0),
+            culverts: new Uint32Array(0),
         };
         // Label 8193 has a bit in the second word.
         expect(splitMouths(mesh, new Set([1, 8193]))).toEqual([1, 2]);
@@ -69,9 +70,9 @@ describe('Pieces', () => {
 
     it('reads its pages again after a rest below 17, as pages came and went while it rested', () => {
         const pieces = new Pieces(() => null), eye = { anchor: anchorAt(8.4048, 46.8219), above: 1.7 };
-        // A cell's mesh with no corners: the head (MAGIC, HEAD 11 words) and the region words.
-        const words = new Uint32Array(11 + Math.ceil((130 * 130) / 32));
-        words[0] = 0x4f424d04;
+        // A cell's mesh with no corners: the head (MAGIC, HEAD 12 words) and the region words.
+        const words = new Uint32Array(12 + Math.ceil((130 * 130) / 32));
+        words[0] = 0x4f424d05;
         pieces.add({ level: 16, x: 34_307, y: 23_107 }, words.buffer, 0, new Set());
         let reads = 0;
         const frame = (finest: number) => pieces.update(cdlod(eye, RANGE.least, finest), eye, () => 0, () => `${reads++}`, [], () => true, () => true);

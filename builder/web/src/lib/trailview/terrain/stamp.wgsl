@@ -166,18 +166,19 @@ fn model_height(mp: ModelPoint, ground: f32, s: Stamp) -> f32 {
     return stamp_bounded(hk.x, hk.y == H_PAVED, s);
 }
 
-// The feature mask of a texel from the records: the distance to the core's outline, which every reader
-// takes for a way's edge; the metres across of the way whose core it is, so that |across| less the
-// distance is its half-width; a way of the records counts as surface code 1. The water and the
-// structures keep their flags.
 // The finish of the painted label; in a stop arm's mouth, the arm's own.
 fn painted_finish(mp: ModelPoint) -> u32 {
     return select(model_finish(mp.block, mp.painted), m_line_finish(mp.block, mp.mouth), mp.mouth != M_NONE);
 }
 
+// The feature mask of a texel from the records: the distance to the core's outline, which every reader
+// takes for a way's edge; the metres across of the way whose core it is, so that |across| less the
+// distance is its half-width; a way of the records counts as surface code 1. The water and the
+// structures keep their flags, and the records' water face takes the texel, so no plant stands in it.
 fn model_mask(mp: ModelPoint, s: Stamp) -> vec4f {
     let road = mp.block != 0u && mp.core < MASK_RANGE;
-    let flags = select(0u, CONFLICT_FLAG, s.conflict) | select(0u, FORD_FLAG, s.ford && mp.core < 0.0) | select(0u, TAKEN_FLAG, s.taken);
+    let water = mp.block != 0u && mp.label != M_NONE && m_surface(mp.block, mp.label) == M_SURFACE_WATER;
+    let flags = select(0u, CONFLICT_FLAG, s.conflict) | select(0u, FORD_FLAG, s.ford && mp.core < 0.0) | select(0u, TAKEN_FLAG, s.taken || water);
     let side = select(1.0, sign(mp.across), mp.across != M_FAR && mp.across != 0.0);
     let half = select(mp.half, 0.0, mp.across == M_FAR);
     let across = clamp(side * min(max(mp.core, 0.0) + half, MASK_RANGE) / (2.0 * MASK_RANGE) + 0.5, 0.0, 1.0);

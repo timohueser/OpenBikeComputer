@@ -20,19 +20,25 @@ pub enum Rank {
     Platform,
     RailBed,
     ShoulderPaved,
+    WaterLine,
     Shoulder,
     Verge,
+    Zone,
+    Bank,
     Slope,
     Terrain,
 }
 
-const RANKS: [(&str, Rank); 8] = [
+const RANKS: [(&str, Rank); 11] = [
     ("carriageway", Rank::Carriageway),
     ("platform", Rank::Platform),
     ("rail_bed", Rank::RailBed),
     ("shoulder_paved", Rank::ShoulderPaved),
+    ("water_line", Rank::WaterLine),
     ("shoulder", Rank::Shoulder),
     ("verge", Rank::Verge),
+    ("zone", Rank::Zone),
+    ("bank", Rank::Bank),
     ("slope", Rank::Slope),
     ("terrain", Rank::Terrain),
 ];
@@ -72,7 +78,7 @@ pub struct PlanRules {
     /// A platform's `reach_m`: its edge is a wall, with no blend into the ground.
     pub platform_reach_m: f64,
     /// Per rank, its place in the list `ranks` of `plan.json`.
-    ranks: [u8; 8],
+    ranks: [u8; RANKS.len()],
     /// "host group/guest group" and "default".
     pairs: BTreeMap<String, Pair>,
     /// Per finish, whether it is in `tread_finishes`: a guest of it keeps its own tread at a stop
@@ -144,7 +150,7 @@ impl Rules {
         };
         let names = top.get("ranks").and_then(Value::as_array).ok_or("plan.json: no list ranks")?;
         let names: Vec<&str> = names.iter().filter_map(Value::as_str).collect();
-        let mut ranks = [u8::MAX; 8];
+        let mut ranks = [u8::MAX; RANKS.len()];
         for (at, name) in names.iter().enumerate() {
             let Some(&(_, rank)) = RANKS.iter().find(|(n, _)| n == name) else {
                 return Err(format!("plan.json ranks: an unknown rank {name:?}"));
@@ -158,7 +164,8 @@ impl Rules {
             return Err(format!("plan.json ranks: no rank {name:?}"));
         }
         let classes: Vec<_> = (0..).map_while(|rank| sections.class_faces(rank)).collect();
-        let groups: Vec<&str> = classes.iter().map(|c| c.group).collect();
+        // The groups of roads.json, and line water's.
+        let groups: Vec<&str> = classes.iter().map(|c| c.group).chain(["water"]).collect();
         let mut pairs = BTreeMap::new();
         for (key, row) in top.get("pairs").and_then(Value::as_object).ok_or("plan.json: no object pairs")? {
             if key != "default" {
@@ -355,6 +362,7 @@ mod tests {
         assert_eq!(rules.plan.rank(Rank::Carriageway), 0);
         assert_eq!(rules.plan.pair("road", "path").mouth, Mouth::Stop);
         assert_eq!(rules.plan.pair("water", "road").mouth, Mouth::Join);
+        assert_eq!(rules.plan.pair("water", "water"), Pair { mouth: Mouth::Join, blend: true });
         let cell = rules.reaches().find(|r| r.name == "faces cell").unwrap();
         assert!(cell.metres() < 191.0);
         let fails = |plan: &str| Rules::parse(Sections::embedded().clone(), plan).unwrap_err();

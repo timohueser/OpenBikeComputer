@@ -11,6 +11,7 @@ diagnostic(off, derivative_uniformity);
 // #include band.wgsl
 // #include looks.wgsl
 // #include corridor-in.wgsl
+// #include ../terrain/water-look.wgsl
 
 // As Frame of terrain.wgsl, which shares its buffer.
 struct Frame {
@@ -38,11 +39,17 @@ const PRIO_SHIFT: u32 = 16u;
 const HALF_SHIFT: u32 = 19u;
 const HALF_BITS: u32 = 511u;
 const FINE_SHIFT: u32 = 28u;
-// As MAT, LOOK and CF of section.ts.
+// As MAT, LOOK and CF of section.ts. A piece's water face, and a step slot whose upper side is water: the
+// water's look (water-look.wgsl).
 const MAT_GROUND: u32 = 1u;
+const MAT_WATER: u32 = 50u;
 // In a piece's wall's word, the code bit (1 << CODE_SHIFT) that its look does not read: its road stands on its higher
 // side (plan/piece.wgsl).
 const WALL_FILL: u32 = 128u;
+// In a piece's concrete word, the next code bit, which its look does not read: the dark inside of a culvert's mouth
+// (plan/piece.wgsl), this colour.
+const CULVERT_DARK: u32 = 256u;
+const CULVERT_INSIDE: vec3f = vec3f(0.018, 0.02, 0.018);
 const CF_SAMPLE: u32 = 1u;
 const CF_MESH: u32 = 2u;
 const CF_FILL: u32 = 3u;
@@ -371,8 +378,18 @@ fn corridor_fragment(raw: CorridorOut) -> @location(0) vec4f {
     if (PIECE && frame.debug == 3u) {
         return vec4f(vec3f(0.25 + 0.5 * (max(dot(render_normal(select(normalize(in.normal), drawn_normal(su), (in.word & MAT_BITS) == MAT_GROUND)), frame.sun.xyz), 0.0) * frame.sun.w + 0.3) / 1.3), 1.0);
     }
+    if (PIECE && (in.word & (MAT_BITS | CULVERT_DARK)) == (MAT_CAP | CULVERT_DARK)) {
+        return vec4f(atmosphere(CULVERT_INSIDE, in.relative, in.altitude), 1.0);
+    }
     if (mat == MAT_GROUND) {
         return vec4f(corridor_ground(in, su, d), 1.0);
+    }
+    // The fall of a piece's water is the slope of its surface, which is level across its line: a step's
+    // slot stands upright, so it foams.
+    if (PIECE && mat == MAT_WATER) {
+        let wn = normalize(in.normal);
+        let fall = length(wn.xy) / max(wn.z, 1e-3);
+        return vec4f(atmosphere(water_look(in.relative, su, fall, false, frame.pixel, frame.curvature), in.relative, in.altitude), 1.0);
     }
     // A piece's wall in a cliff is a rock cut (wall_rock).
     var rock = WallRock(0.0, vec3f(0.0, 0.0, 1.0));

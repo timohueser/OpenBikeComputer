@@ -37,9 +37,11 @@ pub fn sharp(rule: HeightRule) -> bool {
 ///   1 cm;
 /// - shoulders and verges: 3 m, narrow bands beside the carriageway;
 /// - blend faces (junction regions, corner fills): 2 m, the blend heights curve;
+/// - water: 4 m, its level runs along its line as a paved face's height;
 /// - slope and terrain: 2.4 m, the grid's diagonal at the mesh level.
 pub fn l_max_m(surface: Surface, rule: HeightRule) -> f64 {
     match (rule, surface) {
+        (HeightRule::Owner, Surface::Water) => 4.0,
         (HeightRule::Terrain | HeightRule::Slope, _) => 2.4,
         (HeightRule::Blend, _) | (_, Surface::CornerFill) => 2.0,
         (_, Surface::Shoulder | Surface::Verge) => 3.0,

@@ -169,7 +169,7 @@ fn the_vocabulary_names_every_code_with_its_colour() {
         v[key].as_array().unwrap().iter().map(|e| e["name"].as_str().unwrap().to_string()).collect::<Vec<_>>()
     };
     assert_eq!(names("surfaces")[Surface::CornerFill as usize], "corner_fill");
-    assert_eq!(names("surfaces").len(), Surface::Platform as usize + 1);
+    assert_eq!(names("surfaces").len(), Surface::Zone as usize + 1);
     assert_eq!(names("edges")[EdgeKind::CellBorder as usize], "cell_border");
     assert_eq!(v["surfaces"][0]["fill"], serde_json::Value::Null, "terrain has no fill");
     assert!(v["edges"].as_array().unwrap().iter().all(|e| colour(&e["colour"])));
@@ -240,7 +240,17 @@ fn plan_of(w: &FaceWords, cell: CellKey) -> FacePlan {
             }
         })
         .collect();
-    FacePlan { cell, level: 0, vertices: pairs(&w.vertices), faces, edges, corners, stats: FaceStats::default() }
+    let mouths = Vec::new();
+    FacePlan {
+        cell,
+        level: 0,
+        vertices: pairs(&w.vertices),
+        faces,
+        edges,
+        corners,
+        mouths,
+        stats: FaceStats::default(),
+    }
 }
 
 #[test]
@@ -288,6 +298,7 @@ fn the_face_words_keep_every_field_of_the_plan() {
             },
             CornerArc { owner: Owner::Way(7), centre: [0, 0], radius_m: 0.0, t_a: [0, 0], t_b: [0, 0], arc: vec![] },
         ],
+        mouths: Vec::new(),
         stats: FaceStats::default(),
     };
     assert_eq!(plan_of(&FaceWords::of(&plan), cell), plan);

@@ -18,11 +18,11 @@ use super::{WayLine, LAYERS};
 const ON_EDGE: f64 = 4.0;
 
 /// The ways at a point: the least `inner_radius_m` and the greatest `sag_plan_m` of the ways whose
-/// carriageway edge runs through q, if any.
+/// carriageway edge runs through q, if any. The paved outline holds no water.
 pub fn at_corner(lines: &[WayLine], q: P) -> Option<(f64, f64)> {
     let (x, y) = (f64::from(q[0]), f64::from(q[1]));
     let mut out: Option<(f64, f64)> = None;
-    for line in lines {
+    for line in lines.iter().filter(|l| !l.sec.water) {
         let touches = line.near([x, y], ON_EDGE).any(|i| {
             let (a, c) = (line.p[i], line.p[i + 1]);
             let (ax, ay) = (f64::from(a[0]), f64::from(a[1]));
@@ -41,10 +41,10 @@ pub fn at_corner(lines: &[WayLine], q: P) -> Option<(f64, f64)> {
 }
 
 /// The way whose carriageway edge runs nearest q (an index into `lines`, `usize::MAX` for none), with
-/// its band layers' outer offsets past that edge (units): paved shoulder, shoulder, verge, slope.
+/// its band layers' outer offsets past that edge (units, `LAYERS`). A water line is no way.
 fn bands_at(lines: &[WayLine], q: [f64; 2]) -> (usize, [f64; LAYERS]) {
     let mut best = (f64::INFINITY, usize::MAX, [0.0; LAYERS]);
-    for (l, line) in lines.iter().enumerate() {
+    for (l, line) in lines.iter().enumerate().filter(|(_, l)| !l.sec.water) {
         let b = line.bbox;
         let pad = f64::from(ON_EDGE as i32) + 1.0;
         if q[0] < f64::from(b[0]) - pad
@@ -75,7 +75,7 @@ fn bands_at(lines: &[WayLine], q: [f64; 2]) -> (usize, [f64; LAYERS]) {
 /// at the corner (doubled), whose label the ring takes.
 pub struct Fill {
     pub ring: Vec<P>,
-    /// Its band rings: paved shoulder, shoulder, verge, slope.
+    /// Its band rings (`LAYERS`).
     pub bands: [Vec<Vec<P>>; LAYERS],
     pub circle: Circle,
     pub inside: [i64; 2],

@@ -14,7 +14,7 @@
     "via_fade_m": 1.5, "band_fade_m": 1.0, "mitre_band_m": 2.0, "budget_round_m": 2.0, "wall_max_m": 4.5, "face_max": 2.5, "legs": "ramp", "step_m": 0.001,
     "region_fade_m": 1.5, "ceiling_gap_m": 0.5, "ceiling_release_m": 8
   },
-  "ranks": ["carriageway", "platform", "rail_bed", "shoulder_paved", "shoulder", "verge", "slope", "terrain"],
+  "ranks": ["carriageway", "platform", "rail_bed", "shoulder_paved", "shoulder", "water_line", "verge", "zone", "bank", "slope", "terrain"],
   "pairs": {
     "road/road": {"mouth": "reach", "blend": true},
     "road/track": {"mouth": "stop", "blend": true},
@@ -29,6 +29,7 @@
     "rail/rail": {"mouth": "join", "blend": false},
     "road/rail": {"mouth": "join", "blend": false},
     "rail/road": {"mouth": "join", "blend": false},
+    "water/water": {"mouth": "join", "blend": true},
     "default": {"mouth": "join", "blend": false}
   }
 }

@@ -43,7 +43,7 @@ use crate::graph::WayGraph;
 use crate::CellInput;
 
 /// "OBF" and the layout's version.
-pub const MAGIC_FAR: u32 = 0x4f42_4601;
+pub const MAGIC_FAR: u32 = 0x4f42_4602;
 /// The viewer's road mask reaches this far past a way's core (`MASK_M` of `terrain/features.wgsl`).
 pub const MASK_M: f64 = 12.75;
 /// The segments on each side of its own that the stroke of a segment reads.

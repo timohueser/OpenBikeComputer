@@ -14,6 +14,7 @@ struct Piece {
     faces: u32,
     block: u32,
     first: u32,
+    culverts: u32,
 }
 
 @group(0) @binding(1) var<storage, read> piece: array<u32>;
@@ -79,6 +80,11 @@ const WALL_SIDE: u32 = 1u << FINE_SHIFT;
 // Whether corner k lies on the road surface of a wall class.
 fn on_road(k: u32) -> bool {
     return (piece[params.out + 4u * k + 1u] & WALL_SIDE) != 0u;
+}
+
+// Whether corner k lies on water (MAT_WATER of corners.wgsl).
+fn on_water(k: u32) -> bool {
+    return (piece[params.out + 4u * k + 1u] & MAT_BITS) == MAT_WATER;
 }
 
 // A corner's metres across and half-width, and its metres along, from its look and place words.
@@ -158,11 +164,16 @@ fn slot_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
     // Toward b, the left of p → q, where a stands higher.
     let along = c[1].s - c[0].s;
     let left = normalize(vec2f(-along.y, along.x) + vec2f(1e-9, 0.0));
-    // An end face (the mesh's last slots, on a deck end line) is plain concrete at any height. A step beside a wall
-    // class's road surface that stands as high as a wall is a wall; any other is a bank of the ground, as on a path
-    // or a track.
+    // An end face (the mesh's last slots, on a deck end line) is plain concrete at any height. A step whose upper
+    // side is water falls as water (its look foams on the upright slot). A step beside a wall class's road surface
+    // that stands as high as a wall is a wall; any other is a bank of the ground, as on a path or a track.
+    let upper = select(vec2u(piece[w + 2u], piece[w + 3u]), vec2u(piece[w], piece[w + 1u]), rise > 0.0);
     let wall = (on_road(piece[w]) || on_road(piece[w + 3u])) && max(abs(dp), abs(dq)) >= WALL_STEP_M;
-    let mat = select(select(MAT_GROUND, MAT_WALL, wall), MAT_CAP, index / 6u >= params.faces);
+    var mat = select(MAT_GROUND, MAT_WALL, wall);
+    if (on_water(upper.x) || on_water(upper.y)) {
+        mat = MAT_WATER;
+    }
+    mat = select(mat, MAT_CAP, index / 6u >= params.faces);
     // A bank's level normal is as long as its share of the light: a step of millimetres shades as the ground
     // beside it, a real one as a face of its own (corridor_ground).
     let share = select(smoothstep(BANK_LOW_M, BANK_HIGH_M, step), 1.0, mat != MAT_GROUND);
@@ -171,8 +182,107 @@ fn slot_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
     // that face lies above it (wall_rock of roads/corridor.wgsl).
     let fill = select(on_road(piece[w + 3u]), on_road(piece[w]), rise > 0.0);
     let word = mat | (480u << HALF_SHIFT) | select(0u, WALL_FILL, mat == MAT_WALL && fill);
-    if (mat != MAT_GROUND) {
+    if (mat == MAT_WALL || mat == MAT_CAP) {
         place = CornerPlace(vec2f(v.h - min(c[0].h, c[3].h), half_of(word)), length(v.s - c[0].s));
     }
     return piece_out(v, word, place, normal);
+}
+
+// A culvert's mouth (the mesh's mouths, 4 words each: its corner on the water and its corner in the zone, the zone
+// outline's direction and the water's half-width): the end of a concrete pipe as wide as the water, which stands
+// MOUTH_FRONT_M out of the way's bank, its shell MOUTH_SHELL_M thick and its inside dark at the bank. Its frame: x
+// along the outline, y into the zone, z up from the water. The pipe's middle lies under the water, so the water runs
+// into it, and it runs along the water. A mouth lower than MOUTH_LOW_M draws no model. The pipe is as wide as the
+// water (`faces::CulvertMouth`): at a crossing and a ford at most `culvert_width_m`, at a mapped culvert and a
+// tunnel's start at most twice `HALF_MAX_M`.
+const MOUTH_SIDES: u32 = 12u;
+const MOUTH_QUADS: u32 = 4u * MOUTH_SIDES;
+const MOUTH_FRONT_M: f32 = 0.25;
+const MOUTH_SHELL_M: f32 = 0.1;
+const MOUTH_LOW_M: f32 = 0.15;
+
+struct MouthFrame {
+    // The opening's half-width along x, its half-height and its middle's z.
+    rx: f32,
+    rz: f32,
+    zc: f32,
+    // The water's direction in the frame (x, y): the pipe runs along it.
+    d: vec2f,
+}
+
+// A point of an ellipse about the opening's middle, `grow` metres out of the opening's rim, at angle t, at y.
+fn mouth_rim(f: MouthFrame, t: f32, grow: f32, y: f32) -> vec3f {
+    return vec3f((f.rx + grow) * cos(t), y, f.zc + (f.rz + grow) * sin(t));
+}
+
+// The point of the pipe at y behind the rim's point p of its front, along the water.
+fn mouth_back(f: MouthFrame, p: vec3f, y: f32) -> vec3f {
+    return vec3f(p.x + (y - p.y) / f.d.y * f.d.x, y, p.z);
+}
+
+// The rim's point at the pipe's dark end, just in front of the zone.
+fn mouth_end(f: MouthFrame, p: vec3f) -> vec3f {
+    return mouth_back(f, p, -0.02);
+}
+
+@vertex
+fn culvert_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
+    let w = params.culverts + 4u * (index / (6u * MOUTH_QUADS));
+    let cw = corner_at(piece[w]);
+    let cz = corner_at(piece[w + 1u]);
+    let e2 = unpack2x16snorm(piece[w + 2u]);
+    let half = bitcast<f32>(piece[w + 3u]);
+    // The frame in render space's metres (y north): x along the outline, y into the zone.
+    let ex = normalize(vec2f(e2.x, -e2.y) + vec2f(1e-9, 0.0));
+    let water = normalize(cz.s - cw.s + vec2f(1e-9, 0.0));
+    var ey = vec2f(-ex.y, ex.x);
+    ey *= select(-1.0, 1.0, dot(ey, water) >= 0.0);
+    var f: MouthFrame;
+    f.d = vec2f(dot(water, ex), max(dot(water, ey), 0.5));
+    // The pipe as wide as the water across its line, so as wide as the water's cut through the outline along it; as
+    // high as the bank leaves room for the shell.
+    let rise = cz.h - cw.h;
+    let r = max(1.03 * half, 0.3);
+    f.rx = r / f.d.y;
+    f.zc = -0.2 * r;
+    f.rz = clamp(rise - MOUTH_SHELL_M - f.zc, 0.15, r);
+    // The quad and its corner, MOUTH_SIDES of each part about the opening: the pipe's front ring, its outside into
+    // the bank, its inside, and its dark end (a triangle each, one corner twice).
+    let q = (index / 6u) % MOUTH_QUADS;
+    let corner = array(0u, 1u, 2u, 0u, 2u, 3u)[index % 6u];
+    let t0 = 6.2831853 * f32(q % MOUTH_SIDES) / f32(MOUTH_SIDES);
+    let t1 = 6.2831853 * f32(q % MOUTH_SIDES + 1u) / f32(MOUTH_SIDES);
+    let tm = 0.5 * (t0 + t1);
+    let y0 = -MOUTH_FRONT_M;
+    let shell = MOUTH_SHELL_M;
+    var p: array<vec3f, 4>;
+    var n = vec3f(0.0, -1.0, 0.0);
+    var word = MAT_CAP | (480u << HALF_SHIFT);
+    switch (q / MOUTH_SIDES) {
+        case 0u: {
+            p = array(mouth_rim(f, t0, 0.0, y0), mouth_rim(f, t0, shell, y0), mouth_rim(f, t1, shell, y0), mouth_rim(f, t1, 0.0, y0));
+        }
+        case 1u: {
+            let a = mouth_rim(f, t0, shell, y0);
+            let b = mouth_rim(f, t1, shell, y0);
+            p = array(a, mouth_back(f, a, 0.1), mouth_back(f, b, 0.1), b);
+            n = normalize(vec3f(f.rz * cos(tm), 0.0, f.rx * sin(tm)));
+        }
+        case 2u: {
+            let a = mouth_rim(f, t0, 0.0, y0);
+            let b = mouth_rim(f, t1, 0.0, y0);
+            p = array(a, mouth_end(f, a), mouth_end(f, b), b);
+            n = normalize(vec3f(-f.rz * cos(tm), 0.0, -f.rx * sin(tm)));
+        }
+        default: {
+            let mid = mouth_end(f, vec3f(0.0, y0, f.zc));
+            p = array(mid, mouth_end(f, mouth_rim(f, t0, 0.0, y0)), mouth_end(f, mouth_rim(f, t1, 0.0, y0)), mid);
+            word |= CULVERT_DARK;
+        }
+    }
+    let l = select(p[corner], vec3f(0.0), rise < MOUTH_LOW_M);
+    let s = 0.5 * (cw.s + cz.s) + l.x * ex + l.y * ey;
+    let v = PieceVertex(surface.part + vec2f(s.x, -s.y) / surface.unit, s, cw.h + l.z);
+    let place = CornerPlace(vec2f(l.z - f.zc, half_of(word)), l.x);
+    return piece_out(v, word, place, vec3f(n.x * ex + n.y * ey, n.z));
 }

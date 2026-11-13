@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::crossings::{cross, Grid};
-use super::curve::{geo, insert, point, samples as span_samples, station_sample};
+use super::curve::{geo_of, insert, point, samples as span_samples, station_sample};
 use super::parts::Rule;
 use super::points::{metres, nodes, position, Anchor, NodeKind, Nodes, Piece, Plan};
 use super::{
@@ -55,7 +55,7 @@ fn reached(nodes: &Nodes, on_piece: &[Vec<(f64, usize)>], piece: usize, m: f64, 
 
 /// The u on a span nearest to a point, from a first u: Newton steps on the squared distance.
 pub(super) fn foot(part: &Part, span: usize, mut u: f64, e: [i64; 2]) -> f64 {
-    let g = geo(&part.vertices[span], &part.vertices[span + 1], part.spans[span].chord);
+    let g = geo_of(&part.vertices[span], &part.vertices[span + 1], &part.spans[span]);
     let rel = [(e[0] - g.p0[0]) as f64, (e[1] - g.p0[1]) as f64];
     for _ in 0..NEWTON_STEPS {
         let [p, d, dd] = g.eval(u);

@@ -441,11 +441,11 @@ fn round_at(
 }
 
 /// Whether a circle about c (relative to the point at `pos`) of radius rho lies off the carriageways
-/// of `lines` but for the parts of its arms' lines on their runs (`own`: line, first and last
-/// sample index).
-fn off_lines(lines: &[WayLine], pos: P, own: &[(usize, f64, f64)], c: [f64; 2], rho: f64) -> bool {
+/// of the `lines` of kind `water` (a point's arms are all water or all ways) but for the parts of its
+/// arms' lines on their runs (`own`: line, first and last sample index). Water and ways overlap by rank.
+fn off_lines(lines: &[WayLine], water: bool, pos: P, own: &[(usize, f64, f64)], c: [f64; 2], rho: f64) -> bool {
     let q = [f64::from(pos[0]) + c[0], f64::from(pos[1]) + c[1]];
-    lines.iter().enumerate().all(|(li, line)| {
+    lines.iter().enumerate().filter(|(_, line)| line.sec.water == water).all(|(li, line)| {
         let mine = |i: usize| own.iter().any(|&(l, lo, hi)| l == li && i as f64 + 1.0 > lo && (i as f64) < hi);
         line.near(q, rho).filter(|&i| !mine(i)).all(|i| {
             let (a, b) = (line.p[i], line.p[i + 1]);
@@ -859,7 +859,8 @@ pub fn round(
         .map(|r| r.iter().map(|p| [f64::from(p[0] - pos[0]), f64::from(p[1] - pos[1])]).collect())
         .collect();
     let off = |c: [f64; 2], rho: f64| {
-        fills.iter().all(|f| to_ring(f, c).d >= rho - 1.0) && off_lines(lines, pos, &own, c, rho)
+        let water = lines[arms[0].line].sec.water;
+        fills.iter().all(|f| to_ring(f, c).d >= rho - 1.0) && off_lines(lines, water, pos, &own, c, rho)
     };
     let (tau, step) = (2.0 * std::f64::consts::PI, 2.0 * std::f64::consts::PI / f64::from(STEPS));
     for &(i, j, r, tol) in pairs {
