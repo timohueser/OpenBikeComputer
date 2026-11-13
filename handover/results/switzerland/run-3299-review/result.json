@@ -1,0 +1,65 @@
+{
+ "steps": [
+  {
+   "step": "planner/routing-source",
+   "key": "3a8c9a88f91e9d2d",
+   "seconds": 80.6,
+   "rss_anon_mib": 19,
+   "work_mib": 1562,
+   "exit": 0,
+   "layer_mib": 752
+  },
+  {
+   "step": "planner/routing-roads",
+   "key": "b8a1d490ed7fccd7",
+   "seconds": 58.1,
+   "rss_anon_mib": 679,
+   "work_mib": 2469,
+   "exit": 0,
+   "layer_mib": 1243
+  },
+  {
+   "step": "planner/routing-costs",
+   "key": "06cf5591d57e7372",
+   "seconds": 35.6,
+   "rss_anon_mib": 6,
+   "work_mib": 1840,
+   "exit": 0,
+   "layer_mib": 1434
+  },
+  {
+   "step": "planner/routing",
+   "key": "51c33b88c2bddc7a",
+   "seconds": 241.8,
+   "rss_anon_mib": 1289,
+   "work_mib": 1030,
+   "exit": 0
+  }
+ ],
+ "layers": "/home/user/obc-bake/switzerland/run-3299-review/layers",
+ "seconds": 416.1,
+ "stages": [
+  "Stage import: 80.5 s, own memory peak 23 MiB",
+  "Imported: 2161202 ways, 20832239 node references, 7719364 directed roads, 21915422 turns, 3092540 junctions",
+  "Stage import: 7.1 s, own memory peak 2 MiB",
+  "Stage emit: 50.8 s, own memory peak 661 MiB",
+  "Manifest estimate: 10419236 bytes",
+  "Stage open: 0.2 s, own memory peak 1 MiB",
+  "Stage way-bases: 3.2 s, own memory peak 5 MiB",
+  "Stage road-pass: 27.5 s, own memory peak 5 MiB",
+  "Stage snap: 4.5 s, own memory peak 4 MiB",
+  "Stage open: 0.0 s, own memory peak 1 MiB",
+  "Stage landmarks: 14.8 s, own memory peak 2 MiB",
+  "Stage writer: 34.4 s, own memory peak 50 MiB",
+  "Stage overlays: 27.2 s, own memory peak 160 MiB",
+  "Stage catalog: 133.7 s, own memory peak 1288 MiB",
+  "Stage blocks: 31.6 s, own memory peak 717 MiB"
+ ],
+ "sha256": {
+  "manifest.json": "466b2ca133aa614ee11ea25bcb1eb515e48fbb61b3572141cf38cf9a07d81ab8",
+  "overlays.sqlite": "c22e59838e0ad0276bec09df7fcdd8d18c225297d55ca7bfaecb6ae9355e2eef",
+  "route-catalog.json": "5d4a242598b8871e214688d4413e9455aa782db2f095e6ade580dc0bb77e6fb9"
+ },
+ "manifest_bytes": 9918794,
+ "roads": 7719364
+}

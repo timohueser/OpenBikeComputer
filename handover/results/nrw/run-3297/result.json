@@ -1,0 +1,32 @@
+{
+ "seconds": 317.1,
+ "exit": -15,
+ "stopped": true,
+ "phases": [
+  {
+   "phase": "Importing",
+   "start_s": 38.9,
+   "seconds": 122.6,
+   "rss_anon_mib": 29,
+   "work_mib": 1466
+  },
+  {
+   "phase": "Sampling terrain",
+   "start_s": 161.5,
+   "seconds": 46.1,
+   "rss_anon_mib": 428,
+   "work_mib": 3641
+  },
+  {
+   "phase": "Preparing",
+   "start_s": 207.6,
+   "seconds": 109.5,
+   "rss_anon_mib": 76,
+   "work_mib": 5756
+  }
+ ],
+ "printed": [
+  "Imported: 2783285 ways, 17816428 node references, 10152040 directed roads, 29230967 turns, 3991797 junctions",
+  "Manifest estimate: 13677036 bytes"
+ ]
+}

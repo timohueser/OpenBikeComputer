@@ -1,0 +1,367 @@
+== ch step1 threads=4 2026-11-11T22:11:44Z
+Stage import: 62.1 s, own memory peak 22 MiB
+Stage import: 23.2 s, own memory peak 2 MiB
+Partition depth 0: 1 cuts, 3092540 junctions, 4 directions (2 stopped), 134 phases, 202927454 visits (65.6 for each junction), 33.8 s
+Partition depth 1: 2 cuts, 3092540 junctions, 8 directions (4 stopped), 288 phases, 222983653 visits (72.1 for each junction), 32.7 s
+Partition depth 2: 4 cuts, 3092540 junctions, 16 directions (7 stopped), 426 phases, 185370780 visits (59.9 for each junction), 25.7 s
+Partition depth 3: 8 cuts, 3092540 junctions, 32 directions (13 stopped), 702 phases, 151556637 visits (49.0 for each junction), 18.4 s
+Partition depth 4: 16 cuts, 3092540 junctions, 64 directions (26 stopped), 1153 phases, 129320942 visits (41.8 for each junction), 14.0 s
+Partition depth 5: 32 cuts, 3092540 junctions, 128 directions (58 stopped), 1600 phases, 89342484 visits (28.9 for each junction), 9.1 s
+Partition depth 6: 64 cuts, 3092540 junctions, 256 directions (118 stopped), 2542 phases, 78042348 visits (25.2 for each junction), 7.5 s
+Partition depth 7: 128 cuts, 3092540 junctions, 512 directions (209 stopped), 4170 phases, 63815936 visits (20.6 for each junction), 6.0 s
+Partition depth 8: 256 cuts, 3092540 junctions, 1024 directions (444 stopped), 6717 phases, 52027900 visits (16.8 for each junction), 4.7 s
+Partition depth 9: 510 cuts, 3091710 junctions, 2040 directions (888 stopped), 10633 phases, 41003035 visits (13.3 for each junction), 3.7 s
+Partition depth 10: 942 cuts, 3062369 junctions, 3768 directions (1585 stopped), 16702 phases, 33233152 visits (10.9 for each junction), 2.9 s
+Partition depth 11: 1480 cuts, 2918450 junctions, 5920 directions (2437 stopped), 24048 phases, 26725977 visits (9.2 for each junction), 2.3 s
+Partition depth 12: 1851 cuts, 2527234 junctions, 7404 directions (3040 stopped), 28447 phases, 20879021 visits (8.3 for each junction), 1.8 s
+Partition depth 13: 1743 cuts, 1856353 junctions, 6972 directions (2866 stopped), 26536 phases, 14228596 visits (7.7 for each junction), 1.3 s
+Partition depth 14: 1223 cuts, 1099638 junctions, 4892 directions (1984 stopped), 18649 phases, 8075439 visits (7.3 for each junction), 0.7 s
+Partition depth 15: 622 cuts, 498600 junctions, 2488 directions (1004 stopped), 9634 phases, 3628903 visits (7.3 for each junction), 0.3 s
+Partition depth 16: 249 cuts, 176362 junctions, 996 directions (395 stopped), 3867 phases, 1258155 visits (7.1 for each junction), 0.1 s
+Partition depth 17: 56 cuts, 38479 junctions, 224 directions (87 stopped), 943 phases, 303564 visits (7.9 for each junction), 0.0 s
+Partition depth 18: 12 cuts, 7834 junctions, 48 directions (18 stopped), 209 phases, 61656 visits (7.9 for each junction), 0.0 s
+Partition depth 19: 2 cuts, 1177 junctions, 8 directions (3 stopped), 35 phases, 9618 visits (8.2 for each junction), 0.0 s
+Partition first cut, direction 0: 1 cuts, 3092540 junctions, 1 directions (0 stopped), 45 phases, 67480960 visits (21.8 for each junction), 10.8 s
+Partition first cut, direction 1: 1 cuts, 3092540 junctions, 1 directions (1 stopped), 20 phases, 30715825 visits (9.9 for each junction), 5.0 s
+Partition first cut, direction 2: 1 cuts, 3092540 junctions, 1 directions (0 stopped), 50 phases, 75534029 visits (24.4 for each junction), 12.6 s
+Partition first cut, direction 3: 1 cuts, 3092540 junctions, 1 directions (1 stopped), 19 phases, 29196640 visits (9.4 for each junction), 5.3 s
+Partition: 3092540 junctions, 7680912 arcs, need 150 MiB, 78.8 s, 5 levels, SHA-256 612ae937855762e0e8674f147486ec1b6c2ad381663f5de20340d17f6c70b273
+== nrw step1 threads=4 2026-11-11T22:16:48Z
+Stage import: 100.3 s, own memory peak 29 MiB
+Stage import: 18.3 s, own memory peak 2 MiB
+Partition depth 0: 1 cuts, 3991797 junctions, 4 directions (1 stopped), 227 phases, 445256037 visits (111.5 for each junction), 84.9 s
+Partition depth 1: 2 cuts, 3991797 junctions, 8 directions (5 stopped), 280 phases, 259171384 visits (64.9 for each junction), 41.5 s
+Partition depth 2: 4 cuts, 3991797 junctions, 16 directions (6 stopped), 449 phases, 218431638 visits (54.7 for each junction), 30.6 s
+Partition depth 3: 8 cuts, 3991797 junctions, 32 directions (19 stopped), 730 phases, 190278558 visits (47.7 for each junction), 23.4 s
+Partition depth 4: 16 cuts, 3991797 junctions, 64 directions (27 stopped), 1197 phases, 161839183 visits (40.5 for each junction), 17.4 s
+Partition depth 5: 32 cuts, 3991797 junctions, 128 directions (55 stopped), 1943 phases, 129558571 visits (32.5 for each junction), 12.9 s
+Partition depth 6: 64 cuts, 3991797 junctions, 256 directions (113 stopped), 3061 phases, 102576907 visits (25.7 for each junction), 9.7 s
+Partition depth 7: 128 cuts, 3991797 junctions, 512 directions (238 stopped), 4688 phases, 82503588 visits (20.7 for each junction), 7.5 s
+Partition depth 8: 256 cuts, 3991797 junctions, 1024 directions (449 stopped), 7544 phases, 65441666 visits (16.4 for each junction), 5.9 s
+Partition depth 9: 511 cuts, 3991374 junctions, 2044 directions (905 stopped), 12231 phases, 54949936 visits (13.8 for each junction), 4.8 s
+Partition depth 10: 1001 cuts, 3982666 junctions, 4004 directions (1723 stopped), 19845 phases, 44429631 visits (11.2 for each junction), 3.8 s
+Partition depth 11: 1773 cuts, 3895476 junctions, 7092 directions (3079 stopped), 30046 phases, 36375817 visits (9.3 for each junction), 3.1 s
+Partition depth 12: 2431 cuts, 3495957 junctions, 9724 directions (4104 stopped), 38265 phases, 28759850 visits (8.2 for each junction), 2.5 s
+Partition depth 13: 2500 cuts, 2682235 junctions, 10000 directions (4151 stopped), 37872 phases, 20164149 visits (7.5 for each junction), 1.8 s
+Partition depth 14: 1818 cuts, 1618941 junctions, 7272 directions (3022 stopped), 27061 phases, 11506106 visits (7.1 for each junction), 1.0 s
+Partition depth 15: 911 cuts, 728115 junctions, 3644 directions (1524 stopped), 13683 phases, 5114544 visits (7.0 for each junction), 0.4 s
+Partition depth 16: 349 cuts, 257075 junctions, 1396 directions (582 stopped), 5252 phases, 1802024 visits (7.0 for each junction), 0.2 s
+Partition depth 17: 100 cuts, 69630 junctions, 400 directions (156 stopped), 1640 phases, 523818 visits (7.5 for each junction), 0.0 s
+Partition depth 18: 20 cuts, 13618 junctions, 80 directions (34 stopped), 352 phases, 108010 visits (7.9 for each junction), 0.0 s
+Partition depth 19: 3 cuts, 1980 junctions, 12 directions (6 stopped), 40 phases, 13010 visits (6.6 for each junction), 0.0 s
+Partition depth 20: 1 cuts, 562 junctions, 4 directions (2 stopped), 13 phases, 3523 visits (6.3 for each junction), 0.0 s
+Partition first cut, direction 0: 1 cuts, 3991797 junctions, 1 directions (0 stopped), 62 phases, 121397796 visits (30.4 for each junction), 24.1 s
+Partition first cut, direction 1: 1 cuts, 3991797 junctions, 1 directions (0 stopped), 56 phases, 109153452 visits (27.3 for each junction), 20.3 s
+Partition first cut, direction 2: 1 cuts, 3991797 junctions, 1 directions (0 stopped), 82 phases, 161191924 visits (40.4 for each junction), 28.7 s
+Partition first cut, direction 3: 1 cuts, 3991797 junctions, 1 directions (1 stopped), 27 phases, 53512865 visits (13.4 for each junction), 11.8 s
+Partition: 3991797 junctions, 10091514 arcs, need 194 MiB, 141.7 s, 5 levels, SHA-256 280974c9cb52e71f1e1da83d044123860b94513b98d45357577014b494c1d5b9
+== ch tree threads=4 2026-11-11T22:21:04Z
+Stage import: 5.5 s, own memory peak 2 MiB
+Partition depth 0: 1 cuts, 3092540 junctions, 4 directions (2 stopped), 606 phases, 658436181 visits (212.9 for each junction), 39.8 s
+Partition depth 1: 2 cuts, 3092540 junctions, 8 directions (4 stopped), 1229 phases, 630584685 visits (203.9 for each junction), 33.7 s
+Partition depth 2: 4 cuts, 3092540 junctions, 16 directions (7 stopped), 1773 phases, 447054334 visits (144.6 for each junction), 20.3 s
+Partition depth 3: 8 cuts, 3092540 junctions, 32 directions (13 stopped), 2617 phases, 343310745 visits (111.0 for each junction), 14.4 s
+Partition depth 4: 16 cuts, 3092540 junctions, 64 directions (26 stopped), 4027 phases, 283079847 visits (91.5 for each junction), 11.2 s
+Partition depth 5: 32 cuts, 3092540 junctions, 128 directions (58 stopped), 5246 phases, 181140671 visits (58.6 for each junction), 6.9 s
+Partition depth 6: 64 cuts, 3092540 junctions, 256 directions (118 stopped), 7790 phases, 145852600 visits (47.2 for each junction), 5.3 s
+Partition depth 7: 128 cuts, 3092540 junctions, 512 directions (209 stopped), 11951 phases, 113007131 visits (36.5 for each junction), 4.1 s
+Partition depth 8: 256 cuts, 3092540 junctions, 1024 directions (444 stopped), 18072 phases, 90323984 visits (29.2 for each junction), 3.3 s
+Partition depth 9: 510 cuts, 3091710 junctions, 2040 directions (888 stopped), 26903 phases, 66760372 visits (21.6 for each junction), 2.5 s
+Partition depth 10: 942 cuts, 3062369 junctions, 3768 directions (1585 stopped), 39701 phases, 51774656 visits (16.9 for each junction), 2.0 s
+Partition depth 11: 1480 cuts, 2918450 junctions, 5920 directions (2437 stopped), 55045 phases, 40416602 visits (13.8 for each junction), 1.7 s
+Partition depth 12: 1851 cuts, 2527234 junctions, 7404 directions (3040 stopped), 64230 phases, 30894515 visits (12.2 for each junction), 1.3 s
+Partition depth 13: 1743 cuts, 1856353 junctions, 6972 directions (2866 stopped), 59713 phases, 21154822 visits (11.4 for each junction), 0.9 s
+Partition depth 14: 1223 cuts, 1099638 junctions, 4892 directions (1984 stopped), 41628 phases, 11848429 visits (10.8 for each junction), 0.5 s
+Partition depth 15: 622 cuts, 498600 junctions, 2488 directions (1004 stopped), 21894 phases, 5416664 visits (10.9 for each junction), 0.2 s
+Partition depth 16: 249 cuts, 176362 junctions, 996 directions (395 stopped), 8823 phases, 1895782 visits (10.7 for each junction), 0.1 s
+Partition depth 17: 56 cuts, 38479 junctions, 224 directions (87 stopped), 2248 phases, 443670 visits (11.5 for each junction), 0.0 s
+Partition depth 18: 12 cuts, 7834 junctions, 48 directions (18 stopped), 498 phases, 90769 visits (11.6 for each junction), 0.0 s
+Partition depth 19: 2 cuts, 1177 junctions, 8 directions (3 stopped), 92 phases, 16961 visits (14.4 for each junction), 0.0 s
+Partition first cut, direction 0: 1 cuts, 3092540 junctions, 1 directions (0 stopped), 155 phases, 212345140 visits (68.7 for each junction), 12.7 s
+Partition first cut, direction 1: 1 cuts, 3092540 junctions, 1 directions (1 stopped), 145 phases, 88916543 visits (28.8 for each junction), 5.7 s
+Partition first cut, direction 2: 1 cuts, 3092540 junctions, 1 directions (0 stopped), 153 phases, 262583143 visits (84.9 for each junction), 15.8 s
+Partition first cut, direction 3: 1 cuts, 3092540 junctions, 1 directions (1 stopped), 153 phases, 94591355 visits (30.6 for each junction), 5.5 s
+Partition: 3092540 junctions, 7680912 arcs, need 150 MiB, 83.8 s, 5 levels, SHA-256 612ae937855762e0e8674f147486ec1b6c2ad381663f5de20340d17f6c70b273
+== nrw tree threads=4 2026-11-11T22:23:32Z
+Stage import: 5.4 s, own memory peak 2 MiB
+Partition depth 0: 1 cuts, 3991797 junctions, 4 directions (1 stopped), 1286 phases, 1351191849 visits (338.5 for each junction), 90.1 s
+Partition depth 1: 2 cuts, 3991797 junctions, 8 directions (5 stopped), 1473 phases, 671733668 visits (168.3 for each junction), 39.2 s
+Partition depth 2: 4 cuts, 3991797 junctions, 16 directions (6 stopped), 1944 phases, 560591751 visits (140.4 for each junction), 26.7 s
+Partition depth 3: 8 cuts, 3991797 junctions, 32 directions (19 stopped), 3323 phases, 460860620 visits (115.5 for each junction), 19.6 s
+Partition depth 4: 16 cuts, 3991797 junctions, 64 directions (27 stopped), 4488 phases, 334506281 visits (83.8 for each junction), 13.3 s
+Partition depth 5: 32 cuts, 3991797 junctions, 128 directions (55 stopped), 7241 phases, 265219103 visits (66.4 for each junction), 9.6 s
+Partition depth 6: 64 cuts, 3991797 junctions, 256 directions (113 stopped), 10106 phases, 195884973 visits (49.1 for each junction), 7.0 s
+Partition depth 7: 128 cuts, 3991797 junctions, 512 directions (238 stopped), 13965 phases, 146785431 visits (36.8 for each junction), 5.2 s
+Partition depth 8: 256 cuts, 3991797 junctions, 1024 directions (449 stopped), 21027 phases, 105479522 visits (26.4 for each junction), 3.9 s
+Partition depth 9: 511 cuts, 3991374 junctions, 2044 directions (905 stopped), 31968 phases, 85172763 visits (21.3 for each junction), 3.2 s
+Partition depth 10: 1001 cuts, 3982666 junctions, 4004 directions (1723 stopped), 48721 phases, 66465876 visits (16.7 for each junction), 2.6 s
+Partition depth 11: 1773 cuts, 3895476 junctions, 7092 directions (3079 stopped), 69529 phases, 53180002 visits (13.7 for each junction), 2.1 s
+Partition depth 12: 2431 cuts, 3495957 junctions, 9724 directions (4104 stopped), 85421 phases, 41139920 visits (11.8 for each junction), 1.7 s
+Partition depth 13: 2500 cuts, 2682235 junctions, 10000 directions (4151 stopped), 83020 phases, 28780627 visits (10.7 for each junction), 1.2 s
+Partition depth 14: 1818 cuts, 1618941 junctions, 7272 directions (3022 stopped), 59057 phases, 16448968 visits (10.2 for each junction), 0.7 s
+Partition depth 15: 911 cuts, 728115 junctions, 3644 directions (1524 stopped), 30259 phases, 7255486 visits (10.0 for each junction), 0.3 s
+Partition depth 16: 349 cuts, 257075 junctions, 1396 directions (582 stopped), 11660 phases, 2561210 visits (10.0 for each junction), 0.1 s
+Partition depth 17: 100 cuts, 69630 junctions, 400 directions (156 stopped), 3764 phases, 730519 visits (10.5 for each junction), 0.0 s
+Partition depth 18: 20 cuts, 13618 junctions, 80 directions (34 stopped), 812 phases, 161500 visits (11.9 for each junction), 0.0 s
+Partition depth 19: 3 cuts, 1980 junctions, 12 directions (6 stopped), 109 phases, 17478 visits (8.8 for each junction), 0.0 s
+Partition depth 20: 1 cuts, 562 junctions, 4 directions (2 stopped), 30 phases, 5803 visits (10.3 for each junction), 0.0 s
+Partition first cut, direction 0: 1 cuts, 3991797 junctions, 1 directions (0 stopped), 362 phases, 362708892 visits (90.9 for each junction), 24.3 s
+Partition first cut, direction 1: 1 cuts, 3991797 junctions, 1 directions (0 stopped), 310 phases, 271867283 visits (68.1 for each junction), 18.2 s
+Partition first cut, direction 2: 1 cuts, 3991797 junctions, 1 directions (0 stopped), 312 phases, 580834388 visits (145.5 for each junction), 38.0 s
+Partition first cut, direction 3: 1 cuts, 3991797 junctions, 1 directions (1 stopped), 302 phases, 135781286 visits (34.0 for each junction), 9.6 s
+Partition: 3991797 junctions, 10091514 arcs, need 194 MiB, 139.1 s, 5 levels, SHA-256 280974c9cb52e71f1e1da83d044123860b94513b98d45357577014b494c1d5b9
+== DROPPED candidate tree (one search tree through the whole flow, adopt or free orphans): hashes equal; CH 78.8->83.8 s, NRW 141.7->139.1 s; depth-0 visits CH 65.6->212.9, NRW 111.5->338.5 per junction (orphan cascades behind each full arc)
+== ch start threads=4 2026-11-11T22:36:05Z
+Stage import: 4.8 s, own memory peak 2 MiB
+Partition depth 0: 1 cuts, 3092540 junctions, 4 directions (2 stopped), 34 phases, 50844105 visits (16.4 for each junction), 7.1 s
+Partition depth 1: 2 cuts, 3092540 junctions, 8 directions (5 stopped), 11 phases, 7274449 visits (2.4 for each junction), 2.0 s
+Partition depth 2: 4 cuts, 3092540 junctions, 16 directions (8 stopped), 44 phases, 12871788 visits (4.2 for each junction), 2.1 s
+Partition depth 3: 8 cuts, 3092540 junctions, 32 directions (14 stopped), 153 phases, 27540481 visits (8.9 for each junction), 3.0 s
+Partition depth 4: 16 cuts, 3092540 junctions, 64 directions (23 stopped), 273 phases, 29361712 visits (9.5 for each junction), 2.7 s
+Partition depth 5: 32 cuts, 3092540 junctions, 128 directions (49 stopped), 436 phases, 21417285 visits (6.9 for each junction), 2.0 s
+Partition depth 6: 64 cuts, 3092540 junctions, 256 directions (99 stopped), 828 phases, 23325483 visits (7.5 for each junction), 2.1 s
+Partition depth 7: 127 cuts, 3092125 junctions, 508 directions (214 stopped), 1446 phases, 17071618 visits (5.5 for each junction), 1.5 s
+Partition depth 8: 250 cuts, 3091107 junctions, 1000 directions (407 stopped), 2562 phases, 19645851 visits (6.4 for each junction), 1.8 s
+Partition depth 9: 449 cuts, 3072448 junctions, 1796 directions (710 stopped), 4347 phases, 16123382 visits (5.2 for each junction), 1.4 s
+Partition depth 10: 746 cuts, 3018596 junctions, 2984 directions (1185 stopped), 7160 phases, 13446556 visits (4.5 for each junction), 1.2 s
+Partition depth 11: 1047 cuts, 2865597 junctions, 4188 directions (1641 stopped), 9712 phases, 14644998 visits (5.1 for each junction), 1.2 s
+Partition depth 12: 1276 cuts, 2586011 junctions, 5104 directions (2073 stopped), 11615 phases, 11409410 visits (4.4 for each junction), 1.0 s
+Partition depth 13: 1346 cuts, 2185287 junctions, 5384 directions (2141 stopped), 12262 phases, 9426445 visits (4.3 for each junction), 0.8 s
+Partition depth 14: 1226 cuts, 1709805 junctions, 4904 directions (1980 stopped), 11042 phases, 6879114 visits (4.0 for each junction), 0.6 s
+Partition depth 15: 971 cuts, 1228339 junctions, 3884 directions (1543 stopped), 8882 phases, 4963834 visits (4.0 for each junction), 0.4 s
+Partition depth 16: 736 cuts, 837289 junctions, 2944 directions (1197 stopped), 6813 phases, 3357555 visits (4.0 for each junction), 0.3 s
+Partition depth 17: 509 cuts, 530690 junctions, 2036 directions (848 stopped), 4597 phases, 2027213 visits (3.8 for each junction), 0.2 s
+Partition depth 18: 317 cuts, 306773 junctions, 1268 directions (486 stopped), 2989 phases, 1211798 visits (4.0 for each junction), 0.1 s
+Partition depth 19: 169 cuts, 160577 junctions, 676 directions (288 stopped), 1552 phases, 627040 visits (3.9 for each junction), 0.1 s
+Partition depth 20: 95 cuts, 83655 junctions, 380 directions (150 stopped), 890 phases, 321929 visits (3.8 for each junction), 0.0 s
+Partition depth 21: 46 cuts, 39270 junctions, 184 directions (75 stopped), 423 phases, 144009 visits (3.7 for each junction), 0.0 s
+Partition depth 22: 22 cuts, 17773 junctions, 88 directions (37 stopped), 195 phases, 65974 visits (3.7 for each junction), 0.0 s
+Partition depth 23: 10 cuts, 7334 junctions, 40 directions (23 stopped), 69 phases, 21547 visits (2.9 for each junction), 0.0 s
+Partition depth 24: 3 cuts, 2048 junctions, 12 directions (3 stopped), 31 phases, 8142 visits (4.0 for each junction), 0.0 s
+Partition depth 25: 1 cuts, 576 junctions, 4 directions (2 stopped), 7 phases, 1579 visits (2.7 for each junction), 0.0 s
+Partition first cut, direction 0: 1 cuts, 3092540 junctions, 1 directions (0 stopped), 13 phases, 19210589 visits (6.2 for each junction), 2.5 s
+Partition first cut, direction 1: 1 cuts, 3092540 junctions, 1 directions (1 stopped), 8 phases, 12295508 visits (4.0 for each junction), 1.7 s
+Partition first cut, direction 2: 1 cuts, 3092540 junctions, 1 directions (0 stopped), 8 phases, 11649274 visits (3.8 for each junction), 1.6 s
+Partition first cut, direction 3: 1 cuts, 3092540 junctions, 1 directions (1 stopped), 5 phases, 7688734 visits (2.5 for each junction), 1.3 s
+Partition: 3092540 junctions, 7680912 arcs, need 150 MiB, 16.8 s, 5 levels, SHA-256 131ece6cc96f3be9a2b2a4f017622c0e08a4a98980f93b78b3d5be1efa80f749
+== nrw start threads=4 2026-11-11T22:45:43Z
+Stage import: 5.5 s, own memory peak 2 MiB
+Partition depth 0: 1 cuts, 3991797 junctions, 4 directions (2 stopped), 9 phases, 16665659 visits (4.2 for each junction), 3.7 s
+Partition depth 1: 2 cuts, 3991797 junctions, 8 directions (6 stopped), 43 phases, 46450986 visits (11.6 for each junction), 6.9 s
+Partition depth 2: 4 cuts, 3991797 junctions, 16 directions (8 stopped), 48 phases, 19742371 visits (4.9 for each junction), 3.2 s
+Partition depth 3: 8 cuts, 3991797 junctions, 32 directions (15 stopped), 154 phases, 27918138 visits (7.0 for each junction), 3.2 s
+Partition depth 4: 16 cuts, 3991797 junctions, 64 directions (31 stopped), 254 phases, 43402906 visits (10.9 for each junction), 4.5 s
+Partition depth 5: 32 cuts, 3991797 junctions, 128 directions (54 stopped), 369 phases, 25836465 visits (6.5 for each junction), 2.6 s
+Partition depth 6: 64 cuts, 3991797 junctions, 256 directions (115 stopped), 784 phases, 22941340 visits (5.7 for each junction), 2.1 s
+Partition depth 7: 128 cuts, 3991797 junctions, 512 directions (217 stopped), 1494 phases, 26602464 visits (6.7 for each junction), 2.2 s
+Partition depth 8: 251 cuts, 3989899 junctions, 1004 directions (405 stopped), 2604 phases, 21503690 visits (5.4 for each junction), 1.8 s
+Partition depth 9: 483 cuts, 3983372 junctions, 1932 directions (777 stopped), 4607 phases, 20458335 visits (5.1 for each junction), 1.7 s
+Partition depth 10: 814 cuts, 3929333 junctions, 3256 directions (1286 stopped), 7500 phases, 18924350 visits (4.8 for each junction), 1.5 s
+Partition depth 11: 1202 cuts, 3783580 junctions, 4808 directions (1877 stopped), 10952 phases, 17166558 visits (4.5 for each junction), 1.4 s
+Partition depth 12: 1557 cuts, 3495747 junctions, 6228 directions (2482 stopped), 13898 phases, 14617290 visits (4.2 for each junction), 1.2 s
+Partition depth 13: 1776 cuts, 3051297 junctions, 7104 directions (2788 stopped), 15941 phases, 12809896 visits (4.2 for each junction), 1.0 s
+Partition depth 14: 1700 cuts, 2439643 junctions, 6800 directions (2704 stopped), 15235 phases, 9726732 visits (4.0 for each junction), 0.8 s
+Partition depth 15: 1448 cuts, 1809144 junctions, 5792 directions (2287 stopped), 13257 phases, 7570699 visits (4.2 for each junction), 0.6 s
+Partition depth 16: 1092 cuts, 1229084 junctions, 4368 directions (1784 stopped), 10105 phases, 4976233 visits (4.0 for each junction), 0.4 s
+Partition depth 17: 736 cuts, 767038 junctions, 2944 directions (1178 stopped), 6802 phases, 3002555 visits (3.9 for each junction), 0.2 s
+Partition depth 18: 454 cuts, 441769 junctions, 1816 directions (727 stopped), 4204 phases, 1759980 visits (4.0 for each junction), 0.1 s
+Partition depth 19: 239 cuts, 232503 junctions, 956 directions (386 stopped), 2222 phases, 928792 visits (4.0 for each junction), 0.1 s
+Partition depth 20: 144 cuts, 129083 junctions, 576 directions (230 stopped), 1328 phases, 514734 visits (4.0 for each junction), 0.0 s
+Partition depth 21: 71 cuts, 59365 junctions, 284 directions (113 stopped), 626 phases, 211130 visits (3.6 for each junction), 0.0 s
+Partition depth 22: 30 cuts, 25303 junctions, 120 directions (45 stopped), 266 phases, 91681 visits (3.6 for each junction), 0.0 s
+Partition depth 23: 14 cuts, 10947 junctions, 56 directions (24 stopped), 119 phases, 36940 visits (3.4 for each junction), 0.0 s
+Partition depth 24: 6 cuts, 4121 junctions, 24 directions (10 stopped), 55 phases, 15743 visits (3.8 for each junction), 0.0 s
+Partition depth 25: 1 cuts, 828 junctions, 4 directions (3 stopped), 5 phases, 1878 visits (2.3 for each junction), 0.0 s
+Partition depth 26: 1 cuts, 545 junctions, 4 directions (1 stopped), 13 phases, 3061 visits (5.6 for each junction), 0.0 s
+Partition first cut, direction 0: 1 cuts, 3991797 junctions, 1 directions (0 stopped), 4 phases, 7502621 visits (1.9 for each junction), 1.4 s
+Partition first cut, direction 1: 1 cuts, 3991797 junctions, 1 directions (0 stopped), 2 phases, 3213473 visits (0.8 for each junction), 0.8 s
+Partition first cut, direction 2: 1 cuts, 3991797 junctions, 1 directions (1 stopped), 2 phases, 3966823 visits (1.0 for each junction), 0.9 s
+Partition first cut, direction 3: 1 cuts, 3991797 junctions, 1 directions (1 stopped), 1 phases, 1982742 visits (0.5 for each junction), 0.6 s
+Partition: 3991797 junctions, 10091514 arcs, need 194 MiB, 19.5 s, 5 levels, SHA-256 99eca9d8c2cbeea0b211be40fe0da64d42f602072424f273d9d494bcf0ab578e
+== DISCARDED start run 1: bug (the blocking path overwrote the queue, so the next phase start was too low): wrong SHA-256
+== ch start threads=4 2026-11-12T09:40:16Z
+Stage import: 33.2 s, own memory peak 2 MiB
+Partition depth 0: 1 cuts, 3092540 junctions, 4 directions (2 stopped), 134 phases, 202927454 visits (65.6 for each junction), 21.1 s
+Partition depth 1: 2 cuts, 3092540 junctions, 8 directions (4 stopped), 288 phases, 222983653 visits (72.1 for each junction), 21.4 s
+Partition depth 2: 4 cuts, 3092540 junctions, 16 directions (7 stopped), 426 phases, 185370780 visits (59.9 for each junction), 16.8 s
+Partition depth 3: 8 cuts, 3092540 junctions, 32 directions (13 stopped), 702 phases, 151556637 visits (49.0 for each junction), 13.0 s
+Partition depth 4: 16 cuts, 3092540 junctions, 64 directions (26 stopped), 1153 phases, 129320942 visits (41.8 for each junction), 11.1 s
+Partition depth 5: 32 cuts, 3092540 junctions, 128 directions (58 stopped), 1600 phases, 89342484 visits (28.9 for each junction), 6.8 s
+Partition depth 6: 64 cuts, 3092540 junctions, 256 directions (118 stopped), 2542 phases, 78042348 visits (25.2 for each junction), 5.9 s
+Partition depth 7: 128 cuts, 3092540 junctions, 512 directions (209 stopped), 4170 phases, 63815936 visits (20.6 for each junction), 4.9 s
+Partition depth 8: 256 cuts, 3092540 junctions, 1024 directions (444 stopped), 6717 phases, 52027900 visits (16.8 for each junction), 4.0 s
+Partition depth 9: 510 cuts, 3091710 junctions, 2040 directions (888 stopped), 10633 phases, 41003035 visits (13.3 for each junction), 3.1 s
+Partition depth 10: 942 cuts, 3062369 junctions, 3768 directions (1585 stopped), 16702 phases, 33233152 visits (10.9 for each junction), 2.5 s
+Partition depth 11: 1480 cuts, 2918450 junctions, 5920 directions (2437 stopped), 24048 phases, 26725977 visits (9.2 for each junction), 2.1 s
+Partition depth 12: 1851 cuts, 2527234 junctions, 7404 directions (3040 stopped), 28447 phases, 20879021 visits (8.3 for each junction), 1.7 s
+Partition depth 13: 1743 cuts, 1856353 junctions, 6972 directions (2866 stopped), 26536 phases, 14228596 visits (7.7 for each junction), 1.2 s
+Partition depth 14: 1223 cuts, 1099638 junctions, 4892 directions (1984 stopped), 18649 phases, 8075439 visits (7.3 for each junction), 0.7 s
+Partition depth 15: 622 cuts, 498600 junctions, 2488 directions (1004 stopped), 9634 phases, 3628903 visits (7.3 for each junction), 0.3 s
+Partition depth 16: 249 cuts, 176362 junctions, 996 directions (395 stopped), 3867 phases, 1258155 visits (7.1 for each junction), 0.1 s
+Partition depth 17: 56 cuts, 38479 junctions, 224 directions (87 stopped), 943 phases, 303564 visits (7.9 for each junction), 0.0 s
+Partition depth 18: 12 cuts, 7834 junctions, 48 directions (18 stopped), 209 phases, 61656 visits (7.9 for each junction), 0.0 s
+Partition depth 19: 2 cuts, 1177 junctions, 8 directions (3 stopped), 35 phases, 9618 visits (8.2 for each junction), 0.0 s
+Partition first cut, direction 0: 1 cuts, 3092540 junctions, 1 directions (0 stopped), 45 phases, 67480960 visits (21.8 for each junction), 7.2 s
+Partition first cut, direction 1: 1 cuts, 3092540 junctions, 1 directions (1 stopped), 20 phases, 30715825 visits (9.9 for each junction), 3.0 s
+Partition first cut, direction 2: 1 cuts, 3092540 junctions, 1 directions (0 stopped), 50 phases, 75534029 visits (24.4 for each junction), 7.4 s
+Partition first cut, direction 3: 1 cuts, 3092540 junctions, 1 directions (1 stopped), 19 phases, 29196640 visits (9.4 for each junction), 3.5 s
+Partition: 3092540 junctions, 7680912 arcs, need 150 MiB, 53.5 s, 5 levels, SHA-256 612ae937855762e0e8674f147486ec1b6c2ad381663f5de20340d17f6c70b273
+== nrw start threads=4 2026-11-12T09:44:34Z
+Stage import: 24.8 s, own memory peak 2 MiB
+Partition depth 0: 1 cuts, 3991797 junctions, 4 directions (1 stopped), 227 phases, 445256037 visits (111.5 for each junction), 54.5 s
+Partition depth 1: 2 cuts, 3991797 junctions, 8 directions (5 stopped), 280 phases, 259171384 visits (64.9 for each junction), 30.6 s
+Partition depth 2: 4 cuts, 3991797 junctions, 16 directions (6 stopped), 449 phases, 218431638 visits (54.7 for each junction), 22.0 s
+Partition depth 3: 8 cuts, 3991797 junctions, 32 directions (19 stopped), 730 phases, 190278558 visits (47.7 for each junction), 16.8 s
+Partition depth 4: 16 cuts, 3991797 junctions, 64 directions (27 stopped), 1197 phases, 161839183 visits (40.5 for each junction), 12.6 s
+Partition depth 5: 32 cuts, 3991797 junctions, 128 directions (55 stopped), 1943 phases, 129558571 visits (32.5 for each junction), 10.6 s
+Partition depth 6: 64 cuts, 3991797 junctions, 256 directions (113 stopped), 3061 phases, 102576907 visits (25.7 for each junction), 8.0 s
+Partition depth 7: 128 cuts, 3991797 junctions, 512 directions (238 stopped), 4688 phases, 82503588 visits (20.7 for each junction), 6.2 s
+Partition depth 8: 256 cuts, 3991797 junctions, 1024 directions (449 stopped), 7544 phases, 65441666 visits (16.4 for each junction), 4.9 s
+Partition depth 9: 511 cuts, 3991374 junctions, 2044 directions (905 stopped), 12231 phases, 54949936 visits (13.8 for each junction), 4.1 s
+Partition depth 10: 1001 cuts, 3982666 junctions, 4004 directions (1723 stopped), 19845 phases, 44429631 visits (11.2 for each junction), 3.4 s
+Partition depth 11: 1773 cuts, 3895476 junctions, 7092 directions (3079 stopped), 30046 phases, 36375817 visits (9.3 for each junction), 2.8 s
+Partition depth 12: 2431 cuts, 3495957 junctions, 9724 directions (4104 stopped), 38265 phases, 28759850 visits (8.2 for each junction), 2.3 s
+Partition depth 13: 2500 cuts, 2682235 junctions, 10000 directions (4151 stopped), 37872 phases, 20164149 visits (7.5 for each junction), 1.6 s
+Partition depth 14: 1818 cuts, 1618941 junctions, 7272 directions (3022 stopped), 27061 phases, 11506106 visits (7.1 for each junction), 0.9 s
+Partition depth 15: 911 cuts, 728115 junctions, 3644 directions (1524 stopped), 13683 phases, 5114544 visits (7.0 for each junction), 0.4 s
+Partition depth 16: 349 cuts, 257075 junctions, 1396 directions (582 stopped), 5252 phases, 1802024 visits (7.0 for each junction), 0.1 s
+Partition depth 17: 100 cuts, 69630 junctions, 400 directions (156 stopped), 1640 phases, 523818 visits (7.5 for each junction), 0.0 s
+Partition depth 18: 20 cuts, 13618 junctions, 80 directions (34 stopped), 352 phases, 108010 visits (7.9 for each junction), 0.0 s
+Partition depth 19: 3 cuts, 1980 junctions, 12 directions (6 stopped), 40 phases, 13010 visits (6.6 for each junction), 0.0 s
+Partition depth 20: 1 cuts, 562 junctions, 4 directions (2 stopped), 13 phases, 3523 visits (6.3 for each junction), 0.0 s
+Partition first cut, direction 0: 1 cuts, 3991797 junctions, 1 directions (0 stopped), 62 phases, 121397796 visits (30.4 for each junction), 15.9 s
+Partition first cut, direction 1: 1 cuts, 3991797 junctions, 1 directions (0 stopped), 56 phases, 109153452 visits (27.3 for each junction), 14.1 s
+Partition first cut, direction 2: 1 cuts, 3991797 junctions, 1 directions (0 stopped), 82 phases, 161191924 visits (40.4 for each junction), 17.5 s
+Partition first cut, direction 3: 1 cuts, 3991797 junctions, 1 directions (1 stopped), 27 phases, 53512865 visits (13.4 for each junction), 7.0 s
+Partition: 3991797 junctions, 10091514 arcs, need 194 MiB, 95.5 s, 5 levels, SHA-256 280974c9cb52e71f1e1da83d044123860b94513b98d45357577014b494c1d5b9
+== ch start threads=1 2026-11-12T09:52:23Z
+Stage import: 6.4 s, own memory peak 2 MiB
+Partition depth 0: 1 cuts, 3092540 junctions, 4 directions (2 stopped), 134 phases, 202927454 visits (65.6 for each junction), 24.3 s
+Partition depth 1: 2 cuts, 3092540 junctions, 8 directions (4 stopped), 288 phases, 222983653 visits (72.1 for each junction), 24.5 s
+Partition depth 2: 4 cuts, 3092540 junctions, 16 directions (7 stopped), 426 phases, 185370780 visits (59.9 for each junction), 20.5 s
+Partition depth 3: 8 cuts, 3092540 junctions, 32 directions (13 stopped), 702 phases, 151556637 visits (49.0 for each junction), 15.1 s
+Partition depth 4: 16 cuts, 3092540 junctions, 64 directions (26 stopped), 1153 phases, 129320942 visits (41.8 for each junction), 10.9 s
+Partition depth 5: 32 cuts, 3092540 junctions, 128 directions (58 stopped), 1600 phases, 89342484 visits (28.9 for each junction), 7.4 s
+Partition depth 6: 64 cuts, 3092540 junctions, 256 directions (118 stopped), 2542 phases, 78042348 visits (25.2 for each junction), 6.5 s
+Partition depth 7: 128 cuts, 3092540 junctions, 512 directions (209 stopped), 4170 phases, 63815936 visits (20.6 for each junction), 5.3 s
+Partition depth 8: 256 cuts, 3092540 junctions, 1024 directions (444 stopped), 6717 phases, 52027900 visits (16.8 for each junction), 4.4 s
+Partition depth 9: 510 cuts, 3091710 junctions, 2040 directions (888 stopped), 10633 phases, 41003035 visits (13.3 for each junction), 3.4 s
+Partition depth 10: 942 cuts, 3062369 junctions, 3768 directions (1585 stopped), 16702 phases, 33233152 visits (10.9 for each junction), 2.9 s
+Partition depth 11: 1480 cuts, 2918450 junctions, 5920 directions (2437 stopped), 24048 phases, 26725977 visits (9.2 for each junction), 2.4 s
+Partition depth 12: 1851 cuts, 2527234 junctions, 7404 directions (3040 stopped), 28447 phases, 20879021 visits (8.3 for each junction), 1.9 s
+Partition depth 13: 1743 cuts, 1856353 junctions, 6972 directions (2866 stopped), 26536 phases, 14228596 visits (7.7 for each junction), 1.3 s
+Partition depth 14: 1223 cuts, 1099638 junctions, 4892 directions (1984 stopped), 18649 phases, 8075439 visits (7.3 for each junction), 0.8 s
+Partition depth 15: 622 cuts, 498600 junctions, 2488 directions (1004 stopped), 9634 phases, 3628903 visits (7.3 for each junction), 0.3 s
+Partition depth 16: 249 cuts, 176362 junctions, 996 directions (395 stopped), 3867 phases, 1258155 visits (7.1 for each junction), 0.1 s
+Partition depth 17: 56 cuts, 38479 junctions, 224 directions (87 stopped), 943 phases, 303564 visits (7.9 for each junction), 0.0 s
+Partition depth 18: 12 cuts, 7834 junctions, 48 directions (18 stopped), 209 phases, 61656 visits (7.9 for each junction), 0.0 s
+Partition depth 19: 2 cuts, 1177 junctions, 8 directions (3 stopped), 35 phases, 9618 visits (8.2 for each junction), 0.0 s
+Partition first cut, direction 0: 1 cuts, 3092540 junctions, 1 directions (0 stopped), 45 phases, 67480960 visits (21.8 for each junction), 8.3 s
+Partition first cut, direction 1: 1 cuts, 3092540 junctions, 1 directions (1 stopped), 20 phases, 30715825 visits (9.9 for each junction), 3.4 s
+Partition first cut, direction 2: 1 cuts, 3092540 junctions, 1 directions (0 stopped), 50 phases, 75534029 visits (24.4 for each junction), 9.0 s
+Partition first cut, direction 3: 1 cuts, 3092540 junctions, 1 directions (1 stopped), 19 phases, 29196640 visits (9.4 for each junction), 3.5 s
+Partition: 3092540 junctions, 7680912 arcs, need 150 MiB, 135.8 s, 5 levels, SHA-256 612ae937855762e0e8674f147486ec1b6c2ad381663f5de20340d17f6c70b273
+== nrw start threads=1 2026-11-12T09:56:26Z
+Stage import: 7.3 s, own memory peak 2 MiB
+Partition depth 0: 1 cuts, 3991797 junctions, 4 directions (1 stopped), 227 phases, 445256037 visits (111.5 for each junction), 59.1 s
+Partition depth 1: 2 cuts, 3991797 junctions, 8 directions (5 stopped), 280 phases, 259171384 visits (64.9 for each junction), 31.7 s
+Partition depth 2: 4 cuts, 3991797 junctions, 16 directions (6 stopped), 449 phases, 218431638 visits (54.7 for each junction), 22.2 s
+Partition depth 3: 8 cuts, 3991797 junctions, 32 directions (19 stopped), 730 phases, 190278558 visits (47.7 for each junction), 17.3 s
+Partition depth 4: 16 cuts, 3991797 junctions, 64 directions (27 stopped), 1197 phases, 161839183 visits (40.5 for each junction), 14.0 s
+Partition depth 5: 32 cuts, 3991797 junctions, 128 directions (55 stopped), 1943 phases, 129558571 visits (32.5 for each junction), 10.1 s
+Partition depth 6: 64 cuts, 3991797 junctions, 256 directions (113 stopped), 3061 phases, 102576907 visits (25.7 for each junction), 8.0 s
+Partition depth 7: 128 cuts, 3991797 junctions, 512 directions (238 stopped), 4688 phases, 82503588 visits (20.7 for each junction), 6.3 s
+Partition depth 8: 256 cuts, 3991797 junctions, 1024 directions (449 stopped), 7544 phases, 65441666 visits (16.4 for each junction), 5.0 s
+Partition depth 9: 511 cuts, 3991374 junctions, 2044 directions (905 stopped), 12231 phases, 54949936 visits (13.8 for each junction), 4.2 s
+Partition depth 10: 1001 cuts, 3982666 junctions, 4004 directions (1723 stopped), 19845 phases, 44429631 visits (11.2 for each junction), 3.4 s
+Partition depth 11: 1773 cuts, 3895476 junctions, 7092 directions (3079 stopped), 30046 phases, 36375817 visits (9.3 for each junction), 2.9 s
+Partition depth 12: 2431 cuts, 3495957 junctions, 9724 directions (4104 stopped), 38265 phases, 28759850 visits (8.2 for each junction), 2.3 s
+Partition depth 13: 2500 cuts, 2682235 junctions, 10000 directions (4151 stopped), 37872 phases, 20164149 visits (7.5 for each junction), 1.7 s
+Partition depth 14: 1818 cuts, 1618941 junctions, 7272 directions (3022 stopped), 27061 phases, 11506106 visits (7.1 for each junction), 1.0 s
+Partition depth 15: 911 cuts, 728115 junctions, 3644 directions (1524 stopped), 13683 phases, 5114544 visits (7.0 for each junction), 0.4 s
+Partition depth 16: 349 cuts, 257075 junctions, 1396 directions (582 stopped), 5252 phases, 1802024 visits (7.0 for each junction), 0.2 s
+Partition depth 17: 100 cuts, 69630 junctions, 400 directions (156 stopped), 1640 phases, 523818 visits (7.5 for each junction), 0.0 s
+Partition depth 18: 20 cuts, 13618 junctions, 80 directions (34 stopped), 352 phases, 108010 visits (7.9 for each junction), 0.0 s
+Partition depth 19: 3 cuts, 1980 junctions, 12 directions (6 stopped), 40 phases, 13010 visits (6.6 for each junction), 0.0 s
+Partition depth 20: 1 cuts, 562 junctions, 4 directions (2 stopped), 13 phases, 3523 visits (6.3 for each junction), 0.0 s
+Partition first cut, direction 0: 1 cuts, 3991797 junctions, 1 directions (0 stopped), 62 phases, 121397796 visits (30.4 for each junction), 15.6 s
+Partition first cut, direction 1: 1 cuts, 3991797 junctions, 1 directions (0 stopped), 56 phases, 109153452 visits (27.3 for each junction), 14.6 s
+Partition first cut, direction 2: 1 cuts, 3991797 junctions, 1 directions (0 stopped), 82 phases, 161191924 visits (40.4 for each junction), 20.6 s
+Partition first cut, direction 3: 1 cuts, 3991797 junctions, 1 directions (1 stopped), 27 phases, 53512865 visits (13.4 for each junction), 8.3 s
+Partition: 3991797 junctions, 10091514 arcs, need 194 MiB, 195.1 s, 5 levels, SHA-256 280974c9cb52e71f1e1da83d044123860b94513b98d45357577014b494c1d5b9
+Stage partition: 194.2 s, own memory peak 197 MiB
+== ch chain threads=4 2026-11-12T10:03:21Z
+Stage import: 5.3 s, own memory peak 2 MiB
+Partition depth 0: 1 cuts, 3092540 junctions, 4 directions (2 stopped), 148 phases, 175287094 visits (56.7 for each junction), 32.0 s
+Partition depth 1: 2 cuts, 3092540 junctions, 8 directions (4 stopped), 307 phases, 188495675 visits (61.0 for each junction), 31.7 s
+Partition depth 2: 4 cuts, 3092540 junctions, 16 directions (7 stopped), 436 phases, 150674360 visits (48.7 for each junction), 23.4 s
+Partition depth 3: 8 cuts, 3092540 junctions, 32 directions (13 stopped), 721 phases, 121575838 visits (39.3 for each junction), 16.5 s
+Partition depth 4: 16 cuts, 3092540 junctions, 64 directions (26 stopped), 1162 phases, 103931546 visits (33.6 for each junction), 13.2 s
+Partition depth 5: 32 cuts, 3092540 junctions, 128 directions (58 stopped), 1607 phases, 71046401 visits (23.0 for each junction), 8.9 s
+Partition depth 6: 64 cuts, 3092540 junctions, 256 directions (118 stopped), 2544 phases, 61901010 visits (20.0 for each junction), 7.5 s
+Partition depth 7: 128 cuts, 3092540 junctions, 512 directions (209 stopped), 4167 phases, 49774087 visits (16.1 for each junction), 6.2 s
+Partition depth 8: 256 cuts, 3092540 junctions, 1024 directions (444 stopped), 6609 phases, 40478596 visits (13.1 for each junction), 5.0 s
+Partition depth 9: 510 cuts, 3091710 junctions, 2040 directions (888 stopped), 10574 phases, 32355456 visits (10.5 for each junction), 4.2 s
+Partition depth 10: 942 cuts, 3062369 junctions, 3768 directions (1585 stopped), 16407 phases, 25756564 visits (8.4 for each junction), 3.4 s
+Partition depth 11: 1480 cuts, 2918450 junctions, 5920 directions (2437 stopped), 23663 phases, 20784911 visits (7.1 for each junction), 2.9 s
+Partition depth 12: 1851 cuts, 2527234 junctions, 7404 directions (3040 stopped), 27989 phases, 16201641 visits (6.4 for each junction), 2.3 s
+Partition depth 13: 1743 cuts, 1856353 junctions, 6972 directions (2866 stopped), 26004 phases, 11061513 visits (6.0 for each junction), 1.6 s
+Partition depth 14: 1223 cuts, 1099638 junctions, 4892 directions (1984 stopped), 18204 phases, 6239987 visits (5.7 for each junction), 0.9 s
+Partition depth 15: 622 cuts, 498600 junctions, 2488 directions (1004 stopped), 9400 phases, 2769107 visits (5.6 for each junction), 0.4 s
+Partition depth 16: 249 cuts, 176362 junctions, 996 directions (395 stopped), 3783 phases, 963262 visits (5.5 for each junction), 0.1 s
+Partition depth 17: 56 cuts, 38479 junctions, 224 directions (87 stopped), 899 phases, 217605 visits (5.7 for each junction), 0.0 s
+Partition depth 18: 12 cuts, 7834 junctions, 48 directions (18 stopped), 197 phases, 44590 visits (5.7 for each junction), 0.0 s
+Partition depth 19: 2 cuts, 1177 junctions, 8 directions (3 stopped), 36 phases, 7348 visits (6.2 for each junction), 0.0 s
+Partition first cut, direction 0: 1 cuts, 3092540 junctions, 1 directions (0 stopped), 56 phases, 65943910 visits (21.3 for each junction), 12.4 s
+Partition first cut, direction 1: 1 cuts, 3092540 junctions, 1 directions (1 stopped), 17 phases, 20433030 visits (6.6 for each junction), 3.7 s
+Partition first cut, direction 2: 1 cuts, 3092540 junctions, 1 directions (0 stopped), 53 phases, 62322988 visits (20.2 for each junction), 11.0 s
+Partition first cut, direction 3: 1 cuts, 3092540 junctions, 1 directions (1 stopped), 22 phases, 26587166 visits (8.6 for each junction), 4.9 s
+Partition: 3092540 junctions, 7680912 arcs, need 150 MiB, 74.6 s, 5 levels, SHA-256 612ae937855762e0e8674f147486ec1b6c2ad381663f5de20340d17f6c70b273
+== nrw chain threads=4 2026-11-12T10:05:43Z
+Stage import: 7.0 s, own memory peak 2 MiB
+Partition depth 0: 1 cuts, 3991797 junctions, 4 directions (1 stopped), 219 phases, 345532566 visits (86.6 for each junction), 77.5 s
+Partition depth 1: 2 cuts, 3991797 junctions, 8 directions (5 stopped), 283 phases, 212004410 visits (53.1 for each junction), 42.5 s
+Partition depth 2: 4 cuts, 3991797 junctions, 16 directions (6 stopped), 461 phases, 183394465 visits (45.9 for each junction), 30.4 s
+Partition depth 3: 8 cuts, 3991797 junctions, 32 directions (19 stopped), 734 phases, 155513423 visits (39.0 for each junction), 22.3 s
+Partition depth 4: 16 cuts, 3991797 junctions, 64 directions (27 stopped), 1209 phases, 132659071 visits (33.2 for each junction), 16.9 s
+Partition depth 5: 32 cuts, 3991797 junctions, 128 directions (55 stopped), 1963 phases, 105753960 visits (26.5 for each junction), 13.8 s
+Partition depth 6: 64 cuts, 3991797 junctions, 256 directions (113 stopped), 3065 phases, 82947588 visits (20.8 for each junction), 11.0 s
+Partition depth 7: 128 cuts, 3991797 junctions, 512 directions (238 stopped), 4680 phases, 66833314 visits (16.7 for each junction), 8.7 s
+Partition depth 8: 256 cuts, 3991797 junctions, 1024 directions (449 stopped), 7547 phases, 52984900 visits (13.3 for each junction), 6.9 s
+Partition depth 9: 511 cuts, 3991374 junctions, 2044 directions (905 stopped), 12003 phases, 43501784 visits (10.9 for each junction), 5.7 s
+Partition depth 10: 1001 cuts, 3982666 junctions, 4004 directions (1723 stopped), 19575 phases, 35587131 visits (8.9 for each junction), 4.8 s
+Partition depth 11: 1773 cuts, 3895476 junctions, 7092 directions (3079 stopped), 29562 phases, 29016704 visits (7.4 for each junction), 4.0 s
+Partition depth 12: 2431 cuts, 3495957 junctions, 9724 directions (4104 stopped), 37542 phases, 22770893 visits (6.5 for each junction), 3.3 s
+Partition depth 13: 2500 cuts, 2682235 junctions, 10000 directions (4151 stopped), 37079 phases, 15983763 visits (6.0 for each junction), 2.4 s
+Partition depth 14: 1818 cuts, 1618941 junctions, 7272 directions (3022 stopped), 26472 phases, 9074989 visits (5.6 for each junction), 1.4 s
+Partition depth 15: 911 cuts, 728115 junctions, 3644 directions (1524 stopped), 13278 phases, 3967687 visits (5.4 for each junction), 0.6 s
+Partition depth 16: 349 cuts, 257075 junctions, 1396 directions (582 stopped), 5134 phases, 1400959 visits (5.4 for each junction), 0.2 s
+Partition depth 17: 100 cuts, 69630 junctions, 400 directions (156 stopped), 1554 phases, 392505 visits (5.6 for each junction), 0.1 s
+Partition depth 18: 20 cuts, 13618 junctions, 80 directions (34 stopped), 336 phases, 80485 visits (5.9 for each junction), 0.0 s
+Partition depth 19: 3 cuts, 1980 junctions, 12 directions (6 stopped), 41 phases, 10526 visits (5.3 for each junction), 0.0 s
+Partition depth 20: 1 cuts, 562 junctions, 4 directions (2 stopped), 13 phases, 2817 visits (5.0 for each junction), 0.0 s
+Partition first cut, direction 0: 1 cuts, 3991797 junctions, 1 directions (0 stopped), 59 phases, 93206790 visits (23.3 for each junction), 22.4 s
+Partition first cut, direction 1: 1 cuts, 3991797 junctions, 1 directions (0 stopped), 53 phases, 83015341 visits (20.8 for each junction), 19.1 s
+Partition first cut, direction 2: 1 cuts, 3991797 junctions, 1 directions (0 stopped), 81 phases, 128145381 visits (32.1 for each junction), 26.5 s
+Partition first cut, direction 3: 1 cuts, 3991797 junctions, 1 directions (1 stopped), 26 phases, 41165054 visits (10.3 for each junction), 9.5 s
+Partition: 3991797 junctions, 10091514 arcs, need 194 MiB, 133.9 s, 5 levels, SHA-256 280974c9cb52e71f1e1da83d044123860b94513b98d45357577014b494c1d5b9
+== KEPT candidate start (commit 14dbf76a): 4 threads CH 78.8->53.5 s, NRW 141.7->95.5 s; 1 thread CH 135.8 s, NRW 195.1 s; all four SHA-256 equal to #3300
+== DROPPED candidate chain (chains of two-neighbour junctions as one arc of the flow, on top of start): SHA-256 equal; CH 53.5->74.6 s, NRW 95.5->133.9 s; depth-0 visits CH 65.6->56.7, NRW 111.5->86.6 per junction, but more phases (CH 134->148) and each arc into a chain costs a search for the far end
+== candidate stop-early: already in #3300 (`bound` of `flow`); nothing to build
+== candidate parallel directions: not built; a second work set (level, current, queue 12 B + residual 1 B per arc) = about 14.5 B per junction, 51.5 + 14.5 = 66 B > gate 60 B
+== ch final threads=4 2026-11-12T10:10:16Z
+Stage import: 6.2 s, own memory peak 2 MiB
+Partition: 3092540 junctions, 7680912 arcs, need 150 MiB, 59.7 s, 5 levels, SHA-256 612ae937855762e0e8674f147486ec1b6c2ad381663f5de20340d17f6c70b273
+Stage partition: 58.9 s, own memory peak 152 MiB
+== nrw final threads=4 2026-11-12T10:12:02Z
+Stage import: 6.2 s, own memory peak 2 MiB
+Partition: 3991797 junctions, 10091514 arcs, need 194 MiB, 98.2 s, 5 levels, SHA-256 280974c9cb52e71f1e1da83d044123860b94513b98d45357577014b494c1d5b9
+Stage partition: 97.5 s, own memory peak 197 MiB
+== ch final threads=1 2026-11-12T10:14:09Z
+Stage import: 6.1 s, own memory peak 2 MiB
+Partition: 3092540 junctions, 7680912 arcs, need 150 MiB, 121.3 s, 5 levels, SHA-256 612ae937855762e0e8674f147486ec1b6c2ad381663f5de20340d17f6c70b273
+Stage partition: 120.7 s, own memory peak 152 MiB
+== nrw final threads=1 2026-11-12T10:17:32Z
+Stage import: 6.6 s, own memory peak 2 MiB
+Partition: 3991797 junctions, 10091514 arcs, need 194 MiB, 195.5 s, 5 levels, SHA-256 280974c9cb52e71f1e1da83d044123860b94513b98d45357577014b494c1d5b9
+Stage partition: 194.9 s, own memory peak 197 MiB

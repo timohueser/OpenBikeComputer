@@ -1,0 +1,41 @@
+{
+ "steps": [
+  {
+   "step": "planner/routing-source",
+   "key": "8e6532db7304d829",
+   "seconds": 111.2,
+   "rss_anon_mib": 29,
+   "work_mib": 1610,
+   "exit": 0,
+   "layer_mib": 825
+  },
+  {
+   "step": "planner/routing-roads",
+   "key": "4b95990ef9b9a115",
+   "seconds": 177.0,
+   "rss_anon_mib": 427,
+   "work_mib": 2788,
+   "exit": 0,
+   "layer_mib": 1460
+  },
+  {
+   "step": "planner/routing-costs",
+   "key": "d384229179b3f44f",
+   "seconds": 0.3,
+   "rss_anon_mib": 0,
+   "work_mib": 0,
+   "exit": -9,
+   "killed": true
+  }
+ ],
+ "layers": "/home/user/obc-bake/nrw/run-3300-fix/layers",
+ "seconds": 288.5,
+ "stages": [
+  "Stage import: 111.0 s, own memory peak 29 MiB",
+  "Imported: 2783285 ways, 17816428 node references, 10152040 directed roads, 29230967 turns, 3991797 junctions",
+  "Stage import: 17.4 s, own memory peak 2 MiB",
+  "Stage partition: 115.4 s, own memory peak 197 MiB",
+  "Stage emit: 44.0 s, own memory peak 427 MiB",
+  "Manifest estimate: 13677036 bytes"
+ ]
+}

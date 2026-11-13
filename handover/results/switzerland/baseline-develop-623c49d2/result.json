@@ -1,0 +1,137 @@
+{
+ "seconds": 646.4,
+ "exit": 0,
+ "stopped": false,
+ "phases": [
+  {
+   "phase": "Importing",
+   "start_s": 0.9,
+   "seconds": 100.3,
+   "rss_anon_mib": 17,
+   "work_mib": 1938
+  },
+  {
+   "phase": "Sampling terrain",
+   "start_s": 101.2,
+   "seconds": 40.9,
+   "rss_anon_mib": 649,
+   "work_mib": 2559
+  },
+  {
+   "phase": "Preparing",
+   "start_s": 142.1,
+   "seconds": 38.1,
+   "rss_anon_mib": 106,
+   "work_mib": 2477
+  },
+  {
+   "phase": "Preparing",
+   "start_s": 180.2,
+   "seconds": 27.1,
+   "rss_anon_mib": 144,
+   "work_mib": 2447
+  },
+  {
+   "phase": "Preparing",
+   "start_s": 207.3,
+   "seconds": 27.1,
+   "rss_anon_mib": 145,
+   "work_mib": 2447
+  },
+  {
+   "phase": "Preparing",
+   "start_s": 234.4,
+   "seconds": 40.1,
+   "rss_anon_mib": 145,
+   "work_mib": 2447
+  },
+  {
+   "phase": "Preparing",
+   "start_s": 274.5,
+   "seconds": 23.5,
+   "rss_anon_mib": 147,
+   "work_mib": 2447
+  },
+  {
+   "phase": "Preparing",
+   "start_s": 298.0,
+   "seconds": 26.3,
+   "rss_anon_mib": 149,
+   "work_mib": 2447
+  },
+  {
+   "phase": "Preparing",
+   "start_s": 324.3,
+   "seconds": 26.7,
+   "rss_anon_mib": 150,
+   "work_mib": 2447
+  },
+  {
+   "phase": "Preparing",
+   "start_s": 351.0,
+   "seconds": 26.6,
+   "rss_anon_mib": 152,
+   "work_mib": 2447
+  },
+  {
+   "phase": "Preparing",
+   "start_s": 377.6,
+   "seconds": 38.3,
+   "rss_anon_mib": 153,
+   "work_mib": 2447
+  },
+  {
+   "phase": "Preparing",
+   "start_s": 415.9,
+   "seconds": 26.6,
+   "rss_anon_mib": 157,
+   "work_mib": 2447
+  },
+  {
+   "phase": "Preparing",
+   "start_s": 442.5,
+   "seconds": 25.5,
+   "rss_anon_mib": 160,
+   "work_mib": 2447
+  },
+  {
+   "phase": "Writing the overlay index",
+   "start_s": 468.0,
+   "seconds": 33.6,
+   "rss_anon_mib": 210,
+   "work_mib": 717
+  },
+  {
+   "phase": "Writing the route catalog",
+   "start_s": 501.6,
+   "seconds": 144.8,
+   "rss_anon_mib": 1345,
+   "work_mib": 717
+  }
+ ],
+ "printed": [],
+ "sha256": {
+  "manifest.json": "466b2ca133aa614ee11ea25bcb1eb515e48fbb61b3572141cf38cf9a07d81ab8",
+  "overlays.sqlite": "c22e59838e0ad0276bec09df7fcdd8d18c225297d55ca7bfaecb6ae9355e2eef",
+  "route-catalog.json": "5d4a242598b8871e214688d4413e9455aa782db2f095e6ade580dc0bb77e6fb9"
+ },
+ "manifest_id": "466b2ca133aa614ee11ea25bcb1eb515e48fbb61b3572141cf38cf9a07d81ab8",
+ "manifest_bytes": 9918794,
+ "roads": 7719364,
+ "warnings": [
+  "conservatively excluded unsupported restriction relations: 550",
+  "dismount-only crossing nodes: 3517",
+  "excluded area ways: 7770",
+  "outside bounds or missing referenced nodes: 2474",
+  "restriction members missing at retained junction: 702",
+  "restrictions outside retained graph: 14",
+  "retained directed roads: 7719364",
+  "retained graph nodes: 3092540",
+  "roads with unknown surface: 4029169",
+  "unknown barrier nodes passed on foot: 1435",
+  "unknown hiking classifications: 19",
+  "Country access defaults; ferry schedules, conditional access and via-way restrictions require conservative handling",
+  "Terrain estimates use samples at most 20 m apart and a 20 m filter radius. Bridge and tunnel heights interpolate their endpoints.",
+  "Copernicus GLO-30"
+ ]
+}

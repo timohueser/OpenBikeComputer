@@ -1,0 +1,33 @@
+{
+ "steps": [
+  {
+   "step": "planner/routing-source",
+   "key": "3a8c9a88f91e9d2d",
+   "reused": true,
+   "layer_mib": 752
+  },
+  {
+   "step": "planner/routing-roads",
+   "key": "b8a1d490ed7fccd7",
+   "reused": true,
+   "layer_mib": 1243
+  },
+  {
+   "step": "planner/routing-costs",
+   "key": "56ec63117e0d1fde",
+   "seconds": 11.8,
+   "rss_anon_mib": 6,
+   "work_mib": 795,
+   "exit": -9,
+   "killed": true
+  }
+ ],
+ "layers": "/home/user/obc-bake/switzerland/run-3299/layers",
+ "seconds": 11.8,
+ "stages": [
+  "Manifest estimate: 5628786 bytes",
+  "Stage open: 0.1 s, own memory peak 1 MiB",
+  "Stage way-bases: 1.6 s, own memory peak 5 MiB",
+  "Stage road-pass: 9.9 s, own memory peak 5 MiB"
+ ]
+}

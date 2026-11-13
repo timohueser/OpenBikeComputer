@@ -1,0 +1,54 @@
+{
+ "steps": [
+  {
+   "step": "planner/routing-source",
+   "key": "8e6532db7304d829",
+   "seconds": 102.4,
+   "rss_anon_mib": 29,
+   "work_mib": 1387,
+   "exit": 0,
+   "layer_mib": 825
+  },
+  {
+   "step": "planner/routing-roads",
+   "key": "7c816828a84ffa96",
+   "seconds": 61.4,
+   "rss_anon_mib": 458,
+   "work_mib": 2757,
+   "exit": 0,
+   "layer_mib": 1449
+  },
+  {
+   "step": "planner/routing-costs",
+   "key": "e877f4b9f65b8bd2",
+   "seconds": 49.4,
+   "rss_anon_mib": 7,
+   "work_mib": 2516,
+   "exit": 0,
+   "layer_mib": 1902
+  },
+  {
+   "step": "planner/routing",
+   "key": "b3f1fe1f6c0311c5",
+   "seconds": 0.3,
+   "rss_anon_mib": 0,
+   "work_mib": 0,
+   "exit": -9,
+   "killed": true
+  }
+ ],
+ "layers": "/home/user/obc-bake/nrw/run-3299/layers",
+ "seconds": 213.4,
+ "stages": [
+  "Stage import: 102.3 s, own memory peak 29 MiB",
+  "Imported: 2783285 ways, 17816428 node references, 10152040 directed roads, 29230967 turns, 3991797 junctions",
+  "Stage import: 19.2 s, own memory peak 2 MiB",
+  "Stage emit: 42.0 s, own memory peak 426 MiB",
+  "Manifest estimate: 13677036 bytes",
+  "Stage open: 0.2 s, own memory peak 1 MiB",
+  "Stage way-bases: 5.3 s, own memory peak 6 MiB",
+  "Stage road-pass: 38.7 s, own memory peak 7 MiB",
+  "Stage snap: 5.0 s, own memory peak 5 MiB",
+  "Stage open: 0.0 s, own memory peak 1 MiB"
+ ]
+}

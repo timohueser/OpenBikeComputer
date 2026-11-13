@@ -1,0 +1,72 @@
+{
+ "steps": [
+  {
+   "step": "planner/routing-source",
+   "key": "3a8c9a88f91e9d2d",
+   "seconds": 76.6,
+   "rss_anon_mib": 19,
+   "work_mib": 1562,
+   "exit": 0,
+   "layer_mib": 752
+  },
+  {
+   "step": "planner/routing-roads",
+   "key": "67f5a38bc99cdce5",
+   "seconds": 142.5,
+   "rss_anon_mib": 658,
+   "work_mib": 2493,
+   "exit": 0,
+   "layer_mib": 1251
+  },
+  {
+   "step": "planner/routing-costs",
+   "key": "da4e963a2f0f5db5",
+   "seconds": 36.1,
+   "rss_anon_mib": 6,
+   "work_mib": 1812,
+   "exit": 0,
+   "layer_mib": 1434
+  },
+  {
+   "step": "planner/routing",
+   "key": "b29078aa6b60c1c4",
+   "seconds": 259.5,
+   "rss_anon_mib": 1530,
+   "work_mib": 1030,
+   "exit": 0
+  }
+ ],
+ "layers": "/home/user/obc-bake/switzerland/run-3301-ruzstd/layers",
+ "seconds": 514.7,
+ "stages": [
+  "Stage import: 76.6 s, own memory peak 22 MiB",
+  "Imported: 2161202 ways, 20832239 node references, 7719364 directed roads, 21915422 turns, 3092540 junctions",
+  "Stage import: 7.2 s, own memory peak 2 MiB",
+  "Stage partition: 79.7 s, own memory peak 152 MiB",
+  "Stage emit: 55.6 s, own memory peak 649 MiB",
+  "Manifest estimate: 10419236 bytes",
+  "Stage open: 0.1 s, own memory peak 1 MiB",
+  "Stage way-bases: 4.0 s, own memory peak 5 MiB",
+  "Stage road-pass: 28.9 s, own memory peak 5 MiB",
+  "Stage snap: 2.9 s, own memory peak 4 MiB",
+  "Stage open: 0.0 s, own memory peak 1 MiB",
+  "Stage landmarks: 16.2 s, own memory peak 2 MiB",
+  "Stage writer: 35.8 s, own memory peak 50 MiB",
+  "Stage cells: 16.8 s, own memory peak 650 MiB",
+  "Stage overlays: 27.1 s, own memory peak 402 MiB",
+  "Stage catalog: 130.2 s, own memory peak 1529 MiB",
+  "Stage blocks: 33.1 s, own memory peak 1064 MiB"
+ ],
+ "sha256": {
+  "manifest.json": "979675e1d72f6bfe6ce67bb67ed6ee1fb0de81a204e7f98d0d9313dce4af91a2",
+  "overlays.sqlite": "2231583903d286232ccdba3c281ebdbc64d87550fdef14d4ce31375e0af1c952",
+  "route-catalog.json": "a9ae51f0702839038e92fe0fd649b435e7feac059a2cb104e5ed11093a4f08fb"
+ },
+ "manifest_bytes": 9918794,
+ "roads": 7719364,
+ "cells": {
+  "identity": "bbfb0484a5278cdb4052c49ced217e29a197fdbeb1bcd0762482bf282c286b16",
+  "files": 148,
+  "bytes": 484705107
+ }
+}

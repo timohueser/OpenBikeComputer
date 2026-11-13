@@ -1,0 +1,55 @@
+{
+ "steps": [
+  {
+   "step": "planner/routing-source",
+   "key": "3a8c9a88f91e9d2d",
+   "reused": true,
+   "layer_mib": 752
+  },
+  {
+   "step": "planner/routing-roads",
+   "key": "b8a1d490ed7fccd7",
+   "reused": true,
+   "layer_mib": 1243
+  },
+  {
+   "step": "planner/routing-costs",
+   "key": "56ec63117e0d1fde",
+   "seconds": 15.3,
+   "rss_anon_mib": 6,
+   "work_mib": 989,
+   "exit": 0,
+   "layer_mib": 717
+  },
+  {
+   "step": "planner/routing",
+   "key": "442d12a23574fe08",
+   "seconds": 191.6,
+   "rss_anon_mib": 1245,
+   "work_mib": 676,
+   "exit": 0
+  }
+ ],
+ "layers": "/home/user/obc-bake/switzerland/run-3299/layers",
+ "seconds": 206.9,
+ "stages": [
+  "Manifest estimate: 5628786 bytes",
+  "Stage open: 0.1 s, own memory peak 1 MiB",
+  "Stage way-bases: 1.8 s, own memory peak 5 MiB",
+  "Stage road-pass: 10.7 s, own memory peak 5 MiB",
+  "Stage snap: 2.6 s, own memory peak 4 MiB",
+  "Stage open: 0.0 s, own memory peak 1 MiB",
+  "Stage landmarks: 9.0 s, own memory peak 2 MiB",
+  "Stage writer: 22.9 s, own memory peak 36 MiB",
+  "Stage overlays: 24.1 s, own memory peak 155 MiB",
+  "Stage catalog: 109.4 s, own memory peak 1244 MiB",
+  "Stage blocks: 26.1 s, own memory peak 798 MiB"
+ ],
+ "sha256": {
+  "manifest.json": "590cbe34363415b3c0d2d173d54c6be89a8b01537cf84428f0c98a5b062a9e6b",
+  "overlays.sqlite": "26846a48a0c8ccc968315f4192c0b69edc687eb551d234180a6e7550b3201db1",
+  "route-catalog.json": "5d4a242598b8871e214688d4413e9455aa782db2f095e6ade580dc0bb77e6fb9"
+ },
+ "manifest_bytes": 5330477,
+ "roads": 7719364
+}

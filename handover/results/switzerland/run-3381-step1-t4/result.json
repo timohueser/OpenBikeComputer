@@ -1,0 +1,29 @@
+{
+ "steps": [
+  {
+   "step": "planner/routing-source",
+   "key": "3a8c9a88f91e9d2d",
+   "seconds": 62.1,
+   "rss_anon_mib": 17,
+   "work_mib": 1562,
+   "exit": 0,
+   "layer_mib": 752
+  },
+  {
+   "step": "planner/routing-roads",
+   "key": "67f5a38bc99cdce5",
+   "seconds": 101.8,
+   "rss_anon_mib": 153,
+   "work_mib": 265,
+   "exit": -9,
+   "killed": true
+  }
+ ],
+ "layers": "/home/user/obc-bake/switzerland/layers-3381",
+ "seconds": 163.9,
+ "stages": [
+  "Stage import: 62.1 s, own memory peak 22 MiB",
+  "Imported: 2161202 ways, 20832239 node references, 7719364 directed roads, 21915422 turns, 3092540 junctions",
+  "Stage import: 23.2 s, own memory peak 2 MiB"
+ ]
+}

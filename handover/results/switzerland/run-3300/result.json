@@ -1,0 +1,66 @@
+{
+ "steps": [
+  {
+   "step": "planner/routing-source",
+   "key": "3a8c9a88f91e9d2d",
+   "seconds": 72.1,
+   "rss_anon_mib": 17,
+   "work_mib": 1562,
+   "exit": 0,
+   "layer_mib": 752
+  },
+  {
+   "step": "planner/routing-roads",
+   "key": "67f5a38bc99cdce5",
+   "seconds": 194.9,
+   "rss_anon_mib": 645,
+   "work_mib": 2493,
+   "exit": 0,
+   "layer_mib": 1251
+  },
+  {
+   "step": "planner/routing-costs",
+   "key": "da4e963a2f0f5db5",
+   "seconds": 33.1,
+   "rss_anon_mib": 6,
+   "work_mib": 1590,
+   "exit": 0,
+   "layer_mib": 1434
+  },
+  {
+   "step": "planner/routing",
+   "key": "021b09838c2aa8bd",
+   "seconds": 230.8,
+   "rss_anon_mib": 1289,
+   "work_mib": 1030,
+   "exit": 0
+  }
+ ],
+ "layers": "/home/user/obc-bake/switzerland/run-3300/layers",
+ "seconds": 530.9,
+ "stages": [
+  "Stage import: 71.9 s, own memory peak 17 MiB",
+  "Imported: 2161202 ways, 20832239 node references, 7719364 directed roads, 21915422 turns, 3092540 junctions",
+  "Stage import: 5.5 s, own memory peak 2 MiB",
+  "Stage partition: 137.1 s, own memory peak 140 MiB",
+  "Stage emit: 52.2 s, own memory peak 684 MiB",
+  "Manifest estimate: 10419236 bytes",
+  "Stage open: 0.1 s, own memory peak 1 MiB",
+  "Stage way-bases: 3.2 s, own memory peak 5 MiB",
+  "Stage road-pass: 26.4 s, own memory peak 5 MiB",
+  "Stage snap: 3.1 s, own memory peak 4 MiB",
+  "Stage open: 0.0 s, own memory peak 1 MiB",
+  "Stage landmarks: 16.0 s, own memory peak 2 MiB",
+  "Stage writer: 32.5 s, own memory peak 50 MiB",
+  "Stage overlays: 24.0 s, own memory peak 160 MiB",
+  "Stage catalog: 127.0 s, own memory peak 1288 MiB",
+  "Stage blocks: 31.1 s, own memory peak 747 MiB"
+ ],
+ "sha256": {
+  "manifest.json": "979675e1d72f6bfe6ce67bb67ed6ee1fb0de81a204e7f98d0d9313dce4af91a2",
+  "overlays.sqlite": "2231583903d286232ccdba3c281ebdbc64d87550fdef14d4ce31375e0af1c952",
+  "route-catalog.json": "a9ae51f0702839038e92fe0fd649b435e7feac059a2cb104e5ed11093a4f08fb"
+ },
+ "manifest_bytes": 9918794,
+ "roads": 7719364
+}

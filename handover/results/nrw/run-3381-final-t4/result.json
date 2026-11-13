@@ -1,0 +1,26 @@
+{
+ "steps": [
+  {
+   "step": "planner/routing-source",
+   "key": "8e6532db7304d829",
+   "reused": true,
+   "layer_mib": 825
+  },
+  {
+   "step": "planner/routing-roads",
+   "key": "4b95990ef9b9a115",
+   "seconds": 104.1,
+   "rss_anon_mib": 198,
+   "work_mib": 427,
+   "exit": -9,
+   "killed": true
+  }
+ ],
+ "layers": "/home/user/obc-bake/nrw/layers-3381",
+ "seconds": 104.1,
+ "stages": [
+  "Imported: 2783285 ways, 17816428 node references, 10152040 directed roads, 29230967 turns, 3991797 junctions",
+  "Stage import: 6.2 s, own memory peak 2 MiB",
+  "Stage partition: 97.5 s, own memory peak 197 MiB"
+ ]
+}
