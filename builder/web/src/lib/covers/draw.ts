@@ -55,7 +55,8 @@ export function drawCover(context: CanvasRenderingContext2D, cover: CoverImage,
     const widest = Math.max(2, WIDEST * Math.min(...box));
     const width = (i: number) => widest * Math.max(LEAST, Math.min(1, nearest / distanceAt(points, i)));
     const metres = summary && part && metresAlong(summary);
-    const inPart = (i: number) => !!metres && !!part && (metres[i - 1] + metres[i]) / 2 >= part[0] && (metres[i - 1] + metres[i]) / 2 <= part[1];
+    // A segment that overlaps the part is in it, so a part shorter than one segment still shows.
+    const inPart = (i: number) => !!metres && !!part && metres[i] > part[0] && metres[i - 1] < part[1];
 
     // Consecutive segments of one width step and one colour make one path, so that a weak stroke shows no dots at its
     // joints. A stretch that the terrain hides draws nothing.
@@ -66,22 +67,23 @@ export function drawCover(context: CanvasRenderingContext2D, cover: CoverImage,
         else pieces.push({ part: inside, w, from: i - 1, to: i });
     }
     const reach = Math.max(2, GLOW_REACH * widest), glow = Array.from({ length: GLOW_STEPS }, (_, k) => 2 * reach * (GLOW_STEPS - k) / GLOW_STEPS);
-    const passes: { width: (w: number) => number; colour: string; alpha: number; rest?: string }[] = [
-        ...glow.map(extra => ({ width: (w: number) => w + extra, colour: colours.glow, alpha: GLOW_ALPHA })),
-        { width: w => w, colour: colours.line, alpha: 1, rest: REST[look] },
-        { width: w => CORE_WIDTH * w, colour: colours.core, alpha: CORE_ALPHA },
+    // The rest draws first, so the part with its glow is on top where the line crosses itself or goes back on itself.
+    const passes: { width: (w: number) => number; colour: string; alpha: number; part: boolean }[] = [
+        ...metres ? [{ width: (w: number) => w, colour: REST[look], alpha: 1, part: false }] : [],
+        ...glow.map(extra => ({ width: (w: number) => w + extra, colour: colours.glow, alpha: GLOW_ALPHA, part: true })),
+        { width: w => w, colour: colours.line, alpha: 1, part: true },
+        { width: w => CORE_WIDTH * w, colour: colours.core, alpha: CORE_ALPHA, part: true },
     ];
     context.lineCap = context.lineJoin = 'round';
     for (const pass of passes) {
         context.globalAlpha = pass.alpha;
         for (const piece of pieces) {
-            const colour = metres && !piece.part ? pass.rest : pass.colour;
-            if (!colour) continue;
+            if (metres && piece.part !== pass.part) continue;
             context.beginPath();
             context.moveTo(x(piece.from), y(piece.from));
             for (let i = piece.from + 1; i <= piece.to; i++) context.lineTo(x(i), y(i));
             context.lineWidth = pass.width(piece.w);
-            context.strokeStyle = colour;
+            context.strokeStyle = pass.colour;
             context.stroke();
         }
     }
