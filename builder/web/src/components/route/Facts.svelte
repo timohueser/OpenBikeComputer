@@ -1,11 +1,9 @@
 <script lang="ts">
-    import type { Snippet } from 'svelte';
     import Card from '../../lib/ui/Card.svelte';
     import Icon from '../planner/PlannerIcon.svelte';
-    import ElevationRow from './ElevationRow.svelte';
     import { townOf } from './towns';
     import type { RouteSummary } from '../../lib/library/records';
-    import { distanceIn, formatDistance, formatHeight, formatPercent } from '../../lib/settings/format';
+    import { distanceIn, formatAlong, formatDistance, formatHeight, formatPercent } from '../../lib/settings/format';
     import { settings } from '../../lib/settings/settings.svelte';
     import { duration, orderedRoutePoints, planView, type RoutePoint, type Trip } from '../../lib/planner/editor';
     import { profileHeightAt, profileSamples } from '../../lib/planner/profile-data';
@@ -14,8 +12,8 @@
     import { kindLabel } from '../../lib/planner/search/presentation';
 
     /** The left card of the Route page: the numbers of the stored summary, then the days, the climbs and the waypoints
-     * of the calculated line, or the routing error. A climb opens in the card with its profile. */
-    let { summary, trip, line, facts, error, changed, children }: {
+     * of the calculated line, or the routing error. The opened climb is the selected part of the page. */
+    let { summary, trip, line, facts, error, changed, opened, onopen }: {
         summary: RouteSummary | null;
         trip: Trip;
         /** The calculated line, which `facts` belongs to. */
@@ -24,17 +22,15 @@
         error?: string;
         /** The calculated line differs from the stored summary. */
         changed: boolean;
-        /** The buttons at the end of the card. */
-        children: Snippet;
+        opened?: Climb;
+        onopen: (climb: Climb | undefined) => void;
     } = $props();
 
-    let climbsOpen = $state(false), opened = $state.raw<Climb>();
     // A climb of an earlier line or route does not stay open.
     const shownClimb = $derived(opened && facts?.climbs.includes(opened) ? opened : undefined);
     const days = $derived(facts && facts.days.length > 1 ? facts.days : undefined);
     const ends = $derived(orderedRoutePoints(trip));
     const finish = $derived(trip.loop ? ends[0] : ends.at(-1));
-    const longest = $derived(facts?.climbs.reduce<Climb | undefined>((best, climb) => !best || climb.to - climb.from > best.to - best.from ? climb : best, undefined));
 
     /** "km 19", or "mi 12" with miles. */
     const at = (km: number) => `${settings.units} ${Math.round(distanceIn(km * 1000))}`;
@@ -54,7 +50,7 @@
 {#snippet climbRow(climb: Climb)}
     {@const numbers = `${at(climb.from)} · ${formatDistance((climb.to - climb.from) * 1000)} · ${grade(climb)}`}
     <li class="climb">
-        <button type="button" onclick={() => opened = climb}>
+        <button type="button" onclick={() => onopen(climb)}>
             <span>
                 {#await townOf(climb.top)}
                     <strong>{numbers}</strong>
@@ -70,13 +66,13 @@
 {#snippet climbCard(climb: Climb, line: RoutingLine)}
     {@const total = planView(trip, line).total}
     {@const top = profileHeightAt(climb.to / total, profileSamples(line))}
-    <button type="button" class="back" onclick={() => opened = undefined}>‹ Climbs</button>
+    <button type="button" class="back" onclick={() => onopen(undefined)}>‹ Climbs</button>
     {#await townOf(climb.top)}
         <h3 class="climb-name">Climb</h3>
     {:then name}
         <h3 class="climb-name">{name ? `To ${name}` : 'Climb'}</h3>
     {/await}
-    <p class="note">{at(climb.from)} to {at(climb.to)}</p>
+    <p class="note">{formatAlong(climb.from * 1000)} to {formatAlong(climb.to * 1000)}</p>
     <dl class="numbers">
         {@render number('Length', formatDistance((climb.to - climb.from) * 1000))}
         {@render number('Climb', formatHeight(climb.ascent))}
@@ -84,7 +80,10 @@
         {@render number(`Steepest ${formatDistance(STEEPEST_KM * 1000)}`, formatPercent(climb.steepest))}
         {@render number('Top', top === null ? '–' : formatHeight(top))}
     </dl>
-    <div class="profile"><ElevationRow {line} from={climb.from / total} to={climb.to / total} /></div>
+    {#if facts && facts.climbs.length > 1}
+        <h3>Other climbs</h3>
+        <ul class="rows">{#each facts.climbs.filter(other => other !== climb) as other (other.from)}{@render climbRow(other)}{/each}</ul>
+    {/if}
 {/snippet}
 
 <div class="facts">
@@ -129,12 +128,9 @@
                         {/if}
                     {/each}
                 </ol>
-                {#if longest}
-                    <button type="button" class="more" aria-expanded={climbsOpen} onclick={() => climbsOpen = !climbsOpen}>
-                        <span><strong>{facts.climbs.length} {facts.climbs.length === 1 ? 'climb' : 'climbs'}</strong> · the longest: {formatDistance((longest.to - longest.from) * 1000)} at {grade(longest)}</span>
-                        <Icon name="chevron" size={14} />
-                    </button>
-                    {#if climbsOpen}<ul class="rows">{#each facts.climbs as climb (climb.from)}{@render climbRow(climb)}{/each}</ul>{/if}
+                {#if facts.climbs.length}
+                    <h3>Climbs</h3>
+                    <ul class="rows">{#each facts.climbs as climb (climb.from)}{@render climbRow(climb)}{/each}</ul>
                 {/if}
             {:else}
                 {#if facts.climbs.length}
@@ -147,8 +143,6 @@
                 {/if}
             {/if}
         {/if}
-
-        <div class="actions">{@render children()}</div>
     </Card>
 </div>
 
@@ -246,11 +240,6 @@
     .climb-name + .note {
         margin: 2px 0 14px;
     }
-    .profile {
-        flex: none;
-        height: 72px;
-        margin: 14px 0 4px 46px;
-    }
     li > span:not(.chip, .pin) {
         display: flex;
         flex-direction: column;
@@ -285,32 +274,5 @@
         border-radius: 4px;
         background: var(--parchment-2);
         font-size: 12px;
-    }
-    .more {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 8px;
-        width: 100%;
-        padding: 10px 0;
-        border: 0;
-        border-bottom: 1px solid var(--line);
-        background: none;
-        color: var(--ink);
-        text-align: left;
-    }
-    .more[aria-expanded="true"] :global(svg) {
-        transform: rotate(90deg);
-    }
-    /* The card scrolls inside; its buttons stay in sight and cover the padding of the card under them. */
-    .actions {
-        position: sticky;
-        bottom: -16px;
-        display: flex;
-        justify-content: space-between;
-        gap: 8px;
-        margin: auto 0 -16px;
-        padding: 16px 0;
-        background: var(--panel);
     }
 </style>

@@ -12,7 +12,7 @@
      * place under a lower picture stays free. When the map would get less than MAP_PX, the cover is large and cut, and
      * the map is small in a corner; a click on the small one swaps them, and only the large one shows the pins. The
      * pointer is a share of the summary line from 0 to 1, so the cover and the map mark the same place. */
-    let { library, id, summary, ride = false, pins = [], mark, onpoint }: {
+    let { library, id, summary, ride = false, pins = [], mark, onpoint, part, lit, place }: {
         library: Library;
         /** The id of a route or the key of a ride. */
         id: string;
@@ -21,6 +21,12 @@
         pins?: { share: number; label: string; number?: number }[];
         mark?: number;
         onpoint: (share: number | null) => void;
+        /** The stretch that the map fits. */
+        part?: [number, number] | null;
+        /** The stretch that the cover and the map mark, with the rest of the line paler on the map. */
+        lit?: [number, number] | null;
+        /** A place that the map marks. */
+        place?: [number, number] | null;
     } = $props();
 
     let cover = $state.raw<CoverRecord>(), swapped = $state(false);
@@ -61,13 +67,14 @@
         {#if covered}
             <div class="slot cover">
                 <Cover {library} {id} pins={side || !mapLarge ? pins : []} mark={mark === undefined ? undefined : mark * summary.lengthM}
+                    part={lit ? [lit[0] * summary.lengthM, lit[1] * summary.lengthM] : undefined}
                     onpoint={metres => onpoint(metres === null || !summary.lengthM ? null : metres / summary.lengthM)} />
                 {#if !side && mapLarge}<button type="button" class="swap" aria-label="Show the picture large" onclick={() => swapped = false}></button>{/if}
             </div>
             <Credits {credits} side="left" />
         {/if}
         <div class="slot map">
-            <RouteMap {summary} {ride} pins={side || mapLarge ? pins : []} {mark} {onpoint} />
+            <RouteMap {summary} {ride} pins={side || mapLarge ? pins : []} {mark} {onpoint} fitTo={part} {lit} {place} />
             {#if !side && !mapLarge}<button type="button" class="swap" aria-label="Show the map large" onclick={() => swapped = true}></button>{/if}
         </div>
     </div>

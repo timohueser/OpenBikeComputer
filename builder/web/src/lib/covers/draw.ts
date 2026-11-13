@@ -11,6 +11,11 @@ const LOOKS = {
     part: { line: '#f4a81d', glow: '#f8c66a', core: '#ffe6b0' },
 };
 export type Look = 'route' | 'ride';
+/** With a part, the rest of the line takes a paler solid tint of its look. */
+export const REST: Record<Look, { line: string; glow: string; core: string }> = {
+    route: { line: '#e7a6d0', glow: '#f2cde4', core: '#fae6f2' },
+    ride: { line: '#d9d0c4', glow: '#e3d6c3', core: '#f2ece4' },
+};
 /** The glow reaches GLOW_REACH of the widest line beyond it, in GLOW_STEPS strokes of GLOW_ALPHA each; the core is CORE_WIDTH of the line. */
 const GLOW_REACH = 0.6, GLOW_STEPS = 5, GLOW_ALPHA = 0.14, CORE_WIDTH = 0.25, CORE_ALPHA = 0.3;
 /** The width of the line at the point nearest to the eye, as a share of the shorter side of the box, and the least width as a share of it. */
@@ -64,10 +69,11 @@ export function drawCover(context: CanvasRenderingContext2D, cover: CoverImage,
         else pieces.push({ part: inside, w, from: i - 1, to: i });
     }
     const reach = Math.max(2, GLOW_REACH * widest), glow = Array.from({ length: GLOW_STEPS }, (_, k) => 2 * reach * (GLOW_STEPS - k) / GLOW_STEPS);
-    const passes: { width: (w: number) => number; colour: (part: boolean) => string; alpha: number }[] = [
-        ...glow.map(extra => ({ width: (w: number) => w + extra, colour: (part: boolean) => (part ? LOOKS.part : colours).glow, alpha: GLOW_ALPHA })),
-        { width: w => w, colour: part => (part ? LOOKS.part : colours).line, alpha: 1 },
-        { width: w => CORE_WIDTH * w, colour: part => (part ? LOOKS.part : colours).core, alpha: CORE_ALPHA },
+    const tint = (inside: boolean) => inside ? LOOKS.part : metres ? REST[look] : colours;
+    const passes: { width: (w: number) => number; colour: (inside: boolean) => string; alpha: number }[] = [
+        ...glow.map(extra => ({ width: (w: number) => w + extra, colour: (inside: boolean) => tint(inside).glow, alpha: GLOW_ALPHA })),
+        { width: w => w, colour: inside => tint(inside).line, alpha: 1 },
+        { width: w => CORE_WIDTH * w, colour: inside => tint(inside).core, alpha: CORE_ALPHA },
     ];
     context.lineCap = context.lineJoin = 'round';
     for (const pass of passes) {

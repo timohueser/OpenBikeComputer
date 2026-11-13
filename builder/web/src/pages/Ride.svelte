@@ -1,7 +1,7 @@
 <script lang="ts">
     import Window from '../lib/ui/Window.svelte';
     import Detail from '../components/route/Detail.svelte';
-    import ExportMenu from '../components/route/ExportMenu.svelte';
+    import Menu from '../components/route/Menu.svelte';
     import Picture from '../components/route/Picture.svelte';
     import RideFacts from '../components/route/RideFacts.svelte';
     import { download } from '../components/route/download';
@@ -96,7 +96,7 @@
     {/snippet}
     {#snippet buttons()}
         <button type="button" class="button" disabled={!samples} onclick={() => act(() => rideAgain(library, record!, samples))}>Ride it again</button>
-        <ExportMenu items={exports} />
+        <Menu label="Export" items={exports} />
     {/snippet}
     {#snippet left()}
         {#if summary}
