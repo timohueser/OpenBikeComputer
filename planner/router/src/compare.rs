@@ -441,13 +441,8 @@ pub fn areas(folder: &Path) -> Result<Vec<Level>, String> {
         objects.sort_unstable();
         let (mut tiles, mut blocks) = (Vec::new(), Vec::new());
         for &(side, x, y) in &areas {
-            let area = [
-                tile_box(x, y + side - 1)[0],
-                tile_box(x, y + side - 1)[1],
-                tile_box(x + side - 1, y)[2],
-                tile_box(x + side - 1, y)[3],
-            ];
-            let window = grown(area)?;
+            let (southwest, northeast) = (tile_box(x, y + side - 1), tile_box(x + side - 1, y));
+            let window = grown([southwest[0], southwest[1], northeast[2], northeast[3]])?;
             let taken: u64 = cells
                 .values()
                 .filter(|(_, bounds)| cells::meets(*bounds, window))
