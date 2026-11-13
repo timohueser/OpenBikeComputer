@@ -65,20 +65,6 @@ export function along(points: CoverPoints, summary: Summary, metres: number): { 
     return { x: mix(points.x[i - 1], points.x[i]), y: mix(points.y[i - 1], points.y[i]), distance: mix(distanceAt(points, i - 1), distanceAt(points, i)), visible: visibleAt(points, i) };
 }
 
-/** A pin label is at most about LABEL_PX wide and less than LABEL_HIGH_PX high. */
-const LABEL_PX = 200, LABEL_HIGH_PX = 26;
-
-/** For each pin, in order, whether its label would cover the label of an earlier pin that is not crowded. A crowded pin
- * shows no text. */
-export function crowded(pins: readonly { x: number; y: number }[]): boolean[] {
-    const shown: { x: number; y: number }[] = [];
-    return pins.map(pin => {
-        const near = shown.some(other => Math.abs(other.y - pin.y) < LABEL_HIGH_PX && Math.abs(other.x - pin.x) < LABEL_PX);
-        if (!near) shown.push(pin);
-        return near;
-    });
-}
-
 /** The metres along the route of the point of the line that is nearest to pixel (x, y) of the image; undefined when no
  * segment has a place within `within` pixels of the image. A hidden stretch counts as line. */
 export function nearest(points: CoverPoints, summary: Summary, x: number, y: number, within = Infinity): number | undefined {

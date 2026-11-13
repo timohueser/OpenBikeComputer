@@ -5,7 +5,7 @@
     import type { Summary } from '../../lib/library/records';
     import { lineCoordinates } from '../../lib/library/summary';
     import { coordinateAt, nearestOnLine, nearestProgress, type Coordinate } from '../../lib/planner/geo';
-    import { crowded } from '../../lib/covers/line';
+    import Icon from '../planner/PlannerIcon.svelte';
     import { basemapStyle } from '../../lib/planner/map-style';
     import { styleConfig, useMapProtocols } from '../../lib/planner/map-setup';
     import { appearance } from '../../lib/theme.svelte';
@@ -26,6 +26,10 @@
     const NEAR_PX = 24;
     let container: HTMLElement;
     let map = $state.raw<maplibregl.Map>();
+    let shownPins = $state.raw<{ share: number; label: string; number?: number; x: number; y: number }[]>([]);
+    /** The pin whose name shows, by its index; one at a time. */
+    let opened = $state<number>();
+    const pinName = (pin: { label: string; number?: number }) => pin.number ? pin.label : pin.label ? `Night · ${pin.label}` : 'Night';
     const theme = $derived(appearance.dark ? 'dark' : 'light');
     const coordinates = $derived(lineCoordinates(summary));
     const dot = Object.assign(document.createElement('div'), { className: 'route-map-mark' });
@@ -78,24 +82,20 @@
         const source = map?.getSource<maplibregl.GeoJSONSource>('route');
         source?.setData({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates } });
     });
+    // The pins follow the map: their places in the box change with each move.
     $effect(() => {
-        if (!map || coordinates.length < 2) return;
-        const shown = map, markers = pins.map(pin => new maplibregl.Marker({ element: Object.assign(document.createElement('div'), { className: 'route-pin' }), anchor: 'bottom', offset: [0, -6] })
-            .setLngLat(coordinateAt(coordinates, pin.share)).addTo(shown));
-        // A crowded waypoint shows its number only, a crowded night nothing.
-        const label = () => {
-            const short = crowded(markers.map(marker => shown.project(marker.getLngLat())));
-            pins.forEach((pin, i) => {
-                const element = markers[i].getElement();
-                element.classList.toggle('short', short[i]);
-                element.hidden = short[i] && !pin.number;
-                if (pin.number) element.replaceChildren(Object.assign(document.createElement('b'), { textContent: String(pin.number) }), short[i] ? '' : pin.label);
-                else element.textContent = pin.label ? `Night · ${pin.label}` : 'Night';
+        if (!map || coordinates.length < 2) return void (shownPins = []);
+        const shown = map, at = pins.map(pin => coordinateAt(coordinates, pin.share));
+        const place = () => {
+            const { clientWidth: width, clientHeight: height } = shown.getContainer();
+            shownPins = pins.flatMap((pin, i) => {
+                const { x, y } = shown.project(at[i]);
+                return x >= 0 && x <= width && y >= 0 && y <= height ? [{ ...pin, x, y }] : [];
             });
         };
-        label();
-        const events = [shown.on('moveend', label), shown.on('resize', label)];
-        return () => { events.forEach(event => event.unsubscribe()); markers.forEach(marker => marker.remove()); };
+        place();
+        const events = [shown.on('move', place), shown.on('resize', place)];
+        return () => events.forEach(event => event.unsubscribe());
     });
     $effect(() => {
         if (!map) return;
@@ -104,13 +104,37 @@
     });
 </script>
 
-<div class="route-map" bind:this={container}></div>
+<svelte:document onpointerdown={event => { if (!(event.target as Element).closest('.route-pin')) opened = undefined; }} />
+
+<div class="route-map" bind:this={container}>
+    <div class="pins">
+        {#each shownPins as pin, i (i)}
+            <span class="route-pin" style:left={`${pin.x}px`} style:top={`${pin.y}px`}>
+                <button type="button" class:night={!pin.number} aria-label={pinName(pin)} aria-expanded={opened === i}
+                    onclick={() => opened = i} onfocus={() => opened = i} onblur={() => opened = undefined}
+                    onkeydown={event => { if (event.key === 'Escape') opened = undefined; }}>
+                    {#if pin.number}{pin.number}{:else}<Icon name="moon" size={12} />{/if}
+                </button>
+                {#if opened === i}<span class="route-pin-label">{pinName(pin)}</span>{/if}
+            </span>
+        {/each}
+    </div>
+</div>
 
 <style>
     .route-map {
         width: 100%;
         height: 100%;
         background: var(--parchment);
+    }
+    .pins {
+        position: absolute;
+        z-index: 2;
+        inset: 0;
+        pointer-events: none;
+    }
+    .pins :global(.route-pin) {
+        pointer-events: auto;
     }
     :global(.route-map-mark) {
         width: 14px;

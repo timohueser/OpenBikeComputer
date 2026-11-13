@@ -8,8 +8,8 @@
     import { creditsWith } from '../../lib/planner/map-setup';
 
     /** The large picture of a detail page: the cover large and the map small in a corner, or the map alone with no cover.
-     * A click on the small one swaps them. The pointer is a share of the summary line from 0 to 1, so the cover and the
-     * map mark the same place. */
+     * A click on the small one swaps them. Only the large one shows the pins. The pointer is a share of the summary line
+     * from 0 to 1, so the cover and the map mark the same place. */
     let { library, id, summary, ride = false, pins = [], mark, onpoint }: {
         library: Library;
         /** The id of a route or the key of a ride. */
@@ -48,14 +48,14 @@
 <div class="picture" class:map-large={mapLarge}>
     {#if covered}
         <div class="slot cover">
-            <Cover {library} {id} {pins} mark={mark === undefined ? undefined : mark * summary.lengthM}
+            <Cover {library} {id} pins={mapLarge ? [] : pins} mark={mark === undefined ? undefined : mark * summary.lengthM}
                 onpoint={metres => onpoint(metres === null || !summary.lengthM ? null : metres / summary.lengthM)} />
             {#if mapLarge}<button type="button" class="swap" aria-label="Show the picture large" onclick={() => swapped = false}></button>{/if}
         </div>
         <Credits {credits} side="left" />
     {/if}
     <div class="slot map">
-        <RouteMap {summary} {ride} {pins} {mark} {onpoint} />
+        <RouteMap {summary} {ride} pins={mapLarge ? pins : []} {mark} {onpoint} />
         {#if !mapLarge}<button type="button" class="swap" aria-label="Show the map large" onclick={() => swapped = true}></button>{/if}
     </div>
 </div>
