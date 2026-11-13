@@ -1,4 +1,5 @@
 <script lang="ts">
+    import Switch from '../lib/ui/Switch.svelte';
     import Window from '../lib/ui/Window.svelte';
     import Detail from '../components/route/Detail.svelte';
     import Menu from '../components/route/Menu.svelte';
@@ -12,7 +13,7 @@
     import type { Library } from '../lib/library/store';
     import { lineCoordinates } from '../lib/library/summary';
     import { rideAgain } from '../lib/ride/again';
-    import { lineShares } from '../lib/ride/lines';
+    import { lineShares, slice } from '../lib/ride/lines';
     import { channels, movingSpeed, partNumbers, rideClimbs, rideCsv, type PartNumbers } from '../lib/ride/numbers';
     import { fitSport, ridePoints, rideSamples } from '../lib/ride/samples';
     import { router } from '../lib/router.svelte';
@@ -32,6 +33,8 @@
      * the numbers follow PART_MS after the last one. */
     let part = $state.raw<[number, number] | null>(null), partFacts = $state.raw<PartNumbers>();
     const PART_MS = 120;
+    /** The exports hold only the selected part. */
+    let onlyPart = $state(false);
 
     const summary = $derived(record?.summary);
     const samples = $derived(source?.samples);
@@ -50,7 +53,7 @@
         const target = key;
         let live = true, reading = false;
         record = source = undefined;
-        [share, deleting, failure, part] = [undefined, false, '', null];
+        [share, deleting, failure, part, onlyPart] = [undefined, false, '', null, false];
         const load = async () => {
             const ride = await library.ride(target);
             if (!live) return;
@@ -89,23 +92,28 @@
         });
     }
 
-    /** The exports, then Delete. An export is the stored file for its own format, else a file written from the samples. */
+    /** The exports, then Delete. An export of the whole ride is the stored file for its own format, else a file written
+     * from the samples. With "Only the selected part", each export is written from the samples of the part, and its
+     * name says so. */
     const more = $derived.by(() => {
-        const ride = record, read = source;
+        const ride = record, read = source, range = onlyPart ? part : null;
+        const samplesOf = () => range ? slice(read!.samples, range) : read!.samples, name = () => range ? `${ride!.name} part` : ride!.name;
         const file = (format: RideRecord['format'], write: () => BlobPart) => () => {
             if (!ride || !read) return;
             const [type, extension] = format === 'fit' ? ['application/vnd.ant.fit', 'fit'] : ['application/gpx+xml', 'gpx'];
-            download(ride.format === format ? read.file : write(), type, ride.name, extension);
+            download(ride.format === format && !range ? read.file : write(), type, name(), extension);
         };
         return [
-            { label: 'Export FIT file', disabled: !read, run: file('fit', () => writeFitRide({ sport: fitSport(ride!.summary.bike), samples: read!.samples }) as Uint8Array<ArrayBuffer>) },
-            { label: 'Export GPX track', disabled: !read, run: file('gpx', () => writeGpx({ name: ride!.name, points: ridePoints(read!.samples), waypoints: [] })) },
+            { label: 'Export FIT file', disabled: !read, run: file('fit', () => writeFitRide({ sport: fitSport(ride!.summary.bike), samples: samplesOf() }) as Uint8Array<ArrayBuffer>) },
+            { label: 'Export GPX track', disabled: !read, run: file('gpx', () => writeGpx({ name: name(), points: ridePoints(samplesOf()), waypoints: [] })) },
             { label: 'Export table of the data (CSV)', note: 'One line for each point', disabled: !read,
-                run: () => { if (ride && read) download(rideCsv(read.samples), 'text/csv', ride.name, 'csv'); } },
+                run: () => { if (ride && read) download(rideCsv(samplesOf()), 'text/csv', name(), 'csv'); } },
             { label: 'Delete', rule: true, danger: true, run: () => { deleting = true; } },
         ];
     });
 </script>
+
+{#snippet partSwitch()}<Switch label="Only the selected part" bind:checked={onlyPart} />{/snippet}
 
 <Detail message={record === undefined ? 'Loading…' : record === null ? 'This ride is not in the library.' : undefined}
     name={record?.name ?? ''} nameLabel="Ride name" onrename={rename} {failure}>
@@ -114,7 +122,7 @@
     {/snippet}
     {#snippet buttons()}
         <button type="button" class="button" disabled={!samples} onclick={() => act(() => rideAgain(library, record!, samples))}>Ride it again</button>
-        <Menu label="More" items={more} />
+        <Menu label="More" items={more} children={part ? partSwitch : undefined} />
     {/snippet}
     {#snippet left()}
         {#if summary}

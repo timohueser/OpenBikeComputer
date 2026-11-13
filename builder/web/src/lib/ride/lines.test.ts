@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { FitSample } from '../core/fit';
 import { rideSummary, lineCoordinates } from '../library/summary';
 import { heartRateZones } from '../settings/zones';
-import { distanceAxis, extent, lineShares, range, sampleAt, smooth, speeds, thin, zoneStretches } from './lines';
+import { distanceAxis, extent, lineShares, outOfStops, range, sampleAt, slice, smooth, speeds, stops, thin, timeAxis, zoneStretches } from './lines';
 
 const T = 1_792_828_800;
 /** Microdegrees of latitude for about 50 m. */
@@ -95,5 +95,56 @@ describe('the axis of a ride with a pause that covers distance', () => {
     it('ends the line at the last sample, for a ride that passes its end, turns and comes back to it', () => {
         const back = [0, 20, 10, 20].map((steps, i) => sample(i * 60, steps));
         expect(lineShares(back, [[8, 46], [8, 46.009]])).toEqual([0, .5, .75, 1]);
+    });
+});
+
+describe('the time axis, the stops and a part of a ride', () => {
+    // 50 m every 10 s. The rider stands 7 min with the recording on (the samples 4 to 11), pauses 10 min, which starts a
+    // segment (the samples 16 and 17), and stands 2 min (the samples 21 and 22).
+    const samples = [
+        ...[0, 10, 20, 30, 40].map((seconds, i) => sample(seconds, i, { segmentStart: !i })),
+        ...[100, 160, 220, 280, 340, 400, 460].map(seconds => sample(seconds, 4)),
+        ...[470, 480, 490, 500, 510].map((seconds, i) => sample(seconds, 5 + i)),
+        sample(1110, 9, { segmentStart: true }),
+        ...[1120, 1130, 1140, 1150].map((seconds, i) => sample(seconds, 10 + i)),
+        sample(1270, 13), sample(1280, 14),
+    ];
+    const time = timeAxis(samples), found = stops(samples);
+
+    it('places the samples by the clock, and ends the line at a step of more than a minute', () => {
+        expect(time.xs[0]).toBe(0);
+        expect(time.xs[16]).toBeCloseTo(510 / 1280);
+        expect(time.xs.at(-1)).toBe(1);
+        expect(time.gaps).toEqual([17, 22]);
+        const values = samples.map(() => 100);
+        // The pause is the columns 40 to 85 of 100.
+        expect(thin(time.xs, values, 100, time.gaps)[60]).toBeNull();
+        expect(thin(time.xs, values, 100, time.gaps)[86]).toBe(100);
+        expect(thin(time.xs, values, 100)[60]).toBe(100);
+    });
+
+    it('finds a stop of 5 min or more and a pause, not a short stop', () => {
+        expect(found).toEqual([{ first: 4, last: 11, seconds: 420 }, { first: 16, last: 17, seconds: 600 }]);
+    });
+
+    it('gives the first sample at a place: the first of a stop on the distance axis, the one after a gap on the time axis', () => {
+        const { xs } = distanceAxis(samples);
+        expect(sampleAt(xs, xs[8])).toBe(4);
+        expect(sampleAt(time.xs, .6)).toBe(17);
+    });
+
+    it('moves the ends of a part out of a stop: a start to its last sample, an end to its first', () => {
+        expect(outOfStops(found, [4, 16])).toEqual([11, 16]);
+        expect(outOfStops(found, [2, 8])).toEqual([2, 4]);
+        expect(outOfStops(found, [1, 3])).toEqual([1, 3]);
+        // A part in one stop stays.
+        expect(outOfStops(found, [5, 9])).toEqual([5, 9]);
+    });
+
+    it('cuts a part as a ride of its own, whose first sample starts a segment', () => {
+        const part = slice(samples, [12, 14]);
+        expect(part.map(s => s.timeS)).toEqual([samples[12].timeS, samples[13].timeS, samples[14].timeS]);
+        expect(part.map(s => s.segmentStart)).toEqual([true, false, false]);
+        expect(samples[12].segmentStart).toBe(false);
     });
 });

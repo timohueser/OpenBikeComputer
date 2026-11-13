@@ -1,7 +1,7 @@
-/** The lines of a recorded ride on its distance axis: smoothed, thinned to one value for each pixel column, and tied to
- * the summary line of the ride. */
+/** The lines of a recorded ride on its distance axis or its time axis: smoothed, thinned to one value for each pixel
+ * column, and tied to the summary line of the ride; the stops of the ride, and a part of it as a ride of its own. */
 import type { FitSample } from '../core/fit';
-import { metres } from '../library/summary';
+import { metres, movingSteps } from '../library/summary';
 import { cumulative, firstIndex, type Coordinate } from '../planner/geo';
 import { zoneOf, type Zone } from '../settings/zones';
 
@@ -16,6 +16,50 @@ function along(samples: FitSample[], hops = false): number[] {
 export function distanceAxis(samples: FitSample[]): { xs: number[]; lengthM: number } {
     const m = along(samples), lengthM = m.at(-1) || 1;
     return { xs: m.map(value => value / lengthM), lengthM };
+}
+
+/** No line leads to a sample on the time axis after a step of more than GAP_S. A stop is STOP_S long, or has a segment
+ * start in it. */
+const GAP_S = 60, STOP_S = 300;
+
+/** The place of each sample on the time axis from 0 to 1, by the clock, and `gaps`: the samples after a step of more
+ * than a minute, where the recording was off. */
+export function timeAxis(samples: FitSample[]): { xs: number[]; gaps: number[] } {
+    const start = samples[0].timeS, seconds = samples.at(-1)!.timeS - start || 1;
+    return {
+        xs: samples.map(sample => (sample.timeS - start) / seconds),
+        gaps: samples.flatMap((sample, i) => i && sample.timeS - samples[i - 1].timeS > GAP_S ? [i] : []),
+    };
+}
+
+/** The stops of a ride: each is a run of steps that do not move (`movingSteps`), with a segment start in it or 5 min
+ * or more long. It goes from the sample `first`, the last one before the run, to the sample `last`. */
+export function stops(samples: FitSample[]): { first: number; last: number; seconds: number }[] {
+    const steps = movingSteps(samples), found = [];
+    for (let i = 1; i < samples.length;) {
+        if (steps[i]) { i++; continue; }
+        let end = i, pause = samples[i].segmentStart;
+        while (end + 1 < samples.length && !steps[end + 1]) { end++; pause ||= samples[end].segmentStart; }
+        const seconds = samples[end].timeS - samples[i - 1].timeS;
+        if (pause || seconds >= STOP_S) found.push({ first: i - 1, last: end, seconds });
+        i = end + 1;
+    }
+    return found;
+}
+
+/** A part with no end in a stop: a start in a stop moves to the last sample of the stop, an end to its first one. A
+ * part that is in one stop stays. */
+export function outOfStops(found: { first: number; last: number }[], [first, last]: [number, number]): [number, number] {
+    const inStop = (sample: number) => found.find(stop => sample >= stop.first && sample <= stop.last);
+    const [from, to] = [inStop(first)?.last ?? first, inStop(last)?.first ?? last];
+    return from <= to ? [from, to] : [first, last];
+}
+
+/** The samples `first` to `last` as a ride of its own: the first sample starts a segment, so no step leads into it. */
+export function slice(samples: FitSample[], [first, last]: [number, number]): FitSample[] {
+    const part = samples.slice(first, last + 1);
+    part[0] = { ...part[0], segmentStart: true };
+    return part;
 }
 
 /** The speed of the file, else the distance of the step over its time; none for a step of 0 s or to a segment start. */
@@ -44,11 +88,13 @@ export function smooth(samples: FitSample[], values: (number | undefined)[], sec
 
 /** The mean of the values in each of `width` columns of the axis. A column between two samples, as in a ride with few
  * points, stands on the straight line between its neighbours. A column whose samples have no value is null, and so is a
- * column beside it with no sample. */
-export function thin(xs: number[], values: (number | undefined)[], width: number): (number | null)[] {
-    const sum = new Float64Array(width), count = new Uint32Array(width), seen = new Uint8Array(width);
+ * column beside it with no sample. No line leads to a sample of `gaps`: the columns before it stay null. */
+export function thin(xs: number[], values: (number | undefined)[], width: number, gaps: number[] = []): (number | null)[] {
+    const sum = new Float64Array(width), count = new Uint32Array(width), seen = new Uint8Array(width), cut = new Uint8Array(width);
+    const columnOf = (x: number) => Math.min(width - 1, Math.floor(x * width));
+    for (const i of gaps) cut[columnOf(xs[i])] = 1;
     xs.forEach((x, i) => {
-        const value = values[i], column = Math.min(width - 1, Math.floor(x * width));
+        const value = values[i], column = columnOf(x);
         seen[column] = 1;
         if (value === undefined || !Number.isFinite(value)) return;
         sum[column] += value;
@@ -59,7 +105,7 @@ export function thin(xs: number[], values: (number | undefined)[], width: number
     for (let i = 0; i < width; i++) {
         if (!seen[i]) continue;
         const [from, to] = [last < 0 ? null : columns[last], columns[i]];
-        if (from !== null && to !== null) for (let j = last + 1; j < i; j++) columns[j] = from + (to - from) * (j - last) / (i - last);
+        if (from !== null && to !== null && !cut[i]) for (let j = last + 1; j < i; j++) columns[j] = from + (to - from) * (j - last) / (i - last);
         last = i;
     }
     return columns;

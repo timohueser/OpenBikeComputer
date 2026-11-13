@@ -6,8 +6,8 @@
      * with `open`, its label is a button. Rows with no label have no column of labels. The scale:
      * the highest value at the top, the lowest at the floor. With `onpart`, a drag or Shift with an arrow key selects a part of the axis: the
      * rest is paler, the header shows `partText` with Clear, and Escape clears it. On a phone the labels stand above
-     * their rows. */
-    let { rows, ticks, ticksAfter, header, label, pointer, onpointer, chip, part = null, onpart, partText = '', onclick }: {
+     * their rows, and `corner` stands under the ticks. With no row, only the header shows. */
+    let { rows, ticks, ticksAfter, header, label, pointer, onpointer, chip, part = null, onpart, partText = '', onclick, corner, marks }: {
         rows: { label: string; draw: Snippet; height?: number; note?: string; color?: string; scale?: [high: string, low: string];
             /** What a click on the label does, and the name of the button, such as "Heart rate, open large". */
             open?: { label: string; run: () => void } }[];
@@ -15,6 +15,10 @@
         ticks: { at: number; label: string }[];
         /** The ticks follow this many rows; by default they follow every row. */
         ticksAfter?: number;
+        /** What stands in the column of the labels beside the ticks, such as the name of the axis. */
+        corner?: Snippet;
+        /** Marks in the row of the ticks, on the axis. */
+        marks?: Snippet;
         /** The controls at the start of the header. */
         header?: Snippet;
         /** The name of the axis for the keys, such as "Profile". */
@@ -56,6 +60,8 @@
     }
 
     function move(event: PointerEvent) {
+        // The corner is beside the axis, or on a phone under it: the pointer on it is at no place of the axis.
+        if (!down && (event.target as Element).closest('.corner')) return onpointer(null);
         const { x, px, row } = place(event), clamped = Math.min(1, Math.max(0, x));
         if (down && onpart && (down.moved || Math.abs(px - down.px) >= DRAG_PX)) {
             down.moved = true;
@@ -113,6 +119,7 @@
         {/if}
     </header>
 {/if}
+{#if rows.length}
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="lanes" class:scaled={rows.some(row => row.scale)} class:bare={rows.every(row => !row.label)} bind:this={root} onpointermove={move} onpointerdown={start} onpointerup={end} onpointercancel={() => down = null}
     onpointerleave={() => { if (!down) onpointer(null); }}>
@@ -131,7 +138,9 @@
         {#if row.scale}<div class="scale" style:grid-row={gridRow(i)}><span>{row.scale[0]}</span><span>{row.scale[1]}</span></div>{/if}
     {/each}
     <!-- Each part has its grid row: the pointer layer covers the rows of the lanes. -->
+    {#if corner}<div class="corner" style:--beside={split + 1} style:--under={rows.length + 2}>{@render corner()}</div>{/if}
     <div class="ticks" bind:this={tickRow} style:grid-row={split + 1}>
+        {@render marks?.()}
         {#each ticks as tick, i (i)}<span style:left={`${tick.at * 100}%`} style:translate={`${-tick.at * 100}%`}>{tick.label}</span>{/each}
     </div>
     <!-- The pointer layer is the slider of the keys: it holds no button. Shift with an arrow grows a part, Enter clicks
@@ -151,6 +160,7 @@
         {/if}
     </div>
 </div>
+{/if}
 
 <style>
     header {
@@ -159,6 +169,10 @@
         align-items: center;
         gap: 8px 12px;
         margin-bottom: 10px;
+    }
+    /* With no row, the header is the whole card. */
+    header:last-child {
+        margin-bottom: 0;
     }
     .part {
         display: flex;
@@ -205,6 +219,12 @@
         color: var(--ink-soft);
         font-size: 12px;
         line-height: 16px;
+    }
+    .corner {
+        z-index: 3;
+        grid-row: var(--beside);
+        grid-column: 1;
+        height: 16px;
     }
     .scaled {
         grid-template-columns: 72px minmax(0, 1fr) max-content;
@@ -376,6 +396,11 @@
         }
         .ticks {
             margin-top: -16px;
+        }
+        .corner {
+            grid-row: var(--under);
+            grid-column: 2;
+            margin-top: -10px;
         }
     }
 </style>

@@ -196,6 +196,18 @@ test('the lines of a ride: a row for each line with values, the pointer, and a p
   // The zones are those of the part: all of it is in Z4.
   await expect(facts.getByRole('img', { name: /Z3 · 130–147 bpm · 0h 0m, Z4 · 148–166 bpm · 0h 17m/ })).toBeVisible();
   await expect(facts.locator('.climbs')).toHaveCount(0);
+  // With a part, the menu has the switch "Only the selected part": with it on, an export holds only the part.
+  const gpx = async () => {
+    await page.getByRole('button', { name: 'More ▾' }).click();
+    const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Export GPX track' }).click()]);
+    return { name: download.suggestedFilename(), points: (await text(download)).split('<trkpt').length - 1 };
+  };
+  expect(await gpx()).toEqual({ name: 'Above Engelberg.gpx', points: 200 });
+  await page.getByRole('button', { name: 'More ▾' }).click();
+  await page.getByRole('switch', { name: 'Only the selected part' }).click();
+  await page.keyboard.press('Escape');
+  expect(await gpx()).toEqual({ name: 'Above Engelberg part.gpx', points: 100 });
+
   // The large line shows the part: its range, its numbers and its zone times. Escape closes the window and keeps the part.
   await label.click();
   await expect(large.getByText('km 5.0 to km 10.0 · 5.0 km')).toBeVisible();
@@ -209,6 +221,29 @@ test('the lines of a ride: a row for each line with values, the pointer, and a p
   await page.keyboard.press('Escape');
   await expect(page.locator('.lines .part')).toHaveCount(0);
   await expect(facts.locator('dl > div').filter({ hasText: 'Distance' })).toContainText('10.0 km');
+  // With no part, the menu has no switch.
+  await page.getByRole('button', { name: 'More ▾' }).click();
+  await expect(page.getByRole('button', { name: 'Export GPX track' })).toBeVisible();
+  await expect(page.getByRole('switch', { name: 'Only the selected part' })).toHaveCount(0);
+  await page.keyboard.press('Escape');
+
+  // The name of the axis is its switch: the ticks of the time axis are times of the day.
+  const ticks = lanes.locator('.ticks span');
+  await expect(ticks.nth(1)).toHaveText('10.0 km');
+  await page.getByRole('button', { name: 'Distance axis, change to time' }).click();
+  await expect(ticks.first()).toHaveText(/^\d\d:\d\d$/);
+  for (const tick of await ticks.allTextContents()) expect(tick).toMatch(/^\d\d:\d\d$/);
+  await page.getByRole('button', { name: 'Time axis, change to distance' }).click();
+  await expect(ticks.nth(1)).toHaveText('10.0 km');
+
+  // With every line hidden, the card is its chips only; a chip brings the rows back.
+  for (const name of ['Elevation', 'Speed', 'Heart rate', 'Power', 'Cadence']) await chips.filter({ hasText: name }).click();
+  await expect(chips).toHaveCount(5);
+  await expect(lanes).toHaveCount(0);
+  await chips.filter({ hasText: 'Speed' }).click();
+  await expect(lanes.locator('.label')).toHaveText(['Speed18.0 km/h']);
+  for (const name of ['Elevation', 'Heart rate', 'Power', 'Cadence']) await chips.filter({ hasText: name }).click();
+  await expect(lanes.locator('.label')).toHaveCount(5);
 
   // The elevation row fills the climb; a click on it selects the climb, a click on another row clears the part.
   const click = async (row, at) => {

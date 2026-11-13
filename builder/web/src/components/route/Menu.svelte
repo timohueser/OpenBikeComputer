@@ -1,14 +1,18 @@
 <script lang="ts">
-    /** A button of a detail page, such as "More" or "Places", and its menu. The menu is in the top layer, so no card cuts
+    import type { Snippet } from 'svelte';
+
+    /** A button of a detail page, such as "More" or "Places", and its menu, with `children` over the items. The menu is in the top layer, so no card cuts
      * it: it opens under its button and moves up or to the side where it would leave the window. A click outside the
      * menu, Escape or a new size of the window closes it. */
-    let { label, items, left = false }: {
+    let { label, items, left = false, children }: {
         label: string;
         /** `rule` draws a line over the item; `checked` marks the chosen item of a choice; `danger` is an action that
          * removes something. */
         items: { label: string; note?: string; disabled?: boolean; rule?: boolean; checked?: boolean; danger?: boolean; run: () => void }[];
         /** The menu opens to the right of the button, not to its left. */
         left?: boolean;
+        /** A control that the items follow, such as a switch. A click on it keeps the menu open. */
+        children?: Snippet;
     } = $props();
     /** The menu keeps EDGE_PX from the edges of the window and GAP_PX from its button. */
     const EDGE_PX = 8, GAP_PX = 4;
@@ -38,6 +42,7 @@
     <button type="button" class="button" bind:this={button} aria-expanded={open} onclick={() => open = !open}>{label} ▾</button>
     {#if open}
         <menu popover="manual" use:place>
+            {#if children}<li class="control">{@render children()}</li>{/if}
             {#each items as item (item.label)}
                 <li class:rule={item.rule}>
                     <button type="button" class:danger={item.danger} disabled={item.disabled} onclick={() => { open = false; item.run(); }}>
@@ -69,6 +74,11 @@
         color: var(--ink);
         box-shadow: 0 8px 24px rgb(28 27 20 / 0.18);
         list-style: none;
+    }
+    .control {
+        margin-bottom: 4px;
+        padding: 3px 10px 7px;
+        border-bottom: 1px solid var(--line);
     }
     .rule {
         margin-top: 4px;
