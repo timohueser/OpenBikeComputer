@@ -45,10 +45,12 @@
     });
 
     // Back from another page brings the search again. WebKit refuses many history writes in a short time, so the page
-    // writes once after the last key.
+    // writes once after the last key, and at once before a link changes the entry.
+    let keep: (() => void) | undefined;
     $effect(() => {
         const search = $state.snapshot({ chips, text });
-        const timer = setTimeout(() => history.replaceState({ ...history.state, search }, ''), KEEP_AFTER_MS);
+        keep = () => { keep = undefined; history.replaceState({ ...history.state, search }, ''); };
+        const timer = setTimeout(keep, KEEP_AFTER_MS);
         return () => clearTimeout(timer);
     });
 
@@ -106,6 +108,8 @@
 
     const addFiles = () => initCore().then(() => import('./AddFiles.svelte')).then(module => module.default);
 </script>
+
+<svelte:window onclickcapture={event => { if ((event.target as Element).closest?.('a[href]')) keep?.(); }} />
 
 <div class="routes-page">
     <header>
