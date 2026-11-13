@@ -231,6 +231,8 @@ impl Tile {
                 i = next;
             }
             at = i;
+            let own = |key: &str| pairs.iter().any(|p| order[p.0 as usize] == key);
+            assert!(more.keys().all(|k| !own(k)), "feature {id} has a tag of its own that the bake adds");
             for (key, value) in more {
                 pairs.push((string(&mut order, key), string(&mut order, value)));
             }
@@ -872,13 +874,40 @@ mod tests {
         }
         assert_eq!(tile.bytes(), encode(&features), "no more tags, the same bytes");
         let more = Tags::from([("levels".to_string(), "D".to_string()), ("~".to_string(), "last".to_string())]);
-        let tagged = decode(&tile.bytes_with(&|id| (id == 1).then_some(&more))).unwrap();
+        let bytes = tile.bytes_with(&|id| (id == 1).then_some(&more));
+        let tagged = decode(&bytes).unwrap();
         for (k, (a, b)) in features.iter().zip(&tagged).enumerate() {
             let mut want = a.clone();
             if k == 1 {
                 want.tags.extend(more.clone());
             }
             assert_eq!(as_json(b), as_json(&want), "feature {k}");
+        }
+        // The keys of each feature in the order of the bytes: the strings, the count, two words of each head, then
+        // the tags.
+        let (n, mut at) = read_varint(&bytes, 0);
+        let mut strings = Vec::new();
+        for _ in 0..n {
+            let (len, from) = read_varint(&bytes, at);
+            at = from + len as usize;
+            strings.push(String::from_utf8(bytes[from..at].to_vec()).unwrap());
+        }
+        let (count, from) = read_varint(&bytes, at);
+        at = from;
+        for _ in 0..2 * count {
+            at = read_varint(&bytes, at).1;
+        }
+        for k in 0..count {
+            let (pairs, from) = read_varint(&bytes, at);
+            at = from;
+            let mut keys = Vec::new();
+            for _ in 0..pairs {
+                let (key, from) = read_varint(&bytes, at);
+                at = read_varint(&bytes, from).1;
+                keys.push(strings[key as usize].clone());
+            }
+            assert!(keys.windows(2).all(|w| w[0] < w[1]), "feature {k}: keys {keys:?}");
+            assert_eq!(keys.len(), features[k as usize].tags.len() + if k == 1 { more.len() } else { 0 });
         }
     }
 

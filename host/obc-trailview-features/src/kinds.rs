@@ -206,6 +206,16 @@ pub fn waterway_rows(table: &Value) -> Value {
     rows_of(table, &WATERWAY_FIELDS)
 }
 
+/// The rule values that the levels of the ground plan read (`levels`): per class the fields of the way graph and of a
+/// way's body (`fill`, `reach`), per waterway kind the fields of the graph, and the `structures` of `plan.json`. They
+/// are options of the step, so a change of them bakes again.
+pub fn level_rows(roads: &Value, waterways: &Value, plan: &Value) -> Value {
+    use obc_ground_plan::sections::{GRAPH_FIELDS, WATER_GRAPH_FIELDS};
+    let road_fields: Vec<&str> = GRAPH_FIELDS.iter().copied().chain(["fill", "reach"]).collect();
+    serde_json::json!({"roads": rows_of(roads, &road_fields), "waterways": rows_of(waterways, &WATER_GRAPH_FIELDS),
+                       "structures": plan["structures"]})
+}
+
 /// The finishes of the step's options: the fields of `FINISH_FIELDS` of each finish of the table.
 pub fn finish_rows(table: &Value) -> Value {
     rows_of(table, &FINISH_FIELDS)

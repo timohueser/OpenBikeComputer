@@ -60,14 +60,17 @@ pub trait Terrain: Sync {
     }
 
     /// The heights of its 512 px tile z/x/y, row by row from north, NaN where unknown; None where it has no tile.
-    fn tile(&self, _z: u8, _x: u32, _y: u32) -> Option<std::sync::Arc<Vec<f32>>> {
-        None
-    }
+    fn tile(&self, z: u8, x: u32, y: u32) -> Option<std::sync::Arc<Vec<f32>>>;
 }
 
+/// Heights at points alone: it has no tiles, so the levels of a bake on it read no terrain.
 impl<F: Fn(f64, f64) -> f64 + Sync> Terrain for F {
     fn heights(&self, points: &[[f64; 2]]) -> Vec<f64> {
         points.iter().map(|&[x, y]| self(x, y)).collect()
+    }
+
+    fn tile(&self, _z: u8, _x: u32, _y: u32) -> Option<std::sync::Arc<Vec<f32>>> {
+        None
     }
 }
 

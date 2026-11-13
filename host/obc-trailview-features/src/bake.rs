@@ -434,8 +434,9 @@ pub fn bake(
     let (off, most) = ground_census.off_centre();
     eprintln!("census: {off} positions of ways on the ground lie more than {GATE_M} m off the terrain under their centre line, at most {most:.1} m");
     metrics.insert("census".into(), json!({"ground": ground_census.metrics(), "water": water_census.metrics()}));
+    let pass = Instant::now();
     let (levels, cells) = levels::tags(&placer.tiles, terrain, memory);
-    eprintln!("levels: {cells} cells, {} ways tagged, {:.1} s", levels.len(), started.elapsed().as_secs_f64());
+    eprintln!("levels: {cells} cells, {} ways tagged in {:.1} s", levels.len(), pass.elapsed().as_secs_f64());
     metrics.insert("levels".into(), json!({"cells": cells, "ways": levels.len()}));
     low_zooms(&mut placer);
     let size = write(&placer, &levels, options, output)?;

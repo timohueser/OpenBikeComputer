@@ -869,6 +869,21 @@ fn the_ladder_follows_the_room_by_the_class_rows_at_every_boundary() {
 }
 
 #[test]
+fn a_deck_over_another_deck_lies_on_storey_2() {
+    // Two residential bridges, square to each other, the upper one 6 m over the lower: room for a full deck (4.5 + 1.0).
+    let bridge = [("highway", "residential"), ("bridge", "yes"), ("deck", "1")];
+    let upper = line("road", &bridge, &[[0.0, -40.0], [0.0, 40.0]], 16.0);
+    let lower = line("road", &bridge, &[[-40.0, 0.0], [40.0, 0.0]], 10.0);
+    let g = graph(&[upper, lower]);
+    let storey = super::level_tags::storeys(&g);
+    let of = |feature: u32| {
+        let ways = g.ways.iter().filter(|w| g.parts[w.part as usize].feature.0 == feature);
+        ways.map(|w| storey[w.id as usize]).max()
+    };
+    assert_eq!((of(0), of(1)), (Some(2), Some(1)));
+}
+
+#[test]
 fn the_room_reads_each_way_on_its_own_curve() {
     // A residential deck on a hairpin of radius 12 m over a road, both level: the room at every corner
     // of the overlap is the height difference, though the hairpin's far leg passes within 24 m.

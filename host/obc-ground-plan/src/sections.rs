@@ -35,8 +35,8 @@ const WATER_BANK_FIELDS: [&str; 6] =
     ["depth_m", "bank_slope", "bank_reach_m", "bank_steepest", "freeboard_m", "bank_m"];
 /// The feature kinds of line water.
 pub const WATER_KINDS: [&str; 2] = ["river", "stream"];
-/// The fields of the way graph: none is an option of the feature step.
-const GRAPH_FIELDS: [&str; 10] = [
+/// The fields of the way graph. The feature step's options hold them for the levels that it bakes.
+pub const GRAPH_FIELDS: [&str; 10] = [
     "snap_m",
     "snap_height_m",
     "sag_plan_m",
@@ -51,7 +51,7 @@ const GRAPH_FIELDS: [&str; 10] = [
 /// The numeric fields of the faces: none is an option of the feature step.
 const FACE_FIELDS: [&str; 7] =
     ["inner_radius_m", "verge_m", "return_grade", "corner_radius_m", "corner_radius_walk_m", "fill_max", "cut_max"];
-const WATER_GRAPH_FIELDS: [&str; 11] = [
+pub const WATER_GRAPH_FIELDS: [&str; 11] = [
     "culvert_max_m",
     "culvert_width_m",
     "pipe_width_m",

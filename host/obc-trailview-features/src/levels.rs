@@ -39,32 +39,37 @@ pub fn tags(tiles: &Tiles, terrain: &dyn Terrain, memory: usize) -> (HashMap<u32
         for _ in 0..threads.min(jobs.len()) {
             scope.spawn(|| {
                 while let Some(&(c, r)) = jobs.get(next.fetch_add(1, Ordering::Relaxed)) {
-                    let found = cells_of(c, r, &z13, terrain, rules);
-                    done.lock().unwrap().push(found);
+                    let cells = cells_of(c, r, &z13, terrain, rules);
+                    done.lock().unwrap().push(((c, r), cells));
                 }
             });
         }
     });
-    let mut by_id: BTreeMap<u32, Vec<level_tags::Found>> = BTreeMap::new();
-    for found in done.into_inner().unwrap() {
-        for ([c, r, index], f) in found {
-            if let Some(id) = z13(c, r).and_then(|t| t.id(index)) {
+    // The jobs in the order of their tiles, whatever the order the threads finish them in.
+    let mut done = done.into_inner().unwrap();
+    done.sort_unstable_by_key(|d| d.0);
+    let id = |[c, r, index]: [u32; 3]| z13(c, r).and_then(|t| t.id(index));
+    let (mut by_id, mut groups): (BTreeMap<u32, Vec<level_tags::Found>>, Vec<Vec<u32>>) = Default::default();
+    for cell in done.into_iter().flat_map(|d| d.1) {
+        for (key, f) in cell.found {
+            if let Some(id) = id(key) {
                 by_id.entry(id).or_default().push(f);
             }
         }
+        groups.extend(cell.groups.into_iter().map(|g| g.into_iter().filter_map(id).collect::<Vec<_>>()));
     }
-    let tags = by_id.into_iter().map(|(id, found)| (id, level_tags::tags(found.iter())));
-    (tags.filter(|(_, t)| !t.is_empty()).collect(), jobs.len() << (2 * (CELL_ZOOM - FEATURE_ZOOM)))
+    let tags = level_tags::merge(&by_id, &groups);
+    (tags.into_iter().collect(), jobs.len() << (2 * (CELL_ZOOM - FEATURE_ZOOM)))
 }
 
-/// What the cells of zoom-13 tile (c, r) find, by the feature's tile and position there.
+/// What the cells of zoom-13 tile (c, r) find, in the order of the cells.
 fn cells_of<'a>(
     c: u32,
     r: u32,
     z13: &dyn Fn(u32, u32) -> Option<&'a Tile>,
     terrain: &dyn Terrain,
     rules: &Rules,
-) -> Vec<([u32; 3], level_tags::Found)> {
+) -> Vec<level_tags::Cell> {
     let (mut cache, mut quadrants) = (TileCache::new(PARSED), HashMap::<(u32, u32, u32), Option<Quadrants>>::new());
     let n = 1 << (CELL_ZOOM - FEATURE_ZOOM);
     let mut out = Vec::new();
@@ -84,7 +89,7 @@ fn cells_of<'a>(
                 .unwrap_or_else(|e| panic!("the bake's own tile about cell {x}/{y}: {e:?}"));
             let mut g = graph::build(key, &input, &rules.sections);
             graph::levels(&mut g, &input, &rules.sections, &rules.structures);
-            out.extend(level_tags::found(&g, &input, &rules.sections));
+            out.push(level_tags::found(&g, &input, &rules.sections));
         }
     }
     out

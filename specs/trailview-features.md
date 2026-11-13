@@ -422,14 +422,18 @@ The bake adds these to the features of the road solver:
 | tag `slab` | each way of a deck whose room gives less than its full depth (ladder step 2), at zoom 13 | The depth of its slab in metres |
 
 The bake decides `levels`, `storey` and `slab` by the levels of the ground plan (`graph::levels` of
-`host/obc-ground-plan`, and `graph::level_tags` for the tags) with the rule tables of its own build. It builds
-each zoom-16 cell of each zoom-13 tile that holds a way of the road solver as the viewer does: from the zoom-13
-tiles of the bake and the terrain tiles of zooms 13 and 12 of the grid. Each cell decides the ways inside its
-square. A way has a state where it is a bridge or a tunnel, or where it ends at the body of a way that it
-crosses. The metres along of a way are those of its stroke (see Alignment): `along_code` at the first vertex of
-each part, and the length of the ground plan's curve of each span from there, in the tile that owns the span. A
-number is the shortest decimal that gives the same 64-bit float. A way with a part that has no alignment has none
-of these tags. A change of the rules or of the code of the levels takes a new revision of the layer.
+`host/obc-ground-plan`, and `graph::level_tags` for the tags) with the rule tables of its own build. The options
+of the step hold the rule values that the levels read (`level_rows` of `kinds.rs`: the graph's fields of each
+class and waterway kind, and the `structures` of `plan.json`), so a change of them bakes the layer again; a change
+of the code of the levels takes a new revision. The bake builds each zoom-16 cell of each zoom-13 tile that holds a
+way of the road solver as the viewer does: from the zoom-13 tiles of the bake and the terrain tiles of zooms 13 and
+12 of the grid. Each cell decides the ways inside its square. A way has a state where it is a bridge or a tunnel, or
+where it ends at the body of a way that it crosses. The storey is one per deck group, the deck ways that share a
+point: the highest that a cell gives a way of the group. The metres along of a way are those of its stroke (see
+Alignment): `along_code` at the first vertex of each part, and the length of the ground plan's curve of each span
+(`graph::curve`) from there, in the tile that owns the span. Every zoom-13 copy of a way holds the lines of the whole
+way. Two lines at one metre come in the order A, portal, closed. A number is the shortest decimal that gives the same
+64-bit float. A way with a part that has no alignment has none of these tags.
 
 The masts of a track stand evenly along each of its ways, at most 50 m apart, 3 m beside its middle,
 or 2.5 m for a narrow gauge (`gauge` below 1200 mm, else `narrow_gauge` and `funicular`). On a
