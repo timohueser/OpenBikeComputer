@@ -4,6 +4,7 @@
     import { heightRange, profileHeightAt, profilePaths, profileSamples, sampleIndex, type ProfileLine } from '../../lib/planner/profile-data';
     import { formatHeight } from '../../lib/settings/format';
     import { appearance } from '../../lib/theme.svelte';
+    import ClimbFills from './ClimbFills.svelte';
 
     /** The heights of a stretch of a line as the planner profile draws them: a plain area, and the line in the colour of
      * the steepness band of each segment, with the lowest and the highest height of the scale inside the box. Each climb
@@ -25,7 +26,6 @@
     /** HEAD units over the 105 of `profilePaths` keep room for the texts. A text is about CHAR_PX wide for each character
      * and keeps TEXT_GAP_PX from the next one; a scale label is about SCALE_PX wide. */
     const HEAD = 20, CHAR_PX = 6.2, TEXT_GAP_PX = 10, SCALE_PX = 56;
-    const uid = $props.id();
     let width = $state(0), height = $state(0);
     const samples = $derived(profileSamples(line));
     const grades = $derived(profileGrades(samples, cumulative(line.coordinates).at(-1) ?? 0));
@@ -77,15 +77,8 @@
 
 <div class="elevation" bind:clientWidth={width} bind:clientHeight={height}>
     <svg viewBox={`${from * 1000} ${-head} ${span * 1000} ${105 + head}`} preserveAspectRatio="none" aria-hidden="true">
-        <defs>
-            {#each shown as climb (climb.index)}
-                <clipPath id={`${uid}-climb-${climb.index}`}><rect x={climb.a * 1000} y={-head} width={(climb.b - climb.a) * 1000} height={105 + head} /></clipPath>
-            {/each}
-        </defs>
         <path class="area" d={area} />
-        {#each shown as climb (climb.index)}
-            <path class="climb" class:lit={lit === climb.index} d={area} clip-path={`url(#${uid}-climb-${climb.index})`} />
-        {/each}
+        <ClimbFills {area} climbs={shown} {lit} {head} />
         {#each bands as path, band (band)}
             {#if path}<path class="line" d={path} style:stroke={appearance.dark ? gradeBands[band].dark : gradeBands[band].color} />{/if}
         {/each}
@@ -116,12 +109,6 @@
     }
     .area {
         fill: color-mix(in srgb, var(--ink-faint) 10%, var(--panel));
-    }
-    .climb {
-        fill: color-mix(in srgb, var(--ink-faint) 24%, var(--panel));
-    }
-    .climb.lit {
-        fill: color-mix(in srgb, var(--ink-faint) 38%, var(--panel));
     }
     .line {
         fill: none;

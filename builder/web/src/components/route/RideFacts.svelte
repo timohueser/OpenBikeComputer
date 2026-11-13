@@ -1,103 +1,128 @@
 <script lang="ts">
-    import type { Snippet } from 'svelte';
     import Card from '../../lib/ui/Card.svelte';
     import type { RideSummary } from '../../lib/library/records';
     import { duration } from '../../lib/planner/editor';
-    import type { Channel, Channels, RideClimb } from '../../lib/ride/numbers';
+    import type { Channel, Channels, PartNumbers, RideClimb } from '../../lib/ride/numbers';
     import { ROUTES } from '../../lib/routes';
     import { formatDistance, formatHeight, formatSpeed } from '../../lib/settings/format';
     import { townOf } from './towns';
 
-    /** The left card of the Ride page: the numbers of the summary, then heart rate, power and cadence with their zones and
-     * the climbs, which come from the samples. A sensor with no value shows nothing. */
-    let { summary, speed, channels, climbs, unreadable, children }: {
+    /** The left card of the Ride page: the numbers of the summary, then heart rate, power and cadence, each sensor with
+     * the time in its zones under it, and the climbs, which come from the samples. A sensor with no value shows nothing.
+     * With a selected part, its numbers and its zones stand beside the numbers of the whole ride, and the climbs go. */
+    let { summary, speed, channels, climbs, part, unreadable }: {
         summary: RideSummary;
         /** The speed over the moving steps, in m/s (`movingSpeed`). */
         speed?: number;
         /** Undefined while the samples load or when the file cannot be read. */
         channels?: Channels;
         climbs?: RideClimb[];
+        /** The numbers of the selected part. */
+        part?: PartNumbers;
         unreadable: boolean;
-        /** The buttons at the end of the card. */
-        children: Snippet;
     } = $props();
 
     const hours = (seconds: number) => duration(seconds / 3600);
+    const speedText = (value?: number) => value === undefined ? '–' : formatSpeed(value);
+    const mean = (channel: Channel | undefined, unit: string) => channel ? `${Math.round(channel.mean)}${unit}` : '–';
+    const sensors = [
+        { key: 'hr', label: 'Heart rate', unit: '', zoneUnit: 'bpm', missing: 'maximum heart rate' },
+        { key: 'power', label: 'Power', unit: ' W', zoneUnit: 'W', missing: 'threshold power' },
+        { key: 'cadence', label: 'Cadence', unit: '', zoneUnit: '', missing: '' },
+    ] as const;
 </script>
 
 {#snippet number(label: string, value: string)}
     <div><dt>{label}</dt><dd>{value}</dd></div>
 {/snippet}
 
-{#snippet sensor(label: string, channel: Channel | undefined, unit: string, max: boolean)}
-    {#if channel}
-        <li class="sensor"><span>{label}</span><strong>{Math.round(channel.mean)}{unit}</strong><small>{max ? `max ${Math.round(channel.max)}` : ''}</small></li>
-    {/if}
+{#snippet pair(label: string, selected: string, whole: string)}
+    <tr><th scope="row">{label}</th><td>{selected}</td><td>{whole}</td></tr>
 {/snippet}
 
-{#snippet zones(label: string, channel: Channel | undefined, unit: string, missing: string, tone: 'warm' | 'cool')}
-    {#if channel}
-        <h3>{label}, time in each zone</h3>
-        {#if channel.zones}
-            {@const parts = channel.zones.map(({ zone, seconds }) =>
-                `${zone.name} · ${Number.isFinite(zone.to) ? `${zone.from}–${zone.to}` : `${zone.from}+`} ${unit} · ${hours(seconds)}`)}
-            <div class={`bar ${tone}`} role="img" aria-label={parts.join(', ')}>
-                {#each channel.zones as { seconds }, i (i)}
-                    <span class={`z${i + 1}`} style:flex-grow={seconds} title={parts[i]}></span>
-                {/each}
-            </div>
-        {:else}
-            <p class="note">Set your {missing} in <a href={ROUTES.settings}>Settings</a> to see zones.</p>
-        {/if}
+{#snippet zones(channel: Channel, unit: string, missing: string)}
+    {#if channel.zones}
+        {@const parts = channel.zones.map(({ zone, seconds }) =>
+            `${zone.name} · ${Number.isFinite(zone.to) ? `${zone.from}–${zone.to}` : `${zone.from}+`} ${unit} · ${hours(seconds)}`)}
+        <div class="bar" role="img" aria-label={parts.join(', ')}>
+            {#each channel.zones as { seconds }, i (i)}
+                <span style:flex-grow={seconds} style:background={`var(--zone-${i + 1})`} title={parts[i]}></span>
+            {/each}
+        </div>
+    {:else}
+        <p class="note">Set your {missing} in <a href={ROUTES.settings}>Settings</a> to see zones.</p>
     {/if}
 {/snippet}
 
 <div class="facts">
     <Card>
-        <dl class="numbers">
-            {@render number('Distance', formatDistance(summary.lengthM))}
-            {@render number('Climb', formatHeight(summary.climbM))}
-            {@render number('Time moving', hours(summary.movingS))}
-            {@render number('Speed', speed === undefined ? '–' : formatSpeed(speed))}
-        </dl>
+        {#if part && channels}
+            <table>
+                <thead><tr><td></td><th scope="col">Selected</th><th scope="col">Whole ride</th></tr></thead>
+                <tbody>
+                    {@render pair('Distance', formatDistance(part.lengthM), formatDistance(summary.lengthM))}
+                    {@render pair('Climb', formatHeight(part.climbM), formatHeight(summary.climbM))}
+                    {@render pair('Time moving', hours(part.movingS), hours(summary.movingS))}
+                    {@render pair('Speed', speedText(part.speed), speedText(speed))}
+                    {#each sensors as { key, label, unit, zoneUnit, missing } (key)}
+                        {#if channels[key]}
+                            {@render pair(label, mean(part.channels[key], unit), mean(channels[key], unit))}
+                            {#if missing && part.channels[key]}<tr class="zones"><td colspan="3">{@render zones(part.channels[key], zoneUnit, missing)}</td></tr>{/if}
+                        {/if}
+                    {/each}
+                </tbody>
+            </table>
+        {:else}
+            <dl class="numbers">
+                {@render number('Distance', formatDistance(summary.lengthM))}
+                {@render number('Climb', formatHeight(summary.climbM))}
+                {@render number('Time moving', hours(summary.movingS))}
+                {@render number('Speed', speedText(speed))}
+            </dl>
 
-        {#if unreadable}
-            <p class="note" role="alert">The file of this ride cannot be read.</p>
-        {:else if channels && climbs}
-            <ul class="sensors">
-                {@render sensor('Heart rate', channels.hr, '', true)}
-                {@render sensor('Power', channels.power, ' W', true)}
-                {@render sensor('Cadence', channels.cadence, '', false)}
-            </ul>
-            <div class="zones">
-                {@render zones('Heart rate', channels.hr, 'bpm', 'maximum heart rate', 'warm')}
-                {@render zones('Power', channels.power, 'W', 'threshold power', 'cool')}
-            </div>
-            {#if climbs.length}
-                <h3 class="climbs">Climbs</h3>
-                <ul class="rows">
-                    {#each climbs as climb (climb.first)}
-                        {@const numbers = [formatDistance((climb.to - climb.from) * 1000), hours(climb.seconds), climb.powerW === undefined ? '' : `${Math.round(climb.powerW)} W`].filter(Boolean).join(' · ')}
-                        <li>
-                            {#await townOf(climb.top)}
-                                <strong>Climb</strong>
-                            {:then name}
-                                <strong>{name ? `To ${name}` : 'Climb'}</strong>
-                            {/await}
-                            <small>{numbers}</small>
-                        </li>
+            {#if unreadable}
+                <p class="note" role="alert">The file of this ride cannot be read.</p>
+            {:else if channels && climbs}
+                <ul class="sensors" class:none={!sensors.some(({ key }) => channels[key])}>
+                    {#each sensors as { key, label, unit, zoneUnit, missing } (key)}
+                        {@const channel = channels[key]}
+                        {#if channel}
+                            <li class="sensor">
+                                <span>{label}</span><strong>{mean(channel, unit)}</strong><small>{missing ? `max ${Math.round(channel.max)}` : ''}</small>
+                                {#if missing}{@render zones(channel, zoneUnit, missing)}{/if}
+                            </li>
+                        {/if}
                     {/each}
                 </ul>
+                {#if climbs.length}
+                    <div class="climbs" style:--count={climbs.length}>
+                        <h3>Climbs{#if climbs.length > 1}<small>{climbs.length}</small>{/if}</h3>
+                        <ul>
+                            {#each climbs as climb (climb.first)}
+                                {@const numbers = [formatDistance((climb.to - climb.from) * 1000), hours(climb.seconds), climb.powerW === undefined ? '' : `${Math.round(climb.powerW)} W`].filter(Boolean).join(' · ')}
+                                <li>
+                                    {#await townOf(climb.top)}
+                                        <strong>Climb</strong>
+                                    {:then name}
+                                        <strong>{name ? `To ${name}` : 'Climb'}</strong>
+                                    {/await}
+                                    <small>{numbers}</small>
+                                </li>
+                            {/each}
+                        </ul>
+                    </div>
+                {/if}
             {/if}
         {/if}
-
-        <div class="actions">{@render children()}</div>
     </Card>
 </div>
 
 <style>
     .facts {
         min-height: 0;
+        /* The height of a climb, and of the heading over the climbs. */
+        --row: 34px;
+        --head: 38px;
     }
     .facts > :global(section) {
         display: flex;
@@ -105,29 +130,22 @@
         height: 100%;
         overflow: auto;
     }
+    .facts > :global(section > *) {
+        flex: none;
+    }
     .numbers {
         display: grid;
         grid-template-columns: 1fr 1fr;
-        gap: 14px 12px;
+        gap: 10px 12px;
         margin: 0;
     }
-    dt, h3 {
+    dt, h3, th {
         color: var(--ink-soft);
-        font: 600 11px/1.3 var(--sans);
-        letter-spacing: .06em;
-        text-transform: uppercase;
+        font: 13px/1.3 var(--sans);
     }
     dd {
-        margin: 2px 0 0;
+        margin: 1px 0 0;
         font: 600 21px/1.2 var(--sans);
-    }
-    h3 {
-        margin: 14px 0 6px;
-    }
-    .climbs {
-        margin-top: 20px;
-        padding-bottom: 6px;
-        border-bottom: 1px solid var(--line);
     }
     ul {
         margin: 0;
@@ -135,26 +153,23 @@
         list-style: none;
     }
     .sensors {
-        margin-top: 12px;
+        margin-top: 10px;
         border-top: 1px solid var(--line);
+    }
+    .none {
+        display: none;
     }
     .sensor {
         display: grid;
-        grid-template-columns: 1fr auto 64px;
-        gap: 10px;
+        grid-template-columns: 1fr auto 60px;
+        gap: 0 10px;
         align-items: baseline;
-        padding: 8px 0;
+        padding: 6px 0 7px;
         border-bottom: 1px solid var(--line);
     }
-    .sensor strong {
+    .sensor strong, td {
+        font-variant-numeric: tabular-nums;
         text-align: right;
-    }
-    .rows > li {
-        display: flex;
-        flex-direction: column;
-        gap: 2px;
-        padding: 9px 0;
-        border-bottom: 1px solid var(--line);
     }
     small {
         color: var(--ink-soft);
@@ -167,12 +182,17 @@
     .note a {
         color: inherit;
     }
-    .zones .note {
-        margin: 0;
+    .sensor .note, td .note {
+        grid-column: 1 / -1;
+        margin: 2px 0 0;
+        font-size: 12.5px;
+        text-align: left;
     }
     .bar {
         display: flex;
-        height: 10px;
+        grid-column: 1 / -1;
+        height: 8px;
+        margin-top: 7px;
         overflow: hidden;
         border-radius: 3px;
         background: var(--parchment-2);
@@ -181,27 +201,98 @@
         flex-basis: 0;
         min-width: 0;
     }
-    /* Five steps from a pale tint to the darkest shade: warm for heart rate, cool for power. */
-    .z1 { background: color-mix(in srgb, var(--zone) 18%, var(--panel)); }
-    .z2 { background: color-mix(in srgb, var(--zone) 45%, var(--panel)); }
-    .z3 { background: color-mix(in srgb, var(--zone) 75%, var(--panel)); }
-    .z4 { background: var(--zone); }
-    .z5 { background: color-mix(in srgb, var(--zone) 60%, var(--ink)); }
-    .warm {
-        --zone: var(--ride);
+    /* The part in ink, the whole ride beside it in the quiet colour. */
+    table {
+        width: 100%;
+        border-collapse: collapse;
     }
-    .cool {
-        --zone: var(--water);
+    thead th {
+        padding-bottom: 6px;
+        font-size: 12.5px;
+        text-align: right;
     }
-    /* The card scrolls inside; its buttons stay in sight and cover the padding of the card under them. */
-    .actions {
-        position: sticky;
-        bottom: -16px;
+    tbody th {
+        font-weight: 400;
+        text-align: left;
+    }
+    tbody th, tbody td {
+        padding: 7px 0;
+        border-top: 1px solid var(--line);
+    }
+    td {
+        width: 84px;
+        font-weight: 600;
+        white-space: nowrap;
+    }
+    td:last-child {
+        color: var(--ink-soft);
+        font-weight: 400;
+    }
+    .zones td {
+        padding: 0 0 9px;
+        border: 0;
+    }
+    .zones .bar {
+        margin-top: 0;
+    }
+    /* The box is as high as its climbs, or as the card leaves it. Then the list is as high as whole climbs fit under
+     * the heading and scrolls by whole climbs, so no climb is cut at the lower edge. The box holds the heading and one
+     * climb at least; in a lower card, the card scrolls. */
+    .facts .climbs {
         display: flex;
-        justify-content: flex-end;
-        gap: 8px;
-        margin: auto 0 -16px;
-        padding: 16px 0;
-        background: var(--panel);
+        flex: 0 1 calc(var(--head) + var(--count) * var(--row));
+        flex-direction: column;
+        min-height: calc(var(--head) + var(--row));
+        container-type: size;
+    }
+    h3 {
+        display: flex;
+        box-sizing: border-box;
+        justify-content: space-between;
+        height: var(--head);
+        margin: 0;
+        padding-top: 14px;
+        border-bottom: 1px solid var(--line);
+        font-weight: 600;
+    }
+    h3 small {
+        font-weight: 400;
+    }
+    .climbs ul {
+        height: calc(100cqh - var(--head));
+        height: round(down, 100cqh - var(--head), var(--row));
+        overflow-y: auto;
+        scroll-snap-type: y mandatory;
+    }
+    .climbs li {
+        display: flex;
+        box-sizing: border-box;
+        gap: 10px;
+        align-items: center;
+        justify-content: space-between;
+        height: var(--row);
+        border-bottom: 1px solid var(--line);
+        scroll-snap-align: start;
+    }
+    .climbs strong {
+        overflow: hidden;
+        font-weight: 400;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .climbs li small {
+        flex: none;
+        font-variant-numeric: tabular-nums;
+    }
+    /* The card is as high as its content: every climb shows. */
+    @media (max-width: 760px) {
+        .facts .climbs {
+            flex: none;
+            container-type: normal;
+        }
+        .climbs ul {
+            height: auto;
+            overflow: visible;
+        }
     }
 </style>

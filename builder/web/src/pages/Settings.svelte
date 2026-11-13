@@ -16,8 +16,8 @@
     const units: { value: Units; label: string }[] = [{ value: 'km', label: 'Kilometres' }, { value: 'mi', label: 'Miles' }];
     const looks: { value: Look; label: string }[] = [{ value: 'system', label: 'As the computer' }, { value: 'light', label: 'Light' }, { value: 'dark', label: 'Dark' }];
     const values = [
-        { key: 'maxHr', label: 'Maximum heart rate', unit: 'bpm', zones: heartRateZones, ramp: 'hr' },
-        { key: 'ftp', label: 'Threshold power (FTP)', unit: 'W', zones: powerZones, ramp: 'power' },
+        { key: 'maxHr', label: 'Maximum heart rate', unit: 'bpm', zones: heartRateZones },
+        { key: 'ftp', label: 'Threshold power (FTP)', unit: 'W', zones: powerZones },
     ] as const;
 
     let counts = $state<{ routes: number; rides: number } | null>(null);
@@ -89,8 +89,8 @@
         <strong>Look</strong>
         <Segmented label="Look" options={looks} value={appearance.look} onChange={setLook} />
     </div>
-    {#each values as { key, label, unit, zones, ramp } (key)}
-        <RiderValue id={key} {label} {unit} value={settings[key]} range={RANGES[key]} {zones} {ramp} onSet={value => setValue(key, value)} />
+    {#each values as { key, label, unit, zones } (key)}
+        <RiderValue id={key} {label} {unit} value={settings[key]} range={RANGES[key]} {zones} onSet={value => setValue(key, value)} />
     {/each}
     <p class="note">A new ride from the OpenBikeComputer brings the values of the device, and they replace these. A ride keeps its values when you change them later.</p>
     <section aria-labelledby={heading}>

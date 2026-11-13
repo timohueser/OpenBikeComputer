@@ -1,7 +1,7 @@
 /** The numbers of a recorded ride from its samples: heart rate, power and cadence with their zones, the climbs, and the
  * table of the data. */
 import type { FitSample } from '../core/fit';
-import { metres, movingSteps } from '../library/summary';
+import { metres, movingSteps, rideTotals } from '../library/summary';
 import { cumulative, firstIndex, type Coordinate } from '../planner/geo';
 import { routeSegments } from '../planner/search/segments';
 import { heartRateZones, powerZones, type Zone } from '../settings/zones';
@@ -52,6 +52,17 @@ export function movingSpeed(samples: FitSample[]): number | undefined {
         if (step) { distance += metres(samples[i - 1], samples[i]); seconds += step; }
     });
     return seconds ? distance / seconds : undefined;
+}
+
+/** The numbers of a stretch of a ride. */
+export interface PartNumbers { lengthM: number; climbM: number; movingS: number; speed?: number; channels: Channels }
+
+/** The numbers of the samples `first` to `last` as a ride of its own. Its first sample starts a segment, so no step
+ * leads into the part. */
+export function partNumbers(samples: FitSample[], [first, last]: [number, number], limits: { maxHr: number | null; ftp: number | null }): PartNumbers {
+    const part = samples.slice(first, last + 1);
+    part[0] = { ...part[0], segmentStart: true };
+    return { ...rideTotals(part), speed: movingSpeed(part), channels: channels(part, limits) };
 }
 
 /** The climbs of the ride by the one climb rule (`routeSegments`), found in each segment by itself, so that a pause

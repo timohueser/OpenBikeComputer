@@ -4,7 +4,9 @@
     import { ROUTES } from '../../lib/routes';
 
     /** The frame of the Route page and the Ride page: the title row with rename, the left card and the picture side by
-     * side, and `children` under them. Its button styles apply only inside the frame. */
+     * side, and `children` under them. The frame is as high as the page: the cards take the height that the children
+     * leave, down to their least height, so a bottom card keeps its rows low in a low window. No child is a scroll box,
+     * so a menu or a panel of a bottom card is never cut. Its button styles apply only inside the frame. */
     let { message, name, nameLabel, onrename, failure, tags, buttons, left, picture, children }: {
         /** Shows instead of the page, for example while the record loads. */
         message?: string;
@@ -185,14 +187,14 @@
         grid-template-columns: 300px 1fr;
         grid-template-rows: minmax(0, 1fr);
         gap: 14px;
-        min-height: 360px;
+        min-height: 160px;
     }
     @media (max-width: 760px) {
         .detail {
             height: auto;
             padding: 12px 16px;
         }
-        header .back {
+        header .back, .title {
             flex-basis: 100%;
         }
         h1, .title input {
