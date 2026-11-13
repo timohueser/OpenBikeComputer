@@ -15,6 +15,14 @@ pub struct Point {
     /// The first point of the file, and of each `trk` and `trkseg`.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub segment_start: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hr_bpm: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cadence_rpm: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub power_w: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature_c: Option<f64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -137,6 +145,10 @@ fn point(attributes: &str) -> Option<Point> {
         ele: None,
         time: None,
         segment_start: false,
+        hr_bpm: None,
+        cadence_rpm: None,
+        power_w: None,
+        temperature_c: None,
     })
 }
 
@@ -235,6 +247,21 @@ fn scoped_name(text: &str) -> Option<String> {
     None
 }
 
+/// The first element in `extensions` whose local name, after any prefix, is `name`: its text as a finite
+/// decimal. This reads the Garmin `TrackPointExtension` v1 and v2 with any prefix, and a bare `<power>`.
+fn sensor(extensions: &str, name: &str) -> Option<f64> {
+    let rest = extensions.match_indices('<').map(|(at, _)| &extensions[at + 1..]).find(|rest| {
+        let tag = &rest[..rest.find(|c| matches!(c, '/' | '>') || whitespace(c)).unwrap_or(rest.len())];
+        tag.rsplit(':').next() == Some(name)
+    })?;
+    let (head, text) = rest.split_once('>')?;
+    if head.ends_with('/') {
+        return None;
+    }
+    let value: f64 = text[..text.find('<').unwrap_or(text.len())].trim_matches(whitespace).parse().ok()?;
+    value.is_finite().then_some(value)
+}
+
 pub fn read(text: &str, fallback: &str) -> Result<Import, String> {
     let entries = elements(text, &["trkpt", "rtept"]);
     let trks = elements(text, &["trk"]);
@@ -268,6 +295,11 @@ pub fn read(text: &str, fallback: &str) -> Result<Import, String> {
             }
         }
         p.time = first_text(entry.body, "time").and_then(|t| time(&t));
+        if let Some(extensions) = elements(entry.body, &["extensions"]).first() {
+            let value = |name| sensor(extensions.body, name);
+            (p.hr_bpm, p.cadence_rpm, p.power_w, p.temperature_c) =
+                (value("hr"), value("cad"), value("power"), value("atemp"));
+        }
         if entry.kind == "trkpt" {
             p.segment_start = std::mem::take(&mut segment_start);
             tracks.push(p);
@@ -329,5 +361,22 @@ mod tests {
         assert_eq!(import.points[0].ele, Some(1.23456789123));
         assert_eq!(import.waypoints[0].name.as_deref(), Some("Water"));
         assert_eq!(import.waypoints[0].note.as_deref(), Some("Open & free"));
+    }
+
+    #[test]
+    fn sensors_come_from_the_extensions_of_a_point_by_local_name() {
+        let sensors = |extensions: &str| {
+            let text = format!("<gpx><trk><trkseg><trkpt lat='47' lon='8'>{extensions}</trkpt><trkpt lat='47.1' lon='8'/></trkseg></trk></gpx>");
+            let p = read(&text, "file").unwrap().points[0];
+            (p.hr_bpm, p.cadence_rpm, p.power_w, p.temperature_c)
+        };
+        let v1 = "<extensions><gpxtpx:TrackPointExtension><gpxtpx:atemp>21.5</gpxtpx:atemp><gpxtpx:hr>141</gpxtpx:hr><gpxtpx:cad>88</gpxtpx:cad></gpxtpx:TrackPointExtension><power>250</power></extensions>";
+        assert_eq!(sensors(v1), (Some(141.0), Some(88.0), Some(250.0), Some(21.5)));
+        let v2 = "<extensions><ns3:TrackPointExtension><ns3:hr> 150 </ns3:hr><ns3:cad>90</ns3:cad></ns3:TrackPointExtension></extensions>";
+        assert_eq!(sensors(v2), (Some(150.0), Some(90.0), None, None));
+        assert_eq!(sensors("<extensions><power>312</power></extensions>"), (None, None, Some(312.0), None));
+        let none = "<desc><![CDATA[<p>Climb</p><hr>140]]></desc><extensions><gpxtpx:TrackPointExtension><gpxtpx:hr></gpxtpx:hr><gpxtpx:cad>0x8C</gpxtpx:cad><gpxtpx:atemp>inf</gpxtpx:atemp></gpxtpx:TrackPointExtension><power/></extensions>";
+        assert_eq!(sensors(none), (None, None, None, None));
+        assert_eq!(sensors(""), (None, None, None, None));
     }
 }
