@@ -22,7 +22,7 @@
     async function load() {
         try {
             const [nextRoutes, nextRides, active] = await Promise.all([library.routes(), library.rides(), library.state('active')]);
-            [routes, rides, text] = [nextRoutes, nextRides, homeText(nextRoutes, nextRides, active, now)];
+            [routes, rides, text, failure] = [nextRoutes, nextRides, homeText(nextRoutes, nextRides, active, now), ''];
         } catch (reason) {
             failure = reason instanceof Error ? reason.message : String(reason);
         }
@@ -96,7 +96,8 @@
         }
         .hero {
             min-height: 78vh;
-            padding: 16px;
+            /* The place of the view's box is kept free, so nothing moves when the view arrives. */
+            padding: 16px 16px 136px;
             gap: 24px;
         }
     }

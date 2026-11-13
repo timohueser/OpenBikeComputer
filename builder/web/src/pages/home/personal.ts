@@ -4,7 +4,7 @@ import { yearTotals, type Totals } from '../../lib/library/statistics';
 
 export type HomeText =
     | { kind: 'continue'; route: RouteRecord; ago: string }
-    | { kind: 'year'; totals: Totals; last: RideRecord; ago: string }
+    | { kind: 'year'; totals: Totals; last: RideRecord; hike: boolean; ago: string }
     | { kind: 'slogan' };
 
 /** The open plan shows only when it changed in this time. */
@@ -28,7 +28,7 @@ export function homeText(routes: RouteRecord[], rides: RideRecord[], active: str
     const totals = yearTotals(rides, now.getFullYear());
     if (totals.rides + totals.hikes) {
         const last = rides.reduce((newest, ride) => ride.summary.start > newest.summary.start ? ride : newest);
-        return { kind: 'year', totals, last, ago: ago(last.summary.start * 1000, now) };
+        return { kind: 'year', totals, last, hike: last.summary.bike === 'hiking', ago: ago(last.summary.start * 1000, now) };
     }
     return { kind: 'slogan' };
 }

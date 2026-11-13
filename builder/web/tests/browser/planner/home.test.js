@@ -7,7 +7,8 @@ const DAY = 86_400_000;
 const PIXEL = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
 const view = id => ({ id, name: `View ${id}`, region: 'Central Switzerland', lat: 46.8, lon: 8.4, sunrise: '07:00', sunset: '17:00', night: false });
 const manifest = set => ({ format: 1, set, date: '2026-10-15', width: 2560, height: 1440, credits: [`© Data of ${set}`], views: ['a', 'b', 'c'].map(view) });
-const PLACE = { name: 'Testdorf', kind: 'village', lon: 8.05, lat: 47.05, region: 'Testland' };
+// A place with a box, inside the area of the map of the test build.
+const PLACE = { name: 'Testdorf', kind: 'village', lon: 8.05, lat: 48.05, west: 8.04, south: 48.04, east: 8.06, north: 48.06, region: 'Testland' };
 
 /** Answers the hosts of the planner build at a fixed clock; `homeViews` answers the home views, else they fail. The search
  * service finds one place. */
@@ -36,9 +37,9 @@ async function fill(page, { routes = [], rides = [], active = null }) {
   }, { routes, rides, active });
 }
 
-const summary = { line: [8, 47, 8.1, 47.1], heights: [400, 500], bounds: [8, 47, 8.1, 47.1], lengthM: 62_000, climbM: 400, highestM: 500, seconds: 9000, bike: 'gravel' };
+const summary = { line: [8, 48, 8.1, 48.1], heights: [400, 500], bounds: [8, 48, 8.1, 48.1], lengthM: 62_000, climbM: 400, highestM: 500, seconds: 9000, bike: 'gravel' };
 const point = (id, kind, lat) => ({ id, kind, label: id, coordinate: [8, lat], ...kind !== 'start' && { leg: 'drawn', drawn: [[8, lat - 0.1, 400], [8, lat, 500]] } });
-const trip = { mode: 'route', bike: 'gravel', days: 1, routeOrder: [], points: [point('Start', 'start', 47), point('Finish', 'finish', 47.1)] };
+const trip = { mode: 'route', bike: 'gravel', days: 1, routeOrder: [], points: [point('Start', 'start', 48), point('Finish', 'finish', 48.1)] };
 const lake = { id: 'lake', revision: 0, name: 'Lake test', updatedAt: NOON.getTime() - DAY, trip, summary: { ...summary, days: 1 } };
 const ride = (key, name, start) => ({ key, name, source: 'file', format: 'gpx', maxHr: null, ftp: null, summary: { ...summary, start: start.getTime() / 1000, movingS: 9000 } });
 const rides = [ride('20261109T090000Z', 'Kaiserstuhl', new Date(2026, 10, 9, 10)), ride('20261001T090000Z', 'Schauinsland', new Date(2026, 9, 1, 10))];
@@ -132,7 +133,21 @@ test('the text, the cards, the search and each button open what they name', asyn
   await search.fill('Testdorf');
   await results.getByRole('button', { name: 'Plan a route here' }).click();
   await expect(page).toHaveURL(/#\/planner$/);
-  await expect(page.locator('.maplibregl-canvas')).toBeVisible();
+  const canvas = page.locator('.maplibregl-canvas');
+  await expect(canvas).toBeVisible();
+  // The map shows the box of the place: a start at the middle of the map is in the box.
+  await page.waitForLoadState('networkidle');
+  const map = await canvas.boundingBox();
+  await page.mouse.click(map.x + map.width / 2, map.y + map.height / 2);
+  await page.getByRole('button', { name: 'Start here' }).click();
+  await expect(page.getByText('Choose your finish')).toBeVisible();
+  await page.goto('/planner.html?cover=none');
+  await page.waitForFunction(() => window.coverTest);
+  const [lon, lat] = await page.evaluate(async () => (await window.coverTest.library.routes()).find(route => route.trip.points.length === 1).trip.points[0].coordinate);
+  expect(lon).toBeGreaterThan(PLACE.west);
+  expect(lon).toBeLessThan(PLACE.east);
+  expect(lat).toBeGreaterThan(PLACE.south);
+  expect(lat).toBeLessThan(PLACE.north);
 
   // The open plan comes before the year.
   await fill(page, { active: 'lake' });

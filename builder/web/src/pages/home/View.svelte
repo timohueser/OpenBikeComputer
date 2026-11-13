@@ -143,18 +143,19 @@
         margin-top: 4px;
         overflow: auto;
     }
-    /* On a phone the box follows the text, at the bottom of the hero. */
+    /* On a phone the box has the width of the hero, at its bottom, in the place that the hero keeps free. */
     @media (max-width: 760px) {
         .shade {
             background: linear-gradient(180deg, rgb(0 0 0 / 0.5), rgb(0 0 0 / 0.24) 40%, transparent 65%);
         }
         .box {
-            position: relative;
-            right: auto;
-            bottom: auto;
-            order: 2;
+            right: 16px;
+            bottom: 16px;
+            left: 16px;
             max-width: none;
-            margin-top: auto;
+        }
+        .alone {
+            left: auto;
         }
     }
 </style>

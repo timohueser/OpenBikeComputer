@@ -1,6 +1,7 @@
 <!-- The search of the Home page: the routes and rides of the rider by name at each key, and places after a pause. A place
      opens the planner there, or the Routes page with the place as its chip. -->
 <script lang="ts">
+    import { onDestroy } from 'svelte';
     import { router } from '../../lib/router.svelte';
     import { ROUTES } from '../../lib/routes';
     import { formatDistance } from '../../lib/settings/format';
@@ -40,6 +41,8 @@
             }
         }, WAIT_MS);
     }
+
+    onDestroy(() => { clearTimeout(timer); controller?.abort(); });
 
     /** The view of the Routes page that holds the most of the rider's things near the place, with their count. */
     function near({ name, kind, box }: FoundPlace) {
