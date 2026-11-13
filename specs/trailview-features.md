@@ -235,9 +235,10 @@ The road solver:
   number of parts meet there. The rules of the water over the terrain and of `cover_lift_max_m`
   hold for these crossings too: where the lift would pass the most, the way keeps its height.
 
-The grades, the ground, the decks, the sags, the covers and the passes are limits. The heights are
+The grades, the ground, the decks, the sags, the covers and the passes are limits. The solve seeks
 the minimum of the fit plus, per limit, a cost times the square of its distance past its band, so a
-limit only pushes, and only where the heights pass it. The ground past 5 m costs the least, the other
+limit only pushes, and only where the heights pass it. Its rounds stop where no vertex alone would
+move by 1 cm, which on a long stiff deck can leave the heights metres from that minimum. The ground past 5 m costs the least, the other
 limits 100 times more, and the ground past 8 m 100 times more again. A first solve without limits
 gives the weights of the fit, the culverts and the covers that hold; the ramps act after the rest.
 

@@ -250,7 +250,7 @@ fn past(x: f64, lo: f64, hi: f64) -> f64 {
     x - x.max(lo).min(hi)
 }
 
-/// Moves z on the variables `moved` to the minimum of the cost: the least squares of `terms` plus, per limit,
+/// Moves z on the variables `moved` towards the minimum of the cost: the least squares of `terms` plus, per limit,
 /// its cost times the square of its distance past its band. Damped Newton rounds for each of `scales`, which
 /// multiply the costs: soft costs find the limits that act in a few rounds, and each next scale starts from
 /// there. A round solves the quadratic model of the cost at z, in which each limit past its band pulls to the
@@ -260,6 +260,9 @@ fn past(x: f64, lo: f64, hi: f64) -> f64 {
 /// all of `moved`; the next ones only within `reach` in `graph` of the limits that changed side and of the
 /// pieces that did not take a full step. A scale ends where a Newton step of each variable alone, from the rows
 /// that hold it, would move none by SETTLE_M (`unsettled`), or after ROUNDS, FINAL_ROUNDS at the last scale.
+/// The stop rule is local: on a long stiff piece, such as a deck, a joint move of metres can remain open where no
+/// variable alone would move by SETTLE_M, so a job can stop metres from the minimum, and where it stops depends on
+/// the start that the earlier scale gives.
 pub(crate) fn settle(
     terms: &[Term],
     limits: &Limits,
@@ -354,8 +357,8 @@ pub(crate) fn settle(
 }
 
 /// What `settle` did: its rounds, the refinements that did not converge, and per scale, where it ended at its
-/// round cap and not at its stop rule, the largest move of its last round and the variables still unsettled. The
-/// last move does not bound how far the heights are from the minimum: a capped job can lie metres from it.
+/// round cap and not at its stop rule, the largest move of its last round and the variables still unsettled.
+/// Neither the last move nor the stop rule bounds how far the heights are from the minimum.
 pub(crate) struct Settled {
     pub rounds: usize,
     pub unconverged: usize,

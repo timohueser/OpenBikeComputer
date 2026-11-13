@@ -116,10 +116,10 @@ const SCALES: [f64; 2] = [1e-2, 1.0];
 const REFINE_M: f64 = 1e-6;
 const REFINE_STEPS: usize = 30;
 /// The Newton rounds of a scale end when a Newton step of each vertex alone would move none by SETTLE_M, or
-/// after ROUNDS (`Metrics::capped`), FINAL_ROUNDS at the last scale: its heights are the result, and a capped
-/// job can lie metres from its minimum, while an earlier scale only seeds the next. The rounds after the first
-/// solve only the network within REGION_M of the limits that changed side, and the bridges and tunnels that it
-/// meets: the terrain anchors the rest.
+/// after ROUNDS (`Metrics::capped`), FINAL_ROUNDS at the last scale, whose heights are the result. The stop rule
+/// is local, so a job can end metres from the minimum of its cost, capped or not, and the start that the earlier
+/// scale gives changes where. The rounds after the first solve only the network within REGION_M of the limits
+/// that changed side, and the bridges and tunnels that it meets: the terrain anchors the rest.
 const ROUNDS: usize = 40;
 const FINAL_ROUNDS: usize = 80;
 const SETTLE_M: f64 = 1e-2;
@@ -248,8 +248,8 @@ pub struct Metrics {
     pub culverts: usize,
     pub rounds: usize,
     /// Per scale of SCALES, the jobs whose Newton rounds ended at their cap, not at their stop rule, the largest
-    /// move of their last round and the variables still unsettled. The last move does not bound how far the
-    /// heights are from the minimum.
+    /// move of their last round and the variables still unsettled. Neither the last move nor the stop rule bounds
+    /// how far the heights are from the minimum.
     pub capped: [usize; SCALES.len()],
     pub capped_step_m: [f64; SCALES.len()],
     pub capped_left: [usize; SCALES.len()],

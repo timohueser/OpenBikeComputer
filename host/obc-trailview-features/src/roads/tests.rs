@@ -824,6 +824,39 @@ fn a_tunnel_on_a_slope_steeper_than_its_grade_keeps_its_portals_on_the_terrain_a
 }
 
 #[test]
+fn a_road_in_a_gully_by_a_portal_bends_the_tunnel_under_it_within_its_grade() {
+    // The slope of the lever test, 20 % from portal to portal, and a road across the tunnel 10 m from its lower
+    // portal in a gully 5 m deep: the pass needs the tunnel lower than its portals' band gives. The grade between
+    // the portals spreads the drop along the tunnel; without it the tunnel digs a step under the road.
+    let place = bridges();
+    let height = |e: f64| {
+        let inside = (e.clamp(-1000.0, 1000.0) + 1000.0) / 2000.0;
+        let gully = 5.0 * (-((e + 990.0) / 4.0).powi(2)).exp();
+        500.0 + 400.0 * inside + 100.0 * (std::f64::consts::PI * inside).sin() - gully
+    };
+    let terrain = place.terrain(move |e, _| height(e));
+    let line = |corners: &[(f64, f64)]| place.line(corners, None);
+    let features = [
+        way("primary", line(&[(-1200.0, 0.0), (-1000.0, 0.0)]), plain),
+        way("primary", line(&[(-1000.0, 0.0), (1000.0, 0.0)]), tunnel),
+        way("primary", line(&[(1000.0, 0.0), (1200.0, 0.0)]), plain),
+        way("unclassified", line(&[(-990.0, -100.0), (-990.0, 100.0)]), plain),
+    ];
+    let solved = run(&features, &terrain, &[]);
+    assert!(on_the_ground(&place, &solved.ways[3][0], &terrain));
+    // The portals give way to the pass past GROUND_M, as the ground gives way to every other limit, but not past
+    // HARD_M.
+    for f in [0, 2] {
+        let curve = place.curve(&solved.ways[f][0]);
+        let ground = terrain.heights(&curve.points);
+        assert!(curve.z.unwrap().iter().zip(ground).all(|(z, h)| (z - h).abs() <= HARD_M + KEEP_M), "way {f}");
+    }
+    // The pass and the grade are costs of one tier, so the grade gives way a little where the pass pushes.
+    let steepest = steepest(&place, &solved.ways[1][0]);
+    assert!(steepest <= 0.2 + 0.02, "{steepest}");
+}
+
+#[test]
 fn a_footbridge_over_a_gorge_does_not_sag_under_its_ends() {
     let place = bridges();
     let terrain = place.terrain(|e, _| {
