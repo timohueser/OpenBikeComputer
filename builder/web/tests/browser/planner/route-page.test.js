@@ -93,6 +93,8 @@ test('the cover shows whole with the map beside it, and with the map in its corn
   // The shape of the stored covers, 1920 × 1280.
   expect(coverBox.width / coverBox.height).toBeCloseTo(1.5, 1);
   expect(mapBox.x).toBeGreaterThanOrEqual(coverBox.x + coverBox.width + 13);
+  expect(mapBox.width).toBeGreaterThanOrEqual(260);
+  expect(mapBox.height).toBeCloseTo(coverBox.height, 0);
   await expect(page.getByRole('button', { name: 'Show the map large' })).toHaveCount(0);
 
   await page.setViewportSize({ width: 900, height: 900 });

@@ -90,7 +90,7 @@
     .side .map {
         left: var(--map-left);
     }
-    .picture:not(.map-large) .map, .map-large .cover {
+    .picture:not(.map-large, .side) .map, .map-large .cover {
         inset: auto 12px 12px auto;
         z-index: 2;
         width: 180px;
@@ -116,7 +116,7 @@
             order: -1;
             aspect-ratio: 3 / 2;
         }
-        .picture:not(.map-large) .map, .map-large .cover {
+        .picture:not(.map-large, .side) .map, .map-large .cover {
             width: 120px;
             height: 80px;
         }
