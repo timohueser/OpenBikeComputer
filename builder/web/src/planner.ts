@@ -1,7 +1,7 @@
 import { mount } from 'svelte';
 import './styles/tokens.css';
 import { startCoverJob } from './lib/covers/job';
-import { lineKey } from './lib/library/summary';
+import { lineKey, sentKey } from './lib/library/summary';
 import { Library } from './lib/library/store';
 import { setLook } from './lib/theme.svelte';
 
@@ -10,7 +10,7 @@ const search = new URLSearchParams(location.search), cover = search.get('cover')
 if (cover !== null) {
     // The page of the browser test of a cover; the test fills the library through `window.coverTest`.
     const library = new Library();
-    Object.assign(window, { coverTest: { library, lineKey, startCoverJob: () => startCoverJob(library), setLook } });
+    Object.assign(window, { coverTest: { library, lineKey, sentKey, startCoverJob: () => startCoverJob(library), setLook } });
     void import('./lib/covers/CoverPage.svelte').then(({ default: CoverPage }) => mount(CoverPage, { target, props: { library, id: cover } }));
 } else if (search.has('add-files')) {
     // The page of the window "Add files", until a page of the product opens it. The test reads the library through

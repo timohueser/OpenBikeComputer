@@ -12,7 +12,7 @@
     import { writeGpx, type GpxImport } from '../lib/core/gpx';
     import type { RouteRecord, SentRoute } from '../lib/library/records';
     import type { Library } from '../lib/library/store';
-    import { lineCoordinates, lineKey } from '../lib/library/summary';
+    import { lineCoordinates, sentKey } from '../lib/library/summary';
     import { remembered } from '../lib/device-sync/remembered.svelte';
     import { hasEndpoints, planTitle, planView } from '../lib/planner/editor';
     import { downloadPlan, isPlan, isVersion, newPlan } from '../lib/planner/library';
@@ -46,7 +46,7 @@
     // Only an entry of the card of the remembered device counts.
     const sentHere = $derived(sent && remembered.device && sent.device.startsWith(`${remembered.device.storeId}:`) ? sent : undefined);
     // The device has the route as it is stored now.
-    const onDevice = $derived(!!sentHere && !!record && sentHere.line === lineKey(record));
+    const onDevice = $derived(!!sentHere && !!record && sentHere.key === sentKey(record));
     const changed = $derived(!!plan && !!line && (!summary || Math.abs(planView(plan.trip, line).summary.distance * 1000 - summary.lengthM) > summary.lengthM / 100));
 
     $effect(() => {
