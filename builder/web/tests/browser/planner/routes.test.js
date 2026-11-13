@@ -43,7 +43,7 @@ test('the Routes page lists the routes, filters them with a chip, shows the sele
 
   await list.getByRole('button', { name: 'Route that cannot be read' }).click();
   const card = page.getByRole('region', { name: 'Route that cannot be read' });
-  await expect(card.getByRole('link', { name: 'Open' })).toHaveAttribute('href', '#/route/broken');
+  await expect(card.getByRole('link', { name: 'Route that cannot be read' })).toHaveAttribute('href', '#/route/broken');
   await expect(card.getByRole('button')).toHaveCount(0);
 
   await list.getByRole('button', { name: /Start → Finish/ }).click();
@@ -56,8 +56,8 @@ test('the Routes page lists the routes, filters them with a chip, shows the sele
   await expect(plan).toContainText('Changed since it was sent');
 
   // A click anywhere on the card opens the route; a click on the empty map and Escape close the card.
-  // The link covers the heading, so the click lands on the link, as a click of the rider does.
-  await plan.getByRole('heading', { name: 'Start → Finish' }).click({ force: true });
+  // The name is the link that covers the card: a click on the card text lands on it, as a click of the rider does.
+  await plan.getByText('Touring bike · 3 days').click({ force: true });
   await expect(page).toHaveURL(/#\/route\/long$/);
   await page.goBack();
   const row = list.getByRole('button', { name: /Start → Finish/ });
@@ -79,7 +79,7 @@ test('the Routes page lists the routes, filters them with a chip, shows the sele
 
   // Back from a route brings the search again.
   await list.getByRole('button', { name: /Lake test/ }).click();
-  await page.getByRole('region', { name: 'Lake test' }).getByRole('link', { name: 'Open' }).click();
+  await page.getByRole('region', { name: 'Lake test' }).getByRole('link', { name: 'Lake test' }).click();
   await expect(page.getByRole('heading', { name: 'Lake test', level: 1 })).toBeVisible();
   await page.goBack();
   await expect(page.getByText('1 of 3 routes')).toBeVisible();
