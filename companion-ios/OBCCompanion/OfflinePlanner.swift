@@ -1,19 +1,21 @@
 import Foundation
 import OBCPlanner
 
-/// Adapts an installed grid selection to the same client contract as the online planner.
+/// Adapts an installed grid selection and its routing install to the same client contract as the online
+/// planner.
 actor OfflinePlanner {
     private let directory: URL
+    private let routing: URL
     private let scripts: URL
     private let blocks: OfflineBlocks
     private var router: RouteProvider?
     private var search: PlannerSearchRuntime?
 
-    private init(directory: URL, scripts: URL, blocks: OfflineBlocks) {
-        self.directory = directory; self.scripts = scripts; self.blocks = blocks
+    private init(directory: URL, routing: URL, scripts: URL, blocks: OfflineBlocks) {
+        self.directory = directory; self.routing = routing; self.scripts = scripts; self.blocks = blocks
     }
 
-    static func open(map: OfflineMap, directory: URL,
+    static func open(map: OfflineMap, directory: URL, routing: URL,
                      scripts: URL? = Bundle.main.url(forResource: "PlannerSearch", withExtension: nil)) async throws -> any PlannerDataSource {
         guard try plannerFileHash(directory.appending(path: "release.json")) == map.id,
               let scripts else {
@@ -36,7 +38,7 @@ actor OfflinePlanner {
             routes: directory.appending(path: "routes/tiles").absoluteString + "/{cell}.json",
             offlineCells: blocks.cells.map(\.id), attribution: manifest.attribution,
             landcover_attribution: manifest.landcover_attribution)
-        let runtime = OfflinePlanner(directory: directory, scripts: scripts, blocks: blocks)
+        let runtime = OfflinePlanner(directory: directory, routing: routing, scripts: scripts, blocks: blocks)
         return PlannerService(release: release) { try await runtime.respond($0) }
     }
 
@@ -47,7 +49,7 @@ actor OfflinePlanner {
         switch url.lastPathComponent {
         case "release.json": response = (200, try Data(contentsOf: directory.appending(path: "release.json")))
         case "route", "shape":
-            if router == nil { router = try RouteProvider(directory: directory.appending(path: "routing")) }
+            if router == nil { router = try RouteProvider(directory: routing) }
             response = try await router!.call(url.lastPathComponent, request.httpBody ?? Data())
         case "query":
             if search == nil {
@@ -84,11 +86,10 @@ private struct OfflineBlocks: Decodable {
     let zoom: Int
     let map_zoom: Int?
     let id: String
-    let source_routing: String
     let cells: [Cell]
     func validate() throws {
         let hex = CharacterSet(charactersIn: "0123456789abcdef")
-        guard zoom == 9, (format == 2 && map_zoom == 11) || (format == 3 && map_zoom == nil), [id, source_routing].allSatisfy({ $0.count == 64 && $0.unicodeScalars.allSatisfy(hex.contains) }),
+        guard zoom == 9, format == 4, map_zoom == nil, id.count == 64, id.unicodeScalars.allSatisfy(hex.contains),
               !cells.isEmpty, Set(cells.map(\.id)).count == cells.count,
               cells.allSatisfy({ $0.id.range(of: "^9-[0-9]+-[0-9]+$", options: .regularExpression) != nil
                   && $0.bounds.count == 4 && $0.bounds.allSatisfy(\.isFinite)

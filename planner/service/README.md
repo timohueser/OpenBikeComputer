@@ -31,7 +31,15 @@ library contains no HTTP stack. [`tools/build-planner-ios.sh`](../../tools/build
 builds it. `planner_router_call` answers `route` and `shape` with the same code as
 `POST /v1/route` and `POST /v1/shape`. The host serializes the calls on a handle.
 `planner_router_cancel` is safe from any thread: it stops the call in progress, which then answers
-`cancelled`.
+`cancelled`. The budget of `planner_router_open` is the search limit of one search; 0 takes the
+engine's default.
+
+`planner_routing_plan` and `planner_routing_install` take a JSON request: the paths `package`,
+`directory` and `target`, the `areas` of all maps of one routing package as `[west, south, east,
+north]`, and for the install the folder `objects`. The plan answers the objects that `target`
+lacks and the installed bytes. The install calls its progress callback from its workers, one call
+at a time; a callback that returns false stops it with `cancelled`, and a later call goes on. An
+install with no area deletes `target`.
 
 ```sh
 cargo build --release -p planner-service --lib --no-default-features --target aarch64-apple-ios

@@ -25,10 +25,11 @@ struct OBCCompanionApp: App {
         launchOptions.useBLETransport ? nil : launchOptions.makeControl()
     #endif
 
-    private static let offlineStore = OfflineMapStore(root: URL.applicationSupportDirectory.appending(path: "OfflineMaps"))
+    private static let offlineStore = OfflineMapStore(root: URL.applicationSupportDirectory.appending(path: "OfflineMaps"),
+                                                      routing: RoutingInstaller())
     private static let offlineMaps = OfflineMapsModel(store: offlineStore)
     private static let plannerSource: any PlannerDataSource = LocalFirstPlanner(store: offlineStore) {
-        try await OfflinePlanner.open(map: $0, directory: $1)
+        try await OfflinePlanner.open(map: $0, directory: $1, routing: $2)
     }
 
     @MainActor private static let liveTransport = BLETransport()

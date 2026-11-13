@@ -6,6 +6,8 @@ public struct OfflineMap: Codable, Identifiable, Equatable, Sendable {
     public let name: String
     public let region: String
     public let bounds: [Double]
+    /// The hex SHA-256 of `routing/directory.bin`: the maps of one routing package share one install.
+    public let routing: String
     public let installedBytes: Int64
 
     public func contains(_ bounds: [Double]) -> Bool {
@@ -19,20 +21,49 @@ public struct OfflineMap: Codable, Identifiable, Equatable, Sendable {
     }
 }
 
-struct OfflineFile: Codable, Equatable, Sendable {
-    let bytes: Int64
-    let sha256: String
-    var valid: Bool { bytes >= 0 && Self.validHash(sha256) }
+public struct OfflineFile: Codable, Equatable, Sendable {
+    public let bytes: Int64
+    public let sha256: String
+    /// The installed bytes of the part of a routing object; nil for each other file.
+    public var part_bytes: Int64?
+    public init(bytes: Int64, sha256: String, part_bytes: Int64? = nil) {
+        self.bytes = bytes; self.sha256 = sha256; self.part_bytes = part_bytes
+    }
+    var valid: Bool { bytes >= 0 && (part_bytes ?? 0) >= 0 && Self.validHash(sha256) }
     static func validHash(_ value: String) -> Bool {
         value.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
     }
 }
 
 struct OfflineManifest: Codable, Sendable {
+    struct Offline: Codable, Sendable { let format: Int }
     let format: Int
     let region: String
     let bounds: [Double]
+    let routing_package: String
+    let offline: Offline
     let files: [String: OfflineFile]
+
+    static let routingPackage = "routing/package.json"
+    static let routingDirectory = "routing/directory.bin"
+}
+
+/// The objects of a routing install that the target folder lacks, and the installed bytes of the whole
+/// install.
+public struct OfflineRoutingPlan: Codable, Equatable, Sendable {
+    public let objects: [OfflineFile]
+    public let bytes: Int64
+    public init(objects: [OfflineFile], bytes: Int64) { self.objects = objects; self.bytes = bytes }
+}
+
+/// The installer of the routing of offline areas: each call takes the areas of all maps of one routing
+/// package, and an empty list deletes its install.
+public protocol OfflineRouting: Sendable {
+    func plan(package: URL, directory: URL, target: URL, areas: [[Double]]) async throws -> OfflineRoutingPlan
+    /// `objects` holds each object of the plan, named by its SHA-256. `progress` gets the object bytes
+    /// read and those of all missing objects.
+    func install(package: URL, directory: URL, target: URL, areas: [[Double]], objects: URL,
+                 progress: @escaping @Sendable (Int64, Int64) -> Void) async throws
 }
 
 struct OfflineBundle: Codable, Sendable {
@@ -60,7 +91,10 @@ struct OfflineBundle: Codable, Sendable {
         let manifest = try JSONDecoder().decode(OfflineManifest.self, from: data)
         guard manifest.format == 1, OfflineMap.valid(manifest.bounds), !manifest.region.isEmpty,
               manifest.region.range(of: "^[a-z][a-z0-9-]{0,63}$", options: .regularExpression) != nil,
-              !files.isEmpty, Set(files.keys) == Set(manifest.files.keys) else { throw PlannerFailure.invalidData }
+              !files.isEmpty, Set(files.keys) == Set(manifest.files.keys), manifest.offline.format == 4,
+              manifest.files[OfflineManifest.routingPackage] != nil,
+              manifest.files[OfflineManifest.routingDirectory]?.sha256 == manifest.routing_package
+        else { throw PlannerFailure.invalidData }
         var content: [String: Int64] = [:], transports: [String: Int64] = [:]
         for (path, entry) in files {
             let parts = path.split(separator: "/", omittingEmptySubsequences: false)
@@ -88,10 +122,14 @@ public struct OfflineDownloadQuote: Codable, Sendable {
     let source: URL
     let bundle: OfflineBundle
     let release: Data
+    /// The routing objects that the install of this map downloads.
+    let routing: [OfflineFile]
 
     public func named(_ name: String) -> Self {
-        Self(map: OfflineMap(id: map.id, name: name, region: map.region, bounds: map.bounds, installedBytes: map.installedBytes),
-             transferBytes: transferBytes, requiredBytes: requiredBytes, source: source, bundle: bundle, release: release)
+        Self(map: OfflineMap(id: map.id, name: name, region: map.region, bounds: map.bounds, routing: map.routing,
+                             installedBytes: map.installedBytes),
+             transferBytes: transferBytes, requiredBytes: requiredBytes, source: source, bundle: bundle, release: release,
+             routing: routing)
     }
 }
 
