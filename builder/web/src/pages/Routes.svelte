@@ -162,7 +162,8 @@
         </div>
         <div class="map">
             {#await import('./routes/RoutesMap.svelte') then { default: RoutesMap }}
-                <RoutesMap {items} {shown} {selected} {fit} onselect={id => selected = id} onview={next => view = next} />
+                <!-- A route that the chips hide is not drawn as selected. -->
+                <RoutesMap {items} {shown} selected={chosen?.id} {fit} onselect={id => selected = id} onview={next => view = next} />
             {:catch error}
                 <p class="note">{error instanceof Error ? error.message : String(error)}</p>
             {/await}
