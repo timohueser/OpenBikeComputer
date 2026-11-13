@@ -7,10 +7,13 @@
 // horizon, with a sun glint; white where a ribbon runs down a steep bed. The sea's body is the deep
 // colour of the regions about the eye. The haze is that of the ground, from the look in group 2; a ribbon
 // blends in linear light. A ribbon passes under a way on the ground: it stops at the way's mask, which a bridge
-// and a tunnel past its ends leave out, and lies over a ford.
+// and a tunnel past its ends leave out, and lies over a ford. Where a ground plan mesh draws whole, its water
+// faces are the water, and a ribbon draws only for a stream narrower on screen than THIN_PIXELS.
 // #include drawn-mesh.wgsl
 // #include stamp-core.wgsl
 // #include ../ground/look.wgsl
+// #include water-look.wgsl
+// #include ../plan/cells.wgsl
 
 // As Frame and Node of terrain.wgsl, which share their buffers.
 struct Frame {
@@ -32,7 +35,7 @@ struct Node {
 @group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(2) var<storage, read> nodes: array<Node>;
 // Per instance, the index of its node in `nodes` and the level of the node that the mesh belongs to.
-@group(0) @binding(3) var<storage, read> water_nodes: array<vec2u>;
+@group(0) @binding(4) var<storage, read> water_nodes: array<vec2u>;
 
 struct WaterIn {
     @location(0) at: vec2i,
@@ -43,18 +46,14 @@ struct WaterIn {
     @location(3) half: f32,
 }
 
-// The body of the water in linear light.
-const BODY: vec3f = vec3f(0.025, 0.098, 0.175);
 // The draw of the sea.
 override SEA_DRAW: bool = false;
 // The sea lies at this share of the lift of water over the terrain: under a lake at sea level. A river
 // area or a ribbon in the sea lies on its bed, under it, on the levels that cut the sea.
 const SEA_LIFT: f32 = 0.5;
-// A ribbon turns white where its bed falls more steeply than FOAM_LOW along its flow, up to FOAM_MOST at FOAM_HIGH.
-const FOAM_LOW: f32 = 0.4;
-const FOAM_HIGH: f32 = 1.0;
-const FOAM_MOST: f32 = 0.7;
 const RIBBON_PIXELS: f32 = 1.5;
+// Over a ground plan mesh, a ribbon draws for a stream narrower on screen than this, whole at a pixel less.
+const THIN_PIXELS: f32 = 2.0 * RIBBON_PIXELS;
 // A ribbon stops this far past a way's edge or its sidewalk, as GIVE_WAY_M of culverts.ts: past a guard rail's posts, 0.67 m (roads/details.ts).
 // Where a stream crosses the way, its ribbon has ended before this at a mouth's wall (standMouths of culverts.ts).
 const GIVE_WAY_M: f32 = 0.8;
@@ -130,6 +129,7 @@ fn water_vertex(v: WaterIn, @builtin(instance_index) instance: u32) -> WaterOut 
     mark_cut(&out, vec4f(u - low, high - u), known(z) && frame.debug != 3u && frame.debug != 4u);
     z = select(frame.eye - surface.above, z, known(z)) + lift * select(1.0, SEA_LIFT, SEA_DRAW);
     out.lod = lod_space(u);
+    out.u = u;
     var p = vec3f(to_render(out.lod), z - frame.eye);
     p.z -= frame.curvature * dot(p.xy, p.xy);
     let d = length(p);
@@ -156,6 +156,8 @@ fn water_fragment(in: WaterFragment) -> @location(0) vec4f {
 
 @fragment
 fn ribbon_fragment(in: WaterFragment) -> @location(0) vec4f {
+    // The ribbon's width on screen, across it: `side` runs from -1 to 1 over it.
+    let across = 2.0 / max(fwidth(in.side), 1e-6);
     drop_cut(in);
     let edge = clamp((1.0 - abs(in.side)) * in.pixels + 0.5, 0.0, 1.0);
     let m = mask_at(in.lod, u32(ceil(lod(in.lod))), true);
@@ -163,28 +165,13 @@ fn ribbon_fragment(in: WaterFragment) -> @location(0) vec4f {
     if (m.level != 0u && m.kind.x != 0u && (m.kind.y & FORDED) == 0u) {
         open = clamp((m.edge - m.walk - select(GIVE_WAY_M, 0.0, m.half < FOOT_HALF_M)) / (frame.pixel * length(in.relative)) + 0.5, 0.0, 1.0);
     }
-    return vec4f(atmosphere(water_colour(in), in.relative, in.altitude), in.share * edge * open);
+    // Over a ground plan mesh, a stream narrower on screen than THIN_PIXELS keeps its ribbon on top: at a
+    // grazing view its own bank hides its face. The ribbon fades in as the stream narrows.
+    let thin = 1.0 - smoothstep(THIN_PIXELS - 1.0, THIN_PIXELS, across);
+    let drawn = select(1.0, thin, plan_near(vec2i(floor(in.u))));
+    return vec4f(atmosphere(water_colour(in), in.relative, in.altitude), in.share * edge * open * drawn);
 }
 
 fn water_colour(in: WaterFragment) -> vec3f {
-    let dir = normalize(in.relative);
-    let world = in.relative.xy + look.place.xy;
-    // Small waves tilt the surface by the slope of the noise; far away, where a pixel spans several, it lies calm.
-    let calm = 1.0 - smoothstep(0.5, 4.0, frame.pixel * length(in.relative));
-    let q = world / 1.7;
-    let tilt = vec2f(noise(q + vec2f(0.35, 0.0)) - noise(q - vec2f(0.35, 0.0)), noise(q + vec2f(0.0, 0.35)) - noise(q - vec2f(0.0, 0.35))) * 0.06 * calm;
-    let up = normalize(vec3f(2.0 * frame.curvature * in.relative.xy - tilt, 1.0));
-    let mirrored = reflect(dir, up);
-    // The reflection is held to 90 %: the far bank that it would show is darker than the sky.
-    let fresnel = 0.02 + 0.98 * pow(clamp(1.0 - dot(-dir, up), 0.0, 1.0), 5.0);
-    let sun = sun_share(sun_at(in.lod), in.relative, vec3f(0.0, 0.0, 1.0), LIFT_GROUND);
-    let lit = look.ambient.rgb + 0.8 * look.sun_colour.rgb * max(look.sun.z, 0.0) * sun;
-    let body = select(BODY, look.sea.rgb, SEA_DRAW) * lit;
-    var c = mix(body * 0.55, sky(mirrored), min(0.96 * fresnel, 0.9));
-    // The sun's path glints in sparks rather than a sheen.
-    let glint = max(dot(mirrored, look.sun.xyz), 0.0);
-    let sparks = smoothstep(0.8, 0.86, noise(q + 17.0)) * calm;
-    c += look.sun_colour.rgb * (4.0 * pow(glint, 400.0) + 2.5 * sparks * pow(glint, 80.0)) * sun;
-    let foam = FOAM_MOST * smoothstep(FOAM_LOW, FOAM_HIGH, in.fall) * (0.6 + 0.4 * noise(world / 0.8));
-    return mix(c, vec3f(0.85) * lit, foam);
+    return water_look(in.relative, in.lod, in.fall, SEA_DRAW, frame.pixel, frame.curvature);
 }

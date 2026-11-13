@@ -174,7 +174,7 @@ fn samples_break_at_cell_lines_and_a_grid_point_near_a_break_goes() {
 }
 
 #[test]
-fn a_stream_is_a_curve_through_its_vertices_with_its_levels_linear_along_it() {
+fn a_stream_is_a_curve_through_its_vertices_with_its_levels_smooth_and_falling_along_it() {
     // Chords of 30 m and 60 m: the tangent bisects their directions and does not lean to the longer.
     let g = graph(&[Line {
         z: vec![Some(10.0), Some(8.0), Some(7.0)],
@@ -182,7 +182,7 @@ fn a_stream_is_a_curve_through_its_vertices_with_its_levels_linear_along_it() {
     }]);
     let part = &g.parts[0];
     let (v, s) = (&part.vertices, &part.spans);
-    assert!(s.iter().all(|s| !s.chord && s.linear_z));
+    assert!(s.iter().all(|s| !s.chord && s.water_z));
     let direction = |a: [i64; 2], b: [i64; 2]| libm::atan2((b[1] - a[1]) as f64, (b[0] - a[0]) as f64);
     let half = (direction(v[0].pos, v[1].pos) + direction(v[1].pos, v[2].pos)) / 2.0;
     assert!((v[1].tangent - half).abs() < 1e-12, "the bisector of its chords");
@@ -195,13 +195,20 @@ fn a_stream_is_a_curve_through_its_vertices_with_its_levels_linear_along_it() {
         assert!((p.tangent[0] - t[0]).abs() < 1e-9 && (p.tangent[1] - t[1]).abs() < 1e-9, "{span} {u}");
         assert!((p.z_m - v[vertex].z_m).abs() < 1e-9);
     }
-    let mid = point(part, 0, u_at(&s[0], s[0].len_m / 2.0));
-    assert!((mid.z_m - 9.0).abs() < 1e-9, "half way along the arc, half the fall");
+    // The level falls all along, and its grade has no break at the middle vertex.
+    let z: Vec<f64> = (0..=40).map(|j| point(part, j / 21, (j % 21) as f64 / 20.0).z_m).collect();
+    assert!(z.windows(2).all(|w| w[1] <= w[0] + 1e-12), "{z:?}");
+    assert!((point(part, 0, 1.0).grade - point(part, 1, 0.0).grade).abs() < 1e-9);
+    assert!(point(part, 1, 0.0).grade < 0.0, "a vertex between two falls keeps falling");
     assert!(g.samples.iter().any(|s| s.kind == SampleKind::Grid), "the sag rule refines it");
-    // A turn over `curve_turn_max_deg` (60°) is a corner: both its spans are chords, the next one not.
+    // A turn over `curve_turn_max_deg` (60°) is a corner: both its spans are chords, the next one not, and
+    // that curve leaves vertex 2 along the chord before it, so the line does not kink there.
     let g = graph(&[stream(&[], &[[-30.0, 0.0], [0.0, 0.0], [-20.0, 25.0], [-25.0, 60.0]], 0.0)]);
-    let chords: Vec<bool> = g.parts[0].spans.iter().map(|s| s.chord).collect();
-    assert_eq!(chords, [true, true, false]);
+    let (v, s) = (&g.parts[0].vertices, &g.parts[0].spans);
+    assert_eq!(s.iter().map(|s| s.chord).collect::<Vec<_>>(), [true, true, false]);
+    let t = point(&g.parts[0], 2, 0.0).tangent;
+    let chord = direction(v[1].pos, v[2].pos);
+    assert!((t[0] - libm::cos(chord)).abs() < 1e-9 && (t[1] - libm::sin(chord)).abs() < 1e-9);
     // Spans of 300 m whose curves would leave their chords by more than `curve_off_max_m` (2 m).
     let g = graph(&[stream(&[], &[[-300.0, -60.0], [0.0, 0.0], [300.0, -60.0]], 0.0)]);
     assert!(g.parts[0].spans.iter().all(|s| s.chord));
@@ -240,6 +247,33 @@ fn a_waters_end_at_a_tile_line_reads_the_tiles_next_vertex() {
         v.tangent
     };
     assert_eq!(tangent_at(west), tangent_at(both));
+}
+
+#[test]
+fn water_reads_on_through_a_vertex_where_the_map_splits_it_into_two_ways_but_not_at_a_confluence() {
+    // A stream mapped as two ways that meet at (0, 0): the curve and the grade at the shared vertex are
+    // those of one line, so the water turns and falls smoothly there.
+    let up = Line { z: vec![Some(12.0), Some(10.0)], ..stream(&[], &[[-40.0, -10.0], [0.0, 0.0]], 0.0) };
+    let down = Line { z: vec![Some(10.0), Some(9.0)], ..stream(&[("name", "Bach")], &[[0.0, 0.0], [50.0, -5.0]], 0.0) };
+    let joint = |g: &WayGraph| -> Vec<(f64, f64)> {
+        let o = at([0.0, 0.0]);
+        (g.parts.iter().flat_map(|p| &p.vertices))
+            .filter(|v| v.pos == [o.x, o.y])
+            .map(|v| (v.tangent, v.grade))
+            .collect()
+    };
+    let one = joint(&graph(&[up.clone(), down.clone()]));
+    assert_eq!(one.len(), 2);
+    assert!((one[0].0 - one[1].0).abs() < 1e-12 && (one[0].1 - one[1].1).abs() < 1e-12, "{one:?}");
+    let whole = joint(&graph(&[Line {
+        z: vec![Some(12.0), Some(10.0), Some(9.0)],
+        ..stream(&[], &[[-40.0, -10.0], [0.0, 0.0], [50.0, -5.0]], 0.0)
+    }]));
+    assert!((one[0].0 - whole[0].0).abs() < 1e-12 && (one[0].1 - whole[0].1).abs() < 1e-12);
+    // A third line that ends there makes a confluence: each line keeps its own chord.
+    let side = stream(&[], &[[0.0, 0.0], [10.0, 40.0]], 0.0);
+    let three = joint(&graph(&[up, down, side]));
+    assert!(three.iter().all(|t| (t.0 - one[0].0).abs() > 1e-3), "{three:?}");
 }
 
 #[test]
@@ -481,6 +515,37 @@ fn crossing(lines: &[Line]) -> Option<(CrossingKind, Source)> {
     let g = graph(lines);
     assert!(g.crossings.len() <= 1, "{:?}", g.crossings);
     g.crossings.first().map(|c| (c.kind, c.source))
+}
+
+#[test]
+fn a_short_culvert_chain_under_a_road_opens_on_one_straight_line_and_a_long_one_stays_buried() {
+    // Two pipes of `half` metres meet end to end under a road, between open water at 10 m and at 8 m.
+    let pipe =
+        |a: f64, b: f64| Line { z: vec![None, None], ..stream(&[("tunnel", "culvert")], &[[a, 0.0], [b, 0.0]], 0.0) };
+    let chain = |half: f64| {
+        graph(&[
+            road(&[[-1.0, -40.0], [-1.0, 40.0]], 12.0),
+            stream(&[], &[[-half - 30.0, 0.0], [-half, 0.0]], 10.0),
+            pipe(-half, 0.0),
+            pipe(0.0, half),
+            stream(&[], &[[half, 0.0], [half + 30.0, 0.0]], 8.0),
+        ])
+    };
+    let east = |s: &Sample| f64::from(s.pos[0] - (CELL_UNITS / 2) as i32) * mpu();
+    let g = chain(25.0);
+    let water: Vec<&Way> = g.ways.iter().filter(|w| w.family == Family::Water).collect();
+    assert!(water.iter().all(|w| w.level == Level::Ground), "the chain of 50 m lies open");
+    for w in water {
+        for s in &g.samples[w.samples.start as usize..w.samples.end as usize] {
+            let x = east(s).clamp(-25.0, 25.0);
+            let line = 10.0 - 2.0 * (x + 25.0) / 50.0;
+            assert!((s.z_m - line).abs() < 0.05, "{x} m east: {} m, the line {line} m", s.z_m);
+        }
+    }
+    let g = chain(35.0);
+    assert_eq!((g.crossings[0].kind, g.crossings[0].source), (CrossingKind::Culvert, Source::Fallback));
+    let tunnels = g.ways.iter().filter(|w| w.family == Family::Water && w.level == Level::Tunnel).count();
+    assert_eq!(tunnels, 2, "the chain of 70 m stays buried");
 }
 
 #[test]

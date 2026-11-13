@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use core::f64::consts::PI;
 
-use super::curve::{geo, point};
+use super::curve::{geo_of, point};
 use super::parts::Rule;
 use super::{
     inside, Arm, Crossing, CrossingKind, Deck, End, Family, GraphStats, HostRule, Joint, Junction, Level, LinkKind,
@@ -131,7 +131,7 @@ pub(crate) fn between(parts: &[Part], a: &Station, b: &Station) -> f64 {
 pub(crate) fn position(parts: &[Part], st: &Station) -> [i64; 2] {
     let part = &parts[st.part as usize];
     let span = st.span as usize;
-    let g = geo(&part.vertices[span], &part.vertices[span + 1], part.spans[span].chord);
+    let g = geo_of(&part.vertices[span], &part.vertices[span + 1], &part.spans[span]);
     super::curve::round(&g, g.eval(st.u)[0])
 }
 

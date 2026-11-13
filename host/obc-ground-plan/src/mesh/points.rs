@@ -220,6 +220,7 @@ mod tests {
                 faces: Vec::new(),
                 edges,
                 corners: Vec::new(),
+                mouths: Vec::new(),
                 stats: Default::default(),
             };
             let row = &grid_faces(&plan)[10 * SIDE as usize..];

@@ -10,7 +10,7 @@
 //! | rules | `heights::RULES` words: the rule values of the heights (`HeightRules::words`) |
 //! | candidates | `CAND` words each: kind, key, glob order, label, line, then offset and count of its discs, beyond cuts and parts in the extras |
 //! | labels | `LABEL` words each: surface, owner kind, rank, height rule; owner id (a junction's: the index of its junction record); material line; rail line of a crossing; 4 host lines; 4 other lines (none for a junction: its record holds its arms) |
-//! | lines | `LINE` words each, one per leg of a way (`legs`), a way's legs in order: way, finish code with flags, material and the leg (`LEG_SHIFT`), first sample, sample count, cut, fill, reach (m), class rank, shoulder, verge (m), return grade, half-width (m), the kind of each end, the steepest fill and cut; then the ceiling lines (`CEILING`), whose cut and fill words hold their flat ends and whose return grade holds their drop |
+//! | lines | `LINE` words each, one per leg of a way (`legs`), a way's legs in order, the water after the ways: way, finish code (0 for water) with flags, material and the leg (`LEG_SHIFT`), first sample, sample count, cut, fill, reach (m), class rank, shoulder, verge (m), return grade, half-width (m), the kind of each end, the steepest fill and cut, the fill's rise and crest (m); then the ceiling lines (`CEILING`), whose cut and fill words hold their flat ends and whose return grade holds their drop |
 //! | samples | `SAMPLE` words each: x, y, half-width (units), metres along, glob order, height, bank, grade, mitre direction x, y, health radius left and right (units) |
 //! | extras | discs (`DISC` words), beyond cuts (a cut and a label), parts (a way and two cuts, each with a flag) |
 //! | junctions | the table, a word per junction record: its offset; then the records (`junction`) |
@@ -45,8 +45,8 @@ use super::legs::{self, Legs};
 use super::points::Circle;
 use super::stroke::union;
 use super::{
-    band, candidates, sample_at, snap, Cand, FacePlan, Glob, HeightRule, Label, Mouth, Owner, PlanRules, Rules, Sliced,
-    Surface, WayLine, LAYERS, OUTSIDE, SLOPE,
+    band, candidates, near_only, sample_at, snap, Cand, FacePlan, Glob, HeightRule, Label, Mouth, Owner, PlanRules,
+    Rules, Sliced, Surface, WayLine, LAYERS, OUTSIDE, SLOPE,
 };
 use crate::frame::{metres_per_unit, CellKey, GlobalPoint, CELL_UNITS};
 use crate::graph::WayGraph;
@@ -54,14 +54,14 @@ use crate::sections::{Finish, Material, WaySection};
 use crate::CellInput;
 
 /// "OBR" and the layout's version.
-pub const MAGIC: u32 = 0x4f42_5215;
+pub const MAGIC: u32 = 0x4f42_5216;
 
 /// Whether a junction's guest `g` stops at its best host `h`: a way with round corners whose pair's
 /// mouth in `plan.json` is `stop`, and whose look (finish and material) is not the host's or whose
 /// finish keeps its tread (`tread_finishes`). The paint gives the face beside such an arm its own
 /// look up to the route's edge. A `reach` pair keeps the junction's look.
 fn stops(plan: &PlanRules, h: &WaySection, g: &WaySection) -> bool {
-    let tread = g.material == Material::Finish && plan.keeps_tread(g.finish);
+    let tread = g.material == Material::Finish && g.finish.is_some_and(|f| plan.keeps_tread(f));
     (tread || (g.finish, g.material) != (h.finish, h.material))
         && g.corner_radius_m.max(g.corner_radius_walk_m) > 0.0
         && plan.pair(h.group, g.group).mouth == Mouth::Stop
@@ -80,7 +80,7 @@ pub const HEIGHT_PAD_M: f64 = 1.0;
 pub const HEAD: usize = 15;
 pub const CAND: usize = 11;
 pub const LABEL: usize = 12;
-pub const LINE: usize = 16;
+pub const LINE: usize = 18;
 pub const SAMPLE: usize = 12;
 /// Centre, radius, the line at each foot.
 pub const DISC: usize = 5;
@@ -120,7 +120,7 @@ pub const JUNCTION: u32 = 2;
 pub const PLATFORM: u32 = 3;
 
 /// Line flags above the finish code's byte: a rail line, a way that wears lines, one that looks as a
-/// motorway, a wall class, a path (`WaySection::path`); and from `MATERIAL_SHIFT` its top's
+/// motorway, a wall class, line water, a path (`WaySection::path`); and from `MATERIAL_SHIFT` its top's
 /// `sections::Material`.
 pub const RAIL: u32 = 1 << 8;
 pub const MARKED: u32 = 1 << 9;
@@ -135,6 +135,8 @@ pub const WALL: u32 = 1 << 11;
 /// deck's own chord. Its samples' half-width is its stroke's: its paved layers' and `edge_band_m`. No reader of
 /// storey 0 takes it as a way.
 pub const CEILING: u32 = 1 << 12;
+/// Line water: a painter reads only the records of its host's kind, water or not.
+pub const WATER: u32 = 1 << 13;
 pub const PATH: u32 = 1 << 14;
 /// A deck's stroke ends flat on an end line within this turn of its chord: past it the two ways meet side by
 /// side, and the stroke ends square to its own chord.
@@ -155,7 +157,8 @@ pub const LEG_SHIFT: u32 = 24;
 // The fields of a line's finish word: the finish code, each flag, the material and the leg. No two
 // overlap; a new flag joins this list.
 const _: () = {
-    let fields = [0xff, RAIL, MARKED, MOTORWAY, WALL, CEILING, PATH, 0xff << MATERIAL_SHIFT, u32::MAX << LEG_SHIFT];
+    let fields =
+        [0xff, RAIL, MARKED, MOTORWAY, WALL, CEILING, WATER, PATH, 0xff << MATERIAL_SHIFT, u32::MAX << LEG_SHIFT];
     let (mut seen, mut i) = (0u32, 0);
     while i < fields.len() {
         assert!(seen & fields[i] == 0, "two fields of a line's finish word overlap");
@@ -243,21 +246,24 @@ fn pass(
     let ceilings = if level == 0 { super::ceiling_lines(graph, input, rules, cell) } else { Vec::new() };
     let plan = s.plan(cell, level, &map, &s.labels);
     let near = encode(cell, graph, input, rules, (&c.lines, &ceilings), &c.cands, &plan, true);
-    let far_block = far::encode(cell, graph, input, rules, &c.lines);
+    // The far block and the far level hold no water: their lines are the way lines.
+    let far_block = far::encode(cell, graph, input, rules, &c.lines[..c.ways]);
     let records = far_records.then(|| {
         let labels = c.far(&s);
-        c.cands.retain(|c| kind(c) != BAND);
-        encode(cell, graph, input, rules, (&c.lines, &[]), &c.cands, &s.plan(cell, level, &map, &labels), false)
+        c.cands.retain(|c| !near_only(c));
+        let plan = s.plan(cell, level, &map, &labels);
+        encode(cell, graph, input, rules, (&c.lines[..c.ways], &[]), &c.cands, &plan, false)
     });
     (faces, near, records, far_block)
 }
 
-/// How far an outline edge's cones reach: the greatest slope reach of a class. The candidates are the
-/// neighbours' own only up to `MARGIN_M` past the cell (the input margin holds no more past the faces'
-/// longest chain), so past it two cells hold the same outline edges only as far as the border check
-/// shows.
+/// How far an outline edge's cones reach: the greatest slope reach of a class or a water row. The
+/// candidates are the neighbours' own only up to `MARGIN_M` past the cell (the input margin holds no more
+/// past the faces' longest chain), so past it two cells hold the same outline edges only as far as the
+/// border check shows.
 pub fn outline_m(sections: &crate::sections::Sections) -> f64 {
-    (0..).map_while(|rank| sections.class_faces(rank)).map(|c| c.reach_m).fold(0.0, f64::max)
+    let ways = (0..).map_while(|rank| sections.class_faces(rank)).map(|c| c.reach_m);
+    ways.chain(sections.bank_reaches()).fold(0.0, f64::max)
 }
 
 /// Frame units of `m` metres at the cell's edge nearer the pole: at least `m` at every point of it, so
@@ -836,11 +842,16 @@ fn line_words(
 ) -> (Vec<u32>, Vec<u32>) {
     let way = &graph.ways[line.way as usize];
     let sec = &line.sec;
-    let flags =
-        [(line.rail, RAIL), (sec.marked, MARKED), (sec.motorway, MOTORWAY), (sec.leg_wall, WALL), (sec.path, PATH)]
-            .iter()
-            .fold(0, |f, &(on, bit)| f | if on { bit } else { 0 });
-    let finish = code(sec.finish) | flags | (sec.material as u32) << MATERIAL_SHIFT;
+    let flags = [
+        (line.rail, RAIL),
+        (sec.marked, MARKED),
+        (sec.motorway, MOTORWAY),
+        (sec.leg_wall, WALL),
+        (sec.water, WATER),
+        (sec.path, PATH),
+    ];
+    let flags = flags.iter().fold(0, |f, &(on, bit)| f | if on { bit } else { 0 });
+    let finish = sec.finish.map_or(0, code) | flags | (sec.material as u32) << MATERIAL_SHIFT;
     let mut w = vec![line.way, finish, 0, (hi - lo + 1) as u32];
     w.extend([f(sec.cut), f(sec.fill), f(sec.reach_m), sec.rank as u32]);
     w.extend([f(sec.shoulder_m), f(sec.verge_m), f(sec.return_grade), f(sec.half_m)]);
@@ -864,7 +875,7 @@ fn line_words(
             LEVEL
         });
     }
-    w.extend([f(sec.fill_max), f(sec.cut_max)]);
+    w.extend([f(sec.fill_max), f(sec.cut_max), f(sec.rise_m), f(sec.crest_m)]);
     let samples = &graph.samples[way.samples.start as usize..way.samples.end as usize];
     // Per vertex: its graph sample and its share of the segment to the next one.
     let mut share = vec![(0usize, 0.0f64); line.p.len()];
@@ -1079,7 +1090,9 @@ fn encode(
         let (a, b) = (plan.vertices[e.a as usize], plan.vertices[e.b as usize]);
         let eb = [a[0].min(b[0]), a[1].min(b[1]), a[0].max(b[0]), a[1].max(b[1])].map(f64::from);
         let paved = |l: &Label| l.rule as u8 >= HeightRule::Owner as u8;
-        if with_outline && paved(&l) != paved(&r) && bins_of(eb, reach_units).is_some() {
+        // Water casts no cone into a culvert's zone: the slopes there rise from its sides only (`culverts`).
+        let hidden = [(l, r), (r, l)].iter().any(|(a, b)| a.surface == Surface::Water && b.surface == Surface::Zone);
+        if with_outline && paved(&l) != paved(&r) && !hidden && bins_of(eb, reach_units).is_some() {
             rims.push(if paved(&l) { (a, b, label_id(&l)) } else { (b, a, label_id(&r)) });
         }
         let Some((ec, er)) = bins_in(eb, margin + 1.0, window.wide).filter(|_| l != r) else { continue };
@@ -1350,13 +1363,14 @@ fn encode(
         segs[b].append(&mut wanted);
     }
     // The heights' segments within their reach and HEIGHT_PAD_M of a bin, and the discs whose circle
-    // grown by the greatest such reach meets a bin. A segment's reach is the one that the heights read:
-    // its half-width, the class's shoulder and verge, and the class's slope reach or the least feather,
-    // whatever a taper narrows the bands to.
+    // grown by the greater reach of its two lines meets a bin: a fan relates its lines only within their
+    // feathers past its circle. A segment's reach is the one that the heights read: its half-width, the
+    // class's shoulder and verge, and the class's slope reach or the least feather, whatever a taper
+    // narrows the bands to.
     let mut hsegs: Vec<Vec<u32>> = vec![Vec::new(); window.len()];
     let mut hdiscs: Vec<Vec<u32>> = vec![Vec::new(); window.len()];
     let hpad = units(HEIGHT_PAD_M);
-    let mut reach_max = 0.0f64;
+    let mut line_reach = vec![0.0f64; lines.len()];
     for (li, &(l, lo, hi)) in rec.iter().enumerate() {
         let line = &lines[l];
         let sec = &line.sec;
@@ -1364,7 +1378,7 @@ fn encode(
         for i in 0..hi - lo {
             let (a, b) = (line.p[lo + i], line.p[lo + i + 1]);
             let reach = line.h[lo + i].max(line.h[lo + i + 1]) + side + hpad;
-            reach_max = reach_max.max(reach);
+            line_reach[l] = line_reach[l].max(reach);
             let Some((c, r)) = bins_in(seg_box_of(a, b), reach, window.wide) else { continue };
             crate::probe::field(crate::probe::Field::Line, li);
             crate::probe::field(crate::probe::Field::Sample, i);
@@ -1403,7 +1417,8 @@ fn encode(
     }
     for (ci, cand) in cands.iter().enumerate() {
         for (di, d) in cand.discs.iter().enumerate() {
-            let (x, y, reach) = (f64::from(d.centre[0]), f64::from(d.centre[1]), d.radius + reach_max);
+            let reach = d.lines.iter().filter_map(|&l| line_reach.get(l)).fold(0.0, |r: f64, &x| r.max(x));
+            let (x, y, reach) = (f64::from(d.centre[0]), f64::from(d.centre[1]), d.radius + reach);
             let Some((c, r)) = bins_in([x, y, x, y], reach, window.wide) else { continue };
             crate::probe::field(crate::probe::Field::Candidate, ci);
             crate::probe::field(crate::probe::Field::Disc, di);
@@ -1728,7 +1743,15 @@ fn decide(words: &[u32], covered: &[u32], q: [f64; 2], segs: &[u32]) -> Option<u
             k[2]
         }
     };
-    let rest: Vec<u32> = covered.iter().copied().filter(|&c| !matches!(cand(words, c)[0], REGION | OUTLINE)).collect();
+    let surface = |c: u32| label(words, cand(words, c)[3])[0] & 0xff;
+    let own = |c: u32| !matches!(cand(words, c)[0], REGION | OUTLINE);
+    let zone = covered.iter().any(|&c| own(c) && surface(c) == Surface::Zone as u32);
+    // Where a zone covers q, line water does not count: the water ends at the zone.
+    let water = |c: u32| {
+        let line = label(words, cand(words, c)[3])[2];
+        line != u32::MAX && words[words[6] as usize + LINE * line as usize + 1] & WATER != 0
+    };
+    let rest: Vec<u32> = covered.iter().copied().filter(|&c| own(c) && !(zone && water(c))).collect();
     let best = rest.iter().map(|&c| cand(words, c)[1]).min()?;
     let win = rest.iter().copied().filter(|&c| cand(words, c)[1] == best).min_by_key(|&c| glob(c))?;
     let k = cand(words, win);
@@ -1738,7 +1761,8 @@ fn decide(words: &[u32], covered: &[u32], q: [f64; 2], segs: &[u32]) -> Option<u
     let across = (0..k[8] as usize).map(|b| &extras[k[7] as usize + BEYOND * b..][..BEYOND]).find(|e| past(e, q));
     let mut id = across.map_or(k[3], |e| e[4]);
     let l = label(words, id);
-    if (l[0] >> 8) & 0xff == WAY_OWNER && across.is_none() {
+    // A zone keeps itself in a region of its owner way, as the overlay's.
+    if (l[0] >> 8) & 0xff == WAY_OWNER && across.is_none() && l[0] & 0xff != Surface::Zone as u32 {
         let w = l[1];
         let outside = |p: &[u32]| !(p[1] == 1 && past(&p[2..6], q)) && !(p[6] == 1 && past(&p[7..11], q));
         let region = (covered.iter().copied())

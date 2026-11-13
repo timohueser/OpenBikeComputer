@@ -15,6 +15,7 @@ struct WaterOut {
     @location(4) pixels: f32,
     @location(5) fall: f32,
     @location(6) lod: vec2f,
+    @location(7) u: vec2f,
 }
 
 // A fragment shader cannot read a clip distance.
@@ -27,6 +28,7 @@ struct WaterFragment {
     @location(4) pixels: f32,
     @location(5) fall: f32,
     @location(6) lod: vec2f,
+    @location(7) u: vec2f,
 }
 
 fn mark_cut(out: ptr<function, WaterOut>, inside: vec4f, kept: bool) {

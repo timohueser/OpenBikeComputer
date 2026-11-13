@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::far::{MAGIC_FAR, MASK_M, PAD, WINDOW};
 use super::{
     blend_edges, find, label, outline_units, BINS, BIN_UNITS, CAND, CEILING, DISC, HEAD, JUNCTION, LEG_SHIFT, LINE,
-    MARGIN_M, PLATFORM, RAIL, SAMPLE, WAY, WAY_OWNER,
+    MARGIN_M, PLATFORM, RAIL, SAMPLE, WATER, WAY, WAY_OWNER,
 };
 use crate::faces::check::owner_name;
 use crate::faces::geom::winding;
@@ -222,18 +222,19 @@ pub fn agreement(words: &[u32], plan: &FacePlan, overlay: &Overlay, n: i32, edge
 }
 
 /// The far level against the near one at n² points of every bin: the points whose near label is no
-/// band layer, and of them those whose far label differs.
+/// band layer and no water, and of them those whose far label differs.
 pub fn far_agreement(near: &[u32], far: &[u32], n: i32) -> [u64; 2] {
-    let band = [Surface::Shoulder, Surface::Verge, Surface::Slope].map(|s| s as u32);
-    let words = |w: &[u32], id: Option<u32>| id.map(|id| label(w, id).to_vec());
+    let band = [Surface::Shoulder, Surface::Verge, Surface::Bank, Surface::Slope, Surface::Water, Surface::Zone]
+        .map(|s| s as u32);
     let mut count = [0u64; 2];
+    // By name: the far block numbers its junction records without the water's.
     for q in samples(near, n) {
-        let a = words(near, find(near, q));
-        if a.as_ref().is_some_and(|l| band.contains(&(l[0] & 0xff))) {
+        let a = records_name(near, find(near, q));
+        if band.contains(&(a[0] & 0xff)) {
             continue;
         }
         count[0] += 1;
-        count[1] += u64::from(words(far, find(far, q)) != a);
+        count[1] += u64::from(records_name(far, find(far, q)) != a);
     }
     count
 }
@@ -242,7 +243,7 @@ pub fn far_agreement(near: &[u32], far: &[u32], n: i32) -> [u64; 2] {
 /// block's; its record lines are a subsequence of the near ones, matched by way and leg, with every
 /// leg of a kept way and every word but the first sample and the count; its samples are a run of the
 /// near line's, every word but 4 equal, and word 4 keeps their order; a key is the near way
-/// candidate's. Every segment of every near leg that reaches the cell a unit within its line's reach
+/// candidate's. The far block holds no water. Every segment of every near way leg that reaches the cell a unit within its line's reach
 /// (`reach` of `far`, read from the near words) has its leg in the far block, with every sample in its
 /// run that its stroke and `h_segment` read; and `h_segment`'s branches there are the full leg's. The
 /// faults, and the counts of what the check saw.
@@ -348,13 +349,13 @@ pub fn far_matches_near(near: &[u32], far: &[u32], cell: CellKey) -> (Vec<String
             *h = h.max(m);
         }
     }
-    // Every near leg: its segments in reach, and in the far block the samples that their strokes read. A ceiling
-    // line is no leg of storey 0.
+    // Every near way leg: its segments in reach, and in the far block the samples that their strokes read. A
+    // ceiling line is no leg of storey 0.
     let f32m = |w: u32| f64::from(f32::from_bits(w));
     let cell_u = f64::from(CELL_UNITS as i32);
     for k in 0..n_near {
         let nl = line(near, k);
-        if nl[1] & CEILING != 0 {
+        if nl[1] & (WATER | CEILING) != 0 {
             continue;
         }
         let n = nl[3] as usize;

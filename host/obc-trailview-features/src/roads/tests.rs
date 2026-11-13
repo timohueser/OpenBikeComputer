@@ -337,22 +337,23 @@ fn a_ford_lies_under_the_water_and_a_low_short_bridge_is_a_culvert() {
         way("track", line(&[(320.0, 80.0), (350.0, 80.0)]), plain),
         way("track", line(&[(300.0, 80.0), (320.0, 80.0)]), bridge),
     ];
+    // Water wider than a culvert's: a track's ford there stays a ford.
     let streams = [
         River {
             points: vec![place.at(50.0, -10.0), crossing, place.at(50.0, 10.0)],
             levels: vec![999.1, 999.0, 998.9],
-            half: 1.0,
+            half: 2.0,
             cover: 1.0,
             lift: 1.5,
-            untagged_culvert: true,
+            untagged_culvert: false,
         },
         River {
             points: vec![place.at(70.0, 20.0), place.at(70.0, 40.0)],
             levels: vec![998.6, 998.4],
-            half: 1.0,
+            half: 2.0,
             cover: 1.0,
             lift: 1.5,
-            untagged_culvert: true,
+            untagged_culvert: false,
         },
     ];
     let solved = run(&features, &terrain, &streams);
@@ -915,7 +916,8 @@ fn stream(place: &Place, from: (f64, f64), to: (f64, f64)) -> River {
 }
 
 #[test]
-fn a_road_over_an_untagged_stream_holds_its_cover_and_a_ford_a_path_a_wide_river_and_a_grazing_line_do_not() {
+fn a_road_over_a_narrow_stream_holds_its_cover_tagged_as_a_ford_or_not_and_a_path_a_wide_river_and_a_grazing_line_do_not(
+) {
     let place = bridges();
     let road = |class: &str, north: f64, edit: fn(&mut Feature)| {
         way(class, place.line(&[(-100.0, north), (100.0, north)], Some(20.0)), edit)
@@ -976,14 +978,16 @@ fn a_road_over_an_untagged_stream_holds_its_cover_and_a_ford_a_path_a_wide_river
     let level = |z: f64, want: f64| (z - want).abs() < 0.01;
     assert!(lifted(at(0, 0.0)), "{}", at(0, 0.0));
     assert!(level(at(1, 0.0), 500.0) && level(at(3, 0.0), 500.0) && level(at(4, 0.0), 500.0));
-    assert!(level(at(2, 0.0), 499.7 - FORD_M), "{}", at(2, 0.0));
-    assert!(level(at(5, 0.0), 499.7 - FORD_M) && lifted(at(5, 300.0)), "{} {}", at(5, 0.0), at(5, 300.0));
+    // A road tagged as a ford, and one that shares a vertex with the stream, over narrow water.
+    assert!(lifted(at(2, 0.0)), "{}", at(2, 0.0));
+    assert!(lifted(at(5, 0.0)) && lifted(at(5, 300.0)), "{} {}", at(5, 0.0), at(5, 300.0));
     assert!(lifted(at(6, 0.0)) && level(at(7, 0.0), 500.0) && level(at(8, 0.0), 500.0));
     assert!(level(at(9, 0.0), 500.0) && level(at(9, 20.0), 500.0));
     assert!(lifted(at(10, 0.0)) && level(at(11, 0.0), 500.0));
     let m = &solved.metrics;
-    assert_eq!((m.covers_untagged, m.covers_untagged_lifted, m.covers_untagged_capped, m.covers_capped), (4, 4, 1, 0));
-    assert_eq!((m.covers, m.covers_lifted, m.fords), (4, 4, 2));
+    // The ford's crossing, the shared vertex and the stream 4 m on: that one lies under the shared one's lift.
+    assert_eq!((m.covers_untagged, m.covers_untagged_lifted, m.covers_untagged_capped, m.covers_capped), (7, 6, 1, 0));
+    assert_eq!((m.covers, m.covers_lifted, m.fords), (7, 6, 0));
     assert!(m.cover_lift_top_m > 0.69 && m.cover_lift_top_m < 0.71, "{}", m.cover_lift_top_m);
 }
 

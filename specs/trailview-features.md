@@ -40,7 +40,9 @@ nearer the pole, so it is at least `buffer_m` at every point of the tile. 40 m h
 and fill cone of a road up to 30 m wide, which reaches 25 m past the road edge.
 
 The cut makes no vertex. A piece of a line keeps the segments that meet the buffered square whole,
-and one more vertex at each end, so that both tiles know the bend at each end of such a segment.
+and one more vertex at each end, so that both tiles know the bend at each end of such a segment. A
+piece of a `river` or a `stream` keeps two more vertices at each end: the curve that the ground plan
+draws through a span of water reads two vertices on each side of it.
 A ring keeps each edge that crosses a side of the square whole, and joins the vertices outside
 the side directly. Such a join lies outside the square. Thus inside the buffered square, the
 tiles that hold a feature hold the same vertices and edges, and a stamp near a tile edge gets
@@ -211,7 +213,9 @@ The road solver:
 - puts a vertex that a road or a path shares with a river or a stream, where each passes through it
   or meets another part of its own there (only open water counts: a culvert part that starts there
   makes no ford), and the crossing of a way tagged `ford` or
-  `bridge=low_water_crossing` with a waterway, 0.2 m below the water. A path tagged
+  `bridge=low_water_crossing` with a waterway, 0.2 m below the water. A road or a track does so only
+  over water wider than `culvert_width_m`: over narrower water it takes the culvert's cover below,
+  tagged as a ford or not. A path tagged
   `ford=stepping_stones` is no ford and gets no such vertex: it keeps its height,
 - lifts a road or a track on the ground where it crosses a culvert (see below), so that it lies at
   least `cover_m` of the waterway's kind in `data/trailview/waterways.json` over the water there.
@@ -221,7 +225,7 @@ The road solver:
   water lies over the terrain there, have no cover: those levels are not the pipe's, which runs
   under the ground. Nor has a crossing where the cover would lift the way by more than
   `cover_lift_max_m` of the kind over its height after the first solve. A path keeps its height. It also lifts a road, a track or a
-  railway on the ground, not tagged as a ford, where it crosses a river or a stream no wider than
+  railway on the ground, tagged as a ford or not, where it crosses a river or a stream no wider than
   `culvert_width_m` of its kind at 20° or more, unless a ford of that way lies within
   `(cover_m + 0.2 m) / grade` of its class, along the way. A way of a negative `layer` without a
   `tunnel` tag (see below) and water tagged `bridge` have no such crossing. Where one ends on the
@@ -449,13 +453,25 @@ terrain at the waterway's own line, every 5 m: the highest level that never rise
 under the lowest terrain within ±(w/2 + 2 m) across the line and at least `freeboard_m` of the kind
 under the lower terrain at ±(w/2 + `bank_m`), so that the water lies in a channel under its banks.
 Where the terrain is unknown, a sample takes the level before it. Between two vertices of the OSM way,
-the bake adds a vertex at a sample where the straight level between the vertices around it lies more
-than 0.2 m off the level of that sample, the farthest first, so the level holds along the line and not
-only at the vertices of the map. An added vertex lies on the curve of its span that the ground plan
-draws through the vertices of the map: the cubic Hermite whose tangents are the bisectors of the unit
-chords at each vertex, and the chord at an end of the way; the chord where a vertex turns by more than
-`curve_turn_max_deg`, where the curve leaves the chord by more than `curve_off_max_m` of the kind in
-`data/trailview/waterways.json`, or where it folds back. The rules of the ways at water (fords, covers, culverts) read the
+the bake adds vertices at samples until both drawn levels between the kept vertices lie within 0.2 m
+of the level of every sample, so the level holds along the line and not only at the vertices of the map.
+In each round, each span between two kept vertices where a drawn level lies more than 0.2 m off a
+sample keeps its farthest sample. An added vertex lies on the curve of its span
+that the ground plan draws through the vertices of the map, at the sample's share of the span along the
+chords of the map, taken as a share of the curve's length. The drawn level is read on the curve that the
+ground plan draws through the kept vertices: a span of that curve of length L (metres along the curve)
+has at share t of its length the cubic Hermite of the levels z0, z1 and the grades g0, g1 of its
+vertices: z0·(2t³ − 3t² + 1) + L·g0·(t³ − 2t² + t) + z1·(3t² − 2t³) + L·g1·(t³ − t²); a reader
+without the ground plan draws the straight level z0 + t·(z1 − z0) at the same t. The grade at a
+vertex is the harmonic mean of the grades of its two chords where they fall the same way, else 0, and at
+an end of the way or beside an unknown level its one chord's. A sample reads the level at the point of
+that curve nearest to its own point. The curve of a span is the cubic Hermite whose tangents are the
+bisectors of the unit chords at each vertex, and the chord at an end of the way; the chord where a vertex
+turns by more than `curve_turn_max_deg`, where the curve leaves the chord by more than `curve_off_max_m`
+of the kind in `data/trailview/waterways.json`, or where it folds back. A curve beside a chord takes that
+chord's direction at their shared vertex, and its tangents shorten until it leaves its chord by at most
+`curve_off_max_m`. The bake works on the points and levels before the tiles round them to tile units and
+centimetres. The rules of the ways at water (fords, covers, culverts) read the
 levels at the vertices of the map and the straight line between them: at a crossing between two of
 them, that level can lie off the level of the tiles. Near a junction, within the bank
 top's distance of the widest waterway there, the bank tops lie in the other waterway's bed and do

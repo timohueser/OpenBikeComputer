@@ -22,6 +22,8 @@ struct Piece {
     // `first`: make only the plain terrain's corners, which read the drawn page.
     block: u32,
     first: u32,
+    // The first word of the culvert mouths (piece.wgsl).
+    culverts: u32,
 }
 
 @group(0) @binding(0) var<storage, read_write> piece: array<u32>;
@@ -37,7 +39,10 @@ const NO_LABEL: u32 = 33554431u;
 const NORMAL_STEP_M: f32 = 0.1;
 // As MAT of roads/section.ts, and the surfaces of faces::Surface.
 const MAT_GROUND: u32 = 1u;
+const MAT_WATER: u32 = 50u;
 const S_SHOULDER: u32 = 3u;
+const S_WATER: u32 = 9u;
+const S_ZONE: u32 = 11u;
 // The code of a ground-looking shoulder without a line, until its nearest way gives its class.
 const CODE_ROAD_SURFACE: u32 = 1u;
 // In a corner's look word, the bit of the corridors' fine offset (1 << FINE_SHIFT), which pieces do not read:
@@ -86,7 +91,7 @@ fn road_wall(finish: u32) -> bool {
 }
 
 // The metres past the core edge of the way whose core lies nearest q, its half-width, and 1 if it is a wall
-// class road (road_wall): of the lines whose heights reach q's bin. M_FAR and FACE_HALF_M where none does. Water has no way. A bin lists every line whose
+// class road (road_wall): of the lines whose heights reach q's bin, but water. M_FAR and FACE_HALF_M where none does. A bin lists every line whose
 // heights reach it, and every class's reach is at least a path's, so within a path's reach (ground_terms) the
 // answer does not depend on the bin.
 fn nearest_way(q: vec2i, mpu: f32) -> vec3f {
@@ -103,7 +108,7 @@ fn nearest_way(q: vec2i, mpu: f32) -> vec3f {
         let item = mw(at + k);
         let line = item & 0xffffu;
         let finish = mw(lines + M_LINE * line + 1u);
-        if (((finish & 0xffu) == 0u && (finish & M_RAIL) == 0u) || (finish & M_CEILING) != 0u) {
+        if ((finish & (M_WATER | M_CEILING)) != 0u) {
             continue;
         }
         let wa = samples + M_SAMPLE * (mw(lines + M_LINE * line + 2u) + (item >> 16u));
@@ -159,15 +164,19 @@ fn may_pave(label: u32) -> bool {
         return false;
     }
     let surface_code = mw(m_label(params.block, label)) & 0xffu;
-    return m_paved(params.block, label) || surface_code == S_SHOULDER || surface_code == S_CORNER_FILL || surface_code == S_PLATFORM;
+    return m_paved(params.block, label) || surface_code == S_SHOULDER || surface_code == S_CORNER_FILL || surface_code == S_PLATFORM || surface_code == S_WATER;
 }
 
 // The look word and the place word of a corner with a label. A paved face takes its way's look and a frame:
 // a way's carriageway, bed and shoulder their line's, a junction's carriageway its one or two through lines',
 // and soil its line's, in a junction the nearest arm's (from the junction's record). A junction's corner fill and a
-// platform are one surface without edges. Every other face is ground.
+// platform are one surface without edges. A water face is water. Every other face is ground.
 fn corner_look(q: vec2i, label: u32, mpu: f32) -> vec2u {
     let ground = vec2u(MAT_GROUND, 0u);
+    // A culvert's zone is ground, though its material is its way's line.
+    if (label != M_NONE && (mw(m_label(params.block, label)) & 0xffu) == S_ZONE) {
+        return ground;
+    }
     if (!may_pave(label)) {
         return ground;
     }
@@ -180,8 +189,10 @@ fn corner_look(q: vec2i, label: u32, mpu: f32) -> vec2u {
     let finish = select(mw(lines + M_LINE * line + 1u), 0u, line == M_NONE);
     let code = finish & 0xffu;
     let wall = select(0u, LOOK_WALL_SIDE, road_wall(finish));
-    // A line without a finish is water's: the water draws its bed. A shoulder without a line looks like
-    // ground; its nearest way decides whether a step beside it is a wall.
+    if (surface_code == S_WATER) {
+        return vec2u(look_word(MAT_WATER, 0u, 0.0), 0u);
+    }
+    // A shoulder without a line looks like ground; its nearest way decides whether a step beside it is a wall.
     if (line == M_NONE && shoulder) {
         return vec2u(look_word(MAT_GROUND, CODE_ROAD_SURFACE, 0.0), 0u);
     }
@@ -286,7 +297,8 @@ fn corners(@builtin(local_invocation_index) lane: u32, @builtin(workgroup_id) gr
         // Ground: its nearest way, for the ground terms; a shoulder takes that way's wall class.
         let way = nearest_way(q, mpu);
         let wall = ((look.x >> 7u) & 15u) == CODE_ROAD_SURFACE && way.z > 0.5;
-        look = vec2u(look_word(MAT_GROUND, 0u, way.y) | select(0u, LOOK_WALL_SIDE, wall), place_word(way.x, 0.0));
+        let side = select(0u, LOOK_WALL_SIDE, wall);
+        look = vec2u(look_word(MAT_GROUND, 0u, way.y) | side, place_word(way.x, 0.0));
     }
     // Octahedral, as piece.wgsl decodes it.
     let e = n.xy / (abs(n.x) + abs(n.y) + n.z);

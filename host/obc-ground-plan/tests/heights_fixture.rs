@@ -2,7 +2,11 @@
 //! with no rule and slopes steeper than a rock face do not grow, no cap acts, every paved face finds
 //! its host, every deck end has its end face and the ground stays under every deck, and two cells give
 //! a point on their shared line the same bits. The scan's steps with no rule and the ripple of the
-//! carriageways are guidelines: printed, not gated.
+//! carriageways are guidelines: printed, not gated. A fault within the reach of a tile's water vertex whose
+//! level lies far off the terrain is the bake's: a level never rises downstream, so a dip upstream holds it
+//! under the later terrain (a pit), and where the map's line runs on a slope beside the valley floor, the
+//! level is the low ground across the line. Those faults are counted apart and gated apart: the reader
+//! cannot move its own faults out of the gate.
 
 #[path = "fixture/mod.rs"]
 mod fixture;
@@ -17,46 +21,64 @@ use obc_ground_plan::faces::heights::check::{
 use obc_ground_plan::faces::heights::Step;
 use obc_ground_plan::faces::records;
 use obc_ground_plan::faces::Rules;
-use obc_ground_plan::frame::{from_lon_lat, metres_per_unit, CellKey, GlobalPoint};
+use obc_ground_plan::faces::Surface;
+use obc_ground_plan::frame::{from_lon_lat, metres_per_unit, CellKey, GlobalPoint, CELL_UNITS, FRAME_BITS};
 use obc_ground_plan::graph;
+use obc_ground_plan::sections::WATER_KINDS;
 use obc_ground_plan::CellInput;
 
 /// The grid of the step scan, metres.
 const GRID_M: f64 = 0.5;
-/// Steps inside faces, measured with the slopes from the paved outline: the count must not grow.
-const INSIDE_MAX: usize = 7;
-/// Steps at label edges with no rule (`check::edge_steps`), measured on the revision 15 fixture with the
+/// Steps inside faces, measured on the revision 16 fixture with the slopes from the paved outline and line
+/// water: the count must not grow.
+const INSIDE_MAX: usize = 9;
+/// Steps at label edges with no rule (`check::edge_steps`), measured on the revision 16 fixture with the
 /// slopes from the outline pieces of `records::outline_edges` and the vertex values of `heights::groups`
-/// (an end's cone over the fan of its turn only), walls up to the highest wall and faces past it as steep as
-/// their need: the count must not grow.
-const EDGE_MAX: usize = 91;
+/// (an end's cone over the fan of its turn only), walls up to the highest wall, faces past it as steep as
+/// their need, line water and its culverts and fords: the count must not grow.
+const EDGE_MAX: usize = 102;
 /// Pairs of grid points on a slope steeper than a rock face where the terrain is not (`Scan::steep`),
-/// measured on the revision 15 fixture with cones on their outward side, the outline pieces of
-/// `records::outline_edges` and the vertex values of `heights::groups`, faces past the highest wall as
-/// steep as their need, the faces' rings with a vertex at each tile line (it moves piece ends by a few units),
-/// and the ground under the decks' ceilings: the count must not grow.
-const STEEP_MAX: usize = 904;
+/// measured on the revision 16 fixture with cones on their outward side, the outline pieces of
+/// `records::outline_edges` and the vertex values of `heights::groups`, faces past the highest wall as steep
+/// as their need, the faces' rings with a vertex at each tile line, and the banks of line water, whose cuts
+/// climb as steep as the terrain asks beside a gorge, its culverts, and the ground under the decks' ceilings:
+/// the count must not grow.
+const STEEP_MAX: usize = 2469;
 /// A no-room wall's height that changes along it by more than this per metre is a step in its top
-/// (`check::wall_steps`): pairs of points measured on the revision 15 fixture with the slope and the wall of
-/// each point from the need at its foot (`heights::fit`): the count must not grow.
+/// (`check::wall_steps`): pairs of points measured on the revision 16 fixture with the slope and the wall of
+/// each point from the need at its foot (`heights::fit`) and line water: the count must not grow.
 const WALL_STEP_GRADE: f64 = 0.5;
 const WALL_STEPS_MAX: usize = 17;
 /// The ground's grade along the rim that changes across a piece end by more than this is a shading band
 /// (`check::slope_steps`), measured the same way, with the faces' rings with a vertex at each tile line (it
-/// moves piece ends by a few units) and the crease where a deck's ceiling takes the ground: the count must not
-/// grow.
+/// moves piece ends by a few units), the crease where a deck's ceiling takes the ground, and line water, whose
+/// curved banks end many short pieces, and its culverts: the count must not grow.
 const SLOPE_STEP_GRADE: f64 = 0.1;
-const SLOPE_STEPS_MAX: usize = 9831;
-/// Steps that another line's cone holds higher than the paved side's wall cap (`check::held_over_cap`), measured
-/// the same way with a rail bed's fill counted past its wall cap: all at the edge of a class without a wall, most
-/// where the two outlines leave no room for the steep face (the gap is printed): the count must not grow.
+const SLOPE_STEPS_MAX: usize = 12975;
+/// A tile's water vertex whose level lies more than this off the terrain at the vertex has a level that
+/// the bake holds away from its line (a pit, or the low ground beside it): the design keeps the water at
+/// most `freeboard_m` (0.8 m) under its bank and `depth_m` (1 m) deep.
+const LEVEL_OFF_M: f64 = 3.0;
+/// The faults within this of such a vertex, or of a tile segment between two such vertices, are its: a
+/// river's bank reach (15 m) and a half-width.
+const LEVEL_REACH_M: f64 = 20.0;
+/// The faults near such levels (steps, edge steps, steep pairs, wall-top steps, slope steps), measured on
+/// the revision 16 fixture: the counts must not grow.
+const LEVEL_MAX: [usize; 5] = [10, 85, 10882, 0, 1637];
+/// Steps that another line's cone holds higher than the paved side's wall cap (`check::held_over_cap`) between
+/// two ways, measured the same way with a rail bed's fill counted past its wall cap: all at the edge of a class
+/// without a wall, most where the two outlines leave no room for the steep face (the gap is printed): the count
+/// must not grow.
 const HELD_OVER_CAP_MAX: usize = 74;
+/// Such steps where a side is line water, which has no wall (a way's fill that holds a bank over a waterline, or a
+/// bank's fill over a way's edge), counted apart and measured the same way: the count must not grow.
+const HELD_WATER_MAX: usize = 639;
 /// The grid of the ground under the decks, metres.
 const DECK_GRID_M: f64 = 0.5;
 /// An end face may fall short of the deck's depth and the gap by this much, where its paved end's height is not
 /// the way's own surface (a junction's blend face) or the two ways' frames tilt their banks apart.
 const SHORT_M: f64 = 0.1;
-/// End line points shorter than that, measured on the revision 15 fixture: the count must not grow.
+/// End line points shorter than that, measured on the revision 16 fixture: the count must not grow.
 const SHORT_MAX: usize = 22;
 /// The places of the ripple report (latitude, longitude).
 const PLACES: [(&str, f64, f64); 5] = [
@@ -94,24 +116,43 @@ fn every_fixture_cell_keeps_its_steps_on_face_edges_and_agrees_with_its_neighbou
         let graph = graph::build(key, &input, &rules.sections);
         let words = records::build(&graph, &input, rules, key, 0, true).near.words;
         let ours = cells[..scanned].contains(&key);
-        let s = if ours { scan(&words, &input.terrain, key, GRID_M) } else { Default::default() };
-        let edges = if ours { edge_steps(&words, &input.terrain, key, EDGE_GRID_M).len() } else { 0 };
-        let walls = if ours { wall_steps(&words, &input.terrain, key, WALL_STEP_GRADE).len() } else { 0 };
-        let slopes = if ours { slope_steps(&words, &input.terrain, key, SLOPE_STEP_GRADE).len() } else { 0 };
+        let mut s = if ours { scan(&words, &input.terrain, key, GRID_M) } else { Default::default() };
+        let mut e = if ours { edge_steps(&words, &input.terrain, key, EDGE_GRID_M) } else { Vec::new() };
+        let mut w = if ours { wall_steps(&words, &input.terrain, key, WALL_STEP_GRADE) } else { Vec::new() };
+        let mut g = if ours { slope_steps(&words, &input.terrain, key, SLOPE_STEP_GRADE) } else { Vec::new() };
+        // The steps between water and a way (the ends that B's crossings close): count and greatest.
+        let water = |l: Option<u32>| l.is_some_and(|id| records::label(&words, id)[0] & 0xff == Surface::Water as u32);
+        let apart = (s.steps.iter())
+            .filter(|st| st.class == Class::Named(Step::Unrelated) && water(st.labels[0]) != water(st.labels[1]))
+            .fold((0, 0.0f64), |(n, m), st| (n + 1, m.max(st.dh.abs())));
+        // The faults of the bake's water levels, apart: steps, edge steps, steep pairs, wall-top and slope steps.
+        let off = off_level(&input, key);
+        let n = [s.steps.len(), e.len(), s.steep.len(), w.len(), g.len()];
+        s.steps.retain(|st| !off(st.a));
+        e.retain(|st| !off(st.a));
+        s.steep.retain(|st| !off(st.0));
+        w.retain(|st| !off(st.0));
+        g.retain(|st| !off(st.0));
+        let kept = [s.steps.len(), e.len(), s.steep.len(), w.len(), g.len()];
+        let levels: [usize; 5] = std::array::from_fn(|k| n[k] - kept[k]);
         let line = if ours { border(&words, &input.terrain, key, 512) } else { Vec::new() };
         let held = if ours { held_over_cap(&words, &input.terrain, key, EDGE_GRID_M) } else { Vec::new() };
         let decks = ours
             .then(|| (deck_ends(&words, &input.terrain, key), under_decks(&words, &input.terrain, key, DECK_GRID_M)));
-        (key, s, [edges, walls, slopes], line, (held, decks), Cell { words, input })
+        (key, s, [e.len(), w.len(), g.len()], line, levels, apart, (held, decks), Cell { words, input })
     });
-    let (mut inside, mut unnamed, mut full, mut missing) = (0, 0, 0, 0);
+    let (mut inside, mut unnamed, mut full, mut missing, mut water_off) = (0, 0, 0, 0, 0);
     let [mut edges, mut walls, mut slopes] = [0; 3];
+    let mut levels = [0; 5];
+    let mut apart = (0, 0.0f64);
     let mut steep = Vec::new();
     let mut lines: BTreeMap<_, Vec<_>> = BTreeMap::new();
     let mut by_key = BTreeMap::new();
     let (mut held, mut ends, mut points, mut under, mut faults) = (Vec::new(), 0, 0, [0; 4], Vec::new());
     let (mut uncovered, mut paved_beyond, mut short) = (0, 0, Vec::new());
-    for (key, s, e, line, (h, decks), cell) in built {
+    for (key, s, e, line, l, a, (h, decks), cell) in built {
+        apart = (apart.0 + a.0, apart.1.max(a.1));
+        levels = std::array::from_fn(|k| levels[k] + l[k]);
         held.extend(h.into_iter().map(|h| (key, h)));
         if let Some((d, u)) = decks {
             (ends, points) = (ends + d.ends, points + d.points);
@@ -125,19 +166,41 @@ fn every_fixture_cell_keeps_its_steps_on_face_edges_and_agrees_with_its_neighbou
         inside += s.steps.iter().filter(|st| st.class == Class::Inside).count();
         (edges, walls, slopes) = (edges + e[0], walls + e[1], slopes + e[2]);
         unnamed += s.steps.iter().filter(|st| st.class == Class::Unnamed).count();
-        steep.extend(s.steep.iter().map(|st| st.1));
+        let o = key.origin();
+        steep.extend(s.steep.iter().map(|st| ([o.x as f64 + st.0[0], o.y as f64 + st.0[1]], st.1)));
         (full, missing) = (full + s.slots_full.len(), missing + s.host_missing.len());
+        water_off += s.water_off.len();
         for (k, v) in line {
             lines.entry(k).or_default().push(v);
         }
         by_key.insert(key, cell);
     }
-    let over = |m: f64| steep.iter().filter(|&&c| c > m).count();
+    let over = |m: f64| steep.iter().filter(|c| c.1 > m).count();
     let (over_6, over_12) = (over(6.0), over(12.0));
     println!(
         "inside {inside}, unnamed {unnamed}, edge steps {edges}, wall-top steps {walls}, slope steps {slopes}, steep {} (over 6 m/m {over_6}, over 12 m/m {over_12}), slots full {full}, host missing {missing}",
         steep.len()
     );
+    println!(
+        "near water levels over {LEVEL_OFF_M} m off the terrain: steps {}, edge steps {}, steep {}, wall-top steps {}, slope steps {}",
+        levels[0], levels[1], levels[2], levels[3], levels[4]
+    );
+    println!("steps between water and a way (not gated): {}, greatest {:.2} m", apart.0, apart.1);
+    // The five steepest places, each the steepest pair within `LEVEL_REACH_M` of it.
+    steep.sort_by(|a, b| b.1.total_cmp(&a.1));
+    let mut worst: Vec<([f64; 2], f64)> = Vec::new();
+    for &(g, climb) in &steep {
+        let near = |p: &([f64; 2], f64)| {
+            libm::hypot(p.0[0] - g[0], p.0[1] - g[1]) * metres_per_unit(g[1] as i64) < LEVEL_REACH_M
+        };
+        if worst.len() < 5 && !worst.iter().any(near) {
+            worst.push((g, climb));
+        }
+    }
+    for (g, climb) in worst {
+        let [lat, lon] = lat_lon(g);
+        println!("steep {climb:.1} m/m at {lat:.6},{lon:.6}");
+    }
     println!(
         "deck ends {ends} ({points} end line points, {uncovered} under no deck, {paved_beyond} with a paved face beyond), {} faults, end faces short of the drop {} (over {SHORT_M} m {}, most {:.3} m); under the decks {} points, ground over {}, paved over {}, notches at deck joints {}; held over the cap {}",
         faults.len(),
@@ -150,9 +213,20 @@ fn every_fixture_cell_keeps_its_steps_on_face_edges_and_agrees_with_its_neighbou
         under[3],
         held.len()
     );
+    let (wet, held): (Vec<_>, Vec<_>) = held.into_iter().partition(|(_, h)| h.water);
     for (key, h) in &held {
         println!("  held over the cap {key:?} {:?}: {:.2} m, gap {:.2} m, caps {:?}", h.at, h.height, h.gap, h.caps);
     }
+    let mut heights: Vec<f64> = wet.iter().map(|(_, h)| h.height).collect();
+    heights.sort_by(f64::total_cmp);
+    let share = |q: f64| heights.get(((heights.len() as f64 - 1.0) * q) as usize).copied().unwrap_or(0.0);
+    println!(
+        "held over the cap at line water {}: height p50 {:.2} m, p90 {:.2} m, max {:.2} m",
+        wet.len(),
+        share(0.5),
+        share(0.9),
+        share(1.0)
+    );
     assert!(inside <= INSIDE_MAX, "{inside} steps inside faces");
     assert!(edges <= EDGE_MAX, "{edges} steps at label edges with no rule");
     assert!(walls <= WALL_STEPS_MAX, "{walls} wall-top steps over {WALL_STEP_GRADE} m/m");
@@ -161,13 +235,15 @@ fn every_fixture_cell_keeps_its_steps_on_face_edges_and_agrees_with_its_neighbou
     // Measured the same way, no pair is steeper than 6 m/m: a near-vertical rim that the total hides must not
     // come back.
     assert_eq!((over_6, over_12), (0, 0), "slope pairs steeper than 6 m/m and 12 m/m");
-    assert_eq!((full, missing), (0, 0));
+    assert!((0..5).all(|k| levels[k] <= LEVEL_MAX[k]), "{levels:?} faults near water levels off the terrain");
+    assert_eq!((full, missing, water_off), (0, 0, 0), "slots full, host missing, water off its level");
     assert!(ends > 0, "no deck end in the fixture");
     assert!(faults.is_empty(), "{} deck end faults: {:#?}", faults.len(), &faults[..faults.len().min(10)]);
     assert_eq!(under[1], 0, "ground points over a deck's bound");
     assert_eq!(under[3], 0, "points at a joint of two decks under no deck");
     assert!(short.iter().filter(|&&m| m > SHORT_M).count() <= SHORT_MAX, "end faces short by over {SHORT_M} m");
     assert!(held.len() <= HELD_OVER_CAP_MAX, "{} held steps over the cap", held.len());
+    assert!(wet.len() <= HELD_WATER_MAX, "{} held steps over the cap at line water", wet.len());
     let shared: Vec<_> = lines.values().filter(|v| v.len() == 2).collect();
     assert!(shared.len() > 100_000, "{} shared points", shared.len());
     let differ: Vec<_> = shared.iter().filter(|v| v[0].h != v[1].h || v[0].t != v[1].t).collect();
@@ -182,6 +258,45 @@ fn every_fixture_cell_keeps_its_steps_on_face_edges_and_agrees_with_its_neighbou
         let [along, across] = place_ripple(&by_key, lat, lon);
         println!("{name}: ripple p99 along {:.2} mm, across {:.2} mm", along * 1e3, across * 1e3);
     }
+}
+
+/// Whether a point of a cell (frame units) lies within `LEVEL_REACH_M` of a tile's ground water vertex
+/// whose own level is more than `LEVEL_OFF_M` off the terrain there, or of a tile segment between two
+/// such vertices. It reads the input only, never the reader's levels.
+fn off_level(input: &CellInput, key: CellKey) -> impl Fn([f64; 2]) -> bool {
+    let o = key.origin();
+    let reach = LEVEL_REACH_M / metres_per_unit(o.y + CELL_UNITS / 2);
+    let ground = |f: &&obc_ground_plan::tile::Feature| {
+        WATER_KINDS.contains(&f.kind.as_str()) && f.tags.get("tunnel").is_none_or(|t| t == "no")
+    };
+    let mut off: Vec<[[f64; 2]; 2]> = Vec::new();
+    for part in input.features.iter().filter(ground).flat_map(|f| &f.parts) {
+        let Some(heights) = &part.heights else { continue };
+        let far: Vec<bool> = (part.points.iter().zip(heights))
+            .map(|(&g, z)| z.zip(input.terrain.height(g)).is_some_and(|(z, t)| (z - t).abs() > LEVEL_OFF_M))
+            .collect();
+        let local = |i: usize| [(part.points[i].x - o.x) as f64, (part.points[i].y - o.y) as f64];
+        for i in (0..far.len()).filter(|&i| far[i]) {
+            let next = if far.get(i + 1) == Some(&true) { i + 1 } else { i };
+            off.push([local(i), local(next)]);
+        }
+    }
+    move |q| off.iter().any(|&[a, b]| distance(q, a, b) < reach)
+}
+
+/// The distance of q from the segment ab.
+fn distance(q: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    let d = [b[0] - a[0], b[1] - a[1]];
+    let len2 = d[0] * d[0] + d[1] * d[1];
+    let t = if len2 > 0.0 { (((q[0] - a[0]) * d[0] + (q[1] - a[1]) * d[1]) / len2).clamp(0.0, 1.0) } else { 0.0 };
+    libm::hypot(a[0] + t * d[0] - q[0], a[1] + t * d[1] - q[1])
+}
+
+/// The latitude and longitude of a global point in frame units.
+fn lat_lon(g: [f64; 2]) -> [f64; 2] {
+    let square = (1u64 << FRAME_BITS) as f64;
+    let lat = libm::atan(libm::sinh(std::f64::consts::PI * (1.0 - 2.0 * g[1] / square))).to_degrees();
+    [lat, g[0] / square * 360.0 - 180.0]
 }
 
 /// The cells of a place's square.

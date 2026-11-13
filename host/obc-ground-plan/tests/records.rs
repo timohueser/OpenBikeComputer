@@ -1,7 +1,7 @@
 //! The records over every cell of the TrailView fixture: each sampled point gets its face's label,
-//! the far level keeps every label but the band layers', the far block holds the near lines in reach
-//! and is the far-only build's, two neighbouring cells give one label on their shared line, an outline
-//! end with a turn has one edge going on at its paved height, and a second build gives the same words.
+//! the far level keeps every label but the band layers' and water's, the far block holds the near way lines
+//! in reach and is the far-only build's, two neighbouring cells give one label on their shared line, an
+//! outline end with a turn has one edge going on at its paved height, and a second build gives the same words.
 
 #[path = "fixture/mod.rs"]
 mod fixture;

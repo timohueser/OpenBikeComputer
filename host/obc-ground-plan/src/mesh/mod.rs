@@ -20,13 +20,14 @@
 //!
 //! | Words | Holds |
 //! | --- | --- |
-//! | head | `HEAD` words: `MAGIC`, the cell's x and y (zoom 16), the counts of corners, triangles, strip triangles, triangle runs, step slots and step runs, of the last triangle runs that draw only over level-18 nodes, and of the last step slots, the end faces |
+//! | head | `HEAD` words: `MAGIC`, the cell's x and y (zoom 16), the counts of corners, triangles, strip triangles, triangle runs, step slots and step runs, of the last triangle runs that draw only over level-18 nodes, of the last step slots, the end faces, and of the culvert mouths |
 //! | corners | 2 words each (below), sorted by point (y, then x) |
 //! | triangle runs | 2 words each: the run's count of triangles and its base corner |
 //! | triangles | 3 u16 each, the run's base subtracted, turning as the terrain's `gridIndices` (negative signed area in x east, y south); the strip's triangles last, and last of all, in runs of their own, the strip's triangles of halves that the level-17 terrain draws (`strip`); a zero u16 pads an odd count of u16 |
 //! | step runs | 2 words each, as the triangle runs |
 //! | steps | 4 u16 each, the run's base subtracted: `a_p, a_q, b_q, b_p` (below); the slots on a deck end line (`EdgeKind::DeckEdge`) last, in runs of their own: the end faces |
 //! | region | `REGION_WORDS` words: R on the cell and one ring of region cells, bit (cy + 1) × (`CELLS` + 2) + cx + 1 for region cell (cx, cy) of the cell, −1 ≤ cx, cy ≤ `CELLS` |
+//! | mouths | 4 words each: the corners of a culvert mouth's model (below), the zone outline's unit direction there (`pack2x16snorm`, x east, y south) and the water's half-width (f32, m) |
 //!
 //! A run is a stretch of triangles (or slots) whose corners lie within 65,536 of its base: draw it
 //! with `baseVertex` = the base (`drawIndexed` with 16-bit indices), and a slot run with its base from
@@ -48,6 +49,10 @@
 //! and q, so the fold hangs below both faces; a slot of equal heights covers no pixel. A slot faces its
 //! lower side, so it draws without back-face culling or turns toward that side; the step's look (kerb
 //! or wall) comes from the two labels and the step's height, an end face's from its place in the slots.
+//!
+//! A culvert mouth (`faces::CulvertMouth`) whose point lies in the cell has two corners in no triangle, `MOUTH_M`
+//! from the point on the water's middle line: one on the water, one in the zone. The GPU gives them their heights
+//! as every corner's, and the mouth's model stands on them (`plan/piece.wgsl`).
 //!
 //! # Sunk points
 //!
@@ -74,16 +79,18 @@ pub mod region;
 pub mod strip;
 
 use crate::faces::records::find;
-use crate::faces::{Face, FacePlan};
-use crate::frame::{CellKey, CELL_UNITS};
+use crate::faces::{Face, FacePlan, Surface};
+use crate::frame::{metres_per_unit, CellKey, CELL_UNITS};
 use params::{sharp, SIDE};
 use region::{grid_of, Region, MARK_WORDS};
 
 pub use region::REGION_WORDS;
 
 /// "OBM" and the layout's version.
-pub const MAGIC: u32 = 0x4f42_4d04;
-pub const HEAD: usize = 11;
+pub const MAGIC: u32 = 0x4f42_4d05;
+pub const HEAD: usize = 12;
+/// A culvert mouth's corners lie this far from its point, on the water and in the zone (metres).
+pub const MOUTH_M: f64 = 0.1;
 /// The label of a corner of the terrain rule.
 pub const NO_LABEL: u32 = (1 << 25) - 1;
 /// A corner's key: its label, and this bit for a terrain vertex.
@@ -197,6 +204,7 @@ pub struct CellMesh {
     /// The last slots of `steps`: the end faces.
     pub end_faces: u32,
     pub region: Vec<u32>,
+    pub mouths: Vec<[u32; 4]>,
     pub stats: MeshStats,
     pub times: Vec<f64>,
 }
@@ -247,6 +255,7 @@ impl CellMesh {
             self.step_runs.len() as u32,
             self.level18_runs,
             self.end_faces,
+            self.mouths.len() as u32,
         ];
         let words = head
             .into_iter()
@@ -255,7 +264,8 @@ impl CellMesh {
             .chain(packed(&self.triangles, &self.triangle_runs))
             .chain(self.step_runs.iter().flatten().copied())
             .chain(packed(&self.steps, &self.step_runs))
-            .chain(self.region.iter().copied());
+            .chain(self.region.iter().copied())
+            .chain(self.mouths.iter().flatten().copied());
         words.flat_map(u32::to_le_bytes).collect()
     }
 
@@ -545,6 +555,30 @@ pub fn mesh_cell(
             }
         }
     }
+    // The culvert mouths of the cell: a corner on the water and one in the zone, which the faces must hold there.
+    let mut mouths = Vec::new();
+    for m in &plan.mouths {
+        let inside = |c: f64| (0.0..CELL_UNITS as f64).contains(&c);
+        if !(inside(m.at[0]) && inside(m.at[1])) {
+            continue;
+        }
+        let d = MOUTH_M / metres_per_unit(cell.origin().y + libm::round(m.at[1]) as i64);
+        let at = |s: f64| [0, 1].map(|k| libm::round(m.at[k] + s * d * m.into[k]) as i32);
+        let label = |p: [i32; 2], surface: Surface| {
+            find(words, [f64::from(p[0]), f64::from(p[1])])
+                .filter(|&id| crate::faces::records::label(words, id)[0] & 0xff == surface as u32)
+        };
+        let (pw, pz) = (at(-1.0), at(1.0));
+        // A corner lies on its cell: a mouth within MOUTH_M of a cell line draws in neither cell.
+        if [pw, pz].iter().flatten().any(|&c| !(0..=CELL_UNITS as i32).contains(&c)) {
+            continue;
+        }
+        let (Some(lw), Some(lz)) = (label(pw, Surface::Water), label(pz, Surface::Zone)) else { continue };
+        let (vw, vz) = (corners.add_point(pw), corners.add_point(pz));
+        let snorm = |x: f64| u32::from(libm::round(x.clamp(-1.0, 1.0) * 32767.0) as i16 as u16);
+        let edge = snorm(m.edge[0]) | snorm(m.edge[1]) << 16;
+        mouths.push([corners.get(vw, lw), corners.get(vz, lz), edge, (m.half_m as f32).to_bits()]);
+    }
     // The corners by point (y, then x), so that the corners of a triangle or slot lie near each other
     // in the list: the triangulation's points are sorted, the strip's added points follow them.
     let yx = |v: u32| {
@@ -577,6 +611,7 @@ pub fn mesh_cell(
     let triangles = [shared, level18].concat();
     let end_faces = faces.len();
     let steps = [by_least(&steps, &rank), by_least(&faces, &rank)].concat();
+    let mouths = mouths.into_iter().map(|[w, z, e, h]| [rank[w as usize], rank[z as usize], e, h]).collect();
     let step_runs = [runs(&steps[..steps.len() - end_faces])?, runs(&steps[steps.len() - end_faces..])?].concat();
     let packed = (order.iter())
         .map(|&c| {
@@ -611,6 +646,7 @@ pub fn mesh_cell(
         steps,
         end_faces: end_faces as u32,
         region: region.bits(),
+        mouths,
         stats,
         times,
     })

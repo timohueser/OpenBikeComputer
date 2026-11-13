@@ -11,9 +11,10 @@
 //! too low over the river, the road, the path or the track that it crosses; a short bridge that lies
 //! on the terrain is a culvert and does not. A tunnel sinks under a road, a path or a track that
 //! crosses over it, which does not move. Of two bridges that cross, the one of the higher layer
-//! passes over the other, at one layer the better class, and of one class the later one. A ford lies
-//! FORD_M below the water it crosses, and a road, a track or a railway on the ground lies over the cover
-//! of a culvert part or of narrow water that it crosses. Tracks side by side, as OSM maps each track of a double line,
+//! passes over the other, at one layer the better class, and of one class the later one. A path's ford,
+//! and a ford over water wider than a culvert's, lies FORD_M below the water it crosses, and a road, a
+//! track or a railway on the ground lies over the cover of a culvert part or of narrow water that it
+//! crosses, tagged as a ford or not. Tracks side by side, as OSM maps each track of a double line,
 //! lie at one height: their beds are one bed. So do roads and paths whose carriageways overlap. A way
 //! on a ramp beside another keeps its own height.
 //! Each solve ends with the alignment of its ways (`align`): a fitted plan, and the vertices that hold it.

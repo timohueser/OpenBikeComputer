@@ -4,6 +4,8 @@
 use std::collections::{BTreeSet, HashMap};
 use std::f64::consts::TAU;
 
+use obc_ground_plan::sections::WATER_KINDS;
+
 use crate::geometry::bounds;
 use crate::{world, Part, Plan, Tags, EQUATOR_M};
 
@@ -361,7 +363,7 @@ impl Tiles {
             return false;
         }
         if !(rect[0] <= box_[0] && box_[2] <= rect[2] && rect[1] <= box_[1] && box_[3] <= rect[3]) {
-            parts = clipped(geometry, &parts, rect);
+            parts = clipped(geometry, &parts, rect, reach(kind));
             match extent(&parts) {
                 Some(found) => box_ = found,
                 None => return false,
@@ -406,13 +408,13 @@ fn meets([ax, ay]: [f64; 2], [bx, by]: [f64; 2], [x0, y0, x1, y1]: [f64; 4]) -> 
 }
 
 /// The pieces of a polyline that meet `rect`, as lists of vertex indices. A piece keeps the segments
-/// that meet `rect` whole, and one more vertex at each end: the tiles that hold a segment hold the
-/// same segment and the same bends at its ends.
-fn clip_line(points: &[[f64; 2]], rect: [f64; 4]) -> Vec<Vec<usize>> {
+/// that meet `rect` whole, and `reach` more vertices at each end: the tiles that hold a segment hold the
+/// same segment and the same vertices about its ends.
+fn clip_line(points: &[[f64; 2]], rect: [f64; 4], reach: usize) -> Vec<Vec<usize>> {
     let mut keep = vec![false; points.len()];
     for k in 0..points.len().saturating_sub(1) {
         if meets(points[k], points[k + 1], rect) {
-            keep[k.saturating_sub(1)..(k + 3).min(points.len())].fill(true);
+            keep[k.saturating_sub(reach)..(k + 2 + reach).min(points.len())].fill(true);
         }
     }
     let mut pieces: Vec<Vec<usize>> = Vec::new();
@@ -458,8 +460,20 @@ fn clip_ring(ring: &[[f64; 2]], rect: [f64; 4]) -> Vec<usize> {
     indices
 }
 
-/// Parts cut to `rect`. The cut makes no new vertex.
-fn clipped(geometry: Geometry, parts: &[Part], rect: [f64; 4]) -> Vec<Part> {
+/// The vertices that a line of `kind` keeps past the segments that meet a square: the ground plan draws
+/// the curve of line water from the tile's vertices, and a span's curve reads two vertices on each side
+/// of it (`obc_ground_plan::graph::water_spans`); every other line carries its plan.
+fn reach(kind: &str) -> usize {
+    if WATER_KINDS.contains(&kind) {
+        2
+    } else {
+        1
+    }
+}
+
+/// Parts cut to `rect`, a line with `reach` vertices past the segments that meet it. The cut makes no
+/// new vertex.
+fn clipped(geometry: Geometry, parts: &[Part], rect: [f64; 4], reach: usize) -> Vec<Part> {
     let pick = |outer: bool, part: &Part, indices: &[usize]| Part {
         outer,
         points: indices.iter().map(|&i| part.points[i]).collect(),
@@ -482,7 +496,7 @@ fn clipped(geometry: Geometry, parts: &[Part], rect: [f64; 4]) -> Vec<Part> {
             .collect(),
         Geometry::Line => parts
             .iter()
-            .flat_map(|part| clip_line(&part.points, rect).into_iter().map(move |piece| (part, piece)))
+            .flat_map(|part| clip_line(&part.points, rect, reach).into_iter().map(move |piece| (part, piece)))
             .map(|(part, piece)| pick(false, part, &piece))
             .collect(),
         Geometry::Area => parts.iter().map(|part| pick(part.outer, part, &clip_ring(&part.points, rect))).collect(),
@@ -817,6 +831,23 @@ mod tests {
         // The cut keeps the segment whole: no vertex is added at the tile's edges.
         let width = 7 * i64::from(EXTENT);
         assert_eq!(tile[0].parts[0].xy[1][0] - tile[0].parts[0].xy[0][0], width);
+    }
+
+    #[test]
+    fn a_stream_keeps_two_vertices_past_the_segments_that_meet_a_tile_and_a_road_one() {
+        let n = (1u64 << 13) as f64;
+        let (column, row) = (4286.0, 2889.0);
+        let lon = |x: f64| x / n * 360.0 - 180.0;
+        let lat = |y: f64| (std::f64::consts::PI * (1.0 - 2.0 * y / n)).sinh().atan().to_degrees();
+        // Two segments meet the tile; the vertices around them lie a tile apart.
+        let line =
+            [part(false, [-3.0, -2.0, -1.0, 0.5, 2.0, 3.0, 4.0].map(|x| [(column + x) / n, (row + 0.5) / n]).to_vec())];
+        for (kind, vertices) in [("road", 5), ("stream", 7)] {
+            let mut tiles = Tiles::new([lon(column), lat(row + 1.0), lon(column + 1.0), lat(row)]);
+            assert!(tiles.add(13, kind, Geometry::Line, &Tags::new(), &line));
+            let tile = decode(&tiles.tiles[&(13, column as u32, row as u32)].bytes()).unwrap();
+            assert_eq!(tile[0].parts[0].xy.len(), vertices, "{kind}");
+        }
     }
 
     #[test]
