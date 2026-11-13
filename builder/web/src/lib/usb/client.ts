@@ -1,4 +1,4 @@
-/** The shared Rust store client over browser, desktop and loopback byte channels. */
+/** The shared Rust store client over the WebUSB and loopback byte channels. */
 
 import { ClientIO, type NativeOutcome } from "./client-io";
 import { DeviceError, asDeviceError } from "./errors";
@@ -109,7 +109,6 @@ export class FlatStoreClient {
     get liveTransfer(): number | null { return this.io.liveTransfer; }
 
     async deviceInfo(signal?: AbortSignal): Promise<DeviceInfo> {
-        if (!this.link.vendorIn) throw new DeviceError("unavailable", "This host cannot read the device's firmware version: it cannot issue a USB control request.");
         try { return decodeDeviceInfo(await this.link.vendorIn(GET_DEVICE_INFO, 0, DEVICE_INFO_MAX, signal)); }
         catch (cause) { throw asDeviceError(cause); }
     }

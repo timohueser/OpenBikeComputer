@@ -1,0 +1,118 @@
+import { describe, expect, it } from "vitest";
+import { GpxError, readGpx, writeGpx, type GpxImport } from "./gpx";
+
+describe("writeGpx", () => {
+    it("writes a file that readGpx reads back unchanged", () => {
+        const route: GpxImport = {
+            name: "Lake <Uri> & \"back\"",
+            points: [{ lat: 46_912_345, lon: -8_600_001, ele: 434.5, segmentStart: true }, { lat: 46_950_000, lon: 8_610_000 }, { lat: -46_960_000, lon: 8_620_000, ele: -2 }],
+            waypoints: [{ lat: 46_950_000, lon: 8_610_000, name: "Tell's chapel", note: "swim here" }, { lat: 46_960_000, lon: 8_620_000, name: undefined }],
+        };
+        expect(readGpx(writeGpx(route), "fallback")).toEqual(route);
+    });
+});
+
+const HEADER = '<?xml version="1.0" encoding="UTF-8"?><gpx version="1.1" xmlns="http://www.topografix.com/GPX/1/1">';
+
+function track(points: string, name?: string): string {
+    return `${HEADER}<trk>${name ? `<name>${name}</name>` : ""}<trkseg>${points}</trkseg></trk></gpx>`;
+}
+
+describe("readGpx", () => {
+    it("reads track points into integer microdegrees", () => {
+        const route = readGpx(
+            track('<trkpt lat="47.5" lon="7.75"><ele>210</ele></trkpt><trkpt lat="47.6" lon="7.8"/>'),
+            "file",
+        );
+        expect(route.points).toEqual([
+            { lat: 47_500_000, lon: 7_750_000, ele: 210, segmentStart: true },
+            { lat: 47_600_000, lon: 7_800_000 },
+        ]);
+    });
+
+    it("accepts either attribute order, either quote style, self-closing or not", () => {
+        const route = readGpx(
+            track("<trkpt lon='8.0' lat='47.0'></trkpt><trkpt lat=\"47.1\" lon=\"8.1\"/>"),
+            "file",
+        );
+        expect(route.points).toHaveLength(2);
+        expect(route.points[0]).toEqual({ lat: 47_000_000, lon: 8_000_000, segmentStart: true });
+    });
+
+    it("joins the segments and the tracks of a file, and marks the first point of each", () => {
+        const body = `${HEADER}<trk><trkseg><trkpt lat="x" lon="8"/><trkpt lat="47" lon="8"/><trkpt lat="47.05" lon="8"/></trkseg><trkseg><trkpt lat="47.1" lon="8"/></trkseg></trk>`
+            + '<trk><trkpt lat="47.2" lon="8"/><trkpt lat="47.3" lon="8"/></trk></gpx>';
+        expect(readGpx(body, "file").points.map(p => p.segmentStart ?? false)).toEqual([true, false, true, true, false]);
+    });
+
+    it("reads the time of each point as UTC Unix seconds, and the type of the track", () => {
+        const at = (time: string) => `<trkpt lat="47" lon="8"><time>${time}</time></trkpt>`;
+        const body = `${HEADER}<trk><name>Ride</name><type>cycling</type><trkseg>${
+            ["2026-08-01T07:00:00Z", "2026-08-01T09:00:01.5+02:00", "2026-08-01T07:00:02", " 2026-08-01T06:30:03-00:30 ", "1 August", "2026-13-01T00:00:00Z"].map(at).join("")
+        }<trkpt lat="47" lon="8"><type>other</type></trkpt></trkseg></trk></gpx>`;
+        const imported = readGpx(body, "file");
+        const start = Date.UTC(2026, 7, 1, 7) / 1000;
+        expect(imported.points.map(p => p.time)).toEqual([start, start + 1.5, start + 2, start + 3, undefined, undefined, undefined]);
+        expect(imported.kind).toBe("cycling");
+        expect(readGpx(track('<trkpt lat="47" lon="8"/><trkpt lat="47.1" lon="8"/>'), "file").kind).toBeUndefined();
+    });
+
+    it("falls back to route points when there are no track points", () => {
+        const body = `${HEADER}<rte><rtept lat="47" lon="8"/><rtept lat="47.1" lon="8"/></rte></gpx>`;
+        expect(readGpx(body, "file").points).toHaveLength(2);
+    });
+
+    it("names the route from the track, un-escaping XML entities", () => {
+        const body = `${HEADER}<metadata><name>The File</name></metadata><trk><name>Rhein &amp; R&#xF6;n</name><trkseg><trkpt lat="47" lon="8"/><trkpt lat="47.1" lon="8"/></trkseg></trk></gpx>`;
+        // Only the five predefined entities are un-escaped; numeric references
+        // stay as-is, which is the honest limit of a scanner.
+        expect(readGpx(body, "file").name).toBe("Rhein & R&#xF6;n");
+    });
+
+    it("prefers the track's own name over the file-level metadata name", () => {
+        const body = `${HEADER}<metadata><name>File Name</name></metadata><trk><name>Ride Name</name><trkseg><trkpt lat="47" lon="8"/><trkpt lat="47.1" lon="8"/></trkseg></trk></gpx>`;
+        expect(readGpx(body, "x").name).toBe("Ride Name");
+    });
+
+    it("keeps track-name precedence after a self-closing empty track", () => {
+        const body = `${HEADER}<metadata><name>File</name></metadata><trk/><trk><name>Ride</name><trkpt lat="47" lon="8"/><trkpt lat="47.1" lon="8.1"/></trk></gpx>`;
+        expect(readGpx(body, "fallback").name).toBe("Ride");
+    });
+
+    it("uses the metadata name when the track has none, and the fallback last", () => {
+        const named = `${HEADER}<metadata><name>File Name</name></metadata><trk><trkseg><trkpt lat="47" lon="8"/><trkpt lat="47.1" lon="8"/></trkseg></trk></gpx>`;
+        expect(readGpx(named, "fallback").name).toBe("File Name");
+        expect(readGpx(track('<trkpt lat="47" lon="8"/><trkpt lat="47.1" lon="8"/>'), "fallback").name).toBe(
+            "fallback",
+        );
+    });
+
+    it("refuses a file with no points, naming the likely cause", () => {
+        expect(() => readGpx("<html>not gpx</html>", "x")).toThrow(GpxError);
+        expect(() => readGpx("<html>not gpx</html>", "x")).toThrow(/is this a GPX file/);
+    });
+
+    it("refuses a single point — that is a waypoint, not a route", () => {
+        expect(() => readGpx(track('<trkpt lat="47" lon="8"/>'), "x")).toThrow(/fewer than two/);
+    });
+
+    it("counts malformed coordinates instead of silently dropping the file's story", () => {
+        const body = track('<trkpt lat="none" lon="8"/><trkpt lat="47"/>');
+        expect(() => readGpx(body, "x")).toThrow(/2 of 2 carried malformed coordinates/);
+    });
+
+    it("drops out-of-range coordinates as malformed rather than folding them onto the globe", () => {
+        const body = track('<trkpt lat="91" lon="8"/><trkpt lat="47" lon="181"/>');
+        expect(() => readGpx(body, "x")).toThrow(GpxError);
+    });
+    it("preserves full elevation precision, negative ties and waypoint text across the Rust boundary", () => {
+        const body = `${HEADER}<wpt lat="47" lon="8"><name>Water</name><cmt>Open &amp; free</cmt></wpt><wpt lat="48" lon="9"/><trk><name>Track</name><trkpt lat="-0.0000005" lon="-0.0000015"><ele>1.23456789123</ele></trkpt><trkpt lat="47.1" lon="8"/></trk></gpx>`;
+        const imported = readGpx(body, "fallback");
+        expect(imported.name).toBe("Track");
+        expect(imported.points).toEqual([{ lat: -0, lon: -1, ele: 1.23456789123, segmentStart: true }, { lat: 47_100_000, lon: 8_000_000 }]);
+        expect(imported.waypoints).toEqual([
+            { lat: 47_000_000, lon: 8_000_000, name: "Water", note: "Open & free" },
+            { lat: 48_000_000, lon: 9_000_000, name: undefined },
+        ]);
+    });
+});

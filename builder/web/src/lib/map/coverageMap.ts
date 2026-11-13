@@ -1,7 +1,7 @@
 // Leaflet glue for the coverage map. This paints the cell catalog's own region
 // boundaries as quiet affordances, each selection part's true stair-edged outline,
-// hatched not-baked patches inside the selection, and the corridor panel's dashed
-// preview. No grid is ever drawn, and this file simply has no code that could.
+// and hatched not-baked patches inside the selection. No grid is ever drawn, and this
+// file simply has no code that could.
 //
 // All Leaflet state lives on the instance; the Svelte component owns *what* to draw
 // and pushes it through the `set*` methods below, so this class stays framework-free
@@ -22,11 +22,9 @@ export type DegPoint = [number, number];
 /** One selection part, reduced to what the map draws. */
 export interface RenderedPart {
     id: string;
-    kind: "region" | "box" | "corridor" | "lasso";
+    kind: "region" | "box";
     /** Stair-edged coverage rings, outer + holes, from `coverageRings`. */
     rings: DegPoint[][];
-    /** The route itself, for corridor parts. */
-    route?: DegPoint[];
     highlighted: boolean;
 }
 
@@ -35,12 +33,6 @@ export interface RenderedWarning {
     /** [[south, west], [north, east]] */
     bounds: [DegPoint, DegPoint];
     kind: "hole" | "partial";
-}
-
-/** The corridor panel's uncommitted routes. */
-export interface RenderedPreview {
-    rings: DegPoint[][];
-    routes: DegPoint[][];
 }
 
 export interface CoverageMapCallbacks {
@@ -56,10 +48,6 @@ export interface CoverageMapCallbacks {
     onBoxDrawn(south: number, west: number, north: number, east: number): void;
     /** The in-flight box changed; return the pricing chip's text ("" hides). */
     boxDragLabel(south: number, west: number, north: number, east: number): string;
-    /** A lasso ring was drawn, as [lat, lon] degree points, unclosed. */
-    onLassoDrawn(points: DegPoint[]): void;
-    /** The in-flight lasso changed; return the pricing chip's text ("" hides). */
-    lassoDragLabel(points: DegPoint[]): string;
     /** Drawing was cancelled or finished — the component disarms its tool. */
     onDrawEnd(): void;
     /** A hatched warning patch was clicked — zoom is the component's call. */
@@ -85,16 +73,6 @@ const PART_STYLE: L.PathOptions = {
     interactive: false,
 };
 const PART_HIGHLIGHT_STYLE: L.PathOptions = { ...PART_STYLE, weight: 4, fillOpacity: 0.2 };
-const ROUTE_STYLE: L.PathOptions = { color: "var(--route)", weight: 2.5, interactive: false };
-const PREVIEW_RING_STYLE: L.PathOptions = {
-    color: "var(--coral)",
-    weight: 2,
-    dashArray: "7 5",
-    fillColor: "var(--amber)",
-    fillOpacity: 0.08,
-    interactive: false,
-};
-const PREVIEW_ROUTE_STYLE: L.PathOptions = { ...ROUTE_STYLE, dashArray: "4 4" };
 const WARNING_STYLE: Record<"hole" | "partial", L.PathOptions> = {
     hole: { color: "var(--coral)", weight: 1.6, className: "coverage-hatch" },
     partial: { color: "var(--coral)", weight: 1, opacity: 0.6, dashArray: "3 3", className: "coverage-hatch faintly" },
@@ -106,7 +84,6 @@ const BOX_DRAW_STYLE: L.PathOptions = {
     fillColor: "var(--amber)",
     fillOpacity: 0.18,
 };
-const LASSO_DRAW_STYLE: L.PathOptions = { ...BOX_DRAW_STYLE, dashArray: "5 4" };
 
 /** Even-odd containment in a region's drawable rings, degrees — the same rule the
  *  even-odd fill draws them with, so what hovers is what is painted. */
@@ -133,10 +110,6 @@ interface ShelfRegion {
     span: number;
 }
 
-/** Minimum pointer movement, px, before a lasso takes another vertex. Keeps a slow
- *  gesture from minting thousands of points the pricing then walks. */
-const LASSO_STEP_PX = 4;
-
 export class CoverageMapView {
     private map: L.Map;
     private cb: CoverageMapCallbacks;
@@ -150,7 +123,6 @@ export class CoverageMapView {
 
     private partLayer: L.LayerGroup = L.layerGroup();
     private warnLayer: L.LayerGroup = L.layerGroup();
-    private previewLayer: L.LayerGroup = L.layerGroup();
     private cellLayer: L.LayerGroup = L.layerGroup();
 
     private drawArmed = false;
@@ -158,12 +130,6 @@ export class CoverageMapView {
     private drawStart: L.LatLng | null = null;
     private drawRect: L.Rectangle | null = null;
     private drawTip: L.Tooltip;
-
-    private lassoArmed = false;
-    private lassoing = false;
-    private lassoPoints: L.LatLng[] = [];
-    private lassoLastPx: L.Point | null = null;
-    private lassoPoly: L.Polygon | null = null;
 
     private resizeObs: ResizeObserver;
     /** The shelf's bounds. The pane's size settles over several layout passes (0-wide
@@ -182,29 +148,21 @@ export class CoverageMapView {
         void background(this.map);
 
         // Draw order bottom-up: shelf, selection, warnings on top of the
-        // selection they annotate, preview above everything settled.
+        // selection they annotate.
         this.regionLayer.addTo(this.map);
         this.cellLayer.addTo(this.map);
         this.partLayer.addTo(this.map);
         this.warnLayer.addTo(this.map);
-        this.previewLayer.addTo(this.map);
 
         this.drawTip = L.tooltip({ className: "preview-tip", direction: "top", offset: [0, -8] });
         this.hoverTip = L.tooltip({ className: "preview-tip", direction: "top", offset: [0, -12] });
 
-        this.map.on("mousedown", (e) => {
-            this.onDrawStart(e);
-            this.onLassoStart(e);
-        });
+        this.map.on("mousedown", (e) => this.onDrawStart(e));
         this.map.on("mousemove", (e) => {
             this.onDrawMove(e);
-            this.onLassoMove(e);
             this.onRegionHover(e);
         });
-        this.map.on("mouseup", () => {
-            this.onDrawFinish();
-            this.onLassoFinish();
-        });
+        this.map.on("mouseup", () => this.onDrawFinish());
         this.map.on("click", (e) => this.onRegionClick(e));
         this.map.on("mouseout", () => this.clearRegionHover());
         // Leaflet only hears a mouseup inside its container: a drag released over the
@@ -230,7 +188,6 @@ export class CoverageMapView {
 
     private readonly onDocPointerUp = (): void => {
         if (this.drawing) this.onDrawFinish();
-        if (this.lassoing) this.onLassoFinish();
     };
 
     private readonly onVisibility = (): void => {
@@ -291,7 +248,7 @@ export class CoverageMapView {
         if (armed === this.regionArmed) return;
         this.regionArmed = armed;
         if (!armed) this.clearRegionHover();
-        this.setCursor(armed || this.drawArmed || this.lassoArmed);
+        this.setCursor(armed || this.drawArmed);
     }
 
     /** Every region whose boundary contains the point, smallest first. */
@@ -320,7 +277,7 @@ export class CoverageMapView {
     }
 
     private onRegionHover(e: L.LeafletMouseEvent): void {
-        if (!this.regionArmed || this.drawing || this.lassoing) return;
+        if (!this.regionArmed || this.drawing) return;
         const chain = this.chainAt(e.latlng);
         if (chain.length === 0) {
             this.clearRegionHover();
@@ -349,7 +306,7 @@ export class CoverageMapView {
     }
 
     private onRegionClick(e: L.LeafletMouseEvent): void {
-        if (!this.regionArmed || this.drawArmed || this.lassoArmed) return;
+        if (!this.regionArmed || this.drawArmed) return;
         const chain = this.chainAt(e.latlng);
         if (chain.length === 0) return;
         if (chain.length === 1) {
@@ -387,9 +344,6 @@ export class CoverageMapView {
             if (part.rings.length) {
                 L.polygon(part.rings, part.highlighted ? PART_HIGHLIGHT_STYLE : PART_STYLE).addTo(this.partLayer);
             }
-            if (part.route && part.route.length > 1) {
-                L.polyline(part.route, ROUTE_STYLE).addTo(this.partLayer);
-            }
         }
     }
 
@@ -416,18 +370,6 @@ export class CoverageMapView {
         this.ensureHatchPattern();
     }
 
-    setPreview(preview: RenderedPreview | null): void {
-        this.previewLayer.clearLayers();
-        if (!preview) return;
-            // One polygon holding every ring: Leaflet's default even-odd fill rule
-            // renders disjoint outers filled and stair-holes empty without this code
-            // having to work out which hole belongs to which patch.
-        if (preview.rings.length) L.polygon(preview.rings, PREVIEW_RING_STYLE).addTo(this.previewLayer);
-        for (const route of preview.routes) {
-            if (route.length > 1) L.polyline(route, PREVIEW_ROUTE_STYLE).addTo(this.previewLayer);
-        }
-    }
-
     /** Fly to a box — a warning row was clicked. */
     flyTo(south: number, west: number, north: number, east: number): void {
         this.userMoved = true; // deliberate navigation outranks the shelf fit
@@ -451,7 +393,7 @@ export class CoverageMapView {
         this.drawing = false;
         this.removeDrawRect();
         this.map.dragging.enable();
-        this.setCursor(this.regionArmed || this.lassoArmed);
+        this.setCursor(this.regionArmed);
     }
 
     private onDrawStart(e: L.LeafletMouseEvent): void {
@@ -506,79 +448,6 @@ export class CoverageMapView {
         } else if (this.map.hasLayer(this.drawTip)) {
             this.map.removeLayer(this.drawTip);
         }
-    }
-
-    armLassoDraw(): void {
-        this.lassoArmed = true;
-        this.map.dragging.disable();
-        this.setCursor(true);
-    }
-
-    cancelLassoDraw(): void {
-        this.lassoArmed = false;
-        this.lassoing = false;
-        this.removeLassoPoly();
-        this.map.dragging.enable();
-        this.setCursor(this.regionArmed || this.drawArmed);
-    }
-
-    private onLassoStart(e: L.LeafletMouseEvent): void {
-        if (!this.lassoArmed) return;
-        // Clear any leftover preview FIRST: `removeLassoPoly` also resets the point
-        // buffer, so calling it after seeding wipes the gesture's first point and every
-        // move then bails on the null guard.
-        this.removeLassoPoly();
-        this.lassoing = true;
-        this.lassoPoints = [e.latlng];
-        this.lassoLastPx = this.map.latLngToContainerPoint(e.latlng);
-        this.lassoPoly = L.polygon([e.latlng], LASSO_DRAW_STYLE).addTo(this.map);
-    }
-
-    private onLassoMove(e: L.LeafletMouseEvent): void {
-        if (!this.lassoArmed || !this.lassoing || !this.lassoPoly || !this.lassoLastPx) return;
-        const px = this.map.latLngToContainerPoint(e.latlng);
-        if (px.distanceTo(this.lassoLastPx) < LASSO_STEP_PX) return;
-        this.lassoLastPx = px;
-        this.lassoPoints.push(e.latlng);
-        this.lassoPoly.setLatLngs(this.lassoPoints);
-        const label = this.cb.lassoDragLabel(this.lassoPoints.map((p): DegPoint => [p.lat, p.lng]));
-        this.showDrawTip(label, e.latlng);
-    }
-
-    private onLassoFinish(): void {
-        if (!this.lassoArmed || !this.lassoing) return;
-        this.lassoing = false;
-        const points = this.lassoPoints;
-        this.cancelLassoDraw();
-        // A stray click or a gesture with no area draws nothing — the same 5 px
-        // threshold the box uses, over the ring's pixel extent.
-        let minX = Infinity;
-        let minY = Infinity;
-        let maxX = -Infinity;
-        let maxY = -Infinity;
-        for (const p of points) {
-            const px = this.map.latLngToContainerPoint(p);
-            minX = Math.min(minX, px.x);
-            minY = Math.min(minY, px.y);
-            maxX = Math.max(maxX, px.x);
-            maxY = Math.max(maxY, px.y);
-        }
-        if (points.length < 3 || maxX - minX < 5 || maxY - minY < 5) {
-            this.cb.onDrawEnd();
-            return;
-        }
-        this.cb.onLassoDrawn(points.map((p): DegPoint => [p.lat, p.lng]));
-        this.cb.onDrawEnd();
-    }
-
-    private removeLassoPoly(): void {
-        if (this.lassoPoly) {
-            this.map.removeLayer(this.lassoPoly);
-            this.lassoPoly = null;
-        }
-        this.lassoPoints = [];
-        this.lassoLastPx = null;
-        if (this.map.hasLayer(this.drawTip)) this.map.removeLayer(this.drawTip);
     }
 
     private setCursor(crosshair: boolean): void {

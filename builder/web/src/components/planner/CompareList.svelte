@@ -1,7 +1,9 @@
 <script lang="ts">
     import { tick } from 'svelte';
-    import { radioKey } from './Segmented.svelte';
+    import { radioKey } from '../../lib/ui/Segmented.svelte';
     import { difference, optionLetter, type Compared } from '../../lib/planner/route-options';
+    import { distanceIn, heightIn, heightUnit } from '../../lib/settings/format';
+    import { settings } from '../../lib/settings/settings.svelte';
 
     let { label, rows, status, retry, note, applyLabel, previewId, onPreview, onApply }: {
         /** The name of the list, such as "Route options". */
@@ -25,15 +27,17 @@
     const previewed = $derived(checked && checked !== rows[0] ? checked : undefined);
     let group = $state<HTMLDivElement>();
     let statusBox = $state<HTMLDivElement>();
-    const km = (value: number) => value.toFixed(1);
+    /** A distance in kilometres, as text in the units of the rider. */
+    const km = (value: number) => distanceIn(value * 1000).toFixed(1);
+    const climb = (metres: number) => `${Math.round(heightIn(metres))} ${heightUnit()}`;
 
     function notes(row: Compared): string[] {
-        return [row.unknownSurfaceKm >= .05 ? `${km(row.unknownSurfaceKm)} km unknown surface` : '', row.climb === null ? 'Elevation incomplete' : ''].filter(Boolean);
+        return [distanceIn(row.unknownSurfaceKm * 1000) >= .05 ? `${km(row.unknownSurfaceKm)} ${settings.units} unknown surface` : '', row.climb === null ? 'Elevation incomplete' : ''].filter(Boolean);
     }
 
     function ariaLabel(row: Compared, index: number): string {
         const d = index ? `. ${difference(row, rows[0])}` : '';
-        return `${optionLetter(index)}, ${row.name}: ${km(row.km)} km, climb ${row.climb === null ? 'incomplete' : `${row.climb} m`}, unpaved ${km(row.unpavedKm)} km${d}`;
+        return `${optionLetter(index)}, ${row.name}: ${km(row.km)} ${settings.units}, climb ${row.climb === null ? 'incomplete' : climb(row.climb)}, unpaved ${km(row.unpavedKm)} ${settings.units}${d}`;
     }
 
     /** Ends the preview, or applies the row, and focuses the checked radio while the list stays. */
@@ -78,9 +82,9 @@
                             <strong>{row.name}</strong>
                             {#if row === previewed}<small>Previewing</small>{:else if row.detail}<small>{row.detail}</small>{/if}
                         </span>
-                        <span class="value">{km(row.km)} km</span>
-                        <span class="value">{row.climb === null ? '–' : `${row.climb} m`}</span>
-                        <span class="value quiet">{km(row.unpavedKm)} km</span>
+                        <span class="value">{km(row.km)} {settings.units}</span>
+                        <span class="value">{row.climb === null ? '–' : climb(row.climb)}</span>
+                        <span class="value quiet">{km(row.unpavedKm)} {settings.units}</span>
                         {#if index || quiet.length}
                             <span class="detail">{#if index}<span class="difference">{difference(row, rows[0])}</span>{/if}{#if quiet.length}<small>{quiet.join(' · ')}</small>{/if}</span>
                         {/if}

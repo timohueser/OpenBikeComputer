@@ -1,7 +1,7 @@
 name: Bake
 
-# Build catalog cells once, centrally, so the website and desktop app can select,
-# download, and assemble the same verified inputs.
+# Build catalog cells once, centrally, so the website can select, download, and
+# assemble the same verified inputs.
 #
 # ── READ THIS BEFORE ADDING A COUNTRY TO THE MATRIX ────────────────────────────────
 #

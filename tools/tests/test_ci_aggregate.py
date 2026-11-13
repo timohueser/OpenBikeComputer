@@ -15,11 +15,11 @@ import ci_aggregate as aggregate
 import test_plan
 
 
-ALL_JOBS = ("selection", "policy", "test", "wasm-bridges", "web", "desktop-frontend", "desktop")
+ALL_JOBS = ("selection", "policy", "test", "wasm-bridges", "web", "bundle", "shell")
 UPSTREAM = {
     "web": ("selection", "wasm-bridges"),
-    "desktop-frontend": ("selection", "wasm-bridges"),
-    "desktop": ("selection", "desktop-frontend"),
+    "bundle": ("selection", "wasm-bridges"),
+    "shell": ("selection", "bundle"),
 }
 
 
@@ -122,10 +122,10 @@ class AggregateTests(unittest.TestCase):
             aggregate._json_argument(None, "OBC_SELECTION_PLAN")
 
     def test_every_routed_job_of_a_selected_suite_must_run(self):
-        selected = suite("rust.multi", True, ("test", "desktop"))
-        result = evaluate(plan(selected), needs(desktop="skipped"))
+        selected = suite("rust.multi", True, ("test", "shell"))
+        result = evaluate(plan(selected), needs(shell="skipped"))
         self.assertEqual(result.suites[0].state, "selected but not run")
-        self.assertIn("desktop", result.suites[0].reason)
+        self.assertIn("shell", result.suites[0].reason)
 
     def test_upstream_failure_is_distinct_from_skipped_required_work(self):
         job_results = needs(wasm_bridges="failure", web="skipped")
@@ -140,26 +140,26 @@ class AggregateTests(unittest.TestCase):
         self.assertEqual(result.suites[0].state, "selected but not run")
 
     def test_blocking_producer_is_found_two_hops_up(self):
-        # wasm-bridges -> desktop-frontend -> desktop: the failure is not a direct `needs` entry.
-        job_results = needs(wasm_bridges="failure", desktop_frontend="skipped", desktop="skipped")
-        result = evaluate(plan(suite("desktop.contract", True, ("desktop",))), job_results)
+        # wasm-bridges -> bundle -> shell: the failure is not a direct `needs` entry.
+        job_results = needs(wasm_bridges="failure", bundle="skipped", shell="skipped")
+        result = evaluate(plan(suite("shell.contract", True, ("shell",))), job_results)
         self.assertEqual(result.suites[0].state, "blocked by an upstream failure")
         self.assertIn("wasm-bridges", result.suites[0].reason)
 
     def test_unknown_terminal_results_fail_and_block_downstream_work(self):
         for terminal in ("abandoned", "unknown"):
             with self.subTest(result=terminal):
-                job_results = needs(wasm_bridges=terminal, desktop_frontend="skipped", desktop="skipped")
-                result = evaluate(plan(suite("desktop.contract", True, ("desktop",))), job_results)
+                job_results = needs(wasm_bridges=terminal, bundle="skipped", shell="skipped")
+                result = evaluate(plan(suite("shell.contract", True, ("shell",))), job_results)
                 self.assertEqual(result.suites[0].state, "blocked by an upstream failure")
                 self.assertIn("wasm-bridges", result.global_failures)
                 self.assertFalse(result.passed)
 
     def test_blocked_state_when_a_downstream_job_is_skipped(self):
-        job_results = needs(desktop_frontend="failure", desktop="skipped")
-        result = evaluate(plan(suite("desktop.contract", True, ("desktop",))), job_results)
+        job_results = needs(bundle="failure", shell="skipped")
+        result = evaluate(plan(suite("shell.contract", True, ("shell",))), job_results)
         self.assertEqual(result.suites[0].state, "blocked by an upstream failure")
-        self.assertIn("desktop-frontend", result.global_failures)
+        self.assertIn("bundle", result.global_failures)
 
     def test_always_run_policy_job_must_succeed(self):
         result = evaluate(plan(suite("ci.policy", True, ("policy",))), needs(policy="skipped"))
@@ -176,7 +176,7 @@ class AggregateTests(unittest.TestCase):
     def test_upstream_relation_is_the_job_table(self):
         relation = aggregate.upstream_jobs()
         self.assertEqual(relation["web"], ("selection", "wasm-bridges"))
-        self.assertEqual(relation["desktop"], ("selection", "desktop-frontend"))
+        self.assertEqual(relation["web-browser"], ("selection", "wasm-bridges"))
 
     def test_shipped_plan_shape_feeds_the_aggregate(self):
         """The selector's own JSON is what the gate consumes; no second routing table exists."""

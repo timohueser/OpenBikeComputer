@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""Digest-pinned catalog fixtures on loopback, for the two journeys that drive a real catalog UI.
+"""A digest-pinned catalog fixture on loopback, for the builder browser journey.
 
-Two document sets, one server. `schema_examples()` is the desktop launch smoke's catalog and
-publishes no cell bytes, because that journey stops at region selection. `web_assemble()` is the
-builder browser journey's catalog, where every artifact is real, so a region download from it
-assembles the checked-in cells into the checked-in map.
+`web_assemble()` is the journey's catalog, where every artifact is real, so a region download
+from it assembles the checked-in cells into the checked-in map.
 
 Every `bytes`, `sha256` and `url` is computed from the bytes this module serves, never copied from
 a document.
@@ -26,7 +24,6 @@ from threading import Thread
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
-SCHEMA_EXAMPLES = ROOT / "host/obc-pack/schema"
 ASSEMBLE_FIXTURE = ROOT / "builder/wasm/tests/fixture"
 
 CONTENT_TYPES = {
@@ -61,39 +58,6 @@ def pin(objects: dict[str, bytes], path: str, body: bytes) -> dict:
 
 def _document(objects: dict[str, bytes], path: str, document: object) -> dict:
     return pin(objects, path, json.dumps(document).encode())
-
-
-# The desktop launch smoke's catalog.
-
-
-def schema_examples() -> dict[str, bytes]:
-    """Keep the producer's fine-band example; make the other bands empty."""
-
-    catalog = json.loads((SCHEMA_EXAMPLES / "catalog.example.json").read_text())
-    fine = json.loads((SCHEMA_EXAMPLES / "cell-index.example.json").read_text())
-    region_cells = json.loads((SCHEMA_EXAMPLES / "region-cells.example.json").read_text())
-    objects: dict[str, bytes] = {}
-
-    catalog.pop("terrain", None)
-    for ref in catalog["cell_index"]:
-        doc = fine if ref["band"] == "fine" else {
-            "schema_version": 3, "schema_sha256": catalog["schema"]["sha256"],
-            "band": ref["band"], "cells": [], "known_empty": [],
-        }
-        ref.update(_document(objects, f"/{ref['band']}.json", doc))
-        ref.update(cell_count=len(doc["cells"]), known_empty_count=len(doc["known_empty"]))
-    region_cells["cells"] = {"fine": region_cells["cells"]["fine"]}
-    region_cells.pop("terrain", None)
-    region = catalog["regions"][0]
-    region.pop("terrain", None)
-    region.update(bytes=sum(cell["bytes"] for cell in fine["cells"]),
-                  bytes_by_band={"fine": sum(cell["bytes"] for cell in fine["cells"])}, cell_count={"fine": 3},
-                  partial_cell_count_by_band={"fine": 0})
-    pinned = _document(objects, "/region.json", region_cells)
-    region.update({f"cells_{key}": value for key, value in pinned.items()})
-    catalog["regions"] = [region]
-    objects["/catalog.json"] = json.dumps(catalog).encode()
-    return objects
 
 
 # The builder browser journey's catalog.
@@ -265,7 +229,7 @@ def web_assemble() -> dict[str, bytes]:
     return objects
 
 
-CATALOGS = {"schema-examples": schema_examples, "web-assemble": web_assemble}
+CATALOGS = {"web-assemble": web_assemble}
 
 
 

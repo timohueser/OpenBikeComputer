@@ -23,7 +23,6 @@
 -->
 <script lang="ts">
     import { onMount } from "svelte";
-    import Gated from "../Gated.svelte";
     import TransferBar from "./TransferBar.svelte";
     import { saveBytes } from "../../lib/download";
     import { DeviceJob } from "../../lib/device/job.svelte";
@@ -134,7 +133,6 @@
             An export is not a backup — the device is not told anything, and the file you save is the
             only copy.
         </p>
-        <Gated need="rideLibrary" />
     {/if}
 
     <TransferBar {job} />

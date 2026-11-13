@@ -5,9 +5,9 @@ import { thirdPartyLicenses } from "./vite/third-party-licenses";
 import { plannerConfig } from "./src/lib/planner/config";
 import { testConfig } from "./test-support/planner/config";
 
-// One frontend, three hosts. Which host `$host` resolves to is decided here, at
-// build time — a conditional alias, not a runtime `if` — so the two hosts you did not
-// build have no path into the module graph at all. That is what keeps the dev
+// One frontend, two hosts. Which host `$host` resolves to is decided here, at
+// build time — a conditional alias, not a runtime `if` — so the host you did not
+// build has no path into the module graph at all. That is what keeps the dev
 // server's client out of the static web bundle, rather than trusting a bundler to
 // notice that a branch is unreachable. src/lib/platform/bundle.test.ts asserts it
 // against the real emitted chunks.
@@ -16,7 +16,6 @@ const HOSTS = {
     // serves — hence the outDir it already mounts.
     dev: { module: "dev", outDir: "../server/static/dist" },
     web: { module: "web", outDir: "dist/web" },
-    desktop: { module: "desktop", outDir: "dist/desktop" },
 } as const;
 
 type HostName = keyof typeof HOSTS;
@@ -26,7 +25,7 @@ type HostName = keyof typeof HOSTS;
 const PAGES: Record<string, string> = { planner: "planner.html", data: "data.html", trailview: "trailview.html" };
 
 // `vite`/`vite build` default to development/production, and vitest to test — all
-// three are the dev host. `--mode web|desktop` opts into the others. Anything else is
+// three are the dev host. `--mode web` opts into the other. Anything else is
 // a typo, and quietly building the dev host for a mistyped deploy target is the one
 // outcome worth failing over.
 function hostFor(mode: string): HostName {
@@ -58,8 +57,7 @@ export default defineConfig(({ mode }) => {
         // "/" (local FastAPI) or under a sub-path (a future single-server deployment
         // serving landing + docs + builder behind one reverse proxy).
         base: "./",
-            // The licence notices ride along with every tier's bundle — the static site and
-            // the Tauri app are the same build, and both are distributions.
+            // The licence notices ride along with the bundle, which is a distribution.
         plugins: [svelte(), thirdPartyLicenses()],
         resolve: {
             // Root-relative rather than an absolute path so the config needs no

@@ -25,6 +25,7 @@ members = [
     "planner/router",
     "planner/router-build",
     "host/obc-file-source",
+    "host/obc-fit",
     "host/obc-inspect",
     "host/obc-fixtures",
     "host/obc-pack",
@@ -55,13 +56,13 @@ members = [
     "sim/phone/host",
     "sim/desktop",
     "sim/web-demo",
-    # Product bridges. obc-desktop carries its own [workspace].
+    # Product bridges.
     "planner/service",
     "builder/wasm",
 ]
 # obc-fw-nrf54l is a standalone board crate (own target + .cargo/config.toml, own empty
 # [workspace]); it's built on its own, not as part of this host workspace (which builds its
-# members for the host target). obc-boot, obc-desktop and obc-sensor-sim carry their own
+# members for the host target). obc-boot and obc-sensor-sim carry their own
 # [workspace] tables, which excludes them automatically for the same reason.
 exclude = ["firmware/obc-fw-nrf54l"]
 resolver = "2"
@@ -94,6 +95,7 @@ obc-app = { path = "firmware/obc-app" }
 obc-dem = { path = "host/obc-dem", default-features = false }
 obc-dfu = { path = "firmware/obc-dfu" }
 obc-file-source = { path = "host/obc-file-source" }
+obc-fit = { path = "host/obc-fit" }
 obc-host-core = { path = "sim/host-core" }
 obc-places = { path = "host/obc-places" }
 obc-platform = { path = "firmware/obc-platform" }

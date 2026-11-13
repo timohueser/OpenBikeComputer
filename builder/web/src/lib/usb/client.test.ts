@@ -15,9 +15,8 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { expectBytes } from "../../../test-support/bytes";
 import { loadFlatDevice } from "../../../test-support/flat-device/load";
 import { Crc32 } from "./crc32";
-import { DeviceError, FlatStoreClient, blobSource, bytesSource } from "./client";
-import { FlatDevice, controlCeilingFor, flatDevice, streamCeilingFor } from "./flat-device";
-import { loopbackLink } from "./loopback";
+import { DeviceError, blobSource, bytesSource } from "./client";
+import { controlCeilingFor, flatDevice, streamCeilingFor } from "./flat-device";
 import { EntryFlags, ObjectKind, ObjectState, Opcode } from "./protocol";
 
 beforeAll(loadFlatDevice);
@@ -111,19 +110,6 @@ describe("what a connection learns before anything else", () => {
                 serialNumber: "AABB",
             });
         });
-    });
-
-    it("says the host cannot ask rather than inventing a firmware version", async () => {
-        // A transport with no EP0 path — the desktop bridge today. A fabricated revision would feed
-        // "an update is available" a lie, so the honest answer is that nobody asked.
-        const link = loopbackLink();
-        const device = new FlatDevice(link.device);
-        void device.run();
-        const pathless = { control: link.host.control, stream: link.host.stream, close: () => link.host.close() };
-        const client = new FlatStoreClient(pathless);
-        await expect(client.deviceInfo()).rejects.toMatchObject({ code: "unavailable" });
-        await client.close();
-        device.stop();
     });
 
     it("takes the store's identity and cache freshness from the first LIST, not from a read", async () => {

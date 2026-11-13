@@ -4,13 +4,12 @@
 // The arithmetic all lives in `lib/catalog/` — this class owns *state and
 // lifetime*. Two `SelectionResolver`s, deliberately: each prunes cache entries
 // that were not part of its latest answer, so one resolver alternating between
-// the committed selection and the selection plus the corridor panel's preview
-// would evict half its cache on every frame.
+// the committed selection and the box being dragged would evict the committed
+// answers on every move.
 
 import type { ArticleIndexDocument } from "../catalog/articles";
 import { CatalogClient } from "../catalog/client";
 import { cellsIntersecting, coverageBbox, parseCellId, type UBox } from "../core/grid";
-import { lassoCells } from "../catalog/lasso";
 import { cellsTouchingHoles, detailBandId } from "./shape";
 import { ledgerFor, type Ledger } from "../catalog/ledger";
 import type { Catalog, RegionEntry, SkinEntry } from "../catalog/manifest";
@@ -27,34 +26,12 @@ import {
 import {
     emptySelection,
     SelectionResolver,
-    withCorridorRadius,
     withoutPart,
     withPart,
-    type CorridorPart,
-    type LatLon,
     type Selection,
-    type SelectionPart,
     type SelectionContext,
     type SelectionResolution,
 } from "../catalog/selection";
-
-/** The slider's range and default, metres. The default is a day-ride's "what if
- *  I take the other valley" allowance — wide enough that a detour stays on the
- *  map, narrow enough that a corridor stays corridor-shaped (cells are ~29 km,
- *  so the first step past the route is already generous). */
-export const CORRIDOR_RADIUS_DEFAULT_M = 10_000;
-export const CORRIDOR_RADIUS_MIN_M = 2_000;
-export const CORRIDOR_RADIUS_MAX_M = 50_000;
-
-/** What the corridor panel's "adds …" line states about a candidate. */
-export interface PreviewSummary {
-    /** Bytes the map grows by — the candidate's cells minus what the selection
-     *  already covers. */
-    addsBytes: number;
-    addsCells: number;
-    /** Disjoint patches the candidate itself forms (2 routes far apart = 2). */
-    patches: number;
-}
 
 /** A boundary's bbox area in µdeg², the ladder's smallest-first sort key. Not a
  *  real area — but ordering nested admin regions only needs monotonicity, and a
@@ -114,14 +91,10 @@ export class CoverageStore {
     /** Region list fetches that failed, by region id — the part row says so. */
     regionErrors = $state<ReadonlyMap<string, string>>(new Map());
 
-    selection = $state<Selection>(emptySelection(CORRIDOR_RADIUS_DEFAULT_M));
+    selection = $state<Selection>(emptySelection());
     lightSkinId = $state<string>("default");
     darkSkinId = $state<string>("dusk");
     customSkinRecords = $state<CustomSkinRecord[]>([]);
-
-    /** The corridor panel's checked-but-not-yet-added routes, drawn dashed on
-     *  the map and priced by {@link previewSummary}. */
-    previewParts = $state<CorridorPart[]>([]);
 
     /** Somewhere the map should fly to — a warning row was clicked. Consumed
      *  (nulled) by the map after the flight. */
@@ -131,14 +104,12 @@ export class CoverageStore {
     highlightPartId = $state<string | null>(null);
 
     private readonly resolver = new SelectionResolver();
-    private readonly previewResolver = new SelectionResolver();
-    /** Prices the box being dragged, apart from the other two so a drag never
-     *  evicts the committed selection's warm cache. */
+    /** Prices the box being dragged, apart from the committed resolver so a drag
+     *  never evicts the committed selection's warm cache. */
     private readonly dragResolver = new SelectionResolver();
     private readonly skinStorage: SkinStorage | null;
     private nextPartId = 1;
     private boxCount = 0;
-    private lassoCount = 0;
 
     constructor(client: CatalogClient, rootBody: string, skinStorage: SkinStorage | null = browserSkinStorage()) {
         this.client = client;
@@ -155,7 +126,6 @@ export class CoverageStore {
         next.selection = this.selection;
         next.nextPartId = this.nextPartId;
         next.boxCount = this.boxCount;
-        next.lassoCount = this.lassoCount;
         for (const part of next.selection.parts) {
             if (part.kind !== "region") continue;
             if (next.region(part.regionId)) void next.fetchRegionCells(part.regionId);
@@ -215,7 +185,7 @@ export class CoverageStore {
      * be. A resolution *throws* for exactly two kinds of reason, and both are
      * refusals rather than crashes: a broken publish (a region list naming a cell
      * no band index carries), and a part outside what the grid enumerates (a box
-     * over half the planet, a corridor crossing the antimeridian). The UI shows
+     * over half the planet). The UI shows
      * the sentence and the parts list stays alive, so the offending part can be
      * removed.
      */
@@ -241,25 +211,6 @@ export class CoverageStore {
         const resolution = this.resolved.resolution;
         return resolution && this.indices ? ledgerFor(resolution, this.catalog, this.indices, this.articles) : null;
     });
-
-    /** The selection plus the panel's preview routes — what the map draws while
-     *  the panel is open, and what the adds-line is priced from. Null (never a
-     *  throw) when a preview route cannot be resolved; the panel says so. */
-    readonly previewed = $derived.by<{ resolution: SelectionResolution | null; error: string | null }>(() => {
-        const ctx = this.ctx;
-        if (!ctx || this.previewParts.length === 0) return { resolution: null, error: null };
-        let candidate = this.selection;
-        for (const part of this.previewParts) candidate = withPart(candidate, part);
-        try {
-            return { resolution: this.previewResolver.resolve(candidate, ctx), error: null };
-        } catch (e) {
-            return { resolution: null, error: e instanceof Error ? e.message : String(e) };
-        }
-    });
-
-    get previewResolution(): SelectionResolution | null {
-        return this.previewed.resolution;
-    }
 
     readonly skins = $derived.by<SkinEntry[]>(() => [
         ...this.catalog.skins,
@@ -320,19 +271,6 @@ export class CoverageStore {
         this.customSkinRecords = next;
         if (this.lightSkinId === id) this.lightSkinId = "default";
         if (this.darkSkinId === id) this.darkSkinId = "dusk";
-    }
-
-    /** What the panel's candidate would add to the committed map. */
-    previewSummary(patches: number): PreviewSummary | null {
-        const withPreview = this.previewResolution;
-        const ledger = this.ledger;
-        if (!withPreview || !ledger || !this.indices) return null;
-        const candidate = ledgerFor(withPreview, this.catalog, this.indices, this.articles);
-        return {
-            addsBytes: Math.max(0, candidate.totalBytes - ledger.totalBytes),
-            addsCells: Math.max(0, candidate.cellCount - ledger.cellCount),
-            patches,
-        };
     }
 
     /**
@@ -435,8 +373,8 @@ export class CoverageStore {
         void this.fetchRegionCells(regionId);
     }
 
-    /** Why the last drawn box or lasso was refused, shown as a map chip until
-     *  the next draw. */
+    /** Why the last drawn box was refused, shown as a map chip until the next
+     *  draw. */
     drawError = $state<string | null>(null);
 
     /**
@@ -447,21 +385,9 @@ export class CoverageStore {
      * than a second pricing path that can drift.
      */
     priceDraggedBox(box: UBox): { bytes: number; cells: number } | { refused: true } | null {
-        return this.priceDragged({ kind: "box", id: "drag", name: "", box });
-    }
-
-    /** Price a lasso mid-draw — the live chip under the pen, same discipline. */
-    priceDraggedLasso(points: LatLon[]): { bytes: number; cells: number } | { refused: true } | null {
-        return this.priceDragged({ kind: "lasso", id: "drag", name: "", points });
-    }
-
-    private priceDragged(part: SelectionPart): { bytes: number; cells: number } | { refused: true } | null {
         const ctx = this.ctx;
         if (!ctx || !this.indices) return null;
-        const candidate: Selection = {
-            parts: [part],
-            corridorRadiusM: this.selection.corridorRadiusM,
-        };
+        const candidate: Selection = { parts: [{ kind: "box", id: "drag", name: "", box }] };
         try {
             const ledger = ledgerFor(this.dragResolver.resolve(candidate, ctx), this.catalog, this.indices, this.articles);
             return { bytes: ledger.totalBytes, cells: ledger.cellCount };
@@ -493,31 +419,6 @@ export class CoverageStore {
         });
     }
 
-    addLasso(points: LatLon[]): void {
-        // Same pre-check as a box, through the ring's own enumeration: a part
-        // the grid refuses must never make the whole ledger throw.
-        try {
-            for (const band of this.catalog.schema.bands) lassoCells(band.cell_log2, points);
-        } catch {
-            this.drawError = "That lasso covers more cells than a map can hold — draw a smaller one, or add a whole region instead.";
-            return;
-        }
-        this.drawError = null;
-        this.lassoCount += 1;
-        let latSum = 0;
-        let lonSum = 0;
-        for (const p of points) {
-            latSum += p.lat;
-            lonSum += p.lon;
-        }
-        this.selection = withPart(this.selection, {
-            kind: "lasso",
-            id: `part-${this.nextPartId++}`,
-            name: this.areaName("Lasso", latSum / points.length, lonSum / points.length, this.lassoCount),
-            points,
-        });
-    }
-
     /** "Box — <the smallest catalog region under its centre>", because "Box 3"
      *  tells nobody which box to remove. Containment is tested against the
      *  region's actual boundary rings, not its bounding box: a box centred in the
@@ -528,38 +429,8 @@ export class CoverageStore {
         return best ? `${prefix} — ${best.name}` : `${prefix} ${count}`;
     }
 
-    addCorridor(name: string, points: LatLon[]): void {
-        this.selection = withPart(this.selection, {
-            kind: "corridor",
-            id: `part-${this.nextPartId++}`,
-            name,
-            points,
-        });
-    }
-
     removePart(partId: string): void {
         this.selection = withoutPart(this.selection, partId);
         if (this.highlightPartId === partId) this.highlightPartId = null;
-    }
-
-    setCorridorRadius(radiusM: number): void {
-        this.selection = withCorridorRadius(this.selection, radiusM);
-    }
-
-    /** A preview part with a stable id, so the panel can replace one route's
-     *  entry without perturbing the others' cache keys. */
-    makePreviewPart(routeId: string, name: string, points: LatLon[]): CorridorPart {
-        return { kind: "corridor", id: `preview-${routeId}`, name, points };
-    }
-
-    /** Commit the panel's checked routes: one corridor part per route, because a
-     *  part buffers a single polyline and joining two routes into one would
-     *  bridge the ground between them with corridor cells — the exact gap the
-     *  design promises stays a hole. */
-    commitPreview(): void {
-        for (const preview of this.previewParts) {
-            this.addCorridor(preview.name, preview.points);
-        }
-        this.previewParts = [];
     }
 }

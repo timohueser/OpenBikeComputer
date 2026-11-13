@@ -1,7 +1,6 @@
 /**
  * The byte-channel seam under the USB stack: `records.ts` turns these bytes into records and
- * `client.ts` speaks the protocol above them. WebUSB, the desktop `nusb` bridge and the loopback
- * device implement it.
+ * `client.ts` speaks the protocol above them. WebUSB and the loopback device implement it.
  *
  * There is no barrel over the stack. Every consumer imports the module it needs, which keeps the
  * simulated `loopback.ts` device out of the hosted bundle.
@@ -36,7 +35,7 @@ export class PipeError extends Error {
  * client serialises them.
  */
 export interface BytePipe {
-    /** Diagnostics only, never a branch target: `"webusb"`, `"loopback"`, `"native"`. */
+    /** Diagnostics only, never a branch target: `"webusb"`, `"loopback"`. */
     readonly transport: string;
 
     /** False once {@link close} has run or the device has disappeared. */
@@ -70,28 +69,28 @@ export interface BytePipe {
 }
 
 /**
- * The pair of channels one device speaks over, plus USB's one out-of-band read.
+ * The pair of channels one device speaks over.
  *
  * `control` carries control frames and `stream` carries stream frames. Both are record-framed by
  * `records.ts`; neither is a message pipe.
  */
-export interface DeviceLink {
+export interface RecordLink {
     /** Control frames: requests out, responses in, one frame per record. */
     readonly control: BytePipe;
     /** Stream frames: a 16-byte frame and its payload, one frame per record. */
     readonly stream: BytePipe;
 
-    /**
-     * One EP0 vendor device-to-host request, recipient interface.
-     *
-     * Present only on a transport that can issue one. The desktop bridge exposes no control-transfer
-     * command, so it omits this rather than answering with a fabricated payload. Resolves with
-     * however many bytes the device returned, which can be short of `length`.
-     */
-    vendorIn?(request: number, value: number, length: number, signal?: AbortSignal): Promise<Uint8Array>;
-
     /** Close both pipes. Idempotent. */
     close(): Promise<void>;
+}
+
+/** The host's end of a link: the two channels, plus USB's one out-of-band read. */
+export interface DeviceLink extends RecordLink {
+    /**
+     * One EP0 vendor device-to-host request, recipient interface. Resolves with however many bytes
+     * the device returned, which can be short of `length`.
+     */
+    vendorIn(request: number, value: number, length: number, signal?: AbortSignal): Promise<Uint8Array>;
 }
 
 /** Throw `PipeError("aborted")` if `signal` has already fired. */

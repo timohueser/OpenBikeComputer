@@ -74,6 +74,6 @@ export function isTrip(value: unknown): value is Trip {
         integer(Number(night), 1, days - 1) && stay(kinds)))) return false;
 
     if (value.bike !== undefined && (typeof value.bike !== 'string' || !Object.hasOwn(ridingProfiles, value.bike))) return false;
-    // A reader routes a preset that the activity does not have with Balanced (`planPreset`).
-    return value.preset === undefined || typeof value.preset === 'string';
+    // A reader routes a preset that the activity does not have with Balanced (`planPreset`), and an unknown pace is Moderate (`planPace`).
+    return (value.preset === undefined || typeof value.preset === 'string') && (value.pace === undefined || typeof value.pace === 'string');
 }
