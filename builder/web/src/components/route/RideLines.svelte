@@ -38,7 +38,7 @@
     const series: Record<Key, { label: string; color: string; format: (value: number) => string }> = {
         elevation: { label: 'Elevation', color: 'var(--ink-faint)', format: formatHeight },
         speed: { label: 'Speed', color: 'var(--speed)', format: formatSpeed },
-        hr: { label: 'Heart rate', color: 'var(--ride)', format: whole('bpm') },
+        hr: { label: 'Heart rate', color: 'var(--heart-rate)', format: whole('bpm') },
         power: { label: 'Power', color: 'var(--water)', format: whole('W') },
         cadence: { label: 'Cadence', color: 'var(--cadence)', format: whole('rpm') },
     };

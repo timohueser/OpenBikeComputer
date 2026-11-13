@@ -78,7 +78,7 @@ The bottom card ([`RideLines.svelte`](../../builder/web/src/components/route/Rid
 
 The frame of a detail page ([`Detail.svelte`](../../builder/web/src/components/route/Detail.svelte)) does not scroll as a whole on a computer: the cards take the height that the bottom card leaves, down to 160 px, the rows of the lines get lower in a low window, and the left card scrolls inside. No bottom card is a scroll box, so its panels are never cut. A menu ([`Menu.svelte`](../../builder/web/src/components/route/Menu.svelte)) opens in the top layer and stays inside the window.
 
-The line of a ride is warm white with an amber glow on the cover, and `--ride` on the map and on the plain ground. Export gives the stored file for its own format, else a file written from the samples, and a CSV table in SI units. "Ride it again" opens the route of the ride's line. Its id is the id that "Add files" gives the same line (`lineId`), so a second click opens the same route. After Delete, the page goes to `#/routes/ridden`.
+The line of a ride is a teal: a lighter teal with a glow on the cover, and `--ride` on the map and on the plain ground. Export gives the stored file for its own format, else a file written from the samples, and a CSV table in SI units. "Ride it again" opens the route of the ride's line. Its id is the id that "Add files" gives the same line (`lineId`), so a second click opens the same route. After Delete, the page goes to `#/routes/ridden`.
 
 ## Routes page
 

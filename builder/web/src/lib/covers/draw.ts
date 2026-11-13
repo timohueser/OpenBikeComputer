@@ -4,17 +4,17 @@ import { along, distanceAt, metresAlong, placed, runs } from './line';
 
 /** The image is the same in both themes, so the line of a route keeps the colours of the light theme: `--route`, and
  * `--amber` for a part. As the ribbon of TrailView, a glow in a lighter tint of the line fades out beyond it, and a weak
- * light core runs in its middle. The line of a ride is warm white with an amber glow; `ring` is the edge of the mark. */
+ * light core runs in its middle. The line of a ride is a teal, lighter than `--ride` so that it shows on a dark slope; `ring` is the edge of the mark. */
 const LOOKS = {
     route: { line: '#cc2a93', glow: '#ee8fcf', core: '#f8b8e2', ring: '#cc2a93' },
-    ride: { line: '#fff3df', glow: '#f2a33a', core: '#ffffff', ring: '#b4531b' },
+    ride: { line: '#12b3a8', glow: '#84e2d9', core: '#cdf6f1', ring: '#0b8f8b' },
     part: { line: '#f4a81d', glow: '#f8c66a', core: '#ffe6b0' },
 };
 export type Look = 'route' | 'ride';
 /** With a part, the rest of the line takes a paler solid tint of its look. */
 export const REST: Record<Look, { line: string; glow: string; core: string }> = {
     route: { line: '#e7a6d0', glow: '#f2cde4', core: '#fae6f2' },
-    ride: { line: '#d9d0c4', glow: '#e3d6c3', core: '#f2ece4' },
+    ride: { line: '#a5d8d3', glow: '#cbe9e6', core: '#e5f5f3' },
 };
 /** The glow reaches GLOW_REACH of the widest line beyond it, in GLOW_STEPS strokes of GLOW_ALPHA each; the core is CORE_WIDTH of the line. */
 const GLOW_REACH = 0.6, GLOW_STEPS = 5, GLOW_ALPHA = 0.14, CORE_WIDTH = 0.25, CORE_ALPHA = 0.3;

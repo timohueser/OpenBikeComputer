@@ -4,7 +4,7 @@
 :root {
     --version-a: var(--water);
     --version-b: #c8701f;
-    --ride: var(--rust);
+    --ride: #0b8f8b;
     /* A connected device, in the greens of its housing: on the page, and on the rust top bar. */
     --connected: #2f6350;
     --connected-on-rust: #8be3bc;
@@ -14,14 +14,15 @@
     --zone-3: #6a9c62;
     --zone-4: #bd8b0e;
     --zone-5: #bf4a34;
-    /* The lines of the speed and of the cadence of a ride: no other line has these hues. */
+    /* The lines of the speed, the cadence and the heart rate of a ride: no other line has these hues. */
     --speed: #3f68b0;
     --cadence: #74508f;
+    --heart-rate: var(--rust);
 }
 
 :root[data-theme="dark"] {
     --version-b: #e8964a;
-    --ride: #e0874c;
+    --ride: #3fd0c6;
     --connected: #8be3bc;
     --zone-1: #6f6c5f;
     --zone-2: #6c9cc4;
@@ -30,4 +31,5 @@
     --zone-5: #dd6a50;
     --speed: #7aa7f0;
     --cadence: #c2a3dc;
+    --heart-rate: #e0874c;
 }
