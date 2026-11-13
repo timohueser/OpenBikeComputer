@@ -59,8 +59,7 @@
     const chosen = $derived(ridden ? chosenRow?.rides[0] : shown.find(item => item.id === selected));
     const states = $derived(new Map(records?.map(record => [record.id, deviceState(record, waiting, sent)])));
     const times = $derived([...grouped.values()].reduce((counts, id) => counts.set(id, (counts.get(id) ?? 0) + 1), new Map<string, number>()));
-    const count = (n: number, one: string) => `${n.toLocaleString('en')} ${one}${n === 1 ? '' : 's'}`;
-    const noun = $derived(ridden ? 'ride' : 'route');
+    const count = (n: number, one: string) => `${n.toLocaleString('en')} ${one}${n === 1 ? '' : 's'}`;    const noun = $derived(ridden ? 'ride' : 'route');
     const listed = $derived((ridden ? rides : records) !== undefined);
     const years = $derived([...new Set(rideItems.map(item => new Date(item.at).getFullYear()))].sort((a, b) => b - a));
     const year = $derived(chips.year ?? new Date().getFullYear());
@@ -175,6 +174,11 @@
 <svelte:window onclickcapture={event => { if ((event.target as Element).closest?.('a[href]')) keep?.(); }}
     onkeydown={event => { if (event.key === 'Escape' && !document.querySelector('dialog[open]')) selected = undefined; }} />
 
+<!-- The second line of a row: a date, then the numbers. The line wraps between two numbers, never inside one. -->
+{#snippet numbers(parts: (string | false)[], lead = '')}
+    <span class="meta">{lead}{#each parts.filter(Boolean) as part, i (i)}{i || lead ? ' · ' : ''}<span>{part}</span>{/each}</span>
+{/snippet}
+
 <div class="routes-page">
     <header>
         <div class="title">
@@ -227,16 +231,16 @@
                                         <span class="thumb">{#if near.has(key)}<Cover {library} id={first.id} />{/if}</span>
                                         <span class="text">
                                             <strong>{row.name}</strong>
-                                            <span class="meta">
-                                                {#if row.kind === 'trip'}
-                                                    {[tripDates(row), count(row.days!, 'day'), formatDistance(row.rides.reduce((sum, ride) => sum + ride.summary.lengthM, 0))].join(' · ')}
-                                                {:else if row.kind === 'group'}
-                                                    {formatDistance(first.summary.lengthM)} · last on {dayText(first.at)}
-                                                {:else}
-                                                    {[dayText(first.at), formatDistance(first.summary.lengthM), `${formatHeight(first.summary.climbM)} up`].join(' · ')}
-                                                {/if}
-                                            </span>
+                                            {#if row.kind === 'trip'}
+                                                {@render numbers([count(row.days!, 'day'), formatDistance(row.rides.reduce((sum, ride) => sum + ride.summary.lengthM, 0))], tripDates(row))}
+                                            {:else if row.kind === 'group'}
+                                                <span class="meta"><span>{formatDistance(first.summary.lengthM)}</span> · last on {dayText(first.at)}</span>
+                                            {:else}
+                                                {@render numbers([formatDistance(first.summary.lengthM), `${formatHeight(first.summary.climbM)} up`], dayText(first.at))}
+                                            {/if}
                                         </span>
+                                        <!-- The room of the button that opens the group, which lies on the row. -->
+                                        {#if row.kind === 'group'}<span class="open room" aria-hidden="true">{count(row.rides.length, 'ride')} ›</span>{/if}
                                     </button>
                                     {#if row.kind === 'group'}
                                         <button type="button" class="open" onclick={() => { opened = row.id; selected = undefined; }}>{count(row.rides.length, 'ride')} ›</button>
@@ -255,8 +259,7 @@
                                             <strong>{item.name}</strong>
                                             {#if item.kind === 'route' && item.summary}
                                                 {@const summary = item.summary}
-                                                <span class="meta">{[summary.days > 1 && `${summary.days} days`, formatDistance(summary.lengthM),
-                                                    `${formatHeight(summary.climbM)} up`].filter(Boolean).join(' · ')}</span>
+                                                {@render numbers([summary.days > 1 && `${summary.days} days`, formatDistance(summary.lengthM), `${formatHeight(summary.climbM)} up`])}
                                             {/if}
                                         </span>
                                         {#if state}<span class="badge {state}">{BADGES[state]}</span>{/if}
@@ -441,11 +444,12 @@
         gap: 1px;
         min-width: 0;
     }
+    /* The numbers are one line where they fit and wrap where they do not: none is cut. */
     .meta, .badge {
-        overflow: hidden;
         color: var(--ink-soft);
         font-size: 12.5px;
-        text-overflow: ellipsis;
+    }
+    .badge, .meta span {
         white-space: nowrap;
     }
     /* The one state that waits for the rider to connect the device has a dot. */
@@ -462,14 +466,16 @@
     li {
         position: relative;
     }
-    /* The button that opens a group sits on its row, so the row keeps room for it. */
-    li:has(.open) .row {
-        padding-right: 64px;
+    /* The button that opens a group lies on its row, over a column of the row with the same text and width. */
+    .open.room {
+        position: static;
+        transform: none;
+        visibility: hidden;
     }
     .open {
         position: absolute;
         top: 50%;
-        right: 4px;
+        right: 6px;
         padding: 2px 4px;
         border: 0;
         border-radius: 4px;

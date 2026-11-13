@@ -87,8 +87,8 @@
     .card {
         position: relative;
         display: grid;
-        /* The profile takes the room that the text leaves. */
-        grid-template-columns: 220px minmax(0, max-content) minmax(120px, 1fr) auto;
+        /* The profile takes the room that the text leaves, and keeps a fair width beside a long name. */
+        grid-template-columns: 220px minmax(0, max-content) minmax(clamp(140px, 22%, 200px), 1fr) auto;
         align-items: center;
         gap: 20px;
         padding: 10px;
@@ -103,9 +103,15 @@
         overflow: hidden;
         border-radius: 6px;
     }
+    /* A long name has two lines; the page of the route has all of it. */
     h2 {
+        display: -webkit-box;
         margin: 0;
+        overflow: hidden;
         font: 700 18px/1.25 var(--sans);
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+        line-clamp: 2;
     }
     p {
         margin: 2px 0 0;
@@ -176,7 +182,8 @@
         color: var(--ink-soft);
         font-size: 13px;
     }
-    @media (max-width: 900px) {
+    /* Under this width the map leaves the card too little room for four columns. */
+    @media (max-width: 1200px) {
         .card {
             grid-template-columns: 120px minmax(0, 1fr);
             gap: 12px 16px;

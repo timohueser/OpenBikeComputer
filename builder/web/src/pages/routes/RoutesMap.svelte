@@ -222,9 +222,11 @@
         text-decoration: none;
     }
     /* The button stands beside the line of the map's credit; its text opens under the line. */
+    /* No transform, so the text is placed in the corner of the map and not in this box. */
     .picture-credits {
         clear: none;
         margin-left: 6px;
+        transform: none;
     }
     .picture-credits button {
         position: static;
