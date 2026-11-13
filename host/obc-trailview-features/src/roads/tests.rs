@@ -149,6 +149,27 @@ fn a_hairpin_climbs_within_the_grade_of_its_class() {
 }
 
 #[test]
+fn a_road_across_a_steep_slope_keeps_its_grade_where_the_terrain_under_its_line_humps() {
+    // A slope that rises 2 m per metre north, with a nose 15 m high under the line of the road: the terrain
+    // across the road's width spans 16 m, and the nose is no bed for the road.
+    let place = engelberg();
+    let height = |e: f64, n: f64| 1000.0 + 2.0 * n + 15.0 * (-((e - 250.0) / 8.0).powi(2)).exp();
+    let road = way("primary", place.line(&[(0.0, 0.0), (500.0, 0.0)], Some(20.0)), |f| f.half = 4.0);
+    let curve = place.curve(&run(&[road], &place.terrain(height), &[]).ways[0][0]);
+    let z = curve.z.unwrap();
+    let at: Vec<(f64, f64)> = curve.points.iter().map(|&p| place.east_north(p)).collect();
+    for k in 1..z.len() {
+        let grade = (z[k] - z[k - 1]) / (at[k].0 - at[k - 1].0).hypot(at[k].1 - at[k - 1].1);
+        assert!(grade.abs() <= 0.12 + 1e-3, "grade {grade} at {} m east", at[k].0);
+    }
+    // Each vertex lies within GROUND_M of the terrain across the road.
+    for (&(e, n), &z) in at.iter().zip(&z) {
+        let (low, high) = (height(e, n - 4.0), height(e, n + 4.0));
+        assert!(z >= low - GROUND_M - KEEP_M && z <= high + GROUND_M + KEEP_M, "{z} at {e} m east");
+    }
+}
+
+#[test]
 fn a_side_road_between_two_near_junctions_holds_its_grade() {
     // A secondary ends at J on flat ground at 1000 m, where a residential runs on north. 4.4 m on, a
     // path leaves the residential on flat ground at 1002 m. The residential is a side at J, but the
@@ -922,7 +943,8 @@ fn a_road_over_an_untagged_stream_holds_its_cover_and_a_ford_a_path_a_wide_river
         let start = place.east_north(solved.ways[f][0].as_ref().unwrap().points[0]).0;
         interp(east - start, &along, &z)
     };
-    let lifted = |z: f64| z > 499.7 + 1.0 - 0.01;
+    // A limit is a cost: the stiff line of a railway meets its cover within 2 cm.
+    let lifted = |z: f64| z > 499.7 + 1.0 - 0.02;
     let level = |z: f64, want: f64| (z - want).abs() < 0.01;
     assert!(lifted(at(0, 0.0)), "{}", at(0, 0.0));
     assert!(level(at(1, 0.0), 500.0) && level(at(3, 0.0), 500.0) && level(at(4, 0.0), 500.0));

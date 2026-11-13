@@ -107,7 +107,7 @@ const SCALES: [f64; 2] = [1e-2, 1.0];
 /// GMRES refines each solve to REFINE_M, in at most REFINE_STEPS steps.
 const REFINE_M: f64 = 1e-6;
 const REFINE_STEPS: usize = 30;
-/// Newton rounds end when a round of the whole network moves no vertex by SETTLE_M, or after ROUNDS. The
+/// The Newton rounds of a scale end when no vertex of the network would move by SETTLE_M, or after ROUNDS. The
 /// rounds after the first solve only the network within REGION_M of the limits that changed side, and the
 /// bridges and tunnels that it meets: the terrain anchors the rest.
 const ROUNDS: usize = 40;
