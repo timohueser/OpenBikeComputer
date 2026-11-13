@@ -5,9 +5,13 @@
     --version-a: var(--water);
     --version-b: #c8701f;
     --ride: var(--rust);
+    /* A connected device, in the greens of its housing: on the page, and on the rust top bar. */
+    --connected: #2f6350;
+    --connected-on-rust: #8be3bc;
 }
 
 :root[data-theme="dark"] {
     --version-b: #e8964a;
     --ride: #e0874c;
+    --connected: #8be3bc;
 }

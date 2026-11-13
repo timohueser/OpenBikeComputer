@@ -13,8 +13,11 @@ if (cover !== null) {
     Object.assign(window, { coverTest: { library, lineKey, sentKey, startCoverJob: () => startCoverJob(library), setLook } });
     void import('./lib/covers/CoverPage.svelte').then(({ default: CoverPage }) => mount(CoverPage, { target, props: { library, id: cover } }));
 } else {
+    // The dev server and the build of the browser tests can put a pretend device on the cable; another build drops this branch.
+    const fake = (import.meta.env.DEV || import.meta.env.VITE_FAKE_DEVICE) && search.has('fake-device')
+        ? import('../test-support/device-sync/fake-device').then(({ fakeDevice }) => fakeDevice()) : Promise.resolve();
     // A dynamic import, so the test page of a cover has none of the shell's base rules.
-    import('./Shell.svelte').then(({ default: Shell }) => mount(Shell, { target }), (error: unknown) => {
+    fake.then(() => import('./Shell.svelte')).then(({ default: Shell }) => mount(Shell, { target }), (error: unknown) => {
         const message = document.createElement('p');
         message.setAttribute('role', 'alert');
         message.style.cssText = 'margin: 32px 16px; font-family: var(--sans);';

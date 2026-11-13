@@ -219,7 +219,7 @@
     },
     {
      "rule": "cycle",
-     "message": "device-map-builder -> device-link closes a cycle: builder/web/src/components/UpdatePrompt.svelte -> builder/web/src/lib/device/job.svelte.ts, builder/web/src/components/UpdatePrompt.svelte -> builder/web/src/lib/device/session.svelte.ts, builder/web/src/components/device/CardFormat.svelte -> builder/web/src/lib/usb/client.ts, and 40 more"
+     "message": "device-map-builder -> device-link closes a cycle: builder/web/src/components/UpdatePrompt.svelte -> builder/web/src/lib/device/job.svelte.ts, builder/web/src/components/UpdatePrompt.svelte -> builder/web/src/lib/device/session.svelte.ts, builder/web/src/components/device/CardFormat.svelte -> builder/web/src/lib/usb/client.ts, and 46 more"
     },
     {
      "rule": "cycle",
@@ -305,7 +305,7 @@
     "repository-tooling"
    ],
    "violations": 10,
-   "lines": 10824,
+   "lines": 11052,
    "problems": [
     {
      "rule": "cycle",
@@ -313,11 +313,11 @@
     },
     {
      "rule": "cycle",
-     "message": "device-map-builder -> device-link closes a cycle: builder/web/src/components/UpdatePrompt.svelte -> builder/web/src/lib/device/job.svelte.ts, builder/web/src/components/UpdatePrompt.svelte -> builder/web/src/lib/device/session.svelte.ts, builder/web/src/components/device/CardFormat.svelte -> builder/web/src/lib/usb/client.ts, and 40 more"
+     "message": "device-map-builder -> device-link closes a cycle: builder/web/src/components/UpdatePrompt.svelte -> builder/web/src/lib/device/job.svelte.ts, builder/web/src/components/UpdatePrompt.svelte -> builder/web/src/lib/device/session.svelte.ts, builder/web/src/components/device/CardFormat.svelte -> builder/web/src/lib/usb/client.ts, and 46 more"
     },
     {
      "rule": "cycle",
-     "message": "device-map-builder -> firmware-update closes a cycle: builder/web/src/components/UpdatePrompt.svelte -> builder/web/src/lib/firmware/check.svelte.ts, builder/web/src/components/device/FirmwareCard.svelte -> builder/web/src/lib/firmware/check.svelte.ts, builder/web/src/components/device/FirmwareCard.svelte -> builder/web/src/lib/firmware/release.ts"
+     "message": "device-map-builder -> firmware-update closes a cycle: builder/web/src/components/UpdatePrompt.svelte -> builder/web/src/lib/firmware/check.svelte.ts, builder/web/src/components/device/FirmwareCard.svelte -> builder/web/src/lib/firmware/check.svelte.ts, builder/web/src/components/device/FirmwareCard.svelte -> builder/web/src/lib/firmware/release.ts, and 1 more"
     },
     {
      "rule": "cycle",
@@ -440,7 +440,7 @@
     },
     {
      "rule": "cycle",
-     "message": "device-map-builder -> firmware-update closes a cycle: builder/web/src/components/UpdatePrompt.svelte -> builder/web/src/lib/firmware/check.svelte.ts, builder/web/src/components/device/FirmwareCard.svelte -> builder/web/src/lib/firmware/check.svelte.ts, builder/web/src/components/device/FirmwareCard.svelte -> builder/web/src/lib/firmware/release.ts"
+     "message": "device-map-builder -> firmware-update closes a cycle: builder/web/src/components/UpdatePrompt.svelte -> builder/web/src/lib/firmware/check.svelte.ts, builder/web/src/components/device/FirmwareCard.svelte -> builder/web/src/lib/firmware/check.svelte.ts, builder/web/src/components/device/FirmwareCard.svelte -> builder/web/src/lib/firmware/release.ts, and 1 more"
     },
     {
      "rule": "cycle",
@@ -543,7 +543,7 @@
     "content"
    ],
    "violations": 10,
-   "lines": 24579,
+   "lines": 24637,
    "problems": [
     {
      "rule": "cycle",
@@ -665,7 +665,7 @@
     "repository-tooling"
    ],
    "violations": 1,
-   "lines": 25645,
+   "lines": 25679,
    "problems": [
     {
      "rule": "R1",
@@ -828,7 +828,7 @@
    ],
    "test_depends_on": [],
    "violations": 7,
-   "lines": 27400,
+   "lines": 27420,
    "problems": [
     {
      "rule": "cycle",
@@ -1036,14 +1036,16 @@
    "depends_on": [
     "device-link",
     "device-map-builder",
+    "firmware-update",
     "library",
     "map-assembly",
+    "map-style",
     "route-planning",
     "trailview"
    ],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 6827,
+   "lines": 7649,
    "problems": []
   },
   {
@@ -1902,6 +1904,12 @@
   },
   {
    "from": "web-planner",
+   "to": "firmware-update",
+   "test": false,
+   "undeclared": false
+  },
+  {
+   "from": "web-planner",
    "to": "library",
    "test": false,
    "undeclared": false
@@ -1909,6 +1917,12 @@
   {
    "from": "web-planner",
    "to": "map-assembly",
+   "test": false,
+   "undeclared": false
+  },
+  {
+   "from": "web-planner",
+   "to": "map-style",
    "test": false,
    "undeclared": false
   },
