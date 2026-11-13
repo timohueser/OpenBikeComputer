@@ -9,7 +9,7 @@ use faer::sparse::linalg::cholesky::{factorize_symbolic_cholesky, SymmetricOrder
 use faer::sparse::{SparseColMatRef, SymbolicSparseColMatRef};
 use faer::{Conj, MatMut, Par, Side};
 
-use super::{ARMIJO, BISECTIONS, REFINE_M, REFINE_STEPS, ROUNDS, SETTLE_M};
+use super::{ARMIJO, BISECTIONS, FINAL_ROUNDS, REFINE_M, REFINE_STEPS, ROUNDS, SETTLE_M};
 
 /// Sparse rows: per row, its (variable, coefficient) entries.
 #[derive(Clone)]
@@ -259,7 +259,7 @@ fn past(x: f64, lo: f64, hi: f64) -> f64 {
 /// bound that follows other heights (`Limits::lo`) changes between rounds. The first round of a scale solves
 /// all of `moved`; the next ones only within `reach` in `graph` of the limits that changed side and of the
 /// pieces that did not take a full step. A scale ends where a Newton step of each variable alone, from the rows
-/// that hold it, would move none by SETTLE_M (`unsettled`), or after ROUNDS.
+/// that hold it, would move none by SETTLE_M (`unsettled`), or after ROUNDS, FINAL_ROUNDS at the last scale.
 pub(crate) fn settle(
     terms: &[Term],
     limits: &Limits,
@@ -278,14 +278,15 @@ pub(crate) fn settle(
     let holders = Holders::new(&blocks, n);
     let last = terms.len() as u32;
     let excess = |i: usize, x: f64, lo: &[f64]| (x - limits.hi[i]).max(lo[i] - x);
-    for &scale in scales {
+    for (k, &scale) in scales.iter().enumerate() {
         let region_of = |sources: Vec<usize>| {
             let distance = graph.distances(sources.into_iter().map(|v| (v, 0.0)), reach);
             (0..n).filter(|&v| inside[v] && distance[v].is_finite()).collect::<Vec<usize>>()
         };
         let mut region = region_of(unsettled(terms, limits, z, scale, moved));
         let mut step: f64 = 0.0;
-        for _ in 0..ROUNDS {
+        let cap = if k + 1 == scales.len() { FINAL_ROUNDS } else { ROUNDS };
+        for _ in 0..cap {
             if region.is_empty() {
                 break;
             }
@@ -352,8 +353,8 @@ pub(crate) fn settle(
     Settled { rounds, unconverged, capped }
 }
 
-/// What `settle` did: its rounds, the refinements that did not converge, and per scale, where it ended after
-/// ROUNDS and not at its stop rule, the largest move of its last round and the variables still unsettled. The
+/// What `settle` did: its rounds, the refinements that did not converge, and per scale, where it ended at its
+/// round cap and not at its stop rule, the largest move of its last round and the variables still unsettled. The
 /// last move does not bound how far the heights are from the minimum: a capped job can lie metres from it.
 pub(crate) struct Settled {
     pub rounds: usize,

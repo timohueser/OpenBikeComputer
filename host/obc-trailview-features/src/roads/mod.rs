@@ -60,7 +60,8 @@ const APPROACH_PATH_M: f64 = 1.5;
 /// is unknown, a way has no ramp.
 const RAMP_M: f64 = 15.0;
 const RAMP_GRADE: f64 = 0.25;
-/// The grade of a tunnel of a class without one: 1:1, as a deck climbs from where it lands.
+/// The grade of a tunnel of a class without one (a path, a funicular): 1:1, which stops a step and no slope that
+/// a way climbs; the terrain's rise between its portals raises it where that is steeper.
 const TUNNEL_GRADE: f64 = 1.0;
 const HUBER_M: f64 = 1.0;
 /// A way on the ground lies within GROUND_M of the terrain across its width: half the census gate of the bake
@@ -115,9 +116,12 @@ const SCALES: [f64; 2] = [1e-2, 1.0];
 const REFINE_M: f64 = 1e-6;
 const REFINE_STEPS: usize = 30;
 /// The Newton rounds of a scale end when a Newton step of each vertex alone would move none by SETTLE_M, or
-/// after ROUNDS (`Metrics::capped`). The rounds after the first solve only the network within REGION_M of the
-/// limits that changed side, and the bridges and tunnels that it meets: the terrain anchors the rest.
+/// after ROUNDS (`Metrics::capped`), FINAL_ROUNDS at the last scale: its heights are the result, and a capped
+/// job can lie metres from its minimum, while an earlier scale only seeds the next. The rounds after the first
+/// solve only the network within REGION_M of the limits that changed side, and the bridges and tunnels that it
+/// meets: the terrain anchors the rest.
 const ROUNDS: usize = 40;
+const FINAL_ROUNDS: usize = 80;
 const SETTLE_M: f64 = 1e-2;
 const REGION_M: f64 = 300.0;
 /// Halvings of the step in the line search, and the share of its slope by which a full step must cut the
@@ -243,7 +247,7 @@ pub struct Metrics {
     pub fords: usize,
     pub culverts: usize,
     pub rounds: usize,
-    /// Per scale of SCALES, the jobs whose Newton rounds ended at ROUNDS, not at their stop rule, the largest
+    /// Per scale of SCALES, the jobs whose Newton rounds ended at their cap, not at their stop rule, the largest
     /// move of their last round and the variables still unsettled. The last move does not bound how far the
     /// heights are from the minimum.
     pub capped: [usize; SCALES.len()],
@@ -580,19 +584,31 @@ pub fn solve(
     }
     // Grades: per segment of a class with a limit, z_b − z_a within ± grade × length. A tunnel between two
     // portals has the grade of its class too, TUNNEL_GRADE where its class has none, so a pass near a portal does
-    // not dig a step into it. A side tunnel or a shaft that ends on another tunnel has the grade that its ends
-    // give it, so it never lifts that tunnel; so has a bridge. Nor has the approach of a side road, or a segment
-    // between two approaches: the through roads give them their heights. A ramp rises at most RAMP_GRADE off the
-    // grade of the terrain.
+    // not dig a step into it; but at least the terrain's rise from portal to portal over its length, so the grade
+    // never pulls a portal off the terrain. A side tunnel or a shaft that ends on another tunnel has the grade that
+    // its ends give it, so it never lifts that tunnel; so has a bridge. The pieces run portal to portal along the
+    // straightest line of a chain, so a tunnel that branches inside the mountain grades only that line: its
+    // branch has no grade, as a side tunnel. Nor has the approach of a side road, or a segment between two
+    // approaches: the through roads give them their heights. A ramp rises at most RAMP_GRADE off the grade of the
+    // terrain.
     let portal = |v: usize| grounded[net.vertex_var[v]] || loose[net.vertex_var[v]];
     let segment_of: HashMap<(usize, usize), usize> =
         (0..a.len()).flat_map(|s| [((a[s], b[s]), s), ((b[s], a[s]), s)]).collect();
-    let mut graded = vec![false; a.len()];
-    for piece in tunnels.iter().filter(|piece| portal(piece[0]) && portal(piece[piece.len() - 1])) {
-        for pair in piece.windows(2) {
-            if let Some(&s) = segment_of.get(&(net.vertex_var[pair[0]], net.vertex_var[pair[1]])) {
-                graded[s] = true;
-            }
+    let pieces: Vec<&Vec<usize>> =
+        tunnels.iter().filter(|piece| portal(piece[0]) && portal(piece[piece.len() - 1])).collect();
+    let portals: Vec<[f64; 2]> =
+        pieces.iter().flat_map(|piece| [piece[0], piece[piece.len() - 1]].map(|v| net.vertex_xy[v])).collect();
+    let portals = terrain.heights(&portals);
+    // Per segment of a graded piece, the terrain's mean grade between the piece's portals.
+    let mut graded: Vec<Option<f64>> = vec![None; a.len()];
+    for (k, piece) in pieces.iter().enumerate() {
+        let segments: Vec<usize> = (piece.windows(2))
+            .filter_map(|pair| segment_of.get(&(net.vertex_var[pair[0]], net.vertex_var[pair[1]])).copied())
+            .collect();
+        let along: f64 = segments.iter().map(|&s| length[s]).sum();
+        let rise = (portals[2 * k + 1] - portals[2 * k]).abs() / along.max(0.01);
+        for s in segments {
+            graded[s] = Some(if rise.is_finite() { rise } else { 0.0 });
         }
     }
     let mut pinned = vec![false; n];
@@ -609,7 +625,7 @@ pub fn solve(
     for (k, &s) in ramps.iter().enumerate() {
         rise[s] = ground[2 * k + 1] - ground[2 * k];
     }
-    let tunnel = |s: usize| graded[s];
+    let tunnel = |s: usize| graded[s].is_some();
     let limited: Vec<usize> = (0..a.len())
         .filter(|&s| {
             ((grade(s).is_finite() && !approached[s] || rise[s].is_finite()) && !free[s] || tunnel(s))
@@ -652,7 +668,7 @@ pub fn solve(
     let mut band: Vec<[f64; 2]> = Vec::new();
     for &s in &limited {
         let (bound, centre) = match grade(s) {
-            g if tunnel(s) => (g.min(TUNNEL_GRADE) * length[s], 0.0),
+            g if tunnel(s) => (g.min(TUNNEL_GRADE).max(graded[s].unwrap_or(0.0)) * length[s], 0.0),
             g if g.is_finite() => (g * length[s], 0.0),
             _ => (RAMP_GRADE * length[s], rise[s]),
         };

@@ -718,12 +718,12 @@ fn on_the_ground(place: &Place, part: &Option<Way>, terrain: &dyn Terrain) -> bo
 
 #[test]
 fn a_road_over_a_tunnel_by_its_portal_does_not_lever_its_far_portal_off_the_terrain() {
-    // A slope with a mountain over the tunnel, which climbs within the grade of its class; the road crosses 20 m
-    // from the lower portal, where the tunnel's straight line lies too near it.
+    // A slope with a mountain over the tunnel; the road crosses 20 m from the lower portal, where the
+    // tunnel's straight line lies too near it.
     let place = bridges();
     let height = |e: f64| {
         let inside = (e.clamp(-1000.0, 1000.0) + 1000.0) / 2000.0;
-        500.0 + 100.0 * inside + 100.0 * (std::f64::consts::PI * inside).sin()
+        500.0 + 400.0 * inside + 100.0 * (std::f64::consts::PI * inside).sin()
     };
     let terrain = place.terrain(move |e, _| height(e));
     let line = |corners: &[(f64, f64)]| place.line(corners, None);
@@ -741,8 +741,8 @@ fn a_road_over_a_tunnel_by_its_portal_does_not_lever_its_far_portal_off_the_terr
 
 #[test]
 fn a_bridge_that_meets_a_tunnel_stands_on_the_terrain_at_the_portal() {
-    // As above, on a steeper slope for a track, but the upper portal opens onto a bridge: the portal stands on the
-    // terrain, and the tunnel's line does not lever the deck.
+    // As above, but the upper portal opens onto a bridge: the portal stands on the terrain, and the tunnel's line
+    // does not lever the deck.
     let place = bridges();
     let height = |e: f64| {
         let inside = (e.clamp(-1000.0, 1000.0) + 1000.0) / 2000.0;
@@ -751,10 +751,10 @@ fn a_bridge_that_meets_a_tunnel_stands_on_the_terrain_at_the_portal() {
     let terrain = place.terrain(move |e, _| height(e));
     let line = |corners: &[(f64, f64)]| place.line(corners, None);
     let features = [
-        way("track", line(&[(-1200.0, 0.0), (-1000.0, 0.0)]), plain),
-        way("track", line(&[(-1000.0, 0.0), (1000.0, 0.0)]), tunnel),
-        way("track", line(&[(1000.0, 0.0), (1100.0, 0.0)]), bridge),
-        way("track", line(&[(1100.0, 0.0), (1300.0, 0.0)]), plain),
+        way("primary", line(&[(-1200.0, 0.0), (-1000.0, 0.0)]), plain),
+        way("primary", line(&[(-1000.0, 0.0), (1000.0, 0.0)]), tunnel),
+        way("primary", line(&[(1000.0, 0.0), (1100.0, 0.0)]), bridge),
+        way("primary", line(&[(1100.0, 0.0), (1300.0, 0.0)]), plain),
         way("unclassified", line(&[(-980.0, -100.0), (-980.0, 100.0)]), plain),
     ];
     let solved = run(&features, &terrain, &[]);
@@ -768,7 +768,7 @@ fn a_bridge_that_meets_a_tunnel_stands_on_the_terrain_at_the_portal() {
 #[test]
 fn a_path_that_meets_a_tunnel_inside_the_mountain_is_a_portal_and_stays_on_the_ground() {
     let place = bridges();
-    let terrain = place.terrain(|e, _| if e.abs() < 995.0 { 600.0 } else { 500.0 });
+    let terrain = place.terrain(|e, _| if e.abs() < 995.0 { 700.0 } else { 500.0 });
     let line = |corners: &[(f64, f64)]| place.line(corners, None);
     let features = [
         way("primary", line(&[(-1200.0, 0.0), (-1000.0, 0.0)]), plain),
@@ -783,6 +783,44 @@ fn a_path_that_meets_a_tunnel_inside_the_mountain_is_a_portal_and_stays_on_the_g
     let (along, z) = place.profile(&solved.ways[1][0]);
     let (low, top) = (interp(0.0, &along, &z), interp(1000.0, &along, &z));
     assert!((interp(500.0, &along, &z) - (low + top) / 2.0).abs() < 0.5);
+}
+
+/// The steepest climb of a solved way over any 10 m of its curve.
+fn steepest(place: &Place, part: &Option<Way>) -> f64 {
+    let (along, z) = place.profile(part);
+    let mut most: f64 = 0.0;
+    for i in 0..along.len() {
+        if let Some(j) = (i + 1..along.len()).find(|&j| along[j] - along[i] >= 10.0) {
+            most = most.max((z[j] - z[i]).abs() / (along[j] - along[i]));
+        }
+    }
+    most
+}
+
+#[test]
+fn a_tunnel_on_a_slope_steeper_than_its_grade_keeps_its_portals_on_the_terrain_and_climbs_as_the_terrain() {
+    // A primary tunnel of 1000 m between two portals that the terrain lifts by 20 %, past the 12 % of its class,
+    // with a mountain over it: the grade between portals holds the tunnel and never pulls a portal off the terrain.
+    let place = bridges();
+    let height = |e: f64| {
+        let inside = (e.clamp(-500.0, 500.0) + 500.0) / 1000.0;
+        500.0 + 200.0 * inside + 100.0 * (std::f64::consts::PI * inside).sin()
+    };
+    let terrain = place.terrain(move |e, _| height(e));
+    let line = |corners: &[(f64, f64)]| place.line(corners, None);
+    let features = [
+        way("primary", line(&[(-700.0, 0.0), (-500.0, 0.0)]), plain),
+        way("primary", line(&[(-500.0, 0.0), (500.0, 0.0)]), tunnel),
+        way("primary", line(&[(500.0, 0.0), (700.0, 0.0)]), plain),
+    ];
+    let solved = run(&features, &terrain, &[]);
+    for f in [0, 2] {
+        assert!(on_the_ground(&place, &solved.ways[f][0], &terrain), "way {f}");
+    }
+    // The fit rounds the kinks at the portals within the smoothing length of the class, so the curve between them
+    // climbs a little steeper than the terrain's rise: 0.01 of grade.
+    let steepest = steepest(&place, &solved.ways[1][0]);
+    assert!(steepest <= 0.2 + 0.01, "{steepest}");
 }
 
 #[test]

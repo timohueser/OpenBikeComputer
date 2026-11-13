@@ -417,7 +417,7 @@ pub fn bake(
         eprintln!("sea: {:.1} s", started.elapsed().as_secs_f64());
     }
     let (off, most) = ground_census.off_centre();
-    eprintln!("census: {off} vertices of ways on the ground lie more than {GATE_M} m off the terrain under their centre line, at most {most:.1} m");
+    eprintln!("census: {off} positions of ways on the ground lie more than {GATE_M} m off the terrain under their centre line, at most {most:.1} m");
     metrics.insert("census".into(), json!({"ground": ground_census.metrics(), "water": water_census.metrics()}));
     low_zooms(&mut placer);
     let size = write(&placer, options, output)?;
