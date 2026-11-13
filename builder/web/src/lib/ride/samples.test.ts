@@ -3,7 +3,7 @@ import { writeFitRide, type FitSample } from '../core/fit';
 import { writeGpx } from '../core/gpx';
 import type { RideRecord } from '../library/records';
 import { encodeRideObject } from '../usb/objects';
-import { rideSamples } from './samples';
+import { ridePoints, rideSamples } from './samples';
 
 const T = 1_792_828_800;
 const record = (format: RideRecord['format']) => ({ name: 'Ride', format }) as RideRecord;
@@ -18,16 +18,19 @@ describe('rideSamples', () => {
         expect(await rideSamples(record('fit'), file)).toEqual(samples);
     });
 
-    it('reads a GPX ride with its times and segments, and no sensors', async () => {
-        const file = new Blob([writeGpx({ name: 'Ride', waypoints: [], points: [
-            { lat: 46_900_000, lon: 8_400_000, ele: 1000, time: T, segmentStart: true }, { lat: 46_900_050, lon: 8_400_000, time: T + 1 },
-            { lat: 46_900_100, lon: 8_400_000, time: T + 300, segmentStart: true },
-        ] })]);
-        expect(await rideSamples(record('gpx'), file)).toEqual([
-            { timeS: T, lat: 46_900_000, lon: 8_400_000, elevationM: 1000, segmentStart: true },
+    it('reads a GPX ride with its times, segments and sensors, and ridePoints writes them back', async () => {
+        const points = [
+            { lat: 46_900_000, lon: 8_400_000, ele: 1000, time: T, segmentStart: true as const, hrBpm: 142, cadenceRpm: 88, powerW: 250.5, temperatureC: 21.5 },
+            { lat: 46_900_050, lon: 8_400_000, time: T + 1 },
+            { lat: 46_900_100, lon: 8_400_000, time: T + 300, segmentStart: true as const, powerW: 0 },
+        ];
+        const samples = await rideSamples(record('gpx'), new Blob([writeGpx({ name: 'Ride', waypoints: [], points })]));
+        expect(samples).toEqual([
+            { timeS: T, lat: 46_900_000, lon: 8_400_000, elevationM: 1000, segmentStart: true, hrBpm: 142, cadenceRpm: 88, powerW: 250.5, temperatureC: 21.5 },
             { timeS: T + 1, lat: 46_900_050, lon: 8_400_000, segmentStart: false },
-            { timeS: T + 300, lat: 46_900_100, lon: 8_400_000, segmentStart: true },
+            { timeS: T + 300, lat: 46_900_100, lon: 8_400_000, segmentStart: true, powerW: 0 },
         ]);
+        expect(ridePoints([...samples, { ...samples[1], speedMps: 5 }])).toEqual([...points, points[1]]);
     });
 
     it('reads a ride of the device, with no key for a sensor that gave no value', async () => {
