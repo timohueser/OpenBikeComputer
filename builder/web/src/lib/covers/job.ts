@@ -30,9 +30,12 @@ export interface Renderer {
     onTrailViewOpen(listener: () => void): () => void;
 }
 
-/** A hash of the summary line, and for a ride of its start time, as hex. A new name keeps it. */
+/** Changes when a cover of the same line changes, so that the job makes every cover again. */
+const COVER_VERSION = 2;
+
+/** A hash of the summary line, and for a ride of its start time, as hex, with COVER_VERSION. A new name keeps it. */
 export function lineKey(item: RouteRecord | RideRecord): string {
-    const text = `${item.summary?.line.join(',')}@${'key' in item ? item.summary.start : ''}`;
+    const text = `${COVER_VERSION}:${item.summary?.line.join(',')}@${'key' in item ? item.summary.start : ''}`;
     // FNV-1a
     let hash = 0x811c9dc5;
     for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 0x01000193);

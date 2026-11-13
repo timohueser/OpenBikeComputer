@@ -8,7 +8,8 @@ const ROUTE = '#cc2a93', PART = '#f4a81d';
 const GLOW = { route: '#ee8fcf', part: '#f8c66a' }, CORE = { route: '#f8b8e2', part: '#ffe6b0' };
 /** The glow reaches GLOW_REACH of the widest line beyond it, in GLOW_STEPS strokes of GLOW_ALPHA each; the core is CORE_WIDTH of the line. */
 const GLOW_REACH = 0.6, GLOW_STEPS = 5, GLOW_ALPHA = 0.14, CORE_WIDTH = 0.25, CORE_ALPHA = 0.3;
-const HIDDEN_ALPHA = 0.3;
+/** The strength of a stretch that the terrain hides; 0 draws none of it. */
+const HIDDEN_ALPHA = 0.1;
 /** The width of the line at the point nearest to the eye, as a share of the shorter side of the box, and the least width as a share of it. */
 const WIDEST = 0.012, LEAST = 1 / 3;
 

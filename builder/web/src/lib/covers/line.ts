@@ -3,7 +3,7 @@ import type { CoverPoints, Summary } from '../library/records';
 import { kilometres } from '../planner/geo';
 import type { StillPoints } from '../trailview/still';
 
-/** A visible or a hidden stretch shorter than this, in pixels of the image, joins the stretch before it, so trees and houses do not cut the line into dashes. */
+/** A visible or a hidden stretch shorter than this, in pixels of the image, joins the stretch before it, so the edge of a ridge does not cut the line into dashes. */
 const JOIN_PX = 16;
 /** Distance code c of 1 to 127 is NEAREST_M · 2^((c − 1) / STEPS) metres: 9 % for each step, from 10 m to 550 km. */
 const NEAREST_M = 10, STEPS = 8, VISIBLE = 128;

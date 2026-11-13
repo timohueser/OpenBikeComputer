@@ -24,7 +24,7 @@ A page that does not show the 3-D view can still use one image of it: the cover 
 
 The script `home-views.mjs` in `builder/web/tests/browser/trailview/` renders the home views with the still function on a GPU of the owner, and uploads them as one set ([specs/home-views.md](../../specs/home-views.md)).
 
-For a line that the caller gives, the still also gives the place of each point in the image, its distance from the eye, and whether it is visible. The engine puts each point on its drawn terrain and tests it against the depth of the last frame, as it does for the route that it draws. So a page draws the line on the image with no depth image and no camera values.
+For a line that the caller gives, the still also gives the place of each point in the image, its distance from the eye, and whether it is visible. The engine puts each point on its drawn terrain. A point is hidden only when the drawn terrain rises above the line of sight from the eye to the point: the engine reads the terrain height at even steps on that line. Trees, houses, bridges and water do not hide a point. So a page draws the line on the image with no depth image and no camera values.
 
 `coverView()` in [`still-view.ts`](../../builder/web/src/lib/trailview/still-view.ts) chooses the view of a cover before the render, from at most four terrain tiles of the release. For each heading that does not look toward the sun, it finds the lowest tilt that shows 85 % of the route. Of these views, it takes the one that draws the route longest on the screen.
 
