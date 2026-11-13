@@ -42,8 +42,10 @@ export function routeSegments(line: Pick<RoutingLine, 'coordinates' | 'elevation
         return found;
     };
     const segments: RouteSegment[] = [];
+    // The device stores whole metres (`round_i16` in `convert.rs`), so the rule reads the same heights.
+    const metres = km.map(value => value * 1000), whole = heights.map(h => h === null ? null : Math.sign(h) * Math.round(Math.abs(h)));
     for (const [kind, sign] of [['climb', 1], ['descent', -1]] as const)
-        for (const { from, to, gain } of climbs(km, heights, sign)) segments.push(height(kind, from, to, gain));
+        for (const { from, to, gain } of climbs(metres, whole, sign)) segments.push(height(kind, from, to, gain));
     const grades = profileGrades(heights.map((h, i) => ({ progress: km[i] / (total || 1), height: h })), total);
     for (const [from, to] of runs(i => (grades[i] ?? 0) >= STEEP))
         if (km[to] - km[from] >= SHORTEST_KM) segments.push(height('steep', from, to));
@@ -59,15 +61,16 @@ export function routeSegments(line: Pick<RoutingLine, 'coordinates' | 'elevation
 }
 
 /** The climbs (sign 1) or descents (sign -1) of the heights by the device rule, as point indices from trough to summit
- * and the gain in whole metres. A missing height resets the dead band and drops the open climb. */
-export function climbs(km: readonly number[], heights: readonly (number | null)[], sign = 1): { from: number; to: number; gain: number }[] {
+ * and the gain in whole metres. `along` is in metres, as on the device: kilometres put float error on the exact gates. A
+ * missing height resets the dead band and drops the open climb. */
+export function climbs(along: readonly number[], heights: readonly (number | null)[], sign = 1): { from: number; to: number; gain: number }[] {
     const found: { from: number; to: number; gain: number }[] = [];
     let band: number | null = null, trough = -1, low = 0, summit = -1, high = 0;
     const close = () => {
-        const length = (km[summit] - km[trough]) * 1000, gain = Math.trunc(high - low);
+        const length = along[summit] - along[trough], gain = Math.trunc(high - low);
         if (length >= LENGTH_M && gain >= GAIN_M && Math.trunc(gain * 100 / Math.trunc(length)) >= CLIMB) found.push({ from: trough, to: summit, gain });
     };
-    for (let i = 0; i < km.length; i++) {
+    for (let i = 0; i < along.length; i++) {
         const raw = heights[i];
         if (raw === null) {
             band = null;
@@ -80,7 +83,7 @@ export function climbs(km: readonly number[], heights: readonly (number | null)[
             if (trough < 0 || band <= low) [trough, low] = [i, band];
             else [summit, high] = [i, band];
         } else if (band > high) [summit, high] = [i, band];
-        else if (high - band > DROP_M || (km[i] - km[summit]) * 1000 > FLAT_M) {
+        else if (high - band > DROP_M || along[i] - along[summit] > FLAT_M) {
             close();
             [trough, low] = band < high ? [i, band] : [summit, high];
             summit = -1;

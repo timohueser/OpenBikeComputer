@@ -35,8 +35,7 @@ describe('route segments for search', () => {
     });
     it('finds the climbs of the shared vectors that the device finds', () => {
         for (const { name, heights, climbs: expected } of vectors.profiles) {
-            const km = heights.map((_, i) => i * vectors.step_m / 1000);
-            const found = climbs(km, heights).map(({ from, to, gain }) => ({ start_m: from * vectors.step_m, end_m: to * vectors.step_m, gain_m: gain }));
+            const found = climbs(heights.map((_, i) => i * vectors.step_m), heights).map(({ from, to, gain }) => ({ start_m: from * vectors.step_m, end_m: to * vectors.step_m, gain_m: gain }));
             expect(found, name).toEqual(expected);
         }
     });

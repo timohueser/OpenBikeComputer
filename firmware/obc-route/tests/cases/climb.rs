@@ -7,9 +7,10 @@
 //!
 //! The synthetic streams use round values that sit clearly on one side of each knob ([`MIN_GAIN`]
 //! 80 m, [`MIN_AVG_GRADE`] 3 %, [`MAX_DROP`] 25 m, [`MAX_FLAT`] 300 m, [`MIN_LEN`] 400 m), so a
-//! retune of the defaults moves them instead of silently flipping a result. Their ~10 m steps are
-//! smaller than the 3 m dead band in places, so a base or summit can sit on a band step instead of
-//! a waypoint. The shared vectors pin the rule exactly, for this crate and the web planner.
+//! retune of the defaults moves them instead of silently flipping a result. Their height steps of
+//! 0.2 to 1.5 m per ~10 m sample are smaller than the 3 m dead band, so a base or summit can sit on
+//! a band step instead of a waypoint. The shared vectors pin the rule exactly, for this crate and
+//! the web planner.
 
 use obc_formats::io::SliceSource;
 use obc_route::{
