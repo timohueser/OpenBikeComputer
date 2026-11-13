@@ -16,8 +16,9 @@
 //!
 //! "ms" is the time of `routes` and `answer::answer`. With `--cold`, NEW routes once alone first:
 //! "cold open ms" is the open after the eviction, and "cold ms", "cold faults" and "cold read KB"
-//! are those of that route; "new ms" is then a later, warm route, which reuses the snaps of the
-//! first. The other columns of NEW are the sums of the searches of its last run: the time of the
+//! are those of that route; "new ms" and the other columns of NEW are then those of the last later,
+//! warm route, which reuses the snaps of the first. The other columns of NEW are the sums of the
+//! searches of its last run: the time of the
 //! searches and of the unpacking, the settled labels by the level of their expansion (level 0
 //! first), the table values read, the roads of the unpacked legs, the labels that the unpacking
 //! settled, and the most bytes that one search held. "old settled" is the labels that the searches
@@ -166,6 +167,7 @@ fn measure(
         let settled = old.package().take_stats().settled;
         (old, routed, settled)
     });
+    new.package().take_stats();
     let mut routed = compare::route(new, new_request);
     for _ in 1..options.repeat_new {
         new.package().take_stats();
@@ -290,6 +292,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => return Err(USAGE.into()),
     };
     let (count, seed): (usize, u64) = (count.parse()?, seed.parse()?);
+    if options.min_km > options.max_km {
+        return Err(format!("--min-km {} is above --max-km {}", options.min_km, options.max_km).into());
+    }
     if seed == 0 || options.repeat_new == 0 || options.workers == Some(0) {
         return Err("SEED, N of --repeat-new and N of --workers are numbers above 0".into());
     }
@@ -331,6 +336,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::thread::sleep(Duration::from_millis(10));
             }
         });
+        // Ends the sampler also when a worker panics, so that the scope can join it.
+        struct Stop<'a>(&'a AtomicBool);
+        impl Drop for Stop<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+        let _stop = Stop(&stop);
         let run = (|| -> Result<(), Box<dyn std::error::Error>> {
             println!("{}", COLUMNS.map(|column| column[1..].replace(['/', '_'], " ")).join(", "));
             for profile in &profiles {
@@ -420,7 +433,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             Ok(())
         })();
-        stop.store(true, Ordering::Relaxed);
         run
     })?;
     let workers = options.workers.unwrap_or(1) as u64;
