@@ -73,7 +73,7 @@ describe('library store', () => {
         // Only a route on the device has to leave it.
         expect(await library.state('leaving')).toBeUndefined();
         await library.saveRoute(route('c'));
-        await library.setState('sent', { c: { device: '7', line: 'k' } });
+        await library.setState('sent', { c: { device: '1:7', key: 'k' } });
         await library.removeRoute('c');
         expect(await library.state('leaving')).toEqual(['c']);
         await library.close();

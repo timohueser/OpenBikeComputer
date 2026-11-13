@@ -1,9 +1,10 @@
 @import "../../../../docs/assets/theme.css";
 
-/* The two versions of the compare screen. */
+/* The two versions of the compare screen, and the line of a ride on the map and on a plain ground. */
 :root {
     --version-a: var(--water);
     --version-b: #c8701f;
+    --ride: var(--rust);
     /* A connected device, in the greens of its housing: on the page, and on the rust top bar. */
     --connected: #2f6350;
     --connected-on-rust: #8be3bc;
@@ -11,5 +12,6 @@
 
 :root[data-theme="dark"] {
     --version-b: #e8964a;
+    --ride: #e0874c;
     --connected: #8be3bc;
 }

@@ -166,7 +166,8 @@ export const dateName = (start: number, bike: Bike) =>
 /** The key of a ride that starts at a Unix time: `YYYYMMDDTHHMMSSZ`. */
 export const rideKeyAt = (seconds: number) => new Date(Math.floor(seconds) * 1000).toISOString().replace(/[-:]|\.\d+/g, '');
 
-async function lineId(line: number[]): Promise<string> {
+/** The id of a route from a file: a hash of its summary line. */
+export async function lineId(line: number[]): Promise<string> {
     const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(line))));
     return `file-${Array.from(hash.slice(0, 16), b => b.toString(16).padStart(2, '0')).join('')}`;
 }

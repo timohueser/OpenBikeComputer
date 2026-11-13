@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import { CORS_PREFLIGHT, respond } from './stubs.js';
 
@@ -62,4 +63,41 @@ test('the route page shows a stored route, renames, sends, opens in the planner,
   await page.evaluate(() => { location.hash = '#/route/lake'; });
   await expect(page.getByRole('heading', { name: 'Lake loop', level: 1 })).toBeVisible();
   expect(errors).toEqual([]);
+});
+
+test('the cover shows whole with the map beside it, and with the map in its corner when the window is narrow', async ({ page }) => {
+  await page.route(url => url.hostname !== '127.0.0.1', request => {
+    if (request.request().method() === 'OPTIONS') return request.fulfill(CORS_PREFLIGHT);
+    const response = respond(request.request());
+    return response ? request.fulfill(response) : request.abort();
+  });
+  // A real cover of a route at a quarter of its size, with its points.
+  const testdata = new URL('../../../src/lib/covers/testdata/', import.meta.url);
+  const image = [...await readFile(new URL('cover.webp', testdata))];
+  const { summary, points } = JSON.parse(await readFile(new URL('cover.json', testdata), 'utf8'));
+  await page.goto('/planner.html?cover=none');
+  await page.waitForFunction(() => window.coverTest);
+  await page.evaluate(async ({ image, summary, points }) => {
+    const { library, lineKey } = window.coverTest;
+    const route = await library.saveRoute({ id: 'covered', revision: 0, name: 'Covered', updatedAt: 0, trip: {}, summary });
+    await library.saveCover({ id: 'covered', lineKey: lineKey(route), state: 'done', tries: 0, image: new Blob([new Uint8Array(image)], { type: 'image/webp' }),
+      points: { x: Float32Array.from(points.x), y: Float32Array.from(points.y), eye: Uint8Array.from(points.eye) } });
+  }, { image, summary, points });
+
+  // This page has no bottom card, so its picture is tall: the cover is lower than the picture and leaves a third to the map.
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/planner.html#/route/covered');
+  const cover = page.locator('.slot.cover'), map = page.locator('.slot.map');
+  await expect(cover.locator('canvas')).toBeVisible();
+  const [coverBox, mapBox, pictureBox] = [await cover.boundingBox(), await map.boundingBox(), await page.locator('.picture').boundingBox()];
+  // The shape of the stored covers, 1920 × 1280.
+  expect(coverBox.width / coverBox.height).toBeCloseTo(1.5, 1);
+  expect(mapBox.x).toBeGreaterThanOrEqual(coverBox.x + coverBox.width + 13);
+  expect(mapBox.width).toBeCloseTo(pictureBox.width / 3, -1);
+  expect(mapBox.height).toBeCloseTo(coverBox.height, 0);
+  expect(coverBox.height).toBeLessThan(pictureBox.height - 100);
+  await expect(page.getByRole('button', { name: 'Show the map large' })).toHaveCount(0);
+
+  await page.setViewportSize({ width: 900, height: 900 });
+  await expect(page.getByRole('button', { name: 'Show the map large' })).toBeVisible();
 });

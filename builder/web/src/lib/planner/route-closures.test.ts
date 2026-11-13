@@ -39,6 +39,6 @@ describe('possible closures', () => {
         settings.units = 'mi';
         onTestFinished(() => { settings.units = 'km'; });
         const note = (km: number) => closureNote([{ closures: [closure('seasonal', 'dec-mar')], coordinates: [], km }]);
-        expect([note(3.3), note(0.4), note(0.03)]).toEqual(['2.1 mi', '0.2 mi', '0.1 mi'].map(distance => `May be closed seasonally (Dec–Mar) · ${distance}`));
+        expect([note(3.3), note(0.4), note(0.03)]).toEqual(['2.1\u00a0mi', '0.2\u00a0mi', '0.1\u00a0mi'].map(distance => `May be closed seasonally (Dec–Mar) · ${distance}`));
     });
 });

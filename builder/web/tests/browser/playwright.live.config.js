@@ -31,7 +31,7 @@ export default defineConfig({
     actionTimeout: 30_000,
   },
   webServer: {
-    command: `python3 -m http.server ${PORT} --bind 127.0.0.1 --directory ../../dist/web`,
+    command: `python3 serve.py ${PORT} ../../dist/web`,
     url: `http://127.0.0.1:${PORT}`,
     reuseExistingServer: false,
     timeout: 10_000,

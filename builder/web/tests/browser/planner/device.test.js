@@ -60,7 +60,10 @@ test('a remembered device that is not connected shows the last sync and what wai
 
 test('connected, the rows show the sync, the routes, the rides, the memory card, the map and the software', async ({ page }) => {
   // The pretend device holds "Lake loop", which the library sent to its card.
-  await fill(page, { sent: { lake: { device: `${device.storeId}:9`, line: '' } } });
+  await page.goto('/planner.html?fake-device#/device');
+  await page.waitForFunction(() => window.deviceTest);
+  const route = await page.evaluate(() => window.deviceTest.route);
+  await fill(page, { sent: { lake: { device: route, key: '' } } });
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.route(url => url.hostname !== '127.0.0.1', route => route.abort());

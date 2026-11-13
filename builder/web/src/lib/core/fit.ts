@@ -1,11 +1,11 @@
 import { core } from "./bridge";
-import type { GpxImport, GpxPoint, GpxWaypoint } from "./gpx";
+import type { GpxImport, GpxPoint, GpxWaypoint, Sensors } from "./gpx";
 
 /** `unknown`: the file has no session, as after a power loss. It is written as `other`. */
 export type FitSport = "road" | "gravel" | "mtb" | "bike" | "foot" | "other" | "unknown";
 
 /** One recorded point of a ride, in microdegrees. An absent value has no key. */
-export interface FitSample {
+export interface FitSample extends Sensors {
     /** Unix time in seconds. */
     timeS: number;
     lat: number;
@@ -14,10 +14,6 @@ export interface FitSample {
     segmentStart: boolean;
     elevationM?: number;
     speedMps?: number;
-    hrBpm?: number;
-    cadenceRpm?: number;
-    powerW?: number;
-    temperatureC?: number;
 }
 
 export interface FitRide { sport: FitSport; samples: FitSample[] }

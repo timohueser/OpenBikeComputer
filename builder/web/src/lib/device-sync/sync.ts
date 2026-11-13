@@ -2,7 +2,7 @@
  * leave the device, and the routes that wait go to it. */
 import { displayName } from '../device/write';
 import type { Library } from '../library/store';
-import { lineKey } from '../library/summary';
+import { sentKey } from '../library/summary';
 import { planTitle } from '../planner/editor';
 import { isPlan } from '../planner/library';
 import { LegCache } from '../planner/route-legs';
@@ -137,13 +137,22 @@ export async function syncDevice(client: SyncClient, serial: string, library: Li
                 problems.push(`“${name}” waits: ${text(error)}`);
                 continue;
             }
-            await library.changeState('sent', routes => ({ ...routes, [id]: { device: `${card}:${answer.objectId}`, line: lineKey(route) } }));
+            await library.changeState('sent', routes => ({ ...routes, [id]: { device: `${card}:${answer.objectId}`, key: sentKey(route) } }));
+            // The rider deleted the route during its upload, after `removeRoute` looked at `sent`.
+            if (!await library.item(id)) await library.changeState('leaving', ids => [...(ids ?? []).filter(other => other !== id), id]);
             await library.changeState('waiting', ids => (ids ?? []).filter(other => other !== id));
             report.sent++;
             report.waypointsLeft += file.left;
         }
 
-        rememberContents(await client.list({ signal }));
+        const last = await client.list({ signal });
+        // A route that the device lost, or that the rider deleted on it, can be sent again.
+        const on = new Set(ofKind(last, ObjectKind.Route).map(entry => `${last.storeId}:${entry.objectId}`));
+        if (Object.values(await library.state('sent') ?? {}).some(route => route.device.startsWith(`${last.storeId}:`) && !on.has(route.device))) {
+            await library.changeState('sent', routes => Object.fromEntries(Object.entries(routes ?? {})
+                .filter(([, route]) => !route.device.startsWith(`${last.storeId}:`) || on.has(route.device))));
+        }
+        rememberContents(last);
     } catch (error) {
         problems.push(cut(error) || signal.aborted ? CABLE_OUT : text(error));
     }
@@ -159,6 +168,7 @@ async function mark(client: SyncClient, catalog: Catalog, rides: CatalogEntry[],
     let rows;
     try { rows = metadata ? archivedRows((await client.get(metadata, { signal })).bytes) : []; } catch (error) {
         if (cut(error)) throw error;
+        problems.push(`No ride is marked as taken on the device: ${text(error)}`);
         return 0;
     }
     const stored = new Map((await library.rides()).flatMap(ride => ride.device ? [[ride.device, ride.key] as const] : []));

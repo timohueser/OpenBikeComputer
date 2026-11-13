@@ -2,7 +2,7 @@
  * A device on a pretend cable: `planner.html?fake-device`, on the dev server and in the build of the browser tests. The wasm
  * test device of the sync tests holds a map, a route and two rides of today. The chooser of the Connect button plugs it in.
  * `window.deviceTest`: `plug(unformatted)` and `unplug()` move the cable, `hold()` stops each sync at its start until `release()`, and
- * `offer(version)` publishes a pretend software version.
+ * `offer(version)` publishes a pretend software version. The card is the same at each page load.
  */
 import { initCore } from '../../src/lib/core/bridge';
 import { deviceHolder } from '../../src/lib/device/session.svelte';
@@ -23,13 +23,15 @@ function ride(startTime: number, lon: number): RideObject {
     };
 }
 
+const STORE = '0f5e9a7c2b3d4e1f8a6b5c4d3e2f1a0b';
+
 export async function fakeDevice(): Promise<void> {
     await Promise.all([initFlatDevice(), initCore()]);
-    const rig = flatDevice({ storeId: '0f5e9a7c2b3d4e1f8a6b5c4d3e2f1a0b', deviceInfo: {
+    const rig = flatDevice({ storeId: STORE, deviceInfo: {
         firmwareRevision: '0.9.2', hardwareRevision: 'obc-lm20-r1', serialNumber: '9F3A00C1E2B44F2A' } });
     const now = Math.floor(Date.now() / 1000);
     rig.device.seed({ kind: ObjectKind.MapShard, displayName: 'Baden-Württemberg', bytes: new Uint8Array(40_000) });
-    rig.device.seed({ kind: ObjectKind.Route, displayName: 'Lake loop', bytes: new Uint8Array(1_200) });
+    const route = rig.device.seed({ kind: ObjectKind.Route, displayName: 'Lake loop', bytes: new Uint8Array(1_200) });
     rig.device.seed({ kind: ObjectKind.Ride, displayName: 'ride', bytes: encodeRideObject(ride(now - 7200, 8_000_000)) });
     rig.device.seed({ kind: ObjectKind.Ride, displayName: 'ride', bytes: encodeRideObject(ride(now - 3600, 8_050_000)) });
 
@@ -62,5 +64,6 @@ export async function fakeDevice(): Promise<void> {
     const session = new WatchedDeviceSession(watcher);
     // `open()` then gives this session, and never a WebUSB one.
     Object.assign(deviceHolder, { session, opening: Promise.resolve(session) });
-    Object.assign(window, { deviceTest: { plug, unplug, hold, release, offer } });
+    // `route`: the `device` of a `sent` entry for the route on the card.
+    Object.assign(window, { deviceTest: { plug, unplug, hold, release, offer, route: `${STORE}:${route.objectId}` } });
 }

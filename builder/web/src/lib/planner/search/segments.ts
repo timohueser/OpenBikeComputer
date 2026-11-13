@@ -7,10 +7,11 @@ import type { RoutingLine, Surface } from '../routing';
  * positive for a descent too. */
 export interface RouteSegment { kind: string; from: number; to: number; ascent?: number; gradient?: number }
 
-// The device's climb rule (`firmware/obc-route/src/climb.rs`): a climb gains at least 80 m over at least 400 m at a
-// mean grade of 3 % or more. It ends at its summit when the height falls 25 m below it or 300 m pass without a new one.
+// The device's climb rule (`firmware/obc-route/src/climb.rs`), kept equal by `specs/vectors/climbs.json`: a climb gains
+// at least 80 m over at least 400 m at a mean grade of 3 % or more, in whole metres and whole percent. It ends at its
+// summit when the height falls 25 m below it or 300 m pass without a new one. Heights pass a 3 m dead band first.
 const [CLIMB, , STEEP] = gradeThresholds;
-const GAIN_M = 80, LENGTH_KM = .4, DROP_M = 25, FLAT_KM = .3;
+const GAIN_M = 80, LENGTH_M = 400, DROP_M = 25, FLAT_M = 300, BAND_M = 3;
 // Steep runs use the profile's 10 % band; its grades use a 100 m window, so a shorter run is window noise.
 const SHORTEST_KM = .1;
 /** The surfaces that search and the route options count as unpaved. */
@@ -26,10 +27,8 @@ export function routeSegments(line: Pick<RoutingLine, 'coordinates' | 'elevation
     const km = cumulative(line.coordinates), total = km.at(-1) ?? 0, heights = line.elevation;
     const { surfaces, pushing, closures } = line.edges;
     const plain = (kind: string, from: number, to: number): RouteSegment => ({ kind, from: round(km[from], 3), to: round(km[to], 3) });
-    const height = (kind: string, from: number, to: number, sign = 1): RouteSegment => {
-        const change = (heights[to]! - heights[from]!) * sign;
-        return { ...plain(kind, from, to), ascent: Math.round(change), gradient: round(change / (km[to] - km[from]) / 10, 1) };
-    };
+    const height = (kind: string, from: number, to: number, change = (heights[to]! - heights[from]!)): RouteSegment =>
+        ({ ...plain(kind, from, to), ascent: Math.round(change), gradient: round(change / (km[to] - km[from]) / 10, 1) });
     /** The runs of adjacent edges that `keep` accepts, as point indices. */
     const runs = (keep: (edge: number) => boolean) => {
         const found: [number, number][] = [];
@@ -43,8 +42,10 @@ export function routeSegments(line: Pick<RoutingLine, 'coordinates' | 'elevation
         return found;
     };
     const segments: RouteSegment[] = [];
+    // The device stores whole metres (`round_i16` in `convert.rs`), so the rule reads the same heights.
+    const metres = km.map(value => value * 1000), whole = heights.map(h => h === null ? null : Math.sign(h) * Math.round(Math.abs(h)));
     for (const [kind, sign] of [['climb', 1], ['descent', -1]] as const)
-        for (const [from, to] of climbs(km, heights, sign)) segments.push(height(kind, from, to, sign));
+        for (const { from, to, gain } of climbs(metres, whole, sign)) segments.push(height(kind, from, to, gain));
     const grades = profileGrades(heights.map((h, i) => ({ progress: km[i] / (total || 1), height: h })), total);
     for (const [from, to] of runs(i => (grades[i] ?? 0) >= STEEP))
         if (km[to] - km[from] >= SHORTEST_KM) segments.push(height('steep', from, to));
@@ -59,24 +60,32 @@ export function routeSegments(line: Pick<RoutingLine, 'coordinates' | 'elevation
     return segments;
 }
 
-/** The climbs (sign 1) or descents (sign -1) of the heights, as [trough, summit] point indices. A missing height drops
- * the open climb, as on the device. */
-function climbs(km: readonly number[], heights: (number | null)[], sign: number): [number, number][] {
-    const found: [number, number][] = [], h = (i: number) => heights[i]! * sign;
-    let trough = -1, summit = -1;
+/** The climbs (sign 1) or descents (sign -1) of the heights by the device rule, as point indices from trough to summit
+ * and the gain in whole metres. `along` is in metres, as on the device: kilometres put float error on the exact gates. A
+ * missing height resets the dead band and drops the open climb. */
+export function climbs(along: readonly number[], heights: readonly (number | null)[], sign = 1): { from: number; to: number; gain: number }[] {
+    const found: { from: number; to: number; gain: number }[] = [];
+    let band: number | null = null, trough = -1, low = 0, summit = -1, high = 0;
     const close = () => {
-        const gain = h(summit) - h(trough), length = km[summit] - km[trough];
-        if (gain >= GAIN_M && length >= LENGTH_KM && gain / length / 10 >= CLIMB) found.push([trough, summit]);
+        const length = along[summit] - along[trough], gain = Math.trunc(high - low);
+        if (length >= LENGTH_M && gain >= GAIN_M && Math.trunc(gain * 100 / Math.trunc(length)) >= CLIMB) found.push({ from: trough, to: summit, gain });
     };
-    for (let i = 0; i < km.length; i++) {
-        if (heights[i] === null) trough = summit = -1;
-        else if (summit < 0) {
-            if (trough < 0 || h(i) < h(trough)) trough = i;
-            else if (h(i) > h(trough)) summit = i;
-        } else if (h(i) > h(summit)) summit = i;
-        else if (h(summit) - h(i) > DROP_M || km[i] - km[summit] > FLAT_KM) {
+    for (let i = 0; i < along.length; i++) {
+        const raw = heights[i];
+        if (raw === null) {
+            band = null;
+            trough = summit = -1;
+            continue;
+        }
+        if (band === null || Math.abs(raw * sign - band) >= BAND_M) band = raw * sign;
+        // A flat floor moves the trough along, so a climb starts where the rise starts.
+        if (summit < 0) {
+            if (trough < 0 || band <= low) [trough, low] = [i, band];
+            else [summit, high] = [i, band];
+        } else if (band > high) [summit, high] = [i, band];
+        else if (high - band > DROP_M || along[i] - along[summit] > FLAT_M) {
             close();
-            trough = h(i) < h(summit) ? i : summit;
+            [trough, low] = band < high ? [i, band] : [summit, high];
             summit = -1;
         }
     }

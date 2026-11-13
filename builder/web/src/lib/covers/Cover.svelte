@@ -2,12 +2,13 @@
     import type { CoverPoints, CoverRecord, RideRecord, RouteRecord, Summary } from '../library/records';
     import type { Library } from '../library/store';
     import { appearance } from '../theme.svelte';
-    import { drawCover, type Crop } from './draw';
+    import { crop, drawCover, type Crop } from './draw';
     import { lineKey } from '../library/summary';
     import { settled, wantCover, wantsPicture, type Place } from './job';
-    import { nearest } from './line';
+    import { along, nearest } from './line';
+    import Icon from '../../components/planner/PlannerIcon.svelte';
 
-    let { library, id, mark, part, line = true, place = 'row', onpoint }: {
+    let { library, id, mark, part, line = true, place = 'row', pins = [], onpoint, credits = $bindable([]) }: {
         library: Library;
         /** The id of a route or the key of a ride. */
         id: string;
@@ -17,8 +18,12 @@
         line?: boolean;
         /** A card shows the map picture when the record has no cover. A card and a page ask the cover job for what is missing. */
         place?: Place;
+        /** Labels at shares of the summary line from 0 to 1: a numbered waypoint, or a night without a number. */
+        pins?: { share: number; label: string; number?: number }[];
         /** The metres along the route of the point nearest to the pointer, or null when the pointer leaves. */
         onpoint?: (metres: number | null) => void;
+        /** The credits of the data in the shown image: the cover or the map picture. */
+        credits?: string[];
     } = $props();
 
     /** The pointer marks the line only within this many CSS pixels of it. */
@@ -27,14 +32,15 @@
     interface Shown { bitmap: ImageBitmap; points: CoverPoints; summary?: Summary }
     let item = $state<RouteRecord | RideRecord>(), shown = $state<Shown>();
     let canvas = $state<HTMLCanvasElement>(), width = $state(0), height = $state(0), cut: Crop | undefined;
+    const look = $derived(item && 'key' in item ? 'ride' : 'route');
 
     /** The cover, else on a card the map picture of the theme for the line. */
     function source(item: RouteRecord | RideRecord, cover: CoverRecord, dark: boolean) {
         const current = cover.lineKey === lineKey(item), summary = item.summary ?? undefined;
         // The points of a cover of an earlier line draw no mark and no part.
-        if (cover.image && cover.points) return { image: cover.image, points: cover.points, summary: current && cover.state === 'done' ? summary : undefined };
+        if (cover.image && cover.points) return { image: cover.image, points: cover.points, summary: current && cover.state === 'done' ? summary : undefined, credits: cover.credits };
         const map = place === 'card' && cover.map?.lineKey === lineKey(item) ? cover.map : undefined, image = map?.[dark ? 'dark' : 'light'];
-        return image && map?.points ? { image, points: map.points, summary } : undefined;
+        return image && map?.points ? { image, points: map.points, summary, credits: map.credits } : undefined;
     }
 
     // A card loads again after a change of the theme, and asks for the picture of the new theme.
@@ -47,6 +53,7 @@
             const bitmap = from ? await createImageBitmap(from.image).catch(() => undefined) : undefined;
             if (!live) return bitmap?.close();
             [item, shown] = [nextItem, from && bitmap && { bitmap, points: from.points, summary: from.summary }];
+            credits = shown ? from?.credits ?? [] : [];
             if (!first || place === 'row' || !nextItem?.summary) return;
             if (!settled(nextItem, nextCover) || (place === 'card' && wantsPicture(nextItem, nextCover, dark))) wantCover(target, place);
         };
@@ -66,7 +73,7 @@
         canvas.height = Math.round(height * devicePixelRatio);
         const { bitmap, points, summary } = shown;
         cut = drawCover(canvas.getContext('2d')!, { image: bitmap, width: bitmap.width, height: bitmap.height, points, summary },
-            { box: [canvas.width, canvas.height], mark, part, line });
+            { box: [canvas.width, canvas.height], mark, part, line, look });
     });
 
     function point(event: PointerEvent) {
@@ -76,6 +83,24 @@
             NEAR_PX * ratio / cut.scale);
         onpoint?.(metres ?? null);
     }
+
+    /** The pins at visible points of the line, in CSS pixels of the box. `index` is the place in `pins`; `left` puts the
+     * label on the side with more room. */
+    const shownPins = $derived.by(() => {
+        const summary = shown?.summary;
+        if (!summary || !width || !height) return [];
+        const { bitmap, points } = shown!, ratio = devicePixelRatio;
+        const cut = crop({ width: bitmap.width, height: bitmap.height, points }, [Math.round(width * ratio), Math.round(height * ratio)]);
+        return pins.flatMap((pin, index) => {
+            const at = along(points, summary, pin.share * summary.lengthM);
+            const x = at && (at.x - cut.left) * cut.scale / ratio, y = at && (at.y - cut.top) * cut.scale / ratio;
+            return at?.visible && x! >= 0 && x! <= width && y! >= 0 && y! <= height ? [{ ...pin, x: x!, y: y!, index, left: x! > width / 2 }] : [];
+        });
+    });
+
+    /** The pin whose name shows, by its index; one at a time. */
+    let opened = $state<number>();
+    const pinName = (pin: { label: string; number?: number }) => pin.number ? pin.label : pin.label ? `Night · ${pin.label}` : 'Night';
 
     /** The line on a plain ground, in a box of 100 by the shape of the line, with the north up. */
     const fallback = $derived.by(() => {
@@ -92,11 +117,23 @@
     });
 </script>
 
+<svelte:document onpointerdown={event => { if (!(event.target as Element).closest('.route-pin')) opened = undefined; }} />
+
 <div class="cover" bind:clientWidth={width} bind:clientHeight={height}>
     {#if shown}
         <canvas bind:this={canvas} onpointermove={point} onpointerleave={() => onpoint?.(null)}></canvas>
+        {#each shownPins as pin (pin.index)}
+            <span class="route-pin" style:left={`${pin.x}px`} style:top={`${pin.y}px`}>
+                <button type="button" class:night={!pin.number} aria-label={pinName(pin)} aria-expanded={opened === pin.index}
+                    onclick={() => opened = pin.index} onfocus={() => opened = pin.index} onblur={() => opened = undefined}
+                    onkeydown={event => { if (event.key === 'Escape') opened = undefined; }}>
+                    {#if pin.number}{pin.number}{:else}<Icon name="moon" size={12} />{/if}
+                </button>
+                {#if opened === pin.index}<span class="route-pin-label" class:left={pin.left}>{pinName(pin)}</span>{/if}
+            </span>
+        {/each}
     {:else if fallback && line}
-        <svg viewBox={fallback.box} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+        <svg class={look} viewBox={fallback.box} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
             <polyline points={fallback.points} />
         </svg>
     {/if}
@@ -124,5 +161,9 @@
         stroke-linejoin: round;
         stroke-linecap: round;
         vector-effect: non-scaling-stroke;
+    }
+
+    .ride polyline {
+        stroke: var(--ride);
     }
 </style>

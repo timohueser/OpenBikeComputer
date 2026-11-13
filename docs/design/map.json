@@ -305,7 +305,7 @@
     "repository-tooling"
    ],
    "violations": 10,
-   "lines": 10574,
+   "lines": 11052,
    "problems": [
     {
      "rule": "cycle",
@@ -520,7 +520,7 @@
    "depends_on": [],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 1831,
+   "lines": 2263,
    "problems": []
   },
   {
@@ -543,7 +543,7 @@
     "content"
    ],
    "violations": 10,
-   "lines": 24579,
+   "lines": 24637,
    "problems": [
     {
      "rule": "cycle",
@@ -665,7 +665,7 @@
     "repository-tooling"
    ],
    "violations": 1,
-   "lines": 25645,
+   "lines": 25679,
    "problems": [
     {
      "rule": "R1",
@@ -828,7 +828,7 @@
    ],
    "test_depends_on": [],
    "violations": 7,
-   "lines": 27301,
+   "lines": 27420,
    "problems": [
     {
      "rule": "cycle",
@@ -1045,7 +1045,7 @@
    ],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 4515,
+   "lines": 7649,
    "problems": []
   },
   {
