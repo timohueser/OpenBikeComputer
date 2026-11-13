@@ -55,6 +55,22 @@ test('the Routes page lists the routes, filters them with a chip, shows the sele
   await plan.getByRole('button', { name: 'Do not send' }).click();
   await expect(plan).toContainText('Changed since it was sent');
 
+  // A click anywhere on the card opens the route; a click on the empty map and Escape close the card.
+  // The link covers the heading, so the click lands on the link, as a click of the rider does.
+  await plan.getByRole('heading', { name: 'Start → Finish' }).click({ force: true });
+  await expect(page).toHaveURL(/#\/route\/long$/);
+  await page.goBack();
+  const row = list.getByRole('button', { name: /Start → Finish/ });
+  await row.click();
+  const map = page.locator('.map');
+  await expect(map.locator('.maplibregl-canvas')).toBeVisible();
+  const box = await map.boundingBox();
+  await page.mouse.click(box.x + 40, box.y + box.height / 2);
+  await expect(plan).toHaveCount(0);
+  await row.click();
+  await page.keyboard.press('Escape');
+  await expect(plan).toHaveCount(0);
+
   await page.getByText('+ Length').click();
   await page.getByRole('button', { name: 'Under 100 km' }).click();
   await expect(page.getByText('1 of 3 routes')).toBeVisible();

@@ -48,6 +48,7 @@
 
 <style>
     .card {
+        position: relative;
         display: grid;
         grid-template-columns: 176px minmax(0, 1fr) minmax(0, 260px) auto;
         align-items: center;
@@ -94,6 +95,17 @@
         display: flex;
         flex-direction: column;
         gap: 6px;
+    }
+    /* One link opens the route: it covers the whole card, under the send button and the credits. */
+    .primary::after {
+        position: absolute;
+        inset: 0;
+        border-radius: 10px;
+        content: '';
+    }
+    button.button {
+        position: relative;
+        z-index: 1;
     }
     .button {
         display: inline-flex;

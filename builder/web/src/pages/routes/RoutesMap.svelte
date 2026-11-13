@@ -15,7 +15,8 @@
         /** The items of the list. The map draws only these, and the bubbles count only these. */
         shown: Item[];
         selected?: string;
-        onselect: (id: string) => void;
+        /** Undefined after a click on the map where no route is. */
+        onselect: (id: string | undefined) => void;
         onview: (view: Box) => void;
         /** A change fits the map to the shown items. */
         fit: number;
@@ -102,6 +103,10 @@
         created.on('moveend', () => onview(view()));
         created.on('click', 'routes-hit', event => { const id = event.features?.[0]?.properties.id; if (id) onselect(id); });
         created.on('click', 'bubbles', event => void zoomIn(event));
+        created.on('click', event => {
+            const layers = ['routes-hit', 'selected-casing', 'bubbles'].filter(layer => created.getLayer(layer));
+            if (!layers.length || !created.queryRenderedFeatures(event.point, { layers }).length) onselect(undefined);
+        });
         for (const layer of ['routes-hit', 'bubbles']) {
             created.on('mouseenter', layer, () => { created.getCanvas().style.cursor = 'pointer'; });
             created.on('mouseleave', layer, () => { created.getCanvas().style.cursor = ''; });

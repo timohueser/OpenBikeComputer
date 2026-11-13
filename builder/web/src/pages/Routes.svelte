@@ -109,7 +109,9 @@
     const addFiles = () => initCore().then(() => import('./AddFiles.svelte')).then(module => module.default);
 </script>
 
-<svelte:window onclickcapture={event => { if ((event.target as Element).closest?.('a[href]')) keep?.(); }} />
+<!-- Escape in an open window closes only the window. -->
+<svelte:window onclickcapture={event => { if ((event.target as Element).closest?.('a[href]')) keep?.(); }}
+    onkeydown={event => { if (event.key === 'Escape' && !document.querySelector('dialog[open]')) selected = undefined; }} />
 
 <div class="routes-page">
     <header>
