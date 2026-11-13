@@ -46,10 +46,10 @@ const MAT_WATER: u32 = 50u;
 // In a piece's wall's word, the code bit (1 << CODE_SHIFT) that its look does not read: its road stands on its higher
 // side (plan/piece.wgsl).
 const WALL_FILL: u32 = 128u;
-// In a piece's ground slot's word, the next code bit, which its look does not read: the slot is a culvert's mouth
-// (plan/piece.wgsl), its ground shaded down to this share of the light at the water.
-const MOUTH_SHADE: u32 = 256u;
-const MOUTH_DARK: f32 = 0.15;
+// In a piece's concrete word, the next code bit, which its look does not read: the dark inside of a culvert's mouth
+// (plan/piece.wgsl), this colour.
+const CULVERT_DARK: u32 = 256u;
+const CULVERT_INSIDE: vec3f = vec3f(0.018, 0.02, 0.018);
 const CF_SAMPLE: u32 = 1u;
 const CF_MESH: u32 = 2u;
 const CF_FILL: u32 = 3u;
@@ -378,8 +378,8 @@ fn corridor_fragment(raw: CorridorOut) -> @location(0) vec4f {
     if (PIECE && frame.debug == 3u) {
         return vec4f(vec3f(0.25 + 0.5 * (max(dot(render_normal(select(normalize(in.normal), drawn_normal(su), (in.word & MAT_BITS) == MAT_GROUND)), frame.sun.xyz), 0.0) * frame.sun.w + 0.3) / 1.3), 1.0);
     }
-    if (PIECE && mat == MAT_GROUND && (in.word & MOUTH_SHADE) != 0u) {
-        return vec4f(corridor_ground(in, su, d) * mix(MOUTH_DARK, 1.0, smoothstep(0.3, 1.0, in.along)), 1.0);
+    if (PIECE && (in.word & (MAT_BITS | CULVERT_DARK)) == (MAT_CAP | CULVERT_DARK)) {
+        return vec4f(atmosphere(CULVERT_INSIDE, in.relative, in.altitude), 1.0);
     }
     if (mat == MAT_GROUND) {
         return vec4f(corridor_ground(in, su, d), 1.0);

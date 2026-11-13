@@ -32,7 +32,9 @@ const TERRAIN_BIT = 0x80000000;
 /** A piece whose cell reaches this far before the level-18 plateau's end draws with the fade: the metres of four mesh triangles. */
 const FADE_MARGIN_M = 10;
 /** Bytes of a piece's parameters, as Piece of corners.wgsl. */
-const PARAMS_BYTES = 32;
+const PARAMS_BYTES = 48;
+/** The vertices of a culvert mouth's model: MOUTH_QUADS of plan/piece.wgsl, six each. */
+const CULVERT_VERTICES = 6 * 48;
 /** The level-18 nodes per side of the block whose stamps a cell's corners read, NODES of corners.wgsl: the cell's four and one more on each side. */
 const NODES = 6;
 
@@ -79,6 +81,9 @@ interface Resources {
     slots: GPURenderPipeline;
     cutTriangles: GPURenderPipeline;
     cutSlots: GPURenderPipeline;
+    /** The culvert mouths' models (`culvert_vertex` of plan/piece.wgsl). */
+    culverts: GPURenderPipeline;
+    cutCulverts: GPURenderPipeline;
     corners: GPUComputePipeline;
     drawLayout: GPUBindGroupLayout;
     computeLayout: GPUBindGroupLayout;
@@ -301,14 +306,15 @@ export class Pieces {
     }
 
     private upload(r: Resources, piece: Piece): void {
-        const { device } = r.gpu, { corners, triangles, steps } = piece.mesh, n = corners.length / 2;
+        const { device } = r.gpu, { corners, triangles, steps, culverts } = piece.mesh, n = corners.length / 2;
         // COPY_SRC for the determinism check's reads (`buffers`).
-        const data = r.gpu.buffer('plan', 4 * Math.max(4, 6 * n + steps.length), GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC);
+        const data = r.gpu.buffer('plan', 4 * Math.max(4, 6 * n + steps.length + culverts.length), GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC);
         // A buffer write takes whole words.
         const indices = r.gpu.buffer('plan', 4 * Math.max(2, Math.ceil(triangles.length / 2)), GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST);
         const params = r.gpu.buffer('plan', PARAMS_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
         device.queue.writeBuffer(data, 0, corners);
         device.queue.writeBuffer(data, 4 * 6 * n, steps);
+        device.queue.writeBuffer(data, 4 * (6 * n + steps.length), culverts);
         device.queue.writeBuffer(indices, 0, triangles.buffer, triangles.byteOffset, 4 * Math.ceil(triangles.length / 2));
         const draw = device.createBindGroup({ layout: r.drawLayout, entries: [
             { binding: 0, resource: { buffer: r.frame } }, { binding: 1, resource: { buffer: data } }, { binding: 2, resource: { buffer: params } }, { binding: 3, resource: { buffer: r.cells } },
@@ -373,7 +379,7 @@ export class Pieces {
         const gpu = piece.gpu!, n = piece.mesh.corners.length / 2, s = size(CELL_LEVEL);
         const params = new ArrayBuffer(PARAMS_BYTES), ints = new Int32Array(params), words = new Uint32Array(params);
         ints.set([piece.node.x * s, piece.node.y * s]);
-        words.set([n, 6 * n, 2 * n, piece.mesh.steps.length / 4 - piece.mesh.endFaces, piece.block, (first | (make === 'terrain' ? TERRAIN_BIT : 0)) >>> 0], 2);
+        words.set([n, 6 * n, 2 * n, piece.mesh.steps.length / 4 - piece.mesh.endFaces, piece.block, (first | (make === 'terrain' ? TERRAIN_BIT : 0)) >>> 0, 6 * n + piece.mesh.steps.length], 2);
         r.gpu.device.queue.writeBuffer(gpu.params, 0, params);
         if (first === 0 || gpu.bound !== make) this.bindStamps(r, piece, make === 'terrain');
         gpu.bound = make;
@@ -446,6 +452,12 @@ export class Pieces {
                 pass.setBindGroup(0, piece.gpu!.draw);
                 pass.draw(6 * (piece.mesh.steps.length / 4));
             }
+            pass.setPipeline(cut ? r.cutCulverts : r.culverts);
+            for (const piece of pieces) {
+                if (!piece.mesh.culverts.length) continue;
+                pass.setBindGroup(0, piece.gpu!.draw);
+                pass.draw(CULVERT_VERTICES * (piece.mesh.culverts.length / 4));
+            }
         }
     }
 
@@ -475,7 +487,7 @@ export class Pieces {
     }
 
     get stats(): PiecesStats {
-        const bytes = [...this.pieces.values()].reduce((sum, { mesh }) => sum + 4 * (3 * mesh.corners.length + mesh.steps.length) + 2 * mesh.triangles.length, 0);
+        const bytes = [...this.pieces.values()].reduce((sum, { mesh }) => sum + 4 * (3 * mesh.corners.length + mesh.steps.length + mesh.culverts.length) + 2 * mesh.triangles.length, 0);
         return {
             cells: this.pieces.size, drawn: this.drawn.length, inView: this.inView.length,
             triangles: this.inView.reduce((sum, piece) => sum + piece.mesh.runs.slice(0, this.drawnRuns(piece)).reduce((n, run) => n + run.count, 0), 0), steps: this.inView.reduce((sum, { mesh }) => sum + mesh.steps.length / 4, 0),
@@ -507,15 +519,16 @@ export async function piecePipelines(gpu: Gpu) {
         depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: 'greater' },
     });
     // A step faces its lower side from either side of its edge.
-    const [triangles, slots, cutTriangles, cutSlots, mouthTriangles, cutMouthTriangles, corners] = await Promise.all([
+    const [triangles, slots, cutTriangles, cutSlots, mouthTriangles, cutMouthTriangles, culverts, cutCulverts, corners] = await Promise.all([
         render('piece_vertex', 'back', false), render('slot_vertex', 'none', false), render('piece_vertex', 'back', true), render('slot_vertex', 'none', true),
         render('piece_vertex', 'back', false, true), render('piece_vertex', 'back', true, true),
+        render('culvert_vertex', 'none', false), render('culvert_vertex', 'none', true),
         device.createComputePipelineAsync({
             label: 'plan corners', layout: device.createPipelineLayout({ bindGroupLayouts: [computeLayout, surface] }),
             compute: { module: device.createShaderModule({ label: 'plan corners', code: wgsl('plan/corners.wgsl') }), entryPoint: 'corners' },
         }),
     ]);
-    return { triangles, slots, cutTriangles, cutSlots, mouthTriangles, cutMouthTriangles, corners, drawLayout, computeLayout };
+    return { triangles, slots, cutTriangles, cutSlots, mouthTriangles, cutMouthTriangles, culverts, cutCulverts, corners, drawLayout, computeLayout };
 }
 
 /**

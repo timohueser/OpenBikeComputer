@@ -4,9 +4,10 @@
 //! height over the water, at least as far as the fill falls by that height. The water's face ends there and casts
 //! no cone into the zone (`records`), so the ground of the slopes over it rises from the water's sides only: the
 //! step from the water up to the zone is the mouth, an arch as wide as the water and at most as high as its bank's
-//! steepest cut at the half-width. Where open water goes on in its tunnel, a zone over the tunnel's start makes the
-//! same mouth. A path takes no zone: its surface lies across the water. Each zone is a function of global data
-//! within its reach, so two cells build it alike.
+//! steepest cut at the half-width; the mesh stands a pipe's end there (`CulvertMouth`, `plan/piece.wgsl`). Where open
+//! water goes on in its tunnel, a zone over the tunnel's start makes the same mouth. A path takes no zone: its
+//! surface lies across the water. Each zone is a function of global data within its reach, so two cells build it
+//! alike.
 
 use std::collections::BTreeMap;
 
@@ -14,7 +15,7 @@ use i_overlay::core::overlay_rule::OverlayRule;
 
 use super::geom::{winding, P};
 use super::stroke::{pieces_along, shapes, union, Rings};
-use super::{heights, Cand, Ctx, HeightRule, Label, Owner, Surface, WayLine, TERRAIN, VERGE};
+use super::{heights, Cand, Ctx, CulvertMouth, HeightRule, Label, Owner, Surface, WayLine, TERRAIN, VERGE};
 use crate::faces::rules::Rank;
 use crate::frame::metres_per_unit;
 use crate::graph::{Crossing, CrossingKind, Family, Level, WalkPoint};
@@ -60,11 +61,12 @@ pub fn reach_rows(bank_m: f64, culvert_max_m: f64) -> Vec<Reach> {
     ]
 }
 
-/// The zones of the culverts whose crossing lies in `bx` (cell units), over the lines of the faces.
-pub(super) fn candidates(ctx: &Ctx, lines: &[WayLine], bx: [i32; 4]) -> Vec<Cand> {
+/// The zones of the culverts whose crossing lies in `bx` (cell units), over the lines of the faces, and their
+/// mouths: where the water's middle line meets a zone's outline, with water in front of it.
+pub(super) fn candidates(ctx: &Ctx, lines: &[WayLine], bx: [i32; 4]) -> (Vec<Cand>, Vec<CulvertMouth>) {
     let g = ctx.graph;
     let of_way: BTreeMap<u32, usize> = lines.iter().enumerate().map(|(i, l)| (l.way, i)).collect();
-    let mut out = Vec::new();
+    let (mut out, mut mouths) = (Vec::new(), Vec::new());
     let near = |p: P| p[0] >= bx[0] && p[0] <= bx[2] && p[1] >= bx[1] && p[1] <= bx[3];
     let at_grade = |c: &&Crossing| matches!(c.kind, CrossingKind::Culvert | CrossingKind::Ford);
     for c in g.crossings.iter().filter(at_grade).filter(|c| near(c.pos)) {
@@ -84,11 +86,12 @@ pub(super) fn candidates(ctx: &Ctx, lines: &[WayLine], bx: [i32; 4]) -> Vec<Cand
         let over = g.samples[ws as usize].z_m - g.samples[ss as usize].z_m;
         let past = ((over - mouth).max(mouth) / way.fill.max(1e-3)).clamp(0.0, way.reach_m);
         let bank = water.half_m + heights::cone_reach(water.cut, water.rise_m, &ctx.rules.plan.heights);
-        let band_s = water_band(ctx, s, ss, bank);
+        let (band_s, middle) = water_band(ctx, s, ss, bank);
         let band_w = band(ctx, lines, &of_way, w, ws, past, bounds(&band_s));
         let q2 = [2 * i64::from(c.pos[0]), 2 * i64::from(c.pos[1])];
         let found = shapes(&band_w, &band_s, OverlayRule::Intersect, c.pos).into_iter().find(|s| winding(s, q2) != 0);
         let Some(rings) = found else { continue };
+        mouths.extend(mouths_of(ctx, &middle, &rings, water.half_m));
         out.push(zone(ctx, rings, Some((w, way.rank as u8)), c.pos));
     }
     // Where open water goes on in its tunnel, a zone over the tunnel's start: the water's band out to its reach,
@@ -109,11 +112,78 @@ pub(super) fn candidates(ctx: &Ctx, lines: &[WayLine], bx: [i32; 4]) -> Vec<Cand
         let h: Vec<f64> = p.iter().map(|q| (sec.half_m + sec.reach_m) / mpu(ctx, q.map(f64::from))).collect();
         let mut rings = Vec::new();
         stroke(&p, &h, [false, true], &mut rings);
-        if !rings.is_empty() {
+        if !rings.is_empty() && p.len() >= 2 {
+            // The mouth: the zone's square end at the joint, across the tunnel's line.
+            let into = unit(sub(p[1].map(f64::from), p[0].map(f64::from)));
+            let at = j.pos.map(f64::from);
+            mouths.push(CulvertMouth { at, into, edge: [-into[1], into[0]], half_m: sec.half_m });
             out.push(zone(ctx, union(&rings, j.pos), None, j.pos));
         }
     }
+    // A mouth with another zone in front of it has no water there.
+    let front = |m: &CulvertMouth| {
+        let d = MOUTH_FRONT_M / mpu(ctx, m.at);
+        let q = [m.at[0] - d * m.into[0], m.at[1] - d * m.into[1]];
+        let q2 = [libm::round(2.0 * q[0]) as i64, libm::round(2.0 * q[1]) as i64];
+        out.iter().all(|z| winding(&z.rings, q2) == 0)
+    };
+    mouths.retain(front);
+    (out, mouths)
+}
+
+/// A mouth stands where the water this far in front of it lies in no zone (metres).
+const MOUTH_FRONT_M: f64 = 0.3;
+
+/// The mouths where the water's middle line `middle` (units) crosses the outline of a zone's `rings`: each crossing,
+/// the line's direction there toward the zone, and the outline's.
+fn mouths_of(ctx: &Ctx, middle: &[P], rings: &Rings, half_m: f64) -> Vec<CulvertMouth> {
+    let mut out: Vec<CulvertMouth> = Vec::new();
+    for w in middle.windows(2) {
+        let (a, b) = (w[0].map(f64::from), w[1].map(f64::from));
+        let ab = sub(b, a);
+        if ab == [0.0; 2] {
+            continue;
+        }
+        for ring in rings {
+            for k in 0..ring.len() {
+                let (c, d) = (ring[k].map(f64::from), ring[(k + 1) % ring.len()].map(f64::from));
+                let (cd, ac) = (sub(d, c), sub(c, a));
+                let den = cross(ab, cd);
+                if den == 0.0 {
+                    continue;
+                }
+                let (t, u) = (cross(ac, cd) / den, cross(ac, ab) / den);
+                if !(0.0..1.0).contains(&t) || !(0.0..1.0).contains(&u) {
+                    continue;
+                }
+                let at = [a[0] + t * ab[0], a[1] + t * ab[1]];
+                // A middle line through a vertex of the outline crosses two of its edges there.
+                if out.iter().any(|m| libm::hypot(m.at[0] - at[0], m.at[1] - at[1]) * mpu(ctx, at) < MOUTH_FRONT_M) {
+                    continue;
+                }
+                let dir = unit(ab);
+                let e = MOUTH_FRONT_M / mpu(ctx, at);
+                let ahead =
+                    [libm::round(2.0 * (at[0] + e * dir[0])) as i64, libm::round(2.0 * (at[1] + e * dir[1])) as i64];
+                let into = if winding(rings, ahead) != 0 { dir } else { [-dir[0], -dir[1]] };
+                out.push(CulvertMouth { at, into, edge: unit(cd), half_m });
+            }
+        }
+    }
     out
+}
+
+fn sub(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
+    [a[0] - b[0], a[1] - b[1]]
+}
+
+fn cross(a: [f64; 2], b: [f64; 2]) -> f64 {
+    a[0] * b[1] - a[1] * b[0]
+}
+
+fn unit(a: [f64; 2]) -> [f64; 2] {
+    let n = libm::hypot(a[0], a[1]).max(1e-12);
+    [a[0] / n, a[1] / n]
 }
 
 /// A zone's candidate: of a way (its line and class), or of a tunnel's start, named by its seed.
@@ -179,8 +249,9 @@ fn band(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, way: u32, a
 }
 
 /// The water's band about sample `at` of water way `s`: the network within `ZONE_ALONG_M` along it, on through
-/// its joints and into every arm of a junction, `bank` metres wide each side.
-fn water_band(ctx: &Ctx, s: u32, at: u32, bank: f64) -> Rings {
+/// its joints and into every arm of a junction, `bank` metres wide each side; and its middle line through the
+/// joints only.
+fn water_band(ctx: &Ctx, s: u32, at: u32, bank: f64) -> (Rings, Vec<P>) {
     let g = ctx.graph;
     let mut lines: Vec<(Vec<WalkPoint>, [bool; 2])> = Vec::new();
     let mut main: Vec<WalkPoint> = Vec::new();
@@ -194,6 +265,7 @@ fn water_band(ctx: &Ctx, s: u32, at: u32, bank: f64) -> Rings {
         }
         lines.extend(walks.into_iter().map(|w| (w, [true, false])));
     }
+    let middle = main.iter().map(|w| w.pos).collect();
     lines.push((main, [false, false]));
     let mut out = Vec::new();
     for (line, round) in lines {
@@ -201,7 +273,7 @@ fn water_band(ctx: &Ctx, s: u32, at: u32, bank: f64) -> Rings {
         let h: Vec<f64> = line.iter().map(|w| bank / mpu(ctx, w.pos.map(f64::from))).collect();
         stroke(&p, &h, round, &mut out);
     }
-    out
+    (out, middle)
 }
 
 /// The box of rings (units).

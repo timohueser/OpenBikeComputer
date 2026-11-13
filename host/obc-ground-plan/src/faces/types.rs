@@ -163,6 +163,18 @@ impl CornerArc {
     }
 }
 
+/// A culvert's mouth (`culverts`): where the water's middle line meets a zone's outline.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CulvertMouth {
+    /// Frame units from the cell's origin.
+    pub at: [f64; 2],
+    /// The unit direction of the water into the zone, and of the zone's outline there (x east, y south).
+    pub into: [f64; 2],
+    pub edge: [f64; 2],
+    /// The water's half-width, metres.
+    pub half_m: f64,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct FacePlan {
     pub cell: crate::frame::CellKey,
@@ -171,5 +183,7 @@ pub struct FacePlan {
     pub faces: Vec<Face>,
     pub edges: Vec<Edge>,
     pub corners: Vec<CornerArc>,
+    /// The mouths of the culverts' zones about the cell.
+    pub mouths: Vec<CulvertMouth>,
     pub stats: FaceStats,
 }

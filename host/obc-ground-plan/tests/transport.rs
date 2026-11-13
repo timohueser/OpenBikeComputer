@@ -240,7 +240,17 @@ fn plan_of(w: &FaceWords, cell: CellKey) -> FacePlan {
             }
         })
         .collect();
-    FacePlan { cell, level: 0, vertices: pairs(&w.vertices), faces, edges, corners, stats: FaceStats::default() }
+    let mouths = Vec::new();
+    FacePlan {
+        cell,
+        level: 0,
+        vertices: pairs(&w.vertices),
+        faces,
+        edges,
+        corners,
+        mouths,
+        stats: FaceStats::default(),
+    }
 }
 
 #[test]
@@ -288,6 +298,7 @@ fn the_face_words_keep_every_field_of_the_plan() {
             },
             CornerArc { owner: Owner::Way(7), centre: [0, 0], radius_m: 0.0, t_a: [0, 0], t_b: [0, 0], arc: vec![] },
         ],
+        mouths: Vec::new(),
         stats: FaceStats::default(),
     };
     assert_eq!(plan_of(&FaceWords::of(&plan), cell), plan);

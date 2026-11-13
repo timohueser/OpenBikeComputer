@@ -868,6 +868,7 @@ struct Candidates<'a> {
     win: [i32; 4],
     cover: Cover,
     corners: Vec<CornerArc>,
+    mouths: Vec<CulvertMouth>,
     stats: FaceStats,
 }
 
@@ -909,6 +910,7 @@ impl Sliced {
         let labels: Vec<Label> = own.iter().map(|&k| self.labels[k]).collect();
         let mut plan = self.plan(cell, level, &Map::new(snap_round(&patches)), &labels);
         plan.corners = c.corners.clone();
+        plan.mouths = c.mouths.clone();
         let ends: Vec<[f64; 5]> = c.lines.iter().flat_map(deck_ends).collect();
         let on = |v: P, e: &[f64; 5]| {
             let r = [f64::from(v[0]) - e[0], f64::from(v[1]) - e[1]];
@@ -1157,6 +1159,7 @@ fn candidates<'a>(
         }
     }
     let mut cands: Vec<Cand> = Vec::new();
+    let mut mouths = Vec::new();
     // The ways' carriageways and the band layers, on the run of samples near the window. A way with
     // legs keeps its own layers of the owner rule (its shoulders): `split_legs` gives each piece in a
     // leg's near zone that leg's line as its host, as for the carriageway.
@@ -1225,7 +1228,9 @@ fn candidates<'a>(
     if level == 0 {
         cands.extend(platform::candidates(&ctx, input, bx, &mut stats));
         // A culvert's zone lies within `REACH_M` of its crossing.
-        cands.extend(culverts::candidates(&ctx, &lines, reach(culverts::REACH_M)));
+        let (zones, found) = culverts::candidates(&ctx, &lines, reach(culverts::REACH_M));
+        cands.extend(zones);
+        mouths = found;
     }
     // The points' fans and regions, and the band fans.
     let mut fan_of: Vec<Option<usize>> = vec![None; points.len()];
@@ -1388,7 +1393,7 @@ fn candidates<'a>(
         }
     }
     let ways = lines.iter().take_while(|l| !l.sec.water).count();
-    Candidates { lines, ways, cands, seams, win, cover, corners, stats }
+    Candidates { lines, ways, cands, seams, win, cover, corners, mouths, stats }
 }
 
 /// Splits every candidate that gives the label of a way with legs (`legs`), or that is one of its own
@@ -1890,6 +1895,7 @@ fn output(cell: CellKey, level: i8, map: &Map, labels: &[Label], mut stats: Face
         faces,
         edges,
         corners: Vec::new(),
+        mouths: Vec::new(),
         stats,
     }
 }
