@@ -270,3 +270,4 @@ The disk of the container is small. These were removed; their `result.json` file
 - The package output of `switzerland/run-3300-base` (spatial order) and `switzerland/run-3300-fix`
   (the format-9 package in cell order is in `switzerland/packages-3301/format-9`).
 - The binaries of #3295 to #3300 and of develop `623c49d2` in `bin/`.
+`switzerland/run-3304-merged/` (review fixes of #3424, head `8f774d2e`, merged with `routing-overlay` `f3f200e3`; `bin/obc-data-3304-fix`, `bin/cells-3304-fix`): the three hashes of #3300, identity `004a933b…`, the same table hashes for each level; `measure/` has the times of each level before (`bin/cells-3304`) and after, 1 and 4 threads, and a sampled value check (592,010 entries, 0 differ). Layers and output removed. `switzerland/run-3304-fix/measure/` holds the runs of the intermediate head.
