@@ -7,12 +7,11 @@
     import { download } from '../components/route/download';
     import { writeFitRide, type FitSample } from '../lib/core/fit';
     import { writeGpx } from '../lib/core/gpx';
-    import { lineId } from '../lib/library/import';
     import type { RideRecord } from '../lib/library/records';
     import type { Library } from '../lib/library/store';
-    import { planFromFile } from '../lib/planner/gpx-import';
+    import { rideAgain } from '../lib/ride/again';
     import { channels, movingSpeed, rideClimbs, rideCsv } from '../lib/ride/numbers';
-    import { fitSport, rideSamples } from '../lib/ride/samples';
+    import { fitSport, ridePoints, rideSamples } from '../lib/ride/samples';
     import { router } from '../lib/router.svelte';
     import { ROUTES } from '../lib/routes';
     import { settings } from '../lib/settings/settings.svelte';
@@ -64,19 +63,12 @@
 
     const rename = (name: string) => act(() => library.saveRide({ ...record!, name }));
 
-    /** Opens the route of the ride's line, with the id that "Add files" gives the line, and makes it first if needed. */
-    const rideAgain = () => act(async () => {
-        const ride = record!, id = await lineId(ride.summary.line);
-        const points = samples!.map(s => ({ lat: s.lat, lon: s.lon, ...s.elevationM !== undefined && { ele: s.elevationM } }));
-        if (!await library.item(id)) await library.addRoute(await planFromFile({ name: ride.name, points, waypoints: [] }, id, ride.summary.bike));
-        location.hash = `${ROUTES.route}/${id}`;
-    });
 
     function remove() {
         deleting = false;
         return act(async () => {
             await library.removeRide(key);
-            router.replace(ROUTES.routes);
+            router.replace(`${ROUTES.routes}/ridden`);
         });
     }
 
@@ -88,11 +80,9 @@
             const [type, extension] = format === 'fit' ? ['application/vnd.ant.fit', 'fit'] : ['application/gpx+xml', 'gpx'];
             download(ride.format === format ? read.file : write(), type, ride.name, extension);
         };
-        const points = () => read!.samples.map(s => ({ lat: s.lat, lon: s.lon, time: s.timeS, ...s.elevationM !== undefined && { ele: s.elevationM },
-            ...s.segmentStart && { segmentStart: true as const } }));
         return [
             { label: 'FIT file', disabled: !read, run: file('fit', () => writeFitRide({ sport: fitSport(ride!.summary.bike), samples: read!.samples }) as Uint8Array<ArrayBuffer>) },
-            { label: 'GPX track', disabled: !read, run: file('gpx', () => writeGpx({ name: ride!.name, points: points(), waypoints: [] })) },
+            { label: 'GPX track', disabled: !read, run: file('gpx', () => writeGpx({ name: ride!.name, points: ridePoints(read!.samples), waypoints: [] })) },
             { label: 'Table of the data (CSV)', note: 'One line for each point', disabled: !read,
                 run: () => { if (ride && read) download(rideCsv(read.samples), 'text/csv', ride.name, 'csv'); } },
         ];
@@ -105,7 +95,7 @@
         <span class="date">{date}</span>
     {/snippet}
     {#snippet buttons()}
-        <button type="button" class="button" disabled={!samples} onclick={rideAgain}>Ride it again</button>
+        <button type="button" class="button" disabled={!samples} onclick={() => act(() => rideAgain(library, record!, samples))}>Ride it again</button>
         <ExportMenu items={exports} />
     {/snippet}
     {#snippet left()}
