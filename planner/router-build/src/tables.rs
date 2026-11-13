@@ -9,8 +9,10 @@ use planner_router::cells::{encode_table, Table, TABLE_HEADER};
 use rayon::prelude::*;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 /// A table whose values by row take more bytes than this also holds them by column. Then a column
@@ -151,11 +153,21 @@ struct Scratch {
     cost: Vec<u64>,
     heap: BinaryHeap<Reverse<(u64, u32)>>,
     values: Vec<u64>,
-    /// The level and the cell of `graph`.
-    mapped: Option<(usize, usize)>,
+    /// The build, the level and the cell of `graph`.
+    mapped: Option<(u64, usize, usize)>,
 }
 
+thread_local! {
+    /// The scratch of each worker. It outlives a batch, so the tables of the profiles of one cell
+    /// that one worker builds in turn map the cell once.
+    static SCRATCH: RefCell<Scratch> = RefCell::default();
+}
+
+/// A number for each call of `build`, which keys the mapped cell of a scratch.
+static BUILDS: AtomicU64 = AtomicU64::new(0);
+
 struct Input<'a> {
+    build: u64,
     cells: &'a Cells,
     first: &'a [u32],
     head: &'a [u32],
@@ -275,13 +287,14 @@ fn task(
     p: usize,
     scratch: &mut Scratch,
 ) -> Result<Vec<u8>, String> {
-    if scratch.mapped != Some((level, cell)) {
+    let key = Some((input.build, level, cell));
+    if scratch.mapped != key {
         scratch.mapped = None;
         match level {
             1 => level1(input, cell, &mut scratch.graph)?,
             _ => upper(input, level, cell, scratch)?,
         }
-        scratch.mapped = Some((level, cell));
+        scratch.mapped = key;
     }
     let (cells, costs) = (input.cells, &input.profiles[p]);
     let Scratch { graph, starts, cost, heap, values, .. } = scratch;
@@ -328,7 +341,8 @@ pub fn build(
     profiles: &[Costs],
     columns_from: usize,
 ) -> Result<Tables, String> {
-    let input = Input { cells, first, head, profiles, columns_from };
+    let build = BUILDS.fetch_add(1, Ordering::Relaxed);
+    let input = Input { build, cells, first, head, profiles, columns_from };
     let roads = cells.level1.values().last().map_or(0, |last| last[1] as usize);
     let mut tables = Tables { profiles: profiles.len(), levels: Vec::new() };
     for level in 1..=cells.levels() {
@@ -351,8 +365,10 @@ pub fn build(
             let built: Vec<_> = (start..end)
                 .into_par_iter()
                 .with_max_len(1)
-                .map_init(Scratch::default, |scratch, unit| {
-                    task(&input, &tables, level, unit / profiles.len(), unit % profiles.len(), scratch)
+                .map(|unit| {
+                    SCRATCH.with_borrow_mut(|scratch| {
+                        task(&input, &tables, level, unit / profiles.len(), unit % profiles.len(), scratch)
+                    })
                 })
                 .collect();
             for table in crate::cost::in_order(built)? {
