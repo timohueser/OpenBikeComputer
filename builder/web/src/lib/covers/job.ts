@@ -30,21 +30,24 @@ export interface Renderer {
     onTrailViewOpen(listener: () => void): () => void;
 }
 
-/** Changes when a cover of the same line changes, so that the job makes every cover again. */
-const COVER_VERSION = 2;
-
-/** A hash of the summary line, and for a ride of its start time, as hex, with COVER_VERSION. A new name keeps it. */
+/** A hash of the summary line, and for a ride of its start time, as hex. A new name keeps it. */
 export function lineKey(item: RouteRecord | RideRecord): string {
-    const text = `${COVER_VERSION}:${item.summary?.line.join(',')}@${'key' in item ? item.summary.start : ''}`;
+    const text = `${item.summary?.line.join(',')}@${'key' in item ? item.summary.start : ''}`;
     // FNV-1a
     let hash = 0x811c9dc5;
     for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 0x01000193);
     return (hash >>> 0).toString(16).padStart(8, '0');
 }
 
+/** Changes when the covers of a line change, so that the job makes them again; map pictures keep theirs. */
+const COVER_VERSION = 2;
+
+/** The key that a cover keeps in its field `lineKey`: the line of the record and COVER_VERSION. */
+export const coverKey = (item: RouteRecord | RideRecord) => `${lineKey(item)}/${COVER_VERSION}`;
+
 /** Whether the job has nothing left to do for the record: its cover is made, impossible or failed for its line. A page
  * asks for the cover of a record that is not settled, also when it shows the cover of an earlier line. */
-export const settled = (item: RouteRecord | RideRecord, cover: CoverRecord | undefined) => cover?.lineKey === lineKey(item) && cover.state !== 'waiting';
+export const settled = (item: RouteRecord | RideRecord, cover: CoverRecord | undefined) => cover?.lineKey === coverKey(item) && cover.state !== 'waiting';
 
 /** Where a cover part shows: a row of a list asks for nothing, a card for the cover and else for the map picture, a page
  * for the cover only. */
@@ -159,7 +162,7 @@ export function startCoverJob(library: Library, renderer: () => Promise<Renderer
 
     /** One cover. */
     async function render(loaded: Renderer, id: string, item: RouteRecord | RideRecord, old: CoverRecord | undefined): Promise<'next' | 'stay'> {
-        const key = lineKey(item), tries = old?.lineKey === key ? old.tries : 0, controller = rendering = new AbortController();
+        const key = coverKey(item), tries = old?.lineKey === key ? old.tries : 0, controller = rendering = new AbortController();
         const line = Array.from({ length: item.summary!.line.length / 2 }, (_, i) => [item.summary!.line[2 * i], item.summary!.line[2 * i + 1]] as [number, number]);
         try {
             const view = await loaded.view(line, when(item));
@@ -190,7 +193,7 @@ export function startCoverJob(library: Library, renderer: () => Promise<Renderer
         const key = lineKey(item), dark = appearance.dark, controller = drawing = new AbortController();
         const map: MapPicture = old?.map?.lineKey === key ? old.map : { lineKey: key, tries: 0 };
         // A record with a picture and no cover waits for a cover.
-        const cover: CoverRecord = old ?? { id, lineKey: key, state: 'waiting', tries: 0 };
+        const cover: CoverRecord = old ?? { id, lineKey: coverKey(item), state: 'waiting', tries: 0 };
         // The browser keeps a failed import until the page loads again, so it counts no try; the next ask tries again.
         const make = await picture().catch((error: unknown) => void console.info('Map picture code:', error));
         if (!make) return 'next';

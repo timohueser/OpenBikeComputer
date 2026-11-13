@@ -69,8 +69,8 @@ export interface RideRecord {
 export interface CoverPoints { x: Float32Array; y: Float32Array; eye: Uint8Array }
 
 /**
- * The cover of a route or a ride. `state` and `tries` belong to `lineKey`, the line of the route or the ride when the
- * cover job last worked on it. `waiting`: the job renders it again; `none`: no cover is possible for this line, as no
+ * The cover of a route or a ride. `state` and `tries` belong to `lineKey`, the `coverKey` of the route or the ride when
+ * the cover job last worked on it. `waiting`: the job renders it again; `none`: no cover is possible for this line, as no
  * view holds it or TrailView has no data there; `failed`: three tries failed. With `waiting` and `failed`, `image` and
  * `points` can be the cover of an earlier line.
  */

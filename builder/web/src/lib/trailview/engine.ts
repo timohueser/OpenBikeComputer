@@ -32,7 +32,7 @@ import { Dressing } from './dressing/dressing';
 import { KindPoints } from './structures/kind-points';
 import { LightPools } from './structures/light-pools';
 import { Route, type RoutePin } from './route/route';
-import { SAMPLES, terrainHides } from './sight';
+import { sampleDistances, terrainHides } from './sight';
 import { Pacer } from './pacer';
 import type { StillPoints } from './still';
 import { DEBUG_VIEWS, TIME_ZONE, type View } from './view';
@@ -302,7 +302,7 @@ export class TrailView {
      * point in it: call it after `waitForIdle()`. It draws the jittered frames of the view again and
      * copies the canvas of the last one. A point stands where the route's ribbon would: LIFT_M above the
      * drawn surface. It is visible unless the drawn terrain hides it (`terrainHides`), which it probes at
-     * SAMPLES places between the eye and the point.
+     * `sampleDistances` on the way from the eye to the point.
      */
     async capture(line?: readonly [number, number][]): Promise<{ colour: ImageData; points?: StillPoints }> {
         if (this.destroyed) throw new Error('The engine has ended.');
@@ -312,14 +312,18 @@ export class TrailView {
             this.request();
         });
         const { colour, row, output: [width, height], eye } = grabbed;
-        // The points of the line, then SAMPLES places on the way from the eye to each point.
-        const probes = line && new Float64Array(2 * line.length * (SAMPLES + 1));
-        if (line && probes) for (let i = 0; i < line.length; i++) {
+        // The points of the line, then the samples on the way from the eye to each point, in one probe.
+        const along = line?.map(point => {
+            const [east, north] = this.frame.local(...point);
+            return sampleDistances(Math.hypot(east - eye[0], north - eye[1]));
+        });
+        const probes = line && along && new Float64Array(2 * (line.length + along.reduce((sum, list) => sum + list.length, 0)));
+        if (line && along && probes) for (let i = 0, at = 2 * line.length; i < line.length; i++) {
             probes.set(worldPixel(line[i], UNITS), 2 * i);
-            const [east, north] = this.frame.local(...line[i]);
-            for (let k = 0; k < SAMPLES; k++) {
-                const t = (k + 1) / (SAMPLES + 1), at = 2 * (line.length + i * SAMPLES + k);
-                probes.set(worldPixel(this.frame.lonLat(eye[0] + t * (east - eye[0]), eye[1] + t * (north - eye[1])), UNITS), at);
+            const [east, north] = this.frame.local(...line[i]), across = Math.hypot(east - eye[0], north - eye[1]);
+            for (const d of along[i]) {
+                probes.set(worldPixel(this.frame.lonLat(eye[0] + d / across * (east - eye[0]), eye[1] + d / across * (north - eye[1])), UNITS), at);
+                at += 2;
             }
         }
         const [heights] = await Promise.all([probes && this.terrain.probeAt(probes), colour.mapAsync(GPUMapMode.READ)]);
@@ -331,7 +335,7 @@ export class TrailView {
             rgba[to + 2] = bytes[from + (bgra ? 0 : 2)];
             rgba[to + 3] = 255;
         }
-        const points = line && heights && placed(line, heights, this.frame, grabbed);
+        const points = line && along && heights && placed(line, along, heights, this.frame, grabbed);
         colour.destroy();
         return { colour: new ImageData(rgba, width, height), points };
     }
@@ -898,28 +902,25 @@ interface Grabbed {
 /**
  * The place of each point of `line` in the image of a capture, from its drawn height (NaN where no page
  * knows it): projected as route.wgsl projects its ribbon, with the curvature term. `heights` holds the
- * drawn heights of the points, then SAMPLES heights on the way to each point, for `terrainHides`.
+ * drawn heights of the points, then those at the distances `along` on the way to each point, for `terrainHides`.
  */
-function placed(line: readonly [number, number][], heights: Float32Array, frame: Frame, grabbed: Grabbed): StillPoints {
-    const n = line.length, { viewProj: m, eye, output: [width, height], pixel } = grabbed, ground = new Float32Array(SAMPLES);
+function placed(line: readonly [number, number][], along: number[][], heights: Float32Array, frame: Frame, grabbed: Grabbed): StillPoints {
+    const n = line.length, { viewProj: m, eye, output: [width, height], pixel } = grabbed;
     const points: StillPoints = { x: new Float32Array(n).fill(NaN), y: new Float32Array(n).fill(NaN), distance: new Float32Array(n).fill(NaN), visible: new Uint8Array(n) };
-    for (let i = 0; i < n; i++) {
+    for (let i = 0, from = n; i < n; from += along[i].length, i++) {
         if (Number.isNaN(heights[i])) continue;
         const [east, north] = frame.local(...line[i]), x = east - eye[0], y = north - eye[1], z = heights[i] + LIFT_M - eye[2] - CURVATURE * (x * x + y * y);
         // Clip w is the distance along the view axis.
-        const along = m[3] * x + m[7] * y + m[11] * z + m[15];
-        if (!(along > NEAR)) continue;
-        const u = ((m[0] * x + m[4] * y + m[8] * z + m[12]) / along + 1) / 2, v = (1 - (m[1] * x + m[5] * y + m[9] * z + m[13]) / along) / 2;
+        const ahead = m[3] * x + m[7] * y + m[11] * z + m[15];
+        if (!(ahead > NEAR)) continue;
+        const u = ((m[0] * x + m[4] * y + m[8] * z + m[12]) / ahead + 1) / 2, v = (1 - (m[1] * x + m[5] * y + m[9] * z + m[13]) / ahead) / 2;
         const reach = Math.hypot(x, y, z);
         points.x[i] = u * width;
         points.y[i] = v * height;
         points.distance[i] = reach;
         if (u < 0 || u >= 1 || v < 0 || v >= 1) continue;
-        for (let k = 0; k < SAMPLES; k++) {
-            const t = (k + 1) / (SAMPLES + 1);
-            ground[k] = heights[n + i * SAMPLES + k] - eye[2] - CURVATURE * t * t * (x * x + y * y);
-        }
-        points.visible[i] = terrainHides([x, y, z], ground, pixel) ? 0 : 1;
+        const ground = heights.subarray(from, from + along[i].length).map(h => h - eye[2]);
+        points.visible[i] = terrainHides([x, y, heights[i] + LIFT_M - eye[2]], along[i], ground, pixel) ? 0 : 1;
     }
     return points;
 }
