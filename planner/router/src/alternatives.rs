@@ -93,7 +93,12 @@ impl<P: RoutingData> Router<P> {
                 let mut attachment = None;
                 for radius_m in radii {
                     let policy = snap::Policy { radius_m, ..snap::Policy::default() };
-                    attachment = self.package.snap(probe, &request.profile, policy)?.retained.into_iter().next();
+                    attachment = match self.package.snap(probe, &request.profile, policy) {
+                        Ok(found) => found.retained.into_iter().next(),
+                        // A probe near a cell that is not installed is skipped.
+                        Err(Error::MissingRegion(_)) => break,
+                        Err(error) => return Err(error),
+                    };
                     if attachment.is_some() {
                         break;
                     }
@@ -134,13 +139,17 @@ impl<P: RoutingData> Router<P> {
     }
 
     /// Whether a route goes out along a road and back, as to a probe beside the road. Adjacent
-    /// pieces on one road meet at a point; a repeated road or its reverse is a spur.
+    /// pieces on one road meet at a point; a repeated road or its reverse is a spur. A road is its
+    /// way and its two end points.
     fn spur(&self, route: &Route) -> Result<bool> {
         let mut previous = None;
         let mut visited = BTreeSet::new();
         for piece in route.pieces() {
             if previous != Some(piece.road) {
-                let way = self.package.with_road(piece.road, |r| (r.way, r.from.min(r.to), r.from.max(r.to)))?;
+                let way = self.package.with_road(piece.road, |r| {
+                    let ends = [r.shape[0], r.shape[r.shape.len() - 1]].map(|p| (p.lat, p.lon));
+                    (r.way, ends[0].min(ends[1]), ends[0].max(ends[1]))
+                })?;
                 if !visited.insert(way) {
                     return Ok(true);
                 }
@@ -171,30 +180,32 @@ impl<P: RoutingData> Router<P> {
         Ok(cost as f64 <= primary.cost as f64 * 1.35)
     }
 
-    /// The cost of a route with `metric`, or none when the metric excludes one of its roads or turns.
-    fn cost(&self, route: &Route, metric: &str) -> Result<Option<u64>> {
+    /// The cost of a route with `metric`, or none when the metric excludes one of its roads or turns:
+    /// the cost of its pieces and of the turns of each leg between its start road, the roads of its
+    /// pieces and its end road. With the profile of the route, it is the cost of the route.
+    pub fn cost(&self, route: &Route, metric: &str) -> Result<Option<u64>> {
         let mut cost = 0u64;
         for leg in &route.legs {
-            // A leg continues the previous leg on its road, or turns back there at no turn cost.
-            let mut previous = None;
             for piece in &leg.pieces {
                 let endpoint = self.package.endpoint(metric, piece.road)?;
                 let Some(curve) = endpoint.cost.as_ref() else {
                     return Ok(None);
                 };
-                if let Some(before) = previous.filter(|&id| id != piece.road) {
-                    let Some(entry) = endpoint.departures.iter().find(|d| d.state == before) else {
-                        return Ok(None);
-                    };
-                    cost = cost.checked_add(entry.penalty).ok_or(Error::Limit)?;
-                }
-                previous = Some(piece.road);
-                cost = cost
-                    .checked_add(
-                        curve.prefix(piece.to).map_err(Error::InvalidData)?
-                            - curve.prefix(piece.from).map_err(Error::InvalidData)?,
-                    )
-                    .ok_or(Error::Limit)?;
+                let part = curve.prefix(piece.to).map_err(Error::InvalidData)?
+                    - curve.prefix(piece.from).map_err(Error::InvalidData)?;
+                cost = cost.checked_add(part).ok_or(Error::Limit)?;
+            }
+            let mut roads: Vec<u32> = std::iter::once(leg.start.road)
+                .chain(leg.pieces.iter().map(|piece| piece.road))
+                .chain([leg.end.road])
+                .collect();
+            roads.dedup();
+            for pair in roads.windows(2) {
+                let endpoint = self.package.endpoint(metric, pair[1])?;
+                let Some(turn) = endpoint.departures.iter().find(|d| d.state == pair[0]) else {
+                    return Ok(None);
+                };
+                cost = cost.checked_add(turn.penalty).ok_or(Error::Limit)?;
             }
         }
         Ok(Some(cost))

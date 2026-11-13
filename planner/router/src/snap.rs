@@ -77,7 +77,9 @@ pub struct Candidates {
     pub retained: Vec<Candidate>,
 }
 
-pub(crate) fn cells(point: Point, radius: f64) -> std::result::Result<BTreeSet<(i32, i32)>, String> {
+/// The box (west, south, east, north) in microdegrees that holds each point within `radius` metres
+/// of `point`.
+pub fn window(point: Point, radius: f64) -> std::result::Result<[i32; 4], String> {
     if !radius.is_finite()
         || !(0.0..=5_000.0).contains(&radius)
         || point.lat.unsigned_abs() > 85_000_000
@@ -87,9 +89,14 @@ pub(crate) fn cells(point: Point, radius: f64) -> std::result::Result<BTreeSet<(
     }
     let lat = (radius / 0.110).ceil() as i32 + 2;
     let lon = (radius / (0.110 * (point.lat as f64 * 1e-6).to_radians().cos())).ceil() as i32 + 2;
+    Ok([point.lon - lon, point.lat - lat, point.lon + lon, point.lat + lat])
+}
+
+pub(crate) fn cells(point: Point, radius: f64) -> std::result::Result<BTreeSet<(i32, i32)>, String> {
+    let [west, south, east, north] = window(point, radius)?;
     let mut result = BTreeSet::new();
-    for y in (point.lat - lat).div_euclid(CELL)..=(point.lat + lat).div_euclid(CELL) {
-        for x in (point.lon - lon).div_euclid(CELL)..=(point.lon + lon).div_euclid(CELL) {
+    for y in south.div_euclid(CELL)..=north.div_euclid(CELL) {
+        for x in west.div_euclid(CELL)..=east.div_euclid(CELL) {
             result.insert((y, x));
         }
     }
