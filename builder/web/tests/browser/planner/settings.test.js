@@ -38,13 +38,18 @@ test('the settings are a window over the page, and the page under it stays as it
   const settings = page.getByRole('dialog', { name: 'Settings' });
   const planner = page.getByRole('navigation', { name: 'Pages' }).getByRole('link', { name: 'Planner' });
 
-  // A direct visit shows the window over the first page; Close leaves that page.
+  // A direct visit shows the window over the first page; Back and Close leave that page.
   await open(page);
   await expect(planner).toHaveAttribute('aria-current', 'page');
-  await settings.getByRole('button', { name: 'Close' }).click();
-  await expect(settings).toHaveCount(0);
-  await expect(page).toHaveURL(/#\/$/);
-  await expect(planner).toHaveAttribute('aria-current', 'page');
+  for (const close of [() => page.goBack(), () => settings.getByRole('button', { name: 'Close' }).click()]) {
+    await close();
+    await expect(settings).toHaveCount(0);
+    await expect(page).toHaveURL(/#\/$/);
+    await expect(planner).toHaveAttribute('aria-current', 'page');
+    await page.goForward();
+    await expect(settings).toBeVisible();
+  }
+  await page.goBack();
 
   await page.goto('/planner.html?cover=none');
   await page.waitForFunction(() => window.coverTest);
@@ -63,6 +68,7 @@ test('the settings are a window over the page, and the page under it stays as it
     await expect(settings).toHaveCount(0);
     await expect(page).toHaveURL(/#\/route\/two$/);
     await expect(day2).toBeChecked();
+    await expect(page.getByRole('link', { name: 'Settings' })).toBeFocused();
   }
   expect(errors).toEqual([]);
 });

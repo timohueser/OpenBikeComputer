@@ -33,6 +33,7 @@
     import { onMount, tick, untrack } from 'svelte';
     import './styles/shell.css';
     import TopBar from './components/TopBar.svelte';
+    import Window from './lib/ui/Window.svelte';
     import { ROUTES } from './lib/routes';
     import { router } from './lib/router.svelte';
     import { startTheme } from './lib/theme.svelte';
@@ -101,7 +102,9 @@
         {#await import('./pages/Settings.svelte') then { default: Settings }}
             <Settings {library} />
         {:catch error}
-            <p class="failure" role="alert">{error instanceof Error ? error.message : String(error)}</p>
+            <Window title="Settings" large onClose={() => router.closeSettings()}>
+                <p role="alert">{error instanceof Error ? error.message : String(error)}</p>
+            </Window>
         {/await}
     {/if}
     <footer>

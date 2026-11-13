@@ -11,18 +11,30 @@
     } = $props();
     let dialog: HTMLDialogElement;
     const heading = $props.id();
-    onMount(() => dialog.showModal());
+    onMount(() => {
+        const before = document.activeElement;
+        dialog.showModal();
+        // A window that goes while open, for example at Back, gets no `close`, so the focus does not go back by itself.
+        return () => {
+            if (!dialog.open) return;
+            dialog.close();
+            if (before instanceof HTMLElement) before.focus();
+        };
+    });
     const close = () => dialog.close();
-    // A click on the backdrop has the dialog as its target, as a click on its padding does.
-    function outside(event: MouseEvent) {
-        if (event.target !== dialog) return;
+    // A click on the backdrop has the dialog as its target, as a click on its padding does. A press in the window
+    // that ends on the backdrop, as a text selection does, is no click on the backdrop.
+    const outside = (event: MouseEvent) => {
+        if (event.target !== dialog) return false;
         const box = dialog.getBoundingClientRect();
-        if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) close();
-    }
+        return event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom;
+    };
+    let pressedOutside = false;
 </script>
 
 <!-- Esc closes a modal dialog by itself, and each way of closing ends in `onclose`. -->
-<dialog bind:this={dialog} class:large aria-labelledby={heading} onclose={onClose} onclick={large ? outside : undefined}>
+<dialog bind:this={dialog} class:large aria-labelledby={heading} onclose={onClose} onpointerdown={large ? event => pressedOutside = outside(event) : undefined}
+    onclick={large ? event => { if (pressedOutside && outside(event)) close(); } : undefined}>
     <header>
         <h2 id={heading}>{title}</h2>
         <button type="button" class="close" aria-label="Close" onclick={close}><Icon name="close" /></button>
@@ -43,6 +55,7 @@
         box-shadow: 0 18px 48px rgb(28 27 20 / 0.35);
     }
     .large {
+        overscroll-behavior: contain;
         width: min(1080px, calc(100vw - 48px));
         max-height: calc(100dvh - 48px);
     }

@@ -13,29 +13,30 @@ class Router {
     id = $state<string | undefined>();
     /** `#/settings` is a window over the page before it: `route` and `id` keep that page, so it is not created again. */
     settings = $state(false);
-    /** A navigation in this document opened the window, so its close goes back to that page. */
-    private settingsHasPage = false;
 
     constructor() {
-        this.read(false);
-        window.addEventListener("hashchange", () => this.read(true));
+        // A first address of the settings gets the home page in an entry before it, so each close of the window is Back.
+        if (parseRoute(location.hash).route === "settings") {
+            const settings = location.hash;
+            history.replaceState(history.state, "", ROUTES.home);
+            history.pushState(history.state, "", settings);
+        }
+        this.read();
+        window.addEventListener("hashchange", () => this.read());
     }
 
     /** Goes to `hash` in place of the current entry of the history, so Back skips the current address. */
     replace(hash: string) {
         history.replaceState(history.state, "", hash);
-        this.read(false);
+        this.read();
     }
 
     closeSettings() {
-        if (!this.settings) return;
-        if (this.settingsHasPage) history.back();
-        else this.replace(ROUTES.home);
+        if (this.settings) history.back();
     }
 
-    private read(navigated: boolean) {
+    private read() {
         const { route, id } = parseRoute(location.hash);
-        if (route === "settings" && !this.settings) this.settingsHasPage = navigated;
         this.settings = route === "settings";
         if (!this.settings) {
             this.route = route;
