@@ -56,10 +56,10 @@ export function loadManifest(reload = false): Promise<Manifest | undefined> {
 const DAY_MS = 86_400_000;
 const minutes = (clock: string) => Number(clock.slice(0, 2)) * 60 + Number(clock.slice(3));
 
-/** The view of the local date of `now`, `step` views later, and its slot by the local time as if the visitor stood there. */
-export function viewAt(manifest: Manifest, now: Date, step = 0): { view: HomeView; slot: Slot } {
+/** The view of the local date of `now`, and its slot by the local time as if the visitor stood at the viewpoint. */
+export function viewAt(manifest: Manifest, now: Date): { view: HomeView; slot: Slot } {
     const days = Math.floor(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()) / DAY_MS);
-    const count = manifest.views.length, view = manifest.views[((days + step) % count + count) % count];
+    const count = manifest.views.length, view = manifest.views[(days % count + count) % count];
     const at = now.getHours() * 60 + now.getMinutes(), rise = minutes(view.sunrise), set = minutes(view.sunset), noon = (rise + set) / 2;
     if (at < rise || at >= set) return { view, slot: view.night ? 'night' : 'evening' };
     if (at < (rise + noon) / 2) return { view, slot: 'morning' };

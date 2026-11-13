@@ -6,12 +6,12 @@ const manifest = (views: HomeView[]): Manifest => ({ format: 1, set: '0123456789
 const set = manifest([view('a'), view('b'), view('c', false)]);
 
 describe('viewAt', () => {
-    it('takes the view of the local day, and the next one after each step and each day, around the list', () => {
+    it('takes the view of the local day, the next one on the next day, around the list', () => {
         expect(viewAt(set, new Date(1970, 0, 1, 12)).view.id).toBe('a');
-        expect(viewAt(set, new Date(1970, 0, 2, 12)).view.id).toBe('b');
+        expect(viewAt(set, new Date(1970, 0, 1, 23, 59)).view.id).toBe('a');
+        expect(viewAt(set, new Date(1970, 0, 2, 0, 1)).view.id).toBe('b');
         expect(viewAt(set, new Date(1970, 0, 4, 12)).view.id).toBe('a');
-        expect(viewAt(set, new Date(1970, 0, 1, 23, 59), 2).view.id).toBe('c');
-        expect(viewAt(set, new Date(1970, 0, 2, 0, 1), 2).view.id).toBe('a');
+        expect(viewAt(set, new Date(2026, 10, 13, 12)).view.id).toBe('b');
     });
 
     it('takes the slot by sunrise, the middle of the morning and of the afternoon, and sunset', () => {

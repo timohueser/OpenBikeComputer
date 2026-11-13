@@ -10,7 +10,7 @@
     import { appearance } from '../../lib/theme.svelte';
     import type { Box, Item } from './filter';
 
-    let { items, shown, selected, look = 'route', covered = 0, onselect, onview, fit }: {
+    let { items, shown, selected, look = 'route', covered = 0, credits = [], onselect, onview, fit }: {
         items: Item[];
         /** The items of the list. The map draws only these, and the bubbles count only these. */
         shown: Item[];
@@ -18,6 +18,8 @@
         look?: 'route' | 'ride';
         /** The height in pixels of the bottom of the map that the selected card covers. */
         covered?: number;
+        /** The credits of the picture of the selected card, which shows none of its own. */
+        credits?: string[];
         /** Undefined after a click on the map where no route is. */
         onselect: (id: string | undefined) => void;
         onview: (view: Box) => void;
@@ -29,7 +31,7 @@
     let container: HTMLElement;
     let map = $state.raw<maplibregl.Map>(), ready = $state(false);
     const theme = $derived(appearance.dark ? 'dark' : 'light');
-    let styled: typeof theme, styledLook: typeof look, fitted = 0;
+    let styled: typeof theme, styledLook: typeof look, fitted = 0, attribution: maplibregl.AttributionControl | undefined;
 
     const pairs = (line: number[]) => Array.from({ length: line.length / 2 }, (_, i) => [line[2 * i], line[2 * i + 1]]);
     // All lines are in one source; a filter of the layers shows the shown ones, so a chip change sets no data.
@@ -99,6 +101,16 @@
         return [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
     };
 
+    // The control takes its own credits only when it is made.
+    $effect(() => {
+        const custom = credits;
+        if (!map || !attribution) return;
+        untrack(() => {
+            map!.removeControl(attribution!);
+            map!.addControl(attribution = new maplibregl.AttributionControl({ compact: true, customAttribution: custom }), 'top-left');
+        });
+    });
+
     async function zoomIn(event: maplibregl.MapLayerMouseEvent) {
         const bubble = event.features?.[0];
         if (!bubble || bubble.geometry.type !== 'Point') return;
@@ -115,7 +127,7 @@
             attributionControl: false, maxPitch: 0, renderWorldCopies: false,
         });
         // The selected card covers the bottom of the map.
-        created.addControl(new maplibregl.AttributionControl({ compact: true }), 'top-left');
+        created.addControl(attribution = new maplibregl.AttributionControl({ compact: true }), 'top-left');
         created.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
         created.dragRotate.disable();
         created.touchZoomRotate.disableRotation();

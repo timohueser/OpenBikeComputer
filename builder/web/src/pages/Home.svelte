@@ -1,4 +1,4 @@
-<!-- The Home page: the view of the day with the personal text, and a drawer of the newest routes and rides. -->
+<!-- The Home page: the view of the day with the search and the personal text, and a drawer of the newest routes or rides. -->
 <script lang="ts">
     import { onMount } from 'svelte';
     import type { RideRecord, RouteRecord } from '../lib/library/records';
@@ -6,15 +6,18 @@
     import Drawer from './home/Drawer.svelte';
     import Personal from './home/Personal.svelte';
     import { homeText, type HomeText } from './home/personal';
+    import Search from './home/Search.svelte';
     import View from './home/View.svelte';
     import { homeNow } from './home/views';
+    import { rideItem, routeItem } from './routes/filter';
 
     let { library }: { library: Library; active: boolean } = $props();
 
     const READ_AFTER_MS = 200;
     const now = homeNow();
     let routes = $state.raw<RouteRecord[]>(), rides = $state.raw<RideRecord[]>(), text = $state.raw<HomeText>();
-    let shown = $state(false), failure = $state('');
+    let shown = $state(false), failure = $state(''), credits = $state<string[]>([]);
+    const items = $derived([...routes?.map(route => routeItem(route)) ?? [], ...rides?.map(rideItem) ?? []].sort((a, b) => b.at - a.at));
 
     async function load() {
         try {
@@ -40,13 +43,14 @@
 
 <div class="home">
     <section class="hero" class:shown aria-label="Home">
-        <View {now} bind:shown />
+        <View {now} cards={credits} bind:shown />
+        <div class="search"><Search {items} /></div>
         {#if text}<Personal {library} {text} />{/if}
     </section>
     {#if failure}
         <p class="failure" role="alert">{failure}</p>
     {:else if routes && rides}
-        <Drawer {library} {routes} {rides} />
+        <Drawer {library} {routes} {rides} bind:credits />
     {/if}
 </div>
 
@@ -64,7 +68,6 @@
         flex-direction: column;
         min-height: 360px;
         padding: 96px 40px 24px;
-        overflow: hidden;
         color: var(--ink);
     }
     .hero.shown {
@@ -74,6 +77,14 @@
     }
     .hero > :global(.personal) {
         position: relative;
+    }
+    .search {
+        position: absolute;
+        z-index: 2;
+        top: 18px;
+        left: 50%;
+        width: min(540px, calc(100% - 32px));
+        transform: translateX(-50%);
     }
     .failure {
         margin: 16px 20px;
@@ -85,8 +96,15 @@
         }
         .hero {
             min-height: 78vh;
-            padding: 32px 16px 16px;
+            padding: 16px;
             gap: 24px;
+        }
+        .search {
+            position: relative;
+            top: 0;
+            left: 0;
+            width: 100%;
+            transform: none;
         }
     }
 </style>

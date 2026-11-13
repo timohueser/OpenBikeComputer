@@ -1,15 +1,16 @@
-<!-- A route or a ride in the home drawer: its picture with the credits, its name as the link of the card, and a short line. -->
+<!-- A route or a ride in the home drawer: its picture, its name as the link of the card, and a short line. The picture is too
+     small for its credits, so the card gives them to the page. -->
 <script lang="ts">
-    import Credits from '../../components/planner/Credits.svelte';
     import Cover from '../../lib/covers/Cover.svelte';
     import type { Library } from '../../lib/library/store';
     import { ROUTES } from '../../lib/routes';
     import { formatDistance } from '../../lib/settings/format';
     import type { Item } from '../routes/filter';
 
-    let { library, item }: { library: Library; item: Item } = $props();
+    let { library, item, oncredits }: { library: Library; item: Item; oncredits: (credits: string[]) => void } = $props();
 
     let credits = $state<string[]>([]);
+    $effect(() => oncredits(credits));
     const meta = $derived(item.kind === 'ride'
         ? ['Ride', new Date(item.at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }), formatDistance(item.summary.lengthM)]
         : ['Route', item.summary && item.summary.days > 1 && `${item.summary.days} days`, item.summary && formatDistance(item.summary.lengthM)]);
@@ -18,7 +19,6 @@
 <li class="card">
     <div class="picture">
         {#if item.summary}<Cover {library} id={item.id} place="card" bind:credits />{/if}
-        <Credits {credits} side="left" />
     </div>
     <a class="open" href={`${item.kind === 'ride' ? ROUTES.ride : ROUTES.route}/${item.id}`}>{item.name}</a>
     <p class="meta">{meta.filter(Boolean).join(' · ')}</p>
@@ -55,7 +55,7 @@
         text-overflow: ellipsis;
         white-space: nowrap;
     }
-    /* The name is the one link of the card: it covers the whole card, under the credits. */
+    /* The name is the one link of the card: it covers the whole card. */
     .open::after {
         position: absolute;
         inset: 0;

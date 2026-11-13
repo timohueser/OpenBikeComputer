@@ -68,13 +68,14 @@ export function wantCover(id: string, place: Asker): void {
  * Starts the cover job of the page. It renders the covers that `wantCover` asks for, and the cover of the planner's
  * route SETTLE_MS after its last change. For a card whose record gets no cover, it then makes the map picture of the
  * theme. It works only while the page is visible and online. A cover also waits while the planner shows TrailView; a
- * picture does not. Covers are off with no WebGPU and, once the job learns it, with a software renderer or after a still
+ * picture does not. Covers are off with no WebGPU or a coarse pointer and, once the job learns it, with a software renderer or after a still
  * that reached its time limit. Returns the function that stops the job.
  */
 export function startCoverJob(library: Library, renderer: () => Promise<Renderer> = trailView, picture: () => Promise<MapPictureMaker> = mapPicture): () => void {
     if ((navigator as Navigator & { connection?: { saveData?: boolean } }).connection?.saveData) return () => {};
     const queue: string[] = [], cards = new Set<string>(), parked = new Set<string>(), settling = new Map<string, ReturnType<typeof setTimeout>>(), stops: (() => void)[] = [];
-    let engine: Promise<Renderer | undefined> | undefined, off = !('gpu' in navigator), busy = false, stopped = false;
+    // A phone gets no covers, as a browser with no WebGPU: its cards show the map picture.
+    let engine: Promise<Renderer | undefined> | undefined, off = !('gpu' in navigator) || matchMedia('(pointer: coarse)').matches, busy = false, stopped = false;
     let rendering: AbortController | undefined, drawing: AbortController | undefined, retry: ReturnType<typeof setTimeout> | undefined;
 
     const stop = () => {

@@ -522,16 +522,24 @@
         await session.listPlans();
     }
 
-    // `#/planner/ID` opens plan ID, and `#/planner/new` a new plan. The address then drops the id, so Back does not open
-    // it again.
+    // `#/planner/ID` opens plan ID, and `#/planner/new` a new plan, at `history.state.place` when a page gives one. The
+    // address then drops the id, so Back does not open it again.
     $effect(() => {
         const id = router.route === 'planner' ? router.id : undefined;
         if (!id || !session.ready) return;
         router.replace(ROUTES.planner);
-        if (id === 'new') untrack(() => void newPlan());
+        if (id === 'new') untrack(() => void newPlan().then(() => showStart(history.state?.place)));
         // The open plan keeps its Undo history and its map view.
         else if (id !== untrack(() => session.plan.id)) untrack(() => void openPlan(id));
     });
+
+    /** A box of some size fits the map; a point shows at the zoom of a place. */
+    function showStart(place: { lon: number; lat: number; box?: [number, number, number, number] } | undefined) {
+        if (!place) return;
+        const [west, south, east, north] = place.box ?? [place.lon, place.lat, place.lon, place.lat];
+        if (west < east && south < north) map?.fitCoordinates([[west, south], [east, north]]);
+        else map?.showPlace([place.lon, place.lat], 12);
+    }
 
     async function openPlan(id: string) {
         if (!await session.open(id, () => window.confirm('Some edits are not saved. Download a backup before reopening a plan. Discard the unsaved edits?'))) {

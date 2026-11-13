@@ -1,17 +1,29 @@
-<!-- The drawer under the home view: the newest routes and rides as cards, or the previews of the features on a first
-     visit. -->
+<!-- The drawer under the home view: the newest routes or the newest rides as cards, or the previews of the features on a
+     first visit. -->
 <script lang="ts">
     import type { RideRecord, RouteRecord } from '../../lib/library/records';
     import type { Library } from '../../lib/library/store';
+    import Segmented from '../../lib/ui/Segmented.svelte';
     import { ROUTES } from '../../lib/routes';
     import { rideItem, routeItem } from '../routes/filter';
     import ItemCard from './ItemCard.svelte';
 
-    let { library, routes, rides }: { library: Library; routes: RouteRecord[]; rides: RideRecord[] } = $props();
+    let { library, routes, rides, credits = $bindable([]) }: {
+        library: Library;
+        routes: RouteRecord[];
+        rides: RideRecord[];
+        /** The credits of the pictures of the shown cards. */
+        credits?: string[];
+    } = $props();
 
+    type Kind = 'routes' | 'rides';
     const CARDS = 6;
-    const items = $derived([...routes.map(route => routeItem(route)), ...rides.map(rideItem)].sort((a, b) => b.at - a.at).slice(0, CARDS));
-    const count = $derived(routes.length + rides.length);
+    let chosen = $state<Kind>('routes');
+    const kind: Kind = $derived(rides.length && (chosen === 'rides' || !routes.length) ? 'rides' : 'routes');
+    const items = $derived((kind === 'rides' ? rides.map(rideItem) : routes.map(route => routeItem(route))).sort((a, b) => b.at - a.at).slice(0, CARDS));
+    const count = $derived(kind === 'rides' ? rides.length : routes.length);
+    let byCard = $state<Record<string, string[]>>({});
+    $effect(() => { credits = [...new Set(items.flatMap(item => byCard[item.id] ?? []))]; });
     const PREVIEWS = [
         { name: 'Plan a route', text: 'A day ride or a trip of many days, with nights and stops.' },
         { name: 'Look around before you go', text: 'TrailView shows the land along your route in 3-D.' },
@@ -23,11 +35,19 @@
 <section class="drawer" aria-labelledby="home-drawer">
     {#if count}
         <header>
-            <h2 id="home-drawer">Your routes and rides</h2>
-            <a class="button" href={ROUTES.routes}>All {count.toLocaleString('en')} in Routes ›</a>
+            <div class="title">
+                <h2 id="home-drawer">{kind === 'rides' ? 'Your rides' : 'Your routes'}</h2>
+                {#if routes.length && rides.length}
+                    <Segmented label="Routes or rides" value={kind} onChange={next => chosen = next} compact
+                        options={[{ value: 'routes', label: 'Routes' }, { value: 'rides', label: 'Rides' }]} />
+                {/if}
+            </div>
+            <a class="button" href={kind === 'rides' ? `${ROUTES.routes}/ridden` : ROUTES.routes}>All {count.toLocaleString('en')} in Routes ›</a>
         </header>
         <ul class="cards items">
-            {#each items as item (item.id)}<ItemCard {library} {item} />{/each}
+            {#each items as item (item.id)}
+                <ItemCard {library} {item} oncredits={list => { if (JSON.stringify(list) !== JSON.stringify(byCard[item.id] ?? [])) byCard[item.id] = list; }} />
+            {/each}
         </ul>
     {:else}
         <header>
@@ -53,9 +73,17 @@
                             {/each}
                         {:else}
                             <path class="dash" d="M20 46 H82 M158 46 H220" />
-                            <rect class="device" x="96" y="8" width="48" height="76" rx="6" />
-                            <rect class="screen" x="102" y="16" width="36" height="52" />
-                            <path class="route" d="M110 20 C112 40 132 44 130 64" />
+                            <!-- The housing of pages/device/Drawing.svelte, in its units: a body 308 × 470. -->
+                            <g transform="translate(93 5) scale(0.17)">
+                                <rect class="rim" x="-6" y="-6" width="320" height="482" rx="48" />
+                                <rect class="body" width="308" height="470" rx="42" />
+                                {#each [[-13, 158], [-13, 246], [302, 158], [302, 246]] as [x, y] (`${x}:${y}`)}
+                                    <rect class="key" {x} {y} width="19" height="66" rx="2" />
+                                {/each}
+                                <rect class="bezel" x="18" y="16" width="272" height="352" rx="26" />
+                                <rect class="screen" x="34" y="32" width="240" height="320" rx="10" />
+                                <path class="route on-screen" d="M80 310 C110 220 210 230 230 70" />
+                            </g>
                         {/if}
                     </svg>
                     <strong>{preview.name}</strong>
@@ -86,6 +114,12 @@
     h2 {
         margin: 0;
         font: 700 15px/1.3 var(--sans);
+    }
+    .title {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px 14px;
     }
     header:has(.note) {
         justify-content: flex-start;
@@ -170,10 +204,24 @@
         fill: var(--panel);
         stroke: var(--line-strong);
     }
-    .device {
-        fill: var(--ink);
+    /* The colours of the housing, the same in both looks, as on the Device page. */
+    .rim {
+        fill: #8be3bc;
+    }
+    .body {
+        fill: #2f6350;
+    }
+    .key {
+        fill: #2b2f36;
+    }
+    .bezel {
+        fill: #101317;
     }
     .screen {
-        fill: var(--parchment-2);
+        fill: #f4f2eb;
+    }
+    .on-screen {
+        stroke: #cc2a93;
+        stroke-width: 16;
     }
 </style>

@@ -1,20 +1,23 @@
 <!-- The home view behind the hero, and the box that names it. With no live set, drawn hills in the colours of the theme
-     and no box. -->
+     and no box. The data credits of the view and of the pictures of the cards are in the box, else in a fold-out alone. -->
 <script lang="ts">
     import { onMount } from 'svelte';
     import { router } from '../../lib/router.svelte';
     import { ROUTES } from '../../lib/routes';
     import { imageUrl, loadManifest, viewAt, type Manifest } from './views';
 
-    let { now, shown = $bindable(false) }: {
+    let { now, cards = [], shown = $bindable(false) }: {
         now: Date;
+        /** The credits of the pictures of the cards, which show no credits of their own. */
+        cards?: string[];
         /** A view shows, so the text over it is light. */
         shown?: boolean;
     } = $props();
 
-    let manifest = $state.raw<Manifest>(), step = $state(0), broken = $state(false);
+    let manifest = $state.raw<Manifest>(), broken = $state(false);
     let retried = false;
-    const chosen = $derived(manifest && !broken ? viewAt(manifest, now, step) : undefined);
+    const chosen = $derived(manifest && !broken ? viewAt(manifest, now) : undefined);
+    const credits = $derived([...new Set([...chosen ? manifest!.credits : [], ...cards])]);
 
     $effect(() => { shown = !!chosen; });
     onMount(() => { void loadManifest().then(next => { manifest = next; }); });
@@ -30,26 +33,27 @@
     }
 </script>
 
+{#snippet dataCredits()}
+    <details class="credits">
+        <summary>Data credits</summary>
+        <p>{credits.join(' · ')}</p>
+    </details>
+{/snippet}
+
 {#if chosen}
     <img class="backdrop" src={imageUrl(manifest!, chosen.view, chosen.slot)} alt="" decoding="async" onerror={failed} />
+    <div class="shade"></div>
     <aside class="box" aria-label="You look at">
         <p class="label">You look at</p>
         <h2>{chosen.view.name}</h2>
         <p class="region">{chosen.view.region}</p>
-        <div class="buttons">
-            <button type="button" class="button" onclick={() => router.go(`${ROUTES.planner}/new`, { place: { lon: chosen.view.lon, lat: chosen.view.lat } })}>
-                Plan a route here
-            </button>
-            {#if manifest!.views.length > 1}<button type="button" class="button" onclick={() => step++}>Next view</button>{/if}
-        </div>
-        {#if manifest!.credits.length}
-            <details class="credits">
-                <summary>Data credits</summary>
-                <p>{manifest!.credits.join(' · ')}</p>
-            </details>
-        {/if}
+        <button type="button" class="button" onclick={() => router.go(`${ROUTES.planner}/new`, { place: { lon: chosen.view.lon, lat: chosen.view.lat } })}>
+            Plan a route here
+        </button>
+        {#if credits.length}{@render dataCredits()}{/if}
     </aside>
 {:else}
+    {#if credits.length}<div class="box alone">{@render dataCredits()}</div>{/if}
     <svg class="backdrop hills" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMax slice" aria-hidden="true">
         <defs>
             <linearGradient id="home-sky" x1="0" y1="0" x2="0" y2="1">
@@ -126,13 +130,22 @@
         margin: 4px 0 2px;
         font: 700 17px/1.25 var(--sans);
     }
-    .buttons {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-        margin-top: 10px;
+    /* A soft shade under the text, so that light text is readable on a bright view. */
+    .shade {
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(100deg, rgb(0 0 0 / 0.42), rgb(0 0 0 / 0.2) 38%, transparent 62%);
+    }
+    .alone {
+        width: auto;
+        padding: 4px 10px;
+    }
+    .alone .credits {
+        max-width: 320px;
+        margin: 0;
     }
     .button {
+        margin-top: 10px;
         padding: 6px 12px;
         border: 1px solid var(--line-strong);
         border-radius: 6px;
@@ -158,6 +171,9 @@
     }
     /* On a phone the box follows the text, at the bottom of the hero. */
     @media (max-width: 760px) {
+        .shade {
+            background: linear-gradient(180deg, rgb(0 0 0 / 0.42), rgb(0 0 0 / 0.2) 40%, transparent 65%);
+        }
         .box {
             position: relative;
             right: auto;
