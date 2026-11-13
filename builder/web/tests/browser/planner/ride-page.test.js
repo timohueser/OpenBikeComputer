@@ -75,16 +75,16 @@ test('the ride page shows a stored ride with its numbers and zones, renames, exp
   await expect(page.getByRole('heading', { name: 'Trübsee', level: 1 })).toBeVisible();
 
   const exported = async label => {
-    await page.getByRole('button', { name: 'Export ▾' }).click();
+    await page.getByRole('button', { name: 'More ▾' }).click();
     const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: label }).click()]);
     return download;
   };
-  const fit = await exported('FIT file');
+  const fit = await exported('Export FIT file');
   expect(fit.suggestedFilename()).toBe('Trübsee.fit');
   expect(readFileSync(await fit.path()).equals(Buffer.from(file))).toBe(true);
-  const gpx = await text(await exported('GPX track'));
+  const gpx = await text(await exported('Export GPX track'));
   expect(gpx).toContain('<time>2026-10-24T07:33:10.000Z</time>');
-  const csv = (await text(await exported('Table of the data (CSV)'))).split('\n');
+  const csv = (await text(await exported('Export table of the data (CSV)'))).split('\n');
   expect(csv[0]).toBe('time,latitude,longitude,elevation_m,distance_m,speed_m_s,heart_rate_bpm,cadence_rpm,power_w,temperature_c');
   expect(csv[1]).toBe('2026-10-24T07:00:00.000Z,46.900000,8.000000,1000,0,5,140,85,200,10');
 
@@ -97,6 +97,7 @@ test('the ride page shows a stored ride with its numbers and zones, renames, exp
   await expect(page).toHaveURL(route);
   await page.goBack();
 
+  await page.getByRole('button', { name: 'More ▾' }).click();
   await page.getByRole('navigation', { name: 'Actions' }).getByRole('button', { name: 'Delete' }).click();
   await page.getByRole('dialog', { name: 'Delete this ride?' }).getByRole('button', { name: 'Delete' }).click();
   await expect(page).toHaveURL(/#\/routes\/ridden$/);
@@ -166,5 +167,17 @@ test('the lines of a ride: a row for each line with values, the pointer, and a p
   await page.keyboard.press('Escape');
   await expect(page.locator('.lines .part')).toHaveCount(0);
   await expect(facts.locator('dl > div').filter({ hasText: 'Distance' })).toContainText('10.0 km');
+
+  // The elevation row fills the climb; a click on it selects the climb, a click on another row clears the part.
+  const click = async (row, at) => {
+    const lane = await lanes.locator('.lane').nth(row).boundingBox();
+    await page.mouse.click(lane.x + lane.width * at, lane.y + lane.height / 2);
+  };
+  await expect(lanes.locator('.lane').first().locator('path[clip-path]')).toHaveCount(1);
+  await click(0, 0.75);
+  await expect(page.locator('.lines .part')).toContainText('km 5.1 to km 9.9 · 4.9 km');
+  await expect(facts.locator('tbody tr').filter({ hasText: 'Heart rate' }).locator('td')).toHaveText(['160', '150']);
+  await click(1, 0.75);
+  await expect(page.locator('.lines .part')).toHaveCount(0);
   expect(errors).toEqual([]);
 });

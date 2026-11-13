@@ -89,8 +89,8 @@
         });
     }
 
-    /** The stored file for its own format, else a file written from the samples. */
-    const exports = $derived.by(() => {
+    /** The exports, then Delete. An export is the stored file for its own format, else a file written from the samples. */
+    const more = $derived.by(() => {
         const ride = record, read = source;
         const file = (format: RideRecord['format'], write: () => BlobPart) => () => {
             if (!ride || !read) return;
@@ -98,10 +98,11 @@
             download(ride.format === format ? read.file : write(), type, ride.name, extension);
         };
         return [
-            { label: 'FIT file', disabled: !read, run: file('fit', () => writeFitRide({ sport: fitSport(ride!.summary.bike), samples: read!.samples }) as Uint8Array<ArrayBuffer>) },
-            { label: 'GPX track', disabled: !read, run: file('gpx', () => writeGpx({ name: ride!.name, points: ridePoints(read!.samples), waypoints: [] })) },
-            { label: 'Table of the data (CSV)', note: 'One line for each point', disabled: !read,
+            { label: 'Export FIT file', disabled: !read, run: file('fit', () => writeFitRide({ sport: fitSport(ride!.summary.bike), samples: read!.samples }) as Uint8Array<ArrayBuffer>) },
+            { label: 'Export GPX track', disabled: !read, run: file('gpx', () => writeGpx({ name: ride!.name, points: ridePoints(read!.samples), waypoints: [] })) },
+            { label: 'Export table of the data (CSV)', note: 'One line for each point', disabled: !read,
                 run: () => { if (ride && read) download(rideCsv(read.samples), 'text/csv', ride.name, 'csv'); } },
+            { label: 'Delete', rule: true, danger: true, run: () => { deleting = true; } },
         ];
     });
 </script>
@@ -113,8 +114,7 @@
     {/snippet}
     {#snippet buttons()}
         <button type="button" class="button" disabled={!samples} onclick={() => act(() => rideAgain(library, record!, samples))}>Ride it again</button>
-        <Menu label="Export" items={exports} />
-        <button type="button" class="remove" onclick={() => deleting = true}>Delete</button>
+        <Menu label="More" items={more} />
     {/snippet}
     {#snippet left()}
         {#if summary}
@@ -125,7 +125,7 @@
         {#if summary}<Picture {library} id={key} {summary} ride mark={share} onpoint={next => share = next ?? undefined} part={lit} {lit} />{/if}
     {/snippet}
     {#if samples && shares}
-        {#key key}<RideLines {samples} {shares} {speed} channels={numbers} mark={share} onpoint={next => share = next ?? undefined}
+        {#key key}<RideLines {samples} {shares} {speed} channels={numbers} {climbs} mark={share} onpoint={next => share = next ?? undefined}
             {part} onpart={next => part = next} />{/key}
     {/if}
     {#if deleting}
@@ -144,15 +144,5 @@
         flex: none;
         color: var(--ink-soft);
     }
-    /* Beside other buttons, a delete is plain text at the far end. */
-    .remove {
-        padding: 4px 0 4px 4px;
-        border: 0;
-        background: none;
-        color: var(--coral);
-        font-size: 13px;
-    }
-    .remove:hover {
-        text-decoration: underline;
-    }
+
 </style>

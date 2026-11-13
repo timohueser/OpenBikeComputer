@@ -14,7 +14,8 @@
     --zone-3: #6a9c62;
     --zone-4: #bd8b0e;
     --zone-5: #bf4a34;
-    /* The line of the cadence of a ride: no other line and no zone has this hue. */
+    /* The lines of the speed and of the cadence of a ride: no other line has these hues. */
+    --speed: #3f68b0;
     --cadence: #74508f;
 }
 
@@ -27,5 +28,6 @@
     --zone-3: #79ad72;
     --zone-4: #e0b24a;
     --zone-5: #dd6a50;
+    --speed: #7aa7f0;
     --cadence: #c2a3dc;
 }

@@ -6,18 +6,20 @@
     import { townOf } from './towns';
     import type { FitSample } from '../../lib/core/fit';
     import { distanceAxis, range, sampleAt, smooth, speeds, thin } from '../../lib/ride/lines';
-    import type { Channels } from '../../lib/ride/numbers';
+    import type { Channels, RideClimb } from '../../lib/ride/numbers';
     import { formatAlong, formatDistance, formatHeight, formatSpeed } from '../../lib/settings/format';
 
     /** The bottom card of the Ride page: one row for each line of the ride on its distance axis, with the average of the
-     * line under its name and its scale after the row. A line with no value has no row. A drag selects a part. */
-    let { samples, shares, speed, channels, mark, onpoint, part, onpart }: {
+     * line under its name and its scale after the row. A line with no value has no row. A drag selects a part; a click
+     * on a climb in the elevation row selects the climb. */
+    let { samples, shares, speed, channels, climbs = [], mark, onpoint, part, onpart }: {
         samples: FitSample[];
         /** The share of the summary line at each sample (`lineShares`). */
         shares: number[];
         /** The averages that the left card shows: the moving speed in m/s, and the sensors. */
         speed?: number;
         channels?: Channels;
+        climbs?: RideClimb[];
         /** The pointer, as a share of the summary line. */
         mark?: number;
         onpoint: (share: number | null) => void;
@@ -33,11 +35,13 @@
     const SMOOTH_S = 10, ROW_PX = 56, LOW_ROW_PX = 36, CARDS_PX = 340, PAGE_PX = 176, FRAME_PX = 92, GAP_PX = 8;
     /** The elevation row has the grade colours of the profile of the Route page. */
     const ELEVATION_GRADES = false;
+    /** The elevation row fills the stretch of each climb, as the profile of the Route page. */
+    const ELEVATION_CLIMBS = true;
 
     const whole = (unit: string) => (value: number) => `${Math.round(value)} ${unit}`;
     const series: Record<Key, { label: string; color: string; format: (value: number) => string }> = {
         elevation: { label: 'Elevation', color: 'var(--ink-faint)', format: formatHeight },
-        speed: { label: 'Speed', color: 'var(--ink)', format: formatSpeed },
+        speed: { label: 'Speed', color: 'var(--speed)', format: formatSpeed },
         hr: { label: 'Heart rate', color: 'var(--ride)', format: whole('bpm') },
         power: { label: 'Power', color: 'var(--water)', format: whole('W') },
         cadence: { label: 'Cadence', color: 'var(--cadence)', format: whole('rpm') },
@@ -70,6 +74,9 @@
         ...channels?.cadence && { cadence: series.cadence.format(channels.cadence.mean) },
     });
 
+    const stretches = $derived(ELEVATION_CLIMBS ? climbs.map(climb => ({ from: axis.xs[climb.first], to: axis.xs[climb.last] })) : []);
+    /** The climb that is the selected part. */
+    const chosen = $derived(part ? climbs.findIndex(climb => climb.first === part[0] && climb.last === part[1]) : -1);
     const pointer = $derived(mark === undefined ? undefined : axis.xs[sampleAt(shares, mark)]);
     const shownPart = $derived<[number, number] | null>(part && [axis.xs[part[0]], axis.xs[part[1]]]);
     const partText = $derived(shownPart ? `${formatAlong(shownPart[0] * axis.lengthM)} to ${formatAlong(shownPart[1] * axis.lengthM)} · ${formatDistance((shownPart[1] - shownPart[0]) * axis.lengthM)}` : '');
@@ -79,6 +86,12 @@
         label: series[key].label, note: averages[key], color: series[key].color, draw: rowSnippets[key], height: rowHeight,
         scale: ranges[key] && [series[key].format(ranges[key].high), series[key].format(ranges[key].low)] as [string, string],
     })));
+
+    /** A click on a climb in the elevation row, or Enter, selects the climb; another click clears the part. */
+    function click(x: number, row?: number | null) {
+        const index = row === null || shown[row ?? -1] === 'elevation' ? stretches.findIndex(climb => x >= climb.from && x <= climb.to) : -1;
+        onpart(index >= 0 ? [climbs[index].first, climbs[index].last] : null);
+    }
 
     $effect(() => {
         const first = samples[0];
@@ -93,7 +106,8 @@
 
 {#snippet plot(key: Key)}
     <Plot columns={columns[key] ?? []} low={ranges[key]?.low ?? 0} high={ranges[key]?.high ?? 1} color={series[key].color} area={key === 'elevation'}
-        lengthM={key === 'elevation' && ELEVATION_GRADES ? axis.lengthM : undefined} mark={pointer} format={series[key].format} bind:width />
+        lengthM={key === 'elevation' && ELEVATION_GRADES ? axis.lengthM : undefined} climbs={key === 'elevation' ? stretches : []}
+        lit={chosen >= 0 ? chosen : undefined} mark={pointer} format={series[key].format} bind:width />
 {/snippet}
 {#snippet elevationRow()}{@render plot('elevation')}{/snippet}
 {#snippet speedRow()}{@render plot('speed')}{/snippet}
@@ -113,7 +127,7 @@
 
 <div class="lines">
     <Card>
-        <Lanes label="Lines of the ride" {rows} {ticks} {header} {pointer} {chip} part={shownPart} {partText}
+        <Lanes label="Lines of the ride" {rows} {ticks} {header} {pointer} {chip} part={shownPart} {partText} onclick={click}
             onpointer={x => onpoint(x === null ? null : shares[sampleAt(axis.xs, x)])}
             onpart={next => onpart(next && [sampleAt(axis.xs, next[0]), sampleAt(axis.xs, next[1])])} />
     </Card>

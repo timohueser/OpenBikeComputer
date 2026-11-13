@@ -2,18 +2,23 @@
     import { gradeBands, gradePaths, profileGrades } from '../../lib/planner/grade-data';
     import { profilePaths } from '../../lib/planner/profile-data';
     import { appearance } from '../../lib/theme.svelte';
+    import ClimbFills from './ClimbFills.svelte';
 
     /** One line of a ride over the width of its lane, from one value for each pixel column: `low` is the floor of the
      * box and `high` stands just under its top. With `area`, the ground under the line is filled. With `lengthM`, the
-     * line has the colour of the steepness band of each stretch, as the profile of the Route page. `mark` is a place on
-     * the axis from 0 to 1: a dot on the line, and its value beside the pointer. */
-    let { columns, low, high, color, area = false, lengthM, mark, format, width = $bindable(0) }: {
+     * line has the colour of the steepness band of each stretch, as the profile of the Route page. `climbs` are stretches
+     * of the axis that the area fills darker, as that profile fills its climbs. `mark` is a place on the axis from 0 to
+     * 1: a dot on the line, and its value beside the pointer. */
+    let { columns, low, high, color, area = false, lengthM, climbs = [], lit, mark, format, width = $bindable(0) }: {
         columns: (number | null)[];
         low: number;
         high: number;
         color: string;
         area?: boolean;
         lengthM?: number;
+        climbs?: { from: number; to: number }[];
+        /** The index of the climb that is darker. */
+        lit?: number;
         mark?: number;
         format: (value: number) => string;
         width?: number;
@@ -33,7 +38,10 @@
 
 <div class="plot" bind:clientWidth={width}>
     <svg viewBox="0 0 1000 105" preserveAspectRatio="none" aria-hidden="true">
-        {#if area}<path class="area" d={paths.area} />{/if}
+        {#if area}
+            <path class="area" d={paths.area} />
+            <ClimbFills area={paths.area} climbs={climbs.map(({ from, to }, index) => ({ a: from, b: to, index }))} {lit} />
+        {/if}
         {#each bands as path, band (band)}
             {#if path}<path class="line grade" d={path} style:stroke={appearance.dark ? gradeBands[band].dark : gradeBands[band].color} />{/if}
         {:else}
