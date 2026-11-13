@@ -73,4 +73,9 @@ describe('the axis of a ride with a pause that covers distance', () => {
         expect(sampleAt(shares, .5)).toBe(21);
         expect(sampleAt(shares, 2)).toBe(41);
     });
+
+    it('ends the line at the last sample, for a ride that passes its end, turns and comes back to it', () => {
+        const back = [0, 20, 10, 20].map((steps, i) => sample(i * 60, steps));
+        expect(lineShares(back, [[8, 46], [8, 46.009]])).toEqual([0, .5, .75, 1]);
+    });
 });

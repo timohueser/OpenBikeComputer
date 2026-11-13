@@ -75,7 +75,10 @@
     const stretches = $derived(climbs.map(climb => ({ from: axis.xs[climb.first], to: axis.xs[climb.last] })));
     /** The climb that is the selected part. */
     const chosen = $derived(part ? climbs.findIndex(climb => climb.first === part[0] && climb.last === part[1]) : -1);
-    const pointer = $derived(mark === undefined ? undefined : axis.xs[sampleAt(shares, mark)]);
+    /** The pointer on the axis: its place in the rows when the rows gave `mark`, so that a key step shorter than the
+     * gap between two samples moves it; else the sample of `mark`. */
+    const pointer = $derived(mark === undefined ? undefined
+        : over && shares[sampleAt(axis.xs, over.x)] === mark ? over.x : axis.xs[sampleAt(shares, mark)]);
     const shownPart = $derived<[number, number] | null>(part && [axis.xs[part[0]], axis.xs[part[1]]]);
     const partText = $derived(shownPart ? `${formatAlong(shownPart[0] * axis.lengthM)} to ${formatAlong(shownPart[1] * axis.lengthM)} · ${formatDistance((shownPart[1] - shownPart[0]) * axis.lengthM)}` : '');
     const ticks = $derived(fitTicks([{ at: 0, label: start }, { at: 1, label: formatDistance(axis.lengthM) }, ...distanceTicks(0, axis.lengthM, width)], width));

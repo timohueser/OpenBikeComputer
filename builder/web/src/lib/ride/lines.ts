@@ -73,20 +73,22 @@ export function range(values: (number | null | undefined)[]): { low: number; hig
 }
 
 /** The share of the summary line `line`, from 0 to 1, at each sample. Each point of the line is a sample of the ride
- * (`summarize` keeps points), found by a forward search; between two of them a sample stands in proportion to its
- * metres. The line measures the hop across a pause, which the distance axis leaves out, so the metres here hold it. */
+ * (`summarize` keeps points), found by a forward search; the end of the line is the last sample at its place, because a
+ * ride can pass its end before it ends there. Between two of them a sample stands in proportion to its metres. The line measures the hop across a pause, which the distance axis leaves out, so the metres here hold it. */
 export function lineShares(samples: FitSample[], line: Coordinate[]): number[] {
     const km = cumulative(line), total = km.at(-1) || 1, m = along(samples, true);
     // As `summarize` rounds a point.
     const rounded = (micro: number) => Math.round(micro / 1e6 * 1e5) / 1e5;
     const anchors: number[] = [];
     let from = 0;
-    for (const [lon, lat] of line) {
+    line.forEach(([lon, lat], k) => {
+        const here = (i: number) => rounded(samples[i].lon) === lon && rounded(samples[i].lat) === lat;
         let i = from;
-        while (i < samples.length && (rounded(samples[i].lon) !== lon || rounded(samples[i].lat) !== lat)) i++;
-        if (i < samples.length) from = i;
+        if (k < line.length - 1) while (i < samples.length && !here(i)) i++;
+        else for (i = samples.length - 1; i > from && !here(i);) i--;
+        if (i < samples.length && here(i)) from = i;
         anchors.push(from);
-    }
+    });
     const shares = Array<number>(samples.length).fill(0);
     for (let k = 0; k + 1 < anchors.length; k++) {
         const a = anchors[k], b = anchors[k + 1], span = m[b] - m[a];

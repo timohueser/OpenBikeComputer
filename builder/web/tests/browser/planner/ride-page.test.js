@@ -128,6 +128,12 @@ test('the lines of a ride: a row for each line with values, the pointer, and a p
   await expect(chips).toHaveText(['Elevation', 'Speed']);
   await expect(lanes.locator('.label')).toHaveText(['Elevation', 'Speed18.0 km/h']);
   await expect(facts.locator('.sensor')).toHaveCount(0);
+  // The arrow keys move the pointer both ways on a ride whose samples are further apart than a key step.
+  await lanes.locator('.over').focus();
+  for (let i = 0; i < 6; i++) await page.keyboard.press('ArrowRight');
+  const right = await lanes.locator('.chip').textContent();
+  for (let i = 0; i < 3; i++) await page.keyboard.press('ArrowLeft');
+  await expect(lanes.locator('.chip')).not.toHaveText(right);
 
   // A ride with sensors: a row for each line, the cadence off; the average under the name, the scale after the row.
   await page.goto(`/planner.html#/ride/${key}`);
