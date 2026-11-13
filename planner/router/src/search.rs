@@ -1,3 +1,4 @@
+pub use crate::overlay::{Found, Query, Seed};
 use crate::queue::Queue;
 use crate::{
     base::{Costs, Graph},
@@ -80,36 +81,16 @@ pub(crate) fn label_bytes(nodes: usize) -> usize {
 pub struct Workspace {
     labels: [Labels; 2],
     heaps: [Queue; 2],
-}
-
-/// A search enters or leaves at the arrival state of a road, which is its road id.
-pub struct Seed {
-    pub node: u32,
-    pub cost: u64,
-    pub choice: u8,
-}
-
-#[derive(Clone, Copy)]
-pub struct Query<'a> {
-    pub starts: &'a [Seed],
-    pub ends: &'a [Seed],
-    pub ceiling: u64,
-    pub max_roads: usize,
-    /// The room of both search queues now.
-    pub heap_bytes: usize,
-    /// The room of both search queues on an idle service, at least `heap_bytes`.
-    pub heap_limit: usize,
-    pub cancelled: &'a dyn Fn() -> bool,
-}
-
-pub struct Found {
-    pub cost: u64,
-    pub roads: Vec<u32>,
-    pub source: usize,
-    pub target: usize,
+    /// The pops of the last search.
+    pops: usize,
 }
 
 impl Workspace {
+    /// The labels that the last search settled.
+    pub fn settled(&self) -> usize {
+        self.pops
+    }
+
     pub fn clear_heaps(&mut self) {
         for heap in &mut self.heaps {
             heap.clear();
@@ -149,6 +130,7 @@ impl Workspace {
     ) -> Result<Option<Found>> {
         let Query { starts, ends, ceiling, max_roads, heap_bytes, heap_limit, cancelled } = query;
         let rooms = (heap_bytes, heap_limit);
+        self.pops = 0;
         if starts.is_empty() || ends.is_empty() {
             return Ok(None);
         }
@@ -176,9 +158,8 @@ impl Workspace {
         let mut best = ceiling;
         let mut meeting = None;
         let mut best_roots = (u8::MAX, u8::MAX);
-        let mut work = 0usize;
         loop {
-            if work.is_multiple_of(1024) && (cancelled)() {
+            if self.pops.is_multiple_of(1024) && (cancelled)() {
                 return Err(Error::Cancelled);
             }
             for side in 0..2 {
@@ -199,7 +180,7 @@ impl Workspace {
             }
             let side = usize::from(top[1] < top[0]);
             let (_, cost, origin, node) = self.heaps[side].pop().unwrap();
-            work += 1;
+            self.pops += 1;
             let opposite = self.labels[1 - side].cost(node as usize);
             if opposite != u64::MAX {
                 let joined = cost.checked_add(opposite).ok_or(Error::Limit)?;

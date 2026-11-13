@@ -21,9 +21,10 @@ let result = router.routes(&request, &Control::default())?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-`open` reads a complete package or a grid selection (`blocks.json` with its packs) into one
-`data::Selection`. For application storage, supply a `package::Source`: it returns a complete
-object by SHA-256 and must not change objects during a package's lifetime. `Selection::verify`
+`open` chooses the engine by the folder. A folder with `manifest.json` or `blocks.json` is format 9:
+a complete package or a grid selection, read into one `data::Selection`. Each other folder is an
+install of format 10 (`directory.bin`, `install.bin`), read into one `region::Region`. For
+application storage, supply a `package::Source`: it returns a complete object by SHA-256 and must not change objects during a package's lifetime. `Selection::verify`
 checks the full object closure before installation. A missing object returns `MissingRegion`. No
 query needs a network service.
 
@@ -31,6 +32,13 @@ A local query without the HTTP service writes the wire answer:
 
 ```sh
 cargo run --release -p planner-router --example query -- /data/freiburg < request.json
+```
+
+`compare` routes one request set on format 9 and on an install of format 10 of one bake, and
+prints the time and the settled labels of each request. It exits with 1 on a difference:
+
+```sh
+cargo run --release -p planner-router --example compare -- OLD NEW 48 1 --max-km 40
 ```
 
 ## Test
@@ -49,6 +57,11 @@ Physical phone performance and complete-country preparation need separate valida
 
 ## Reference
 
+The old engine (format 9) is `data::Selection`, `package`, `blocks`, `search`, `queue`,
+`landmarks`, `table`, `storage`, `directory` and the graph of `base`. The new engine (format 10) is
+`cells`, `install`, `host`, `region` and `overlay`. `open`, `router`, `snap` and the other modules
+serve both.
+
 | Module | Responsibility |
 | --- | --- |
 | `model` | Directed roads, prepared profiles, surface data, separate pace |
@@ -63,11 +76,14 @@ Physical phone performance and complete-country preparation need separate valida
 | `landmarks` | Compressed junction bounds and the potential of each request |
 | `router` | Ordered points, direction continuity, route pieces and leg totals |
 | `answer` | The wire answer of [the route API](../../specs/route-api.md) |
-| `directory` | Native packed storage and `open` |
+| `directory` | Native packed storage of format 9 |
+| `open` | Native: `open` and `Opened`, the data of either format |
+| `compare` | Native: the request set and the check that compare the two engines |
 | `cells` | Format 10: read views of the cell directory and of the parts of a cell, the road record |
 | `install` | Format 10, native only: installs a set of cells as files, checks the objects, reads the files again |
 | `host` | Format 10: lends the bytes of the installed parts. `Maps` (native) maps each file at its first use; `Memory` (WebAssembly, tests) holds the parts |
 | `region` | Format 10: the request data of an install through a host: snapping, roads, costs, turns, closures |
+| `overlay` | Format 10: the search over the turns of the level-1 cells. Labels in a hash table by road ID, the reverse turns of a cell built when the backward side enters it |
 
 - Snapping uses only roads that the prepared profile permits. A disconnected leg returns `NoPath`;
   it does not retry other roads.
@@ -91,6 +107,9 @@ columns. It reserves 64 MiB for geometry, index caches and decode scratch. An es
 budget returns `Limit` when the profile does not fit alone, else `Memory`. This is not an allocator or process RAM guarantee: manifest memory, source
 mappings, results and host serialization add memory. Search labels allocate visited blocks and
 keep a small reuse pool. Prepared profiles share identical turn columns.
+
+On format 10 the budget is the search limit: the most bytes of the labels, the queues and the
+reverse turns of one search, 768 MiB by default. Above it a search returns `Limit`.
 
 `Selection::fork` gives a worker its own page caches. Forks share the graph, the junction mapping,
 the closures and one cache of prepared profiles. That cache is budgeted like one router: the shared

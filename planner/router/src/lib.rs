@@ -5,6 +5,8 @@ pub mod base;
 pub mod blocks;
 pub mod cells;
 pub mod closures;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod compare;
 pub mod cost;
 pub mod data;
 #[cfg(not(target_arch = "wasm32"))]
@@ -15,6 +17,9 @@ pub mod host;
 pub mod install;
 pub mod landmarks;
 pub mod model;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod open;
+pub mod overlay;
 pub mod package;
 mod queue;
 pub mod region;
@@ -25,7 +30,7 @@ pub mod snap;
 pub mod storage;
 pub mod table;
 #[cfg(not(target_arch = "wasm32"))]
-pub use directory::open;
+pub use open::{open, Opened};
 pub use router::{Control, Request, Route, Router};
 
 /// A request that exceeds a fixed limit, and fails again on an idle service with the same data,

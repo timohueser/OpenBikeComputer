@@ -1,8 +1,8 @@
 //! Compressed junction distances guide the exact directed-road search.
 use crate::{
     blocks::Ids,
+    overlay::Seed,
     package::{Package, Source},
-    search::Seed,
     table::{self, Table},
     Error, Result,
 };

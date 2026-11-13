@@ -8,8 +8,10 @@ use crate::{
         TOPOLOGY,
     },
     closures::Closure,
+    data::RoutingData,
     host::{Host, Part, Span},
     model::{Point, Profile, Road},
+    overlay::{self, Found, Query, Stats, Workspace, SEARCH_BYTES},
     package::{digest, Departure, Endpoint},
     snap::{self, Candidates, Policy},
     Error, Result,
@@ -40,24 +42,24 @@ struct Entry {
 
 /// An installed download cell.
 #[derive(Clone, Copy)]
-struct Cell {
-    record: u32,
+pub(crate) struct Cell {
+    pub record: u32,
     id: u32,
-    first_road: u32,
+    pub first_road: u32,
     roads: u32,
     /// Its place in `Shared::cells`.
     slot: u32,
 }
 
 /// An installed profile, its group and its place in the group.
-struct Installed {
+pub(crate) struct Installed {
     profile: Profile,
-    group: usize,
-    place: u32,
+    pub group: usize,
+    pub place: u32,
 }
 
 /// What all workers share. It grows with the installed download cells, not with the roads.
-struct Shared<H> {
+pub(crate) struct Shared<H> {
     host: H,
     directory: Vec<u8>,
     header: Header,
@@ -72,19 +74,32 @@ struct Shared<H> {
 }
 
 /// A road in the topology part of its download cell.
-struct Place<'a> {
-    cell: Cell,
-    topology: Topology<'a>,
+pub(crate) struct Place<'a> {
+    pub cell: Cell,
+    pub topology: Topology<'a>,
     /// The level-1 record and the index of the road in it.
-    index: u32,
-    level1: Level1,
-    road: u32,
+    pub index: u32,
+    pub level1: Level1,
+    pub road: u32,
+}
+
+/// The level-1 cell of the departure junction of a road, and the target number of the road in it:
+/// its index, or `roads` plus its place in `leaving`.
+pub(crate) struct Junction<'a> {
+    pub cell: Cell,
+    pub topology: Topology<'a>,
+    pub index: u32,
+    pub level1: Level1,
+    pub target: u32,
 }
 
 /// The data of one worker. A host opens a new `Region` after an install that removed cells.
 pub struct Region<H> {
     shared: Arc<Shared<H>>,
     road: RefCell<Road>,
+    workspace: Workspace,
+    /// The search limit: the most bytes of the labels, queues and reverse turns of one search.
+    budget: usize,
 }
 
 impl<H: Host> Region<H> {
@@ -120,43 +135,51 @@ impl<H: Host> Region<H> {
         }
         let identity = digest(&directory);
         let shared = Shared { host, directory, header, downloads, identity, info, profiles, cells, sizes };
-        Ok(Self { shared: Arc::new(shared), road: RefCell::default() })
+        Ok(Self { shared: Arc::new(shared), road: RefCell::default(), workspace: Workspace::default(), budget: 0 })
     }
 
     /// A handle for another worker.
     pub fn fork(&self) -> Self {
-        Self { shared: Arc::clone(&self.shared), road: RefCell::default() }
+        let workspace = Workspace::default();
+        Self { shared: Arc::clone(&self.shared), road: RefCell::default(), workspace, budget: self.budget }
     }
 
     pub fn host(&self) -> &H {
         &self.shared.host
     }
 
+    /// The counts of the searches since the last call.
+    pub fn take_stats(&self) -> Stats {
+        self.workspace.take_stats()
+    }
+}
+
+impl<H: Host> RoutingData for Region<H> {
     /// The SHA-256 of `directory.bin` in hex.
-    pub fn identity(&self) -> &str {
+    fn identity(&self) -> &str {
         &self.shared.identity
     }
-    pub fn region(&self) -> &str {
+    fn region(&self) -> &str {
         &self.shared.info.region
     }
-    pub fn bounds(&self) -> [f64; 4] {
+    fn bounds(&self) -> [f64; 4] {
         self.shared.info.bounds
     }
-    pub fn attribution(&self) -> &str {
+    fn attribution(&self) -> &str {
         &self.shared.info.attribution
     }
-    pub fn warnings(&self) -> &[String] {
+    fn warnings(&self) -> &[String] {
         &self.shared.info.warnings
     }
     /// The profiles of the installed groups.
-    pub fn profiles(&self) -> Vec<&str> {
+    fn profiles(&self) -> Vec<&str> {
         self.shared.profiles.iter().map(|installed| installed.profile.name.as_str()).collect()
     }
-    pub fn profile(&self, name: &str) -> Result<&Profile> {
+    fn profile(&self, name: &str) -> Result<&Profile> {
         Ok(&self.shared.installed(name)?.profile)
     }
 
-    pub fn snap(&self, point: Point, metric: &str, policy: Policy) -> Result<Candidates> {
+    fn snap(&self, point: Point, metric: &str, policy: Policy) -> Result<Candidates> {
         let shared = &*self.shared;
         let installed = shared.installed(metric)?;
         let window = snap::window(point, policy.radius_m).map_err(Error::InvalidRequest)?;
@@ -207,14 +230,14 @@ impl<H: Host> Region<H> {
     }
 
     /// Applies `f` to a road, decoded into the road of this handle.
-    pub fn with_road<T>(&self, road: u32, f: impl FnOnce(&Road) -> T) -> Result<T> {
+    fn with_road<T>(&self, road: u32, f: impl FnOnce(&Road) -> T) -> Result<T> {
         let mut decoded = self.road.borrow_mut();
         self.shared.road(&self.shared.place(road)?, &mut decoded)?;
         Ok(f(&decoded))
     }
 
     /// The closures that concern `mode` on `road`, or `None`.
-    pub fn closing(&self, road: u32, mode: u8) -> Result<Option<Vec<Closure>>> {
+    fn closing(&self, road: u32, mode: u8) -> Result<Option<Vec<Closure>>> {
         let (geometry, closure) = self.shared.road(&self.shared.place(road)?, &mut self.road.borrow_mut())?;
         let Some(set) = closure.checked_sub(1) else { return Ok(None) };
         let closures: Vec<Closure> =
@@ -224,7 +247,7 @@ impl<H: Host> Region<H> {
 
     /// The cost curve of `road` and the roads from which a turn enters it, with the turn cost, in
     /// ascending road ID. A turn from a cell that is not installed is not a turn.
-    pub fn endpoint(&self, metric: &str, road: u32) -> Result<Endpoint> {
+    fn endpoint(&self, metric: &str, road: u32) -> Result<Endpoint> {
         let shared = &*self.shared;
         let installed = shared.installed(metric)?;
         let place = shared.place(road)?;
@@ -239,12 +262,12 @@ impl<H: Host> Region<H> {
             shared.road(&place, &mut decoded)?;
             basis.compile(&decoded, &installed.profile).map_err(Error::InvalidData)?
         };
-        let departures = shared.departures(&place, road, installed.group, (group, group_cell))?;
+        let departures = shared.departures(&place, road, installed.group)?;
         Ok(Endpoint { cost: Some(cost), departures })
     }
 
     /// Tells the host that the engine reads the geometry blocks of these roads next.
-    pub fn announce(&self, roads: &[u32]) {
+    fn announce(&self, roads: &[u32]) {
         let shared = &*self.shared;
         let mut spans: Vec<Span> = roads
             .iter()
@@ -261,6 +284,23 @@ impl<H: Host> Region<H> {
         spans.dedup();
         shared.host.announce(&spans);
     }
+
+    fn search(&mut self, metric: &str, query: Query<'_>) -> Result<Option<Found>> {
+        let installed = self.shared.installed(metric)?;
+        let limit = self.budget.min(query.heap_bytes);
+        overlay::search(&self.shared, &mut self.workspace, installed, query, limit)
+    }
+
+    /// The search limit.
+    fn memory_budget(&self) -> usize {
+        self.budget
+    }
+    fn set_memory_budget(&mut self, bytes: usize) {
+        self.budget = bytes;
+    }
+    fn default_budget(&self) -> usize {
+        SEARCH_BYTES
+    }
 }
 
 impl<H: Host> Shared<H> {
@@ -268,7 +308,7 @@ impl<H: Host> Shared<H> {
         Directory { bytes: &self.directory, header: self.header, downloads: self.downloads }
     }
 
-    fn installed(&self, name: &str) -> Result<&Installed> {
+    pub(crate) fn installed(&self, name: &str) -> Result<&Installed> {
         self.profiles
             .iter()
             .find(|installed| installed.profile.name == name)
@@ -276,7 +316,7 @@ impl<H: Host> Shared<H> {
     }
 
     /// The whole of part `part` of `cell`.
-    fn part(&self, cell: &Cell, part: usize) -> Result<&[u8]> {
+    pub(crate) fn part(&self, cell: &Cell, part: usize) -> Result<&[u8]> {
         let parts = 2 + usize::from(self.header.groups);
         let bytes = *self
             .sizes
@@ -291,10 +331,14 @@ impl<H: Host> Shared<H> {
         self.cells.binary_search_by_key(&id, |cell| cell.id).ok().map(|k| self.cells[k])
     }
 
-    fn place(&self, road: u32) -> Result<Place<'_>> {
+    /// The installed download cell of road `road`.
+    fn cell_of(&self, road: u32) -> Option<Cell> {
         let k = self.cells.partition_point(|cell| cell.first_road <= road);
-        let cell = k.checked_sub(1).map(|k| self.cells[k]).filter(|cell| road - cell.first_road < cell.roads);
-        let cell = cell.ok_or_else(|| Error::MissingRegion(format!("Road {road} is not installed")))?;
+        k.checked_sub(1).map(|k| self.cells[k]).filter(|cell| road - cell.first_road < cell.roads)
+    }
+
+    pub(crate) fn place(&self, road: u32) -> Result<Place<'_>> {
+        let cell = self.cell_of(road).ok_or_else(|| Error::MissingRegion(format!("Road {road} is not installed")))?;
         let topology = Topology::new(self.part(&cell, TOPOLOGY)?)?;
         let local = road - cell.first_road;
         // The last level-1 cell whose first road is at or before the road.
@@ -323,34 +367,56 @@ impl<H: Host> Shared<H> {
         Ok((geometry, closure))
     }
 
-    /// The turns into the road of `place`, which has ID `road`, with the costs of group `group`, whose
-    /// view and level-1 record of the cell of `place` are `own`.
-    fn departures(
-        &self,
-        place: &Place,
-        road: u32,
-        group: usize,
-        own: (Group<'_>, GroupCell<'_>),
-    ) -> Result<Vec<Departure>> {
-        // The level-1 cell of the departure junction, and the target number of the road there.
-        let (cell, topology, level1, target, (costs, costs_cell)) = if place.road >= u32::from(place.level1.entering) {
-            (place.cell, place.topology, place.level1, place.road, own)
-        } else {
-            let id = place.topology.departure(&place.level1, place.road)?;
-            let Some(cell) = self.cell(id & !self.directory().below(self.header.download_level)) else {
-                return Ok(Vec::new());
-            };
-            let topology = Topology::new(self.part(&cell, TOPOLOGY)?)?;
-            let index = search(topology.cells, |k| Ok(topology.level1(k)?.id.cmp(&id)))?
-                .ok_or_else(|| invalid("a departure in a level-1 cell that its download cell lacks"))?;
-            let level1 = topology.level1(index)?;
-            let reference = Reference { cell: place.cell.id, index: road - place.cell.first_road };
-            let k = search(level1.leaving.into(), |k| Ok(topology.leaving(&level1, k)?.cmp(&reference)))?
-                .ok_or_else(|| invalid("an entering road that the leaving list of its departure lacks"))?;
-            let costs = Group::new(self.part(&cell, 2 + group)?)?;
-            let costs_cell = costs.level1(index, &level1)?;
-            (cell, topology, level1, level1.roads + k, (costs, costs_cell))
+    /// The departure junction of the road of `place`, which has ID `road`; `None` when its cell is
+    /// not installed.
+    pub(crate) fn junction<'a>(&'a self, place: &Place<'a>, road: u32) -> Result<Option<Junction<'a>>> {
+        if place.road >= u32::from(place.level1.entering) {
+            let (cell, topology, index, level1) = (place.cell, place.topology, place.index, place.level1);
+            return Ok(Some(Junction { cell, topology, index, level1, target: place.road }));
+        }
+        let id = place.topology.departure(&place.level1, place.road)?;
+        let Some(cell) = self.cell(id & !self.directory().below(self.header.download_level)) else {
+            return Ok(None);
         };
+        let topology = Topology::new(self.part(&cell, TOPOLOGY)?)?;
+        let index = search(topology.cells, |k| Ok(topology.level1(k)?.id.cmp(&id)))?
+            .ok_or_else(|| invalid("a departure in a level-1 cell that its download cell lacks"))?;
+        let level1 = topology.level1(index)?;
+        let reference = Reference { cell: place.cell.id, index: road - place.cell.first_road };
+        let k = search(level1.leaving.into(), |k| Ok(topology.leaving(&level1, k)?.cmp(&reference)))?
+            .ok_or_else(|| invalid("an entering road that the leaving list of its departure lacks"))?;
+        Ok(Some(Junction { cell, topology, index, level1, target: level1.roads + k }))
+    }
+
+    /// The group part `group` of `cell` and its record of level-1 cell `index`, `level1`.
+    pub(crate) fn group(
+        &self,
+        cell: &Cell,
+        index: u32,
+        level1: &Level1,
+        group: usize,
+    ) -> Result<(Group<'_>, GroupCell<'_>)> {
+        let view = Group::new(self.part(cell, 2 + group)?)?;
+        Ok((view, view.level1(index, level1)?))
+    }
+
+    /// The run-time ID of a road reference; `None` when its cell is not installed.
+    pub(crate) fn road_id(&self, reference: Reference) -> Option<u32> {
+        self.cell(reference.cell)
+            .filter(|cell| reference.index < cell.roads)
+            .map(|cell| cell.first_road + reference.index)
+    }
+
+    /// Whether the install has road `road`.
+    pub(crate) fn has(&self, road: u32) -> bool {
+        self.cell_of(road).is_some()
+    }
+
+    /// The turns into the road of `place`, which has ID `road`, with the costs of group `group`.
+    fn departures(&self, place: &Place, road: u32, group: usize) -> Result<Vec<Departure>> {
+        let Some(junction) = self.junction(place, road)? else { return Ok(Vec::new()) };
+        let Junction { cell, topology, index, level1, target } = junction;
+        let (costs, costs_cell) = self.group(&cell, index, &level1, group)?;
         let (first, head) = topology.columns(&level1)?;
         let mut departures = Vec::new();
         for (from, turn) in entering((first, level1.first_width), (head, level1.head_width), target)? {

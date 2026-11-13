@@ -87,7 +87,7 @@ pub fn app(directory: &std::path::Path, workers: usize) -> Result<axum::Router, 
     let package = routers[0].package();
     // Forks share prepared profiles, so one load serves every router.
     if package.profiles().contains(&WARM_PROFILE) {
-        package.prepared(WARM_PROFILE)?;
+        package.warm(WARM_PROFILE)?;
     }
     let metadata = json!({ "package": package.identity(), "region": package.region(), "bounds": package.bounds(),
         "profiles": package.profiles(), "attribution": package.attribution(), "warnings": package.warnings() });
