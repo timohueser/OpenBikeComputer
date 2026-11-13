@@ -9,8 +9,9 @@
 
     /** The left card of the Ride page: the numbers of the summary, then heart rate, power and cadence, each sensor with
      * the time in its zones under it, and the climbs, which come from the samples. A sensor with no value shows nothing.
-     * With a selected part, its numbers and its zones stand beside the numbers of the whole ride, and the climbs go. */
-    let { summary, speed, channels, climbs, part, unreadable }: {
+     * With a selected part, its numbers and its zones stand beside the numbers of the whole ride, and the climbs go. A
+     * click on a climb selects it as the part. */
+    let { summary, speed, channels, climbs, part, unreadable, onclimb }: {
         summary: RideSummary;
         /** The speed over the moving steps, in m/s (`movingSpeed`). */
         speed?: number;
@@ -20,6 +21,7 @@
         /** The numbers of the selected part. */
         part?: PartNumbers;
         unreadable: boolean;
+        onclimb: (climb: RideClimb) => void;
     } = $props();
 
     const hours = (seconds: number) => duration(seconds / 3600);
@@ -87,12 +89,14 @@
                             {#each climbs as climb (climb.first)}
                                 {@const numbers = [formatDistance((climb.to - climb.from) * 1000), hours(climb.seconds), climb.powerW === undefined ? '' : `${Math.round(climb.powerW)} W`].filter(Boolean).join(' · ')}
                                 <li>
-                                    {#await townOf(climb.top)}
-                                        <strong>Climb</strong>
-                                    {:then name}
-                                        <strong>{name ? `To ${name}` : 'Climb'}</strong>
-                                    {/await}
-                                    <small>{numbers}</small>
+                                    <button type="button" onclick={() => onclimb(climb)}>
+                                        {#await townOf(climb.top)}
+                                            <strong>Climb</strong>
+                                        {:then name}
+                                            <strong>{name ? `To ${name}` : 'Climb'}</strong>
+                                        {/await}
+                                        <small>{numbers}</small>
+                                    </button>
                                 </li>
                             {/each}
                         </ul>
@@ -234,14 +238,30 @@
         scroll-snap-type: y mandatory;
     }
     .climbs li {
-        display: flex;
         box-sizing: border-box;
-        gap: 10px;
-        align-items: center;
-        justify-content: space-between;
         height: var(--row);
         border-bottom: 1px solid var(--line);
         scroll-snap-align: start;
+    }
+    .climbs button {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        justify-content: space-between;
+        width: 100%;
+        height: 100%;
+        padding: 0;
+        border: 0;
+        background: none;
+        color: inherit;
+        font: inherit;
+        text-align: left;
+    }
+    .climbs button:hover strong {
+        text-decoration: underline;
+    }
+    .climbs button:focus-visible {
+        outline-offset: -2px;
     }
     .climbs strong {
         overflow: hidden;
@@ -249,7 +269,7 @@
         text-overflow: ellipsis;
         white-space: nowrap;
     }
-    .climbs li small {
+    .climbs small {
         flex: none;
         font-variant-numeric: tabular-nums;
     }

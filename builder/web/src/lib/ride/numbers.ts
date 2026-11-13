@@ -3,6 +3,7 @@
 import type { FitSample } from '../core/fit';
 import { metres, movingSteps, rideTotals } from '../library/summary';
 import { cumulative, firstIndex, type Coordinate } from '../planner/geo';
+import { slice } from './lines';
 import { routeSegments } from '../planner/search/segments';
 import { heartRateZones, powerZones, zoneOf, type Zone } from '../settings/zones';
 
@@ -57,11 +58,9 @@ export function movingSpeed(samples: FitSample[]): number | undefined {
 /** The numbers of a stretch of a ride. */
 export interface PartNumbers { lengthM: number; climbM: number; movingS: number; speed?: number; channels: Channels }
 
-/** The numbers of the samples `first` to `last` as a ride of its own. Its first sample starts a segment, so no step
- * leads into the part. */
-export function partNumbers(samples: FitSample[], [first, last]: [number, number], limits: { maxHr: number | null; ftp: number | null }): PartNumbers {
-    const part = samples.slice(first, last + 1);
-    part[0] = { ...part[0], segmentStart: true };
+/** The numbers of the samples `first` to `last` as a ride of its own (`slice`). */
+export function partNumbers(samples: FitSample[], range: [number, number], limits: { maxHr: number | null; ftp: number | null }): PartNumbers {
+    const part = slice(samples, range);
     return { ...rideTotals(part), speed: movingSpeed(part), channels: channels(part, limits) };
 }
 
