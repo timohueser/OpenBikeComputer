@@ -21,10 +21,11 @@ name = "obc-app"
 triggers = ["specs/vectors/**", "data/sources.toml"]
 
 # The captured planner export is under `fixtures/`, which already selects every unit that declares
-# fixture inputs. Its SwiftPM duplicate is not, and only this suite holds the two identical.
+# fixture inputs. Its SwiftPM duplicate is not, and only this suite holds the two identical. The
+# climb test reads the shared climb vectors; no Cargo edge carries that.
 [[package]]
 name = "obc-route"
-triggers = ["companion-ios/Packages/OBCKit/Sources/OBCMock/Fixtures/sample-import.gpx"]
+triggers = ["companion-ios/Packages/OBCKit/Sources/OBCMock/Fixtures/sample-import.gpx", "specs/vectors/climbs.json"]
 
 [[package]]
 name = "obc-formats"

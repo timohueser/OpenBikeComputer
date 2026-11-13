@@ -53,7 +53,8 @@ describe('rideClimbs', () => {
             [expect.closeTo(6, 0), expect.closeTo(7.5, 0), expect.closeTo(120, -1)],
         ]);
         for (const climb of climbs) {
-            expect(samples[climb.last].elevationM! - samples[climb.first].elevationM!).toBeCloseTo(climb.ascent, 0);
+            // The climb rule measures the gain on heights that pass a 3 m dead band.
+            expect(samples[climb.last].elevationM! - samples[climb.first].elevationM!).toBeCloseTo(climb.ascent, -1);
             // About 5 m/s on the distance of the climb.
             expect(climb.seconds / ((climb.to - climb.from) * 1000 / 5)).toBeCloseTo(1, 1);
             expect(climb.powerW).toBeGreaterThan(200);
