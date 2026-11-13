@@ -545,4 +545,8 @@ fn only_the_chosen_legs_are_unpacked() {
     // Each piece is a road of its leg, and a leg has at most one road before its first piece.
     let pieces = route.pieces().count();
     assert!((pieces..=pieces + 2).contains(&stats.roads), "{stats:?} for {pieces} pieces");
+    // The roads of the chosen legs and the steps of one search have their own limits.
+    for control in [Control { max_roads: 1, ..Control::default() }, Control { max_steps: 1, ..Control::default() }] {
+        assert!(matches!(router.route(&request, &control), Err(Error::Limit)));
+    }
 }

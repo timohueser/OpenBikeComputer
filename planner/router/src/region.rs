@@ -377,7 +377,7 @@ impl<H: Host> RoutingData for Region<H> {
     /// Tells the host that the engine reads the geometry blocks of these roads next.
     fn announce(&self, roads: &[u32]) {
         let shared = &*self.shared;
-        let mut spans: Vec<Span> = roads
+        let spans = roads
             .iter()
             .filter_map(|&road| {
                 let place = shared.place(road).ok()?;
@@ -388,9 +388,7 @@ impl<H: Host> RoutingData for Region<H> {
                 Some(Span { part: Part { record: place.cell.record, part: GEOMETRY as u8 }, at: cell.block, bytes })
             })
             .collect();
-        spans.sort_unstable();
-        spans.dedup();
-        shared.host.announce(&spans);
+        shared.announce(spans);
     }
 
     fn search(&mut self, metric: &str, query: Query<'_>) -> Result<Option<Found>> {
@@ -546,11 +544,15 @@ impl<H: Host> Shared<H> {
             }
             return Ok(());
         }
+        // The download cells of an upper cell, or the one download cell that holds the cell.
         let downloads = match level > self.header.download_level {
-            true => &self.cells[self.cells.partition_point(|cell| cell.id < id)..],
+            true => {
+                let rest = &self.cells[self.cells.partition_point(|cell| cell.id < id)..];
+                &rest[..rest.iter().take_while(|cell| cell.id & mask == id).count()]
+            }
             false => std::slice::from_ref(&home.cell),
         };
-        for cell in downloads.iter().take_while(|cell| cell.id & mask == id) {
+        for cell in downloads {
             let (topology, costs) = (Topology::new(self.part(cell, TOPOLOGY)?)?, Group::new(self.part(cell, group)?)?);
             if child == 1 {
                 for k in partition(topology.cells, |k| Ok(topology.level1(k)?.id < id))?..topology.cells {

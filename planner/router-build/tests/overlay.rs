@@ -1,9 +1,10 @@
 //! The search with cost tables (`Region`) against a relaxation of the turns of the installed roads,
-//! on random graphs with a full and a partial install.
+//! on random graphs with a full and a partial install; and what the unpacking announces against
+//! what it reads.
 
 use planner_router::cells::{Directory, Group, Topology};
 use planner_router::data::RoutingData;
-use planner_router::host::{Memory, Part};
+use planner_router::host::{Host, Memory, Part, Span};
 use planner_router::install;
 use planner_router::model::{Point, Profile, Road, BIKE, FOOT, PUSH};
 use planner_router::overlay::{Query, Seed};
@@ -14,8 +15,11 @@ use planner_router_build::{base, tables, Costs, Graph};
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
-const LEVELS: usize = 3;
+/// The cell sizes of the graphs, in turn. The download level is the level below the top, so the
+/// second package has a level between level 1 and its download level.
+const SIZES: [&[u32]; 2] = [&[4, 16, 64], &[4, 16, 64, 128]];
 
 fn xorshift(state: &mut u64) -> u64 {
     *state ^= *state << 13;
@@ -25,9 +29,9 @@ fn xorshift(state: &mut u64) -> u64 {
 }
 
 /// 150 to 300 junctions at random points, each with roads to its 2 to 4 nearest junctions, three
-/// of four in both directions, and an island of four junctions. `None` when the partition has
-/// fewer than 3 cells of level 3.
-fn graph(state: &mut u64) -> Option<Graph> {
+/// of four in both directions, and an island of four junctions, in cells of `sizes`. `None` when
+/// the partition has fewer than 3 cells of level 3, or lacks a level.
+fn graph(state: &mut u64, sizes: &[u32]) -> Option<Graph> {
     let count = 150 + (xorshift(state) % 151) as usize;
     let point =
         |lat: u64, lon: u64| Point { lat: 46_000_000 + lat as i32, lon: 7_000_000 + lon as i32, elevation: 0.0 };
@@ -69,9 +73,9 @@ fn graph(state: &mut u64) -> Option<Graph> {
         roads: roads.into_iter().collect(),
         ..Graph::default()
     };
-    planner_router_build::layout::order(&mut graph, &[4, 16, 64], None).unwrap();
+    planner_router_build::layout::order(&mut graph, sizes, None).unwrap();
     let cells = &graph.cells;
-    (cells.levels() == LEVELS && cells.counts.values()[LEVELS - 1] >= 3).then_some(graph)
+    (cells.levels() == sizes.len() && cells.counts.values()[2] >= 3).then_some(graph)
 }
 
 /// The columns of one profile: road costs 1 to 8, turn costs 0 to 3, and one road and one turn of
@@ -100,12 +104,75 @@ impl Drop for Scratch {
 /// The arcs out of each road: the target road and the weight.
 type Arcs = Vec<Vec<(u32, u64)>>;
 
-/// An install in memory: the engine on it, its roads, and for each profile the arcs as the views
-/// of the parts give them, with no table.
+/// The parts in memory, and each span that the engine announced.
+struct Recorded {
+    memory: Memory,
+    announced: Mutex<Vec<Span>>,
+}
+
+impl Host for Recorded {
+    fn range(&self, span: Span) -> planner_router::Result<&[u8]> {
+        self.memory.range(span)
+    }
+
+    fn announce(&self, spans: &[Span]) {
+        self.memory.announce(spans);
+        self.announced.lock().unwrap().extend_from_slice(spans);
+    }
+}
+
+/// A profile of an install: its name, its group and its place in the group, and its arcs as the
+/// views of the parts give them, with no table.
+struct Costed {
+    name: String,
+    group: usize,
+    place: u32,
+    arcs: Arcs,
+}
+
+/// An install in memory: the engine on it, its roads, its profiles and its files.
 struct Install {
-    region: Region<Memory>,
+    region: Region<Recorded>,
     roads: Vec<u32>,
-    arcs: Vec<(String, Arcs)>,
+    profiles: Vec<Costed>,
+    directory: Vec<u8>,
+    parts: HashMap<(u32, usize), Vec<u8>>,
+}
+
+impl Install {
+    /// The spans, as the views give them, of the two lists and the table of the cell `id` of
+    /// `level` for `profile`; with `blocks`, of the topology block and the group block of a
+    /// level-1 cell.
+    fn spans(&self, level: u8, id: u32, profile: &Costed, blocks: bool) -> Vec<Span> {
+        let view = Directory::new(&self.directory).unwrap();
+        let record = view.find(level.max(view.header.download_level), id).unwrap().unwrap() as u32;
+        let group = 2 + profile.group;
+        let span = |part: usize, (at, bytes): (u32, u32)| Span { part: Part { record, part: part as u8 }, at, bytes };
+        let topology = Topology::new(&self.parts[&(record, 0)]).unwrap();
+        let costs = Group::new(&self.parts[&(record, group)]).unwrap();
+        if level == 1 {
+            let index = (0..topology.cells).find(|&k| topology.level1(k).unwrap().id == id).unwrap();
+            let level1 = topology.level1(index).unwrap();
+            let block = costs.level1(index, &level1).unwrap().span().unwrap();
+            return match blocks {
+                true => vec![span(0, topology.block(&level1).unwrap()), span(group, block)],
+                false => {
+                    vec![
+                        span(0, topology.leaving_list(&level1).unwrap()),
+                        span(group, costs.slot(profile.place, index).unwrap()),
+                    ]
+                }
+            };
+        }
+        let upper = |k: u32| topology.upper(k).unwrap();
+        let k = (0..topology.upper).find(|&k| (upper(k).level, upper(k).id) == (level, id)).unwrap();
+        let (upper, table) = (upper(k), costs.slot(profile.place, costs.cells + k).unwrap());
+        vec![
+            span(0, (upper.entering_at, 8 * upper.entering)),
+            span(0, (upper.leaving_at, 8 * upper.leaving)),
+            span(group, table),
+        ]
+    }
 }
 
 fn install(objects: &Path, target: &Path, cells: Option<&[u32]>) -> Install {
@@ -150,7 +217,7 @@ fn install(objects: &Path, target: &Path, cells: Option<&[u32]>) -> Install {
         .map(|entry| (entry["group"].as_u64().unwrap(), entry["profile"]["name"].as_str().unwrap().to_string()))
         .collect();
     let total = view.header.roads as usize;
-    let mut arcs = Vec::new();
+    let mut costed = Vec::new();
     let mut roads = Vec::new();
     for (k, (group, name)) in profiles.iter().enumerate() {
         let place = profiles[..k].iter().filter(|other| other.0 == *group).count() as u32;
@@ -186,12 +253,13 @@ fn install(objects: &Path, target: &Path, cells: Option<&[u32]>) -> Install {
                 }
             }
         });
-        arcs.push((name.clone(), list));
+        costed.push(Costed { name: name.clone(), group: *group as usize, place, arcs: list });
     }
     let marker = fs::read(target.join(install::MARKER)).unwrap();
-    let mut region = Region::open(memory, directory, info, &marker).unwrap();
+    let host = Recorded { memory, announced: Mutex::default() };
+    let mut region = Region::open(host, directory.clone(), info, &marker).unwrap();
     region.set_memory_budget(usize::MAX);
-    Install { region, roads, arcs }
+    Install { region, roads, profiles: costed, directory, parts }
 }
 
 /// The least (cost, end choice, start choice) of a path from a start seed to an end seed that
@@ -232,14 +300,17 @@ fn seeds(state: &mut u64, from: &[u32], count: usize) -> Vec<Seed> {
         .collect()
 }
 
-/// What the paths of one kind of install showed, over all graphs.
+/// What the paths of one kind of install showed, over the graphs of one size list.
 #[derive(Default)]
 struct Seen {
     paths: usize,
-    levels: [usize; LEVELS + 1],
-    /// A step of level 3 in the complete upper cell, and of level 2 in the partial one.
+    levels: [usize; 5],
+    /// A step of the top level in the complete upper cell, and of the download level in the
+    /// partial one.
     complete: usize,
     partial: usize,
+    /// The spans that the unpacking read and had announced.
+    announced: usize,
 }
 
 #[test]
@@ -248,21 +319,24 @@ fn the_search_gives_the_least_cost_and_candidates_on_random_graphs() {
     let scratch = Scratch(std::env::temp_dir().join(format!("obc-overlay-{}", std::process::id())));
     let profiles: Vec<Profile> =
         Profile::presets().into_iter().filter(|profile| ["hiking", "touring"].contains(&&*profile.name)).collect();
-    let mut seen = [Seen::default(), Seen::default()];
+    let mut seen: [[Seen; 2]; 2] = Default::default();
     let mut graphs = 0;
     while graphs < 24 {
-        let Some(graph) = graph(&mut state) else { continue };
+        let config = graphs % 2;
+        let sizes = SIZES[config];
+        let (top, download) = (sizes.len(), sizes.len() - 1);
+        let Some(graph) = graph(&mut state, sizes) else { continue };
         let cells = &graph.cells;
         // An upper cell, all of whose download cells the partial install holds, and the next one,
         // of which it holds about half.
         let Some(complete) =
-            (0..cells.counts.values()[LEVELS - 1] as usize - 1).find(|&c| cells.children(LEVELS, c + 1).len() > 1)
+            (0..cells.counts.values()[top - 1] as usize - 1).find(|&c| cells.children(top, c + 1).len() > 1)
         else {
             continue;
         };
-        let half = cells.children(LEVELS, complete + 1);
+        let half = cells.children(top, complete + 1);
         let half = half.start..half.start + half.len() / 2;
-        let some: Vec<u32> = cells.children(LEVELS, complete).chain(half.clone()).map(|d| cells.id(2, d)).collect();
+        let some: Vec<u32> = cells.children(top, complete).chain(half.clone()).map(|d| cells.id(download, d)).collect();
         graphs += 1;
 
         let topology = base::Topology::new(&graph.roads, graph.points.len()).unwrap();
@@ -282,8 +356,8 @@ fn the_search_gives_the_least_cost_and_candidates_on_random_graphs() {
             topology: &topology,
             costs: &costs,
             tables: &tables,
-            sizes: &[4, 16, 64],
-            download_level: 2,
+            sizes,
+            download_level: download as u8,
             info,
             level: 1,
         };
@@ -294,10 +368,11 @@ fn the_search_gives_the_least_cost_and_candidates_on_random_graphs() {
         let arrival = |road: u32| cells.cell(graph.roads.to(road as usize));
         let departure = |road: u32| cells.cell(graph.roads.from(road as usize));
         let cell = |level: usize, level1: usize| cells.ancestor(level, level1);
+        let border = cells.border.values();
         for (kind, ids) in [None, Some(&some[..])].into_iter().enumerate() {
-            let Install { mut region, roads, arcs } =
-                install(&objects, &scratch.0.join(format!("install-{kind}")), ids);
-            let held = |level1: usize| ids.is_none() || some.contains(&cells.id(2, cell(2, level1)));
+            let mut data = install(&objects, &scratch.0.join(format!("install-{kind}")), ids);
+            let roads = data.roads.clone();
+            let held = |level1: usize| ids.is_none() || some.contains(&cells.id(download, cell(download, level1)));
             // The roads that leave the cell `c` of `level`, with both junctions in installed cells.
             let leaving = |level: usize, c: usize| -> Vec<u32> {
                 let border = cells.leaving_list(level, c).iter().copied();
@@ -308,9 +383,9 @@ fn the_search_gives_the_least_cost_and_candidates_on_random_graphs() {
                 let from = cell(level, departure(road));
                 roads.iter().copied().filter(|&r| cell(level, arrival(r)) != from).collect()
             };
-            let top: Vec<u32> =
-                (0..cells.counts.values()[LEVELS - 1] as usize).flat_map(|c| leaving(LEVELS, c)).collect();
-            for (name, arcs) in &arcs {
+            let borders: Vec<u32> =
+                (0..cells.counts.values()[top - 1] as usize).flat_map(|c| leaving(top, c)).collect();
+            for profile in 0..data.profiles.len() {
                 for call in 0..40 {
                     let state = &mut state;
                     let counts = (1 + (xorshift(state) % 4) as usize, 1 + (xorshift(state) % 4) as usize);
@@ -326,8 +401,8 @@ fn the_search_gives_the_least_cost_and_candidates_on_random_graphs() {
                         }
                         // A start seed, then an end seed, on a border road of the top level whose
                         // departure cell is no seed cell.
-                        (2 | 3, _) if !top.is_empty() => {
-                            let road = top[(xorshift(state) % top.len() as u64) as usize];
+                        (2 | 3, _) if !borders.is_empty() => {
+                            let road = borders[(xorshift(state) % borders.len() as u64) as usize];
                             let others = apart(road, 1);
                             (starts, ends) = (seeds(state, &others, counts.0), seeds(state, &others, counts.1));
                             match call {
@@ -337,10 +412,10 @@ fn the_search_gives_the_least_cost_and_candidates_on_random_graphs() {
                         }
                         // The partial install: the seeds on two sides of the complete upper cell,
                         // then of a download cell of the partial upper cell.
-                        (4 | 5, 1) => {
-                            let (level, border) = match call {
-                                4 => (LEVELS, leaving(LEVELS, complete)),
-                                _ => (2, half.clone().flat_map(|d| leaving(2, d)).collect()),
+                        (4..=9, 1) => {
+                            let (level, border) = match call % 2 {
+                                0 => (top, leaving(top, complete)),
+                                _ => (download, half.clone().flat_map(|d| leaving(download, d)).collect()),
                             };
                             if !border.is_empty() {
                                 let road = border[(xorshift(state) % border.len() as u64) as usize];
@@ -350,6 +425,7 @@ fn the_search_gives_the_least_cost_and_candidates_on_random_graphs() {
                         }
                         _ => {}
                     }
+                    let Costed { name, arcs, .. } = &data.profiles[profile];
                     // No ceiling, the true cost, and the true cost less 1.
                     let least = oracle(arcs, &starts, &ends, u64::MAX);
                     let ceiling = match (call % 3, least) {
@@ -367,12 +443,13 @@ fn the_search_gives_the_least_cost_and_candidates_on_random_graphs() {
                         heap_limit: usize::MAX,
                         cancelled: &|| false,
                     };
-                    let found = region.search(name, query).unwrap();
+                    let found = data.region.search(name, query).unwrap();
                     let context = format!("graph {graphs}, install {kind}, {name}, call {call}");
                     let triple = found.as_ref().map(|f| (f.cost, ends[f.target].choice, starts[f.source].choice));
                     assert_eq!(triple, expected, "{context}");
                     let Some(found) = found else { continue };
-                    let unpacked = region.unpack(name, &[&found], &Control::default()).unwrap().remove(0);
+                    data.region.host().announced.lock().unwrap().clear();
+                    let unpacked = data.region.unpack(name, &[&found], &Control::default()).unwrap().remove(0);
                     assert_eq!(unpacked[0], starts[found.source].node, "{context}");
                     assert_eq!(unpacked.last(), Some(&ends[found.target].node), "{context}");
                     let mut sum = starts[found.source].cost + ends[found.target].cost;
@@ -381,22 +458,60 @@ fn the_search_gives_the_least_cost_and_candidates_on_random_graphs() {
                         sum += turn.unwrap_or_else(|| panic!("{context}: no turn from {} to {}", pair[0], pair[1]));
                     }
                     assert_eq!(sum, found.cost, "{context}");
-                    let seen = &mut seen[kind];
+                    let seen = &mut seen[config][kind];
                     seen.paths += 1;
+                    // The cells that the unpacking of each step crosses below the level of the
+                    // step, and its level-1 cells: a part of the roads of the step up to the next
+                    // road that leaves the cell of that level. The unpacking reads the lists and
+                    // the table of each of these cells, and the blocks of each level-1 cell.
+                    let announced = data.region.host().announced.lock().unwrap().clone();
+                    let mut read = Vec::new();
+                    let mut at = 0;
                     for pair in found.path.windows(2) {
                         let level = usize::from(pair[1].level);
                         seen.levels[level] += 1;
                         let entered = cell(level.max(1), arrival(pair[0].road));
-                        seen.complete += usize::from(level == LEVELS && entered == complete);
-                        seen.partial += usize::from(level == 2 && half.contains(&entered));
+                        seen.complete += usize::from(level == top && entered == complete);
+                        seen.partial += usize::from(level == download && half.contains(&entered));
+                        let end = at + 1 + unpacked[at + 1..].iter().position(|&road| road == pair[1].road).unwrap();
+                        for below in 1..=level {
+                            let mut from = at;
+                            for k in at + 1..=end {
+                                if usize::from(border[unpacked[k] as usize]) >= below {
+                                    let crossed = cell(below, arrival(unpacked[from]));
+                                    let id = cells.id(below, crossed);
+                                    if below < level {
+                                        read.extend(data.spans(below as u8, id, &data.profiles[profile], false));
+                                    }
+                                    if below == 1 {
+                                        read.extend(data.spans(1, id, &data.profiles[profile], true));
+                                    }
+                                    from = k;
+                                }
+                            }
+                            assert_eq!(from, end, "{context}: the step ends at a road that leaves its cell");
+                        }
+                        at = end;
+                    }
+                    for span in read.iter().filter(|span| span.bytes > 0) {
+                        let within =
+                            |a: &Span| a.part == span.part && a.at <= span.at && span.at + span.bytes <= a.at + a.bytes;
+                        assert!(
+                            announced.iter().any(within),
+                            "{context}: the unpacking read {span:?} without an announce"
+                        );
+                        seen.announced += 1;
                     }
                 }
             }
         }
     }
-    for (kind, seen) in seen.iter().enumerate() {
-        println!("install {kind}: {} paths, steps by level {:?}", seen.paths, seen.levels);
-        assert!(seen.paths > 600 && seen.levels.iter().all(|&steps| steps > 0), "install {kind}: {:?}", seen.levels);
+    for (sizes, seen) in SIZES.iter().zip(&seen) {
+        for (kind, seen) in seen.iter().enumerate() {
+            let steps = &seen.levels[..=sizes.len()];
+            assert!(seen.paths > 300 && steps.iter().all(|&steps| steps > 0), "{sizes:?}, install {kind}: {steps:?}");
+            assert!(seen.announced > 1000, "{sizes:?}, install {kind}: {} spans", seen.announced);
+        }
+        assert!(seen[1].complete > 0 && seen[1].partial > 0, "{sizes:?}: {} and {}", seen[1].complete, seen[1].partial);
     }
-    assert!(seen[1].complete > 0 && seen[1].partial > 0, "{} and {}", seen[1].complete, seen[1].partial);
 }
