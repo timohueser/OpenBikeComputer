@@ -7,8 +7,8 @@
 //!
 //! Options: `--min-km K` and `--max-km K`, the band of the later points of a request from its
 //! first; `--profiles a,b` (else all); `--new-only`, NEW alone and no check; `--repeat-new N`, NEW
-//! routes each request N times and the last run counts; `--layouts`, which skips the pinned
-//! requests, because a pin names a road ID of OLD; `--workers N`, with `--new-only`, N threads with
+//! routes each request N times and the last run counts; `--layouts`, where NEW pins the candidate
+//! at the coordinate of the pin of OLD, and skips a request without one; `--workers N`, with `--new-only`, N threads with
 //! a router each over one opened install, which take the requests in turn; `--cold`, NEW opened
 //! again with its files out of the page cache before each request; `--no-announce`, a silent host;
 //! `--json FILE`, the line of each request as JSON. `--areas INSTALL` prints the table for the
@@ -152,12 +152,12 @@ fn side(routed: &Routed, settled: usize) -> Value {
     json!({ "outcome": outcome, "cost": cost, "ms": ms(routed.time), "settled": settled })
 }
 
-/// Routes `request` on OLD once, when there is one, and on NEW `repeat_new` times; gives the line
-/// of the request and, with OLD, the check.
+/// Routes `request` on OLD once, when there is one, and `new_request` on NEW `repeat_new` times;
+/// gives the line of the request and, with OLD, the check.
 fn measure(
     old: Option<&mut Router<Opened>>,
     new: &mut Router<Opened>,
-    request: &Request,
+    [request, new_request]: [&Request; 2],
     options: &Options,
 ) -> (Value, Option<Result<Outcome, String>>) {
     let old = old.map(|old| {
@@ -166,10 +166,10 @@ fn measure(
         let settled = old.package().take_stats().settled;
         (old, routed, settled)
     });
-    let mut routed = compare::route(new, request);
+    let mut routed = compare::route(new, new_request);
     for _ in 1..options.repeat_new {
         new.package().take_stats();
-        routed = compare::route(new, request);
+        routed = compare::route(new, new_request);
     }
     let stats = new.package().take_stats();
     let top = stats.levels.iter().rposition(|&count| count > 0).unwrap_or(0);
@@ -368,7 +368,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             scope.spawn(move || loop {
                                 let k = next.fetch_add(1, Ordering::Relaxed);
                                 let Some(request) = requests.get(k) else { break };
-                                let (line, _) = measure(None, &mut router, request, options);
+                                let (line, _) = measure(None, &mut router, [request; 2], options);
                                 lines.lock().expect("a line list").push((k, line));
                             });
                         }
@@ -383,10 +383,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 let mut first = true;
                 for (k, request) in requests.iter().enumerate() {
-                    if options.layouts && kind(k) == "pinned" {
+                    // A pin names a road of OLD; on another layout, the candidate at its coordinate.
+                    let moved = match (&old, &new) {
+                        (Some(old), Some(new)) if options.layouts => {
+                            compare::repin(old.package(), new.package(), request)
+                        }
+                        _ => Some(request.clone()),
+                    };
+                    let Some(moved) = moved else {
                         totals.pinned += 1;
                         continue;
-                    }
+                    };
                     let mut cold = Value::Null;
                     if options.cold {
                         drop(new.take());
@@ -395,7 +402,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let router = new.insert(open_cells(new_path, options.silent)?);
                         let open_ms = ms(opened.elapsed());
                         let (routed, faults, read) = (Instant::now(), major_faults(), read_bytes());
-                        let _ = router.routes(request, &planner_router::Control::default());
+                        let _ = router.routes(&moved, &planner_router::Control::default());
                         cold = json!({
                             "open_ms": open_ms,
                             "ms": ms(routed.elapsed()),
@@ -403,7 +410,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             "read_kb": (read_bytes() - read) / 1000,
                         });
                     }
-                    let (mut line, checked) = measure(old.as_mut(), new.as_mut().ok_or(USAGE)?, request, &options);
+                    let (mut line, checked) =
+                        measure(old.as_mut(), new.as_mut().ok_or(USAGE)?, [request, &moved], &options);
                     line["kind"] = json!(kind(k));
                     line["cold"] = cold;
                     totals.add(&line, checked, first, &mut json);
@@ -428,7 +436,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         peak_kb.saturating_sub(idle_kb) as f64 / 1e3 / workers as f64
     );
     println!(
-        "{} requests, {} differences, {} ties, {} skipped for 8 candidates, {} pinned skipped, in {:.1} s",
+        "{} requests, {} differences, {} ties, {} skipped for 8 candidates, {} pins without a candidate, in {:.1} s",
         totals.requests,
         totals.differences,
         totals.ties,

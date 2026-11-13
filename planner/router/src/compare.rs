@@ -204,14 +204,42 @@ pub fn error_kind(error: &Error) -> String {
     name.split('(').next().unwrap_or_default().to_string()
 }
 
-/// The coordinates of the start and the end of each leg of `route`, which two layouts of one bake
-/// give alike.
+/// The coordinate (latitude, longitude) of `position`, which two layouts of one bake give alike.
+fn position_at<P: RoutingData>(data: &P, position: &Position) -> Option<(i32, i32)> {
+    let point = data.with_road(position.road, |road| along(&road.shape, position.fraction)).ok()?;
+    Some((point.lat, point.lon))
+}
+
+/// The coordinates of the start and the end of each leg of `route`.
 fn leg_ends<P: RoutingData>(data: &P, route: &crate::Route) -> Result<Vec<[(i32, i32); 2]>, String> {
-    let at = |p: &Position| {
-        let point = data.with_road(p.road, |road| along(&road.shape, p.fraction)).map_err(|e| e.to_string())?;
-        Ok::<_, String>((point.lat, point.lon))
-    };
+    let at = |p: &Position| position_at(data, p).ok_or_else(|| format!("no road {}", p.road));
     route.legs.iter().map(|leg| Ok([at(&leg.start)?, at(&leg.end)?])).collect()
+}
+
+/// The coordinate of `position` and the two ends of its road, which tell the two directions of a
+/// road apart.
+fn pin_key<P: RoutingData>(data: &P, position: &Position) -> Option<[(i32, i32); 3]> {
+    let ends = data.with_road(position.road, |road| [road.shape[0], road.shape[road.shape.len() - 1]]).ok()?;
+    Some([position_at(data, position)?, (ends[0].lat, ends[0].lon), (ends[1].lat, ends[1].lon)])
+}
+
+/// `request` with its pins on the roads of `new`, another layout of the bake of `old`: each pin
+/// becomes the candidate of its point in `new` at the same coordinate on a road with the same
+/// ends. `None` when one has none.
+pub fn repin<A: RoutingData, B: RoutingData>(old: &A, new: &B, request: &Request) -> Option<Request> {
+    let mut moved = request.clone();
+    let last = request.points.len().checked_sub(1)?;
+    for (pin, at) in [(&mut moved.start_position, 0), (&mut moved.end_position, last)] {
+        let Some(id) = pin.as_ref() else { continue };
+        let (road, fraction) = id.split_once(':')?;
+        let wanted = pin_key(old, &Position { road: road.parse().ok()?, fraction: fraction.parse().ok()? })?;
+        let [lon, lat] = request.points[at];
+        let point = Point { lat: (lat * 1e6).round() as i32, lon: (lon * 1e6).round() as i32, elevation: NO_ELEVATION };
+        let found = snap(new, point, &request.profile)?;
+        let candidate = found.retained.iter().find(|c| pin_key(new, &c.position) == Some(wanted))?;
+        *pin = Some(candidate.position.id());
+    }
+    Some(moved)
 }
 
 /// Compares the two sides of a request. A difference is the `Err`. On two layouts (`layouts`), a
