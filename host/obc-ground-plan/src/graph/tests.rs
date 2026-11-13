@@ -731,7 +731,7 @@ fn crossings_take_the_first_row_of_the_table() {
     ];
     assert_eq!(crossing(&lines), Some((Culvert, Source::Fallback)));
     // A crossing at a shared vertex reads its arms by position: a far vertex changes nothing.
-    let ford = |far: bool| {
+    let shared = |far: bool| {
         let mut street = vec![[0.0, -40.0], [0.0, 0.0], [0.0, 40.0]];
         if far {
             street.insert(0, [-60.0, -120.0]);
@@ -744,8 +744,8 @@ fn crossings_take_the_first_row_of_the_table() {
         let c = &g.crossings[0];
         (c.kind, c.source, c.angle_rad, class(&g, &g.junctions[0].arms[0]))
     };
-    assert_eq!(ford(false), ford(true));
-    assert_eq!((ford(false).0, ford(false).2), (Culvert, core::f64::consts::FRAC_PI_2));
+    assert_eq!(shared(false), shared(true));
+    assert_eq!((shared(false).0, shared(false).2), (Culvert, core::f64::consts::FRAC_PI_2));
     // A path that shares a vertex with a stream fords it.
     let g = graph(&[
         footway(&[[0.0, -40.0], [0.0, 0.0], [0.0, 40.0]], 0.0),
