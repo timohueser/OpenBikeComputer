@@ -101,13 +101,19 @@
         return [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
     };
 
-    // The control takes its own credits only when it is made.
+    // The control takes its own credits only when it is made. A new control opens; with the long credits of a picture it
+    // would cover the map, so from the first picture on the credits stay behind the button.
+    let closed = false;
     $effect(() => {
         const custom = credits;
         if (!map || !attribution) return;
         untrack(() => {
             map!.removeControl(attribution!);
             map!.addControl(attribution = new maplibregl.AttributionControl({ compact: true, customAttribution: custom }), 'top-left');
+            if (!(closed ||= custom.length > 0)) return;
+            const box = container.querySelector('.maplibregl-ctrl-attrib');
+            box?.classList.remove('maplibregl-compact-show');
+            box?.removeAttribute('open');
         });
     });
 
@@ -196,5 +202,17 @@
     /* The credits wrap before they reach the zoom buttons at the top right. */
     .routes-map :global(.maplibregl-ctrl-top-left) {
         right: 52px;
+    }
+    /* The credit in the letters and the colours of the page, as on the map of a route. */
+    .routes-map :global(.maplibregl-ctrl-attrib) {
+        background: var(--panel);
+        color: var(--ink-soft);
+        font: 11px/20px var(--sans);
+    }
+    .routes-map :global(.maplibregl-ctrl-attrib a) {
+        color: inherit;
+    }
+    :global(:root[data-theme="dark"]) .routes-map :global(.maplibregl-ctrl-attrib-button) {
+        filter: invert(1);
     }
 </style>
