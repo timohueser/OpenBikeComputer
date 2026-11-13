@@ -7,8 +7,8 @@
     import { townOf } from './towns';
     import type { FitSample } from '../../lib/core/fit';
     import { duration } from '../../lib/planner/editor';
-    import { distanceAxis, extent, outOfStops, range, sampleAt, smooth, speeds, stops, thin, timeAxis } from '../../lib/ride/lines';
-    import type { Channels, PartNumbers, RideClimb } from '../../lib/ride/numbers';
+    import { distanceAxis, extent, outOfStops, range, sampleAt, samplesIn, smooth, speeds, stops, thin, timeAxis } from '../../lib/ride/lines';
+    import { partNumbers, type Channels, type RideClimb } from '../../lib/ride/numbers';
     import { formatAlong, formatDistance, formatHeight, formatSpeed } from '../../lib/settings/format';
 
     /** The bottom card of the Ride page: one row for each line of the ride on its axis, with the average of the
@@ -17,7 +17,7 @@
      * The name of the axis beside the ticks is its switch: the distance, or the time of day, where a stop has a width and
      * the lines end at a step of more than a minute. A stop is a mark on the row of the ticks; the foot of the pointer says
      * its length. */
-    let { samples, shares, speed, channels, climbs = [], mark, onpoint, part, onpart, partFacts }: {
+    let { samples, shares, speed, channels, climbs = [], mark, onpoint, part, onpart, limits }: {
         samples: FitSample[];
         /** The share of the summary line at each sample (`lineShares`). */
         shares: number[];
@@ -31,8 +31,8 @@
         /** The selected part, from its first to its last sample. */
         part: [number, number] | null;
         onpart: (part: [number, number] | null) => void;
-        /** The numbers of the selected part, which the large line shows. */
-        partFacts?: PartNumbers;
+        /** The limits of the zones, for the numbers of a stretch of the large line. */
+        limits: { maxHr: number | null; ftp: number | null };
     } = $props();
 
     type Key = 'elevation' | 'speed' | 'hr' | 'power' | 'cadence';
@@ -102,12 +102,11 @@
         : over && shares[sampleAt(xs, over.x)] === mark ? over.x : xs[sampleAt(shares, mark)]);
     const shownPart = $derived<[number, number] | null>(part && [xs[part[0]], xs[part[1]]]);
     /** The ends of the part by the distance or by the time of day, then its distance. */
-    const partRange = (times: boolean) => {
+    const partText = $derived.by(() => {
         if (!part) return '';
         const [from, to] = [axis.xs[part[0]] * axis.lengthM, axis.xs[part[1]] * axis.lengthM];
-        return `${times ? `${clock(samples[part[0]].timeS)} to ${clock(samples[part[1]].timeS)}` : `${formatAlong(from)} to ${formatAlong(to)}`} · ${formatDistance(to - from)}`;
-    };
-    const partText = $derived(partRange(byTime));
+        return `${byTime ? `${clock(samples[part[0]].timeS)} to ${clock(samples[part[1]].timeS)}` : `${formatAlong(from)} to ${formatAlong(to)}`} · ${formatDistance(to - from)}`;
+    });
     /** The start, the end, then round distances; on the time axis the time of the start and of the end, then whole
      * times of the day. */
     const ticks = $derived.by(() => {
@@ -145,23 +144,26 @@
         open: { label: `${series[key].label}, open large`, run: () => { large = key; } },
     })));
 
-    /** The sensor of the large line and the numbers under it: of the selected part, else of the whole ride. */
-    const shownLarge = $derived.by(() => {
-        if (!large) return undefined;
-        const key = large, { format } = series[key], selected = part && partFacts;
+    /** The zones of a large line, its sensor and the numbers under it: of a stretch of the distance axis, else of the
+     * whole ride. The stretch of the selected part is the samples of the part; any other stretch has no end in a stop,
+     * as a part. */
+    function largeOf(key: Key, stretch: [number, number] | null) {
+        const { format, limit } = series[key];
+        const inside = stretch && (part && stretch[0] === axis.xs[part[0]] && stretch[1] === axis.xs[part[1]] ? part : outOfStops(halts, samplesIn(axis.xs, stretch)));
+        const facts = inside && partNumbers(samples, inside, limits);
         const whole = key === 'hr' || key === 'power' || key === 'cadence' ? channels?.[key] : undefined;
-        const sensor = whole && selected ? partFacts.channels[key as keyof Channels] : whole;
+        const sensor = whole && facts ? facts.channels[key as keyof Channels] : whole;
         // The smallest and largest value of the line as it is drawn, not the range of the row, which is wider for a flat
         // line. For the speed it is the largest mean over SMOOTH_S, as the scale of its row.
-        const found = extent(selected ? values[key].slice(part[0], part[1] + 1) : values[key]);
+        const found = extent(inside ? values[key].slice(inside[0], inside[1] + 1) : values[key]);
         const text = (value?: number) => value === undefined ? '–' : format(value);
         const numbers = key === 'elevation' ? [{ label: 'Lowest', value: text(found?.low) }, { label: 'Highest', value: text(found?.high) }]
-            : key === 'speed' ? [{ label: 'Average', value: text(selected ? partFacts.speed : speed) }, { label: 'Highest', value: text(found?.high) }]
+            : key === 'speed' ? [{ label: 'Average', value: text(facts ? facts.speed : speed) }, { label: 'Highest', value: text(found?.high) }]
                 : [{ label: 'Average', value: text(sensor?.mean) }, { label: 'Highest', value: text(sensor?.max) }];
-        // The zones of the line are those of the whole ride, also when the part has no value of the sensor. A sensor
+        // The zones of the line are those of the whole ride, also when the stretch has no value of the sensor. A sensor
         // with no limit keeps its link to the Settings then.
-        return { key, times: sensor ?? (whole?.zones ? undefined : whole), numbers, zones: whole?.zones?.map(({ zone }) => zone) };
-    });
+        return { times: limit ? sensor ?? (whole?.zones ? undefined : whole) : undefined, numbers, zones: whole?.zones?.map(({ zone }) => zone) };
+    }
 
     /** The samples of a part of the axis. On the distance axis a stop is one place: a part does not begin or end in
      * it, so the time of the stop is in no part by chance. */
@@ -227,11 +229,11 @@
     </div>
 {/snippet}
 
-{#if shownLarge}
-    {@const { key, times, numbers, zones } = shownLarge}
+{#if large}
+    {@const key = large}
     <RideLarge title={series[key].label} color={series[key].color} format={series[key].format} xs={axis.xs} lengthM={axis.lengthM} values={values[key]}
-        {zones} times={series[key].limit ? times : undefined} unit={series[key].unit} missing={series[key].limit} grades={key === 'elevation'}
-        part={part && [axis.xs[part[0]], axis.xs[part[1]]]} partText={partRange(false)} {numbers} {start} onClose={() => large = null} />
+        of={stretch => largeOf(key, stretch)} unit={series[key].unit} missing={series[key].limit} grades={key === 'elevation'}
+        part={part && [axis.xs[part[0]], axis.xs[part[1]]]} {start} onClose={() => large = null} />
 {/if}
 
 <div class="lines" style:cursor={hovered >= 0 ? 'pointer' : undefined}>

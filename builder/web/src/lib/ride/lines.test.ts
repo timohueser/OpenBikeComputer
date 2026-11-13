@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { FitSample } from '../core/fit';
 import { rideSummary, lineCoordinates } from '../library/summary';
 import { heartRateZones } from '../settings/zones';
-import { distanceAxis, extent, lineShares, outOfStops, range, sampleAt, slice, smooth, speeds, stops, thin, timeAxis, zoneStretches } from './lines';
+import { distanceAxis, extent, fitView, lineShares, outOfStops, range, sampleAt, samplesIn, slice, smooth, speeds, stops, thin, timeAxis, viewColumns, zoneStretches } from './lines';
 
 const T = 1_792_828_800;
 /** Microdegrees of latitude for about 50 m. */
@@ -149,5 +149,31 @@ describe('the time axis, the stops and a part of a ride', () => {
         expect(part.map(s => s.timeS)).toEqual([samples[12].timeS, samples[13].timeS, samples[14].timeS]);
         expect(part.map(s => s.segmentStart)).toEqual([true, false, false]);
         expect(samples[12].segmentStart).toBe(false);
+    });
+});
+
+describe('a view of a stretch of the axis', () => {
+    it('is at least the least length about the middle of the stretch, and stays inside the axis', () => {
+        const [from, to] = fitView([.4, .41], .1);
+        expect(from).toBeCloseTo(.355);
+        expect(to).toBeCloseTo(.455);
+        expect(fitView([-.2, .3], .1)).toEqual([0, .5]);
+        expect(fitView([.8, 1.3], .1)).toEqual([.5, 1]);
+        expect(fitView([0, 1], 2)).toEqual([0, 1]);
+    });
+
+    it('holds the samples from its start to its end, and the two samples around a stretch with none', () => {
+        const xs = [0, .2, .4, .4, .6, 1];
+        expect(samplesIn(xs, [.1, .5])).toEqual([1, 3]);
+        expect(samplesIn(xs, [.2, .6])).toEqual([1, 4]);
+        expect(samplesIn(xs, [.7, .9])).toEqual([4, 5]);
+        expect(samplesIn(xs, [0, 1])).toEqual([0, 5]);
+    });
+
+    it('draws the line to each edge of the stretch, with the value between the two samples around the edge', () => {
+        expect(viewColumns([0, .5, 1], [0, 10, 20], [.25, .75], 4)).toEqual([5, 7.5, 10, 15]);
+        // A stretch between two samples is the straight line between them.
+        expect(viewColumns([0, 1], [0, 20], [.25, .75], 2)).toEqual([5, 15]);
+        expect(viewColumns([0, .5, 1], [0, 10, 20], [0, 1], 3)).toEqual(thin([0, .5, 1], [0, 10, 20], 3));
     });
 });

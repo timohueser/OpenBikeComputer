@@ -6,9 +6,10 @@
      * `children` gets `close`, which closes the dialog as Esc and the close button do: the focus goes back.
      * A `large` window is a page over the page: a click on the dimmed page closes it, and on a phone it fills the screen.
      * A `wide` window is a large window for a content that needs the width, such as a line over a distance.
+     * `beside` stands after the title, such as the way back from a closer view of the content.
      */
-    let { title, large = false, wide = false, onClose, children }: {
-        title: string; large?: boolean; wide?: boolean; onClose: () => void; children: Snippet<[() => void]>;
+    let { title, large = false, wide = false, onClose, children, beside }: {
+        title: string; large?: boolean; wide?: boolean; onClose: () => void; children: Snippet<[() => void]>; beside?: Snippet;
     } = $props();
     const page = $derived(large || wide);
     let dialog: HTMLDialogElement;
@@ -39,6 +40,7 @@
     onclick={page ? event => { if (pressedOutside && outside(event)) close(); } : undefined}>
     <header>
         <h2 id={heading}>{title}</h2>
+        {@render beside?.()}
         <button type="button" class="close" aria-label="Close" onclick={close}><Icon name="close" /></button>
     </header>
     {@render children(close)}
@@ -96,7 +98,6 @@
         padding: 16px 0 12px;
     }
     h2 {
-        flex: 1;
         margin: 0;
         font: 600 17px/1.3 var(--sans);
     }
@@ -105,6 +106,7 @@
         place-items: center;
         width: 32px;
         height: 32px;
+        margin-left: auto;
         padding: 0;
         border: 0;
         border-radius: 6px;
