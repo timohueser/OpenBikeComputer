@@ -15,10 +15,10 @@
 
     const readers: Readers = { gpx: readGpx, fit: readFit };
     const KINDS = [
-        { kind: 'ride', label: 'rides' },
-        { kind: 'route', label: 'planned routes' },
-        { kind: 'known', label: 'are in your library already' },
-        { kind: 'unreadable', label: 'not readable' },
+        { kind: 'ride', one: 'ride', label: 'rides' },
+        { kind: 'route', one: 'planned route', label: 'planned routes' },
+        { kind: 'known', one: 'is in your library already', label: 'are in your library already' },
+        { kind: 'unreadable', one: 'not readable', label: 'not readable' },
     ] as const;
 
     // `found` is not reactive: a large export has thousands of records. `shown` follows `version`.
@@ -32,6 +32,8 @@
     let added = $state({ ride: 0, route: 0 });
     let message = $state('');
     let expanded = $state(false);
+    /** A file that can be a ride or a planned route is in the list. */
+    let choice = $state(false);
     let over = $state(false);
     let input: HTMLInputElement;
     let controller = new AbortController();
@@ -53,7 +55,7 @@
         added = { ride: 0, route: 0 };
         source = items.length === 1 ? items[0].name : '';
         message = '';
-        expanded = false;
+        expanded = choice = false;
         phase = 'reading';
         version++;
         try {
@@ -62,6 +64,7 @@
                 if (current.signal.aborted) return;
                 found.push(file);
                 counts[file.kind]++;
+                if ('other' in file && file.other) choice = true;
                 version++;
             }
         } catch (error) {
@@ -126,20 +129,15 @@
 
     const plural = (n: number, one: string, many: string) => `${n.toLocaleString('en')} ${n === 1 ? one : many}`;
 
-    function detail(file: Found): string {
-        switch (file.kind) {
-            case 'ride': return `ride · ${formatDistance(file.ride.summary.lengthM)}`;
-            case 'route': return `planned route · ${formatDistance(file.lengthM)}`;
-            case 'known': return 'in your library already';
-            case 'unreadable': return `not readable: ${file.reason}`;
-        }
-    }
+    const NAMES = { ride: 'ride', route: 'planned route' };
+    const lengthOf = (file: Found & { kind: 'ride' | 'route' }) => formatDistance(file.kind === 'ride' ? file.ride.summary.lengthM : file.lengthM);
 </script>
 
 <Window title="Add files" {onClose}>
     {#snippet children(close)}
         <div
             class="drop"
+            class:small={phase !== 'empty'}
             class:over
             role="region"
             aria-label="Drop files or a folder"
@@ -148,7 +146,7 @@
             ondrop={drop}
         >
             <strong>Drop files or a folder here</strong>
-            <p>GPX and FIT files, one or many. Also the ZIP file that Strava, Komoot or Garmin gives you with all your data.</p>
+            {#if phase === 'empty'}<p>GPX and FIT files, or the ZIP file with all your data from Strava, Komoot or Garmin.</p>{/if}
             <button type="button" onclick={() => input.click()} disabled={phase === 'adding'}>Choose files</button>
             <input bind:this={input} type="file" multiple hidden aria-label="Choose files"
                 onchange={() => { void read([...input.files ?? []]); input.value = ''; }} />
@@ -161,23 +159,27 @@
                     {#each KINDS as { kind } (kind)}<span class={kind} style:flex-grow={counts[kind]}></span>{/each}
                 </div>
                 <dl class="counts">
-                    {#each KINDS as { kind, label } (kind)}
-                        <div><dt><i class={kind}></i>{label}</dt><dd>{counts[kind].toLocaleString('en')}</dd></div>
+                    {#each KINDS as { kind, one, label } (kind)}
+                        <div class={kind} class:none={counts[kind] === 0}><dt>{counts[kind] === 1 ? one : label}</dt><dd>{counts[kind].toLocaleString('en')}</dd></div>
                     {/each}
                 </dl>
-                <p class="rule">A file with times comes in as a ride. You can change it to a planned route.</p>
+                {#if choice}<p class="rule">A file with times comes in as a ride. You can change it to a planned route.</p>{/if}
                 {#if shown.length}
                     <ul class:expanded>
                         {#each shown as file, i (i)}
                             <li>
                                 <span class="name" title={file.file}>{file.name}</span>
-                                {#if (file.kind === 'ride' || file.kind === 'route') && file.other && (phase === 'reading' || phase === 'read') && !done.has(file)}
-                                    <span class="detail choice">
-                                        <Segmented compact label={`${file.name}: ride or planned route`} options={[...FORMS]} value={file.kind} onChange={() => swap(i)} />
-                                        {formatDistance(file.kind === 'ride' ? file.ride.summary.lengthM : file.lengthM)}
-                                    </span>
+                                {#if file.kind === 'known'}
+                                    <span class="detail">in your library already</span>
+                                {:else if file.kind === 'unreadable'}
+                                    <span class="detail unreadable">not readable: {file.reason}</span>
                                 {:else}
-                                    <span class="detail" class:unreadable={file.kind === 'unreadable'}>{detail(file)}</span>
+                                    {#if file.other && (phase === 'reading' || phase === 'read') && !done.has(file)}
+                                        <Segmented compact label={`${file.name}: ride or planned route`} options={[...FORMS]} value={file.kind} onChange={() => swap(i)} />
+                                    {:else}
+                                        <span class="detail">{NAMES[file.kind]}</span>
+                                    {/if}
+                                    <span class="detail length">{lengthOf(file)}</span>
                                 {/if}
                             </li>
                         {/each}
@@ -200,7 +202,7 @@
             {:else}
                 <button type="button" onclick={() => { controller.abort(); close(); }}>Cancel</button>
                 <button type="button" class="primary" onclick={add} disabled={phase !== 'read' || toAdd === 0}>
-                    {phase === 'adding' ? `Adding… ${toAdd.toLocaleString('en')} left` : `Add ${toAdd.toLocaleString('en')} to the library`}
+                    {phase === 'adding' ? `Adding… ${toAdd.toLocaleString('en')} left` : phase === 'empty' ? 'Add to the library' : `Add ${toAdd.toLocaleString('en')} to the library`}
                 </button>
             {/if}
         </footer>
@@ -213,33 +215,39 @@
         justify-items: center;
         gap: 6px;
         padding: 20px 16px;
-        border: 2px dashed var(--line-strong);
+        border: 1px dashed var(--line-strong);
         border-radius: 10px;
         background: var(--parchment);
         text-align: center;
     }
     .drop.over { border-color: var(--forest); }
     .drop strong { font-size: 16px; }
+    /* With files in the list the drop place is one low row, so the list and the button that adds lead. */
+    .drop.small {
+        grid-template-columns: 1fr auto;
+        justify-items: start;
+        align-items: center;
+        padding: 8px 8px 8px 14px;
+    }
+    .drop.small strong { font-size: 14px; }
     .drop p {
         margin: 0 0 6px;
         color: var(--ink-soft);
         font-size: 13px;
     }
     button {
-        min-height: 32px;
-        padding: 5px 12px;
+        padding: 6px 12px;
         border: 1px solid var(--line-strong);
         border-radius: 6px;
         background: var(--panel);
         color: var(--ink);
     }
     button:hover:not(:disabled) { background: var(--parchment-2); }
-    .primary {
-        border-color: var(--forest);
-        background: var(--forest);
-        color: var(--panel);
+    .primary, .primary:hover:not(:disabled) {
+        border-color: var(--rust);
+        background: var(--rust);
+        color: var(--cream);
     }
-    .primary:hover:not(:disabled) { background: var(--forest-deep); }
     section { margin-top: 16px; }
     .head {
         display: flex;
@@ -259,46 +267,47 @@
         border-radius: 4px;
         background: var(--parchment-2);
     }
-    .bar span { flex-basis: 0; }
-    .ride { background: var(--forest); }
-    .route { background: var(--route); }
-    .known { background: var(--parchment-3); }
-    .unreadable { background: var(--ink); }
+    .bar span { flex-basis: 0; background: var(--kind); }
+    .ride { --kind: var(--ride); }
+    .route { --kind: var(--route); }
+    .known { --kind: var(--parchment-3); }
+    .unreadable { --kind: var(--ink-faint); }
+    /* One line under the bar: the colour, the number, the kind. A term comes before its value in the markup. */
     .counts {
-        display: grid;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
-        gap: 8px;
-        margin: 10px 0 0;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 2px 18px;
+        margin: 8px 0 0;
+        font-size: 13px;
     }
-    /* A term comes before its value in the markup; the number shows above its label. */
     .counts div {
         display: flex;
-        flex-direction: column-reverse;
-        justify-content: flex-end;
+        flex-direction: row-reverse;
+        align-items: center;
+        gap: 5px;
+    }
+    .counts .none { display: none; }
+    .counts div::after {
+        content: "";
+        width: 9px;
+        height: 9px;
+        margin-right: 1px;
+        border-radius: 2px;
+        background: var(--kind);
     }
     dd {
         margin: 0;
-        font-size: 22px;
         font-weight: 700;
+        font-variant-numeric: tabular-nums;
     }
-    dt {
-        color: var(--ink-soft);
-        font-size: 12px;
-    }
-    dt i {
-        display: inline-block;
-        width: 9px;
-        height: 9px;
-        margin-right: 6px;
-        border-radius: 2px;
-    }
+    dt { color: var(--ink-soft); }
     .rule {
-        margin: 12px 0 8px;
+        margin: 14px 0 0;
         color: var(--ink-soft);
-        font-size: 12px;
+        font-size: 12.5px;
     }
     ul {
-        margin: 0;
+        margin: 10px 0 0;
         padding: 0;
         list-style: none;
     }
@@ -311,11 +320,13 @@
         justify-content: space-between;
         gap: 12px;
         align-items: center;
-        padding: 7px 0;
+        min-height: 43px;
+        padding: 6px 0;
         border-top: 1px solid var(--line);
-        font-size: 13px;
+        font-size: 13.5px;
     }
     .name {
+        flex: 1;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
@@ -323,27 +334,26 @@
     .detail {
         flex: none;
         color: var(--ink-soft);
-        font-size: 12px;
+        font-size: 12.5px;
     }
-    .choice {
-        display: flex;
-        align-items: center;
-        gap: 8px;
+    /* The lengths stand in one column at the right edge. */
+    .length {
+        min-width: 52px;
+        font-variant-numeric: tabular-nums;
+        text-align: right;
     }
     .detail.unreadable {
-        background: none;
         color: var(--coral);
     }
     .more {
-        min-height: 0;
-        padding: 6px 0 0;
+        padding: 8px 0 0;
         border: 0;
         border-top: 1px solid var(--line);
         border-radius: 0;
         width: 100%;
         background: none;
         color: var(--ink-soft);
-        font-size: 12px;
+        font-size: 12.5px;
         text-align: left;
     }
     .more:hover:not(:disabled) { background: none; color: var(--ink); }
@@ -357,7 +367,9 @@
         border-top: 1px solid var(--line);
     }
     @media (max-width: 520px) {
-        .counts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         .detail { max-width: 50%; text-align: right; }
+        /* A row with the choice has the name on its own line. */
+        li { flex-wrap: wrap; row-gap: 6px; }
+        li:has(:global([role="radiogroup"])) .name { flex-basis: 100%; }
     }
 </style>

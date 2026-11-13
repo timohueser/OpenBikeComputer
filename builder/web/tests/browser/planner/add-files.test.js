@@ -70,7 +70,7 @@ test('adds the rides and the routes of files and a ZIP file once, and gives the 
   // A GPX file with times can also be a planned route.
   const form = page.getByRole('radiogroup', { name: 'ride: ride or planned route' });
   await form.getByRole('radio', { name: 'planned route' }).click();
-  await expect(page.locator('dl > div')).toHaveText(['rides1', 'planned routes3', 'are in your library already0', 'not readable1']);
+  await expect(page.locator('dl > div')).toHaveText(['ride1', 'planned routes3', 'are in your library already0', 'not readable1']);
   await form.getByRole('radio', { name: 'ride', exact: true }).click();
   await expect(page.locator('dl > div')).toHaveText(['rides2', 'planned routes2', 'are in your library already0', 'not readable1']);
   await page.getByRole('button', { name: 'Add 4 to the library' }).click();

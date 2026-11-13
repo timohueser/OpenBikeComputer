@@ -56,7 +56,7 @@
     }
     .large {
         overscroll-behavior: contain;
-        width: min(1080px, calc(100vw - 48px));
+        width: min(640px, calc(100vw - 48px));
         max-height: calc(100dvh - 48px);
     }
     @media (max-width: 760px) {
@@ -69,8 +69,16 @@
             border-radius: 0;
         }
     }
-    dialog::backdrop { background: rgb(28 27 20 / 0.55); }
+    dialog::backdrop { background: rgb(28 27 20 / 0.7); }
     :global([data-theme="dark"]) dialog::backdrop { background: rgb(0 0 0 / 0.55); }
+    /* The text starts under the title, and the row of buttons ends the window: the same in each window. */
+    dialog > :global(p) { margin: 0; }
+    dialog :global(.window-buttons) {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        margin-top: 20px;
+    }
     /* The header stays at the top while the window scrolls. */
     header {
         position: sticky;
