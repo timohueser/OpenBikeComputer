@@ -29,9 +29,9 @@ test('a change of the hash closes an open window of the planner', async ({ page 
   await page.mouse.click(map.x + map.width / 2, map.y + map.height / 2);
   const view = page.getByRole('dialog', { name: 'TrailView' });
   await expect(view).toBeVisible();
-  await page.evaluate(() => { location.hash = '#/settings'; });
+  await page.evaluate(() => { location.hash = '#/device'; });
   await expect(view).toHaveCount(0);
-  await expect(page.getByRole('heading', { name: 'Settings', level: 1 })).toBeVisible();
+  await expect(page.getByRole('navigation', { name: 'Pages' }).getByRole('link', { name: 'Device' })).toHaveAttribute('aria-current', 'page');
   await page.getByRole('link', { name: 'Planner' }).click();
   await expect(page.locator('.maplibregl-canvas')).toBeVisible();
 });
