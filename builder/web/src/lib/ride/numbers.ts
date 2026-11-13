@@ -3,7 +3,7 @@
 import type { FitSample } from '../core/fit';
 import { metres, movingSteps } from '../library/summary';
 import { cumulative, firstIndex, type Coordinate } from '../planner/geo';
-import { lineClimbs, type Climb } from '../planner/route-facts';
+import { routeSegments } from '../planner/search/segments';
 import { heartRateZones, powerZones, type Zone } from '../settings/zones';
 
 /** The mean and the maximum of one sensor while the ride moves, and with a limit the seconds in each zone. */
@@ -12,8 +12,10 @@ export interface Channel { mean: number; max: number; zones?: { zone: Zone; seco
 /** A sensor with no value while the ride moves has no channel. */
 export interface Channels { hr?: Channel; power?: Channel; cadence?: Channel }
 
-/** A climb with its moving seconds, and its mean power when the ride has power. */
-export interface RideClimb extends Climb { seconds: number; powerW?: number }
+/** A climb from sample `first` to sample `last`. `from` and `to` are kilometres from the start, with no hop across a
+ * pause; `top` is the place of the last sample. `seconds` is its moving time, `powerW` its mean power when the ride has
+ * power. */
+export interface RideClimb { first: number; last: number; from: number; to: number; ascent: number; top: Coordinate; seconds: number; powerW?: number }
 
 /** Each sample weighs the seconds of the moving step that ends at it (`movingSteps`). */
 function channel(samples: FitSample[], steps: number[], value: (sample: FitSample) => number | undefined, zones?: Zone[]): Channel | undefined {
@@ -42,21 +44,44 @@ export function channels(samples: FitSample[], limits: { maxHr: number | null; f
     };
 }
 
-/** The climbs of the ride by the one climb rule (`lineClimbs`), over the line of all samples. */
-export function rideClimbs(samples: FitSample[]): RideClimb[] {
-    const coordinates = samples.map((s): Coordinate => [s.lon / 1e6, s.lat / 1e6]);
-    const km = cumulative(coordinates), steps = movingSteps(samples);
-    // `routeSegments` rounds the ends of a climb to 1 m.
-    const at = (distance: number) => firstIndex(km.length, i => km[i] >= distance - 5e-4);
-    return lineClimbs({ coordinates, elevation: samples.map(s => s.elevationM ?? null), edges: {} }).map(climb => {
-        let seconds = 0, energy = 0, powered = 0;
-        for (let i = at(climb.from) + 1, last = at(climb.to); i <= last; i++) {
-            seconds += steps[i];
-            const power = samples[i].powerW;
-            if (power !== undefined && steps[i]) { energy += power * steps[i]; powered += steps[i]; }
-        }
-        return { ...climb, seconds, ...powered && { powerW: energy / powered } };
+/** The speed over the moving steps: their metres over their seconds, as the device gives it. Undefined with no moving
+ * step. */
+export function movingSpeed(samples: FitSample[]): number | undefined {
+    let distance = 0, seconds = 0;
+    movingSteps(samples).forEach((step, i) => {
+        if (step) { distance += metres(samples[i - 1], samples[i]); seconds += step; }
     });
+    return seconds ? distance / seconds : undefined;
+}
+
+/** The climbs of the ride by the one climb rule (`routeSegments`), found in each segment by itself, so that a pause
+ * neither adds the hop to a climb nor joins two climbs. */
+export function rideClimbs(samples: FitSample[]): RideClimb[] {
+    const steps = movingSteps(samples), along = [0];
+    for (let i = 1; i < samples.length; i++) along.push(along[i - 1] + (samples[i].segmentStart ? 0 : metres(samples[i - 1], samples[i])));
+    const climbs: RideClimb[] = [];
+    for (let start = 0; start < samples.length;) {
+        let end = start + 1;
+        while (end < samples.length && !samples[end].segmentStart) end++;
+        const part = samples.slice(start, end), coordinates = part.map((s): Coordinate => [s.lon / 1e6, s.lat / 1e6]), km = cumulative(coordinates);
+        // `routeSegments` rounds the ends of a climb to 1 m.
+        const at = (distance: number) => start + firstIndex(km.length, i => km[i] >= distance - 5e-4);
+        const found = part.length < 2 ? [] : routeSegments({ coordinates, elevation: part.map(s => s.elevationM ?? null), edges: {} });
+        for (const { kind, from, to, ascent } of found) {
+            if (kind !== 'climb') continue;
+            const first = at(from), last = at(to);
+            let seconds = 0, energy = 0, powered = 0;
+            for (let i = first + 1; i <= last; i++) {
+                seconds += steps[i];
+                const power = samples[i].powerW;
+                if (power !== undefined && steps[i]) { energy += power * steps[i]; powered += steps[i]; }
+            }
+            climbs.push({ first, last, from: along[first] / 1000, to: along[last] / 1000, ascent: ascent!, top: coordinates[last - start], seconds,
+                ...powered && { powerW: energy / powered } });
+        }
+        start = end;
+    }
+    return climbs;
 }
 
 const CSV_HEADER = 'time,latitude,longitude,elevation_m,distance_m,speed_m_s,heart_rate_bpm,cadence_rpm,power_w,temperature_c';

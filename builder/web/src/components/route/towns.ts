@@ -7,13 +7,13 @@ const SEARCHES = 3;
 const towns = new Map<string, Promise<string | null>>(), waiting: (() => void)[] = [];
 let searching = 0;
 
-/** One place search for each top while the app lives. */
+/** One place search for each top while the app lives. A search that finds no town, or fails, is not kept. */
 export function townOf(top: Coordinate): Promise<string | null> {
     const key = top.join();
     if (!towns.has(key)) towns.set(key, new Promise(resolve => {
         const search = () => {
             searching++;
-            void townName(top).then(resolve).finally(() => { searching--; waiting.shift()?.(); });
+            void townName(top).then(name => { if (name === null) towns.delete(key); resolve(name); }).finally(() => { searching--; waiting.shift()?.(); });
         };
         if (searching < SEARCHES) search(); else waiting.push(search);
     }));

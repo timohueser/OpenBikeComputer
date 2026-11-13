@@ -24,8 +24,8 @@
 
     let renaming = $state(false), input = $state<HTMLInputElement>();
 
-    // A new record ends a rename.
-    $effect(() => { void name; renaming = false; });
+    // A new record ends a rename; a page shows its message while the next record loads.
+    $effect(() => { void [name, message]; renaming = false; });
 
     async function startRename() {
         renaming = true;

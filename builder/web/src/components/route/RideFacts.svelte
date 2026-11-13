@@ -3,16 +3,17 @@
     import Card from '../../lib/ui/Card.svelte';
     import type { RideSummary } from '../../lib/library/records';
     import { duration } from '../../lib/planner/editor';
-    import { STEEPEST_KM } from '../../lib/planner/route-facts';
     import type { Channel, Channels, RideClimb } from '../../lib/ride/numbers';
     import { ROUTES } from '../../lib/routes';
-    import { formatDistance, formatHeight, formatPercent, formatSpeed } from '../../lib/settings/format';
+    import { formatDistance, formatHeight, formatSpeed } from '../../lib/settings/format';
     import { townOf } from './towns';
 
     /** The left card of the Ride page: the numbers of the summary, then heart rate, power and cadence with their zones and
      * the climbs, which come from the samples. A sensor with no value shows nothing. */
-    let { summary, channels, climbs, unreadable, children }: {
+    let { summary, speed, channels, climbs, unreadable, children }: {
         summary: RideSummary;
+        /** The speed over the moving steps, in m/s (`movingSpeed`). */
+        speed?: number;
         /** Undefined while the samples load or when the file cannot be read. */
         channels?: Channels;
         climbs?: RideClimb[];
@@ -57,7 +58,7 @@
             {@render number('Distance', formatDistance(summary.lengthM))}
             {@render number('Climb', formatHeight(summary.climbM))}
             {@render number('Time moving', hours(summary.movingS))}
-            {@render number('Speed', summary.movingS ? formatSpeed(summary.lengthM / summary.movingS) : '–')}
+            {@render number('Speed', speed === undefined ? '–' : formatSpeed(speed))}
         </dl>
 
         {#if unreadable}
@@ -75,7 +76,7 @@
             {#if climbs.length}
                 <h3 class="climbs">Climbs</h3>
                 <ul class="rows">
-                    {#each climbs as climb (climb.from)}
+                    {#each climbs as climb (climb.first)}
                         {@const numbers = [formatDistance((climb.to - climb.from) * 1000), hours(climb.seconds), climb.powerW === undefined ? '' : `${Math.round(climb.powerW)} W`].filter(Boolean).join(' · ')}
                         <li>
                             {#await townOf(climb.top)}
@@ -84,7 +85,6 @@
                                 <strong>{name ? `To ${name}` : 'Climb'}</strong>
                             {/await}
                             <small>{numbers}</small>
-                            <small>{formatPercent(climb.gradient)}, steepest {formatDistance(STEEPEST_KM * 1000)} {formatPercent(climb.steepest)}</small>
                         </li>
                     {/each}
                 </ul>

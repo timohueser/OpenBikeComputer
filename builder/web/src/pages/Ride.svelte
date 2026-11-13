@@ -11,7 +11,7 @@
     import type { RideRecord } from '../lib/library/records';
     import type { Library } from '../lib/library/store';
     import { planFromFile } from '../lib/planner/gpx-import';
-    import { channels, rideClimbs, rideCsv } from '../lib/ride/numbers';
+    import { channels, movingSpeed, rideClimbs, rideCsv } from '../lib/ride/numbers';
     import { fitSport, rideSamples } from '../lib/ride/samples';
     import { router } from '../lib/router.svelte';
     import { ROUTES } from '../lib/routes';
@@ -32,6 +32,7 @@
     // The values that the ride brought, else those of the rider now.
     const numbers = $derived(samples && record ? channels(samples, { maxHr: record.maxHr ?? settings.maxHr?.value ?? null, ftp: record.ftp ?? settings.ftp?.value ?? null }) : undefined);
     const climbs = $derived(samples && rideClimbs(samples));
+    const speed = $derived(samples && movingSpeed(samples));
     const date = $derived(summary && new Date(summary.start * 1000).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }));
 
     // The record loads again after each write of this ride, the file only for a new key.
@@ -109,7 +110,7 @@
     {/snippet}
     {#snippet left()}
         {#if summary}
-            <RideFacts {summary} channels={numbers} {climbs} unreadable={source === null}>
+            <RideFacts {summary} {speed} channels={numbers} {climbs} unreadable={source === null}>
                 <button type="button" class="button danger" onclick={() => deleting = true}>Delete</button>
             </RideFacts>
         {/if}
