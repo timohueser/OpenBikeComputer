@@ -4089,6 +4089,7 @@ dependencies = [
  "obc-ports",
  "obc-reader",
  "obcm-testkit",
+ "serde_json",
 ]
 
 [[package]]

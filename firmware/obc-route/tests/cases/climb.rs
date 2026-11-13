@@ -6,9 +6,10 @@
 //! committed real-route fixture.
 //!
 //! The synthetic streams use round values that sit clearly on one side of each knob ([`MIN_GAIN`]
-//! 80 m, [`MIN_AVG_GRADE`] 3 %, [`MAX_DROP`] 15 m, [`MAX_FLAT`] 300 m, [`MIN_LEN`] 400 m), so a
-//! retune of the defaults moves them instead of silently flipping a result. Elevation steps are
-//! larger than the 3 m dead-band, so the reader's smoothing would not change the outcome.
+//! 80 m, [`MIN_AVG_GRADE`] 3 %, [`MAX_DROP`] 25 m, [`MAX_FLAT`] 300 m, [`MIN_LEN`] 400 m), so a
+//! retune of the defaults moves them instead of silently flipping a result. Their ~10 m steps are
+//! smaller than the 3 m dead band in places, so a base or summit can sit on a band step instead of
+//! a waypoint. The shared vectors pin the rule exactly, for this crate and the web planner.
 
 use obc_formats::io::SliceSource;
 use obc_route::{
@@ -49,10 +50,11 @@ fn clean_single_climb() {
     assert_eq!(c.base_ele_m, 100);
     assert_eq!(c.top_ele_m, 400);
     assert_eq!(c.gain_m, 300);
-    assert_eq!(c.start_m, 0);
+    // The 1.5 m ramp steps hold the dead band for one step, so the rise starts at 10 m.
+    assert_eq!(c.start_m, 10);
     assert_eq!(c.end_m, 2000);
-    assert_eq!(c.len_m(), 2000);
-    assert_eq!(c.avg_grade_pct, 15); // 300 m over 2000 m
+    assert_eq!(c.len_m(), 1990);
+    assert_eq!(c.avg_grade_pct, 15); // 300 m over 1990 m
     assert!(c.gain_m >= MIN_GAIN && c.avg_grade_pct >= MIN_AVG_GRADE && c.len_m() >= MIN_LEN);
 }
 
@@ -92,10 +94,41 @@ fn deep_col_splits_into_two() {
     assert_eq!(climbs[0].base_ele_m, 100);
     assert_eq!(climbs[0].top_ele_m, 300);
     assert_eq!(climbs[0].end_m, 1500);
-    assert_eq!(climbs[1].base_ele_m, 260);
-    assert_eq!(climbs[1].top_ele_m, 460);
-    assert_eq!(climbs[1].start_m, 2000);
+    assert_eq!(climbs[1].base_ele_m, 261);
+    assert_eq!(climbs[1].top_ele_m, 457);
+    assert_eq!(climbs[1].start_m, 2030);
     assert!(climbs[0].end_m <= climbs[1].start_m);
+}
+
+/// The shared climb vectors: the web planner's test reads the same file, so the two rules stay
+/// equal.
+#[test]
+fn shared_climb_vectors() {
+    let file: serde_json::Value =
+        serde_json::from_str(include_str!("../../../../specs/vectors/climbs.json")).expect("climbs.json is JSON");
+    let step = file["step_m"].as_f64().unwrap();
+    for profile in file["profiles"].as_array().unwrap() {
+        let stream = profile["heights"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .map(|(i, h)| ElePt { dist_m: i as f64 * step, ele_m: h.as_f64().unwrap() as f32 });
+        let found: Vec<_> = segment_climbs(stream).as_slice().iter().map(|c| (c.start_m, c.end_m, c.gain_m)).collect();
+        let expected: Vec<_> = profile["climbs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| {
+                (
+                    c["start_m"].as_u64().unwrap() as u32,
+                    c["end_m"].as_u64().unwrap() as u32,
+                    c["gain_m"].as_u64().unwrap() as u16,
+                )
+            })
+            .collect();
+        assert_eq!(found, expected, "{}", profile["name"]);
+    }
 }
 
 #[test]
@@ -178,9 +211,9 @@ fn overflow_keeps_largest_never_panics() {
 fn active_at_is_raw_interval_lookup() {
     let climbs = segment_climbs(ramp(&[
         (0.0, 100.0),
-        (1500.0, 300.0), // climb 0: [0, 1500]
+        (1500.0, 300.0), // climb 0: [20, 1500]
         (2500.0, 260.0), // col > MAX_DROP
-        (4000.0, 460.0), // climb 1: [2500, 4000]
+        (4000.0, 460.0), // climb 1: [2530, 3980], on the dead-band steps
         (4500.0, 460.0),
     ]));
     assert_eq!(climbs.len(), 2);
