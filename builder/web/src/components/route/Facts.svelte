@@ -208,13 +208,13 @@
         display: flex;
         flex: none;
         align-items: center;
-        width: 40px;
+        min-width: 40px;
         min-height: 20px;
         color: var(--ink-soft);
         font-size: 12.5px;
     }
     .rows .lead {
-        width: auto;
+        min-width: 0;
     }
     .climb {
         padding: 0;
