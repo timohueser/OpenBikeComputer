@@ -4,7 +4,7 @@
     import { initCore } from './lib/core/bridge';
     import { Library } from './lib/library/store';
 
-    /** The props that the shell gives each page. `active` is false while a `keep` page is hidden under another page. */
+    /** The props that the shell gives each page. `active` is false while a `keep` page is hidden under another page or under the settings. */
     interface PageProps { library: Library; active: boolean }
     interface Page {
         /** The text of its link in the top bar; a page with no label has no link. */
@@ -26,7 +26,6 @@
         // The page reads and writes GPX and FIT.
         ride: { load: () => initCore().then(() => import('./pages/Ride.svelte')) },
         device: { label: 'Device', load: () => import('./pages/Device.svelte') },
-        settings: { load: () => import('./pages/Settings.svelte') },
     };
 </script>
 
@@ -34,6 +33,7 @@
     import { onMount, tick, untrack } from 'svelte';
     import './styles/shell.css';
     import TopBar from './components/TopBar.svelte';
+    import Window from './lib/ui/Window.svelte';
     import { ROUTES } from './lib/routes';
     import { router } from './lib/router.svelte';
     import { startTheme } from './lib/theme.svelte';
@@ -83,7 +83,7 @@
 </script>
 
 <div class="shell">
-    <TopBar {links} {device} onsync={() => deviceSync.run()} settings={current === 'settings'} />
+    <TopBar {links} {device} onsync={() => deviceSync.run()} settings={router.settings} />
     <div class="pages">
         {#each Object.entries(pages) as [route, page] (route)}
             {#if route === current || (PAGES[route as Route]!.keep && page.component)}
@@ -92,12 +92,21 @@
                     {#if page.error}
                         <p class="failure" role="alert">{page.error}</p>
                     {:else if page.component}
-                        <page.component {library} active={route === current} />
+                        <page.component {library} active={route === current && !router.settings} />
                     {/if}
                 </div>
             {/if}
         {/each}
     </div>
+    {#if router.settings}
+        {#await import('./pages/Settings.svelte') then { default: Settings }}
+            <Settings {library} />
+        {:catch error}
+            <Window title="Settings" large onClose={() => router.closeSettings()}>
+                <p role="alert">{error instanceof Error ? error.message : String(error)}</p>
+            </Window>
+        {/await}
+    {/if}
     <footer>
         <a href={siteBase}>OpenBikeComputer</a>
         <a href={`${siteBase}docs/`}>Docs</a>

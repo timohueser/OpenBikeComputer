@@ -103,7 +103,8 @@
     $effect(() => {
         const search = $state.snapshot({ chips, text });
         keep = () => { keep = undefined; history.replaceState({ ...history.state, search }, ''); };
-        const timer = setTimeout(keep, KEEP_AFTER_MS);
+        // After a link wrote the search, `keep` is undefined: the timer must not write into the next entry.
+        const timer = setTimeout(() => keep?.(), KEEP_AFTER_MS);
         return () => clearTimeout(timer);
     });
 
