@@ -877,7 +877,9 @@ fn a_deck_over_another_deck_lies_on_storey_2() {
     let lines = [upper, lower];
     let (g, input) = (graph(&lines), input_of(cell(), &lines));
     let found = super::level_tags::found(&g, &input, Sections::embedded());
-    let key = |feature: usize| [input.features[feature].parts[0].tile.0, input.features[feature].parts[0].tile.1, feature as u32];
+    let key = |feature: usize| {
+        [input.features[feature].parts[0].tile.0, input.features[feature].parts[0].tile.1, feature as u32]
+    };
     assert_eq!(found.over, [(key(1), key(0))], "the lower bridge under the upper one");
     // The bake's merge, with the features' positions as their ids.
     let ids = |k: [u32; 3]| k[2];

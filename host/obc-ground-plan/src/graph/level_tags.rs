@@ -178,7 +178,8 @@ pub fn merge(found: &BTreeMap<u32, Vec<Found>>, groups: &[Vec<u32>], over: &[(u3
         }
     }
     // The chain on the joined groups; a crossing of a group over itself lifts nothing.
-    let pairs: Vec<(usize, usize)> = over.iter().map(|&(l, u)| (find(&mut root, at(l)), find(&mut root, at(u)))).collect();
+    let pairs: Vec<(usize, usize)> =
+        over.iter().map(|&(l, u)| (find(&mut root, at(l)), find(&mut root, at(u)))).collect();
     let mut storey = vec![1i8; ids.len()];
     for _ in 0..CHAIN_ROUNDS {
         let mut changed = false;
@@ -356,7 +357,8 @@ mod tests {
     #[test]
     fn the_storey_chain_runs_over_the_deck_groups_of_all_cells() {
         let deck = || Found { runs: vec![(0.0, 50.0, State::Deck)], lines: Vec::new(), slab: None };
-        let found = BTreeMap::from([(1, vec![deck(), deck()]), (3, vec![deck()]), (5, vec![deck()]), (20, vec![deck()])]);
+        let found =
+            BTreeMap::from([(1, vec![deck(), deck()]), (3, vec![deck()]), (5, vec![deck()]), (20, vec![deck()])]);
         let tags = merge(&found, &[vec![1, 3], vec![3, 7]], &[(10, 1), (3, 20), (1, 7)]);
         let storey = |id: u32| tags.get(&id).and_then(|t| t.get(STOREY)).map(String::as_str);
         assert_eq!([storey(1), storey(3), storey(7)], [Some("2"); 3]);
