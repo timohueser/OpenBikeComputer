@@ -25,6 +25,12 @@ class Router {
         window.addEventListener("hashchange", () => this.read());
     }
 
+    /** Goes to `hash` in a new entry of the history that holds `state`, for the page there to read. */
+    go(hash: string, state: Record<string, unknown>) {
+        history.pushState(state, "", hash);
+        this.read();
+    }
+
     /** Goes to `hash` in place of the current entry of the history, so Back skips the current address. */
     replace(hash: string) {
         history.replaceState(history.state, "", hash);

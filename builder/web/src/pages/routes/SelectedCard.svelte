@@ -1,7 +1,6 @@
 <!-- The card of the selected route, ride, group of rides or trip over the map: its picture, its numbers, its profile and
      its buttons. The name is the one link of the card. -->
 <script lang="ts">
-    import Credits from '../../components/planner/Credits.svelte';
     import Cover from '../../lib/covers/Cover.svelte';
     import type { Library } from '../../lib/library/store';
     import { duration } from '../../lib/planner/editor';
@@ -13,7 +12,7 @@
     import { dayText, tripDates, type Row } from './rows';
     import { stateText, waitingWith, type DeviceState } from './state';
 
-    let { library, item, row, device, route, inGroup = false }: {
+    let { library, item, row, device, route, inGroup = false, credits = $bindable([]) }: {
         library: Library;
         /** A route, or the ride of `row` that the card shows. */
         item: Item;
@@ -24,9 +23,11 @@
         route?: string;
         /** The ride is a ride of an open group. */
         inGroup?: boolean;
+        /** The credits of the picture. It is too small to show them, so the page shows them with the map. */
+        credits?: string[];
     } = $props();
 
-    let credits = $state<string[]>([]), failure = $state('');
+    let failure = $state('');
     const sum = (key: 'lengthM' | 'climbM' | 'movingS') => row!.rides.reduce((total, ride) => total + ride.summary[key], 0);
     const trip = $derived(row?.kind === 'trip');
     // A trip shows the profile and the numbers of all its days.
@@ -53,7 +54,6 @@
 <section class="card" aria-label={row?.name ?? item.name}>
     <div class="picture">
         <Cover {library} id={item.id} place="card" bind:credits />
-        <Credits {credits} side="left" />
     </div>
     <div class="text">
         <h2><a class="open" href={`${item.kind === 'ride' ? ROUTES.ride : ROUTES.route}/${item.id}`}>{row?.name ?? item.name}</a></h2>
@@ -128,7 +128,7 @@
         color: inherit;
         text-decoration: none;
     }
-    /* The name is the one link of the card: it covers the whole card, under the send button and the credits. */
+    /* The name is the one link of the card: it covers the whole card, under the send button. */
     .open::after {
         position: absolute;
         inset: 0;

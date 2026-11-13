@@ -53,7 +53,7 @@ const settle = async () => { for (let i = 0; i < 30; i++) await new Promise(reso
 
 let held = false;
 const document = Object.assign(new EventTarget(), { hidden: false });
-let library: Library, factory: IDBFactory, stops: (() => void)[];
+let library: Library, factory: IDBFactory, stops: (() => void)[], coarse = false;
 
 beforeEach(() => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
@@ -62,6 +62,8 @@ beforeEach(() => {
     document.hidden = false;
     vi.stubGlobal('document', document);
     vi.stubGlobal('window', new EventTarget());
+    coarse = false;
+    vi.stubGlobal('matchMedia', (query: string) => ({ matches: coarse && query === '(pointer: coarse)' }));
     // One lock for all the jobs, as the browser has for all its tabs.
     vi.stubGlobal('navigator', {
         onLine: true,
@@ -321,6 +323,17 @@ describe('the map picture', () => {
             state: 'waiting', tries: 0, map: { lineKey: lineKey(route('a')), tries: 0, light: expect.any(Blob), credits: ['Map test data'] },
         });
         expect(await library.cover('b')).toBeUndefined();
+    });
+
+    it('comes in place of a cover with a coarse pointer, as on a phone', async () => {
+        await saved('a');
+        coarse = true;
+        const renderer = vi.fn<() => Promise<Renderer>>(), { maker, calls } = fakePicture();
+        stops.push(startCoverJob(library, renderer, async () => maker));
+        wantCover('a', 'card');
+        await settle();
+        expect(calls).toHaveLength(1);
+        expect(renderer).not.toHaveBeenCalled();
     });
 
     it('waits while a cover renders, and comes after a cover that is not possible', async () => {
