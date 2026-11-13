@@ -126,31 +126,31 @@
     {#each routes as route, i (route.id)}{#if i}{' · '}{/if}<a href={`${ROUTES.route}/${route.id}`}>{route.name}</a>{/each}
 {/snippet}
 
-{#if (view === 'connected' || view === 'before') && device}
-    {@const connected = view === 'connected'}
-    <main class="known">
-        <header>
-            <h1>{deviceName(device.serial)}</h1>
-            <span class="state"><span class="dot" class:on={connected}></span>{connected ? 'Connected' : released ? 'Disconnected' : 'Not connected'}</span>
-            <span class="actions">
-                {#if connected}
-                    <button type="button" class="button" onclick={release} disabled={deviceSync.running || updating}>Disconnect</button>
-                {:else}
-                    {@render connectButton('Connect')}
-                {/if}
-            </span>
-        </header>
-        {#if !connected && (other?.formatted || released || error)}
-            <p class="note" class:problem={!!error} role={error ? 'alert' : undefined}>
-                {error ?? (other ? `${other.name} is on the cable.` : 'The map builder can use the device now. Connect takes it back.')}
-            </p>
-        {/if}
-        <div class="columns">
-            <div class="stage">{#key connected}<Drawing live={connected} />{/key}</div>
+<main>
+    <div class="stage">{#key view === 'connected'}<Drawing live={view === 'connected'} />{/key}</div>
+    {#if (view === 'connected' || view === 'before') && device}
+        {@const connected = view === 'connected'}
+        <div class="side known">
+            <header>
+                <h1>{deviceName(device.serial)}</h1>
+                <span class="state"><span class="dot" class:on={connected}></span>{connected ? 'Connected' : released ? 'Disconnected' : 'Not connected'}</span>
+                <span class="actions">
+                    {#if connected}
+                        <button type="button" class="button" onclick={release} disabled={deviceSync.running || updating}>Disconnect</button>
+                    {:else}
+                        {@render connectButton('Connect')}
+                    {/if}
+                </span>
+            </header>
+            {#if !connected && (other?.formatted || released || error)}
+                <p class="note" class:problem={!!error} role={error ? 'alert' : undefined}>
+                    {error ?? (other ? `${other.name} is on the cable.` : 'The map builder can use the device now. Connect takes it back.')}
+                </p>
+            {/if}
             <Card>
                 <div class="rows">
                     <div class="row">
-                        <strong>Sync</strong>
+                        <span class="label">Sync</span>
                         <div>
                             {#if connected && deviceSync.running}
                                 <p class="syncing"><span class="turning"><Icon name="sync" size={16} /></span>Syncing</p>
@@ -172,7 +172,7 @@
                     {#if connected}
                         {#if device.at !== null}
                         <div class="row">
-                            <strong>Routes</strong>
+                            <span class="label">Routes</span>
                             <div>
                                 <p>{device.routes} on the device</p>
                                 {#if held.sent.length}<p class="second">{@render links(held.sent)}{#if more > 0}{` and ${more} more`}{/if}</p>{/if}
@@ -180,7 +180,7 @@
                         </div>
                         {/if}
                         <div class="row">
-                            <strong>Rides</strong>
+                            <span class="label">Rides</span>
                             <div>
                                 <p>{held.rides ? `${held.rides} in your library came from this device` : 'None in your library came from this device'}</p>
                                 {#if held.last !== null}<p class="second">The last on {day(new Date(held.last * 1000))}</p>{/if}
@@ -188,7 +188,7 @@
                         </div>
                         {#if device.at !== null}
                             <div class="row">
-                                <strong>Memory card</strong>
+                                <span class="label">Memory card</span>
                                 <div>
                                     <div class="bar">
                                         {#each parts as part (part.label)}
@@ -200,17 +200,17 @@
                                     </p>
                                 </div>
                             </div>
-                            <div class="row"><strong>Map</strong><div><p>{device.map ?? 'No map'}</p></div></div>
+                            <div class="row"><span class="label">Map</span><div><p>{device.map ?? 'No map'}</p></div></div>
                         {/if}
                         {#if session?.client}
                             <div class="row">
-                                <strong>Software</strong>
+                                <span class="label">Software</span>
                                 <Software client={session.client} running={session.info?.firmwareRevision ?? null} busy={deviceSync.running} bind:working={updating} />
                             </div>
                         {/if}
                     {:else}
                         <div class="row">
-                            <strong>Waits for the device</strong>
+                            <span class="label">Waits for the device</span>
                             <div>
                                 <p>{#if held.waiting.length}{plural(held.waiting.length, 'route')}: {@render links(held.waiting)}{:else}Nothing{/if}</p>
                                 {#if held.leaving}<p class="second">{plural(held.leaving, 'route')} to remove from the device</p>{/if}
@@ -221,39 +221,47 @@
                 </div>
             </Card>
         </div>
-    </main>
-{:else}
-    <main class="alone">
-        {#if view === 'loading'}
-            <h1>{device ? deviceName(device.serial) : 'Device'}</h1>
-        {:else}
-            <Card>
-                <div class="part">
-                    <div class="device"><span></span></div>
-                    {#if view === 'cannot'}
-                        <h1>This browser cannot connect to the device</h1>
-                        <p>The cable connection works in Chrome and in Edge. Your routes and rides are stored in this browser, and another browser does not have them.</p>
-                        <div class="box foot"><strong>What works here</strong>Plan routes, keep rides, and export GPX and FIT files. Only the cable connection is missing.</div>
-                    {:else}
-                        <h1>Connect your OpenBikeComputer</h1>
-                        <p>{other ? `${other.name} is on the cable.` : 'Connect it with the USB cable. Then press the button, and choose the device in the window of the browser.'}</p>
-                        {@render connectButton('Connect a device')}
-                        {#if error}<p class="problem" role="alert">{error}</p>{/if}
-                        <div class="box foot">
-                            <strong>You have no OpenBikeComputer?</strong>
-                            All of this product works without one. Take a route to another device as a GPX or FIT file from its page.
-                            <a href={siteBase}>What the OpenBikeComputer is</a>
-                        </div>
-                    {/if}
+    {:else}
+        <div class="side" class:intro={view !== 'loading'}>
+            {#if view === 'loading'}
+                <h1>{device ? deviceName(device.serial) : 'Device'}</h1>
+            {:else if view === 'cannot'}
+                <h1>This browser cannot connect to the device</h1>
+                <p>The cable connection works in Chrome and in Edge. Your routes and rides are stored in this browser, and another browser does not have them.</p>
+                <div class="aside"><strong>What works here</strong>Plan routes, keep rides, and export GPX and FIT files. Only the cable connection is missing.</div>
+            {:else}
+                <h1>Connect your OpenBikeComputer</h1>
+                <p>{other ? `${other.name} is on the cable.` : 'Connect it with the USB cable. Then press the button, and choose the device in the window of the browser.'}</p>
+                {@render connectButton('Connect a device')}
+                {#if error}<p class="problem" role="alert">{error}</p>{/if}
+                <div class="aside">
+                    <strong>You have no OpenBikeComputer?</strong>
+                    All of this product works without one. Take a route to another device as a GPX or FIT file from its page.
+                    <a href={siteBase}>What the OpenBikeComputer is</a>
                 </div>
-            </Card>
-        {/if}
-    </main>
-{/if}
+            {/if}
+        </div>
+    {/if}
+</main>
 
 <style>
+    /* The device and what the page says of it are one block in the middle of the page, the same in each state. */
     main {
-        padding: 16px 20px 24px;
+        display: grid;
+        grid-template-columns: auto minmax(0, 600px);
+        gap: 56px;
+        align-items: start;
+        justify-content: center;
+        padding: clamp(24px, 10vh, 96px) 24px 32px;
+    }
+    /* The rim and the buttons of the drawing lie outside its box. */
+    .stage {
+        padding: 6px 19px 0;
+    }
+    .side {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
     }
     h1 {
         margin: 0;
@@ -261,6 +269,9 @@
     }
     p {
         margin: 0;
+    }
+    a {
+        color: var(--ink);
     }
     .button {
         min-height: 34px;
@@ -286,17 +297,11 @@
         color: var(--coral);
     }
 
-    .known {
-        display: flex;
-        flex-direction: column;
-        gap: 14px;
-        height: 100%;
-    }
     header {
         display: flex;
         flex-wrap: wrap;
         align-items: center;
-        gap: 10px 24px;
+        gap: 8px 16px;
     }
     .state {
         display: flex;
@@ -315,60 +320,45 @@
         background: var(--connected);
     }
     .actions {
-        display: flex;
-        align-items: center;
-        gap: 12px;
         margin-left: auto;
+    }
+    /* A note in the place of the button takes a line of its own. */
+    .actions:has(.note) {
+        flex-basis: 100%;
     }
     .note {
         color: var(--ink-soft);
-    }
-    .columns {
-        display: grid;
-        flex: 1;
-        grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr);
-        gap: 14px;
-        align-items: start;
-        min-height: 0;
-    }
-    .stage {
-        display: grid;
-        place-items: center;
-        align-self: stretch;
-        padding: 32px 24px;
-        border: 1px solid var(--line);
-        border-radius: 10px;
-        background: var(--parchment-2);
     }
     .rows {
         margin: -16px 0;
     }
     .row {
         display: grid;
-        grid-template-columns: 150px minmax(0, 1fr) auto;
-        gap: 4px 20px;
+        grid-template-columns: 136px minmax(0, 1fr) auto;
+        gap: 4px 16px;
         align-items: start;
         padding: 16px 0;
     }
     .row + .row {
         border-top: 1px solid var(--line);
     }
-    .row strong {
-        padding-top: 1px;
+    /* The label is quiet: the value is what the rider reads. */
+    .label, .second, .hint {
+        color: var(--ink-soft);
+    }
+    .second, .hint {
+        font-size: 13.5px;
     }
     .second {
         margin-top: 4px;
-        color: var(--ink-soft);
-        font-size: 13.5px;
-    }
-    .rows a {
-        color: var(--ink);
     }
     .hint {
         padding: 14px 0 16px;
         border-top: 1px solid var(--line);
-        color: var(--ink-soft);
-        font-size: 13.5px;
+    }
+    /* A button is as high as the two lines beside it, so it does not make its row higher. */
+    .row .button {
+        margin: -3px 0;
     }
     .syncing {
         display: flex;
@@ -413,60 +403,44 @@
         border-radius: 2px;
     }
 
-    .alone {
-        display: grid;
-        justify-items: center;
+    /* Before a first connection the text stands beside the middle of the device. */
+    .intro {
+        align-self: center;
+        align-items: start;
+        max-width: 440px;
     }
-    .alone > :global(section) {
-        width: min(440px, 100%);
-        padding: 28px 24px;
-    }
-    .part {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 14px;
-        text-align: center;
-    }
-    .part p {
+    .intro p {
         color: var(--ink-soft);
     }
-    /* A device with no picture. */
-    .device {
-        display: grid;
-        place-items: center;
-        width: 120px;
-        height: 170px;
-        border-radius: 16px;
-        background: color-mix(in srgb, var(--ink-faint) 70%, var(--panel));
-    }
-    .device span {
-        width: 98px;
-        height: 124px;
-        border-radius: 3px;
-        background: color-mix(in srgb, var(--ink-faint) 40%, var(--panel));
-    }
-    .box {
+    .aside {
         display: flex;
         flex-direction: column;
         gap: 2px;
         align-self: stretch;
-        padding: 10px 12px;
-        border-radius: 8px;
-        background: var(--parchment-2);
-        font-size: 13px;
-        text-align: left;
+        margin-top: 14px;
+        padding-top: 16px;
+        border-top: 1px solid var(--line);
+        color: var(--ink-soft);
+        font-size: 13.5px;
     }
-    .box a {
+    .aside strong {
         color: var(--ink);
     }
-    .foot {
-        margin-top: 24px;
-    }
-    @media (max-width: 760px) {
-        main { padding-inline: 16px; }
-        .columns { grid-template-columns: minmax(0, 1fr); }
+    @media (max-width: 900px) {
+        main {
+            grid-template-columns: minmax(0, 1fr);
+            gap: 20px;
+            padding: 16px 16px 24px;
+        }
+        /* The name and the button come first, then the device, smaller, then the rows. */
+        .known { display: contents; }
+        .known header, .known .note { order: -1; }
+        .stage {
+            --device-h: 300px;
+            justify-self: center;
+        }
+        .intro { justify-self: center; }
         .row { grid-template-columns: minmax(0, 1fr) auto; }
-        .row strong { grid-column: 1 / -1; }
+        .label { grid-column: 1 / -1; }
     }
 </style>
