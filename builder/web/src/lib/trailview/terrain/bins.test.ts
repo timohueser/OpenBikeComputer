@@ -327,8 +327,10 @@ describe('the stamp data of a node', { timeout: 30_000 }, () => {
             const { data, limits } = nodeStamps(list, tile, node, plan), records = 2 + GRID * GRID + 1 + data![1];
             const word = (r: number, i: number) => data![records + RECORD * r + i], all = Array.from({ length: data![0] }, (_, r) => r);
             expect(limits).toBeUndefined();
-            expect([BRIDGE, LAKE, RIVER].map(kind => all.some(r => word(r, 4) === kind))).toEqual([true, true, true]);
-            expect([BRIDGE, RIVER].map(kind => word(all.find(r => word(r, 4) === kind)!, 13) & 0xffff)).toEqual([0, 1]);
+            // With `plan` a bridge has no record on a near level: the records hold the ground under it.
+            expect([BRIDGE, LAKE, RIVER].map(kind => all.some(r => word(r, 4) === kind))).toEqual([!plan, true, true]);
+            const kinds = plan ? [RIVER] : [BRIDGE, RIVER];
+            expect(kinds.map(kind => word(all.find(r => word(r, 4) === kind)!, 13) & 0xffff)).toEqual(plan ? [0] : [0, 1]);
         }
         expect(waterMesh(list, tile, node)!.lakes).toBeGreaterThan(0);
         // Over the paths, a level-16 node holds 65,537 lines with records: their records alone pass STAMP_WORDS.

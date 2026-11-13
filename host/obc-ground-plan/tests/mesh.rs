@@ -1,5 +1,6 @@
-//! The near mesh over every cell of the TrailView fixture: valid topology, the records' labels, and
-//! two neighbouring cells with the same corners and heights on their shared line.
+//! The near mesh over every cell of the TrailView fixture: valid topology, the records' labels, the end
+//! faces on the deck end lines with whole ground about them, and two neighbouring cells with the same
+//! corners and heights on their shared line.
 
 #[path = "fixture/mod.rs"]
 mod fixture;
@@ -11,6 +12,11 @@ use obc_ground_plan::faces::{records, Rules};
 use obc_ground_plan::frame::CellKey;
 use obc_ground_plan::graph;
 use obc_ground_plan::mesh::{check, mesh_cell, Reads, Rim};
+
+/// Ground triangles within `check::NEAR_END_M` of a deck end line steeper than a rock face where the terrain is not
+/// (`check::deck_ends`), measured on the revision 15 fixture: the rock-face fall of an outline edge's cone past its
+/// end's normal at a paved end's corner, which the round slope end bares: the count must not grow.
+const STEEP_NEAR_END_MAX: usize = 51;
 
 #[test]
 fn every_fixture_cell_meshes_validly_with_the_records_labels_and_agrees_with_its_neighbours() {
@@ -29,6 +35,7 @@ fn every_fixture_cell_meshes_validly_with_the_records_labels_and_agrees_with_its
     let mut faults = Vec::new();
     let mut meshes = BTreeMap::new();
     let mut labels = check::Labels::default();
+    let (mut end_faces, mut misses, mut steeps) = (0, 0, 0);
     for (key, _, plan, words, terrain) in &built {
         let around: Vec<Rim> = (-1..=1i64)
             .flat_map(|dy| {
@@ -48,6 +55,10 @@ fn every_fixture_cell_meshes_validly_with_the_records_labels_and_agrees_with_its
             faults.push(format!("{key:?}: {s:?}"));
         }
         faults.extend(check::validity(&mesh).into_iter().map(|f| format!("{key:?}: {f}")));
+        let (stray, missed, steep) = check::deck_ends(&mesh, words, terrain, *key);
+        end_faces += mesh.end_faces;
+        faults.extend(stray.into_iter().map(|f| format!("{key:?}: {f}")));
+        (misses, steeps) = (misses + missed.len(), steeps + steep.len());
         let l = check::labels(&mesh, words);
         labels.sharp_wrong += l.sharp_wrong;
         labels.ground_wrong += l.ground_wrong;
@@ -70,9 +81,11 @@ fn every_fixture_cell_meshes_validly_with_the_records_labels_and_agrees_with_its
         }
     }
     println!(
-        "{} cells meshed, {lines} shared lines ({sub_mm} points with a sub-mm step); labels {labels:?}",
+        "{} cells meshed, {lines} shared lines ({sub_mm} points with a sub-mm step); labels {labels:?}; {end_faces} end face slots, {misses} slots on an end line not end faces, {steeps} steep ground triangles near an end line",
         meshes.len()
     );
+    assert!(end_faces > 0, "no end face in the fixture");
+    assert!(steeps <= STEEP_NEAR_END_MAX, "{steeps} steep ground triangles near a deck end line");
     assert!(faults.is_empty(), "{} faults: {:#?}", faults.len(), &faults[..faults.len().min(20)]);
     assert_eq!(labels.ground_wrong, 0, "{:#?}", labels.first);
 }

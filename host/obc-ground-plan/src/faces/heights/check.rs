@@ -90,7 +90,7 @@ fn audit(words: &[u32], terrain: &Terrain, cell: CellKey, q: [f64; 2]) -> Option
     let material = super::material(words, label);
     let items = super::bin_items(&b, q)?;
     let present = super::present(&b, q, &p, [material, u32::MAX], &items);
-    let h = super::by_label(&b, q, &present.recs, items.blend, label, t, &p).0;
+    let h = super::by_label(&b, q, &present.recs, &items, label, t, &p).0;
     // A blend face has no host: its material line need not be present.
     let missing = (rule == 2 || rule == 4) && material != u32::MAX && !present.recs.iter().any(|r| r.line == material);
     let full = present.full || (rule == 3 && super::regions_full(words, q, label.unwrap_or(u32::MAX), &p));
@@ -252,6 +252,217 @@ pub fn edge_steps(words: &[u32], terrain: &Terrain, cell: CellKey, grid_m: f64) 
             }
             let class = if apart(words, labels[k]) || apart(words, lb) { Class::Apart } else { Class::Unnamed };
             out.push(Step { a, b, dh, labels: [labels[k], lb], class, sides });
+        }
+    }
+    out
+}
+
+/// A step that another line's cone holds higher than the paved side's wall cap (`Step::HeldOverCap`): where it
+/// stands, its height, the metres from it to the outline of the line that holds it (infinite where q's bin lists
+/// none of its edges), and the caps of the paved side's host and of that line.
+#[derive(Clone, Debug)]
+pub struct HeldOver {
+    pub at: [f64; 2],
+    pub height: f64,
+    pub gap: f64,
+    pub caps: [f64; 2],
+}
+
+/// The `HeldOverCap` steps at the label edges of a grid of `grid_m` over the cell, found as `edge_steps` finds
+/// its steps.
+pub fn held_over_cap(words: &[u32], terrain: &Terrain, cell: CellKey, grid_m: f64) -> Vec<HeldOver> {
+    let step = grid_m / metres_per_unit(cell.origin().y + CELL_UNITS / 2);
+    let n = (CELL_UNITS as f64 / step) as usize;
+    let point = |i: usize, j: usize| [(i as f64 + 0.5) * step, (j as f64 + 0.5) * step];
+    let labels: Vec<Option<u32>> = (0..n * n).map(|k| find(words, point(k % n, k / n))).collect();
+    let p = HeightRules::of(words);
+    let mut out = Vec::new();
+    for k in 0..n * n {
+        let (i, j) = (k % n, k / n);
+        for nb in [(i + 1 < n).then_some(k + 1), (j + 1 < n).then_some(k + n)].into_iter().flatten() {
+            if labels[k] == labels[nb] {
+                continue;
+            }
+            let (mut a, mut b, mut lb) = (point(i, j), point(nb % n, nb / n), labels[nb]);
+            while libm::hypot(b[0] - a[0], b[1] - a[1]) > 1.0 {
+                let m = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
+                match find(words, m) {
+                    l if l == labels[k] => a = m,
+                    l => (b, lb) = (m, l),
+                }
+            }
+            let Some(t) = terrain_at(terrain, cell, a) else { continue };
+            let sides = height_at_sides(words, a, [labels[k], lb], t);
+            if sides[0].step != Rule::HeldOverCap || (sides[1].h - sides[0].h).abs() <= STEP_M {
+                continue;
+            }
+            let (slope, paved) = if sides[0].kind == Kind::Paved { (sides[1], sides[0]) } else { (sides[0], sides[1]) };
+            let bl = Block::at(words, a);
+            let cap = |l: u32| if l == u32::MAX { 0.0 } else { bl.line(l as usize).wall_max(&p) };
+            let gap = super::walls(&bl, a, slope.owner, &p).map_or(f64::INFINITY, |w| w.1 / p.face_max);
+            out.push(HeldOver {
+                at: a,
+                height: (paved.h - slope.h).abs(),
+                gap,
+                caps: [cap(paved.owner), cap(slope.owner)],
+            });
+        }
+    }
+    out
+}
+
+/// A ground point within this many metres past a deck end line must stand under the deck's underside less the gap.
+pub const PAST_M: f64 = 0.5;
+/// The points of `deck_ends` across an end line lie this far apart, and the first this far inside its paved ends.
+pub const ACROSS_M: f64 = 0.25;
+
+/// The deck ends of a cell's records and their faults: points of an end line or within `PAST_M` past it that no
+/// deck's stroke holds; ground points within `PAST_M` past it over the deck's underside less the gap (the place,
+/// the metres over); points of the end line with ground beyond it whose step is shorter than the deck's depth and
+/// the gap less `step_m` or not an `EndFace` (the place, the step, the deck's drop, its label). And the points of an
+/// end line with a paved face beyond it with less step: a junction's face or another way's goes on there, so the
+/// end has no end face. The end lines' points lie in the cell.
+#[derive(Clone, Debug, Default)]
+pub struct DeckEnds {
+    pub ends: usize,
+    pub points: usize,
+    pub uncovered: Vec<[f64; 2]>,
+    pub over: Vec<([f64; 2], f64)>,
+    pub short: Vec<([f64; 2], f64, f64, Rule)>,
+    pub paved_beyond: Vec<[f64; 2]>,
+}
+
+/// A deck end line of a block: the end point (frame units from the cell's origin), the unit direction into its
+/// line, and the half-width of its paved layers (units).
+#[derive(Clone, Copy, Debug)]
+pub struct EndLine {
+    pub at: [f64; 2],
+    pub into: [f64; 2],
+    pub half: f64,
+}
+
+impl EndLine {
+    /// q in units along `into` from the end point and across, signed.
+    pub fn place(&self, q: [f64; 2]) -> [f64; 2] {
+        let v = [q[0] - self.at[0], q[1] - self.at[1]];
+        [v[0] * self.into[0] + v[1] * self.into[1], v[1] * self.into[0] - v[0] * self.into[1]]
+    }
+}
+
+/// The deck end lines of a block's lines (`records::DECK`).
+pub fn end_lines(words: &[u32]) -> Vec<EndLine> {
+    let mut out = Vec::new();
+    for l in 0..words[3] as usize {
+        let b = Block::at(words, [0.0, 0.0]);
+        let ln = b.line(l);
+        for e in (0..2).filter(|&e| ln.deck[e] && !ln.ceiling) {
+            let (i, j) = if e == 0 { (0, 1) } else { (ln.count - 1, ln.count - 2) };
+            let (a, next) = (b.position(&ln, i), b.position(&ln, j));
+            let d = [next[0] - a[0], next[1] - a[1]];
+            let len = libm::hypot(d[0], d[1]);
+            let b = Block::at(words, a);
+            let half = (b.sample(&ln, i).h + ln.side) / b.mpu;
+            out.push(EndLine { at: a, into: [d[0] / len, d[1] / len], half });
+        }
+    }
+    out
+}
+
+pub fn deck_ends(words: &[u32], terrain: &Terrain, cell: CellKey) -> DeckEnds {
+    let p = HeightRules::of(words);
+    let mut out = DeckEnds::default();
+    let inside = |q: [f64; 2]| (0.0..CELL_UNITS as f64).contains(&q[0]) && (0.0..CELL_UNITS as f64).contains(&q[1]);
+    for end in end_lines(words).into_iter().filter(|e| inside(e.at)) {
+        let mpu = Block::at(words, end.at).mpu;
+        let (u, nrm) = (end.into, [-end.into[1], end.into[0]]);
+        let at = |across: f64, along: f64| {
+            [end.at[0] + (nrm[0] * across + u[0] * along) / mpu, end.at[1] + (nrm[1] * across + u[1] * along) / mpu]
+        };
+        out.ends += 1;
+        let half = end.half * mpu;
+        let n = ((2.0 * half - 2.0 * ACROSS_M) / ACROSS_M).floor() as usize;
+        for k in 0..=n {
+            let across = -half + ACROSS_M + k as f64 * ACROSS_M;
+            let q = at(across, 0.0);
+            let (Some(t), true) = (terrain_at(terrain, cell, q), inside(q)) else { continue };
+            out.points += 1;
+            // The deck beyond the end line, whose bound `under_deck` reads inside its stroke only.
+            let Some((_, drop)) = super::under_deck(words, at(across, -0.01)) else {
+                out.uncovered.push(q);
+                continue;
+            };
+            let one = 2.0 * mpu;
+            let labels = [find(words, at(across, one)), find(words, at(across, -one))];
+            let sides = height_at_sides(words, q, labels, t);
+            let step = sides[0].h - sides[1].h;
+            if step < drop - p.step_m && sides[1].kind == Kind::Paved {
+                out.paved_beyond.push(q);
+            } else if step < drop - p.step_m || sides[0].step != Rule::EndFace {
+                out.short.push((q, step, drop, sides[0].step));
+            }
+            for m in 1..=5 {
+                let q = at(across, -PAST_M * f64::from(m) / 5.0);
+                let Some(t) = terrain_at(terrain, cell, q).filter(|_| inside(q)) else { continue };
+                let Some((under, _)) = super::under_deck(words, q) else {
+                    out.uncovered.push(q);
+                    continue;
+                };
+                let (h, _) = at_label(words, q, t);
+                if h.kind != Kind::Paved && h.h > under + 1e-9 {
+                    out.over.push((q, h.h - under));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The height and label at q with the terrain t.
+fn at_label(words: &[u32], q: [f64; 2], t: f64) -> (Height, Option<u32>) {
+    let label = find(words, q);
+    (height_at(words, q, label, t), label)
+}
+
+/// The joints of two decks of a block: where two ceiling lines end at one point, the point and the lesser
+/// half-width of their strokes (metres).
+fn deck_joints(words: &[u32]) -> Vec<([f64; 2], f64)> {
+    let b = Block::at(words, [0.0, 0.0]);
+    let mut ends = Vec::new();
+    for l in 0..words[3] as usize {
+        let ln = b.line(l);
+        for i in [0, ln.count - 1].into_iter().filter(|_| ln.ceiling) {
+            let p = b.position(&ln, i);
+            ends.push((l, p, Block::at(words, p).sample(&ln, i).h));
+        }
+    }
+    let mut out = Vec::new();
+    for (k, &(l, p, h)) in ends.iter().enumerate() {
+        out.extend(ends[k + 1..].iter().filter(|e| e.0 != l && e.1 == p).map(|e| (p, h.min(e.2))));
+    }
+    out
+}
+
+/// Over a grid of `grid_m` on the cell, the points that a deck's stroke holds: their count, the ground points
+/// (terrain and slope rules) over the deck's underside less the gap, and the paved points over it; and the points
+/// within the lesser half-width of a joint of two decks that no stroke holds (a notch between their ends).
+pub fn under_decks(words: &[u32], terrain: &Terrain, cell: CellKey, grid_m: f64) -> [usize; 4] {
+    let step = grid_m / metres_per_unit(cell.origin().y + CELL_UNITS / 2);
+    let n = (CELL_UNITS as f64 / step) as usize;
+    let joints = deck_joints(words);
+    let mut out = [0; 4];
+    for k in 0..n * n {
+        let q = [((k % n) as f64 + 0.5) * step, ((k / n) as f64 + 0.5) * step];
+        let Some(t) = terrain_at(terrain, cell, q) else { continue };
+        let Some((under, _)) = super::under_deck(words, q) else {
+            let mpu = Block::at(words, q).mpu;
+            let notch = joints.iter().any(|(j, r)| libm::hypot(q[0] - j[0], q[1] - j[1]) * mpu < r - 0.01);
+            out[3] += usize::from(notch);
+            continue;
+        };
+        let (h, _) = at_label(words, q, t);
+        out[0] += 1;
+        if h.h > under + 1e-9 {
+            out[if h.kind == Kind::Paved { 2 } else { 1 }] += 1;
         }
     }
     out
@@ -495,9 +706,9 @@ pub fn explain(words: &[u32], q: [f64; 2], labels: [Option<u32>; 2], t: f64) -> 
             g.line, g.class, g.rail, g.fill, g.cut, g.steep, g.d, g.toe, g.fade
         );
     }
-    let blend = items.as_ref().map_or(&[][..], |i| i.blend);
+    let none = super::NO_ITEMS;
     for l in labels {
-        let (h, c) = by_label(&b, q, &recs, blend, l, t, &p);
+        let (h, c) = by_label(&b, q, &recs, items.as_ref().unwrap_or(&none), l, t, &p);
         let rule = l.map_or(0, |id| words[words[5] as usize + LABEL * id as usize] >> 24);
         s += &format!("  label {l:?} rule {rule}: {h:?} by {:?}\n", c.by);
     }
