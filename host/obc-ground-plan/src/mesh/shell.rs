@@ -231,11 +231,13 @@ fn prism(b: &mut Build, part: usize, ring: &[P], top: (u32, f64), foot: (u32, f6
     }
 }
 
-/// A convex ring cut by the cell square, its points rounded to the frame unit.
-fn clip(ring: &[[f64; 2]]) -> Vec<P> {
+/// A convex ring about the point `o`, given as offsets from it, cut by the cell square, its points rounded to the
+/// frame unit. The cut is reckoned from `o`, so two cells that share the ring cut it alike on their shared line.
+fn clip(o: P, ring: &[[f64; 2]]) -> Vec<P> {
     let c = CELL_UNITS as f64;
     let mut pts = ring.to_vec();
-    for (axis, bound, keep_low) in [(0, 0.0, false), (0, c, true), (1, 0.0, false), (1, c, true)] {
+    let lines = [(0, -f64::from(o[0]), false), (0, c - f64::from(o[0]), true), (1, -f64::from(o[1]), false)];
+    for (axis, bound, keep_low) in lines.into_iter().chain([(1, c - f64::from(o[1]), true)]) {
         let inside = |p: &[f64; 2]| if keep_low { p[axis] <= bound } else { p[axis] >= bound };
         let mut out = Vec::new();
         for i in 0..pts.len() {
@@ -252,7 +254,7 @@ fn clip(ring: &[[f64; 2]]) -> Vec<P> {
         }
         pts = out;
     }
-    let mut ring: Vec<P> = pts.iter().map(|p| [libm::round(p[0]) as i32, libm::round(p[1]) as i32]).collect();
+    let mut ring: Vec<P> = pts.iter().map(|p| [0, 1].map(|k| o[k] + libm::round(p[k]) as i32)).collect();
     ring.dedup();
     if ring.len() > 1 && ring[0] == ring[ring.len() - 1] {
         ring.pop();
@@ -356,7 +358,7 @@ fn sheet_at(plan: &FacePlan, labels: &[Option<u32>], q: [f64; 2]) -> Option<u32>
 
 /// The inner points of a box along a polyline of the free outline (the sheet on its left in the frame), `width_m`
 /// into the sheet: mitred at each inner point; at an end on a cell line, on that line, so the neighbour's box meets it.
-fn inner_points(pts: &[P], width_m: f64, origin_y: f64) -> Vec<P> {
+fn inner_points(pts: &[P], width_m: f64, origin_y: f64, along: &dyn Fn(usize) -> Option<[f64; 2]>) -> Vec<P> {
     let n = pts.len();
     let unit = |a: P, c: P| {
         let d = [f64::from(c[0] - a[0]), f64::from(c[1] - a[1])];
@@ -365,37 +367,43 @@ fn inner_points(pts: &[P], width_m: f64, origin_y: f64) -> Vec<P> {
     };
     let left = |d: [f64; 2]| [-d[1], d[0]];
     let w = |p: P| width_m / metres_per_unit_at(origin_y + f64::from(p[1]));
-    let c = CELL_UNITS as f64;
+    let c = CELL_UNITS as i32;
     (0..n)
         .map(|i| {
-            let p = [f64::from(pts[i][0]), f64::from(pts[i][1])];
-            let d_in = if i > 0 { Some(unit(pts[i - 1], pts[i])) } else { None };
-            let d_out = if i + 1 < n { Some(unit(pts[i], pts[i + 1])) } else { None };
-            let q = match (d_in, d_out) {
+            let p = pts[i];
+            let d_in = if i > 0 { Some(unit(pts[i - 1], p)) } else { None };
+            let d_out = if i + 1 < n { Some(unit(p, pts[i + 1])) } else { None };
+            // The offset from p, rounded as one vector: two cells that share p give it alike.
+            let delta = match (d_in, d_out) {
                 (Some(a), Some(b)) => {
                     let (na, nb) = (left(a), left(b));
                     let m = [na[0] + nb[0], na[1] + nb[1]];
                     let ml = libm::hypot(m[0], m[1]);
                     let m = if ml > 1e-9 { [m[0] / ml, m[1] / ml] } else { na };
-                    let s = w(pts[i]) / (m[0] * na[0] + m[1] * na[1]).max(0.5);
-                    [p[0] + s * m[0], p[1] + s * m[1]]
+                    let s = w(p) / (m[0] * na[0] + m[1] * na[1]).max(0.5);
+                    [s * m[0], s * m[1]]
                 }
                 (Some(d), None) | (None, Some(d)) => {
+                    let on = |axis: usize| p[axis] == 0 || p[axis] == c;
+                    // An end on a cell line takes the direction of its way's line there, which both cells read from
+                    // the same samples, and its inner point slides along it onto the cell line.
+                    let d = match along(i).filter(|_| on(0) || on(1)) {
+                        Some(e) if e[0] * d[0] + e[1] * d[1] < 0.0 => [-e[0], -e[1]],
+                        Some(e) => e,
+                        None => d,
+                    };
                     let nrm = left(d);
-                    let off = w(pts[i]);
-                    let mut q = [p[0] + off * nrm[0], p[1] + off * nrm[1]];
-                    for axis in 0..2 {
-                        if (p[axis] == 0.0 || p[axis] == c) && d[axis].abs() > 0.2 {
-                            let t = (p[axis] - q[axis]) / d[axis];
-                            q = [q[0] + t * d[0], q[1] + t * d[1]];
-                            q[axis] = p[axis];
-                        }
+                    let mut v = [w(p) * nrm[0], w(p) * nrm[1]];
+                    for axis in (0..2).filter(|&axis| on(axis) && d[axis].abs() > 0.2) {
+                        let t = -v[axis] / d[axis];
+                        v = [v[0] + t * d[0], v[1] + t * d[1]];
+                        v[axis] = 0.0;
                     }
-                    q
+                    v
                 }
-                (None, None) => p,
+                (None, None) => [0.0, 0.0],
             };
-            [libm::round(q[0].clamp(0.0, c)) as i32, libm::round(q[1].clamp(0.0, c)) as i32]
+            [0, 1].map(|k| (p[k] + libm::round(delta[k]) as i32).clamp(0, c))
         })
         .collect()
 }
@@ -573,7 +581,9 @@ pub fn mesh_storeys(
                 let mut ls: Vec<u32> = run.iter().map(|&k| free[k].2).collect();
                 ls.push(*ls.last().unwrap());
                 let width = if railing(run[0]) { BAR_M } else { PARAPET_M[0] };
-                let inner = inner_points(&pts, width, origin_y);
+                let inner = inner_points(&pts, width, origin_y, &|i| {
+                    lines.along(ls[i], [f64::from(pts[i][0]), f64::from(pts[i][1])]).map(|(_, d)| d)
+                });
                 // The box stands on the band: where its inner side would stand in a paved face (another way's that
                 // meets the band), it ends.
                 let ok: Vec<bool> = inner.iter().map(|q| !paved_at(plan, [f64::from(q[0]), f64::from(q[1])])).collect();
@@ -719,7 +729,7 @@ fn posts(
         if ring.iter().flatten().any(|&v| !(0.0..=c).contains(&v)) || ring.iter().any(|&v| paved(v)) {
             continue;
         }
-        prism(b, POST, &clip(&ring), (l, RAIL_M - BAR_M), (l, 0.0));
+        prism(b, POST, &clip([0, 0], &ring), (l, RAIL_M - BAR_M), (l, 0.0));
         stats.railing_posts += 1;
     }
 }
@@ -752,9 +762,8 @@ fn piers(
         let mpu = metres_per_unit_at(origin_y + q[1]);
         let (along, across) = (w.pier_m[0] / 2.0 / mpu, w.pier_m[1] / 2.0 / mpu);
         let n = [-d[1], d[0]];
-        let corner =
-            |u: f64, v: f64| [q[0] + u * along * d[0] + v * across * n[0], q[1] + u * along * d[1] + v * across * n[1]];
-        let ring = clip(&[corner(-1.0, -1.0), corner(1.0, -1.0), corner(1.0, 1.0), corner(-1.0, 1.0)]);
+        let corner = |u: f64, v: f64| [u * along * d[0] + v * across * n[0], u * along * d[1] + v * across * n[1]];
+        let ring = clip(pt, &[corner(-1.0, -1.0), corner(1.0, -1.0), corner(1.0, 1.0), corner(-1.0, 1.0)]);
         if ring.len() < 3 {
             continue;
         }
@@ -844,12 +853,9 @@ pub fn on_paved(m: &StoreyMesh, storeys: &Storeys, words: &[u32]) -> Vec<String>
     out
 }
 
-/// Two corners on a cell line within this many frame units along it are one.
-const LINE_UNITS: i32 = 2;
-
 /// The faults of two neighbouring cells' storey meshes on their shared line (`east`: b lies east of a, else
-/// south): per point of the line and offset, the same corners, whose heights (`height_at` of their labels in each
-/// cell's block) agree within `heights.step_m`.
+/// south): per point of the line and offset exactly the same corners, whose heights (`height_at` of their labels in
+/// each cell's block) agree within 1 mm.
 pub fn border(a: (&StoreyMesh, &[u32]), b: (&StoreyMesh, &[u32]), east: bool) -> Vec<String> {
     use crate::faces::heights::height_at;
     let c = CELL_UNITS as i32;
@@ -870,14 +876,10 @@ pub fn border(a: (&StoreyMesh, &[u32]), b: (&StoreyMesh, &[u32]), east: bool) ->
         out
     };
     let (x, y) = (on(a, c), on(b, 0));
-    // A rail's inner corner on a cell line comes from each cell's own piece of the outline: within a unit or two.
-    let near = |m: &BTreeMap<(i32, u32), Vec<f64>>, (along, off): (i32, u32)| {
-        m.iter().find(|((t, o), _)| *o == off && (t - along).abs() <= LINE_UNITS).map(|(_, h)| h.clone())
-    };
     let mut faults = Vec::new();
     for (from, to) in [(&x, &y), (&y, &x)] {
         for (&key, p) in from {
-            let q = near(to, key);
+            let q = to.get(&key).cloned();
             let same =
                 q.as_ref().is_some_and(|q| p.len() == q.len() && p.iter().zip(q).all(|(u, v)| (u - v).abs() <= 0.001));
             if !same {
