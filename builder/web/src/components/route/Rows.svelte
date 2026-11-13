@@ -7,6 +7,7 @@
     import ElevationRow from './ElevationRow.svelte';
     import Menu from './Menu.svelte';
     import Lanes from './Lanes.svelte';
+    import { distanceTicks, fitTicks } from './ticks';
     import type { RouteSummary } from '../../lib/library/records';
     import { lineCoordinates } from '../../lib/library/summary';
     import { phoneLink, phoneNumbers, websiteLink } from '../../lib/planner/contact-links';
@@ -22,8 +23,7 @@
     import { kindLabel } from '../../lib/planner/search/presentation';
     import { placeDetails, type SearchPlace } from '../../lib/planner/search/types';
     import { surfaceBarColors, surfaceRuns, surfaceWindow } from '../../lib/planner/surface-data';
-    import { distanceIn, formatAlong, formatDistance, formatHeight, formatPercent } from '../../lib/settings/format';
-    import { settings } from '../../lib/settings/settings.svelte';
+    import { formatAlong, formatDistance, formatHeight, formatPercent } from '../../lib/settings/format';
 
     /** The bottom card of the Route page: the waypoints, the heights, the surface and the places along the route or one
      * day of it, on one axis. Shares are 0 to 1 of the route. Without the calculated line, the rows that the summary
@@ -49,8 +49,8 @@
 
     /** Places load within PLACE_M of the shown stretch, for at most PLACES_KM of it. A place icon is ICON_PX wide and a
      * count after it about COUNT_CHAR_PX for each figure; icons that would touch join into one, whose list shows at most
-     * LIST_NAMES names. A tick label is about TICK_CHAR_PX wide for each character, and keeps TICK_GAP_PX from the next one. */
-    const PLACE_M = 1000, PLACES_KM = 300, ICON_PX = 24, COUNT_CHAR_PX = 7, LIST_NAMES = 30, TICK_CHAR_PX = 7, TICK_GAP_PX = 12, PANEL_PX = 260;
+     * LIST_NAMES names. */
+    const PLACE_M = 1000, PLACES_KM = 300, ICON_PX = 24, COUNT_CHAR_PX = 7, LIST_NAMES = 30, PANEL_PX = 260;
     /** The elevation row is ELEVATION_PX high in a window at least WIDE_PX wide and TALL_PX high. The disc of a night keeps
      * NIGHT_PX from the middle of a waypoint pin. */
     const ELEVATION_PX = 120, WIDE_PX = 1200, TALL_PX = 800, ELEVATION_ROW = 1, NIGHT_PX = 20;
@@ -84,30 +84,15 @@
     const surfaces = $derived([...new Set(runs.map(run => run.surface))]);
     const tooLong = $derived(span * totalM / 1000 > PLACES_KM);
 
-    // The start, the end, the nights, then the distances: a tick that would touch a kept one is left out.
+    // The start, the end, the nights, then the distances.
     const ticks = $derived.by(() => {
         const nightName = (share: number) => pins.find(pin => !pin.number && Math.abs(pin.share - share) < 1e-6)?.label || 'Night';
-        const length = distanceIn(span * totalM), first = distanceIn(shown.from * totalM);
-        const step = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000].find(size => length / size <= Math.max(1, width / 80)) ?? 2000;
-        const numbers = [];
-        for (let value = Math.ceil(first / step) * step; value < first + length; value += step) numbers.push({ at: (value - first) / length, label: `${settings.units} ${value}` });
-        const wanted = [
+        return fitTicks([
             { at: 0, label: shown.from ? nightName(shown.from) : orderedRoutePoints(trip)[0]?.label ?? '' },
             { at: 1, label: formatDistance(shown.to * totalM) },
             ...nights.filter(share => share > shown.from && share < shown.to).map(share => ({ at: x(share), label: nightName(share) })),
-            ...numbers,
-        ];
-        // A label sits as `Lanes` places it: shifted left by its share of the axis.
-        const extent = ({ at, label }: { at: number; label: string }) => {
-            const size = label.length * TICK_CHAR_PX;
-            return [at * width - at * size, at * width + (1 - at) * size];
-        };
-        const kept: typeof wanted = [];
-        for (const tick of wanted) {
-            const [left, right] = extent(tick);
-            if (kept.every(other => { const [a, b] = extent(other); return right + TICK_GAP_PX <= a || left >= b + TICK_GAP_PX; })) kept.push(tick);
-        }
-        return kept;
+            ...distanceTicks(shown.from * totalM, shown.to * totalM, width),
+        ], width);
     });
 
     const climbs = $derived(facts?.climbs.map(climb => ({
@@ -337,7 +322,7 @@
     ]} />
 {/snippet}
 
-<div class="rows">
+<div class="rows bottom">
     <Card>
         <Lanes label="Profile" {ticks} ticksAfter={ELEVATION_ROW + 1} {header} pointer={mark !== undefined && inside(mark) ? x(mark) : undefined}
             chip={pointer} onpointer={point} part={shownPart} {partText} onclick={click}

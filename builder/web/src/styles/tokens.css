@@ -8,10 +8,21 @@
     /* A connected device, in the greens of its housing: on the page, and on the rust top bar. */
     --connected: #2f6350;
     --connected-on-rust: #8be3bc;
+    /* The five zones of heart rate and of power, from easy to hard: grey, blue, green, yellow, red. */
+    --zone-1: #b8b5a6;
+    --zone-2: #6790b4;
+    --zone-3: #6a9c62;
+    --zone-4: #d9a62e;
+    --zone-5: #bf4a34;
 }
 
 :root[data-theme="dark"] {
     --version-b: #e8964a;
     --ride: #e0874c;
     --connected: #8be3bc;
+    --zone-1: #6f6c5f;
+    --zone-2: #6c9cc4;
+    --zone-3: #79ad72;
+    --zone-4: #e0b24a;
+    --zone-5: #dd6a50;
 }

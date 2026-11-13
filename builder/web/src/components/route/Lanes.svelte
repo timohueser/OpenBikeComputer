@@ -2,11 +2,12 @@
     import type { Snippet } from 'svelte';
 
     /** Rows on one axis from 0 to 1 under a header, with a narrow column of labels, the pointer as a line across the
-     * rows and the ticks under them. With `onpart`, a drag or Shift with an arrow key selects a part of the axis: the
+     * rows and the ticks under them. A row can have a note under its label, and its scale in a column after the rows:
+     * the highest value at the top, the lowest at the floor. With `onpart`, a drag or Shift with an arrow key selects a part of the axis: the
      * rest is paler, the header shows `partText` with Clear, and Escape clears it. On a phone the labels stand above
      * their rows. */
     let { rows, ticks, ticksAfter, header, label, pointer, onpointer, chip, part = null, onpart, partText = '', onclick }: {
-        rows: { label: string; draw: Snippet; height?: number }[];
+        rows: { label: string; draw: Snippet; height?: number; note?: string; color?: string; scale?: [high: string, low: string] }[];
         /** Labels under the rows; the first and the last stay inside the axis. */
         ticks: { at: number; label: string }[];
         /** The ticks follow this many rows; by default they follow every row. */
@@ -109,11 +110,14 @@
     </header>
 {/if}
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="lanes" bind:this={root} onpointermove={move} onpointerdown={start} onpointerup={end} onpointercancel={() => down = null}
+<div class="lanes" class:scaled={rows.some(row => row.scale)} bind:this={root} onpointermove={move} onpointerdown={start} onpointerup={end} onpointercancel={() => down = null}
     onpointerleave={() => { if (!down) onpointer(null); }}>
     {#each rows as row, i (i)}
-        <div class="label" class:low={!!row.height && row.height <= LOW_PX} style:grid-row={gridRow(i)}>{row.label}</div>
+        <div class="label" class:low={!!row.height && row.height <= LOW_PX} style:grid-row={gridRow(i)}>
+            {row.label}{#if row.note}<span class="note" style:color={row.color}>{row.note}</span>{/if}
+        </div>
         <div class="lane" data-row={i} style:grid-row={gridRow(i)} style:height={row.height ? `${row.height}px` : undefined}>{@render row.draw()}</div>
+        {#if row.scale}<div class="scale" style:grid-row={gridRow(i)}><span>{row.scale[0]}</span><span>{row.scale[1]}</span></div>{/if}
     {/each}
     <!-- Each part has its grid row: the pointer layer covers the rows of the lanes. -->
     <div class="ticks" bind:this={tickRow} style:grid-row={split + 1}>
@@ -191,6 +195,30 @@
         font-size: 12px;
         line-height: 16px;
     }
+    .scaled {
+        grid-template-columns: 72px minmax(0, 1fr) max-content;
+        row-gap: 8px;
+    }
+    .note {
+        display: block;
+        font-size: 13px;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+    }
+    /* One place in every row: the highest value at the top of the row, the lowest at its floor. */
+    .scale {
+        display: flex;
+        grid-column: 3;
+        flex-direction: column;
+        justify-content: space-between;
+        margin-left: -8px;
+        color: var(--ink-faint);
+        font-size: 11px;
+        line-height: 13px;
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+    }
     /* The margin lets a label of two lines stand in a low row and not stretch it. */
     .low {
         align-self: center;
@@ -265,12 +293,24 @@
             row-gap: 22px;
             padding-top: 18px;
         }
+        .scaled {
+            grid-template-columns: 0 minmax(0, 1fr) max-content;
+            column-gap: 0;
+        }
+        .scale {
+            margin-left: 8px;
+        }
         .label {
             z-index: 1;
+            display: flex;
             grid-column: 2;
+            gap: 8px;
             align-self: start;
             margin-top: -18px;
             pointer-events: none;
+        }
+        .note {
+            font-size: 12px;
         }
         .ticks {
             margin-top: -16px;

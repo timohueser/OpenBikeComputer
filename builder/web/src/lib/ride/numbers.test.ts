@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { FitSample } from '../core/fit';
-import { channels, movingSpeed, rideClimbs, rideCsv } from './numbers';
+import { channels, movingSpeed, partNumbers, rideClimbs, rideCsv } from './numbers';
 
 const T = 1_792_828_800;
 /** Microdegrees of latitude for about 50 m, so a step of 10 s moves at about 5 m/s. */
@@ -25,6 +25,28 @@ describe('channels', () => {
         expect(cadence).toEqual({ mean: 85, max: 90 });
         expect(movingSpeed(samples)).toBeCloseTo(5.004, 2);
         expect(channels(samples.map(({ powerW: _, ...rest }) => rest), { maxHr: null, ftp: 250 })).toMatchObject({ hr: { mean: 140 }, power: undefined });
+    });
+});
+
+describe('partNumbers', () => {
+    it('gives the numbers of a part with a pause in it, with no step into the part, the time in each zone and no power', () => {
+        // 50 m every 10 s, 2 m up each step. The part is the samples 2 to 7; a pause stands before sample 5.
+        const samples: FitSample[] = Array.from({ length: 10 }, (_, i) => ({
+            timeS: T + 10 * i + (i >= 5 ? 600 : 0), lat: 46e6 + i * STEP, lon: 8e6, segmentStart: i === 0 || i === 5,
+            elevationM: 500 + 2 * i, hrBpm: i < 5 ? 130 : 170, cadenceRpm: 80,
+        }));
+        const part = partNumbers(samples, [2, 7], 'gravel', { maxHr: 200, ftp: 250 });
+        // The steps to the samples 3, 4, 6 and 7 move: 200 m in 40 s.
+        expect(part.lengthM).toBeCloseTo(200, -1);
+        expect(part.movingS).toBe(40);
+        // The climb counts a rise of 5 m or more above the last low: 504 m to 510 m.
+        expect(part.climbM).toBe(6);
+        expect(part.speed).toBeCloseTo(5, 1);
+        expect(part.channels.hr).toMatchObject({ mean: 150, max: 170 });
+        // Zones of a maximum of 200: 130 is in Z2, 170 in Z4.
+        expect(part.channels.hr!.zones!.map(zone => zone.seconds)).toEqual([0, 20, 0, 20, 0]);
+        expect(part.channels.power).toBeUndefined();
+        expect(samples[2].segmentStart).toBe(false);
     });
 });
 
