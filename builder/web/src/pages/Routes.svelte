@@ -13,7 +13,6 @@
     import { yearTotals } from '../lib/library/statistics';
     import type { Library } from '../lib/library/store';
     import { trips } from '../lib/library/trips';
-    import { ridingProfiles } from '../lib/planner/riding-profiles';
     import { router } from '../lib/router.svelte';
     import { ROUTES } from '../lib/routes';
     import { formatDistance, formatHeight } from '../lib/settings/format';
@@ -60,8 +59,7 @@
     const chosen = $derived(ridden ? chosenRow?.rides[0] : shown.find(item => item.id === selected));
     const states = $derived(new Map(records?.map(record => [record.id, deviceState(record, waiting, sent)])));
     const times = $derived([...grouped.values()].reduce((counts, id) => counts.set(id, (counts.get(id) ?? 0) + 1), new Map<string, number>()));
-    const count = (n: number, one: string) => `${n.toLocaleString('en')} ${one}${n === 1 ? '' : 's'}`;
-    const noun = $derived(ridden ? 'ride' : 'route');
+    const count = (n: number, one: string) => `${n.toLocaleString('en')} ${one}${n === 1 ? '' : 's'}`;    const noun = $derived(ridden ? 'ride' : 'route');
     const listed = $derived((ridden ? rides : records) !== undefined);
     const years = $derived([...new Set(rideItems.map(item => new Date(item.at).getFullYear()))].sort((a, b) => b - a));
     const year = $derived(chips.year ?? new Date().getFullYear());
@@ -176,6 +174,11 @@
 <svelte:window onclickcapture={event => { if ((event.target as Element).closest?.('a[href]')) keep?.(); }}
     onkeydown={event => { if (event.key === 'Escape' && !document.querySelector('dialog[open]')) selected = undefined; }} />
 
+<!-- The second line of a row: a date, then the numbers. The line wraps between two numbers, never inside one. -->
+{#snippet numbers(parts: (string | false)[], lead = '')}
+    <span class="meta">{lead}{#each parts.filter(Boolean) as part, i (i)}{i || lead ? ' · ' : ''}<span>{part}</span>{/each}</span>
+{/snippet}
+
 <div class="routes-page">
     <header>
         <div class="title">
@@ -200,7 +203,10 @@
                 {#if !listed}
                     <p class="note">Loading…</p>
                 {:else if !items.length}
-                    <p class="note">{ridden ? 'No rides yet. Connect the device, or add GPX and FIT files.' : 'No routes yet. Plan one, or add GPX and FIT files.'}</p>
+                    <p class="note empty">
+                        <strong>{ridden ? 'No rides yet.' : 'No routes yet.'}</strong>
+                        {ridden ? 'Connect the device, or add GPX and FIT files.' : 'Plan one, or add GPX and FIT files.'}
+                    </p>
                 {:else}
                     <input class="search" type="search" aria-label={ridden ? 'Search your rides' : 'Search your routes'}
                         placeholder={ridden ? 'Search your rides, or a place' : 'Search your routes, or a place'}
@@ -211,7 +217,8 @@
                             <button type="button" class="back" onclick={() => { opened = undefined; selected = undefined; }}>‹ All rides</button>
                             · {group.name} · {count(group.rides.length, 'ride')}
                         </p>
-                    {:else}
+                    {:else if text.trim() || Object.keys(chips).length || onlyView}
+                        <!-- The count of a search. With no search the switch above has the count. -->
                         <p class="count">{shown.length === items.length ? count(items.length, noun) : `${shown.length.toLocaleString('en')} of ${count(items.length, noun)}`}</p>
                     {/if}
                     <ul>
@@ -224,16 +231,16 @@
                                         <span class="thumb">{#if near.has(key)}<Cover {library} id={first.id} />{/if}</span>
                                         <span class="text">
                                             <strong>{row.name}</strong>
-                                            <span class="meta">
-                                                {#if row.kind === 'trip'}
-                                                    {[tripDates(row), count(row.days!, 'day'), formatDistance(row.rides.reduce((sum, ride) => sum + ride.summary.lengthM, 0))].join(' · ')}
-                                                {:else if row.kind === 'group'}
-                                                    {formatDistance(first.summary.lengthM)} · last on {dayText(first.at)}
-                                                {:else}
-                                                    {[dayText(first.at), formatDistance(first.summary.lengthM), `${formatHeight(first.summary.climbM)} up`].join(' · ')}
-                                                {/if}
-                                            </span>
+                                            {#if row.kind === 'trip'}
+                                                {@render numbers([count(row.days!, 'day'), formatDistance(row.rides.reduce((sum, ride) => sum + ride.summary.lengthM, 0))], tripDates(row))}
+                                            {:else if row.kind === 'group'}
+                                                <span class="meta"><span>{formatDistance(first.summary.lengthM)}</span> · last on {dayText(first.at)}</span>
+                                            {:else}
+                                                {@render numbers([formatDistance(first.summary.lengthM), `${formatHeight(first.summary.climbM)} up`], dayText(first.at))}
+                                            {/if}
                                         </span>
+                                        <!-- The room of the button that opens the group, which lies on the row. -->
+                                        {#if row.kind === 'group'}<span class="open room" aria-hidden="true">{count(row.rides.length, 'ride')} ›</span>{/if}
                                     </button>
                                     {#if row.kind === 'group'}
                                         <button type="button" class="open" onclick={() => { opened = row.id; selected = undefined; }}>{count(row.rides.length, 'ride')} ›</button>
@@ -245,7 +252,6 @@
                         {:else}
                             {#each shown as item (item.id)}
                                 {@const state = states.get(item.id)}
-                                {@const runs = times.get(item.id) ?? 0}
                                 <li data-id={item.id} use:watch>
                                     <button type="button" class="row" aria-current={item.id === selected} onclick={() => selected = item.id}>
                                         <span class="thumb">{#if item.summary && near.has(item.id)}<Cover {library} id={item.id} />{/if}</span>
@@ -253,9 +259,7 @@
                                             <strong>{item.name}</strong>
                                             {#if item.kind === 'route' && item.summary}
                                                 {@const summary = item.summary}
-                                                <span class="meta">{[ridingProfiles[summary.bike].label, summary.days > 1 && `${summary.days} days`,
-                                                    formatDistance(summary.lengthM), `${formatHeight(summary.climbM)} up`,
-                                                    runs && (runs === 1 ? 'ridden once' : `ridden ${runs} times`)].filter(Boolean).join(' · ')}</span>
+                                                {@render numbers([summary.days > 1 && `${summary.days} days`, formatDistance(summary.lengthM), `${formatHeight(summary.climbM)} up`])}
                                             {/if}
                                         </span>
                                         {#if state}<span class="badge {state}">{BADGES[state]}</span>{/if}
@@ -286,6 +290,7 @@
             {#if chosen}
                 <div class="selected" bind:offsetHeight={cardHeight}>
                     <SelectedCard {library} item={chosen} row={chosenRow} device={states.get(chosen.id)} inGroup={!!group} bind:credits={cardCredits}
+                        runs={ridden ? 0 : times.get(chosen.id)}
                         route={chosenRow?.kind === 'group' && records?.some(record => record.id === chosenRow.id) ? chosenRow.id : undefined} />
                 </div>
             {/if}
@@ -356,7 +361,7 @@
     .cards {
         display: grid;
         flex: 1;
-        grid-template-columns: 360px 1fr;
+        grid-template-columns: 380px 1fr;
         grid-template-rows: minmax(0, 1fr);
         gap: 14px;
         min-height: 0;
@@ -372,6 +377,18 @@
         margin: 4px 0;
         color: var(--ink-soft);
     }
+    .empty {
+        max-width: 26ch;
+        margin: auto;
+        padding: 24px 0;
+        text-align: center;
+    }
+    .empty strong {
+        display: block;
+        margin-bottom: 4px;
+        color: var(--ink);
+        font-size: 16px;
+    }
     .search {
         width: 100%;
         padding: 8px 10px;
@@ -383,7 +400,7 @@
     .count {
         margin: 0;
         color: var(--ink-soft);
-        font-size: 12px;
+        font-size: 13px;
     }
     ul {
         flex: 1;
@@ -395,9 +412,9 @@
     }
     .row {
         display: grid;
-        grid-template-columns: 64px minmax(0, 1fr) auto;
+        grid-template-columns: 72px minmax(0, 1fr) auto;
         align-items: center;
-        gap: 10px;
+        gap: 12px;
         width: 100%;
         padding: 6px;
         border: 0;
@@ -413,54 +430,58 @@
         background: var(--parchment-2);
     }
     .thumb {
-        height: 44px;
+        height: 48px;
         overflow: hidden;
-        border-radius: 5px;
-        background: var(--parchment);
+        border-radius: 6px;
+        background: var(--parchment-2);
+    }
+    .thumb :global(.cover) {
+        background: none;
     }
     .text {
         display: flex;
         flex-direction: column;
+        gap: 1px;
         min-width: 0;
     }
-    .meta {
+    /* The numbers are one line where they fit and wrap where they do not: none is cut. */
+    .meta, .badge {
         color: var(--ink-soft);
-        font-size: 12px;
+        font-size: 12.5px;
     }
-    .badge {
-        padding: 1px 6px;
-        border-radius: 4px;
-        background: var(--parchment-2);
-        color: var(--ink-soft);
-        font-size: 11px;
+    .badge, .meta span {
         white-space: nowrap;
     }
-    .badge.waiting {
+    /* The one state that waits for the rider to connect the device has a dot. */
+    .badge.waiting::before {
+        display: inline-block;
+        width: 6px;
+        height: 6px;
+        margin-right: 5px;
+        border-radius: 50%;
         background: var(--amber);
-        color: var(--on-amber);
+        vertical-align: 1px;
+        content: '';
     }
     li {
         position: relative;
     }
-    /* The button that opens a group sits on its row, so the row keeps room for it. */
-    li:has(.open) .row {
-        padding-right: 76px;
-    }
-    li:has(.open) .meta {
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
+    /* The button that opens a group lies on its row, over a column of the row with the same text and width. */
+    .open.room {
+        position: static;
+        transform: none;
+        visibility: hidden;
     }
     .open {
         position: absolute;
         top: 50%;
-        right: 8px;
-        padding: 2px 7px;
+        right: 6px;
+        padding: 2px 4px;
         border: 0;
         border-radius: 4px;
-        background: var(--parchment-3);
-        color: var(--ink);
-        font-size: 12px;
+        background: none;
+        color: var(--ink-soft);
+        font-size: 12.5px;
         transform: translateY(-50%);
         white-space: nowrap;
     }
@@ -475,14 +496,13 @@
         color: var(--ink);
         font: inherit;
     }
+    /* One line over the foot of the list: the switch, and under it the year. */
     .switch {
-        padding-top: 6px;
+        padding-top: 8px;
         border-top: 1px solid var(--line);
     }
     .totals {
-        margin: 0;
-        padding-top: 8px;
-        border-top: 1px solid var(--line);
+        margin: -4px 0 0;
         color: var(--ink-soft);
         font-size: 13px;
     }
@@ -517,6 +537,13 @@
         }
         ul {
             max-height: 60vh;
+        }
+        .row {
+            grid-template-columns: 64px minmax(0, 1fr) auto;
+            gap: 10px;
+        }
+        .thumb {
+            height: 44px;
         }
         .map {
             height: 70vh;

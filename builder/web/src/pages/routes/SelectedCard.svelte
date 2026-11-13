@@ -12,7 +12,7 @@
     import { dayText, tripDates, type Row } from './rows';
     import { stateText, waitingWith, type DeviceState } from './state';
 
-    let { library, item, row, device, route, inGroup = false, credits = $bindable([]) }: {
+    let { library, item, row, device, route, runs = 0, inGroup = false, credits = $bindable([]) }: {
         library: Library;
         /** A route, or the ride of `row` that the card shows. */
         item: Item;
@@ -21,6 +21,8 @@
         device?: DeviceState;
         /** The route of a group, which "Ride it again" opens. */
         route?: string;
+        /** The number of rides on the route. */
+        runs?: number;
         /** The ride is a ride of an open group. */
         inGroup?: boolean;
         /** The credits of the picture. It is too small to show them, so the page shows them with the map. */
@@ -36,7 +38,8 @@
     const meta = $derived(row?.kind === 'trip' ? [tripDates(row), `${row.days} days`]
         : row?.kind === 'group' ? [`${row.rides.length} rides`, `last on ${dayText(item.at)}`]
         : item.kind === 'ride' ? [dayText(item.at)]
-        : item.summary ? [ridingProfiles[item.summary.bike].label, item.summary.days > 1 && `${item.summary.days} days`] : []);
+        : item.summary ? [ridingProfiles[item.summary.bike].label, item.summary.days > 1 && `${item.summary.days} days`,
+            runs > 0 && (runs === 1 ? 'ridden once' : `ridden ${runs} times`)] : []);
 
     async function act(work: () => Promise<unknown>) {
         failure = '';
@@ -75,7 +78,7 @@
             </button>
         {:else if item.kind === 'ride' && !trip}
             <button type="button" class="button" onclick={again}>Ride it again</button>
-            {#if row?.kind === 'group' || inGroup}<button type="button" class="button" onclick={takeOut}>Take out of the group</button>{/if}
+            {#if row?.kind === 'group' || inGroup}<button type="button" class="button quiet" onclick={takeOut}>Take out of the group</button>{/if}
         {/if}
     </div>
 </section>
@@ -84,9 +87,10 @@
     .card {
         position: relative;
         display: grid;
-        grid-template-columns: 220px minmax(0, 1fr) minmax(0, 220px) auto;
+        /* The profile takes the room that the text leaves, and keeps a fair width beside a long name. */
+        grid-template-columns: 220px minmax(0, max-content) minmax(clamp(140px, 22%, 200px), 1fr) auto;
         align-items: center;
-        gap: 16px;
+        gap: 20px;
         padding: 10px;
         border: 1px solid var(--line);
         border-radius: 10px;
@@ -99,9 +103,15 @@
         overflow: hidden;
         border-radius: 6px;
     }
+    /* A long name has two lines; the page of the route has all of it. */
     h2 {
+        display: -webkit-box;
         margin: 0;
+        overflow: hidden;
         font: 700 18px/1.25 var(--sans);
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+        line-clamp: 2;
     }
     p {
         margin: 2px 0 0;
@@ -114,15 +124,18 @@
         display: flex;
         flex-wrap: wrap;
         gap: 2px 16px;
-        margin-top: 6px;
-        font: 700 18px/1.2 var(--sans);
+        margin-top: 8px;
+        font: 600 15px/1.2 var(--sans);
         white-space: nowrap;
+    }
+    .state {
+        margin-top: 8px;
     }
     .failure {
         color: var(--coral);
     }
     .profile {
-        height: 72px;
+        height: 84px;
     }
     .open {
         color: inherit;
@@ -163,9 +176,17 @@
     .button:not(:disabled):hover {
         background: var(--parchment-2);
     }
-    @media (max-width: 900px) {
+    /* The second button is plain text, so the card has one framed button. */
+    .quiet {
+        border-color: transparent;
+        color: var(--ink-soft);
+        font-size: 13px;
+    }
+    /* Under this width the map leaves the card too little room for four columns. */
+    @media (max-width: 1200px) {
         .card {
             grid-template-columns: 120px minmax(0, 1fr);
+            gap: 12px 16px;
         }
         .picture {
             height: 80px;
