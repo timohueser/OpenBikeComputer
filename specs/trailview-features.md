@@ -150,10 +150,13 @@ The road solver:
 - samples the master terrain every 2 m along each way,
 - fits a smooth height line to the samples, with weights that let a spike or a gully of the terrain
   go, so that it does not move the road,
-- holds each vertex of a way on the ground within 5 m of the terrain at each sample: a bound that
-  gives way to no other rule, so a segment can pass the grade of its class to keep it. A sample of a
-  segment that ends where a bridge runs through has no bound: steps or a ramp that meet a deck there
-  take its height. The end of a bridge that meets no way stands on the terrain the same way,
+- holds each vertex of a way on the ground within 5 m of the terrain across the way at each sample:
+  of the range from the lowest to the highest terrain at the sample and at ± the half-width of the
+  way, square to it. On a slope the terrain under the centre line is not the bed of the road. Past
+  5 m the bound gives way to the other limits, and past 8 m to none, so a segment can pass the grade
+  of its class there. A sample of a segment that ends where a bridge runs through has no bound: steps
+  or a ramp that meet a deck there take its height. The end of a bridge that meets no way stands on
+  the terrain the same way,
 - holds each segment within the grade of its class on the line of OSM, but not the approach of a
   side road where the through roads give it its heights: on the surface of the through road, or on
   a link that is a side road at both of its junctions, past any junction where it runs through. So
@@ -221,14 +224,16 @@ The road solver:
   number of parts meet there. The rules of the water over the terrain and of `cover_lift_max_m`
   hold for these crossings too: where the lift would pass the most, the way keeps its height.
 
-The grades, the ground, the decks, the sags, the covers and the passes are limits: a limit that a
-solve passes holds its bound from the next solve on, and lets go where the solve leaves it inside,
-so a limit only pushes. The decks, the sags, the covers and the passes start with the second solve.
+The grades, the ground, the decks, the sags, the covers and the passes are limits. The heights are
+the minimum of the fit plus, per limit, a cost times the square of its distance past its band, so a
+limit only pushes, and only where the heights pass it. The ground past 5 m costs the least, the other
+limits 100 times more, and the ground past 8 m 100 times more again. A first solve without limits
+gives the weights of the fit, the culverts and the covers that hold; the ramps act after the rest.
 
 The bake fails when a vertex of a way on the ground (not a bridge and not a tunnel, and not where a
-deck runs through it) lies more than 10 m off the terrain, the owner's gate; the message names the
-worst places. Its metrics hold this census, and the same one of the rivers and streams, which does
-not fail the bake.
+deck runs through it) lies more than 10 m past the terrain across its way, the range of the ground
+bound above: the owner's gate; the message names the worst places. Its metrics hold this census, and
+the same one of the rivers and streams, which does not fail the bake.
 
 The road solver works by area: an area is a tile of zoom 10. The solve of an area holds each way
 within 500 m of the area, along the ways from the nearest vertex of OSM of a way in a straight line.

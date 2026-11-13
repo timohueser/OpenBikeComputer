@@ -3,8 +3,8 @@
 //!
 //! A way is sampled every SAMPLE_M metres. Its heights minimise Σ wᵢ(zᵢ − hᵢ)² + λ·Σ Δgrade² / s,
 //! with Huber weights wᵢ, so that a spike or a gully of the terrain does not move the road, and
-//! λ = smooth_m⁴ of its class. A way on the ground lies within GROUND_M of the terrain, and no other
-//! segment is steeper than the grade of its class. Ways that share a
+//! λ = smooth_m⁴ of its class. A way on the ground lies within GROUND_M of the terrain across its width, and
+//! no other segment is steeper than the grade of its class. Ways that share a
 //! vertex share its height, and a side road leaves a junction on the surface of the through road. A
 //! bridge or a tunnel ignores the terrain under it and runs between its ends, a tunnel in a straight
 //! line; a bridge never sags under the straight line between its ends, and rises where it would pass
@@ -42,7 +42,7 @@ use rows::union;
 use sidewalks::Town;
 pub use sidewalks::Walks;
 
-use crate::geometry::{key, percentile};
+use crate::geometry::{abreast, key, percentile};
 use crate::structures::{BORE_M, BORE_PATH_M, BORE_RAIL_M};
 use crate::{degrees, metres, Plan, Terrain};
 
@@ -60,7 +60,7 @@ const APPROACH_PATH_M: f64 = 1.5;
 const RAMP_M: f64 = 15.0;
 const RAMP_GRADE: f64 = 0.25;
 const HUBER_M: f64 = 1.0;
-/// A way on the ground lies within GROUND_M of the terrain: half the census gate of the bake
+/// A way on the ground lies within GROUND_M of the terrain across its width: half the census gate of the bake
 /// (`gate::GATE_M`), which leaves room for the curve between the samples.
 const GROUND_M: f64 = 5.0;
 pub const FORD_M: f64 = 0.2;
@@ -391,16 +391,14 @@ pub fn solve(
             length[s] / k[s] as f64 * f64::from(u8::from(seen))
         })
         .collect();
+    let point = |i: usize| {
+        let v = net.segment_start[seg[i]];
+        let (pa, pb) = (net.vertex_xy[v], net.vertex_xy[v + 1]);
+        [pa[0] + t[i] * (pb[0] - pa[0]), pa[1] + t[i] * (pb[1] - pa[1])]
+    };
     let mut h = Vec::with_capacity(seg.len());
     for chunk in (0..seg.len()).collect::<Vec<_>>().chunks(1 << 21) {
-        let points: Vec<[f64; 2]> = chunk
-            .iter()
-            .map(|&i| {
-                let v = net.segment_start[seg[i]];
-                let (pa, pb) = (net.vertex_xy[v], net.vertex_xy[v + 1]);
-                [pa[0] + t[i] * (pb[0] - pa[0]), pa[1] + t[i] * (pb[1] - pa[1])]
-            })
-            .collect();
+        let points: Vec<[f64; 2]> = chunk.iter().map(|&i| point(i)).collect();
         h.extend(terrain.heights(&points));
     }
     let finite: Vec<bool> = h.iter().map(|h| h.is_finite()).collect();
@@ -593,7 +591,7 @@ pub fn solve(
                 && !(pinned[a[s]] && pinned[b[s]])
         })
         .collect();
-    // The ground: a way on the ground lies within GROUND_M of the terrain at each of its samples, and
+    // The ground: a way on the ground lies within GROUND_M of the terrain across it at each of its samples, and
     // the end of a bridge that meets no way at its own; but not where a bridge runs through an end of
     // its segment: steps or a ramp that meet a deck there take its height.
     let mut decked = vec![0u8; n];
@@ -610,6 +608,14 @@ pub fn solve(
             && if free[s] { loose[at_end(i)] && ends } else { decked[a[s]] < 2 && decked[b[s]] < 2 }
     };
     let ground_samples: Vec<usize> = (0..seg.len()).filter(|&i| on_ground(i)).collect();
+    // The terrain across the way at each ground sample, at its centre and at ± its half-width square to its
+    // segment: on a slope the terrain under the line of OSM is not the bed of the road, and the ground holds
+    // the road near the terrain range of its whole width.
+    let edges = |i: usize| {
+        let v = net.segment_start[seg[i]];
+        abreast(point(i), [net.vertex_xy[v], net.vertex_xy[v + 1]], net.half[net.segment_way[seg[i]]])
+    };
+    let width = across(&ground_samples, &h, edges, terrain);
     // The limits: rows A·z with a band from lo to hi, each with a cost per square metre past its band, so a
     // limit only pushes, and only where the heights pass it. First the grades of the segments; then the
     // ground of the vertices; then the rows of one side, A·z ≥ lo, that the first solve chooses: the decks
@@ -626,9 +632,9 @@ pub fn solve(
         band.push([centre - bound, centre + bound]);
     }
     for off in [GROUND_M, HARD_M] {
-        for &i in &ground_samples {
+        for (&i, &[low, high]) in ground_samples.iter().zip(&width) {
             limits.push([(a[seg[i]], 1.0 - t[i]), (b[seg[i]], t[i])]);
-            band.push([h[i] - off, h[i] + off]);
+            band.push([low - off, high + off]);
         }
     }
     let mut starts = [0; 3];
@@ -822,6 +828,25 @@ fn terms<'a>(
     let mut terms: Vec<Term> = fixed.iter().map(|(rows, w, c)| Term { block: Block::Rows(rows), w, c }).collect();
     terms.push(Term { block: samples, w, c: h });
     terms
+}
+
+/// Per sample of `samples`, the lowest and the highest terrain across its way: its height `h` and the known
+/// terrain at its two `edges`.
+fn across(
+    samples: &[usize],
+    h: &[f64],
+    edges: impl Fn(usize) -> [[f64; 2]; 2],
+    terrain: &dyn Terrain,
+) -> Vec<[f64; 2]> {
+    let mut out = Vec::with_capacity(samples.len());
+    for chunk in samples.chunks(1 << 16) {
+        let points: Vec<[f64; 2]> = chunk.iter().flat_map(|&i| edges(i)).collect();
+        let heights = terrain.heights(&points);
+        out.extend(chunk.iter().zip(heights.chunks(2)).map(|(&i, pair)| {
+            pair.iter().filter(|z| z.is_finite()).fold([h[i], h[i]], |[lo, hi], &z| [lo.min(z), hi.max(z)])
+        }));
+    }
+    out
 }
 
 /// Rows of their weights against 0.

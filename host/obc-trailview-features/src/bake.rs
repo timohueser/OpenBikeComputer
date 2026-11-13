@@ -276,7 +276,7 @@ pub fn bake(
                 .map(|(p, k)| k.map_or_else(|| p.clone(), |(points, z)| Part { points, z: Some(z), ..p.clone() }))
                 .collect();
             if is_river(*e) && tags.get("bridge").is_none_or(|b| GROUND.contains(&b.as_str())) {
-                water_census.add(&kinds[*e].kind, &parts, terrain, &|_| false);
+                water_census.add(&kinds[*e].kind, &parts, 0.0, terrain, &|_| false);
             }
             placer.entry(&kinds[*e], tags.clone(), parts);
         }
@@ -357,7 +357,8 @@ pub fn bake(
                     *shallow.get_or_insert(0) += 1;
                 }
                 if entry.kind != "tunnel" && tags.get("bridge").is_none_or(|b| GROUND.contains(&b.as_str())) {
-                    ground_census.add(&entry.kind, &parts, terrain, &|p| on_deck.contains(&key(p)));
+                    let half = options.widths.way(&kinds[*e].kind, tags, false).half_m;
+                    ground_census.add(&entry.kind, &parts, half, terrain, &|p| on_deck.contains(&key(p)));
                 }
                 let mut all = tags.clone();
                 all.extend(extra.get(&n).cloned().unwrap_or_default());

@@ -3,6 +3,7 @@
 
 use serde_json::{json, Value};
 
+use crate::geometry::abreast;
 use crate::{Part, Terrain};
 
 /// Chosen by the owner: a way or water this far off the terrain shows as a wall or a gorge that is
@@ -33,15 +34,36 @@ impl Default for Census {
 }
 
 impl Census {
-    /// Counts the vertices of `parts` with a height and a known terrain, but those that `skip` marks.
-    pub fn add(&mut self, kind: &str, parts: &[Part], terrain: &dyn Terrain, skip: &dyn Fn([f64; 2]) -> bool) {
+    /// Counts the vertices of `parts` with a height and a known terrain, but those that `skip` marks. The offset
+    /// of a vertex is how far it lies past the terrain across its way, at it and at ± `half` square to the way:
+    /// the band of the road solver.
+    pub fn add(
+        &mut self,
+        kind: &str,
+        parts: &[Part],
+        half: f64,
+        terrain: &dyn Terrain,
+        skip: &dyn Fn([f64; 2]) -> bool,
+    ) {
         for part in parts {
             let Some(z) = &part.z else { continue };
-            for ((&point, &z), ground) in part.points.iter().zip(z).zip(terrain.heights(&part.points)) {
-                let dz = z - ground;
-                if !dz.is_finite() || skip(point) {
+            let p = &part.points;
+            let edges: Vec<[f64; 2]> = (0..p.len())
+                .filter(|_| half > 0.0)
+                .flat_map(|j| abreast(p[j], [p[j.saturating_sub(1)], p[(j + 1).min(p.len() - 1)]], half))
+                .collect();
+            let sides = terrain.heights(&edges);
+            for (j, ((&point, &z), ground)) in p.iter().zip(z).zip(terrain.heights(p)).enumerate() {
+                if !(z - ground).is_finite() || skip(point) {
                     continue;
                 }
+                let [low, high] = sides
+                    .get(2 * j..2 * j + 2)
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|h| h.is_finite())
+                    .fold([ground, ground], |[low, high], &h| [low.min(h), high.max(h)]);
+                let dz = z - z.clamp(low, high);
                 self.vertices += 1;
                 self.bins[((dz.abs() / BIN_M) as usize).min(BINS)] += 1;
                 self.over += u64::from(dz > GATE_M);
@@ -118,7 +140,8 @@ mod tests {
             plan: None,
         };
         let mut census = Census::default();
-        census.add("road", &[line(vec![500.5, 512.0, 499.0, f64::NAN, 470.0, 520.0])], &flat, &|p| p[0] > 0.530045);
+        census
+            .add("road", &[line(vec![500.5, 512.0, 499.0, f64::NAN, 470.0, 520.0])], 0.0, &flat, &|p| p[0] > 0.530045);
         assert_eq!((census.vertices, census.over(), census.under()), (4, 1, 1));
         assert!(census.places(true).ends_with("road +12.0 m"), "{}", census.places(true));
         assert!(census.places(false).ends_with("road -30.0 m"), "{}", census.places(false));
