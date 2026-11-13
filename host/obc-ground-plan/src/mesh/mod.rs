@@ -286,7 +286,7 @@ pub fn face_labels(faces: &[Face], words: &[u32]) -> Vec<Option<u32>> {
     use crate::faces::{Owner, Surface};
     let (labels, lines) = (words[2] as usize, words[3] as usize);
     let line_of = |way: Option<u32>, leg: u8, level: i8| {
-        let (flag, leg) = if level > 0 { (STOREY, level as u32) } else { (0, u32::from(leg)) };
+        let (flag, leg) = if level != 0 { (STOREY, u32::from(level as u8)) } else { (0, u32::from(leg)) };
         way.map_or(u32::MAX, |w| {
             let at = |l: usize| &words[words[6] as usize + LINE * l..];
             (0..lines)

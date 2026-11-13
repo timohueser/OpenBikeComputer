@@ -15,8 +15,8 @@ pub(crate) enum End {
     /// At the way's own end: a joint or junction with the next deck way, or the end of a synthetic deck. `open`: a
     /// ground way goes on there.
     Way { open: bool },
-    /// On an end line through `at` (frame units from the cell's origin). `open`: a ground way ends at that end of
-    /// the way, so storey 0 meets the deck on the line; else the line is the deck's free end.
+    /// On an end line through `at` (frame units from the cell's origin). `open`: an A line, on which storey 0 meets the
+    /// deck; a closed line is the deck's free end.
     Line { at: [f64; 2], open: bool },
 }
 
@@ -59,14 +59,13 @@ impl Decks {
         };
         let mut pieces: BTreeMap<u32, Vec<Piece>> = BTreeMap::new();
         for r in g.levels.runs.iter().filter(|r| r.state == State::Deck && deck_way(r.way)) {
-            let way = &g.ways[r.way as usize];
             let end = |st: &Station, dir: i8| {
                 let line = (g.levels.end_lines.iter())
                     .find(|l| l.way == r.way && key(&l.at) == key(st) && l.kind != EndKind::Portal);
-                let way_end = if dir > 0 { &way.from } else { &way.to };
+                // Past an A line the way goes on as a ground way (its stub); past a closed line it is not drawn.
                 line.map_or(End::Way { open: ground_at(r.way, dir, st) }, |l| {
                     let at = [0, 1].map(|k| (f64::from(l.ends[0][k]) + f64::from(l.ends[1][k])) / 2.0);
-                    End::Line { at, open: l.kind == EndKind::A && ground_at(r.way, dir, way_end) }
+                    End::Line { at, open: l.kind == EndKind::A }
                 })
             };
             let ends = [end(&r.from, 1), end(&r.to, -1)];
@@ -275,8 +274,8 @@ pub(crate) fn stretches(line: &WayLine, pieces: &[Piece]) -> Vec<Stretch> {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Storeys {
     pub plans: Vec<super::FacePlan>,
-    /// Per deck way of the plans: its slab, its edge feature and its piers.
-    pub ways: BTreeMap<u32, DeckWay>,
+    /// Per deck way of the plans, by way: its slab, its edge feature and its piers.
+    pub ways: Vec<(u32, DeckWay)>,
     /// The baked piers (`bridge-pier`) within `PIER_NEAR_M` of the cell, frame units from its origin.
     pub piers: Vec<[i32; 2]>,
 }
@@ -291,12 +290,19 @@ pub struct DeckWay {
     pub pier_m: [f64; 2],
 }
 
-/// A pier's length along a road deck and a path deck, and its width as a share of the deck's paved width (as
-/// today's `structures/bridges.ts`).
+/// A pier's length along a road deck and a path deck, and its width as a share of the deck's paved width: the
+/// crossing block's thickness table.
 const PIER_ALONG_M: [f64; 2] = [1.6, 0.5];
 const PIER_SHARE: f64 = 0.6;
 /// A pier whose point lies this near the cell may reach into it.
 pub const PIER_NEAR_M: f64 = 5.0;
+
+impl Storeys {
+    /// The deck way `w` of the plans.
+    pub fn way(&self, w: u32) -> Option<&DeckWay> {
+        self.ways.binary_search_by_key(&w, |x| x.0).ok().map(|k| &self.ways[k].1)
+    }
+}
 
 impl DeckWay {
     pub(crate) fn of(g: &WayGraph, input: &crate::CellInput, rules: &super::Rules, w: u32) -> DeckWay {

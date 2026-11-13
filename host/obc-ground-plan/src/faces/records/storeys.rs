@@ -14,8 +14,11 @@ use crate::tile::Geometry;
 use crate::CellInput;
 
 /// The storeys over the ground near the cell, storey 1 first, with their records merged into `near` (storey 0's
-/// block). A storey with no deck near the cell has no plan.
+/// block). A storey with no deck near the cell has no plan; without the feature `storeys` there is none.
 pub fn storeys(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, near: &mut Vec<u32>) -> Storeys {
+    if !cfg!(feature = "storeys") {
+        return Storeys::default();
+    }
     let top = Decks::of(graph).storey.iter().copied().max().unwrap_or(0);
     let mut out = Storeys::default();
     for k in 1..=top {
@@ -29,7 +32,9 @@ pub fn storeys(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey
         let sub = encode(cell, graph, input, rules, (&c.lines, &[]), &c.cands, &plan, false);
         *near = merge(near, &sub.words, k);
         for w in faces.faces.iter().filter_map(|f| f.material) {
-            out.ways.entry(w).or_insert_with(|| DeckWay::of(graph, input, rules, w));
+            if let Err(k) = out.ways.binary_search_by_key(&w, |x| x.0) {
+                out.ways.insert(k, (w, DeckWay::of(graph, input, rules, w)));
+            }
         }
         out.plans.push(faces);
     }
@@ -99,7 +104,7 @@ fn merge(main: &[u32], sub: &[u32], storey: i8) -> Vec<u32> {
     w.extend(&main[main[6] as usize..main[7] as usize]);
     for l in sub[sub[6] as usize..sub[7] as usize].chunks(LINE) {
         let mut l = l.to_vec();
-        l[1] |= STOREY | (storey as u32) << LEG_SHIFT;
+        l[1] |= STOREY | u32::from(storey as u8) << LEG_SHIFT;
         l[2] += s0;
         w.extend(l);
     }

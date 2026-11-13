@@ -45,10 +45,9 @@ const POST: usize = 5;
 const PIER: usize = 6;
 pub const HEAD: usize = 9 + PARTS.len();
 
-/// A parapet: its width and its height over the deck (today's `PARAPET_M` of `roads/decks.ts` and the parapet of
-/// `structures/bridges.ts`).
+/// A parapet: its width and its height over the deck (the crossing block's thickness table).
 const PARAPET_M: [f64; 2] = [0.35, 1.0];
-/// A railing: its height, and the side of its square rail and posts (`structures/bridges.ts`).
+/// A railing: its height, and the side of its square rail and of its posts (the crossing block's thickness table).
 const RAIL_M: f64 = 1.05;
 const BAR_M: f64 = 0.08;
 
@@ -454,7 +453,7 @@ pub fn mesh_storeys(
         stats.unlabelled +=
             (0..plan.faces.len() as u32).filter(|&f| sheet(f) && labels[f as usize].is_none()).count() as u32;
         let label = |f: u32| labels[f as usize].unwrap_or(NO_LABEL);
-        let way = |l: u32| lines.way(l).and_then(|w| storeys.ways.get(&w));
+        let way = |l: u32| lines.way(l).and_then(|w| storeys.way(w));
         let depth = |l: u32| way(l).map_or(0.0, |w| w.depth_m);
         // The sheets: faces joined by an edge.
         let mut root: Vec<usize> = (0..plan.faces.len()).collect();
@@ -756,7 +755,7 @@ fn piers(
         else {
             continue;
         };
-        let (Some(w), Some((_, d))) = (lines.way(top).and_then(|w| storeys.ways.get(&w)), lines.along(top, q)) else {
+        let (Some(w), Some((_, d))) = (lines.way(top).and_then(|w| storeys.way(w)), lines.along(top, q)) else {
             continue;
         };
         let mpu = metres_per_unit_at(origin_y + q[1]);

@@ -1,6 +1,7 @@
 //! The storeys over the ground over every cell of the TrailView fixture: storey 0 reads the same with them, each
 //! storey is a planar partition, each shell part closes, no parapet or railing stands in a paved face of its
 //! storey, and two neighbouring cells give a storey the same corners and heights on their shared line.
+#![cfg(feature = "storeys")]
 
 #[path = "fixture/mod.rs"]
 mod fixture;

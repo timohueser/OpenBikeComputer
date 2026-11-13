@@ -764,7 +764,7 @@ fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2], items: &Item
         let l = (hs[k] & 0xffff) as usize;
         let ln = b.line(l);
         // The ceiling lines and the storeys over the ground come last: no line of storey 0 follows.
-        if storey == 0 && (ln.ceiling || ln.storey > 0) {
+        if storey == 0 && (ln.ceiling || ln.storey != 0) {
             break;
         }
         if ln.storey != storey {
@@ -1515,7 +1515,7 @@ fn decks<'a>(
 ) -> impl Iterator<Item = (f64, f64, f64)> + 'a {
     // The storeys' lines over the ground come after the ceiling lines.
     let lines = segs.iter().rev().map(move |&item| (b.line((item & 0xffff) as usize), (item >> 16) as usize));
-    let ceilings = lines.skip_while(|(ln, _)| ln.storey > 0).map_while(|(ln, i)| ln.ceiling.then_some((ln, i)));
+    let ceilings = lines.skip_while(|(ln, _)| ln.storey != 0).map_while(|(ln, i)| ln.ceiling.then_some((ln, i)));
     ceilings.filter_map(move |(ln, i)| {
         let (sa, sb) = (b.sample(&ln, i), b.sample(&ln, i + 1));
         let ab = sub(sb.p, sa.p);

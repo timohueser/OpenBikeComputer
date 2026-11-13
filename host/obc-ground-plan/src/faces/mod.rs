@@ -198,6 +198,10 @@ impl Ctx<'_> {
     }
 }
 
+/// Whether the storeys over the ground are built (the feature `storeys`): a build without them links none of their
+/// code.
+const STOREYS: bool = cfg!(feature = "storeys");
+
 /// A way of storey 0. Water lies on the ground or in a tunnel, never on a deck.
 fn in_level(graph: &WayGraph, way: u32) -> bool {
     graph.ways[way as usize].level == Level::Ground
@@ -859,10 +863,10 @@ pub(crate) fn level_lines<'a>(
     level: i8,
 ) -> Vec<WayLine<'a>> {
     let ctx = Ctx { graph, rules, origin: cell.origin() };
-    let decks = (level > 0).then(|| deck::Decks::of(graph));
+    let decks = (STOREYS && level > 0).then(|| deck::Decks::of(graph));
     let mut out =
         lines(&ctx, input, &keep(graph, decks.as_ref(), level), window(cell, input_m(&rules.plan, &rules.sections))).0;
-    if decks.is_some() {
+    if STOREYS && decks.is_some() {
         for line in &mut out {
             deck::deck_bands(line, &|p| ctx.units(rules.structures.edge_band_m, p));
         }
@@ -960,8 +964,8 @@ impl Sliced {
 /// A face edge lies on a line's end line where its ends lie within this many units of it: the slice rounds
 /// the stroke's whole-unit corners.
 const END_UNITS: f64 = 2.0;
-/// The same for a deck's end on its end line, whose corners are those of each layer of its stroke, each rounded
-/// apart (measured on the fixture: under 3 units).
+/// The same for a deck's end on its end line, whose corners are those of each layer of its stroke, each rounded on its
+/// own: they lie a few units apart.
 const DECK_END_UNITS: f64 = 4.0;
 
 /// A line's deck end lines: the end point, the unit direction into the line and the half-width of its
@@ -1056,7 +1060,7 @@ fn candidates<'a>(
     // farther still: the off-line test of the points' rounds reads them.
     let lx = reach(rules::lines_m(plan, &rules.sections));
     // A storey over the ground holds the pieces of its deck ways: each a deck's stroke between its end lines.
-    let decks = (level > 0).then(|| deck::Decks::of(graph));
+    let decks = (STOREYS && level > 0).then(|| deck::Decks::of(graph));
     let (mut lines, of_way) =
         lines(&ctx, input, &keep(graph, decks.as_ref(), level), reach(rules::ways_m(plan, &rules.sections)));
     let stretches: Vec<Vec<deck::Stretch>> = match &decks {
@@ -1069,8 +1073,9 @@ fn candidates<'a>(
         None => Vec::new(),
     };
     // A point of a storey over the ground lies on the pieces of all its arms.
-    let held =
-        |a: &Arm| stretches.is_empty() || stretches[a.line].iter().any(|s| s.inner.0 <= a.at && a.at <= s.inner.1);
+    let held = |a: &Arm| {
+        !STOREYS || stretches.is_empty() || stretches[a.line].iter().any(|s| s.inner.0 <= a.at && a.at <= s.inner.1)
+    };
     // The points within `bx` round their arms; the points past it only end their runs.
     let mut all = graph_points(&ctx, &lines, &of_way, reach(rules::points_m(plan, &rules.sections)));
     all.retain(|pt| pt.arms.iter().all(&held));
@@ -1221,7 +1226,7 @@ fn candidates<'a>(
             own
         };
         // A deck's stretches: its carriageway and its own band layers, ending square on their end lines.
-        if !stretches.is_empty() {
+        if STOREYS && !stretches.is_empty() {
             if run(bx).is_none() {
                 continue;
             }
@@ -1343,7 +1348,7 @@ fn candidates<'a>(
         let mut legged: Vec<usize> = pt.arms.iter().map(|a| a.line).filter(|&l| !lines[l].cuts.is_empty()).collect();
         legged.sort_unstable();
         legged.dedup();
-        let deck_owner = pt.label.material.and_then(|m| of_way.get(&m).copied()).filter(|_| decks.is_some());
+        let deck_owner = pt.label.material.and_then(|m| of_way.get(&m).copied()).filter(|_| STOREYS && decks.is_some());
         for k in 0..bands {
             let layer = match (deck_owner, &legged[..]) {
                 (Some(l), _) => &mut own_layers.entry(l).or_default()[k],
@@ -1359,7 +1364,7 @@ fn candidates<'a>(
         if layer.is_empty() {
             continue;
         }
-        let (rank, surface, rule) = band_label(k, decks.is_some());
+        let (rank, surface, rule) = band_label(k, STOREYS && decks.is_some());
         let rank = plan.rank(rank);
         let material = line.map(|l| lines[l].way);
         let label = Label { rank, surface, rule, material, ..TERRAIN };
@@ -1400,7 +1405,7 @@ fn candidates<'a>(
     for (k, &(rank, surface, rule)) in BAND_LABELS.iter().enumerate() {
         let rings: Vec<Vec<P>> = fills.iter().flat_map(|f| f.bands[k].iter().cloned()).collect();
         // A deck's band layers are its ways' own: a round's shared band would name no way.
-        if rings.is_empty() || k >= bands || decks.is_some() {
+        if rings.is_empty() || k >= bands || (STOREYS && decks.is_some()) {
             continue;
         }
         let rank = plan.rank(rank);
@@ -1475,7 +1480,7 @@ fn candidates<'a>(
         }
     }
     let ways = lines.iter().take_while(|l| !l.sec.water).count();
-    let ends: Vec<[f64; 5]> = if decks.is_some() {
+    let ends: Vec<[f64; 5]> = if STOREYS && decks.is_some() {
         let open = stretches.iter().flatten().flat_map(|s| s.lines.iter().flatten()).filter(|e| e.open);
         open.map(|e| [f64::from(e.at[0]), f64::from(e.at[1]), e.into[0], e.into[1], e.half]).collect()
     } else {
