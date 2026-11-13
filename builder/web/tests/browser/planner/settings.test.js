@@ -80,7 +80,7 @@ test('the settings set the look and the units, and a backup brings the library b
   page.on('pageerror', error => errors.push(error.message));
   await stub(page);
   await open(page);
-  await expect(counts(page)).toHaveText('0 routes and 0 rides are saved in this browser, on this computer only.');
+  await expect(counts(page)).toHaveText('0 routes and 0 rides are saved in this browser only.');
   await expect(page.getByRole('button', { name: 'Save a backup file' })).toBeDisabled();
   await page.getByRole('radio', { name: 'Dark' }).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');

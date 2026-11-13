@@ -1,6 +1,5 @@
 <script lang="ts">
     import { onMount } from 'svelte';
-    import Card from '../lib/ui/Card.svelte';
     import Segmented from '../lib/ui/Segmented.svelte';
     import Window from '../lib/ui/Window.svelte';
     import { saveBlob } from '../lib/download';
@@ -27,6 +26,7 @@
     let confirming = $state(false);
     let failure = $state('');
     let file: HTMLInputElement;
+    const heading = $props.id();
 
     const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
     const text = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -81,34 +81,31 @@
 </script>
 
 <Window title="Settings" large onClose={() => router.closeSettings()}>
-    <div class="cards">
-        <Card label="Rider">
-            <div class="row">
-                <strong>Units</strong>
-                <Segmented label="Units" options={units} value={settings.units} onChange={value => updateSettings({ units: value })} />
-            </div>
-            <div class="row">
-                <strong>Look</strong>
-                <Segmented label="Look" options={looks} value={appearance.look} onChange={setLook} />
-            </div>
-            {#each values as { key, label, unit, zones, ramp } (key)}
-                <RiderValue id={key} {label} {unit} value={settings[key]} range={RANGES[key]} {zones} {ramp} onSet={value => setValue(key, value)} />
-            {/each}
-            <p class="note">The zones come from these two values. A new ride from the OpenBikeComputer brings the values of the device, and they replace the values here. A ride from a file takes the values that are here. A ride keeps its values when you change them later.</p>
-        </Card>
-        <Card label="Your library">
-            <p class="count">
-                {#if counts}<strong>{plural(counts.routes, 'route')} and {plural(counts.rides, 'ride')}</strong> are saved in this browser, on this computer only.{/if}
-            </p>
-            <div class="buttons">
-                <button type="button" onclick={save} disabled={busy || !counts || counts.routes + counts.rides === 0}>Save a backup file</button>
-                <button type="button" onclick={() => file.click()} disabled={busy}>Load a backup file</button>
-                <input bind:this={file} type="file" accept=".zip,application/zip" hidden onchange={event => load(event.currentTarget.files?.[0])} />
-                <button type="button" class="danger" onclick={() => confirming = true} disabled={busy}>Delete all</button>
-            </div>
-            <p class="message" role="status">{message}</p>
-        </Card>
+    <div class="row">
+        <strong>Units</strong>
+        <Segmented label="Units" options={units} value={settings.units} onChange={value => updateSettings({ units: value })} />
     </div>
+    <div class="row">
+        <strong>Look</strong>
+        <Segmented label="Look" options={looks} value={appearance.look} onChange={setLook} />
+    </div>
+    {#each values as { key, label, unit, zones, ramp } (key)}
+        <RiderValue id={key} {label} {unit} value={settings[key]} range={RANGES[key]} {zones} {ramp} onSet={value => setValue(key, value)} />
+    {/each}
+    <p class="note">A new ride from the OpenBikeComputer brings the values of the device, and they replace these. A ride keeps its values when you change them later.</p>
+    <section aria-labelledby={heading}>
+        <h3 id={heading}>Your library</h3>
+        <p class="count">
+            {#if counts}<strong>{plural(counts.routes, 'route')} and {plural(counts.rides, 'ride')}</strong> are saved in this browser only.{/if}
+        </p>
+        <div class="buttons">
+            <button type="button" onclick={save} disabled={busy || !counts || counts.routes + counts.rides === 0}>Save a backup file</button>
+            <button type="button" onclick={() => file.click()} disabled={busy}>Load a backup file</button>
+            <input bind:this={file} type="file" accept=".zip,application/zip" hidden onchange={event => load(event.currentTarget.files?.[0])} />
+            <button type="button" class="danger" onclick={() => confirming = true} disabled={busy}>Delete all</button>
+        </div>
+        <p class="message" role="status">{message}</p>
+    </section>
 </Window>
 
 {#if confirming}
@@ -116,7 +113,7 @@
         {#snippet children(close)}
         <p>Your routes and rides leave this browser. The device keeps its own, and its rides come in again at the next connection. Close other tabs of this app first.</p>
         {#if failure}<p class="message" role="alert">{failure}</p>{/if}
-        <div class="buttons end">
+        <div class="window-buttons">
             <button type="button" onclick={close}>Cancel</button>
             <button type="button" class="danger" onclick={deleteAll} disabled={busy}>Delete all</button>
         </div>
@@ -125,47 +122,42 @@
 {/if}
 
 <style>
-    .cards {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 16px;
-        align-items: start;
-    }
     .row {
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 16px;
-        padding: 9px 0;
+        padding: 12px 0;
         border-top: 1px solid var(--line);
     }
-    p {
-        margin: 4px 0 0;
-    }
-    .row p, .note {
-        color: var(--ink-soft);
-        font-size: 12.5px;
-    }
-    .note {
+    .note, .count, .message {
         margin: 0;
-        padding-top: 12px;
+        color: var(--ink-soft);
+        font-size: 13.5px;
+        text-wrap: pretty;
+    }
+    /* The library is a second part: a line and more room than between two rows. */
+    section {
+        margin-top: 20px;
+        padding-top: 16px;
         border-top: 1px solid var(--line);
     }
-    .count {
-        margin: 0 0 12px;
+    h3 {
+        margin: 0 0 2px;
+        font: 700 14px/20px var(--sans);
+    }
+    .count strong {
+        color: var(--ink);
+        font-weight: 600;
     }
     .buttons {
         display: flex;
         flex-wrap: wrap;
         gap: 8px;
-    }
-    .end {
-        justify-content: flex-end;
-        margin-top: 16px;
+        margin-top: 12px;
     }
     button {
-        min-height: 32px;
-        padding: 5px 10px;
+        padding: 6px 12px;
         border: 1px solid var(--line-strong);
         border-radius: 6px;
         background: var(--panel);
@@ -178,8 +170,10 @@
         border-color: var(--coral);
         color: var(--coral);
     }
-    .buttons:not(.end) .danger {
+    /* Beside the backup buttons the delete is plain text at the far end; its window asks before it deletes. */
+    .buttons .danger {
         margin-left: auto;
+        border-color: transparent;
     }
     .message {
         margin-top: 10px;
@@ -188,7 +182,6 @@
         margin: 0;
     }
     @media (max-width: 760px) {
-        .cards { grid-template-columns: minmax(0, 1fr); }
         .row { flex-wrap: wrap; }
     }
 </style>

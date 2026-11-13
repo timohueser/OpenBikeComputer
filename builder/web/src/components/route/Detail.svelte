@@ -175,11 +175,6 @@
         border-color: var(--coral);
         color: var(--coral);
     }
-    .detail :global(.window-buttons) {
-        display: flex;
-        justify-content: flex-end;
-        gap: 8px;
-    }
     .failure {
         margin: 0;
         color: var(--coral);
