@@ -1083,6 +1083,11 @@ jobs:
         with:
           name: obc-builder-bridge-pkg
           path: builder/web/src/lib/core/pkg
+      # The planner build of the browser tests holds the pretend device of `?fake-device`.
+      - uses: actions/download-artifact@v4
+        with:
+          name: obc-flat-device-pkg
+          path: builder/web/test-support/flat-device/pkg
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
