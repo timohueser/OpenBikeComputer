@@ -309,7 +309,7 @@ fn frame_header(bytes: &[u8]) -> Option<(u64, Option<u64>, bool)> {
 /// and a window of at most 8 MiB. `buffer` holds the part bytes between the reads and writes.
 fn stream(
     item: &Item,
-    object: &File,
+    object: &mut impl Read,
     decoder: &mut ruzstd::decoding::FrameDecoder,
     buffer: &mut [u8],
     mut out: impl FnMut(&[u8]) -> Result<()>,
@@ -403,14 +403,46 @@ fn check_info(directory: &[u8], info: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn open<F: Fn(&str) -> io::Result<File>>(fetch: &F, item: &Item) -> Result<File> {
+fn open<O, F: Fn(&str) -> io::Result<O>>(fetch: &F, item: &Item) -> Result<O> {
     fetch(&hex(&item.object)).map_err(|e| item.wrong(e))
+}
+
+/// Takes the lock of the folder `target`, which exists.
+fn lock(target: &Path) -> Result<File> {
+    let path = target.join(LOCK);
+    let lock = fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path).map_err(io(&path))?;
+    match lock.try_lock() {
+        Ok(()) => Ok(lock),
+        Err(fs::TryLockError::WouldBlock) => Err(Error::Locked(path)),
+        Err(fs::TryLockError::Error(error)) => Err(io(&path)(error)),
+    }
+}
+
+/// Deletes the install `target` under its lock.
+pub fn remove(target: &Path) -> Result<()> {
+    if !target.exists() {
+        return Ok(());
+    }
+    let _lock = lock(target)?;
+    fs::remove_dir_all(target).map_err(io(target))
+}
+
+/// A published object that `fetch` opens: a file, or a reader of one.
+pub trait Object: Read {
+    /// The file of the object, whose cached pages the installer drops after the read.
+    fn file(&self) -> &File;
+}
+
+impl Object for File {
+    fn file(&self) -> &File {
+        self
+    }
 }
 
 /// Installs the download cells `cells`, or all, with the groups of `profiles`, or all, of the
 /// package of `directory` and `info` into `target`. `fetch` opens a published object by its
 /// SHA-256 in hex; `threads` workers decompress and check the objects.
-pub fn install<F>(
+pub fn install<F, O>(
     target: &Path,
     (directory, info): (&[u8], &[u8]),
     (cells, profiles): (Option<&[u32]>, Option<&[String]>),
@@ -418,17 +450,11 @@ pub fn install<F>(
     fetch: F,
 ) -> Result<Report>
 where
-    F: Fn(&str) -> io::Result<File> + Sync,
+    F: Fn(&str) -> io::Result<O> + Sync,
+    O: Object,
 {
     fs::create_dir_all(target).map_err(io(target))?;
-    let lock_path = target.join(LOCK);
-    let lock =
-        fs::OpenOptions::new().create(true).truncate(false).write(true).open(&lock_path).map_err(io(&lock_path))?;
-    match lock.try_lock() {
-        Ok(()) => {}
-        Err(fs::TryLockError::WouldBlock) => return Err(Error::Locked(lock_path)),
-        Err(fs::TryLockError::Error(error)) => return Err(io(&lock_path)(error)),
-    }
+    let _lock = lock(target)?;
     check_info(directory, info)?;
     let plan = plan(directory, info, cells, profiles)?;
     keep(&target.join("directory.bin"), directory)?;
@@ -445,12 +471,12 @@ where
     }
     let missing = plan.missing(target);
     each(&missing.files, threads, |item, decoder, buffer| {
-        let object = open(&fetch, item)?;
+        let mut object = open(&fetch, item)?;
         let (part, path) = (dir.join(format!("{}.part", item.name)), dir.join(&item.name));
         // The file starts with the first bytes of the part, so an object that `stream` refuses at
         // its header leaves no file.
         let mut file = None;
-        stream(item, &object, decoder, buffer, |bytes| {
+        stream(item, &mut object, decoder, buffer, |bytes| {
             let file = match &mut file {
                 Some(file) => file,
                 None => file.insert(File::create(&part).map_err(io(&part))?),
@@ -463,7 +489,7 @@ where
         };
         file.sync_all().map_err(io(&part))?;
         drop_cache(&file);
-        drop_cache(&object);
+        drop_cache(object.file());
         drop(file);
         fs::rename(&part, &path).map_err(io(&path))
     })?;
@@ -488,16 +514,17 @@ where
 }
 
 /// Checks each object of the package of `directory` and `info` as `install` does, without a file.
-pub fn check<F>(directory: &[u8], info: &[u8], threads: usize, fetch: F) -> Result<Report>
+pub fn check<F, O>(directory: &[u8], info: &[u8], threads: usize, fetch: F) -> Result<Report>
 where
-    F: Fn(&str) -> io::Result<File> + Sync,
+    F: Fn(&str) -> io::Result<O> + Sync,
+    O: Object,
 {
     check_info(directory, info)?;
     let plan = plan(directory, info, None, None)?;
     each(&plan.files, threads, |item, decoder, buffer| {
-        let object = open(&fetch, item)?;
-        stream(item, &object, decoder, buffer, |_| Ok(()))?;
-        drop_cache(&object);
+        let mut object = open(&fetch, item)?;
+        stream(item, &mut object, decoder, buffer, |_| Ok(()))?;
+        drop_cache(object.file());
         Ok(())
     })?;
     Ok(Report {
