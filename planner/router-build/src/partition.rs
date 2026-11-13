@@ -294,8 +294,8 @@ impl Part<'_> {
             self.queue[..n - k].select_nth_unstable_by_key(k - 1, key);
             self.queue[k..n - k].select_nth_unstable_by_key(n / 2 - k, key);
             let median = key(&self.queue[n / 2]);
-            for place in 0..n {
-                self.level[place] &= BEST;
+            for level in &mut self.level[..n] {
+                *level &= BEST;
             }
             for i in n - k..n {
                 let place = self.place(graph, self.queue[i]).expect("a sink of the part");

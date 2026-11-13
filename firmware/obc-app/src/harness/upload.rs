@@ -480,8 +480,7 @@ fn feed_trip(app: &mut App) {
 
 #[test]
 fn a_trip_upload_collapses_the_route_popup_burst_into_one_trip_card() {
-    // The desktop app's trip send: each member route commits (its popup replacing the previous),
-    // The desktop app's trip send: each member route commits, its popup replacing the previous,
+    // A host's trip send: each member route commits, its popup replacing the previous,
     // then the trip object lands last, so exactly one card is left standing.
     let mut app = idle_app();
     route_upload(&mut app, 10, false);
@@ -596,7 +595,7 @@ fn a_later_route_upload_replaces_the_trip_card_most_recent_wins() {
 
 #[test]
 fn a_trip_replace_is_silent() {
-    // A replace is a host-side trip edit (the desktop edits by replace-at-same-id, one upload per
+    // A replace is a host-side trip edit (a host edits by replace-at-same-id, one upload per
     // click): the rider just made the change, so no card. Only a fresh delivery announces itself.
     let mut app = idle_app();
     feed_trip(&mut app);
@@ -605,7 +604,7 @@ fn a_trip_replace_is_silent() {
     assert!(matches!(app.top_screen(), Screen::Home(_)), "a trip edit raises no popup");
     assert!(!app.take_dirty().map, "…and dirties nothing");
 
-    // The desktop reorder sequence: several replace-commits in a row stay completely silent.
+    // A host's reorder sequence: several replace-commits in a row stay completely silent.
     for _ in 0..4 {
         trip_upload(&mut app, 5, true);
     }

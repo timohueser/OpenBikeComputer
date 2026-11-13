@@ -1,7 +1,10 @@
-import { readGpx } from '../core/gpx';
+import { readGpx, type GpxImport } from '../core/gpx';
+import type { Bike } from '../library/records';
 import { emptyTrip, maxRidingDays, type DrawnCoordinate, type RoutePoint, type Trip } from './editor';
 import { kilometres, nearestOnLine, simplify, type Coordinate } from './geo';
-import type { Shape } from './routing';
+import { newPlan, planSummary, type Plan } from './library';
+import { LegCache } from './route-legs';
+import { calculateLine, type Shape } from './routing';
 
 /** One imported file: its name, its simplified line with the file's elevations, its waypoints and, when planned on roads,
  * its shape. */
@@ -17,19 +20,31 @@ const toleranceKm = .003;
 /** Two days whose ends are farther apart than this are joined by a transfer. */
 const transferMinKm = 0.2;
 
+/** The line of a GPX file or a FIT course, simplified, with its waypoints. */
+export function importedLine(name: string, { points, waypoints }: Pick<GpxImport, 'points' | 'waypoints'>): ImportedLine {
+    const line = points.map((p): DrawnCoordinate => p.ele === undefined ? [p.lon / 1e6, p.lat / 1e6] : [p.lon / 1e6, p.lat / 1e6, p.ele]);
+    return { name, line: simplify(line, toleranceKm).map(i => line[i]),
+        waypoints: waypoints.map(w => ({ label: w.name ?? 'Marker', coordinate: [w.lon / 1e6, w.lat / 1e6], ...w.note ? { note: w.note } : {} })) };
+}
+
 /** One day per file, in the given order. */
 export function readTracks(files: { name: string; text: string }[]): ImportedLine[] {
     if (files.length > maxRidingDays) throw new Error(`A trip has at most ${maxRidingDays} days. Import ${maxRidingDays} files or fewer.`);
     return files.map(file => {
         try {
-            const { name, points, waypoints } = readGpx(file.text, file.name.replace(/\.gpx$/i, ''));
-            const line = points.map((p): DrawnCoordinate => p.ele === undefined ? [p.lon / 1e6, p.lat / 1e6] : [p.lon / 1e6, p.lat / 1e6, p.ele]);
-            return { name, line: simplify(line, toleranceKm).map(i => line[i]),
-                waypoints: waypoints.map(w => ({ label: w.name ?? 'Marker', coordinate: [w.lon / 1e6, w.lat / 1e6], ...w.note ? { note: w.note } : {} })) };
+            const track = readGpx(file.text, file.name.replace(/\.gpx$/i, ''));
+            return importedLine(track.name, track);
         } catch (error) {
             throw new Error(`${file.name}: ${(error as Error).message}`);
         }
     });
+}
+
+/** A plan of one day that keeps the line of the file as one drawn leg, with its calculated summary. */
+export async function planFromFile(track: Pick<GpxImport, 'name' | 'points' | 'waypoints'>, id: string, bike: Bike): Promise<Plan> {
+    const trip = importedTrip({ bike }, [importedLine(track.name, track)]);
+    const line = await calculateLine(trip, new AbortController().signal, new LegCache());
+    return { ...newPlan(trip, track.name), id, summary: planSummary(trip, line) };
 }
 
 /** Shapes the lines one at a time, so an import never sends parallel requests. Any failure, such as a busy service, keeps

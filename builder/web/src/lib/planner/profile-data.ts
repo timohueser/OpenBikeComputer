@@ -1,3 +1,4 @@
+import { heightIn } from '../settings/format';
 import type { RoutingLine } from './routing';
 import { cumulative, firstIndex } from './geo';
 
@@ -19,13 +20,15 @@ export function profileSamples(line?: ProfileLine): readonly ProfileSample[] {
     return samples;
 }
 
-/** Whole hundreds of metres that hold every known height of the sample lists; 0 to 100 m without one. */
+/** Whole hundreds of the height unit of the rider (`heightUnit()`) that hold every known height of the sample lists, in
+ * metres; 0 to 100 of that unit without one. */
 export function heightRange(...lists: (readonly ProfileSample[])[]): { low: number; high: number } {
     let min = Infinity, max = -Infinity;
     for (const list of lists) for (const { height } of list) if (height !== null) { min = Math.min(min, height); max = Math.max(max, height); }
-    if (min === Infinity) return { low: 0, high: 100 };
-    const low = Math.floor(min / 100) * 100;
-    return { low, high: Math.max(low + 100, Math.ceil(max / 100) * 100) };
+    const step = 100 / heightIn(1);
+    if (min === Infinity) return { low: 0, high: step };
+    const low = Math.floor(min / step) * step;
+    return { low, high: Math.max(low + step, Math.ceil(max / step) * step) };
 }
 
 /** SVG paths of a profile in a 1000 × 105 box between the heights `low` and `high`: one line, and the area below it, for

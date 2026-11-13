@@ -2,7 +2,7 @@
  * The reactive shell over a {@link DeviceWatcher} — the one Svelte-aware file in `lib/usb/`.
  *
  * Everything with logic in it (pipes, codecs, the client, discovery, the mock device) is plain
- * TypeScript, tested under Node and reusable by the desktop app. This file exists only to mirror a
+ * TypeScript, tested under Node. This file exists only to mirror a
  * watcher's snapshots into runes so a component can read `session.status` and re-render, mirroring
  * how `JobTracker` shells the build API.
  */
@@ -19,16 +19,11 @@ export class WatchedDeviceSession implements DeviceSession {
     info = $state<DeviceInfo | null>(null);
     error = $state<string | null>(null);
 
-    readonly transport: string;
-    readonly supported: boolean;
-
     private readonly watcher: DeviceWatcher;
     private readonly unsubscribe: () => void;
 
-    constructor(watcher: DeviceWatcher, transport: string) {
+    constructor(watcher: DeviceWatcher) {
         this.watcher = watcher;
-        this.transport = transport;
-        this.supported = watcher.current.status !== "unsupported";
         // `subscribe` fires immediately with the current snapshot, so the initial state is set here
         // rather than duplicated above.
         this.unsubscribe = watcher.subscribe((state) => {
@@ -55,15 +50,15 @@ export class WatchedDeviceSession implements DeviceSession {
 }
 
 /**
- * Open a WebUSB session and adopt an already-permitted device if one is plugged in.
+ * Open the device session and adopt an already-permitted device if one is plugged in.
  *
  * Returns as soon as the adopt attempt has settled — with a live client when a device was found,
  * `idle` when none was, and `unsupported` in a browser without WebUSB. None of those is a failure,
  * because the session's whole job is to be something the UI can render in every one of them.
  */
-export async function openWebUsbSession(options: WatcherOptions = {}): Promise<DeviceSession> {
+export async function openDeviceSession(options: WatcherOptions = {}): Promise<DeviceSession> {
     const watcher = new WebUsbWatcher(options);
-    const session = new WatchedDeviceSession(watcher, "webusb");
+    const session = new WatchedDeviceSession(watcher);
     await watcher.start();
     return session;
 }

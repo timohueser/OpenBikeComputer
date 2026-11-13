@@ -48,8 +48,8 @@ pub fn row_hash(row: &[u8]) -> u32 {
 /// between two changed ones splits the run.
 ///
 /// `hash` is the per-row hash, with a colliding stub for the oracle, and `force_all` treats every
-/// row as changed, for the first present after construction or a reset. The store's length is the
-/// row count.
+/// row as changed, for glass the store cannot vouch for, such as an unconfirmed [`RowDiff`]. The
+/// store's length is the row count.
 pub fn diff_rows(
     fb: &[u8],
     stride: usize,
@@ -80,37 +80,42 @@ pub fn diff_rows(
     }
 }
 
-/// A fixed-height per-row hash store, the [`diff_rows`] wrapper a board owns in `.bss`. The
-/// priming flag forces a full first present.
+/// A fixed-height per-row hash store, the [`diff_rows`] wrapper a board owns in `.bss`.
+///
+/// Rows that [`diff_clipped`](RowDiff::diff_clipped) returns are owed to the glass until the
+/// caller [`confirm`](RowDiff::confirm)s their push. While a push is unconfirmed, the next
+/// `diff_clipped` returns every row outside its `exclude`, so a failed, skipped or dropped push
+/// costs a full push and never strands rows.
 pub struct RowDiff<const H: usize> {
-    /// Last-presented per-row hashes, seeded by the first diff.
+    /// Last-diffed per-row hashes. They track the frame whether or not its rows reached glass.
     prev: [u32; H],
-    /// `false` until the first diff: the stored hashes hold no prior frame, so the first present
-    /// must push and seed the whole frame whatever the zero-init store says.
-    primed: bool,
+    /// `true` when every row outside the last `exclude` is on glass as `prev` records it. `false`
+    /// after [`new`](RowDiff::new), after [`reset`](RowDiff::reset), and while returned spans wait
+    /// for [`confirm`](RowDiff::confirm).
+    confirmed: bool,
 }
 
 impl<const H: usize> RowDiff<H> {
-    /// An unprimed store (zeroed hashes); the first [`diff`](RowDiff::diff) pushes the whole frame.
+    /// An unconfirmed, all-zero store: the first [`diff_clipped`](RowDiff::diff_clipped) returns
+    /// every row outside its `exclude`.
     pub const fn new() -> Self {
-        Self { prev: [0; H], primed: false }
+        Self { prev: [0; H], confirmed: false }
     }
 
-    /// Force the next diff to push the whole frame again, for a repaint such as a panel re-init
-    /// where the on-glass frame no longer matches the store.
+    /// Mark the glass as unknown, so the next diff returns every row outside its `exclude`.
     pub fn reset(&mut self) {
-        self.primed = false;
+        self.confirmed = false;
     }
 
-    /// Diff `fb` against the store, emitting each changed-row span and updating the store. The
-    /// first call after [`new`](RowDiff::new) or [`reset`](RowDiff::reset) pushes the whole frame.
-    pub fn diff(&mut self, fb: &[u8], stride: usize, push_span: impl FnMut(u16, u16)) {
-        diff_rows(fb, stride, &mut self.prev, !self.primed, row_hash, push_span);
-        self.primed = true;
+    /// The spans the last [`diff_clipped`](RowDiff::diff_clipped) returned reached glass.
+    pub fn confirm(&mut self) {
+        self.confirmed = true;
     }
 
-    /// [`diff`](RowDiff::diff) with a live overlay's rows clipped out: the shared present skeleton
-    /// both display backends run.
+    /// Diff `fb` against the store, update the store, and return the changed-row spans with a live
+    /// overlay's `exclude` rows clipped out: the present skeleton of the board and the host double.
+    /// Returned spans leave the store unconfirmed until [`confirm`](RowDiff::confirm); an empty
+    /// result leaves the confirmation as it was.
     ///
     /// It diffs the whole frame, excluded rows included, because the store tracks the clean
     /// framebuffer and the overlay's rows must re-push clean when it goes quiet. Each changed span
@@ -129,7 +134,7 @@ impl<const H: usize> RowDiff<H> {
         let ex = exclude.map(|(y0, rows)| (y0, y0 + rows));
         let mut n = 0;
         let mut overflow = false;
-        self.diff(fb, stride, |y0, cnt| {
+        diff_rows(fb, stride, &mut self.prev, !self.confirmed, row_hash, |y0, cnt| {
             clip_span(y0, cnt, ex, &mut |s, c| {
                 if n < spans.len() {
                     spans[n] = (s, c);
@@ -145,6 +150,9 @@ impl<const H: usize> RowDiff<H> {
                 spans[n] = (s, c);
                 n += 1;
             });
+        }
+        if n > 0 {
+            self.confirmed = false;
         }
         &spans[..n]
     }
@@ -325,25 +333,6 @@ mod tests {
         assert_eq!(diff(&mut prev, &fb1, 2), vec![(2, 2)]);
     }
 
-    #[test]
-    fn first_diff_pushes_the_whole_frame_via_priming() {
-        // An unprimed RowDiff: the first diff is one full-frame span whatever the store holds.
-        let mut rd = RowDiff::<6>::new();
-        let fb = [7u8; 6 * 3];
-        let mut spans = Vec::new();
-        rd.diff(&fb, 3, |y0, n| spans.push((y0, n)));
-        assert_eq!(spans, vec![(0, 6)]);
-        // Re-presenting the same frame now pushes nothing.
-        spans.clear();
-        rd.diff(&fb, 3, |y0, n| spans.push((y0, n)));
-        assert_eq!(spans, Vec::new());
-        // reset() re-arms the full push.
-        rd.reset();
-        spans.clear();
-        rd.diff(&fb, 3, |y0, n| spans.push((y0, n)));
-        assert_eq!(spans, vec![(0, 6)]);
-    }
-
     /// Collect [`clip_span`]'s emitted sub-spans for `[y0, y0+n)` minus `exclude`.
     fn clip(y0: u16, n: u16, exclude: Option<(u16, u16)>) -> Vec<(u16, u16)> {
         let mut out = Vec::new();
@@ -390,11 +379,43 @@ mod tests {
         rd.diff_clipped(fb, 2, exclude, &mut scratch).to_vec()
     }
 
+    /// `diff_clipped`, then confirm the push, as a present that reached glass does.
+    fn pushed(rd: &mut RowDiff<6>, fb: &[u8], exclude: Option<(u16, u16)>) -> Vec<(u16, u16)> {
+        let spans = diff_clipped(rd, fb, exclude);
+        rd.confirm();
+        spans
+    }
+
+    #[test]
+    fn unconfirmed_spans_come_again_and_confirmed_spans_do_not() {
+        let mut rd = RowDiff::<6>::new();
+        let fb = [7u8; 6 * 2];
+        assert_eq!(diff_clipped(&mut rd, &fb, None), vec![(0, 6)], "a new store returns every row");
+        assert_eq!(diff_clipped(&mut rd, &fb, Some((2, 2))), vec![(0, 2), (4, 2)], "unconfirmed: every row again");
+        rd.confirm();
+        assert_eq!(diff_clipped(&mut rd, &fb, None), Vec::new(), "confirmed: nothing is owed");
+        rd.reset();
+        assert_eq!(diff_clipped(&mut rd, &fb, None), vec![(0, 6)], "reset: every row again");
+    }
+
+    #[test]
+    fn a_diff_with_no_spans_keeps_the_store_confirmed() {
+        let mut rd = RowDiff::<6>::new();
+        let fb0 = [0u8; 6 * 2];
+        let _ = pushed(&mut rd, &fb0, None);
+        assert_eq!(diff_clipped(&mut rd, &fb0, None), Vec::new());
+        // Only an excluded row changes: no spans, and the store stays confirmed.
+        let mut fb1 = fb0;
+        fb1[3 * 2] = 0x77;
+        assert_eq!(diff_clipped(&mut rd, &fb1, Some((3, 1))), Vec::new());
+        assert_eq!(diff_clipped(&mut rd, &fb1, Some((3, 1))), Vec::new(), "no full push follows");
+    }
+
     #[test]
     fn diff_clipped_clips_changed_spans_around_the_exclude() {
         let mut rd = RowDiff::<6>::new();
         let fb0 = [0u8; 6 * 2];
-        let _ = diff_clipped(&mut rd, &fb0, None); // prime
+        let _ = pushed(&mut rd, &fb0, None);
         let mut fb1 = fb0;
         // Rows 1..=4 change; the exclude [2, 4) splits the span into (1,1) and (4,1).
         for y in 1..=4 {
@@ -407,7 +428,7 @@ mod tests {
     fn diff_clipped_updates_the_store_for_excluded_rows() {
         let mut rd = RowDiff::<6>::new();
         let fb0 = [0u8; 6 * 2];
-        let _ = diff_clipped(&mut rd, &fb0, None); // prime
+        let _ = pushed(&mut rd, &fb0, None);
         let mut fb1 = fb0;
         fb1[3 * 2] = 0x77; // row 3 changes, but is excluded this present
         assert_eq!(diff_clipped(&mut rd, &fb1, Some((3, 1))), Vec::new());
@@ -416,7 +437,7 @@ mod tests {
     }
 
     #[test]
-    fn diff_clipped_priming_pushes_the_whole_frame_minus_the_exclude() {
+    fn a_new_store_pushes_the_whole_frame_minus_the_exclude() {
         let mut rd = RowDiff::<6>::new();
         let fb = [9u8; 6 * 2];
         // First present: everything is dirty; the exclude still clips its rows out.
@@ -427,7 +448,7 @@ mod tests {
     fn diff_clipped_overflow_falls_back_to_whole_frame_minus_exclude() {
         let mut rd = RowDiff::<6>::new();
         let fb0 = [0u8; 6 * 2];
-        let _ = diff_clipped(&mut rd, &fb0, None); // prime
+        let _ = pushed(&mut rd, &fb0, None);
         let mut fb1 = fb0;
         // Three disjoint spans overflow a 2-slot scratch, so the fallback covers the whole frame.
         fb1[0] = 1;

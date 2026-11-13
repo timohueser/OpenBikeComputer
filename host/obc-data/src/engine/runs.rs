@@ -30,11 +30,15 @@ pub struct Limits {
 }
 
 impl Limits {
-    /// One step per core, and three quarters of the physical memory: the rest is for the engine,
-    /// the page cache and the other programs of the machine.
+    /// One step per core that the process can use, and three quarters of the smaller of the
+    /// physical memory and the least `memory.max` of its cgroups: the rest is for the engine, the
+    /// page cache and the other programs, which the cgroup limit counts too.
     pub fn machine() -> Self {
+        // `available_parallelism` already honours the affinity mask and the cgroup `cpu.max`.
         let jobs = std::thread::available_parallelism().map_or(1, |n| n.get());
-        Self { jobs, memory_bytes: memory().map(|memory| memory - memory / 4) }
+        let cgroup = super::cgroup::limit();
+        let memory = memory().into_iter().chain(cgroup).min();
+        Self { jobs, memory_bytes: memory.map(|memory| memory - memory / 4) }
     }
 }
 
@@ -515,6 +519,8 @@ impl Run {
         }
         self.plan_layers(plan, &ordered)?;
         self.fetch(context, plan)?;
+        let memory = limits.memory_bytes.map_or("no limit".into(), bytes);
+        self.line(&format!("limits: {} jobs, {memory} of memory", limits.jobs))?;
 
         let planned: HashMap<&str, &Build> = plan.builds().map(|build| (build.step.as_str(), build)).collect();
         let exact = |build: &Build| build.estimate.filter(|estimate| !estimate.guess)?.peak_rss_bytes;
@@ -1493,9 +1499,11 @@ pub(crate) mod tests {
         assert!(err.starts_with("step `test/join`: `python3 join.py` failed"), "{err}");
         let failed = list(&fixture.store).unwrap().remove(0);
         let lines = logged(&fixture.store, &failed.id);
-        assert_eq!(lines[..2], ["started `obc data build test`", "test/upper started"]);
-        assert!(lines[2].starts_with("test/upper built in ") && lines[2].ends_with(", 5 B"), "{lines:?}");
-        assert!(lines[4].starts_with("test/join failed: "), "{lines:?}");
+        assert_eq!(lines[0], "started `obc data build test`");
+        assert!(lines[1].starts_with("limits: ") && lines[1].ends_with(" of memory"), "{lines:?}");
+        assert_eq!(lines[2], "test/upper started");
+        assert!(lines[3].starts_with("test/upper built in ") && lines[3].ends_with(", 5 B"), "{lines:?}");
+        assert!(lines[5].starts_with("test/join failed: "), "{lines:?}");
         let status = status(&fixture.store, &failed.id).unwrap();
         let progress = (&status.layers[0].layer, status.layers[0].done, status.layers[0].total);
         assert_eq!(progress, (&"test".to_string(), 1, 3), "test/upper of three steps");

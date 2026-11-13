@@ -10,8 +10,6 @@ owns:
   - tools/data_registry.py
   - tools/check_data_sources.py
   - tools/check_obc_data_licence.py
-  - builder/web/src/lib/data/**
-  - builder/web/src/components/data/**
 depends_on: []
 test_depends_on: []
 status: draft

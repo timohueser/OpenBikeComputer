@@ -1,7 +1,7 @@
 //! The end-to-end pack: `.osm.pbf`(s) to `.obcm`, as one function.
 //!
-//! [`pack`] is the only entry point: `main.rs` parses flags and calls it, the desktop app builds the
-//! same [`PackOptions`] and calls it, and a parity test packs the same fixture both ways and
+//! [`pack`] is the only entry point: `main.rs` parses flags and calls it, an in-process caller builds
+//! the same [`PackOptions`] and calls it, and a parity test packs the same fixture both ways and
 //! compares the bytes, so the two hosts cannot grow different pipelines.
 //!
 //! Everything the run wants to say, and the only way to stop it, arrive together in [`Progress`].

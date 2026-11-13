@@ -31,47 +31,6 @@ mod web {
         crate::convert::track_to_gpx(bytes, name).map_err(to_js)
     }
 
-    /// Decode a `.obcr` route's polyline for the device page's preview: flat `[lat, lon, ele]`
-    /// triples in route order, crossing as one `Float64Array`.
-    ///
-    /// Throws an `Error` carrying `code` and `message` on failure; see [`crate::convert::ErrorCode`].
-    #[wasm_bindgen]
-    pub fn obc_convert_obcr_to_track(bytes: &[u8]) -> Result<Vec<f64>, JsValue> {
-        crate::convert::obcr_to_track(bytes).map_err(to_js)
-    }
-
-    /// Decode a `.obcr` route's waypoint table: an `Array` of plain
-    /// `{name, lat, lon, ele, category, distAlongM}` objects in ascending `distAlongM` order.
-    /// `ele` is `null` where the source carried none, `category` is the stored byte raw, and
-    /// `distAlongM` is the stored placement-time distance and not a recomputation. A route without
-    /// waypoints yields `[]`.
-    ///
-    /// Plain objects rather than a flat array because names are strings, and at most 32 waypoints
-    /// cross per route.
-    ///
-    /// Throws an `Error` carrying `code` and `message` on failure; see [`crate::convert::ErrorCode`].
-    #[wasm_bindgen]
-    pub fn obc_convert_obcr_to_waypoints(bytes: &[u8]) -> Result<js_sys::Array, JsValue> {
-        let wps = crate::convert::obcr_to_waypoints(bytes).map_err(to_js)?;
-        let arr = js_sys::Array::new();
-        for w in wps {
-            let obj = js_sys::Object::new();
-            set(&obj, "name", &JsValue::from_str(&w.name));
-            set(&obj, "lat", &JsValue::from_f64(w.lat));
-            set(&obj, "lon", &JsValue::from_f64(w.lon));
-            set(&obj, "ele", &w.ele.map_or(JsValue::NULL, JsValue::from_f64));
-            set(&obj, "category", &JsValue::from_f64(f64::from(w.category)));
-            set(&obj, "distAlongM", &JsValue::from_f64(f64::from(w.dist_along_m)));
-            arr.push(&obj.into());
-        }
-        Ok(arr)
-    }
-
-    /// `Reflect::set` on a fresh plain object, which cannot fail, so the result is ignored.
-    fn set(obj: &js_sys::Object, key: &str, value: &JsValue) {
-        let _ = js_sys::Reflect::set(obj, &JsValue::from_str(key), value);
-    }
-
     /// Build the JS exception as a real `Error` instance, so it carries a stack and survives
     /// `instanceof Error`, with the stable code hung off it as a plain property.
     ///
