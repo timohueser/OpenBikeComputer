@@ -41,9 +41,9 @@ const EDGE_MAX: usize = 101;
 /// measured on the revision 17 fixture with cones on their outward side, the outline pieces of
 /// `records::outline_edges` and the vertex values of `heights::groups`, faces past the highest wall as steep
 /// as their need, the faces' rings with a vertex at each tile line, and the banks of line water, whose cuts
-/// climb as steep as the terrain asks beside a gorge, its culverts, and the ground under the decks' ceilings:
-/// the count must not grow.
-const STEEP_MAX: usize = 2472;
+/// climb as steep as the terrain asks beside a gorge, its culverts, the ground under the decks' ceilings, and a
+/// paved outline that holds no water: the count must not grow.
+const STEEP_MAX: usize = 2465;
 /// Of those, the pairs steeper than 6 m/m, measured the same way: the bank of one way that crosses a gully
 /// inside its ground band, which spans the terrain across the way's width. The count must not grow, and no pair
 /// is steeper than 12 m/m: a near-vertical rim that the total hides must not come back.
@@ -56,9 +56,10 @@ const WALL_STEPS_MAX: usize = 17;
 /// The ground's grade along the rim that changes across a piece end by more than this is a shading band
 /// (`check::slope_steps`), measured the same way, with the faces' rings with a vertex at each tile line (it
 /// moves piece ends by a few units), the crease where a deck's ceiling takes the ground, and line water, whose
-/// curved banks end many short pieces, and its culverts: the count must not grow.
+/// curved banks end many short pieces, its culverts, and a paved outline that holds no water: the count must not
+/// grow.
 const SLOPE_STEP_GRADE: f64 = 0.1;
-const SLOPE_STEPS_MAX: usize = 12971;
+const SLOPE_STEPS_MAX: usize = 12967;
 /// A tile's water vertex whose level lies more than this off the terrain at the vertex has a level that
 /// the bake holds away from its line (a pit, or the low ground beside it): the design keeps the water at
 /// most `freeboard_m` (0.8 m) under its bank and `depth_m` (1 m) deep.
@@ -75,8 +76,11 @@ const LEVEL_MAX: [usize; 5] = [10, 85, 10882, 0, 1637];
 /// must not grow.
 const HELD_OVER_CAP_MAX: usize = 74;
 /// Such steps where a side is line water, which has no wall (a way's fill that holds a bank over a waterline, or a
-/// bank's fill over a way's edge), counted apart and measured the same way: the count must not grow.
-const HELD_WATER_MAX: usize = 639;
+/// bank's fill over a way's edge), counted apart and measured the same way with a paved outline that holds no water
+/// (where a way's edge meets the water, the bank's fill stands against it, and no round of the way's paving covers
+/// the corner; 90 of them stand within 25 m of 46.82015, 8.3866, at the river's bank against two paths' edges): the
+/// count must not grow.
+const HELD_WATER_MAX: usize = 663;
 /// The grid of the ground under the decks, metres.
 const DECK_GRID_M: f64 = 0.5;
 /// An end face may fall short of the deck's depth and the gap by this much, where its paved end's height is not

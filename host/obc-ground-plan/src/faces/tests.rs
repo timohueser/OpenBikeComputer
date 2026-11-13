@@ -443,6 +443,16 @@ fn outline_rounds_depend_on_no_order_of_rings_or_ring_starts() {
     }
 }
 
+#[test]
+fn the_paved_outline_holds_no_water() {
+    // A stream that runs on past the window crosses a road under it: no round fills a corner between the road's
+    // edge and the water, on either side of either.
+    let mut stream = line("stream", &[("waterway", "stream")], &[[0.0, -300.0], [0.0, 300.0]]);
+    stream.z = vec![499.0; 2];
+    let p = plan(&[road(&[[-300.0, 0.0], [300.0, 0.0]]), stream]);
+    assert!(p.corners.is_empty(), "rounds at {:?}", p.corners.iter().map(|c| c.centre).collect::<Vec<_>>());
+}
+
 /// A cell's records with its graph and feature names, for the records' checks.
 fn records_of(key: CellKey, lines: &[Line]) -> (Vec<u32>, WayGraph, Vec<[u32; 3]>) {
     let input = input_of(key, lines);

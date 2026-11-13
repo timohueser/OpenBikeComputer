@@ -64,6 +64,13 @@ impl<'a> Rule<'a> {
     }
 }
 
+/// Whether a way of `family` at a ford or at a vertex it shares with open water crosses that water as a ford: a path
+/// always, another way only over water wider than `culvert_width_m`. As the bake lays it, a road, a track or a
+/// railway otherwise takes the rule of an untagged crossing.
+pub(crate) fn fords(family: Family, water: &WaterSection) -> bool {
+    family == Family::Path || water.width_m > water.culvert_width_m
+}
+
 /// The family, rank, level and rules of a line feature, or None for another kind.
 pub(crate) fn classify<'a>(feature: &Feature, sections: &'a Sections) -> Option<(Family, u8, Level, Rule<'a>)> {
     let tag = |key: &str| feature.tags.get(key).map(String::as_str);
