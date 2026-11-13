@@ -113,8 +113,8 @@ impl Reverse {
 pub struct Workspace {
     labels: [Labels; 2],
     queues: [Queue; 2],
-    /// The reverse turns of the level-1 cells that the backward side entered, by download cell
-    /// record and level-1 index.
+    /// The reverse turns of the open level-1 cells where the backward side used the turns, by
+    /// download cell record and level-1 index.
     entered: HashMap<(u32, u32), Reverse>,
     entered_bytes: usize,
     arcs: Vec<(u32, u64)>,
