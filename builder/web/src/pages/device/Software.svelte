@@ -6,8 +6,9 @@
     import { updateStatus } from '../../lib/firmware/release';
     import { DeviceError, type FlatStoreClient } from '../../lib/usb/client';
 
-    /** The value and the action of the row Software. `busy`: a sync uses the client, and transfers do not queue. */
-    let { client, running, busy }: { client: FlatStoreClient; running: string | null; busy: boolean } = $props();
+    /** The value and the action of the row Software. Transfers do not queue: `busy` says that a sync uses the client, and
+     * `working` that this row does. */
+    let { client, running, busy, working = $bindable(false) }: { client: FlatStoreClient; running: string | null; busy: boolean; working?: boolean } = $props();
 
     // The check asks the update host only while a device is connected; this row shows only then.
     onMount(() => void firmwareCheck.ensure());
@@ -15,6 +16,7 @@
     const release = $derived(firmwareCheck.release);
     const status = $derived(updateStatus(running, release?.version ?? null));
     let step = $state<string | null>(null);
+    $effect(() => { working = !!step; });
     let said = $state<string | null>(null);
 
     /** The two steps of the map builder: the package goes to the card, then the device is asked to install it. Only the
@@ -25,6 +27,7 @@
         said = null;
         const controller = new AbortController();
         const ctx = { signal: controller.signal, cancel: (reason?: unknown) => controller.abort(reason), phase: () => {}, progress: () => {} };
+        let staged = false;
         try {
             step = `Sending version ${target.version} to the device`;
             const response = await fetch(target.url, { credentials: 'omit' });
@@ -32,11 +35,13 @@
             const bytes = new Uint8Array(await response.arrayBuffer());
             if (bytes.length !== target.bytes || Sha256.hex(bytes) !== target.sha256) throw new Error('The downloaded update failed its check. Nothing went to the device.');
             const { result } = await stageFirmware(client, bytes, ctx);
+            staged = true;
             step = 'Asking the device to install it';
             await armUpdate(client, result);
             said = `The device installs version ${target.version} when it restarts. Keep it powered.`;
         } catch (cause) {
-            said = cause instanceof DeviceError && cause.code === 'rejected'
+            // The upload itself can also be refused with `rejected`: then the package is not on the card.
+            said = staged && cause instanceof DeviceError && cause.code === 'rejected'
                 ? `The device refused to install version ${target.version}. The update is on its memory card, and the device runs version ${running} as before.`
                 : cause instanceof Error ? cause.message : String(cause);
         } finally {
@@ -54,7 +59,7 @@
     {:else if status === 'unknown' && running}
         <p>Development build <span class="mono">{running}</span></p>
         <p class="second">Automatic updates are paused.</p>
-    {:else if status === 'unknown'}
+    {:else if status === 'unknown' || !running}
         <p>The device did not report its version.</p>
     {:else}
         <p>Version {running}</p>

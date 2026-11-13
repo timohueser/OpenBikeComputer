@@ -25,6 +25,8 @@
     let reads = 0;
     /** The rider clicked Disconnect, and the device did not connect again since. */
     let released = $state(false);
+    /** The software row uses the client; a sync now would fail with `busy`. */
+    let updating = $state(false);
 
     const session = $derived(deviceHolder.session);
     const status = $derived(session?.status);
@@ -83,7 +85,7 @@
 
     onMount(() => {
         void deviceHolder.open();
-        return library.onChange(store => { if (store !== 'covers' && store !== 'versions') void read(remembered.device?.storeId); });
+        return library.onChange(store => { if (store === 'state' || store === 'rides' || store === 'routes') void read(remembered.device?.storeId); });
     });
     $effect(() => { void read(device?.storeId); });
 
@@ -132,7 +134,7 @@
             <span class="state"><span class="dot" class:on={connected}></span>{connected ? 'Connected' : released ? 'Disconnected' : 'Not connected'}</span>
             <span class="actions">
                 {#if connected}
-                    <button type="button" class="button" onclick={release} disabled={deviceSync.running}>Disconnect</button>
+                    <button type="button" class="button" onclick={release} disabled={deviceSync.running || updating}>Disconnect</button>
                 {:else}
                     {@render connectButton('Connect')}
                 {/if}
@@ -164,7 +166,7 @@
                             {/if}
                         </div>
                         {#if connected}
-                            <div><button type="button" class="button" onclick={() => deviceSync.run()} disabled={deviceSync.running}>{deviceSync.problem ? 'Try again' : 'Sync now'}</button></div>
+                            <div><button type="button" class="button" onclick={() => deviceSync.run()} disabled={deviceSync.running || updating}>{deviceSync.problem ? 'Try again' : 'Sync now'}</button></div>
                         {/if}
                     </div>
                     {#if connected}
@@ -203,7 +205,7 @@
                         {#if session?.client}
                             <div class="row">
                                 <strong>Software</strong>
-                                <Software client={session.client} running={session.info?.firmwareRevision ?? null} busy={deviceSync.running} />
+                                <Software client={session.client} running={session.info?.firmwareRevision ?? null} busy={deviceSync.running} bind:working={updating} />
                             </div>
                         {/if}
                     {:else}
