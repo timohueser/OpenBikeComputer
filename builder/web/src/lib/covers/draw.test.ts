@@ -26,13 +26,14 @@ function recorder() {
 }
 
 describe('the line of a cover', () => {
-    it('draws the rest of the line paler while a part is selected', () => {
+    it('draws the part in the colour of the line and the rest paler', () => {
         const cover = { image: {} as CanvasImageSource, width: 400, height: 100, points, summary };
         const whole = recorder(), withPart = recorder();
         drawCover(whole.context, cover, { box: [400, 100], line: true });
         drawCover(withPart.context, cover, { box: [400, 100], line: true, part: [100, 200] });
-        expect(whole.strokes).not.toContain(REST.route.line);
-        expect(withPart.strokes).toContain(REST.route.line);
-        expect(withPart.strokes).not.toContain('#cc2a93');
+        expect(whole.strokes).not.toContain(REST.route);
+        expect(withPart.strokes).toContain(REST.route);
+        // The part keeps the colour of the line.
+        expect(withPart.strokes).toContain('#cc2a93');
     });
 });
