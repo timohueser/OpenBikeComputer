@@ -322,7 +322,7 @@
     ]} />
 {/snippet}
 
-<div class="rows bottom">
+<div class="rows">
     <Card>
         <Lanes label="Profile" {ticks} ticksAfter={ELEVATION_ROW + 1} {header} pointer={mark !== undefined && inside(mark) ? x(mark) : undefined}
             chip={pointer} onpointer={point} part={shownPart} {partText} onclick={click}

@@ -1,8 +1,7 @@
 /** The numbers of a recorded ride from its samples: heart rate, power and cadence with their zones, the climbs, and the
  * table of the data. */
 import type { FitSample } from '../core/fit';
-import type { Bike } from '../library/records';
-import { metres, movingSteps, rideSummary } from '../library/summary';
+import { metres, movingSteps, rideTotals } from '../library/summary';
 import { cumulative, firstIndex, type Coordinate } from '../planner/geo';
 import { routeSegments } from '../planner/search/segments';
 import { heartRateZones, powerZones, type Zone } from '../settings/zones';
@@ -60,11 +59,10 @@ export interface PartNumbers { lengthM: number; climbM: number; movingS: number;
 
 /** The numbers of the samples `first` to `last` as a ride of its own. Its first sample starts a segment, so no step
  * leads into the part. */
-export function partNumbers(samples: FitSample[], [first, last]: [number, number], bike: Bike, limits: { maxHr: number | null; ftp: number | null }): PartNumbers {
+export function partNumbers(samples: FitSample[], [first, last]: [number, number], limits: { maxHr: number | null; ftp: number | null }): PartNumbers {
     const part = samples.slice(first, last + 1);
     part[0] = { ...part[0], segmentStart: true };
-    const { lengthM, climbM, movingS } = rideSummary(part, bike);
-    return { lengthM, climbM, movingS, speed: movingSpeed(part), channels: channels(part, limits) };
+    return { ...rideTotals(part), speed: movingSpeed(part), channels: channels(part, limits) };
 }
 
 /** The climbs of the ride by the one climb rule (`routeSegments`), found in each segment by itself, so that a pause

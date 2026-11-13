@@ -67,9 +67,9 @@ export function movingSteps(samples: RideSample[]): number[] {
     });
 }
 
-/** The summary of a recorded ride. The length skips the step to a segment start. The climb counts a rise when the
- * height is 5 m above the last low. The moving time is the sum of `movingSteps`. `samples` holds at least one sample. */
-export function rideSummary(samples: RideSample[], bike: Bike): RideSummary {
+/** The length, the climb and the moving time of a recorded ride. The length skips the step to a segment start. The
+ * climb counts a rise when the height is 5 m above the last low. The moving time is the sum of `movingSteps`. */
+export function rideTotals(samples: RideSample[]): { lengthM: number; climbM: number; movingS: number } {
     let lengthM = 0, climbM = 0, low: number | null = null;
     samples.forEach((sample, i) => {
         const height = sample.elevationM;
@@ -79,7 +79,12 @@ export function rideSummary(samples: RideSample[], bike: Bike): RideSummary {
         }
         if (i && !sample.segmentStart) lengthM += metres(samples[i - 1], sample);
     });
-    const start = samples[0].timeS, movingS = movingSteps(samples).reduce((sum, seconds) => sum + seconds, 0);
+    return { lengthM, climbM, movingS: movingSteps(samples).reduce((sum, seconds) => sum + seconds, 0) };
+}
+
+/** The summary of a recorded ride, with the numbers of `rideTotals`. `samples` holds at least one sample. */
+export function rideSummary(samples: RideSample[], bike: Bike): RideSummary {
+    const start = samples[0].timeS, { lengthM, climbM, movingS } = rideTotals(samples);
     return summarize<RideSummary>(samples.map(s => [s.lon / 1e6, s.lat / 1e6, s.elevationM]), {
         lengthM: Math.round(lengthM), climbM: Math.round(climbM), seconds: Math.round(samples.at(-1)!.timeS - start),
         movingS: Math.round(movingS), start: Math.floor(start), bike,

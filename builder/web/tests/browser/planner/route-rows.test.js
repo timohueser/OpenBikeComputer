@@ -156,6 +156,21 @@ test('the rows of a route of two days: a day, the pointer, a part, a climb, the 
   await expect(page.getByRole('button', { name: '‹ Climbs' })).toHaveCount(0);
   await page.getByRole('radio', { name: 'Both days' }).click();
 
+  // In a low window the page does not scroll as a whole, and the whole Places menu is in view, over the card.
+  const pageScroll = () => page.evaluate(() => {
+    const box = [...document.querySelectorAll('.page')].find(el => el.clientHeight);
+    return box.scrollHeight - box.clientHeight;
+  });
+  await page.setViewportSize({ width: 1280, height: 720 });
+  expect(await pageScroll()).toBe(0);
+  await page.getByRole('button', { name: 'Places ▾' }).click();
+  await expect(page.locator('menu li').first()).toBeInViewport({ ratio: 1 });
+  await expect(page.locator('menu li').last()).toBeInViewport({ ratio: 1 });
+  expect(await pageScroll()).toBe(0);
+  await page.keyboard.press('Escape');
+  await expect(page.locator('menu')).toHaveCount(0);
+  await page.setViewportSize({ width: 1440, height: 1100 });
+
   // A place opens its name and shows on the map; a group lists at most 30 names.
   await page.getByRole('button', { name: 'Places ▾' }).click();
   await page.getByRole('button', { name: 'Food', exact: true }).click();

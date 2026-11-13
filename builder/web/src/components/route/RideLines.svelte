@@ -27,8 +27,10 @@
     } = $props();
 
     type Key = 'elevation' | 'speed' | 'hr' | 'power' | 'cadence';
-    /** The lines are smoothed over SMOOTH_S. A row is ROW_PX high in a window at least TALL_PX high. */
-    const SMOOTH_S = 10, ROW_PX = 56, LOW_ROW_PX = 44, TALL_PX = 880;
+    /** The lines are smoothed over SMOOTH_S. A row is ROW_PX high, and lower in a low window, down to LOW_ROW_PX, so that
+     * the cards over the rows keep CARDS_PX: the page around the cards and the rows is about PAGE_PX high, the card
+     * around the rows about FRAME_PX, and GAP_PX are between two rows. */
+    const SMOOTH_S = 10, ROW_PX = 56, LOW_ROW_PX = 36, CARDS_PX = 340, PAGE_PX = 176, FRAME_PX = 92, GAP_PX = 8;
     /** The elevation row has the grade colours of the profile of the Route page. */
     const ELEVATION_GRADES = false;
 
@@ -38,7 +40,7 @@
         speed: { label: 'Speed', color: 'var(--ink)', format: formatSpeed },
         hr: { label: 'Heart rate', color: 'var(--ride)', format: whole('bpm') },
         power: { label: 'Power', color: 'var(--water)', format: whole('W') },
-        cadence: { label: 'Cadence', color: 'var(--wood)', format: whole('rpm') },
+        cadence: { label: 'Cadence', color: 'var(--cadence)', format: whole('rpm') },
     };
     const keys = Object.keys(series) as Key[];
 
@@ -57,7 +59,10 @@
     const present = $derived(keys.filter(key => values[key].some(value => value !== undefined)));
     const shown = $derived(present.filter(key => on[key]));
     const columns = $derived(Object.fromEntries(shown.map(key => [key, thin(axis.xs, values[key], Math.max(1, Math.round(width)))])) as Partial<Record<Key, (number | null)[]>>);
-    const ranges = $derived(Object.fromEntries(shown.map(key => [key, range(columns[key]!) ?? { low: 0, high: 1 }])) as Partial<Record<Key, { low: number; high: number }>>);
+    // From the smoothed values, not from the columns: the scale of a row does not change with the width of the window.
+    const ranges = $derived(Object.fromEntries(present.map(key => [key, range(values[key]) ?? { low: 0, high: 1 }])) as Partial<Record<Key, { low: number; high: number }>>);
+    const rowHeight = $derived(Math.max(LOW_ROW_PX, Math.min(ROW_PX,
+        Math.floor((innerHeight - PAGE_PX - CARDS_PX - FRAME_PX - (shown.length - 1) * GAP_PX) / Math.max(1, shown.length)))));
     const averages = $derived<Partial<Record<Key, string>>>({
         ...speed !== undefined && { speed: formatSpeed(speed) },
         ...channels?.hr && { hr: series.hr.format(channels.hr.mean) },
@@ -71,7 +76,7 @@
     const ticks = $derived(fitTicks([{ at: 0, label: start }, { at: 1, label: formatDistance(axis.lengthM) }, ...distanceTicks(0, axis.lengthM, width)], width));
     const rowSnippets = { elevation: elevationRow, speed: speedRow, hr: hrRow, power: powerRow, cadence: cadenceRow };
     const rows = $derived(shown.map(key => ({
-        label: series[key].label, note: averages[key], color: series[key].color, draw: rowSnippets[key], height: innerHeight >= TALL_PX ? ROW_PX : LOW_ROW_PX,
+        label: series[key].label, note: averages[key], color: series[key].color, draw: rowSnippets[key], height: rowHeight,
         scale: ranges[key] && [series[key].format(ranges[key].high), series[key].format(ranges[key].low)] as [string, string],
     })));
 
@@ -106,7 +111,7 @@
     </div>
 {/snippet}
 
-<div class="lines bottom">
+<div class="lines">
     <Card>
         <Lanes label="Lines of the ride" {rows} {ticks} {header} {pointer} {chip} part={shownPart} {partText}
             onpointer={x => onpoint(x === null ? null : shares[sampleAt(axis.xs, x)])}

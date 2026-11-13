@@ -67,9 +67,9 @@
     });
 
     $effect(() => {
-        const [range, read, bike, zones] = [part, samples, summary?.bike, limits];
-        if (!range || !read || !bike) return void (partFacts = undefined);
-        const timer = setTimeout(() => { partFacts = partNumbers(read, range, bike, zones); }, PART_MS);
+        const [range, read, zones] = [part, samples, limits];
+        if (!range || !read) return void (partFacts = undefined);
+        const timer = setTimeout(() => { partFacts = partNumbers(read, range, zones); }, PART_MS);
         return () => clearTimeout(timer);
     });
 

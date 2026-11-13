@@ -64,10 +64,11 @@ export function thin(xs: number[], values: (number | undefined)[], width: number
     return columns;
 }
 
-/** The lowest and the highest column, or undefined with none. A flat line gets a range of 1, so it has a height to draw in. */
-export function range(columns: (number | null)[]): { low: number; high: number } | undefined {
+/** The lowest and the highest value, or undefined with none. A flat line gets a range of 1, so it has a height to draw
+ * in. The columns of `thin` stay inside the range of their values. */
+export function range(values: (number | null | undefined)[]): { low: number; high: number } | undefined {
     let low = Infinity, high = -Infinity;
-    for (const value of columns) if (value !== null) { low = Math.min(low, value); high = Math.max(high, value); }
+    for (const value of values) if (value != null) { low = Math.min(low, value); high = Math.max(high, value); }
     return low > high ? undefined : { low, high: high > low ? high : low + 1 };
 }
 

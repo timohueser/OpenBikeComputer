@@ -35,7 +35,7 @@ describe('partNumbers', () => {
             timeS: T + 10 * i + (i >= 5 ? 600 : 0), lat: 46e6 + i * STEP, lon: 8e6, segmentStart: i === 0 || i === 5,
             elevationM: 500 + 2 * i, hrBpm: i < 5 ? 130 : 170, cadenceRpm: 80,
         }));
-        const part = partNumbers(samples, [2, 7], 'gravel', { maxHr: 200, ftp: 250 });
+        const part = partNumbers(samples, [2, 7], { maxHr: 200, ftp: 250 });
         // The steps to the samples 3, 4, 6 and 7 move: 200 m in 40 s.
         expect(part.lengthM).toBeCloseTo(200, -1);
         expect(part.movingS).toBe(40);

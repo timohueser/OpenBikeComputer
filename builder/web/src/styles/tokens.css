@@ -12,8 +12,10 @@
     --zone-1: #b8b5a6;
     --zone-2: #6790b4;
     --zone-3: #6a9c62;
-    --zone-4: #d9a62e;
+    --zone-4: #bd8b0e;
     --zone-5: #bf4a34;
+    /* The line of the cadence of a ride: no other line and no zone has this hue. */
+    --cadence: #74508f;
 }
 
 :root[data-theme="dark"] {
@@ -25,4 +27,5 @@
     --zone-3: #79ad72;
     --zone-4: #e0b24a;
     --zone-5: #dd6a50;
+    --cadence: #c2a3dc;
 }
