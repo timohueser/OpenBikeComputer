@@ -111,7 +111,7 @@
 <div class="lanes" bind:this={root} onpointermove={move} onpointerdown={start} onpointerup={end} onpointercancel={() => down = null}
     onpointerleave={() => { if (!down) onpointer(null); }}>
     {#each rows as row, i (i)}
-        <div class="label" style:grid-row={gridRow(i)}>{row.label}</div>
+        <div class="label" style:grid-row={gridRow(i)} style:--row={row.height ? `${row.height}px` : undefined}>{row.label}</div>
         <div class="lane" data-row={i} style:grid-row={gridRow(i)} style:height={row.height ? `${row.height}px` : undefined}>{@render row.draw()}</div>
     {/each}
     <!-- Each part has its grid row: the pointer layer covers the rows of the lanes. -->
@@ -171,6 +171,12 @@
         row-gap: 6px;
         touch-action: pan-y;
         user-select: none;
+        /* How much of the panel covers the rows outside a part. */
+        --pale: .7;
+    }
+    /* On the dark panel the same share leaves too little of the rows to read. */
+    :global(:root[data-theme="dark"]) .lanes {
+        --pale: .55;
     }
     .over:focus-visible {
         border-radius: 2px;
@@ -182,7 +188,8 @@
         min-width: 0;
         color: var(--ink-soft);
         font-size: 12px;
-        line-height: 16px;
+        /* The label stands at the middle of a low row, such as the pins, and at the top of a high one. */
+        line-height: min(var(--row, 16px), 28px);
     }
     .lane {
         position: relative;
@@ -212,7 +219,7 @@
         top: -4px;
         bottom: -4px;
         background: var(--panel);
-        opacity: .7;
+        opacity: var(--pale);
     }
     .pale:first-child {
         border-right: 1px solid var(--ink-soft);
@@ -258,6 +265,7 @@
             grid-column: 2;
             align-self: start;
             margin-top: -18px;
+            line-height: 16px;
             pointer-events: none;
         }
         .ticks {
