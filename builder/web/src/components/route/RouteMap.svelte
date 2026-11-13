@@ -1,17 +1,17 @@
 <script lang="ts">
-    import { onMount } from 'svelte';
+    import { onMount, untrack } from 'svelte';
     import * as maplibregl from 'maplibre-gl';
     import 'maplibre-gl/dist/maplibre-gl.css';
     import type { Summary } from '../../lib/library/records';
     import { lineCoordinates } from '../../lib/library/summary';
-    import { coordinateAt, nearestOnLine, nearestProgress, type Coordinate } from '../../lib/planner/geo';
+    import { coordinateAt, nearestOnLine, nearestProgress, routeSlice, type Coordinate } from '../../lib/planner/geo';
     import Icon from '../planner/PlannerIcon.svelte';
     import { basemapStyle } from '../../lib/planner/map-style';
     import { styleConfig, useMapProtocols } from '../../lib/planner/map-setup';
     import { appearance } from '../../lib/theme.svelte';
 
     /** A map that the rider can move, with the summary line of a route or a ride and the mark. A share is 0 to 1 along the line. */
-    let { summary, ride = false, mark, pins = [], onpoint }: {
+    let { summary, ride = false, mark, pins = [], onpoint, fitTo, lit, place }: {
         summary: Summary;
         /** The line is a ride, in `--ride`. */
         ride?: boolean;
@@ -20,6 +20,11 @@
         pins?: { share: number; label: string; number?: number }[];
         /** The share of the point of the line nearest to the pointer, or null when the pointer is not near the line. */
         onpoint?: (share: number | null) => void;
+        /** The stretch that the map fits; without it, the whole line. */
+        fitTo?: [number, number] | null;
+        /** The stretch in the colour of the line; the rest of the line is paler. */
+        lit?: [number, number] | null;
+        place?: Coordinate | null;
     } = $props();
 
     /** The pointer marks the line within this many pixels of it. */
@@ -35,19 +40,43 @@
     const coordinates = $derived(lineCoordinates(summary));
     const dot = Object.assign(document.createElement('div'), { className: 'route-map-mark' });
     const marker = new maplibregl.Marker({ element: dot });
+    const spot = Object.assign(document.createElement('div'), { className: 'route-map-place' });
+    const placeMarker = new maplibregl.Marker({ element: spot });
     let shown: typeof theme;
 
-    const bounds = () => summary.bounds as [number, number, number, number];
-    const fit = () => map?.fitBounds(bounds(), { padding: Math.min(48, map.getContainer().clientWidth / 12), animate: false });
+    const bounds = (): [number, number, number, number] => {
+        if (!fitTo) return summary.bounds as [number, number, number, number];
+        const slice = routeSlice(coordinates, fitTo[0], fitTo[1]);
+        const lons = slice.map(c => c[0]), lats = slice.map(c => c[1]);
+        return [Math.min(...lons), Math.min(...lats), Math.max(...lons), Math.max(...lats)];
+    };
+    const fit = (animate = false) => map?.fitBounds(bounds(), { padding: Math.min(48, map.getContainer().clientWidth / 12), animate, duration: 400 });
+    const lineOf = (stretch: [number, number] | null | undefined) =>
+        ({ type: 'Feature' as const, properties: {}, geometry: { type: 'LineString' as const, coordinates: stretch ? routeSlice(coordinates, stretch[0], stretch[1]) : [] } });
+
+    /** The colour of the line, and a solid paler colour of it for the line outside the lit stretch. A canvas gives an opaque
+     * colour as `#rrggbb`. */
+    function colours() {
+        const style = getComputedStyle(container), probe = document.createElement('canvas').getContext('2d')!;
+        const line = style.getPropertyValue(ride ? '--ride' : '--route').trim(), panel = style.getPropertyValue('--panel').trim();
+        const rgb = (colour: string) => { probe.fillStyle = colour; return [1, 3, 5].map(i => parseInt(String(probe.fillStyle).slice(i, i + 2), 16)); };
+        const [a, b] = [rgb(line), rgb(panel)];
+        return { panel, line, pale: `rgb(${a.map((v, i) => Math.round(v * .35 + b[i] * .65)).join(',')})` };
+    }
 
     function addLine() {
         if (!map) return;
-        const style = getComputedStyle(container);
+        const { panel, line, pale } = colours();
         map.addSource('route', { type: 'geojson', data: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates } } });
+        map.addSource('lit', { type: 'geojson', data: lineOf(lit) });
         map.addLayer({ id: 'route-casing', type: 'line', source: 'route', layout: { 'line-join': 'round', 'line-cap': 'round' },
-            paint: { 'line-color': style.getPropertyValue('--panel').trim(), 'line-width': 7 } });
+            paint: { 'line-color': panel, 'line-width': 7 } });
         map.addLayer({ id: 'route', type: 'line', source: 'route', layout: { 'line-join': 'round', 'line-cap': 'round' },
-            paint: { 'line-color': style.getPropertyValue(ride ? '--ride' : '--route').trim(), 'line-width': 4 } });
+            paint: { 'line-color': lit ? pale : line, 'line-width': 4 } });
+        map.addLayer({ id: 'lit-casing', type: 'line', source: 'lit', layout: { 'line-join': 'round', 'line-cap': 'round' },
+            paint: { 'line-color': panel, 'line-width': 8 } });
+        map.addLayer({ id: 'lit', type: 'line', source: 'lit', layout: { 'line-join': 'round', 'line-cap': 'round' },
+            paint: { 'line-color': line, 'line-width': 5 } });
     }
 
     function point(event: maplibregl.MapMouseEvent) {
@@ -72,7 +101,24 @@
         // A swap of the large and the small place changes the size of the box.
         const resize = new ResizeObserver(() => { created.resize(); fit(); });
         resize.observe(container);
-        return () => { resize.disconnect(); marker.remove(); created.remove(); };
+        return () => { resize.disconnect(); marker.remove(); placeMarker.remove(); created.remove(); };
+    });
+
+    $effect(() => {
+        const stretch = lit, source = map?.getSource<maplibregl.GeoJSONSource>('lit');
+        if (!map || !source) return;
+        source.setData(lineOf(stretch));
+        const { line, pale } = colours();
+        map.setPaintProperty('route', 'line-color', stretch ? pale : line);
+    });
+    $effect(() => {
+        void fitTo?.[0]; void fitTo?.[1];
+        if (map) untrack(() => fit(true));
+    });
+    $effect(() => {
+        if (!map) return;
+        if (place) placeMarker.setLngLat(place).addTo(map);
+        else placeMarker.remove();
     });
 
     $effect(() => { dot.classList.toggle('ride', ride); });
@@ -143,6 +189,14 @@
         border: 3px solid var(--route);
         border-radius: 50%;
         background: var(--panel);
+        pointer-events: none;
+    }
+    :global(.route-map-place) {
+        width: 12px;
+        height: 12px;
+        border: 3px solid var(--panel);
+        border-radius: 50%;
+        background: var(--ink);
         pointer-events: none;
     }
     :global(.route-map-mark.ride) {

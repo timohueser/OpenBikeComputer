@@ -140,6 +140,11 @@
         color: var(--ink-soft);
         font-size: 12px;
     }
+    .title :global(.plain) {
+        flex: none;
+        color: var(--ink-soft);
+        font-size: 15px;
+    }
     .buttons {
         display: flex;
         flex-wrap: wrap;

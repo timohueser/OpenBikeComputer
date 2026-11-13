@@ -4,19 +4,20 @@
     import Segmented from '../../lib/ui/Segmented.svelte';
     import OpeningHours from '../planner/OpeningHours.svelte';
     import ElevationRow from './ElevationRow.svelte';
+    import Menu from './Menu.svelte';
     import Lanes from './Lanes.svelte';
     import type { RouteSummary } from '../../lib/library/records';
     import { lineCoordinates } from '../../lib/library/summary';
     import { phoneLink, phoneNumbers, websiteLink } from '../../lib/planner/contact-links';
     import { orderedRoutePoints, planView, type Place, type RoutePoint, type Trip } from '../../lib/planner/editor';
-    import { cumulative, nearestProgress, routeSlice } from '../../lib/planner/geo';
+    import { cumulative, nearestProgress, routeSlice, type Coordinate } from '../../lib/planner/geo';
     import { profileGrades } from '../../lib/planner/grade-data';
     import { config } from '../../lib/planner/map-data';
     import { corridorPlaces } from '../../lib/planner/place-index';
     import { categoryIds, placeCategories, type PlaceCategory } from '../../lib/planner/poi-kinds';
-    import { profileHeightAt, profileSamples, sampleIndex } from '../../lib/planner/profile-data';
+    import { profileAscent, profileHeightAt, profileSamples, sampleIndex } from '../../lib/planner/profile-data';
     import type { Pin, RouteFacts } from '../../lib/planner/route-facts';
-    import type { RoutingLine, Surface } from '../../lib/planner/routing';
+    import type { RoutingLine } from '../../lib/planner/routing';
     import { kindLabel } from '../../lib/planner/search/presentation';
     import { placeDetails, type SearchPlace } from '../../lib/planner/search/types';
     import { surfaceBarColors, surfaceRuns, surfaceWindow } from '../../lib/planner/surface-data';
@@ -25,8 +26,8 @@
 
     /** The bottom card of the Route page: the waypoints, the heights, the surface and the places along the route or one
      * day of it, on one axis. Shares are 0 to 1 of the route. Without the calculated line, the rows that the summary
-     * holds show. */
-    let { summary, trip, line, facts, pins, mark, onpoint }: {
+     * holds show. A drag selects a part; a click on a climb in the elevation row selects the climb. */
+    let { summary, trip, line, facts, pins, mark, onpoint, part, onpart, onhover, onday, onplace }: {
         summary: RouteSummary;
         trip: Trip;
         line?: RoutingLine;
@@ -34,14 +35,30 @@
         pins: Pin[];
         mark?: number;
         onpoint: (share: number | null) => void;
+        /** The selected part, as shares of the whole route. */
+        part: [number, number] | null;
+        onpart: (part: [number, number] | null) => void;
+        /** The stretch of the climb under the pointer. */
+        onhover: (stretch: [number, number] | null) => void;
+        /** The stretch of the chosen day, or null for the whole route. */
+        onday: (stretch: [number, number] | null) => void;
+        /** The place whose panel is open. */
+        onplace: (at: Coordinate | null) => void;
     } = $props();
 
-    /** Places load within PLACE_M of the shown stretch, for at most PLACES_KM of it. Icons closer than JOIN_PX join into one.
-     * A tick label is about TICK_CHAR_PX wide for each character, and keeps TICK_GAP_PX from the next one. */
-    const PLACE_M = 1000, PLACES_KM = 300, JOIN_PX = 12, TICK_CHAR_PX = 7, TICK_GAP_PX = 12, PANEL_PX = 260;
+    /** Places load within PLACE_M of the shown stretch, for at most PLACES_KM of it. A place icon is ICON_PX wide and a
+     * count after it about COUNT_CHAR_PX for each figure; icons that would touch join into one, whose list shows at most
+     * LIST_NAMES names. A tick label is about TICK_CHAR_PX wide for each character, and keeps TICK_GAP_PX from the next one. */
+    const PLACE_M = 1000, PLACES_KM = 300, ICON_PX = 24, COUNT_CHAR_PX = 7, LIST_NAMES = 30, TICK_CHAR_PX = 7, TICK_GAP_PX = 12, PANEL_PX = 260;
+    /** The elevation row is ELEVATION_PX high in a window at least WIDE_PX wide and TALL_PX high. */
+    const ELEVATION_PX = 120, WIDE_PX = 1200, TALL_PX = 800, ELEVATION_ROW = 1;
     const searchable = /^(?:[nwr]|Q)[1-9]\d*$/;
 
+    /** The pointer on the axis of the shown stretch while it is over the elevation row or moved by the keys. */
+    let onProfile = $state<number>(), innerWidth = $state(1440), innerHeight = $state(900);
     let day = $state('all'), category = $state<PlaceCategory | ''>(''), open = $state<number>(), shift = $state(0);
+    /** The open group of places, and the place of a group of several that the rider chose. */
+    let openPlace = $state<{ group: number; place?: number }>();
     let placeLane = $state<HTMLElement>(), width = $state(0), seen = $state(false);
     let places = $state.raw<{ found?: Place[]; failed?: boolean }>({});
     let details = $state.raw<Record<string, SearchPlace | null>>({});
@@ -90,7 +107,26 @@
         }
         return kept;
     });
-    const labels = $derived(facts?.climbs.map(climb => ({ from: climb.from * 1000 / totalM, to: climb.to * 1000 / totalM, text: formatPercent(climb.gradient) })) ?? []);
+
+    const climbs = $derived(facts?.climbs.map(climb => ({
+        from: climb.from * 1000 / totalM, to: climb.to * 1000 / totalM,
+        text: `${formatDistance((climb.to - climb.from) * 1000)} · ${formatPercent(climb.gradient)}`, short: formatPercent(climb.gradient),
+    })) ?? []);
+    const climbAt = (share: number) => climbs.findIndex(climb => share >= climb.from && share <= climb.to);
+    const same = (a: [number, number] | null, b: { from: number; to: number }) => !!a && Math.abs(a[0] - b.from) < 1e-9 && Math.abs(a[1] - b.to) < 1e-9;
+    const chosenClimb = $derived(climbs.findIndex(climb => same(part, climb)));
+    const hoveredClimb = $derived(onProfile === undefined ? -1 : climbAt(shown.from + onProfile * span));
+    const lit = $derived(hoveredClimb >= 0 ? hoveredClimb : chosenClimb >= 0 ? chosenClimb : undefined);
+    const shownPart = $derived.by((): [number, number] | null => {
+        if (!part || part[1] <= shown.from || part[0] >= shown.to) return null;
+        return [Math.max(0, x(part[0])), Math.min(1, x(part[1]))];
+    });
+    const partText = $derived.by(() => {
+        if (!part) return '';
+        const [a, b] = part.map(share => distanceIn(share * totalM));
+        return `${settings.units} ${a.toFixed(1)} to ${b.toFixed(1)} · ${formatDistance((part[1] - part[0]) * totalM)} · ${formatHeight(profileAscent(part[0], part[1], profile))} up`;
+    });
+    const elevationHeight = $derived(innerWidth >= WIDE_PX && innerHeight >= TALL_PX ? ELEVATION_PX : 96);
 
     const chip = $derived.by(() => {
         if (mark === undefined) return '';
@@ -99,18 +135,28 @@
         return [formatDistance(mark * totalM), height === null ? '' : formatHeight(height), grade === null ? '' : formatPercent(grade)].filter(Boolean).join(' · ');
     });
 
-    /** The places of the chosen category, joined where their icons would overlap. */
+    /** The places of the chosen category, joined where their icons with the count would touch. */
     const groups = $derived.by(() => {
         // On the shown slice, so that a place on a loop does not land on another day.
         const found = (places.found ?? []).map(place => ({ place, at: nearestProgress(slice, place.coordinate) })).sort((a, b) => a.at - b.at);
-        const joined: { at: number; names: string[] }[] = [];
+        const joined: { at: number; places: Place[] }[] = [];
+        const drawn = (count: number) => ICON_PX + (count > 1 ? 2 + String(count).length * COUNT_CHAR_PX : 0);
         for (const { place, at } of found) {
             const last = joined.at(-1);
-            if (last && (at - last.at) * width < JOIN_PX) last.names.push(place.label);
-            else joined.push({ at, names: [place.label] });
+            if (last && (at - last.at) * width < drawn(last.places.length + 1) + 2) last.places.push(place);
+            else joined.push({ at, places: [place] });
         }
         return joined;
     });
+    const chosenPlace = $derived.by(() => {
+        const group = openPlace && groups[openPlace.group];
+        if (!group) return undefined;
+        return group.places.length === 1 ? group.places[0] : openPlace!.place === undefined ? undefined : group.places[openPlace!.place];
+    });
+
+    $effect(() => { onhover(hoveredClimb >= 0 ? [climbs[hoveredClimb].from, climbs[hoveredClimb].to] : null); });
+    $effect(() => { onday(day === 'all' ? null : [shown.from, shown.to]); });
+    $effect(() => { onplace(chosenPlace ? chosenPlace.coordinate : null); });
 
     $effect(() => {
         if (!placeLane) return;
@@ -130,9 +176,9 @@
         return () => { live = false; };
     });
 
-    // The details of a waypoint made from a mapped place load when its panel opens.
+    // The details of a waypoint or a place made from a mapped place load when its panel opens.
     $effect(() => {
-        const point = pins.find(pin => pin.number === open)?.point, id = point?.placeId;
+        const point = chosenPlace ?? pins.find(pin => pin.number === open)?.point, id = point?.placeId;
         if (!point || !id || !searchable.test(id) || untrack(() => id in details)) return;
         const abort = new AbortController();
         placeDetails(id, point.coordinate, abort.signal).then(found => { details = { ...details, [id]: found ?? null }; }, () => {});
@@ -146,26 +192,44 @@
         open = number;
     }
 
-    const surfaceName = (surface: Surface) => surface === 'Unknown' ? 'unknown' : surface.toLowerCase();
+    /** A click on a climb in the elevation row, or Enter, selects the climb; another click clears the part. */
+    function click(at: number, row?: number | null) {
+        const index = row === ELEVATION_ROW || row === null ? climbAt(shown.from + at * span) : -1;
+        onpart(index >= 0 ? [climbs[index].from, climbs[index].to] : null);
+    }
+
+    function point(at: number | null, row?: number | null) {
+        onProfile = at !== null && (row === ELEVATION_ROW || row === null) ? at : undefined;
+        onpoint(at === null ? null : shown.from + at * span);
+    }
+
+    const kmOf = (place: Place) => formatDistance((shown.from + nearestProgress(slice, place.coordinate) * span) * totalM);
 </script>
 
+<svelte:window bind:innerWidth bind:innerHeight />
 <!-- iOS Safari does not focus a tapped button, so a tap outside closes the panel here, not by `focusout`. -->
-<svelte:document onpointerdown={event => { if (open !== undefined && !(event.target as Element).closest('.pin')) open = undefined; }} />
+<svelte:document onpointerdown={event => {
+    if (open !== undefined && !(event.target as Element).closest('.pin')) open = undefined;
+    if (openPlace && !(event.target as Element).closest('.place')) openPlace = undefined;
+}} />
 
 {#snippet about(point: RoutePoint)}
     {@const found = point.placeId ? details[point.placeId] : undefined}
-    {@const website = websiteLink(found?.website)}
+    {@const own = point as Partial<Place>}
+    {@const website = websiteLink(found?.website ?? own.website)}
+    {@const phone = found?.phone ?? own.phone}
+    {@const hours = found?.opening_hours ?? own.openingHours}
     <div class="panel" style:left={`${shift}px`}>
         <strong>{point.label}</strong>
         {#if point.placeKind}<small>{kindLabel(point.placeKind)}</small>{/if}
         {#if point.note}<p>{point.note}</p>{/if}
-        {#if found?.opening_hours}<OpeningHours value={found.opening_hours} />{/if}
-        {#if website || found?.phone}
+        {#if hours}<OpeningHours value={hours} />{/if}
+        {#if website || phone}
             <p class="contacts">
                 {#if website}<a href={website} target="_blank" rel="noopener noreferrer">Website</a>{/if}
-                {#each phoneNumbers(found?.phone) as phone (phone)}
-                    {@const link = phoneLink(phone)}
-                    {#if link}<a href={link}>{phone}</a>{:else}<span>{phone}</span>{/if}
+                {#each phoneNumbers(phone) as number (number)}
+                    {@const link = phoneLink(number)}
+                    {#if link}<a href={link}>{number}</a>{:else}<span>{number}</span>{/if}
                 {/each}
             </p>
         {/if}
@@ -173,6 +237,7 @@
 {/snippet}
 
 {#snippet waypoints()}
+    <div class="measure" bind:clientWidth={width}></div>
     {#each shownPins as pin, i (i)}
         {#if pin.number}
             <!-- A link in the panel takes the focus: the panel closes only when the focus leaves the pin and its panel. -->
@@ -186,33 +251,28 @@
                 {#if open === pin.number && pin.point}{@render about(pin.point)}{/if}
             </span>
         {:else}
-            <span class="night" style:left={`${x(pin.share) * 100}%`}>Night</span>
+            <!-- At an end of the axis the tag stays inside the card. -->
+            <span class="night" style:left={`${x(pin.share) * 100}%`}
+                style:transform={x(pin.share) > .97 ? 'translate(-100%, -50%)' : x(pin.share) < .03 ? 'translate(0, -50%)' : undefined}>Night</span>
         {/if}
     {/each}
 {/snippet}
 
 {#snippet elevation()}
-    <ElevationRow line={profile} from={shown.from} to={shown.to} {labels} lines={nights} />
+    <ElevationRow line={profile} from={shown.from} to={shown.to} {climbs} {lit} lines={nights} />
 {/snippet}
 
 {#snippet surface()}
+    <span class="legend">
+        {#each surfaces as surface (surface)}<span><i style:background={surfaceBarColors[surface]}></i>{surface}</span>{/each}
+    </span>
     <div class="bar">
         {#each runs as run, i (i)}<span style:left={`${x(run.from) * 100}%`} style:width={`${(run.to - run.from) / span * 100}%`} style:background={surfaceBarColors[run.surface]}></span>{/each}
     </div>
-    <span class="legend">
-        {#each surfaces as surface (surface)}<span><i style:background={surfaceBarColors[surface]}></i>{surfaceName(surface)}</span>{/each}
-    </span>
-{/snippet}
-
-{#snippet placeLabel()}
-    <select aria-label="Places" bind:value={category}>
-        <option value="">Places</option>
-        {#each categoryIds as id (id)}<option value={id}>{placeCategories[id].label}</option>{/each}
-    </select>
 {/snippet}
 
 {#snippet placeRow()}
-    <div class="places" bind:this={placeLane} bind:clientWidth={width}>
+    <div class="places" bind:this={placeLane}>
         {#if category && tooLong}
             <span class="note">{days.length > 1 && day === 'all' ? 'Choose one day to see places' : 'Too long to show places'}</span>
         {:else if places.failed}
@@ -221,9 +281,25 @@
             <span class="note">None within {formatDistance(PLACE_M)}</span>
         {:else if category}
             {#each groups as group, i (i)}
-                <span class="place" style:left={`${group.at * 100}%`} title={group.names.join('\n')}>
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d={placeCategories[category].icon} /></svg>
-                    {#if group.names.length > 1}<b>{group.names.length}</b>{/if}
+                <span class="place" class:open={openPlace?.group === i} style:left={`${group.at * 100}%`}
+                    style:transform={group.at * width > width - 40 ? 'translate(-100%, -50%)' : undefined}>
+                    <button type="button" aria-label={group.places.map(place => place.label).join(', ')} aria-expanded={openPlace?.group === i}
+                        onclick={event => { show(event.currentTarget.parentElement!, undefined); openPlace = openPlace?.group === i ? undefined : { group: i }; }}>
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d={placeCategories[category].icon} /></svg>
+                        {#if group.places.length > 1}<span class="count">{group.places.length}</span>{/if}
+                    </button>
+                    {#if openPlace?.group === i}
+                        {#if chosenPlace}
+                            {@render about(chosenPlace)}
+                        {:else}
+                            <div class="panel list" style:left={`${shift}px`}>
+                                {#each group.places.slice(0, LIST_NAMES) as place, j (j)}
+                                    <button type="button" onclick={() => openPlace = { group: i, place: j }}><span>{place.label}</span><small>{kmOf(place)}</small></button>
+                                {/each}
+                                {#if group.places.length > LIST_NAMES}<p class="more">and {group.places.length - LIST_NAMES} more</p>{/if}
+                            </div>
+                        {/if}
+                    {/if}
                 </span>
             {/each}
         {/if}
@@ -232,36 +308,35 @@
 
 {#snippet pointer()}{chip}{/snippet}
 
+{#snippet header()}
+    {#if days.length > 1}
+        <Segmented compact label="Shown days" value={day} onChange={value => day = value}
+            options={[{ value: 'all', label: days.length === 2 ? 'Both days' : 'All days' }, ...days.map(item => ({ value: String(item.number), label: `Day ${item.number}` }))]} />
+    {/if}
+    <Menu label="Places" left items={[
+        ...categoryIds.map(id => ({ label: placeCategories[id].label, checked: category === id, run: () => { category = id; openPlace = undefined; } })),
+        ...category ? [{ label: 'Hide places', rule: true, run: () => { category = ''; openPlace = undefined; } }] : [],
+    ]} />
+{/snippet}
+
 <div class="rows">
     <Card>
-        <header>
-            <h2>From start to end</h2>
-            {#if days.length > 1}
-                <Segmented compact label="Shown days" value={day} onChange={value => day = value}
-                    options={[{ value: 'all', label: days.length === 2 ? 'Both days' : 'All days' }, ...days.map(item => ({ value: String(item.number), label: `Day ${item.number}` }))]} />
-            {/if}
-        </header>
-        <Lanes {ticks} pointer={mark !== undefined && inside(mark) ? x(mark) : undefined} chip={pointer}
-            onpointer={at => onpoint(at === null ? null : shown.from + at * span)}
+        <Lanes label="Profile" {ticks} ticksAfter={ELEVATION_ROW + 1} {header} pointer={mark !== undefined && inside(mark) ? x(mark) : undefined}
+            chip={pointer} onpointer={point} part={shownPart} {partText} onclick={click}
+            onpart={next => onpart(next && [shown.from + next[0] * span, shown.from + next[1] * span])}
             rows={[
                 { label: 'Waypoints', draw: waypoints, height: 24 },
-                { label: 'Elevation', draw: elevation, height: 96 },
+                { label: 'Elevation', draw: elevation, height: elevationHeight },
                 ...runs.length ? [{ label: 'Surface', draw: surface }] : [],
-                { label: placeLabel, draw: placeRow, height: 24 },
+                ...category ? [{ label: placeCategories[category].label, draw: placeRow, height: 28 }] : [],
             ]} />
     </Card>
 </div>
 
 <style>
-    header {
-        display: flex;
-        align-items: center;
-        gap: 16px;
-        margin-bottom: 14px;
-    }
-    h2 {
-        margin: 0;
-        font: 700 15px/1.3 var(--sans);
+    .measure {
+        position: absolute;
+        inset: 0;
     }
     .pin, .night, .place {
         position: absolute;
@@ -296,16 +371,17 @@
     }
     .panel {
         position: absolute;
+        z-index: 6;
         top: calc(100% + 6px);
         display: flex;
         flex-direction: column;
         gap: 4px;
-        width: min(260px, 90vw);
-        padding: 12px 14px;
-        border: 1px solid var(--line);
+        width: max-content;
+        max-width: min(260px, 90vw);
+        padding: 10px 12px;
+        border: 1px solid var(--line-strong);
         border-radius: 8px;
         background: var(--panel);
-        box-shadow: 0 8px 24px rgb(28 27 20 / 0.18);
         font-size: 13px;
     }
     /* Covers the gap above the panel, so that the pointer does not leave the pin on its way to a link. */
@@ -338,11 +414,23 @@
     }
     .legend {
         display: flex;
-        flex-wrap: wrap;
-        gap: 2px 12px;
-        margin-top: 5px;
+        justify-content: flex-end;
+        gap: 12px;
+        overflow: hidden;
+        height: 16px;
+        margin-bottom: 2px;
         color: var(--ink-soft);
-        font-size: 11.5px;
+        font-size: 11px;
+        line-height: 16px;
+        white-space: nowrap;
+    }
+    @media (max-width: 760px) {
+        .legend {
+            flex-wrap: wrap;
+            justify-content: flex-start;
+            gap: 0 10px;
+            height: auto;
+        }
     }
     .legend span {
         display: flex;
@@ -366,41 +454,81 @@
         top: 0;
         bottom: 0;
     }
-    select {
-        width: 100%;
-        padding: 5px 8px;
-        border: 1px solid var(--line-strong);
-        border-radius: 6px;
-        background: var(--panel);
-        color: var(--ink);
-    }
     .places {
         position: relative;
         height: 100%;
+    }
+    /* The icon centres on the place; the count follows it. */
+    .place {
+        transform: translate(-12px, -50%);
+    }
+    .place.open {
+        z-index: 5;
+    }
+    .place > button {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        height: 24px;
+        padding: 0;
+        border: 0;
+        background: none;
+        color: var(--ink-soft);
+    }
+    .place > button:hover, .place.open > button {
+        color: var(--ink);
     }
     .place svg {
         display: block;
         width: 18px;
         height: 18px;
+        margin: 0 3px;
         fill: none;
-        stroke: var(--forest);
+        stroke: currentColor;
         stroke-width: 2;
         stroke-linecap: round;
         stroke-linejoin: round;
     }
-    .place b {
-        position: absolute;
-        top: -6px;
-        right: -10px;
-        padding: 0 4px;
-        border-radius: 7px;
-        background: var(--forest);
-        color: var(--panel);
-        font: 700 10px/14px var(--sans);
+    .count {
+        margin-left: -3px;
+        font: 600 11px/1 var(--sans);
+        font-variant-numeric: tabular-nums;
+    }
+    /* The places row is the last row of the card: its panel opens upwards. */
+    .place .panel {
+        top: auto;
+        bottom: calc(100% + 6px);
+        max-height: 240px;
+        overflow: auto;
+    }
+    .list {
+        gap: 0;
+        min-width: 180px;
+        padding: 4px;
+    }
+    .list button {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 6px 8px;
+        border: 0;
+        border-radius: 5px;
+        background: none;
+        color: var(--ink);
+        text-align: left;
+        white-space: nowrap;
+    }
+    .list button:hover {
+        background: var(--parchment-2);
+    }
+    .list .more {
+        margin: 0;
+        padding: 6px 8px;
+        color: var(--ink-soft);
     }
     .note {
         color: var(--ink-soft);
         font-size: 12.5px;
-        line-height: 24px;
+        line-height: 28px;
     }
 </style>

@@ -55,9 +55,11 @@ test('the route page shows a stored route, renames, sends, opens in the planner,
   await page.goBack();
   await expect(page.getByRole('heading', { name: 'Lake loop', level: 1 })).toBeVisible();
 
+  await page.getByRole('button', { name: 'More ▾' }).click();
   await page.getByRole('button', { name: 'Duplicate' }).click();
   await expect(page.getByRole('heading', { name: 'Lake loop (copy)', level: 1 })).toBeVisible();
-  await page.locator('.facts').getByRole('button', { name: 'Delete' }).click();
+  await page.getByRole('button', { name: 'More ▾' }).click();
+  await page.getByRole('button', { name: 'Delete' }).click();
   await page.getByRole('dialog', { name: 'Delete this route?' }).getByRole('button', { name: 'Delete' }).click();
   await expect(page).toHaveURL(/#\/routes$/);
   await page.evaluate(() => { location.hash = '#/route/lake'; });

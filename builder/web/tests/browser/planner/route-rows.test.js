@@ -1,5 +1,32 @@
 import { expect, test } from '@playwright/test';
+import { PbfWriter } from 'pbf';
 import { CORS_PREFLIGHT, respond } from './stubs.js';
+
+/** A vector tile with a layer `pois` of restaurants: each place is a point with its kind, name and coordinate. */
+function placeTile(places) {
+  const pbf = new PbfWriter(), keys = ['kind', 'name', 'lon', 'lat'];
+  pbf.writeMessage(3, (_, layer) => {
+    layer.writeVarintField(15, 2);
+    layer.writeStringField(1, 'pois');
+    places.forEach((_, i) => layer.writeMessage(2, (__, feature) => {
+      feature.writeVarintField(1, i + 1);
+      feature.writePackedVarint(2, keys.flatMap((___, k) => [k, i * keys.length + k]));
+      feature.writeVarintField(3, 1);
+      feature.writePackedVarint(4, [9, 4096, 4096]);
+    }));
+    for (const key of keys) layer.writeStringField(3, key);
+    for (const { name, lon, lat } of places) {
+      for (const text of ['restaurant', name]) layer.writeMessage(4, (__, value) => value.writeStringField(1, text));
+      for (const number of [lon, lat]) layer.writeMessage(4, (__, value) => value.writeDoubleField(3, number));
+    }
+    layer.writeVarintField(5, 4096);
+  });
+  return Buffer.from(pbf.finish());
+}
+
+// One restaurant near the climb, and 35 at one place near the second waypoint.
+const PLACES = placeTile([{ name: 'Linde', lon: 8.03, lat: 47.001 },
+  ...Array.from({ length: 35 }, (_, i) => ({ name: `Stube ${i + 1}`, lon: 8.15, lat: 47.001 + i * 1e-5 }))]);
 
 const drawn = (id, kind, lon, from, to, extra = {}) => ({
   id, kind, label: id, coordinate: [lon, 47], ...extra,
@@ -19,11 +46,14 @@ const route = {
   summary: { line: [8, 47, 8.05, 47, 8.1, 47, 8.15, 47, 8.2, 47], heights: [400, 600, 600, 600, 400], bounds: [8, 47, 8.2, 47], lengthM: 15_184, climbM: 200, highestM: 600, seconds: 4000, bike: 'touring', days: 2 },
 };
 
-test('the rows of a route of two days: a day, the pointer, a climb, places and the state on the device', async ({ page }) => {
+test('the rows of a route of two days: a day, the pointer, a part, a climb, the keys, places and the state on the device', async ({ page }) => {
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.route(url => url.hostname !== '127.0.0.1', request => {
     if (request.request().method() === 'OPTIONS') return request.fulfill(CORS_PREFLIGHT);
+    if (/^\/places\/\d+\/\d+\/\d+\.mvt$/.test(new URL(request.request().url()).pathname)) {
+      return request.fulfill({ headers: CORS_PREFLIGHT.headers, contentType: 'application/x-protobuf', body: PLACES });
+    }
     const response = respond(request.request());
     return response ? request.fulfill(response) : request.abort();
   });
@@ -42,7 +72,7 @@ test('the rows of a route of two days: a day, the pointer, a climb, places and t
   await page.goto('/planner.html#/route/two');
 
   const lanes = page.locator('.lanes');
-  for (const label of ['Waypoints', 'Elevation', 'Places']) await expect(lanes.locator('.label').filter({ hasText: label })).toBeVisible();
+  for (const label of ['Waypoints', 'Elevation']) await expect(lanes.locator('.label').filter({ hasText: label })).toBeVisible();
   await expect(lanes.locator('.ticks')).toContainText('start');
   await expect(lanes.locator('.ticks')).toContainText('15.2 km');
   await expect(lanes.locator('.pin')).toHaveText(['1', '2']);
@@ -77,14 +107,62 @@ test('the rows of a route of two days: a day, the pointer, a climb, places and t
   await page.keyboard.press('Escape');
   await expect(mapPins.locator('.route-pin-label')).toHaveCount(0);
 
-  await page.getByRole('combobox', { name: 'Places' }).selectOption('water');
-  await expect(lanes).toContainText('None within 1.0 km');
+  // A drag selects a part; Escape and Clear end it.
+  const part = page.locator('.rows .part');
+  const drag = async (from, to) => {
+    await page.mouse.move(elevation.x + elevation.width * from, elevation.y + elevation.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(elevation.x + elevation.width * (from + to) / 2, elevation.y + elevation.height / 2);
+    await page.mouse.move(elevation.x + elevation.width * to, elevation.y + elevation.height / 2);
+    await page.mouse.up();
+  };
+  await drag(0.4, 0.6);
+  await expect(part).toContainText('km 6.1 to 9.1 · 3.0 km');
+  await expect(lanes.locator('.pale')).toHaveCount(2);
+  await page.keyboard.press('Escape');
+  await expect(part).toHaveCount(0);
+  await drag(0.4, 0.6);
+  await part.getByRole('button', { name: 'Clear' }).click();
+  await expect(part).toHaveCount(0);
 
-  await page.locator('.facts .more').click();
-  await page.locator('.facts .climb button').first().click();
+  // A click on the climb in the profile and a click on it in the left card give the same part.
+  await page.mouse.click(elevation.x + elevation.width * 0.1, elevation.y + elevation.height / 2);
   await expect(page.getByRole('button', { name: '‹ Climbs' })).toBeVisible();
   await expect(page.locator('.facts dl > div').filter({ hasText: 'Steepest' })).toContainText('5 %');
-  await expect(page.locator('.facts')).toContainText('Steepest 500 m');
+  const climb = await part.textContent();
+  expect(climb).toMatch(/^km 0.0 to 3.8 · 3.8\skm · 200\sm up/);
+  await page.getByRole('button', { name: '‹ Climbs' }).click();
+  await expect(part).toHaveCount(0);
+  await page.locator('.facts .climb button').first().click();
+  await expect(part).toHaveText(climb);
+
+  // The keys: an arrow moves the pointer, Shift with an arrow grows a part, Enter selects the climb at the pointer.
+  await page.keyboard.press('Escape');
+  await page.getByRole('slider', { name: 'Profile' }).focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(lanes.locator('.chip')).toContainText(/^15\d\sm/);
+  for (let i = 0; i < 5; i++) await page.keyboard.press('Shift+ArrowRight');
+  await expect(part).toContainText('km 0.2 to 0.9');
+  await page.keyboard.press('Escape');
+  await page.keyboard.press('Enter');
+  await expect(part).toHaveText(climb);
+  await page.keyboard.press('Escape');
+
+  // A place opens its name and shows on the map; a group lists at most 30 names.
+  await page.getByRole('button', { name: 'Places ▾' }).click();
+  await page.getByRole('button', { name: 'Food', exact: true }).click();
+  await lanes.locator('.places').scrollIntoViewIfNeeded();
+  const places = lanes.locator('.place > button');
+  await expect(places).toHaveCount(2);
+  await places.first().click();
+  await expect(lanes.locator('.place .panel')).toContainText('Linde');
+  await expect(page.locator('.route-map-place')).toBeVisible();
+  await places.last().click();
+  await expect(places.last()).toContainText('35');
+  await expect(lanes.locator('.list button')).toHaveCount(30);
+  await expect(lanes.locator('.list')).toContainText('and 5 more');
+  await lanes.locator('.list button').first().click();
+  await expect(lanes.locator('.place .panel')).toContainText('Stube 1');
 
   await page.evaluate(() => new Promise(resolve => {
     const open = indexedDB.open('obc-library');
