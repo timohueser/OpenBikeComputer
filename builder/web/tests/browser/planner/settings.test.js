@@ -36,16 +36,16 @@ test('the settings are a window over the page, and the page under it stays as it
   page.on('pageerror', error => errors.push(error.message));
   await stub(page);
   const settings = page.getByRole('dialog', { name: 'Settings' });
-  const planner = page.getByRole('navigation', { name: 'Pages' }).getByRole('link', { name: 'Planner' });
+  const home = page.getByRole('region', { name: 'Home' }).getByRole('heading', { level: 1 });
 
-  // A direct visit shows the window over the first page; Back and Close leave that page.
+  // A direct visit shows the window over the Home page; Back and Close leave the rider there.
   await open(page);
-  await expect(planner).toHaveAttribute('aria-current', 'page');
+  await expect(home).toBeVisible();
   for (const close of [() => page.goBack(), () => settings.getByRole('button', { name: 'Close' }).click()]) {
     await close();
     await expect(settings).toHaveCount(0);
     await expect(page).toHaveURL(/#\/$/);
-    await expect(planner).toHaveAttribute('aria-current', 'page');
+    await expect(home).toBeVisible();
     await page.goForward();
     await expect(settings).toBeVisible();
   }
