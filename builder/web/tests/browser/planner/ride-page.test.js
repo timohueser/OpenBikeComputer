@@ -256,5 +256,11 @@ test('the lines of a ride: a row for each line with values, the pointer, and a p
   await expect(facts.locator('tbody tr').filter({ hasText: 'Heart rate' }).locator('td')).toHaveText(['160', '150']);
   await click(1, 0.75);
   await expect(page.locator('.lines .part')).toHaveCount(0);
+  // A click on the climb in the left card selects it too.
+  await facts.locator('.climbs').getByRole('button').click();
+  await expect(page.locator('.lines .part')).toContainText('km 5.1 to km 9.9 · 4.9 km');
+  await expect(facts.locator('thead th')).toHaveText(['Selected', 'Whole ride']);
+  await page.keyboard.press('Escape');
+  await expect(facts.locator('.climbs li')).toHaveCount(1);
   expect(errors).toEqual([]);
 });

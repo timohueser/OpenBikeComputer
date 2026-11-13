@@ -112,6 +112,7 @@ describe('the time axis, the stops and a part of a ride', () => {
     const time = timeAxis(samples), found = stops(samples);
 
     it('places the samples by the clock, and ends the line at a step of more than a minute', () => {
+        expect([time.start, time.seconds]).toEqual([T, 1280]);
         expect(time.xs[0]).toBe(0);
         expect(time.xs[16]).toBeCloseTo(510 / 1280);
         expect(time.xs.at(-1)).toBe(1);
@@ -127,10 +128,12 @@ describe('the time axis, the stops and a part of a ride', () => {
         expect(found).toEqual([{ first: 4, last: 11, seconds: 420 }, { first: 16, last: 17, seconds: 600 }]);
     });
 
-    it('gives the first sample at a place: the first of a stop on the distance axis, the one after a gap on the time axis', () => {
+    it('gives the first sample at a place: the first of a stop on the distance axis, the one after a gap on the time axis, where a row has no value', () => {
         const { xs } = distanceAxis(samples);
         expect(sampleAt(xs, xs[8])).toBe(4);
+        // The place .6 is in the pause: the map marks the sample after it, and the rows show no value there.
         expect(sampleAt(time.xs, .6)).toBe(17);
+        expect(thin(time.xs, samples.map(() => 100), 100, time.gaps)[60]).toBeNull();
     });
 
     it('moves the ends of a part out of a stop: a start to its last sample, an end to its first', () => {

@@ -22,11 +22,12 @@ export function distanceAxis(samples: FitSample[]): { xs: number[]; lengthM: num
  * start in it. */
 const GAP_S = 60, STOP_S = 300;
 
-/** The place of each sample on the time axis from 0 to 1, by the clock, and `gaps`: the samples after a step of more
- * than a minute, where the recording was off. */
-export function timeAxis(samples: FitSample[]): { xs: number[]; gaps: number[] } {
+/** The time axis of a ride: the time of its first sample, its length in seconds, the place of each sample from 0 to 1
+ * by the clock, and `gaps`: the samples after a step of more than a minute, to which no line leads. */
+export function timeAxis(samples: FitSample[]): { start: number; seconds: number; xs: number[]; gaps: number[] } {
     const start = samples[0].timeS, seconds = samples.at(-1)!.timeS - start || 1;
     return {
+        start, seconds,
         xs: samples.map(sample => (sample.timeS - start) / seconds),
         gaps: samples.flatMap((sample, i) => i && sample.timeS - samples[i - 1].timeS > GAP_S ? [i] : []),
     };

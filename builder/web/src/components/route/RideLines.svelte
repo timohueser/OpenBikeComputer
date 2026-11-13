@@ -15,7 +15,7 @@
      * line under its name and its scale after the row. A line with no value has no row. A drag selects a part; a click
      * on a climb in the elevation row selects the climb. A click on the label of a row opens its line large in a window.
      * The name of the axis beside the ticks is its switch: the distance, or the time of day, where a stop has a width and
-     * the lines end at a gap of the recording. A stop is a mark on the row of the ticks; the foot of the pointer says
+     * the lines end at a step of more than a minute. A stop is a mark on the row of the ticks; the foot of the pointer says
      * its length. */
     let { samples, shares, speed, channels, climbs = [], mark, onpoint, part, onpart, partFacts }: {
         samples: FitSample[];
@@ -66,7 +66,9 @@
     let byTime = $state(false);
     const time = $derived(timeAxis(samples));
     const xs = $derived(byTime ? time.xs : axis.xs);
-    const found = $derived(stops(samples).map(stop => ({ ...stop, from: xs[stop.first], to: xs[stop.last] })));
+    const halts = $derived(stops(samples));
+    /** The stops on the axis. */
+    const found = $derived(halts.map(stop => ({ ...stop, from: xs[stop.first], to: xs[stop.last] })));
     const clock = (seconds: number) => new Date(seconds * 1000).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
     const values = $derived<Record<Key, (number | undefined)[]>>({
         elevation: samples.map(sample => sample.elevationM),
@@ -110,7 +112,7 @@
      * times of the day. */
     const ticks = $derived.by(() => {
         if (!byTime) return fitTicks([{ at: 0, label: start }, { at: 1, label: formatDistance(axis.lengthM) }, ...distanceTicks(0, axis.lengthM, width)], width);
-        const first = samples[0].timeS, seconds = samples.at(-1)!.timeS - first || 1, day = new Date(first * 1000);
+        const { start: first, seconds } = time, day = new Date(first * 1000);
         const step = [1, 5, 10, 15, 30, 60, 120, 240].find(minutes => seconds / 60 / minutes <= Math.max(1, width / CLOCK_PX)) ?? 480;
         const minute = day.getHours() * 60 + day.getMinutes() + day.getSeconds() / 60, whole = [];
         for (let m = Math.ceil(minute / step) * step; (m - minute) * 60 < seconds; m += step) whole.push({ at: (m - minute) * 60 / seconds, label: clock(first + (m - minute) * 60) });
@@ -127,12 +129,14 @@
         const at = pointer * width;
         return found.find(stop => { const { left, wide } = markOf(stop); return at >= left && at <= left + wide; });
     });
-    /** The foot of the pointer: its place, and the length of a stop under it. */
+    /** The foot of the pointer: the place of the pointer on the axis, and the length of a stop under it, in whole
+     * minutes. */
     const foot = $derived.by(() => {
         if (pointer === undefined) return '';
-        const place = byTime ? clock(samples[sampleAt(xs, pointer)].timeS) : formatDistance(pointer * axis.lengthM);
+        const place = byTime ? clock(time.start + pointer * time.seconds) : formatDistance(pointer * axis.lengthM);
         if (!stopAt) return place;
-        return `${place} · stop ${stopAt.seconds < 3600 ? `${Math.round(stopAt.seconds / 60)} min` : duration(stopAt.seconds / 3600)}`;
+        const minutes = Math.round(stopAt.seconds / 60);
+        return `${place} · stop ${minutes < 60 ? `${minutes} min` : duration(minutes / 60)}`;
     });
     const rowSnippets = { elevation: elevationRow, speed: speedRow, hr: hrRow, power: powerRow, cadence: cadenceRow };
     const rows = $derived(shown.map(key => ({
@@ -163,7 +167,7 @@
      * it, so the time of the stop is in no part by chance. */
     const partOf = ([from, to]: [number, number]): [number, number] => {
         const ends: [number, number] = [sampleAt(xs, from), sampleAt(xs, to)];
-        return byTime ? ends : outOfStops(found, ends);
+        return byTime ? ends : outOfStops(halts, ends);
     };
 
     /** The climb at a place of the elevation row, or of the keys, which have no row. */

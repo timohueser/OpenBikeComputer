@@ -126,7 +126,8 @@
     {/snippet}
     {#snippet left()}
         {#if summary}
-            <RideFacts {summary} {speed} channels={numbers} {climbs} part={partFacts} unreadable={source === null} />
+            <RideFacts {summary} {speed} channels={numbers} {climbs} part={partFacts} unreadable={source === null}
+                onclimb={climb => part = [climb.first, climb.last]} />
         {/if}
     {/snippet}
     {#snippet picture()}
