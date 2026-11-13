@@ -14,25 +14,42 @@ const summary = {
     lengthM: 400, climbM: 0, highestM: null, seconds: 0, bike: 'road',
 } satisfies Summary;
 
-/** A context that keeps the colour of each full-strength stroke. */
+/** A context that keeps the colour and the strength of each stroke, and the x where its path starts. */
 function recorder() {
-    const strokes: string[] = [];
+    const strokes: { colour: string; alpha: number; from: number }[] = [];
+    let from = 0;
     const context = {
         globalAlpha: 1, strokeStyle: '', fillStyle: '', lineWidth: 1, lineCap: '', lineJoin: '',
-        drawImage() {}, beginPath() {}, moveTo() {}, lineTo() {}, arc() {}, fill() {},
-        stroke() { if (context.globalAlpha === 1) strokes.push(context.strokeStyle); },
+        drawImage() {}, beginPath() {}, moveTo(x: number) { from = x; }, lineTo() {}, arc() {}, fill() {},
+        stroke() { strokes.push({ colour: context.strokeStyle, alpha: context.globalAlpha, from }); },
     };
     return { context: context as unknown as CanvasRenderingContext2D, strokes };
 }
+const LINE = '#cc2a93', GLOW = '#ee8fcf', CORE = '#f8b8e2';
+const cover = { image: {} as CanvasImageSource, width: 400, height: 100, points, summary };
+function strokesOf(part?: [number, number]) {
+    const { context, strokes } = recorder();
+    drawCover(context, cover, { box: [400, 100], line: true, part });
+    return strokes;
+}
 
 describe('the line of a cover', () => {
-    it('draws the rest of the line paler while a part is selected', () => {
-        const cover = { image: {} as CanvasImageSource, width: 400, height: 100, points, summary };
-        const whole = recorder(), withPart = recorder();
-        drawCover(whole.context, cover, { box: [400, 100], line: true });
-        drawCover(withPart.context, cover, { box: [400, 100], line: true, part: [100, 200] });
-        expect(whole.strokes).not.toContain(REST.route.line);
-        expect(withPart.strokes).toContain(REST.route.line);
-        expect(withPart.strokes).not.toContain('#cc2a93');
+    it('draws no pale colour with no part', () => {
+        expect(strokesOf().map(stroke => stroke.colour)).not.toContain(REST.route);
+    });
+
+    it('draws the part in the colours of the line, and the rest pale with no glow and no core, under the part', () => {
+        // The part is the segment from x = 100 to x = 200.
+        const strokes = strokesOf([100, 200]), inPart = strokes.filter(stroke => stroke.from === 100), rest = strokes.filter(stroke => stroke.from !== 100);
+        expect(rest.length).toBeGreaterThan(0);
+        expect(rest.every(stroke => stroke.colour === REST.route && stroke.alpha === 1)).toBe(true);
+        expect(new Set(inPart.map(stroke => stroke.colour))).toEqual(new Set([GLOW, LINE, CORE]));
+        expect(inPart.find(stroke => stroke.colour === LINE)?.alpha).toBe(1);
+        expect(strokes.indexOf(inPart[0])).toBeGreaterThan(strokes.lastIndexOf(rest.at(-1)!));
+    });
+
+    it('draws a part shorter than one segment in the colour of the line', () => {
+        const strong = strokesOf([120, 130]).filter(stroke => stroke.colour === LINE);
+        expect(strong.map(stroke => stroke.from)).toEqual([100]);
     });
 });

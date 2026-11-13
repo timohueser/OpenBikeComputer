@@ -2,20 +2,17 @@
 import type { CoverPoints, Summary } from '../library/records';
 import { along, distanceAt, metresAlong, placed, runs } from './line';
 
-/** The image is the same in both themes, so the line of a route keeps the colours of the light theme: `--route`, and
- * `--amber` for a part. As the ribbon of TrailView, a glow in a lighter tint of the line fades out beyond it, and a weak
- * light core runs in its middle. The line of a ride is a teal, lighter than `--ride` so that it shows on a dark slope; `ring` is the edge of the mark. */
+/** The image is the same in both themes, so the line of a route keeps the colour of the light theme: `--route`. As the
+ * ribbon of TrailView, a glow in a lighter tint of the line fades out beyond it, and a weak light core runs in its
+ * middle. The line of a ride is a teal, lighter than `--ride` so that it shows on a dark slope; `ring` is the edge of the mark. */
 const LOOKS = {
     route: { line: '#cc2a93', glow: '#ee8fcf', core: '#f8b8e2', ring: '#cc2a93' },
     ride: { line: '#12b3a8', glow: '#84e2d9', core: '#cdf6f1', ring: '#0b8f8b' },
-    part: { line: '#f4a81d', glow: '#f8c66a', core: '#ffe6b0' },
 };
 export type Look = 'route' | 'ride';
-/** With a part, the rest of the line takes a paler solid tint of its look. */
-export const REST: Record<Look, { line: string; glow: string; core: string }> = {
-    route: { line: '#e7a6d0', glow: '#f2cde4', core: '#fae6f2' },
-    ride: { line: '#a5d8d3', glow: '#cbe9e6', core: '#e5f5f3' },
-};
+/** With a part, the part keeps the colours of its look. The rest of the line is a paler solid tint with no glow and no
+ * core, so that it stays behind the part on a dark slope as the pale line does on the map. */
+export const REST: Record<Look, string> = { route: '#e7a6d0', ride: '#a5d8d3' };
 /** The glow reaches GLOW_REACH of the widest line beyond it, in GLOW_STEPS strokes of GLOW_ALPHA each; the core is CORE_WIDTH of the line. */
 const GLOW_REACH = 0.6, GLOW_STEPS = 5, GLOW_ALPHA = 0.14, CORE_WIDTH = 0.25, CORE_ALPHA = 0.3;
 /** The width of the line at the point nearest to the eye, as a share of the shorter side of the box, and the least width as a share of it. */
@@ -58,7 +55,8 @@ export function drawCover(context: CanvasRenderingContext2D, cover: CoverImage,
     const widest = Math.max(2, WIDEST * Math.min(...box));
     const width = (i: number) => widest * Math.max(LEAST, Math.min(1, nearest / distanceAt(points, i)));
     const metres = summary && part && metresAlong(summary);
-    const inPart = (i: number) => !!metres && !!part && (metres[i - 1] + metres[i]) / 2 >= part[0] && (metres[i - 1] + metres[i]) / 2 <= part[1];
+    // A segment that overlaps the part is in it, so a part shorter than one segment still shows.
+    const inPart = (i: number) => !!metres && !!part && metres[i] > part[0] && metres[i - 1] < part[1];
 
     // Consecutive segments of one width step and one colour make one path, so that a weak stroke shows no dots at its
     // joints. A stretch that the terrain hides draws nothing.
@@ -69,21 +67,23 @@ export function drawCover(context: CanvasRenderingContext2D, cover: CoverImage,
         else pieces.push({ part: inside, w, from: i - 1, to: i });
     }
     const reach = Math.max(2, GLOW_REACH * widest), glow = Array.from({ length: GLOW_STEPS }, (_, k) => 2 * reach * (GLOW_STEPS - k) / GLOW_STEPS);
-    const tint = (inside: boolean) => inside ? LOOKS.part : metres ? REST[look] : colours;
-    const passes: { width: (w: number) => number; colour: (inside: boolean) => string; alpha: number }[] = [
-        ...glow.map(extra => ({ width: (w: number) => w + extra, colour: (inside: boolean) => tint(inside).glow, alpha: GLOW_ALPHA })),
-        { width: w => w, colour: inside => tint(inside).line, alpha: 1 },
-        { width: w => CORE_WIDTH * w, colour: inside => tint(inside).core, alpha: CORE_ALPHA },
+    // The rest draws first, so the part with its glow is on top where the line crosses itself or goes back on itself.
+    const passes: { width: (w: number) => number; colour: string; alpha: number; part: boolean }[] = [
+        ...metres ? [{ width: (w: number) => w, colour: REST[look], alpha: 1, part: false }] : [],
+        ...glow.map(extra => ({ width: (w: number) => w + extra, colour: colours.glow, alpha: GLOW_ALPHA, part: true })),
+        { width: w => w, colour: colours.line, alpha: 1, part: true },
+        { width: w => CORE_WIDTH * w, colour: colours.core, alpha: CORE_ALPHA, part: true },
     ];
     context.lineCap = context.lineJoin = 'round';
     for (const pass of passes) {
         context.globalAlpha = pass.alpha;
         for (const piece of pieces) {
+            if (metres && piece.part !== pass.part) continue;
             context.beginPath();
             context.moveTo(x(piece.from), y(piece.from));
             for (let i = piece.from + 1; i <= piece.to; i++) context.lineTo(x(i), y(i));
             context.lineWidth = pass.width(piece.w);
-            context.strokeStyle = pass.colour(piece.part);
+            context.strokeStyle = pass.colour;
             context.stroke();
         }
     }

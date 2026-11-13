@@ -23,7 +23,7 @@
         onpoint: (share: number | null) => void;
         /** The stretch that the map fits. */
         part?: [number, number] | null;
-        /** The stretch that the cover and the map mark, with the rest of the line paler on the map. */
+        /** The stretch that the cover and the map mark, with the rest of the line paler. */
         lit?: [number, number] | null;
         /** A place that the map marks. */
         place?: [number, number] | null;
