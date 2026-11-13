@@ -6,8 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::far::{MAGIC_FAR, MASK_M, PAD, WINDOW};
 use super::{
-    blend_edges, find, label, outline_units, BINS, BIN_UNITS, CAND, DISC, HEAD, JUNCTION, LEG_SHIFT, LINE, MARGIN_M,
-    PLATFORM, RAIL, SAMPLE, WAY, WAY_OWNER,
+    blend_edges, find, label, outline_units, BINS, BIN_UNITS, CAND, CEILING, DISC, HEAD, JUNCTION, LEG_SHIFT, LINE,
+    MARGIN_M, PLATFORM, RAIL, SAMPLE, WAY, WAY_OWNER,
 };
 use crate::faces::check::owner_name;
 use crate::faces::geom::winding;
@@ -348,11 +348,15 @@ pub fn far_matches_near(near: &[u32], far: &[u32], cell: CellKey) -> (Vec<String
             *h = h.max(m);
         }
     }
-    // Every near leg: its segments in reach, and in the far block the samples that their strokes read.
+    // Every near leg: its segments in reach, and in the far block the samples that their strokes read. A ceiling
+    // line is no leg of storey 0.
     let f32m = |w: u32| f64::from(f32::from_bits(w));
     let cell_u = f64::from(CELL_UNITS as i32);
     for k in 0..n_near {
         let nl = line(near, k);
+        if nl[1] & CEILING != 0 {
+            continue;
+        }
         let n = nl[3] as usize;
         let reach = half[&nl[0]] + (f32m(nl[8]) + f32m(nl[9]) + f32m(nl[6])).max(MASK_M) + 1.0;
         let p = |i: usize| {

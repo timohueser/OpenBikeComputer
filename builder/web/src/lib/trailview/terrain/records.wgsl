@@ -23,11 +23,13 @@ const M_JR_ARM: u32 = 3u;
 const M_ARM_HOST: u32 = 0x10000u;
 const M_ARM_STOP: u32 = 0x20000u;
 // Line flags of the finish word, as records.rs: a rail, a way that wears lines, one that looks as a motorway, a
-// wall class, a path, and the shift of its top's material (sections::Material).
+// wall class, a deck's ceiling line (after every line of storey 0), a path, and the shift of its top's material
+// (sections::Material).
 const M_RAIL: u32 = 256u;
 const M_MARKED: u32 = 512u;
 const M_MOTORWAY: u32 = 1024u;
 const M_WALL: u32 = 2048u;
+const M_CEILING: u32 = 4096u;
 const M_PATH: u32 = 16384u;
 const M_MATERIAL_SHIFT: u32 = 16u;
 // Candidate kinds and the slope surface, as records.rs and faces::Surface.

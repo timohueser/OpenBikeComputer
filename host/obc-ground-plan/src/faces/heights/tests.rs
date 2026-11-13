@@ -575,3 +575,75 @@ fn a_rim_bent_by_its_cuts_gives_the_ground_of_the_straight_rim() {
         }
     }
 }
+
+#[test]
+fn a_deck_end_turned_up_to_the_flat_turn_lists_its_ceiling_in_every_bin_where_it_holds_the_ground() {
+    // A tertiary deck ends at a joint with a ground road that meets it at a turn up to `FLAT_TURN_DEG`, its
+    // stroke flat on the road's end line; the deck lies at 0, 22.5 and 45 degrees to the cell's axes.
+    let release = Rules::embedded().plan.heights.ceiling_release_m;
+    let dir = |deg: f64, m: f64| [m * libm::cos(deg.to_radians()), m * libm::sin(deg.to_radians())];
+    // The most metres past the stroke, the release and HEIGHT_PAD_M behind the end that a held point lies.
+    let mut beyond = f64::NEG_INFINITY;
+    for axis in [0.0, 22.5, 45.0] {
+        for turn in [0.0, 20.0, 35.0, 44.0] {
+            let deck = line(
+                "road",
+                &[("highway", "tertiary"), ("bridge", "yes"), ("deck", "1")],
+                &[[0.0; 2], dir(axis, 60.0)],
+            );
+            let c = ways(&[main_road(&[dir(axis + 180.0 + turn, 60.0), [0.0; 2]]), deck], &|_, _| 500.0);
+            let (b, p) = (super::Block::at(&c.words, c.q([0.0; 2])), super::HeightRules::of(&c.words));
+            let ceilings: Vec<u32> = (0..c.words[3] as usize)
+                .map(|l| (l, b.line(l)))
+                .filter(|(_, ln)| ln.ceiling)
+                .flat_map(|(l, ln)| (0..ln.count - 1).map(move |i| l as u32 | (i as u32) << 16))
+                .collect();
+            assert!(!ceilings.is_empty(), "axis {axis}, turn {turn}: no ceiling line");
+            let ln = b.line((ceilings[0] & 0xffff) as usize);
+            let reach = b.sample(&ln, 0).h + release + records::HEIGHT_PAD_M;
+            let u = dir(axis, 1.0);
+            for k in 0..180 * 180 {
+                let m = [-45.0 + 0.5 * f64::from(k % 180), -45.0 + 0.5 * f64::from(k / 180)];
+                let q = c.q(m);
+                let b = super::Block::at(&c.words, q);
+                let Some(items) = super::bin_items(&b, q) else { continue };
+                for &item in &ceilings {
+                    let Some((out, ..)) = super::decks(&b, q, &[item], &p).next() else { continue };
+                    if out < release {
+                        assert!(
+                            items.segs.contains(&item),
+                            "axis {axis}, turn {turn}: {m:?} held by {item:#x}, not listed"
+                        );
+                        if m[0] * u[0] + m[1] * u[1] < 0.0 {
+                            beyond = beyond.max(libm::hypot(m[0], m[1]) - reach);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // A turned flat end holds the ground farther behind the end than a segment's own reach.
+    assert!(beyond > 2.0, "the farthest held point lies {beyond} m past a segment's reach");
+}
+
+#[test]
+fn two_decks_that_meet_at_a_bend_hold_the_ground_on_the_outside_of_their_joint() {
+    // Two deck ways meet at a joint with a bend; both strokes end on its mitre, so the joint's round lies under a
+    // deck: no notch on the outside of the bend.
+    let dir = |deg: f64, m: f64| [m * libm::cos(deg.to_radians()), m * libm::sin(deg.to_radians())];
+    let deck = |depth, points: &[[f64; 2]]| {
+        line("road", &[("highway", "tertiary"), ("bridge", "yes"), ("deck", depth)], points)
+    };
+    for bend in [10.0, 20.0, 45.0, 80.0] {
+        let c = ways(&[deck("1", &[[-60.0, 0.0], [0.0; 2]]), deck("1.5", &[[0.0; 2], dir(bend, 60.0)])], &|_, _| 500.0);
+        let notches = super::check::under_decks(&c.words, &c.input.terrain, c.key, 0.5)[3];
+        assert_eq!(notches, 0, "bend {bend}: points at the joint under no deck");
+        // The outward bisector of the two arms, out of the bend.
+        let w = [1.0 - libm::cos(bend.to_radians()), -libm::sin(bend.to_radians())];
+        let n = libm::hypot(w[0], w[1]);
+        for r in [1.0, 2.0, 3.0] {
+            let q = c.q([w[0] / n * r, w[1] / n * r]);
+            assert!(super::under_deck(&c.words, q).is_some(), "bend {bend}: {r} m out of the joint under no deck");
+        }
+    }
+}
