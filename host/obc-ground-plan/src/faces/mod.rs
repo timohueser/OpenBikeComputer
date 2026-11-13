@@ -816,7 +816,8 @@ pub(crate) fn record_lines<'a>(
 ) -> Vec<WayLine<'a>> {
     let ctx = Ctx { graph, rules, origin: cell.origin() };
     let mut lines =
-        lines(&ctx, input, &|w| in_level(graph, w, 0), grown(cell, rules::ways_m(&rules.plan, &rules.sections), true)).0;
+        lines(&ctx, input, &|w| in_level(graph, w, 0), grown(cell, rules::ways_m(&rules.plan, &rules.sections), true))
+            .0;
     lines.retain(|l| !l.sec.water);
     lines
 }

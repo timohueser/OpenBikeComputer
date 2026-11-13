@@ -518,6 +518,37 @@ fn crossing(lines: &[Line]) -> Option<(CrossingKind, Source)> {
 }
 
 #[test]
+fn a_short_culvert_chain_under_a_road_opens_on_one_straight_line_and_a_long_one_stays_buried() {
+    // Two pipes of `half` metres meet end to end under a road, between open water at 10 m and at 8 m.
+    let pipe =
+        |a: f64, b: f64| Line { z: vec![None, None], ..stream(&[("tunnel", "culvert")], &[[a, 0.0], [b, 0.0]], 0.0) };
+    let chain = |half: f64| {
+        graph(&[
+            road(&[[-1.0, -40.0], [-1.0, 40.0]], 12.0),
+            stream(&[], &[[-half - 30.0, 0.0], [-half, 0.0]], 10.0),
+            pipe(-half, 0.0),
+            pipe(0.0, half),
+            stream(&[], &[[half, 0.0], [half + 30.0, 0.0]], 8.0),
+        ])
+    };
+    let east = |s: &Sample| f64::from(s.pos[0] - (CELL_UNITS / 2) as i32) * mpu();
+    let g = chain(25.0);
+    let water: Vec<&Way> = g.ways.iter().filter(|w| w.family == Family::Water).collect();
+    assert!(water.iter().all(|w| w.level == Level::Ground), "the chain of 50 m lies open");
+    for w in water {
+        for s in &g.samples[w.samples.start as usize..w.samples.end as usize] {
+            let x = east(s).clamp(-25.0, 25.0);
+            let line = 10.0 - 2.0 * (x + 25.0) / 50.0;
+            assert!((s.z_m - line).abs() < 0.05, "{x} m east: {} m, the line {line} m", s.z_m);
+        }
+    }
+    let g = chain(35.0);
+    assert_eq!((g.crossings[0].kind, g.crossings[0].source), (CrossingKind::Culvert, Source::Fallback));
+    let tunnels = g.ways.iter().filter(|w| w.family == Family::Water && w.level == Level::Tunnel).count();
+    assert_eq!(tunnels, 2, "the chain of 70 m stays buried");
+}
+
+#[test]
 fn crossings_take_the_first_row_of_the_table() {
     use CrossingKind::*;
     let across = |z: f64| road(&[[0.0, -40.0], [0.0, 40.0]], z);

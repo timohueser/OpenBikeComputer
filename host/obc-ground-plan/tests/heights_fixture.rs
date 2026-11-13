@@ -35,15 +35,15 @@ const INSIDE_MAX: usize = 9;
 /// Steps at label edges with no rule (`check::edge_steps`), measured on the revision 16 fixture with the
 /// slopes from the outline pieces of `records::outline_edges` and the vertex values of `heights::groups`
 /// (an end's cone over the fan of its turn only), walls up to the highest wall, faces past it as steep as
-/// their need, line water and its culverts: the count must not grow.
-const EDGE_MAX: usize = 103;
+/// their need, line water and its culverts and fords: the count must not grow.
+const EDGE_MAX: usize = 102;
 /// Pairs of grid points on a slope steeper than a rock face where the terrain is not (`Scan::steep`),
 /// measured on the revision 16 fixture with cones on their outward side, the outline pieces of
 /// `records::outline_edges` and the vertex values of `heights::groups`, faces past the highest wall as steep
 /// as their need, the faces' rings with a vertex at each tile line, and the banks of line water, whose cuts
 /// climb as steep as the terrain asks beside a gorge, its culverts, and the ground under the decks' ceilings:
 /// the count must not grow.
-const STEEP_MAX: usize = 2485;
+const STEEP_MAX: usize = 2470;
 /// A no-room wall's height that changes along it by more than this per metre is a step in its top
 /// (`check::wall_steps`): pairs of points measured on the revision 16 fixture with the slope and the wall of
 /// each point from the need at its foot (`heights::fit`) and line water: the count must not grow.
@@ -54,7 +54,7 @@ const WALL_STEPS_MAX: usize = 17;
 /// moves piece ends by a few units), the crease where a deck's ceiling takes the ground, and line water, whose
 /// curved banks end many short pieces, and its culverts: the count must not grow.
 const SLOPE_STEP_GRADE: f64 = 0.1;
-const SLOPE_STEPS_MAX: usize = 12977;
+const SLOPE_STEPS_MAX: usize = 12986;
 /// A tile's water vertex whose level lies more than this off the terrain at the vertex has a level that
 /// the bake holds away from its line (a pit, or the low ground beside it): the design keeps the water at
 /// most `freeboard_m` (0.8 m) under its bank and `depth_m` (1 m) deep.
@@ -64,11 +64,13 @@ const LEVEL_OFF_M: f64 = 3.0;
 const LEVEL_REACH_M: f64 = 20.0;
 /// The faults near such levels (steps, edge steps, steep pairs, wall-top steps, slope steps), measured on
 /// the revision 16 fixture: the counts must not grow.
-const LEVEL_MAX: [usize; 5] = [9, 66, 10929, 0, 1619];
+const LEVEL_MAX: [usize; 5] = [10, 85, 10882, 0, 1637];
 /// Steps that another line's cone holds higher than the paved side's wall cap (`check::held_over_cap`), measured
-/// the same way with a rail bed's fill counted past its wall cap: all at the edge of a class without a wall, most
-/// where the two outlines leave no room for the steep face (the gap is printed): the count must not grow.
-const HELD_OVER_CAP_MAX: usize = 74;
+/// the same way with a rail bed's fill counted past its wall cap and line water: all at the edge of a class
+/// without a wall, most where the two outlines leave no room for the steep face (the gap is printed). Line water
+/// has no wall, so a way's fill that holds the bank over a waterline counts: most of them lie at a water or bank
+/// face. The count must not grow.
+const HELD_OVER_CAP_MAX: usize = 717;
 /// The grid of the ground under the decks, metres.
 const DECK_GRID_M: f64 = 0.5;
 /// An end face may fall short of the deck's depth and the gap by this much, where its paved end's height is not

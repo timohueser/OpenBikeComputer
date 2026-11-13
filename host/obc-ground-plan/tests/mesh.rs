@@ -14,9 +14,10 @@ use obc_ground_plan::graph;
 use obc_ground_plan::mesh::{check, mesh_cell, Reads, Rim};
 
 /// Ground triangles within `check::NEAR_END_M` of a deck end line steeper than a rock face where the terrain is not
-/// (`check::deck_ends`), measured on the revision 15 fixture: the rock-face fall of an outline edge's cone past its
-/// end's normal at a paved end's corner, which the round slope end bares: the count must not grow.
-const STEEP_NEAR_END_MAX: usize = 51;
+/// (`check::deck_ends`), measured on the revision 16 fixture with line water: the rock-face fall of an outline edge's
+/// cone past its end's normal at a paved end's corner, which the round slope end bares, and a water bank at its
+/// steepest beside a deck end: the count must not grow.
+const STEEP_NEAR_END_MAX: usize = 52;
 
 #[test]
 fn every_fixture_cell_meshes_validly_with_the_records_labels_and_agrees_with_its_neighbours() {
