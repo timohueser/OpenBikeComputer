@@ -7,8 +7,8 @@
 //! The free outline is every face edge between the sheet and the rest that lies on no cell line and on no end line
 //! where storey 0 meets the deck (`EdgeKind::DeckEdge`): those stay open, as the neighbour cell or storey 0 goes on
 //! there. Each part is cut by the cell square; its faces on a cell line stay open as well. The face edges split
-//! into equal pieces no longer than the `l_max_m` of their faces, as the cell mesh's, so two cells and two storeys
-//! that share an edge give it the same points.
+//! into equal pieces no longer than the `l_max_m` of their sheet faces, as the cell mesh's, a rule that reads only the
+//! edge: two cells, and storey 0 on an end line by the same rule, give it the same points.
 //!
 //! Every triangle turns counter-clockwise seen from outside its solid (x east, y north, up), and every slot turns as
 //! the cell mesh's: its first two corners are those of the face left of its edge.
@@ -468,9 +468,10 @@ pub fn mesh_storeys(
         let mut pieces: Vec<(P, P, u32, u32, EdgeKind)> = Vec::new();
         for e in plan.edges.iter().filter(|e| sheet(e.left) || sheet(e.right)) {
             let (pa, pb) = (plan.vertices[e.a as usize], plan.vertices[e.b as usize]);
+            // The sheet's faces split it: past the sheet lies nothing of the storey.
             let l = [e.left, e.right]
                 .iter()
-                .filter(|&&f| f != OUTSIDE)
+                .filter(|&&f| sheet(f))
                 .map(|&f| l_max_m(plan.faces[f as usize].surface, plan.faces[f as usize].rule))
                 .fold(f64::INFINITY, f64::min);
             let mid = (pa[1] + pb[1]) / 2;
@@ -657,7 +658,8 @@ pub fn mesh_storeys(
 
 /// A railing's posts on a polyline of the free outline: where the metres along its labels' line pass a multiple of
 /// `spacing_m`, and at each end that lies on no cell line, inside the polyline; each a closed square box under the
-/// rail. A post nearer another one than a quarter of the spacing, or across a cell line, is left out.
+/// rail, a closed triangular prism `BAR_M` on a side. A post nearer another one than a quarter of the spacing, or
+/// across a cell line, is left out.
 #[allow(clippy::too_many_arguments)]
 fn posts(
     b: &mut Build,
@@ -711,7 +713,8 @@ fn posts(
         let n = [-d[1], d[0]];
         let corner = |u: f64, v: f64| [p[0] + u * s * d[0] + v * s * n[0], p[1] + u * s * d[1] + v * s * n[1]];
         // A post across a cell line would stand in two cells, each with its own chain: it is left out.
-        let ring = [corner(-0.5, 0.0), corner(0.5, 0.0), corner(0.5, 1.0), corner(-0.5, 1.0)];
+        // A triangular post: the least closed box, two faces less than a square one.
+        let ring = [corner(-0.5, 0.0), corner(0.5, 0.0), corner(0.0, 1.0)];
         let c = CELL_UNITS as f64;
         if ring.iter().flatten().any(|&v| !(0.0..=c).contains(&v)) || ring.iter().any(|&v| paved(v)) {
             continue;
