@@ -10,6 +10,15 @@ pub fn key([x, y]: [f64; 2]) -> [u64; 2] {
     [x.to_bits(), y.to_bits()]
 }
 
+/// The two points `half` metres either side of `p`, square to the line from `a` to `b`; `p` twice where they
+/// are one point.
+pub fn abreast(p: [f64; 2], [a, b]: [[f64; 2]; 2], half: f64) -> [[f64; 2]; 2] {
+    let d = [b[0] - a[0], b[1] - a[1]];
+    let reach = half / crate::metres(p[1]) / d[0].hypot(d[1]);
+    let o = if reach.is_finite() { [-d[1] * reach, d[0] * reach] } else { [0.0, 0.0] };
+    [[p[0] + o[0], p[1] + o[1]], [p[0] - o[0], p[1] - o[1]]]
+}
+
 /// The box (x0, y0, x1, y1) of the points; x0 > x1 of none.
 pub fn bounds<'a>(points: impl IntoIterator<Item = &'a [f64; 2]>) -> [f64; 4] {
     points.into_iter().fold([f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY], |b, &[x, y]| {

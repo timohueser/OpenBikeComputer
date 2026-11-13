@@ -1,8 +1,11 @@
 //! The census gate of a bake: the heights of the ways on the ground and of the rivers and streams
 //! against the terrain that the bake reads, which TrailView draws.
 
+use std::collections::HashSet;
+
 use serde_json::{json, Value};
 
+use crate::geometry::abreast;
 use crate::{Part, Terrain};
 
 /// Chosen by the owner: a way or water this far off the terrain shows as a wall or a gorge that is
@@ -21,6 +24,10 @@ pub struct Census {
     bins: Vec<u64>,
     over: u64,
     under: u64,
+    /// The positions of the vertices more than GATE_M off the terrain under their centre line, which the gate
+    /// does not count (a vertex that several ways share is one), and the largest such distance.
+    off_centre: HashSet<[u64; 2]>,
+    off_centre_max_m: f64,
     /// (offset, latitude and longitude, kind), the largest above and below.
     highest: Vec<(f64, [f64; 2], String)>,
     lowest: Vec<(f64, [f64; 2], String)>,
@@ -28,24 +35,58 @@ pub struct Census {
 
 impl Default for Census {
     fn default() -> Self {
-        Census { vertices: 0, bins: vec![0; BINS + 1], over: 0, under: 0, highest: Vec::new(), lowest: Vec::new() }
+        Census {
+            vertices: 0,
+            bins: vec![0; BINS + 1],
+            over: 0,
+            under: 0,
+            off_centre: HashSet::new(),
+            off_centre_max_m: 0.0,
+            highest: Vec::new(),
+            lowest: Vec::new(),
+        }
     }
 }
 
 impl Census {
-    /// Counts the vertices of `parts` with a height and a known terrain, but those that `skip` marks.
-    pub fn add(&mut self, kind: &str, parts: &[Part], terrain: &dyn Terrain, skip: &dyn Fn([f64; 2]) -> bool) {
+    /// Counts the vertices of `parts` with a height and a known terrain, but those that `skip` marks. The offset
+    /// of a vertex is how far it lies past the terrain across its way, at it and at ± `half` square to the way:
+    /// the band of the road solver.
+    pub fn add(
+        &mut self,
+        kind: &str,
+        parts: &[Part],
+        half: f64,
+        terrain: &dyn Terrain,
+        skip: &dyn Fn([f64; 2]) -> bool,
+    ) {
         for part in parts {
             let Some(z) = &part.z else { continue };
-            for ((&point, &z), ground) in part.points.iter().zip(z).zip(terrain.heights(&part.points)) {
-                let dz = z - ground;
-                if !dz.is_finite() || skip(point) {
+            let p = &part.points;
+            let edges: Vec<[f64; 2]> = (0..p.len())
+                .filter(|_| half > 0.0)
+                .flat_map(|j| abreast(p[j], [p[j.saturating_sub(1)], p[(j + 1).min(p.len() - 1)]], half))
+                .collect();
+            let sides = terrain.heights(&edges);
+            for (j, ((&point, &z), ground)) in p.iter().zip(z).zip(terrain.heights(p)).enumerate() {
+                if !(z - ground).is_finite() || skip(point) {
                     continue;
                 }
+                let [low, high] = sides
+                    .get(2 * j..2 * j + 2)
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|h| h.is_finite())
+                    .fold([ground, ground], |[low, high], &h| [low.min(h), high.max(h)]);
+                let dz = z - z.clamp(low, high);
                 self.vertices += 1;
                 self.bins[((dz.abs() / BIN_M) as usize).min(BINS)] += 1;
                 self.over += u64::from(dz > GATE_M);
                 self.under += u64::from(dz < -GATE_M);
+                if (z - ground).abs() > GATE_M {
+                    self.off_centre.insert(point.map(f64::to_bits));
+                }
+                self.off_centre_max_m = self.off_centre_max_m.max((z - ground).abs());
                 let at = crate::degrees(point);
                 keep(&mut self.highest, (dz, at, kind), |a, b| a > b);
                 keep(&mut self.lowest, (dz, at, kind), |a, b| a < b);
@@ -59,6 +100,11 @@ impl Census {
 
     pub fn under(&self) -> u64 {
         self.under
+    }
+
+    /// The positions more than GATE_M off the terrain under their centre line, and the largest distance.
+    pub fn off_centre(&self) -> (usize, f64) {
+        (self.off_centre.len(), self.off_centre_max_m)
     }
 
     /// The worst places past the gate above (`high`) or below the terrain, as text.
@@ -83,6 +129,7 @@ impl Census {
         json!({"vertices": self.vertices, "over_m": self.over, "under_m": self.under,
                "p50_m": percentile(50.0), "p90_m": percentile(90.0), "p99_m": percentile(99.0),
                "share_past_5m": (share(over_5) * 1e5).round() / 1e5,
+               "off_centre_past_gate": self.off_centre.len(), "off_centre_max_m": (self.off_centre_max_m * 10.0).round() / 10.0,
                "highest": self.places(true), "lowest": self.places(false)})
     }
 }
@@ -118,7 +165,8 @@ mod tests {
             plan: None,
         };
         let mut census = Census::default();
-        census.add("road", &[line(vec![500.5, 512.0, 499.0, f64::NAN, 470.0, 520.0])], &flat, &|p| p[0] > 0.530045);
+        census
+            .add("road", &[line(vec![500.5, 512.0, 499.0, f64::NAN, 470.0, 520.0])], 0.0, &flat, &|p| p[0] > 0.530045);
         assert_eq!((census.vertices, census.over(), census.under()), (4, 1, 1));
         assert!(census.places(true).ends_with("road +12.0 m"), "{}", census.places(true));
         assert!(census.places(false).ends_with("road -30.0 m"), "{}", census.places(false));

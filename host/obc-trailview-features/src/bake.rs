@@ -256,6 +256,13 @@ pub fn bake(
         );
         drop((road_features, around, beyond));
         eprintln!("roads: {:.1} s", started.elapsed().as_secs_f64());
+        let m = &solved.metrics;
+        eprintln!(
+            "roads: jobs at the round cap per scale {:?}, largest move of their last round {:?} m, unsettled variables {:?}",
+            m.capped,
+            m.capped_step_m.map(|v| round(v, 3)),
+            m.capped_left
+        );
         let mut road_metrics = road_metrics(&solved.metrics);
         road_metrics.insert("cut_features".into(), cut.len().into());
         let culverts: Vec<usize> = solved.culverts.iter().map(|&i| kept[i]).collect();
@@ -276,7 +283,7 @@ pub fn bake(
                 .map(|(p, k)| k.map_or_else(|| p.clone(), |(points, z)| Part { points, z: Some(z), ..p.clone() }))
                 .collect();
             if is_river(*e) && tags.get("bridge").is_none_or(|b| GROUND.contains(&b.as_str())) {
-                water_census.add(&kinds[*e].kind, &parts, terrain, &|_| false);
+                water_census.add(&kinds[*e].kind, &parts, 0.0, terrain, &|_| false);
             }
             placer.entry(&kinds[*e], tags.clone(), parts);
         }
@@ -357,7 +364,8 @@ pub fn bake(
                     *shallow.get_or_insert(0) += 1;
                 }
                 if entry.kind != "tunnel" && tags.get("bridge").is_none_or(|b| GROUND.contains(&b.as_str())) {
-                    ground_census.add(&entry.kind, &parts, terrain, &|p| on_deck.contains(&key(p)));
+                    let half = options.widths.way(&kinds[*e].kind, tags, false).half_m;
+                    ground_census.add(&entry.kind, &parts, half, terrain, &|p| on_deck.contains(&key(p)));
                 }
                 let mut all = tags.clone();
                 all.extend(extra.get(&n).cloned().unwrap_or_default());
@@ -408,6 +416,8 @@ pub fn bake(
         }
         eprintln!("sea: {:.1} s", started.elapsed().as_secs_f64());
     }
+    let (off, most) = ground_census.off_centre();
+    eprintln!("census: {off} positions of ways on the ground lie more than {GATE_M} m off the terrain under their centre line, at most {most:.1} m");
     metrics.insert("census".into(), json!({"ground": ground_census.metrics(), "water": water_census.metrics()}));
     low_zooms(&mut placer);
     let size = write(&placer, options, output)?;
@@ -683,7 +693,9 @@ fn round(value: f64, digits: i32) -> f64 {
 fn road_metrics(m: &roads::Metrics) -> Map<String, Value> {
     let value = json!({
         "ways": m.ways, "variables": m.variables, "known": m.known, "approaches": m.approaches, "fords": m.fords,
-        "culverts": m.culverts, "rounds": m.rounds, "held": m.held, "clearances": m.clearances,
+        "culverts": m.culverts, "rounds": m.rounds, "rounds_capped": m.capped,
+        "rounds_capped_step_m": m.capped_step_m.map(|v| round(v, 3)), "rounds_capped_unsettled": m.capped_left,
+        "held": m.held, "clearances": m.clearances,
         "clearances_low_cm": m.clearances_low_cm, "passes": m.passes, "passes_near_cm": m.passes_near_cm,
         "grade_excess_m": round(m.grade_excess_m, 4), "grade_excess_at": m.grade_excess_at.map(|v| round(v, 5)),
         "grade_excess_over_1cm": m.grade_excess_over_1cm, "grounded": m.grounded,

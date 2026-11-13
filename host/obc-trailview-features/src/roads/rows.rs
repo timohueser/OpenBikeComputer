@@ -139,8 +139,9 @@ pub(crate) fn approaches(net: &Network, classes: &Classes) -> (Pins<3>, Vec<bool
 /// keeps a bridge from sagging. Where the ends of member ways meet, a chain runs on through the two
 /// that continue most nearly straight, and the others are side tunnels. So a side tunnel or a shaft
 /// follows the tunnel that it joins and never lifts it: nothing but its ends gives a long tunnel its
-/// heights. A chain ends at each variable that `stops` marks.
-pub(crate) fn chains(net: &Network, members: &[bool], stops: &[bool]) -> Pins<3> {
+/// heights. A chain ends at each variable that `stops` marks. The rows, and the vertices of each piece of a
+/// chain between two of its ends or stops.
+pub(crate) fn chains(net: &Network, members: &[bool], stops: &[bool]) -> (Pins<3>, Vec<Vec<usize>>) {
     let chained: Vec<usize> = (0..members.len()).filter(|&w| members[w]).collect();
     let mut meetings: Vec<Vec<(usize, usize, [f64; 2])>> = Vec::new();
     let mut slot: HashMap<usize, usize> = HashMap::new();
@@ -176,7 +177,7 @@ pub(crate) fn chains(net: &Network, members: &[bool], stops: &[bool]) -> Pins<3>
         }
     }
     let mut seen = HashSet::new();
-    let mut pins = Pins::default();
+    let (mut pins, mut pieces) = (Pins::default(), Vec::new());
     for &start in &chained {
         if seen.contains(&start) {
             continue;
@@ -206,10 +207,11 @@ pub(crate) fn chains(net: &Network, members: &[bool], stops: &[bool]) -> Pins<3>
         let mut first = 0;
         for last in (1..chain.len()).filter(|&i| i + 1 == chain.len() || cut(i)) {
             straight(net, &chain[first..=last], &mut pins);
+            pieces.push(chain[first..=last].to_vec());
             first = last;
         }
     }
-    pins
+    (pins, pieces)
 }
 
 /// The rows of `chains` for one chain of vertices.
@@ -739,8 +741,26 @@ fn clearance(net: &Network, classes: &Classes, lower: usize) -> f64 {
     }
 }
 
-/// The variables where a bridge lands at a height that it cannot move: an end that meets no other way
-/// stands on the terrain, and one that leaves a junction as a side lies on its through road.
+/// Per variable, whether a bridge ends there on the terrain: an end that meets no other way, or one that meets
+/// a tunnel. A portal stands on the terrain: a tunnel is a long lever, which would carry a slope or a pass at
+/// its other end to a deck that nothing else holds.
+pub(crate) fn standing(net: &Network) -> Vec<bool> {
+    let mut tunnel = vec![false; net.count];
+    for s in (0..net.a.len()).filter(|&s| net.tunnel[net.segment_way[s]]) {
+        tunnel[net.a[s]] = true;
+        tunnel[net.b[s]] = true;
+    }
+    let mut out = vec![false; net.count];
+    for w in (0..net.free.len()).filter(|&w| net.free[w] && !net.tunnel[w]) {
+        for v in [net.vertex_var[net.way_first[w]], net.vertex_var[net.way_last[w]]] {
+            out[v] = !net.junction[v] || tunnel[v];
+        }
+    }
+    out
+}
+
+/// The variables where a bridge lands at a height that it cannot move: an end that stands on the terrain
+/// (`standing`), and one that leaves a junction as a side lies on its through road.
 pub(crate) fn landings(net: &Network) -> HashSet<usize> {
     let mut ends = HashSet::new();
     for w in (0..net.free.len()).filter(|&w| net.free[w] && !net.tunnel[w]) {
@@ -748,7 +768,8 @@ pub(crate) fn landings(net: &Network) -> HashSet<usize> {
         ends.insert(net.osm_first[w]);
         ends.insert(last);
     }
-    let loose = ends.iter().filter(|&&o| !net.junction[net.osm_var[o]]);
+    let standing = standing(net);
+    let loose = ends.iter().filter(|&&o| standing[net.osm_var[o]]);
     let sides = net.sides.occurrence.iter().filter(|o| ends.contains(o));
     loose.chain(sides).map(|&o| net.osm_var[o]).collect()
 }
