@@ -73,8 +73,7 @@ pub fn stats(cells: &BTreeMap<CellKey, Cell>, square: [f64; 4]) -> Value {
         }
     }
     let mut parts = [0u32; PARTS.len()];
-    let (mut closure_faults, mut paved, mut bytes, mut sheets, mut piers, mut left_out) =
-        (Vec::new(), Vec::new(), 0, 0, 0, 0);
+    let (mut closure_faults, mut paved, mut bytes, mut piers, mut left_out) = (Vec::new(), Vec::new(), 0, 0, 0);
     for c in cells.values() {
         for (k, n) in c.storeys.parts.iter().enumerate() {
             parts[k] += n;
@@ -82,7 +81,6 @@ pub fn stats(cells: &BTreeMap<CellKey, Cell>, square: [f64; 4]) -> Value {
         closure_faults.extend(closure(&c.storeys));
         paved.extend(on_paved(&c.storeys, &c.build.storeys, &c.build.records));
         bytes += if c.storeys.corners.is_empty() { 0 } else { c.storeys.to_bytes().len() };
-        sheets += c.storeys.stats.sheets;
         piers += c.storeys.stats.piers;
         left_out += c.storeys.stats.piers_left_out;
     }
@@ -90,7 +88,7 @@ pub fn stats(cells: &BTreeMap<CellKey, Cell>, square: [f64; 4]) -> Value {
         PARTS.iter().zip(v).map(|(n, k)| (n.to_string(), json!(k))).collect::<serde_json::Map<_, _>>()
     };
     json!({"triangles": by_part(parts), "in_square": {"triangles": by_part(near), "corners": near_corners.len()},
-        "sheets": sheets, "piers": piers, "piers_left_out": left_out, "storey_mesh_bytes": bytes,
+        "piers": piers, "piers_left_out": left_out, "storey_mesh_bytes": bytes,
         "closure_faults": closure_faults, "on_paved": paved})
 }
 

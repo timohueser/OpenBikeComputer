@@ -62,10 +62,18 @@ pub fn pages_from_terrarium(
     if size != 2 * PAGE || rgba.len() != 4 * size * size {
         return Err(format!("a terrain tile has {size} px and {} bytes, not {} px", rgba.len(), 2 * PAGE));
     }
-    Ok(std::array::from_fn(|q| {
+    let heights: Vec<f32> = (0..size * size).map(|p| terrarium(rgba, 4 * p).unwrap_or(f32::NAN)).collect();
+    Ok(pages_from_heights(&heights, z, x, y))
+}
+
+/// `pages_from_terrarium` of the tile's heights, row by row from north, NaN where unknown.
+pub fn pages_from_heights(heights: &[f32], z: u32, x: u32, y: u32) -> [Option<StoredPage>; 4] {
+    let size = 2 * PAGE;
+    std::array::from_fn(|q| {
         // A height is exact in f32: 15 bits of metres and 8 of fraction.
         let heights: Vec<Option<f32>> = (0..PAGE * PAGE)
-            .map(|t| terrarium(rgba, 4 * ((t / PAGE + (q >> 1) * PAGE) * size + t % PAGE + (q & 1) * PAGE)))
+            .map(|t| heights[(t / PAGE + (q >> 1) * PAGE) * size + t % PAGE + (q & 1) * PAGE])
+            .map(|h| (!h.is_nan()).then_some(h))
             .collect();
         let known = heights.iter().flatten();
         let min = known.clone().copied().reduce(f32::min)?;
@@ -77,7 +85,7 @@ pub fn pages_from_terrarium(
             .collect();
         let (dx, dy) = ((q & 1) as u32, (q >> 1) as u32);
         Some(StoredPage { level: (z + 1) as u8, x: 2 * x + dx, y: 2 * y + dy, offset: min, scale: scale as f32, codes })
-    }))
+    })
 }
 
 /// The stored pages of a cell.

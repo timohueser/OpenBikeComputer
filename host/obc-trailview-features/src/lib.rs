@@ -12,6 +12,7 @@ pub mod bake;
 mod gate;
 mod geometry;
 pub mod kinds;
+mod levels;
 mod lifts;
 mod osm;
 mod pmtiles;
@@ -56,6 +57,11 @@ pub trait Terrain: Sync {
 
     fn height(&self, point: [f64; 2]) -> f64 {
         self.heights(&[point])[0]
+    }
+
+    /// The heights of its 512 px tile z/x/y, row by row from north, NaN where unknown; None where it has no tile.
+    fn tile(&self, _z: u8, _x: u32, _y: u32) -> Option<std::sync::Arc<Vec<f32>>> {
+        None
     }
 }
 

@@ -1,13 +1,18 @@
 //! The decks of the storeys over the ground: the ways that storey k ≥ 1 holds, the stretch of each between its
-//! end lines (the DECK runs of `graph::levels`), and the stroke of a deck: its paved layers and the band about
-//! them (`edge_band_m`, `Surface::DeckEdge`).
-
-use std::collections::{BTreeMap, BTreeSet};
+//! end lines (the DECK runs that the tiles carry, `graph::level_tags`), and the stroke of a deck: its paved layers
+//! and the band about them (`edge_band_m`, `Surface::DeckEdge`).
 
 use super::geom::P;
 use super::stroke::unit;
 use super::{WayLine, LAYERS, SLOPE};
-use crate::graph::{CrossingKind, EndKind, Family, Level, State, Station, Step, WayGraph};
+use crate::graph::{level_tags, EndKind, Family, Level, State, Station, WayGraph};
+use crate::CellInput;
+
+/// The number of a tag of the feature of way w.
+fn tag(g: &WayGraph, input: &CellInput, w: u32, key: &str) -> Option<f64> {
+    let f = &input.features[g.parts[g.ways[w as usize].part as usize].feature.0 as usize];
+    f.tags.get(key).and_then(|t| t.parse().ok())
+}
 
 /// How a piece of a deck way ends.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -27,11 +32,12 @@ pub(crate) struct Piece {
     pub ends: [End; 2],
 }
 
-/// The decks of a graph after `graph::levels`.
+/// The decks of a graph after `graph::level_tags::read`.
 pub(crate) struct Decks {
     /// Per way: its storey, 0 for a way on no deck.
     pub storey: Vec<i8>,
-    pub pieces: BTreeMap<u32, Vec<Piece>>,
+    /// Per way: its pieces, none for a way on no deck.
+    pub pieces: Vec<Vec<Piece>>,
 }
 
 fn key(s: &Station) -> (u32, f64) {
@@ -39,10 +45,8 @@ fn key(s: &Station) -> (u32, f64) {
 }
 
 impl Decks {
-    /// A DECK run of a bridge way is a piece; a synthetic deck (no runs) is one piece end to end. A storey is the
-    /// storey of a deck group (`WayGraph::decks`, the deck ways that share a point): 1, and one more than each
-    /// group under it at a crossing whose ladder gives a deck (full or thin).
-    pub(crate) fn of(g: &WayGraph) -> Decks {
+    /// A DECK run of a bridge way is a piece; a synthetic deck (no runs) is one piece end to end.
+    pub(crate) fn of(g: &WayGraph, input: &CellInput) -> Decks {
         let deck_way = |w: u32| {
             let x = &g.ways[w as usize];
             x.level == Level::Deck && x.family != Family::Water
@@ -57,14 +61,14 @@ impl Decks {
                     && !arms.iter().any(|a| a.way != w && deck_way(a.way))
             })
         };
-        let mut pieces: BTreeMap<u32, Vec<Piece>> = BTreeMap::new();
+        let mut pieces: Vec<Vec<Piece>> = vec![Vec::new(); g.ways.len()];
         for r in g.levels.runs.iter().filter(|r| r.state == State::Deck && deck_way(r.way)) {
             let way = &g.ways[r.way as usize];
             let end = |st: &Station, dir: i8| {
                 let line = (g.levels.end_lines.iter())
                     .find(|l| l.way == r.way && key(&l.at) == key(st) && l.kind != EndKind::Portal);
-                // Past an A line inside the way, the way goes on as a ground way (its stub). `graph::levels` also
-                // gives A to the way's own end, where storey 0 goes on only through a ground way that meets it.
+                // Past an A line inside the way, the way goes on as a ground way (its stub). The levels also
+                // give A to the way's own end, where storey 0 goes on only through a ground way that meets it.
                 let way_end = if dir > 0 { &way.from } else { &way.to };
                 line.map_or(End::Way { open: ground_at(r.way, dir, st) }, |l| {
                     let at = [0, 1].map(|k| (f64::from(l.ends[0][k]) + f64::from(l.ends[1][k])) / 2.0);
@@ -73,45 +77,25 @@ impl Decks {
                 })
             };
             let ends = [end(&r.from, 1), end(&r.to, -1)];
-            pieces.entry(r.way).or_default().push(Piece { from: r.from, to: r.to, ends });
+            pieces[r.way as usize].push(Piece { from: r.from, to: r.to, ends });
         }
-        let tagged: BTreeSet<u32> = g.levels.runs.iter().map(|r| r.way).collect();
-        for w in (0..g.ways.len() as u32).filter(|&w| deck_way(w) && !tagged.contains(&w)) {
+        let mut tagged = vec![false; g.ways.len()];
+        for r in &g.levels.runs {
+            tagged[r.way as usize] = true;
+        }
+        for w in (0..g.ways.len() as u32).filter(|&w| deck_way(w) && !tagged[w as usize]) {
             let way = &g.ways[w as usize];
             let ends = [End::Way { open: ground_at(w, 1, &way.from) }, End::Way { open: ground_at(w, -1, &way.to) }];
-            pieces.insert(w, vec![Piece { from: way.from, to: way.to, ends }]);
+            pieces[w as usize].push(Piece { from: way.from, to: way.to, ends });
         }
-        let inside = |w: u32, st: &Station| {
-            pieces.get(&w).is_some_and(|ps| ps.iter().any(|p| key(&p.from) <= key(st) && key(st) <= key(&p.to)))
-        };
-        let over: Vec<(usize, usize)> = (g.crossings.iter())
-            .filter(|c| c.kind == CrossingKind::Deck)
-            .filter_map(|c| {
-                let l = c.ladder.as_ref().filter(|l| matches!(l.step, Step::Full | Step::Thin))?;
-                let (up, low) = (g.ways[l.upper as usize].deck?, g.ways[l.lower as usize].deck?);
-                (up != low && inside(l.upper, &c.over) && inside(l.lower, &c.under))
-                    .then_some((low as usize, up as usize))
-            })
-            .collect();
-        let mut group = vec![1i8; g.decks.len()];
-        // A chain of decks over decks is short; a loop (a spiral ramp) stops growing here.
-        for _ in 0..8 {
-            let mut changed = false;
-            for &(low, up) in &over {
-                if group[up] <= group[low] {
-                    group[up] = group[low] + 1;
-                    changed = true;
+        // A deck way's storey is its feature's, as the bake decides it (`level_tags::STOREY`); 1 by default.
+        let storey = (0..g.ways.len() as u32)
+            .map(|w| {
+                if pieces[w as usize].is_empty() {
+                    0
+                } else {
+                    tag(g, input, w, level_tags::STOREY).map_or(1, |s| s as i8)
                 }
-            }
-            if !changed {
-                break;
-            }
-        }
-        let storey = (0..g.ways.len())
-            .map(|w| match (pieces.contains_key(&(w as u32)), g.ways[w].deck) {
-                (true, Some(d)) => group[d as usize],
-                (true, None) => 1,
-                (false, _) => 0,
             })
             .collect();
         Decks { storey, pieces }
@@ -309,15 +293,12 @@ impl Storeys {
 }
 
 impl DeckWay {
-    pub(crate) fn of(g: &WayGraph, input: &crate::CellInput, rules: &super::Rules, w: u32) -> DeckWay {
+    pub(crate) fn of(g: &WayGraph, input: &CellInput, rules: &super::Rules, w: u32) -> DeckWay {
         let way = &g.ways[w as usize];
         let feature = &input.features[g.parts[way.part as usize].feature.0 as usize];
         let sec = rules.sections.way(&feature.kind, &feature.tags, false);
-        let thin = (g.crossings.iter())
-            .filter_map(|c| c.ladder.as_ref())
-            .filter(|l| l.upper == w && l.step == Step::Thin)
-            .map(|l| (l.room_m - l.least_m + sec.deck_least_m).max(sec.deck_least_m));
-        let depth_m = thin.fold(g.deck_depth(input, w, &sec), f64::min);
+        let depth = g.deck_depth(input, w, &sec);
+        let depth_m = tag(g, input, w, level_tags::SLAB).map_or(depth, |s| s.min(depth));
         let paved = sec.half_m + if sec.shoulder_paved { sec.shoulder_m } else { 0.0 };
         let width = 2.0 * (paved + rules.structures.edge_band_m);
         DeckWay {

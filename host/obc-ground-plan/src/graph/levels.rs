@@ -1,12 +1,13 @@
 //! The levels of bridges and tunnels, after `build`: per crossing the room between its two ways and
 //! its step of the ladder; per station of a tagged way its state; the end lines where a state changes.
-//! Nothing on the device calls it yet: the faces still read `Way::level` and `Way::deck`.
+//! The bake runs it on every cell and the tiles carry what it decides (`level_tags`); the device reads that.
 //!
 //! Every decision reads within the row of `Structures::reach`: a crossing's corners along each way up
 //! to `PLACE_M`; a station's tag end along its way up to `open_max_m`, an A line up to `A_MAX_M`; the
 //! bodies and strokes within `GRID_M` of a station.
 
 use super::curve::point;
+use super::level_tags::{end_line, kind_between};
 use super::parts::{classify, Rule};
 use super::points::{advance, between, exact, key, Piece};
 use super::{CrossingKind, Family, Fault, Level, Sample, Station, Way, WayGraph, PLACE_M};
@@ -236,6 +237,7 @@ fn segs_dist(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> f64 {
 struct Ctx<'a> {
     g: &'a WayGraph,
     input: &'a CellInput,
+    sections: &'a Sections,
     rules: Vec<Rule<'a>>,
     s: &'a Structures,
     origin: [f64; 2],
@@ -273,6 +275,7 @@ impl<'a> Ctx<'a> {
         Ctx {
             g,
             input,
+            sections,
             rules,
             s,
             origin,
@@ -888,11 +891,7 @@ fn runs(ctx: &Ctx, t: &Track, ended: &[(usize, u32)], out: &mut Levels) {
                     bisect(m0, m1, &|m| member(state_at(m)) != side)
                 }
             };
-            let kind = match (state, next) {
-                (State::Hidden, _) | (_, State::Hidden) => EndKind::Closed,
-                (State::Deck, _) | (_, State::Deck) => EndKind::A,
-                _ => EndKind::Portal,
-            };
+            let kind = kind_between(state, next);
             let st = ctx.at(w, m).st;
             out.end_lines.push(line_at(ctx, w, st, kind, state.min(next)));
             st
@@ -925,12 +924,7 @@ fn runs(ctx: &Ctx, t: &Track, ended: &[(usize, u32)], out: &mut Levels) {
 
 /// The end line of one way at a station: across the stroke of the structure side.
 fn line_at(ctx: &Ctx, w: u32, st: Station, kind: EndKind, structure: State) -> EndLine {
-    let a = ctx.at_station(st);
-    let band = if matches!(structure, State::Deck | State::Bore) { ctx.s.edge_band_m } else { 0.0 };
-    let h = (ctx.half(w, a.widen) + band) / ctx.mpu(a.p);
-    let n = [-a.tangent[1], a.tangent[0]];
-    let local = |p: [f64; 2]| [(libm::round(p[0]) - ctx.origin[0]) as i32, (libm::round(p[1]) - ctx.origin[1]) as i32];
-    EndLine { kind, way: w, at: st, ends: [local(add(a.p, n, h)), local(add(a.p, n, -h))] }
+    end_line(ctx.g, ctx.input, ctx.sections, ctx.s.edge_band_m, (w, st, kind, structure))
 }
 
 /// G7: the runs of a bridge or tunnel way cover it once, in order; OPEN lies within `open_max_m` of a

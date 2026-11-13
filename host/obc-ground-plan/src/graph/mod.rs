@@ -1,13 +1,15 @@
 //! The way graph of one cell: every way and waterway as its curve with samples at global parameters,
 //! split at the cell lines; the junctions with their hosts, the joints and the ends; snapped ends and
 //! their links; a level per way piece; and every crossing with its type. `levels` adds the step of the
-//! ladder of each crossing and the states and end lines of the bridge and tunnel ways.
+//! ladder of each crossing and the states and end lines of the bridge and tunnel ways; the bake runs it, and
+//! a cell reads what the tiles carry of it (`level_tags::read`).
 //!
 //! Every decision reads only data within its reach of the element it decides (the rows of
 //! `reach_rows`), so two cells give the same graph where both hold complete data.
 
 mod crossings;
 mod curve;
+pub mod level_tags;
 mod levels;
 mod parts;
 mod points;
