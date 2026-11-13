@@ -49,7 +49,7 @@ The bottom card ([`Rows.svelte`](../../builder/web/src/components/route/Rows.sve
 
 A rename calls `renameRoute`, which is the only write that changes the name of a stored route. "Send to device" and "Do not send" change the list `waiting` of the library with `changeState`, and the device sync sends the routes of that list. "Open in the planner" goes to `#/planner/ID`: the planner opens that plan and then replaces the address with `#/planner`, so Back returns to the page. `#/planner/new` opens a new plan in the same way.
 
-The Route page and the Routes page show the same state of a route on the device ([`state.ts`](../../builder/web/src/pages/routes/state.ts)): "Waits for the device" for a route in `waiting`; "On the device" for a route in `sent` on the card of the remembered device; "Changed since it was sent" when its `sentKey`, a hash of its name and its plan, differs from the sent key. Only then is "Send to device" off.
+The Route page and the Routes page show the same state of a route on the device ([`state.ts`](../../builder/web/src/pages/routes/state.ts)): "Waits for the device" for a route in `waiting`; "On the device" for a route in `sent` on the card of the remembered device; "Changed since it was sent" when its name or its trip differs from the sent ones (`sentKey`). "Send to device" is off only for a route that is on the device.
 
 The Route page and the Ride page share their frame ([`Detail.svelte`](../../builder/web/src/components/route/Detail.svelte)): the title row with rename, the left card, the picture ([`Picture.svelte`](../../builder/web/src/components/route/Picture.svelte)) and the Export menu. The button styles of the frame apply only inside it, so they do not reach the planner.
 

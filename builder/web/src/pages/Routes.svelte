@@ -275,7 +275,8 @@
         </div>
         <div class="map">
             {#await import('./routes/RoutesMap.svelte') then { default: RoutesMap }}
-                <RoutesMap {items} shown={mapShown} selected={ridden ? chosenRow?.rides.map(ride => ride.id) ?? [] : selected ? [selected] : []} {fit}
+                <!-- A route or a ride that the chips hide is not drawn as selected. -->
+                <RoutesMap {items} shown={mapShown} selected={ridden ? chosenRow?.rides.map(ride => ride.id) ?? [] : chosen ? [chosen.id] : []} {fit}
                     covered={chosen && cardHeight ? cardHeight + 12 : 0}
                     look={ridden ? 'ride' : 'route'} onselect={select} onview={next => view = next} />
             {:catch error}
