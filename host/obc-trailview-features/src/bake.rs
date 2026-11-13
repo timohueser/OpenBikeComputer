@@ -256,6 +256,12 @@ pub fn bake(
         );
         drop((road_features, around, beyond));
         eprintln!("roads: {:.1} s", started.elapsed().as_secs_f64());
+        let m = &solved.metrics;
+        eprintln!(
+            "roads: jobs at the round cap per scale {:?}, largest move of their last round {:?} m",
+            m.capped,
+            m.capped_step_m.map(|v| round(v, 3))
+        );
         let mut road_metrics = road_metrics(&solved.metrics);
         road_metrics.insert("cut_features".into(), cut.len().into());
         let culverts: Vec<usize> = solved.culverts.iter().map(|&i| kept[i]).collect();
@@ -337,7 +343,10 @@ pub fn bake(
                 let tunnel = entry.kind == "tunnel";
                 if tunnel {
                     let count = parts.len();
-                    parts.retain(|p| !p.z.as_ref().is_some_and(|z| structures::floating(&p.points, z, terrain)));
+                    parts.retain(|p| {
+                        std::env::var_os("OBC_X_KEEPFLOAT").is_some()
+                            || !p.z.as_ref().is_some_and(|z| structures::floating(&p.points, z, terrain))
+                    });
                     *floating.get_or_insert(0) += count - parts.len();
                     if parts.is_empty() {
                         continue;
@@ -684,7 +693,8 @@ fn round(value: f64, digits: i32) -> f64 {
 fn road_metrics(m: &roads::Metrics) -> Map<String, Value> {
     let value = json!({
         "ways": m.ways, "variables": m.variables, "known": m.known, "approaches": m.approaches, "fords": m.fords,
-        "culverts": m.culverts, "rounds": m.rounds, "held": m.held, "clearances": m.clearances,
+        "culverts": m.culverts, "rounds": m.rounds, "rounds_capped": m.capped,
+        "rounds_capped_step_m": m.capped_step_m.map(|v| round(v, 3)), "held": m.held, "clearances": m.clearances,
         "clearances_low_cm": m.clearances_low_cm, "passes": m.passes, "passes_near_cm": m.passes_near_cm,
         "grade_excess_m": round(m.grade_excess_m, 4), "grade_excess_at": m.grade_excess_at.map(|v| round(v, 5)),
         "grade_excess_over_1cm": m.grade_excess_over_1cm, "grounded": m.grounded,

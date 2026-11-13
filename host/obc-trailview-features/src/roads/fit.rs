@@ -255,10 +255,11 @@ fn past(x: f64, lo: f64, hi: f64) -> f64 {
 /// multiply the costs: soft costs find the limits that act in a few rounds, and each next scale starts from
 /// there. A round solves the quadratic model of the cost at z, in which each limit past its band pulls to the
 /// bound that it passed, and each piece of the network that the solve moves steps along it as far as its cost
-/// falls: the cost is convex with a continuous slope, so it falls in every round. The first round of a scale
-/// solves all of `moved`; the next ones only within `reach` in `graph` of the limits that changed side and of
-/// the pieces that did not take a full step. A full round that changes no side and moves no height by
-/// SETTLE_M ends the scale at its minimum. The rounds, and the refinements that did not converge.
+/// falls. With fixed bands the cost is convex with a continuous slope, so it falls in every round; a lower
+/// bound that follows other heights (`Limits::lo`) changes between rounds. The first round of a scale solves
+/// all of `moved`; the next ones only within `reach` in `graph` of the limits that changed side and of the
+/// pieces that did not take a full step. A scale ends where a Newton step of each variable alone, from the rows
+/// that hold it, would move none by SETTLE_M (`unsettled`), or after ROUNDS.
 pub(crate) fn settle(
     terms: &[Term],
     limits: &Limits,
@@ -266,8 +267,8 @@ pub(crate) fn settle(
     moved: &[usize],
     (graph, reach): (&Graph, f64),
     scales: &[f64],
-) -> (usize, usize) {
-    let (mut rounds, mut unconverged) = (0, 0);
+) -> Settled {
+    let (mut rounds, mut unconverged, mut capped) = (0, 0, Vec::new());
     let n = z.len();
     let mut inside = vec![false; n];
     moved.iter().for_each(|&v| inside[v] = true);
@@ -283,6 +284,7 @@ pub(crate) fn settle(
             (0..n).filter(|&v| inside[v] && distance[v].is_finite()).collect::<Vec<usize>>()
         };
         let mut region = region_of(unsettled(terms, limits, z, scale, moved));
+        let mut step: f64 = 0.0;
         for _ in 0..ROUNDS {
             if region.is_empty() {
                 break;
@@ -310,8 +312,10 @@ pub(crate) fn settle(
             unconverged += usize::from(!converged);
             let d: Vec<f64> = next.iter().zip(z.iter()).map(|(next, z)| next - z).collect();
             let (piece, alphas) = steps(terms, limits, scale, (z, &d), (&near, &x, &lo), (&held, &region));
+            step = 0.0;
             for &v in &region {
                 z[v] += alphas[piece[v]] * d[v];
+                step = step.max((alphas[piece[v]] * d[v]).abs());
             }
             rounds += 1;
             // The limits that changed side, by more than a tenth of SETTLE_M in or out, and the pieces that
@@ -343,8 +347,17 @@ pub(crate) fn settle(
             }
             region = region_of(sources);
         }
+        capped.push((!region.is_empty()).then_some(step));
     }
-    (rounds, unconverged)
+    Settled { rounds, unconverged, capped }
+}
+
+/// What `settle` did: its rounds, the refinements that did not converge, and per scale, where it ended after
+/// ROUNDS and not at its stop rule, the largest move of its last round.
+pub(crate) struct Settled {
+    pub rounds: usize,
+    pub unconverged: usize,
+    pub capped: Vec<Option<f64>>,
 }
 
 /// The variables of `moved` that a Newton step of each alone would move by SETTLE_M or more, for a fall of the
@@ -463,8 +476,7 @@ fn steps(
             if -slope(0.0) < SETTLE_M * SETTLE_M {
                 return 0.0;
             }
-            // A full step that falls by ARMIJO of its slope is taken whole: on the box it gives the same heights
-            // as the exact search in fewer rounds.
+            // A full step that falls by ARMIJO of its slope is taken whole: a step short of 1 makes more rounds.
             if slope(1.0) <= 0.0 || fall <= ARMIJO * slope(0.0) {
                 return 1.0;
             }

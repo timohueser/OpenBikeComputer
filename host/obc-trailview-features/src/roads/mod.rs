@@ -91,12 +91,16 @@ const PARALLEL_FREE_M: f64 = 100.0;
 /// tunnel the preference for level, so that one that meets a road at one end only is level from there.
 const FREE: f64 = 1e-4;
 const PIN: f64 = 1e8;
+/// The weight of a row that holds a tunnel on the straight line between the ends of its chain: under GROUND, so
+/// a portal stays on the terrain and a limit bends the line, but strong enough that a side tunnel that climbs to
+/// the hillside does not lift the line out of the mountain.
+const BORE: f64 = 1e3;
 const LEVEL: f64 = 1e-3;
 /// The cost of a limit per square metre past its band: GROUND for the ground of a sample, LIMIT for a
 /// grade, a deck, a cover and a pass, and HARD for a sample HARD_M off the terrain. So the ground gives way
-/// to the other limits, but not past HARD_M: the census gate (`gate::GATE_M`) less room for the curve
-/// between the samples. A factor of 100 between the tiers lets each win over the one below and keeps the
-/// Newton rounds few; stiffer factors need many more rounds.
+/// to the other limits, and past HARD_M only to a pin, which costs as much: HARD_M is the census gate
+/// (`gate::GATE_M`) less room for the curve between the samples. A factor of 100 between the tiers lets each
+/// win over the one below.
 const GROUND: f64 = 1e4;
 const LIMIT: f64 = 1e6;
 const HARD: f64 = 1e8;
@@ -107,9 +111,9 @@ const SCALES: [f64; 2] = [1e-2, 1.0];
 /// GMRES refines each solve to REFINE_M, in at most REFINE_STEPS steps.
 const REFINE_M: f64 = 1e-6;
 const REFINE_STEPS: usize = 30;
-/// The Newton rounds of a scale end when no vertex of the network would move by SETTLE_M, or after ROUNDS. The
-/// rounds after the first solve only the network within REGION_M of the limits that changed side, and the
-/// bridges and tunnels that it meets: the terrain anchors the rest.
+/// The Newton rounds of a scale end when a Newton step of each vertex alone would move none by SETTLE_M, or
+/// after ROUNDS (`Metrics::capped`). The rounds after the first solve only the network within REGION_M of the
+/// limits that changed side, and the bridges and tunnels that it meets: the terrain anchors the rest.
 const ROUNDS: usize = 40;
 const SETTLE_M: f64 = 1e-2;
 const REGION_M: f64 = 300.0;
@@ -236,6 +240,10 @@ pub struct Metrics {
     pub fords: usize,
     pub culverts: usize,
     pub rounds: usize,
+    /// Per scale of SCALES, the jobs whose Newton rounds ended at ROUNDS, not at their stop rule, and the
+    /// largest move of their last round.
+    pub capped: [usize; SCALES.len()],
+    pub capped_step_m: [f64; SCALES.len()],
     pub held: usize,
     pub clearances: usize,
     pub clearances_low_cm: usize,
@@ -265,8 +273,8 @@ pub struct Metrics {
 }
 
 impl Metrics {
-    /// The metrics of two jobs: the counts add up; `rounds`, `residual_p99_m` and `cover_lift_top_m` are
-    /// the largest, and so is the grade excess, with its place.
+    /// The metrics of two jobs: the counts add up; `rounds`, `capped_step_m`, `residual_p99_m` and
+    /// `cover_lift_top_m` are the largest, and so is the grade excess, with its place.
     pub fn add(&mut self, other: &Metrics) {
         let sums = [
             (&mut self.ways, other.ways),
@@ -295,6 +303,10 @@ impl Metrics {
         }
         self.sidewalks.add(&other.sidewalks);
         self.rounds = self.rounds.max(other.rounds);
+        for k in 0..SCALES.len() {
+            self.capped[k] += other.capped[k];
+            self.capped_step_m[k] = self.capped_step_m[k].max(other.capped_step_m[k]);
+        }
         self.residual_p99_m = self.residual_p99_m.max(other.residual_p99_m);
         self.cover_lift_top_m = self.cover_lift_top_m.max(other.cover_lift_top_m);
         if (other.grade_excess_m, other.grade_excess_at) > (self.grade_excess_m, self.grade_excess_at) {
@@ -375,14 +387,9 @@ pub fn solve(
         seg.push(end - 1);
         t.push(1.0);
     }
-    // A bridge or a tunnel sees no terrain, unless nothing that it meets does. A bridge's end that
-    // meets no other way stands on the terrain: else the smoothness carries any rise of its deck on up.
-    let mut loose = vec![false; n];
-    for w in (0..net.free.len()).filter(|&w| net.free[w] && !net.tunnel[w]) {
-        for v in [net.way_first[w], net.way_last[w]] {
-            loose[net.vertex_var[v]] = !net.junction[net.vertex_var[v]];
-        }
-    }
+    // A bridge or a tunnel sees no terrain, unless nothing that it meets does. A bridge's end that stands
+    // on the terrain (`rows::standing`) sees it: else the smoothness carries any rise of its deck on up.
+    let loose = rows::standing(&net);
     let at_end = |i: usize| if t[i] == 0.0 { a[seg[i]] } else { b[seg[i]] };
     let mut weight: Vec<f64> = (0..seg.len())
         .map(|i| {
@@ -515,13 +522,14 @@ pub fn solve(
         pass_first.push(upper.0[0]);
     }
     let mut p_rows = Rows::default();
-    let (mut values, mut counted) = (Vec::new(), Vec::new());
-    for pins in [&approach, &fords, &bores, &beside] {
+    let (mut values, mut counted, mut p_w) = (Vec::new(), Vec::new(), Vec::new());
+    for (k, pins) in [&approach, &fords, &bores, &beside].into_iter().enumerate() {
         let mut count = 0;
         for i in 0..pins.values.len() {
             if all_known(&pins.variables[i]) {
                 p_rows.push(pins.variables[i].into_iter().zip(pins.coefficients[i]));
                 values.push(pins.values[i]);
+                p_w.push(if k == 2 { BORE } else { PIN });
                 count += usize::from(var_mine[pins.variables[i][0]]);
             }
         }
@@ -668,8 +676,7 @@ pub fn solve(
     }
     let zeros = vec![0.0; unknown.len()];
     // The rows (A, w, c) of the least squares Σ w·(A·z − c)² that every solve holds.
-    let fixed =
-        [level(d2, lam), level(level_rows, level_w), held_at(p_rows, PIN, values), held_at(unknown, 1.0, zeros)];
+    let fixed = [level(d2, lam), level(level_rows, level_w), (p_rows, p_w, values), held_at(unknown, 1.0, zeros)];
     let samples = Block::Samples { seg: &seg, t: &t, a, b };
     // The first solve, without limits, gives the Huber weights, the culverts and the covers.
     let (mut z, converged) = fit(&terms(&fixed, samples, (&weight, &h)), n, None);
@@ -708,8 +715,9 @@ pub fn solve(
     let edges: Vec<(usize, usize, f64)> =
         (0..a.len()).map(|s| (a[s], b[s], if free[s] { 1e-6 } else { length[s].max(0.01) })).collect();
     let graph = (&Graph::new(n, &edges), REGION_M);
-    let (mut rounds, more) = settle(&terms, &limit(&rest), &mut z, &all, graph, &SCALES);
-    unconverged += more;
+    let solved_rest = settle(&terms, &limit(&rest), &mut z, &all, graph, &SCALES);
+    let (mut rounds, mut at_cap) = (solved_rest.rounds, solved_rest.capped);
+    unconverged += solved_rest.unconverged;
     // The ramps, with every vertex fixed but those of the ramps' sides past their approach and before any
     // junction: a ramp bends its side and never moves the road it leaves.
     let mut ramp_region: Vec<usize> = (0..limited.len())
@@ -720,8 +728,12 @@ pub fn solve(
     ramp_region.sort_unstable();
     ramp_region.dedup();
     if !ramp_region.is_empty() {
-        let (more_rounds, more) = settle(&terms, &limit(&cost), &mut z, &ramp_region, graph, &[1.0]);
-        (rounds, unconverged) = (rounds + more_rounds, unconverged + more);
+        let ramps = settle(&terms, &limit(&cost), &mut z, &ramp_region, graph, &[1.0]);
+        (rounds, unconverged) = (rounds + ramps.rounds, unconverged + ramps.unconverged);
+        // The ramps run at the last scale.
+        if let Some(step) = ramps.capped[0] {
+            at_cap[SCALES.len() - 1] = Some(at_cap[SCALES.len() - 1].unwrap_or(0.0).max(step));
+        }
     }
     // Per limit, whether it acts at the end: past its band.
     let (gz, low) = (limits.times(&z), lows(&z));
@@ -779,6 +791,8 @@ pub fn solve(
         fords: counted[1],
         culverts: solved.culverts.len(),
         rounds,
+        capped: std::array::from_fn(|k| usize::from(at_cap[k].is_some())),
+        capped_step_m: std::array::from_fn(|k| at_cap[k].unwrap_or(0.0)),
         held: count(&mut (0..limited.len()).map(|i| held[i] && segment_mine[limited[i]])),
         grounded: count(
             &mut (limited.len()..hard).map(|i| held[i] && segment_mine[seg[ground_samples[i - limited.len()]]]),

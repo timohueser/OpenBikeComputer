@@ -153,10 +153,11 @@ The road solver:
 - holds each vertex of a way on the ground within 5 m of the terrain across the way at each sample:
   of the range from the lowest to the highest terrain at the sample and at ± the half-width of the
   way, square to it. On a slope the terrain under the centre line is not the bed of the road. Past
-  5 m the bound gives way to the other limits, and past 8 m to none, so a segment can pass the grade
-  of its class there. A sample of a segment that ends where a bridge runs through has no bound: steps
-  or a ramp that meet a deck there take its height. The end of a bridge that meets no way stands on
-  the terrain the same way,
+  5 m the bound gives way to the other limits, and past 8 m only to the pins of the approaches, the
+  fords and the ways side by side, which cost as much, so a segment can pass the grade of its class
+  there. A sample of a segment that ends where a bridge runs through has no bound: steps or a ramp
+  that meet a deck there take its height. The end of a bridge that meets no way or a tunnel (a
+  portal) stands on the terrain the same way,
 - holds each segment within the grade of its class on the line of OSM, but not the approach of a
   side road where the through roads give it its heights: on the surface of the through road, or on
   a link that is a side road at both of its junctions, past any junction where it runs through. So
@@ -176,9 +177,10 @@ The road solver:
   where its carriageway overlaps that of another road or path, so that the two have one surface. A way follows only a way after it in the bake's
   order. A vertex keeps its own height where the terrain under the two ways differs by more than
   0.5 m, there or within 100 m along its way: a ramp or a flyover,
-- ignores the terrain under a bridge and in a tunnel: these run between their ends. A tunnel runs in
+- ignores the terrain under a bridge and in a tunnel: these run between their ends. A tunnel keeps to
   a straight line between the two ends of its chain of tunnel ways that meet end to end, so a side
-  tunnel or a shaft that joins it follows it and does not lift it. A way on the ground that meets a
+  tunnel or a shaft that joins it follows it and does not lift it. The line weighs less than the
+  ground: the ground at a portal and the limits along the tunnel bend it. A way on the ground that meets a
   tunnel ends its chain there: a portal, on the ground. A tunnel chain with an end that
   meets no way runs level from its other end, or on the grade of the road that runs on into it
   there. A bridge never sags under the straight line between the two ends of its chain of bridge
@@ -189,8 +191,8 @@ The road solver:
   the room. A bridge whose end lies on the road that it crosses, within that road's outer
   half-width, meets it there and does not rise,
 - lets a bridge rise from where it lands at a height that it cannot move no more steeply than 1:1:
-  an end that meets no other way stands on the terrain, and an end that leaves a junction as a side
-  lies on the through road. A crossing that asks more lies where the bridge lands and does not raise
+  an end that meets no other way or a tunnel stands on the terrain, and an end that leaves a junction
+  as a side lies on the through road. A crossing that asks more lies where the bridge lands and does not raise
   it,
 - sinks a tunnel where a road, a path or a track crosses over it without meeting it: the tunnel's
   road lies at least its bore and 1 m under that road's middle and both its edges, each on the

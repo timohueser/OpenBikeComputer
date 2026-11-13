@@ -675,9 +675,10 @@ fn a_long_tunnel_runs_straight_between_its_portals_and_a_shaft_does_not_lift_it(
             way.points.iter().zip(&way.z).map(|(&p, &z)| (place.east_north(p).0, z)).collect::<Vec<_>>()
         })
         .collect();
+    // The straight line weighs less than the ground (`BORE`): the shaft moves it by a centimetre or two.
     let (first, last) = (vertices[0].1, vertices[vertices.len() - 1].1);
     for &(e, z) in &vertices {
-        assert!((z - interp(e, &[-3000.0, 3000.0], &[first, last])).abs() < 0.01);
+        assert!((z - interp(e, &[-3000.0, 3000.0], &[first, last])).abs() < 0.02);
     }
     assert!(vertices.iter().all(|&(_, z)| z < 1001.0));
 }
@@ -738,6 +739,32 @@ fn a_road_over_a_tunnel_by_its_portal_does_not_lever_its_far_portal_off_the_terr
 }
 
 #[test]
+fn a_bridge_that_meets_a_tunnel_stands_on_the_terrain_at_the_portal() {
+    // As above, but the upper portal opens onto a bridge: the portal stands on the terrain, and the tunnel's line
+    // does not lever the deck.
+    let place = bridges();
+    let height = |e: f64| {
+        let inside = (e.clamp(-1000.0, 1000.0) + 1000.0) / 2000.0;
+        500.0 + 400.0 * inside + 100.0 * (std::f64::consts::PI * inside).sin()
+    };
+    let terrain = place.terrain(move |e, _| height(e));
+    let line = |corners: &[(f64, f64)]| place.line(corners, None);
+    let features = [
+        way("primary", line(&[(-1200.0, 0.0), (-1000.0, 0.0)]), plain),
+        way("primary", line(&[(-1000.0, 0.0), (1000.0, 0.0)]), tunnel),
+        way("primary", line(&[(1000.0, 0.0), (1100.0, 0.0)]), bridge),
+        way("primary", line(&[(1100.0, 0.0), (1300.0, 0.0)]), plain),
+        way("unclassified", line(&[(-980.0, -100.0), (-980.0, 100.0)]), plain),
+    ];
+    let solved = run(&features, &terrain, &[]);
+    let deck = solved.ways[2][0].as_ref().unwrap();
+    assert!((deck.z[0] - height(1000.0)).abs() <= GROUND_M + KEEP_M, "{}", deck.z[0]);
+    for f in [0, 3, 4] {
+        assert!(on_the_ground(&place, &solved.ways[f][0], &terrain), "way {f}");
+    }
+}
+
+#[test]
 fn a_path_that_meets_a_tunnel_inside_the_mountain_is_a_portal_and_stays_on_the_ground() {
     let place = bridges();
     let terrain = place.terrain(|e, _| if e.abs() < 995.0 { 700.0 } else { 500.0 });
@@ -750,10 +777,11 @@ fn a_path_that_meets_a_tunnel_inside_the_mountain_is_a_portal_and_stays_on_the_g
     ];
     let solved = run(&features, &terrain, &[]);
     assert!(on_the_ground(&place, &solved.ways[3][0], &terrain));
-    // The tunnel runs straight from each portal to the path.
+    // The tunnel runs straight from each portal to the path, but for the smoothness of its class, which rounds
+    // the kink at the path: the straight line weighs less (`BORE`).
     let (along, z) = place.profile(&solved.ways[1][0]);
     let (low, top) = (interp(0.0, &along, &z), interp(1000.0, &along, &z));
-    assert!((interp(500.0, &along, &z) - (low + top) / 2.0).abs() < 0.05);
+    assert!((interp(500.0, &along, &z) - (low + top) / 2.0).abs() < 0.5);
 }
 
 #[test]
