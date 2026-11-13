@@ -2,17 +2,18 @@
     import Card from '../../lib/ui/Card.svelte';
     import Lanes from './Lanes.svelte';
     import Plot from './Plot.svelte';
+    import RideLarge from './RideLarge.svelte';
     import { distanceTicks, fitTicks } from './ticks';
     import { townOf } from './towns';
     import type { FitSample } from '../../lib/core/fit';
-    import { distanceAxis, range, sampleAt, smooth, speeds, thin } from '../../lib/ride/lines';
-    import type { Channels, RideClimb } from '../../lib/ride/numbers';
+    import { distanceAxis, extent, range, sampleAt, smooth, speeds, thin } from '../../lib/ride/lines';
+    import type { Channels, PartNumbers, RideClimb } from '../../lib/ride/numbers';
     import { formatAlong, formatDistance, formatHeight, formatSpeed } from '../../lib/settings/format';
 
     /** The bottom card of the Ride page: one row for each line of the ride on its distance axis, with the average of the
      * line under its name and its scale after the row. A line with no value has no row. A drag selects a part; a click
-     * on a climb in the elevation row selects the climb. */
-    let { samples, shares, speed, channels, climbs = [], mark, onpoint, part, onpart }: {
+     * on a climb in the elevation row selects the climb. A click on the label of a row opens its line large in a window. */
+    let { samples, shares, speed, channels, climbs = [], mark, onpoint, part, onpart, partFacts }: {
         samples: FitSample[];
         /** The share of the summary line at each sample (`lineShares`). */
         shares: number[];
@@ -26,6 +27,8 @@
         /** The selected part, from its first to its last sample. */
         part: [number, number] | null;
         onpart: (part: [number, number] | null) => void;
+        /** The numbers of the selected part, which the large line shows. */
+        partFacts?: PartNumbers;
     } = $props();
 
     type Key = 'elevation' | 'speed' | 'hr' | 'power' | 'cadence';
@@ -35,11 +38,12 @@
     const SMOOTH_S = 10, ROW_PX = 56, LOW_ROW_PX = 36, CARDS_PX = 340, PAGE_PX = 176, FRAME_PX = 92, GAP_PX = 8;
 
     const whole = (unit: string) => (value: number) => `${Math.round(value)} ${unit}`;
-    const series: Record<Key, { label: string; color: string; format: (value: number) => string }> = {
+    /** `unit` and `limit` are of a line with zones (`ZoneTimes`). */
+    const series: Record<Key, { label: string; color: string; format: (value: number) => string; unit?: string; limit?: string }> = {
         elevation: { label: 'Elevation', color: 'var(--ink-faint)', format: formatHeight },
         speed: { label: 'Speed', color: 'var(--speed)', format: formatSpeed },
-        hr: { label: 'Heart rate', color: 'var(--heart-rate)', format: whole('bpm') },
-        power: { label: 'Power', color: 'var(--water)', format: whole('W') },
+        hr: { label: 'Heart rate', color: 'var(--heart-rate)', format: whole('bpm'), unit: 'bpm', limit: 'maximum heart rate' },
+        power: { label: 'Power', color: 'var(--water)', format: whole('W'), unit: 'W', limit: 'threshold power' },
         cadence: { label: 'Cadence', color: 'var(--cadence)', format: whole('rpm') },
     };
     const keys = Object.keys(series) as Key[];
@@ -47,6 +51,8 @@
     let on = $state<Record<Key, boolean>>({ elevation: true, speed: true, hr: true, power: true, cadence: false });
     let width = $state(0), innerHeight = $state(900), start = $state('Start');
     let over = $state<{ x: number; row?: number | null } | null>(null);
+    /** The line that shows large. */
+    let large = $state<Key | null>(null);
 
     const axis = $derived(distanceAxis(samples));
     const values = $derived<Record<Key, (number | undefined)[]>>({
@@ -86,7 +92,26 @@
     const rows = $derived(shown.map(key => ({
         label: series[key].label, note: averages[key], color: series[key].color, draw: rowSnippets[key], height: rowHeight,
         scale: ranges[key] && [series[key].format(ranges[key].high), series[key].format(ranges[key].low)] as [string, string],
+        open: { label: `${series[key].label}, open large`, run: () => { large = key; } },
     })));
+
+    /** The sensor of the large line and the numbers under it: of the selected part, else of the whole ride. */
+    const shownLarge = $derived.by(() => {
+        if (!large) return undefined;
+        const key = large, { format } = series[key], selected = part && partFacts;
+        const whole = key === 'hr' || key === 'power' || key === 'cadence' ? channels?.[key] : undefined;
+        const sensor = whole && selected ? partFacts.channels[key as keyof Channels] : whole;
+        // The smallest and largest value of the line as it is drawn, not the range of the row, which is wider for a flat
+        // line. For the speed it is the largest mean over SMOOTH_S, as the scale of its row.
+        const found = extent(selected ? values[key].slice(part[0], part[1] + 1) : values[key]);
+        const text = (value?: number) => value === undefined ? '–' : format(value);
+        const numbers = key === 'elevation' ? [{ label: 'Lowest', value: text(found?.low) }, { label: 'Highest', value: text(found?.high) }]
+            : key === 'speed' ? [{ label: 'Average', value: text(selected ? partFacts.speed : speed) }, { label: 'Highest', value: text(found?.high) }]
+                : [{ label: 'Average', value: text(sensor?.mean) }, { label: 'Highest', value: text(sensor?.max) }];
+        // The zones of the line are those of the whole ride, also when the part has no value of the sensor. A sensor
+        // with no limit keeps its link to the Settings then.
+        return { key, times: sensor ?? (whole?.zones ? undefined : whole), numbers, zones: whole?.zones?.map(({ zone }) => zone) };
+    });
 
     /** The climb at a place of the elevation row, or of the keys, which have no row. */
     const climbAt = (x: number, row?: number | null) =>
@@ -131,6 +156,13 @@
         {/each}
     </div>
 {/snippet}
+
+{#if shownLarge}
+    {@const { key, times, numbers, zones } = shownLarge}
+    <RideLarge title={series[key].label} color={series[key].color} format={series[key].format} xs={axis.xs} lengthM={axis.lengthM} values={values[key]}
+        {zones} times={series[key].limit ? times : undefined} unit={series[key].unit} missing={series[key].limit} grades={key === 'elevation'}
+        part={shownPart} {partText} {numbers} {start} onClose={() => large = null} />
+{/if}
 
 <div class="lines" style:cursor={hovered >= 0 ? 'pointer' : undefined}>
     <Card>

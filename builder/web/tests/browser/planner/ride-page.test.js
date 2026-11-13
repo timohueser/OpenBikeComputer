@@ -61,6 +61,13 @@ test('the ride page shows a stored ride with its numbers and zones, renames, exp
   await expect(facts.locator('.sensor').filter({ hasText: 'Cadence' })).toContainText('85');
   await expect(facts.getByText('Set your maximum heart rate in Settings to see zones.')).toBeVisible();
   await expect(facts.getByText('Set your threshold power in Settings to see zones.')).toBeVisible();
+  // With no limit, the large line has no zones: it shows the same link.
+  await page.getByRole('button', { name: 'Power, open large' }).click();
+  const large = page.getByRole('dialog', { name: 'Power' });
+  await expect(large.getByText('Set your threshold power in Settings to see zones.')).toBeVisible();
+  await expect(large.getByText('Time in each zone')).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(large).toHaveCount(0);
   await expect(facts.locator('.climbs li')).toHaveCount(1);
 
   // With no values in the ride, the zones use the settings.
@@ -154,6 +161,25 @@ test('the lines of a ride: a row for each line with values, the pointer, and a p
   await expect(lanes.locator('.chip')).toHaveText('2.5 km');
   await expect(lanes.locator('.lane').nth(2)).toHaveText('140 bpm');
 
+  // The label of a row opens its line large in a window: the name of each zone that the line reaches, the time in each
+  // zone and two numbers. Escape closes the window, and the focus is back on the label.
+  const label = page.getByRole('button', { name: 'Heart rate, open large' }), large = page.getByRole('dialog', { name: 'Heart rate' });
+  await label.click();
+  await expect(large.getByText('Z4 from 148 bpm')).toBeVisible();
+  await expect(large.getByRole('heading', { name: 'Time in each zone' })).toBeVisible();
+  await expect(large.locator('li')).toHaveText(['Z50h 0m', 'Z40h 17m', 'Z30h 17m', 'Z20h 0m', 'Z10h 0m']);
+  await expect(large.locator('dl > div')).toHaveText(['Average150 bpm', 'Highest160 bpm']);
+  await page.keyboard.press('Escape');
+  await expect(large).toHaveCount(0);
+  await expect(label).toBeFocused();
+  // A line with no zones has no list.
+  await page.getByRole('button', { name: 'Speed, open large' }).click();
+  const speed = page.getByRole('dialog', { name: 'Speed' });
+  await expect(speed.locator('dl > div').first()).toHaveText('Average18.0 km/h');
+  await expect(speed.getByText('Time in each zone')).toHaveCount(0);
+  await speed.getByRole('button', { name: 'Close' }).click();
+  await expect(speed).toHaveCount(0);
+
   // A drag over the second half selects the climb: the header shows its distance, the left card its numbers beside
   // those of the whole ride, and the map marks it.
   await page.mouse.move(box.x + box.width * 0.5, y);
@@ -170,6 +196,16 @@ test('the lines of a ride: a row for each line with values, the pointer, and a p
   // The zones are those of the part: all of it is in Z4.
   await expect(facts.getByRole('img', { name: /Z3 · 130–147 bpm · 0h 0m, Z4 · 148–166 bpm · 0h 17m/ })).toBeVisible();
   await expect(facts.locator('.climbs')).toHaveCount(0);
+  // The large line shows the part: its range, its numbers and its zone times. Escape closes the window and keeps the part.
+  await label.click();
+  await expect(large.getByText('km 5.0 to km 10.0 · 5.0 km')).toBeVisible();
+  await expect(large.locator('li')).toHaveText(['Z50h 0m', 'Z40h 17m', 'Z30h 0m', 'Z20h 0m', 'Z10h 0m']);
+  await expect(large.locator('dl > div')).toHaveText(['Average160 bpm', 'Highest160 bpm']);
+  // A click on the line takes the focus out of the window: Escape still closes only the window.
+  await large.locator('.lane').click();
+  await page.keyboard.press('Escape');
+  await expect(large).toHaveCount(0);
+  await expect(page.locator('.lines .part')).toHaveCount(1);
   await page.keyboard.press('Escape');
   await expect(page.locator('.lines .part')).toHaveCount(0);
   await expect(facts.locator('dl > div').filter({ hasText: 'Distance' })).toContainText('10.0 km');

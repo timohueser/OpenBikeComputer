@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { FitSample } from '../core/fit';
 import { rideSummary, lineCoordinates } from '../library/summary';
-import { distanceAxis, lineShares, range, sampleAt, smooth, speeds, thin } from './lines';
+import { heartRateZones } from '../settings/zones';
+import { distanceAxis, extent, lineShares, range, sampleAt, smooth, speeds, thin, zoneStretches } from './lines';
 
 const T = 1_792_828_800;
 /** Microdegrees of latitude for about 50 m. */
@@ -35,8 +36,25 @@ describe('thin', () => {
         expect(range(columns)!.low).toBe(10);
         // A ride with few points: the columns between two samples join them; a sample with no value keeps its gap.
         expect(thin([0, .5, .75, .99], [10, 30, undefined, 50], 8)).toEqual([10, 15, 20, 25, 30, null, null, 50]);
+        // A flat line draws in a range of 1; its smallest and its largest value are the same.
         expect(range([null, 7, null])).toEqual({ low: 7, high: 8 });
+        expect(extent([null, 7, undefined, 7])).toEqual({ low: 7, high: 7 });
+        expect(extent([3, undefined, 9, 5])).toEqual({ low: 3, high: 9 });
         expect(range([null])).toBeUndefined();
+        expect(extent([undefined, null])).toBeUndefined();
+    });
+});
+
+describe('zoneStretches', () => {
+    it('splits a line where the zone changes and where a value is missing, with a smoothed value under an edge in the lower zone', () => {
+        // Zones of a maximum of 200: Z2 from 120, Z3 from 140, Z4 from 160.
+        const zones = heartRateZones(200);
+        expect(zoneStretches([100, 119.9, 120, 139, null, 139.5, 140, 165, 150, null, null, 190], zones)).toEqual([
+            { zone: 0, from: 0, to: 1 }, { zone: 1, from: 2, to: 3 },
+            { zone: 1, from: 5, to: 5 }, { zone: 2, from: 6, to: 6 }, { zone: 3, from: 7, to: 7 }, { zone: 2, from: 8, to: 8 },
+            { zone: 4, from: 11, to: 11 },
+        ]);
+        expect(zoneStretches([null, null], zones)).toEqual([]);
     });
 });
 

@@ -5,10 +5,12 @@
     /**
      * `children` gets `close`, which closes the dialog as Esc and the close button do: the focus goes back.
      * A `large` window is a page over the page: a click on the dimmed page closes it, and on a phone it fills the screen.
+     * A `wide` window is a large window for a content that needs the width, such as a line over a distance.
      */
-    let { title, large = false, onClose, children }: {
-        title: string; large?: boolean; onClose: () => void; children: Snippet<[() => void]>;
+    let { title, large = false, wide = false, onClose, children }: {
+        title: string; large?: boolean; wide?: boolean; onClose: () => void; children: Snippet<[() => void]>;
     } = $props();
+    const page = $derived(large || wide);
     let dialog: HTMLDialogElement;
     const heading = $props.id();
     onMount(() => {
@@ -33,8 +35,8 @@
 </script>
 
 <!-- Esc closes a modal dialog by itself, and each way of closing ends in `onclose`. -->
-<dialog bind:this={dialog} class:large aria-labelledby={heading} onclose={onClose} onpointerdown={large ? event => pressedOutside = outside(event) : undefined}
-    onclick={large ? event => { if (pressedOutside && outside(event)) close(); } : undefined}>
+<dialog bind:this={dialog} class:large={page} class:wide aria-labelledby={heading} onclose={onClose} onpointerdown={page ? event => pressedOutside = outside(event) : undefined}
+    onclick={page ? event => { if (pressedOutside && outside(event)) close(); } : undefined}>
     <header>
         <h2 id={heading}>{title}</h2>
         <button type="button" class="close" aria-label="Close" onclick={close}><Icon name="close" /></button>
@@ -58,6 +60,9 @@
         overscroll-behavior: contain;
         width: min(640px, calc(100vw - 48px));
         max-height: calc(100dvh - 48px);
+    }
+    .wide {
+        width: min(1000px, calc(100vw - 48px));
     }
     @media (max-width: 760px) {
         .large {

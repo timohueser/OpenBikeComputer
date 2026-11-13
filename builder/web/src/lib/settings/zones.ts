@@ -19,5 +19,8 @@ function zones(limit: number, edges: Edges): Zone[] {
     return starts.map((from, i) => ({ name: `Z${i + 1}`, from, to: i + 1 < starts.length ? starts[i + 1] - 1 : Infinity }));
 }
 
+/** The index in `zones` of the zone of `value`: the last zone whose lowest value it reaches. */
+export const zoneOf = (zones: Zone[], value: number): number => Math.max(0, zones.filter(zone => value >= zone.from).length - 1);
+
 export const heartRateZones = (maxHr: number): Zone[] => zones(maxHr, HR_EDGES);
 export const powerZones = (ftp: number): Zone[] => zones(ftp, POWER_EDGES);
