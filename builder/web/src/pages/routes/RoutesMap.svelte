@@ -10,12 +10,14 @@
     import { appearance } from '../../lib/theme.svelte';
     import type { Box, Item } from './filter';
 
-    let { items, shown, selected, look = 'route', onselect, onview, fit }: {
+    let { items, shown, selected, look = 'route', covered = 0, onselect, onview, fit }: {
         items: Item[];
         /** The items of the list. The map draws only these, and the bubbles count only these. */
         shown: Item[];
         selected: string[];
         look?: 'route' | 'ride';
+        /** The height in pixels of the bottom of the map that the selected card covers. */
+        covered?: number;
         /** Undefined after a click on the map where no route is. */
         onselect: (id: string | undefined) => void;
         onview: (view: Box) => void;
@@ -81,6 +83,17 @@
         map.fitBounds(bounds, { padding: { top: side, left: side, right: side, bottom: Math.min(160, height / 3) }, maxZoom: 13, animate: false });
     }
 
+    /** Moves the map only when a selected line is under the card or outside the view: it pans, or zooms out. */
+    function reveal(ids: string[], bottom: number) {
+        const bounds = new maplibregl.LngLatBounds();
+        for (const { id, summary } of untrack(() => items)) if (summary && ids.includes(id)) bounds.extend(summary.bounds);
+        const { clientWidth: width, clientHeight: height } = container, side = Math.min(48, width / 8);
+        if (bounds.isEmpty() || !map || height - bottom < 2 * side) return;
+        const sw = map.project(bounds.getSouthWest()), ne = map.project(bounds.getNorthEast());
+        if (sw.x >= 0 && ne.x <= width && ne.y >= 0 && sw.y <= height - bottom) return;
+        map.fitBounds(bounds, { padding: { top: side, left: side, right: side, bottom: bottom + side / 2 }, maxZoom: map.getZoom() });
+    }
+
     const view = (): Box => {
         const b = map!.getBounds();
         return [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
@@ -143,6 +156,14 @@
     });
     $effect(() => {
         if (ready) for (const layer of ['selected-casing', 'selected']) if (map!.getLayer(layer)) map!.setFilter(layer, selectedFilter);
+    });
+    // A new selection or a new card height moves the map; a reload of the same selection does not.
+    let revealed = '';
+    $effect(() => {
+        const ids = selected, bottom = covered, key = `${ids.join()}|${bottom}`;
+        if (!ready || !ids.length || !bottom || key === revealed) return;
+        revealed = key;
+        untrack(() => reveal(ids, bottom));
     });
     $effect(() => {
         const target = fit;

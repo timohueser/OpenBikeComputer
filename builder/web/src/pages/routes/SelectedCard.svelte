@@ -13,7 +13,7 @@
     import { dayText, tripDates, type Row } from './rows';
     import { stateText, waitingWith, type DeviceState } from './state';
 
-    let { library, item, row, device, route }: {
+    let { library, item, row, device, route, inGroup = false }: {
         library: Library;
         /** A route, or the ride of `row` that the card shows. */
         item: Item;
@@ -22,6 +22,8 @@
         device?: DeviceState;
         /** The route of a group, which "Ride it again" opens. */
         route?: string;
+        /** The ride is a ride of an open group. */
+        inGroup?: boolean;
     } = $props();
 
     let credits = $state<string[]>([]), failure = $state('');
@@ -73,7 +75,7 @@
             </button>
         {:else if item.kind === 'ride' && !trip}
             <button type="button" class="button" onclick={again}>Ride it again</button>
-            {#if row?.kind === 'group'}<button type="button" class="button" onclick={takeOut}>Take out of the group</button>{/if}
+            {#if row?.kind === 'group' || inGroup}<button type="button" class="button" onclick={takeOut}>Take out of the group</button>{/if}
         {/if}
     </div>
 </section>

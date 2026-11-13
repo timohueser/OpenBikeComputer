@@ -142,11 +142,15 @@ test('the ridden view shows a trip, a group of rides on a route, a ride taken ou
 
   await list.getByRole('button', { name: '3 rides ›' }).click();
   await expect(list.locator('li')).toHaveText([/Lake 3/, /Lake 2/, /Lake 1/]);
+  // In an open group, each ride can leave the group.
+  await list.locator('.row', { hasText: 'Lake 1' }).click();
+  await page.getByRole('region', { name: 'Lake 1' }).getByRole('button', { name: 'Take out of the group' }).click();
+  await expect(list.locator('li')).toHaveText([/Lake 3/, /Lake 2/]);
   await page.getByRole('button', { name: '‹ All rides' }).click();
-  await expect(list.locator('li')).toHaveCount(3);
+  await expect(list.locator('li')).toHaveCount(4);
 
   await page.getByRole('radio', { name: 'Planned 1' }).click();
   await expect(page).toHaveURL(/#\/routes$/);
-  await expect(page.locator('ul').getByRole('button', { name: /Lake test/ })).toContainText('ridden 3 times');
+  await expect(page.locator('ul').getByRole('button', { name: /Lake test/ })).toContainText('ridden 2 times');
   expect(errors).toEqual([]);
 });

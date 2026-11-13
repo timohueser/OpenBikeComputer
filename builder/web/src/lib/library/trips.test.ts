@@ -41,5 +41,10 @@ describe('trips', () => {
         expect(trips(commute)).toEqual([]);
         const base = [6, 7, 8].map(day => ride(at(day), [500, 0], [500.5, 0]));
         expect(trips(base)).toEqual([]);
+        // A loop that ends after midnight, and a loop from home the next morning.
+        expect(trips([ride(at(10, 22), [0, 0], [0.5, 0]), ride(at(11), [0, 0], [0.5, 0])])).toEqual([]);
+        // A commute of 25 km with the first morning ride missing: every night is at home, 25 km from the first point.
+        const long = [12, 13, 14].flatMap(day => [ride(at(day, 7), [0, 0], [25, 0]), ride(at(day, 17), [25, 0], [0, 0])]);
+        expect(trips(long.slice(1))).toEqual([]);
     });
 });

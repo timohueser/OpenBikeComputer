@@ -50,6 +50,8 @@
     const tripList = $derived(trips(rides ?? []));
     const rows = $derived(ridden ? rideRows(shown as RideItem[], tripList, grouped, new Map(routeItems.map(item => [item.id, item.name]))) : []);
     const group = $derived(rows.find(row => row.kind === 'group' && row.id === opened));
+    /** The height of the selected card, which covers the bottom of the map. */
+    let cardHeight = $state(0);
     /** The rows of the list: the routes, the ride rows, or the rides of the open group. */
     const listRows: Row[] = $derived(group ? group.rides.map(ride => ({ kind: 'ride', id: ride.id, name: ride.name, rides: [ride], at: ride.at }))
         : ridden ? rows : []);
@@ -71,6 +73,11 @@
         void JSON.stringify(chips);
         void opened;
         if (listed && !untrack(() => onlyView)) untrack(() => fit++);
+    });
+
+    // A chip, a deleted first ride or a new route of the group can end the open group.
+    $effect(() => {
+        if (opened && !group) opened = undefined;
     });
 
     // Each view has its own entry of the history, with its own search.
@@ -269,13 +276,14 @@
         <div class="map">
             {#await import('./routes/RoutesMap.svelte') then { default: RoutesMap }}
                 <RoutesMap {items} shown={mapShown} selected={ridden ? chosenRow?.rides.map(ride => ride.id) ?? [] : selected ? [selected] : []} {fit}
+                    covered={chosen && cardHeight ? cardHeight + 12 : 0}
                     look={ridden ? 'ride' : 'route'} onselect={select} onview={next => view = next} />
             {:catch error}
                 <p class="note">{error instanceof Error ? error.message : String(error)}</p>
             {/await}
             {#if chosen}
-                <div class="selected">
-                    <SelectedCard {library} item={chosen} row={chosenRow} device={states.get(chosen.id)}
+                <div class="selected" bind:offsetHeight={cardHeight}>
+                    <SelectedCard {library} item={chosen} row={chosenRow} device={states.get(chosen.id)} inGroup={!!group}
                         route={chosenRow?.kind === 'group' && records?.some(record => record.id === chosenRow.id) ? chosenRow.id : undefined} />
                 </div>
             {/if}
