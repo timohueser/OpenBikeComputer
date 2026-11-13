@@ -3,6 +3,7 @@
     import Card from '../../lib/ui/Card.svelte';
     import Segmented from '../../lib/ui/Segmented.svelte';
     import OpeningHours from '../planner/OpeningHours.svelte';
+    import Icon from '../planner/PlannerIcon.svelte';
     import ElevationRow from './ElevationRow.svelte';
     import Menu from './Menu.svelte';
     import Lanes from './Lanes.svelte';
@@ -50,8 +51,9 @@
      * count after it about COUNT_CHAR_PX for each figure; icons that would touch join into one, whose list shows at most
      * LIST_NAMES names. A tick label is about TICK_CHAR_PX wide for each character, and keeps TICK_GAP_PX from the next one. */
     const PLACE_M = 1000, PLACES_KM = 300, ICON_PX = 24, COUNT_CHAR_PX = 7, LIST_NAMES = 30, TICK_CHAR_PX = 7, TICK_GAP_PX = 12, PANEL_PX = 260;
-    /** The elevation row is ELEVATION_PX high in a window at least WIDE_PX wide and TALL_PX high. */
-    const ELEVATION_PX = 120, WIDE_PX = 1200, TALL_PX = 800, ELEVATION_ROW = 1;
+    /** The elevation row is ELEVATION_PX high in a window at least WIDE_PX wide and TALL_PX high. The disc of a night keeps
+     * NIGHT_PX from the middle of a waypoint pin. */
+    const ELEVATION_PX = 120, WIDE_PX = 1200, TALL_PX = 800, ELEVATION_ROW = 1, NIGHT_PX = 20;
     const searchable = /^(?:[nwr]|Q)[1-9]\d*$/;
 
     /** The pointer on the axis of the shown stretch while it is over the elevation row or moved by the keys. */
@@ -264,9 +266,12 @@
                 {#if open === pin.number && pin.point}{@render about(pin.point)}{/if}
             </span>
         {:else}
-            <!-- At an end of the axis the tag stays inside the card. -->
-            <span class="night" style:left={`${x(pin.share) * 100}%`}
-                style:transform={x(pin.share) > .97 ? 'translate(-100%, -50%)' : x(pin.share) < .03 ? 'translate(0, -50%)' : undefined}>Night</span>
+            <!-- At an end of the axis the disc stays inside the card. Beside a waypoint it steps to the far side, so the
+                 pin does not hide it. -->
+            {@const gap = shownPins.map(other => other.number ? (x(pin.share) - x(other.share)) * width : Infinity).find(px => Math.abs(px) < NIGHT_PX)}
+            <span class="night" role="img" aria-label="Night" style:left={`${x(pin.share) * 100}%`}
+                style:margin-left={gap === undefined ? undefined : `${(gap < 0 ? -NIGHT_PX : NIGHT_PX) - gap}px`}
+                style:transform={x(pin.share) > .97 ? 'translate(-100%, -50%)' : x(pin.share) < .03 ? 'translate(0, -50%)' : undefined}><Icon name="moon" size={11} /></span>
         {/if}
     {/each}
 {/snippet}
@@ -276,12 +281,12 @@
 {/snippet}
 
 {#snippet surface()}
-    <span class="legend">
-        {#each surfaces as surface (surface)}<span><i style:background={surfaceBarColors[surface]}></i>{surface}</span>{/each}
-    </span>
     <div class="bar">
         {#each runs as run, i (i)}<span style:left={`${x(run.from) * 100}%`} style:width={`${(run.to - run.from) / span * 100}%`} style:background={surfaceBarColors[run.surface]}></span>{/each}
     </div>
+    <span class="legend">
+        {#each surfaces as surface (surface)}<span><i style:background={surfaceBarColors[surface]}></i>{surface}</span>{/each}
+    </span>
 {/snippet}
 
 {#snippet placeRow()}
@@ -356,7 +361,7 @@
         top: 50%;
         transform: translate(-50%, -50%);
     }
-    .pin button {
+    .pin button, .night {
         display: grid;
         place-items: center;
         width: 22px;
@@ -368,19 +373,18 @@
         color: var(--cream);
         font: 700 11px/1 var(--sans);
     }
-    /* A pin keeps its disc in sight over a night label. */
+    /* A pin keeps its disc in sight over a night. */
     .pin {
         z-index: 1;
     }
     .pin:hover, .pin:focus-within {
         z-index: 5;
     }
+    /* The night is a disc with the moon, as on the map. */
     .night {
-        padding: 1px 6px;
-        border-radius: 4px;
-        background: var(--parchment-2);
-        color: var(--ink-soft);
-        font-size: 12px;
+        box-sizing: border-box;
+        background: var(--ink);
+        color: var(--panel);
     }
     .panel {
         position: absolute;
@@ -425,13 +429,12 @@
     .contacts a {
         color: var(--forest);
     }
+    /* The bar stands beside its label; its key follows under it. */
     .legend {
         display: flex;
-        justify-content: flex-end;
         gap: 12px;
         overflow: hidden;
         height: 16px;
-        margin-bottom: 2px;
         color: var(--ink-soft);
         font-size: 11px;
         line-height: 16px;
@@ -440,7 +443,6 @@
     @media (max-width: 760px) {
         .legend {
             flex-wrap: wrap;
-            justify-content: flex-start;
             gap: 0 10px;
             height: auto;
         }
@@ -458,6 +460,7 @@
     .bar {
         position: relative;
         height: 10px;
+        margin: 3px 0;
         overflow: hidden;
         border-radius: 5px;
         background: var(--parchment-2);

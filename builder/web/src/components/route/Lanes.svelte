@@ -28,8 +28,9 @@
         onclick?: (x: number, row?: number | null) => void;
     } = $props();
 
-    /** A drag starts after DRAG_PX; an arrow key moves the pointer by KEY_STEP of the axis. */
-    const DRAG_PX = 4, KEY_STEP = .01;
+    /** A drag starts after DRAG_PX; an arrow key moves the pointer by KEY_STEP of the axis. The label of a row up to
+     * LOW_PX high, such as the pins, stands at its middle. */
+    const DRAG_PX = 4, KEY_STEP = .01, LOW_PX = 28;
     let root = $state<HTMLElement>(), axis = $state<HTMLElement>(), tickRow = $state<HTMLElement>(), lineEnd = $state<number>();
     let down: { x: number; px: number; row?: number; moved: boolean } | null = null;
     const split = $derived(Math.min(rows.length, ticksAfter ?? rows.length));
@@ -111,7 +112,7 @@
 <div class="lanes" bind:this={root} onpointermove={move} onpointerdown={start} onpointerup={end} onpointercancel={() => down = null}
     onpointerleave={() => { if (!down) onpointer(null); }}>
     {#each rows as row, i (i)}
-        <div class="label" style:grid-row={gridRow(i)}>{row.label}</div>
+        <div class="label" class:low={!!row.height && row.height <= LOW_PX} style:grid-row={gridRow(i)}>{row.label}</div>
         <div class="lane" data-row={i} style:grid-row={gridRow(i)} style:height={row.height ? `${row.height}px` : undefined}>{@render row.draw()}</div>
     {/each}
     <!-- Each part has its grid row: the pointer layer covers the rows of the lanes. -->
@@ -171,6 +172,12 @@
         row-gap: 6px;
         touch-action: pan-y;
         user-select: none;
+        /* How much of the panel covers the rows outside a part. */
+        --pale: .7;
+    }
+    /* On the dark panel the same share leaves too little of the rows to read. */
+    :global(:root[data-theme="dark"]) .lanes {
+        --pale: .55;
     }
     .over:focus-visible {
         border-radius: 2px;
@@ -183,6 +190,11 @@
         color: var(--ink-soft);
         font-size: 12px;
         line-height: 16px;
+    }
+    /* The margin lets a label of two lines stand in a low row and not stretch it. */
+    .low {
+        align-self: center;
+        margin: -2px 0;
     }
     .lane {
         position: relative;
@@ -212,7 +224,7 @@
         top: -4px;
         bottom: -4px;
         background: var(--panel);
-        opacity: .7;
+        opacity: var(--pale);
     }
     .pale:first-child {
         border-right: 1px solid var(--ink-soft);

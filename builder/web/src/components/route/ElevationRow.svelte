@@ -166,9 +166,9 @@
         color: var(--ink-soft);
         font-weight: 500;
     }
-    /* As pale as the rows under the pale layer of `Lanes`: the panel at 70 % over `--ink-soft`. */
+    /* As pale as the rows under the pale layer of `Lanes`: the panel at its share `--pale` over `--ink-soft`. */
     .text.faint {
-        color: color-mix(in srgb, var(--ink-soft) 30%, var(--panel));
+        color: color-mix(in srgb, var(--panel) calc(var(--pale) * 100%), var(--ink-soft));
     }
     .text.lit {
         color: var(--ink);

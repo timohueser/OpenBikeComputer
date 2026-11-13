@@ -44,7 +44,7 @@
 {/snippet}
 
 {#snippet pin(stop: Waypoint, detail: string)}
-    <li class="stop"><span class="pin">{stop.number}</span><span><strong>{stop.point.label}</strong>{#if detail}<small>{detail}</small>{/if}</span></li>
+    <li class="stop"><span class="lead"><span class="pin">{stop.number}</span></span><span><strong>{stop.point.label}</strong>{#if detail}<small>{detail}</small>{/if}</span></li>
 {/snippet}
 
 {#snippet climbRow(climb: Climb)}
@@ -110,12 +110,12 @@
                 <ol class="days">
                     {#each days as day (day.number)}
                         {#if day.rest}
-                            <li class="day"><span class="chip">Day {day.number}</span><strong>{trip.restNames?.[day.restIndex!] || 'Rest day'}</strong></li>
+                            <li class="day"><span class="lead">Day {day.number}</span><strong>{trip.restNames?.[day.restIndex!] || 'Rest day'}</strong></li>
                         {:else}
                             {@const from = day.ridingNumber === 1 ? ends[0]?.label : trip.points.find(p => p.kind === 'night' && p.night === day.ridingNumber - 1)?.label}
                             {@const last = day.ridingNumber === days.filter(d => !d.rest).length}
                             <li class="day">
-                                <span class="chip">Day {day.number}</span>
+                                <span class="lead">Day {day.number}</span>
                                 <span>
                                     <strong>{dayTitle(from, last ? finish?.label : day.pinned?.label)}</strong>
                                     <small>{formatDistance(day.distance * 1000)} · {formatHeight(day.ascent)} up · {duration(day.hours)}</small>
@@ -123,7 +123,7 @@
                             </li>
                             {#each day.stops as stop (stop.point.id)}{@render pin(stop, about(stop.point))}{/each}
                             {#if !last}
-                                <li class="day"><span class="chip">Night</span><span>{day.pinned?.label ?? 'Not chosen'}</span></li>
+                                <li class="sleep"><span class="lead"><span class="pin night"><Icon name="moon" size={11} /></span></span><span>{day.pinned?.label ?? 'Not chosen'}<small>Night</small></span></li>
                             {/if}
                         {/if}
                     {/each}
@@ -164,18 +164,17 @@
     }
     dt, h3 {
         color: var(--ink-soft);
-        font: 600 11px/1.3 var(--sans);
-        letter-spacing: .06em;
-        text-transform: uppercase;
+        font: 13px/1.3 var(--sans);
     }
     dd {
-        margin: 2px 0 0;
+        margin: 1px 0 0;
         font: 600 21px/1.2 var(--sans);
     }
     h3 {
         margin: 20px 0 0;
         padding-bottom: 6px;
         border-bottom: 1px solid var(--line);
+        font-weight: 600;
     }
     .note {
         margin: 12px 0 0;
@@ -192,8 +191,30 @@
         align-items: flex-start;
         padding: 9px 0;
     }
-    .rows > li, .day {
+    .rows > li {
         border-bottom: 1px solid var(--line);
+    }
+    /* One line between two days; the waypoints and the night of a day follow its title with no line. */
+    .day {
+        padding-bottom: 4px;
+    }
+    .day:not(:first-child) {
+        margin-top: 5px;
+        padding-top: 14px;
+        border-top: 1px solid var(--line);
+    }
+    /* The day, the pin and the night stand in one column, so every name starts on one edge. */
+    .lead {
+        display: flex;
+        flex: none;
+        align-items: center;
+        min-width: 40px;
+        min-height: 20px;
+        color: var(--ink-soft);
+        font-size: 12.5px;
+    }
+    .rows .lead {
+        min-width: 0;
     }
     .climb {
         padding: 0;
@@ -234,13 +255,11 @@
         border: 0;
         color: var(--ink);
         font: 700 17px/1.3 var(--sans);
-        letter-spacing: 0;
-        text-transform: none;
     }
     .climb-name + .note {
         margin: 2px 0 14px;
     }
-    li > span:not(.chip, .pin) {
+    li > span:not(.lead) {
         display: flex;
         flex-direction: column;
         gap: 2px;
@@ -250,9 +269,11 @@
         color: var(--ink-soft);
         font-size: 12.5px;
     }
-    .stop {
-        padding: 5px 0 5px 12px;
-        border: 0;
+    .stop, .sleep {
+        padding: 5px 0;
+    }
+    .rows > .stop {
+        padding: 9px 0;
     }
     .stop strong {
         font-weight: 400;
@@ -268,11 +289,8 @@
         color: var(--cream);
         font: 700 11px/1 var(--sans);
     }
-    .chip {
-        flex: none;
-        padding: 2px 6px;
-        border-radius: 4px;
-        background: var(--parchment-2);
-        font-size: 12px;
+    .night {
+        background: var(--ink);
+        color: var(--panel);
     }
 </style>

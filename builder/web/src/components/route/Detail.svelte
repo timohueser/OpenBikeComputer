@@ -107,14 +107,16 @@
         text-overflow: ellipsis;
         white-space: nowrap;
     }
+    /* The name stays where the title was, in the same letters. */
     .title input {
         width: min(480px, 100%);
-        padding: 2px 6px;
+        margin: -1px 0 -1px -7px;
+        padding: 0 6px;
         border: 1px solid var(--line-strong);
         border-radius: 6px;
         background: var(--panel);
         color: var(--ink);
-        font: 700 22px/1.2 var(--sans);
+        font: 700 25px/1.2 var(--sans);
     }
     .icon {
         display: grid;
@@ -195,8 +197,13 @@
             height: auto;
             padding: 12px 16px;
         }
-        h1 {
+        header .back {
+            flex-basis: 100%;
+        }
+        h1, .title input {
             font-size: 21px;
+        }
+        h1 {
             white-space: normal;
         }
         .cards {

@@ -185,6 +185,18 @@
     .pins :global(.route-pin) {
         pointer-events: auto;
     }
+    /* The credit in the letters and the colours of the page, as on the map of the planner. */
+    .route-map :global(.maplibregl-ctrl-attrib) {
+        background: var(--panel);
+        color: var(--ink-soft);
+        font: 11px/20px var(--sans);
+    }
+    .route-map :global(.maplibregl-ctrl-attrib a) {
+        color: inherit;
+    }
+    :global(:root[data-theme="dark"]) .route-map :global(.maplibregl-ctrl-attrib-button) {
+        filter: invert(1);
+    }
     :global(.route-map-mark) {
         width: 14px;
         height: 14px;
