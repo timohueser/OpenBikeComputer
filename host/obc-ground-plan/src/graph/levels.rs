@@ -820,7 +820,110 @@ fn states(ctx: &Ctx, ladders: &[Option<Ladder>]) -> Levels {
         }
         runs(ctx, &t, &ended[w as usize], &mut out);
     }
+    merge_a(ctx, &mut out);
     out
+}
+
+/// The A lines of one deck group that cross or lie within `edge_band_m` of each other become one: each deck of
+/// them ends on the line normal to their mean direction into the decks, at the farthest one in, its A moved in
+/// along its way and its ground stretch grown to it. So no deck stroke runs over the ground stretch of another.
+fn merge_a(ctx: &Ctx, out: &mut Levels) {
+    let g = ctx.g;
+    let mut group = vec![u32::MAX; g.ways.len()];
+    for (k, d) in g.decks.iter().enumerate() {
+        for &w in &d.ways {
+            group[w as usize] = k as u32;
+        }
+    }
+    let gl = |p: [i32; 2]| [ctx.origin[0] + f64::from(p[0]), ctx.origin[1] + f64::from(p[1])];
+    let deck_run = |runs: &[Run], l: &EndLine| {
+        runs.iter().position(|r| r.way == l.way && r.state == State::Deck && (r.from == l.at || r.to == l.at))
+    };
+    // The A lines at a deck run, and whether the deck lies ahead of the line along the way.
+    let lines: Vec<(usize, bool)> = (out.end_lines.iter().enumerate())
+        .filter(|(_, l)| l.kind == EndKind::A && group[l.way as usize] != u32::MAX)
+        .filter_map(|(i, l)| deck_run(&out.runs, l).map(|r| (i, out.runs[r].from == l.at)))
+        .collect();
+    let n = lines.len();
+    let mut root: Vec<usize> = (0..n).collect();
+    fn find(root: &mut [usize], mut i: usize) -> usize {
+        while root[i] != i {
+            root[i] = root[root[i]];
+            i = root[i];
+        }
+        i
+    }
+    for i in 0..n {
+        for j in i + 1..n {
+            let (a, b) = (&out.end_lines[lines[i].0], &out.end_lines[lines[j].0]);
+            if a.way == b.way || group[a.way as usize] != group[b.way as usize] {
+                continue;
+            }
+            let d = segs_dist(gl(a.ends[0]), gl(a.ends[1]), gl(b.ends[0]), gl(b.ends[1])) * ctx.mpu(gl(a.ends[0]));
+            if d <= ctx.s.edge_band_m {
+                let (x, y) = (find(&mut root, i), find(&mut root, j));
+                root[x.max(y)] = x.min(y);
+            }
+        }
+    }
+    let mut members: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for i in 0..n {
+        members[find(&mut root, i)].push(i);
+    }
+    for m in members.into_iter().filter(|m| m.len() > 1) {
+        // Each line's point and the unit direction into its deck.
+        let into: Vec<([f64; 2], [f64; 2])> = (m.iter())
+            .map(|&i| {
+                let (l, ahead) = lines[i];
+                let a = ctx.at_station(out.end_lines[l].at);
+                let s = if ahead { 1.0 } else { -1.0 };
+                (a.p, [s * a.tangent[0], s * a.tangent[1]])
+            })
+            .collect();
+        let mean = into.iter().fold([0.0, 0.0], |s, d| add(s, d.1, 1.0));
+        let len = dot(mean, mean).sqrt();
+        if len < 1e-9 {
+            continue;
+        }
+        let mean = [mean[0] / len, mean[1] / len];
+        let far = into.iter().map(|d| dot(d.0, mean)).fold(f64::NEG_INFINITY, f64::max);
+        for (k, &i) in m.iter().enumerate() {
+            let (l, ahead) = lines[i];
+            let Some(r) = deck_run(&out.runs, &out.end_lines[l]) else { continue };
+            let (p, d) = into[k];
+            let gap = (far - dot(p, mean)) / dot(d, mean).max(1e-6);
+            if gap * ctx.mpu(p) < PLACE_TO_M {
+                continue;
+            }
+            let w = out.end_lines[l].way;
+            let from = g.ways[w as usize].from;
+            let at = between(&g.parts, &from, &out.end_lines[l].at);
+            let moved = if ahead { at + gap * ctx.mpu(p) } else { at - gap * ctx.mpu(p) };
+            let deck = (out.runs[r].from, out.runs[r].to);
+            let (m0, m1) = (between(&g.parts, &from, &deck.0), between(&g.parts, &from, &deck.1));
+            // The deck keeps its end lines in order and some length.
+            if moved <= m0.min(m1) + PLACE_TO_M || moved >= m0.max(m1) - PLACE_TO_M {
+                continue;
+            }
+            let st = ctx.at(w, moved).st;
+            let old = out.end_lines[l].at;
+            let ground = Run { way: w, from: old, to: old, state: State::Open };
+            if ahead {
+                out.runs[r].from = st;
+                match out.runs.iter().position(|x| x.way == w && x.to == old && x.state == State::Open) {
+                    Some(o) => out.runs[o].to = st,
+                    None => out.runs.insert(r, Run { to: st, ..ground }),
+                }
+            } else {
+                out.runs[r].to = st;
+                match out.runs.iter().position(|x| x.way == w && x.from == old && x.state == State::Open) {
+                    Some(o) => out.runs[o].from = st,
+                    None => out.runs.insert(r + 1, Run { from: st, ..ground }),
+                }
+            }
+            out.end_lines[l] = line_at(ctx, w, st, EndKind::A, State::Deck);
+        }
+    }
 }
 
 /// OPEN only between a tag end and the first BORE from that end: the read stays within `open_max_m`.

@@ -3,6 +3,7 @@
 import { imagePixels } from '../../planner/layers/terrain';
 import { tilePages, type PageData } from '../stream/heights';
 import { debugMesh, type DebugMesh, type Vocabulary } from './debug';
+import { meshBytes } from './mesh';
 import init, { build, build_bytes, CellRequest, far, vocabulary, type CellPlan, type InitOutput, type MeshInput } from './pkg/obc_ground_plan_bridge.js';
 
 /** Decoded stored tiles kept: 16 tiles of four 128 KiB pages, 8 MiB. */
@@ -209,22 +210,15 @@ function meshCell({ id, cell, rims }: Extract<PlanRequest, { type: 'mesh' }>): v
     }
 }
 
-/** A cell's mesh bytes, then its storeys' mesh bytes where it has a storey over the ground. A storey mesh that the crate refuses draws none. */
+/** A cell's mesh bytes with its storeys' (`meshBytes`). A storey mesh that the crate refuses draws none. */
 function withStoreys(mesh: Uint8Array, input: MeshInput): ArrayBuffer {
-    let storeys: Uint8Array;
     try {
-        storeys = input.storeys();
+        return meshBytes(mesh, input.storeys());
     } catch (error) {
         if (trapped(error)) throw error;
         console.warn(`Ground plan storeys: ${message(error)}`);
-        return mesh.buffer as ArrayBuffer;
+        return meshBytes(mesh);
     }
-    // A storey mesh's corner count, after its magic and its cell.
-    if (!new Uint32Array(storeys.buffer, storeys.byteOffset, 4)[3]) return mesh.buffer as ArrayBuffer;
-    const out = new Uint8Array(mesh.byteLength + storeys.byteLength);
-    out.set(mesh);
-    out.set(storeys, mesh.byteLength);
-    return out.buffer;
 }
 
 function time({ id, request, runs }: Extract<PlanRequest, { type: 'time' }>): void {

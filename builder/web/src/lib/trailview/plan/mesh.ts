@@ -53,6 +53,18 @@ export interface StoreyMesh {
     slots: Uint32Array<ArrayBuffer>;
 }
 
+/** The bytes that `cellMesh` reads: a cell's mesh, then its storeys' mesh where it has a storey corner. */
+export function meshBytes(mesh: Uint8Array, storeys?: Uint8Array): ArrayBuffer {
+    // A storey mesh's corner count follows its magic and its cell.
+    if (!storeys || !new Uint32Array(storeys.buffer, storeys.byteOffset, 4)[3]) {
+        return mesh.byteOffset === 0 && mesh.byteLength === mesh.buffer.byteLength ? (mesh.buffer as ArrayBuffer) : mesh.slice().buffer;
+    }
+    const out = new Uint8Array(mesh.byteLength + storeys.byteLength);
+    out.set(mesh);
+    out.set(storeys, mesh.byteLength);
+    return out.buffer;
+}
+
 export function cellMesh(bytes: ArrayBuffer): CellMesh {
     const words = new Uint32Array(bytes);
     const [magic, x, y, corners, triangles, , triangleRuns, steps, stepRuns, level18Runs, endFaces, mouths] = words.subarray(0, HEAD);
