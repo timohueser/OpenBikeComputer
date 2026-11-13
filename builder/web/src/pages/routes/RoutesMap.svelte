@@ -143,4 +143,8 @@
         height: 100%;
         background: var(--parchment);
     }
+    /* The credits wrap before they reach the zoom buttons at the top right. */
+    .routes-map :global(.maplibregl-ctrl-top-left) {
+        right: 52px;
+    }
 </style>
