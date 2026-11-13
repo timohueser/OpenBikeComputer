@@ -162,13 +162,40 @@ test('the lines of a ride: a row for each line with values, the pointer, and a p
   await expect(lanes.locator('.lane').nth(2)).toHaveText('140 bpm');
 
   // The label of a row opens its line large in a window: the name of each zone that the line reaches, the time in each
-  // zone and two numbers. Escape closes the window, and the focus is back on the label.
+  // zone and two numbers.
   const label = page.getByRole('button', { name: 'Heart rate, open large' }), large = page.getByRole('dialog', { name: 'Heart rate' });
+  const whole = large.getByRole('button', { name: 'Whole ride' });
   await label.click();
   await expect(large.getByText('Z4 from 148 bpm')).toBeVisible();
   await expect(large.getByRole('heading', { name: 'Time in each zone' })).toBeVisible();
   await expect(large.locator('li')).toHaveText(['Z50h 0m', 'Z40h 17m', 'Z30h 17m', 'Z20h 0m', 'Z10h 0m']);
   await expect(large.locator('dl > div')).toHaveText(['Average150 bpm', 'Highest160 bpm']);
+  await expect(whole).toHaveCount(0);
+  // A drag across the line shows that stretch large: the ticks, the numbers and the zone times are of the stretch,
+  // and the zone times of a short stretch are in minutes and seconds.
+  const line = await large.locator('.lane').boundingBox();
+  const dragLine = async () => {
+    await page.mouse.move(line.x + line.width * 0.7, line.y + line.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(line.x + line.width * 0.8, line.y + line.height / 2);
+    await page.mouse.move(line.x + line.width * 0.9, line.y + line.height / 2);
+    await page.mouse.up();
+  };
+  await dragLine();
+  await expect(large.locator('.ticks span')).toHaveText(['km 7.0', 'km 9.0', 'km 7.5', 'km 8.0', 'km 8.5']);
+  await expect(large.getByText('km 7.0 to km 9.0 · 2.0 km')).toBeVisible();
+  await expect(large.locator('li')).toHaveText(['Z50m 0s', 'Z46m 40s', 'Z30m 0s', 'Z20m 0s', 'Z10m 0s']);
+  await expect(large.locator('dl > div')).toHaveText(['Average160 bpm', 'Highest160 bpm']);
+  // "Whole ride" beside the title shows the whole line again, and is there only for a stretch.
+  await whole.click();
+  await expect(large.locator('dl > div')).toHaveText(['Average150 bpm', 'Highest160 bpm']);
+  await expect(large.locator('.ticks span').nth(1)).toHaveText('10.0 km');
+  await expect(whole).toHaveCount(0);
+  // Escape shows the whole line first and closes the window second, and the focus is back on the label.
+  await dragLine();
+  await expect(whole).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(large.locator('.ticks span').nth(1)).toHaveText('10.0 km');
   await page.keyboard.press('Escape');
   await expect(large).toHaveCount(0);
   await expect(label).toBeFocused();
@@ -208,13 +235,18 @@ test('the lines of a ride: a row for each line with values, the pointer, and a p
   await page.keyboard.press('Escape');
   expect(await gpx()).toEqual({ name: 'Above Engelberg part.gpx', points: 100 });
 
-  // The large line shows the part: its range, its numbers and its zone times. Escape closes the window and keeps the part.
+  // The large line opens on the part: its range, its numbers and its zone times.
   await label.click();
   await expect(large.getByText('km 5.0 to km 10.0 · 5.0 km')).toBeVisible();
   await expect(large.locator('li')).toHaveText(['Z50h 0m', 'Z40h 17m', 'Z30h 0m', 'Z20h 0m', 'Z10h 0m']);
   await expect(large.locator('dl > div')).toHaveText(['Average160 bpm', 'Highest160 bpm']);
-  // A click on the line takes the focus out of the window: Escape still closes only the window.
+  // A click on the line takes the focus out of the window: Escape still acts on the window only. In the whole ride
+  // the part shows as in the rows, with one pale layer, because the part reaches the end of the line. The second
+  // Escape closes the window and keeps the part.
   await large.locator('.lane').click();
+  await page.keyboard.press('Escape');
+  await expect(large.locator('dl > div')).toHaveText(['Average150 bpm', 'Highest160 bpm']);
+  await expect(large.locator('.pale')).toHaveCount(1);
   await page.keyboard.press('Escape');
   await expect(large).toHaveCount(0);
   await expect(page.locator('.lines .part')).toHaveCount(1);

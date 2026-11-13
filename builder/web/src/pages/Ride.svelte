@@ -134,7 +134,7 @@
         {#if summary}<Picture {library} id={key} {summary} ride mark={share} onpoint={next => share = next ?? undefined} part={lit} {lit} />{/if}
     {/snippet}
     {#if samples && shares}
-        {#key key}<RideLines {samples} {shares} {speed} channels={numbers} {climbs} {partFacts} mark={share} onpoint={next => share = next ?? undefined}
+        {#key key}<RideLines {samples} {shares} {speed} channels={numbers} {climbs} {limits} mark={share} onpoint={next => share = next ?? undefined}
             {part} onpart={next => part = next} />{/key}
     {/if}
     {#if deleting}

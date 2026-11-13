@@ -112,6 +112,29 @@ export function thin(xs: number[], values: (number | undefined)[], width: number
     return columns;
 }
 
+/** A stretch of the axis as a view: at least `least` long about its middle, and inside the axis. */
+export function fitView([from, to]: [number, number], least: number): [number, number] {
+    const span = Math.min(1, Math.max(least, to - from)), start = Math.min(1 - span, Math.max(0, (from + to - span) / 2));
+    // A view that reaches the end of the axis ends at 1, with no rounding error.
+    return [start, 1 - start - span < 1e-9 ? 1 : start + span];
+}
+
+/** The columns of `thin` for the stretch `from` to `to` of the axis. The line reaches each edge of the stretch: there it
+ * has the value on the straight line between the two samples around the edge. */
+export function viewColumns(xs: number[], values: (number | undefined)[], [from, to]: [number, number], width: number): (number | null)[] {
+    const first = sampleAt(xs, from), places: number[] = [], found: (number | undefined)[] = [];
+    /** The value at the place `x`, between the sample before `i` and the sample `i`. */
+    const between = (i: number, x: number) => {
+        const [a, b] = [values[i - 1], values[i]];
+        return a === undefined || b === undefined || xs[i] === xs[i - 1] ? undefined : a + (b - a) * (x - xs[i - 1]) / (xs[i] - xs[i - 1]);
+    };
+    if (first > 0 && xs[first] > from) { places.push(0); found.push(between(first, from)); }
+    let i = first;
+    for (; i < xs.length && xs[i] <= to; i++) { places.push((xs[i] - from) / (to - from)); found.push(values[i]); }
+    if (i > 0 && i < xs.length && xs[i - 1] < to) { places.push(1); found.push(between(i, to)); }
+    return thin(places, found, width);
+}
+
 /** The smallest and the largest value, or undefined with none. */
 export function extent(values: (number | null | undefined)[]): { low: number; high: number } | undefined {
     let low = Infinity, high = -Infinity;

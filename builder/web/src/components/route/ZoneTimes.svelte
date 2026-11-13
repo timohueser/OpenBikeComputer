@@ -4,7 +4,9 @@
     import { ROUTES } from '../../lib/routes';
 
     /** The time in each zone of a sensor of a ride: one bar of five parts, or with `list` one row for each zone, the
-     * hardest first, with its bar and its time. A sensor with no limit shows the link to the Settings. */
+     * hardest first, with its bar and its time. The times are in hours and minutes; where the longest is under
+     * SHORT_S, as in a short stretch of a ride, they are in minutes and seconds. A sensor with no limit shows the link
+     * to the Settings. */
     let { channel, unit, missing, list = false }: {
         channel: Channel;
         /** The unit of the zones: "bpm" or "W". */
@@ -14,12 +16,15 @@
         list?: boolean;
     } = $props();
 
-    const hours = (seconds: number) => duration(seconds / 3600);
+    const SHORT_S = 600;
+    const longest = $derived(Math.max(1, ...(channel.zones ?? []).map(zone => zone.seconds)));
+    const time = $derived(longest < SHORT_S
+        ? (seconds: number) => `${Math.floor(Math.round(seconds) / 60)}m ${Math.round(seconds) % 60}s`
+        : (seconds: number) => duration(seconds / 3600));
     const zones = $derived((channel.zones ?? []).map(({ zone, seconds }, i) => ({
         name: zone.name, seconds, colour: `var(--zone-${i + 1})`,
-        text: `${zone.name} · ${Number.isFinite(zone.to) ? `${zone.from}–${zone.to}` : `${zone.from}+`} ${unit} · ${hours(seconds)}`,
+        text: `${zone.name} · ${Number.isFinite(zone.to) ? `${zone.from}–${zone.to}` : `${zone.from}+`} ${unit} · ${time(seconds)}`,
     })));
-    const longest = $derived(Math.max(1, ...zones.map(zone => zone.seconds)));
 </script>
 
 {#if !channel.zones}
@@ -27,7 +32,7 @@
 {:else if list}
     <ul>
         {#each [...zones].reverse() as zone (zone.name)}
-            <li title={zone.text}><span>{zone.name}</span><i style:width={`${zone.seconds / longest * 100}%`} style:background={zone.colour}></i><small>{hours(zone.seconds)}</small></li>
+            <li title={zone.text}><span>{zone.name}</span><i style:width={`${zone.seconds / longest * 100}%`} style:background={zone.colour}></i><small>{time(zone.seconds)}</small></li>
         {/each}
     </ul>
 {:else}

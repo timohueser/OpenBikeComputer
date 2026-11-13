@@ -7,12 +7,16 @@ export interface Tick { at: number; label: string }
 /** A tick label is about TICK_CHAR_PX wide for each character, and keeps TICK_GAP_PX from the next one. */
 const TICK_CHAR_PX = 7, TICK_GAP_PX = 12;
 
-/** Ticks at round distances from `fromM` to `toM` along a line, about one for each 80 px of `width`. */
-export function distanceTicks(fromM: number, toM: number, width: number): Tick[] {
+/** Ticks at round distances from `fromM` to `toM` along a line, about one for each 80 px of `width`. With `fine`, a
+ * short stretch has steps under one unit, as a view into a line needs them. */
+export function distanceTicks(fromM: number, toM: number, width: number, fine = false): Tick[] {
     const first = distanceIn(fromM), length = distanceIn(toM - fromM);
-    const step = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000].find(size => length / size <= Math.max(1, width / 80)) ?? 2000;
+    const step = [...fine ? [.1, .2, .5] : [], 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000].find(size => length / size <= Math.max(1, width / 80)) ?? 2000;
     const ticks = [];
-    for (let value = Math.ceil(first / step) * step; value < first + length; value += step) ticks.push({ at: (value - first) / length, label: `${settings.units} ${value}` });
+    // The count of steps is whole, so a step under one unit adds no rounding error.
+    for (let k = Math.ceil(first / step - 1e-9); k * step < first + length; k++) {
+        ticks.push({ at: (k * step - first) / length, label: `${settings.units} ${step < 1 ? (k * step).toFixed(1) : k * step}` });
+    }
     return ticks;
 }
 

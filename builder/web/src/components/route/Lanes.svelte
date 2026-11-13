@@ -149,8 +149,9 @@
         role="slider" tabindex="0" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round((pointer ?? 0) * 100)}
         onkeydown={key} onblur={() => onpointer(null)}>
         {#if part}
-            <b class="pale" style:left="0" style:width={`${part[0] * 100}%`}></b>
-            <b class="pale" style:left={`${part[1] * 100}%`} style:right="0"></b>
+            <!-- A part that reaches an end of the axis has no pale layer there, and so no edge. -->
+            {#if part[0] > 0}<b class="pale before" style:left="0" style:width={`${part[0] * 100}%`}></b>{/if}
+            {#if part[1] < 1}<b class="pale after" style:left={`${part[1] * 100}%`} style:right="0"></b>{/if}
         {/if}
         {#if pointer !== undefined}
             <i style:left={`${pointer * 100}%`} style:bottom={lineEnd === undefined ? undefined : 'auto'}
@@ -329,10 +330,10 @@
         background: var(--panel);
         opacity: var(--pale);
     }
-    .pale:first-child {
+    .before {
         border-right: 1px solid var(--ink-soft);
     }
-    .pale + .pale {
+    .after {
         border-left: 1px solid var(--ink-soft);
     }
     i {
