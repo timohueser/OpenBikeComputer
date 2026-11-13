@@ -2,6 +2,7 @@
  * library, with a map picture for a card whose record gets no cover. */
 import type { CoverRecord, MapPicture, RideRecord, RouteRecord } from '../library/records';
 import type { Library } from '../library/store';
+import { lineKey } from '../library/summary';
 import { loadTrailView } from '../planner/trailview';
 import { appearance } from '../theme.svelte';
 import type { Still, StillJob } from '../trailview/still';
@@ -28,15 +29,6 @@ export interface Renderer {
     /** Whether the planner shows TrailView, and a listener for each change. */
     trailViewOpen(): boolean;
     onTrailViewOpen(listener: () => void): () => void;
-}
-
-/** A hash of the summary line, and for a ride of its start time, as hex. A new name keeps it. */
-export function lineKey(item: RouteRecord | RideRecord): string {
-    const text = `${item.summary?.line.join(',')}@${'key' in item ? item.summary.start : ''}`;
-    // FNV-1a
-    let hash = 0x811c9dc5;
-    for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 0x01000193);
-    return (hash >>> 0).toString(16).padStart(8, '0');
 }
 
 /** Whether the job has nothing left to do for the record: its cover is made, impossible or failed for its line. A page

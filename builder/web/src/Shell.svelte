@@ -33,6 +33,7 @@
     import { router } from './lib/router.svelte';
     import { startTheme } from './lib/theme.svelte';
     import { startCoverJob } from './lib/covers/job';
+    import { startDeviceSync } from './lib/device-sync/state.svelte';
 
     const siteBase = import.meta.env.VITE_SITE_BASE || '/';
     // One library for all pages: a listener of `onChange` hears only the writes of its own object.
@@ -66,6 +67,7 @@
     });
 
     onMount(startTheme);
+    onMount(() => startDeviceSync(library));
 </script>
 
 <div class="shell">

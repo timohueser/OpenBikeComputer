@@ -107,6 +107,13 @@ export interface DeletedRide {
     device?: string;
 }
 
+/** A route on a device: `storeId:objectId` of its object, as the `device` of a ride, and the `sentKey` of the route when it
+ * was sent. */
+export interface SentRoute {
+    device: string;
+    key: string;
+}
+
 /** The values of the `state` store. */
 export interface LibraryState {
     /** The route that the planner opens. */
@@ -115,6 +122,8 @@ export interface LibraryState {
     waiting: string[];
     /** Routes to remove from the device. */
     leaving: string[];
+    /** The routes sent to a device, by route id. */
+    sent: Record<string, SentRoute>;
     /** Rides that the rider deleted; no import adds them again. */
     deleted: DeletedRide[];
 }
@@ -156,6 +165,9 @@ export function isRideRecord(value: unknown): value is RideRecord {
         && optional(value.group, isString) && optional(value.trip, isString) && optional(value.device, isString);
 }
 
+const isSent = (value: unknown): value is Record<string, SentRoute> => isRecord(value)
+    && Object.values(value).every(route => isRecord(route) && isString(route.device) && isString(route.key));
+
 const isDeleted = (value: unknown): value is DeletedRide =>
     isRecord(value) && isString(value.key) && rideKey.test(value.key) && optional(value.device, isString);
 
@@ -164,5 +176,6 @@ export const stateChecks: { [K in keyof LibraryState]: (value: unknown) => value
     active: (value): value is string | null => value === null || isString(value),
     waiting: isStrings,
     leaving: isStrings,
+    sent: isSent,
     deleted: (value): value is DeletedRide[] => Array.isArray(value) && value.every(isDeleted),
 };

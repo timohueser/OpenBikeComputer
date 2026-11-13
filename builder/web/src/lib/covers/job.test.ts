@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CoverRecord, RouteRecord } from '../library/records';
 import { Library } from '../library/store';
 import type { Still, StillJob } from '../trailview/still';
-import { lineKey, settled, startCoverJob, wantCover, type Renderer } from './job';
+import { lineKey } from '../library/summary';
+import { settled, startCoverJob, wantCover, type Renderer } from './job';
 import type { MapPictureMaker, MapPictureResult } from './map-picture';
 
 const route = (id: string, name = id, line = [8.38, 46.82, 8.42, 46.81]): RouteRecord => ({

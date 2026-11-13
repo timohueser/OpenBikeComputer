@@ -1,5 +1,5 @@
 /** Makes the summary of a route or a ride: its line simplified to about 1,000 points, its bounds and its numbers. */
-import type { Bike, RideSummary, Summary } from './records';
+import type { Bike, RideRecord, RideSummary, RouteRecord, Summary } from './records';
 
 /** One recorded point of a ride: Unix seconds and microdegrees. `segmentStart` marks the first point and the first
  * point after a pause. */
@@ -10,6 +10,20 @@ export interface RideSample {
     elevationM?: number | null;
     segmentStart: boolean;
 }
+
+/** FNV-1a of `text`, as hex. */
+function hash(text: string): string {
+    let value = 0x811c9dc5;
+    for (let i = 0; i < text.length; i++) value = Math.imul(value ^ text.charCodeAt(i), 0x01000193);
+    return (value >>> 0).toString(16).padStart(8, '0');
+}
+
+/** A hash of the summary line, and for a ride of its start time, as hex. A new name keeps it. */
+export const lineKey = (item: RouteRecord | RideRecord) => hash(`${item.summary?.line.join(',')}@${'key' in item ? item.summary.start : ''}`);
+
+/** A hash of what the device file of a route is made from: its name and its plan (`trip`), which give the line, the
+ * waypoints, the days and the bike. A route whose key differs from the key in `sent` changed since it was sent. */
+export const sentKey = (route: RouteRecord) => hash(JSON.stringify([route.name, route.trip]));
 
 /** Longitude, latitude, and the height in metres or null. */
 export type Point = readonly [number, number, (number | null)?];
