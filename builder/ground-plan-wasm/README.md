@@ -14,6 +14,9 @@ obc exec cargo clippy -p obc-ground-plan-bridge --all-targets -- -D warnings
 obc exec cargo clippy -p obc-ground-plan-bridge --target wasm32-unknown-unknown -- -D warnings
 ```
 
+The feature `storeys` (off) builds the storeys over the ground too: `MeshInput.storeys()` gives their meshes'
+bytes and `CellPlan.storey_times()` their stages' times. Without it the package links none of it.
+
 ## Check 7: native and WASM bytes
 
 ```sh
