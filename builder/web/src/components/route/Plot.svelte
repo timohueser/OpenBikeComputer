@@ -1,21 +1,17 @@
 <script lang="ts">
-    import { gradeBands, gradePaths, profileGrades } from '../../lib/planner/grade-data';
     import { profilePaths } from '../../lib/planner/profile-data';
-    import { appearance } from '../../lib/theme.svelte';
     import ClimbFills from './ClimbFills.svelte';
 
     /** One line of a ride over the width of its lane, from one value for each pixel column: `low` is the floor of the
-     * box and `high` stands just under its top. With `area`, the ground under the line is filled. With `lengthM`, the
-     * line has the colour of the steepness band of each stretch, as the profile of the Route page. `climbs` are stretches
-     * of the axis that the area fills darker, as that profile fills its climbs. `mark` is a place on the axis from 0 to
-     * 1: a dot on the line, and its value beside the pointer. */
-    let { columns, low, high, color, area = false, lengthM, climbs = [], lit, hover, mark, format, width = $bindable(0) }: {
+     * box and `high` stands just under its top. With `area`, the ground under the line is filled. `climbs` are
+     * stretches of the axis that the area fills darker, as the profile of the Route page fills its climbs. `mark` is a
+     * place on the axis from 0 to 1: a dot on the line, and its value beside the pointer. */
+    let { columns, low, high, color, area = false, climbs = [], lit, hover, mark, format, width = $bindable(0) }: {
         columns: (number | null)[];
         low: number;
         high: number;
         color: string;
         area?: boolean;
-        lengthM?: number;
         climbs?: { from: number; to: number }[];
         /** The index of the climb that is darker. */
         lit?: number;
@@ -30,7 +26,6 @@
     const FLIP = .85;
     const samples = $derived(columns.map((height, i) => ({ progress: (i + .5) / columns.length, height })));
     const paths = $derived(profilePaths(samples, low, high));
-    const bands = $derived(lengthM ? gradePaths(samples, profileGrades(samples, lengthM / 1000), low, high) : []);
     const marked = $derived.by(() => {
         const value = mark === undefined ? null : columns[Math.min(columns.length - 1, Math.floor(mark * columns.length))];
         // The box of `profilePaths` is 105 high, with `high` at 5.
@@ -44,11 +39,7 @@
             <path class="area" d={paths.area} />
             <ClimbFills area={paths.area} climbs={climbs.map(({ from, to }, index) => ({ a: from, b: to, index }))} {lit} {hover} />
         {/if}
-        {#each bands as path, band (band)}
-            {#if path}<path class="line grade" d={path} style:stroke={appearance.dark ? gradeBands[band].dark : gradeBands[band].color} />{/if}
-        {:else}
-            <path class="line" d={paths.line} style:stroke={color} />
-        {/each}
+        <path class="line" d={paths.line} style:stroke={color} />
     </svg>
     {#if marked && mark !== undefined}
         <b style:left={`${mark * 100}%`} style:top={`${marked.top}%`} style:background={color}></b>
@@ -74,9 +65,6 @@
         stroke-width: 1.5;
         stroke-linejoin: round;
         vector-effect: non-scaling-stroke;
-    }
-    .grade {
-        stroke-width: 2;
     }
     b {
         position: absolute;

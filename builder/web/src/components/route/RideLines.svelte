@@ -33,10 +33,6 @@
      * the cards over the rows keep CARDS_PX: the page around the cards and the rows is about PAGE_PX high, the card
      * around the rows about FRAME_PX, and GAP_PX are between two rows. */
     const SMOOTH_S = 10, ROW_PX = 56, LOW_ROW_PX = 36, CARDS_PX = 340, PAGE_PX = 176, FRAME_PX = 92, GAP_PX = 8;
-    /** The elevation row has the grade colours of the profile of the Route page. */
-    const ELEVATION_GRADES = false;
-    /** The elevation row fills the stretch of each climb, as the profile of the Route page. */
-    const ELEVATION_CLIMBS = true;
 
     const whole = (unit: string) => (value: number) => `${Math.round(value)} ${unit}`;
     const series: Record<Key, { label: string; color: string; format: (value: number) => string }> = {
@@ -75,7 +71,8 @@
         ...channels?.cadence && { cadence: series.cadence.format(channels.cadence.mean) },
     });
 
-    const stretches = $derived(ELEVATION_CLIMBS ? climbs.map(climb => ({ from: axis.xs[climb.first], to: axis.xs[climb.last] })) : []);
+    /** The elevation row fills the stretch of each climb, as the profile of the Route page. */
+    const stretches = $derived(climbs.map(climb => ({ from: axis.xs[climb.first], to: axis.xs[climb.last] })));
     /** The climb that is the selected part. */
     const chosen = $derived(part ? climbs.findIndex(climb => climb.first === part[0] && climb.last === part[1]) : -1);
     const pointer = $derived(mark === undefined ? undefined : axis.xs[sampleAt(shares, mark)]);
@@ -113,7 +110,7 @@
 
 {#snippet plot(key: Key)}
     <Plot columns={columns[key] ?? []} low={ranges[key]?.low ?? 0} high={ranges[key]?.high ?? 1} color={series[key].color} area={key === 'elevation'}
-        lengthM={key === 'elevation' && ELEVATION_GRADES ? axis.lengthM : undefined} climbs={key === 'elevation' ? stretches : []}
+        climbs={key === 'elevation' ? stretches : []}
         lit={chosen >= 0 ? chosen : undefined} hover={key === 'elevation' && hovered >= 0 ? hovered : undefined} mark={pointer} format={series[key].format} bind:width />
 {/snippet}
 {#snippet elevationRow()}{@render plot('elevation')}{/snippet}
