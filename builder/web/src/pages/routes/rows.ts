@@ -38,3 +38,14 @@ export function rideRows(shown: RideItem[], trips: Trip[], groups: Map<string, s
     }
     return [...rows.values()].sort((a, b) => b.at - a.at);
 }
+
+/** "24 Oct 2026". */
+export const dayText = (at: number, parts: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'short', year: 'numeric' }) =>
+    new Date(at).toLocaleDateString('en-GB', parts);
+
+/** The dates of a trip, "3 to 9 Aug 2026", with the first month and year only where they differ. */
+export function tripDates(row: Row): string {
+    const [from, to] = [new Date(row.rides[0].at), new Date(row.rides.at(-1)!.at)];
+    const year = from.getFullYear() !== to.getFullYear(), month = year || from.getMonth() !== to.getMonth();
+    return `${dayText(from.getTime(), { day: 'numeric', ...month && { month: 'short' }, ...year && { year: 'numeric' } })} to ${dayText(to.getTime())}`;
+}

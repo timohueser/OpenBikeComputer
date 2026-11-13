@@ -114,7 +114,7 @@ test('the ridden view shows a trip, a group of rides on a route, a ride taken ou
   await expect(page.getByText('No rides yet.')).toBeVisible();
   await expect(page.getByRole('radio', { name: 'Ridden 0' })).toBeChecked();
 
-  // Four rides of the lake route, the last taken out of the group, and a trip of two days along the coast.
+  // Four rides of the lake route and a trip of two days along the coast.
   const rides = [...[0, 1, 2, 3].map(month => ride(`Lake ${month + 1}`, lake, 37_000, month, 5)),
     ride('Coast, day 1', [9, 47, 9.5, 47], 38_000, 5, 1), ride('Coast, day 2', [9.5, 47, 10, 47], 38_000, 5, 2)];
   await page.goto('/planner.html?cover=none');
@@ -123,17 +123,22 @@ test('the ridden view shows a trip, a group of rides on a route, a ride taken ou
     const { library } = window.coverTest;
     await library.saveRoute(route);
     for (const ride of rides) await library.addRide(ride, new Blob(['ride']));
-    await library.setState('apart', [rides[3].key]);
   }, { rides, route: { id: 'lake', revision: 0, name: 'Lake test', updatedAt: 1, trip: trip(1), summary: { ...rides[0].summary, days: 1 } } });
 
   await page.goto('/planner.html#/routes/ridden');
   await expect(page.getByText('6 rides', { exact: true })).toBeVisible();
   const list = page.locator('.list ul');
-  await expect(list.locator('li')).toHaveText([/Coast, day 1 1 to 2 Jun \d+ · 2 days · 76.0\skm/, /Lake 4 5 Apr \d+ · 37.0\skm · 100\sm up/, /Lake test.*the last time on.*3 rides ›/]);
+  await expect(list.locator('li')).toHaveText([/Coast, day 1 1 to 2 Jun \d+ · 2 days · 76.0\skm/, /Lake test 37.0\skm · last on 5 Apr \d+ 4 rides ›/]);
   await expect(page.locator('.totals')).toHaveText(new RegExp(`${year} · 224\\skm · 6 rides`));
 
+  // The card of a trip opens its first day; the card of a group takes its newest ride out.
   await list.locator('.row', { hasText: 'Coast, day 1' }).click();
-  await expect(page.getByRole('region', { name: 'Coast, day 1' }).getByRole('link', { name: 'Open' })).toHaveAttribute('href', `#/ride/${rides[4].key}`);
+  const coast = page.getByRole('region', { name: 'Coast, day 1' });
+  await expect(coast).toContainText('2 days');
+  await expect(coast.getByRole('link', { name: 'Coast, day 1' })).toHaveAttribute('href', `#/ride/${rides[4].key}`);
+  await list.locator('.row', { hasText: 'Lake test' }).click();
+  await page.getByRole('region', { name: 'Lake test' }).getByRole('button', { name: 'Take out of the group' }).click();
+  await expect(list.locator('li')).toHaveText([/Coast, day 1/, /Lake 4 5 Apr \d+ · 37.0\skm · 100\sm up/, /Lake test.*last on 5 Mar.*3 rides ›/]);
 
   await list.getByRole('button', { name: '3 rides ›' }).click();
   await expect(list.locator('li')).toHaveText([/Lake 3/, /Lake 2/, /Lake 1/]);

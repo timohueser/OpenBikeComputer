@@ -19,7 +19,7 @@
     import { formatDistance, formatHeight } from '../lib/settings/format';
     import Chips from './routes/Chips.svelte';
     import { readSearch, results, rideItem, routeItem, type Box, type Chips as ChipValues, type Item, type Naming, type RideItem } from './routes/filter';
-    import { rideRows, type Row } from './routes/rows';
+    import { dayText, rideRows, tripDates, type Row } from './routes/rows';
     import SelectedCard from './routes/SelectedCard.svelte';
     import { deviceState, type DeviceState } from './routes/state';
 
@@ -30,8 +30,6 @@
     const READ_AFTER_MS = 200, KEEP_AFTER_MS = 300;
     const BADGES: Record<DeviceState, string> = { waiting: 'Waits', sent: 'On the device', changed: 'Changed' };
     const KEYS = { planned: ['bike', 'place', 'length', 'climb', 'days'], ridden: ['place', 'year', 'bike', 'length'] } as const;
-    const day = (at: number, parts: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'short', year: 'numeric' }) =>
-        new Date(at).toLocaleDateString('en-GB', parts);
 
     let records = $state.raw<RouteRecord[]>(), rides = $state.raw<RideRecord[]>(), apart = $state.raw<string[]>([]);
     let waiting = $state.raw<LibraryState['waiting']>(), sent = $state.raw<LibraryState['sent']>();
@@ -57,8 +55,7 @@
         : ridden ? rows : []);
     const mapShown = $derived(ridden ? listRows.flatMap(row => row.rides) : shown);
     const chosenRow = $derived(listRows.find(row => `${row.kind}:${row.id}` === selected));
-    // Until the full card of a group and a trip: their first ride, under the name of the row.
-    const chosen = $derived(ridden ? chosenRow && { ...chosenRow.rides[0], name: chosenRow.name } : shown.find(item => item.id === selected));
+    const chosen = $derived(ridden ? chosenRow?.rides[0] : shown.find(item => item.id === selected));
     const states = $derived(new Map(records?.map(record => [record.id, deviceState(record, waiting, sent)])));
     const times = $derived([...grouped.values()].reduce((counts, id) => counts.set(id, (counts.get(id) ?? 0) + 1), new Map<string, number>()));
     const count = (n: number, one: string) => `${n.toLocaleString('en')} ${one}${n === 1 ? '' : 's'}`;
@@ -164,13 +161,6 @@
         selected = row ? `${row.kind}:${row.id}` : ridden ? undefined : id;
     }
 
-    /** "3 to 9 Aug 2026", with the first month and year only where they differ. */
-    function dates(row: Row): string {
-        const [from, to] = [new Date(row.rides[0].at), new Date(row.rides.at(-1)!.at)];
-        const year = from.getFullYear() !== to.getFullYear(), month = year || from.getMonth() !== to.getMonth();
-        return `${day(from.getTime(), { day: 'numeric', ...month && { month: 'short' }, ...year && { year: 'numeric' } })} to ${day(to.getTime())}`;
-    }
-
     const addFiles = () => initCore().then(() => import('./AddFiles.svelte')).then(module => module.default);
 </script>
 
@@ -228,11 +218,11 @@
                                             <strong>{row.name}</strong>
                                             <span class="meta">
                                                 {#if row.kind === 'trip'}
-                                                    {[dates(row), count(row.days!, 'day'), formatDistance(row.rides.reduce((sum, ride) => sum + ride.summary.lengthM, 0))].join(' · ')}
+                                                    {[tripDates(row), count(row.days!, 'day'), formatDistance(row.rides.reduce((sum, ride) => sum + ride.summary.lengthM, 0))].join(' · ')}
                                                 {:else if row.kind === 'group'}
-                                                    {formatDistance(first.summary.lengthM)} · the last time on {day(first.at)}
+                                                    {formatDistance(first.summary.lengthM)} · last on {dayText(first.at)}
                                                 {:else}
-                                                    {[day(first.at), formatDistance(first.summary.lengthM), `${formatHeight(first.summary.climbM)} up`].join(' · ')}
+                                                    {[dayText(first.at), formatDistance(first.summary.lengthM), `${formatHeight(first.summary.climbM)} up`].join(' · ')}
                                                 {/if}
                                             </span>
                                         </span>
@@ -284,7 +274,10 @@
                 <p class="note">{error instanceof Error ? error.message : String(error)}</p>
             {/await}
             {#if chosen}
-                <div class="selected"><SelectedCard {library} item={chosen} device={states.get(chosen.id)} /></div>
+                <div class="selected">
+                    <SelectedCard {library} item={chosen} row={chosenRow} device={states.get(chosen.id)}
+                        route={chosenRow?.kind === 'group' && records?.some(record => record.id === chosenRow.id) ? chosenRow.id : undefined} />
+                </div>
             {/if}
         </div>
     </div>
@@ -442,6 +435,11 @@
     /* The button that opens a group sits on its row, so the row keeps room for it. */
     li:has(.open) .row {
         padding-right: 76px;
+    }
+    li:has(.open) .meta {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
     .open {
         position: absolute;
