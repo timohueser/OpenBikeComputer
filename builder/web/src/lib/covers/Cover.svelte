@@ -29,6 +29,7 @@
     interface Shown { bitmap: ImageBitmap; points: CoverPoints; summary?: Summary }
     let item = $state<RouteRecord | RideRecord>(), shown = $state<Shown>();
     let canvas = $state<HTMLCanvasElement>(), width = $state(0), height = $state(0), cut: Crop | undefined;
+    const look = $derived(item && 'key' in item ? 'ride' : 'route');
 
     /** The cover, else on a card the map picture of the theme for the line. */
     function source(item: RouteRecord | RideRecord, cover: CoverRecord, dark: boolean) {
@@ -68,7 +69,7 @@
         canvas.height = Math.round(height * devicePixelRatio);
         const { bitmap, points, summary } = shown;
         cut = drawCover(canvas.getContext('2d')!, { image: bitmap, width: bitmap.width, height: bitmap.height, points, summary },
-            { box: [canvas.width, canvas.height], mark, part, line });
+            { box: [canvas.width, canvas.height], mark, part, line, look });
     });
 
     function point(event: PointerEvent) {
@@ -118,7 +119,7 @@
             </span>
         {/each}
     {:else if fallback && line}
-        <svg viewBox={fallback.box} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+        <svg class={look} viewBox={fallback.box} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
             <polyline points={fallback.points} />
         </svg>
     {/if}
@@ -151,5 +152,9 @@
         stroke-linejoin: round;
         stroke-linecap: round;
         vector-effect: non-scaling-stroke;
+    }
+
+    .ride polyline {
+        stroke: var(--ride);
     }
 </style>

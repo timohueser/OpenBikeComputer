@@ -3,14 +3,13 @@
     import Card from '../../lib/ui/Card.svelte';
     import Icon from '../planner/PlannerIcon.svelte';
     import ElevationRow from './ElevationRow.svelte';
+    import { townOf } from './towns';
     import type { RouteSummary } from '../../lib/library/records';
     import { distanceIn, formatDistance, formatHeight, formatPercent } from '../../lib/settings/format';
     import { settings } from '../../lib/settings/settings.svelte';
     import { duration, orderedRoutePoints, planView, type RoutePoint, type Trip } from '../../lib/planner/editor';
-    import type { Coordinate } from '../../lib/planner/geo';
     import { profileHeightAt, profileSamples } from '../../lib/planner/profile-data';
     import type { RoutingLine } from '../../lib/planner/routing';
-    import { townName } from '../../lib/planner/point-names';
     import { STEEPEST_KM, type Climb, type RouteFacts, type Waypoint } from '../../lib/planner/route-facts';
     import { kindLabel } from '../../lib/planner/search/presentation';
 
@@ -32,22 +31,6 @@
     let climbsOpen = $state(false), opened = $state.raw<Climb>();
     // A climb of an earlier line or route does not stay open.
     const shownClimb = $derived(opened && facts?.climbs.includes(opened) ? opened : undefined);
-    // One place search for each shown climb top while the page lives, at most SEARCHES at a time: each search has a time limit.
-    const SEARCHES = 3;
-    const towns = new Map<string, Promise<string | null>>(), waiting: (() => void)[] = [];
-    let searching = 0;
-    const town = (top: Coordinate) => {
-        const key = top.join();
-        if (!towns.has(key)) towns.set(key, new Promise(resolve => {
-            const search = () => {
-                searching++;
-                void townName(top).then(resolve).finally(() => { searching--; waiting.shift()?.(); });
-            };
-            if (searching < SEARCHES) search(); else waiting.push(search);
-        }));
-        return towns.get(key)!;
-    };
-
     const days = $derived(facts && facts.days.length > 1 ? facts.days : undefined);
     const ends = $derived(orderedRoutePoints(trip));
     const finish = $derived(trip.loop ? ends[0] : ends.at(-1));
@@ -73,7 +56,7 @@
     <li class="climb">
         <button type="button" onclick={() => opened = climb}>
             <span>
-                {#await town(climb.top)}
+                {#await townOf(climb.top)}
                     <strong>{numbers}</strong>
                 {:then name}
                     {#if name}<strong>To {name}</strong><small>{numbers}</small>{:else}<strong>{numbers}</strong>{/if}
@@ -88,7 +71,7 @@
     {@const total = planView(trip, line).total}
     {@const top = profileHeightAt(climb.to / total, profileSamples(line))}
     <button type="button" class="back" onclick={() => opened = undefined}>‹ Climbs</button>
-    {#await town(climb.top)}
+    {#await townOf(climb.top)}
         <h3 class="climb-name">Climb</h3>
     {:then name}
         <h3 class="climb-name">{name ? `To ${name}` : 'Climb'}</h3>

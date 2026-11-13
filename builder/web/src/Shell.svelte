@@ -21,6 +21,8 @@
         planner: { label: 'Planner', keep: true, load: () => initCore().then(() => import('./components/planner/PlannerApp.svelte')) },
         // The page writes GPX and FIT.
         route: { load: () => initCore().then(() => import('./pages/Route.svelte')) },
+        // The page reads and writes GPX and FIT.
+        ride: { load: () => initCore().then(() => import('./pages/Ride.svelte')) },
         settings: { load: () => import('./pages/Settings.svelte') },
     };
 </script>

@@ -10,9 +10,11 @@
     import { styleConfig, useMapProtocols } from '../../lib/planner/map-setup';
     import { appearance } from '../../lib/theme.svelte';
 
-    /** A map that the rider can move, with the summary line of a route and the mark. A share is 0 to 1 along the line. */
-    let { summary, mark, pins = [], onpoint }: {
+    /** A map that the rider can move, with the summary line of a route or a ride and the mark. A share is 0 to 1 along the line. */
+    let { summary, ride = false, mark, pins = [], onpoint }: {
         summary: Summary;
+        /** The line is a ride, in `--ride`. */
+        ride?: boolean;
         mark?: number;
         /** Labels at shares of the line: a numbered waypoint, or a night without a number. */
         pins?: { share: number; label: string; number?: number }[];
@@ -40,7 +42,7 @@
         map.addLayer({ id: 'route-casing', type: 'line', source: 'route', layout: { 'line-join': 'round', 'line-cap': 'round' },
             paint: { 'line-color': style.getPropertyValue('--panel').trim(), 'line-width': 7 } });
         map.addLayer({ id: 'route', type: 'line', source: 'route', layout: { 'line-join': 'round', 'line-cap': 'round' },
-            paint: { 'line-color': style.getPropertyValue('--route').trim(), 'line-width': 4 } });
+            paint: { 'line-color': style.getPropertyValue(ride ? '--ride' : '--route').trim(), 'line-width': 4 } });
     }
 
     function point(event: maplibregl.MapMouseEvent) {
@@ -68,6 +70,7 @@
         return () => { resize.disconnect(); marker.remove(); created.remove(); };
     });
 
+    $effect(() => { dot.classList.toggle('ride', ride); });
     $effect(() => {
         if (map && theme !== shown) map.setStyle(basemapStyle(shown = theme, styleConfig));
     });
@@ -116,5 +119,8 @@
         border-radius: 50%;
         background: var(--panel);
         pointer-events: none;
+    }
+    :global(.route-map-mark.ride) {
+        border-color: var(--ride);
     }
 </style>

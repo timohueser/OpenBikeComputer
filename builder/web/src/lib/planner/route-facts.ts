@@ -32,6 +32,11 @@ export function routeFacts(trip: Trip, line: RoutingLine): RouteFacts {
     const stops = dayStops(trip, line, { from: 0, to: 1 }).map(({ point, km }, i) => ({ point, km, number: i + 1 }));
     const byId = new Map(stops.map(stop => [stop.point.id, stop]));
     const days = view.itinerary.map(day => ({ ...day, stops: day.rest ? [] : dayStops(trip, line, day).map(({ point }) => byId.get(point.id)!) }));
+    return { days, climbs: lineClimbs(line), stops };
+}
+
+/** The climbs of a line by the rule of the device (`routeSegments`). A recorded ride gives a line with no edge facts. */
+export function lineClimbs(line: Pick<RoutingLine, 'coordinates' | 'elevation' | 'edges'>): Climb[] {
     const km = cumulative(line.coordinates), samples = profileSamples(line), total = km.at(-1) || 1;
     // The heights are linear between the points, so the steepest window starts or ends at a point.
     const steepest = (from: number, to: number, gradient: number) => {
@@ -45,9 +50,8 @@ export function routeFacts(trip: Trip, line: RoutingLine): RouteFacts {
         }
         return Number.isFinite(most) ? most : gradient;
     };
-    const climbs = routeSegments(line).filter(segment => segment.kind === 'climb').map(({ from, to, ascent, gradient }) =>
-        ({ from, to, ascent: ascent!, gradient: gradient!, steepest: steepest(from, to, gradient!), top: coordinateAt(line.coordinates, view.total ? to / view.total : 0) }));
-    return { days, climbs, stops };
+    return routeSegments(line).filter(segment => segment.kind === 'climb').map(({ from, to, ascent, gradient }) =>
+        ({ from, to, ascent: ascent!, gradient: gradient!, steepest: steepest(from, to, gradient!), top: coordinateAt(line.coordinates, to / total) }));
 }
 
 /** The waypoints and the nights of a plan: on the calculated line when there is one, else at the points of `coordinates`
