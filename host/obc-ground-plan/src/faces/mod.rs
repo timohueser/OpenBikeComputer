@@ -863,7 +863,7 @@ pub(crate) fn level_lines<'a>(
     level: i8,
 ) -> Vec<WayLine<'a>> {
     let ctx = Ctx { graph, rules, origin: cell.origin() };
-    let decks = (STOREYS && level > 0).then(|| deck::Decks::of(graph));
+    let decks = (STOREYS && level > 0).then(|| deck::Decks::of(graph, input));
     let mut out =
         lines(&ctx, input, &keep(graph, decks.as_ref(), level), window(cell, input_m(&rules.plan, &rules.sections))).0;
     if STOREYS && decks.is_some() {
@@ -1060,7 +1060,7 @@ fn candidates<'a>(
     // farther still: the off-line test of the points' rounds reads them.
     let lx = reach(rules::lines_m(plan, &rules.sections));
     // A storey over the ground holds the pieces of its deck ways: each a deck's stroke between its end lines.
-    let decks = (STOREYS && level > 0).then(|| deck::Decks::of(graph));
+    let decks = (STOREYS && level > 0).then(|| deck::Decks::of(graph, input));
     let (mut lines, of_way) =
         lines(&ctx, input, &keep(graph, decks.as_ref(), level), reach(rules::ways_m(plan, &rules.sections)));
     let stretches: Vec<Vec<deck::Stretch>> = match &decks {
@@ -1068,7 +1068,7 @@ fn candidates<'a>(
             for line in &mut lines {
                 deck::deck_bands(line, &|p| ctx.units(rules.structures.edge_band_m, p));
             }
-            lines.iter().map(|l| deck::stretches(l, &d.pieces[&l.way])).collect()
+            lines.iter().map(|l| deck::stretches(l, &d.pieces[l.way as usize])).collect()
         }
         None => Vec::new(),
     };

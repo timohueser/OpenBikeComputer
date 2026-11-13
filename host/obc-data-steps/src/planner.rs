@@ -60,7 +60,7 @@ pub static PLANNER_SNOW: Layer = whole("planner/snow", 2, &[&WEB_PLANNER]);
 /// holds what the stamp worker makes of the tiles; `stamp_version` of `specs/trailview-tiles.md` says
 /// which stamp code made it.
 pub static PLANNER_TRAILVIEW_FEATURES: Layer =
-    Layer { revision: 17, ..whole("planner/trailview-features", 4, &[&WEB_PLANNER]) };
+    Layer { revision: 18, ..whole("planner/trailview-features", 4, &[&WEB_PLANNER]) };
 /// The TrailView ruleset, `rules.json` of `specs/trailview-tiles.md`. Its format is `format` of
 /// `rules.json`, `FORMAT` of `tools/trailview/rules.py`.
 pub static PLANNER_TRAILVIEW_RULES: Layer =
@@ -547,6 +547,10 @@ impl Planner {
             // The heights of roads, rivers and lakes come from the master terrain, by the class rules of the
             // roads; the sea, which OSM maps only as coastlines, from the water polygons.
             let sea = snapshot(inputs, store, "water-polygons", Vec::new(), &mut wanted)?;
+            let plan: serde_json::Value = serde_json::from_str(include_str!("../../../data/trailview/plan.json"))
+                .map_err(|e| Unplanned::Failed(format!("data/trailview/plan.json: {e}")))?;
+            // The rules of the ground plan's levels that the bake runs, as the solver's rows of the roads.
+            let levels = obc_trailview_features::kinds::level_rows(&roads, &waterways, &plan);
             let roads = obc_trailview_features::kinds::solver_rows(&roads);
             let waterways = obc_trailview_features::kinds::waterway_rows(&waterways);
             let finishes = obc_trailview_features::kinds::finish_rows(&finishes);
@@ -555,7 +559,7 @@ impl Planner {
                 name: "planner/trailview-features".into(),
                 inputs: vec![Input::step("planner/osm"), Input::step("planner/terrain/grid"), sea],
                 options: json!({"bounds": bounds, "kinds": kinds, "roads": roads, "finishes": finishes,
-                                "waterways": waterways, "attribution": attribution("osm-planet")}),
+                                "waterways": waterways, "levels": levels, "attribution": attribution("osm-planet")}),
                 outputs: vec!["trailview-features.pmtiles".into()],
                 run: Run::Rust(&functions::TRAILVIEW_FEATURES),
                 client: Client::All,

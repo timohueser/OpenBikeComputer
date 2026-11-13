@@ -19,7 +19,7 @@ pub fn storeys(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey
     if !cfg!(feature = "storeys") {
         return Storeys::default();
     }
-    let top = Decks::of(graph).storey.iter().copied().max().unwrap_or(0);
+    let top = Decks::of(graph, input).storey.iter().copied().max().unwrap_or(0);
     let mut out = Storeys::default();
     for k in 1..=top {
         let c = candidates(graph, input, rules, cell, k, LAYERS, true);

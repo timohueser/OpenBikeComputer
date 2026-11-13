@@ -55,15 +55,6 @@ type P = [i32; 2];
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ShellStats {
-    pub storeys: u32,
-    /// The sheets: the storeys' faces joined by their edges, per storey.
-    pub sheets: u32,
-    pub sheet_faces: u32,
-    /// Pieces of the free outline, and of the open lines (cell lines and end lines where storey 0 meets the deck).
-    pub free_pieces: u32,
-    pub open_pieces: u32,
-    pub parapet_segments: u32,
-    pub railing_posts: u32,
     pub piers: u32,
     /// Piers whose foot stands in a paved face of storey 0 or on a lower storey's sheet: left out.
     pub piers_left_out: u32,
@@ -128,21 +119,31 @@ impl StoreyMesh {
 /// The corners and the items of the mesh as it grows.
 #[derive(Default)]
 struct Build {
-    keys: Vec<(P, u32, u32)>,
-    of: BTreeMap<(P, u32, u32), u32>,
+    /// Each corner as it is asked for, its key (`corner_key`) and its offset's bits; equal ones are one corner.
+    keys: Vec<(u64, u32)>,
     tris: [Vec<[u32; 3]>; PARTS.len()],
     /// The tops' slots, then the undersides' risers.
     slots: [Vec<[u32; 4]>; 2],
 }
 
+/// A point in one word, in the order y, then x.
+fn yx(p: P) -> u64 {
+    u64::from(p[1] as u32 ^ 1 << 31) << 32 | u64::from(p[0] as u32 ^ 1 << 31)
+}
+
+fn of_yx(k: u64) -> P {
+    [(k as u32 ^ 1 << 31) as i32, ((k >> 32) as u32 ^ 1 << 31) as i32]
+}
+
+/// A corner's point and label in one word, in the order y, then x, then the label.
+fn corner_key(p: P, label: u32) -> u64 {
+    (p[1] as u64) << 44 | (p[0] as u64) << 25 | u64::from(label & NO_LABEL)
+}
+
 impl Build {
     fn corner(&mut self, p: P, label: u32, offset: f64) -> u32 {
-        let key = (p, label, (offset as f32).to_bits());
-        let n = self.keys.len() as u32;
-        *self.of.entry(key).or_insert_with(|| {
-            self.keys.push(key);
-            n
-        })
+        self.keys.push((corner_key(p, label), (offset as f32).to_bits()));
+        self.keys.len() as u32 - 1
     }
 
     /// A quad with its corners counter-clockwise seen from outside.
@@ -444,7 +445,7 @@ pub fn mesh_storeys(
     let mpu = |y: i32| metres_per_unit_at(origin_y + f64::from(y));
     let lines = Lines { words };
     let mut b = Build::default();
-    let mut stats = ShellStats { storeys: storeys.plans.len() as u32, ..ShellStats::default() };
+    let mut stats = ShellStats::default();
     let mut open = Vec::new();
     let mut all_labels = Vec::new();
     for plan in &storeys.plans {
@@ -455,22 +456,6 @@ pub fn mesh_storeys(
         let label = |f: u32| labels[f as usize].unwrap_or(NO_LABEL);
         let way = |l: u32| lines.way(l).and_then(|w| storeys.way(w));
         let depth = |l: u32| way(l).map_or(0.0, |w| w.depth_m);
-        // The sheets: faces joined by an edge.
-        let mut root: Vec<usize> = (0..plan.faces.len()).collect();
-        fn find_root(root: &mut [usize], mut i: usize) -> usize {
-            while root[i] != i {
-                root[i] = root[root[i]];
-                i = root[i];
-            }
-            i
-        }
-        for e in plan.edges.iter().filter(|e| sheet(e.left) && sheet(e.right)) {
-            let (x, y) = (find_root(&mut root, e.left as usize), find_root(&mut root, e.right as usize));
-            root[x.max(y)] = x.min(y);
-        }
-        let faces: Vec<usize> = (0..plan.faces.len()).filter(|&f| sheet(f as u32)).collect();
-        stats.sheet_faces += faces.len() as u32;
-        stats.sheets += faces.iter().filter(|&&f| find_root(&mut root, f) == f).count() as u32;
         // The face edges of the sheet in pieces.
         let mut pieces: Vec<(P, P, u32, u32, EdgeKind)> = Vec::new();
         for e in plan.edges.iter().filter(|e| sheet(e.left) || sheet(e.right)) {
@@ -493,10 +478,11 @@ pub fn mesh_storeys(
                 }
             }
         }
-        let mut points: Vec<P> = pieces.iter().flat_map(|p| [p.0, p.1]).collect();
-        points.sort_unstable_by_key(|p| (p[1], p[0]));
-        points.dedup();
-        let at = |p: P| points.binary_search_by_key(&(p[1], p[0]), |q| (q[1], q[0])).unwrap() as u32;
+        let mut keyed: Vec<(u64, u32)> = pieces.iter().flat_map(|p| [(yx(p.0), 0), (yx(p.1), 0)]).collect();
+        keyed.sort_unstable();
+        keyed.dedup();
+        let points: Vec<P> = keyed.iter().map(|k| of_yx(k.0)).collect();
+        let at = |p: P| keyed.binary_search(&(yx(p), 0)).unwrap() as u32;
         let segments: Vec<Segment> =
             pieces.iter().map(|&(a, c, left, right, _)| Segment { a: at(a), b: at(c), left, right }).collect();
         let (tris, _) = cdt::triangulate(&points, &segments, segments.len())?;
@@ -530,10 +516,8 @@ pub fn mesh_storeys(
                 (s_left, _) => {
                     if kind == EdgeKind::DeckEdge || kind == EdgeKind::CellBorder || on_cell_line(pa, pc) {
                         open.push([pa, pc]);
-                        stats.open_pieces += 1;
                         continue;
                     }
-                    stats.free_pieces += 1;
                     let f = if s_left { left } else { right };
                     let l = label(f);
                     let d = -depth(l);
@@ -547,23 +531,25 @@ pub fn mesh_storeys(
             }
         }
         // The free outline's chains, the sheet on their left; each run of one edge feature a parapet or a railing.
-        let mut from: BTreeMap<P, Vec<usize>> = BTreeMap::new();
-        let mut to: BTreeMap<P, usize> = BTreeMap::new();
-        for (k, f) in free.iter().enumerate() {
-            from.entry(f.0).or_default().push(k);
-            *to.entry(f.1).or_default() += 1;
-        }
+        // The pieces by their first point, and their last points, in sorted lists.
+        let mut from: Vec<(u64, u32)> = free.iter().enumerate().map(|(k, f)| (yx(f.0), k as u32)).collect();
+        from.sort_unstable();
+        let mut to: Vec<(u64, u32)> = free.iter().map(|f| (yx(f.1), 0)).collect();
+        to.sort_unstable();
         let mut used = vec![false; free.len()];
         let starts: Vec<usize> =
-            (0..free.len()).filter(|&k| !to.contains_key(&free[k].0)).chain(0..free.len()).collect();
+            (0..free.len()).filter(|&k| to.binary_search(&(yx(free[k].0), 0)).is_err()).chain(0..free.len()).collect();
         for s in starts {
             if used[s] {
                 continue;
             }
             let mut chain = vec![s];
             used[s] = true;
-            while let Some(&k) = from.get(&free[*chain.last().unwrap()].1).and_then(|ks| ks.iter().find(|&&k| !used[k]))
-            {
+            loop {
+                let end = yx(free[*chain.last().unwrap()].1);
+                let first = from.partition_point(|e| e.0 < end);
+                let next = from[first..].iter().take_while(|e| e.0 == end).map(|e| e.1 as usize).find(|&k| !used[k]);
+                let Some(k) = next else { break };
                 used[k] = true;
                 chain.push(k);
             }
@@ -599,19 +585,9 @@ pub fn mesh_storeys(
                     let (p, q, l) = (&pts[k..=e], &inner[k..=e], &ls[k..=e]);
                     if railing(run[0]) {
                         strip(&mut b, RAILING, p, q, l, (RAIL_M - BAR_M, RAIL_M));
-                        posts(
-                            &mut b,
-                            &lines,
-                            p,
-                            l,
-                            structures.post_spacing_m,
-                            origin_y,
-                            &|x| paved_at(plan, x),
-                            &mut stats,
-                        );
+                        posts(&mut b, &lines, p, l, structures.post_spacing_m, origin_y, &|x| paved_at(plan, x));
                     } else {
                         strip(&mut b, PARAPET, p, q, l, (0.0, PARAPET_M[1]));
-                        stats.parapet_segments += (e - k) as u32;
                     }
                     k = e;
                 }
@@ -621,16 +597,12 @@ pub fn mesh_storeys(
         all_labels.push(labels);
     }
     piers(&mut b, storeys, words, &lines, &all_labels, structures, &mut stats);
-    // The corners by point (y, then x), and the items in runs: each part and each kind of slot apart.
-    let mut order: Vec<u32> = (0..b.keys.len() as u32).collect();
-    order.sort_by_key(|&k| {
-        let (p, l, o) = b.keys[k as usize];
-        (p[1], p[0], l, o)
-    });
-    let mut rank = vec![0; order.len()];
-    for (new, &old) in order.iter().enumerate() {
-        rank[old as usize] = new as u32;
-    }
+    // The corners by point (y, then x), then label and offset, each once; and the items in runs: each part and each
+    // kind of slot apart.
+    let mut unique = b.keys.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    let rank: Vec<u32> = b.keys.iter().map(|k| unique.binary_search(k).unwrap() as u32).collect();
     let (mut triangles, mut triangle_runs, mut parts) = (Vec::new(), Vec::new(), [0; PARTS.len()]);
     for (k, tris) in b.tris.iter().enumerate() {
         let sorted = by_least(tris, &rank);
@@ -644,11 +616,10 @@ pub fn mesh_storeys(
         slot_runs.extend(runs(&sorted)?);
         slots.extend(sorted);
     }
-    let corners = (order.iter())
-        .map(|&c| {
-            let (p, label, offset) = b.keys[c as usize];
-            let label = label & NO_LABEL;
-            [p[0] as u32 | label << 19, p[1] as u32 | (label >> 13) << 19, offset]
+    let corners = (unique.iter())
+        .map(|&(key, offset)| {
+            let (label, x, y) = ((key as u32) & NO_LABEL, (key >> 25) as u32 & 0x7ffff, (key >> 44) as u32);
+            [x | label << 19, y | (label >> 13) << 19, offset]
         })
         .collect();
     Ok(StoreyMesh {
@@ -669,7 +640,6 @@ pub fn mesh_storeys(
 /// `spacing_m`, and at each end that lies on no cell line, inside the polyline; each a closed square box under the
 /// rail, a closed triangular prism `BAR_M` on a side. A post nearer another one than a quarter of the spacing, or
 /// across a cell line, is left out.
-#[allow(clippy::too_many_arguments)]
 fn posts(
     b: &mut Build,
     lines: &Lines,
@@ -678,7 +648,6 @@ fn posts(
     spacing_m: f64,
     origin_y: f64,
     paved: &dyn Fn([f64; 2]) -> bool,
-    stats: &mut ShellStats,
 ) {
     let f = |p: P| [f64::from(p[0]), f64::from(p[1])];
     let mpu = |p: [f64; 2]| metres_per_unit_at(origin_y + p[1]);
@@ -729,7 +698,6 @@ fn posts(
             continue;
         }
         prism(b, POST, &clip([0, 0], &ring), (l, RAIL_M - BAR_M), (l, 0.0));
-        stats.railing_posts += 1;
     }
 }
 

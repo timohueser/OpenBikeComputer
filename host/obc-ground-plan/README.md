@@ -11,7 +11,7 @@ its inputs: integers, `libm` and ordered collections, no I/O and no threads.
 | `tile` | The reader of format 4, the owner of each element of a cell's tiles, `TileCache` |
 | `terrain` | `StoredPage`, `Terrain::wanted` and `Terrain::height`, the Catmull-Rom of the viewer |
 | `sections` | `Sections::way` and `Sections::water` from `roads.json`, `finishes.json`, `waterways.json`; `WidthRules`, the width rule that the feature bake shares; the reach table |
-| `graph` | `graph::build`: the way graph of a cell (parts, ways, samples, junctions, joints, ends, crossings, decks); `graph::check` |
+| `graph` | `graph::build`: the way graph of a cell (parts, ways, samples, junctions, joints, ends, crossings, decks); `graph::check`; `graph::levels`, which the feature bake runs, and `graph::level_tags`, the tags that carry the levels in the tiles and their reader |
 | `cell` | `build_cell`: a cell from its request bytes, stage by stage (`STAGES`), with the time of each; `build_storeys`: the same with the storeys over the ground (decks); `far_request`: a cell's far block alone |
 | `transport` | `Request` (the canonical request bytes), `Flat` (the plan as flat integer arrays, its stats and digest), `vocabulary()` |
 | `debug` | The palette that the debug tool and the viewer's debug draw share |

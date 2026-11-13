@@ -17,7 +17,7 @@ use crate::roads::{self, Classes, River, Surroundings};
 use crate::structures::{self, is_bridge, GROUND};
 use crate::tiles::{simplified, Geometry, Tiles, BUFFER_M, EXTENT, FORMAT, MAX_ZOOM, MIN_ZOOM, TOLERANCE};
 use crate::water::{self, Kind, Level};
-use crate::{lifts, metres, rails, sea, world, Part, Tags, Terrain};
+use crate::{levels, lifts, metres, rails, sea, world, Part, Tags, Terrain};
 
 const EARTH_RADIUS_KM: f64 = 6371.0088;
 /// The waterways and lakes that the water solver sets, and the falls, weirs and dams that keep the
@@ -77,7 +77,20 @@ struct Placer {
 
 impl Placer {
     fn place(&mut self, kind: &str, geometry: Geometry, min_zoom: u8, tags: Tags, parts: Vec<Part>) {
-        if self.tiles.add(MAX_ZOOM, kind, geometry, &tags, &parts) {
+        self.place_with(kind, geometry, min_zoom, tags, parts, None);
+    }
+
+    /// `place`, with an id on the zoom-13 copies where the feature can take more tags after the cut.
+    fn place_with(
+        &mut self,
+        kind: &str,
+        geometry: Geometry,
+        min_zoom: u8,
+        tags: Tags,
+        parts: Vec<Part>,
+        id: Option<u32>,
+    ) {
+        if self.tiles.add(MAX_ZOOM, kind, geometry, &tags, &parts, id) {
             *self.counts.entry(kind.to_string()).or_default() += 1;
         }
         if min_zoom < MAX_ZOOM && self.tiles.meets(min_zoom, &parts) {
@@ -373,7 +386,9 @@ pub fn bake(
                     let curves = parts.iter().filter(|p| p.z.is_some()).map(roads::polyline);
                     tracks.extend(curves.map(|p| (entry.kind.clone(), tags.clone(), p)));
                 }
-                placer.entry(entry, all, parts);
+                // A way whose parts all have an alignment takes the tags of the levels: its metres along run on.
+                let id = parts.iter().all(|p| p.plan.is_some()).then_some(n as u32);
+                placer.place_with(&entry.kind, entry.geometry, entry.min_zoom, all, parts, id);
             }
             for (point, z, way) in piers {
                 let min_zoom = kinds[ways[decks[way]].0].min_zoom;
@@ -419,8 +434,12 @@ pub fn bake(
     let (off, most) = ground_census.off_centre();
     eprintln!("census: {off} positions of ways on the ground lie more than {GATE_M} m off the terrain under their centre line, at most {most:.1} m");
     metrics.insert("census".into(), json!({"ground": ground_census.metrics(), "water": water_census.metrics()}));
+    let pass = Instant::now();
+    let (levels, cells) = levels::tags(&placer.tiles, terrain, memory);
+    eprintln!("levels: {cells} cells, {} ways tagged in {:.1} s", levels.len(), pass.elapsed().as_secs_f64());
+    metrics.insert("levels".into(), json!({"cells": cells, "ways": levels.len()}));
     low_zooms(&mut placer);
-    let size = write(&placer, options, output)?;
+    let size = write(&placer, &levels, options, output)?;
     eprintln!("tiles: {:.1} s", started.elapsed().as_secs_f64());
     let mut out = Map::new();
     out.insert("osmium".into(), version.lines().next().unwrap_or_default().into());
@@ -742,12 +761,13 @@ fn area_km2([west, south, east, north]: [f64; 4]) -> f64 {
 }
 
 /// Write the tiles to the archive at `output`; its bytes.
-fn write(placer: &Placer, options: &Options, output: &Path) -> Result<u64, String> {
+/// Write the archive, with the tags of the levels on the ways of each id.
+fn write(placer: &Placer, levels: &HashMap<u32, Tags>, options: &Options, output: &Path) -> Result<u64, String> {
     let mut tiles: Vec<(u64, Vec<u8>)> = placer
         .tiles
         .tiles
         .iter()
-        .map(|(&(z, x, y), tile)| (pmtiles::tile_id(z, x, y), pmtiles::gzip(&tile.bytes())))
+        .map(|(&(z, x, y), tile)| (pmtiles::tile_id(z, x, y), pmtiles::gzip(&tile.bytes_with(&|id| levels.get(&id)))))
         .collect();
     if tiles.is_empty() {
         return Err("The region has no TrailView features".into());
@@ -780,7 +800,7 @@ fn low_zooms(placer: &mut Placer) {
         for zoom in feature.min_zoom..MAX_ZOOM {
             let tolerance = TOLERANCE / ((1u64 << zoom) as f64 * EXTENT as f64);
             let parts = simplified(feature.geometry, &feature.parts, &anchors, tolerance);
-            placer.tiles.add(zoom, &feature.kind, feature.geometry, &feature.tags, &parts);
+            placer.tiles.add(zoom, &feature.kind, feature.geometry, &feature.tags, &parts, None);
         }
     }
 }

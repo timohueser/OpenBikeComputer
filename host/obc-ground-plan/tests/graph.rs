@@ -1,6 +1,6 @@
 //! The way graph over every cell of the TrailView fixture: the invariants G1 to G4 of `check` and G7
 //! to G9 of `check_levels`, equal graphs and levels near the border of two neighbouring cells (G5),
-//! and the same bytes twice (G6).
+//! the same bytes twice (G6), and the levels that the tiles carry.
 
 #[path = "fixture/mod.rs"]
 mod fixture;
@@ -10,8 +10,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use fixture::{default_dir, Fixture};
 use obc_ground_plan::faces::Rules;
 use obc_ground_plan::frame::{metres_per_unit, CellKey, CELL_UNITS};
-use obc_ground_plan::graph::{build, check, check_levels, levels, Arm, Sample, WayGraph};
+use obc_ground_plan::graph::{build, check, check_levels, level_tags, levels, Arm, Sample, Station, WayGraph};
 use obc_ground_plan::sections::Sections;
+use obc_ground_plan::tile::Tags;
 use obc_ground_plan::CellInput;
 
 /// The band on each side of a shared border where two cells must agree.
@@ -172,4 +173,75 @@ fn neighbouring_cells_agree_near_their_border_g5() {
     println!("{pairs} borders, {compared} elements compared");
     assert!(pairs > 100 && compared > 10_000);
     assert!(faults.is_empty(), "{} differences:\n{}", faults.len(), faults[..faults.len().min(40)].join("\n"));
+}
+
+/// The levels that the fixture's tiles carry are those that `levels` gives the cells: the tags of each feature are
+/// those that the bake's merge (`level_tags::merge`) gives of what the cells find, storey and slab included; and what
+/// a cell reads of them (`level_tags::read`) on every way inside its square has the same states and end lines, their
+/// stations to 1e-9 of a span. A change of the levels or of their rules takes a new bake of the fixture.
+#[test]
+fn the_tiles_carry_the_levels_of_each_cell() {
+    let mut fixture = Fixture::open(&default_dir());
+    let structures = &Rules::embedded().structures;
+    let near = |a: &Station, b: &Station| a.span == b.span && (a.u - b.u).abs() <= 1e-9;
+    let (mut faults, mut ways) = (Vec::new(), 0);
+    // A feature by its kind and tags, the same in each tile that holds it; and its level tags.
+    let (mut ids, mut carried_tags) = (BTreeMap::<String, u32>::new(), BTreeMap::<u32, Tags>::new());
+    let (mut found, mut groups, mut over) = (BTreeMap::<u32, Vec<level_tags::Found>>::new(), Vec::new(), Vec::new());
+    for (key, computed) in graphs() {
+        let input = fixture.cell(key);
+        let cell = level_tags::found(&computed, &input, Sections::embedded());
+        let mut id = |[c, r, index]: [u32; 3]| {
+            let f = input.features.iter().find(|f| f.parts[0].tile == (c, r) && f.index == index).unwrap();
+            let next = ids.len() as u32;
+            let id = *ids.entry(format!("{} {:?}", f.kind, f.tags)).or_insert(next);
+            let own = [level_tags::LEVELS, level_tags::STOREY, level_tags::SLAB];
+            let tags = f.tags.iter().filter(|(k, _)| own.contains(&k.as_str()));
+            carried_tags.insert(id, tags.map(|(k, v)| (k.clone(), v.clone())).collect());
+            id
+        };
+        for (k, f) in cell.found {
+            found.entry(id(k)).or_default().push(f);
+        }
+        groups.extend(cell.groups.into_iter().map(|g| g.into_iter().map(&mut id).collect::<Vec<_>>()));
+        over.extend(cell.over.into_iter().map(|(l, u)| (id(l), id(u))));
+        let mut carried = build(key, &input, Sections::embedded());
+        level_tags::read(&mut carried, &input, Sections::embedded(), structures.edge_band_m);
+        for w in (0..computed.ways.len() as u32).filter(|&w| level_tags::inside(&computed, w)) {
+            let runs = |g: &WayGraph| g.levels.runs.iter().filter(|r| r.way == w).cloned().collect::<Vec<_>>();
+            let lines = |g: &WayGraph| g.levels.end_lines.iter().filter(|l| l.way == w).cloned().collect::<Vec<_>>();
+            let (a, b) = (runs(&computed), runs(&carried));
+            let (la, lb) = (lines(&computed), lines(&carried));
+            if a.is_empty() && b.is_empty() {
+                continue;
+            }
+            ways += 1;
+            let same_runs = a.len() == b.len()
+                && a.iter().zip(&b).all(|(x, y)| x.state == y.state && near(&x.from, &y.from) && near(&x.to, &y.to));
+            let same_lines = la.len() == lb.len()
+                && la.iter().all(|x| {
+                    lb.iter().any(|y| {
+                        let close = (0..2).all(|e| (0..2).all(|k| (x.ends[e][k] - y.ends[e][k]).abs() <= 1));
+                        x.kind == y.kind && near(&x.at, &y.at) && close
+                    })
+                });
+            if !same_runs || !same_lines {
+                faults.push(format!("{key:?} way {w}: computed {a:?} {la:?}, carried {b:?} {lb:?}"));
+            }
+        }
+    }
+    let merged = level_tags::merge(&found, &groups, &over);
+    let mut counts = BTreeMap::<String, usize>::new();
+    for (id, carried) in &carried_tags {
+        let want = merged.get(id).cloned().unwrap_or_default();
+        for k in want.keys() {
+            *counts.entry(k.clone()).or_default() += 1;
+        }
+        if want != *carried {
+            faults.push(format!("feature {id}: the cells give {want:?}, the tiles carry {carried:?}"));
+        }
+    }
+    println!("{ways} ways with levels inside their cells; tags of the cells' features {counts:?}");
+    assert!(ways > 10, "the fixture's bridges and tunnels");
+    assert!(faults.is_empty(), "{} faults:\n{}", faults.len(), faults[..faults.len().min(10)].join("\n"));
 }

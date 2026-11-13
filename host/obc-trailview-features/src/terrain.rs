@@ -162,6 +162,10 @@ impl Terrain for Tiles {
         self.top.into()
     }
 
+    fn tile(&self, z: u8, x: u32, y: u32) -> Option<Arc<Vec<f32>>> {
+        Tiles::tile(self, (z, x, y))
+    }
+
     fn heights(&self, points: &[[f64; 2]]) -> Vec<f64> {
         // The last tiles that this call read, so that points sorted by tile take the lock of the
         // cache about once per tile.

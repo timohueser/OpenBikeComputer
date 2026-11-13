@@ -869,6 +869,27 @@ fn the_ladder_follows_the_room_by_the_class_rows_at_every_boundary() {
 }
 
 #[test]
+fn a_deck_over_another_deck_lies_on_storey_2() {
+    // Two residential bridges, square to each other, the upper one 6 m over the lower: room for a full deck (4.5 + 1.0).
+    let bridge = [("highway", "residential"), ("bridge", "yes"), ("deck", "1")];
+    let upper = line("road", &bridge, &[[0.0, -40.0], [0.0, 40.0]], 16.0);
+    let lower = line("road", &bridge, &[[-40.0, 0.0], [40.0, 0.0]], 10.0);
+    let lines = [upper, lower];
+    let (g, input) = (graph(&lines), input_of(cell(), &lines));
+    let found = super::level_tags::found(&g, &input, Sections::embedded());
+    let key = |feature: usize| {
+        [input.features[feature].parts[0].tile.0, input.features[feature].parts[0].tile.1, feature as u32]
+    };
+    assert_eq!(found.over, [(key(1), key(0))], "the lower bridge under the upper one");
+    // The bake's merge, with the features' positions as their ids.
+    let ids = |k: [u32; 3]| k[2];
+    let cells = BTreeMap::from_iter(found.found.into_iter().map(|(k, f)| (ids(k), vec![f])));
+    let tags = super::level_tags::merge(&cells, &[], &[(1, 0)]);
+    let storey = |id: u32| tags.get(&id).and_then(|t| t.get(super::level_tags::STOREY)).cloned();
+    assert_eq!((storey(0), storey(1)), (Some("2".to_string()), None));
+}
+
+#[test]
 fn the_room_reads_each_way_on_its_own_curve() {
     // A residential deck on a hairpin of radius 12 m over a road, both level: the room at every corner
     // of the overlap is the height difference, though the hairpin's far leg passes within 24 m.

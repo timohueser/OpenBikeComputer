@@ -31,7 +31,7 @@ pub struct CellBuild {
     /// The storeys over the ground, whose records `records` holds after storey 0's; none unless asked
     /// (`build_storeys`).
     pub storeys: Storeys,
-    /// With the storeys: the times of the levels of the way graph and of the storeys' faces and records (ms).
+    /// With the storeys: the times of the levels that the tiles carry and of the storeys' faces and records (ms).
     pub storey_times: [f64; 2],
 }
 
@@ -69,9 +69,9 @@ pub fn build_request(
     Ok(stages(now(), request, cache, rules, now)?.0)
 }
 
-/// `build_request`, then the storeys over the ground: the levels of the way graph (`graph::levels`), the storeys'
-/// faces, their records after storey 0's in the one block (`records::storeys`) and what their shells read. Storey
-/// 0's faces and far block are those of `build_request`.
+/// `build_request`, then the storeys over the ground: the levels of the way graph as the tiles carry them
+/// (`graph::level_tags::read`), the storeys' faces, their records after storey 0's in the one block
+/// (`records::storeys`) and what their shells read. Storey 0's faces and far block are those of `build_request`.
 pub fn build_storeys(
     request: Request,
     cache: &mut TileCache,
@@ -80,7 +80,7 @@ pub fn build_storeys(
 ) -> Result<CellBuild, String> {
     let (mut b, input) = stages(now(), request, cache, rules, now)?;
     let start = now();
-    graph::levels(&mut b.graph, &input, &rules.sections, &rules.structures);
+    graph::level_tags::read(&mut b.graph, &input, &rules.sections, rules.structures.edge_band_m);
     let levelled = now();
     b.storeys = records::storeys(&b.graph, &input, rules, b.key, &mut b.records);
     b.storey_times = [levelled - start, now() - levelled];
