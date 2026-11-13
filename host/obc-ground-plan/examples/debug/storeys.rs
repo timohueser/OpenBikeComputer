@@ -52,8 +52,26 @@ pub fn cells(fix: &mut Fixture, keys: &[CellKey], rules: &Rules) -> Result<BTree
     Ok(out)
 }
 
-/// The counts and checks of the place's cells.
-pub fn stats(cells: &BTreeMap<CellKey, Cell>) -> Value {
+/// The counts and checks of the place's cells; the triangles and corners of the storeys' meshes in the square
+/// [x0, y0, x1, y1] (global frame units, every corner inside).
+pub fn stats(cells: &BTreeMap<CellKey, Cell>, square: [f64; 4]) -> Value {
+    let inside = |key: CellKey, p: [i32; 2]| {
+        let g = global(key, p);
+        (square[0]..=square[2]).contains(&(g.x as f64)) && (square[1]..=square[3]).contains(&(g.y as f64))
+    };
+    let mut near = [0u32; PARTS.len()];
+    let mut near_corners = std::collections::BTreeSet::new();
+    for (&key, c) in cells {
+        let m = &c.storeys;
+        for (k, n) in near.iter_mut().enumerate() {
+            for t in &m.triangles[m.part(k)] {
+                if t.iter().all(|&i| inside(key, m.corner(i as usize).0)) {
+                    *n += 1;
+                    near_corners.extend(t.iter().map(|&i| (key, i)));
+                }
+            }
+        }
+    }
     let mut parts = [0u32; PARTS.len()];
     let (mut closure_faults, mut paved, mut bytes, mut sheets, mut piers, mut left_out) =
         (Vec::new(), Vec::new(), 0, 0, 0, 0);
@@ -68,7 +86,10 @@ pub fn stats(cells: &BTreeMap<CellKey, Cell>) -> Value {
         piers += c.storeys.stats.piers;
         left_out += c.storeys.stats.piers_left_out;
     }
-    json!({"triangles": PARTS.iter().zip(parts).map(|(n, k)| (n.to_string(), json!(k))).collect::<serde_json::Map<_, _>>(),
+    let by_part = |v: [u32; PARTS.len()]| {
+        PARTS.iter().zip(v).map(|(n, k)| (n.to_string(), json!(k))).collect::<serde_json::Map<_, _>>()
+    };
+    json!({"triangles": by_part(parts), "in_square": {"triangles": by_part(near), "corners": near_corners.len()},
         "sheets": sheets, "piers": piers, "piers_left_out": left_out, "storey_mesh_bytes": bytes,
         "closure_faults": closure_faults, "on_paved": paved})
 }

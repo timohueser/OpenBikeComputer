@@ -373,7 +373,7 @@ fn run() -> Result<(), String> {
             let path = o.out.join(format!("{name}-storeys.png"));
             storeys::save(&top.pixmap, &path)?;
             storeys::oblique(&o.out.join(format!("{name}-oblique.png")), &built, &cells, centre, o.size_m, o.oblique)?;
-            let stats = storeys::stats(&built);
+            let stats = storeys::stats(&built, square);
             write(
                 &o.out.join(format!("{name}-storeys.json")),
                 serde_json::to_string_pretty(&stats).unwrap().as_bytes(),
@@ -384,7 +384,7 @@ fn run() -> Result<(), String> {
                     &gltf::glb(&storeys::gltf_meshes(&built, &cells, centre, o.size_m)),
                 )?;
             }
-            println!("{name}: storeys {}", serde_json::to_string(&stats["triangles"]).unwrap());
+            println!("{name}: storeys {}", serde_json::to_string(&stats["in_square"]).unwrap());
         }
         if o.probe > 0 {
             let (points, free) = probe(&cells, sections, square, o.probe);
