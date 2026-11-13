@@ -1,7 +1,11 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { cumulative, type Coordinate } from '../geo';
 import type { Edges } from '../routing';
-import { routeSegments } from './segments';
+import { climbs, routeSegments } from './segments';
+
+interface ClimbVectors { step_m: number; profiles: { name: string; heights: number[]; climbs: { start_m: number; end_m: number; gain_m: number }[] }[] }
+const vectors: ClimbVectors = JSON.parse(readFileSync(new URL('../../../../../../specs/vectors/climbs.json', import.meta.url), 'utf8'));
 
 describe('route segments for search', () => {
     // Five 500 m edges.
@@ -25,8 +29,15 @@ describe('route segments for search', () => {
     });
     it('finds climbs and descents with the device rule, and steep runs only uphill', () => {
         expect(routeSegments({ coordinates, elevation: [250, 250, 220, 160, 130, 100], edges: {} })).toEqual([
-            { kind: 'descent', from: 0, to: km[5], ascent: 150, gradient: 6 },
+            { kind: 'descent', from: km[1], to: km[5], ascent: 150, gradient: 7.5 },
         ]);
         expect(routeSegments({ coordinates, elevation: [100, 104, 100, 104, 100, 104], edges: {} })).toEqual([]);
+    });
+    it('finds the climbs of the shared vectors that the device finds', () => {
+        for (const { name, heights, climbs: expected } of vectors.profiles) {
+            const km = heights.map((_, i) => i * vectors.step_m / 1000);
+            const found = climbs(km, heights).map(({ from, to, gain }) => ({ start_m: from * vectors.step_m, end_m: to * vectors.step_m, gain_m: gain }));
+            expect(found, name).toEqual(expected);
+        }
     });
 });
