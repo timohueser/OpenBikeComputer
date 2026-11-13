@@ -332,7 +332,8 @@ pub fn far(request: CellRequest) -> Result<Vec<u32>, Error> {
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
 pub fn build_bytes(bytes: &[u8]) -> Result<CellPlan, Error> {
     let built = if cfg!(feature = "storeys") {
-        Request::decode(bytes).and_then(|r| build_of(r, &mut TileCache::new(4)))
+        let built = Request::decode(bytes).and_then(|r| build_of(r, &mut TileCache::new(4)));
+        built.map(|b| CellBuild { request: Some(fnv(bytes)), ..b })
     } else {
         build_cell(bytes, Rules::embedded(), &mut now)
     };
