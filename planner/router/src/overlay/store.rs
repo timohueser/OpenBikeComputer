@@ -13,9 +13,11 @@ pub(crate) struct Label {
     pub cost: u64,
     pub parent: u32,
     pub origin: u8,
+    /// The level of the step that set the label: 0 for a seed or a turn, else that of a cost table.
+    pub level: u8,
 }
 
-pub(crate) const NONE: Label = Label { cost: u64::MAX, parent: u32::MAX, origin: u8::MAX };
+pub(crate) const NONE: Label = Label { cost: u64::MAX, parent: u32::MAX, origin: u8::MAX, level: 0 };
 
 /// One cache line holds a whole slot, so a probe reads one place.
 #[derive(Clone, Copy)]
@@ -24,9 +26,10 @@ struct Slot {
     id: u32,
     parent: u32,
     origin: u8,
+    level: u8,
 }
 
-const FREE: Slot = Slot { cost: u64::MAX, id: EMPTY, parent: u32::MAX, origin: u8::MAX };
+const FREE: Slot = Slot { cost: u64::MAX, id: EMPTY, parent: u32::MAX, origin: u8::MAX, level: 0 };
 
 /// Labels by road ID: open addressing with linear probing over a power of two of slots. No array
 /// spans the ID space, so sparse IDs cost nothing.
@@ -73,7 +76,7 @@ impl Labels {
         if slot.id == EMPTY {
             return NONE;
         }
-        Label { cost: slot.cost, parent: slot.parent, origin: slot.origin }
+        Label { cost: slot.cost, parent: slot.parent, origin: slot.origin, level: slot.level }
     }
 
     /// Sets the label of `id`. A table that would pass `room` bytes while it grows is a `Limit`.
@@ -89,7 +92,7 @@ impl Labels {
             }
             self.used += 1;
         }
-        self.slots[at] = Slot { cost: label.cost, id, parent: label.parent, origin: label.origin };
+        self.slots[at] = Slot { cost: label.cost, id, parent: label.parent, origin: label.origin, level: label.level };
         Ok(())
     }
 
@@ -135,6 +138,12 @@ impl Default for Queue {
 impl Queue {
     pub fn bytes(&self) -> usize {
         self.capacity * size_of::<Entry>()
+    }
+
+    /// An empty queue that keeps its room.
+    pub fn clear(&mut self) {
+        self.buckets.iter_mut().for_each(Vec::clear);
+        self.last = 0;
     }
 
     /// A queue that would pass `room` bytes is a `Limit`.
@@ -203,7 +212,7 @@ mod tests {
                 .map(|k| if k % 4 == 0 { k + round } else { (random(&mut state) % u64::from(EMPTY)) as u32 })
                 .chain([EMPTY - 1, 0]);
             for (k, id) in ids.enumerate() {
-                let label = Label { cost: k as u64, parent: id ^ 1, origin: (k % 7) as u8 };
+                let label = Label { cost: k as u64, parent: id ^ 1, origin: (k % 7) as u8, level: (k % 5) as u8 };
                 labels.set(id, label, usize::MAX).unwrap();
                 oracle.insert(id, label);
             }
@@ -218,7 +227,8 @@ mod tests {
         assert!(matches!(labels.set(EMPTY, NONE, usize::MAX), Err(Error::InvalidData(_))));
         let room = START_SLOTS * 24 * 2;
         let ids = 0..START_SLOTS as u32;
-        let result = ids.into_iter().try_for_each(|id| labels.set(id, Label { cost: 1, parent: 0, origin: 0 }, room));
+        let result =
+            ids.into_iter().try_for_each(|id| labels.set(id, Label { cost: 1, parent: 0, origin: 0, level: 0 }, room));
         assert!(matches!(result, Err(Error::Limit)));
     }
 

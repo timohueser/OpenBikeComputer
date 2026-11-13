@@ -126,6 +126,12 @@ fn within(bytes: &[u8], at: u64, count: u64, size: u64) -> Result<()> {
     (offset(at, count, size)? <= bytes.len() as u64).then_some(()).ok_or_else(|| invalid("a section outside the part"))
 }
 
+/// The offset `start` and the size up to `end`, which a view checked against its part.
+fn range(start: u64, end: u64) -> Result<(u32, u32)> {
+    let size = end.checked_sub(start).and_then(|size| u32::try_from(size).ok());
+    u32::try_from(start).ok().zip(size).ok_or_else(|| invalid("a block of 4 GiB"))
+}
+
 /// The bits of a cell ID below `level`, for the ID field widths `level_bits`, level 1 first.
 pub fn below(level_bits: &[u8], level: usize) -> u32 {
     let bits: u32 = level_bits.iter().take(level.saturating_sub(1)).map(|&b| u32::from(b)).sum();
@@ -554,6 +560,17 @@ impl<'a> Topology<'a> {
         Ok((slice(self.bytes, cell.block.into(), first)?, slice(self.bytes, cell.columns()?[0], head)?))
     }
 
+    /// The offset and the size of the block of `cell`.
+    pub fn block(&self, cell: &Level1) -> Result<(u32, u32)> {
+        range(cell.block.into(), cell.columns()?[3])
+    }
+
+    /// The offset and the size of the leaving list of `cell`.
+    pub fn leaving_list(&self, cell: &Level1) -> Result<(u32, u32)> {
+        let [_, leaving, departure, _] = cell.columns()?;
+        range(leaving, departure)
+    }
+
     /// The turns of road `road` of `cell`, counted from the first turn of the cell.
     pub fn turns(&self, cell: &Level1, road: u32) -> Result<std::ops::Range<u32>> {
         if road >= cell.roads {
@@ -654,6 +671,11 @@ pub struct GroupCell<'a> {
 }
 
 impl GroupCell<'_> {
+    /// The offset and the size of the block.
+    pub fn span(&self) -> Result<(u32, u32)> {
+        range(self.block.into(), self.allowed(self.cost_widths.len())?)
+    }
+
     /// The offset of `costs` of profile `profile` in the part, or of the first `allowed` column
     /// for the profile count.
     fn costs(&self, profile: usize) -> Result<u64> {

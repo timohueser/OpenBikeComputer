@@ -1,11 +1,11 @@
 //! The request data of an install of format 10: snapping, the roads, their costs, the turns into
-//! them and their closures. It reads the parts through a `Host`, keeps no cache and decodes
-//! nothing at open.
+//! them, their closures, and the cells with a cost table. It reads the parts through a `Host`, keeps
+//! no cache and decodes nothing at open.
 
 use crate::{
     cells::{
-        self, meets, values, Directory, Geometry, Group, GroupCell, Header, Level1, Reference, Topology, GEOMETRY,
-        TOPOLOGY,
+        self, meets, values, Directory, Geometry, Group, GroupCell, Header, Level1, Reference, Table, Topology, Upper,
+        GEOMETRY, TOPOLOGY,
     },
     closures::Closure,
     data::RoutingData,
@@ -41,14 +41,15 @@ struct Entry {
     profile: Profile,
 }
 
-/// An installed download cell.
+/// An installed cell: a download cell or an upper cell.
 #[derive(Clone, Copy)]
 pub(crate) struct Cell {
     pub record: u32,
-    id: u32,
+    level: u8,
+    pub id: u32,
     pub first_road: u32,
     roads: u32,
-    /// Its place in `Shared::cells`.
+    /// Its place in `Shared::sizes`.
     slot: u32,
 }
 
@@ -68,10 +69,22 @@ pub(crate) struct Shared<H> {
     identity: String,
     info: Info,
     profiles: Vec<Installed>,
-    /// In ascending `first_road`, and so in ascending ID.
+    /// The download cells, in ascending `first_road`, and so in ascending ID.
     cells: Vec<Cell>,
-    /// The size of each part of each installed download cell, from the directory.
+    /// The upper cells, in the order of level and ID.
+    uppers: Vec<Cell>,
+    /// The size of each part of each installed cell, from the directory.
     sizes: Vec<u32>,
+}
+
+/// A level-1 cell in the topology part of its download cell.
+#[derive(Clone, Copy)]
+pub(crate) struct Home<'a> {
+    pub cell: Cell,
+    pub topology: Topology<'a>,
+    /// The level-1 record.
+    pub index: u32,
+    pub level1: Level1,
 }
 
 /// A road in the topology part of its download cell.
@@ -92,6 +105,99 @@ pub(crate) struct Junction<'a> {
     pub index: u32,
     pub level1: Level1,
     pub target: u32,
+}
+
+impl<'a> Place<'a> {
+    pub(crate) fn home(&self) -> Home<'a> {
+        Home { cell: self.cell, topology: self.topology, index: self.index, level1: self.level1 }
+    }
+
+    /// The reference of the road.
+    pub(crate) fn reference(&self) -> Reference {
+        Reference { cell: self.cell.id, index: self.level1.first_road + self.road }
+    }
+}
+
+impl<'a> Junction<'a> {
+    pub(crate) fn home(&self) -> Home<'a> {
+        Home { cell: self.cell, topology: self.topology, index: self.index, level1: self.level1 }
+    }
+}
+
+/// The two road lists of a cell.
+#[derive(Clone, Copy)]
+enum Lists {
+    /// A level-1 cell of the download cell with this ID: its entering roads are its first roads.
+    Level1(u32, Level1),
+    Upper(Upper),
+}
+
+/// A cell with a cost table: its entering and its leaving roads, and the table of one profile.
+pub(crate) struct Closed<'a> {
+    pub table: Table<'a>,
+    topology: Topology<'a>,
+    lists: Lists,
+}
+
+impl Closed<'_> {
+    /// The row of the entering road `road`. A road that the list lacks is `InvalidData`.
+    pub(crate) fn row(&self, road: Reference) -> Result<u32> {
+        let row = match self.lists {
+            Lists::Level1(cell, level1) => {
+                let row = road.index.checked_sub(level1.first_road).filter(|&row| row < level1.entering.into());
+                row.filter(|_| road.cell == cell)
+            }
+            Lists::Upper(upper) => {
+                search(upper.entering, |k| Ok(self.topology.reference(upper.entering_at.into(), k)?.cmp(&road)))?
+            }
+        };
+        row.ok_or_else(|| invalid("a road that the entering list of its cell lacks"))
+    }
+
+    /// The column of the leaving road `road`. A road that the list lacks is `InvalidData`.
+    pub(crate) fn column(&self, road: Reference) -> Result<u32> {
+        let column = match self.lists {
+            Lists::Level1(_, level1) => {
+                search(level1.leaving.into(), |k| Ok(self.topology.leaving(&level1, k)?.cmp(&road)))?
+            }
+            Lists::Upper(upper) => {
+                search(upper.leaving, |k| Ok(self.topology.reference(upper.leaving_at.into(), k)?.cmp(&road)))?
+            }
+        };
+        column.ok_or_else(|| invalid("a road that the leaving list of its cell lacks"))
+    }
+
+    /// The entering road of `row`, which is below the rows of the table.
+    pub(crate) fn entering(&self, row: u32) -> Result<Reference> {
+        match self.lists {
+            Lists::Level1(cell, level1) => Ok(Reference { cell, index: level1.first_road + row }),
+            Lists::Upper(upper) => self.topology.reference(upper.entering_at.into(), row),
+        }
+    }
+
+    /// The leaving road of `column`, which is below the columns of the table.
+    pub(crate) fn leaving(&self, column: u32) -> Result<Reference> {
+        match self.lists {
+            Lists::Level1(_, level1) => self.topology.leaving(&level1, column),
+            Lists::Upper(upper) => self.topology.reference(upper.leaving_at.into(), column),
+        }
+    }
+}
+
+/// The run-time IDs of road references. The lists ascend, so it keeps the last download cell.
+pub(crate) struct Ids<'a, H> {
+    shared: &'a Shared<H>,
+    last: Option<Cell>,
+}
+
+impl<H: Host> Ids<'_, H> {
+    /// The run-time ID of `reference`; `None` when its cell is not installed.
+    pub(crate) fn get(&mut self, reference: Reference) -> Option<u32> {
+        if self.last.is_none_or(|cell| cell.id != reference.cell) {
+            self.last = Some(self.shared.cell(reference.cell)?);
+        }
+        self.last.filter(|cell| reference.index < cell.roads).map(|cell| cell.first_road + reference.index)
+    }
 }
 
 /// The data of one worker. A host opens a new `Region` after an install that removed cells.
@@ -125,17 +231,18 @@ impl<H: Host> Region<H> {
                 profiles.push(Installed { profile: entry.profile.clone(), group, place });
             }
         }
-        let mut records: Vec<u32> = records.into_iter().filter(|&record| (record as usize) < downloads).collect();
+        let mut records = records;
         records.sort_unstable();
-        let (mut cells, mut sizes) = (Vec::new(), Vec::new());
+        let (mut cells, mut uppers, mut sizes) = (Vec::new(), Vec::new(), Vec::new());
         for (slot, &record) in records.iter().enumerate() {
             let cell = view.cell(record as usize)?;
-            let (id, first_road, roads, slot) = (cell.id, cell.first_road, cell.roads, slot as u32);
-            cells.push(Cell { record, id, first_road, roads, slot });
+            let (level, id, first_road, roads, slot) = (cell.level, cell.id, cell.first_road, cell.roads, slot as u32);
+            let list = if (record as usize) < downloads { &mut cells } else { &mut uppers };
+            list.push(Cell { record, level, id, first_road, roads, slot });
             sizes.extend(cell.parts.iter().map(|part| part.bytes));
         }
         let identity = digest(&directory);
-        let shared = Shared { host, directory, header, downloads, identity, info, profiles, cells, sizes };
+        let shared = Shared { host, directory, header, downloads, identity, info, profiles, cells, uppers, sizes };
         Ok(Self { shared: Arc::new(shared), road: RefCell::default(), workspace: Workspace::default(), budget: 0 })
     }
 
@@ -263,7 +370,7 @@ impl<H: Host> RoutingData for Region<H> {
             shared.road(&place, &mut decoded)?;
             basis.compile(&decoded, &installed.profile).map_err(Error::InvalidData)?
         };
-        let departures = shared.departures(&place, road, installed.group)?;
+        let departures = shared.departures(&place, installed.group)?;
         Ok(Endpoint { cost: Some(cost), departures })
     }
 
@@ -292,10 +399,10 @@ impl<H: Host> RoutingData for Region<H> {
         overlay::search(&self.shared, &mut self.workspace, installed, query, limit)
     }
 
-    fn unpack(&mut self, _metric: &str, legs: &[&Found], control: &Control<'_>) -> Result<Vec<Vec<u32>>> {
-        let roads = crate::data::roads(legs, control)?;
-        roads.iter().for_each(|leg| self.workspace.unpacked(leg.len()));
-        Ok(roads)
+    fn unpack(&mut self, metric: &str, legs: &[&Found], control: &Control<'_>) -> Result<Vec<Vec<u32>>> {
+        let installed = self.shared.installed(metric)?;
+        let limit = self.budget.min(control.max_heap_bytes);
+        overlay::unpack(&self.shared, &mut self.workspace, installed, legs, control, limit)
     }
 
     /// The search limit.
@@ -322,15 +429,161 @@ impl<H: Host> Shared<H> {
             .ok_or_else(|| Error::InvalidRequest(format!("Profile {name} is not installed")))
     }
 
+    /// The size of part `part` of `cell`; 0 for a part that the cell does not have.
+    fn size(&self, cell: &Cell, part: usize) -> Result<u32> {
+        let parts = 2 + usize::from(self.header.groups);
+        let size = self.sizes.get(cell.slot as usize * parts + part).filter(|_| part < parts);
+        size.copied().ok_or_else(|| invalid("a part outside the directory"))
+    }
+
     /// The whole of part `part` of `cell`.
     pub(crate) fn part(&self, cell: &Cell, part: usize) -> Result<&[u8]> {
-        let parts = 2 + usize::from(self.header.groups);
-        let bytes = *self
-            .sizes
-            .get(cell.slot as usize * parts + part)
-            .filter(|_| part < parts)
-            .ok_or_else(|| invalid("a part outside the directory"))?;
+        let bytes = self.size(cell, part)?;
         self.host.range(Span { part: Part { record: cell.record, part: part as u8 }, at: 0, bytes })
+    }
+
+    /// The engine reads these spans next. Each span goes to the host once.
+    pub(crate) fn announce(&self, mut spans: Vec<Span>) {
+        spans.sort_unstable();
+        spans.dedup();
+        self.host.announce(&spans);
+    }
+
+    /// The highest level at which two level-1 cells whose IDs differ in the bits `differ` lie in two
+    /// cells; 0 for one level-1 cell.
+    pub(crate) fn apart(&self, differ: u32) -> u8 {
+        let directory = self.directory();
+        (1..=self.header.levels).rev().find(|&level| differ & !directory.below(level) != 0).unwrap_or(0)
+    }
+
+    /// The lists and the table, for the profile `installed`, of the cell of `level` that holds the
+    /// level-1 cell `home`. `None` for a cell that the search treats as open: its slot has 0 bytes,
+    /// or it is an upper cell that is not installed or has no group part.
+    pub(crate) fn closed<'a>(
+        &'a self,
+        home: &Home<'a>,
+        level: u8,
+        installed: &Installed,
+    ) -> Result<Option<Closed<'a>>> {
+        let (group, profile) = (2 + installed.group, installed.place);
+        if level == 1 {
+            let (costs, level1) = (Group::new(self.part(&home.cell, group)?)?, home.level1);
+            let table = costs.table(profile, home.index, level1.entering.into(), level1.leaving.into())?;
+            let lists = Lists::Level1(home.cell.id, level1);
+            return Ok(table.map(|table| Closed { table, topology: home.topology, lists }));
+        }
+        let key = (level, home.level1.id & !self.directory().below(level));
+        let (cell, topology, record) = if level <= self.header.download_level {
+            let topology = home.topology;
+            let found = search(topology.upper, |k| {
+                let upper = topology.upper(k)?;
+                Ok((upper.level, upper.id).cmp(&key))
+            })?;
+            (home.cell, topology, found.ok_or_else(|| invalid("a download cell without the record of its cell"))?)
+        } else {
+            let Ok(k) = self.uppers.binary_search_by_key(&key, |cell| (cell.level, cell.id)) else { return Ok(None) };
+            let cell = self.uppers[k];
+            if self.size(&cell, group)? == 0 {
+                return Ok(None);
+            }
+            (cell, Topology::new(self.part(&cell, TOPOLOGY)?)?, 0)
+        };
+        let upper = topology.upper(record)?;
+        if (upper.level, upper.id) != key {
+            return Err(invalid("an upper cell with the record of another cell"));
+        }
+        let costs = Group::new(self.part(&cell, group)?)?;
+        let table = costs.table(profile, costs.cells + record, upper.entering, upper.leaving)?;
+        Ok(table.map(|table| Closed { table, topology, lists: Lists::Upper(upper) }))
+    }
+
+    /// The run-time IDs of the roads of the cell of `level`, from 2, that holds the level-1 cell
+    /// `home`.
+    pub(crate) fn roads(&self, home: &Home, level: u8) -> Result<std::ops::Range<u32>> {
+        let below = self.directory().below(level);
+        let id = home.level1.id & !below;
+        let cell = match level.cmp(&self.header.download_level) {
+            std::cmp::Ordering::Less => {
+                let topology = &home.topology;
+                let first = |k: u32| match k < topology.cells {
+                    true => topology.first_road(k),
+                    false => Ok(topology.roads),
+                };
+                let start = partition(topology.cells, |k| Ok(topology.level1(k)?.id < id))?;
+                let end = partition(topology.cells, |k| Ok(topology.level1(k)?.id <= id | below))?;
+                return Ok(home.cell.first_road + first(start)?..home.cell.first_road + first(end)?);
+            }
+            std::cmp::Ordering::Equal => home.cell,
+            std::cmp::Ordering::Greater => {
+                let found = self.uppers.binary_search_by_key(&(level, id), |cell| (cell.level, cell.id));
+                self.uppers[found.map_err(|_| invalid("a path step in an upper cell that is not installed"))?]
+            }
+        };
+        Ok(cell.first_road..cell.first_road + cell.roads)
+    }
+
+    /// Adds the spans that the unpacking of a step of `level` in the cell of `home` reads: for
+    /// level 1 the topology block and the group block of the level-1 cell, else the two lists and
+    /// the table of each child of the cell.
+    pub(crate) fn spans(&self, home: &Home, level: u8, installed: &Installed, spans: &mut Vec<Span>) -> Result<()> {
+        let (group, profile) = (2 + installed.group, installed.place);
+        let mut add = |cell: &Cell, part: usize, (at, bytes): (u32, u32)| {
+            spans.push(Span { part: Part { record: cell.record, part: part as u8 }, at, bytes });
+        };
+        if level == 1 {
+            add(&home.cell, TOPOLOGY, home.topology.block(&home.level1)?);
+            let costs = Group::new(self.part(&home.cell, group)?)?;
+            add(&home.cell, group, costs.level1(home.index, &home.level1)?.span()?);
+            return Ok(());
+        }
+        let (child, mask) = (level - 1, !self.directory().below(level));
+        let id = home.level1.id & mask;
+        if child > self.header.download_level {
+            let start = self.uppers.partition_point(|cell| (cell.level, cell.id) < (child, id));
+            for cell in self.uppers[start..].iter().take_while(|cell| cell.level == child && cell.id & mask == id) {
+                add(cell, TOPOLOGY, (0, self.size(cell, TOPOLOGY)?));
+                add(cell, group, Group::new(self.part(cell, group)?)?.slot(profile, 0)?);
+            }
+            return Ok(());
+        }
+        let downloads = match level > self.header.download_level {
+            true => &self.cells[self.cells.partition_point(|cell| cell.id < id)..],
+            false => std::slice::from_ref(&home.cell),
+        };
+        for cell in downloads.iter().take_while(|cell| cell.id & mask == id) {
+            let (topology, costs) = (Topology::new(self.part(cell, TOPOLOGY)?)?, Group::new(self.part(cell, group)?)?);
+            if child == 1 {
+                for k in partition(topology.cells, |k| Ok(topology.level1(k)?.id < id))?..topology.cells {
+                    let level1 = topology.level1(k)?;
+                    if level1.id & mask != id {
+                        break;
+                    }
+                    add(cell, TOPOLOGY, topology.leaving_list(&level1)?);
+                    add(cell, group, costs.slot(profile, k)?);
+                }
+                continue;
+            }
+            let first = partition(topology.upper, |k| {
+                let upper = topology.upper(k)?;
+                Ok((upper.level, upper.id) < (child, id))
+            })?;
+            for k in first..topology.upper {
+                let upper = topology.upper(k)?;
+                if upper.level != child || upper.id & mask != id {
+                    break;
+                }
+                let size = cells::REFERENCE as u32;
+                add(cell, TOPOLOGY, (upper.entering_at, upper.entering * size));
+                add(cell, TOPOLOGY, (upper.leaving_at, upper.leaving * size));
+                add(cell, group, costs.slot(profile, costs.cells + k)?);
+            }
+        }
+        Ok(())
+    }
+
+    /// The run-time IDs of road references.
+    pub(crate) fn ids(&self) -> Ids<'_, H> {
+        Ids { shared: self, last: None }
     }
 
     /// The installed download cell with ID `id`.
@@ -374,9 +627,8 @@ impl<H: Host> Shared<H> {
         Ok((geometry, closure))
     }
 
-    /// The departure junction of the road of `place`, which has ID `road`; `None` when its cell is
-    /// not installed.
-    pub(crate) fn junction<'a>(&'a self, place: &Place<'a>, road: u32) -> Result<Option<Junction<'a>>> {
+    /// The departure junction of the road of `place`; `None` when its cell is not installed.
+    pub(crate) fn junction<'a>(&'a self, place: &Place<'a>) -> Result<Option<Junction<'a>>> {
         if place.road >= u32::from(place.level1.entering) {
             let (cell, topology, index, level1) = (place.cell, place.topology, place.index, place.level1);
             return Ok(Some(Junction { cell, topology, index, level1, target: place.road }));
@@ -389,7 +641,7 @@ impl<H: Host> Shared<H> {
         let index = search(topology.cells, |k| Ok(topology.level1(k)?.id.cmp(&id)))?
             .ok_or_else(|| invalid("a departure in a level-1 cell that its download cell lacks"))?;
         let level1 = topology.level1(index)?;
-        let reference = Reference { cell: place.cell.id, index: road - place.cell.first_road };
+        let reference = place.reference();
         let k = search(level1.leaving.into(), |k| Ok(topology.leaving(&level1, k)?.cmp(&reference)))?
             .ok_or_else(|| invalid("an entering road that the leaving list of its departure lacks"))?;
         Ok(Some(Junction { cell, topology, index, level1, target: level1.roads + k }))
@@ -407,21 +659,14 @@ impl<H: Host> Shared<H> {
         Ok((view, view.level1(index, level1)?))
     }
 
-    /// The run-time ID of a road reference; `None` when its cell is not installed.
-    pub(crate) fn road_id(&self, reference: Reference) -> Option<u32> {
-        self.cell(reference.cell)
-            .filter(|cell| reference.index < cell.roads)
-            .map(|cell| cell.first_road + reference.index)
-    }
-
     /// Whether the install has road `road`.
     pub(crate) fn has(&self, road: u32) -> bool {
         self.cell_of(road).is_some()
     }
 
-    /// The turns into the road of `place`, which has ID `road`, with the costs of group `group`.
-    fn departures(&self, place: &Place, road: u32, group: usize) -> Result<Vec<Departure>> {
-        let Some(junction) = self.junction(place, road)? else { return Ok(Vec::new()) };
+    /// The turns into the road of `place`, with the costs of group `group`.
+    fn departures(&self, place: &Place, group: usize) -> Result<Vec<Departure>> {
+        let Some(junction) = self.junction(place)? else { return Ok(Vec::new()) };
         let Junction { cell, topology, index, level1, target } = junction;
         let (costs, costs_cell) = self.group(&cell, index, &level1, group)?;
         let (first, head) = topology.columns(&level1)?;
@@ -467,6 +712,21 @@ fn entering(first: (&[u8], u8), head: (&[u8], u8), target: u32) -> Result<Vec<(u
         found.push((road, turn));
     }
     Ok(found)
+}
+
+/// The first `k` below `count` where `before(k)` is false, else `count`, for a `before` that is
+/// true up to that `k`.
+fn partition(count: u32, before: impl Fn(u32) -> Result<bool>) -> Result<u32> {
+    let (mut low, mut high) = (0, count);
+    while low < high {
+        let middle = low + (high - low) / 2;
+        if before(middle)? {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+    Ok(low)
 }
 
 /// The `k` below `count` where `compare(k)` is `Equal`, for a `compare` that ascends with `k`.
