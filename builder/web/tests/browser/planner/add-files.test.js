@@ -77,7 +77,7 @@ test('adds the rides and the routes of files and a ZIP file once, and gives the 
   await expect(page.getByRole('status')).toHaveText('Added 2 rides and 2 planned routes.');
   await page.keyboard.press('Escape');
   // The Routes page shows the planned routes only.
-  await expect(page.getByText('2 routes', { exact: true })).toBeVisible();
+  await expect(page.getByRole('radio', { name: 'Planned 2' })).toBeChecked();
   await expect(page.locator('ul').getByRole('button')).toHaveCount(2);
 
   await page.goto('/planner.html?cover=none');

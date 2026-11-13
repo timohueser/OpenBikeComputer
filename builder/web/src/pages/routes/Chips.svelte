@@ -16,7 +16,7 @@
         years?: number[];
     } = $props();
 
-    const NAMES: Record<Key, string> = { bike: 'Kind of bike', place: 'Place', length: 'Length', climb: 'Climb', days: 'Days', year: 'Year' };
+    const NAMES: Record<Key, string> = { bike: 'Bike', place: 'Place', length: 'Length', climb: 'Climb', days: 'Days', year: 'Year' };
     // The limits between the options, in the units of the rider.
     const LIMITS = { km: { length: [100, 200, 500], climb: [500, 1500, 3000] }, mi: { length: [100, 200, 500], climb: [1500, 5000, 10_000] } };
     const DAYS: { value: Range; label: string }[] = [
@@ -111,17 +111,18 @@
     .chips {
         display: flex;
         flex-wrap: wrap;
-        gap: 6px;
+        gap: 4px 6px;
+        margin: -2px -6px;
     }
     .chip {
         position: relative;
     }
+    /* A free chip is plain text, so the row is one quiet line; only a set chip is a box. */
     summary {
-        padding: 3px 9px;
-        border: 1px solid var(--line-strong);
+        padding: 3px 6px;
         border-radius: 6px;
-        background: var(--panel);
-        color: var(--ink);
+        color: var(--ink-soft);
+        font-size: 13px;
         list-style: none;
         cursor: pointer;
         white-space: nowrap;
@@ -129,9 +130,15 @@
     summary::-webkit-details-marker {
         display: none;
     }
+    summary:hover, .open summary {
+        background: var(--parchment-2);
+        color: var(--ink);
+    }
     .set summary {
-        border-color: var(--parchment-3);
+        margin: 0 2px 0 6px;
+        padding: 3px 9px;
         background: var(--parchment-3);
+        color: var(--ink);
     }
     .menu {
         position: absolute;

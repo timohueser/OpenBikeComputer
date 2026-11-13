@@ -38,7 +38,7 @@ test('the Routes page lists the routes, filters them with a chip, shows the sele
 
   await page.goto('/planner.html#/routes');
   const list = page.locator('ul').filter({ hasText: 'Lake test' });
-  await expect(page.getByText('3 routes')).toBeVisible();
+  await expect(page.getByRole('radio', { name: 'Planned 3' })).toBeChecked();
   await expect(list.getByRole('button')).toHaveText([/Lake test.*Waits/, /Start → Finish.*3 days · 150\skm.*Changed/, /Route that cannot be read/]);
 
   await list.getByRole('button', { name: 'Route that cannot be read' }).click();
@@ -126,7 +126,7 @@ test('the ridden view shows a trip, a group of rides on a route, a ride taken ou
   }, { rides, route: { id: 'lake', revision: 0, name: 'Lake test', updatedAt: 1, trip: trip(1), summary: { ...rides[0].summary, days: 1 } } });
 
   await page.goto('/planner.html#/routes/ridden');
-  await expect(page.getByText('6 rides', { exact: true })).toBeVisible();
+  await expect(page.getByRole('radio', { name: 'Ridden 6' })).toBeChecked();
   const list = page.locator('.list ul');
   await expect(list.locator('li')).toHaveText([/Coast, day 1 1 to 2 Jun \d+ · 2 days · 76.0\skm/, /Lake test 37.0\skm · last on 5 Apr \d+ 4 rides ›/]);
   await expect(page.locator('.totals')).toHaveText(new RegExp(`${year} · 224\\skm · 6 rides`));
@@ -151,6 +151,7 @@ test('the ridden view shows a trip, a group of rides on a route, a ride taken ou
 
   await page.getByRole('radio', { name: 'Planned 1' }).click();
   await expect(page).toHaveURL(/#\/routes$/);
-  await expect(page.locator('ul').getByRole('button', { name: /Lake test/ })).toContainText('ridden 2 times');
+  await page.locator('ul').getByRole('button', { name: /Lake test/ }).click();
+  await expect(page.getByRole('region', { name: 'Lake test' })).toContainText('ridden 2 times');
   expect(errors).toEqual([]);
 });
