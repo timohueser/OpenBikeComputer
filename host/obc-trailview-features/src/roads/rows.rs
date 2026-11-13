@@ -377,13 +377,18 @@ impl Arms {
 
 /// The OSM vertices that a ford pins, with the level of their water: a vertex of a road or a path on the
 /// ground that open water shares, where each passes through it or meets another part of its own there.
-/// A railway takes the untagged rule there, and stepping stones keep their path's height.
+/// A railway takes the untagged rule there, a road or a track too where the water is a culvert's
+/// (`River::untagged_culvert`), and stepping stones keep their path's height.
 fn shared_fords(net: &Network, rivers: &[&River], arms: &Arms, classes: &Classes) -> Vec<(usize, f64)> {
     let mut levels: HashMap<[u64; 2], f64> = HashMap::new();
+    let mut wide = HashSet::new();
     for river in rivers {
         for (point, &level) in river.points.iter().zip(&river.levels) {
             if level.is_finite() {
                 levels.entry(key(*point)).or_insert(level);
+            }
+            if !river.untagged_culvert {
+                wide.insert(key(*point));
             }
         }
     }
@@ -393,13 +398,15 @@ fn shared_fords(net: &Network, rivers: &[&River], arms: &Arms, classes: &Classes
             let w = net.osm_way[o];
             !net.free[w] && !net.stones[w] && !classes.rows[net.rule[w]].rail && arms.ways[0][net.osm_var[o]] >= 2
         })
+        .filter(|&o| net.rule[net.osm_way[o]] >= classes.path || wide.contains(&key(net.osm_xy[o])))
         .filter(|&o| wet(o))
         .filter_map(|o| Some((o, *levels.get(&key(net.osm_xy[o]))?)))
         .collect()
 }
 
 /// The rows of the fords: a shared vertex of `shared_fords`, and the point where a way tagged as a ford
-/// crosses a waterway, lie FORD_M below the water there. A bridge or a tunnel has no ford.
+/// crosses a waterway, lie FORD_M below the water there; a road or a track tagged as a ford takes the
+/// untagged rule over a culvert's water. A bridge or a tunnel has no ford.
 pub(crate) fn fords(net: &Network, rivers: &[&River], classes: &Classes) -> Pins<3> {
     let mut pins = Pins::default();
     if rivers.is_empty() {
@@ -410,7 +417,7 @@ pub(crate) fn fords(net: &Network, rivers: &[&River], classes: &Classes) -> Pins
         for k in 1..river.points.len() {
             let (zp, zq) = (river.levels[k - 1], river.levels[k]);
             if !zp.is_nan() && !zq.is_nan() {
-                segments.push((river.points[k - 1], river.points[k], zp, zq));
+                segments.push((river.points[k - 1], river.points[k], zp, zq, river.untagged_culvert));
             }
         }
     }
@@ -427,7 +434,10 @@ pub(crate) fn fords(net: &Network, rivers: &[&River], classes: &Classes) -> Pins
         for v in net.way_first[w]..net.way_last[w] {
             let (p, q) = (net.vertex_xy[v], net.vertex_xy[v + 1]);
             for number in grid.near(p, q) {
-                let (r0, r1, z0, z1) = segments[number];
+                let (r0, r1, z0, z1, narrow) = segments[number];
+                if narrow && net.rule[w] < classes.path {
+                    continue;
+                }
                 if let Some((u, tr)) = crossing(p, q, r0, r1) {
                     let variables = [net.vertex_var[v], net.vertex_var[v + 1], net.vertex_var[v]];
                     pins.push(variables, [1.0 - u, u, 0.0], z0 + (z1 - z0) * tr - FORD_M);
@@ -453,7 +463,7 @@ pub(crate) struct UntaggedCrossing {
     pub sin: f64,
 }
 
-/// The crossings of a road, a track or a railway on the ground, not tagged as a ford, with open water no
+/// The crossings of a road, a track or a railway on the ground, tagged as a ford or not, with open water no
 /// wider than `culvert_width_m` with known levels, at GRAZE_DEG or more. A crossing as near a ford of its
 /// way, along it, as the grade of its class lets the way climb from FORD_M under the water to its cover
 /// is none. Where one ends on the other there is no crossing, and a point of both gives one, the first.
@@ -481,7 +491,7 @@ pub(crate) fn untagged_crossings(net: &Network, rivers: &[&River], classes: &Cla
     }
     let graze = GRAZE_DEG.to_radians().sin();
     let mut seen = HashSet::new();
-    for w in (0..net.free.len()).filter(|&w| !net.free[w] && !net.tunnel[w] && !net.ford[w] && !net.indoor[w]) {
+    for w in (0..net.free.len()).filter(|&w| !net.free[w] && !net.tunnel[w] && !net.indoor[w]) {
         if net.rule[w] >= classes.path {
             continue;
         }

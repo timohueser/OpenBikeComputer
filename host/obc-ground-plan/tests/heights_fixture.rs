@@ -35,7 +35,7 @@ const EDGE_MAX: usize = 91;
 /// `records::outline_edges` and the vertex values of `heights::groups`, faces past the highest wall as
 /// steep as their need, the faces' rings with a vertex at each tile line (it moves piece ends by a few units),
 /// and the ground under the decks' ceilings: the count must not grow.
-const STEEP_MAX: usize = 904;
+const STEEP_MAX: usize = 903;
 /// A no-room wall's height that changes along it by more than this per metre is a step in its top
 /// (`check::wall_steps`): pairs of points measured on the revision 16 fixture with the slope and the wall of
 /// each point from the need at its foot (`heights::fit`): the count must not grow.
@@ -46,7 +46,7 @@ const WALL_STEPS_MAX: usize = 17;
 /// moves piece ends by a few units) and the crease where a deck's ceiling takes the ground: the count must not
 /// grow.
 const SLOPE_STEP_GRADE: f64 = 0.1;
-const SLOPE_STEPS_MAX: usize = 9829;
+const SLOPE_STEPS_MAX: usize = 9824;
 /// Steps that another line's cone holds higher than the paved side's wall cap (`check::held_over_cap`), measured
 /// the same way with a rail bed's fill counted past its wall cap: all at the edge of a class without a wall, most
 /// where the two outlines leave no room for the steep face (the gap is printed): the count must not grow.
