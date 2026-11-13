@@ -6,6 +6,12 @@ publish = false
 license = "GPL-3.0-only"
 description = "The TrailView ground plan of one cell: integer geometry, terrain heights and cross-sections from the feature tiles, the terrain pages and the rule tables"
 
+# The storeys over the ground (decks): their faces, records, meshes and shells. The crate's tests and its debug tool
+# build them; a dependent turns it on to link them (the bridge's own feature `storeys`).
+[features]
+default = ["storeys"]
+storeys = []
+
 [dependencies]
 # Integer polygon slices. No `allow_multithreading`: the crate runs on one thread.
 i_overlay = { version = "9.1.0", default-features = false }

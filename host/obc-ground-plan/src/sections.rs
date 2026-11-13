@@ -436,6 +436,8 @@ pub struct WaySection<'a> {
     /// A way of a path class (`group` path or steps): its dirt or grass wears a trail's tread, as
     /// `lookOf` of the viewer's `roads/section.ts`.
     pub path: bool,
+    /// A deck of this class has a railing on its free outline, not a parapet (`group` path, steps or track).
+    pub railing: bool,
     /// The least radius of an inward corner's inner edge; 0: no round at the way's turns and corners.
     pub inner_radius_m: f64,
     /// The radius of a junction corner, and of one with a sidewalk on its side; a corner takes the
@@ -774,6 +776,7 @@ impl Sections {
             roof_least_m: row.graph[9],
             group: &row.group,
             path: matches!(row.group.as_str(), "path" | "steps"),
+            railing: matches!(row.group.as_str(), "path" | "steps" | "track"),
             inner_radius_m: row.face[0],
             corner_radius_m: row.face[3],
             corner_radius_walk_m: row.face[4],
@@ -825,6 +828,7 @@ impl Sections {
             roof_least_m: 0.0,
             group: "water",
             path: false,
+            railing: false,
             inner_radius_m: 0.0,
             corner_radius_m: 0.0,
             corner_radius_walk_m: 0.0,

@@ -13,6 +13,7 @@ mod heights_view;
 mod mesh;
 mod model;
 mod requests;
+mod storeys;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -54,6 +55,8 @@ struct Options {
     bench: bool,
     faces_bench: bool,
     runs: usize,
+    storeys: bool,
+    oblique: (f64, f64),
 }
 
 fn options() -> Result<Options, String> {
@@ -73,6 +76,8 @@ fn options() -> Result<Options, String> {
         bench: false,
         faces_bench: false,
         runs: 1,
+        storeys: false,
+        oblique: (30.0, 35.0),
     };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -99,6 +104,13 @@ fn options() -> Result<Options, String> {
             "--census" => o.census = true,
             "--bench" => o.bench = true,
             "--faces-bench" => o.faces_bench = true,
+            "--storeys" => o.storeys = true,
+            "--oblique" => {
+                let text = value()?;
+                let (h, p) = text.split_once(',').ok_or("--oblique HEADING,PITCH")?;
+                o.oblique =
+                    (h.parse().map_err(|_| "--oblique: a heading")?, p.parse().map_err(|_| "--oblique: a pitch")?);
+            }
             "--runs" => o.runs = value()?.parse().map_err(|_| "--runs: a count")?,
             "--probe" => o.probe = value()?.parse().map_err(|_| "--probe: a count")?,
             _ => return Err(format!("unknown option {arg}")),
@@ -347,6 +359,32 @@ fn run() -> Result<(), String> {
         if o.gltf {
             let mesh = gltf::terrain(&cells, centre, o.size_m);
             write(&o.out.join(format!("{name}.glb")), &gltf::glb(&[mesh]))?;
+        }
+        if o.storeys {
+            let rules = obc_ground_plan::faces::Rules::embedded();
+            let built = storeys::cells(&mut fix, &keys, rules)?;
+            let mut top = Canvas::new(o.px, square[0], square[1], 2.0 * half / f64::from(o.px), mpu);
+            draw::terrain(&mut top, &heights.values);
+            storeys::top(&mut top, &built);
+            if o.layers.iter().any(|l| l == "inputs") {
+                draw::inputs(&mut top, &cells, sections);
+            }
+            draw::cells(&mut top, &keys, centre);
+            let path = o.out.join(format!("{name}-storeys.png"));
+            storeys::save(&top.pixmap, &path)?;
+            storeys::oblique(&o.out.join(format!("{name}-oblique.png")), &built, &cells, centre, o.size_m, o.oblique)?;
+            let stats = storeys::stats(&built, square);
+            write(
+                &o.out.join(format!("{name}-storeys.json")),
+                serde_json::to_string_pretty(&stats).unwrap().as_bytes(),
+            )?;
+            if o.gltf {
+                write(
+                    &o.out.join(format!("{name}-storeys.glb")),
+                    &gltf::glb(&storeys::gltf_meshes(&built, &cells, centre, o.size_m)),
+                )?;
+            }
+            println!("{name}: storeys {}", serde_json::to_string(&stats["in_square"]).unwrap());
         }
         if o.probe > 0 {
             let (points, free) = probe(&cells, sections, square, o.probe);

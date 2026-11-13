@@ -36,6 +36,8 @@ pub enum Surface {
     /// Ground over line water at a culvert under a way (`culverts`): the water does not show there, and the
     /// slopes shape it.
     Zone = 11,
+    /// The band about a deck's paved stroke, the seat of its parapet or railing (`faces::deck`).
+    DeckEdge = 12,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

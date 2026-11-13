@@ -76,7 +76,7 @@ obc-elevation = { path = "firmware/obc-elevation" }
 obc-fixtures = { path = "host/obc-fixtures" }
 obc-flat-device = { path = "sim/flat-device" }
 obc-formats = { path = "firmware/obc-formats" }
-obc-ground-plan = { path = "host/obc-ground-plan" }
+obc-ground-plan = { path = "host/obc-ground-plan", default-features = false }
 obc-link = { path = "firmware/obc-link" }
 obc-map-scene = { path = "firmware/obc-map-scene" }
 obc-pack = { path = "host/obc-pack" }
