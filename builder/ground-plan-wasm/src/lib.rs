@@ -6,7 +6,7 @@
 
 use std::cell::{OnceCell, RefCell};
 
-use obc_ground_plan::cell::{build_cell, build_request, far_request, CellBuild};
+use obc_ground_plan::cell::{build_cell, build_request, build_storeys, far_request, CellBuild};
 use obc_ground_plan::faces::{FacePlan, Rules};
 use obc_ground_plan::frame::CellKey;
 use obc_ground_plan::mesh::{mesh_cell, Reads, Rim};
@@ -220,7 +220,19 @@ impl CellPlan {
     /// What the cell's mesh reads, kept apart so the plan can go while the mesh waits for its
     /// neighbours' rims.
     pub fn mesh_input(&self) -> MeshInput {
-        MeshInput { plan: self.built.faces.clone(), records: self.built.records.clone(), last: None }
+        MeshInput {
+            plan: self.built.faces.clone(),
+            records: self.built.records.clone(),
+            last: None,
+            #[cfg(feature = "storeys")]
+            storeys: self.built.storeys.clone(),
+        }
+    }
+
+    /// The milliseconds of the levels of the way graph and of the storeys' faces and records.
+    #[cfg(feature = "storeys")]
+    pub fn storey_times(&self) -> Vec<f64> {
+        self.built.storey_times.to_vec()
     }
 
     /// The far block of the records' lines (`records::far` of obc-ground-plan), or why the crate
@@ -237,6 +249,8 @@ pub struct MeshInput {
     records: Vec<u32>,
     /// What the last mesh read of the rims.
     last: Option<Reads>,
+    #[cfg(feature = "storeys")]
+    storeys: obc_ground_plan::faces::Storeys,
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
@@ -259,6 +273,15 @@ impl MeshInput {
         let mesh = mesh_cell(&self.plan, &self.records, &reads, &mut now);
         self.last = Some(reads);
         Ok(Some(mesh.map_err(|e| error(format!("{e:?}")))?.to_bytes()))
+    }
+
+    /// The bytes of the meshes of the cell's storeys over the ground (`StoreyMesh::to_bytes`).
+    #[cfg(feature = "storeys")]
+    pub fn storeys(&self) -> Result<Vec<u8>, Error> {
+        let rules = Rules::embedded();
+        obc_ground_plan::mesh::shell::mesh_storeys(self.plan.cell, &self.storeys, &self.records, &rules.structures)
+            .map(|m| m.to_bytes())
+            .map_err(|e| error(format!("{e:?}")))
     }
 }
 
@@ -292,7 +315,7 @@ fn held<T>(request: CellRequest, f: impl FnOnce(Request, &mut TileCache) -> Resu
 pub fn build(request: CellRequest, digest: bool) -> Result<CellPlan, Error> {
     let digest = if digest { Some(fnv(&request.to_bytes()?)) } else { None };
     let named = request.named.len();
-    let mut built = held(request, |inputs, tiles| build_request(inputs, tiles, Rules::embedded(), &mut now))?;
+    let mut built = held(request, build_of)?;
     built.request = digest;
     built.tiles += named;
     Ok(CellPlan { flat: OnceCell::new(), built })
@@ -308,8 +331,18 @@ pub fn far(request: CellRequest) -> Result<Vec<u32>, Error> {
 /// Builds a cell from canonical request bytes, with the embedded rule tables.
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
 pub fn build_bytes(bytes: &[u8]) -> Result<CellPlan, Error> {
-    let built = build_cell(bytes, Rules::embedded(), &mut now).map_err(error)?;
-    Ok(CellPlan { flat: OnceCell::new(), built })
+    let built = if cfg!(feature = "storeys") {
+        Request::decode(bytes).and_then(|r| build_of(r, &mut TileCache::new(4)))
+    } else {
+        build_cell(bytes, Rules::embedded(), &mut now)
+    };
+    Ok(CellPlan { flat: OnceCell::new(), built: built.map_err(error)? })
+}
+
+/// The cell build of a request: with the feature `storeys`, its storeys over the ground too.
+fn build_of(request: Request, tiles: &mut TileCache) -> Result<CellBuild, String> {
+    let build = if cfg!(feature = "storeys") { build_storeys } else { build_request };
+    build(request, tiles, Rules::embedded(), &mut now)
 }
 
 #[cfg(test)]

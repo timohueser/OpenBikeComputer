@@ -5,6 +5,7 @@ use crate::frame::CellKey;
 use crate::graph::{self, WayGraph};
 use crate::tile::TileCache;
 use crate::transport::{fnv, Request};
+use crate::CellInput;
 
 /// The stages in their order: `times` holds one time per stage.
 pub const STAGES: [&str; 3] = ["input", "graph", "faces"];
@@ -54,7 +55,7 @@ pub fn build_cell_with(
 ) -> Result<CellBuild, String> {
     let start = now();
     let request = Request::decode(bytes)?;
-    Ok(CellBuild { request: Some(fnv(bytes)), ..stages(start, request, cache, rules, false, now)? })
+    Ok(CellBuild { request: Some(fnv(bytes)), ..stages(start, request, cache, rules, now)?.0 })
 }
 
 /// `build_cell_with` of a request that is not encoded, without its digest. A tile that the request
@@ -65,19 +66,25 @@ pub fn build_request(
     rules: &Rules,
     now: &mut dyn FnMut() -> f64,
 ) -> Result<CellBuild, String> {
-    stages(now(), request, cache, rules, false, now)
+    Ok(stages(now(), request, cache, rules, now)?.0)
 }
 
-/// `build_request` with the storeys over the ground: the levels of the way graph (`graph::levels`), then the
-/// storeys' faces, their records after storey 0's in the one block (`records::storeys`), and what their shells read.
-/// Storey 0's faces and far block are those of `build_request`.
+/// `build_request`, then the storeys over the ground: the levels of the way graph (`graph::levels`), the storeys'
+/// faces, their records after storey 0's in the one block (`records::storeys`) and what their shells read. Storey
+/// 0's faces and far block are those of `build_request`.
 pub fn build_storeys(
     request: Request,
     cache: &mut TileCache,
     rules: &Rules,
     now: &mut dyn FnMut() -> f64,
 ) -> Result<CellBuild, String> {
-    stages(now(), request, cache, rules, true, now)
+    let (mut b, input) = stages(now(), request, cache, rules, now)?;
+    let start = now();
+    graph::levels(&mut b.graph, &input, &rules.sections, &rules.structures);
+    let levelled = now();
+    b.storeys = records::storeys(&b.graph, &input, rules, b.key, &mut b.records);
+    b.storey_times = [levelled - start, now() - levelled];
+    Ok(b)
 }
 
 /// The far block of a request's cell alone (`records::far_block`): the stages input and graph of
@@ -94,23 +101,19 @@ fn stages(
     request: Request,
     cache: &mut TileCache,
     rules: &Rules,
-    storeys: bool,
     now: &mut dyn FnMut() -> f64,
-) -> Result<CellBuild, String> {
+) -> Result<(CellBuild, CellInput), String> {
     let (key, tiles, pages) = (request.key, request.tiles.len(), request.pages.len());
     let input = request.input(cache)?;
     let read = now();
-    let mut graph = graph::build(key, &input, &rules.sections);
+    let graph = graph::build(key, &input, &rules.sections);
     let built = now();
-    if storeys {
-        graph::levels(&mut graph, &input, &rules.sections, &rules.structures);
-    }
-    let levelled = now();
-    let (faces, mut records, far) = records::near(&graph, &input, rules, key, 0, true);
-    let faced = now();
-    let storeys = if storeys { records::storeys(&graph, &input, rules, key, &mut records) } else { Storeys::default() };
-    let storey_times = [levelled - built, now() - faced];
-    let times = vec![read - start, built - read, faced - levelled];
+    let (faces, records, far) = records::near(&graph, &input, rules, key, 0, true);
+    let times = vec![read - start, built - read, now() - built];
     let records = records.words;
-    Ok(CellBuild { key, request: None, tiles, pages, graph, faces, records, far, times, storeys, storey_times })
+    let (storeys, storey_times) = (Storeys::default(), [0.0; 2]);
+    Ok((
+        CellBuild { key, request: None, tiles, pages, graph, faces, records, far, times, storeys, storey_times },
+        input,
+    ))
 }

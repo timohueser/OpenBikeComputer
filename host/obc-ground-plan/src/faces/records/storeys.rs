@@ -4,7 +4,7 @@
 //! The bins list no candidate item of a storey over the ground: the mesh names its faces' labels, and no reader
 //! decides one by point.
 
-use super::{encode, Records, BEYOND, BLEND, CAND, DISC, HEADER, JR, JR_ARM, LABEL, LEG_SHIFT, LINE, SAMPLE, STOREY};
+use super::{encode, BEYOND, BLEND, CAND, DISC, HEADER, JR, JR_ARM, LABEL, LEG_SHIFT, LINE, SAMPLE, STOREY};
 use super::{BINS, JUNCTION};
 use crate::faces::deck::{DeckWay, Decks, Storeys, PIER_NEAR_M};
 use crate::faces::{candidates, window, Rules, Sliced, LAYERS};
@@ -15,7 +15,7 @@ use crate::CellInput;
 
 /// The storeys over the ground near the cell, storey 1 first, with their records merged into `near` (storey 0's
 /// block). A storey with no deck near the cell has no plan.
-pub fn storeys(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, near: &mut Records) -> Storeys {
+pub fn storeys(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, near: &mut Vec<u32>) -> Storeys {
     let top = Decks::of(graph).storey.iter().copied().max().unwrap_or(0);
     let mut out = Storeys::default();
     for k in 1..=top {
@@ -27,7 +27,7 @@ pub fn storeys(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey
         let faces = s.cell(&c, cell, k);
         let plan = s.plan(cell, k, &s.map(), &s.labels);
         let sub = encode(cell, graph, input, rules, (&c.lines, &[]), &c.cands, &plan, false);
-        near.words = merge(&near.words, &sub.words, k);
+        *near = merge(near, &sub.words, k);
         for w in faces.faces.iter().filter_map(|f| f.material) {
             out.ways.entry(w).or_insert_with(|| DeckWay::of(graph, input, rules, w));
         }
