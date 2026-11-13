@@ -15,8 +15,8 @@
         "noUnusedParameters": true,
         // The platform alias vite.config.ts rewrites per build target. Type
         // checking pins it to the dev host — the one `npm run dev` and
-        // `npm run build` use; the other two hosts are still checked as files,
-        // each against the `Platform` interface they annotate themselves with.
+        // `npm run build` use; the web host is still checked as a file, against
+        // the `Platform` interface it annotates itself with.
         "paths": {
             "$host": ["./src/lib/platform/dev.ts"]
         }

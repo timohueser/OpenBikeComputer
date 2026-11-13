@@ -54,8 +54,7 @@ class BulkSource(Source):
                                  headers=self.headers_for(url), what=f"{self.key} {name}", listed=self.listed,
                                  relink=relink and partial(relink, name))
 
-        # The files of one box are independent, and a box is tens of them, so they arrive
-        # a few at a time; unpacking stays in order below, because it is the disk's turn.
+        # Unpacking stays in order below, because it is the disk's turn.
         downloaded = each(one, wanted, PARALLEL_REQUESTS)
         for i, ((name, _), path) in enumerate(zip(wanted, downloaded), 1):
             if path is None and self.listed:

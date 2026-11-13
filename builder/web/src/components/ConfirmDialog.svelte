@@ -1,11 +1,9 @@
 <!--
-  The app's own confirmation, mounted once at the root — see `lib/ui/confirm.svelte.ts` for why the
-  browser's is not usable in the desktop app.
+  The app's own confirmation, mounted once at the root — see `lib/ui/confirm.svelte.ts`.
 
   Deliberately **not** a `<dialog>` element. That would come with focus trapping and Escape for
-  free, and it is also the one thing this component must not get wrong: `<dialog>.showModal()` is
-  Safari 15.4 / WebKitGTK 2.36 and newer, and the bug being fixed here is precisely a modal that
-  silently never appears on an older webview. A plain overlay renders everywhere a `div` does.
+  free, but `<dialog>.showModal()` is Safari 15.4 and newer, and an older browser would silently
+  never show the modal. A plain overlay renders everywhere a `div` does.
 -->
 <script lang="ts">
     import { confirmQueue } from "../lib/ui/confirm.svelte";
@@ -45,19 +43,6 @@
                 <button type="button" class="btn ghost" onclick={() => pending.answer(false)}>
                     Cancel
                 </button>
-                {#if pending.extra}
-                    <!-- The second affirmative, between Cancel and the primary — reached by
-                         Shift+Tab from the focused primary (there is no focus trap; plain Tab
-                         leaves the dialog, as it always has), never focused by default. -->
-                    <button
-                        type="button"
-                        class="btn ghost"
-                        class:destructive-ghost={pending.extra.destructive}
-                        onclick={() => pending.answer("extra")}
-                    >
-                        {pending.extra.label}
-                    </button>
-                {/if}
                 <button
                     type="button"
                     class="btn primary"
@@ -112,13 +97,6 @@
 
     .destructive {
         background: var(--coral);
-        border-color: var(--coral);
-    }
-
-    /* A destructive-but-not-primary choice: coral text on the quiet ghost chrome, so the filled
-       coral primary stays the loudest thing in the row. */
-    .btn.destructive-ghost {
-        color: var(--coral);
         border-color: var(--coral);
     }
 </style>

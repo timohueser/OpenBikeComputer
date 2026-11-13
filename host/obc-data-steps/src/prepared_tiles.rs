@@ -24,7 +24,7 @@ pub(crate) const RUNNING: usize = 8;
 /// The programs that fail in a row, with none that ends well between them, that end the first pass
 /// at once: that is a bug or no network, not one server that is down. Chosen by the owner above the
 /// longest row of Europe blocks in plan order that one national model covers, about 100 (Norway,
-/// on the box of its extent). A source with a `fetch.at_once` falls behind, so its blocks can be
+/// on the box of its extent). A source held to its `fetch.at_once` falls behind, so its blocks can be
 /// the last that run; when its server is down, they end the run, but only once no other block waits.
 /// Without network a block fails after about one retry ladder of its downloads, 12.6 min, so the
 /// run stops after about 128 / 8 × 12.6 min, 3.4 h.
@@ -32,7 +32,7 @@ pub(crate) const IN_A_ROW: usize = 128;
 
 /// A tile: its name, and its files in the version, each with the mark in `state/tiles/` that holds
 /// its pixel digest; `marks` are other marks that the program writes before those. `limits` names
-/// each source that its program reads with a `fetch.at_once`, and that number.
+/// each source that its program reads, and its `fetch.at_once`.
 pub struct Tile {
     pub name: String,
     pub files: Vec<(String, String)>,

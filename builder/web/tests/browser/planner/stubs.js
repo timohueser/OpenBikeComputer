@@ -92,7 +92,7 @@ export function respond(request) {
       return json({ routes });
     }
     case 'region':
-      return json({ package: 'budget-test', profiles: ['gravel', 'hiking', 'mtb', 'road', 'touring'].flatMap(bike => [bike, `${bike}/shorter`, `${bike}/less-climbing`]) });
+      return json({ package: 'budget-test', profiles: ['gravel', 'hiking', 'mtb', 'road', 'touring', 'gravel/less-climbing', 'road/less-climbing', 'touring/less-climbing'] });
     case 'reverse':
       return json({ label: 'Teststraße 1, Freiburg' });
     case 'query': {

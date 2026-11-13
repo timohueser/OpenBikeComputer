@@ -3,7 +3,7 @@
  * TypeScript, tested under Node) and the thing that renders them (`job.svelte.ts`, runes).
  *
  * It lives in its own file so the flows never import a `.svelte.ts` module: everything with logic in
- * it stays framework-free and reusable by the desktop app.
+ * it stays framework-free.
  */
 
 /**

@@ -79,9 +79,8 @@ Browser zurücksenden kann. Rechtsgrundlage ist jeweils Art. 6 Abs. 1 lit. f DSG
 
 ### 6.1 Kartenkacheln
 
-Die Regionsauswahl, Tourenvorschauen und Karten aufgezeichneter Fahrten im Kartenbaukasten
-und in der Desktop-App laden Kacheln von `tiles.openbikecomputer.com`. Das ist der Cloudflare
-Worker, der auch den Routenplaner bedient (Abschnitt 7.1). Cloudflare erhält die IP-Adresse
+Die Regionsauswahl im Kartenbaukasten lädt Kacheln von `tiles.openbikecomputer.com`. Das
+ist der Cloudflare Worker, der auch den Routenplaner bedient (Abschnitt 7.1). Cloudflare erhält die IP-Adresse
 und die angefragte Kachel. Daraus kann Cloudflare den Kartenausschnitt erkennen.
 Die Streckendaten selbst werden nicht übertragen. Schriften und Symbole der Karte kommen
 von `maps.openbikecomputer.com` (Abschnitt 6.3). Builds ohne feste Planereinstellungen lesen
@@ -193,14 +192,15 @@ nachvollziehbaren, gesicherten Freigabeprozess. Der Server steht bei der Contabo
 
 ## 9. Speicherung auf dem Endgerät
 
-Der Hell-Dunkel-Schalter der Website und des Kartenbaukastens speichert die
-gewählte Darstellung lokal unter `obc-theme` in `localStorage`. Ohne Auswahl gilt die Browsereinstellung. Der
+Der Hell-Dunkel-Schalter der Website und des Kartenbaukastens sowie die Zeile „Look“ auf
+der Seite „Settings“ des Routenplaners speichern die gewählte Darstellung lokal unter
+`obc-theme` in `localStorage`. Ohne Auswahl gilt die Browsereinstellung. Der
 Wert wird nicht an einen Server gesendet. Er bleibt gespeichert, bis die Websitedaten
 im Browser gelöscht werden.
 
-Webanwendung und installierte Desktop-App verwenden lokalen Gerätespeicher. Der
+Die Webanwendung verwendet lokalen Gerätespeicher. Der
 Kartenbaukasten nutzt `localStorage` und das *Origin Private File System* (OPFS) des
-Browsers. Diese Daten bleiben auf dem verwendeten Gerät und werden nicht an den
+Browsers. Der Routenplaner nutzt `localStorage` und die Browser-Datenbank *IndexedDB*. Diese Daten bleiben auf dem verwendeten Gerät und werden nicht an den
 Verantwortlichen übertragen.
 
 | Daten | Zweck und Dauer |
@@ -211,19 +211,16 @@ Verantwortlichen übertragen.
 | Optional weiterverwendete Kartenzellen | Nur wenn „Keep downloaded map cells for future builds“ aktiviert wird; bis zum Deaktivieren, bis „Delete stored map data“ gewählt wird, bis Browserdaten gelöscht werden oder eine neue Kataloggeneration die alte ersetzt. |
 | Entscheidung über die Wiederverwendung von Kartenzellen | Damit die ausdrücklich gewählte Einstellung bei einem späteren Besuch erhalten bleibt; bis zur nächsten Änderung oder zum Löschen der Website-Daten. |
 | Beantwortete Firmware-Hinweise mit Geräte-Seriennummer und angebotener Version | Erst nachdem ein Hinweis geschlossen oder aufgerufen wurde, damit dieselbe Frage für dasselbe Gerät nicht ständig erscheint; höchstens die 32 jüngsten Antworten, bis die Website-Daten gelöscht werden. |
-| Aktueller Reiseplan des Routenplaners (`obc-planner-routing-v2`) | Automatisch gespeicherter Entwurf mit Wegpunkten und Etappen, damit er einen Reload übersteht; bis zum Ersetzen oder Löschen der Website-Daten. Er verlässt den Browser nur als Suchanfrage nach Abschnitt 7.1. |
-| Gespeicherte Planversionen des Routenplaners (`obc-planner-lab-versions-v1`) | Nur auf ausdrückliche Speicherung; bis zum Löschen über die Versionsliste oder durch Löschen der Website-Daten. |
+| Bibliothek des Routenplaners (IndexedDB `obc-library`): Routen und ihre Versionen, Fahrten mit ihren Dateien sowie Titelbilder | Der Routenplaner speichert eine Route automatisch während der Planung und eine Fahrt beim Hinzufügen, damit die Bibliothek in diesem Browser bleibt; bis zum Löschen, bis „Delete all“ auf der Seite „Settings“ gewählt wird oder bis die Website-Daten gelöscht werden. Sie verlässt den Browser nur in einer selbst gespeicherten Sicherungsdatei und als Suchanfrage nach Abschnitt 7.1. |
+| Entscheidung, die Karte des Routenplaners auf einen gewählten Punkt zu zentrieren (`obc-planner-auto-center`) | Damit die gewählte Einstellung bei einem späteren Besuch erhalten bleibt; bis zur nächsten Änderung oder zum Löschen der Website-Daten. |
+| Einstellungen des Routenplaners (`obc-settings`): Einheiten, maximale Herzfrequenz und Schwellenleistung | Damit die gewählten Einstellungen bei einem späteren Besuch erhalten bleiben; bis zur nächsten Änderung oder zum Löschen der Website-Daten. Die Werte gehen in eine selbst gespeicherte Sicherungsdatei ein. |
 | Gewähltes Fahrradprofil für Routen (`obcm.routeBikeType`) | Damit die gewählte Einstellung bei einem späteren Besuch erhalten bleibt; bis zur nächsten Änderung oder zum Löschen der Website-Daten. |
-| Routen- und Tourenvorschauen in der Webanwendung | Aus dem angeschlossenen Gerät geladene, ausgedünnte Koordinaten zur Darstellung der Kacheln; nur im Arbeitsspeicher der laufenden Seitensitzung, bis zum Neuladen oder Schließen. |
-| Routen- und Tourenvorschauen in der installierten Desktop-App | Ausgedünnte Koordinaten werden lokal zwischengespeichert, damit sie nach einem App-Neustart nicht erneut vom angeschlossenen Gerät geladen werden müssen. Der Cache ist auf 300 Einträge begrenzt und entfernt ältere, zuletzt nicht verwendete Einträge. Geänderte Objekte erhalten durch Inhaltsmerkmale einen neuen Cache-Schlüssel. Löschung ist auf der Geräteseite über „Delete saved previews“ oder durch Löschen der App-Daten möglich. |
 
-Das kurzfristige Speichern und Auslesen der Arbeitsdaten, das Speichern des Reiseplans,
-gespeicherter Planversionen und gewählter Einstellungen sowie das Speichern eines vom
-Nutzer ausdrücklich gesicherten Skins oder beantworteten Firmware-Hinweises sowie der
-begrenzte Vorschau-Cache der ausdrücklich installierten Desktop-App sind für die jeweils
-angeforderte Funktion erforderlich (§ 25 Abs. 2 Nr. 2 TDDDG). Der Vorschau-Cache
-vermeidet insbesondere wiederholte vollständige Übertragungen aller dargestellten
-Routen und Touren über USB. Für diese Vorgänge ist keine Einwilligung erforderlich.
+Das kurzfristige Speichern und Auslesen der Arbeitsdaten, das Speichern der Bibliothek
+des Routenplaners und gewählter Einstellungen sowie das Speichern eines vom
+Nutzer ausdrücklich gesicherten Skins oder beantworteten Firmware-Hinweises sind für die
+jeweils angeforderte Funktion erforderlich (§ 25 Abs. 2 Nr. 2 TDDDG). Für diese Vorgänge
+ist keine Einwilligung erforderlich.
 
 Die Wiederverwendung heruntergeladener Kartenzellen bei späteren Builds ist dagegen
 optional und standardmäßig ausgeschaltet. Das Aktivieren der deutlich bezeichneten
@@ -239,12 +236,7 @@ nicht an einen Server übertragen. Das gilt insbesondere für Routendateien, die
 Positionsdaten enthalten können.
 
 Eine WebUSB-Verbindung entsteht erst, nachdem ein Gerät im Auswahldialog des Browsers
-bestätigt wurde. Die Daten fließen unmittelbar zwischen Browser und Gerät. Zeigt eine
-Karte Touren oder Fahrten, laden Browser und Desktop-App nur Kartenkacheln nach
-Abschnitt 6.1; die Streckendaten verlassen das Gerät nicht. Für die
-Vorschaubilder der Geräteübersicht werden vereinfachte Streckenverläufe im Arbeitsspeicher
-gehalten, jedoch **nicht dauerhaft im Browser gespeichert**. Sie werden bei einem Reload
-oder beim Ende der Browsersitzung verworfen.
+bestätigt wurde. Die Daten fließen unmittelbar zwischen Browser und Gerät.
 
 ## 11. Externe Links
 

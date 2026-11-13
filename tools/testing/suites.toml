@@ -21,10 +21,11 @@ name = "obc-app"
 triggers = ["specs/vectors/**", "data/sources.toml"]
 
 # The captured planner export is under `fixtures/`, which already selects every unit that declares
-# fixture inputs. Its SwiftPM duplicate is not, and only this suite holds the two identical.
+# fixture inputs. Its SwiftPM duplicate is not, and only this suite holds the two identical. The
+# climb test reads the shared climb vectors; no Cargo edge carries that.
 [[package]]
 name = "obc-route"
-triggers = ["companion-ios/Packages/OBCKit/Sources/OBCMock/Fixtures/sample-import.gpx"]
+triggers = ["companion-ios/Packages/OBCKit/Sources/OBCMock/Fixtures/sample-import.gpx", "specs/vectors/climbs.json"]
 
 [[package]]
 name = "obc-formats"
@@ -191,12 +192,6 @@ name = "obc-boot"
 command = "cargo build --manifest-path firmware/obc-boot/Cargo.toml --release --locked"
 platforms = ["linux"]
 
-[[package]]
-name = "obc-desktop"
-command = "cargo test --manifest-path builder/desktop/Cargo.toml --release --locked"
-# A web change reaches the shell only as the bundle that desktop-frontend builds and checks.
-triggers = ["planner/search/place-kinds.json"]
-
 # ── Suites no Cargo package owns ────────────────────────────────────────────
 
 [[suite]]
@@ -238,8 +233,7 @@ triggers = [
 ]
 
 # The whole app is the subject, the bridge fixture is the input, and the shared catalog
-# generator is what publishes it. The schema examples are not here: this catalog is cut
-# from the bridge fixture, and only the desktop smoke reads the examples.
+# generator is what publishes it. This catalog is cut from the bridge fixture.
 [[suite]]
 id = "web.verification"
 route = "ordinary"
@@ -268,6 +262,17 @@ triggers = [
   "builder/web/src/components/planner/**",
   "builder/web/src/lib/planner/**",
   "builder/web/src/planner.ts",
+  "builder/web/src/Shell.svelte",
+  "builder/web/src/pages/**",
+  "builder/web/src/lib/library/**",
+  "builder/web/src/lib/core/gpx.ts",
+  "builder/web/src/lib/core/fit.ts",
+  "builder/wasm/src/gpx.rs",
+  "builder/web/src/components/TopBar.svelte",
+  "builder/web/src/styles/shell.css",
+  "builder/web/src/lib/ui/**",
+  "builder/web/src/lib/routes.ts",
+  "builder/web/src/lib/router.svelte.ts",
   "builder/web/planner.html",
   "builder/web/tests/browser/planner/**",
   "builder/web/tests/browser/playwright.planner.config.js",
@@ -497,7 +502,7 @@ triggers = [
 id = "ci.rust-workspace-tests"
 route = "ordinary"
 command = "obc check test"
-jobs = ["desktop", "test"]
+jobs = ["test"]
 foundation = true
 triggers = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "tools/fixtures.py"]
 
@@ -521,7 +526,7 @@ triggers = [".rustfmt.toml"]
 id = "ci.rust-clippy"
 route = "ordinary"
 command = "obc check clippy"
-jobs = ["boot", "clippy", "desktop", "embedded"]
+jobs = ["boot", "clippy", "embedded"]
 foundation = true
 triggers = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml"]
 
@@ -529,7 +534,7 @@ triggers = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml"]
 id = "ci.rust-builds"
 route = "ordinary"
 command = "obc check device board wasm"
-jobs = ["boot", "builder-python", "desktop", "device", "embedded", "ui-snapshots", "wasm"]
+jobs = ["boot", "builder-python", "device", "embedded", "ui-snapshots", "wasm"]
 foundation = true
 triggers = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "tools/install-riscv.sh"]
 
@@ -635,7 +640,7 @@ triggers = [
 id = "ci.web-build"
 route = "ordinary"
 command = "obc check frontend"
-jobs = ["desktop-frontend", "web"]
+jobs = ["web"]
 triggers = ["planner/search/place-kinds.json", "docs/assets/theme.css", "docs/assets/fonts/**", "builder/web/package.json", "builder/web/package-lock.json", "builder/web/src/**"]
 
 [[suite]]
@@ -688,9 +693,9 @@ command = "python3 tools/prose.py --check"
 jobs = ["guards"]
 triggers = ["tools/prose.py", "tools/testing/prose-baseline.json"]
 
-# Report only: `cairn check` fails only for a new violation of a system whose doc is approved,
-# and whenever the system map is stale.
-# It reads source paths (ownership), source lines (R3) and Cargo manifests (dependencies), so any
+# `cairn check` fails for a new violation of a system whose doc is approved. For every doc, it
+# fails for a stale system map, a lost name in a Rules table and a skill file over its budget.
+# It reads source paths (ownership), system docs (the Rules tables) and Cargo manifests (dependencies), so any
 # change to one of them selects it, and a documentation-only or data-only change does not.
 [[suite]]
 id = "ci.cairn"
@@ -866,12 +871,6 @@ triggers = [
   "host/obc-pack/src/landmarks/**",
   "fixtures/sources/peak-view/peak-articles-source.json",
 ]
-
-[[suite]]
-id = "manual.desktop-linux-launch"
-route = "manual"
-command = "xvfb-run -a dbus-run-session -- uv run --locked --group desktop-e2e python builder/desktop/e2e/launch.py"
-platforms = ["linux"]
 
 [[suite]]
 id = "manual.obc-link"

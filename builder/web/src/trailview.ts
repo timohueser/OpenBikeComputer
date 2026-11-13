@@ -1,4 +1,4 @@
-import { plannerConfig } from './lib/planner/config';
+import { plannerConfig, type PlannerConfig } from './lib/planner/config';
 import { activeRelease, pageRelease } from './lib/planner/release';
 import { TrailView } from './lib/trailview/engine';
 import { Gpu } from './lib/trailview/gpu/device';
@@ -6,6 +6,8 @@ import { hud } from './lib/trailview/hud';
 import { preload } from './lib/trailview/plan/bridge';
 import { WORKERS } from './lib/trailview/terrain/model';
 import { scaleOf } from './lib/trailview/resolve/targets';
+import { canRenderStills, credits, still, type StillJob } from './lib/trailview/still';
+import { coverView } from './lib/trailview/still-view';
 import { defaultView, finestOf, formatView, groundPlanOf, parseView, poolOf } from './lib/trailview/view';
 
 /** The address follows the view at most this often. */
@@ -20,15 +22,17 @@ function notice(text: string): void {
     document.body.replaceChildren(message);
 }
 
-async function main(): Promise<void> {
-    if (!navigator.gpu) return notice(NO_WEBGPU);
+/**
+ * The release and the device, and with `plan` the plan's bridge and its workers, which load side by side; undefined
+ * after the notice that the browser has no WebGPU. The device rejects when the browser has no adapter.
+ */
+async function open(plan = false): Promise<{ gpu: Promise<Gpu>; release: PlannerConfig } | undefined> {
+    if (!navigator.gpu) return void notice(NO_WEBGPU);
     const preview: string | undefined = import.meta.env.VITE_PLANNER_CONFIG;
     const config = (async () => plannerConfig(preview ? JSON.parse(preview) : await activeRelease()))();
     config.catch(() => {});
-    // The release, the device, the plan's bridge and its workers load side by side; `start` reports a failed load. The
-    // pipelines compile at the attach: a compile from the device on would hold the start of the ground's workers, whose
-    // WebGL waits for the same GPU process.
-    const plan = groundPlanOf(location.search);
+    // `start` reports a failed load. The pipelines compile at the attach: a compile from the device on would hold the
+    // start of the ground's workers, whose WebGL waits for the same GPU process.
     if (plan) preload(WORKERS);
     const gpu = Gpu.request().then(gpu => {
         if (!gpu) throw new Error(NO_WEBGPU);
@@ -37,8 +41,33 @@ async function main(): Promise<void> {
     gpu.catch(() => {});
     const release = await config;
     pageRelease(release.id);
+    return { gpu, release };
+}
+
+/** With `still` in the address, the page starts no engine: a headless script renders stills through `window.trailviewStill`. */
+async function stills(): Promise<void> {
+    const opened = await open();
+    if (!opened) return;
+    const { release } = opened, gpu = await opened.gpu;
+    // No engine runs before the first still, so no worker waits for this compile.
+    TrailView.prepare(gpu).catch(() => {});
+    Object.assign(window, {
+        trailviewStill: {
+            release: release.id,
+            view: (search: string) => parseView(search, defaultView(release.bounds)),
+            still: (job: StillJob, options?: Parameters<typeof still>[3]) => still(gpu, release, job, options),
+            coverView: (line: [number, number][], when: Parameters<typeof coverView>[2]) => coverView(line, release, when),
+            canRenderStills,
+        },
+    });
+}
+
+async function main(): Promise<void> {
+    const plan = groundPlanOf(location.search), opened = await open(plan);
+    if (!opened) return;
+    const { gpu, release } = opened;
     const view = parseView(location.search, defaultView(release.bounds));
-    const engine = await TrailView.start(document.querySelector('canvas')!, gpu, release, view, scaleOf(location.search), plan, finestOf(location.search), poolOf(location.search));
+    const engine = await TrailView.start(document.querySelector('canvas')!, gpu, release, view, scaleOf(location.search), { plan, finest: finestOf(location.search), pool: poolOf(location.search) });
 
     const address = () => `${location.origin}${location.pathname}${formatView(engine.view, location.search)}`;
     let writing: ReturnType<typeof setTimeout> | undefined;
@@ -61,11 +90,11 @@ async function main(): Promise<void> {
         engine.view = parseView(text.includes('?') ? text.slice(text.indexOf('?')) : text, engine.view);
         event.preventDefault();
     });
-    const credits = document.querySelector<HTMLElement>('#credits')!;
-    credits.textContent = [release.terrain_attribution, ...engine.attribution].filter(Boolean).join(' · ');
-    credits.hidden = !credits.textContent;
+    const line = document.querySelector<HTMLElement>('#credits')!;
+    line.textContent = credits(release, engine).join(' · ');
+    line.hidden = !line.textContent;
     hud(document.querySelector<HTMLElement>('#hud')!, engine);
     Object.assign(window, { trailView: engine });
 }
 
-main().catch((error: unknown) => notice(error instanceof Error ? error.message : String(error)));
+(new URLSearchParams(location.search).has('still') ? stills() : main()).catch((error: unknown) => notice(error instanceof Error ? error.message : String(error)));

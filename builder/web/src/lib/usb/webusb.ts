@@ -9,7 +9,7 @@
  * taken off the page.
  *
  * WebUSB is Chromium-only and needs a secure context. Firefox and Safari get {@link PipeError}
- * `unsupported`, and the honest answer for them is the desktop app.
+ * `unsupported`, and the honest answer for them is another browser.
  *
  * The endpoint layout — a vendor-specific interface, lowest IN/OUT pair control, next pair stream —
  * is what the firmware descriptors declare, so {@link discoverLayout}'s rule is a contract rather
@@ -22,6 +22,7 @@
  * The VID/PID is still provisional on purpose — see {@link OBC_USB_FILTERS}.
  */
 
+import { initCore } from "../core/bridge";
 import { PipeError, withAbort, type BytePipe, type DeviceLink } from "./pipe";
 import { FlatStoreClient, isFormatRecoveryState, type ClientOptions } from "./client";
 import { USB_BINDING_MAJOR, type DeviceInfo } from "./records";
@@ -550,9 +551,9 @@ export interface WatcherOptions extends ClientOptions {
 /**
  * Finds the device, keeps up with plugging and unplugging, and owns the {@link FlatStoreClient}.
  *
- * Framework-free on purpose — `session.svelte.ts` is a thin reactive shell over this, and the
- * desktop app reuses it unchanged behind a native transport. Subscribers get an immutable snapshot
- * per change, so a consumer can hold one without watching it mutate underneath.
+ * Framework-free on purpose — `session.svelte.ts` is a thin reactive shell over this. Subscribers
+ * get an immutable snapshot per change, so a consumer can hold one without watching it mutate
+ * underneath.
  */
 export class WebUsbWatcher {
     private readonly usb: UsbLike | null;
@@ -572,8 +573,7 @@ export class WebUsbWatcher {
             info: null,
             error: this.usb
                 ? null
-                : "This browser cannot talk to USB devices. Chrome, Edge and other Chromium browsers can — " +
-                  "or use the desktop app, which works everywhere.",
+                : "This browser cannot use the USB cable. Use Chrome or Edge.",
         };
     }
 
@@ -643,6 +643,9 @@ export class WebUsbWatcher {
         let link: WebUsbLink | null = null;
         try {
             link = await openWebUsbLink(device, this.options.layout);
+            // The client runs in the shared core, which loads only now that a device connects: a page such as
+            // Settings does not load it. A failed load ends in `error`, and the next connect loads it again.
+            await initCore();
             const client = new FlatStoreClient(link, { timeoutMs: this.options.timeoutMs });
             // The identity strings first, because they sit below the record framing and the firmware
             // revision is what "an update is available" compares against. Then `LIST`, which every

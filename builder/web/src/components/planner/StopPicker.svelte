@@ -8,6 +8,8 @@
     import { allStay, type Place, type Stay, type Trip } from '../../lib/planner/editor';
     import { stayOptions } from '../../lib/planner/search/presentation';
     import type { RoutingLine } from '../../lib/planner/routing';
+    import { distanceIn } from '../../lib/settings/format';
+    import { settings } from '../../lib/settings/settings.svelte';
 
     let { trip, line, night, labels, theme, found, window, stopId, date, elevationAt, kinds, onOpen, onEndHere, onStay, onSelectPlace, onPick, onRetry, onCancel, onKinds, onRelease }: {
         trip: Trip;
@@ -38,6 +40,7 @@
         /** Makes a kept or moved night a suggestion again. */
         onRelease?: () => void;
     } = $props();
+    const at = (km: number) => Math.round(distanceIn(km * 1000));
 
     const stops = $derived(found?.state === 'ready' ? found.stops : []);
     const even = $derived(evenStop(stops, trip, line, night));
@@ -60,7 +63,7 @@
         onBack={() => { returnTo = open.id; onOpen(null); }} {onEndHere} {onStay} {onSelectPlace} />
 {:else}
     <div class="picker">
-        <p class="lead">Towns with somewhere to sleep between km {Math.round(window[0])} and {Math.round(window[1])}. Each bar shows day {labels[0]} and day {labels[1]}.</p>
+        <p class="lead">Towns with somewhere to sleep between {settings.units} {at(window[0])} and {at(window[1])}. Each bar shows day {labels[0]} and day {labels[1]}.</p>
         {#if found?.state === 'ready'}
             {#if rows.length}
                 <ul aria-label={`Towns for night ${labels[0]}`}>
@@ -69,7 +72,7 @@
                             <button type="button" class="town" onclick={() => onOpen(stop.id)} {@attach node => { if (stop.id === returnTo) { returnTo = null; node.focus(); } }}
                                 aria-label={`${stop.name}, ${stopCounts(stop)}. Day ${labels[0]} ${duration(days[0].hours)}, day ${labels[1]} ${duration(days[1].hours)}${stop === even ? '. Even days' : ''}`}>
                                 <strong>{stop.name}{#if stop === even}<em>Even days</em>{/if}</strong>
-                                <small>km {Math.round(stop.from)}{Math.round(stop.to) !== Math.round(stop.from) ? `–${Math.round(stop.to)}` : ''} · {stopCounts(stop)}
+                                <small>{settings.units} {at(stop.from)}{at(stop.to) !== at(stop.from) ? `–${at(stop.to)}` : ''} · {stopCounts(stop)}
                                     <span class="services" aria-hidden="true">{#each services as service}{#if stop[service].length}<Icon path={placeCategories[service].icon} size={13} />{/if}{/each}</span>
                                 </small>
                                 <span class="bar" aria-hidden="true">
@@ -83,7 +86,7 @@
                     {/each}
                 </ul>
             {:else}
-                <p class="state" role="status">No mapped place to sleep between km {Math.round(window[0])} and {Math.round(window[1])}. Pick a spot on the map.</p>
+                <p class="state" role="status">No mapped place to sleep between {settings.units} {at(window[0])} and {at(window[1])}. Pick a spot on the map.</p>
             {/if}
         {:else if found?.state === 'error'}
             <p class="state" role="status">{found.message}</p>

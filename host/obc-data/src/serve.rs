@@ -1,8 +1,8 @@
 //! `obc data serve`: run the planner services of the releases that a target names, and give the
 //! apps a dir target. The services of a new release start beside those of the current one, and
-//! clients get the new release once its services answer. The services of the serving release, of
-//! its rollback and of the release of `planner/next.json` stay loaded, so a rollback, and a switch
-//! that waited for the next release, are instant.
+//! clients get the new release once its services answer. An install stays on disk across restarts.
+//! The services of two planner releases run, so a rollback, and a switch that waited for the next
+//! release, are instant.
 
 pub mod http;
 pub mod services;
@@ -25,9 +25,10 @@ pub const PLANNER: &str = POINTERS[1];
 /// How long the services of a planner release may take to answer after they start.
 pub const READY: Duration = Duration::from_secs(120);
 
-/// How long a failed planner release waits before it starts again. Each failure in a row doubles
-/// the wait, up to [`BACKOFF_MAX`]: a download that broke soon tries again, and a release that
-/// cannot start, such as one in a format that the services do not read, logs at most twice an hour.
+/// How long a failed planner release or service waits before it starts again. Each failure in a
+/// row doubles the wait, up to [`BACKOFF_MAX`]: a download that broke soon tries again, and a
+/// release that cannot start, such as one in a format that the services do not read, logs at most
+/// twice an hour. A service that stops this long after its first answer starts again at once.
 const BACKOFF: Duration = Duration::from_secs(60);
 const BACKOFF_MAX: Duration = Duration::from_secs(30 * 60);
 
@@ -141,11 +142,11 @@ pub struct Seen {
 /// Read what `target` names. When it named other releases since `seen`, the follower wants them;
 /// else it polls. An error leaves the releases as they are, and the next look reads again: also a
 /// release of `planner/next.json` that cannot be read.
-pub fn look<S: Services>(
-    follower: &mut Follower<S>,
+pub fn look<P: Process>(
+    follower: &mut Follower<P>,
     target: &Target,
     seen: &mut Seen,
-    load: &mut dyn Load<Services = S>,
+    load: &mut dyn Load<Process = P>,
     now: &dyn Fn() -> Instant,
 ) {
     let read = names(target).and_then(|names| match seen.whole && seen.names.as_ref() == Some(&names) {
@@ -155,9 +156,9 @@ pub fn look<S: Services>(
     let problem = match read {
         Ok(Some((names, (wanted, problem)))) => {
             if names[0].is_none() && seen.names.as_ref().is_none_or(|seen| seen[0].is_some()) {
-                eprintln!("obc data serve: the target names no release yet");
+                say("the target names no release yet".into());
             }
-            (seen.names, seen.whole) = (Some(names), problem.is_none());
+            (seen.names, seen.whole, follower.read) = (Some(names), problem.is_none(), problem.is_none());
             if follower.wanted != wanted {
                 follower.want(wanted, load, now);
             } else {
@@ -176,72 +177,161 @@ pub fn look<S: Services>(
     };
     if problem != seen.error {
         if let Some(problem) = &problem {
-            eprintln!("obc data serve: {problem}");
+            say(problem.clone());
         }
         seen.error = problem;
     }
 }
 
-/// The services of a planner release. They stop when they drop.
-pub trait Services {
-    /// Whether each service answers; an error when one stopped.
+/// One service of a planner release. It stops when it drops.
+pub trait Process {
+    /// Whether it answers; an error when it stopped.
     fn ready(&mut self) -> Result<bool, String>;
-    /// Why a service stopped; `None` while each runs.
+    /// Why it stopped; `None` while it runs.
     fn stopped(&mut self) -> Option<String>;
-    /// The port of each of the [`services::SERVICES`] on this machine.
-    fn ports(&self) -> [u16; services::SERVICES.len()];
+    /// Its port on this machine.
+    fn port(&self) -> u16;
+    /// Ask it to stop, so that the services that stop together wait once. It ends when it drops.
+    fn signal(&mut self) {}
+}
+
+/// How a fetch of a planner release ended.
+pub enum Fetched {
+    Installed,
+    /// The disk has `free` bytes, and the install needs `need`.
+    NoRoom {
+        need: u64,
+        free: u64,
+    },
+    Failed(String),
 }
 
 /// How the follower loads the planner release of a release.
 pub trait Load {
-    type Services: Services;
-    /// Give the store what the services of `served` read, on a thread of its own: a download can
-    /// take long, and the follower keeps polling. It stops at its next object once `wanted` is
-    /// false. An error when the system gives no thread.
-    fn fetch(&mut self, served: &Served, wanted: Arc<AtomicBool>) -> Result<JoinHandle<Result<(), String>>, String>;
-    /// Install the files of `served` from the store and start its services. The follower waits for
-    /// it.
-    fn start(&mut self, served: &Served) -> Result<Self::Services, String>;
-    /// Delete from the store what the services of none of `wanted` read.
-    fn keep(&mut self, wanted: &[&Served]);
+    type Process: Process;
+    /// Install the files of `served`, on a thread of its own: a download can take long, and the
+    /// follower keeps polling. It stops between two files once `wanted` is false. An error when the
+    /// system gives no thread.
+    fn fetch(&mut self, served: &Served, wanted: Arc<AtomicBool>) -> Result<JoinHandle<Fetched>, String>;
+    /// Start the service `service` of [`services::SERVICES`] of the installed `served`.
+    fn start(&mut self, served: &Served, service: usize) -> Result<Self::Process, String>;
+    /// Delete from the store what the services of none of `wanted` read, and each install whose
+    /// planner release `installs` does not hold.
+    fn keep(&mut self, wanted: &[&Served], installs: &BTreeSet<String>);
+    /// Delete the files of the planner release `planner`; whether it had files.
+    fn delete(&mut self, planner: &str) -> bool;
 }
 
-enum State<S> {
-    /// Its objects download while `wanted`. `backoff` is the wait after a failure.
-    Fetching {
-        worker: JoinHandle<Result<(), String>>,
-        backoff: Duration,
-        wanted: Arc<AtomicBool>,
-    },
+enum State<P> {
+    /// Its files download and install while `wanted`. `backoff` is the wait after a failure.
+    Fetching { worker: JoinHandle<Fetched>, backoff: Duration, wanted: Arc<AtomicBool> },
+    /// Its files are on disk. Each of the [`services::SERVICES`] has its own state.
+    Installed { services: [Service<P>; 3] },
+    /// Its fetch failed, for this reason. It fetches again at `retry`, or at once when the target
+    /// names other releases.
+    Failed { reason: String, retry: Instant, backoff: Duration },
+}
+
+struct Service<P> {
+    run: Run<P>,
+    /// The wait after its next failure.
+    backoff: Duration,
+}
+
+enum Run<P> {
+    Stopped,
     Starting {
-        services: S,
+        process: P,
         since: Instant,
-        backoff: Duration,
     },
-    Ready(S),
-    /// Its services stopped, for this reason. It starts again at `retry`, or at once when the
-    /// target names other releases.
+    /// It answers since `since`.
+    Ready {
+        process: P,
+        since: Instant,
+    },
+    /// It stopped, for this reason, and starts again at `retry`.
     Failed {
         reason: String,
         retry: Instant,
-        backoff: Duration,
     },
 }
 
-/// The planner releases whose services run, and the release that clients get.
-pub struct Follower<S> {
-    /// By planner release id: those of the wanted releases and of the current one.
-    planners: BTreeMap<String, State<S>>,
-    wanted: Wanted,
-    current: Option<Served>,
-    /// The downloads of planner releases that no release names any more.
-    abandoned: Vec<JoinHandle<Result<(), String>>>,
-    /// Whether the store can hold what no wanted release reads: the wanted releases changed or a
-    /// download ran since the store was pruned.
-    dirty: bool,
+impl<P: Process> State<P> {
+    fn signal(&mut self) {
+        if let State::Installed { services } = self {
+            services.iter_mut().for_each(Service::signal);
+        }
+    }
 }
 
-impl<S: Services> Default for Follower<S> {
+impl<P: Process> Service<P> {
+    fn signal(&mut self) {
+        if let Run::Starting { process, .. } | Run::Ready { process, .. } = &mut self.run {
+            process.signal();
+        }
+    }
+
+    fn new() -> Self {
+        Self { run: Run::Stopped, backoff: BACKOFF }
+    }
+
+    /// Follow a process that starts or runs at `now`.
+    fn check(&mut self, planner: &str, service: usize, now: Instant) {
+        let name = services::SERVICES[service].name;
+        match &mut self.run {
+            Run::Starting { process, since } => match process.ready() {
+                Ok(true) => {
+                    let Run::Starting { process, .. } = std::mem::replace(&mut self.run, Run::Stopped) else {
+                        unreachable!("the service starts")
+                    };
+                    self.run = Run::Ready { process, since: now };
+                }
+                Ok(false) if now.duration_since(*since) < READY => {}
+                Ok(false) => {
+                    self.fail(planner, format!("the {name} service does not answer after {} s", READY.as_secs()), now)
+                }
+                Err(e) => self.fail(planner, e, now),
+            },
+            Run::Ready { process, since } => {
+                let since = *since;
+                if let Some(e) = process.stopped() {
+                    match now.duration_since(since) >= BACKOFF {
+                        true => {
+                            say(format!("planner release {}: {e}; it starts again", short(planner)));
+                            (self.run, self.backoff) = (Run::Stopped, BACKOFF);
+                        }
+                        false => self.fail(planner, e, now),
+                    }
+                }
+            }
+            Run::Stopped | Run::Failed { .. } => {}
+        }
+    }
+
+    fn fail(&mut self, planner: &str, reason: String, now: Instant) {
+        say(format!("planner release {}: {reason}; it starts again in {} s", short(planner), self.backoff.as_secs()));
+        self.run = Run::Failed { reason, retry: now + self.backoff };
+        self.backoff = (self.backoff * 2).min(BACKOFF_MAX);
+    }
+}
+
+/// The planner releases whose services run, and the release that clients get.
+pub struct Follower<P> {
+    /// By planner release id: those of the wanted releases and of the current one.
+    planners: BTreeMap<String, State<P>>,
+    wanted: Wanted,
+    current: Option<Served>,
+    /// The fetches of planner releases that no release wants now.
+    abandoned: Vec<JoinHandle<Fetched>>,
+    /// Whether the store can hold what no wanted release reads: the wanted releases changed or a
+    /// fetch ran since the store was pruned.
+    dirty: bool,
+    /// Whether the last look read each release that the target names. A release that could not be
+    /// read can still have an install.
+    read: bool,
+}
+
+impl<P: Process> Default for Follower<P> {
     fn default() -> Self {
         Self {
             planners: BTreeMap::new(),
@@ -249,118 +339,219 @@ impl<S: Services> Default for Follower<S> {
             current: None,
             abandoned: Vec::new(),
             dirty: false,
+            read: false,
         }
     }
 }
 
-impl<S: Services> Follower<S> {
-    /// Follow `wanted`, then [`Self::poll`]. The planner releases that failed start again at once.
-    pub fn want(&mut self, wanted: Wanted, load: &mut dyn Load<Services = S>, now: &dyn Fn() -> Instant) {
+impl<P: Process> Follower<P> {
+    /// Follow `wanted`, then [`Self::poll`]. The planner releases whose fetch failed fetch again at
+    /// once.
+    pub fn want(&mut self, wanted: Wanted, load: &mut dyn Load<Process = P>, now: &dyn Fn() -> Instant) {
         self.planners.retain(|_, state| !matches!(state, State::Failed { .. }));
         (self.wanted, self.dirty) = (wanted, true);
         self.poll(load, now);
         if let Some(current) = self.current.as_ref().filter(|current| !self.wanted.serving.contains(current)) {
-            eprintln!(
-                "obc data serve: WARNING: clients get release {}, which release.json no longer names. An update \
-                 can delete its files. Fix: run `obc data update` until a release loads.",
+            say(format!(
+                "WARNING: clients get release {}, which release.json no longer names. An update can delete its \
+                 files. Fix: run `obc data update` until a release loads.",
                 short(&current.id)
-            );
+            ));
         }
     }
 
-    /// Fetch the objects of each wanted planner release that does not run, or that failed and
-    /// waited, and start its services once they are in the store, also those of the current
-    /// release that no release names any more; the time to answer counts from the return of the
-    /// start. Check the services that start, and fail a planner release whose service stopped.
-    /// Clients get the serving release of the target once its services answer; until then they
-    /// keep the current release. Stop the services that neither the wanted releases nor the
-    /// current one need.
-    pub fn poll(&mut self, load: &mut dyn Load<Services = S>, now: &dyn Fn() -> Instant) {
+    /// The releases in the order of their claim: current, serving, next, rollback. While a next
+    /// release is named, the rollback fetches nothing.
+    fn order(&self, fetch: bool) -> Vec<&Served> {
+        let rollback = self.wanted.serving.get(1).filter(|_| !fetch || self.wanted.next.is_none());
+        let all = self.current.iter().chain(self.wanted.serving.first()).chain(&self.wanted.next).chain(rollback);
+        let mut order: Vec<&Served> = Vec::new();
+        for served in all {
+            if !order.iter().any(|seen| seen.planner == served.planner) {
+                order.push(served);
+            }
+        }
+        order
+    }
+
+    /// Take the fetch that ended. Start one fetch, for the first release of [`Self::order`] without
+    /// an install that does not wait for its back-off, when no fetch runs. Run the services of the
+    /// first two installed planner releases of the order, stop the others, and check them. Clients
+    /// get the serving release of the target once its services answer; until then they keep the
+    /// current release. Stop what no release needs, and prune.
+    pub fn poll(&mut self, load: &mut dyn Load<Process = P>, now: &dyn Fn() -> Instant) {
+        self.abandoned.retain(|worker| !worker.is_finished());
+        let mut later = false;
+        let ended: Vec<String> = (self.planners.iter())
+            .filter(|(_, state)| matches!(state, State::Fetching { worker, .. } if worker.is_finished()))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in ended {
+            let Some(State::Fetching { worker, backoff, .. }) = self.planners.remove(&id) else {
+                unreachable!("a fetch ended")
+            };
+            match worker.join().unwrap_or_else(|_| Fetched::Failed("the download stopped".into())) {
+                Fetched::Installed => {
+                    let services = [Service::new(), Service::new(), Service::new()];
+                    self.planners.insert(id, State::Installed { services });
+                }
+                Fetched::Failed(e) => {
+                    self.planners.insert(id.clone(), failed(&id, e, now(), backoff));
+                }
+                Fetched::NoRoom { need, free } => {
+                    let (need, free) = (gb(need), gb(free));
+                    match self.drop_rollback(&id, load) {
+                        Some(rollback) => {
+                            say(format!(
+                                "WARNING: no rollback during the install of {}: deleted the files of planner release \
+                                 {}; the disk has {free} GB free and the install needs {need} GB",
+                                short(&id),
+                                short(&rollback)
+                            ));
+                            later = true;
+                        }
+                        None => {
+                            let reason = format!("the disk has {free} GB free; the install needs {need} GB");
+                            self.planners.insert(id.clone(), failed(&id, reason, now(), backoff));
+                        }
+                    }
+                }
+            }
+        }
+        self.stop_gone();
         self.prune(load);
-        // The current release, last, only finishes a download that it has.
-        let wanted = self.wanted.serving.len() + usize::from(self.wanted.next.is_some());
-        for (at, served) in self.wanted.serving.iter().chain(&self.wanted.next).chain(&self.current).enumerate() {
-            let mut fetch = |backoff| {
+        if !later
+            && self.abandoned.is_empty()
+            && !self.planners.values().any(|state| matches!(state, State::Fetching { .. }))
+        {
+            let waits = |served: &&Served| match self.planners.get(&served.planner) {
+                None => Some(BACKOFF),
+                Some(State::Failed { retry, backoff, .. }) if *retry <= now() => Some(*backoff),
+                Some(_) => None,
+            };
+            let next =
+                self.order(true).into_iter().find_map(|served| waits(&served).map(|backoff| (served.clone(), backoff)));
+            if let Some((served, backoff)) = next {
                 let wanted = Arc::new(AtomicBool::new(true));
                 self.dirty = true;
-                match load.fetch(served, wanted.clone()) {
+                let state = match load.fetch(&served, wanted.clone()) {
                     Ok(worker) => State::Fetching { worker, backoff, wanted },
                     Err(e) => failed(&served.planner, e, now(), backoff),
-                }
-            };
-            let state = match self.planners.remove(&served.planner) {
-                None if at < wanted => fetch(BACKOFF),
-                None => continue,
-                Some(State::Failed { retry, backoff, .. }) if at < wanted && retry <= now() => fetch(backoff),
-                Some(State::Fetching { worker, backoff, .. }) if worker.is_finished() => {
-                    let fetched = worker.join().unwrap_or_else(|_| Err("the download stopped".into()));
-                    match fetched.and_then(|()| load.start(served)) {
-                        Ok(services) => State::Starting { services, since: now(), backoff },
-                        Err(e) => failed(&served.planner, e, now(), backoff),
-                    }
-                }
-                Some(state) => state,
-            };
-            self.planners.insert(served.planner.clone(), state);
+                };
+                self.planners.insert(served.planner.clone(), state);
+            }
         }
-        let now = now();
+        let order: Vec<Served> = self.order(false).into_iter().cloned().collect();
+        let installed =
+            |id: &str, planners: &BTreeMap<String, State<P>>| matches!(planners.get(id), Some(State::Installed { .. }));
+        let running: Vec<&Served> =
+            order.iter().filter(|served| installed(&served.planner, &self.planners)).take(2).collect();
         for (id, state) in &mut self.planners {
-            match state {
-                State::Starting { services, since, backoff } => match services.ready() {
-                    Ok(false) if now.duration_since(*since) < READY => {}
-                    Ok(false) => {
-                        let reason = format!("its services do not answer after {} s", READY.as_secs());
-                        *state = failed(id, reason, now, *backoff);
-                    }
-                    Err(e) => *state = failed(id, e, now, *backoff),
-                    Ok(true) => {
-                        let placeholder = State::Failed { reason: String::new(), retry: now, backoff: BACKOFF };
-                        let State::Starting { services, .. } = std::mem::replace(state, placeholder) else {
-                            unreachable!("the state starts")
-                        };
-                        *state = State::Ready(services);
-                    }
-                },
-                State::Ready(services) => {
-                    if let Some(e) = services.stopped() {
-                        *state = failed(id, e, now, BACKOFF);
+            let State::Installed { services } = state else { continue };
+            let served = running.iter().find(|served| served.planner == *id);
+            if served.is_none() {
+                services.iter_mut().for_each(Service::signal);
+            }
+            for (at, service) in services.iter_mut().enumerate() {
+                let Some(served) = served else {
+                    service.run = Run::Stopped;
+                    continue;
+                };
+                let due = match &service.run {
+                    Run::Stopped => true,
+                    Run::Failed { retry, .. } => *retry <= now(),
+                    Run::Starting { .. } | Run::Ready { .. } => false,
+                };
+                if due {
+                    match load.start(served, at) {
+                        Ok(process) => service.run = Run::Starting { process, since: now() },
+                        Err(e) => service.fail(id, e, now()),
                     }
                 }
-                State::Fetching { .. } | State::Failed { .. } => {}
+            }
+        }
+        for (id, state) in &mut self.planners {
+            if let State::Installed { services } = state {
+                for (at, service) in services.iter_mut().enumerate() {
+                    service.check(id, at, now());
+                }
             }
         }
         if let Some(next) = self.wanted.serving.first().filter(|next| self.current.as_ref() != Some(*next)) {
-            if let Some(State::Ready(_)) = self.planners.get(&next.planner) {
-                eprintln!("obc data serve: release {} with planner release {}", short(&next.id), short(&next.planner));
+            if self.ready(&next.planner) {
+                say(format!("release {} with planner release {}", short(&next.id), short(&next.planner)));
                 self.current = Some(next.clone());
             }
         }
-        let wanted = self.wanted.serving.iter().chain(&self.wanted.next).chain(&self.current);
-        let needed: BTreeSet<String> = wanted.map(|served| served.planner.clone()).collect();
-        let gone: Vec<String> = self.planners.keys().filter(|id| !needed.contains(*id)).cloned().collect();
+        self.stop_gone();
+        self.prune(load);
+    }
+
+    /// Stop the services of each planner release that no release needs, and each fetch that no
+    /// release wants now.
+    fn stop_gone(&mut self) {
+        let fetchable: BTreeSet<String> = self.order(true).into_iter().map(|served| served.planner.clone()).collect();
+        let needed: BTreeSet<String> = self.order(false).into_iter().map(|served| served.planner.clone()).collect();
+        let gone: Vec<String> = (self.planners.iter())
+            .filter(|(id, state)| match state {
+                State::Fetching { .. } => !fetchable.contains(*id),
+                _ => !needed.contains(*id),
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        self.dirty |= !gone.is_empty();
+        for id in &gone {
+            self.planners.get_mut(id).into_iter().for_each(State::signal);
+        }
         for id in gone {
             if let Some(State::Fetching { worker, wanted, .. }) = self.planners.remove(&id) {
                 wanted.store(false, Ordering::Relaxed);
                 self.abandoned.push(worker);
             }
         }
-        self.abandoned.retain(|worker| !worker.is_finished());
-        self.prune(load);
     }
 
-    /// Delete from the store what no wanted release reads, once no download runs: a download writes
-    /// in `partial/` meanwhile.
-    fn prune(&mut self, load: &mut dyn Load<Services = S>) {
+    /// Whether each service of the planner release `planner` answers.
+    fn ready(&self, planner: &str) -> bool {
+        match self.planners.get(planner) {
+            Some(State::Installed { services }) => {
+                services.iter().all(|service| matches!(service.run, Run::Ready { .. }))
+            }
+            _ => false,
+        }
+    }
+
+    /// For the planner release `planner`, which has no room: stop the services of the rollback and
+    /// delete its files, when no other release names its planner release. Give it when it had files.
+    fn drop_rollback(&mut self, planner: &str, load: &mut dyn Load<Process = P>) -> Option<String> {
+        let rollback = self.wanted.serving.get(1)?.planner.clone();
+        let others = self.current.iter().chain(self.wanted.serving.first()).chain(&self.wanted.next);
+        if rollback == planner || others.into_iter().any(|served| served.planner == rollback) {
+            return None;
+        }
+        self.planners.get_mut(&rollback).into_iter().for_each(State::signal);
+        self.planners.remove(&rollback);
+        load.delete(&rollback).then_some(rollback)
+    }
+
+    /// Delete from the store what no wanted release reads, and the installs of the planner releases
+    /// that neither the follower nor a wanted release has, once no fetch runs (a fetch writes in
+    /// `partial/` and its folder meanwhile) and the last look read each named release.
+    fn prune(&mut self, load: &mut dyn Load<Process = P>) {
         let fetching = self.planners.values().any(|state| matches!(state, State::Fetching { .. }));
-        if self.dirty && !fetching && self.abandoned.is_empty() {
-            load.keep(&self.wanted.serving.iter().chain(&self.wanted.next).collect::<Vec<_>>());
+        if self.dirty && self.read && !fetching && self.abandoned.is_empty() {
+            let wanted: Vec<&Served> = self.wanted.serving.iter().chain(&self.wanted.next).collect();
+            let mut installs: BTreeSet<String> = self.planners.keys().cloned().collect();
+            installs.extend(wanted.iter().map(|served| served.planner.clone()));
+            load.keep(&wanted, &installs);
             self.dirty = false;
         }
     }
 
-    /// Wait for each download, after [`crate::fetch::http::stop`] ended it: a stopped serve
-    /// writes nothing more.
-    pub fn finish(self) {
+    /// Wait for each fetch, after [`crate::fetch::http::stop`] ended it: a stopped serve writes
+    /// nothing more.
+    pub fn finish(mut self) {
+        self.planners.values_mut().for_each(State::signal);
         let fetching = self.planners.into_values().filter_map(|state| match state {
             State::Fetching { worker, .. } => Some(worker),
             _ => None,
@@ -381,26 +572,58 @@ impl<S: Services> Follower<S> {
         served.find(|served| served.id == id).cloned()
     }
 
-    /// What the HTTP side gives clients: the current release, and what the services of each
-    /// planner release do.
+    /// What the HTTP side gives clients: the current release, and the state of each planner release
+    /// with the port of each service that answers.
     pub fn view(&self) -> http::View {
         let planners = self.planners.iter().map(|(id, state)| {
-            let planner = match state {
-                State::Fetching { .. } | State::Starting { .. } => http::Planner::Starting,
-                State::Ready(services) => http::Planner::Ready(services.ports()),
-                State::Failed { reason, .. } => http::Planner::Failed(reason.clone()),
+            let mut ports = [None; services::SERVICES.len()];
+            let status = match state {
+                State::Fetching { .. } => http::Status::Starting,
+                State::Failed { reason, .. } => http::Status::Failed(reason.clone()),
+                State::Installed { services } => {
+                    for (port, service) in ports.iter_mut().zip(services) {
+                        if let Run::Ready { process, .. } = &service.run {
+                            *port = Some(process.port());
+                        }
+                    }
+                    let reasons: Vec<&str> = (services.iter())
+                        .filter_map(|service| match &service.run {
+                            Run::Failed { reason, .. } => Some(reason.as_str()),
+                            _ => None,
+                        })
+                        .collect();
+                    match () {
+                        _ if !reasons.is_empty() => http::Status::Failed(reasons.join("; ")),
+                        _ if ports.iter().all(Option::is_some) => http::Status::Ready,
+                        _ if services.iter().all(|service| matches!(service.run, Run::Stopped)) => {
+                            http::Status::Installed
+                        }
+                        _ => http::Status::Starting,
+                    }
+                }
             };
-            (id.clone(), planner)
+            (id.clone(), http::Planner { status, ports })
         });
         http::View { current: self.current.clone(), planners: planners.collect() }
     }
 }
 
-/// The state of a planner release that failed at `now`, and waits `backoff`.
-fn failed<S>(planner: &str, reason: String, now: Instant, backoff: Duration) -> State<S> {
-    let (planner, wait) = (short(planner), backoff.as_secs());
-    eprintln!("obc data serve: planner release {planner} failed: {reason}; it starts again in {wait} s");
+/// The state of a planner release whose fetch failed at `now`, and that waits `backoff`.
+fn failed<P>(planner: &str, reason: String, now: Instant, backoff: Duration) -> State<P> {
+    say(format!("planner release {} failed: {reason}; it fetches again in {} s", short(planner), backoff.as_secs()));
     State::Failed { reason, retry: now + backoff, backoff: (backoff * 2).min(BACKOFF_MAX) }
+}
+
+/// Write `line` to the log of serve.
+fn say(line: String) {
+    #[cfg(test)]
+    tests::SAID.with(|said| said.borrow_mut().push(line.clone()));
+    eprintln!("obc data serve: {line}");
+}
+
+/// `bytes` in GB, with one decimal.
+fn gb(bytes: u64) -> String {
+    format!("{:.1}", bytes as f64 / 1e9)
 }
 
 fn short(id: &str) -> &str {
@@ -413,41 +636,64 @@ pub(crate) mod tests {
     use std::path::{Path, PathBuf};
     use std::rc::Rc;
     use std::sync::{mpsc, Arc, Mutex};
+    use std::time::SystemTime;
 
     use serde_json::json;
 
     use super::*;
     use crate::engine::LayerFile;
     use crate::release::{in_store, serving, switch};
+    use crate::serve::services::Disk;
     use crate::store::tests::Scratch;
     use crate::store::Store;
     use crate::target::Condition;
+
+    thread_local! {
+        /// What [`say`] wrote on this thread.
+        pub(super) static SAID: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    }
 
     /// What the fake services of each planner release do, and what happened to them.
     #[derive(Default)]
     struct Log {
         ready: BTreeSet<String>,
         broken: BTreeSet<String>,
-        exited: BTreeSet<String>,
+        /// The services that exited, by planner release and place in [`services::SERVICES`].
+        exited: BTreeSet<(String, usize)>,
         ports: BTreeMap<String, u16>,
         /// The planner releases whose download waits until the test sends on the channel.
         held: BTreeMap<String, mpsc::Receiver<()>>,
         holding: BTreeSet<String>,
-        started: Vec<String>,
-        stopped: Vec<String>,
+        /// Each start and each stop of a service, by planner release and place.
+        started: Vec<(String, usize)>,
+        stopped: Vec<(String, usize)>,
         /// How often the follower pruned the store.
         pruned: usize,
     }
 
-    /// The fake services of a planner release, and the files that its start installed.
-    struct Fake {
-        planner: String,
-        log: Rc<RefCell<Log>>,
-        _installed: Option<services::Processes>,
+    impl Log {
+        /// The planner release of each start of a routing service: one for each start of a release.
+        fn starts(&self) -> Vec<String> {
+            self.started.iter().filter(|(_, at)| *at == 0).map(|(planner, _)| planner.clone()).collect()
+        }
+
+        fn stops(&self) -> Vec<String> {
+            self.stopped.iter().filter(|(_, at)| *at == 0).map(|(planner, _)| planner.clone()).collect()
+        }
     }
 
-    impl Services for Fake {
+    /// A fake service of a planner release.
+    struct Fake {
+        planner: String,
+        service: usize,
+        log: Rc<RefCell<Log>>,
+    }
+
+    impl Process for Fake {
         fn ready(&mut self) -> Result<bool, String> {
+            if let Some(stopped) = self.stopped() {
+                return Err(stopped);
+            }
             let log = self.log.borrow();
             match log.broken.contains(&self.planner) {
                 true => Err("the routing service stopped".into()),
@@ -456,18 +702,18 @@ pub(crate) mod tests {
         }
 
         fn stopped(&mut self) -> Option<String> {
-            let exited = self.log.borrow().exited.contains(&self.planner);
-            exited.then(|| "the search service stopped: exit status 1".into())
+            let exited = self.log.borrow().exited.contains(&(self.planner.clone(), self.service));
+            exited.then(|| format!("the {} service stopped: exit status 1", services::SERVICES[self.service].name))
         }
 
-        fn ports(&self) -> [u16; services::SERVICES.len()] {
-            [self.log.borrow().ports.get(&self.planner).copied().unwrap_or(1); 3]
+        fn port(&self) -> u16 {
+            self.log.borrow().ports.get(&self.planner).copied().unwrap_or(1)
         }
     }
 
     impl Drop for Fake {
         fn drop(&mut self) {
-            self.log.borrow_mut().stopped.push(self.planner.clone());
+            self.log.borrow_mut().stopped.push((self.planner.clone(), self.service));
         }
     }
 
@@ -487,8 +733,8 @@ pub(crate) mod tests {
         api: &str,
     ) -> (String, String) {
         let sha256 = sha256_hex(routing);
-        let entry =
-            json!({"bytes": routing.len(), "sha256": sha256, "transport": {"sha256": sha256, "encoding": "identity"}});
+        let transport = json!({"bytes": routing.len(), "sha256": sha256, "encoding": "identity"});
+        let entry = json!({"bytes": routing.len(), "sha256": sha256, "transport": transport});
         let document =
             serde_json::to_vec(&json!({"format": 1, "region": "test", "files": {"routing/pages.bin": entry}})).unwrap();
         let planner = crate::engine::digest([("release.json", sha256_hex(&document).as_str())]);
@@ -534,55 +780,70 @@ pub(crate) mod tests {
         now: Instant,
         /// The store and the programs of a load that downloads and installs the files of a release.
         install: Option<(PathBuf, Arc<services::Programs>)>,
+        /// The free bytes of the disk of an install: the first while the folder exists, else the
+        /// second. Without it the disk has room.
+        free: Room,
     }
 
+    type Room = Arc<Mutex<Option<(PathBuf, u64, u64)>>>;
+
+    /// The size of the disk of [`Case::free`]: its reserve is 2 GB.
+    const DISK: u64 = 40_000_000_000;
+
     /// The load of the fake services: a download that the test can hold, and with `install` the
-    /// real download and install.
+    /// real download and install in `work`.
     struct Fakes<'a> {
         log: &'a Rc<RefCell<Log>>,
         install: &'a Option<(PathBuf, Arc<services::Programs>)>,
+        free: &'a Room,
         reader: &'a Target,
         work: PathBuf,
     }
 
     impl Load for Fakes<'_> {
-        type Services = Fake;
+        type Process = Fake;
 
-        fn fetch(
-            &mut self,
-            served: &Served,
-            wanted: Arc<AtomicBool>,
-        ) -> Result<JoinHandle<Result<(), String>>, String> {
+        fn fetch(&mut self, served: &Served, wanted: Arc<AtomicBool>) -> Result<JoinHandle<Fetched>, String> {
             let held = self.log.borrow_mut().held.remove(&served.planner);
             let real =
                 self.install.clone().map(|(store, programs)| (store, programs, self.reader.clone(), served.clone()));
+            let (dir, free) = (self.work.join(&served.planner), self.free.clone());
             Ok(std::thread::spawn(move || {
                 if let Some(held) = held {
                     let _ = held.recv();
                 }
+                let disk = |_: &Path| {
+                    Ok(match &*free.lock().unwrap() {
+                        None => Disk { free: u64::MAX, size: 0 },
+                        Some((folder, with, without)) => {
+                            Disk { free: if folder.exists() { *with } else { *without }, size: DISK }
+                        }
+                    })
+                };
                 match real {
                     Some((store, programs, target, served)) => {
-                        services::fetch(&programs, &Store::at(store), &target, &served, &wanted)
+                        services::fetch(&programs, &Store::at(store), &target, &served, &dir, &wanted, &disk)
                     }
-                    None => Ok(()),
+                    None => Fetched::Installed,
                 }
             }))
         }
 
-        fn keep(&mut self, wanted: &[&Served]) {
+        fn keep(&mut self, wanted: &[&Served], installs: &BTreeSet<String>) {
             self.log.borrow_mut().pruned += 1;
             if let Some((store, _)) = self.install {
-                services::prune(&Store::at(store.clone()), self.reader, wanted).unwrap();
+                services::prune(&Store::at(store.clone()), self.reader, &self.work, wanted).unwrap();
+                services::uninstall(&self.work, |planner| installs.contains(planner)).unwrap();
             }
         }
 
-        fn start(&mut self, served: &Served) -> Result<Fake, String> {
-            let installed = match self.install {
-                Some((store, _)) => Some(services::install(&Store::at(store.clone()), &self.work, served)?.0),
-                None => None,
-            };
-            self.log.borrow_mut().started.push(served.planner.clone());
-            Ok(Fake { planner: served.planner.clone(), log: self.log.clone(), _installed: installed })
+        fn delete(&mut self, planner: &str) -> bool {
+            services::remove(&self.work.join(planner)).unwrap()
+        }
+
+        fn start(&mut self, served: &Served, service: usize) -> Result<Fake, String> {
+            self.log.borrow_mut().started.push((served.planner.clone(), service));
+            Ok(Fake { planner: served.planner.clone(), service, log: self.log.clone() })
         }
     }
 
@@ -591,15 +852,25 @@ pub(crate) mod tests {
             let scratch = Scratch::new(name);
             let target = Target::Dir(scratch.0.join("target"));
             let (log, follower, seen, now) = (Rc::default(), Follower::default(), Seen::default(), Instant::now());
-            Self { reader: target.clone(), scratch, target, log, follower, seen, now, install: None }
+            Self {
+                reader: target.clone(),
+                scratch,
+                target,
+                log,
+                follower,
+                seen,
+                now,
+                install: None,
+                free: Room::default(),
+            }
         }
 
         /// Look at what the target names, or only poll; then poll until each download that the
         /// test does not hold ended and the follower took it.
         fn step(&mut self, look_at_target: bool) {
-            let Self { scratch, reader, log, follower, seen, now, install, .. } = self;
+            let Self { scratch, reader, log, follower, seen, now, install, free, .. } = self;
             let now = *now;
-            let mut load = Fakes { log, install, reader, work: scratch.0.join("work") };
+            let mut load = Fakes { log, install, free, reader, work: scratch.0.join("work") };
             match look_at_target {
                 true => look(follower, reader, seen, &mut load, &|| now),
                 false => follower.poll(&mut load, &|| now),
@@ -657,6 +928,16 @@ pub(crate) mod tests {
         fn planner(&self, planner: &str) -> Option<http::Planner> {
             self.follower.view().planners.get(planner).cloned()
         }
+
+        /// A follower that starts again on the same store.
+        fn restart(&mut self) {
+            (self.follower, self.seen) = (Follower::default(), Seen::default());
+        }
+
+        /// The install of `planner`.
+        fn install(&self, planner: &str) -> PathBuf {
+            self.scratch.0.join("work").join(planner)
+        }
     }
 
     #[test]
@@ -675,7 +956,7 @@ pub(crate) mod tests {
         assert_eq!(case.current(), b);
         let ready = |case: &Case| {
             let view = case.follower.view();
-            let ready = view.planners.into_iter().filter(|(_, planner)| matches!(planner, http::Planner::Ready(_)));
+            let ready = view.planners.into_iter().filter(|(_, planner)| planner.status == http::Status::Ready);
             ready.map(|(id, _)| id).collect::<BTreeSet<_>>()
         };
         assert_eq!(ready(&case), [p1.clone(), p2.clone()].into(), "the rollback runs");
@@ -684,9 +965,9 @@ pub(crate) mod tests {
         let (c, _) = publish(&case.target, "device c", b"routing 2");
         case.follow();
         assert_eq!(case.current(), c);
-        assert_eq!(case.log.borrow().started, [p1.clone(), p2.clone()]);
+        assert_eq!(case.log.borrow().starts(), [p1.clone(), p2.clone()]);
         assert_eq!(
-            case.log.borrow().stopped,
+            case.log.borrow().stops(),
             std::slice::from_ref(&p1),
             "no release of the target needs the oldest services"
         );
@@ -702,7 +983,7 @@ pub(crate) mod tests {
         assert_eq!(case.follower.current().unwrap().formats, [("test".to_string(), 1)].into(), "the layer formats");
         case.switch(&c);
         assert_eq!(case.current(), c, "a rollback to another planner release that runs");
-        assert_eq!(case.log.borrow().started, [p1, p2, p3]);
+        assert_eq!(case.log.borrow().starts(), [p1, p2, p3]);
     }
 
     #[test]
@@ -717,14 +998,14 @@ pub(crate) mod tests {
         let (b, _) = publish(&case.target, "device b", b"routing 2");
         case.follow();
         assert_eq!(case.follower.current().unwrap().id, release(&case.target, "device a", b"routing 1", 1).0);
-        assert_eq!(case.log.borrow().stopped, std::slice::from_ref(&p2), "the services of a failed release stop");
+        assert_eq!(case.log.borrow().stops(), std::slice::from_ref(&p2), "the services of a failed release stop");
         case.now += BACKOFF - Duration::from_secs(1);
         case.step(false);
-        assert_eq!(case.log.borrow().started, [p1.clone(), p2.clone()], "a failed release waits");
+        assert_eq!(case.log.borrow().starts(), [p1.clone(), p2.clone()], "a failed release waits");
         case.log.borrow_mut().broken.clear();
         case.now += Duration::from_secs(1);
         case.answers(&p2);
-        assert_eq!(case.log.borrow().started, [p1.clone(), p2.clone(), p2.clone()], "then it starts again");
+        assert_eq!(case.log.borrow().starts(), [p1.clone(), p2.clone(), p2.clone()], "then it starts again");
         assert_eq!(case.current(), b);
 
         let (_, p3) = publish(&case.target, "device c", b"routing 3");
@@ -732,12 +1013,13 @@ pub(crate) mod tests {
         case.now += READY;
         case.step(false);
         assert_eq!(case.current(), b, "services that do not answer in time fail");
-        assert!(matches!(case.planner(&p3), Some(http::Planner::Failed(reason)) if reason.contains("do not answer")));
+        let failed = case.planner(&p3).unwrap().status;
+        assert!(matches!(failed, http::Status::Failed(reason) if reason.contains("does not answer")));
 
-        case.log.borrow_mut().exited.insert(p2.clone());
+        case.log.borrow_mut().exited.insert((p2.clone(), 1));
         case.step(false);
-        let stopped = "the search service stopped: exit status 1".to_string();
-        assert_eq!(case.planner(&p2), Some(http::Planner::Failed(stopped)), "the API of its planner release ends");
+        let ports = case.planner(&p2).unwrap().ports;
+        assert!(ports[0].is_some() && ports[1].is_none(), "only the search service of its planner release stops");
         assert_eq!(case.current(), b);
     }
 
@@ -865,7 +1147,7 @@ pub(crate) mod tests {
         published.follow();
         published.answers(&pc);
         assert_eq!(published.case.current(), c);
-        assert_eq!(published.case.log.borrow().stopped, std::slice::from_ref(&pb), "a third release stops the oldest");
+        assert_eq!(published.case.log.borrow().stops(), std::slice::from_ref(&pb), "a third release stops the oldest");
         assert!(!work.join(&pb).exists(), "and removes its files");
     }
 
@@ -891,11 +1173,11 @@ pub(crate) mod tests {
         let body: Value = serde_json::from_str(&published.get(&format!("/planner-api/releases/{pc}/ready")).1).unwrap();
         let reason = "not ready: needs a routing service that reads test format 2; it reads 1";
         assert_eq!(body, json!({"state": "failed", "reason": reason}));
-        assert_eq!(published.case.log.borrow().started, [pa], "neither release starts");
+        assert_eq!(published.case.log.borrow().starts(), [pa], "neither release starts");
     }
 
     #[test]
-    fn a_slow_download_holds_back_no_other_release() {
+    fn a_slow_download_holds_back_no_installed_release() {
         let mut published = Published::new("serve-slow");
         let (r, pr) = publish(&published.case.target, "device r", b"routing r");
         published.follow();
@@ -913,9 +1195,10 @@ pub(crate) mod tests {
         assert_eq!(ready(&published, &pn).0, 503, "the next release downloads");
         published.case.switch(&r);
         assert_eq!(published.case.current(), r, "a change of release.json is seen during the download");
-        published.case.log.borrow_mut().exited.insert(ps.clone());
+        published.case.log.borrow_mut().exited.insert((ps.clone(), 1));
         published.case.step(false);
-        assert!(matches!(published.case.planner(&ps), Some(http::Planner::Failed(_))), "and a service that stops");
+        let failed = published.case.planner(&ps).unwrap().status;
+        assert!(matches!(failed, http::Status::Failed(_)), "and a service that stops");
 
         // The publish gives up during the download: its release never starts.
         published.case.target.remove(NEXT).unwrap();
@@ -925,7 +1208,7 @@ pub(crate) mod tests {
             std::thread::sleep(Duration::from_millis(1));
         }
         published.case.step(false);
-        assert!(!published.case.log.borrow().started.contains(&pn), "a download that no release needs starts nothing");
+        assert!(!published.case.log.borrow().starts().contains(&pn), "a download that no release needs starts nothing");
         assert_eq!(ready(&published, &pn).0, 404);
     }
 
@@ -940,14 +1223,14 @@ pub(crate) mod tests {
             case.follow();
             case.answers(&ps);
             assert_eq!(case.current(), s, "the serving release loads");
-            assert_eq!(case.log.borrow().started, std::slice::from_ref(&ps), "and no next release");
+            assert_eq!(case.log.borrow().starts(), std::slice::from_ref(&ps), "and no next release");
         }
         let (n, pn) = release(&case.target, "device n", b"routing n", 1);
         case.target
             .put(NEXT, &serde_json::to_vec(&Role { id: n, since: String::new() }).unwrap(), &Condition::Any)
             .unwrap();
         case.follow();
-        assert_eq!(case.log.borrow().started, [ps, pn], "a next release that can be read loads");
+        assert_eq!(case.log.borrow().starts(), [ps, pn], "a next release that can be read loads");
     }
 
     #[test]
@@ -1000,27 +1283,241 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_download_of_the_current_release_that_no_release_names_ends_and_then_the_store_is_pruned() {
+    fn an_abandoned_download_ends_before_the_store_is_pruned_and_the_next_download_starts() {
         let mut case = Case::new("serve-join");
         let (_, pa) = publish(&case.target, "device a", b"routing a");
         case.follow();
         case.answers(&pa);
-        case.log.borrow_mut().exited.insert(pa.clone());
-        case.step(false);
-        case.log.borrow_mut().exited.clear();
-        let held = case.hold(&pa);
-        case.now += BACKOFF;
-        case.step(false);
-        let pruned = case.log.borrow().pruned;
+        let (_, pb) = release(&case.target, "device b", b"routing b", 1);
+        let held = case.hold(&pb);
         publish(&case.target, "device b", b"routing b");
-        publish(&case.target, "device c", b"routing c");
         case.follow();
-        let a = release(&case.target, "device a", b"routing a", 1).0;
-        assert_eq!(case.current(), a, "a is current, and release.json names it no more");
-        assert_eq!(case.log.borrow().pruned, pruned, "the download of a defers the prune");
+        let pruned = case.log.borrow().pruned;
+        publish(&case.target, "device c", b"routing c");
+        let (d, pd) = publish(&case.target, "device d", b"routing d");
+        case.follow();
+        assert_eq!(case.log.borrow().pruned, pruned, "the download of b defers the prune");
+        assert!(case.planner(&pd).is_none(), "and the next download");
 
-        case.release(&pa, held);
-        assert!(case.log.borrow().pruned > pruned, "the prune waited for the download of a");
-        assert_eq!(case.log.borrow().started.iter().filter(|started| **started == pa).count(), 2, "a starts again");
+        case.release(&pb, held);
+        while !case.follower.abandoned.iter().all(JoinHandle::is_finished) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        case.answers(&pd);
+        assert!(case.log.borrow().pruned > pruned, "the prune waited for the download of b");
+        assert_eq!(case.current(), d);
+    }
+
+    /// Each file and folder under `dir` with its inode and its time of change: an install that
+    /// writes again gives other values.
+    fn writes(dir: &Path) -> BTreeMap<PathBuf, (u64, SystemTime)> {
+        use std::os::unix::fs::MetadataExt;
+        let mut all = BTreeMap::new();
+        let mut folders = vec![dir.to_path_buf()];
+        while let Some(folder) = folders.pop() {
+            for entry in std::fs::read_dir(&folder).unwrap() {
+                let path = entry.unwrap().path();
+                let metadata = std::fs::symlink_metadata(&path).unwrap();
+                if metadata.is_dir() {
+                    folders.push(path.clone());
+                }
+                all.insert(path, (metadata.ino(), metadata.modified().unwrap()));
+            }
+        }
+        all
+    }
+
+    /// Whether the follower asked the target for the document or a file object of a planner release.
+    fn fetched(gets: &[String], planner: &str, routing: &[u8]) -> bool {
+        let objects = [format!("/releases/{planner}/release.json"), format!("/objects/{}", sha256_hex(routing))];
+        gets.iter().any(|get| objects.contains(get))
+    }
+
+    #[test]
+    fn an_install_stays_across_a_restart_and_only_an_unmarked_one_installs_again() {
+        let mut published = Published::new("serve-restart");
+        let (a, pa) = publish(&published.case.target, "device a", b"routing a");
+        published.follow();
+        published.answers(&pa);
+        let dir = published.case.install(&pa);
+        let installed = writes(&dir);
+        assert!(services::installed(&dir) && dir.join("release.json").is_file());
+
+        published.case.restart();
+        published.gets.lock().unwrap().clear();
+        published.follow();
+        published.answers(&pa);
+        assert_eq!(published.case.current(), a);
+        assert!(!fetched(&published.gets.lock().unwrap(), &pa, b"routing a"), "no object request");
+        assert_eq!(writes(&dir), installed, "and no write");
+
+        std::fs::remove_file(dir.join("installed")).unwrap();
+        published.case.restart();
+        published.follow();
+        published.answers(&pa);
+        assert_eq!(published.case.current(), a);
+        assert!(services::installed(&dir), "a folder without a marker installs again");
+        assert_ne!(writes(&dir), installed);
+        assert_eq!(std::fs::read(dir.join("routing/pages.bin")).unwrap(), b"routing a");
+    }
+
+    #[test]
+    fn a_stopped_service_restarts_alone_and_keeps_its_files() {
+        let mut published = Published::new("serve-restart-service");
+        let echo = listen(
+            &published.runtime,
+            axum::Router::new().fallback(|uri: axum::http::Uri| async move { format!("{uri}") }),
+        );
+        let (_, pa) = publish(&published.case.target, "device a", b"routing a");
+        published.case.log.borrow_mut().ports.insert(pa.clone(), echo);
+        published.follow();
+        published.answers(&pa);
+        let get =
+            |published: &Published, service: &str| published.get(&format!("/planner-api/releases/{pa}/{service}/x"));
+        let searches =
+            |published: &Published| published.case.log.borrow().started.iter().filter(|(_, at)| *at == 1).count();
+        let busy = (503, r#"{"code":"busy","message":"The search service restarts. Try again shortly."}"#.to_string());
+
+        published.case.now += BACKOFF;
+        published.case.log.borrow_mut().exited.insert((pa.clone(), 1));
+        published.case.step(false);
+        assert_eq!(get(&published, "routing"), (200, "/x".into()), "routing keeps answering");
+        assert_eq!(get(&published, "search"), busy);
+        published.case.log.borrow_mut().exited.clear();
+        published.case.step(false);
+        assert_eq!(
+            get(&published, "search"),
+            (200, "/api/planner-search/x".into()),
+            "a service that ran 60 s starts again at once"
+        );
+        assert_eq!((searches(&published), published.case.log.borrow().starts()), (2, vec![pa.clone()]));
+        assert!(services::installed(&published.case.install(&pa)), "its files stay");
+
+        published.case.log.borrow_mut().exited.insert((pa.clone(), 1));
+        published.case.step(false);
+        published.case.log.borrow_mut().exited.clear();
+        published.case.step(false);
+        assert_eq!(get(&published, "search"), busy, "a second exit within 60 s waits the back-off");
+        assert_eq!(searches(&published), 2);
+        published.case.now += BACKOFF;
+        published.case.step(false);
+        assert_eq!(searches(&published), 3);
+        assert_eq!(get(&published, "search").0, 200);
+    }
+
+    #[test]
+    fn during_an_update_the_rollback_stops_and_keeps_its_files() {
+        let mut published = Published::new("serve-update");
+        let (_, pa) = publish(&published.case.target, "device a", b"routing a");
+        published.follow();
+        published.answers(&pa);
+        let (b, pb) = publish(&published.case.target, "device b", b"routing b");
+        published.follow();
+        published.answers(&pb);
+        let (c, pc) = release(&published.case.target, "device c", b"routing c", 1);
+        published.next(&c);
+        published.answers(&pc);
+        let ready =
+            |published: &Published, planner: &str| published.get(&format!("/planner-api/releases/{planner}/ready"));
+        assert_eq!(ready(&published, &pb).0, 200, "the serving release runs");
+        assert_eq!(ready(&published, &pc).0, 200, "and the next one");
+        assert_eq!(ready(&published, &pa), (503, r#"{"state":"installed"}"#.into()), "the rollback stops");
+        assert!(published.case.log.borrow().stops().contains(&pa));
+        assert!(services::installed(&published.case.install(&pa)), "and keeps its files");
+
+        published.case.restart();
+        published.gets.lock().unwrap().clear();
+        published.follow();
+        assert_eq!(published.case.current(), b);
+        assert_eq!(ready(&published, &pc).0, 200);
+        assert_eq!(ready(&published, &pa).0, 404, "the rollback does not fetch during the update");
+
+        published.case.target.remove(NEXT).unwrap();
+        published.follow();
+        published.answers(&pa);
+        assert_eq!(ready(&published, &pa).0, 200, "after it the rollback starts");
+        assert!(!fetched(&published.gets.lock().unwrap(), &pa, b"routing a"), "with no object request");
+    }
+
+    #[test]
+    fn an_install_that_does_not_fit_deletes_the_rollback_once() {
+        let mut published = Published::new("serve-room");
+        let (_, pa) = publish(&published.case.target, "device a", b"routing a");
+        published.follow();
+        published.answers(&pa);
+        let (_, pb) = publish(&published.case.target, "device b", b"routing b");
+        published.follow();
+        published.answers(&pb);
+        let rollback = published.case.install(&pa);
+        *published.case.free.lock().unwrap() = Some((rollback.clone(), 1_500_000_000, 2_500_000_000));
+        SAID.with(|said| said.borrow_mut().clear());
+
+        let (c, pc) = release(&published.case.target, "device c", b"routing c", 1);
+        published.next(&c);
+        assert!(!rollback.exists(), "the files of the rollback go");
+        let warning = format!(
+            "WARNING: no rollback during the install of {}: deleted the files of planner release {}; the disk has 1.5 GB \
+             free and the install needs 2.0 GB",
+            short(&pc),
+            short(&pa)
+        );
+        assert!(SAID.with(|said| said.borrow().contains(&warning)), "{:?}", SAID.with(|said| said.borrow().clone()));
+        published.case.step(false);
+        published.answers(&pc);
+        let ready =
+            |published: &Published, planner: &str| published.get(&format!("/planner-api/releases/{planner}/ready"));
+        assert_eq!(ready(&published, &pc).0, 200, "the next release installs");
+        published.case.step(false);
+        assert_eq!(ready(&published, &pa).0, 404, "the rollback does not fetch while the next release is named");
+
+        *published.case.free.lock().unwrap() = Some((rollback, 500_000_000, 500_000_000));
+        let (d, pd) = release(&published.case.target, "device d", b"routing d", 1);
+        published.next(&d);
+        let (status, body) = ready(&published, &pd);
+        let reason = "not ready: the disk has 0.5 GB free; the install needs 2.0 GB";
+        let body: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!((status, body), (503, json!({"state": "failed", "reason": reason})), "with no rollback it fails");
+    }
+
+    #[test]
+    fn the_files_of_a_release_that_no_release_names_go_before_the_next_install() {
+        let mut published = Published::new("serve-gone");
+        let (_, pa) = publish(&published.case.target, "device a", b"routing a");
+        published.follow();
+        published.answers(&pa);
+        let (_, pb) = publish(&published.case.target, "device b", b"routing b");
+        published.follow();
+        published.answers(&pb);
+        let gone = published.case.install(&pa);
+        *published.case.free.lock().unwrap() = Some((gone.clone(), 1_500_000_000, 2_500_000_000));
+
+        let (c, pc) = publish(&published.case.target, "device c", b"routing c");
+        published.follow();
+        published.answers(&pc);
+        assert!(!gone.exists(), "the files of a release that no release names go");
+        assert_eq!(published.case.current(), c, "before the disk check of the next install");
+        assert!(services::installed(&published.case.install(&pb)), "the rollback keeps its files");
+    }
+
+    #[test]
+    fn a_restart_keeps_the_install_of_a_next_release_that_cannot_be_read() {
+        let mut published = Published::new("serve-unread");
+        let (_, pa) = publish(&published.case.target, "device a", b"routing a");
+        published.follow();
+        published.answers(&pa);
+        let (n, pn) = release(&published.case.target, "device n", b"routing n", 1);
+        published.next(&n);
+        published.answers(&pn);
+
+        published.case.restart();
+        published.case.target.put(NEXT, b"not json", &Condition::Any).unwrap();
+        published.follow();
+        assert!(services::installed(&published.case.install(&pn)), "a look that cannot read a release deletes nothing");
+
+        published.gets.lock().unwrap().clear();
+        published.next(&n);
+        published.answers(&pn);
+        assert_eq!(published.get(&format!("/planner-api/releases/{pn}/ready")).0, 200);
+        assert!(!fetched(&published.gets.lock().unwrap(), &pn, b"routing n"), "with no object request");
     }
 }

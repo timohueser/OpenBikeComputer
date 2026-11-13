@@ -2,6 +2,8 @@
 //! SQLite layout of `specs/planner-release.md`.
 mod access;
 
+use crate::column::Column;
+use crate::sort::{self, Sorted};
 use crate::source::{Data, Id, Relations, Table, Tags};
 use rusqlite::{params, Connection, Transaction};
 use serde_json::{json, Value};
@@ -53,10 +55,10 @@ fn access_zoom(status: &str) -> Option<f64> {
     })
 }
 
-type Memberships = BTreeMap<i64, Vec<i64>>;
-
-fn memberships(relations: &Table<Relations>) -> (Memberships, BTreeMap<i64, Value>) {
-    let mut members = Memberships::new();
+/// The (way ID, relation ID) pair of each way of each active route, in order, and the properties of
+/// each route.
+fn memberships(relations: &Table<Relations>) -> (Sorted<(i64, i64)>, BTreeMap<i64, Value>) {
+    let mut members = Column::default();
     let mut routes = BTreeMap::new();
     for relation in relations.iter().filter(|r| active(&r.tags)) {
         let Some(activity) = kind(&relation.tags) else { continue };
@@ -89,11 +91,11 @@ fn memberships(relations: &Table<Relations>) -> (Memberships, BTreeMap<i64, Valu
             }
         }
         for id in ways {
-            members.entry(id).or_default().push(relation.id);
+            members.push((id, relation.id));
         }
         routes.insert(relation.id, route);
     }
-    (members, routes)
+    (sort::sorted(members), routes)
 }
 
 /// Writes a new index for the routing package whose manifest identity is `package`.
@@ -118,6 +120,7 @@ pub fn write(path: &Path, package: &str, bounds: [f64; 4], osm: &Data) -> Result
         .execute("INSERT INTO metadata VALUES (?,?)", params![package, serde_json::to_string(&bounds).map_err(text)?])
         .map_err(text)?;
     let (members, routes) = memberships(&osm.relations);
+    let mut members = members.peekable();
     for (id, properties) in &routes {
         transaction
             .execute(
@@ -126,10 +129,14 @@ pub fn write(path: &Path, package: &str, bounds: [f64; 4], osm: &Data) -> Result
             )
             .map_err(text)?;
     }
-    let mut attributes = HashMap::new();
+    let (mut attributes, mut memberships) = (HashMap::new(), Vec::new());
     for way in osm.ways.iter() {
-        let access = access::feature(&way, osm.country(&way));
-        let memberships = members.get(&way.id).map_or(&[][..], Vec::as_slice);
+        let access = access::feature(&way, way.facts.country());
+        while members.next_if(|&(id, _)| id < way.id).is_some() {}
+        memberships.clear();
+        while let Some((_, relation)) = members.next_if(|&(id, _)| id == way.id) {
+            memberships.push(relation);
+        }
         if access.is_none() && memberships.is_empty() {
             continue;
         }
@@ -152,7 +159,7 @@ pub fn write(path: &Path, package: &str, bounds: [f64; 4], osm: &Data) -> Result
         }
         // A node outside the import bounds splits the way into separate lines.
         let mut run = Vec::new();
-        let points = way.nodes.iter().map(|&id| osm.nodes.get(id).map(|node| [node.point.lon, node.point.lat]));
+        let points = way.points.iter().map(|point| point.present().then_some([point.lon, point.lat]));
         for point in points.chain(std::iter::once(None)) {
             if let Some(point) = point {
                 run.push(point);
@@ -262,22 +269,23 @@ mod tests {
 
     #[test]
     fn index_holds_route_and_access_lines_and_cuts_ways_at_missing_nodes() {
-        use crate::source::{Builder, Nodes, Ways};
-        use planner_router::model::{Point, NO_ELEVATION};
-        let mut nodes = Builder::<Nodes>::default();
-        for id in 0..2 {
-            nodes.push(id, Point { lon: id as i32 * 10_000, lat: 0, elevation: NO_ELEVATION }, &Tags::default());
-        }
+        use crate::source::{Builder, NodeRef, Ways};
         let mut ways = Builder::<Ways>::default();
         ways.push(1, &[0, 1], &tags(&[("highway", "tertiary")]));
         ways.push(2, &[0, 1, 999, 0], &tags(&[("highway", "construction")]));
         ways.push(3, &[0, 1], &tags(&[("highway", "footway"), ("bicycle", "no")]));
+        let mut ways = ways.finish().0;
+        let node = |id: i64| match id {
+            999 => NodeRef::missing(false),
+            id => NodeRef { lon: id as i32 * 10_000, flags: NodeRef::PRESENT, ..NodeRef::missing(true) },
+        };
+        ways.set_points(ways.references().iter().map(|&id| node(id)).collect());
         let relations = routes(&[
             (1, "bicycle", "rcn", &[Id::Way(1)], ""),
             (2, "hiking", "rwn", &[Id::Way(1)], ""),
             (3, "mtb", "", &[Id::Way(1)], ""),
         ]);
-        let osm = Data { nodes: nodes.finish().0, ways: ways.finish().0, relations };
+        let osm = Data { ways, relations, ..Data::default() };
         let path = std::env::temp_dir().join(format!("route-build-overlays-{}.sqlite", std::process::id()));
         write(&path, "package", [-1.0, -1.0, 1.0, 1.0], &osm).unwrap();
         let database = Connection::open(&path).unwrap();
@@ -303,10 +311,8 @@ mod tests {
             (3, "bicycle", "lcn", &[Id::Way(20)], "proposed"),
         ]);
         let (members, routes) = memberships(&relations);
-        assert_eq!(
-            members[&10].iter().map(|id| routes[id]["network"].as_str().unwrap()).collect::<Vec<_>>(),
-            ["icn", "rcn"]
-        );
-        assert!(!members.contains_key(&20));
+        let members: Vec<_> = members.collect();
+        let networks = members.iter().map(|(way, id)| (*way, routes[id]["network"].as_str().unwrap()));
+        assert_eq!(networks.collect::<Vec<_>>(), [(10, "icn"), (10, "rcn")]);
     }
 }

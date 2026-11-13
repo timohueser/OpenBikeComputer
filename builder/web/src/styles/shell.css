@@ -1,0 +1,81 @@
+/* The base rules of each page of the shell. */
+* {
+    box-sizing: border-box;
+    scrollbar-width: thin;
+    scrollbar-color: var(--line-strong) transparent;
+}
+::selection {
+    background: var(--parchment-3);
+    color: var(--ink);
+}
+body {
+    margin: 0;
+    background: var(--parchment);
+    color: var(--ink);
+    font: 14px/1.4 var(--sans);
+    -webkit-font-smoothing: antialiased;
+}
+button,
+input,
+select {
+    font: inherit;
+}
+button {
+    cursor: pointer;
+}
+button:disabled {
+    opacity: .35;
+    cursor: default;
+}
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+a:focus-visible,
+summary:focus-visible {
+    outline: 2px solid var(--forest);
+    outline-offset: 2px;
+}
+
+/* A pin at a point of a route on the cover or the map: a waypoint is its number in a disc, a night a moon. A click shows
+   its name in a label beside it, on the side of the box with more room. */
+.route-pin {
+    position: absolute;
+    transform: translate(-50%, -50%);
+}
+.route-pin button {
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 2px solid #fff;
+    border-radius: 50%;
+    background: var(--rust);
+    color: var(--cream);
+    font: 700 11px/1 var(--sans);
+    box-shadow: 0 1px 4px rgb(28 27 20 / 0.35);
+}
+.route-pin button.night {
+    background: rgb(28 27 20 / 0.85);
+    color: #fff;
+}
+.route-pin-label {
+    position: absolute;
+    top: 50%;
+    left: calc(100% + 6px);
+    max-width: 220px;
+    overflow: hidden;
+    padding: 3px 8px;
+    border-radius: 6px;
+    background: rgb(28 27 20 / 0.85);
+    color: #fff;
+    font: 500 12.5px/1.2 var(--sans);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    transform: translateY(-50%);
+    pointer-events: none;
+}
+.route-pin-label.left {
+    right: calc(100% + 6px);
+    left: auto;
+}

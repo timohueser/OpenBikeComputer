@@ -1,0 +1,296 @@
+<script lang="ts">
+    import Card from '../../lib/ui/Card.svelte';
+    import Icon from '../planner/PlannerIcon.svelte';
+    import { townOf } from './towns';
+    import type { RouteSummary } from '../../lib/library/records';
+    import { distanceIn, formatAlong, formatDistance, formatHeight, formatPercent } from '../../lib/settings/format';
+    import { settings } from '../../lib/settings/settings.svelte';
+    import { duration, orderedRoutePoints, planView, type RoutePoint, type Trip } from '../../lib/planner/editor';
+    import { profileHeightAt, profileSamples } from '../../lib/planner/profile-data';
+    import type { RoutingLine } from '../../lib/planner/routing';
+    import { STEEPEST_KM, type Climb, type RouteFacts, type Waypoint } from '../../lib/planner/route-facts';
+    import { kindLabel } from '../../lib/planner/search/presentation';
+
+    /** The left card of the Route page: the numbers of the stored summary, then the days, the climbs and the waypoints
+     * of the calculated line, or the routing error. The opened climb is the selected part of the page. */
+    let { summary, trip, line, facts, error, changed, opened, onopen }: {
+        summary: RouteSummary | null;
+        trip: Trip;
+        /** The calculated line, which `facts` belongs to. */
+        line?: RoutingLine;
+        facts?: RouteFacts;
+        error?: string;
+        /** The calculated line differs from the stored summary. */
+        changed: boolean;
+        opened?: Climb;
+        onopen: (climb: Climb | undefined) => void;
+    } = $props();
+
+    // A climb of an earlier line or route does not stay open.
+    const shownClimb = $derived(opened && facts?.climbs.includes(opened) ? opened : undefined);
+    const days = $derived(facts && facts.days.length > 1 ? facts.days : undefined);
+    const ends = $derived(orderedRoutePoints(trip));
+    const finish = $derived(trip.loop ? ends[0] : ends.at(-1));
+
+    /** "km 19", or "mi 12" with miles. */
+    const at = (km: number) => `${settings.units} ${Math.round(distanceIn(km * 1000))}`;
+    const grade = (climb: Climb) => formatPercent(climb.gradient);
+    const about = (point: RoutePoint) => point.note ? `“${point.note}”` : point.placeKind ? kindLabel(point.placeKind) : '';
+    const dayTitle = (from: string | undefined, to: string | undefined) => from && to ? `${from} to ${to}` : to ? `To ${to}` : from ? `From ${from}` : '';
+</script>
+
+{#snippet number(label: string, value: string)}
+    <div><dt>{label}</dt><dd>{value}</dd></div>
+{/snippet}
+
+{#snippet pin(stop: Waypoint, detail: string)}
+    <li class="stop"><span class="lead"><span class="pin">{stop.number}</span></span><span><strong>{stop.point.label}</strong>{#if detail}<small>{detail}</small>{/if}</span></li>
+{/snippet}
+
+{#snippet climbRow(climb: Climb)}
+    {@const numbers = `${at(climb.from)} · ${formatDistance((climb.to - climb.from) * 1000)} · ${grade(climb)}`}
+    <li class="climb">
+        <button type="button" onclick={() => onopen(climb)}>
+            <span>
+                {#await townOf(climb.top)}
+                    <strong>{numbers}</strong>
+                {:then name}
+                    {#if name}<strong>To {name}</strong><small>{numbers}</small>{:else}<strong>{numbers}</strong>{/if}
+                {/await}
+            </span>
+            <Icon name="chevron" size={14} />
+        </button>
+    </li>
+{/snippet}
+
+{#snippet climbCard(climb: Climb, line: RoutingLine)}
+    {@const total = planView(trip, line).total}
+    {@const top = profileHeightAt(climb.to / total, profileSamples(line))}
+    <button type="button" class="back" onclick={() => onopen(undefined)}>‹ Climbs</button>
+    {#await townOf(climb.top)}
+        <h3 class="climb-name">Climb</h3>
+    {:then name}
+        <h3 class="climb-name">{name ? `To ${name}` : 'Climb'}</h3>
+    {/await}
+    <p class="note">{formatAlong(climb.from * 1000)} to {formatAlong(climb.to * 1000)}</p>
+    <dl class="numbers">
+        {@render number('Length', formatDistance((climb.to - climb.from) * 1000))}
+        {@render number('Climb', formatHeight(climb.ascent))}
+        {@render number('Mean grade', grade(climb))}
+        {@render number(`Steepest ${formatDistance(STEEPEST_KM * 1000)}`, formatPercent(climb.steepest))}
+        {@render number('Top', top === null ? '–' : formatHeight(top))}
+    </dl>
+    {#if facts && facts.climbs.length > 1}
+        <h3>Other climbs</h3>
+        <ul class="rows">{#each facts.climbs.filter(other => other !== climb) as other (other.from)}{@render climbRow(other)}{/each}</ul>
+    {/if}
+{/snippet}
+
+<div class="facts">
+    <Card>
+        {#if shownClimb && line}
+            {@render climbCard(shownClimb, line)}
+        {:else}
+            <dl class="numbers">
+                {@render number('Length', summary ? formatDistance(summary.lengthM) : '–')}
+                {@render number('Climb', summary ? formatHeight(summary.climbM) : '–')}
+                {#if !days}
+                    {@render number('Time', summary ? duration(summary.seconds / 3600) : '–')}
+                    {@render number('Highest point', summary?.highestM != null ? formatHeight(summary.highestM) : '–')}
+                {/if}
+            </dl>
+            {#if changed}<p class="note">Changed since the last save</p>{/if}
+
+            {#if error}
+                <p class="note" role="alert">{error}</p>
+            {:else if !facts}
+                <p class="note">Finding the climbs…</p>
+            {:else if days}
+                <h3>Days</h3>
+                <ol class="days">
+                    {#each days as day (day.number)}
+                        {#if day.rest}
+                            <li class="day"><span class="lead">Day {day.number}</span><strong>{trip.restNames?.[day.restIndex!] || 'Rest day'}</strong></li>
+                        {:else}
+                            {@const from = day.ridingNumber === 1 ? ends[0]?.label : trip.points.find(p => p.kind === 'night' && p.night === day.ridingNumber - 1)?.label}
+                            {@const last = day.ridingNumber === days.filter(d => !d.rest).length}
+                            <li class="day">
+                                <span class="lead">Day {day.number}</span>
+                                <span>
+                                    <strong>{dayTitle(from, last ? finish?.label : day.pinned?.label)}</strong>
+                                    <small>{formatDistance(day.distance * 1000)} · {formatHeight(day.ascent)} up · {duration(day.hours)}</small>
+                                </span>
+                            </li>
+                            {#each day.stops as stop (stop.point.id)}{@render pin(stop, about(stop.point))}{/each}
+                            {#if !last}
+                                <li class="sleep"><span class="lead"><span class="pin night"><Icon name="moon" size={11} /></span></span><span>{day.pinned?.label ?? 'Not chosen'}<small>Night</small></span></li>
+                            {/if}
+                        {/if}
+                    {/each}
+                </ol>
+                {#if facts.climbs.length}
+                    <h3>Climbs</h3>
+                    <ul class="rows">{#each facts.climbs as climb (climb.from)}{@render climbRow(climb)}{/each}</ul>
+                {/if}
+            {:else}
+                {#if facts.climbs.length}
+                    <h3>Climbs</h3>
+                    <ul class="rows">{#each facts.climbs as climb (climb.from)}{@render climbRow(climb)}{/each}</ul>
+                {/if}
+                {#if facts.stops.length}
+                    <h3>Waypoints</h3>
+                    <ol class="rows">{#each facts.stops as stop (stop.point.id)}{@render pin(stop, [about(stop.point), at(stop.km)].filter(Boolean).join(' · '))}{/each}</ol>
+                {/if}
+            {/if}
+        {/if}
+    </Card>
+</div>
+
+<style>
+    .facts {
+        min-height: 0;
+    }
+    .facts > :global(section) {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        overflow: auto;
+    }
+    .numbers {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 14px 12px;
+        margin: 0;
+    }
+    dt, h3 {
+        color: var(--ink-soft);
+        font: 13px/1.3 var(--sans);
+    }
+    dd {
+        margin: 1px 0 0;
+        font: 600 21px/1.2 var(--sans);
+    }
+    h3 {
+        margin: 20px 0 0;
+        padding-bottom: 6px;
+        border-bottom: 1px solid var(--line);
+        font-weight: 600;
+    }
+    .note {
+        margin: 12px 0 0;
+        color: var(--ink-soft);
+    }
+    ol, ul {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+    }
+    li {
+        display: flex;
+        gap: 10px;
+        align-items: flex-start;
+        padding: 9px 0;
+    }
+    .rows > li {
+        border-bottom: 1px solid var(--line);
+    }
+    /* One line between two days; the waypoints and the night of a day follow its title with no line. */
+    .day {
+        padding-bottom: 4px;
+    }
+    .day:not(:first-child) {
+        margin-top: 5px;
+        padding-top: 14px;
+        border-top: 1px solid var(--line);
+    }
+    /* The day, the pin and the night stand in one column, so every name starts on one edge. */
+    .lead {
+        display: flex;
+        flex: none;
+        align-items: center;
+        min-width: 40px;
+        min-height: 20px;
+        color: var(--ink-soft);
+        font-size: 12.5px;
+    }
+    .rows .lead {
+        min-width: 0;
+    }
+    .climb {
+        padding: 0;
+    }
+    .climb button, .back {
+        border: 0;
+        background: none;
+        color: var(--ink);
+        text-align: left;
+    }
+    .climb button {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        width: 100%;
+        padding: 9px 0;
+    }
+    .climb button > span {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+    }
+    .climb button:hover strong {
+        text-decoration: underline;
+    }
+    .back {
+        align-self: flex-start;
+        padding: 0;
+        color: var(--ink-soft);
+    }
+    .back:hover {
+        color: var(--ink);
+    }
+    .climb-name {
+        margin: 10px 0 0;
+        padding: 0;
+        border: 0;
+        color: var(--ink);
+        font: 700 17px/1.3 var(--sans);
+    }
+    .climb-name + .note {
+        margin: 2px 0 14px;
+    }
+    li > span:not(.lead) {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+    }
+    small {
+        color: var(--ink-soft);
+        font-size: 12.5px;
+    }
+    .stop, .sleep {
+        padding: 5px 0;
+    }
+    .rows > .stop {
+        padding: 9px 0;
+    }
+    .stop strong {
+        font-weight: 400;
+    }
+    .pin {
+        display: grid;
+        flex: none;
+        place-items: center;
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        background: var(--rust);
+        color: var(--cream);
+        font: 700 11px/1 var(--sans);
+    }
+    .night {
+        background: var(--ink);
+        color: var(--panel);
+    }
+</style>

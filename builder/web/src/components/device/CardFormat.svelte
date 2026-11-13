@@ -1,6 +1,5 @@
 <!--
-  The destructive recovery operation for a removable card, shared by the browser and desktop
-  surfaces. FORMAT is a protocol-v4 operation rather than host-side filesystem work: the device
+  The destructive recovery operation for a removable card. FORMAT is a protocol-v4 operation rather than host-side filesystem work: the device
   owns the card, writes a fresh flat-store superblock pair, answers durably, then reboots.
 -->
 <script lang="ts">

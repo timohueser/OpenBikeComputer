@@ -12,30 +12,44 @@ pub const MINIMUM_COMPONENT: usize = 100;
 
 use crate::base::{group, Topology};
 use crate::column::Column;
+use crate::Roads;
 
-/// The shared topology, and its arcs by destination road.
+/// The shared topology, and the roads that arrive at each junction.
 pub struct States<'a> {
     topology: &'a Topology,
-    reverse_first: Column<u32>,
-    reverse_arcs: Column<u32>,
+    from: &'a [u32],
+    /// The roads that arrive at junction `j` are `arrivals[arriving[j]..arriving[j + 1]]`, in road
+    /// order.
+    arriving: Column<u32>,
+    arrivals: Column<u32>,
+    /// The place of each road among the roads that depart from its junction: the arc from a road
+    /// that arrives there to this road is `first[that road] + place`.
+    place: Column<u32>,
 }
 
 impl<'a> States<'a> {
-    pub fn new(topology: &'a Topology) -> Self {
-        let (reverse_first, reverse_arcs) = group(topology.head.values(), topology.roads());
-        Self { topology, reverse_first, reverse_arcs }
-    }
-
-    fn tail(&self, arc: u32) -> usize {
-        self.topology.first.values().partition_point(|&start| start <= arc) - 1
+    /// `topology` is the topology of `roads`, whose junctions are below `points`.
+    pub fn new(topology: &'a Topology, roads: &'a Roads, points: usize) -> Self {
+        let (arriving, arrivals) = group(roads.to.values(), points);
+        let (departing, departures) = group(roads.from.values(), points);
+        let (departing, departures) = (departing.values(), departures.values());
+        let mut place = Column::filled(roads.len(), 0);
+        let places = place.values_mut();
+        for junction in 0..points {
+            let range = departing[junction] as usize..departing[junction + 1] as usize;
+            for (place, &road) in (0u32..).zip(&departures[range]) {
+                places[road as usize] = place;
+            }
+        }
+        Self { topology, from: roads.from.values(), arriving, arrivals, place }
     }
 
     /// One snap bit per road: the road has a cost and lies in the metric's largest component or
     /// in one of at least `MINIMUM_COMPONENT` states. A transition counts where its turn is legal.
-    pub fn snappable(&self, road_costs: &[u32], turns: &[u32]) -> Vec<u64> {
+    pub fn snappable(&self, road_costs: &[u32], turns: &[u32]) -> Column<u64> {
         let roads = road_costs.len();
         let (first, head) = (self.topology.first.values(), self.topology.head.values());
-        let (reverse_first, reverse_arcs) = (self.reverse_first.values(), self.reverse_arcs.values());
+        let (arriving, arrivals, place) = (self.arriving.values(), self.arrivals.values(), self.place.values());
         let open = |arc: usize, from: usize, to: usize| {
             turns[arc] != u32::MAX && road_costs[from] != u32::MAX && road_costs[to] != u32::MAX
         };
@@ -43,20 +57,20 @@ impl<'a> States<'a> {
         let mut seen = Column::filled(roads, false);
         let seen = seen.values_mut();
         let mut order = Column::default();
-        let mut stack: Vec<(u32, u32)> = Vec::new();
+        let mut stack = Column::<(u32, u32)>::default();
         for root in 0..roads {
             if seen[root] || road_costs[root] == u32::MAX {
                 continue;
             }
             seen[root] = true;
             stack.push((root as u32, first[root]));
-            while let Some(&(node, arc)) = stack.last() {
+            while let Some(&(node, arc)) = stack.values().last() {
                 if arc == first[node as usize + 1] {
                     stack.pop();
                     order.push(node);
                     continue;
                 }
-                stack.last_mut().unwrap().1 += 1;
+                stack.values_mut().last_mut().unwrap().1 += 1;
                 let to = head[arc as usize] as usize;
                 if !seen[to] && open(arc as usize, node as usize, to) {
                     seen[to] = true;
@@ -67,8 +81,8 @@ impl<'a> States<'a> {
         seen.fill(false);
         let mut component = Column::filled(roads, u32::MAX);
         let component = component.values_mut();
-        let mut sizes: Vec<usize> = Vec::new();
-        let mut pending = Vec::new();
+        let mut sizes = Column::<u32>::default();
+        let mut pending = Column::default();
         for &root in order.values().iter().rev() {
             if seen[root as usize] {
                 continue;
@@ -79,22 +93,25 @@ impl<'a> States<'a> {
             pending.push(root);
             while let Some(node) = pending.pop() {
                 component[node as usize] = id;
-                sizes[id as usize] += 1;
-                for index in reverse_first[node as usize]..reverse_first[node as usize + 1] {
-                    let arc = reverse_arcs[index as usize];
-                    let from = self.tail(arc);
-                    if !seen[from] && open(arc as usize, from, node as usize) {
-                        seen[from] = true;
-                        pending.push(from as u32);
+                sizes.values_mut()[id as usize] += 1;
+                let junction = self.from[node as usize] as usize;
+                for &from in &arrivals[arriving[junction] as usize..arriving[junction + 1] as usize] {
+                    let arc = first[from as usize] + place[node as usize];
+                    if !seen[from as usize] && open(arc as usize, from as usize, node as usize) {
+                        seen[from as usize] = true;
+                        pending.push(from);
                     }
                 }
             }
         }
+        let sizes = sizes.values();
         let largest = sizes.iter().copied().max().unwrap_or(0);
-        let mut words = vec![0u64; roads.div_ceil(64)];
+        let mut words = Column::filled(roads.div_ceil(64), 0u64);
+        let words_mut = words.values_mut();
         for (road, &id) in component.iter().enumerate() {
-            if id != u32::MAX && (sizes[id as usize] == largest || sizes[id as usize] >= MINIMUM_COMPONENT) {
-                words[road / 64] |= 1 << (road % 64);
+            let size = if id == u32::MAX { 0 } else { sizes[id as usize] };
+            if size != 0 && (size == largest || size as usize >= MINIMUM_COMPONENT) {
+                words_mut[road / 64] |= 1 << (road % 64);
             }
         }
         words
@@ -104,45 +121,49 @@ impl<'a> States<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use planner_router::model::Road;
 
-    /// `edges` are sorted by source road.
-    fn topology(roads: usize, edges: &[(u32, u32)]) -> Topology {
-        let tails: Vec<_> = edges.iter().map(|&(from, _)| from).collect();
-        Topology { first: group(&tails, roads).0, head: edges.iter().map(|&(_, to)| to).collect() }
+    /// The roads from junction to junction of `ends`, and their topology.
+    fn graph(ends: &[(u32, u32)]) -> (Roads, Topology, usize) {
+        let roads: Roads = ends.iter().map(|&(from, to)| Road { from, to, ..Road::default() }).collect();
+        let points = ends.iter().map(|&(from, to)| from.max(to) as usize + 1).max().unwrap_or(0);
+        let topology = Topology::new(&roads, points).unwrap();
+        (roads, topology, points)
     }
 
     #[test]
     fn fragments_and_one_way_stubs_lose_their_snap_bit_but_the_largest_component_keeps_it() {
-        // Roads 0..4 form a two-way pair plus a cycle, 4 is a one-way stub leaving it, 5 and 6
-        // are a two-way pair that only a forbidden turn joins to the rest, 7 has no cost.
-        let edges = [(0, 1), (0, 4), (1, 0), (1, 2), (2, 3), (3, 1), (4, 5), (5, 6), (6, 5), (6, 7), (7, 0)];
-        let topology = topology(8, &edges);
-        let states = States::new(&topology);
+        // Roads 0 and 1 are a two-way pair and 2 and 3 close a cycle with 0. Road 4 is a one-way
+        // stub that leaves it, 5 and 6 are a two-way pair that only a forbidden turn from 4 joins
+        // to the rest, and 7 has no cost.
+        let (roads, topology, points) = graph(&[(0, 1), (1, 0), (1, 2), (2, 0), (2, 3), (3, 4), (4, 3), (4, 0)]);
+        let states = States::new(&topology, &roads, points);
         let costs = [1, 1, 1, 1, 1, 1, 1, u32::MAX];
-        let mut turns = vec![0u32; edges.len()];
-        turns[6] = u32::MAX;
+        let mut turns = vec![0u32; topology.head.len()];
+        let stub = topology.edges().position(|edge| edge == (4, 5)).unwrap();
+        turns[stub] = u32::MAX;
         let words = states.snappable(&costs, &turns);
-        let bits: Vec<bool> = (0..8).map(|road| words[0] & (1 << road) != 0).collect();
+        let bits: Vec<bool> = (0..8).map(|road| words.values()[0] & (1 << road) != 0).collect();
         assert_eq!(bits, [true, true, true, true, false, false, false, false]);
-        turns[6] = 0;
+        turns[stub] = 0;
         let costs = [1, 1, 1, 1, 1, 1, 1, 1];
-        assert_eq!(states.snappable(&costs, &turns), vec![0xff]);
+        assert_eq!(states.snappable(&costs, &turns).values(), [0xff]);
     }
 
     #[test]
     fn an_island_of_the_minimum_size_keeps_its_snap_bit_beside_a_larger_mainland() {
-        // Three cycles that nothing joins: the minimum size, twice that, and a pair.
-        let mut edges = Vec::new();
+        // Three one-way rings that nothing joins: the minimum size, twice that, and a pair.
+        let mut ends = Vec::new();
         let mut start = 0u32;
         for size in [MINIMUM_COMPONENT as u32, 2 * MINIMUM_COMPONENT as u32, 2] {
-            edges.extend((0..size).map(|i| (start + i, start + (i + 1) % size)));
+            ends.extend((0..size).map(|i| (start + i, start + (i + 1) % size)));
             start += size;
         }
-        edges.sort_unstable();
-        let roads = start as usize;
-        let words = States::new(&topology(roads, &edges)).snappable(&vec![1; roads], &vec![0; edges.len()]);
-        let bit = |road: usize| words[road / 64] & (1 << (road % 64)) != 0;
+        let (roads, topology, points) = graph(&ends);
+        let words =
+            States::new(&topology, &roads, points).snappable(&vec![1; roads.len()], &vec![0; topology.head.len()]);
+        let bit = |road: usize| words.values()[road / 64] & (1 << (road % 64)) != 0;
         assert!((0..3 * MINIMUM_COMPONENT).all(bit));
-        assert!(!(3 * MINIMUM_COMPONENT..roads).any(bit));
+        assert!(!(3 * MINIMUM_COMPONENT..roads.len()).any(bit));
     }
 }

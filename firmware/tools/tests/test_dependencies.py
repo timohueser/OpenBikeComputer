@@ -125,6 +125,22 @@ class DependencyTests(unittest.TestCase):
         self.assertIn("forbidden dependency edge `low -> high`", violations[0])
         self.assertIn("low must stay low", violations[0])
 
+    def test_closed_crates_take_only_allowed_production_dependencies(self):
+        root = metadata_root(
+            ("low", "high"),
+            (("low", "high", None), ("low", "libm", None), ("low", "serde", "build"), ("low", "proptest", "dev")),
+        )
+        policy = {"packages": ["low", "high"], "allowed": ["libm"], "reason": "no policy"}
+        self.assertEqual(
+            check_dependencies.check_closed_dependencies([root], policy),
+            ["dependency `low -> serde` is outside the closed list: no policy"],
+        )
+        policy["packages"].append("typo")
+        self.assertIn(
+            "closed dependency package `typo` is not in the workspace",
+            check_dependencies.check_closed_dependencies([root], policy),
+        )
+
     def test_dev_edges_do_not_constrain_test_fixtures(self):
         edges = check_dependencies.local_edges(metadata(("low", "high", "dev")))
         self.assertEqual(edges, set())

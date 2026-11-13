@@ -55,19 +55,19 @@ impl Junctions {
         let mut seen = Column::filled(nodes, false);
         let seen = seen.values_mut();
         let mut order = Column::default();
-        let mut stack = Vec::new();
+        let mut stack = Column::<(u32, u32)>::default();
         for root in 0..nodes as u32 {
             if seen[root as usize] {
                 continue;
             }
             seen[root as usize] = true;
             stack.push((root, first[0][root as usize]));
-            while let Some(&(node, arc)) = stack.last() {
+            while let Some(&(node, arc)) = stack.values().last() {
                 if arc == first[0][node as usize + 1] {
                     stack.pop();
                     order.push(node);
                 } else {
-                    stack.last_mut().unwrap().1 += 1;
+                    stack.values_mut().last_mut().unwrap().1 += 1;
                     let road = roads[0][arc as usize] as usize;
                     let next = to[road];
                     if costs[road] != u32::MAX && !seen[next as usize] {
@@ -81,7 +81,7 @@ impl Junctions {
         let mut components = Column::filled(nodes, u32::MAX);
         let components = components.values_mut();
         let (mut largest, mut largest_size) = (u32::MAX, 0);
-        let mut pending = Vec::new();
+        let mut pending = Column::default();
         for (id, &root) in (0u32..).zip(order.values().iter().rev()) {
             if components[root as usize] != u32::MAX {
                 continue;
@@ -137,11 +137,8 @@ impl Junctions {
         }
     }
 
-    pub fn prepare(
-        &self,
-        costs: &[u32],
-        write: &mut impl FnMut(&[u8]) -> Result<String, String>,
-    ) -> Result<landmarks::Columns, String> {
+    /// The distance columns of the landmarks of one profile, and their scale.
+    pub fn compute(&self, costs: &[u32]) -> Result<Distances, String> {
         let (first, roads) = (self.first.each_ref().map(Column::values), self.roads.each_ref().map(Column::values));
         let component = self.component(costs);
         let component = component.values();
@@ -182,12 +179,25 @@ impl Junctions {
                 nearest[node as usize] = nearest[node as usize].min(distances[node as usize]);
             }
             next = *component.iter().max_by_key(|&&node| nearest[node as usize]).unwrap();
-            tables.push(landmarks::write(distances.iter().map(|&d| d.min(u16::MAX as u64) as u32), write)?);
+            tables.push(distances.iter().map(|&d| d.min(u16::MAX as u64) as u32).collect());
             if nearest[next as usize] == 0 {
                 break;
             }
         }
-        Ok(landmarks::Columns { scale, tables })
+        Ok(Distances { scale, tables })
+    }
+}
+
+/// The landmark distances of one profile, divided by `scale` and capped at `u16::MAX`.
+pub struct Distances {
+    pub scale: u32,
+    tables: Vec<Column<u32>>,
+}
+
+impl Distances {
+    pub fn write(&self, write: &mut impl FnMut(&[u8]) -> Result<String, String>) -> Result<landmarks::Columns, String> {
+        let tables = self.tables.iter().map(|table| landmarks::write(table.values().iter().copied(), write));
+        Ok(landmarks::Columns { scale: self.scale, tables: tables.collect::<Result<_, _>>()? })
     }
 }
 
@@ -209,7 +219,7 @@ mod tests {
         let mut index = graph.index(&mut write).unwrap();
         let metrics = [vec![9, 15, 8, u32::MAX - 17, u32::MAX - 8, 9], vec![u32::MAX, 15, 8, 9, 17, 9]];
         for (i, costs) in metrics.iter().enumerate() {
-            index.profiles.insert(i.to_string(), graph.prepare(costs, &mut write).unwrap());
+            index.profiles.insert(i.to_string(), graph.compute(costs).unwrap().write(&mut write).unwrap());
         }
         assert!(index.valid(endpoints.len() as u32));
         let read = |table: &Table| -> Vec<u32> {

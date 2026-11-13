@@ -2,6 +2,8 @@
     import DrawerTitle from './DrawerTitle.svelte';
     import { heightRange, profilePaths, profileSamples } from '../../lib/planner/profile-data';
     import type { Compared } from '../../lib/planner/route-options';
+    import { distanceIn, heightIn, heightUnit } from '../../lib/settings/format';
+    import { settings } from '../../lib/settings/settings.svelte';
 
     let { option, current, letter, height, open, onToggle }: {
         /** The previewed route, which the profile fills. */
@@ -31,8 +33,8 @@
     </div>
     {#if open}
         <div class="plot">
-            <span class="height" style:top="5%">{high} m</span>
-            <span class="height" style:top="94%">{low} m</span>
+            <span class="height" style:top="5%">{Math.round(heightIn(high))} {heightUnit()}</span>
+            <span class="height" style:top="94%">{Math.round(heightIn(low))} {heightUnit()}</span>
             <svg viewBox="0 0 1000 112" preserveAspectRatio="none" role="img" aria-label={`Elevation of ${letter}, filled, and of your route A, dotted, on one distance scale.`}>
                 <path d="M0 25H1000M0 65H1000M0 105H1000" class="grid" />
                 <path d={optionPath.area} class="fill" />
@@ -40,10 +42,10 @@
                 <path d={currentPath.line} class="current" />
             </svg>
             {#each ends as end, i (end.letter)}
-                <span class="end" class:current={i === 1} style:left={`${end.row.km / longest * 100}%`} style:top={`${i * 18}px`}>{end.letter} {end.row.km.toFixed(1)} km</span>
+                <span class="end" class:current={i === 1} style:left={`${end.row.km / longest * 100}%`} style:top={`${i * 18}px`}>{end.letter} {distanceIn(end.row.km * 1000).toFixed(1)} {settings.units}</span>
             {/each}
         </div>
-        <div class="axis"><span>0 km</span><span>{longest.toFixed(1)} km</span></div>
+        <div class="axis"><span>0 {settings.units}</span><span>{distanceIn(longest * 1000).toFixed(1)} {settings.units}</span></div>
     {/if}
 </section>
 

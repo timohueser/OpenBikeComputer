@@ -18,6 +18,7 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { loadFlatDevice } from "../../../test-support/flat-device/load";
+import { initCore } from "../core/bridge";
 import { DeviceError, FlatStoreClient } from "./client";
 import { FlatDevice, streamCeilingFor, type FlatDeviceOptions } from "./flat-device";
 import { loopbackLink, type LoopbackLink, type LoopbackOptions } from "./loopback";
@@ -251,14 +252,20 @@ function bareLink(options: LoopbackOptions = {}) {
 
 beforeAll(loadFlatDevice);
 
+// The setup of the suites loads the core; the spy shows when a connection asks for it.
+vi.mock("../core/bridge", async (original) => {
+    const bridge = await original<typeof import("../core/bridge")>();
+    return { ...bridge, initCore: vi.fn(bridge.initCore) };
+});
+
 describe("browser support", () => {
     it("reports no WebUSB rather than pretending", () => {
-        // Firefox and Safari take this path. The answer is the desktop app, not a retry.
+        // Firefox and Safari take this path. The answer is another browser, not a retry.
         const watcher = new WebUsbWatcher({ usb: undefined });
         // No `navigator.usb` under Node, so the default lookup finds nothing.
         expect(webUsb()).toBeNull();
         expect(watcher.current.status).toBe("unsupported");
-        expect(watcher.current.error).toMatch(/desktop app/);
+        expect(watcher.current.error).toBe("This browser cannot use the USB cable. Use Chrome or Edge.");
     });
 
     it("cannot prompt where there is no API", async () => {
@@ -417,6 +424,22 @@ describe("the USB-binding major, settled by matching", () => {
 });
 
 describe("hot plug", () => {
+    it("loads the shared core only when a device connects, and again after a failed load", async () => {
+        const { usb, usbDevice } = rig();
+        const watcher = new WebUsbWatcher({ usb });
+        vi.mocked(initCore).mockClear();
+        await watcher.start();
+        expect(initCore).not.toHaveBeenCalled();
+
+        vi.mocked(initCore).mockRejectedValueOnce(new Error("offline"));
+        usb.emit("connect", usbDevice);
+        await vi.waitUntil(() => watcher.current.status === "error");
+        usb.emit("connect", usbDevice);
+        await vi.waitUntil(() => watcher.current.status === "ready");
+        expect(initCore).toHaveBeenCalledTimes(2);
+        await watcher.close();
+    });
+
     it("connects on a `connect` event", async () => {
         const { usb, usbDevice } = rig();
         const watcher = new WebUsbWatcher({ usb });

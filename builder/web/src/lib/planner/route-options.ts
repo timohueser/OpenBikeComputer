@@ -1,3 +1,5 @@
+import { distanceIn, heightIn, heightUnit } from '../settings/format';
+import { settings } from '../settings/settings.svelte';
 import { coordinateAt, cumulative, routeDistance, type Coordinate } from './geo';
 import { profileAscent, type ProfileLine } from './profile-data';
 import { presetName } from './riding-profiles';
@@ -11,7 +13,7 @@ export function optionOrder(routes: EngineRoute[], choice: string): EngineRoute[
 
 export const optionLetter = (index: number) => String.fromCharCode(65 + index);
 
-const reasonNames: Record<string, string> = { shorter: 'Shorter', less_climbing: 'Less climbing', smoother: 'Smoother' };
+const reasonNames: Record<string, string> = { less_climbing: 'Less climbing' };
 
 /** A corridor route takes the settlement near its `via` from `places`, else "Other way"; the primary route its preset. */
 export function optionName(route: EngineRoute, places: Record<string, string>): string {
@@ -45,9 +47,9 @@ export function routeRow(route: EngineRoute, name: string): Compared {
         unpavedKm: unpavedMetres(totals) / 1000, unknownSurfaceKm: totals.surface_m[0] / 1000 };
 }
 
-const tenths = (km: number) => Math.abs(km).toFixed(1);
+const tenths = (km: number) => Math.abs(distanceIn(km * 1000)).toFixed(1);
 /** "5.5 km shorter", or empty when the difference rounds to nothing. */
-const distanceWords = (km: number) => Number(tenths(km)) ? `${tenths(km)} km ${km < 0 ? 'shorter' : 'longer'}` : '';
+const distanceWords = (km: number) => Number(tenths(km)) ? `${tenths(km)} ${settings.units} ${km < 0 ? 'shorter' : 'longer'}` : '';
 
 /** How `row` differs from the current route, in words: "5.5 km shorter · 237 m less climbing · 0.1 km more unpaved".
  * Climb stays out when either climb is unknown; unpaved stays out when it rounds to nothing. */
@@ -55,11 +57,11 @@ export function difference(row: Compared, current: Compared): string {
     const km = row.km - current.km;
     const parts = [distanceWords(km) || 'Same distance'];
     if (row.climb !== null && current.climb !== null) {
-        const climb = Math.round(row.climb - current.climb);
-        parts.push(climb ? `${Math.abs(climb)} m ${climb < 0 ? 'less' : 'more'} climbing` : 'same climbing');
+        const climb = Math.round(heightIn(row.climb - current.climb));
+        parts.push(climb ? `${Math.abs(climb)} ${heightUnit()} ${climb < 0 ? 'less' : 'more'} climbing` : 'same climbing');
     }
     const unpaved = row.unpavedKm - current.unpavedKm;
-    if (Number(tenths(unpaved))) parts.push(`${tenths(unpaved)} km ${unpaved < 0 ? 'less' : 'more'} unpaved`);
+    if (Number(tenths(unpaved))) parts.push(`${tenths(unpaved)} ${settings.units} ${unpaved < 0 ? 'less' : 'more'} unpaved`);
     return parts.join(' · ');
 }
 

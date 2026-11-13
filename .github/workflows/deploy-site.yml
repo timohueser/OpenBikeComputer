@@ -156,8 +156,8 @@ jobs:
 
       # VITE_SITE_BASE makes the builder's links to the docs and the landing relative:
       # they are siblings inside this artifact, so naming them by absolute URL would be
-      # the one place a domain move still bit us. Left unset everywhere else (dev
-      # server, desktop app), where the site genuinely is somewhere else.
+      # the one place a domain move still bit us. Left unset everywhere else (the dev
+      # server), where the site genuinely is somewhere else.
       - name: Build the static map builder
         working-directory: builder/web
         env:

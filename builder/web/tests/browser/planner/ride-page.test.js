@@ -1,0 +1,298 @@
+import { readFileSync } from 'node:fs';
+import { expect, test } from '@playwright/test';
+import { initSync, obc_fit_write_ride } from '../../../src/lib/core/pkg/obc_builder_bridge.js';
+import { CORS_PREFLIGHT, respond } from './stubs.js';
+
+initSync({ module: readFileSync(new URL('../../../src/lib/core/pkg/obc_builder_bridge_bg.wasm', import.meta.url)) });
+
+const start = Date.UTC(2026, 9, 24, 7) / 1000, key = '20261024T070000Z';
+// 200 samples 10 s apart, about 50 m each to the north: 5 km down 20 m at 140 bpm and 200 W, then 5 km up 200 m at 160 bpm and 260 W.
+const samples = Array.from({ length: 200 }, (_, i) => {
+  const up = i >= 100;
+  return [start + 10 * i, 46_900_000 + 450 * i, 8_000_000, i ? 0 : 1, up ? 980 + (i - 99) * 2 : 1000 - 0.2 * i, 5, up ? 160 : 140, 85, up ? 260 : 200, 10];
+});
+const file = obc_fit_write_ride('bike', Float64Array.from(samples.flat()));
+const ride = {
+  key, name: 'Above Engelberg', source: 'file', format: 'fit', maxHr: null, ftp: null,
+  summary: { line: [8, 46.9, 8, 46.945, 8, 46.98955], heights: [1000, 980, 1180], bounds: [8, 46.9, 8, 46.98955], lengthM: 9958, climbM: 200,
+    highestM: 1180, seconds: 1990, movingS: 1990, start, bike: 'touring' },
+};
+const text = async download => readFileSync(await download.path(), 'utf8');
+
+// A ride from a GPX file, with no sensor: 20 points 10 s apart, about 50 m each to the north.
+const plainKey = '20261025T070000Z';
+const plain = {
+  key: plainKey, name: 'No sensors', source: 'file', format: 'gpx', maxHr: null, ftp: null,
+  summary: { line: [8, 46.9, 8, 46.90855], heights: [1000, 1019], bounds: [8, 46.9, 8, 46.90855], lengthM: 951, climbM: 19,
+    highestM: 1019, seconds: 190, movingS: 190, start: start + 86_400, bike: 'touring' },
+};
+const plainFile = `<?xml version="1.0"?><gpx version="1.1" creator="test" xmlns="http://www.topografix.com/GPX/1/1"><trk><trkseg>${
+  Array.from({ length: 20 }, (_, i) => `<trkpt lat="${(46.9 + 0.00045 * i).toFixed(5)}" lon="8"><ele>${1000 + i}</ele><time>${new Date((start + 86_400 + 10 * i) * 1000).toISOString()}</time></trkpt>`).join('')
+}</trkseg></trk></gpx>`;
+
+async function answer(page) {
+  await page.route(url => url.hostname !== '127.0.0.1', request => {
+    if (request.request().method() === 'OPTIONS') return request.fulfill(CORS_PREFLIGHT);
+    const response = respond(request.request());
+    return response ? request.fulfill(response) : request.abort();
+  });
+}
+
+test('the ride page shows a stored ride with its numbers and zones, renames, exports, rides it again and deletes', async ({ page }) => {
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await answer(page);
+  await page.goto(`/planner.html#/ride/${key}`);
+  await expect(page.getByText('This ride is not in the library.')).toBeVisible();
+
+  await page.goto('/planner.html?cover=none');
+  await page.waitForFunction(() => window.coverTest);
+  await page.evaluate(([record, bytes]) => window.coverTest.library.addRide(record, new Blob([new Uint8Array(bytes)])), [ride, [...file]]);
+  await page.goto(`/planner.html#/ride/${key}`);
+  const facts = page.locator('.facts');
+  await expect(page.getByRole('heading', { name: 'Above Engelberg', level: 1 })).toBeVisible();
+  await expect(page.getByText('24 October 2026')).toBeVisible();
+  for (const [label, value] of [['Distance', '10.0 km'], ['Climb', '200 m'], ['Time moving', '0h 33m'], ['Speed', '18.0 km/h']]) {
+    await expect(facts.locator('dl > div').filter({ hasText: label })).toContainText(value);
+  }
+  // The moving steps weigh 99 × 10 s on the flat and 100 × 10 s up.
+  await expect(facts.locator('.sensor').filter({ hasText: 'Heart rate' })).toContainText('150max 160');
+  await expect(facts.locator('.sensor').filter({ hasText: 'Power' })).toContainText('230 Wmax 260');
+  await expect(facts.locator('.sensor').filter({ hasText: 'Cadence' })).toContainText('85');
+  await expect(facts.getByText('Set your maximum heart rate in Settings to see zones.')).toBeVisible();
+  await expect(facts.getByText('Set your threshold power in Settings to see zones.')).toBeVisible();
+  // With no limit, the large line has no zones: it shows the same link.
+  await page.getByRole('button', { name: 'Power, open large' }).click();
+  const large = page.getByRole('dialog', { name: 'Power' });
+  await expect(large.getByText('Set your threshold power in Settings to see zones.')).toBeVisible();
+  await expect(large.getByText('Time in each zone')).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(large).toHaveCount(0);
+  await expect(facts.locator('.climbs li')).toHaveCount(1);
+
+  // With no values in the ride, the zones use the settings.
+  await page.evaluate(() => localStorage.setItem('obc-settings', JSON.stringify({ units: 'km', maxHr: { value: 185, at: 0, device: false }, ftp: { value: 250, at: 0, device: false } })));
+  await page.reload();
+  await expect(facts.getByRole('img', { name: /Z4 · 148–166 bpm · 0h 17m/ })).toBeVisible();
+  await expect(facts.getByRole('img', { name: /Z5 · 263\+ W/ })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Rename' }).click();
+  await page.getByRole('textbox', { name: 'Ride name' }).fill('Trübsee');
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('heading', { name: 'Trübsee', level: 1 })).toBeVisible();
+
+  const exported = async label => {
+    await page.getByRole('button', { name: 'More ▾' }).click();
+    const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: label }).click()]);
+    return download;
+  };
+  const fit = await exported('Export FIT file');
+  expect(fit.suggestedFilename()).toBe('Trübsee.fit');
+  expect(readFileSync(await fit.path()).equals(Buffer.from(file))).toBe(true);
+  const gpx = await text(await exported('Export GPX track'));
+  expect(gpx).toContain('<time>2026-10-24T07:33:10.000Z</time>');
+  const csv = (await text(await exported('Export table of the data (CSV)'))).split('\n');
+  expect(csv[0]).toBe('time,latitude,longitude,elevation_m,distance_m,speed_m_s,heart_rate_bpm,cadence_rpm,power_w,temperature_c');
+  expect(csv[1]).toBe('2026-10-24T07:00:00.000Z,46.900000,8.000000,1000,0,5,140,85,200,10');
+
+  await page.getByRole('button', { name: 'Ride it again' }).click();
+  await expect(page).toHaveURL(/#\/route\/file-[0-9a-f]{32}$/);
+  await expect(page.getByRole('heading', { name: 'Trübsee', level: 1 })).toBeVisible();
+  const route = page.url();
+  await page.goBack();
+  await page.getByRole('button', { name: 'Ride it again' }).click();
+  await expect(page).toHaveURL(route);
+  await page.goBack();
+
+  await page.getByRole('button', { name: 'More ▾' }).click();
+  await page.getByRole('navigation', { name: 'Actions' }).getByRole('button', { name: 'Delete' }).click();
+  await page.getByRole('dialog', { name: 'Delete this ride?' }).getByRole('button', { name: 'Delete' }).click();
+  await expect(page).toHaveURL(/#\/routes\/ridden$/);
+  await page.evaluate(k => { location.hash = `#/ride/${k}`; }, key);
+  await expect(page.getByText('This ride is not in the library.')).toBeVisible();
+
+  await page.goto('/planner.html?cover=none');
+  await page.waitForFunction(() => window.coverTest);
+  expect(await page.evaluate(() => window.coverTest.library.routes().then(routes => routes.length))).toBe(1);
+  expect(errors).toEqual([]);
+});
+
+test('the lines of a ride: a row for each line with values, the pointer, and a part by a drag with its numbers', async ({ page }) => {
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await answer(page);
+  await page.goto('/planner.html?cover=none');
+  await page.waitForFunction(() => window.coverTest);
+  await page.evaluate(() => localStorage.setItem('obc-settings', JSON.stringify({ units: 'km', maxHr: { value: 185, at: 0, device: false }, ftp: { value: 250, at: 0, device: false } })));
+  await page.evaluate(async ([record, bytes, other, gpx]) => {
+    await window.coverTest.library.addRide(record, new Blob([new Uint8Array(bytes)]));
+    await window.coverTest.library.addRide(other, new Blob([gpx]));
+  }, [ride, [...file], plain, plainFile]);
+
+  // A ride with no sensor has the rows of the elevation and the speed only, and no sensor in the left card.
+  await page.goto(`/planner.html#/ride/${plainKey}`);
+  const facts = page.locator('.facts'), lanes = page.locator('.lanes'), chips = page.getByRole('group', { name: 'Shown lines' }).getByRole('button');
+  await expect(chips).toHaveText(['Elevation', 'Speed']);
+  await expect(lanes.locator('.label')).toHaveText(['Elevation', 'Speed18.0 km/h']);
+  await expect(facts.locator('.sensor')).toHaveCount(0);
+  // The arrow keys move the pointer both ways on a ride whose samples are further apart than a key step.
+  await lanes.locator('.over').focus();
+  for (let i = 0; i < 6; i++) await page.keyboard.press('ArrowRight');
+  const right = await lanes.locator('.chip').textContent();
+  for (let i = 0; i < 3; i++) await page.keyboard.press('ArrowLeft');
+  await expect(lanes.locator('.chip')).not.toHaveText(right);
+
+  // A ride with sensors: a row for each line, the cadence off; the average under the name, the scale after the row.
+  await page.goto(`/planner.html#/ride/${key}`);
+  await expect(chips).toHaveText(['Elevation', 'Speed', 'Heart rate', 'Power', 'Cadence']);
+  await expect(lanes.locator('.label')).toHaveText(['Elevation', 'Speed18.0 km/h', 'Heart rate150 bpm', 'Power230 W']);
+  await expect(lanes.locator('.scale').nth(2)).toHaveText('160 bpm140 bpm');
+  await chips.filter({ hasText: 'Cadence' }).click();
+  await expect(lanes.locator('.label').last()).toHaveText('Cadence85 rpm');
+  // A hidden line keeps its zones in the left card.
+  await chips.filter({ hasText: 'Heart rate' }).click();
+  await expect(lanes.locator('.label')).toHaveCount(4);
+  await expect(facts.getByRole('img', { name: /Z4 · 148–166 bpm · 0h 17m/ })).toBeVisible();
+  await chips.filter({ hasText: 'Heart rate' }).click();
+
+  // The pointer shows the value of each line at its place.
+  const box = await lanes.locator('.over').boundingBox(), y = box.y + box.height / 2;
+  await page.mouse.move(box.x + box.width * 0.25, y);
+  await expect(lanes.locator('.chip')).toHaveText('2.5 km');
+  await expect(lanes.locator('.lane').nth(2)).toHaveText('140 bpm');
+
+  // The label of a row opens its line large in a window: the name of each zone that the line reaches, the time in each
+  // zone and two numbers.
+  const label = page.getByRole('button', { name: 'Heart rate, open large' }), large = page.getByRole('dialog', { name: 'Heart rate' });
+  const whole = large.getByRole('button', { name: 'Whole ride' });
+  await label.click();
+  await expect(large.getByText('Z4 from 148 bpm')).toBeVisible();
+  await expect(large.getByRole('heading', { name: 'Time in each zone' })).toBeVisible();
+  await expect(large.locator('li')).toHaveText(['Z50h 0m', 'Z40h 17m', 'Z30h 17m', 'Z20h 0m', 'Z10h 0m']);
+  await expect(large.locator('dl > div')).toHaveText(['Average150 bpm', 'Highest160 bpm']);
+  await expect(whole).toHaveCount(0);
+  // A drag across the line shows that stretch large: the ticks, the numbers and the zone times are of the stretch,
+  // and the zone times of a short stretch are in minutes and seconds. The stretch holds the samples 140 to 179: 39 steps of 10 s.
+  const line = await large.locator('.lane').boundingBox();
+  const dragLine = async () => {
+    await page.mouse.move(line.x + line.width * 0.7, line.y + line.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(line.x + line.width * 0.8, line.y + line.height / 2);
+    await page.mouse.move(line.x + line.width * 0.9, line.y + line.height / 2);
+    await page.mouse.up();
+  };
+  await dragLine();
+  await expect(large.locator('.ticks span')).toHaveText(['km 7.0', 'km 9.0', 'km 7.5', 'km 8.0', 'km 8.5']);
+  await expect(large.getByText('km 7.0 to km 9.0 · 2.0 km')).toBeVisible();
+  await expect(large.locator('li')).toHaveText(['Z50m 0s', 'Z46m 30s', 'Z30m 0s', 'Z20m 0s', 'Z10m 0s']);
+  await expect(large.locator('dl > div')).toHaveText(['Average160 bpm', 'Highest160 bpm']);
+  // "Whole ride" beside the title shows the whole line again, and is there only for a stretch.
+  await whole.click();
+  await expect(large.locator('dl > div')).toHaveText(['Average150 bpm', 'Highest160 bpm']);
+  await expect(large.locator('.ticks span').nth(1)).toHaveText('10.0 km');
+  await expect(whole).toHaveCount(0);
+  // Escape shows the whole line first and closes the window second, and the focus is back on the label.
+  await dragLine();
+  await expect(whole).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(large.locator('.ticks span').nth(1)).toHaveText('10.0 km');
+  await page.keyboard.press('Escape');
+  await expect(large).toHaveCount(0);
+  await expect(label).toBeFocused();
+  // A line with no zones has no list.
+  await page.getByRole('button', { name: 'Speed, open large' }).click();
+  const speed = page.getByRole('dialog', { name: 'Speed' });
+  await expect(speed.locator('dl > div').first()).toHaveText('Average18.0 km/h');
+  await expect(speed.getByText('Time in each zone')).toHaveCount(0);
+  await speed.getByRole('button', { name: 'Close' }).click();
+  await expect(speed).toHaveCount(0);
+
+  // A drag over the second half selects the climb: the header shows its distance, the left card its numbers beside
+  // those of the whole ride, and the map marks it.
+  await page.mouse.move(box.x + box.width * 0.5, y);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * 0.75, y);
+  await page.mouse.move(box.x + box.width - 1, y);
+  await page.mouse.up();
+  await expect(page.locator('.lines .part')).toContainText('km 5.0 to km 10.0 · 5.0 km');
+  await expect(facts.locator('thead th')).toHaveText(['Selected', 'Whole ride']);
+  for (const [label, selected, whole] of [['Distance', '5.0 km', '10.0 km'], ['Time moving', '0h 17m', '0h 33m'], ['Speed', '18.0 km/h', '18.0 km/h'],
+    ['Heart rate', '160', '150'], ['Power', '260 W', '230 W'], ['Cadence', '85', '85']]) {
+    await expect(facts.locator('tbody tr').filter({ hasText: label }).locator('td')).toHaveText([selected, whole]);
+  }
+  // The zones are those of the part: all of it is in Z4.
+  await expect(facts.getByRole('img', { name: /Z3 · 130–147 bpm · 0h 0m, Z4 · 148–166 bpm · 0h 17m/ })).toBeVisible();
+  await expect(facts.locator('.climbs')).toHaveCount(0);
+  // With a part, the menu has the switch "Only the selected part": with it on, an export holds only the part.
+  const gpx = async () => {
+    await page.getByRole('button', { name: 'More ▾' }).click();
+    const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Export GPX track' }).click()]);
+    return { name: download.suggestedFilename(), points: (await text(download)).split('<trkpt').length - 1 };
+  };
+  expect(await gpx()).toEqual({ name: 'Above Engelberg.gpx', points: 200 });
+  await page.getByRole('button', { name: 'More ▾' }).click();
+  await page.getByRole('switch', { name: 'Only the selected part' }).click();
+  await page.keyboard.press('Escape');
+  expect(await gpx()).toEqual({ name: 'Above Engelberg part.gpx', points: 100 });
+
+  // The large line opens on the part: its range, its numbers and its zone times.
+  await label.click();
+  await expect(large.getByText('km 5.0 to km 10.0 · 5.0 km')).toBeVisible();
+  await expect(large.locator('li')).toHaveText(['Z50h 0m', 'Z40h 17m', 'Z30h 0m', 'Z20h 0m', 'Z10h 0m']);
+  await expect(large.locator('dl > div')).toHaveText(['Average160 bpm', 'Highest160 bpm']);
+  // A click on the line takes the focus out of the window: Escape still acts on the window only. In the whole ride
+  // the part shows as in the rows, with one pale layer, because the part reaches the end of the line. The second
+  // Escape closes the window and keeps the part.
+  await large.locator('.lane').click();
+  await page.keyboard.press('Escape');
+  await expect(large.locator('dl > div')).toHaveText(['Average150 bpm', 'Highest160 bpm']);
+  await expect(large.locator('.pale')).toHaveCount(1);
+  await page.keyboard.press('Escape');
+  await expect(large).toHaveCount(0);
+  await expect(page.locator('.lines .part')).toHaveCount(1);
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.lines .part')).toHaveCount(0);
+  await expect(facts.locator('dl > div').filter({ hasText: 'Distance' })).toContainText('10.0 km');
+  // With no part, the menu has no switch.
+  await page.getByRole('button', { name: 'More ▾' }).click();
+  await expect(page.getByRole('button', { name: 'Export GPX track' })).toBeVisible();
+  await expect(page.getByRole('switch', { name: 'Only the selected part' })).toHaveCount(0);
+  await page.keyboard.press('Escape');
+
+  // The name of the axis is its switch: the ticks of the time axis are times of the day.
+  const ticks = lanes.locator('.ticks span');
+  await expect(ticks.nth(1)).toHaveText('10.0 km');
+  await page.getByRole('button', { name: 'Distance axis, change to time' }).click();
+  await expect(ticks.first()).toHaveText(/^\d\d:\d\d$/);
+  for (const tick of await ticks.allTextContents()) expect(tick).toMatch(/^\d\d:\d\d$/);
+  await page.getByRole('button', { name: 'Time axis, change to distance' }).click();
+  await expect(ticks.nth(1)).toHaveText('10.0 km');
+
+  // With every line hidden, the card is its chips only; a chip brings the rows back.
+  for (const name of ['Elevation', 'Speed', 'Heart rate', 'Power', 'Cadence']) await chips.filter({ hasText: name }).click();
+  await expect(chips).toHaveCount(5);
+  await expect(lanes).toHaveCount(0);
+  await chips.filter({ hasText: 'Speed' }).click();
+  await expect(lanes.locator('.label')).toHaveText(['Speed18.0 km/h']);
+  for (const name of ['Elevation', 'Heart rate', 'Power', 'Cadence']) await chips.filter({ hasText: name }).click();
+  await expect(lanes.locator('.label')).toHaveCount(5);
+
+  // The elevation row fills the climb; a click on it selects the climb, a click on another row clears the part.
+  const click = async (row, at) => {
+    const lane = await lanes.locator('.lane').nth(row).boundingBox();
+    await page.mouse.click(lane.x + lane.width * at, lane.y + lane.height / 2);
+  };
+  await expect(lanes.locator('.lane').first().locator('path[clip-path]')).toHaveCount(1);
+  await click(0, 0.75);
+  await expect(page.locator('.lines .part')).toContainText('km 5.1 to km 9.9 · 4.9 km');
+  await expect(facts.locator('tbody tr').filter({ hasText: 'Heart rate' }).locator('td')).toHaveText(['160', '150']);
+  await click(1, 0.75);
+  await expect(page.locator('.lines .part')).toHaveCount(0);
+  // A click on the climb in the left card selects it too.
+  await facts.locator('.climbs').getByRole('button').click();
+  await expect(page.locator('.lines .part')).toContainText('km 5.1 to km 9.9 · 4.9 km');
+  await expect(facts.locator('thead th')).toHaveText(['Selected', 'Whole ride']);
+  await page.keyboard.press('Escape');
+  await expect(facts.locator('.climbs li')).toHaveCount(1);
+  expect(errors).toEqual([]);
+});

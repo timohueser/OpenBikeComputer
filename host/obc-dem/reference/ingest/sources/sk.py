@@ -41,7 +41,7 @@ class QuasigeoidWcs(Wcs20Source):
         self.grid = None
 
     def fetch(self, bbox, workdir):
-        # Once, before the requests run in parallel.
+        # Once, before the requests.
         self.grid = http_download(self.geoid, workdir / Path(self.geoid).name)
         return super().fetch(bbox, workdir)
 
