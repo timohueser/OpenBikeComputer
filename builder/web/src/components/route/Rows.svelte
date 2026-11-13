@@ -21,7 +21,7 @@
     import { kindLabel } from '../../lib/planner/search/presentation';
     import { placeDetails, type SearchPlace } from '../../lib/planner/search/types';
     import { surfaceBarColors, surfaceRuns, surfaceWindow } from '../../lib/planner/surface-data';
-    import { distanceIn, formatDistance, formatHeight, formatPercent } from '../../lib/settings/format';
+    import { distanceIn, formatAlong, formatDistance, formatHeight, formatPercent } from '../../lib/settings/format';
     import { settings } from '../../lib/settings/settings.svelte';
 
     /** The bottom card of the Route page: the waypoints, the heights, the surface and the places along the route or one
@@ -121,10 +121,13 @@
         if (!part || part[1] <= shown.from || part[0] >= shown.to) return null;
         return [Math.max(0, x(part[0])), Math.min(1, x(part[1]))];
     });
+    // A climb gives its own length and gain, as the left card does; a profile with no heights gives no gain.
     const partText = $derived.by(() => {
         if (!part) return '';
-        const [a, b] = part.map(share => distanceIn(share * totalM));
-        return `${settings.units} ${a.toFixed(1)} to ${b.toFixed(1)} · ${formatDistance((part[1] - part[0]) * totalM)} · ${formatHeight(profileAscent(part[0], part[1], profile))} up`;
+        const climb = chosenClimb >= 0 ? facts?.climbs[chosenClimb] : undefined;
+        const gain = climb ? climb.ascent : samples.some(sample => sample.height !== null) ? profileAscent(part[0], part[1], profile) : null;
+        return [`${formatAlong(part[0] * totalM)} to ${formatAlong(part[1] * totalM)}`, formatDistance(climb ? (climb.to - climb.from) * 1000 : (part[1] - part[0]) * totalM),
+            gain === null ? '' : `${formatHeight(gain)} up`].filter(Boolean).join(' · ');
     });
     const elevationHeight = $derived(innerWidth >= WIDE_PX && innerHeight >= TALL_PX ? ELEVATION_PX : 96);
 
@@ -157,6 +160,8 @@
     $effect(() => { onhover(hoveredClimb >= 0 ? [climbs[hoveredClimb].from, climbs[hoveredClimb].to] : null); });
     $effect(() => { onday(day === 'all' ? null : [shown.from, shown.to]); });
     $effect(() => { onplace(chosenPlace ? chosenPlace.coordinate : null); });
+    // `openPlace` points into `groups`: new groups, after a resize or another day, close it.
+    $effect(() => { void groups; openPlace = undefined; });
 
     $effect(() => {
         if (!placeLane) return;
@@ -203,10 +208,18 @@
         onpoint(at === null ? null : shown.from + at * span);
     }
 
+    /** Escape closes an open panel before the part, which `Lanes` clears; the focus goes back to the place. */
+    function closeOnEscape(event: KeyboardEvent) {
+        if (event.key !== 'Escape' || (open === undefined && !openPlace)) return;
+        event.preventDefault();
+        if (openPlace) placeLane?.querySelector<HTMLElement>('.place.open > button')?.focus();
+        [open, openPlace] = [undefined, undefined];
+    }
+
     const kmOf = (place: Place) => formatDistance((shown.from + nearestProgress(slice, place.coordinate) * span) * totalM);
 </script>
 
-<svelte:window bind:innerWidth bind:innerHeight />
+<svelte:window bind:innerWidth bind:innerHeight onkeydowncapture={closeOnEscape} />
 <!-- iOS Safari does not focus a tapped button, so a tap outside closes the panel here, not by `focusout`. -->
 <svelte:document onpointerdown={event => {
     if (open !== undefined && !(event.target as Element).closest('.pin')) open = undefined;
@@ -219,7 +232,7 @@
     {@const website = websiteLink(found?.website ?? own.website)}
     {@const phone = found?.phone ?? own.phone}
     {@const hours = found?.opening_hours ?? own.openingHours}
-    <div class="panel" style:left={`${shift}px`}>
+    <div class="panel" data-panel style:left={`${shift}px`}>
         <strong>{point.label}</strong>
         {#if point.placeKind}<small>{kindLabel(point.placeKind)}</small>{/if}
         {#if point.note}<p>{point.note}</p>{/if}
@@ -259,7 +272,7 @@
 {/snippet}
 
 {#snippet elevation()}
-    <ElevationRow line={profile} from={shown.from} to={shown.to} {climbs} {lit} lines={nights} />
+    <ElevationRow line={profile} from={shown.from} to={shown.to} {climbs} {lit} {part} lines={nights} />
 {/snippet}
 
 {#snippet surface()}
@@ -292,7 +305,7 @@
                         {#if chosenPlace}
                             {@render about(chosenPlace)}
                         {:else}
-                            <div class="panel list" style:left={`${shift}px`}>
+                            <div class="panel list" data-panel style:left={`${shift}px`}>
                                 {#each group.places.slice(0, LIST_NAMES) as place, j (j)}
                                     <button type="button" onclick={() => openPlace = { group: i, place: j }}><span>{place.label}</span><small>{kmOf(place)}</small></button>
                                 {/each}
@@ -310,7 +323,7 @@
 
 {#snippet header()}
     {#if days.length > 1}
-        <Segmented compact label="Shown days" value={day} onChange={value => day = value}
+        <Segmented compact label="Shown days" value={day} onChange={value => { day = value; onpart(null); }}
             options={[{ value: 'all', label: days.length === 2 ? 'Both days' : 'All days' }, ...days.map(item => ({ value: String(item.number), label: `Day ${item.number}` }))]} />
     {/if}
     <Menu label="Places" left items={[

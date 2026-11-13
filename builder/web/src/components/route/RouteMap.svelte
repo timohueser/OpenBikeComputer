@@ -29,6 +29,8 @@
 
     /** The pointer marks the line within this many pixels of it. */
     const NEAR_PX = 24;
+    /** A fit of a short part, such as one of no length, zooms in no further than this. */
+    const FIT_ZOOM = 15;
     let container: HTMLElement;
     let map = $state.raw<maplibregl.Map>();
     /** `index` is the place in `pins`; `left` puts the label on the side with more room. */
@@ -50,7 +52,7 @@
         const lons = slice.map(c => c[0]), lats = slice.map(c => c[1]);
         return [Math.min(...lons), Math.min(...lats), Math.max(...lons), Math.max(...lats)];
     };
-    const fit = (animate = false) => map?.fitBounds(bounds(), { padding: Math.min(48, map.getContainer().clientWidth / 12), animate, duration: 400 });
+    const fit = (animate = false) => map?.fitBounds(bounds(), { padding: Math.min(48, map.getContainer().clientWidth / 12), maxZoom: FIT_ZOOM, animate, duration: 400 });
     const lineOf = (stretch: [number, number] | null | undefined) =>
         ({ type: 'Feature' as const, properties: {}, geometry: { type: 'LineString' as const, coordinates: stretch ? routeSlice(coordinates, stretch[0], stretch[1]) : [] } });
 

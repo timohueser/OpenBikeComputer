@@ -3,7 +3,7 @@
     import Icon from '../planner/PlannerIcon.svelte';
     import { townOf } from './towns';
     import type { RouteSummary } from '../../lib/library/records';
-    import { distanceIn, formatDistance, formatHeight, formatPercent } from '../../lib/settings/format';
+    import { distanceIn, formatAlong, formatDistance, formatHeight, formatPercent } from '../../lib/settings/format';
     import { settings } from '../../lib/settings/settings.svelte';
     import { duration, orderedRoutePoints, planView, type RoutePoint, type Trip } from '../../lib/planner/editor';
     import { profileHeightAt, profileSamples } from '../../lib/planner/profile-data';
@@ -72,7 +72,7 @@
     {:then name}
         <h3 class="climb-name">{name ? `To ${name}` : 'Climb'}</h3>
     {/await}
-    <p class="note">{at(climb.from)} to {at(climb.to)}</p>
+    <p class="note">{formatAlong(climb.from * 1000)} to {formatAlong(climb.to * 1000)}</p>
     <dl class="numbers">
         {@render number('Length', formatDistance((climb.to - climb.from) * 1000))}
         {@render number('Climb', formatHeight(climb.ascent))}
@@ -80,6 +80,10 @@
         {@render number(`Steepest ${formatDistance(STEEPEST_KM * 1000)}`, formatPercent(climb.steepest))}
         {@render number('Top', top === null ? '–' : formatHeight(top))}
     </dl>
+    {#if facts && facts.climbs.length > 1}
+        <h3>Other climbs</h3>
+        <ul class="rows">{#each facts.climbs.filter(other => other !== climb) as other (other.from)}{@render climbRow(other)}{/each}</ul>
+    {/if}
 {/snippet}
 
 <div class="facts">

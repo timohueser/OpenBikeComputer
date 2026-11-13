@@ -8,14 +8,22 @@
         /** The menu opens to the right of the button, not to its left. */
         left?: boolean;
     } = $props();
-    let open = $state(false), root = $state<HTMLElement>();
+    let open = $state(false), root = $state<HTMLElement>(), button = $state<HTMLButtonElement>();
+
+    // In the capture phase, so that Escape closes the menu before anything under it, such as a selected part.
+    function escape(event: KeyboardEvent) {
+        if (!open || event.key !== 'Escape') return;
+        event.preventDefault();
+        open = false;
+        button?.focus();
+    }
 </script>
 
 <svelte:window onclick={event => { if (open && !root?.contains(event.target as Node)) open = false; }}
-    onkeydown={event => { if (open && event.key === 'Escape') open = false; }} />
+    onkeydowncapture={escape} />
 
 <div class="menu" bind:this={root}>
-    <button type="button" class="button" aria-expanded={open} onclick={() => open = !open}>{label} ▾</button>
+    <button type="button" class="button" bind:this={button} aria-expanded={open} onclick={() => open = !open}>{label} ▾</button>
     {#if open}
         <menu class:left>
             {#each items as item (item.label)}

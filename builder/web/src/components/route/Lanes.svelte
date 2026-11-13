@@ -9,7 +9,7 @@
         rows: { label: string; draw: Snippet; height?: number }[];
         /** Labels under the rows; the first and the last stay inside the axis. */
         ticks: { at: number; label: string }[];
-        /** The ticks follow this many rows, which all have a height; by default they follow every row. */
+        /** The ticks follow this many rows; by default they follow every row. */
         ticksAfter?: number;
         /** The controls at the start of the header. */
         header?: Snippet;
@@ -28,14 +28,22 @@
         onclick?: (x: number, row?: number | null) => void;
     } = $props();
 
-    /** A drag starts after DRAG_PX; an arrow key moves the pointer by KEY_STEP of the axis. GAP_PX is the `row-gap` of `.lanes`. */
-    const DRAG_PX = 4, KEY_STEP = .01, GAP_PX = 6;
-    let axis = $state<HTMLElement>();
+    /** A drag starts after DRAG_PX; an arrow key moves the pointer by KEY_STEP of the axis. */
+    const DRAG_PX = 4, KEY_STEP = .01;
+    let root = $state<HTMLElement>(), axis = $state<HTMLElement>(), tickRow = $state<HTMLElement>(), lineEnd = $state<number>();
     let down: { x: number; px: number; row?: number; moved: boolean } | null = null;
     const split = $derived(Math.min(rows.length, ticksAfter ?? rows.length));
     const gridRow = (i: number) => i < split ? i + 1 : i + 2;
-    // With the ticks between the rows, the pointer line ends on them, where its chip shows.
-    const lineHeight = $derived(split < rows.length ? rows.slice(0, split).reduce((sum, row) => sum + (row.height ?? 0) + GAP_PX, 0) - GAP_PX + 4 : undefined);
+
+    // With rows under the ticks, the pointer line ends on the ticks, where its chip shows. The gaps differ on a phone,
+    // so the place is measured.
+    $effect(() => {
+        if (!root || !axis || !tickRow || split === rows.length) return void (lineEnd = undefined);
+        const [box, ticksBox, measure] = [axis, tickRow, () => { lineEnd = ticksBox.offsetTop - box.offsetTop; }];
+        const observer = new ResizeObserver(measure);
+        observer.observe(root);
+        return () => observer.disconnect();
+    });
 
     function place(event: PointerEvent) {
         const box = axis!.getBoundingClientRect(), lane = (event.target as Element).closest<HTMLElement>('.lane');
@@ -54,8 +62,8 @@
 
     function start(event: PointerEvent) {
         const { x, px, row } = place(event);
-        // A button in a lane, such as a pin or a place, keeps its own click.
-        if (!onpart || x < 0 || x > 1 || event.button || (event.target as Element).closest('button, a')) return;
+        // A button, a link or a panel (`data-panel`) in a lane keeps its own press.
+        if (!onpart || x < 0 || x > 1 || event.button || (event.target as Element).closest('button, a, [data-panel]')) return;
         down = { x, px, row, moved: false };
         (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
     }
@@ -82,8 +90,10 @@
         onpointer(next, null);
     }
 
+    // A menu or a panel that Escape closes first prevents the default, in the capture phase.
     function escape(event: KeyboardEvent) {
-        if (event.key === 'Escape' && part && onpart && !(event.target as Element).closest?.('input, textarea, dialog, [role="dialog"]')) onpart(null);
+        if (event.key !== 'Escape' || event.defaultPrevented || !part || !onpart) return;
+        if (!(event.target as Element).closest?.('input, textarea, dialog')) onpart(null);
     }
 </script>
 
@@ -97,27 +107,29 @@
         {/if}
     </header>
 {/if}
-<!-- The arrow keys move the pointer like a slider; Shift grows a part, Enter clicks at the pointer. -->
-<div class="lanes" role="slider" tabindex="0" aria-label={label} aria-valuemin={0} aria-valuemax={100}
-    aria-valuenow={Math.round((pointer ?? 0) * 100)} onkeydown={key}
-    onpointermove={move} onpointerdown={start} onpointerup={end} onpointercancel={() => down = null}
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="lanes" bind:this={root} onpointermove={move} onpointerdown={start} onpointerup={end} onpointercancel={() => down = null}
     onpointerleave={() => { if (!down) onpointer(null); }}>
     {#each rows as row, i (i)}
         <div class="label" style:grid-row={gridRow(i)}>{row.label}</div>
         <div class="lane" data-row={i} style:grid-row={gridRow(i)} style:height={row.height ? `${row.height}px` : undefined}>{@render row.draw()}</div>
     {/each}
     <!-- Each part has its grid row: the pointer layer covers the rows of the lanes. -->
-    <div class="ticks" style:grid-row={split + 1}>
+    <div class="ticks" bind:this={tickRow} style:grid-row={split + 1}>
         {#each ticks as tick, i (i)}<span style:left={`${tick.at * 100}%`} style:translate={`${-tick.at * 100}%`}>{tick.label}</span>{/each}
     </div>
-    <div class="over" bind:this={axis} style:grid-row={`1 / span ${split < rows.length ? rows.length + 1 : rows.length}`}>
+    <!-- The pointer layer is the slider of the keys: it holds no button. Shift with an arrow grows a part, Enter clicks
+         at the pointer. -->
+    <div class="over" bind:this={axis} style:grid-row={`1 / span ${split < rows.length ? rows.length + 1 : rows.length}`}
+        role="slider" tabindex="0" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round((pointer ?? 0) * 100)}
+        onkeydown={key} onblur={() => onpointer(null)}>
         {#if part}
             <b class="pale" style:left="0" style:width={`${part[0] * 100}%`}></b>
             <b class="pale" style:left={`${part[1] * 100}%`} style:right="0"></b>
         {/if}
         {#if pointer !== undefined}
-            <i style:left={`${pointer * 100}%`} style:bottom={lineHeight === undefined ? undefined : 'auto'}
-                style:height={lineHeight === undefined ? undefined : `${lineHeight}px`}>
+            <i style:left={`${pointer * 100}%`} style:bottom={lineEnd === undefined ? undefined : 'auto'}
+                style:height={lineEnd === undefined ? undefined : `${lineEnd + 4}px`}>
                 {#if chip}<span class="chip" class:flip={pointer > .7}>{@render chip()}</span>{/if}
             </i>
         {/if}
@@ -152,15 +164,16 @@
         color: var(--ink);
     }
     .lanes {
+        position: relative;
         display: grid;
         grid-template-columns: 72px minmax(0, 1fr);
         column-gap: 16px;
         row-gap: 6px;
-        border-radius: 4px;
         touch-action: pan-y;
         user-select: none;
     }
-    .lanes:focus-visible {
+    .over:focus-visible {
+        border-radius: 2px;
         outline: 2px solid var(--ink-soft);
         outline-offset: 4px;
     }

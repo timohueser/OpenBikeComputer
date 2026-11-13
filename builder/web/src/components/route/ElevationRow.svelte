@@ -8,7 +8,7 @@
     /** The heights of a stretch of a line as the planner profile draws them: a plain area, and the line in the colour of
      * the steepness band of each segment, with the lowest and the highest height of the scale inside the box. Each climb
      * fills its stretch under the line, with a rule on the floor and its text over the top. Shares are 0 to 1 of the line. */
-    let { line, from = 0, to = 1, climbs = [], lit, lines = [] }: {
+    let { line, from = 0, to = 1, climbs = [], lit, part = null, lines = [] }: {
         line: ProfileLine;
         from?: number;
         to?: number;
@@ -16,6 +16,8 @@
         climbs?: { from: number; to: number; text: string; short: string }[];
         /** The index of the climb that shows in `--ink`. */
         lit?: number;
+        /** The selected part: the texts of the climbs outside it are pale and whole, over the pale layer of `Lanes`. */
+        part?: [number, number] | null;
         /** Dashed vertical lines, such as the ends of the days. */
         lines?: number[];
     } = $props();
@@ -67,7 +69,8 @@
                 if (at !== null) { [text, start, end] = [candidate, at, at + candidate.length * CHAR_PX]; break; }
             }
             const peak = profileHeightAt(climb.to, samples);
-            return { a, b, index: climb.index, text, start, y: peak === null ? 0 : yOf(peak) };
+            const inside = !part || (climb.from >= part[0] - 1e-9 && climb.to <= part[1] + 1e-9);
+            return { a, b, index: climb.index, text, start, inside, y: peak === null ? 0 : yOf(peak) };
         });
     });
 </script>
@@ -95,7 +98,7 @@
     {#each shown as climb (climb.index)}
         <b class="floor" class:lit={lit === climb.index} style:left={left(climb.a)} style:width={`${(climb.b - climb.a) / span * 100}%`}></b>
         {#if climb.text}
-            <span class="text" class:lit={lit === climb.index} style:left={`${climb.start}px`} style:top={`${Math.max(0, climb.y - 17)}px`}>{climb.text}</span>
+            <span class="text" class:lit={lit === climb.index} class:faint={!climb.inside} style:left={`${climb.start}px`} style:top={`${Math.max(0, climb.y - 17)}px`}>{climb.text}</span>
         {/if}
     {/each}
 </div>
@@ -157,9 +160,15 @@
     .floor.lit {
         background: var(--ink);
     }
+    /* Over the pale layer of `Lanes`, so that a text is never cut by the edge of a part. */
     .text {
+        z-index: 3;
         color: var(--ink-soft);
         font-weight: 500;
+    }
+    /* As pale as the rows under the pale layer of `Lanes`: the panel at 70 % over `--ink-soft`. */
+    .text.faint {
+        color: color-mix(in srgb, var(--ink-soft) 30%, var(--panel));
     }
     .text.lit {
         color: var(--ink);

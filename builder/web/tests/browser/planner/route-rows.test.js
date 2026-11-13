@@ -110,14 +110,15 @@ test('the rows of a route of two days: a day, the pointer, a part, a climb, the 
   // A drag selects a part; Escape and Clear end it.
   const part = page.locator('.rows .part');
   const drag = async (from, to) => {
-    await page.mouse.move(elevation.x + elevation.width * from, elevation.y + elevation.height / 2);
+    const box = await lanes.locator('.lane').nth(1).boundingBox(), y = box.y + box.height / 2;
+    await page.mouse.move(box.x + box.width * from, y);
     await page.mouse.down();
-    await page.mouse.move(elevation.x + elevation.width * (from + to) / 2, elevation.y + elevation.height / 2);
-    await page.mouse.move(elevation.x + elevation.width * to, elevation.y + elevation.height / 2);
+    await page.mouse.move(box.x + box.width * (from + to) / 2, y);
+    await page.mouse.move(box.x + box.width * to, y);
     await page.mouse.up();
   };
   await drag(0.4, 0.6);
-  await expect(part).toContainText('km 6.1 to 9.1 · 3.0 km');
+  await expect(part).toContainText('km 6.1 to km 9.1 · 3.0 km');
   await expect(lanes.locator('.pale')).toHaveCount(2);
   await page.keyboard.press('Escape');
   await expect(part).toHaveCount(0);
@@ -130,7 +131,9 @@ test('the rows of a route of two days: a day, the pointer, a part, a climb, the 
   await expect(page.getByRole('button', { name: '‹ Climbs' })).toBeVisible();
   await expect(page.locator('.facts dl > div').filter({ hasText: 'Steepest' })).toContainText('5 %');
   const climb = await part.textContent();
-  expect(climb).toMatch(/^km 0.0 to 3.8 · 3.8\skm · 200\sm up/);
+  expect(climb).toMatch(/^km\s0.0 to km\s3.8 · 3.8\skm · 200\sm up/);
+  // The map fits the climb: the pins beyond it leave the map.
+  await expect(mapPins.locator('button')).toHaveText(['1']);
   await page.getByRole('button', { name: '‹ Climbs' }).click();
   await expect(part).toHaveCount(0);
   await page.locator('.facts .climb button').first().click();
@@ -142,11 +145,16 @@ test('the rows of a route of two days: a day, the pointer, a part, a climb, the 
   await page.keyboard.press('ArrowRight');
   await expect(lanes.locator('.chip')).toContainText(/^15\d\sm/);
   for (let i = 0; i < 5; i++) await page.keyboard.press('Shift+ArrowRight');
-  await expect(part).toContainText('km 0.2 to 0.9');
+  await expect(part).toContainText('km 0.2 to km 0.9');
   await page.keyboard.press('Escape');
   await page.keyboard.press('Enter');
   await expect(part).toHaveText(climb);
-  await page.keyboard.press('Escape');
+
+  // Another day clears the part.
+  await page.getByRole('radio', { name: 'Day 2' }).click();
+  await expect(part).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '‹ Climbs' })).toHaveCount(0);
+  await page.getByRole('radio', { name: 'Both days' }).click();
 
   // A place opens its name and shows on the map; a group lists at most 30 names.
   await page.getByRole('button', { name: 'Places ▾' }).click();
@@ -163,6 +171,18 @@ test('the rows of a route of two days: a day, the pointer, a part, a climb, the 
   await expect(lanes.locator('.list')).toContainText('and 5 more');
   await lanes.locator('.list button').first().click();
   await expect(lanes.locator('.place .panel')).toContainText('Stube 1');
+
+  // Enter on a place opens it and leaves the profile alone; Escape closes the panel before it clears a part.
+  await drag(0.4, 0.6);
+  await places.first().focus();
+  await page.keyboard.press('Enter');
+  await expect(lanes.locator('.place .panel')).toContainText('Linde');
+  await expect(part).toContainText('km 6.1 to km 9.1');
+  await page.keyboard.press('Escape');
+  await expect(lanes.locator('.place .panel')).toHaveCount(0);
+  await expect(part).toHaveCount(1);
+  await page.keyboard.press('Escape');
+  await expect(part).toHaveCount(0);
 
   await page.evaluate(() => new Promise(resolve => {
     const open = indexedDB.open('obc-library');

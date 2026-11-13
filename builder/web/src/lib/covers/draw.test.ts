@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import type { Summary } from '../library/records';
 import { drawCover, REST } from './draw';
 import { pack } from './line';
@@ -26,10 +26,7 @@ function recorder() {
 }
 
 describe('the line of a cover', () => {
-    afterEach(() => vi.unstubAllGlobals());
-
     it('draws the rest of the line paler while a part is selected', () => {
-        vi.stubGlobal('OffscreenCanvas', class { getContext() { return recorder().context; } });
         const cover = { image: {} as CanvasImageSource, width: 400, height: 100, points, summary };
         const whole = recorder(), withPart = recorder();
         drawCover(whole.context, cover, { box: [400, 100], line: true });
