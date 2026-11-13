@@ -162,6 +162,7 @@
     .plan {
         z-index: 1;
         grid-column: 1;
+        align-self: start;
         padding: 0;
         border: 0;
         background: none;
