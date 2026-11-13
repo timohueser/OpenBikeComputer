@@ -1183,7 +1183,8 @@ fn candidates<'a>(
             pieces_along(p, h, &[], [&cut(first, 0), &cut(last - 1, 0)], ends, false, &mut own);
             own
         };
-        let outer = run(lx);
+        // The paved outline holds no water.
+        let outer = if line.sec.water { None } else { run(lx) };
         let Some((first, last)) = run(bx) else {
             outer_paved.extend(outer.map(|r| prepare(&union(&carriageway(r), [0, 0]))).unwrap_or_default());
             continue;
@@ -1228,7 +1229,7 @@ fn candidates<'a>(
     if level == 0 {
         cands.extend(platform::candidates(&ctx, input, bx, &mut stats));
         // A culvert's zone lies within `REACH_M` of its crossing.
-        let (zones, found) = culverts::candidates(&ctx, input, &lines, reach(culverts::REACH_M));
+        let (zones, found) = culverts::candidates(&ctx, &lines, reach(culverts::REACH_M));
         cands.extend(zones);
         mouths = found;
     }
