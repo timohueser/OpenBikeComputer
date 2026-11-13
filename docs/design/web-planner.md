@@ -11,6 +11,7 @@ owns:
   - builder/web/src/components/route/**
   - builder/web/src/lib/covers/**
   - builder/web/src/lib/device-sync/**
+  - builder/web/src/lib/ride/**
 depends_on:
   - device-link
   - device-map-builder
@@ -47,6 +48,14 @@ The picture has two places. With a cover, the cover is large and the map ([`Rout
 The bottom card ([`Rows.svelte`](../../builder/web/src/components/route/Rows.svelte)) shows the waypoints, the heights, the surface and the places of one category along the route, or along one day of it. The rows share one axis ([`Lanes.svelte`](../../builder/web/src/components/route/Lanes.svelte)): the distance from the start of the route. The heights ([`ElevationRow.svelte`](../../builder/web/src/components/route/ElevationRow.svelte)) have the steepness colours of the planner profile (`gradeBands`), and the climbs are those of `routeFacts`. With no calculated line, the card shows the heights of the summary and the waypoints at the nearest points of the summary line (`routePins`). Places load only when their row is on the screen, for at most 300 km of the shown stretch. A pointer on the card marks the cover and the map, and the reverse. The cover and the map label the waypoints and the nights. A click on a climb opens it in the left card, with its profile.
 
 A rename calls `renameRoute`, which is the only write that changes the name of a stored route. "Send to device" and "Do not send" change the list `waiting` of the library with `changeState`, and the device sync sends the routes of that list. When `sent` holds the route for the card of the remembered device, the title says "On the device" if the line is the stored line, and "Send to device" is off; else it says "Changed since it was sent". "Open in the planner" goes to `#/planner/ID`: the planner opens that plan and then replaces the address with `#/planner`, so Back returns to the page.
+
+The Route page and the Ride page share their frame ([`Detail.svelte`](../../builder/web/src/components/route/Detail.svelte)): the title row with rename, the left card, the picture ([`Picture.svelte`](../../builder/web/src/components/route/Picture.svelte)) and the Export menu. The button styles of the frame apply only inside it, so they do not reach the planner.
+
+## Ride page
+
+The page `#/ride/KEY` ([`Ride.svelte`](../../builder/web/src/pages/Ride.svelte)) shows one ride. A ride record holds no samples, so the page reads the stored source file one time for each key ([`samples.ts`](../../builder/web/src/lib/ride/samples.ts)): FIT with `readFit`, GPX with `readGpx`, and a device ride with `deviceSamples`. It reads the record again after each write of the ride, for example a rename. Distance, climb and the moving time come from the summary. Heart rate, power and cadence are means over the moving steps of the summary (`movingSteps`), weighed by their seconds ([`numbers.ts`](../../builder/web/src/lib/ride/numbers.ts)); a cadence of 0 does not count. A sensor with no value shows no row and no zones. The zones use the maximum heart rate and the threshold power that the ride brought, else those of the settings; with neither, the card links to Settings. The climbs use the one climb rule over the line of all samples (`lineClimbs`).
+
+The line of a ride is warm white with an amber glow on the cover, and `--ride` on the map and on the plain ground. Export gives the stored file for its own format, else a file written from the samples, and a CSV table in SI units. "Ride it again" opens the route of the ride's line. Its id is the id that "Add files" gives the same line (`lineId`), so a second click opens the same route.
 
 ## Device sync
 
