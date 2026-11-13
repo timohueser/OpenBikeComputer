@@ -101,14 +101,16 @@
         const key = large, { format } = series[key], selected = part && partFacts;
         const whole = key === 'hr' || key === 'power' || key === 'cadence' ? channels?.[key] : undefined;
         const sensor = whole && selected ? partFacts.channels[key as keyof Channels] : whole;
-        // The real smallest and largest value, not the range of the row, which is wider for a flat line.
+        // The smallest and largest value of the line as it is drawn, not the range of the row, which is wider for a flat
+        // line. For the speed it is the largest mean over SMOOTH_S, as the scale of its row.
         const found = extent(selected ? values[key].slice(part[0], part[1] + 1) : values[key]);
         const text = (value?: number) => value === undefined ? '–' : format(value);
         const numbers = key === 'elevation' ? [{ label: 'Lowest', value: text(found?.low) }, { label: 'Highest', value: text(found?.high) }]
             : key === 'speed' ? [{ label: 'Average', value: text(selected ? partFacts.speed : speed) }, { label: 'Highest', value: text(found?.high) }]
                 : [{ label: 'Average', value: text(sensor?.mean) }, { label: 'Highest', value: text(sensor?.max) }];
-        // The zones of the line are those of the whole ride, also when the part has no value of the sensor.
-        return { key, sensor, numbers, zones: whole?.zones?.map(({ zone }) => zone) };
+        // The zones of the line are those of the whole ride, also when the part has no value of the sensor. A sensor
+        // with no limit keeps its link to the Settings then.
+        return { key, times: sensor ?? (whole?.zones ? undefined : whole), numbers, zones: whole?.zones?.map(({ zone }) => zone) };
     });
 
     /** The climb at a place of the elevation row, or of the keys, which have no row. */
@@ -156,9 +158,9 @@
 {/snippet}
 
 {#if shownLarge}
-    {@const { key, sensor, numbers, zones } = shownLarge}
+    {@const { key, times, numbers, zones } = shownLarge}
     <RideLarge title={series[key].label} color={series[key].color} format={series[key].format} xs={axis.xs} lengthM={axis.lengthM} values={values[key]}
-        {zones} times={series[key].limit ? sensor : undefined} unit={series[key].unit} missing={series[key].limit} grades={key === 'elevation'}
+        {zones} times={series[key].limit ? times : undefined} unit={series[key].unit} missing={series[key].limit} grades={key === 'elevation'}
         part={shownPart} {partText} {numbers} {start} onClose={() => large = null} />
 {/if}
 
