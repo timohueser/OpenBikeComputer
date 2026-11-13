@@ -1,6 +1,6 @@
 //! The storeys over the ground over every cell of the TrailView fixture: storey 0 reads the same with them, each
 //! storey is a planar partition, each shell part closes, no parapet or railing stands in a paved face of its
-//! storey, no slot of a top joins two runs of decks, storey 0 goes on past every open end, and two neighbouring cells
+//! storey, no slot of a top is a wall between two runs of decks, storey 0 goes on past every open end, and two neighbouring cells
 //! give a storey the same corners and heights on their shared line.
 #![cfg(feature = "storeys")]
 
@@ -74,19 +74,26 @@ fn open_without_ground(key: CellKey, g: &WayGraph, decks: &[i8], open: &[[[i32; 
         .collect()
 }
 
-/// The slots of the tops between two runs of decks: there each deck has its own edge (`mesh::shell`).
-fn slots_across_runs(key: CellKey, m: &StoreyMesh, b: &CellBuild) -> Vec<String> {
+/// A slot of a top between two runs of decks stands no higher than a parapet and the cross-slope of a deck: higher,
+/// each deck has its own edge (`mesh::shell`).
+const RUN_STEP_M: f64 = 1.5;
+
+/// The slots of the tops between two runs of decks higher than `RUN_STEP_M`, by the crate's height function.
+fn walls_between_runs(key: CellKey, m: &StoreyMesh, b: &CellBuild) -> Vec<String> {
     let w = &b.records;
     let run = |l: u32| {
         let line = records::label(w, l)[2];
-        (line != u32::MAX)
-            .then(|| w[w[6] as usize + records::LINE * line as usize])
-            .and_then(|x| b.storeys.way(x))
-            .map(|d| d.run)
+        let way = (line != u32::MAX).then(|| w[w[6] as usize + records::LINE * line as usize]);
+        way.and_then(|x| b.storeys.way(x)).map(|d| d.run)
+    };
+    let h = |k: u32| {
+        let (p, l, _) = m.corner(k as usize);
+        height_at(w, [f64::from(p[0]), f64::from(p[1])], Some(l), 500.0).h
     };
     (m.slots[..m.top_slots as usize].iter())
         .filter(|s| run(m.corner(s[0] as usize).1).zip(run(m.corner(s[3] as usize).1)).is_some_and(|(a, c)| a != c))
-        .map(|s| format!("{key:?}: the slot {s:?} joins two runs of decks"))
+        .filter(|s| (h(s[0]) - h(s[3])).abs().max((h(s[1]) - h(s[2])).abs()) > RUN_STEP_M)
+        .map(|s| format!("{key:?}: the slot {s:?} is a wall between two runs of decks"))
         .collect()
 }
 
@@ -129,7 +136,7 @@ fn the_storeys_close_stand_on_their_sheets_meet_their_neighbours_and_leave_store
         assert_eq!(mesh.stats.unlabelled, 0, "{key:?}: a sheet face has no label");
         faults.extend(closure(&mesh));
         faults.extend(on_paved(&mesh, &with.storeys, &with.records));
-        faults.extend(slots_across_runs(key, &mesh, &with));
+        faults.extend(walls_between_runs(key, &mesh, &with));
         let storeys: Vec<i8> =
             (0..with.graph.ways.len() as u32).map(|w| with.storeys.way(w).map_or(0, |d| d.storey)).collect();
         faults.extend(open_without_ground(key, &with.graph, &storeys, &mesh.open));

@@ -279,11 +279,17 @@ impl Lines<'_> {
 
     /// The metres along the label's line and its unit direction at q's foot on its nearest segment.
     fn along(&self, label: u32, q: [f64; 2]) -> Option<(f64, [f64; 2])> {
+        self.foot(label, q).map(|(m, d, _)| (m, d))
+    }
+
+    /// The metres along the label's line, its unit direction and its height at q's foot on its nearest segment.
+    fn foot(&self, label: u32, q: [f64; 2]) -> Option<(f64, [f64; 2], f64)> {
         let l = self.line(label)?;
         let (first, n) = (l[2] as usize, l[3] as usize);
         let s = |i: usize| &self.words[self.words[7] as usize + SAMPLE * (first + i)..][..SAMPLE];
         let pos = |i: usize| [f64::from(s(i)[0] as i32), f64::from(s(i)[1] as i32)];
-        let mut best = (f64::INFINITY, 0.0, [1.0, 0.0]);
+        let mut best = (f64::INFINITY, 0.0, [1.0, 0.0], 0.0);
+        let f = |i: usize, k: usize| f64::from(f32::from_bits(s(i)[k]));
         for i in 0..n.saturating_sub(1) {
             let (a, b) = (pos(i), pos(i + 1));
             let d = [b[0] - a[0], b[1] - a[1]];
@@ -294,12 +300,12 @@ impl Lines<'_> {
             let t = (((q[0] - a[0]) * d[0] + (q[1] - a[1]) * d[1]) / l2).clamp(0.0, 1.0);
             let e = libm::hypot(q[0] - a[0] - t * d[0], q[1] - a[1] - t * d[1]);
             if e < best.0 {
-                let (ma, mb) = (f64::from(f32::from_bits(s(i)[3])), f64::from(f32::from_bits(s(i + 1)[3])));
                 let len = l2.sqrt();
-                best = (e, ma + t * (mb - ma), [d[0] / len, d[1] / len]);
+                let mix = |k: usize| f(i, k) + t * (f(i + 1, k) - f(i, k));
+                best = (e, mix(3), [d[0] / len, d[1] / len], mix(5));
             }
         }
-        best.0.is_finite().then_some((best.1, best.2))
+        best.0.is_finite().then_some((best.1, best.2, best.3))
     }
 }
 
@@ -494,11 +500,27 @@ pub fn mesh_storeys(
             b.tris[UNDER].push([under[0], under[2], under[1]]);
         }
         // Slots between two labels; the free outline's edge faces; the open pieces. Two runs side by side on the
-        // sheet each have their own edge: a slot between them would be a wall from one deck to the other.
+        // sheet are one deck, but where their lines lie more than a parapet's height apart each has its own edge:
+        // a slot there would be a wall from one deck to the other. The pair decides once, so its edges close.
         let mut free: Vec<(P, P, u32)> = Vec::new();
         let run = |f: u32| way(label(f)).map(|w| w.run);
+        let pair = |l: u32, r: u32| run(l).zip(run(r)).filter(|(a, c)| a != c).map(|(a, c)| (a.min(c), a.max(c)));
+        let mut steps: Vec<((u32, u32), f64)> = Vec::new();
+        for &(pa, pc, left, right, _) in pieces.iter().filter(|p| sheet(p.2) && sheet(p.3)) {
+            let Some(k) = pair(left, right) else { continue };
+            let mid = [f64::from(pa[0] + pc[0]) / 2.0, f64::from(pa[1] + pc[1]) / 2.0];
+            let z = |f: u32| lines.foot(label(f), mid).map(|x| x.2);
+            if let (Some(za), Some(zb)) = (z(left), z(right)) {
+                match steps.iter_mut().find(|s| s.0 == k) {
+                    Some(s) => s.1 = s.1.max((za - zb).abs()),
+                    None => steps.push((k, (za - zb).abs())),
+                }
+            }
+        }
         for &(pa, pc, left, right, kind) in &pieces {
-            let torn = sheet(left) && sheet(right) && run(left).zip(run(right)).is_some_and(|(a, c)| a != c);
+            let torn = sheet(left)
+                && sheet(right)
+                && pair(left, right).is_some_and(|k| steps.iter().any(|s| s.0 == k && s.1 > PARAPET_M[1]));
             let sides: &[bool] = match (sheet(left), sheet(right)) {
                 _ if torn => &[true, false],
                 (true, true) => &[],
