@@ -25,19 +25,19 @@ use obc_ground_plan::CellInput;
 const GRID_M: f64 = 0.5;
 /// Steps inside faces, measured with the slopes from the paved outline: the count must not grow.
 const INSIDE_MAX: usize = 7;
-/// Steps at label edges with no rule (`check::edge_steps`), measured on the revision 15 fixture with the
+/// Steps at label edges with no rule (`check::edge_steps`), measured on the revision 16 fixture with the
 /// slopes from the outline pieces of `records::outline_edges` and the vertex values of `heights::groups`
 /// (an end's cone over the fan of its turn only), walls up to the highest wall and faces past it as steep as
 /// their need: the count must not grow.
 const EDGE_MAX: usize = 91;
 /// Pairs of grid points on a slope steeper than a rock face where the terrain is not (`Scan::steep`),
-/// measured on the revision 15 fixture with cones on their outward side, the outline pieces of
+/// measured on the revision 16 fixture with cones on their outward side, the outline pieces of
 /// `records::outline_edges` and the vertex values of `heights::groups`, faces past the highest wall as
 /// steep as their need, the faces' rings with a vertex at each tile line (it moves piece ends by a few units),
 /// and the ground under the decks' ceilings: the count must not grow.
-const STEEP_MAX: usize = 904;
+const STEEP_MAX: usize = 903;
 /// A no-room wall's height that changes along it by more than this per metre is a step in its top
-/// (`check::wall_steps`): pairs of points measured on the revision 15 fixture with the slope and the wall of
+/// (`check::wall_steps`): pairs of points measured on the revision 16 fixture with the slope and the wall of
 /// each point from the need at its foot (`heights::fit`): the count must not grow.
 const WALL_STEP_GRADE: f64 = 0.5;
 const WALL_STEPS_MAX: usize = 17;
@@ -46,7 +46,7 @@ const WALL_STEPS_MAX: usize = 17;
 /// moves piece ends by a few units) and the crease where a deck's ceiling takes the ground: the count must not
 /// grow.
 const SLOPE_STEP_GRADE: f64 = 0.1;
-const SLOPE_STEPS_MAX: usize = 9831;
+const SLOPE_STEPS_MAX: usize = 9824;
 /// Steps that another line's cone holds higher than the paved side's wall cap (`check::held_over_cap`), measured
 /// the same way with a rail bed's fill counted past its wall cap: all at the edge of a class without a wall, most
 /// where the two outlines leave no room for the steep face (the gap is printed): the count must not grow.
@@ -56,7 +56,7 @@ const DECK_GRID_M: f64 = 0.5;
 /// An end face may fall short of the deck's depth and the gap by this much, where its paved end's height is not
 /// the way's own surface (a junction's blend face) or the two ways' frames tilt their banks apart.
 const SHORT_M: f64 = 0.1;
-/// End line points shorter than that, measured on the revision 15 fixture: the count must not grow.
+/// End line points shorter than that, measured on the revision 16 fixture: the count must not grow.
 const SHORT_MAX: usize = 22;
 /// The places of the ripple report (latitude, longitude).
 const PLACES: [(&str, f64, f64); 5] = [

@@ -23,7 +23,8 @@ use crate::sections::{leading_number, Reach, Sections, WaySection};
 use crate::CellInput;
 
 pub use crossings::end_on_chord;
-pub use curve::{curve_point, folds, off_chord, point, s_at, u_at, water_tangents, SpanPoint};
+pub(crate) use curve::{folds, water_tangents};
+pub use curve::{point, s_at, u_at, water_curves, water_grades, water_level, SpanPoint, WaterCurve};
 pub use levels::{check_levels, levels, step, EndKind, EndLine, Ladder, Levels, Run, State, Step, Structures};
 
 /// The coarsest sample step: the grid of level l is `BASE_STEP_M / 2^l` along a span.
