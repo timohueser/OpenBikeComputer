@@ -3,15 +3,21 @@
     import * as maplibregl from 'maplibre-gl';
     import 'maplibre-gl/dist/maplibre-gl.css';
     import type { Summary } from '../../lib/library/records';
+    import { lineCoordinates } from '../../lib/library/summary';
     import { coordinateAt, nearestOnLine, nearestProgress, type Coordinate } from '../../lib/planner/geo';
+    import Icon from '../planner/PlannerIcon.svelte';
     import { basemapStyle } from '../../lib/planner/map-style';
     import { styleConfig, useMapProtocols } from '../../lib/planner/map-setup';
     import { appearance } from '../../lib/theme.svelte';
 
-    /** A map that the rider can move, with the summary line of a route and the mark. A share is 0 to 1 along the line. */
-    let { summary, mark, onpoint }: {
+    /** A map that the rider can move, with the summary line of a route or a ride and the mark. A share is 0 to 1 along the line. */
+    let { summary, ride = false, mark, pins = [], onpoint }: {
         summary: Summary;
+        /** The line is a ride, in `--ride`. */
+        ride?: boolean;
         mark?: number;
+        /** Labels at shares of the line: a numbered waypoint, or a night without a number. */
+        pins?: { share: number; label: string; number?: number }[];
         /** The share of the point of the line nearest to the pointer, or null when the pointer is not near the line. */
         onpoint?: (share: number | null) => void;
     } = $props();
@@ -20,8 +26,13 @@
     const NEAR_PX = 24;
     let container: HTMLElement;
     let map = $state.raw<maplibregl.Map>();
+    /** `index` is the place in `pins`; `left` puts the label on the side with more room. */
+    let shownPins = $state.raw<{ share: number; label: string; number?: number; x: number; y: number; index: number; left: boolean }[]>([]);
+    /** The pin whose name shows, by its index; one at a time. */
+    let opened = $state<number>();
+    const pinName = (pin: { label: string; number?: number }) => pin.number ? pin.label : pin.label ? `Night · ${pin.label}` : 'Night';
     const theme = $derived(appearance.dark ? 'dark' : 'light');
-    const coordinates = $derived(Array.from({ length: summary.line.length / 2 }, (_, i): Coordinate => [summary.line[2 * i], summary.line[2 * i + 1]]));
+    const coordinates = $derived(lineCoordinates(summary));
     const dot = Object.assign(document.createElement('div'), { className: 'route-map-mark' });
     const marker = new maplibregl.Marker({ element: dot });
     let shown: typeof theme;
@@ -36,7 +47,7 @@
         map.addLayer({ id: 'route-casing', type: 'line', source: 'route', layout: { 'line-join': 'round', 'line-cap': 'round' },
             paint: { 'line-color': style.getPropertyValue('--panel').trim(), 'line-width': 7 } });
         map.addLayer({ id: 'route', type: 'line', source: 'route', layout: { 'line-join': 'round', 'line-cap': 'round' },
-            paint: { 'line-color': style.getPropertyValue('--route').trim(), 'line-width': 4 } });
+            paint: { 'line-color': style.getPropertyValue(ride ? '--ride' : '--route').trim(), 'line-width': 4 } });
     }
 
     function point(event: maplibregl.MapMouseEvent) {
@@ -64,12 +75,28 @@
         return () => { resize.disconnect(); marker.remove(); created.remove(); };
     });
 
+    $effect(() => { dot.classList.toggle('ride', ride); });
     $effect(() => {
         if (map && theme !== shown) map.setStyle(basemapStyle(shown = theme, styleConfig));
     });
     $effect(() => {
         const source = map?.getSource<maplibregl.GeoJSONSource>('route');
         source?.setData({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates } });
+    });
+    // The pins follow the map: their places in the box change with each move.
+    $effect(() => {
+        if (!map || coordinates.length < 2) return void (shownPins = []);
+        const shown = map, at = pins.map(pin => coordinateAt(coordinates, pin.share));
+        const place = () => {
+            const { clientWidth: width, clientHeight: height } = shown.getContainer();
+            shownPins = pins.flatMap((pin, i) => {
+                const { x, y } = shown.project(at[i]);
+                return x >= 0 && x <= width && y >= 0 && y <= height ? [{ ...pin, x, y, index: i, left: x > width / 2 }] : [];
+            });
+        };
+        place();
+        const events = [shown.on('move', place), shown.on('resize', place)];
+        return () => events.forEach(event => event.unsubscribe());
     });
     $effect(() => {
         if (!map) return;
@@ -78,13 +105,37 @@
     });
 </script>
 
-<div class="route-map" bind:this={container}></div>
+<svelte:document onpointerdown={event => { if (!(event.target as Element).closest('.route-pin')) opened = undefined; }} />
+
+<div class="route-map" bind:this={container}>
+    <div class="pins">
+        {#each shownPins as pin (pin.index)}
+            <span class="route-pin" style:left={`${pin.x}px`} style:top={`${pin.y}px`}>
+                <button type="button" class:night={!pin.number} aria-label={pinName(pin)} aria-expanded={opened === pin.index}
+                    onclick={() => opened = pin.index} onfocus={() => opened = pin.index} onblur={() => opened = undefined}
+                    onkeydown={event => { if (event.key === 'Escape') opened = undefined; }}>
+                    {#if pin.number}{pin.number}{:else}<Icon name="moon" size={12} />{/if}
+                </button>
+                {#if opened === pin.index}<span class="route-pin-label" class:left={pin.left}>{pinName(pin)}</span>{/if}
+            </span>
+        {/each}
+    </div>
+</div>
 
 <style>
     .route-map {
         width: 100%;
         height: 100%;
         background: var(--parchment);
+    }
+    .pins {
+        position: absolute;
+        z-index: 2;
+        inset: 0;
+        pointer-events: none;
+    }
+    .pins :global(.route-pin) {
+        pointer-events: auto;
     }
     :global(.route-map-mark) {
         width: 14px;
@@ -93,5 +144,8 @@
         border-radius: 50%;
         background: var(--panel);
         pointer-events: none;
+    }
+    :global(.route-map-mark.ride) {
+        border-color: var(--ride);
     }
 </style>

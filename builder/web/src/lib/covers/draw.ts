@@ -2,10 +2,15 @@
 import type { CoverPoints, Summary } from '../library/records';
 import { along, distanceAt, metresAlong, placed, runs } from './line';
 
-/** The image is the same in both themes, so the line keeps the colours of the light theme: `--route` and `--amber`. */
-const ROUTE = '#cc2a93', PART = '#f4a81d';
-/** As the ribbon of TrailView: a glow in a lighter tint of the line fades out beyond it, and a weak light core runs in its middle. */
-const GLOW = { route: '#ee8fcf', part: '#f8c66a' }, CORE = { route: '#f8b8e2', part: '#ffe6b0' };
+/** The image is the same in both themes, so the line of a route keeps the colours of the light theme: `--route`, and
+ * `--amber` for a part. As the ribbon of TrailView, a glow in a lighter tint of the line fades out beyond it, and a weak
+ * light core runs in its middle. The line of a ride is warm white with an amber glow; `ring` is the edge of the mark. */
+const LOOKS = {
+    route: { line: '#cc2a93', glow: '#ee8fcf', core: '#f8b8e2', ring: '#cc2a93' },
+    ride: { line: '#fff3df', glow: '#f2a33a', core: '#ffffff', ring: '#b4531b' },
+    part: { line: '#f4a81d', glow: '#f8c66a', core: '#ffe6b0' },
+};
+export type Look = 'route' | 'ride';
 /** The glow reaches GLOW_REACH of the widest line beyond it, in GLOW_STEPS strokes of GLOW_ALPHA each; the core is CORE_WIDTH of the line. */
 const GLOW_REACH = 0.6, GLOW_STEPS = 5, GLOW_ALPHA = 0.14, CORE_WIDTH = 0.25, CORE_ALPHA = 0.3;
 /** The strength of a stretch that the terrain hides; 0 draws none of it. */
@@ -38,8 +43,9 @@ export function crop(cover: Pick<CoverImage, 'width' | 'height' | 'points'>, [wi
 }
 
 /** Draws the cover over the whole canvas of `context`, which is `box` pixels in size, and returns the cut. `mark` and `part` are metres along the route. */
-export function drawCover(context: CanvasRenderingContext2D, cover: CoverImage, { box, mark, part, line }: { box: [number, number]; mark?: number; part?: [number, number]; line: boolean }): Crop {
-    const cut = crop(cover, box), { points, summary } = cover;
+export function drawCover(context: CanvasRenderingContext2D, cover: CoverImage,
+    { box, mark, part, line, look = 'route' }: { box: [number, number]; mark?: number; part?: [number, number]; line: boolean; look?: Look }): Crop {
+    const cut = crop(cover, box), { points, summary } = cover, colours = LOOKS[look];
     context.drawImage(cover.image, cut.left, cut.top, box[0] / cut.scale, box[1] / cut.scale, 0, 0, box[0], box[1]);
     if (!line) return cut;
     const x = (i: number) => (points.x[i] - cut.left) * cut.scale, y = (i: number) => (points.y[i] - cut.top) * cut.scale;
@@ -60,9 +66,9 @@ export function drawCover(context: CanvasRenderingContext2D, cover: CoverImage, 
     }
     const reach = Math.max(2, GLOW_REACH * widest), glow = Array.from({ length: GLOW_STEPS }, (_, k) => 2 * reach * (GLOW_STEPS - k) / GLOW_STEPS);
     const passes: { width: (w: number) => number; colour: (part: boolean) => string; alpha: number }[] = [
-        ...glow.map(extra => ({ width: (w: number) => w + extra, colour: (part: boolean) => part ? GLOW.part : GLOW.route, alpha: GLOW_ALPHA })),
-        { width: w => w, colour: part => part ? PART : ROUTE, alpha: 1 },
-        { width: w => CORE_WIDTH * w, colour: part => part ? CORE.part : CORE.route, alpha: CORE_ALPHA },
+        ...glow.map(extra => ({ width: (w: number) => w + extra, colour: (part: boolean) => (part ? LOOKS.part : colours).glow, alpha: GLOW_ALPHA })),
+        { width: w => w, colour: part => (part ? LOOKS.part : colours).line, alpha: 1 },
+        { width: w => CORE_WIDTH * w, colour: part => (part ? LOOKS.part : colours).core, alpha: CORE_ALPHA },
     ];
     // The hidden stretches draw opaque on a layer of their own, which then draws weak, so that they keep the look of the line.
     const layer = new OffscreenCanvas(box[0], box[1]).getContext('2d')!;
@@ -88,7 +94,7 @@ export function drawCover(context: CanvasRenderingContext2D, cover: CoverImage, 
     const at = summary && mark !== undefined ? along(points, summary, mark) : undefined;
     if (at) {
         const cx = (at.x - cut.left) * cut.scale, cy = (at.y - cut.top) * cut.scale, r = 1.2 * widest;
-        context.fillStyle = GLOW.route;
+        context.fillStyle = colours.glow;
         context.globalAlpha = GLOW_ALPHA;
         for (const extra of glow) {
             context.beginPath();
@@ -101,7 +107,7 @@ export function drawCover(context: CanvasRenderingContext2D, cover: CoverImage, 
         context.fillStyle = '#fff';
         context.fill();
         context.lineWidth = widest * 0.5;
-        context.strokeStyle = ROUTE;
+        context.strokeStyle = colours.ring;
         context.stroke();
     }
     return cut;

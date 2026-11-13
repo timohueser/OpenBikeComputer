@@ -159,13 +159,15 @@ const fitBikes: Record<string, Bike | null> = { road: 'road', gravel: 'gravel', 
 /** A name that the rider knows: not a number such as `12345` or `12345_ACTIVITY`, and not a file name with an email
  * address. */
 const usable = (name: string | undefined): name is string => !!name && !name.includes('@') && /[^\d\s_.-]/.test(name.replace(/activity/gi, ''));
-const dateName = (start: number, bike: Bike) =>
+/** The name of a ride with no usable name: its activity and its date. */
+export const dateName = (start: number, bike: Bike) =>
     `${bike === 'hiking' ? 'Hike' : 'Ride'}, ${new Date(start * 1000).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`;
 
-/** `YYYYMMDDTHHMMSSZ` of a Unix time. */
-const rideKey = (seconds: number) => new Date(Math.floor(seconds) * 1000).toISOString().replace(/[-:]|\.\d+/g, '');
+/** The key of a ride that starts at a Unix time: `YYYYMMDDTHHMMSSZ`. */
+export const rideKeyAt = (seconds: number) => new Date(Math.floor(seconds) * 1000).toISOString().replace(/[-:]|\.\d+/g, '');
 
-async function lineId(line: number[]): Promise<string> {
+/** The id of a route from a file: a hash of its summary line. */
+export async function lineId(line: number[]): Promise<string> {
     const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(line))));
     return `file-${Array.from(hash.slice(0, 16), b => b.toString(16).padStart(2, '0')).join('')}`;
 }
@@ -221,7 +223,7 @@ export async function* readFiles(items: Item[], library: Library, readers: Reade
         if (samples.length < 2) { yield { ...found, kind: 'unreadable', reason: reasons.track }; continue; }
         // A route's summary here gives only its line and its length: the planner makes the stored one.
         const summary = rideSummary(samples, bike);
-        const key = 'samples' in file || timed ? rideKey(summary.start) : undefined;
+        const key = 'samples' in file || timed ? rideKeyAt(summary.start) : undefined;
         const id = 'points' in file ? await lineId(summary.line) : undefined;
         // A timed GPX file is known when either of its forms is stored or came before.
         const known = (key !== undefined && (seen.has(key) || deleted.has(key) || !!await library.ride(key)))

@@ -579,6 +579,21 @@ describe("REMOVE", () => {
     });
 });
 
+describe("ARCHIVE_RIDE", () => {
+    it("marks the exact ride once, and refuses a source that is not on the card", async () => {
+        await withDevice({ storeId: CARD }, async ({ client, device }) => {
+            const ride = device.seed({ kind: ObjectKind.Ride, displayName: "ride", bytes: payload(200) });
+            const source = { storeId: CARD, ...ride };
+            const first = await client.archiveRide(source);
+            expect(first.commitSequence).toBe(device.sequence);
+            expect(device.entries.filter((entry) => entry.kind === ObjectKind.Metadata)).toHaveLength(1);
+            // The duplicate answers from the stored row and commits nothing.
+            expect((await client.archiveRide(source)).commitSequence).toBe(first.commitSequence);
+            await expect(client.archiveRide({ ...source, payloadCrc32: source.payloadCrc32 ^ 1 })).rejects.toMatchObject({ code: "invalid-request" });
+        });
+    });
+});
+
 describe("ARM", () => {
     it("is refused by the device's current policy, and says so", async () => {
         // A stated dev-window gap. The request is wired and the refusal is the truth; a client that

@@ -53,11 +53,18 @@ export interface RideRecord {
     summary: RideSummary;
     maxHr: number | null;
     ftp: number | null;
-    group?: string;
-    trip?: string;
+    /** The trip of the device that the ride belongs to. */
+    trip?: RideTrip;
     /** `storeId:objectId` of the ride on the device: a card gets a new `StoreId` when it is initialized, and it never
      * gives an `ObjectId` again. */
     device?: string;
+}
+
+/** `key` is the trip key of the device in decimal; `day` counts from 1. */
+export interface RideTrip {
+    key: string;
+    day: number;
+    name: string;
 }
 
 /**
@@ -107,6 +114,13 @@ export interface DeletedRide {
     device?: string;
 }
 
+/** A route on a device: `storeId:objectId` of its object, as the `device` of a ride, and the `sentKey` of the route when it
+ * was sent. */
+export interface SentRoute {
+    device: string;
+    key: string;
+}
+
 /** The values of the `state` store. */
 export interface LibraryState {
     /** The route that the planner opens. */
@@ -115,8 +129,12 @@ export interface LibraryState {
     waiting: string[];
     /** Routes to remove from the device. */
     leaving: string[];
+    /** The routes sent to a device, by route id. */
+    sent: Record<string, SentRoute>;
     /** Rides that the rider deleted; no import adds them again. */
     deleted: DeletedRide[];
+    /** Rides that the rider took out of their group; no ride joins them. */
+    apart: string[];
 }
 
 export const rideKey = /^\d{8}T\d{6}Z$/;
@@ -153,8 +171,14 @@ export function isRideRecord(value: unknown): value is RideRecord {
     return isRecord(value) && isString(value.key) && rideKey.test(value.key) && isString(value.name)
         && ['device', 'file'].includes(value.source as string) && ['obcride', 'fit', 'gpx'].includes(value.format as string)
         && isRideSummary(value.summary) && (value.maxHr === null || isNumber(value.maxHr)) && (value.ftp === null || isNumber(value.ftp))
-        && optional(value.group, isString) && optional(value.trip, isString) && optional(value.device, isString);
+        && optional(value.trip, isTrip) && optional(value.device, isString);
 }
+
+const isTrip = (value: unknown): value is RideTrip => isRecord(value) && isString(value.key) && /^[1-9]\d*$/.test(value.key)
+    && Number.isInteger(value.day) && (value.day as number) >= 1 && isString(value.name);
+
+const isSent = (value: unknown): value is Record<string, SentRoute> => isRecord(value)
+    && Object.values(value).every(route => isRecord(route) && isString(route.device) && isString(route.key));
 
 const isDeleted = (value: unknown): value is DeletedRide =>
     isRecord(value) && isString(value.key) && rideKey.test(value.key) && optional(value.device, isString);
@@ -164,5 +188,7 @@ export const stateChecks: { [K in keyof LibraryState]: (value: unknown) => value
     active: (value): value is string | null => value === null || isString(value),
     waiting: isStrings,
     leaving: isStrings,
+    sent: isSent,
     deleted: (value): value is DeletedRide[] => Array.isArray(value) && value.every(isDeleted),
+    apart: isStrings,
 };

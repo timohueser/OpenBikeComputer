@@ -1,5 +1,5 @@
 /** Makes the summary of a route or a ride: its line simplified to about 1,000 points, its bounds and its numbers. */
-import type { Bike, RideSummary, Summary } from './records';
+import type { Bike, RideRecord, RideSummary, RouteRecord, Summary } from './records';
 
 /** One recorded point of a ride: Unix seconds and microdegrees. `segmentStart` marks the first point and the first
  * point after a pause. */
@@ -11,6 +11,25 @@ export interface RideSample {
     segmentStart: boolean;
 }
 
+/** FNV-1a of `text`, as hex. */
+function hash(text: string): string {
+    let value = 0x811c9dc5;
+    for (let i = 0; i < text.length; i++) value = Math.imul(value ^ text.charCodeAt(i), 0x01000193);
+    return (value >>> 0).toString(16).padStart(8, '0');
+}
+
+/** A hash of the summary line, and for a ride of its start time, as hex. A new name keeps it. */
+export const lineKey = (item: RouteRecord | RideRecord) => hash(`${item.summary?.line.join(',')}@${'key' in item ? item.summary.start : ''}`);
+
+/** A hash of what the device file of a route is made from: its name and its plan (`trip`), which give the line, the
+ * waypoints, the days and the bike. A route whose key differs from the key in `sent` changed since it was sent. */
+export const sentKey = (route: RouteRecord) => hash(JSON.stringify([route.name, route.trip]));
+
+/** The points of the summary line as [longitude, latitude]. */
+export function lineCoordinates({ line }: Summary): [number, number][] {
+    return Array.from({ length: line.length / 2 }, (_, i) => [line[2 * i], line[2 * i + 1]]);
+}
+
 /** Longitude, latitude, and the height in metres or null. */
 export type Point = readonly [number, number, (number | null)?];
 /** The numbers that the caller knows; `summarize` finds the others from the points. */
@@ -18,37 +37,49 @@ export type Numbers<S extends Summary> = Omit<S, 'line' | 'heights' | 'bounds' |
 
 const maxPoints = 1000;
 // The group rule of rides allows 50 m between two lines, so a simplified line stays within 40 m of its points.
-const firstToleranceM = 10, lastToleranceM = 40;
-const metresPerDegree = 6_371_008.8 * Math.PI / 180;
+const firstToleranceM = 10;
+/** A summary line is within this many metres of the points it simplifies. */
+export const lastToleranceM = 40;
+export const metresPerDegree = 6_371_008.8 * Math.PI / 180;
 
 // Start values, to test on real rides.
 const climbStepM = 5, movingMps = 2 / 3.6;
 
 const round = (value: number, scale: number) => Math.round(value * scale) / scale;
 
-function metres(a: RideSample, b: RideSample): number {
-    const rad = Math.PI / 180e6, dLat = (b.lat - a.lat) * rad, dLon = (b.lon - a.lon) * rad;
-    const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(dLon / 2) ** 2;
-    return 2 * metresPerDegree * 180 / Math.PI * Math.asin(Math.min(1, Math.sqrt(h)));
+/** The great-circle distance between two points in degrees. */
+export function distanceM(lon1: number, lat1: number, lon2: number, lat2: number): number {
+    const rad = Math.PI / 180, h = Math.sin((lat2 - lat1) * rad / 2) ** 2
+        + Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin((lon2 - lon1) * rad / 2) ** 2;
+    return 2 * metresPerDegree / rad * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+/** The great-circle distance between two samples. */
+export const metres = (a: RideSample, b: RideSample) => distanceM(a.lon / 1e6, a.lat / 1e6, b.lon / 1e6, b.lat / 1e6);
+
+/** For each sample, the seconds of the step that ends at it when that step moves: at 2 km/h or more, and not to a
+ * segment start. Else 0. The moving time of a ride is their sum. */
+export function movingSteps(samples: RideSample[]): number[] {
+    return samples.map((sample, i) => {
+        if (!i || sample.segmentStart) return 0;
+        const seconds = sample.timeS - samples[i - 1].timeS;
+        return seconds > 0 && metres(samples[i - 1], sample) / seconds >= movingMps ? seconds : 0;
+    });
 }
 
 /** The summary of a recorded ride. The length skips the step to a segment start. The climb counts a rise when the
- * height is 5 m above the last low. The moving time adds the steps at 2 km/h or more that do not start a segment.
- * `samples` holds at least one sample. */
+ * height is 5 m above the last low. The moving time is the sum of `movingSteps`. `samples` holds at least one sample. */
 export function rideSummary(samples: RideSample[], bike: Bike): RideSummary {
-    let lengthM = 0, climbM = 0, movingS = 0, low: number | null = null;
+    let lengthM = 0, climbM = 0, low: number | null = null;
     samples.forEach((sample, i) => {
         const height = sample.elevationM;
         if (height != null) {
             if (low === null || height < low) low = height;
             else if (height - low >= climbStepM) { climbM += height - low; low = height; }
         }
-        if (!i || sample.segmentStart) return;
-        const step = metres(samples[i - 1], sample), seconds = sample.timeS - samples[i - 1].timeS;
-        lengthM += step;
-        if (seconds > 0 && step / seconds >= movingMps) movingS += seconds;
+        if (i && !sample.segmentStart) lengthM += metres(samples[i - 1], sample);
     });
-    const start = samples[0].timeS;
+    const start = samples[0].timeS, movingS = movingSteps(samples).reduce((sum, seconds) => sum + seconds, 0);
     return summarize<RideSummary>(samples.map(s => [s.lon / 1e6, s.lat / 1e6, s.elevationM]), {
         lengthM: Math.round(lengthM), climbM: Math.round(climbM), seconds: Math.round(samples.at(-1)!.timeS - start),
         movingS: Math.round(movingS), start: Math.floor(start), bike,
