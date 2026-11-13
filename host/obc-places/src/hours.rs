@@ -76,8 +76,8 @@ pub fn parse(raw: &str) -> Option<Schedule> {
 
     // `24/7` is its own top-level token (may appear alone or as the whole value).
     if raw == "24/7" {
-        for day in sched.days.iter_mut().take(DAYS) {
-            day[0] = Interval { open_q: 0, close_q: 96 };
+        for d in 0..DAYS {
+            sched.days[d][0] = Interval { open_q: 0, close_q: 96 };
         }
         return Some(sched);
     }
