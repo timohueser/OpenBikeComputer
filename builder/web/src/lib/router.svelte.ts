@@ -4,15 +4,23 @@
 // The hashes themselves live in `lib/routes.ts`, which has no side effects —
 // this module reads `location` and subscribes to `hashchange` on import.
 
-import { parseRoute, type Route } from "./routes";
+import { parseRoute, ROUTES, type Route } from "./routes";
 
 export type { Route };
 
 class Router {
     route = $state<Route>("home");
     id = $state<string | undefined>();
+    /** `#/settings` is a window over the page before it: `route` and `id` keep that page, so it is not created again. */
+    settings = $state(false);
 
     constructor() {
+        // A first address of the settings gets the home page in an entry before it, so each close of the window is Back.
+        if (parseRoute(location.hash).route === "settings") {
+            const settings = location.hash;
+            history.replaceState(history.state, "", ROUTES.home);
+            history.pushState(history.state, "", settings);
+        }
         this.read();
         window.addEventListener("hashchange", () => this.read());
     }
@@ -29,8 +37,17 @@ class Router {
         this.read();
     }
 
+    closeSettings() {
+        if (this.settings) history.back();
+    }
+
     private read() {
-        ({ route: this.route, id: this.id } = parseRoute(location.hash));
+        const { route, id } = parseRoute(location.hash);
+        this.settings = route === "settings";
+        if (!this.settings) {
+            this.route = route;
+            this.id = id;
+        }
     }
 }
 

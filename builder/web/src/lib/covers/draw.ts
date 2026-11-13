@@ -11,10 +11,13 @@ const LOOKS = {
     part: { line: '#f4a81d', glow: '#f8c66a', core: '#ffe6b0' },
 };
 export type Look = 'route' | 'ride';
+/** With a part, the rest of the line takes a paler solid tint of its look. */
+export const REST: Record<Look, { line: string; glow: string; core: string }> = {
+    route: { line: '#e7a6d0', glow: '#f2cde4', core: '#fae6f2' },
+    ride: { line: '#d9d0c4', glow: '#e3d6c3', core: '#f2ece4' },
+};
 /** The glow reaches GLOW_REACH of the widest line beyond it, in GLOW_STEPS strokes of GLOW_ALPHA each; the core is CORE_WIDTH of the line. */
 const GLOW_REACH = 0.6, GLOW_STEPS = 5, GLOW_ALPHA = 0.14, CORE_WIDTH = 0.25, CORE_ALPHA = 0.3;
-/** The strength of a stretch that the terrain hides; 0 draws none of it. */
-const HIDDEN_ALPHA = 0.1;
 /** The width of the line at the point nearest to the eye, as a share of the shorter side of the box, and the least width as a share of it. */
 const WIDEST = 0.012, LEAST = 1 / 3;
 
@@ -57,39 +60,33 @@ export function drawCover(context: CanvasRenderingContext2D, cover: CoverImage,
     const metres = summary && part && metresAlong(summary);
     const inPart = (i: number) => !!metres && !!part && (metres[i - 1] + metres[i]) / 2 >= part[0] && (metres[i - 1] + metres[i]) / 2 <= part[1];
 
-    // Consecutive segments of one width step and one colour make one path, so that a weak stroke shows no dots at its joints.
-    const pieces: { visible: boolean; part: boolean; w: number; from: number; to: number }[] = [];
-    for (const run of runs(points)) for (let i = run.from + 1; i <= run.to; i++) {
+    // Consecutive segments of one width step and one colour make one path, so that a weak stroke shows no dots at its
+    // joints. A stretch that the terrain hides draws nothing.
+    const pieces: { part: boolean; w: number; from: number; to: number }[] = [];
+    for (const run of runs(points)) for (let i = run.from + 1; run.visible && i <= run.to; i++) {
         const w = Math.round(width(i - 1) + width(i)) / 2, last = pieces.at(-1), inside = inPart(i);
-        if (last?.to === i - 1 && last.visible === run.visible && last.w === w && last.part === inside) last.to = i;
-        else pieces.push({ visible: run.visible, part: inside, w, from: i - 1, to: i });
+        if (last?.to === i - 1 && last.w === w && last.part === inside) last.to = i;
+        else pieces.push({ part: inside, w, from: i - 1, to: i });
     }
     const reach = Math.max(2, GLOW_REACH * widest), glow = Array.from({ length: GLOW_STEPS }, (_, k) => 2 * reach * (GLOW_STEPS - k) / GLOW_STEPS);
-    const passes: { width: (w: number) => number; colour: (part: boolean) => string; alpha: number }[] = [
-        ...glow.map(extra => ({ width: (w: number) => w + extra, colour: (part: boolean) => (part ? LOOKS.part : colours).glow, alpha: GLOW_ALPHA })),
-        { width: w => w, colour: part => (part ? LOOKS.part : colours).line, alpha: 1 },
-        { width: w => CORE_WIDTH * w, colour: part => (part ? LOOKS.part : colours).core, alpha: CORE_ALPHA },
+    const tint = (inside: boolean) => inside ? LOOKS.part : metres ? REST[look] : colours;
+    const passes: { width: (w: number) => number; colour: (inside: boolean) => string; alpha: number }[] = [
+        ...glow.map(extra => ({ width: (w: number) => w + extra, colour: (inside: boolean) => tint(inside).glow, alpha: GLOW_ALPHA })),
+        { width: w => w, colour: inside => tint(inside).line, alpha: 1 },
+        { width: w => CORE_WIDTH * w, colour: inside => tint(inside).core, alpha: CORE_ALPHA },
     ];
-    // The hidden stretches draw opaque on a layer of their own, which then draws weak, so that they keep the look of the line.
-    const layer = new OffscreenCanvas(box[0], box[1]).getContext('2d')!;
-    for (const [target, visible] of [[layer, false], [context, true]] as const) {
-        target.lineCap = target.lineJoin = 'round';
-        for (const pass of passes) {
-            target.globalAlpha = pass.alpha;
-            for (const piece of pieces) {
-                if (piece.visible !== visible) continue;
-                target.beginPath();
-                target.moveTo(x(piece.from), y(piece.from));
-                for (let i = piece.from + 1; i <= piece.to; i++) target.lineTo(x(i), y(i));
-                target.lineWidth = pass.width(piece.w);
-                target.strokeStyle = pass.colour(piece.part);
-                target.stroke();
-            }
+    context.lineCap = context.lineJoin = 'round';
+    for (const pass of passes) {
+        context.globalAlpha = pass.alpha;
+        for (const piece of pieces) {
+            context.beginPath();
+            context.moveTo(x(piece.from), y(piece.from));
+            for (let i = piece.from + 1; i <= piece.to; i++) context.lineTo(x(i), y(i));
+            context.lineWidth = pass.width(piece.w);
+            context.strokeStyle = pass.colour(piece.part);
+            context.stroke();
         }
-        target.globalAlpha = 1;
     }
-    context.globalAlpha = HIDDEN_ALPHA;
-    context.drawImage(layer.canvas, 0, 0);
     context.globalAlpha = 1;
     const at = summary && mark !== undefined ? along(points, summary, mark) : undefined;
     if (at) {

@@ -4,6 +4,7 @@
     import Segmented from '../lib/ui/Segmented.svelte';
     import Window from '../lib/ui/Window.svelte';
     import { saveBlob } from '../lib/download';
+    import { router } from '../lib/router.svelte';
     import { loadBackup, saveBackup } from '../lib/library/backup';
     import type { Library } from '../lib/library/store';
     import RiderValue from './RiderValue.svelte';
@@ -11,7 +12,7 @@
     import { heartRateZones, powerZones } from '../lib/settings/zones';
     import { appearance, setLook, type Look } from '../lib/theme.svelte';
 
-    let { library }: { library: Library; active: boolean } = $props();
+    let { library }: { library: Library } = $props();
 
     const units: { value: Units; label: string }[] = [{ value: 'km', label: 'Kilometres' }, { value: 'mi', label: 'Miles' }];
     const looks: { value: Look; label: string }[] = [{ value: 'system', label: 'As the computer' }, { value: 'light', label: 'Light' }, { value: 'dark', label: 'Dark' }];
@@ -79,8 +80,7 @@
     }
 </script>
 
-<main>
-    <h1>Settings</h1>
+<Window title="Settings" large onClose={() => router.closeSettings()}>
     <div class="cards">
         <Card label="Rider">
             <div class="row">
@@ -109,7 +109,7 @@
             <p class="message" role="status">{message}</p>
         </Card>
     </div>
-</main>
+</Window>
 
 {#if confirming}
     <Window title="Delete all?" onClose={() => { confirming = false; failure = ''; }}>
@@ -125,14 +125,6 @@
 {/if}
 
 <style>
-    main {
-        max-width: 1280px;
-        padding: 16px 18px 24px;
-    }
-    h1 {
-        margin: 0 0 16px;
-        font: 700 26px/1.2 var(--sans);
-    }
     .cards {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -196,7 +188,6 @@
         margin: 0;
     }
     @media (max-width: 760px) {
-        main { padding-inline: 16px; }
         .cards { grid-template-columns: minmax(0, 1fr); }
         .row { flex-wrap: wrap; }
     }

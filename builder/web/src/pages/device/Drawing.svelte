@@ -74,7 +74,7 @@
     /* The housing as the iOS app draws it. Each size is a share of the body height, 470 units; the colours are those of
        the housing, the same in both looks of the page. */
     .device {
-        --h: min(470px, 110vw);
+        --h: var(--device-h, min(470px, 110vw));
         --u: calc(var(--h) / 470);
         --body: #2f6350;
         --rim: #8be3bc;

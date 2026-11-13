@@ -28,6 +28,11 @@ export function heightUnit(): 'm' | 'ft' {
     return settings.units === 'mi' ? 'ft' : 'm';
 }
 
+/** "km 41.6", "mi 25.8": a place along a route, by its distance from the start. */
+export function formatAlong(metres: number): string {
+    return Number.isFinite(metres) ? `${settings.units}${SPACE}${tenths(distanceIn(metres))}` : NONE;
+}
+
 /** "400 m", "12.3 km", "123 km", "7.6 mi". With kilometres, a distance under 1 km shows in metres; with miles, a distance above 0 shows at least "0.1 mi". */
 export function formatDistance(metres: number): string {
     if (!Number.isFinite(metres)) return NONE;
