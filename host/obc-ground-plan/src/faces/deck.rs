@@ -15,8 +15,8 @@ pub(crate) enum End {
     /// At the way's own end: a joint or junction with the next deck way, or the end of a synthetic deck. `open`: a
     /// ground way goes on there.
     Way { open: bool },
-    /// On an end line through `at` (frame units from the cell's origin). `open`: an A line, on which storey 0 meets the
-    /// deck; a closed line is the deck's free end.
+    /// On an end line through `at` (frame units from the cell's origin). `open`: an A line past which storey 0 goes
+    /// on; else the line is the deck's free end.
     Line { at: [f64; 2], open: bool },
 }
 
@@ -59,13 +59,17 @@ impl Decks {
         };
         let mut pieces: BTreeMap<u32, Vec<Piece>> = BTreeMap::new();
         for r in g.levels.runs.iter().filter(|r| r.state == State::Deck && deck_way(r.way)) {
+            let way = &g.ways[r.way as usize];
             let end = |st: &Station, dir: i8| {
                 let line = (g.levels.end_lines.iter())
                     .find(|l| l.way == r.way && key(&l.at) == key(st) && l.kind != EndKind::Portal);
-                // Past an A line the way goes on as a ground way (its stub); past a closed line it is not drawn.
+                // Past an A line inside the way, the way goes on as a ground way (its stub). `graph::levels` also
+                // gives A to the way's own end, where storey 0 goes on only through a ground way that meets it.
+                let way_end = if dir > 0 { &way.from } else { &way.to };
                 line.map_or(End::Way { open: ground_at(r.way, dir, st) }, |l| {
                     let at = [0, 1].map(|k| (f64::from(l.ends[0][k]) + f64::from(l.ends[1][k])) / 2.0);
-                    End::Line { at, open: l.kind == EndKind::A }
+                    let open = l.kind == EndKind::A && (key(st) != key(way_end) || ground_at(r.way, dir, st));
+                    End::Line { at, open }
                 })
             };
             let ends = [end(&r.from, 1), end(&r.to, -1)];
