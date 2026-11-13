@@ -30,7 +30,7 @@ mod sidewalks;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use rstar::RTree;
 
@@ -59,6 +59,8 @@ const APPROACH_PATH_M: f64 = 1.5;
 /// is unknown, a way has no ramp.
 const RAMP_M: f64 = 15.0;
 const RAMP_GRADE: f64 = 0.25;
+/// The grade of a tunnel of a class without one: 1:1, as a deck climbs from where it lands.
+const TUNNEL_GRADE: f64 = 1.0;
 const HUBER_M: f64 = 1.0;
 /// A way on the ground lies within GROUND_M of the terrain across its width: half the census gate of the bake
 /// (`gate::GATE_M`), which leaves room for the curve between the samples.
@@ -91,9 +93,9 @@ const PARALLEL_FREE_M: f64 = 100.0;
 /// tunnel the preference for level, so that one that meets a road at one end only is level from there.
 const FREE: f64 = 1e-4;
 const PIN: f64 = 1e8;
-/// The weight of a row that holds a tunnel on the straight line between the ends of its chain: under GROUND, so
-/// a portal stays on the terrain and a limit bends the line, but strong enough that a side tunnel that climbs to
-/// the hillside does not lift the line out of the mountain.
+/// The weight of a row that holds a tunnel on the straight line between the ends of its chain. It is a value
+/// from a window, not from a rule: a lighter line lets a side tunnel lift the line out of the mountain, and a
+/// heavier one is a lever that carries a pass or a slope at one portal to the other.
 const BORE: f64 = 1e3;
 const LEVEL: f64 = 1e-3;
 /// The cost of a limit per square metre past its band: GROUND for the ground of a sample, LIMIT for a
@@ -240,10 +242,12 @@ pub struct Metrics {
     pub fords: usize,
     pub culverts: usize,
     pub rounds: usize,
-    /// Per scale of SCALES, the jobs whose Newton rounds ended at ROUNDS, not at their stop rule, and the
-    /// largest move of their last round.
+    /// Per scale of SCALES, the jobs whose Newton rounds ended at ROUNDS, not at their stop rule, the largest
+    /// move of their last round and the variables still unsettled. The last move does not bound how far the
+    /// heights are from the minimum.
     pub capped: [usize; SCALES.len()],
     pub capped_step_m: [f64; SCALES.len()],
+    pub capped_left: [usize; SCALES.len()],
     pub held: usize,
     pub clearances: usize,
     pub clearances_low_cm: usize,
@@ -305,6 +309,7 @@ impl Metrics {
         self.rounds = self.rounds.max(other.rounds);
         for k in 0..SCALES.len() {
             self.capped[k] += other.capped[k];
+            self.capped_left[k] += other.capped_left[k];
             self.capped_step_m[k] = self.capped_step_m[k].max(other.capped_step_m[k]);
         }
         self.residual_p99_m = self.residual_p99_m.max(other.residual_p99_m);
@@ -470,12 +475,12 @@ pub fn solve(
         grounded[a[s]] = true;
         grounded[b[s]] = true;
     }
-    let bores = rows::chains(&net, &net.tunnel, &grounded);
+    let (bores, tunnels) = rows::chains(&net, &net.tunnel, &grounded);
     let beside = rows::parallels(&net, classes, terrain);
     let bridge: Vec<bool> = (0..net.free.len()).map(|w| net.free[w] && !net.tunnel[w]).collect();
     // The decks over what they cross and the bridges that do not sag: each ≥ its value.
     let (above, deck_ways) = rows::clearances(&net, rivers, classes, terrain);
-    let sags = rows::chains(&net, &bridge, &[]);
+    let (sags, _) = rows::chains(&net, &bridge, &[]);
     // The covers over the culverts, tagged and untagged: each ≥ its value where its way lies on the ground.
     let (cover, cover_ways, cover_untagged) = rows::covers(&net, (&near.culverts, rivers), &untagged, classes, terrain);
     let (mut k_rows, mut k_least, mut k_way, mut k_first) = (Rows::default(), Vec::new(), Vec::new(), Vec::new());
@@ -572,10 +577,23 @@ pub fn solve(
             add_bend(across, span(p, j), span(q, j), smooth(net.rule[net.osm_way[o1]]));
         }
     }
-    // Grades: per segment of a class with a limit, z_b − z_a within ± grade × length. A bridge or a
-    // tunnel has the grade that its ends give it: OSM joins shafts and ramps to tunnels that no limit
-    // could meet. Nor has the approach of a side road, or a segment between two approaches: the through
-    // roads give them their heights. A ramp rises at most RAMP_GRADE off the grade of the terrain.
+    // Grades: per segment of a class with a limit, z_b − z_a within ± grade × length. A tunnel between two
+    // portals has the grade of its class too, TUNNEL_GRADE where its class has none, so a pass near a portal does
+    // not dig a step into it. A side tunnel or a shaft that ends on another tunnel has the grade that its ends
+    // give it, so it never lifts that tunnel; so has a bridge. Nor has the approach of a side road, or a segment
+    // between two approaches: the through roads give them their heights. A ramp rises at most RAMP_GRADE off the
+    // grade of the terrain.
+    let portal = |v: usize| grounded[net.vertex_var[v]] || loose[net.vertex_var[v]];
+    let segment_of: HashMap<(usize, usize), usize> =
+        (0..a.len()).flat_map(|s| [((a[s], b[s]), s), ((b[s], a[s]), s)]).collect();
+    let mut graded = vec![false; a.len()];
+    for piece in tunnels.iter().filter(|piece| portal(piece[0]) && portal(piece[piece.len() - 1])) {
+        for pair in piece.windows(2) {
+            if let Some(&s) = segment_of.get(&(net.vertex_var[pair[0]], net.vertex_var[pair[1]])) {
+                graded[s] = true;
+            }
+        }
+    }
     let mut pinned = vec![false; n];
     for variables in &approach.variables {
         pinned[variables[0]] = true;
@@ -590,10 +608,10 @@ pub fn solve(
     for (k, &s) in ramps.iter().enumerate() {
         rise[s] = ground[2 * k + 1] - ground[2 * k];
     }
+    let tunnel = |s: usize| graded[s];
     let limited: Vec<usize> = (0..a.len())
         .filter(|&s| {
-            (grade(s).is_finite() && !approached[s] || rise[s].is_finite())
-                && !free[s]
+            ((grade(s).is_finite() && !approached[s] || rise[s].is_finite()) && !free[s] || tunnel(s))
                 && known[a[s]]
                 && known[b[s]]
                 && !(pinned[a[s]] && pinned[b[s]])
@@ -633,6 +651,7 @@ pub fn solve(
     let mut band: Vec<[f64; 2]> = Vec::new();
     for &s in &limited {
         let (bound, centre) = match grade(s) {
+            g if tunnel(s) => (g.min(TUNNEL_GRADE) * length[s], 0.0),
             g if g.is_finite() => (g * length[s], 0.0),
             _ => (RAMP_GRADE * length[s], rise[s]),
         };
@@ -656,7 +675,8 @@ pub fn solve(
     let (lo, hi): (Vec<f64>, Vec<f64>) = band.into_iter().map(|[lo, hi]| (lo, hi)).unzip();
     let [decks, covers, passes] = starts;
     let hard = limited.len() + ground_samples.len();
-    let is_ramp: Vec<bool> = (0..lo.len()).map(|i| i < limited.len() && !grade(limited[i]).is_finite()).collect();
+    let is_ramp: Vec<bool> =
+        (0..lo.len()).map(|i| i < limited.len() && !tunnel(limited[i]) && !grade(limited[i]).is_finite()).collect();
     // The lower bound now: a tunnel under a road on the ground lies the margin under the road's height.
     let lows = |z: &[f64]| -> Vec<f64> {
         let mut out = lo.clone();
@@ -731,8 +751,9 @@ pub fn solve(
         let ramps = settle(&terms, &limit(&cost), &mut z, &ramp_region, graph, &[1.0]);
         (rounds, unconverged) = (rounds + ramps.rounds, unconverged + ramps.unconverged);
         // The ramps run at the last scale.
-        if let Some(step) = ramps.capped[0] {
-            at_cap[SCALES.len() - 1] = Some(at_cap[SCALES.len() - 1].unwrap_or(0.0).max(step));
+        if let Some((step, left)) = ramps.capped[0] {
+            let (most, all) = at_cap[SCALES.len() - 1].unwrap_or((0.0, 0));
+            at_cap[SCALES.len() - 1] = Some((most.max(step), all + left));
         }
     }
     // Per limit, whether it acts at the end: past its band.
@@ -771,7 +792,7 @@ pub fn solve(
     let pass_mine: Vec<bool> = pass_first.iter().map(|&v| var_mine[v]).collect();
     let gz = limits.times(&z);
     let excess: Vec<(f64, usize)> = (0..limited.len())
-        .filter(|&i| segment_mine[limited[i]] && !is_ramp[i])
+        .filter(|&i| segment_mine[limited[i]] && !is_ramp[i] && !free[limited[i]])
         .map(|i| ((gz[i] - hi[i]).max(lo[i] - gz[i]), limited[i]))
         .collect();
     let worst = excess.iter().fold(None, |best: Option<(f64, usize)>, &(e, s)| match best {
@@ -792,8 +813,9 @@ pub fn solve(
         culverts: solved.culverts.len(),
         rounds,
         capped: std::array::from_fn(|k| usize::from(at_cap[k].is_some())),
-        capped_step_m: std::array::from_fn(|k| at_cap[k].unwrap_or(0.0)),
-        held: count(&mut (0..limited.len()).map(|i| held[i] && segment_mine[limited[i]])),
+        capped_step_m: std::array::from_fn(|k| at_cap[k].map_or(0.0, |c| c.0)),
+        capped_left: std::array::from_fn(|k| at_cap[k].map_or(0, |c| c.1)),
+        held: count(&mut (0..limited.len()).map(|i| held[i] && segment_mine[limited[i]] && !free[limited[i]])),
         grounded: count(
             &mut (limited.len()..hard).map(|i| held[i] && segment_mine[seg[ground_samples[i - limited.len()]]]),
         ),

@@ -162,7 +162,10 @@ The road solver:
   side road where the through roads give it its heights: on the surface of the through road, or on
   a link that is a side road at both of its junctions, past any junction where it runs through. So
   a side road does not move the through road. The fit of the plan can shorten the tip of a hairpin,
-  and the heights stay, so the curve can pass the grade there,
+  and the heights stay, so the curve can pass the grade there. A tunnel between two portals holds the
+  grade of its class too, or 1:1 for a class without one, so a road that crosses it near a portal
+  does not dig a step into it. A side tunnel or a shaft that ends on another tunnel has the grade
+  that its ends give it, so it never lifts that tunnel,
 - holds a way of a class without a grade, where it leaves a road of a class with one, as a ramp:
   for 15 m from the junction, where no pin of the approach holds it, its grade differs from the
   terrain's under it by at most 25 %. The ramps are solved last, with every other height fixed, so a
@@ -180,8 +183,8 @@ The road solver:
 - ignores the terrain under a bridge and in a tunnel: these run between their ends. A tunnel keeps to
   a straight line between the two ends of its chain of tunnel ways that meet end to end, so a side
   tunnel or a shaft that joins it follows it and does not lift it. The line weighs less than the
-  ground: the ground at a portal and the limits along the tunnel bend it. A way on the ground that meets a
-  tunnel ends its chain there: a portal, on the ground. A tunnel chain with an end that
+  ground: the ground at a portal and the limits along the tunnel bend it. A way on the ground that
+  meets a tunnel ends its chain there: a portal, on the ground. A tunnel chain with an end that
   meets no way runs level from its other end, or on the grade of the road that runs on into it
   there. A bridge never sags under the straight line between the two ends of its chain of bridge
   ways,
@@ -235,7 +238,9 @@ gives the weights of the fit, the culverts and the covers that hold; the ramps a
 The bake fails when a vertex of a way on the ground (not a bridge and not a tunnel, and not where a
 deck runs through it) lies more than 10 m past the terrain across its way, the range of the ground
 bound above: the owner's gate; the message names the worst places. Its metrics hold this census, and
-the same one of the rivers and streams, which does not fail the bake.
+the same one of the rivers and streams, which does not fail the bake. The bake log and the metrics
+also count the vertices more than 10 m off the terrain under their centre line, which the gate does
+not.
 
 The road solver works by area: an area is a tile of zoom 10. The solve of an area holds each way
 within 500 m of the area, along the ways from the nearest vertex of OSM of a way in a straight line.

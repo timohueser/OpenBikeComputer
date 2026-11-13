@@ -347,17 +347,18 @@ pub(crate) fn settle(
             }
             region = region_of(sources);
         }
-        capped.push((!region.is_empty()).then_some(step));
+        capped.push((!region.is_empty()).then_some((step, region.len())));
     }
     Settled { rounds, unconverged, capped }
 }
 
 /// What `settle` did: its rounds, the refinements that did not converge, and per scale, where it ended after
-/// ROUNDS and not at its stop rule, the largest move of its last round.
+/// ROUNDS and not at its stop rule, the largest move of its last round and the variables still unsettled. The
+/// last move does not bound how far the heights are from the minimum: a capped job can lie metres from it.
 pub(crate) struct Settled {
     pub rounds: usize,
     pub unconverged: usize,
-    pub capped: Vec<Option<f64>>,
+    pub capped: Vec<Option<(f64, usize)>>,
 }
 
 /// The variables of `moved` that a Newton step of each alone would move by SETTLE_M or more, for a fall of the

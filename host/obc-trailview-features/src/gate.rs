@@ -22,6 +22,10 @@ pub struct Census {
     bins: Vec<u64>,
     over: u64,
     under: u64,
+    /// The vertices more than GATE_M off the terrain under their centre line, which the gate does not count, and
+    /// the largest such distance.
+    off_centre: u64,
+    off_centre_max_m: f64,
     /// (offset, latitude and longitude, kind), the largest above and below.
     highest: Vec<(f64, [f64; 2], String)>,
     lowest: Vec<(f64, [f64; 2], String)>,
@@ -29,7 +33,16 @@ pub struct Census {
 
 impl Default for Census {
     fn default() -> Self {
-        Census { vertices: 0, bins: vec![0; BINS + 1], over: 0, under: 0, highest: Vec::new(), lowest: Vec::new() }
+        Census {
+            vertices: 0,
+            bins: vec![0; BINS + 1],
+            over: 0,
+            under: 0,
+            off_centre: 0,
+            off_centre_max_m: 0.0,
+            highest: Vec::new(),
+            lowest: Vec::new(),
+        }
     }
 }
 
@@ -68,6 +81,8 @@ impl Census {
                 self.bins[((dz.abs() / BIN_M) as usize).min(BINS)] += 1;
                 self.over += u64::from(dz > GATE_M);
                 self.under += u64::from(dz < -GATE_M);
+                self.off_centre += u64::from((z - ground).abs() > GATE_M);
+                self.off_centre_max_m = self.off_centre_max_m.max((z - ground).abs());
                 let at = crate::degrees(point);
                 keep(&mut self.highest, (dz, at, kind), |a, b| a > b);
                 keep(&mut self.lowest, (dz, at, kind), |a, b| a < b);
@@ -81,6 +96,11 @@ impl Census {
 
     pub fn under(&self) -> u64 {
         self.under
+    }
+
+    /// The vertices more than GATE_M off the terrain under their centre line, and the largest distance.
+    pub fn off_centre(&self) -> (u64, f64) {
+        (self.off_centre, self.off_centre_max_m)
     }
 
     /// The worst places past the gate above (`high`) or below the terrain, as text.
@@ -105,6 +125,7 @@ impl Census {
         json!({"vertices": self.vertices, "over_m": self.over, "under_m": self.under,
                "p50_m": percentile(50.0), "p90_m": percentile(90.0), "p99_m": percentile(99.0),
                "share_past_5m": (share(over_5) * 1e5).round() / 1e5,
+               "off_centre_past_gate": self.off_centre, "off_centre_max_m": (self.off_centre_max_m * 10.0).round() / 10.0,
                "highest": self.places(true), "lowest": self.places(false)})
     }
 }
