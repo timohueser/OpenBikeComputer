@@ -18,6 +18,7 @@ use crate::base::Topology;
 use crate::column::Layout;
 use crate::osm::{Counts, Source};
 use crate::source::{Data, Sets};
+use crate::tables::{self, Tables};
 use crate::work::{Guard, OWN_BYTES};
 use crate::{catalog, grid, overlays, Costs, Graph, Limits, SETS};
 
@@ -183,9 +184,9 @@ fn graph(request: &Request) -> Result<(Graph, Topology, Vec<String>), String> {
     Ok((graph, topology, strings(&summary["identities"])))
 }
 
-/// The graph, the topology and the costs of a roads layer and a costs layer in the folders
-/// `roads` and `costs`, without the source objects: the input of `cells::write` for a tool.
-pub fn layers(roads: &Path, costs: &Path) -> Result<(Graph, Topology, Costs), String> {
+/// The graph, the topology, the costs and the cost tables of a roads layer and a costs layer in the
+/// folders `roads` and `costs`, without the source objects: the input of `cells::write` for a tool.
+pub fn layers(roads: &Path, costs: &Path) -> Result<(Graph, Topology, Costs, Tables), String> {
     let read = |dir: &Path| {
         let entries = fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let paths = entries
@@ -198,12 +199,15 @@ pub fn layers(roads: &Path, costs: &Path) -> Result<(Graph, Topology, Costs), St
     let summary = read_json(&roads, "roads.json")?;
     let graph = Graph::open(&roads, Data::default(), strings(&summary["warnings"]))?;
     let topology = Topology { first: roads.open("first")?, head: roads.open("head")? };
-    Ok((graph, topology, Costs::open(&read(costs)?)?))
+    let layout = read(costs)?;
+    let costs = Costs::open(&layout)?;
+    let tables = Tables::open(&layout, graph.cells.levels(), costs.profiles.len())?;
+    Ok((graph, topology, costs, tables))
 }
 
 /// The costs step. It reads the source and the roads layers and the options `bounds` and
 /// `profiles`, the profile IDs or `all`. The layer `costs/` holds the costs of each profile
-/// (`Costs::save`).
+/// (`Costs::save`) and the cost tables of each level (`Tables::save`).
 pub fn costs(request: &Request) -> Result<(), String> {
     let _guard = start()?;
     Guard::stage("open");
@@ -215,8 +219,13 @@ pub fn costs(request: &Request) -> Result<(), String> {
     crate::check(&graph, &profiles)?;
     eprintln!("Preparing {} profiles for {} directed roads", profiles.len(), graph.roads.len());
     let costs = crate::costs(&graph, &topology, &profiles)?;
+    Guard::stage("tables");
+    eprintln!("Building the cost tables");
+    let (first, head) = (topology.first.values(), topology.head.values());
+    let tables = tables::build(&graph.cells, first, head, &costs.columns(), tables::COLUMNS_FROM)?;
     let mut layout = output(request, COSTS)?;
     costs.save(&mut layout)?;
+    tables.save(&mut layout)?;
     layout.finish()
 }
 
@@ -258,12 +267,14 @@ pub fn step(request: &Request) -> Result<(), String> {
     Guard::stage("cells");
     eprintln!("Writing the package of format 10");
     let costs = Costs::open(&folder(request, COSTS)?)?;
+    let tables = Tables::open(&folder(request, COSTS)?, graph.cells.levels(), costs.profiles.len())?;
     let roads = folder(request, ROADS)?;
     let topology = Topology { first: roads.open("first")?, head: roads.open("head")? };
     let input = crate::cells::Input {
         graph: &graph,
         topology: &topology,
         costs: &costs,
+        tables: &tables,
         sizes: &sizes,
         download_level: level,
         info,
@@ -271,7 +282,7 @@ pub fn step(request: &Request) -> Result<(), String> {
     };
     let summary = crate::cells::write(&input, &request.output.join("cells"))?;
     eprintln!("Cells: {}", summary.to_json());
-    drop((costs, topology));
+    drop((costs, tables, topology));
     // The overlay index and the route catalog read only the source objects. The road graph is
     // freed here, so the catalog routers get its memory.
     let osm = std::mem::take(&mut graph.osm);

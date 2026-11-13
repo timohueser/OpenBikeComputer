@@ -17,6 +17,7 @@ pub mod sort;
 pub mod source;
 pub mod step;
 mod suitability;
+pub mod tables;
 pub mod terrain;
 mod traffic;
 mod work;
@@ -549,6 +550,14 @@ impl Costs {
     /// The cost of each arc of the topology for profile `profile`; `u32::MAX` where it may not turn.
     pub fn turns(&self, profile: usize) -> &[u32] {
         self.roads[profile].turns.values()
+    }
+
+    /// The cost columns of each profile, the input of `tables::build`.
+    pub fn columns(&self) -> Vec<tables::Costs<'_>> {
+        self.roads
+            .iter()
+            .map(|costs| tables::Costs { totals: costs.totals.values(), turns: costs.turns.values() })
+            .collect()
     }
 
     /// The snap bit of road `road` for profile `profile`.

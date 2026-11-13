@@ -183,6 +183,8 @@ fn bake(name: &str) -> Bake {
 
     let topology = base::Topology::new(&graph.roads, graph.points.len()).unwrap();
     let costs = planner_router_build::costs(&graph, &topology, &profiles).unwrap();
+    let (first, head) = (topology.first.values(), topology.head.values());
+    let tables = planner_router_build::tables::build(&graph.cells, first, head, &costs.columns(), 16).unwrap();
     let scratch = Scratch(std::env::temp_dir().join(format!("obc-engines-{name}-{}", std::process::id())));
     let _ = fs::remove_dir_all(&scratch.0);
     let info = Info { region: "town".into(), bounds, source_sha256: vec![], attribution: "test".into() };
@@ -190,6 +192,7 @@ fn bake(name: &str) -> Bake {
         graph: &graph,
         topology: &topology,
         costs: &costs,
+        tables: &tables,
         sizes: &[8, 32, 128],
         download_level: 2,
         info,

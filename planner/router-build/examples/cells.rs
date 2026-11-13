@@ -3,11 +3,13 @@
 //! `cells write ROADS COSTS OUT [LEVEL]` writes the package of the roads and the costs layer
 //! folders into OUT with zstd level LEVEL (default `cells::LEVEL`), with `cell_sizes` and `download_level` of
 //! `data/planner.toml`. `cells install OUT TARGET [THREADS]` installs all cells of OUT into TARGET
-//! and then checks each object. Each prints its summary, the time and the peak `RssAnon`.
+//! and then checks each object. `cells tables ROADS COSTS` builds the cost tables of the two layer
+//! folders and writes nothing. Each prints its summary, the time and the peak `RssAnon`.
 
 use planner_router::cells::{Directory, Geometry, GEOMETRY};
 use planner_router::install;
 use planner_router_build::cells::{self, Info, Input};
+use planner_router_build::tables;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
@@ -61,12 +63,21 @@ fn spread(mut values: Vec<usize>) -> (usize, usize) {
 }
 
 fn write(roads: &Path, costs: &Path, out: &Path, level: i32) -> Result<(), String> {
-    let (graph, topology, costs) = planner_router_build::step::layers(roads, costs)?;
+    let (graph, topology, costs, tables) = planner_router_build::step::layers(roads, costs)?;
     let sizes: Vec<u32> =
         setting("cell_sizes").trim_matches(['[', ']']).split(',').map(|size| size.trim().parse().unwrap()).collect();
     let download_level = setting("download_level").parse().unwrap();
     let info = Info { region: "measure".into(), bounds: [0.0; 4], source_sha256: vec![], attribution: String::new() };
-    let input = Input { graph: &graph, topology: &topology, costs: &costs, sizes: &sizes, download_level, info, level };
+    let input = Input {
+        graph: &graph,
+        topology: &topology,
+        costs: &costs,
+        tables: &tables,
+        sizes: &sizes,
+        download_level,
+        info,
+        level,
+    };
     let summary = measured(&format!("write, zstd level {level}"), || cells::write(&input, out))?;
     println!("{}", serde_json::to_string_pretty(&summary.to_json()).unwrap());
 
@@ -108,6 +119,16 @@ fn write(roads: &Path, costs: &Path, out: &Path, level: i32) -> Result<(), Strin
     Ok(())
 }
 
+fn build_tables(roads: &Path, costs: &Path) -> Result<(), String> {
+    let (graph, topology, costs, _) = planner_router_build::step::layers(roads, costs)?;
+    let (first, head) = (topology.first.values(), topology.head.values());
+    let threads = rayon::current_num_threads();
+    measured(&format!("tables, {threads} threads"), || {
+        tables::build(&graph.cells, first, head, &costs.columns(), tables::COLUMNS_FROM)
+    })?;
+    Ok(())
+}
+
 fn install(out: &Path, target: &Path, threads: usize) -> Result<(), String> {
     let read = |name| std::fs::read(out.join(name)).map_err(|e| e.to_string());
     let (directory, info) = (read(cells::DIRECTORY)?, read(cells::PACKAGE)?);
@@ -129,12 +150,14 @@ fn install(out: &Path, target: &Path, threads: usize) -> Result<(), String> {
 
 fn main() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let usage = "usage: cells write ROADS COSTS OUT [LEVEL] | cells install OUT TARGET [THREADS]";
+    let usage =
+        "usage: cells write ROADS COSTS OUT [LEVEL] | cells install OUT TARGET [THREADS] | cells tables ROADS COSTS";
     match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
         ["write", roads, costs, out, ..] => {
             let level = args.get(4).map_or(Ok(cells::LEVEL), |level| level.parse()).map_err(|_| usage)?;
             write(Path::new(roads), Path::new(costs), Path::new(out), level)
         }
+        ["tables", roads, costs] => build_tables(Path::new(roads), Path::new(costs)),
         ["install", out, target, ..] => {
             let all = std::thread::available_parallelism().map_or(1, |n| n.get());
             let threads = args.get(3).map_or(Ok(all), |threads| threads.parse()).map_err(|_| usage)?;

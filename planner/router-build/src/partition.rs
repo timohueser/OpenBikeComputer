@@ -6,6 +6,7 @@ use crate::column::{Column, Layout};
 use crate::{sort, work, Roads};
 use planner_router::model::Point;
 use sha2::{Digest, Sha256};
+use std::ops::Range;
 use std::sync::atomic::{AtomicU32, AtomicU8, Ordering::Relaxed};
 
 /// The largest number of levels: a road keeps its border level in a byte of its order key.
@@ -82,10 +83,80 @@ impl Cells {
         if level == 1 {
             return cell;
         }
+        let firsts = self.firsts(level);
+        firsts[..firsts.len() - 1].partition_point(|&first| first as usize <= cell) - 1
+    }
+
+    /// For a level from 2, the first level-1 cell of each of its cells, then the count of level-1
+    /// cells.
+    fn firsts(&self, level: usize) -> &[u32] {
         let counts = self.counts.values();
         let start: usize = counts[1..level - 1].iter().map(|&count| count as usize + 1).sum();
-        let firsts = &self.upper.values()[start..start + counts[level - 1] as usize];
-        firsts.partition_point(|&first| first as usize <= cell) - 1
+        &self.upper.values()[start..start + counts[level - 1] as usize + 1]
+    }
+
+    /// The level-1 cells of cell `cell` of `level`.
+    pub fn level1_cells(&self, level: usize, cell: usize) -> Range<usize> {
+        match level {
+            1 => cell..cell + 1,
+            _ => self.firsts(level)[cell] as usize..self.firsts(level)[cell + 1] as usize,
+        }
+    }
+
+    /// The cells of level `level - 1` in cell `cell` of `level`, from 2 (rule 4).
+    pub fn children(&self, level: usize, cell: usize) -> Range<usize> {
+        self.within(level - 1, self.level1_cells(level, cell))
+    }
+
+    /// The cells of `level` whose level-1 cells lie in `level1`, a range of whole cells of a higher
+    /// level.
+    pub fn within(&self, level: usize, level1: Range<usize>) -> Range<usize> {
+        if level == 1 {
+            return level1;
+        }
+        let firsts = self.firsts(level);
+        let firsts = &firsts[..firsts.len() - 1];
+        firsts.partition_point(|&first| (first as usize) < level1.start)
+            ..firsts.partition_point(|&first| (first as usize) < level1.end)
+    }
+
+    /// The roads of level-1 cell `cell`.
+    pub fn roads(&self, cell: usize) -> Range<usize> {
+        let level1 = self.level1.values();
+        level1[cell][1] as usize..level1[cell + 1][1] as usize
+    }
+
+    /// The entering list of cell `cell` of `level` by rule 2, ascending.
+    pub fn entering(&self, level: usize, cell: usize) -> impl Iterator<Item = u32> + '_ {
+        let border = self.border.values();
+        self.level1_cells(level, cell).flat_map(move |l1| {
+            self.roads(l1).take_while(move |&road| usize::from(border[road]) >= level).map(|road| road as u32)
+        })
+    }
+
+    /// The place of `road`, the target of a turn from a road of level-1 cell `cell`: its index in the
+    /// cell, or the road count of the cell plus its place in the leaving list.
+    pub fn target(&self, cell: usize, road: u32) -> Result<u32, String> {
+        let roads = self.roads(cell);
+        if roads.contains(&(road as usize)) {
+            return Ok(road - roads.start as u32);
+        }
+        let place = self.leaving_list(1, cell).binary_search(&road).map_err(|_| {
+            format!("the turn target {road} is outside the leaving list of level-1 cell ID {:08x}", self.id(1, cell))
+        })?;
+        Ok((roads.len() + place) as u32)
+    }
+
+    /// The leaving list of cell `cell` of `level` (rule 3).
+    pub fn leaving_list(&self, level: usize, cell: usize) -> &[u32] {
+        let (global, first) = (self.global(level, cell), self.leaving_first.values());
+        &self.leaving.values()[first[global] as usize..first[global + 1] as usize]
+    }
+
+    /// The cell ID of cell `cell` of `level`, with zero bits below its level.
+    pub fn id(&self, level: usize, cell: usize) -> u32 {
+        let first = self.level1_cells(level, cell).start;
+        self.ids.values()[first] & !planner_router::cells::below(self.widths.values(), level)
     }
 
     /// The number over all levels of cell `cell` of level `level`.

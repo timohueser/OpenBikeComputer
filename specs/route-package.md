@@ -15,8 +15,8 @@ then. The contract of format 9 is this file on `develop`.
   `planner/routing` of `obc data`. The step `planner/routing/cells/grid` publishes the files.
 - Readers: `planner/router/src/install.rs` (the installer of the server and of the phone) and the
   views of `planner/router/src/cells.rs`.
-- Code authority: `planner/router/src/cells.rs` (`Directory`, `Topology`, `Group`, `Geometry`,
-  `encode_road`, `decode_road`).
+- Code authority: `planner/router/src/cells.rs` (`Directory`, `Topology`, `Group`, `Table`,
+  `Geometry`, `encode_road`, `decode_road`, `encode_table`).
 - Related: [route API](route-api.md), [planner release](planner-release.md), [obc data](obc-data.md)
   (the option `download_level`).
 
@@ -74,7 +74,8 @@ of that ID. A **long road** is a road whose `length_m` is above 10,000.
 An object is one zstd frame of one part of one cell: level 12, a window of at most 8 MiB, with
 the content size, without a checksum or a dictionary, made on one thread. A part is smaller than
 4 GiB. The parts of a download cell are part 0 the topology, part 1 the geometry, and part 2 + g
-profile group g. An upper cell has only a topology part.
+profile group g. An upper cell has part 0, the topology with its two road lists, and part 2 + g
+for each group, with its cost tables. Its part 1 is absent.
 
 Two profiles are one **profile group** when their turn costs are equal. The groups are numbered by
 their first profile in name order. A package has at most 32 groups.
@@ -102,7 +103,7 @@ then the upper cells in the order of level and ID.
 | `first_road`, `roads` | 2 × u32 | The run-time ID of its first road; its road count |
 | `box` | 4 × i32 | West, south, east, north in microdegrees: the union of the boxes of its level-1 cells. No long road is in it |
 | `long_box` | 4 × i32 | The union of the boxes of the long roads of a download cell. All zero when it has none, and in an upper cell |
-| `parts` | 72 bytes each | Part 0 topology, part 1 geometry, part 2 + g profile group g |
+| `parts` | 72 bytes each | Part 0 topology, part 1 geometry, part 2 + g profile group g. Part 1 of an upper cell is absent |
 
 A part entry is `object` (32 bytes, SHA-256 of the object), `object_bytes` (u32), `sha256` (32
 bytes, SHA-256 of the part) and `bytes` (u32). An absent part is all zero. The first digest finds
@@ -167,10 +168,52 @@ classes are in ascending order of their bytes. Each download cell has its own cl
 
 The slots are, for each profile, one slot for each level-1 cell and then one for each upper record
 of the topology part: `at` and `bytes` (u32 each). A slot names the cost table of that cell and
-profile. The tables lie by profile, then level, then cell. This format writes each slot with 0
-bytes and `at` at the end of the slots. A group part of an upper cell has only the header, the
-slots and the table of that cell: `cells` and `classes` are 0, `upper` is 1, and `classes_at` and
-`slots_at` are 24. This format writes no group part for an upper cell.
+profile. The tables lie by profile, then level, then cell, each at a multiple of 4. A group part of
+an upper cell has only the header, the slots and the table of that cell: `cells` and `classes` are
+0, `upper` is 1, and `classes_at` and `slots_at` are 24. Each upper cell has a group part for each
+group.
+
+### Cost tables
+
+In these rules, `C` is a cell of level ℓ and `p` a profile. An entering road `e` of `C` departs
+outside `C` and arrives in `C`. A leaving road `l` departs in `C` and arrives outside it.
+
+- **T1. Value.** `T[e][l]` is the least sum, over the turns of a path `e = r0, r1, …, rk = l`
+  (k ≥ 1) whose roads `r1 … rk−1` arrive in `C`, of the turn cost plus the total cost of the
+  target road. It does not include the cost of `e`. So the forward search sets
+  `cost(l) = cost(e) + T[e][l]`, and the backward search sets `cost(e) = T[e][l] + cost(l)`.
+- **T2. No path.** All-ones of the width of the table means that no such path exists. A turn with
+  an all-ones turn cost or target cost is not a turn. No road is an entering and a leaving road of
+  the same cell, and no path in a cell reaches an entering road again.
+- **T3. Rows and columns.** Level 1: the row of `e` is its index in the level-1 cell, and the
+  column of `l` is its place in the leaving list of the cell. Level 2 and up: the row and the
+  column are the places in the entering and the leaving list of the upper record. Each list
+  ascends by run-time road ID.
+- **T4. Presence.** Each cell of each level has a table for each profile of each group part that
+  has its slot. A table with no entering or no leaving road is a header of 16 bytes, so no slot
+  has 0 bytes.
+- **T5. Bytes.** As in the table below. Without the copy by column, a reader reads a column with a
+  stride of `columns × width` bytes. The view `Table` gives each value as `u64`, with `u64::MAX`
+  for no path.
+- **T6. Range.** Each finite value is at most 2^32 − 2. A reader adds values in `u64`.
+- **T7. Unpacking.** For each finite `T[e][l]` of level ℓ ≥ 2, a search from `e` over the tables
+  of the cells of level ℓ − 1 in `C` reaches `l` with exactly that cost. For level 1, a search from
+  `e` on the roads that arrive in the cell reaches `l` with exactly that cost. The path can be
+  another path of the same cost.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `rows`, `columns` | 2 × u32 | The entering and the leaving roads of the cell; the view checks them against the record |
+| `width` | u8 | 1, 2 or 4: the narrowest width whose all-ones value is above each finite value. A table with no finite value has width 1 |
+| `layout` | u8 | 0: by row; 1: by row, then by column |
+| zero | 6 bytes | |
+| by row | `rows × columns` values | Value (r, q) at 16 + (r × `columns` + q) × `width` |
+| by column | `rows × columns` values, when `layout` is 1 | Value (r, q) at 16 + (`rows` × `columns` + q × `rows` + r) × `width` |
+
+The writer sets `layout` to 1 when the values by row take more than 16,384 bytes and the table has
+more than one row and more than one column. Then a column read with a stride touches more than 4
+pages of 4 KiB or more than one page of 16 KiB. A reader accepts layout 0 and layout 1 for each
+table and does not check this threshold.
 
 A legal transition costs the turn cost plus the cost of the destination road. The addition and
 the path cost use checked `u64` arithmetic. The departures of an end point are the finite turns
@@ -232,7 +275,9 @@ An install is one folder: `directory.bin`, `package.json`, `cells/LEVEL-ID-PART`
 installed file is one part, without compression. `install.bin` is `OBCRINST` (8 bytes), the
 SHA-256 of the directory, `groups` (u32, bit g set when group g is installed), `count` (u32) and
 `count` record numbers of the directory (u32, ascending). Each installed cell has the parts of
-each installed group. The server has each cell; a phone has fewer cells in the same layout.
+each installed group: a download cell has 2 files and one for each installed group, an upper cell
+1 file and one for each installed group. The server has each cell; a phone has fewer cells in the same
+layout.
 
 `install::install` installs a set of download cells and profile groups:
 
@@ -249,7 +294,9 @@ each installed group. The server has each cell; a phone has fewer cells in the s
    the folder.
 5. It deletes each file in `cells/` that the install does not name, and nothing outside `cells/`.
 
-The install adds each upper cell whose download cells are all in the install. `install::check`
+The install adds each upper cell whose download cells are all in the install, with its topology part
+and the parts of the installed groups. It takes no part of an upper cell that it holds only in
+part; the search treats that cell as open (rule 3). `install::check`
 checks each object without a file. `install::scrub` reads each installed file again.
 
 The rules of a reader:
