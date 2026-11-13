@@ -24,11 +24,30 @@ export function requestGpu(): Promise<Gpu | undefined> {
     });
 }
 
+let windowOpen = false;
+const windowListeners = new Set<() => void>();
+const setWindowOpen = (open: boolean) => {
+    windowOpen = open;
+    for (const listener of windowListeners) listener();
+};
+
+/** Whether a TrailView window is open: the cover job draws no still then, as two engines would share the GPU. */
+export const trailViewOpen = () => windowOpen;
+
+/** Calls `listener` when a TrailView window opens or closes. Returns the function that stops it. */
+export function onTrailViewOpen(listener: () => void): () => void {
+    windowListeners.add(listener);
+    return () => windowListeners.delete(listener);
+}
+
 /**
  * The engine on the canvas, or undefined when the browser has no WebGPU adapter. It starts at `view`
- * and moves to the first view of the drop, which loads while the engine compiles.
+ * and moves to the first view of the drop, which loads while the engine compiles. The window is open
+ * (`trailViewOpen`) until `closed` aborts.
  */
-export async function startTrailView(canvas: HTMLCanvasElement, config: PlannerConfig, view: View, near: Near): Promise<TrailView | undefined> {
+export async function startTrailView(canvas: HTMLCanvasElement, config: PlannerConfig, view: View, near: Near, closed: AbortSignal): Promise<TrailView | undefined> {
+    setWindowOpen(true);
+    closed.addEventListener('abort', () => setWindowOpen(false), { once: true });
     // The first view cannot reject: a throw after the start would leave a running engine that no caller holds.
     const first = firstView(config, [view.lon, view.lat], near).catch((error: unknown) => void console.info('TrailView first view falls back to the drop:', error));
     const gpu = await requestGpu();

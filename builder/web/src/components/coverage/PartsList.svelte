@@ -1,16 +1,10 @@
 <script lang="ts">
     import type { CoverageStore } from "../../lib/coverage/store.svelte";
-    import {
-        CORRIDOR_RADIUS_MAX_M,
-        CORRIDOR_RADIUS_MIN_M,
-    } from "../../lib/coverage/store.svelte";
     import ToolIcon from "./ToolIcon.svelte";
 
     let { store }: { store: CoverageStore } = $props();
 
     const parts = $derived(store.selection.parts);
-    const hasCorridor = $derived(store.selection.parts.some((p) => p.kind === "corridor"));
-    const radiusKm = $derived(Math.round(store.selection.corridorRadiusM / 1000));
 </script>
 
 {#if parts.length === 0}
@@ -28,7 +22,7 @@
                 }}
             >
                 <span class="glyph" aria-hidden="true"><ToolIcon kind={part.kind} size={15} /></span>
-                <span class="name">{part.kind === "corridor" ? `Corridor — ${part.name}` : part.name}</span>
+                <span class="name">{part.name}</span>
                 {#if regionError}
                     <span class="small error">{regionError}</span>
                     {#if part.kind === "region" && store.region(part.regionId)}
@@ -47,27 +41,6 @@
             </li>
         {/each}
     </ul>
-
-    {#if hasCorridor}
-        <div class="width">
-            <div class="width-head">
-                <label class="small muted" for="corridor-width-global">
-                    <span class="glyph" aria-hidden="true"><ToolIcon kind="corridor" size={13} /></span> Corridor width — all routes
-                </label>
-                <span class="mono small">± {radiusKm} km</span>
-            </div>
-            <input
-                id="corridor-width-global"
-                type="range"
-                min={CORRIDOR_RADIUS_MIN_M / 1000}
-                max={CORRIDOR_RADIUS_MAX_M / 1000}
-                step="1"
-                value={radiusKm}
-                oninput={(e) =>
-                    store.setCorridorRadius(Number((e.currentTarget as HTMLInputElement).value) * 1000)}
-            />
-        </div>
-    {/if}
 {/if}
 
 <style>
@@ -141,32 +114,5 @@
 
     .remove:hover {
         color: var(--coral);
-    }
-
-    /* The one-map-wide corridor width, as a quiet appendix to the corridor
-       rows it re-buffers: same parchment as a row, dashed border so it reads
-       as a control over the parts rather than another part. */
-    .width {
-        background: var(--parchment);
-        border: 1px dashed var(--line);
-        border-radius: 8px;
-        padding: 6px 10px 8px;
-        margin-top: 1px;
-    }
-
-    .width-head {
-        display: flex;
-        justify-content: space-between;
-        align-items: baseline;
-        gap: 8px;
-        margin-bottom: 2px;
-    }
-
-    .width input[type="range"] {
-        width: 100%;
-        accent-color: var(--forest);
-        padding: 0;
-        border: none;
-        background: none;
     }
 </style>

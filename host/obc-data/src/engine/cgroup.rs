@@ -18,23 +18,29 @@ pub fn memory() -> Option<Cgroup> {
     read(Path::new("/sys/fs/cgroup"), &membership)
 }
 
-/// `membership` has the format of `/proc/self/cgroup`, and `root` is the mount point of cgroup v2.
-/// A parent can set a limit that its child does not show, so the reader goes up to `root`.
+/// The least `memory.max` of the cgroup of this process and of its parents: the limit that binds
+/// whatever is in use. `None` for no limit, and without cgroup v2 or its memory controller.
+pub fn limit() -> Option<u64> {
+    let membership = fs::read_to_string("/proc/self/cgroup").ok()?;
+    limit_in(Path::new("/sys/fs/cgroup"), &membership)
+}
+
 pub fn read(root: &Path, membership: &str) -> Option<Cgroup> {
-    let path = membership.lines().find_map(|line| line.strip_prefix("0::"))?;
     let free = |cgroup: &Cgroup| cgroup.max.map_or(u64::MAX, |max| max.saturating_sub(cgroup.anon));
-    let mut folder = root.join(path.trim_start_matches('/'));
-    let mut tightest: Option<Cgroup> = None;
-    loop {
-        if let Some(cgroup) = at(&folder) {
-            if tightest.is_none_or(|tightest| free(&cgroup) < free(&tightest)) {
-                tightest = Some(cgroup);
-            }
-        }
-        if folder == root || !folder.pop() {
-            return tightest;
-        }
-    }
+    chain(root, membership)?.into_iter().min_by_key(free)
+}
+
+pub fn limit_in(root: &Path, membership: &str) -> Option<u64> {
+    chain(root, membership)?.into_iter().filter_map(|cgroup| cgroup.max).min()
+}
+
+/// The cgroups from that of `membership` up to `root`. `membership` has the format of
+/// `/proc/self/cgroup`, and `root` is the mount point of cgroup v2. A parent can set a limit that
+/// its child does not show.
+fn chain(root: &Path, membership: &str) -> Option<Vec<Cgroup>> {
+    let path = membership.lines().find_map(|line| line.strip_prefix("0::"))?;
+    let folder = root.join(path.trim_start_matches('/'));
+    Some(folder.ancestors().take_while(|folder| folder.starts_with(root)).filter_map(at).collect())
 }
 
 /// The memory of the cgroup in `folder`; the root cgroup has no `memory.max`.
@@ -69,6 +75,25 @@ mod tests {
         fs::write(parent.join("memory.stat"), "anon 8192\n").unwrap();
         assert_eq!(read(&root, membership), Some(Cgroup { max: Some(12 << 30), anon: 8192 }));
         assert_eq!(read(&root, "4:memory:/bake/step\n"), None, "cgroup v1 has no limit here");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_limit_is_the_least_max_of_the_chain_whatever_is_in_use() {
+        let root = std::env::temp_dir().join(format!("obc-data-cgroup-limit-{}", std::process::id()));
+        let (parent, folder) = (root.join("bake"), root.join("bake/step"));
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("memory.max"), "4294967296\n").unwrap();
+        fs::write(folder.join("memory.stat"), "anon 536870912\n").unwrap();
+        fs::write(parent.join("memory.max"), "8589934592\n").unwrap();
+        fs::write(parent.join("memory.stat"), "anon 6442450944\n").unwrap();
+        let membership = "0::/bake/step\n";
+        assert_eq!(read(&root, membership).unwrap().max, Some(8 << 30), "the parent has the least free memory");
+        assert_eq!(limit_in(&root, membership), Some(4 << 30));
+        fs::write(folder.join("memory.max"), "max\n").unwrap();
+        assert_eq!(limit_in(&root, membership), Some(8 << 30));
+        fs::write(parent.join("memory.max"), "max\n").unwrap();
+        assert_eq!(limit_in(&root, membership), None);
         fs::remove_dir_all(&root).unwrap();
     }
 }

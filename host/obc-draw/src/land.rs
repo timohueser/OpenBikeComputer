@@ -371,9 +371,8 @@ fn geos_polygon_from_rings(rings: &[Vec<(f64, f64)>]) -> Option<Geometry> {
 
 /// Where the unpacked dataset lives: `$OBCM_CACHE_DIR/land`, else `~/.cache/obcm/land`.
 ///
-/// The override and the Windows home variable are both load-bearing. The desktop app documents this
-/// directory as the shared cache, so the CLI, the dev server and the app point at one 2.3 GB
-/// dataset instead of three, and it finds it through `OBCM_CACHE_DIR`. `HOME` alone is unset on
+/// The override and the Windows home variable are both load-bearing. The CLI and the dev server
+/// point at one shared 2.3 GB dataset through `OBCM_CACHE_DIR`. `HOME` alone is unset on
 /// Windows.
 pub(crate) fn cache_dir() -> Result<PathBuf, String> {
     if let Some(dir) = std::env::var_os("OBCM_CACHE_DIR") {
@@ -675,7 +674,7 @@ mod tests {
     }
 
     /// A cancelled index must not be remembered as a failure: the packer is linked in-process by
-    /// the desktop app and the bakery, so one stopped build would leave land generation broken for
+    /// the bakery, so one stopped build would leave land generation broken for
     /// the life of the process. The only test that touches the process-wide slot.
     #[test]
     fn a_cancelled_index_is_not_memoized() {

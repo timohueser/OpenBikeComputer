@@ -9,9 +9,7 @@
 
   The ride panel here is handed a `RideSource` — two reads, and no way to write — so "this surface
   cannot change anything on the device" is a property of what the panel has rather than of what it
-  remembers not to call (#894, C5 #904). The tier with a managed folder (`caps.rideLibrary`) does
-  not render these surfaces at all any more: its device features live on the Device and Ride-library
-  pages.
+  remembers not to call.
 -->
 <script lang="ts">
     import type { FlatStoreClient } from "../../lib/usb/client";

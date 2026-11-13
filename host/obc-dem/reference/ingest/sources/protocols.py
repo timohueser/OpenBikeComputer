@@ -22,7 +22,7 @@ from rasterio.warp import transform_bounds
 
 from ..lattice import Refuse, WGS84
 from ..pool import read_source
-from .base import MOST_MISSING, TIFF_MAGIC, Source, decode_tiff, each, http_get, redact
+from .base import MOST_MISSING, TIFF_MAGIC, Source, decode_tiff, each, http_get, pace, redact
 
 # One request per sub-box. A failed 4000 x 4000 request wastes far more time than four
 # 2000 x 2000 ones, and every service here caps the pixels it will answer with.
@@ -56,17 +56,29 @@ def spans(bbox, epsg=None) -> tuple[float, float]:
     return span_x, span_y
 
 
-def request_boxes(bbox, resolution_m: float, epsg=None):
-    """A WGS84 box cut into requests no larger than `MAX_PIXELS` on a side."""
+def request_boxes(bbox, resolution_m: float, epsg=None,
+                  cap: int = MAX_PIXELS) -> list[tuple[float, float, float, float]]:
+    """A WGS84 box cut into requests no larger than `cap` pixels on a side.
+
+    The cut is even in degrees. Far from its central meridian a projected grid is turned against
+    them, so each piece's footprint keeps a share of the other axis that more pieces of this axis
+    do not shrink. Every piece is measured as `output_size` will measure it, and while one is over
+    the cap the cut is made finer on both axes, which shrinks that share too.
+    """
 
     west, south, east, north = bbox
     span_x, span_y = spans(bbox, epsg)
-    nx = max(1, math.ceil(span_x / resolution_m / MAX_PIXELS))
-    ny = max(1, math.ceil(span_y / resolution_m / MAX_PIXELS))
-    for i in range(ny):
-        for j in range(nx):
-            yield (west + (east - west) * j / nx, south + (north - south) * i / ny,
-                   west + (east - west) * (j + 1) / nx, south + (north - south) * (i + 1) / ny)
+    nx = max(1, math.ceil(span_x / resolution_m / cap))
+    ny = max(1, math.ceil(span_y / resolution_m / cap))
+    while True:
+        boxes = [(west + (east - west) * j / nx, south + (north - south) * i / ny,
+                  west + (east - west) * (j + 1) / nx, south + (north - south) * (i + 1) / ny)
+                 for i in range(ny) for j in range(nx)]
+        measured = [spans(box, epsg) for box in boxes]
+        if all(round(x / resolution_m) <= cap and round(y / resolution_m) <= cap
+               for x, y in measured):
+            return boxes
+        nx, ny = nx + 1, ny + 1
 
 
 def pixels(count: float, what: str) -> int:
@@ -146,6 +158,11 @@ def projected_box(box, epsg: int):
     return (lo_x, lo_y, hi_x, hi_y), (hi_x - lo_x, hi_y - lo_y)
 
 
+# A service that answers "too many requests" on a 200: Kartverket's gateway says
+# "[99][Interceptor] Overforbruk på kort tid. Vent litt, prøv igjen", so it is retried after a wait.
+BUSY = (b"[Interceptor]",)
+
+
 def raster_bytes(url: str, what: str) -> bytes:
     """One raster from a service, or a refusal that quotes what came back instead.
 
@@ -155,7 +172,12 @@ def raster_bytes(url: str, what: str) -> bytes:
     reads its token out of the URL, so the URL is not something to put in a message.
     """
 
-    body = http_get(url, what=what, check=decode_tiff)
+    def check(body: bytes) -> None:
+        if any(mark in body[:400] for mark in BUSY):
+            raise OSError(f"the service asks to wait: {body[:300].decode('utf-8', 'replace')}")
+        decode_tiff(body)
+
+    body = http_get(url, what=what, check=check)
     if body[:4] not in TIFF_MAGIC:
         # These services answer an error with a 200 and an XML document that quotes the
         # request, token and all, so the body is redacted like any other message.
@@ -179,7 +201,17 @@ def unreadable(refusal: Refuse) -> bool:
 
 
 class TiledService(Source):
-    """A service that answers one box at a time, cached per request in the work directory."""
+    """A service that answers one box at a time, cached per request in the work directory.
+
+    `gap` is the least time between the starts of two requests of the whole prepare, for a server
+    that refuses a burst; a retry waits its own, longer delay. It needs the shared directory, which
+    every block of a prepare has. `cap` is the largest request side in pixels, below
+    `MAX_PIXELS` for a gateway that times out a large request.
+    """
+
+    def __init__(self, *args, gap: float = 0.0, cap: int = MAX_PIXELS, **kw):
+        super().__init__(*args, **kw)
+        self.gap, self.cap = gap, cap
 
     #: These services read a key out of the query, which `request` appends.
     credential_style = "query"
@@ -190,7 +222,7 @@ class TiledService(Source):
 
     def fetch(self, bbox, workdir) -> list[Path]:
         workdir.mkdir(parents=True, exist_ok=True)
-        boxes = list(request_boxes(bbox, self.resolution_m, self.epsg))
+        boxes = request_boxes(bbox, self.resolution_m, self.epsg, self.cap)
 
         def one(box) -> Path | None:
             name = self.request_name(box)
@@ -284,6 +316,8 @@ class TiledService(Source):
         url = self.url(box)
         if url is None:
             return None
+        if self.gap and self.shared is not None:
+            pace(self.shared / "pace" / self.key, self.gap)
         credential = self.credential.query() if self.credential else ""
         return raster_bytes(url + credential, f"{self.key} {box}")
 

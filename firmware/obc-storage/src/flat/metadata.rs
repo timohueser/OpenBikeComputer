@@ -5,7 +5,7 @@ use super::{
     StoreError, StoreId,
 };
 
-use obc_formats::assistant::{NavigatorCheckpoint, PayloadFingerprint, CHECKPOINT_LEN, CHECKPOINT_VERSION};
+use obc_formats::navigator::{NavigatorCheckpoint, PayloadFingerprint, CHECKPOINT_LEN, CHECKPOINT_VERSION};
 use obc_formats::trip_progress::{TripProgress, MAX_RECORDS, RECORD_LEN};
 
 pub const HEADER_LEN: usize = 32;

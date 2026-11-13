@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
+import { settings } from '../settings/settings.svelte';
 import { closureNote, closureStretches } from './route-closures';
 import type { RouteClosure } from './routing';
 import { decodeRoutes } from './route-answer';
@@ -32,5 +33,12 @@ describe('possible closures', () => {
         expect(note(closure('unclear', 'unknown'))).toBe('Access unclear (unknown) · 400 m');
         expect(note(closure('private', 'private'), closure('farm', 'agricultural;forestry'), closure('sidepath', 'use_sidepath'), closure('discouraged', 'discouraged')))
             .toBe('Private road · Farm or forest traffic only · Use the side path · Access discouraged · 400 m');
+    });
+
+    it('writes tenths of a mile, and at least 0.1 mi, for a rider on miles', () => {
+        settings.units = 'mi';
+        onTestFinished(() => { settings.units = 'km'; });
+        const note = (km: number) => closureNote([{ closures: [closure('seasonal', 'dec-mar')], coordinates: [], km }]);
+        expect([note(3.3), note(0.4), note(0.03)]).toEqual(['2.1 mi', '0.2 mi', '0.1 mi'].map(distance => `May be closed seasonally (Dec–Mar) · ${distance}`));
     });
 });

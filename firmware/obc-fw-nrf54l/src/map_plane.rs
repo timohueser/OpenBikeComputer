@@ -28,8 +28,8 @@ use embedded_graphics::pixelcolor::{raw::RawU16, Rgb565};
 use obc_app::InputPlane;
 // `Band` is the frame-absolute draw view the overlay drawer paints the hold bulge into.
 use obc_display::display_contracts::{OverlayPresenter, Presenter};
-use obc_display::ls021::{RowDamage, RowWindow, FRAME_H, FRAME_W};
-use obc_display::{Band, FbDevice64};
+use obc_display::ls021::{RowWindow, FRAME_H, FRAME_W};
+use obc_display::Band;
 use obc_render::RenderStats;
 
 use crate::ls021_flpr::{relaunch_flpr, Frame64, Ls021Flpr};
@@ -39,14 +39,14 @@ use crate::ls021_flpr::{relaunch_flpr, Frame64, Ls021Flpr};
 const OVL_ROWS: u16 = 12;
 
 // The "present the rows around a live bulge" discipline lives inside the self-diffing present: the
-// map plane presents with `damage_around(bulge window)`, which clips the bulge's rows out of the
-// spans it pushes and leaves them for `MapDisplay::present_bulge`.
+// map plane presents with the bulge's rows as `exclude`, which clips them out of the spans it
+// pushes and leaves them for `MapDisplay::present_bulge`.
 
 /// Draw a static boot fault when card bring-up fails before USB recovery is available.
 pub(crate) async fn show_boot_fault(display: &mut MapDisplay, fault: obc_app::BootFault) {
     let color_fn = |c: u16| Rgb565::from(RawU16::new(c));
     display.render_frame(|f| {
-        let mut fbdev = FbDevice64::new(f.bytes_mut(), FRAME_W as u32, FRAME_H as u32);
+        let mut fbdev = f.draw_target();
         obc_app::draw_boot_fault(&mut fbdev, FRAME_W as i32, FRAME_H as i32, color_fn, fault);
         RenderStats::default()
     });
@@ -73,7 +73,7 @@ pub(crate) async fn run_map_recovery(
         while crate::input_plane::CHORDS.try_receive().is_ok() {}
         if redraw || changed {
             display.render_frame(|f| {
-                let mut fbdev = FbDevice64::new(f.bytes_mut(), FRAME_W as u32, FRAME_H as u32);
+                let mut fbdev = f.draw_target();
                 recovery.draw(&mut fbdev, FRAME_W as i32, FRAME_H as i32, |c| Rgb565::from(RawU16::new(c)));
                 RenderStats::default()
             });
@@ -178,10 +178,11 @@ impl MapDisplay {
     }
 
     /// Self-diff the already-rendered resident frame to glass: the async half of the split, pushing
-    /// only the rows that changed since the last present. With a live bulge, presenting with
-    /// `damage_around(bulge window)` clips its rows out and leaves them for `present_bulge`,
-    /// because the full-frame scan would otherwise blank the bulge for its whole duration. Returns
-    /// `(reached_glass, push_us)`; `false` is a transport fault the caller retries. Rendering
+    /// only the rows that changed since the last present. With a live bulge, presenting with its
+    /// rows as `exclude` clips them out and leaves them for `present_bulge`, because the full-frame
+    /// scan would otherwise blank the bulge for its whole duration. Returns
+    /// `(reached_glass, push_us)`; `false` is a transport fault the caller retries, and after any
+    /// failed push the presenter pushes every row outside the bulge on the next present. Rendering
     /// between a [`render_frame`](Self::render_frame) and this push is impossible for anyone but the
     /// caller: both halves borrow the same owned `frame` field through `&mut self`.
     #[inline(always)]
@@ -197,14 +198,7 @@ impl MapDisplay {
         // `present_bulge` owns them. The await frees the M33 for the whole scan, and the shared
         // `&self.frame` borrow held across it is what guarantees the framebuffer stays untouched
         // while the FLPR reads it.
-        let ok = self.panel.present(&self.frame, RowDamage::SelfDiff { exclude: overlay_span }).await.is_ok();
-        if !ok {
-            // The push did not reach glass, but the self-diffing present already advanced its
-            // row-hash store to this frame, so the caller's latched retry would diff an identical
-            // frame against an up-to-date store and push nothing, stranding the rows that missed
-            // glass. Re-arm a full push.
-            self.panel.reset_diff();
-        }
+        let ok = self.panel.present(&self.frame, overlay_span).await.is_ok();
         let push_us = t_push.elapsed().as_micros();
         self.note_push(ok).await;
         (ok, push_us)
@@ -268,9 +262,9 @@ impl MapDisplay {
         let mut y = y0;
         while y < end {
             let rows = (end - y).min(OVL_ROWS);
-            let region = RowWindow { x0: 0, y0: y, w: FRAME_W as u16, rows };
+            let window = RowWindow { x0: 0, y0: y, w: FRAME_W as u16, rows };
             if panel
-                .present_overlay(frame, region, |band: &mut Band| {
+                .present_overlay(frame, window, |band: &mut Band| {
                     input_plane
                         .lock(|cell| cell.borrow().render_overlay(band, FRAME_W as f32, FRAME_H as f32, color_fn));
                 })
@@ -319,10 +313,9 @@ impl MapDisplay {
         );
         match relaunch_flpr().await {
             Ok(()) => {
-                // Fresh core, no frame history: the diff store may believe rows are on glass that
-                // never landed. Force the next present to repaint every row, and tell the ride loop
-                // to schedule that present even if nothing else dirtied the map.
-                self.panel.reset_diff();
+                // Fresh core, and rows may have missed glass. The failed pushes that led here left
+                // the row store unconfirmed, so the next present repaints every row; tell the ride
+                // loop to schedule it even if nothing else dirtied the map.
                 self.relaunch_repaint = true;
                 defmt::info!("FLPR: relaunch OK — alive again, full repaint armed");
             }

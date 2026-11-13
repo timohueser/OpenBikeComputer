@@ -117,7 +117,7 @@ pub struct FindState {
     profile: crate::settings::BikeType,
     local: Option<(u8, u16)>,
     selected_review: bool,
-    invalid_visit: Option<obc_formats::assistant::PayloadFingerprint>,
+    invalid_visit: Option<obc_formats::navigator::PayloadFingerprint>,
     pub(crate) resume_offer: bool,
     /// The catalog row the standing checkpoint names, so the Resume card can say which route.
     pub(crate) resume_route: Option<u8>,
@@ -1135,8 +1135,8 @@ mod tests {
                 limit * 2
             );
             assert_eq!((0..PLAN_LIMIT as u8).filter(|&id| find.candidate(id, &nearby, &[]).is_some()).count(), limit);
-            for i in 0..limit * 2 {
-                find.costs[i] = cost(10_000 - i as u32 * 100, Some(100), 100);
+            for (i, costs) in find.costs[..limit * 2].iter_mut().enumerate() {
+                *costs = cost(10_000 - i as u32 * 100, Some(100), 100);
             }
             find.rank();
             assert_eq!(

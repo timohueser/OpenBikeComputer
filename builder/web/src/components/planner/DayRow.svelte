@@ -7,6 +7,8 @@
     import { kindLabel, sleepIcon } from '../../lib/planner/search/presentation';
     import { dayStops, duration, planView, type ItineraryDay, type RoutePoint, type Trip, type Day } from '../../lib/planner/editor';
     import type { RoutingLine } from '../../lib/planner/routing';
+    import { distanceIn, heightIn, heightUnit } from '../../lib/settings/format';
+    import { settings } from '../../lib/settings/settings.svelte';
 
     let {
         trip, line, day, days, theme, scale, expanded, choosing, conflict, selectedId, revealId, hoveredId = null, onHover, calendar,
@@ -79,9 +81,9 @@
         <span class="badge">{day.number}</span>
         <span class="title">
             <strong>Day {day.number}</strong>
-            <small>{duration(day.hours)} · ↑ {ascentKnown ? day.ascent : '—'} m · ↓ {ascentKnown ? day.descent : '—'} m{day.pinned?.placeKind ? ` · ${kindLabel(day.pinned.placeKind)}` : ''}</small>
+            <small>{duration(day.hours)} · ↑ {ascentKnown ? Math.round(heightIn(day.ascent)) : '—'} {heightUnit()} · ↓ {ascentKnown ? Math.round(heightIn(day.descent)) : '—'} {heightUnit()}{day.pinned?.placeKind ? ` · ${kindLabel(day.pinned.placeKind)}` : ''}</small>
         </span>
-        <span class="distance">{day.distance.toFixed(1)}<small>km</small></span>
+        <span class="distance">{distanceIn(day.distance * 1000).toFixed(1)}<small>{settings.units}</small></span>
         <Icon name="chevron" size={14} />
         </span>
     <span class="bar" aria-hidden="true">
@@ -95,11 +97,11 @@
     {#if expanded}
         <div class="body">
             <h3>Stops along the day</h3>
-            {#if stops.length}<div class="stop"><span class="dot"></span><span>{start}</span><small>0 km</small></div>{/if}
+            {#if stops.length}<div class="stop"><span class="dot"></span><span>{start}</span><small>0 {settings.units}</small></div>{/if}
             {#each stops as { point, km } (point.id)}
                 <button type="button" class="stop" class:chosen={selectedId === point.id || hoveredId === point.id} class:flash={revealId === point.id} onmouseenter={() => onHover?.(point.id)} onmouseleave={() => onHover?.(null)} onfocus={() => onHover?.(point.id)} onblur={() => onHover?.(null)} onclick={() => onInspect(point)} {@attach reveal(point.id)}>
                     <Icon name={stopKinds[point.kind].icon} size={15} /><span>{point.label}</span>
-                    <small>{stopKinds[point.kind].label} · at {km.toFixed(1)} km</small>
+                    <small>{stopKinds[point.kind].label} · at {distanceIn(km * 1000).toFixed(1)} {settings.units}</small>
                 </button>
             {/each}
             {#if last || day.pinned}
@@ -108,7 +110,7 @@
                 </button>
             {/if}
             {#if stops.length && !last && !day.pinned}
-                <button type="button" class="stop end" onclick={onShowEnd}><Icon name="camp" size={15} /><span>Suggested day end<small>Choose an overnight below</small></span><small>{day.distance.toFixed(1)} km</small></button>
+                <button type="button" class="stop end" onclick={onShowEnd}><Icon name="camp" size={15} /><span>Suggested day end<small>Choose an overnight below</small></span><small>{distanceIn(day.distance * 1000).toFixed(1)} {settings.units}</small></button>
             {/if}
             <p class="help">{stops.length ? 'Click the map to add a stop. Drag the route to reshape it.' : 'No stops yet. Click the map to add one.'}</p>
             {#if choosing && !last}

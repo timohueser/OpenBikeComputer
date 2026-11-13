@@ -2,7 +2,7 @@
     import type { Snippet } from 'svelte';
     import DrawerTitle from './DrawerTitle.svelte';
     import Surface from './PlannerSurface.svelte';
-    import Segmented from './Segmented.svelte';
+    import Segmented from '../../lib/ui/Segmented.svelte';
     import TripRow from './TripRow.svelte';
     import Icon from './PlannerIcon.svelte';
     import { formatGrade, gradeBand, gradeBands, profileGrades } from '../../lib/planner/grade-data';
@@ -13,6 +13,8 @@
     import { axisColumn, axisLeft, axisPieces, axisRest, axisProgress, axisWidth, type ProfileAxis } from '../../lib/planner/profile-axis';
     import { addDays, weekdayLabel } from '../../lib/planner/layers/data-layer';
     import { sleepIcon } from '../../lib/planner/search/presentation';
+    import { distanceIn, heightIn, heightUnit } from '../../lib/settings/format';
+    import { settings } from '../../lib/settings/settings.svelte';
     type ProfileDay = Pick<Day, 'number' | 'from' | 'to' | 'pinned' | 'split'> & Partial<Pick<Day, 'distance' | 'hours'>>;
 
     let {
@@ -170,7 +172,7 @@
         <Segmented compact label="Profile range" value={range} onChange={(value) => range = value}
             options={[{ value: 'map', label: focus?.label ?? 'Map view' }, { value: 'route', label: 'Whole route' }]} />
         <label class="grade-toggle"><input type="checkbox" checked={showGrade} onchange={(event) => gradeChoice = event.currentTarget.checked} />Grade</label>
-        <span class="distance">{(span * total).toFixed(1)} km</span>
+        <span class="distance">{distanceIn(span * total * 1000).toFixed(1)} {settings.units}</span>
         {#if trip && onTrip && !singleRoute}<div class="trip"><TripRow {trip} onChange={onTrip} /></div>{/if}
         {/if}
     </div>
@@ -191,15 +193,15 @@
                 {@const start = Math.max(day.from, shown.from)}
                 <div class="label" style:left={axisLeft(axis, start, true)} style:width={axisWidth(axis, start, Math.min(endAt(day), shown.to))} style:--day-color={dayColor(day.number, theme)}>
                     <span><strong>Day {dayLabels[day.number] ?? day.number}</strong>{#if trip?.startDate}<span>{dayDate(day)}</span>{/if}</span>
-                    {#if day.distance !== undefined && day.hours !== undefined}<small>{Math.round(day.distance)} km · {duration(day.hours)}</small>{/if}
+                    {#if day.distance !== undefined && day.hours !== undefined}<small>{Math.round(distanceIn(day.distance * 1000))} {settings.units} · {duration(day.hours)}</small>{/if}
                 </div>
             {/each}
         </div>
     {/if}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="plot" bind:this={plot} onpointermove={track} onpointerleave={leave} onpointerup={release} onpointercancel={() => drag = null}>
-        <span class="height" style:top="5%">{high} m</span>
-        <span class="height" style:top="94%">{low} m</span>
+        <span class="height" style:top="5%">{Math.round(heightIn(high))} {heightUnit()}</span>
+        <span class="height" style:top="94%">{Math.round(heightIn(low))} {heightUnit()}</span>
         {#each axisPieces(axis) as [start, end], i (i)}
         <svg style:left={axisLeft(axis, start, true)} style:width={axisWidth(axis, start, end)} viewBox={`${start * 1000} 0 ${Math.max(1e-6, end - start) * 1000} 112`} preserveAspectRatio="none"
             role={i ? undefined : 'img'} aria-hidden={i ? 'true' : undefined} aria-label={i ? undefined : `${focus && range === 'map' ? focus.label : 'Route'} elevation profile. Distances start at ${origin > 0 ? 'the day start' : 'the route start'}. The shaded band is the suggested overnight stretch.`}>
@@ -233,7 +235,7 @@
         {/each}
         {#if hover !== null}
             <span class="readout" style:left={axisLeft(axis, hover)}>
-                <span class="chip" class:flip={(hover - shown.from) / span > .8}>{((hover - origin) * total).toFixed(1)} km{origin > 0 ? ` into ${focus!.label.toLowerCase()}` : ''} · {hoverHeight === null ? 'Elevation unknown' : `${Math.round(hoverHeight)} m`} · {formatGrade(hoverGrade)}{#if hoverPushing && !walking} · Push bike{:else if hoverPushing === null} · Access unverified{/if}</span>
+                <span class="chip" class:flip={(hover - shown.from) / span > .8}>{distanceIn((hover - origin) * total * 1000).toFixed(1)} {settings.units}{origin > 0 ? ` into ${focus!.label.toLowerCase()}` : ''} · {hoverHeight === null ? 'Elevation unknown' : `${Math.round(heightIn(hoverHeight))} ${heightUnit()}`} · {formatGrade(hoverGrade)}{#if hoverPushing && !walking} · Push bike{:else if hoverPushing === null} · Access unverified{/if}</span>
             </span>
         {/if}
         {#each handles as { day, left } (day.number)}
@@ -253,8 +255,8 @@
         {/each}
     </div>
     <div class="axis">
-        <!-- Ticks less than 1 km apart need a decimal, or the labels repeat. -->
-        {#each ticks as { t, at }, i (i)}<span style:left={axisLeft(axis, at)} style:translate={`${-t * 100}%`}>{((at - origin) * total).toFixed(span * total / 4 < 1 ? 1 : 0)} km</span>{/each}
+        <!-- Ticks less than 1 unit apart need a decimal, or the labels repeat. -->
+        {#each ticks as { t, at }, i (i)}<span style:left={axisLeft(axis, at)} style:translate={`${-t * 100}%`}>{distanceIn((at - origin) * total * 1000).toFixed(distanceIn(span * total * 1000) / 4 < 1 ? 1 : 0)} {settings.units}</span>{/each}
     </div>
     <Surface {walking} line={lineData} from={shown.from} to={shown.to} rests={axis.rests} onHover={inspect} />
     {@render strip?.(shown.from, shown.to, axis.rests, inspect)}
