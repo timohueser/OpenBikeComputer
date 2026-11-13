@@ -84,17 +84,18 @@ test('the cover shows whole with the map beside it, and with the map in its corn
       points: { x: Float32Array.from(points.x), y: Float32Array.from(points.y), eye: Uint8Array.from(points.eye) } });
   }, { image, summary, points });
 
-  // This page has no bottom card, so its picture is tall.
-  await page.setViewportSize({ width: 1920, height: 900 });
+  // This page has no bottom card, so its picture is tall: the cover is lower than the picture and leaves a third to the map.
+  await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto('/planner.html#/route/covered');
   const cover = page.locator('.slot.cover'), map = page.locator('.slot.map');
   await expect(cover.locator('canvas')).toBeVisible();
-  const [coverBox, mapBox] = [await cover.boundingBox(), await map.boundingBox()];
+  const [coverBox, mapBox, pictureBox] = [await cover.boundingBox(), await map.boundingBox(), await page.locator('.picture').boundingBox()];
   // The shape of the stored covers, 1920 × 1280.
   expect(coverBox.width / coverBox.height).toBeCloseTo(1.5, 1);
   expect(mapBox.x).toBeGreaterThanOrEqual(coverBox.x + coverBox.width + 13);
-  expect(mapBox.width).toBeGreaterThanOrEqual(260);
+  expect(mapBox.width).toBeCloseTo(pictureBox.width / 3, -1);
   expect(mapBox.height).toBeCloseTo(coverBox.height, 0);
+  expect(coverBox.height).toBeLessThan(pictureBox.height - 100);
   await expect(page.getByRole('button', { name: 'Show the map large' })).toHaveCount(0);
 
   await page.setViewportSize({ width: 900, height: 900 });

@@ -7,10 +7,11 @@
     import type { Library } from '../../lib/library/store';
     import { creditsWith } from '../../lib/planner/map-setup';
 
-    /** The large picture of a detail page: the whole cover at the full height with the map beside it, or the map alone
-     * with no cover. When the map has too little room beside the cover, the cover is large and cut, and the map is small in
-     * a corner; a click on the small one swaps them, and only the large one shows the pins. The pointer is a share of the
-     * summary line from 0 to 1, so the cover and the map mark the same place. */
+    /** The large picture of a detail page: the whole cover with the map beside it at the same height, or the map alone
+     * with no cover. The cover is as high as the frame, but no higher than leaves a third of the width to the map; the
+     * place under a lower picture stays free. When the map would get less than MAP_PX, the cover is large and cut, and
+     * the map is small in a corner; a click on the small one swaps them, and only the large one shows the pins. The
+     * pointer is a share of the summary line from 0 to 1, so the cover and the map mark the same place. */
     let { library, id, summary, ride = false, pins = [], mark, onpoint }: {
         library: Library;
         /** The id of a route or the key of a ride. */
@@ -33,7 +34,8 @@
     let width = $state(0), height = $state(0);
     // The cards have a border of 1 px. A CSS container query cannot compare the width with a share of the height, so
     // the part measures its box.
-    const coverWidth = $derived(Math.round((height - 2) * WIDTH / HEIGHT) + 2);
+    const coverHeight = $derived(Math.min(height, Math.round((width * 2 / 3 - GAP_PX - 2) * HEIGHT / WIDTH) + 2));
+    const coverWidth = $derived(Math.round((coverHeight - 2) * WIDTH / HEIGHT) + 2);
     const side = $derived(covered && width - coverWidth - GAP_PX >= MAP_PX);
 
     $effect(() => {
@@ -54,24 +56,34 @@
 </script>
 
 <div class="picture" class:side class:map-large={!side && mapLarge} bind:clientWidth={width} bind:clientHeight={height}
-    style:--cover-width={`${coverWidth}px`} style:--map-left={`${coverWidth + GAP_PX}px`}>
-    {#if covered}
-        <div class="slot cover">
-            <Cover {library} {id} pins={side || !mapLarge ? pins : []} mark={mark === undefined ? undefined : mark * summary.lengthM}
-                onpoint={metres => onpoint(metres === null || !summary.lengthM ? null : metres / summary.lengthM)} />
-            {#if !side && mapLarge}<button type="button" class="swap" aria-label="Show the picture large" onclick={() => swapped = false}></button>{/if}
+    style:--cover-width={`${coverWidth}px`} style:--map-left={`${coverWidth + GAP_PX}px`} style:--cover-height={`${coverHeight}px`}>
+    <div class="cards">
+        {#if covered}
+            <div class="slot cover">
+                <Cover {library} {id} pins={side || !mapLarge ? pins : []} mark={mark === undefined ? undefined : mark * summary.lengthM}
+                    onpoint={metres => onpoint(metres === null || !summary.lengthM ? null : metres / summary.lengthM)} />
+                {#if !side && mapLarge}<button type="button" class="swap" aria-label="Show the picture large" onclick={() => swapped = false}></button>{/if}
+            </div>
+            <Credits {credits} side="left" />
+        {/if}
+        <div class="slot map">
+            <RouteMap {summary} {ride} pins={side || mapLarge ? pins : []} {mark} {onpoint} />
+            {#if !side && !mapLarge}<button type="button" class="swap" aria-label="Show the map large" onclick={() => swapped = true}></button>{/if}
         </div>
-        <Credits {credits} side="left" />
-    {/if}
-    <div class="slot map">
-        <RouteMap {summary} {ride} pins={side || mapLarge ? pins : []} {mark} {onpoint} />
-        {#if !side && !mapLarge}<button type="button" class="swap" aria-label="Show the map large" onclick={() => swapped = true}></button>{/if}
     </div>
 </div>
 
 <style>
     .picture {
         position: relative;
+    }
+    .cards {
+        position: absolute;
+        inset: 0;
+    }
+    .side .cards {
+        bottom: auto;
+        height: var(--cover-height);
     }
     /* A card fills the picture, or with `side` the cover is on the left and the map beside it; the small place is a
      * corner of the large card. */
