@@ -1,5 +1,6 @@
 //! The culverts of line water under ways on the ground, as candidates of the face slice: a zone where the water
-//! does not show. A ford is a culvert too: water at grade under a way. A road's or a railway's zone is the water's
+//! does not show. A ford over water that a culvert carries (no wider than `culvert_width_m`) is a culvert too, as
+//! the bake lays it; a wider ford stays a ford, with no zone. A road's or a railway's zone is the water's
 //! band under the way and out over its verge, and as far past it as the way's fill stands more than the mouth's
 //! height over the water, at least as far as the fill falls by that height. The water's face ends there and casts
 //! no cone into the zone (`records`), so the ground of the slopes over it rises from the water's sides only: the
@@ -20,6 +21,7 @@ use crate::faces::rules::Rank;
 use crate::frame::metres_per_unit;
 use crate::graph::{Crossing, CrossingKind, Family, Level, WalkPoint};
 use crate::sections::{Reach, HALF_MAX_M};
+use crate::CellInput;
 
 /// A zone reads the water this far along from its crossing: it holds a way's verge and fill past it at a
 /// crossing angle down to about 30°.
@@ -63,7 +65,12 @@ pub fn reach_rows(bank_m: f64, culvert_max_m: f64) -> Vec<Reach> {
 
 /// The zones of the culverts whose crossing lies in `bx` (cell units), over the lines of the faces, and their
 /// mouths: where the water's middle line meets a zone's outline, with water in front of it.
-pub(super) fn candidates(ctx: &Ctx, lines: &[WayLine], bx: [i32; 4]) -> (Vec<Cand>, Vec<CulvertMouth>) {
+pub(super) fn candidates(
+    ctx: &Ctx,
+    input: &CellInput,
+    lines: &[WayLine],
+    bx: [i32; 4],
+) -> (Vec<Cand>, Vec<CulvertMouth>) {
     let g = ctx.graph;
     let of_way: BTreeMap<u32, usize> = lines.iter().enumerate().map(|(i, l)| (l.way, i)).collect();
     let (mut out, mut mouths) = (Vec::new(), Vec::new());
@@ -75,6 +82,12 @@ pub(super) fn candidates(ctx: &Ctx, lines: &[WayLine], bx: [i32; 4]) -> (Vec<Can
         };
         let (Some(&lw), Some(&ls)) = (of_way.get(&w), of_way.get(&s)) else { continue };
         if !matches!(g.ways[w as usize].family, Family::Road | Family::Rail) || !lines[ls].sec.water {
+            continue;
+        }
+        let part = &g.parts[g.ways[s as usize].part as usize];
+        let feature = &input.features[part.feature.0 as usize];
+        let row = ctx.rules.sections.water(&feature.kind, &feature.tags);
+        if c.kind == CrossingKind::Ford && row.width_m > row.culvert_width_m {
             continue;
         }
         let (way, water) = (&lines[lw].sec, &lines[ls].sec);
@@ -128,7 +141,15 @@ pub(super) fn candidates(ctx: &Ctx, lines: &[WayLine], bx: [i32; 4]) -> (Vec<Can
         out.iter().all(|z| winding(&z.rings, q2) == 0)
     };
     mouths.retain(front);
-    (out, mouths)
+    // Two zones whose outlines meet at the water (a road beside a railway) give one mouth there.
+    let mut kept: Vec<CulvertMouth> = Vec::new();
+    for m in mouths {
+        let apart = |k: &CulvertMouth| libm::hypot(k.at[0] - m.at[0], k.at[1] - m.at[1]) * mpu(ctx, m.at);
+        if kept.iter().all(|k| apart(k) >= MOUTH_FRONT_M) {
+            kept.push(m);
+        }
+    }
+    (out, kept)
 }
 
 /// A mouth stands where the water this far in front of it lies in no zone (metres).

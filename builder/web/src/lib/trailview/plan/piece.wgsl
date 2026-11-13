@@ -192,7 +192,9 @@ fn slot_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
 // outline's direction and the water's half-width): the end of a concrete pipe as wide as the water, which stands
 // MOUTH_FRONT_M out of the way's bank, its shell MOUTH_SHELL_M thick and its inside dark at the bank. Its frame: x
 // along the outline, y into the zone, z up from the water. The pipe's middle lies under the water, so the water runs
-// into it, and it runs along the water. A mouth lower than MOUTH_LOW_M draws no model.
+// into it, and it runs along the water. A mouth lower than MOUTH_LOW_M draws no model. The pipe is as wide as the
+// water (`faces::CulvertMouth`): at a crossing and a ford at most `culvert_width_m`, at a mapped culvert and a
+// tunnel's start at most twice `HALF_MAX_M`.
 const MOUTH_SIDES: u32 = 12u;
 const MOUTH_QUADS: u32 = 4u * MOUTH_SIDES;
 const MOUTH_FRONT_M: f32 = 0.25;
@@ -213,10 +215,14 @@ fn mouth_rim(f: MouthFrame, t: f32, grow: f32, y: f32) -> vec3f {
     return vec3f((f.rx + grow) * cos(t), y, f.zc + (f.rz + grow) * sin(t));
 }
 
+// The point of the pipe at y behind the rim's point p of its front, along the water.
+fn mouth_back(f: MouthFrame, p: vec3f, y: f32) -> vec3f {
+    return vec3f(p.x + (y - p.y) / f.d.y * f.d.x, y, p.z);
+}
+
 // The rim's point at the pipe's dark end, just in front of the zone.
 fn mouth_end(f: MouthFrame, p: vec3f) -> vec3f {
-    let run = (MOUTH_FRONT_M - 0.02) / f.d.y;
-    return vec3f(p.x + run * f.d.x, -0.02, p.z);
+    return mouth_back(f, p, -0.02);
 }
 
 @vertex
@@ -257,7 +263,9 @@ fn culvert_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
             p = array(mouth_rim(f, t0, 0.0, y0), mouth_rim(f, t0, shell, y0), mouth_rim(f, t1, shell, y0), mouth_rim(f, t1, 0.0, y0));
         }
         case 1u: {
-            p = array(mouth_rim(f, t0, shell, y0), mouth_rim(f, t0, shell, 0.1), mouth_rim(f, t1, shell, 0.1), mouth_rim(f, t1, shell, y0));
+            let a = mouth_rim(f, t0, shell, y0);
+            let b = mouth_rim(f, t1, shell, y0);
+            p = array(a, mouth_back(f, a, 0.1), mouth_back(f, b, 0.1), b);
             n = normalize(vec3f(f.rz * cos(tm), 0.0, f.rx * sin(tm)));
         }
         case 2u: {

@@ -1228,7 +1228,7 @@ fn candidates<'a>(
     if level == 0 {
         cands.extend(platform::candidates(&ctx, input, bx, &mut stats));
         // A culvert's zone lies within `REACH_M` of its crossing.
-        let (zones, found) = culverts::candidates(&ctx, &lines, reach(culverts::REACH_M));
+        let (zones, found) = culverts::candidates(&ctx, input, &lines, reach(culverts::REACH_M));
         cands.extend(zones);
         mouths = found;
     }

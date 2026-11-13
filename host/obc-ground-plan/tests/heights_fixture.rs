@@ -43,7 +43,7 @@ const EDGE_MAX: usize = 102;
 /// as their need, the faces' rings with a vertex at each tile line, and the banks of line water, whose cuts
 /// climb as steep as the terrain asks beside a gorge, its culverts, and the ground under the decks' ceilings:
 /// the count must not grow.
-const STEEP_MAX: usize = 2470;
+const STEEP_MAX: usize = 2469;
 /// A no-room wall's height that changes along it by more than this per metre is a step in its top
 /// (`check::wall_steps`): pairs of points measured on the revision 16 fixture with the slope and the wall of
 /// each point from the need at its foot (`heights::fit`) and line water: the count must not grow.
@@ -54,7 +54,7 @@ const WALL_STEPS_MAX: usize = 17;
 /// moves piece ends by a few units), the crease where a deck's ceiling takes the ground, and line water, whose
 /// curved banks end many short pieces, and its culverts: the count must not grow.
 const SLOPE_STEP_GRADE: f64 = 0.1;
-const SLOPE_STEPS_MAX: usize = 12986;
+const SLOPE_STEPS_MAX: usize = 12975;
 /// A tile's water vertex whose level lies more than this off the terrain at the vertex has a level that
 /// the bake holds away from its line (a pit, or the low ground beside it): the design keeps the water at
 /// most `freeboard_m` (0.8 m) under its bank and `depth_m` (1 m) deep.
@@ -65,12 +65,14 @@ const LEVEL_REACH_M: f64 = 20.0;
 /// The faults near such levels (steps, edge steps, steep pairs, wall-top steps, slope steps), measured on
 /// the revision 16 fixture: the counts must not grow.
 const LEVEL_MAX: [usize; 5] = [10, 85, 10882, 0, 1637];
-/// Steps that another line's cone holds higher than the paved side's wall cap (`check::held_over_cap`), measured
-/// the same way with a rail bed's fill counted past its wall cap and line water: all at the edge of a class
-/// without a wall, most where the two outlines leave no room for the steep face (the gap is printed). Line water
-/// has no wall, so a way's fill that holds the bank over a waterline counts: most of them lie at a water or bank
-/// face. The count must not grow.
-const HELD_OVER_CAP_MAX: usize = 717;
+/// Steps that another line's cone holds higher than the paved side's wall cap (`check::held_over_cap`) between
+/// two ways, measured the same way with a rail bed's fill counted past its wall cap: all at the edge of a class
+/// without a wall, most where the two outlines leave no room for the steep face (the gap is printed): the count
+/// must not grow.
+const HELD_OVER_CAP_MAX: usize = 74;
+/// Such steps where a side is line water, which has no wall (a way's fill that holds a bank over a waterline, or a
+/// bank's fill over a way's edge), counted apart and measured the same way: the count must not grow.
+const HELD_WATER_MAX: usize = 639;
 /// The grid of the ground under the decks, metres.
 const DECK_GRID_M: f64 = 0.5;
 /// An end face may fall short of the deck's depth and the gap by this much, where its paved end's height is not
@@ -211,9 +213,20 @@ fn every_fixture_cell_keeps_its_steps_on_face_edges_and_agrees_with_its_neighbou
         under[3],
         held.len()
     );
+    let (wet, held): (Vec<_>, Vec<_>) = held.into_iter().partition(|(_, h)| h.water);
     for (key, h) in &held {
         println!("  held over the cap {key:?} {:?}: {:.2} m, gap {:.2} m, caps {:?}", h.at, h.height, h.gap, h.caps);
     }
+    let mut heights: Vec<f64> = wet.iter().map(|(_, h)| h.height).collect();
+    heights.sort_by(f64::total_cmp);
+    let share = |q: f64| heights.get(((heights.len() as f64 - 1.0) * q) as usize).copied().unwrap_or(0.0);
+    println!(
+        "held over the cap at line water {}: height p50 {:.2} m, p90 {:.2} m, max {:.2} m",
+        wet.len(),
+        share(0.5),
+        share(0.9),
+        share(1.0)
+    );
     assert!(inside <= INSIDE_MAX, "{inside} steps inside faces");
     assert!(edges <= EDGE_MAX, "{edges} steps at label edges with no rule");
     assert!(walls <= WALL_STEPS_MAX, "{walls} wall-top steps over {WALL_STEP_GRADE} m/m");
@@ -230,6 +243,7 @@ fn every_fixture_cell_keeps_its_steps_on_face_edges_and_agrees_with_its_neighbou
     assert_eq!(under[3], 0, "points at a joint of two decks under no deck");
     assert!(short.iter().filter(|&&m| m > SHORT_M).count() <= SHORT_MAX, "end faces short by over {SHORT_M} m");
     assert!(held.len() <= HELD_OVER_CAP_MAX, "{} held steps over the cap", held.len());
+    assert!(wet.len() <= HELD_WATER_MAX, "{} held steps over the cap at line water", wet.len());
     let shared: Vec<_> = lines.values().filter(|v| v.len() == 2).collect();
     assert!(shared.len() > 100_000, "{} shared points", shared.len());
     let differ: Vec<_> = shared.iter().filter(|v| v[0].h != v[1].h || v[0].t != v[1].t).collect();

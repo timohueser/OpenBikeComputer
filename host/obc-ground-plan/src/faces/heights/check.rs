@@ -278,13 +278,14 @@ pub fn edge_steps(words: &[u32], terrain: &Terrain, cell: CellKey, grid_m: f64) 
 
 /// A step that another line's cone holds higher than the paved side's wall cap (`Step::HeldOverCap`): where it
 /// stands, its height, the metres from it to the outline of the line that holds it (infinite where q's bin lists
-/// none of its edges), and the caps of the paved side's host and of that line.
+/// none of its edges), the caps of the paved side's host and of that line, and whether either is line water.
 #[derive(Clone, Debug)]
 pub struct HeldOver {
     pub at: [f64; 2],
     pub height: f64,
     pub gap: f64,
     pub caps: [f64; 2],
+    pub water: bool,
 }
 
 /// The `HeldOverCap` steps at the label edges of a grid of `grid_m` over the cell, found as `edge_steps` finds
@@ -324,6 +325,7 @@ pub fn held_over_cap(words: &[u32], terrain: &Terrain, cell: CellKey, grid_m: f6
                 height: (paved.h - slope.h).abs(),
                 gap,
                 caps: [cap(paved.owner), cap(slope.owner)],
+                water: [paved.owner, slope.owner].iter().any(|&l| l != u32::MAX && bl.line(l as usize).water),
             });
         }
     }
