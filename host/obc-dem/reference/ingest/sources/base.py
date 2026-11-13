@@ -13,6 +13,7 @@ and a redirect that leaves the host loses the `Authorization` header.
 """
 
 import base64
+import fcntl
 import gzip
 import hashlib
 import http.client
@@ -163,7 +164,11 @@ class DropAuthOnRedirect(urllib.request.HTTPRedirectHandler):
         return onward
 
 
+# One name for every request, also GDAL's: a gateway can rate a client it does not know as a bot,
+# and Defra allows a bot a twentieth of what it allows an automated service.
+USER_AGENT = "OpenBikeComputer-terrain-prepare/1 (+https://openbikecomputer.com)"
 OPENER = urllib.request.build_opener(DropAuthOnRedirect)
+OPENER.addheaders = [("User-Agent", USER_AGENT)]
 
 
 def gzipped(headers) -> bool:
@@ -172,12 +177,17 @@ def gzipped(headers) -> bool:
     return (headers.get("Content-Encoding") or "").strip().lower() in ("gzip", "x-gzip")
 
 
-def with_retry(attempt, what: str, absent=(), gone=()):
+class Stopped(Refuse):
+    """A server that refused the client itself, such as a gateway's 429: a retry makes it worse."""
+
+
+def with_retry(attempt, what: str, absent=(), gone=(), stop=()):
     """Run one request, retrying what is worth retrying and refusing what is not.
 
     `absent` is the set of status codes that mean "there is nothing here", which for a
     grid of tiles is a coverage edge rather than a fault; those come back as `None`. `gone` is
-    the set of status codes that also come back as `None`, but only after every retry.
+    the set of status codes that also come back as `None`, but only after every retry. `stop` is
+    the set of status codes that raise `Stopped` at once.
     """
 
     for delay in (*RETRY_DELAYS, None):
@@ -196,6 +206,8 @@ def with_retry(attempt, what: str, absent=(), gone=()):
                 except zlib.error:
                     pass
             body = raw[:400].decode("utf-8", "replace").replace("\n", " ").strip()
+            if error.code in stop:
+                raise Stopped(redact(f"{what}: HTTP {error.code} — {body}")) from error
             # Some faults of a server ride on a 4xx: the LGL WCS sends `NoApplicableCode` as a
             # 404 while it is overloaded, and the IGN WMS sends a 408 while it is busy and,
             # from some of its nodes, `LayerNotDefined` for a layer of its capabilities. So
@@ -297,6 +309,20 @@ def each(one, items, workers: int) -> list:
         return list(pool.map(guarded, items))
 
 
+def pace(folder: Path, gap: float) -> None:
+    """Wait until `gap` seconds have passed since any block of the prepare started a request in
+    `folder`, then mark this start. The blocks are separate processes, so a file lock orders them."""
+
+    folder.mkdir(parents=True, exist_ok=True)
+    asked = folder / "asked"
+    with (folder / "pace").open("w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if asked.exists():
+            # At most `gap`: a clock that stepped back must not stall every block.
+            time.sleep(min(gap, max(0.0, asked.stat().st_mtime + gap - time.time())))
+        asked.touch()
+
+
 def http_get(url: str, headers=None, what: str | None = None, data: bytes | None = None,
              check=None) -> bytes:
     """One response body, whole; a POST of `data` when it is given.
@@ -325,14 +351,15 @@ def http_get(url: str, headers=None, what: str | None = None, data: bytes | None
 
 
 def http_download(url: str, path: Path, optional: bool = False, headers=None,
-                  what: str | None = None, listed: bool = False, relink=None) -> Path | None:
+                  what: str | None = None, listed: bool = False, relink=None, stop=()) -> Path | None:
     """Stream one file to disk, which is how a bulk product of several gigabytes arrives.
 
     The bytes land beside the name and are moved onto it at the end, so a download that
     was cut short is never mistaken for a complete one by the next run. `optional` turns a
     404 into absence, which is what a grid square outside its state is. `listed` is a file that
     a catalogue names: its 404 is retried like a fault, and only then is absence. `relink` gives
-    the URL of each attempt after the first, for a link that answers one request only.
+    the URL of each attempt after the first, for a link that answers one request only. `stop` is
+    as in `with_retry`.
     """
 
     if path.exists():
@@ -367,7 +394,8 @@ def http_download(url: str, path: Path, optional: bool = False, headers=None,
         return path
 
     try:
-        return with_retry(once, what or url, absent=(404,) if optional else (), gone=(404,) if listed else ())
+        return with_retry(once, what or url, absent=(404,) if optional else (), gone=(404,) if listed else (),
+                          stop=stop)
     finally:
         part.unlink(missing_ok=True)
 

@@ -91,8 +91,13 @@ pub fn stop() {
     STOPPED.store(true, Ordering::Relaxed);
 }
 
-fn stopped(url: &str) -> Result<(), String> {
-    match STOPPED.load(Ordering::Relaxed) {
+/// Whether [`stop`] ran.
+pub fn stopped() -> bool {
+    STOPPED.load(Ordering::Relaxed)
+}
+
+fn unless_stopped(url: &str) -> Result<(), String> {
+    match stopped() {
         true => Err(format!("GET {url}: the run stopped; the next fetch resumes the download")),
         false => Ok(()),
     }
@@ -102,7 +107,7 @@ fn stopped(url: &str) -> Result<(), String> {
 fn pause(url: &str, delay: Duration) -> Result<(), String> {
     let end = Instant::now() + delay;
     loop {
-        stopped(url)?;
+        unless_stopped(url)?;
         let left = end.saturating_duration_since(Instant::now());
         if left.is_zero() {
             return Ok(());
@@ -485,7 +490,7 @@ impl Http {
     }
 
     fn attempt(&self, url: &str, part: &Path, validator: &Path, expect: &Expect) -> Result<(), Failure> {
-        stopped(url).map_err(Failure::Final)?;
+        unless_stopped(url).map_err(Failure::Final)?;
         let have = fs::metadata(part).map_or(0, |metadata| metadata.len());
         let saved = fs::read_to_string(validator).ok();
         // Without a validator or a digest, nothing would tell a changed file from the rest of the old one.
@@ -569,7 +574,7 @@ impl Http {
         let (mut received, mut reported) = (0u64, std::time::Instant::now());
         let retry = |grew: bool, why: String| if append && grew { Failure::Grew(why) } else { Failure::Retry(why) };
         loop {
-            stopped(url).map_err(Failure::Final)?;
+            unless_stopped(url).map_err(Failure::Final)?;
             let read = reader.read(&mut buffer).map_err(|e| retry(grew, format!("GET {url}: {e}")))?;
             if read == 0 {
                 break;

@@ -1,19 +1,53 @@
 # Regional route builder
 
-`obc data` builds the `planner/routing` layer of a region with this crate (`step::step`). The
-[package contract](../../specs/route-package.md) defines the output.
+`obc data` builds the `planner/routing` layer of a region with this crate, in four steps
+(`step.rs`). The [package contract](../../specs/route-package.md) defines the output.
 
 ## Build
 
 The step reads the OSM PBF files of the region and clips the graph at the region bounds. It does
-not fetch missing data. `data/planner.toml` lists the profiles. To build the layer again after a
-code change, run:
+not fetch missing data. The nodes of the input must come in ID order, as `osmium sort` writes
+them; else the import stops. `data/planner.toml` lists the profiles. To build the layer again after
+a code change, run:
 
 ```sh
 obc data update local --only planner/routing
 ```
 
 The step writes a new layer directory. Do not edit an installed package in place.
+
+The roads step prints the counts of the roads and turns, the costs step the manifest estimate.
+Each stops at a limit of the package format. A region whose manifest passes the limit of format 9
+fails in the costs step, after the source and the roads steps.
+
+## Layers
+
+The store keeps only the work layer of each step and options that a run used last (`cache`).
+
+| Step | Runs | Layer |
+| --- | --- | --- |
+| `planner/routing-source` | Pass 1, the node join, the way facts, the turn rules | `source/` |
+| `planner/routing-roads` | The walks of the roads with the terrain, the turn restrictions, the topology | `roads/` |
+| `planner/routing-costs` | The way bases, the road pass, the snap bits | `costs/` |
+| `planner/routing` | The landmarks, the package, the overlay index, the route catalog, the blocks and the routes | `routing/`, `blocks/`, `routes/` |
+
+| Change | Steps that run |
+| --- | --- |
+| A stop or a crash in a step | That step and the steps after it |
+| The profile list, or the revision of `planner/routing-costs` | Costs, package |
+| `region`, `countries`, `attribution` | Package |
+| The GLO-30 tiles or the reference, or the revision of `planner/routing-roads` | Roads, costs, package |
+| The OSM cut, the bounds, the router `FORMAT`, or the revision of `planner/routing-source` | All four |
+
+A change of the bytes of a work layer changes its format, of its content its revision. A column
+is one file of little-endian values; `layout.json` gives its type and count (`column::Layout`).
+The columns take, without the tags and the closure sets:
+
+| Layer | Bytes |
+| --- | --- |
+| `planner/routing-source` | 48 for each way, 24 for each node reference |
+| `planner/routing-roads` | 55 for each road, 12 for each shape point, 4 for each turn, 27 for each junction |
+| `planner/routing-costs` | For each profile, 8.125 for each road and 4 for each turn |
 
 ```sh
 obc test -p planner-router-build
@@ -43,12 +77,25 @@ The bake keeps its large tables in memory-mapped work files and sorts them on di
 | Setting | Value |
 | --- | --- |
 | Work folder | `OBC_DATA_WORK`, else `TMPDIR`, else the temporary folder of the system; `obc data` sets `TMPDIR` to a folder beside the output |
-| Bake folder | `obc-router-build-<process ID>-<n>` in the work folder, with the first free `n`; the bake removes it at the end, also after an error |
-| Sort run | 4 GiB, or `OBC_DATA_MEMORY_BYTES` when it is lower, at least 1 MiB; a value that is not a number of bytes stops the bake |
-| Disk need | About 5 GB per GB of PBF; Europe about 200 GB (estimated) |
+| Bake folder | `obc-router-build-<process ID>-<n>` in the work folder, with the first free `n`; a step removes it at the end, also after an error. A step moves the columns that it keeps into its layer by a rename |
+| Page budget | The smallest of the free memory of the bake's cgroup v2 or of a parent (`memory.max` less `anon`), `MemAvailable`, and `OBC_DATA_MEMORY_BYTES` less the bake's own `RssAnon`; read once at the start, and printed with its source; a value that is not a number of bytes stops the bake |
+| Sort run | A quarter of the page budget, from 1 MiB to 4 GiB |
+| Order buckets | The roads of one bucket, with their shapes before and after the terrain, take about one sort run; 1 to 256 buckets |
+| Threads | All cores, or `RAYON_NUM_THREADS`; the bytes of the package are the same for each thread count |
+| Road pass | The profiles of one group at a time; the way bases of a group take at most a quarter of the page budget |
+| Profile jobs | The snap bits and the landmarks of one profile in each job; the page budget sets how many jobs run at a time |
+| Own memory | 4 GiB; the step samples `RssAnon` every 100 ms and stops at the first sample above it, with the name of the stage; `catalog` and `blocks` are exempt |
+| Disk need | The stored layers above, and the work files of the step that runs; the roads step needs the most |
 
 Put the work folder on a disk, not on a tmpfs: the files of a tmpfs take RAM. A killed bake
-leaves its bake folder; remove it.
+leaves its bake folder; remove it. A bake that the memory guard stops also leaves it.
+
+The costs layer holds the columns of each profile: 8.125 B for each road and 4 B for each turn.
+The package step maps them and adds the landmarks, 24 B for each junction and profile, until the
+writer ends. The page budget changes only the speed of the bake, never its bytes. Each step prints
+the time and the peak own memory of each stage: `import` and `emit` (source and roads), `open`,
+`way-bases`, `road-pass` and `snap` (costs), `open`, `landmarks`, `writer`, `overlays`, `catalog`
+and `blocks` (package).
 
 ## Route catalog
 
@@ -62,7 +109,8 @@ countries before the import.
 
 ## Terrain
 
-`terrain::apply` takes a height callback. The step reads heights from the Copernicus GLO-30 tiles
+The import samples the terrain while it puts the roads into their final order (`layout::Buckets`).
+`terrain::sample` takes a height callback. The step reads heights from the Copernicus GLO-30 tiles
 of the bounds through `obc-dem`. Terrain samples are at most 20 m apart. A symmetric 20 m filter
 leaves junction heights and missing samples intact. Bridges and tunnels interpolate between their
 endpoints. Without a height, climb and slope remain unknown.
@@ -94,12 +142,11 @@ tags.
 
 ## Profiles
 
-The `profiles` option names the profile IDs, or `all` for all 17 metrics.
+The `profiles` option names the profile IDs, or `all` for all 10 metrics.
 
 | Road profile | Preference |
 | --- | --- |
 | `road` | BRouter fastbike surfaces, traffic stress, turns and downhill costs; trunk roads cost 10 times more |
-| `road/shorter` | Same road suitability; no terrain penalty; lower turn cost |
 | `road/less-climbing` | Additional uphill cost above the slope threshold |
 
 Road weights derive from the MIT-licensed BRouter
@@ -122,9 +169,8 @@ profiles.
 | Steps and via ferrata | Cycling profiles never use steps; no profile uses a via ferrata |
 
 Touring, gravel, MTB and hiking use separate surface and road-class tables, and add smoothness,
-track grade, trail grade and traffic. Hiking also adds trail visibility. Each has shorter and
-less-climbing variants. Shorter ignores climb preferences and signed cycle routes but keeps road
-and surface preferences. A signed cycle route discounts only the preference above the physical and
+track grade, trail grade and traffic. Hiking also adds trail visibility. Touring and gravel have a
+less-climbing variant with three times the climb cost. A signed cycle route discounts only the preference above the physical and
 traffic cost, in the direction that its member role gives. Access rules apply to every variant.
 MTB permits S2 at most and `mtb/technical` every grade; hiking permits T2 at most and
 `hiking/alpine` T4. Alternatives keep the difficulty limit of the request.

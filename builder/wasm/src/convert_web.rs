@@ -12,15 +12,50 @@ mod web {
     /// Throws an `Error` carrying `code` and `message` on failure; see [`crate::convert::ErrorCode`].
     #[wasm_bindgen]
     pub fn obc_convert_gpx_to_obcr(bytes: &[u8], name: &str, bike: f64) -> Result<Vec<u8>, JsValue> {
+        crate::convert::gpx_to_obcr(bytes, name, bike_type(bike)?).map_err(to_js)
+    }
+
+    fn bike_type(bike: f64) -> Result<obc_route::BikeType, JsValue> {
         let whole = bike.fract() == 0.0 && (0.0..=3.0).contains(&bike);
-        let bike = whole.then_some(bike as u8).and_then(obc_route::BikeType::from_u8).ok_or_else(|| {
+        whole.then_some(bike as u8).and_then(obc_route::BikeType::from_u8).ok_or_else(|| {
             to_js(ConvertFailure {
                 code: crate::convert::ErrorCode::Internal,
                 // A static message: formatting the `f64` would link float printing into the module.
                 message: "Internal error: the bike type is not 0 to 3. This is a bug in the builder.".into(),
             })
-        })?;
-        crate::convert::gpx_to_obcr(bytes, name, bike).map_err(to_js)
+        })
+    }
+
+    /// Encode a calculated line into `.obcr` bytes; see [`crate::convert::line_to_obcr`].
+    /// `coordinates` holds longitude and latitude in microdegrees for each point; `heights` holds
+    /// metres, `i16::MIN` where none is known; `waypoints` is a JSON array of
+    /// [`crate::convert::LineWaypoint`] with camelCase fields.
+    #[wasm_bindgen]
+    pub fn obc_convert_line_to_obcr(
+        coordinates: &[i32],
+        heights: &[i16],
+        surfaces: &[u8],
+        waypoints: &str,
+        name: &str,
+        bike: f64,
+    ) -> Result<Vec<u8>, JsValue> {
+        let bike = bike_type(bike)?;
+        let internal = |message: &str| {
+            to_js(ConvertFailure { code: crate::convert::ErrorCode::Internal, message: message.into() })
+        };
+        if coordinates.len() != heights.len() * 2 {
+            return Err(internal("Internal error: each point needs one height. This is a bug in the planner."));
+        }
+        let waypoints: Vec<crate::convert::LineWaypoint> = serde_json::from_str(waypoints)
+            .map_err(|_| internal("Internal error: the waypoints are not valid. This is a bug in the planner."))?;
+        let points: Vec<_> = coordinates
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .zip(heights)
+            .map(|(&[lon, lat], &height)| (lon, lat, (height != i16::MIN).then_some(height)))
+            .collect();
+        crate::convert::line_to_obcr(&points, surfaces, &waypoints, name, bike).map_err(to_js)
     }
 
     /// Convert a finished ride-v6 object into a GPX 1.1 document, naming the track `name`.
@@ -29,47 +64,6 @@ mod web {
     #[wasm_bindgen]
     pub fn obc_convert_track_to_gpx(bytes: &[u8], name: &str) -> Result<String, JsValue> {
         crate::convert::track_to_gpx(bytes, name).map_err(to_js)
-    }
-
-    /// Decode a `.obcr` route's polyline for the device page's preview: flat `[lat, lon, ele]`
-    /// triples in route order, crossing as one `Float64Array`.
-    ///
-    /// Throws an `Error` carrying `code` and `message` on failure; see [`crate::convert::ErrorCode`].
-    #[wasm_bindgen]
-    pub fn obc_convert_obcr_to_track(bytes: &[u8]) -> Result<Vec<f64>, JsValue> {
-        crate::convert::obcr_to_track(bytes).map_err(to_js)
-    }
-
-    /// Decode a `.obcr` route's waypoint table: an `Array` of plain
-    /// `{name, lat, lon, ele, category, distAlongM}` objects in ascending `distAlongM` order.
-    /// `ele` is `null` where the source carried none, `category` is the stored byte raw, and
-    /// `distAlongM` is the stored placement-time distance and not a recomputation. A route without
-    /// waypoints yields `[]`.
-    ///
-    /// Plain objects rather than a flat array because names are strings, and at most 32 waypoints
-    /// cross per route.
-    ///
-    /// Throws an `Error` carrying `code` and `message` on failure; see [`crate::convert::ErrorCode`].
-    #[wasm_bindgen]
-    pub fn obc_convert_obcr_to_waypoints(bytes: &[u8]) -> Result<js_sys::Array, JsValue> {
-        let wps = crate::convert::obcr_to_waypoints(bytes).map_err(to_js)?;
-        let arr = js_sys::Array::new();
-        for w in wps {
-            let obj = js_sys::Object::new();
-            set(&obj, "name", &JsValue::from_str(&w.name));
-            set(&obj, "lat", &JsValue::from_f64(w.lat));
-            set(&obj, "lon", &JsValue::from_f64(w.lon));
-            set(&obj, "ele", &w.ele.map_or(JsValue::NULL, JsValue::from_f64));
-            set(&obj, "category", &JsValue::from_f64(f64::from(w.category)));
-            set(&obj, "distAlongM", &JsValue::from_f64(f64::from(w.dist_along_m)));
-            arr.push(&obj.into());
-        }
-        Ok(arr)
-    }
-
-    /// `Reflect::set` on a fresh plain object, which cannot fail, so the result is ignored.
-    fn set(obj: &js_sys::Object, key: &str, value: &JsValue) {
-        let _ = js_sys::Reflect::set(obj, &JsValue::from_str(key), value);
     }
 
     /// Build the JS exception as a real `Error` instance, so it carries a stack and survives

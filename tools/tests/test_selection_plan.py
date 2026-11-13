@@ -458,7 +458,6 @@ class ShippedPlanTests(unittest.TestCase):
             "obc-crc": ["clippy", "fmt", "test"],
             "obc-fw-nrf54l": ["embedded", "fmt"],
             "obc-boot": ["boot", "fmt"],
-            "obc-desktop": ["desktop", "fmt"],
             "obc-builder-bridge": ["clippy", "fmt", "test", "wasm-bridges"],
             "obc-web-demo": ["clippy", "fmt", "test", "wasm"],
             "obc-pack": ["builder-python", "clippy", "fmt", "test"],
@@ -484,33 +483,28 @@ class ShippedPlanTests(unittest.TestCase):
             (
                 "foundational Rust crate",
                 ["firmware/obc-crc/src/lib.rs"],
-                ["boot", "builder-python", "cairn", "clippy", "desktop", "desktop-frontend", "device", "embedded", "fmt", "ios-app", "ios-release", "ios-unit", "test", "ui-snapshots", "wasm", "wasm-bridges"],
+                ["boot", "builder-python", "cairn", "clippy", "device", "embedded", "fmt", "ios-app", "ios-release", "ios-unit", "test", "ui-snapshots", "wasm", "wasm-bridges"],
             ),
             (
                 "shared vectors",
                 ["specs/vectors/obcm-v2.json"],
                 ["clippy", "device", "fmt", "ios-unit", "test", "wasm-bridges", "web"],
             ),
-            (
-                "desktop launch harness",
-                ["builder/desktop/e2e/launch.py"],
-                ["cairn", "desktop", "desktop-frontend", "fmt", "wasm-bridges"],
-            ),
             ("iOS application", ["companion-ios/OBCCompanion/App.swift"], ["cairn", "ios-app", "ios-release"]),
             (
                 "web only",
                 ["builder/web/src/lib/panel.ts"],
-                ["cairn", "desktop-frontend", "wasm-bridges", "web", "web-browser"],
+                ["cairn", "wasm-bridges", "web", "web-browser"],
             ),
             (
                 "workflow",
                 [".github/workflows/ci.yml"],
-                ["boot", "builder-python", "cairn", "clippy", "deny", "desktop", "desktop-frontend", "device", "docs", "embedded", "fmt", "ios-app", "ios-release", "ios-unit", "planner-search", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
+                ["boot", "builder-python", "cairn", "clippy", "deny", "device", "docs", "embedded", "fmt", "ios-app", "ios-release", "ios-unit", "planner-search", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
             ),
             (
                 "nextest configuration",
                 [".config/nextest.toml"],
-                ["boot", "builder-python", "cairn", "clippy", "deny", "desktop", "desktop-frontend", "device", "docs", "embedded", "fmt", "planner-search", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
+                ["boot", "builder-python", "cairn", "clippy", "deny", "device", "docs", "embedded", "fmt", "planner-search", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
             ),
             ("web demo crate", ["sim/web-demo/src/lib.rs"], ["cairn", "clippy", "fmt", "test", "wasm"]),
             ("web demo Trunk target", ["docs/index.html"], ["docs", "wasm", "wasm-bridges"]),
@@ -527,7 +521,7 @@ class ShippedPlanTests(unittest.TestCase):
             (
                 "repository tooling",
                 ["tools/fixtures.py"],
-                ["cairn", "desktop", "desktop-frontend", "test", "wasm-bridges"],
+                ["cairn", "test"],
             ),
         ]
         for name, paths, expected in cases:
@@ -547,7 +541,7 @@ class ShippedPlanTests(unittest.TestCase):
         for path in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".rustfmt.toml", ".cargo/config.toml"):
             with self.subTest(path=path):
                 self.assertLessEqual(
-                    {"boot", "clippy", "desktop", "device", "embedded", "fmt", "test", "wasm", "wasm-bridges"},
+                    {"boot", "clippy", "device", "embedded", "fmt", "test", "wasm", "wasm-bridges"},
                     set(self.jobs_for(path)),
                 )
 

@@ -13,6 +13,7 @@ owns:
   - builder/web/src/lib/coverage/**
   - builder/web/src/lib/map/**
   - builder/web/src/components/coverage/**
+  - host/obc-fit/**
 depends_on:
   - card-storage
   - device-link

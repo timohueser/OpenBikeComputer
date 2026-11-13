@@ -1,6 +1,6 @@
 """Bounded native packing for the localhost maintainer schema lab.
 
-The product web and desktop hosts never import or expose this module.  The
+The product web host never imports or exposes this module.  The
 FastAPI maintainer host accepts only a JSON config; the source, binary, crop,
 command line, output path and resource bounds all remain server-owned.
 """

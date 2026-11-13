@@ -107,7 +107,6 @@ and a missing expected file fails the upload. Download with
 | `web-builder-ATTEMPT` | Vitest JUnit XML |
 | `web-builder-browser-ATTEMPT`, `web-demo-browser-ATTEMPT` | the two Chromium journeys, with a screenshot and trace on failure |
 | `ios-tests-coverage-ATTEMPT`, `ios-screenshots-ATTEMPT`, `ios-application-ATTEMPT` | `.xcresult` bundles; restore the suffix and open in Xcode |
-| `desktop-tests-PLATFORM-ATTEMPT` | desktop nextest results |
 
 The exit status and the CI log stay authoritative; an artifact does not prove a passing run.
 

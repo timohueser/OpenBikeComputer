@@ -36,7 +36,6 @@ PRODUCT_ROOTS = (
     "firmware/obc-fw-nrf54l",
     "firmware/obc-boot",
     "firmware/obc-sensor-sim",
-    "builder/desktop",
 )
 
 @dataclass(frozen=True)
@@ -75,8 +74,6 @@ JOBS: dict[str, Job] = {
     "web-browser": Job(needs=("selection", "wasm-bridges")),
     "verification": Job(needs=("selection",)),
     "planner-search": Job(needs=("selection",)),
-    "desktop-frontend": Job(needs=("selection", "wasm-bridges")),
-    "desktop": Job(needs=("selection", "desktop-frontend"), roots=("builder/desktop",)),
 }
 
 # The job that evaluates the plan.  It is never a route for the work it reports.
@@ -92,7 +89,7 @@ GATES: dict[str, tuple[str, ...]] = {
     "board": ("embedded", "boot"),
     "deny": ("deny",),
     "wasm": ("wasm", "wasm-bridges"),
-    "frontend": ("web", "desktop-frontend"),
+    "frontend": ("web",),
     "docs": ("docs",),
 }
 
@@ -742,7 +739,6 @@ NPM_PROJECTS: dict[str, tuple[str, ...]] = {
     "wasm": ("sim/web-demo/tests/browser",),
     "web": ("builder/web",),
     "web-browser": ("builder/web", "builder/web/tests/browser"),
-    "desktop-frontend": ("builder/web",),
     "verification": ("tools/verification",),
     "planner-search": ("planner/search", "planner/tiles"),
 }
@@ -1022,7 +1018,6 @@ AUDITED_PATHS = (
     "tools/testing/suites.toml",
     "builder/web/src/lib/example.ts",
     "companion-ios/Packages/OBCKit/Sources/OBCFormats/example.swift",
-    "builder/desktop/src/main.rs",
     "docs/index.md",
 )
 

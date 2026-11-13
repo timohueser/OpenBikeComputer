@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { calculateLine, profileId, regionProfiles, requestAlternatives, requestRoute, routingKey, movingSecondsAt, type RouteTotals } from './routing';
+import { calculateLine, pacedLine, profileId, regionProfiles, requestAlternatives, requestRoute, routingKey, movingSecondsAt, type RouteTotals, type RoutingLine } from './routing';
 import { LegCache } from './route-legs';
 import { routeService } from '../../../test-support/planner/route-service';
 import { decodeRoutes, type AnswerRoute } from './route-answer';
-import { presetName, servedPresets, type BikeType } from './riding-profiles';
+import { paceFactor, presetName, servedPresets, type BikeType } from './riding-profiles';
 import { surfaceRuns, surfaceWindow } from './surface-data';
 import { planView, removeRoutePoint, setEndpoint, type RoutePoint, type Trip } from './editor';
 import { cumulative, type Coordinate } from './geo';
@@ -30,13 +30,16 @@ function trip(): Trip {
 afterEach(() => vi.unstubAllGlobals());
 describe('routing integration', () => {
     it('offers the presets of the profiles that the region serves, each with its own profile ID', async () => {
-        const profiles = ['gravel', 'gravel/shorter', 'hiking/less-climbing', 'mtb/technical'];
+        const profiles = ['gravel', 'gravel/less-climbing', 'hiking/alpine', 'mtb/technical'];
         vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ package: 'test', profiles }) }));
         const served = await regionProfiles();
-        expect([servedPresets('gravel', served), servedPresets('hiking', served), servedPresets('mtb', served), servedPresets('road', served), servedPresets('road', undefined)])
-            .toEqual([['Balanced', 'Shorter'], ['Less climbing'], ['Technical'], [], ['Balanced', 'Shorter', 'Less climbing']]);
+        expect([servedPresets('gravel', served), servedPresets('hiking', served), servedPresets('mtb', served), servedPresets('road', served), servedPresets('road', undefined), servedPresets('mtb', undefined)])
+            .toEqual([['Balanced', 'Less climbing'], ['Alpine'], ['Technical'], [], ['Balanced', 'Less climbing'], ['Balanced']]);
         for (const id of profiles) expect(profileId({ ...trip(), bike: id.split('/')[0] as BikeType, preset: presetName(id) })).toBe(id);
-        expect(profileId({ ...trip(), bike: 'road', preset: 'Quieter' })).toBe('road');
+        // A saved plan with a preset that its activity does not have routes with Balanced.
+        expect(profileId({ ...trip(), bike: 'road', preset: 'Shorter' })).toBe('road');
+        expect(profileId({ ...trip(), bike: 'mtb', preset: 'Less climbing' })).toBe('mtb');
+        expect(routingKey({ ...trip(), bike: 'mtb', preset: 'Less climbing' })).toBe(routingKey({ ...trip(), bike: 'mtb' }));
     });
     it('keeps directed shaping context in one request and preserves unknown elevation', async () => {
         const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ routes: [answer] }) });
@@ -49,11 +52,11 @@ describe('routing integration', () => {
         expect(line.edges).toEqual({ surfaces: ['Paved', 'Gravel'], pushing: [false, true] });
         expect(line.package).toBe('test');
         expect(JSON.parse(fetch.mock.calls[0][1].body).points).toEqual(plan.points.map(p => p.coordinate));
-        fetch.mockResolvedValueOnce({ ok: true, json: async () => ({ routes: [{ ...answer, id: 'shorter', reason: 'shorter' }] }) });
+        fetch.mockResolvedValueOnce({ ok: true, json: async () => ({ routes: [{ ...answer, id: 'climb', reason: 'less_climbing' }] }) });
         const alternatives = await requestAlternatives(plan, line.primary!, new AbortController().signal);
         const { alternatives: _primaryOnly, ...request } = JSON.parse(fetch.mock.calls[0][1].body);
         expect(JSON.parse(fetch.mock.calls[1][1].body)).toEqual({ ...request, alternatives_only: true });
-        expect(alternatives.map(r => r.id)).toEqual(['primary', 'shorter']);
+        expect(alternatives.map(r => r.id)).toEqual(['primary', 'climb']);
         expect(movingSecondsAt(line, 0.5)).toBeCloseTo(3000);
         expect(line.elevation).toEqual([200, null, 400]);
         expect(line.stops.map(s => s.distance)).toEqual(cumulative(route.geometry));
@@ -70,7 +73,7 @@ describe('routing integration', () => {
         expect(unmarked.splits).toEqual(edited.splits);
         const moved = { ...edited, points: edited.points.map(p => p.id === 'shape' ? { ...p, coordinate: [8.1, 48] as [number, number] } : p) };
         expect(routingKey(moved)).not.toBe(routingKey(plan));
-        expect(routingKey({ ...plan, preset: 'Shorter' })).not.toBe(routingKey(plan));
+        expect(routingKey({ ...plan, preset: 'Less climbing' })).not.toBe(routingKey(plan));
     });
     it('requests only the legs that an edit changes, pinned to the cached legs on both sides', async () => {
         const fetch = vi.fn<(url: string, init: RequestInit) => Promise<unknown>>(routeService('one'));
@@ -142,6 +145,29 @@ describe('routing integration', () => {
         expect(surfaceRuns(line).shares.get('Unknown')).toBe(1);
         const mixed = await calculateLine(legs([undefined, 'straight', 'routed']), new AbortController().signal, new LegCache());
         expect(mixed.edges).toEqual({ surfaces: [null, null, 'Paved', 'Gravel'], pushing: [null, null, false, true] });
+    });
+    it('times each activity at its own speed on the flat, and each pace against Moderate', () => {
+        const flat = (bike: BikeType, pace?: Trip['pace']) => Math.round(({ road: 19, gravel: 19, touring: 19, mtb: 15.6, hiking: 4.5 })[bike] / paceFactor({ bike, pace }) * 10) / 10;
+        expect((['road', 'gravel', 'touring', 'mtb', 'hiking'] as const).map(bike => (['easy', undefined, 'sporty', 'fast'] as const).map(pace => flat(bike, pace))))
+            .toEqual([[19.7, 25, 30.3, 35.5], [16.6, 21, 25.4, 29.8], [15, 19, 23, 27], [12.3, 15.6, 18.9, 22.2], [3.6, 4.5, 5.4, 6.4]]);
+    });
+    it('scales the riding time of a routed or drawn segment at the pace of the plan, but not of a pushed segment', async () => {
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ routes: [{ ...answer, legs: [{ ...answer.legs[0], to_index: 2 }] }] }) }));
+        const plan: Trip = { ...trip(), points: trip().points.map(p => p.id === 'shape' ? { ...p, leg: 'straight' } : p) };
+        const line = await calculateLine(plan, new AbortController().signal, new LegCache());
+        const fast: Trip = { ...plan, pace: 'fast' }, paced = pacedLine(line, fast);
+        const time = (l: RoutingLine, i: number) => l.elapsed[i + 1] - l.elapsed[i];
+        expect(line.edges.pushing).toEqual([null, null, false, true]);
+        expect(time(line, 0)).toBeGreaterThan(0);
+        line.edges.pushing!.forEach((pushed, i) => expect(time(paced, i)).toBeCloseTo(time(line, i) * (pushed ? 1 : 19 / 27)));
+        expect(paced.seconds).toBe(paced.elapsed.at(-1));
+        const lines = [pacedLine(line, fast), pacedLine(paced, fast), pacedLine(paced, plan), pacedLine(line, { ...plan, bike: 'mtb' })];
+        expect(lines.map(l => l === paced ? 'paced' : l === line ? 'line' : 'copy')).toEqual(['paced', 'paced', 'line', 'line']);
+        // A road bike at Moderate rides faster than the engine; on foot, every stretch takes the pace.
+        const road = pacedLine(line, { ...plan, bike: 'road' });
+        line.edges.pushing!.forEach((pushed, i) => expect(time(road, i)).toBeCloseTo(time(line, i) * (pushed ? 1 : 19 / 25)));
+        expect(pacedLine(line, { ...plan, bike: 'hiking', pace: 'easy' }).seconds).toBeCloseTo(line.seconds * 19 / 15);
+        expect(pacedLine(line, { ...plan, bike: 'hiking', pace: 'fast' }).seconds).toBeCloseTo(line.seconds * 19 / 27);
     });
     it('aligns surface sections by distance and clips the view without changing route shares', () => {
         const line = { coordinates: route.geometry, edges: route.edges };

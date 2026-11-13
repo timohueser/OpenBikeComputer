@@ -1,3 +1,5 @@
+import { distanceIn, heightIn, heightUnit } from '../settings/format';
+import { settings } from '../settings/settings.svelte';
 import type { Coordinate } from './geo';
 import { loadRouteCell } from './map-data';
 import { corridorTiles } from './place-index';
@@ -72,7 +74,7 @@ export class RouteFinder {
             lines: this.matches.slice(0, this.shown).map(({ route }, i) => {
                 const line = recordLine(route, route.stages?.flatMap(id => this.records.get(id) ?? []));
                 return { id: route.id, number: i + 1, rank: route.rank, line: line.length ? line : [startOf(route)],
-                    label: `${route.name ?? route.ref} · ${(route.length_m / 1000).toFixed(1)} km · ↑ ${route.ascent_m} m` };
+                    label: `${route.name ?? route.ref} · ${distanceIn(route.length_m).toFixed(1)} ${settings.units} · ↑ ${Math.round(heightIn(route.ascent_m))} ${heightUnit()}` };
             }),
             dots: this.matches.slice(this.shown).map(({ route }) => ({ id: route.id, rank: route.rank, at: startOf(route) })),
             selected: detail ? { id: detail.route.id, line: recordLine(detail.route, detail.stages) } : null,

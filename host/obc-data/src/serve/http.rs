@@ -32,12 +32,23 @@ pub struct View {
     pub planners: BTreeMap<String, Planner>,
 }
 
+/// What the services of a planner release do.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Planner {
+pub struct Planner {
+    pub status: Status,
+    /// The port on this machine of each of the [`SERVICES`] that answers.
+    pub ports: [Option<u16>; SERVICES.len()],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Status {
+    /// Its files download, or a service starts.
     Starting,
-    /// They answer, at the port of each of the [`SERVICES`] on this machine.
-    Ready([u16; SERVICES.len()]),
-    /// Why they stopped.
+    /// Each service answers.
+    Ready,
+    /// Its files are on disk, and its services do not run.
+    Installed,
+    /// Why its fetch failed, or why each failed service stopped.
     Failed(String),
 }
 
@@ -86,24 +97,21 @@ pub fn router(shared: Shared, files: Option<(&Path, u16)>, version: Version) -> 
     router.with_state(shared).layer(CorsLayer::permissive())
 }
 
-/// The port of the service `name` of the planner release `planner`, while its services answer, and
-/// the place of the service in [`SERVICES`].
-fn port(view: &View, planner: &str, name: &str) -> Option<(usize, u16)> {
+/// The port of the service `name` of the planner release `planner`, while it answers.
+fn port(view: &View, planner: &str, name: &str) -> Option<u16> {
     let at = SERVICES.iter().position(|service| service.name == name)?;
-    match view.planners.get(planner)? {
-        Planner::Ready(ports) => Some((at, ports[at])),
-        _ => None,
-    }
+    view.planners.get(planner)?.ports[at]
 }
 
-/// 200 when the services of the planner release `id` answer; 503 while they start or after they
-/// failed, with the reason; 404 when no release that the target names has it.
+/// 200 when the services of the planner release `id` answer; 503 while they start, while they do
+/// not run, or after one failed, with the reason; 404 when no release that the target names has it.
 async fn ready(State(shared): State<Shared>, Params(id): Params<String>) -> Response {
-    let planner = shared.read().unwrap().planners.get(&id).cloned();
+    let planner = shared.read().unwrap().planners.get(&id).map(|planner| planner.status.clone());
     let (status, body) = match planner {
-        Some(Planner::Ready(_)) => (StatusCode::OK, json!({"state": "ready"})),
-        Some(Planner::Starting) => (StatusCode::SERVICE_UNAVAILABLE, json!({"state": "starting"})),
-        Some(Planner::Failed(reason)) => {
+        Some(Status::Ready) => (StatusCode::OK, json!({"state": "ready"})),
+        Some(Status::Starting) => (StatusCode::SERVICE_UNAVAILABLE, json!({"state": "starting"})),
+        Some(Status::Installed) => (StatusCode::SERVICE_UNAVAILABLE, json!({"state": "installed"})),
+        Some(Status::Failed(reason)) => {
             (StatusCode::SERVICE_UNAVAILABLE, json!({"state": "failed", "reason": format!("not ready: {reason}")}))
         }
         None => {
@@ -119,10 +127,17 @@ async fn api(
     Params((id, name, _)): Params<(String, String, String)>,
     request: Request,
 ) -> Response {
-    let found = port(&shared.read().unwrap(), &id, &name);
-    let Some((service, port)) = found else {
+    let (known, found) = {
+        let view = shared.read().unwrap();
+        (view.planners.contains_key(&id), port(&view, &id, &name))
+    };
+    let Some(service) = SERVICES.iter().position(|service| service.name == name).filter(|_| known) else {
         return (StatusCode::NOT_FOUND, format!("No {name} service of planner release {id} runs here."))
             .into_response();
+    };
+    let Some(port) = found else {
+        let message = format!("The {name} service restarts. Try again shortly.");
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"code": "busy", "message": message}))).into_response();
     };
     let prefix = format!("/planner-api/releases/{id}/{name}");
     let rest = request.uri().path_and_query().map_or("", |path| path.as_str()).strip_prefix(&prefix).unwrap_or("/");
@@ -136,7 +151,7 @@ async fn offline(State(shared): State<Shared>, request: Request) -> Response {
         let view = shared.read().unwrap();
         view.current.as_ref().and_then(|current| port(&view, &current.planner, "downloads"))
     };
-    let Some((_, port)) = found else {
+    let Some(port) = found else {
         return (StatusCode::SERVICE_UNAVAILABLE, "The downloads of the current release do not run.").into_response();
     };
     let path = request.uri().path_and_query().map_or("", |path| path.as_str());
@@ -260,7 +275,8 @@ mod tests {
             pointers: [(POINTERS[0].into(), b"{}".to_vec()), (PLANNER.into(), pointer.clone().into())].into(),
             formats: BTreeMap::new(),
         };
-        let view = View { current: Some(current), planners: [(planner.clone(), Planner::Ready([upstream; 3]))].into() };
+        let ready = Planner { status: Status::Ready, ports: [Some(upstream); 3] };
+        let view = View { current: Some(current), planners: [(planner.clone(), ready)].into() };
         let version = Version {
             commit: Some("c".repeat(40)),
             formats: [("planner/routing".into(), 9)].into(),

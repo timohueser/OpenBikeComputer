@@ -26,6 +26,7 @@ use obc_dem::reference::TILE_LOG2;
 use obc_dem::step::GLO30;
 use obc_map_core::grid::CellId;
 use planner_router_build::grid::{mercator, tile_bounds};
+use planner_router_build::step;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -43,6 +44,13 @@ pub static PLANNER_BASEMAP: Layer = whole("planner/basemap", 1, &[&WEB_PLANNER, 
 /// `specs/planner-release.md`.
 pub static PLANNER_TERRAIN: Layer =
     Layer { revision: 4, ..whole("planner/terrain", 2, &[&WEB_PLANNER, &readers::PLANNER_TRAILVIEW_FEATURES]) };
+/// The work layers of the routing bake, each of the step of its name: the source, the roads and the
+/// costs of `planner_router_build::step`. A change of their bytes changes their format (`work`), a
+/// change of their content their revision: of the import rules the source, of the split, the order
+/// or the terrain the roads, of the cost code the costs.
+pub static PLANNER_ROUTING_SOURCE: Layer = work(step::SOURCE);
+pub static PLANNER_ROUTING_ROADS: Layer = work(step::ROADS);
+pub static PLANNER_ROUTING_COSTS: Layer = work(step::COSTS);
 /// The routing package, its grid and the route network overlays.
 pub static PLANNER_ROUTING: Layer = Layer {
     revision: 3,
@@ -60,7 +68,7 @@ pub static PLANNER_SNOW: Layer = whole("planner/snow", 2, &[&WEB_PLANNER]);
 /// holds what the stamp worker makes of the tiles; `stamp_version` of `specs/trailview-tiles.md` says
 /// which stamp code made it.
 pub static PLANNER_TRAILVIEW_FEATURES: Layer =
-    Layer { revision: 18, ..whole("planner/trailview-features", 4, &[&WEB_PLANNER]) };
+    Layer { revision: 19, ..whole("planner/trailview-features", 4, &[&WEB_PLANNER]) };
 /// The TrailView ruleset, `rules.json` of `specs/trailview-tiles.md`. Its format is `format` of
 /// `rules.json`, `FORMAT` of `tools/trailview/rules.py`.
 pub static PLANNER_TRAILVIEW_RULES: Layer =
@@ -84,7 +92,21 @@ pub static PLANNER_INDEX: Layer =
 const WORLDCOVER_GRID: &str = "esa-worldcover-grid";
 
 const fn whole(name: &'static str, format: u32, readers: &'static [&'static Reader]) -> Layer {
-    Layer { name, shape: Shape::Whole, format, revision: 1, readers }
+    Layer { name, shape: Shape::Whole, format, revision: 1, readers, cache: false }
+}
+
+/// The files of a work layer hold router types: the closure sets, `Point` and the postcard
+/// `CostBasis` of the dictionary. Its format is the sum of the router `FORMAT` and the format of
+/// its own files, 1; each only grows.
+const fn work(name: &'static str) -> Layer {
+    Layer {
+        name,
+        shape: Shape::Whole,
+        format: planner_router::package::FORMAT + 1,
+        revision: 1,
+        readers: &[],
+        cache: true,
+    }
 }
 const BASEMAP_SOURCES: [&str; 7] = [
     "protomaps-basemaps",
@@ -400,20 +422,52 @@ impl Planner {
         };
         // The last part of the id: the old planner names its files after it.
         let name = region.id.rsplit('/').next();
-        let routing = Step {
-            layer: &PLANNER_ROUTING,
-            name: "planner/routing".into(),
-            inputs: std::iter::once(Input::step(cut.name.clone()))
+        // A bad profile or country of the routing fails before any bake.
+        if on("routing") {
+            let profiles: Vec<&str> = config.routing.profiles.iter().map(String::as_str).collect();
+            planner_router_build::profiles(&profiles)
+                .and_then(|profiles| planner_router_build::catalog::check(&countries, &profiles))
+                .map_err(|reason| invalid(format!("the routing of region `{id}`: {reason}")))?;
+        }
+        let work = |layer: &'static Layer, inputs: Vec<Input>, options, run| Step {
+            layer,
+            name: layer.name.into(),
+            inputs,
+            options,
+            outputs: vec![step::folder_name(layer.name).into()],
+            run: Run::Rust(run),
+            client: Client::None,
+        };
+        let routing_source = work(
+            &PLANNER_ROUTING_SOURCE,
+            vec![Input::step(cut.name.clone())],
+            json!({"bounds": bounds}),
+            &functions::ROUTING_SOURCE,
+        );
+        let routing_roads = work(
+            &PLANNER_ROUTING_ROADS,
+            std::iter::once(Input::step(step::SOURCE))
                 .chain(tiles(bounds, &land, &glo30))
                 .chain(reference.iter().map(|step| Input::step(&step.name)))
                 .collect(),
+            json!({"bounds": bounds, "terrain_attribution": attribution(GLO30)}),
+            &functions::ROUTING_ROADS,
+        );
+        let routing_costs = work(
+            &PLANNER_ROUTING_COSTS,
+            vec![Input::step(step::SOURCE), Input::step(step::ROADS)],
+            json!({"bounds": bounds, "profiles": config.routing.profiles}),
+            &functions::ROUTING_COSTS,
+        );
+        let routing = Step {
+            layer: &PLANNER_ROUTING,
+            name: "planner/routing".into(),
+            inputs: [step::SOURCE, step::ROADS, step::COSTS].into_iter().map(Input::step).collect(),
             options: json!({
                 "region": name,
                 "bounds": bounds,
-                "profiles": config.routing.profiles,
                 "countries": countries,
                 "attribution": attribution("osm-planet"),
-                "terrain_attribution": attribution(GLO30),
             }),
             outputs: vec!["routing".into(), "blocks".into(), "routes".into()],
             run: Run::Rust(&functions::ROUTING),
@@ -519,7 +573,22 @@ impl Planner {
         steps.extend(content.steps);
         steps.extend(reference);
         steps.extend([
-            osm, cut, terrain, routing, overlays, assets, model, policy, dump, records, pois, addresses, places,
+            osm,
+            cut,
+            terrain,
+            routing_source,
+            routing_roads,
+            routing_costs,
+            routing,
+            overlays,
+            assets,
+            model,
+            policy,
+            dump,
+            records,
+            pois,
+            addresses,
+            places,
             basemap,
         ]);
         if on("climate") {
@@ -1347,6 +1416,7 @@ mod tests {
             region("no-countries", "kind = \"geofabrik\"\nareas = [\"europe/test\"]\ntime_zone = \"Europe/Berlin\"\n"),
             region("no-time-zone", "kind = \"geofabrik\"\nareas = [\"europe/test\"]\ncountries = [\"DE\"]\n"),
             region("boxed", "kind = \"box\"\nbox = [7.79, 47.99, 7.82, 48.02]\ncountries = [\"DE\"]\n"),
+            region("border", "kind = \"box\"\nbox = [7.79, 47.99, 7.82, 48.02]\ncountries = [\"DE\", \"FR\"]\n"),
         ])
         .unwrap()
     }
@@ -1568,11 +1638,56 @@ mod tests {
             (&files[..], &reference.options["pool"]),
             (&["mean/18/1206/1054.tif".to_string(), "index.json".to_string()][..], &json!("mean"))
         );
-        for reader in ["planner/terrain", "planner/routing"] {
+        for reader in ["planner/terrain", "planner/routing-roads"] {
             let step = steps.iter().find(|step| step.name == reader).unwrap();
             let reads = |input: &Input| matches!(input, Input::Step { name, .. } if name == "planner/reference");
             assert!(step.inputs.iter().any(reads), "{reader} reads the national models");
         }
+    }
+
+    #[test]
+    fn only_a_plan_with_routing_checks_the_countries_of_the_route_catalog() {
+        let temp = temp("planner-border");
+        let store = store(&temp, &["2026-10-01"]);
+        let mut inputs = inputs("border", &[]);
+        let result = Planner.steps(&root(), &inputs, &regions(), &store);
+        assert!(matches!(result, Err(Unplanned::Invalid(reason)) if reason.contains("routing of region `border`")));
+        inputs.settings.layers = vec!["map".into()];
+        assert!(Planner.steps(&root(), &inputs, &regions(), &store).is_ok(), "France and Germany have a map");
+    }
+
+    #[test]
+    fn the_profiles_are_an_option_of_the_costs_step_alone() {
+        let temp = temp("planner-routing-steps");
+        let store = store(&temp, &["2026-10-01"]);
+        let steps = Planner.steps(&root(), &inputs(AREA, &[]), &regions(), &store).unwrap().steps;
+        let get = |name: &str| steps.iter().find(|step| step.name == name).unwrap();
+        let options = |name: &str| {
+            let mut keys: Vec<String> = get(name).options.as_object().unwrap().keys().cloned().collect();
+            keys.sort();
+            keys
+        };
+        let reads = |name: &str| {
+            let names = get(name).inputs.iter().filter_map(|input| match input {
+                Input::Step { name, .. } => Some(name.clone()),
+                Input::Snapshot { .. } => None,
+            });
+            names.collect::<Vec<_>>()
+        };
+        // The key holds the options and the digests of the inputs: a new profile list changes the
+        // key of the costs, and so of the package, and no other.
+        assert_eq!(options(step::SOURCE), ["bounds"]);
+        assert_eq!(options(step::ROADS), ["bounds", "terrain_attribution"]);
+        assert_eq!(options(step::COSTS), ["bounds", "profiles"]);
+        assert_eq!(options("planner/routing"), ["attribution", "bounds", "countries", "region"]);
+        assert_eq!(reads(step::SOURCE), ["planner/osm/bounds"]);
+        assert_eq!(reads(step::ROADS), [step::SOURCE]);
+        assert_eq!(reads(step::COSTS), [step::SOURCE, step::ROADS]);
+        assert_eq!(reads("planner/routing"), [step::SOURCE, step::ROADS, step::COSTS]);
+        for name in [step::SOURCE, step::ROADS, step::COSTS] {
+            assert!(get(name).layer.cache && get(name).client.is_none(), "{name}");
+        }
+        assert!(!get("planner/routing").layer.cache);
     }
 
     /// A version of `terrain` with `paths` and an `index.json` whose tile 4825/4218 is of `ch`, with
@@ -1654,6 +1769,9 @@ mod tests {
             "osm",
             "osm/bounds",
             "terrain",
+            "routing-source",
+            "routing-roads",
+            "routing-costs",
             "routing",
             "overlays",
             "assets",
@@ -1694,6 +1812,9 @@ mod tests {
                 "planner/osm",
                 "planner/osm/bounds",
                 "planner/terrain",
+                "planner/routing-source",
+                "planner/routing-roads",
+                "planner/routing-costs",
                 "planner/routing",
                 "planner/overlays",
                 "planner/assets",
@@ -1731,13 +1852,13 @@ mod tests {
         let cut = get("planner/osm/bounds");
         assert!(matches!(&cut.inputs[..], [Input::Step { name, files }] if name == "planner/osm" && files.is_empty()));
         assert!(matches!(cut.run, Run::Rust(function) if function.name == obc_data::engine::PASS.name));
-        for reader in ["planner/routing", "planner/basemap", "planner/search/dump"] {
+        for reader in ["planner/routing-source", "planner/basemap", "planner/search/dump"] {
             assert!(get(reader)
                 .inputs
                 .iter()
                 .any(|input| matches!(input, Input::Step { name, .. } if name == "planner/osm/bounds")));
         }
-        assert_eq!(tiles(&routing.inputs[1]), ["N47_00_E007", "N48_00_E007"]);
+        assert_eq!(tiles(&get("planner/routing-roads").inputs[1]), ["N47_00_E007", "N48_00_E007"]);
         assert_eq!(routing.options["bounds"], json!([7.79, 47.99, 7.82, 48.02]));
         assert_eq!((&routing.options["region"], &routing.options["countries"]), (&json!("test"), &json!(["DE"])));
         assert_eq!(
@@ -1903,6 +2024,9 @@ mod tests {
                 ["device", "catalog"] => "device/catalog",
                 ["planner", "basemap" | "assets", ..] => "planner/basemap",
                 ["planner", "terrain", ..] => "planner/terrain",
+                ["planner", "routing-source"] => "planner/routing-source",
+                ["planner", "routing-roads"] => "planner/routing-roads",
+                ["planner", "routing-costs"] => "planner/routing-costs",
                 ["planner", "routing" | "overlays", ..] => "planner/routing",
                 ["planner", "search" | "model", ..] => "planner/search",
                 ["planner", "places", ..] => "planner/places",
@@ -1922,7 +2046,11 @@ mod tests {
             assert_eq!(step.layer.name, layer(&step.name), "{}", step.name);
         }
         let named: BTreeSet<&str> = steps.iter().map(|step| step.layer.name).collect();
-        assert_eq!(named.len(), 17, "sixteen operator layers and the OSM of the region: {named:?}");
+        assert_eq!(
+            named.len(),
+            20,
+            "sixteen operator layers, the OSM of the region and the work layers of the routing: {named:?}"
+        );
 
         // A target holds only client files: a step reads only those of a step of another layer
         // that a program reads, so another machine can bake it without baking that step again. A

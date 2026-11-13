@@ -51,7 +51,7 @@ pub fn read<T: TryFrom<i64>>(
     maximum: u32,
 ) -> Result<Vec<T>> {
     let mut result = Vec::new();
-    result.try_reserve_exact(indices.clone().count()).map_err(|_| Error::Limit)?;
+    result.try_reserve_exact(indices.clone().count()).map_err(|_| Error::Memory)?;
     let mut page = usize::MAX;
     let mut values = Vec::new();
     for index in indices {

@@ -1,15 +1,28 @@
-//! Browser GPX import: full planner points and the bounded corridor preview.
+//! Browser GPX import: the points and waypoints of a GPX file.
 
 use serde::Serialize;
 
-pub const MAX_ROUTE_POINTS: usize = 2048;
-
 #[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Point {
     pub lat: f64,
     pub lon: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ele: Option<f64>,
+    /// Unix seconds, with the fraction of the file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time: Option<f64>,
+    /// The first point of the file, and of each `trk` and `trkseg`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub segment_start: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hr_bpm: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cadence_rpm: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub power_w: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature_c: Option<f64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -26,14 +39,9 @@ pub struct Import {
     pub name: String,
     pub points: Vec<Point>,
     pub waypoints: Vec<Waypoint>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Route {
-    pub name: String,
-    pub points: Vec<Point>,
-    pub distance_km: f64,
+    /// The `<type>` of the first track, such as `cycling`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 fn whitespace(c: char) -> bool {
@@ -135,6 +143,12 @@ fn point(attributes: &str) -> Option<Point> {
         lat: round(lat * 1e6),
         lon: round(lon * 1e6),
         ele: None,
+        time: None,
+        segment_start: false,
+        hr_bpm: None,
+        cadence_rpm: None,
+        power_w: None,
+        temperature_c: None,
     })
 }
 
@@ -148,6 +162,55 @@ fn round(value: f64) -> f64 {
     } else {
         floor + 1.0
     }
+}
+
+/// `YYYY-MM-DDTHH:MM:SS`, an optional fraction, then `Z`, `±HH:MM` or no zone, which is UTC.
+fn time(text: &str) -> Option<f64> {
+    let b = text.as_bytes();
+    let digits = |at: usize, len: usize| -> Option<i64> {
+        let part = b.get(at..at + len)?;
+        part.iter().all(u8::is_ascii_digit).then(|| part.iter().fold(0, |n, c| n * 10 + i64::from(c - b'0')))
+    };
+    let [year, month, day, hour, minute, second] =
+        [(0, 4), (5, 2), (8, 2), (11, 2), (14, 2), (17, 2)].map(|(at, len)| digits(at, len));
+    let (year, month, day, hour, minute, second) = (year?, month?, day?, hour?, minute?, second?);
+    if b[4] != b'-' || b[7] != b'-' || !matches!(b[10], b'T' | b't' | b' ') || b[13] != b':' || b[16] != b':' {
+        return None;
+    }
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || minute > 59 || second > 60 {
+        return None;
+    }
+    let mut rest = &b[19..];
+    let mut fraction = 0.0;
+    if let Some(after) = rest.strip_prefix(b".") {
+        let end = after.iter().position(|c| !c.is_ascii_digit()).unwrap_or(after.len());
+        fraction = after[..end].iter().rev().fold(0.0, |f, c| (f + f64::from(c - b'0')) / 10.0);
+        rest = &after[end..];
+    }
+    let offset = match rest {
+        b"" | b"Z" | b"z" => 0,
+        [sign @ (b'+' | b'-'), h1, h2, b':', m1, m2] | [sign @ (b'+' | b'-'), h1, h2, m1, m2] => {
+            let zone = [h1, h2, m1, m2];
+            if !zone.iter().all(|c| c.is_ascii_digit()) {
+                return None;
+            }
+            let [h1, h2, m1, m2] = zone.map(|c| i64::from(c - b'0'));
+            let seconds = (h1 * 10 + h2) * 3600 + (m1 * 10 + m2) * 60;
+            if *sign == b'-' {
+                -seconds
+            } else {
+                seconds
+            }
+        }
+        _ => return None,
+    };
+    // Days since 1970-01-01 in the Gregorian calendar (`days_from_civil` of Howard Hinnant).
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
+    let days = era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468;
+    Some((days * 86_400 + hour * 3600 + minute * 60 + second - offset) as f64 + fraction)
 }
 
 fn first_text(text: &str, tag: &str) -> Option<String> {
@@ -184,12 +247,38 @@ fn scoped_name(text: &str) -> Option<String> {
     None
 }
 
+/// The first element in `extensions` whose local name, after any prefix, is `name`: its text as a finite
+/// decimal. This reads the Garmin `TrackPointExtension` v1 and v2 with any prefix, and a bare `<power>`.
+fn sensor(extensions: &str, name: &str) -> Option<f64> {
+    let rest = extensions.match_indices('<').map(|(at, _)| &extensions[at + 1..]).find(|rest| {
+        let tag = &rest[..rest.find(|c| matches!(c, '/' | '>') || whitespace(c)).unwrap_or(rest.len())];
+        tag.rsplit(':').next() == Some(name)
+    })?;
+    let (head, text) = rest.split_once('>')?;
+    if head.ends_with('/') {
+        return None;
+    }
+    let value: f64 = text[..text.find('<').unwrap_or(text.len())].trim_matches(whitespace).parse().ok()?;
+    value.is_finite().then_some(value)
+}
+
 pub fn read(text: &str, fallback: &str) -> Result<Import, String> {
     let entries = elements(text, &["trkpt", "rtept"]);
-    let mut tracks = Vec::new();
-    let mut routes = Vec::new();
+    let trks = elements(text, &["trk"]);
+    // The openers of the tracks and their segments, in the order of the file.
+    let mut openers: Vec<usize> = trks.iter().chain(&elements(text, &["trkseg"])).map(|e| e.start).collect();
+    openers.sort_unstable();
+    let mut openers = openers.into_iter().peekable();
+    let mut tracks: Vec<Point> = Vec::new();
+    let mut routes: Vec<Point> = Vec::new();
     let mut malformed = 0;
+    let mut segment_start = true;
     for entry in &entries {
+        if entry.kind == "trkpt" {
+            while openers.next_if(|&at| at < entry.start).is_some() {
+                segment_start = true;
+            }
+        }
         let Some(mut p) = point(entry.attributes) else {
             malformed += 1;
             continue;
@@ -205,9 +294,22 @@ pub fn read(text: &str, fallback: &str) -> Result<Import, String> {
                 break;
             }
         }
+        p.time = first_text(entry.body, "time").and_then(|t| time(&t));
+        if let Some(extensions) = elements(entry.body, &["extensions"]).first() {
+            // No sensor gives a heart rate of 0 or a negative cadence or power: some apps write 0 without strap contact.
+            let value = |name, min: f64| sensor(extensions.body, name).filter(|v| *v >= min);
+            (p.hr_bpm, p.cadence_rpm, p.power_w, p.temperature_c) = (
+                value("hr", f64::MIN_POSITIVE),
+                value("cad", 0.0),
+                value("power", 0.0),
+                sensor(extensions.body, "atemp"),
+            );
+        }
         if entry.kind == "trkpt" {
+            p.segment_start = std::mem::take(&mut segment_start);
             tracks.push(p);
         } else {
+            p.segment_start = routes.is_empty();
             routes.push(p);
         }
     }
@@ -242,25 +344,12 @@ pub fn read(text: &str, fallback: &str) -> Result<Import, String> {
     }
     file.push_str(&text[at..]);
     let name = scoped.or_else(|| first_text(&file, "name")).unwrap_or_else(|| fallback.into());
-    Ok(Import { name, points, waypoints })
-}
-
-pub fn parse(text: &str, fallback: &str) -> Result<Route, String> {
-    let Import { name, points, .. } = read(text, fallback)?;
-    let count = points.len().min(MAX_ROUTE_POINTS);
-    let step = (points.len() - 1) as f64 / (count - 1) as f64;
-    let points: Vec<_> = (0..count).map(|k| Point { ele: None, ..points[round(k as f64 * step) as usize] }).collect();
-    let distance_km = points
-        .windows(2)
-        .map(|p| {
-            let cos = (((p[0].lat + p[1].lat) / 2.0) * std::f64::consts::PI / 180e6).cos();
-            let dlat = (p[1].lat - p[0].lat) * 111_320.0 / 1e6;
-            let dlon = (p[1].lon - p[0].lon) * 111_320.0 * cos / 1e6;
-            dlat.hypot(dlon)
-        })
-        .sum::<f64>()
-        / 1000.0;
-    Ok(Route { name, points, distance_km })
+    // Only the head of the track: a point can have a `<type>` too.
+    let kind = trks.first().and_then(|trk| {
+        let head = ["<trkseg", "<trkpt"].iter().filter_map(|tag| trk.body.find(tag)).min().unwrap_or(trk.body.len());
+        first_text(&trk.body[..head], "type")
+    });
+    Ok(Import { name, points, waypoints, kind })
 }
 
 #[cfg(test)]
@@ -280,29 +369,23 @@ mod tests {
     }
 
     #[test]
-    fn corridor_keeps_endpoints_and_uniform_source_points() {
-        let text: String =
-            (0..10_000).map(|i| format!("<trkpt lat='{}' lon='8'/>", 47.0 + i as f64 / 10_000.0)).collect();
-        let full = read(&text, "fallback").unwrap();
-        let route = parse(&text, "fallback").unwrap();
-        assert_eq!(full.points.len(), 10_000);
-        assert_eq!(route.points.len(), MAX_ROUTE_POINTS);
-        let samples: Vec<_> =
-            [0, 1, 2, 3, 512, 1023, 1024, 2046, 2047].into_iter().map(|i| route.points[i].lat).collect();
-        assert_eq!(
-            samples,
-            [
-                47_000_000.0,
-                47_000_500.0,
-                47_001_000.0,
-                47_001_500.0,
-                47_250_100.0,
-                47_499_700.0,
-                47_500_200.0,
-                47_999_400.0,
-                47_999_900.0
-            ]
-        );
-        assert!(route.points.iter().all(|point| point.ele.is_none()));
+    fn sensors_come_from_the_extensions_of_a_point_by_local_name() {
+        let sensors = |extensions: &str| {
+            let text = format!("<gpx><trk><trkseg><trkpt lat='47' lon='8'>{extensions}</trkpt><trkpt lat='47.1' lon='8'/></trkseg></trk></gpx>");
+            let p = read(&text, "file").unwrap().points[0];
+            (p.hr_bpm, p.cadence_rpm, p.power_w, p.temperature_c)
+        };
+        let v1 = "<extensions><gpxtpx:TrackPointExtension><gpxtpx:atemp>21.5</gpxtpx:atemp><gpxtpx:hr>141</gpxtpx:hr><gpxtpx:cad>88</gpxtpx:cad></gpxtpx:TrackPointExtension><power>250</power></extensions>";
+        assert_eq!(sensors(v1), (Some(141.0), Some(88.0), Some(250.0), Some(21.5)));
+        let v2 = "<extensions><ns3:TrackPointExtension><ns3:hr> 150 </ns3:hr><ns3:cad>90</ns3:cad></ns3:TrackPointExtension></extensions>";
+        assert_eq!(sensors(v2), (Some(150.0), Some(90.0), None, None));
+        assert_eq!(sensors("<extensions><power>312</power></extensions>"), (None, None, Some(312.0), None));
+        let none = "<desc><![CDATA[<p>Climb</p><hr>140]]></desc><extensions><gpxtpx:TrackPointExtension><gpxtpx:hr></gpxtpx:hr><gpxtpx:cad>0x8C</gpxtpx:cad><gpxtpx:atemp>inf</gpxtpx:atemp></gpxtpx:TrackPointExtension><power/></extensions>";
+        assert_eq!(sensors(none), (None, None, None, None));
+        let out_of_range = "<extensions><gpxtpx:TrackPointExtension><gpxtpx:hr>0</gpxtpx:hr><gpxtpx:cad>-1</gpxtpx:cad></gpxtpx:TrackPointExtension><power>-5</power></extensions>";
+        assert_eq!(sensors(out_of_range), (None, None, None, None));
+        let zero = "<extensions><gpxtpx:TrackPointExtension><gpxtpx:cad>0</gpxtpx:cad></gpxtpx:TrackPointExtension><power>0</power></extensions>";
+        assert_eq!(sensors(zero), (None, Some(0.0), Some(0.0), None));
+        assert_eq!(sensors(""), (None, None, None, None));
     }
 }

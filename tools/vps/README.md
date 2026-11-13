@@ -44,6 +44,9 @@ tools/vps/deploy-services.sh HOST [COMMIT]     # COMMIT defaults to HEAD
   follower, and then leaves prod as it was.
 - The follower keeps the objects of the releases that prod names, and nothing else, in
   `/var/lib/obc-data/store/follower/prod/`.
+- The follower keeps the installed files in `/var/lib/obc-data/store/serve/prod/`. A restart
+  installs nothing again. A rollback after a failed update downloads nothing while the disk kept
+  its files.
 - `journalctl -u obc-data-serve` shows why a release did not start.
 - `/planner-api/version` gives the commit of the build, the layer formats that its services read
   and the format of the release manifest that it reads.

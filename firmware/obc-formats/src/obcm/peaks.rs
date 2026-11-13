@@ -46,18 +46,14 @@ impl Record {
     pub fn decode(bytes: &[u8; RECORD_LEN]) -> Self {
         Self {
             id: bytes[..32].try_into().unwrap(),
-            content: core::array::from_fn(|i| ContentRef {
-                offset: rd_u32(bytes, 32 + i * 8),
-                len: rd_u32(bytes, 36 + i * 8),
-            }),
+            content: core::array::from_fn(|i| ContentRef::decode(bytes, 32 + i * 8)),
         }
     }
     pub fn encode(self) -> [u8; RECORD_LEN] {
         let mut bytes = [0; RECORD_LEN];
         bytes[..32].copy_from_slice(&self.id);
-        for (i, r) in self.content.iter().enumerate() {
-            bytes[32 + i * 8..36 + i * 8].copy_from_slice(&r.offset.to_le_bytes());
-            bytes[36 + i * 8..40 + i * 8].copy_from_slice(&r.len.to_le_bytes());
+        for (i, r) in self.content.into_iter().enumerate() {
+            r.encode(&mut bytes, 32 + i * 8);
         }
         bytes
     }

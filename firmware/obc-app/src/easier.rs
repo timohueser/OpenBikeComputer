@@ -181,7 +181,7 @@ impl App {
     /// selected candidate widens the map, so it holds still while trials run.
     pub fn assistant_easier_bounds(
         &mut self,
-        source: obc_formats::assistant::PayloadFingerprint,
+        source: obc_formats::navigator::PayloadFingerprint,
         bounds: obc_map_scene::BBox,
     ) {
         if self.easier.phase == Phase::Rebuild && self.assistant_preview().is_some_and(|p| p.source == source) {

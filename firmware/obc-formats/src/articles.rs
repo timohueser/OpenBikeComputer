@@ -1,8 +1,5 @@
 //! Shared, self-contained multilingual article bundles. Photos belong to the enclosing place.
-use crate::{
-    io::rd_u32,
-    obcm::landmarks::{ContentRef, MAX_ATTRIBUTION_BYTES, MAX_TEXT_BYTES, MAX_TEXT_PAGES},
-};
+use crate::obcm::landmarks::{ContentRef, MAX_ATTRIBUTION_BYTES, MAX_TEXT_BYTES, MAX_TEXT_PAGES};
 
 /// The device UI order is checked against this mapping by obc-app.
 pub const LANGUAGES: [[u8; 2]; 4] = [*b"en", *b"de", *b"fr", *b"es"];
@@ -24,18 +21,16 @@ impl ArticleVariant {
         (LANGUAGES.contains(&language) && (1..=MAX_TEXT_PAGES).contains(&bytes[2]) && bytes[3] == 0).then(|| Self {
             language,
             text_pages: bytes[2],
-            text: ContentRef { offset: rd_u32(bytes, 4), len: rd_u32(bytes, 8) },
-            attribution: ContentRef { offset: rd_u32(bytes, 12), len: rd_u32(bytes, 16) },
+            text: ContentRef::decode(bytes, 4),
+            attribution: ContentRef::decode(bytes, 12),
         })
     }
     pub fn encode(&self) -> [u8; VARIANT_LEN] {
         let mut bytes = [0; VARIANT_LEN];
         bytes[..2].copy_from_slice(&self.language);
         bytes[2] = self.text_pages;
-        for (at, reference) in [(4, self.text), (12, self.attribution)] {
-            bytes[at..at + 4].copy_from_slice(&reference.offset.to_le_bytes());
-            bytes[at + 4..at + 8].copy_from_slice(&reference.len.to_le_bytes());
-        }
+        self.text.encode(&mut bytes, 4);
+        self.attribution.encode(&mut bytes, 12);
         bytes
     }
 }

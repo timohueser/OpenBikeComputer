@@ -74,7 +74,6 @@ impl CostBasis {
             return Err("Road has zero geometric length".into());
         }
         let (up, down, cutoff) = match profile.weighting {
-            Weighting::RoadBike(RoadBike::Shorter) => (0.0, 0.0, 0.015),
             Weighting::RoadBike(RoadBike::LessClimbing) => (60.0, 60.0, 0.015),
             Weighting::RoadBike(_) => (0.0, 60.0, 0.015),
             Weighting::Weighted { climb, .. } => (climb, 0.0, 0.0),

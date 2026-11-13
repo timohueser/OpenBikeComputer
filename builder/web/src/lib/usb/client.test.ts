@@ -15,9 +15,8 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { expectBytes } from "../../../test-support/bytes";
 import { loadFlatDevice } from "../../../test-support/flat-device/load";
 import { Crc32 } from "./crc32";
-import { DeviceError, FlatStoreClient, blobSource, bytesSource } from "./client";
-import { FlatDevice, controlCeilingFor, flatDevice, streamCeilingFor } from "./flat-device";
-import { loopbackLink } from "./loopback";
+import { DeviceError, blobSource, bytesSource } from "./client";
+import { controlCeilingFor, flatDevice, streamCeilingFor } from "./flat-device";
 import { EntryFlags, ObjectKind, ObjectState, Opcode } from "./protocol";
 
 beforeAll(loadFlatDevice);
@@ -111,19 +110,6 @@ describe("what a connection learns before anything else", () => {
                 serialNumber: "AABB",
             });
         });
-    });
-
-    it("says the host cannot ask rather than inventing a firmware version", async () => {
-        // A transport with no EP0 path — the desktop bridge today. A fabricated revision would feed
-        // "an update is available" a lie, so the honest answer is that nobody asked.
-        const link = loopbackLink();
-        const device = new FlatDevice(link.device);
-        void device.run();
-        const pathless = { control: link.host.control, stream: link.host.stream, close: () => link.host.close() };
-        const client = new FlatStoreClient(pathless);
-        await expect(client.deviceInfo()).rejects.toMatchObject({ code: "unavailable" });
-        await client.close();
-        device.stop();
     });
 
     it("takes the store's identity and cache freshness from the first LIST, not from a read", async () => {
@@ -589,6 +575,21 @@ describe("REMOVE", () => {
             await expect(client.remove({ objectId: ride.objectId, revision: ride.revision })).rejects.toMatchObject({
                 code: "invalid-request",
             });
+        });
+    });
+});
+
+describe("ARCHIVE_RIDE", () => {
+    it("marks the exact ride once, and refuses a source that is not on the card", async () => {
+        await withDevice({ storeId: CARD }, async ({ client, device }) => {
+            const ride = device.seed({ kind: ObjectKind.Ride, displayName: "ride", bytes: payload(200) });
+            const source = { storeId: CARD, ...ride };
+            const first = await client.archiveRide(source);
+            expect(first.commitSequence).toBe(device.sequence);
+            expect(device.entries.filter((entry) => entry.kind === ObjectKind.Metadata)).toHaveLength(1);
+            // The duplicate answers from the stored row and commits nothing.
+            expect((await client.archiveRide(source)).commitSequence).toBe(first.commitSequence);
+            await expect(client.archiveRide({ ...source, payloadCrc32: source.payloadCrc32 ^ 1 })).rejects.toMatchObject({ code: "invalid-request" });
         });
     });
 });

@@ -1,6 +1,8 @@
 <script lang="ts">
     import LayerInspect from './LayerInspect.svelte';
     import LayerLegend from './LayerLegend.svelte';
+    import { distanceIn, heightIn, heightUnit } from '../../lib/settings/format';
+    import { settings } from '../../lib/settings/settings.svelte';
     import { dateLabel, valueRuns, type DataLayer, type Theme } from '../../lib/planner/layers/data-layer';
     import { profileSamples, sampleIndex } from '../../lib/planner/profile-data';
     import type { RoutingLine } from '../../lib/planner/routing';
@@ -77,7 +79,7 @@
 </div>
 {#if at && chart}
     <div class="popover" role="tooltip" style:left={`clamp(8px, ${at.x - 184}px, calc(100vw - 376px))`} style:bottom={`${at.bottom}px`}>
-        <LayerInspect title={`${layer.label} at km ${(at.progress * total).toFixed(1)}`} detail={height === null ? '' : `${Math.round(height).toLocaleString('en-GB')} m`} {chart} {date} source={layer.source} />
+        <LayerInspect title={`${layer.label} at ${settings.units} ${distanceIn(at.progress * total * 1000).toFixed(1)}`} detail={height === null ? '' : `${Math.round(heightIn(height)).toLocaleString('en-GB')} ${heightUnit()}`} {chart} {date} source={layer.source} />
     </div>
 {/if}
 
