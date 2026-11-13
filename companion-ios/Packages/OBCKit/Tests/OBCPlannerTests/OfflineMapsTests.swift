@@ -109,6 +109,56 @@ struct OfflineMapsTests {
         #expect(try await store.maps().isEmpty)
     }
 
+    @Test func aStoppedRoutingInstallLinksNothingAndADiscardLeavesNothing() async throws {
+        let root = temporary()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cell = Data("cell".utf8)
+        let object = OfflineFile(bytes: Int64(cell.count), sha256: OfflineBundle.hash(cell), part_bytes: 10)
+        // Two parts with equal bytes share one object, which downloads once.
+        let routing = FakeRouting(objects: [object, object], stops: true)
+        let store = OfflineMapStore(root: root, routing: routing)
+        let (quote, bytes) = try fixture()
+        try stage(quote, bytes: bytes, root: root)
+        try cell.write(to: root.appending(path: "downloads/\(object.sha256)"))
+        await #expect(throws: CancellationError.self) {
+            try await store.install(quote, allowMobileData: false) { _, _, _ in }
+        }
+        let exists = { (path: String) in FileManager.default.fileExists(atPath: root.appending(path: path).path) }
+        #expect(try await store.maps().isEmpty)
+        #expect(try await store.pending()?.routing == [object, object])
+        #expect(exists("objects/\(object.sha256)"))
+        #expect(!exists("releases/\(quote.map.id)"))
+        #expect(FileManager.default.fileExists(atPath: store.routing(quote.map).path))
+        try await store.discardPending()
+        #expect(await routing.calls.last?.areas == [])
+        #expect(!FileManager.default.fileExists(atPath: store.routing(quote.map).path))
+        #expect(!exists("objects/\(object.sha256)") && !exists("pending.json") && !exists("downloads"))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.appending(path: "releases").path).isEmpty)
+    }
+
+    @Test func aNewMapOfThePackageDropsTheCachedSource() async throws {
+        let root = temporary()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = OfflineMapStore(root: root, routing: FakeRouting())
+        let (first, firstBytes) = try fixture(content: "first")
+        let (second, secondBytes) = try fixture(content: "second", bounds: [9.5,49.5,10,50])
+        try stage(first, bytes: firstBytes, root: root)
+        try await store.install(first, allowMobileData: false) { _, _, _ in }
+        let local = RecordingSource(local: true), opens = Counter()
+        let planner = LocalFirstPlanner(store: store, online: RecordingSource(local: false)) { _, _, _ in
+            await opens.add()
+            return local
+        }
+        let release = try await planner.release()
+        let points = [Coordinate(latitude: 48, longitude: 8), Coordinate(latitude: 48.1, longitude: 8.1)]
+        for _ in 0..<2 { _ = try await planner.route(points: points, activity: .gravel, preference: .balanced, release: release) }
+        #expect(await opens.count == 1)
+        try stage(second, bytes: secondBytes, root: root)
+        try await store.install(second, allowMobileData: false) { _, _, _ in }
+        _ = try await planner.route(points: points, activity: .gravel, preference: .balanced, release: release)
+        #expect(await opens.count == 2)
+    }
+
     @Test func corruptTransportNeverReplacesAnInstalledMapAndCanBeRetried() async throws {
         let root = temporary()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -303,12 +353,20 @@ private func stage(_ quote: OfflineDownloadQuote, bytes: Data, root: URL) throws
     }
 }
 
-/// Records the areas of each install, and the maps that `maps.json` lists at that moment.
+private actor Counter {
+    var count = 0
+    func add() { count += 1 }
+}
+
+/// Records the areas of each install, and the maps that `maps.json` lists at that moment. It keeps a
+/// folder with `directory.bin` for an install of some areas and deletes it for none; with `stops`, an
+/// install of some areas stops after it wrote the folder.
 private actor FakeRouting: OfflineRouting {
     struct Call: Sendable { let target: URL; let areas: [[Double]]; let listed: [String] }
     var calls: [Call] = []
     let objects: [OfflineFile]
-    init(objects: [OfflineFile] = []) { self.objects = objects }
+    let stops: Bool
+    init(objects: [OfflineFile] = [], stops: Bool = false) { self.objects = objects; self.stops = stops }
     func plan(package: URL, directory: URL, target: URL, areas: [[Double]]) throws -> OfflineRoutingPlan {
         OfflineRoutingPlan(objects: objects, bytes: 0)
     }
@@ -318,6 +376,13 @@ private actor FakeRouting: OfflineRouting {
         let listed = FileManager.default.fileExists(atPath: list.path)
             ? try JSONDecoder().decode([OfflineMap].self, from: Data(contentsOf: list)).map(\.id) : []
         calls.append(Call(target: target, areas: areas, listed: listed))
+        if areas.isEmpty {
+            try? FileManager.default.removeItem(at: target)
+            return
+        }
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        try Data().write(to: target.appending(path: "directory.bin"))
+        if stops { throw CancellationError() }
     }
 }
 

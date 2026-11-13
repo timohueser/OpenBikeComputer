@@ -59,8 +59,21 @@ public actor OfflineMapStore {
             release: quote.release, routing: quote.routing)
     }
 
-    public func discardPending() throws {
+    public func discardPending() async throws {
         guard !installing else { throw OfflineMapFailure.unavailable("Pause the download first.") }
+        installing = true
+        defer { installing = false }
+        // A stopped install can leave cells of the pending map in its routing folder: install the listed
+        // maps of that package again from the copies in the folder (no area deletes it).
+        if let pending = try? pending() {
+            let target = routing(pending.map)
+            if FileManager.default.fileExists(atPath: target.appending(path: "directory.bin").path) {
+                let areas = try maps().filter { $0.routing == pending.map.routing }.map(\.bounds)
+                try await installer.install(package: target.appending(path: "package.json"),
+                    directory: target.appending(path: "directory.bin"), target: target, areas: areas,
+                    objects: root.appending(path: "objects")) { _, _ in }
+            }
+        }
         let path = root.appending(path: "pending.json")
         if FileManager.default.fileExists(atPath: path.path) { try FileManager.default.removeItem(at: path) }
         let downloads = root.appending(path: "downloads")
@@ -175,7 +188,7 @@ public actor OfflineMapStore {
         let total = try missingBytes(quote.bundle, objects)
         let transfer = OfflineTransfer(root: root, source: quote.source.appending(path: "objects"),
             total: total, session: session, progress: progress)
-        let missing = quote.bundle.objects.filter { !hasObject($0) } + objects.filter { !hasObject($0) }.map { Self.entry($0) }
+        let missing = quote.bundle.objects.filter { !hasObject($0) } + unique(objects).filter { !hasObject($0) }.map { Self.entry($0) }
         try await withThrowingTaskGroup(of: Void.self) { group in
             var next = missing.makeIterator()
             for _ in 0..<4 {
@@ -186,6 +199,14 @@ public actor OfflineMapStore {
             }
         }
         try Task.checkCancellation()
+        // The routing installs from `objects/` before the release folder is linked, so the link and
+        // `maps.json` follow it with no suspension between them, and a stopped install links nothing.
+        let areas = try maps().filter { $0.routing == quote.map.routing && $0.id != quote.map.id }.map(\.bounds)
+        try await installer.install(package: object(quote.bundle, OfflineManifest.routingPackage),
+            directory: object(quote.bundle, OfflineManifest.routingDirectory), target: routing(quote.map),
+            areas: areas + [quote.map.bounds], objects: root.appending(path: "objects")) { done, all in
+            progress(done, all, "Installing routes…")
+        }
         let directory = root.appending(path: "releases/\(quote.map.id)")
         let stage = root.appending(path: "releases/.\(quote.map.id)")
         if fm.fileExists(atPath: stage.path) { try fm.removeItem(at: stage) }
@@ -202,13 +223,6 @@ public actor OfflineMapStore {
                 throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
             }
         } else { try fm.moveItem(at: stage, to: directory) }
-        // The map becomes visible only once its routing is complete; until then the old `install.bin` holds.
-        let areas = try maps().filter { $0.routing == quote.map.routing && $0.id != quote.map.id }.map(\.bounds)
-        try await installer.install(package: directory.appending(path: OfflineManifest.routingPackage),
-            directory: directory.appending(path: OfflineManifest.routingDirectory), target: routing(quote.map),
-            areas: areas + [quote.map.bounds], objects: root.appending(path: "objects")) { done, all in
-            progress(done, all, "Installing routes…")
-        }
         var updated = try maps().filter { $0.id != quote.map.id }
         updated.append(quote.map)
         try JSONEncoder().encode(updated).write(to: root.appending(path: "maps.json"), options: .atomic)
@@ -225,9 +239,15 @@ public actor OfflineMapStore {
         // The install comes first: a route during the `await` must not cache a reader under the new map list
         // on the old `install.bin`.
         let others = try maps().filter { $0.id != map.id }
-        try await installer.install(package: directory.appending(path: OfflineManifest.routingPackage),
-            directory: directory.appending(path: OfflineManifest.routingDirectory), target: routing(map),
-            areas: others.filter { $0.routing == map.routing }.map(\.bounds), objects: root.appending(path: "objects")) { _, _ in }
+        let remaining = others.filter { $0.routing == map.routing }.map(\.bounds)
+        do {
+            try await installer.install(package: directory.appending(path: OfflineManifest.routingPackage),
+                directory: directory.appending(path: OfflineManifest.routingDirectory), target: routing(map),
+                areas: remaining, objects: root.appending(path: "objects")) { _, _ in }
+        } catch let error where !remaining.isEmpty && !(error is CancellationError) {
+            // The cells of the remaining maps can be gone after a removal that stopped before `maps.json`;
+            // the folder stays for them, and their routes that miss a cell go online.
+        }
         try JSONEncoder().encode(others).write(to: root.appending(path: "maps.json"), options: .atomic)
         if FileManager.default.fileExists(atPath: directory.path) { try FileManager.default.removeItem(at: directory) }
         try collectObjects()
@@ -253,12 +273,23 @@ public actor OfflineMapStore {
 
     /// The transport bytes of the missing objects of `bundle` and of the missing routing objects.
     private func missingBytes(_ bundle: OfflineBundle, _ routing: [OfflineFile]) throws -> Int64 {
-        try sum(bundle.objects.filter { !hasObject($0) }.map(\.transport.bytes) + routing.filter { !hasObject($0) }.map(\.bytes))
+        try sum(bundle.objects.filter { !hasObject($0) }.map(\.transport.bytes) + unique(routing).filter { !hasObject($0) }.map(\.bytes))
+    }
+
+    /// The routing objects once each: parts with equal bytes share one object.
+    private func unique(_ files: [OfflineFile]) -> [OfflineFile] {
+        var seen: Set<String> = []
+        return files.filter { seen.insert($0.sha256).inserted }
     }
 
     private func needed(_ bundle: OfflineBundle, _ routing: [OfflineFile]) throws -> Int64 {
         let missing = bundle.objects.filter { !hasObject($0) }
         let missingRouting = routing.filter { !hasObject($0) }
+        // A new routing package also copies `package.json` and `directory.bin` into its install folder.
+        let files = [OfflineManifest.routingPackage, OfflineManifest.routingDirectory].compactMap { bundle.files[$0] }
+        let folder = root.appending(path: "routing/\(bundle.files[OfflineManifest.routingDirectory]?.sha256 ?? "")")
+        let copies = FileManager.default.fileExists(atPath: folder.appending(path: "directory.bin").path)
+            ? [] : files.map(\.bytes)
         _ = try availableBytes()
         var info = statfs()
         guard statfs(root.path, &info) == 0 else { throw POSIXError(.EIO) }
@@ -276,7 +307,8 @@ public actor OfflineMapStore {
         // Allocate for object tails, directory blocks, and both copies of atomically written metadata.
         let metadata = try JSONEncoder().encode(bundle).count + Int(bundle.release.bytes) * 2
         return try sum(try missing.map { try allocated($0.bytes) }
-            + missingRouting.map { try sum([allocated($0.bytes), allocated($0.part_bytes ?? 0)]) } + [
+            + unique(missingRouting).map { try allocated($0.bytes) } + missingRouting.map { try allocated($0.part_bytes ?? 0) }
+            + copies.map { try allocated($0) } + [
             sum(missing.filter { $0.transport.encoding == "gzip" }.map(\.transport.bytes).sorted(by: >).prefix(4).map { try allocated($0) }),
             allocated(Int64(metadata) * 2), block * Int64(directories.count + bundle.files.count + 4)])
     }
