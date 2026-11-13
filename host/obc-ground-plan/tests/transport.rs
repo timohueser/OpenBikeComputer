@@ -169,7 +169,7 @@ fn the_vocabulary_names_every_code_with_its_colour() {
         v[key].as_array().unwrap().iter().map(|e| e["name"].as_str().unwrap().to_string()).collect::<Vec<_>>()
     };
     assert_eq!(names("surfaces")[Surface::CornerFill as usize], "corner_fill");
-    assert_eq!(names("surfaces").len(), Surface::Zone as usize + 1);
+    assert_eq!(names("surfaces").len(), Surface::DeckEdge as usize + 1);
     assert_eq!(names("edges")[EdgeKind::CellBorder as usize], "cell_border");
     assert_eq!(v["surfaces"][0]["fill"], serde_json::Value::Null, "terrain has no fill");
     assert!(v["edges"].as_array().unwrap().iter().all(|e| colour(&e["colour"])));
