@@ -175,9 +175,7 @@ shared objects that another map or the pending download needs.
 
 Each download prohibits cellular, expensive and constrained networks unless the user allows them.
 The preparation of a download is the exception: it fetches `routing/package.json` and
-`routing/directory.bin` on any network, to plan the cells of the area. The directory has about 78
-bytes for each file of the route package: about 3 MB for 35,000 files, up to about 19.5 MB for
-250,000.
+`routing/directory.bin` on any network, to plan the cells of the area.
 Maps, routes and search first use a complete installed release that covers the request. A route
 uses the install of the first map that holds its points. A failed local request falls back to the
 online service. A long road of a download cell that the area does not install is no candidate on the
