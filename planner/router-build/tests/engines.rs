@@ -453,7 +453,7 @@ fn the_engine_on_format_10_gives_the_costs_and_candidates_of_format_9() {
     // table set.
     let (mut tables, mut under_ceiling) = ([0; 8], 0);
     for profile in Profile::presets() {
-        let mut set = compare::requests(&old, &profile.name, 40, 17, 10_000.0);
+        let mut set = compare::requests(&old, &profile.name, 40, 17, 0.0, 10_000.0);
         for points in [[ends[0], ends[1]], [ends[1], ends[0]]] {
             set.push(serde_json::from_value(serde_json::json!({"points": points, "profile": profile.name})).unwrap());
         }
