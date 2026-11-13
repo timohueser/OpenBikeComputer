@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 use crate::frame::{metres_per_unit, CellKey, CELL_UNITS, FRAME_BITS, MARGIN_M};
-use crate::sections::{Reach, Sections};
+use crate::sections::{leading_number, Reach, Sections, WaySection};
 use crate::CellInput;
 
 pub use crossings::end_on_chord;
@@ -466,6 +466,16 @@ impl WayGraph {
     /// The way of sample k.
     fn way_of_sample(&self, k: u32) -> u32 {
         self.ways.partition_point(|w| w.samples.end <= k) as u32
+    }
+
+    /// The deck depth of bridge way w: its tile's `deck` tag where the way lies on the deck of its own
+    /// part, else the thinnest deck of its class (`section`).
+    pub fn deck_depth(&self, input: &CellInput, w: u32, section: &WaySection) -> f64 {
+        let way = &self.ways[w as usize];
+        let part = &self.parts[way.part as usize];
+        let tagged = way.level == Level::Deck && part.level == Level::Deck;
+        let tag = input.features[part.feature.0 as usize].tags.get("deck");
+        tag.and_then(|t| leading_number(t)).filter(|_| tagged).unwrap_or(section.deck_least_m)
     }
 }
 

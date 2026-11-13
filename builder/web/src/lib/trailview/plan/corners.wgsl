@@ -16,7 +16,8 @@ struct Piece {
     corners: u32,
     slots: u32,
     out: u32,
-    steps: u32,
+    // The first step slot of the end faces (the mesh's last slots).
+    faces: u32,
     // The first word of the cell's records block, and the first corner of a dispatch; the top bit of
     // `first`: make only the plain terrain's corners, which read the drawn page.
     block: u32,
@@ -108,7 +109,7 @@ fn nearest_way(q: vec2i, mpu: f32) -> vec3f {
         let item = mw(at + k);
         let line = item & 0xffffu;
         let finish = mw(lines + M_LINE * line + 1u);
-        if ((finish & M_WATER) != 0u) {
+        if ((finish & (M_WATER | M_CEILING)) != 0u) {
             continue;
         }
         let wa = samples + M_SAMPLE * (mw(lines + M_LINE * line + 2u) + (item >> 16u));

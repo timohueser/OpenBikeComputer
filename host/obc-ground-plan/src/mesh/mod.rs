@@ -20,12 +20,12 @@
 //!
 //! | Words | Holds |
 //! | --- | --- |
-//! | head | `HEAD` words: `MAGIC`, the cell's x and y (zoom 16), the counts of corners, triangles, strip triangles, triangle runs, step slots and step runs, and of the last triangle runs that draw only over level-18 nodes |
+//! | head | `HEAD` words: `MAGIC`, the cell's x and y (zoom 16), the counts of corners, triangles, strip triangles, triangle runs, step slots and step runs, of the last triangle runs that draw only over level-18 nodes, and of the last step slots, the end faces |
 //! | corners | 2 words each (below), sorted by point (y, then x) |
 //! | triangle runs | 2 words each: the run's count of triangles and its base corner |
 //! | triangles | 3 u16 each, the run's base subtracted, turning as the terrain's `gridIndices` (negative signed area in x east, y south); the strip's triangles last, and last of all, in runs of their own, the strip's triangles of halves that the level-17 terrain draws (`strip`); a zero u16 pads an odd count of u16 |
 //! | step runs | 2 words each, as the triangle runs |
-//! | steps | 4 u16 each, the run's base subtracted: `a_p, a_q, b_q, b_p` (below) |
+//! | steps | 4 u16 each, the run's base subtracted: `a_p, a_q, b_q, b_p` (below); the slots on a deck end line (`EdgeKind::DeckEdge`) last, in runs of their own: the end faces |
 //! | region | `REGION_WORDS` words: R on the cell and one ring of region cells, bit (cy + 1) × (`CELLS` + 2) + cx + 1 for region cell (cx, cy) of the cell, −1 ≤ cx, cy ≤ `CELLS` |
 //!
 //! A run is a stretch of triangles (or slots) whose corners lie within 65,536 of its base: draw it
@@ -47,7 +47,7 @@
 //! heights. Where h(a) − h(b) changes sign between p and q, the diagonal joins the lower corners at p
 //! and q, so the fold hangs below both faces; a slot of equal heights covers no pixel. A slot faces its
 //! lower side, so it draws without back-face culling or turns toward that side; the step's look (kerb
-//! or wall) comes from the two labels and the step's height.
+//! or wall) comes from the two labels and the step's height, an end face's from its place in the slots.
 //!
 //! # Sunk points
 //!
@@ -82,8 +82,8 @@ use region::{grid_of, Region, MARK_WORDS};
 pub use region::REGION_WORDS;
 
 /// "OBM" and the layout's version.
-pub const MAGIC: u32 = 0x4f42_4d03;
-pub const HEAD: usize = 10;
+pub const MAGIC: u32 = 0x4f42_4d04;
+pub const HEAD: usize = 11;
 /// The label of a corner of the terrain rule.
 pub const NO_LABEL: u32 = (1 << 25) - 1;
 /// A corner's key: its label, and this bit for a terrain vertex.
@@ -194,6 +194,8 @@ pub struct CellMesh {
     pub level18_runs: u32,
     pub steps: Vec<[u32; 4]>,
     pub step_runs: Vec<[u32; 2]>,
+    /// The last slots of `steps`: the end faces.
+    pub end_faces: u32,
     pub region: Vec<u32>,
     pub stats: MeshStats,
     pub times: Vec<f64>,
@@ -244,6 +246,7 @@ impl CellMesh {
             self.steps.len() as u32,
             self.step_runs.len() as u32,
             self.level18_runs,
+            self.end_faces,
         ];
         let words = head
             .into_iter()
@@ -488,8 +491,8 @@ pub fn mesh_cell(
         let k = t.map(|v| key(v, &mut ground));
         triangles.push([0, 1, 2].map(|i| corners.get(t[i], k[i])));
     }
-    let mut steps = Vec::new();
-    for s in &input.segments[..input.edges] {
+    let (mut steps, mut faces) = (Vec::new(), Vec::new());
+    for (s, &end) in input.segments[..input.edges].iter().zip(&input.end_faces) {
         let side = |f: u32, v: u32, ground: &mut Vec<u32>| {
             if is_sharp(f) {
                 label_of(f)
@@ -500,7 +503,12 @@ pub fn mesh_cell(
         let (la, lb) = (side(s.left, s.a, &mut ground), side(s.left, s.b, &mut ground));
         let (ra, rb) = (side(s.right, s.a, &mut ground), side(s.right, s.b, &mut ground));
         if la != ra || lb != rb {
-            steps.push([corners.get(s.a, la), corners.get(s.b, lb), corners.get(s.b, rb), corners.get(s.a, ra)]);
+            let slot = [corners.get(s.a, la), corners.get(s.b, lb), corners.get(s.b, rb), corners.get(s.a, ra)];
+            if end {
+                faces.push(slot);
+            } else {
+                steps.push(slot);
+            }
         }
     }
     // The strip: its grid points are the triangulation's where D's border holds them.
@@ -567,7 +575,9 @@ pub fn mesh_cell(
     let level18_count = level18.len() as u32;
     triangle_runs.extend(&level18_runs);
     let triangles = [shared, level18].concat();
-    let steps = by_least(&steps, &rank);
+    let end_faces = faces.len();
+    let steps = [by_least(&steps, &rank), by_least(&faces, &rank)].concat();
+    let step_runs = [runs(&steps[..steps.len() - end_faces])?, runs(&steps[steps.len() - end_faces..])?].concat();
     let packed = (order.iter())
         .map(|&c| {
             let (key, v) = (corners.keys[c as usize], corners.of[c as usize]);
@@ -597,8 +607,9 @@ pub fn mesh_cell(
         triangle_runs,
         level18_runs: level18_runs.len() as u32,
         triangles,
-        step_runs: runs(&steps)?,
+        step_runs,
         steps,
+        end_faces: end_faces as u32,
         region: region.bits(),
         stats,
         times,

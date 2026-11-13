@@ -23,6 +23,8 @@ export const GROUND = 1, PAINT = 2, VOID = 4, INSIDE = 8, LAMP = 16, BORE = 128;
 export interface StructureMesh {
     vertices: ArrayBuffer;
     indices: Uint32Array<ArrayBuffer>;
+    /** The count of the last indices, which the ground plan does not draw: a bridge's abutments, where its end faces stand. None: 0. */
+    offPlan?: number;
 }
 
 /** A point of a cross-section: metres across to the left of the line, and metres up. */
@@ -83,7 +85,9 @@ export function curveStops(line: Line): (Station & { along: number })[] {
  */
 export class MeshBuilder {
     private readonly words: number[] = [];
-    private readonly indices: number[] = [];
+    private readonly onPlan: number[] = [];
+    private readonly late: number[] = [];
+    private indices = this.onPlan;
 
     /** A vertex at a station's corner, or at a point. */
     vertex(x: number, y: number, z: number, colour: number, across = 0, half = 0, sleepers = NO_SLEEPERS): number {
@@ -112,8 +116,15 @@ export class MeshBuilder {
         this.quad([this.at(s, a, colour), this.at(s, b, colour), this.at(t, b, colour), this.at(t, a, colour)], o);
     }
 
+    /** Builds the faces of `make` as faces that the ground plan does not draw (StructureMesh.offPlan). */
+    offPlan(make: () => void): void {
+        this.indices = this.late;
+        make();
+        this.indices = this.onPlan;
+    }
+
     mesh(): StructureMesh | null {
-        if (!this.indices.length) return null;
+        if (!this.onPlan.length && !this.late.length) return null;
         const vertices = new ArrayBuffer(this.words.length * 4), floats = new Float32Array(vertices), ints = new Int32Array(vertices), uints = new Uint32Array(vertices);
         this.words.forEach((word, i) => {
             const k = i % STRUCTURE_VERTEX;
@@ -121,7 +132,7 @@ export class MeshBuilder {
             else if (k === 3 || k === 4) uints[i] = word;
             else floats[i] = word;
         });
-        return { vertices, indices: new Uint32Array(this.indices) };
+        return { vertices, indices: new Uint32Array(this.onPlan.concat(this.late)), offPlan: this.late.length };
     }
 
     /** The direction east, north, up of a direction [across, up] at the middle of two stations. */

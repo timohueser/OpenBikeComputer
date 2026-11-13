@@ -4,7 +4,8 @@
 // they agree and the greater one rules inside its core. Slopes start from the face plan's paved outline
 // (the records' outline edges): per host line a fill and a cut over its edges, released at the reach,
 // and the ground is a smooth min(cut, max(T, fill)), where a line's cut rises to the bank of the other
-// lines' fills, a wall class's up to its highest wall and then at its steepest cut.
+// lines' fills, a wall class's up to its highest wall and then at its steepest cut. The ground (the terrain and
+// the slopes) stays under every deck's ceiling.
 // #include records.wgsl
 
 const H_SLOTS: u32 = 10u;
@@ -52,6 +53,7 @@ struct HRules {
     wall_max: f32,
     face_max: f32,
     region_fade: f32,
+    ceiling_release: f32,
     legs_wall: bool,
 }
 var<private> H: HRules;
@@ -61,7 +63,7 @@ var<private> H_BASE: f32;
 
 fn h_rules(block: u32) -> HRules {
     let r = block + H_RULES_AT;
-    return HRules(mf(r), mf(r + 1u), mf(r + 2u), mf(r + 3u), mf(r + 4u), mf(r + 5u), mf(r + 6u), mf(r + 7u), mf(r + 8u), mf(r + 9u), mf(r + 10u), mf(r + 11u), mf(r + 12u), mf(r + 13u), mf(r + 14u), mf(r + 15u), mf(r + 16u), mf(r + 17u), mf(r + 18u), mf(r + 20u), mw(r + 21u) == 1u);
+    return HRules(mf(r), mf(r + 1u), mf(r + 2u), mf(r + 3u), mf(r + 4u), mf(r + 5u), mf(r + 6u), mf(r + 7u), mf(r + 8u), mf(r + 9u), mf(r + 10u), mf(r + 11u), mf(r + 12u), mf(r + 13u), mf(r + 14u), mf(r + 15u), mf(r + 16u), mf(r + 17u), mf(r + 18u), mf(r + 20u), mf(r + 22u), mw(r + 23u) == 1u);
 }
 
 // An unknown terrain where an outline edge's cones let go, or an unknown grade.
@@ -419,6 +421,10 @@ fn h_present(hp: ptr<function, HPoint>, block: u32, q: vec2f, mpu: f32, keep: ve
             break;
         }
         let l = mw(at + k) & 0xffffu;
+        // The ceiling lines come last: no line of storey 0 follows.
+        if ((mw(block + mw(block + 6u) + M_LINE * l + 1u) & M_CEILING) != 0u) {
+            break;
+        }
         let ln = h_line(block, l);
         // A line whose core lies a feather or more from q is not present: skip it before its frames
         // (the labels' material lines stay).
@@ -949,7 +955,13 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, t: f32) -> f32 {
     for (var k = 0u; k < n; k++) {
         let g = gs.g[k];
         let counted = roads & ~(1u << k);
-        let budget = h_soft_top(&fills, &dists, n, counted);
+        // Another line's rail bed counts with its fill less its wall cap, as heights::slope.
+        var budget = h_soft_top(&fills, &dists, n, counted);
+        for (var j = 0u; j < n; j++) {
+            if (j != k && (gs.g[j].rank & H_RAIL) != 0u) {
+                budget = max(budget, fills[j] - select(0.0, H.wall_max, (gs.g[j].rank & H_WALL) != 0u));
+            }
+        }
         var near = g.d;
         for (var j = 0u; j < n; j++) {
             if (((counted >> j) & 1u) != 0u) {
@@ -1121,21 +1133,95 @@ fn height_at(block: u32, q: vec2f, label: u32, t: f32, start: u32) -> vec2f {
 
 // height_at with every height less H_BASE.
 fn height_relative(block: u32, q: vec2f, label: u32, t: f32, start: u32) -> vec2f {
-    if (label == M_NONE) {
-        return vec2f(t, H_TERRAIN);
-    }
-    let lw = m_label(block, label);
-    let rule = mw(lw) >> 24u;
+    let rule = select(mw(m_label(block, label)) >> 24u, 0u, label == M_NONE);
+    // The terrain under a deck's ceiling: a point with no ceiling line in its bin reads no rules.
     if (rule == 0u) {
-        return vec2f(t, H_TERRAIN);
+        let at = h_ceilings(block, q, start);
+        if (at.y == 0u) {
+            return vec2f(t, H_TERRAIN);
+        }
+        H = h_rules(block);
+        return vec2f(min(t, h_ceiling(block, q, h_scale(block, q), at)), H_TERRAIN);
     }
     H = h_rules(block);
     let mpu = h_scale(block, q);
-    // A slope reads only the outline edges.
+    // A slope reads only the outline edges, and the ceilings.
     if (rule == 1u) {
-        return vec2f(h_slope(block, q, mpu, t), H_SLOPE);
+        return vec2f(min(h_slope(block, q, mpu, t), h_ceiling(block, q, mpu, h_ceilings(block, q, start))), H_SLOPE);
     }
-    return h_paved_at(block, q, mpu, label, rule, mw(lw + 2u), t, start);
+    return h_paved_at(block, q, mpu, label, rule, mw(m_label(block, label) + 2u), t, start);
+}
+
+// The word after q's bin's height segment items and the count of the ceiling lines' items among them, last
+// (records::CEILING): 0 where none.
+fn h_ceilings(block: u32, q: vec2f, start: u32) -> vec2u {
+    let head = m_bin_head(block, q);
+    if (head == 0u) {
+        return vec2u(0u);
+    }
+    let end = select(h_heights_start(block, q), start, start != 0u) + (mw(head + 2u) >> 16u);
+    let lines = block + mw(block + 6u);
+    var n = 0u;
+    loop {
+        if (n == (mw(head + 2u) >> 16u) || (mw(lines + M_LINE * (mw(end - n - 1u) & 0xffffu) + 1u) & M_CEILING) == 0u) {
+            break;
+        }
+        n++;
+    }
+    return vec2u(end, n);
+}
+
+// The ceiling at q from the last `at.y` height segment items before word `at.x`, as heights::ceiling: per
+// segment of a deck's ceiling line, the metres outside its stroke (flat at the line's ends along their `flat`
+// normals, words 4 and 5) and its banked surface at q's foot less its drop (word 10); past the stroke the bound
+// rises at face_max and lets go over ceiling_release.
+fn h_ceiling(block: u32, q: vec2f, mpu: f32, at: vec2u) -> f32 {
+    var best = H_BIG;
+    let lines = block + mw(block + 6u);
+    let samples = block + mw(block + 7u);
+    for (var k = 1u; k <= at.y; k++) {
+        let item = mw(at.x - k);
+        let lw = lines + M_LINE * (item & 0xffffu);
+        let ln = h_line(block, item & 0xffffu);
+        let i = item >> 16u;
+        let sa = h_sample(block, ln, i, mpu);
+        let sb = h_sample(block, ln, i + 1u, mpu);
+        let ab = sb.p - sa.p;
+        let len = length(ab);
+        if (len <= 0.0) {
+            continue;
+        }
+        let u = ab / len;
+        let v = q - sa.p;
+        let t = dot(v, u);
+        let lateral = -m_cross(u, v) * mpu;
+        var f = clamp(t / len, 0.0, 1.0);
+        var across = length(v - f * ab) * mpu;
+        if ((i == 0u && t < 0.0) || (i + 2u == ln.count && t > len)) {
+            f = select(1.0, 0.0, t < 0.0);
+            across = abs(lateral);
+        }
+        let half = sa.h + f * (sb.h - sa.h);
+        let last = ln.count - 1u;
+        let along = samples + M_SAMPLE * ln.first + 3u;
+        var past = 0.0;
+        if (mf(along + M_SAMPLE * i) - mf(along) <= sa.h + H.ceiling_release) {
+            let a = samples + M_SAMPLE * ln.first;
+            past = max(past, -dot(q - vec2f(mi(a), mi(a + 1u)), h_unit(unpack2x16snorm(mw(lw + 4u)))) * mpu);
+        }
+        if (mf(along + M_SAMPLE * last) - mf(along + M_SAMPLE * (i + 1u)) <= sb.h + H.ceiling_release) {
+            let a = samples + M_SAMPLE * (ln.first + last);
+            past = max(past, -dot(q - vec2f(mi(a), mi(a + 1u)), h_unit(unpack2x16snorm(mw(lw + 5u)))) * mpu);
+        }
+        let out = length(vec2f(max(across - half, 0.0), past));
+        if (out >= H.ceiling_release) {
+            continue;
+        }
+        let len_m = len * mpu;
+        let z = h_hermite(sa.z, sb.z, sa.grade * len_m, sb.grade * len_m, f) + (sa.bank + f * (sb.bank - sa.bank)) * clamp(lateral, -half, half);
+        best = min(best, z - ln.ret + H.face_max * out + h_release(out, H.ceiling_release).y);
+    }
+    return best;
 }
 
 // height_relative of a paved label. Tint zeroes a function's vars at its entry: hp lives here, so only a paved

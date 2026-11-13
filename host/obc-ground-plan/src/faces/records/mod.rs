@@ -10,7 +10,7 @@
 //! | rules | `heights::RULES` words: the rule values of the heights (`HeightRules::words`) |
 //! | candidates | `CAND` words each: kind, key, glob order, label, line, then offset and count of its discs, beyond cuts and parts in the extras |
 //! | labels | `LABEL` words each: surface, owner kind, rank, height rule; owner id (a junction's: the index of its junction record); material line; rail line of a crossing; 4 host lines; 4 other lines (none for a junction: its record holds its arms) |
-//! | lines | `LINE` words each, one per leg of a way (`legs`), a way's legs in order, the water after the ways: way, finish code (0 for water) with flags, material and the leg (`LEG_SHIFT`), first sample, sample count, cut, fill, reach (m), class rank, shoulder, verge (m), return grade, half-width (m), the kind of each end, the steepest fill and cut, the fill's rise and crest (m) |
+//! | lines | `LINE` words each, one per leg of a way (`legs`), a way's legs in order, the water after the ways: way, finish code (0 for water) with flags, material and the leg (`LEG_SHIFT`), first sample, sample count, cut, fill, reach (m), class rank, shoulder, verge (m), return grade, half-width (m), the kind of each end, the steepest fill and cut, the fill's rise and crest (m); then the ceiling lines (`CEILING`), whose cut and fill words hold their flat ends and whose return grade holds their drop |
 //! | samples | `SAMPLE` words each: x, y, half-width (units), metres along, glob order, height, bank, grade, mitre direction x, y, health radius left and right (units) |
 //! | extras | discs (`DISC` words), beyond cuts (a cut and a label), parts (a way and two cuts, each with a flag) |
 //! | junctions | the table, a word per junction record: its offset; then the records (`junction`) |
@@ -54,7 +54,7 @@ use crate::sections::{Finish, Material, WaySection};
 use crate::CellInput;
 
 /// "OBR" and the layout's version.
-pub const MAGIC: u32 = 0x4f42_5215;
+pub const MAGIC: u32 = 0x4f42_5216;
 
 /// Whether a junction's guest `g` stops at its best host `h`: a way with round corners whose pair's
 /// mouth in `plan.json` is `stop`, and whose look (finish and material) is not the host's or whose
@@ -127,16 +127,38 @@ pub const MARKED: u32 = 1 << 9;
 pub const MOTORWAY: u32 = 1 << 10;
 /// A class with a wall at its edge where a higher line's bank needs one (`leg_wall`).
 pub const WALL: u32 = 1 << 11;
+/// A deck way over storey 0, after every line of storey 0: the ground stays under its underside
+/// (`heights::ceiling`). Its word 10 holds the drop from its surface to that bound, the deck's depth and
+/// `ceiling_gap_m`; its words 4 and 5 the unit normal into it of its stroke's flat end at its start and at its
+/// end (`pack2x16snorm`): the end line of the ground way that ends there, or the mitre with another deck that
+/// ends there, whichever lies nearest the deck's chord and within `FLAT_TURN_DEG` of it, else square to the
+/// deck's own chord. Its samples' half-width is its stroke's: its paved layers' and `edge_band_m`. No reader of
+/// storey 0 takes it as a way.
+pub const CEILING: u32 = 1 << 12;
 /// Line water: a painter reads only the records of its host's kind, water or not.
-pub const WATER: u32 = 1 << 12;
+pub const WATER: u32 = 1 << 13;
 pub const PATH: u32 = 1 << 14;
+/// A deck's stroke ends flat on an end line within this turn of its chord: past it the two ways meet side by
+/// side, and the stroke ends square to its own chord.
+pub const FLAT_TURN_DEG: f64 = 45.0;
+
+/// The farthest from a ceiling line's end segment that its term in `heights::decks` holds the ground, for its
+/// stroke's half-width `half` and the release `release` (one unit for both). The end segment goes on along its
+/// chord until q lies `release` past the flat end, whose normal turns up to `FLAT_TURN_DEG` (θ) from the chord,
+/// and holds q within `half + release` across the chord: so q lies at most `(release + (half + release)·sin θ) /
+/// cos θ` along the chord behind the end sample. Every other segment holds q within `half + release` of itself.
+pub(crate) fn ceiling_end_reach(half: f64, release: f64) -> f64 {
+    let theta = FLAT_TURN_DEG.to_radians();
+    libm::hypot((release + (half + release) * libm::sin(theta)) / libm::cos(theta), half + release)
+}
 pub const MATERIAL_SHIFT: u32 = 16;
 /// The leg of a line's way, from 0 in the way's direction, in the bits from this one of its finish word.
 pub const LEG_SHIFT: u32 = 24;
 // The fields of a line's finish word: the finish code, each flag, the material and the leg. No two
 // overlap; a new flag joins this list.
 const _: () = {
-    let fields = [0xff, RAIL, MARKED, MOTORWAY, WALL, WATER, PATH, 0xff << MATERIAL_SHIFT, u32::MAX << LEG_SHIFT];
+    let fields =
+        [0xff, RAIL, MARKED, MOTORWAY, WALL, CEILING, WATER, PATH, 0xff << MATERIAL_SHIFT, u32::MAX << LEG_SHIFT];
     let (mut seen, mut i) = (0u32, 0);
     while i < fields.len() {
         assert!(seen & fields[i] == 0, "two fields of a line's finish word overlap");
@@ -146,10 +168,12 @@ const _: () = {
 };
 
 /// End kinds of a line: a free (round) end, an arm of a junction or joint or the cut where the next
-/// or the previous leg of its way goes on (`legs`), a level change.
+/// or the previous leg of its way goes on (`legs`), a level change to a tunnel or a gallery, and one to a
+/// deck, where the paved layers end square on the end line and the slope runs round it.
 pub const FREE: u32 = 0;
 pub const MEETS: u32 = 1;
 pub const LEVEL: u32 = 2;
+pub const DECK: u32 = 3;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RecordStats {
@@ -219,13 +243,16 @@ fn pass(
     let s = Sliced::new(&c);
     let faces = s.cell(&c, cell, level);
     let map = s.map();
-    let near = encode(cell, graph, input, rules, &c.lines, &c.cands, &s.plan(cell, level, &map, &s.labels), true);
+    let ceilings = if level == 0 { super::ceiling_lines(graph, input, rules, cell) } else { Vec::new() };
+    let plan = s.plan(cell, level, &map, &s.labels);
+    let near = encode(cell, graph, input, rules, (&c.lines, &ceilings), &c.cands, &plan, true);
     // The far block and the far level hold no water: their lines are the way lines.
     let far_block = far::encode(cell, graph, input, rules, &c.lines[..c.ways]);
     let records = far_records.then(|| {
         let labels = c.far(&s);
         c.cands.retain(|c| !near_only(c));
-        encode(cell, graph, input, rules, &c.lines[..c.ways], &c.cands, &s.plan(cell, level, &map, &labels), false)
+        let plan = s.plan(cell, level, &map, &labels);
+        encode(cell, graph, input, rules, (&c.lines[..c.ways], &[]), &c.cands, &plan, false)
     });
     (faces, near, records, far_block)
 }
@@ -842,6 +869,8 @@ fn line_words(
             FREE
         } else if meets(dir, st) {
             MEETS
+        } else if line.deck[k] {
+            DECK
         } else {
             LEVEL
         });
@@ -891,13 +920,14 @@ fn cut_words(cut: &[P; 2]) -> [u32; 4] {
     [a[0] as u32, a[1] as u32, b[0] as u32, b[1] as u32]
 }
 
+/// The block of a cell's candidates and plan, with its lines and its ceiling lines (`CEILING`).
 #[allow(clippy::too_many_arguments)]
 fn encode(
     cell: CellKey,
     graph: &WayGraph,
     input: &CellInput,
     rules: &Rules,
-    lines: &[WayLine],
+    (lines, ceilings): (&[WayLine], &[WayLine]),
     cands: &[Cand],
     plan: &FacePlan,
     with_outline: bool,
@@ -936,6 +966,48 @@ fn encode(
             samples_w.extend(s);
             rec.push((l, lo, hi));
         }
+    }
+    // The ceiling lines after them, each one leg (`faces::ceiling_lines`), with the drop in word 10.
+    let heights = &rules.plan.heights;
+    // The ground ways' deck end lines: their end point, the unit direction into the way.
+    let ends: Vec<[f64; 5]> = lines.iter().flat_map(super::deck_ends).collect();
+    let unit = |v: [f64; 2]| {
+        let len = libm::hypot(v[0], v[1]);
+        (len > 1e-9).then(|| [v[0] / len, v[1] / len])
+    };
+    // Each ceiling line's ends: the end point and the unit chord into the line. Two decks that end at one point
+    // end on their mitre, the bisector of their chords, so their strokes leave no notch on the outside of a bend.
+    let chord = |line: &WayLine, at: usize, next: usize| {
+        let (a, b) = (line.p[at], line.p[next]);
+        let own = unit([f64::from(b[0] - a[0]), f64::from(b[1] - a[1])]).unwrap_or([1.0, 0.0]);
+        (a, own)
+    };
+    let deck_chords: Vec<(usize, (P, [f64; 2]))> = (ceilings.iter().enumerate())
+        .flat_map(|(k, l)| [(k, chord(l, 0, 1)), (k, chord(l, l.p.len() - 1, l.p.len() - 2))])
+        .collect();
+    for (c, line) in ceilings.iter().enumerate() {
+        let (mut w, s) = line_words(line, (0, line.p.len() - 1), graph, input, rules, &|_| 0);
+        let n = line.p.len();
+        for (k, (at, next)) in [(0, 1), (n - 1, n - 2)].into_iter().enumerate() {
+            let (a, own) = chord(line, at, next);
+            let grounds =
+                (ends.iter()).filter(|e| e[0] == f64::from(a[0]) && e[1] == f64::from(a[1])).map(|e| [-e[2], -e[3]]);
+            let mitres = (deck_chords.iter())
+                .filter(|&&(m, (p, _))| m != c && p == a)
+                .filter_map(|&(_, (_, other))| unit([own[0] - other[0], own[1] - other[1]]));
+            let flat = (grounds.chain(mitres))
+                .map(|n| (n[0] * own[0] + n[1] * own[1], n))
+                .filter(|&(c, _)| c >= libm::cos(FLAT_TURN_DEG.to_radians()))
+                .max_by(|x, y| x.0.total_cmp(&y.0))
+                .map_or(own, |(_, n)| n);
+            let snorm = |v: f64| u32::from(libm::round(v.clamp(-1.0, 1.0) * 32767.0) as i16 as u16);
+            w[4 + k] = snorm(flat[0]) | snorm(flat[1]) << 16;
+        }
+        w[1] |= CEILING;
+        w[2] = (samples_w.len() / SAMPLE) as u32;
+        w[10] = f(graph.deck_depth(input, line.way, &line.sec) + heights.ceiling_gap_m);
+        lines_w.extend(w);
+        samples_w.extend(s);
     }
     let rec_line = |l: usize, leg: u8| rec_of[l] + u32::from(leg);
     let rec_points = |r: usize| &lines[rec[r].0].p[rec[r].1..=rec[r].2];
@@ -1319,6 +1391,30 @@ fn encode(
             }
         }
     }
+    // A ceiling line's segments within their reach (`ceiling_end_reach` for the first and the last) and
+    // HEIGHT_PAD_M of a bin of the cell: last in each bin, so a reader of storey 0 stops before them and the
+    // ceiling walks them from the end.
+    let release = units(heights.ceiling_release_m);
+    for (k, line) in ceilings.iter().enumerate() {
+        let li = rec.len() + k;
+        let n = line.p.len();
+        for i in 0..n - 1 {
+            let (a, b) = (line.p[i], line.p[i + 1]);
+            let half = line.h[i].max(line.h[i + 1]);
+            let end = i == 0 || i + 2 == n;
+            let reach = if end { ceiling_end_reach(half, release) } else { half + release } + hpad;
+            let Some((c, r)) = bins_of(seg_box_of(a, b), reach) else { continue };
+            crate::probe::field(crate::probe::Field::Line, li);
+            crate::probe::field(crate::probe::Field::Sample, i);
+            for row in r[0]..=r[1] {
+                for col in c[0]..=c[1] {
+                    if clip(a, b, square(col, row, reach)).is_some() {
+                        hsegs[window.at(col, row)].push(li as u32 | (i as u32) << 16);
+                    }
+                }
+            }
+        }
+    }
     for (ci, cand) in cands.iter().enumerate() {
         for (di, d) in cand.discs.iter().enumerate() {
             let reach = d.lines.iter().filter_map(|&l| line_reach.get(l)).fold(0.0, |r: f64, &x| r.max(x));
@@ -1341,7 +1437,7 @@ fn encode(
     words[0] = MAGIC;
     words[1] = shapes.len() as u32;
     words[2] = labels.len() as u32;
-    words[3] = rec.len() as u32;
+    words[3] = (rec.len() + ceilings.len()) as u32;
     words[10] = (origin.y / CELL_UNITS) as u32;
     words.extend(rules.plan.heights.words());
     words[4] = words.len() as u32;
@@ -1449,7 +1545,7 @@ fn encode(
     }
     stats.cands = shapes.len() as u32;
     stats.labels = labels.len() as u32;
-    stats.lines = rec.len() as u32;
+    stats.lines = (rec.len() + ceilings.len()) as u32;
     stats.samples = (samples_w.len() / SAMPLE) as u32;
     Records { cell, words, stats }
 }

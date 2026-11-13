@@ -11,7 +11,7 @@ struct Piece {
     corners: u32,
     slots: u32,
     out: u32,
-    steps: u32,
+    faces: u32,
     block: u32,
     first: u32,
 }
@@ -170,14 +170,16 @@ fn slot_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
     // Toward b, the left of p → q, where a stands higher.
     let along = c[1].s - c[0].s;
     let left = normalize(vec2f(-along.y, along.x) + vec2f(1e-9, 0.0));
-    // A step whose upper side is water falls as water (its look foams on the upright slot). A step beside a wall
-    // class's road surface that stands as high as a wall is one; any other is a bank of the ground, as on a
-    // path or a track.
+    // An end face (the mesh's last slots, on a deck end line) is plain concrete at any height. A step whose upper
+    // side is water falls as water (its look foams on the upright slot). A step beside a wall class's road surface
+    // that stands as high as a wall is a wall; any other is a bank of the ground, as on a path or a track.
     let upper = select(vec2u(piece[w + 2u], piece[w + 3u]), vec2u(piece[w], piece[w + 1u]), rise > 0.0);
-    var mat = select(MAT_GROUND, MAT_WALL, (on_road(piece[w]) || on_road(piece[w + 3u])) && max(abs(dp), abs(dq)) >= WALL_STEP_M);
+    let wall = (on_road(piece[w]) || on_road(piece[w + 3u])) && max(abs(dp), abs(dq)) >= WALL_STEP_M;
+    var mat = select(MAT_GROUND, MAT_WALL, wall);
     if (on_water(upper.x) || on_water(upper.y)) {
         mat = MAT_WATER;
     }
+    mat = select(mat, MAT_CAP, index / 6u >= params.faces);
     // A step from water up to a culvert's zone is the culvert's mouth: its bank's ground, shaded dark toward the
     // water (MOUTH_SHADE of roads/corridor.wgsl), by its share of the step from the water up in `along`.
     let lower = select(vec2u(piece[w], piece[w + 1u]), vec2u(piece[w + 2u], piece[w + 3u]), rise > 0.0);
@@ -187,13 +189,13 @@ fn slot_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
     }
     // A bank's level normal is as long as its share of the light: a step of millimetres shades as the ground
     // beside it, a real one as a face of its own (corridor_ground).
-    let share = select(smoothstep(BANK_LOW_M, BANK_HIGH_M, step), 1.0, mat == MAT_WALL || mat == MAT_WATER);
+    let share = select(smoothstep(BANK_LOW_M, BANK_HIGH_M, step), 1.0, mat != MAT_GROUND);
     let normal = vec3f(select(-left, left, rise > 0.0) * share, 0.0);
     // A wall whose road stands on its higher side holds the road up, and the face that it continues lies below it; else
     // that face lies above it (wall_rock of roads/corridor.wgsl).
     let fill = select(on_road(piece[w + 3u]), on_road(piece[w]), rise > 0.0);
     let word = mat | (480u << HALF_SHIFT) | select(0u, WALL_FILL, mat == MAT_WALL && fill) | select(0u, MOUTH_SHADE, mouth);
-    if (mat == MAT_WALL) {
+    if (mat == MAT_WALL || mat == MAT_CAP) {
         place = CornerPlace(vec2f(v.h - min(c[0].h, c[3].h), half_of(word)), length(v.s - c[0].s));
     }
     return piece_out(v, word, place, normal);

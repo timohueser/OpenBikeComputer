@@ -140,7 +140,7 @@ impl Rules {
         for (v, field) in values.iter_mut().zip(RULE_FIELDS) {
             *v = h(field)?;
         }
-        if values[RULE_FIELDS.len() - 1] > MARGIN_M {
+        if values[RULE_FIELDS.iter().position(|&f| f == "region_fade_m").unwrap()] > MARGIN_M {
             return Err("plan.json heights.region_fade_m: over the records' MARGIN_M".into());
         }
         let legs = match heights.get("legs").and_then(Value::as_str) {
