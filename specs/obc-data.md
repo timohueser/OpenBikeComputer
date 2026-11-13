@@ -1287,9 +1287,9 @@ are under `<tiles_origin>/releases/<id>/`: the tile Worker reads `releases/<id>/
 `objects/` of the bucket.
 
 Each service prints the formats of the layers that it reads with `--formats`, as one JSON object
-of layer and format, and reads no data: `planner-service --formats` gives `planner/routing`,
-`node planner/search/server.mjs --formats` gives `planner/search` and `planner/index`, and
-`python3 -m tools.planner_downloads --formats` gives `planner/index`. The format of
+of layer and format, and reads no data: `planner-service --formats` gives `planner/routing` and
+`planner/routing-cells`, `node planner/search/server.mjs --formats` gives `planner/search` and
+`planner/index`, and `python3 -m tools.planner_downloads --formats` gives `planner/index`. The format of
 `planner/index` is that of the two files of it that the services check: the offline catalog and
 `search/<region>.grid.json`.
 
