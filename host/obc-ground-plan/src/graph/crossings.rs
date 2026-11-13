@@ -6,7 +6,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use super::curve::{insert, point};
-use super::parts::Rule;
+use super::parts::{fords, Rule};
 use super::points::{advance, key, metres, nodes, Anchor, Node, NodeKind, Piece, Plan};
 use super::{
     Crossing, CrossingKind, Family, GraphStats, Level, Network, Part, Sample, Source, Station, BUCKET_M,
@@ -371,7 +371,7 @@ pub(crate) fn crossings(
                     stats.buried += 1;
                     Outcome::Record(CrossingKind::Culvert, Source::Fallback)
                 }
-            } else if x.rule.ford() {
+            } else if x.rule.ford() && fords(x.family, w.rule.water()) {
                 Outcome::Record(CrossingKind::Ford, Source::Tag)
             } else if angle < graze {
                 stats.grazing_water += 1;

@@ -581,12 +581,36 @@ fn crossings_take_the_first_row_of_the_table() {
         ("a short culvert", culvert(5.0), Some((Culvert, Source::Tag))),
         ("a buried stream", culvert(35.0), Some((Culvert, Source::Fallback))),
         (
-            "a ford",
+            "a track's ford over a river",
+            vec![
+                line("road", &[("highway", "track"), ("ford", "yes")], &[[0.0, -40.0], [0.0, 40.0]], 0.0),
+                along("river", &[("waterway", "river")], 0.0),
+            ],
+            Some((Ford, Source::Tag)),
+        ),
+        (
+            "a path's ford over a stream",
+            vec![
+                line("path", &[("highway", "footway"), ("ford", "yes")], &[[0.0, -40.0], [0.0, 40.0]], 0.0),
+                stream(&[], &[[-40.0, 0.0], [40.0, 0.0]], 0.0),
+            ],
+            Some((Ford, Source::Tag)),
+        ),
+        (
+            "a track's ford over a stream: a culvert, as the bake lays it",
             vec![
                 line("road", &[("highway", "track"), ("ford", "yes")], &[[0.0, -40.0], [0.0, 40.0]], 0.0),
                 stream(&[], &[[-40.0, 0.0], [40.0, 0.0]], 0.0),
             ],
-            Some((Ford, Source::Tag)),
+            Some((Culvert, Source::Rule)),
+        ),
+        (
+            "a track's ford over a stream at 19°",
+            vec![
+                line("road", &[("highway", "track"), ("ford", "yes")], &[[0.0, -40.0], [0.0, 40.0]], 0.0),
+                at_angle(71.0, stream(&[], &[[0.0, 0.0]], 0.0)),
+            ],
+            Some((Stacked, Source::Fallback)),
         ),
         (
             "a road over a stream",
@@ -721,7 +745,13 @@ fn crossings_take_the_first_row_of_the_table() {
         (c.kind, c.source, c.angle_rad, class(&g, &g.junctions[0].arms[0]))
     };
     assert_eq!(ford(false), ford(true));
-    assert_eq!((ford(false).0, ford(false).2), (Ford, core::f64::consts::FRAC_PI_2));
+    assert_eq!((ford(false).0, ford(false).2), (Culvert, core::f64::consts::FRAC_PI_2));
+    // A path that shares a vertex with a stream fords it.
+    let g = graph(&[
+        footway(&[[0.0, -40.0], [0.0, 0.0], [0.0, 40.0]], 0.0),
+        stream(&[], &[[-40.0, 0.0], [0.0, 0.0], [40.0, 0.0]], 0.0),
+    ]);
+    assert_eq!((g.crossings[0].kind, g.crossings[0].source), (Ford, Source::SharedVertex));
     // A culvert's mouth on a road vertex: a culvert, as one water arm there is in a tunnel.
     let g = graph(&[
         road(&[[0.0, -40.0], [0.0, 0.0], [0.0, 40.0]], 0.0),
