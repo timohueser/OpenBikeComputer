@@ -1,7 +1,7 @@
 /**
  * A device on a pretend cable: `planner.html?fake-device`, on the dev server and in the build of the browser tests. The wasm
  * test device of the sync tests holds a map, a route and two rides of today. The chooser of the Connect button plugs it in.
- * `window.deviceTest`: `plug()` and `unplug()` move the cable, `hold()` stops each sync at its start until `release()`, and
+ * `window.deviceTest`: `plug(unformatted)` and `unplug()` move the cable, `hold()` stops each sync at its start until `release()`, and
  * `offer(version)` publishes a pretend software version.
  */
 import { initCore } from '../../src/lib/core/bridge';
@@ -37,10 +37,12 @@ export async function fakeDevice(): Promise<void> {
     let state = idle;
     const listeners = new Set<(state: DeviceState) => void>();
     const publish = (next: DeviceState) => { state = next; for (const listener of listeners) listener(next); };
-    const plug = async () => {
+    /** `unformatted`: the device reports a card with no format, as a new card does. */
+    const plug = async (unformatted = false) => {
         publish({ ...idle, status: 'connecting' });
         const info = await rig.client.deviceInfo(), page = await rig.client.listPage({});
-        publish({ status: 'ready', client: rig.client, store: { storeId: page.storeId, commitSequence: page.commitSequence }, info, error: null });
+        const store = unformatted ? null : { storeId: page.storeId, commitSequence: page.commitSequence };
+        publish({ status: 'ready', client: rig.client, store, info, error: null });
         return true;
     };
     const unplug = async () => publish(idle);
