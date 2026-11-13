@@ -31,7 +31,9 @@
     let container: HTMLElement;
     let map = $state.raw<maplibregl.Map>(), ready = $state(false);
     const theme = $derived(appearance.dark ? 'dark' : 'light');
-    let styled: typeof theme, styledLook: typeof look, fitted = 0, attribution: maplibregl.AttributionControl | undefined;
+    let styled: typeof theme, styledLook: typeof look, fitted = 0;
+    /** The credits of the picture, behind a button beside the credit of the map. */
+    let pictureCredits: HTMLElement, creditsOpen = $state(false);
 
     const pairs = (line: number[]) => Array.from({ length: line.length / 2 }, (_, i) => [line[2 * i], line[2 * i + 1]]);
     // All lines are in one source; a filter of the layers shows the shown ones, so a chip change sets no data.
@@ -101,20 +103,10 @@
         return [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
     };
 
-    // The control takes its own credits only when it is made. A new control opens; with the long credits of a picture it
-    // would cover the map, so from the first picture on the credits stay behind the button.
-    let closed = false;
+    // The credits of another picture start closed.
     $effect(() => {
-        const custom = credits;
-        if (!map || !attribution) return;
-        untrack(() => {
-            map!.removeControl(attribution!);
-            map!.addControl(attribution = new maplibregl.AttributionControl({ compact: true, customAttribution: custom }), 'top-left');
-            if (!(closed ||= custom.length > 0)) return;
-            const box = container.querySelector('.maplibregl-ctrl-attrib');
-            box?.classList.remove('maplibregl-compact-show');
-            box?.removeAttribute('open');
-        });
+        void credits;
+        creditsOpen = false;
     });
 
     async function zoomIn(event: maplibregl.MapLayerMouseEvent) {
@@ -133,7 +125,12 @@
             attributionControl: false, maxPitch: 0, renderWorldCopies: false,
         });
         // The selected card covers the bottom of the map.
-        created.addControl(attribution = new maplibregl.AttributionControl({ compact: true }), 'top-left');
+        // No option: the credit is a line on a wide map, and behind its button on a small one.
+        created.addControl(new maplibregl.AttributionControl({}), 'top-left');
+        created.addControl({ onAdd: () => pictureCredits, onRemove: () => pictureCredits.remove() }, 'top-left');
+        // On a small map the button of the map's credit opens the credits of the picture with it.
+        container.querySelector('summary.maplibregl-ctrl-attrib-button')?.addEventListener('click', event =>
+            creditsOpen = (event.currentTarget as Element).parentElement!.classList.contains('maplibregl-compact-show'));
         created.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
         created.dragRotate.disable();
         created.touchZoomRotate.disableRotation();
@@ -192,6 +189,13 @@
 </script>
 
 <div class="routes-map" bind:this={container}></div>
+<!-- The map takes this box as a control, after its own credit. The credit of the map is always in view; the long credits
+     of the picture of the selected card open at the button. On a small map the button of the map's credit opens them. -->
+<div class="maplibregl-ctrl picture-credits" class:open={creditsOpen} bind:this={pictureCredits} hidden={!credits.length}>
+    <button type="button" class="maplibregl-ctrl-attrib-button" aria-label="Credits of the picture" aria-expanded={creditsOpen}
+        onclick={() => creditsOpen = !creditsOpen}></button>
+    <p>{@html credits.join(' | ')}</p>
+</div>
 
 <style>
     .routes-map {
@@ -204,13 +208,59 @@
         right: 52px;
     }
     /* The credit in the letters and the colours of the page, as on the map of a route. */
-    .routes-map :global(.maplibregl-ctrl-attrib) {
+    .routes-map :global(.maplibregl-ctrl-attrib), .picture-credits {
+        border-radius: 12px;
         background: var(--panel);
         color: var(--ink-soft);
         font: 11px/20px var(--sans);
     }
-    .routes-map :global(.maplibregl-ctrl-attrib a) {
+    .routes-map :global(.maplibregl-ctrl-attrib:not(.maplibregl-compact)) {
+        padding: 2px 10px;
+    }
+    .routes-map :global(.maplibregl-ctrl-attrib a), .picture-credits :global(a) {
         color: inherit;
+        text-decoration: none;
+    }
+    /* The button stands beside the line of the map's credit; its text opens under the line. */
+    .picture-credits {
+        clear: none;
+        margin-left: 6px;
+    }
+    .picture-credits button {
+        position: static;
+        display: block;
+        width: 24px;
+        height: 24px;
+        padding: 0;
+        border: 0;
+        border-radius: 12px;
+        background-color: transparent;
+    }
+    .picture-credits p {
+        position: absolute;
+        top: 40px;
+        right: 0;
+        left: 10px;
+        display: none;
+        margin: 0;
+        padding: 4px 10px;
+        border-radius: 8px;
+        background: var(--panel);
+    }
+    .picture-credits.open p {
+        display: block;
+    }
+    /* A small map has its credit behind its own button: the credits of the picture open and close with it. */
+    :global(.maplibregl-compact) + .picture-credits {
+        clear: both;
+        margin-left: 10px;
+    }
+    :global(.maplibregl-compact) + .picture-credits button, :global(.maplibregl-compact:not(.maplibregl-compact-show)) + .picture-credits p {
+        display: none;
+    }
+    :global(.maplibregl-compact-show) + .picture-credits.open p {
+        position: static;
+        display: block;
     }
     :global(:root[data-theme="dark"]) .routes-map :global(.maplibregl-ctrl-attrib-button) {
         filter: invert(1);
