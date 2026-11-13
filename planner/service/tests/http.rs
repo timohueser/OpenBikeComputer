@@ -4,9 +4,11 @@ use axum::{
 };
 use planner_router::{
     directory::Writer,
+    install,
     model::{Pace, Point, Profile, Road, Surface, BIKE, FOOT, NO_ELEVATION},
-    Router,
+    Opened, Router,
 };
+use planner_router_build::cells::{write, Info, Input};
 use planner_router_build::source::{Builder, Tags, Ways};
 use planner_router_build::Graph;
 use planner_service::native;
@@ -24,6 +26,43 @@ fn native_body(response: *mut c_char) -> Vec<u8> {
         native::planner_response_free(response);
         body
     }
+}
+
+/// One road east along the equator from 0 to 0.01 degrees.
+fn one_road() -> Graph {
+    let points =
+        vec![Point { lon: 0, lat: 0, elevation: NO_ELEVATION }, Point { lon: 10000, lat: 0, elevation: NO_ELEVATION }];
+    let road = Road {
+        from: 0,
+        to: 1,
+        way: 1,
+        reversed: false,
+        length_m: 1112,
+        ascent_m: 0,
+        descent_m: 0,
+        surface: Surface::Paved,
+        class: 1,
+        access: BIKE | FOOT,
+        difficulty: 0,
+        hiking_difficulty: None,
+        structure: false,
+        shape: points.clone(),
+    };
+    let mut ways = Builder::<Ways>::default();
+    ways.push(1, &[0, 1], &Tags::default());
+    let mut graph = Graph {
+        signals: [0; 2].into_iter().collect(),
+        node_doubts: [0; 2].into_iter().collect(),
+        node_closures: [u32::MAX; 2].into_iter().collect(),
+        node_ids: [0, 1].into_iter().collect(),
+        node_access: [BIKE | FOOT; 2].into_iter().collect(),
+        points: points.iter().copied().collect(),
+        roads: [road].into_iter().collect(),
+        ..Default::default()
+    };
+    graph.osm.ways = ways.finish().0;
+    graph.link_ways();
+    graph
 }
 
 #[test]
@@ -46,35 +85,7 @@ async fn http_contract_uses_a_closed_package_and_returns_typed_failures() {
         }
     }
     let _cleanup = Cleanup(path.clone());
-    let points =
-        vec![Point { lon: 0, lat: 0, elevation: NO_ELEVATION }, Point { lon: 10000, lat: 0, elevation: NO_ELEVATION }];
-    let road = Road {
-        from: 0,
-        to: 1,
-        way: 1,
-        reversed: false,
-        length_m: 1112,
-        ascent_m: 0,
-        descent_m: 0,
-        surface: Surface::Paved,
-        class: 1,
-        access: BIKE | FOOT,
-        difficulty: 0,
-        hiking_difficulty: None,
-        structure: false,
-        shape: points.clone(),
-    };
-    let mut ways = Builder::<Ways>::default();
-    ways.push(1, &[0, 1], &Tags::default());
-    let mut graph = Graph {
-        node_ids: [0, 1].into_iter().collect(),
-        node_access: [BIKE | FOOT; 2].into_iter().collect(),
-        points: points.iter().copied().collect(),
-        roads: [road].into_iter().collect(),
-        ..Default::default()
-    };
-    graph.osm.ways = ways.finish().0;
-    graph.link_ways();
+    let graph = one_road();
     let manifest = planner_router_build::prepare(
         &graph,
         "test".into(),
@@ -210,4 +221,64 @@ async fn http_contract_uses_a_closed_package_and_returns_typed_failures() {
         let answer: serde_json::Value = serde_json::from_slice(&answer).unwrap();
         assert_eq!((actual, answer["code"].as_str().unwrap()), (status, code));
     }
+}
+
+#[tokio::test]
+async fn the_service_opens_an_install_of_format_10() {
+    let scratch = std::env::temp_dir().join(format!("route-server-cells-{}", std::process::id()));
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(scratch.clone());
+    let mut graph = one_road();
+    planner_router_build::layout::order(&mut graph, &[8, 32, 128], None).unwrap();
+    let (pages, objects, target) = (scratch.join("pages"), scratch.join("objects"), scratch.join("install"));
+    std::fs::create_dir_all(&pages).unwrap();
+    let mut writer = Writer::create(&pages).unwrap();
+    let bounds = [-1.0, -1.0, 1.0, 1.0];
+    let profiles = &Profile::presets()[..1];
+    let manifest =
+        planner_router_build::prepare(&graph, "test".into(), bounds, profiles, vec![], "test".into(), |bytes| {
+            writer.write(bytes)
+        })
+        .unwrap();
+    writer.finish().unwrap();
+    std::fs::write(pages.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
+    let topology = planner_router_build::base::Topology::new(&graph.roads, graph.points.len()).unwrap();
+    let costs = planner_router_build::costs(&graph, &topology, profiles).unwrap();
+    let (first, head) = (topology.first.values(), topology.head.values());
+    let tables = planner_router_build::tables::build(&graph.cells, first, head, &costs.columns(), 16).unwrap();
+    let info = Info { region: "test".into(), bounds, source_sha256: vec![], attribution: "test".into() };
+    let input = Input {
+        graph: &graph,
+        topology: &topology,
+        costs: &costs,
+        tables: &tables,
+        sizes: &[8, 32, 128],
+        download_level: 2,
+        info,
+        level: 3,
+    };
+    write(&input, &objects).unwrap();
+    let (directory, info) =
+        (std::fs::read(objects.join("directory.bin")).unwrap(), std::fs::read(objects.join("package.json")).unwrap());
+    let fetch = |name: &str| std::fs::File::open(objects.join(name));
+    install::install(&target, (&directory, &info), (None, None), 1, fetch).unwrap();
+
+    let app = planner_service::app(&target, 1).unwrap();
+    let response = app.clone().oneshot(Request::get("/v1/region").body(Body::empty()).unwrap()).await.unwrap();
+    let region: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await.unwrap()).unwrap();
+    assert_eq!(region["package"], planner_router::package::digest(&directory));
+    let body = r#"{"points":[[0.002,0],[0.008,0]],"profile":"touring"}"#;
+    let request = Request::post("/v1/route").header("content-type", "application/json").body(Body::from(body)).unwrap();
+    assert_eq!(app.oneshot(request).await.unwrap().status(), StatusCode::OK);
+
+    std::fs::remove_file(target.join(install::MARKER)).unwrap();
+    assert!(matches!(planner_service::app(&target, 1), Err(planner_router::Error::MissingRegion(_))));
+    std::fs::write(pages.join("directory.bin"), &directory).unwrap();
+    assert!(matches!(planner_router::open(&pages).unwrap(), Opened::Pages(_)));
 }

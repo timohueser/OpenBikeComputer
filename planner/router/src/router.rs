@@ -3,8 +3,8 @@ use crate::{
     data::RoutingData,
     geometry,
     model::{Pace, Point, Profile, Surface, Totals, BIKE, NO_ELEVATION, PUSH},
+    overlay::{Query, Seed},
     package::digest,
-    search::{Query, Seed},
     snap::{self, Candidate, Policy, Position},
     Error, Result,
 };

@@ -1,107 +1,133 @@
-//! Routes one request set on two packages and prints each request whose cost or error differs:
-//! `compare OLD NEW COUNT SEED`. A request runs from the middle of one road of OLD to the middle of
-//! another, at most 75 km away. When more candidates are near a point than the snap keeps
-//! (`snap_truncated`), the snap cuts them by distance, then by road ID: so only where the last kept
-//! and the first cut candidate are at the same distance can other road IDs keep other candidates.
-//! A difference is a fault unless a point of its request has such a tie. Exits with 1 on a fault,
-//! with 2 when the packages have other profiles.
+//! Routes one request set on the two formats of one bake and prints each request:
+//! `compare OLD NEW COUNT SEED [--max-km K] [--cold] [--no-announce]`. OLD is format 9 and NEW an
+//! install of format 10 (`cells install`); COUNT is the requests of each profile. `--cold` opens NEW
+//! again with its files out of the page cache before each request; `--no-announce` makes its host
+//! silent. Exits with 1 on a difference, with 2 when the packages have other profiles.
 use planner_router::{
+    compare::{self, Outcome, KINDS},
     data::RoutingData,
+    host::Maps,
+    install,
     model::{Point, NO_ELEVATION},
+    region::Region,
     snap::Policy,
-    Control, Error, Request, Router,
+    Error, Opened, Request, Router,
 };
-use std::path::Path;
+use std::{path::Path, time::Instant};
 
-/// The point at half the length of `shape`.
-fn middle(shape: &[Point]) -> Point {
-    let mut rest = shape.windows(2).map(|pair| pair[0].distance(pair[1])).sum::<f64>() / 2.0;
-    for pair in shape.windows(2) {
-        let length = pair[0].distance(pair[1]);
-        if rest <= length && length > 0.0 {
-            let t = rest / length;
-            let along = |a: i32, b: i32| a + (f64::from(b - a) * t).round() as i32;
-            return Point { lat: along(pair[0].lat, pair[1].lat), lon: along(pair[0].lon, pair[1].lon), ..pair[0] };
-        }
-        rest -= length;
-    }
-    shape[shape.len() - 1]
+/// Opens NEW; with `silent`, on a host whose `announce` does nothing.
+fn open_new(path: &Path, silent: bool) -> Result<Router<Opened>, Error> {
+    let data = if silent {
+        let read = |name: &str| std::fs::read(path.join(name)).map_err(|e| Error::InvalidData(e.to_string()));
+        let (directory, info, marker) = (read("directory.bin")?, read("package.json")?, read(install::MARKER)?);
+        let maps = Maps::new(path, &directory)?.silent();
+        Opened::Cells(Region::open(maps, directory, info, &marker)?)
+    } else {
+        planner_router::open(path)?
+    };
+    Ok(Router::new(data, usize::MAX))
 }
 
-/// The name of the kind of `error`, without its details.
-fn kind(error: &Error) -> String {
-    format!("{error:?}").split('(').next().unwrap_or_default().to_string()
+/// The major page faults of this process (field 12 of `/proc/self/stat`).
+fn major_faults() -> u64 {
+    let stat = std::fs::read_to_string("/proc/self/stat").unwrap_or_default();
+    let fields: Vec<&str> = stat.rsplit_once(')').map_or("", |(_, rest)| rest).split_whitespace().collect();
+    fields.get(9).and_then(|field| field.parse().ok()).unwrap_or(0)
+}
+
+fn point([lon, lat]: [f64; 2]) -> Point {
+    Point { lat: (lat * 1e6).round() as i32, lon: (lon * 1e6).round() as i32, elevation: NO_ELEVATION }
+}
+
+/// The greatest distance from the first point of `request`, in km.
+fn straight_km(request: &Request) -> f64 {
+    let first = point(request.points[0]);
+    request.points.iter().map(|&p| first.distance(point(p))).fold(0.0, f64::max) / 1000.0
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
-    let [_, old, new, count, seed] = &args[..] else { return Err("Usage: compare OLD NEW COUNT SEED".into()) };
-    let (count, mut state): (usize, u64) = (count.parse()?, seed.parse()?);
-    if state == 0 {
+    let usage = "Usage: compare OLD NEW COUNT SEED [--max-km K] [--cold] [--no-announce]";
+    let [_, old_path, new_path, count, seed, options @ ..] = &args[..] else { return Err(usage.into()) };
+    let (count, seed): (usize, u64) = (count.parse()?, seed.parse()?);
+    if seed == 0 {
         return Err("SEED is a number above 0".into());
     }
-    let (old, new) = (planner_router::open(Path::new(old))?, planner_router::open(Path::new(new))?);
-    let profiles: Vec<String> = old.profiles().into_iter().map(str::to_string).collect();
-    if new.profiles() != old.profiles() {
-        eprintln!("The packages have other profiles: {:?} and {:?}", old.profiles(), new.profiles());
-        std::process::exit(2);
-    }
-    let roads = u64::from(old.package().manifest().roads);
-    let mut requests = Vec::new();
-    while requests.len() < count {
-        let [a, b] = [0; 2].map(|_| {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            old.with_road((state % roads) as u32, |road| middle(&road.shape))
-        });
-        let (a, b) = (a?, b?);
-        if a.distance(b) <= 75_000.0 {
-            requests.push([a, b].map(|p| [f64::from(p.lon) * 1e-6, f64::from(p.lat) * 1e-6]));
+    let (mut max_km, mut cold, mut silent) = (75.0, false, false);
+    let mut options = options.iter();
+    while let Some(option) = options.next() {
+        match option.as_str() {
+            "--max-km" => max_km = options.next().ok_or(usage)?.parse()?,
+            "--cold" => cold = true,
+            "--no-announce" => silent = true,
+            _ => return Err(usage.into()),
         }
     }
-    // Whether the snap of `point` on `package` cuts between two candidates at the same distance.
-    let tie = |package: &planner_router::data::Selection<_>, [lon, lat]: [f64; 2], profile: &str| {
-        let point = Point { lat: (lat * 1e6).round() as i32, lon: (lon * 1e6).round() as i32, elevation: NO_ELEVATION };
-        let kept = Policy::default().max_candidates;
-        let found = package.snap(point, profile, Policy { max_candidates: kept + 1, ..Policy::default() })?;
-        let distance = |i: usize| found.retained.get(i).map(|candidate| candidate.snap_distance_m);
-        Ok::<_, Error>(distance(kept).is_some() && distance(kept - 1) == distance(kept))
-    };
-    let (old_budget, new_budget) = (old.default_budget(), new.default_budget());
-    let mut routers = [Router::new(old.fork(), old_budget), Router::new(new.fork(), new_budget)];
-    let (mut truncated, mut differences, mut truncated_differences, mut ties) = (0, 0, 0, 0);
+    let new_path = Path::new(new_path);
+    let mut old = Router::new(planner_router::open(Path::new(old_path))?, usize::MAX);
+    let mut new = Some(open_new(new_path, silent)?);
+    let profiles: Vec<String> = old.package().profiles().into_iter().map(str::to_string).collect();
+    let new_profiles: Vec<String> = new.iter().flat_map(|new| new.package().profiles()).map(str::to_string).collect();
+    if new_profiles != profiles {
+        eprintln!("The packages have other profiles: {profiles:?} and {new_profiles:?}");
+        std::process::exit(2);
+    }
+    let started = Instant::now();
+    let (mut requests_run, mut differences, mut ties) = (0, 0, 0);
+    println!("profile, kind, km, old ms, old settled, old ns/label, new ms, new settled, new ns/label, new peak MB, faults, outcome");
     for profile in &profiles {
-        for points in &requests {
-            let request: Request = serde_json::from_value(serde_json::json!({"points": points, "profile": profile}))?;
-            let answers = routers.each_mut().map(|router| router.routes(&request, &Control::default()));
-            let cut =
-                answers.iter().any(|answer| answer.as_ref().is_ok_and(|response| response.routes[0].snap_truncated));
-            truncated += usize::from(cut);
-            let [old_cost, new_cost] = answers.map(|answer| match answer {
-                Ok(response) => response.routes[0].cost.to_string(),
-                Err(error) => kind(&error),
-            });
-            if old_cost == new_cost {
-                continue;
+        let requests = compare::requests(&old, profile, count, seed, max_km * 1000.0);
+        let points: Vec<Point> = requests.iter().flat_map(|request| request.points.iter().map(|&p| point(p))).collect();
+        let mut snap_us = [0.0; 2];
+        for (side, data) in [old.package(), new.as_ref().ok_or(usage)?.package()].into_iter().enumerate() {
+            let started = Instant::now();
+            for &point in &points {
+                let _ = data.snap(point, profile, Policy::default());
             }
-            if !cut {
-                println!("{profile}, {points:?}, {old_cost}, {new_cost}");
-                differences += 1;
-                continue;
+            snap_us[side] = started.elapsed().as_secs_f64() * 1e6 / points.len().max(1) as f64;
+        }
+        println!("{profile}: snap of {} points: old {:.1} µs, new {:.1} µs each", points.len(), snap_us[0], snap_us[1]);
+        for (k, request) in requests.iter().enumerate() {
+            if cold {
+                drop(new.take());
+                Maps::evict(new_path)?;
+                new = Some(open_new(new_path, silent)?);
             }
-            let mut at_tie = false;
-            for &point in points {
-                at_tie |= tie(&old, point, profile)? || tie(&new, point, profile)?;
-            }
-            println!("truncated, tie at the cut {at_tie}: {profile}, {points:?}, {old_cost}, {new_cost}");
-            truncated_differences += 1;
-            ties += usize::from(at_tie);
+            let router = new.as_mut().ok_or(usage)?;
+            let faults = major_faults();
+            old.package().take_stats();
+            router.package().take_stats();
+            let checked = compare::check(&mut old, router, request);
+            let faults = major_faults() - faults;
+            let stats = [old.package().take_stats(), router.package().take_stats()];
+            requests_run += 1;
+            let (outcome, times) = match checked {
+                Ok((outcome, times)) => (format!("{outcome:?}"), times),
+                Err(difference) => {
+                    differences += 1;
+                    println!("difference: {}", serde_json::to_string(request)?);
+                    (format!("Difference: {difference}"), Default::default())
+                }
+            };
+            ties += usize::from(outcome == format!("{:?}", Outcome::Tie));
+            let side = |s: usize| {
+                let ms = times[s].as_secs_f64() * 1e3;
+                let per = times[s].as_nanos() as f64 / stats[s].settled.max(1) as f64;
+                format!("{ms:.1}, {}, {per:.0}", stats[s].settled)
+            };
+            println!(
+                "{profile}, {}, {:.1}, {}, {}, {:.1}, {faults}, {outcome}",
+                KINDS[k % KINDS.len()],
+                straight_km(request),
+                side(0),
+                side(1),
+                stats[1].peak_bytes as f64 / 1e6
+            );
         }
     }
     println!(
-        "{} requests, {differences} differences; {truncated} truncated, {truncated_differences} differences, {ties} of them at a tie",
-        profiles.len() * requests.len()
+        "{requests_run} requests, {differences} differences, {ties} ties, in {:.1} s",
+        started.elapsed().as_secs_f64()
     );
-    std::process::exit(i32::from(differences + truncated_differences > ties));
+    std::process::exit(i32::from(differences > 0));
 }

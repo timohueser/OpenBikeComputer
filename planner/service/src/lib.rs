@@ -5,12 +5,7 @@ pub mod native;
 #[cfg(feature = "http")]
 pub use http::{app, MAX_WORKERS};
 
-use planner_router::{
-    data::{RoutingData, Selection},
-    directory::Files,
-    shape::LineRequest,
-    Control, Error, Request, Router,
-};
+use planner_router::{data::RoutingData, shape::LineRequest, Control, Error, Opened, Request, Router};
 use serde_json::{json, Value};
 use std::{
     panic::{catch_unwind, AssertUnwindSafe},
@@ -18,7 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub type Engine = Router<Selection<Files>>;
+pub type Engine = Router<Opened>;
 
 /// The request body limit of every call.
 const BODY_LIMIT: usize = 64 * 1024;

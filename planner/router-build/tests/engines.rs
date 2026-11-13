@@ -1,6 +1,8 @@
-//! The data of format 10 (`Region`) against the data of format 9 (`Selection`) of the same bake.
+//! The data and the search of format 10 (`Region`) against those of format 9 (`Selection`) of the
+//! same bake.
 
 use planner_router::cells::Directory;
+use planner_router::compare::{self, Outcome};
 use planner_router::data::{RoutingData, Selection};
 use planner_router::host::{self, Part};
 use planner_router::install;
@@ -436,4 +438,64 @@ fn a_route_costs_what_its_pieces_and_turns_cost() {
         break;
     }
     assert!(turn && place);
+}
+
+#[test]
+fn the_engine_on_format_10_gives_the_costs_and_candidates_of_format_9() {
+    let bake = bake("search");
+    let mut old = Router::new(bake.old.fork(), usize::MAX);
+    let mut new = Router::new(bake.region(None), usize::MAX);
+    let (mut requests, mut ties, mut routed) = (0, 0, 0);
+    for profile in Profile::presets() {
+        for request in compare::requests(&old, &profile.name, 40, 17, 10_000.0) {
+            let (outcome, _) =
+                compare::check(&mut old, &mut new, &request).unwrap_or_else(|e| panic!("{request:?}: {e}"));
+            ties += usize::from(outcome == Outcome::Tie);
+            routed += usize::from(old.routes(&request, &Control::default()).is_ok());
+            requests += 1;
+        }
+    }
+    assert_eq!(requests, 400);
+    assert!(routed > 300, "{routed} of {requests} requests give a route");
+    assert!(ties * 20 <= requests, "{ties} ties in {requests} requests");
+}
+
+#[test]
+fn an_install_of_some_cells_routes_on_its_roads() {
+    let bake = bake("some");
+    let directory = Directory::new(&bake.directory).unwrap();
+    let half = directory.downloads() / 2;
+    let ids: Vec<u32> = (0..half).map(|record| directory.cell(record).unwrap().id).collect();
+    let installed = |road: u32| directory.download_of_road(road).unwrap().unwrap() < half;
+    let on_installed = |route: &planner_router::Route| route.pieces().all(|piece| installed(piece.road));
+    let mut full = Router::new(bake.region(None), usize::MAX);
+    let mut some = Router::new(bake.region(Some(&ids)), usize::MAX);
+    // Points whose snap windows meet only installed cells.
+    let points: Vec<[f64; 2]> = snap_points(&bake.graph)
+        .into_iter()
+        .filter(|&point| directory.meeting(snap::window(point, REACH_M).unwrap()).unwrap().iter().all(|&r| r < half))
+        .map(|p| [p.lon as f64 * 1e-6, p.lat as f64 * 1e-6])
+        .collect();
+    let (mut same, mut dearer) = (0, 0);
+    for pair in points.windows(2).step_by(3) {
+        let request: Request =
+            serde_json::from_value(serde_json::json!({"points": pair, "profile": "touring"})).unwrap();
+        let all = full.route(&request, &Control::default());
+        match (some.route(&request, &Control::default()), all) {
+            (Ok(route), Ok(all)) => {
+                assert!(on_installed(&route), "{request:?}");
+                if on_installed(&all) {
+                    assert_eq!(route.cost, all.cost, "{request:?}");
+                    same += 1;
+                } else {
+                    assert!(route.cost > all.cost, "{request:?}");
+                    dearer += 1;
+                }
+            }
+            (Err(Error::NoPath), Ok(all)) => assert!(!on_installed(&all), "{request:?}"),
+            (Err(Error::NoPath), Err(Error::NoPath)) => {}
+            (route, all) => panic!("{request:?}: {:?} against {:?}", route.map(|r| r.cost), all.map(|r| r.cost)),
+        }
+    }
+    assert!(same > 0, "{same} routes as on the full install, {dearer} dearer");
 }

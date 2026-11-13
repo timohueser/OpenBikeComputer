@@ -5,8 +5,9 @@ use crate::{
     closures::{Closure, Closures},
     landmarks::{self, Guide, Junctions},
     model::{Point, Profile, Road},
+    overlay::{Found, Query, Stats},
     package::{cell_key, digest, Departure, Endpoint, Manifest, Package, Source, MAX_MANIFEST_BYTES, ROADS_PER_PAGE},
-    search::{Found, Query, Workspace},
+    search::Workspace,
     snap::{self, Candidates, Policy},
     Error, Result,
 };
@@ -119,6 +120,8 @@ pub struct Selection<S> {
     workspace: Workspace,
     /// The metric of the queues in `workspace`.
     searched: String,
+    /// The labels that the searches settled since the last `take_stats`.
+    settled: std::cell::Cell<usize>,
 }
 
 fn turn_groups(manifest: &Manifest) -> BTreeMap<String, usize> {
@@ -150,6 +153,7 @@ impl<S: Source> Selection<S> {
             memory_budget: usize::MAX,
             workspace: Workspace::default(),
             searched: String::new(),
+            settled: Default::default(),
         }
     }
 
@@ -201,6 +205,7 @@ impl<S: Source> Selection<S> {
             memory_budget: self.memory_budget,
             workspace: Workspace::default(),
             searched: String::new(),
+            settled: Default::default(),
         }
     }
 
@@ -257,6 +262,11 @@ impl<S: Source> Selection<S> {
         let mut keys: Vec<_> = keys.into_iter().collect();
         package.source().order_for_verify(&mut keys)?;
         Ok(keys)
+    }
+
+    /// The counts of the searches since the last call. The labels are not counted in bytes.
+    pub fn take_stats(&self) -> Stats {
+        Stats { settled: self.settled.take(), peak_bytes: 0 }
     }
 
     /// Check the complete object closure before publishing or installing.
@@ -587,7 +597,7 @@ impl<S: Source> RoutingData for Selection<S> {
             None => None,
         };
         let (graph, costs) = (&prepared.graph, &prepared.costs);
-        match self.workspace.run_with_potential(graph, costs, query, potential.as_ref()) {
+        let result = match self.workspace.run_with_potential(graph, costs, query, potential.as_ref()) {
             // Cached metrics that no router holds go first, so that an idle service has the room
             // of `heap_limit` and answers `Memory` only for memory that other requests hold.
             Err(Error::Memory) if self.release(metric) => {
@@ -595,7 +605,9 @@ impl<S: Source> RoutingData for Selection<S> {
                 self.workspace.run_with_potential(graph, costs, Query { heap_bytes, ..query }, potential.as_ref())
             }
             result => result,
-        }
+        };
+        self.settled.set(self.settled.get() + self.workspace.settled());
+        result
     }
 
     fn memory_budget(&self) -> usize {
