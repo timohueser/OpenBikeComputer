@@ -23,8 +23,8 @@ let result = router.routes(&request, &Control::default())?;
 
 `open` chooses the engine by the folder. A folder with `manifest.json` or `blocks.json` is format 9:
 a complete package or a grid selection, read into one `data::Selection`. Each other folder is an
-install of format 10 (`directory.bin`, `install.bin`), read into one `region::Region`. For application storage, supply a `package::Source`: it returns a complete
-object by SHA-256 and must not change objects during a package's lifetime. `Selection::verify`
+install of format 10 (`directory.bin`, `install.bin`), read into one `region::Region`. For
+application storage, supply a `package::Source`: it returns a complete object by SHA-256 and must not change objects during a package's lifetime. `Selection::verify`
 checks the full object closure before installation. A missing object returns `MissingRegion`. No
 query needs a network service.
 
@@ -57,8 +57,10 @@ Physical phone performance and complete-country preparation need separate valida
 
 ## Reference
 
-The old engine (format 9) is `package`, `data`, `blocks`, `base`, `search`, `landmarks` and
-`directory`. The new engine (format 10) is `cells`, `install`, `host`, `region` and `overlay`.
+The old engine (format 9) is `data::Selection`, `package`, `blocks`, `search`, `queue`,
+`landmarks`, `table`, `storage`, `directory` and the graph of `base`. The new engine (format 10) is
+`cells`, `install`, `host`, `region` and `overlay`. `open`, `router`, `snap` and the other modules
+serve both.
 
 | Module | Responsibility |
 | --- | --- |

@@ -346,6 +346,9 @@ impl<H: Host> Search<'_, H> {
         let mut heads = Vec::new();
         heads.try_reserve_exact(turns).map_err(|_| Error::Memory)?;
         heads.extend(values(head_column, level1.head_width));
+        if heads.len() != turns {
+            return Err(invalid("a head column that is not the turn count"));
+        }
         let mut first = reserved(targets + 1, 0u32)?;
         for &head in &heads {
             *first

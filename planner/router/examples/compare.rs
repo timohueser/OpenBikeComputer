@@ -1,6 +1,7 @@
 //! Routes one request set on the two formats of one bake and prints each request:
-//! `compare OLD NEW COUNT SEED [--max-km K] [--cold] [--no-announce]`. OLD is format 9 and NEW an
-//! install of format 10 (`cells install`); COUNT is the requests of each profile. `--cold` opens NEW
+//! `compare OLD NEW COUNT SEED [--max-km K] [--profile P] [--cold] [--no-announce]`. OLD is format
+//! 9 and NEW an install of format 10 (`cells install`); COUNT is the requests of each profile, or of
+//! `P` only. `--cold` opens NEW
 //! again with its files out of the page cache before each request; `--no-announce` makes its host
 //! silent. Exits with 1 on a difference, with 2 when the packages have other profiles.
 use planner_router::{
@@ -47,17 +48,18 @@ fn straight_km(request: &Request) -> f64 {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
-    let usage = "Usage: compare OLD NEW COUNT SEED [--max-km K] [--cold] [--no-announce]";
+    let usage = "Usage: compare OLD NEW COUNT SEED [--max-km K] [--profile P] [--cold] [--no-announce]";
     let [_, old_path, new_path, count, seed, options @ ..] = &args[..] else { return Err(usage.into()) };
     let (count, seed): (usize, u64) = (count.parse()?, seed.parse()?);
     if seed == 0 {
         return Err("SEED is a number above 0".into());
     }
-    let (mut max_km, mut cold, mut silent) = (75.0, false, false);
+    let (mut max_km, mut only, mut cold, mut silent) = (75.0, None, false, false);
     let mut options = options.iter();
     while let Some(option) = options.next() {
         match option.as_str() {
             "--max-km" => max_km = options.next().ok_or(usage)?.parse()?,
+            "--profile" => only = Some(options.next().ok_or(usage)?.clone()),
             "--cold" => cold = true,
             "--no-announce" => silent = true,
             _ => return Err(usage.into()),
@@ -75,7 +77,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let started = Instant::now();
     let (mut requests_run, mut differences, mut ties) = (0, 0, 0);
     println!("profile, kind, km, old ms, old settled, old ns/label, new ms, new settled, new ns/label, new peak MB, faults, outcome");
-    for profile in &profiles {
+    for profile in profiles.iter().filter(|profile| only.as_ref().is_none_or(|only| only == *profile)) {
         let requests = compare::requests(&old, profile, count, seed, max_km * 1000.0);
         let points: Vec<Point> = requests.iter().flat_map(|request| request.points.iter().map(|&p| point(p))).collect();
         let mut snap_us = [0.0; 2];

@@ -218,8 +218,7 @@ mod tests {
         assert!(matches!(labels.set(EMPTY, NONE, usize::MAX), Err(Error::InvalidData(_))));
         let room = START_SLOTS * 24 * 2;
         let ids = 0..START_SLOTS as u32;
-        let result =
-            ids.map(|id| labels.set(id, Label { cost: 1, parent: 0, origin: 0 }, room)).collect::<Result<()>>();
+        let result = ids.into_iter().try_for_each(|id| labels.set(id, Label { cost: 1, parent: 0, origin: 0 }, room));
         assert!(matches!(result, Err(Error::Limit)));
     }
 

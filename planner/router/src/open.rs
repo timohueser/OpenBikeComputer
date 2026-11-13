@@ -16,6 +16,7 @@ use crate::{
 use std::path::Path;
 
 /// The data of one worker on either format.
+#[allow(clippy::large_enum_variant, reason = "one value for each worker")]
 pub enum Opened {
     Pages(Selection<Files>),
     Cells(Region<Maps>),
