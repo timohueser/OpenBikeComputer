@@ -26,6 +26,7 @@
     let confirming = $state(false);
     let failure = $state('');
     let file: HTMLInputElement;
+    const heading = $props.id();
 
     const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
     const text = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -92,8 +93,8 @@
         <RiderValue id={key} {label} {unit} value={settings[key]} range={RANGES[key]} {zones} {ramp} onSet={value => setValue(key, value)} />
     {/each}
     <p class="note">A new ride from the OpenBikeComputer brings the values of the device, and they replace these. A ride keeps its values when you change them later.</p>
-    <section aria-labelledby="library">
-        <h3 id="library">Your library</h3>
+    <section aria-labelledby={heading}>
+        <h3 id={heading}>Your library</h3>
         <p class="count">
             {#if counts}<strong>{plural(counts.routes, 'route')} and {plural(counts.rides, 'ride')}</strong> are saved in this browser only.{/if}
         </p>
