@@ -365,8 +365,9 @@ assert selection['source'] == public + '/bundles/' + selection['id']
 bundle = json.loads((source / 'selections' / selection['id'] / 'bundle.json').read_bytes())
 assert any(name.startswith('search/tiles/pois/') for name in bundle['files'])
 assert any(name.startswith('search/tiles/addresses/') for name in bundle['files'])
-assert any(name.startswith('routing/packs/') for name in bundle['files'])
-for entries in [catalog['assets'], *(cell[key] for cell in cells for key in ('files', 'packs', 'routing_packs'))]:
+assert {'routing/package.json', 'routing/directory.bin'} <= bundle['files'].keys()
+assert not any(name.startswith('routing/packs/') for name in bundle['files'])
+for entries in [catalog['assets'], *(cell[key] for cell in cells for key in ('files', 'packs'))]:
     for entry in entries.values():
         offline.verify(source / 'objects' / entry['transport']['sha256'], entry['transport'])
 "#,

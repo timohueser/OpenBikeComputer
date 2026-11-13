@@ -27,14 +27,9 @@ def write_indexes(root):
                                              for name in ("pages.bin", "pages.idx")),
                     *(f"{folder}/{cell}.json" for cell in cells for folder in ("offline/routing-cells", "routes/tiles")))
     package = files("routing/package.json", "routing/directory.bin", "routing/objects/" + "d" * 64)
-    # The roads of the western cell reach into the cell west of it.
-    geometry = {"9-267-177": [7.5, 48.0, 8.4375, 48.4], "9-268-177": cells["9-268-177"]}
     indexes = {
         "routing": {"files": routing, "graph": {"source": "s" * 64, "data": {"bounds": bounds, "region": "test",
-            "source_sha256": ["o" * 64, "t" * 64], "metrics": {"road": {}}}},
-            "cells": [{"id": cell, "bounds": box, "geometry_bounds": geometry[cell], "adjacency": [[0, 1]],
-                       "manifest": f"routing-cells/{cell}.json", "sha256": "c" * 64, "archives": [ARCHIVES[cell]]}
-                      for cell, box in cells.items()]},
+            "source_sha256": ["o" * 64, "t" * 64], "metrics": {"road": {}}}}},
         "basemap": {"files": files("maps/basemap.json", *tiles("basemap", "9-266-177", "9-267-177", "9-268-177")),
                     "metadata": {"bounds": bounds}},
         "places": {"files": files(*tiles("places", "0-0-0")), "metadata": {"bounds": bounds, "osm_sha256": "o" * 64}},

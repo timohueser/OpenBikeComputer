@@ -67,13 +67,6 @@ def compose(indexes, options):
             target["files"].extend(cell["files"])
     for cell in cells.values():
         cell["files"].append(f"routes/tiles/{cell['id']}.json")
-    routing_cells = {cell["id"]: cell for cell in routing["cells"]}
-    if not set(routing_cells) <= set(cells):
-        raise ValueError("Routing cell coverage differs")
-    for name, descriptor in routing_cells.items():
-        if descriptor["bounds"] != cells[name]["bounds"]:
-            raise ValueError("Routing and search cells differ")
-        cells[name]["routing"] = descriptor
     for kind in MAP_KINDS & indexes.keys():
         index = indexes[kind]
         info = index["metadata"]
