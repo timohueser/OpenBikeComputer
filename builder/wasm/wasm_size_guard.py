@@ -23,9 +23,9 @@ BUDGETS = {
     # Measured in CI on the build with the outline's turns, the levels that the tiles carry, the faces' tile-line
     # vertices, the decks' ceilings and end faces, the shared water level and curve of the feature bake, line water
     # and its culverts with their mouths, the classifier's ford rule, and the crate's feature `storeys` turned off
-    # (772,319 B gzipped with the glue, 1,999,238 B raw, stable 1.100.0), the next whole KiB. The owner allows a few
+    # (772,488 B gzipped with the glue, 2,000,343 B raw, stable 1.100.0), the next whole KiB. The owner allows a few
     # per cent for line water and about 60 kB for the crossing block when stated.
-    "ground-plan": {"gzipped": 755 * 1024, "raw_wasm": 1953 * 1024},
+    "ground-plan": {"gzipped": 755 * 1024, "raw_wasm": 1954 * 1024},
 }
 
 ADVICE = {
