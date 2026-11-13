@@ -36,15 +36,15 @@
     {#if count}
         <header>
             <div class="title">
-                <h2 id="home-drawer">{kind === 'rides' ? 'Your rides' : 'Your routes'}</h2>
+                <h2 id="home-drawer" class:unseen={routes.length && rides.length}>{kind === 'rides' ? 'Your rides' : 'Your routes'}</h2>
                 {#if routes.length && rides.length}
                     <Segmented label="Routes or rides" value={kind} onChange={next => chosen = next} compact
                         options={[{ value: 'routes', label: 'Routes' }, { value: 'rides', label: 'Rides' }]} />
                 {/if}
             </div>
-            <a class="button" href={kind === 'rides' ? `${ROUTES.routes}/ridden` : ROUTES.routes}>All {count.toLocaleString('en')} in Routes ›</a>
+            <a class="all" href={kind === 'rides' ? `${ROUTES.routes}/ridden` : ROUTES.routes}>All {count.toLocaleString('en')} in Routes ›</a>
         </header>
-        <ul class="cards items">
+        <ul class="cards items" style:--columns={Math.max(items.length, 4)}>
             {#each items as item (item.id)}
                 <ItemCard {library} {item} oncredits={list => { if (JSON.stringify(list) !== JSON.stringify(byCard[item.id] ?? [])) byCard[item.id] = list; }} />
             {/each}
@@ -52,7 +52,6 @@
     {:else}
         <header>
             <h2 id="home-drawer">What you can do here</h2>
-            <p class="note">Your routes and rides take this place when you have some.</p>
         </header>
         <ul class="cards">
             {#each PREVIEWS as preview, i (preview.name)}
@@ -74,7 +73,7 @@
                         {:else}
                             <path class="dash" d="M20 46 H82 M158 46 H220" />
                             <!-- The housing of pages/device/Drawing.svelte, in its units: a body 308 × 470. -->
-                            <g transform="translate(93 5) scale(0.17)">
+                            <g transform="translate(96 10) scale(0.155)">
                                 <rect class="rim" x="-6" y="-6" width="320" height="482" rx="48" />
                                 <rect class="body" width="308" height="470" rx="42" />
                                 {#each [[-13, 158], [-13, 246], [302, 158], [302, 246]] as [x, y] (`${x}:${y}`)}
@@ -100,7 +99,7 @@
         flex: none;
         flex-direction: column;
         gap: 10px;
-        padding: 12px 20px 16px;
+        padding: 14px 40px 18px;
         border-top: 1px solid var(--line);
         background: var(--panel);
     }
@@ -110,6 +109,7 @@
         align-items: center;
         justify-content: space-between;
         gap: 4px 16px;
+        min-height: 30px;
     }
     h2 {
         margin: 0;
@@ -121,24 +121,27 @@
         align-items: center;
         gap: 8px 14px;
     }
-    header:has(.note) {
-        justify-content: flex-start;
+    /* The switch names the kind, so the heading is for a screen reader only. */
+    .unseen {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
     }
-    .note, .meta {
+    .meta {
         margin: 0;
         color: var(--ink-soft);
         font-size: 12px;
     }
-    .button {
-        padding: 4px 10px;
-        border: 1px solid var(--line-strong);
-        border-radius: 6px;
-        color: var(--ink);
+    .all {
+        color: var(--ink-soft);
         text-decoration: none;
         white-space: nowrap;
     }
-    .button:hover {
-        background: var(--parchment-2);
+    .all:hover {
+        color: var(--ink);
+        text-decoration: underline;
     }
     .cards {
         display: grid;
@@ -150,24 +153,21 @@
         overflow-x: auto;
         list-style: none;
     }
-    /* A card keeps the width of one of six, also when there are fewer. */
+    /* The cards share the row; fewer than four keep the width of one of four. */
     .items {
-        grid-auto-columns: minmax(190px, calc((100% - 60px) / 6));
+        grid-auto-columns: minmax(190px, calc((100% - (var(--columns) - 1) * 12px) / var(--columns)));
     }
+    /* A preview is a picture with its text, with no frame: it is not a card to open. */
     .preview {
         display: flex;
         flex-direction: column;
         gap: 2px;
         min-width: 0;
-        padding: 0 10px 10px;
-        overflow: hidden;
-        border: 1px solid var(--line);
-        border-radius: 8px;
-        background: var(--parchment);
     }
     .preview svg {
         height: 92px;
-        margin: 0 -10px 6px;
+        margin-bottom: 6px;
+        border-radius: 8px;
         background: var(--parchment-2);
     }
     .preview circle {
@@ -223,5 +223,10 @@
     .on-screen {
         stroke: #cc2a93;
         stroke-width: 16;
+    }
+    @media (max-width: 760px) {
+        .drawer {
+            padding: 12px 16px 16px;
+        }
     }
 </style>

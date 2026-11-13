@@ -44,10 +44,9 @@
     <img class="backdrop" src={imageUrl(manifest!, chosen.view, chosen.slot)} alt="" decoding="async" onerror={failed} />
     <div class="shade"></div>
     <aside class="box" aria-label="You look at">
-        <p class="label">You look at</p>
         <h2>{chosen.view.name}</h2>
         <p class="region">{chosen.view.region}</p>
-        <button type="button" class="button" onclick={() => router.go(`${ROUTES.planner}/new`, { place: { lon: chosen.view.lon, lat: chosen.view.lat } })}>
+        <button type="button" class="plan" onclick={() => router.go(`${ROUTES.planner}/new`, { place: { lon: chosen.view.lon, lat: chosen.view.lat } })}>
             Plan a route here
         </button>
         {#if credits.length}{@render dataCredits()}{/if}
@@ -64,6 +63,7 @@
         <rect width="1600" height="900" fill="url(#home-sky)" />
         <path class="far" d="M0 520 L140 470 L280 500 L430 440 L580 485 L720 445 L870 475 L1010 430 L1160 465 L1310 420 L1460 455 L1600 425 V900 H0Z" />
         <path class="peak" d="M820 600 L1000 340 L1035 370 L1085 290 L1250 600Z" />
+        <path class="face" d="M1085 290 L1108 392 L1086 470 L1128 600 H1250Z" />
         <path class="snow" d="M1085 290 L1120 355 L1102 346 L1083 362 L1066 346 L1048 352Z" />
         <path class="mid" d="M0 640 C200 580 360 600 520 620 S820 560 1000 600 S1300 640 1600 580 V900 H0Z" />
         <path class="near" d="M0 720 C240 660 420 700 640 690 S1000 640 1240 700 S1480 720 1600 690 V900 H0Z" />
@@ -84,6 +84,7 @@
         --sky-low: #eef0e8;
         --far: #b5c2c8;
         --peak: #8fa3b1;
+        --face: #7d93a2;
         --snow: #f5f7f5;
         --mid: #93ab9f;
         --near: #6f9483;
@@ -94,6 +95,7 @@
         --sky-low: #1f2634;
         --far: #2a313f;
         --peak: #353e4e;
+        --face: #2c3443;
         --snow: #8a94a1;
         --mid: #252f2b;
         --near: #1e2924;
@@ -101,6 +103,7 @@
     }
     .far { fill: var(--far); }
     .peak { fill: var(--peak); }
+    .face { fill: var(--face); }
     .snow { fill: var(--snow); }
     .mid { fill: var(--mid); }
     .near { fill: var(--near); }
@@ -108,61 +111,76 @@
     .box {
         position: absolute;
         z-index: 1;
-        right: 20px;
-        bottom: 20px;
-        width: 320px;
-        padding: 14px 16px;
+        right: 40px;
+        bottom: 32px;
+        display: grid;
+        grid-template-columns: auto 1fr;
+        min-width: 260px;
+        max-width: 340px;
+        padding: 12px 16px;
         border: 1px solid var(--line);
         border-radius: 10px;
         background: var(--panel);
         color: var(--ink);
-        box-shadow: 0 6px 20px rgb(28 27 20 / 0.18);
+        box-shadow: 0 2px 10px rgb(28 27 20 / 0.16);
         text-shadow: none;
     }
     p {
         margin: 0;
     }
-    .label, .region {
+    h2, .region {
+        grid-column: 1 / -1;
+    }
+    .region {
         color: var(--ink-soft);
-        font-size: 12px;
+        font-size: 13px;
     }
     h2 {
-        margin: 4px 0 2px;
-        font: 700 17px/1.25 var(--sans);
+        margin: 0 0 1px;
+        font: 700 16px/1.3 var(--sans);
     }
     /* A soft shade under the text, so that light text is readable on a bright view. */
     .shade {
         position: absolute;
         inset: 0;
-        background: linear-gradient(100deg, rgb(0 0 0 / 0.42), rgb(0 0 0 / 0.2) 38%, transparent 62%);
+        background: linear-gradient(100deg, rgb(0 0 0 / 0.5), rgb(0 0 0 / 0.24) 36%, transparent 62%);
     }
     .alone {
-        width: auto;
+        display: block;
+        min-width: 0;
         padding: 4px 10px;
     }
     .alone .credits {
-        max-width: 320px;
         margin: 0;
     }
-    .button {
+    /* The one link of the box and the fold-out of the credits share a line; the open credits take the width under it. */
+    .plan, .credits {
+        grid-row: 3;
         margin-top: 10px;
-        padding: 6px 12px;
-        border: 1px solid var(--line-strong);
-        border-radius: 6px;
-        background: var(--panel);
+        line-height: 20px;
+    }
+    .plan {
+        z-index: 1;
+        grid-column: 1;
+        padding: 0;
+        border: 0;
+        background: none;
         color: var(--ink);
+        text-decoration: underline;
+        text-underline-offset: 3px;
         white-space: nowrap;
     }
-    .button:hover {
-        background: var(--parchment-2);
-    }
     .credits {
-        margin-top: 10px;
+        grid-column: 1 / -1;
         color: var(--ink-soft);
-        font-size: 11px;
+        font-size: 12px;
     }
     .credits summary {
+        text-align: right;
         cursor: pointer;
+    }
+    .alone summary {
+        text-align: left;
     }
     .credits p {
         max-height: 120px;
@@ -172,14 +190,19 @@
     /* On a phone the box follows the text, at the bottom of the hero. */
     @media (max-width: 760px) {
         .shade {
-            background: linear-gradient(180deg, rgb(0 0 0 / 0.42), rgb(0 0 0 / 0.2) 40%, transparent 65%);
+            background: linear-gradient(180deg, rgb(0 0 0 / 0.5), rgb(0 0 0 / 0.24) 40%, transparent 65%);
+        }
+        /* The peak stays in the narrow hero. */
+        .hills {
+            left: -67%;
+            width: 167%;
         }
         .box {
             position: relative;
             right: auto;
             bottom: auto;
             order: 2;
-            width: auto;
+            max-width: none;
             margin-top: auto;
         }
     }

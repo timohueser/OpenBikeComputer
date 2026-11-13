@@ -4,6 +4,7 @@
     import { router } from '../../lib/router.svelte';
     import { ROUTES } from '../../lib/routes';
     import { formatDistance } from '../../lib/settings/format';
+    import Icon from '../../components/planner/PlannerIcon.svelte';
     import { findPlaces, results, type Box, type FoundPlace, type Item } from '../routes/filter';
 
     let { items }: { items: Item[] } = $props();
@@ -52,6 +53,7 @@
 <svelte:window onclick={event => { if (open && !box?.contains(event.target as Node)) open = false; }} />
 
 <div class="search" bind:this={box}>
+    <span class="icon"><Icon name="search" size={16} /></span>
     <input type="search" aria-label="Search" placeholder={items.length ? 'Search your routes and rides, or a place' : 'Search a place'}
         bind:value={text} oninput={input} onfocus={() => open = true} onkeydown={event => { if (event.key === 'Escape') open = false; }} />
     {#if open && text.trim()}
@@ -111,15 +113,23 @@
         color: var(--ink);
         text-shadow: none;
     }
+    .icon {
+        position: absolute;
+        top: 14px;
+        left: 14px;
+        display: flex;
+        color: var(--ink-soft);
+        pointer-events: none;
+    }
     input {
         width: 100%;
-        padding: 11px 14px;
+        padding: 11px 14px 11px 40px;
         border: 1px solid var(--line-strong);
         border-radius: 8px;
         background: var(--panel);
         color: var(--ink);
         font: inherit;
-        box-shadow: 0 6px 20px rgb(28 27 20 / 0.18);
+        box-shadow: 0 2px 10px rgb(28 27 20 / 0.16);
     }
     .results {
         position: absolute;

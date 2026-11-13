@@ -66,25 +66,24 @@
         display: flex;
         flex: 1;
         flex-direction: column;
+        gap: 40px;
         min-height: 360px;
-        padding: 96px 40px 24px;
+        padding: 32px 40px;
         color: var(--ink);
     }
     .hero.shown {
         background: #3a4640;
         color: #fff;
-        text-shadow: 0 1px 12px rgb(0 0 0 / 0.55);
+        text-shadow: 0 1px 2px rgb(0 0 0 / 0.45);
     }
     .hero > :global(.personal) {
         position: relative;
     }
+    /* The search and the text are one column, at one left edge. */
     .search {
-        position: absolute;
+        position: relative;
         z-index: 2;
-        top: 18px;
-        left: 50%;
-        width: min(540px, calc(100% - 32px));
-        transform: translateX(-50%);
+        width: min(520px, 100%);
     }
     .failure {
         margin: 16px 20px;
@@ -98,13 +97,6 @@
             min-height: 78vh;
             padding: 16px;
             gap: 24px;
-        }
-        .search {
-            position: relative;
-            top: 0;
-            left: 0;
-            width: 100%;
-            transform: none;
         }
     }
 </style>

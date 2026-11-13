@@ -42,10 +42,19 @@
     }
     .picture {
         position: relative;
-        height: 92px;
+        aspect-ratio: 3;
+        min-height: 92px;
+        max-height: 112px;
         margin: 0 -10px 6px;
         overflow: hidden;
+    }
+    /* With no picture, the line has room around it on the ground of a picture. */
+    .picture :global(.cover) {
         background: var(--parchment-2);
+    }
+    .picture :global(svg) {
+        box-sizing: border-box;
+        padding: 12px;
     }
     .open {
         overflow: hidden;

@@ -17,22 +17,22 @@
 <div class="personal">
     {#if text.kind === 'continue'}
         {@const summary = text.route.summary!}
-        <p class="eyebrow">Continue where you stopped</p>
+        <p class="over">Continue where you stopped</p>
         <h1>{routeItem(text.route).name}</h1>
         <p class="numbers">{[formatDistance(summary.lengthM), `${formatHeight(summary.climbM)} up`, summary.days > 1 && count(summary.days, 'day')].filter(Boolean).join(' · ')}</p>
         <p>You changed it {text.ago}.</p>
         <nav class="buttons" aria-label="Continue">
-            <a class="button" href={`${ROUTES.planner}/${text.route.id}`}>Open in the planner</a>
+            <a class="button primary" href={`${ROUTES.planner}/${text.route.id}`}>Open in the planner</a>
             <a class="button" href={`${ROUTES.planner}/new`}>Plan a new route</a>
         </nav>
     {:else if text.kind === 'year'}
         {@const { totals } = text}
-        <p class="eyebrow">This year, {totals.rides && totals.hikes ? 'by bike and on foot' : totals.hikes ? 'on foot' : 'by bike'}</p>
+        <p class="over">This year, {totals.rides && totals.hikes ? 'by bike and on foot' : totals.hikes ? 'on foot' : 'by bike'}</p>
         <h1 class="total">{formatDistance(totals.lengthM)}</h1>
         <p class="numbers">{[totals.rides && count(totals.rides, 'ride'), totals.hikes && count(totals.hikes, 'hike')].filter(Boolean).join(' · ')}</p>
         <p>Your last ride was {text.last.name}, {text.ago}.</p>
         <nav class="buttons" aria-label="This year">
-            <a class="button" href={`${ROUTES.ride}/${text.last.key}`}>Look back at it</a>
+            <a class="button primary" href={`${ROUTES.ride}/${text.last.key}`}>Look back at it</a>
             <a class="button" href={`${ROUTES.planner}/new`}>Plan a route</a>
         </nav>
     {:else}
@@ -58,21 +58,23 @@
     .personal {
         display: flex;
         flex-direction: column;
-        gap: 8px;
+        gap: 6px;
         max-width: 520px;
     }
     p {
         margin: 0;
+        opacity: .92;
     }
-    .eyebrow {
-        font: 700 13px/1.3 var(--sans);
-        letter-spacing: .06em;
-        text-transform: uppercase;
+    .over {
+        font-weight: 600;
+        opacity: 1;
     }
     h1 {
-        margin: 0;
+        margin: 0 0 4px;
         font: 700 44px/1.1 var(--sans);
+        letter-spacing: -0.01em;
         overflow-wrap: anywhere;
+        text-wrap: balance;
     }
     .total {
         font-size: 64px;
@@ -82,22 +84,21 @@
     }
     .numbers, .lead {
         font-size: 18px;
-    }
-    .note {
-        opacity: .85;
+        opacity: 1;
+        text-wrap: balance;
     }
     .buttons {
         display: flex;
         flex-wrap: wrap;
-        gap: 8px;
-        margin-top: 8px;
+        gap: 10px;
+        margin-top: 14px;
     }
     .button {
         display: inline-flex;
         align-items: center;
-        padding: 6px 12px;
+        padding: 8px 16px;
         border: 1px solid var(--line-strong);
-        border-radius: 6px;
+        border-radius: 8px;
         background: var(--panel);
         color: var(--ink);
         font: inherit;
