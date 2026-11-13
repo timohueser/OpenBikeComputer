@@ -48,24 +48,27 @@ describe('takeDeviceValues', () => {
 });
 
 describe('format', () => {
+    // The functions put a no-break space between a number and its unit.
+    const plain = (texts: string[]) => texts.map(text => text.replace('\u00a0', ' '));
+
     it('writes distances, heights and speeds in kilometres', () => {
-        expect([formatDistance(400), formatDistance(12_340), formatDistance(123_400), formatDistance(1_234_000)]).toEqual(['400 m', '12.3 km', '123 km', '1,234 km']);
-        expect([formatHeight(1240), heightUnit(), heightIn(1240), distanceIn(12_340)]).toEqual(['1,240 m', 'm', 1240, 12.34]);
-        expect(formatSpeed(19 / 3.6)).toBe('19.0 km/h');
+        expect(plain([formatDistance(400), formatDistance(12_340), formatDistance(123_400), formatDistance(1_234_000)])).toEqual(['400 m', '12.3 km', '123 km', '1,234 km']);
+        expect([formatHeight(1240), heightUnit(), heightIn(1240), distanceIn(12_340)]).toEqual(['1,240\u00a0m', 'm', 1240, 12.34]);
+        expect(plain([formatSpeed(19 / 3.6)])).toEqual(['19.0 km/h']);
     });
 
     it('rounds before it chooses the unit and the digits, and shows a dash for a value that is not a number', () => {
-        expect([formatDistance(99_960), formatDistance(999.6), formatDistance(-0.2)]).toEqual(['100 km', '1.0 km', '0 m']);
+        expect(plain([formatDistance(99_960), formatDistance(999.6), formatDistance(-0.2)])).toEqual(['100 km', '1.0 km', '0 m']);
         expect([formatDistance(NaN), formatHeight(Infinity), formatSpeed(NaN)]).toEqual(['–', '–', '–']);
         updateSettings({ units: 'mi' });
-        expect([formatDistance(40), formatDistance(0), formatDistance(160_900)]).toEqual(['0.1 mi', '0.0 mi', '100 mi']);
+        expect(plain([formatDistance(40), formatDistance(0), formatDistance(160_900)])).toEqual(['0.1 mi', '0.0 mi', '100 mi']);
     });
 
     it('writes distances, heights and speeds in miles', () => {
         updateSettings({ units: 'mi' });
-        expect([formatDistance(400), formatDistance(12_231), formatDistance(200_000)]).toEqual(['0.2 mi', '7.6 mi', '124 mi']);
-        expect([formatHeight(1240), heightUnit()]).toEqual(['4,068 ft', 'ft']);
+        expect(plain([formatDistance(400), formatDistance(12_231), formatDistance(200_000)])).toEqual(['0.2 mi', '7.6 mi', '124 mi']);
+        expect(plain([formatHeight(1240), heightUnit()])).toEqual(['4,068 ft', 'ft']);
         expect(distanceIn(1609.344)).toBe(1);
-        expect(formatSpeed(19 / 3.6)).toBe('11.8 mph');
+        expect(plain([formatSpeed(19 / 3.6)])).toEqual(['11.8 mph']);
     });
 });

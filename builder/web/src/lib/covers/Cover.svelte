@@ -8,7 +8,7 @@
     import { along, nearest } from './line';
     import Icon from '../../components/planner/PlannerIcon.svelte';
 
-    let { library, id, mark, part, line = true, place = 'row', pins = [], onpoint }: {
+    let { library, id, mark, part, line = true, place = 'row', pins = [], onpoint, credits = $bindable([]) }: {
         library: Library;
         /** The id of a route or the key of a ride. */
         id: string;
@@ -22,6 +22,8 @@
         pins?: { share: number; label: string; number?: number }[];
         /** The metres along the route of the point nearest to the pointer, or null when the pointer leaves. */
         onpoint?: (metres: number | null) => void;
+        /** The credits of the data in the shown image: the cover or the map picture. */
+        credits?: string[];
     } = $props();
 
     /** The pointer marks the line only within this many CSS pixels of it. */
@@ -36,9 +38,9 @@
     function source(item: RouteRecord | RideRecord, cover: CoverRecord, dark: boolean) {
         const current = cover.lineKey === lineKey(item), summary = item.summary ?? undefined;
         // The points of a cover of an earlier line draw no mark and no part.
-        if (cover.image && cover.points) return { image: cover.image, points: cover.points, summary: current && cover.state === 'done' ? summary : undefined };
+        if (cover.image && cover.points) return { image: cover.image, points: cover.points, summary: current && cover.state === 'done' ? summary : undefined, credits: cover.credits };
         const map = place === 'card' && cover.map?.lineKey === lineKey(item) ? cover.map : undefined, image = map?.[dark ? 'dark' : 'light'];
-        return image && map?.points ? { image, points: map.points, summary } : undefined;
+        return image && map?.points ? { image, points: map.points, summary, credits: map.credits } : undefined;
     }
 
     // A card loads again after a change of the theme, and asks for the picture of the new theme.
@@ -51,6 +53,7 @@
             const bitmap = from ? await createImageBitmap(from.image).catch(() => undefined) : undefined;
             if (!live) return bitmap?.close();
             [item, shown] = [nextItem, from && bitmap && { bitmap, points: from.points, summary: from.summary }];
+            credits = shown ? from?.credits ?? [] : [];
             if (!first || place === 'row' || !nextItem?.summary) return;
             if (!settled(nextItem, nextCover) || (place === 'card' && wantsPicture(nextItem, nextCover, dark))) wantCover(target, place);
         };
