@@ -105,8 +105,12 @@ fn graph(lines: &[Line]) -> WayGraph {
 }
 
 fn graph_of(key: CellKey, lines: &[Line]) -> WayGraph {
-    let g = build(key, &input_of(key, lines), Sections::embedded());
+    let input = input_of(key, lines);
+    let mut g = build(key, &input, Sections::embedded());
     assert_eq!(check(&g), Vec::new());
+    let structures = &crate::faces::Rules::embedded().structures;
+    levels(&mut g, &input, Sections::embedded(), structures);
+    assert_eq!(check_levels(&g, &input, Sections::embedded(), structures), Vec::new());
     g
 }
 
@@ -170,7 +174,7 @@ fn samples_break_at_cell_lines_and_a_grid_point_near_a_break_goes() {
 }
 
 #[test]
-fn a_stream_is_a_curve_through_its_vertices_with_its_levels_linear_along_it() {
+fn a_stream_is_a_curve_through_its_vertices_with_its_levels_smooth_and_falling_along_it() {
     // Chords of 30 m and 60 m: the tangent bisects their directions and does not lean to the longer.
     let g = graph(&[Line {
         z: vec![Some(10.0), Some(8.0), Some(7.0)],
@@ -178,7 +182,7 @@ fn a_stream_is_a_curve_through_its_vertices_with_its_levels_linear_along_it() {
     }]);
     let part = &g.parts[0];
     let (v, s) = (&part.vertices, &part.spans);
-    assert!(s.iter().all(|s| !s.chord && s.linear_z));
+    assert!(s.iter().all(|s| !s.chord && s.water_z));
     let direction = |a: [i64; 2], b: [i64; 2]| libm::atan2((b[1] - a[1]) as f64, (b[0] - a[0]) as f64);
     let half = (direction(v[0].pos, v[1].pos) + direction(v[1].pos, v[2].pos)) / 2.0;
     assert!((v[1].tangent - half).abs() < 1e-12, "the bisector of its chords");
@@ -191,13 +195,20 @@ fn a_stream_is_a_curve_through_its_vertices_with_its_levels_linear_along_it() {
         assert!((p.tangent[0] - t[0]).abs() < 1e-9 && (p.tangent[1] - t[1]).abs() < 1e-9, "{span} {u}");
         assert!((p.z_m - v[vertex].z_m).abs() < 1e-9);
     }
-    let mid = point(part, 0, u_at(&s[0], s[0].len_m / 2.0));
-    assert!((mid.z_m - 9.0).abs() < 1e-9, "half way along the arc, half the fall");
+    // The level falls all along, and its grade has no break at the middle vertex.
+    let z: Vec<f64> = (0..=40).map(|j| point(part, j / 21, (j % 21) as f64 / 20.0).z_m).collect();
+    assert!(z.windows(2).all(|w| w[1] <= w[0] + 1e-12), "{z:?}");
+    assert!((point(part, 0, 1.0).grade - point(part, 1, 0.0).grade).abs() < 1e-9);
+    assert!(point(part, 1, 0.0).grade < 0.0, "a vertex between two falls keeps falling");
     assert!(g.samples.iter().any(|s| s.kind == SampleKind::Grid), "the sag rule refines it");
-    // A turn over `curve_turn_max_deg` (60°) is a corner: both its spans are chords, the next one not.
+    // A turn over `curve_turn_max_deg` (60°) is a corner: both its spans are chords, the next one not, and
+    // that curve leaves vertex 2 along the chord before it, so the line does not kink there.
     let g = graph(&[stream(&[], &[[-30.0, 0.0], [0.0, 0.0], [-20.0, 25.0], [-25.0, 60.0]], 0.0)]);
-    let chords: Vec<bool> = g.parts[0].spans.iter().map(|s| s.chord).collect();
-    assert_eq!(chords, [true, true, false]);
+    let (v, s) = (&g.parts[0].vertices, &g.parts[0].spans);
+    assert_eq!(s.iter().map(|s| s.chord).collect::<Vec<_>>(), [true, true, false]);
+    let t = point(&g.parts[0], 2, 0.0).tangent;
+    let chord = direction(v[1].pos, v[2].pos);
+    assert!((t[0] - libm::cos(chord)).abs() < 1e-9 && (t[1] - libm::sin(chord)).abs() < 1e-9);
     // Spans of 300 m whose curves would leave their chords by more than `curve_off_max_m` (2 m).
     let g = graph(&[stream(&[], &[[-300.0, -60.0], [0.0, 0.0], [300.0, -60.0]], 0.0)]);
     assert!(g.parts[0].spans.iter().all(|s| s.chord));
@@ -236,6 +247,33 @@ fn a_waters_end_at_a_tile_line_reads_the_tiles_next_vertex() {
         v.tangent
     };
     assert_eq!(tangent_at(west), tangent_at(both));
+}
+
+#[test]
+fn water_reads_on_through_a_vertex_where_the_map_splits_it_into_two_ways_but_not_at_a_confluence() {
+    // A stream mapped as two ways that meet at (0, 0): the curve and the grade at the shared vertex are
+    // those of one line, so the water turns and falls smoothly there.
+    let up = Line { z: vec![Some(12.0), Some(10.0)], ..stream(&[], &[[-40.0, -10.0], [0.0, 0.0]], 0.0) };
+    let down = Line { z: vec![Some(10.0), Some(9.0)], ..stream(&[("name", "Bach")], &[[0.0, 0.0], [50.0, -5.0]], 0.0) };
+    let joint = |g: &WayGraph| -> Vec<(f64, f64)> {
+        let o = at([0.0, 0.0]);
+        (g.parts.iter().flat_map(|p| &p.vertices))
+            .filter(|v| v.pos == [o.x, o.y])
+            .map(|v| (v.tangent, v.grade))
+            .collect()
+    };
+    let one = joint(&graph(&[up.clone(), down.clone()]));
+    assert_eq!(one.len(), 2);
+    assert!((one[0].0 - one[1].0).abs() < 1e-12 && (one[0].1 - one[1].1).abs() < 1e-12, "{one:?}");
+    let whole = joint(&graph(&[Line {
+        z: vec![Some(12.0), Some(10.0), Some(9.0)],
+        ..stream(&[], &[[-40.0, -10.0], [0.0, 0.0], [50.0, -5.0]], 0.0)
+    }]));
+    assert!((one[0].0 - whole[0].0).abs() < 1e-12 && (one[0].1 - whole[0].1).abs() < 1e-12);
+    // A third line that ends there makes a confluence: each line keeps its own chord.
+    let side = stream(&[], &[[0.0, 0.0], [10.0, 40.0]], 0.0);
+    let three = joint(&graph(&[up, down, side]));
+    assert!(three.iter().all(|t| (t.0 - one[0].0).abs() > 1e-3), "{three:?}");
 }
 
 #[test]
@@ -480,6 +518,37 @@ fn crossing(lines: &[Line]) -> Option<(CrossingKind, Source)> {
 }
 
 #[test]
+fn a_short_culvert_chain_under_a_road_opens_on_one_straight_line_and_a_long_one_stays_buried() {
+    // Two pipes of `half` metres meet end to end under a road, between open water at 10 m and at 8 m.
+    let pipe =
+        |a: f64, b: f64| Line { z: vec![None, None], ..stream(&[("tunnel", "culvert")], &[[a, 0.0], [b, 0.0]], 0.0) };
+    let chain = |half: f64| {
+        graph(&[
+            road(&[[-1.0, -40.0], [-1.0, 40.0]], 12.0),
+            stream(&[], &[[-half - 30.0, 0.0], [-half, 0.0]], 10.0),
+            pipe(-half, 0.0),
+            pipe(0.0, half),
+            stream(&[], &[[half, 0.0], [half + 30.0, 0.0]], 8.0),
+        ])
+    };
+    let east = |s: &Sample| f64::from(s.pos[0] - (CELL_UNITS / 2) as i32) * mpu();
+    let g = chain(25.0);
+    let water: Vec<&Way> = g.ways.iter().filter(|w| w.family == Family::Water).collect();
+    assert!(water.iter().all(|w| w.level == Level::Ground), "the chain of 50 m lies open");
+    for w in water {
+        for s in &g.samples[w.samples.start as usize..w.samples.end as usize] {
+            let x = east(s).clamp(-25.0, 25.0);
+            let line = 10.0 - 2.0 * (x + 25.0) / 50.0;
+            assert!((s.z_m - line).abs() < 0.05, "{x} m east: {} m, the line {line} m", s.z_m);
+        }
+    }
+    let g = chain(35.0);
+    assert_eq!((g.crossings[0].kind, g.crossings[0].source), (CrossingKind::Culvert, Source::Fallback));
+    let tunnels = g.ways.iter().filter(|w| w.family == Family::Water && w.level == Level::Tunnel).count();
+    assert_eq!(tunnels, 2, "the chain of 70 m stays buried");
+}
+
+#[test]
 fn crossings_take_the_first_row_of_the_table() {
     use CrossingKind::*;
     let across = |z: f64| road(&[[0.0, -40.0], [0.0, 40.0]], z);
@@ -512,12 +581,36 @@ fn crossings_take_the_first_row_of_the_table() {
         ("a short culvert", culvert(5.0), Some((Culvert, Source::Tag))),
         ("a buried stream", culvert(35.0), Some((Culvert, Source::Fallback))),
         (
-            "a ford",
+            "a track's ford over a river",
+            vec![
+                line("road", &[("highway", "track"), ("ford", "yes")], &[[0.0, -40.0], [0.0, 40.0]], 0.0),
+                along("river", &[("waterway", "river")], 0.0),
+            ],
+            Some((Ford, Source::Tag)),
+        ),
+        (
+            "a path's ford over a stream",
+            vec![
+                line("path", &[("highway", "footway"), ("ford", "yes")], &[[0.0, -40.0], [0.0, 40.0]], 0.0),
+                stream(&[], &[[-40.0, 0.0], [40.0, 0.0]], 0.0),
+            ],
+            Some((Ford, Source::Tag)),
+        ),
+        (
+            "a track's ford over a stream: a culvert, as the bake lays it",
             vec![
                 line("road", &[("highway", "track"), ("ford", "yes")], &[[0.0, -40.0], [0.0, 40.0]], 0.0),
                 stream(&[], &[[-40.0, 0.0], [40.0, 0.0]], 0.0),
             ],
-            Some((Ford, Source::Tag)),
+            Some((Culvert, Source::Rule)),
+        ),
+        (
+            "a track's ford over a stream at 19°",
+            vec![
+                line("road", &[("highway", "track"), ("ford", "yes")], &[[0.0, -40.0], [0.0, 40.0]], 0.0),
+                at_angle(71.0, stream(&[], &[[0.0, 0.0]], 0.0)),
+            ],
+            Some((Stacked, Source::Fallback)),
         ),
         (
             "a road over a stream",
@@ -638,7 +731,7 @@ fn crossings_take_the_first_row_of_the_table() {
     ];
     assert_eq!(crossing(&lines), Some((Culvert, Source::Fallback)));
     // A crossing at a shared vertex reads its arms by position: a far vertex changes nothing.
-    let ford = |far: bool| {
+    let shared = |far: bool| {
         let mut street = vec![[0.0, -40.0], [0.0, 0.0], [0.0, 40.0]];
         if far {
             street.insert(0, [-60.0, -120.0]);
@@ -651,8 +744,14 @@ fn crossings_take_the_first_row_of_the_table() {
         let c = &g.crossings[0];
         (c.kind, c.source, c.angle_rad, class(&g, &g.junctions[0].arms[0]))
     };
-    assert_eq!(ford(false), ford(true));
-    assert_eq!((ford(false).0, ford(false).2), (Ford, core::f64::consts::FRAC_PI_2));
+    assert_eq!(shared(false), shared(true));
+    assert_eq!((shared(false).0, shared(false).2), (Culvert, core::f64::consts::FRAC_PI_2));
+    // A path that shares a vertex with a stream fords it.
+    let g = graph(&[
+        footway(&[[0.0, -40.0], [0.0, 0.0], [0.0, 40.0]], 0.0),
+        stream(&[], &[[-40.0, 0.0], [0.0, 0.0], [40.0, 0.0]], 0.0),
+    ]);
+    assert_eq!((g.crossings[0].kind, g.crossings[0].source), (Ford, Source::SharedVertex));
     // A culvert's mouth on a road vertex: a culvert, as one water arm there is in a tunnel.
     let g = graph(&[
         road(&[[0.0, -40.0], [0.0, 0.0], [0.0, 40.0]], 0.0),
@@ -684,4 +783,109 @@ fn crossings_take_the_first_row_of_the_table() {
     let deck = &g.decks[0];
     assert!(deck.synthetic && g.ways[deck.ways[0] as usize].level == Level::Deck);
     assert_eq!(g.joints.len(), 2, "the deck's two ends");
+}
+
+#[test]
+fn the_ladder_follows_the_room_by_the_class_rows_at_every_boundary() {
+    use Step::*;
+    let upper = |kind, tags: &[(&'static str, &'static str)], z| line(kind, tags, &[[0.0, -40.0], [0.0, 40.0]], z);
+    let lower = |kind, tags: &[(&'static str, &'static str)], z| line(kind, tags, &[[-40.0, 0.0], [40.0, 0.0]], z);
+    let bridge = [("highway", "residential"), ("bridge", "yes"), ("deck", "1")];
+    let footbridge = [("highway", "footway"), ("bridge", "yes"), ("deck", "0.4")];
+    let street = [("highway", "residential")];
+    let foot = [("highway", "footway")];
+    let rail = [("railway", "rail")];
+    let tunnel = [("highway", "residential"), ("tunnel", "yes")];
+    let rail_tunnel = [("railway", "rail"), ("tunnel", "yes")];
+    // (what, upper, lower, step, whether the upper way ends on step 3). A residential deck over a
+    // residential road: full 4.5 + 1.0, least 3.0 + 0.4; a residential bore: full 5.0 + 1.0, least
+    // 3.0 + 0.3; snap 0.5 everywhere.
+    type Row = (&'static str, Line, Line, Step, bool);
+    let rows: Vec<Row> = vec![
+        ("deck, full", upper("road", &bridge, 5.5), lower("road", &street, 0.0), Full, false),
+        ("deck, thin", upper("road", &bridge, 5.45), lower("road", &street, 0.0), Thin, false),
+        ("deck, least", upper("road", &bridge, 3.4), lower("road", &street, 0.0), Thin, false),
+        (
+            "deck, closed: the lower way of one class ends",
+            upper("road", &bridge, 3.35),
+            lower("road", &street, 0.0),
+            Closed,
+            false,
+        ),
+        ("deck, closed over snap", upper("road", &bridge, 0.55), lower("road", &street, 0.0), Closed, false),
+        ("deck, at grade", upper("road", &bridge, 0.5), lower("road", &street, 0.0), AtGrade, false),
+        ("deck, at grade under", upper("road", &bridge, -0.5), lower("road", &street, 0.0), AtGrade, false),
+        ("deck, inverted", upper("road", &bridge, -0.55), lower("road", &street, 0.0), Inverted, false),
+        (
+            "footbridge over a railway, closed: the footway ends",
+            upper("path", &footbridge, 4.95),
+            lower("railway", &rail, 0.0),
+            Closed,
+            true,
+        ),
+        (
+            "footbridge over a railway, least",
+            upper("path", &footbridge, 5.0),
+            lower("railway", &rail, 0.0),
+            Thin,
+            false,
+        ),
+        (
+            "railway bridge over a road, closed: the road ends",
+            upper("railway", &[("railway", "rail"), ("bridge", "yes"), ("deck", "1")], 3.0),
+            lower("road", &street, 0.0),
+            Closed,
+            false,
+        ),
+        ("bore, full", upper("road", &street, 6.0), lower("tunnel", &tunnel, 0.0), Full, false),
+        ("bore, thin", upper("road", &street, 5.95), lower("tunnel", &tunnel, 0.0), Thin, false),
+        ("bore, least", upper("road", &street, 3.3), lower("tunnel", &tunnel, 0.0), Thin, false),
+        (
+            "bore, closed: the tunnel way ends",
+            upper("road", &street, 3.25),
+            lower("tunnel", &tunnel, 0.0),
+            Closed,
+            false,
+        ),
+        ("bore, inverted", upper("road", &street, -0.55), lower("tunnel", &tunnel, 0.0), Inverted, false),
+        (
+            "railway bore under a footway, closed: the railway ends",
+            upper("path", &foot, 5.05),
+            lower("tunnel", &rail_tunnel, 0.0),
+            Closed,
+            false,
+        ),
+    ];
+    for (what, u, l, want, upper_ends) in rows {
+        let g = graph(&[u, l]);
+        let c = g.crossings.iter().find(|c| c.ladder.is_some()).unwrap_or_else(|| panic!("{what}: {:?}", g.crossings));
+        let ladder = c.ladder.as_ref().unwrap();
+        assert_eq!(ladder.step, want, "{what}: room {}", ladder.room_m);
+        if matches!(want, Closed | Inverted) {
+            let ends = if upper_ends { ladder.upper } else { ladder.lower };
+            assert_eq!(ladder.ends, Some(ends), "{what}");
+        }
+    }
+}
+
+#[test]
+fn the_room_reads_each_way_on_its_own_curve() {
+    // A residential deck on a hairpin of radius 12 m over a road, both level: the room at every corner
+    // of the overlap is the height difference, though the hairpin's far leg passes within 24 m.
+    let arc: Vec<[f64; 2]> = (0..=12)
+        .map(|i| {
+            let a = core::f64::consts::PI * f64::from(i) / 12.0;
+            [12.0 * libm::cos(a) - 12.0, 12.0 * libm::sin(a) - 30.0]
+        })
+        .collect();
+    let mut points = vec![[0.0, -60.0]];
+    points.extend(arc.iter().rev().map(|p| [p[0] + 24.0, -p[1] - 60.0]));
+    let deck = line("road", &[("highway", "residential"), ("bridge", "yes"), ("deck", "1")], &points, 6.0);
+    let road = line("road", &[("highway", "residential")], &[[-40.0, -40.0], [40.0, -40.0]], 0.0);
+    let g = graph(&[deck, road]);
+    for c in g.crossings.iter().filter_map(|c| c.ladder.as_ref()) {
+        assert!((c.room_m - 6.0).abs() < 0.05, "room {}", c.room_m);
+        assert_eq!(c.step, Step::Full);
+    }
+    assert!(g.crossings.iter().any(|c| c.ladder.is_some()));
 }

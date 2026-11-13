@@ -11,6 +11,7 @@ diagnostic(off, derivative_uniformity);
 // #include band.wgsl
 // #include looks.wgsl
 // #include corridor-in.wgsl
+// #include ../terrain/water-look.wgsl
 
 // As Frame of terrain.wgsl, which shares its buffer.
 struct Frame {
@@ -38,11 +39,17 @@ const PRIO_SHIFT: u32 = 16u;
 const HALF_SHIFT: u32 = 19u;
 const HALF_BITS: u32 = 511u;
 const FINE_SHIFT: u32 = 28u;
-// As MAT, LOOK and CF of section.ts.
+// As MAT, LOOK and CF of section.ts. A piece's water face, and a step slot whose upper side is water: the
+// water's look (water-look.wgsl).
 const MAT_GROUND: u32 = 1u;
+const MAT_WATER: u32 = 50u;
 // In a piece's wall's word, the code bit (1 << CODE_SHIFT) that its look does not read: its road stands on its higher
 // side (plan/piece.wgsl).
 const WALL_FILL: u32 = 128u;
+// In a piece's concrete word, the next code bit, which its look does not read: the dark inside of a culvert's mouth
+// (plan/piece.wgsl), this colour.
+const CULVERT_DARK: u32 = 256u;
+const CULVERT_INSIDE: vec3f = vec3f(0.018, 0.02, 0.018);
 const CF_SAMPLE: u32 = 1u;
 const CF_MESH: u32 = 2u;
 const CF_FILL: u32 = 3u;
@@ -222,19 +229,19 @@ fn part_caster(v: PartIn) -> @builtin(position) vec4f {
 fn corridor_ground(in: CorridorOut, su: vec2f, d: mat2x3f) -> vec3f {
     if (PIECE) {
         // A step's bank: its level normal, as long as its share of the light (slot_vertex of plan/piece.wgsl).
-        var n = drawn_normal(su);
+        var n = drawn_relief(su);
         let share = length(in.normal);
         if (abs(in.normal.z) < 0.01 && share > 0.0) {
-            n = normalize(mix(n, in.normal / share, min(share, 1.0)));
+            n = vec4f(normalize(mix(n.xyz, in.normal / share, min(share, 1.0))), n.w);
         }
         return piece_ground(in, su, d, n, 0.0);
     }
-    return ground_colour(su, in.relative, d, in.altitude, u32(ceil(lod(su))), in.clip.xy, band_road(select(0.0, 1.0, in.road.y < PATH_HALF_M)), drawn_normal(su));
+    return ground_colour(su, in.relative, d, in.altitude, u32(ceil(lod(su))), in.clip.xy, band_road(select(0.0, 1.0, in.road.y < PATH_HALF_M)), drawn_relief(su));
 }
 
-// A piece's ground at a pixel, lit and looked by the normal `n` in LOD-space axes; `wall` 1 for a wall that stands as
-// rock (wall_rock), which ground_colour draws all rock.
-fn piece_ground(in: CorridorOut, su: vec2f, d: mat2x3f, n: vec3f, wall: f32) -> vec3f {
+// A piece's ground at a pixel, lit and looked by the normal `n` in LOD-space axes and its turn per texel in w
+// (ground_colour); `wall` 1 for a wall that stands as rock (wall_rock), which ground_colour draws all rock.
+fn piece_ground(in: CorridorOut, su: vec2f, d: mat2x3f, n: vec4f, wall: f32) -> vec3f {
     let level = lod(su);
     let edge = select(abs(in.road.x) - in.road.y, in.road.x, (in.word & MAT_BITS) == MAT_GROUND);
     let g = model_reach(level, length(in.relative.xy)) * ground_terms(moved_at(su, u32(ceil(level))), edge, in.road.y);
@@ -371,15 +378,25 @@ fn corridor_fragment(raw: CorridorOut) -> @location(0) vec4f {
     if (PIECE && frame.debug == 3u) {
         return vec4f(vec3f(0.25 + 0.5 * (max(dot(render_normal(select(normalize(in.normal), drawn_normal(su), (in.word & MAT_BITS) == MAT_GROUND)), frame.sun.xyz), 0.0) * frame.sun.w + 0.3) / 1.3), 1.0);
     }
+    if (PIECE && (in.word & (MAT_BITS | CULVERT_DARK)) == (MAT_CAP | CULVERT_DARK)) {
+        return vec4f(atmosphere(CULVERT_INSIDE, in.relative, in.altitude), 1.0);
+    }
     if (mat == MAT_GROUND) {
         return vec4f(corridor_ground(in, su, d), 1.0);
+    }
+    // The fall of a piece's water is the slope of its surface, which is level across its line: a step's
+    // slot stands upright, so it foams.
+    if (PIECE && mat == MAT_WATER) {
+        let wn = normalize(in.normal);
+        let fall = length(wn.xy) / max(wn.z, 1e-3);
+        return vec4f(atmosphere(water_look(in.relative, su, fall, false, frame.pixel, frame.curvature), in.relative, in.altitude), 1.0);
     }
     // A piece's wall in a cliff is a rock cut (wall_rock).
     var rock = WallRock(0.0, vec3f(0.0, 0.0, 1.0));
     if (PIECE && mat == MAT_WALL) {
         rock = wall_rock(in, su);
         if (rock.share >= 1.0) {
-            return vec4f(piece_ground(in, su, d, rock.face, 1.0), 1.0);
+            return vec4f(piece_ground(in, su, d, vec4f(rock.face, 0.0), 1.0), 1.0);
         }
     }
     var n = normalize(cross(d[0], d[1]));
@@ -405,7 +422,7 @@ fn corridor_fragment(raw: CorridorOut) -> @location(0) vec4f {
     let way = WayPixel(p, across, in.road.y, in.along, pw, cw, aw, open);
     let code = (in.word >> CODE_SHIFT) & 15u;
     let flags = ((in.word >> FLAGS_SHIFT) & FLAGS_BITS) | select(0u, CF_NO_LEFT_LINE | CF_NO_RIGHT_LINE, past);
-    let l = way_look(mat, code, region_at(su), su, way, flags, n.z, in.altitude);
+    let l = way_look(mat, code, region_at(su), su, way, flags, n.z, in.altitude, PIECE);
     if (PIECE && l.ground >= 1.0) {
         return vec4f(corridor_ground(in, su, d), 1.0);
     }
@@ -419,7 +436,7 @@ fn corridor_fragment(raw: CorridorOut) -> @location(0) vec4f {
         return vec4f(log_lit(l, n, su, in.relative, in.altitude), 1.0);
     }
     if (rock.share > 0.0) {
-        return vec4f(mix(way_lit(l, n, su, in.relative, in.altitude), piece_ground(in, su, d, rock.face, 1.0), rock.share), 1.0);
+        return vec4f(mix(way_lit(l, n, su, in.relative, in.altitude), piece_ground(in, su, d, vec4f(rock.face, 0.0), 1.0), rock.share), 1.0);
     }
     return vec4f(way_lit(l, n, su, in.relative, in.altitude), 1.0);
 }

@@ -1,10 +1,14 @@
 //! The checks of a cell's records: the label of sampled points against the face plan's, the far
-//! level against the near one, and two cells on their shared line by global names: the labels and
-//! the blend edges near each point.
+//! level against the near one, the far block against the near records, and two cells on their shared
+//! line by global names: the labels and the blend edges near each point.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use super::{blend_edges, find, label, BINS, BIN_UNITS, CAND, DISC, JUNCTION, LINE, MARGIN_M, PLATFORM, WAY_OWNER};
+use super::far::{MAGIC_FAR, MASK_M, PAD, WINDOW};
+use super::{
+    blend_edges, find, label, outline_units, BINS, BIN_UNITS, CAND, CEILING, DISC, HEAD, JUNCTION, LEG_SHIFT, LINE,
+    MARGIN_M, PLATFORM, RAIL, SAMPLE, WATER, WAY, WAY_OWNER,
+};
 use crate::faces::check::owner_name;
 use crate::faces::geom::winding;
 use crate::faces::heights::HeightRules;
@@ -218,20 +222,185 @@ pub fn agreement(words: &[u32], plan: &FacePlan, overlay: &Overlay, n: i32, edge
 }
 
 /// The far level against the near one at n² points of every bin: the points whose near label is no
-/// band layer, and of them those whose far label differs.
+/// band layer and no water, and of them those whose far label differs.
 pub fn far_agreement(near: &[u32], far: &[u32], n: i32) -> [u64; 2] {
-    let band = [Surface::Shoulder, Surface::Verge, Surface::Slope].map(|s| s as u32);
-    let words = |w: &[u32], id: Option<u32>| id.map(|id| label(w, id).to_vec());
+    let band = [Surface::Shoulder, Surface::Verge, Surface::Bank, Surface::Slope, Surface::Water, Surface::Zone]
+        .map(|s| s as u32);
     let mut count = [0u64; 2];
+    // By name: the far block numbers its junction records without the water's.
     for q in samples(near, n) {
-        let a = words(near, find(near, q));
-        if a.as_ref().is_some_and(|l| band.contains(&(l[0] & 0xff))) {
+        let a = records_name(near, find(near, q));
+        if band.contains(&(a[0] & 0xff)) {
             continue;
         }
         count[0] += 1;
-        count[1] += u64::from(words(far, find(far, q)) != a);
+        count[1] += u64::from(records_name(far, find(far, q)) != a);
     }
     count
+}
+
+/// The far block against the near records of one build (`far`). Its head and rules are the near
+/// block's; its record lines are a subsequence of the near ones, matched by way and leg, with every
+/// leg of a kept way and every word but the first sample and the count; its samples are a run of the
+/// near line's, every word but 4 equal, and word 4 keeps their order; a key is the near way
+/// candidate's. The far block holds no water. Every segment of every near way leg that reaches the cell a unit within its line's reach
+/// (`reach` of `far`, read from the near words) has its leg in the far block, with every sample in its
+/// run that its stroke and `h_segment` read; and `h_segment`'s branches there are the full leg's. The
+/// faults, and the counts of what the check saw.
+pub fn far_matches_near(near: &[u32], far: &[u32], cell: CellKey) -> (Vec<String>, BTreeMap<&'static str, usize>) {
+    let mut faults = Vec::new();
+    let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
+    let rules = HEAD + crate::faces::heights::RULES;
+    let len = far.len() as u32;
+    let lines_end = (rules + LINE * far[3] as usize) as u32;
+    let head = [MAGIC_FAR, 0, 0, far[3], rules as u32, rules as u32, rules as u32, lines_end, far[8], far[9], near[10]];
+    if far[..11] != head
+        || [far[11], far[12], far[13], far[14]] != [len, len, 0, len]
+        || far[HEAD..rules] != near[HEAD..rules]
+    {
+        return (vec![format!("the head {:?} or the rules differ", &far[..HEAD])], counts);
+    }
+    let line = |w: &[u32], l: usize| -> Vec<u32> { w[w[6] as usize + LINE * l..][..LINE].to_vec() };
+    let sample = |w: &[u32], ln: &[u32], i: usize| -> Vec<u32> {
+        w[w[7] as usize + SAMPLE * (ln[2] as usize + i)..][..SAMPLE].to_vec()
+    };
+    let id = |ln: &[u32]| (ln[0], ln[1] >> LEG_SHIFT);
+    let (n_near, n_far) = (near[3] as usize, far[3] as usize);
+    let n_samples = (far[8] - far[7]) as usize / SAMPLE;
+    if !((far[8] - far[7]) as usize).is_multiple_of(SAMPLE)
+        || far[9] - far[8] != far[3]
+        || (len - far[9]) as usize != 2 * n_samples
+    {
+        faults.push(format!(
+            "{n_far} lines and {n_samples} samples, but {} keys and {} sides",
+            far[9] - far[8],
+            len - far[9]
+        ));
+    }
+    counts.insert("lines", n_far);
+    counts.insert("samples", n_samples);
+    let keys: BTreeMap<u32, u32> = (0..near[1] as usize)
+        .map(|ci| &near[near[4] as usize + CAND * ci..][..CAND])
+        .filter(|c| c[0] == WAY)
+        .map(|c| (c[4], c[1]))
+        .collect();
+    // Per near line matched by a far line: the far line's count of samples and its run's offset.
+    let mut runs: BTreeMap<usize, (usize, Option<usize>)> = BTreeMap::new();
+    let (mut ways, mut order) = (BTreeSet::new(), Vec::new());
+    let (mut at, mut first) = (0, 0u32);
+    for l in 0..n_far {
+        let fl = line(far, l);
+        let Some(k) = (at..n_near).find(|&k| id(&line(near, k)) == id(&fl)) else {
+            faults.push(format!("far line {l} (way {}, leg {}) follows no later near line", fl[0], fl[1] >> LEG_SHIFT));
+            break;
+        };
+        at = k + 1;
+        let nl = line(near, k);
+        ways.insert(fl[0]);
+        if (0..LINE).any(|w| w != 2 && w != 3 && fl[w] != nl[w]) || fl[2] != first {
+            faults.push(format!("far line {l}: {fl:?} against near line {k}: {nl:?}"));
+        }
+        first += fl[3];
+        if keys.get(&(k as u32)).is_some_and(|&key| far[far[8] as usize + l] != key) {
+            faults.push(format!("far line {l}: key {:#x}, near {:#x}", far[far[8] as usize + l], keys[&(k as u32)]));
+        }
+        let (m, n) = (fl[3] as usize, nl[3] as usize);
+        let same = |i: usize, j: usize| {
+            let (a, b) = (sample(far, &fl, i), sample(near, &nl, j));
+            (0..SAMPLE).all(|w| w == 4 || a[w] == b[w])
+        };
+        let a = (m > 0 && m <= n).then(|| (0..=n - m).find(|&a| (0..m).all(|i| same(i, a + i)))).flatten();
+        if m > 0 && a.is_none() {
+            faults.push(format!("far line {l}: its {m} samples are no run of near line {k}"));
+        }
+        if let Some(a) = a {
+            order.extend((0..m).map(|i| (sample(far, &fl, i)[4], sample(near, &nl, a + i)[4])));
+        }
+        runs.insert(k, (m, a));
+        let ends = (n > 0).then(|| [sample(near, &nl, 0), sample(near, &nl, n - 1)]);
+        for (case, yes) in [
+            ("rails", fl[1] & RAIL != 0),
+            ("empty", m == 0),
+            ("single", n == 2),
+            ("rings", n > 2 && ends.is_some_and(|[a, b]| a[..2] == b[..2])),
+        ] {
+            *counts.entry(case).or_default() += usize::from(yes);
+        }
+    }
+    if first as usize != n_samples {
+        faults.push(format!("the lines count {first} samples, the block holds {n_samples}"));
+    }
+    for k in (0..n_near).filter(|k| !runs.contains_key(k) && ways.contains(&line(near, *k)[0])) {
+        faults.push(format!("near line {k}: a leg of a kept way is missing"));
+    }
+    order.sort_unstable();
+    if order.windows(2).any(|w| (w[0].0 == w[1].0) != (w[0].1 == w[1].1) || w[0].1 > w[1].1) {
+        faults.push("the samples' word 4 does not keep the near order".into());
+    }
+    // A way's widest carriageway in metres over all its legs.
+    let origin = cell.origin();
+    let mut half: BTreeMap<u32, f64> = BTreeMap::new();
+    for k in 0..n_near {
+        let nl = line(near, k);
+        for i in 0..nl[3] as usize {
+            let s = sample(near, &nl, i);
+            let m = f64::from(f32::from_bits(s[2])) * metres_per_unit(origin.y + i64::from(s[1] as i32));
+            let h = half.entry(nl[0]).or_insert(0.0);
+            *h = h.max(m);
+        }
+    }
+    // Every near way leg: its segments in reach, and in the far block the samples that their strokes read. A
+    // ceiling line is no leg of storey 0.
+    let f32m = |w: u32| f64::from(f32::from_bits(w));
+    let cell_u = f64::from(CELL_UNITS as i32);
+    for k in 0..n_near {
+        let nl = line(near, k);
+        if nl[1] & (WATER | CEILING) != 0 {
+            continue;
+        }
+        let n = nl[3] as usize;
+        let reach = half[&nl[0]] + (f32m(nl[8]) + f32m(nl[9]) + f32m(nl[6])).max(MASK_M) + 1.0;
+        let p = |i: usize| {
+            let s = sample(near, &nl, i);
+            [f64::from(s[0] as i32), f64::from(s[1] as i32)]
+        };
+        let meets = |s: usize, r: f64| {
+            let (u, v) = (p(s), p(s + 1));
+            (0..2).all(|k| u[k].min(v[k]) - r <= cell_u && u[k].max(v[k]) + r >= 0.0)
+        };
+        let r = outline_units(cell, reach) - 1.0;
+        let in_reach: Vec<usize> = (0..n.saturating_sub(1)).filter(|&s| meets(s, r)).collect();
+        if in_reach.is_empty() {
+            continue;
+        }
+        *counts.entry("in_reach").or_default() += in_reach.len();
+        *counts.entry("twice").or_default() += usize::from(in_reach.windows(2).any(|w| w[1] > w[0] + 1));
+        *counts.entry("touch").or_default() += usize::from(!in_reach.iter().any(|&s| meets(s, 0.0)));
+        let (m, a) = match runs.get(&k) {
+            Some(&(m, Some(a))) => (m, a),
+            Some(&(_, None)) => {
+                faults.push(format!("near line {k}: {} segments in reach, its far line holds none", in_reach.len()));
+                continue;
+            }
+            None => {
+                faults.push(format!("near line {k}: {} segments in reach, no far line", in_reach.len()));
+                continue;
+            }
+        };
+        for s in in_reach {
+            if s.saturating_sub(PAD) < a || (s + PAD + 1).min(n - 1) >= a + m {
+                faults.push(format!("near line {k}: segment {s} in reach, its run {a}..{}", a + m));
+                continue;
+            }
+            for j in s.saturating_sub(WINDOW)..=(s + WINDOW).min(n - 2) {
+                let b = |j: usize, n: usize| [j == 0, j + 2 == n, j > 0, j + 2 < n];
+                if b(j, n) != b(j - a, m) {
+                    faults.push(format!("near line {k}: h_segment of segment {j} takes other branches"));
+                }
+            }
+        }
+    }
+    (faults, counts)
 }
 
 /// A cell for the border check: its records, its graph and its input's `feature_names`.
@@ -358,9 +527,10 @@ pub fn border(a: Cell, b: Cell, east: bool, step: i32) -> (u64, u64, Vec<(f64, S
 /// edge of the other block with the same words, its host line named by its class and its sample nearest
 /// the edge (two cells number a way's legs from its own start). The edges compared, and the ones that
 /// differ within `MARGIN_M` of the shared line and past it: only up to `MARGIN_M` past a cell are its
-/// inputs the neighbours' own.
+/// inputs the neighbours' own. An end's turn counts only within that listing reach of both cells: past it,
+/// the end's cone reaches no point of that cell, and that cell may not hold the edge that goes on there.
 pub fn outline_border(a: (&[u32], CellKey), b: (&[u32], CellKey)) -> (u64, [Vec<String>; 2]) {
-    type Edge = ([i64; 4], [u32; 5], [i64; 3]);
+    type Edge = ([i64; 4], [u32; 8], [i64; 3]);
     let edges = |(w, key): (&[u32], CellKey)| -> Vec<Edge> {
         let o = key.origin();
         let line = |l: u32| &w[w[6] as usize + LINE * l as usize..][..LINE];
@@ -379,7 +549,7 @@ pub fn outline_border(a: (&[u32], CellKey), b: (&[u32], CellKey)) -> (u64, [Vec<
                     .min_by_key(|s| (s[0] - g[0]).pow(2) + (s[1] - g[1]).pow(2))
                     .unwrap_or([0, 0]);
                 let name = [i64::from(host[7]), near[0], near[1]];
-                (g, [e[3] >> 16, e[4], e[5], e[6], e[7]], name)
+                (g, [e[3] >> 16, e[4], e[5], e[6], e[7], e[8] & 0xffff, e[9] & 0xffff, e[8] >> 16], name)
             })
             .collect()
     };
@@ -388,7 +558,7 @@ pub fn outline_border(a: (&[u32], CellKey), b: (&[u32], CellKey)) -> (u64, [Vec<
     let mut differ = [Vec::new(), Vec::new()];
     let mut checked = 0;
     for ((from, from_edges), (to, to_edges)) in [((a, &ea), (b, &eb)), ((b, &eb), (a, &ea))] {
-        let theirs: BTreeMap<[i64; 4], ([u32; 5], [i64; 3])> = to_edges.iter().map(|e| (e.0, (e.1, e.2))).collect();
+        let theirs: BTreeMap<[i64; 4], ([u32; 8], [i64; 3])> = to_edges.iter().map(|e| (e.0, (e.1, e.2))).collect();
         let o = to.1.origin();
         let sq = [o.x, o.y, o.x + CELL_UNITS, o.y + CELL_UNITS].map(|v| v as f64);
         let corners = [[sq[0], sq[1]], [sq[2], sq[1]], [sq[0], sq[3]], [sq[2], sq[3]]];
@@ -411,7 +581,19 @@ pub fn outline_border(a: (&[u32], CellKey), b: (&[u32], CellKey)) -> (u64, [Vec<
                 continue;
             }
             checked += 1;
-            if theirs.get(&e.0) != Some(&(e.1, e.2)) {
+            let own_box = |v: [f64; 2]| {
+                libm::hypot((own[0] - v[0]).max(v[0] - own[2]).max(0.0), (own[1] - v[1]).max(v[1] - own[3]).max(0.0))
+            };
+            // The turns at a and at b, the last two words, where the end lies within both cells' reach.
+            let turns = |mut w: [u32; 8]| {
+                for (t, v) in [(6, p), (7, q)] {
+                    if to_box(v).max(own_box(v)) >= listed {
+                        w[t] = 0;
+                    }
+                }
+                w
+            };
+            if theirs.get(&e.0).map(|(w, n)| (turns(*w), *n)) != Some((turns(e.1), e.2)) {
                 // Within `MARGIN_M` of the shared line: within it of both squares.
                 let off =
                     |sq: [f64; 4], v: [f64; 2]| (sq[0] - v[0]).max(v[0] - sq[2]).max(sq[1] - v[1]).max(v[1] - sq[3]);
@@ -427,6 +609,33 @@ pub fn outline_border(a: (&[u32], CellKey), b: (&[u32], CellKey)) -> (u64, [Vec<
         }
     }
     (checked, differ)
+}
+
+/// The outline ends of a block that hold a turn but not exactly one edge of their host going on there with
+/// the same paved height bits: there the fan's far ray would be a step.
+pub fn outline_turns(words: &[u32]) -> Vec<String> {
+    let edges = super::outline_words(words).as_chunks::<{ super::EDGE }>().0;
+    let mut heights: BTreeMap<(super::P, u32, bool), Vec<u32>> = BTreeMap::new();
+    for e in edges {
+        let (a, b) = super::edge_ends(e);
+        heights.entry((a, super::edge_line(e), true)).or_default().push(e[4]);
+        heights.entry((b, super::edge_line(e), false)).or_default().push(e[5]);
+    }
+    let none = u32::from(i16::MIN as u16);
+    let mut out = Vec::new();
+    for e in edges {
+        let (a, b) = super::edge_ends(e);
+        for (p, h, turn, next_a) in [(a, e[4], e[9] & 0xffff, false), (b, e[5], e[8] >> 16, true)] {
+            let goes_on = heights.get(&(p, super::edge_line(e), next_a));
+            if turn != none && goes_on.map(Vec::as_slice) != Some(&[h][..]) {
+                out.push(format!(
+                    "end {p:?} of line {}: a turn, the edges going on hold {goes_on:?}",
+                    super::edge_line(e)
+                ));
+            }
+        }
+    }
+    out
 }
 
 /// Whether segment pq meets the box [x0, y0, x1, y1].

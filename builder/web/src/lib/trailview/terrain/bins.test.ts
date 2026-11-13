@@ -9,11 +9,12 @@ import { functionOf, shaderFunctions } from '../gpu/shader-functions';
 import { decodeFeatures, EXTENT, SIDE_BACK, SIDE_ON, unitScale, type Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { auditSamples, IN_WATER, roadHeight, SAMPLE } from './audit-samples';
-import { BRIDGE, CELL, cellAt, CORNER, crosses, crossSlope, DRIVEWAY, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, junctions, junctionWays, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, seaShows, SHOULDER_M, shows, SLEEPER_M, STREAM, surfaceOf, SURFACE_CODES, SURFACES, AREA, trackSurface, TUNNEL, WARP_M, waterAt, type Line, type Profile } from './bins';
+import { BRIDGE, CELL, cellAt, CORNER, crosses, crossSlope, DRIVEWAY, EDGE, features, fronts, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, junctions, junctionWays, LAKE, linesNear, metresPerUnit, NEAR, nodeStamps, PATH, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, seaShows, SHOULDER_M, shows, SLEEPER_M, STREAM, surfaceOf, SURFACE_CODES, SURFACES, AREA, trackSurface, TUNNEL, WARP_M, waterAt, type Line, type Profile, type Shapes } from './bins';
 import { SPILL_M } from '../roads/section';
 import { cornersOf, halfAt, partnersOf } from './corners';
 import { FOOT_HALF_M, GIVE_WAY_M } from './culverts';
 import { LEFT, RIGHT } from './town';
+import { waterMesh } from './water-mesh';
 
 const shader = readFileSync(new URL('./stamp-core.wgsl', import.meta.url), 'utf8');
 const fixture = (z: number, x: number, y: number) =>
@@ -147,6 +148,32 @@ describe('the stamp data of a node', { timeout: 30_000 }, () => {
         expect(body.match(/out\.shoulder = false;/g)).toHaveLength(2);
     });
 
+    it('keeps the material of the painted way in the paint, and paints a way without one as before', () => {
+        const source = ['./records.wgsl', './stamp-core.wgsl', './mask-walk.wgsl', './stamp.wgsl'].map(file => readFileSync(new URL(file, import.meta.url), 'utf8')).join('\n');
+        const scope = globalThis as Record<string, unknown>, helpers = {
+            painted_finish: (mp: { finish: number }) => mp.finish, asinh: Math.asinh, fract: (x: number) => x - Math.floor(x),
+            clamp: (x: number, lo: number, hi: number) => Math.min(Math.max(x, lo), hi), vec4f: (...v: number[]) => v,
+        };
+        Object.assign(scope, helpers);
+        try {
+            const { paint_texel: paint } = shaderFunctions<{ paint_texel: (mp: object) => number[] }>(source, ['paint_texel', 'distance_code', 'walk_byte']);
+            const MARKED = 512, NONE = 0xffffffff;
+            for (const code of Object.values(SURFACES).map((_, i) => i + 1)) for (const flags of [0, MARKED]) for (const material of [1, 2, 3, 4]) {
+                const way = (m: number, painted = 0) => ({ block: 1, painted, d_paved: -1.2, across: 2.5, along: 7.3, finish: code | flags | (m << 16) });
+                const [plain, worn] = [paint(way(0)), paint(way(material))];
+                // The finish code alone, as before, in a way without a material; the material above it in a way with one.
+                expect(Math.round(plain[3] * 255)).toBe(code === 2 ? 1 : code);
+                expect(Math.round(worn[3] * 255)).toBe((code === 2 ? 1 : code) | (material << 4));
+                expect(worn.slice(0, 3)).toEqual(plain.slice(0, 3));
+                // No paint, no material.
+                expect(paint(way(material, NONE))).toEqual(paint(way(0, NONE)));
+                expect(paint(way(material, NONE))[3]).toBe(0);
+            }
+        } finally {
+            for (const name of Object.keys(helpers)) delete scope[name];
+        }
+    });
+
     it('shows a line on the levels where the gates of stamp-core.wgsl show it', () => {
         const gates = shaderGates(), seen = new Set<boolean>();
         for (const [kind, profile] of [[ROAD, 0], [PATH, Object.keys(PROFILES).indexOf('path')], [RIVER, Object.keys(PROFILES).indexOf('river')]]) for (const h of [0.6, 2, 5, 12]) for (let level = 12; level <= 18; level++) {
@@ -192,6 +219,19 @@ describe('the stamp data of a node', { timeout: 30_000 }, () => {
         const middle = { level: 18, x: 2 * NODE.x + 1, y: 2 * NODE.y + 1 }, held = nodeStamps(list, TILE, middle);
         expect(cellOf(held.data!, middle, 9 * GRID + 9).entries.length).toBe(1);
         expect(held.mask).toBe(true);
+    });
+
+    it('lists a segment whose box comes within the reach of a node only at its corner, and not one past the reach', () => {
+        const tile = { level: 13, x: 4287, y: 2889 }, node = { level: 18, x: tile.x * 32 + 10, y: tile.y * 32 + 10 }, shift = 22 - node.level, cell = CELL * 2 ** shift;
+        const x0 = node.x * PAGE * 2 ** shift - cell, y0 = node.y * PAGE * 2 ** shift - cell, reach = 40 / metresPerUnit(y0);
+        // North-west of the node, across the diagonal: the box's corner lies `share` of the reach from the node's corner on both axes, the segment far off.
+        const road = (share: number) => {
+            const ax = x0 - share * reach, ay = y0 - share * reach, world = [ax - 3000, ay, ax, ay - 3000];
+            return { kind: 'road', tags: { highway: 'tertiary' }, geometry: 'line' as const, parts: [{ outer: false, xy: Float32Array.from(world, (v, i) => v / 8 - (i % 2 ? tile.y : tile.x) * EXTENT), z: Float32Array.of(1000, 1000) }] };
+        };
+        const { data } = nodeStamps([road(0.9), road(1.5)], tile, node), corner = cellOf(data!, node, 0).entries;
+        expect(data![0]).toBe(1);
+        expect(Array.from(corner)).toEqual([0]);
     });
 
     it('takes the points inside the buildings and the river areas, from each cell origin and the edges that the cell lists', () => {
@@ -270,6 +310,31 @@ describe('the stamp data of a node', { timeout: 30_000 }, () => {
             expect(seaBound(data!, NODE, p) < Infinity, `${tx}, ${ty}`).toBe(sea);
             expect(waterAt(data!, NODE, p[0], p[1])).toBe(sea ? 0 : -Infinity);
         }
+    });
+
+    it('numbers the lines with records per node in a tile past the 16-bit index, and leaves a node with more of them empty and counted', () => {
+        // A level-17 node spans 1024 tile units; 65,537 paths in the tile's far corner come between the bridge and the river.
+        const tile = { level: 13, x: 4287, y: 2889 }, node = { level: 17, x: tile.x * 16 + 8, y: tile.y * 16 + 8 };
+        const line = (kind: string, tags: Record<string, string>, ...parts: number[][]) =>
+            ({ kind, tags, geometry: 'line' as const, parts: parts.map(xy => ({ outer: false, xy: Float32Array.from(xy), z: new Float32Array(xy.length / 2).fill(1000) })) });
+        const paths = Array.from({ length: 0x10001 }, (_, i) => [100 + (i % 256) * 8, 100 + Math.floor(i / 256) * 8, 104 + (i % 256) * 8, 100 + Math.floor(i / 256) * 8]);
+        const list = [
+            { kind: 'lake', tags: {}, geometry: 'area' as const, parts: [{ outer: true, xy: Int32Array.from([8600, 8600, 8800, 8600, 8800, 8800, 8600, 8800]), z: Float32Array.of(990) }] },
+            line('road', { highway: 'tertiary', bridge: 'yes' }, [8200, 8500, 9200, 8500]), line('path', { highway: 'path' }, ...paths), line('river', { waterway: 'river' }, [8200, 8900, 9200, 8900]),
+        ];
+        expect(features(list, tile).lines.length).toBe(0x10001 + 2);
+        for (const plan of [false, true]) {
+            const { data, limits } = nodeStamps(list, tile, node, plan), records = 2 + GRID * GRID + 1 + data![1];
+            const word = (r: number, i: number) => data![records + RECORD * r + i], all = Array.from({ length: data![0] }, (_, r) => r);
+            expect(limits).toBeUndefined();
+            // With `plan` a bridge has no record on a near level: the records hold the ground under it.
+            expect([BRIDGE, LAKE, RIVER].map(kind => all.some(r => word(r, 4) === kind))).toEqual([!plan, true, true]);
+            const kinds = plan ? [RIVER] : [BRIDGE, RIVER];
+            expect(kinds.map(kind => word(all.find(r => word(r, 4) === kind)!, 13) & 0xffff)).toEqual(plan ? [0] : [0, 1]);
+        }
+        expect(waterMesh(list, tile, node)!.lakes).toBeGreaterThan(0);
+        // Over the paths, a level-16 node holds 65,537 lines with records: their records alone pass STAMP_WORDS.
+        expect(nodeStamps(list, tile, { level: 16, x: tile.x * 8, y: tile.y * 8 })).toEqual({ data: null, heights: false, mask: false, limits: 1 });
     });
 });
 
@@ -610,7 +675,7 @@ describe('a town', () => {
     });
 
     it('fronts a house with its wall that faces the road, but for a house that a road reaches or none comes near', () => {
-        const frontOf = (gap: number) => features([road, house(gap)], tile).buildings[0].front;
+        const frontOf = (gap: number) => fronts([road, house(gap)], tile)[0];
         expect(frontOf(15)).toEqual([0, -1]);
         expect(frontOf(1)).toBeUndefined();
         expect(frontOf(25)).toBeUndefined();
@@ -665,5 +730,47 @@ describe('the cross-section table of the ground plan', () => {
             if (half_m !== null) expect(half_m, finish).toBe(SURFACES[finish as keyof typeof SURFACES]);
             if (shoulder_m !== null) expect(shoulder_m, finish).toBe(BEDS.includes(finish) ? SPILL_M : (SHOULDER_M[finish as keyof typeof SURFACES] ?? 0));
         }
+    });
+});
+
+describe('the lines near a point', () => {
+    /** A steady value in [0, 1) for each call. */
+    const random = (seed => () => (seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31)(7);
+    const tileOf = (lines: Line[]) => ({ lines, lakes: [], seas: [], pads: [], areas: [], buildings: [] }) as unknown as Shapes;
+    const way = (xy: number[]) => ({ kind: ROAD, xy, z: xy.filter((_, i) => i % 2 === 0).map(() => 0), h: 2.5, code: 2, ford: false, profile: 0 }) as Line;
+    /** The world units from a point to the nearest segment of a line. */
+    const distance = ({ xy }: Line, x: number, y: number) => {
+        let best = Infinity;
+        for (let i = 0; i + 3 < xy.length; i += 2) {
+            const dx = xy[i + 2] - xy[i], dy = xy[i + 3] - xy[i + 1], t = Math.min(1, Math.max(0, ((x - xy[i]) * dx + (y - xy[i + 1]) * dy) / (dx * dx + dy * dy || 1)));
+            best = Math.min(best, Math.hypot(xy[i] + t * dx - x, xy[i + 1] + t * dy - y));
+        }
+        return best;
+    };
+
+    it('hold every line that a scan of all lines finds within reach, in the tile\'s order', () => {
+        // The index has cells of 2^13 units: a square of 20 cells, with its corner on a cell line.
+        const cell = 2 ** 13, x0 = 2 ** 29, y0 = 2 ** 29, side = 20 * cell, lines: Line[] = [];
+        for (let k = 0; k < 400; k++) {
+            const xy = [x0 + random() * side, y0 + random() * side];
+            for (let v = 1 + Math.floor(random() * 5); v > 0; v--) xy.push(xy[xy.length - 2] + (random() - 0.5) * 3 * cell, xy[xy.length - 2 + 1] + (random() - 0.5) * 3 * cell);
+            lines.push(way(xy));
+        }
+        // A segment without length, ways on a cell line and across every cell, and a way that ends on a corner of cells.
+        lines.push(way([x0 + 5.5 * cell, y0 + 5.5 * cell, x0 + 5.5 * cell, y0 + 5.5 * cell]), way([x0 + 3 * cell, y0, x0 + 3 * cell, y0 + side]), way([x0, y0 + 7 * cell, x0 + side, y0 + 7 * cell]), way([x0 + 2 * cell, y0 + 2 * cell, x0 + 2.5 * cell, y0 + 2.2 * cell]));
+        const shapes = tileOf(lines);
+        const points = Array.from({ length: 300 }, () => [x0 + (random() * 1.4 - 0.2) * side, y0 + (random() * 1.4 - 0.2) * side]);
+        // On a cell line, on a corner of cells, on the segment without length, and far outside the tile.
+        points.push([x0 + 3 * cell, y0 + 4.5 * cell], [x0 + 2 * cell, y0 + 2 * cell], [x0 + 5.5 * cell, y0 + 5.5 * cell], [x0 - 50 * cell, y0 + 300 * cell], [0, 0]);
+        let found = 0;
+        for (const [x, y] of points) for (const reach of [0, 40, 600, 2.5 * cell]) {
+            const near = linesNear(shapes, x, y, reach);
+            expect(near).toEqual([...near].sort((a, b) => a - b));
+            const scanned = lines.flatMap((line, k) => (distance(line, x, y) <= reach ? [k] : []));
+            expect(scanned.filter(k => !near.includes(k))).toEqual([]);
+            found += scanned.length;
+        }
+        expect(found).toBeGreaterThan(1000);
+        expect(linesNear(tileOf([]), x0, y0, 600)).toEqual([]);
     });
 });

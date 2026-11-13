@@ -2,7 +2,7 @@ import type { Gpu } from '../gpu/device';
 import { layouts } from '../gpu/layouts';
 import { wgsl } from '../gpu/wgsl';
 import { LOOK_CODES } from '../light/look';
-import type { Region, Rules } from '../rules/regions';
+import type { Rules } from '../rules/regions';
 import type { GroundSource } from '../stream/ground';
 import type { GroundPage } from '../stream/ground-pages';
 import { PAGE } from '../stream/heights';
@@ -31,7 +31,7 @@ const NEUTRAL: Rules = {
     vocabulary: { materials: [{ id: 'none', cover: 'grass' }], lithologies: [{ id: 'unknown', hardness: 0.5 }] },
     regions: [{
         id: 'world', chain: ['world'], leaf: 'mixed', look: {
-            snap: 0.4, hazeKm: 35, hazeHeight: 2500, mistTop: 0, softness: 0.08, gradient: 0.35, ramps: {}, outcrops: 0, snow_share: 0.5, turf_deg: 42,
+            snap: 0.4, hazeKm: 35, hazeHeight: 2500, mistTop: 0, softness: 0.08, gradient: 0.35, ramps: {}, outcrops: 0, turf_deg: 42,
             rock: '#8c877d', sea: { deep: '#2c5874', shallow: '#4f8088' }, grade: { shadow: [-0.004, 0, 0.012], light: [0.01, 0.004, -0.008], saturation: 1.08 },
         },
         houses: [0, 0],
@@ -89,7 +89,7 @@ export class Ground {
         const { materials, lithologies } = this.rules.vocabulary;
         this.codes = [this.finest, materials.length, lithologies.length, 0];
         const world = Math.max(0, this.rules.regions.findIndex(region => region.id === 'world'));
-        this.pages = new GroundPages(source, POOL, this.finest, this.rules.regions.map((region: Region) => region.look.snow_share), world, changed);
+        this.pages = new GroundPages(source, POOL, this.finest, world, changed);
     }
 
     get idle(): boolean {
@@ -250,6 +250,16 @@ export class Ground {
     lost(): void {
         this.pages.lost();
         this.jobs = [];
+    }
+
+    /** Counts the changes of the resident pages. */
+    get changes(): number {
+        return this.pages.changes;
+    }
+
+    /** The regions of the resident pages within `metres` of a point, across or along. */
+    regionsNear(lon: number, lat: number, metres: number): Set<number> {
+        return this.pages.regionsNear(lon, lat, metres);
     }
 
     /** The regions about a point and their weights, which sum to 1. */

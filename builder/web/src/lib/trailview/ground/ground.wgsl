@@ -21,7 +21,7 @@ struct Job {
 // Per job, one layer: the satellite on the date and its NDVI code (0 where no quarter looked). The
 // page keeps only what the look reads.
 @group(0) @binding(2) var colour_in: texture_2d_array<f32>;
-// Per job, one layer: snow by the region's snow_share, snow data known, the satellite's snow mark.
+// Per job, one layer: snow on the band of the date, snow data known, the satellite's snow mark.
 @group(0) @binding(3) var snow_in: texture_2d_array<f32>;
 @group(0) @binding(4) var horizons_out: texture_storage_2d_array<rgba8unorm, write>;
 // Per job, the openness of each texel as one byte, four per word, for a copy into `relief_open`.
@@ -69,7 +69,7 @@ fn open_of(job: Job, t: vec2i) -> f32 {
 fn coarse_of(job: Job, u: vec2i) -> vec3f {
     // The finest ground pages also draw the nodes finer than them, near the eye, whose LOD is higher.
     let coarse = max(job.level, COARSEST + 2u) - select(2u, 1u, job.level == look.codes.x);
-    let n = level_normal(lod_space(vec2f(u - surface.anchor)), coarse);
+    let n = level_normal(lod_space(vec2f(u - surface.anchor)), coarse).xy;
     let step = WIDE << (22u - coarse);
     let coarse_open = openness(units_height(u, coarse), vec4f(units_height(u + vec2i(step, 0), coarse), units_height(u - vec2i(step, 0), coarse),
         units_height(u + vec2i(0, step), coarse), units_height(u - vec2i(0, step), coarse)), f32(WIDE << (job.level - coarse)) * job.metres);

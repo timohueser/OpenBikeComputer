@@ -160,8 +160,10 @@ class MapGrid(unittest.TestCase):
                                           ("trailview-colour-q1", TileType.UNKNOWN, ndvi + avif, True),
                                           ("trailview-colour-q1", TileType.UNKNOWN, ndvi + webp, True),
                                           ("trailview-colour-q1", TileType.UNKNOWN, webp + ndvi, False),
-                                          ("trailview-snow-04", TileType.WEBP, webp, True),
-                                          ("trailview-snow-04", TileType.WEBP, ndvi, False),
+                                          ("snow", TileType.WEBP, webp, True),
+                                          ("snow", TileType.WEBP, ndvi, False),
+                                          ("snow-levels", TileType.WEBP, webp * 4, True),
+                                          ("snow-levels", TileType.WEBP, webp * 3, False),
                                           ("trailview-ground", TileType.AVIF, avif, False)]:
             with self.subTest(kind=kind, tile_type=tile_type, ok=ok), tempfile.TemporaryDirectory() as temporary:
                 path = Path(temporary) / "archive.pmtiles"
@@ -184,7 +186,7 @@ class MapGrid(unittest.TestCase):
             planner_verify.features((vectors / "trailview-features.bin").read_bytes() + b"\x00")
 
     def test_changed_binary_archives_check_the_decoded_consumer_layouts(self):
-        for kind, zoom, size, metadata in [('snow', 8, 2 * 2 * 256 * 256, {'seasons': 2}),
+        for kind, zoom, size, metadata in [('snow-seasons', 8, 2 * 2 * 64 * 64, {'seasons': 2}),
                                          ('climate', 8, 183552, {'years': 10}),
                                          ('climate', 9, 252096, {'years': 10})]:
             with self.subTest(kind=kind, zoom=zoom), tempfile.TemporaryDirectory() as temporary:

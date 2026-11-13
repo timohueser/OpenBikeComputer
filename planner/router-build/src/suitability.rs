@@ -170,8 +170,8 @@ mod tests {
         }
     }
 
-    fn tags(pairs: &[(&str, &str)]) -> Tags {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    fn tags(pairs: &[(&str, &str)]) -> Tags<'static> {
+        Tags::from_pairs(pairs.iter().copied())
     }
 
     fn floor(road: &Road, tags: &Tags, name: &str) -> Option<f64> {
@@ -182,7 +182,7 @@ mod tests {
     #[test]
     fn rolling_evidence_is_progressive_and_good_tags_do_not_erase_bad_evidence() {
         for name in ["touring", "gravel", "mtb"] {
-            let base = floor(&road(), &Tags::new(), name).unwrap();
+            let base = floor(&road(), &Tags::default(), name).unwrap();
             let mut previous = base;
             for smoothness in ["intermediate", "bad", "very_bad", "horrible", "very_horrible"] {
                 let next = floor(&road(), &tags(&[("smoothness", smoothness)]), name).unwrap();
@@ -205,17 +205,19 @@ mod tests {
             let unknown = Road { surface: Surface::Unknown, ..road() };
             let firm = floor(&unknown, &tags(&[("tracktype", "grade1")]), name).unwrap();
             assert!(floor(&unknown, &tags(&[("tracktype", "grade5")]), name).unwrap() > firm);
-            assert!(floor(&unknown, &Tags::new(), name).unwrap() >= firm);
-            assert!(firm >= floor(&Road { surface: Surface::Paved, ..road() }, &Tags::new(), name).unwrap());
+            assert!(floor(&unknown, &Tags::default(), name).unwrap() >= firm);
+            assert!(firm >= floor(&Road { surface: Surface::Paved, ..road() }, &Tags::default(), name).unwrap());
         }
     }
 
     #[test]
     fn walking_uses_grade_visibility_and_equipment_instead_of_smoothness() {
         let path = Road { surface: Surface::Dirt, class: 4, ..road() };
-        let base = floor(&path, &Tags::new(), "hiking").unwrap();
+        let base = floor(&path, &Tags::default(), "hiking").unwrap();
         assert_eq!(floor(&path, &tags(&[("smoothness", "impassable")]), "hiking"), Some(base));
-        assert!(floor(&Road { hiking_difficulty: Some(2), ..path.clone() }, &Tags::new(), "hiking").unwrap() > base);
+        assert!(
+            floor(&Road { hiking_difficulty: Some(2), ..path.clone() }, &Tags::default(), "hiking").unwrap() > base
+        );
         assert!(floor(&path, &tags(&[("trail_visibility", "no")]), "hiking").unwrap() > base);
         assert!(floor(&path, &tags(&[("via_ferrata_scale", "2")]), "hiking/alpine").is_none());
         assert!(floor(&path, &tags(&[("via_ferrata_scale", "0")]), "hiking").is_some());
@@ -232,7 +234,7 @@ mod tests {
                 } else {
                     Road { difficulty: grade, ..road() }
                 };
-                let factor = floor(&graded, &Tags::new(), name).unwrap();
+                let factor = floor(&graded, &Tags::default(), name).unwrap();
                 assert!(factor > previous, "{name} {grade}");
                 previous = factor;
             }
@@ -242,14 +244,13 @@ mod tests {
     #[test]
     fn a_cycle_track_takes_part_of_the_main_road_dislike_away() {
         let main = Road { surface: Surface::Paved, class: 2, ..road() };
-        let mut primary = tags(&[("highway", "primary"), ("maxspeed", "80")]);
-        let factor = |tags: &Tags| {
+        let primary = [("highway", "primary"), ("maxspeed", "80")];
+        let factor = |pairs: &[(&str, &str)]| {
             let profile = Profile::presets().into_iter().find(|p| p.name == "touring").unwrap();
-            way(&main, tags, Country::default(), &profile).unwrap()
+            way(&main, &tags(pairs), Country::default(), &profile).unwrap()
         };
         let exposed = factor(&primary);
-        primary.insert("cycleway:right".into(), "track".into());
-        let protected = factor(&primary);
+        let protected = factor(&[&primary[..], &[("cycleway:right", "track")]].concat());
         assert!(protected.basis.factor < exposed.basis.factor);
         assert!(protected.minimum_factor < exposed.minimum_factor && protected.minimum_factor > 1.0);
     }

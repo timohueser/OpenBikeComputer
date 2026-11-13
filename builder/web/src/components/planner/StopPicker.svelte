@@ -5,10 +5,11 @@
     import { placeCategories } from '../../lib/planner/poi-kinds';
     import { daysAround, evenStop, stopCounts, type Stop } from '../../lib/planner/stops';
     import type { NightStops } from '../../lib/planner/night-stops.svelte';
-    import type { Place, Trip } from '../../lib/planner/editor';
+    import { allStay, type Place, type Stay, type Trip } from '../../lib/planner/editor';
+    import { stayOptions } from '../../lib/planner/search/presentation';
     import type { RoutingLine } from '../../lib/planner/routing';
 
-    let { trip, line, night, labels, theme, found, window, stopId, date, elevationAt, onOpen, onEndHere, onStay, onSelectPlace, onPick, onRetry, onCancel }: {
+    let { trip, line, night, labels, theme, found, window, stopId, date, elevationAt, kinds, onOpen, onEndHere, onStay, onSelectPlace, onPick, onRetry, onCancel, onKinds, onRelease }: {
         trip: Trip;
         line: RoutingLine;
         /** The riding day that ends at this night. */
@@ -23,6 +24,8 @@
         /** The date of this night, when the trip has a start date. */
         date?: string;
         elevationAt: (km: number) => number | null;
+        /** The kinds of place to sleep of this night. */
+        kinds: Stay[];
         onOpen: (id: string | null) => void;
         onEndHere: (stop: Stop) => void;
         onStay: (place: Place) => void;
@@ -30,6 +33,10 @@
         onPick: () => void;
         onRetry: () => void;
         onCancel?: () => void;
+        /** Sets the kinds of this night; null follows the trip. */
+        onKinds: (kinds: Stay[] | null) => void;
+        /** Makes a kept or moved night a suggestion again. */
+        onRelease?: () => void;
     } = $props();
 
     const stops = $derived(found?.state === 'ready' ? found.stops : []);
@@ -61,22 +68,17 @@
                         <li>
                             <button type="button" class="town" onclick={() => onOpen(stop.id)} {@attach node => { if (stop.id === returnTo) { returnTo = null; node.focus(); } }}
                                 aria-label={`${stop.name}, ${stopCounts(stop)}. Day ${labels[0]} ${duration(days[0].hours)}, day ${labels[1]} ${duration(days[1].hours)}${stop === even ? '. Even days' : ''}`}>
-                                <span class="name">
-                                    <strong>{stop.name}{#if stop === even}<em>Even days</em>{/if}</strong>
-                                    <small>km {Math.round(stop.from)}{Math.round(stop.to) !== Math.round(stop.from) ? `–${Math.round(stop.to)}` : ''} · {stopCounts(stop)}</small>
-                                    <span class="services" aria-hidden="true">
-                                        {#each services as service}{#if stop[service].length}<Icon path={placeCategories[service].icon} size={13} />{/if}{/each}
-                                    </span>
+                                <strong>{stop.name}{#if stop === even}<em>Even days</em>{/if}</strong>
+                                <small>km {Math.round(stop.from)}{Math.round(stop.to) !== Math.round(stop.from) ? `–${Math.round(stop.to)}` : ''} · {stopCounts(stop)}
+                                    <span class="services" aria-hidden="true">{#each services as service}{#if stop[service].length}<Icon path={placeCategories[service].icon} size={13} />{/if}{/each}</span>
+                                </small>
+                                <span class="bar" aria-hidden="true">
+                                    <span style:width={`${days[0].hours / longest * 100}%`} style:background={dayColor(night, theme)}></span>
+                                    <span style:width={`${days[1].hours / longest * 100}%`} style:background={dayColor(night + 1, theme)}></span>
                                 </span>
-                                <span class="balance" aria-hidden="true">
-                                    <span class="hours"><span style:color={dayColor(night, theme)}>{duration(days[0].hours)}</span><span style:color={dayColor(night + 1, theme)}>{duration(days[1].hours)}</span></span>
-                                    <span class="bar">
-                                        <span style:width={`${days[0].hours / longest * 100}%`} style:background={dayColor(night, theme)}></span>
-                                        <span style:width={`${days[1].hours / longest * 100}%`} style:background={dayColor(night + 1, theme)}></span>
-                                    </span>
-                                </span>
-                                <Icon name="chevron" size={13} />
+                                <small class="hours" aria-hidden="true"><span>Day {labels[0]} · {duration(days[0].hours)}</span><span>Day {labels[1]} · {duration(days[1].hours)}</span></small>
                             </button>
+                            <button type="button" class="stay" aria-label={`Stay in ${stop.name}`} onclick={() => onEndHere(stop)}>Stay here</button>
                         </li>
                     {/each}
                 </ul>
@@ -89,6 +91,15 @@
         {:else}
             <p class="state" role="status">Finding towns with somewhere to sleep…</p>
         {/if}
+        <div class="kinds" role="group" aria-label={`Places to sleep on night ${labels[0]}`}>
+            <span>This night</span>
+            {#each stayOptions as { kind, label } (kind)}
+                {@const on = kinds.includes(kind)}
+                <button type="button" aria-pressed={on} disabled={on && kinds.length === 1} onclick={() => onKinds(allStay.filter(k => k === kind ? !on : kinds.includes(k)))}>{label}</button>
+            {/each}
+            {#if trip.nightStay?.[night]}<button type="button" class="planner-action" onclick={() => onKinds(null)}>Same as the trip</button>{/if}
+        </div>
+        {#if onRelease}<button type="button" class="planner-action release" onclick={onRelease}>Let the planner choose</button>{/if}
         <div class="actions">
             <button type="button" class="planner-action" onclick={onPick}>Pick a spot on the map</button>
             {#if onCancel}<button type="button" class="planner-action quiet" onclick={onCancel}>Cancel</button>{/if}
@@ -116,12 +127,15 @@
     li + li {
         border-top: 1px solid var(--line);
     }
-    .town {
+    li {
         display: flex;
         align-items: center;
-        gap: 12px;
-        width: calc(100% + 16px);
-        margin: 0 -8px;
+        gap: 8px;
+    }
+    .town {
+        flex: 1;
+        min-width: 0;
+        margin-left: -8px;
         padding: 10px 8px;
         border: 0;
         border-radius: 6px;
@@ -134,17 +148,9 @@
     .town:hover {
         background: var(--parchment-2);
     }
-    .town:focus-visible {
+    button:focus-visible {
         outline: 2px solid var(--ink);
         outline-offset: 2px;
-    }
-    .town > :global(svg) {
-        flex: none;
-        color: var(--ink-faint);
-    }
-    .name {
-        flex: 1;
-        min-width: 0;
     }
     strong {
         display: flex;
@@ -167,34 +173,77 @@
         font-variant-numeric: tabular-nums;
     }
     .services {
-        display: flex;
+        display: inline-flex;
         gap: 6px;
-        margin-top: 4px;
+        margin-left: 6px;
+        vertical-align: -2px;
         color: var(--ink-faint);
-    }
-    .balance {
-        flex: none;
-        width: 112px;
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-    }
-    .hours {
-        display: flex;
-        justify-content: space-between;
-        font: 600 12px var(--sans);
-        font-variant-numeric: tabular-nums;
     }
     .bar {
         display: flex;
         gap: 2px;
         height: 4px;
+        margin-top: 6px;
     }
     .bar span {
         border-radius: 2px;
     }
     .bar span + span {
         opacity: .55;
+    }
+    .hours {
+        display: flex;
+        gap: 12px;
+        font-size: 12px;
+    }
+    .stay, .kinds button:not(.planner-action) {
+        flex: none;
+        border: 1px solid var(--line-strong);
+        border-radius: 6px;
+        background: var(--panel);
+        color: var(--ink);
+        font: 600 13px var(--sans);
+        cursor: pointer;
+    }
+    .stay {
+        min-height: 32px;
+        padding: 0 10px;
+    }
+    .stay:hover, .kinds button:not(.planner-action):hover:not(:disabled) {
+        background: var(--parchment-2);
+    }
+    .kinds {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 4px;
+        padding-top: 8px;
+        border-top: 1px solid var(--line);
+        font-size: 12px;
+    }
+    .kinds > span {
+        margin-right: 4px;
+        color: var(--ink-soft);
+    }
+    .kinds button:not(.planner-action) {
+        min-height: 26px;
+        padding: 0 8px;
+        border-color: var(--line);
+        background: none;
+        color: var(--ink-soft);
+        font-size: 12px;
+    }
+    .kinds button[aria-pressed="true"] {
+        border: 1.5px solid var(--ink);
+        background: var(--panel);
+        color: var(--ink);
+    }
+    .kinds button:disabled {
+        cursor: default;
+    }
+    .release {
+        align-self: flex-start;
+        font-size: 13px;
     }
     .actions {
         display: flex;

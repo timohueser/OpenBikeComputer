@@ -139,8 +139,9 @@ pub(crate) fn approaches(net: &Network, classes: &Classes) -> (Pins<3>, Vec<bool
 /// keeps a bridge from sagging. Where the ends of member ways meet, a chain runs on through the two
 /// that continue most nearly straight, and the others are side tunnels. So a side tunnel or a shaft
 /// follows the tunnel that it joins and never lifts it: nothing but its ends gives a long tunnel its
-/// heights.
-pub(crate) fn chains(net: &Network, members: &[bool]) -> Pins<3> {
+/// heights. A chain ends at each variable that `stops` marks. The rows, and the vertices of each piece of a
+/// chain between two of its ends or stops.
+pub(crate) fn chains(net: &Network, members: &[bool], stops: &[bool]) -> (Pins<3>, Vec<Vec<usize>>) {
     let chained: Vec<usize> = (0..members.len()).filter(|&w| members[w]).collect();
     let mut meetings: Vec<Vec<(usize, usize, [f64; 2])>> = Vec::new();
     let mut slot: HashMap<usize, usize> = HashMap::new();
@@ -176,7 +177,7 @@ pub(crate) fn chains(net: &Network, members: &[bool]) -> Pins<3> {
         }
     }
     let mut seen = HashSet::new();
-    let mut pins = Pins::default();
+    let (mut pins, mut pieces) = (Pins::default(), Vec::new());
     for &start in &chained {
         if seen.contains(&start) {
             continue;
@@ -202,22 +203,33 @@ pub(crate) fn chains(net: &Network, members: &[bool]) -> Pins<3> {
             let Some(&(next, next_end)) = partner.get(&(w, if flipped { 0 } else { 1 })) else { break };
             (w, flipped) = (next, next_end == 1);
         }
-        let (a, b) = (net.vertex_var[chain[0]], net.vertex_var[chain[chain.len() - 1]]);
-        if chain.len() < 3 || a == b {
-            continue;
-        }
-        let mut along = vec![0.0];
-        for pair in chain.windows(2) {
-            let (p, q) = (net.vertex_xy[pair[0]], net.vertex_xy[pair[1]]);
-            along.push(along[along.len() - 1] + hypot(sub(q, p)) * metres((p[1] + q[1]) / 2.0));
-        }
-        let total = along[along.len() - 1];
-        for (n, &v) in chain.iter().enumerate().take(chain.len() - 1).skip(1) {
-            let tau = along[n] / total;
-            pins.push([net.vertex_var[v], a, b], [1.0, -(1.0 - tau), -tau], 0.0);
+        let cut = |i: usize| i + 1 < chain.len() && stops.get(net.vertex_var[chain[i]]).copied().unwrap_or(false);
+        let mut first = 0;
+        for last in (1..chain.len()).filter(|&i| i + 1 == chain.len() || cut(i)) {
+            straight(net, &chain[first..=last], &mut pins);
+            pieces.push(chain[first..=last].to_vec());
+            first = last;
         }
     }
-    pins
+    (pins, pieces)
+}
+
+/// The rows of `chains` for one chain of vertices.
+fn straight(net: &Network, chain: &[usize], pins: &mut Pins<3>) {
+    let (a, b) = (net.vertex_var[chain[0]], net.vertex_var[chain[chain.len() - 1]]);
+    if chain.len() < 3 || a == b {
+        return;
+    }
+    let mut along = vec![0.0];
+    for pair in chain.windows(2) {
+        let (p, q) = (net.vertex_xy[pair[0]], net.vertex_xy[pair[1]]);
+        along.push(along[along.len() - 1] + hypot(sub(q, p)) * metres((p[1] + q[1]) / 2.0));
+    }
+    let total = along[along.len() - 1];
+    for (n, &v) in chain.iter().enumerate().take(chain.len() - 1).skip(1) {
+        let tau = along[n] / total;
+        pins.push([net.vertex_var[v], a, b], [1.0, -(1.0 - tau), -tau], 0.0);
+    }
 }
 
 /// Rows z_P − (1 − τ)·z_A − τ·z_B = 0 for each vertex P of a way on the ground and the nearest
@@ -367,13 +379,18 @@ impl Arms {
 
 /// The OSM vertices that a ford pins, with the level of their water: a vertex of a road or a path on the
 /// ground that open water shares, where each passes through it or meets another part of its own there.
-/// A railway takes the untagged rule there, and stepping stones keep their path's height.
+/// A railway takes the untagged rule there, a road or a track too where the water is a culvert's
+/// (`River::untagged_culvert`), and stepping stones keep their path's height.
 fn shared_fords(net: &Network, rivers: &[&River], arms: &Arms, classes: &Classes) -> Vec<(usize, f64)> {
     let mut levels: HashMap<[u64; 2], f64> = HashMap::new();
+    let mut wide = HashSet::new();
     for river in rivers {
         for (point, &level) in river.points.iter().zip(&river.levels) {
             if level.is_finite() {
                 levels.entry(key(*point)).or_insert(level);
+            }
+            if !river.untagged_culvert {
+                wide.insert(key(*point));
             }
         }
     }
@@ -383,13 +400,15 @@ fn shared_fords(net: &Network, rivers: &[&River], arms: &Arms, classes: &Classes
             let w = net.osm_way[o];
             !net.free[w] && !net.stones[w] && !classes.rows[net.rule[w]].rail && arms.ways[0][net.osm_var[o]] >= 2
         })
+        .filter(|&o| net.rule[net.osm_way[o]] >= classes.path || wide.contains(&key(net.osm_xy[o])))
         .filter(|&o| wet(o))
         .filter_map(|o| Some((o, *levels.get(&key(net.osm_xy[o]))?)))
         .collect()
 }
 
 /// The rows of the fords: a shared vertex of `shared_fords`, and the point where a way tagged as a ford
-/// crosses a waterway, lie FORD_M below the water there. A bridge or a tunnel has no ford.
+/// crosses a waterway, lie FORD_M below the water there; a road or a track tagged as a ford takes the
+/// untagged rule over a culvert's water. A bridge or a tunnel has no ford.
 pub(crate) fn fords(net: &Network, rivers: &[&River], classes: &Classes) -> Pins<3> {
     let mut pins = Pins::default();
     if rivers.is_empty() {
@@ -400,7 +419,7 @@ pub(crate) fn fords(net: &Network, rivers: &[&River], classes: &Classes) -> Pins
         for k in 1..river.points.len() {
             let (zp, zq) = (river.levels[k - 1], river.levels[k]);
             if !zp.is_nan() && !zq.is_nan() {
-                segments.push((river.points[k - 1], river.points[k], zp, zq));
+                segments.push((river.points[k - 1], river.points[k], zp, zq, river.untagged_culvert));
             }
         }
     }
@@ -417,7 +436,10 @@ pub(crate) fn fords(net: &Network, rivers: &[&River], classes: &Classes) -> Pins
         for v in net.way_first[w]..net.way_last[w] {
             let (p, q) = (net.vertex_xy[v], net.vertex_xy[v + 1]);
             for number in grid.near(p, q) {
-                let (r0, r1, z0, z1) = segments[number];
+                let (r0, r1, z0, z1, narrow) = segments[number];
+                if narrow && net.rule[w] < classes.path {
+                    continue;
+                }
                 if let Some((u, tr)) = crossing(p, q, r0, r1) {
                     let variables = [net.vertex_var[v], net.vertex_var[v + 1], net.vertex_var[v]];
                     pins.push(variables, [1.0 - u, u, 0.0], z0 + (z1 - z0) * tr - FORD_M);
@@ -443,7 +465,7 @@ pub(crate) struct UntaggedCrossing {
     pub sin: f64,
 }
 
-/// The crossings of a road, a track or a railway on the ground, not tagged as a ford, with open water no
+/// The crossings of a road, a track or a railway on the ground, tagged as a ford or not, with open water no
 /// wider than `culvert_width_m` with known levels, at GRAZE_DEG or more. A crossing as near a ford of its
 /// way, along it, as the grade of its class lets the way climb from FORD_M under the water to its cover
 /// is none. Where one ends on the other there is no crossing, and a point of both gives one, the first.
@@ -471,7 +493,7 @@ pub(crate) fn untagged_crossings(net: &Network, rivers: &[&River], classes: &Cla
     }
     let graze = GRAZE_DEG.to_radians().sin();
     let mut seen = HashSet::new();
-    for w in (0..net.free.len()).filter(|&w| !net.free[w] && !net.tunnel[w] && !net.ford[w] && !net.indoor[w]) {
+    for w in (0..net.free.len()).filter(|&w| !net.free[w] && !net.tunnel[w] && !net.indoor[w]) {
         if net.rule[w] >= classes.path {
             continue;
         }
@@ -660,8 +682,8 @@ pub(crate) fn clearances(
     for w in bridges {
         let (first, last) = (net.way_first[w], net.way_last[w]);
         let mut along = vec![0.0];
-        for s in first - w..last - w {
-            along.push(along[along.len() - 1] + net.length[s]);
+        for length in &net.length[first - w..last - w] {
+            along.push(along[along.len() - 1] + length);
         }
         let tips: Vec<f64> =
             [first, last].iter().filter(|&&v| continued[net.vertex_var[v]] < 2).map(|&v| along[v - first]).collect();
@@ -719,8 +741,26 @@ fn clearance(net: &Network, classes: &Classes, lower: usize) -> f64 {
     }
 }
 
-/// The variables where a bridge lands at a height that it cannot move: an end that meets no other way
-/// stands on the terrain, and one that leaves a junction as a side lies on its through road.
+/// Per variable, whether a bridge ends there on the terrain: an end that meets no other way, or one that meets
+/// a tunnel. A portal stands on the terrain: a tunnel is a long lever, which would carry a slope or a pass at
+/// its other end to a deck that nothing else holds.
+pub(crate) fn standing(net: &Network) -> Vec<bool> {
+    let mut tunnel = vec![false; net.count];
+    for s in (0..net.a.len()).filter(|&s| net.tunnel[net.segment_way[s]]) {
+        tunnel[net.a[s]] = true;
+        tunnel[net.b[s]] = true;
+    }
+    let mut out = vec![false; net.count];
+    for w in (0..net.free.len()).filter(|&w| net.free[w] && !net.tunnel[w]) {
+        for v in [net.vertex_var[net.way_first[w]], net.vertex_var[net.way_last[w]]] {
+            out[v] = !net.junction[v] || tunnel[v];
+        }
+    }
+    out
+}
+
+/// The variables where a bridge lands at a height that it cannot move: an end that stands on the terrain
+/// (`standing`), and one that leaves a junction as a side lies on its through road.
 pub(crate) fn landings(net: &Network) -> HashSet<usize> {
     let mut ends = HashSet::new();
     for w in (0..net.free.len()).filter(|&w| net.free[w] && !net.tunnel[w]) {
@@ -728,7 +768,8 @@ pub(crate) fn landings(net: &Network) -> HashSet<usize> {
         ends.insert(net.osm_first[w]);
         ends.insert(last);
     }
-    let loose = ends.iter().filter(|&&o| !net.junction[net.osm_var[o]]);
+    let standing = standing(net);
+    let loose = ends.iter().filter(|&&o| standing[net.osm_var[o]]);
     let sides = net.sides.occurrence.iter().filter(|o| ends.contains(o));
     loose.chain(sides).map(|&o| net.osm_var[o]).collect()
 }
@@ -770,30 +811,41 @@ pub(crate) fn passes(net: &Network, classes: &Classes) -> Passes {
             return;
         }
         let above = ([va, vb], [1.0 - u, u]);
-        let mut places = vec![r];
+        let mut places = vec![(k, r)];
         let tunnel_under_road = net.tunnel[lower] && !net.free[upper];
         if tunnel_under_road {
-            // Where the tunnel's line meets each edge of the road, on this segment of the tunnel at most.
+            // Where the tunnel's line meets each edge of the road, on the segment of the tunnel nearest to it.
             let e = sub(q, p);
             let (norm, half, unit) = (hypot(e), net.half[upper], metres(p[1]));
             let side = [-e[1] / norm * half / unit, e[0] / norm * half / unit];
+            let (start, end) = (net.vertex_xy[k], net.vertex_xy[k + 1]);
             for offset in [side, [-side[0], -side[1]]] {
-                let Some((edge, _)) =
-                    lines(net.vertex_xy[k], net.vertex_xy[k + 1], [p[0] + offset[0], p[1] + offset[1]], e)
+                let Some((edge, _)) = lines(start, end, [p[0] + offset[0], p[1] + offset[1]], e) else { continue };
+                let at = [start[0] + edge * (end[0] - start[0]), start[1] + edge * (end[1] - start[1])];
+                let foot = |j: usize| {
+                    let (a, d) = (net.vertex_xy[j], sub(net.vertex_xy[j + 1], net.vertex_xy[j]));
+                    dot(sub(at, a), d) / dot(d, d).max(1e-300)
+                };
+                let gap = |j: usize| {
+                    let (a, d, x) =
+                        (net.vertex_xy[j], sub(net.vertex_xy[j + 1], net.vertex_xy[j]), foot(j).clamp(0.0, 1.0));
+                    hypot(sub(at, [a[0] + x * d[0], a[1] + x * d[1]]))
+                };
+                let Some(j) = (net.way_first[lower]..net.way_last[lower]).min_by(|&i, &j| gap(i).total_cmp(&gap(j)))
                 else {
                     continue;
                 };
-                let x = edge.clamp(0.0, 1.0);
+                let x = foot(j).clamp(0.0, 1.0);
                 // An edge past a portal would pin the portal, and with it the way on the ground that leaves it.
-                if x != edge && grounded[under[x as usize]] {
+                if x != foot(j) && grounded[net.vertex_var[j + x as usize]] {
                     continue;
                 }
-                places.push(x);
+                places.push((j, x));
             }
         }
-        for x in places {
+        for (j, x) in places {
             out.upper.push(above);
-            out.lower.push((under, [1.0 - x, x]));
+            out.lower.push(([net.vertex_var[j], net.vertex_var[j + 1]], [1.0 - x, x]));
             out.margin.push(margin);
             out.lower_way.push(lower);
             out.moves.push(!tunnel_under_road);

@@ -4,7 +4,8 @@
 // they agree and the greater one rules inside its core. Slopes start from the face plan's paved outline
 // (the records' outline edges): per host line a fill and a cut over its edges, released at the reach,
 // and the ground is a smooth min(cut, max(T, fill)), where a line's cut rises to the bank of the other
-// lines' fills, a wall class's up to its highest wall and then at its steepest cut.
+// lines' fills, a wall class's up to its highest wall and then at its steepest cut. The ground (the terrain and
+// the slopes) stays under every deck's ceiling.
 // #include records.wgsl
 
 const H_SLOTS: u32 = 10u;
@@ -15,17 +16,20 @@ const H_QUADS: u32 = 4u;
 const H_REGIONS: u32 = 2u;
 // The heights' rule words follow the block's head (heights::RULES of the crate).
 const H_RULES_AT: u32 = 15u;
-// The words of an outline edge, and its grade's steps per metre (records::EDGE, GRADE_STEPS).
-const H_EDGE: u32 = 8u;
+// The words of an outline edge, its grade's steps per metre and its turn's steps per π (records::EDGE,
+// GRADE_STEPS, TURN_STEPS).
+const H_EDGE: u32 = 10u;
+const H_TURN_STEPS: f32 = 32767.0;
 const H_GRADE_STEPS: f32 = 4096.0;
 // An outline edge's cone reaches this many frame units past its line into its paved face before it falls
 // on at face_max (heights::SIDE_UNITS).
 const H_SIDE_UNITS: f32 = 32.0;
 // HRec.rank and HLine.rank: the class rank below H_FLAGS, the line's flags from it on (a wall class, a
-// rail).
+// rail, line water).
 const H_FLAGS: u32 = 1u << 24u;
 const H_WALL: u32 = 1u << 31u;
 const H_RAIL: u32 = 1u << 30u;
+const H_WATER: u32 = 1u << 29u;
 
 // The rule values of heights, as heights::HeightRules: read from the block by height_at.
 struct HRules {
@@ -49,6 +53,7 @@ struct HRules {
     wall_max: f32,
     face_max: f32,
     region_fade: f32,
+    ceiling_release: f32,
     legs_wall: bool,
 }
 var<private> H: HRules;
@@ -58,7 +63,7 @@ var<private> H_BASE: f32;
 
 fn h_rules(block: u32) -> HRules {
     let r = block + H_RULES_AT;
-    return HRules(mf(r), mf(r + 1u), mf(r + 2u), mf(r + 3u), mf(r + 4u), mf(r + 5u), mf(r + 6u), mf(r + 7u), mf(r + 8u), mf(r + 9u), mf(r + 10u), mf(r + 11u), mf(r + 12u), mf(r + 13u), mf(r + 14u), mf(r + 15u), mf(r + 16u), mf(r + 17u), mf(r + 18u), mf(r + 20u), mw(r + 21u) == 1u);
+    return HRules(mf(r), mf(r + 1u), mf(r + 2u), mf(r + 3u), mf(r + 4u), mf(r + 5u), mf(r + 6u), mf(r + 7u), mf(r + 8u), mf(r + 9u), mf(r + 10u), mf(r + 11u), mf(r + 12u), mf(r + 13u), mf(r + 14u), mf(r + 15u), mf(r + 16u), mf(r + 17u), mf(r + 18u), mf(r + 20u), mf(r + 22u), mw(r + 23u) == 1u);
 }
 
 // An unknown terrain where an outline edge's cones let go, or an unknown grade.
@@ -123,12 +128,21 @@ struct HLine {
     // The class's steepest fill and cut of the no-room rule.
     fill_max: f32,
     cut_max: f32,
+    // The fill cone starts this far over its edge and this far past it (water's dyke).
+    rise: f32,
+    crest: f32,
 }
 
 fn h_line(block: u32, l: u32) -> HLine {
     let at = block + mw(block + 6u) + M_LINE * l;
-    let rank = mw(at + 7u) | select(0u, H_WALL, (mw(at + 1u) & M_WALL) != 0u) | select(0u, H_RAIL, (mw(at + 1u) & M_RAIL) != 0u);
-    return HLine(mw(at + 2u), mw(at + 3u), mf(at + 4u), mf(at + 5u), mf(at + 6u), rank, mf(at + 8u) + mf(at + 9u), mf(at + 10u), mf(at + 14u), mf(at + 15u));
+    let f = mw(at + 1u);
+    let rank = mw(at + 7u) | select(0u, H_WALL, (f & M_WALL) != 0u) | select(0u, H_RAIL, (f & M_RAIL) != 0u) | select(0u, H_WATER, (f & M_WATER) != 0u);
+    return HLine(mw(at + 2u), mw(at + 3u), mf(at + 4u), mf(at + 5u), mf(at + 6u), rank, mf(at + 8u) + mf(at + 9u), mf(at + 10u), mf(at + 14u), mf(at + 15u), mf(at + 16u), mf(at + 17u));
+}
+
+// Whether line l of the block is water; false for none.
+fn h_line_water(block: u32, l: u32) -> bool {
+    return (m_line_finish(block, l) & M_WATER) != 0u;
 }
 
 struct HSample {
@@ -407,6 +421,10 @@ fn h_present(hp: ptr<function, HPoint>, block: u32, q: vec2f, mpu: f32, keep: ve
             break;
         }
         let l = mw(at + k) & 0xffffu;
+        // The ceiling lines come last: no line of storey 0 follows.
+        if ((mw(block + mw(block + 6u) + M_LINE * l + 1u) & M_CEILING) != 0u) {
+            break;
+        }
         let ln = h_line(block, l);
         // A line whose core lies a feather or more from q is not present: skip it before its frames
         // (the labels' material lines stay).
@@ -580,7 +598,7 @@ fn h_via(past: f32, feather: f32) -> f32 {
 
 // The pair's agreement, as heights::paved_as: a fan relates them, the face relates them as arms, or
 // the rise between them is one that the lesser one's return grade climbs over the greater one's
-// feather.
+// feather. A return grade of 0 (water's) climbs no rise.
 fn h_agree(hp: ptr<function, HPoint>, i: u32, j: u32, arms: u32) -> f32 {
     let upper = min(i, j);
     let lower = max(i, j);
@@ -592,11 +610,18 @@ fn h_agree(hp: ptr<function, HPoint>, i: u32, j: u32, arms: u32) -> f32 {
     if (i != j) {
         rel = (*hp).rel[h_pair(i, j)];
     }
-    return max(max(h_phi((dz - ok) / (wall - ok)), rel), face);
+    let rise = select(0.0, h_phi((dz - ok) / (wall - ok)), wall > 0.0);
+    return max(max(rise, rel), face);
 }
 
-// The paved field for host o (H_SLOTS for none: a blend face), as heights::paved_as.
-fn h_paved_as(hp: ptr<function, HPoint>, o: u32, arms: u32) -> f32 {
+// Whether record k is of the painter's kind: water, or a way.
+fn h_kind(hp: ptr<function, HPoint>, k: u32, water: bool) -> bool {
+    return (((*hp).recs[k].rank & H_WATER) != 0u) == water;
+}
+
+// The paved field for host o (H_SLOTS for none: a blend face), as heights::paved_as: of the records of the
+// painter's kind (`water`) only.
+fn h_paved_as(hp: ptr<function, HPoint>, o: u32, arms: u32, water: bool) -> f32 {
     let n = (*hp).n;
     var beta: array<f32, H_SLOTS>;
     for (var k = 0u; k < n; k++) {
@@ -604,9 +629,12 @@ fn h_paved_as(hp: ptr<function, HPoint>, o: u32, arms: u32) -> f32 {
     }
     var sw = 0.0;
     var swz = 0.0;
-    var near = 0u;
+    var near = H_SLOTS;
     for (var j = 0u; j < n; j++) {
-        if ((*hp).recs[j].d < (*hp).recs[near].d) {
+        if (!h_kind(hp, j, water)) {
+            continue;
+        }
+        if (near == H_SLOTS || (*hp).recs[j].d < (*hp).recs[near].d) {
             near = j;
         }
         var w = beta[j];
@@ -614,6 +642,9 @@ fn h_paved_as(hp: ptr<function, HPoint>, o: u32, arms: u32) -> f32 {
             w *= h_agree(hp, o, j, arms);
         }
         for (var i = 0u; i < n; i++) {
+            if (!h_kind(hp, i, water)) {
+                continue;
+            }
             if (i < j) {
                 w *= select(1.0 - beta[i], 1.0 - beta[i] * h_agree(hp, i, j, arms), j == o);
             } else if (i > j && j != o) {
@@ -626,7 +657,10 @@ fn h_paved_as(hp: ptr<function, HPoint>, o: u32, arms: u32) -> f32 {
     if (sw > 0.0) {
         return swz / sw;
     }
-    return select((*hp).recs[near].z, (*hp).recs[o].z, o < n);
+    if (o < n) {
+        return (*hp).recs[o].z;
+    }
+    return select(0.0, (*hp).recs[min(near, H_SLOTS - 1u)].z, near < H_SLOTS);
 }
 
 fn h_cone(s: f32, d: f32) -> f32 {
@@ -636,30 +670,67 @@ fn h_cone(s: f32, d: f32) -> f32 {
     return s * (d - H.round * 0.5);
 }
 
-// The no-room rule of a cone of slope s from an edge whose ends stand `need` above (a fill) or below
-// (a cut) the plain terrain where the cone should meet it (`known`: which ends know it), with walls up
-// to `wall` before the face steepens on as steep as the need asks, as heights::fit: (the slope, the
-// wall at each end).
-fn h_fit(s: f32, most: f32, need: vec2f, known: vec2<bool>, wall: f32, reach: f32) -> vec3f {
-    let run = max(reach * (1.0 - H.fade_share) - H.round * 0.5, 1e-3);
-    let top = max(select(-H_BIG, need.x, known.x), select(-H_BIG, need.y, known.y));
+// The no-room rule of a cone of slope s from a point of the outline that stands `need` above (a fill) or
+// below (a cut) the plain terrain where the cone should meet it (`known`: whether it is known), with a wall up
+// to `wall` before the face steepens on as steep as the need asks, and `crest` metres less run, as
+// heights::fit: (the slope, the wall).
+fn h_fit(s: f32, most: f32, need: f32, known: bool, wall: f32, reach: f32, crest: f32) -> vec2f {
+    let run = max(max(reach * (1.0 - H.fade_share) - H.round * 0.5, 1e-3) - crest, 1e-3);
     let s0 = min(s, H.face_max);
-    var sc = select(min(top / run, max(min(most, H.face_max), s0)), s0, top <= s0 * run);
-    if (top - sc * run > wall) {
-        sc = (top - wall) / run;
+    if (!known) {
+        return vec2f(s0, 0.0);
     }
-    let w = select(vec2f(0.0), clamp(need - sc * run, vec2f(0.0), vec2f(wall)), known);
-    return vec3f(sc, w);
+    var sc = select(min(need / run, max(min(most, H.face_max), s0)), s0, need <= s0 * run);
+    if (need - sc * run > wall) {
+        sc = (need - wall) / run;
+    }
+    return vec2f(sc, clamp(need - sc * run, 0.0, wall));
 }
 
-// The greatest of top(x) − c |q − x| over an edge whose top runs linearly (sign 1, a fill), or the least
-// of top(x) + c |q − x| (sign −1, a cut), with c = √(s² + g²) for the edge's grade g, as
-// heights::edge_cone: q lies `along` metres along the edge and `off` metres off its line.
-fn h_edge_cone(along: f32, off: f32, len: f32, top: vec2f, s: f32, sign: f32) -> f32 {
+// A value of an outline edge's ends at share f of it (`known`: which ends know it), linear between them; an
+// unknown end takes the other end's, as heights::at_share.
+fn h_at_share(v: vec2f, known: vec2<bool>, f: f32) -> f32 {
+    return mix(select(v.y, v.x, known.x), select(v.x, v.y, known.y), f);
+}
+
+// Where q lies past an end of an outline edge within the cone of that end, as heights::fan: (1 or 0 for the
+// end b or a, the metres to it), or x < 0. `turn`: the outline's turn at a and b (`known`: whether an edge
+// goes on there).
+fn h_fan(along: f32, out: f32, len: f32, turn: vec2f, known: vec2<bool>) -> vec2f {
+    var x = along;
+    var end = 0u;
+    if (along > len) {
+        x = along - len;
+        end = 1u;
+    } else if (along >= 0.0) {
+        return vec2f(-1.0);
+    }
+    let t = turn[end];
+    if (!known[end]) {
+        return vec2f(f32(end), length(vec2f(x, out)));
+    }
+    if (t <= 0.0) {
+        return vec2f(-1.0);
+    }
+    let before = select(x * cos(t) + out * sin(t) >= 0.0, x * cos(t) - out * sin(t) <= 0.0, end == 1u);
+    if (before) {
+        return vec2f(f32(end), length(vec2f(x, out)));
+    }
+    return vec2f(-1.0);
+}
+
+// The cone of an outline edge at q (sign 1 a fill, −1 a cut) whose top runs linearly, as heights::edge_cone:
+// the line across its strip, falling on by `steep` more than it climbs past the ends' normals, and within an
+// end's fan the end's own cone; with a crest b, falling from b metres out.
+fn h_edge_cone(along: f32, out: f32, len: f32, top: vec2f, s: f32, sign: f32, fan: vec2f, steep: f32, crest: f32) -> f32 {
     let g = select(0.0, (top.y - top.x) / len, len > 0.0);
-    let u = clamp(along + sign * off * g / s, 0.0, len);
-    let d = sqrt((u - along) * (u - along) + off * off);
-    return top.x + g * u - sign * sqrt(s * s + g * g) * d;
+    let past = max(max(-along, along - len), 0.0);
+    let line = top.x + g * along - sign * (s * max(abs(out) - crest, 0.0) + (steep + abs(g)) * past);
+    if (fan.x < 0.0) {
+        return line;
+    }
+    let cone = select(top.x, top.y, fan.x > 0.5) - sign * s * max(fan.y - crest, 0.0);
+    return select(min(line, cone), max(line, cone), sign > 0.0);
 }
 
 // How much the round of a cone of slope s at its foot holds it back at d metres, as heights::round_back.
@@ -717,6 +788,8 @@ struct HGroup {
     rank: u32,
     glob: u32,
     fill: f32,
+    // Its fill without a rise and a crest, which bounds its own cut.
+    plain: f32,
     cut: f32,
     steep: f32,
     d: f32,
@@ -745,7 +818,8 @@ fn h_close(gs: ptr<function, HGroups>, g0: HGroup, ln: HLine) {
     }
     var g = g0;
     g.fade = h_release(g.d, ln.reach).x;
-    g.fill += h_round_back(ln.fill, g.d);
+    g.plain += h_round_back(ln.fill, g.d);
+    g.fill += h_round_back(ln.fill, max(g.d - ln.crest, 0.0));
     g.cut -= h_round_back(ln.cut, g.d);
     g.steep -= h_round_back(min(max(ln.cut_max, ln.cut), H.face_max), g.d);
     if ((*gs).n == H_SLOTS) {
@@ -779,7 +853,7 @@ fn h_groups(block: u32, q: vec2f, mpu: f32) -> HGroups {
     let at = h_heights_start(block, q) + (hc >> 16u) + (hc & 0xffffu) + (mw(head + 3u) & 0xffffu);
     let n = mw(at) & 0xffffu;
     let edges = block + mw(block + 14u);
-    var g = HGroup(M_NONE, 0u, 0u, -H_BIG, H_BIG, H_BIG, H_BIG, H_BIG, 1.0);
+    var g = HGroup(M_NONE, 0u, 0u, -H_BIG, -H_BIG, H_BIG, H_BIG, H_BIG, H_BIG, 1.0);
     var ln: HLine;
     for (var k = 1u; k <= n; k++) {
         let e = edges + H_EDGE * ((mw(at + k / 2u) >> (16u * (k % 2u))) & 0xffffu);
@@ -789,7 +863,7 @@ fn h_groups(block: u32, q: vec2f, mpu: f32) -> HGroups {
                 h_close(&gs, g, ln);
             }
             ln = h_line(block, line);
-            g = HGroup(line, ln.rank, h_glob(block, ln), -H_BIG, H_BIG, H_BIG, H_BIG, H_BIG, 1.0);
+            g = HGroup(line, ln.rank, h_glob(block, ln), -H_BIG, -H_BIG, H_BIG, H_BIG, H_BIG, H_BIG, 1.0);
         }
         // Metres along and off the edge from q − a; b is two i16 offsets from a.
         let a = vec2f(mi(e), mi(e + 1u));
@@ -810,26 +884,42 @@ fn h_groups(block: u32, q: vec2f, mpu: f32) -> HGroups {
         let h = vec2f(mf(e + 4u), mf(e + 5u)) - H_BASE;
         let t = vec2f(h_known_word(e + 6u), h_known_word(e + 7u));
         let known = t > vec2f(H_UNKNOWN * 0.5);
-        let gq = bitcast<i32>(mw(e + 3u)) >> 16u;
-        let grade = select(f32(gq) / H_GRADE_STEPS, H_UNKNOWN, gq == -32768);
+        let last = mw(e + 8u);
+        let gq = vec2i(bitcast<i32>(mw(e + 3u)) >> 16u, bitcast<i32>(last << 16u) >> 16u);
+        let graded = gq != vec2i(-32768);
+        let tq = vec2i(bitcast<i32>(mw(e + 9u) << 16u) >> 16u, bitcast<i32>(last) >> 16u);
+        let fan = h_fan(along, side * mpu, len, vec2f(tq) / H_TURN_STEPS * 3.14159265, tq != vec2i(-32768));
         let fr = h_release(d, ln.reach);
         let wall = select(0.0, H.wall_max, (ln.rank & H_WALL) != 0u);
-        let f = h_fit(ln.fill, ln.fill_max, h - t, known, wall, ln.reach);
-        let c = h_fit(ln.cut, ln.cut_max, t - h, known, wall, ln.reach);
+        // The slope and the wall at q's foot on the edge, from the need there. The fill starts ln.rise over
+        // the edge and ln.crest past it.
+        let share = select(0.0, clamp(along / len, 0.0, 1.0), len > 0.0);
+        let need = h_at_share(h - t, known, share);
+        let grade = select(H_UNKNOWN, h_at_share(vec2f(gq) / H_GRADE_STEPS, graded, share), any(graded));
+        let f = h_fit(ln.fill, ln.fill_max, need + ln.rise, any(known), wall, ln.reach, ln.crest);
+        let c = h_fit(ln.cut, ln.cut_max, -need, any(known), wall, ln.reach, 0.0);
         g.d = min(g.d, d);
-        let w = h_toe_width(d, h_span_k(f.x, c.x, grade));
+        let past = select(max(max(-along, along - len), 0.0), 0.0, fan.x >= 0.0);
+        let w = h_toe_width(d, h_span_k(f.x, c.x, grade)) + H.face_max * past;
         g.toe = min(g.toe, w + fr.x * (H.toe_max - w));
         // Past its line into its paved face (from H_SIDE_UNITS on) an edge's cone falls on at face_max,
         // as heights::groups.
         let inside = select(0.0, max(-side - H_SIDE_UNITS, 0.0) * mpu * H.face_max, lu > 0.0);
-        g.fill = max(g.fill, h_edge_cone(along, off, len, h - f.yz, f.x, 1.0) - fr.y - inside);
-        g.cut = min(g.cut, h_edge_cone(along, off, len, h + c.yz, c.x, -1.0) + fr.y + inside);
+        let out = side * mpu;
+        let fill = h_edge_cone(along, out, len, h + ln.rise - f.y, f.x, 1.0, fan, H.face_max, ln.crest);
+        var plain = fill;
+        if (ln.rise > 0.0 || ln.crest > 0.0) {
+            let pf = h_fit(ln.fill, ln.fill_max, need, any(known), wall, ln.reach, 0.0);
+            plain = h_edge_cone(along, out, len, h - pf.y, pf.x, 1.0, fan, H.face_max, 0.0);
+        }
+        g.fill = max(g.fill, fill - fr.y - inside);
+        g.plain = max(g.plain, plain - fr.y - inside);
+        g.cut = min(g.cut, h_edge_cone(along, out, len, h + c.y, c.x, -1.0, fan, H.face_max, 0.0) + fr.y + inside);
         // The highest cut toward the budget: a wall class's wall up to wall_max at its edge, then a face
         // at the steepest cut from the wall's top.
         let steep = min(max(ln.cut_max, ln.cut), H.face_max);
-        let top = h + wall;
-        let s = h_fit(steep, steep, t - top, known, 0.0, ln.reach);
-        g.steep = min(g.steep, h_edge_cone(along, off, len, top + s.yz, s.x, -1.0) + fr.y + inside);
+        let s = h_fit(steep, steep, -need - wall, any(known), 0.0, ln.reach, 0.0);
+        g.steep = min(g.steep, h_edge_cone(along, out, len, h + wall, s.x, -1.0, fan, H.face_max, 0.0) + fr.y + inside);
     }
     if (g.line != M_NONE) {
         h_close(&gs, g, ln);
@@ -839,9 +929,9 @@ fn h_groups(block: u32, q: vec2f, mpu: f32) -> HGroups {
 
 // The slope field at q, as heights::slope: per host line of the outline near q its fill and cut, then a
 // smooth min(cut, max(T, fill)). A line's cut rises toward its bank budget (the soft greatest fill of
-// the other lines that are no rail) up to its highest cut, in a round that grows from 0 at its own
-// outline and at the outline of every line in the budget; where its own fill passes its cut, that fill
-// bounds the cut.
+// the other lines that are no rail and no water) up to its highest cut, in a round that grows from 0 at
+// its own outline and at the outline of every line in the budget; where its own plain fill passes its
+// cut, that fill bounds the cut.
 fn h_slope(block: u32, q: vec2f, mpu: f32, t: f32) -> f32 {
     let gs = h_groups(block, q, mpu);
     let n = gs.n;
@@ -858,14 +948,20 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, t: f32) -> f32 {
         toe = min(toe, kq + g.fade * (H.toe_max - kq));
         fills[k] = g.fill;
         dists[k] = g.d;
-        roads |= select(1u << k, 0u, (g.rank & H_RAIL) != 0u);
+        roads |= select(1u << k, 0u, (g.rank & (H_RAIL | H_WATER)) != 0u);
     }
     let lo = h_soft_top(&fills, &dists, n, 0xffffffffu);
     var hi = H_BIG;
     for (var k = 0u; k < n; k++) {
         let g = gs.g[k];
         let counted = roads & ~(1u << k);
-        let budget = h_soft_top(&fills, &dists, n, counted);
+        // Another line's rail bed counts with its fill less its wall cap, as heights::slope.
+        var budget = h_soft_top(&fills, &dists, n, counted);
+        for (var j = 0u; j < n; j++) {
+            if (j != k && (gs.g[j].rank & H_RAIL) != 0u) {
+                budget = max(budget, fills[j] - select(0.0, H.wall_max, (gs.g[j].rank & H_WALL) != 0u));
+            }
+        }
         var near = g.d;
         for (var j = 0u; j < n; j++) {
             if (((counted >> j) & 1u) != 0u) {
@@ -874,7 +970,7 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, t: f32) -> f32 {
         }
         let w = h_toe_width(near, H.budget_round);
         let lift = h_smin(budget, g.steep, w);
-        hi = min(hi, max(h_smax(g.cut, lift, w), min(g.fill, g.steep)));
+        hi = min(hi, max(h_smax(g.cut, lift, w), min(g.plain, g.steep)));
     }
     let edge = h_slope_edge(block, q, mpu);
     let k = toe * h_smooth(edge / M_MARGIN);
@@ -905,10 +1001,11 @@ fn h_arms_of(block: u32, hp: ptr<function, HPoint>, id: u32) -> u32 {
 
 // A junction's region at q: its own painter, faded near each of its edges to the face beyond, as
 // heights::region. The groups: a host beyond at its record's index, then the regions beyond (the
-// nearest H_REGIONS). Toward a slope or the terrain the region keeps its own painter.
-fn h_region(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, label: u32, arms: u32) -> f32 {
+// nearest H_REGIONS). Toward a slope or the terrain the region keeps its own painter. `water`: the region's
+// kind, its material line's.
+fn h_region(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, label: u32, arms: u32, water: bool) -> f32 {
     let n = (*hp).n;
-    let own = h_paved_as(hp, H_SLOTS, arms);
+    let own = h_paved_as(hp, H_SLOTS, arms, water);
     var dist: array<f32, H_SLOTS>;
     for (var k = 0u; k < H_SLOTS; k++) {
         dist[k] = H_BIG;
@@ -987,7 +1084,7 @@ fn h_region(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, label: u3
         if (sigma <= 0.0) {
             continue;
         }
-        let v = h_paved_as(hp, g, 0u);
+        let v = h_paved_as(hp, g, 0u, ((*hp).recs[g].rank & H_WATER) != 0u);
         let s = h_smooth(dist[g] / H.region_fade);
         if (s <= 0.0) {
             return v;
@@ -1000,7 +1097,7 @@ fn h_region(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, label: u3
     var vr: array<f32, H_REGIONS>;
     for (var k = 0u; k < H_REGIONS; k++) {
         if (beyond_id[k] != M_NONE) {
-            vr[k] = h_paved_as(hp, H_SLOTS, arms | h_arms_of(block, hp, beyond_id[k]));
+            vr[k] = h_paved_as(hp, H_SLOTS, arms | h_arms_of(block, hp, beyond_id[k]), water);
         }
     }
     for (var j = 1u; j < H_REGIONS; j++) {
@@ -1036,21 +1133,95 @@ fn height_at(block: u32, q: vec2f, label: u32, t: f32, start: u32) -> vec2f {
 
 // height_at with every height less H_BASE.
 fn height_relative(block: u32, q: vec2f, label: u32, t: f32, start: u32) -> vec2f {
-    if (label == M_NONE) {
-        return vec2f(t, H_TERRAIN);
-    }
-    let lw = m_label(block, label);
-    let rule = mw(lw) >> 24u;
+    let rule = select(mw(m_label(block, label)) >> 24u, 0u, label == M_NONE);
+    // The terrain under a deck's ceiling: a point with no ceiling line in its bin reads no rules.
     if (rule == 0u) {
-        return vec2f(t, H_TERRAIN);
+        let at = h_ceilings(block, q, start);
+        if (at.y == 0u) {
+            return vec2f(t, H_TERRAIN);
+        }
+        H = h_rules(block);
+        return vec2f(min(t, h_ceiling(block, q, h_scale(block, q), at)), H_TERRAIN);
     }
     H = h_rules(block);
     let mpu = h_scale(block, q);
-    // A slope reads only the outline edges.
+    // A slope reads only the outline edges, and the ceilings.
     if (rule == 1u) {
-        return vec2f(h_slope(block, q, mpu, t), H_SLOPE);
+        return vec2f(min(h_slope(block, q, mpu, t), h_ceiling(block, q, mpu, h_ceilings(block, q, start))), H_SLOPE);
     }
-    return h_paved_at(block, q, mpu, label, rule, mw(lw + 2u), t, start);
+    return h_paved_at(block, q, mpu, label, rule, mw(m_label(block, label) + 2u), t, start);
+}
+
+// The word after q's bin's height segment items and the count of the ceiling lines' items among them, last
+// (records::CEILING): 0 where none.
+fn h_ceilings(block: u32, q: vec2f, start: u32) -> vec2u {
+    let head = m_bin_head(block, q);
+    if (head == 0u) {
+        return vec2u(0u);
+    }
+    let end = select(h_heights_start(block, q), start, start != 0u) + (mw(head + 2u) >> 16u);
+    let lines = block + mw(block + 6u);
+    var n = 0u;
+    loop {
+        if (n == (mw(head + 2u) >> 16u) || (mw(lines + M_LINE * (mw(end - n - 1u) & 0xffffu) + 1u) & M_CEILING) == 0u) {
+            break;
+        }
+        n++;
+    }
+    return vec2u(end, n);
+}
+
+// The ceiling at q from the last `at.y` height segment items before word `at.x`, as heights::ceiling: per
+// segment of a deck's ceiling line, the metres outside its stroke (flat at the line's ends along their `flat`
+// normals, words 4 and 5) and its banked surface at q's foot less its drop (word 10); past the stroke the bound
+// rises at face_max and lets go over ceiling_release.
+fn h_ceiling(block: u32, q: vec2f, mpu: f32, at: vec2u) -> f32 {
+    var best = H_BIG;
+    let lines = block + mw(block + 6u);
+    let samples = block + mw(block + 7u);
+    for (var k = 1u; k <= at.y; k++) {
+        let item = mw(at.x - k);
+        let lw = lines + M_LINE * (item & 0xffffu);
+        let ln = h_line(block, item & 0xffffu);
+        let i = item >> 16u;
+        let sa = h_sample(block, ln, i, mpu);
+        let sb = h_sample(block, ln, i + 1u, mpu);
+        let ab = sb.p - sa.p;
+        let len = length(ab);
+        if (len <= 0.0) {
+            continue;
+        }
+        let u = ab / len;
+        let v = q - sa.p;
+        let t = dot(v, u);
+        let lateral = -m_cross(u, v) * mpu;
+        var f = clamp(t / len, 0.0, 1.0);
+        var across = length(v - f * ab) * mpu;
+        if ((i == 0u && t < 0.0) || (i + 2u == ln.count && t > len)) {
+            f = select(1.0, 0.0, t < 0.0);
+            across = abs(lateral);
+        }
+        let half = sa.h + f * (sb.h - sa.h);
+        let last = ln.count - 1u;
+        let along = samples + M_SAMPLE * ln.first + 3u;
+        var past = 0.0;
+        if (mf(along + M_SAMPLE * i) - mf(along) <= sa.h + H.ceiling_release) {
+            let a = samples + M_SAMPLE * ln.first;
+            past = max(past, -dot(q - vec2f(mi(a), mi(a + 1u)), h_unit(unpack2x16snorm(mw(lw + 4u)))) * mpu);
+        }
+        if (mf(along + M_SAMPLE * last) - mf(along + M_SAMPLE * (i + 1u)) <= sb.h + H.ceiling_release) {
+            let a = samples + M_SAMPLE * (ln.first + last);
+            past = max(past, -dot(q - vec2f(mi(a), mi(a + 1u)), h_unit(unpack2x16snorm(mw(lw + 5u)))) * mpu);
+        }
+        let out = length(vec2f(max(across - half, 0.0), past));
+        if (out >= H.ceiling_release) {
+            continue;
+        }
+        let len_m = len * mpu;
+        let z = h_hermite(sa.z, sb.z, sa.grade * len_m, sb.grade * len_m, f) + (sa.bank + f * (sb.bank - sa.bank)) * clamp(lateral, -half, half);
+        best = min(best, z - ln.ret + H.face_max * out + h_release(out, H.ceiling_release).y);
+    }
+    return best;
 }
 
 // height_relative of a paved label. Tint zeroes a function's vars at its entry: hp lives here, so only a paved
@@ -1059,12 +1230,17 @@ fn h_paved_at(block: u32, q: vec2f, mpu: f32, label: u32, rule: u32, material: u
     var hp: HPoint;
     h_present(&hp, block, q, mpu, vec2u(material, M_NONE), start);
     // A blend face (a junction's region) has no host, and it relates the junction's arms (its
-    // material, host and guest lines), as heights::by_label.
-    if (rule == 3u && hp.n > 0u) {
-        return vec2f(h_region(block, q, mpu, &hp, label, h_arms_of(block, &hp, label)), H_PAVED);
+    // material, host and guest lines), as heights::by_label; with no record of its kind, the plain terrain.
+    let water = h_line_water(block, material);
+    var kind = false;
+    for (var k = 0u; k < hp.n; k++) {
+        kind = kind || h_kind(&hp, k, water);
     }
-    // The host: the label's material line; with none, the first record whose core holds q, else the
-    // nearest, as heights::host.
+    if (rule == 3u && kind) {
+        return vec2f(h_region(block, q, mpu, &hp, label, h_arms_of(block, &hp, label), water), H_PAVED);
+    }
+    // The host: the label's material line; with none (a way's band face), the first way record whose core
+    // holds q, else the nearest way record, as heights::host.
     var o = H_SLOTS;
     for (var k = 0u; k < hp.n; k++) {
         if (hp.recs[k].line == material) {
@@ -1072,14 +1248,14 @@ fn h_paved_at(block: u32, q: vec2f, mpu: f32, label: u32, rule: u32, material: u
         }
     }
     for (var k = 0u; k < hp.n && o == H_SLOTS && material == M_NONE; k++) {
-        if (hp.recs[k].d <= 0.0) {
+        if (hp.recs[k].d <= 0.0 && h_kind(&hp, k, false)) {
             o = k;
         }
     }
     if (o == H_SLOTS && material == M_NONE) {
         var best = H_BIG;
         for (var k = 0u; k < hp.n; k++) {
-            if (hp.recs[k].d < best) {
+            if (hp.recs[k].d < best && h_kind(&hp, k, false)) {
                 best = hp.recs[k].d;
                 o = k;
             }
@@ -1088,5 +1264,5 @@ fn h_paved_at(block: u32, q: vec2f, mpu: f32, label: u32, rule: u32, material: u
     if (o == H_SLOTS) {
         return vec2f(t, H_PAVED);
     }
-    return vec2f(h_paved_as(&hp, o, 0u), H_PAVED);
+    return vec2f(h_paved_as(&hp, o, 0u, (hp.recs[o].rank & H_WATER) != 0u), H_PAVED);
 }

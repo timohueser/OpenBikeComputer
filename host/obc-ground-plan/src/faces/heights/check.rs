@@ -3,7 +3,9 @@
 //! points on the cell's lines, which two cells must give alike.
 
 use super::{height_at, height_at_sides, Block, Height, HeightRules, Kind, Step as Rule};
-use crate::faces::records::{find, label, CAND, DISC, JUNCTION, LABEL, LINE, PLATFORM};
+use crate::faces::records::{
+    edge_ends, edge_line, find, label, outline_words, CAND, DISC, EDGE, JUNCTION, LABEL, LINE, PLATFORM,
+};
 use crate::faces::Surface;
 use crate::frame::{metres_per_unit, CellKey, GlobalPoint, CELL_UNITS};
 use crate::terrain::Terrain;
@@ -14,6 +16,8 @@ pub const STEP_M: f64 = 0.01;
 pub const RIPPLE_M: f64 = 0.25;
 /// The grid of `edge_steps` in the fixture's checks.
 pub const EDGE_GRID_M: f64 = 1.0;
+/// A water face of the owner rule lies at its host's own surface within this.
+pub const WATER_LEVEL_M: f64 = 0.001;
 
 /// Where a step stands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -47,9 +51,13 @@ pub struct Step {
 pub struct Scan {
     pub points: u64,
     /// The grid points where a cap of `SLOTS` lines, `QUADS` quads or `REGIONS` regions left records
-    /// out, and the paved points whose label's material line the records lack.
+    /// out, and the paved points whose label's material line the records lack (for a blend face, every
+    /// record of its kind: it then takes the plain terrain).
     pub slots_full: Vec<[f64; 2]>,
     pub host_missing: Vec<([f64; 2], Option<u32>)>,
+    /// The points of a water face of the owner rule whose height is not its host's own surface within
+    /// `WATER_LEVEL_M`: the painter reads the records of one kind only, so W is exact.
+    pub water_off: Vec<[f64; 2]>,
     pub steps: Vec<Step>,
     /// The second differences of the carriageway grid points along and across their line (m).
     pub ripple: [Vec<f64>; 2],
@@ -71,28 +79,38 @@ pub fn at(words: &[u32], terrain: &Terrain, cell: CellKey, q: [f64; 2]) -> Optio
     Some((height_at(words, q, label, t), label))
 }
 
-/// The height at q with the label of `find` there, whether a cap left records out, and whether the
-/// records lack the label's material line.
-fn audit(words: &[u32], terrain: &Terrain, cell: CellKey, q: [f64; 2]) -> Option<((Height, Option<u32>), bool, bool)> {
+/// What `audit` finds at a point: its height and label, whether a cap left records out, whether the
+/// records lack the label's material line, and whether a water face of the owner rule leaves its host's
+/// own surface.
+type Audit = ((Height, Option<u32>), bool, bool, bool);
+
+/// The height at q with the label of `find` there, and the faults there (`Audit`).
+fn audit(words: &[u32], terrain: &Terrain, cell: CellKey, q: [f64; 2]) -> Option<Audit> {
     let t = terrain_at(terrain, cell, q)?;
     let label = find(words, q);
     let rule = label.map_or(0, |id| self::label(words, id)[0] >> 24);
     if rule == 0 {
-        return Some(((height_at(words, q, label, t), label), false, false));
+        return Some(((height_at(words, q, label, t), label), false, false, false));
     }
     let b = Block::at(words, q);
     let p = HeightRules::of(words);
     if rule == 1 {
-        return Some(((height_at(words, q, label, t), label), super::groups(&b, q, &p).1, false));
+        return Some(((height_at(words, q, label, t), label), super::groups(&b, q, &p).1, false, false));
     }
     let material = super::material(words, label);
     let items = super::bin_items(&b, q)?;
     let present = super::present(&b, q, &p, [material, u32::MAX], &items);
-    let h = super::by_label(&b, q, &present.recs, items.blend, label, t, &p).0;
-    // A blend face has no host: its material line need not be present.
-    let missing = (rule == 2 || rule == 4) && material != u32::MAX && !present.recs.iter().any(|r| r.line == material);
+    let h = super::by_label(&b, q, &present.recs, &items, label, t, &p).0;
+    // A host face misses its host; a blend face has none, and misses every record of its kind.
+    let missing = match rule {
+        3 => !present.recs.iter().any(|r| r.water == b.water(material)),
+        _ => material != u32::MAX && !present.recs.iter().any(|r| r.line == material),
+    };
     let full = present.full || (rule == 3 && super::regions_full(words, q, label.unwrap_or(u32::MAX), &p));
-    Some(((h, label), full, missing))
+    let water = label.is_some_and(|id| self::label(words, id)[0] & 0xff == Surface::Water as u32) && rule == 2;
+    let host = present.recs.iter().find(|r| r.line == material);
+    let off = water && host.is_some_and(|r| (h.h - r.z).abs() > WATER_LEVEL_M);
+    Some(((h, label), full, missing, off))
 }
 
 /// Whether a label's face is one that GP6's rules do not own yet: a paved band face with no material
@@ -103,6 +121,25 @@ fn apart(words: &[u32], id: Option<u32>) -> bool {
         let owner = (l[0] >> 8) & 0xff;
         owner == PLATFORM || (l[0] >> 24 >= 2 && l[2] == u32::MAX)
     })
+}
+
+/// `scan`'s grid points of `grid_m` over the cell with a known terrain, those where a cap left records
+/// out (`Scan::slots_full`) and those whose label's material line the records lack
+/// (`Scan::host_missing`), without the steps: the census reads the caps of each cell of a region.
+pub fn caps(words: &[u32], terrain: &Terrain, cell: CellKey, grid_m: f64) -> [u64; 3] {
+    let step = grid_m / metres_per_unit(cell.origin().y + CELL_UNITS / 2);
+    let n = (CELL_UNITS as f64 / step).ceil() as usize;
+    let mut out = [0; 3];
+    for k in 0..n * n {
+        let q = [((k % n) as f64 + 0.5) * step, ((k / n) as f64 + 0.5) * step];
+        if q[0] >= CELL_UNITS as f64 || q[1] >= CELL_UNITS as f64 {
+            continue;
+        }
+        if let Some((_, full, missing, _)) = audit(words, terrain, cell, q) {
+            out = [out[0] + 1, out[1] + u64::from(full), out[2] + u64::from(missing)];
+        }
+    }
+    out
 }
 
 /// The steps of a grid of `grid_m` over the cell, and the ripple at its carriageway points. Between
@@ -128,6 +165,9 @@ pub fn scan(words: &[u32], terrain: &Terrain, cell: CellKey, grid_m: f64) -> Sca
             }
             if a.2 {
                 out.host_missing.push((q, a.0 .1));
+            }
+            if a.3 {
+                out.water_off.push(q);
             }
             Some(a.0)
         })
@@ -231,6 +271,308 @@ pub fn edge_steps(words: &[u32], terrain: &Terrain, cell: CellKey, grid_m: f64) 
             }
             let class = if apart(words, labels[k]) || apart(words, lb) { Class::Apart } else { Class::Unnamed };
             out.push(Step { a, b, dh, labels: [labels[k], lb], class, sides });
+        }
+    }
+    out
+}
+
+/// A step that another line's cone holds higher than the paved side's wall cap (`Step::HeldOverCap`): where it
+/// stands, its height, the metres from it to the outline of the line that holds it (infinite where q's bin lists
+/// none of its edges), the caps of the paved side's host and of that line, and whether either is line water.
+#[derive(Clone, Debug)]
+pub struct HeldOver {
+    pub at: [f64; 2],
+    pub height: f64,
+    pub gap: f64,
+    pub caps: [f64; 2],
+    pub water: bool,
+}
+
+/// The `HeldOverCap` steps at the label edges of a grid of `grid_m` over the cell, found as `edge_steps` finds
+/// its steps.
+pub fn held_over_cap(words: &[u32], terrain: &Terrain, cell: CellKey, grid_m: f64) -> Vec<HeldOver> {
+    let step = grid_m / metres_per_unit(cell.origin().y + CELL_UNITS / 2);
+    let n = (CELL_UNITS as f64 / step) as usize;
+    let point = |i: usize, j: usize| [(i as f64 + 0.5) * step, (j as f64 + 0.5) * step];
+    let labels: Vec<Option<u32>> = (0..n * n).map(|k| find(words, point(k % n, k / n))).collect();
+    let p = HeightRules::of(words);
+    let mut out = Vec::new();
+    for k in 0..n * n {
+        let (i, j) = (k % n, k / n);
+        for nb in [(i + 1 < n).then_some(k + 1), (j + 1 < n).then_some(k + n)].into_iter().flatten() {
+            if labels[k] == labels[nb] {
+                continue;
+            }
+            let (mut a, mut b, mut lb) = (point(i, j), point(nb % n, nb / n), labels[nb]);
+            while libm::hypot(b[0] - a[0], b[1] - a[1]) > 1.0 {
+                let m = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
+                match find(words, m) {
+                    l if l == labels[k] => a = m,
+                    l => (b, lb) = (m, l),
+                }
+            }
+            let Some(t) = terrain_at(terrain, cell, a) else { continue };
+            let sides = height_at_sides(words, a, [labels[k], lb], t);
+            if sides[0].step != Rule::HeldOverCap || (sides[1].h - sides[0].h).abs() <= STEP_M {
+                continue;
+            }
+            let (slope, paved) = if sides[0].kind == Kind::Paved { (sides[1], sides[0]) } else { (sides[0], sides[1]) };
+            let bl = Block::at(words, a);
+            let cap = |l: u32| if l == u32::MAX { 0.0 } else { bl.line(l as usize).wall_max(&p) };
+            let gap = super::walls(&bl, a, slope.owner, &p).map_or(f64::INFINITY, |w| w.1 / p.face_max);
+            out.push(HeldOver {
+                at: a,
+                height: (paved.h - slope.h).abs(),
+                gap,
+                caps: [cap(paved.owner), cap(slope.owner)],
+                water: [paved.owner, slope.owner].iter().any(|&l| l != u32::MAX && bl.line(l as usize).water),
+            });
+        }
+    }
+    out
+}
+
+/// A ground point within this many metres past a deck end line must stand under the deck's underside less the gap.
+pub const PAST_M: f64 = 0.5;
+/// The points of `deck_ends` across an end line lie this far apart, and the first this far inside its paved ends.
+pub const ACROSS_M: f64 = 0.25;
+
+/// The deck ends of a cell's records and their faults: points of an end line or within `PAST_M` past it that no
+/// deck's stroke holds; ground points within `PAST_M` past it over the deck's underside less the gap (the place,
+/// the metres over); points of the end line with ground beyond it whose step is shorter than the deck's depth and
+/// the gap less `step_m` or not an `EndFace` (the place, the step, the deck's drop, its label). And the points of an
+/// end line with a paved face beyond it with less step: a junction's face or another way's goes on there, so the
+/// end has no end face. The end lines' points lie in the cell.
+#[derive(Clone, Debug, Default)]
+pub struct DeckEnds {
+    pub ends: usize,
+    pub points: usize,
+    pub uncovered: Vec<[f64; 2]>,
+    pub over: Vec<([f64; 2], f64)>,
+    pub short: Vec<([f64; 2], f64, f64, Rule)>,
+    pub paved_beyond: Vec<[f64; 2]>,
+}
+
+/// A deck end line of a block: the end point (frame units from the cell's origin), the unit direction into its
+/// line, and the half-width of its paved layers (units).
+#[derive(Clone, Copy, Debug)]
+pub struct EndLine {
+    pub at: [f64; 2],
+    pub into: [f64; 2],
+    pub half: f64,
+}
+
+impl EndLine {
+    /// q in units along `into` from the end point and across, signed.
+    pub fn place(&self, q: [f64; 2]) -> [f64; 2] {
+        let v = [q[0] - self.at[0], q[1] - self.at[1]];
+        [v[0] * self.into[0] + v[1] * self.into[1], v[1] * self.into[0] - v[0] * self.into[1]]
+    }
+}
+
+/// The deck end lines of a block's lines (`records::DECK`).
+pub fn end_lines(words: &[u32]) -> Vec<EndLine> {
+    let mut out = Vec::new();
+    for l in 0..words[3] as usize {
+        let b = Block::at(words, [0.0, 0.0]);
+        let ln = b.line(l);
+        for e in (0..2).filter(|&e| ln.deck[e] && !ln.ceiling) {
+            let (i, j) = if e == 0 { (0, 1) } else { (ln.count - 1, ln.count - 2) };
+            let (a, next) = (b.position(&ln, i), b.position(&ln, j));
+            let d = [next[0] - a[0], next[1] - a[1]];
+            let len = libm::hypot(d[0], d[1]);
+            let b = Block::at(words, a);
+            let half = (b.sample(&ln, i).h + ln.side) / b.mpu;
+            out.push(EndLine { at: a, into: [d[0] / len, d[1] / len], half });
+        }
+    }
+    out
+}
+
+pub fn deck_ends(words: &[u32], terrain: &Terrain, cell: CellKey) -> DeckEnds {
+    let p = HeightRules::of(words);
+    let mut out = DeckEnds::default();
+    let inside = |q: [f64; 2]| (0.0..CELL_UNITS as f64).contains(&q[0]) && (0.0..CELL_UNITS as f64).contains(&q[1]);
+    for end in end_lines(words).into_iter().filter(|e| inside(e.at)) {
+        let mpu = Block::at(words, end.at).mpu;
+        let (u, nrm) = (end.into, [-end.into[1], end.into[0]]);
+        let at = |across: f64, along: f64| {
+            [end.at[0] + (nrm[0] * across + u[0] * along) / mpu, end.at[1] + (nrm[1] * across + u[1] * along) / mpu]
+        };
+        out.ends += 1;
+        let half = end.half * mpu;
+        let n = ((2.0 * half - 2.0 * ACROSS_M) / ACROSS_M).floor() as usize;
+        for k in 0..=n {
+            let across = -half + ACROSS_M + k as f64 * ACROSS_M;
+            let q = at(across, 0.0);
+            let (Some(t), true) = (terrain_at(terrain, cell, q), inside(q)) else { continue };
+            out.points += 1;
+            // The deck beyond the end line, whose bound `under_deck` reads inside its stroke only.
+            let Some((_, drop)) = super::under_deck(words, at(across, -0.01)) else {
+                out.uncovered.push(q);
+                continue;
+            };
+            let one = 2.0 * mpu;
+            let labels = [find(words, at(across, one)), find(words, at(across, -one))];
+            let sides = height_at_sides(words, q, labels, t);
+            let step = sides[0].h - sides[1].h;
+            if step < drop - p.step_m && sides[1].kind == Kind::Paved {
+                out.paved_beyond.push(q);
+            } else if step < drop - p.step_m || sides[0].step != Rule::EndFace {
+                out.short.push((q, step, drop, sides[0].step));
+            }
+            for m in 1..=5 {
+                let q = at(across, -PAST_M * f64::from(m) / 5.0);
+                let Some(t) = terrain_at(terrain, cell, q).filter(|_| inside(q)) else { continue };
+                let Some((under, _)) = super::under_deck(words, q) else {
+                    out.uncovered.push(q);
+                    continue;
+                };
+                let (h, _) = at_label(words, q, t);
+                if h.kind != Kind::Paved && h.h > under + 1e-9 {
+                    out.over.push((q, h.h - under));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The height and label at q with the terrain t.
+fn at_label(words: &[u32], q: [f64; 2], t: f64) -> (Height, Option<u32>) {
+    let label = find(words, q);
+    (height_at(words, q, label, t), label)
+}
+
+/// The joints of two decks of a block: where two ceiling lines end at one point, the point and the lesser
+/// half-width of their strokes (metres).
+fn deck_joints(words: &[u32]) -> Vec<([f64; 2], f64)> {
+    let b = Block::at(words, [0.0, 0.0]);
+    let mut ends = Vec::new();
+    for l in 0..words[3] as usize {
+        let ln = b.line(l);
+        for i in [0, ln.count - 1].into_iter().filter(|_| ln.ceiling) {
+            let p = b.position(&ln, i);
+            ends.push((l, p, Block::at(words, p).sample(&ln, i).h));
+        }
+    }
+    let mut out = Vec::new();
+    for (k, &(l, p, h)) in ends.iter().enumerate() {
+        out.extend(ends[k + 1..].iter().filter(|e| e.0 != l && e.1 == p).map(|e| (p, h.min(e.2))));
+    }
+    out
+}
+
+/// Over a grid of `grid_m` on the cell, the points that a deck's stroke holds: their count, the ground points
+/// (terrain and slope rules) over the deck's underside less the gap, and the paved points over it; and the points
+/// within the lesser half-width of a joint of two decks that no stroke holds (a notch between their ends).
+pub fn under_decks(words: &[u32], terrain: &Terrain, cell: CellKey, grid_m: f64) -> [usize; 4] {
+    let step = grid_m / metres_per_unit(cell.origin().y + CELL_UNITS / 2);
+    let n = (CELL_UNITS as f64 / step) as usize;
+    let joints = deck_joints(words);
+    let mut out = [0; 4];
+    for k in 0..n * n {
+        let q = [((k % n) as f64 + 0.5) * step, ((k / n) as f64 + 0.5) * step];
+        let Some(t) = terrain_at(terrain, cell, q) else { continue };
+        let Some((under, _)) = super::under_deck(words, q) else {
+            let mpu = Block::at(words, q).mpu;
+            let notch = joints.iter().any(|(j, r)| libm::hypot(q[0] - j[0], q[1] - j[1]) * mpu < r - 0.01);
+            out[3] += usize::from(notch);
+            continue;
+        };
+        let (h, _) = at_label(words, q, t);
+        out[0] += 1;
+        if h.h > under + 1e-9 {
+            out[if h.kind == Kind::Paved { 2 } else { 1 }] += 1;
+        }
+    }
+    out
+}
+
+/// The points of `wall_steps` along an outline edge lie this far apart, at most.
+pub const WALL_TOP_M: f64 = 0.25;
+/// A step this high beside a wall class's road draws as a wall (`WALL_STEP_M` of `plan/piece.wgsl`).
+pub const WALL_M: f64 = 0.5;
+
+/// The outline edges of a cell's records that lie in the cell by their middle: their ends (frame units), their
+/// unit direction, their host line and their turn at b (`Edge::turn`), in the records' order.
+fn cell_edges(words: &[u32]) -> impl Iterator<Item = ([f64; 2], [f64; 2], [f64; 2], u32, f64)> + '_ {
+    let inside = |v: f64| (0.0..CELL_UNITS as f64).contains(&v);
+    let block = Block::at(words, [0.0, 0.0]);
+    outline_words(words).chunks(EDGE).enumerate().filter_map(move |(k, e)| {
+        let (a, b) = edge_ends(e);
+        let (a, b) = ([f64::from(a[0]), f64::from(a[1])], [f64::from(b[0]), f64::from(b[1])]);
+        let len = libm::hypot(b[0] - a[0], b[1] - a[1]);
+        let u = [(b[0] - a[0]) / len, (b[1] - a[1]) / len];
+        (inside((a[0] + b[0]) / 2.0) && inside((a[1] + b[1]) / 2.0))
+            .then(|| (a, b, u, edge_line(e), block.edge(k as u32).turn[1]))
+    })
+}
+
+/// The wall-top steps of a cell: along each outline edge of a wall class that lies in the cell by its middle,
+/// points up to `WALL_TOP_M` apart (edges under 0.1 m left out); two neighbours on one no-room wall at least
+/// `WALL_M` high whose wall height changes by more than `grade` per metre: the first point and that change.
+pub fn wall_steps(words: &[u32], terrain: &Terrain, cell: CellKey, grade: f64) -> Vec<([f64; 2], f64)> {
+    let b = Block::at(words, [0.0, 0.0]);
+    let mut out = Vec::new();
+    for (a, z, u, line, _) in cell_edges(words) {
+        let len = libm::hypot(z[0] - a[0], z[1] - a[1]) * b.mpu;
+        if len < 0.1 || !b.line(line as usize).wall {
+            continue;
+        }
+        let (n, steps) = ([u[1], -u[0]], (len / WALL_TOP_M).ceil() as usize);
+        let wall = |k: usize| {
+            let q = [a[0] + (z[0] - a[0]) * k as f64 / steps as f64, a[1] + (z[1] - a[1]) * k as f64 / steps as f64];
+            let labels = [-2.0, 2.0].map(|o| find(words, [q[0] + o * n[0], q[1] + o * n[1]]));
+            let s = height_at_sides(words, q, labels, terrain_at(terrain, cell, q)?);
+            let w = s[1].h - s[0].h;
+            (s[1].step == Rule::NoRoom && w.abs() >= WALL_M).then_some((q, w))
+        };
+        let walls: Vec<_> = (0..=steps).map(wall).collect();
+        for pair in walls.windows(2) {
+            if let [Some((q, w0)), Some((_, w1))] = pair {
+                let climb = (w1 - w0).abs() * steps as f64 / len;
+                if climb > grade {
+                    out.push((*q, climb));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// `slope_steps` reads the ground this many metres out from the rim, and these metres along it to each side.
+pub const SLOPE_OUT_M: [f64; 3] = [1.0, 2.0, 4.0];
+pub const SLOPE_SIDE_M: [f64; 2] = [0.25, 0.05];
+/// The slope steps of a cell (the shading bands, a groove or a ridge): at each end in the cell where the
+/// record's turn goes on to the next edge on a straight rim, the ground's grade along the rim over each of
+/// `SLOPE_SIDE_M` before and after the end, at each of `SLOPE_OUT_M` out where all three points lie on a slope;
+/// where the grade changes by more than `grade`: the end and the greatest change. The rim is straight where
+/// the turn is within what a shift of each whole-unit end by one unit across the rim gives (2 / length per
+/// edge, in units): a cut at the bin grid rounds its point and a split floors its middle.
+pub fn slope_steps(words: &[u32], terrain: &Terrain, cell: CellKey, grade: f64) -> Vec<([f64; 2], f64)> {
+    let mpu = Block::at(words, [0.0, 0.0]).mpu;
+    let edges: Vec<_> = cell_edges(words).collect();
+    let mut out = Vec::new();
+    for pair in edges.windows(2) {
+        let [(a0, v, u, l0, turn), (a1, z, _, l1, _)] = [pair[0], pair[1]];
+        let rounding = 2.0 / libm::hypot(v[0] - a0[0], v[1] - a0[1]) + 2.0 / libm::hypot(z[0] - a1[0], z[1] - a1[1]);
+        if v != a1 || l0 != l1 || turn.is_nan() || turn.abs() > rounding {
+            continue;
+        }
+        let n = [u[1], -u[0]];
+        let ground = |out: f64, side: f64| {
+            let q = [v[0] + (n[0] * out + u[0] * side) / mpu, v[1] + (n[1] * out + u[1] * side) / mpu];
+            at(words, terrain, cell, q).filter(|(h, _)| h.kind == Kind::Slope).map(|(h, _)| h.h)
+        };
+        let change = (SLOPE_OUT_M.iter().flat_map(|&o| SLOPE_SIDE_M.map(|d| (o, d))))
+            .filter_map(|(o, d)| {
+                let (l, c, r) = (ground(o, -d)?, ground(o, 0.0)?, ground(o, d)?);
+                Some(((r - c) - (c - l)).abs() / d)
+            })
+            .fold(0.0, f64::max);
+        if change > grade {
+            out.push((v, change));
         }
     }
     out
@@ -385,9 +727,9 @@ pub fn explain(words: &[u32], q: [f64; 2], labels: [Option<u32>; 2], t: f64) -> 
             g.line, g.class, g.rail, g.fill, g.cut, g.steep, g.d, g.toe, g.fade
         );
     }
-    let blend = items.as_ref().map_or(&[][..], |i| i.blend);
+    let none = super::NO_ITEMS;
     for l in labels {
-        let (h, c) = by_label(&b, q, &recs, blend, l, t, &p);
+        let (h, c) = by_label(&b, q, &recs, items.as_ref().unwrap_or(&none), l, t, &p);
         let rule = l.map_or(0, |id| words[words[5] as usize + LABEL * id as usize] >> 24);
         s += &format!("  label {l:?} rule {rule}: {h:?} by {:?}\n", c.by);
     }

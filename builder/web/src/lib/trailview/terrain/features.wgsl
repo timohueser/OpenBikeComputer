@@ -22,11 +22,16 @@ struct Masks {
 // writes it.
 @group(3) @binding(2) var snaps: texture_2d_array<u32>;
 // With `ground=plan`, per mask texel: the paint of the records' paved labels in the mask's format (the distance
-// to the paved outline, the walk byte, the metres across the host, the finish code), and how far their heights
-// moved the ground from the plain terrain, 0 to MOVED_RANGE_M as 0..1, four texels of a row in one texel. The
-// stamp pass writes them.
+// to the paved outline, the walk byte, the metres across the host, the finish code with the material of the top in
+// place of the flags), and how far their heights moved the ground from the plain terrain, 0 to MOVED_RANGE_M as
+// 0..1, four texels of a row in one texel. The stamp pass writes them.
 @group(3) @binding(3) var paint_texels: texture_2d_array<f32>;
 @group(3) @binding(4) var moved_texels: texture_2d_array<f32>;
+// With `ground=plan`, per mask texel: the cliff share of cliff.wgsl in SHARE_STEPS steps, or UNSHAPED where the
+// plan did not move the ground about it, four texels of a row in one texel.
+@group(3) @binding(5) var cliff_texels: texture_2d_array<f32>;
+const SHARE_STEPS: f32 = 254.0;
+const UNSHAPED: f32 = 1.0;
 
 const WALL: u32 = 1u;
 const CONFLICT: u32 = 2u;
@@ -90,7 +95,8 @@ struct Mask {
     edge: f32,
     // The share of the texels on a road's cut or fill face.
     face: f32,
-    // The surface code and the flags.
+    // The surface code and the flags. A paint mask holds the material of the way's top in place of the flags, so
+    // its `kind.y` and `face` are no flags: no reader takes flags from a paint mask.
     kind: vec2u,
     // The level of the page that holds it; 0 where no page within reach has a mask.
     level: u32,
@@ -223,6 +229,45 @@ fn moved_at(s: vec2f, top: u32) -> f32 {
         }
     }
     return 0.0;
+}
+
+// How far ground_colour turns the normal at a point toward the coarse one, with the level and morph of drawn_relief:
+// between the cliff shares of the texels about it (cliff.wgsl), each `key` (the look's own, at the point) where its
+// page has no mask or the plan did not move the ground about it.
+fn cliff_at(s: vec2f, key: f32) -> f32 {
+    let lambda = lod(s);
+    let level = u32(ceil(lambda));
+    var share = cliff_in(s, level, key);
+    let morph = f32(level) - lambda;
+    if (morph > 0.0) {
+        share = mix(share, cliff_in(s, level - 1u, key), morph);
+    }
+    return share;
+}
+
+fn cliff_in(s: vec2f, level: u32, key: f32) -> f32 {
+    if (level < MASK_LEVEL) {
+        return key;
+    }
+    let t = texel_of(s, level);
+    var slots = vec4u(mask_of(level, t.whole));
+    if (!in_one_page(t.whole)) {
+        slots = vec4u(slots.x, mask_of(level, t.whole + vec2i(1, 0)), mask_of(level, t.whole + vec2i(0, 1)), mask_of(level, t.whole + 1));
+    } else if (slots.x == 0u) {
+        return key;
+    }
+    let top = mix(cliff_texel(slots.x, t.whole, key), cliff_texel(slots.y, t.whole + vec2i(1, 0), key), t.part.x);
+    return mix(top, mix(cliff_texel(slots.z, t.whole + vec2i(0, 1), key), cliff_texel(slots.w, t.whole + 1, key), t.part.x), t.part.y);
+}
+
+// The cliff share of a texel in the mask layer + 1 `slot`, or `key`.
+fn cliff_texel(slot: u32, t: vec2i, key: f32) -> f32 {
+    if (slot == 0u) {
+        return key;
+    }
+    let at = in_layer(slot - 1u, t);
+    let v = textureLoad(cliff_texels, vec2i(at.x >> 2u, at.y), (slot - 1u) >> 6u, 0)[at.x & 3];
+    return select(v * 255.0 / SHARE_STEPS, key, v > (SHARE_STEPS + 0.5) / 255.0);
 }
 
 // The metres from a point to the records' paved outline (negative inside), from the paint of the finest page at

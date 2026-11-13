@@ -1,4 +1,4 @@
-import type { Place } from '../editor';
+import type { Place, Stay } from '../editor';
 import { placeCategories, poiKinds, type PlaceCategory } from '../poi-kinds';
 import type { QueryPoint, Where, QueryRequest, SearchPlace } from './types';
 import contract from '../../../../../../planner/search/query/contract.json' with { type: 'json' };
@@ -18,8 +18,19 @@ export function sleepCategory(placeKind?: string): PlaceCategory | undefined {
     const found = placeKind ? category(placeKind) : undefined;
     return found === 'camp' || found === 'hotel' || found === 'shelter' ? found : undefined;
 }
+const stayKinds: Record<string, Stay> = { campsite: 'camp', caravan_site: 'camp', hut: 'hut', hostel: 'hostel', hotel: 'hotel',
+    guest_house: 'hotel', motel: 'hotel', chalet: 'hotel', shelter: 'shelter' };
+/** The kind of place to sleep of a place kind, such as `camp` for `caravan_site`; undefined for any other kind. */
+export const stayKind = (placeKind?: string): Stay | undefined => placeKind && Object.hasOwn(stayKinds, placeKind) ? stayKinds[placeKind] : undefined;
+/** Why a night that a train or bus leaves from does not move. */
+export const trainNightText = 'A train or bus leaves from here. Remove it to move this night.';
+/** The five kinds of place to sleep as the trip row and a night list them. */
+export const stayOptions: { kind: Stay; label: string; icon?: string }[] = [
+    { kind: 'camp', label: 'Campsites', icon: 'camp' }, { kind: 'hut', label: 'Huts' }, { kind: 'hostel', label: 'Hostels' },
+    { kind: 'hotel', label: 'Hotels', icon: 'hotel' }, { kind: 'shelter', label: 'Shelters' },
+];
 /** The icon of a night by the kind of place it is at. */
-export const sleepIcon = (placeKind?: string) => ({ camp: 'camp', hotel: 'hotel' } as Record<string, string>)[sleepCategory(placeKind) ?? ''] ?? 'moon';
+export const sleepIcon = (placeKind?: string) => ({ camp: 'camp', hut: 'hotel', hostel: 'hotel', hotel: 'hotel' } as Record<string, string>)[stayKind(placeKind) ?? ''] ?? 'moon';
 export function asPlace(p: SearchPlace): Place {
     return { id: p.source, placeKind: p.kind, label: p.name, kind: 'place', category: category(p.kind), coordinate: [p.lon, p.lat],
         locality: p.city, openingHours: p.opening_hours, hoursStatus: p.hoursStatus, website: p.website, phone: p.phone, content: p.content,

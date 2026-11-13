@@ -4,7 +4,7 @@ import { coresOf } from '../roads/cores';
 import { packPoints, type Point } from '../instances/points';
 import type { Feature } from '../stream/features';
 import { AnchoredBuilder, anchorBytes, type AnchoredMesh } from './anchored';
-import { BRIDGE, features, LIFT_M, metresPerUnit, PATH, ROAD, TUNNEL, type Node } from '../terrain/bins';
+import { BRIDGE, features, LIFT_M, metresPerUnit, TUNNEL, type Node } from '../terrain/bins';
 import { OWNER } from '../terrain/lod';
 import { cornerAt } from '../terrain/corners';
 import { deckHalf } from '../roads/decks';
@@ -73,14 +73,17 @@ export interface Meshes { structures: StructureMesh | null; anchored: AnchoredMe
  */
 export interface NodeMeshes { far: Meshes; near: Meshes; anchors: ArrayBuffer | null; points: Uint32Array<ArrayBuffer> | null }
 
-/** The meshes of a node of the OWNER level from the features of its feature tile: the structures, then the kinds of the registry. */
-export function structureMeshes(list: Feature[], tile: Node, node: Node): NodeMeshes {
+/**
+ * The meshes of a node of the OWNER level from the features of its feature tile: the structures, then the kinds of the
+ * registry. With the ground plan (`plan`) the plan's mesh draws the culverts' mouths (plan/piece.wgsl): none stands here.
+ */
+export function structureMeshes(list: Feature[], tile: Node, node: Node, plan = false): NodeMeshes {
     const none = { structures: null, anchored: null };
     if (node.level !== OWNER) return { far: none, near: none, anchors: null, points: null };
     const side = 2 ** (30 - node.level), x0 = node.x * side, y0 = node.y * side;
     const owns: Owns = (x, y) => x >= x0 && x < x0 + side && y >= y0 && y < y0 + side;
     const words: number[] = [], far = { mesh: new MeshBuilder(), anchored: new AnchoredBuilder(words) }, near = { mesh: new MeshBuilder(), anchored: new AnchoredBuilder(words) };
-    const shapes = features(list, tile), { lines, buildings } = shapes;
+    const shapes = features(list, tile), { lines } = shapes;
     bridges(far.mesh, list, tile, lines, owns);
     tunnels(far.mesh, lines, owns);
     galleries(far.mesh, lines, owns);
@@ -88,15 +91,15 @@ export function structureMeshes(list: Feature[], tile: Node, node: Node): NodeMe
     const points: Point[] = [];
     let kind = '';
     const place = ({ model, tint = 1, ...at }: Placement) => points.push({ ...at, tint, model: POINT_MODELS.indexOf(`${kind}/${model}`) });
-    const out: Build = { far, near, owns, place, ways: lines.filter(line => line.kind === ROAD || line.kind === PATH), cores: coresOf(shapes), taken: [], buildings, cornered: (x, y) => !!cornerAt(lines, x, y) };
+    const out: Build = { far, near, owns, place, shapes, cores: coresOf(shapes), taken: [], cornered: (x, y) => !!cornerAt(lines, x, y) };
     for (const feature of list) {
         kind = feature.kind;
         KINDS.get(kind)?.build(placed(feature, tile), out);
     }
     kind = 'road';
-    streetLamps(out, lines);
+    streetLamps(out);
     kind = 'stream';
-    culvertMouths(out, shapes);
+    if (!plan) culvertMouths(out, shapes);
     const meshes = ({ mesh, anchored }: typeof far): Meshes => ({ structures: mesh.mesh(), anchored: anchored.mesh() });
     return { far: meshes(far), near: meshes(near), anchors: words.length ? anchorBytes(words) : null, points: points.length ? packPoints(points.filter(p => p.model >= 0)) : null };
 }

@@ -5,15 +5,16 @@
   "platform_half_m": 1.5,
   "platform_reach_m": 0,
   "tread_finishes": ["gravel", "dirt", "grass", "path"],
+  "structures": {"cover_m": 1.0, "lift_max_m": 1.0, "open_max_m": 30, "deck_min_m": 2.0, "edge_band_m": 0.5, "door_min_m": 1.0},
   "heights": {
     "feather_min_m": 1.0, "blend_steep": 1.5, "leg_reach_m": 0.5,
     "health_margin_m": 0.25, "health_width_m": 1.0, "frame_tilt_deg": 30,
     "round_m": 0.5, "fade_share": 0.3, "fade_gap_m": 1.0,
     "toe_per_m": 1.0, "toe_max_m": 5.0, "toe_span_m": 6.0, "toe_gap_min": 0.1,
     "via_fade_m": 1.5, "band_fade_m": 1.0, "mitre_band_m": 2.0, "budget_round_m": 2.0, "wall_max_m": 4.5, "face_max": 2.5, "legs": "ramp", "step_m": 0.001,
-    "region_fade_m": 1.5
+    "region_fade_m": 1.5, "ceiling_gap_m": 0.5, "ceiling_release_m": 8
   },
-  "ranks": ["carriageway", "platform", "rail_bed", "shoulder_paved", "shoulder", "verge", "slope", "terrain"],
+  "ranks": ["carriageway", "platform", "rail_bed", "shoulder_paved", "shoulder", "water_line", "verge", "zone", "bank", "slope", "terrain"],
   "pairs": {
     "road/road": {"mouth": "reach", "blend": true},
     "road/track": {"mouth": "stop", "blend": true},
@@ -28,6 +29,7 @@
     "rail/rail": {"mouth": "join", "blend": false},
     "road/rail": {"mouth": "join", "blend": false},
     "rail/road": {"mouth": "join", "blend": false},
+    "water/water": {"mouth": "join", "blend": true},
     "default": {"mouth": "join", "blend": false}
   }
 }

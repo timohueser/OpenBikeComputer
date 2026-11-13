@@ -443,6 +443,16 @@ fn outline_rounds_depend_on_no_order_of_rings_or_ring_starts() {
     }
 }
 
+#[test]
+fn the_paved_outline_holds_no_water() {
+    // A stream that runs on past the window crosses a road under it: no round fills a corner between the road's
+    // edge and the water, on either side of either.
+    let mut stream = line("stream", &[("waterway", "stream")], &[[0.0, -300.0], [0.0, 300.0]]);
+    stream.z = vec![499.0; 2];
+    let p = plan(&[road(&[[-300.0, 0.0], [300.0, 0.0]]), stream]);
+    assert!(p.corners.is_empty(), "rounds at {:?}", p.corners.iter().map(|c| c.centre).collect::<Vec<_>>());
+}
+
 /// A cell's records with its graph and feature names, for the records' checks.
 fn records_of(key: CellKey, lines: &[Line]) -> (Vec<u32>, WayGraph, Vec<[u32; 3]>) {
     let input = input_of(key, lines);
@@ -468,10 +478,29 @@ fn the_records_give_each_point_its_face_label_and_the_far_level_keeps_every_othe
         records_check::agreement(&near, &plan, &records_check::Overlay::new(&graph, &input, rules, key, true), 6, 8.0);
     assert!(a.points > 10_000, "{} points", a.points);
     assert!(a.area.is_empty(), "{} of {} points: {:?}", a.area.len(), a.points, &a.area[..a.area.len().min(4)]);
-    let far = built.far.words;
+    let far = built.far_records.words;
     let [points, differ] = records_check::far_agreement(&near, &far, 6);
     assert!(points > 10_000, "{points} points");
     assert_eq!(differ, 0);
+}
+
+#[test]
+fn the_far_block_check_finds_a_way_in_reach_that_the_block_leaves_out() {
+    let lines = [road(&[[-200.0, -40.0], [0.0, -38.0], [180.0, -60.0]]), road(&[[-20.0, -200.0], [30.0, 200.0]])];
+    let (key, input, rules) = (cell(), input_of(cell(), &lines), Rules::embedded());
+    let graph = build(key, &input, &rules.sections);
+    let built = records::build(&graph, &input, rules, key, 0, true);
+    let near = built.near.words;
+    let (faults, counts) = records_check::far_matches_near(&near, &built.far_block.unwrap(), key);
+    assert!(faults.is_empty() && counts["lines"] >= 2, "{faults:?} {counts:?}");
+    // A block without the first way, and an empty block.
+    let mut all = record_lines(&graph, &input, rules, key);
+    all.remove(0);
+    for lines in [&all[..], &[]] {
+        let block = records::far::encode(key, &graph, &input, rules, lines).unwrap();
+        let faults = records_check::far_matches_near(&near, &block, key).0;
+        assert!(faults.iter().any(|f| f.ends_with("segments in reach, no far line")), "{faults:?}");
+    }
 }
 
 #[test]
@@ -671,4 +700,50 @@ fn a_stop_mouth_between_two_widths_widens_the_narrow_arm_without_a_step() {
     assert_eq!(keeps_route(&words, jr, [0.2, -(wide + 0.1)]), Some(false));
     // The other side has no stop arm: the junction keeps its own look there.
     assert_eq!(keeps_route(&words, jr, [0.2, narrow + 0.1]), None);
+}
+
+#[test]
+fn two_cells_give_one_side_to_their_line_where_an_edge_passes_a_tile_corner_on_it() {
+    // A ring's edge leaves the cell line x = C at y = t + 27 or t + 15 and crosses the tile line y = t
+    // 0.53 or 0.30 units off the cell line, beside the tile corner (C, t); or it crosses the cell line
+    // at that corner. Each also mirrored and reversed. Per window, the segments on the cell line after
+    // the snap rounding, each with whether its patch lies in the ring, which goes through `prepare`
+    // twice (as `split_legs` does) and then gets its tile-line points, as `candidates` gives them.
+    let (c, t) = (CELL_UNITS as i32, 7 * slice::TILE as i32);
+    let sides = |window: [i32; 4], ring: &[P]| {
+        let rings: Rings =
+            prepare(&prepare(&vec![ring.to_vec()])).iter().map(|r| geom::with_grid_lines(r, slice::TILE)).collect();
+        let (patches, _) = slice(window, &rings, &[]);
+        let snapped = snap_round(&patches);
+        let at = |i: u32| snapped.verts[i as usize];
+        let mut on: Vec<([P; 2], bool)> = (patches.iter().zip(&snapped.patches))
+            .flat_map(|(patch, segs)| {
+                let inside = inner_point(patch).is_some_and(|q| geom::winding(&rings, q) != 0);
+                segs.iter().map(move |&[a, b]| ([at(a), at(b)], inside))
+            })
+            .filter(|([a, b], _)| a[0] == c && b[0] == c)
+            .map(|([a, b], inside)| (if a < b { [a, b] } else { [b, a] }, inside))
+            .collect();
+        on.sort_unstable();
+        on
+    };
+    let wedge = |on: [P; 2], low: P| {
+        vec![[c - 40, t + 300], on[0], on[1], low, [c + 300, t - 379], [c + 300, t + 300], [c, t + 300]]
+    };
+    let mut rings = Vec::new();
+    for ring in [
+        wedge([[c - 20, t + 200], [c, t + 27]], [c + 8, t - 379]),
+        wedge([[c - 20, t + 200], [c, t + 15]], [c + 8, t - 379]),
+        wedge([[c - 8, t + 8], [c, t]], [c + 8, t - 8]),
+    ] {
+        rings.push(ring.iter().map(|p| [2 * c - p[0], p[1]]).collect::<Vec<P>>());
+        rings.push(ring.iter().rev().copied().collect());
+        rings.push(ring);
+    }
+    for ring in rings {
+        let west = sides([c - 400, t - 400, c, t + 400], &ring);
+        let east = sides([c, t - 400, c + 400, t + 400], &ring);
+        assert!(west.len() >= 3, "{west:?}");
+        assert_eq!(west, east, "ring {ring:?}");
+    }
 }

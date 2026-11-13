@@ -1,8 +1,8 @@
-import { featureTile, type NodeStamps } from './bins';
+import { featureTile, NEAR, type NodeStamps } from './bins';
 import { CAPS, DeviceCache } from './device-cache';
 import { key, OWNER, type Node } from './lod';
 import { BAKED, decodeNode, EMPTY_MESHES, encodeNode, unpackNode } from './node-bytes';
-import { STAMP_WORDS, type StampSource } from './pages';
+import type { StampSource } from './pages';
 import type { Request } from './stamp-worker';
 import type { NodeMeshes } from '../structures/node';
 import type { WaterMesh } from './water-mesh';
@@ -13,7 +13,10 @@ const NODE_BYTES = 64 * 2 ** 20, ENTRY_BYTES = 64;
 /** Requests to the worker in flight at most. */
 const REQUESTS = 8;
 
-/** What a node stamps, its water, its structures and kinds, their floors and the boxes of its tunnels' portals, from the worker. */
+/**
+ * What a node stamps, its water, the floors of its structures and the boxes of its tunnels' portals, from the worker;
+ * and the structures and kinds of an owner node: null until their own job answers, and for every other node.
+ */
 export interface NodeFeatures extends NodeStamps {
     water: WaterMesh | null;
     meshes: NodeMeshes | null;
@@ -21,7 +24,12 @@ export interface NodeFeatures extends NodeStamps {
     portals: Float64Array<ArrayBuffer> | null;
 }
 
+/** The worker's answer where it no longer holds a tile whose body went to it. */
+const MISSING = Symbol('missing');
+
 const NOTHING: NodeFeatures = { data: null, heights: false, mask: false, water: null, meshes: null, floors: null, portals: null };
+/** Whether a node lacks nothing: an owner node of a tile has its structure meshes. */
+const whole = (node: Node, features: NodeFeatures) => node.level !== OWNER || features === NOTHING || features.meshes !== null;
 const meshBytes = (mesh: { vertices: ArrayBuffer; indices: Uint32Array } | null) => (mesh ? mesh.vertices.byteLength + mesh.indices.byteLength : 0);
 const kindBytes = ({ far, near, anchors, points }: NodeMeshes) =>
     [far.structures, far.anchored, near.structures, near.anchored].reduce((n, mesh) => n + meshBytes(mesh), (anchors?.byteLength ?? 0) + (points?.byteLength ?? 0));
@@ -51,22 +59,37 @@ const NO_SAMPLES: NodeSamples = { samples: new Uint32Array(0), lakes: 0, mixed: 
 export class Stamps implements StampSource {
     private readonly nodes = new Map<string, NodeFeatures>();
     private nodeBytes = 0;
-    private readonly pending = new Set<string>();
+    /** The nodes on their way, and the feature tile of each. */
+    private readonly pending = new Map<string, string>();
     private readonly masks = new Map<string, Promise<number | undefined>>();
     /** The nodes that the frame asked for and that are not on their way. */
     private readonly wishes = new Map<string, Node>();
+    /** The last frame's wishes that did not go yet, by rank: each answer sends the next. */
+    private queue: Node[] = [];
+    /** The owner nodes that are known without their structure meshes, whether one's meshes are on their way, and the last frame's rank. */
+    private readonly unbuilt = new Map<string, Node>();
+    private building = false;
+    private rank: (node: Node) => number = () => 0;
+    /** The feature tiles of the frame's wishes, and of the near levels' nodes that the frame read and the frame before. */
+    private queued = new Set<string>();
+    private nearRead = new Set<string>();
+    private nearTiles = new Set<string>();
     private readonly worker?: Worker;
     private readonly waiting = new Map<number, { resolve: (result: unknown) => void; reject: (error: Error) => void }>();
     private next = 0;
     private readonly cache?: Promise<DeviceCache | undefined>;
+    /** The feature tiles whose body went to the worker: it keeps them decoded while its budget holds them. */
+    private readonly sent = new Set<string>();
     failed = 0;
+    /** How often the nodes hit a limit of their stamps (NodeStamps.limits). */
+    limits = 0;
 
     /**
      * An abort of `stop` ends the worker. With `plan` the records draw the ways (nodeStamps of bins.ts). A node
      * that `baked` holds comes from it, with the same bytes as from the worker. With `cache`, the release and the
      * version of the stamp code (`virtual:stamp-version`), the nodes go to the device cache.
      */
-    constructor(private readonly tiles: FeatureTiles | undefined, private readonly changed: () => void, stop: AbortSignal, private readonly plan = false, private readonly baked?: BakedNodes, cache?: { release: string; version: string }) {
+    constructor(private readonly tiles: FeatureTiles | undefined, private readonly changed: () => void, stop: AbortSignal, readonly plan = false, private readonly baked?: BakedNodes, cache?: { release: string; version: string }) {
         if (!tiles) return;
         if (cache) this.cache = DeviceCache.open('stamps', cache.release, `${cache.version}/${plan}`, CAPS.stamps).catch(error => {
             console.warn(`The stamps' device cache did not open: ${error}`);
@@ -78,13 +101,13 @@ export class Stamps implements StampSource {
             const wait = this.waiting.get(data.id);
             this.waiting.delete(data.id);
             if (data.error) wait?.reject(new Error(data.error));
-            else wait?.resolve(data.result);
+            else wait?.resolve(data.missing ? MISSING : data.result);
         };
     }
 
     /** Whether features are on their way: each wakes the engine when it arrives. A wish waits only while REQUESTS are. */
     get loading(): boolean {
-        return this.pending.size > 0;
+        return this.pending.size > 0 || this.unbuilt.size > 0;
     }
 
     /** The node's stamps and water, undefined while they are on their way: the node is a wish of this frame until `send`. */
@@ -100,24 +123,42 @@ export class Stamps implements StampSource {
 
     /**
      * Asks the worker for the frame's wishes, the lowest `rank` first, while it has fewer than REQUESTS
-     * on their way. The rest wait for the next frame, which states its wishes again.
+     * on their way. The rest go as answers come, until the next frame states its wishes again.
      */
     send(rank: (node: Node) => number): void {
-        const free = REQUESTS - this.pending.size, wishes = [...this.wishes.values()];
+        const ranks = new Map([...this.wishes.values()].map(node => [node, rank(node)]));
+        this.queue = [...ranks.keys()].sort((a, b) => ranks.get(a)! - ranks.get(b)!);
+        this.queued = new Set(this.queue.map(node => key(featureTile(node)!)));
+        [this.nearTiles, this.nearRead] = [this.nearRead, new Set()];
         this.wishes.clear();
-        if (free <= 0) return;
-        const ranks = new Map(wishes.map(node => [node, rank(node)]));
-        for (const node of wishes.sort((a, b) => ranks.get(a)! - ranks.get(b)!).slice(0, free)) this.request(node);
+        this.rank = rank;
+        this.refill();
+    }
+
+    /**
+     * The stamps first: the structure meshes of an owner node are a job of their own, which goes to the worker only
+     * while no stamp request is on its way, and one at a time. The worker takes its jobs in turn, so a stamp wish
+     * waits for one structure job at most, whenever it comes. Of the owner nodes without meshes, the next is the
+     * lowest in the last frame's rank.
+     */
+    private refill(): void {
+        while (this.pending.size < REQUESTS && this.queue.length) {
+            const node = this.queue.shift()!;
+            if (!this.pending.has(key(node)) && !this.nodes.has(key(node))) this.request(node);
+        }
+        if (this.pending.size || this.building) return;
+        let next: Node | undefined;
+        for (const node of this.unbuilt.values()) if (!next || this.rank(node) < this.rank(next)) next = node;
+        if (next) this.build(next);
     }
 
     private request(node: Node): void {
         const tile = featureTile(node)!, name = key(node);
-        this.pending.add(name);
+        this.pending.set(name, key(tile));
         this.stamps(tile, node).then(stamps => {
-            // A frame takes at most STAMP_WORDS: a node with more would wait forever, so it stamps nothing.
-            if ((stamps.data?.length ?? 0) <= STAMP_WORDS) return this.keep(name, stamps);
-            console.warn(`Node ${name}: ${stamps.data!.length} words of stamps, more than a frame takes`);
-            this.keep(name, { ...stamps, data: null, heights: false, mask: false });
+            this.limits += stamps.limits ?? 0;
+            this.keep(name, stamps);
+            if (!whole(node, stamps)) this.unbuilt.set(name, node);
         }, error => {
             // A tile that fails stamps nothing, as an absent one.
             if (!stopped(error)) console.warn(`Feature tile ${key(tile)}: ${error instanceof Error ? error.message : error}`);
@@ -125,6 +166,7 @@ export class Stamps implements StampSource {
             this.keep(name, NOTHING);
         }).finally(() => {
             this.pending.delete(name);
+            this.refill();
             this.changed();
         });
     }
@@ -135,30 +177,63 @@ export class Stamps implements StampSource {
         const hit = await cache?.read(name).catch(() => undefined);
         if (hit) return decodeNode(new Uint8Array(hit[0].buffer)) as NodeFeatures;
         const made = await this.features(tile, node);
-        // Off the critical path; a value that encodeNode cannot give back exactly is not kept.
-        if (cache && made !== NOTHING) void Promise.resolve().then(() => cache.write(name, [new Uint32Array(encodeNode(made).buffer)])).catch(() => {});
+        this.save(node, made);
         return made;
+    }
+
+    /** Keeps a node in the device cache, an owner node once it has its structure meshes: a cached node is whole. */
+    private save(node: Node, made: NodeFeatures): void {
+        if (made === NOTHING || !whole(node, made)) return;
+        // Off the critical path; a value that encodeNode cannot give back exactly is not kept.
+        void this.cache?.then(cache => cache?.write(key(node), [new Uint32Array(encodeNode(made).buffer)])).catch(() => {});
     }
 
     /**
      * A BAKED node with the ground plan, and an owner node's structure meshes, from the stamp layer where it holds
      * them; the rest from the worker. The mask of a feature tile says which of its owner nodes have meshes: the
-     * others are EMPTY_MESHES and cost no request. Each node that the layer cannot give comes from the worker whole.
+     * others are EMPTY_MESHES and cost no request. An owner node that the layer cannot give its meshes waits for
+     * the worker's structure job.
      */
     private async features(tile: Node, node: Node): Promise<NodeFeatures> {
         if (this.plan && node.level >= BAKED.from && node.level <= BAKED.to) {
-            const whole = await this.read(node);
-            if (whole) return whole as NodeFeatures;
-        } else if (node.level === OWNER && this.baked) {
-            const mask = await this.mask(tile);
-            if (mask !== undefined) {
-                const held = (mask >> ((node.x & 3) + 4 * (node.y & 3))) & 1;
-                const [stamps, meshes] = await Promise.all([this.ask<NodeFeatures>(tile, node, 'stamps', false), held ? this.read(node) : EMPTY_MESHES]);
-                if (stamps === NOTHING) return NOTHING;
-                if (meshes) return { ...stamps, meshes: meshes as NodeMeshes };
-            }
+            const baked = await this.read(node);
+            if (baked) return baked as NodeFeatures;
         }
-        return this.ask<NodeFeatures>(tile, node, 'stamps');
+        const [stamps, meshes] = await Promise.all([this.ask<NodeFeatures>(tile, node, 'stamps'), node.level === OWNER && this.baked ? this.layerMeshes(tile, node) : undefined]);
+        return stamps === NOTHING || !meshes ? stamps : { ...stamps, meshes };
+    }
+
+    /** An owner node's structure meshes as the stamp layer gives them; undefined where it cannot. */
+    private async layerMeshes(tile: Node, node: Node): Promise<NodeMeshes | undefined> {
+        const mask = await this.mask(tile);
+        if (mask === undefined) return undefined;
+        return (mask >> ((node.x & 3) + 4 * (node.y & 3))) & 1 ? ((await this.read(node)) as NodeMeshes | undefined) : EMPTY_MESHES;
+    }
+
+    /**
+     * The structure meshes of an owner node from the worker: the node is whole when they come. A job that fails gives
+     * none for this session and is not kept on the device: the next load asks again.
+     */
+    private build(node: Node): void {
+        const name = key(node);
+        this.building = true;
+        this.ask<NodeMeshes>(featureTile(node)!, node, 'meshes').catch(error => {
+            if (!stopped(error)) console.warn(`The structure meshes of ${name}: ${error instanceof Error ? error.message : error}`);
+            this.failed++;
+            return EMPTY_MESHES;
+        }).then(meshes => {
+            const known = this.nodes.get(name);
+            if (!known) return;
+            const built = { ...known, meshes };
+            this.keep(name, built);
+            // The worker's answer is never the constant itself.
+            if (meshes !== EMPTY_MESHES) this.save(node, built);
+        }).finally(() => {
+            this.building = false;
+            this.unbuilt.delete(name);
+            this.refill();
+            this.changed();
+        });
     }
 
     /** The node as the stamp layer holds it; undefined where it holds none or its bytes do not decode. */
@@ -190,7 +265,9 @@ export class Stamps implements StampSource {
 
     /** The node's stamps and water once they are known, without a request. */
     known(node: Node): NodeFeatures | undefined {
-        if (!this.tiles || !featureTile(node)) return NOTHING;
+        const tile = featureTile(node);
+        if (!this.tiles || !tile) return NOTHING;
+        if (node.level >= NEAR) this.nearRead.add(key(tile));
         const name = key(node), known = this.nodes.get(name);
         if (known) {
             this.nodes.delete(name);
@@ -207,18 +284,34 @@ export class Stamps implements StampSource {
         for (const [first, kept] of this.nodes) {
             if (this.nodeBytes <= NODE_BYTES) break;
             this.nodes.delete(first);
+            this.unbuilt.delete(first);
             this.nodeBytes -= bytesOf(kept);
         }
     }
 
-    /** Without `meshes` the worker leaves the structure meshes out. */
-    private async ask<T>(tile: Node, node: Node, what: Request, meshes = true): Promise<T> {
-        const body = await this.tiles!(tile.level, tile.x, tile.y);
-        if (!body) return ({ stamps: NOTHING, samples: NO_SAMPLES } as const)[what] as T;
+    /** The body of a tile goes once, and again where the worker no longer holds it. */
+    private async ask<T>(tile: Node, node: Node, what: Request): Promise<T> {
+        const name = key(tile), sent = this.sent.has(name), body = sent ? undefined : await this.tiles!(tile.level, tile.x, tile.y);
+        if (!sent && !body) return ({ stamps: NOTHING, meshes: EMPTY_MESHES, samples: NO_SAMPLES } as const)[what] as T;
         const id = this.next++;
-        return new Promise<T>((resolve, reject) => {
-            this.waiting.set(id, { resolve: resolve as (result: unknown) => void, reject });
-            this.worker!.postMessage({ id, tile, node, body, what, plan: this.plan, meshes }, [body]);
+        const answer = await new Promise<unknown>((resolve, reject) => {
+            this.waiting.set(id, { resolve, reject });
+            this.worker!.postMessage({ id, tile, node, body, what, plan: this.plan, wanted: this.wanted() }, body ? [body] : []);
+            if (body) this.sent.add(name);
         });
+        if (answer !== MISSING) return answer as T;
+        this.sent.delete(name);
+        return this.ask(tile, node, what);
+    }
+
+    /**
+     * The feature tiles of the nodes on their way, still wished or without their structure meshes, and of the near levels'
+     * nodes that the last frame read: the worker keeps them. The eye's own tile has no wish for seconds between its waves of levels.
+     */
+    private wanted(): string[] {
+        const tiles = new Set([...this.pending.values(), ...this.queued, ...this.nearTiles, ...[...this.unbuilt.values()].map(node => key(featureTile(node)!))]);
+        // A tile that no job reads now sends its body again when one does: the worker may have let it go.
+        for (const name of this.sent) if (!tiles.has(name)) this.sent.delete(name);
+        return [...tiles];
     }
 }

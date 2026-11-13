@@ -6,7 +6,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use super::curve::{insert, point};
-use super::parts::Rule;
+use super::parts::{fords, Rule};
 use super::points::{advance, key, metres, nodes, Anchor, Node, NodeKind, Piece, Plan};
 use super::{
     Crossing, CrossingKind, Family, GraphStats, Level, Network, Part, Sample, Source, Station, BUCKET_M,
@@ -237,6 +237,8 @@ enum Outcome {
     Implicit,
     /// A synthetic deck or footbridge over the lower side, and the half-width that it spans.
     Synthetic(CrossingKind, f64),
+    /// A tunnel way under the other side. Its stations are no samples: storey 0 stays as it is.
+    Bore,
 }
 
 /// The length of a culvert chain about a station, read up to `limit` metres each way.
@@ -337,6 +339,14 @@ pub(crate) fn crossings(
         let culvert =
             |w: &Side, x: &Side| water(w) && w.level == Level::Tunnel && !water(x) && x.level == Level::Ground;
         if (a.level == Level::Tunnel || b.level == Level::Tunnel) && !culvert(&a, &b) && !culvert(&b, &a) {
+            let water_tunnel = |x: &Side| water(x) && x.level == Level::Tunnel;
+            if water_tunnel(&a) || water_tunnel(&b) || (a.level == b.level && angle < graze) {
+                continue;
+            }
+            // The tag gives the roles: the tunnel way is under; of two, the heights.
+            let tunnel = |x: &Side| x.level == Level::Tunnel;
+            let (u, l) = if tunnel(&a) && (!tunnel(&b) || b.z > a.z) { (b, a) } else { (a, b) };
+            found.push((pos, u, l, Outcome::Bore, angle));
             continue;
         }
         if water(&a) && water(&b) {
@@ -361,7 +371,7 @@ pub(crate) fn crossings(
                     stats.buried += 1;
                     Outcome::Record(CrossingKind::Culvert, Source::Fallback)
                 }
-            } else if x.rule.ford() {
+            } else if x.rule.ford() && fords(x.family, w.rule.water()) {
                 Outcome::Record(CrossingKind::Ford, Source::Tag)
             } else if angle < graze {
                 stats.grazing_water += 1;
@@ -415,6 +425,7 @@ pub(crate) fn crossings(
         angle_rad: angle,
         deck: None,
         owned: false,
+        ladder: None,
     };
     // Synthetic stretches by piece: the metres and the stations of their ends.
     let mut stretches: BTreeMap<usize, Vec<(StretchEnd, StretchEnd)>> = BTreeMap::new();
@@ -431,6 +442,9 @@ pub(crate) fn crossings(
         let piece = &plan.pieces[upper.piece];
         match outcome {
             Outcome::Implicit => {}
+            Outcome::Bore => {
+                plan.crossings.push(record(pos, upper.st, lower.st, CrossingKind::Bore, Source::Tag, angle));
+            }
             Outcome::Record(kind, source) => {
                 stations.push((piece.part, upper.st));
                 stations.push((plan.pieces[lower.piece].part, lower.st));

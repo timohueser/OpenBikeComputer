@@ -6,14 +6,15 @@ use std::collections::BTreeMap;
 
 use core::f64::consts::PI;
 
-use super::curve::{geo, point};
-use super::parts::Rule;
+use super::curve::{geo_of, point};
+use super::parts::{fords, Rule};
 use super::{
     inside, Arm, Crossing, CrossingKind, Deck, End, Family, GraphStats, HostRule, Joint, Junction, Level, LinkKind,
     Network, Part, PointRef, Sample, Source, Station, Way, WayGraph, HEADING_M, ROOM_MAX_M, SIDE_BACK, SIDE_ON,
     STROKE_DEG,
 };
 use crate::frame::CellKey;
+use crate::sections::GRAZE_DEG;
 use crate::CellInput;
 
 /// A stretch of one part with one level, before ids.
@@ -131,7 +132,7 @@ pub(crate) fn between(parts: &[Part], a: &Station, b: &Station) -> f64 {
 pub(crate) fn position(parts: &[Part], st: &Station) -> [i64; 2] {
     let part = &parts[st.part as usize];
     let span = st.span as usize;
-    let g = geo(&part.vertices[span], &part.vertices[span + 1], part.spans[span].chord);
+    let g = geo_of(&part.vertices[span], &part.vertices[span + 1], &part.spans[span]);
     super::curve::round(&g, g.eval(st.u)[0])
 }
 
@@ -456,6 +457,7 @@ pub(crate) fn assemble(
         ends: Vec::new(),
         crossings: Vec::new(),
         decks: Vec::new(),
+        levels: Default::default(),
         stats: GraphStats::default(),
     };
     for (id, piece) in plan.pieces.iter().enumerate() {
@@ -600,23 +602,22 @@ pub(crate) fn assemble(
                 .clone()
         };
         let (a, b) = (pick(arms_a), pick(arms_b));
-        let tunnel = arms_b.iter().any(|x| plan.pieces[x.piece].level == Level::Tunnel);
-        let (kind, source) = match (ga, gb) {
-            (Network::Way, Network::Rail) => (CrossingKind::LevelCrossing, Source::SharedVertex),
-            (Network::Way, Network::Water) if tunnel => (CrossingKind::Culvert, Source::SharedVertex),
-            (Network::Way, Network::Water) => (CrossingKind::Ford, Source::SharedVertex),
-            _ => {
-                let water = rules[plan.pieces[b.piece].part].water();
-                if water.width_m <= water.culvert_width_m {
-                    (CrossingKind::Culvert, Source::Rule)
-                } else {
-                    (CrossingKind::Stacked, Source::Fallback)
-                }
-            }
-        };
         let ta = point(&parts[a.at.part as usize], a.at.span as usize, a.at.u).tangent;
         let tb = point(&parts[b.at.part as usize], b.at.span as usize, b.at.u).tangent;
         let angle = libm::atan2((ta[0] * tb[1] - ta[1] * tb[0]).abs(), dot(ta, tb).abs());
+        let tunnel = arms_b.iter().any(|x| plan.pieces[x.piece].level == Level::Tunnel);
+        let water = || rules[plan.pieces[b.piece].part].water();
+        let ford = || fords(parts[plan.pieces[a.piece].part].family, water());
+        // A way that does not ford the water takes the untagged rule, as at a crossing without a shared vertex.
+        let (kind, source) = match (ga, gb) {
+            (Network::Way, Network::Rail) => (CrossingKind::LevelCrossing, Source::SharedVertex),
+            (Network::Way, Network::Water) if tunnel => (CrossingKind::Culvert, Source::SharedVertex),
+            (Network::Way, Network::Water) if ford() => (CrossingKind::Ford, Source::SharedVertex),
+            _ if angle >= GRAZE_DEG.to_radians() && water().width_m <= water().culvert_width_m => {
+                (CrossingKind::Culvert, Source::Rule)
+            }
+            _ => (CrossingKind::Stacked, Source::Fallback),
+        };
         plan.crossings.push(Crossing {
             pos: local(*pos),
             over: a.at,
@@ -626,6 +627,7 @@ pub(crate) fn assemble(
             angle_rad: angle,
             deck: None,
             owned: false,
+            ladder: None,
         });
     }
     // Decks: deck pieces that share a point, and each synthetic stretch.

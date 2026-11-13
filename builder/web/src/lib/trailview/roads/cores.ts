@@ -1,5 +1,5 @@
 // Where a model at a point stands beside the ways: the cores of a tile's ways as their corridors draw them, and the place out of them.
-import { insideRings, junctions, metresPerUnit, PATH, ringsDistance, RIVER, STREAM, type Line, type Shapes } from '../terrain/bins';
+import { insideRings, junctions, linesNear, metresPerUnit, nearBoxes, PATH, ringsDistance, RIVER, STREAM, tileIndex, type Line, type Shapes } from '../terrain/bins';
 import { halfAt, partnersOf } from '../terrain/corners';
 import { near, townOf, type Town } from '../terrain/town';
 import { direction } from './arms';
@@ -8,21 +8,31 @@ import { CF, corridorLine, sideOf, type Part } from './section';
 import { between, stationsOf, type Station } from './stations';
 
 /**
- * The ground of a tile that a model at a point keeps out of. `ways`: the roads, tracks, paths and railways
- * with a corridor on the ground; a deck stands over the ground, and the test is flat. `partners` set a
+ * The ground of a tile that a model at a point keeps out of. Its ways (`isWay`) are the roads, tracks, paths and
+ * railways with a corridor on the ground; a deck stands over the ground, and the test is flat. `partners` set a
  * road's half-width at its ends. `meetings`: the points where three ways or more meet, decks included.
  * And the buildings and the water.
  */
 export interface Cores {
-    ways: Line[];
+    shapes: Shapes;
+    /**
+     * How far the core of each line of the tile can lie from the box of its vertices. `half`: the widest half-width of
+     * the line and of its stations, in metres. `bulge`: the most that a way's curve leaves its segments, a quarter of
+     * its longest, in world units. `widest` holds the greatest of each.
+     */
+    half: Float64Array;
+    bulge: Float64Array;
+    widest: { half: number; bulge: number };
     partners: Map<Line, [Line?, Line?]>;
     meetings: { x: number; y: number; lines: Line[] }[];
     /** The points that two ways or more share, where a junction's corner can lie. */
     joints: { x: number; y: number }[];
-    buildings: Shapes['buildings'];
     town: Town;
-    water: { rings: number[][][]; lines: Line[] };
 }
+
+/** A way with a corridor on the ground, and a waterway. */
+const isWay = (line: Line) => corridorLine(line) && !isDeck(line) && line.z.length > 1;
+const isWater = ({ kind }: Line) => kind === STREAM || kind === RIVER;
 
 /**
  * How a model at a point keeps out of the ways: `half`, the metres that it reaches from its foot across the
@@ -44,16 +54,24 @@ const coresByTile = new WeakMap<Shapes, Cores>(), stationsByLine = new WeakMap<L
 export function coresOf(shapes: Shapes): Cores {
     let cores = coresByTile.get(shapes);
     if (cores) return cores;
-    const { lines, buildings } = shapes, ways = lines.filter(line => corridorLine(line) && !isDeck(line) && line.z.length > 1);
+    const { lines, buildings } = shapes, ways = lines.filter(isWay), partners = partnersOf(lines);
     const meet = [...ways, ...lines.filter(isDeck)], at = new Map<string, Line[]>();
     for (const line of meet) line.z.forEach((_, v) => {
         const key = `${line.xy[2 * v]},${line.xy[2 * v + 1]}`;
         (at.get(key) ?? at.set(key, []).get(key)!).push(line);
     });
     const meetings = [...junctions(meet)].filter(([, j]) => j.ways >= 3).map(([key, { x, y }]) => ({ x, y, lines: [...new Set(at.get(key))] }));
-    const water = { rings: [...shapes.lakes, ...shapes.seas, ...shapes.areas].map(({ rings }) => rings), lines: lines.filter(({ kind }) => kind === STREAM || kind === RIVER) };
     const joints = [...at].filter(([, here]) => new Set(here).size > 1).map(([key]) => key.split(',').map(Number)).map(([x, y]) => ({ x, y }));
-    coresByTile.set(shapes, (cores = { ways, partners: partnersOf(lines), meetings, joints, buildings, town: townOf(buildings), water }));
+    const half = Float64Array.from(lines, ({ h }) => h), bulge = new Float64Array(lines.length), widest = { half: 0, bulge: 0 };
+    lines.forEach((line, k) => {
+        if (isWay(line)) for (let v = 0; v < line.z.length; v++) {
+            half[k] = Math.max(half[k], halfAt(line, v, partners));
+            if (v) bulge[k] = Math.max(bulge[k], Math.hypot(line.xy[2 * v] - line.xy[2 * v - 2], line.xy[2 * v + 1] - line.xy[2 * v - 1]) / 4);
+        }
+        widest.half = Math.max(widest.half, half[k]);
+        widest.bulge = Math.max(widest.bulge, bulge[k]);
+    });
+    coresByTile.set(shapes, (cores = { shapes, half, bulge, widest, partners, meetings, joints, town: townOf(buildings) }));
     return cores;
 }
 
@@ -71,11 +89,12 @@ const WALL_M = 0.5, WATER_M = 0.3;
 /** The search out of the cores: its step, and the farthest a point moves. */
 const STEP_M = 0.1, FARTHEST_M = 30;
 
-/** Of `ways`, those whose side may reach within `metres` of world point x, y. */
-function waysNear(ways: Line[], x: number, y: number, metres: number): Line[] {
-    const unit = metresPerUnit(y);
-    return ways.filter(({ xy, h }) => {
-        const r = (h + PAST_HALF_M + metres) / unit;
+/** The numbers of the tile's lines of a kind (`of`) whose side may reach within `metres` of world point x, y, in their order. */
+function sidesNear(cores: Cores, of: (line: Line) => boolean, x: number, y: number, metres: number): number[] {
+    const unit = metresPerUnit(y), { lines } = cores.shapes;
+    return linesNear(cores.shapes, x, y, (cores.widest.half + PAST_HALF_M + metres) / unit).filter(k => {
+        if (!of(lines[k])) return false;
+        const { xy, h } = lines[k], r = (h + PAST_HALF_M + metres) / unit;
         for (let i = 0; i + 3 < xy.length; i += 2) {
             if (Math.min(xy[i], xy[i + 2]) - r < x && Math.max(xy[i], xy[i + 2]) + r > x && Math.min(xy[i + 1], xy[i + 3]) - r < y && Math.max(xy[i + 1], xy[i + 3]) + r > y) return true;
         }
@@ -100,17 +119,22 @@ function beyond(s: Station, dx: number, dy: number, x: number, y: number): numbe
 export interface Foot { line: Line; foot: Station; side: 1 | -1; metres: number; parts: Part[]; edge: number }
 
 /**
- * Of `ways`, the side that holds world point x, y most deeply, out to `reach` metres from the line, as the
- * corridors draw it: each step between two stations with its own width, and a round cap at each end.
+ * Of the tile's lines with the numbers `ways`, the side that holds world point x, y most deeply, out to `reach` metres
+ * from the line, as the corridors draw it: each step between two stations with its own width, and a round cap at each end.
  */
-function deepest(cores: Cores, ways: Line[], x: number, y: number, reach: (parts: Part[], edge: number) => number): Foot | undefined {
-    const unit = metresPerUnit(y);
+function deepest(cores: Cores, ways: number[], x: number, y: number, reach: (parts: Part[], edge: number) => number): Foot | undefined {
+    const unit = metresPerUnit(y), { lines } = cores.shapes, { boxes } = tileIndex(cores.shapes).lines;
     let most = 0, found: Foot | undefined;
-    for (const line of ways) {
-        const st = stationsIn(cores, line);
+    for (const way of ways) {
+        // A station lies on the line's curve, within `bulge` of the box of its vertices, and a step holds no point farther
+        // than PAST_HALF_M past its half-width: a line whose box lies farther off has no step for the point, and a step
+        // whose box lies farther off does not hold it. One unit more for the rounding.
+        const box = boxes[way], r = cores.bulge[way] + (cores.half[way] + PAST_HALF_M) / unit + 1;
+        if (x < box[0] - r || x > box[2] + r || y < box[1] - r || y > box[3] + r) continue;
+        const line = lines[way], st = stationsIn(cores, line);
         for (let k = 0; k + 1 < st.length; k++) {
-            const s = st[k], t = st[k + 1], dx = t.x - s.x, dy = t.y - s.y, l = dx * dx + dy * dy;
-            if (!l) continue;
+            const s = st[k], t = st[k + 1], dx = t.x - s.x, dy = t.y - s.y, l = dx * dx + dy * dy, far = (s.h + PAST_HALF_M) / unit + 1;
+            if (!l || x < Math.min(s.x, t.x) - far || x > Math.max(s.x, t.x) + far || y < Math.min(s.y, t.y) - far || y > Math.max(s.y, t.y) + far) continue;
             // A step's faces lie between the cross-sections of its stations, so steps meet with no wedge in a
             // bend. A way's end has a round cap (mesh.ts), or a joint where another way goes on.
             if ((beyond(s, dx, dy, x, y) < 0 && k > 0) || (beyond(t, dx, dy, x, y) > 0 && k + 2 < st.length)) continue;
@@ -126,12 +150,14 @@ function deepest(cores: Cores, ways: Line[], x: number, y: number, reach: (parts
 }
 
 /** The core of the ways that holds world point x, y most deeply, widened by `past` metres; undefined outside every core. */
-export function coreAt(cores: Cores, x: number, y: number, past = 0, ways = cores.ways): Foot | undefined {
+export function coreAt(cores: Cores, x: number, y: number, past = 0): Foot | undefined {
+    const { lines } = cores.shapes, { half, bulge } = cores.widest;
+    const ways = linesNear(cores.shapes, x, y, bulge + (half + PAST_HALF_M) / metresPerUnit(y)).filter(k => isWay(lines[k]));
     return deepest(cores, ways, x, y, (_, edge) => edge + past);
 }
 
 /** The way whose band reaches world point x, y past its core, out to the row that sinks under the mesh. */
-function besideAt(cores: Cores, x: number, y: number, ways: Line[]): Beside | undefined {
+function besideAt(cores: Cores, x: number, y: number, ways: number[]): Beside | undefined {
     const hit = deepest(cores, ways, x, y, parts => parts[parts.length - 1].a);
     if (!hit || hit.metres < hit.edge) return undefined;
     const { line, foot, side, metres, parts, edge } = hit, sampled = Math.max(edge, ...parts.filter(({ flags }) => flags === CF.SAMPLE).map(({ a }) => a));
@@ -151,12 +177,29 @@ function lineMetres({ xy }: Line, x: number, y: number): number {
 
 /** Whether the box of a ring comes within `reach` world units of world point x, y. */
 function boxNear(ring: number[], x: number, y: number, reach: number): boolean {
-    const xs = ring.filter((_, i) => i % 2 === 0), ys = ring.filter((_, i) => i % 2 === 1);
-    return Math.min(...xs) - reach < x && Math.max(...xs) + reach > x && Math.min(...ys) - reach < y && Math.max(...ys) + reach > y;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (let i = 0; i < ring.length; i += 2) {
+        x0 = Math.min(x0, ring[i]);
+        y0 = Math.min(y0, ring[i + 1]);
+        x1 = Math.max(x1, ring[i]);
+        y1 = Math.max(y1, ring[i + 1]);
+    }
+    return x0 - reach < x && x1 + reach > x && y0 - reach < y && y1 + reach > y;
 }
 
-/** What lies near a point that a model keeps out of: the ways, and the water. */
-interface Near { ways: Line[]; rings: number[][][]; streams: Line[] }
+/** The rings of the tile's lakes, seas and river areas that have a ring whose box comes within `reach` world units of world point x, y, in the tile's order. */
+function waterNear({ shapes }: Cores, x: number, y: number, reach: number): number[][][] {
+    const { outlines } = tileIndex(shapes), { seasFrom, padsFrom, areasFrom, buildingsFrom } = outlines, found: number[][][] = [];
+    // The outlines hold the pads between the seas and the river areas, and the buildings after them. One unit more for the rounding.
+    for (const k of nearBoxes(outlines, [x, y, x, y], reach + 1)) {
+        const area = k < seasFrom ? shapes.lakes[k] : k < padsFrom ? shapes.seas[k - seasFrom] : k >= areasFrom && k < buildingsFrom ? shapes.areas[k - areasFrom] : undefined;
+        if (area?.rings.some(ring => boxNear(ring, x, y, reach))) found.push(area.rings);
+    }
+    return found;
+}
+
+/** What lies near a point that a model keeps out of: the numbers of the ways, and the water. */
+interface Near { ways: number[]; rings: number[][][]; streams: Line[] }
 
 /**
  * A model keeps out to the band's first row: from the core's edge to there the corridor's face falls from a
@@ -171,7 +214,7 @@ function groundAt(cores: Cores, { ways, rings, streams }: Near, cornered: (x: nu
     const unit = metresPerUnit(y);
     if (rings.some(ring => insideRings(ring, x, y)) || streams.some(line => lineMetres(line, x, y) < line.h + WATER_M)) return 'blocked';
     let walled = false;
-    near(cores.town, x, y, x, y, WALL_M / unit, b => (walled ||= insideRings(cores.buildings[b].rings, x, y) || ringsDistance(cores.buildings[b].rings, x, y) * unit < WALL_M));
+    near(cores.town, x, y, x, y, WALL_M / unit, b => (walled ||= insideRings(cores.shapes.buildings[b].rings, x, y) || ringsDistance(cores.shapes.buildings[b].rings, x, y) * unit < WALL_M));
     if (walled) return 'blocked';
     return deepest(cores, ways, x, y, firstRow) || cornered(x, y) ? 'way' : 'free';
 }
@@ -208,7 +251,7 @@ function placeAlong(cores: Cores, nearby: Near, cornered: (x: number, y: number)
  */
 export function besideWays(cores: Cores, cornered: (x: number, y: number) => boolean, x: number, y: number, stand: Stand, taken: Taken[] = []): { x: number; y: number; yaw?: number; beside?: Beside } {
     const { corner = false } = stand;
-    const ways = waysNear(cores.ways, x, y, FARTHEST_M), unit = metresPerUnit(y), core = deepest(cores, ways, x, y, firstRow);
+    const ways = sidesNear(cores, isWay, x, y, FARTHEST_M), unit = metresPerUnit(y), core = deepest(cores, ways, x, y, firstRow);
     const stay = { x, y, beside: besideAt(cores, x, y, ways) };
     if (!core && !cornered(x, y)) return stay;
     const meeting = nearest(cores.meetings, x, y), leaves: Leave[] = [];
@@ -226,10 +269,7 @@ export function besideWays(cores: Cores, cornered: (x: number, y: number) => boo
             leaves.push(away([(x - joint.x) / l, (y - joint.y) / l]));
         }
     }
-    const reach = FARTHEST_M / unit, nearby: Near = {
-        ways, streams: waysNear(cores.water.lines, x, y, FARTHEST_M),
-        rings: cores.water.rings.filter(rings => rings.some(ring => boxNear(ring, x, y, reach))),
-    };
+    const nearby: Near = { ways, streams: sidesNear(cores, isWater, x, y, FARTHEST_M).map(k => cores.shapes.lines[k]), rings: waterNear(cores, x, y, FARTHEST_M / unit) };
     for (const leave of leaves) {
         const at = placeAlong(cores, nearby, cornered, leave, stand, taken);
         if (at) return { x: at[0], y: at[1], yaw: Math.atan2(leave.front[0], leave.front[1]), beside: besideAt(cores, at[0], at[1], ways) };

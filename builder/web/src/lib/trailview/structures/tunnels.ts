@@ -45,12 +45,17 @@ const TWIN_M = 8;
  */
 export type Twin = { shift: number; widen: number } | null;
 
+/** The twins of each tile's lines, made once: each node of the tile reads them. */
+const paired = new WeakMap<Line[], Map<Line, [Twin?, Twin?]>>();
+
 /**
  * Per tunnel line of a track, the twins of its two ends that meet the ground: two such ends of two tracks'
  * tunnels that lie side by side within TWIN_M and lead the same way are one portal, which the end that
  * comes first by its point draws. The nearest pairs pair first, and an end has at most one twin.
  */
 export function twins(lines: Line[]): Map<Line, [Twin?, Twin?]> {
+    const known = paired.get(lines);
+    if (known) return known;
     const ends = lines.filter(line => line.kind === TUNNEL && line.abut && line.code >= RAIL_CODE).flatMap(line => [0, 1].filter(end => line.abut![end]).map(end => {
         const n = line.z.length, v = end ? n - 1 : 0, w = end ? n - 2 : 1, x = line.xy[2 * v], y = line.xy[2 * v + 1];
         const dx = line.xy[2 * w] - x, dy = line.xy[2 * w + 1] - y, l = Math.hypot(dx, dy) || 1;
@@ -69,6 +74,7 @@ export function twins(lines: Line[]): Map<Line, [Twin?, Twin?]> {
         (out.get(a.line) ?? out.set(a.line, [undefined, undefined]).get(a.line)!)[a.end] = { shift: across / 2, widen: Math.abs(across) / 2 };
         (out.get(b.line) ?? out.set(b.line, [undefined, undefined]).get(b.line)!)[b.end] = null;
     }
+    paired.set(lines, out);
     return out;
 }
 

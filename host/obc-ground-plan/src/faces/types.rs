@@ -29,6 +29,13 @@ pub enum Surface {
     Crossing = 6,
     RailBed = 7,
     Platform = 8,
+    /// Line water: its face lies at the water level.
+    Water = 9,
+    /// The band from a waterline to the bank top.
+    Bank = 10,
+    /// Ground over line water at a culvert under a way (`culverts`): the water does not show there, and the
+    /// slopes shape it.
+    Zone = 11,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -156,6 +163,20 @@ impl CornerArc {
     }
 }
 
+/// A culvert's mouth (`culverts`): where the water's middle line meets a zone's outline.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CulvertMouth {
+    /// Frame units from the cell's origin.
+    pub at: [f64; 2],
+    /// The unit direction of the water into the zone, and of the zone's outline there (x east, y south).
+    pub into: [f64; 2],
+    pub edge: [f64; 2],
+    /// The water's half-width, metres: at most half of `culvert_width_m` at an untagged crossing, a road's or a
+    /// railway's ford included (the classifier's rule), at most `HALF_MAX_M` at a mapped culvert and a tunnel's
+    /// start, which carry any water.
+    pub half_m: f64,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct FacePlan {
     pub cell: crate::frame::CellKey,
@@ -164,5 +185,7 @@ pub struct FacePlan {
     pub faces: Vec<Face>,
     pub edges: Vec<Edge>,
     pub corners: Vec<CornerArc>,
+    /// The mouths of the culverts' zones about the cell.
+    pub mouths: Vec<CulvertMouth>,
     pub stats: FaceStats,
 }

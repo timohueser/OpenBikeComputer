@@ -1,5 +1,5 @@
 import { worldPixel } from '../../planner/layers/mercator';
-import { seasonDay } from '../../planner/layers/snow';
+import { seasonDay, snowBand } from '../../planner/layers/snow';
 import { EARTH_RADIUS, tileLonLat } from '../frame/frame';
 import { anchorAt, UNITS } from '../frame/space';
 import type { GroundDate, GroundPage } from '../stream/ground-pages';
@@ -26,6 +26,8 @@ const STAY = 0.7;
 const RETRY_MS = 2000, RETRY_MAX_MS = 60_000;
 /** The look at the eye blends the regions at the nodes of this level about it (0.84 km at 47°), with a tent weight of this reach in nodes. */
 const LOOK_LEVEL = 15, LOOK_REACH = 3;
+/** Blocks of 16 × 16 texels a page side, for the regions near a point; a block's word where its texels hold more than one region. */
+const BLOCKS = PAGE / 16, MIXED = 256;
 
 /** The four pages of a ground tile, null where it has no ground; not complete when a layer failed to load. */
 export interface GroundResult { pages: (GroundPage | null)[]; complete: boolean }
@@ -44,8 +46,9 @@ export interface Slot {
     used: number;
     /** The date of the content, or -1 before the first upload. */
     date: number;
-    /** The region of each texel, for the look at the eye. */
+    /** The region of each texel, for the look at the eye, and of each block of texels where they all hold one, else MIXED. */
     regions?: Uint8Array;
+    blocks?: Uint16Array;
     /** A layer of the content failed to load: the page loads again after its tile's wait. */
     partial?: boolean;
 }
@@ -86,8 +89,10 @@ export class GroundPages {
     private readonly failures = new Map<string, { count: number; until: number }>();
     private free: number[];
     private frame = 0;
+    /** Counts the arrivals and evictions of pages, so a reader of their regions knows when to read again. */
+    changes = 0;
     private dateKey = '';
-    private today = { quarters: [0, 1] as [number, number], weight: 0, snowIndex: 0 };
+    private today = { quarters: [0, 1] as [number, number], weight: 0, band: 0 };
     private loads = 0;
     /** Ground tiles of the date in flight, or whose pages wait in `arrivals`, with the pages that wait. */
     private readonly loading = new Map<string, number>();
@@ -111,7 +116,7 @@ export class GroundPages {
 
     constructor(
         private readonly source: GroundTiles | undefined, readonly capacity: number, readonly finest: number,
-        private readonly shares: number[], private readonly world: number, private readonly changed: () => void,
+        private readonly world: number, private readonly changed: () => void,
     ) {
         this.free = range(capacity);
     }
@@ -133,13 +138,14 @@ export class GroundPages {
 
     /** Sets the date of the view; true when it is a new one, whose rules the GPU then needs. */
     setDate(date: string): boolean {
-        const day = dayOfYear(date), { quarters, weight } = mosaicsAt(day), snowIndex = seasonDay(date).index;
-        const dateKey = `${quarters}/${weight.toFixed(3)}/${snowIndex}`;
+        const day = dayOfYear(date), { quarters, weight } = mosaicsAt(day), band = snowBand(seasonDay(date).index);
+        // A new key builds the pages again from the cached tiles: the snow tile holds every band.
+        const dateKey = `${quarters}/${weight.toFixed(3)}/${band}`;
         if (dateKey === this.dateKey) return false;
         this.dateKey = dateKey;
         this.date++;
         this.day = day;
-        this.today = { quarters, weight, snowIndex };
+        this.today = { quarters, weight, band };
         return true;
     }
 
@@ -202,7 +208,13 @@ export class GroundPages {
             page.date = date;
             page.partial = partial;
             page.regions ??= new Uint8Array(PAGE * PAGE);
-            for (let i = 0; i < PAGE * PAGE; i++) page.regions[i] = data.cells[4 * i + 2];
+            const blocks = (page.blocks ??= new Uint16Array(BLOCKS * BLOCKS));
+            for (let i = 0; i < PAGE * PAGE; i++) {
+                // The first texel of a block, in this order, is its top left one.
+                const region = (page.regions[i] = data.cells[4 * i + 2]), b = ((i >> 12) << 4) | ((i & 255) >> 4);
+                blocks[b] = (i & 0xf0f) === 0 || blocks[b] === region ? region : MIXED;
+            }
+            this.changes++;
             this.refresh.delete(page);
             work.uploads.push({ page, data, horizons });
             this.dirty = true;
@@ -225,6 +237,7 @@ export class GroundPages {
     /** A lost device keeps the absent and the failed tiles; every page and the rules come again. */
     lost(): void {
         this.pages.clear();
+        this.changes++;
         this.free = range(this.capacity);
         this.arrivals = [];
         this.loading.clear();
@@ -257,6 +270,26 @@ export class GroundPages {
         return out;
     }
 
+    /**
+     * The regions of the texels of the resident pages within `metres` of a point, across or along, and one texel more: a
+     * point reads its nearest texel.
+     */
+    regionsNear(lon: number, lat: number, metres: number): Set<number> {
+        const [ux, uy] = worldPixel([lon, lat], UNITS), reach = metres / anchorAt(lon, lat).unit, seen = new Uint8Array(256);
+        for (const { node, regions, blocks } of this.pages.values()) {
+            if (!regions || !blocks) continue;
+            const side = size(node.level), texel = side / PAGE, x = ux - node.x * side, y = uy - node.y * side;
+            const i0 = Math.max(0, Math.floor((x - reach) / texel) - 1), i1 = Math.min(PAGE - 1, Math.floor((x + reach) / texel) + 1);
+            const j0 = Math.max(0, Math.floor((y - reach) / texel) - 1), j1 = Math.min(PAGE - 1, Math.floor((y + reach) / texel) + 1);
+            for (let bj = j0 >> 4; i0 <= i1 && bj <= j1 >> 4; bj++) for (let bi = i0 >> 4; bi <= i1 >> 4; bi++) {
+                const block = blocks[bj * BLOCKS + bi];
+                if (block !== MIXED) seen[block] = 1;
+                else for (let j = Math.max(j0, 16 * bj); j <= Math.min(j1, 16 * bj + 15); j++) for (let i = Math.max(i0, 16 * bi); i <= Math.min(i1, 16 * bi + 15); i++) seen[regions[j * PAGE + i]] = 1;
+            }
+        }
+        return new Set([...seen.keys()].filter(region => seen[region]));
+    }
+
     /** The first `n` pages of a set that are still resident; they leave it. */
     private take(set: Set<Slot>, n: number): Slot[] {
         const pages = [...set].slice(0, n);
@@ -282,11 +315,11 @@ export class GroundPages {
     private load(node: Node): void {
         const z = node.level - 1, x = node.x >> 1, y = node.y >> 1, name = tileOf(node, this.date);
         if (!this.source || this.loading.has(name) || this.loads >= LOADS) return;
-        const date = this.date, { quarters, weight, snowIndex } = this.today;
+        const date = this.date, { quarters, weight, band } = this.today;
         const quarter = (q: number) => ({ level: z + 1, x: 2 * x + (q & 1), y: 2 * y + (q >> 1) });
         this.loads++;
         this.loading.set(name, 1);
-        this.source.pages(z, x, y, quarters, { weight, snowIndex, shares: this.shares }, this.world).then(({ pages, complete }) => {
+        this.source.pages(z, x, y, quarters, { weight, band }, this.world).then(({ pages, complete }) => {
             pages.forEach((page, q) => {
                 if (!page) return this.absent.add(key(quarter(q)));
                 this.arrivals.push({ node: quarter(q), page, date, partial: !complete });
@@ -331,6 +364,7 @@ export class GroundPages {
             for (const page of this.pages.values()) if (page.used < this.frame && (!oldest || page.used < oldest.used)) oldest = page;
             if (!oldest) return undefined;
             this.pages.delete(key(oldest.node));
+            this.changes++;
             this.refresh.delete(oldest);
             this.dirty = true;
             slot = oldest.slot;

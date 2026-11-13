@@ -8,11 +8,12 @@
     import { regionProfiles, type RoutingLine } from '../../lib/planner/routing';
     import type { Version } from '../../lib/planner/versions';
 
-    let { trip, line, name, versions, canUndo, canRedo, draftSavedAt, draftError, onChange, onUndo, onRedo, onRestore, onVersions, onNew, onLibrary, ready }: {
+    let { trip, line, name, versions, openId, canUndo, canRedo, draftSavedAt, draftError, onChange, onUndo, onRedo, onOpen, onSaveNew, onVersions, onCompare, onNew, onLibrary, ready }: {
         trip: Trip;
         line?: RoutingLine;
         name: string;
         versions: Version[];
+        openId?: string;
         ready: boolean;
         onLibrary: () => void;
         canUndo: boolean;
@@ -23,8 +24,10 @@
         onNew: () => void;
         onUndo: () => void;
         onRedo: () => void;
-        onRestore: (trip: Trip, name: string) => void;
+        onOpen: (id: string, name: string) => void;
+        onSaveNew: (name: string) => Promise<void>;
         onVersions: (versions: Version[]) => Promise<void>;
+        onCompare: () => void;
     } = $props();
 
     const bike = $derived(trip.bike ?? 'touring');
@@ -60,7 +63,7 @@
         <button type="button" class="icon" disabled={!canUndo} onclick={onUndo} aria-label="Undo" title="Undo"><Icon name="undo" /></button>
         <button type="button" class="icon" disabled={!canRedo} onclick={onRedo} aria-label="Redo" title="Redo"><Icon name="redo" /></button>
         <button type="button" class="planner-action" disabled={!ready} onclick={onLibrary}>My plans</button>
-        <VersionsMenu {trip} {line} {versions} {draftSavedAt} {draftError} {onRestore} onChange={onVersions} />
+        <VersionsMenu {trip} {line} {versions} {openId} {draftSavedAt} {draftError} {onOpen} {onSaveNew} onChange={onVersions} {onCompare} />
     </div>
 </div>
 

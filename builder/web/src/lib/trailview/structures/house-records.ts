@@ -2,7 +2,7 @@
 // and a mesh of walls and a flat roof for the footprints that no template fits. A worker uses it.
 import earcut from 'earcut';
 import { EXTENT, square, unitScale, type Feature } from '../stream/features';
-import { features, metresPerUnit, type Node } from '../terrain/bins';
+import { fronts, metresPerUnit, type Node } from '../terrain/bins';
 
 /** Words of a record, as `House` in houses.wgsl. */
 export const RECORD_WORDS = 8;
@@ -17,7 +17,7 @@ export const TEMPLATE = 0, OUTLINE = 1;
 const ROOFS: Record<string, number> = { gabled: 1, hipped: 2, pyramidal: 2, 'half-hipped': 3 };
 
 /** OSM building values that draw nothing, draw as a barn or shed, as a church or as a block, from the prototype's nearfield.ts. */
-export const SKIPPED = new Set(['roof', 'ruins', 'construction', 'carport', 'storage_tank', 'bunker']);
+const SKIPPED = new Set(['roof', 'ruins', 'construction', 'carport', 'storage_tank', 'bunker']);
 const SHEDS = new Set(['barn', 'farm_auxiliary', 'shed', 'garage', 'garages', 'stable', 'cowshed', 'hut', 'sty', 'boathouse']);
 /** Granaries this small stand raised on pillars, as hórreos and stabbur do; larger ones are barns. */
 const GRANARY_M2 = 60;
@@ -179,12 +179,12 @@ export function tileHouses(list: Feature[], tile: Node, owned: Node = tile): Til
     const scale = unitScale(tile.level), [west, north, size] = square(tile, owned);
     const records: number[] = [], outlines: number[] = [], floats = new Float32Array(1), word = new Uint32Array(floats.buffer);
     const f32 = (v: number) => ((floats[0] = v), word[0]);
-    const left = tile.x * EXTENT, top = tile.y * EXTENT, { buildings } = features(list, tile);
+    const left = tile.x * EXTENT, top = tile.y * EXTENT, faces = fronts(list, tile);
     let building = -1;
     for (const feature of list) {
         if (feature.kind !== 'building') continue;
-        // The outward direction of the wall that faces its road, in world units; features() lists the buildings in this order.
-        const front = buildings[++building].front;
+        // The wall that faces its road; fronts() lists the buildings in this order.
+        const front = faces[++building];
         const tag = feature.tags.building ?? 'yes', part = feature.parts.find(p => p.outer);
         if (SKIPPED.has(tag) || !part || part.xy.length < 6) continue;
         // Metres east and north of the first vertex.

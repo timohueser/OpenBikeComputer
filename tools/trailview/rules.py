@@ -181,7 +181,7 @@ def tables(materials):
         "lithology": each(materials["lithologies"][1:], obj({"colour": colour, "banded": one_of(True)})),
         "bare_luma": lambda v, p: listed(number(0, 1), 4)(v, p) if isinstance(v, list) else number(0, 1)(v, p),
         "outcrops": number(0, 1), "turf_deg": number(0, 90), "rock": colour, "cliff": colour,
-        "snow_share": number(0, 1), "bedding": obj({"strike": number(0, 360), "dip": number(0, 90)}), "roads": listed(colour, 6),
+        "bedding": obj({"strike": number(0, 360), "dip": number(0, 90)}), "roads": listed(colour, 6),
         "roadLine": by_place(colour), "concrete": colour, "setts": colour, "zebra": by_place(colour), "zebraSetts": by_place(colour),
         "giveWay": by_place(obj({"dash_m": number(0.1, 2), "triangle": one_of(True, False)})),
         "dashes": by_place(obj({"line": dash, "lane": dash})), "sea": obj({"deep": colour, "shallow": colour}), "windswept_m": number(0, 5000),

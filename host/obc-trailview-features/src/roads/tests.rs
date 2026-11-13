@@ -149,6 +149,27 @@ fn a_hairpin_climbs_within_the_grade_of_its_class() {
 }
 
 #[test]
+fn a_road_across_a_steep_slope_keeps_its_grade_where_the_terrain_under_its_line_humps() {
+    // A slope that rises 2 m per metre north, with a nose 15 m high under the line of the road: the terrain
+    // across the road's width spans 16 m, and the nose is no bed for the road.
+    let place = engelberg();
+    let height = |e: f64, n: f64| 1000.0 + 2.0 * n + 15.0 * (-((e - 250.0) / 8.0).powi(2)).exp();
+    let road = way("primary", place.line(&[(0.0, 0.0), (500.0, 0.0)], Some(20.0)), |f| f.half = 4.0);
+    let curve = place.curve(&run(&[road], &place.terrain(height), &[]).ways[0][0]);
+    let z = curve.z.unwrap();
+    let at: Vec<(f64, f64)> = curve.points.iter().map(|&p| place.east_north(p)).collect();
+    for k in 1..z.len() {
+        let grade = (z[k] - z[k - 1]) / (at[k].0 - at[k - 1].0).hypot(at[k].1 - at[k - 1].1);
+        assert!(grade.abs() <= 0.12 + 1e-3, "grade {grade} at {} m east", at[k].0);
+    }
+    // Each vertex lies within GROUND_M of the terrain across the road.
+    for (&(e, n), &z) in at.iter().zip(&z) {
+        let (low, high) = (height(e, n - 4.0), height(e, n + 4.0));
+        assert!(z >= low - GROUND_M - KEEP_M && z <= high + GROUND_M + KEEP_M, "{z} at {e} m east");
+    }
+}
+
+#[test]
 fn a_side_road_between_two_near_junctions_holds_its_grade() {
     // A secondary ends at J on flat ground at 1000 m, where a residential runs on north. 4.4 m on, a
     // path leaves the residential on flat ground at 1002 m. The residential is a side at J, but the
@@ -316,22 +337,23 @@ fn a_ford_lies_under_the_water_and_a_low_short_bridge_is_a_culvert() {
         way("track", line(&[(320.0, 80.0), (350.0, 80.0)]), plain),
         way("track", line(&[(300.0, 80.0), (320.0, 80.0)]), bridge),
     ];
+    // Water wider than a culvert's: a track's ford there stays a ford.
     let streams = [
         River {
             points: vec![place.at(50.0, -10.0), crossing, place.at(50.0, 10.0)],
             levels: vec![999.1, 999.0, 998.9],
-            half: 1.0,
+            half: 2.0,
             cover: 1.0,
             lift: 1.5,
-            untagged_culvert: true,
+            untagged_culvert: false,
         },
         River {
             points: vec![place.at(70.0, 20.0), place.at(70.0, 40.0)],
             levels: vec![998.6, 998.4],
-            half: 1.0,
+            half: 2.0,
             cover: 1.0,
             lift: 1.5,
-            untagged_culvert: true,
+            untagged_culvert: false,
         },
     ];
     let solved = run(&features, &terrain, &streams);
@@ -654,33 +676,184 @@ fn a_long_tunnel_runs_straight_between_its_portals_and_a_shaft_does_not_lift_it(
             way.points.iter().zip(&way.z).map(|(&p, &z)| (place.east_north(p).0, z)).collect::<Vec<_>>()
         })
         .collect();
+    // The straight line weighs less than the ground (`BORE`): the shaft moves it by a centimetre or two.
     let (first, last) = (vertices[0].1, vertices[vertices.len() - 1].1);
     for &(e, z) in &vertices {
-        assert!((z - interp(e, &[-3000.0, 3000.0], &[first, last])).abs() < 0.01);
+        assert!((z - interp(e, &[-3000.0, 3000.0], &[first, last])).abs() < 0.02);
     }
     assert!(vertices.iter().all(|&(_, z)| z < 1001.0));
 }
 
 #[test]
 fn a_tunnel_sinks_under_the_whole_width_of_the_road_over_it_and_the_road_stays() {
-    // The north portal lies just past the motorway's edge, its half-width from its centreline.
+    // The north portal lies just past the motorway's edge, its half-width from its centreline. The
+    // motorway runs on a bank 3 m high, so its tunnel's portals lie within GROUND_M of the terrain.
     let place = bridges();
     let line = |corners: &[(f64, f64)]| place.line(corners, None);
     let main_half = 6.0;
+    let bank = place.terrain(move |_, n| if n.abs() <= main_half { 503.0 } else { 500.0 });
     let features = [
         way("motorway", line(&[(-200.0, 0.0), (200.0, 0.0)]), |f| f.half = main_half),
         way("unclassified", line(&[(5.0, -200.0), (5.0, -20.0)]), plain),
         way("unclassified", line(&[(5.0, -20.0), (5.0, 7.0)]), tunnel),
         way("unclassified", line(&[(5.0, 7.0), (5.0, 200.0)]), plain),
     ];
-    let solved = run(&features, &flat, &[]);
+    let solved = run(&features, &bank, &[]);
     assert_eq!(solved.underpasses, BTreeSet::from([2]));
     let (ra, rz) = place.profile(&solved.ways[0][0]);
-    assert!((interp(205.0, &ra, &rz) - 500.0).abs() < 0.05);
+    assert!((interp(205.0, &ra, &rz) - 503.0).abs() < 0.05);
     let (ta, tz) = place.profile(&solved.ways[2][0]);
     for north in [-main_half, 0.0, main_half] {
-        assert!(interp(north + 20.0, &ta, &tz) <= 500.0 - BORE_M - COVER_M + 0.01);
+        assert!(interp(north + 20.0, &ta, &tz) <= 503.0 - BORE_M - COVER_M + 0.01);
     }
+}
+
+/// Whether each vertex of the curve of a solved way lies within GROUND_M of the terrain, and the
+/// curve's KEEP_M off the heights of the solve.
+fn on_the_ground(place: &Place, part: &Option<Way>, terrain: &dyn Terrain) -> bool {
+    let curve = place.curve(part);
+    let ground = terrain.heights(&curve.points);
+    curve.z.unwrap().iter().zip(ground).all(|(z, h)| (z - h).abs() <= GROUND_M + KEEP_M)
+}
+
+#[test]
+fn a_road_over_a_tunnel_by_its_portal_does_not_lever_its_far_portal_off_the_terrain() {
+    // A slope with a mountain over the tunnel; the road crosses 20 m from the lower portal, where the
+    // tunnel's straight line lies too near it.
+    let place = bridges();
+    let height = |e: f64| {
+        let inside = (e.clamp(-1000.0, 1000.0) + 1000.0) / 2000.0;
+        500.0 + 400.0 * inside + 100.0 * (std::f64::consts::PI * inside).sin()
+    };
+    let terrain = place.terrain(move |e, _| height(e));
+    let line = |corners: &[(f64, f64)]| place.line(corners, None);
+    let features = [
+        way("primary", line(&[(-1200.0, 0.0), (-1000.0, 0.0)]), plain),
+        way("primary", line(&[(-1000.0, 0.0), (1000.0, 0.0)]), tunnel),
+        way("primary", line(&[(1000.0, 0.0), (1200.0, 0.0)]), plain),
+        way("unclassified", line(&[(-980.0, -100.0), (-980.0, 100.0)]), plain),
+    ];
+    let solved = run(&features, &terrain, &[]);
+    for f in [0, 2, 3] {
+        assert!(on_the_ground(&place, &solved.ways[f][0], &terrain), "way {f}");
+    }
+}
+
+#[test]
+fn a_bridge_that_meets_a_tunnel_stands_on_the_terrain_at_the_portal() {
+    // As above, but the upper portal opens onto a bridge: the portal stands on the terrain, and the tunnel's line
+    // does not lever the deck.
+    let place = bridges();
+    let height = |e: f64| {
+        let inside = (e.clamp(-1000.0, 1000.0) + 1000.0) / 2000.0;
+        500.0 + 400.0 * inside + 100.0 * (std::f64::consts::PI * inside).sin()
+    };
+    let terrain = place.terrain(move |e, _| height(e));
+    let line = |corners: &[(f64, f64)]| place.line(corners, None);
+    let features = [
+        way("primary", line(&[(-1200.0, 0.0), (-1000.0, 0.0)]), plain),
+        way("primary", line(&[(-1000.0, 0.0), (1000.0, 0.0)]), tunnel),
+        way("primary", line(&[(1000.0, 0.0), (1100.0, 0.0)]), bridge),
+        way("primary", line(&[(1100.0, 0.0), (1300.0, 0.0)]), plain),
+        way("unclassified", line(&[(-980.0, -100.0), (-980.0, 100.0)]), plain),
+    ];
+    let solved = run(&features, &terrain, &[]);
+    let deck = solved.ways[2][0].as_ref().unwrap();
+    assert!((deck.z[0] - height(1000.0)).abs() <= GROUND_M + KEEP_M, "{}", deck.z[0]);
+    for f in [0, 3, 4] {
+        assert!(on_the_ground(&place, &solved.ways[f][0], &terrain), "way {f}");
+    }
+}
+
+#[test]
+fn a_path_that_meets_a_tunnel_inside_the_mountain_is_a_portal_and_stays_on_the_ground() {
+    let place = bridges();
+    let terrain = place.terrain(|e, _| if e.abs() < 995.0 { 700.0 } else { 500.0 });
+    let line = |corners: &[(f64, f64)]| place.line(corners, None);
+    let features = [
+        way("primary", line(&[(-1200.0, 0.0), (-1000.0, 0.0)]), plain),
+        way("primary", line(&[(-1000.0, 0.0), (0.0, 0.0), (1000.0, 0.0)]), tunnel),
+        way("primary", line(&[(1000.0, 0.0), (1200.0, 0.0)]), plain),
+        way("path", line(&[(0.0, 0.0), (0.0, 200.0)]), plain),
+    ];
+    let solved = run(&features, &terrain, &[]);
+    assert!(on_the_ground(&place, &solved.ways[3][0], &terrain));
+    // The tunnel runs straight from each portal to the path, but for the smoothness of its class, which rounds
+    // the kink at the path: the straight line weighs less (`BORE`).
+    let (along, z) = place.profile(&solved.ways[1][0]);
+    let (low, top) = (interp(0.0, &along, &z), interp(1000.0, &along, &z));
+    assert!((interp(500.0, &along, &z) - (low + top) / 2.0).abs() < 0.5);
+}
+
+/// The steepest climb of a solved way over any 10 m of its curve.
+fn steepest(place: &Place, part: &Option<Way>) -> f64 {
+    let (along, z) = place.profile(part);
+    let mut most: f64 = 0.0;
+    for i in 0..along.len() {
+        if let Some(j) = (i + 1..along.len()).find(|&j| along[j] - along[i] >= 10.0) {
+            most = most.max((z[j] - z[i]).abs() / (along[j] - along[i]));
+        }
+    }
+    most
+}
+
+#[test]
+fn a_tunnel_on_a_slope_steeper_than_its_grade_keeps_its_portals_on_the_terrain_and_climbs_as_the_terrain() {
+    // A primary tunnel of 1000 m between two portals that the terrain lifts by 20 %, past the 12 % of its class,
+    // with a mountain over it: the grade between portals holds the tunnel and never pulls a portal off the terrain.
+    let place = bridges();
+    let height = |e: f64| {
+        let inside = (e.clamp(-500.0, 500.0) + 500.0) / 1000.0;
+        500.0 + 200.0 * inside + 100.0 * (std::f64::consts::PI * inside).sin()
+    };
+    let terrain = place.terrain(move |e, _| height(e));
+    let line = |corners: &[(f64, f64)]| place.line(corners, None);
+    let features = [
+        way("primary", line(&[(-700.0, 0.0), (-500.0, 0.0)]), plain),
+        way("primary", line(&[(-500.0, 0.0), (500.0, 0.0)]), tunnel),
+        way("primary", line(&[(500.0, 0.0), (700.0, 0.0)]), plain),
+    ];
+    let solved = run(&features, &terrain, &[]);
+    for f in [0, 2] {
+        assert!(on_the_ground(&place, &solved.ways[f][0], &terrain), "way {f}");
+    }
+    // The fit rounds the kinks at the portals within the smoothing length of the class, so the curve between them
+    // climbs a little steeper than the terrain's rise: 0.01 of grade.
+    let steepest = steepest(&place, &solved.ways[1][0]);
+    assert!(steepest <= 0.2 + 0.01, "{steepest}");
+}
+
+#[test]
+fn a_road_in_a_gully_by_a_portal_bends_the_tunnel_under_it_within_its_grade() {
+    // The slope of the lever test, 20 % from portal to portal, and a road across the tunnel 10 m from its lower
+    // portal in a gully 5 m deep: the pass needs the tunnel lower than its portals' band gives. The grade between
+    // the portals spreads the drop along the tunnel; without it the tunnel digs a step under the road.
+    let place = bridges();
+    let height = |e: f64| {
+        let inside = (e.clamp(-1000.0, 1000.0) + 1000.0) / 2000.0;
+        let gully = 5.0 * (-((e + 990.0) / 4.0).powi(2)).exp();
+        500.0 + 400.0 * inside + 100.0 * (std::f64::consts::PI * inside).sin() - gully
+    };
+    let terrain = place.terrain(move |e, _| height(e));
+    let line = |corners: &[(f64, f64)]| place.line(corners, None);
+    let features = [
+        way("primary", line(&[(-1200.0, 0.0), (-1000.0, 0.0)]), plain),
+        way("primary", line(&[(-1000.0, 0.0), (1000.0, 0.0)]), tunnel),
+        way("primary", line(&[(1000.0, 0.0), (1200.0, 0.0)]), plain),
+        way("unclassified", line(&[(-990.0, -100.0), (-990.0, 100.0)]), plain),
+    ];
+    let solved = run(&features, &terrain, &[]);
+    assert!(on_the_ground(&place, &solved.ways[3][0], &terrain));
+    // The portals give way to the pass past GROUND_M, as the ground gives way to every other limit, but not past
+    // HARD_M.
+    for f in [0, 2] {
+        let curve = place.curve(&solved.ways[f][0]);
+        let ground = terrain.heights(&curve.points);
+        assert!(curve.z.unwrap().iter().zip(ground).all(|(z, h)| (z - h).abs() <= HARD_M + KEEP_M), "way {f}");
+    }
+    // The pass and the grade are costs of one tier, so the grade gives way a little where the pass pushes.
+    let steepest = steepest(&place, &solved.ways[1][0]);
+    assert!(steepest <= 0.2 + 0.02, "{steepest}");
 }
 
 #[test]
@@ -814,7 +987,8 @@ fn stream(place: &Place, from: (f64, f64), to: (f64, f64)) -> River {
 }
 
 #[test]
-fn a_road_over_an_untagged_stream_holds_its_cover_and_a_ford_a_path_a_wide_river_and_a_grazing_line_do_not() {
+fn a_road_over_a_narrow_stream_holds_its_cover_tagged_as_a_ford_or_not_and_a_path_a_wide_river_and_a_grazing_line_do_not(
+) {
     let place = bridges();
     let road = |class: &str, north: f64, edit: fn(&mut Feature)| {
         way(class, place.line(&[(-100.0, north), (100.0, north)], Some(20.0)), edit)
@@ -870,18 +1044,21 @@ fn a_road_over_an_untagged_stream_holds_its_cover_and_a_ford_a_path_a_wide_river
         let start = place.east_north(solved.ways[f][0].as_ref().unwrap().points[0]).0;
         interp(east - start, &along, &z)
     };
-    let lifted = |z: f64| z > 499.7 + 1.0 - 0.01;
+    // A limit is a cost: the stiff line of a railway meets its cover within 2 cm.
+    let lifted = |z: f64| z > 499.7 + 1.0 - 0.02;
     let level = |z: f64, want: f64| (z - want).abs() < 0.01;
     assert!(lifted(at(0, 0.0)), "{}", at(0, 0.0));
     assert!(level(at(1, 0.0), 500.0) && level(at(3, 0.0), 500.0) && level(at(4, 0.0), 500.0));
-    assert!(level(at(2, 0.0), 499.7 - FORD_M), "{}", at(2, 0.0));
-    assert!(level(at(5, 0.0), 499.7 - FORD_M) && lifted(at(5, 300.0)), "{} {}", at(5, 0.0), at(5, 300.0));
+    // A road tagged as a ford, and one that shares a vertex with the stream, over narrow water.
+    assert!(lifted(at(2, 0.0)), "{}", at(2, 0.0));
+    assert!(lifted(at(5, 0.0)) && lifted(at(5, 300.0)), "{} {}", at(5, 0.0), at(5, 300.0));
     assert!(lifted(at(6, 0.0)) && level(at(7, 0.0), 500.0) && level(at(8, 0.0), 500.0));
     assert!(level(at(9, 0.0), 500.0) && level(at(9, 20.0), 500.0));
     assert!(lifted(at(10, 0.0)) && level(at(11, 0.0), 500.0));
     let m = &solved.metrics;
-    assert_eq!((m.covers_untagged, m.covers_untagged_lifted, m.covers_untagged_capped, m.covers_capped), (4, 4, 1, 0));
-    assert_eq!((m.covers, m.covers_lifted, m.fords), (4, 4, 2));
+    // The ford's crossing, the shared vertex and the stream 4 m on: that one lies under the shared one's lift.
+    assert_eq!((m.covers_untagged, m.covers_untagged_lifted, m.covers_untagged_capped, m.covers_capped), (7, 6, 1, 0));
+    assert_eq!((m.covers, m.covers_lifted, m.fords), (7, 6, 0));
     assert!(m.cover_lift_top_m > 0.69 && m.cover_lift_top_m < 0.71, "{}", m.cover_lift_top_m);
 }
 

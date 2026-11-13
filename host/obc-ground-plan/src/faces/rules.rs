@@ -9,7 +9,7 @@ use serde_json::{Map, Value};
 use super::heights::{HeightRules, Legs, RULE_FIELDS};
 use super::records::MARGIN_M;
 use crate::frame::CHAIN_MAX_M;
-use crate::graph::{HEADING_M, ROOM_MAX_M, SNAP_REACH_M};
+use crate::graph::{Structures, HEADING_M, ROOM_MAX_M, SNAP_REACH_M};
 use crate::sections::HALF_MAX_M;
 use crate::sections::{Finish, Reach, Sections};
 
@@ -20,19 +20,25 @@ pub enum Rank {
     Platform,
     RailBed,
     ShoulderPaved,
+    WaterLine,
     Shoulder,
     Verge,
+    Zone,
+    Bank,
     Slope,
     Terrain,
 }
 
-const RANKS: [(&str, Rank); 8] = [
+const RANKS: [(&str, Rank); 11] = [
     ("carriageway", Rank::Carriageway),
     ("platform", Rank::Platform),
     ("rail_bed", Rank::RailBed),
     ("shoulder_paved", Rank::ShoulderPaved),
+    ("water_line", Rank::WaterLine),
     ("shoulder", Rank::Shoulder),
     ("verge", Rank::Verge),
+    ("zone", Rank::Zone),
+    ("bank", Rank::Bank),
     ("slope", Rank::Slope),
     ("terrain", Rank::Terrain),
 ];
@@ -72,7 +78,7 @@ pub struct PlanRules {
     /// A platform's `reach_m`: its edge is a wall, with no blend into the ground.
     pub platform_reach_m: f64,
     /// Per rank, its place in the list `ranks` of `plan.json`.
-    ranks: [u8; 8],
+    ranks: [u8; RANKS.len()],
     /// "host group/guest group" and "default".
     pairs: BTreeMap<String, Pair>,
     /// Per finish, whether it is in `tread_finishes`: a guest of it keeps its own tread at a stop
@@ -100,6 +106,8 @@ impl PlanRules {
 pub struct Rules {
     pub sections: Sections,
     pub plan: PlanRules,
+    /// The block `structures`: the levels of the way graph.
+    pub structures: Structures,
     reaches: Vec<Reach>,
 }
 
@@ -132,7 +140,7 @@ impl Rules {
         for (v, field) in values.iter_mut().zip(RULE_FIELDS) {
             *v = h(field)?;
         }
-        if values[RULE_FIELDS.len() - 1] > MARGIN_M {
+        if values[RULE_FIELDS.iter().position(|&f| f == "region_fade_m").unwrap()] > MARGIN_M {
             return Err("plan.json heights.region_fade_m: over the records' MARGIN_M".into());
         }
         let legs = match heights.get("legs").and_then(Value::as_str) {
@@ -142,7 +150,7 @@ impl Rules {
         };
         let names = top.get("ranks").and_then(Value::as_array).ok_or("plan.json: no list ranks")?;
         let names: Vec<&str> = names.iter().filter_map(Value::as_str).collect();
-        let mut ranks = [u8::MAX; 8];
+        let mut ranks = [u8::MAX; RANKS.len()];
         for (at, name) in names.iter().enumerate() {
             let Some(&(_, rank)) = RANKS.iter().find(|(n, _)| n == name) else {
                 return Err(format!("plan.json ranks: an unknown rank {name:?}"));
@@ -156,7 +164,8 @@ impl Rules {
             return Err(format!("plan.json ranks: no rank {name:?}"));
         }
         let classes: Vec<_> = (0..).map_while(|rank| sections.class_faces(rank)).collect();
-        let groups: Vec<&str> = classes.iter().map(|c| c.group).collect();
+        // The groups of roads.json, and line water's.
+        let groups: Vec<&str> = classes.iter().map(|c| c.group).chain(["water"]).collect();
         let mut pairs = BTreeMap::new();
         for (key, row) in top.get("pairs").and_then(Value::as_object).ok_or("plan.json: no object pairs")? {
             if key != "default" {
@@ -184,6 +193,12 @@ impl Rules {
             let at = Finish::ALL.iter().position(|f| Some(f.name()) == name.as_str());
             tread[at.ok_or_else(|| format!("plan.json tread_finishes: {name} is no finish"))?] = true;
         }
+        let block = top.get("structures").and_then(Value::as_object).ok_or("plan.json: no object structures")?;
+        let mut parts = [0.0; 6];
+        for (v, field) in parts.iter_mut().zip(Structures::FIELDS) {
+            *v = number(block, field).map_err(|e| e.replace("plan.json ", "plan.json structures."))?;
+        }
+        let structures = Structures::new(parts);
         let f = |field: &str| number(top, field);
         let plan = PlanRules {
             extent_m: f("extent_m")?,
@@ -199,7 +214,9 @@ impl Rules {
         if classes.iter().any(|c| c.return_grade <= 0.0) {
             return Err("roads.json: a return_grade of 0".into());
         }
-        let reaches = reach_rows(&plan, band_m(&sections), inner_max_m(&sections), radius_max_m(&sections));
+        let mut reaches = reach_rows(&plan, band_m(&sections), inner_max_m(&sections), radius_max_m(&sections));
+        let graph_m = (sections.reaches().iter()).filter(|r| r.owner == "graph").map(Reach::metres).fold(0.0, f64::max);
+        reaches.push(structures.reach(graph_m));
         for row in reaches.iter().filter(|r| r.chain) {
             if row.metres() > CHAIN_MAX_M {
                 return Err(format!(
@@ -209,7 +226,7 @@ impl Rules {
                 ));
             }
         }
-        Ok(Rules { sections, plan, reaches })
+        Ok(Rules { sections, plan, structures, reaches })
     }
 
     /// The reach table: the rows of `Sections` and those of the faces.
@@ -345,6 +362,7 @@ mod tests {
         assert_eq!(rules.plan.rank(Rank::Carriageway), 0);
         assert_eq!(rules.plan.pair("road", "path").mouth, Mouth::Stop);
         assert_eq!(rules.plan.pair("water", "road").mouth, Mouth::Join);
+        assert_eq!(rules.plan.pair("water", "water"), Pair { mouth: Mouth::Join, blend: true });
         let cell = rules.reaches().find(|r| r.name == "faces cell").unwrap();
         assert!(cell.metres() < 191.0);
         let fails = |plan: &str| Rules::parse(Sections::embedded().clone(), plan).unwrap_err();

@@ -1,8 +1,8 @@
 // A cell's near mesh as the plan worker hands it over (`CellMesh::to_bytes` of `mesh/mod.rs` in
 // obc-ground-plan): the one reader of those bytes, in the form that pieces.ts uploads.
 
-const MAGIC = 0x4f424d03;
-const HEAD = 10;
+const MAGIC = 0x4f424d05;
+const HEAD = 12;
 /** Region cells (2 × 2 grid cells) along a side of a cell, as `params::CELLS`, and the words of R on the cell and one ring. */
 const CELLS = 128;
 const REGION_WORDS = Math.ceil(((CELLS + 2) * (CELLS + 2)) / 32);
@@ -24,13 +24,17 @@ export interface CellMesh {
     level18Runs: number;
     /** Four corner indices per step slot: a_p, a_q, b_q, b_p. */
     steps: Uint32Array<ArrayBuffer>;
+    /** The last slots of `steps`: the end faces on the deck end lines. */
+    endFaces: number;
     /** One bit per grid point (j × SIDE + i) whose region cells all lie in R: the terrain sinks there. */
     sunk: Uint32Array<ArrayBuffer>;
+    /** Four words per culvert mouth: its corner on the water, its corner in the zone, the outline's direction and the water's half-width. */
+    culverts: Uint32Array<ArrayBuffer>;
 }
 
 export function cellMesh(bytes: ArrayBuffer): CellMesh {
     const words = new Uint32Array(bytes);
-    const [magic, x, y, corners, triangles, , triangleRuns, steps, stepRuns, level18Runs] = words.subarray(0, HEAD);
+    const [magic, x, y, corners, triangles, , triangleRuns, steps, stepRuns, level18Runs, endFaces, mouths] = words.subarray(0, HEAD);
     if (magic !== MAGIC) throw new Error(`not a ground plan mesh: ${magic.toString(16)}`);
     let at = HEAD;
     const take = (n: number) => words.subarray(at, (at += n));
@@ -41,13 +45,13 @@ export function cellMesh(bytes: ArrayBuffer): CellMesh {
         const table = take(2 * runs), short = new Uint16Array(bytes.slice(4 * at, 4 * (at += Math.ceil((size * count) / 2))), 0, size * count);
         return { short, runs: Array.from({ length: runs }, (_, r) => ({ count: table[2 * r], base: table[2 * r + 1] })) };
     };
-    const triangle = items(triangles, triangleRuns, 3), step = items(steps, stepRuns, 4), region = take(REGION_WORDS);
-    if (region.length !== REGION_WORDS) throw new Error('a ground plan mesh ends early');
+    const triangle = items(triangles, triangleRuns, 3), step = items(steps, stepRuns, 4), region = take(REGION_WORDS), culverts = words.slice(at, at + 4 * mouths);
+    if (region.length !== REGION_WORDS || culverts.length !== 4 * mouths) throw new Error('a ground plan mesh ends early');
     // The slots read their corners in the vertex stage, by whole index.
     const slots = new Uint32Array(step.short.length);
     let k = 0;
     for (const { count, base } of step.runs) for (let n = 0; n < 4 * count; n++, k++) slots[k] = step.short[k] + base;
-    return { x, y, corners: corner, triangles: triangle.short, runs: triangle.runs, level18Runs, steps: slots, sunk: sunkOf(region) };
+    return { x, y, corners: corner, triangles: triangle.short, runs: triangle.runs, level18Runs, steps: slots, endFaces, sunk: sunkOf(region), culverts };
 }
 
 /** The grid points whose region cells all lie in R: cells ⌊(i − 1) / 2⌋ to ⌊i / 2⌋ across, the same down. */

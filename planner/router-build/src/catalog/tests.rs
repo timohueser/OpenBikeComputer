@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    source::{Node, Way},
+    source::{Builder, Nodes, Relations, Ways},
     Graph,
 };
 use planner_router::{
@@ -17,8 +17,8 @@ impl Source for Memory {
     }
 }
 
-fn tags(pairs: &[(&str, &str)]) -> Tags {
-    pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+fn tags(pairs: &[(&str, &str)]) -> Tags<'static> {
+    Tags::from_pairs(pairs.iter().copied())
 }
 
 /// The way between grid nodes `a` and `b`.
@@ -29,11 +29,16 @@ fn way(a: i64, b: i64) -> i64 {
 /// Inside one zoom 9 cell.
 const ORIGIN: i32 = 100_000;
 
+/// A relation: ID, tags and members with the empty role.
+type Route<'a> = (i64, Vec<(&'a str, &'a str)>, Vec<Id>);
+
 /// A 7 by 7 grid of streets 445 m apart on rolling ground, with node `10 * row + column`, and its
 /// source objects. The way from node 0 to node 1 is T3.
-fn grid(relations: Vec<Relation>) -> (Package<Memory>, Data) {
+fn grid(routes: Vec<Route>) -> (Package<Memory>, Data) {
     let mut graph = Graph::default();
     let mut index = HashMap::new();
+    let (mut nodes, mut ways, mut relations) =
+        (Builder::<Nodes>::default(), Builder::<Ways>::default(), Builder::<Relations>::default());
     for row in 0..7 {
         for column in 0..7 {
             let id = 10 * row + column;
@@ -46,7 +51,7 @@ fn grid(relations: Vec<Relation>) -> (Package<Memory>, Data) {
             graph.points.push(point);
             graph.node_ids.push(id);
             graph.node_access.push(BIKE | FOOT | PUSH);
-            graph.osm.nodes.insert(id, Node { id, point, tags: Tags::new() });
+            nodes.push(id, point, &Tags::default());
         }
     }
     for row in 0..7 {
@@ -54,9 +59,9 @@ fn grid(relations: Vec<Relation>) -> (Package<Memory>, Data) {
             let a = 10 * row + column;
             for b in [a + 1, a + 10].into_iter().filter(|b| b % 10 < 7 && b / 10 < 7) {
                 let id = way(a, b);
-                graph.osm.ways.insert(id, Way { id, nodes: vec![a, b], tags: tags(&[("highway", "residential")]) });
+                ways.push(id, &[a, b], &tags(&[("highway", "residential")]));
                 for (from, to) in [(index[&a], index[&b]), (index[&b], index[&a])] {
-                    let shape = vec![graph.points[from as usize], graph.points[to as usize]];
+                    let shape = vec![graph.points.values()[from as usize], graph.points.values()[to as usize]];
                     graph.roads.push(Road {
                         from,
                         to,
@@ -77,7 +82,10 @@ fn grid(relations: Vec<Relation>) -> (Package<Memory>, Data) {
             }
         }
     }
-    graph.osm.relations = relations.into_iter().map(|r| (r.id, r)).collect();
+    for (id, pairs, members) in routes {
+        relations.push(id, &tags(&pairs), members.into_iter().map(|member| (member, "")));
+    }
+    graph.osm = Data { nodes: nodes.finish().0, ways: ways.finish().0, relations: relations.finish().0 };
     let profiles: Vec<_> = Profile::presets().into_iter().filter(|p| PROFILES.contains(&p.name.as_str())).collect();
     let mut objects = HashMap::new();
     let manifest =
@@ -89,9 +97,8 @@ fn grid(relations: Vec<Relation>) -> (Package<Memory>, Data) {
     (Package::open(Memory(Arc::new(objects)), &serde_json::to_vec(&manifest).unwrap()).unwrap(), graph.osm)
 }
 
-fn route(id: i64, pairs: &[(&str, &str)], ways: impl IntoIterator<Item = i64>) -> Relation {
-    let members = ways.into_iter().map(|w| (Id::Way(w), String::new())).collect();
-    Relation { id, tags: tags(&[[("type", "route")].as_slice(), pairs].concat()), members }
+fn route<'a>(id: i64, pairs: &[(&'a str, &'a str)], ways: impl IntoIterator<Item = i64>) -> Route<'a> {
+    (id, [&[("type", "route")], pairs].concat(), ways.into_iter().map(Id::Way).collect())
 }
 
 fn path(nodes: &[i64]) -> Vec<i64> {
@@ -107,10 +114,9 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
         ("osmc:symbol", "red"),
         ("url", "https://t.example"),
     ];
-    let long = |id, children: &[i64]| Relation {
-        id,
-        tags: tags(&[("type", "superroute"), ("route", "hiking"), ("name", "Long"), ("network", "rwn")]),
-        members: children.iter().map(|&c| (Id::Relation(c), String::new())).collect(),
+    let long = |id, children: &[i64]| -> Route {
+        let tags = vec![("type", "superroute"), ("route", "hiking"), ("name", "Long"), ("network", "rwn")];
+        (id, tags, children.iter().copied().map(Id::Relation).collect())
     };
     let mut corner = path(&[0, 1, 2, 3, 4, 14, 24, 34, 44]);
     corner.remove(5);

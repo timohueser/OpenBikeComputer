@@ -10,6 +10,8 @@ export interface Plan {
     updatedAt: number;
     summary: string;
     trip: Trip;
+    /** The ID of the saved version that `trip` belongs to. */
+    open?: string;
 }
 
 export function newPlan(trip: Trip, name = ''): Plan {
@@ -19,12 +21,13 @@ export function newPlan(trip: Trip, name = ''): Plan {
 function isPlan(value: unknown): value is Plan {
     const plan = value as Partial<Plan> | null;
     return !!plan && typeof plan.id === 'string' && !!plan.id && Number.isInteger(plan.revision) && typeof plan.name === 'string'
-        && Number.isFinite(plan.updatedAt) && typeof plan.summary === 'string' && isTrip(plan.trip);
+        && Number.isFinite(plan.updatedAt) && typeof plan.summary === 'string' && isTrip(plan.trip)
+        && (plan.open === undefined || typeof plan.open === 'string');
 }
 
 // Only the fields of a plan: a record of a version 1 library also holds its versions, which a save must not write back.
-function fields({ id, revision, name, updatedAt, summary, trip }: Plan): Plan {
-    return { id, revision, name, updatedAt, summary, trip };
+function fields({ id, revision, name, updatedAt, summary, trip, open }: Plan): Plan {
+    return { id, revision, name, updatedAt, summary, trip, ...open !== undefined && { open } };
 }
 
 function isVersion(value: unknown): value is Version {
@@ -187,9 +190,12 @@ export class PlanLibrary {
     async close(): Promise<void> { (await this.database)?.close(); }
 }
 
+// The companion app requires these keys; the web planner ignores them.
+const withCompanionKeys = (trip: Trip) => ({ ...trip, budget: 'days', target: trip.days, limit: 0 });
+
 export function exportPlan(plan: Plan, versions: Version[]): string {
     return JSON.stringify({ format: 'openbikecomputer-plan', version: 1, name: (plan.name || planTitle(plan.trip)).slice(0, 120),
-        trip: plan.trip, versions }, null, 2);
+        open: versions.some(v => v.id === plan.open) ? plan.open : undefined, trip: withCompanionKeys(plan.trip), versions: versions.map(v => ({ ...v, trip: withCompanionKeys(v.trip) })) }, null, 2);
 }
 
 export function importPlan(text: string): { plan: Plan; versions: Version[] } {
@@ -203,7 +209,8 @@ export function importPlan(text: string): { plan: Plan; versions: Version[] } {
         ids.add(value.id);
         return { id: value.id, at: value.at, ...(value.name ? { name: value.name } : {}), summary: versionSummary(value.trip, undefined), trip: value.trip };
     });
-    return { plan: newPlan(file.trip, file.name.trim()), versions };
+    const plan = newPlan(file.trip, file.name.trim());
+    return { plan: ids.has(file.open) ? { ...plan, open: file.open } : plan, versions };
 }
 
 export function downloadPlan(plan: Plan, versions: Version[]): void {

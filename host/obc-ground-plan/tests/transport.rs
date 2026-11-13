@@ -111,7 +111,7 @@ fn the_flat_plan_indexes_its_samples_and_its_digest_ignores_the_clock() {
     assert_eq!(flat.crossings.len(), CROSSING_WORDS * g.crossings.len());
     let stats: serde_json::Value = serde_json::from_str(&flat.stats).unwrap();
     assert_eq!(stats["graph"]["junctions"].as_u64(), Some(u64::from(g.stats.junctions)));
-    assert_eq!(stats["inputs"]["request"].as_str(), Some(a.request.as_str()));
+    assert_eq!(stats["inputs"]["request"].as_str(), a.request.as_deref());
     let f = &flat.faces;
     assert!(!a.faces.faces.is_empty());
     assert_eq!(f.faces.len(), FACE_WORDS * a.faces.faces.len());
@@ -164,12 +164,12 @@ fn the_vocabulary_names_every_code_with_its_colour() {
     let colour = |c: &serde_json::Value| c.as_str().is_some_and(|c| c.len() == 7 && c.starts_with('#'));
     assert!(families.iter().all(|f| colour(&f["colour"])));
     assert!(v["colours"].as_object().unwrap().values().all(colour));
-    assert_eq!(v["crossings"].as_array().unwrap().len(), 8);
+    assert_eq!(v["crossings"].as_array().unwrap().len(), 9);
     let names = |key: &str| {
         v[key].as_array().unwrap().iter().map(|e| e["name"].as_str().unwrap().to_string()).collect::<Vec<_>>()
     };
     assert_eq!(names("surfaces")[Surface::CornerFill as usize], "corner_fill");
-    assert_eq!(names("surfaces").len(), Surface::Platform as usize + 1);
+    assert_eq!(names("surfaces").len(), Surface::Zone as usize + 1);
     assert_eq!(names("edges")[EdgeKind::CellBorder as usize], "cell_border");
     assert_eq!(v["surfaces"][0]["fill"], serde_json::Value::Null, "terrain has no fill");
     assert!(v["edges"].as_array().unwrap().iter().all(|e| colour(&e["colour"])));
@@ -240,7 +240,17 @@ fn plan_of(w: &FaceWords, cell: CellKey) -> FacePlan {
             }
         })
         .collect();
-    FacePlan { cell, level: 0, vertices: pairs(&w.vertices), faces, edges, corners, stats: FaceStats::default() }
+    let mouths = Vec::new();
+    FacePlan {
+        cell,
+        level: 0,
+        vertices: pairs(&w.vertices),
+        faces,
+        edges,
+        corners,
+        mouths,
+        stats: FaceStats::default(),
+    }
 }
 
 #[test]
@@ -288,6 +298,7 @@ fn the_face_words_keep_every_field_of_the_plan() {
             },
             CornerArc { owner: Owner::Way(7), centre: [0, 0], radius_m: 0.0, t_a: [0, 0], t_b: [0, 0], arc: vec![] },
         ],
+        mouths: Vec::new(),
         stats: FaceStats::default(),
     };
     assert_eq!(plan_of(&FaceWords::of(&plan), cell), plan);
