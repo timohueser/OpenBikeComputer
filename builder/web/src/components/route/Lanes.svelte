@@ -95,10 +95,11 @@
         onpointer(next, null);
     }
 
-    // A menu or a panel that Escape closes first prevents the default, in the capture phase.
+    // A menu or a panel that Escape closes first prevents the default, in the capture phase. A window closes at
+    // Escape by itself, wherever the focus is: then the part stays.
     function escape(event: KeyboardEvent) {
-        if (event.key !== 'Escape' || event.defaultPrevented || !part || !onpart) return;
-        if (!(event.target as Element).closest?.('input, textarea, dialog')) onpart(null);
+        if (event.key !== 'Escape' || event.defaultPrevented || !part || !onpart || document.querySelector('dialog:modal')) return;
+        if (!(event.target as Element).closest?.('input, textarea')) onpart(null);
     }
 </script>
 

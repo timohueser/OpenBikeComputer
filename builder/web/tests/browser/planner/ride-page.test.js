@@ -201,6 +201,8 @@ test('the lines of a ride: a row for each line with values, the pointer, and a p
   await expect(large.getByText('km 5.0 to km 10.0 · 5.0 km')).toBeVisible();
   await expect(large.locator('li')).toHaveText(['Z50h 0m', 'Z40h 17m', 'Z30h 0m', 'Z20h 0m', 'Z10h 0m']);
   await expect(large.locator('dl > div')).toHaveText(['Average160 bpm', 'Highest160 bpm']);
+  // A click on the line takes the focus out of the window: Escape still closes only the window.
+  await large.locator('.lane').click();
   await page.keyboard.press('Escape');
   await expect(large).toHaveCount(0);
   await expect(page.locator('.lines .part')).toHaveCount(1);

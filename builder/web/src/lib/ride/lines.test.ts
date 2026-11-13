@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { FitSample } from '../core/fit';
 import { rideSummary, lineCoordinates } from '../library/summary';
 import { heartRateZones } from '../settings/zones';
-import { distanceAxis, lineShares, range, sampleAt, smooth, speeds, thin, zoneStretches } from './lines';
+import { distanceAxis, extent, lineShares, range, sampleAt, smooth, speeds, thin, zoneStretches } from './lines';
 
 const T = 1_792_828_800;
 /** Microdegrees of latitude for about 50 m. */
@@ -36,8 +36,12 @@ describe('thin', () => {
         expect(range(columns)!.low).toBe(10);
         // A ride with few points: the columns between two samples join them; a sample with no value keeps its gap.
         expect(thin([0, .5, .75, .99], [10, 30, undefined, 50], 8)).toEqual([10, 15, 20, 25, 30, null, null, 50]);
+        // A flat line draws in a range of 1; its smallest and its largest value are the same.
         expect(range([null, 7, null])).toEqual({ low: 7, high: 8 });
+        expect(extent([null, 7, undefined, 7])).toEqual({ low: 7, high: 7 });
+        expect(extent([3, undefined, 9, 5])).toEqual({ low: 3, high: 9 });
         expect(range([null])).toBeUndefined();
+        expect(extent([undefined, null])).toBeUndefined();
     });
 });
 

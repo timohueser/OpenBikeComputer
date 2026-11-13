@@ -6,7 +6,7 @@
     import { distanceTicks, fitTicks } from './ticks';
     import { townOf } from './towns';
     import type { FitSample } from '../../lib/core/fit';
-    import { distanceAxis, range, sampleAt, smooth, speeds, thin } from '../../lib/ride/lines';
+    import { distanceAxis, extent, range, sampleAt, smooth, speeds, thin } from '../../lib/ride/lines';
     import type { Channels, PartNumbers, RideClimb } from '../../lib/ride/numbers';
     import { formatAlong, formatDistance, formatHeight, formatSpeed } from '../../lib/settings/format';
 
@@ -101,10 +101,12 @@
         const key = large, { format } = series[key], selected = part && partFacts;
         const whole = key === 'hr' || key === 'power' || key === 'cadence' ? channels?.[key] : undefined;
         const sensor = whole && selected ? partFacts.channels[key as keyof Channels] : whole;
-        const span = (selected ? range(values[key].slice(part[0], part[1] + 1)) : ranges[key]) ?? { low: NaN, high: NaN };
-        const average = key === 'speed' ? selected ? partFacts.speed : speed : sensor?.mean;
-        const numbers = key === 'elevation' ? [{ label: 'Lowest', value: format(span.low) }, { label: 'Highest', value: format(span.high) }]
-            : [{ label: 'Average', value: average === undefined ? '–' : format(average) }, { label: 'Highest', value: format(sensor?.max ?? span.high) }];
+        // The real smallest and largest value, not the range of the row, which is wider for a flat line.
+        const found = extent(selected ? values[key].slice(part[0], part[1] + 1) : values[key]);
+        const text = (value?: number) => value === undefined ? '–' : format(value);
+        const numbers = key === 'elevation' ? [{ label: 'Lowest', value: text(found?.low) }, { label: 'Highest', value: text(found?.high) }]
+            : key === 'speed' ? [{ label: 'Average', value: text(selected ? partFacts.speed : speed) }, { label: 'Highest', value: text(found?.high) }]
+                : [{ label: 'Average', value: text(sensor?.mean) }, { label: 'Highest', value: text(sensor?.max) }];
         // The zones of the line are those of the whole ride, also when the part has no value of the sensor.
         return { key, sensor, numbers, zones: whole?.zones?.map(({ zone }) => zone) };
     });
