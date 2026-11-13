@@ -3,7 +3,7 @@
 //! search inside the cell of the step, which finds a path of exactly the table value: over the
 //! turns of the cell for level 1, else over the tables of its children.
 
-use super::{clock, invalid, target, turns, Entry, Found, Label, Step, Workspace};
+use super::{clock, costs, invalid, target, turns, Entry, Found, Label, Step, Workspace};
 use crate::{
     host::Host,
     region::{Installed, Place, Shared},
@@ -98,11 +98,13 @@ impl<H: Host> Unpack<'_, H> {
         let cell = shared.closed(&home, level, installed)?.ok_or_else(|| invalid("a path step without its table"))?;
         let column = cell.column(shared.place(b)?.reference())?;
         let best = cell.table.get(cell.row(start.reference())?, column);
-        // Level 1: the cost of `b`, which no block of this cell holds. Higher: the roads of the cell.
+        // Level 1: the costs of the cell, and the cost of `b`, which no block of the cell holds.
+        // Higher: the roads of the cell.
         let (end, inside) = match level {
             1 => (target(shared, installed, b)?, 0..0),
             _ => ((b, None), shared.roads(&home, level)?),
         };
+        let turn_costs = costs(shared, installed, &start)?;
         self.work.labels[0].reset()?;
         self.work.queues[0].clear();
         self.set(a, Label { cost: 0, parent: u32::MAX, origin: 0, level: 0 })?;
@@ -126,7 +128,7 @@ impl<H: Host> Unpack<'_, H> {
             if level == 1 {
                 let road = entry.road - (home.cell.first_road + home.level1.first_road);
                 let place = Place { road, ..start };
-                turns(shared, installed, &place, |k| Ok((k == column).then_some(end)), &mut arcs)?;
+                turns(&place, &turn_costs, |k| Ok((k == column).then_some(end)), &mut arcs)?;
             } else {
                 let place = shared.place(entry.road)?;
                 let child = shared.closed(&place.home(), level - 1, installed)?;
@@ -182,7 +184,7 @@ impl<H: Host> Unpack<'_, H> {
                 true => target(shared, installed, step.road).map(Some),
                 false => Ok(None),
             };
-            turns(shared, installed, &from, leaving, &mut arcs)?;
+            turns(&from, &costs(shared, installed, &from)?, leaving, &mut arcs)?;
             let weight = arcs.iter().filter(|arc| arc.0 == step.road).map(|arc| arc.1).min();
             let weight = weight.ok_or_else(|| Error::InvalidData("A path road without its turn".into()))?;
             sum = sum.checked_add(weight).ok_or(Error::Limit)?;

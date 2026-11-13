@@ -14,6 +14,7 @@ use planner_router_build::Graph;
 use planner_service::native;
 use std::{
     ffi::{c_char, CStr, CString},
+    process::{Command, Stdio},
     sync::atomic::AtomicBool,
 };
 use tower::ServiceExt;
@@ -279,6 +280,24 @@ async fn the_service_opens_an_install_of_format_10() {
 
     std::fs::remove_file(target.join(install::MARKER)).unwrap();
     assert!(matches!(planner_service::app(&target, 1), Err(planner_router::Error::MissingRegion(_))));
+    // The program opens the folder of `ROUTE_CELLS`, not its argument: it does not start on the
+    // install without its marker, also when the argument is a package that opens.
     std::fs::write(pages.join("directory.bin"), &directory).unwrap();
+    let mut service = Command::new(env!("CARGO_BIN_EXE_planner-service"));
+    service.arg(&pages).env("ROUTE_CELLS", &target).env("ROUTE_LISTEN", "127.0.0.1:0").stderr(Stdio::null());
+    let mut service = service.spawn().unwrap();
+    let ended = (0..100).find_map(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        service.try_wait().unwrap()
+    });
+    let _ = service.kill();
+    assert!(ended.is_some_and(|status| !status.success()), "the service started on the package of its argument");
     assert!(matches!(planner_router::open(&pages).unwrap(), Opened::Pages(_)));
+}
+
+#[test]
+fn the_program_prints_the_format_of_each_package_that_it_reads() {
+    let output = Command::new(env!("CARGO_BIN_EXE_planner-service")).arg("--formats").output().unwrap();
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), r#"{"planner/routing":9,"planner/routing-cells":10}"#);
 }

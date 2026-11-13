@@ -12,9 +12,10 @@ target/release/planner-service /data/routes/freiburg
 target/release/planner-service --formats
 ```
 
-`--formats` prints the format of the routing package that the service reads, such as
-`{"planner/routing":9}`. `obc data serve` starts no release in another format, and starts one
-service for each planner release that it serves. The planner calls the `routing` prefix of its
+`--formats` prints the format of each routing package that the service reads:
+`{"planner/routing":9,"planner/routing-cells":10}`. `obc data serve` starts no release in another
+format of `planner/routing`, and starts one service for each planner release that it serves. With
+`ROUTE_CELLS`, the service opens that install of format 10 and not the package of its argument. The planner calls the `routing` prefix of its
 config; see the [planner README](../../builder/web/src/components/planner/README.md).
 
 ```sh
@@ -51,6 +52,7 @@ cargo clippy -p planner-service --all-targets --no-default-features -- -D warnin
 | `ROUTE_LISTEN` | `127.0.0.1:8788` | Listen address |
 | `ROUTE_WORKERS` | CPUs of the process, at most 12 | Concurrent requests, from 1 to 12; heavy requests use at most half |
 | `ROUTE_ORIGIN` | Unset | One allowed browser origin; omit for same-origin proxy |
+| `ROUTE_CELLS` | Unset | The folder of an install of format 10, which `obc data serve` sets. The service fails at its start when the folder does not open |
 
 - `GET /health` reports process health.
 - `GET /v1/region` reports package identity, coverage, profiles and attribution.

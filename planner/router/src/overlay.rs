@@ -10,7 +10,7 @@ mod store;
 mod unpack;
 
 use crate::{
-    cells::{values, MAX_LEVELS},
+    cells::{values, Group, GroupCell, MAX_LEVELS},
     host::Host,
     region::{Closed, Home, Installed, Junction, Place, Shared},
     Error, Result,
@@ -151,23 +151,36 @@ fn invalid(what: &str) -> Error {
     Error::InvalidData(format!("Invalid route cell data: {what}"))
 }
 
+/// The costs of the level-1 cell of `place` for the profile `installed`.
+fn costs<'a, H: Host>(shared: &'a Shared<H>, installed: &Installed, place: &Place<'a>) -> Result<Costs<'a>> {
+    let (group, cell) = shared.group(&place.cell, place.index, &place.level1, installed.group)?;
+    Ok(Costs { group, cell, profile: installed.place })
+}
+
+/// The costs of one level-1 cell for one profile.
+struct Costs<'a> {
+    group: Group<'a>,
+    cell: GroupCell<'a>,
+    profile: u32,
+}
+
 /// Adds the arcs of the turns of the road of `place` to `arcs`, each with its weight: the cost of
-/// its target road plus the turn cost. `leaving` gives the ID and the cost of a leaving road of
-/// the level-1 cell by its place in the list, or `None` for a road that the caller leaves out.
-fn turns<H: Host>(
-    shared: &Shared<H>,
-    installed: &Installed,
+/// its target road plus the turn cost. `costs` are those of the level-1 cell of the road.
+/// `leaving` gives the ID and the cost of a leaving road of the cell by its place in the list, or
+/// `None` for a road that the caller leaves out.
+fn turns(
     place: &Place<'_>,
+    costs: &Costs<'_>,
     mut leaving: impl FnMut(u32) -> Result<Option<(u32, Option<u32>)>>,
     arcs: &mut Vec<(u32, u64)>,
 ) -> Result<()> {
     let (topology, level1) = (place.topology, place.level1);
-    let (costs, cell) = shared.group(&place.cell, place.index, &level1, installed.group)?;
+    let Costs { group, cell, profile } = costs;
     for turn in topology.turns(&level1, place.road)? {
-        let Some(penalty) = costs.turn(&cell, turn)? else { continue };
+        let Some(penalty) = group.turn(cell, turn)? else { continue };
         let head = topology.head(&level1, turn)?;
         let (to, cost) = if head < level1.roads {
-            (place.cell.first_road + level1.first_road + head, costs.cost(&cell, installed.place, head)?)
+            (place.cell.first_road + level1.first_road + head, group.cost(cell, *profile, head)?)
         } else {
             let Some(found) = leaving(head - level1.roads)? else { continue };
             found
@@ -182,8 +195,8 @@ fn turns<H: Host>(
 /// The ID and the cost of road `to` for the profile `installed`.
 fn target<H: Host>(shared: &Shared<H>, installed: &Installed, to: u32) -> Result<(u32, Option<u32>)> {
     let place = shared.place(to)?;
-    let (costs, cell) = shared.group(&place.cell, place.index, &place.level1, installed.group)?;
-    Ok((to, costs.cost(&cell, installed.place, place.road)?))
+    let Costs { group, cell, profile } = costs(shared, installed, &place)?;
+    Ok((to, group.cost(&cell, profile, place.road)?))
 }
 
 struct Search<'a, H> {
@@ -424,7 +437,7 @@ impl<'a, H: Host> Search<'a, H> {
                     Some(to) => target(shared, installed, to).map(Some),
                     None => Ok(None),
                 };
-                turns(shared, installed, &place, leaving, arcs)?;
+                turns(&place, &costs(shared, installed, &place)?, leaving, arcs)?;
                 return Ok(0);
             };
             let row = cell.row(place.reference())?;

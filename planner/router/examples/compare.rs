@@ -4,6 +4,13 @@
 //! `P` only. `--cold` opens NEW again with its files out of the page cache before each request, and
 //! prints the time and the major page faults of that first route of NEW; `--no-announce` makes its
 //! host silent. Exits with 1 on a difference, with 2 when the packages have other profiles.
+//!
+//! "old ms" and "new ms" are the time of the whole request. With `--cold`, "new ms" is a second,
+//! warm route that reuses the snaps of the first, so it leaves out the snap time. The other columns
+//! of NEW are the sums of the searches of the request: the time of the searches and of the
+//! unpacking, the settled labels by the level of their expansion (level 0 first), the table values
+//! read, the roads of the unpacked legs, the labels that the unpacking settled, and the most bytes
+//! that one search held.
 use planner_router::{
     compare::{self, Outcome, KINDS},
     data::RoutingData,
@@ -66,7 +73,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let started = Instant::now();
     let (mut requests_run, mut differences, mut ties) = (0, 0, 0);
-    println!("profile, kind, km, old ms, old settled, old ns/label, new ms, new settled, new ns/label, new peak MB, cold ms, cold faults, outcome");
+    println!(
+        "profile, kind, km, old ms, old settled, new ms, search ms, unpack ms, settled by level, values, roads, \
+         unpack settled, peak KB, cold ms, cold faults, outcome"
+    );
     for profile in profiles.iter().filter(|profile| only.as_ref().is_none_or(|only| only == *profile)) {
         // The decode of a profile of format 9 is not a time of its searches.
         old.package().warm(profile)?;
@@ -112,18 +122,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             };
             ties += usize::from(outcome == format!("{:?}", Outcome::Tie));
-            let side = |s: usize| {
-                let ms = times[s].as_secs_f64() * 1e3;
-                let per = times[s].as_nanos() as f64 / stats[s].settled.max(1) as f64;
-                format!("{ms:.1}, {}, {per:.0}", stats[s].settled)
-            };
+            let [old_ms, new_ms] = times.map(|time| time.as_secs_f64() * 1e3);
+            let new = stats[1];
+            let levels: Vec<String> = new.levels.iter().map(usize::to_string).collect();
+            let top = new.levels.iter().rposition(|&count| count > 0).unwrap_or(0);
             println!(
-                "{profile}, {}, {:.1}, {}, {}, {:.1}, {cold_ms:.1}, {faults}, {outcome}",
+                "{profile}, {}, {:.1}, {old_ms:.1}, {}, {new_ms:.1}, {:.2}, {:.2}, {}, {}, {}, {}, {:.0}, {cold_ms:.1}, \
+                 {faults}, {outcome}",
                 KINDS[k % KINDS.len()],
                 straight_km(request),
-                side(0),
-                side(1),
-                stats[1].peak_bytes as f64 / 1e6
+                stats[0].settled,
+                new.search_ns as f64 / 1e6,
+                new.unpack_ns as f64 / 1e6,
+                levels[..=top].join("/"),
+                new.values,
+                new.roads,
+                new.unpack_settled,
+                new.peak_bytes as f64 / 1e3
             );
         }
     }
