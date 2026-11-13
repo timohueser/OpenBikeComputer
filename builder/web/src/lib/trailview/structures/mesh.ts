@@ -129,6 +129,11 @@ export class MeshBuilder {
         this.within(this.decks, make);
     }
 
+    /** Builds the faces of `make` of a bridge as faces that no storey draws: they draw with the ground plan too. */
+    beside(make: () => void): void {
+        this.within(this.onPlan, make);
+    }
+
     private within(list: number[], make: () => void): void {
         const was = this.indices;
         this.indices = list;
