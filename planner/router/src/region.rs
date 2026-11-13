@@ -13,6 +13,7 @@ use crate::{
     model::{Point, Profile, Road},
     overlay::{self, Found, Query, Stats, Workspace, SEARCH_BYTES},
     package::{digest, Departure, Endpoint},
+    router::Control,
     snap::{self, Candidates, Policy},
     Error, Result,
 };
@@ -289,6 +290,12 @@ impl<H: Host> RoutingData for Region<H> {
         let installed = self.shared.installed(metric)?;
         let limit = self.budget.min(query.heap_bytes);
         overlay::search(&self.shared, &mut self.workspace, installed, query, limit)
+    }
+
+    fn unpack(&mut self, _metric: &str, legs: &[&Found], control: &Control<'_>) -> Result<Vec<Vec<u32>>> {
+        let roads = crate::data::roads(legs, control)?;
+        roads.iter().for_each(|leg| self.workspace.unpacked(leg.len()));
+        Ok(roads)
     }
 
     /// The search limit.

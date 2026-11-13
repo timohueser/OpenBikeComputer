@@ -3,7 +3,7 @@ use crate::{
     data::RoutingData,
     geometry,
     model::{Pace, Point, Profile, Surface, Totals, BIKE, NO_ELEVATION, PUSH},
-    overlay::{Query, Seed},
+    overlay::{Found, Query, Seed},
     package::digest,
     snap::{self, Candidate, Policy, Position},
     Error, Result,
@@ -119,28 +119,45 @@ impl Route {
 pub struct Control<'a> {
     pub cancelled: &'a dyn Fn() -> bool,
     pub max_queries: usize,
-    pub max_geometry: usize,
+    /// The most points of an answer.
+    pub max_points: usize,
+    /// The most roads of the chosen legs of one route.
+    pub max_roads: usize,
+    /// The most steps of the path of one search.
+    pub max_steps: usize,
     /// Caps the search queues below what the memory budget leaves, so that the space of a search
     /// does not depend on the cost tables in the cache.
     pub max_heap_bytes: usize,
 }
 impl Default for Control<'_> {
     fn default() -> Self {
-        Self { cancelled: &|| false, max_queries: 8192, max_geometry: 250_000, max_heap_bytes: usize::MAX }
+        Self {
+            cancelled: &|| false,
+            max_queries: 8192,
+            max_points: 250_000,
+            max_roads: 250_000,
+            max_steps: 250_000,
+            max_heap_bytes: usize::MAX,
+        }
     }
+}
+
+/// A leg between two candidates: a part of one road, or the path of a search.
+enum Path {
+    Road(Slice),
+    Search(Found),
 }
 
 struct Choice {
     source: usize,
     target: usize,
     cost: u64,
-    roads: Vec<Slice>,
+    path: Path,
 }
 
 #[derive(Default)]
 struct Work {
     queries: usize,
-    witnesses: usize,
 }
 
 pub struct Router<P> {
@@ -174,7 +191,7 @@ impl<P: RoutingData> Router<P> {
         control: &Control<'_>,
         queries: &mut usize,
     ) -> Result<Route> {
-        let mut work = Work { queries: *queries, ..Work::default() };
+        let mut work = Work { queries: *queries };
         let result = self.search(request, control, &mut work);
         *queries = work.queries;
         result
@@ -243,10 +260,10 @@ impl<P: RoutingData> Router<P> {
         }
         // A candidate is shared by both adjacent legs. The dynamic program preserves its direction.
         let mut costs = vec![0u64; candidates[0].len()];
-        let mut stages = Vec::<Vec<Option<(usize, usize, Vec<Slice>)>>>::new();
+        let mut stages = Vec::<Vec<Option<(usize, usize, Path)>>>::new();
         for (stage_index, pair) in candidates.windows(2).enumerate() {
             let mut next = vec![u64::MAX; pair[1].len()];
-            let mut paths = vec![None; pair[1].len()];
+            let mut paths: Vec<_> = pair[1].iter().map(|_| None).collect();
             let previous: Vec<_> = pair[0]
                 .iter()
                 .enumerate()
@@ -285,14 +302,10 @@ impl<P: RoutingData> Router<P> {
                     return Err(Error::Limit);
                 }
                 if let Some(found) = self.leg_batch(&starts, &ends, control)? {
-                    work.witnesses = work.witnesses.saturating_add(found.roads.len());
-                    if work.witnesses > control.max_geometry {
-                        return Err(Error::Limit);
-                    }
                     let j = found.target;
                     if found.cost < next[j] {
                         next[j] = found.cost;
-                        paths[j] = Some((previous[found.source], found.source, found.roads));
+                        paths[j] = Some((previous[found.source], found.source, found.path));
                     }
                 }
             }
@@ -305,14 +318,37 @@ impl<P: RoutingData> Router<P> {
         let (mut selected, &cost) = costs.iter().enumerate().min_by_key(|(_, cost)| *cost).ok_or(Error::NoPath)?;
         // Each leg departs from its start candidate and arrives at the candidate that the next leg
         // continues from; they differ only at a turnaround.
-        let mut paths = Vec::new();
+        let mut chosen = Vec::new();
         for (index, stage) in stages.into_iter().enumerate().rev() {
             let end = candidates[index + 1][selected].position;
-            let (previous, source, roads) = stage.into_iter().nth(selected).flatten().ok_or(Error::NoPath)?;
-            paths.push((&candidates[index][source], end, roads));
+            let (previous, source, path) = stage.into_iter().nth(selected).flatten().ok_or(Error::NoPath)?;
+            chosen.push((&candidates[index][source], end, path));
             selected = previous;
         }
-        paths.reverse();
+        chosen.reverse();
+        // Only the legs that the program chose are unpacked into their roads.
+        let found: Vec<&Found> = chosen
+            .iter()
+            .filter_map(|(.., path)| if let Path::Search(found) = path { Some(found) } else { None })
+            .collect();
+        let mut unpacked = self.package.unpack(&self.metric, &found, control)?.into_iter();
+        let mut paths = Vec::with_capacity(chosen.len());
+        for (start, end, path) in &chosen {
+            let slices = match path {
+                Path::Road(slice) => vec![slice.clone()],
+                Path::Search(_) => {
+                    let roads = unpacked.next().ok_or_else(|| Error::InvalidData("A leg without its roads".into()))?;
+                    let mut slices: Vec<_> = roads.into_iter().map(|road| Slice { road, from: 0.0, to: 1.0 }).collect();
+                    if let Some(first) = slices.first_mut() {
+                        first.from = start.position.fraction;
+                    }
+                    slices.push(Slice { road: end.road, from: 0.0, to: end.fraction });
+                    slices.retain(|slice| slice.from < slice.to);
+                    slices
+                }
+            };
+            paths.push((*start, *end, slices));
+        }
         let (points, elapsed, legs) = self.line(request, &profile, control, &paths)?;
         let mut identity = request.profile.as_bytes().to_vec();
         identity.push(0);
@@ -387,7 +423,7 @@ impl<P: RoutingData> Router<P> {
                     if points.last().is_some_and(|p| p.lat == point.lat && p.lon == point.lon) {
                         continue;
                     }
-                    if points.len() >= control.max_geometry {
+                    if points.len() >= control.max_points {
                         return Err(Error::Limit);
                     }
                     if !points.is_empty() {
@@ -483,16 +519,10 @@ impl<P: RoutingData> Router<P> {
                         .ok_or_else(|| Error::InvalidData("Invalid partial road costs".into()))?;
                     let total = prior.checked_add(cost).ok_or(Error::Limit)?;
                     if best.as_ref().is_none_or(|b| (total, index, source_index) < (b.cost, b.target, b.source)) {
-                        best = Some(Choice {
-                            source: source_index,
-                            target: index,
-                            cost: total,
-                            roads: vec![Slice {
-                                road: to.position.road,
-                                from: from.position.fraction,
-                                to: to.position.fraction,
-                            }],
-                        });
+                        let slice =
+                            Slice { road: to.position.road, from: from.position.fraction, to: to.position.fraction };
+                        best =
+                            Some(Choice { source: source_index, target: index, cost: total, path: Path::Road(slice) });
                     }
                 }
             }
@@ -501,22 +531,16 @@ impl<P: RoutingData> Router<P> {
             starts: &starts,
             ends: &ends,
             ceiling: best.as_ref().map_or(u64::MAX, |b| b.cost),
-            max_roads: control.max_geometry,
+            max_steps: control.max_steps,
             heap_bytes: control.max_heap_bytes,
             heap_limit: control.max_heap_bytes,
             cancelled: control.cancelled,
         };
         let found = self.package.search(&self.metric, query)?;
         if let Some(found) = found {
-            let &(source, from, _) = &sources[found.source];
-            let &(target, to) = &targets[end_targets[found.target]];
+            let (source, target) = (sources[found.source].0, targets[end_targets[found.target]].0);
             if best.as_ref().is_none_or(|b| (found.cost, target, source) < (b.cost, b.target, b.source)) {
-                let mut roads: Vec<_> =
-                    found.roads.into_iter().map(|road| Slice { road, from: 0.0, to: 1.0 }).collect();
-                roads[0].from = from.position.fraction;
-                roads.push(Slice { road: to.position.road, from: 0.0, to: to.position.fraction });
-                roads.retain(|r| r.from < r.to);
-                best = Some(Choice { source, target, cost: found.cost, roads });
+                best = Some(Choice { source, target, cost: found.cost, path: Path::Search(found) });
             }
         }
         Ok(best)

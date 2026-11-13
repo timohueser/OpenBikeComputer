@@ -496,3 +496,26 @@ fn an_install_of_some_cells_routes_on_its_roads() {
     }
     assert!(same > 0, "{same} routes as on the full install, {dearer} dearer");
 }
+
+#[test]
+fn only_the_chosen_legs_are_unpacked() {
+    let bake = bake("unpack");
+    let points = bake.graph.points.values();
+    let junction = |k: usize| [points[k].lon as f64 * 1e-6, points[k].lat as f64 * 1e-6];
+    let mut router = Router::new(bake.region(None), usize::MAX);
+    // The via point is a junction, so each road at it is a candidate and the first leg runs one
+    // search for each.
+    let request: Request = serde_json::from_value(serde_json::json!({
+        "points": [junction(0), junction(points.len() / 2), junction(points.len() - 1)], "profile": "touring",
+    }))
+    .unwrap();
+    router.package().take_stats();
+    let route = router.route(&request, &Control::default()).unwrap();
+    let stats = router.package().take_stats();
+    assert!(stats.searches > 3, "{stats:?}");
+    assert_eq!(stats.legs, 2, "{stats:?}");
+    assert!(route.legs.iter().all(|leg| leg.pieces.len() > 1));
+    // Each piece is a road of its leg, and a leg has at most one road before its first piece.
+    let pieces = route.pieces().count();
+    assert!((pieces..=pieces + 2).contains(&stats.roads), "{stats:?} for {pieces} pieces");
+}

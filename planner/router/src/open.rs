@@ -10,6 +10,7 @@ use crate::{
     overlay::{Found, Query, Stats},
     package::Endpoint,
     region::Region,
+    router::Control,
     snap::{Candidates, Policy},
     Error, Result,
 };
@@ -122,6 +123,9 @@ impl RoutingData for Opened {
     }
     fn search(&mut self, metric: &str, query: Query<'_>) -> Result<Option<Found>> {
         each!(self, data => data.search(metric, query))
+    }
+    fn unpack(&mut self, metric: &str, legs: &[&Found], control: &Control<'_>) -> Result<Vec<Vec<u32>>> {
+        each!(self, data => data.unpack(metric, legs, control))
     }
     fn announce(&self, roads: &[u32]) {
         each!(self, data => data.announce(roads))

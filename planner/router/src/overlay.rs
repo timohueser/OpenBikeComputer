@@ -27,7 +27,8 @@ pub struct Query<'a> {
     pub starts: &'a [Seed],
     pub ends: &'a [Seed],
     pub ceiling: u64,
-    pub max_roads: usize,
+    /// The most steps of the path.
+    pub max_steps: usize,
     /// The room of both search queues now.
     pub heap_bytes: usize,
     /// The room of both search queues on an idle service, at least `heap_bytes`.
@@ -35,18 +36,34 @@ pub struct Query<'a> {
     pub cancelled: &'a dyn Fn() -> bool,
 }
 
+/// One step of a path: the road that it leads to and its level. Level 0 is a turn, or the first
+/// road of the path; a higher level crosses a cell of that level by its cost table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Step {
+    pub road: u32,
+    pub level: u8,
+}
+
 pub struct Found {
     pub cost: u64,
-    pub roads: Vec<u32>,
+    /// The cost of the steps: `cost` less the costs of the two seeds.
+    pub arcs: u64,
+    pub path: Vec<Step>,
     pub source: usize,
     pub target: usize,
 }
 
-/// The work of searches: the labels that they settled and the most bytes that one held.
+/// The work of searches and of the unpacking of their paths.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
+    pub searches: usize,
+    /// The labels that the searches settled.
     pub settled: usize,
+    /// The most bytes that one search held.
     pub peak_bytes: usize,
+    /// The legs that were unpacked, and their roads.
+    pub legs: usize,
+    pub roads: usize,
 }
 
 /// The turns into the roads of one level-1 cell: target `t` has the pairs (source road, turn) at
@@ -79,6 +96,14 @@ impl Workspace {
     /// The counts of the searches since the last call.
     pub fn take_stats(&self) -> Stats {
         self.stats.take()
+    }
+
+    /// Counts the unpacking of one leg into `roads` roads.
+    pub(crate) fn unpacked(&self, roads: usize) {
+        let mut stats = self.stats.get();
+        stats.legs += 1;
+        stats.roads += roads;
+        self.stats.set(stats);
     }
 
     fn bytes(&self) -> usize {
@@ -143,14 +168,17 @@ pub(crate) fn search<H: Host>(
     };
     let result = search.run(query);
     let Search { work, pops, peak, .. } = search;
-    let stats = work.stats.get();
-    work.stats.set(Stats { settled: stats.settled + pops, peak_bytes: stats.peak_bytes.max(peak) });
+    let mut stats = work.stats.get();
+    stats.searches += 1;
+    stats.settled += pops;
+    stats.peak_bytes = stats.peak_bytes.max(peak);
+    work.stats.set(stats);
     result
 }
 
 impl<H: Host> Search<'_, H> {
     fn run(&mut self, query: Query<'_>) -> Result<Option<Found>> {
-        let Query { starts, ends, max_roads, cancelled, .. } = query;
+        let Query { starts, ends, max_steps, cancelled, .. } = query;
         self.peak = self.work.bytes();
         for (side, seeds) in [starts, ends].into_iter().enumerate() {
             for seed in seeds {
@@ -195,7 +223,7 @@ impl<H: Host> Search<'_, H> {
             if label.parent == u32::MAX {
                 return Ok(None);
             }
-            if roads.len() > max_roads {
+            if roads.len() > max_steps {
                 return Err(Error::Limit);
             }
             Ok(Some(label.parent))
@@ -216,7 +244,8 @@ impl<H: Host> Search<'_, H> {
             roads.push(road);
         }
         let target = witness(1, ends, *roads.last().unwrap_or(&meeting))?;
-        let mut check = starts[source].cost.checked_add(ends[target].cost).ok_or(Error::Limit)?;
+        let seeds = starts[source].cost.checked_add(ends[target].cost).ok_or(Error::Limit)?;
+        let mut check = seeds;
         let mut arcs = std::mem::take(&mut self.work.arcs);
         for pair in roads.windows(2) {
             arcs.clear();
@@ -229,7 +258,8 @@ impl<H: Host> Search<'_, H> {
         if check != self.best {
             return Err(Error::InvalidData("Base path witness cost differs".into()));
         }
-        Ok(Some(Found { cost: self.best, roads, source, target }))
+        let path = roads.into_iter().map(|road| Step { road, level: 0 }).collect();
+        Ok(Some(Found { cost: self.best, arcs: self.best - seeds, path, source, target }))
     }
 
     /// The bytes that the search may hold besides those of a store that holds `own`.
