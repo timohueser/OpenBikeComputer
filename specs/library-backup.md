@@ -64,8 +64,7 @@ A version is a version object of [planner-plan.md](planner-plan.md).
 | `summary` | [Summary](#5-summary) with `start` and `movingS` |
 | `maxHr` | Number or `null`: the maximum heart rate that applies to the ride |
 | `ftp` | Number or `null`: the threshold power in watts that applies to the ride |
-| `group` | Optional string: the group of rides on the same route |
-| `trip` | Optional string: the trip that the ride belongs to |
+| `trip` | Optional object: the trip of the device that the ride belongs to, with `key`, the trip key of the device as a decimal string; `day`, the day of the trip from 1; and `name`, the name of the trip, empty when the device no longer held the trip |
 | `device` | Optional string `storeId:objectId`: the ride on the device that it came from |
 
 ## 5. Summary
@@ -98,6 +97,7 @@ Each field is optional.
 | `waiting` | Array of route ids: the routes that wait to go to the device |
 | `leaving` | Array of route ids: the routes to remove from the device |
 | `sent` | Object: for a route id, an object with `device`, the route on the device as `storeId:objectId`, and `line`, the line key of the route when it was sent |
+| `apart` | Array of ride keys: the rides that the rider took out of their group of rides on the same route |
 | `deleted` | Array of objects with `key` and an optional `device`: the rides that the rider deleted |
 
 ## 7. Load
