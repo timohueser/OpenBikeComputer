@@ -129,8 +129,9 @@ struct OfflineMapsTests {
         #expect(exists("objects/\(object.sha256)"))
         #expect(!exists("releases/\(quote.map.id)"))
         #expect(FileManager.default.fileExists(atPath: store.routing(quote.map).path))
+        // The stopped install wrote no `package.json`: the discard deletes the folder without the installer.
         try await store.discardPending()
-        #expect(await routing.calls.last?.areas == [])
+        #expect(await routing.calls.count == 1)
         #expect(!FileManager.default.fileExists(atPath: store.routing(quote.map).path))
         #expect(!exists("objects/\(object.sha256)") && !exists("pending.json") && !exists("downloads"))
         #expect(try FileManager.default.contentsOfDirectory(atPath: root.appending(path: "releases").path).isEmpty)

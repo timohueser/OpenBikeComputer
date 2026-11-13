@@ -63,12 +63,15 @@ public actor OfflineMapStore {
         guard !installing else { throw OfflineMapFailure.unavailable("Pause the download first.") }
         installing = true
         defer { installing = false }
-        // A stopped install can leave cells of the pending map in its routing folder: install the listed
-        // maps of that package again from the copies in the folder (no area deletes it).
+        // A stopped install can leave cells of the pending map in its routing folder. With no listed map of
+        // the package the folder goes, also when it is only partly written; else the listed maps install
+        // again from the copies in the folder, which their complete install wrote.
         if let pending = try? pending() {
             let target = routing(pending.map)
-            if FileManager.default.fileExists(atPath: target.appending(path: "directory.bin").path) {
-                let areas = try maps().filter { $0.routing == pending.map.routing }.map(\.bounds)
+            let areas = try maps().filter { $0.routing == pending.map.routing }.map(\.bounds)
+            if areas.isEmpty {
+                if FileManager.default.fileExists(atPath: target.path) { try FileManager.default.removeItem(at: target) }
+            } else {
                 try await installer.install(package: target.appending(path: "package.json"),
                     directory: target.appending(path: "directory.bin"), target: target, areas: areas,
                     objects: root.appending(path: "objects")) { _, _ in }
@@ -244,7 +247,7 @@ public actor OfflineMapStore {
             try await installer.install(package: directory.appending(path: OfflineManifest.routingPackage),
                 directory: directory.appending(path: OfflineManifest.routingDirectory), target: routing(map),
                 areas: remaining, objects: root.appending(path: "objects")) { _, _ in }
-        } catch let error where !remaining.isEmpty && !(error is CancellationError) {
+        } catch PlannerFailure.invalidData where !remaining.isEmpty {
             // The cells of the remaining maps can be gone after a removal that stopped before `maps.json`;
             // the folder stays for them, and their routes that miss a cell go online.
         }

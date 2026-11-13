@@ -77,6 +77,8 @@ struct RoutingInstaller: OfflineRouting {
                            userInfo: [NSLocalizedDescriptionKey: "The routing installer failed"])
         }
         if failure.body.code == "cancelled" { return CancellationError() }
+        // A missing or damaged object, or a damaged directory.
+        if failure.body.code == "invalid_data" { return PlannerFailure.invalidData }
         return NSError(domain: "PlannerRouting", code: failure.status,
                        userInfo: [NSLocalizedDescriptionKey: failure.body.message])
     }
