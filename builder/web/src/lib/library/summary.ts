@@ -11,14 +11,19 @@ export interface RideSample {
     segmentStart: boolean;
 }
 
-/** A hash of the summary line, and for a ride of its start time, as hex. A new name keeps it. */
-export function lineKey(item: RouteRecord | RideRecord): string {
-    const text = `${item.summary?.line.join(',')}@${'key' in item ? item.summary.start : ''}`;
-    // FNV-1a
-    let hash = 0x811c9dc5;
-    for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 0x01000193);
-    return (hash >>> 0).toString(16).padStart(8, '0');
+/** FNV-1a of `text`, as hex. */
+function hash(text: string): string {
+    let value = 0x811c9dc5;
+    for (let i = 0; i < text.length; i++) value = Math.imul(value ^ text.charCodeAt(i), 0x01000193);
+    return (value >>> 0).toString(16).padStart(8, '0');
 }
+
+/** A hash of the summary line, and for a ride of its start time, as hex. A new name keeps it. */
+export const lineKey = (item: RouteRecord | RideRecord) => hash(`${item.summary?.line.join(',')}@${'key' in item ? item.summary.start : ''}`);
+
+/** A hash of what the device file of a route is made from: its name and its plan (`trip`), which give the line, the
+ * waypoints, the days and the bike. A route whose key differs from the key in `sent` changed since it was sent. */
+export const sentKey = (route: RouteRecord) => hash(JSON.stringify([route.name, route.trip]));
 
 /** Longitude, latitude, and the height in metres or null. */
 export type Point = readonly [number, number, (number | null)?];
