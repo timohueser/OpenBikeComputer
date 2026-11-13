@@ -16,12 +16,11 @@
 //!
 //! "ms" is the time of `routes` and `answer::answer`. With `--cold`, NEW routes once alone first:
 //! "cold open ms" is the open after the eviction, and "cold ms", "cold faults" and "cold read KB"
-//! are those of that route; "new ms" and the other columns of NEW are then those of the last later,
-//! warm route, which reuses the snaps of the first. The other columns of NEW are the sums of the
-//! searches of its last run: the time of the
-//! searches and of the unpacking, the settled labels by the level of their expansion (level 0
-//! first), the table values read, the roads of the unpacked legs, the labels that the unpacking
-//! settled, and the most bytes that one search held. "old settled" is the labels that the searches
+//! are those of that route; "new ms" and the other columns of NEW then describe the last warm
+//! route, which reuses the snaps of the first. The other columns of NEW are the sums of the
+//! searches of its last run: the time of the searches and of the unpacking, the settled labels by
+//! the level of their expansion (level 0 first), the table values read, the roads of the unpacked
+//! legs, the labels that the unpacking settled, and the most bytes that one search held. "old settled" is the labels that the searches
 //! of OLD settled. A thread samples `RssAnon` every 10 ms; the summary gives it after the open and
 //! at its peak, and the times leave out the first request of OLD of each profile.
 use planner_router::{

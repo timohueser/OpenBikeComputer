@@ -564,7 +564,7 @@ fn two_layouts_of_one_bake_give_the_same_routes() {
     let mut old = Router::new(a.region(None), usize::MAX);
     let mut new = Router::new(b.region(None), usize::MAX);
     let (min_m, max_m) = (3_000.0, 10_000.0);
-    let (mut pinned, mut routed) = (0, 0);
+    let (mut pinned, mut moved_ids, mut same) = (0, 0, 0);
     for profile in Profile::presets() {
         let set = compare::requests(&old, &profile.name, 15, 17, min_m, max_m);
         assert!(set.len() >= 5, "{}: {} requests", profile.name, set.len());
@@ -581,17 +581,21 @@ fn two_layouts_of_one_bake_give_the_same_routes() {
                 assert!(first.distance(last) >= min_m - 2.0 * REACH_M, "{request:?}");
             }
             let moved = compare::repin(old.package(), new.package(), request).expect("a candidate at each pin");
-            if let Some(pin) = &request.start_position {
-                pinned += 1;
-                assert!(moved.start_position.is_some(), "{pin}");
-            }
             let (x, y) = (compare::route(&mut old, request), compare::route(&mut new, &moved));
             let outcome = compare::verdict(&old, &new, &x, &y, true).unwrap_or_else(|e| panic!("{request:?}: {e}"));
             assert_ne!(outcome, Outcome::Tie);
-            routed += usize::from(x.result.is_ok());
+            same += usize::from(outcome == Outcome::Same && x.result.is_ok());
+            // Each route starts at its pin, and `verdict` found the two starts at one coordinate.
+            if let (Some(pin), Ok(rx), Ok(ry)) = (&request.start_position, &x.result, &y.result) {
+                let moved_pin = moved.start_position.as_ref().expect("a moved pin");
+                assert_eq!((&rx.routes[0].legs[0].start.id(), &ry.routes[0].legs[0].start.id()), (pin, moved_pin));
+                pinned += 1;
+                moved_ids += usize::from(moved_pin != pin);
+            }
         }
     }
-    assert!(pinned >= 10 && routed >= 40, "{pinned} pinned, {routed} routed");
+    // 140 of the 150 requests are compared, 30 pinned, each pin on another road ID.
+    assert!(same >= 120 && pinned >= 10 && moved_ids > 0, "{same} compared, {pinned} pinned, {moved_ids} moved");
 }
 
 #[test]
