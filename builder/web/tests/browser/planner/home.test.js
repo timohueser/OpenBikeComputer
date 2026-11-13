@@ -43,13 +43,13 @@ const lake = { id: 'lake', revision: 0, name: 'Lake test', updatedAt: NOON.getTi
 const ride = (key, name, start) => ({ key, name, source: 'file', format: 'gpx', maxHr: null, ftp: null, summary: { ...summary, start: start.getTime() / 1000, movingS: 9000 } });
 const rides = [ride('20261109T090000Z', 'Kaiserstuhl', new Date(2026, 10, 9, 10)), ride('20261001T090000Z', 'Schauinsland', new Date(2026, 9, 1, 10))];
 
-test('a first visit with no home views shows the slogan, the previews and the drawn hills, also for an unknown page', async ({ page }) => {
+test('a first visit with no home views shows the slogan and the previews on a plain ground, also for an unknown page', async ({ page }) => {
   await start(page);
   for (const path of ['/planner.html', '/planner.html#/nowhere']) {
     await page.goto(path);
     await expect(page.getByRole('heading', { name: '[Slogan goes here]' })).toBeVisible();
     await expect(page.getByRole('region', { name: 'What you can do here' }).getByRole('listitem')).toHaveCount(4);
-    await expect(page.locator('svg.hills')).toBeVisible();
+    await expect(page.locator('.backdrop')).toHaveCount(0);
     await expect(page.getByRole('complementary', { name: 'You look at' })).toHaveCount(0);
   }
   await expect(page.getByRole('link', { name: 'Plan a route' })).toHaveAttribute('href', '#/planner/new');
@@ -57,7 +57,7 @@ test('a first visit with no home views shows the slogan, the previews and the dr
   await expect(page.getByRole('dialog', { name: 'Add files' })).toBeVisible();
 });
 
-test('the view of the day shows by the rule with its credits; a missing image reads the manifest again, then shows the hills', async ({ page }) => {
+test('the view of the day shows by the rule with its credits; a missing image reads the manifest again, then shows the plain ground', async ({ page }) => {
   // The first live set is gone, and the manifest then names a new set. Later a set is gone, and the manifest names it again.
   const sets = ['aaaaaaaaaaaaaaaa', 'bbbbbbbbbbbbbbbb'], gone = new Set(['aaaaaaaaaaaaaaaa']);
   const manifests = [];
@@ -84,9 +84,9 @@ test('the view of the day shows by the rule with its credits; a missing image re
   gone.add('cccccccccccccccc');
   await page.goto('/planner.html#/routes');
   await page.goto('/planner.html#/');
-  await expect(page.locator('svg.hills')).toBeVisible();
+  await expect.poll(() => manifests).toEqual(['aaaaaaaaaaaaaaaa', 'bbbbbbbbbbbbbbbb', 'cccccccccccccccc', 'cccccccccccccccc']);
+  await expect(page.locator('.backdrop')).toHaveCount(0);
   await expect(box).toHaveCount(0);
-  expect(manifests).toEqual(['aaaaaaaaaaaaaaaa', 'bbbbbbbbbbbbbbbb', 'cccccccccccccccc', 'cccccccccccccccc']);
 });
 
 test('the text, the cards, the search and each button open what they name', async ({ page }) => {

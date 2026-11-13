@@ -69,6 +69,7 @@
         gap: 40px;
         min-height: 360px;
         padding: 32px 40px;
+        background: var(--parchment-2);
         color: var(--ink);
     }
     .hero.shown {
