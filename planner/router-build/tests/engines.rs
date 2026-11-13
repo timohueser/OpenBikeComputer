@@ -32,7 +32,7 @@ const SIDE: u32 = 20;
 /// with gaps and diagonals, three surfaces, smooth heights, forbidden turns for each mode, some
 /// roads for walkers only, two closures, and one paved two-way road of about 10.5 km between two
 /// far junctions.
-fn town() -> Graph {
+fn town(sizes: &[u32]) -> Graph {
     let mut state = 0x9E37_79B9_7F4A_7C15u64;
     let height = |lat: i32, lon: i32| 500.0 + 120.0 * ((lat as f32) * 2e-5).sin() * ((lon as f32) * 3e-5).cos();
     let points: Vec<Point> = (0..SIDE * SIDE)
@@ -133,7 +133,7 @@ fn town() -> Graph {
         forbidden_foot: forbidden_foot.into_iter().collect(),
         ..Graph::default()
     };
-    planner_router_build::layout::order(&mut graph, &[8, 32, 128], None).unwrap();
+    planner_router_build::layout::order(&mut graph, sizes, None).unwrap();
     graph.osm.ways = ways.finish().0;
     graph.link_ways();
     graph
@@ -159,6 +159,8 @@ impl Drop for Scratch {
 
 /// The two formats of one bake of `town()`: format 9 in memory, and format 10 as objects that
 /// `install` reads.
+const SIZES: [u32; 3] = [8, 32, 128];
+
 struct Bake {
     graph: Graph,
     old: Selection<Objects>,
@@ -168,7 +170,12 @@ struct Bake {
 }
 
 fn bake(name: &str) -> Bake {
-    let graph = town();
+    bake_with(name, &SIZES)
+}
+
+/// A bake with the cell sizes `sizes`.
+fn bake_with(name: &str, sizes: &[u32]) -> Bake {
+    let graph = town(sizes);
     let profiles = Profile::presets();
     assert_eq!(profiles.len(), 10);
     let mut objects = HashMap::new();
@@ -195,7 +202,7 @@ fn bake(name: &str) -> Bake {
         topology: &topology,
         costs: &costs,
         tables: &tables,
-        sizes: &[8, 32, 128],
+        sizes,
         download_level: 2,
         info,
         level: 3,
@@ -549,4 +556,58 @@ fn only_the_chosen_legs_are_unpacked() {
     for control in [Control { max_roads: 1, ..Control::default() }, Control { max_steps: 1, ..Control::default() }] {
         assert!(matches!(router.route(&request, &control), Err(Error::Limit)));
     }
+}
+
+#[test]
+fn two_layouts_of_one_bake_give_the_same_routes() {
+    let (a, b) = (bake("layout-a"), bake_with("layout-b", &[4, 16, 64]));
+    let mut old = Router::new(a.region(None), usize::MAX);
+    let mut new = Router::new(b.region(None), usize::MAX);
+    let (min_m, max_m) = (3_000.0, 10_000.0);
+    let (mut pinned, mut routed) = (0, 0);
+    for profile in Profile::presets() {
+        let set = compare::requests(&old, &profile.name, 15, 17, min_m, max_m);
+        assert!(set.len() >= 5, "{}: {} requests", profile.name, set.len());
+        for (k, request) in set.iter().enumerate() {
+            // No request stays on one road or asks for alternatives; the projected points of the
+            // kinds 0 and 4 lie in the band, up to the snap reach of both points.
+            assert!(compare::kind(k, min_m) < 5 && !request.alternatives);
+            let [first, last] = [request.points[0], request.points[request.points.len() - 1]].map(|[lon, lat]| Point {
+                lat: (lat * 1e6).round() as i32,
+                lon: (lon * 1e6).round() as i32,
+                ..Point::default()
+            });
+            if [0, 4].contains(&compare::kind(k, min_m)) {
+                assert!(first.distance(last) >= min_m - 2.0 * REACH_M, "{request:?}");
+            }
+            let moved = compare::repin(old.package(), new.package(), request).expect("a candidate at each pin");
+            if let Some(pin) = &request.start_position {
+                pinned += 1;
+                assert!(moved.start_position.is_some(), "{pin}");
+            }
+            let (x, y) = (compare::route(&mut old, request), compare::route(&mut new, &moved));
+            let outcome = compare::verdict(&old, &new, &x, &y, true).unwrap_or_else(|e| panic!("{request:?}: {e}"));
+            assert_ne!(outcome, Outcome::Tie);
+            routed += usize::from(x.result.is_ok());
+        }
+    }
+    assert!(pinned >= 10 && routed >= 40, "{pinned} pinned, {routed} routed");
+}
+
+#[test]
+fn the_table_for_the_download_level_counts_the_files_of_the_install() {
+    let bake = bake("areas");
+    let target = bake.install(None);
+    let (_, plan) = install::installed(&target).unwrap();
+    let directory = Directory::new(&bake.directory).unwrap();
+    let (header, records) = (directory.header, directory.len() as f64);
+    let rows = compare::areas(&target).unwrap();
+    assert_eq!(rows.iter().map(|row| row.level).collect::<Vec<_>>(), (2..=header.levels).collect::<Vec<_>>());
+    let row = &rows[usize::from(header.download_level) - 2];
+    assert_eq!((row.cells, row.objects), (directory.downloads(), plan.files.len() as u64));
+    let scale = 1e9 / f64::from(header.roads);
+    assert_eq!(row.world_files, plan.files.len() as f64 * scale);
+    let record = planner_router::cells::record_bytes(header.groups.into()) as f64;
+    assert_eq!(row.world_directory, 64.0 + records * scale * record);
+    assert!(rows.windows(2).all(|pair| pair[0].cells >= pair[1].cells && pair[0].roads[1] <= pair[1].roads[1]));
 }
