@@ -17,11 +17,6 @@ async function start(page, path) {
   await expect(page.getByRole('navigation', { name: 'Pages' }).getByRole('link', { name: 'Planner' })).toHaveAttribute('aria-current', 'page');
 }
 
-test('the shell shows the planner with no hash and for a page that does not exist', async ({ page }) => {
-  await start(page, '/planner.html');
-  await start(page, '/planner.html#/nowhere');
-});
-
 test('a change of the hash closes an open window of the planner', async ({ page }) => {
   await start(page, '/planner.html#/planner');
   await page.getByRole('button', { name: 'Drag onto the map to open TrailView' }).click();

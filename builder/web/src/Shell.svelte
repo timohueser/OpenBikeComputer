@@ -15,8 +15,10 @@
     }
 
     /** A route with no line shows `START`. */
-    const START: Route = 'planner';
+    const START: Route = 'home';
     const PAGES: Partial<Record<Route, Page>> = {
+        // The view, the text and the cards show from the library alone; nothing waits for the map catalogue.
+        home: { load: () => import('./pages/Home.svelte') },
         // The planner reads the live catalogue as it loads.
         planner: { label: 'Planner', keep: true, load: () => initCore().then(() => import('./components/planner/PlannerApp.svelte')) },
         // The list shows from the library alone; the map and the place search load the map catalogue after it.

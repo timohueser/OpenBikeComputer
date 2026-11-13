@@ -1,0 +1,76 @@
+<!-- A route or a ride in the home drawer: its picture with the credits, its name as the link of the card, and a short line. -->
+<script lang="ts">
+    import Credits from '../../components/planner/Credits.svelte';
+    import Cover from '../../lib/covers/Cover.svelte';
+    import type { Library } from '../../lib/library/store';
+    import { ROUTES } from '../../lib/routes';
+    import { formatDistance } from '../../lib/settings/format';
+    import type { Item } from '../routes/filter';
+
+    let { library, item }: { library: Library; item: Item } = $props();
+
+    let credits = $state<string[]>([]);
+    const meta = $derived(item.kind === 'ride'
+        ? ['Ride', new Date(item.at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }), formatDistance(item.summary.lengthM)]
+        : ['Route', item.summary && item.summary.days > 1 && `${item.summary.days} days`, item.summary && formatDistance(item.summary.lengthM)]);
+</script>
+
+<li class="card">
+    <div class="picture">
+        {#if item.summary}<Cover {library} id={item.id} place="card" bind:credits />{/if}
+        <Credits {credits} side="left" />
+    </div>
+    <a class="open" href={`${item.kind === 'ride' ? ROUTES.ride : ROUTES.route}/${item.id}`}>{item.name}</a>
+    <p class="meta">{meta.filter(Boolean).join(' · ')}</p>
+</li>
+
+<style>
+    .card {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+        padding: 0 10px 10px;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--parchment);
+    }
+    .card:hover {
+        border-color: var(--line-strong);
+    }
+    .picture {
+        position: relative;
+        height: 92px;
+        margin: 0 -10px 6px;
+        overflow: hidden;
+        background: var(--parchment-2);
+    }
+    .open {
+        overflow: hidden;
+        color: var(--ink);
+        font-weight: 700;
+        text-decoration: none;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    /* The name is the one link of the card: it covers the whole card, under the credits. */
+    .open::after {
+        position: absolute;
+        inset: 0;
+        content: '';
+    }
+    .open:focus-visible {
+        outline: none;
+    }
+    .open:focus-visible::after {
+        outline: 2px solid var(--forest);
+        outline-offset: -2px;
+    }
+    .meta {
+        margin: 0;
+        color: var(--ink-soft);
+        font-size: 12px;
+    }
+</style>
