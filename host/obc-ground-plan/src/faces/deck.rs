@@ -13,15 +13,12 @@ fn tag(g: &WayGraph, input: &CellInput, w: u32, key: &str) -> Option<f64> {
     f.tags.get(key).and_then(|t| t.parse().ok())
 }
 
-/// The decks of a graph: per way its storey (0 for a way on no deck), whether each of its ends is open, and its run.
+/// The decks of a graph: per way its storey (0 for a way on no deck) and whether each of its ends is open.
 pub(crate) struct Decks {
     pub storey: Vec<i8>,
     /// An open end meets a way that goes on past it on another storey: a way on the ground (storey 0 goes on), or a
     /// deck on another storey. The shell leaves it open; a free end is closed.
     pub open: Vec<[bool; 2]>,
-    /// The deck ways that a junction or a joint joins on one storey are one run, named by its least way: where two
-    /// runs meet side by side on a sheet, each has its own edge (`mesh::shell`).
-    pub run: Vec<u32>,
 }
 
 impl Decks {
@@ -41,27 +38,14 @@ impl Decks {
                 && (x.level == Level::Ground || deck_way(o) && storey[o as usize] != storey[w as usize])
         };
         let mut open = vec![[false; 2]; g.ways.len()];
-        let mut run: Vec<u32> = (0..g.ways.len() as u32).collect();
-        fn root(run: &mut [u32], mut w: u32) -> u32 {
-            while run[w as usize] != w {
-                run[w as usize] = run[run[w as usize] as usize];
-                w = run[w as usize];
-            }
-            w
-        }
         for arms in g.junctions.iter().map(|j| &j.arms[..]).chain(g.joints.iter().map(|j| &j.arms[..])) {
             for a in arms.iter().filter(|a| deck_way(a.way)) {
                 if arms.iter().any(|b| goes_on(a.way, b.way)) {
                     open[a.way as usize][usize::from(a.dir < 0)] = true;
                 }
-                for b in arms.iter().filter(|b| deck_way(b.way) && storey[b.way as usize] == storey[a.way as usize]) {
-                    let (x, y) = (root(&mut run, a.way), root(&mut run, b.way));
-                    run[x.max(y) as usize] = x.min(y);
-                }
             }
         }
-        let run = (0..g.ways.len() as u32).map(|w| root(&mut run, w)).collect();
-        Decks { storey, open, run }
+        Decks { storey, open }
     }
 }
 
@@ -111,9 +95,8 @@ pub struct Storeys {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DeckWay {
-    /// Its storey over the ground, and its run (`Decks::run`).
+    /// Its storey over the ground.
     pub storey: i8,
-    pub run: u32,
     /// The slab under the deck's top: the tile's `deck` depth, on ladder step 2 down to the class's least.
     pub depth_m: f64,
     /// A railing on the free outline, else a parapet.
@@ -147,7 +130,6 @@ impl DeckWay {
         let width = 2.0 * (paved + rules.structures.edge_band_m);
         DeckWay {
             storey: decks.storey[w as usize],
-            run: decks.run[w as usize],
             depth_m,
             railing: sec.railing || width < rules.structures.railing_width_m,
             pier_m: [PIER_ALONG_M[usize::from(sec.path)], PIER_SHARE * 2.0 * paved],

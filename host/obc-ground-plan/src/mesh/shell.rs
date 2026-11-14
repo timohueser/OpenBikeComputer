@@ -499,12 +499,12 @@ pub fn mesh_storeys(
             b.tris[TOP].push(top);
             b.tris[UNDER].push([under[0], under[2], under[1]]);
         }
-        // Slots between two labels; the free outline's edge faces; the open pieces. Two runs side by side on the
-        // sheet are one deck, but where their lines lie more than a parapet's height apart each has its own edge:
+        // Slots between two labels; the free outline's edge faces; the open pieces. Two deck ways side by side on
+        // the sheet are one deck, but where their lines lie more than a parapet's height apart each has its own edge:
         // a slot there would be a wall from one deck to the other. The pair decides once, so its edges close.
         let mut free: Vec<(P, P, u32)> = Vec::new();
-        let run = |f: u32| way(label(f)).map(|w| w.run);
-        let pair = |l: u32, r: u32| run(l).zip(run(r)).filter(|(a, c)| a != c).map(|(a, c)| (a.min(c), a.max(c)));
+        let deck = |f: u32| lines.way(label(f)).filter(|&w| storeys.way(w).is_some());
+        let pair = |l: u32, r: u32| deck(l).zip(deck(r)).filter(|(a, c)| a != c).map(|(a, c)| (a.min(c), a.max(c)));
         let mut steps: Vec<((u32, u32), f64)> = Vec::new();
         for &(pa, pc, left, right, _) in pieces.iter().filter(|p| sheet(p.2) && sheet(p.3)) {
             let Some(k) = pair(left, right) else { continue };
