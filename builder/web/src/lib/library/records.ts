@@ -121,6 +121,21 @@ export interface SentRoute {
     key: string;
 }
 
+/** A box of a map area, in whole microdegrees. */
+export interface MapBox { minLat: number; minLon: number; maxLat: number; maxLon: number }
+
+/** The area and the colours of the map that the rider chose for the device and that is not sent yet. */
+export interface NextMap {
+    /** Ids of regions of the map catalog. */
+    regions: string[];
+    boxes: MapBox[];
+    /** The ids of the map styles for the day and for the night. */
+    light: string;
+    dark: string;
+    /** The size of the download of the whole map. */
+    bytes: number;
+}
+
 /** The values of the `state` store. */
 export interface LibraryState {
     /** The route that the planner opens. */
@@ -135,6 +150,7 @@ export interface LibraryState {
     deleted: DeletedRide[];
     /** Rides that the rider took out of their group; no ride joins them. */
     apart: string[];
+    nextMap: NextMap | null;
 }
 
 export const rideKey = /^\d{8}T\d{6}Z$/;
@@ -183,6 +199,13 @@ const isSent = (value: unknown): value is Record<string, SentRoute> => isRecord(
 const isDeleted = (value: unknown): value is DeletedRide =>
     isRecord(value) && isString(value.key) && rideKey.test(value.key) && optional(value.device, isString);
 
+const isBox = (value: unknown): value is MapBox =>
+    isRecord(value) && [value.minLat, value.minLon, value.maxLat, value.maxLon].every(Number.isInteger)
+    && (value.minLat as number) < (value.maxLat as number) && (value.minLon as number) < (value.maxLon as number);
+
+const isNextMap = (value: unknown): value is NextMap => isRecord(value) && isStrings(value.regions)
+    && Array.isArray(value.boxes) && value.boxes.every(isBox) && isString(value.light) && isString(value.dark) && isNumber(value.bytes);
+
 /** The check of each value of the `state` store. */
 export const stateChecks: { [K in keyof LibraryState]: (value: unknown) => value is LibraryState[K] } = {
     active: (value): value is string | null => value === null || isString(value),
@@ -191,4 +214,5 @@ export const stateChecks: { [K in keyof LibraryState]: (value: unknown) => value
     sent: isSent,
     deleted: (value): value is DeletedRide[] => Array.isArray(value) && value.every(isDeleted),
     apart: isStrings,
+    nextMap: (value): value is NextMap | null => value === null || isNextMap(value),
 };

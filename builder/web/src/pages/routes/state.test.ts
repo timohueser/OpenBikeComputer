@@ -8,7 +8,7 @@ const route: RouteRecord = { id: 'r', revision: 1, name: 'Lake loop', updatedAt:
 const sent = { r: { device: 'card:7', key: sentKey(route) } };
 
 beforeEach(() => {
-    remembered.device = { serial: '00AB', storeId: 'card', at: null, map: null, routes: 1, bytes: { map: 0, routes: 0, rides: 0, other: 0 }, came: null, skipped: [] };
+    remembered.device = { serial: '00AB', storeId: 'card', at: null, map: null, mapObject: null, built: null, routes: 1, bytes: { map: 0, routes: 0, rides: 0, other: 0 }, came: null, skipped: [] };
 });
 
 describe('deviceState', () => {

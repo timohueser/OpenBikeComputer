@@ -227,41 +227,9 @@ select:focus {
     color: var(--parchment);
 }
 
-.basemap-warning {
-    padding: 6px 10px;
-    background: var(--panel);
-    color: var(--ink);
-}
-
-.leaflet-bar a,
-.leaflet-control-attribution {
-    background: var(--panel) !important;
-    color: var(--ink) !important;
-}
-.leaflet-bar a:hover { background: var(--parchment-2) !important; }
-.leaflet-control-attribution a { color: var(--forest); }
-
 :focus-visible { outline: 2px solid var(--forest); outline-offset: 3px; }
 input { accent-color: var(--forest); }
 ::selection { background: var(--amber); color: var(--on-amber); }
-
-.leaflet-container {
-    font-family: var(--sans);
-    background: var(--parchment-2);
-}
-
-.leaflet-popup-content-wrapper,
-.leaflet-tooltip {
-    background: var(--panel);
-    color: var(--ink);
-    border: 1px solid var(--parchment-3);
-    border-radius: 10px;
-    box-shadow: 0 6px 18px rgba(36, 51, 28, 0.18);
-}
-
-.leaflet-popup-tip {
-    background: var(--panel);
-}
 
 .region-popup {
     display: flex;
@@ -329,18 +297,3 @@ input { accent-color: var(--forest); }
     cursor: nesw-resize;
 }
 
-.bbox-cursor {
-    cursor: crosshair !important;
-}
-
-/* The coverage map's not-baked hatch (#1038). Leaflet's SVG renderer sets fill
-   as a presentation attribute; CSS wins over attributes, which is how these
-   rectangles pick up the injected <pattern> (coverageMap.ts owns the defs). */
-.coverage-hatch {
-    fill: url(#obc-unbaked-hatch);
-    fill-opacity: 0.5;
-}
-
-.coverage-hatch.faintly {
-    fill-opacity: 0.3;
-}

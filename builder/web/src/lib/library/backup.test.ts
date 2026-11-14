@@ -18,6 +18,7 @@ async function filled(): Promise<Library> {
     const library = new Library(new IDBFactory());
     await library.saveRoute(route, [{ id: 'v1', at: '2026-08-01T07:00:00.000Z', trip: route.trip }]);
     await library.setState('active', 'r1');
+    await library.setState('nextMap', { regions: ['europe/switzerland'], boxes: [{ minLat: 46_000_000, minLon: 8_000_000, maxLat: 46_500_000, maxLon: 9_000_000 }], light: 'default', dark: 'dusk', bytes: 870_000_000 });
     for (const key of ['20260801T070000Z', '20260802T070000Z', '20260803T070000Z']) await library.addRide(ride(key), new Blob([`bytes of ${key}`]));
     await library.removeRide('20260803T070000Z');
     return library;
@@ -45,7 +46,10 @@ describe('library backup', () => {
         const bytes = new Uint8Array(await backup.arrayBuffer());
         bytes[45] ^= 0xff;
         const files = [new Blob([bytes]), backup.slice(0, backup.size / 2), await edited(backup, json => ({ ...json, version: 2 })),
-            await edited(backup, json => ({ ...json, rides: [...json.rides as RideRecord[], ride('20260809T070000Z')] }))];
+            await edited(backup, json => ({ ...json, rides: [...json.rides as RideRecord[], ride('20260809T070000Z')] })),
+            await edited(backup, json => ({ ...json, state: { nextMap: { regions: [], boxes: [{ minLat: 46.5 }], light: 'default', dark: 'dusk', bytes: 1 } } })),
+            // A box with no height.
+            await edited(backup, json => ({ ...json, state: { nextMap: { regions: [], boxes: [{ minLat: 46_000_000, minLon: 8_000_000, maxLat: 46_000_000, maxLon: 9_000_000 }], light: 'default', dark: 'dusk', bytes: 1 } } }))];
         for (const file of files) await expect(loadBackup(target, file)).rejects.toThrow();
         expect(await target.contents()).toEqual({ routes: [], versions: {}, rides: [], files: new Map(), state: {} });
     });

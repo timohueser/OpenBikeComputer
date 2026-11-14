@@ -12,9 +12,10 @@
     // click looks broken, and picking a region is the first thing almost every map
     // starts with.
 
-    import { onDestroy, onMount, tick } from "svelte";
+    import { onDestroy, onMount, tick, untrack } from "svelte";
     import { coverageRings, mergeCellRects } from "../../lib/catalog/outline";
     import type { RegionEntry } from "../../lib/catalog/manifest";
+    import { cellSize, GRID_ORIGIN } from "../../lib/core/grid";
     import {
         degreesToUbox,
         detailBandId,
@@ -34,13 +35,22 @@
     } from "../../lib/map/coverageMap";
     import ToolIcon from "./ToolIcon.svelte";
 
-    let { store, active = true }: { store: CoverageStore; active?: boolean } = $props();
+    type Tool = "none" | "region" | "box";
+    let { store, active = true, tool = $bindable("region"), rail = true, pale = false, routes = [] }: {
+        store: CoverageStore;
+        active?: boolean;
+        tool?: Tool;
+        /** The tool rail, the region list and the hints. A page with its own controls for `tool` has none of them. */
+        rail?: boolean;
+        /** The look of a page of the shell: the ground outside the selection is grey and a little pale, one line goes
+         *  around the selection, and the lines of the map cells show faintly. */
+        pale?: boolean;
+        /** The lines of the rider's routes, each as `[lat, lon]` degrees. */
+        routes?: DegPoint[][];
+    } = $props();
 
     let mapEl: HTMLDivElement;
     let view = $state<CoverageMapView | null>(null);
-
-    type Tool = "none" | "region" | "box";
-    let tool = $state<Tool>("region");
 
     const detailBand = $derived(detailBandId(store.catalog));
 
@@ -49,6 +59,9 @@
     // comparison is O(n) over short strings — far cheaper than re-walking the
     // boundary of a country-sized part.
     const ringCache = new Map<string, { cells: string[]; rings: DegPoint[][] }>();
+
+    /** The cache key of the rings of the whole selection; a part id is never this. */
+    const PALE = "pale";
 
     function sameCells(a: string[], b: string[]): boolean {
         if (a.length !== b.length) return false;
@@ -79,7 +92,9 @@
                 return priceBox(south, west, north, east);
             },
             onDrawEnd() {
-                if (tool === "box") tool = "none";
+                // With no rail the box tool stays for the next box: the region tool would take the click that ends this one.
+                if (!rail) view?.armBoxDraw();
+                else if (tool === "box") tool = "none";
             },
             onWarningClick(kind) {
                 store.focusWarnings(kind);
@@ -92,6 +107,8 @@
                 rings: r.boundary.rings.map(ringToDegrees),
             })),
         );
+        const band = store.catalog.schema.bands.find((entry) => entry.id === detailBand);
+        if (pale && band) view.setGrid(cellSize(band.cell_log2) / 1e6, GRID_ORIGIN / 1e6);
     });
 
     onDestroy(() => view?.destroy());
@@ -107,6 +124,7 @@
     $effect(() => {
         const resolution = store.resolution;
         if (!view) return;
+        if (pale) view.setPale(ringsFor(PALE, resolution?.cellsByBand.get(detailBand) ?? []));
         const parts: RenderedPart[] = [];
         const live = new Set<string>();
         for (const partRes of resolution?.parts ?? []) {
@@ -121,7 +139,7 @@
             });
         }
         for (const key of [...ringCache.keys()]) {
-            if (!live.has(key)) ringCache.delete(key);
+            if (key !== PALE && !live.has(key)) ringCache.delete(key);
         }
         view.setParts(parts);
     });
@@ -153,7 +171,15 @@
     });
 
     $effect(() => {
-        view?.setRegionToolArmed(tool === "region");
+        view?.setRoutes(routes);
+    });
+
+    $effect(() => {
+        if (!view) return;
+        view.setRegionToolArmed(tool === "region");
+        if (tool === "box") view.armBoxDraw();
+        else view.cancelBoxDraw();
+        if (tool !== "region") untrack(closeLadder);
     });
 
     // --- the ancestor ladder ----------------------------------------------
@@ -262,11 +288,7 @@
     // --- tools ------------------------------------------------------------
 
     function setTool(next: Tool) {
-        const target = tool === next ? "none" : next;
-        if (tool === "box" && target !== "box") view?.cancelBoxDraw();
-        if (tool === "region" && target !== "region") closeLadder();
-        tool = target;
-        if (target === "box") view?.armBoxDraw();
+        tool = tool === next ? "none" : next;
     }
 
     function onKey(e: KeyboardEvent) {
@@ -277,7 +299,8 @@
             closeLadder();
             return;
         }
-        if (tool !== "none") setTool("none");
+        // With no rail nothing arms a tool again, so the region tool stays.
+        tool = rail ? "none" : "region";
     }
 
     // The rail is a toolbar, and a toolbar is ONE tab stop: Tab lands on the
@@ -322,9 +345,10 @@
 
 <svelte:window onkeydown={onKey} />
 
-<div class="map-wrap card">
+<div class="map-wrap" class:card={rail} class:railed={rail}>
     <div class="map" bind:this={mapEl}></div>
 
+    {#if rail}
     <!-- The tool rail: the map owns selection. -->
     <div class="overlay rail-wrap">
         <div
@@ -440,6 +464,7 @@
             {/if}
         </div>
     {/if}
+    {/if}
 
     {#if ladder}
         <div
@@ -474,11 +499,11 @@
 
     {#if store.drawError}
         <div class="overlay bottom-left chip error">{store.drawError}</div>
-    {:else if tool === "box"}
+    {:else if rail && tool === "box"}
         <div class="overlay bottom-left chip">Drag a box. Esc to cancel.</div>
-    {:else if tool === "region"}
+    {:else if rail && tool === "region"}
         <div class="overlay bottom-left chip">Click a region to add it.</div>
-    {:else if partCount === 0 && tool === "none"}
+    {:else if rail && partCount === 0 && tool === "none"}
         <div class="overlay bottom-left chip">
             Choose a region or draw an area.
         </div>
@@ -495,7 +520,7 @@
     }
 
     @media (max-width: 940px) {
-        .map-wrap {
+        .railed {
             min-height: 480px;
         }
     }
@@ -674,6 +699,12 @@
 
     .ladder .head {
         margin: 3px 8px 4px;
+        color: var(--ink-faint);
+        font-size: 12.5px;
+    }
+
+    .ladder button span:last-child {
+        color: var(--ink-faint);
     }
 
     .ladder button {
@@ -723,15 +754,17 @@
     }
 
     .chip.error {
-        border-color: var(--coral);
+        padding: 4px 10px;
+        border: 1px solid var(--coral);
+        border-radius: 999px;
+        background: var(--parchment);
         color: var(--coral);
+        font-size: 13px;
     }
 
-    /* app.css drops Leaflet's zoom control 58px for the old panel's search bar;
-       this pane has the tool rail there instead. The offset tucks the control
-       directly under the rail (2 × 40px buttons + gap + padding + 12px top
-       ≈ 106px) rather than parking it mid-pane. */
-    .map-wrap :global(.leaflet-top.leaflet-left) {
+    /* Leaflet's zoom control stands under the rail: 2 × 40px buttons, the gap, the padding and 12px at the top
+       are about 106px. */
+    .railed :global(.leaflet-top.leaflet-left) {
         top: 116px;
     }
 </style>

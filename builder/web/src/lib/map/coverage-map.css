@@ -1,0 +1,65 @@
+/* The rules of the coverage map on Leaflet. `lib/map/coverageMap.ts` loads them, so the map builder and a page of the
+   shell show the same map. */
+.basemap-warning {
+    padding: 6px 10px;
+    background: var(--panel);
+    color: var(--ink);
+}
+
+.leaflet-bar a,
+.leaflet-control-attribution {
+    background: var(--panel) !important;
+    color: var(--ink) !important;
+}
+.leaflet-bar a:hover { background: var(--parchment-2) !important; }
+.leaflet-control-attribution a { color: var(--forest); }
+
+.leaflet-container {
+    font-family: var(--sans);
+    background: var(--parchment-2);
+}
+
+.leaflet-popup-content-wrapper,
+.leaflet-tooltip {
+    background: var(--panel);
+    color: var(--ink);
+    border: 1px solid var(--parchment-3);
+    border-radius: 10px;
+    box-shadow: 0 6px 18px rgba(36, 51, 28, 0.18);
+}
+
+.leaflet-popup-tip {
+    background: var(--panel);
+}
+
+.bbox-cursor {
+    cursor: crosshair !important;
+}
+
+/* The coverage map's not-baked hatch. Leaflet's SVG renderer sets fill
+   as a presentation attribute; CSS wins over attributes, which is how these
+   rectangles pick up the injected <pattern> (coverageMap.ts owns the defs). */
+.coverage-hatch {
+    fill: url(#obc-unbaked-hatch);
+    fill-opacity: 0.5;
+}
+
+.coverage-hatch.faintly {
+    fill-opacity: 0.3;
+}
+
+/* The ground outside the area of a map, under the outlines: its colour goes, its lines and names keep their contrast,
+   and a light veil of the page ground sets it back. The blend is on the pane, because an SVG blends only inside itself. */
+.leaflet-grey-pane {
+    mix-blend-mode: saturation;
+}
+
+.coverage-grey {
+    fill: #808080;
+    fill-opacity: 0.85;
+}
+
+.coverage-pale {
+    fill: var(--parchment);
+    fill-opacity: 0.2;
+}
