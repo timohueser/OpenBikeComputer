@@ -1,5 +1,6 @@
 /** Remembers the one device that the sync works with, and what the last sync found on it, in `localStorage`. */
 import { deviceHolder } from '../device/session.svelte';
+import type { MapBox } from '../library/records';
 
 /** Bytes on the card by the kind of object. */
 export interface DeviceBytes { map: number; routes: number; rides: number; other: number }
@@ -12,6 +13,10 @@ export interface RememberedDevice {
     at: number | null;
     /** The name of the map on the card, or null without one. */
     map: string | null;
+    /** `objectId:revision` of the map on the card, or null without one. */
+    mapObject: string | null;
+    /** The area and the colours of the map `object` that this browser sent to the card. */
+    built: { object: string; regions: string[]; boxes: MapBox[]; light: string; dark: string } | null;
     routes: number;
     bytes: DeviceBytes;
     /** The rides that came in on `day`, a local `YYYY-MM-DD`. */
@@ -67,7 +72,7 @@ export function onRemember(listener: () => void): () => void {
 export function rememberCard(serial: string, storeId: string): void {
     const device = remembered.device;
     if (device?.serial === serial && device.storeId === storeId) return;
-    save({ serial, storeId, at: null, map: null, routes: 0, bytes: { map: 0, routes: 0, rides: 0, other: 0 }, came: null, skipped: [] });
+    save({ serial, storeId, at: null, map: null, mapObject: null, built: null, routes: 0, bytes: { map: 0, routes: 0, rides: 0, other: 0 }, came: null, skipped: [] });
 }
 
 /** Remembers the connected device. Only the Connect button of the Device page calls it; a sync follows. */
