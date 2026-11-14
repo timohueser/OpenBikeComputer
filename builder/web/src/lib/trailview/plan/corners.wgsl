@@ -55,8 +55,9 @@ const CODE_ROAD_SURFACE: u32 = 1u;
 // the face lies on the road surface of a wall class (the line's M_WALL, from `leg_wall` of roads.json), so a step
 // beside it is a wall (piece.wgsl's WALL_SIDE).
 const LOOK_WALL_SIDE: u32 = 268435456u;
-// The next bit: that wall is a bridge's (M_BRIDGE_GROUND), of concrete (piece.wgsl's BRIDGE_SIDE). A storey's corner
-// has no wall: it takes these bits for its deck's build and planks (M_BUILD_SHIFT), in the bits from DECK_SHIFT.
+// The next bit: that wall is a bridge's (M_BRIDGE_GROUND, or near a deck: near_deck), of concrete (piece.wgsl's
+// BRIDGE_SIDE). A storey's corner has no wall: it takes these bits for its deck's build and planks (M_BUILD_SHIFT), in
+// the bits from DECK_SHIFT.
 const LOOK_BRIDGE_SIDE: u32 = 536870912u;
 const SIDE_SHIFT: u32 = 28u;
 const DECK_SHIFT: u32 = 29u;
@@ -145,6 +146,37 @@ fn nearest_way(q: vec2i, mpu: f32) -> vec3f {
         }
     }
     return out;
+}
+
+// A wall this near a deck's stroke over storey 0 (a ceiling line, M_CEILING) is the bridge's: its abutment.
+const DECK_NEAR_M: f32 = 3.0;
+
+// Whether q lies within DECK_NEAR_M of the stroke of a deck over storey 0: of the lines whose heights reach q's bin.
+fn near_deck(q: vec2i, mpu: f32) -> bool {
+    let qf = vec2f(q);
+    let head = m_bin_head(params.block, qf);
+    if (head == 0u) {
+        return false;
+    }
+    let at = h_heights_start(params.block, qf);
+    let lines = params.block + mw(params.block + 6u);
+    let samples = params.block + mw(params.block + 7u);
+    for (var k = 0u; k < (mw(head + 2u) >> 16u); k++) {
+        let item = mw(at + k);
+        let line = item & 0xffffu;
+        if ((mw(lines + M_LINE * line + 1u) & M_CEILING) == 0u) {
+            continue;
+        }
+        let wa = samples + M_SAMPLE * (mw(lines + M_LINE * line + 2u) + (item >> 16u));
+        let wb = wa + M_SAMPLE;
+        let a = vec2f(m_vertex(wa));
+        let u = vec2f(m_vertex(wb)) - a;
+        let t = clamp(dot(qf - a, u) / max(dot(u, u), 1e-9), 0.0, 1.0);
+        if (length(qf - a - t * u) * mpu - mix(mf(wa + 2u), mf(wb + 2u), t) * mpu <= DECK_NEAR_M) {
+            return true;
+        }
+    }
+    return false;
 }
 
 // Metres across from the middle of `line` (signed by side), along it and its half-width, from its nearest segment in
@@ -320,6 +352,10 @@ fn corners(@builtin(local_invocation_index) lane: u32, @builtin(workgroup_id) gr
         let way = nearest_way(q, mpu);
         let side = select(0u, u32(way.z) << SIDE_SHIFT, ((look.x >> 7u) & 15u) == CODE_ROAD_SURFACE);
         look = vec2u(look_word(MAT_GROUND, 0u, way.y) | side, place_word(way.x, 0.0));
+    }
+    // A wall near a deck is its abutment, as a wall beside a bridge's ground stretch.
+    if (params.offsets == 0u && (look.x & LOOK_WALL_SIDE) != 0u && near_deck(q, mpu)) {
+        look.x |= LOOK_BRIDGE_SIDE;
     }
     // A storey's corner: its deck's build and planks, from its label's line.
     if (params.offsets != 0u && label != M_NONE) {
