@@ -2,8 +2,9 @@
  * a step that takes no signal, such as a module import. */
 export function until<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
     return new Promise<T>((resolve, reject) => {
+        // First, so a failure of `work` after an abort has a handler.
+        work.then(resolve, reject);
         if (signal.aborted) return reject(signal.reason);
         signal.addEventListener('abort', () => reject(signal.reason), { once: true });
-        work.then(resolve, reject);
     });
 }

@@ -409,8 +409,8 @@ export class CoverageMapView {
         this.gridLayer.clearLayers();
         const grid = this.grid, width = this.map.getSize().x, seen = this.map.getBounds();
         if (!grid || !width || (width * grid.step) / (seen.getEast() - seen.getWest()) < GRID_MIN_PX) return;
-        // Past the view, so a pan shows lines before the map comes to rest.
-        const view = seen.pad(1), south = Math.max(view.getSouth(), -85), north = Math.min(view.getNorth(), 85);
+        // As far past the view as the renderer draws, so the start of a pan shows lines.
+        const view = seen.pad(0.1), south = Math.max(view.getSouth(), -85), north = Math.min(view.getNorth(), 85);
         const first = (value: number) => grid.origin + Math.ceil((value - grid.origin) / grid.step) * grid.step;
         const lines: DegPoint[][] = [];
         for (let lon = first(view.getWest()); lon <= view.getEast(); lon += grid.step) lines.push([[south, lon], [north, lon]]);
