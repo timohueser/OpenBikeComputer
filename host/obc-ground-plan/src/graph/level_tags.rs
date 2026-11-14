@@ -400,7 +400,9 @@ fn ground_junctions_once(
     // The nodes of the pieces on the ground or on a (real) deck: per node, each piece's arm there, an end (0 or 1) or
     // a vertex that it runs through (2), with its way's direction away from the node.
     let nodes = |plan: &Plan| {
-        let mut out: BTreeMap<[i64; 2], Vec<NodeArm>> = BTreeMap::new();
+        // The arms, and per arm its node's key (y, then x, in `NODE_UNITS`) and its place in the arms, sorted.
+        let mut arms: Vec<NodeArm> = Vec::new();
+        let mut keys: Vec<(u64, u32)> = Vec::new();
         for (i, p) in plan.pieces.iter().enumerate() {
             let part = &parts[p.part];
             let deck = p.level == Level::Deck && !p.synthetic;
@@ -408,20 +410,26 @@ fn ground_junctions_once(
                 continue;
             }
             let through = (p.from.span + 1..=p.to.span).map(|k| Station { span: k, u: 0.0, ..p.from });
-            let arms = [(0, p.from), (1, p.to)].into_iter().chain(through.map(|st| (2, st)));
-            for (e, st) in arms.filter(|(e, st)| *e < 2 || key(st) < key(&p.to)) {
+            let ends = [(0, p.from), (1, p.to)].into_iter().chain(through.map(|st| (2, st)));
+            for (e, st) in ends.filter(|(e, st)| *e < 2 || key(st) < key(&p.to)) {
                 let (pos, t) = global(part, &st);
-                let node = [(pos[0] / NODE_UNITS).round() as i64, (pos[1] / NODE_UNITS).round() as i64];
+                let node = |v: f64| u64::from((v / NODE_UNITS).round() as i64 as u32);
                 let back = [-t[0], -t[1]];
-                let list = out.entry(node).or_default();
-                match e {
-                    0 => list.push((i, 0, st, t)),
-                    1 => list.push((i, 1, st, back)),
-                    _ => list.extend([(i, 2, st, t), (i, 2, st, back)]),
+                let new: &[NodeArm] = match e {
+                    0 => &[(i, 0, st, t)],
+                    1 => &[(i, 1, st, back)],
+                    _ => &[(i, 2, st, t), (i, 2, st, back)],
+                };
+                for a in new {
+                    keys.push((node(pos[1]) << 32 | node(pos[0]), arms.len() as u32));
+                    arms.push(*a);
                 }
             }
         }
-        out
+        keys.sort_unstable();
+        keys.chunk_by(|a, b| a.0 == b.0)
+            .map(|c| c.iter().map(|k| arms[k.1 as usize]).collect::<Vec<_>>())
+            .collect::<Vec<_>>()
     };
     let mixed = |arms: &[NodeArm], plan: &Plan| {
         arms.len() >= 3
@@ -429,12 +437,16 @@ fn ground_junctions_once(
             && arms.iter().any(|a| plan.pieces[a.0].level == Level::Deck)
     };
     // A deck that runs through such a node ends there.
-    let mut cuts: Vec<(usize, Station)> = (nodes(&plan).values())
-        .filter(|arms| mixed(arms, &plan))
-        .flat_map(|arms| arms.iter().filter(|a| a.1 == 2 && plan.pieces[a.0].level == Level::Deck).map(|a| (a.0, a.2)))
-        .collect();
-    cuts.sort_by(|a, b| a.0.cmp(&b.0).then(key(&a.1).partial_cmp(&key(&b.1)).unwrap()));
-    cuts.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
+    let mut cuts: Vec<(usize, Station)> = Vec::new();
+    for arms in nodes(&plan).iter().filter(|arms| mixed(arms, &plan)) {
+        for a in arms.iter().filter(|a| a.1 == 2 && plan.pieces[a.0].level == Level::Deck) {
+            if !cuts.contains(&(a.0, a.2)) {
+                // In order along the piece: a few cuts.
+                let at = cuts.iter().position(|c| (c.0, key(&c.1)) > (a.0, key(&a.2))).unwrap_or(cuts.len());
+                cuts.insert(at, (a.0, a.2));
+            }
+        }
+    }
     let plan = if cuts.is_empty() {
         plan
     } else {
@@ -451,8 +463,8 @@ fn ground_junctions_once(
     };
     let ends = nodes(&plan);
     // Per piece and end, the station of its mouth (none: the piece lies in the junction as a whole).
-    let mut mouths: BTreeMap<(usize, usize), Option<Station>> = BTreeMap::new();
-    for arms in ends.values().filter(|a| mixed(a, &plan)) {
+    let mut mouths: Vec<((usize, usize), Option<Station>)> = Vec::new();
+    for arms in ends.iter().filter(|a| mixed(a, &plan)) {
         let ground: Vec<(usize, [f64; 2])> =
             arms.iter().filter(|a| plan.pieces[a.0].level == Level::Ground).map(|a| (a.0, a.3)).collect();
         // The ground arms' strokes: points along their lines, their half-widths (units) and their directions.
@@ -499,7 +511,7 @@ fn ground_junctions_once(
                 let cross = [-1.0, -0.5, 0.0, 0.5, 1.0].map(|k| [c[0] - t[1] * h * k, c[1] + t[0] * h * k]);
                 !cross.iter().any(|&q| near(q, dir))
             };
-            mouths.insert((i, e), inner.into_iter().find(clear));
+            mouths.push(((i, e), inner.into_iter().find(clear)));
         }
     }
     if mouths.is_empty() {
@@ -507,7 +519,8 @@ fn ground_junctions_once(
     }
     let mut out = Vec::with_capacity(plan.pieces.len() + mouths.len());
     for (i, p) in plan.pieces.iter().enumerate() {
-        let (a, b) = (mouths.get(&(i, 0)).copied(), mouths.get(&(i, 1)).copied());
+        let mouth = |e: usize| mouths.iter().find(|m| m.0 == (i, e)).map(|m| m.1);
+        let (a, b) = (mouth(0), mouth(1));
         if a.is_none() && b.is_none() {
             out.push(p.clone());
             continue;
