@@ -56,7 +56,7 @@
         name: deviceName(remembered.device.serial),
         connected: rememberedReady(),
         // The sync can run again only with the device on the cable.
-        sync: deviceSync.running ? 'running' as const : rememberedReady() && deviceSync.problem ? 'problem' as const : null,
+        sync: deviceSync.running || deviceSync.map ? 'running' as const : rememberedReady() && deviceSync.problem ? 'problem' as const : null,
     });
     const links = $derived(Object.entries(PAGES).flatMap(([route, page]) =>
         page.label ? [{ href: ROUTES[route as Route], label: page.label, current: route === current || ROUTES[current].startsWith(`${ROUTES[route as Route]}/`) }] : []));

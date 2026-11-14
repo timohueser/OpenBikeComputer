@@ -1,12 +1,13 @@
 <script lang="ts">
     import { onMount } from 'svelte';
     import Card from '../lib/ui/Card.svelte';
+    import Window from '../lib/ui/Window.svelte';
     import Icon from '../components/planner/PlannerIcon.svelte';
     import Drawing from './device/Drawing.svelte';
     import Software from './device/Software.svelte';
     import { deviceHolder } from '../lib/device/session.svelte';
     import { deviceName, rememberDevice, remembered, rememberedReady } from '../lib/device-sync/remembered.svelte';
-    import { deviceSync } from '../lib/device-sync/state.svelte';
+    import { deviceSync, type MapStep } from '../lib/device-sync/state.svelte';
     import { formatBytes } from '../lib/format';
     import type { NextMap, RouteRecord } from '../lib/library/records';
     import type { Library } from '../lib/library/store';
@@ -32,6 +33,8 @@
     let released = $state(false);
     /** The software row uses the client; a sync now would fail with `busy`. */
     let updating = $state(false);
+    /** The question before a map download in a browser that saves data. */
+    let asking = $state(false);
 
     const session = $derived(deviceHolder.session);
     const status = $derived(session?.status);
@@ -107,6 +110,14 @@
         return known && sameArea(held.next, known) ? 'New colours' : 'New area';
     });
 
+    const stepText = (step: MapStep) => step.phase === 'wait' ? 'Waits for another map build'
+        : step.phase === 'build' ? 'Build' : `${step.phase === 'download' ? 'Download' : 'Send'} ${step.percent}\u00a0%`;
+
+    function sendMap() {
+        if ((navigator as Navigator & { connection?: { saveData?: boolean } }).connection?.saveData) asking = true;
+        else deviceSync.sendMap();
+    }
+
     /** A device that this page adopted is remembered as it is: a second chooser would open a second link to it. */
     function connect() {
         const current = session;
@@ -140,20 +151,34 @@
     {/if}
 {/snippet}
 
-<!-- The map on the device, or the map that waits for it. A click on "Send the map" is the only start of a map build. -->
+<!-- The map on the device, the map that waits for it, or the send of that map. A click on "Send the map" is the only
+     start of a map build. -->
 {#snippet mapRow(connected: boolean)}
+    {@const step = connected ? deviceSync.map : null}
+    {@const failed = deviceSync.mapProblem}
     <div class="row">
         <span class="label">Map</span>
         <div>
-            {#if held.next}
-                {#if news}<p>{news} · {formatBytes(held.next.bytes)}</p>{/if}
-            {:else if device?.at != null}
-                <p>{device.map ?? 'No map'}</p>
+            {#if step}
+                {@const share = step.phase === 'download' || step.phase === 'send' ? step.percent : 0}
+                <p class="syncing"><span class="turning"><Icon name="sync" size={16} /></span>{stepText(step)}</p>
+                <div class="progress" role="progressbar" aria-label="The send of the map" aria-valuemin={0} aria-valuemax={100} aria-valuenow={share}>
+                    <span style:width={`${share}%`}></span>
+                </div>
+            {:else}
+                {#if held.next}
+                    {#if news}<p>{news} · {formatBytes(held.next.bytes)}</p>{/if}
+                    {#if failed}<p class="second" class:problem={!failed.stopped} role={failed.stopped ? undefined : 'alert'}>{failed.text}</p>{/if}
+                {:else if device?.at != null}
+                    <p>{device.map ?? 'No map'}</p>
+                {/if}
+                <p class="second"><a href={ROUTES.area}>Change the area of the map</a></p>
             {/if}
-            <p class="second"><a href={ROUTES.area}>Change the area of the map</a></p>
         </div>
-        {#if held.next && connected}
-            <div><button type="button" class="button" disabled>Send the map</button></div>
+        {#if step}
+            <div><button type="button" class="button map" onclick={() => deviceSync.stop()}>Stop</button></div>
+        {:else if held.next && connected}
+            <div><button type="button" class="button map" onclick={sendMap} disabled={deviceSync.running || updating}>Send the map</button></div>
         {/if}
     </div>
 {/snippet}
@@ -172,7 +197,7 @@
                 <span class="state"><span class="dot" class:on={connected}></span>{connected ? 'Connected' : released ? 'Disconnected' : 'Not connected'}</span>
                 <span class="actions">
                     {#if connected}
-                        <button type="button" class="button" onclick={release} disabled={deviceSync.running || updating}>Disconnect</button>
+                        <button type="button" class="button" onclick={release} disabled={deviceSync.running || updating || !!deviceSync.map}>Disconnect</button>
                     {:else}
                         {@render connectButton('Connect')}
                     {/if}
@@ -202,7 +227,7 @@
                             {/if}
                         </div>
                         {#if connected}
-                            <div><button type="button" class="button" onclick={() => deviceSync.run()} disabled={deviceSync.running || updating}>{deviceSync.problem ? 'Try again' : 'Sync now'}</button></div>
+                            <div><button type="button" class="button" onclick={() => deviceSync.run()} disabled={deviceSync.running || updating || !!deviceSync.map}>{deviceSync.problem ? 'Try again' : 'Sync now'}</button></div>
                         {/if}
                     </div>
                     {#if connected}
@@ -241,7 +266,7 @@
                         {#if session?.client}
                             <div class="row">
                                 <span class="label">Software</span>
-                                <Software client={session.client} running={session.info?.firmwareRevision ?? null} busy={deviceSync.running} bind:working={updating} />
+                                <Software client={session.client} running={session.info?.firmwareRevision ?? null} busy={deviceSync.running || !!deviceSync.map} bind:working={updating} />
                             </div>
                         {/if}
                     {:else}
@@ -280,6 +305,18 @@
         </div>
     {/if}
 </main>
+
+{#if asking && held.next}
+    <Window title="Send the map?" onClose={() => asking = false}>
+        {#snippet children(close)}
+            <p>This browser saves data. The map is a download of {formatBytes(held.next!.bytes)}.</p>
+            <div class="window-buttons">
+                <button type="button" class="button" onclick={close}>Not now</button>
+                <button type="button" class="button primary" onclick={() => { close(); deviceSync.sendMap(); }}>Download and send</button>
+            </div>
+        {/snippet}
+    </Window>
+{/if}
 
 <style>
     /* The device and what the page says of it are one block in the middle of the page, the same in each state. */
@@ -392,6 +429,9 @@
     .second:first-child {
         margin-top: 0;
     }
+    .second.problem {
+        color: var(--coral);
+    }
     .hint {
         padding: 14px 0 16px;
         border-top: 1px solid var(--line);
@@ -408,6 +448,23 @@
     .turning {
         display: inline-grid;
         animation: turn 1.2s linear infinite;
+    }
+    /* "Send the map" and "Stop" have one width, and the bar stands where the link of the row is: the row and the
+       rows under it do not move when a send starts. */
+    .map {
+        min-width: 116px;
+    }
+    .progress {
+        height: 4px;
+        margin: 12px 0 7px;
+        overflow: hidden;
+        border-radius: 2px;
+        background: var(--parchment-2);
+    }
+    .progress span {
+        display: block;
+        height: 100%;
+        background: var(--water);
     }
     @keyframes turn {
         to { transform: rotate(360deg); }

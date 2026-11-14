@@ -1,6 +1,8 @@
 /** One sync with the remembered device: the new rides come into the library and are marked as taken, the deleted routes
- * leave the device, and the routes that wait go to it. */
+ * leave the device, and the routes that wait go to it. And one send of the map that waits. */
+import type { JobContext } from '../device/progress';
 import { displayName } from '../device/write';
+import type { NextMap } from '../library/records';
 import type { Library } from '../library/store';
 import { sentKey } from '../library/summary';
 import { planTitle } from '../planner/editor';
@@ -11,7 +13,7 @@ import { takeDeviceValues } from '../settings/settings.svelte';
 import { DeviceError, type Catalog, type FlatStoreClient } from '../usb/client';
 import { Crc32 } from '../usb/crc32';
 import { decodeRideObject } from '../usb/objects';
-import { EntryFlags, ObjectKind, type CatalogEntry } from '../usb/protocol';
+import { EntryFlags, ObjectKind, type CatalogEntry, type PutResponse } from '../usb/protocol';
 import { archivedRows } from './metadata';
 import { remember, rememberCard, remembered, type DeviceBytes } from './remembered.svelte';
 import { rideRecord } from './ride';
@@ -36,6 +38,11 @@ export interface SyncReport {
 }
 
 export const CABLE_OUT = 'The sync stopped when the cable came out. It goes on at the next connection.';
+export const NO_ROOM = 'The memory card has no room for the new map. The old map stays until the new one is complete, so the card needs room for both.';
+export const MAP_LOST = 'The new map was not sent, and its download is lost. “Send the map” downloads it again.';
+
+/** Builds the map `next` and puts it on the device. The one of the app is `buildMap` of `map.svelte.ts`. */
+export type BuildMap = (next: NextMap, ctx: JobContext) => Promise<Pick<PutResponse, 'objectId' | 'revision'>>;
 
 const unused = (entry: CatalogEntry) => (entry.flags & (EntryFlags.Recording | EntryFlags.Retained)) === 0;
 const ofKind = (catalog: Catalog, kind: number) => catalog.entries.filter(entry => entry.kind === kind && unused(entry));
@@ -158,6 +165,28 @@ export async function syncDevice(client: SyncClient, serial: string, library: Li
     }
     report.problem = problems.join(' ') || null;
     return report;
+}
+
+/**
+ * Sends the map that waits to the device `serial`, only when it is the remembered device. After the put it remembers the
+ * area and the colours of the map object, and the map waits no more. A map that the rider chose during the build still
+ * waits. Returns the sentence for the rider when the map did not go, else null. A cut cable and a stop keep the old map
+ * on the card.
+ */
+export async function sendMap(serial: string, library: Library, build: BuildMap, ctx: JobContext): Promise<string | null> {
+    const next = await library.state('nextMap');
+    if (!next || remembered.device?.serial !== serial) return null;
+    try {
+        const { objectId, revision } = await build(next, ctx);
+        const { bytes: _, ...area } = next, object = `${objectId}:${revision}`;
+        remember({ mapObject: object, built: { object, ...area } });
+        const sent = JSON.stringify(next);
+        await library.changeState('nextMap', now => now && JSON.stringify(now) !== sent ? now : null);
+        return null;
+    } catch (error) {
+        if (refused(error, 'no-space')) return NO_ROOM;
+        return cut(error) || ctx.signal.aborted ? MAP_LOST : text(error);
+    }
 }
 
 /** Marks each stored ride of `rides` that the Metadata object does not mark, after a check that the stored file is the exact

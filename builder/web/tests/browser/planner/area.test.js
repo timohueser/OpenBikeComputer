@@ -96,3 +96,33 @@ test('a route that waits and leaves the area gives the warning, the box around i
   expect(errors).toEqual([]);
   expect((await nextMap(page)).boxes).toHaveLength(2);
 });
+
+test('"Send the map" builds the map that waits and puts it on the device; Stop in the middle keeps it waiting', async ({ page }) => {
+  await library(page, () => window.coverTest.library.setState('nextMap', { regions: ['bridge-fixture'], boxes: [], light: 'default', dark: 'dusk', bytes: 16_000 }));
+  const errors = await open(page, '?fake-device#/device');
+  await page.getByRole('button', { name: 'Connect a device' }).click();
+  const row = page.locator('.row', { has: page.getByText('Map', { exact: true }) });
+  await expect(row).toContainText('New area · 15.6 KB');
+  await expect(page.locator('.row', { hasText: 'In sync.' })).toBeVisible();
+
+  // The device holds its answer to the list before the put, so the send stays after the build.
+  await page.evaluate(() => window.deviceTest.hold());
+  await row.getByRole('button', { name: 'Send the map' }).click();
+  await expect(row).toContainText('Build');
+  await expect(row.getByRole('progressbar')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Disconnect' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Sync now' })).toBeDisabled();
+  await row.getByRole('button', { name: 'Stop' }).click();
+  await page.evaluate(() => window.deviceTest.release());
+  await expect(row).toContainText('The new map was not sent, and its download is lost.');
+  await expect(row).toContainText('New area · 15.6 KB');
+  await expect(page.locator('.row', { has: page.getByText('Memory card', { exact: true }) })).toContainText('Map 39.1 KB');
+
+  await row.getByRole('button', { name: 'Send the map' }).click();
+  await expect(row).toContainText('Bridge Fixture');
+  await expect(row).not.toContainText('New area');
+  await expect(row.getByRole('button')).toHaveCount(0);
+  await expect(row.getByRole('link', { name: 'Change the area of the map' })).toBeVisible();
+  expect(errors).toEqual([]);
+  expect(await nextMap(page)).toBeNull();
+});
