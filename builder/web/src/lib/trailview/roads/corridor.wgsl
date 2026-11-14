@@ -49,9 +49,9 @@ const WALL_FILL: u32 = 128u;
 // In a piece's concrete word, the next code bit, which its look does not read: the dark inside of a culvert's mouth
 // (plan/piece.wgsl), this colour.
 const CULVERT_DARK: u32 = 256u;
-// In a piece's word, the fine offset's second bit, which pieces do not read: a storey's top (plan/piece.wgsl), whose way
-// paints its details at any distance (DETAIL_EVERYWHERE).
-const STOREY_TOP: u32 = 536870912u;
+// In a piece's word, the fine offset's top bit, which no corner of a cell's mesh sets: a storey's top
+// (plan/piece.wgsl), whose way paints its details at any distance (DETAIL_EVERYWHERE).
+const STOREY_TOP: u32 = 2147483648u;
 const CULVERT_INSIDE: vec3f = vec3f(0.018, 0.02, 0.018);
 const CF_SAMPLE: u32 = 1u;
 const CF_MESH: u32 = 2u;
