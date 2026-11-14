@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs';
+import { gunzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
-import { cellMesh, SIDE } from './mesh';
-import { build, CellRequest, initSync } from './pkg/obc_ground_plan_bridge.js';
+import { cellMesh, meshBytes, SIDE } from './mesh';
+import { build, CellRequest, feature_tiles, initSync } from './pkg/obc_ground_plan_bridge.js';
 
 /** Frame units per grid cell of the mesh level, as `params::GRID`. */
 const GRID = 1024;
@@ -32,6 +33,29 @@ describe('the mesh reader', () => {
             for (let j = 0; j < SIDE; j++) for (let i = 0; i < SIDE; i++) inside += +sunk(i, j);
             expect(terrain).toBeGreaterThan(0);
             expect(inside).toBeGreaterThan(0);
+        } finally {
+            input.free();
+            plan.free();
+        }
+    });
+
+    it('reads the storeys after a cell mesh: every index names a storey corner, the top comes first, then the shell in its parts', () => {
+        // A cell of the browser fixture with decks over a road.
+        const fixture = new URL('../../../../tests/browser/trailview/fixture/features/13/', import.meta.url), [x, y] = [34294, 23098];
+        const request = new CellRequest(x, y), tiles = feature_tiles(x, y);
+        for (let t = 0; t < tiles.length; t += 2) {
+            const bytes = readFileSync(new URL(`${tiles[t]}/${tiles[t + 1]}.bin`, fixture));
+            request.add_tile(tiles[t], tiles[t + 1], bytes[0] === 0x1f && bytes[1] === 0x8b ? gunzipSync(bytes) : bytes);
+        }
+        const plan = build(request, false), input = plan.mesh_input();
+        try {
+            const storeys = cellMesh(meshBytes(input.mesh(plan.rim())!, input.storeys())).storeys!, corners = storeys.offsets.length;
+            expect(storeys.corners.length).toBe(2 * corners);
+            expect([...storeys.triangles, ...storeys.slots].every(c => c < corners)).toBe(true);
+            expect(storeys.top).toBeGreaterThan(0);
+            expect(storeys.top).toBeLessThan(storeys.triangles.length / 3);
+            expect(storeys.top <= storeys.railings && storeys.railings <= storeys.piers && storeys.piers <= storeys.triangles.length / 3).toBe(true);
+            expect([...new Float32Array(storeys.offsets.buffer)].every(Number.isFinite)).toBe(true);
         } finally {
             input.free();
             plan.free();

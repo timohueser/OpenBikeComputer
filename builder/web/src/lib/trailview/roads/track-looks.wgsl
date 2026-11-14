@@ -42,8 +42,12 @@ fn detail_fade(distance: f32) -> f32 {
 }
 
 // Whether a way paints these faces `distance` metres off: nearer, they hide all that it could paint.
+// A pixel of a storey's top (plan/piece.wgsl): no faces of tracks.ts stand on a deck, so its way paints them at any
+// distance.
+var<private> DETAIL_EVERYWHERE: bool = false;
+
 fn detail_painted(distance: f32) -> bool {
-    return distance >= DETAIL_M;
+    return distance >= DETAIL_M || DETAIL_EVERYWHERE;
 }
 
 fn narrow_gauge(code: u32) -> bool {

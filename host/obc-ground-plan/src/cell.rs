@@ -1,8 +1,9 @@
 //! The build of one cell from its request bytes, stage by stage, with the time of each stage.
 
-use crate::faces::{records, FacePlan, Rules, Storeys};
+use crate::faces::{records, EdgeKind, FacePlan, Rules, Storeys, OUTSIDE};
 use crate::frame::CellKey;
 use crate::graph::{self, WayGraph};
+use crate::mesh;
 use crate::tile::TileCache;
 use crate::transport::{fnv, Request};
 use crate::CellInput;
@@ -31,8 +32,8 @@ pub struct CellBuild {
     /// The storeys over the ground, whose records `records` holds after storey 0's; none unless asked
     /// (`build_storeys`).
     pub storeys: Storeys,
-    /// With the storeys: the times of the levels that the tiles carry and of the storeys' faces and records (ms).
-    pub storey_times: [f64; 2],
+    /// With the storeys: the time of the storeys' faces and records (ms).
+    pub storey_time: f64,
 }
 
 /// Builds the cell of a request: `input` decodes the request, the feature tiles and the terrain;
@@ -69,9 +70,9 @@ pub fn build_request(
     Ok(stages(now(), request, cache, rules, now)?.0)
 }
 
-/// `build_request`, then the storeys over the ground: the levels of the way graph as the tiles carry them
-/// (`graph::level_tags::read`), the storeys' faces, their records after storey 0's in the one block
-/// (`records::storeys`) and what their shells read. Storey 0's faces and far block are those of `build_request`.
+/// `build_request`, then the storeys over the ground: their faces, their records after storey 0's in the one block
+/// (`records::storeys`) and what their shells read. The graph splits each way at the end lines that the tiles carry
+/// (`graph::level_tags::split`). Storey 0's faces and far block are those of `build_request`.
 pub fn build_storeys(
     request: Request,
     cache: &mut TileCache,
@@ -80,10 +81,16 @@ pub fn build_storeys(
 ) -> Result<CellBuild, String> {
     let (mut b, input) = stages(now(), request, cache, rules, now)?;
     let start = now();
-    graph::level_tags::read(&mut b.graph, &input, &rules.sections, rules.structures.edge_band_m);
-    let levelled = now();
     b.storeys = records::storeys(&b.graph, &input, rules, b.key, &mut b.records);
-    b.storey_times = [levelled - start, now() - levelled];
+    let plan = &b.faces;
+    let sharp = |f: u32| f != OUTSIDE && mesh::params::sharp(plan.faces[f as usize].rule);
+    b.storeys.ground_ends = (plan.edges.iter())
+        .filter(|e| {
+            e.kind == EdgeKind::DeckEdge && e.left != OUTSIDE && e.right != OUTSIDE && (sharp(e.left) || sharp(e.right))
+        })
+        .flat_map(|e| mesh::points::edge_points(plan, e, b.key.origin().y as f64))
+        .collect();
+    b.storey_time = now() - start;
     Ok(b)
 }
 
@@ -93,7 +100,16 @@ pub fn build_storeys(
 pub fn far_request(request: Request, cache: &mut TileCache, rules: &Rules) -> Result<Vec<u32>, String> {
     let key = request.key;
     let input = request.input(cache)?;
-    records::far_block(&graph::build(key, &input, &rules.sections), &input, rules, key)
+    records::far_block(&cell_graph(key, &input, rules), &input, rules, key)
+}
+
+/// The way graph of a cell: with the storeys, its ways follow the levels that the tiles carry.
+pub fn cell_graph(key: CellKey, input: &CellInput, rules: &Rules) -> WayGraph {
+    if cfg!(feature = "storeys") {
+        graph::build_levelled(key, input, &rules.sections, rules.structures.edge_band_m)
+    } else {
+        graph::build(key, input, &rules.sections)
+    }
 }
 
 fn stages(
@@ -106,14 +122,11 @@ fn stages(
     let (key, tiles, pages) = (request.key, request.tiles.len(), request.pages.len());
     let input = request.input(cache)?;
     let read = now();
-    let graph = graph::build(key, &input, &rules.sections);
+    let graph = cell_graph(key, &input, rules);
     let built = now();
     let (faces, records, far) = records::near(&graph, &input, rules, key, 0, true);
     let times = vec![read - start, built - read, now() - built];
     let records = records.words;
-    let (storeys, storey_times) = (Storeys::default(), [0.0; 2]);
-    Ok((
-        CellBuild { key, request: None, tiles, pages, graph, faces, records, far, times, storeys, storey_times },
-        input,
-    ))
+    let (storeys, storey_time) = (Storeys::default(), 0.0);
+    Ok((CellBuild { key, request: None, tiles, pages, graph, faces, records, far, times, storeys, storey_time }, input))
 }

@@ -9,9 +9,10 @@ description = "The TrailView ground plan in the browser: the cell build of obc-g
 [lib]
 crate-type = ["cdylib", "rlib"]
 
-# The storeys over the ground (decks): off until the viewer draws them. Without it the device does not link
-# `graph::levels` nor the storeys' faces, records and shells.
+# The storeys over the ground (decks), which the viewer draws. Without it the package links none of their faces,
+# records and shells.
 [features]
+default = ["storeys"]
 storeys = ["obc-ground-plan/storeys"]
 
 [dependencies]

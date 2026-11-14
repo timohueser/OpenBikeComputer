@@ -402,8 +402,13 @@ fn h_heights_start(block: u32, q: vec2f) -> u32 {
     return select(segs.x + segs.y, 0u, segs.x == 0u);
 }
 
+// The storey of a line's finish word: 0 but for a storey's line (M_STOREY).
+fn h_storey(finish: u32) -> u32 {
+    return select(0u, finish >> 24u, (finish & M_STOREY) != 0u);
+}
+
 // The lines present at q, as heights::present, into hp, a point as WGSL declares it (all zero). keep: the
-// material lines of the labels asked for, never skipped as absent.
+// material lines of the labels asked for, never skipped as absent. The lines are those of keep.x's storey.
 fn h_present(hp: ptr<function, HPoint>, block: u32, q: vec2f, mpu: f32, keep: vec2u, start: u32) {
     (*hp).n = 0u;
     let head = m_bin_head(block, q);
@@ -415,15 +420,25 @@ fn h_present(hp: ptr<function, HPoint>, block: u32, q: vec2f, mpu: f32, keep: ve
     let nh = hcounts >> 16u;
     let nd = hcounts & 0xffffu;
     let ds = at + nh;
+    let lines = block + mw(block + 6u);
+    var storey = 0u;
+    if (keep.x != M_NONE) {
+        storey = h_storey(mw(lines + M_LINE * keep.x + 1u));
+    }
     var k = 0u;
     loop {
         if (k >= nh) {
             break;
         }
         let l = mw(at + k) & 0xffffu;
-        // The ceiling lines come last: no line of storey 0 follows.
-        if ((mw(block + mw(block + 6u) + M_LINE * l + 1u) & M_CEILING) != 0u) {
+        let finish = mw(lines + M_LINE * l + 1u);
+        // The ceiling lines and the storeys' lines come last: no line of storey 0 follows.
+        if (storey == 0u && (finish & (M_CEILING | M_STOREY)) != 0u) {
             break;
+        }
+        if (h_storey(finish) != storey) {
+            k++;
+            continue;
         }
         let ln = h_line(block, l);
         // A line whose core lies a feather or more from q is not present: skip it before its frames
@@ -546,7 +561,6 @@ fn h_present(hp: ptr<function, HPoint>, block: u32, q: vec2f, mpu: f32, keep: ve
     }
     var fans = false;
     let extras = m_extras(block);
-    let lines = block + mw(block + 6u);
     for (var e = 0u; e < nd; e++) {
         let item = mw(ds + e);
         let cand = m_cand(block, item & 0xffffu);

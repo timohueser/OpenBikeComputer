@@ -8,9 +8,10 @@ export function functionOf(source: string, name: string): string {
     return source.slice(open + 1, at - 1);
 }
 
-/** Functions of a shader in JavaScript, as written there, with its constants. */
+/** Functions of a shader in JavaScript, as written there, with its constants and its private variables' first values. */
 export function shaderFunctions<T>(source: string, names: string[]): T {
     const constants = [...source.matchAll(/^const (\w+): [fu]32 = ([^;]+);/gm)].map(([, name, value]) => `const ${name} = ${value.replace(/\b(0x[0-9a-f]+|\d+)u\b/g, '$1')};`);
+    constants.push(...[...source.matchAll(/^var<private> (\w+): \w+ = ([^;]+);/gm)].map(([, name, value]) => `let ${name} = ${value};`));
     const functions = names.map(name => {
         const args = /\(([^)]*)\)/.exec(source.slice(source.indexOf(`fn ${name}(`)))![1];
         const body = functionOf(source, name).replace(/\blet\b/g, 'const').replace(/\bvar\b/g, 'let').replace(/\b(max|min|abs|round)\(/g, 'Math.$1(').replace(/\b[fu]32\(/g, '(').replace(/\b(0x[0-9a-f]+|\d+)u\b/g, '$1');

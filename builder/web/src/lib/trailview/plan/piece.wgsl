@@ -1,6 +1,6 @@
 // The ground plan's mesh of a cell (pieces.ts), drawn before the terrain with the corridors' fragment stage
 // (PIECE): its triangles at the corners' heights from corners.wgsl, and its step slots, two triangles each
-// on the slot's four corners. A terrain vertex of the strip is the terrain's own
+// on the slot's four corners; and the meshes of its storeys over the ground, their slots all plain concrete. A terrain vertex of the strip is the terrain's own
 // vertex at its level-18 grid point, made by the same code, so the strip meets the terrain without a crack.
 // #include ../roads/corridor.wgsl
 // #include cells.wgsl
@@ -15,6 +15,12 @@ struct Piece {
     block: u32,
     first: u32,
     culverts: u32,
+    offsets: u32,
+    tris: u32,
+    top: u32,
+    // A storey mesh's first triangle of its railings and posts, and of its piers (mesh/shell.rs's PARTS).
+    railings: u32,
+    piers: u32,
 }
 
 @group(0) @binding(1) var<storage, read> piece: array<u32>;
@@ -80,6 +86,15 @@ const WALL_SIDE: u32 = 1u << FINE_SHIFT;
 // Whether corner k lies on the road surface of a wall class.
 fn on_road(k: u32) -> bool {
     return (piece[params.out + 4u * k + 1u] & WALL_SIDE) != 0u;
+}
+
+// The next bit: on a bridge's ground stretch, whose wall is concrete (LOOK_BRIDGE_SIDE of plan/corners.wgsl). A
+// storey's corner holds its deck's build and planks in the bits from DECK_SHIFT, as corners.wgsl's.
+const BRIDGE_SIDE: u32 = 2u << FINE_SHIFT;
+const DECK_SHIFT: u32 = 29u;
+
+fn on_bridge(k: u32) -> bool {
+    return (piece[params.out + 4u * k + 1u] & BRIDGE_SIDE) != 0u;
 }
 
 // Whether corner k lies on water (MAT_WATER of corners.wgsl).
@@ -166,10 +181,11 @@ fn slot_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
     let left = normalize(vec2f(-along.y, along.x) + vec2f(1e-9, 0.0));
     // An end face (the mesh's last slots, on a deck end line) is plain concrete at any height. A step whose upper
     // side is water falls as water (its look foams on the upright slot). A step beside a wall class's road surface
-    // that stands as high as a wall is a wall; any other is a bank of the ground, as on a path or a track.
+    // that stands as high as a wall is a wall, of concrete beside a bridge's ground stretch; any other is a bank of
+    // the ground, as on a path or a track.
     let upper = select(vec2u(piece[w + 2u], piece[w + 3u]), vec2u(piece[w], piece[w + 1u]), rise > 0.0);
     let wall = (on_road(piece[w]) || on_road(piece[w + 3u])) && max(abs(dp), abs(dq)) >= WALL_STEP_M;
-    var mat = select(MAT_GROUND, MAT_WALL, wall);
+    var mat = select(MAT_GROUND, select(MAT_WALL, MAT_CAP, on_bridge(piece[w]) || on_bridge(piece[w + 3u])), wall);
     if (on_water(upper.x) || on_water(upper.y)) {
         mat = MAT_WATER;
     }
@@ -285,4 +301,58 @@ fn culvert_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
     let v = PieceVertex(surface.part + vec2f(s.x, -s.y) / surface.unit, s, cw.h + l.z);
     let place = CornerPlace(vec2f(l.z - f.zc, half_of(word)), l.x);
     return piece_out(v, word, place, vec3f(n.x * ex + n.y * ey, n.z));
+}
+
+// A storey mesh's triangle corner (three corners a triangle from `tris`): its top takes its corners' looks and
+// normals, or planks; its shell (underside, edges, parapets, railings, posts, piers) is flat, of its deck's build
+// (DECK_SHIFT of plan/corners.wgsl, its first corner's): the slab and its edge feature of concrete, dark timber or
+// steel, a railing of wood on timber and else of steel, the piers concrete.
+@vertex
+fn storey_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
+    let i = index / 3u;
+    let t = params.tris + 3u * i;
+    let k = piece[t + index % 3u];
+    let v = corner_at(k);
+    let a = corner_at(piece[t]);
+    let b = corner_at(piece[t + 1u]);
+    let c = corner_at(piece[t + 2u]);
+    let deck = piece[params.out + 4u * piece[t] + 1u] >> DECK_SHIFT;
+    let build = select(select(MAT_CAP, MAT_STEEL, (deck & 3u) == 2u), MAT_TIMBER, (deck & 3u) == 1u);
+    var out: CorridorOut;
+    if (i < params.top) {
+        let o = params.out + 4u * k;
+        var word = (piece[o + 1u] & ~(7u << DECK_SHIFT)) | STOREY_TOP;
+        if ((deck & 4u) != 0u) {
+            word = (word & ~MAT_BITS) | MAT_PLANKS;
+        }
+        out = piece_out(v, word, place_at(k), octahedral(unpack2x16snorm(piece[o + 3u])));
+    } else {
+        // Counter-clockwise from outside in lod space (east, north, up): the normal points out.
+        let n = normalize(cross(vec3f(b.s - a.s, b.h - a.h), vec3f(c.s - a.s, c.h - a.h)) + vec3f(0.0, 0.0, 1e-9));
+        var mat = select(build, select(MAT_STEEL, MAT_WOOD, build == MAT_TIMBER), i >= params.railings);
+        mat = select(mat, MAT_CAP, i >= params.piers);
+        let word = mat | (480u << HALF_SHIFT);
+        out = piece_out(v, word, CornerPlace(vec2f(v.h, half_of(word)), v.s.x + v.s.y), n);
+    }
+    // A storey stands on no terrain vertex: a triangle with a corner of no height yet draws nothing.
+    if (!known(a.h) || !known(b.h) || !known(c.h)) {
+        out.clip = vec4f(0.0, 0.0, 2.0, 1.0);
+    }
+    return out;
+}
+
+// A storey mesh's corner height, NONE before the corners pass.
+fn storey_height(k: u32) -> f32 {
+    return bitcast<f32>(piece[params.out + 4u * k]);
+}
+
+// A storey mesh's triangle corner in the sun's frame, as a caster of the shadow map: at its stored height.
+@vertex
+fn storey_caster(@builtin(vertex_index) index: u32) -> @builtin(position) vec4f {
+    let t = params.tris + 3u * (index / 3u);
+    let k = piece[t + index % 3u];
+    let q = vec2u(piece[2u * k] & 0x7ffffu, piece[2u * k + 1u] & 0x7ffffu);
+    let u = vec2f(params.origin - surface.anchor) + vec2f(q) / 16.0;
+    let all = known(storey_height(piece[t])) && known(storey_height(piece[t + 1u])) && known(storey_height(piece[t + 2u]));
+    return select(vec4f(0.0, 0.0, 2.0, 1.0), frame.view_proj * vec4f(corner_point(PieceVertex(u, lod_space(u), storey_height(k))), 1.0), all);
 }

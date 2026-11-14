@@ -3,6 +3,7 @@
 import { imagePixels } from '../../planner/layers/terrain';
 import { tilePages, type PageData } from '../stream/heights';
 import { debugMesh, type DebugMesh, type Vocabulary } from './debug';
+import { meshBytes } from './mesh';
 import init, { build, build_bytes, CellRequest, far, vocabulary, type CellPlan, type InitOutput, type MeshInput } from './pkg/obc_ground_plan_bridge.js';
 
 /** Decoded stored tiles kept: 16 tiles of four 128 KiB pages, 8 MiB. */
@@ -39,8 +40,8 @@ export interface CellBuilt { id: number; ok: true; words: Uint32Array; rim: Uint
 /** A cell's far block from a `far` job: the `far` of its `cell` job. */
 export interface FarBuilt { id: number; ok: true; far: Uint32Array; ms: number; heap: number }
 /**
- * A cell's near mesh (`mesh/mod.rs` of obc-ground-plan gives the bytes), or `gone` when the worker no
- * longer keeps its input; `ms` is the mesh stage.
+ * A cell's near mesh (`mesh/mod.rs` of obc-ground-plan gives the bytes), then the meshes of its storeys over the
+ * ground (`mesh/shell.rs`) where it has any, or `gone` when the worker no longer keeps its input; `ms` is the mesh stage.
  */
 export type Meshed = { id: number; ok: true; mesh: ArrayBuffer; ms: number } | { id: number; ok: true; gone: true };
 /**
@@ -199,13 +200,24 @@ function meshCell({ id, cell, rims }: Extract<PlanRequest, { type: 'mesh' }>): v
     const start = performance.now();
     try {
         // A first mesh of an input always gives its bytes.
-        const mesh = input.mesh(rims)!;
-        post({ id, ok: true, mesh: mesh.buffer as ArrayBuffer, ms: performance.now() - start } satisfies Meshed, [mesh.buffer]);
+        const mesh = withStoreys(input.mesh(rims)!, input);
+        post({ id, ok: true, mesh, ms: performance.now() - start } satisfies Meshed, [mesh]);
     } catch (error) {
         failed(id, error);
     } finally {
         input.free();
         kept.delete(name);
+    }
+}
+
+/** A cell's mesh bytes with its storeys' (`meshBytes`). A storey mesh that the crate refuses draws none. */
+function withStoreys(mesh: Uint8Array, input: MeshInput): ArrayBuffer {
+    try {
+        return meshBytes(mesh, input.storeys());
+    } catch (error) {
+        if (trapped(error)) throw error;
+        console.warn(`Ground plan storeys: ${message(error)}`);
+        return meshBytes(mesh);
     }
 }
 

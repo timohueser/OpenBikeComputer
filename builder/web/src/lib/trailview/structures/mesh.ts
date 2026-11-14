@@ -25,6 +25,8 @@ export interface StructureMesh {
     indices: Uint32Array<ArrayBuffer>;
     /** The count of the last indices, which the ground plan does not draw: a bridge's abutments, where its end faces stand. None: 0. */
     offPlan?: number;
+    /** The count of the indices before those: a bridge's other faces, which the ground plan's storeys draw where its meshes draw. None: 0. */
+    decks?: number;
 }
 
 /** A point of a cross-section: metres across to the left of the line, and metres up. */
@@ -86,6 +88,7 @@ export function curveStops(line: Line): (Station & { along: number })[] {
 export class MeshBuilder {
     private readonly words: number[] = [];
     private readonly onPlan: number[] = [];
+    private readonly decks: number[] = [];
     private readonly late: number[] = [];
     private indices = this.onPlan;
 
@@ -118,13 +121,28 @@ export class MeshBuilder {
 
     /** Builds the faces of `make` as faces that the ground plan does not draw (StructureMesh.offPlan). */
     offPlan(make: () => void): void {
-        this.indices = this.late;
+        this.within(this.late, make);
+    }
+
+    /** Builds the faces of `make` as a bridge's, which the ground plan's storeys draw where its meshes draw (StructureMesh.decks). */
+    bridge(make: () => void): void {
+        this.within(this.decks, make);
+    }
+
+    /** Builds the faces of `make` of a bridge as faces that no storey draws: they draw with the ground plan too. */
+    beside(make: () => void): void {
+        this.within(this.onPlan, make);
+    }
+
+    private within(list: number[], make: () => void): void {
+        const was = this.indices;
+        this.indices = list;
         make();
-        this.indices = this.onPlan;
+        this.indices = was;
     }
 
     mesh(): StructureMesh | null {
-        if (!this.onPlan.length && !this.late.length) return null;
+        if (!this.onPlan.length && !this.decks.length && !this.late.length) return null;
         const vertices = new ArrayBuffer(this.words.length * 4), floats = new Float32Array(vertices), ints = new Int32Array(vertices), uints = new Uint32Array(vertices);
         this.words.forEach((word, i) => {
             const k = i % STRUCTURE_VERTEX;
@@ -132,7 +150,7 @@ export class MeshBuilder {
             else if (k === 3 || k === 4) uints[i] = word;
             else floats[i] = word;
         });
-        return { vertices, indices: new Uint32Array(this.onPlan.concat(this.late)), offPlan: this.late.length };
+        return { vertices, indices: new Uint32Array([...this.onPlan, ...this.decks, ...this.late]), offPlan: this.late.length, decks: this.decks.length };
     }
 
     /** The direction east, north, up of a direction [across, up] at the middle of two stations. */

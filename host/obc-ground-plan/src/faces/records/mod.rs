@@ -51,7 +51,7 @@ use super::{
     Rules, Sliced, Surface, WayLine, LAYERS, OUTSIDE, SLOPE,
 };
 use crate::frame::{metres_per_unit, CellKey, GlobalPoint, CELL_UNITS};
-use crate::graph::WayGraph;
+use crate::graph::{Level, WayGraph};
 use crate::sections::{Finish, Material, WaySection};
 use crate::CellInput;
 
@@ -123,7 +123,7 @@ pub const PLATFORM: u32 = 3;
 
 /// Line flags above the finish code's byte: a rail line, a way that wears lines, one that looks as a
 /// motorway, a wall class, line water, a path (`WaySection::path`); and from `MATERIAL_SHIFT` its top's
-/// `sections::Material`.
+/// `sections::Material` (4 bits).
 pub const RAIL: u32 = 1 << 8;
 pub const MARKED: u32 = 1 << 9;
 pub const MOTORWAY: u32 = 1 << 10;
@@ -157,6 +157,12 @@ pub(crate) fn ceiling_end_reach(half: f64, release: f64) -> f64 {
     libm::hypot((release + (half + release) * libm::sin(theta)) / libm::cos(theta), half + release)
 }
 pub const MATERIAL_SHIFT: u32 = 16;
+/// A line of a bridge's ground stretch (an open part of a bridge way, `graph::level_tags::split`): a wall at its edge
+/// is the bridge's, of concrete.
+pub const BRIDGE_GROUND: u32 = 1 << 20;
+/// A storey's line: what its deck is made of (`deck::Build`, 2 bits from here) and whether its top is of planks.
+pub const BUILD_SHIFT: u32 = 21;
+pub const PLANKS: u32 = 1 << 23;
 /// The leg of a line's way, from 0 in the way's direction, in the bits from this one of its finish word.
 pub const LEG_SHIFT: u32 = 24;
 // The fields of a line's finish word: the finish code, each flag, the material and the leg. No two
@@ -172,7 +178,10 @@ const _: () = {
         WATER,
         PATH,
         STOREY,
-        0xff << MATERIAL_SHIFT,
+        0xf << MATERIAL_SHIFT,
+        BRIDGE_GROUND,
+        3 << BUILD_SHIFT,
+        PLANKS,
         u32::MAX << LEG_SHIFT,
     ];
     let (mut seen, mut i) = (0u32, 0);
@@ -865,6 +874,7 @@ fn line_words(
         (sec.leg_wall, WALL),
         (sec.water, WATER),
         (sec.path, PATH),
+        (way.level == Level::Ground && graph.parts[way.part as usize].level == Level::Deck, BRIDGE_GROUND),
     ];
     let flags = flags.iter().fold(0, |f, &(on, bit)| f | if on { bit } else { 0 });
     let finish = sec.finish.map_or(0, code) | flags | (sec.material as u32) << MATERIAL_SHIFT;
