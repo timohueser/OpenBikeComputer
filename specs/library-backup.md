@@ -99,6 +99,7 @@ Each field is optional.
 | `sent` | Object: for a route id, an object with `device`, the route on the device as `storeId:objectId`, and `key`, a hash of the name and the plan of the route when it was sent |
 | `apart` | Array of ride keys: the rides that the rider took out of their group of rides on the same route |
 | `deleted` | Array of objects with `key` and an optional `device`: the rides that the rider deleted |
+| `nextMap` | Object or `null`: the map that the rider chose for the device and that is not sent yet. `regions` is an array of region ids of the map catalog. `boxes` is an array of objects with `minLat`, `minLon`, `maxLat` and `maxLon` in whole microdegrees. `light` and `dark` are the ids of the map styles for the day and for the night. `bytes` is the size of the download of the whole map |
 
 ## 7. Load
 

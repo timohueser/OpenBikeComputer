@@ -28,6 +28,8 @@
         // The page reads and writes GPX and FIT.
         ride: { load: () => initCore().then(() => import('./pages/Ride.svelte')) },
         device: { label: 'Device', load: () => import('./pages/Device.svelte') },
+        // The page reads the grid of the map cells.
+        area: { load: () => initCore().then(() => import('./pages/Area.svelte')) },
     };
 </script>
 
@@ -54,10 +56,10 @@
         name: deviceName(remembered.device.serial),
         connected: rememberedReady(),
         // The sync can run again only with the device on the cable.
-        sync: deviceSync.running ? 'running' as const : rememberedReady() && deviceSync.problem ? 'problem' as const : null,
+        sync: deviceSync.running || deviceSync.map ? 'running' as const : rememberedReady() && deviceSync.problem ? 'problem' as const : null,
     });
     const links = $derived(Object.entries(PAGES).flatMap(([route, page]) =>
-        page.label ? [{ href: ROUTES[route as Route], label: page.label, current: route === current }] : []));
+        page.label ? [{ href: ROUTES[route as Route], label: page.label, current: route === current || ROUTES[current].startsWith(`${ROUTES[route as Route]}/`) }] : []));
 
     $effect(() => {
         const route = current;

@@ -115,6 +115,16 @@ A sync ([`state.svelte.ts`](../../builder/web/src/lib/device-sync/state.svelte.t
 
 A pulled cable stops the sync. The library stores a ride only after its whole download, and a route goes into `sent` only after its upload, so the next connection continues. After "Delete all", the next connection takes each ride again, and the sent routes stay on the device.
 
+### The map send
+
+A sync never builds a map. Only `deviceSync.sendMap()` does, and only the button "Send the map" of the Device page calls it. The sync and the map send use the one link to the device, so each waits for the other: a sync does not start while a map send runs, and a map send that the rider asks for during a sync starts after it. A map send ends with a sync, which reads the card again.
+
+`sendMap` ([`sync.ts`](../../builder/web/src/lib/device-sync/sync.ts)) reads the library state `nextMap` and calls the build. The build of the app is `buildMap` ([`map.svelte.ts`](../../builder/web/src/lib/device-sync/map.svelte.ts)). It makes the selection of map assembly from `nextMap`, waits until the run is ready (the catalog indices, the cell lists of the regions and the memory check of the assembly worker), and then downloads the cells, assembles the map in this tab and puts it on the device as one run (`MapRun.sendToDevice`). The build makes exactly the map of `nextMap` or nothing: when a region, a box or a map style of it is not there any more, the build ends with one sentence, as it does for an area with no map data, a refusal of the memory check and a failed memory check. Stop and a pulled cable also end each wait before the run. While the build runs, the browser asks before it closes the tab.
+
+After the put, `sendMap` remembers the map object with its area and its colours (`built` of the remembered device), and sets `nextMap` to `null`. When the rider chose another map during the build, that map still waits. A send that does not end keeps `nextMap`, and the card keeps its old map, because the device replaces the old map only at the end of the put. The next send downloads the cells again, unless the map builder page is set to keep downloaded map data. After the last byte the device stores the map, and Stop is not available any more. A card with no room for both maps refuses the put.
+
+The run holds the Web Lock `obc-map-work` ([`workBarrier.ts`](../../builder/web/src/lib/cells/workBarrier.ts)) while it uses the working files of map assembly in the browser storage. The map builder page takes the same lock before it deletes or uses these files, so the page and the map send do not delete the files of each other. `deviceSync.map` gives the step of the send and its percent; `wait` means that another map build holds the lock.
+
 ## Device page
 
 The page `#/device` ([`Device.svelte`](../../builder/web/src/pages/Device.svelte)) shows the remembered device and the device sync. "Sync" means that routes go to the device and rides come from it; "update" means only a software update. The page does not run a step of the sync itself. It opens the one device session of the tab (`deviceHolder`), and the sync uses the same session, so the tab has one link to the device. The first state that applies shows:
@@ -123,12 +133,14 @@ The page `#/device` ([`Device.svelte`](../../builder/web/src/pages/Device.svelte
 | --- | --- | --- |
 | Cannot | The browser has no WebUSB. | That the cable works in Chrome and Edge, and what works here. No button. |
 | Connected | The remembered device is `ready`. | The name, "Connected", "Disconnect", the live drawing, and one card of rows: Sync, Routes, Rides, Memory card, Map and Software. |
-| Not connected | A device is remembered. | The name, "Not connected", "Connect", the dim drawing, the last sync and the routes that wait for the device. |
+| Not connected | A device is remembered. | The name, "Not connected", "Connect", the dim drawing, the last sync, the routes that wait for the device, and the row Map. |
 | Never | No device is remembered. | "Connect a device", and a note that the product works with no device. |
 
 The row Sync shows the time of the last sync (`at` of the remembered device) and what the last sync of this page did (`deviceSync.report`). "Sync now" and, after a problem, "Try again" call `deviceSync.run()`. The row Routes counts the routes on the card and names the routes of the library whose `sent` entry names this card. The row Rides counts the rides of the library that came from this card, from `library.rides()`, because a ride record names its card and the library has no index of it. The memory card bar shows only the used parts, because the cable does not report the size of the card.
 
 The row Software ([`Software.svelte`](../../builder/web/src/pages/device/Software.svelte)) compares the version that the cable reports with the published one (`firmwareCheck`). "Update" sends the package to the card (`stageFirmware`) and asks the device to install it (`armUpdate`). The row says that the device installs it only when the device agreed. The firmware refuses that step today, and the row says so in one sentence.
+
+The row Map shows the name of the map on the card. When the library state `nextMap` holds a map that waits for the device, the row shows "New area" or "New colours" and the size of its download. It is "New colours" when the map on the device has the same regions and boxes (`deviceArea`, `sameArea`). The page loads the regions of the map catalog for this comparison, one time, and only when a map waits. With a connected device the row has the button "Send the map", which starts the map send. In a browser that saves data (`navigator.connection.saveData`), the button first asks in a window. While the send runs, the row shows one line ("Download 40 %", "Build", "Send 60 %", or "Waits for another map build") and one bar in the place of the link, and "Stop" in the place of the button, so the row keeps its height. "Disconnect", "Sync now" and the software update are not available during the send. After a send that did not end, the row shows the map that waits again and one sentence under it: quiet after Stop, as a problem after a pulled cable or a card with no room. The sentence goes when the rider chooses another map. The link "Change the area of the map" opens the map area page.
 
 A Connect button calls `requestDevice()` in the click, and remembers the device when it is `ready`. When another device is `ready` on the cable, the button names it and remembers it with no chooser, because a second chooser would open a second link to it. A device whose card has no format cannot be remembered; the page sends the rider to the map builder. "Disconnect" frees the device for another page; the sync takes it again at its next `ready`. The error of a device that another page holds is one plain sentence.
 
@@ -137,6 +149,16 @@ The drawing ([`Drawing.svelte`](../../builder/web/src/pages/device/Drawing.svelt
 The top bar shows a chip with the name of the remembered device: a hollow dot, or a green dot while it is connected. While a sync runs, a sync icon turns beside it. After a problem of the last sync, the icon is a button that starts the sync again.
 
 `planner.html?fake-device` puts the wasm test device on a pretend cable ([`fake-device.ts`](../../builder/web/test-support/device-sync/fake-device.ts)), with `window.deviceTest`. The dev server has it, and the build of the browser tests has it through `VITE_FAKE_DEVICE=1`. Another build has no path to it.
+
+## Map area page
+
+On the page `#/device/area` ([`Area.svelte`](../../builder/web/src/pages/Area.svelte)) the rider chooses the area and the colours of the device map. The page opens with the map that waits (`nextMap`), else with the area of the map on the device, else with no area. `deviceArea` ([`area.ts`](../../builder/web/src/lib/device-sync/area.ts)) knows the area of the map on the device in two cases: this browser sent the map (`built` of the remembered device names the map object on the card), or the map has the name of one region of the map catalog.
+
+The page shows the coverage map of map assembly (`CoverageMap`) with no tool rail. The switch "Countries and regions" / "A box" of the left card sets the tool of the map: a click adds a region, a drag draws a box. The ground outside the area is grey and a little pale, with its names and lines at full contrast, because the rider reads them to choose what to add. One line goes around the area, and each route of the library is a line in the colour of a route. The lines of the map cells show faintly where a cell is at least 36 pixels wide: an area grows to whole cells, and the lines show why. While the rider draws a box, a line goes around the cells that the box takes. The left card lists the parts of the area, each with a button that removes it.
+
+`routesOutside` ([`outside.ts`](../../builder/web/src/pages/area/outside.ts)) checks the routes that wait for the device and the routes on the card of the remembered device. For each route it gives the length of the summary line outside the detail cells of the area. Ground with no map data in the catalog does not count, because the rider cannot add it. A route with no length outside the area gets no warning. For each other route the card offers two answers: a box around each part outside the area, and the smallest region of the catalog there.
+
+"Colours" opens the choice of the map styles of map assembly (`SkinStep`) in a window, with no editor. The card shows the size of the download of the whole map and the size of the map on the device. "Done" gives `nextMap` the regions, the boxes, the two style ids and the size of the download, or `null` when the map is the map on the device or has no part. It writes only a value that differs from the stored one. The page needs no remembered device, and nothing on it builds a map.
 
 ## Covers
 

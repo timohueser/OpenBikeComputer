@@ -429,6 +429,27 @@ export class CoverageStore {
         return best ? `${prefix} — ${best.name}` : `${prefix} ${count}`;
     }
 
+    /** The regions and the boxes of the selection, and the ids of the two skins, as plain values that a database can store. */
+    area(): { regions: string[]; boxes: UBox[]; light: string; dark: string } {
+        const parts = this.selection.parts;
+        return {
+            regions: parts.flatMap((part) => (part.kind === "region" ? [part.regionId] : [])),
+            boxes: parts.flatMap((part) => (part.kind === "box" ? [{ ...part.box }] : [])),
+            light: this.lightSkin.id,
+            dark: this.darkSkin.id,
+        };
+    }
+
+    /** Replaces the selection and the skins with `area`. A region that the catalog does not hold is left out, and a
+     *  skin that is not there gives the first of its kind. */
+    setArea(area: { regions: string[]; boxes: UBox[]; light: string; dark: string }): void {
+        this.selection = emptySelection();
+        for (const regionId of area.regions) this.addRegion(regionId);
+        for (const box of area.boxes) this.addBox(box);
+        this.lightSkinId = area.light;
+        this.darkSkinId = area.dark;
+    }
+
     removePart(partId: string): void {
         this.selection = withoutPart(this.selection, partId);
         if (this.highlightPartId === partId) this.highlightPartId = null;

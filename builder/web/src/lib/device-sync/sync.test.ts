@@ -14,7 +14,7 @@ import { ObjectKind } from '../usb/protocol';
 import { archivedRows } from './metadata';
 import { rideRecord } from './ride';
 import { rememberCard, remembered } from './remembered.svelte';
-import { CABLE_OUT, syncDevice } from './sync';
+import { CABLE_OUT, MAP_LOST, NO_ROOM, sendMap, syncDevice } from './sync';
 
 beforeAll(loadFlatDevice);
 beforeEach(() => { remembered.device = null; });
@@ -255,5 +255,49 @@ describe('rideRecord', () => {
         const trip = { key: 2n ** 63n + 5n, dayIndex: 1, dayCount: 3, name: 'Alps' };
         expect(rideRecord(ride(1_780_000_000, { trip }), 'card:1')?.trip).toEqual({ key: '9223372036854775813', day: 2, name: 'Alps' });
         expect(rideRecord(ride(1_780_000_000), 'card:1')).not.toHaveProperty('trip');
+    });
+});
+
+describe('sendMap', () => {
+    const next = { regions: ['europe/switzerland'], boxes: [], light: 'default', dark: 'dusk', bytes: 870_000_000 };
+    const job = (controller = new AbortController()) =>
+        ({ signal: controller.signal, cancel: (reason?: unknown) => controller.abort(reason), phase() {}, progress() {} });
+
+    async function waiting() {
+        const library = new Library(new IDBFactory());
+        rememberCard(SERIAL, CARD);
+        await library.setState('nextMap', next);
+        return library;
+    }
+
+    it('remembers the area of the sent map, and the map waits no more unless the rider chose another one during the build', async () => {
+        const library = await waiting();
+        expect(await sendMap(SERIAL, library, async () => ({ objectId: 7n, revision: 2n }), job())).toBeNull();
+        expect(remembered.device).toMatchObject({ mapObject: '7:2',
+            built: { object: '7:2', regions: ['europe/switzerland'], boxes: [], light: 'default', dark: 'dusk' } });
+        expect(await library.state('nextMap')).toBeNull();
+
+        const other = { ...next, dark: 'custom-night' };
+        await library.setState('nextMap', next);
+        const build = async () => {
+            await library.setState('nextMap', other);
+            return { objectId: 7n, revision: 3n };
+        };
+        expect(await sendMap(SERIAL, library, build, job())).toBeNull();
+        expect(remembered.device?.built).toMatchObject({ object: '7:3', dark: 'dusk' });
+        expect(await library.state('nextMap')).toEqual(other);
+    });
+
+    it('keeps the map that waits and says why: a card with no room, a cut cable, a stop', async () => {
+        const library = await waiting();
+        const fail = (error: unknown) => async () => { throw error; };
+        expect(await sendMap(SERIAL, library, fail(new DeviceError('no-space', 'full')), job())).toBe(NO_ROOM);
+        expect(await sendMap(SERIAL, library, fail(new DeviceError('link', 'gone')), job())).toBe(MAP_LOST);
+        const stop = new AbortController();
+        stop.abort();
+        expect(await sendMap(SERIAL, library, fail(stop.signal.reason), job(stop))).toBe(MAP_LOST);
+        expect(await sendMap(SERIAL, library, fail(new Error('This area cannot be built: no data.')), job())).toBe('This area cannot be built: no data.');
+        expect(await library.state('nextMap')).toEqual(next);
+        expect(remembered.device?.built).toBeNull();
     });
 });
