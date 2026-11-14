@@ -84,15 +84,12 @@ pub fn build_storeys(
     b.storeys = records::storeys(&b.graph, &input, rules, b.key, &mut b.records);
     let plan = &b.faces;
     let sharp = |f: u32| f != OUTSIDE && mesh::params::sharp(plan.faces[f as usize].rule);
-    let mut ends: Vec<[i32; 2]> = (plan.edges.iter())
+    b.storeys.ground_ends = (plan.edges.iter())
         .filter(|e| {
             e.kind == EdgeKind::DeckEdge && e.left != OUTSIDE && e.right != OUTSIDE && (sharp(e.left) || sharp(e.right))
         })
         .flat_map(|e| mesh::points::edge_points(plan, e, b.key.origin().y as f64))
         .collect();
-    ends.sort_unstable_by_key(|p| (p[1], p[0]));
-    ends.dedup();
-    b.storeys.ground_ends = ends;
     b.storey_time = now() - start;
     Ok(b)
 }

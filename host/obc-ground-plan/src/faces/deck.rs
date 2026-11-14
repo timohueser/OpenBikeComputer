@@ -96,8 +96,8 @@ pub struct Storeys {
     pub ways: Vec<(u32, DeckWay)>,
     /// The baked piers (`bridge-pier`) within `PIER_NEAR_M` of the cell, frame units from its origin.
     pub piers: Vec<[i32; 2]>,
-    /// Storey 0's mesh points on its end lines (`EdgeKind::DeckEdge`, `mesh::points::edge_points`), sorted: a deck's
-    /// end on such a line takes the same points.
+    /// Storey 0's mesh points on its end lines (`EdgeKind::DeckEdge`, `mesh::points::edge_points`): a deck's end on
+    /// such a line takes the same points.
     pub ground_ends: Vec<[i32; 2]>,
 }
 
