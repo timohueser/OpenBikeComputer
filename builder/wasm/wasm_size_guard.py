@@ -22,10 +22,11 @@ BUDGETS = {
     "builder": {"gzipped": (62 + 352 + 128) * 1024, "raw_wasm": (112 + 944 + 272) * 1024},
     # Measured in CI on the build with the outline's turns, the levels that the tiles carry, the faces' tile-line
     # vertices, the decks' ceilings and end faces, the shared water level and curve of the feature bake, line water
-    # and its culverts with their mouths, the classifier's ford rule, and the storeys over the ground (the crate's
-    # feature `storeys` on: 797,596 B gzipped with the glue, 2,061,249 B raw, stable 1.100.0), the next whole KiB.
+    # and its culverts with their mouths, the classifier's ford rule, and the storeys over the ground with their open
+    # junction ends, their ends on the stubs' points and what each deck is made of (the crate's feature `storeys` on:
+    # 802,266 B gzipped with the glue, 2,075,448 B raw, stable 1.100.0, at d388cd1e9), the next whole KiB.
     # The owner allows a few per cent for line water and about 60 kB for the crossing block when stated.
-    "ground-plan": {"gzipped": 779 * 1024, "raw_wasm": 2013 * 1024},
+    "ground-plan": {"gzipped": 784 * 1024, "raw_wasm": 2027 * 1024},
 }
 
 ADVICE = {
