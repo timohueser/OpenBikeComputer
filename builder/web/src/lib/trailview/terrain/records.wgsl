@@ -24,7 +24,7 @@ const M_ARM_HOST: u32 = 0x10000u;
 const M_ARM_STOP: u32 = 0x20000u;
 // Line flags of the finish word, as records.rs: a rail, a way that wears lines, one that looks as a motorway, a
 // wall class, a deck's ceiling line (after every line of storey 0), line water, a path, a storey's line, and the
-// shift of its top's material (sections::Material).
+// shift of its top's material (sections::Material, 4 bits).
 const M_RAIL: u32 = 256u;
 const M_MARKED: u32 = 512u;
 const M_MOTORWAY: u32 = 1024u;
@@ -35,6 +35,10 @@ const M_PATH: u32 = 16384u;
 // A line of a storey over the ground, after the ceiling lines: its leg bits (from 24) hold its storey.
 const M_STOREY: u32 = 32768u;
 const M_MATERIAL_SHIFT: u32 = 16u;
+// A line of a bridge's ground stretch: a wall at its edge is the bridge's, of concrete. A storey's line: from
+// M_BUILD_SHIFT, what its deck is made of (deck::Build, 2 bits) and whether its top is of planks (the third bit).
+const M_BRIDGE_GROUND: u32 = 1048576u;
+const M_BUILD_SHIFT: u32 = 21u;
 // Candidate kinds and the surfaces of the slope, line water, its bank and a culvert's zone, as records.rs and
 // faces::Surface.
 const M_BAND: u32 = 3u;

@@ -12,6 +12,17 @@ const MAT_DELI_BAND: u32 = 45u;
 const MAT_REFLECTOR: u32 = 46u;
 const MAT_WALL: u32 = 48u;
 const MAT_CAP: u32 = 49u;
+// A storey's shell of timber or of steel, and a deck's top of planks across it (plan/piece.wgsl): the colours of
+// the decks of structures/bridges.ts, squared as structures.wgsl squares them.
+const MAT_TIMBER: u32 = 51u;
+const MAT_STEEL: u32 = 52u;
+const MAT_PLANKS: u32 = 53u;
+const TIMBER: vec3f = vec3f(0.133, 0.071, 0.035);
+const STEEL: vec3f = vec3f(0.084, 0.091, 0.098);
+const PLANK: vec3f = vec3f(0.24, 0.13, 0.057);
+// A plank's width along the deck, and the share of it that the gap to the next one takes.
+const PLANK_M: f32 = 0.2;
+const PLANK_GAP: f32 = 0.06;
 // A stone of a wall: its cell along and up. Stones lie flat.
 const STONE_LONG_M: f32 = 0.267;
 const STONE_HIGH_M: f32 = 0.125;
@@ -105,6 +116,21 @@ fn detail_look(mat: u32, su: vec2f, w: WayPixel, altitude: f32) -> WayLook {
         }
         case MAT_REFLECTOR: {
             out.albedo = vec3f(1.0, 0.47, 0.06);
+        }
+        case MAT_TIMBER: {
+            out.albedo = TIMBER * (0.85 + 0.3 * noise(p / 0.4));
+        }
+        case MAT_STEEL: {
+            out.albedo = STEEL;
+            out.spec = 0.3;
+        }
+        case MAT_PLANKS: {
+            // Each plank its own tone; the gaps fade into the mean tone once a pixel spans a plank.
+            let n = w.along / PLANK_M;
+            let gap = 1.0 - smoothstep(PLANK_GAP - w.aw / PLANK_M, PLANK_GAP + w.aw / PLANK_M, fract(n));
+            let tone = 0.85 + 0.3 * hash(vec2f(floor(n), 0.0));
+            let shown = 1.0 - smoothstep(0.3, 1.0, w.aw / PLANK_M);
+            out.albedo = PLANK * mix(1.0, tone * (1.0 - 0.6 * gap), shown) * (0.9 + 0.2 * noise(p / 0.5));
         }
         default: {
             // The local rock's brightness and a hint of its hue.

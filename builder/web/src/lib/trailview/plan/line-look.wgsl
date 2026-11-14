@@ -11,7 +11,7 @@ const PIECE_INSIDE: u32 = 65536u;
 // The look and the drawn code of a line's finish word; a soil line of a path (M_PATH) wears a trail.
 fn line_look(finish: u32) -> vec2u {
     let code = finish & 0xffu;
-    let material = (finish >> M_MATERIAL_SHIFT) & 0xffu;
+    let material = (finish >> M_MATERIAL_SHIFT) & 15u;
     if ((finish & M_RAIL) != 0u || code >= 9u) {
         return vec2u(LOOK_BALLAST, code);
     }

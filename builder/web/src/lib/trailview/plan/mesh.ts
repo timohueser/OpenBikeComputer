@@ -46,9 +46,11 @@ export interface StoreyMesh {
     /** Two words per corner, as the cell mesh's (never a terrain vertex), and each corner's offset in metres (f32 bits). */
     corners: Uint32Array<ArrayBuffer>;
     offsets: Uint32Array<ArrayBuffer>;
-    /** Three whole corner indices per triangle, and the count of the top's. */
+    /** Three whole corner indices per triangle; the count of the top's, and the first of the railings' and of the piers'. */
     triangles: Uint32Array<ArrayBuffer>;
     top: number;
+    railings: number;
+    piers: number;
     /** Four whole corner indices per slot (a_p, a_q, b_q, b_p): the tops' steps between two labels, then the undersides' risers. */
     slots: Uint32Array<ArrayBuffer>;
 }
@@ -111,7 +113,9 @@ function storeyMesh(bytes: ArrayBuffer, start: number): StoreyMesh {
     };
     const triangle = items(triangles, triangleRuns, 3), slot = items(slots, slotRuns, 4);
     if (at > words.length) throw new Error('a storey mesh ends early');
-    return { corners: packed, offsets, triangles: whole(triangle, 3), top: words[STOREY_HEAD - 7], slots: whole(slot, 4) };
+    // The parts' triangles: top, underside, edge, parapet, railing, post, pier.
+    const parts = words.subarray(STOREY_HEAD - 7, STOREY_HEAD), first = (k: number) => parts.subarray(0, k).reduce((sum, n) => sum + n, 0);
+    return { corners: packed, offsets, triangles: whole(triangle, 3), top: parts[0], railings: first(4), piers: first(6), slots: whole(slot, 4) };
 }
 
 /** The grid points whose region cells all lie in R: cells ⌊(i − 1) / 2⌋ to ⌊i / 2⌋ across, the same down. */

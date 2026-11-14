@@ -39,7 +39,7 @@ describe('the mesh reader', () => {
         }
     });
 
-    it('reads the storeys after a cell mesh: every index names a storey corner, the top comes first', () => {
+    it('reads the storeys after a cell mesh: every index names a storey corner, the top comes first, then the shell in its parts', () => {
         // A cell of the browser fixture with decks over a road.
         const fixture = new URL('../../../../tests/browser/trailview/fixture/features/13/', import.meta.url), [x, y] = [34294, 23098];
         const request = new CellRequest(x, y), tiles = feature_tiles(x, y);
@@ -54,6 +54,7 @@ describe('the mesh reader', () => {
             expect([...storeys.triangles, ...storeys.slots].every(c => c < corners)).toBe(true);
             expect(storeys.top).toBeGreaterThan(0);
             expect(storeys.top).toBeLessThan(storeys.triangles.length / 3);
+            expect(storeys.top <= storeys.railings && storeys.railings <= storeys.piers && storeys.piers <= storeys.triangles.length / 3).toBe(true);
             expect([...new Float32Array(storeys.offsets.buffer)].every(Number.isFinite)).toBe(true);
         } finally {
             input.free();
