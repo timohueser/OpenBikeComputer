@@ -1,6 +1,7 @@
 //! The storeys over the ground over every cell of the TrailView fixture: storey 0 reads the same with them, each
 //! storey is a planar partition, each shell part closes, no parapet or railing stands in a paved face of its
-//! storey, no slot of a top is a wall between two deck ways, no bar stands on two decks, no edge stands across the
+//! storey or in a way of storey 0, no slot of a top is a wall between two deck ways, no bar stands on two decks, no
+//! edge stands across the
 //! mouth of a way that goes on at another level, something goes on past every open piece, a stub and its deck share
 //! their points and heights on their end line, and two neighbouring cells give a storey the same corners and
 //! heights on their shared line.
@@ -27,8 +28,11 @@ use obc_ground_plan::tile::TileCache;
 const GRID: i32 = 32;
 /// The probes of what lies past an open piece stand this far to each side of its middle (metres).
 const PROBE_M: f64 = 0.3;
-/// A top of another storey goes on past an open piece within this of its height (metres).
+/// Storey 0 or another storey goes on past an open piece within this of its top's height (metres).
 const GOES_ON_M: f64 = 0.1;
+/// Open pieces with water or a bank on both sides (a deck's end whose stub begins past the bank), measured on the
+/// fixture at the junction rule's build: the count must not grow.
+const OPEN_MAX: usize = 24;
 
 /// The storey of label l's line: 0 for none and for a line of storey 0.
 fn storey_of(w: &[u32], l: u32) -> i8 {
@@ -51,8 +55,8 @@ fn tops_at(m: &StoreyMesh, w: &[u32], p: [i32; 2]) -> Vec<(i8, f64)> {
 }
 
 /// The open pieces off the cell lines past which nothing goes on: at neither side of the piece's middle does storey
-/// 0 hold a face of a way (its records), and at its ends no top of another storey lies within `GOES_ON_M`. The
-/// heights where a stub meets its deck are `stub_meets_deck`'s.
+/// 0 hold a paved face or shoulder within `GOES_ON_M` of the top (its records), or a stub's verge or slope, and at its
+/// ends no top of another storey lies within `GOES_ON_M`.
 fn open_without_ground(key: CellKey, m: &StoreyMesh, w: &[u32]) -> Vec<String> {
     let c = CELL_UNITS as i32;
     let mpu = metres_per_unit(key.origin().y + CELL_UNITS / 2);
@@ -67,9 +71,18 @@ fn open_without_ground(key: CellKey, m: &StoreyMesh, w: &[u32]) -> Vec<String> {
         let d = [f64::from(b[0] - a[0]), f64::from(b[1] - a[1])];
         let len = libm::hypot(d[0], d[1]).max(1e-9);
         let n = [-d[1] / len * PROBE_M / mpu, d[0] / len * PROBE_M / mpu];
+        // A paved face or shoulder of storey 0 at the top's height, or its verge or slope (the stub's side, under a
+        // deck's band); no water, bank or bare terrain.
+        let z = (za + zb) / 2.0;
         let ground = [1.0, -1.0].iter().any(|&side| {
-            let g = find(w, [mid[0] + side * n[0], mid[1] + side * n[1]]);
-            g.is_some_and(|g| records::label(w, g)[0] & 0xff != Surface::Terrain as u32)
+            let q = [mid[0] + side * n[0], mid[1] + side * n[1]];
+            find(w, q).is_some_and(|g| {
+                let s = records::label(w, g)[0] & 0xff;
+                let paved = [Surface::Carriageway, Surface::Shoulder, Surface::RailBed, Surface::Crossing];
+                let side = [Surface::Verge, Surface::Slope];
+                (paved.iter().any(|&x| x as u32 == s) && (height_at(w, q, Some(g), f64::NAN).h - z).abs() <= GOES_ON_M)
+                    || side.iter().any(|&x| x as u32 == s)
+            })
         });
         let other = |t: &[(i8, f64)], z: f64| t.iter().any(|&(k, h)| k != storey && (h - z).abs() <= GOES_ON_M);
         if !ground && !(other(&ta, za) && other(&tb, zb)) {
@@ -77,6 +90,59 @@ fn open_without_ground(key: CellKey, m: &StoreyMesh, w: &[u32]) -> Vec<String> {
         }
     }
     out
+}
+
+/// An edge face, parapet, railing or post of a storey stands in a paved face of storey 0 where that face lies within
+/// this of the deck's top under it (metres): a parapet's height.
+const STAND_M: f64 = 1.0;
+/// Edge triangles over a stub where it meets its deck at a joint with a bend (the deck's end square to its own way,
+/// the stub's to its), and over another way's ground stretch beside a deck (their strokes overlap): measured on the
+/// fixture at the junction rule's build. The B6 seams and GP12.8 own them; the counts must not grow.
+const JOINT_MAX: usize = 25;
+const BESIDE_MAX: usize = 235;
+
+/// The edge faces, parapets, railings and posts of the storeys that stand in a carriageway, rail bed or crossing of
+/// storey 0 (its records): a triangle's middle over such a face within `STAND_M` of its deck's top there. Returns
+/// those on a way that meets the deck at a junction (none: a deck ends on its mouth's line there, `ground_junctions`),
+/// and the counts of those on a stub at its joint and on a way that does not meet the deck.
+fn edges_on_ground_ways(key: CellKey, m: &StoreyMesh, b: &CellBuild) -> (Vec<String>, usize, usize) {
+    let (g, w) = (&b.graph, &b.records);
+    let paved = |l: u32| {
+        let s = records::label(w, l)[0] & 0xff;
+        [Surface::Carriageway, Surface::RailBed, Surface::Crossing].iter().any(|&x| x as u32 == s)
+    };
+    let way = |l: u32| {
+        let line = records::label(w, l)[2];
+        (line != u32::MAX).then(|| w[w[6] as usize + records::LINE * line as usize])
+    };
+    // Whether ways a and c meet at a junction (three arms or more), and at a joint.
+    let both = |arms: &[obc_ground_plan::graph::Arm], a: u32, c: u32| {
+        arms.iter().any(|x| x.way == a) && arms.iter().any(|x| x.way == c)
+    };
+    let junction = |a: u32, c: u32| g.junctions.iter().any(|j| both(&j.arms, a, c));
+    let joint = |a: u32, c: u32| g.joints.iter().any(|j| both(&j.arms, a, c));
+    let (mut out, mut joints, mut beside) = (Vec::new(), 0, 0);
+    for k in 2..6 {
+        for t in m.part(k) {
+            let c = m.triangles[t].map(|i| m.corner(i as usize));
+            let Some(&(_, deck, _)) = c.iter().find(|x| storey_of(w, x.1) > 0) else { continue };
+            let q = [0, 1].map(|i| c.iter().map(|x| f64::from(x.0[i])).sum::<f64>() / 3.0);
+            let top = height_at(w, q, Some(deck), f64::NAN).h;
+            let Some(f) = find(w, q).filter(|&f| paved(f)) else { continue };
+            if (height_at(w, q, Some(f), f64::NAN).h - top).abs() >= STAND_M {
+                continue;
+            }
+            match way(f).zip(way(deck)) {
+                Some((a, d)) if junction(a, d) => out.push(format!(
+                    "{key:?}: a {} triangle at {q:.0?} stands in the mouth of way {a}",
+                    shell_part(m, t)
+                )),
+                Some((a, d)) if joint(a, d) => joints += 1,
+                _ => beside += 1,
+            }
+        }
+    }
+    (out, joints, beside)
 }
 
 /// A parapet's, railing's or post's corners on two labels differ in height by at most this (metres): a bar stands
@@ -117,7 +183,7 @@ const SEAM_M: f64 = 0.001;
 /// The seams of `stub_meets_deck`, measured on the fixture at the storeys' build: a deck's end at a bend of its way
 /// (its stub leaves at an angle past `records::FLAT_TURN_DEG`), a stub whose face at the end is no paved face or
 /// shoulder, and stub points inside a deck's end piece. The count must not grow.
-const SEAMS_MAX: usize = 17;
+const SEAMS_MAX: usize = 14;
 
 fn stub_meets_deck(key: CellKey, ground: &CellMesh, m: &StoreyMesh, b: &CellBuild) -> Vec<String> {
     let w = &b.records;
@@ -273,7 +339,7 @@ fn the_storeys_close_stand_on_their_sheets_meet_their_neighbours_and_leave_store
     let mut cache = TileCache::new(16);
     let mut faults = Vec::new();
     let mut built: BTreeMap<CellKey, (CellBuild, StoreyMesh)> = BTreeMap::new();
-    let (mut torn, mut seams) = (0, Vec::new());
+    let (mut torn, mut seams, mut joints, mut beside, mut open_ends) = (0, Vec::new(), 0, 0, Vec::new());
     for key in fix.cells() {
         let without = build_request(fix.request(key), &mut cache, rules, &mut || 0.0).unwrap();
         let with = build_storeys(fix.request(key), &mut cache, rules, &mut || 0.0).unwrap();
@@ -308,8 +374,11 @@ fn the_storeys_close_stand_on_their_sheets_meet_their_neighbours_and_leave_store
         faults.extend(on_paved(&mesh, &with.storeys, &with.records));
         faults.extend(walls_between_decks(key, &mesh, &with));
         faults.extend(edges_in_mouths(key, &mesh, &with, rules.structures.edge_band_m));
-        faults.extend(open_without_ground(key, &mesh, &with.records));
+        open_ends.extend(open_without_ground(key, &mesh, &with.records));
         faults.extend(bars_across_decks(key, &mesh, &with.records));
+        let (in_mouths, at_joints, by) = edges_on_ground_ways(key, &mesh, &with);
+        faults.extend(in_mouths);
+        (joints, beside) = (joints + at_joints, beside + by);
         let rim = Rim::of(&with.faces);
         match mesh_cell(&with.faces, &with.records, &Reads::of(&with.faces, &[rim]), &mut || 0.0) {
             Ok(ground) => seams.extend(stub_meets_deck(key, &ground, &mesh, &with)),
@@ -326,6 +395,9 @@ fn the_storeys_close_stand_on_their_sheets_meet_their_neighbours_and_leave_store
         }
     }
     let triangles: u32 = built.values().map(|(_, m)| m.triangles.len() as u32).sum();
+    for f in &faults {
+        println!("FAULT {f}");
+    }
     seams.sort();
     seams.dedup();
     println!(
@@ -334,6 +406,10 @@ fn the_storeys_close_stand_on_their_sheets_meet_their_neighbours_and_leave_store
         faults.len()
     );
     println!("{} seams where a stub meets its deck: {seams:#?}", seams.len());
+    println!("{joints} edge triangles on a stub at its joint, {beside} on a ground way beside a deck");
+    println!("{} open pieces with nothing past them: {open_ends:#?}", open_ends.len());
+    assert!(open_ends.len() <= OPEN_MAX, "{} open pieces with nothing past them", open_ends.len());
+    assert!(joints <= JOINT_MAX && beside <= BESIDE_MAX, "{joints} and {beside} edge triangles on ground ways");
     assert!(seams.len() <= SEAMS_MAX, "{} seams where a stub meets its deck, more than {SEAMS_MAX}", seams.len());
     assert!(built.len() > 10, "the fixture's decks");
     assert!(faults.is_empty(), "{} faults: {:#?}", faults.len(), &faults[..faults.len().min(20)]);

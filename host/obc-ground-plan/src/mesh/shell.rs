@@ -47,8 +47,6 @@ pub const HEAD: usize = 9 + PARTS.len();
 
 /// A parapet: its width and its height over the deck (the crossing block's thickness table).
 const PARAPET_M: [f64; 2] = [0.35, 1.0];
-/// A deck's top goes on into a paved face of the ground that lies within this of its height.
-const GOES_ON_M: f64 = 0.1;
 /// A railing: its height, and the side of its square rail and of its posts (the crossing block's thickness table).
 const RAIL_M: f64 = 1.05;
 const BAR_M: f64 = 0.08;
@@ -371,17 +369,6 @@ fn paved_at(plan: &FacePlan, q: [f64; 2]) -> bool {
     })
 }
 
-/// Whether q lies in a paved face of the ground (a carriageway, a rail bed or a crossing of storey 0) whose line lies
-/// within `within_m` of label l's line there. (The lines' heights, not the height function's: the device never runs
-/// that.)
-fn ground_way(words: &[u32], lines: &Lines, l: u32, q: [f64; 2], within_m: f64) -> bool {
-    let Some(g) = find(words, q) else { return false };
-    let s = records::label(words, g)[0] & 0xff;
-    let paved = [Surface::Carriageway, Surface::RailBed, Surface::Crossing].iter().any(|&x| x as u32 == s);
-    let z = |l: u32| lines.foot(l, q).map(|x| x.2);
-    paved && z(l).zip(z(g)).is_some_and(|(a, b)| (a - b).abs() <= within_m)
-}
-
 /// The label of storey 0's paved face or shoulder that meets a deck's end at point p of its end line: of those a probe
 /// `STUB_PROBE_M` to each side of p finds, the one whose line at p lies nearest label l's, within `STUB_STEP_M`.
 fn stub_label(words: &[u32], lines: &Lines, l: u32, p: P, mpu: f64) -> Option<u32> {
@@ -637,15 +624,7 @@ pub fn mesh_storeys(
                 }
                 continue;
             }
-            // Where the free outline lies on a paved face of the ground at the deck's height, the deck meets a way
-            // that goes on on the ground (a junction at its end): it stays open.
-            let on_way = || {
-                let f = if sheet(left) { left } else { right };
-                let mid = [f64::from(pa[0] + pc[0]) / 2.0, f64::from(pa[1] + pc[1]) / 2.0];
-                ground_way(words, &lines, label(f), mid, GOES_ON_M)
-            };
-            if !torn && (kind == EdgeKind::DeckEdge || kind == EdgeKind::CellBorder || on_cell_line(pa, pc) || on_way())
-            {
+            if !torn && (kind == EdgeKind::DeckEdge || kind == EdgeKind::CellBorder || on_cell_line(pa, pc)) {
                 open.push([pa, pc]);
                 continue;
             }
@@ -708,13 +687,8 @@ pub fn mesh_storeys(
                     lines.along(ls[i], [f64::from(pts[i][0]), f64::from(pts[i][1])]).map(|(_, d)| d)
                 });
                 // The box stands on the band: where its inner side would stand in a paved face (another way's that
-                // meets the band, or a way's on the ground within a parapet's height of the deck), it ends.
-                let ok: Vec<bool> = (inner.iter().zip(&ls))
-                    .map(|(q, &l)| {
-                        let q = [f64::from(q[0]), f64::from(q[1])];
-                        !paved_at(plan, q) && !ground_way(words, &lines, l, q, PARAPET_M[1])
-                    })
-                    .collect();
+                // meets the band), it ends.
+                let ok: Vec<bool> = inner.iter().map(|q| !paved_at(plan, [f64::from(q[0]), f64::from(q[1])])).collect();
                 let mut k = 0;
                 while k + 1 < pts.len() {
                     if !(ok[k] && ok[k + 1]) {

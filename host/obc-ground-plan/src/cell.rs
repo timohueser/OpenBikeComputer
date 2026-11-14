@@ -106,7 +106,7 @@ pub fn far_request(request: Request, cache: &mut TileCache, rules: &Rules) -> Re
 /// The way graph of a cell: with the storeys, its ways follow the levels that the tiles carry.
 pub fn cell_graph(key: CellKey, input: &CellInput, rules: &Rules) -> WayGraph {
     if cfg!(feature = "storeys") {
-        graph::build_levelled(key, input, &rules.sections)
+        graph::build_levelled(key, input, &rules.sections, rules.structures.edge_band_m)
     } else {
         graph::build(key, input, &rules.sections)
     }

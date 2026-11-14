@@ -10,6 +10,7 @@ use super::curve::{insert, point, s_at, u_at};
 use super::parts::{classify, Rule};
 use super::points::{exact, key, norm, Piece, Plan};
 use super::{CrossingKind, EndKind, EndLine, Family, Level, Part, Run, Sample, State, Station, Step, WayGraph};
+use crate::faces::records::FLAT_TURN_DEG;
 use crate::frame::{metres_per_unit_at, CellKey, GlobalPoint};
 use crate::sections::Sections;
 use crate::tile::Tags;
@@ -343,6 +344,186 @@ pub(crate) fn split(cell: CellKey, parts: &[Part], input: &CellInput, samples: &
                     p.to = c[1].0
                 }
                 _ => out.push(Piece { from: c[0].0, to: c[1].0, level, ..piece.clone() }),
+            }
+        }
+    }
+    Plan { pieces: out, ..plan }
+}
+
+/// A junction with arms on the ground and on a deck lies on the ground: its arms meet at one height there, and the
+/// ground's junction rounds its corners. Each deck arm's stretch from the junction up to its mouth, its first sample
+/// where its stroke (its outer half-width and `band_m`) has left the strokes of the junction's ground arms that leave
+/// across it, is a ground piece, which meets the rest of the deck at a joint as a stub meets its deck. A deck arm that
+/// never leaves them is a ground piece as a whole. The mouth is a sample of the deck, so no new sample lies a few
+/// centimetres from an old one.
+/// Piece ends this near (frame units) are one node: a station's point is a curve point, not its vertex's exact one.
+const NODE_UNITS: f64 = 4.0;
+
+pub(crate) fn ground_junctions(
+    parts: &[Part],
+    input: &CellInput,
+    sections: &Sections,
+    band_m: f64,
+    samples: &[Vec<Sample>],
+    mut plan: Plan,
+) -> Plan {
+    // A mouth can land on another node of the deck (a junction of two decks near the ground's): it lies on the
+    // ground then too. Each round only lowers deck to the ground at the samples of the decks, so the rounds end.
+    loop {
+        let next = ground_junctions_once(parts, input, sections, band_m, samples, plan.clone());
+        if next.pieces == plan.pieces {
+            return plan;
+        }
+        plan = next;
+    }
+}
+
+/// A piece's arm at a node: the piece, its end (0, 1) or 2 where it runs through, the station, the direction away.
+type NodeArm = (usize, usize, Station, [f64; 2]);
+
+fn ground_junctions_once(
+    parts: &[Part],
+    input: &CellInput,
+    sections: &Sections,
+    band_m: f64,
+    samples: &[Vec<Sample>],
+    plan: Plan,
+) -> Plan {
+    let feature = |p: &Piece| &input.features[parts[p.part].feature.0 as usize];
+    let half_m = |p: &Piece| sections.way(&feature(p).kind, &feature(p).tags, false).outer_m();
+    let global = |part: &Part, st: &Station| {
+        let sp = point(part, st.span as usize, st.u);
+        let v = part.vertices[st.span as usize].pos;
+        ([v[0] as f64 + sp.d[0], v[1] as f64 + sp.d[1]], sp.tangent)
+    };
+    let units = |m: f64, y: f64| m / metres_per_unit_at(y);
+    // The nodes of the pieces on the ground or on a (real) deck: per node, each piece's arm there, an end (0 or 1) or
+    // a vertex that it runs through (2), with its way's direction away from the node.
+    let nodes = |plan: &Plan| {
+        let mut out: BTreeMap<[i64; 2], Vec<NodeArm>> = BTreeMap::new();
+        for (i, p) in plan.pieces.iter().enumerate() {
+            let part = &parts[p.part];
+            let deck = p.level == Level::Deck && !p.synthetic;
+            if part.family == Family::Water || !(p.level == Level::Ground || deck) {
+                continue;
+            }
+            let through = (p.from.span + 1..=p.to.span).map(|k| Station { span: k, u: 0.0, ..p.from });
+            let arms = [(0, p.from), (1, p.to)].into_iter().chain(through.map(|st| (2, st)));
+            for (e, st) in arms.filter(|(e, st)| *e < 2 || key(st) < key(&p.to)) {
+                let (pos, t) = global(part, &st);
+                let node = [(pos[0] / NODE_UNITS).round() as i64, (pos[1] / NODE_UNITS).round() as i64];
+                let back = [-t[0], -t[1]];
+                let list = out.entry(node).or_default();
+                match e {
+                    0 => list.push((i, 0, st, t)),
+                    1 => list.push((i, 1, st, back)),
+                    _ => list.extend([(i, 2, st, t), (i, 2, st, back)]),
+                }
+            }
+        }
+        out
+    };
+    let mixed = |arms: &[NodeArm], plan: &Plan| {
+        arms.len() >= 3
+            && arms.iter().any(|a| plan.pieces[a.0].level == Level::Ground)
+            && arms.iter().any(|a| plan.pieces[a.0].level == Level::Deck)
+    };
+    // A deck that runs through such a node ends there.
+    let mut cuts: Vec<(usize, Station)> = (nodes(&plan).values())
+        .filter(|arms| mixed(arms, &plan))
+        .flat_map(|arms| arms.iter().filter(|a| a.1 == 2 && plan.pieces[a.0].level == Level::Deck).map(|a| (a.0, a.2)))
+        .collect();
+    cuts.sort_by(|a, b| a.0.cmp(&b.0).then(key(&a.1).partial_cmp(&key(&b.1)).unwrap()));
+    cuts.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
+    let plan = if cuts.is_empty() {
+        plan
+    } else {
+        let mut pieces = Vec::with_capacity(plan.pieces.len() + cuts.len());
+        for (i, p) in plan.pieces.iter().enumerate() {
+            let mut from = p.from;
+            for c in cuts.iter().filter(|c| c.0 == i) {
+                pieces.push(Piece { from, to: c.1, ..p.clone() });
+                from = c.1;
+            }
+            pieces.push(Piece { from, ..p.clone() });
+        }
+        Plan { pieces, ..plan }
+    };
+    let ends = nodes(&plan);
+    // Per piece and end, the station of its mouth (none: the piece lies in the junction as a whole).
+    let mut mouths: BTreeMap<(usize, usize), Option<Station>> = BTreeMap::new();
+    for arms in ends.values().filter(|a| mixed(a, &plan)) {
+        let ground: Vec<(usize, [f64; 2])> =
+            arms.iter().filter(|a| plan.pieces[a.0].level == Level::Ground).map(|a| (a.0, a.3)).collect();
+        // The ground arms' strokes: points along their lines, their half-widths (units) and their directions.
+        let lines: Vec<(Vec<[f64; 2]>, f64, [f64; 2])> = (ground.iter().map(|&(g, dir)| (&plan.pieces[g], dir)))
+            .map(|(p, dir)| {
+                let part = &parts[p.part];
+                let pts: Vec<[f64; 2]> = (p.from.span..=p.to.span)
+                    .flat_map(|k| (0..=8).map(move |j| (k, f64::from(j) / 8.0)))
+                    .filter(|&(k, u)| (k, u) >= (p.from.span, p.from.u) && (k, u) <= (p.to.span, p.to.u))
+                    .map(|(k, u)| global(part, &Station { part: p.from.part, span: k, u }).0)
+                    .collect();
+                let y = pts.first().map_or(0.0, |q| q[1]);
+                (pts, units(half_m(p), y), dir)
+            })
+            .collect();
+        // A ground arm within `FLAT_TURN_DEG` of the deck arm runs beside it, as two ways that meet side by side: it
+        // holds no mouth.
+        let across = |a: [f64; 2], b: [f64; 2]| a[0] * b[0] + a[1] * b[1] < libm::cos(FLAT_TURN_DEG.to_radians());
+        let near = |q: [f64; 2], d: [f64; 2]| {
+            lines.iter().filter(|l| across(l.2, d)).any(|(pts, h, _)| {
+                pts.windows(2).any(|w| {
+                    let (a, b) = (w[0], w[1]);
+                    let d = [b[0] - a[0], b[1] - a[1]];
+                    let l2 = (d[0] * d[0] + d[1] * d[1]).max(1e-9);
+                    let t = (((q[0] - a[0]) * d[0] + (q[1] - a[1]) * d[1]) / l2).clamp(0.0, 1.0);
+                    libm::hypot(q[0] - a[0] - t * d[0], q[1] - a[1] - t * d[1]) < *h
+                })
+            })
+        };
+        for &(i, e, _, dir) in arms.iter().filter(|a| a.1 < 2 && plan.pieces[a.0].level == Level::Deck) {
+            let p = &plan.pieces[i];
+            let part = &parts[p.part];
+            let k = |x: &Sample| (x.span, x.u);
+            let mut inner: Vec<Station> = (samples[p.part].iter())
+                .filter(|x| k(x) > (p.from.span, p.from.u) && k(x) < (p.to.span, p.to.u))
+                .map(|x| Station { part: p.from.part, span: x.span, u: x.u })
+                .collect();
+            if e == 1 {
+                inner.reverse();
+            }
+            let clear = |st: &Station| {
+                let (c, t) = global(part, st);
+                let h = units(half_m(p) + band_m, c[1]);
+                let cross = [-1.0, -0.5, 0.0, 0.5, 1.0].map(|k| [c[0] - t[1] * h * k, c[1] + t[0] * h * k]);
+                !cross.iter().any(|&q| near(q, dir))
+            };
+            mouths.insert((i, e), inner.into_iter().find(clear));
+        }
+    }
+    if mouths.is_empty() {
+        return plan;
+    }
+    let mut out = Vec::with_capacity(plan.pieces.len() + mouths.len());
+    for (i, p) in plan.pieces.iter().enumerate() {
+        let (a, b) = (mouths.get(&(i, 0)).copied(), mouths.get(&(i, 1)).copied());
+        if a.is_none() && b.is_none() {
+            out.push(p.clone());
+            continue;
+        }
+        // The deck between the mouths, the junctions' stretches on the ground.
+        let (lo, hi) = (a.unwrap_or(Some(p.from)), b.unwrap_or(Some(p.to)));
+        match lo.zip(hi).filter(|(l, h)| key(l) < key(h)) {
+            None => out.push(Piece { level: Level::Ground, ..p.clone() }),
+            Some((l, h)) => {
+                if l != p.from {
+                    out.push(Piece { to: l, level: Level::Ground, ..p.clone() });
+                }
+                out.push(Piece { from: l, to: h, ..p.clone() });
+                if h != p.to {
+                    out.push(Piece { from: h, level: Level::Ground, ..p.clone() });
+                }
             }
         }
     }
