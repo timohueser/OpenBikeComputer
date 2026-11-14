@@ -12,11 +12,12 @@ const MAT_DELI_BAND: u32 = 45u;
 const MAT_REFLECTOR: u32 = 46u;
 const MAT_WALL: u32 = 48u;
 const MAT_CAP: u32 = 49u;
-// A storey's shell of timber or of steel, and a deck's top of planks across it (plan/piece.wgsl): the colours of
-// the decks of structures/bridges.ts, squared as structures.wgsl squares them.
+// A storey's shell of dark timber or of steel, a deck's top of planks across it and a railing of wood (plan/piece.wgsl):
+// the colours of the decks of structures/bridges.ts, squared as structures.wgsl squares them.
 const MAT_TIMBER: u32 = 51u;
 const MAT_STEEL: u32 = 52u;
 const MAT_PLANKS: u32 = 53u;
+const MAT_WOOD: u32 = 54u;
 const TIMBER: vec3f = vec3f(0.133, 0.071, 0.035);
 const STEEL: vec3f = vec3f(0.084, 0.091, 0.098);
 const PLANK: vec3f = vec3f(0.24, 0.13, 0.057);
@@ -119,6 +120,9 @@ fn detail_look(mat: u32, su: vec2f, w: WayPixel, altitude: f32) -> WayLook {
         }
         case MAT_TIMBER: {
             out.albedo = TIMBER * (0.85 + 0.3 * noise(p / 0.4));
+        }
+        case MAT_WOOD: {
+            out.albedo = PLANK * (0.9 + 0.2 * noise(p / 0.4));
         }
         case MAT_STEEL: {
             out.albedo = STEEL;

@@ -305,8 +305,8 @@ fn culvert_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
 
 // A storey mesh's triangle corner (three corners a triangle from `tris`): its top takes its corners' looks and
 // normals, or planks; its shell (underside, edges, parapets, railings, posts, piers) is flat, of its deck's build
-// (DECK_SHIFT of plan/corners.wgsl, its first corner's): the slab and its edge feature of concrete, timber or steel,
-// a railing timber on timber and else steel, the piers concrete.
+// (DECK_SHIFT of plan/corners.wgsl, its first corner's): the slab and its edge feature of concrete, dark timber or
+// steel, a railing of wood on timber and else of steel, the piers concrete.
 @vertex
 fn storey_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
     let i = index / 3u;
@@ -329,7 +329,7 @@ fn storey_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
     } else {
         // Counter-clockwise from outside in lod space (east, north, up): the normal points out.
         let n = normalize(cross(vec3f(b.s - a.s, b.h - a.h), vec3f(c.s - a.s, c.h - a.h)) + vec3f(0.0, 0.0, 1e-9));
-        var mat = select(build, select(MAT_STEEL, MAT_TIMBER, build == MAT_TIMBER), i >= params.railings);
+        var mat = select(build, select(MAT_STEEL, MAT_WOOD, build == MAT_TIMBER), i >= params.railings);
         mat = select(mat, MAT_CAP, i >= params.piers);
         let word = mat | (480u << HALF_SHIFT);
         out = piece_out(v, word, CornerPlace(vec2f(v.h, half_of(word)), v.s.x + v.s.y), n);
