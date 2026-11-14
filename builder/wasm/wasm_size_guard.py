@@ -24,7 +24,7 @@ BUDGETS = {
     # vertices, the decks' ceilings and end faces, the shared water level and curve of the feature bake, line water
     # and its culverts with their mouths, the classifier's ford rule, and the storeys over the ground with their open
     # junction ends, their ends on the stubs' points and what each deck is made of (the crate's feature `storeys` on:
-    # 802,266 B gzipped with the glue, 2,075,448 B raw, stable 1.100.0, at d388cd1e9), the next whole KiB.
+    # 802,266 B gzipped with the glue, 2,075,448 B raw, stable 1.100.0), the next whole KiB.
     # The owner allows a few per cent for line water and about 60 kB for the crossing block when stated.
     "ground-plan": {"gzipped": 784 * 1024, "raw_wasm": 2027 * 1024},
 }
