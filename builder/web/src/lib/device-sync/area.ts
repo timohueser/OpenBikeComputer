@@ -1,6 +1,6 @@
 /** Compares the area and the colours of two device maps, and gives those of the map on the device. */
-import type { RememberedDevice } from '../../lib/device-sync/remembered.svelte';
-import type { MapBox, NextMap } from '../../lib/library/records';
+import type { MapBox, NextMap } from '../library/records';
+import type { RememberedDevice } from './remembered.svelte';
 
 /** The regions, the boxes and the colours of a device map. */
 export type MapArea = Omit<NextMap, 'bytes'>;

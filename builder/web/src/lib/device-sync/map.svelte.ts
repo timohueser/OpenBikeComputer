@@ -8,22 +8,26 @@ import type { NextMap } from '../library/records';
 import { platform } from '../platform';
 import type { FlatStoreClient } from '../usb/client';
 import type { PutResponse } from '../usb/protocol';
+import { sameMap } from './area';
+import { until } from './until';
 
 /**
- * Downloads the cells of `next`, assembles them and puts the map on the device as one run that `ctx.signal` stops. A
- * stopped run keeps nothing of its download. `waits` is called when another map build holds the working files. While
- * the run goes, the browser asks before it closes the tab.
+ * Downloads the cells of `next`, assembles them and puts the map on the device as one run that `ctx.signal` stops.
+ * It builds exactly `next` or nothing: the caller records `next` as the map on the device. `waits` is called when another
+ * map build holds the working files. While the run goes, the browser asks before it closes the tab.
  */
 export async function buildMap(next: NextMap, client: FlatStoreClient, ctx: JobContext, waits: () => void): Promise<PutResponse> {
     const leave = (event: BeforeUnloadEvent) => event.preventDefault();
     window.addEventListener('beforeunload', leave);
     let run: MapRun | undefined;
     try {
-        const { url, body } = await platform.catalog();
+        const { url, body } = await until(platform.catalog(), ctx.signal);
         const store = new CoverageStore(CatalogClient.fromBody(body, url, { fetchImpl: platform.catalogFetch }), body);
         store.setArea(next);
-        if (store.area().regions.length !== next.regions.length) throw new Error('This area cannot be built: a region of it is no longer in the map catalog.');
-        if (await mapWorkBusy()) waits();
+        // The selection leaves out a region that the catalog does not hold and a box that the grid refuses, and it takes
+        // the first map style for one that is not there.
+        if (!sameMap(store.area(), next)) throw new Error('This area cannot be built: a part or a map style of it is not there any more. Choose the area again.');
+        if (await until(mapWorkBusy(), ctx.signal)) waits();
         run = new MapRun(store);
         run.start();
         await ready(store, run, ctx.signal);

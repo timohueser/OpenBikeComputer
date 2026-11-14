@@ -114,7 +114,7 @@ test('"Send the map" builds the map that waits and puts it on the device; Stop i
   await expect(page.getByRole('button', { name: 'Sync now' })).toBeDisabled();
   await row.getByRole('button', { name: 'Stop' }).click();
   await page.evaluate(() => window.deviceTest.release());
-  await expect(row).toContainText('The new map was not sent, and its download is lost.');
+  await expect(row).toContainText('The new map was not sent. “Send the map” starts again.');
   await expect(row).toContainText('New area · 15.6 KB');
   await expect(page.locator('.row', { has: page.getByText('Memory card', { exact: true }) })).toContainText('Map 39.1 KB');
 

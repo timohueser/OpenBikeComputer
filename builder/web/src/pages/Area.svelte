@@ -17,7 +17,7 @@
     import { formatDistance } from '../lib/settings/format';
     import Segmented from '../lib/ui/Segmented.svelte';
     import Window from '../lib/ui/Window.svelte';
-    import { deviceArea, sameMap } from './area/area';
+    import { deviceArea, sameMap } from '../lib/device-sync/area';
     import { routesOutside } from './area/outside';
 
     let { library, active }: { library: Library; active: boolean } = $props();

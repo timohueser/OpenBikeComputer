@@ -15,7 +15,7 @@
     import { isPlan } from '../lib/planner/library';
     import { platform } from '../lib/platform';
     import { ROUTES } from '../lib/routes';
-    import { deviceArea, sameArea } from './area/area';
+    import { deviceArea, sameArea } from '../lib/device-sync/area';
 
     let { library }: { library: Library; active: boolean } = $props();
 
@@ -176,7 +176,7 @@
             {/if}
         </div>
         {#if step}
-            <div><button type="button" class="button map" onclick={() => deviceSync.stop()}>Stop</button></div>
+            <div><button type="button" class="button map" onclick={() => deviceSync.stop()} disabled={step.storing}>Stop</button></div>
         {:else if held.next && connected}
             <div><button type="button" class="button map" onclick={sendMap} disabled={deviceSync.running || updating}>Send the map</button></div>
         {/if}

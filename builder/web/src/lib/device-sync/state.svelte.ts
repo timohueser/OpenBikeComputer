@@ -7,12 +7,14 @@ import { deviceHolder } from '../device/session.svelte';
 import type { Library } from '../library/store';
 import { onRemember, remembered } from './remembered.svelte';
 import type { SyncReport } from './sync';
+import { until } from './until';
 
 /** One sync at a time in the whole browser: two tabs on one cable would send each route twice. */
 const LOCK = 'obc-device-sync';
 
-/** A step of the map send. `wait`: another map build holds the working files. `percent` is of the step. */
-export interface MapStep { phase: 'wait' | 'download' | 'build' | 'send'; percent: number }
+/** A step of the map send. `wait`: another map build holds the working files. `percent` is of the step. `storing`: the
+ * device has each byte and stores the map, so the send cannot stop any more. */
+export interface MapStep { phase: 'wait' | 'download' | 'build' | 'send'; percent: number; storing: boolean }
 
 class DeviceSync {
     running = $state(false);
@@ -115,9 +117,10 @@ export function startDeviceSync(library: Library): () => void {
         const controller = sending = new AbortController();
         stopped = false;
         deviceSync.mapProblem = null;
-        let phase: MapStep['phase'] = 'download';
+        let phase: MapStep['phase'] = 'download', storing = false;
         const show = (percent = 0) => {
-            if (deviceSync.map?.phase !== phase || deviceSync.map.percent !== percent) deviceSync.map = { phase, percent };
+            const now = deviceSync.map;
+            if (now?.phase !== phase || now.percent !== percent || now.storing !== storing) deviceSync.map = { phase, percent, storing };
         };
         show();
         const ctx: JobContext = {
@@ -125,18 +128,20 @@ export function startDeviceSync(library: Library): () => void {
             cancel: reason => controller.abort(reason),
             // After the last byte the device stores the map: the send stays at its end.
             phase: job => {
-                phase = job === 'downloading' ? 'download' : ['sending', 'committing', 'finalizing'].includes(job) ? 'send' : 'build';
-                show(phase === 'send' && job !== 'sending' ? 100 : 0);
+                storing = job === 'committing' || job === 'finalizing';
+                phase = job === 'downloading' ? 'download' : job === 'sending' || storing ? 'send' : 'build';
+                show(storing ? 100 : 0);
             },
             progress: (done, total) => show(total ? Math.floor(100 * done / total) : 0),
         };
         try {
-            const [sync, { buildMap }] = await Promise.all([import('./sync'), initCore().then(() => import('./map.svelte'))]);
+            const [sync, { buildMap }] = await until(Promise.all([import('./sync'), initCore().then(() => import('./map.svelte'))]), controller.signal);
             const waits = () => { phase = 'wait'; show(); };
             const problem = await sync.sendMap(serial, library, (next, job) => buildMap(next, client, job, waits), ctx);
             if (problem) deviceSync.mapProblem = { text: problem, stopped };
         } catch (error) {
-            deviceSync.mapProblem = { text: error instanceof Error ? error.message : String(error), stopped: false };
+            // A stop before the build began left nothing to say.
+            if (!controller.signal.aborted) deviceSync.mapProblem = { text: error instanceof Error ? error.message : String(error), stopped: false };
         } finally {
             deviceSync.map = null;
             sending = null;
@@ -147,6 +152,7 @@ export function startDeviceSync(library: Library): () => void {
     }
 
     function stopMap(): void {
+        if (deviceSync.map?.storing) return;
         stopped = true;
         sending?.abort(new DOMException('The rider stopped the map send.', 'AbortError'));
     }
@@ -171,6 +177,8 @@ export function startDeviceSync(library: Library): () => void {
     });
     const stopRemember = onRemember(connected);
     const stopChange = library.onChange((store, key) => {
+        // The sentence of the last send was about another map.
+        if (store === 'state' && key === 'nextMap' && !deviceSync.map) deviceSync.mapProblem = null;
         if (store !== 'state' || (key !== 'waiting' && key !== 'leaving')) return;
         if (deviceSync.running) again = true;
         else void pending().then(next => { if (next) void run(); });
