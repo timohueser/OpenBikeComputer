@@ -429,8 +429,9 @@ of the code of the levels takes a new revision. The bake builds each zoom-16 cel
 way of the road solver as the viewer does: from the zoom-13 tiles of the bake and the terrain tiles of zooms 13 and
 12 of the grid. Each cell decides the ways inside its square. A way has a state where it is a bridge or a tunnel, or
 where it ends at the body of a way that it crosses. The A lines of one deck group that cross or lie within
-`edge_band_m` of each other are one line: each of those decks ends on the line normal to their mean direction into
-the decks, at the farthest one in. The storey is one per deck group, the deck ways that share a
+`edge_band_m` of each other move in together: each A moves in along its way to where its centre line meets the line
+normal to their mean direction into the decks through the farthest one in, and each end line stays square to its own
+way. One pass merges them; a cell merges the A lines that it sees. The storey is one per deck group, the deck ways that share a
 point, joined over all cells: 1, and one more than each group under it at a crossing that a cell owns and whose
 ladder gives a deck (full or thin). A crossing of a group over itself lifts nothing. The metres along of a way are
 those of its stroke (see Alignment): `along_code` at the first vertex of each part, and the length of the ground
