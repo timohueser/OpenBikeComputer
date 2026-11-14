@@ -1,8 +1,9 @@
 //! The build of one cell from its request bytes, stage by stage, with the time of each stage.
 
-use crate::faces::{records, FacePlan, Rules, Storeys};
+use crate::faces::{records, EdgeKind, FacePlan, Rules, Storeys, OUTSIDE};
 use crate::frame::CellKey;
 use crate::graph::{self, WayGraph};
+use crate::mesh;
 use crate::tile::TileCache;
 use crate::transport::{fnv, Request};
 use crate::CellInput;
@@ -32,7 +33,7 @@ pub struct CellBuild {
     /// (`build_storeys`).
     pub storeys: Storeys,
     /// With the storeys: the time of the storeys' faces and records (ms).
-    pub storey_times: f64,
+    pub storey_time: f64,
 }
 
 /// Builds the cell of a request: `input` decodes the request, the feature tiles and the terrain;
@@ -81,7 +82,18 @@ pub fn build_storeys(
     let (mut b, input) = stages(now(), request, cache, rules, now)?;
     let start = now();
     b.storeys = records::storeys(&b.graph, &input, rules, b.key, &mut b.records);
-    b.storey_times = now() - start;
+    let plan = &b.faces;
+    let sharp = |f: u32| f != OUTSIDE && mesh::params::sharp(plan.faces[f as usize].rule);
+    let mut ends: Vec<[i32; 2]> = (plan.edges.iter())
+        .filter(|e| {
+            e.kind == EdgeKind::DeckEdge && e.left != OUTSIDE && e.right != OUTSIDE && (sharp(e.left) || sharp(e.right))
+        })
+        .flat_map(|e| mesh::points::edge_points(plan, e, b.key.origin().y as f64))
+        .collect();
+    ends.sort_unstable_by_key(|p| (p[1], p[0]));
+    ends.dedup();
+    b.storeys.ground_ends = ends;
+    b.storey_time = now() - start;
     Ok(b)
 }
 
@@ -118,9 +130,6 @@ fn stages(
     let (faces, records, far) = records::near(&graph, &input, rules, key, 0, true);
     let times = vec![read - start, built - read, now() - built];
     let records = records.words;
-    let (storeys, storey_times) = (Storeys::default(), 0.0);
-    Ok((
-        CellBuild { key, request: None, tiles, pages, graph, faces, records, far, times, storeys, storey_times },
-        input,
-    ))
+    let (storeys, storey_time) = (Storeys::default(), 0.0);
+    Ok((CellBuild { key, request: None, tiles, pages, graph, faces, records, far, times, storeys, storey_time }, input))
 }

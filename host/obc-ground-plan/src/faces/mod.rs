@@ -603,8 +603,15 @@ fn sidewalk(line: &WayLine, arm: Arm, right: bool) -> bool {
     seg.is_some_and(|s| s + 1 < line.walk.len() && line.walk[s] & bit != 0)
 }
 
-/// The junctions and joints whose faces reach the window.
-fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx: [i32; 4]) -> Vec<Point> {
+/// The junctions and joints whose faces reach the window. A junction with an arm that goes on at another level
+/// (`elsewhere`) is no point of this level: each of its arms here ends there, open (`deck::Decks`), as at a joint.
+fn graph_points(
+    ctx: &Ctx,
+    lines: &[WayLine],
+    of_way: &BTreeMap<u32, usize>,
+    elsewhere: &dyn Fn(u32) -> bool,
+    bx: [i32; 4],
+) -> Vec<Point> {
     let g = ctx.graph;
     let near = |p: P| p[0] >= bx[0] && p[0] <= bx[2] && p[1] >= bx[1] && p[1] <= bx[3];
     let mut out = Vec::new();
@@ -612,7 +619,7 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
     for (id, j) in g.junctions.iter().enumerate() {
         let arms: Vec<(&crate::graph::Arm, usize)> =
             j.arms.iter().filter_map(|a| of_way.get(&a.way).map(|&l| (a, l))).collect();
-        if arms.len() < 2 || !near(j.pos) {
+        if arms.len() < 2 || !near(j.pos) || j.arms.iter().any(|a| elsewhere(a.way)) {
             continue;
         }
         // The material: the arm of the best class, a road or path before a rail, a host before a guest.
@@ -1069,7 +1076,8 @@ fn candidates<'a>(
         }
     }
     // The points within `bx` round their arms; the points past it only end their runs.
-    let all = graph_points(&ctx, &lines, &of_way, reach(rules::points_m(plan, &rules.sections)));
+    let elsewhere = |w: u32| decks.as_ref().is_some_and(|d| d.goes_on(graph, w, level));
+    let all = graph_points(&ctx, &lines, &of_way, &elsewhere, reach(rules::points_m(plan, &rules.sections)));
     let (mut points, outer): (Vec<Point>, Vec<Point>) = all.into_iter().partition(|pt| near(pt.pos));
     let mut stats = FaceStats::default();
     let junction = |pt: &&Point| matches!(pt.label.owner, Owner::Junction(_));

@@ -11,7 +11,7 @@ use fixture::{default_dir, Fixture};
 use obc_ground_plan::faces::Rules;
 use obc_ground_plan::frame::{metres_per_unit, CellKey, CELL_UNITS};
 use obc_ground_plan::graph::{
-    build, build_levelled, check, check_levels, level_tags, levels, Arm, Level, Sample, State, Station, WayGraph,
+    build, build_levelled, check, check_levels, level_tags, levels, s_at, Arm, Level, Sample, State, Station, WayGraph,
 };
 use obc_ground_plan::sections::Sections;
 use obc_ground_plan::tile::Tags;
@@ -180,11 +180,14 @@ fn neighbouring_cells_agree_near_their_border_g5() {
 /// The levels that the fixture's tiles carry are those that `levels` gives the cells: the tags of each feature are
 /// those that the bake's merge (`level_tags::merge`) gives of what the cells find, storey and slab included; and the
 /// graph of the storeys (`build_levelled`) gives every way inside a cell's square the level of its stretch's state,
-/// with no way on a HIDDEN stretch. A change of the levels or of their rules takes a new bake of the fixture.
+/// with no way on a HIDDEN stretch, and cuts each bridge at its end lines. A change of the levels or of their rules takes a new bake of the fixture.
+/// A cut of the storeys' graph lies this near its end line (metres): `level_tags::split` merges closer stations.
+const CUT_M: f64 = 1e-6;
+
 #[test]
 fn the_tiles_carry_the_levels_of_each_cell() {
     let mut fixture = Fixture::open(&default_dir());
-    let (mut faults, mut ways) = (Vec::new(), 0);
+    let (mut faults, mut ways, mut ends) = (Vec::new(), 0, 0);
     // A feature by its kind and tags, the same in each tile that holds it; and its level tags.
     let (mut ids, mut carried_tags) = (BTreeMap::<String, u32>::new(), BTreeMap::<u32, Tags>::new());
     let (mut found, mut groups, mut over) = (BTreeMap::<u32, Vec<level_tags::Found>>::new(), Vec::new(), Vec::new());
@@ -242,6 +245,28 @@ fn the_tiles_carry_the_levels_of_each_cell() {
                 faults.push(format!("{key:?} way {w}: on {:?}, its stretch's state gives {want:?}", way.level));
             }
         }
+        // Each end line of a carried stretch cuts its way where the cell computes it: a way of the storeys' graph on
+        // its part ends there, within the merge's 1e-6 m.
+        let along = |g: &WayGraph, st: &Station| {
+            let part = &g.parts[st.part as usize];
+            let span = &part.spans[st.span as usize];
+            span.along0_m + if part.backward { -1.0 } else { 1.0 } * s_at(span, st.u)
+        };
+        let cuts: Vec<(u32, f64)> = (levelled.ways.iter())
+            .filter(|w| levelled.parts[w.part as usize].level == Level::Deck)
+            .flat_map(|w| [(w.part, along(&levelled, &w.from)), (w.part, along(&levelled, &w.to))])
+            .collect();
+        for l in computed.levels.end_lines.iter().filter(|l| level_tags::inside(&computed, l.way)) {
+            if computed.parts[l.at.part as usize].level != Level::Deck {
+                continue;
+            }
+            ends += 1;
+            let m = along(&computed, &l.at);
+            if !cuts.iter().any(|&(p, c)| p == l.at.part && (c - m).abs() <= CUT_M) {
+                faults
+                    .push(format!("{key:?} way {}: no way of the storeys' graph ends at its end line ({m} m)", l.way));
+            }
+        }
         for r in
             computed.levels.runs.iter().filter(|r| r.state == State::Hidden && level_tags::inside(&computed, r.way))
         {
@@ -262,7 +287,7 @@ fn the_tiles_carry_the_levels_of_each_cell() {
             faults.push(format!("feature {id}: the cells give {want:?}, the tiles carry {carried:?}"));
         }
     }
-    println!("{ways} ways of the storeys' graph on a carried stretch; tags of the cells' features {counts:?}");
-    assert!(ways > 10, "the fixture's bridges and tunnels");
+    println!("{ways} ways of the storeys' graph on a carried stretch, {ends} end lines; tags of the cells' features {counts:?}");
+    assert!(ways > 10 && ends > 10, "the fixture's bridges and tunnels");
     assert!(faults.is_empty(), "{} faults:\n{}", faults.len(), faults[..faults.len().min(10)].join("\n"));
 }

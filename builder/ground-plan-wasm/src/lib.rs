@@ -232,7 +232,7 @@ impl CellPlan {
     /// The milliseconds of the storeys' faces and records.
     #[cfg(feature = "storeys")]
     pub fn storey_time(&self) -> f64 {
-        self.built.storey_times
+        self.built.storey_time
     }
 
     /// The far block of the records' lines (`records::far` of obc-ground-plan), or why the crate

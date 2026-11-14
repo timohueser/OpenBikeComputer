@@ -824,9 +824,11 @@ fn states(ctx: &Ctx, ladders: &[Option<Ladder>]) -> Levels {
     out
 }
 
-/// The A lines of one deck group that cross or lie within `edge_band_m` of each other become one: each deck of
-/// them ends on the line normal to their mean direction into the decks, at the farthest one in, its A moved in
-/// along its way and its ground stretch grown to it. So no deck stroke runs over the ground stretch of another.
+/// The A lines of one deck group that cross or lie within `edge_band_m` of each other move in together: each A
+/// moves in along its way to where its centre line meets the line normal to their mean direction into the decks
+/// through the farthest one in, and its ground stretch grows to it; its end line stays square to its own way, so on
+/// two ways at an angle the end lines can still cross or leave a wedge. One pass: a moved A is not merged again. A
+/// cell merges the A lines that it sees.
 fn merge_a(ctx: &Ctx, out: &mut Levels) {
     let g = ctx.g;
     let mut group = vec![u32::MAX; g.ways.len()];
