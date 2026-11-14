@@ -652,23 +652,26 @@ pub fn mesh_storeys(
                 }
             }
         }
-        // The free outline's chains, the sheet on their left; each run of one edge feature a parapet or a railing.
-        // The pieces by their first point, and their last points, in sorted lists.
+        // The free outline's chains, the sheet on their left; each run of one edge feature a parapet or a railing. A
+        // chain stays on one deck way: past a torn run's end, the next free piece may be the other deck's. The pieces
+        // by their first point, and their last points with their way, in sorted lists; a chain starts at a piece that
+        // no piece of its way leads to.
+        let way_of = |k: usize| lines.way(free[k].2).unwrap_or(u32::MAX);
         let mut from: Vec<(u64, u32)> = free.iter().enumerate().map(|(k, f)| (yx(f.0), k as u32)).collect();
         from.sort_unstable();
-        let mut to: Vec<(u64, u32)> = free.iter().map(|f| (yx(f.1), 0)).collect();
+        let mut to: Vec<(u64, u32)> = (0..free.len()).map(|k| (yx(free[k].1), way_of(k))).collect();
         to.sort_unstable();
         let mut used = vec![false; free.len()];
-        let starts: Vec<usize> =
-            (0..free.len()).filter(|&k| to.binary_search(&(yx(free[k].0), 0)).is_err()).chain(0..free.len()).collect();
+        let starts: Vec<usize> = (0..free.len())
+            .filter(|&k| to.binary_search(&(yx(free[k].0), way_of(k))).is_err())
+            .chain(0..free.len())
+            .collect();
         for s in starts {
             if used[s] {
                 continue;
             }
             let mut chain = vec![s];
             used[s] = true;
-            // A chain stays on one deck way: past a torn run's end, the next free piece may be the other deck's.
-            let way_of = |k: usize| lines.way(free[k].2);
             loop {
                 let last = *chain.last().unwrap();
                 let end = yx(free[last].1);
