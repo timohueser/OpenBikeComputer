@@ -4,11 +4,10 @@
 mod fixture;
 
 use fixture::{default_dir, Fixture};
-use obc_ground_plan::cell::{build_cell, build_cell_with, STAGES};
+use obc_ground_plan::cell::{build_cell, build_cell_with, cell_graph, STAGES};
 use obc_ground_plan::faces::{records, Rules};
 use obc_ground_plan::faces::{CornerArc, Edge, EdgeKind, Face, FacePlan, FaceStats, HeightRule, Owner, Surface};
 use obc_ground_plan::frame::CellKey;
-use obc_ground_plan::graph;
 use obc_ground_plan::tile::TileCache;
 use obc_ground_plan::transport::{
     vocabulary, FaceWords, Flat, Request, CORNER_WORDS, CROSSING_WORDS, EDGE_WORDS, FACE_WORDS, POINT_WORDS,
@@ -138,7 +137,7 @@ fn a_cell_build_gives_the_faces_and_near_records_of_the_whole_records_build_and_
     let rules = Rules::embedded();
     let cell = build_cell(&bytes, rules, &mut || 0.0).unwrap();
     let input = Request::decode(&bytes).unwrap().input(&mut TileCache::new(1)).unwrap();
-    let whole = records::build(&graph::build(CELL, &input, &rules.sections), &input, rules, CELL, 0, true);
+    let whole = records::build(&cell_graph(CELL, &input, rules), &input, rules, CELL, 0, true);
     assert_eq!(cell.faces, whole.faces);
     assert_eq!(cell.records, whole.near.words);
     // The second build reads the tiles that the first parsed: a load of one would panic.

@@ -13,7 +13,7 @@
 use super::cdt::{Segment, INSIDE};
 use super::params::{l_max_m, sharp, GRID, GRID_CLEARANCE_M, SIDE};
 use super::region::Region;
-use crate::faces::{EdgeKind, FacePlan, OUTSIDE};
+use crate::faces::{Edge, EdgeKind, FacePlan, OUTSIDE};
 use crate::frame::{metres_per_unit_at, CELL_UNITS};
 
 pub type P = [i32; 2];
@@ -58,6 +58,31 @@ fn dist(a: P, b: P, p: [f64; 2]) -> f64 {
     libm::hypot(w[0] - t * e[0], w[1] - t * e[1])
 }
 
+/// The points of face edge e of a plan in the mesh, from its first to its last: it splits into equal pieces no
+/// longer than the `l_max_m` of its two faces. A storey's end on an end line takes them too (`mesh::shell`).
+pub fn edge_points(plan: &FacePlan, e: &Edge, origin_y: f64) -> Vec<P> {
+    let (a, b) = (plan.vertices[e.a as usize], plan.vertices[e.b as usize]);
+    let mid = [(a[0] + b[0]).div_euclid(2), (a[1] + b[1]).div_euclid(2)];
+    let l = [e.left, e.right]
+        .map(|f| {
+            let f = &plan.faces[f as usize];
+            l_max_m(f.surface, f.rule)
+        })
+        .into_iter()
+        .fold(f64::INFINITY, f64::min);
+    let len =
+        libm::hypot(f64::from(b[0] - a[0]), f64::from(b[1] - a[1])) * metres_per_unit_at(origin_y + f64::from(mid[1]));
+    let n = (len / l).ceil().max(1.0) as i64;
+    let mut out = vec![a];
+    for k in 1..=n {
+        let p = if k == n { b } else { part(a, b, k, n) };
+        if Some(&p) != out.last() {
+            out.push(p);
+        }
+    }
+    out
+}
+
 /// The input of D's triangulation. `lines`: the plan vertices of the cell and its neighbour on each
 /// side line, as coordinates along it; `origin_y`: the cell's global row, for the metres per unit.
 pub fn input(plan: &FacePlan, region: &Region, lines: &[Vec<i32>; 4], origin_y: f64) -> Input {
@@ -76,23 +101,9 @@ pub fn input(plan: &FacePlan, region: &Region, lines: &[Vec<i32>; 4], origin_y: 
             outside_d += 1;
             continue;
         }
-        let l = [e.left, e.right]
-            .map(|f| {
-                let f = &plan.faces[f as usize];
-                l_max_m(f.surface, f.rule)
-            })
-            .into_iter()
-            .fold(f64::INFINITY, f64::min);
-        let len = libm::hypot(f64::from(b[0] - a[0]), f64::from(b[1] - a[1])) * mpu(f64::from(mid[1]));
-        let n = (len / l).ceil().max(1.0) as i64;
-        let mut last = a;
-        for k in 1..=n {
-            let p = if k == n { b } else { part(a, b, k, n) };
-            if p != last {
-                ends.push((last, p, e.left, e.right));
-                end_faces.push(e.kind == EdgeKind::DeckEdge);
-                last = p;
-            }
+        for w in edge_points(plan, e, origin_y).windows(2) {
+            ends.push((w[0], w[1], e.left, e.right));
+            end_faces.push(e.kind == EdgeKind::DeckEdge);
         }
     }
     let edges = ends.len();

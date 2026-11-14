@@ -482,9 +482,10 @@ export class Terrain {
     async attachParts(frames: GPUBuffer[]): Promise<void> {
         const r = this.resources!;
         await Promise.all([
-            this.water.attach(r.gpu, frames[0], r.nodes, r.cells), this.structures.attach(r.gpu, frames, r.holes), this.roads.attach(r.gpu, frames), this.piecesAttached,
+            this.water.attach(r.gpu, frames[0], r.nodes, r.cells), this.structures.attach(r.gpu, frames, r.holes, r.cells), this.roads.attach(r.gpu, frames), this.piecesAttached,
             r.gpu.once(this.records ? planHoledPipeline : holedPipeline).then(pipeline => void (r.holedMesh = pipeline)),
         ]);
+        this.pieces?.castWith(frames[1]);
     }
 
     /**
@@ -701,12 +702,13 @@ export class Terrain {
         pass.end();
     }
 
-    /** Draws the structures into the shadow map (light/shadow.ts) as casters. */
+    /** Draws the structures and the ground plan's storeys into the shadow map (light/shadow.ts) as casters. */
     cast(pass: GPURenderPassEncoder): void {
         const r = this.resources;
         if (!r) return;
         this.structures.cast(pass, r.surfaceGroup, r.featureGroup);
         this.roads.cast(pass, r.surfaceGroup);
+        this.pieces?.cast(pass, r.surfaceGroup, r.emptyGroup, r.featureGroup);
     }
 
     /** With `owned` (the debug view), only the meshes and the terrain draw. */

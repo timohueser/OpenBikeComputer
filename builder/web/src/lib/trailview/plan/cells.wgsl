@@ -4,7 +4,7 @@
 // lie strictly inside its mesh's owned region, one bit each, row by row from the north-west, both borders
 // included.
 // #include ../terrain/drawn-mesh.wgsl
-@group(0) @binding(3) var<storage, read> plan_cells: array<u32>;
+// #include cells-buffer.wgsl
 
 // As WINDOW, HEAD, SIDE and SUNK_WORDS of pieces.ts.
 const PLAN_WINDOW: i32 = 7;
@@ -40,6 +40,19 @@ const PLAN_TRIANGLE_UNITS: f32 = 256.0;
 // Whether a grid point lies nearer than `m` metres in the LOD metric.
 fn plan_within(u: vec2i, m: f32) -> bool {
     return length(vec3f(lod_space(vec2f(u)), surface.above)) < m;
+}
+
+// The share of a mesh's pixels that draw at `u` units about the anchor: 1 to where a cut piece starts to fade into
+// the far look (CUT of roads/corridor.wgsl), 0 where level 18 ends and where no mesh draws. A pixel draws by
+// dither(clip + PLAN_DITHER) < share, as a cut piece's.
+const PLAN_DITHER: vec2f = vec2f(61.0, 7.0);
+
+fn plan_share(u: vec2f) -> f32 {
+    if (!plan_meshed(vec2i(floor(u)))) {
+        return 0.0;
+    }
+    let d = length(vec3f(lod_space(u), surface.above));
+    return 1.0 - smoothstep(plan_sink_m() + PLAN_TRIANGLE_UNITS * surface.unit, surface.range * exp2(-18.0), d);
 }
 
 // Whether a mesh draws a grid point whole: its cell has one, and the point lies before the band where the

@@ -9,7 +9,8 @@
 // #include line-look.wgsl
 
 // A piece's words: its corners (2 words each, as `mesh/mod.rs` of obc-ground-plan packs them), at `out` the
-// corners' height, look word, place word and normal, at `slots` its step slots; as pieces.ts lays them out.
+// corners' height, look word, place word and normal, at `slots` its step slots; as pieces.ts lays them out. A
+// storey mesh's corners take their offsets (`mesh/shell.rs`).
 struct Piece {
     // The cell's north-west corner in whole world units.
     origin: vec2i,
@@ -24,6 +25,11 @@ struct Piece {
     first: u32,
     // The first word of the culvert mouths (piece.wgsl).
     culverts: u32,
+    // A storey mesh's: the first word of its corners' height offsets (f32 metres; 0 for a cell's mesh), of its
+    // triangles (three corners each) and the count of its top's triangles (piece.wgsl).
+    offsets: u32,
+    tris: u32,
+    top: u32,
 }
 
 @group(0) @binding(0) var<storage, read_write> piece: array<u32>;
@@ -49,6 +55,11 @@ const CODE_ROAD_SURFACE: u32 = 1u;
 // the face lies on the road surface of a wall class (the line's M_WALL, from `leg_wall` of roads.json), so a step
 // beside it is a wall (piece.wgsl's WALL_SIDE).
 const LOOK_WALL_SIDE: u32 = 268435456u;
+// The next bit: that wall is a bridge's (M_BRIDGE_GROUND), of concrete (piece.wgsl's BRIDGE_SIDE). A storey's corner
+// has no wall: it takes these bits for its deck's build and planks (M_BUILD_SHIFT), in the bits from DECK_SHIFT.
+const LOOK_BRIDGE_SIDE: u32 = 536870912u;
+const SIDE_SHIFT: u32 = 28u;
+const DECK_SHIFT: u32 = 29u;
 const S_CORNER_FILL: u32 = 5u;
 const S_PLATFORM: u32 = 8u;
 // A face without a frame has no edge in its look: this far across a way this wide on each side, as a junction's faces in section.ts.
@@ -67,11 +78,13 @@ fn cell_stamp(u: vec2i) -> Stamp {
     return stamp_at(18u, node << vec2u(8u), select(NO_DATA, entry - 1u, entry != 0u), u);
 }
 
-fn height_of(q: vec2i, label: u32) -> f32 {
+// A storey's corner lies on no ground: no stamp bounds it. Its plain terrain (a pier's foot) is the stamp's ground,
+// which reads no drawn page: the storeys' corners are made in `all` passes only.
+fn height_of(q: vec2i, label: u32, storey: bool) -> f32 {
     let u = params.origin + q / 16;
     // The plain terrain's rule: the drawn page, which holds the water's bed and the structures' ground as
     // the terrain beside the mesh draws them.
-    if (label == M_NONE) {
+    if (label == M_NONE && !storey) {
         return units_height(u, 18u);
     }
     // Under a label, the stamp's ground of the level-18 page: the bicubic of the stored pages after the water and
@@ -81,8 +94,11 @@ fn height_of(q: vec2i, label: u32) -> f32 {
         return NONE;
     }
     let s = cell_stamp(u);
+    if (label == M_NONE) {
+        return stamped_ground(base, s);
+    }
     let h = height_at(params.block, vec2f(q), label, stamped_ground(base, s), 0u);
-    return stamp_bounded(h.x, h.y == H_PAVED, s);
+    return select(stamp_bounded(h.x, h.y == H_PAVED, s), h.x, storey);
 }
 
 // Whether a line's finish word is of a wall class: the one flag that heights reads for a wall at its edge.
@@ -90,10 +106,16 @@ fn road_wall(finish: u32) -> bool {
     return (finish & M_WALL) != 0u;
 }
 
-// The metres past the core edge of the way whose core lies nearest q, its half-width, and 1 if it is a wall
-// class road (road_wall): of the lines whose heights reach q's bin, but water. M_FAR and FACE_HALF_M where none does. A bin lists every line whose
-// heights reach it, and every class's reach is at least a path's, so within a path's reach (ground_terms) the
-// answer does not depend on the bin.
+// The bits of a wall beside a line of finish word `finish`: none, or LOOK_WALL_SIDE for a wall class (road_wall), with
+// LOOK_BRIDGE_SIDE on a bridge's ground stretch.
+fn wall_side(finish: u32) -> u32 {
+    return select(0u, LOOK_WALL_SIDE | select(0u, LOOK_BRIDGE_SIDE, (finish & M_BRIDGE_GROUND) != 0u), road_wall(finish));
+}
+
+// The metres past the core edge of the way whose core lies nearest q, its half-width, and its wall_side bits (from
+// SIDE_SHIFT): of the lines whose heights reach q's bin, but water. M_FAR and FACE_HALF_M where none does. A bin
+// lists every line whose heights reach it, and every class's reach is at least a path's, so within a path's reach
+// (ground_terms) the answer does not depend on the bin.
 fn nearest_way(q: vec2i, mpu: f32) -> vec3f {
     var out = vec3f(M_FAR, FACE_HALF_M, 0.0);
     let qf = vec2f(q);
@@ -119,7 +141,7 @@ fn nearest_way(q: vec2i, mpu: f32) -> vec3f {
         let half = mix(mf(wa + 2u), mf(wb + 2u), t) * mpu;
         let edge = length(qf - a - t * u) * mpu - half;
         if (edge < out.x) {
-            out = vec3f(edge, half, select(0.0, 1.0, road_wall(finish)));
+            out = vec3f(edge, half, f32(wall_side(finish) >> SIDE_SHIFT));
         }
     }
     return out;
@@ -188,7 +210,7 @@ fn corner_look(q: vec2i, label: u32, mpu: f32) -> vec2u {
     let lines = params.block + mw(params.block + 6u);
     let finish = select(mw(lines + M_LINE * line + 1u), 0u, line == M_NONE);
     let code = finish & 0xffu;
-    let wall = select(0u, LOOK_WALL_SIDE, road_wall(finish));
+    let wall = wall_side(finish);
     if (surface_code == S_WATER) {
         return vec2u(look_word(MAT_WATER, 0u, 0.0), 0u);
     }
@@ -258,7 +280,7 @@ fn corners(@builtin(local_invocation_index) lane: u32, @builtin(workgroup_id) gr
     let cell = vec2i(i32(M_CELL));
     var h = NONE;
     if (makes && (tap == 0u || (!terrain_only && may_pave(label))) && (!terrain_only || label == M_NONE)) {
-        h = height_of(clamp(q + taps[tap], vec2i(0), cell), label);
+        h = height_of(clamp(q + taps[tap], vec2i(0), cell), label, params.offsets != 0u);
     }
     corner_heights[lane] = h;
     workgroupBarrier();
@@ -296,12 +318,20 @@ fn corners(@builtin(local_invocation_index) lane: u32, @builtin(workgroup_id) gr
     } else {
         // Ground: its nearest way, for the ground terms; a shoulder takes that way's wall class.
         let way = nearest_way(q, mpu);
-        let wall = ((look.x >> 7u) & 15u) == CODE_ROAD_SURFACE && way.z > 0.5;
-        let side = select(0u, LOOK_WALL_SIDE, wall);
+        let side = select(0u, u32(way.z) << SIDE_SHIFT, ((look.x >> 7u) & 15u) == CODE_ROAD_SURFACE);
         look = vec2u(look_word(MAT_GROUND, 0u, way.y) | side, place_word(way.x, 0.0));
+    }
+    // A storey's corner: its deck's build and planks, from its label's line.
+    if (params.offsets != 0u && label != M_NONE) {
+        let line = mw(m_label(params.block, label) + 2u);
+        let finish = select(mw(params.block + mw(params.block + 6u) + M_LINE * line + 1u), 0u, line == M_NONE);
+        look.x = (look.x & ~(7u << DECK_SHIFT)) | (((finish >> M_BUILD_SHIFT) & 7u) << DECK_SHIFT);
     }
     // Octahedral, as piece.wgsl decodes it.
     let e = n.xy / (abs(n.x) + abs(n.y) + n.z);
+    if (params.offsets != 0u && known(h)) {
+        h += bitcast<f32>(piece[params.offsets + k]);
+    }
     piece[o] = bitcast<u32>(h);
     piece[o + 1u] = look.x;
     piece[o + 2u] = look.y;

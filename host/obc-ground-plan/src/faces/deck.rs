@@ -1,11 +1,11 @@
-//! The decks of the storeys over the ground: the ways that storey k ≥ 1 holds, the stretch of each between its
-//! end lines (the DECK runs that the tiles carry, `graph::level_tags`), and the stroke of a deck: its paved layers
-//! and the band about them (`edge_band_m`, `Surface::DeckEdge`).
+//! The decks of the storeys over the ground: the ways that storey k ≥ 1 holds (the graph splits each bridge way at
+//! the end lines that the tiles carry, `graph::level_tags::split`, so a deck is a whole way), their open ends, and the
+//! stroke of a deck: its paved layers and the band about them (`edge_band_m`, `Surface::DeckEdge`).
 
 use super::geom::P;
-use super::stroke::unit;
-use super::{WayLine, LAYERS, SLOPE};
-use crate::graph::{level_tags, EndKind, Family, Level, State, Station, WayGraph};
+use super::{WayLine, SLOPE};
+use crate::graph::{level_tags, Family, Level, WayGraph};
+use crate::sections::Finish;
 use crate::CellInput;
 
 /// The number of a tag of the feature of way w.
@@ -14,97 +14,49 @@ fn tag(g: &WayGraph, input: &CellInput, w: u32, key: &str) -> Option<f64> {
     f.tags.get(key).and_then(|t| t.parse().ok())
 }
 
-/// How a piece of a deck way ends.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum End {
-    /// At the way's own end: a joint or junction with the next deck way, or the end of a synthetic deck. `open`: a
-    /// ground way goes on there.
-    Way { open: bool },
-    /// On an end line through `at` (frame units from the cell's origin). `open`: an A line past which storey 0 goes
-    /// on; else the line is the deck's free end.
-    Line { at: [f64; 2], open: bool },
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Piece {
-    pub from: Station,
-    pub to: Station,
-    pub ends: [End; 2],
-}
-
-/// The decks of a graph after `graph::level_tags::read`.
+/// The decks of a graph: per way its storey (0 for a way on no deck) and whether each of its ends is open.
 pub(crate) struct Decks {
-    /// Per way: its storey, 0 for a way on no deck.
     pub storey: Vec<i8>,
-    /// Per way: its pieces, none for a way on no deck.
-    pub pieces: Vec<Vec<Piece>>,
-}
-
-fn key(s: &Station) -> (u32, f64) {
-    (s.span, s.u)
+    /// An open end meets a way that goes on past it on another storey: a way on the ground (storey 0 goes on), or a
+    /// deck on another storey. The shell leaves it open; a free end is closed.
+    pub open: Vec<[bool; 2]>,
 }
 
 impl Decks {
-    /// A DECK run of a bridge way is a piece; a synthetic deck (no runs) is one piece end to end.
+    /// A deck way's storey is its feature's (`level_tags::STOREY`, one more than each deck under it), 1 by default.
     pub(crate) fn of(g: &WayGraph, input: &CellInput) -> Decks {
         let deck_way = |w: u32| {
             let x = &g.ways[w as usize];
             x.level == Level::Deck && x.family != Family::Water
         };
-        // Whether a ground way and no other deck way meets the end of way w at station `st`, which w leaves along
-        // `dir`: there storey 0 goes on from the deck.
-        let ground_at = |w: u32, dir: i8, st: &Station| {
-            let sets = g.junctions.iter().map(|j| &j.arms[..]).chain(g.joints.iter().map(|j| &j.arms[..]));
-            sets.into_iter().any(|arms| {
-                arms.iter().any(|a| a.way == w && a.dir == dir && key(&a.at) == key(st))
-                    && arms.iter().any(|a| a.level == Level::Ground && g.ways[a.way as usize].family != Family::Water)
-                    && !arms.iter().any(|a| a.way != w && deck_way(a.way))
-            })
-        };
-        let mut pieces: Vec<Vec<Piece>> = vec![Vec::new(); g.ways.len()];
-        for r in g.levels.runs.iter().filter(|r| r.state == State::Deck && deck_way(r.way)) {
-            let way = &g.ways[r.way as usize];
-            let end = |st: &Station, dir: i8| {
-                let line = (g.levels.end_lines.iter())
-                    .find(|l| l.way == r.way && key(&l.at) == key(st) && l.kind != EndKind::Portal);
-                // Past an A line inside the way, the way goes on as a ground way (its stub). The levels also
-                // give A to the way's own end, where storey 0 goes on only through a ground way that meets it.
-                let way_end = if dir > 0 { &way.from } else { &way.to };
-                line.map_or(End::Way { open: ground_at(r.way, dir, st) }, |l| {
-                    let at = [0, 1].map(|k| (f64::from(l.ends[0][k]) + f64::from(l.ends[1][k])) / 2.0);
-                    let open = l.kind == EndKind::A && (key(st) != key(way_end) || ground_at(r.way, dir, st));
-                    End::Line { at, open }
-                })
-            };
-            let ends = [end(&r.from, 1), end(&r.to, -1)];
-            pieces[r.way as usize].push(Piece { from: r.from, to: r.to, ends });
-        }
-        let mut tagged = vec![false; g.ways.len()];
-        for r in &g.levels.runs {
-            tagged[r.way as usize] = true;
-        }
-        for w in (0..g.ways.len() as u32).filter(|&w| deck_way(w) && !tagged[w as usize]) {
-            let way = &g.ways[w as usize];
-            let ends = [End::Way { open: ground_at(w, 1, &way.from) }, End::Way { open: ground_at(w, -1, &way.to) }];
-            pieces[w as usize].push(Piece { from: way.from, to: way.to, ends });
-        }
-        // A deck way's storey is its feature's, as the bake decides it (`level_tags::STOREY`); 1 by default.
-        let storey = (0..g.ways.len() as u32)
-            .map(|w| {
-                if pieces[w as usize].is_empty() {
-                    0
-                } else {
-                    tag(g, input, w, level_tags::STOREY).map_or(1, |s| s as i8)
-                }
-            })
+        let storey: Vec<i8> = (0..g.ways.len() as u32)
+            .map(|w| if deck_way(w) { tag(g, input, w, level_tags::STOREY).map_or(1, |s| s as i8) } else { 0 })
             .collect();
-        Decks { storey, pieces }
+        let mut decks = Decks { storey, open: vec![[false; 2]; g.ways.len()] };
+        let mut open = vec![[false; 2]; g.ways.len()];
+        for arms in g.junctions.iter().map(|j| &j.arms[..]).chain(g.joints.iter().map(|j| &j.arms[..])) {
+            for a in arms.iter().filter(|a| deck_way(a.way)) {
+                if arms.iter().any(|b| decks.goes_on(g, b.way, decks.storey[a.way as usize])) {
+                    open[a.way as usize][usize::from(a.dir < 0)] = true;
+                }
+            }
+        }
+        decks.open = open;
+        decks
+    }
+
+    /// Whether way w goes on at another level than storey k: a way on the ground (but water), or a deck on another
+    /// storey.
+    pub(crate) fn goes_on(&self, g: &WayGraph, w: u32, k: i8) -> bool {
+        let x = &g.ways[w as usize];
+        x.family != Family::Water
+            && (x.level == Level::Ground || x.level == Level::Deck && self.storey[w as usize] != k)
     }
 }
 
 /// A deck's stroke on a line of storey k ≥ 1: its carriageway, its paved shoulder and the band (`band`, units at
 /// a vertex) in the slope's place; the shoulder, the verge and the bank are 0 wide. A deck is one leg and ends
-/// square: a free end lies on an end line or at a joint.
+/// square.
 pub(crate) fn deck_bands(line: &mut WayLine, band: &dyn Fn(P) -> f64) {
     for i in 0..line.p.len() {
         let paved = line.bands[i][0];
@@ -116,144 +68,22 @@ pub(crate) fn deck_bands(line: &mut WayLine, band: &dyn Fn(P) -> f64) {
     line.deck = [false; 2];
 }
 
-/// Where a stretch ends on an end line: the point on the line's chord, the unit direction of that chord into the
-/// stretch, whether storey 0 meets it there, and the half-width of the stroke there (units).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct EndAt {
-    pub at: P,
-    pub into: [f64; 2],
-    pub open: bool,
-    pub half: f64,
-}
-
-/// The stroke of one piece of a line: its points with the offsets of each layer (carriageway, then `LAYERS`), the
-/// direction of each segment, the line's vertices strictly inside it (from, to), and its end lines.
-pub(crate) struct Stretch {
-    pub p: Vec<P>,
-    pub o: Vec<[f64; LAYERS + 1]>,
-    pub dirs: Vec<Option<[f64; 2]>>,
-    pub inner: (usize, usize),
-    pub lines: [Option<EndAt>; 2],
-}
-
-/// The segment of the line nearest q and the share of q's foot on it.
-fn foot(line: &WayLine, q: [f64; 2]) -> (usize, f64) {
-    let mut best = (f64::INFINITY, 0, 0.0);
-    for j in 0..line.p.len() - 1 {
-        let (a, b) = (line.p[j], line.p[j + 1]);
-        let d = [f64::from(b[0] - a[0]), f64::from(b[1] - a[1])];
-        let v = [q[0] - f64::from(a[0]), q[1] - f64::from(a[1])];
-        let l2 = d[0] * d[0] + d[1] * d[1];
-        let t = if l2 > 0.0 { ((v[0] * d[0] + v[1] * d[1]) / l2).clamp(0.0, 1.0) } else { 0.0 };
-        let e = libm::hypot(v[0] - t * d[0], v[1] - t * d[1]);
-        if e < best.0 {
-            best = (e, j, t);
-        }
-    }
-    (best.1, best.2)
-}
-
-/// The stretch of each piece of a line: from its end line (or the line's end) to its end line, every vertex of the
-/// line between. An end on a line keeps the direction of the segment that holds it, so the stroke ends square on
-/// that segment's chord; an end that falls on a vertex is that vertex, square to the segment beyond it.
-pub(crate) fn stretches(line: &WayLine, pieces: &[Piece]) -> Vec<Stretch> {
+/// The open end lines of a deck's line: the end point, the unit direction into the line and the half-width of its
+/// stroke, its band included (units).
+pub(crate) fn open_ends(line: &WayLine, open: [bool; 2]) -> Vec<[f64; 5]> {
     let n = line.p.len();
-    let chord = |j: usize| unit(line.p[j], line.p[j + 1]);
-    // The foot of an end line on the segment that holds it: (segment, share, point), the point a whole unit from
-    // the segment's start, so two cells round it alike.
-    let at = |j: usize, t: f64| {
-        let (a, b) = (line.p[j], line.p[j + 1]);
-        [0, 1].map(|k| a[k] + libm::round(t * f64::from(b[k] - a[k])) as i32)
-    };
-    let offsets_at = |j: usize, t: f64| -> [f64; LAYERS + 1] {
-        let (a, b) = (line.offsets(j), line.offsets(j + 1));
-        std::array::from_fn(|k| a[k] + t * (b[k] - a[k]))
+    let end = |at: usize, next: usize| {
+        let (p, q) = (line.p[at], line.p[next]);
+        let d = [f64::from(q[0] - p[0]), f64::from(q[1] - p[1])];
+        let len = libm::hypot(d[0], d[1]).max(1e-9);
+        [f64::from(p[0]), f64::from(p[1]), d[0] / len, d[1] / len, line.bands[at][SLOPE]]
     };
     let mut out = Vec::new();
-    for piece in pieces {
-        let start = match piece.ends[0] {
-            End::Line { at: q, open } => {
-                let (j, t) = foot(line, q);
-                Some(if t >= 1.0 && j + 2 < n { (j + 1, 0.0, open) } else { (j, t, open) })
-            }
-            End::Way { .. } => None,
-        };
-        let end = match piece.ends[1] {
-            End::Line { at: q, open } => {
-                let (j, t) = foot(line, q);
-                Some(if t <= 0.0 && j >= 1 { (j - 1, 1.0, open) } else { (j, t, open) })
-            }
-            End::Way { .. } => None,
-        };
-        // The line's vertices strictly inside the piece.
-        let lo = start.map_or(0, |(j, t, _)| if t <= 0.0 { j } else { j + 1 });
-        let hi = end.map_or(n - 1, |(j, t, _)| if t >= 1.0 { j + 1 } else { j });
-        let mut s = Stretch { p: Vec::new(), o: Vec::new(), dirs: Vec::new(), inner: (lo, hi), lines: [None, None] };
-        if let Some((j, t, open)) = start.filter(|&(_, t, _)| t > 0.0) {
-            let o = offsets_at(j, t);
-            s.lines[0] = Some(EndAt { at: at(j, t), into: chord(j).unwrap_or([1.0, 0.0]), open, half: o[SLOPE + 1] });
-            s.p.push(at(j, t));
-            s.o.push(o);
-        }
-        for i in lo..=hi {
-            s.p.push(line.p[i]);
-            s.o.push(line.offsets(i));
-        }
-        if let Some((j, t, open)) = end.filter(|&(_, t, _)| t < 1.0) {
-            let o = offsets_at(j, t);
-            let along = chord(j).unwrap_or([1.0, 0.0]);
-            s.lines[1] = Some(EndAt { at: at(j, t), into: [-along[0], -along[1]], open, half: o[SLOPE + 1] });
-            s.p.push(at(j, t));
-            s.o.push(o);
-        }
-        // An end on a vertex: the end line is square to the segment beyond it.
-        if let (None, Some((_, _, open))) = (s.lines[0], start) {
-            let o = line.offsets(lo);
-            let into = chord(lo.min(n - 2)).unwrap_or([1.0, 0.0]);
-            s.lines[0] = Some(EndAt { at: line.p[lo], into, open, half: o[SLOPE + 1] });
-        }
-        if let (None, Some((_, _, open))) = (s.lines[1], end) {
-            let o = line.offsets(hi);
-            let along = chord(hi.max(1) - 1).unwrap_or([1.0, 0.0]);
-            s.lines[1] = Some(EndAt { at: line.p[hi], into: [-along[0], -along[1]], open, half: o[SLOPE + 1] });
-        }
-        // A way's own end where storey 0 goes on: its end line is square to its end segment.
-        if let (None, End::Way { open: true }) = (s.lines[0], piece.ends[0]) {
-            let into = chord(0).unwrap_or([1.0, 0.0]);
-            s.lines[0] = Some(EndAt { at: line.p[0], into, open: true, half: line.offsets(0)[SLOPE + 1] });
-        }
-        if let (None, End::Way { open: true }) = (s.lines[1], piece.ends[1]) {
-            let along = chord(n - 2).unwrap_or([1.0, 0.0]);
-            let half = line.offsets(n - 1)[SLOPE + 1];
-            s.lines[1] = Some(EndAt { at: line.p[n - 1], into: [-along[0], -along[1]], open: true, half });
-        }
-        let m = s.p.len();
-        s.dirs = vec![None; m.saturating_sub(1)];
-        if let (Some((j, t, _)), true) = (start, m >= 2) {
-            if t > 0.0 {
-                s.dirs[0] = chord(j);
-            }
-        }
-        if let (Some((j, t, _)), true) = (end, m >= 2) {
-            if t < 1.0 {
-                s.dirs[m - 2] = chord(j);
-            }
-        }
-        // A foot that rounds onto the next vertex: one point, the segment beyond keeps its own direction.
-        let mut k = 1;
-        while k < s.p.len() {
-            if s.p[k] == s.p[k - 1] {
-                let drop = if k == 1 { 1 } else { k - 1 };
-                s.p.remove(drop);
-                s.o.remove(drop);
-                s.dirs.remove(drop - 1);
-            } else {
-                k += 1;
-            }
-        }
-        if s.p.len() >= 2 {
-            out.push(s);
-        }
+    if n >= 2 && open[0] {
+        out.push(end(0, 1));
+    }
+    if n >= 2 && open[1] {
+        out.push(end(n - 1, n - 2));
     }
     out
 }
@@ -266,17 +96,38 @@ pub struct Storeys {
     pub ways: Vec<(u32, DeckWay)>,
     /// The baked piers (`bridge-pier`) within `PIER_NEAR_M` of the cell, frame units from its origin.
     pub piers: Vec<[i32; 2]>,
+    /// Storey 0's mesh points on its end lines (`EdgeKind::DeckEdge`, `mesh::points::edge_points`): a deck's end on
+    /// such a line takes the same points.
+    pub ground_ends: Vec<[i32; 2]>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DeckWay {
+    /// Its storey over the ground.
+    pub storey: i8,
     /// The slab under the deck's top: the tile's `deck` depth, on ladder step 2 down to the class's least.
     pub depth_m: f64,
     /// A railing on the free outline, else a parapet.
     pub railing: bool,
     /// A pier's length along the deck and its width across.
     pub pier_m: [f64; 2],
+    /// What its slab and its edge feature are made of.
+    pub build: Build,
+    /// A top of planks.
+    pub planks: bool,
 }
+
+/// What a deck's slab is made of: a road's on beams and a railway's are concrete, a hanging bridge's steel, any
+/// other timber. Its railing is timber on timber, else steel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Build {
+    Concrete = 0,
+    Timber = 1,
+    Steel = 2,
+}
+
+/// The `bridge:structure` of a bridge that hangs from cables, as `CABLES` of the viewer's `terrain/bins.ts`.
+const CABLES: [&str; 3] = ["suspension", "simple-suspension", "cable-stayed"];
 
 /// A pier's length along a road deck and a path deck, and its width as a share of the deck's paved width: the
 /// crossing block's thickness table.
@@ -293,7 +144,12 @@ impl Storeys {
 }
 
 impl DeckWay {
-    pub(crate) fn of(g: &WayGraph, input: &CellInput, rules: &super::Rules, w: u32) -> DeckWay {
+    /// Its build and its planks in a storey line's finish word (`records::BUILD_SHIFT`, `records::PLANKS`).
+    pub(crate) fn finish_bits(&self) -> u32 {
+        (self.build as u32) << super::records::BUILD_SHIFT | if self.planks { super::records::PLANKS } else { 0 }
+    }
+
+    pub(crate) fn of(g: &WayGraph, input: &CellInput, rules: &super::Rules, w: u32, decks: &Decks) -> DeckWay {
         let way = &g.ways[w as usize];
         let feature = &input.features[g.parts[way.part as usize].feature.0 as usize];
         let sec = rules.sections.way(&feature.kind, &feature.tags, false);
@@ -301,10 +157,28 @@ impl DeckWay {
         let depth_m = tag(g, input, w, level_tags::SLAB).map_or(depth, |s| s.min(depth));
         let paved = sec.half_m + if sec.shoulder_paved { sec.shoulder_m } else { 0.0 };
         let width = 2.0 * (paved + rules.structures.edge_band_m);
+        // The rule of `segment` in the viewer's structures/bridges.ts: a road on beams is a concrete bridge with
+        // parapets; a covered bridge, one that hangs and a path's bridge have a railing, a railway's too. A top
+        // that the viewer did not count as paved (`isPaved` of roads/decks.ts) is of planks on such a bridge.
+        let text = |key: &str| feature.tags.get(key).map_or("", String::as_str);
+        let (covered, cable) = (text("bridge") == "covered", CABLES.contains(&text("bridge:structure")));
+        let rail = sec.group == "rail";
+        let beam_road = !covered && !cable && !sec.path;
+        let build = if cable {
+            Build::Steel
+        } else if rail || beam_road {
+            Build::Concrete
+        } else {
+            Build::Timber
+        };
+        let paved_top = matches!(sec.finish, Some(Finish::Main | Finish::Road | Finish::Oneway));
         DeckWay {
+            storey: decks.storey[w as usize],
             depth_m,
-            railing: sec.railing || width < rules.structures.railing_width_m,
+            railing: sec.railing || !beam_road || width < rules.structures.railing_width_m,
             pier_m: [PIER_ALONG_M[usize::from(sec.path)], PIER_SHARE * 2.0 * paved],
+            build,
+            planks: !beam_road && !rail && !paved_top,
         }
     }
 }
