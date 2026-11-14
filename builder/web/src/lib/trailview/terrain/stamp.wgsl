@@ -202,7 +202,7 @@ fn paint_texel(mp: ModelPoint) -> vec4f {
     // Lines on the asphalt of a way that wears them (the records' flag); a soil path is trodden.
     let marked = (finish & M_MARKED) != 0u;
     let walk = f32(walk_byte(0.0, false, code == 6u, marked)) / 255.0;
-    let material = select(0u, (finish >> M_MATERIAL_SHIFT) & 0xffu, code != 0u);
+    let material = select(0u, (finish >> M_MATERIAL_SHIFT) & 15u, code != 0u);
     return vec4f(distance_code(mp.d_paved), select(walk, fract(mp.along / SLEEPER_M), track), across, f32(code | (material << 4u)) / 255.0);
 }
 

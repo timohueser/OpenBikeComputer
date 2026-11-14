@@ -1,15 +1,17 @@
 //! The levels of the way graph as the feature tiles carry them: the bake runs `levels` on each cell and writes the
-//! tags of each way from what the cells decide (`found`, `merge`); a cell reads its runs and end lines back (`read`).
+//! tags of each way from what the cells decide (`found`, `merge`); a cell's graph splits its ways at the end lines that
+//! the tags give and takes the level of each stretch's state (`split`).
 //!
 //! A place on a way is its metres along its stroke (`Sample::along_m`): the same in every cell, as the spans are.
 
 use std::collections::BTreeMap;
 
-use super::curve::{point, s_at, u_at};
+use super::curve::{insert, point, s_at, u_at};
 use super::parts::{classify, Rule};
-use super::points::{exact, key, norm};
-use super::{CrossingKind, EndKind, EndLine, Family, Level, Run, State, Station, Step, WayGraph};
-use crate::frame::{metres_per_unit_at, GlobalPoint};
+use super::points::{exact, key, norm, Piece, Plan};
+use super::{CrossingKind, EndKind, EndLine, Family, Level, Part, Run, Sample, State, Station, Step, WayGraph};
+use crate::faces::records::FLAT_TURN_DEG;
+use crate::frame::{metres_per_unit_at, CellKey, GlobalPoint};
 use crate::sections::Sections;
 use crate::tile::Tags;
 use crate::CellInput;
@@ -288,62 +290,257 @@ pub fn end_line(
     EndLine { kind, way: w, at: st, ends: [local(1.0), local(-1.0)] }
 }
 
-/// The runs and end lines of every way whose feature carries `levels` (`WayGraph::levels`, as `levels` gives them).
-pub fn read(g: &mut WayGraph, input: &CellInput, sections: &Sections, edge_band_m: f64) {
-    let mut levels = super::Levels::default();
-    for w in 0..g.ways.len() as u32 {
-        let way = &g.ways[w as usize];
-        let tags = &input.features[g.parts[way.part as usize].feature.0 as usize].tags;
-        let Some((first, lines)) = tags.get(LEVELS).filter(|_| aligned(g, input, w)).and_then(|t| parse(t)) else {
+/// The pieces of a plan split at the end lines that the tiles carry (`LEVELS`), each with the level of its state: a
+/// DECK stretch on its deck, an OPEN stretch on the ground (a bridge way's stub, or any way of the road solver), a
+/// HIDDEN stretch not at all. A tunnel way keeps its level, and so does a synthetic deck. Each cut is a sample of its
+/// part, so the stretches meet at a joint.
+pub(crate) fn split(cell: CellKey, parts: &[Part], input: &CellInput, samples: &mut [Vec<Sample>], plan: Plan) -> Plan {
+    let mut out = Vec::with_capacity(plan.pieces.len());
+    for piece in &plan.pieces {
+        let part = &parts[piece.part];
+        let f = &input.features[part.feature.0 as usize];
+        let tag = f.tags.get(LEVELS).filter(|_| f.parts.iter().all(|p| p.plan.is_some()));
+        let levels = tag.and_then(|t| parse(t)).filter(|_| !piece.synthetic && part.level != Level::Tunnel);
+        let Some((first, lines)) = levels else {
+            out.push(piece.clone());
             continue;
         };
-        let state_at = |m: f64| lines.iter().take_while(|l| l.0 <= m).last().map_or(first, |l| l.2);
-        let (a0, a1) = (along(g, &way.from), along(g, &way.to));
-        let at = |m: f64| -> Station {
-            if (m - a0).abs() <= SAME_M {
-                return way.from;
-            }
-            if (m - a1).abs() <= SAME_M {
-                return way.to;
-            }
-            let part = &g.parts[way.part as usize];
-            let sign = if part.backward { -1.0 } else { 1.0 };
-            let span = (way.from.span..=way.to.span)
-                .find(|&k| {
-                    let s = sign * (m - part.spans[k as usize].along0_m);
-                    (0.0..=part.spans[k as usize].len_m).contains(&s)
-                })
-                .unwrap_or(way.to.span);
-            let s = sign * (m - part.spans[span as usize].along0_m);
-            norm(part, Station { part: way.part, span, u: u_at(&part.spans[span as usize], s) })
+        let sign = if part.backward { -1.0 } else { 1.0 };
+        let along = |st: &Station| {
+            let span = &part.spans[st.span as usize];
+            span.along0_m + sign * s_at(span, st.u)
         };
-        let (lo, hi) = (a0.min(a1) - SAME_M, a0.max(a1) + SAME_M);
-        // The lines in rising metres, so in the way's order where its metres rise along it.
-        let mut here: Vec<(Station, EndKind, f64)> =
-            lines.iter().filter(|l| (lo..=hi).contains(&l.0)).map(|l| (at(l.0), l.1, l.0)).collect();
+        let state_at = |m: f64| lines.iter().take_while(|l| l.0 <= m).last().map_or(first, |l| l.2);
+        let (a0, a1) = (along(&piece.from), along(&piece.to));
+        let (lo, hi) = (a0.min(a1) + SAME_M, a0.max(a1) - SAME_M);
+        // The station at metres m along the piece: on the first of its spans whose metres hold m.
+        let at = |m: f64| {
+            let span = (piece.from.span..=piece.to.span)
+                .find(|&k| {
+                    (0.0..=part.spans[k as usize].len_m).contains(&(sign * (m - part.spans[k as usize].along0_m)))
+                })
+                .unwrap_or(piece.to.span);
+            let s = sign * (m - part.spans[span as usize].along0_m);
+            norm(part, Station { part: piece.part as u32, span, u: u_at(&part.spans[span as usize], s) })
+        };
+        let mut cuts: Vec<(Station, f64)> = vec![(piece.from, a0)];
+        let inner = lines.iter().map(|l| l.0).filter(|&m| (lo..=hi).contains(&m));
+        let mut inner: Vec<(Station, f64)> =
+            inner.map(|m| (insert(part, &mut samples[piece.part], at(m), cell), m)).collect();
         if a1 < a0 {
-            here.reverse();
+            inner.reverse();
         }
-        // The runs: split at each line inside the way, each the state at its middle, equal neighbours joined.
-        let mut cuts: Vec<(Station, f64)> = vec![(way.from, a0)];
-        cuts.extend(here.iter().filter(|h| key(&h.0) > key(&way.from) && key(&h.0) < key(&way.to)).map(|h| (h.0, h.2)));
-        cuts.push((way.to, a1));
-        let mut runs: Vec<Run> = Vec::new();
+        cuts.extend(inner.into_iter().filter(|c| key(&c.0) > key(&piece.from) && key(&c.0) < key(&piece.to)));
+        cuts.push((piece.to, a1));
         for c in cuts.windows(2) {
-            let state = state_at((c[0].1 + c[1].1) / 2.0);
-            match runs.last_mut() {
-                Some(r) if r.state == state => r.to = c[1].0,
-                _ => runs.push(Run { way: w, from: c[0].0, to: c[1].0, state }),
+            let level = match state_at((c[0].1 + c[1].1) / 2.0) {
+                State::Deck => Level::Deck,
+                State::Open => Level::Ground,
+                State::Bore => part.level,
+                State::Hidden => continue,
+            };
+            match out.last_mut() {
+                Some(p) if p.part == piece.part && p.to == c[0].0 && p.level == level && p.link == piece.link => {
+                    p.to = c[1].0
+                }
+                _ => out.push(Piece { from: c[0].0, to: c[1].0, level, ..piece.clone() }),
             }
         }
-        for (st, kind, m) in here {
-            // The structure side: the lower of the states about the line, as `levels` gives the band.
-            let structure = state_at(m - SAME_M * 2.0).min(state_at(m + SAME_M * 2.0));
-            levels.end_lines.push(end_line(g, input, sections, edge_band_m, (w, st, kind, structure)));
-        }
-        levels.runs.extend(runs);
     }
-    g.levels = levels;
+    Plan { pieces: out, ..plan }
+}
+
+/// A junction with arms on the ground and on a deck lies on the ground: its arms meet at one height there, and the
+/// ground's junction rounds its corners. Each deck arm's stretch from the junction up to its mouth, its first sample
+/// where its stroke (its outer half-width and `band_m`) has left the strokes of the junction's ground arms that leave
+/// across it, is a ground piece, which meets the rest of the deck at a joint as a stub meets its deck. A deck arm that
+/// never leaves them is a ground piece as a whole. The mouth is a sample of the deck, so no new sample lies a few
+/// centimetres from an old one.
+/// Piece ends this near (frame units) are one node: a station's point is a curve point, not its vertex's exact one.
+const NODE_UNITS: f64 = 4.0;
+
+pub(crate) fn ground_junctions(
+    parts: &[Part],
+    input: &CellInput,
+    sections: &Sections,
+    band_m: f64,
+    samples: &[Vec<Sample>],
+    mut plan: Plan,
+) -> Plan {
+    // A mouth can land on another node of the deck (a junction of two decks near the ground's): it lies on the
+    // ground then too. Each round only lowers deck to the ground at the samples of the decks, so the rounds end.
+    loop {
+        let next = ground_junctions_once(parts, input, sections, band_m, samples, plan.clone());
+        if next.pieces == plan.pieces {
+            return plan;
+        }
+        plan = next;
+    }
+}
+
+/// A piece's arm at a node: the piece, its end (0, 1) or 2 where it runs through, the station, the direction away.
+type NodeArm = (usize, usize, Station, [f64; 2]);
+
+fn ground_junctions_once(
+    parts: &[Part],
+    input: &CellInput,
+    sections: &Sections,
+    band_m: f64,
+    samples: &[Vec<Sample>],
+    plan: Plan,
+) -> Plan {
+    let feature = |p: &Piece| &input.features[parts[p.part].feature.0 as usize];
+    let half_m = |p: &Piece| sections.way(&feature(p).kind, &feature(p).tags, false).outer_m();
+    let global = |part: &Part, st: &Station| {
+        let sp = point(part, st.span as usize, st.u);
+        let v = part.vertices[st.span as usize].pos;
+        ([v[0] as f64 + sp.d[0], v[1] as f64 + sp.d[1]], sp.tangent)
+    };
+    let units = |m: f64, y: f64| m / metres_per_unit_at(y);
+    // The nodes of the pieces on the ground or on a (real) deck: per node, each piece's arm there, an end (0 or 1) or
+    // a vertex that it runs through (2), with its way's direction away from the node.
+    let nodes = |plan: &Plan| {
+        // The arms, and per arm its node's key (y, then x, in `NODE_UNITS`) and its place in the arms, sorted.
+        let mut arms: Vec<NodeArm> = Vec::new();
+        let mut keys: Vec<(u64, u32)> = Vec::new();
+        for (i, p) in plan.pieces.iter().enumerate() {
+            let part = &parts[p.part];
+            let deck = p.level == Level::Deck && !p.synthetic;
+            if part.family == Family::Water || !(p.level == Level::Ground || deck) {
+                continue;
+            }
+            let through = (p.from.span + 1..=p.to.span).map(|k| Station { span: k, u: 0.0, ..p.from });
+            let ends = [(0, p.from), (1, p.to)].into_iter().chain(through.map(|st| (2, st)));
+            for (e, st) in ends.filter(|(e, st)| *e < 2 || key(st) < key(&p.to)) {
+                let (pos, t) = global(part, &st);
+                let node = |v: f64| u64::from((v / NODE_UNITS).round() as i64 as u32);
+                let back = [-t[0], -t[1]];
+                let new: &[NodeArm] = match e {
+                    0 => &[(i, 0, st, t)],
+                    1 => &[(i, 1, st, back)],
+                    _ => &[(i, 2, st, t), (i, 2, st, back)],
+                };
+                for a in new {
+                    keys.push((node(pos[1]) << 32 | node(pos[0]), arms.len() as u32));
+                    arms.push(*a);
+                }
+            }
+        }
+        keys.sort_unstable();
+        keys.chunk_by(|a, b| a.0 == b.0)
+            .map(|c| c.iter().map(|k| arms[k.1 as usize]).collect::<Vec<_>>())
+            .collect::<Vec<_>>()
+    };
+    let mixed = |arms: &[NodeArm], plan: &Plan| {
+        arms.len() >= 3
+            && arms.iter().any(|a| plan.pieces[a.0].level == Level::Ground)
+            && arms.iter().any(|a| plan.pieces[a.0].level == Level::Deck)
+    };
+    // A deck that runs through such a node ends there.
+    let mut cuts: Vec<(usize, Station)> = Vec::new();
+    for arms in nodes(&plan).iter().filter(|arms| mixed(arms, &plan)) {
+        for a in arms.iter().filter(|a| a.1 == 2 && plan.pieces[a.0].level == Level::Deck) {
+            if !cuts.contains(&(a.0, a.2)) {
+                // In order along the piece: a few cuts.
+                let at = cuts.iter().position(|c| (c.0, key(&c.1)) > (a.0, key(&a.2))).unwrap_or(cuts.len());
+                cuts.insert(at, (a.0, a.2));
+            }
+        }
+    }
+    let plan = if cuts.is_empty() {
+        plan
+    } else {
+        let mut pieces = Vec::with_capacity(plan.pieces.len() + cuts.len());
+        for (i, p) in plan.pieces.iter().enumerate() {
+            let mut from = p.from;
+            for c in cuts.iter().filter(|c| c.0 == i) {
+                pieces.push(Piece { from, to: c.1, ..p.clone() });
+                from = c.1;
+            }
+            pieces.push(Piece { from, ..p.clone() });
+        }
+        Plan { pieces, ..plan }
+    };
+    let ends = nodes(&plan);
+    // Per piece and end, the station of its mouth (none: the piece lies in the junction as a whole).
+    let mut mouths: Vec<((usize, usize), Option<Station>)> = Vec::new();
+    for arms in ends.iter().filter(|a| mixed(a, &plan)) {
+        let ground: Vec<(usize, [f64; 2])> =
+            arms.iter().filter(|a| plan.pieces[a.0].level == Level::Ground).map(|a| (a.0, a.3)).collect();
+        // The ground arms' strokes: points along their lines, their half-widths (units) and their directions.
+        let lines: Vec<(Vec<[f64; 2]>, f64, [f64; 2])> = (ground.iter().map(|&(g, dir)| (&plan.pieces[g], dir)))
+            .map(|(p, dir)| {
+                let part = &parts[p.part];
+                let pts: Vec<[f64; 2]> = (p.from.span..=p.to.span)
+                    .flat_map(|k| (0..=8).map(move |j| (k, f64::from(j) / 8.0)))
+                    .filter(|&(k, u)| (k, u) >= (p.from.span, p.from.u) && (k, u) <= (p.to.span, p.to.u))
+                    .map(|(k, u)| global(part, &Station { part: p.from.part, span: k, u }).0)
+                    .collect();
+                let y = pts.first().map_or(0.0, |q| q[1]);
+                (pts, units(half_m(p), y), dir)
+            })
+            .collect();
+        // A ground arm within `FLAT_TURN_DEG` of the deck arm runs beside it, as two ways that meet side by side: it
+        // holds no mouth.
+        let across = |a: [f64; 2], b: [f64; 2]| a[0] * b[0] + a[1] * b[1] < libm::cos(FLAT_TURN_DEG.to_radians());
+        let near = |q: [f64; 2], d: [f64; 2]| {
+            lines.iter().filter(|l| across(l.2, d)).any(|(pts, h, _)| {
+                pts.windows(2).any(|w| {
+                    let (a, b) = (w[0], w[1]);
+                    let d = [b[0] - a[0], b[1] - a[1]];
+                    let l2 = (d[0] * d[0] + d[1] * d[1]).max(1e-9);
+                    let t = (((q[0] - a[0]) * d[0] + (q[1] - a[1]) * d[1]) / l2).clamp(0.0, 1.0);
+                    libm::hypot(q[0] - a[0] - t * d[0], q[1] - a[1] - t * d[1]) < *h
+                })
+            })
+        };
+        for &(i, e, _, dir) in arms.iter().filter(|a| a.1 < 2 && plan.pieces[a.0].level == Level::Deck) {
+            let p = &plan.pieces[i];
+            let part = &parts[p.part];
+            let k = |x: &Sample| (x.span, x.u);
+            let mut inner: Vec<Station> = (samples[p.part].iter())
+                .filter(|x| k(x) > (p.from.span, p.from.u) && k(x) < (p.to.span, p.to.u))
+                .map(|x| Station { part: p.from.part, span: x.span, u: x.u })
+                .collect();
+            if e == 1 {
+                inner.reverse();
+            }
+            let clear = |st: &Station| {
+                let (c, t) = global(part, st);
+                let h = units(half_m(p) + band_m, c[1]);
+                let cross = [-1.0, -0.5, 0.0, 0.5, 1.0].map(|k| [c[0] - t[1] * h * k, c[1] + t[0] * h * k]);
+                !cross.iter().any(|&q| near(q, dir))
+            };
+            mouths.push(((i, e), inner.into_iter().find(clear)));
+        }
+    }
+    if mouths.is_empty() {
+        return plan;
+    }
+    let mut out = Vec::with_capacity(plan.pieces.len() + mouths.len());
+    for (i, p) in plan.pieces.iter().enumerate() {
+        let mouth = |e: usize| mouths.iter().find(|m| m.0 == (i, e)).map(|m| m.1);
+        let (a, b) = (mouth(0), mouth(1));
+        if a.is_none() && b.is_none() {
+            out.push(p.clone());
+            continue;
+        }
+        // The deck between the mouths, the junctions' stretches on the ground.
+        let (lo, hi) = (a.unwrap_or(Some(p.from)), b.unwrap_or(Some(p.to)));
+        match lo.zip(hi).filter(|(l, h)| key(l) < key(h)) {
+            None => out.push(Piece { level: Level::Ground, ..p.clone() }),
+            Some((l, h)) => {
+                if l != p.from {
+                    out.push(Piece { to: l, level: Level::Ground, ..p.clone() });
+                }
+                out.push(Piece { from: l, to: h, ..p.clone() });
+                if h != p.to {
+                    out.push(Piece { from: h, level: Level::Ground, ..p.clone() });
+                }
+            }
+        }
+    }
+    Plan { pieces: out, ..plan }
 }
 
 #[cfg(test)]

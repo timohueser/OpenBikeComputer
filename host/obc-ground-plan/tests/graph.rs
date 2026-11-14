@@ -10,7 +10,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use fixture::{default_dir, Fixture};
 use obc_ground_plan::faces::Rules;
 use obc_ground_plan::frame::{metres_per_unit, CellKey, CELL_UNITS};
-use obc_ground_plan::graph::{build, check, check_levels, level_tags, levels, Arm, Sample, Station, WayGraph};
+use obc_ground_plan::graph::{
+    build, build_levelled, check, check_levels, level_tags, levels, s_at, Arm, Level, Sample, State, Station, WayGraph,
+};
 use obc_ground_plan::sections::Sections;
 use obc_ground_plan::tile::Tags;
 use obc_ground_plan::CellInput;
@@ -176,15 +178,16 @@ fn neighbouring_cells_agree_near_their_border_g5() {
 }
 
 /// The levels that the fixture's tiles carry are those that `levels` gives the cells: the tags of each feature are
-/// those that the bake's merge (`level_tags::merge`) gives of what the cells find, storey and slab included; and what
-/// a cell reads of them (`level_tags::read`) on every way inside its square has the same states and end lines, their
-/// stations to 1e-9 of a span. A change of the levels or of their rules takes a new bake of the fixture.
+/// those that the bake's merge (`level_tags::merge`) gives of what the cells find, storey and slab included; and the
+/// graph of the storeys (`build_levelled`) gives every way inside a cell's square the level of its stretch's state,
+/// with no way on a HIDDEN stretch, and cuts each bridge at its end lines. A change of the levels or of their rules takes a new bake of the fixture.
+/// A cut of the storeys' graph lies this near its end line (metres): `level_tags::split` merges closer stations.
+const CUT_M: f64 = 1e-6;
+
 #[test]
 fn the_tiles_carry_the_levels_of_each_cell() {
     let mut fixture = Fixture::open(&default_dir());
-    let structures = &Rules::embedded().structures;
-    let near = |a: &Station, b: &Station| a.span == b.span && (a.u - b.u).abs() <= 1e-9;
-    let (mut faults, mut ways) = (Vec::new(), 0);
+    let (mut faults, mut ways, mut ends) = (Vec::new(), 0, 0);
     // A feature by its kind and tags, the same in each tile that holds it; and its level tags.
     let (mut ids, mut carried_tags) = (BTreeMap::<String, u32>::new(), BTreeMap::<u32, Tags>::new());
     let (mut found, mut groups, mut over) = (BTreeMap::<u32, Vec<level_tags::Found>>::new(), Vec::new(), Vec::new());
@@ -205,28 +208,71 @@ fn the_tiles_carry_the_levels_of_each_cell() {
         }
         groups.extend(cell.groups.into_iter().map(|g| g.into_iter().map(&mut id).collect::<Vec<_>>()));
         over.extend(cell.over.into_iter().map(|(l, u)| (id(l), id(u))));
-        let mut carried = build(key, &input, Sections::embedded());
-        level_tags::read(&mut carried, &input, Sections::embedded(), structures.edge_band_m);
-        for w in (0..computed.ways.len() as u32).filter(|&w| level_tags::inside(&computed, w)) {
-            let runs = |g: &WayGraph| g.levels.runs.iter().filter(|r| r.way == w).cloned().collect::<Vec<_>>();
-            let lines = |g: &WayGraph| g.levels.end_lines.iter().filter(|l| l.way == w).cloned().collect::<Vec<_>>();
-            let (a, b) = (runs(&computed), runs(&carried));
-            let (la, lb) = (lines(&computed), lines(&carried));
-            if a.is_empty() && b.is_empty() {
+        // The graph of the storeys gives each stretch the level of its state, and holds no HIDDEN stretch.
+        let levelled = build_levelled(key, &input, Sections::embedded(), Rules::embedded().structures.edge_band_m);
+        let k = |st: &Station| (st.span, st.u);
+        let state = |st: &Station| {
+            let run = computed
+                .levels
+                .runs
+                .iter()
+                .find(|r| r.from.part == st.part && k(&r.from) <= k(st) && k(st) <= k(&r.to));
+            run.map(|r| r.state)
+        };
+        // A point strictly inside the way: an end sample lies on a run boundary, where rounding picks either run.
+        let middle = |g: &WayGraph, w: u32| {
+            let (a, b) = (g.ways[w as usize].from, g.ways[w as usize].to);
+            let u = if a.span == b.span { (a.u + b.u) / 2.0 } else { (a.u + 1.0) / 2.0 };
+            Station { u, ..a }
+        };
+        for w in (0..levelled.ways.len() as u32).filter(|&w| level_tags::inside(&levelled, w)) {
+            let way = &levelled.ways[w as usize];
+            let part = &levelled.parts[way.part as usize];
+            if part.level == Level::Tunnel || (way.level == Level::Deck && part.level != Level::Deck) {
                 continue;
             }
+            let want = match state(&middle(&levelled, w)) {
+                Some(State::Deck) => Level::Deck,
+                Some(State::Open) => Level::Ground,
+                Some(State::Hidden) => {
+                    faults.push(format!("{key:?} way {w}: it lies on a HIDDEN stretch"));
+                    continue;
+                }
+                _ => continue,
+            };
             ways += 1;
-            let same_runs = a.len() == b.len()
-                && a.iter().zip(&b).all(|(x, y)| x.state == y.state && near(&x.from, &y.from) && near(&x.to, &y.to));
-            let same_lines = la.len() == lb.len()
-                && la.iter().all(|x| {
-                    lb.iter().any(|y| {
-                        let close = (0..2).all(|e| (0..2).all(|k| (x.ends[e][k] - y.ends[e][k]).abs() <= 1));
-                        x.kind == y.kind && near(&x.at, &y.at) && close
-                    })
-                });
-            if !same_runs || !same_lines {
-                faults.push(format!("{key:?} way {w}: computed {a:?} {la:?}, carried {b:?} {lb:?}"));
+            if way.level != want {
+                faults.push(format!("{key:?} way {w}: on {:?}, its stretch's state gives {want:?}", way.level));
+            }
+        }
+        // Each end line of a carried stretch cuts its way where the cell computes it: a way of the storeys' graph on
+        // its part ends there, within the merge's 1e-6 m.
+        let along = |g: &WayGraph, st: &Station| {
+            let part = &g.parts[st.part as usize];
+            let span = &part.spans[st.span as usize];
+            span.along0_m + if part.backward { -1.0 } else { 1.0 } * s_at(span, st.u)
+        };
+        let cuts: Vec<(u32, f64)> = (levelled.ways.iter())
+            .filter(|w| levelled.parts[w.part as usize].level == Level::Deck)
+            .flat_map(|w| [(w.part, along(&levelled, &w.from)), (w.part, along(&levelled, &w.to))])
+            .collect();
+        for l in computed.levels.end_lines.iter().filter(|l| level_tags::inside(&computed, l.way)) {
+            if computed.parts[l.at.part as usize].level != Level::Deck {
+                continue;
+            }
+            ends += 1;
+            let m = along(&computed, &l.at);
+            if !cuts.iter().any(|&(p, c)| p == l.at.part && (c - m).abs() <= CUT_M) {
+                faults
+                    .push(format!("{key:?} way {}: no way of the storeys' graph ends at its end line ({m} m)", l.way));
+            }
+        }
+        for r in
+            computed.levels.runs.iter().filter(|r| r.state == State::Hidden && level_tags::inside(&computed, r.way))
+        {
+            let st = Station { part: r.from.part, span: (r.from.span + r.to.span) / 2, u: 0.5 };
+            if k(&st) > k(&r.from) && k(&st) < k(&r.to) && levelled.way_at(&st, Level::Ground).is_some() {
+                faults.push(format!("{key:?} way {}: a way of the storeys' graph lies on its HIDDEN stretch", r.way));
             }
         }
     }
@@ -241,7 +287,7 @@ fn the_tiles_carry_the_levels_of_each_cell() {
             faults.push(format!("feature {id}: the cells give {want:?}, the tiles carry {carried:?}"));
         }
     }
-    println!("{ways} ways with levels inside their cells; tags of the cells' features {counts:?}");
-    assert!(ways > 10, "the fixture's bridges and tunnels");
+    println!("{ways} ways of the storeys' graph on a carried stretch, {ends} end lines; tags of the cells' features {counts:?}");
+    assert!(ways > 10 && ends > 10, "the fixture's bridges and tunnels");
     assert!(faults.is_empty(), "{} faults:\n{}", faults.len(), faults[..faults.len().min(10)].join("\n"));
 }

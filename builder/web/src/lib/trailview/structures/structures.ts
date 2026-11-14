@@ -30,6 +30,9 @@ interface Resources {
     device: GPUDevice;
     pipeline: GPURenderPipeline;
     anchoredPipeline: GPURenderPipeline;
+    /** A bridge's faces with the ground plan: gone where its meshes draw the storeys (structures.wgsl), and as casters. */
+    bridges: GPURenderPipeline;
+    bridgeCaster: GPURenderPipeline;
     /** The pipelines of the structure and the anchored meshes as casters of the shadow map, with the group of the sun's frame. */
     casters: [GPURenderPipeline, GPURenderPipeline];
     sunGroup: GPUBindGroup;
@@ -72,10 +75,13 @@ export class Structures {
         return (this.resources?.structures.dropped ?? 0) + (this.resources?.anchored.dropped ?? 0) + this.unanchored;
     }
 
-    /** `frames` are the frame uniforms of the eye's view and of the sun's (light/shadow.ts); `portals` the terrain's boxes of the tunnels' portals. */
-    async attach(gpu: Gpu, [frame, sunFrame]: GPUBuffer[], portals: GPUBuffer): Promise<void> {
+    /**
+     * `frames` are the frame uniforms of the eye's view and of the sun's (light/shadow.ts); `portals` the terrain's boxes of the tunnels'
+     * portals; `cells` the cells whose ground-plan meshes draw (plan/cells.wgsl).
+     */
+    async attach(gpu: Gpu, [frame, sunFrame]: GPUBuffer[], portals: GPUBuffer, cells: GPUBuffer): Promise<void> {
         this.resources = undefined;
-        const { device } = gpu, { layout, empty, computeLayout, pipelines: [pipeline, anchoredPipeline, heightsPipeline, structureCaster, anchoredCaster] } = await gpu.once(structurePipelines);
+        const { device } = gpu, { layout, empty, computeLayout, pipelines: [pipeline, anchoredPipeline, heightsPipeline, structureCaster, anchoredCaster, bridges, bridgeCaster] } = await gpu.once(structurePipelines);
         const anchors = gpu.buffer('kinds', ANCHORS * ANCHOR_WORDS * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
         const heights = gpu.buffer('kinds', ANCHORS * 8, GPUBufferUsage.STORAGE);
         const count = gpu.buffer('kinds', 16, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
@@ -83,9 +89,9 @@ export class Structures {
             new Pool(device, gpu.buffer(label, vertexBytes, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST), gpu.buffer(label, indexBytes, GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST), 4 * stride);
         this.drawn = [];
         this.fresh = true;
-        const frameGroup = (frame: GPUBuffer) => device.createBindGroup({ layout, entries: [[0, frame], [1, anchors], [4, heights], [5, portals]].map(([binding, buffer]) => ({ binding: binding as number, resource: { buffer: buffer as GPUBuffer } })) });
+        const frameGroup = (frame: GPUBuffer) => device.createBindGroup({ layout, entries: [[0, frame], [1, anchors], [4, heights], [5, portals], [6, cells]].map(([binding, buffer]) => ({ binding: binding as number, resource: { buffer: buffer as GPUBuffer } })) });
         this.resources = {
-            device, pipeline, anchoredPipeline, casters: [structureCaster, anchoredCaster], heightsPipeline, anchors, count,
+            device, pipeline, anchoredPipeline, bridges, bridgeCaster, casters: [structureCaster, anchoredCaster], heightsPipeline, anchors, count,
             group: frameGroup(frame), sunGroup: frameGroup(sunFrame),
             emptyGroup: device.createBindGroup({ layout: empty, entries: [] }),
             computeGroup: device.createBindGroup({ layout: computeLayout, entries: [frame, anchors, heights, count].map((buffer, binding) => ({ binding, resource: { buffer } })) }),
@@ -207,25 +213,34 @@ export class Structures {
 
     draw(pass: GPURenderPassEncoder, surfaceGroup: GPUBindGroup, ground: GPUBindGroup, features: GPUBindGroup): void {
         const r = this.resources;
-        if (r) this.drawWith(pass, [r.group, surfaceGroup, ground, features], r.pipeline, r.anchoredPipeline);
+        if (r) this.drawWith(pass, [r.group, surfaceGroup, ground, features], r.pipeline, r.anchoredPipeline, r.bridges);
     }
 
     /** Draws the meshes into the shadow map (light/shadow.ts) as casters. */
     cast(pass: GPURenderPassEncoder, surfaceGroup: GPUBindGroup, features: GPUBindGroup): void {
         const r = this.resources;
-        if (r) this.drawWith(pass, [r.sunGroup, surfaceGroup, r.emptyGroup, features], ...r.casters);
+        if (r) this.drawWith(pass, [r.sunGroup, surfaceGroup, r.emptyGroup, features], ...r.casters, r.bridgeCaster);
     }
 
-    private drawWith(pass: GPURenderPassEncoder, groups: GPUBindGroup[], structures: GPURenderPipeline, anchored: GPURenderPipeline): void {
+    private drawWith(pass: GPURenderPassEncoder, groups: GPUBindGroup[], structures: GPURenderPipeline, anchored: GPURenderPipeline, bridges: GPURenderPipeline): void {
         const r = this.resources!;
         if (!this.draws.length && !this.hung.length) return;
         groups.forEach((group, k) => pass.setBindGroup(k, group));
-        pass.setPipeline(structures);
         pass.setVertexBuffer(0, r.structures.vertices);
         pass.setIndexBuffer(r.structures.indices, 'uint32');
+        // With the ground plan, a bridge's faces draw with their own pipeline and its abutments not at all.
+        const plan = this.stamps.plan, own = (mesh: StructureMesh) => mesh.indices.length - (plan ? (mesh.offPlan ?? 0) + (mesh.decks ?? 0) : 0);
+        pass.setPipeline(structures);
         for (const mesh of this.draws) {
             const at = r.structures.at(mesh);
-            if (at) pass.drawIndexed(mesh.indices.length - (this.stamps.plan ? (mesh.offPlan ?? 0) : 0), 1, at.first, at.base);
+            if (at && own(mesh)) pass.drawIndexed(own(mesh), 1, at.first, at.base);
+        }
+        if (plan) {
+            pass.setPipeline(bridges);
+            for (const mesh of this.draws) {
+                const at = r.structures.at(mesh);
+                if (at && mesh.decks) pass.drawIndexed(mesh.decks, 1, at.first + own(mesh), at.base);
+            }
         }
         pass.setPipeline(anchored);
         pass.setVertexBuffer(0, r.anchored.vertices);
@@ -245,16 +260,18 @@ async function structurePipelines(gpu: Gpu) {
     const layout = device.createBindGroupLayout({ entries: [
         { binding: 0, visibility: VF, buffer: { type: 'uniform' } }, { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
         { binding: 4, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } }, { binding: 5, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'read-only-storage' } },
+        { binding: 6, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'read-only-storage' } },
     ] });
     const empty = device.createBindGroupLayout({ entries: [] }), computeLayout = device.createBindGroupLayout({ entries: [
         { binding: 0, visibility: C, buffer: { type: 'uniform' } }, { binding: 1, visibility: C, buffer: { type: 'read-only-storage' } },
         { binding: 2, visibility: C, buffer: { type: 'storage' } }, { binding: 3, visibility: C, buffer: { type: 'uniform' } },
     ] });
-    const module = device.createShaderModule({ label: 'structures', code: wgsl('structures/structures.wgsl') });
+    // The cells whose ground-plan meshes draw, at a binding of the structures' group.
+    const module = device.createShaderModule({ label: 'structures', code: wgsl('structures/structures.wgsl', { 'plan/cells-buffer.wgsl': 'structures/plan-cells.wgsl' }) });
     const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout, surface, ground, features] });
-    const render = (entryPoint: string, buffers: GPUVertexBufferLayout[], cullMode: GPUCullMode) => device.createRenderPipelineAsync({
-        label: entryPoint, layout: pipelineLayout, vertex: { module, entryPoint, buffers },
-        fragment: { module, entryPoint: 'structure_fragment', targets: [{ format: sceneFormat(gpu) }] },
+    const render = (entryPoint: string, buffers: GPUVertexBufferLayout[], cullMode: GPUCullMode, bridges = false) => device.createRenderPipelineAsync({
+        label: `${entryPoint}${bridges ? ' bridges' : ''}`, layout: pipelineLayout, vertex: { module, entryPoint, buffers },
+        fragment: { module, entryPoint: 'structure_fragment', targets: [{ format: sceneFormat(gpu) }], constants: { BRIDGES: +bridges } },
         primitive: { topology: 'triangle-list', cullMode },
         depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: 'greater' },
     });
@@ -284,6 +301,11 @@ async function structurePipelines(gpu: Gpu) {
             compute: { module, entryPoint: 'anchor_heights' },
         }),
         caster('structure_vertex', structureVertices), caster('anchored_caster', anchoredVertices),
+        render('structure_vertex', structureVertices, 'back', true),
+        device.createRenderPipelineAsync({
+            label: 'structure_vertex bridges caster', layout: casterLayout, vertex: { module, entryPoint: 'structure_vertex', buffers: structureVertices },
+            fragment: { module, entryPoint: 'bridge_caster', targets: [] }, primitive: CASTER_PRIMITIVE, depthStencil: CASTER_DEPTH,
+        }),
     ]);
     return { layout, empty, computeLayout, pipelines };
 }

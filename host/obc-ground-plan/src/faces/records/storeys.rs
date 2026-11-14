@@ -19,7 +19,8 @@ pub fn storeys(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey
     if !cfg!(feature = "storeys") {
         return Storeys::default();
     }
-    let top = Decks::of(graph, input).storey.iter().copied().max().unwrap_or(0);
+    let decks = Decks::of(graph, input);
+    let top = decks.storey.iter().copied().max().unwrap_or(0);
     let mut out = Storeys::default();
     for k in 1..=top {
         let c = candidates(graph, input, rules, cell, k, LAYERS, true);
@@ -30,10 +31,10 @@ pub fn storeys(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey
         let faces = s.cell(&c, cell, k);
         let plan = s.plan(cell, k, &s.map(), &s.labels);
         let sub = encode(cell, graph, input, rules, (&c.lines, &[]), &c.cands, &plan, false);
-        *near = merge(near, &sub.words, k);
+        *near = merge(near, &sub.words, k, &|w| DeckWay::of(graph, input, rules, w, &decks).finish_bits());
         for w in faces.faces.iter().filter_map(|f| f.material) {
             if let Err(k) = out.ways.binary_search_by_key(&w, |x| x.0) {
-                out.ways.insert(k, (w, DeckWay::of(graph, input, rules, w)));
+                out.ways.insert(k, (w, DeckWay::of(graph, input, rules, w, &decks)));
             }
         }
         out.plans.push(faces);
@@ -65,8 +66,9 @@ fn add(v: u32, by: u32) -> u32 {
 }
 
 /// Block `main` with the records of block `sub` of storey `storey` after its own in every table, their indices
-/// moved past main's. Main's words keep their values, its offsets move.
-fn merge(main: &[u32], sub: &[u32], storey: i8) -> Vec<u32> {
+/// moved past main's; a line of way w takes `bits(w)` into its finish word. Main's words keep their values, its
+/// offsets move.
+fn merge(main: &[u32], sub: &[u32], storey: i8, bits: &dyn Fn(u32) -> u32) -> Vec<u32> {
     let (c0, l0, n0) = (main[1], main[2], main[3]);
     let x0 = main[12] - main[8];
     let j0 = main[13];
@@ -104,7 +106,7 @@ fn merge(main: &[u32], sub: &[u32], storey: i8) -> Vec<u32> {
     w.extend(&main[main[6] as usize..main[7] as usize]);
     for l in sub[sub[6] as usize..sub[7] as usize].chunks(LINE) {
         let mut l = l.to_vec();
-        l[1] |= STOREY | u32::from(storey as u8) << LEG_SHIFT;
+        l[1] |= STOREY | bits(l[0]) | u32::from(storey as u8) << LEG_SHIFT;
         l[2] += s0;
         w.extend(l);
     }

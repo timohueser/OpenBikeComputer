@@ -2,7 +2,7 @@
 //! split at the cell lines; the junctions with their hosts, the joints and the ends; snapped ends and
 //! their links; a level per way piece; and every crossing with its type. `levels` adds the step of the
 //! ladder of each crossing and the states and end lines of the bridge and tunnel ways; the bake runs it, and
-//! a cell reads what the tiles carry of it (`level_tags::read`).
+//! with the storeys a cell splits its ways at the end lines that the tiles carry (`level_tags::split`).
 //!
 //! Every decision reads only data within its reach of the element it decides (the rows of
 //! `reach_rows`), so two cells give the same graph where both hold complete data.
@@ -502,6 +502,19 @@ fn inside([x0, y0, x1, y1]: [i64; 4], p: [i64; 2]) -> bool {
 
 /// The graph of a cell from its input and the rule tables, in the order of the stages.
 pub fn build(cell: CellKey, input: &CellInput, rules: &Sections) -> WayGraph {
+    build_with(cell, input, rules, None)
+}
+
+/// `build`, with each way split at the end lines that the tiles carry, each stretch on the level of its state
+/// (`level_tags::split`), and each junction with arms on the ground and on a deck on the ground
+/// (`level_tags::ground_junctions`, with the decks' `edge_band_m`): the graph of the storeys. `levels` reads the graph
+/// of `build`, as the bake does.
+pub fn build_levelled(cell: CellKey, input: &CellInput, rules: &Sections, band_m: f64) -> WayGraph {
+    build_with(cell, input, rules, Some(band_m))
+}
+
+/// `levelled`: the graph of the storeys, with the decks' `edge_band_m`.
+fn build_with(cell: CellKey, input: &CellInput, rules: &Sections, levelled: Option<f64>) -> WayGraph {
     let area = work_area(cell);
     let mut stats = GraphStats::default();
     let (mut parts, mut part_rules) = parts::parts(input, rules, &mut stats);
@@ -510,6 +523,13 @@ pub fn build(cell: CellKey, input: &CellInput, rules: &Sections) -> WayGraph {
     let plan = points::pieces(&parts, &sampled, input, &mut stats);
     let plan = crossings::crossings(cell, area, &parts, &part_rules, &mut samples, plan, &mut stats);
     let plan = snap::snap(cell, area, &mut parts, &mut part_rules, &mut samples, plan, &mut stats);
+    let plan = match levelled {
+        Some(band_m) => {
+            let plan = level_tags::split(cell, &parts, input, &mut samples, plan);
+            level_tags::ground_junctions(&parts, input, rules, band_m, &samples, plan)
+        }
+        None => plan,
+    };
     let mut g = points::assemble(cell, area, parts, &part_rules, samples, plan, stats);
     open_culverts(&mut g, input, rules);
     g

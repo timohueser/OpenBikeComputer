@@ -603,8 +603,15 @@ fn sidewalk(line: &WayLine, arm: Arm, right: bool) -> bool {
     seg.is_some_and(|s| s + 1 < line.walk.len() && line.walk[s] & bit != 0)
 }
 
-/// The junctions and joints whose faces reach the window.
-fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx: [i32; 4]) -> Vec<Point> {
+/// The junctions and joints whose faces reach the window. A junction with an arm that goes on at another level
+/// (`elsewhere`) is no point of this level: each of its arms here ends there, open (`deck::Decks`), as at a joint.
+fn graph_points(
+    ctx: &Ctx,
+    lines: &[WayLine],
+    of_way: &BTreeMap<u32, usize>,
+    elsewhere: &dyn Fn(u32) -> bool,
+    bx: [i32; 4],
+) -> Vec<Point> {
     let g = ctx.graph;
     let near = |p: P| p[0] >= bx[0] && p[0] <= bx[2] && p[1] >= bx[1] && p[1] <= bx[3];
     let mut out = Vec::new();
@@ -612,7 +619,7 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
     for (id, j) in g.junctions.iter().enumerate() {
         let arms: Vec<(&crate::graph::Arm, usize)> =
             j.arms.iter().filter_map(|a| of_way.get(&a.way).map(|&l| (a, l))).collect();
-        if arms.len() < 2 || !near(j.pos) {
+        if arms.len() < 2 || !near(j.pos) || j.arms.iter().any(|a| elsewhere(a.way)) {
             continue;
         }
         // The material: the arm of the best class, a road or path before a rail, a host before a guest.
@@ -1059,26 +1066,18 @@ fn candidates<'a>(
     // The carriageways reach farther than the points: the outline rounds read them. The ways reach
     // farther still: the off-line test of the points' rounds reads them.
     let lx = reach(rules::lines_m(plan, &rules.sections));
-    // A storey over the ground holds the pieces of its deck ways: each a deck's stroke between its end lines.
+    // A storey over the ground holds its deck ways, each a deck's stroke.
     let decks = (STOREYS && level > 0).then(|| deck::Decks::of(graph, input));
     let (mut lines, of_way) =
         lines(&ctx, input, &keep(graph, decks.as_ref(), level), reach(rules::ways_m(plan, &rules.sections)));
-    let stretches: Vec<Vec<deck::Stretch>> = match &decks {
-        Some(d) => {
-            for line in &mut lines {
-                deck::deck_bands(line, &|p| ctx.units(rules.structures.edge_band_m, p));
-            }
-            lines.iter().map(|l| deck::stretches(l, &d.pieces[l.way as usize])).collect()
+    if decks.is_some() {
+        for line in &mut lines {
+            deck::deck_bands(line, &|p| ctx.units(rules.structures.edge_band_m, p));
         }
-        None => Vec::new(),
-    };
-    // A point of a storey over the ground lies on the pieces of all its arms.
-    let held = |a: &Arm| {
-        !STOREYS || stretches.is_empty() || stretches[a.line].iter().any(|s| s.inner.0 <= a.at && a.at <= s.inner.1)
-    };
+    }
     // The points within `bx` round their arms; the points past it only end their runs.
-    let mut all = graph_points(&ctx, &lines, &of_way, reach(rules::points_m(plan, &rules.sections)));
-    all.retain(|pt| pt.arms.iter().all(&held));
+    let elsewhere = |w: u32| decks.as_ref().is_some_and(|d| d.goes_on(graph, w, level));
+    let all = graph_points(&ctx, &lines, &of_way, &elsewhere, reach(rules::points_m(plan, &rules.sections)));
     let (mut points, outer): (Vec<Point>, Vec<Point>) = all.into_iter().partition(|pt| near(pt.pos));
     let mut stats = FaceStats::default();
     let junction = |pt: &&Point| matches!(pt.label.owner, Owner::Junction(_));
@@ -1149,7 +1148,7 @@ fn candidates<'a>(
         }
     }
     let first_turn = points.len();
-    points.extend(turn_points(&ctx, &lines, &taken, bx).into_iter().filter(|pt| pt.arms.iter().all(&held)));
+    points.extend(turn_points(&ctx, &lines, &taken, bx));
     stats.turns = points[first_turn..].iter().filter(|pt| own(pt.pos)).count() as u32;
     let all = stops(&points);
     rounded.extend(points[first_turn..].iter().map(|pt| round(pt, &all)));
@@ -1225,46 +1224,6 @@ fn candidates<'a>(
             pieces_along(p, h, &[], [&cut(first, 0), &cut(last - 1, 0)], ends, false, &mut own);
             own
         };
-        // A deck's stretches: its carriageway and its own band layers, ending square on their end lines.
-        if STOREYS && !stretches.is_empty() {
-            if run(bx).is_none() {
-                continue;
-            }
-            let mut own = Vec::new();
-            let layers = own_layers.entry(li).or_default();
-            for s in &stretches[li] {
-                let last = s.p.len() - 1;
-                let ends = |k: usize| -> [Vec<f64>; 2] {
-                    [(0, s.inner.0), (last, s.inner.1)].map(|(at, i)| match s.lines[usize::from(at == last)] {
-                        Some(_) => s.o[at][..k].to_vec(),
-                        None => cut(i, k),
-                    })
-                };
-                let h: Vec<f64> = s.o.iter().map(|o| o[0]).collect();
-                let c = ends(0);
-                pieces_along(&s.p, &h, &s.dirs, [&c[0], &c[1]], [false, false], false, &mut own);
-                for (k, layer) in layers.iter_mut().enumerate().take(bands) {
-                    let d: Vec<f64> = s.o.iter().map(|o| o[k + 1]).collect();
-                    if s.o.iter().all(|o| o[k + 1] <= o[k]) {
-                        continue;
-                    }
-                    let c = ends(k + 1);
-                    pieces_along(&s.p, &d, &s.dirs, [&c[0], &c[1]], [false, false], false, layer);
-                }
-            }
-            cands.push(Cand {
-                rings: union(&own, [0, 0]),
-                label: way_label(rules, line, 0).0,
-                key: way_key(rules, line),
-                glob: None,
-                line: li,
-                relabel: None,
-                beyond: Vec::new(),
-                fill: None,
-                discs: Vec::new(),
-            });
-            continue;
-        }
         // The paved outline holds no water.
         let outer = if line.sec.water { None } else { run(lx) };
         let Some((first, last)) = run(bx) else {
@@ -1288,7 +1247,8 @@ fn candidates<'a>(
             fill: None,
             discs: Vec::new(),
         });
-        let mut own = (!line.cuts.is_empty()).then(|| own_layers.entry(li).or_default());
+        // A deck's band layers are its own: the slab's edge band names its way.
+        let mut own = (!line.cuts.is_empty() || decks.is_some()).then(|| own_layers.entry(li).or_default());
         // At a deck end the slope takes the round end of a free end, so its bank runs round the end: the
         // paved layers end square on the end line.
         let deck = [line.deck[0] && first == 0, line.deck[1] && last == line.p.len()];
@@ -1300,7 +1260,7 @@ fn candidates<'a>(
             }
             let cuts = [&cut(first, k + 1)[..], &cut(last - 1, k + 1)[..]];
             let layer = match own.as_deref_mut() {
-                Some(own) if BAND_LABELS[k].2 == HeightRule::Owner => &mut own[k],
+                Some(own) if decks.is_some() || BAND_LABELS[k].2 == HeightRule::Owner => &mut own[k],
                 _ => &mut layers[k],
             };
             let ends = if k == SLOPE { [ends[0] || deck[0], ends[1] || deck[1]] } else { ends };
@@ -1480,11 +1440,9 @@ fn candidates<'a>(
         }
     }
     let ways = lines.iter().take_while(|l| !l.sec.water).count();
-    let ends: Vec<[f64; 5]> = if STOREYS && decks.is_some() {
-        let open = stretches.iter().flatten().flat_map(|s| s.lines.iter().flatten()).filter(|e| e.open);
-        open.map(|e| [f64::from(e.at[0]), f64::from(e.at[1]), e.into[0], e.into[1], e.half]).collect()
-    } else {
-        lines.iter().flat_map(deck_ends).collect()
+    let ends: Vec<[f64; 5]> = match &decks {
+        Some(d) => lines.iter().flat_map(|l| deck::open_ends(l, d.open[l.way as usize])).collect(),
+        None => lines.iter().flat_map(deck_ends).collect(),
     };
     Candidates { lines, ways, cands, seams, win, cover, corners, mouths, ends, stats }
 }

@@ -1,5 +1,5 @@
-//! `requests`: the request bytes of fixture cells, with their native digests and build times, for
-//! check 7 (`builder/ground-plan-wasm/check.mjs`) and the timing page. A cell whose far-only build
+//! `requests`: the request bytes of fixture cells, with their native digests (with the storeys, as the bridge
+//! builds them) and build times, for check 7 (`builder/ground-plan-wasm/check.mjs`) and the timing page. A cell whose far-only build
 //! gives another far block than its full build, or whose far block breaks `far_matches_near`, is an
 //! error; a cell whose far block the crate refuses is noted and counted.
 
@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use obc_ground_plan::cell::{build_cell, far_request, STAGES};
+use obc_ground_plan::cell::{build_cell, build_storeys, far_request, CellBuild, STAGES};
 use obc_ground_plan::faces::records::check::far_matches_near;
 use obc_ground_plan::frame::CellKey;
 use obc_ground_plan::terrain::Terrain;
@@ -90,7 +90,15 @@ pub fn run() -> Result<(), String> {
         let last = &builds[runs - 1];
         let fail = |e: String| format!("cell {}/{}: {e}", key.x, key.y);
         let flat = Flat::of(last);
-        let digest = flat.digest(last).map_err(fail)?;
+        // The bridge's digest: with the storeys, of the build with them.
+        let digest = if cfg!(feature = "storeys") {
+            let request = Request::decode(&bytes).map_err(fail)?;
+            let with = build_storeys(request, &mut TileCache::new(4), rules, &mut clock).map_err(fail)?;
+            let with = CellBuild { request: Some(fnv(&bytes)), ..with };
+            Flat::of(&with).digest(&with).map_err(fail)?
+        } else {
+            flat.digest(last).map_err(fail)?
+        };
         // What the GPU reads, without the graph: the near records and the faces that the mesh builds on.
         let le = |words: &mut dyn Iterator<Item = u32>| -> Vec<u8> { words.flat_map(u32::to_le_bytes).collect() };
         let records = fnv(&le(&mut last.records.iter().copied()));

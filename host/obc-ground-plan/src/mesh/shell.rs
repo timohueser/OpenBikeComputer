@@ -60,6 +60,8 @@ pub struct ShellStats {
     pub piers_left_out: u32,
     /// Sheet faces with no label in the block: none expected.
     pub unlabelled: u32,
+    /// Pieces between two deck ways whose lines lie more than a parapet's height apart: each deck has its own edge.
+    pub torn: u32,
 }
 
 /// The meshes of a cell's storeys over the ground: see the module's bytes. Triangles and slots hold whole corner
@@ -124,6 +126,9 @@ struct Build {
     tris: [Vec<[u32; 3]>; PARTS.len()],
     /// The tops' slots, then the undersides' risers.
     slots: [Vec<[u32; 4]>; 2],
+    /// A corner of a label at a point that takes another label (`stub_label`): its key (`corner_key`) and that label,
+    /// sorted.
+    relabel: Vec<(u64, u32)>,
 }
 
 /// A point in one word, in the order y, then x.
@@ -142,8 +147,15 @@ fn corner_key(p: P, label: u32) -> u64 {
 
 impl Build {
     fn corner(&mut self, p: P, label: u32, offset: f64) -> u32 {
+        let label = self.relabelled(p, label).unwrap_or(label);
         self.keys.push((corner_key(p, label), (offset as f32).to_bits()));
         self.keys.len() as u32 - 1
+    }
+
+    /// The label that a corner of label l at p takes instead, if any.
+    fn relabelled(&self, p: P, l: u32) -> Option<u32> {
+        let k = corner_key(p, l);
+        self.relabel.binary_search_by_key(&k, |x| x.0).ok().map(|i| self.relabel[i].1)
     }
 
     /// A quad with its corners counter-clockwise seen from outside.
@@ -160,6 +172,29 @@ fn cross(o: P, a: P, b: P) -> i64 {
 /// Twice the signed area in the frame (x east, y south): positive where the ring turns from +x toward +y.
 fn area2(ring: &[P]) -> i64 {
     (0..ring.len()).map(|i| cross([0, 0], ring[i], ring[(i + 1) % ring.len()])).sum()
+}
+
+/// The points of `points` (`yx` keys, sorted) within a unit of the segment a → b and strictly between its ends, in
+/// order from a.
+fn on_segment(points: &[(u64, u32)], a: P, b: P) -> Vec<P> {
+    let d = [f64::from(b[0] - a[0]), f64::from(b[1] - a[1])];
+    let l2 = d[0] * d[0] + d[1] * d[1];
+    if l2 <= 0.0 {
+        return Vec::new();
+    }
+    let (lo, hi) = (yx([i32::MIN, a[1].min(b[1]) - 1]), yx([i32::MAX, a[1].max(b[1]) + 1]));
+    let first = points.partition_point(|p| p.0 < lo);
+    let mut out: Vec<(f64, P)> = Vec::new();
+    for p in points[first..].iter().take_while(|p| p.0 <= hi).map(|p| of_yx(p.0)).filter(|&p| p != a && p != b) {
+        let w = [f64::from(p[0] - a[0]), f64::from(p[1] - a[1])];
+        let t = (w[0] * d[0] + w[1] * d[1]) / l2;
+        if t > 0.0 && t < 1.0 && (w[0] * d[1] - w[1] * d[0]).abs() / l2.sqrt() <= 1.0 {
+            // A few points an edge: in order of t as they come.
+            let at = out.iter().position(|x| x.0 > t).unwrap_or(out.len());
+            out.insert(at, (t, p));
+        }
+    }
+    out.into_iter().map(|x| x.1).collect()
 }
 
 /// Whether a and b lie on one line of the cell square.
@@ -279,11 +314,17 @@ impl Lines<'_> {
 
     /// The metres along the label's line and its unit direction at q's foot on its nearest segment.
     fn along(&self, label: u32, q: [f64; 2]) -> Option<(f64, [f64; 2])> {
+        self.foot(label, q).map(|(m, d, _)| (m, d))
+    }
+
+    /// The metres along the label's line, its unit direction and its height at q's foot on its nearest segment.
+    fn foot(&self, label: u32, q: [f64; 2]) -> Option<(f64, [f64; 2], f64)> {
         let l = self.line(label)?;
         let (first, n) = (l[2] as usize, l[3] as usize);
         let s = |i: usize| &self.words[self.words[7] as usize + SAMPLE * (first + i)..][..SAMPLE];
         let pos = |i: usize| [f64::from(s(i)[0] as i32), f64::from(s(i)[1] as i32)];
-        let mut best = (f64::INFINITY, 0.0, [1.0, 0.0]);
+        let mut best = (f64::INFINITY, 0.0, [1.0, 0.0], 0.0);
+        let f = |i: usize, k: usize| f64::from(f32::from_bits(s(i)[k]));
         for i in 0..n.saturating_sub(1) {
             let (a, b) = (pos(i), pos(i + 1));
             let d = [b[0] - a[0], b[1] - a[1]];
@@ -294,12 +335,12 @@ impl Lines<'_> {
             let t = (((q[0] - a[0]) * d[0] + (q[1] - a[1]) * d[1]) / l2).clamp(0.0, 1.0);
             let e = libm::hypot(q[0] - a[0] - t * d[0], q[1] - a[1] - t * d[1]);
             if e < best.0 {
-                let (ma, mb) = (f64::from(f32::from_bits(s(i)[3])), f64::from(f32::from_bits(s(i + 1)[3])));
                 let len = l2.sqrt();
-                best = (e, ma + t * (mb - ma), [d[0] / len, d[1] / len]);
+                let mix = |k: usize| f(i, k) + t * (f(i + 1, k) - f(i, k));
+                best = (e, mix(3), [d[0] / len, d[1] / len], mix(5));
             }
         }
-        best.0.is_finite().then_some((best.1, best.2))
+        best.0.is_finite().then_some((best.1, best.2, best.3))
     }
 }
 
@@ -327,6 +368,31 @@ fn paved_at(plan: &FacePlan, q: [f64; 2]) -> bool {
             && edge_distance(plan, f, q) > ON_EDGE_UNITS
     })
 }
+
+/// The label of storey 0's paved face or shoulder that meets a deck's end at point p of its end line: of those a probe
+/// `STUB_PROBE_M` to each side of p finds, the one whose line at p lies nearest label l's, within `STUB_STEP_M`.
+fn stub_label(words: &[u32], lines: &Lines, l: u32, p: P, mpu: f64) -> Option<u32> {
+    let q = [f64::from(p[0]), f64::from(p[1])];
+    let (_, dir, z) = lines.foot(l, q)?;
+    let r = STUB_PROBE_M / mpu;
+    let probes = [[q[0] + dir[0] * r, q[1] + dir[1] * r], [q[0] - dir[0] * r, q[1] - dir[1] * r]];
+    (probes.iter().filter_map(|&x| find(words, x)))
+        .filter(|&g| {
+            let s = records::label(words, g)[0] & 0xff;
+            [Surface::Carriageway, Surface::Shoulder, Surface::RailBed, Surface::Crossing]
+                .iter()
+                .any(|&x| x as u32 == s)
+        })
+        .filter_map(|g| lines.foot(g, q).map(|x| (g, (x.2 - z).abs())))
+        .filter(|&(_, d)| d <= STUB_STEP_M)
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(g, _)| g)
+}
+
+/// The probes of `stub_label` stand this far along the deck's line from its end point.
+const STUB_PROBE_M: f64 = 0.3;
+/// A stub's line and its deck's meet at the end line; past this apart a face's line belongs to another way (metres).
+const STUB_STEP_M: f64 = 0.25;
 
 /// A corner within this many frame units of a face's edge stands on it: the rings' corners are rounded.
 const ON_EDGE_UNITS: f64 = 4.0;
@@ -444,6 +510,9 @@ pub fn mesh_storeys(
     let origin_y = cell.origin().y as f64;
     let mpu = |y: i32| metres_per_unit_at(origin_y + f64::from(y));
     let lines = Lines { words };
+    let mut ground_ends: Vec<(u64, u32)> = storeys.ground_ends.iter().map(|&p| (yx(p), 0)).collect();
+    ground_ends.sort_unstable();
+    ground_ends.dedup();
     let mut b = Build::default();
     let mut stats = ShellStats::default();
     let mut open = Vec::new();
@@ -468,16 +537,41 @@ pub fn mesh_storeys(
                 .fold(f64::INFINITY, f64::min);
             let mid = (pa[1] + pb[1]) / 2;
             let len = libm::hypot(f64::from(pb[0] - pa[0]), f64::from(pb[1] - pa[1])) * mpu(mid);
-            let n = (len / l).ceil().max(1.0) as i64;
+            // An end line of the free outline takes storey 0's points on it, where it has any.
+            let ground = if e.kind == EdgeKind::DeckEdge && sheet(e.left) != sheet(e.right) {
+                on_segment(&ground_ends, pa, pb)
+            } else {
+                Vec::new()
+            };
+            let n = if ground.is_empty() { (len / l).ceil().max(1.0) as i64 } else { ground.len() as i64 + 1 };
             let mut last = pa;
             for k in 1..=n {
-                let p = if k == n { pb } else { part_of(pa, pb, k, n) };
+                let p = if k == n {
+                    pb
+                } else if ground.is_empty() {
+                    part_of(pa, pb, k, n)
+                } else {
+                    ground[k as usize - 1]
+                };
                 if p != last {
                     pieces.push((last, p, e.left, e.right, e.kind));
                     last = p;
                 }
             }
         }
+        // Where storey 0 meets the deck on an end line of the free outline, the deck's corners there take the label
+        // of storey 0's paved face or shoulder past it: the two meshes stand at one height on the line.
+        for &(pa, pc, left, right, _) in pieces.iter().filter(|p| p.4 == EdgeKind::DeckEdge && sheet(p.2) != sheet(p.3))
+        {
+            let l = label(if sheet(left) { left } else { right });
+            for p in [pa, pc] {
+                if let Some(g) = stub_label(words, &lines, l, p, mpu(p[1])) {
+                    b.relabel.push((corner_key(p, l), g));
+                }
+            }
+        }
+        b.relabel.sort_unstable();
+        b.relabel.dedup_by_key(|x| x.0);
         let mut keyed: Vec<(u64, u32)> = pieces.iter().flat_map(|p| [(yx(p.0), 0), (yx(p.1), 0)]).collect();
         keyed.sort_unstable();
         keyed.dedup();
@@ -493,52 +587,73 @@ pub fn mesh_storeys(
             b.tris[TOP].push(top);
             b.tris[UNDER].push([under[0], under[2], under[1]]);
         }
-        // Slots between two labels; the free outline's edge faces; the open pieces.
+        // Slots between two labels; the free outline's edge faces; the open pieces. Two deck ways side by side on
+        // the sheet are one deck, but where their lines lie more than a parapet's height apart at either end of a
+        // piece, each has its own edge there: a slot would be a wall from one deck to the other. A piece decides from
+        // its own two points, so two cells decide alike; where a torn run meets a slot, all their corners at the
+        // shared point lie on one vertical line, which closes them.
         let mut free: Vec<(P, P, u32)> = Vec::new();
+        let deck = |f: u32| lines.way(label(f)).filter(|&w| storeys.way(w).is_some());
+        let apart = |p: P, l: u32, r: u32| {
+            let z = |f: u32| lines.foot(label(f), [f64::from(p[0]), f64::from(p[1])]).map(|x| x.2);
+            z(l).zip(z(r)).is_some_and(|(za, zb)| (za - zb).abs() > PARAPET_M[1])
+        };
         for &(pa, pc, left, right, kind) in &pieces {
-            match (sheet(left), sheet(right)) {
-                (true, true) => {
-                    let (la, lb) = (label(left), label(right));
-                    if la != lb {
-                        let (da, db) = (-depth(la), -depth(lb));
-                        let top = [
-                            b.corner(pa, la, 0.0),
-                            b.corner(pc, la, 0.0),
-                            b.corner(pc, lb, 0.0),
-                            b.corner(pa, lb, 0.0),
-                        ];
-                        let under =
-                            [b.corner(pa, la, da), b.corner(pc, la, da), b.corner(pc, lb, db), b.corner(pa, lb, db)];
-                        b.slots[0].push(top);
-                        b.slots[1].push(under);
-                    }
+            let torn = sheet(left)
+                && sheet(right)
+                && deck(left).zip(deck(right)).is_some_and(|(a, c)| a != c)
+                && (apart(pa, left, right) || apart(pc, left, right));
+            stats.torn += u32::from(torn);
+            let sides: &[bool] = match (sheet(left), sheet(right)) {
+                _ if torn => &[true, false],
+                (true, true) => &[],
+                (s_left, _) => &[s_left],
+            };
+            if sides.is_empty() {
+                let (la, lb) = (label(left), label(right));
+                // Two labels that take one label at both ends (`relabel`) need no slot.
+                let one = |p: P| b.relabelled(p, la).is_some_and(|g| b.relabelled(p, lb) == Some(g));
+                if la != lb && !(one(pa) && one(pc)) {
+                    let (da, db) = (-depth(la), -depth(lb));
+                    let top =
+                        [b.corner(pa, la, 0.0), b.corner(pc, la, 0.0), b.corner(pc, lb, 0.0), b.corner(pa, lb, 0.0)];
+                    let under =
+                        [b.corner(pa, la, da), b.corner(pc, la, da), b.corner(pc, lb, db), b.corner(pa, lb, db)];
+                    b.slots[0].push(top);
+                    b.slots[1].push(under);
                 }
-                (s_left, _) => {
-                    if kind == EdgeKind::DeckEdge || kind == EdgeKind::CellBorder || on_cell_line(pa, pc) {
-                        open.push([pa, pc]);
-                        continue;
-                    }
-                    let f = if s_left { left } else { right };
-                    let l = label(f);
-                    let d = -depth(l);
-                    wall(&mut b, EDGE, (pa, pc), s_left, (l, l), ([d; 2], [0.0; 2]));
-                    // The parapet or the railing stands on the band: across a deck's free end it would stand on
-                    // the carriageway.
-                    if plan.faces[f as usize].surface == Surface::DeckEdge {
-                        free.push(if s_left { (pa, pc, l) } else { (pc, pa, l) });
-                    }
+                continue;
+            }
+            if !torn && (kind == EdgeKind::DeckEdge || kind == EdgeKind::CellBorder || on_cell_line(pa, pc)) {
+                open.push([pa, pc]);
+                continue;
+            }
+            for &s_left in sides {
+                let f = if s_left { left } else { right };
+                let l = label(f);
+                let d = -depth(l);
+                wall(&mut b, EDGE, (pa, pc), s_left, (l, l), ([d; 2], [0.0; 2]));
+                // The parapet or the railing stands on the band: across a deck's free end it would stand on
+                // the carriageway.
+                if plan.faces[f as usize].surface == Surface::DeckEdge {
+                    free.push(if s_left { (pa, pc, l) } else { (pc, pa, l) });
                 }
             }
         }
-        // The free outline's chains, the sheet on their left; each run of one edge feature a parapet or a railing.
-        // The pieces by their first point, and their last points, in sorted lists.
+        // The free outline's chains, the sheet on their left; each run of one edge feature a parapet or a railing. A
+        // chain stays on one deck way: past a torn run's end, the next free piece may be the other deck's. The pieces
+        // by their first point, and their last points with their way, in sorted lists; a chain starts at a piece that
+        // no piece of its way leads to.
+        let way_of = |k: usize| lines.way(free[k].2).unwrap_or(u32::MAX);
         let mut from: Vec<(u64, u32)> = free.iter().enumerate().map(|(k, f)| (yx(f.0), k as u32)).collect();
         from.sort_unstable();
-        let mut to: Vec<(u64, u32)> = free.iter().map(|f| (yx(f.1), 0)).collect();
+        let mut to: Vec<(u64, u32)> = (0..free.len()).map(|k| (yx(free[k].1), way_of(k))).collect();
         to.sort_unstable();
         let mut used = vec![false; free.len()];
-        let starts: Vec<usize> =
-            (0..free.len()).filter(|&k| to.binary_search(&(yx(free[k].0), 0)).is_err()).chain(0..free.len()).collect();
+        let starts: Vec<usize> = (0..free.len())
+            .filter(|&k| to.binary_search(&(yx(free[k].0), way_of(k))).is_err())
+            .chain(0..free.len())
+            .collect();
         for s in starts {
             if used[s] {
                 continue;
@@ -546,9 +661,11 @@ pub fn mesh_storeys(
             let mut chain = vec![s];
             used[s] = true;
             loop {
-                let end = yx(free[*chain.last().unwrap()].1);
+                let last = *chain.last().unwrap();
+                let end = yx(free[last].1);
                 let first = from.partition_point(|e| e.0 < end);
-                let next = from[first..].iter().take_while(|e| e.0 == end).map(|e| e.1 as usize).find(|&k| !used[k]);
+                let next = (from[first..].iter().take_while(|e| e.0 == end).map(|e| e.1 as usize))
+                    .find(|&k| !used[k] && way_of(k) == way_of(last));
                 let Some(k) = next else { break };
                 used[k] = true;
                 chain.push(k);
@@ -703,7 +820,9 @@ fn posts(
 
 /// The piers at the baked pier points: each under the highest sheet that holds its point, along the deck's line
 /// there, from the underside to `pier_depth_m` under the ground; left out where its foot stands in a paved face of
-/// storey 0 or on a lower storey's sheet.
+/// storey 0 or on a lower storey's sheet. A pier on a cell line is one solid in two halves: each cell reads its
+/// sheet at the point of its own square nearest the pier's point, and the line, the ground and the tests of the
+/// foot at the pier's whole ring, the same in both cells.
 fn piers(
     b: &mut Build,
     storeys: &Storeys,
@@ -718,8 +837,9 @@ fn piers(
     let c = CELL_UNITS as f64;
     for &pt in &storeys.piers {
         let q = [f64::from(pt[0]), f64::from(pt[1])];
+        let own = [q[0].clamp(1.0, c - 1.0), q[1].clamp(1.0, c - 1.0)];
         let Some((k, top)) =
-            (0..storeys.plans.len()).rev().find_map(|k| sheet_at(&storeys.plans[k], &labels[k], q).map(|l| (k, l)))
+            (0..storeys.plans.len()).rev().find_map(|k| sheet_at(&storeys.plans[k], &labels[k], own).map(|l| (k, l)))
         else {
             continue;
         };
@@ -730,14 +850,11 @@ fn piers(
         let (along, across) = (w.pier_m[0] / 2.0 / mpu, w.pier_m[1] / 2.0 / mpu);
         let n = [-d[1], d[0]];
         let corner = |u: f64, v: f64| [u * along * d[0] + v * across * n[0], u * along * d[1] + v * across * n[1]];
-        let ring = clip(pt, &[corner(-1.0, -1.0), corner(1.0, -1.0), corner(1.0, 1.0), corner(-1.0, 1.0)]);
+        let whole = [corner(-1.0, -1.0), corner(1.0, -1.0), corner(1.0, 1.0), corner(-1.0, 1.0)];
+        let ring = clip(pt, &whole);
         if ring.len() < 3 {
             continue;
         }
-        let centre = {
-            let s = ring.iter().fold([0.0, 0.0], |s, p| [s[0] + f64::from(p[0]), s[1] + f64::from(p[1])]);
-            [(s[0] / ring.len() as f64).clamp(0.0, c), (s[1] / ring.len() as f64).clamp(0.0, c)]
-        };
         let paved = |p: [f64; 2]| {
             find(words, p).is_some_and(|l| {
                 let s = records::label(words, l)[0] & 0xff;
@@ -745,12 +862,12 @@ fn piers(
             })
         };
         let lower = |p: [f64; 2]| (0..k).any(|j| sheet_at(&storeys.plans[j], &labels[j], p).is_some());
-        let foot: Vec<[f64; 2]> = ring.iter().map(|p| [f64::from(p[0]), f64::from(p[1])]).chain([centre]).collect();
+        let foot: Vec<[f64; 2]> = whole.iter().map(|p| [q[0] + p[0], q[1] + p[1]]).chain([q]).collect();
         if foot.iter().any(|&p| paved(p) || lower(p)) {
             stats.piers_left_out += 1;
             continue;
         }
-        let ground = find(words, centre).unwrap_or(NO_LABEL);
+        let ground = find(words, q).unwrap_or(NO_LABEL);
         prism(b, PIER, &ring, (top, -w.depth_m), (ground, -structures.pier_depth_m));
         stats.piers += 1;
     }
@@ -778,7 +895,8 @@ pub fn closure(m: &StoreyMesh) -> Vec<String> {
     }
     for (name, tris) in solids {
         let mut uses: BTreeMap<(u32, u32), u32> = BTreeMap::new();
-        for t in tris {
+        // A triangle with two equal corners (a slot whose two labels take one label at an end) spans nothing.
+        for t in tris.iter().filter(|t| t[0] != t[1] && t[1] != t[2] && t[0] != t[2]) {
             for i in 0..3 {
                 *uses.entry((t[i], t[(i + 1) % 3])).or_default() += 1;
             }
@@ -831,7 +949,8 @@ pub fn border(a: (&StoreyMesh, &[u32]), b: (&StoreyMesh, &[u32]), east: bool) ->
         let mut out: BTreeMap<(i32, u32), Vec<f64>> = BTreeMap::new();
         for k in 0..m.corners.len() {
             let (p, l, off) = m.corner(k);
-            if p[axis] == line {
+            // A pier's foot on the plain terrain (NO_LABEL) stands at the terrain's height, which no record holds.
+            if p[axis] == line && l != NO_LABEL {
                 let h = height_at(words, [f64::from(p[0]), f64::from(p[1])], Some(l), f64::NAN).h + off;
                 out.entry((p[along], (off as f32).to_bits())).or_default().push(h);
             }

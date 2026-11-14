@@ -196,16 +196,21 @@ function railing(b: MeshBuilder, s: Station, t: Station, h: number, length: numb
     }
 }
 
-/** A covered bridge from station s to t: a wooden wall on each side, posts up to the eaves, and a pitched roof with its underside. */
+/**
+ * A covered bridge from station s to t: a wooden wall on each side, posts up to the eaves, and a pitched roof with its
+ * underside. No storey of the ground plan draws them: they draw beside its deck.
+ */
 function covered(b: MeshBuilder, s: Station, t: Station, h: number, length: number): void {
     const w = h + 0.1, eave = w + OVERHANG_M, ridge = EAVES_M + PITCH * eave;
-    for (const side of [1, -1]) {
-        b.strip(s, t, [side * w, LIFT_M], [side * w, COVER_WALL_M], WOOD_DARK, [-side, 0]);
-        b.strip(s, t, [side * w, COVER_WALL_M], [side * w, LIFT_M], WOOD_DARK, [side, 0]);
-        b.strip(s, t, [0, ridge], [side * eave, EAVES_M], ROOF, [0, 1]);
-        b.strip(s, t, [side * eave, EAVES_M], [0, ridge], ROOF_UNDER, [0, -1]);
-    }
-    railing(b, s, t, w, length, WOOD_DARK, 0.15, EAVES_M, COVER_WALL_M);
+    b.beside(() => {
+        for (const side of [1, -1]) {
+            b.strip(s, t, [side * w, LIFT_M], [side * w, COVER_WALL_M], WOOD_DARK, [-side, 0]);
+            b.strip(s, t, [side * w, COVER_WALL_M], [side * w, LIFT_M], WOOD_DARK, [side, 0]);
+            b.strip(s, t, [0, ridge], [side * eave, EAVES_M], ROOF, [0, 1]);
+            b.strip(s, t, [side * eave, EAVES_M], [0, ridge], ROOF_UNDER, [0, -1]);
+        }
+        railing(b, s, t, w, length, WOOD_DARK, 0.15, EAVES_M, COVER_WALL_M);
+    });
 }
 
 /** A pier at each `bridge-pier` point near the node, across its bridge line, from under the deck down into the drawn surface. */
