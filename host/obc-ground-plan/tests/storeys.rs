@@ -180,7 +180,7 @@ fn bars_across_decks(key: CellKey, m: &StoreyMesh, w: &[u32]) -> Vec<String> {
 /// end point of a top on it is missing from the cell mesh or stands apart from it, and no cell mesh point on it lies
 /// inside a paved open piece's span.
 const SEAM_M: f64 = 0.001;
-/// The seams of `stub_meets_deck`, measured on the fixture at the storeys' build: a deck's end at a bend of its way
+/// The seams of `stub_meets_deck`, measured on the fixture at the junction rule's build: a deck's end at a bend of its way
 /// (its stub leaves at an angle past `records::FLAT_TURN_DEG`), a stub whose face at the end is no paved face or
 /// shoulder, and stub points inside a deck's end piece. The count must not grow.
 const SEAMS_MAX: usize = 14;
