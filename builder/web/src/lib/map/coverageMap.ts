@@ -83,6 +83,14 @@ const AREA_HIGHLIGHT_STYLE: L.PathOptions = { ...AREA_STYLE, weight: 3, opacity:
 // Leaflet draws the paths of one pane in the order of their arrival, so the pale ground and the routes have panes of
 // their own: under and over the pane of the regions, the parts and the warnings.
 const PALE_STYLE: L.PathOptions = { stroke: false, className: "coverage-pale", interactive: false, pane: "pale" };
+/** Takes the colour out of the ground under it; `coverage-map.css` has the blend of its pane. */
+const GREY_STYLE: L.PathOptions = { stroke: false, className: "coverage-grey", interactive: false, pane: "grey" };
+/** The lines of the map cells. They show why an area grows to whole cells, and are otherwise not noticed. */
+const GRID_STYLE: L.PolylineOptions = { color: "var(--ink)", weight: 1, opacity: 0.13, interactive: false, pane: "grid" };
+/** The cells that a box takes while the rider draws it. */
+const SNAP_STYLE: L.PathOptions = { color: "var(--ink)", weight: 1.5, opacity: 0.6, fill: false, interactive: false };
+/** A cell narrower than this on the screen gets no lines: they would be a texture. */
+const GRID_MIN_PX = 36;
 const ROUTE_STYLE: L.PolylineOptions = { color: "var(--route)", weight: 3, interactive: false, pane: "routes" };
 /** A ring around the whole map; the rings of the area are its holes. */
 const WORLD: DegPoint[] = [[-89, -540], [-89, 540], [89, 540], [89, -540]];
@@ -136,6 +144,10 @@ export class CoverageMapView {
 
     private paleLayer: L.LayerGroup = L.layerGroup();
     private pale = false;
+    private gridLayer: L.LayerGroup = L.layerGroup();
+    /** The side of a map cell and a line of the grid, in degrees; null with no cell lines. */
+    private grid: { step: number; origin: number } | null = null;
+    private snapRect: L.Rectangle | null = null;
     private partLayer: L.LayerGroup = L.layerGroup();
     private routeLayer: L.LayerGroup = L.layerGroup();
     private warnLayer: L.LayerGroup = L.layerGroup();
@@ -165,9 +177,13 @@ export class CoverageMapView {
 
         // Draw order bottom-up: the pale ground, shelf, selection, warnings on top of the
         // selection they annotate, and the routes above all.
+        this.map.createPane("grey").style.zIndex = "340";
         this.map.createPane("pale").style.zIndex = "350";
+        this.map.createPane("grid").style.zIndex = "360";
         this.map.createPane("routes").style.zIndex = "450";
         this.paleLayer.addTo(this.map);
+        this.gridLayer.addTo(this.map);
+        this.map.on("moveend", () => this.drawGrid());
         this.regionLayer.addTo(this.map);
         this.cellLayer.addTo(this.map);
         this.partLayer.addTo(this.map);
@@ -368,16 +384,38 @@ export class CoverageMapView {
     }
 
     /**
-     * Makes the ground outside `rings` pale, so the area shows in the full colour of the map, with one line around
-     * it. `rings` are the outer rings and the holes of one cell set, which never cross. From then on a region is a
-     * dashed line, and `setParts` draws only a highlighted part.
+     * Makes the ground outside `rings` grey and a little pale, so the area shows in the full colour of the map, with
+     * one line around it. The names and the lines of the ground outside keep their contrast: the rider reads them to
+     * choose what to add. `rings` are the outer rings and the holes of one cell set, which never cross. From then on
+     * a region is a dashed line, and `setParts` draws only a highlighted part.
      */
     setPale(rings: DegPoint[][]): void {
         if (!this.pale) for (const poly of this.regionPolys.values()) poly.setStyle(REGION_PALE_STYLE);
         this.pale = true;
         this.paleLayer.clearLayers();
+        L.polygon([WORLD, ...rings], GREY_STYLE).addTo(this.paleLayer);
         L.polygon([WORLD, ...rings], PALE_STYLE).addTo(this.paleLayer);
         if (rings.length) L.polygon(rings, AREA_STYLE).addTo(this.paleLayer);
+    }
+
+    /** Shows the lines of the map cells, faintly: a cell has the side `step`, and one line is at `origin`, in degrees.
+     *  While the rider draws a box, a line goes around the cells that the box takes. */
+    setGrid(step: number, origin: number): void {
+        this.grid = { step, origin };
+        this.drawGrid();
+    }
+
+    private drawGrid(): void {
+        this.gridLayer.clearLayers();
+        const grid = this.grid, width = this.map.getSize().x, seen = this.map.getBounds();
+        if (!grid || !width || (width * grid.step) / (seen.getEast() - seen.getWest()) < GRID_MIN_PX) return;
+        // Past the view, so a pan shows lines before the map comes to rest.
+        const view = seen.pad(1), south = Math.max(view.getSouth(), -85), north = Math.min(view.getNorth(), 85);
+        const first = (value: number) => grid.origin + Math.ceil((value - grid.origin) / grid.step) * grid.step;
+        const lines: DegPoint[][] = [];
+        for (let lon = first(view.getWest()); lon <= view.getEast(); lon += grid.step) lines.push([[south, lon], [north, lon]]);
+        for (let lat = first(south); lat <= north; lat += grid.step) lines.push([[lat, view.getWest()], [lat, view.getEast()]]);
+        L.polyline(lines, GRID_STYLE).addTo(this.gridLayer);
     }
 
     /** The lines of the rider's routes, in the colour of a route, in place of those before. */
@@ -447,6 +485,14 @@ export class CoverageMapView {
         if (!this.drawArmed || !this.drawing || !this.drawRect || !this.drawStart) return;
         const bounds = L.latLngBounds(this.drawStart, e.latlng);
         this.drawRect.setBounds(bounds);
+        if (this.grid) {
+            const { step, origin } = this.grid;
+            const edge = (value: number, round: (cells: number) => number) => origin + round((value - origin) / step) * step;
+            const cells = L.latLngBounds([edge(bounds.getSouth(), Math.floor), edge(bounds.getWest(), Math.floor)],
+                [edge(bounds.getNorth(), Math.ceil), edge(bounds.getEast(), Math.ceil)]);
+            if (this.snapRect) this.snapRect.setBounds(cells);
+            else this.snapRect = L.rectangle(cells, SNAP_STYLE).addTo(this.map);
+        }
         const label = this.cb.boxDragLabel(
             bounds.getSouth(),
             bounds.getWest(),
@@ -473,6 +519,10 @@ export class CoverageMapView {
     }
 
     private removeDrawRect(): void {
+        if (this.snapRect) {
+            this.map.removeLayer(this.snapRect);
+            this.snapRect = null;
+        }
         if (this.drawRect) {
             this.map.removeLayer(this.drawRect);
             this.drawRect = null;

@@ -48,8 +48,18 @@
     fill-opacity: 0.3;
 }
 
-/* The ground outside the area of a map, under the outlines. */
+/* The ground outside the area of a map, under the outlines: its colour goes, its lines and names keep their contrast,
+   and a light veil of the page ground sets it back. The blend is on the pane, because an SVG blends only inside itself. */
+.leaflet-grey-pane {
+    mix-blend-mode: saturation;
+}
+
+.coverage-grey {
+    fill: #808080;
+    fill-opacity: 0.85;
+}
+
 .coverage-pale {
     fill: var(--parchment);
-    fill-opacity: 0.6;
+    fill-opacity: 0.2;
 }

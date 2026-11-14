@@ -15,6 +15,7 @@
     import { onDestroy, onMount, tick, untrack } from "svelte";
     import { coverageRings, mergeCellRects } from "../../lib/catalog/outline";
     import type { RegionEntry } from "../../lib/catalog/manifest";
+    import { cellSize, GRID_ORIGIN } from "../../lib/core/grid";
     import {
         degreesToUbox,
         detailBandId,
@@ -41,7 +42,8 @@
         tool?: Tool;
         /** The tool rail, the region list and the hints. A page with its own controls for `tool` has none of them. */
         rail?: boolean;
-        /** The ground outside the selection is pale, and one line goes around the selection. */
+        /** The look of a page of the shell: the ground outside the selection is grey and a little pale, one line goes
+         *  around the selection, and the lines of the map cells show faintly. */
         pale?: boolean;
         /** The lines of the rider's routes, each as `[lat, lon]` degrees. */
         routes?: DegPoint[][];
@@ -105,6 +107,8 @@
                 rings: r.boundary.rings.map(ringToDegrees),
             })),
         );
+        const band = store.catalog.schema.bands.find((entry) => entry.id === detailBand);
+        if (pale && band) view.setGrid(cellSize(band.cell_log2) / 1e6, GRID_ORIGIN / 1e6);
     });
 
     onDestroy(() => view?.destroy());
