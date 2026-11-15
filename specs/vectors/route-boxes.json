@@ -7,6 +7,7 @@
     { "name": "a box of another bike gives only its kind", "box": [8.2, 47.85, 8.26, 47.89], "bike": "mtb", "ids": [201] },
     { "name": "the same box for hiking gives the stage with a vertex in it", "box": [8.2, 47.85, 8.26, 47.89], "bike": "hiking", "ids": [403] },
     { "name": "a box across a cell edge gives a route of both cells once", "box": [7.72, 47.85, 7.75, 47.89], "bike": "hiking", "ids": [601] },
+    { "name": "routes of two cells are in ascending id order, not in the order of the cells", "box": [7.72, 47.85, 8.13, 47.95], "bike": "hiking", "ids": [102, 104, 403, 601] },
     { "name": "a cell without a file adds nothing", "box": [10.0, 47.86, 10.04, 47.88], "bike": "hiking", "ids": [] }
   ]
 }
