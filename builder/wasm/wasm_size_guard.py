@@ -22,7 +22,7 @@ from pathlib import Path
 # junction ends, their ends on the stubs' points, what each deck is made of, the junctions that lie on the
 # ground, and a building passage of an older bake on the ground (the crate's feature `storeys` on, stable 1.100.0).
 # The owner allows about 60 kB of code growth for the crossing block, stated in its pull request and recorded here.
-GROUND_PLAN_MEASURED = {"gzipped": 808_271, "raw_wasm": 2_090_936}
+GROUND_PLAN_MEASURED = {"gzipped": 808_099, "raw_wasm": 2_090_936}
 # The owner's margin: compiler and dependency updates move the size by a few kilobytes and must not fail
 # unrelated pull requests; real growth past the margin still fails. Raw gets the same fraction as gzipped.
 # A pull request that changes the bridge's code records its own CI size here; the margin is only for toolchain
