@@ -103,25 +103,17 @@ and a missing expected file fails the upload. Download with
 | Artifact | Holds |
 | --- | --- |
 | `rust-test-ATTEMPT`, `rust-fixtures-ATTEMPT` | nextest JUnit XML for the fast and fixture tiers; the fast artifact also holds `doctests.log` and `formats-default.log` |
-| `python-repository-tools-ATTEMPT`, `python-firmware-tools-ATTEMPT`, `python-builder-ATTEMPT` | unittest and pytest XML |
+| `python-repository-tools-ATTEMPT`, `python-firmware-tools-ATTEMPT`, `python-packer-ATTEMPT` | unittest and pytest XML |
 | `web-builder-ATTEMPT` | Vitest JUnit XML |
-| `web-builder-browser-ATTEMPT`, `web-demo-browser-ATTEMPT` | the two Chromium journeys, with a screenshot and trace on failure |
+| `web-builder-browser-ATTEMPT`, `web-demo-browser-ATTEMPT` | the Chromium journeys of the web app and of the landing page, with a screenshot and trace on failure |
 | `ios-tests-coverage-ATTEMPT`, `ios-screenshots-ATTEMPT`, `ios-application-ATTEMPT` | `.xcresult` bundles; restore the suffix and open in Xcode |
 
 The exit status and the CI log stay authoritative; an artifact does not prove a passing run.
 
 ## Browser journeys
 
-`web.builder-browser` runs the map builder in Chromium against a digest-pinned loopback catalog,
-assembles a map through the real WebAssembly bridge and requires the bytes to equal
-`expected/map.obcm`. `web.demo-browser` drives the landing page's save, view, reset and reload
+`web.planner-requests` runs the web app in Chromium. Its area and Device journeys build a map in
+the tab from a digest-pinned loopback catalog, through the real WebAssembly bridge, and send it to
+the pretend device. `web.demo-browser` drives the landing page's save, view, reset and reload
 controls. Each browser suite serves on a free loopback port, so separate worktrees run it at the
 same time; `OBC_BROWSER_PORT` and the other `OBC_*_BROWSER_PORT` variables set one.
-
-`live.builder-memory` is the same builder against the **published** catalogue, and it is the one
-`live` suite with a browser in it. It assembles the largest published region and holds the wasm
-linear memory the worker reports at the end of the run against the peak the estimate that admitted
-the run projected. It is the measurement the projection cannot make: an assembler that buffers a
-whole map passes every arithmetic test of the estimator. It downloads about 890 MB, needs about
-3 GB of free disk and takes minutes, so run it by hand before a release and after a change to the
-assembler or the estimator.

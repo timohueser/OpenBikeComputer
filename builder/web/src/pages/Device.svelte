@@ -47,7 +47,7 @@
     const device = $derived(remembered.device);
     const raw = $derived(deviceHolder.error ?? (status === 'error' ? session?.error : null));
     // Chrome names `claimInterface` when another page holds the device.
-    const error = $derived(raw && /claim/i.test(raw) ? 'Another tab or the map builder uses the device. Close it, then connect again.' : raw);
+    const error = $derived(raw && /claim/i.test(raw) ? 'Another tab uses the device. Close it, then connect again.' : raw);
     const view = $derived(
         status === 'unsupported' ? 'cannot'
             : !session && !deviceHolder.error ? 'loading'
@@ -231,11 +231,10 @@
                     {/if}
                 </span>
             </header>
-            {#if !connected && (other || released || error)}
+            {#if !connected && (other || error)}
                 {@const problem = error ?? (other && !other.formatted ? formatProblem : '')}
                 <p class="note" class:problem={!!problem} role={problem ? 'alert' : undefined}>
-                    {problem || (!other ? 'The map builder can use the device now. Connect takes it back.'
-                        : other.formatted ? `${other.name} is on the cable.` : `The memory card of ${other.name} needs a format.`)}
+                    {problem || (other?.formatted ? `${other.name} is on the cable.` : `The memory card of ${other?.name} needs a format.`)}
                 </p>
             {/if}
             <Card>

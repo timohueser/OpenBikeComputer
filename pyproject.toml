@@ -26,8 +26,8 @@ trailview-sky = [{ include-group = "planner-maps" }, "numpy==2.5.3", "openexr==3
 planner-search = ["orjson==3.12.0", "pyyaml==6.0.2", "shapely==2.1.2", "zstandard==0.25.0"]
 
 dev = ["unittest-xml-reporting==4.0.0", "PyYAML==6.0.2"]
-builder = ["fastapi>=0.110.0", "uvicorn[standard]>=0.27.0"]
-builder-test = [{ include-group = "builder" }, "pytest>=8.0.0", "httpx>=0.27.0"]
+# The routing-profile test of `obc-pack` (host/obc-bake/tests/test_routing_profiles.py).
+packer-test = ["pytest>=8.0.0"]
 search-runtime = [
     "orjson==3.12.0",
     "shapely==2.1.2",

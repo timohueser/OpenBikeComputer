@@ -194,8 +194,8 @@
    "test_depends_on": [
     "map-reading"
    ],
-   "violations": 9,
-   "lines": 36239,
+   "violations": 8,
+   "lines": 34811,
    "problems": [
     {
      "rule": "cycle",
@@ -207,7 +207,7 @@
     },
     {
      "rule": "cycle",
-     "message": "device-link -> device-map-builder closes a cycle: builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/bytes.ts (test), builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/flat-device/load.ts (test), builder/web/src/lib/device/rides.test.ts -> builder/web/test-support/flat-device/load.ts (test), and 10 more"
+     "message": "device-link -> device-map-builder closes a cycle: builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/bytes.ts (test), builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/flat-device/load.ts (test), builder/web/src/lib/device/sha256.test.ts -> builder/web/src/lib/core/hash.ts (test), and 8 more"
     },
     {
      "rule": "cycle",
@@ -215,11 +215,7 @@
     },
     {
      "rule": "cycle",
-     "message": "device-link -> map-assembly closes a cycle: builder/web/src/lib/device/flows.test.ts -> builder/web/src/lib/convert/bridge.ts (test), builder/web/src/lib/device/rides.test.ts -> builder/web/src/lib/convert/bridge.ts (test), builder/web/src/lib/device/rides.ts -> builder/web/src/lib/convert/bridge.ts, and 1 more"
-    },
-    {
-     "rule": "cycle",
-     "message": "device-map-builder -> device-link closes a cycle: builder/web/src/components/UpdatePrompt.svelte -> builder/web/src/lib/device/job.svelte.ts, builder/web/src/components/UpdatePrompt.svelte -> builder/web/src/lib/device/session.svelte.ts, builder/web/src/components/device/CardFormat.svelte -> builder/web/src/lib/usb/client.ts, and 46 more"
+     "message": "device-map-builder -> device-link closes a cycle: builder/web/test-support/device-smoke/smoke.test.ts -> builder/web/src/lib/usb/client.ts (test), builder/web/test-support/device-smoke/smoke.test.ts -> builder/web/src/lib/usb/flat-device.ts (test), builder/web/test-support/device-smoke/smoke.test.ts -> builder/web/src/lib/usb/protocol.ts (test), and 16 more"
     },
     {
      "rule": "cycle",
@@ -227,7 +223,7 @@
     },
     {
      "rule": "cycle",
-     "message": "map-assembly -> device-link closes a cycle: obc-builder-bridge -> obc-flat-device, obc-builder-bridge -> obc-link, obc-builder-bridge -> obc-vectors (test), and 12 more"
+     "message": "map-assembly -> device-link closes a cycle: obc-builder-bridge -> obc-flat-device, obc-builder-bridge -> obc-link, obc-builder-bridge -> obc-vectors (test), and 4 more"
     },
     {
      "rule": "R1",
@@ -254,7 +250,7 @@
     "repository-tooling"
    ],
    "violations": 7,
-   "lines": 60410,
+   "lines": 60595,
    "problems": [
     {
      "rule": "cycle",
@@ -290,7 +286,7 @@
    "name": "device-map-builder",
    "kind": "shell",
    "area": "Shells",
-   "purpose": "Runs the map builder, where a rider builds a device map and manages the device, in the browser.",
+   "purpose": "Holds the build configuration of the web app and the code that its pages share.",
    "status": "approved",
    "depends_on": [
     "device-link",
@@ -304,28 +300,20 @@
    "test_depends_on": [
     "repository-tooling"
    ],
-   "violations": 10,
-   "lines": 12271,
+   "violations": 8,
+   "lines": 9192,
    "problems": [
     {
      "rule": "cycle",
-     "message": "device-link -> device-map-builder closes a cycle: builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/bytes.ts (test), builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/flat-device/load.ts (test), builder/web/src/lib/device/rides.test.ts -> builder/web/test-support/flat-device/load.ts (test), and 10 more"
+     "message": "device-link -> device-map-builder closes a cycle: builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/bytes.ts (test), builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/flat-device/load.ts (test), builder/web/src/lib/device/sha256.test.ts -> builder/web/src/lib/core/hash.ts (test), and 8 more"
     },
     {
      "rule": "cycle",
-     "message": "device-map-builder -> device-link closes a cycle: builder/web/src/components/UpdatePrompt.svelte -> builder/web/src/lib/device/job.svelte.ts, builder/web/src/components/UpdatePrompt.svelte -> builder/web/src/lib/device/session.svelte.ts, builder/web/src/components/device/CardFormat.svelte -> builder/web/src/lib/usb/client.ts, and 46 more"
+     "message": "device-map-builder -> device-link closes a cycle: builder/web/test-support/device-smoke/smoke.test.ts -> builder/web/src/lib/usb/client.ts (test), builder/web/test-support/device-smoke/smoke.test.ts -> builder/web/src/lib/usb/flat-device.ts (test), builder/web/test-support/device-smoke/smoke.test.ts -> builder/web/src/lib/usb/protocol.ts (test), and 16 more"
     },
     {
      "rule": "cycle",
-     "message": "device-map-builder -> firmware-update closes a cycle: builder/web/src/components/UpdatePrompt.svelte -> builder/web/src/lib/firmware/check.svelte.ts, builder/web/src/components/device/FirmwareCard.svelte -> builder/web/src/lib/firmware/check.svelte.ts, builder/web/src/components/device/FirmwareCard.svelte -> builder/web/src/lib/firmware/release.ts, and 1 more"
-    },
-    {
-     "rule": "cycle",
-     "message": "device-map-builder -> map-assembly closes a cycle: builder/web/src/components/device/DeviceStep.svelte -> builder/web/src/lib/catalog/ledger.ts, builder/web/src/components/device/DeviceSurfaces.svelte -> builder/web/src/lib/catalog/ledger.ts, builder/web/src/components/device/MapSend.svelte -> builder/web/src/lib/catalog/ledger.ts, and 7 more"
-    },
-    {
-     "rule": "cycle",
-     "message": "device-map-builder -> map-style closes a cycle: builder/web/src/lib/api/client.ts -> builder/web/src/lib/config/model.ts, builder/web/src/lib/platform/types.ts -> builder/web/src/lib/config/model.ts, builder/web/src/routes/Advanced.svelte -> builder/web/src/components/advanced/CategoryRail.svelte, and 10 more"
+     "message": "device-map-builder -> firmware-update closes a cycle: builder/web/test-support/device-sync/fake-device.ts -> builder/web/src/lib/firmware/check.svelte.ts"
     },
     {
      "rule": "cycle",
@@ -337,11 +325,11 @@
     },
     {
      "rule": "cycle",
-     "message": "map-assembly -> device-map-builder closes a cycle: builder/web/src/components/coverage/CoverageHome.svelte -> builder/web/src/components/device/DeviceStep.svelte, builder/web/src/components/coverage/CoverageHome.svelte.test.ts -> builder/web/src/routes/Home.svelte (test), builder/web/src/components/coverage/CoverageHome.svelte.test.ts -> builder/web/test-support/coverage/Selection.svelte (test), and 28 more"
+     "message": "map-assembly -> device-map-builder closes a cycle: builder/web/src/components/coverage/CoverageMap.svelte -> builder/web/src/lib/core/grid.ts, builder/web/src/components/coverage/CoverageMap.svelte -> builder/web/src/lib/format.ts, builder/web/src/components/coverage/SkinStep.svelte -> builder/web/src/lib/ui/Window.svelte, and 21 more"
     },
     {
      "rule": "cycle",
-     "message": "map-style -> device-map-builder closes a cycle: builder/web/src/components/advanced/ColorControl.svelte -> builder/web/src/lib/palette.ts, builder/web/src/components/advanced/ProfilesTab.svelte -> builder/web/src/lib/ui/confirm.svelte.ts, builder/web/src/components/advanced/SchemaLab.svelte -> builder/web/src/lib/platform/types.ts, and 4 more"
+     "message": "map-style -> device-map-builder closes a cycle: builder/web/src/lib/skin/preview.test.ts -> builder/web/src/lib/core/bridge.ts (test), builder/web/src/lib/skin/preview.ts -> builder/web/src/lib/core/bridge.ts"
     },
     {
      "rule": "cycle",
@@ -440,7 +428,7 @@
     },
     {
      "rule": "cycle",
-     "message": "device-map-builder -> firmware-update closes a cycle: builder/web/src/components/UpdatePrompt.svelte -> builder/web/src/lib/firmware/check.svelte.ts, builder/web/src/components/device/FirmwareCard.svelte -> builder/web/src/lib/firmware/check.svelte.ts, builder/web/src/components/device/FirmwareCard.svelte -> builder/web/src/lib/firmware/release.ts, and 1 more"
+     "message": "device-map-builder -> firmware-update closes a cycle: builder/web/test-support/device-sync/fake-device.ts -> builder/web/src/lib/firmware/check.svelte.ts"
     },
     {
      "rule": "cycle",
@@ -520,7 +508,7 @@
    "depends_on": [],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 2276,
+   "lines": 2851,
    "problems": []
   },
   {
@@ -542,28 +530,20 @@
    "test_depends_on": [
     "content"
    ],
-   "violations": 10,
-   "lines": 24646,
+   "violations": 8,
+   "lines": 21789,
    "problems": [
-    {
-     "rule": "cycle",
-     "message": "device-link -> map-assembly closes a cycle: builder/web/src/lib/device/flows.test.ts -> builder/web/src/lib/convert/bridge.ts (test), builder/web/src/lib/device/rides.test.ts -> builder/web/src/lib/convert/bridge.ts (test), builder/web/src/lib/device/rides.ts -> builder/web/src/lib/convert/bridge.ts, and 1 more"
-    },
-    {
-     "rule": "cycle",
-     "message": "device-map-builder -> map-assembly closes a cycle: builder/web/src/components/device/DeviceStep.svelte -> builder/web/src/lib/catalog/ledger.ts, builder/web/src/components/device/DeviceSurfaces.svelte -> builder/web/src/lib/catalog/ledger.ts, builder/web/src/components/device/MapSend.svelte -> builder/web/src/lib/catalog/ledger.ts, and 7 more"
-    },
     {
      "rule": "cycle",
      "message": "map-assembly -> card-storage closes a cycle: obc-builder-bridge -> obc-storage"
     },
     {
      "rule": "cycle",
-     "message": "map-assembly -> device-link closes a cycle: obc-builder-bridge -> obc-flat-device, obc-builder-bridge -> obc-link, obc-builder-bridge -> obc-vectors (test), and 12 more"
+     "message": "map-assembly -> device-link closes a cycle: obc-builder-bridge -> obc-flat-device, obc-builder-bridge -> obc-link, obc-builder-bridge -> obc-vectors (test), and 4 more"
     },
     {
      "rule": "cycle",
-     "message": "map-assembly -> device-map-builder closes a cycle: builder/web/src/components/coverage/CoverageHome.svelte -> builder/web/src/components/device/DeviceStep.svelte, builder/web/src/components/coverage/CoverageHome.svelte.test.ts -> builder/web/src/routes/Home.svelte (test), builder/web/src/components/coverage/CoverageHome.svelte.test.ts -> builder/web/test-support/coverage/Selection.svelte (test), and 28 more"
+     "message": "map-assembly -> device-map-builder closes a cycle: builder/web/src/components/coverage/CoverageMap.svelte -> builder/web/src/lib/core/grid.ts, builder/web/src/components/coverage/CoverageMap.svelte -> builder/web/src/lib/format.ts, builder/web/src/components/coverage/SkinStep.svelte -> builder/web/src/lib/ui/Window.svelte, and 21 more"
     },
     {
      "rule": "cycle",
@@ -629,20 +609,16 @@
    "status": "draft",
    "depends_on": [],
    "test_depends_on": [],
-   "violations": 4,
-   "lines": 6923,
+   "violations": 3,
+   "lines": 1998,
    "problems": [
-    {
-     "rule": "cycle",
-     "message": "device-map-builder -> map-style closes a cycle: builder/web/src/lib/api/client.ts -> builder/web/src/lib/config/model.ts, builder/web/src/lib/platform/types.ts -> builder/web/src/lib/config/model.ts, builder/web/src/routes/Advanced.svelte -> builder/web/src/components/advanced/CategoryRail.svelte, and 10 more"
-    },
     {
      "rule": "cycle",
      "message": "map-assembly -> map-style closes a cycle: builder/web/src/components/coverage/SkinStep.svelte -> builder/web/src/components/skin/SkinEditor.svelte, builder/web/src/components/coverage/SkinStep.svelte -> builder/web/src/components/skin/SkinPreviewThumbnail.svelte, builder/web/src/components/coverage/SkinStep.svelte -> builder/web/src/lib/skin/custom.ts, and 4 more"
     },
     {
      "rule": "cycle",
-     "message": "map-style -> device-map-builder closes a cycle: builder/web/src/components/advanced/ColorControl.svelte -> builder/web/src/lib/palette.ts, builder/web/src/components/advanced/ProfilesTab.svelte -> builder/web/src/lib/ui/confirm.svelte.ts, builder/web/src/components/advanced/SchemaLab.svelte -> builder/web/src/lib/platform/types.ts, and 4 more"
+     "message": "map-style -> device-map-builder closes a cycle: builder/web/src/lib/skin/preview.test.ts -> builder/web/src/lib/core/bridge.ts (test), builder/web/src/lib/skin/preview.ts -> builder/web/src/lib/core/bridge.ts"
     },
     {
      "rule": "cycle",
@@ -708,7 +684,7 @@
     },
     {
      "rule": "R1",
-     "message": "crate obc-data-steps (obc-data) holds 4 file(s) of planner-map-baking"
+     "message": "crate obc-data-steps (obc-data) holds 2 file(s) of planner-map-baking"
     },
     {
      "rule": "R1",
@@ -729,7 +705,7 @@
    "problems": [
     {
      "rule": "R1",
-     "message": "crate obc-data-steps (obc-data) holds 4 file(s) of planner-map-baking"
+     "message": "crate obc-data-steps (obc-data) holds 2 file(s) of planner-map-baking"
     },
     {
      "rule": "R4",
@@ -780,7 +756,7 @@
    ],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 18954,
+   "lines": 18895,
    "problems": []
   },
   {
@@ -828,7 +804,7 @@
    ],
    "test_depends_on": [],
    "violations": 7,
-   "lines": 27428,
+   "lines": 27585,
    "problems": [
     {
      "rule": "cycle",
@@ -945,7 +921,7 @@
     "repository-tooling"
    ],
    "violations": 4,
-   "lines": 18734,
+   "lines": 18928,
    "problems": [
     {
      "rule": "cycle",
@@ -976,7 +952,7 @@
    ],
    "test_depends_on": [],
    "violations": 5,
-   "lines": 101940,
+   "lines": 103131,
    "problems": [
     {
      "rule": "cycle",
@@ -1045,7 +1021,7 @@
    ],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 11044,
+   "lines": 14023,
    "problems": []
   },
   {
@@ -1202,12 +1178,6 @@
   },
   {
    "from": "device-link",
-   "to": "map-assembly",
-   "test": false,
-   "undeclared": true
-  },
-  {
-   "from": "device-link",
    "to": "map-reading",
    "test": true,
    "undeclared": false
@@ -1298,18 +1268,6 @@
   },
   {
    "from": "device-map-builder",
-   "to": "map-assembly",
-   "test": false,
-   "undeclared": false
-  },
-  {
-   "from": "device-map-builder",
-   "to": "map-style",
-   "test": false,
-   "undeclared": false
-  },
-  {
-   "from": "device-map-builder",
    "to": "repository-tooling",
    "test": true,
    "undeclared": false
@@ -1323,12 +1281,6 @@
   {
    "from": "device-map-builder",
    "to": "trailview",
-   "test": false,
-   "undeclared": false
-  },
-  {
-   "from": "device-map-builder",
-   "to": "website",
    "test": false,
    "undeclared": false
   },

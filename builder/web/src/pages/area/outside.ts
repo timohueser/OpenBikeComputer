@@ -1,4 +1,4 @@
-/** Finds the parts of the rider's routes that leave the area of a device map. It needs the wasm core of the map builder. */
+/** Finds the parts of the rider's routes that leave the area of a device map. It needs the shared wasm core. */
 import type { RegionEntry } from '../../lib/catalog/manifest';
 import { cellIndexHas } from '../../lib/catalog/satellites';
 import { cellContaining, formatCellId, type UBox } from '../../lib/core/grid';

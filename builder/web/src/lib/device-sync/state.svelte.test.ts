@@ -8,9 +8,11 @@ import { Library } from '../library/store';
 import type { DeviceSession } from '../usb/session';
 import { rememberCard, remembered } from './remembered.svelte';
 import { deviceSync, startDeviceSync } from './state.svelte';
-import { syncDevice, type SyncReport } from './sync';
+import { sendMap, syncDevice, type SyncReport } from './sync';
 
-vi.mock('./sync', () => ({ syncDevice: vi.fn() }));
+vi.mock('./sync', () => ({ syncDevice: vi.fn(), sendMap: vi.fn() }));
+vi.mock('../core/bridge', () => ({ initCore: vi.fn(async () => {}) }));
+vi.mock('./map.svelte', () => ({ buildMap: vi.fn() }));
 
 const SERIAL = '9F3A00C1E2B47D10';
 const session = (status: DeviceSession['status']) =>
@@ -69,6 +71,34 @@ describe('startDeviceSync', () => {
         await settle();
         expect(syncDevice).not.toHaveBeenCalled();
         expect(deviceSync.running).toBe(false);
+        stop();
+        deviceHolder.session = null;
+        remembered.device = null;
+    });
+
+    it('does not stop a map send once the device has each byte', async () => {
+        vi.spyOn(deviceHolder, 'open').mockResolvedValue(null);
+        vi.mocked(syncDevice).mockResolvedValue(report([]));
+        rememberCard(SERIAL, '8f2c41d96b074ea3b1559c207de83466');
+        let signal: AbortSignal | undefined;
+        vi.mocked(sendMap).mockImplementation(async (_serial, _library, _build, ctx) => {
+            signal = ctx.signal;
+            // The device stores the map, then the host cleans up: Stop is too late for both.
+            for (const phase of ['committing', 'finalizing'] as const) {
+                ctx.phase(phase);
+                deviceSync.stop();
+            }
+            return null;
+        });
+        deviceHolder.session = session('ready');
+        const stop = startDeviceSync(new Library(new IDBFactory()));
+        flushSync();
+        await vi.waitFor(() => expect(deviceSync.running).toBe(false));
+        deviceSync.sendMap();
+        await vi.waitFor(() => expect(signal).toBeDefined());
+        await settle();
+        expect(signal!.aborted).toBe(false);
+        expect([deviceSync.map, deviceSync.mapProblem]).toEqual([null, null]);
         stop();
         deviceHolder.session = null;
         remembered.device = null;

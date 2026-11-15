@@ -415,15 +415,13 @@ jobs:
           path: ${{ runner.temp }}/ui-snapshots/*.png
           if-no-files-found: ignore
 
-  # Routing-profile round-trips through the builder's pack path. These shell out to the real
-  # obc-pack binary over the tiny corpus and byte-compare the §8.6 profile table against
-  # independently quantized expectations — so they pin the packer's writer against the spec
-  # rather than against itself — plus the pure /api/schema and /api/presets endpoints via
-  # FastAPI's TestClient. The preflight is what stops a missing binary or corpus from turning
-  # the packer half of the suite into a silent skip.
-  builder-python:
+  # Routing-profile round-trips through the obc-pack binary. These pack the tiny corpus with custom
+  # profiles and byte-compare the §8.6 profile table against independently quantized expectations,
+  # so they pin the packer's writer against the spec rather than against itself. The preflight is
+  # what stops a missing binary or corpus from turning the suite into a silent skip.
+  packer-python:
     needs: selection
-    if: contains(fromJSON(needs.selection.outputs.jobs), 'builder-python')
+    if: contains(fromJSON(needs.selection.outputs.jobs), 'packer-python')
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -445,26 +443,26 @@ jobs:
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           version: *python-uv-version
-      - name: Prepare web-builder packer tests
+      - name: Prepare the packer profile tests
         run: |
-          uv sync --locked --group builder-test
+          uv sync --locked --group packer-test
           cargo build -p obc-bake --bin obc-pack --release --locked
       - name: Packer binary and corpus are present
         run: |
           test -x target/release/obc-pack
           test -f builder/tests/corpus/data/tiny.osm.pbf
-      - name: web-builder packer tests (pytest)
-        id: python-builder
+      - name: Packer profile tests (pytest)
+        id: python-packer
         run: |
           mkdir -p .artifacts/python
-          rm -f .artifacts/python/builder.xml
-          PYTHONPATH=. uv run --locked --group builder-test python -m pytest builder/tests/ -v --junitxml=.artifacts/python/builder.xml
-      - name: Upload builder Python test results
-        if: ${{ !cancelled() && (steps.python-builder.outcome == 'success' || steps.python-builder.outcome == 'failure') }}
+          rm -f .artifacts/python/packer.xml
+          uv run --locked --group packer-test python -m pytest host/obc-bake/tests/test_routing_profiles.py -v --junitxml=.artifacts/python/packer.xml
+      - name: Upload packer Python test results
+        if: ${{ !cancelled() && (steps.python-packer.outcome == 'success' || steps.python-packer.outcome == 'failure') }}
         uses: actions/upload-artifact@v4
         with:
-          name: python-builder-${{ github.run_attempt }}
-          path: .artifacts/python/builder.xml
+          name: python-packer-${{ github.run_attempt }}
+          path: .artifacts/python/packer.xml
           if-no-files-found: error
 
   embedded:
@@ -1016,18 +1014,14 @@ jobs:
             exit 1
           fi
 
-  # The web builder's Svelte frontend: type-check, unit tests, production builds.
-  #
-  # One source tree, two hosts: `npm run build` is the local FastAPI one and
-  # `build:web` the static hosted site. Both are built here — a host that stops compiling is otherwise invisible until someone
-  # tries to ship it. The *contents* of the web bundle (no job polling, no style
-  # editor) are asserted by vitest, which builds and inspects the emitted chunks.
+  # The web app's Svelte frontend: type-check and unit tests. The production build of the app is
+  # in vitest too: `bundle.test.ts` builds it and inspects the emitted chunks.
   #
   # The three wasm bridges come from `wasm-bridges` rather than being rebuilt here, so the
   # module the byte-identity tests run against is literally the one the size budget passed. It is
   # a hard dependency, not an optimisation, and it is why the downloads land before `npm ci`:
   # every step below needs them — the TS wrappers import the generated bindings, so `npm run check`
-  # type-checks against them, and the vitest suites and `build:all` fail without the artifacts.
+  # type-checks against them, and the vitest suites fail without the artifacts.
   # The assembly bridge's suite is also the *headless smoke* for #1034: it assembles the checked-in
   # cell fixture in Node and compares the result to the bytes the native CLI wrote.
   web:
@@ -1068,8 +1062,6 @@ jobs:
         run: |
           rm -f "$RUNNER_TEMP/web-builder-junit.xml"
           npm run test:components -- --reporter=default --reporter=junit --outputFile="$RUNNER_TEMP/web-builder-junit.xml"
-      - name: production builds (dev + web hosts)
-        run: npm run build:all
       # naga is the WGSL front end of Firefox; Chrome's Tint compiles the same files in the TrailView smoke.
       - name: Cache the WGSL validator
         id: naga
@@ -1093,17 +1085,15 @@ jobs:
           path: ${{ runner.temp }}/web-builder-junit.xml
           if-no-files-found: error
 
-  # The builder's download journey in a real browser: the shipped `dist/web` build, the real
-  # assembly worker, real OPFS, and the checked-in bridge fixture served as a loopback catalog.
+  # The web app in a real browser: the planner build with the pretend device, the real assembly
+  # worker, real OPFS, and the checked-in bridge fixture served as a loopback catalog.
   #
   # Its own job rather than a step on `web`, because the registry routes a suite to the job whose
-  # step executes it: sharing `web` would make the component tier and this end-to-end journey one
-  # route, and neither could be selected without the other. It needs the production core and
-  # deliberately not the flat test device — the shipped build must not contain it, and
-  # `bundle.test.ts` is what says so.
+  # step executes it: sharing `web` would make the component tier and these end-to-end journeys one
+  # route, and neither could be selected without the other.
   #
-  # `npm test` builds `dist/web` itself (the package's `pretest`), so the bundle under test can
-  # never be stale or built against a different catalog URL.
+  # Each `npm run test:*` builds its page itself (the package's `pretest:*`), so the bundle under
+  # test can never be stale.
   web-browser:
     needs: [selection, wasm-bridges]
     if: contains(fromJSON(needs.selection.outputs.jobs), 'web-browser')
@@ -1139,16 +1129,14 @@ jobs:
         run: |
           npm ci
           npx playwright install --with-deps chromium --only-shell
-      - name: Builder assemble and download journey
+      - name: Web app journeys and the planner request budget
         id: browser-journey
-        run: npm test --prefix builder/web/tests/browser
+        run: npm run test:planner --prefix builder/web/tests/browser
       - name: Require browser journey execution
         if: ${{ !cancelled() }}
         env:
           JOURNEY_OUTCOME: ${{ steps.browser-journey.outcome }}
         run: test "$JOURNEY_OUTCOME" = success
-      - name: Planner request budget
-        run: npm run test:planner --prefix builder/web/tests/browser
       - name: Operator page at phone width
         run: npm run test:data --prefix builder/web/tests/browser
       - name: TrailView smoke on SwiftShader
@@ -1223,7 +1211,7 @@ jobs:
   # publishes no plan, which fails this gate rather than silently passing.
   ci:
     if: always()
-    needs: [selection, guards, cairn, fmt, clippy, test, ui-snapshots, builder-python, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, ios-release, web, web-browser, verification, planner-search]
+    needs: [selection, guards, cairn, fmt, clippy, test, ui-snapshots, packer-python, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, ios-release, web, web-browser, verification, planner-search]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4

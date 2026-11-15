@@ -1,17 +1,13 @@
-"""Routing-profile round-trips through the web builder's pack path (N6).
+"""Routing profiles through the real `obc-pack` binary.
 
-These tests exercise the same `obc-pack` binary the builder dev server shells out
-to (``builder/server/schema_preview.py``): a config carrying custom ``routing.profiles``
-is packed over the tiny corpus fixture, and the resulting §8.6 profile-table
-bytes are compared against independently quantized expectations. A sub-1.0
-multiplier must be rejected with the packer's admissibility error — the same
-message the builder surfaces as a job failure. The pure API endpoints
-(``/api/schema``, ``/api/presets``) are checked with FastAPI's TestClient so no
-network is needed.
+A config carrying custom ``routing.profiles`` is packed over the tiny corpus fixture, and the
+§8.6 profile-table bytes of the map are compared with expectations that this file quantizes
+itself from the spec. A sub-1.0 multiplier and any profile set but the four bike types must fail
+the pack with the packer's own error.
 
-Run from the repo root with the uv-managed venv, e.g.::
+Run from the repo root, after ``cargo build -p obc-bake --bin obc-pack --release``::
 
-    PYTHONPATH=. uv run --locked --group builder-test python -m pytest builder/tests/
+    uv run --locked --group packer-test python -m pytest host/obc-bake/tests/test_routing_profiles.py
 """
 import json
 import os
@@ -21,11 +17,9 @@ import subprocess
 
 import pytest
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-BUILDER_ROOT = os.path.dirname(HERE)
-REPO_ROOT = os.path.dirname(BUILDER_ROOT)
-TINY_PBF = os.path.join(HERE, "corpus", "data", "tiny.osm.pbf")
-SCHEMA_PRESET = os.path.join(BUILDER_ROOT, "presets", "schema.json")
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+TINY_PBF = os.path.join(REPO_ROOT, "builder", "tests", "corpus", "data", "tiny.osm.pbf")
+SCHEMA_PRESET = os.path.join(REPO_ROOT, "builder", "presets", "schema.json")
 
 # Canonical class order; must match obc-map-core/src/nav.rs and the OBCM spec.
 HIGHWAY_CLASSES = [
@@ -175,8 +169,7 @@ def test_anything_but_the_four_bike_types_is_rejected(tmp_path):
 
 @requires_pack
 def test_sub_one_multiplier_is_rejected_with_admissibility_error(tmp_path):
-    """A multiplier below 1.0 must be rejected by the packer with the admissibility error
-    — the identical failure the builder API surfaces as a job error."""
+    """A multiplier below 1.0 must be rejected by the packer with the admissibility error."""
     cfg = json.load(open(SCHEMA_PRESET))
     cfg.pop("_meta", None)
     cfg["routing"] = {"profiles": _four({"name": "Road", "highway": {"cycleway": 0.5}})}
@@ -190,40 +183,3 @@ def test_sub_one_multiplier_is_rejected_with_admissibility_error(tmp_path):
     msg = proc.stdout + proc.stderr
     assert "below 1.0" in msg
     assert "admissible" in msg
-
-# --- Pure builder-API endpoints (no network) --------------------------------
-# Called directly (not via TestClient) so the suite needs no httpx — the
-# handlers return FastAPI JSONResponses whose body we decode.
-
-def _endpoint_json(response):
-    return json.loads(bytes(response.body))
-
-def test_schema_endpoint_exposes_routing_defaults():
-    """The builder serves the canonical shipped profiles as the schema default —
-    the single source of truth the frontend's 'Reset to defaults' reads."""
-    pytest.importorskip("fastapi")
-    from builder.server import server
-
-    schema = _endpoint_json(server.get_schema())["schema"]
-    routing = schema["properties"]["routing"]
-    names = [p["name"] for p in routing["default"]["profiles"]]
-    assert names == ["Road", "Gravel", "MTB", "Touring"]
-    hw_enum = schema["$defs"]["profile"]["properties"]["highway"]["propertyNames"]["enum"]
-    assert hw_enum[:5] == HIGHWAY_CLASSES[:5]
-    mult = schema["$defs"]["multiplier"]["oneOf"]
-    assert any(o.get("minimum") == 1.0 for o in mult)
-    assert any(o.get("const") == "forbidden" for o in mult)
-
-def test_presets_round_trip_routing():
-    """Every shipped preset carries a complete routing section (CLI-usable), so the
-    builder shows its profiles when a preset is loaded."""
-    pytest.importorskip("fastapi")
-    from builder.server import server
-
-    presets = _endpoint_json(server.get_presets())
-    assert presets, "no presets served"
-    for p in presets:
-        routing = p["config"].get("routing")
-        assert routing is not None, f"preset {p['id']} lost its routing section"
-        assert 1 <= len(routing["profiles"]) <= 8
-        assert all("name" in prof for prof in routing["profiles"])

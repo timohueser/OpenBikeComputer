@@ -1,14 +1,13 @@
 /**
- * The three flows, end to end against the simulated device.
+ * The map and firmware flows, end to end against the simulated device.
  *
  * The LM20's USB peripheral does not exist yet, so this is where "it works" is decided. The device on
  * the other end is the real protocol engine over a real flat store on a simulated card: it assigns
  * the ids, enforces the compare-and-swap, answers a second transfer `busy`, refuses a payload its
  * extents cannot hold with the bytes it needed, and runs the bilateral cancel.
  *
- * A map is **one object**, exactly as a route and a firmware image are: one `PUT`, one stream, one
- * whole-payload CRC, one commit. There is no multi-file map upload to test, so a map's tests are the
- * same tests the other two get, on a much larger object.
+ * A map is **one object**, exactly as a firmware image is: one `PUT`, one stream, one whole-payload
+ * CRC, one commit. There is no multi-file map upload to test.
  *
  * Nothing here proves the LM20 enumerates, that its endpoints have the sizes assumed, or that a real
  * SD write keeps up. What it does prove is the object-model half, including the four failure paths
@@ -27,11 +26,9 @@ import { FlatDevice, flatDevice } from "../usb/flat-device";
 import { loopbackLink } from "../usb/loopback";
 import type { BytePipe, DeviceLink } from "../usb/pipe";
 import { ObjectKind } from "../usb/protocol";
-import { initConvert } from "../convert/bridge";
 import { expectBytes } from "../../../test-support/bytes";
 import { loadFlatDevice } from "../../../test-support/flat-device/load";
-import { prepareRoute } from "./route";
-import { armUpdate, sendMapBlob, sendMapBytes, sendMapFile, sendRoute, stageFirmware } from "./write";
+import { armUpdate, sendMapBlob, sendMapBytes, stageFirmware } from "./write";
 import type { JobContext, JobPhase } from "./progress";
 
 function repoRoot(): string {
@@ -46,14 +43,7 @@ function repoRoot(): string {
 const ROOT = repoRoot();
 const vector = (name: string) => new Uint8Array(readFileSync(join(ROOT, "specs/vectors", name)));
 
-beforeAll(async () => {
-    const wasm = join(dirname(fileURLToPath(import.meta.url)), "..", "core", "pkg", "obc_builder_bridge_bg.wasm");
-    if (!existsSync(wasm)) {
-        throw new Error(`the wasm bridge is not built (${wasm} missing). Run \`npm run build:wasm\`.`);
-    }
-    await initConvert(readFileSync(wasm));
-    await loadFlatDevice();
-});
+beforeAll(loadFlatDevice);
 
 interface Watched extends JobContext {
     readonly phases: JobPhase[];
@@ -131,9 +121,10 @@ describe("map upload from a file", () => {
     it("commits one object and reports the id the device assigned", async () => {
         await withDevice({}, async ({ client, device }) => {
             const bytes = syntheticBytes(200_000);
-            const file = new File([bytes], "grimsel-default.obcm");
+            const map = new Blob([bytes]);
+            const name = "grimsel-default.obcm";
             const ctx = context();
-            const result = await sendMapFile(client, file, ctx);
+            const result = await sendMapBlob(client, map, name, ctx);
 
             expect(result.objectId).toBe(1n);
             expect(result.payloadLength).toBe(BigInt(bytes.length));
@@ -149,10 +140,11 @@ describe("map upload from a file", () => {
     it("replaces the selected map on a second send instead of accumulating another object", async () => {
         await withDevice({}, async ({ client, device }) => {
             const bytes = syntheticBytes(64 * 1024);
-            const file = new File([bytes], "grimsel-default.obcm");
-            const first = await sendMapFile(client, file, context());
+            const map = new Blob([bytes]);
+            const name = "grimsel-default.obcm";
+            const first = await sendMapBlob(client, map, name, context());
             const replacement = syntheticBytes(96 * 1024);
-            const second = await sendMapFile(client, new File([replacement], "monaco.obcm"), context());
+            const second = await sendMapBlob(client, new Blob([replacement]), "monaco.obcm", context());
 
             expect(second.objectId).toBe(first.objectId);
             expect(second.revision).toBe(first.revision + 1n);
@@ -175,7 +167,7 @@ describe("map upload from a file", () => {
             device.seed({ kind: ObjectKind.Route, displayName: "not a map", bytes: syntheticBytes(512) });
 
             const bytes = syntheticBytes(32 * 1024);
-            const result = await sendMapFile(client, new File([bytes], "replacement.obcm"), context());
+            const result = await sendMapBlob(client, new Blob([bytes]), "replacement.obcm", context());
 
             expect(result.objectId).toBe(active.objectId);
             expect(result.revision).toBe(active.revision + 1n);
@@ -196,8 +188,9 @@ describe("map upload from a file", () => {
             // bytes before the old map can be retired.
             const oldBytes = syntheticBytes(64);
             const held = device.seed({ kind: ObjectKind.MapShard, displayName: "installed", bytes: oldBytes });
-            const file = new File([syntheticBytes(256 * 1024)], "too-big.obcm");
-            const failure = await sendMapFile(client, file, context()).catch((cause: unknown) => cause);
+            const map = new Blob([syntheticBytes(256 * 1024)]);
+            const name = "too-big.obcm";
+            const failure = await sendMapBlob(client, map, name, context()).catch((cause: unknown) => cause);
             expect(failure).toBeInstanceOf(DeviceError);
             expect((failure as DeviceError).code).toBe("no-space");
             expect((failure as DeviceError).refusal?.context).toBe(BigInt(256 * 1024));
@@ -209,7 +202,8 @@ describe("map upload from a file", () => {
     it("reports an unplug mid-transfer, and the next attempt is an ordinary one", async () => {
         const first = flatDevice({ packetSize: 4096, streamHighWaterMark: 8 * 1024 });
         const bytes = syntheticBytes(2 * 1024 * 1024);
-        const file = new File([bytes], "big.obcm");
+        const map = new Blob([bytes]);
+        const name = "big.obcm";
         const ctx = context({
             at: (done, phase) => {
                 // Pull the cable a little way into the *send*, not the read: mid-stream is the
@@ -217,7 +211,7 @@ describe("map upload from a file", () => {
                 if (phase === "sending" && done > 256 * 1024) void first.link.device.close();
             },
         });
-        const failure = await sendMapFile(first.client, file, ctx).catch((e: unknown) => e);
+        const failure = await sendMapBlob(first.client, map, name, ctx).catch((e: unknown) => e);
         expect(failure).toBeInstanceOf(DeviceError);
         expect((failure as DeviceError).code).toBe("link");
         expect(first.device.entries, "a half-written map is never committed").toEqual([]);
@@ -227,7 +221,7 @@ describe("map upload from a file", () => {
         // no repair. Any break before the commit leaves the card as if nothing had happened, and
         // transfers restart rather than resume.
         await withDevice({ packetSize: 4096 }, async ({ client, device }) => {
-            const result = await sendMapFile(client, file, context());
+            const result = await sendMapBlob(client, map, name, context());
             expect(result.payloadLength).toBe(BigInt(bytes.length));
             expectBytes(device.payloadOf(result.objectId), bytes);
         });
@@ -239,7 +233,8 @@ describe("map upload from a file", () => {
         // and the retry is therefore not a special path, it is the first path again.
         await withDevice({ packetSize: 4096, streamHighWaterMark: 8 * 1024 }, async ({ client, device }) => {
             const bytes = syntheticBytes(1024 * 1024);
-            const file = new File([bytes], "cancelled.obcm");
+            const map = new Blob([bytes]);
+            const name = "cancelled.obcm";
             const oldBytes = syntheticBytes(4096);
             const installed = device.seed({ kind: ObjectKind.MapShard, displayName: "installed", bytes: oldBytes });
             const controller = new AbortController();
@@ -252,11 +247,11 @@ describe("map upload from a file", () => {
                     if (phase === "sending" && done > 128 * 1024) controller.abort();
                 },
             });
-            await expect(sendMapFile(client, file, ctx)).rejects.toMatchObject({ code: "aborted" });
+            await expect(sendMapBlob(client, map, name, ctx)).rejects.toMatchObject({ code: "aborted" });
             expect(device.entries).toEqual([installed]);
             expect(device.payloadOf(installed.objectId)).toEqual(oldBytes);
 
-            const result = await sendMapFile(client, file, context());
+            const result = await sendMapBlob(client, map, name, context());
             expect(result.objectId).toBe(installed.objectId);
             expect(result.revision).toBe(installed.revision + 1n);
             expectBytes(device.payloadOf(result.objectId), bytes);
@@ -302,50 +297,14 @@ describe("map upload from a file", () => {
         // Three surfaces share one client and one device, which allows exactly one transfer at a
         // time, and the answer has to be a clean error rather than two interleaved objects.
         await withDevice({ packetSize: 4096, streamHighWaterMark: 8 * 1024 }, async ({ client }) => {
-            const file = new File([syntheticBytes(1024 * 1024)], "one.obcm");
-            const running = sendMapFile(client, file, context());
-            const second = sendMapFile(client, new File([syntheticBytes(4096)], "two.obcm"), context()).catch(
+            const map = new Blob([syntheticBytes(1024 * 1024)]);
+            const name = "one.obcm";
+            const running = sendMapBlob(client, map, name, context());
+            const second = sendMapBlob(client, new Blob([syntheticBytes(4096)]), "two.obcm", context()).catch(
                 (e: unknown) => e,
             );
             await running;
             expect((await second) as DeviceError).toMatchObject({ code: "busy" });
-        });
-    });
-});
-
-describe("route upload", () => {
-    it("converts a dropped GPX and sends the OBCR the device would have produced itself", async () => {
-        await withDevice({}, async ({ client, device }) => {
-            const gpx = readFileSync(join(ROOT, "host/obc-vectors/src/route-source.gpx"));
-            // The route's name comes from the file's stem, which is what makes this comparable to
-            // the checked-in vector: same input, same name, same bytes.
-            const prepared = await prepareRoute(new File([gpx], "Vector Loop.gpx"), 0);
-            expect(prepared.obcr).toEqual(vector("route-waypoints.obcr"));
-            expect(prepared.header).toMatchObject({
-                name: "Vector Loop",
-                pointCount: 9,
-                distanceM: 2207,
-                ascentM: 76,
-            });
-
-            const result = await sendRoute(client, prepared, context());
-            expect(device.payloadOf(result.objectId)).toEqual(prepared.obcr);
-                // The display name is what a catalog listing shows, and it is the route's own name —
-                // so the row a rider reads on the device page is the row they dropped.
-            const listed = await client.list({ kind: ObjectKind.Route });
-            expect(listed.entries.map((entry) => [entry.objectId, entry.displayName])).toEqual([
-                [result.objectId, "Vector Loop"],
-            ]);
-        });
-    });
-
-    it("rejects a file that is not a route before anything is sent", async () => {
-        await withDevice({}, async ({ client, device }) => {
-            await expect(prepareRoute(new File([new Uint8Array(64)], "notes.txt"), 0)).rejects.toMatchObject({
-                name: "ConvertError",
-            });
-            expect(device.entries).toEqual([]);
-            void client;
         });
     });
 });
