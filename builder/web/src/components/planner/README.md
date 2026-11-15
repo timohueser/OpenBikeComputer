@@ -25,8 +25,8 @@ The planner reads the `active`
 [catalogue](../../../../../specs/planner-release.md#catalogue) entry at page load.
 `VITE_PLANNER_CATALOG` names another catalogue, such as the one that `obc data serve`
 prints. The map pages then read its device catalogue too. `VITE_PLANNER_CONFIG`
-replaces the entry with one entry. `VITE_CATALOG_URL` gives the map pages another
-device catalogue.
+replaces only the entry of the planner: the map pages still read the device catalogue of the
+`active` entry, unless `VITE_CATALOG_URL` names another device catalogue.
 
 Basemap zooms are 0–14; terrain zooms are 0–12. Browser contours use terrain
 neighbours. Highlighted places use zoom 11.

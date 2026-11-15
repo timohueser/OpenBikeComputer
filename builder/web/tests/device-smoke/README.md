@@ -40,7 +40,7 @@ noise.
 | Phase | Evidence |
 | --- | --- |
 | `connect` | The device answers `LIST`; its identity strings come over EP0. The catalog is recorded. |
-| `upload` | `PUT` through the shipping `sendMapBytes`, the same call that "Send the map" of the web app makes. |
+| `upload` | `PUT` through the shipping `sendMapBytes`, the call that "Send the map" of the web app makes for a map in memory. A map that the assembly writes to the browser storage goes through `sendMapBlob`, which this test does not run. |
 | `verify` | `STATUS`, the catalog entry and a whole `GET` all agree with the bytes sent; every other object on the card is still at its revision, length and CRC. |
 | `reboot` | `board.py run --preverify` resets the board and streams RTT. The firmware names the object and revision it opened, the box it parsed out of the map header, and the embedded terrain region it mounted. |
 | `reverify` | The device comes back on the same store with the same object at the same revision, length and CRC. |
