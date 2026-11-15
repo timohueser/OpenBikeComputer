@@ -7,7 +7,7 @@
     /** The window of the photos of a ride: one photo large, with the list of all photos beside it, so a rider with many
      * photos goes to one with one click. The arrows and the arrow keys go to the next and the last photo. Under the
      * photo are its place, its time of day and "Remove", which asks no question. The frame of the photo has one size, so
-     * no part of the window moves from one photo to the next. */
+     * no part of the window moves from one photo to the next; an upright photo and a wide one stand in its middle. */
     let { library, photos, first, onClose }: {
         library: Library;
         /** The photos in the order of the ride: the address of the small picture, and the place with the time of day. */
@@ -24,6 +24,8 @@
     /** The copy of the photo that shows. Until the library gives it, the small picture stands in its place. */
     let copy = $state.raw<{ id: string; url: string }>();
     let list = $state<HTMLElement>(), failure = $state('');
+    /** The width of the photo that shows over its height, from the picture when it loads. */
+    let shape = $state(4 / 3);
 
     const go = (to: number) => { index = Math.max(0, Math.min(photos.length - 1, to)); };
 
@@ -67,7 +69,8 @@
                 {/each}
             </ul>
             <button type="button" class="step" aria-label="Photo before" disabled={at === 0} onclick={() => go(at - 1)}><span class="back"><Icon name="chevron" /></span></button>
-            <div class="frame"><img src={copy?.id === shown.id ? copy.url : shown.url} alt={`Photo ${at + 1} of ${photos.length}`} /></div>
+            <div class="frame"><img src={copy?.id === shown.id ? copy.url : shown.url} alt={`Photo ${at + 1} of ${photos.length}`} style:--shape={shape}
+                onload={event => { const image = event.currentTarget as HTMLImageElement; shape = image.naturalWidth / image.naturalHeight; }} /></div>
             <button type="button" class="step" aria-label="Next photo" disabled={at === photos.length - 1} onclick={() => go(at + 1)}><Icon name="chevron" /></button>
             <div class="foot">
                 <span>{shown.text}</span>
@@ -125,18 +128,21 @@
         outline: 2px solid var(--ink-soft);
         outline-offset: 1px;
     }
+    /* The frame has one size and no ground: the photo has its own shape in the middle of it, as large as the frame lets it be. */
     .frame {
+        display: grid;
+        place-items: center;
         min-width: 0;
         min-height: 0;
-        overflow: hidden;
-        border-radius: 8px;
-        background: var(--parchment-2);
+        container-type: size;
     }
     .frame img {
         display: block;
-        width: 100%;
-        height: 100%;
-        object-fit: contain;
+        width: min(100cqw, calc(100cqh * var(--shape)));
+        aspect-ratio: var(--shape);
+        border-radius: 8px;
+        background: var(--parchment-2);
+        object-fit: cover;
     }
     .step {
         display: grid;
