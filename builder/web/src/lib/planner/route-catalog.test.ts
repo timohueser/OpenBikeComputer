@@ -43,6 +43,7 @@ describe('route catalog', () => {
         const box: Box = [7.1, 47.8, 15.6, 47.9];
         expect(boxCells(box)).toHaveLength(MAX_CELLS + 1);
         expect(await new RouteCatalog().inBox(box, 'hiking')).toBeNull();
+        expect(await new RouteCatalog().inBox([-180, -85, 180, 85], 'hiking')).toBeNull();
         expect(asked).toEqual([]);
     });
 

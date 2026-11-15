@@ -1,12 +1,15 @@
 import type { Coordinate } from './geo';
 import { loadRouteCell } from './map-data';
-import { corridorTiles } from './place-index';
+import { corridorTiles, tileColumn, tileRow } from './place-index';
 import type { BikeType } from './riding-profiles';
 import { decodeCoordinates } from './route-answer';
 import { joinedPlan, type RoutePlan } from './signed-route-plan';
 import { kinds, routePlan, type CatalogRecord, type RouteRecord } from './signed-routes';
 
-/** West, south, east and north, in degrees. */
+/**
+ * West, south, east and north, in degrees. The caller wraps longitudes to -180..180. A box with west above east,
+ * south above north or a longitude outside -180..180 gives no cell.
+ */
 export type Box = [west: number, south: number, east: number, north: number];
 
 /** The most cell files that one map view loads (`specs/route-catalog.md`, "Map view"). */
@@ -19,23 +22,24 @@ export function recordLine(route: CatalogRecord, stages: CatalogRecord[] = []): 
     return route.line_udeg ? decodeCoordinates(route.line_udeg) : stages.flatMap(stage => stage.line_udeg ? decodeCoordinates(stage.line_udeg) : []);
 }
 
+/** The columns and rows of the zoom 9 cells whose box meets `box`, edges included, or null for a box with no cell. */
+function boxRange([west, south, east, north]: Box) {
+    if (!(-180 <= west && west <= east && east <= 180 && south <= north)) return null;
+    // A cell [i, i + 1] meets the range [a, b] when i is from ceil(a) - 1 to floor(b). A latitude on a row edge
+    // is not exact in floating point; no vertex in microdegrees lies on such an edge, so this has no effect.
+    const range = (a: number, b: number) => ({ from: Math.max(0, Math.ceil(a) - 1), to: Math.min(511, Math.floor(b)) });
+    const columns = range(tileColumn(west, 9), tileColumn(east, 9)), rows = range(tileRow(north, 9), tileRow(south, 9));
+    return { columns, rows, count: Math.max(0, columns.to - columns.from + 1) * Math.max(0, rows.to - rows.from + 1) };
+}
+
 /** The ids `9-X-Y` of the zoom 9 cells whose box meets `box`, edges included. */
-export function boxCells([west, south, east, north]: Box): string[] {
-    if (!(west <= east && south <= north)) return [];
-    const n = 512;
-    // Multiplication before division keeps a longitude on a cell edge exact.
-    const column = (lon: number) => (lon + 180) * n / 360;
-    const row = (lat: number) => {
-        const rad = lat * Math.PI / 180;
-        return (1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2 * n;
-    };
-    // A cell [i, i + 1] meets the range [a, b] when i is from ceil(a) - 1 to floor(b).
-    const range = (a: number, b: number) => {
-        const from = Math.max(0, Math.ceil(a) - 1), to = Math.min(n - 1, Math.floor(b));
-        return Array.from({ length: Math.max(0, to - from + 1) }, (_, i) => from + i);
-    };
-    const rows = range(row(north), row(south));
-    return range(column(west), column(east)).flatMap(x => rows.map(y => `9-${x}-${y}`));
+export function boxCells(box: Box): string[] {
+    const cells: string[] = [];
+    const range = boxRange(box);
+    if (!range) return cells;
+    const { columns, rows } = range;
+    for (let x = columns.from; x <= columns.to; x++) for (let y = rows.from; y <= rows.to; y++) cells.push(`9-${x}-${y}`);
+    return cells;
 }
 
 /** The cell files of the route catalog and their records. The cache has no limit: a session holds some tens of cells. */
@@ -67,8 +71,8 @@ export class RouteCatalog {
      * A long route is not one, but its stages are. Null, with no load, when the box meets more than `MAX_CELLS` cells.
      */
     async inBox(box: Box, bike: BikeType): Promise<CatalogRecord[] | null> {
+        if ((boxRange(box)?.count ?? 0) > MAX_CELLS) return null;
         const cells = boxCells(box);
-        if (cells.length > MAX_CELLS) return null;
         const [west, south, east, north] = box;
         const found = new Map<number, CatalogRecord>();
         for (const file of await Promise.all(cells.map(id => this.cell(id)))) {
