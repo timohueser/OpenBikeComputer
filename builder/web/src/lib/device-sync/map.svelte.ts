@@ -41,7 +41,7 @@ export async function buildMap(next: NextMap, client: FlatStoreClient, ctx: JobC
 }
 
 /** Resolves when the run can start, and rejects with the reason why it never can. */
-function ready(store: CoverageStore, run: MapRun, signal: AbortSignal): Promise<void> {
+export function ready(store: CoverageStore, run: MapRun, signal: AbortSignal): Promise<void> {
     return new Promise((resolve, reject) => {
         let stop = () => {};
         const end = (error?: unknown) => {
