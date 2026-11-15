@@ -2,7 +2,9 @@
     import Switch from '../lib/ui/Switch.svelte';
     import Window from '../lib/ui/Window.svelte';
     import Detail from '../components/route/Detail.svelte';
+    import AddPhotos from '../components/route/AddPhotos.svelte';
     import Menu from '../components/route/Menu.svelte';
+    import Photos from '../components/route/Photos.svelte';
     import Picture from '../components/route/Picture.svelte';
     import RideFacts from '../components/route/RideFacts.svelte';
     import RideLines from '../components/route/RideLines.svelte';
@@ -14,14 +16,16 @@
     import type { Library } from '../lib/library/store';
     import { lineCoordinates } from '../lib/library/summary';
     import { rideAgain } from '../lib/ride/again';
-    import { lineShares, slice } from '../lib/ride/lines';
+    import { distanceAxis, lineShares, slice } from '../lib/ride/lines';
     import { channels, movingSpeed, partNumbers, rideClimbs, rideCsv, type PartNumbers } from '../lib/ride/numbers';
+    import { photoSample } from '../lib/ride/photos';
     import { fitSport, ridePoints, rideSamples } from '../lib/ride/samples';
     import { router } from '../lib/router.svelte';
     import { ROUTES } from '../lib/routes';
+    import { formatAlong } from '../lib/settings/format';
     import { settings } from '../lib/settings/settings.svelte';
 
-    let { library }: { library: Library; active: boolean } = $props();
+    let { library, active }: { library: Library; active: boolean } = $props();
 
     const key = $derived(router.id ?? '');
     let record = $state.raw<RideRecord | null>();
@@ -36,6 +40,12 @@
     const PART_MS = 120;
     /** The exports hold only the selected part. */
     let onlyPart = $state(false);
+    /** The photos of the ride in its order: the address of the small picture, the sample of the place, and the time
+     * when the photo has one. */
+    let photos = $state.raw<{ id: string; url: string; sample: number; time: number | null }[]>([]);
+    /** The files that the window "Add photos" reads, and the photo that the photo window opens with. */
+    let chosen = $state.raw<File[]>(), opened = $state<string>();
+    let picker = $state<HTMLInputElement>(), dropping = $state(false);
 
     const summary = $derived(record?.summary);
     const samples = $derived(source?.samples);
@@ -48,13 +58,21 @@
     const climbs = $derived(samples && rideClimbs(samples));
     const speed = $derived(samples && movingSpeed(samples));
     const date = $derived(summary && new Date(summary.start * 1000).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }));
+    const marks = $derived(shares ? photos.map(({ id, url, sample }) => ({ id, url, share: shares[sample] })) : []);
+    /** For the photo window: the place of each photo on the distance axis, and its time of day. */
+    const listed = $derived.by(() => {
+        if (!samples) return [];
+        const { xs, lengthM } = distanceAxis(samples);
+        const clock = (seconds: number) => new Date(seconds * 1000).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+        return photos.map(({ id, url, sample, time }) => ({ id, url, text: [formatAlong(xs[sample] * lengthM), ...time === null ? [] : [clock(time)]].join(' · ') }));
+    });
 
     // The record loads again after each write of this ride, the file only for a new key.
     $effect(() => {
         const target = key;
         let live = true, reading = false;
         record = source = undefined;
-        [share, deleting, sharing, failure, part, onlyPart] = [undefined, false, false, '', null, false];
+        [share, deleting, sharing, failure, part, onlyPart, chosen, opened] = [undefined, false, false, '', null, false, undefined, undefined];
         const load = async () => {
             const ride = await library.ride(target);
             if (!live) return;
@@ -77,6 +95,49 @@
         return () => clearTimeout(timer);
     });
 
+    // The photos load again after each photo that this tab adds or removes. A small picture keeps its address while
+    // its photo is in the list.
+    $effect(() => {
+        const target = key, read = samples, urls = new Map<string, string>();
+        if (!read) return void (photos = []);
+        let live = true;
+        const load = async () => {
+            const records = await library.photos(target);
+            if (!live) return;
+            const next = records.flatMap(record => {
+                const sample = photoSample(read, record);
+                if (sample === undefined) return [];
+                if (!urls.has(record.id)) urls.set(record.id, URL.createObjectURL(record.small));
+                return [{ id: record.id, url: urls.get(record.id)!, sample, time: record.time }];
+            }).sort((a, b) => a.sample - b.sample || (a.time ?? 0) - (b.time ?? 0));
+            for (const [id, url] of urls) {
+                if (next.some(photo => photo.id === id)) continue;
+                URL.revokeObjectURL(url);
+                urls.delete(id);
+            }
+            photos = next;
+        };
+        void load();
+        const stop = library.onChange(store => { if (store === 'photos') void load(); });
+        return () => { live = false; stop(); urls.forEach(url => URL.revokeObjectURL(url)); };
+    });
+
+    /** A drag of files over the page, while the page shows and no window is open. */
+    const filesOver = (event: DragEvent) => active && !!samples && !!event.dataTransfer?.types.includes('Files') && !document.querySelector('dialog:modal');
+
+    function drag(event: DragEvent) {
+        if (!filesOver(event)) return;
+        event.preventDefault();
+        dropping = true;
+    }
+
+    function drop(event: DragEvent) {
+        dropping = false;
+        if (!filesOver(event)) return;
+        event.preventDefault();
+        chosen = [...event.dataTransfer!.files];
+    }
+
     /** Runs a library action; its error shows under the title. */
     async function act(work: () => Promise<unknown>) {
         failure = '';
@@ -93,7 +154,7 @@
         });
     }
 
-    /** Share, the exports, then Delete. An export of the whole ride is the stored file for its own format, else a file
+    /** Share, "Add photos", the exports, then Delete. An export of the whole ride is the stored file for its own format, else a file
      * written from the samples. With a part, the switch "Only the selected part" stands over the exports: with it on,
      * each export is written from the samples of the part, and its name says so. The share card is the whole ride. */
     const more = $derived.by(() => {
@@ -106,6 +167,7 @@
         };
         return [
             { label: 'Share', disabled: !ride, run: () => { sharing = true; } },
+            { label: 'Add photos', disabled: !read, run: () => picker?.click() },
             { label: 'Export FIT file', rule: true, control: part ? partSwitch : undefined, disabled: !read, run: file('fit', () => writeFitRide({ sport: fitSport(ride!.summary.bike), samples: samplesOf() }) as Uint8Array<ArrayBuffer>) },
             { label: 'Export GPX track', disabled: !read, run: file('gpx', () => writeGpx({ name: name(), points: ridePoints(samplesOf()), waypoints: [] })) },
             { label: 'Export table of the data (CSV)', note: 'One line for each point', disabled: !read,
@@ -116,6 +178,10 @@
 </script>
 
 {#snippet partSwitch()}<Switch label="Only the selected part" bind:checked={onlyPart} />{/snippet}
+
+<svelte:window ondragover={drag} ondrop={drop} ondragleave={event => { if (!event.relatedTarget) dropping = false; }} />
+<input bind:this={picker} type="file" accept="image/*" multiple hidden
+    onchange={event => { const files = [...event.currentTarget.files ?? []]; event.currentTarget.value = ''; if (files.length) chosen = files; }} />
 
 <Detail message={record === undefined ? 'Loading…' : record === null ? 'This ride is not in the library.' : undefined}
     name={record?.name ?? ''} nameLabel="Ride name" onrename={rename} {failure}>
@@ -133,12 +199,15 @@
         {/if}
     {/snippet}
     {#snippet picture()}
-        {#if summary}<Picture {library} id={key} {summary} ride mark={share} onpoint={next => share = next ?? undefined} part={lit} {lit} />{/if}
+        {#if summary}<Picture {library} id={key} {summary} ride photos={marks} onphoto={id => opened = id} mark={share} onpoint={next => share = next ?? undefined} part={lit} {lit} />{/if}
     {/snippet}
     {#if samples && shares}
-        {#key key}<RideLines {samples} {shares} {speed} channels={numbers} {climbs} {limits} mark={share} onpoint={next => share = next ?? undefined}
-            {part} onpart={next => part = next} />{/key}
+        {#key key}<RideLines {samples} {shares} {speed} channels={numbers} {climbs} {limits} {photos} onphoto={id => opened = id} mark={share}
+            onpoint={next => share = next ?? undefined} {part} onpart={next => part = next} />{/key}
     {/if}
+    {#if dropping}<p class="drop">Drop to add photos</p>{/if}
+    {#if chosen && samples}<AddPhotos {library} ride={key} {samples} files={chosen} onClose={() => chosen = undefined} />{/if}
+    {#if opened}<Photos {library} photos={listed} first={opened} onClose={() => opened = undefined} />{/if}
     {#if sharing && record}<Share {library} id={key} name={record.name} summary={record.summary} {date} onClose={() => sharing = false} />{/if}
     {#if deleting}
         <Window title="Delete this ride?" onClose={() => deleting = false}>
@@ -156,5 +225,19 @@
         flex: none;
         color: var(--ink-soft);
     }
-
+    /* The plate of the pointer, at the foot of the window, while files are over the page. */
+    .drop {
+        position: fixed;
+        bottom: 24px;
+        left: 50%;
+        z-index: 5;
+        margin: 0;
+        padding: 6px 12px;
+        border-radius: 6px;
+        background: var(--ink);
+        color: var(--panel);
+        font: 600 13px/1.4 var(--sans);
+        translate: -50%;
+        pointer-events: none;
+    }
 </style>

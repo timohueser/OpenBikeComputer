@@ -1,0 +1,49 @@
+import { describe, expect, it } from 'vitest';
+import type { FitSample } from '../core/fit';
+import { photoSample, placePhoto } from './photos';
+
+const start = Date.UTC(2026, 9, 24, 7) / 1000;
+/** 60 samples 10 s apart, about 50 m each: 30 to the north, then back to the south on the same line. */
+const samples: FitSample[] = Array.from({ length: 60 }, (_, i) => ({ timeS: start + 10 * i, lat: 46_900_000 + 450 * (i < 30 ? i : 59 - i), lon: 8_000_000, segmentStart: !i }));
+const placeOf = (sample: number): [number, number] => [8, samples[sample].lat / 1e6];
+const utc = () => 0;
+
+describe('the place of a photo on a ride', () => {
+    it('takes the clock time with the zone of the file, and the sample nearest to it', () => {
+        const at = placePhoto(samples, { clock: start + 7200 + 204, zone: 7200, gpsTime: start + 999_999 }, utc);
+        expect(at).toEqual({ time: start + 204 });
+        expect(photoSample(samples, at!)).toBe(20);
+    });
+
+    it('takes the GPS time for a clock with no zone, else the zone of the browser', () => {
+        expect(placePhoto(samples, { clock: start + 7200 + 100, gpsTime: start + 100 }, utc)).toEqual({ time: start + 100 });
+        expect(placePhoto(samples, { clock: start + 3600 + 100 }, () => 3600)).toEqual({ time: start + 100 });
+    });
+
+    it('leaves out a photo before the start, after the end or with no time and no place', () => {
+        expect(placePhoto(samples, { clock: start - 1, zone: 0 }, utc)).toBeUndefined();
+        expect(placePhoto(samples, { clock: start + 591, zone: 0 }, utc)).toBeUndefined();
+        expect(placePhoto(samples, {}, utc)).toBeUndefined();
+    });
+
+    it('takes the hour that puts a photo with no zone nearest to its GPS place', () => {
+        // The camera clock is two hours ahead of the zone of the browser; the place is that of sample 40.
+        expect(placePhoto(samples, { clock: start + 7200 + 400, place: placeOf(40) }, utc)).toEqual({ time: start + 400 });
+        // No hour is in the ride.
+        expect(placePhoto(samples, { clock: start + 1800 + 400, place: placeOf(40) }, utc)).toBeUndefined();
+    });
+
+    it('puts a photo with no time at the first pass of the line within 100 m of its GPS place', () => {
+        // Sample 49 is exactly at this place on the way back; sample 10 is the first pass.
+        const at = placePhoto(samples, { place: placeOf(49) }, utc);
+        expect(at).toEqual({ time: null, place: placeOf(49) });
+        expect(photoSample(samples, at!)).toBe(10);
+        expect(placePhoto(samples, { place: [8.002, 46.9] }, utc)).toBeUndefined();
+    });
+
+    it('places the photos of a ride with no times by their GPS place only', () => {
+        const timeless = samples.map(sample => ({ ...sample, timeS: 0 }));
+        expect(placePhoto(timeless, { clock: start + 100, zone: 0, place: placeOf(5) }, utc)).toEqual({ time: null, place: placeOf(5) });
+        expect(placePhoto(timeless, { clock: start + 100, zone: 0 }, utc)).toBeUndefined();
+    });
+});

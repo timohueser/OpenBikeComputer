@@ -305,7 +305,7 @@
     "repository-tooling"
    ],
    "violations": 10,
-   "lines": 12432,
+   "lines": 12505,
    "problems": [
     {
      "rule": "cycle",
@@ -515,12 +515,12 @@
    "name": "library",
    "kind": "system",
    "area": "Apps",
-   "purpose": "Keeps the rider's routes, rides and settings in the browser, each route and ride with a summary, and saves and loads them as one backup file.",
+   "purpose": "Keeps the rider's routes, rides, photos of rides and settings in the browser, each route and ride with a summary, and saves and loads them as one backup file.",
    "status": "draft",
    "depends_on": [],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 2304,
+   "lines": 2493,
    "problems": []
   },
   {
@@ -1045,7 +1045,7 @@
    ],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 11996,
+   "lines": 12677,
    "problems": []
   },
   {
