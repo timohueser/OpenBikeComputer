@@ -13,7 +13,7 @@
     import { kindLabel } from '../../lib/planner/search/presentation';
     import type { SearchPlace } from '../../lib/planner/search/types';
     import { routeBase, type RoutePlan } from '../../lib/planner/signed-route-plan';
-    import type { Bounds, CatalogRecord, RouteShape, RouteSort } from '../../lib/planner/signed-routes';
+    import { gradeName, type Bounds, type CatalogRecord, type RouteShape, type RouteSort } from '../../lib/planner/signed-routes';
     import type { BikeType } from '../../lib/planner/riding-profiles';
     import { pacedLine } from '../../lib/planner/routing';
     import type { Trip } from '../../lib/planner/editor';
@@ -40,7 +40,7 @@
     } = $props();
 
     const graded = $derived(activity === 'hiking' || activity === 'mtb');
-    const grade = (index: number) => activity === 'mtb' ? `S${index}` : `T${index + 1}`;
+    const grade = (index: number) => gradeName(activity === 'mtb' ? 'mtb' : 'hiking', index);
     const gradeList = (from: number, to: number) => {
         const names = Array.from({ length: to - from + 1 }, (_, i) => grade(from + i));
         return names.length > 1 ? `${names.slice(0, -1).join(', ')} or ${names.at(-1)}` : names[0];

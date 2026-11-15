@@ -7,7 +7,7 @@ relation with a member outside the extract leaves the catalog.
 - Version: `format` `1`.
 - Writers: the region prepare step, `planner/router-build` (`src/catalog/mod.rs`).
 - Readers: the planner search, online and offline: the web planner
-  (`builder/web/src/lib/planner/signed-routes.ts`), the companion app
+  (`builder/web/src/lib/planner/signed-routes.ts`, `route-catalog.ts`), the companion app
   (`OBCPlanner/SignedRoutes.swift`).
 - Test vectors: [`vectors/signed-routes.json`](vectors/signed-routes.json).
 - Related: [route API](route-api.md), [planner release](planner-release.md), [offline
@@ -163,6 +163,16 @@ A segment of the plan route touches each zoom 9 cell whose box intersects the bo
 segment, edges included. `cells` can name a cell outside the grid; that cell has no file. Offline, a
 route lies wholly inside the download when each of its `cells` is the `id` of a cell in
 `offline.cells`.
+
+### Map view
+
+A map view is a box of longitude and latitude. Its cells are the zoom 9 cells whose box intersects
+the view, edges included. A client loads no more than 12 cell files for one view. When the view has
+more cells, the client loads none and shows no routes. A route record is in the view when its
+`kind` fits the activity and a vertex of its `line_udeg` is in the box, edges included. A long
+route is never in the view, but its stages can be. Each record is in the view once, also when
+several of its cells are loaded. A cell outside the covered set adds no record. Test vectors:
+[`vectors/route-boxes.json`](vectors/route-boxes.json).
 
 ## Examples
 

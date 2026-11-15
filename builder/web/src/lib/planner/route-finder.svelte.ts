@@ -1,10 +1,8 @@
 import { distanceIn, heightIn, heightUnit } from '../settings/format';
 import { settings } from '../settings/settings.svelte';
 import type { Coordinate } from './geo';
-import { loadRouteCell } from './map-data';
-import { corridorTiles } from './place-index';
 import type { BikeType } from './riding-profiles';
-import { decodeCoordinates } from './route-answer';
+import { RouteCatalog, recordLine } from './route-catalog';
 import type { RoutingLine } from './routing';
 import { joinedPlan, type RoutePlan } from './signed-route-plan';
 import type { SignedRoutesView } from './signed-routes-map';
@@ -21,12 +19,7 @@ export interface RouteFilters { radiusKm: number; shape: RouteShape; distanceKm:
 /** The shown route, its distance from the start when it is a match, and the stages of its long route once they load or fail to. */
 export interface RouteDetail { route: CatalogRecord; distanceM?: number; family?: CatalogRecord; stages?: CatalogRecord[]; failed?: boolean }
 
-const cellsAround = (at: Coordinate, km: number) => corridorTiles([at], km, 9).map(key => key.replaceAll('/', '-'));
-
-/** The line of a record: its own, or the lines of the stages of a long route in order. */
-export function recordLine(route: CatalogRecord, stages: CatalogRecord[] = []): Coordinate[] {
-    return route.line_udeg ? decodeCoordinates(route.line_udeg) : stages.flatMap(stage => stage.line_udeg ? decodeCoordinates(stage.line_udeg) : []);
-}
+export { recordLine };
 
 /** The Routes view state. It outlives the view, so "Back to routes" finds the filters and the list again. */
 export class RouteFinder {
@@ -45,8 +38,8 @@ export class RouteFinder {
     hovered = $state<number | null>(null);
     /** A routed plan of the detail, for its profile, figures and time. */
     routed = $state.raw<{ plan: RoutePlan; line: RoutingLine } | null>(null);
-    private readonly cells = new Map<string, Promise<CatalogRecord[] | null>>();
-    private readonly records = new Map<number, CatalogRecord>();
+    /** Its own catalog, so each finder starts with an empty cache. */
+    private readonly catalog = new RouteCatalog();
     private serial = 0;
 
     /** The plan of the detail, from the route's own start; a long route joins its stages. Null when a long route is too long for one plan; undefined while its stages load. */
@@ -72,7 +65,7 @@ export class RouteFinder {
         return {
             center: start.coordinate, radiusKm: this.filters.radiusKm,
             lines: this.matches.slice(0, this.shown).map(({ route }, i) => {
-                const line = recordLine(route, route.stages?.flatMap(id => this.records.get(id) ?? []));
+                const line = recordLine(route, route.stages?.flatMap(id => this.catalog.record(id) ?? []));
                 return { id: route.id, number: i + 1, rank: route.rank, line: line.length ? line : [startOf(route)],
                     label: `${route.name ?? route.ref} · ${distanceIn(route.length_m).toFixed(1)} ${settings.units} · ↑ ${Math.round(heightIn(route.ascent_m))} ${heightUnit()}` };
             }),
@@ -83,21 +76,7 @@ export class RouteFinder {
 
     /** A loaded record, such as the long route of a stage. */
     record(id: number): CatalogRecord | undefined {
-        return this.records.get(id);
-    }
-
-    private cell(id: string) {
-        let file = this.cells.get(id);
-        if (!file) {
-            file = loadRouteCell(id).then(records => {
-                records?.forEach(record => this.records.set(record.id, record));
-                return records;
-            });
-            // A failed cell loads again on the next search.
-            file.catch(() => this.cells.delete(id));
-            this.cells.set(id, file);
-        }
-        return file;
+        return this.catalog.record(id);
     }
 
     async search(activity: BikeType) {
@@ -109,7 +88,7 @@ export class RouteFinder {
         this.progress = { loaded: 0, total: 0 };
         const counted = (cell: string) => {
             if (id === this.serial) this.progress.total++;
-            return this.cell(cell).finally(() => { if (id === this.serial) this.progress.loaded++; });
+            return this.catalog.cell(cell).finally(() => { if (id === this.serial) this.progress.loaded++; });
         };
         try {
             const matches = await searchRoutes(query, counted);
@@ -145,31 +124,23 @@ export class RouteFinder {
     /** Shows a record, and loads the stages of its long route. */
     async select(id: number | null) {
         this.routed = null;
-        const route = id === null ? undefined : this.records.get(id);
+        const route = id === null ? undefined : this.catalog.record(id);
         if (!route) { this.detail = null; return; }
         const detail: RouteDetail = { route, distanceM: this.matches.find(match => match.route.id === id)?.distanceM };
         this.detail = detail;
-        const family = route.stages ? route : route.parent ? this.records.get(route.parent) : undefined;
+        const family = route.stages ? route : route.parent ? this.catalog.record(route.parent) : undefined;
         if (!family?.stages) return;
-        const stages = await this.stagesOf(family).catch(() => undefined);
+        const stages = await this.catalog.stagesOf(family).catch(() => undefined);
         if (this.detail === detail) this.detail = stages ? { ...detail, family, stages } : { ...detail, failed: true };
     }
 
-    private async stagesOf(route: CatalogRecord): Promise<CatalogRecord[]> {
-        await Promise.all(route.cells.map(cell => this.cell(cell)));
-        const stages = route.stages!.map(stage => this.records.get(stage));
-        if (stages.some(stage => !stage)) throw new Error('A stage of this route is missing from the catalog.');
-        return stages as CatalogRecord[];
-    }
-
     /** A record of the catalog that a map point lies on. */
-    async find(id: number, at: Coordinate): Promise<CatalogRecord | undefined> {
-        await Promise.all(cellsAround(at, .1).map(cell => this.cell(cell)));
-        return this.records.get(id);
+    find(id: number, at: Coordinate): Promise<CatalogRecord | undefined> {
+        return this.catalog.find(id, at);
     }
 
     /** The plan of a record in data order, or null when a long route is too long for one plan. */
-    async dataPlan(route: CatalogRecord): Promise<RoutePlan | null> {
-        return route.stages ? joinedPlan((await this.stagesOf(route)).map(stage => routePlan(stage as RouteRecord))) : routePlan(route as RouteRecord);
+    dataPlan(route: CatalogRecord): Promise<RoutePlan | null> {
+        return this.catalog.dataPlan(route);
     }
 }
