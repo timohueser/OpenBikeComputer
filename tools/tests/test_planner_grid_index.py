@@ -10,7 +10,6 @@ from tools import planner_grid as grid, planner_grid_index as grid_index, planne
 
 OPTIONS = {"region": "test", "name": "Test", "bounds": [7.8, 48.0, 9.0, 48.4], "attribution": "OSM",
            "landcover_attribution": "Daylight"}
-ARCHIVES = {"9-267-177": "a" * 64, "9-268-177": "b" * 64}
 
 
 def entry(name):
@@ -23,19 +22,17 @@ def write_indexes(root):
     bounds, cells = OPTIONS["bounds"], dict(grid.cells(OPTIONS["bounds"]))
     files = lambda *names: {name: entry(name) for name in names}
     tiles = lambda kind, *cells: [f"maps/tiles/{kind}/{cell}.pmtiles" for cell in cells]
-    routing = files("routing/blocks.json", *(f"routing/packs/{key}/{name}" for key in ARCHIVES.values()
-                                             for name in ("pages.bin", "pages.idx")),
-                    *(f"{folder}/{cell}.json" for cell in cells for folder in ("offline/routing-cells", "routes/tiles")))
+    routing = files(*(f"routes/tiles/{cell}.json" for cell in cells))
     package = files("routing/package.json", "routing/directory.bin", "routing/objects/" + "d" * 64)
     indexes = {
-        "routing": {"files": routing, "graph": {"source": "s" * 64, "data": {"bounds": bounds, "region": "test",
-            "source_sha256": ["o" * 64, "t" * 64], "metrics": {"road": {}}}}},
+        "routing": {"files": routing},
         "basemap": {"files": files("maps/basemap.json", *tiles("basemap", "9-266-177", "9-267-177", "9-268-177")),
                     "metadata": {"bounds": bounds}},
         "places": {"files": files(*tiles("places", "0-0-0")), "metadata": {"bounds": bounds, "osm_sha256": "o" * 64}},
         "overlays": {"files": files(*tiles("overlays", "6-33-22")),
                      "metadata": {"bounds": bounds, "routing_package": package["routing/directory.bin"]["sha256"]}},
-        "routing-cells": {"files": package},
+        "routing-cells": {"files": package, "metadata": {"bounds": bounds, "region": "test",
+            "source_sha256": ["o" * 64, "t" * 64], "profiles": ["road"]}},
         "terrain": {"files": files(*tiles("terrain", "9-267-177", "9-269-177", "13/9-267-177")),
                     "metadata": {"bounds": [7, 47, 10, 49], "source_sha256": json.dumps(["t" * 64]), "attribution": "GLO-30"}},
         "assets": {"files": files("maps/assets/sprites/v4.json")},
@@ -78,7 +75,7 @@ class PlannerGridIndex(unittest.TestCase):
             for step, item in document["indexes"].items():
                 data = Path(layers[step]["index.json"]).read_bytes()
                 self.assertEqual((item["bytes"], item["sha256"]), (len(data), hashlib.sha256(data).hexdigest()))
-            self.assertEqual(document["indexes"]["planner/routing/grid"]["folders"], ["offline", "routes", "routing"])
+            self.assertEqual(document["indexes"]["planner/routing/grid"]["folders"], ["routes"])
             self.assertEqual(document["indexes"]["planner/offline/grid"]["folders"], ["offline"])
             self.assertEqual(list(document["files"]), ["search/test.grid.json"])
             directory = json.loads(Path(layers["planner/routing/cells/grid"]["index.json"]).read_bytes())
