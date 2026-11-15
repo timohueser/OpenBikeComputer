@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
+import { settings } from '../settings/settings.svelte';
 import type { Coordinate } from './geo';
 import { difference, divergence, optionName, optionOrder, otherWays, routeRow } from './route-options';
 import type { EngineRoute } from './routing';
@@ -27,6 +28,14 @@ describe('route options', () => {
     it('says what the other ways offer beside the current route', () => {
         const [base, short, near] = [balanced, lower, corridor].map(r => routeRow(r, r.id));
         expect([otherWays([base]), otherWays([base, short]), otherWays([base, short, near])]).toEqual(['', '1 other way, 5.5 km shorter', '2 other ways']);
+    });
+
+    it('writes the differences in the units of a rider on miles', () => {
+        settings.units = 'mi';
+        onTestFinished(() => { settings.units = 'km'; });
+        const [base, short, near] = [balanced, lower, corridor].map(r => routeRow(r, r.id));
+        expect(difference(near, base)).toBe('0.4 mi shorter · 66 ft less climbing · 0.1 mi more unpaved');
+        expect(otherWays([base, short])).toBe('1 other way, 3.4 mi shorter');
     });
 
     it('names options by their reason, and a corridor by its settlement or as another way', () => {

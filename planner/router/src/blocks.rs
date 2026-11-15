@@ -109,7 +109,7 @@ impl Ids {
             return Ok(Lookup::Whole(self.count));
         }
         let mut pages = Vec::new();
-        pages.try_reserve_exact((self.source_count as usize).div_ceil(4096)).map_err(|_| Error::Limit)?;
+        pages.try_reserve_exact((self.source_count as usize).div_ceil(4096)).map_err(|_| Error::Memory)?;
         pages.resize_with((self.source_count as usize).div_ceil(4096), || None);
         for (local, source) in self.iter().enumerate() {
             let page = pages[source as usize / 4096].get_or_insert_with(|| Box::new([u32::MAX; 4096]));
@@ -170,7 +170,7 @@ pub fn numbers(
         ($variant:ident, $ty:ty) => {{
             let mut reader = Reader::<$ty>::new(&column.values);
             let mut result = Vec::new();
-            result.try_reserve_exact(count).map_err(|_| Error::Limit)?;
+            result.try_reserve_exact(count).map_err(|_| Error::Memory)?;
             for index in indices {
                 if result.len() == count {
                     return Err(Error::InvalidData("Too many selected values".into()));
@@ -206,9 +206,9 @@ impl Union {
         let mut heads = Reader::<u32>::new(&topology.head);
         let lookup = ids.fast()?;
         let mut first = Vec::new();
-        first.try_reserve_exact(ids.count as usize + 1).map_err(|_| Error::Limit)?;
+        first.try_reserve_exact(ids.count as usize + 1).map_err(|_| Error::Memory)?;
         let mut head = Vec::new();
-        head.try_reserve_exact(maximum_arcs as usize).map_err(|_| Error::Limit)?;
+        head.try_reserve_exact(maximum_arcs as usize).map_err(|_| Error::Memory)?;
         let mut arcs: Vec<[u32; 2]> = Vec::new();
         let mut retained = vec![0u64; (maximum_arcs as usize).div_ceil(64)];
         let mut previous_end = 0;

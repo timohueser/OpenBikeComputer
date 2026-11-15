@@ -34,7 +34,10 @@
     import type { CatalogRecord } from '../../lib/planner/signed-routes';
     import LibraryPanel from './PlanLibrary.svelte';
     import type { Plan } from '../../lib/planner/library';
+    import type { Library } from '../../lib/library/store';
     import { PlanSession } from '../../lib/planner/plan-session.svelte';
+    import { router } from '../../lib/router.svelte';
+    import { ROUTES } from '../../lib/routes';
     import { isTrip } from '../../lib/planner/trip-validation';
     import {
         addClickedPoint, addPointNear, addRestDay, addTransfer, allStay, closeLoop, releaseNight, trainAfter, routeToTrip, hasEndpoints as endpointsChosen,
@@ -59,15 +62,15 @@
     import { applyQueryChanges } from '../../lib/planner/search/actions';
     import type { MapPoint, MapSegment } from '../../lib/planner/map-types';
     import type { Version } from '../../lib/planner/versions';
-    import { appearance, startTheme, toggleTheme } from '../../lib/theme.svelte';
-
-    const siteBase = import.meta.env.VITE_SITE_BASE || '/';
+    import { appearance } from '../../lib/theme.svelte';
     import { routingKey, type EngineRoute, type RoutingLine } from '../../lib/planner/routing';
     import { importedTrip, readTracks } from '../../lib/planner/gpx-import';
     import { DRAWER_CLOSED, DRAWER_MIN, resizeDrawer } from '../../lib/planner/drawer';
     import { closureNote, closureStretches, type Stretch } from '../../lib/planner/route-closures';
     import { alpineNote, alpineStretches } from '../../lib/planner/route-difficulty';
     import { gapNote, routeGaps } from '../../lib/planner/route-gaps';
+    import { distanceIn } from '../../lib/settings/format';
+    import { settings } from '../../lib/settings/settings.svelte';
     const defaultLabels: Record<EditableKind, string> = {
         via: 'Shaping point',
         pass: 'Pass here',
@@ -76,6 +79,9 @@
         marker: 'Marker',
     };
 
+    // The page gives the library, so that the cover job hears the saves of the planner.
+    // While `active` is false the planner is hidden under another page and reads no keys.
+    let { library, active = true }: { library: Library; active?: boolean } = $props();
     const session = new PlanSession(opened);
     const trip = $derived(session.trip);
     const planId = $derived(session.plan.id);
@@ -100,8 +106,9 @@
             void tick().then(() => { if (planId === id) map?.fitRoute(); });
         }
     });
+    const distance = (km: number) => `${distanceIn(km * 1000).toFixed(1)} ${settings.units}`;
     const routingMessage = $derived(session.dragging ? session.previewStatus : currentRoute
-        ? `${currentRoute.unknownSurfaceKm.toFixed(1)} km unknown surface${trip.bike !== 'hiking' && currentRoute.pushingKm ? ` · ${currentRoute.pushingKm.toFixed(1)} km pushing` : ''}${currentRoute.unroutedKm ? ` · ${currentRoute.unroutedKm.toFixed(1)} km manual / access unverified` : ''}${currentRoute.unknownElevationKm ? ' · elevation incomplete' : ''}`
+        ? `${distance(currentRoute.unknownSurfaceKm)} unknown surface${trip.bike !== 'hiking' && currentRoute.pushingKm ? ` · ${distance(currentRoute.pushingKm)} pushing` : ''}${currentRoute.unroutedKm ? ` · ${distance(currentRoute.unroutedKm)} manual / access unverified` : ''}${currentRoute.unknownElevationKm ? ' · elevation incomplete' : ''}`
         : routingStatus);
     let list = $state<'plan' | 'ways'>('plan');
     // The compare screen of saved versions replaces the trip bar and the planner below it.
@@ -476,11 +483,10 @@
     $effect(() => { void [queryPlan, here, pointing, trip.startDate]; untrack(() => searchRevision++); });
 
     onMount(() => {
-        void session.start();
+        void session.start(library);
         beforeReload(() => session.saved());
         try { autoCenter = localStorage.getItem('obc-planner-auto-center') === 'true'; } catch { /* Optional browser preference. */ }
-        const stopTheme = startTheme();
-        return () => { stopTheme(); session.close(); };
+        return () => session.close();
     });
 
     $effect(() => {
@@ -516,8 +522,30 @@
         await session.listPlans();
     }
 
-    async function openPlan(plan: Plan) {
-        if (!await session.open(plan, () => window.confirm('Some edits are not saved. Download a backup before reopening a plan. Discard the unsaved edits?'))) return;
+    // `#/planner/ID` opens plan ID, and `#/planner/new` a new plan, at `history.state.place` when a page gives one. The
+    // address then drops the id, so Back does not open it again.
+    $effect(() => {
+        const id = router.route === 'planner' ? router.id : undefined;
+        if (!id || !session.ready) return;
+        router.replace(ROUTES.planner);
+        if (id === 'new') untrack(() => void newPlan().then(() => showStart(history.state?.place)));
+        // The open plan keeps its Undo history and its map view.
+        else if (id !== untrack(() => session.plan.id)) untrack(() => void openPlan(id));
+    });
+
+    /** A box of some size fits the map; a point shows at the zoom of a place. */
+    function showStart(place: { lon: number; lat: number; box?: [number, number, number, number] } | undefined) {
+        if (!place) return;
+        const [west, south, east, north] = place.box ?? [place.lon, place.lat, place.lon, place.lat];
+        if (west < east && south < north) map?.fitCoordinates([[west, south], [east, north]]);
+        else map?.showPlace([place.lon, place.lat], 12);
+    }
+
+    async function openPlan(id: string) {
+        if (!await session.open(id, () => window.confirm('Some edits are not saved. Download a backup before reopening a plan. Discard the unsaved edits?'))) {
+            if (session.libraryError) message = session.libraryError;
+            return;
+        }
         libraryOpen = false;
         message = 'Plan opened';
     }
@@ -1135,7 +1163,7 @@
     }
 
     function keyboard(event: KeyboardEvent) {
-        if (comparing || (event.target as HTMLElement)?.closest('input, select, textarea')) return;
+        if (!active || comparing || (event.target as HTMLElement)?.closest('input, select, textarea')) return;
         if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') {
             event.preventDefault();
             if (event.shiftKey) redo();
@@ -1176,20 +1204,6 @@
 <svelte:window onkeydown={keyboard} bind:innerHeight={viewportHeight} bind:innerWidth={viewportWidth} />
 
 <div class="planner-shell" style:--side-width={`${Math.min(sideWidth, maxSide)}px`}>
-    <header class="site-header">
-        <a class="brand" href={siteBase}><img src={`${siteBase}brand/app-icon.svg`} alt="" /><span>OpenBikeComputer</span></a>
-        <nav aria-label="Main navigation">
-            {#if import.meta.env.MODE === 'planner'}
-                <a href={`${siteBase}docs/`}>Docs</a>
-                <a href={`${siteBase}blog/`}>Blog</a>
-                <a href={`${siteBase}builder/`}>Maps</a>
-            {/if}
-            <span aria-current="page">Route planner</span>
-        </nav>
-        <button type="button" class="theme" aria-label={theme === 'light' ? 'Use dark theme' : 'Use light theme'} onclick={toggleTheme}>
-            <Icon name={theme === 'light' ? 'moon' : 'sun'} />
-        </button>
-    </header>
     {#if comparing}
     <CompareScreen name={session.plan.name || planTitle(trip)} {trip} line={session.line} routeError={session.routeError} openId={session.openId}
         versions={session.versions.filter(version => isTrip(version.trip))} versionLines={session.versionLines} {theme} onBack={endCompare}
@@ -1206,7 +1220,7 @@
     <main aria-busy={!session.ready}>
         {#if libraryOpen}
             <LibraryPanel plans={session.plans} unreadable={session.unreadable} onDeleteUnreadable={() => { if (window.confirm('Delete the saved plans that cannot be read? This cannot be undone.')) void session.removeUnreadable(); }} activeId={planId} busy={session.busy} error={session.libraryError}
-                onClose={() => libraryOpen = false} onOpen={openPlan} onRename={(plan, name) => session.rename(plan, name)} onDuplicate={plan => session.duplicate(plan)}
+                onClose={() => libraryOpen = false} onOpen={plan => openPlan(plan.id)} onRename={(plan, name) => session.rename(plan, name)} onDuplicate={plan => session.duplicate(plan)}
                 onDelete={deletePlan} onImport={importFiles} gpxNames={session.gpxLines?.map(line => line.name) ?? null}
                 onGpx={roads => roads === null ? session.gpxLines = null : importGpx(roads)} onDownload={plan => session.download(plan)} />
         {/if}
@@ -1216,7 +1230,7 @@
                 <button type="button" class="back-to-routes" onclick={() => openRoutes()}><Icon name="back" size={15} />Find another route</button>
             {/if}
             {#if routesOpen}
-                <SignedRoutes {finder} activity={bike} {theme} attribution={config.attribution} onClose={closeRoutes} onPlan={planSignedRoute} {placeName}
+                <SignedRoutes {finder} activity={bike} {trip} {theme} attribution={config.attribution} onClose={closeRoutes} onPlan={planSignedRoute} {placeName}
                     current={hasEndpoints && total > 0 ? { title: planTitle(trip), km: view.summary.distance } : null}
                     findPlaces={(text, signal) => searchPlaces(text, searchContext, 6, signal).then(answer => routesPlaces(answer.results ?? [], text))} />
             {:else if searching}
@@ -1404,7 +1418,6 @@
                 {#if statusUndo}<span>·</span><button type="button" class="planner-action" onclick={statusUndo}>Undo</button>{/if}
                 {#if placeNote}<span>· {placeNote}</span>{/if}
                 <span class="lab-note">Regional map, search and routing</span>
-                <span class="legal"><a href={`${siteBase}docs/impressum/`}>Impressum</a> · <a href={`${siteBase}docs/datenschutz/`}>Datenschutz</a></span>
             </div>
         </section>
     </main>
@@ -1431,42 +1444,6 @@
     .empty-profile p { margin: 12px 0 4px; }
     .empty-profile small { color: var(--ink-soft); }
 
-    :global(*) {
-        box-sizing: border-box;
-        scrollbar-width: thin;
-        scrollbar-color: var(--line-strong) transparent;
-    }
-    :global(::selection) {
-        background: var(--parchment-3);
-        color: var(--ink);
-    }
-    :global(body) {
-        margin: 0;
-        background: var(--parchment);
-        color: var(--ink);
-        font: 14px/1.4 var(--sans);
-        -webkit-font-smoothing: antialiased;
-    }
-    :global(button),
-    :global(input),
-    :global(select) {
-        font: inherit;
-    }
-    :global(button) {
-        cursor: pointer;
-    }
-    :global(button:disabled) {
-        opacity: .35;
-        cursor: default;
-    }
-    :global(button:focus-visible),
-    :global(input:focus-visible),
-    :global(select:focus-visible),
-    :global(a:focus-visible),
-    :global(summary:focus-visible) {
-        outline: 2px solid var(--forest);
-        outline-offset: 2px;
-    }
     button {
         padding: 0;
         border: 0;
@@ -1482,7 +1459,7 @@
         --link: var(--forest);
         display: flex;
         flex-direction: column;
-        height: 100dvh;
+        height: 100%;
         min-width: 760px;
         min-height: 580px;
     }
@@ -1511,67 +1488,6 @@
     .planner-shell :global(.planner-action:hover:not(:disabled)) { background: var(--parchment-2); border-color: var(--ink-faint); }
     .planner-shell :global(.planner-action.quiet) {
         color: var(--ink-soft);
-    }
-    .site-header {
-        display: flex;
-        align-items: center;
-        gap: 28px;
-        height: 48px;
-        flex: none;
-        padding: 0 20px;
-        background: var(--rust);
-        color: var(--cream);
-    }
-    .brand {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        color: inherit;
-        text-decoration: none;
-    }
-    .brand img {
-        width: 28px;
-        height: 28px;
-        border-radius: 6px;
-    }
-    .brand span {
-        font: 700 17px var(--mono);
-    }
-    .site-header nav {
-        display: flex;
-        align-items: center;
-        gap: 24px;
-        height: 100%;
-        font-size: 13px;
-        min-width: 0;
-        overflow-x: auto;
-        white-space: nowrap;
-    }
-    .site-header nav a {
-        color: inherit;
-        text-decoration: none;
-    }
-    .site-header nav a:hover {
-        text-decoration: underline;
-        text-underline-offset: 4px;
-    }
-    .site-header nav span {
-        display: flex;
-        align-items: center;
-        height: 100%;
-        font-weight: 700;
-        border-bottom: 3px solid var(--amber);
-    }
-    .theme {
-        display: grid;
-        place-items: center;
-        width: 32px;
-        height: 32px;
-        margin-left: auto;
-        border-radius: 6px;
-    }
-    .theme:hover {
-        background: color-mix(in srgb, var(--rust) 80%, var(--on-amber));
     }
     main {
         position: relative;
@@ -1704,25 +1620,13 @@
     .lab-note {
         margin-left: auto;
     }
-    .legal { white-space: nowrap; }
-    @media (max-width: 1150px) {
-        .brand span {
-            font-size: 14px;
-        }
-    }
     @media (max-width: 760px) {
-        .planner-shell { min-width: 0; height: auto; min-height: 100dvh; }
+        .planner-shell { min-width: 0; height: auto; min-height: 100%; }
         main { grid-template-columns: minmax(0, 1fr); }
         main > :global([aria-label="Sidebar width"]) { display: none; }
         .planner-pane { max-height: 50dvh; }
         .geography { height: 75dvh; }
         .status-line { height: auto; min-height: 38px; flex-wrap: wrap; padding-block: 8px; }
         .lab-note { display: none; }
-        .legal { margin-left: auto; }
-        .site-header { gap: 12px; padding-inline: 12px; }
-        .brand { flex: none; }
-        .brand span { display: none; }
-        .site-header nav { gap: 16px; }
-        .theme { flex: none; }
     }
 </style>

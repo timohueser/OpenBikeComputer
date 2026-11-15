@@ -422,8 +422,8 @@ pub(crate) fn clearances(
     for w in bridges {
         let (first, last) = (net.way_first[w], net.way_last[w]);
         let mut along = vec![0.0];
-        for s in first - w..last - w {
-            along.push(along[along.len() - 1] + net.length[s]);
+        for length in &net.length[first - w..last - w] {
+            along.push(along[along.len() - 1] + length);
         }
         let tips: Vec<f64> =
             [first, last].iter().filter(|&&v| continued[net.vertex_var[v]] < 2).map(|&v| along[v - first]).collect();

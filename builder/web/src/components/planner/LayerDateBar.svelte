@@ -1,7 +1,7 @@
 <script lang="ts">
     import SeasonGrid from './SeasonGrid.svelte';
     import DateStepper, { dayKey } from './DateStepper.svelte';
-    import Segmented from './Segmented.svelte';
+    import Segmented from '../../lib/ui/Segmented.svelte';
     import { columnDate, dateLabel, type DataLayer, type Grid } from '../../lib/planner/layers/data-layer';
 
     let { date, year, variable, onDate }: { date: string; year: Grid; variable: DataLayer['variable']; onDate: (date: string) => void } = $props();

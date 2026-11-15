@@ -2,7 +2,7 @@ import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { emptyTrip, orderedRoutePoints, setDays, type RoutePoint, type Trip } from './editor';
 import type { Coordinate } from './geo';
-import { PlanLibrary } from './library';
+import { Library } from '../library/store';
 import { PlanSession } from './plan-session.svelte';
 import { newVersion } from './versions';
 import * as routing from './routing';
@@ -54,6 +54,11 @@ function options(session: PlanSession) {
 const choice = (session: PlanSession) => session.routeOptions.state === 'ready' ? session.routeOptions.choice : undefined;
 
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+const active = async (library: Library) => {
+    const id = await library.state('active');
+    return id ? library.route(id) : undefined;
+};
 
 describe('plan session', () => {
     it('shows the last routed trip while a line is calculated, no line after a failure, and undoes without a request', async () => {
@@ -115,11 +120,40 @@ describe('plan session', () => {
         expect(routes.fetch).toHaveBeenCalledTimes(3);
     });
 
+    it('takes a rename of another page over its own later save, deletes its plan after a rename, and opens an empty plan when another page removes its plan', async () => {
+        service();
+        const library = new Library(new IDBFactory()), session = new PlanSession();
+        await session.start(library);
+        session.commit(plan);
+        await vi.waitFor(() => expect(session.line).toBeDefined());
+        await session.saved();
+        const id = session.plan.id;
+        await library.renameRoute(id, 'Lake loop');
+        await vi.waitFor(() => expect(session.plan.name).toBe('Lake loop'));
+        session.commit(moved(plan, 8.2));
+        expect(await session.saved()).toBe(true);
+        expect(await library.route(id)).toMatchObject({ name: 'Lake loop', trip: { points: moved(plan, 8.2).points } });
+        await session.rename(session.plan, 'Lake round');
+        await vi.waitFor(() => expect(session.plan.name).toBe('Lake round'));
+        expect(await session.remove(session.plan)).toBe(true);
+        expect(await library.route(id)).toBeUndefined();
+
+        session.commit(plan);
+        await vi.waitFor(() => expect(session.line).toBeDefined());
+        await session.saved();
+        const second = session.plan.id;
+
+        await library.removeRoute(second);
+        await vi.waitFor(() => expect(session.plan.id).not.toBe(second));
+        expect([session.trip.points, session.saveError]).toEqual([[], '']);
+        session.close();
+    });
+
     it('previews an option without an edit, applies it as one Undo step, and refuses options of an earlier plan', async () => {
         const via: Coordinate = [8.05, 48.02];
         const routes = service([alternative('corridor', 'corridor', 'touring', [[8, 48], via, [8.1, 48]], via)]);
         const session = new PlanSession();
-        await session.start(new IDBFactory());
+        await session.start(new Library(new IDBFactory()));
         session.commit(plan);
         await vi.waitFor(() => expect(session.line).toBeDefined());
         session.findAlternatives();
@@ -200,7 +234,7 @@ describe('plan session', () => {
     it('calculates each saved version once, a failed one again on retry, and opens a version with its line', async () => {
         const routes = service();
         const session = new PlanSession();
-        await session.start(new IDBFactory());
+        await session.start(new Library(new IDBFactory()));
         session.commit(plan);
         await vi.waitFor(() => expect(session.line).toBeDefined());
         const valley = moved(plan, 8.2), ridge = moved(plan, 8.3);
@@ -224,7 +258,7 @@ describe('plan session', () => {
     it('keeps the edits of the open version when another opens, and saves a plan of no version first', async () => {
         service();
         const session = new PlanSession();
-        await session.start(new IDBFactory());
+        await session.start(new Library(new IDBFactory()));
         session.commit(plan);
         await session.saveNewVersion('A');
         const a = session.openId!;
@@ -255,7 +289,7 @@ describe('plan session', () => {
         service();
         const factory = new IDBFactory();
         const session = new PlanSession();
-        await session.start(factory);
+        await session.start(new Library(factory));
         session.commit(plan);
         await session.saveNewVersion('A');
         const a = session.openId;
@@ -266,14 +300,14 @@ describe('plan session', () => {
         expect(session.undo()).toBe(true);
         expect([session.trip, session.openId]).toEqual([moved(plan, 8.2), b]);
         await session.saved();
-        expect((await new PlanLibrary(factory).active())?.open).toBe(b);
+        expect((await active(new Library(factory)))?.open).toBe(b);
         session.close();
     });
 
     it('keeps the earlier steps with the version saved from them, so Undo makes no copies and no empty version', async () => {
         service();
         const session = new PlanSession();
-        await session.start(new IDBFactory());
+        await session.start(new Library(new IDBFactory()));
         session.commit(plan);
         session.commit(moved(plan, 8.2));
         await session.saveNewVersion('A');
@@ -300,30 +334,53 @@ describe('plan session', () => {
     it('duplicates a plan that is not open with the versions saved for it', async () => {
         service();
         const session = new PlanSession();
-        await session.start(new IDBFactory());
+        await session.start(new Library(new IDBFactory()));
         session.commit(plan);
+        await vi.waitFor(() => expect(session.line).toBeDefined());
         await session.saveVersions([newVersion(plan, undefined, 'Valley')]);
         const first = session.plan;
         expect(await session.newPlan()).toBe(true);
         expect(session.versions).toEqual([]);
         expect(await session.duplicate(first)).toBe(true);
         expect([session.plan.id === first.id, session.versions.map(v => v.name)]).toEqual([false, ['Valley']]);
+        expect(session.plan.summary).toEqual(first.summary);
+        expect(first.summary).not.toBeNull();
         session.close();
     });
 
-    it('saves the plan without its line and calculates the line again when the plan opens', async () => {
+    it('counts the saved records that are not plans, and deletes them on request', async () => {
+        service();
+        const factory = new IDBFactory(), library = new Library(factory), session = new PlanSession();
+        await session.start(library);
+        await library.saveRoute({ id: 'no-trip', revision: 0, name: '', updatedAt: 1, summary: null, trip: {} });
+        const db = await new Promise<IDBDatabase>(resolve => { const request = factory.open('obc-library'); request.onsuccess = () => resolve(request.result); });
+        const tx = db.transaction('routes', 'readwrite');
+        tx.objectStore('routes').put({ id: 'no-record' });
+        await new Promise(resolve => tx.oncomplete = resolve);
+        db.close();
+        expect(await session.listPlans()).toBe(true);
+        expect(session.unreadable).toBe(2);
+        expect(await session.removeUnreadable()).toBe(true);
+        expect([session.unreadable, await library.unreadableRoutes(), await library.routes()]).toEqual([0, [], []]);
+        session.close();
+    });
+
+    it('saves the plan with the summary of its line, and calculates the line again when the plan opens', async () => {
         const routes = service();
         const factory = new IDBFactory();
         const first = new PlanSession();
-        await first.start(factory);
+        await first.start(new Library(factory));
         first.commit(plan);
-        const library = new PlanLibrary(factory);
-        await vi.waitFor(async () => expect((await library.active())?.summary).toMatch(/^Single route · \d+\.\d km$/));
-        expect((await library.active())?.trip).toEqual(plan);
+        const library = new Library(factory);
+        await vi.waitFor(async () => expect((await active(library))?.summary).toBeTruthy());
+        const saved = (await active(library))!;
+        expect(saved.trip).toEqual(plan);
+        expect(saved.summary).toMatchObject({ line: [8, 48, 8.1, 48], days: 1, bike: 'touring', bounds: [8, 48, 8.1, 48] });
+        expect(saved.summary!.lengthM).toBeCloseTo(7440, -2);
         first.close();
         const opened = vi.fn();
         const second = new PlanSession(opened);
-        await second.start(factory);
+        await second.start(new Library(factory));
         expect(opened).toHaveBeenCalledOnce();
         expect([second.trip, second.canUndo]).toEqual([plan, false]);
         await vi.waitFor(() => expect(second.line).toBeDefined());
@@ -357,5 +414,26 @@ describe('plan session', () => {
         session.commit(visit(session.trip, 'b'));
         await vi.waitFor(() => expect(session.line).toBeDefined());
         expect(session.trip).toMatchObject({ days: 5, daysSet: true });
+    });
+
+    it('changes the pace and the guessed days in one Undo step with no route request, and starts a new plan at Moderate', async () => {
+        service();
+        const calculate = vi.spyOn(routing, 'calculateLine').mockImplementation(async trip => {
+            const line = testLine(trip), seconds = 25 * 3600;
+            return { ...line, elapsed: line.elapsed.map(s => s * seconds / line.seconds), seconds };
+        });
+        const session = new PlanSession();
+        await session.start(new Library(new IDBFactory()));
+        session.commit({ ...plan, daysSet: undefined });
+        await vi.waitFor(() => expect(session.trip.days).toBe(4));
+        session.commit({ ...session.trip, pace: 'fast' });
+        expect([session.trip.days, session.stale]).toEqual([3, false]);
+        expect(session.undo()).toBe(true);
+        expect([session.trip.pace, session.trip.days]).toEqual([undefined, 4]);
+        expect(calculate).toHaveBeenCalledOnce();
+        session.redo();
+        expect(await session.newPlan()).toBe(true);
+        expect(session.trip.pace).toBeUndefined();
+        session.close();
     });
 });

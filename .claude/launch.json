@@ -22,13 +22,6 @@
       "port": 5173
     },
     {
-      "name": "web-builder-desktop",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--", "--mode", "desktop", "--port", "5173"],
-      "cwd": "builder/web",
-      "port": 5173
-    },
-    {
       "name": "data-page",
       "runtimeExecutable": "tools/obc",
       "runtimeArgs": ["data", "ui"],

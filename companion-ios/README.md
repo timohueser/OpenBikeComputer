@@ -10,6 +10,10 @@ Install Xcode 26.x, an iOS simulator runtime, XcodeGen, Node.js 22 or later, and
 toolchain. Personal signing belongs in `project.local.yml`: it is tracked with an empty team id,
 and its header says how to keep your edit out of git.
 
+The app has no Associated Domains entitlement, because a personal team cannot sign it. A pairing
+link then opens the browser, not the app. A paid team adds the entitlement of
+[`../specs/ble-interface.md`](../specs/ble-interface.md) §9.6 to `project.yml`.
+
 ## Build
 
 XcodeGen installs the pinned replay renderer and builds native map styles and search with npm.

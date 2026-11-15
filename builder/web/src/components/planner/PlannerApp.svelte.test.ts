@@ -5,9 +5,9 @@ import { emptyTrip, maxRidingDays, type Place } from '../../lib/planner/editor';
 import { coordinateAt, cumulative, type Coordinate } from '../../lib/planner/geo';
 import { corridorPlaces } from '../../lib/planner/place-index';
 import PlannerApp from './PlannerApp.svelte';
+import { Library } from '../../lib/library/store';
 import * as routing from '../../lib/planner/routing';
 import { newPlan, type Plan } from '../../lib/planner/library';
-import { isTrip } from '../../lib/planner/trip-validation';
 import type { RoutingLine } from '../../lib/planner/routing';
 
 import { routeService } from '../../../test-support/planner/route-service';
@@ -20,21 +20,18 @@ let app: ReturnType<typeof mount> | undefined;
 const stored = new Map<string, string>();
 let savedPlan: Plan | undefined;
 
-vi.mock('../../lib/planner/library', async original => ({
-    ...await original<object>(),
-    PlanLibrary: class {
-        async active() {
-            const value: unknown = JSON.parse(stored.get('trip') ?? 'null'), trip = isTrip(value) ? value : undefined;
-            if (!trip && stored.has('trip')) throw new Error('Saved plan is invalid. Open another plan or import a backup.');
-            return trip ? { ...newPlan(trip), revision: 1 } : undefined;
-        }
+vi.mock('../../lib/library/store', () => ({
+    Library: class {
+        async state() { return stored.has('trip') ? 'stored' : null; }
+        async route() { return { ...newPlan(emptyTrip()), id: 'stored', revision: 1, trip: JSON.parse(stored.get('trip')!) }; }
         async versions() { return []; }
-        async save(plan: Plan) {
+        async saveRoute(plan: Plan) {
             stored.set('trip', JSON.stringify(plan.trip));
             savedPlan = { ...plan, revision: plan.revision + 1 };
             return savedPlan;
         }
-        async activate(id: string | null) { if (!id) { stored.set('trip', JSON.stringify(emptyTrip())); savedPlan = undefined; } }
+        async setState(_key: string, id: string | null) { if (!id) { stored.set('trip', JSON.stringify(emptyTrip())); savedPlan = undefined; } }
+        onChange() { return () => {}; }
         async close() {}
     },
 }));
@@ -92,8 +89,8 @@ function button(label: string, scope: ParentNode = document) {
     return found;
 }
 
-async function startApp() {
-    app = mount(PlannerApp, { target: document.body });
+async function startApp(props: { library: Library; active?: boolean } = { library: new Library() }) {
+    app = mount(PlannerApp, { target: document.body, props });
     await vi.waitFor(() => expect(document.querySelector('main')?.getAttribute('aria-busy')).toBe('false'));
     await tick();
 }
@@ -305,6 +302,21 @@ describe('planner app transitions', () => {
         expect(calculate.mock.calls[0][1].aborted).toBe(true);
         finish({} as RoutingLine); await tick();
         expect(document.body.textContent).toContain('Choose your start');
+    });
+
+    it('reads no keys while another page shows', async () => {
+        const props = $state({ library: new Library(), active: true });
+        await startApp(props);
+        button('Map point: Basel').click(); await tick();
+        button('Remove point').click(); await tick();
+        const edited = stored.get('trip');
+        const undoKey = () => document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
+        props.active = false; await tick();
+        undoKey(); await tick();
+        expect(stored.get('trip')).toBe(edited);
+        props.active = true; await tick();
+        undoKey(); await tick();
+        expect(stored.get('trip')).not.toBe(edited);
     });
 
     it('returns to an earlier bike and undoes without a route request', async () => {

@@ -63,7 +63,7 @@ impl Directory {
     /// Enumerate a pack index without loading its page payloads.
     pub fn digests(&self) -> Result<Vec<[u8; 32]>> {
         let mut keys = Vec::new();
-        keys.try_reserve_exact(self.0.count as usize).map_err(|_| Error::Limit)?;
+        keys.try_reserve_exact(self.0.count as usize).map_err(|_| Error::Memory)?;
         for record in self.0.index[HEADER as usize..].as_chunks::<{ RECORD as usize }>().0 {
             let key: [u8; 32] = record[..32].try_into().unwrap();
             let offset = u64::from_le_bytes(record[32..40].try_into().unwrap());
@@ -130,7 +130,7 @@ impl Files {
         if packs.len() > 1 {
             for (index, pack) in packs.iter().enumerate() {
                 let keys = pack.digests()?;
-                objects.try_reserve(keys.len()).map_err(|_| Error::Limit)?;
+                objects.try_reserve(keys.len()).map_err(|_| Error::Memory)?;
                 objects.extend(keys.into_iter().map(|key| (key, index as u32)));
             }
             objects.sort_unstable();

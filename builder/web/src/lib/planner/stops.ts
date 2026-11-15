@@ -129,9 +129,9 @@ export const suits = (stop: Stop, kinds: Stay[]) => stop.sleep.some(p => kinds.s
  * end. */
 export function proposeNights(trip: Trip, line: RoutingLine | undefined, stopsOf: (night: number) => Stop[]): Map<number, Proposal> {
     const proposals = new Map<number, Proposal>();
-    const { total, days } = planView(trip, line);
-    if (!line || !total) return proposals;
-    const effort = (km: number) => line.seconds > 0 ? movingSecondsAt(line, km / total) : km;
+    const { total, days, line: paced } = planView(trip, line);
+    if (!paced || !total) return proposals;
+    const effort = (km: number) => paced.seconds > 0 ? movingSecondsAt(paced, km / total) : km;
     const pinned = new Set(trip.points.filter(p => p.kind === 'night').map(p => p.night));
     let planned = trip;
     for (let night = 1; night < days.length; night++) {

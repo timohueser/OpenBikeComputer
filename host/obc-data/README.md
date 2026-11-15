@@ -94,8 +94,8 @@ The [page README](../../builder/web/src/components/data/README.md) covers the pa
 ## Serve
 
 `obc data serve` serves `local` on port 8710 of every IPv4 address of the machine. It prints the
-command that opens each app on `local`: the web planner, the map builder, the desktop app, the
-simulator and the Debug iOS app. It runs the routing, search and downloads services of each
+command that opens each app on `local`: the web planner, the map builder, the simulator and the
+Debug iOS app. It runs the routing, search and downloads services of each
 planner release and the tile server of `planner/tiles`. At start it builds `planner-service` with
 cargo. Prepare Node and the other services once:
 

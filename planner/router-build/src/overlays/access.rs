@@ -85,7 +85,7 @@ mod tests {
     }
     fn way(pairs: &[(&str, &str)]) -> Way<'static> {
         let tags = Tags::from_pairs([("highway", "path")].into_iter().chain(pairs.iter().copied()));
-        Way { id: 1, nodes: &[1, 2], tags }
+        Way { id: 1, nodes: &[1, 2], points: &[], tags, facts: Default::default() }
     }
     #[test]
     fn restrictions_distinguish_pushing_private_access_and_construction() {

@@ -7,6 +7,8 @@ pub const FOOT: u8 = 2;
 pub const PUSH: u8 = 4;
 pub const NO_ELEVATION: f32 = f32::MIN;
 
+/// `#[repr(C)]`: the routing bake stores points as 12-byte records.
+#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Point {
     pub lat: i32,

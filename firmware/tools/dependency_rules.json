@@ -2,8 +2,7 @@
   "schema_version": 1,
   "standalone_manifests": [
     "firmware/obc-fw-nrf54l/Cargo.toml",
-    "firmware/obc-boot/Cargo.toml",
-    "builder/desktop/Cargo.toml"
+    "firmware/obc-boot/Cargo.toml"
   ],
   "forbidden_features": [
     {
@@ -16,6 +15,20 @@
       "reason": "the BLE host formats bond keys and identities in its logs; the board owns connection diagnostics"
     }
   ],
+  "closed_dependencies": {
+    "packages": [
+      "obc-crc",
+      "obc-file-source",
+      "obc-formats",
+      "obc-map-scene",
+      "obc-ports"
+    ],
+    "allowed": [
+      "heapless",
+      "libm"
+    ],
+    "reason": "the foundations system carries no product policy, so its crates take only heapless, libm and each other"
+  },
   "groups": {
     "foundation": [
       "obc-crc",
@@ -48,9 +61,9 @@
       "obc-data",
       "obc-data-steps",
       "obc-dem",
-      "obc-desktop",
       "obc-draw",
       "obc-file-source",
+      "obc-fit",
       "obc-fixtures",
       "obc-flat-device",
       "obc-host-core",

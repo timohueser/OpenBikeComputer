@@ -12,11 +12,12 @@ impl<P: RoutingData> Router<P> {
     /// the query budget of `control`.
     pub fn routes(&mut self, request: &Request, control: &Control<'_>) -> Result<Response> {
         let mut queries = 0;
-        let mut routes = vec![self.primary(request, control, &mut queries)?];
+        let mut routes = vec![self.route_counted(request, control, &mut queries)?];
         if request.alternatives || request.alternatives_only {
             match self.alternatives(request, control, &mut queries, &mut routes) {
-                // The deadline or a limit ends the discovery, and the answer keeps what it found.
-                Ok(()) | Err(Error::Cancelled | Error::Limit) => {}
+                // The deadline, a limit or a lack of memory ends the discovery, and the answer keeps
+                // what it found.
+                Ok(()) | Err(Error::Cancelled | Error::Limit | Error::Memory) => {}
                 Err(error) => return Err(error),
             }
             if request.alternatives_only {
@@ -84,9 +85,20 @@ impl<P: RoutingData> Router<P> {
                 if (control.cancelled)() {
                     return Err(Error::Cancelled);
                 }
-                let policy = snap::Policy { radius_m: offset_m.min(5000.0), ..snap::Policy::default() };
-                let found = self.package.snap(probe, &request.profile, policy)?;
-                let Some(attachment) = found.retained.first() else {
+                // The probe uses the nearest road, which is the same at any radius that holds it. A
+                // small radius keeps the window of a dense city below the road limit of a snap.
+                let radii = [snap::Policy::default().radius_m, snap::REACH_M]
+                    .into_iter()
+                    .chain((offset_m > snap::REACH_M).then_some(offset_m));
+                let mut attachment = None;
+                for radius_m in radii {
+                    let policy = snap::Policy { radius_m, ..snap::Policy::default() };
+                    attachment = self.package.snap(probe, &request.profile, policy)?.retained.into_iter().next();
+                    if attachment.is_some() {
+                        break;
+                    }
+                }
+                let Some(attachment) = attachment else {
                     continue;
                 };
                 let via = [attachment.projected.lon as f64 / 1e6, attachment.projected.lat as f64 / 1e6];

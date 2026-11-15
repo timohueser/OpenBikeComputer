@@ -7,6 +7,8 @@
     import { clockTime, nightLow, sunsetAt } from '../../lib/planner/evening';
     import { stopCounts, type Stop, type StopPlace } from '../../lib/planner/stops';
     import type { Day, Place } from '../../lib/planner/editor';
+    import { distanceIn, heightIn, heightUnit } from '../../lib/settings/format';
+    import { settings } from '../../lib/settings/settings.svelte';
 
     let { stop, days, labels, theme, date, elevation, onBack, onEndHere, onStay, onSelectPlace }: {
         stop: Stop;
@@ -42,13 +44,14 @@
     // Search names an unnamed place after its kind.
     const named = (p: StopPlace) => p.place.label.toLowerCase() !== kind(p);
     const names = (places: StopPlace[]) => places.slice(0, 3).map(p => p.place.label).join(', ');
-    const away = (p: StopPlace) => p.off < .15 ? 'on the route' : `${p.off.toFixed(1)} km off the route`;
+    const away = (p: StopPlace) => p.off < .15 ? 'on the route' : `${distanceIn(p.off * 1000).toFixed(1)} ${settings.units} off the route`;
     function shops(places: StopPlace[]) {
         return places.slice(0, 3).map(({ place }) => {
             const hours = place.openingHours ? openingHoursRows(place.openingHours)?.[0] : null;
             return hours ? `${place.label} (${hours.days} ${hours.periods.join(', ')})` : place.label;
         }).join(', ');
     }
+    const at = (km: number) => Math.round(distanceIn(km * 1000));
     function duration(hours: number) {
         const minutes = Math.round(hours * 60);
         return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`;
@@ -59,13 +62,13 @@
     <button type="button" class="back" onclick={onBack} {@attach node => node.focus({ preventScroll: true })}><Icon name="back" size={15} />All towns</button>
     <header>
         <h3>{stop.name}</h3>
-        <p>km {Math.round(stop.from)}{Math.round(stop.to) !== Math.round(stop.from) ? `–${Math.round(stop.to)}` : ''} · {stopCounts(stop)}</p>
+        <p>{settings.units} {at(stop.from)}{at(stop.to) !== at(stop.from) ? `–${at(stop.to)}` : ''} · {stopCounts(stop)}</p>
     </header>
     <dl class="days">
         {#each days as day, i}
             <div style:--day={dayColor(day.number, theme)}>
                 <dt><span class="badge">{labels[i]}</span>Day {labels[i]} {i ? 'starts here' : 'ends here'}</dt>
-                <dd>{day.distance.toFixed(1)} km · {duration(day.hours)} · ↑ {Math.round(day.ascent)} m</dd>
+                <dd>{distanceIn(day.distance * 1000).toFixed(1)} {settings.units} · {duration(day.hours)} · ↑ {Math.round(heightIn(day.ascent))} {heightUnit()}</dd>
             </div>
         {/each}
     </dl>

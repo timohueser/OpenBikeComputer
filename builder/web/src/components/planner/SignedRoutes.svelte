@@ -1,7 +1,7 @@
 <script lang="ts">
     import { untrack } from 'svelte';
     import Icon from './PlannerIcon.svelte';
-    import Segmented from './Segmented.svelte';
+    import Segmented from '../../lib/ui/Segmented.svelte';
     import PlannerSelect from './PlannerSelect.svelte';
     import RouteStats from './RouteStats.svelte';
     import TrailMarker from './TrailMarker.svelte';
@@ -12,12 +12,18 @@
     import { RADII, recordLine, type RouteFilter, type RouteFinder } from '../../lib/planner/route-finder.svelte';
     import { kindLabel } from '../../lib/planner/search/presentation';
     import type { SearchPlace } from '../../lib/planner/search/types';
-    import type { RoutePlan } from '../../lib/planner/signed-route-plan';
+    import { routeBase, type RoutePlan } from '../../lib/planner/signed-route-plan';
     import type { Bounds, CatalogRecord, RouteShape, RouteSort } from '../../lib/planner/signed-routes';
     import type { BikeType } from '../../lib/planner/riding-profiles';
+    import { pacedLine } from '../../lib/planner/routing';
+    import type { Trip } from '../../lib/planner/editor';
+    import { distanceIn, heightIn, heightUnit } from '../../lib/settings/format';
+    import { settings } from '../../lib/settings/settings.svelte';
 
-    let { finder, activity, theme = 'light', current = null, placeName, findPlaces, onClose, onPlan, attribution }: {
+    let { finder, activity, trip, theme = 'light', current = null, placeName, findPlaces, onClose, onPlan, attribution }: {
         finder: RouteFinder;
+        /** The open plan. */
+        trip: Trip;
         /** The map data credit of the release. */
         attribution: string;
         activity: BikeType;
@@ -93,14 +99,15 @@
     const listed = $derived(finder.matches.slice(0, finder.shown));
     const detail = $derived(finder.detail);
     const plan = $derived(finder.plan);
-    const km = (metres: number) => `${(metres / 1000).toFixed(1)} km`;
-    // The routed plan gives all four figures once it is ready, so the time never belongs to other figures.
+    const km = (metres: number) => `${distanceIn(metres).toFixed(1)} ${settings.units}`;
+    // The routed plan gives all four figures once it is ready, so the time never belongs to other figures. The time is at
+    // the pace of the open plan, which the picked route keeps.
     function figures(route: CatalogRecord) {
         const line = finder.preview;
         if (!line) return { distance: route.length_m / 1000, ascent: route.ascent_m, descent: route.descent_m, hours: null };
         const known = line.elevation.every(height => height !== null);
         return { distance: cumulative(line.coordinates).at(-1)!, ascent: known ? profileAscent(0, 1, line) : null,
-            descent: known ? profileDescent(0, 1, line) : null, hours: line.seconds / 3600 };
+            descent: known ? profileDescent(0, 1, line) : null, hours: pacedLine(line, routeBase(route, trip)).seconds / 3600 };
     }
 
     function kindLine(route: CatalogRecord, short = false): string {
@@ -144,7 +151,7 @@
         <button type="button" class="back" aria-label="Back to the planner" onclick={onClose}><Icon name="back" size={18} /></button>
         <h2>Signed routes</h2>
     </header>
-    {#if current}<p class="current">Your plan: {current.title}, {current.km.toFixed(1)} km · <button type="button" onclick={onClose}>Show</button></p>{/if}
+    {#if current}<p class="current">Your plan: {current.title}, {km(current.km * 1000)} · <button type="button" onclick={onClose}>Show</button></p>{/if}
     {#if detail}
         {@const route = detail.route}
         {@const website = routeWebsite(route.website)}
@@ -282,7 +289,7 @@
                             <span class="n">{i + 1}</span>
                             <span class="marker"><TrailMarker symbol={route.symbol} ref={route.ref} /></span>
                             <span class="body"><strong>{title(route)}</strong><small>{rowLine(route)}</small><span class="detail-line">{km(distanceM)} from {place}</span></span>
-                            <span class="figure">{km(route.length_m)}<small>↑ {route.ascent_m} m</small></span>
+                            <span class="figure">{km(route.length_m)}<small>↑ {Math.round(heightIn(route.ascent_m))} {heightUnit()}</small></span>
                             <Icon name="chevron" size={13} />
                         </button>
                     {/each}

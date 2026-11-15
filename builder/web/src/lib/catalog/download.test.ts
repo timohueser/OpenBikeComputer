@@ -49,7 +49,7 @@ async function fixtures() {
         box: { minLat: A.minLat + 1, minLon: A.minLon + 1, maxLat: A.maxLat - 1, maxLon: B.maxLon - 1 },
     };
     const ctx: SelectionContext = { catalog: exampleCatalog, indices, regionCells: new Map() };
-    const resolution = resolveSelection({ parts: [part], corridorRadiusM: 0 }, ctx);
+    const resolution = resolveSelection({ parts: [part] }, ctx);
     return { indices, plan: planCells(resolution, exampleCatalog, indices) };
 }
 
@@ -111,7 +111,7 @@ describe("planCells", () => {
             box: { minLat: A.minLat + 1, minLon: A.minLon - 1, maxLat: A.maxLat - 1, maxLon: A.minLon + 1 },
         };
         const resolution = resolveSelection(
-            { parts: [westOfA], corridorRadiusM: 0 },
+            { parts: [westOfA] },
             { catalog: exampleCatalog, indices, regionCells: new Map() },
         );
         const plan = planCells(resolution, exampleCatalog, indices);
@@ -149,7 +149,7 @@ describe("planCells", () => {
             },
         };
         const resolution = resolveSelection(
-            { parts: [part], corridorRadiusM: 0 },
+            { parts: [part] },
             { catalog: exampleCatalog, indices, regionCells: new Map() },
         );
         const plan = planCells(resolution, exampleCatalog, indices);

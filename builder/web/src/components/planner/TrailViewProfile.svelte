@@ -1,5 +1,7 @@
 <script lang="ts">
     import Icon from './PlannerIcon.svelte';
+    import { distanceIn, heightIn, heightUnit } from '../../lib/settings/format';
+    import { settings } from '../../lib/settings/settings.svelte';
     import { heightRange, profileHeightAt, profilePaths, type ProfileSample } from '../../lib/planner/profile-data';
 
     let { profile, colours, total, onHover }: {
@@ -45,7 +47,7 @@
     <div class="profile">
         <div class="head">
             <p class="label">
-                {#if hover === null}Hover to follow the route{:else}<b>{(hover * total).toFixed(1)} km</b>{height === null ? '' : ` · ${Math.round(height)} m`}{/if}
+                {#if hover === null}Hover to follow the route{:else}<b>{distanceIn(hover * total * 1000).toFixed(1)} {settings.units}</b>{height === null ? '' : ` · ${Math.round(heightIn(height))} ${heightUnit()}`}{/if}
             </p>
             <button type="button" class="fold" aria-label="Hide the elevation profile" title="Hide the elevation profile" onclick={() => { leave(); open = false; }}><Icon name="down" size={16} /></button>
         </div>

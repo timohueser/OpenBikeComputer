@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { emptyTrip, setEndpoint, addRestDay, setDays, maxRidingDays, pinNight, reorderPoint, setDrawnLeg, type Trip } from './editor';
 import { isTrip } from './trip-validation';
+import { planPace } from './riding-profiles';
 import { newVersion } from './versions';
 import { testTrip } from '../../../test-support/planner/trip';
 
@@ -34,9 +35,12 @@ describe('stored planner data', () => {
             { ...trip, restAfter: [4] }, { ...trip, splits: { 3: .5 } },
             { ...trip, points: [...trip.points, { ...trip.points[0], id: 'night-3', kind: 'night', night: 3 }] },
             { ...trip, points: [trip.points[0], { ...trip.points[1], leg: 'ferry' }] },
-            { ...trip, preset: 7 }, { ...trip, points: [...trip.points, { ...trip.points[0], id: 'pin', kind: 'marker', legEnd: 7 }] },
+            { ...trip, preset: 7 }, { ...trip, pace: 1 }, { ...trip, points: [...trip.points, { ...trip.points[0], id: 'pin', kind: 'marker', legEnd: 7 }] },
         ];
         expect(isTrip({ ...trip, bike: 'hiking', preset: 'Shorter' })).toBe(true);
+        // A pace that this reader does not know reads as Moderate.
+        expect(isTrip({ ...trip, pace: 'relaxed' })).toBe(true);
+        expect(planPace({ pace: 'relaxed' })).toBe('moderate');
         expect(isTrip({ ...trip, points: [trip.points[0], { ...trip.points[1], leg: 'transfer' }] })).toBe(true);
         for (const value of invalid) expect(isTrip(value), JSON.stringify(value)).toBe(false);
     });

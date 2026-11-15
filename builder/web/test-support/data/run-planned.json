@@ -110,8 +110,7 @@
                 "drops": [],
                 "dropped_leaves": [],
                 "readers": [
-                    "map builder",
-                    "desktop app"
+                    "map builder"
                 ],
                 "format": null
             }

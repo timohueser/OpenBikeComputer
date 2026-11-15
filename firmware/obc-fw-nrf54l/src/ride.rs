@@ -16,7 +16,6 @@ use embedded_graphics::prelude::{Point, Size};
 use embedded_graphics::primitives::Rectangle;
 use obc_app::App;
 use obc_display::ls021::{FRAME_H, FRAME_W};
-use obc_display::FbDevice64;
 use obc_formats::io::{ByteSink, Error as ByteError};
 use obc_formats::obcr::HEADER_FULL_LEN;
 use obc_platform::sensor_hub::SensorConsumer;
@@ -667,7 +666,7 @@ pub(crate) async fn run_app(
     // The in-flight route plan's bookkeeping: `Some` while a plan is being stepped, one bounded step
     // per pass. It guards the planner slot's initialization.
     let mut nav_run: Option<NavRun> = None;
-    let mut review_publication: Option<obc_formats::assistant::PayloadFingerprint> = None;
+    let mut review_publication: Option<obc_formats::navigator::PayloadFingerprint> = None;
     let mut review_original: Option<obc_storage::flat::StoreSource<'static, crate::flat_store::FlatCard>> = None;
     let mut detour = crate::detour::Executor::new();
     let mut visit = crate::visit::Executor::new();
@@ -2645,7 +2644,7 @@ pub(crate) async fn run_app(
                 match banner_rows.filter(|_| dirty.overlay) {
                     Some((y0, rows)) => {
                         let (stats, render_us) = display.render_frame(|f: &mut crate::ls021_flpr::Frame64| {
-                            let mut fbdev = FbDevice64::new(f.bytes_mut(), FRAME_W as u32, FRAME_H as u32);
+                            let mut fbdev = f.draw_target();
                             // Clip the framebuffer to the banner's own band, so a future overlay item
                             // cannot repaint map pixels the freeze is preserving.
                             fbdev.set_clip(Rectangle::new(
@@ -2729,7 +2728,7 @@ pub(crate) async fn run_app(
 
                         {
                             let (stats, render_us) = display.render_frame(|f: &mut crate::ls021_flpr::Frame64| {
-                                let mut fbdev = FbDevice64::new(f.bytes_mut(), FRAME_W as u32, FRAME_H as u32);
+                                let mut fbdev = f.draw_target();
                                 if let Some(r) = clip {
                                     fbdev.set_clip(r);
                                 }
@@ -2765,7 +2764,7 @@ pub(crate) async fn run_app(
                 if let Some(mut photo) = crate::arena::claim_photo() {
                     let reader = Reader::new(flat_map, map_tables, map_cache);
                     let (stats, render_us) = display.render_frame(|f: &mut crate::ls021_flpr::Frame64| {
-                        let mut target = FbDevice64::new(f.bytes_mut(), FRAME_W as u32, FRAME_H as u32);
+                        let mut target = f.draw_target();
                         app.render_scene_map_photo_timed(
                             None,
                             &mut target,

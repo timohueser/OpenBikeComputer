@@ -7,9 +7,8 @@
 // source is the build product itself, so this reads the modules Rollup actually put in the
 // emitted chunks and collects a licence text for each npm package behind them.
 //
-// The result is emitted as an asset, which means it ships with the static site *and* inside
-// the Tauri bundle, because both are the same `vite build`. The Rust side of the desktop app
-// and the firmware are a separate obligation, covered by the repo's THIRD-PARTY.md.
+// The result is emitted as an asset, which means it ships with the static site. The firmware
+// is a separate obligation, covered by the repo's THIRD-PARTY.md.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -28,7 +27,7 @@ export function registryAttribution(id: string): string {
 }
 
 // LICENSE, LICENCE, LICENSE.md, COPYING, NOTICE — and the dual-licensed shape, where a
-// package ships one file per option (`LICENSE_MIT` + `LICENSE_APACHE-2.0`, @tauri-apps/api).
+// package ships one file per option (`LICENSE_MIT` + `LICENSE_APACHE-2.0`).
 // Both are collected: the licence is the package's to choose between, not ours to narrow.
 // The optional tail must start with a separator so `licenses.js` is not a licence file.
 const LICENSE_FILE = /^(licen[cs]e|copying|notice)([._-][\w.+-]+)*$/i;

@@ -17,9 +17,7 @@
 //   * **Overlap is free.** Two parts sharing ground share the *same cells*, and
 //     the union counts them once, which is why per-part bytes need two answers.
 
-import { corridorCells, type LatLon } from "./corridor";
 import { cellsIntersecting, formatCellId, type UBox } from "../core/grid";
-import { lassoCells } from "./lasso";
 import type { BandEntry, Catalog } from "./manifest";
 import {
     assertRegionCellsIndexed,
@@ -30,14 +28,12 @@ import {
     type TerrainIndexDocument,
 } from "./satellites";
 
-export type { LatLon } from "./corridor";
-
 interface PartBase {
     /** Stable within a session; the UI's key for the row and the remove button. */
     id: string;
     /**
      * What the parts list calls it. Held by the part rather than derived, because
-     * the three kinds get their names from three different places, and a list
+     * the kinds get their names from different places, and a list
      * that renamed a row when the catalog reloaded would be a list that cannot be
      * trusted to be the same list.
      */
@@ -56,31 +52,11 @@ export interface BoxPart extends PartBase {
     box: UBox;
 }
 
-/** One route, buffered by the selection's global corridor radius. */
-export interface CorridorPart extends PartBase {
-    kind: "corridor";
-    points: LatLon[];
-}
+export type SelectionPart = RegionPart | BoxPart;
 
-/** A freehand ring drawn on the map, in integer microdegrees. Closed
- *  implicitly — the last point connects back to the first. */
-export interface LassoPart extends PartBase {
-    kind: "lasso";
-    points: LatLon[];
-}
-
-export type SelectionPart = RegionPart | BoxPart | CorridorPart | LassoPart;
-
-/**
- * A selection: the parts, and the one corridor width that applies to every route
- * in the map.
- *
- * The radius is on the selection rather than on each corridor part because it is
- * a single global slider. Per-part widths would be a different UI.
- */
+/** A selection: the parts, in the order they were added. */
 export interface Selection {
     parts: SelectionPart[];
-    corridorRadiusM: number;
 }
 
 /** Everything a resolution needs that is not in the selection itself. */
@@ -172,8 +148,8 @@ export interface SelectionResolution {
 }
 
 /** A selection with nothing in it. */
-export function emptySelection(corridorRadiusM: number): Selection {
-    return { parts: [], corridorRadiusM };
+export function emptySelection(): Selection {
+    return { parts: [] };
 }
 
 /**
@@ -196,11 +172,6 @@ export function withPart(selection: Selection, part: SelectionPart): Selection {
 /** Remove a part by id. */
 export function withoutPart(selection: Selection, partId: string): Selection {
     return { ...selection, parts: selection.parts.filter((p) => p.id !== partId) };
-}
-
-/** Set the one global corridor width. */
-export function withCorridorRadius(selection: Selection, radiusM: number): Selection {
-    return { ...selection, corridorRadiusM: Math.max(0, radiusM) };
 }
 
 /**
@@ -229,7 +200,7 @@ function assertRegionListsIndexed(selection: Selection, ctx: SelectionContext): 
  * The cell ids one part contributes to one band, before any published/missing
  * distinction — pure geometry, or for a region pure lookup.
  */
-function partCells(part: SelectionPart, bandEntry: BandEntry, ctx: SelectionContext, radiusM: number): string[] {
+function partCells(part: SelectionPart, bandEntry: BandEntry, ctx: SelectionContext): string[] {
     switch (part.kind) {
         case "region": {
             const list = ctx.regionCells.get(part.regionId);
@@ -242,10 +213,6 @@ function partCells(part: SelectionPart, bandEntry: BandEntry, ctx: SelectionCont
         }
         case "box":
             return cellsIntersecting(bandEntry.cell_log2, part.box).map(formatCellId);
-        case "corridor":
-            return corridorCells(bandEntry.cell_log2, part.points, radiusM).map(formatCellId);
-        case "lasso":
-            return lassoCells(bandEntry.cell_log2, part.points).map(formatCellId);
     }
 }
 
@@ -253,21 +220,17 @@ function partCells(part: SelectionPart, bandEntry: BandEntry, ctx: SelectionCont
  * The terrain squares one part covers — the same coverage rule, applied to the
  * terrain grid.
  *
- * There is no terrain special case here and there must never be one: a box and a
- * corridor resolve through exactly the test the bands use, and a region reads its
+ * There is no terrain special case here and there must never be one: a box
+ * resolves through exactly the test the bands use, and a region reads its
  * published list, because deriving one from the drawable boundary would let a
  * simplification error drop an edge square.
  */
-function partTerrainCells(part: SelectionPart, log2: number, ctx: SelectionContext, radiusM: number): string[] {
+function partTerrainCells(part: SelectionPart, log2: number, ctx: SelectionContext): string[] {
     switch (part.kind) {
         case "region":
             return [...(ctx.regionCells.get(part.regionId)?.terrain ?? [])];
         case "box":
             return cellsIntersecting(log2, part.box).map(formatCellId);
-        case "corridor":
-            return corridorCells(log2, part.points, radiusM).map(formatCellId);
-        case "lasso":
-            return lassoCells(log2, part.points).map(formatCellId);
     }
 }
 
@@ -284,12 +247,11 @@ function classify(
     part: SelectionPart,
     bandEntry: BandEntry,
     ctx: SelectionContext,
-    radiusM: number,
     index: CellIndexDocument,
 ): BandCells {
     const published: string[] = [];
     const missing: string[] = [];
-    for (const id of new Set(partCells(part, bandEntry, ctx, radiusM))) {
+    for (const id of new Set(partCells(part, bandEntry, ctx))) {
         (cellIndexHas(index, id) ? published : missing).push(id);
     }
     return { published: published.sort(), missing: missing.sort() };
@@ -302,14 +264,12 @@ type CellSource = (part: SelectionPart, bandEntry: BandEntry, index: CellIndexDo
  * Resolve a selection into the cells it names, per band, with per-part
  * attribution.
  *
- * The one-shot path: it computes every part from scratch. A UI holding a slider
- * does not want that sixty times a second — see {@link SelectionResolver}.
+ * The one-shot path: it computes every part from scratch. A UI that resolves on
+ * every change does not want that — see {@link SelectionResolver}.
  */
 export function resolveSelection(selection: Selection, ctx: SelectionContext): SelectionResolution {
     assertRegionListsIndexed(selection, ctx);
-    return resolveWith(selection, ctx, (part, bandEntry, index) =>
-        classify(part, bandEntry, ctx, selection.corridorRadiusM, index),
-    );
+    return resolveWith(selection, ctx, (part, bandEntry, index) => classify(part, bandEntry, ctx, index));
 }
 
 function resolveWith(selection: Selection, ctx: SelectionContext, cellsFor: CellSource): SelectionResolution {
@@ -367,9 +327,7 @@ function resolveWith(selection: Selection, ctx: SelectionContext, cellsFor: Cell
     if (terrainIndex) {
         const seen = new Set<string>();
         for (const part of selection.parts) {
-            for (const id of partTerrainCells(part, terrainIndex.cell_log2, ctx, selection.corridorRadiusM)) {
-                seen.add(id);
-            }
+            for (const id of partTerrainCells(part, terrainIndex.cell_log2, ctx)) seen.add(id);
         }
         for (const id of [...seen].sort()) {
             const entry = terrainIndex.byId.get(id);
@@ -421,7 +379,6 @@ function sortedLists(source: Map<string, Set<string>>): Map<string, string[]> {
  *  comparison rather than a convention. */
 interface CachedBand {
     part: SelectionPart;
-    radiusM: number;
     index: CellIndexDocument;
     regionList: RegionCellsDocument | undefined;
     cells: BandCells;
@@ -430,15 +387,14 @@ interface CachedBand {
 /**
  * `resolveSelection`, but remembering what it worked out.
  *
- * The reason is the corridor slider. Resolving a bikepacking-sized selection is
- * tens of milliseconds and a slider asks for a new answer on every frame it
- * moves, yet almost none of that work is new: a global corridor width changes
- * what the *corridor* parts cover and nothing else.
+ * Resolving a bikepacking-sized selection is tens of milliseconds, and the
+ * selection changes one part at a time: an added box or region, or a region's
+ * cell list that arrives, leaves the answer of every other part as it was.
  *
  * So the cache is keyed per **(part, band)** — the finest grain at which an
  * answer is reusable — and an entry is reused only when everything it was
  * computed from is still the same object: the part itself, the band's index
- * document, the region's cell list, and for corridors the radius. Parts are
+ * document and the region's cell list. Parts are
  * values here, replaced rather than edited by `withPart`, so identity is the
  * right test; a caller that does edit one in place says so with
  * {@link invalidate}.
@@ -481,15 +437,14 @@ export class SelectionResolver {
                 hit &&
                 hit.part === part &&
                 hit.index === index &&
-                hit.regionList === regionList &&
-                (part.kind !== "corridor" || hit.radiusM === selection.corridorRadiusM)
+                hit.regionList === regionList
             ) {
                 this.stats.reused += 1;
                 return hit.cells;
             }
             this.stats.computed += 1;
-            const cells = classify(part, bandEntry, ctx, selection.corridorRadiusM, index);
-            this.cache.set(key, { part, radiusM: selection.corridorRadiusM, index, regionList, cells });
+            const cells = classify(part, bandEntry, ctx, index);
+            this.cache.set(key, { part, index, regionList, cells });
             return cells;
         });
         // A removed part must not keep its answers alive: a session that adds

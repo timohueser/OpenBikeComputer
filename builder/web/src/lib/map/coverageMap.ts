@@ -1,7 +1,7 @@
 // Leaflet glue for the coverage map. This paints the cell catalog's own region
 // boundaries as quiet affordances, each selection part's true stair-edged outline,
-// hatched not-baked patches inside the selection, and the corridor panel's dashed
-// preview. No grid is ever drawn, and this file simply has no code that could.
+// and hatched not-baked patches inside the selection. No grid is ever drawn, and this
+// file simply has no code that could.
 //
 // All Leaflet state lives on the instance; the Svelte component owns *what* to draw
 // and pushes it through the `set*` methods below, so this class stays framework-free
@@ -14,6 +14,8 @@
 // armed hover and click do point-in-rings over every region.
 
 import L from "leaflet";
+import "leaflet/dist/leaflet.css";
+import "./coverage-map.css";
 import { addBasemap } from "./basemap";
 
 /** [lat, lon] degrees — Leaflet's own order. */
@@ -22,11 +24,9 @@ export type DegPoint = [number, number];
 /** One selection part, reduced to what the map draws. */
 export interface RenderedPart {
     id: string;
-    kind: "region" | "box" | "corridor" | "lasso";
+    kind: "region" | "box";
     /** Stair-edged coverage rings, outer + holes, from `coverageRings`. */
     rings: DegPoint[][];
-    /** The route itself, for corridor parts. */
-    route?: DegPoint[];
     highlighted: boolean;
 }
 
@@ -35,12 +35,6 @@ export interface RenderedWarning {
     /** [[south, west], [north, east]] */
     bounds: [DegPoint, DegPoint];
     kind: "hole" | "partial";
-}
-
-/** The corridor panel's uncommitted routes. */
-export interface RenderedPreview {
-    rings: DegPoint[][];
-    routes: DegPoint[][];
 }
 
 export interface CoverageMapCallbacks {
@@ -56,10 +50,6 @@ export interface CoverageMapCallbacks {
     onBoxDrawn(south: number, west: number, north: number, east: number): void;
     /** The in-flight box changed; return the pricing chip's text ("" hides). */
     boxDragLabel(south: number, west: number, north: number, east: number): string;
-    /** A lasso ring was drawn, as [lat, lon] degree points, unclosed. */
-    onLassoDrawn(points: DegPoint[]): void;
-    /** The in-flight lasso changed; return the pricing chip's text ("" hides). */
-    lassoDragLabel(points: DegPoint[]): string;
     /** Drawing was cancelled or finished — the component disarms its tool. */
     onDrawEnd(): void;
     /** A hatched warning patch was clicked — zoom is the component's call. */
@@ -85,16 +75,25 @@ const PART_STYLE: L.PathOptions = {
     interactive: false,
 };
 const PART_HIGHLIGHT_STYLE: L.PathOptions = { ...PART_STYLE, weight: 4, fillOpacity: 0.2 };
-const ROUTE_STYLE: L.PathOptions = { color: "var(--route)", weight: 2.5, interactive: false };
-const PREVIEW_RING_STYLE: L.PathOptions = {
-    color: "var(--coral)",
-    weight: 2,
-    dashArray: "7 5",
-    fillColor: "var(--amber)",
-    fillOpacity: 0.08,
-    interactive: false,
-};
-const PREVIEW_ROUTE_STYLE: L.PathOptions = { ...ROUTE_STYLE, dashArray: "4 4" };
+/** A region over pale ground: a dashed line with no fill, so the area keeps the full colour of the map. */
+const REGION_PALE_STYLE: L.PathOptions = { ...REGION_STYLE, weight: 1.2, opacity: 0.6, fill: false, dashArray: "5 4" };
+/** The line around the area where the ground outside it is pale: the full colour of the map shows the area, so it has no fill. */
+const AREA_STYLE: L.PathOptions = { color: "var(--ink)", weight: 1.5, opacity: 0.7, fill: false, interactive: false };
+const AREA_HIGHLIGHT_STYLE: L.PathOptions = { ...AREA_STYLE, weight: 3, opacity: 1 };
+// Leaflet draws the paths of one pane in the order of their arrival, so the pale ground and the routes have panes of
+// their own: under and over the pane of the regions, the parts and the warnings.
+const PALE_STYLE: L.PathOptions = { stroke: false, className: "coverage-pale", interactive: false, pane: "pale" };
+/** Takes the colour out of the ground under it; `coverage-map.css` has the blend of its pane. */
+const GREY_STYLE: L.PathOptions = { stroke: false, className: "coverage-grey", interactive: false, pane: "grey" };
+/** The lines of the map cells. They show why an area grows to whole cells, and are otherwise not noticed. */
+const GRID_STYLE: L.PolylineOptions = { color: "var(--ink)", weight: 1, opacity: 0.13, interactive: false, pane: "grid" };
+/** The cells that a box takes while the rider draws it. */
+const SNAP_STYLE: L.PathOptions = { color: "var(--ink)", weight: 1.5, opacity: 0.6, fill: false, interactive: false };
+/** A cell narrower than this on the screen gets no lines: they would be a texture. */
+const GRID_MIN_PX = 36;
+const ROUTE_STYLE: L.PolylineOptions = { color: "var(--route)", weight: 3, interactive: false, pane: "routes" };
+/** A ring around the whole map; the rings of the area are its holes. */
+const WORLD: DegPoint[] = [[-89, -540], [-89, 540], [89, 540], [89, -540]];
 const WARNING_STYLE: Record<"hole" | "partial", L.PathOptions> = {
     hole: { color: "var(--coral)", weight: 1.6, className: "coverage-hatch" },
     partial: { color: "var(--coral)", weight: 1, opacity: 0.6, dashArray: "3 3", className: "coverage-hatch faintly" },
@@ -106,7 +105,6 @@ const BOX_DRAW_STYLE: L.PathOptions = {
     fillColor: "var(--amber)",
     fillOpacity: 0.18,
 };
-const LASSO_DRAW_STYLE: L.PathOptions = { ...BOX_DRAW_STYLE, dashArray: "5 4" };
 
 /** Even-odd containment in a region's drawable rings, degrees — the same rule the
  *  even-odd fill draws them with, so what hovers is what is painted. */
@@ -133,10 +131,6 @@ interface ShelfRegion {
     span: number;
 }
 
-/** Minimum pointer movement, px, before a lasso takes another vertex. Keeps a slow
- *  gesture from minting thousands of points the pricing then walks. */
-const LASSO_STEP_PX = 4;
-
 export class CoverageMapView {
     private map: L.Map;
     private cb: CoverageMapCallbacks;
@@ -148,9 +142,15 @@ export class CoverageMapView {
     private emphasized: string | null = null;
     private hoverTip: L.Tooltip;
 
+    private paleLayer: L.LayerGroup = L.layerGroup();
+    private pale = false;
+    private gridLayer: L.LayerGroup = L.layerGroup();
+    /** The side of a map cell and a line of the grid, in degrees; null with no cell lines. */
+    private grid: { step: number; origin: number } | null = null;
+    private snapRect: L.Rectangle | null = null;
     private partLayer: L.LayerGroup = L.layerGroup();
+    private routeLayer: L.LayerGroup = L.layerGroup();
     private warnLayer: L.LayerGroup = L.layerGroup();
-    private previewLayer: L.LayerGroup = L.layerGroup();
     private cellLayer: L.LayerGroup = L.layerGroup();
 
     private drawArmed = false;
@@ -158,12 +158,6 @@ export class CoverageMapView {
     private drawStart: L.LatLng | null = null;
     private drawRect: L.Rectangle | null = null;
     private drawTip: L.Tooltip;
-
-    private lassoArmed = false;
-    private lassoing = false;
-    private lassoPoints: L.LatLng[] = [];
-    private lassoLastPx: L.Point | null = null;
-    private lassoPoly: L.Polygon | null = null;
 
     private resizeObs: ResizeObserver;
     /** The shelf's bounds. The pane's size settles over several layout passes (0-wide
@@ -181,30 +175,30 @@ export class CoverageMapView {
         this.map = L.map(el, { worldCopyJump: true, boxZoom: false, maxZoom: 18 }).setView([49, 9], 5);
         void background(this.map);
 
-        // Draw order bottom-up: shelf, selection, warnings on top of the
-        // selection they annotate, preview above everything settled.
+        // Draw order bottom-up: the pale ground, shelf, selection, warnings on top of the
+        // selection they annotate, and the routes above all.
+        this.map.createPane("grey").style.zIndex = "340";
+        this.map.createPane("pale").style.zIndex = "350";
+        this.map.createPane("grid").style.zIndex = "360";
+        this.map.createPane("routes").style.zIndex = "450";
+        this.paleLayer.addTo(this.map);
+        this.gridLayer.addTo(this.map);
+        this.map.on("moveend", () => this.drawGrid());
         this.regionLayer.addTo(this.map);
         this.cellLayer.addTo(this.map);
         this.partLayer.addTo(this.map);
         this.warnLayer.addTo(this.map);
-        this.previewLayer.addTo(this.map);
+        this.routeLayer.addTo(this.map);
 
         this.drawTip = L.tooltip({ className: "preview-tip", direction: "top", offset: [0, -8] });
         this.hoverTip = L.tooltip({ className: "preview-tip", direction: "top", offset: [0, -12] });
 
-        this.map.on("mousedown", (e) => {
-            this.onDrawStart(e);
-            this.onLassoStart(e);
-        });
+        this.map.on("mousedown", (e) => this.onDrawStart(e));
         this.map.on("mousemove", (e) => {
             this.onDrawMove(e);
-            this.onLassoMove(e);
             this.onRegionHover(e);
         });
-        this.map.on("mouseup", () => {
-            this.onDrawFinish();
-            this.onLassoFinish();
-        });
+        this.map.on("mouseup", () => this.onDrawFinish());
         this.map.on("click", (e) => this.onRegionClick(e));
         this.map.on("mouseout", () => this.clearRegionHover());
         // Leaflet only hears a mouseup inside its container: a drag released over the
@@ -230,7 +224,6 @@ export class CoverageMapView {
 
     private readonly onDocPointerUp = (): void => {
         if (this.drawing) this.onDrawFinish();
-        if (this.lassoing) this.onLassoFinish();
     };
 
     private readonly onVisibility = (): void => {
@@ -291,7 +284,7 @@ export class CoverageMapView {
         if (armed === this.regionArmed) return;
         this.regionArmed = armed;
         if (!armed) this.clearRegionHover();
-        this.setCursor(armed || this.drawArmed || this.lassoArmed);
+        this.setCursor(armed || this.drawArmed);
     }
 
     /** Every region whose boundary contains the point, smallest first. */
@@ -320,7 +313,7 @@ export class CoverageMapView {
     }
 
     private onRegionHover(e: L.LeafletMouseEvent): void {
-        if (!this.regionArmed || this.drawing || this.lassoing) return;
+        if (!this.regionArmed || this.drawing) return;
         const chain = this.chainAt(e.latlng);
         if (chain.length === 0) {
             this.clearRegionHover();
@@ -343,13 +336,13 @@ export class CoverageMapView {
      *  restores quiet. */
     emphasizeRegion(regionId: string | null): void {
         if (regionId === this.emphasized) return;
-        if (this.emphasized) this.regionPolys.get(this.emphasized)?.setStyle(REGION_STYLE);
+        if (this.emphasized) this.regionPolys.get(this.emphasized)?.setStyle(this.pale ? REGION_PALE_STYLE : REGION_STYLE);
         this.emphasized = regionId;
         if (regionId) this.regionPolys.get(regionId)?.setStyle(REGION_HOVER_STYLE);
     }
 
     private onRegionClick(e: L.LeafletMouseEvent): void {
-        if (!this.regionArmed || this.drawArmed || this.lassoArmed) return;
+        if (!this.regionArmed || this.drawArmed) return;
         const chain = this.chainAt(e.latlng);
         if (chain.length === 0) return;
         if (chain.length === 1) {
@@ -384,13 +377,51 @@ export class CoverageMapView {
     setParts(parts: RenderedPart[]): void {
         this.partLayer.clearLayers();
         for (const part of parts) {
-            if (part.rings.length) {
-                L.polygon(part.rings, part.highlighted ? PART_HIGHLIGHT_STYLE : PART_STYLE).addTo(this.partLayer);
-            }
-            if (part.route && part.route.length > 1) {
-                L.polyline(part.route, ROUTE_STYLE).addTo(this.partLayer);
-            }
+            if (!part.rings.length) continue;
+            if (!this.pale) L.polygon(part.rings, part.highlighted ? PART_HIGHLIGHT_STYLE : PART_STYLE).addTo(this.partLayer);
+            else if (part.highlighted) L.polygon(part.rings, AREA_HIGHLIGHT_STYLE).addTo(this.partLayer);
         }
+    }
+
+    /**
+     * Makes the ground outside `rings` grey and a little pale, so the area shows in the full colour of the map, with
+     * one line around it. The names and the lines of the ground outside keep their contrast: the rider reads them to
+     * choose what to add. `rings` are the outer rings and the holes of one cell set, which never cross. From then on
+     * a region is a dashed line, and `setParts` draws only a highlighted part.
+     */
+    setPale(rings: DegPoint[][]): void {
+        if (!this.pale) for (const poly of this.regionPolys.values()) poly.setStyle(REGION_PALE_STYLE);
+        this.pale = true;
+        this.paleLayer.clearLayers();
+        L.polygon([WORLD, ...rings], GREY_STYLE).addTo(this.paleLayer);
+        L.polygon([WORLD, ...rings], PALE_STYLE).addTo(this.paleLayer);
+        if (rings.length) L.polygon(rings, AREA_STYLE).addTo(this.paleLayer);
+    }
+
+    /** Shows the lines of the map cells, faintly: a cell has the side `step`, and one line is at `origin`, in degrees.
+     *  While the rider draws a box, a line goes around the cells that the box takes. */
+    setGrid(step: number, origin: number): void {
+        this.grid = { step, origin };
+        this.drawGrid();
+    }
+
+    private drawGrid(): void {
+        this.gridLayer.clearLayers();
+        const grid = this.grid, width = this.map.getSize().x, seen = this.map.getBounds();
+        if (!grid || !width || (width * grid.step) / (seen.getEast() - seen.getWest()) < GRID_MIN_PX) return;
+        // As far past the view as the renderer draws, so the start of a pan shows lines.
+        const view = seen.pad(0.1), south = Math.max(view.getSouth(), -85), north = Math.min(view.getNorth(), 85);
+        const first = (value: number) => grid.origin + Math.ceil((value - grid.origin) / grid.step) * grid.step;
+        const lines: DegPoint[][] = [];
+        for (let lon = first(view.getWest()); lon <= view.getEast(); lon += grid.step) lines.push([[south, lon], [north, lon]]);
+        for (let lat = first(south); lat <= north; lat += grid.step) lines.push([[lat, view.getWest()], [lat, view.getEast()]]);
+        L.polyline(lines, GRID_STYLE).addTo(this.gridLayer);
+    }
+
+    /** The lines of the rider's routes, in the colour of a route, in place of those before. */
+    setRoutes(lines: DegPoint[][]): void {
+        this.routeLayer.clearLayers();
+        for (const line of lines) L.polyline(line, ROUTE_STYLE).addTo(this.routeLayer);
     }
 
     /** Squares, such as the leaves of a tiled layer, each in its colour and with its label. */
@@ -416,18 +447,6 @@ export class CoverageMapView {
         this.ensureHatchPattern();
     }
 
-    setPreview(preview: RenderedPreview | null): void {
-        this.previewLayer.clearLayers();
-        if (!preview) return;
-            // One polygon holding every ring: Leaflet's default even-odd fill rule
-            // renders disjoint outers filled and stair-holes empty without this code
-            // having to work out which hole belongs to which patch.
-        if (preview.rings.length) L.polygon(preview.rings, PREVIEW_RING_STYLE).addTo(this.previewLayer);
-        for (const route of preview.routes) {
-            if (route.length > 1) L.polyline(route, PREVIEW_ROUTE_STYLE).addTo(this.previewLayer);
-        }
-    }
-
     /** Fly to a box — a warning row was clicked. */
     flyTo(south: number, west: number, north: number, east: number): void {
         this.userMoved = true; // deliberate navigation outranks the shelf fit
@@ -451,7 +470,7 @@ export class CoverageMapView {
         this.drawing = false;
         this.removeDrawRect();
         this.map.dragging.enable();
-        this.setCursor(this.regionArmed || this.lassoArmed);
+        this.setCursor(this.regionArmed);
     }
 
     private onDrawStart(e: L.LeafletMouseEvent): void {
@@ -466,6 +485,14 @@ export class CoverageMapView {
         if (!this.drawArmed || !this.drawing || !this.drawRect || !this.drawStart) return;
         const bounds = L.latLngBounds(this.drawStart, e.latlng);
         this.drawRect.setBounds(bounds);
+        if (this.grid) {
+            const { step, origin } = this.grid;
+            const edge = (value: number, round: (cells: number) => number) => origin + round((value - origin) / step) * step;
+            const cells = L.latLngBounds([edge(bounds.getSouth(), Math.floor), edge(bounds.getWest(), Math.floor)],
+                [edge(bounds.getNorth(), Math.ceil), edge(bounds.getEast(), Math.ceil)]);
+            if (this.snapRect) this.snapRect.setBounds(cells);
+            else this.snapRect = L.rectangle(cells, SNAP_STYLE).addTo(this.map);
+        }
         const label = this.cb.boxDragLabel(
             bounds.getSouth(),
             bounds.getWest(),
@@ -492,6 +519,10 @@ export class CoverageMapView {
     }
 
     private removeDrawRect(): void {
+        if (this.snapRect) {
+            this.map.removeLayer(this.snapRect);
+            this.snapRect = null;
+        }
         if (this.drawRect) {
             this.map.removeLayer(this.drawRect);
             this.drawRect = null;
@@ -506,79 +537,6 @@ export class CoverageMapView {
         } else if (this.map.hasLayer(this.drawTip)) {
             this.map.removeLayer(this.drawTip);
         }
-    }
-
-    armLassoDraw(): void {
-        this.lassoArmed = true;
-        this.map.dragging.disable();
-        this.setCursor(true);
-    }
-
-    cancelLassoDraw(): void {
-        this.lassoArmed = false;
-        this.lassoing = false;
-        this.removeLassoPoly();
-        this.map.dragging.enable();
-        this.setCursor(this.regionArmed || this.drawArmed);
-    }
-
-    private onLassoStart(e: L.LeafletMouseEvent): void {
-        if (!this.lassoArmed) return;
-        // Clear any leftover preview FIRST: `removeLassoPoly` also resets the point
-        // buffer, so calling it after seeding wipes the gesture's first point and every
-        // move then bails on the null guard.
-        this.removeLassoPoly();
-        this.lassoing = true;
-        this.lassoPoints = [e.latlng];
-        this.lassoLastPx = this.map.latLngToContainerPoint(e.latlng);
-        this.lassoPoly = L.polygon([e.latlng], LASSO_DRAW_STYLE).addTo(this.map);
-    }
-
-    private onLassoMove(e: L.LeafletMouseEvent): void {
-        if (!this.lassoArmed || !this.lassoing || !this.lassoPoly || !this.lassoLastPx) return;
-        const px = this.map.latLngToContainerPoint(e.latlng);
-        if (px.distanceTo(this.lassoLastPx) < LASSO_STEP_PX) return;
-        this.lassoLastPx = px;
-        this.lassoPoints.push(e.latlng);
-        this.lassoPoly.setLatLngs(this.lassoPoints);
-        const label = this.cb.lassoDragLabel(this.lassoPoints.map((p): DegPoint => [p.lat, p.lng]));
-        this.showDrawTip(label, e.latlng);
-    }
-
-    private onLassoFinish(): void {
-        if (!this.lassoArmed || !this.lassoing) return;
-        this.lassoing = false;
-        const points = this.lassoPoints;
-        this.cancelLassoDraw();
-        // A stray click or a gesture with no area draws nothing — the same 5 px
-        // threshold the box uses, over the ring's pixel extent.
-        let minX = Infinity;
-        let minY = Infinity;
-        let maxX = -Infinity;
-        let maxY = -Infinity;
-        for (const p of points) {
-            const px = this.map.latLngToContainerPoint(p);
-            minX = Math.min(minX, px.x);
-            minY = Math.min(minY, px.y);
-            maxX = Math.max(maxX, px.x);
-            maxY = Math.max(maxY, px.y);
-        }
-        if (points.length < 3 || maxX - minX < 5 || maxY - minY < 5) {
-            this.cb.onDrawEnd();
-            return;
-        }
-        this.cb.onLassoDrawn(points.map((p): DegPoint => [p.lat, p.lng]));
-        this.cb.onDrawEnd();
-    }
-
-    private removeLassoPoly(): void {
-        if (this.lassoPoly) {
-            this.map.removeLayer(this.lassoPoly);
-            this.lassoPoly = null;
-        }
-        this.lassoPoints = [];
-        this.lassoLastPx = null;
-        if (this.map.hasLayer(this.drawTip)) this.map.removeLayer(this.drawTip);
     }
 
     private setCursor(crosshair: boolean): void {

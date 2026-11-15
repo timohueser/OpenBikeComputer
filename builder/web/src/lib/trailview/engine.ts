@@ -1,9 +1,11 @@
 import type { PlannerConfig } from '../planner/config';
 import type { Coordinate } from '../planner/geo';
+import { worldPixel } from '../planner/layers/mercator';
 import { instantAt } from '../planner/solar';
-import { eyeAltitude, follow, groundOf, MIN_CLEARANCE, move, VFOV, viewProjection, type Footing, type Pose } from './frame/camera';
+import { eyeAltitude, follow, groundOf, MIN_CLEARANCE, move, NEAR, VFOV, viewProjection, type Footing, type Pose } from './frame/camera';
 import { Controls } from './frame/controls';
 import { CURVATURE, frameAt, type Frame } from './frame/frame';
+import { UNITS } from './frame/space';
 import { Gpu } from './gpu/device';
 import { PassTimes } from './gpu/timing';
 import { Ground, groundPipelines, type GroundStats } from './ground/ground';
@@ -30,7 +32,9 @@ import { Dressing } from './dressing/dressing';
 import { KindPoints } from './structures/kind-points';
 import { LightPools } from './structures/light-pools';
 import { Route, type RoutePin } from './route/route';
+import { sampleDistances, terrainHides } from './sight';
 import { Pacer } from './pacer';
+import type { StillPoints } from './still';
 import { DEBUG_VIEWS, TIME_ZONE, type View } from './view';
 
 const PASSES = ['terrain', 'ground', 'stamp', 'houses', 'vegetation', 'casters', 'shadow', 'far-casters', 'far-shadow', 'mips', 'resolve'];
@@ -50,6 +54,8 @@ const RAD = Math.PI / 180;
 const STEP_M = 1, HEADROOM_M = 2;
 /** A flying eye under the terrain is in a tunnel when a floor lies at most this far below it. */
 const BORE_M = 6;
+/** The lift of the ribbon of route.wgsl above the surface. */
+const LIFT_M = 0.3;
 
 export interface Stats {
     adapter: string;
@@ -117,7 +123,7 @@ export class TrailView {
     private readonly shadow = new Shadow();
     private readonly resolve = new Resolve();
     private readonly temporal = new Temporal();
-    private readonly controls: Controls;
+    private readonly controls?: Controls;
     private destroyed = false;
     private pose: Pose;
     private extras: Pick<View, 'date' | 'time' | 'weather' | 'debug'>;
@@ -150,6 +156,8 @@ export class TrailView {
     private lastFrame?: Omit<LastFrame, 'moved'> & { eye: number[] };
     /** Whether the last frame that placed the instances moved or changed: the next one places them again, culled by a depth of the same view. */
     private unrest = true;
+    /** A capture that waits for the last jittered frame of the view. */
+    private grab?: { resolve: (grabbed: Grabbed) => void; reject: (error: Error) => void };
     /**
      * The brightness of the sky at the eye on a moonless night, in magnitudes per square arcsecond, as
      * a sky quality meter reads it: about 22 far from lights, 18 in a town. It sets the faintest
@@ -157,7 +165,7 @@ export class TrailView {
      */
     private skyMagnitude = DARK_SKY;
 
-    private constructor(private readonly canvas: HTMLCanvasElement, config: PlannerConfig, view: View, ground: GroundSource | undefined, tiles: EyeTiles, private readonly stop: AbortController, private readonly scale: number) {
+    private constructor(private readonly canvas: HTMLCanvasElement, config: PlannerConfig, view: View, ground: GroundSource | undefined, tiles: EyeTiles, private readonly stop: AbortController, private readonly scale: number, private readonly size?: [number, number]) {
         // `destroy()` aborts it: it ends the tile requests, the workers and the listeners.
         const { signal } = stop;
         this.context = canvas.getContext('webgpu')!;
@@ -174,6 +182,8 @@ export class TrailView {
         this.rows = new Rows(this.groundLook.rules, this.trees, this.plants, this.instances);
         this.kindPoints = new KindPoints(this.instances);
         this.dressing = new Dressing(this.groundLook.rules, this.instances);
+        // A still has a size of its own and no input: the controls listen for keys on the whole window.
+        if (size) return;
         this.controls = new Controls(canvas, {
             pose: () => this.pose,
             moved: pose => { this.pose = pose; this.moved = true; this.request(); },
@@ -197,12 +207,13 @@ export class TrailView {
      * Starts the terrain and feature tiles under the eye, reads the ruleset and opens the ground layers,
      * attaches what the first frame draws, then starts the other tile loads once the tiles under the eye
      * are in, or after EYE_WAIT_MS: on a slow link the other loads would share it with them. The other
-     * passes draw once they attach after the first frame. `scale` is the render scale.
+     * passes draw once they attach after the first frame. `scale` is the render scale. `size` is the
+     * output in pixels, in place of the element's size on the screen.
      */
-    static async start(canvas: HTMLCanvasElement, gpu: Gpu, config: PlannerConfig, view: View, scale: number): Promise<TrailView> {
+    static async start(canvas: HTMLCanvasElement, gpu: Gpu, config: PlannerConfig, view: View, scale: number, size?: [number, number]): Promise<TrailView> {
         const stop = new AbortController(), tiles = eyeTiles(config, [view.lon, view.lat], stop.signal);
         const ground = await GroundSource.open(config, stop.signal).catch(error => void console.warn(`TrailView draws no ground: ${error instanceof Error ? error.message : error}`));
-        const engine = new TrailView(canvas, config, view, ground ?? undefined, tiles, stop, scale);
+        const engine = new TrailView(canvas, config, view, ground ?? undefined, tiles, stop, scale, size);
         // No caller holds an engine whose start fails, so it ends itself: its workers and listeners run already.
         await engine.attach(gpu).catch(error => {
             engine.destroy();
@@ -286,6 +297,49 @@ export class TrailView {
         return this.terrain.check(points, this.groundLook.group!);
     }
 
+    /**
+     * The finished image of the view as RGBA and, for a line of [lon, lat] points, the place of each
+     * point in it: call it after `waitForIdle()`. It draws the jittered frames of the view again and
+     * copies the canvas of the last one. A point stands where the route's ribbon would: LIFT_M above the
+     * drawn surface. It is visible unless the drawn terrain hides it (`terrainHides`), which it probes at
+     * `sampleDistances` on the way from the eye to the point.
+     */
+    async capture(line?: readonly [number, number][]): Promise<{ colour: ImageData; points?: StillPoints }> {
+        if (this.destroyed) throw new Error('The engine has ended.');
+        const grabbed = await new Promise<Grabbed>((resolve, reject) => {
+            this.grab = { resolve, reject };
+            this.temporal.reset();
+            this.request();
+        });
+        const { colour, row, output: [width, height], eye } = grabbed;
+        // The points of the line, then the samples on the way from the eye to each point, in one probe.
+        const along = line?.map(point => {
+            const [east, north] = this.frame.local(...point);
+            return sampleDistances(Math.hypot(east - eye[0], north - eye[1]));
+        });
+        const probes = line && along && new Float64Array(2 * (line.length + along.reduce((sum, list) => sum + list.length, 0)));
+        if (line && along && probes) for (let i = 0, at = 2 * line.length; i < line.length; i++) {
+            probes.set(worldPixel(line[i], UNITS), 2 * i);
+            const [east, north] = this.frame.local(...line[i]), across = Math.hypot(east - eye[0], north - eye[1]);
+            for (const d of along[i]) {
+                probes.set(worldPixel(this.frame.lonLat(eye[0] + d / across * (east - eye[0]), eye[1] + d / across * (north - eye[1])), UNITS), at);
+                at += 2;
+            }
+        }
+        const [heights] = await Promise.all([probes && this.terrain.probeAt(probes), colour.mapAsync(GPUMapMode.READ)]);
+        // The canvas holds the device's format, often BGRA, in rows padded to 256 bytes.
+        const bytes = new Uint8Array(colour.getMappedRange()), rgba = new Uint8ClampedArray(4 * width * height), bgra = this.gpu.format === 'bgra8unorm';
+        for (let y = 0; y < height; y++) for (let x = 0, from = y * row, to = 4 * y * width; x < width; x++, from += 4, to += 4) {
+            rgba[to] = bytes[from + (bgra ? 2 : 0)];
+            rgba[to + 1] = bytes[from + 1];
+            rgba[to + 2] = bytes[from + (bgra ? 0 : 2)];
+            rgba[to + 3] = 255;
+        }
+        const points = line && along && heights && placed(line, along, heights, this.frame, grabbed);
+        colour.destroy();
+        return { colour: new ImageData(rgba, width, height), points };
+    }
+
     /** The invariant audit of the drawn terrain, with the state of the last frame: call it after `waitForIdle()`. */
     audit(): Promise<Audit> {
         return this.terrain.audit();
@@ -301,6 +355,7 @@ export class TrailView {
         this.ready = false;
         this.stop.abort();
         for (const resolve of this.rendered.splice(0)) resolve();
+        this.grab?.reject(new Error('The engine has ended.'));
         this.context.unconfigure();
         // A start that fails in its first attach may have no GPU state yet.
         this.gpuState?.times.destroy();
@@ -393,10 +448,11 @@ export class TrailView {
         // The passes' attaches report a failed compile.
         TrailView.prepare(gpu).catch(() => {});
         this.complete = false;
-        this.context.configure({ device: gpu.device, format: gpu.format, alphaMode: 'opaque' });
+        // A still copies the canvas.
+        this.context.configure({ device: gpu.device, format: gpu.format, alphaMode: 'opaque', usage: GPUTextureUsage.RENDER_ATTACHMENT | (this.size ? GPUTextureUsage.COPY_SRC : 0) });
         const uniform = gpu.buffer('uniforms', FRAME_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
         const look = gpu.buffer('uniforms', LOOK_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
-        const targets = new Targets(gpu);
+        const targets = new Targets(gpu, !!this.size);
         this.gpuState = { gpu, uniform, look, times: new PassTimes(gpu, PASSES, { resolve: 'terrain' }), targets };
         this.temporal.reset();
         // The maps at once: the ground's group binds them.
@@ -534,7 +590,7 @@ export class TrailView {
         if (!this.ready || this.held) return;
         if (!this.pacer.due(now)) return this.request();
         const start = performance.now();
-        const steer = this.controls.steer(), dt = this.last ? Math.min(0.1, (now - this.last) / 1000) : 0;
+        const steer = this.controls?.steer(), dt = this.last ? Math.min(0.1, (now - this.last) / 1000) : 0;
         if (steer) this.pose = move(this.pose, steer, dt, this.ground());
         const probe = this.terrain.ground;
         if (probe && !Number.isNaN(probe.height)) {
@@ -551,6 +607,8 @@ export class TrailView {
             this.lastFrame = undefined;
         }
         const debug = this.extras.debug !== 'off', scale = this.scaleNow, [width, height] = targets.viewport(scale), aspect = targets.width / targets.height;
+        // Metres per output pixel at 1 m from the eye.
+        const pixel = 2 * Math.tan(VFOV * RAD / 2) / targets.height;
         const viewProj = viewProjection(this.pose.heading, this.pose.pitch, aspect);
         const lonLat = this.frame.lonLat(place.east, place.north);
         // The shipping render scale selects the nodes, also for a debug view: it shows the LOD that ships.
@@ -567,8 +625,13 @@ export class TrailView {
         this.dressing.update(lonLat);
         const group = this.groundLook.group;
         this.drawing = !!(eye && group);
+        // A frame that cannot draw asks for no next frame: a capture would wait forever.
+        if (this.grab && !this.drawing) {
+            this.grab.reject(new Error(eye ? 'The still draws nothing: the ground layers are not ready.' : 'The still draws nothing: no terrain is known under the eye.'));
+            this.grab = undefined;
+        }
         let step: Step | undefined, offset: [number, number] = [0, 0], ndc: [number, number] = [0, 0], moved = true, changed = false, cascade = -1;
-        let lights: Lights | undefined;
+        let lights: Lights | undefined, grabbed: Grabbed | undefined;
         if (eye && group) {
             const camera = [...viewProj, eye.east, eye.north, eye.z, eye.above, scale], extras = JSON.stringify([this.extras, this.skyMagnitude]);
             moved = camera.some((value, i) => value !== this.camera[i]);
@@ -585,7 +648,7 @@ export class TrailView {
             if (step && !debug) offset = jitter(step.sample);
             // The jitter in clip space: render pixels are y down.
             ndc = [2 * offset[0] / width, -2 * offset[1] / height];
-            gpu.device.queue.writeBuffer(uniform, 0, this.uniforms(eye, jittered(viewProj, ndc), 2 * Math.tan(VFOV * RAD / 2) / targets.height, light));
+            gpu.device.queue.writeBuffer(uniform, 0, this.uniforms(eye, jittered(viewProj, ndc), pixel, light));
             const near = this.regionLook(eye);
             gpu.device.queue.writeBuffer(this.gpuState.look, 0, this.look(eye, near, lights, aspect, ndc, scale, step?.sample ?? 0));
             const { cover } = near.weather, night = lightAt(lights.sunAltitude).night;
@@ -638,9 +701,14 @@ export class TrailView {
                 { viewProj, eye: [eye.east, eye.north, eye.z], render: [width, height], jitter: offset }, { weight: step.weight, clip: step.clip, copy: debug }, times.writes('resolve'));
             targets.swap();
             this.lastFrame = { depth: targets.depth!, pixels: [width, height], viewProj: jittered(viewProj, ndc), eye: [eye.east, eye.north, eye.z] };
+            if (this.grab && !this.converging) grabbed = this.copy(encoder, { viewProj, eye: [eye.east, eye.north, eye.z], pixel });
         }
         const read = times.resolve(encoder, { ...this.terrain.stats.jobs, frame: start });
         gpu.device.queue.submit([encoder.finish()]);
+        if (grabbed) {
+            this.grab!.resolve(grabbed);
+            this.grab = undefined;
+        }
         if (step) this.firstDrawn?.();
         read();
         probed();
@@ -699,10 +767,18 @@ export class TrailView {
         return this.houses.readCasters(encoder);
     }
 
-    /** Fits the canvas and the targets to the element; true when the targets are new. */
+    /** Encodes the copy of the canvas, in rows of a multiple of 256 bytes. */
+    private copy(encoder: GPUCommandEncoder, camera: Omit<Grabbed, 'colour' | 'row' | 'output'>): Grabbed {
+        const canvas = this.context.getCurrentTexture(), row = Math.ceil(4 * canvas.width / 256) * 256;
+        const colour = this.gpu.device.createBuffer({ size: row * canvas.height, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+        encoder.copyTextureToBuffer({ texture: canvas }, { buffer: colour, bytesPerRow: row }, [canvas.width, canvas.height]);
+        return { ...camera, colour, row, output: [canvas.width, canvas.height] };
+    }
+
+    /** Fits the canvas and the targets to the element, or to the size of `start`; true when the targets are new. */
     private fit(): boolean {
         const ratio = Math.min(devicePixelRatio, MAX_PIXEL_RATIO);
-        const width = Math.max(1, Math.round(this.canvas.clientWidth * ratio)), height = Math.max(1, Math.round(this.canvas.clientHeight * ratio));
+        const [width, height] = this.size ?? [this.canvas.clientWidth, this.canvas.clientHeight].map(side => Math.max(1, Math.round(side * ratio)));
         if (!this.gpuState.targets.fit(width, height, Math.max(this.scaleNow, MAX_SCALE))) return false;
         this.canvas.width = width;
         this.canvas.height = height;
@@ -806,6 +882,47 @@ interface Lights {
     /** The sun's activity and the seed of an eclipse's corona (light/eclipse.ts). */
     activity: number;
     seed: number;
+}
+
+/** The copies of the last frame of a capture, and its camera. */
+interface Grabbed {
+    /** The canvas, in rows of `row` bytes. */
+    colour: GPUBuffer;
+    row: number;
+    /** The image in pixels. */
+    output: [number, number];
+    /** The view projection without its jitter. */
+    viewProj: Float32Array;
+    /** The eye: frame metres east and north, and metres above sea level. */
+    eye: [number, number, number];
+    /** Metres per output pixel at 1 m from the eye. */
+    pixel: number;
+}
+
+/**
+ * The place of each point of `line` in the image of a capture, from its drawn height (NaN where no page
+ * knows it): projected as route.wgsl projects its ribbon, with the curvature term. `heights` holds the
+ * drawn heights of the points, then those at the distances `along` on the way to each point, for `terrainHides`.
+ */
+function placed(line: readonly [number, number][], along: number[][], heights: Float32Array, frame: Frame, grabbed: Grabbed): StillPoints {
+    const n = line.length, { viewProj: m, eye, output: [width, height], pixel } = grabbed;
+    const points: StillPoints = { x: new Float32Array(n).fill(NaN), y: new Float32Array(n).fill(NaN), distance: new Float32Array(n).fill(NaN), visible: new Uint8Array(n) };
+    for (let i = 0, from = n; i < n; from += along[i].length, i++) {
+        if (Number.isNaN(heights[i])) continue;
+        const [east, north] = frame.local(...line[i]), x = east - eye[0], y = north - eye[1], z = heights[i] + LIFT_M - eye[2] - CURVATURE * (x * x + y * y);
+        // Clip w is the distance along the view axis.
+        const ahead = m[3] * x + m[7] * y + m[11] * z + m[15];
+        if (!(ahead > NEAR)) continue;
+        const u = ((m[0] * x + m[4] * y + m[8] * z + m[12]) / ahead + 1) / 2, v = (1 - (m[1] * x + m[5] * y + m[9] * z + m[13]) / ahead) / 2;
+        const reach = Math.hypot(x, y, z);
+        points.x[i] = u * width;
+        points.y[i] = v * height;
+        points.distance[i] = reach;
+        if (u < 0 || u >= 1 || v < 0 || v >= 1) continue;
+        const ground = heights.subarray(from, from + along[i].length).map(h => h - eye[2]);
+        points.visible[i] = terrainHides([x, y, heights[i] + LIFT_M - eye[2]], along[i], ground, pixel) ? 0 : 1;
+    }
+    return points;
 }
 
 /** A view projection whose image moves by `ndc` in clip space. */

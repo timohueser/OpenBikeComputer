@@ -17,10 +17,10 @@ Set the size from its signals. One signal of a larger size is enough to move up.
 | Size | Signals | Goldfish tests |
 | --- | --- | --- |
 | S | 1 system, no contract change, no new dependency between systems, up to 500 changed lines | critic, with the role `goldfish-critic-s` |
-| M | 2 or 3 systems, a compatible contract change, a new dependency between systems, or up to 1,500 changed lines | critic |
-| L | more than 3 systems, a breaking contract change, a new or split system, more than 1,500 changed lines, or a change that released versions cannot easily undo, such as a stored format | comprehension, critic and readiness |
+| M | 2 or 3 systems, a compatible contract change, a new dependency between systems, or more than 500 changed lines | critic |
+| L | more than 3 systems, a breaking contract change, a new or split system, or a change that released versions cannot easily undo, such as a stored format | critic and readiness |
 
-When you are not sure between two sizes, take the larger one. Only the user makes a size smaller. An S design can be short: the TL;DR and a few plan steps.
+The number of changed lines alone never gives L. When you are not sure between two sizes, take the larger one. Only the user makes a size smaller. An S design can be short: the TL;DR and a few plan steps.
 
 ## 3. Section by section
 
@@ -63,6 +63,7 @@ Rules for the content:
 - Files lists every file that the plan changes, the tests and docs too.
 - The `**Size:**` line in the TL;DR is the only size line.
 - Put the facts that you found in the code into `## Facts`, not into the TL;DR.
+- The body holds only the current design. When a decision changes, replace the old text: GitHub keeps the earlier versions of the body.
 - If the plan contradicts a decision of `explore`, show both and ask the user. The plan can be right, because `design` reads code that `explore` did not.
 
 Send one message for each section, in order. For an S change, send all sections in one message.
@@ -74,7 +75,9 @@ Send one message for each section, in order. For an S change, send all sections 
 
 ## Epics
 
-An L change is an epic. Its Plan lists its sub-issues, one line each: `- [ ] #N <title>`. When the user approves the Plan section, open each sub-issue: its own short TL;DR, its own `Status:` and `Size:` lines, a `Systems:` line that is a subset of the epic's, its plan steps, and `Depends on #x` when the order matters. Each sub-issue is one pull request.
+An L change is an epic. So is an M change that is too large for one pull request, above about 1,500 changed lines. Its Plan lists its sub-issues, one line each: `- [ ] #N <title>`. When the user approves the Plan section, open each sub-issue: its own short TL;DR, its own `Status:` and `Size:` lines, a `Systems:` line that is a subset of the epic's, its plan steps, and `Depends on #x` when the order matters. Each sub-issue is one pull request.
+
+A sub-issue does not repeat its epic: it links it, and states only what the epic leaves open. When a sub-issue of an approved epic gets a design of its own, run only the critic on it, also when its size is L.
 
 ## Trackers
 

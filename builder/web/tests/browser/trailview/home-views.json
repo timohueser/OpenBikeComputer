@@ -1,0 +1,7 @@
+{
+    "date": "2026-10-15",
+    "views": [
+        { "id": "lauterbrunnen", "name": "Lauterbrunnen", "region": "Bernese Oberland", "view": "?lat=46.593500&lon=7.908600&heading=170.0&pitch=4.0&eye=1.6&date=2026-08-15&time=13:00&weather=sunny", "night": true },
+        { "id": "rigi-kulm", "name": "Rigi Kulm", "region": "Central Switzerland", "view": "?lat=47.056500&lon=8.485500&heading=215.0&pitch=-2.0&eye=1.6&date=2026-08-15&time=13:00&weather=sunny", "night": true }
+    ]
+}

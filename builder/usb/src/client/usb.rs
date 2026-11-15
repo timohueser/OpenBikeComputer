@@ -158,7 +158,7 @@ pub(super) struct UsbTransport {
 
 impl UsbTransport {
     pub(super) async fn open(info: &nusb::DeviceInfo) -> Result<Self, PipeFault> {
-        let (link, _) = crate::open(info, format!("{:?}", info.id())).await?;
+        let link = crate::open(info).await?;
         let readers = Readers::start(&link);
         Ok(Self { link: Some(link), readers: Some(readers), serial: info.serial_number().map(str::to_owned) })
     }
@@ -249,7 +249,7 @@ impl Transport for UsbTransport {
                 if devices.next().is_some() {
                     return Err(PipeFault::device("More than one device has the saved serial number."));
                 }
-                if let Ok((link, _)) = crate::open(&info, format!("{:?}", info.id())).await {
+                if let Ok(link) = crate::open(&info).await {
                     self.readers = Some(Readers::start(&link));
                     self.link = Some(link);
                     return Ok(());

@@ -14,16 +14,11 @@
  *    catalog read.
  * 3. `ready` — {@link DeviceSession.client} is live.
  * 4. `error` — {@link DeviceSession.error} is a sentence written for a rider.
- * 5. `unsupported` — no WebUSB in this browser. Not a failure to retry: the answer is the desktop
- *    app, and the UI should say so rather than offering a button that cannot work.
+ * 5. `unsupported` — no WebUSB in this browser. Not a failure to retry: the answer is another
+ *    browser, and the UI should say so rather than offering a button that cannot work.
  *
  * Unplugging returns the session to `idle` with no error — a rider pulling a cable is not a fault —
  * and re-plugging a permitted device reconnects on its own.
- *
- * **Do not gate a USB affordance on this session's `supported` flag.** It is a runtime probe of
- * `navigator.usb`, and the desktop app's webview has no WebUSB while its tier reaches USB natively,
- * so probing would disable the very tier that works best. Gating belongs to `<Gated>` and the
- * platform caps; `supported` exists to explain a session that cannot connect.
  */
 
 import type { FlatStoreClient } from "./client";
@@ -39,10 +34,6 @@ export type { DeviceState, DeviceStatus, StoreIdentity };
  * only promises they are observable, not how.
  */
 export interface DeviceSession {
-    /** Diagnostics only: `"webusb"` on the hosted tier, `"native"` in the desktop app. */
-    readonly transport: string;
-    /** False where the browser has no WebUSB at all. Distinct from "nothing plugged in". */
-    readonly supported: boolean;
     readonly status: DeviceStatus;
     /** Non-null exactly when `status === "ready"`. */
     readonly client: FlatStoreClient | null;
@@ -77,9 +68,8 @@ export interface DeviceSession {
 /**
  * The framework-free half a session wraps: discovery, hot-plug and the client's lifetime.
  *
- * `WebUsbWatcher` is the browser implementation and `NativeWatcher` the desktop one, over `nusb`;
- * the reactive shell above them does not change, and neither does any component that renders a
- * session.
+ * `WebUsbWatcher` is the browser implementation. A second transport implements the same interface;
+ * the reactive shell above it and the components that render a session do not change.
  */
 export interface DeviceWatcher {
     readonly current: DeviceState;

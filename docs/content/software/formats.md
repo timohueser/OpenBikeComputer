@@ -19,7 +19,7 @@ says what each format is for and why it has that shape.
 | OBCR | Route geometry, statistics, and waypoints | Device |
 | Ride object | Recorded samples and summary | Device and companion |
 | OBCT | Terrain height raster | Device and map tools |
-| OBCC | Map-builder catalog | Website and desktop app |
+| OBCC | Map-builder catalog | Website |
 | OBCA | Cell and assembly rules | Map tools |
 
 Values are little-endian and coordinates are signed microdegrees. A reader uses checked arithmetic

@@ -1,9 +1,10 @@
 import { readFileSync } from 'node:fs';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { settings } from '../settings/settings.svelte';
 import type { CatalogRecord } from './signed-routes';
 
 const host = vi.hoisted(() => {
-    Object.assign(globalThis, { window: { location: { href: 'http://localhost/' } } });
+    Object.assign(globalThis, { window: { location: { href: 'http://localhost/' }, addEventListener: () => {} } });
     return { load: (_id: string): Promise<CatalogRecord[] | null> => Promise.resolve(null) };
 });
 vi.mock('./map-data', async importActual => ({
@@ -57,5 +58,14 @@ describe('route finder', () => {
         expect(newer).not.toContain(101);
         expect(ids(found)).toEqual(newer);
         expect(found.status).toBe('ready');
+    });
+
+    it('labels a match in the units of a rider on miles', async () => {
+        settings.units = 'mi';
+        onTestFinished(() => { settings.units = 'km'; });
+        host.load = cell;
+        const found = finder({ radiusKm: 25, shape: 'loop' });
+        await found.search('touring');
+        expect(found.mapView?.lines.map(line => line.label)).toEqual(['Seenradweg · 37.3 mi · ↑ 2297 ft']);
     });
 });

@@ -1,19 +1,15 @@
 <script module lang="ts">
     import { terrainRetry, terrainSource } from '../../lib/planner/map-terrain';
     import { config } from '../../lib/planner/map-data';
-    import { releaseProtocol, releaseUrl } from '../../lib/planner/release';
     const terrain = terrainSource(config.terrain);
-    // MapLibre loads the release objects of the style through `releaseProtocol`.
-    export const styleConfig = { ...config, basemap: releaseUrl(config.basemap), glyphs: releaseUrl(config.glyphs), sprites: releaseUrl(config.sprites) };
 </script>
 
 <script lang="ts">
     import { onMount, untrack, type Snippet } from "svelte";
     import * as maplibregl from "maplibre-gl";
-    import mapWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
     import type { GeoJSONSource } from "maplibre-gl";
     import type { Feature, FeatureCollection, LineString, Point } from "geojson";
-    import { Protocol } from "pmtiles";
+    import { styleConfig, useMapProtocols } from "../../lib/planner/map-setup";
     import mlcontour from "maplibre-contour";
     import "maplibre-gl/dist/maplibre-gl.css";
     import { mapStyle, poiFilter } from "../../lib/planner/map-style";
@@ -475,10 +471,7 @@
 
     onMount(() => {
         appliedTheme = theme;
-        maplibregl.setWorkerUrl(mapWorkerUrl);
-        const protocol = new Protocol();
-        maplibregl.addProtocol("pmtiles", protocol.tile);
-        maplibregl.addProtocol("release", releaseProtocol);
+        useMapProtocols();
         const terrainLease = terrain.acquire(maplibregl);
         dem = terrainLease.dem;
         const contourUrl = dem.contourProtocolUrl({ thresholds: { 10: [200, 1000], 11: [100, 500], 13: [50, 250], 14: [20, 100] }, contourLayer: "contours", elevationKey: "ele", levelKey: "level" });

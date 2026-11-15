@@ -201,7 +201,7 @@ public final class ImportFlowModel {
     /// Why a file keeps its line, in a few plain words.
     static func reason(_ error: Error) -> String {
         switch error as? PlannerFailure {
-        case .lineTooLong: "the line is too long to plan"
+        case .lineTooLong, .routeTooLong: "the line is too long to plan"
         case .lineNotReproducible, .noRoad: "no route on roads follows it"
         case .busy: "the route service is busy"
         case .outsideRegion: "it is outside the map region"

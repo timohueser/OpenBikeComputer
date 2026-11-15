@@ -8,9 +8,9 @@ use planner_router::{
     snap::{Candidate, Policy, Position, REACH_M},
     Control, Error, Request, Route, Router,
 };
-use planner_router_build::cost::{Costing, Doubts};
+use planner_router_build::cost::{way_bases, Costing};
 use planner_router_build::source::{Builder, Tags, Ways};
-use planner_router_build::{base::Dictionary, Graph};
+use planner_router_build::{base::Dictionary, Graph, Turn};
 use serde_json::{json, Value};
 use std::{
     cmp::Reverse,
@@ -95,7 +95,7 @@ fn fixture() -> Graph {
                     length_m: points[from as usize].distance(points[to as usize]).round() as u32,
                     ascent_m: 0,
                     descent_m: 0,
-                    surface: if from % 2 == 0 { Surface::Gravel } else { Surface::Paved },
+                    surface: if from.min(to) % 2 == 0 { Surface::Gravel } else { Surface::Paved },
                     class: 1,
                     access: BIKE | FOOT,
                     difficulty: 0,
@@ -109,15 +109,16 @@ fn fixture() -> Graph {
     let forbidden = (0..roads.len())
         .flat_map(|a| {
             let roads = &roads;
-            (0..roads.len())
-                .filter_map(move |b| (roads[a].to == roads[b].from && (a + b) % 7 == 0).then_some((a as u32, b as u32)))
+            (0..roads.len()).filter_map(move |b| {
+                (roads[a].to == roads[b].from && (a + b) % 7 == 0).then_some(Turn { from: a as u32, to: b as u32 })
+            })
         })
         .collect();
     let forbidden_foot = (0..roads.len())
         .flat_map(|a| {
             let roads = &roads;
             (0..roads.len()).filter_map(move |b| {
-                (roads[a].to == roads[b].from && (a + b) % 11 == 0).then_some((a as u32, b as u32))
+                (roads[a].to == roads[b].from && (a + b) % 11 == 0).then_some(Turn { from: a as u32, to: b as u32 })
             })
         })
         .collect();
@@ -142,6 +143,7 @@ fn edit_roads(graph: &mut Graph, edit: impl FnOnce(&mut Vec<Road>)) {
 fn with_sources(mut graph: Graph) -> Graph {
     // Reordering or clipping roads does not change their source way tags.
     if !graph.osm.ways.is_empty() {
+        graph.link_ways();
         return graph;
     }
     graph.node_ids = (0..graph.points.len() as i64).collect();
@@ -159,13 +161,18 @@ fn with_sources(mut graph: Graph) -> Graph {
         }
     });
     graph.osm = planner_router_build::source::Data { ways: ways.finish().0, ..Default::default() };
+    graph.link_ways();
     graph
+}
+fn costing<'a>(graph: &'a Graph, profile: &'a Profile, dictionary: &'a mut Dictionary) -> Costing<'a> {
+    let bases = way_bases(&graph.osm, std::slice::from_ref(profile)).unwrap();
+    Costing::new(graph, profile, &bases, dictionary).unwrap()
 }
 // Independent arrival-road Dijkstra. The target is a partial transition, not a compact state.
 fn oracle(graph: &Graph, profile: &Profile, a: Position, b: Position) -> Option<u64> {
     let graph = with_sources(graph.clone());
-    let (none, mut dictionary) = (Doubts::default(), Dictionary::default());
-    let costing = Costing::new(&graph, profile, &none, &mut dictionary).unwrap();
+    let mut dictionary = Dictionary::default();
+    let costing = costing(&graph, profile, &mut dictionary);
     search(&costing, &curves(&graph, &costing, profile), a, b)
 }
 /// The cost curve of each road, compiled from the basis of `costing`, which keeps its total.
@@ -221,7 +228,7 @@ fn coordinate(road: &Road, fraction: f64) -> [f64; 2] {
 fn prepared_coordinate_routes_match_independent_arrival_road_search() {
     let original = with_sources(fixture());
     let mut graph = original.clone();
-    let order = planner_router_build::layout::spatial_order(&mut graph).unwrap();
+    let order = planner_router_build::layout::order(&mut graph, None).unwrap();
     let order = order.values();
     let (reordered, original_roads) = (roads(&graph), roads(&original));
     for (new, &old) in order.iter().enumerate() {
@@ -233,8 +240,11 @@ fn prepared_coordinate_routes_match_independent_arrival_road_search() {
     for (actual, expected) in
         [(&graph.forbidden, &original.forbidden), (&graph.forbidden_foot, &original.forbidden_foot)]
     {
-        let mut restored: Vec<_> =
-            actual.values().iter().map(|&(a, b)| (order[a as usize], order[b as usize])).collect();
+        let mut restored: Vec<_> = actual
+            .values()
+            .iter()
+            .map(|&Turn { from, to }| Turn { from: order[from as usize], to: order[to as usize] })
+            .collect();
         restored.sort_unstable();
         assert_eq!(restored, expected.values());
     }
@@ -242,10 +252,9 @@ fn prepared_coordinate_routes_match_independent_arrival_road_search() {
     let (source, manifest) = package_with_profiles(&graph, &profiles);
     let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
     let coords: Vec<_> = reordered.iter().step_by(3).flat_map(|r| [coordinate(r, 0.2), coordinate(r, 0.8)]).collect();
-    let none = Doubts::default();
     for profile in &profiles {
         let mut dictionary = Dictionary::default();
-        let costing = Costing::new(&graph, profile, &none, &mut dictionary).unwrap();
+        let costing = costing(&graph, profile, &mut dictionary);
         let curves = curves(&graph, &costing, profile);
         let snapped: Vec<_> = coords.iter().map(|&c| snaps(&router, c, &profile.name)).collect();
         for (&from, starts) in coords.iter().zip(&snapped) {
@@ -308,8 +317,8 @@ fn lazy_endpoint_costs_preserve_every_profile_and_partial_offset() {
     let (source, manifest) = package_with_profiles(&graph, &profiles);
     let package = routing(source, &manifest);
     for profile in &profiles {
-        let (none, mut dictionary) = (Doubts::default(), Dictionary::default());
-        let costing = Costing::new(&graph, profile, &none, &mut dictionary).unwrap();
+        let mut dictionary = Dictionary::default();
+        let costing = costing(&graph, profile, &mut dictionary);
         for (id, expected) in curves(&graph, &costing, profile).iter().enumerate() {
             let actual = package.endpoint(&profile.name, id as u32).unwrap().cost;
             assert_eq!(actual, *expected, "{} road {id}", profile.name);
@@ -323,6 +332,47 @@ fn lazy_endpoint_costs_preserve_every_profile_and_partial_offset() {
             }
         }
     }
+}
+
+#[test]
+fn an_idle_service_drops_the_profiles_that_no_router_holds_before_it_answers_memory() {
+    let graph = fixture();
+    let (source, manifest) = package(&graph);
+    // This handle keeps an unlimited budget, so the cache keeps each profile that it loads.
+    let cache = routing(source, &manifest);
+    let roads = roads(&graph);
+    let request = Request {
+        points: vec![coordinate(&roads[0], 0.2), coordinate(&roads[15], 0.8)],
+        profile: "touring".into(),
+        pace: Pace::default(),
+        alternatives: false,
+        alternatives_only: false,
+        turnarounds: vec![],
+        start_position: None,
+        end_position: None,
+    };
+    let idle = cache.idle_bytes("touring").unwrap();
+    // A router with `gravel` prepared holds it, so `touring` cannot have its idle room now.
+    let held = cache.prepared("gravel").unwrap();
+    let busy = cache.fork();
+    let mut budget = busy.routing_bytes("touring").unwrap() - 1;
+    assert!(budget >= idle);
+    drop(busy);
+    assert!(matches!(Router::new(cache.fork(), budget).route(&request, &Control::default()), Err(Error::Memory)));
+    drop(held);
+    // Without the holder, each budget gives the same answer at each try: a limit or the route.
+    budget = idle;
+    loop {
+        let mut router = Router::new(cache.fork(), budget);
+        router.package().prepared("touring").unwrap();
+        cache.prepared("gravel").unwrap();
+        match router.route(&request, &Control::default()) {
+            Ok(_) => break,
+            Err(Error::Limit) => budget += 64,
+            Err(error) => panic!("{error:?} with a budget of {budget}"),
+        }
+    }
+    assert!(budget > idle);
 }
 
 #[test]
@@ -391,7 +441,7 @@ fn a_point_without_a_road_nearby_attaches_to_the_nearest_road_within_reach() {
             shape,
             ..roads(&graph)[0].clone()
         };
-        graph.roads.push(road);
+        graph.roads.push(road, Default::default());
     }
     let (source, manifest) = package(&graph);
     let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
@@ -480,9 +530,16 @@ fn a_window_pinned_to_its_neighbour_legs_repeats_the_whole_trip() {
     assert_eq!(router.route(&foreign, &Control::default()).unwrap().points, route.points);
 }
 
+/// Orders the roads of `graph` with the heights of `height`, and returns the old ID of each road.
+/// The tests drop roads, so the turn rules of `fixture` go.
+fn order_with_terrain(graph: &mut Graph, mut height: impl FnMut(Point) -> Result<Option<f64>, String>) -> Vec<u32> {
+    graph.forbidden = Default::default();
+    graph.forbidden_foot = Default::default();
+    planner_router_build::layout::order(graph, Some(&mut height)).unwrap().values().to_vec()
+}
+
 #[test]
-fn terrain_reuses_nearby_tiles_without_changing_road_identity_or_heights() {
-    // The visits go to roads 1, 3, 2 and 0: not the road order, and the roads at lon 0 and 20 000 share a tile.
+fn terrain_keeps_road_identity_and_heights() {
     let lons = [1_000_000, 0, 500_000, 20_000];
     let mut graph = fixture();
     edit_roads(&mut graph, |roads| {
@@ -492,20 +549,12 @@ fn terrain_reuses_nearby_tiles_without_changing_road_identity_or_heights() {
         }
     });
     let identities: Vec<_> = graph.roads.iter().map(|r| (r.way, r.from, r.to)).collect();
-    let mut loaded = None;
-    let mut loads = 0;
-    planner_router_build::terrain::apply(&mut graph, |point| {
-        let tile = point.lon.div_euclid(100_000);
-        if loaded != Some(tile) {
-            loaded = Some(tile);
-            loads += 1;
-        }
+    let order = order_with_terrain(&mut graph, |point| {
         Ok(Some(100.0 + point.lon.div_euclid(1000) as f64 + point.lon.rem_euclid(1000) as f64 / 10.0))
-    })
-    .unwrap();
-    assert_eq!(loads, 3);
-    assert_eq!(graph.roads.iter().map(|r| (r.way, r.from, r.to)).collect::<Vec<_>>(), identities);
-    for (road, lon) in graph.roads.iter().zip(lons) {
+    });
+    for (road, &old) in graph.roads.iter().zip(&order) {
+        let lon = lons[old as usize];
+        assert_eq!((road.way, road.from, road.to), identities[old as usize]);
         let base = 100.0 + (lon / 1000) as f32;
         let points: Vec<_> = road.shape.iter().map(|p| (p.lon, p.elevation)).collect();
         assert_eq!(points, [(lon, base), (lon + 10, base + 1.0)]);
@@ -514,32 +563,11 @@ fn terrain_reuses_nearby_tiles_without_changing_road_identity_or_heights() {
 }
 
 #[test]
-fn terrain_visits_the_roads_square_by_square() {
-    // By fine cell alone, the road at 1.5° E comes first: its cell row is further south.
-    let starts = [(0, 1_500_000), (10_000, 0)];
-    let mut graph = fixture();
-    edit_roads(&mut graph, |roads| {
-        roads.truncate(starts.len());
-        for (road, (lat, lon)) in roads.iter_mut().zip(starts) {
-            road.shape = [lon, lon + 10].map(|lon| Point { lat, lon, elevation: NO_ELEVATION }).to_vec();
-        }
-    });
-    let mut visits = Vec::new();
-    planner_router_build::terrain::apply(&mut graph, |point| {
-        visits.push(point.lon.div_euclid(1_000_000));
-        Ok(None)
-    })
-    .unwrap();
-    visits.dedup();
-    assert_eq!(visits, [0, 1]);
-}
-
-#[test]
 fn terrain_is_direction_independent_preserves_gaps_and_interpolates_structures() {
     let mut graph = fixture();
     edit_roads(&mut graph, |roads| roads.retain(|r| (r.from == 0 && r.to == 1) || (r.from == 1 && r.to == 0)));
     let height = |p: Point| Ok(if (4000..6000).contains(&p.lon) { None } else { Some(100.0 + p.lon as f64 / 100.0) });
-    planner_router_build::terrain::apply(&mut graph, height).unwrap();
+    order_with_terrain(&mut graph, height);
     let [a, b] = &roads(&graph)[..] else { panic!("two roads") };
     assert_eq!(
         a.shape.iter().map(|p| p.elevation).collect::<Vec<_>>(),
@@ -548,11 +576,12 @@ fn terrain_is_direction_independent_preserves_gaps_and_interpolates_structures()
     assert_eq!(a.ascent_m, b.descent_m);
     assert!(a.shape.iter().any(|p| p.elevation == NO_ELEVATION));
     edit_roads(&mut graph, |roads| roads.iter_mut().for_each(|road| road.structure = true));
-    planner_router_build::terrain::apply(&mut graph, height).unwrap();
+    order_with_terrain(&mut graph, height);
     let roads = roads(&graph);
     assert!(roads.iter().flat_map(|r| &r.shape).all(|p| p.elevation != NO_ELEVATION));
-    assert_eq!(roads[0].ascent_m, 100);
-    assert_eq!(roads[1].descent_m, 100);
+    for road in roads {
+        assert_eq!((road.ascent_m, road.descent_m), if road.from == 0 { (100, 0) } else { (0, 100) });
+    }
 }
 
 #[test]
@@ -826,8 +855,8 @@ fn partial_cost_localizes_climbing_and_telescopes_across_shape_points() {
     let mut graph = fixture();
     graph.roads = [road].into_iter().collect();
     let graph = with_sources(graph);
-    let (none, mut dictionary) = (Doubts::default(), Dictionary::default());
-    let costing = Costing::new(&graph, &profile, &none, &mut dictionary).unwrap();
+    let mut dictionary = Dictionary::default();
+    let costing = costing(&graph, &profile, &mut dictionary);
     let curves = curves(&graph, &costing, &profile);
     let curve = curves[0].as_ref().unwrap();
     let full = curve.total();
@@ -1325,6 +1354,7 @@ fn shared_pages_preserve_routes_costs_and_guidance_for_every_profile() {
                     ceiling: u64::MAX,
                     max_roads: usize::MAX,
                     heap_bytes: 1_000_000,
+                    heap_limit: 1_000_000,
                     cancelled: &|| false,
                 };
                 let expected = expected_work

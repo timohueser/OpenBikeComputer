@@ -199,6 +199,8 @@ pub enum Failure {
     Check,
     /// The router reached its resource limit.
     Limit,
+    /// The router had no memory for a leg at that moment.
+    Memory,
     /// The search used all its router calls.
     Budget,
     /// Shaping points stopped cutting the deviation.
@@ -222,6 +224,8 @@ struct Search<'a, D> {
     /// A leg reached the router limit, so a failed search is the limit's fault.
     limited: bool,
     cancelled: bool,
+    /// A leg had no memory; the search stops as at a cancel.
+    memory: bool,
     control: &'a Control<'a>,
     calls: &'a mut usize,
     max_calls: usize,
@@ -301,13 +305,15 @@ impl<D: RoutingData> Search<'_, D> {
     /// Polls the control, so that the search also stops between router calls.
     fn stopped(&mut self) -> bool {
         self.cancelled |= (self.control.cancelled)();
-        self.cancelled || *self.calls >= self.max_calls
+        self.cancelled || self.memory || *self.calls >= self.max_calls
     }
 
     /// Why the search found no plan.
     fn failure(&self) -> Failure {
         if self.cancelled {
             Failure::Cancelled
+        } else if self.memory {
+            Failure::Memory
         } else if *self.calls >= self.max_calls {
             Failure::Budget
         } else if self.limited {
@@ -333,6 +339,10 @@ impl<D: RoutingData> Search<'_, D> {
         let result = self.router.route(&request(profile, points, turnarounds.to_vec()), self.control);
         result.map_err(|error| match error {
             Error::Limit => Failure::Limit,
+            Error::Memory => {
+                self.memory = true;
+                Failure::Memory
+            }
             Error::Cancelled => {
                 self.cancelled = true;
                 Failure::Cancelled
@@ -391,6 +401,7 @@ pub fn shape<D: RoutingData>(
         tried: plan.iter().copied().collect(),
         limited: false,
         cancelled: false,
+        memory: false,
         control: &limits.control,
         calls: &mut limits.calls,
         max_calls: limits.max_calls,
@@ -531,6 +542,7 @@ pub fn answer<D: RoutingData>(router: &mut Router<D>, request: &LineRequest, con
     let plan = shape(router, &profiles, &line, &tips, length, false, &mut limits).map_err(|failure| match failure {
         Failure::Cancelled => Error::Cancelled,
         Failure::Limit => Error::Limit,
+        Failure::Memory => Error::Memory,
         Failure::TooManyPoints | Failure::Check | Failure::Budget | Failure::Stall => Error::NotReproducible,
     })?;
     let points: Vec<[f64; 2]> = plan.points.iter().map(|p| [p[0] as f64 / 1e6, p[1] as f64 / 1e6]).collect();

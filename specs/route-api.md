@@ -32,9 +32,9 @@ The service rejects unknown fields.
 The answer is `{"routes": [...]}`. The first route is the primary route. With `alternatives_only`,
 the answer holds only the alternative routes, and it can be empty. `alternatives_only` overrides
 `alternatives` when both are `true`. When the primary route fails, an `alternatives_only` request
-fails with that error, not with an empty answer. When the deadline or a limit stops the search for
-alternatives after the primary route, the answer holds the routes found before it. Each route has
-these fields:
+fails with that error, not with an empty answer. When the deadline, a limit or a lack of memory
+stops the search for alternatives after the primary route, the answer holds the routes found before
+it. Each route has these fields:
 
 | Field | Value |
 | --- | --- |
@@ -193,8 +193,13 @@ legal route joins two consecutive points; the service does not try other roads f
 `line_not_reproducible` means that the search found no plan of at most 64 points that follows the
 line, within its 200 route calculations.
 
-`busy` means that no worker became free within 1 s. `internal` means that the service failed, not
-the request or the data. Send the request again. A body larger than the limit is an
+`limit` means that the request exceeds a fixed limit of the service. The same request fails again;
+plan the route in shorter parts. `busy` means that no worker became free within 1 s, or that a
+worker had no memory for the request at that moment. `internal` means that the service failed, not
+the request or the data. For `busy` and `internal`, send the request again later.
+
+A route request with `alternatives` or `alternatives_only`, and a shape request, can use at most
+`max(1, workers / 2)` workers. With 1 worker, a light request waits behind a heavy request. A body larger than the limit is an
 `invalid_request`. A call other than `route` and `shape` is `not_found`.
 
 | Code | Status |
@@ -202,7 +207,7 @@ the request or the data. Send the request again. A body larger than the limit is
 | `invalid_request` | 400 |
 | `not_found` | 404 |
 | `no_snap`, `no_path`, `missing_region` | 422 |
-| `line_too_long`, `line_not_reproducible` | 422 |
+| `line_too_long`, `line_not_reproducible`, `limit` | 422 |
 | `cancelled` | 408 |
-| `busy`, `limit` | 503 |
+| `busy` | 503 |
 | `invalid_data`, `internal` | 500 |

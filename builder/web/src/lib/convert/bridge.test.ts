@@ -19,7 +19,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 
-import { ConvertError, gpxToObcr, initConvert, routeTrack, routeWaypoints, trackToGpx } from "./bridge";
+import { ConvertError, gpxToObcr, initConvert, trackToGpx } from "./bridge";
 
 /**
  * The OBCR header's name field, and the GPX `<trk><name>`, are inputs to the conversion, so they have
@@ -121,108 +121,6 @@ describe("trackToGpx", () => {
         // so text equality here *is* byte equality.
         expect(gpx).toBe(expected);
         expectSameBytes(new TextEncoder().encode(gpx), vector("track-export.gpx"), "track-export.gpx");
-    });
-});
-
-describe("routeTrack", () => {
-    it("reads back the polyline the converter stored, elevation included", async () => {
-        // The fixture's OBCR is byte-pinned above, so the read-back is checked against the same
-        // source of truth: what the GPX said, within the format's microdegree resolution.
-        const points = await routeTrack(vector("route-waypoints.obcr"));
-        expect(points.length).toBeGreaterThan(2);
-        for (const p of points) {
-            expect(p.lat).toBeGreaterThan(-90);
-            expect(p.lat).toBeLessThan(90);
-            expect(p.lon).toBeGreaterThan(-180);
-            expect(p.lon).toBeLessThan(180);
-            expect(Number.isFinite(p.ele)).toBe(true);
-        }
-        // Round-trip a fresh conversion: a stored point count equals the read-back count.
-        const gpx = text("host/obc-vectors/src/route-source.gpx");
-        const obcr = await gpxToObcr(new TextEncoder().encode(gpx), ROUTE_NAME, 0);
-        const view = new DataView(obcr.buffer, obcr.byteOffset, obcr.byteLength);
-        expect((await routeTrack(obcr)).length).toBe(view.getUint32(32, true));
-    });
-
-    it("refuses bytes that are not a route, with the stable code", async () => {
-        const failure = await routeTrack(new Uint8Array(200)).catch((e: unknown) => e);
-        expect(failure).toBeInstanceOf(ConvertError);
-        expect((failure as ConvertError).code).toBe("not-route");
-    });
-});
-
-describe("routeWaypoints", () => {
-    it("reads back the fixture's waypoint table, decoded and in route order", async () => {
-        // `route-source.gpx` carries two `<wpt>`s: "Pass Summit" (`<type>Viewpoint</type>` —
-        // deliberately unmapped, so generic) and "Brunnen" (`<sym>Drinking Water</sym>` → water).
-        const wps = await routeWaypoints(vector("route-waypoints.obcr"));
-        expect(wps.map((w) => w.name).sort()).toEqual(["Brunnen", "Pass Summit"]);
-        for (let i = 1; i < wps.length; i++) {
-            expect(wps[i].distAlongM).toBeGreaterThanOrEqual(wps[i - 1].distAlongM);
-        }
-
-        const brunnen = wps.find((w) => w.name === "Brunnen")!;
-        expect(brunnen.category).toBe(1);
-        expect(brunnen.ele).toBe(238);
-        expect(brunnen.lat).toBeCloseTo(48.0001, 4);
-        expect(brunnen.lon).toBeCloseTo(7.8201, 4);
-
-        const summit = wps.find((w) => w.name === "Pass Summit")!;
-        expect(summit.category).toBe(0);
-        expect(summit.ele).toBeNull();
-
-        // The absolute distances, not just their order — the modal's `km x.y` labels rest on
-        // this field. The fixture is byte-pinned, so these are exact stored `uint32` metres:
-        // Brunnen anchors at the first raw track point, the summit ~1.7 km in.
-        expect(brunnen.distAlongM).toBe(0);
-        expect(summit.distAlongM).toBe(1700);
-    });
-
-    it("agrees with a fresh conversion of the same GPX", async () => {
-        // The other way the device gets waypoints: `gpxToObcr` on a GPX with `<wpt>`s. The
-        // fixture is byte-pinned to that conversion above, so the tables must agree exactly.
-        const gpx = text("host/obc-vectors/src/route-source.gpx");
-        const obcr = await gpxToObcr(new TextEncoder().encode(gpx), ROUTE_NAME, 0);
-        expect(await routeWaypoints(obcr)).toEqual(await routeWaypoints(vector("route-waypoints.obcr")));
-    });
-
-    it("resolves to an empty list for a route without waypoints", async () => {
-        expect(await routeWaypoints(vector("route-plain.obcr"))).toEqual([]);
-    });
-
-    it("refuses bytes that are not a route, with the stable code", async () => {
-        const failure = await routeWaypoints(new Uint8Array(200)).catch((e: unknown) => e);
-        expect(failure).toBeInstanceOf(ConvertError);
-        expect((failure as ConvertError).code).toBe("not-route");
-    });
-});
-
-describe("captured planner exports", () => {
-    /**
-     * `fixtures/sources/route-import/` holds the real files, with their provenance and licence. The
-     * names and the order below are the list `obc-route` and `obc-app` assert on the same bytes, so
-     * a browser import and a device import agree on what a planner actually sent.
-     */
-    it("reads the komoot export's waypoints the way the Rust importer does", async () => {
-        const gpx = text("fixtures/sources/route-import/komoot-schwarzwald.gpx");
-        const obcr = await gpxToObcr(new TextEncoder().encode(gpx), "Schwarzwald", 0);
-        const wps = await routeWaypoints(obcr);
-
-        expect(wps.length).toBe(gpx.split("<wpt ").length - 1);
-        // Stored names are capped at 24 bytes on a character boundary, which four of these reach.
-        expect(wps.map((w) => w.name)).toEqual([
-            "Steiler Abschnitt auf de",
-            "Freudenst\u00e4dter Wasserfo",
-            "Feuerstelle Schmidsberge",
-            "Blick auf die Landschaft",
-            "Fuxxbau",
-        ]);
-        // `Restaurant` is resupply; `Fishing Hot Spot Facility` has no home among the six and stays
-        // generic instead of being dropped or forced into the nearest one.
-        expect(wps.map((w) => w.category)).toEqual([0, 0, 0, 0, 4]);
-        for (let i = 1; i < wps.length; i++) {
-            expect(wps[i].distAlongM).toBeGreaterThanOrEqual(wps[i - 1].distAlongM);
-        }
     });
 });
 

@@ -149,7 +149,7 @@ over BLE and USB. The custom PCB and enclosure are still under development. KiCa
 | `host/` | Host tools, map bakers, fixtures, and test support |
 | `planner/` | Router, build tools, service, search, and tile worker |
 | `sim/` | Desktop, web and phone simulators, host core, replay, feeder and benchmarks |
-| `builder/` | Web and desktop builder, Rust/WASM core, USB transport, presets, and server |
+| `builder/` | Web builder, Rust/WASM core, USB transport, presets, and server |
 | `companion-ios/` | SwiftUI companion app and shared iOS package |
 | `specs/` | Normative binary, wire, and vector contracts |
 | `fixtures/` | Scenario registry, source provenance, and fixture builders |
@@ -159,7 +159,7 @@ over BLE and USB. The custom PCB and enclosure are still under development. KiCa
 | `tools/` | The `obc` command, repository tools, and verification console |
 
 `Cargo.toml` lists the root workspace crates. The nRF54L board image,
-bootloader, Tauri desktop app, and sensor simulator are standalone Cargo roots. The
+bootloader, and sensor simulator are standalone Cargo roots. The
 [architecture guide](https://openbikecomputer.com/docs/software/architecture/) explains the boundaries.
 
 ## Other open bike computers

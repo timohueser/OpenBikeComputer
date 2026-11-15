@@ -71,14 +71,13 @@ builder/web/test-support/flat-device/pkg/
 # virtualenv + the optional local maps drop. The tooling itself (everything in
 # tools/ except obc.local) is committed.
 tools/obc.local
-# Planner tile settings for a local desktop build (see builder/desktop/README.md).
+# Local Vite settings of the web builder.
 builder/web/.env.local
 .venv/
 /maps/
 # Web builder frontend: dependencies + the Vite build output (CI builds it).
 # The dev host builds into builder/server/static/dist/ (what the FastAPI server
-# mounts); the static-web and desktop hosts into builder/web/dist/<host>/ — see
-# #895. Both entries must keep matching vite.config.ts's outDirs: when they
+# mounts); the static-web host into builder/web/dist/web/. Both entries must keep matching vite.config.ts's outDirs: when they
 # drifted apart, `npm run build` wrote to an unignored path and 640 KB of bundle
 # got committed by accident (and the server mounted nothing).
 builder/web/node_modules/

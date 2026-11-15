@@ -8,7 +8,6 @@ A country is then a row in the registry. Only France needs code of its own, beca
 serves raw float32 over WMS and the GeoTIFF has to be assembled from it.
 """
 
-import json
 import math
 import os
 import re
@@ -23,7 +22,7 @@ from rasterio.warp import transform_bounds
 
 from ..lattice import Refuse, WGS84
 from ..pool import read_source
-from .base import MOST_MISSING, TIFF_MAGIC, Source, decode_tiff, each, http_get, redact
+from .base import MOST_MISSING, TIFF_MAGIC, Source, decode_tiff, each, http_get, pace, redact
 
 # One request per sub-box. A failed 4000 x 4000 request wastes far more time than four
 # 2000 x 2000 ones, and every service here caps the pixels it will answer with.
@@ -57,17 +56,29 @@ def spans(bbox, epsg=None) -> tuple[float, float]:
     return span_x, span_y
 
 
-def request_boxes(bbox, resolution_m: float, epsg=None):
-    """A WGS84 box cut into requests no larger than `MAX_PIXELS` on a side."""
+def request_boxes(bbox, resolution_m: float, epsg=None,
+                  cap: int = MAX_PIXELS) -> list[tuple[float, float, float, float]]:
+    """A WGS84 box cut into requests no larger than `cap` pixels on a side.
+
+    The cut is even in degrees. Far from its central meridian a projected grid is turned against
+    them, so each piece's footprint keeps a share of the other axis that more pieces of this axis
+    do not shrink. Every piece is measured as `output_size` will measure it, and while one is over
+    the cap the cut is made finer on both axes, which shrinks that share too.
+    """
 
     west, south, east, north = bbox
     span_x, span_y = spans(bbox, epsg)
-    nx = max(1, math.ceil(span_x / resolution_m / MAX_PIXELS))
-    ny = max(1, math.ceil(span_y / resolution_m / MAX_PIXELS))
-    for i in range(ny):
-        for j in range(nx):
-            yield (west + (east - west) * j / nx, south + (north - south) * i / ny,
-                   west + (east - west) * (j + 1) / nx, south + (north - south) * (i + 1) / ny)
+    nx = max(1, math.ceil(span_x / resolution_m / cap))
+    ny = max(1, math.ceil(span_y / resolution_m / cap))
+    while True:
+        boxes = [(west + (east - west) * j / nx, south + (north - south) * i / ny,
+                  west + (east - west) * (j + 1) / nx, south + (north - south) * (i + 1) / ny)
+                 for i in range(ny) for j in range(nx)]
+        measured = [spans(box, epsg) for box in boxes]
+        if all(round(x / resolution_m) <= cap and round(y / resolution_m) <= cap
+               for x, y in measured):
+            return boxes
+        nx, ny = nx + 1, ny + 1
 
 
 def pixels(count: float, what: str) -> int:
@@ -147,6 +158,11 @@ def projected_box(box, epsg: int):
     return (lo_x, lo_y, hi_x, hi_y), (hi_x - lo_x, hi_y - lo_y)
 
 
+# A service that answers "too many requests" on a 200: Kartverket's gateway says
+# "[99][Interceptor] Overforbruk på kort tid. Vent litt, prøv igjen", so it is retried after a wait.
+BUSY = (b"[Interceptor]",)
+
+
 def raster_bytes(url: str, what: str) -> bytes:
     """One raster from a service, or a refusal that quotes what came back instead.
 
@@ -156,17 +172,18 @@ def raster_bytes(url: str, what: str) -> bytes:
     reads its token out of the URL, so the URL is not something to put in a message.
     """
 
-    body = http_get(url, what=what, check=decode_tiff)
+    def check(body: bytes) -> None:
+        if any(mark in body[:400] for mark in BUSY):
+            raise OSError(f"the service asks to wait: {body[:300].decode('utf-8', 'replace')}")
+        decode_tiff(body)
+
+    body = http_get(url, what=what, check=check)
     if body[:4] not in TIFF_MAGIC:
         # These services answer an error with a 200 and an XML document that quotes the
         # request, token and all, so the body is redacted like any other message.
         text = body[:400].decode("utf-8", "replace").replace("\n", " ").strip()
         raise Refuse(redact(f"{what}: the service did not answer with a TIFF but with: {text}"))
     return body
-
-
-class NotMirrored(Refuse):
-    """A mirrored fetch that lacks answers, after it named them in `wanted/`."""
 
 
 def label(box) -> str:
@@ -184,7 +201,17 @@ def unreadable(refusal: Refuse) -> bool:
 
 
 class TiledService(Source):
-    """A service that answers one box at a time, cached per request in the work directory."""
+    """A service that answers one box at a time, cached per request in the work directory.
+
+    `gap` is the least time between the starts of two requests of the whole prepare, for a server
+    that refuses a burst; a retry waits its own, longer delay. It needs the shared directory, which
+    every block of a prepare has. `cap` is the largest request side in pixels, below
+    `MAX_PIXELS` for a gateway that times out a large request.
+    """
+
+    def __init__(self, *args, gap: float = 0.0, cap: int = MAX_PIXELS, **kw):
+        super().__init__(*args, **kw)
+        self.gap, self.cap = gap, cap
 
     #: These services read a key out of the query, which `request` appends.
     credential_style = "query"
@@ -195,10 +222,7 @@ class TiledService(Source):
 
     def fetch(self, bbox, workdir) -> list[Path]:
         workdir.mkdir(parents=True, exist_ok=True)
-        boxes = list(request_boxes(bbox, self.resolution_m, self.epsg))
-        mirror = self.mirror()
-        if mirror is not None:
-            return self.mirrored(boxes, mirror)
+        boxes = request_boxes(bbox, self.resolution_m, self.epsg, self.cap)
 
         def one(box) -> Path | None:
             name = self.request_name(box)
@@ -240,67 +264,9 @@ class TiledService(Source):
         return [path for path in paths if path]
 
     def request_name(self, box) -> str:
-        """The file that the answer to a box lands in, in the work directory and in a mirror."""
+        """The file that the answer to a box lands in, in the work directory."""
 
         return f"{self.key}_{box[0]:.5f}_{box[1]:.5f}_{box[2]:.5f}_{box[3]:.5f}.tif"
-
-    def mirror(self) -> Path | None:
-        """`<shared>/mirror/<key>`, a folder that another host fills with this row's answers, or
-        `None` when there is none.
-
-        Another host can fetch a row at the rate its server allows. While the folder exists, the
-        row asks its server nothing: it reads `envelope.json` and each answer by its
-        `request_name`, in place. `<name>.unreadable` is an answer the server could not read. A
-        fetch that lacks an answer writes a file per lacking answer into `wanted/`, holding the
-        box, for the other host to fetch, and raises `NotMirrored`.
-
-        A link to a drive that is not mounted is still a mirror, and refused: the row must not
-        fall back to its server.
-        """
-
-        if self.shared is None:
-            return None
-        mirror = self.shared / "mirror" / self.key
-        if not os.path.lexists(mirror):
-            return None
-        if not mirror.is_dir():
-            raise Refuse(f"{self.key}: the mirror {mirror} is not a folder that can be read")
-        return mirror
-
-    def mirrored(self, boxes, mirror: Path) -> list[Path]:
-        """The answers of `boxes` in `mirror`, each a whole TIFF, read where they are."""
-
-        asked = [(box, mirror / self.request_name(box)) for box in boxes if self.url(box) is not None]
-        absent = [box for box, path in asked
-                  if not (path.exists() or path.with_name(path.name + ".unreadable").exists())]
-        if absent:
-            (mirror / "wanted").mkdir(exist_ok=True)
-            for box in absent:
-                want = mirror / "wanted" / self.request_name(box)
-                part = want.with_name(f"{want.name}.{os.getpid()}")
-                part.write_text(json.dumps(list(box)), encoding="utf-8")
-                os.replace(part, want)
-            raise NotMirrored(f"{self.key}: {len(absent)} of {len(boxes)} answers are not in the mirror yet")
-        paths = []
-        for box, path in asked:
-            if not path.exists():
-                self.missing.append(label(box))
-                continue
-            with path.open("rb") as handle:
-                head = handle.read(4)
-            try:
-                if head not in TIFF_MAGIC:
-                    raise OSError(f"it starts with {head!r}")
-                decode_tiff(path)
-            except OSError as error:
-                raise Refuse(f"{self.key}: {path.name} in the mirror is not a whole TIFF: {error}") from error
-            if not self.known().exists():
-                self.remember(box, path.read_bytes())
-            paths.append(path)
-        if len(self.missing) > MOST_MISSING:
-            raise Refuse(f"{self.key}: the service cannot read {len(self.missing)} boxes of one fetch, "
-                         f"such as {self.missing[0]}")
-        return paths
 
     def holds_heights(self, body: bytes) -> bool:
         """Whether a raster holds a height that the tail does not read as void, so the server read
@@ -350,8 +316,8 @@ class TiledService(Source):
         url = self.url(box)
         if url is None:
             return None
-        if self.mirror() is not None:
-            raise Refuse(f"{self.key}: a mirrored row asks its server nothing")
+        if self.gap and self.shared is not None:
+            pace(self.shared / "pace" / self.key, self.gap)
         credential = self.credential.query() if self.credential else ""
         return raster_bytes(url + credential, f"{self.key} {box}")
 
@@ -399,14 +365,7 @@ class CoverageService(TiledService):
 
     def fetch(self, bbox, workdir) -> list[Path]:
         if self.envelope is None:
-            mirror = self.mirror()
-            if mirror is None:
-                self.envelope = self.describe()
-            elif (mirror / "envelope.json").exists():
-                envelope = tuple(json.loads((mirror / "envelope.json").read_text(encoding="utf-8")))
-                self.envelope = self.meets_extent(envelope, f"{self.key} envelope.json")
-            else:
-                raise Refuse(f"{self.key}: the mirror holds no envelope.json yet")
+            self.envelope = self.describe()
         return super().fetch(bbox, workdir)
 
     def describe(self):

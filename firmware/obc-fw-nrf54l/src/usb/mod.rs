@@ -1,5 +1,5 @@
 //! The USB device plane: the nRF54LM20's USBHS carrying flat-store frames, so a browser (WebUSB)
-//! or the desktop app can push a map, a route or a firmware image to a plugged-in device. The
+//! or a native USB host can push a map, a route or a firmware image to a plugged-in device. The
 //! adapter owns record boundaries, pacing, timeouts and drain; the engine beside the card decides
 //! what a frame means.
 //!

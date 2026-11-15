@@ -131,10 +131,7 @@ impl RecordWriter {
             }
         }
         let padding = padded_record_len(frame.len()) - frame.len();
-        if padding != 0 && self.write(&[0; 3][..padding]).await.is_err() {
-            return false;
-        }
-        true
+        padding == 0 || self.write(&[0; 3][..padding]).await.is_ok()
     }
 
     async fn write(&mut self, bytes: &[u8]) -> Result<(), EndpointError> {

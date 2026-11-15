@@ -17,7 +17,7 @@ use present::*;
 
 /// The sim's glass is the RGB888 texture, read back in the draw colour space. The expansion is
 /// bit-replication, so truncation inverts it exactly.
-impl<'b, const W: usize, const H: usize> GlassProbe<Device64Frame<'b, W, H>> for Present {
+impl GlassProbe for Present {
     fn glass(&self, x: u32, y: u32) -> Rgb565 {
         let t = (y as usize * self.width + x as usize) * 3;
         let (r, g, b) = (self.texture()[t], self.texture()[t + 1], self.texture()[t + 2]);
@@ -40,13 +40,13 @@ fn rgb(raw: u16) -> Rgb565 {
     Rgb565::from(RawU16::new(raw))
 }
 
-// The generic conformance suite, the same checks the board-semantics double runs, against this
+// The conformance suite, the same checks the board-semantics double runs, against this
 // backend: the simulator presenter paired with `Device64Frame`, through the real contract impls.
 
 const CW: usize = 16;
 const CH: usize = 16;
-/// The reference overlay window: a right-edge rect, which is the bulge shape scaled down.
-const OVERLAY: Rectangle = Rectangle { top_left: Point::new(12, 4), size: Size::new(4, 4) };
+/// The reference overlay window: a right-edge window, which is the bulge shape scaled down.
+const OVERLAY: RowWindow = RowWindow { x0: 12, y0: 4, w: 4, rows: 4 };
 const RED: u16 = 0xF800;
 const GREEN: u16 = 0x07E0;
 const BLUE: u16 = 0x001F;
@@ -60,11 +60,11 @@ fn conformance_full_present() {
 }
 
 #[test]
-fn conformance_damage_translation() {
+fn conformance_self_diff() {
     let mut buf = [0u8; CW * CH];
     let mut frame = Device64Frame::<CW, CH>::new(&mut buf);
     let mut p = Present::new(CW as u32, CH as u32);
-    block_on(conformance::check_damage_translation(&mut frame, &mut p, rgb(RED), rgb(BLUE), true));
+    block_on(conformance::check_self_diff(&mut frame, &mut p, rgb(RED), rgb(BLUE)));
 }
 
 #[test]
@@ -100,7 +100,6 @@ fn conformance_overlay_exclusion() {
         (14, 6),
         (0, 0),
         |f| f.bytes().to_vec(),
-        true,
     ));
 }
 
@@ -118,7 +117,6 @@ fn conformance_overlay_pop_retract_clear() {
         (12, 5),
         (15, 6),
         |f| f.bytes().to_vec(),
-        true,
     ));
 }
 
@@ -131,7 +129,7 @@ fn conformance_overlay_exclusion_at_device_geometry() {
     let mut frame = Device64Frame::<FRAME_W, FRAME_H>::new(&mut buf);
     let mut p = Present::new(FRAME_W as u32, FRAME_H as u32);
     // The real bulge shape: a right-edge 16-column window.
-    let overlay = Rectangle::new(Point::new((FRAME_W - 16) as i32, 60), Size::new(16, 111));
+    let overlay = RowWindow { x0: (FRAME_W - 16) as u16, y0: 60, w: 16, rows: 111 };
     block_on(conformance::check_overlay_exclusion(
         &mut frame,
         &mut p,
@@ -143,7 +141,6 @@ fn conformance_overlay_exclusion_at_device_geometry() {
         (FRAME_W as u32 - 2, 140),
         (0, 0),
         |f| f.bytes().to_vec(),
-        true,
     ));
 }
 

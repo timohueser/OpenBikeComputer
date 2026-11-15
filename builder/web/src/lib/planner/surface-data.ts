@@ -1,6 +1,8 @@
 import { cumulative } from './geo';
 import type { RoutingLine, Surface } from './routing';
 
+export const surfaceBarColors: Record<Surface, string> = { Paved: '#536674', Compacted: '#7d8b63', Gravel: '#ba9c5c', Dirt: '#a36d49', Rough: '#875f72', Unknown: '#b8b5ac' };
+
 export function surfaceRuns(line?: Pick<RoutingLine, 'coordinates' | 'edges'>) {
     const lengths = cumulative(line?.coordinates ?? []);
     const total = lengths.at(-1) ?? 0;

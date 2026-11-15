@@ -1,6 +1,6 @@
 //! Visit requests and phase progress stay in Navigator. Geometry is accepted once.
 use super::{review::AfterCheckpoint, NavigatorMachine, ReviewContext, ReviewPurpose, ReviewStatus};
-use obc_formats::assistant::JourneyPhase;
+use obc_formats::navigator::JourneyPhase;
 use obc_formats::obcm::PoiMetadata;
 use obc_route::visit::VisitTarget;
 use obc_route::RouteReader;
@@ -203,7 +203,7 @@ impl crate::App {
     pub fn set_assistant_preview_shape(
         &mut self,
         token: crate::device_core::OperationToken<crate::device_core::NavigatorTag>,
-        source: obc_formats::assistant::PayloadFingerprint,
+        source: obc_formats::navigator::PayloadFingerprint,
         points: &[(i32, i32)],
     ) -> bool {
         if !self.navigator.accepts(&super::NavigatorOutcome::ReviewReady { token })
@@ -366,7 +366,7 @@ impl crate::App {
     pub fn bind_visit_sources(
         &mut self,
         scope: crate::device_core::StoreRevision,
-        original: Option<obc_formats::assistant::PayloadFingerprint>,
+        original: Option<obc_formats::navigator::PayloadFingerprint>,
         avoidance: bool,
     ) -> bool {
         if !self.navigator.visit.needs_bind {
@@ -521,8 +521,8 @@ mod tests {
     use super::*;
     use crate::device_core::{MetadataTag, TokenSource};
     use crate::metadata::MetadataOutcome;
-    use obc_formats::assistant::{NavigatorCheckpoint, PayloadFingerprint};
     use obc_formats::io::{ByteSink, Error, SliceSource};
+    use obc_formats::navigator::{NavigatorCheckpoint, PayloadFingerprint};
     use obc_formats::obcr::{RouteSourceKey, VisitDescriptor};
 
     #[derive(Default)]
