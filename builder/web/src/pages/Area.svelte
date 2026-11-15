@@ -2,6 +2,7 @@
     import { onMount } from 'svelte';
     import CoverageMap from '../components/coverage/CoverageMap.svelte';
     import SkinStep from '../components/coverage/SkinStep.svelte';
+    import Credits from '../components/planner/Credits.svelte';
     import Icon from '../components/planner/PlannerIcon.svelte';
     import { CatalogClient } from '../lib/catalog/client';
     import { CoverageStore } from '../lib/coverage/store.svelte';
@@ -46,6 +47,20 @@
         const line = route.summary?.line ?? [];
         return line.length ? [Array.from({ length: line.length / 2 }, (_, i): [number, number] => [line[2 * i + 1], line[2 * i]])] : [];
     }));
+    /** What the data lacks in the chosen area, known when each part has its cells. */
+    const missing = $derived.by(() => {
+        if (!store || bytes === null) return null;
+        const map = store.holeCells().length > 0, elevation = (store.ledger?.terrain?.missingCount ?? 0) > 0;
+        return map || elevation ? { map, elevation } : null;
+    });
+    /** The credits of the data of the map for the device; the credit of the base map is a line on the map. */
+    const credits = $derived.by(() => {
+        const source = store?.catalog.source, terrain = store?.catalog.terrain;
+        return [
+            ...(source ? [`${source.attribution} (${source.license})`] : []),
+            ...(terrain ? [terrain.attribution, ...terrain.references.map(from => `Summit heights from ${from.product}: ${from.attribution} (${from.licence})`)] : []),
+        ];
+    });
     const nameOf = (route: RouteRecord) => route.name || (isPlan(route) ? planTitle(route.trip) : 'Route');
     const leaving = $derived.by(() => {
         if (!store || !parts.length || bytes === null) return [];
@@ -100,6 +115,7 @@
         <div class="cards">
             <div class="map">
                 {#if store}<CoverageMap {store} {active} bind:tool rail={false} pale routes={lines} />{/if}
+                <Credits {credits} side="left" />
             </div>
             {#if store}
                 <section class="side" aria-label="The area">
@@ -132,6 +148,14 @@
                                     {/if}
                                 </div>
                             {/each}
+                        </div>
+                    {/if}
+                    {#if missing}
+                        <div class="missing">
+                            {#if missing.map}
+                                <p>Map data is missing in a part of this area. <button type="button" class="link" onclick={() => store!.focusWarnings('hole')}>Show on the map</button></p>
+                            {/if}
+                            {#if missing.elevation}<p>Elevation data is missing in a part of this area. Climbs there read as flat.</p>{/if}
                         </div>
                     {/if}
                     <div class="colours">
@@ -201,12 +225,17 @@
         min-height: 0;
     }
     .map {
+        position: relative;
         grid-column: 2;
         grid-row: 1;
         overflow: hidden;
         border: 1px solid var(--line);
         border-radius: 10px;
         background: var(--parchment-2);
+    }
+    /* The panes of the map stay under the button of the credits. */
+    .map :global(.map-wrap) {
+        isolation: isolate;
     }
     /* The credit of the map has the letters and the colours of the page. */
     .map :global(.leaflet-control-attribution) {
@@ -250,7 +279,7 @@
         padding: 0;
         list-style: none;
     }
-    .parts li, .leaving, .colours, footer {
+    .parts li, .leaving, .missing, .colours, footer {
         border-top: 1px solid var(--line);
     }
     .parts li {
@@ -297,9 +326,14 @@
         border-radius: 50%;
         background: var(--amber);
     }
-    .leaving p {
+    .leaving p, .missing {
         color: var(--ink-soft);
         font-size: 13.5px;
+    }
+    .missing {
+        display: grid;
+        gap: 6px;
+        padding: 12px 0;
     }
     .answers {
         display: flex;
