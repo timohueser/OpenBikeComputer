@@ -42,9 +42,10 @@ export function crop(cover: Pick<CoverImage, 'width' | 'height' | 'points'>, [wi
     return { scale, left: place(middle(points.x, cover.width), cover.width, width / scale), top: place(middle(points.y, cover.height), cover.height, height / scale) };
 }
 
-/** Draws the cover over the whole canvas of `context`, which is `box` pixels in size, and returns the cut. `mark` and `part` are metres along the route. */
+/** Draws the cover over the whole canvas of `context`, which is `box` pixels in size, and returns the cut. `mark` and
+ * `part` are metres along the route. `trim` leaves out the line in that many metres along the route at each end. */
 export function drawCover(context: CanvasRenderingContext2D, cover: CoverImage,
-    { box, mark, part, line, look = 'route' }: { box: [number, number]; mark?: number; part?: [number, number]; line: boolean; look?: Look }): Crop {
+    { box, mark, part, line, look = 'route', trim = 0 }: { box: [number, number]; mark?: number; part?: [number, number]; line: boolean; look?: Look; trim?: number }): Crop {
     const cut = crop(cover, box), { points, summary } = cover, colours = LOOKS[look];
     context.drawImage(cover.image, cut.left, cut.top, box[0] / cut.scale, box[1] / cut.scale, 0, 0, box[0], box[1]);
     if (!line) return cut;
@@ -54,14 +55,23 @@ export function drawCover(context: CanvasRenderingContext2D, cover: CoverImage,
     for (let i = 0; i < points.x.length; i++) if (placed(points, i)) nearest = Math.min(nearest, distanceAt(points, i));
     const widest = Math.max(2, WIDEST * Math.min(...box));
     const width = (i: number) => widest * Math.max(LEAST, Math.min(1, nearest / distanceAt(points, i)));
-    const metres = summary && part && metresAlong(summary);
+    const reached = summary && (part || trim) ? metresAlong(summary) : undefined, metres = part && reached;
     // A segment that overlaps the part is in it, so a part shorter than one segment still shows.
     const inPart = (i: number) => !!metres && !!part && metres[i] > part[0] && metres[i - 1] < part[1];
+    const kept = reached && trim ? [trim, summary!.lengthM - trim] : undefined;
+    /** The place of point `i`, the end of a piece. An end in a trimmed stretch moves along its segment toward `next`,
+     * to the point where the kept line starts or ends. */
+    const end = (i: number, next: number): [number, number] => {
+        const bound = !kept ? undefined : reached![i] < kept[0] ? kept[0] : reached![i] > kept[1] ? kept[1] : undefined;
+        const t = bound === undefined ? 0 : (bound - reached![i]) / (reached![next] - reached![i]);
+        return [x(i) + t * (x(next) - x(i)), y(i) + t * (y(next) - y(i))];
+    };
 
     // Consecutive segments of one width step and one colour make one path, so that a weak stroke shows no dots at its
     // joints. A stretch that the terrain hides draws nothing.
     const pieces: { part: boolean; w: number; from: number; to: number }[] = [];
     for (const run of runs(points)) for (let i = run.from + 1; run.visible && i <= run.to; i++) {
+        if (kept && (reached![i] <= kept[0] || reached![i - 1] >= kept[1])) continue;
         const w = Math.round(width(i - 1) + width(i)) / 2, last = pieces.at(-1), inside = inPart(i);
         if (last?.to === i - 1 && last.w === w && last.part === inside) last.to = i;
         else pieces.push({ part: inside, w, from: i - 1, to: i });
@@ -80,8 +90,9 @@ export function drawCover(context: CanvasRenderingContext2D, cover: CoverImage,
         for (const piece of pieces) {
             if (metres && piece.part !== pass.part) continue;
             context.beginPath();
-            context.moveTo(x(piece.from), y(piece.from));
-            for (let i = piece.from + 1; i <= piece.to; i++) context.lineTo(x(i), y(i));
+            context.moveTo(...end(piece.from, piece.from + 1));
+            for (let i = piece.from + 1; i < piece.to; i++) context.lineTo(x(i), y(i));
+            context.lineTo(...end(piece.to, piece.to - 1));
             context.lineWidth = pass.width(piece.w);
             context.strokeStyle = pass.colour;
             context.stroke();

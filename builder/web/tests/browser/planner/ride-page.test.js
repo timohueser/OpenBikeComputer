@@ -95,6 +95,16 @@ test('the ride page shows a stored ride with its numbers and zones, renames, exp
   expect(csv[0]).toBe('time,latitude,longitude,elevation_m,distance_m,speed_m_s,heart_rate_bpm,cadence_rpm,power_w,temperature_c');
   expect(csv[1]).toBe('2026-10-24T07:00:00.000Z,46.900000,8.000000,1000,0,5,140,85,200,10');
 
+  // "Share" is the first item of "More". The card of a ride has its date, with a switch.
+  await page.getByRole('button', { name: 'More ▾' }).click();
+  await expect(page.locator('menu button').first()).toHaveText('Share');
+  await page.getByRole('button', { name: 'Share' }).click();
+  const share = page.getByRole('dialog', { name: 'Share' });
+  await expect(share.getByRole('switch', { name: 'Date' })).toBeVisible();
+  const [card] = await Promise.all([page.waitForEvent('download'), share.getByRole('button', { name: 'Download' }).click()]);
+  expect(card.suggestedFilename()).toBe('Trübsee.jpg');
+  await page.keyboard.press('Escape');
+
   await page.getByRole('button', { name: 'Ride it again' }).click();
   await expect(page).toHaveURL(/#\/route\/file-[0-9a-f]{32}$/);
   await expect(page.getByRole('heading', { name: 'Trübsee', level: 1 })).toBeVisible();
@@ -223,7 +233,7 @@ test('the lines of a ride: a row for each line with values, the pointer, and a p
   // The zones are those of the part: all of it is in Z4.
   await expect(facts.getByRole('img', { name: /Z3 · 130–147 bpm · 0h 0m, Z4 · 148–166 bpm · 0h 17m/ })).toBeVisible();
   await expect(facts.locator('.climbs')).toHaveCount(0);
-  // With a part, the menu has the switch "Only the selected part": with it on, an export holds only the part.
+  // With a part, the menu has the switch "Only the selected part" over its exports: with it on, an export holds only the part.
   const gpx = async () => {
     await page.getByRole('button', { name: 'More ▾' }).click();
     const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Export GPX track' }).click()]);

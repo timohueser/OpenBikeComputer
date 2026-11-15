@@ -1,9 +1,9 @@
 <script lang="ts">
-    let { checked = $bindable(false), label }: { checked?: boolean; label: string } = $props();
+    let { checked = $bindable(false), label, note }: { checked?: boolean; label: string; /** A second line under the label. */ note?: string } = $props();
 </script>
 
 <button type="button" role="switch" aria-checked={checked} onclick={() => checked = !checked}>
-    <span class="label">{label}</span>
+    <span class="label">{label}{#if note}<small>{note}</small>{/if}</span>
     <span class="track" aria-hidden="true"><span class="knob"></span></span>
 </button>
 
@@ -22,6 +22,12 @@
         font: inherit;
         text-align: left;
         cursor: pointer;
+    }
+    small {
+        display: block;
+        color: var(--ink-soft);
+        font-size: 13.5px;
+        font-weight: 400;
     }
     .track {
         flex: none;

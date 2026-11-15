@@ -55,6 +55,23 @@ test('the route page shows a stored route, renames, sends, opens in the planner,
   await page.goBack();
   await expect(page.getByRole('heading', { name: 'Lake loop', level: 1 })).toBeVisible();
 
+  // "Share" is the first item of "More". Its window gives the share card as a JPEG of 1920 × 1280.
+  await page.getByRole('button', { name: 'More ▾' }).click();
+  await expect(page.locator('menu button').first()).toHaveText('Share');
+  await page.getByRole('button', { name: 'Share' }).click();
+  const share = page.getByRole('dialog', { name: 'Share' });
+  await expect(share.getByRole('switch')).toHaveText(['Numbers', 'Elevation profile', 'Hide start and endThe first and last 500 m']);
+  const [card] = await Promise.all([page.waitForEvent('download'), share.getByRole('button', { name: 'Download' }).click()]);
+  expect(card.suggestedFilename()).toBe('Lake loop.jpg');
+  const bytes = await readFile(await card.path());
+  expect([...bytes.subarray(0, 3)]).toEqual([0xff, 0xd8, 0xff]);
+  expect(await page.evaluate(async file => {
+    const image = await createImageBitmap(new Blob([new Uint8Array(file)]));
+    return [image.width, image.height];
+  }, [...bytes])).toEqual([1920, 1280]);
+  await page.keyboard.press('Escape');
+  await expect(share).toHaveCount(0);
+
   await page.getByRole('button', { name: 'More ▾' }).click();
   await page.getByRole('button', { name: 'Duplicate' }).click();
   await expect(page.getByRole('heading', { name: 'Lake loop (copy)', level: 1 })).toBeVisible();

@@ -7,6 +7,7 @@
     import Facts from '../components/route/Facts.svelte';
     import Picture from '../components/route/Picture.svelte';
     import Rows from '../components/route/Rows.svelte';
+    import Share from '../components/route/Share.svelte';
     import { download } from '../components/route/download';
     import { writeFitCourse } from '../lib/core/fit';
     import { writeGpx, type GpxImport } from '../lib/core/gpx';
@@ -34,7 +35,7 @@
     let routed = $state.raw<{ key: string; line?: RoutingLine; error?: string }>();
     /** The pointer, as a share of the summary line from 0 to 1. */
     let share = $state<number>();
-    let deleting = $state(false), failure = $state('');
+    let deleting = $state(false), sharing = $state(false), failure = $state('');
     /** The selected part, the stretch of the climb under the pointer and the chosen day, as shares of the line; the
      * place whose panel is open. A chosen day acts as the part when none is selected. */
     let part = $state<[number, number] | null>(null), hover = $state<[number, number] | null>(null);
@@ -63,7 +64,7 @@
         const target = id;
         let live = true;
         record = undefined;
-        [share, deleting, failure, part, hover, day, place] = [undefined, false, '', null, null, null, null];
+        [share, deleting, sharing, failure, part, hover, day, place] = [undefined, false, false, '', null, null, null, null];
         const load = async () => {
             const [item, ids, copies] = await Promise.all([library.item(target), library.state('waiting'), library.state('sent')]);
             if (!live) return;
@@ -136,7 +137,8 @@
         { label: 'Plan file', run: () => void act(async () => downloadPlan(plan!, await versions())) },
     ]);
     const more = $derived<{ label: string; disabled?: boolean; rule?: boolean; danger?: boolean; run: () => void }[]>([
-        ...exports.map(item => ({ ...item, label: `Export ${item.label}` })),
+        { label: 'Share', disabled: !summary, run: () => { sharing = true; } },
+        ...exports.map((item, i) => ({ ...item, label: `Export ${item.label}`, rule: i === 0 })),
         { label: 'Duplicate', rule: true, run: () => void duplicate() },
         { label: 'Delete', danger: true, run: () => { deleting = true; } },
     ]);
@@ -174,6 +176,7 @@
         {#key id}<Rows {summary} trip={plan.trip} {line} {facts} {pins} mark={share} onpoint={next => share = next ?? undefined}
             {part} onpart={next => part = next} onhover={next => hover = next} onday={next => day = next} onplace={next => place = next} />{/key}
     {/if}
+    {#if sharing && summary}<Share {library} {id} {name} {summary} onClose={() => sharing = false} />{/if}
     {#if deleting}
         <Window title="Delete this route?" onClose={() => deleting = false}>
             <p>“{name}” and its saved versions go. You cannot undo this.</p>
