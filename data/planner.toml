@@ -26,7 +26,7 @@ profiles = [
 # The largest number of junctions in a routing cell of level 1, 2, …: at most 8 increasing values.
 # The cell IDs have at most 32 bits: the bake of a region that needs more fails. The list is the same
 # for each region, so an operator then removes a level here.
-# Chosen by the owner on a Switzerland bake, by the time of long legs.
+# Owner's choice on a Switzerland bake: from 256, twice the files and not 10 % faster on long legs.
 cell_sizes = [512, 4096, 32768, 262144, 2097152, 16777216, 134217728]
 # The level of the download cells of the routing package: 1 to 8. A package with fewer levels takes
 # its top level. A change bakes only the package again.

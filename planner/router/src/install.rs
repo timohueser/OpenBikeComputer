@@ -216,7 +216,7 @@ pub fn plan(directory: &[u8], info: &[u8], cells: Option<&[u32]>, profiles: Opti
 
 /// `area` (`[west, south, east, north]` in microdegrees) grown by the half-sizes of the snap window
 /// of `REACH_M` at its corner nearest to a pole: the largest window of any point in it.
-pub fn grown(area: [i32; 4]) -> std::result::Result<[i32; 4], String> {
+pub(crate) fn grown(area: [i32; 4]) -> std::result::Result<[i32; 4], String> {
     let pole = if area[1].unsigned_abs() > area[3].unsigned_abs() { area[1] } else { area[3] };
     let corner = crate::model::Point { lat: pole.clamp(-85_000_000, 85_000_000), lon: 0, elevation: 0.0 };
     let window = crate::snap::window(corner, crate::snap::REACH_M)?;
