@@ -999,3 +999,13 @@ fn a_paved_stroke_hides_a_tunnel_station_only_where_it_lies_on_top() {
         }
     }
 }
+
+#[test]
+fn a_passage_through_a_building_of_kind_tunnel_lies_on_the_ground_and_a_tunnel_does_not() {
+    let level = |tunnel: &'static str| {
+        let l = line("tunnel", &[("highway", "residential"), ("tunnel", tunnel)], &[[-20.0, 0.0], [20.0, 0.0]], 500.0);
+        parts::classify(&feature(&l, cell().feature_tiles()[0], 0), Sections::embedded()).map(|c| c.2)
+    };
+    assert_eq!(level("building_passage"), Some(Level::Ground));
+    assert_eq!(level("yes"), Some(Level::Tunnel));
+}

@@ -381,8 +381,10 @@ type Frame = ReturnType<typeof frameOf>;
 function lineType(kind: string, tags: Record<string, string>): number | undefined {
     const river = kind === 'river' || kind === 'stream';
     if (!river && !['main-road', 'road', 'path', 'railway', 'tunnel', 'gallery'].includes(kind)) return undefined;
-    const bridge = !river && kind !== 'tunnel' && !GROUND.includes(tags.bridge ?? 'no');
-    return kind === 'river' ? RIVER : kind === 'stream' ? STREAM : bridge ? BRIDGE : kind === 'tunnel' ? TUNNEL : kind === 'railway' ? RAIL : kind === 'path' || Object.hasOwn(PATH_HALF, tags.highway) ? PATH : ROAD;
+    // Tiles of an older bake hold a passage through a building as a tunnel: it is a way, the building stands over it.
+    const bore = kind === 'tunnel' && tags.tunnel !== 'building_passage';
+    const bridge = !river && !bore && !GROUND.includes(tags.bridge ?? 'no');
+    return kind === 'river' ? RIVER : kind === 'stream' ? STREAM : bridge ? BRIDGE : bore ? TUNNEL : kind === 'railway' ? RAIL : kind === 'path' || Object.hasOwn(PATH_HALF, tags.highway) ? PATH : ROAD;
 }
 
 /**

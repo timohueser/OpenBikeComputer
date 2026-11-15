@@ -559,6 +559,14 @@ describe('the ends of bridges and tunnels', () => {
         ], { level: 14, x: 8574, y: 5778 });
         expect(lines.filter(line => line.kind === BRIDGE || line.kind === TUNNEL).map(line => line.abut)).toEqual([[true, true], [true, false], [false, false]]);
     });
+
+    it('take a passage through a building of kind `tunnel` as a way of its class, and a tunnel as a bore', () => {
+        const way = (tunnel: string) =>
+            ({ kind: 'tunnel', tags: { highway: 'residential', tunnel }, geometry: 'line' as const, parts: [{ outer: false, xy: Int32Array.from([1000, 4000, 2000, 4000]), z: Float32Array.from([500, 500]) }] });
+        const kinds = (tunnel: string) => features([way(tunnel)], { level: 14, x: 8574, y: 5778 }).lines.map(line => line.kind);
+        expect(kinds('building_passage')).toEqual([ROAD]);
+        expect(kinds('yes')).toEqual([TUNNEL]);
+    });
 });
 
 describe('a waterway', () => {
