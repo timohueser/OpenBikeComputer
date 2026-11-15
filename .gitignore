@@ -76,16 +76,11 @@ tools/obc.local
 builder/web/.env.local
 .venv/
 /maps/
-# Web builder frontend: dependencies + the Vite build output (CI builds it).
-# The dev host builds into builder/server/static/dist/ (what the FastAPI server
-# mounts); the static-web host into builder/web/dist/web/. Both entries must keep matching vite.config.ts's outDirs: when they
-# drifted apart, `npm run build` wrote to an unignored path and 640 KB of bundle
-# got committed by accident (and the server mounted nothing).
+# Web app frontend: dependencies + the Vite build output, which goes to builder/web/dist/MODE/.
 node_modules/
 builder/web/dist/
 planner/tiles/dist/
 planner/tiles/.wrangler/
-builder/server/static/dist/
 # The static tier's data files (#900): the Geofabrik index is ~1.7 MB of
 # generated JSON that goes stale weekly, and the catalog manifest belongs to the
 # bakery — both are produced at deploy time, never committed.

@@ -116,7 +116,6 @@
         <a href={siteBase}>OpenBikeComputer</a>
         <a href={`${siteBase}docs/`}>Docs</a>
         <a href={`${siteBase}blog/`}>Blog</a>
-        <a href={`${siteBase}builder/`}>Map builder</a>
         <a href={`${siteBase}docs/impressum/`}>Impressum</a>
         <a href={`${siteBase}docs/datenschutz/`}>Datenschutz</a>
         <a href={LINKS.licenses}>Licences</a>

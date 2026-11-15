@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import { spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { HOSTS, respond } from './stubs.js';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '../../../../..');
 const PLANNER_CATALOG = 'https://maps.openbikecomputer.com/planner/catalog.json';
@@ -27,13 +28,23 @@ const device = {
   bytes: { map: 9_000_000, routes: 0, rides: 0, other: 0 }, came: null, skipped: [],
 };
 
-/** Answers the planner catalogue with the fixture catalog as the device catalog, and nothing else outside the machine. */
-async function open(page, hash) {
+/**
+ * Answers the planner catalogue with the fixture catalog as the device catalog, and nothing else outside the machine.
+ * `tiles: 'answer'` answers the tile host with the stubs, and `tiles: 'fail'` with 503. `outside` collects each other request
+ * that leaves the machine.
+ */
+async function open(page, hash, { tiles, outside = [] } = {}) {
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
-  await page.route(url => url.hostname !== '127.0.0.1', route => route.request().url() === PLANNER_CATALOG
-    ? route.fulfill({ headers: CORS, json: { format: 1, active: { id: 'test', device_catalog: `${origin}/catalog/catalog.json` } } })
-    : route.abort());
+  await page.route(url => url.hostname !== '127.0.0.1', route => {
+    const request = route.request();
+    if (request.url() === PLANNER_CATALOG) {
+      return route.fulfill({ headers: CORS, json: { format: 1, active: { id: 'test', device_catalog: `${origin}/catalog/catalog.json` } } });
+    }
+    outside.push(request.url());
+    if (!tiles || new URL(request.url()).hostname !== HOSTS.tiles) return route.abort();
+    return route.fulfill(tiles === 'fail' ? { headers: CORS, status: 503 } : respond(request) ?? { headers: CORS, status: 204 });
+  });
   // The catalog has another port than the page, so its answers need the header that the real host sends.
   await page.route(url => url.origin === origin, async route => {
     const response = await route.fetch();
@@ -122,6 +133,44 @@ test('the window Colours opens the colour editor over it, and Cancel goes back t
   await editor.getByRole('button', { name: 'Cancel' }).click();
   await expect(editor).toHaveCount(0);
   await expect(colours.getByRole('button', { name: 'Bridge Fixture' })).toHaveAttribute('aria-pressed', 'true');
+  expect(errors).toEqual([]);
+});
+
+test('the base map loads in the light and the dark look, from the tile host only', async ({ page }) => {
+  const outside = [];
+  const light = page.waitForResponse(`https://${HOSTS.tiles}/sprites/light.json`);
+  const errors = await open(page, '#/device/area', { tiles: 'answer', outside });
+  await light;
+  await expect(page.locator('.leaflet-gl-layer canvas')).toBeVisible();
+  const dark = page.waitForResponse(`https://${HOSTS.tiles}/sprites/dark.json`);
+  await page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
+  await dark;
+  await expect(page.locator('.basemap-warning')).toHaveCount(0);
+  expect(outside.length).toBeGreaterThan(0);
+  expect(outside.every(url => new URL(url).hostname === HOSTS.tiles)).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('when the base map does not load, the map says so and a click still adds a region', async ({ page }) => {
+  const errors = await open(page, '#/device/area', { tiles: 'fail' });
+  await expect(page.getByRole('status').filter({ hasText: 'Map background unavailable.' })).toBeVisible();
+  await page.locator('.leaflet-container').click();
+  await expect(page.locator('.parts li')).toHaveText(['Bridge Fixture']);
+  expect(errors).toEqual([]);
+});
+
+test('a browser with no WebGL2 gets the note and asks the tile host for nothing', async ({ page }) => {
+  await page.addInitScript(() => {
+    const original = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function (type, ...args) {
+      return type === 'webgl2' ? null : original.call(this, type, ...args);
+    };
+  });
+  const outside = [];
+  const errors = await open(page, '#/device/area', { tiles: 'answer', outside });
+  await expect(page.locator('.basemap-warning')).toHaveText('Map background unavailable.');
+  await expect(page.locator('.leaflet-gl-layer')).toHaveCount(0);
+  expect(outside).toEqual([]);
   expect(errors).toEqual([]);
 });
 

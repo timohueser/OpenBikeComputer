@@ -32,8 +32,6 @@
   "cycle device-map-baking -> source-preparation",
   "cycle device-map-builder -> device-link",
   "cycle device-map-builder -> firmware-update",
-  "cycle device-map-builder -> map-assembly",
-  "cycle device-map-builder -> map-style",
   "cycle device-map-builder -> route-planning",
   "cycle device-map-builder -> trailview",
   "cycle firmware-update -> device-link",

@@ -13,12 +13,9 @@
         "strict": true,
         "noUnusedLocals": true,
         "noUnusedParameters": true,
-        // The platform alias vite.config.ts rewrites per build target. Type
-        // checking pins it to the dev host — the one `npm run dev` and
-        // `npm run build` use; the web host is still checked as a file, against
-        // the `Platform` interface it annotates itself with.
+        // The platform alias of vite.config.ts, which names the web host in every mode.
         "paths": {
-            "$host": ["./src/lib/platform/dev.ts"]
+            "$host": ["./src/lib/platform/web.ts"]
         }
     },
     // `test-support/` holds what the suites need and the app must not have: the loader for the wasm

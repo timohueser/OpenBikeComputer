@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A digest-pinned catalog fixture on loopback, for the builder browser journey.
+"""A digest-pinned catalog fixture on loopback, for the browser journeys of the web app.
 
 `web_assemble()` is the journey's catalog, where every artifact is real, so a region download
 from it assembles the checked-in cells into the checked-in map.
@@ -7,10 +7,9 @@ from it assembles the checked-in cells into the checked-in map.
 Every `bytes`, `sha256` and `url` is computed from the bytes this module serves, never copied from
 a document.
 
-Run it as a server for a browser test:
+Run it as a server for a browser test; it prints its origin first:
 
-    python3 tools/fixture_catalog.py --catalog web-assemble --port 4180 \\
-        --static builder/web/dist/web --log .artifacts/web-builder/catalog.jsonl
+    python3 tools/fixture_catalog.py --catalog web-assemble
 """
 
 from __future__ import annotations
@@ -60,7 +59,7 @@ def _document(objects: dict[str, bytes], path: str, document: object) -> dict:
     return pin(objects, path, json.dumps(document).encode())
 
 
-# The builder browser journey's catalog.
+# The catalog of the browser journeys.
 #
 # The bridge fixture's own cut numbers its feature types in config order. A hosted catalog names the
 # feature types and the schema assigns the ids, so the assignment is restated here in the catalog's
@@ -313,7 +312,7 @@ def main() -> None:
     if args.static and not (args.static / "index.html").is_file():
         raise SystemExit(
             f"{args.static}/index.html is missing. Build it first:\n"
-            "  cd builder/web && npm run build:web"
+            "  cd builder/web && npm run build"
         )
     server = CatalogServer(CATALOGS[args.catalog](), args.port, args.static, args.log)
     print(f"{server.origin} serving {len(server.objects)} pinned objects", flush=True)

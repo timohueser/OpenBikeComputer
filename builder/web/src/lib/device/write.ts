@@ -50,10 +50,10 @@ export function displayName(name: string, fallback: string): string {
 // with the transport that pays for it: `DEFAULT_BATCH_BYTES` / `UPLOAD_WINDOW` in `../usb/client`.
 
 /**
- * Send a `.obcm` Blob, either selected by the rider or produced by the assembler.
+ * Send the `.obcm` Blob that the assembler built.
  *
- * No second staging copy: a picked `File` and the assembler's Blob are read twice in bounded chunks,
- * once for the CRC and once to send. That is what `blobSource` is for.
+ * No second staging copy: the Blob is read twice in bounded chunks, once for the CRC and once to
+ * send. That is what `blobSource` is for.
  *
  * Replaces the map the device will select: the active (non-retained) `MapShard` with the lowest
  * `ObjectId`. That is the firmware's deterministic selection rule, so a second send moves the map the
@@ -145,11 +145,6 @@ async function sendMapSource(
             onSent: () => ctx.phase("committing"),
         },
     );
-}
-
-/** Send a `.obcm` the rider selected from disk. */
-export function sendMapFile(client: FlatStoreClient, file: File, ctx: JobContext): Promise<PutResponse> {
-    return sendMapBlob(client, file, file.name, ctx);
 }
 
 /**
