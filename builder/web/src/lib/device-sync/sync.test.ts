@@ -272,16 +272,17 @@ describe('sendMap', () => {
 
     it('remembers the area of the sent map, and the map waits no more unless the rider chose another one during the build', async () => {
         const library = await waiting();
-        expect(await sendMap(SERIAL, library, async () => ({ objectId: 7n, revision: 2n }), job())).toBeNull();
-        expect(remembered.device).toMatchObject({ mapObject: '7:2',
-            built: { object: '7:2', regions: ['europe/switzerland'], boxes: [], light: 'default', dark: 'dusk' } });
+        // The build gives the versions of the styles that it sent, which can be newer than those of the map that waited.
+        const area = { regions: ['europe/switzerland'], boxes: [], light: 'default', dark: 'dusk', lightVersion: 3, darkVersion: 1 };
+        expect(await sendMap(SERIAL, library, async () => ({ objectId: 7n, revision: 2n, area }), job())).toBeNull();
+        expect(remembered.device).toMatchObject({ mapObject: '7:2', built: { object: '7:2', ...area } });
         expect(await library.state('nextMap')).toBeNull();
 
         const other = { ...next, dark: 'custom-night' };
         await library.setState('nextMap', next);
         const build = async () => {
             await library.setState('nextMap', other);
-            return { objectId: 7n, revision: 3n };
+            return { objectId: 7n, revision: 3n, area };
         };
         expect(await sendMap(SERIAL, library, build, job())).toBeNull();
         expect(remembered.device?.built).toMatchObject({ object: '7:3', dark: 'dusk' });

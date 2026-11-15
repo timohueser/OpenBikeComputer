@@ -8,15 +8,16 @@ import type { NextMap } from '../library/records';
 import { platform } from '../platform';
 import type { FlatStoreClient } from '../usb/client';
 import type { PutResponse } from '../usb/protocol';
-import { areaOf, sameMap } from './area';
+import { areaOf, sameArea, type MapArea } from './area';
 import { until } from './until';
 
 /**
  * Downloads the cells of `next`, assembles them and puts the map on the device as one run that `ctx.signal` stops.
- * It builds exactly `next` or nothing: the caller records `next` as the map on the device. `waits` is called when another
+ * It builds the area and the two map styles of `next` or nothing, with the colours that the styles have now, and gives
+ * the area with the versions of the styles that it sent: the caller records it as the map on the device. `waits` is called when another
  * map build holds the working files. While the run goes, the browser asks before it closes the tab.
  */
-export async function buildMap(next: NextMap, client: FlatStoreClient, ctx: JobContext, waits: () => void): Promise<PutResponse> {
+export async function buildMap(next: NextMap, client: FlatStoreClient, ctx: JobContext, waits: () => void): Promise<PutResponse & { area: MapArea }> {
     const leave = (event: BeforeUnloadEvent) => event.preventDefault();
     window.addEventListener('beforeunload', leave);
     let run: MapRun | undefined;
@@ -25,13 +26,14 @@ export async function buildMap(next: NextMap, client: FlatStoreClient, ctx: JobC
         const store = new CoverageStore(CatalogClient.fromBody(body, url, { fetchImpl: platform.catalogFetch }), body);
         store.setArea(next);
         // The selection leaves out a region that the catalog does not hold and a box that the grid refuses, and it takes
-        // the first map style for one that is not there. A map style can have new colours since the rider chose the area.
-        if (!sameMap(areaOf(store), next)) throw new Error('This area cannot be built: a part or a map style of it changed or is not there any more. Choose the area again.');
+        // the first map style for one that is not there. A style with new colours since the rider chose the area is sent.
+        const area = areaOf(store);
+        if (!sameArea(area, next) || area.light !== next.light || area.dark !== next.dark) throw new Error('This area cannot be built: a part or a map style of it is not there any more. Choose the area again.');
         if (await until(mapWorkBusy(), ctx.signal)) waits();
         run = new MapRun(store);
         run.start();
         await ready(store, run, ctx.signal);
-        return await run.sendToDevice(client, ctx);
+        return { ...await run.sendToDevice(client, ctx), area };
     } finally {
         window.removeEventListener('beforeunload', leave);
         run?.destroy();

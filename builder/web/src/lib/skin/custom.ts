@@ -213,12 +213,14 @@ export function prepareCustomSkin(
         id,
         name: name.trim(),
         description: "Saved in this browser.",
-        version: existing && existing.id === id ? existing.version + 1 : 1,
+        version: existing && existing.id === id ? existing.version : 1,
         preview: null,
     };
     const error = skinStyleError(schema, candidate.styles);
     if (error) throw new Error(error);
     const valid = validateCustomSkin(candidate, schema);
     if (!valid) throw new Error("The skin is incomplete or contains a value outside the device format.");
-    return valid;
+    if (existing?.id !== id) return valid;
+    // A map with this skin waits for the device again after a new version, so a save with no change keeps the version.
+    return JSON.stringify(valid) === JSON.stringify(existing) ? existing : { ...valid, version: existing.version + 1 };
 }
