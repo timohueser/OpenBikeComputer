@@ -996,7 +996,7 @@ fn encode(
     // The ceiling lines after them, each one leg (`faces::ceiling_lines`), with the drop in word 10.
     let heights = &rules.plan.heights;
     // The ground ways' deck end lines: their end point, the unit direction into the way.
-    let ends: Vec<[f64; 5]> = lines.iter().flat_map(super::deck_ends).collect();
+    let ends: Vec<[f64; 5]> = lines.iter().flat_map(super::deck_ends).map(|e| e.1).collect();
     let unit = |v: [f64; 2]| {
         let len = libm::hypot(v[0], v[1]);
         (len > 1e-9).then(|| [v[0] / len, v[1] / len])
@@ -1031,7 +1031,14 @@ fn encode(
         }
         w[1] |= CEILING;
         w[2] = (samples_w.len() / SAMPLE) as u32;
-        w[10] = f(graph.deck_depth(input, line.way, &line.sec) + heights.ceiling_gap_m);
+        if super::in_bore(graph, line.way) {
+            // A bore's floor: the drop turned (the roof's top and its plate over the floor), and in the rise word the
+            // most that it lifts the terrain.
+            w[10] = f(-(line.sec.bore_m + line.sec.roof_least_m));
+            w[16] = f(rules.structures.lift_max_m);
+        } else {
+            w[10] = f(graph.deck_depth(input, line.way, &line.sec) + heights.ceiling_gap_m);
+        }
         lines_w.extend(w);
         samples_w.extend(s);
     }

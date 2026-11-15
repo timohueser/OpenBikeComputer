@@ -1,8 +1,16 @@
-//! The meshes of the storeys over the ground: each storey's sheet as a constrained triangulation of its faces alone
+//! The meshes of the storeys other than 0: each storey's sheet as a constrained triangulation of its faces alone
 //! (no ground ring, no strip, no grid point), and the shell about it, each part a closed solid of a real thickness:
 //! the underside (the top again, turned over, at the slab's depth, with a riser where two depths meet), the edge
 //! faces on the free outline, a parapet or a railing on it, and the piers. A corner is a point with a label of the
-//! cell's block and a height offset in metres: its height is the label's height there plus the offset.
+//! cell's block and a height offset in metres: its height is the label's height there plus the offset, or where the
+//! corner has a cap (a second label and offset), the lower of the two.
+//!
+//! A bore (storey −1, the feature `bores`) is a deck turned over, its depth its bore turned: the top is its floor, the
+//! underside its roof, which stays its least plate under the ground over it (the roof's cap: storey 0's label there),
+//! and the edge faces its walls, facing in. It has no parapet, railing or pier. Where it ends on a portal line, its
+//! floor ends on storey 0's points (`Storeys::portals`) at storey 0's height, a frame stands about the opening in front
+//! of the line (jambs, a lintel), and an end face stands on the line from the frame's top up to the ground over the
+//! bore (its foot capped at that ground).
 //!
 //! The free outline is every face edge between the sheet and the rest that lies on no cell line and on no end line
 //! where storey 0 meets the deck (`EdgeKind::DeckEdge`): those stay open, as the neighbour cell or storey 0 goes on
@@ -21,6 +29,7 @@
 //! | corners | 3 words each, sorted by point (y, then x): x in bits 0–18 and the label's bits 0–12 in bits 19–31; y in bits 0–18 and the label's bits 13–24 in bits 19–30; the offset (f32, metres) |
 //! | triangle runs, triangles | as the cell mesh's: 2 words a run (count, base corner), 3 u16 a triangle less its run's base; each part in runs of its own |
 //! | slot runs, slots | 2 words a run, 4 u16 a slot (`a_p, a_q, b_q, b_p`): the tops' slots between two labels, then the undersides' risers |
+//! | caps | with the bores (its count last in the head): 3 words each, sorted: a corner, its second label, its second offset (f32) |
 
 use std::collections::BTreeMap;
 
@@ -32,10 +41,18 @@ use crate::faces::{EdgeKind, FacePlan, Storeys, Surface, OUTSIDE};
 use crate::frame::{metres_per_unit_at, CellKey, CELL_UNITS};
 use crate::graph::Structures;
 
-/// "OBS" and the layout's version.
-pub const MAGIC: u32 = 0x4f42_5301;
+/// "OBS" and the layout's version: with the bores, the frames, the end faces and the caps.
+pub const MAGIC: u32 = if BORES { 0x4f42_5302 } else { 0x4f42_5301 };
 /// The parts of a storey's mesh, in the order of their triangles.
+#[cfg(not(feature = "bores"))]
 pub const PARTS: [&str; 7] = ["top", "underside", "edge", "parapet", "railing", "post", "pier"];
+#[cfg(feature = "bores")]
+pub const PARTS: [&str; 9] = ["top", "underside", "edge", "parapet", "railing", "post", "pier", "frame", "end face"];
+#[cfg(feature = "bores")]
+const FRAME: usize = 7;
+#[cfg(feature = "bores")]
+const END_FACE: usize = 8;
+const BORES: bool = cfg!(feature = "bores");
 const TOP: usize = 0;
 const UNDER: usize = 1;
 const EDGE: usize = 2;
@@ -43,13 +60,23 @@ const PARAPET: usize = 3;
 const RAILING: usize = 4;
 const POST: usize = 5;
 const PIER: usize = 6;
-pub const HEAD: usize = 9 + PARTS.len();
+pub const HEAD: usize = 9 + PARTS.len() + BORES as usize;
 
 /// A parapet: its width and its height over the deck (the crossing block's thickness table).
 const PARAPET_M: [f64; 2] = [0.35, 1.0];
 /// A railing: its height, and the side of its square rail and of its posts (the crossing block's thickness table).
 const RAIL_M: f64 = 1.05;
 const BAR_M: f64 = 0.08;
+/// A portal's frame: its jambs' width beside the opening, its lintel's height over the bore, its depth along the way
+/// in front of the portal line, and how far its jambs reach under the ground (the crossing block's thickness table).
+#[cfg(feature = "bores")]
+const FRAME_SIDE_M: f64 = 0.7;
+#[cfg(feature = "bores")]
+const FRAME_TOP_M: f64 = 1.3;
+#[cfg(feature = "bores")]
+const FRAME_DEPTH_M: f64 = 0.6;
+#[cfg(feature = "bores")]
+const FRAME_FOOT_M: f64 = 0.3;
 
 type P = [i32; 2];
 
@@ -62,6 +89,11 @@ pub struct ShellStats {
     pub unlabelled: u32,
     /// Pieces between two deck ways whose lines lie more than a parapet's height apart: each deck has its own edge.
     pub torn: u32,
+    /// A bore's floor edges on a portal line where storey 0 holds no run of portal pieces between their ends: none
+    /// expected.
+    pub portal_misses: u32,
+    /// Portal frames left out because they would touch or reach past a cell line.
+    pub frames_cut: u32,
 }
 
 /// The meshes of a cell's storeys over the ground: see the module's bytes. Triangles and slots hold whole corner
@@ -78,6 +110,8 @@ pub struct StoreyMesh {
     pub slot_runs: Vec<[u32; 2]>,
     pub top_slots: u32,
     pub open: Vec<[P; 2]>,
+    /// The corners with a cap: the corner, the cap's label and its offset's bits (`corner_height`).
+    pub caps: Vec<[u32; 3]>,
     pub stats: ShellStats,
 }
 
@@ -95,12 +129,16 @@ impl StoreyMesh {
             self.top_slots,
         ];
         head.extend(self.parts);
+        if BORES {
+            head.push(self.caps.len() as u32);
+        }
         let words = (head.into_iter())
             .chain(self.corners.iter().flatten().copied())
             .chain(self.triangle_runs.iter().flatten().copied())
             .chain(packed(&self.triangles, &self.triangle_runs))
             .chain(self.slot_runs.iter().flatten().copied())
-            .chain(packed(&self.slots, &self.slot_runs));
+            .chain(packed(&self.slots, &self.slot_runs))
+            .chain(self.caps.iter().flatten().copied());
         words.flat_map(u32::to_le_bytes).collect()
     }
 
@@ -116,6 +154,22 @@ impl StoreyMesh {
         let start = self.parts[..k].iter().sum::<u32>() as usize;
         start..start + self.parts[k] as usize
     }
+
+    /// The height of corner k by the crate's height function in the cell's block over the cell's terrain: its label's
+    /// plus its offset, or the lower of that and its cap's. A pier's foot on the plain terrain (`NO_LABEL`) stands on
+    /// the terrain.
+    pub fn corner_height(&self, k: usize, words: &[u32], terrain: &crate::terrain::Terrain) -> f64 {
+        use crate::faces::heights::height_at;
+        let (p, l, off) = self.corner(k);
+        let (q, o) = ([f64::from(p[0]), f64::from(p[1])], self.cell.origin());
+        let t = terrain.height(crate::frame::GlobalPoint { x: o.x + i64::from(p[0]), y: o.y + i64::from(p[1]) });
+        let t = t.unwrap_or(f64::NAN);
+        let at = |l: u32, off: f64| if l == NO_LABEL { t + off } else { height_at(words, q, Some(l), t).h + off };
+        match self.caps.binary_search_by_key(&(k as u32), |c| c[0]) {
+            Ok(i) => at(l, off).min(at(self.caps[i][1], f64::from(f32::from_bits(self.caps[i][2])))),
+            Err(_) => at(l, off),
+        }
+    }
 }
 
 /// The corners and the items of the mesh as it grows.
@@ -129,6 +183,8 @@ struct Build {
     /// A corner of a label at a point that takes another label (`stub_label`): its key (`corner_key`) and that label,
     /// sorted.
     relabel: Vec<(u64, u32)>,
+    /// The caps of corners, by the corner's key and its offset's bits: the cap's label and its offset's bits.
+    caps: Vec<((u64, u32), (u32, u32))>,
 }
 
 /// A point in one word, in the order y, then x.
@@ -156,6 +212,13 @@ impl Build {
     fn relabelled(&self, p: P, l: u32) -> Option<u32> {
         let k = corner_key(p, l);
         self.relabel.binary_search_by_key(&k, |x| x.0).ok().map(|i| self.relabel[i].1)
+    }
+
+    /// A cap for the corner of label l at p with an offset: its height is at most label `cap`'s there plus `cap_off`.
+    #[cfg(feature = "bores")]
+    fn cap(&mut self, p: P, label: u32, offset: f64, (cap, cap_off): (u32, f64)) {
+        let label = self.relabelled(p, label).unwrap_or(label);
+        self.caps.push(((corner_key(p, label), (offset as f32).to_bits()), (cap, (cap_off as f32).to_bits())));
     }
 
     /// A quad with its corners counter-clockwise seen from outside.
@@ -517,7 +580,13 @@ pub fn mesh_storeys(
     let mut stats = ShellStats::default();
     let mut open = Vec::new();
     let mut all_labels = Vec::new();
+    #[cfg(feature = "bores")]
+    let portals = PortalMap::new(&storeys.portals);
     for plan in &storeys.plans {
+        let bore = plan.level < 0;
+        // The bore's floor ends on storey 0's portal pieces: each piece, its floor label, its way's, its back's.
+        #[cfg(feature = "bores")]
+        let mut ends: Vec<(P, P, u32, u32, u32)> = Vec::new();
         let labels = face_labels(&plan.faces, words);
         let sheet = |f: u32| f != OUTSIDE && plan.faces[f as usize].surface != Surface::Terrain;
         stats.unlabelled +=
@@ -543,6 +612,20 @@ pub fn mesh_storeys(
             } else {
                 Vec::new()
             };
+            #[cfg(feature = "bores")]
+            if bore && e.kind == EdgeKind::Portal && sheet(e.left) != sheet(e.right) {
+                if let Some(walk) = portals.walk(pa, pb) {
+                    let floor = label(if sheet(e.left) { e.left } else { e.right });
+                    let mut last = pa;
+                    for (p, front, back, along) in walk {
+                        pieces.push((last, p, e.left, e.right, e.kind));
+                        ends.push(if along { (last, p, floor, front, back) } else { (p, last, floor, front, back) });
+                        last = p;
+                    }
+                    continue;
+                }
+                stats.portal_misses += 1;
+            }
             let n = if ground.is_empty() { (len / l).ceil().max(1.0) as i64 } else { ground.len() as i64 + 1 };
             let mut last = pa;
             for k in 1..=n {
@@ -570,6 +653,11 @@ pub fn mesh_storeys(
                 }
             }
         }
+        // A bore's floor takes the label of the way that ends on the portal line at its points there.
+        #[cfg(feature = "bores")]
+        for &(pa, pc, floor, front, _) in &ends {
+            b.relabel.extend([(corner_key(pa, floor), front), (corner_key(pc, floor), front)]);
+        }
         b.relabel.sort_unstable();
         b.relabel.dedup_by_key(|x| x.0);
         let mut keyed: Vec<(u64, u32)> = pieces.iter().flat_map(|p| [(yx(p.0), 0), (yx(p.1), 0)]).collect();
@@ -586,6 +674,16 @@ pub fn mesh_storeys(
             let under = t.map(|v| b.corner(points[v as usize], l, -depth(l)));
             b.tris[TOP].push(top);
             b.tris[UNDER].push([under[0], under[2], under[1]]);
+            // A bore's roof stays its plate under the ground over it: behind a portal line the back's label, else
+            // storey 0's at the corner.
+            #[cfg(feature = "bores")]
+            for &v in t.iter().filter(|_| bore) {
+                let p = points[v as usize];
+                let plate = way(l).map_or(0.0, |w| w.plate_m);
+                if let Some(g) = portals.back(p).or_else(|| find(words, [f64::from(p[0]), f64::from(p[1])])) {
+                    b.cap(p, l, -depth(l), (g, -plate));
+                }
+            }
         }
         // Slots between two labels; the free outline's edge faces; the open pieces. Two deck ways side by side on
         // the sheet are one deck, but where their lines lie more than a parapet's height apart at either end of a
@@ -624,7 +722,8 @@ pub fn mesh_storeys(
                 }
                 continue;
             }
-            if !torn && (kind == EdgeKind::DeckEdge || kind == EdgeKind::CellBorder || on_cell_line(pa, pc)) {
+            let end = matches!(kind, EdgeKind::DeckEdge | EdgeKind::Portal | EdgeKind::CellBorder);
+            if !torn && (end || on_cell_line(pa, pc)) {
                 open.push([pa, pc]);
                 continue;
             }
@@ -635,7 +734,7 @@ pub fn mesh_storeys(
                 wall(&mut b, EDGE, (pa, pc), s_left, (l, l), ([d; 2], [0.0; 2]));
                 // The parapet or the railing stands on the band: across a deck's free end it would stand on
                 // the carriageway.
-                if plan.faces[f as usize].surface == Surface::DeckEdge {
+                if plan.faces[f as usize].surface == Surface::DeckEdge && !bore {
                     free.push(if s_left { (pa, pc, l) } else { (pc, pa, l) });
                 }
             }
@@ -711,6 +810,13 @@ pub fn mesh_storeys(
                 i = j;
             }
         }
+        // The portals' frames and end faces: each run of the floor's end pieces that meet end to end.
+        #[cfg(feature = "bores")]
+        for run in runs_of(&ends) {
+            let run: Vec<(P, u32, u32, f64)> = run.iter().map(|&(p, f, k)| (p, f, k, -depth(f))).collect();
+            portal_end_face(&mut b, &run);
+            portal_frame(&mut b, &mut stats, words, &run, origin_y);
+        }
         all_labels.push(labels);
     }
     piers(&mut b, storeys, words, &lines, &all_labels, structures, &mut stats);
@@ -733,6 +839,11 @@ pub fn mesh_storeys(
         slot_runs.extend(runs(&sorted)?);
         slots.extend(sorted);
     }
+    let mut caps: Vec<[u32; 3]> = (b.caps.iter())
+        .filter_map(|&(key, (l, off))| unique.binary_search(&key).ok().map(|k| [k as u32, l, off]))
+        .collect();
+    caps.sort_unstable();
+    caps.dedup_by_key(|c| c[0]);
     let corners = (unique.iter())
         .map(|&(key, offset)| {
             let (label, x, y) = ((key as u32) & NO_LABEL, (key >> 25) as u32 & 0x7ffff, (key >> 44) as u32);
@@ -749,6 +860,7 @@ pub fn mesh_storeys(
         slot_runs,
         top_slots: b.slots[0].len() as u32,
         open,
+        caps,
         stats,
     })
 }
@@ -838,8 +950,10 @@ fn piers(
     for &pt in &storeys.piers {
         let q = [f64::from(pt[0]), f64::from(pt[1])];
         let own = [q[0].clamp(1.0, c - 1.0), q[1].clamp(1.0, c - 1.0)];
-        let Some((k, top)) =
-            (0..storeys.plans.len()).rev().find_map(|k| sheet_at(&storeys.plans[k], &labels[k], own).map(|l| (k, l)))
+        let Some((k, top)) = (0..storeys.plans.len())
+            .rev()
+            .filter(|&k| storeys.plans[k].level > 0)
+            .find_map(|k| sheet_at(&storeys.plans[k], &labels[k], own).map(|l| (k, l)))
         else {
             continue;
         };
@@ -873,8 +987,8 @@ fn piers(
     }
 }
 
-/// The faults of a storey mesh's closure, per solid: the slab (top, underside, edge faces and slots), the parapets,
-/// the railings' rails, their posts and the piers. In each, every edge between two corners at two points is the edge of exactly one
+/// The faults of a storey mesh's closure, per solid: the slab (top, underside, edge faces and slots; a bore's floor,
+/// roof and walls), the parapets, the railings' rails, their posts, the piers and the portals' frames. In each, every edge between two corners at two points is the edge of exactly one
 /// triangle in each direction (a closed, consistently turned surface), except on a cell line and on an open piece
 /// (`StoreyMesh::open`), where storey 0 or the neighbour goes on. Two corners at one point (a seam between two
 /// labels, or a vertical edge) span no area seen from above and count for nothing.
@@ -893,6 +1007,9 @@ pub fn closure(m: &StoreyMesh) -> Vec<String> {
     for k in [PARAPET, RAILING, POST, PIER] {
         solids.push((PARTS[k], slab(k)));
     }
+    // A portal's frame is a solid; its end face is a step on the portal line, as storey 0's end faces.
+    #[cfg(feature = "bores")]
+    solids.push((PARTS[FRAME], slab(FRAME)));
     for (name, tris) in solids {
         let mut uses: BTreeMap<(u32, u32), u32> = BTreeMap::new();
         // A triangle with two equal corners (a slot whose two labels take one label at an end) spans nothing.
@@ -938,21 +1055,22 @@ pub fn on_paved(m: &StoreyMesh, storeys: &Storeys, words: &[u32]) -> Vec<String>
     out
 }
 
+/// A cell's storey mesh with its block and its terrain.
+pub type Side<'a> = (&'a StoreyMesh, &'a [u32], &'a crate::terrain::Terrain);
+
 /// The faults of two neighbouring cells' storey meshes on their shared line (`east`: b lies east of a, else
-/// south): per point of the line and offset exactly the same corners, whose heights (`height_at` of their labels in
-/// each cell's block) agree within 1 mm.
-pub fn border(a: (&StoreyMesh, &[u32]), b: (&StoreyMesh, &[u32]), east: bool) -> Vec<String> {
-    use crate::faces::heights::height_at;
+/// south): per point of the line and offset exactly the same corners, whose heights (`StoreyMesh::corner_height` in
+/// each cell's block over its terrain) agree within 1 mm.
+pub fn border(a: Side, b: Side, east: bool) -> Vec<String> {
     let c = CELL_UNITS as i32;
     let (axis, along) = if east { (0, 1) } else { (1, 0) };
-    let on = |(m, words): (&StoreyMesh, &[u32]), line: i32| {
+    let on = |(m, words, terrain): Side, line: i32| {
         let mut out: BTreeMap<(i32, u32), Vec<f64>> = BTreeMap::new();
         for k in 0..m.corners.len() {
             let (p, l, off) = m.corner(k);
             // A pier's foot on the plain terrain (NO_LABEL) stands at the terrain's height, which no record holds.
             if p[axis] == line && l != NO_LABEL {
-                let h = height_at(words, [f64::from(p[0]), f64::from(p[1])], Some(l), f64::NAN).h + off;
-                out.entry((p[along], (off as f32).to_bits())).or_default().push(h);
+                out.entry((p[along], (off as f32).to_bits())).or_default().push(m.corner_height(k, words, terrain));
             }
         }
         for v in out.values_mut() {
@@ -982,4 +1100,183 @@ pub fn border(a: (&StoreyMesh, &[u32]), b: (&StoreyMesh, &[u32]), east: bool) ->
     faults.sort();
     faults.dedup();
     faults
+}
+
+/// Storey 0's pieces on its portal lines, each from a to b with the way that ends there on its left
+/// (`Storeys::portals`): by point, the pieces that leave it and those that reach it.
+#[cfg(feature = "bores")]
+struct PortalMap {
+    pieces: BTreeMap<P, Vec<(P, u32, u32, bool)>>,
+}
+
+#[cfg(feature = "bores")]
+impl PortalMap {
+    fn new(portals: &[crate::faces::Portal]) -> PortalMap {
+        let mut pieces: BTreeMap<P, Vec<(P, u32, u32, bool)>> = BTreeMap::new();
+        for p in portals {
+            pieces.entry(p.a).or_default().push((p.b, p.front, p.back, true));
+            pieces.entry(p.b).or_default().push((p.a, p.front, p.back, false));
+        }
+        PortalMap { pieces }
+    }
+
+    /// Storey 0's points from a to b along its portal pieces, b included, each with its piece's labels and whether the
+    /// walk runs along the piece (its way on the left); None where storey 0 holds no such run of pieces. Each step
+    /// moves on toward b, so the walk ends.
+    fn walk(&self, a: P, b: P) -> Option<Vec<(P, u32, u32, bool)>> {
+        let d = [f64::from(b[0] - a[0]), f64::from(b[1] - a[1])];
+        let ahead = |p: P| f64::from(p[0] - a[0]) * d[0] + f64::from(p[1] - a[1]) * d[1];
+        let (mut at, mut out) = (a, Vec::new());
+        while at != b {
+            let next = (self.pieces.get(&at)?.iter())
+                .filter(|x| ahead(x.0) > ahead(at))
+                .min_by(|x, y| ahead(x.0).total_cmp(&ahead(y.0)))?;
+            if ahead(next.0) > ahead(b) {
+                return None;
+            }
+            out.push(*next);
+            at = next.0;
+        }
+        Some(out)
+    }
+
+    /// The label of the ground or the way on top over the bore at a point of a portal piece.
+    fn back(&self, p: P) -> Option<u32> {
+        self.pieces.get(&p).and_then(|v| v.first()).map(|x| x.2)
+    }
+}
+
+/// The runs of a floor's end pieces on portal lines that meet end to end, each oriented with its way on the left: per
+/// point its floor label (of the piece that leaves it, the last of the piece that reaches it) and the back's label.
+#[cfg(feature = "bores")]
+fn runs_of(ends: &[(P, P, u32, u32, u32)]) -> Vec<Vec<(P, u32, u32)>> {
+    let mut used = vec![false; ends.len()];
+    let mut out = Vec::new();
+    let starts: Vec<usize> = (0..ends.len()).filter(|&k| !ends.iter().any(|e| e.1 == ends[k].0)).collect();
+    for s in starts.into_iter().chain(0..ends.len()) {
+        if used[s] {
+            continue;
+        }
+        let (mut run, mut k) = (vec![(ends[s].0, ends[s].2, ends[s].4)], s);
+        loop {
+            used[k] = true;
+            let e = ends[k];
+            match (0..ends.len()).find(|&j| !used[j] && ends[j].0 == e.1) {
+                Some(j) => {
+                    run.push((e.1, ends[j].2, ends[j].4));
+                    k = j;
+                }
+                None => {
+                    run.push((e.1, e.2, e.4));
+                    break;
+                }
+            }
+        }
+        out.push(run);
+    }
+    out
+}
+
+/// The end face of a portal on its run of the bore's floor end (`PortalMap::walk`, from P0 to Pn with the way that
+/// ends there on its left, each point with its floor label, which takes the way's label there by `Build::relabel`, the
+/// label of the ground or the way on top behind, and the bore's height): it stands on the line from the frame's top
+/// (the lintel's back top), capped at the ground behind, up to that ground.
+#[cfg(feature = "bores")]
+fn portal_end_face(b: &mut Build, run: &[(P, u32, u32, f64)]) {
+    for w in run.windows(2) {
+        let ((pa, la, ba, za), (pb, lb, bb, zb)) = (w[0], w[1]);
+        let (ta, tb) = (za + FRAME_TOP_M, zb + FRAME_TOP_M);
+        b.cap(pa, la, ta, (ba, 0.0));
+        b.cap(pb, lb, tb, (bb, 0.0));
+        let c = [b.corner(pa, la, ta), b.corner(pa, ba, 0.0), b.corner(pb, lb, tb), b.corner(pb, bb, 0.0)];
+        wall_of(b, END_FACE, c, false);
+    }
+}
+
+/// The frame of a portal on its run (`portal_end_face`), in front of the portal line, `FRAME_DEPTH_M` deep, one closed
+/// solid: a lintel from the bore's height up by `FRAME_TOP_M` over the opening and the jambs, and a jamb
+/// `FRAME_SIDE_M` wide beside each end of the opening, from `FRAME_FOOT_M` under the lower of the way's plane and the
+/// ground there up to the lintel. The lintel's underside and the jambs' inner backs share the roof's and the walls'
+/// corners at the opening. Each cell builds the runs of its own pieces, so a frame that would touch or reach past a
+/// cell line is left out (`ShellStats::frames_cut`).
+#[cfg(feature = "bores")]
+fn portal_frame(b: &mut Build, stats: &mut ShellStats, words: &[u32], run: &[(P, u32, u32, f64)], origin_y: f64) {
+    let n = run.len();
+    let (p0, pn) = (run[0].0, run[n - 1].0);
+    let len = libm::hypot(f64::from(pn[0] - p0[0]), f64::from(pn[1] - p0[1]));
+    if n < 2 || len <= 0.0 {
+        return;
+    }
+    let c = f64::from(CELL_UNITS as i32);
+    let u = [f64::from(pn[0] - p0[0]) / len, f64::from(pn[1] - p0[1]) / len];
+    let mpu = metres_per_unit_at(origin_y + f64::from(p0[1]));
+    let (side, depth) = (FRAME_SIDE_M / mpu, FRAME_DEPTH_M / mpu);
+    // A point `along` the line and `forward` toward the way (its left), rounded; None on or past the cell's square.
+    let at = |p: P, along: f64, forward: f64| {
+        let q = [f64::from(p[0]) + along * u[0] - forward * u[1], f64::from(p[1]) + along * u[1] + forward * u[0]];
+        let q = q.map(libm::round);
+        q.iter().all(|v| v > &0.0 && v < &c).then(|| q.map(|v| v as i32))
+    };
+    // The points along the line: the jambs' outer ends about the run; and in front of each, the frame's front.
+    let mut row: Vec<(Option<P>, u32, f64)> = vec![(at(p0, -side, 0.0), run[0].1, run[0].3)];
+    row.extend(run.iter().map(|r| (at(r.0, 0.0, 0.0), r.1, r.3)));
+    row.push((at(pn, side, 0.0), run[n - 1].1, run[n - 1].3));
+    let ahead: Vec<Option<P>> = (row.iter().enumerate())
+        .map(|(k, r)| match k {
+            0 => at(p0, -side, depth),
+            _ if k == n + 1 => at(pn, side, depth),
+            _ => at(run[k - 1].0, 0.0, depth),
+        })
+        .collect();
+    let (Some(back), Some(front)): (Option<Vec<P>>, Option<Vec<P>>) =
+        (row.iter().map(|r| r.0).collect(), ahead.into_iter().collect())
+    else {
+        stats.frames_cut += 1;
+        return;
+    };
+    let m = row.len();
+    let (bore, top) = (|k: usize| row[k].2, |k: usize| row[k].2 + FRAME_TOP_M);
+    let foot = |b: &mut Build, p: P, l: u32| {
+        if let Some(g) = find(words, [f64::from(p[0]), f64::from(p[1])]) {
+            b.cap(p, l, -FRAME_FOOT_M, (g, -FRAME_FOOT_M));
+        }
+        b.corner(p, l, -FRAME_FOOT_M)
+    };
+    for k in 0..m - 1 {
+        let (pa, pb, qa, qb, la, lb) = (back[k], back[k + 1], front[k], front[k + 1], row[k].1, row[k + 1].1);
+        // The lintel's band all along: its back on the line, its front, its top.
+        wall(b, FRAME, (pa, pb), true, (la, lb), ([bore(k), bore(k + 1)], [top(k), top(k + 1)]));
+        wall(b, FRAME, (qa, qb), false, (la, lb), ([bore(k), bore(k + 1)], [top(k), top(k + 1)]));
+        let t = [
+            b.corner(pa, la, top(k)),
+            b.corner(qa, la, top(k)),
+            b.corner(qb, lb, top(k + 1)),
+            b.corner(pb, lb, top(k + 1)),
+        ];
+        b.quad(FRAME, t);
+        let (ba, bb) = (b.corner(pa, la, bore(k)), b.corner(pb, lb, bore(k + 1)));
+        let (ca, cb) = (b.corner(qa, la, bore(k)), b.corner(qb, lb, bore(k + 1)));
+        if k == 0 || k + 2 == m {
+            // A jamb under the lintel: its back, its front, its foot.
+            let f = [foot(b, pa, la), foot(b, qa, la), foot(b, qb, lb), foot(b, pb, lb)];
+            wall_of(b, FRAME, [f[0], ba, f[3], bb], true);
+            wall_of(b, FRAME, [f[1], ca, f[2], cb], false);
+            b.quad(FRAME, [f[0], f[3], f[2], f[1]]);
+        } else {
+            // The lintel's underside over the opening.
+            b.quad(FRAME, [ba, bb, cb, ca]);
+        }
+    }
+    // Across the depth, from the front point to the line: the solid's two ends (the lintel's, and under it the jamb's
+    // outer end), and each jamb's inner side, facing the opening.
+    for (k, left, ends) in [(0, true, true), (m - 1, false, true), (1, false, false), (m - 2, true, false)] {
+        let (p, q, l) = (back[k], front[k], row[k].1);
+        let (pl, ql) = (b.corner(p, l, bore(k)), b.corner(q, l, bore(k)));
+        if ends {
+            let (ph, qh) = (b.corner(p, l, top(k)), b.corner(q, l, top(k)));
+            wall_of(b, FRAME, [ql, qh, pl, ph], left);
+        }
+        let (pf, qf) = (foot(b, p, l), foot(b, q, l));
+        wall_of(b, FRAME, [qf, ql, pf, pl], left);
+    }
 }

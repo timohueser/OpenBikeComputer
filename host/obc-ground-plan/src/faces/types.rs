@@ -38,6 +38,8 @@ pub enum Surface {
     Zone = 11,
     /// The band about a deck's paved stroke, the seat of its parapet or railing (`faces::deck`).
     DeckEdge = 12,
+    /// The ground over a bore behind its portal lines, over its floor bound (`faces::bore_cover`).
+    Cover = 13,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -68,6 +70,8 @@ pub enum EdgeKind {
 pub const SEAM: u8 = 1;
 pub const BLEND_JOIN: u8 = 2;
 pub const UNRELATED: u8 = 4;
+/// `FRONT_LEFT`: on a portal edge (`EdgeKind::Portal`), the way that ends on it lies on the left; the bore on the right.
+pub const FRONT_LEFT: u8 = 8;
 /// The face index past the window's edge.
 pub const OUTSIDE: u32 = u32::MAX;
 

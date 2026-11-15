@@ -1,6 +1,6 @@
 //! The build of one cell from its request bytes, stage by stage, with the time of each stage.
 
-use crate::faces::{records, EdgeKind, FacePlan, Rules, Storeys, OUTSIDE};
+use crate::faces::{records, EdgeKind, FacePlan, Portal, Rules, Storeys, FRONT_LEFT, OUTSIDE};
 use crate::frame::CellKey;
 use crate::graph::{self, WayGraph};
 use crate::mesh;
@@ -84,12 +84,21 @@ pub fn build_storeys(
     b.storeys = records::storeys(&b.graph, &input, rules, b.key, &mut b.records);
     let plan = &b.faces;
     let sharp = |f: u32| f != OUTSIDE && mesh::params::sharp(plan.faces[f as usize].rule);
+    let origin_y = b.key.origin().y as f64;
     b.storeys.ground_ends = (plan.edges.iter())
         .filter(|e| {
             e.kind == EdgeKind::DeckEdge && e.left != OUTSIDE && e.right != OUTSIDE && (sharp(e.left) || sharp(e.right))
         })
-        .flat_map(|e| mesh::points::edge_points(plan, e, b.key.origin().y as f64))
+        .flat_map(|e| mesh::points::edge_points(plan, e, origin_y))
         .collect();
+    let labels = mesh::face_labels(&plan.faces, &b.records);
+    for e in plan.edges.iter().filter(|e| e.kind == EdgeKind::Portal && e.left != OUTSIDE && e.right != OUTSIDE) {
+        let (front, back) = if e.flags & FRONT_LEFT != 0 { (e.left, e.right) } else { (e.right, e.left) };
+        let (Some(front), Some(back)) = (labels[front as usize], labels[back as usize]) else { continue };
+        for w in mesh::points::edge_points(plan, e, origin_y).windows(2) {
+            b.storeys.portals.push(Portal { a: w[0], b: w[1], front, back });
+        }
+    }
     b.storey_time = now() - start;
     Ok(b)
 }

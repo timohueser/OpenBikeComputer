@@ -1503,7 +1503,9 @@ fn snorm2(w: u32) -> [f64; 2] {
 
 /// Per ceiling line segment of q's height segments (`segs`, whose ceiling lines come last): the metres of q
 /// outside the deck's stroke, the deck's surface at q's foot (banked as the line's surface is across its
-/// stroke, level past it) less its drop, which is the bound inside the stroke, and the drop. The stroke ends
+/// stroke, level past it) less its drop, which is the bound inside the stroke, the drop, and the line's `rise`. A
+/// bore's floor line has a negative drop: its bound is a floor (`floor`), and its rise is the most that it lifts the
+/// terrain. The stroke ends
 /// flat at each end of the line, on the line through the end sample along its `flat` normal: a segment whose
 /// start lies within its half-width and `ceiling_release_m` of an end, along the line, holds q past that end
 /// line as past its own end. The end segments reach on along their chord to the flat ends.
@@ -1512,7 +1514,7 @@ fn decks<'a>(
     q: [f64; 2],
     segs: &'a [u32],
     p: &'a HeightRules,
-) -> impl Iterator<Item = (f64, f64, f64)> + 'a {
+) -> impl Iterator<Item = (f64, f64, f64, f64)> + 'a {
     // The storeys' lines over the ground come after the ceiling lines.
     let lines = segs.iter().rev().map(move |&item| (b.line((item & 0xffff) as usize), (item >> 16) as usize));
     let ceilings = lines.skip_while(|(ln, _)| ln.storey != 0).map_while(|(ln, i)| ln.ceiling.then_some((ln, i)));
@@ -1552,7 +1554,7 @@ fn decks<'a>(
         let len_m = len * b.mpu;
         let bank = sa.bank + f * (sb.bank - sa.bank);
         let z = hermite(sa.z, sb.z, sa.grade * len_m, sb.grade * len_m, f) + bank * lateral.clamp(-half, half);
-        Some((out, z - ln.ret, ln.ret))
+        Some((out, z - ln.ret, ln.ret, ln.rise))
     })
 }
 
@@ -1561,9 +1563,19 @@ fn decks<'a>(
 /// bounds has no step; infinite where no deck is near.
 fn ceiling(b: &Block, q: [f64; 2], segs: &[u32], p: &HeightRules) -> f64 {
     decks(b, q, segs, p)
-        .filter(|&(out, ..)| out < p.ceiling_release_m)
-        .map(|(out, base, _)| base + p.face_max * out + release(out, p.ceiling_release_m, p).1)
+        .filter(|&(out, _, drop, _)| out < p.ceiling_release_m && drop > 0.0)
+        .map(|(out, base, ..)| base + p.face_max * out + release(out, p.ceiling_release_m, p).1)
         .fold(f64::INFINITY, f64::min)
+}
+
+/// The floor at q over the plain terrain t: the ceiling with the sign turned, for the bores near q (their roof's top
+/// and its least plate inside their stroke, falling past it), each at most its lift over t; minus infinity where no
+/// bore is near.
+fn floor(b: &Block, q: [f64; 2], segs: &[u32], t: f64, p: &HeightRules) -> f64 {
+    decks(b, q, segs, p)
+        .filter(|&(out, _, drop, _)| out < p.ceiling_release_m && drop < 0.0)
+        .map(|(out, base, _, lift)| (base - p.face_max * out - release(out, p.ceiling_release_m, p).1).min(t + lift))
+        .fold(f64::NEG_INFINITY, f64::max)
 }
 
 /// The least bound of the decks whose stroke holds q (their underside less `ceiling_gap_m`) and that deck's
@@ -1572,8 +1584,8 @@ pub(crate) fn under_deck(words: &[u32], q: [f64; 2]) -> Option<(f64, f64)> {
     let b = Block::at(words, q);
     let p = HeightRules::of(words);
     let items = bin_items(&b, q)?;
-    let inside = decks(&b, q, items.segs, &p).filter(|&(out, ..)| out <= 0.0);
-    inside.map(|(_, base, drop)| (base, drop)).reduce(|a, c| if c.0 < a.0 { c } else { a })
+    let inside = decks(&b, q, items.segs, &p).filter(|&(out, _, drop, _)| out <= 0.0 && drop > 0.0);
+    inside.map(|(_, base, drop, _)| (base, drop)).reduce(|a, c| if c.0 < a.0 { c } else { a })
 }
 
 /// The height rule of a label (0 for none).
@@ -1876,7 +1888,7 @@ fn host(recs: &[Rec], material: u32) -> Option<usize> {
 
 /// The height at q by the label's height rule, from the records present there and the items about q (a
 /// region's blend edges, the ceilings' segments), and its cause. The ground (the terrain and the slope rules)
-/// stays under the ceiling.
+/// stays over the floor of a bore and under the ceiling.
 fn by_label(
     b: &Block,
     q: [f64; 2],
@@ -1894,6 +1906,11 @@ fn by_label(
     if rule <= 1 {
         let ((h, cause), kind) =
             if rule == 0 { ((t, NO_CAUSE), Kind::Terrain) } else { (slope(b, q, t, p), Kind::Slope) };
+        // A comparison, not `max`: an unknown terrain (NaN) stays unknown.
+        let h = match floor(b, q, items.segs, t, p) {
+            f if f > h => f,
+            _ => h,
+        };
         let c = ceiling(b, q, items.segs, p);
         if c < h {
             return (height(c, kind, None), Cause { ceiling: true, ..NO_CAUSE });

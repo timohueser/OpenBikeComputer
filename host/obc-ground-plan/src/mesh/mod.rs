@@ -80,7 +80,7 @@ pub mod shell;
 pub mod strip;
 
 use crate::faces::records::find;
-use crate::faces::{Face, FacePlan, Surface};
+use crate::faces::{EdgeKind, Face, FacePlan, Surface};
 use crate::frame::{metres_per_unit, CellKey, CELL_UNITS};
 use params::{sharp, SIDE};
 use region::{grid_of, Region, MARK_WORDS};
@@ -505,7 +505,11 @@ pub fn mesh_cell(
         triangles.push([0, 1, 2].map(|i| corners.get(t[i], k[i])));
     }
     let (mut steps, mut faces) = (Vec::new(), Vec::new());
-    for (s, &end) in input.segments[..input.edges].iter().zip(&input.end_faces) {
+    for (s, &kind) in input.segments[..input.edges].iter().zip(&input.kinds) {
+        if kind == EdgeKind::Portal {
+            continue;
+        }
+        let end = kind == EdgeKind::DeckEdge;
         let side = |f: u32, v: u32, ground: &mut Vec<u32>| {
             if is_sharp(f) {
                 label_of(f)
