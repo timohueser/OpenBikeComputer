@@ -258,7 +258,7 @@ fn raised(graph: &WayGraph, a: &crate::graph::Arm) -> bool {
 
 /// The end direction of each arm of a portal (a joint of a ground way and a bore way), by its arm's key: the mean of
 /// the two ways' tangents at their end samples, both turned into the bore. Both storeys read it from the same samples.
-fn portal_dirs(g: &WayGraph) -> Vec<((u32, i8, u32, u64), [f64; 2])> {
+fn portal_dirs(g: &WayGraph) -> Vec<(ArmKey, [f64; 2])> {
     let mut out = Vec::new();
     for j in g.joints.iter().filter(|_| BORES) {
         let [a, b] = &j.arms;
@@ -300,7 +300,10 @@ fn layer_offsets(ctx: &Ctx, sec: &WaySection, s: &crate::graph::Sample) -> [f64;
     [u(h), u(h + paved), u(h + sh), u(verge), u(verge + bank), u(verge + sec.reach_m)]
 }
 
-fn station_key(way: u32, dir: i8, st: &Station) -> (u32, i8, u32, u64) {
+/// An arm's key: its way, its direction and its station.
+type ArmKey = (u32, i8, u32, u64);
+
+fn station_key(way: u32, dir: i8, st: &Station) -> ArmKey {
     (way, dir, st.span, st.u.to_bits())
 }
 

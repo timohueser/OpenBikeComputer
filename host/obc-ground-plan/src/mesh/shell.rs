@@ -1229,7 +1229,7 @@ fn portal_frame(b: &mut Build, stats: &mut ShellStats, words: &[u32], run: &[(P,
     row.extend(run.iter().map(|r| (at(r.0, 0.0, 0.0), r.1, r.3)));
     row.push((at(pn, side, 0.0), run[n - 1].1, run[n - 1].3));
     let ahead: Vec<Option<P>> = (row.iter().enumerate())
-        .map(|(k, r)| match k {
+        .map(|(k, _)| match k {
             0 => at(p0, -side, depth),
             _ if k == n + 1 => at(pn, side, depth),
             _ => at(run[k - 1].0, 0.0, depth),
