@@ -83,7 +83,6 @@ flowchart LR
   s_source_preparation --> s_data_engine
   s_source_preparation ==> s_map_reading
   s_trailview ==> s_route_planning
-  s_trailview -.-> s_web_foundations
 ```
 
 ## Systems

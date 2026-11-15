@@ -16,13 +16,13 @@ owns:
   - builder/web/vite/bundle-version.ts
   - builder/web/vite/versions.d.ts
   - builder/web/test-support/trailview/**
+  - builder/web/test-support/fake-caches.ts
   - builder/web/tests/browser/trailview/**
   - builder/web/tests/browser/playwright.trailview.config.js
   - tools/trailview/**
   - tools/planner_trailview_canopy.py
 depends_on:
   - data-engine
-  - web-foundations
 test_depends_on:
   - repository-tooling
 status: draft

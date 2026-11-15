@@ -18,7 +18,6 @@ owns:
   - builder/web/src/styles/tokens.css
   - builder/web/test-support/bytes.ts
   - builder/web/test-support/core.ts
-  - builder/web/test-support/fake-caches.ts
 depends_on: []
 test_depends_on: []
 status: draft

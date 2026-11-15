@@ -834,14 +834,13 @@
    "purpose": "Renders a region as an explorable 3-D landscape in the browser.",
    "status": "draft",
    "depends_on": [
-    "data-engine",
-    "web-foundations"
+    "data-engine"
    ],
    "test_depends_on": [
     "repository-tooling"
    ],
    "violations": 3,
-   "lines": 106279,
+   "lines": 106305,
    "problems": [
     {
      "rule": "cycle",
@@ -893,7 +892,7 @@
    "depends_on": [],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 1157,
+   "lines": 1131,
    "problems": []
   },
   {
@@ -1694,12 +1693,6 @@
    "to": "route-planning",
    "test": false,
    "undeclared": true
-  },
-  {
-   "from": "trailview",
-   "to": "web-foundations",
-   "test": true,
-   "undeclared": false
   },
   {
    "from": "trailview-page",
