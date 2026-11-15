@@ -257,9 +257,10 @@ fn raised(graph: &WayGraph, a: &crate::graph::Arm) -> bool {
     a.level == Level::Deck || in_bore(graph, a.way)
 }
 
-/// The end direction of each arm of a portal (a joint of a ground way and a bore way), by its arm's key: the mean of
-/// the two ways' tangents at their end samples, both turned into the bore. Both storeys read it from the same samples.
-fn portal_dirs(g: &WayGraph) -> Vec<(ArmKey, [f64; 2])> {
+/// Each arm of a portal (a joint of a ground way and a bore way) by its key, with the end direction of both and the
+/// other arm: the mean of the two ways' tangents at their end samples, both turned into the bore. Both storeys read it
+/// from the same samples.
+fn portal_dirs(g: &WayGraph) -> Vec<(ArmKey, [f64; 2], crate::graph::Arm)> {
     let mut out = Vec::new();
     for j in g.joints.iter().filter(|_| BORES) {
         let [a, b] = &j.arms;
@@ -282,7 +283,8 @@ fn portal_dirs(g: &WayGraph) -> Vec<(ArmKey, [f64; 2])> {
         let len = libm::hypot(m[0], m[1]);
         if len > 1e-9 {
             for arm in [a, b] {
-                out.push((station_key(arm.way, arm.dir, &arm.at), [m[0] / len, m[1] / len]));
+                let other = if std::ptr::eq(arm, a) { b } else { a };
+                out.push((station_key(arm.way, arm.dir, &arm.at), [m[0] / len, m[1] / len], other.clone()));
             }
         }
     }
@@ -410,7 +412,23 @@ fn lines<'a>(
         of_way.insert(way.id, out.len());
         out.push(line);
     }
-    taper(ctx, input, &mut out, &of_way);
+    taper(ctx, &mut out, &of_way);
+    // A bore's end on a portal takes the offsets of the ground way that ends there as storey 0 builds that way (its
+    // own tapers included): one computation, so both strokes end on the same corners.
+    if out.iter().any(|l| l.end_dir.iter().any(Option::is_some) && in_bore(g, l.way)) {
+        let (ground, of_ground) = lines(ctx, input, &|w| in_level(g, w), bx);
+        for line in out.iter_mut().filter(|l| in_bore(g, l.way)) {
+            let way = &g.ways[line.way as usize];
+            for (k, key) in [station_key(way.id, 1, &way.from), station_key(way.id, -1, &way.to)].iter().enumerate() {
+                let Some((_, _, other)) = dirs.iter().find(|x| x.0 == *key) else { continue };
+                let Some(&gl) = of_ground.get(&other.way) else { continue };
+                let o = ground[gl].offsets(if other.dir > 0 { 0 } else { ground[gl].p.len() - 1 });
+                let at = if k == 0 { 0 } else { line.p.len() - 1 };
+                line.h[at] = o[0];
+                line.bands[at] = std::array::from_fn(|m| o[m + 1]);
+            }
+        }
+    }
     for line in &mut out {
         line.cuts = line.cuts.iter().map(|&k| line.index[k]).collect();
         line.spans = line.spans.iter().map(|&(a, b)| (line.index[a], line.index[b])).collect();
@@ -449,28 +467,11 @@ struct Taper {
 /// `extent_m` of the joint (it widens in a bend) would end the taper past `extent_m`: so the taper
 /// meets the own edge within `extent_m`, with no step. A vertex is added where a taper meets the own
 /// offset, so the edge turns there and at the joint only. At a junction, a guest tapers so into the
-/// largest offset of each layer of the other arms; the hosts keep their widths. At a portal the way of the other
-/// storey is no line here: its offsets come from its end sample, and any layer that is wider tapers, so both ways end
-/// with the lesser offset of each layer.
-fn taper(ctx: &Ctx, input: &CellInput, lines: &mut [WayLine], of_way: &BTreeMap<u32, usize>) {
+/// largest offset of each layer of the other arms; the hosts keep their widths.
+fn taper(ctx: &Ctx, lines: &mut [WayLine], of_way: &BTreeMap<u32, usize>) {
     let g = ctx.graph;
     let mut tapers: BTreeMap<usize, Vec<Taper>> = BTreeMap::new();
     for (pos, arms) in g.joints.iter().map(|j| (j.pos, &j.arms)) {
-        if let (true, [Some(&l), None], [own, other]) | (true, [None, Some(&l)], [other, own]) =
-            (BORES, [of_way.get(&arms[0].way), of_way.get(&arms[1].way)], [&arms[0], &arms[1]])
-        {
-            if lines[l].portal[usize::from(own.dir < 0)] || in_bore(g, own.way) && portal_end(g, other) {
-                let r = &g.ways[other.way as usize].samples;
-                let s = &g.samples[if other.dir > 0 { r.start } else { r.end - 1 } as usize];
-                let f = &input.features[g.parts[g.ways[other.way as usize].part as usize].feature.0 as usize];
-                let to = layer_offsets(ctx, &ctx.rules.sections.way(&f.kind, &f.tags, false), s);
-                let at = sample_at(g, &lines[l], &own.at, pos);
-                if (0..=LAYERS).any(|m| lines[l].offsets(at)[m] > to[m]) {
-                    tapers.entry(l).or_default().push(Taper { at, dir: own.dir, to });
-                }
-            }
-            continue;
-        }
         let (Some(&la), Some(&lb)) = (of_way.get(&arms[0].way), of_way.get(&arms[1].way)) else { continue };
         if arms[0].level != arms[1].level || la == lb {
             continue;
@@ -593,13 +594,6 @@ fn taper(ctx: &Ctx, input: &CellInput, lines: &mut [WayLine], of_way: &BTreeMap<
         line.walk = rows.iter().map(|r| r.3).collect();
         line.index = index;
     }
-}
-
-/// Whether an arm is the ground way of a portal: on the ground, not water.
-#[inline]
-fn portal_end(g: &WayGraph, a: &crate::graph::Arm) -> bool {
-    let w = &g.ways[a.way as usize];
-    BORES && w.level == Level::Ground && w.family != Family::Water
 }
 
 /// The sample of a line at a graph station, else the one nearest `pos`.
@@ -1602,11 +1596,11 @@ fn run_in(line: &WayLine, bx: [i32; 4]) -> Option<(usize, usize)> {
 }
 
 /// The ground over the bores near the cell (with the bores), two candidates of storey 0 of one label, each over each
-/// bore's stroke from end line to end line. The opening, its core, its wall and the cover's margin less the cores of the
-/// ways that cross over it, wins every other face: a way that does not cross over a bore ends at the side of its
-/// opening, and a way on top is never cut. The band about it, as far as the floor bound reaches
+/// bore's stroke from end line to end line. The opening, its core and its wall less the cores of the ways that cross
+/// over it, wins every other face: a way that does not cross over a bore ends at the side of its opening, and a way on
+/// top is never cut. The band about it, the cover's margin and as far as the floor bound reaches
 /// (`ceiling_release_m`), wins the slope layers only: the ground that the floor lifts is the cover's, so its step on a
-/// portal line lies on the cover's edge. Their square ends pass the corners of the bore's layers, which are those of
+/// portal line lies on the cover's edge, and a neighbour's paved faces keep their place. Their square ends pass the corners of the bore's layers, which are those of
 /// the way that ends on the portal line (`taper`). Their height is the ground's (the slope rule) over the floor bound.
 fn bore_cover(
     ctx: &Ctx,
@@ -1618,12 +1612,12 @@ fn bore_cover(
 ) -> Vec<Cand> {
     let g = ctx.graph;
     let (bores, _) = lines(ctx, input, &|w| in_bore(g, w), ways_box);
-    let side_m = deck::WALL_M + deck::COVER_SIDE_M;
+    let band_m = deck::WALL_M + deck::COVER_SIDE_M + ctx.rules.plan.heights.ceiling_release_m;
     let (mut rings, mut band) = (Vec::new(), Vec::new());
     for line in &bores {
         let Some((first, last)) = run_in(line, bx) else { continue };
         let cuts = [&line.offsets(first)[..=VERGE + 1], &line.offsets(last - 1)[..=VERGE + 1]];
-        for (out, m) in [(&mut rings, side_m), (&mut band, side_m + ctx.rules.plan.heights.ceiling_release_m)] {
+        for (out, m) in [(&mut rings, deck::WALL_M), (&mut band, band_m)] {
             let d: Vec<f64> = (first..last).map(|i| line.bands[i][VERGE] + ctx.units(m, line.p[i])).collect();
             pieces_along(&line.p[first..last], &d, &line.dirs(first, last), cuts, [false; 2], false, out);
         }
