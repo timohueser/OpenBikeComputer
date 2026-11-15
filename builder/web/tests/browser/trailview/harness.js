@@ -107,16 +107,10 @@ async function mbtiles(file) {
 
 /** The pixels of a screenshot of the page that show the red clear colour of `debug=cracks`. */
 export async function redPixels(page) {
-    const png = (await page.screenshot()).toString('base64');
-    return page.evaluate(async png => {
-        const image = await createImageBitmap(await (await fetch(`data:image/png;base64,${png}`)).blob());
-        const context = new OffscreenCanvas(image.width, image.height).getContext('2d');
-        context.drawImage(image, 0, 0);
-        const rgba = context.getImageData(0, 0, image.width, image.height).data;
-        let red = 0;
-        for (let i = 0; i < rgba.length; i += 4) if (rgba[i] === 255 && rgba[i + 1] === 0 && rgba[i + 2] === 0) red++;
-        return red;
-    }, png);
+    const { rgba } = await screenPixels(page);
+    let red = 0;
+    for (let i = 0; i < rgba.length; i += 4) if (rgba[i] === 255 && rgba[i + 1] === 0 && rgba[i + 2] === 0) red++;
+    return red;
 }
 
 /** A screenshot of the page as `{ width, height, rgba }`, its bytes in rows from the top, decoded in the page. */
