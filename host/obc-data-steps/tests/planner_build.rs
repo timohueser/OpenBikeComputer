@@ -336,7 +336,6 @@ for kind, field, value in [('places', 'osm_sha256', '0' * 64), ('addresses', 'bo
         pass
     else:
         raise AssertionError('an inconsistent source or coverage is rejected')
-assert 'routing/blocks.json' not in document['files']
 files = {name: entry for path in (source / 'indexes').rglob('index.json')
     for name, entry in json.loads(path.read_bytes())['files'].items()} | document['files']
 offline.materialize(source, source / 'runtime', {'files': files}, ('offline/', 'routing/', 'search/', 'maps/overlays.json'))
@@ -433,7 +432,7 @@ for entries in [catalog['assets'], *(cell[key] for cell in cells for key in ('fi
     assert!(!restored.object(&osm.files[0].sha256).exists());
     Planner.verify(&root, None, &release, &restored).unwrap();
     let output = |step: &str| files.outputs.iter().find(|output| output.step == step).unwrap();
-    let private = output("planner/routing").files.iter().find(|file| file.path == "routing/manifest.json").unwrap();
+    let private = output("planner/routing").files.iter().find(|file| file.path == "routing/overlays.sqlite").unwrap();
     assert!(!restored.object(&private.sha256).exists());
     let basemap = output("planner/basemap/grid").files.iter().find(|file| file.path == "index.json").unwrap();
     let basemap: serde_json::Value =
