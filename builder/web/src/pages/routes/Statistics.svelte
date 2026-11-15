@@ -80,11 +80,12 @@
 {#snippet column(bar: typeof bars[number])}
     {@const value = amount(measure, bar.totals)}
     <span class="area">
+        <!-- The parts grow by their share of the bar: grow factors with a sum under 1 would not fill the bar. -->
         {#if value > 0}
             <span class="amount">{formatCount(value)}</span>
             <span class="stack" style:height={`calc((100% - 22px) * ${value / top})`}>
                 {#each order.filter(bike => bar.kinds.has(bike)) as bike (bike)}
-                    <span style:flex-grow={amount(measure, bar.kinds.get(bike)!)} style:background={`var(--kind-${order.indexOf(bike)})`}></span>
+                    <span style:flex-grow={amount(measure, bar.kinds.get(bike)!) / value} style:background={`var(--kind-${order.indexOf(bike)})`}></span>
                 {/each}
             </span>
         {/if}

@@ -1,7 +1,7 @@
 <!-- The Routes page: the planned routes or the rides in a list with a search and chips, on a map, and the selected one in a
      card. -->
 <script lang="ts">
-    import { onMount, untrack } from 'svelte';
+    import { onMount, tick, untrack } from 'svelte';
     import { SvelteSet } from 'svelte/reactivity';
     import Card from '../lib/ui/Card.svelte';
     import Segmented from '../lib/ui/Segmented.svelte';
@@ -171,9 +171,11 @@
         selected = row ? `${row.kind}:${row.id}` : ridden ? undefined : id;
     }
 
-    /** The row of a trip is in the list only with no search and no open group. */
-    function showTrip(id: string) {
+    /** The row of a trip is in the list only with no search and no open group. The list then scrolls to the row. */
+    async function showTrip(id: string) {
         [chips, text, onlyView, opened, selected] = [{}, '', false, undefined, `trip:${id}`];
+        await tick();
+        document.querySelector(`.list li[data-id="${CSS.escape(selected!)}"]`)?.scrollIntoView({ block: 'nearest' });
     }
 
     const addFiles = () => initCore().then(() => import('./AddFiles.svelte')).then(module => module.default);
