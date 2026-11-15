@@ -219,7 +219,7 @@
     },
     {
      "rule": "cycle",
-     "message": "device-map-builder -> device-link closes a cycle: builder/web/test-support/device-smoke/smoke.test.ts -> builder/web/src/lib/usb/client.ts (test), builder/web/test-support/device-smoke/smoke.test.ts -> builder/web/src/lib/usb/flat-device.ts (test), builder/web/test-support/device-smoke/smoke.test.ts -> builder/web/src/lib/usb/protocol.ts (test), and 15 more"
+     "message": "device-map-builder -> device-link closes a cycle: builder/web/test-support/device-smoke/smoke.test.ts -> builder/web/src/lib/usb/client.ts (test), builder/web/test-support/device-smoke/smoke.test.ts -> builder/web/src/lib/usb/flat-device.ts (test), builder/web/test-support/device-smoke/smoke.test.ts -> builder/web/src/lib/usb/protocol.ts (test), and 16 more"
     },
     {
      "rule": "cycle",
@@ -254,7 +254,7 @@
     "repository-tooling"
    ],
    "violations": 7,
-   "lines": 60410,
+   "lines": 60595,
    "problems": [
     {
      "rule": "cycle",
@@ -305,7 +305,7 @@
     "repository-tooling"
    ],
    "violations": 8,
-   "lines": 9011,
+   "lines": 9218,
    "problems": [
     {
      "rule": "cycle",
@@ -313,7 +313,7 @@
     },
     {
      "rule": "cycle",
-     "message": "device-map-builder -> device-link closes a cycle: builder/web/test-support/device-smoke/smoke.test.ts -> builder/web/src/lib/usb/client.ts (test), builder/web/test-support/device-smoke/smoke.test.ts -> builder/web/src/lib/usb/flat-device.ts (test), builder/web/test-support/device-smoke/smoke.test.ts -> builder/web/src/lib/usb/protocol.ts (test), and 15 more"
+     "message": "device-map-builder -> device-link closes a cycle: builder/web/test-support/device-smoke/smoke.test.ts -> builder/web/src/lib/usb/client.ts (test), builder/web/test-support/device-smoke/smoke.test.ts -> builder/web/src/lib/usb/flat-device.ts (test), builder/web/test-support/device-smoke/smoke.test.ts -> builder/web/src/lib/usb/protocol.ts (test), and 16 more"
     },
     {
      "rule": "cycle",
@@ -507,12 +507,12 @@
    "name": "library",
    "kind": "system",
    "area": "Apps",
-   "purpose": "Keeps the rider's routes, rides and settings in the browser, each route and ride with a summary, and saves and loads them as one backup file.",
+   "purpose": "Keeps the rider's routes, rides, photos of rides and settings in the browser, each route and ride with a summary, and saves and loads them as one backup file.",
    "status": "draft",
    "depends_on": [],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 2308,
+   "lines": 2851,
    "problems": []
   },
   {
@@ -535,7 +535,7 @@
     "content"
    ],
    "violations": 9,
-   "lines": 21998,
+   "lines": 21873,
    "problems": [
     {
      "rule": "cycle",
@@ -764,7 +764,7 @@
    ],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 18943,
+   "lines": 18944,
    "problems": []
   },
   {
@@ -1029,7 +1029,7 @@
    ],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 12088,
+   "lines": 13982,
    "problems": []
   },
   {

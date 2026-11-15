@@ -3,12 +3,13 @@
     import type { Library } from '../library/store';
     import { appearance } from '../theme.svelte';
     import { crop, drawCover, type Crop } from './draw';
-    import { lineKey } from '../library/summary';
+    import { lineCoordinates, lineKey } from '../library/summary';
     import { coverKey, settled, wantCover, wantsPicture, type Place } from './job';
-    import { along, nearest } from './line';
+    import { along, fromAbove, nearest } from './line';
     import Icon from '../../components/planner/PlannerIcon.svelte';
+    import PhotoMarks from '../../components/route/PhotoMarks.svelte';
 
-    let { library, id, mark, part, line = true, place = 'row', pins = [], onpoint, credits = $bindable([]) }: {
+    let { library, id, mark, part, line = true, place = 'row', pins = [], photos = [], onphoto, onpoint, credits = $bindable([]) }: {
         library: Library;
         /** The id of a route or the key of a ride. */
         id: string;
@@ -20,6 +21,9 @@
         place?: Place;
         /** Labels at shares of the summary line from 0 to 1: a numbered waypoint, or a night without a number. */
         pins?: { share: number; label: string; number?: number }[];
+        /** The photos of a ride at shares of the summary line, each with the address of its small picture. */
+        photos?: { id: string; url: string; share: number }[];
+        onphoto?: (id: string) => void;
         /** The metres along the route of the point nearest to the pointer, or null when the pointer leaves. */
         onpoint?: (metres: number | null) => void;
         /** The credits of the data in the shown image: the cover or the map picture. */
@@ -84,19 +88,29 @@
         onpoint?.(metres ?? null);
     }
 
-    /** The pins at visible points of the line, in CSS pixels of the box. `index` is the place in `pins`; `left` puts the
-     * label on the side with more room. */
-    const shownPins = $derived.by(() => {
+    /** The place of a share of the line in CSS pixels of the box, where the line is visible there. */
+    const placeOf = $derived.by(() => {
         const summary = shown?.summary;
-        if (!summary || !width || !height) return [];
+        if (!summary || !width || !height) return () => undefined;
         const { bitmap, points } = shown!, ratio = devicePixelRatio;
         const cut = crop({ width: bitmap.width, height: bitmap.height, points }, [Math.round(width * ratio), Math.round(height * ratio)]);
-        return pins.flatMap((pin, index) => {
-            const at = along(points, summary, pin.share * summary.lengthM);
-            const x = at && (at.x - cut.left) * cut.scale / ratio, y = at && (at.y - cut.top) * cut.scale / ratio;
-            return at?.visible && x! >= 0 && x! <= width && y! >= 0 && y! <= height ? [{ ...pin, x: x!, y: y!, index, left: x! > width / 2 }] : [];
-        });
+        return (share: number) => {
+            const at = along(points, summary, share * summary.lengthM);
+            if (!at?.visible) return undefined;
+            const x = (at.x - cut.left) * cut.scale / ratio, y = (at.y - cut.top) * cut.scale / ratio;
+            return x >= 0 && x <= width && y >= 0 && y <= height ? { x, y } : undefined;
+        };
     });
+    /** The pins at visible points of the line. `index` is the place in `pins`; `left` puts the label on the side with
+     * more room. */
+    const shownPins = $derived(pins.flatMap((pin, index) => {
+        const at = placeOf(pin.share);
+        return at ? [{ ...pin, ...at, index, left: at.x > width / 2 }] : [];
+    }));
+    const shownPhotos = $derived(photos.flatMap(photo => {
+        const at = placeOf(photo.share);
+        return at ? [{ ...photo, ...at }] : [];
+    }));
 
     /** The pin whose name shows, by its index; one at a time. */
     let opened = $state<number>();
@@ -104,15 +118,12 @@
 
     /** The line on a plain ground, in a box of 100 by the shape of the line, with the north up. */
     const fallback = $derived.by(() => {
-        const flat = item?.summary?.line;
-        if (!flat?.length) return undefined;
-        const lons = flat.filter((_, i) => i % 2 === 0), lats = flat.filter((_, i) => i % 2 === 1);
-        const west = Math.min(...lons), north = Math.max(...lats), across = Math.cos((north + Math.min(...lats)) / 2 * Math.PI / 180);
-        const xs = lons.map(lon => (lon - west) * across), ys = lats.map(lat => north - lat);
-        const size = Math.max(...xs, ...ys) || 1, pad = 8;
+        const summary = item?.summary;
+        if (!summary?.line.length) return undefined;
+        const { points, width, height } = fromAbove(lineCoordinates(summary)), pad = 8;
         return {
-            box: `${-pad} ${-pad} ${Math.max(...xs) / size * 100 + 2 * pad} ${Math.max(...ys) / size * 100 + 2 * pad}`,
-            points: xs.map((x, i) => `${(x / size * 100).toFixed(2)},${(ys[i] / size * 100).toFixed(2)}`).join(' '),
+            box: `${-pad} ${-pad} ${width * 100 + 2 * pad} ${height * 100 + 2 * pad}`,
+            points: points.map(([x, y]) => `${(x * 100).toFixed(2)},${(y * 100).toFixed(2)}`).join(' '),
         };
     });
 </script>
@@ -132,6 +143,7 @@
                 {#if opened === pin.index}<span class="route-pin-label" class:left={pin.left}>{pinName(pin)}</span>{/if}
             </span>
         {/each}
+        <PhotoMarks photos={shownPhotos} onopen={onphoto} />
     {:else if fallback && line}
         <svg class={look} viewBox={fallback.box} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
             <polyline points={fallback.points} />

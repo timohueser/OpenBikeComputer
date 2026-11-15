@@ -1,18 +1,17 @@
 <script lang="ts">
     import type { Snippet } from 'svelte';
 
-    /** A button of a detail page, such as "More" or "Places", and its menu, with `children` over the items. The menu is in the top layer, so no card cuts
+    /** A button of a detail page, such as "More" or "Places", and its menu. The menu is in the top layer, so no card cuts
      * it: it opens under its button and moves up or to the side where it would leave the window. A click outside the
      * menu, Escape or a new size of the window closes it. */
-    let { label, items, left = false, children }: {
+    let { label, items, left = false }: {
         label: string;
         /** `rule` draws a line over the item; `checked` marks the chosen item of a choice; `danger` is an action that
-         * removes something. */
-        items: { label: string; note?: string; disabled?: boolean; rule?: boolean; checked?: boolean; danger?: boolean; run: () => void }[];
+         * removes something. `control` stands over the item: a control for it and the items after it, such as a
+         * switch. A click on it keeps the menu open. */
+        items: { label: string; note?: string; disabled?: boolean; rule?: boolean; checked?: boolean; danger?: boolean; control?: Snippet; run: () => void }[];
         /** The menu opens to the right of the button, not to its left. */
         left?: boolean;
-        /** A control that the items follow, such as a switch. A click on it keeps the menu open. */
-        children?: Snippet;
     } = $props();
     /** The menu keeps EDGE_PX from the edges of the window and GAP_PX from its button. */
     const EDGE_PX = 8, GAP_PX = 4;
@@ -42,9 +41,9 @@
     <button type="button" class="button" bind:this={button} aria-expanded={open} onclick={() => open = !open}>{label} ▾</button>
     {#if open}
         <menu popover="manual" use:place>
-            {#if children}<li class="control">{@render children()}</li>{/if}
             {#each items as item (item.label)}
                 <li class:rule={item.rule}>
+                    {#if item.control}<div class="control">{@render item.control()}</div>{/if}
                     <button type="button" class:danger={item.danger} disabled={item.disabled} onclick={() => { open = false; item.run(); }}>
                         <span>{#if item.checked !== undefined}<i>{item.checked ? '✓' : ''}</i>{/if}{item.label}</span>
                         {#if item.note}<small>{item.note}</small>{/if}
@@ -76,9 +75,7 @@
         list-style: none;
     }
     .control {
-        margin-bottom: 4px;
-        padding: 3px 10px 7px;
-        border-bottom: 1px solid var(--line);
+        padding: 3px 10px;
     }
     .rule {
         margin-top: 4px;

@@ -26,10 +26,20 @@
             <a class="button" href={`${ROUTES.planner}/new`}>Plan a new route</a>
         </nav>
     {:else if text.kind === 'year'}
-        {@const { totals } = text}
-        <p class="over">This year, {totals.rides && totals.hikes ? 'by bike and on foot' : totals.hikes ? 'on foot' : 'by bike'}</p>
-        <h1 class="total">{formatDistance(totals.lengthM)}</h1>
-        <p class="numbers">{[totals.rides && count(totals.rides, 'ride'), totals.hikes && count(totals.hikes, 'hike')].filter(Boolean).join(' · ')}</p>
+        {@const { bike, foot } = text.totals}
+        {#if bike.count && foot.count}
+            <!-- The two lengths never add, and neither leads: side by side in one size, each with its word and its count. -->
+            <p class="over">This year</p>
+            <h1 class="sides">
+                <span>{formatDistance(bike.lengthM)}<small>by bike · {count(bike.count, 'ride')}</small></span>
+                <span>{formatDistance(foot.lengthM)}<small>on foot · {count(foot.count, 'hike')}</small></span>
+            </h1>
+        {:else}
+            {@const main = bike.count ? bike : foot}
+            <p class="over">This year, {bike.count ? 'by bike' : 'on foot'}</p>
+            <h1 class="total">{formatDistance(main.lengthM)}</h1>
+            <p class="numbers">{count(main.count, bike.count ? 'ride' : 'hike')}</p>
+        {/if}
         <p>Your last {text.hike ? 'hike' : 'ride'} was {text.last.name}, {text.ago}.</p>
         <nav class="buttons" aria-label="This year">
             <a class="button primary" href={`${ROUTES.ride}/${text.last.key}`}>Look back at it</a>
@@ -82,6 +92,23 @@
     .slogan {
         font-size: 48px;
     }
+    /* Where the two lengths do not fit in one row, the second goes under the first: no number is cut. */
+    .sides {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px 44px;
+        font-size: 48px;
+    }
+    .sides span {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        white-space: nowrap;
+    }
+    .sides small {
+        font: 400 18px/1.4 var(--sans);
+        letter-spacing: 0;
+    }
     .numbers, .lead {
         font-size: 18px;
         opacity: 1;
@@ -123,6 +150,13 @@
         }
         .total {
             font-size: 48px;
+        }
+        .sides {
+            column-gap: 28px;
+            font-size: 38px;
+        }
+        .sides small {
+            font-size: 16px;
         }
         .numbers, .lead {
             font-size: 16px;

@@ -12,13 +12,16 @@
      * place under a lower picture stays free. When the map would get less than MAP_PX, the cover is large and cut, and
      * the map is small in a corner; a click on the small one swaps them, and only the large one shows the pins. The
      * pointer is a share of the summary line from 0 to 1, so the cover and the map mark the same place. */
-    let { library, id, summary, ride = false, pins = [], mark, onpoint, part, lit, place }: {
+    let { library, id, summary, ride = false, pins = [], photos = [], onphoto, mark, onpoint, part, lit, place }: {
         library: Library;
         /** The id of a route or the key of a ride. */
         id: string;
         summary: Summary;
         ride?: boolean;
         pins?: { share: number; label: string; number?: number }[];
+        /** The photos of a ride at shares of the summary line: marks on the cover and on the map, where the pins show. */
+        photos?: { id: string; url: string; share: number }[];
+        onphoto?: (id: string) => void;
         mark?: number;
         onpoint: (share: number | null) => void;
         /** The stretch that the map fits. */
@@ -66,7 +69,7 @@
     <div class="cards">
         {#if covered}
             <div class="slot cover">
-                <Cover {library} {id} pins={side || !mapLarge ? pins : []} mark={mark === undefined ? undefined : mark * summary.lengthM}
+                <Cover {library} {id} pins={side || !mapLarge ? pins : []} photos={side || !mapLarge ? photos : []} {onphoto} mark={mark === undefined ? undefined : mark * summary.lengthM}
                     part={lit ? [lit[0] * summary.lengthM, lit[1] * summary.lengthM] : undefined}
                     onpoint={metres => onpoint(metres === null || !summary.lengthM ? null : metres / summary.lengthM)} />
                 {#if !side && mapLarge}<button type="button" class="swap" aria-label="Show the picture large" onclick={() => swapped = false}></button>{/if}
@@ -74,7 +77,7 @@
             <Credits {credits} side="left" />
         {/if}
         <div class="slot map">
-            <RouteMap {summary} {ride} pins={side || mapLarge ? pins : []} {mark} {onpoint} fitTo={part} {lit} {place} />
+            <RouteMap {summary} {ride} pins={side || mapLarge ? pins : []} photos={side || mapLarge ? photos : []} {onphoto} {mark} {onpoint} fitTo={part} {lit} {place} />
             {#if !side && !mapLarge}<button type="button" class="swap" aria-label="Show the map large" onclick={() => swapped = true}></button>{/if}
         </div>
     </div>
