@@ -6,8 +6,8 @@
 #
 # HOST is an SSH host that logs in as root. The user obc-data builds `git archive COMMIT` (default
 # HEAD) in /opt/obc-data/<commit> on the VPS, for the target of data/planner-runtime.toml and the
-# Python of .python-version. Then /opt/obc-data/current points at it, its unit replaces the
-# installed unit, the follower restarts, and /opt/obc-data/previous keeps the build before. Other
+# Python of .python-version. Then /opt/obc-data/current points at it, its unit and its limit of
+# memory maps replace the installed ones, the follower restarts, and /opt/obc-data/previous keeps the build before. Other
 # builds go.
 # `--dry-run` prints the commands and runs none.
 set -euo pipefail
@@ -35,13 +35,18 @@ cargo build --release --locked -p planner-service
 cargo build --release --locked -p obc-data --bin obc-data-plumbing
 npm ci --prefix planner/search
 UV_PROJECT_ENVIRONMENT=planner/search/.venv uv sync --locked --python $python --group search-runtime"
+# Each step that can fail runs before the switch, so that a failure leaves the build that runs.
+# A machine that has the limit already, such as a container with a read-only /proc/sys, needs no write.
 switch="set -euo pipefail
+install -m 644 $base/tools/vps/obc-data.sysctl /etc/sysctl.d/90-obc-data.conf
+maps=\$(sed -n 's/^vm.max_map_count *= *//p' /etc/sysctl.d/90-obc-data.conf)
+[ \"\$(sysctl -n vm.max_map_count)\" -ge \"\$maps\" ] || sysctl -p /etc/sysctl.d/90-obc-data.conf
+install -m 644 $base/tools/vps/obc-data-serve.service /etc/systemd/system/
+systemctl daemon-reload
 old=\$(readlink /opt/obc-data/current || true)
 if [ -n \"\$old\" ] && [ \"\$old\" != $base ]; then ln -sfn \"\$old\" /opt/obc-data/previous; fi
 ln -sfn $base /opt/obc-data/current.next
 mv -T /opt/obc-data/current.next /opt/obc-data/current
-install -m 644 $base/tools/vps/obc-data-serve.service /etc/systemd/system/
-systemctl daemon-reload
 systemctl restart obc-data-serve
 keep=\$(readlink /opt/obc-data/previous || echo $base)
 find /opt/obc-data -mindepth 1 -maxdepth 1 -type d ! -path $base ! -path \"\$keep\" -exec rm -rf {} +"

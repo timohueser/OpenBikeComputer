@@ -5,7 +5,8 @@ grid publication: the exact release manifest and every runtime file, without sou
 contract also defines the grid selection, the download service API and the iOS library.
 
 - Version: bundle manifest `format` `1`; `offline/catalog.json` and `offline/cells/CELL.json`
-  `format: 4`; selected release `offline.format: 3`; service catalog `format: 1`.
+  `format: 5`; selected release `offline.format: 4`; service catalog `format: 2`; selection
+  format `7`.
 - Writers: the download service (`tools/planner_downloads.py`); the step `planner/offline/grid`
   (`tools/planner_grid_offline.py`, offline selection metadata).
 - Readers: the companion app (`OBCPlanner/OfflineMapStore.swift`).
@@ -40,7 +41,7 @@ coordinates at zoom 9. Cell IDs are `9-X-Y`. A requested rectangle selects every
 The service rejects a rectangle that is not inside the release bounds. The returned coverage
 contains the complete requested rectangle.
 
-The publisher creates routing page packs, search databases, and PMTiles packs once. A map pack
+The publisher creates search databases and PMTiles packs once. A map pack
 `maps/tiles/<kind>/<z>-<x>-<y>.pmtiles` holds the tiles of square `z/x/y` from zoom `z` to the last
 zoom of the level range of `z`:
 
@@ -63,9 +64,14 @@ tile zoom back to the base level of the tile zoom. A tile that this pack does no
 
 Original compressed tile payloads remain unchanged. Terrain is the exception: its tiles are encoded
 again with the same pixels, and its zoom 13 tiles have packs of their own ([terrain
-tiles](planner-release.md#terrain-tiles)). A routing pack contains pages with the same cell
-consumers, up to 16 MiB. Search retains whole intersecting records
+tiles](planner-release.md#terrain-tiles)). Search retains whole intersecting records
 and their dependencies. Each cell also has its [route catalog](route-catalog.md) file.
+
+The routing of an area is not part of the grid. It is each download cell of the [route
+package](route-package.md#installed-files-and-the-installer) whose `box` meets the area, grown on
+each side by the half-sizes of the snap window of 1 km at the corner of the area nearest to a pole.
+That window is the largest of any point of the area, so no point of the area is `missing_region`.
+Long roads do not count. The phone selects these cells from `routing/directory.bin`.
 
 The download service reads `offline/catalog.json` when it starts, and the cell files of each
 request. An entry is a step index entry: the decoded `bytes` and `sha256`, and the `transport`
@@ -73,27 +79,24 @@ above.
 
 | `offline/catalog.json` field | Value |
 | --- | --- |
-| `format` | `4`, the format of the layer `planner/index` |
+| `format` | `5`, the format of the layer `planner/index` |
 | `zoom` | `9` |
 | `release` | The header of the [release manifest](planner-release.md#manifest), with `format: 1` and without `grid`, `indexes` and `files` |
-| `routing_source` | The SHA-256 of the source routing graph |
 | `cells` | The sorted IDs of the cells |
-| `shared` | Each map asset path of a selection, mapped to its publication file |
+| `shared` | Each map asset path of a selection, and `routing/package.json` and `routing/directory.bin` of the route package, mapped to its publication file |
 | `assets` | Each publication file that `shared` names, mapped to its entry |
 
 `offline/cells/CELL.json` describes one cell:
 
 | Field | Value |
 | --- | --- |
-| `format` | `4` |
+| `format` | `5` |
 | `id`, `bounds` | The cell ID and its bounds, clipped to the release bounds |
 | `files` | The search databases and the route catalog file of the cell, each mapped to its entry |
-| `routing` | The routing descriptor: a manifest path and SHA-256, source adjacency ranges, retained geometry bounds and `archives`, the routing packs of the cell. Absent for a cell without roads |
 | `packs` | The map packs that an area of the cell takes, each mapped to its entry |
-| `routing_packs` | `pages.bin` and `pages.idx` of each archive of `routing`, each mapped to its entry |
 
-The `packs` of a cell are the basemap, places, overlay and terrain packs of the box of its `bounds`
-and its retained geometry bounds. Terrain adds one ring of tiles. They omit the zoom 13 terrain
+The `packs` of a cell are the basemap, places, overlay and terrain packs of its `bounds`. Terrain
+adds one ring of tiles. They omit the zoom 13 terrain
 packs. The service selects these objects and writes only the selection manifests. It does not
 rebuild routing, SQLite databases, or map payloads.
 
@@ -105,13 +108,13 @@ forms, `ref`, `ref:en`, `shield_text`, and `addr_housenumber`. The ranges also c
 form of each text. Text with a character from U+0600 to U+08FF adds the Arabic presentation forms,
 U+FB00 to U+FEFF. A missing range file stops the labels of each tile that requests it.
 
-The selected release has `offline` with `format: 3`, `id`, `zoom`, `source_routing`, and
-`cells`. Each cell has `id`, `bounds`, and `files`: the cell's search databases and route catalog
-file. `routing/blocks.json` follows the [routing selection
-contract](route-package.md#grid-selections). A selection takes the union of the `packs` and the
-`routing_packs` of its cells, so it covers the area and the retained roads of each cell. The
-TileJSON bounds and `terrain_bounds` of a selection are the box of its cells and of their retained
-geometry bounds. `maps/basemap.json`, `maps/overlays.json` and `maps/terrain.json` are TileJSON for these
+The selected release has `offline` with `format: 4`, `id`, `zoom`, and `cells`. Each cell has
+`id`, `bounds`, and `files`: the cell's search databases and route catalog file. Its `region` is
+`area-` and the first 24 hex digits of the selection ID. A selection takes the union of the `packs`
+of its cells and the two files of the route package in `shared`. Its `routing_package` is the
+SHA-256 of `routing/directory.bin`, the identity of the route package. It has no
+`routing/blocks.json`. The TileJSON bounds and `terrain_bounds` of a selection are the box of its
+cells, so a route can leave the map of its area. `maps/basemap.json`, `maps/overlays.json` and `maps/terrain.json` are TileJSON for these
 packs. Their tile URLs use the host `offline.openbikecomputer.invalid`, which the app serves from
 the installed packs. The app finds the pack of a tile by the rule above, from the files of the
 bundle.
@@ -124,13 +127,13 @@ the service. Bounds use west, south, east, north.
 
 | Request | Result |
 | --- | --- |
-| `GET /catalog` | `format: 1`, source `bounds`, and selection `zoom` |
+| `GET /catalog` | `format: 2`, source `bounds`, and selection `zoom` |
 | `POST /jobs` | JSON `bounds`; returns `id` and `state: ready` once the selection metadata exists |
 | `GET /bundles/ID/bundle.json` | Selected bundle manifest |
 | `GET /bundles/ID/release.json` | Selected release manifest |
-| `GET /bundles/ID/objects/SHA256` | Transport bytes or HTTP 307 to the immutable object pool |
+| `GET /bundles/ID/objects/SHA256` | Transport bytes or HTTP 307 to the immutable object pool, also for each cell object of the route package |
 
-The ID hashes the selection format (`6`), the publication catalog, the bounds of the grid cells
+The ID hashes the selection format (`7`), the publication catalog, the bounds of the grid cells
 that the request overlaps, the SHA-256 of each of their cell files, and the URL of the object pool.
 A cell of the catalog without its cell file is an error. Repeated selections reuse metadata.
 Cancellation stops the client request. Error responses contain `message`. Selections outside the
@@ -149,18 +152,32 @@ server language model and device catalog.
 | `downloads/SHA256` | Incomplete or complete transport bytes pending verification |
 | `downloads/SHA256.resume` | Opaque URLSession resume data |
 | `releases/ID/` | Original runtime file layout, linked to verified objects |
+| `routing/DIRECTORY/` | The install of the route package whose `directory.bin` has the SHA-256 `DIRECTORY`, with the union of the areas of the maps of that package |
 | `maps.json` | List of installed maps |
 | `pending.json` | One resumable download |
 
-Each `maps.json` entry contains `id`, `name`, `region`, `bounds`, and `installedBytes`.
+Each `maps.json` entry contains `id`, `name`, `region`, `bounds`, `routing` (the SHA-256 of
+`routing/directory.bin`), and `installedBytes`.
+
+Before each change of `maps.json`, the app installs the union of the areas of the maps of the
+routing package that the change gives; with no area left, the install folder goes. A map enters
+`maps.json` only after its install is complete. The cell objects of the route package stay in
+`objects/` only until their install. The `installedBytes` of a map count the routing of its own
+area, so two maps that share cells both count them.
 
 The app checks free space before transfer. Its estimate includes filesystem allocation, missing
-decoded objects, the four largest temporary compressed objects, and installation metadata. At most
+decoded objects, the four largest temporary compressed objects, installation metadata, each missing
+cell object of the route package and its installed part, and for a new routing package the copies
+of `package.json` and `directory.bin` in its install folder. At most
 four downloads run at once. Compressed objects are decoded and removed individually. Verification
 precedes the atomic library update. The library is excluded from device backups. Deletion retains
 shared objects that another map or the pending download needs.
 
 Each download prohibits cellular, expensive and constrained networks unless the user allows them.
-Maps, routes and search first use a complete installed release that covers the request. Routing
-graphs are not combined. A failed local request falls back to the online service. A valid empty
+The preparation of a download is the exception: it fetches `routing/package.json` and
+`routing/directory.bin` on any network, to plan the cells of the area.
+Maps, routes and search first use a complete installed release that covers the request. A route
+uses the install of the first map that holds its points. A failed local request falls back to the
+online service. A long road of a download cell that the area does not install is no candidate on the
+phone, where the server can snap to it. A valid empty
 local search result does not need a network request.

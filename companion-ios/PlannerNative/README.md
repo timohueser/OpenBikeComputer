@@ -1,7 +1,10 @@
 # Native planner providers
 
 The Companion app compiles the Swift files in this directory. `RouteProvider`
-calls the planner-service static library. `PMTilesArchive` reads the map and route
+calls the planner-service static library through `PlannerNative.h`; keep that header
+equal to the `#[no_mangle]` block of `planner/service/src/native.rs`.
+`RoutingInstaller` installs the routing of the offline areas with the same library.
+`PMTilesArchive` reads the map and route
 network tiles of an installed map. Follow
 [the iOS on-ramp](../README.md) to build the app.
 

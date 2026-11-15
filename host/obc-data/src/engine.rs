@@ -8,7 +8,7 @@ pub mod changes;
 pub mod plan;
 mod process;
 pub use process::{child, peak_rss, python_executable, Usage};
-pub(crate) use process::{copy_lines, ended, panicked};
+pub(crate) use process::{copy_lines, ended, last_line, panicked};
 #[cfg(unix)]
 pub(crate) use process::{try_wait_pid, wait_pid};
 

@@ -16,6 +16,10 @@ required-features = ["http"]
 name = "http"
 required-features = ["http"]
 
+[[test]]
+name = "install"
+required-features = ["http"]
+
 [features]
 default = ["http"]
 # The HTTP service. The phone's static library builds without it.
@@ -30,5 +34,7 @@ tower-http = { version = "0.6", features = ["compression-br", "compression-gzip"
 
 [dev-dependencies]
 planner-router-build = { workspace = true }
+# The hashes of the package of the install test.
+sha2 = "0.10"
 
 tower = { version = "0.5", features = ["util"] }

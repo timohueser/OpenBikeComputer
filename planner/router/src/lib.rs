@@ -1,27 +1,41 @@
 //! A routing library independent of transport, filesystem, map rendering and itinerary policy.
 mod alternatives;
 pub mod answer;
-pub mod base;
-pub mod blocks;
+pub mod cells;
 pub mod closures;
-pub mod cost;
-pub mod data;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod directory;
+pub mod compare;
+pub mod cost;
 pub mod geometry;
-pub mod landmarks;
+pub mod host;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod install;
 pub mod model;
-pub mod package;
-mod queue;
+pub mod overlay;
+pub mod region;
 pub mod router;
-pub mod search;
 pub mod shape;
 pub mod snap;
-pub mod storage;
-pub mod table;
-#[cfg(not(target_arch = "wasm32"))]
-pub use directory::open;
 pub use router::{Control, Request, Route, Router};
+
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::Path;
+
+/// Opens the install of format 10 in `path`, which `install.bin` marks complete; with `silent`, on
+/// a host whose `announce` does nothing, which only a measurement uses.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn open(path: &Path, silent: bool) -> Result<region::Region<host::Maps>> {
+    if !path.join("directory.bin").is_file() || !path.join(install::MARKER).is_file() {
+        return Err(Error::MissingRegion(format!("The routing install in {} is not complete", path.display())));
+    }
+    let read = |name: &str| {
+        let path = path.join(name);
+        std::fs::read(&path).map_err(|e| Error::InvalidData(format!("{}: {e}", path.display())))
+    };
+    let (directory, info, marker) = (read("directory.bin")?, read("package.json")?, read(install::MARKER)?);
+    let maps = host::Maps::new(path, &directory)?;
+    region::Region::open(if silent { maps.silent() } else { maps }, directory, info, &marker)
+}
 
 /// A request that exceeds a fixed limit, and fails again on an idle service with the same data,
 /// gives `Limit`. A request that fails for memory that other requests hold, or for an allocation

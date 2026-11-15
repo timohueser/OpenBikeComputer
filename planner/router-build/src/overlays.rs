@@ -98,7 +98,7 @@ fn memberships(relations: &Table<Relations>) -> (Sorted<(i64, i64)>, BTreeMap<i6
     (sort::sorted(members), routes)
 }
 
-/// Writes a new index for the routing package whose manifest identity is `package`.
+/// Writes a new index for the routing package whose identity is `package`.
 pub fn write(path: &Path, package: &str, bounds: [f64; 4], osm: &Data) -> Result<(), String> {
     let mut database = Connection::open(path).map_err(text)?;
     database

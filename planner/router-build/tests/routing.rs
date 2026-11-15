@@ -1,9 +1,9 @@
 use planner_router::cost::RoadCost;
 use planner_router::{
     answer::answer,
-    data::{RoutingData, Selection},
+    host::Memory,
     model::{Pace, Point, Profile, Road, Surface, BIKE, FOOT, NO_ELEVATION, PUSH},
-    package::{digest, Package, Source},
+    region::Region,
     router::Response,
     snap::{Candidate, Policy, Position, REACH_M},
     Control, Error, Request, Route, Router,
@@ -12,44 +12,37 @@ use planner_router_build::cost::{way_bases, Costing};
 use planner_router_build::source::{Builder, Tags, Ways};
 use planner_router_build::{base::Dictionary, Graph, Turn};
 use serde_json::{json, Value};
-use std::{
-    cmp::Reverse,
-    collections::{BinaryHeap, HashMap},
-    sync::Arc,
-};
+use std::{cmp::Reverse, collections::BinaryHeap};
 
-#[derive(Clone)]
-struct Memory(Arc<HashMap<String, Vec<u8>>>);
-impl Source for Memory {
-    fn read(&self, key: &str) -> planner_router::Result<Vec<u8>> {
-        self.0.get(key).cloned().ok_or_else(|| Error::MissingRegion(key.into()))
+/// The cell sizes of the package of a test graph: `fixture()` has two levels. A route of more than
+/// a few roads crosses a closed level-1 cell.
+const SIZES: [u32; 2] = [4, 8];
+
+/// The package of `graph` for `profiles`, in memory. It gives `graph` its source ways and, unless
+/// it is ordered, the junction facts and the order into cells of `SIZES`, so that the road IDs of
+/// `graph` are those of the package.
+fn region_with_profiles(graph: &mut Graph, profiles: &[Profile]) -> Region<Memory> {
+    *graph = with_sources(std::mem::take(graph));
+    if graph.cells.levels() == 0 {
+        let junctions = graph.points.len();
+        if graph.signals.values().is_empty() {
+            graph.signals = std::iter::repeat_n(0, junctions).collect();
+            graph.node_doubts = std::iter::repeat_n(0, junctions).collect();
+            graph.node_closures = std::iter::repeat_n(u32::MAX, junctions).collect();
+        }
+        planner_router_build::layout::order(graph, &SIZES, None).unwrap();
     }
+    planner_router_build::cells::memory(graph, &SIZES, profiles, [-1.0, -1.0, 1.0, 1.0]).unwrap()
 }
-fn package(graph: &Graph) -> (Memory, Vec<u8>) {
-    let profiles = Profile::presets();
-    package_with_profiles(graph, &profiles[..5])
+fn region(graph: &mut Graph) -> Region<Memory> {
+    region_with_profiles(graph, &Profile::presets()[..5])
 }
-fn routing(source: Memory, manifest: &[u8]) -> Selection<Memory> {
-    Selection::whole(Package::open(source, manifest).unwrap())
+fn router_of(graph: &mut Graph) -> Router<Memory> {
+    Router::new(region(graph))
 }
-fn package_with_profiles(graph: &Graph, profiles: &[Profile]) -> (Memory, Vec<u8>) {
-    let graph = with_sources(graph.clone());
-    let mut objects = HashMap::new();
-    let manifest = planner_router_build::prepare(
-        &graph,
-        "test".into(),
-        [-1.0, -1.0, 1.0, 1.0],
-        profiles,
-        vec![],
-        "test".into(),
-        |bytes| {
-            let key = digest(bytes);
-            objects.insert(key.clone(), bytes.to_vec());
-            Ok(key)
-        },
-    )
-    .unwrap();
-    (Memory(Arc::new(objects)), serde_json::to_vec(&manifest).unwrap())
+/// The labels that the searches since the last call settled at a level above 0: by a cost table.
+fn upper(router: &Router<Memory>) -> usize {
+    router.package().take_stats().levels[1..].iter().sum()
 }
 /// One value for each edge of the route, from the runs of one edge channel of its answer.
 fn edges(route: &Route, channel: &str) -> Value {
@@ -66,7 +59,7 @@ fn attachment(route: &Route, request: &Request, k: usize) -> (Point, f64) {
     (attached, attached.distance(point(request.points[k])))
 }
 /// The candidates a route request attaches a point to: within 250 m, or else within reach.
-fn snaps(router: &Router<Selection<Memory>>, coordinate: [f64; 2], profile: &str) -> Vec<Candidate> {
+fn snaps(router: &Router<Memory>, coordinate: [f64; 2], profile: &str) -> Vec<Candidate> {
     let package = router.package();
     let found = package.snap(point(coordinate), profile, Policy::default()).unwrap();
     if found.retained.is_empty() {
@@ -228,15 +221,20 @@ fn coordinate(road: &Road, fraction: f64) -> [f64; 2] {
 fn prepared_coordinate_routes_match_independent_arrival_road_search() {
     let original = with_sources(fixture());
     let mut graph = original.clone();
-    let order = planner_router_build::layout::order(&mut graph, None).unwrap();
+    let order = planner_router_build::layout::order(&mut graph, &SIZES, None).unwrap();
     let order = order.values();
+    // `with_sources` gives junction `i` the node ID `i`, so the node IDs give the new junction IDs.
+    let mut rank = vec![0; graph.points.len()];
+    for (new, &old) in graph.node_ids.values().iter().enumerate() {
+        rank[old as usize] = new as u32;
+    }
     let (reordered, original_roads) = (roads(&graph), roads(&original));
     for (new, &old) in order.iter().enumerate() {
-        assert_eq!(
-            serde_json::to_value(&reordered[new]).unwrap(),
-            serde_json::to_value(&original_roads[old as usize]).unwrap()
-        );
+        let mut road = original_roads[old as usize].clone();
+        (road.from, road.to) = (rank[road.from as usize], rank[road.to as usize]);
+        assert_eq!(serde_json::to_value(&reordered[new]).unwrap(), serde_json::to_value(&road).unwrap());
     }
+    check_cells(&graph);
     for (actual, expected) in
         [(&graph.forbidden, &original.forbidden), (&graph.forbidden_foot, &original.forbidden_foot)]
     {
@@ -249,8 +247,8 @@ fn prepared_coordinate_routes_match_independent_arrival_road_search() {
         assert_eq!(restored, expected.values());
     }
     let profiles = Profile::presets();
-    let (source, manifest) = package_with_profiles(&graph, &profiles);
-    let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
+    let mut router = Router::new(region_with_profiles(&mut graph, &profiles));
+    let mut crossed = 0;
     let coords: Vec<_> = reordered.iter().step_by(3).flat_map(|r| [coordinate(r, 0.2), coordinate(r, 0.8)]).collect();
     for profile in &profiles {
         let mut dictionary = Dictionary::default();
@@ -263,6 +261,7 @@ fn prepared_coordinate_routes_match_independent_arrival_road_search() {
                     .iter()
                     .flat_map(|a| ends.iter().filter_map(|b| search(&costing, &curves, a.position, b.position)))
                     .min();
+                upper(&router);
                 let actual = router.route(
                     &Request {
                         points: vec![from, to],
@@ -279,6 +278,7 @@ fn prepared_coordinate_routes_match_independent_arrival_road_search() {
                 match (expected, actual) {
                     (Some(cost), Ok(route)) => {
                         assert_eq!(cost, route.cost, "{from:?} -> {to:?}");
+                        crossed += usize::from(upper(&router) > 0);
                         for pair in route.legs[0].pieces.windows(2) {
                             assert_eq!(graph.roads.to(pair[0].road as usize), graph.roads.from(pair[1].road as usize));
                             assert!(graph.permits_turn(pair[0].road, pair[1].road, profile.walking));
@@ -290,6 +290,7 @@ fn prepared_coordinate_routes_match_independent_arrival_road_search() {
             }
         }
     }
+    assert!(crossed > 0, "no route crosses a closed cell");
 }
 
 #[test]
@@ -312,10 +313,9 @@ fn lazy_endpoint_costs_preserve_every_profile_and_partial_offset() {
                 .collect();
         }
     });
-    let graph = with_sources(graph);
+    let mut graph = with_sources(graph);
     let profiles = Profile::presets();
-    let (source, manifest) = package_with_profiles(&graph, &profiles);
-    let package = routing(source, &manifest);
+    let package = region_with_profiles(&mut graph, &profiles);
     for profile in &profiles {
         let mut dictionary = Dictionary::default();
         let costing = costing(&graph, profile, &mut dictionary);
@@ -335,51 +335,9 @@ fn lazy_endpoint_costs_preserve_every_profile_and_partial_offset() {
 }
 
 #[test]
-fn an_idle_service_drops_the_profiles_that_no_router_holds_before_it_answers_memory() {
-    let graph = fixture();
-    let (source, manifest) = package(&graph);
-    // This handle keeps an unlimited budget, so the cache keeps each profile that it loads.
-    let cache = routing(source, &manifest);
-    let roads = roads(&graph);
-    let request = Request {
-        points: vec![coordinate(&roads[0], 0.2), coordinate(&roads[15], 0.8)],
-        profile: "touring".into(),
-        pace: Pace::default(),
-        alternatives: false,
-        alternatives_only: false,
-        turnarounds: vec![],
-        start_position: None,
-        end_position: None,
-    };
-    let idle = cache.idle_bytes("touring").unwrap();
-    // A router with `gravel` prepared holds it, so `touring` cannot have its idle room now.
-    let held = cache.prepared("gravel").unwrap();
-    let busy = cache.fork();
-    let mut budget = busy.routing_bytes("touring").unwrap() - 1;
-    assert!(budget >= idle);
-    drop(busy);
-    assert!(matches!(Router::new(cache.fork(), budget).route(&request, &Control::default()), Err(Error::Memory)));
-    drop(held);
-    // Without the holder, each budget gives the same answer at each try: a limit or the route.
-    budget = idle;
-    loop {
-        let mut router = Router::new(cache.fork(), budget);
-        router.package().prepared("touring").unwrap();
-        cache.prepared("gravel").unwrap();
-        match router.route(&request, &Control::default()) {
-            Ok(_) => break,
-            Err(Error::Limit) => budget += 64,
-            Err(error) => panic!("{error:?} with a budget of {budget}"),
-        }
-    }
-    assert!(budget > idle);
-}
-
-#[test]
 fn via_direction_pace_and_failure_states_are_explicit() {
-    let graph = fixture();
-    let (source, manifest) = package(&graph);
-    let mut router = Router::new(routing(source.clone(), &manifest), 768 * 1024 * 1024);
+    let mut graph = fixture();
+    let mut router = router_of(&mut graph);
     let roads = roads(&graph);
     let mut request = Request {
         points: vec![coordinate(&roads[0], 0.2), coordinate(&roads[7], 0.5), coordinate(&roads[15], 0.8)],
@@ -417,12 +375,6 @@ fn via_direction_pace_and_failure_states_are_explicit() {
     assert!(matches!(router.route(&request, &Control { max_queries: 0, ..Control::default() }), Err(Error::Limit)));
     request.points[0] = [10.0, 10.0];
     assert!(matches!(router.route(&request, &Control::default()), Err(Error::MissingRegion(_))));
-    let mut broken = (*source.0).clone();
-    let reader = router.package().package();
-    let key = reader.key(&reader.manifest().geometry, 0).unwrap();
-    broken.get_mut(&key).unwrap()[0] ^= 1;
-    let package = Package::open(Memory(Arc::new(broken)), &manifest).unwrap();
-    assert!(matches!(package.road(0), Err(Error::InvalidData(_))));
 }
 
 #[test]
@@ -443,8 +395,7 @@ fn a_point_without_a_road_nearby_attaches_to_the_nearest_road_within_reach() {
         };
         graph.roads.push(road, Default::default());
     }
-    let (source, manifest) = package(&graph);
-    let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
+    let mut router = router_of(&mut graph);
     let mut request = Request {
         points: vec![[0.001, 0.0], [0.015, -0.006]],
         profile: "touring".into(),
@@ -469,8 +420,7 @@ fn a_shape_keeps_direction_and_only_an_explicit_visit_can_reverse() {
     edit_roads(&mut graph, |roads| roads.retain(|r| (r.from == 0 && r.to == 1) || (r.from == 1 && r.to == 0)));
     graph.forbidden = Default::default();
     graph.forbidden_foot = Default::default();
-    let (source, manifest) = package(&graph);
-    let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
+    let mut router = router_of(&mut graph);
     let road = &roads(&graph)[0];
     let mut request = Request {
         points: vec![coordinate(road, 0.2), coordinate(road, 0.8), coordinate(road, 0.2)],
@@ -494,9 +444,8 @@ fn a_shape_keeps_direction_and_only_an_explicit_visit_can_reverse() {
 
 #[test]
 fn a_window_pinned_to_its_neighbour_legs_repeats_the_whole_trip() {
-    let graph = fixture();
-    let (source, manifest) = package(&graph);
-    let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
+    let mut graph = fixture();
+    let mut router = router_of(&mut graph);
     let roads = roads(&graph);
     let whole = Request {
         points: [(0, 0.3), (7, 0.5), (15, 0.5), (20, 0.6), (3, 0.7), (11, 0.4)]
@@ -530,12 +479,64 @@ fn a_window_pinned_to_its_neighbour_legs_repeats_the_whole_trip() {
     assert_eq!(router.route(&foreign, &Control::default()).unwrap().points, route.points);
 }
 
-/// Orders the roads of `graph` with the heights of `height`, and returns the old ID of each road.
-/// The tests drop roads, so the turn rules of `fixture` go.
+/// Checks the cells of an ordered graph against a direct scan: the cell of each road, its border
+/// level, the entering roads first in each level-1 cell, and the leaving lists.
+fn check_cells(graph: &Graph) {
+    let cells = &graph.cells;
+    let (level1, counts) = (cells.level1.values(), cells.counts.values());
+    let levels = cells.levels();
+    assert!(levels >= 2, "the fixture has two levels");
+    // The level-`level` cell of each junction, from the first junctions of the cells.
+    let cell = |level: usize, junction: u32| {
+        let level1 = (0..level1.len() - 1).find(|&c| level1[c][0] <= junction && junction < level1[c + 1][0]).unwrap();
+        if level == 1 {
+            return level1;
+        }
+        let start: usize = counts[1..level - 1].iter().map(|&n| n as usize + 1).sum();
+        let upper = &cells.upper.values()[start..=start + counts[level - 1] as usize];
+        (0..counts[level - 1] as usize)
+            .find(|&c| upper[c] as usize <= level1 && level1 < upper[c + 1] as usize)
+            .unwrap()
+    };
+    let mut global = 0;
+    for level in 1..=levels {
+        for c in 0..counts[level - 1] as usize {
+            let leaving: Vec<u32> = (0..graph.roads.len() as u32)
+                .filter(|&road| {
+                    let (from, to) = (graph.roads.from(road as usize), graph.roads.to(road as usize));
+                    cell(level, from) == c && cell(level, to) != c
+                })
+                .collect();
+            let first = cells.leaving_first.values();
+            assert_eq!(&cells.leaving.values()[first[global] as usize..first[global + 1] as usize], leaving);
+            global += 1;
+        }
+    }
+    for road in 0..graph.roads.len() {
+        let (from, to) = (graph.roads.from(road), graph.roads.to(road));
+        let c = cell(1, to);
+        assert!((level1[c][1] as usize..level1[c + 1][1] as usize).contains(&road), "road {road} in its cell");
+        let border = (1..=levels).filter(|&level| cell(level, from) != cell(level, to)).max().unwrap_or(0);
+        assert_eq!(cells.border.values()[road] as usize, border, "road {road}");
+    }
+    for c in 0..level1.len() - 1 {
+        let border = &cells.border.values()[level1[c][1] as usize..level1[c + 1][1] as usize];
+        assert!(border.is_sorted_by(|a, b| a >= b), "the entering roads come first in cell {c}");
+    }
+}
+
+/// Orders the roads of `graph` in one cell with the heights of `height`, and returns the old ID of
+/// each road. The tests drop roads, so the turn rules of `fixture` go.
 fn order_with_terrain(graph: &mut Graph, mut height: impl FnMut(Point) -> Result<Option<f64>, String>) -> Vec<u32> {
     graph.forbidden = Default::default();
     graph.forbidden_foot = Default::default();
-    planner_router_build::layout::order(graph, Some(&mut height)).unwrap().values().to_vec()
+    let junctions = graph.points.len();
+    graph.node_ids = (0..junctions as i64).collect();
+    graph.node_access = std::iter::repeat_n(0, junctions).collect();
+    graph.signals = std::iter::repeat_n(0, junctions).collect();
+    graph.node_doubts = std::iter::repeat_n(0, junctions).collect();
+    graph.node_closures = std::iter::repeat_n(u32::MAX, junctions).collect();
+    planner_router_build::layout::order(graph, &[4096], Some(&mut height)).unwrap().values().to_vec()
 }
 
 #[test]
@@ -601,7 +602,7 @@ fn closed_packages_route_across_multiple_checked_blocks() {
             });
         }
     }
-    let graph = Graph {
+    let mut graph = Graph {
         points: points.iter().copied().collect(),
         roads: roads.into_iter().collect(),
         forbidden: Default::default(),
@@ -609,9 +610,7 @@ fn closed_packages_route_across_multiple_checked_blocks() {
         warnings: vec![],
         ..Graph::default()
     };
-    let (source, manifest) = package(&graph);
-    let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
-    assert!(router.package().package().manifest().graph.first.blocks.len() > 1);
+    let mut router = router_of(&mut graph);
     let request = Request {
         points: vec![[0.00002, 0.0], [0.21988, 0.0]],
         profile: "touring".into(),
@@ -624,6 +623,7 @@ fn closed_packages_route_across_multiple_checked_blocks() {
     };
     let result = router.routes(&request, &Control::default()).unwrap();
     assert_eq!(result.routes.len(), 1, "A single corridor does not need invented alternatives");
+    assert!(upper(&router) > 0, "the route crosses a closed cell");
     let route = &result.routes[0];
     assert_eq!(route.cost, oracle(&graph, &Profile::presets()[0], route.legs[0].start, route.legs[0].end).unwrap());
     assert_eq!(route.legs[0].pieces.len(), 2199);
@@ -646,10 +646,9 @@ fn a_leg_adds_the_sub_metre_climb_of_its_pieces_before_it_rounds() {
             });
         }
     }
-    let graph =
+    let mut graph =
         Graph { points: points.iter().copied().collect(), roads: roads.into_iter().collect(), ..Graph::default() };
-    let (source, manifest) = package(&graph);
-    let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
+    let mut router = router_of(&mut graph);
     let request = Request {
         points: vec![[0.00002, 0.0], [0.00098, 0.0]],
         profile: "touring".into(),
@@ -685,13 +684,12 @@ fn each_leg_smooths_its_own_heights() {
         shape,
         ..template.clone()
     });
-    let graph = Graph {
+    let mut graph = Graph {
         points: [shape[0], shape[100]].into_iter().collect(),
         roads: roads.into_iter().collect(),
         ..Graph::default()
     };
-    let (source, manifest) = package(&graph);
-    let mut router = Router::new(routing(source, &manifest), 768 << 20);
+    let mut router = router_of(&mut graph);
     let mut route = |points: &[[f64; 2]]| {
         let request = Request {
             points: points.to_vec(),
@@ -740,7 +738,7 @@ fn alternatives_find_a_separate_corridor_without_an_out_and_back_probe() {
             });
         }
     }
-    let graph = Graph {
+    let mut graph = Graph {
         points: points.iter().copied().collect(),
         roads: roads.into_iter().collect(),
         forbidden: Default::default(),
@@ -748,8 +746,7 @@ fn alternatives_find_a_separate_corridor_without_an_out_and_back_probe() {
         warnings: vec![],
         ..Graph::default()
     };
-    let (source, manifest) = package(&graph);
-    let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
+    let mut router = router_of(&mut graph);
     let request = Request {
         points: vec![[0.0, 0.0], [0.06, 0.0]],
         profile: "touring".into(),
@@ -804,7 +801,7 @@ fn an_out_and_back_trip_gets_alternatives_within_one_query_budget() {
             });
         }
     }
-    let graph = Graph {
+    let mut graph = Graph {
         points: points.iter().copied().collect(),
         roads: roads.into_iter().collect(),
         forbidden: Default::default(),
@@ -813,8 +810,7 @@ fn an_out_and_back_trip_gets_alternatives_within_one_query_budget() {
         ..Graph::default()
     };
     let profiles: Vec<_> = Profile::presets().into_iter().filter(|p| p.name.starts_with("touring")).collect();
-    let (source, manifest) = package_with_profiles(&graph, &profiles);
-    let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
+    let mut router = Router::new(region_with_profiles(&mut graph, &profiles));
     let request = Request {
         points: vec![[-0.0015, 0.0], [0.0465, 0.0], [-0.0015, 0.0]],
         profile: "touring".into(),
@@ -836,7 +832,7 @@ fn an_out_and_back_trip_gets_alternatives_within_one_query_budget() {
         .find(|&queries| router.route(&alone, &Control { max_queries: queries, ..Control::default() }).is_ok())
         .unwrap();
     // A new router, because a router answers a repeated request from its last primary route.
-    let mut fresh = Router::new(router.package().fork(), 768 * 1024 * 1024);
+    let mut fresh = Router::new(router.package().fork());
     let kept = fresh.routes(&request, &Control { max_queries: needed, ..Control::default() }).unwrap().routes;
     assert_eq!(kept.iter().map(|r| &r.id).collect::<Vec<_>>(), [&routes[0].id]);
 }
@@ -867,55 +863,6 @@ fn partial_cost_localizes_climbing_and_telescopes_across_shape_points() {
 }
 
 #[test]
-fn geometry_cache_retains_a_snap_working_set_across_many_small_pages() {
-    use planner_router::package::Manifest;
-    use std::cell::Cell;
-    struct Counted<'a>(Memory, &'a Cell<usize>);
-    impl Source for Counted<'_> {
-        fn read(&self, key: &str) -> planner_router::Result<Vec<u8>> {
-            self.1.set(self.1.get() + 1);
-            self.0.read(key)
-        }
-    }
-    let graph = fixture();
-    let (source, bytes) = package(&graph);
-    let mut objects = (*source.0).clone();
-    let mut manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
-    manifest.roads = 20 * 128;
-    manifest.landmarks = None;
-    let mut geometry = Vec::new();
-    for page in 0..20 {
-        let road = Road { way: page, ..roads(&graph)[0].clone() };
-        let bytes = planner_router::geometry::encode(&vec![road; 128]).unwrap();
-        let key = digest(&bytes);
-        geometry.push(key.clone());
-        objects.insert(key, bytes);
-    }
-    let mut write = |bytes: &[u8]| {
-        let key = digest(bytes);
-        objects.insert(key.clone(), bytes.to_vec());
-        Ok(key)
-    };
-    manifest.geometry = planner_router::table::Table::write(&geometry, &mut write).unwrap();
-    manifest.graph =
-        planner_router::base::write_topology(&vec![0; manifest.roads as usize + 1], &[], &mut write).unwrap();
-    for metric in manifest.metrics.values_mut() {
-        metric.weights = planner_router::base::write_weights(vec![1; manifest.roads as usize], [], &mut write).unwrap();
-        metric.allowed = planner_router::table::Table::write(&vec![u64::MAX; 40], &mut write).unwrap();
-        metric.costs = planner_router::table::Table::write(&vec![1u32; manifest.roads as usize], &mut write).unwrap();
-    }
-    let reads = Cell::new(0);
-    let package =
-        Package::open(Counted(Memory(Arc::new(objects)), &reads), &serde_json::to_vec(&manifest).unwrap()).unwrap();
-    for _ in 0..2 {
-        for page in 0..20 {
-            assert_eq!(package.road(page * 128).unwrap().way, page as i64);
-        }
-    }
-    assert_eq!(reads.get(), 21);
-}
-
-#[test]
 fn disconnected_driveway_uses_a_nearby_connected_road_without_relaxing_the_profile() {
     // A road in two segments, and a driveway that only a grade 1 path joins to it.
     let mut graph = fixture();
@@ -941,8 +888,7 @@ fn disconnected_driveway_uses_a_nearby_connected_road_without_relaxing_the_profi
         .collect();
     graph.forbidden = Default::default();
     graph.forbidden_foot = Default::default();
-    let (source, manifest) = package(&graph);
-    let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
+    let mut router = router_of(&mut graph);
     let mut request = Request {
         points: vec![[0.0, 0.0], [0.005, 0.0002], [0.01, 0.0]],
         profile: "road".into(),
@@ -1004,8 +950,7 @@ fn road_and_gravel_bikes_take_their_own_surfaces() {
     graph.forbidden_foot = Default::default();
     let profiles: Vec<_> =
         Profile::presets().into_iter().filter(|p| ["road", "gravel"].contains(&p.name.as_str())).collect();
-    let (source, manifest) = package_with_profiles(&graph, &profiles);
-    let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
+    let mut router = Router::new(region_with_profiles(&mut graph, &profiles));
     let mut request = Request {
         points: vec![[0.0, 0.0], [0.01, 0.0]],
         profile: "road".into(),
@@ -1074,14 +1019,12 @@ fn riding_bans_allow_a_pushing_connection_unless_pushing_is_also_banned() {
         start_position: None,
         end_position: None,
     };
-    let (source, manifest) = package(&graph);
-    let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
+    let mut router = router_of(&mut graph);
     let route = router.route(&request, &Control::default()).unwrap();
     assert_eq!(route.totals().pushing_m, 111);
     assert_eq!(edges(&route, "pushing"), json!([false, true, false]));
     edit_roads(&mut graph, |roads| roads.iter_mut().for_each(|road| road.access &= !PUSH));
-    let (source, manifest) = package(&graph);
-    let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
+    let mut router = router_of(&mut graph);
     assert!(router.route(&request, &Control::default()).is_err());
 }
 
@@ -1119,8 +1062,7 @@ fn a_route_reports_its_possible_closures_only_for_the_mode_it_uses() {
         sources.push(way, &[way, way + 1], &Tags::from_pairs(tags));
     }
     graph.osm.ways = sources.finish().0;
-    let (source, manifest) = package(&graph);
-    let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
+    let mut router = router_of(&mut graph);
     let mut request = Request {
         points: vec![[0.0001, 0.0], [0.0029, 0.0]],
         profile: "road".into(),
@@ -1186,8 +1128,7 @@ fn a_route_avoids_a_private_road_unless_a_shaping_point_is_on_it() {
         sources.push(way as i64, &[a as i64, b as i64], &tags);
     }
     graph.osm.ways = sources.finish().0;
-    let (source, manifest) = package(&graph);
-    let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
+    let mut router = router_of(&mut graph);
     let mut request = Request {
         points: vec![[-0.0005, 0.0], [0.0025, 0.0]],
         profile: "touring".into(),
@@ -1247,10 +1188,13 @@ fn a_spur_that_ends_at_a_closed_gate_stays_snappable_through_its_u_turn() {
         sources.push(way as i64, &[a as i64, b as i64], &Tags::from_pairs([("highway", "service")]));
     }
     graph.osm.ways = sources.finish().0;
-    let (source, manifest) = package(&graph);
-    let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
+    let mut router = router_of(&mut graph);
+    // Each road, also the spur that ends at the gate, is a candidate at its middle.
     for id in 0..6 {
-        assert!(router.package().package().allowed("touring", id).unwrap(), "road {id}");
+        let [a, b] = router.package().with_road(id, |road| [road.shape[0], road.shape[1]]).unwrap();
+        let middle = Point { lat: (a.lat + b.lat) / 2, lon: (a.lon + b.lon) / 2, elevation: NO_ELEVATION };
+        let found = router.package().snap(middle, "touring", Policy::default()).unwrap();
+        assert!(found.retained.iter().any(|c| c.position.road == id), "road {id}");
     }
     // A point 55 m before the gate ends the route there instead of at the junction.
     let request = Request {
@@ -1269,141 +1213,4 @@ fn a_spur_that_ends_at_a_closed_gate_stays_snappable_through_its_u_turn() {
     assert!((330..=338).contains(&distance), "{distance}");
     let back = Request { points: vec![[0.0015, 0.0], [-0.0015, 0.0]], ..request };
     assert_eq!(attachment(&router.route(&back, &Control::default()).unwrap(), &back, 0).1, 0.0);
-}
-
-#[test]
-fn shared_pages_preserve_routes_costs_and_guidance_for_every_profile() {
-    use planner_router::search::{Query, Seed, Workspace};
-    let (source, bytes) = package_with_profiles(&fixture(), &Profile::presets());
-    let original = routing(source.clone(), &bytes);
-    let n = original.package().manifest().roads;
-    let bounds = original.package().manifest().bounds;
-    let make = |ids: &[u32]| {
-        let selection = planner_router_build::blocks::prepare(original.package(), bounds, ids).unwrap();
-        let objects = selection.objects.iter().map(|key| (key.clone(), source.read(key).unwrap())).collect();
-        let selected =
-            Selection::open(Memory(Arc::new(objects)), &serde_json::to_vec(&selection.manifest).unwrap()).unwrap();
-        (selection, selected)
-    };
-    let (full, full_package) = make(&(0..n).collect::<Vec<_>>());
-    let selected: Vec<_> = (0..n).filter(|&i| i < n / 3 || i >= 2 * n / 3).collect();
-    let (_, mut partial) = make(&selected);
-    let mut full_router = Router::new(full_package, 768 * 1024 * 1024);
-    let mut original_router = Router::new(original.fork(), 768 * 1024 * 1024);
-    let names: Vec<_> = original.package().manifest().metrics.keys().cloned().collect();
-    let mut saw_forbidden = false;
-    for name in names {
-        for points in [vec![[0.001, 0.0], [0.02, 0.011]], vec![[0.02, 0.011], [0.001, 0.0]]] {
-            let request = Request {
-                points,
-                profile: name.clone(),
-                pace: Pace::default(),
-                alternatives: false,
-                alternatives_only: false,
-                turnarounds: vec![],
-                start_position: None,
-                end_position: None,
-            };
-            let before = original_router.route(&request, &Control::default()).unwrap();
-            let after = full_router.route(&request, &Control::default()).unwrap();
-            assert_eq!(after.cost, before.cost);
-            assert_eq!(after.points, before.points);
-            assert_eq!(after.elapsed, before.elapsed);
-        }
-        let whole = original.prepared(&name).unwrap();
-        let (graph, costs) = (&whole.graph, &whole.costs);
-        let part = partial.prepared(&name).unwrap();
-        let (joined, joined_costs) = (&part.graph, &part.costs);
-        let mut masked_roads: Vec<u64> = (0..n).map(|i| costs.roads.get(i as usize)).collect();
-        for id in 0..n {
-            if partial.local_id(id).is_none() {
-                masked_roads[id as usize] = u64::MAX;
-            }
-        }
-        let masked = planner_router::base::Costs {
-            roads: planner_router::base::Numbers::U64(masked_roads),
-            turns: costs.turns.clone(),
-        };
-        let mut expected_work = Workspace::default();
-        let mut actual_work = Workspace::default();
-        for from in 0..joined.nodes() as u32 {
-            let global = partial.source_id(from).unwrap();
-            assert_eq!(partial.local_id(global), Some(from));
-            assert_eq!(
-                partial.with_road(from, |road| serde_json::to_value(road).unwrap()).unwrap(),
-                original.with_road(global, |road| serde_json::to_value(road).unwrap()).unwrap()
-            );
-            let expected: Vec<_> = (graph.first[global as usize]..graph.first[global as usize + 1])
-                .filter_map(|arc| {
-                    partial.local_id(graph.head[arc as usize]).map(|to| (to, costs.arc(graph, arc as usize)))
-                })
-                .collect();
-            let actual: Vec<_> = (joined.first[from as usize]..joined.first[from as usize + 1])
-                .map(|arc| (joined.head[arc as usize], joined_costs.arc(joined, arc as usize)))
-                .collect();
-            saw_forbidden |= actual.iter().any(|(_, c)| *c == u64::MAX);
-            assert_eq!(actual, expected);
-            for to in 0..joined.nodes() as u32 {
-                let starts = [Seed { node: from, cost: 7, choice: 0 }];
-                let ends = [Seed { node: to, cost: 11, choice: 0 }];
-                let source_starts = [Seed { node: global, ..starts[0] }];
-                let source_ends = [Seed { node: partial.source_id(to).unwrap(), ..ends[0] }];
-                let query = Query {
-                    starts: &starts,
-                    ends: &ends,
-                    ceiling: u64::MAX,
-                    max_roads: usize::MAX,
-                    heap_bytes: 1_000_000,
-                    heap_limit: 1_000_000,
-                    cancelled: &|| false,
-                };
-                let expected = expected_work
-                    .run(graph, &masked, Query { starts: &source_starts, ends: &source_ends, ..query })
-                    .unwrap();
-                let guidance = part.guide.as_ref().unwrap().potential(&starts, &ends).unwrap();
-                let source_guidance = whole.guide.as_ref().unwrap().potential(&source_starts, &source_ends).unwrap();
-                for local in 0..joined.nodes() as u32 {
-                    assert_eq!(guidance.get(local), source_guidance.get(partial.source_id(local).unwrap()));
-                }
-                let actual = actual_work.run_with_potential(joined, joined_costs, query, Some(&guidance)).unwrap();
-                assert_eq!(actual.as_ref().map(|r| r.cost), expected.as_ref().map(|r| r.cost));
-            }
-        }
-    }
-    assert!(saw_forbidden);
-    let mut incomplete = full.manifest.clone();
-    incomplete.data.graph.head.retain(&Default::default()).unwrap();
-    let missing = Selection::open(source.clone(), &serde_json::to_vec(&incomplete).unwrap()).unwrap();
-    assert!(matches!(missing.prepared("touring"), Err(Error::MissingRegion(_))));
-    incomplete = full.manifest.clone();
-    incomplete.roads.push(incomplete.roads[0]);
-    assert!(Selection::open(source, &serde_json::to_vec(&incomplete).unwrap()).is_err());
-    let cached = partial.prepared("touring").unwrap();
-    partial.set_memory_budget(partial.routing_bytes("touring").unwrap());
-    assert!(Arc::ptr_eq(&cached, &partial.prepared("touring").unwrap()));
-    partial.set_memory_budget(1);
-    assert!(matches!(partial.prepared("hiking"), Err(Error::Limit)));
-}
-
-#[test]
-fn sparse_tables_keep_source_page_numbers_and_last_page_length() {
-    use planner_router::table::{Cache, Table, ENTRIES};
-    let (source, manifest) = package(&fixture());
-    let mut objects = (*source.0).clone();
-    let values: Vec<u32> = (0..(ENTRIES * 3 + 17) as u32).collect();
-    let mut table = Table::write(&values, &mut |bytes| {
-        let key = digest(bytes);
-        objects.insert(key.clone(), bytes.to_vec());
-        Ok(key)
-    })
-    .unwrap();
-    table.retain(&[1, 3].into()).unwrap();
-    assert!(table.valid());
-    let input = Package::open(Memory(Arc::new(objects)), &manifest).unwrap();
-    let mut cache = Cache::<u32>::default();
-    assert_eq!(&*cache.block(&input, &table, 1).unwrap(), &values[ENTRIES..ENTRIES * 2]);
-    assert_eq!(&*cache.block(&input, &table, 3).unwrap(), &values[ENTRIES * 3..]);
-    assert!(matches!(cache.block(&input, &table, 2), Err(Error::MissingRegion(_))));
-    table.pages = Some(vec![3, 1]);
-    assert!(!table.valid());
 }

@@ -23,7 +23,7 @@ of the planner](obc-data.md#planner).
 | `name` | Region display name for an applied grid publication |
 | `bounds` | `[west,south,east,north]` in degrees |
 | `osm_sha256` | Hash of the common OSM PBF |
-| `routing_package` | Hash of `routing/manifest.json` or `routing/blocks.json` |
+| `routing_package` | SHA-256 of `routing/directory.bin`, the identity of the [route package](route-package.md) |
 | `profiles` | Sorted routing profile IDs |
 | `attribution` | OSM credit: the `osm-planet` attribution of `data/sources.toml` |
 | `landcover_attribution` | Credit of the basemap's land cover: the `daylight-landcover` attribution of `data/sources.toml`. Can be absent |
@@ -50,12 +50,13 @@ A release of `obc data` uses the layout of [Canonical grid storage](#canonical-g
 `maps/` contains `basemap.pmtiles`, `places.pmtiles`, `overlays.pmtiles`, `terrain.pmtiles`, map
 assets, and their manifest. When the region recipe names a snow source, it also contains
 `snow.pmtiles`, `snow-levels.pmtiles` and `snow-seasons.pmtiles` from the [snow tile
-contract](planner-snow-tiles.md). When the recipe has a `climate`
-field, it also contains `climate.pmtiles` from the [climate tile
-contract](planner-climate-tiles.md). The files of the release are exactly the files of the map
-manifest and the manifest itself. `routing/` contains the three files in the [route package
-contract](route-package.md), plus `overlays.sqlite`. The overlay index stores the routing manifest
-identity and has the same OSM source. `search/` contains `pois/REGION.sqlite`,
+contract](planner-snow-tiles.md). When the recipe has a `climate` field, it also contains
+`climate.pmtiles` from the [climate tile contract](planner-climate-tiles.md). The files of the
+release are exactly the files of the map manifest and the manifest itself. `routing/` contains the
+files of the [route package contract](route-package.md): `routing/package.json`,
+`routing/directory.bin` and `routing/objects/SHA256`, and no `blocks.json` or packs. Each object is
+an `identity` file. The overlay index stores the identity
+of that route package and has the same OSM source. `search/` contains `pois/REGION.sqlite`,
 `addresses/REGION.sqlite`, and `model/`. Local combined packages use `REGION.sqlite`. `routes/`
 contains `REGION.json` from the [route catalog contract](route-catalog.md). `device/catalog.json` is
 a snapshot. Its file references are absolute URLs to the original immutable cell objects.
@@ -110,9 +111,8 @@ Archive metadata includes the source `osm_sha256`. Empty tiles are absent, excep
 archive contains one empty tile at the southwest bound.
 
 `overlays.pmtiles` holds the route networks and access restrictions of the overlay index. It has
-gzip MVT tiles from zoom 6 to 14, with extent 4096. Its metadata `routing_package` is the routing
-manifest identity of the overlay index. In a grid release, `maps/overlays.json` names the grid
-routing package, the SHA-256 of `routing/blocks.json`, which packs the same graph.
+gzip MVT tiles from zoom 6 to 14, with extent 4096. Its metadata `routing_package` is the identity
+of the route package, also in `maps/overlays.json`.
 
 | Layer | Feature ID | Properties |
 | --- | --- | --- |
@@ -190,7 +190,8 @@ verification indexes.
 
 Before publication, the verifier checks the packed bytes and named metadata against their receipts.
 It composes the indexes with the same source and coverage checks as the producer. It reads changed
-decoded map archives, search shards and routing graphs with their format validators. Unchanged
+decoded map archives and search shards with their format validators, and checks changed routing
+objects with the installer check of the route package. Unchanged
 binary payloads retain their previous verification. The Python group and Node reader dependencies
 must be prepared from their locks. A fresh store can restore the named indexes and client objects
 without the producer files. Verification does not install tools, download data or build runtimes.

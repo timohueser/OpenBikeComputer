@@ -1,36 +1,32 @@
 pub mod base;
-pub mod blocks;
 pub mod catalog;
+pub mod cells;
 mod column;
 pub mod connectivity;
 pub mod cost;
 pub mod country;
 pub mod grid;
-pub mod landmarks;
 pub mod layout;
 pub mod osm;
 pub mod overlays;
+pub mod partition;
 mod road_bike;
 pub mod sort;
 pub mod source;
 pub mod step;
 mod suitability;
+pub mod tables;
 pub mod terrain;
 mod traffic;
 mod work;
 
 use base::{Dictionary, Topology};
-use column::{Column, Layout, Lists};
+use column::{Column, Layout, Lists, Plain};
 use planner_router::{
-    closures,
     cost::CostBasis,
     model::{Point, Profile, Road},
-    package::{self, Manifest, CELL, ROADS_PER_PAGE},
-    storage,
-    table::Table,
 };
 use rayon::prelude::*;
-use std::collections::BTreeMap;
 use terrain::Height;
 
 /// The ways or roads of one job of a parallel pass. Each job writes its own range of each output,
@@ -47,7 +43,7 @@ pub(crate) const SETS: &str = "sets.postcard";
 /// objects that costs, closures, the overlay index and the route catalog read.
 #[derive(Clone, Debug, Default)]
 pub struct Graph {
-    /// The junctions, in the order of their first use by a road.
+    /// The junctions, in the order of their cells (`partition`).
     pub points: Column<Point>,
     pub node_ids: Column<i64>,
     pub node_access: Column<u8>,
@@ -64,6 +60,7 @@ pub struct Graph {
     pub forbidden: Column<Turn>,
     pub forbidden_foot: Column<Turn>,
     pub warnings: Vec<String>,
+    pub cells: partition::Cells,
 }
 
 /// A transition from road `from` to road `to`.
@@ -94,6 +91,7 @@ impl Graph {
         self.roads.save(layout)?;
         layout.save("forbidden", self.forbidden)?;
         layout.save("forbidden_foot", self.forbidden_foot)?;
+        self.cells.save(layout)?;
         let path = layout.path(SETS)?;
         std::fs::write(&path, self.sets.to_bytes()).map_err(|e| format!("{}: {e}", path.display()))
     }
@@ -115,7 +113,27 @@ impl Graph {
             forbidden: layout.open("forbidden")?,
             forbidden_foot: layout.open("forbidden_foot")?,
             warnings,
+            cells: partition::Cells::open(layout)?,
         })
+    }
+
+    /// Puts each junction column into the order `order`: the old ID of each new junction ID.
+    pub fn permute_junctions(&mut self, order: &Column<u32>) -> Result<(), String> {
+        fn permute<T: Plain>(column: &mut Column<T>, order: &Column<u32>) -> Result<(), String> {
+            if column.len() != order.len() {
+                return Err(format!("a junction column has {} entries, not {}", column.len(), order.len()));
+            }
+            let mut permuted = Column::default();
+            permuted.extend_permuted(column, order.values());
+            *column = permuted;
+            Ok(())
+        }
+        permute(&mut self.points, order)?;
+        permute(&mut self.node_ids, order)?;
+        permute(&mut self.node_access, order)?;
+        permute(&mut self.signals, order)?;
+        permute(&mut self.node_closures, order)?;
+        permute(&mut self.node_doubts, order)
     }
 
     /// For a graph that a test builds by hand; the import does this itself. Gives each road the
@@ -435,7 +453,7 @@ impl Roads {
             .enumerate()
             .map(|(slot, &old)| {
                 let p = bucket.shape(old as usize).first().ok_or("Terrain requires a road with at least two points")?;
-                let (lat, lon) = package::cell(*p);
+                let (lat, lon) = terrain::cell(*p);
                 Ok((([degree(p.lat), degree(p.lon)], [lat, lon]), slot as u32))
             })
             .collect::<Result<Column<_>, String>>()?;
@@ -509,6 +527,56 @@ impl Costs {
             layout.save(&format!("{i}.snap"), snap)?;
         }
         Ok(())
+    }
+
+    /// Costs of chosen columns, for a test of the search: for each profile the total cost of each
+    /// road and the cost of each arc of the topology, with `u32::MAX` for none. Each road with a
+    /// cost has the same cost basis, and its snap bit.
+    pub fn of_columns(profiles: Vec<Profile>, columns: Vec<(Vec<u32>, Vec<u32>)>) -> Self {
+        let (mut roads, mut snap) = (Vec::new(), Vec::new());
+        for (totals, turns) in columns {
+            let mut bits = vec![0u64; totals.len().div_ceil(64)];
+            for road in (0..totals.len()).filter(|&road| totals[road] != u32::MAX) {
+                bits[road / 64] |= 1 << (road % 64);
+            }
+            snap.push(bits.into_iter().collect());
+            let bases = totals.iter().map(|&total| u32::from(total != u32::MAX)).collect();
+            roads.push(cost::RoadCosts {
+                bases,
+                totals: totals.into_iter().collect(),
+                turns: turns.into_iter().collect(),
+            });
+        }
+        Self { profiles, roads, snap, dictionary: vec![CostBasis { factor: 1.0, turn: 0.0, ferry: false }] }
+    }
+
+    /// The cost basis of road `road` for profile `profile`; `None` where the profile excludes it.
+    pub fn basis(&self, profile: usize, road: usize) -> Option<CostBasis> {
+        let id = self.roads[profile].bases.values()[road];
+        Some(self.dictionary[id.checked_sub(1)? as usize])
+    }
+
+    /// The total cost of road `road` for profile `profile`; `u32::MAX` where it excludes the road.
+    pub fn total(&self, profile: usize, road: usize) -> u32 {
+        self.roads[profile].totals.values()[road]
+    }
+
+    /// The cost of each arc of the topology for profile `profile`; `u32::MAX` where it may not turn.
+    pub fn turns(&self, profile: usize) -> &[u32] {
+        self.roads[profile].turns.values()
+    }
+
+    /// The cost columns of each profile, the input of `tables::build`.
+    pub fn columns(&self) -> Vec<tables::Costs<'_>> {
+        self.roads
+            .iter()
+            .map(|costs| tables::Costs { totals: costs.totals.values(), turns: costs.turns.values() })
+            .collect()
+    }
+
+    /// The snap bit of road `road` for profile `profile`.
+    pub fn snappable(&self, profile: usize, road: usize) -> bool {
+        self.snap[profile].values()[road / 64] >> (road % 64) & 1 != 0
     }
 
     pub(crate) fn open(layout: &Layout) -> Result<Self, String> {
@@ -614,142 +682,6 @@ pub fn costs(graph: &Graph, topology: &Topology, profiles: &[Profile]) -> Result
     Ok(Costs { profiles: profiles.to_vec(), roads: costs, snap, dictionary: dictionary.into_values() })
 }
 
-/// Writes a closed regional package with all legal transitions and complete road geometry.
-/// The caller publishes the manifest only after all objects have been written.
-pub fn prepare(
-    graph: &Graph,
-    region: String,
-    bounds: [f64; 4],
-    profiles: &[Profile],
-    source_sha256: Vec<String>,
-    attribution: String,
-    write: impl FnMut(&[u8]) -> Result<String, String>,
-) -> Result<Manifest, String> {
-    check(graph, profiles)?;
-    let topology = Topology::new(&graph.roads, graph.points.len())?;
-    let costs = costs(graph, &topology, profiles)?;
-    package(graph, topology, costs, (region, bounds), source_sha256, attribution, write)
-}
-
-/// Writes the package of `graph` with `costs`, which `costs` computed on `topology`: the landmark
-/// distances of each profile, then the objects in profile order.
-pub fn package(
-    graph: &Graph,
-    topology: Topology,
-    costs: Costs,
-    (region, bounds): (String, [f64; 4]),
-    source_sha256: Vec<String>,
-    attribution: String,
-    mut write: impl FnMut(&[u8]) -> Result<String, String>,
-) -> Result<Manifest, String> {
-    let roads = &graph.roads;
-    let count = u32::try_from(roads.len()).map_err(|_| "Too many roads")?;
-    work::Guard::stage("landmarks");
-    let junctions = landmarks::Junctions::new((0..roads.len()).map(|id| (roads.from(id), roads.to(id))))?;
-    let jobs = profile_jobs(work::page_budget()?.0, graph, &topology);
-    let pool = rayon::ThreadPoolBuilder::new().num_threads(jobs).build().map_err(|e| e.to_string())?;
-    let distances = pool.install(|| {
-        costs.roads.par_iter().with_max_len(1).map(|costs| junctions.compute(costs.totals.values())).collect()
-    });
-    let distances = cost::in_order(distances)?;
-    let Costs { profiles, roads: costs, snap, dictionary } = costs;
-    work::Guard::stage("writer");
-    let mut manifest = Manifest {
-        landmarks: None,
-        closures: None,
-        format: package::FORMAT,
-        region,
-        bounds,
-        source_sha256,
-        attribution,
-        warnings: graph.warnings.clone(),
-        roads: count,
-        graph: planner_router::base::write_topology(topology.first.values(), topology.head.values(), &mut write)?,
-        geometry: Table::default(),
-        spatial: BTreeMap::new(),
-        metrics: BTreeMap::new(),
-        costs: Table::default(),
-    };
-    drop(topology);
-    // The (1° group, cell, road) of each cell that a road passes.
-    let mut cells = Column::<(([i32; 2], [i32; 2]), u32)>::default();
-    let mut road_cells = Vec::new();
-    for id in 0..roads.len() {
-        for pair in roads.shape(id).windows(2) {
-            let (a, b) = (package::cell(pair[0]), package::cell(pair[1]));
-            if (a.0.abs_diff(b.0) as u64 + 1) * (a.1.abs_diff(b.1) as u64 + 1) > 4096 {
-                return Err(format!("Road segment spans more than 4096 spatial cells of {} microdegrees", CELL));
-            }
-            for lat in a.0.min(b.0)..=a.0.max(b.0) {
-                for lon in a.1.min(b.1)..=a.1.max(b.1) {
-                    road_cells.push((([lat.div_euclid(100), lon.div_euclid(100)], [lat, lon]), id as u32));
-                }
-            }
-        }
-        road_cells.sort_unstable();
-        road_cells.dedup();
-        cells.extend(&road_cells);
-        road_cells.clear();
-    }
-    let mut geometry = Vec::new();
-    let mut page = Vec::new();
-    for start in (0..roads.len()).step_by(ROADS_PER_PAGE as usize) {
-        let ids = start..roads.len().min(start + ROADS_PER_PAGE as usize);
-        page.resize_with(ids.len(), Road::default);
-        for (road, id) in page.iter_mut().zip(ids) {
-            roads.get(id, road);
-        }
-        geometry.push(write(&planner_router::geometry::encode(&page)?)?);
-    }
-    manifest.geometry = Table::write(&geometry, &mut write)?;
-    // Each group writes the road lists of its cells, then its directory.
-    let mut cells = sort::sorted(cells).peekable();
-    let (mut ids, mut directory, mut current) = (Vec::new(), BTreeMap::new(), None);
-    loop {
-        let next = cells.next();
-        let group = next.map(|((group, _), _)| group);
-        if let Some([lat, lon]) = current.filter(|&current| Some(current) != group) {
-            let directory = storage::encode(&std::mem::take(&mut directory))?;
-            manifest.spatial.insert(package::cell_key((lat, lon)), write(&directory)?);
-        }
-        let Some(((group, [lat, lon]), id)) = next else { break };
-        current = Some(group);
-        ids.clear();
-        ids.push(id);
-        while let Some((_, id)) = cells.next_if(|&((_, cell), _)| cell == [lat, lon]) {
-            ids.push(id);
-        }
-        directory.insert(package::cell_key((lat, lon)), write(&storage::encode(&ids)?)?);
-    }
-    drop(cells);
-    let mut landmarks = junctions.index(&mut write)?;
-    for ((profile, costs), (allowed, distances)) in profiles.iter().zip(&costs).zip(snap.iter().zip(&distances)) {
-        let road_costs = costs.totals.values();
-        let fragments = road_costs.iter().filter(|&&c| c != u32::MAX).count()
-            - allowed.values().iter().map(|word| word.count_ones() as usize).sum::<usize>();
-        eprintln!(
-            "Profile {}: {fragments} roads in fragments are not snappable; landmark scale {}",
-            profile.name, distances.scale
-        );
-        landmarks.profiles.insert(profile.name.clone(), distances.write(&mut write)?);
-        manifest.metrics.insert(
-            profile.name.clone(),
-            base::metric(
-                profile,
-                costs.bases.values(),
-                road_costs,
-                costs.turns.values(),
-                allowed.values(),
-                &mut write,
-            )?,
-        );
-    }
-    manifest.costs = Table::write(&dictionary, &mut write)?;
-    manifest.landmarks = Some(landmarks);
-    manifest.closures = write_closures(graph, &mut write)?;
-    Ok(manifest)
-}
-
 /// The transitions of the roads with the (from, to) junctions `ends`: the roads that arrive at
 /// each junction times those that depart.
 pub fn turns(ends: impl Iterator<Item = (u32, u32)>, junctions: usize) -> u64 {
@@ -761,7 +693,7 @@ pub fn turns(ends: impl Iterator<Item = (u32, u32)>, junctions: usize) -> u64 {
     arriving.values().iter().zip(departing.values()).map(|(&a, &d)| u64::from(a) * u64::from(d)).sum()
 }
 
-/// Prints the counts of the import, and fails when the 32-bit IDs of format 9 cannot number the
+/// Prints the counts of the import, and fails when the 32-bit IDs of the package cannot number the
 /// roads and the transitions. The import checks them after walk 1, before the roads and their
 /// terrain. `ways` and `references` are the counts of the ways, `ends` the (from, to) junction of
 /// each road.
@@ -770,86 +702,12 @@ pub fn check_counts((ways, references): (usize, usize), ends: &[(u32, u32)], jun
     let (r, j) = (ends.len() as u64, junctions as u64);
     eprintln!("Imported: {ways} ways, {references} node references, {r} directed roads, {turns} turns, {j} junctions");
     if r >= u64::from(u32::MAX) {
-        return Err(format!("Too many roads: {r}; format 9 allows fewer than 2^32 - 1"));
+        return Err(format!("Too many roads: {r}; the package allows fewer than 2^32 - 1"));
     }
     if turns >= 1 << 32 {
-        return Err(format!("Too many road transitions: {turns}; format 9 allows fewer than 2^32"));
+        return Err(format!("Too many road transitions: {turns}; the package allows fewer than 2^32"));
     }
     Ok(())
-}
-
-/// The manifest limit of format 9, which the costs step checks before its passes.
-#[derive(Clone, Copy, Debug)]
-pub struct Limits {
-    pub profiles: usize,
-    /// West, south, east, north: the 1° squares of the spatial index.
-    pub bounds: [f64; 4],
-}
-
-impl Limits {
-    /// Fails when the manifest of a package of `graph` passes the limit of format 9. Returns the
-    /// estimate of the manifest size in bytes.
-    pub fn check(self, graph: &Graph) -> Result<u64, String> {
-        let Self { profiles, bounds } = self;
-        let roads = &graph.roads;
-        let turns = turns((0..roads.len()).map(|id| (roads.from(id), roads.to(id))), graph.points.len());
-        let (r, j) = (roads.len() as u64, graph.points.len() as u64);
-        // Each page reference of the manifest takes about 70 bytes: a hash and its JSON.
-        let pages = |n: u64| n.div_ceil(4096);
-        let squares = |low: f64, high: f64| (high.floor() - low.floor()) as u64 + 1;
-        let per_profile = 2 * pages(r) + pages(turns) + pages(r.div_ceil(64)) + 6 * pages(j);
-        let references = pages(r + 1)
-            + pages(turns)
-            + 2 * pages(r)
-            + profiles as u64 * per_profile
-            + pages(r.div_ceil(128))
-            + 1
-            + squares(bounds[0], bounds[2]) * squares(bounds[1], bounds[3]);
-        let estimate = 70 * references + 64 * 1024;
-        eprintln!("Manifest estimate: {estimate} bytes");
-        if estimate > package::MAX_MANIFEST_BYTES as u64 {
-            return Err(format!(
-                "the package of this region needs a manifest of about {} MiB; format 9 allows 128 MiB",
-                estimate.div_ceil(1 << 20)
-            ));
-        }
-        Ok(estimate)
-    }
-}
-
-/// Fails when the closure sets of the roads pass the page limit of format 9.
-pub fn check_closures(graph: &Graph) -> Result<(), String> {
-    let roads = &graph.roads;
-    let mut used = std::collections::BTreeSet::new();
-    used.extend((0..roads.len()).map(|id| roads.closures(id)).filter(|&set| set != u32::MAX));
-    let sets: Vec<_> = used.into_iter().map(|set| graph.sets.get(set)).collect();
-    storage::encode(&sets).map_err(|_| "The closure sets of the roads pass the page limit of format 9")?;
-    Ok(())
-}
-
-/// Writes the sets object and the per-road column only when a road has a possible closure. A set
-/// gets its ID at its first use in road order.
-fn write_closures(
-    graph: &Graph,
-    write: &mut impl FnMut(&[u8]) -> Result<String, String>,
-) -> Result<Option<closures::Index>, String> {
-    let roads = &graph.roads;
-    let (mut ids, mut sets) = (vec![u32::MAX; graph.sets.len()], Vec::new());
-    for road in 0..roads.len() {
-        let set = roads.closures(road);
-        if let Some(id) = ids.get_mut(set as usize).filter(|id| **id == u32::MAX) {
-            *id = sets.len() as u32;
-            sets.push(graph.sets.get(set));
-        }
-    }
-    if sets.is_empty() {
-        return Ok(None);
-    }
-    let id = |road| ids.get(roads.closures(road) as usize).map_or(u64::MAX, |&id| u64::from(id));
-    Ok(Some(closures::Index {
-        sets: write(&storage::encode(&sets)?)?,
-        roads: planner_router::base::write_column((0..roads.len()).map(id), write)?,
-    }))
 }
 
 #[cfg(test)]
@@ -904,25 +762,6 @@ mod tests {
     }
 
     #[test]
-    fn one_and_four_threads_give_the_same_package() {
-        let graph = ladder();
-        let profiles: Vec<_> = Profile::presets().into_iter().take(3).collect();
-        let package = |threads| {
-            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
-            let mut objects = Vec::new();
-            let manifest = pool.install(|| {
-                prepare(&graph, "test".into(), [0.0, 0.0, 0.01, 0.01], &profiles, vec![], "test".into(), |bytes| {
-                    objects.push(bytes.to_vec());
-                    Ok(package::digest(bytes))
-                })
-            });
-            (serde_json::to_vec(&manifest.unwrap()).unwrap(), objects)
-        };
-        assert!(graph.roads.len() > 4 * CHUNK, "the roads fill several chunks");
-        assert_eq!(package(1), package(4));
-    }
-
-    #[test]
     fn the_chunks_give_the_costs_of_each_road_computed_alone() {
         let graph = ladder();
         let profiles: Vec<_> = Profile::presets().into_iter().take(3).collect();
@@ -950,34 +789,5 @@ mod tests {
                 assert_eq!(costs.turns.values()[arc], base::narrow(turn).unwrap(), "{}", profile.name);
             }
         }
-    }
-
-    #[test]
-    fn the_manifest_estimate_is_not_below_the_manifest() {
-        let graph = ladder();
-        let profiles: Vec<_> = Profile::presets().into_iter().take(2).collect();
-        let bounds = [0.0, 0.0, 0.01, 0.01];
-        let estimate = Limits { profiles: profiles.len(), bounds }.check(&graph).unwrap();
-        check_closures(&graph).unwrap();
-        let manifest = prepare(&graph, "test".into(), bounds, &profiles, vec![], "test".into(), |bytes| {
-            Ok(package::digest(bytes))
-        })
-        .unwrap();
-        let json = serde_json::to_vec(&manifest).unwrap();
-        assert!(json.len() as u64 <= estimate);
-        // The page references, each a SHA-256 in hex, are the part of the estimate that grows.
-        fn hashes(value: &serde_json::Value) -> u64 {
-            match value {
-                serde_json::Value::String(text) => {
-                    u64::from(text.len() == 64 && text.bytes().all(|byte| byte.is_ascii_hexdigit()))
-                }
-                serde_json::Value::Array(items) => items.iter().map(hashes).sum(),
-                serde_json::Value::Object(map) => map.values().map(hashes).sum(),
-                _ => 0,
-            }
-        }
-        let references = (estimate - 64 * 1024) / 70;
-        let found = hashes(&serde_json::from_slice(&json).unwrap());
-        assert!(found <= references, "{found} page references, estimate {references}");
     }
 }

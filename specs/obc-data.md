@@ -180,6 +180,8 @@ The options of the [planner layers](#planner) that are the same for each region.
 | --- | --- | --- |
 | `osm.margin_m` | number | `planner/osm/bounds` of a region with a box reaches at least this far around the region, in metres: the search puts a place in the town of a place node up to 15 km away |
 | `routing.profiles` | array of strings | The profiles of the routing package. The route catalog needs `touring`, `road`, `gravel`, `mtb/technical` and `hiking/alpine` |
+| `routing.cell_sizes` | array of integers | The largest number of junctions in a routing cell of level 1, 2, …: the option `cell_sizes` of `planner/routing-roads` |
+| `routing.download_level` | integer | The level of the download cells of the routing package, 1 to 8: the option `download_level` of `planner/routing`. A package with fewer levels takes its top level. A change bakes only `planner/routing` again |
 | `climate.first_year` | integer | The first of the ten years of ERA5-Land that the climate layer reads |
 | `snow.seasons` | array of 2 integers | The first and the last season of the snow layer, and of a version of [`snow`](#snow) |
 
@@ -762,7 +764,7 @@ The `obc data` binary declares each layer beside the steps that make it:
 | `planner/places`, `planner/climate`, `planner/snow`, `planner/trailview-rules`, `planner/trailview-colour` | The step of the same name and its grids |
 | `planner/trailview-features` | `planner/trailview-features`, `planner/trailview-stamps` and their grids |
 | `planner/trailview-ground` | `planner/trailview-material`, `planner/trailview-lithology`, `planner/trailview-region`, `planner/trailview-ground` and its grid |
-| `planner/routing-source`, `planner/routing-roads`, `planner/routing-costs` | The step of the same name. Internal, `cache`. Their files hold router types, so their format is the router `FORMAT` plus 1 |
+| `planner/routing-source`, `planner/routing-roads`, `planner/routing-costs` | The step of the same name. Internal, `cache`. Their files hold router types, so their format is the router `FORMAT` plus 3 |
 | `planner/routing` | `planner/routing`, `planner/overlays` and their grids |
 | `planner/search` | `planner/search/…`, `planner/model` and their grids |
 | `planner/index` | `planner/fonts/grid`, `planner/offline/grid`, `planner/index`, `planner/catalog` |
@@ -1200,9 +1202,9 @@ reads their maximum: the blocks `mean/18/<bi:04>/<bj:04>.tif` that hold the arch
 | `planner/terrain-osm` | Only for more than one source area: `source.osm.pbf` of each `planner/terrain-osm/<area>` | None | `osm.pbf`: their union, as `planner/osm` merges |
 | `planner/terrain` | The GLO-30 tiles of `bounds`; `planner/reference` when there is one; `planner/terrain-osm`, or for one source area its `planner/terrain-osm/<area>` | `bounds`: west, south, east and north of the zoom 10 tiles that the bounds of the region touch and of their neighbours; `attribution`: the credit of GLO-30; `osm_attribution`: the credit of `osm-planet` | `terrain.mbtiles`: the terrain tiles of [the planner release](planner-release.md#terrain-tiles), the bytes that `planner-dem` writes from the same tiles, archive and OSM. `terrain-osm` is the Geofabrik extract with `refresh = "manual"`: the terrain keeps the extract of each area that it read first, and a newer `geofabrik-extracts` does not build the terrain again. `obc data fetch terrain-osm area=<area>` puts a newer extract in the store, which the next update reads. Where GLO-30 has weight, its heights follow the OSM within 300 m of `bounds` (`host/obc-dem/src/shape.rs`): the water side of `natural=coastline` is at 0 m up to 45 m from the line; within 45 m of the top of GLO-30 within 30 m of a `natural=peak` or `natural=volcano` with a numeric `ele`, the cone of its flanks continued from 45 m and 90 m, only rising and never above `ele`. With OSM, the metrics name the Osmium version (`osmium`) |
 | `planner/routing-source` | `planner/osm/bounds` | `bounds` | `source/`: the ways with their node references, tags and facts, the relations, the present node members, the turn rules of the relations, the closure sets, `source.json` (the counts of the import, the SHA-256 of the PBF from `layer_files`) and `layout.json`. The columns are stored columns of `planner/router-build/src/column.rs`: little-endian values of one type each, which `layout.json` names with their count. The import applies the country access defaults |
-| `planner/routing-roads` | `planner/routing-source`, the GLO-30 tiles of the bounds of the region, and `planner/reference` when there is one. The heights of the roads are those of `planner/terrain` without the OSM corrections | `bounds`; `terrain_attribution`: the credit of GLO-30 | `roads/`: the junctions, the roads in package order with their heights, the forbidden turns, the closure sets, the road topology, `roads.json` (the warnings of the manifest, the identities of the PBF and the terrain) and `layout.json` |
-| `planner/routing-costs` | `planner/routing-source`, `planner/routing-roads` | `bounds`, `profiles` | `costs/`: the cost dictionary and, for each profile `<i>` in order, `<i>.bases`, `<i>.totals`, `<i>.turns` and `<i>.snap`; `costs.json` (the profile IDs) and `layout.json` |
-| `planner/routing` | `planner/routing-source`, `planner/routing-roads`, `planner/routing-costs` | `region` (the last part of the region id), `bounds` and `countries`; `attribution`: the credit of OSM. The step list checks the profiles and the countries when it is built | `routing/`: the package of [the route package contract](route-package.md) with `overlays.sqlite` and `route-catalog.json`; `blocks/`: the routing blocks of the grid cells: shared page packs, one manifest for each cell, `blocks.json` and `catalog.json`; `routes/<cell>.json`: the records of `route-catalog.json` that name the cell, with a final newline |
+| `planner/routing-roads` | `planner/routing-source`, the GLO-30 tiles of the bounds of the region, and `planner/reference` when there is one. The heights of the roads are those of `planner/terrain` without the OSM corrections | `bounds`; `terrain_attribution`: the credit of GLO-30; `cell_sizes`: `routing.cell_sizes` of `data/planner.toml`, the largest number of junctions in a cell of level 1, 2, …: 1 to 8 increasing values, the first from 2 to 2^24 − 1 | `roads/`: the junctions and the roads in cell order, the roads with their heights, the cells (`cells.*`), the forbidden turns, the closure sets, the road topology, `roads.json` (the warnings of the manifest, the identities of the PBF and the terrain) and `layout.json` |
+| `planner/routing-costs` | `planner/routing-source`, `planner/routing-roads` | `bounds`, `profiles` | `costs/`: the cost dictionary and, for each profile `<i>` in order, `<i>.bases`, `<i>.totals`, `<i>.turns` and `<i>.snap`; for each level `<l>`, the cost tables of its cells, `tables.<l>.bytes` and `tables.<l>.at`; `costs.json` (the profile IDs) and `layout.json` |
+| `planner/routing` | `planner/routing-source`, `planner/routing-roads`, `planner/routing-costs` | `region` (the last part of the region id), `bounds` and `countries`; `attribution`: the credit of OSM; `cell_sizes`: as for `planner/routing-roads`; `download_level`: `routing.download_level` of `data/planner.toml`, 1 to 8. The step list checks the profiles and the countries when it is built | `routing/`: `overlays.sqlite` and `route-catalog.json`; `cells/`: the objects, `package.json` and `directory.bin` of [the route package contract](route-package.md); `routes/<cell>.json`: the records of `route-catalog.json` that name the cell, with a final newline |
 | `planner/overlays` | `planner/routing` | `attribution` of `osm-planet` | `overlays.pmtiles`: the route networks and the access of `routing/overlays.sqlite`, as [the planner release](planner-release.md) defines it |
 | `planner/assets` | `protomaps-assets`, `tangrams-icons` | None | `assets/fonts/` and `assets/sprites/` of the assets archive; `assets/sprites/LICENSE.txt`: the MIT notice of `tangrams-icons` |
 | `planner/model` | `query-model` | None | `model/`: `model.int8.onnx`, `tokenizer.json` and `tokenizer_config.json` of the archive, and `labels.json`, the labels of the query schema |
@@ -1245,7 +1247,7 @@ The parts of the planner are `map`, `routing`, `search`, `climate`, `snow`,
 `trailview-features`, `trailview-rules`, `trailview-ground`, `trailview-colour` and
 `trailview-canopy`; the device maps are the part `device`. A planner step is in the list when a
 part that is on makes it or reads it: `map` makes the basemap, places, assets and terrain grids,
-`routing` the routing and overlays grids, `search` the model and the two search grids; the other
+`routing` the routing, routing cells and overlays grids, `search` the model and the two search grids; the other
 parts make their own steps. The fonts, the offline grid, the index and the catalog read only the grids that stay.
 `trailview-features` makes the stamps step too.
 `trailview-ground` makes the material, lithology and region steps, and needs `trailview-rules`.
@@ -1254,7 +1256,8 @@ All producers are intermediate layers. Grid steps select their `objects/` and th
 
 | Layer | Reads | Files |
 | --- | --- | --- |
-| `planner/routing/grid` | `planner/routing` | Packed `routing/blocks.json`, `routing/packs/<sha256>/pages.bin` and `pages.idx`, `offline/routing-cells/<cell>.json`, and `routes/tiles/<cell>.json`. It does not build the routing blocks again. Its index records the source graph and cell descriptors |
+| `planner/routing/grid` | `planner/routing` | Packed `routes/tiles/<cell>.json` |
+| `planner/routing/cells/grid` | `planner/routing` | `cells/` of `planner/routing`: `routing/package.json`, `routing/directory.bin` and `routing/objects/<sha256>` of [the route package contract](route-package.md), each with the transport `identity`. Its index has the kind `routing-cells` and `metadata`: `region`, `bounds`, `source_sha256` and the sorted profile names of `package.json` |
 | `planner/search/pois/grid`, `planner/search/addresses/grid` | The database of its search component | `search/tiles/<component>/<cell>.sqlite`, packed. A cell retains intersecting places, addresses, their streets and contexts. The index records regional metadata and clipped cell bounds |
 | `planner/assets/grid`, `planner/model/grid`, `planner/trailview-rules/grid` | `planner/assets`, `planner/model` or `rules.json` of `planner/trailview-rules` | The input files, packed as `maps/assets/`, `search/model/` or `trailview/`. The index maps logical paths to file and transport identities |
 | `planner/fonts/grid` | `planner/basemap/grid`, `planner/places/grid`, `planner/overlays/grid` and `planner/assets/grid`: client files only. The route references are the `ref` of the overlay tiles | Packed `offline/fonts/<stack>.pbf`: the joined used glyph ranges of [the offline contract](planner-offline.md). The index maps each original glyph range to its joined stack |
@@ -1262,10 +1265,11 @@ All producers are intermediate layers. Grid steps select their `objects/` and th
 | `planner/index` | Only `index.json` of each grid step | Packed `search/<region>.grid.json` in `objects/`; `release.json`, which names the index of each grid step, and the small tile pointers in `public/` |
 | `planner/catalog` | `planner/index`, and `index.json` of each grid step | `catalog.json`: the pointer that a planner client reads first. Its `active.id` is the planner release id: the digest of the named files of the planner. `origins` is the `[publication]` table of `data/planner-runtime.toml` |
 
-The overlay grid reads only `index.json` of the routing grid too. It checks the source routing
-package and changes its TileJSON `routing_package` to the grid package hash. The final index
-checks the OSM source, region, coverage, search schema and time zone, routing cell bounds, terrain
-inputs. It reads no payload to compose metadata. A climate change builds
+The overlay grid reads only `index.json` of the routing cells grid too. It fails when
+`routing_package` of its archive is not the SHA-256 of `routing/directory.bin` in that index, and
+keeps the value in its TileJSON. The final index
+checks the OSM source, region and coverage of `metadata` of the routing cells index, the search
+schema and time zone, and the terrain inputs. It reads no payload to compose metadata. A climate change builds
 only its producer, its grid, the final index and the pointer. The named files of the planner are
 `release.json` and `public/` of `planner/index`, and the `index.json` of each grid step at
 `indexes/<step>/index.json`. The engine release manifest holds source versions
@@ -1287,9 +1291,8 @@ are under `<tiles_origin>/releases/<id>/`: the tile Worker reads `releases/<id>/
 `objects/` of the bucket.
 
 Each service prints the formats of the layers that it reads with `--formats`, as one JSON object
-of layer and format, and reads no data: `planner-service --formats` gives `planner/routing`,
-`node planner/search/server.mjs --formats` gives `planner/search` and `planner/index`, and
-`python3 -m tools.planner_downloads --formats` gives `planner/index`. The format of
+of layer and format, and reads no data: `planner-service --formats` gives `planner/routing` 10, `node planner/search/server.mjs --formats` gives `planner/search` and
+`planner/index`, and `python3 -m tools.planner_downloads --formats` gives `planner/index`. The format of
 `planner/index` is that of the two files of it that the services check: the offline catalog and
 `search/<region>.grid.json`.
 
@@ -2326,8 +2329,8 @@ current, serving, release of `planner/next.json`, rollback, and counts each plan
    stops between two files, and goes on after the file goes. A fetch first compares the formats of
    the layers of the release with the formats that the services read (see
    [Service runtimes](#service-runtimes)). A layer in another format fails the planner release
-   before anything downloads: `needs a routing service that reads planner/routing format 9; it
-   reads 8`. Then the fetch downloads the objects and installs the files. Serve keeps reading the
+   before anything downloads: `needs a routing service that reads planner/routing format 10; it
+   reads 9`. Then the fetch downloads the objects and installs the files. Serve keeps reading the
    two files and checking the services meanwhile.
 2. The services of the first two planner releases of the order that have an install run. The
    services of each other installed planner release stop, and its files stay.
@@ -2366,9 +2369,31 @@ When serve stops, it ends each download at its next read and each install betwee
 waits for them within the 10 seconds of its grace; a wait before a retry, a connection or a hash
 does not see the stop.
 
+A planner release whose files hold `routing/directory.bin` has a routing package of format 10
+([the route package contract](route-package.md)). Its files `routing/directory.bin`,
+`routing/package.json` and `routing/objects/*` do not go into `routing/`. After the other files,
+the routing program installs all cells and all profile groups of the package in the folder
+`route-cells/` of the install:
+`planner-service <install>/route-cells --install DIRECTORY PACKAGE OBJECTS 2`. `DIRECTORY` and
+`PACKAGE` are the objects of `routing/directory.bin` and `routing/package.json` in the store of
+serve, and `OBJECTS` is `objects/` of that store, which holds each object as
+`<first two hex digits>/<SHA-256>`. The installer runs at nice 10 on 2 threads, checks each object
+while it writes, and drops each file from the page cache after its sync, so that an install does
+not evict the files of the serving release. A stop of the fetch kills it. A fetch keeps
+`route-cells/` of a folder without the marker, and the next install goes on from its complete
+files. A failed install fails the fetch with its exit status and, after an exit that is not
+from a signal, the last line of the installer: `the routing cells (exit status: 1): <why>`. The
+exit status 3 means that a published object is missing or damaged, and the last line is
+`object <SHA-256>: <why>`: serve deletes that object from its store, so that the next fetch
+downloads it again. The marker `installed` comes after the routing cells.
+
 Before the objects of the files download, the fetch checks the disk. The install needs the bytes
 of each object that the store lacks, the decoded bytes of each file that is not `identity`, and a
-reserve of 5 % of the file system for the logs, the downloads cache and the file system. When the
+reserve of 5 % of the file system for the logs, the downloads cache and the file system. For a
+routing package of format 10, the fetch first downloads `routing/directory.bin` and
+`routing/package.json`, and the install also needs the installed bytes of the files that
+`route-cells/` lacks, which `planner-service <install>/route-cells --missing DIRECTORY PACKAGE`
+prints. When the
 free bytes of the file system of the store are fewer, nothing downloads. Then, when the planner
 release is not the one of the rollback, and no other release names the planner release of the
 rollback, serve stops the services of the rollback, deletes its install, writes `WARNING: no
@@ -2383,11 +2408,29 @@ read the two files and each release that they name: a start without a network de
 `obc data clean` does not touch the installs. The objects are in a store of serve alone, `<store>/follower/<target>/`. After the
 releases that the two files name change, and after fetches, serve deletes there each object and
 each unfinished download that the services of none of them read, once no fetch runs. A `gzip`
-object of a planner release with an install goes too: the install holds its decoded file. A fetch
+object and a file of the routing package of format 10 of a planner release with an install go
+too: the install holds the decoded file. A fetch
 for a planner release that no release names any more stops between two files. For a
 `dir` target, download bundles name the origin of the machine on its network when serve starts,
 else `http://127.0.0.1:8710`. For an R2 target, they name `api_origin` and
 `<objects_origin>/objects` of the planner pointer.
+
+The routing service gets `<install>/route-cells` as its argument.
+It maps each file there at its first use and keeps the map, so its RSS counts the mapped pages.
+Two limits keep one service that grows from taking the memory of the unit from it:
+
+- Search and downloads start with `oom_score_adj` 1000, so when the unit runs out of memory the
+  kernel kills one of them first, not the routing service with its larger RSS.
+- The routing service starts with `RLIMIT_DATA` of (workers + 1) GiB: 1 GiB for each worker and
+  1 GiB for the shared part. `planner-service --workers` prints the worker count by the rule of
+  the service: `ROUTE_WORKERS`, else one for each CPU of the process. The limit counts private
+  writable memory, not the read-only maps of the files.
+
+The kernel limits the maps of each process with `vm.max_map_count`. The VPS sets it to 1,048,576
+(`tools/vps/obc-data.sysctl`). An install with more files than
+the limit allows does not start its routing service. The reason of a failed service ends with the
+last line of its standard error, unless a signal ended it, so the release fails with the message
+of the routing service.
 
 For a `dir` target, serve builds the routing service with cargo when it starts. For an R2 target,
 the routing service is the `planner-service` program beside the program of serve, and serve
@@ -2418,7 +2461,7 @@ commands in a row: the login, the configuration of `ssh` and the host key.
 | Action | Checks |
 | --- | --- |
 | Publish: an update of `prod` and `r2 legacy` | The `OBC_R2_*` variables; rclone on PATH |
-| `deploy services` | `OBC_VPS_SSH`, which does not start with `-`; this machine logs in as root without a prompt, with a host key that it knows; the one-time setup on the VPS: the user `obc-data`, `/opt/obc-data`, Rust, uv and the uv Python of `.python-version` of that user, a C compiler, Node of the `[target]` of `data/planner-runtime.toml`, and the enabled unit. The deploy installs the unit of its commit. The Caddy route of the API is a check that the deploy does not wait for. `tools/vps/`, `data/planner-runtime.toml` and `.python-version` have no change that the commit does not hold |
+| `deploy services` | `OBC_VPS_SSH`, which does not start with `-`; this machine logs in as root without a prompt, with a host key that it knows; the one-time setup on the VPS: the user `obc-data`, `/opt/obc-data`, Rust, uv and the uv Python of `.python-version` of that user, a C compiler, Node of the `[target]` of `data/planner-runtime.toml`, the enabled unit, and `vm.max_map_count` of at least 1,048,576. The deploy installs the unit and the limit of memory maps of its commit. The Caddy route of the API is a check that the deploy does not wait for. `tools/vps/`, `data/planner-runtime.toml` and `.python-version` have no change that the commit does not hold |
 | `deploy tiles` | The two variables; the token may list the Workers of the account; `planner/tiles` has no change that the commit does not hold |
 | Both | The commit of the checkout is on `origin/develop` after a fetch. An older commit of develop serves to go back |
 

@@ -4,18 +4,9 @@ use crate::{
     Graph,
 };
 use planner_router::{
+    host::Memory,
     model::{Point, Profile, Road, Surface, BIKE, FOOT, PUSH},
-    package::{digest, Package},
 };
-use std::sync::Arc;
-
-#[derive(Clone)]
-struct Memory(Arc<HashMap<String, Vec<u8>>>);
-impl Source for Memory {
-    fn read(&self, key: &str) -> planner_router::Result<Vec<u8>> {
-        self.0.get(key).cloned().ok_or_else(|| planner_router::Error::MissingRegion(key.into()))
-    }
-}
 
 fn tags(pairs: &[(&str, &str)]) -> Tags<'static> {
     Tags::from_pairs(pairs.iter().copied())
@@ -34,7 +25,7 @@ type Route<'a> = (i64, Vec<(&'a str, &'a str)>, Vec<Id>);
 
 /// A 7 by 7 grid of streets 445 m apart on rolling ground, with node `10 * row + column`, and its
 /// source objects. The way from node 0 to node 1 is T3.
-fn grid(routes: Vec<Route>) -> (Package<Memory>, Data) {
+fn grid(routes: Vec<Route>) -> (Region<Memory>, Data) {
     let mut graph = Graph::default();
     let mut index = HashMap::new();
     let (mut ways, mut relations) = (Builder::<Ways>::default(), Builder::<Relations>::default());
@@ -93,15 +84,14 @@ fn grid(routes: Vec<Route>) -> (Package<Memory>, Data) {
     ways.set_points(ways.references().iter().map(|&id| node(id)).collect());
     graph.osm = Data { ways, relations: relations.finish().0, ..Data::default() };
     graph.link_ways();
+    let junctions = graph.points.len();
+    graph.signals = std::iter::repeat_n(0, junctions).collect();
+    graph.node_doubts = std::iter::repeat_n(0, junctions).collect();
+    graph.node_closures = std::iter::repeat_n(u32::MAX, junctions).collect();
+    crate::layout::order(&mut graph, &[4, 16], None).unwrap();
     let profiles: Vec<_> = Profile::presets().into_iter().filter(|p| PROFILES.contains(&p.name.as_str())).collect();
-    let mut objects = HashMap::new();
-    let manifest =
-        crate::prepare(&graph, "test".into(), [-1.0, -1.0, 1.0, 1.0], &profiles, vec![], "test".into(), |bytes| {
-            objects.insert(digest(bytes), bytes.to_vec());
-            Ok(digest(bytes))
-        })
-        .unwrap();
-    (Package::open(Memory(Arc::new(objects)), &serde_json::to_vec(&manifest).unwrap()).unwrap(), graph.osm)
+    let region = crate::cells::memory(&graph, &[4, 16], &profiles, [-1.0, -1.0, 1.0, 1.0]).unwrap();
+    (region, graph.osm)
 }
 
 fn route<'a>(id: i64, pairs: &[(&'a str, &'a str)], ways: impl IntoIterator<Item = i64>) -> Route<'a> {
@@ -127,7 +117,7 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
     };
     let mut corner = path(&[0, 1, 2, 3, 4, 14, 24, 34, 44]);
     corner.remove(5);
-    let (package, osm) = grid(vec![
+    let (region, osm) = grid(vec![
         // East, then north: the router needs a shaping point near the corner. The way from node
         // 14 to node 24 is missing, a gap of 445 m.
         route(1, &trail, corner),
@@ -144,8 +134,7 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
         long(5, &[1, 2]),
         long(6, &[5]),
     ]);
-    let selection = Selection::whole(package.fork());
-    let (records, report) = catalog(&selection, osm, false, 2)?;
+    let (records, report) = catalog(&region, osm, false, 2)?;
     let by_id: HashMap<i64, &Value> = records.iter().map(|r| (r["id"].as_i64().unwrap(), r)).collect();
     let dropped: Vec<_> = report.dropped.iter().map(|(reason, ids)| (reason.as_str(), ids.clone())).collect();
     assert_eq!(dropped, [("ExtractEdge", vec![7]), ("Gap", vec![3]), ("NestedLongRoute", vec![6])]);
@@ -173,8 +162,8 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
         .chain([vertices.len() - 1])
         .map(|k| [vertices[k][0] as i32, vertices[k][1] as i32])
         .collect();
-    let mut router = Router::new(Selection::whole(package.fork()), 768 << 20);
-    let routed = router.route(&shape::request("hiking/alpine", &plan, vec![]), &control()).unwrap().totals();
+    let mut router = Router::new(region.fork());
+    let routed = router.route(&shape::request("hiking/alpine", &plan, vec![]), &Control::default()).unwrap().totals();
     assert!(routed.ascent_m > 0);
     assert_eq!(
         [&trail["length_m"], &trail["ascent_m"], &trail["descent_m"]],

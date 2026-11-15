@@ -1,37 +1,15 @@
 """Pack planner routing, assets, model or joined fonts without rebuilding their inputs."""
 
 import argparse
-import json
 from pathlib import Path
 
 from . import planner_offline as offline, planner_runtime as runtime, step_request
 
 
 def routing(layers):
+    """The route catalog files of each grid cell."""
     inputs = layers["planner/routing"]
-    graph = json.loads(Path(inputs["blocks/blocks.json"]).read_bytes())
-    catalog = json.loads(Path(inputs["blocks/catalog.json"]).read_bytes())
-    if graph["source"] != catalog["source"]:
-        raise ValueError("Routing grid sources differ")
-    files = {"routing/blocks.json": inputs["blocks/blocks.json"]}
-    for archive in graph["archives"]:
-        for filename in ("pages.bin", "pages.idx"):
-            name = f"packs/{archive}/{filename}"
-            files[f"routing/{name}"] = inputs[f"blocks/{name}"]
-    cells = []
-    for cell in catalog["cells"]:
-        name = f"offline/routing-cells/{cell['id']}.json"
-        source = inputs[f"blocks/{cell['manifest']}"]
-        descriptor = json.loads(Path(source).read_bytes())
-        if descriptor["source"] != graph["source"] or descriptor["data"]["bounds"] != cell["bounds"]:
-            raise ValueError("Routing cell source or coverage differs")
-        files[name] = source
-        cells.append({**cell, "manifest": name.removeprefix("offline/"), "sha256": runtime.digest(source),
-                      "archives": descriptor["archives"]})
-    for name, source in inputs.items():
-        if name.startswith("routes/"):
-            files[f"routes/tiles/{Path(name).name}"] = source
-    return files, {"graph": graph, "cells": cells}
+    return {f"routes/tiles/{Path(name).name}": source for name, source in inputs.items() if name.startswith("routes/")}
 
 
 def pack_index(request, kind, files, **extra):
@@ -44,12 +22,12 @@ def pack_index(request, kind, files, **extra):
 def step(request):
     kind = request["options"]["kind"]
     if kind == "routing":
-        files, extra = routing(request["layers"])
+        files = routing(request["layers"])
     else:
         layer, = request["layers"].values()
         prefix = {"assets": "maps/", "model": "search/", "trailview-rules": "trailview/"}[kind]
-        files, extra = {prefix + name: source for name, source in layer.items()}, {}
-    pack_index(request, kind, files, **extra)
+        files = {prefix + name: source for name, source in layer.items()}
+    pack_index(request, kind, files)
 
 
 def main():

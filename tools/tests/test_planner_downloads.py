@@ -24,8 +24,7 @@ class PlannerDownloads(unittest.TestCase):
         self.source.mkdir()
         files = {}
         packs = {"left": "maps/tiles/basemap/9-267-177.pmtiles", "right": "maps/tiles/basemap/9-268-177.pmtiles"}
-        for name, data in {"routing/packs/" + "c" * 64 + "/pages.bin": b"abcdef",
-                           "routing/packs/" + "c" * 64 + "/pages.idx": b"index", "search/left.sqlite": b"left places",
+        for name, data in {"routing/directory.bin": b"abcdef", "routing/package.json": b"package", "search/left.sqlite": b"left places",
                            "search/right.sqlite": b"right places", packs["left"]: b"left tiles", packs["right"]: b"right tiles",
                            "maps/tiles/places/0-0-0.pmtiles": b"places", "maps/tiles/overlays/6-33-22.pmtiles": b"networks", "offline/fonts/Sans.pbf": b"glyphs"}.items():
             path = self.root / name
@@ -33,25 +32,16 @@ class PlannerDownloads(unittest.TestCase):
             path.write_bytes(data)
             files[name] = offline.pack_file(path, self.source / "objects")
         manifest = {"format": 1, "bounds": [7.8, 48, 9, 48.4], "region": "test", "profiles": ["road"]}
-        graph = {"format": 2, "source": "b" * 64, "data": {"region": "test", "bounds": manifest["bounds"],
-            "graph": {"head": {"len": 4, "pages": [0], "blocks": ["d" * 64]}}},
-            "roads": [[0, 2]], "arcs": 4, "snap": {}, "archives": ["c" * 64]}
-        (self.source / "routing-cells").mkdir()
         (self.source / "cells").mkdir()
         for side, cell, box in [("left", "9-267-177", [7.8, 48, 8.4375, 48.4]), ("right", "9-268-177", [8.4375, 48, 9, 48.4])]:
-            path = self.source / "routing-cells" / f"{cell}.json"
-            path.write_bytes(runtime.encoded(graph))
-            routing = {"manifest": f"routing-cells/{cell}.json", "sha256": runtime.digest(path),
-                       "adjacency": [[0, 4]], "geometry_bounds": box, "archives": ["c" * 64]}
             pick = lambda *names: {name: files[name] for name in names}
-            (self.source / "cells" / f"{cell}.json").write_bytes(runtime.encoded({"format": 4, "id": cell,
-                "bounds": box, "files": pick(f"search/{side}.sqlite"), "routing": routing,
-                "packs": pick(packs[side], "maps/tiles/places/0-0-0.pmtiles", "maps/tiles/overlays/6-33-22.pmtiles"),
-                "routing_packs": pick(*(f"routing/packs/{'c' * 64}/{name}" for name in ("pages.bin", "pages.idx")))}))
-        publication = {"format": 4, "zoom": 9, "release": manifest, "routing_source": "b" * 64,
-            "cells": ["9-267-177", "9-268-177"],
-            "shared": {f"maps/assets/fonts/Sans/{name}.pbf": "offline/fonts/Sans.pbf" for name in ("0-255", "256-511")},
-            "assets": {"offline/fonts/Sans.pbf": files["offline/fonts/Sans.pbf"]}}
+            (self.source / "cells" / f"{cell}.json").write_bytes(runtime.encoded({"format": 5, "id": cell,
+                "bounds": box, "files": pick(f"search/{side}.sqlite"),
+                "packs": pick(packs[side], "maps/tiles/places/0-0-0.pmtiles", "maps/tiles/overlays/6-33-22.pmtiles")}))
+        shared = {f"maps/assets/fonts/Sans/{name}.pbf": "offline/fonts/Sans.pbf" for name in ("0-255", "256-511")}
+        shared.update({name: name for name in ("routing/directory.bin", "routing/package.json")})
+        publication = {"format": 5, "zoom": 9, "release": manifest, "cells": ["9-267-177", "9-268-177"],
+            "shared": shared, "assets": {name: files[name] for name in set(shared.values())}}
         (self.source / "catalog.json").write_bytes(runtime.encoded(publication))
         self.left, self.packs = [7.9, 48.1, 8.3, 48.3], packs
         self.public = "https://releases.test/planner-api/services/" + "f" * 64 + "/downloads"
@@ -77,7 +67,7 @@ class PlannerDownloads(unittest.TestCase):
         manifest = json.loads((directory / "release.json").read_bytes())
         bundle = json.loads((directory / "bundle.json").read_bytes())
         self.assertEqual(manifest["bounds"], [7.8, 48, 8.4375, 48.4])
-        self.assertEqual({key: manifest["offline"][key] for key in ("format", "zoom")}, {"format": 3, "zoom": 9})
+        self.assertEqual({key: manifest["offline"][key] for key in ("format", "zoom")}, {"format": 4, "zoom": 9})
         self.assertNotIn("map_zoom", manifest["offline"])
         self.assertEqual(manifest["offline"]["cells"], [{"id": "9-267-177", "bounds": [7.8, 48, 8.4375, 48.4], "files": ["search/left.sqlite"]}])
         self.assertIn("search/left.sqlite", bundle["files"])
@@ -92,7 +82,7 @@ class PlannerDownloads(unittest.TestCase):
         tilejson = json.loads(gzip.decompress((directory / "objects" / overlays).read_bytes()))
         self.assertEqual((tilejson["tiles"], tilejson["minzoom"]),
                          ([f"https://offline.openbikecomputer.invalid/{first['id']}/overlays/{{z}}/{{x}}/{{y}}"], 6))
-        static = bundle["files"]["routing/packs/" + "c" * 64 + "/pages.bin"]["transport"]["sha256"]
+        static = bundle["files"]["routing/directory.bin"]["transport"]["sha256"]
         self.assertFalse((directory / "objects" / static).exists())
         self.assertEqual(before, {p.name: p.read_bytes() for p in (self.source / "objects").iterdir()})
         restarted = downloads.Downloads(self.source, self.service.cache, 1000000, public_url=self.public)
@@ -150,9 +140,19 @@ class PlannerDownloads(unittest.TestCase):
         path.write_bytes(runtime.encoded(publication))
         newer = downloads.Downloads(self.source, self.service.cache, 1000000, public_url=self.public)
         self.assertNotEqual(first["id"], newer.prepare(self.request())["id"])
-        (self.source / "routing-cells/9-267-177.json").write_bytes(b"{}")
-        with self.assertRaisesRegex(ValueError, "checksum"):
-            newer.prepare(self.request(self.left))
+
+    def test_a_selection_carries_the_routing_directory_and_no_routing_pack(self):
+        job = self.service.prepare(self.request(self.left))
+        directory = self.service.cache / job["id"]
+        manifest = json.loads((directory / "release.json").read_bytes())
+        bundle = json.loads((directory / "bundle.json").read_bytes())
+        assets = self.service.publication["assets"]
+        for name in ("routing/directory.bin", "routing/package.json"):
+            self.assertEqual(bundle["files"][name], assets[name])
+        self.assertEqual(manifest["routing_package"], hashlib.sha256(b"abcdef").hexdigest())
+        self.assertEqual(manifest["region"], "area-" + job["id"][:24])
+        self.assertNotIn("source_routing", manifest["offline"])
+        self.assertFalse([name for name in bundle["files"] if name == "routing/blocks.json" or name.startswith("routing/packs/")])
 
     def test_a_pool_change_keeps_the_old_quote_and_uses_a_new_cache_entry(self):
         old = self.service.prepare(self.request())
@@ -196,12 +196,12 @@ class PlannerDownloads(unittest.TestCase):
         job = self.service.prepare(self.request())
         base = f"{self.serve()}/bundles/{job['id']}"
         with urlopen(f"{base}/bundle.json") as response:
-            entry = json.load(response)["files"]["routing/blocks.json"]
+            entry = json.load(response)["files"]["maps/basemap.json"]
         self.assertEqual(entry["transport"]["encoding"], "gzip")
         with urlopen(f"{base}/objects/{entry['transport']['sha256']}") as response:
             data = gzip.decompress(response.read())
         self.assertEqual((len(data), hashlib.sha256(data).hexdigest()), (entry["bytes"], entry["sha256"]))
-        self.assertEqual(json.loads(data)["archives"], ["c" * 64])
+        self.assertEqual(json.loads(data)["bounds"], [7.8, 48, 9, 48.4])
 
     def test_published_payload_redirects_to_the_shared_pool_and_keeps_its_identity(self):
         from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -220,7 +220,7 @@ class PlannerDownloads(unittest.TestCase):
         self.service.objects_url = f'http://127.0.0.1:{server.server_port}/planner/objects'
         job = self.service.prepare(self.request())
         bundle = json.loads((self.service.cache / job['id'] / 'bundle.json').read_bytes())
-        entry = bundle['files']['routing/packs/' + 'c' * 64 + '/pages.bin']['transport']
+        entry = bundle['files']['routing/directory.bin']['transport']
         url = f"{self.serve()}/bundles/{job['id']}/objects/{entry['sha256']}"
         with urlopen(url) as response:
             self.assertEqual(response.url, self.service.objects_url + '/' + entry['sha256'])
@@ -233,9 +233,10 @@ class PlannerDownloads(unittest.TestCase):
             job = json.load(response)
         self.assertEqual(job["source"], self.public + "/bundles/" + job["id"])
         with urlopen(base + '/catalog') as response:
-            self.assertEqual(json.load(response)['sha256'], runtime.digest(self.source / 'catalog.json'))
+            catalog = json.load(response)
+            self.assertEqual((catalog['format'], catalog['sha256']), (2, runtime.digest(self.source / 'catalog.json')))
         bundle = json.loads((self.service.cache / job["id"] / "bundle.json").read_bytes())
-        digest = bundle["files"]["routing/packs/" + "c" * 64 + "/pages.bin"]["transport"]["sha256"]
+        digest = bundle["files"]["routing/directory.bin"]["transport"]["sha256"]
         url = f"{base}/bundles/{job['id']}/objects/{digest}"
         # A selection being built holds the cache lock; object reads never wait for it.
         with self.service.lock, urlopen(Request(url, headers={"Range": "bytes=2-4"}), timeout=5) as response:

@@ -51,7 +51,19 @@ macro_rules! stored {
     };
 }
 
-stored!(u8, u16, u32, u64, i32, i64, crate::source::NodeRef, crate::source::WayFacts, crate::source::Rule, crate::Turn);
+stored!(
+    u8,
+    u16,
+    u32,
+    u64,
+    i32,
+    i64,
+    [u32; 2],
+    crate::source::NodeRef,
+    crate::source::WayFacts,
+    crate::source::Rule,
+    crate::Turn
+);
 
 impl sealed::Sealed for Point {}
 impl Plain for Point {}

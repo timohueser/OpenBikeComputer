@@ -5,8 +5,8 @@
 //! line. A plan reproduces a line when the deviation of its route is at most `SHARE` of the line
 //! length, for every profile.
 use crate::{
-    data::RoutingData,
     geometry::{self, METRES_PER_UDEG},
+    host::Host,
     model::{Pace, Point},
     Control, Error, Request, Route, Router,
 };
@@ -209,8 +209,8 @@ pub enum Failure {
 }
 
 /// The search for one line. A plan is a list of ascending line vertex indices.
-struct Search<'a, D> {
-    router: &'a mut Router<D>,
+struct Search<'a, H> {
+    router: &'a mut Router<H>,
     profiles: &'a [&'a str],
     line: &'a [P],
     along: Vec<f64>,
@@ -231,7 +231,7 @@ struct Search<'a, D> {
     max_calls: usize,
 }
 
-impl<D: RoutingData> Search<'_, D> {
+impl<H: Host> Search<'_, H> {
     fn leg(&mut self, p: usize, i: usize, j: usize) -> Leg {
         if let Some(leg) = self.legs.get(&(p, i, j)) {
             return *leg;
@@ -367,8 +367,8 @@ fn untried(legs: &mut [Leg], tried: &HashSet<usize>) -> Option<usize> {
 /// the plan is within the budget. Then every shaping point that does not help goes. The whole
 /// plan is routed last; when it fails, its worst leg with an untried point gets that point and the
 /// search continues.
-pub fn shape<D: RoutingData>(
-    router: &mut Router<D>,
+pub fn shape<H: Host>(
+    router: &mut Router<H>,
     profiles: &[&str],
     line: &[P],
     tips: &[usize],
@@ -465,7 +465,13 @@ pub fn shape<D: RoutingData>(
         if legs.is_empty() {
             return Ok(Plan { points: snapped, turnarounds, route: routes.swap_remove(0) });
         }
-        let via = untried(&mut legs, &search.tried);
+        // The shaping point of the worst leg, also one that was tried before: a leg of the whole
+        // route starts on the road where the leg before it ended, so it can break a tie between ways
+        // of equal cost in another way than the leg routed alone, and a point that the prune
+        // removed can be the one that the whole route needs. A leg's point lies strictly inside the
+        // leg, so it is never in the plan; it stays fixed, so each round adds another one.
+        legs.sort_by(|a, b| b.off.total_cmp(&a.off));
+        let via = legs.iter().find_map(|leg| leg.via);
         search.insert(&mut plan, via)?;
         search.fixed.extend(via);
     }
@@ -508,7 +514,7 @@ pub struct LineRequest {
 
 /// The answer of `POST /v1/shape`: the plan points of one client line, with one profile and at
 /// most `MAX_CALLS` router calls, each with `control`.
-pub fn answer<D: RoutingData>(router: &mut Router<D>, request: &LineRequest, control: Control) -> Result<Value, Error> {
+pub fn answer<H: Host>(router: &mut Router<H>, request: &LineRequest, control: Control) -> Result<Value, Error> {
     if request.line.len() < 2 {
         return Err(Error::InvalidRequest("Use 2 or more line points".into()));
     }

@@ -37,7 +37,7 @@ class MapGrid(unittest.TestCase):
         self.assertEqual(set(path.name for path in output.iterdir()), {"objects", "index.json"})
         return output, index
 
-    def source(self, root, kind, tiles, tile_type=TileType.MVT):
+    def source(self, root, kind, tiles, tile_type=TileType.MVT, **metadata):
         archive = root / f"{kind}.pmtiles"
         with write(archive) as writer:
             for tile, data in sorted(tiles.items(), key=lambda item: zxy_to_tileid(*item[0])):
@@ -46,7 +46,7 @@ class MapGrid(unittest.TestCase):
                              "min_lon_e7": -1800000000, "min_lat_e7": -850000000,
                              "max_lon_e7": 1800000000, "max_lat_e7": 850000000,
                              "center_zoom": 0, "center_lon_e7": 0, "center_lat_e7": 0},
-                            {"attribution": "test credit", "vector_layers": [{"id": "roads", "fields": {}}]})
+                            {"attribution": "test credit", "vector_layers": [{"id": "roads", "fields": {}}], **metadata})
         return archive
 
     def packs(self, output, index):
@@ -81,6 +81,22 @@ class MapGrid(unittest.TestCase):
                 data = gzip.decompress(data)
             self.assertEqual(json.loads(data), index["metadata"])
             self.assertEqual(index["metadata"]["bounds"], BOUNDS)
+
+    def test_overlays_name_the_directory_of_the_route_package(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive = self.source(root, "overlays", {(6, 33, 22): b"routes"}, routing_package="a" * 64)
+            for directory, same in (("a" * 64, True), ("b" * 64, False)):
+                (root / "index.json").write_text(json.dumps({"files": {"routing/directory.bin": {"sha256": directory}}}))
+                request = self.request(root, archive, "overlays")
+                request["layers"]["planner/routing/cells/grid"] = {"index.json": str(root / "index.json")}
+                if same:
+                    grid.step(request)
+                    self.assertEqual(self.files(request)[1]["metadata"]["routing_package"], directory)
+                    Path(request["output"]).rename(root / "first")
+                else:
+                    with self.assertRaisesRegex(ValueError, "another routing package"):
+                        grid.step(request)
 
     def test_a_pack_over_the_limit_keeps_its_own_tile_and_its_children_take_the_deeper_tiles(self):
         tiles = {(9, 1, 2): b"a" * 1000, (10, 2, 4): b"b" * 1000, (10, 3, 5): b"c" * 1000, (11, 6, 10): b"d" * 1000}

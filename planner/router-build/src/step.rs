@@ -2,23 +2,24 @@
 //! that a stop or a new profile list repeats only the steps after it: `planner/routing-source`
 //! (the OSM objects with their facts), `planner/routing-roads` (the roads with their terrain and
 //! their topology) and `planner/routing-costs` (the costs of each profile). `planner/routing`
-//! writes the package, its overlay index, its route catalog, the routing blocks and the routes of
-//! each grid cell.
+//! writes the package of format 10, its overlay index, its route catalog and the routes of each
+//! grid cell. `planner/routing/cells/grid` publishes the files of the package.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use obc_data::engine::Request;
 use obc_dem::planner::{Recent, Terrain};
-use planner_router::{directory::Writer, model::Point, package};
+use planner_router::model::Point;
 use serde_json::{json, Value};
 
 use crate::base::Topology;
 use crate::column::Layout;
 use crate::osm::{Counts, Source};
 use crate::source::{Data, Sets};
+use crate::tables::{self, Tables};
 use crate::work::{Guard, OWN_BYTES};
-use crate::{catalog, grid, overlays, Costs, Graph, Limits, SETS};
+use crate::{catalog, grid, overlays, Costs, Graph, SETS};
 
 /// The step of the source layer. The last part of the name of a work layer names its folder.
 pub const SOURCE: &str = "planner/routing-source";
@@ -35,6 +36,23 @@ fn list(options: &Value, name: &str) -> Result<Vec<String>, String> {
         .iter()
         .map(|value| value.as_str().map(str::to_string).ok_or(format!("option `{name}` lists a non-string")))
         .collect()
+}
+
+/// The option `cell_sizes`: the largest number of junctions in a cell of level 1, 2, ….
+fn cell_sizes(options: &Value) -> Result<Vec<u32>, String> {
+    let values = options["cell_sizes"].as_array().ok_or("option `cell_sizes` is not a list")?;
+    let sizes = values
+        .iter()
+        .map(|value| value.as_u64().and_then(|size| u32::try_from(size).ok()))
+        .collect::<Option<Vec<_>>>()
+        .ok_or("option `cell_sizes` lists a value that is not a 32-bit count")?;
+    crate::partition::check_sizes(&sizes)?;
+    Ok(sizes)
+}
+
+/// The option `download_level`: the level of the download cells of format 10.
+fn download_level(options: &Value) -> Result<u8, String> {
+    crate::cells::download_level(options["download_level"].as_u64().ok_or("option `download_level` is not a number")?)
 }
 
 /// Starts the memory guard, and reads the page budget first, so that a bad value fails before the
@@ -112,11 +130,13 @@ pub fn source(request: &Request) -> Result<(), String> {
 
 /// The roads step. It reads the source layer, the GLO-30 tiles of its bounds and, when the request
 /// has it, the layer `planner/reference`: the heights of the planner terrain without its shapes.
-/// The options are `bounds` and `terrain_attribution`, the credit of GLO-30. The layer `roads/`
-/// holds the junctions, the roads in their final order with their heights, the forbidden turns,
-/// the closure sets with those of the roads, the topology (`first`, `head`), and `roads.json`: the
+/// The options are `bounds`, `terrain_attribution`, the credit of GLO-30, and `cell_sizes`
+/// (`partition::check_sizes`). The layer `roads/` holds the junctions and the roads in their final
+/// order, the roads with their heights, the cells (`partition::Cells`), the forbidden turns, the
+/// closure sets with those of the roads, the topology (`first`, `head`), and `roads.json`: the
 /// warnings of the manifest and the identities of its inputs, the OSM files and then the terrain.
 pub fn roads(request: &Request) -> Result<(), String> {
+    let sizes = cell_sizes(&request.options)?;
     let _guard = start()?;
     Guard::stage("import");
     let bounds = obc_dem::step::bounds(&request.options)?;
@@ -131,8 +151,7 @@ pub fn roads(request: &Request) -> Result<(), String> {
     eprintln!("Building the roads");
     let mut recent = Recent::default();
     let mut height = |point: Point| terrain.height(point.lat, point.lon, &mut recent);
-    let mut graph = crate::osm::roads(source, Some(&mut height))?;
-    crate::check_closures(&graph)?;
+    let mut graph = crate::osm::roads(source, &sizes, Some(&mut height))?;
     let mut warnings = std::mem::take(&mut graph.warnings);
     warnings.retain(|w| !w.starts_with("No DEM applied"));
     warnings.push(crate::terrain::WARNING.into());
@@ -163,31 +182,56 @@ fn graph(request: &Request) -> Result<(Graph, Topology, Vec<String>), String> {
     Ok((graph, topology, strings(&summary["identities"])))
 }
 
-/// The costs step. It reads the source and the roads layers and the options `bounds` and
-/// `profiles`, the profile IDs or `all`. The layer `costs/` holds the costs of each profile
-/// (`Costs::save`).
+/// The graph, the topology, the costs and the cost tables of a roads layer and a costs layer in the
+/// folders `roads` and `costs`, without the source objects: the input of `cells::write` for a tool.
+pub fn layers(roads: &Path, costs: &Path) -> Result<(Graph, Topology, Costs, Tables), String> {
+    let read = |dir: &Path| {
+        let entries = fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let paths = entries
+            .map(|entry| entry.map(|entry| (entry.file_name().to_string_lossy().into_owned(), entry.path())))
+            .collect::<Result<_, _>>()
+            .map_err(|e| e.to_string())?;
+        Layout::read(paths)
+    };
+    let roads = read(roads)?;
+    let summary = read_json(&roads, "roads.json")?;
+    let graph = Graph::open(&roads, Data::default(), strings(&summary["warnings"]))?;
+    let topology = Topology { first: roads.open("first")?, head: roads.open("head")? };
+    let layout = read(costs)?;
+    let costs = Costs::open(&layout)?;
+    let tables = Tables::open(&layout, graph.cells.levels(), costs.profiles.len())?;
+    Ok((graph, topology, costs, tables))
+}
+
+/// The costs step. It reads the source and the roads layers and the option `profiles`, the profile
+/// IDs or `all`; its option `bounds` is only part of its key. The layer `costs/` holds the costs of each profile
+/// (`Costs::save`) and the cost tables of each level (`Tables::save`).
 pub fn costs(request: &Request) -> Result<(), String> {
     let _guard = start()?;
     Guard::stage("open");
-    let bounds = obc_dem::step::bounds(&request.options)?;
     let names = list(&request.options, "profiles")?;
     let profiles = crate::profiles(&names.iter().map(String::as_str).collect::<Vec<_>>())?;
     let (graph, topology, _) = graph(request)?;
-    Limits { profiles: profiles.len(), bounds }.check(&graph)?;
     crate::check(&graph, &profiles)?;
     eprintln!("Preparing {} profiles for {} directed roads", profiles.len(), graph.roads.len());
     let costs = crate::costs(&graph, &topology, &profiles)?;
+    Guard::stage("tables");
+    eprintln!("Building the cost tables");
+    let (first, head) = (topology.first.values(), topology.head.values());
+    let tables = tables::build(&graph.cells, first, head, &costs.columns(), tables::COLUMNS_FROM)?;
     let mut layout = output(request, COSTS)?;
     costs.save(&mut layout)?;
+    tables.save(&mut layout)?;
     layout.finish()
 }
 
 /// The package step. It reads the three work layers and the options `region`, `bounds`,
-/// `countries`, the ISO codes of the countries of the region for the route catalog, and
-/// `attribution`, the credit of the OSM data. The layer:
+/// `countries`, the ISO codes of the countries of the region for the route catalog,
+/// `attribution`, the credit of the OSM data, `cell_sizes` of the roads layer and `download_level`.
+/// The layer:
 ///
-/// - `routing/`: the package, `overlays.sqlite` and `route-catalog.json`;
-/// - `blocks/`: the routing blocks of the grid cells (`blocks::publish`);
+/// - `routing/`: `overlays.sqlite` and `route-catalog.json`;
+/// - `cells/`: the objects, `package.json` and `directory.bin` of the package (`cells::write`);
 /// - `routes/<cell>.json`: the routes of each grid cell.
 ///
 /// Its metrics are the report of the route catalog.
@@ -201,27 +245,41 @@ pub fn step(request: &Request) -> Result<(), String> {
         return Err("option `countries` is empty: the routes of each cell come from the route catalog".into());
     }
     let (region, attribution) = (text(options, "region")?, text(options, "attribution")?);
+    let (sizes, level) = (cell_sizes(options)?, download_level(options)?);
     let costs = Costs::open(&folder(request, COSTS)?)?;
     let france = catalog::check(&countries, &costs.profiles)?;
     let (mut graph, topology, identities) = graph(request)?;
     let routing = request.output.join("routing");
     fs::create_dir(&routing).map_err(|e| format!("{}: {e}", routing.display()))?;
+    let info = crate::cells::Info { region, bounds, source_sha256: identities, attribution };
+    Guard::stage("cells");
     eprintln!("Writing the package of {} profiles", costs.profiles.len());
-    let manifest = write_package(&graph, topology, costs, (region, bounds), identities, attribution, &routing)?;
+    let tables = Tables::open(&folder(request, COSTS)?, graph.cells.levels(), costs.profiles.len())?;
+    let input = crate::cells::Input {
+        graph: &graph,
+        topology: &topology,
+        costs: &costs,
+        tables: &tables,
+        sizes: &sizes,
+        download_level: level,
+        info,
+        level: crate::cells::LEVEL,
+    };
+    let cells = request.output.join("cells");
+    let summary = crate::cells::write(&input, &cells)?;
+    eprintln!("Cells: {}", summary.to_json());
+    drop((costs, tables, topology));
     // The overlay index and the route catalog read only the source objects. The road graph is
     // freed here, so the catalog routers get its memory.
     let osm = std::mem::take(&mut graph.osm);
     drop(graph);
     Guard::stage("overlays");
     eprintln!("Writing the overlay index");
-    overlays::write(&routing.join(overlays::FILE), &package::digest(&manifest), bounds, &osm)?;
+    overlays::write(&routing.join(overlays::FILE), &summary.identity, bounds, &osm)?;
     Guard::exempt("catalog");
     eprintln!("Writing the route catalog");
-    let report = catalog::write(&routing, osm, france)?;
-
+    let report = catalog::write(&routing, &cells, osm, france)?;
     let cells = grid::cells(bounds);
-    Guard::exempt("blocks");
-    crate::blocks::publish(&routing, &cells, &request.output.join("blocks")).map_err(|e| e.to_string())?;
     let catalog = fs::read(routing.join(catalog::FILE)).map_err(|e| e.to_string())?;
     let catalog: Value = serde_json::from_slice(&catalog).map_err(|e| e.to_string())?;
     let ids: Vec<&str> = cells.iter().map(|(id, _)| id.as_str()).collect();
@@ -236,23 +294,59 @@ pub fn step(request: &Request) -> Result<(), String> {
     fs::write(&request.metrics, report.to_json().to_string()).map_err(|e| e.to_string())
 }
 
-/// Writes the package objects and `manifest.json` into the empty directory `output`. Returns the
-/// bytes of the manifest.
-fn write_package(
-    graph: &Graph,
-    topology: Topology,
-    costs: Costs,
-    (region, bounds): (String, [f64; 4]),
-    identities: Vec<String>,
-    attribution: String,
-    output: &Path,
-) -> Result<Vec<u8>, String> {
-    let mut writer = Writer::create(output).map_err(|e| e.to_string())?;
-    let manifest =
-        crate::package(graph, topology, costs, (region, bounds), identities, attribution, |bytes| writer.write(bytes))?;
-    // Only the bytes outlive this statement, not the decoded manifest.
-    let manifest = serde_json::to_vec(&manifest).map_err(|e| e.to_string())?;
-    writer.finish().map_err(|e| e.to_string())?;
-    fs::write(output.join("manifest.json"), &manifest).map_err(|e| e.to_string())?;
-    Ok(manifest)
+/// The grid step of the package. It reads `cells/` of `planner/routing` and writes `objects/`, each
+/// file under its SHA-256, and `index.json` with the files `routing/package.json`,
+/// `routing/directory.bin` and `routing/objects/SHA256`, each with the transport `identity`, and
+/// `metadata`: `region`, `bounds`, `source_sha256` and the sorted profile names of `package.json`.
+pub fn cells_step(request: &Request) -> Result<(), String> {
+    const STEP: &str = "planner/routing";
+    let files = request.layers.get(STEP).ok_or("the step reads no planner/routing")?;
+    let records = request.layer_files.get(STEP).ok_or("the request gives no receipts of planner/routing")?;
+    let records: std::collections::HashMap<&str, _> = records.iter().map(|file| (file.path.as_str(), file)).collect();
+    let objects = request.output.join("objects");
+    fs::create_dir_all(&objects).map_err(|e| format!("{}: {e}", objects.display()))?;
+    let mut index = serde_json::Map::new();
+    let mut metadata = None;
+    for (path, source) in files {
+        let Some(name) = path.strip_prefix("cells/") else { continue };
+        let record = records.get(path.as_str()).ok_or(format!("no receipt of {path}"))?;
+        if name == crate::cells::PACKAGE {
+            let bytes = fs::read(source).map_err(|e| format!("{}: {e}", source.display()))?;
+            let info: Value = serde_json::from_slice(&bytes).map_err(|e| format!("{path}: {e}"))?;
+            let mut profiles: Vec<&str> = info["profiles"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|entry| entry["profile"]["name"].as_str())
+                .collect();
+            profiles.sort_unstable();
+            metadata = Some(json!({
+                "region": info["region"], "bounds": info["bounds"], "source_sha256": info["source_sha256"],
+                "profiles": profiles,
+            }));
+        }
+        let logical = match name {
+            crate::cells::PACKAGE | crate::cells::DIRECTORY => format!("routing/{name}"),
+            object if object == record.sha256 => format!("routing/objects/{object}"),
+            _ => return Err(format!("{path} is not named by its SHA-256")),
+        };
+        let target = objects.join(&record.sha256);
+        if !target.exists() && fs::hard_link(source, &target).is_err() {
+            fs::copy(source, &target).map_err(|e| format!("{}: {e}", target.display()))?;
+        }
+        let transport = json!({"bytes": record.size, "sha256": record.sha256, "encoding": "identity"});
+        index.insert(logical, json!({"bytes": record.size, "sha256": record.sha256, "transport": transport}));
+    }
+    for name in [crate::cells::PACKAGE, crate::cells::DIRECTORY] {
+        if !index.contains_key(&format!("routing/{name}")) {
+            return Err(format!("planner/routing has no cells/{name}"));
+        }
+    }
+    let count = index.len();
+    let document = json!({"format": 1, "kind": "routing-cells", "files": index, "metadata": metadata});
+    let document = crate::sort_keys(document);
+    let mut bytes = serde_json::to_vec(&document).map_err(|e| e.to_string())?;
+    bytes.push(b'\n');
+    fs::write(request.output.join("index.json"), bytes).map_err(|e| e.to_string())?;
+    fs::write(&request.metrics, json!({"files": count}).to_string()).map_err(|e| e.to_string())
 }
