@@ -181,7 +181,7 @@ fn the_land_between_hairpin_legs_stays_land_past_the_turns_corner_zone() {
 }
 
 #[test]
-fn a_junction_corner_takes_the_lesser_class_radius_and_the_sidewalk_one_on_a_sidewalk_side() {
+fn a_junction_corner_takes_the_lesser_class_radius_and_the_one_walk_radius_where_one_side_walks() {
     // A residential road runs south from a tertiary one, with a sidewalk on its left: the east.
     let host = line("road", &[("highway", "tertiary")], &[[-80.0, 0.0], [0.0, 0.0], [80.0, 0.0]]);
     let mut guest = road(&[[0.0, 0.0], [0.0, 80.0]]);
@@ -196,7 +196,7 @@ fn a_junction_corner_takes_the_lesser_class_radius_and_the_sidewalk_one_on_a_sid
         let c = p.corners.iter().find(|c| (o.x + i64::from(c.centre[0]) > centre.x) == east && c.radius_m > 0.0);
         c.map(|c| c.radius_m).unwrap()
     };
-    let east = residential.corner_radius_walk_m.min(tertiary.corner_radius_walk_m);
+    let east = Rules::embedded().plan.walk.radius_one_walk_m;
     let west = residential.corner_radius_m.min(tertiary.corner_radius_m);
     assert!(east < west);
     assert!((radius(true) - east).abs() < 0.01, "{} m east", radius(true));

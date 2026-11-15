@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use obc_ground_plan::faces::heights::check::{
-    border, edge_steps, scan, side_name, BorderKey, BorderValue, Class, Step, EDGE_GRID_M,
+    border, edge_steps, kerb_steps, scan, side_name, BorderKey, BorderValue, Class, Step, EDGE_GRID_M,
 };
 use obc_ground_plan::faces::records::{self, label};
 use obc_ground_plan::faces::Rules;
@@ -44,6 +44,8 @@ struct Cell {
     edges: Vec<(Step, [String; 2])>,
     /// The slope pairs steeper than a rock face (`Scan::steep`): where, the climb per metre.
     steep: Vec<(Value, f64)>,
+    /// The kerbs whose step is not their rise (`check::kerb_steps`).
+    kerbs: Vec<Value>,
 }
 
 fn round(v: f64, k: f64) -> f64 {
@@ -171,7 +173,10 @@ pub fn run() -> Result<(), String> {
             })
             .collect();
         let steep = s.steep.iter().map(|&(q, c)| (at_json(key, q), c)).collect();
-        Cell { key, points: s.points, steps, border, ripple: s.ripple, audit: [full, missing], edges, steep }
+        let kerbs = (kerb_steps(&words, &input.terrain, key, EDGE_GRID_M).iter())
+            .map(|st| json!({"at": at_json(key, st.a), "dh": round(st.dh, 1e3), "sides": st.sides.map(|h| side_name(&words, &h))}))
+            .collect();
+        Cell { key, points: s.points, steps, border, ripple: s.ripple, audit: [full, missing], edges, steep, kerbs }
     });
     let mut by: BTreeMap<ClassKey, (u64, f64, Value)> = BTreeMap::new();
     let mut by_rule: BTreeMap<String, (u64, f64)> = BTreeMap::new();
@@ -296,6 +301,9 @@ pub fn run() -> Result<(), String> {
     write("border-differ.json", &Value::Array(differ))?;
     write("host-missing.json", &lists[1])?;
     write("edge-steps.json", &Value::Array(edge_list))?;
+    let kerbs: Vec<Value> = scans.iter().flat_map(|c| c.kerbs.iter().cloned()).collect();
+    println!("kerbs whose step is not their rise: {}", kerbs.len());
+    write("kerb-steps.json", &Value::Array(kerbs))?;
     println!(
         "{}",
         serde_json::to_string_pretty(&json!({"slots_full": audit[0], "host_missing": audit[1], "ripple_mm": report["ripple_mm"], "steps": total, "on_edges": on_edges, "inside": total - on_edges, "by_rule": report["by_rule"], "inside_by_label": report["inside_by_label"], "border": {"points": both, "bit_equal": equal, "terrain_bit_equal": t_equal, "over_5mm": over, "max_dh_m": max_dh}, "edges": report["edges"], "steep": report["steep"]})).unwrap()

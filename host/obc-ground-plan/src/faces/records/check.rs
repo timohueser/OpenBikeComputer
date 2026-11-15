@@ -279,9 +279,11 @@ pub fn far_matches_near(near: &[u32], far: &[u32], cell: CellKey) -> (Vec<String
     }
     counts.insert("lines", n_far);
     counts.insert("samples", n_samples);
+    // A line's key is its carriageway's or rail bed's: a sidewalk is a way's candidate too.
+    let sidewalk = |c: &[u32]| label(near, c[3])[0] & 0xff == Surface::Sidewalk as u32;
     let keys: BTreeMap<u32, u32> = (0..near[1] as usize)
         .map(|ci| &near[near[4] as usize + CAND * ci..][..CAND])
-        .filter(|c| c[0] == WAY)
+        .filter(|c| c[0] == WAY && !sidewalk(c))
         .map(|c| (c[4], c[1]))
         .collect();
     // Per near line matched by a far line: the far line's count of samples and its run's offset.

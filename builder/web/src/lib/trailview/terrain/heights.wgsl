@@ -15,7 +15,7 @@ const H_QUADS: u32 = 4u;
 // The most regions beyond a region's edges that weigh at a point, as heights::REGIONS.
 const H_REGIONS: u32 = 2u;
 // The heights' rule words follow the block's head (heights::RULES of the crate).
-const H_RULES_AT: u32 = 15u;
+const H_RULES_AT: u32 = 16u;
 // The words of an outline edge, its grade's steps per metre and its turn's steps per π (records::EDGE,
 // GRADE_STEPS, TURN_STEPS).
 const H_EDGE: u32 = 10u;
@@ -1278,5 +1278,130 @@ fn h_paved_at(block: u32, q: vec2f, mpu: f32, label: u32, rule: u32, material: u
     if (o == H_SLOTS) {
         return vec2f(t, H_PAVED);
     }
-    return vec2f(h_paved_as(&hp, o, 0u, (hp.recs[o].rank & H_WATER) != 0u), H_PAVED);
+    let rise = select(0.0, h_kerb_rise(block, q, hp.recs[o].line, start), rule == 4u);
+    return vec2f(h_paved_as(&hp, o, 0u, (hp.recs[o].rank & H_WATER) != 0u) + rise, H_PAVED);
+}
+
+// The sidewalks (the crate's faces::walk and heights::kerb): the words of a record line's row in the block's
+// sidewalks' table and of a width rule (records::WALK_LINE, WALK_RULE).
+const H_WALK_LINE: u32 = 5u;
+const H_WALK_RULE: u32 = 3u;
+
+// The width x metres past a rule's station toward its slab, as walk::ramp: a ramp at slope k from target to full,
+// its two kinks rounded with radius r (less where the rounds would meet).
+fn h_ramp(x0: f32, target: f32, full: f32, k: f32, r0: f32) -> f32 {
+    let rise = full - target;
+    if (rise <= 0.0) {
+        return full;
+    }
+    let phi = atan(k);
+    let s = sin(phi);
+    let c = cos(phi);
+    let r = min(r0, rise * (1.0 + c) / (2.0 * s * s));
+    let t = r * s / (1.0 + c);
+    let top = t + rise / k;
+    let x = max(x0, 0.0);
+    if (x <= r * s) {
+        return target + r - sqrt(max(r * r - x * x, 0.0));
+    }
+    if (x <= top - t * c) {
+        return target + k * (x - t);
+    }
+    if (x < top + t) {
+        let y = x - top - t;
+        return full - r + sqrt(max(r * r - y * y, 0.0));
+    }
+    return full;
+}
+
+// The word of a record line's row in the sidewalks' table; 0 where the block has none for it.
+fn h_walk_row(block: u32, line: u32) -> u32 {
+    let t = mw(block + 15u);
+    if (t == 0u || line >= mw(block + t + 2u)) {
+        return 0u;
+    }
+    return block + t + 3u + H_WALK_LINE * line;
+}
+
+// The width at metres along `at` on a side (+1 the stroke's left normal) of a row's sidewalk, as walk::width:
+// the least ramp whose slab side holds it; with `tips`, of the taper tips alone.
+fn h_walk_width(block: u32, row: u32, at: f32, side: f32, tips: bool) -> f32 {
+    let t = mw(block + 15u);
+    let k = mf(block + t);
+    let r = mf(block + t + 1u);
+    let rules = block + t + 3u + H_WALK_LINE * mw(block + t + 2u) + H_WALK_RULE * mw(row);
+    let full = mf(row + 2u);
+    let own = select(0u, 1u, side > 0.0);
+    var w = full;
+    for (var i = 0u; i < mw(row + 1u); i++) {
+        let e = rules + H_WALK_RULE * i;
+        let flags = mw(e + 2u);
+        let dir = select(-1.0, 1.0, (flags & 2u) != 0u);
+        let target = mf(e + 1u);
+        if ((flags & 1u) != own || (tips && target != 0.0) || (at - mf(e)) * dir < 0.0) {
+            continue;
+        }
+        w = min(w, h_ramp(abs(at - mf(e)), target, full, k, r));
+    }
+    return w;
+}
+
+// q's metres along record line l and its side (y: +1 on the stroke's left normal, 0 where none of the nh height
+// segment items from word `at` frames q), as kerb::station: in the mitre quad that holds q, the one nearest across
+// where quads overlap, at its share; past the line's first or last sample, along its end chord.
+fn h_walk_station(block: u32, q: vec2f, l: u32, at: u32, nh: u32) -> vec2f {
+    let ln = h_line(block, l);
+    let samples = block + mw(block + 7u) + M_SAMPLE * ln.first;
+    var best = vec3f(H_BIG, 0.0, 0.0);
+    for (var k = 0u; k < nh; k++) {
+        let item = mw(at + k);
+        if ((item & 0xffffu) != l) {
+            continue;
+        }
+        let i = item >> 16u;
+        let wa = samples + M_SAMPLE * i;
+        let wb = wa + M_SAMPLE;
+        let pa = vec2f(mi(wa), mi(wa + 1u));
+        let pb = vec2f(mi(wb), mi(wb + 1u));
+        let ab = pb - pa;
+        let len = length(ab);
+        if (len <= 0.0) {
+            continue;
+        }
+        let da = dot(q - pa, h_mitre(block, ln, i));
+        let db = dot(pb - q, h_mitre(block, ln, i + 1u));
+        let aa = mf(wa + 3u);
+        let ab_ = mf(wb + 3u);
+        var along = 0.0;
+        if (da >= 0.0 && db >= 0.0) {
+            along = aa + select(0.5, da / (da + db), da + db > 0.0) * (ab_ - aa);
+        } else if (i == 0u && da < 0.0 && db >= 0.0) {
+            along = aa + (ab_ - aa) * dot(q - pa, ab) / (len * len);
+        } else if (i + 2u == ln.count && db < 0.0 && da >= 0.0) {
+            along = ab_ + (ab_ - aa) * dot(q - pb, ab) / (len * len);
+        } else {
+            continue;
+        }
+        let across = m_cross(ab, q - pa) / len;
+        if (abs(across) < best.x) {
+            best = vec3f(abs(across), along, select(-1.0, 1.0, across >= 0.0));
+        }
+    }
+    return best.yz;
+}
+
+// The kerb's rise at q of a sidewalk on record line `line`, as kerb::rise: kerb_m times the share of the full
+// width that the taper tips on q's side leave at q's metres along; in full where no segment frames q.
+fn h_kerb_rise(block: u32, q: vec2f, line: u32, start: u32) -> f32 {
+    let row = h_walk_row(block, line);
+    if (row == 0u || mf(row + 2u) <= 0.0 || mf(row + 3u) <= 0.0) {
+        return 0.0;
+    }
+    let head = m_bin_head(block, q);
+    let at = select(h_heights_start(block, q), start, start != 0u);
+    let s = h_walk_station(block, q, line, at, select(0u, mw(head + 2u) >> 16u, head != 0u));
+    if (s.y == 0.0) {
+        return mf(row + 3u);
+    }
+    return mf(row + 3u) * h_walk_width(block, row, s.x, s.y, true) / mf(row + 2u);
 }

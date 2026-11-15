@@ -13,6 +13,7 @@
 //! line's edge. The ground (the terrain and the slopes) stays under every deck's ceiling (`ceiling`).
 
 pub mod check;
+pub(crate) mod kerb;
 #[cfg(test)]
 mod tests;
 
@@ -53,6 +54,9 @@ pub enum Step {
     /// A step that another line's cone holds (as `Held`) higher than the paved side's wall cap: a fault
     /// (`check::held_over_cap`).
     HeldOverCap,
+    /// A sidewalk's kerb: the sidewalk stands higher than a carriageway or shoulder beside it. Its size is the
+    /// check's (`check::kerb_steps`), not the rule's.
+    Kerb,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1605,7 +1609,17 @@ pub fn height_at_sides(words: &[u32], q: [f64; 2], labels: [Option<u32>; 2], t: 
     let ends = labels.map(surface);
     let [water, zone] = [Surface::Water, Surface::Zone].map(|s| Some(s as u32));
     let mouth = (ends == [water, zone] || ends == [zone, water]) && (sides[0].0.h - sides[1].0.h).abs() > p.step_m;
-    let step = if mouth { Step::Mouth } else { step(&b, q, &recs, &sides, &p) };
+    let walk = Some(Surface::Sidewalk as u32);
+    let below = [Surface::Carriageway, Surface::Crossing, Surface::Shoulder].map(|s| Some(s as u32));
+    let kerb =
+        (0..2).any(|k| ends[k] == walk && below.contains(&ends[1 - k]) && sides[k].0.h - sides[1 - k].0.h > p.step_m);
+    let step = if mouth {
+        Step::Mouth
+    } else if kerb {
+        Step::Kerb
+    } else {
+        step(&b, q, &recs, &sides, &p)
+    };
     sides.map(|(h, _)| Height { step, ..h })
 }
 
@@ -1914,7 +1928,8 @@ fn by_label(
     match host {
         Some(o) => {
             let line = recs[o].line;
-            (height(paved(recs, o, p), Kind::Paved, Some(line)), Cause { by: Some(line), ..NO_CAUSE })
+            let rise = if rule == 4 { kerb::rise(b, q, line, items.segs) } else { 0.0 };
+            (height(paved(recs, o, p) + rise, Kind::Paved, Some(line)), Cause { by: Some(line), ..NO_CAUSE })
         }
         // A host missing from the records: a fault (`check::Scan::host_missing`).
         None => (height(t, Kind::Paved, None), NO_CAUSE),

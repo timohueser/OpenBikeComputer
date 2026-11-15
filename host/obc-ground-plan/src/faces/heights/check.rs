@@ -747,3 +747,51 @@ pub fn explain(words: &[u32], q: [f64; 2], labels: [Option<u32>; 2], t: f64) -> 
     s += &format!("  step {:?}\n", sides[0].step);
     s
 }
+
+/// A kerb's step may differ from its rise by this: two hosts' surfaces where a slab runs into another road.
+pub const KERB_SLACK_M: f64 = 0.05;
+
+/// The edges between a sidewalk and a carriageway, crossing or shoulder face on a grid of `grid_m` over the cell, found
+/// as `edge_steps` finds its edges, whose step is not the kerb's rise there within `KERB_SLACK_M`: a missing kerb, or
+/// one that stands too high.
+pub fn kerb_steps(words: &[u32], terrain: &Terrain, cell: CellKey, grid_m: f64) -> Vec<Step> {
+    let step = grid_m / metres_per_unit(cell.origin().y + CELL_UNITS / 2);
+    let n = (CELL_UNITS as f64 / step) as usize;
+    let point = |i: usize, j: usize| [(i as f64 + 0.5) * step, (j as f64 + 0.5) * step];
+    let labels: Vec<Option<u32>> = (0..n * n).map(|k| find(words, point(k % n, k / n))).collect();
+    let surface = |l: Option<u32>| l.map(|id| label(words, id)[0] & 0xff);
+    let walk = |l: Option<u32>| surface(l) == Some(Surface::Sidewalk as u32);
+    let below = |l: Option<u32>| {
+        [Surface::Carriageway, Surface::Crossing, Surface::Shoulder].iter().any(|&s| surface(l) == Some(s as u32))
+    };
+    let mut out = Vec::new();
+    for k in 0..n * n {
+        let (i, j) = (k % n, k / n);
+        for nb in [(i + 1 < n).then_some(k + 1), (j + 1 < n).then_some(k + n)].into_iter().flatten() {
+            let (la, lb) = (labels[k], labels[nb]);
+            if !((walk(la) && below(lb)) || (walk(lb) && below(la))) {
+                continue;
+            }
+            let (mut a, mut b, mut lb) = (point(i, j), point(nb % n, nb / n), lb);
+            while libm::hypot(b[0] - a[0], b[1] - a[1]) > 1.0 {
+                let m = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
+                match find(words, m) {
+                    l if l == la => a = m,
+                    l => (b, lb) = (m, l),
+                }
+            }
+            if !((walk(la) && below(lb)) || (walk(lb) && below(la))) {
+                continue;
+            }
+            let Some(t) = terrain_at(terrain, cell, a) else { continue };
+            let sides = height_at_sides(words, a, [la, lb], t);
+            let (w, o) = if walk(la) { (0, 1) } else { (1, 0) };
+            let dh = sides[w].h - sides[o].h;
+            let rise = super::kerb::rise_at(words, a, [la, lb][w]);
+            if (dh - rise).abs() > KERB_SLACK_M {
+                out.push(Step { a, b, dh, labels: [la, lb], class: Class::Unnamed, sides });
+            }
+        }
+    }
+    out
+}

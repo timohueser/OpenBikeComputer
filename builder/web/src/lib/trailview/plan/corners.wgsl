@@ -49,6 +49,9 @@ const MAT_WATER: u32 = 50u;
 const S_SHOULDER: u32 = 3u;
 const S_WATER: u32 = 9u;
 const S_ZONE: u32 = 11u;
+const S_SIDEWALK: u32 = 13u;
+// As MAT.SIDEWALK of roads/section.ts.
+const MAT_SIDEWALK: u32 = 3u;
 // The code of a ground-looking shoulder without a line, until its nearest way gives its class.
 const CODE_ROAD_SURFACE: u32 = 1u;
 // In a corner's look word, the bit of the corridors' fine offset (1 << FINE_SHIFT), which pieces do not read:
@@ -186,7 +189,41 @@ fn may_pave(label: u32) -> bool {
         return false;
     }
     let surface_code = mw(m_label(params.block, label)) & 0xffu;
-    return m_paved(params.block, label) || surface_code == S_SHOULDER || surface_code == S_CORNER_FILL || surface_code == S_PLATFORM || surface_code == S_WATER;
+    return m_paved(params.block, label) || surface_code == S_SHOULDER || surface_code == S_CORNER_FILL || surface_code == S_PLATFORM || surface_code == S_WATER || surface_code == S_SIDEWALK;
+}
+
+// The look and place words of a sidewalk corner on host line `line`: paving, the slab's width there as its half, and
+// its frame: the metres from its kerb (past the host's carriageway edge, or inside the arc of a round of q's bin
+// whose sector holds q) and the host's metres along.
+fn sidewalk_look(q: vec2i, line: u32, wall: u32, mpu: f32) -> vec2u {
+    let block = params.block;
+    let qf = vec2f(q);
+    let f = line_frame(q, line, mpu);
+    var d = abs(f.x) - f.z;
+    let row = h_walk_row(block, line);
+    var w = select(0.0, mf(row + 2u), row != 0u);
+    let head = m_bin_head(block, qf);
+    if (head != 0u) {
+        let at = h_heights_start(block, qf);
+        let nh = mw(head + 2u) >> 16u;
+        for (var k = 0u; k < (mw(head + 2u) & 0xffffu); k++) {
+            let item = mw(at + nh + k);
+            let disc = m_extras(block) + mw(m_cand(block, item & 0xffffu) + 5u) + M_DISC * (item >> 16u);
+            let v = qf - vec2f(mi(disc), mi(disc + 1u));
+            let ua = unpack2x16snorm(mw(disc + 5u));
+            let ub = unpack2x16snorm(mw(disc + 6u));
+            let turn = m_cross(ua, ub);
+            let r = length(v);
+            if (r < mf(disc + 2u) && m_cross(ua, v) * turn >= 0.0 && m_cross(v, ub) * turn >= 0.0) {
+                d = min(d, (mf(disc + 2u) - r) * mpu);
+            }
+        }
+        let s = h_walk_station(block, qf, line, at, nh);
+        if (row != 0u && s.y != 0.0) {
+            w = h_walk_width(block, row, s.x, s.y, false);
+        }
+    }
+    return vec2u(look_word(MAT_SIDEWALK, 0u, w) | wall, place_word(max(d, 0.0), f.y));
 }
 
 // The look word and the place word of a corner with a label. A paved face takes its way's look and a frame:
@@ -213,6 +250,9 @@ fn corner_look(q: vec2i, label: u32, mpu: f32) -> vec2u {
     let wall = wall_side(finish);
     if (surface_code == S_WATER) {
         return vec2u(look_word(MAT_WATER, 0u, 0.0), 0u);
+    }
+    if (surface_code == S_SIDEWALK && line != M_NONE) {
+        return sidewalk_look(q, line, wall, mpu);
     }
     // A shoulder without a line looks like ground; its nearest way decides whether a step beside it is a wall.
     if (line == M_NONE && shoulder) {

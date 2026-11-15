@@ -6,7 +6,7 @@
 //!
 //! | Words | Holds |
 //! | --- | --- |
-//! | head | `HEAD` words: `MAGIC`; the counts of candidates, labels and lines; the offsets of the candidates, labels, lines, samples, extras and bin headers; the cell's row of zoom 16; the offset of the blend edges; the offset of the junction table and the count of its records; the offset of the outline edges |
+//! | head | `HEAD` words: `MAGIC`; the counts of candidates, labels and lines; the offsets of the candidates, labels, lines, samples, extras and bin headers; the cell's row of zoom 16; the offset of the blend edges; the offset of the junction table and the count of its records; the offset of the outline edges; the offset of the sidewalks' table |
 //! | rules | `heights::RULES` words: the rule values of the heights (`HeightRules::words`) |
 //! | candidates | `CAND` words each: kind, key, glob order, label, line, then offset and count of its discs, beyond cuts and parts in the extras |
 //! | labels | `LABEL` words each: surface, owner kind, rank, height rule; owner id (a junction's: the index of its junction record); material line; rail line of a crossing; 4 host lines; 4 other lines (none for a junction: its record holds its arms) |
@@ -14,6 +14,7 @@
 //! | samples | `SAMPLE` words each: x, y, half-width (units), metres along, glob order, height, bank, grade, mitre direction x, y, health radius left and right (units) |
 //! | extras | discs (`DISC` words), beyond cuts (a cut and a label), parts (a way and two cuts, each with a flag) |
 //! | junctions | the table, a word per junction record: its offset; then the records (`junction`) |
+//! | sidewalks | the ramps' `end_slope` and `end_round_m`, the count of record lines R; per record line `WALK_LINE` words: its first rule, its count of rules, its class's sidewalk width, kerb rise and kerb top width (m); then the rules, `WALK_RULE` words each: metres along, the width there (m), the side (bit 0: the stroke's left normal) and the direction (bit 1: toward more metres along) (`walk::End`) |
 //! | blend edges | `BLEND` words each: the ends a (x, y) and b (x, y) as i32 bits, the label of the blend face, the label of the face beyond (u32::MAX for terrain) |
 //! | outline edges | `EDGE` words each (`edge_ends`, `edge_line`): the end a (x, y) as i32 bits with the paved face on the left; b − a as two i16 (x low); the host line, low half, and the terrain's grade outward at a in 1/`GRADE_STEPS` (i16, `i16::MIN` unknown), high half; the paved height at a and at b; the plain terrain where the cones from a and from b start to let go (NaN unknown); the grade at b, low half, and the turn at b in 1/`TURN_STEPS` of π (i16, `i16::MIN` none), high half; the turn at a, low half |
 //! | bins | `BINS`² headers of `HEADER` words (the first word of the bin's items; the counts of items and segments; of height segments and height discs; the words of the items and the count of blend edges), then per bin its candidate items, segments, height segments, height discs, blend edges, and in half words (the first low) the count of its outline edges followed by them |
@@ -46,6 +47,7 @@ use super::heights::{self, Height, Items};
 use super::legs::{self, Legs};
 use super::points::Circle;
 use super::stroke::union;
+use super::walk::Ends;
 use super::{
     band, candidates, near_only, sample_at, snap, Cand, FacePlan, Glob, HeightRule, Label, Mouth, Owner, PlanRules,
     Rules, Sliced, Surface, WayLine, LAYERS, OUTSIDE, SLOPE,
@@ -56,7 +58,7 @@ use crate::sections::{Finish, Material, WaySection};
 use crate::CellInput;
 
 /// "OBR" and the layout's version.
-pub const MAGIC: u32 = 0x4f42_5216;
+pub const MAGIC: u32 = 0x4f42_5217;
 
 /// Whether a junction's guest `g` stops at its best host `h`: a way with round corners whose pair's
 /// mouth in `plan.json` is `stop`, and whose look (finish and material) is not the host's or whose
@@ -79,17 +81,19 @@ pub const MARGIN_M: f64 = 3.0;
 pub const LINE_PAD_M: f64 = 3.0;
 /// The heights read a line's segments and the discs within its slope reach and this past a bin.
 pub const HEIGHT_PAD_M: f64 = 1.0;
-pub const HEAD: usize = 15;
+pub const HEAD: usize = 16;
 pub const CAND: usize = 11;
 pub const LABEL: usize = 12;
 pub const LINE: usize = 18;
 pub const SAMPLE: usize = 12;
-/// Centre, radius, the line at each foot.
-pub const DISC: usize = 5;
+/// Centre, radius, the line at each foot, the unit direction from the centre to each foot (`pack2x16snorm`).
+pub const DISC: usize = 7;
 pub const BEYOND: usize = 5;
 pub const PART: usize = 11;
 pub const BLEND: usize = 6;
 pub const EDGE: usize = 10;
+pub const WALK_LINE: usize = 5;
+pub const WALK_RULE: usize = 3;
 /// An outline edge's turn at an end in these steps per π radians (`i16`; `i16::MIN`: no edge goes on there).
 pub const TURN_STEPS: f64 = 32767.0;
 /// A junction record: node x, y; the arm count (bits 0-7) and the graph junction (bits 16-31); then
@@ -270,14 +274,14 @@ fn pass(
     let map = s.map();
     let ceilings = if level == 0 { super::ceiling_lines(graph, input, rules, cell) } else { Vec::new() };
     let plan = s.plan(cell, level, &map, &s.labels);
-    let near = encode(cell, graph, input, rules, (&c.lines, &ceilings), &c.cands, &plan, true);
+    let near = encode(cell, graph, input, rules, (&c.lines, &ceilings), (&c.cands, &c.walk_ends), &plan, true);
     // The far block and the far level hold no water: their lines are the way lines.
     let far_block = far::encode(cell, graph, input, rules, &c.lines[..c.ways]);
     let records = far_records.then(|| {
         let labels = c.far(&s);
         c.cands.retain(|c| !near_only(c));
         let plan = s.plan(cell, level, &map, &labels);
-        encode(cell, graph, input, rules, (&c.lines[..c.ways], &[]), &c.cands, &plan, false)
+        encode(cell, graph, input, rules, (&c.lines[..c.ways], &[]), (&c.cands, &c.walk_ends), &plan, false)
     });
     (faces, near, records, far_block)
 }
@@ -903,6 +907,7 @@ fn line_words(
     }
     w.extend([f(sec.fill_max), f(sec.cut_max), f(sec.rise_m), f(sec.crest_m)]);
     let samples = &graph.samples[way.samples.start as usize..way.samples.end as usize];
+    let along = super::walk::alongs(graph, line);
     // Per vertex: its graph sample and its share of the segment to the next one.
     let mut share = vec![(0usize, 0.0f64); line.p.len()];
     for (k, win) in line.index.windows(2).enumerate() {
@@ -928,7 +933,7 @@ fn line_words(
         let (k, x) = share[i];
         let (s0, s1) = (&samples[k], &samples[(k + 1).min(samples.len() - 1)]);
         let lerp = |a: f64, b: f64| a + x * (b - a);
-        s.extend([p[0] as u32, p[1] as u32, f(line.h[i]), f(lerp(s0.along_m, s1.along_m)), order(&line.key[i])]);
+        s.extend([p[0] as u32, p[1] as u32, f(line.h[i]), f(along[i]), order(&line.key[i])]);
         s.extend([f(lerp(s0.z_m, s1.z_m)), f(lerp(s0.bank, s1.bank)), f(lerp(s0.grade, s1.grade))]);
         s.extend(mitres[i - lo].map(f));
     }
@@ -937,7 +942,14 @@ fn line_words(
 
 /// The words of a disc; `line` gives the record line of a line at a foot.
 fn disc_words(d: &Circle, line: &dyn Fn(usize, P) -> u32) -> [u32; DISC] {
-    [d.centre[0] as u32, d.centre[1] as u32, f(d.radius), line(d.lines[0], d.feet[0]), line(d.lines[1], d.feet[1])]
+    let toward = |foot: P| {
+        let v = [f64::from(foot[0] - d.centre[0]), f64::from(foot[1] - d.centre[1])];
+        let len = libm::hypot(v[0], v[1]).max(1e-9);
+        let snorm = |x: f64| u32::from(libm::round((x / len).clamp(-1.0, 1.0) * 32767.0) as i16 as u16);
+        snorm(v[0]) | snorm(v[1]) << 16
+    };
+    let (a, b) = (line(d.lines[0], d.feet[0]), line(d.lines[1], d.feet[1]));
+    [d.centre[0] as u32, d.centre[1] as u32, f(d.radius), a, b, toward(d.feet[0]), toward(d.feet[1])]
 }
 
 /// The words of a cut as the slice holds it: its ends snapped as the overlay's `past` reads them.
@@ -954,7 +966,7 @@ fn encode(
     input: &CellInput,
     rules: &Rules,
     (lines, ceilings): (&[WayLine], &[WayLine]),
-    cands: &[Cand],
+    (cands, walk): (&[Cand], &Ends),
     plan: &FacePlan,
     with_outline: bool,
 ) -> Records {
@@ -1466,6 +1478,24 @@ fn encode(
     words[3] = (rec.len() + ceilings.len()) as u32;
     words[10] = (origin.y / CELL_UNITS) as u32;
     words.extend(rules.plan.heights.words());
+    // The sidewalks' table before the candidates: a storey's merge keeps every word before them.
+    words[15] = words.len() as u32;
+    let w = &rules.plan.walk;
+    let mut rows = vec![f(w.end_slope), f(w.end_round_m), rec.len() as u32];
+    let mut walk_w = Vec::new();
+    for &(l, _, _) in &rec {
+        let first = walk_w.len() / WALK_RULE;
+        for (s, list) in [0u8, 1].map(|s| (s, walk.get(&(l, s)))) {
+            for e in list.into_iter().flatten() {
+                walk_w.extend([f(e.at), f(e.target), u32::from(s) | u32::from(e.dir > 0.0) << 1]);
+            }
+        }
+        let sec = &lines[l].sec;
+        rows.extend([first as u32, (walk_w.len() / WALK_RULE - first) as u32]);
+        rows.extend([f(sec.sidewalk_m), f(sec.kerb_m), f(sec.kerb_top_m)]);
+    }
+    words.extend(rows);
+    words.extend(walk_w);
     words[4] = words.len() as u32;
     words.extend(&cands_w);
     words[5] = words.len() as u32;
