@@ -58,28 +58,37 @@ export function routePoints(routes: readonly RouteLine[]): Uint32Array<ArrayBuff
 }
 
 /**
- * The pick points of a route: frame metres east and north and the height of each entry of its profile
- * that has one, at its place on the line. Entry i lies at the share i × step / L of the line, where L is
- * the length of the route, and the last entry at its end. The profile gives L only within a step,
- * (n − 2) × step ≤ L < (n − 1) × step for n entries: the length of the line, held in that range, stands
- * for it. Undefined for a route with no profile or a line with no length.
+ * The pick points of a route, in their order along the line: frame metres east and north, and a height.
+ * Each vertex of the line takes the height of the profile at its share of the line's length: on a
+ * straight line between the two entries about it, none where one of them has none. Each entry of the
+ * profile that falls between two vertices adds its own height there, so that the points also follow the
+ * terrain along a long straight stretch. A point with no height is left out. Entry i lies at the share
+ * i × step / L of the line, where L is the length of the route, and the last entry at its end. The profile
+ * gives L only within a step, (n − 2) × step ≤ L < (n − 1) × step for n entries: the length of the line,
+ * held in that range, stands for it. Undefined for a route with no profile or a line with no length.
  */
 export function pickPoints({ line, profile }: RouteLine, frame: Frame): Float64Array | undefined {
     if (!profile || line.length < 2 || profile.heights.length < 2) return undefined;
-    const { step, heights } = profile, at = line.map(point => frame.local(...point)), along = [0];
+    const { step, heights } = profile, n = heights.length, at = line.map(point => frame.local(...point)), along = [0];
     for (let i = 1; i < at.length; i++) along.push(along[i - 1] + Math.hypot(at[i][0] - at[i - 1][0], at[i][1] - at[i - 1][1]));
     const total = along.at(-1)!;
     if (!total) return undefined;
-    const length = Math.min(Math.max(total, (heights.length - 2) * step), (heights.length - 1) * step), out: number[] = [];
-    for (let e = 0, i = 1; e < heights.length; e++) {
-        const height = heights[e];
-        if (height === null) continue;
-        const d = Math.min(e * step / length, 1) * total;
+    const length = Math.min(Math.max(total, (n - 2) * step), (n - 1) * step);
+    // Metres along the line of entry e; the last entries can share the end.
+    const entry = (e: number) => Math.min(e * step / length, 1) * total;
+    const heightAt = (d: number) => {
+        const e = Math.min(Math.floor(d / total * length / step), n - 2), a = heights[e], b = heights[e + 1], from = entry(e), to = entry(e + 1);
+        return a === null || b === null ? null : a + (b - a) * (to > from ? (d - from) / (to - from) : 1);
+    };
+    const points: [number, number, number, number | null][] = at.map(([x, y], i) => [along[i], x, y, heightAt(along[i])]);
+    for (let e = 0, i = 1; e < n; e++) {
+        const d = entry(e);
         while (i < at.length - 1 && along[i] < d) i++;
-        const t = along[i] > along[i - 1] ? (d - along[i - 1]) / (along[i] - along[i - 1]) : 0;
-        out.push(at[i - 1][0] + t * (at[i][0] - at[i - 1][0]), at[i - 1][1] + t * (at[i][1] - at[i - 1][1]), height);
+        if (d <= along[i - 1] || d >= along[i]) continue;
+        const t = (d - along[i - 1]) / (along[i] - along[i - 1]);
+        points.push([d, at[i - 1][0] + t * (at[i][0] - at[i - 1][0]), at[i - 1][1] + t * (at[i][1] - at[i - 1][1]), heights[e]]);
     }
-    return new Float64Array(out);
+    return new Float64Array(points.sort((p, q) => p[0] - q[0]).flatMap(([, x, y, height]) => (height === null ? [] : [x, y, height])));
 }
 
 /** '#rrggbb' as the bytes of WGSL's unpack4x8unorm: red lowest. */
