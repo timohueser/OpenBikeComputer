@@ -67,16 +67,14 @@ key of a cover. Run the commands from `builder/web/tests/browser`.
 
 ## Steps
 
-The first runs, from `builder/web/tests/browser`:
-
 1. Build the still page for production: `npm run build:trailview --prefix ../..`. `npm run
    test:trailview` builds it for the fixture, so build it again after each test run. `render`
    refuses a page of another release than production.
 2. Run the test of one fixture route on the GPU:
    `npm run test:trailview -- --trace off route-pictures.test.js` with `OBC_TRAILVIEW_GPU=1`. It
-   passes with no test skipped. Then build the page again (step 1).
+   passes with no test skipped. Then build the page again.
 3. Measure a sample: `node trailview/route-pictures.mjs render --gpu --sample 30`. It prints the
-   seconds and the bytes of each cover, and the time, the size and the count of files of all routes.
+   seconds and the bytes of each cover, and the cost of all routes.
 4. Render all routes in `.artifacts/route-pictures/`: `node trailview/route-pictures.mjs render --gpu`.
    It writes `covers/<id>/<key>.webp` and `.json`, or `<key>.none` for a route with no view, and at
    the end the set under `sets/<set>/`. Then upload: `node trailview/route-pictures.mjs upload`. It
@@ -99,14 +97,15 @@ For a new planner release, do steps 1 and 4: only the routes whose line changed 
 
 ## Pitfalls
 
+- Each route renders in a new page: the renderer keeps the memory of each still until its page
+  closes. A dead browser fails only its route: `render` starts a new one.
 - A route that fails gets no file. `render` goes on with the next route, names each failed route
   with its reason at the end, and exits with 1. The next run tries it again. After 5 failures in a
-  row it stops: the tile host or the GPU is down. When a route fails on
-  each run, leave it out of the set: `upload --without ID,ID`. It then has no cover in that set.
+  row it stops: the tile host or the GPU is down. When a route fails on each run, leave it out of
+  the set: `upload --without ID,ID`.
 - `render` skips a route whose cover or `.none` mark exists for its key. A change of the light or
   of the camera rule in the script changes `look` and so each key: all routes render again.
 - `upload` takes the routes of the active production release, and refuses while one of them has no
-  cover and no `.none` mark. It lists the covers in the bucket one time and sends only the missing
-  ones, 16 at a time. After a 429 of the host it waits one minute, at most 5 times for a file.
+  cover and no `.none` mark. It sends only the covers that the bucket lacks, 16 at a time. After a 429 of the host it waits one minute, at most 5 times for a file.
 - `upload` and `switch` call `obc data r2`, which needs `OBC_R2_*`. `switch` checks the covers in
   the bucket, because the public host keeps a deleted file in its cache for a year.

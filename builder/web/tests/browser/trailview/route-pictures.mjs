@@ -140,10 +140,10 @@ export function checkRelease(page, release) {
 
 /** The cover of one line in the page: the view of `coverView`, then the still; `none` when no view holds the line. */
 const shoot = (page, job) => page.evaluate(async ({ line, when, width, height, timeoutMs }) => {
-    const { coverView, still } = window.trailviewStill, started = performance.now();
+    const { coverView, still } = window.trailviewStill;
     try {
         const view = await coverView(line, { width, height, ...when });
-        if (!view) return { none: true, seconds: (performance.now() - started) / 1000 };
+        if (!view) return { none: true };
         const { image, points, credits } = await still({ view, width, height, line }, { timeoutMs });
         if (image.type !== 'image/webp') return { failure: 'type', message: `the browser encoded ${image.type}, not WebP` };
         const url = await new Promise(resolve => {
@@ -152,11 +152,30 @@ const shoot = (page, job) => page.evaluate(async ({ line, when, width, height, t
             reader.readAsDataURL(image);
         });
         const arrays = Object.fromEntries(Object.entries(points).map(([key, values]) => [key, Array.from(values)]));
-        return { image: url.slice(url.indexOf(',') + 1), points: arrays, credits, seconds: (performance.now() - started) / 1000 };
+        return { image: url.slice(url.indexOf(',') + 1), points: arrays, credits };
     } catch (error) {
         return { failure: error.name, message: error.message };
     }
-}, job).catch(error => ({ failure: 'page', message: `the page failed: ${error.message}` }));
+}, job);
+
+/**
+ * The cover of one line in a page of its own, with the seconds of the page and the still. The renderer keeps
+ * memory of each still until its page closes, so one page for many routes outgrows a 3 GB cap. `browser.get()`
+ * starts a new browser after one died, so a dead browser fails at most this route.
+ */
+async function cover(browser, origin, options, job) {
+    const started = performance.now();
+    let page;
+    try {
+        page = await stillPage(await browser.get(), origin, options);
+        return { ...await shoot(page, job), seconds: (performance.now() - started) / 1000 };
+    } catch (error) {
+        // Playwright appends the whole log of the browser.
+        return { failure: 'page', message: `the page failed: ${error.message.split('\n')[0]}` };
+    } finally {
+        await page?.close().catch(() => {});
+    }
+}
 
 /**
  * Writes the cell files and the manifest of the set of the covers in `out` for `records`, under
@@ -194,19 +213,22 @@ export async function render({ out = OUT, sample, only, gpu = false, fixture = f
     console.log(`${records.length} routes, ${chosen.length} chosen, ${todo.length} to render.`);
     const when = { date: `${new Date().getFullYear()}-${DAY}`, time: TIME, weather: 'sunny' };
     const { origin, close } = await serve();
-    const browser = await launch(gpu);
-    const release = active?.id ?? 'fixture', failed = [];
+    let current = await launch(gpu);
+    const browser = { get: async () => (current.isConnected() ? current : (current = await launch(gpu))) };
+    const options = { gpu, fixture }, release = active?.id ?? 'fixture', failed = [];
     let covers = 0, none = 0, seconds = 0, bytes = 0;
     try {
-        let page = await stillPage(browser, origin, { gpu, fixture }), inARow = 0;
-        if (!fixture) checkRelease(await page.evaluate(() => window.trailviewStill.release), release);
+        const probe = await stillPage(current, origin, options);
+        if (!fixture) checkRelease(await probe.evaluate(() => window.trailviewStill.release), release);
+        await probe.close();
+        let inARow = 0;
         for (const record of todo) {
             const job = { line: lineOf(record), when, width: WIDTH, height: HEIGHT, timeoutMs: gpu ? undefined : SOFTWARE_MS };
-            let result = await shoot(page, job);
+            let result = await cover(browser, origin, options, job);
             if (result.failure === 'tiles-failed') {
                 console.log(`${record.id}: ${result.message} Waiting ${RETRY_MS / 1000} s to try once more.`);
                 await sleep(RETRY_MS);
-                result = await shoot(page, job);
+                result = await cover(browser, origin, options, job);
             }
             if (result.failure) {
                 failed.push(`${record.id}: ${result.message}`);
@@ -215,9 +237,6 @@ export async function render({ out = OUT, sample, only, gpu = false, fixture = f
                     console.log(`${inARow} routes failed in a row: render stops. Check the tile host and the GPU, then run again.`);
                     break;
                 }
-                // A new page asks for a new GPU device, also after a lost one or a crash.
-                await page.close().catch(() => {});
-                page = await stillPage(browser, origin, { gpu, fixture });
                 continue;
             }
             inARow = 0;
@@ -236,9 +255,8 @@ export async function render({ out = OUT, sample, only, gpu = false, fixture = f
             bytes += image.length;
             console.log(`${record.id}: ${result.seconds.toFixed(1)} s, ${Math.round(image.length / 1000)} kB`);
         }
-        await page.close().catch(() => {});
     } finally {
-        await browser.close();
+        await current.close().catch(() => {});
         close();
     }
     const done = covers + none, mean = done ? seconds / done : 0;
