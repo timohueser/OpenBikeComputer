@@ -8,9 +8,7 @@
 //! A bore (storey −1, the feature `bores`) is a deck turned over, its depth its bore turned: the top is its floor, the
 //! underside its roof, which stays its least plate under the ground over it (the roof's cap: storey 0's label there),
 //! and the edge faces its walls, facing in. It has no parapet, railing or pier. Where it ends on a portal line, its
-//! floor ends on storey 0's points (`Storeys::portals`) at storey 0's height, a frame stands about the opening in front
-//! of the line (jambs, a lintel), and an end face stands on the line from the frame's top up to the ground over the
-//! bore (its foot capped at that ground).
+//! floor ends on storey 0's points (`Storeys::portals`) at storey 0's height.
 //!
 //! The free outline is every face edge between the sheet and the rest that lies on no cell line and on no end line
 //! where storey 0 meets the deck (`EdgeKind::DeckEdge`): those stay open, as the neighbour cell or storey 0 goes on
@@ -41,17 +39,10 @@ use crate::faces::{EdgeKind, FacePlan, Storeys, Surface, OUTSIDE};
 use crate::frame::{metres_per_unit_at, CellKey, CELL_UNITS};
 use crate::graph::Structures;
 
-/// "OBS" and the layout's version: with the bores, the frames, the end faces and the caps.
+/// "OBS" and the layout's version: with the bores, the caps.
 pub const MAGIC: u32 = if BORES { 0x4f42_5302 } else { 0x4f42_5301 };
 /// The parts of a storey's mesh, in the order of their triangles.
-#[cfg(not(feature = "bores"))]
 pub const PARTS: [&str; 7] = ["top", "underside", "edge", "parapet", "railing", "post", "pier"];
-#[cfg(feature = "bores")]
-pub const PARTS: [&str; 9] = ["top", "underside", "edge", "parapet", "railing", "post", "pier", "frame", "end face"];
-#[cfg(feature = "bores")]
-const FRAME: usize = 7;
-#[cfg(feature = "bores")]
-const END_FACE: usize = 8;
 const BORES: bool = cfg!(feature = "bores");
 const TOP: usize = 0;
 const UNDER: usize = 1;
@@ -67,16 +58,6 @@ const PARAPET_M: [f64; 2] = [0.35, 1.0];
 /// A railing: its height, and the side of its square rail and of its posts (the crossing block's thickness table).
 const RAIL_M: f64 = 1.05;
 const BAR_M: f64 = 0.08;
-/// A portal's frame: its jambs' width beside the opening, its lintel's height over the bore, its depth along the way
-/// in front of the portal line, and how far its jambs reach under the ground (the crossing block's thickness table).
-#[cfg(feature = "bores")]
-const FRAME_SIDE_M: f64 = 0.7;
-#[cfg(feature = "bores")]
-const FRAME_TOP_M: f64 = 1.3;
-#[cfg(feature = "bores")]
-const FRAME_DEPTH_M: f64 = 0.6;
-#[cfg(feature = "bores")]
-const FRAME_FOOT_M: f64 = 0.3;
 
 type P = [i32; 2];
 
@@ -92,8 +73,6 @@ pub struct ShellStats {
     /// A bore's floor edges on a portal line where storey 0 holds no run of portal pieces between their ends: none
     /// expected.
     pub portal_misses: u32,
-    /// Portal frames left out because they would touch or reach past a cell line.
-    pub frames_cut: u32,
 }
 
 /// The meshes of a cell's storeys over the ground: see the module's bytes. Triangles and slots hold whole corner
@@ -589,7 +568,7 @@ pub fn mesh_storeys(
     let portals = PortalMap::new(&storeys.portals);
     for plan in &storeys.plans {
         let bore = plan.level < 0;
-        // The bore's floor ends on storey 0's portal pieces: each piece, its floor label, its way's, its back's.
+        // The bore's floor ends on storey 0's portal pieces: each piece, its floor label, its way's label.
         #[cfg(feature = "bores")]
         let mut ends: Vec<(P, P, u32, u32, u32)> = Vec::new();
         let labels = face_labels(&plan.faces, words);
@@ -816,13 +795,6 @@ pub fn mesh_storeys(
                 i = j;
             }
         }
-        // The portals' frames and end faces: each run of the floor's end pieces that meet end to end.
-        #[cfg(feature = "bores")]
-        for run in runs_of(&ends) {
-            let run: Vec<(P, u32, u32, f64)> = run.iter().map(|&(p, f, k)| (p, f, k, -depth(f))).collect();
-            portal_end_face(&mut b, &run);
-            portal_frame(&mut b, &mut stats, words, &run, origin_y);
-        }
         all_labels.push(labels);
     }
     piers(&mut b, storeys, words, &lines, &all_labels, structures, &mut stats);
@@ -996,7 +968,7 @@ fn piers(
 }
 
 /// The faults of a storey mesh's closure, per solid: the slab (top, underside, edge faces and slots; a bore's floor,
-/// roof and walls), the parapets, the railings' rails, their posts, the piers and the portals' frames. In each, every edge between two corners at two points is the edge of exactly one
+/// roof and walls), the parapets, the railings' rails, their posts and the piers. In each, every edge between two corners at two points is the edge of exactly one
 /// triangle in each direction (a closed, consistently turned surface), except on a cell line and on an open piece
 /// (`StoreyMesh::open`), where storey 0 or the neighbour goes on. Two corners at one point (a seam between two
 /// labels, or a vertical edge) span no area seen from above and count for nothing.
@@ -1015,9 +987,6 @@ pub fn closure(m: &StoreyMesh) -> Vec<String> {
     for k in [PARAPET, RAILING, POST, PIER] {
         solids.push((PARTS[k], slab(k)));
     }
-    // A portal's frame is a solid; its end face is a step on the portal line, as storey 0's end faces.
-    #[cfg(feature = "bores")]
-    solids.push((PARTS[FRAME], slab(FRAME)));
     for (name, tris) in solids {
         let mut uses: BTreeMap<(u32, u32), u32> = BTreeMap::new();
         // A triangle with two equal corners (a slot whose two labels take one label at an end) spans nothing.
@@ -1150,141 +1119,5 @@ impl PortalMap {
     /// The label of the ground or the way on top over the bore at a point of a portal piece.
     fn back(&self, p: P) -> Option<u32> {
         self.pieces.iter().find(|x| x.0 == p).map(|x| x.3)
-    }
-}
-
-/// The runs of a floor's end pieces on portal lines that meet end to end, each oriented with its way on the left: per
-/// point its floor label (of the piece that leaves it, the last of the piece that reaches it) and the back's label.
-#[cfg(feature = "bores")]
-fn runs_of(ends: &[(P, P, u32, u32, u32)]) -> Vec<Vec<(P, u32, u32)>> {
-    let mut used = vec![false; ends.len()];
-    let mut out = Vec::new();
-    let starts: Vec<usize> = (0..ends.len()).filter(|&k| !ends.iter().any(|e| e.1 == ends[k].0)).collect();
-    for s in starts.into_iter().chain(0..ends.len()) {
-        if used[s] {
-            continue;
-        }
-        let (mut run, mut k) = (vec![(ends[s].0, ends[s].2, ends[s].4)], s);
-        loop {
-            used[k] = true;
-            let e = ends[k];
-            match (0..ends.len()).find(|&j| !used[j] && ends[j].0 == e.1) {
-                Some(j) => {
-                    run.push((e.1, ends[j].2, ends[j].4));
-                    k = j;
-                }
-                None => {
-                    run.push((e.1, e.2, e.4));
-                    break;
-                }
-            }
-        }
-        out.push(run);
-    }
-    out
-}
-
-/// The end face of a portal on its run of the bore's floor end (`PortalMap::walk`, from P0 to Pn with the way that
-/// ends there on its left, each point with its floor label, which takes the way's label there by `Build::relabel`, the
-/// label of the ground or the way on top behind, and the bore's height): it stands on the line from the frame's top
-/// (the lintel's back top), capped at the ground behind, up to that ground.
-#[cfg(feature = "bores")]
-fn portal_end_face(b: &mut Build, run: &[(P, u32, u32, f64)]) {
-    for w in run.windows(2) {
-        let ((pa, la, ba, za), (pb, lb, bb, zb)) = (w[0], w[1]);
-        let (ta, tb) = (za + FRAME_TOP_M, zb + FRAME_TOP_M);
-        b.cap(pa, la, ta, (ba, 0.0));
-        b.cap(pb, lb, tb, (bb, 0.0));
-        let c = [b.corner(pa, la, ta), b.corner(pa, ba, 0.0), b.corner(pb, lb, tb), b.corner(pb, bb, 0.0)];
-        wall_of(b, END_FACE, c, false);
-    }
-}
-
-/// The frame of a portal on its run (`portal_end_face`), in front of the portal line, `FRAME_DEPTH_M` deep, one closed
-/// solid: a lintel from the bore's height up by `FRAME_TOP_M` over the opening and the jambs, and a jamb
-/// `FRAME_SIDE_M` wide beside each end of the opening, from `FRAME_FOOT_M` under the least of the way's plane, the
-/// ground there and the terrain up to the lintel. The lintel's underside and the jambs' inner backs share the roof's and the walls'
-/// corners at the opening. Each cell builds the runs of its own pieces, so a frame that would touch or reach past a
-/// cell line is left out (`ShellStats::frames_cut`).
-#[cfg(feature = "bores")]
-fn portal_frame(b: &mut Build, stats: &mut ShellStats, words: &[u32], run: &[(P, u32, u32, f64)], origin_y: f64) {
-    let n = run.len();
-    let (p0, pn) = (run[0].0, run[n - 1].0);
-    let len = libm::hypot(f64::from(pn[0] - p0[0]), f64::from(pn[1] - p0[1]));
-    if n < 2 || len <= 0.0 {
-        return;
-    }
-    let c = f64::from(CELL_UNITS as i32);
-    let u = [f64::from(pn[0] - p0[0]) / len, f64::from(pn[1] - p0[1]) / len];
-    let mpu = metres_per_unit_at(origin_y + f64::from(p0[1]));
-    let (side, depth) = (FRAME_SIDE_M / mpu, FRAME_DEPTH_M / mpu);
-    // A point `along` the line and `forward` toward the way (its left), rounded; None on or past the cell's square.
-    let at = |p: P, along: f64, forward: f64| {
-        let q = [f64::from(p[0]) + along * u[0] - forward * u[1], f64::from(p[1]) + along * u[1] + forward * u[0]];
-        let q = q.map(libm::round);
-        q.iter().all(|v| v > &0.0 && v < &c).then(|| q.map(|v| v as i32))
-    };
-    // The points along the line: the jambs' outer ends about the run; and in front of each, the frame's front.
-    let mut row: Vec<(Option<P>, u32, f64)> = vec![(at(p0, -side, 0.0), run[0].1, run[0].3)];
-    row.extend(run.iter().map(|r| (at(r.0, 0.0, 0.0), r.1, r.3)));
-    row.push((at(pn, side, 0.0), run[n - 1].1, run[n - 1].3));
-    let ahead: Vec<Option<P>> = (row.iter().enumerate())
-        .map(|(k, _)| match k {
-            0 => at(p0, -side, depth),
-            _ if k == n + 1 => at(pn, side, depth),
-            _ => at(run[k - 1].0, 0.0, depth),
-        })
-        .collect();
-    let (Some(back), Some(front)): (Option<Vec<P>>, Option<Vec<P>>) =
-        (row.iter().map(|r| r.0).collect(), ahead.into_iter().collect())
-    else {
-        stats.frames_cut += 1;
-        return;
-    };
-    let m = row.len();
-    let (bore, top) = (|k: usize| row[k].2, |k: usize| row[k].2 + FRAME_TOP_M);
-    let foot = |b: &mut Build, p: P, l: u32| {
-        b.cap(p, l, -FRAME_FOOT_M, (NO_LABEL, -FRAME_FOOT_M));
-        if let Some(g) = find(words, [f64::from(p[0]), f64::from(p[1])]) {
-            b.cap(p, l, -FRAME_FOOT_M, (g, -FRAME_FOOT_M));
-        }
-        b.corner(p, l, -FRAME_FOOT_M)
-    };
-    for k in 0..m - 1 {
-        let (pa, pb, qa, qb, la, lb) = (back[k], back[k + 1], front[k], front[k + 1], row[k].1, row[k + 1].1);
-        // The lintel's band all along: its back on the line, its front, its top.
-        wall(b, FRAME, (pa, pb), true, (la, lb), ([bore(k), bore(k + 1)], [top(k), top(k + 1)]));
-        wall(b, FRAME, (qa, qb), false, (la, lb), ([bore(k), bore(k + 1)], [top(k), top(k + 1)]));
-        let t = [
-            b.corner(pa, la, top(k)),
-            b.corner(qa, la, top(k)),
-            b.corner(qb, lb, top(k + 1)),
-            b.corner(pb, lb, top(k + 1)),
-        ];
-        b.quad(FRAME, t);
-        let (ba, bb) = (b.corner(pa, la, bore(k)), b.corner(pb, lb, bore(k + 1)));
-        let (ca, cb) = (b.corner(qa, la, bore(k)), b.corner(qb, lb, bore(k + 1)));
-        if k == 0 || k + 2 == m {
-            // A jamb under the lintel: its back, its front, its foot.
-            let f = [foot(b, pa, la), foot(b, qa, la), foot(b, qb, lb), foot(b, pb, lb)];
-            wall_of(b, FRAME, [f[0], ba, f[3], bb], true);
-            wall_of(b, FRAME, [f[1], ca, f[2], cb], false);
-            b.quad(FRAME, [f[0], f[3], f[2], f[1]]);
-        } else {
-            // The lintel's underside over the opening.
-            b.quad(FRAME, [ba, bb, cb, ca]);
-        }
-    }
-    // Across the depth, from the front point to the line: the solid's two ends (the lintel's, and under it the jamb's
-    // outer end), and each jamb's inner side, facing the opening.
-    for (k, left, ends) in [(0, true, true), (m - 1, false, true), (1, false, false), (m - 2, true, false)] {
-        let (p, q, l) = (back[k], front[k], row[k].1);
-        let (pl, ql) = (b.corner(p, l, bore(k)), b.corner(q, l, bore(k)));
-        if ends {
-            let (ph, qh) = (b.corner(p, l, top(k)), b.corner(q, l, top(k)));
-            wall_of(b, FRAME, [ql, qh, pl, ph], left);
-        }
-        let (pf, qf) = (foot(b, p, l), foot(b, q, l));
-        wall_of(b, FRAME, [qf, ql, pf, pl], left);
     }
 }

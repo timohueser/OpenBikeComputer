@@ -383,6 +383,9 @@ pub struct WayGraph {
     /// Empty from `build`: `levels` fills it.
     pub levels: Levels,
     pub stats: GraphStats,
+    /// The graph of the storeys (`build_levelled`): its ways are the stretches of the states that the tiles carry, so
+    /// a tunnel way here is a BORE stretch; in the graph of `build` it is a whole tunnel, whose states it does not know.
+    pub levelled: bool,
 }
 
 /// A sample of a walk along a way: its place (cell units) and its way.
@@ -535,6 +538,7 @@ fn build_with(cell: CellKey, input: &CellInput, rules: &Sections, levelled: Opti
         None => plan,
     };
     let mut g = points::assemble(cell, area, parts, &part_rules, samples, plan, stats);
+    g.levelled = levelled.is_some();
     open_culverts(&mut g, input, rules);
     g
 }

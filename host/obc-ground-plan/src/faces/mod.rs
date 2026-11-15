@@ -243,11 +243,12 @@ fn on_deck(graph: &WayGraph, way: u32) -> bool {
     w.family != Family::Water && w.level == Level::Deck
 }
 
-/// A bore way (with the bores): a tunnel way that is not water. Its floor bound is a ceiling line with the sign turned.
+/// A bore way (with the bores): a BORE stretch of a tunnel way that is not water, in the graph of the storeys. Its
+/// floor bound is a ceiling line with the sign turned.
 #[inline]
 pub(crate) fn in_bore(graph: &WayGraph, way: u32) -> bool {
     let w = &graph.ways[way as usize];
-    BORES && w.family != Family::Water && w.level == Level::Tunnel
+    BORES && graph.levelled && w.family != Family::Water && w.level == Level::Tunnel
 }
 
 /// An arm on a structure: a deck, or a bore.
@@ -1140,13 +1141,13 @@ fn deck_ends(line: &WayLine) -> Vec<(EdgeKind, [f64; 5])> {
     out
 }
 
-/// Whether a candidate is a band layer.
+/// Whether a candidate is a band layer. The cover over a bore is none: it decides the opening at every distance.
 fn band(c: &Cand) -> bool {
     c.relabel.is_none()
         && c.fill.is_none()
         && c.glob.is_some()
         && c.label.owner == Owner::Terrain
-        && c.label.surface != Surface::Zone
+        && !matches!(c.label.surface, Surface::Zone | Surface::Cover)
 }
 
 /// Whether the far level leaves a label out: water (whose bank is a band layer) and a culvert's zone, until the
@@ -1600,11 +1601,13 @@ fn run_in(line: &WayLine, bx: [i32; 4]) -> Option<(usize, usize)> {
     Some(((0..n).find(meets)?, (0..n).rfind(meets)? + 2))
 }
 
-/// The ground over the bores near the cell (with the bores), a candidate of storey 0: each bore's stroke (its core, its
-/// wall and the cover's margin) from end line to end line, less the cores of the ways that cross over it. It wins
-/// every other face there, so a way that does not cross over a bore ends at the side of its opening, and a way on top
-/// is never cut. Its square ends pass the corners of the bore's layers, which are those of the way that ends on the
-/// portal line (`taper`). Its height is the ground's (the slope rule) over the bores' floor bound.
+/// The ground over the bores near the cell (with the bores), two candidates of storey 0 of one label, each over each
+/// bore's stroke from end line to end line. The opening, its core, its wall and the cover's margin less the cores of the
+/// ways that cross over it, wins every other face: a way that does not cross over a bore ends at the side of its
+/// opening, and a way on top is never cut. The band about it, as far as the floor bound reaches
+/// (`ceiling_release_m`), wins the slope layers only: the ground that the floor lifts is the cover's, so its step on a
+/// portal line lies on the cover's edge. Their square ends pass the corners of the bore's layers, which are those of
+/// the way that ends on the portal line (`taper`). Their height is the ground's (the slope rule) over the floor bound.
 fn bore_cover(
     ctx: &Ctx,
     input: &CellInput,
@@ -1612,19 +1615,21 @@ fn bore_cover(
     of_way: &BTreeMap<u32, usize>,
     ways_box: [i32; 4],
     bx: [i32; 4],
-) -> Option<Cand> {
+) -> Vec<Cand> {
     let g = ctx.graph;
     let (bores, _) = lines(ctx, input, &|w| in_bore(g, w), ways_box);
-    let mut rings = Vec::new();
+    let side_m = deck::WALL_M + deck::COVER_SIDE_M;
+    let (mut rings, mut band) = (Vec::new(), Vec::new());
     for line in &bores {
         let Some((first, last)) = run_in(line, bx) else { continue };
-        let side = |i: usize| line.bands[i][VERGE] + ctx.units(deck::WALL_M + deck::COVER_SIDE_M, line.p[i]);
-        let d: Vec<f64> = (first..last).map(side).collect();
         let cuts = [&line.offsets(first)[..=VERGE + 1], &line.offsets(last - 1)[..=VERGE + 1]];
-        pieces_along(&line.p[first..last], &d, &line.dirs(first, last), cuts, [false; 2], false, &mut rings);
+        for (out, m) in [(&mut rings, side_m), (&mut band, side_m + ctx.rules.plan.heights.ceiling_release_m)] {
+            let d: Vec<f64> = (first..last).map(|i| line.bands[i][VERGE] + ctx.units(m, line.p[i])).collect();
+            pieces_along(&line.p[first..last], &d, &line.dirs(first, last), cuts, [false; 2], false, out);
+        }
     }
     if rings.is_empty() {
-        return None;
+        return Vec::new();
     }
     let bore = |st: &Station| g.way_at(st, Level::Tunnel).is_some_and(|w| in_bore(g, w));
     let mut over: Vec<usize> = (g.crossings.iter().filter(|c| bore(&c.under)))
@@ -1642,8 +1647,18 @@ fn bore_cover(
     }
     let rings = stroke::boolean(&union(&rings, [0, 0]), &union(&cores, [0, 0]), OverlayRule::Difference, [0, 0]);
     let label = Label { surface: Surface::Cover, rule: HeightRule::Slope, rank: 0, ..TERRAIN };
-    let (glob, beyond, discs) = (Some([i64::MIN; 5]), Vec::new(), Vec::new());
-    Some(Cand { rings, label, key: (0, 0, 0), glob, line: 0, relabel: None, beyond, fill: None, discs })
+    let cand = |rings: Rings, key| Cand {
+        rings,
+        label,
+        key,
+        glob: Some([i64::MIN; 5]),
+        line: 0,
+        relabel: None,
+        beyond: Vec::new(),
+        fill: None,
+        discs: Vec::new(),
+    };
+    vec![cand(rings, (0, 0, 0)), cand(union(&band, [0, 0]), (ctx.rules.plan.rank(Rank::Slope), 0, 0))]
 }
 
 /// Splits every candidate that gives the label of a way with legs (`legs`), or that is one of its own

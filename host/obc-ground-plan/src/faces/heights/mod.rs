@@ -1096,11 +1096,12 @@ struct Cause {
     arms: u32,
     parts: bool,
     wall: bool,
-    /// A deck's ceiling holds the side (`ceiling`).
+    /// A deck's ceiling holds the side (`ceiling`), or a bore's floor lifts it (`floor`).
     ceiling: bool,
+    floor: bool,
 }
 
-const NO_CAUSE: Cause = Cause { by: None, arms: 0, parts: false, wall: false, ceiling: false };
+const NO_CAUSE: Cause = Cause { by: None, arms: 0, parts: false, wall: false, ceiling: false, floor: false };
 
 impl Cause {
     /// The records that host a paved side: its host, or a region's arms, which all host it.
@@ -1398,6 +1399,7 @@ fn slope(b: &Block, q: [f64; 2], t: f64, p: &HeightRules) -> (f64, Cause) {
         parts: k.is_some_and(|k| groups[k].plain > at[k].1),
         wall: false,
         ceiling: false,
+        floor: false,
     };
     let (lo, top) = soft_top(&at, 0..groups.len(), p);
     let lo_by = by(top);
@@ -1549,7 +1551,13 @@ fn decks<'a>(
             b.along(&ln, i) - b.along(&ln, 0) <= sa.h + p.ceiling_release_m,
             b.along(&ln, last) - b.along(&ln, i + 1) <= sb.h + p.ceiling_release_m,
         ];
-        let past = behind(0, near[0]).max(behind(1, near[1])).max(0.0);
+        let (p0, p1) = (behind(0, near[0]), behind(1, near[1]));
+        // A bore's floor holds the ground behind its portal lines only: in front of one the way that ends there and its
+        // cut stand alone.
+        if ln.ret < 0.0 && ((ln.level[0] && p0 > 0.0) || (ln.level[1] && p1 > 0.0)) {
+            return None;
+        }
+        let past = p0.max(p1).max(0.0);
         let out = libm::hypot((across - half).max(0.0), past);
         let len_m = len * b.mpu;
         let bank = sa.bank + f * (sb.bank - sa.bank);
@@ -1684,8 +1692,9 @@ fn step(b: &Block, q: [f64; 2], recs: &[Rec], sides: &[(Height, Cause); 2], p: &
         return Step::None;
     }
     // An end face: beside a paved side on the deck end line of a line present (one of several ways that end
-    // there need not host the face), whatever the lower side; or where the ceiling holds the lower side.
-    let lower = if sides[0].0.h < sides[1].0.h { &sides[0] } else { &sides[1] };
+    // there need not host the face), whatever the lower side; or where the ceiling holds the lower side, or a bore's
+    // floor the higher.
+    let (lower, higher) = if sides[0].0.h < sides[1].0.h { (&sides[0], &sides[1]) } else { (&sides[1], &sides[0]) };
     let on_deck_end = |r: &Rec| {
         let ln = b.line(r.line as usize);
         (0..2).any(|e| {
@@ -1694,7 +1703,10 @@ fn step(b: &Block, q: [f64; 2], recs: &[Rec], sides: &[(Height, Cause); 2], p: &
             ln.deck[e] && b.past_end(&ln, e, q).abs() <= END_UNITS * b.mpu && across <= b.half(&ln, i) + ln.side
         })
     };
-    if lower.1.ceiling || (sides.iter().any(|(h, _)| h.kind == Kind::Paved) && recs.iter().any(on_deck_end)) {
+    if lower.1.ceiling
+        || higher.1.floor
+        || (sides.iter().any(|(h, _)| h.kind == Kind::Paved) && recs.iter().any(on_deck_end))
+    {
         return Step::EndFace;
     }
     let within = |rise: f64, size: f64| rise * size > 0.0 && rise.abs() <= size.abs() + p.step_m;
@@ -1907,9 +1919,9 @@ fn by_label(
         let ((h, cause), kind) =
             if rule == 0 { ((t, NO_CAUSE), Kind::Terrain) } else { (slope(b, q, t, p), Kind::Slope) };
         // A comparison, not `max`: an unknown terrain (NaN) stays unknown. Only the bores have floor lines.
-        let h = match crate::graph::BORES.then(|| floor(b, q, items.segs, t, p)) {
-            Some(f) if f > h => f,
-            _ => h,
+        let (h, cause) = match crate::graph::BORES.then(|| floor(b, q, items.segs, t, p)) {
+            Some(f) if f > h => (f, Cause { floor: true, ..NO_CAUSE }),
+            _ => (h, cause),
         };
         let c = ceiling(b, q, items.segs, p);
         if c < h {
