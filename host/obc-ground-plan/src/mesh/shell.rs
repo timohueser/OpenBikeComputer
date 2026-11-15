@@ -29,7 +29,7 @@
 //! | corners | 3 words each, sorted by point (y, then x): x in bits 0–18 and the label's bits 0–12 in bits 19–31; y in bits 0–18 and the label's bits 13–24 in bits 19–30; the offset (f32, metres) |
 //! | triangle runs, triangles | as the cell mesh's: 2 words a run (count, base corner), 3 u16 a triangle less its run's base; each part in runs of its own |
 //! | slot runs, slots | 2 words a run, 4 u16 a slot (`a_p, a_q, b_q, b_p`): the tops' slots between two labels, then the undersides' risers |
-//! | caps | with the bores (its count last in the head): 3 words each, sorted: a corner, its second label, its second offset (f32) |
+//! | caps | with the bores (its count last in the head): 3 words each, sorted: a corner, a cap's label (`NO_LABEL`: the plain terrain) and offset (f32) |
 
 use std::collections::BTreeMap;
 
@@ -110,7 +110,8 @@ pub struct StoreyMesh {
     pub slot_runs: Vec<[u32; 2]>,
     pub top_slots: u32,
     pub open: Vec<[P; 2]>,
-    /// The corners with a cap: the corner, the cap's label and its offset's bits (`corner_height`).
+    /// The caps of corners, sorted (a corner may have several): the corner, the cap's label (`NO_LABEL`: the plain
+    /// terrain) and its offset's bits (`corner_height`).
     pub caps: Vec<[u32; 3]>,
     pub stats: ShellStats,
 }
@@ -156,8 +157,8 @@ impl StoreyMesh {
     }
 
     /// The height of corner k by the crate's height function in the cell's block over the cell's terrain: its label's
-    /// plus its offset, or the lower of that and its cap's. A pier's foot on the plain terrain (`NO_LABEL`) stands on
-    /// the terrain.
+    /// plus its offset, or the least of that and its caps'. A label `NO_LABEL` is the plain terrain (a pier's foot, a
+    /// cap under the terrain).
     pub fn corner_height(&self, k: usize, words: &[u32], terrain: &crate::terrain::Terrain) -> f64 {
         use crate::faces::heights::height_at;
         let (p, l, off) = self.corner(k);
@@ -165,10 +166,10 @@ impl StoreyMesh {
         let t = terrain.height(crate::frame::GlobalPoint { x: o.x + i64::from(p[0]), y: o.y + i64::from(p[1]) });
         let t = t.unwrap_or(f64::NAN);
         let at = |l: u32, off: f64| if l == NO_LABEL { t + off } else { height_at(words, q, Some(l), t).h + off };
-        match self.caps.binary_search_by_key(&(k as u32), |c| c[0]) {
-            Ok(i) => at(l, off).min(at(self.caps[i][1], f64::from(f32::from_bits(self.caps[i][2])))),
-            Err(_) => at(l, off),
-        }
+        let first = self.caps.partition_point(|c| c[0] < k as u32);
+        (self.caps[first..].iter().take_while(|c| c[0] == k as u32))
+            .map(|c| at(c[1], f64::from(f32::from_bits(c[2]))))
+            .fold(at(l, off), f64::min)
     }
 }
 
@@ -674,12 +675,13 @@ pub fn mesh_storeys(
             let under = t.map(|v| b.corner(points[v as usize], l, -depth(l)));
             b.tris[TOP].push(top);
             b.tris[UNDER].push([under[0], under[2], under[1]]);
-            // A bore's roof stays its plate under the ground over it: behind a portal line the back's label, else
-            // storey 0's at the corner.
+            // A bore's roof stays its plate under the ground over it, which storey 0 draws (behind a portal line the
+            // back's label, else storey 0's at the corner) or the terrain does past storey 0's mesh: under both.
             #[cfg(feature = "bores")]
             for &v in t.iter().filter(|_| bore) {
                 let p = points[v as usize];
                 let plate = way(l).map_or(0.0, |w| w.plate_m);
+                b.cap(p, l, -depth(l), (NO_LABEL, -plate));
                 if let Some(g) = portals.back(p).or_else(|| find(words, [f64::from(p[0]), f64::from(p[1])])) {
                     b.cap(p, l, -depth(l), (g, -plate));
                 }
@@ -839,11 +841,13 @@ pub fn mesh_storeys(
         slot_runs.extend(runs(&sorted)?);
         slots.extend(sorted);
     }
-    let mut caps: Vec<[u32; 3]> = (b.caps.iter())
+    let mut caps: Vec<[u32; 3]> = (b.caps.iter().filter(|_| BORES))
         .filter_map(|&(key, (l, off))| unique.binary_search(&key).ok().map(|k| [k as u32, l, off]))
         .collect();
-    caps.sort_unstable();
-    caps.dedup_by_key(|c| c[0]);
+    if BORES {
+        caps.sort_unstable();
+        caps.dedup();
+    }
     let corners = (unique.iter())
         .map(|&(key, offset)| {
             let (label, x, y) = ((key as u32) & NO_LABEL, (key >> 25) as u32 & 0x7ffff, (key >> 44) as u32);
@@ -1195,8 +1199,8 @@ fn portal_end_face(b: &mut Build, run: &[(P, u32, u32, f64)]) {
 
 /// The frame of a portal on its run (`portal_end_face`), in front of the portal line, `FRAME_DEPTH_M` deep, one closed
 /// solid: a lintel from the bore's height up by `FRAME_TOP_M` over the opening and the jambs, and a jamb
-/// `FRAME_SIDE_M` wide beside each end of the opening, from `FRAME_FOOT_M` under the lower of the way's plane and the
-/// ground there up to the lintel. The lintel's underside and the jambs' inner backs share the roof's and the walls'
+/// `FRAME_SIDE_M` wide beside each end of the opening, from `FRAME_FOOT_M` under the least of the way's plane, the
+/// ground there and the terrain up to the lintel. The lintel's underside and the jambs' inner backs share the roof's and the walls'
 /// corners at the opening. Each cell builds the runs of its own pieces, so a frame that would touch or reach past a
 /// cell line is left out (`ShellStats::frames_cut`).
 #[cfg(feature = "bores")]
@@ -1237,6 +1241,7 @@ fn portal_frame(b: &mut Build, stats: &mut ShellStats, words: &[u32], run: &[(P,
     let m = row.len();
     let (bore, top) = (|k: usize| row[k].2, |k: usize| row[k].2 + FRAME_TOP_M);
     let foot = |b: &mut Build, p: P, l: u32| {
+        b.cap(p, l, -FRAME_FOOT_M, (NO_LABEL, -FRAME_FOOT_M));
         if let Some(g) = find(words, [f64::from(p[0]), f64::from(p[1])]) {
             b.cap(p, l, -FRAME_FOOT_M, (g, -FRAME_FOOT_M));
         }

@@ -1906,9 +1906,9 @@ fn by_label(
     if rule <= 1 {
         let ((h, cause), kind) =
             if rule == 0 { ((t, NO_CAUSE), Kind::Terrain) } else { (slope(b, q, t, p), Kind::Slope) };
-        // A comparison, not `max`: an unknown terrain (NaN) stays unknown.
-        let h = match floor(b, q, items.segs, t, p) {
-            f if f > h => f,
+        // A comparison, not `max`: an unknown terrain (NaN) stays unknown. Only the bores have floor lines.
+        let h = match crate::graph::BORES.then(|| floor(b, q, items.segs, t, p)) {
+            Some(f) if f > h => f,
             _ => h,
         };
         let c = ceiling(b, q, items.segs, p);

@@ -91,7 +91,7 @@ pub fn build_storeys(
         })
         .flat_map(|e| mesh::points::edge_points(plan, e, origin_y))
         .collect();
-    let labels = mesh::face_labels(&plan.faces, &b.records);
+    let labels = if crate::graph::BORES { mesh::face_labels(&plan.faces, &b.records) } else { Vec::new() };
     for e in plan.edges.iter().filter(|e| e.kind == EdgeKind::Portal && e.left != OUTSIDE && e.right != OUTSIDE) {
         let (front, back) = if e.flags & FRONT_LEFT != 0 { (e.left, e.right) } else { (e.right, e.left) };
         let (Some(front), Some(back)) = (labels[front as usize], labels[back as usize]) else { continue };

@@ -244,12 +244,14 @@ fn on_deck(graph: &WayGraph, way: u32) -> bool {
 }
 
 /// A bore way (with the bores): a tunnel way that is not water. Its floor bound is a ceiling line with the sign turned.
+#[inline]
 pub(crate) fn in_bore(graph: &WayGraph, way: u32) -> bool {
     let w = &graph.ways[way as usize];
     BORES && w.family != Family::Water && w.level == Level::Tunnel
 }
 
 /// An arm on a structure: a deck, or a bore.
+#[inline]
 fn raised(graph: &WayGraph, a: &crate::graph::Arm) -> bool {
     a.level == Level::Deck || in_bore(graph, a.way)
 }
@@ -329,7 +331,7 @@ fn lines<'a>(
             decks.extend(ground);
         }
     }
-    let dirs = portal_dirs(g);
+    let dirs = if BORES { portal_dirs(g) } else { BTreeMap::new() };
     let mut out = Vec::new();
     let mut of_way = BTreeMap::new();
     let (ways, water): (Vec<_>, Vec<_>) = g.ways.iter().partition(|w| w.family != Family::Water);
@@ -347,6 +349,9 @@ fn lines<'a>(
         let ends_at = [station_key(way.id, 1, &way.from), station_key(way.id, -1, &way.to)];
         // A portal's end segment takes the portal's direction, turned along the line.
         let end_dir = |k: usize| {
+            if !BORES {
+                return None;
+            }
             let d = *dirs.get(&ends_at[k])?;
             let (a, b) = if k == 0 {
                 (samples[0].pos, samples[1].pos)
@@ -447,8 +452,8 @@ fn taper(ctx: &Ctx, input: &CellInput, lines: &mut [WayLine], of_way: &BTreeMap<
     let g = ctx.graph;
     let mut tapers: BTreeMap<usize, Vec<Taper>> = BTreeMap::new();
     for (pos, arms) in g.joints.iter().map(|j| (j.pos, &j.arms)) {
-        if let ([Some(&l), None], [own, other]) | ([None, Some(&l)], [other, own]) =
-            ([of_way.get(&arms[0].way), of_way.get(&arms[1].way)], [&arms[0], &arms[1]])
+        if let (true, [Some(&l), None], [own, other]) | (true, [None, Some(&l)], [other, own]) =
+            (BORES, [of_way.get(&arms[0].way), of_way.get(&arms[1].way)], [&arms[0], &arms[1]])
         {
             if lines[l].portal[usize::from(own.dir < 0)] || in_bore(g, own.way) && portal_end(g, other) {
                 let r = &g.ways[other.way as usize].samples;
@@ -587,6 +592,7 @@ fn taper(ctx: &Ctx, input: &CellInput, lines: &mut [WayLine], of_way: &BTreeMap<
 }
 
 /// Whether an arm is the ground way of a portal: on the ground, not water.
+#[inline]
 fn portal_end(g: &WayGraph, a: &crate::graph::Arm) -> bool {
     let w = &g.ways[a.way as usize];
     BORES && w.level == Level::Ground && w.family != Family::Water
@@ -1063,19 +1069,25 @@ impl Sliced {
         plan.corners = c.corners.clone();
         plan.mouths = c.mouths.clone();
         let ends = &c.ends;
-        // A deck's end passes the rounded corners of every layer of its stroke.
-        let tol = if level != 0 { DECK_END_UNITS } else { END_UNITS };
-        let on = |v: P, e: &[f64; 5]| {
+        // A deck's end passes the rounded corners of every layer of its stroke, and so does a portal's on storey 0.
+        let tol = |kind: EdgeKind| if level != 0 || kind == EdgeKind::Portal { DECK_END_UNITS } else { END_UNITS };
+        let on = |v: P, (kind, e): &(EdgeKind, [f64; 5])| {
             let r = [f64::from(v[0]) - e[0], f64::from(v[1]) - e[1]];
-            (r[0] * e[2] + r[1] * e[3]).abs() <= tol && (r[1] * e[2] - r[0] * e[3]).abs() <= e[4] + tol
+            (r[0] * e[2] + r[1] * e[3]).abs() <= tol(*kind) && (r[1] * e[2] - r[0] * e[3]).abs() <= e[4] + tol(*kind)
         };
         for e in plan.edges.iter_mut().filter(|e| e.kind == EdgeKind::Continuous) {
             let (a, b) = (plan.vertices[e.a as usize], plan.vertices[e.b as usize]);
-            if let Some((kind, end)) = ends.iter().find(|(_, end)| on(a, end) && on(b, end)) {
+            if let Some((kind, end)) = ends.iter().find(|end| on(a, end) && on(b, end)) {
+                // The way lies on the side that its end's direction points to. On storey 0 a portal edge has the
+                // ground over the bore behind it: else it is the end of the way's own layers.
+                let front_left = f64::from(b[0] - a[0]) * end[3] - f64::from(b[1] - a[1]) * end[2] > 0.0;
+                let back = if front_left { e.right } else { e.left };
+                let cover = back != OUTSIDE && plan.faces[back as usize].surface == Surface::Cover;
+                if *kind == EdgeKind::Portal && level == 0 && !cover {
+                    continue;
+                }
                 e.kind = *kind;
-                // The way lies on the side that its end's direction points to.
-                let side = f64::from(b[0] - a[0]) * end[3] - f64::from(b[1] - a[1]) * end[2];
-                if *kind == EdgeKind::Portal && level == 0 && side > 0.0 {
+                if *kind == EdgeKind::Portal && level == 0 && front_left {
                     e.flags |= FRONT_LEFT;
                 }
             }

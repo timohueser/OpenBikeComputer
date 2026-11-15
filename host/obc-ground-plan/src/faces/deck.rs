@@ -194,7 +194,7 @@ impl DeckWay {
         let way = &g.ways[w as usize];
         let feature = &input.features[g.parts[way.part as usize].feature.0 as usize];
         let sec = rules.sections.way(&feature.kind, &feature.tags, false);
-        if decks.storey[w as usize] < 0 {
+        if super::BORES && decks.storey[w as usize] < 0 {
             let (railing, pier_m, build, planks) = (false, [0.0; 2], Build::Concrete, false);
             let (depth_m, plate_m) = (-sec.bore_m, sec.roof_least_m);
             return DeckWay { storey: decks.storey[w as usize], depth_m, plate_m, railing, pier_m, build, planks };
