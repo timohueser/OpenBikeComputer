@@ -60,7 +60,11 @@ test('the route page shows a stored route, renames, sends, opens in the planner,
   await expect(page.locator('menu button').first()).toHaveText('Share');
   await page.getByRole('button', { name: 'Share' }).click();
   const share = page.getByRole('dialog', { name: 'Share' });
-  await expect(share.getByRole('switch')).toHaveText(['Numbers', 'Elevation profile', 'Hide start and endThe first and last 500 m']);
+  await expect(share.getByRole('switch')).toHaveCount(3);
+  for (const name of ['Numbers', 'Elevation profile', 'Hide start and end']) await expect(share.getByRole('switch', { name, exact: true })).toBeVisible();
+  await expect(share.getByRole('switch', { name: 'Hide start and end' })).toHaveAccessibleDescription('The first and last 500 m');
+  // The planner saved the summary again when it opened the plan, with its own time.
+  await expect(share.getByRole('img', { name: /^Share card: Lake loop, 22\.2 km, 400 m up, 1h \d+m$/ })).toBeVisible();
   const [card] = await Promise.all([page.waitForEvent('download'), share.getByRole('button', { name: 'Download' }).click()]);
   expect(card.suggestedFilename()).toBe('Lake loop.jpg');
   const bytes = await readFile(await card.path());

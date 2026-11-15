@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Summary } from '../library/records';
-import { drawCard, holders, layout, SIZES, stretch, type Box, type Card } from './card';
+import { creditParts, drawCard, layout, SIZES, stretch, type Box, type Card } from './card';
 
 const summary = {
     line: [8, 46, 8.1, 46, 8.2, 46], heights: [400, 900, 500], bounds: [8, 46, 8.2, 46],
@@ -83,11 +83,39 @@ describe('the drawing of a share card', () => {
 });
 
 describe('the credits of a share card', () => {
-    it('names each holder of a right one time', () => {
-        expect(holders([
+    it('keeps each part between two ";" whole, also a part with no "©", and removes a second copy', () => {
+        expect(creditParts([
             '© swisstopo (Open data, attribution required); produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018; © OpenStreetMap contributors',
-            '© ESA WorldCover project 2021 / Contains modified Copernicus Sentinel data (2021); © OpenStreetMap contributors; Natural Earth',
-        ])).toEqual(['© swisstopo', '© DLR e.V.', '© Airbus Defence and Space GmbH', '© OpenStreetMap contributors', '© ESA WorldCover project']);
-        expect(holders(['Natural Earth'])).toEqual(['Natural Earth']);
+            '© Environment Agency copyright and/or database right 2022. All rights reserved.',
+            '© GeoBasis-DE/M-V 2024; © GeoBasis-DE / LVermGeo LSA',
+            '© European Union, Copernicus Land Monitoring Service 2026, European Environment Agency (EEA): HR-WSI Snow Phenology',
+            'Contains modified Copernicus Sentinel data 2025; © OpenStreetMap contributors; © 2024 X',
+        ])).toEqual([
+            '© swisstopo (Open data, attribution required)',
+            'produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018',
+            '© OpenStreetMap contributors',
+            '© Environment Agency copyright and/or database right 2022. All rights reserved.',
+            '© GeoBasis-DE/M-V 2024',
+            '© GeoBasis-DE / LVermGeo LSA',
+            '© European Union, Copernicus Land Monitoring Service 2026, European Environment Agency (EEA): HR-WSI Snow Phenology',
+            'Contains modified Copernicus Sentinel data 2025',
+            '© 2024 X',
+        ]);
+    });
+
+    it('puts short credits beside the text, and long credits whole under it in smaller letters', () => {
+        const cover = { image: {} as CanvasImageSource, width: 1920, height: 1280, points: { x: new Float32Array(3), y: new Float32Array(3), eye: new Uint8Array(3) } };
+        const short = recorder(), long = recorder();
+        const beside = drawCard(short.context, 'wide', { ...card, line: false, cover: { ...cover, credits: ['© swisstopo; © OpenStreetMap contributors'] } });
+        expect(short.texts).toContain('© swisstopo\u00a0· © OpenStreetMap contributors');
+        expect(beside.credit!.y + beside.credit!.height).toBe(beside.numbers!.y + beside.numbers!.height);
+        const sentence = 'produced using Copernicus WorldDEM-30 and provided under COPERNICUS by the European Union and ESA';
+        const under = drawCard(long.context, 'wide', { ...card, line: false, cover: { ...cover, credits: Array.from({ length: 12 }, (_, i) => `${sentence} ${i}`) } });
+        const lines = long.texts.filter(text => text.startsWith('produced') || text.includes('COPERNICUS'));
+        // No line ends with "…", and the last one holds the end of the last credit.
+        expect(lines.join(' ')).not.toContain('…');
+        expect(long.texts.some(text => text.endsWith('ESA 11'))).toBe(true);
+        expect(under.letters.small).toBeLessThan(beside.letters.small);
+        expect(under.credit!.y).toBeGreaterThan(under.numbers!.y + under.numbers!.height);
     });
 });
