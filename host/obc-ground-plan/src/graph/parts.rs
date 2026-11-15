@@ -94,7 +94,8 @@ pub(crate) fn classify<'a>(feature: &Feature, sections: &'a Sections) -> Option<
     } else {
         Family::Road
     };
-    let level = if kind == "tunnel" {
+    // Tiles of an older bake hold a passage through a building as a tunnel: it is a way, the building stands over it.
+    let level = if kind == "tunnel" && tag("tunnel") != Some("building_passage") {
         Level::Tunnel
     } else if tag("deck").is_some() {
         Level::Deck
