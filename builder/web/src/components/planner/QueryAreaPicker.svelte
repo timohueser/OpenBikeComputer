@@ -1,5 +1,5 @@
 <script lang="ts">
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import QueryAlong from './QueryAlong.svelte';
     import QueryPointPicker from './QueryPointPicker.svelte';
     import type { Where, QueryDay } from '../../lib/planner/search/types';

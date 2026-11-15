@@ -3,7 +3,7 @@
     import CoverageMap from '../components/coverage/CoverageMap.svelte';
     import SkinStep from '../components/coverage/SkinStep.svelte';
     import Credits from '../components/planner/Credits.svelte';
-    import Icon from '../components/planner/PlannerIcon.svelte';
+    import Icon from '../lib/ui/Icon.svelte';
     import { CatalogClient } from '../lib/catalog/client';
     import { CoverageStore } from '../lib/coverage/store.svelte';
     import { remembered } from '../lib/device-sync/remembered.svelte';

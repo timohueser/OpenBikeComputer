@@ -2,7 +2,7 @@
     import { onMount } from 'svelte';
     import Card from '../lib/ui/Card.svelte';
     import Window from '../lib/ui/Window.svelte';
-    import Icon from '../components/planner/PlannerIcon.svelte';
+    import Icon from '../lib/ui/Icon.svelte';
     import Drawing from './device/Drawing.svelte';
     import Software from './device/Software.svelte';
     import { deviceHolder } from '../lib/device/session.svelte';

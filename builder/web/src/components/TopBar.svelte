@@ -1,5 +1,5 @@
 <script lang="ts">
-    import Icon from './planner/PlannerIcon.svelte';
+    import Icon from '../lib/ui/Icon.svelte';
     import { ROUTES } from '../lib/routes';
 
     let { links, device, onsync, settings }: {

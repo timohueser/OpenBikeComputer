@@ -6,7 +6,7 @@
     import { lineCoordinates, lineKey } from '../library/summary';
     import { coverKey, settled, wantCover, wantsPicture, type Place } from './job';
     import { along, fromAbove, nearest } from './line';
-    import Icon from '../../components/planner/PlannerIcon.svelte';
+    import Icon from '../ui/Icon.svelte';
     import PhotoMarks from '../../components/route/PhotoMarks.svelte';
 
     let { library, id, mark, part, line = true, place = 'row', pins = [], photos = [], onphoto, onpoint, credits = $bindable([]) }: {

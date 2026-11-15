@@ -1,7 +1,7 @@
 <script lang="ts">
     import { onMount, tick, untrack } from 'svelte';
     import PlannerMap from './PlannerMap.svelte';
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import Profile from './PlannerProfile.svelte';
     import DrawerTitle from './DrawerTitle.svelte';
     import Query from './PlannerQuery.svelte';

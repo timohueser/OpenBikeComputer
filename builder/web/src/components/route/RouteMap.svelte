@@ -5,7 +5,7 @@
     import type { Summary } from '../../lib/library/records';
     import { lineCoordinates } from '../../lib/library/summary';
     import { coordinateAt, nearestOnLine, nearestProgress, routeSlice, type Coordinate } from '../../lib/planner/geo';
-    import Icon from '../planner/PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import PhotoMarks from './PhotoMarks.svelte';
     import { basemapStyle } from '../../lib/planner/map-style';
     import { styleConfig, useMapProtocols } from '../../lib/planner/map-setup';

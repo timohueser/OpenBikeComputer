@@ -1,6 +1,6 @@
 <script lang="ts">
     import { tick, type Snippet } from 'svelte';
-    import Icon from '../planner/PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import { ROUTES } from '../../lib/routes';
 
     /** The frame of the Route page and the Ride page: the title row with rename, the left card and the picture side by

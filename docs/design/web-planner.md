@@ -53,7 +53,7 @@ The settings ([`Settings.svelte`](../../builder/web/src/pages/Settings.svelte)) 
 
 The pages reach the browser through one host layer ([`platform/`](../../builder/web/src/lib/platform/index.ts)), the web host. The build configuration ([`vite.config.ts`](../../builder/web/vite.config.ts)) builds this app, TrailView alone and the operator page of `obc data`, each with its own mode. `npm run build:planner` builds the app into `builder/web/dist/planner`. The site deploy copies it to the path `/plan/` of the project site ([`deploy-site.yml`](../../.github/workflows/deploy-site.yml)). The browser tests of the app are in `tests/browser/planner/`.
 
-Route planning owns all the planner code and the shared window and controls of `lib/ui`. Web foundations owns the code that the other web systems share too: the page addresses, the theme and the loader of the WebAssembly core. This shell owns the entry point, the shell, the top bar, the pages, their parts in `components/route`, the covers in `lib/covers`, the host layer and the build configuration.
+Route planning owns all the planner code. Web foundations owns the code that the other web systems share too: the window and the controls of `lib/ui`, the page addresses, the theme and the loader of the WebAssembly core. This shell owns the entry point, the shell, the top bar, the pages, their parts in `components/route`, the covers in `lib/covers`, the host layer and the build configuration.
 
 ## Home page
 

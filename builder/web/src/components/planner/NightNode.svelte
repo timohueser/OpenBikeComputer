@@ -1,6 +1,6 @@
 <script lang="ts">
     import type { Snippet } from 'svelte';
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import { kindLabel, sleepIcon } from '../../lib/planner/search/presentation';
     import { proposalTitle, stopCounts, suits } from '../../lib/planner/stops';
     import { clockTime, nightLow, sunsetAt } from '../../lib/planner/evening';

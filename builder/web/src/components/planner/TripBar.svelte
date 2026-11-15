@@ -1,5 +1,5 @@
 <script lang="ts">
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import Select from './PlannerSelect.svelte';
     import VersionsMenu from './VersionsMenu.svelte';
     import { onMount } from 'svelte';

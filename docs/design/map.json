@@ -453,7 +453,7 @@
     },
     {
      "rule": "cycle",
-     "message": "map-assembly -> route-planning closes a cycle: builder/web/src/components/coverage/SkinStep.svelte -> builder/web/src/lib/ui/Window.svelte, builder/web/src/lib/map/basemap-config.test.ts -> builder/web/src/lib/planner/map-style.ts (test), builder/web/src/lib/map/basemap-config.ts -> builder/web/src/lib/planner/config.ts, and 2 more"
+     "message": "map-assembly -> route-planning closes a cycle: builder/web/src/lib/map/basemap-config.test.ts -> builder/web/src/lib/planner/map-style.ts (test), builder/web/src/lib/map/basemap-config.ts -> builder/web/src/lib/planner/config.ts, builder/web/src/lib/map/basemap-config.ts -> builder/web/src/lib/planner/release.ts, and 1 more"
     },
     {
      "rule": "cycle",
@@ -701,11 +701,11 @@
    ],
    "test_depends_on": [],
    "violations": 5,
-   "lines": 28026,
+   "lines": 27639,
    "problems": [
     {
      "rule": "cycle",
-     "message": "map-assembly -> route-planning closes a cycle: builder/web/src/components/coverage/SkinStep.svelte -> builder/web/src/lib/ui/Window.svelte, builder/web/src/lib/map/basemap-config.test.ts -> builder/web/src/lib/planner/map-style.ts (test), builder/web/src/lib/map/basemap-config.ts -> builder/web/src/lib/planner/config.ts, and 2 more"
+     "message": "map-assembly -> route-planning closes a cycle: builder/web/src/lib/map/basemap-config.test.ts -> builder/web/src/lib/planner/map-style.ts (test), builder/web/src/lib/map/basemap-config.ts -> builder/web/src/lib/planner/config.ts, builder/web/src/lib/map/basemap-config.ts -> builder/web/src/lib/planner/release.ts, and 1 more"
     },
     {
      "rule": "cycle",
@@ -887,12 +887,12 @@
    "name": "web-foundations",
    "kind": "system",
    "area": "Apps",
-   "purpose": "Holds the small parts that the web systems share: the loader of the WebAssembly core, the GPX and FIT files, the theme, the page addresses, the verified download, the colour tokens and the licence notices of the build.",
+   "purpose": "Holds the small parts that the web systems share: the window, the switches and the icon, the loader of the WebAssembly core, the GPX and FIT files, the theme, the page addresses, the verified download, the colour tokens and the licence notices of the build.",
    "status": "draft",
    "depends_on": [],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 1131,
+   "lines": 1518,
    "problems": []
   },
   {
@@ -1434,12 +1434,6 @@
    "from": "obc-data",
    "to": "repository-tooling",
    "test": true,
-   "undeclared": false
-  },
-  {
-   "from": "obc-data",
-   "to": "route-planning",
-   "test": false,
    "undeclared": false
   },
   {

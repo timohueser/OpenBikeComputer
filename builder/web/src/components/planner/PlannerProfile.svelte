@@ -4,7 +4,7 @@
     import Surface from './PlannerSurface.svelte';
     import Segmented from '../../lib/ui/Segmented.svelte';
     import TripRow from './TripRow.svelte';
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import { formatGrade, gradeBands, gradePaths, profileGrades } from '../../lib/planner/grade-data';
     import { dayColor } from '../../lib/planner/day-colors';
     import { heightRange, profileHeightAt, profilePaths, profileSamples, sampleIndex } from '../../lib/planner/profile-data';

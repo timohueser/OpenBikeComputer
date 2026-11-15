@@ -3,7 +3,7 @@
     import Card from '../../lib/ui/Card.svelte';
     import Segmented from '../../lib/ui/Segmented.svelte';
     import OpeningHours from '../planner/OpeningHours.svelte';
-    import Icon from '../planner/PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import ElevationRow from './ElevationRow.svelte';
     import Menu from './Menu.svelte';
     import Lanes from './Lanes.svelte';

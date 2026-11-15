@@ -95,8 +95,8 @@ flowchart LR
 | [library](library.md) | Keeps the rider's routes, rides, photos of rides and settings in the browser, each route and ride with a summary, and saves and loads them as one backup file. | draft |  | route-planning, web-planner |
 | [map-assembly](map-assembly.md) | Assembles a device map from published cells. | draft | card-storage, device-link, device-map-baking, foundations, host-runtime, map-reading, map-style, navigation, rendering-display, route-planning, web-foundations | map-style, obc-data, route-planning, web-planner |
 | [map-style](map-style.md) | Defines how map features look on the device. | draft | map-assembly, web-foundations | map-assembly, web-planner |
-| [route-planning](route-planning.md) | Lets a rider plan a route on a map, in the browser or on the phone. | draft | library, map-assembly, trailview, web-foundations | map-assembly, obc-data, trailview, trailview-page, web-planner |
-| [web-foundations](web-foundations.md) | Holds the small parts that the web systems share: the loader of the WebAssembly core, the GPX and FIT files, the theme, the page addresses, the verified download, the colour tokens and the licence notices of the build. | draft |  | device-link, map-assembly, map-style, obc-data, route-planning, search, web-planner |
+| [route-planning](route-planning.md) | Lets a rider plan a route on a map, in the browser or on the phone. | draft | library, map-assembly, trailview, web-foundations | map-assembly, trailview, trailview-page, web-planner |
+| [web-foundations](web-foundations.md) | Holds the small parts that the web systems share: the window, the switches and the icon, the loader of the WebAssembly core, the GPX and FIT files, the theme, the page addresses, the verified download, the colour tokens and the licence notices of the build. | draft |  | device-link, map-assembly, map-style, obc-data, route-planning, search, web-planner |
 
 ### Data and services
 
@@ -149,7 +149,7 @@ flowchart LR
 | --- | --- | --- | --- | --- |
 | [companion-ios](companion-ios.md) | Runs the iPhone app that plans routes, sends them to the device and gets rides back. | approved |  |  |
 | [device-firmware](device-firmware.md) | Builds the nRF54L board image from the device systems. | approved | board-inputs, card-storage, device-link, device-runtime, firmware-update, foundations, map-reading, navigation, rendering-display |  |
-| [obc-data](obc-data.md) | Runs the `obc data` command and its operator page. | approved | data-engine, device-map-baking, foundations, map-assembly, route-planning, routing, search, source-preparation, trailview, web-foundations |  |
+| [obc-data](obc-data.md) | Runs the `obc data` command and its operator page. | approved | data-engine, device-map-baking, foundations, map-assembly, routing, search, source-preparation, trailview, web-foundations |  |
 | [planner-tile-server](planner-tile-server.md) | Serves the map tiles of a planner release from the storage bucket or from a local folder. | approved |  |  |
 | [simulators](simulators.md) | Runs the device core on a computer, a phone or a web page, and sends test input to a real board. | approved | board-inputs, card-storage, data-engine, device-link, device-runtime, firmware-update, foundations, host-runtime, map-reading, navigation, rendering-display, repository-tooling |  |
 | [trailview-page](trailview-page.md) | Opens TrailView, the 3-D view of a region, as its own page in the browser. | approved | route-planning, trailview |  |

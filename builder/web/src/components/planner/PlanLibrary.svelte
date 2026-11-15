@@ -3,7 +3,7 @@
     import { planTitle } from '../../lib/planner/versions';
     import type { RouteSummary } from '../../lib/library/records';
     import type { Plan } from '../../lib/planner/library';
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import { distanceIn, heightIn, heightUnit } from '../../lib/settings/format';
     import { settings } from '../../lib/settings/settings.svelte';
 

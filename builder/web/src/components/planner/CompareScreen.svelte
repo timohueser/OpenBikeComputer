@@ -1,7 +1,7 @@
 <script lang="ts">
     import { onMount, tick, untrack } from 'svelte';
     import PlannerMap from './PlannerMap.svelte';
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import Select from './PlannerSelect.svelte';
     import { daySegments, duration, planView, type Trip } from '../../lib/planner/editor';
     import { coordinateAt } from '../../lib/planner/geo';
