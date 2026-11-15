@@ -105,7 +105,18 @@ fn graph(lines: &[Line]) -> WayGraph {
 }
 
 fn graph_of(key: CellKey, lines: &[Line]) -> WayGraph {
-    let input = input_of(key, lines);
+    graph_with(input_of(key, lines))
+}
+
+/// The graph of lines on terrain z of metres east and south of the cell's centre.
+fn graph_on(lines: &[Line], z: &dyn Fn(f64, f64) -> f64) -> WayGraph {
+    let mut input = input_of(cell(), lines);
+    input.terrain = crate::faces::tests::plane(cell(), z);
+    graph_with(input)
+}
+
+fn graph_with(input: CellInput) -> WayGraph {
+    let key = input.key;
     let mut g = build(key, &input, Sections::embedded());
     assert_eq!(check(&g), Vec::new());
     let structures = &crate::faces::Rules::embedded().structures;
@@ -909,4 +920,82 @@ fn the_room_reads_each_way_on_its_own_curve() {
         assert_eq!(c.step, Step::Full);
     }
     assert!(g.crossings.iter().any(|c| c.ladder.is_some()));
+}
+
+/// The states of a way's runs in order, and its end lines by kind and metres along it.
+type WayLevels = (Vec<State>, Vec<(EndKind, f64)>);
+
+/// The levels of the one tunnel way of a graph.
+fn tunnel_levels(g: &WayGraph) -> WayLevels {
+    let tunnels: Vec<&Way> = g.ways.iter().filter(|w| w.level == Level::Tunnel).collect();
+    assert_eq!(tunnels.len(), 1);
+    let w = tunnels[0];
+    let states = g.levels.runs.iter().filter(|r| r.way == w.id).map(|r| r.state).collect();
+    let at = |l: &EndLine| (l.kind, super::points::between(&g.parts, &w.from, &l.at));
+    (states, g.levels.end_lines.iter().filter(|l| l.way == w.id).map(at).collect())
+}
+
+#[test]
+fn a_tunnel_that_comes_in_over_the_terrain_is_open_from_its_tag_end_up_to_open_max_m() {
+    use EndKind::*;
+    use State::*;
+    // A residential way 3 m over flat terrain, a tunnel from x 0 to `len` through a ridge that rises `slope` per metre
+    // from each tag end. The bore needs the least room less the lift on free ground: 3.0 + 0.3 - 1.0 = 2.3 m of
+    // cover, at (3 + 2.3) / slope in from each end. On the steep ridge that lies within `open_max_m` (30 m): the way is
+    // open from its tag end, on its bank, to the portal. On the gentle one it lies past 30 m: open to 30 m, then
+    // closed.
+    let street = [("highway", "residential")];
+    let tunnel = [("highway", "residential"), ("tunnel", "yes")];
+    let cases: [(f64, f64, WayLevels); 2] = [
+        (0.5, 80.0, (vec![Open, Bore, Open], vec![(Portal, 10.6), (Portal, 69.4)])),
+        (
+            0.1,
+            160.0,
+            (
+                vec![Open, Hidden, Bore, Hidden, Open],
+                vec![(Closed, 30.0), (Closed, 53.0), (Closed, 107.0), (Closed, 130.0)],
+            ),
+        ),
+    ];
+    for (slope, len, (want_states, want_lines)) in cases {
+        let lines = [
+            line("road", &street, &[[-60.0, 0.0], [0.0, 0.0]], 3.0),
+            line("tunnel", &tunnel, &[[0.0, 0.0], [len, 0.0]], 3.0),
+            line("road", &street, &[[len, 0.0], [len + 60.0, 0.0]], 3.0),
+        ];
+        let g = graph_on(&lines, &|x, _| (slope * x.min(len - x)).max(0.0));
+        let (states, lines) = tunnel_levels(&g);
+        assert_eq!(states, want_states, "slope {slope}: {lines:?}");
+        assert_eq!(lines.len(), want_lines.len(), "slope {slope}: {lines:?}");
+        for (got, want) in lines.iter().zip(&want_lines) {
+            assert!(got.0 == want.0 && (got.1 - want.1).abs() < 0.3, "slope {slope}: {got:?}, want {want:?}");
+        }
+    }
+}
+
+#[test]
+fn a_paved_stroke_hides_a_tunnel_station_only_where_it_lies_on_top() {
+    // A residential tunnel with no cover on flat terrain between two roads at its height, and a residential road
+    // beside it from x 5 to 30, 2 m off its middle, so that the road's paved stroke covers the tunnel's middle line.
+    // Lower than the tunnel's floor, or within `snap_height_m` (0.5 m) over it, the road lies beside it and the tunnel
+    // is open along its whole length; higher, the road lies on top and hides the tunnel under its stroke.
+    let street = [("highway", "residential")];
+    let tunnel = [("highway", "residential"), ("tunnel", "yes")];
+    for (dz, hidden) in [(-2.0, false), (0.5, false), (0.55, true)] {
+        let lines = [
+            line("road", &street, &[[-60.0, 0.0], [0.0, 0.0]], 0.0),
+            line("tunnel", &tunnel, &[[0.0, 0.0], [40.0, 0.0]], 0.0),
+            line("road", &street, &[[40.0, 0.0], [100.0, 0.0]], 0.0),
+            line("road", &street, &[[5.0, 2.0], [30.0, 2.0]], dz),
+        ];
+        let g = graph_on(&lines, &|_, _| 0.0);
+        let (states, lines) = tunnel_levels(&g);
+        if hidden {
+            assert_eq!(states, [State::Open, State::Hidden, State::Open], "dz {dz}: {lines:?}");
+            let (a, b) = (lines[0].1, lines[1].1);
+            assert!(a > 2.0 && a < 5.0 && b > 30.0 && b < 33.0, "dz {dz}: the road's stroke, {lines:?}");
+        } else {
+            assert_eq!((states, lines), (vec![State::Open], Vec::new()), "dz {dz}");
+        }
+    }
 }

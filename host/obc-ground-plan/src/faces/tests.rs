@@ -3,7 +3,7 @@ use super::records::{self, check as records_check};
 use super::*;
 use crate::frame::{from_lon_lat, metres_per_unit, GlobalPoint};
 use crate::graph::{build, WayGraph};
-use crate::terrain::Terrain;
+use crate::terrain::{StoredPage, Terrain, PAGE};
 use crate::tile::{self, Alignment, Feature, Geometry, Tags};
 
 pub(crate) fn cell() -> CellKey {
@@ -87,6 +87,30 @@ pub(crate) fn input_of(key: CellKey, lines: &[Line]) -> CellInput {
         features: lines.iter().zip(0..).map(|(l, index)| feature(l, tile, index)).collect(),
         terrain: Terrain::new(key, Vec::new()),
     }
+}
+
+/// The terrain of a cell on every page that it reads: z of metres east and south of the centre of
+/// `cell()`.
+pub(crate) fn plane(key: CellKey, z: &dyn Fn(f64, f64) -> f64) -> Terrain {
+    let centre = at([0.0, 0.0]);
+    let pages = Terrain::wanted(key)
+        .into_iter()
+        .map(|k| {
+            let s = crate::frame::FRAME_BITS - 8 - u32::from(k.level);
+            let texel = |i: usize, base: u32| ((i64::from(base) << 8) + i as i64) << s | 1 << (s - 1);
+            let h: Vec<f64> = (0..PAGE * PAGE)
+                .map(|t| {
+                    let (x, y) = (texel(t % PAGE, k.x), texel(t / PAGE, k.y));
+                    z((x - centre.x) as f64 * mpu(), (y - centre.y) as f64 * mpu())
+                })
+                .collect();
+            let (min, max) = h.iter().fold((f64::MAX, f64::MIN), |(a, b), &v| (a.min(v), b.max(v)));
+            let scale = ((max - min) / 65534.0).max(1e-4);
+            let codes = h.iter().map(|v| ((v - min) / scale).round() as u16).collect();
+            StoredPage { level: k.level, x: k.x, y: k.y, offset: min as f32, scale: scale as f32, codes }
+        })
+        .collect();
+    Terrain::new(key, pages)
 }
 
 /// The plan of a cell from lines, with check 1 at 0 faults.
