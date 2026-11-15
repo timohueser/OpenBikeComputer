@@ -66,6 +66,8 @@ const BORE_M = 6;
 const REACH_MARGIN_M = 250;
 /** The lift of the ribbon of route.wgsl above the surface. */
 const LIFT_M = 0.3;
+/** `routeAt` cuts a segment of a route here, a little in front of the near plane, where the eye stands on the route. */
+const CLIP_NEAR = 2 * NEAR;
 
 export interface Stats {
     adapter: string;
@@ -327,14 +329,25 @@ export class TrailView {
     routeAt(x: number, y: number): number | null {
         const sight = this.sight, { clientWidth: width, clientHeight: height } = this.canvas;
         if (!sight) return null;
+        const { viewProj: m, eye } = sight, ahead = (p: readonly number[]) => m[3] * p[0] + m[7] * p[1] + m[11] * p[2] + m[15];
         const screen = this.route.picks.map(points => {
             if (!points) return undefined;
-            const out = new Float32Array(points.length).fill(NaN);
-            for (let i = 0; i < points.length; i += 3) {
-                const p = aboutEye(sight.eye, points[i], points[i + 1], points[i + 2]), at = onImage(sight.viewProj, p);
-                if (at) out.set([at[0] * width, at[1] * height, Math.hypot(...p)], i);
+            const out: number[] = [];
+            const push = (p: readonly number[]) => {
+                const at = onImage(m, p);
+                out.push(...(at ? [at[0] * width, at[1] * height, Math.hypot(...p)] : [NaN, NaN, NaN]));
+            };
+            for (let i = 0, last: number[] | undefined; i < points.length; i += 3) {
+                const p = aboutEye(eye, points[i], points[i + 1], points[i + 2]);
+                // A segment through the near plane keeps its part in front of CLIP_NEAR.
+                if (last && (ahead(last) > CLIP_NEAR) !== (ahead(p) > CLIP_NEAR)) {
+                    const t = (CLIP_NEAR - ahead(last)) / (ahead(p) - ahead(last));
+                    push(last.map((value, j) => value + t * (p[j] - value)));
+                }
+                push(p);
+                last = p;
             }
-            return out;
+            return new Float32Array(out);
         });
         return nearestRoute(screen, x, y, this.route.bold);
     }
