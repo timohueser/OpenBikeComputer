@@ -3,6 +3,9 @@ system: web-planner
 kind: shell
 purpose: "Opens the app at /plan/: the top bar, the pages, and the route planner as one page."
 owns:
+  - builder/web/vite.config.ts
+  - builder/web/svelte.config.js
+  - builder/build-wasm-bridges.sh
   - builder/web/src/planner.ts
   - builder/web/src/Shell.svelte
   - builder/web/src/components/TopBar.svelte
@@ -11,17 +14,23 @@ owns:
   - builder/web/src/components/route/**
   - builder/web/src/lib/covers/**
   - builder/web/src/lib/device-sync/**
+  - builder/web/src/lib/platform/**
   - builder/web/src/lib/ride/**
+  - builder/web/test-support/device-sync/**
+  - builder/web/tests/browser/planner/**
+  - builder/web/tests/browser/playwright.planner.config.js
+  - builder/web/tests/browser/serve.py
 depends_on:
   - device-link
-  - device-map-builder
   - firmware-update
   - library
   - map-assembly
   - map-style
   - route-planning
   - trailview
-test_depends_on: []
+  - web-foundations
+test_depends_on:
+  - repository-tooling
 status: approved
 ---
 
@@ -31,7 +40,7 @@ status: approved
 
 This page is the app of the rider at the path `/plan/`. The entry point [`planner.ts`](../../builder/web/src/planner.ts) mounts the shell ([`Shell.svelte`](../../builder/web/src/Shell.svelte)). The shell shows the top bar ([`TopBar.svelte`](../../builder/web/src/components/TopBar.svelte)), one page, and a footer line with the links of the project site, the legal pages and the licence notices that the build writes beside the page.
 
-The hash of the address selects the page, for example `#/planner` or `#/route/ID` ([`routes.ts`](../../builder/web/src/lib/routes.ts)). The table `PAGES` in the shell has one line for each page. A line gives the label of the link in the top bar, if the page has one, and a function that loads the page. A hash with no line in `PAGES` shows the Home page. Each page goes in `src/pages/`. The route planner is the page of route planning (`PlannerApp`). Its line loads the shared WebAssembly core of the map builder first. When a page cannot load, the shell shows its message.
+The hash of the address selects the page, for example `#/planner` or `#/route/ID` ([`routes.ts`](../../builder/web/src/lib/routes.ts)). The table `PAGES` in the shell has one line for each page. A line gives the label of the link in the top bar, if the page has one, and a function that loads the page. A hash with no line in `PAGES` shows the Home page. Each page goes in `src/pages/`. The route planner is the page of route planning (`PlannerApp`). Its line loads the shared WebAssembly core first. When a page cannot load, the shell shows its message.
 
 The planner page stays mounted when another page shows, so its Undo history, its map view and its calculated line stay. The shell hides it and gives it `active` false, and then the planner reads no keys. When the route changes, the shell closes each open modal window, because an open modal window makes the rest of the page inert.
 
@@ -41,7 +50,9 @@ The shell makes the one library of the app (`Library`) and gives it to each page
 
 The settings ([`Settings.svelte`](../../builder/web/src/pages/Settings.svelte)) are a large window over the page, not a page in `PAGES`; the gear at the right end of the top bar opens them. For `#/settings`, the router keeps the route and the id of the page before it, so that page is not created again and keeps its scroll place and its selection. A direct visit shows the window over the first page: the router puts `#/` in the history before it. So each close of the window is Back, and Close, Escape and a click on the dimmed page go back too. The settings set the units, the look, the maximum heart rate and the threshold power, and it saves and loads a backup of the library. "Delete all" empties the library with `clear` and loads the page again, because after `clear` the `Library` object of the tab refuses each write.
 
-`npm run build:planner` builds the page into `builder/web/dist/planner`. The site deploy copies it to the path `/plan/` of the project site ([`deploy-site.yml`](../../.github/workflows/deploy-site.yml)). Route planning owns all the planner code. This shell owns the entry point, the shell, the top bar, the pages, their parts in `components/route` and the covers in `lib/covers`.
+The pages reach the browser through one host layer ([`platform/`](../../builder/web/src/lib/platform/index.ts)), the web host. The build configuration ([`vite.config.ts`](../../builder/web/vite.config.ts)) builds this app, TrailView alone and the operator page of `obc data`, each with its own mode. `npm run build:planner` builds the app into `builder/web/dist/planner`. The site deploy copies it to the path `/plan/` of the project site ([`deploy-site.yml`](../../.github/workflows/deploy-site.yml)). The browser tests of the app are in `tests/browser/planner/`.
+
+Route planning owns all the planner code and the shared window and controls of `lib/ui`. Web foundations owns the code that the other web systems share too: the page addresses, the theme and the loader of the WebAssembly core. This shell owns the entry point, the shell, the top bar, the pages, their parts in `components/route`, the covers in `lib/covers`, the host layer and the build configuration.
 
 ## Home page
 
@@ -177,3 +188,9 @@ A card whose record gets no cover shows a still picture of the map ([`map-pictur
 The cover part ([`Cover.svelte`](../../builder/web/src/lib/covers/Cover.svelte)) cuts the image as CSS `cover` does, and moves the cut toward the middle of the route. It draws the line thinner far from the eye, and draws no part of the line that the terrain hides. It shows a selected part and a mark, and gives the point of the line under the pointer. Its prop `place` tells where it shows: a row of a list asks for nothing, a card asks for the cover and then the map picture, and a page asks for the cover only. With no cover, a card shows the map picture of the theme with the line drawn on it as on a cover. Else the part draws the summary line on a plain ground. `planner.html?cover=ID` shows the cover of one record in a home card and at a large size, for the browser test.
 
 The window "Add files" ([`AddFiles.svelte`](../../builder/web/src/pages/AddFiles.svelte)) adds GPX and FIT files, folders and the ZIP exports of services to the library. It gives the file readers of the shared core to the library (`readFiles`), so that the library depends on no other system. A route from a file becomes a plan of the planner with one drawn leg (`planFromFile`). The Routes page opens the window.
+
+## Rules that must hold
+
+| Rule | Check |
+| --- | --- |
+| The built app refers to its files with relative paths, so it works under any path of a server. | `references its own assets relatively` in [`bundle.test.ts`](../../builder/web/src/lib/platform/bundle.test.ts); the step `Mountable at any prefix` in [`deploy-site.yml`](../../.github/workflows/deploy-site.yml) |
