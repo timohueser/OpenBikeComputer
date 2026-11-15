@@ -65,8 +65,8 @@ export class Forest implements Producer {
         this.most = windowSide(Math.max(Math.abs(config.bounds[1]), Math.abs(config.bounds[3])));
         this.planted = bits(rules.vocabulary.materials.flatMap((material, code) => (material.rows ? [code] : [])));
         // tools/trailview/rules.py checks that a region has SPECIES tree species at most, each with its model.
-        this.species = speciesTable(rules.regions.map(region => region.trees.filter(rule => rule.cover === 'tree').slice(0, SPECIES).flatMap(rule => {
-            const model = trees.index(rule.model, rule.evergreen);
+        this.species = speciesTable(rules.regions.map((region, r) => region.trees.filter(rule => rule.cover === 'tree').slice(0, SPECIES).flatMap(rule => {
+            const model = trees.index(r, rule.model, rule.evergreen);
             return model === undefined ? [] : [{ model, leaf: rule.leaf === 'broadleaved' ? 1 : 2, band: rule.elevation, weight: rule.weight }];
         })));
     }

@@ -9,7 +9,6 @@ use std::collections::BTreeSet;
 use rstar::primitives::GeomWithData;
 use rstar::RTree;
 
-use crate::structures::trim_space;
 use crate::{metres, Part, Tags};
 
 /// The most metres between two masts of a track, and how far beside the track's middle a mast
@@ -46,6 +45,12 @@ fn narrow(tags: &Tags) -> bool {
     }
     let digits = digits.trim_start_matches('0');
     digits.len() <= 4 && digits.parse::<u32>().unwrap_or(0) < NARROW_MM
+}
+
+/// The text without the white space that JavaScript trims before a number: Rust's white space, less
+/// U+0085, and U+FEFF.
+fn trim_space(text: &str) -> &str {
+    text.trim_start_matches(|c: char| c.is_whitespace() && c != '\u{85}' || c == '\u{feff}')
 }
 
 /// Whether a track runs under a contact wire.
@@ -203,7 +208,8 @@ pub fn platforms(platforms: &[Vec<Part>], tracks: &[Track]) -> Vec<Option<Vec<Pa
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::structures::{bore, class_of, BORE_M};
+    use crate::structures::{bore, BORE_M};
+    use obc_ground_plan::sections::class_of;
 
     /// A point at Engelberg in world units, and world units per metre there.
     fn origin() -> (f64, f64, f64) {

@@ -26,7 +26,7 @@ function fake() {
     let open = false;
     const renderer: Renderer = {
         canRender: async () => true,
-        view: async (_, when) => ({ lat: 46.8, lon: 8.4, heading: 0, pitch: -30, mode: 'fly', height: 3000, debug: 'off', ...when }),
+        view: async (_, when) => ({ lat: 46.8, lon: 8.4, heading: 0, pitch: -30, mode: 'fly', height: 3000, debug: 'off', plan: 'off', ...when }),
         still: (job, signal) => new Promise((resolve, reject) => {
             stills.push({ job, resolve, reject });
             signal.addEventListener('abort', () => reject(failure('aborted')));

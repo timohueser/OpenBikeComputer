@@ -1,6 +1,8 @@
 import { availableParallelism, loadavg } from "node:os";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { defineConfig, loadEnv } from "vite";
+import { bundleVersions } from "./vite/bundle-version";
+import { stampVersion } from "./vite/stamp-bundle";
 import { thirdPartyLicenses } from "./vite/third-party-licenses";
 import { plannerConfig } from "./src/lib/planner/config";
 import { testConfig } from "./test-support/planner/config";
@@ -57,8 +59,8 @@ export default defineConfig(({ mode }) => {
         // "/" (local FastAPI) or under a sub-path (a future single-server deployment
         // serving landing + docs + builder behind one reverse proxy).
         base: "./",
-            // The licence notices ride along with the bundle, which is a distribution.
-        plugins: [svelte(), thirdPartyLicenses()],
+        // The licence notices ride along with the bundle, which is a distribution.
+        plugins: [svelte(), thirdPartyLicenses(), stampVersion(), bundleVersions()],
         // Always a string, so a build without it drops the pretend device of `planner.ts` with its wasm.
         define: { "import.meta.env.VITE_FAKE_DEVICE": JSON.stringify(process.env.VITE_FAKE_DEVICE ?? "") },
         resolve: {
@@ -85,6 +87,8 @@ export default defineConfig(({ mode }) => {
                 // in-browser assembly, not the site: the worker only spawns from the
                 // download step.
             format: "es",
+            // Workers bundle their imports with plugins of their own.
+            plugins: () => [stampVersion()],
         },
         server: {
             // The product skin editor imports the bakery's canonical Teningen

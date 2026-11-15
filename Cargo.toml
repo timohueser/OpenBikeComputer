@@ -41,6 +41,7 @@ members = [
     "host/obc-mkimage",
     "host/obc-vectors",
     "host/obc-trailview-features",
+    "host/obc-ground-plan",
     "host/obc-tree-walk",
     "host/obcm-assemble",
     "host/obcm-testkit",
@@ -59,6 +60,7 @@ members = [
     # Product bridges.
     "planner/service",
     "builder/wasm",
+    "builder/ground-plan-wasm",
 ]
 # obc-fw-nrf54l is a standalone board crate (own target + .cargo/config.toml, own empty
 # [workspace]); it's built on its own, not as part of this host workspace (which builds its
@@ -75,6 +77,7 @@ obc-elevation = { path = "firmware/obc-elevation" }
 obc-fixtures = { path = "host/obc-fixtures" }
 obc-flat-device = { path = "sim/flat-device" }
 obc-formats = { path = "firmware/obc-formats" }
+obc-ground-plan = { path = "host/obc-ground-plan", default-features = false }
 obc-link = { path = "firmware/obc-link" }
 obc-map-scene = { path = "firmware/obc-map-scene" }
 obc-pack = { path = "host/obc-pack" }
@@ -146,3 +149,11 @@ opt-level = 2
 # Tool identities hash large compiler and sysroot files.
 [profile.dev.package.sha2]
 opt-level = 3
+
+# The ground plan's fixture tests build and mesh every fixture cell.
+[profile.dev.package.obc-ground-plan]
+opt-level = 3
+[profile.dev.package.spade]
+opt-level = 2
+[profile.dev.package.i_overlay]
+opt-level = 2

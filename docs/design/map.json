@@ -133,7 +133,7 @@
    "depends_on": [],
    "test_depends_on": [],
    "violations": 1,
-   "lines": 33260,
+   "lines": 33274,
    "problems": [
     {
      "rule": "R4",
@@ -305,7 +305,7 @@
     "repository-tooling"
    ],
    "violations": 10,
-   "lines": 11632,
+   "lines": 12271,
    "problems": [
     {
      "rule": "cycle",
@@ -333,7 +333,7 @@
     },
     {
      "rule": "cycle",
-     "message": "device-map-builder -> trailview closes a cycle: builder/web/scripts/check-wgsl.mjs -> builder/web/src/lib/trailview/gpu/include.ts, builder/web/scripts/road-census.ts -> builder/web/src/lib/trailview/frame/space.ts, builder/web/scripts/road-census.ts -> builder/web/src/lib/trailview/terrain/bins.ts, and 26 more"
+     "message": "device-map-builder -> trailview closes a cycle: builder/web/scripts/check-wgsl.mjs -> builder/web/src/lib/trailview/gpu/include.ts, builder/web/scripts/road-census.ts -> builder/web/src/lib/trailview/frame/space.ts, builder/web/scripts/road-census.ts -> builder/web/src/lib/trailview/terrain/bins.ts, and 28 more"
     },
     {
      "rule": "cycle",
@@ -543,7 +543,7 @@
     "content"
    ],
    "violations": 10,
-   "lines": 24637,
+   "lines": 24646,
    "problems": [
     {
      "rule": "cycle",
@@ -696,7 +696,7 @@
     "repository-tooling"
    ],
    "violations": 4,
-   "lines": 9951,
+   "lines": 9954,
    "problems": [
     {
      "rule": "R1",
@@ -708,7 +708,7 @@
     },
     {
      "rule": "R1",
-     "message": "crate obc-data-steps (obc-data) holds 2 file(s) of planner-map-baking"
+     "message": "crate obc-data-steps (obc-data) holds 4 file(s) of planner-map-baking"
     },
     {
      "rule": "R1",
@@ -725,11 +725,11 @@
    "depends_on": [],
    "test_depends_on": [],
    "violations": 2,
-   "lines": 6068,
+   "lines": 6121,
    "problems": [
     {
      "rule": "R1",
-     "message": "crate obc-data-steps (obc-data) holds 2 file(s) of planner-map-baking"
+     "message": "crate obc-data-steps (obc-data) holds 4 file(s) of planner-map-baking"
     },
     {
      "rule": "R4",
@@ -780,7 +780,7 @@
    ],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 18785,
+   "lines": 18954,
    "problems": []
   },
   {
@@ -856,7 +856,7 @@
     },
     {
      "rule": "cycle",
-     "message": "trailview -> route-planning closes a cycle: builder/web/src/lib/trailview/dressing/dressing.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/trailview/engine.ts -> builder/web/src/lib/planner/config.ts, builder/web/src/lib/trailview/engine.ts -> builder/web/src/lib/planner/geo.ts, and 36 more"
+     "message": "trailview -> route-planning closes a cycle: builder/web/src/lib/trailview/dressing/dressing.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/trailview/engine.ts -> builder/web/src/lib/planner/config.ts, builder/web/src/lib/trailview/engine.ts -> builder/web/src/lib/planner/geo.ts, and 38 more"
     }
    ]
   },
@@ -976,11 +976,11 @@
    ],
    "test_depends_on": [],
    "violations": 5,
-   "lines": 55663,
+   "lines": 101940,
    "problems": [
     {
      "rule": "cycle",
-     "message": "device-map-builder -> trailview closes a cycle: builder/web/scripts/check-wgsl.mjs -> builder/web/src/lib/trailview/gpu/include.ts, builder/web/scripts/road-census.ts -> builder/web/src/lib/trailview/frame/space.ts, builder/web/scripts/road-census.ts -> builder/web/src/lib/trailview/terrain/bins.ts, and 26 more"
+     "message": "device-map-builder -> trailview closes a cycle: builder/web/scripts/check-wgsl.mjs -> builder/web/src/lib/trailview/gpu/include.ts, builder/web/scripts/road-census.ts -> builder/web/src/lib/trailview/frame/space.ts, builder/web/scripts/road-census.ts -> builder/web/src/lib/trailview/terrain/bins.ts, and 28 more"
     },
     {
      "rule": "cycle",
@@ -988,11 +988,11 @@
     },
     {
      "rule": "dependency",
-     "message": "trailview tests use device-map-builder but test_depends_on does not list it: builder/web/src/lib/trailview/roads/mesh.test.ts -> builder/web/test-support/trailview/census.ts (test)"
+     "message": "trailview tests use device-map-builder but test_depends_on does not list it: builder/web/src/lib/trailview/roads/mesh.test.ts -> builder/web/test-support/trailview/census.ts (test), builder/web/src/lib/trailview/terrain/model.test.ts -> builder/web/test-support/fake-caches.ts (test), builder/web/src/lib/trailview/terrain/stamp-cache.test.ts -> builder/web/test-support/fake-caches.ts (test), and 2 more"
     },
     {
      "rule": "cycle",
-     "message": "trailview -> route-planning closes a cycle: builder/web/src/lib/trailview/dressing/dressing.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/trailview/engine.ts -> builder/web/src/lib/planner/config.ts, builder/web/src/lib/trailview/engine.ts -> builder/web/src/lib/planner/geo.ts, and 36 more"
+     "message": "trailview -> route-planning closes a cycle: builder/web/src/lib/trailview/dressing/dressing.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/trailview/engine.ts -> builder/web/src/lib/planner/config.ts, builder/web/src/lib/trailview/engine.ts -> builder/web/src/lib/planner/geo.ts, and 38 more"
     },
     {
      "rule": "R4",
@@ -1012,7 +1012,7 @@
    ],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 87,
+   "lines": 100,
    "problems": []
   },
   {
@@ -1045,7 +1045,7 @@
    ],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 10742,
+   "lines": 11044,
    "problems": []
   },
   {

@@ -10,6 +10,11 @@ description = "The TrailView feature tiles of a region: the step planner/trailvi
 name = "trailview-features"
 path = "src/main.rs"
 
+# Builds each ground-plan cell of a release or a fixture as the viewer does, and records each failure.
+[[bin]]
+name = "census"
+path = "src/bin/census/main.rs"
+
 [dependencies]
 # The sparse Cholesky factorization of the road solver's normal equations.
 faer = { version = "0.24", default-features = false, features = ["std", "sparse-linalg"] }
@@ -23,7 +28,10 @@ rusqlite = { workspace = true, features = ["bundled"] }
 serde_json = { workspace = true, features = ["preserve_order", "float_roundtrip"] }
 # The request of the step and its function.
 obc-data = { workspace = true }
+# The cross-section rules that the ground plan shares, and the reader of the tiles for the codec tests.
+obc-ground-plan = { workspace = true }
 # The cut of the OSM of a bake.
 tempfile = { workspace = true }
 # The water polygons of the sea.
 zip = { workspace = true, features = ["deflate-flate2"] }
+

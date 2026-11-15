@@ -64,9 +64,11 @@ pub static PLANNER_PLACES: Layer = whole("planner/places", 1, &[&WEB_PLANNER]);
 pub static PLANNER_CLIMATE: Layer = whole("planner/climate", 1, &[&WEB_PLANNER]);
 /// The snow archives of `specs/planner-snow-tiles.md`.
 pub static PLANNER_SNOW: Layer = whole("planner/snow", 2, &[&WEB_PLANNER]);
-/// Its format is `features_format` of `specs/trailview-features.md`.
+/// Its format is `features_format` of `specs/trailview-features.md`. Its step `planner/trailview-stamps`
+/// holds what the stamp worker makes of the tiles; `stamp_version` of `specs/trailview-tiles.md` says
+/// which stamp code made it.
 pub static PLANNER_TRAILVIEW_FEATURES: Layer =
-    Layer { revision: 12, ..whole("planner/trailview-features", 4, &[&WEB_PLANNER]) };
+    Layer { revision: 21, ..whole("planner/trailview-features", 4, &[&WEB_PLANNER]) };
 /// The TrailView ruleset, `rules.json` of `specs/trailview-tiles.md`. Its format is `format` of
 /// `rules.json`, `FORMAT` of `tools/trailview/rules.py`.
 pub static PLANNER_TRAILVIEW_RULES: Layer =
@@ -608,19 +610,38 @@ impl Planner {
             let waterways: serde_json::Value =
                 serde_json::from_str(include_str!("../../../data/trailview/waterways.json"))
                     .map_err(|e| Unplanned::Failed(format!("data/trailview/waterways.json: {e}")))?;
+            let finishes: serde_json::Value =
+                serde_json::from_str(include_str!("../../../data/trailview/finishes.json"))
+                    .map_err(|e| Unplanned::Failed(format!("data/trailview/finishes.json: {e}")))?;
             // The heights of roads, rivers and lakes come from the master terrain, by the class rules of the
             // roads; the sea, which OSM maps only as coastlines, from the water polygons.
             let sea = snapshot(inputs, store, "water-polygons", Vec::new(), &mut wanted)?;
+            let plan: serde_json::Value = serde_json::from_str(include_str!("../../../data/trailview/plan.json"))
+                .map_err(|e| Unplanned::Failed(format!("data/trailview/plan.json: {e}")))?;
+            // The rules of the ground plan's levels that the bake runs, as the solver's rows of the roads.
+            let levels = obc_trailview_features::kinds::level_rows(&roads, &waterways, &plan);
             let roads = obc_trailview_features::kinds::solver_rows(&roads);
             let waterways = obc_trailview_features::kinds::waterway_rows(&waterways);
+            let finishes = obc_trailview_features::kinds::finish_rows(&finishes);
             steps.push(Step {
                 layer: &PLANNER_TRAILVIEW_FEATURES,
                 name: "planner/trailview-features".into(),
                 inputs: vec![Input::step("planner/osm"), Input::step("planner/terrain/grid"), sea],
-                options: json!({"bounds": bounds, "kinds": kinds, "roads": roads, "waterways": waterways,
-                                "attribution": attribution("osm-planet")}),
+                options: json!({"bounds": bounds, "kinds": kinds, "roads": roads, "finishes": finishes,
+                                "waterways": waterways, "levels": levels, "attribution": attribution("osm-planet")}),
                 outputs: vec!["trailview-features.pmtiles".into()],
                 run: Run::Rust(&functions::TRAILVIEW_FEATURES),
+                client: Client::All,
+            });
+            steps.push(Step {
+                layer: &PLANNER_TRAILVIEW_FEATURES,
+                name: "planner/trailview-stamps".into(),
+                inputs: vec![Input::step("planner/trailview-features")],
+                // A change of the stamp code stales this step only; the feature tiles stay.
+                options: json!({"bounds": bounds, "attribution": attribution("osm-planet"),
+                                "stamp_sources": stamp_sources(root).map_err(Unplanned::Failed)?}),
+                outputs: vec!["trailview-stamps.pmtiles".into()],
+                run: Run::Rust(&functions::TRAILVIEW_STAMPS),
                 client: Client::All,
             });
         }
@@ -635,6 +656,7 @@ impl Planner {
             "overlays",
             "climate",
             "trailview-features",
+            "trailview-stamps",
             "trailview-ground",
             "trailview-canopy",
         ];
@@ -1217,23 +1239,48 @@ fn trailview(
 /// The digest of the JSON files of `data/trailview/`, by their paths in it, as `digest` of
 /// `tools/trailview/rules.py` gives it.
 fn ruleset(root: &Path) -> Result<String, String> {
-    fn walk(dir: &Path, base: &Path, out: &mut Vec<(String, String)>) -> Result<(), String> {
-        for entry in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
-            let path = entry.map_err(|e| e.to_string())?.path();
-            if path.is_dir() {
-                walk(&path, base, out)?;
-            } else if path.extension().is_some_and(|extension| extension == "json") {
-                let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-                let name = path.strip_prefix(base).unwrap().to_string_lossy().replace('\\', "/");
-                out.push((name, obc_data::store::sha256_hex(&bytes)));
-            }
-        }
-        Ok(())
-    }
     let base = root.join("data/trailview");
     let mut files = Vec::new();
-    walk(&base, &base, &mut files)?;
+    walk(&base, &base, &|path| path.extension().is_some_and(|extension| extension == "json"), &mut files)?;
     Ok(obc_data::engine::digest(files.iter().map(|(name, sha256)| (name.as_str(), sha256.as_str()))))
+}
+
+/// The digest of the files that the TrailView stamp code can read, by their paths in the repository: the
+/// TypeScript of `builder/web/src/lib/trailview/` but its tests and generated packages, the JSON of
+/// `data/trailview/`, the bake module, the stamp process and the npm lock. It changes with each change of the
+/// stamp version, and with more: the exact version needs Node and the npm packages, which a plan has not.
+fn stamp_sources(root: &Path) -> Result<String, String> {
+    let mut files = Vec::new();
+    let typescript = |path: &Path| {
+        let name = path.to_string_lossy();
+        name.ends_with(".ts") && !name.ends_with(".test.ts") && !path.components().any(|part| part.as_os_str() == "pkg")
+    };
+    walk(&root.join("builder/web/src/lib/trailview"), root, &typescript, &mut files)?;
+    walk(&root.join("data/trailview"), root, &|path| path.extension().is_some_and(|e| e == "json"), &mut files)?;
+    for name in [
+        "builder/web/vite/stamp-bundle.ts",
+        "builder/web/scripts/trailview-stamps.mjs",
+        "builder/web/package-lock.json",
+    ] {
+        let bytes = std::fs::read(root.join(name)).map_err(|e| format!("{name}: {e}"))?;
+        files.push((name.to_string(), obc_data::store::sha256_hex(&bytes)));
+    }
+    Ok(obc_data::engine::digest(files.iter().map(|(name, sha256)| (name.as_str(), sha256.as_str()))))
+}
+
+/// The SHA-256 of each file under `dir` that `keep` takes, by its path from `base`.
+fn walk(dir: &Path, base: &Path, keep: &dyn Fn(&Path) -> bool, out: &mut Vec<(String, String)>) -> Result<(), String> {
+    for entry in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        if path.is_dir() {
+            walk(&path, base, keep, out)?;
+        } else if keep(&path) {
+            let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            let name = path.strip_prefix(base).unwrap().to_string_lossy().replace('\\', "/");
+            out.push((name, obc_data::store::sha256_hex(&bytes)));
+        }
+    }
+    Ok(())
 }
 
 /// The sources of a ground chain that its step reads over `bounds`, each once: a source with an
@@ -1673,13 +1720,18 @@ mod tests {
     fn a_part_that_is_off_keeps_only_the_steps_that_a_part_that_is_on_reads() {
         let temp = temp("planner-parts");
         let store = store(&temp, &["2026-10-01"]);
-        let only = |parts: &[&str]| {
+        let planned = |parts: &[&str]| {
             let mut inputs = inputs(AREA, &[]);
             inputs.settings.layers = parts.iter().map(|part| part.to_string()).collect();
-            let steps = Planner.steps(&root(), &inputs, &regions(), &store).unwrap().steps;
-            steps.into_iter().map(|step| step.name).collect::<HashSet<_>>()
+            Planner.steps(&root(), &inputs, &regions(), &store).unwrap().steps
         };
+        let only = |parts: &[&str]| planned(parts).into_iter().map(|step| step.name).collect::<HashSet<_>>();
         let features = only(&["trailview-features"]);
+        let bake = planned(&["trailview-features"]).into_iter().find(|s| s.name == "planner/trailview-features");
+        let options = bake.unwrap().options;
+        assert!(options["finishes"]["gravel"]["shoulder_m"].is_number() && options["roads"][0]["half_m"].is_number());
+        let stamps = planned(&["trailview-features"]).into_iter().find(|s| s.name == "planner/trailview-stamps");
+        assert_eq!(stamps.unwrap().options["stamp_sources"], json!(stamp_sources(&root()).unwrap()));
         assert!(["planner/terrain/grid", "planner/trailview-features/grid", "planner/index", catalog::STEP]
             .iter()
             .all(|step| features.contains(*step)));
@@ -1980,7 +2032,7 @@ mod tests {
                 ["planner", "places", ..] => "planner/places",
                 ["planner", "climate", ..] => "planner/climate",
                 ["planner", "snow", ..] => "planner/snow",
-                ["planner", "trailview-features", ..] => "planner/trailview-features",
+                ["planner", "trailview-features" | "trailview-stamps", ..] => "planner/trailview-features",
                 ["planner", "trailview-rules", ..] => "planner/trailview-rules",
                 ["planner", "trailview-material" | "trailview-lithology" | "trailview-region" | "trailview-ground", ..] => {
                     "planner/trailview-ground"

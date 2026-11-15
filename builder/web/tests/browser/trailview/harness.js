@@ -9,7 +9,7 @@ export const SWIFTSHADER = ['--enable-unsafe-webgpu', '--enable-features=Vulkan'
 /** A Chromium other than the one Playwright installed, such as /opt/pw-browsers/chromium. */
 export const EXECUTABLE = process.env.OBC_CHROMIUM || undefined;
 /** WebGPU on the machine's GPU. Chromium on Linux gives no adapter without Vulkan. */
-const GPU = ['--enable-webgpu-developer-features', ...(process.platform === 'linux' ? ['--enable-unsafe-webgpu', '--enable-features=Vulkan', '--use-angle=vulkan', '--ignore-gpu-blocklist'] : [])];
+export const GPU = ['--enable-webgpu-developer-features', ...(process.platform === 'linux' ? ['--enable-unsafe-webgpu', '--enable-features=Vulkan', '--use-angle=vulkan', '--ignore-gpu-blocklist'] : [])];
 /**
  * The browser of a script: with `gpu` the machine's GPU, else SwiftShader. Only a GPU `window` is not
  * headless, and macOS keeps one by default: its GPU is proven in a window only. With OBC_BROWSER_WS set,

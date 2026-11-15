@@ -54,7 +54,7 @@ export async function still(gpu: Gpu, config: PlannerConfig, job: StillJob, { si
         signal?.addEventListener('abort', aborted, { signal: done.signal });
         void gpu.device.lost.then(info => fail('device-lost', `The WebGPU device was lost: ${info.message}`));
     });
-    const started = TrailView.start(document.createElement('canvas'), gpu, config, job.view, MAX_SCALE, [job.width, job.height]);
+    const started = TrailView.start(document.createElement('canvas'), gpu, config, job.view, MAX_SCALE, { size: [job.width, job.height] });
     try {
         return await Promise.race([failed, started.then(async engine => {
             await engine.waitForIdle();

@@ -8,6 +8,7 @@ import the test module under the name the planner already uses, and the planner'
 from __future__ import annotations
 
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -19,6 +20,8 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import test_plan as plan
+
+BUILD = (".", ["bash", "builder/build-wasm-bridges.sh"])
 
 
 def package(name, root, dependencies=(), product_root=".", ordinary=("main",), fixtures=(), examples=()):
@@ -295,12 +298,27 @@ class ExecutionTests(unittest.TestCase):
                 (root / pkg).mkdir(parents=True)
                 (root / pkg / "bridge.wasm").write_bytes(b"")
             self.assertEqual(plan.local_setup(root, ["web-browser"], bridge_changed=False), [])
-            self.assertEqual(
-                plan.local_setup(root, ["web"], bridge_changed=True),
-                [(".", ["bash", "builder/build-wasm-bridges.sh"])],
-            )
+            self.assertEqual(plan.local_setup(root, ["web"], bridge_changed=True), [BUILD])
             (root / "builder/web/package-lock.json").write_text("a new lock")
             self.assertEqual([d for d, _ in plan.local_setup(root, ["web"], bridge_changed=False)], ["builder/web"])
+
+    def test_the_bridge_job_itself_builds_the_bridges(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(plan.local_setup(Path(directory), ["wasm-bridges"], bridge_changed=False), [BUILD])
+            for pkg in plan.BRIDGES:
+                (Path(directory) / pkg).mkdir(parents=True, exist_ok=True)
+                (Path(directory) / pkg / "bridge.wasm").write_bytes(b"")
+            self.assertEqual(plan.local_setup(Path(directory), ["wasm-bridges"], bridge_changed=False), [])
+
+    def test_a_suite_whose_command_the_setup_ran_runs_once(self) -> None:
+        bridges = plan.Unit(id="ci.wasm-size", jobs=["wasm-bridges"], command=shlex.join(BUILD[1]), reasons=["x"])
+        chosen = plan.Plan(base="a", head="b", changed_paths=[], units=[bridges], packages=[], errors=[])
+        ran = []
+        with patch.object(plan, "local_setup", return_value=[BUILD]), \
+             patch.object(plan.subprocess, "run", side_effect=lambda command, **_: ran.append(command) or subprocess.CompletedProcess([], 0)), \
+             patch("builtins.print"):
+            self.assertEqual(plan.run_plan(chosen, self.graph, Path(".")), 0)
+        self.assertEqual(ran, [BUILD[1]])
 
     def test_gates_name_jobs_and_a_ci_only_suite_is_never_claimed(self) -> None:
         units = [
@@ -707,6 +725,13 @@ class ShippedPlanTests(unittest.TestCase):
         for carved in ("binary(=decode)", "binary(=real_tile)", "binary(=assistant_places)"):
             self.assertNotIn(carved, expression)
 
+    def test_an_ordinary_suites_targets_join_the_fast_tier_only_when_it_runs(self) -> None:
+        census = "(package(=obc-ground-plan) & binary(=heights_fixture))"
+        running = plan.cargo_filter(self.graph, "fast", carved=plan.carved_targets(self.document, ["ci.ground-plan-census"]))
+        idle = plan.cargo_filter(self.graph, "fast", carved=plan.carved_targets(self.document, []))
+        self.assertIn(census, running)
+        self.assertNotIn(census, idle)
+
     def test_every_required_suite_a_full_local_run_misses_is_named(self) -> None:
         covered = {item.id for item in plan.reproduced(self.units, sorted(plan.GATES))}
         missing = sorted(item.id for item in self.units if item.route == "required" and item.id not in covered)
@@ -718,6 +743,7 @@ class ShippedPlanTests(unittest.TestCase):
                 "ci.ios-host-portability",
                 "ci.prose",
                 "python.repository-tools",
+                "python.trailview",
             ],
         )
 

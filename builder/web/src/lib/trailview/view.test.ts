@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { defaultView, formatView, parseView, type View } from './view';
+import { defaultView, formatView, groundPlanOf, parseView, type View } from './view';
 
 const fallback = defaultView([8.37, 46.765, 8.46, 46.83], new Date(2026, 7, 15));
 
@@ -9,8 +9,15 @@ describe('the view in the address', () => {
         const search = formatView(walk, '?scale=2&lat=1');
         expect(search).toBe('?scale=2&lat=46.820500&lon=8.403000&heading=160.0&pitch=5.0&eye=1.6&date=2026-08-15&time=15:00&weather=sunny&debug=lod');
         expect(parseView(search, fallback)).toEqual(walk);
-        const fly: View = { ...walk, mode: 'fly', height: 60000, debug: 'off' };
-        expect(parseView(formatView(fly), fallback)).toEqual(fly);
+        const fly: View = { ...walk, mode: 'fly', height: 60000, debug: 'off', plan: 'faces' };
+        expect(formatView(fly, '?ground=plan')).toContain('&plan=faces');
+        expect(parseView(formatView(fly, '?ground=plan'), fallback)).toEqual(fly);
+    });
+
+    it('builds the ground plan only with ground=plan', () => {
+        expect(groundPlanOf('?ground=plan&plan=faces')).toBe(true);
+        expect(groundPlanOf('?plan=faces')).toBe(false);
+        expect(groundPlanOf('?ground=planned')).toBe(false);
     });
 });
 

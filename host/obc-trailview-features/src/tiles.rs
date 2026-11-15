@@ -4,6 +4,8 @@
 use std::collections::{BTreeSet, HashMap};
 use std::f64::consts::TAU;
 
+use obc_ground_plan::sections::WATER_KINDS;
+
 use crate::geometry::bounds;
 use crate::{world, Part, Plan, Tags, EQUATOR_M};
 
@@ -105,6 +107,22 @@ pub struct Tile {
     order: Vec<String>,
     streams: Streams,
     count: u64,
+    /// The features that can take more tags after the cut: their position, their id and where their tags start in
+    /// the tags stream.
+    ids: Vec<(u32, u32, usize)>,
+}
+
+fn read_varint(bytes: &[u8], mut at: usize) -> (u64, usize) {
+    let (mut value, mut shift) = (0u64, 0);
+    loop {
+        let byte = bytes[at];
+        at += 1;
+        value |= u64::from(byte & 0x7f) << shift;
+        if byte < 0x80 {
+            return (value, at);
+        }
+        shift += 7;
+    }
 }
 
 fn varint(out: &mut Vec<u8>, mut value: u64) {
@@ -130,9 +148,12 @@ impl Tile {
         at
     }
 
-    /// Add a feature. A height is in metres; a part without heights in a feature with some has an
-    /// unknown height at each point.
-    pub fn add(&mut self, kind: &str, tags: &Tags, geometry: Geometry, parts: &[Quantized]) {
+    /// Add a feature, with `id` where it can take more tags after the cut (`bytes_with`). A height is in metres; a
+    /// part without heights in a feature with some has an unknown height at each point.
+    pub fn add(&mut self, kind: &str, tags: &Tags, geometry: Geometry, parts: &[Quantized], id: Option<u32>) {
+        if let Some(id) = id {
+            self.ids.push((self.count as u32, id, self.streams.tags.len()));
+        }
         let kind = self.string(kind);
         let tags: Vec<(u64, u64)> = tags.iter().map(|(key, value)| (self.string(key), self.string(value))).collect();
         let out = &mut self.streams;
@@ -174,15 +195,64 @@ impl Tile {
 
     /// The bytes of the tile.
     pub fn bytes(&self) -> Vec<u8> {
+        self.bytes_with(&|_| None)
+    }
+
+    pub fn has_ids(&self) -> bool {
+        !self.ids.is_empty()
+    }
+
+    /// The id of the feature at a position of the tile, where it has one.
+    pub fn id(&self, position: u32) -> Option<u32> {
+        let k = self.ids.binary_search_by_key(&position, |x| x.0).ok()?;
+        Some(self.ids[k].1)
+    }
+
+    /// The bytes of the tile with the tags of `more` on the features of each id: its own keys, which the feature
+    /// lacks. The tags of a feature stay sorted by key.
+    pub fn bytes_with<'a>(&self, more: &dyn Fn(u32) -> Option<&'a Tags>) -> Vec<u8> {
+        let (mut strings, mut order) = (self.strings.clone(), self.order.clone());
+        let mut string = |order: &mut Vec<String>, text: &str| {
+            *strings.entry(text.to_string()).or_insert_with(|| {
+                order.push(text.to_string());
+                order.len() as u64 - 1
+            })
+        };
+        let (mut tags, mut at) = (Vec::new(), 0);
+        for &(_, id, start) in &self.ids {
+            let Some(more) = more(id).filter(|m| !m.is_empty()) else { continue };
+            tags.extend(&self.streams.tags[at..start]);
+            let (count, mut i) = read_varint(&self.streams.tags, start);
+            let mut pairs = Vec::new();
+            for _ in 0..count {
+                let (key, next) = read_varint(&self.streams.tags, i);
+                let (value, next) = read_varint(&self.streams.tags, next);
+                pairs.push((key, value));
+                i = next;
+            }
+            at = i;
+            let own = |key: &str| pairs.iter().any(|p| order[p.0 as usize] == key);
+            assert!(more.keys().all(|k| !own(k)), "feature {id} has a tag of its own that the bake adds");
+            for (key, value) in more {
+                pairs.push((string(&mut order, key), string(&mut order, value)));
+            }
+            pairs.sort_by(|a, b| order[a.0 as usize].cmp(&order[b.0 as usize]));
+            varint(&mut tags, pairs.len() as u64);
+            for (key, value) in pairs {
+                varint(&mut tags, key);
+                varint(&mut tags, value);
+            }
+        }
+        tags.extend(&self.streams.tags[at..]);
         let mut out = Vec::new();
-        varint(&mut out, self.order.len() as u64);
-        for text in &self.order {
+        varint(&mut out, order.len() as u64);
+        for text in &order {
             varint(&mut out, text.len() as u64);
             out.extend(text.as_bytes());
         }
         varint(&mut out, self.count);
-        let Streams { heads, tags, parts, vertices, along, tangent, grade, bank, words } = &self.streams;
-        for stream in [heads, tags, parts, vertices, along, tangent, grade, bank, words] {
+        let Streams { heads, parts, vertices, along, tangent, grade, bank, words, .. } = &self.streams;
+        for stream in [heads, &tags, parts, vertices, along, tangent, grade, bank, words] {
             out.extend(stream);
         }
         out
@@ -217,135 +287,44 @@ impl Streams {
 pub fn encode(features: &[Feature]) -> Vec<u8> {
     let mut tile = Tile::default();
     for feature in features {
-        tile.add(&feature.kind, &feature.tags, feature.geometry, &feature.parts);
+        tile.add(&feature.kind, &feature.tags, feature.geometry, &feature.parts, None);
     }
     tile.bytes()
 }
 
-/// The features of a tile.
+/// The features of a tile, through the reader of `obc-ground-plan`.
 #[cfg(test)]
 pub fn decode(data: &[u8]) -> Result<Vec<Feature>, String> {
-    let next = |at: &mut usize| -> Result<u64, String> {
-        let (mut value, mut shift) = (0u64, 0);
-        loop {
-            let byte = *data.get(*at).ok_or("a feature tile ends inside a varint")?;
-            *at += 1;
-            value |= u64::from(byte & 0x7f) << shift;
-            shift += 7;
-            if byte < 0x80 {
-                return Ok(value);
-            }
-        }
-    };
-    let signed = |value: u64| (value >> 1) as i64 ^ -((value & 1) as i64);
-    let mut at = 0;
-    let mut table = Vec::new();
-    for _ in 0..next(&mut at)? {
-        let length = next(&mut at)? as usize;
-        let text = data.get(at..at + length).ok_or("a feature tile ends inside a string")?;
-        table.push(String::from_utf8(text.to_vec()).map_err(|e| e.to_string())?);
-        at += length;
-    }
-    let text = |index: u64| table.get(index as usize).cloned().ok_or("a string index past the table");
-    let heads = (0..next(&mut at)?)
-        .map(|_| {
-            let kind = text(next(&mut at)?)?;
-            let header = next(&mut at)?;
-            let geometry = [Geometry::Point, Geometry::Line, Geometry::Area]
-                .get((header & 3) as usize)
-                .copied()
-                .ok_or("an unknown geometry")?;
-            Ok::<_, String>((kind, header, geometry))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut features = Vec::new();
-    for (kind, _, geometry) in &heads {
-        let mut tags = Tags::new();
-        for _ in 0..next(&mut at)? {
-            let key = text(next(&mut at)?)?;
-            tags.insert(key, text(next(&mut at)?)?);
-        }
-        features.push(Feature { kind: kind.clone(), tags, geometry: *geometry, parts: Vec::new() });
-    }
-    // The vertices of each part, which the streams after this one do not name.
-    let mut counts: Vec<Vec<u64>> = Vec::new();
-    for (feature, (_, header, _)) in features.iter_mut().zip(&heads) {
-        let (mut sizes, solved) = (Vec::new(), header & 4 != 0);
-        for _ in 0..header >> 4 {
-            let code = next(&mut at)?;
-            sizes.push(code >> 1);
-            feature.parts.push(Quantized {
-                outer: code & 1 == 1,
-                xy: Vec::new(),
-                z: solved.then(Vec::new),
-                plan: None,
-            });
-        }
-        counts.push(sizes);
-    }
-    for (feature, sizes) in features.iter_mut().zip(&counts) {
-        let (mut x, mut y, mut height) = (0i64, 0i64, 0i64);
-        for (part, &size) in feature.parts.iter_mut().zip(sizes) {
-            for _ in 0..size {
-                x += signed(next(&mut at)?);
-                y += signed(next(&mut at)?);
-                part.xy.push([x, y]);
-                if let Some(z) = &mut part.z {
-                    let code = next(&mut at)?;
-                    if code == 0 {
-                        z.push(f64::NAN);
-                    } else {
-                        height += signed(code - 1);
-                        z.push(height as f64 / 100.0);
-                    }
-                }
-            }
-        }
-    }
-    // (feature, part, the code of its metres along) of each part with an alignment.
-    let mut aligned = Vec::new();
-    for (f, _) in heads.iter().enumerate().filter(|(_, head)| head.1 & 8 != 0) {
-        for p in 0..counts[f].len() {
-            let code = next(&mut at)?;
-            if code != 0 {
-                aligned.push((f, p, code));
-            }
-        }
-    }
-    let column = |at: &mut usize| -> Result<Vec<Vec<u64>>, String> {
-        let mut out = Vec::with_capacity(aligned.len());
-        for &(f, p, _) in &aligned {
-            out.push((0..counts[f][p]).map(|_| next(at)).collect::<Result<Vec<u64>, String>>()?);
-        }
-        Ok(out)
-    };
-    let (tangents, grades) = (column(&mut at)?, column(&mut at)?);
-    let (banks, words) = (column(&mut at)?, column(&mut at)?);
-    let running = |codes: &[u64]| -> Vec<i64> {
-        let mut sum = 0;
-        codes
-            .iter()
-            .map(|&code| {
-                sum += signed(code);
-                sum
+    use obc_ground_plan::tile::{self, Geometry as Read};
+    let features = tile::decode(data).map_err(|e| e.to_string())?;
+    let feature = |f: tile::RawFeature| Feature {
+        kind: f.kind,
+        tags: f.tags,
+        geometry: match f.geometry {
+            Read::Point => Geometry::Point,
+            Read::Line => Geometry::Line,
+            Read::Area => Geometry::Area,
+        },
+        parts: f
+            .parts
+            .into_iter()
+            .map(|p| Quantized {
+                outer: p.outer,
+                xy: p.xy,
+                z: p.z.map(|z| z.into_iter().map(|cm| cm.map_or(f64::NAN, |cm| cm as f64 / 100.0)).collect()),
+                plan: p.plan.map(|plan| Aligned {
+                    along: plan.along,
+                    tangent: plan.tangent,
+                    grade: plan.grade,
+                    bank: plan.bank,
+                    widen: plan.widen,
+                    side: plan.side.into_iter().map(u64::from).collect(),
+                    walk: plan.walk.into_iter().map(u64::from).collect(),
+                }),
             })
-            .collect()
+            .collect(),
     };
-    for (n, &(f, p, code)) in aligned.iter().enumerate() {
-        features[f].parts[p].plan = Some(Aligned {
-            along: code - 1,
-            tangent: running(&tangents[n]).iter().map(|turn| turn.rem_euclid(TURN)).collect(),
-            grade: running(&grades[n]),
-            bank: banks[n].iter().map(|&code| signed(code)).collect(),
-            widen: words[n].iter().map(|word| word >> 4).collect(),
-            side: words[n].iter().map(|word| word & 3).collect(),
-            walk: words[n].iter().map(|word| word >> 2 & 3).collect(),
-        });
-    }
-    if at != data.len() {
-        return Err("a feature tile has bytes after its last feature".into());
-    }
-    Ok(features)
+    Ok(features.into_iter().map(feature).collect())
 }
 
 /// The box (x0, y0, x1, y1) of the points of the parts, or None when they have none.
@@ -359,6 +338,7 @@ struct Named<'a> {
     kind: &'a str,
     geometry: Geometry,
     tags: &'a Tags,
+    id: Option<u32>,
 }
 
 /// The tiles of a region from MIN_ZOOM to MAX_ZOOM that hold at least one feature.
@@ -406,8 +386,16 @@ impl Tiles {
     }
 
     /// Add the feature to each tile of `zoom` in the region whose buffered square it meets, cut to
-    /// that square. Whether a tile took it.
-    pub fn add(&mut self, zoom: u8, kind: &str, geometry: Geometry, tags: &Tags, parts: &[Part]) -> bool {
+    /// that square, with its `id` in each (`Tile::add`). Whether a tile took it.
+    pub fn add(
+        &mut self,
+        zoom: u8,
+        kind: &str,
+        geometry: Geometry,
+        tags: &Tags,
+        parts: &[Part],
+        id: Option<u32>,
+    ) -> bool {
         let scale = (1u64 << zoom) as f64 * EXTENT_F;
         let parts: Vec<Part> = parts
             .iter()
@@ -425,7 +413,7 @@ impl Tiles {
         let [c0, r0, c1, r1] = self.span(zoom);
         let (c0, r0) = (c0.max(row(box_[0] - margin)), r0.max(row(box_[1] - margin)));
         let (c1, r1) = (c1.min(row(box_[2] + margin)), r1.min(row(box_[3] + margin)));
-        let feature = Named { kind, geometry, tags };
+        let feature = Named { kind, geometry, tags, id };
         c0 <= c1 && r0 <= r1 && self.cut(zoom, &feature, parts, box_, [c0, r0, c1, r1])
     }
 
@@ -439,7 +427,7 @@ impl Tiles {
         mut box_: [f64; 4],
         [c0, r0, c1, r1]: [i64; 4],
     ) -> bool {
-        let Named { kind, geometry, tags } = *feature;
+        let Named { kind, geometry, tags, id } = *feature;
         let buffer = self.pad(zoom, r0).max(self.pad(zoom, r1));
         let extent_i = i64::from(EXTENT);
         let rect = [
@@ -452,7 +440,7 @@ impl Tiles {
             return false;
         }
         if !(rect[0] <= box_[0] && box_[2] <= rect[2] && rect[1] <= box_[1] && box_[3] <= rect[3]) {
-            parts = clipped(geometry, &parts, rect);
+            parts = clipped(geometry, &parts, rect, reach(kind));
             match extent(&parts) {
                 Some(found) => box_ = found,
                 None => return false,
@@ -461,7 +449,7 @@ impl Tiles {
         if (c0, r0) == (c1, r1) {
             let cut = quantized(geometry, &parts, c0 * extent_i, r0 * extent_i);
             if !cut.is_empty() {
-                self.tiles.entry((zoom, c0 as u32, r0 as u32)).or_default().add(kind, tags, geometry, &cut);
+                self.tiles.entry((zoom, c0 as u32, r0 as u32)).or_default().add(kind, tags, geometry, &cut, id);
             }
             return !cut.is_empty();
         }
@@ -497,13 +485,13 @@ fn meets([ax, ay]: [f64; 2], [bx, by]: [f64; 2], [x0, y0, x1, y1]: [f64; 4]) -> 
 }
 
 /// The pieces of a polyline that meet `rect`, as lists of vertex indices. A piece keeps the segments
-/// that meet `rect` whole, and one more vertex at each end: the tiles that hold a segment hold the
-/// same segment and the same bends at its ends.
-fn clip_line(points: &[[f64; 2]], rect: [f64; 4]) -> Vec<Vec<usize>> {
+/// that meet `rect` whole, and `reach` more vertices at each end: the tiles that hold a segment hold the
+/// same segment and the same vertices about its ends.
+fn clip_line(points: &[[f64; 2]], rect: [f64; 4], reach: usize) -> Vec<Vec<usize>> {
     let mut keep = vec![false; points.len()];
     for k in 0..points.len().saturating_sub(1) {
         if meets(points[k], points[k + 1], rect) {
-            keep[k.saturating_sub(1)..(k + 3).min(points.len())].fill(true);
+            keep[k.saturating_sub(reach)..(k + 2 + reach).min(points.len())].fill(true);
         }
     }
     let mut pieces: Vec<Vec<usize>> = Vec::new();
@@ -549,8 +537,20 @@ fn clip_ring(ring: &[[f64; 2]], rect: [f64; 4]) -> Vec<usize> {
     indices
 }
 
-/// Parts cut to `rect`. The cut makes no new vertex.
-fn clipped(geometry: Geometry, parts: &[Part], rect: [f64; 4]) -> Vec<Part> {
+/// The vertices that a line of `kind` keeps past the segments that meet a square: the ground plan draws
+/// the curve of line water from the tile's vertices, and a span's curve reads two vertices on each side
+/// of it (`obc_ground_plan::graph::water_spans`); every other line carries its plan.
+fn reach(kind: &str) -> usize {
+    if WATER_KINDS.contains(&kind) {
+        2
+    } else {
+        1
+    }
+}
+
+/// Parts cut to `rect`, a line with `reach` vertices past the segments that meet it. The cut makes no
+/// new vertex.
+fn clipped(geometry: Geometry, parts: &[Part], rect: [f64; 4], reach: usize) -> Vec<Part> {
     let pick = |outer: bool, part: &Part, indices: &[usize]| Part {
         outer,
         points: indices.iter().map(|&i| part.points[i]).collect(),
@@ -573,7 +573,7 @@ fn clipped(geometry: Geometry, parts: &[Part], rect: [f64; 4]) -> Vec<Part> {
             .collect(),
         Geometry::Line => parts
             .iter()
-            .flat_map(|part| clip_line(&part.points, rect).into_iter().map(move |piece| (part, piece)))
+            .flat_map(|part| clip_line(&part.points, rect, reach).into_iter().map(move |piece| (part, piece)))
             .map(|(part, piece)| pick(false, part, &piece))
             .collect(),
         Geometry::Area => parts.iter().map(|part| pick(part.outer, part, &clip_ring(&part.points, rect))).collect(),
@@ -865,6 +865,53 @@ mod tests {
     }
 
     #[test]
+    fn a_feature_with_an_id_takes_more_tags_at_the_write_in_the_order_of_their_keys() {
+        let vectors = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../specs/vectors");
+        let features = decode(&std::fs::read(vectors.join("trailview-features.bin")).unwrap()).unwrap();
+        let mut tile = Tile::default();
+        for (k, f) in features.iter().enumerate() {
+            tile.add(&f.kind, &f.tags, f.geometry, &f.parts, (k % 2 == 1).then_some(k as u32));
+        }
+        assert_eq!(tile.bytes(), encode(&features), "no more tags, the same bytes");
+        let more = Tags::from([("levels".to_string(), "D".to_string()), ("~".to_string(), "last".to_string())]);
+        let bytes = tile.bytes_with(&|id| (id == 1).then_some(&more));
+        let tagged = decode(&bytes).unwrap();
+        for (k, (a, b)) in features.iter().zip(&tagged).enumerate() {
+            let mut want = a.clone();
+            if k == 1 {
+                want.tags.extend(more.clone());
+            }
+            assert_eq!(as_json(b), as_json(&want), "feature {k}");
+        }
+        // The keys of each feature in the order of the bytes: the strings, the count, two words of each head, then
+        // the tags.
+        let (n, mut at) = read_varint(&bytes, 0);
+        let mut strings = Vec::new();
+        for _ in 0..n {
+            let (len, from) = read_varint(&bytes, at);
+            at = from + len as usize;
+            strings.push(String::from_utf8(bytes[from..at].to_vec()).unwrap());
+        }
+        let (count, from) = read_varint(&bytes, at);
+        at = from;
+        for _ in 0..2 * count {
+            at = read_varint(&bytes, at).1;
+        }
+        for k in 0..count {
+            let (pairs, from) = read_varint(&bytes, at);
+            at = from;
+            let mut keys = Vec::new();
+            for _ in 0..pairs {
+                let (key, from) = read_varint(&bytes, at);
+                at = read_varint(&bytes, from).1;
+                keys.push(strings[key as usize].clone());
+            }
+            assert!(keys.windows(2).all(|w| w[0] < w[1]), "feature {k}: keys {keys:?}");
+            assert_eq!(keys.len(), features[k as usize].tags.len() + if k == 1 { more.len() } else { 0 });
+        }
+    }
+
+    #[test]
     fn an_island_near_a_curved_shore_does_not_cross_it_at_any_zoom() {
         // A lake whose shore curves 45 m over 2 km, with a 200 m island 8 m off the shore.
         let metres = |x: f64, y: f64| world(8.2 + x / 76_220.0, 46.8 + y / 111_320.0);
@@ -903,11 +950,28 @@ mod tests {
         let mut tiles = Tiles::new([lon(column), lat(row + 1.0), lon(column + 1.0), lat(row)]);
         let at = |x: f64, y: f64| [x / n, y / n];
         let line = [part(false, vec![at(column - 3.0, row + 0.5), at(column + 4.0, row + 0.5)])];
-        assert!(tiles.add(13, "road", Geometry::Line, &Tags::new(), &line));
+        assert!(tiles.add(13, "road", Geometry::Line, &Tags::new(), &line, None));
         let tile = decode(&tiles.tiles[&(13, column as u32, row as u32)].bytes()).unwrap();
         // The cut keeps the segment whole: no vertex is added at the tile's edges.
         let width = 7 * i64::from(EXTENT);
         assert_eq!(tile[0].parts[0].xy[1][0] - tile[0].parts[0].xy[0][0], width);
+    }
+
+    #[test]
+    fn a_stream_keeps_two_vertices_past_the_segments_that_meet_a_tile_and_a_road_one() {
+        let n = (1u64 << 13) as f64;
+        let (column, row) = (4286.0, 2889.0);
+        let lon = |x: f64| x / n * 360.0 - 180.0;
+        let lat = |y: f64| (std::f64::consts::PI * (1.0 - 2.0 * y / n)).sinh().atan().to_degrees();
+        // Two segments meet the tile; the vertices around them lie a tile apart.
+        let line =
+            [part(false, [-3.0, -2.0, -1.0, 0.5, 2.0, 3.0, 4.0].map(|x| [(column + x) / n, (row + 0.5) / n]).to_vec())];
+        for (kind, vertices) in [("road", 5), ("stream", 7)] {
+            let mut tiles = Tiles::new([lon(column), lat(row + 1.0), lon(column + 1.0), lat(row)]);
+            assert!(tiles.add(13, kind, Geometry::Line, &Tags::new(), &line, None));
+            let tile = decode(&tiles.tiles[&(13, column as u32, row as u32)].bytes()).unwrap();
+            assert_eq!(tile[0].parts[0].xy.len(), vertices, "{kind}");
+        }
     }
 
     #[test]
@@ -941,7 +1005,7 @@ mod tests {
             plan: Some(plan),
             ..Part::default()
         };
-        assert!(tiles.add(MAX_ZOOM, "road", Geometry::Line, &Tags::new(), std::slice::from_ref(&line)));
+        assert!(tiles.add(MAX_ZOOM, "road", Geometry::Line, &Tags::new(), std::slice::from_ref(&line), None));
         let tile =
             |c: f64| decode(&tiles.tiles[&(MAX_ZOOM, c as u32, row as u32)].bytes()).unwrap().remove(0).parts.remove(0);
         let (west, east) = (tile(column), tile(column + 1.0));
