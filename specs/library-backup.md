@@ -22,8 +22,8 @@ rides. It holds no covers: the browser renders them again.
 
 Each entry is stored with no compression (method 0), with its CRC-32 and with UTF-8 names (flag bit
 11). The file has no ZIP64 records, so it is smaller than 4 GiB and has fewer than 65,536 entries.
-A writer whose entries do not fit writes a file with no photos: no `photos` field and no photo
-entry.
+A writer writes no file whose entries do not fit. The web app then offers a file with no photos:
+no `photos` field and no photo entry.
 
 | Entry | Content |
 | --- | --- |
@@ -115,8 +115,8 @@ no small picture of a photo: a reader makes it from the copy.
 | --- | --- |
 | `id` | Non-empty string of letters, digits, `_` and `-`: the key of the ride, `-`, and a hash of the file of the photo |
 | `ride` | The `key` of the ride of the photo |
-| `time` | Unix time in seconds when the rider took the photo, or `null` when the photo file has no time |
-| `place` | Optional array `[longitude, latitude]`: the GPS place of the photo file. Only a photo that has its place on the ride from it has this field; a record with the `time` `null` has it. |
+| `time` | Unix time in seconds when the rider took the photo, or `null` for a photo that has its place on the ride from `place` |
+| `place` | Optional array `[longitude, latitude]`: the GPS place of the photo file. Only a photo that has its place on the ride from it has this field: the photo file has no time, or the ride has no times. A record has `place` when, and only when, its `time` is `null`. |
 
 The place of a photo on its ride is the sample of the ride nearest to `time`. With `place`, it is
 the sample nearest to `place`, in the first pass of the ride within 100 m of it.
@@ -127,6 +127,9 @@ A load first checks `format`, `version`, the fields of each record, the unique i
 CRC-32 of each entry, the source file entry of each ride and the copy entry of each photo. It does
 not check `trip`: the planner checks a plan when it opens it. When a check fails, the load changes
 nothing.
+
+A reader ignores an entry of the file and a field of the envelope that it does not know. So a
+reader with no photos loads the routes and the rides of a file with photos.
 
 Then one transaction adds:
 
