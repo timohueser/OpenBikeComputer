@@ -1,20 +1,22 @@
-/** Draws the share card of a route or a ride: the picture or a plain ground with the line, the name, the numbers, the elevation profile, the date of a ride, the product mark and the credits of the map data. */
+/** Draws the share card of a route or a ride: the whole picture, or a plain ground with the line, at the top with the product mark, and under it the date of a ride, the name, the numbers and the elevation profile on a plain ground. */
 import type { Summary } from '../library/records';
 import { drawCover, type CoverImage, type Look } from './draw';
 import { fromAbove, metresAlong } from './line';
 
 export type Format = 'wide';
-/** The pixels of a card. The wide card has the size of a cover, so it shows the whole picture. */
-export const SIZES: Record<Format, [number, number]> = { wide: [1920, 1280] };
+/** The width of a card in pixels. The wide card shows a cover at its own size. */
+const WIDTHS: Record<Format, number> = { wide: 1920 };
 /** "Hide start and end" leaves out HIDDEN_M of the line at each end. A line shorter than SHORT_M stays whole. */
 export const HIDDEN_M = 500, SHORT_M = 2000;
 /** The fonts of the card. A canvas draws a font only after the page loaded it. */
 export const FONTS = ['700 96px Atkinson', '400 48px Atkinson', '700 30px "Atkinson Mono"'];
+/** A missing font file must not stop the card: each font names the fallback of the product. */
+const SANS = 'Atkinson, system-ui, sans-serif', MONO = '"Atkinson Mono", ui-monospace, monospace';
 
-/** The card is the same in both looks. A plain ground has the colours of the light look; on a picture the text is white. */
-const PLAIN = { ink: '#1c1b14', soft: '#5c5a2e', credit: '#676443', band: '#e7ecdf', profile: '#5c5a2e', post: '#5c5a2e' };
-const ON_PICTURE = { ink: '#fff', soft: 'rgb(255 255 255 / 0.86)', credit: 'rgb(255 255 255 / 0.8)', band: 'rgb(255 255 255 / 0.34)', profile: 'rgb(255 255 255 / 0.92)', post: '#fff2d1' };
-const GROUND = '#f4f2eb', BOARD = '#f4a81d', SHADE = '18 20 14';
+/** The card is the same in both looks: the ground and the text have the colours of the light look. */
+const GROUND = '#f4f2eb', INK = '#1c1b14', SOFT = '#5c5a2e', FAINT = '#676443', BAND = '#e7ecdf', BOARD = '#f4a81d';
+/** The mark on a plain ground, and on a picture. */
+const MARK = { plain: { text: INK, post: SOFT }, picture: { text: '#fff', post: '#fff2d1' } };
 /** `--route` and `--ride` of the light look. */
 const LINE: Record<Look, string> = { route: '#cc2a93', ride: '#0b8f8b' };
 /** The signpost of the product in a box of 100: the post and its two boards. */
@@ -24,13 +26,14 @@ const BOARDS = [
     [[21.3, 53.98], [73.17, 50.35], [87.91, 60.35], [74.71, 72.3], [22.84, 75.93]],
 ];
 const PRODUCT = 'OpenBikeComputer';
-/** The profile band shows at least this range of heights, so a flat line looks flat. Chosen. */
+/** Each card with a picture has this one credit line. */
+const CREDIT = '© OpenStreetMap contributors and others';
+/** The profile shows at least this range of heights, so a flat line looks flat. Chosen. */
 const LEAST_RANGE_M = 50;
-/** The name has at most NAME_LINES lines; the rest ends with "…". Credits of at most BESIDE_LINES lines stand beside
- * the text. Longer credits stand under it, whole, on the lines that they need. */
-const NAME_LINES = 3, BESIDE_LINES = 2;
-/** A missing font file must not stop the card: each font names the fallback of the product. */
-const SANS = 'Atkinson, system-ui, sans-serif', MONO = '"Atkinson Mono", ui-monospace, monospace';
+/** The name has at most NAME_LINES lines; the rest ends with "…". */
+const NAME_LINES = 3;
+/** The height of a capital letter, as a share of the size of its letters. */
+const CAPITAL = 0.7;
 
 export interface Card {
     name: string;
@@ -40,8 +43,8 @@ export interface Card {
     date?: string;
     /** Each number with its unit, such as ["58.7", "km"]. With none, the card has no row of numbers. */
     numbers: [string, string][];
-    /** The picture and the credits of its data. With none, the ground is plain. */
-    cover?: CoverImage & { credits: string[] };
+    /** The picture. With none, the top of the card is a plain ground. */
+    cover?: CoverImage;
     line: boolean;
     profile: boolean;
     /** The metres of the line that the card leaves out at each end. */
@@ -54,69 +57,69 @@ export interface Box { x: number; y: number; width: number; height: number }
  * the baseline of its last line. */
 export interface Layout {
     size: [number, number];
-    /** The picture, or the plain ground. */
+    /** The whole picture at the top, 3 : 2 as a cover; or a plain ground. Only the mark stands on it. */
     picture: Box;
-    /** The room of the line on a plain ground. */
+    /** The room of the line on a plain ground, in the place of the picture. */
     plan: Box;
     mark: Box;
+    /** The plain ground under the picture, with the text and the profile. */
+    ground: Box;
     date?: Box;
     name: Box;
     numbers?: Box;
     credit?: Box;
+    /** The elevation profile, along the lower edge of the ground. */
     band?: Box;
-    /** The sizes of the letters: the name, the numbers and the date, and the credits. */
+    /** The sizes of the letters: the name, the numbers and the date, and the credit. */
     letters: { name: number; number: number; small: number };
 }
 
-/** The margin at the sides, the width between the margins and the sizes of the letters. Credits under the text have
- * the smallest letters that still read in the file, 16 px in a card of 1920 px. Chosen. */
-function measures(format: Format, creditUnder: boolean) {
-    const [width] = SIZES[format], margin = Math.round(0.042 * width);
-    const letters = { name: Math.round(0.05 * width), number: Math.round(0.025 * width), small: Math.round(width / (creditUnder ? 120 : 84)) };
-    return { margin, inner: width - 2 * margin, letters };
-}
+/** The parts of a card that change its layout. */
+export interface Shown { nameLines: number; date: boolean; numbers: boolean; profile: boolean; credit: boolean }
 
-/** The parts of a card that change its layout. The credits stand beside the numbers, or under them in their own lines. */
-export interface Shown { nameLines: number; date: boolean; numbers: boolean; profile: boolean; creditLines: number; creditUnder: boolean }
-
-/** The layout of a card: the picture fills it, the text stands at the lower left over the band of the profile, and the
- * mark at the upper left. */
+/** The layout of a card. The ground is as high as the text of a name of one line with each of its rows and a profile
+ * need (0.26 of the width, chosen), and one line higher for each more line of the name: no switch changes the size.
+ * The profile takes the height that the text leaves, up to 0.104 of the width. With no profile, the text stands in
+ * the middle of the ground. */
 export function layout(format: Format, shown: Shown): Layout {
-    const [width, height] = SIZES[format], { margin, inner, letters } = measures(format, shown.creditUnder);
-    const nameLine = Math.round(1.08 * letters.name), smallLine = Math.round(1.4 * letters.small);
-    const band = shown.profile ? { x: 0, y: height - Math.round(0.13 * height), width, height: Math.round(0.13 * height) } : undefined;
-    // With no band, the text keeps the margin of the sides from the lower edge.
-    const bottom = band ? band.y - Math.round(0.55 * margin) : height - margin;
-    const creditHeight = shown.creditLines * smallLine;
-    const credit = shown.creditLines ? { x: margin, y: bottom - creditHeight, width: inner, height: creditHeight } : undefined;
-    const numbersBottom = credit && shown.creditUnder ? credit.y - Math.round(0.6 * letters.small) : bottom;
-    const numbers = shown.numbers ? { x: margin, y: numbersBottom - letters.number, width: inner, height: letters.number } : undefined;
-    const nameBottom = numbers ? numbersBottom - Math.round(1.45 * letters.number) : numbersBottom;
-    const name = { x: margin, y: nameBottom - shown.nameLines * nameLine, width: inner, height: shown.nameLines * nameLine };
-    const date = shown.date ? { x: margin, y: name.y - Math.round(0.25 * letters.number) - letters.number, width: inner, height: letters.number } : undefined;
+    const width = WIDTHS[format], margin = Math.round(0.042 * width), inner = width - 2 * margin;
+    const letters = { name: Math.round(0.05 * width), number: Math.round(0.025 * width), small: Math.round(0.012 * width) };
+    const nameLine = Math.round(1.08 * letters.name);
+    const picture = { x: 0, y: 0, width, height: Math.round(width * 2 / 3) };
+    const ground = { x: 0, y: picture.height, width, height: Math.round(0.2604 * width) + (shown.nameLines - 1) * nameLine };
+    const bottom = ground.y + ground.height;
+    // The baseline of each row, from the top of the letters of the first row.
+    const dateBase = shown.date ? Math.round(CAPITAL * letters.number) : undefined;
+    const nameBase = dateBase === undefined ? Math.round(CAPITAL * letters.name) : dateBase + Math.round(0.25 * letters.number) + nameLine;
+    const nameEnd = nameBase + (shown.nameLines - 1) * nameLine;
+    const numbersBase = shown.numbers ? nameEnd + Math.round(1.45 * letters.number) : undefined;
+    const creditBase = shown.credit ? (numbersBase ?? nameEnd) + Math.round(1.9 * letters.small) : undefined;
+    const end = creditBase ?? numbersBase ?? nameEnd;
+    const top = ground.y + (shown.profile ? margin : Math.round((ground.height - end) / 2));
+    const row = (base: number | undefined, height: number) => base === undefined ? undefined : { x: margin, y: top + base - height, width: inner, height };
+    const bandTop = Math.max(top + end + Math.round(0.55 * margin), bottom - Math.round(0.104 * width));
     // The signpost, then the name of the product in mono letters of half its height, each 0.6 of its size wide.
-    const markHeight = Math.round(0.62 * letters.name);
-    const mark = { x: margin, y: Math.round(0.8 * margin), width: Math.round((1.05 + 0.3 * PRODUCT.length) * markHeight), height: markHeight };
-    const planTop = Math.round(2.4 * margin), textTop = (date ?? name).y;
+    const markHeight = Math.round(0.62 * letters.name), planTop = Math.round(2.4 * margin);
     return {
-        size: [width, height], picture: { x: 0, y: 0, width, height }, mark, date, name, numbers, credit, band, letters,
-        plan: { x: Math.round(1.5 * margin), y: planTop, width: width - 3 * margin, height: textTop - Math.round(0.9 * margin) - planTop },
+        size: [width, bottom], picture, ground, letters,
+        mark: { x: margin, y: Math.round(0.8 * margin), width: Math.round((1.05 + 0.3 * PRODUCT.length) * markHeight), height: markHeight },
+        plan: { x: Math.round(1.5 * margin), y: planTop, width: width - 3 * margin, height: picture.height - planTop - margin },
+        date: row(dateBase, letters.number),
+        name: { x: margin, y: top + nameBase - nameLine, width: inner, height: shown.nameLines * nameLine },
+        numbers: row(numbersBase, letters.number),
+        credit: row(creditBase, letters.small),
+        band: shown.profile ? { x: 0, y: bandTop, width, height: bottom - bandTop } : undefined,
     };
 }
 
-/** The credits of a picture as the card shows them: each part between two ";", whole, one time. */
-export function creditParts(credits: string[]): string[] {
-    return [...new Set(credits.flatMap(credit => credit.split(';')).map(part => part.trim()).filter(Boolean))];
-}
-
-/** The lines of `pieces` in the font of `context`: pieces joined by `joint`, broken between two pieces at `max` pixels.
- * The text after `most` lines, and the end of a piece wider than a line, is "…". */
-function wrap(context: CanvasRenderingContext2D, pieces: string[], joint: string, max: number, most: number): string[] {
-    const lines: string[] = [], wide = (text: string) => context.measureText(text).width > max;
-    for (const piece of pieces) {
-        const joined = `${lines.at(-1)}${joint}${piece}`;
+/** The lines of `text` in the font of `context`, broken at spaces to `max` pixels. The text after `most` lines, and
+ * the end of a word wider than a line, is "…". */
+function wrap(context: CanvasRenderingContext2D, text: string, max: number, most: number): string[] {
+    const lines: string[] = [], wide = (line: string) => context.measureText(line).width > max;
+    for (const word of text.split(/\s+/).filter(Boolean)) {
+        const joined = `${lines.at(-1)} ${word}`;
         if (lines.length && !wide(joined)) lines[lines.length - 1] = joined;
-        else lines.push(piece);
+        else lines.push(word);
     }
     const kept = lines.slice(0, most);
     if (lines.length > most) kept[most - 1] += '…';
@@ -144,54 +147,37 @@ export function stretch(summary: Summary, trim: number): [number, number][] {
     return points;
 }
 
-/** Draws the card over the whole canvas of `context`, which has the size of the format, and returns its layout. */
-export function drawCard(context: CanvasRenderingContext2D, format: Format, card: Card): Layout {
-    const { summary, cover } = card, [width, height] = SIZES[format], colours = cover ? ON_PICTURE : PLAIN;
-    const { inner, letters } = measures(format, false), gap = letters.number;
-    const fonts = { name: `700 ${letters.name}px ${SANS}`, value: `700 ${letters.number}px ${SANS}`, unit: `400 ${letters.number}px ${SANS}` };
-    const small = (under: boolean) => `400 ${measures(format, under).letters.small}px ${SANS}`;
-    const measure = (font: string, text: string) => { context.font = font; return context.measureText(text).width; };
-
+/** Gives `canvas` the size of the card, draws the card over it and returns its layout. */
+export function drawCard(canvas: HTMLCanvasElement, format: Format, card: Card): Layout {
+    const { summary, cover } = card, context = canvas.getContext('2d')!;
+    const { letters, name } = layout(format, { nameLines: 1, date: false, numbers: false, profile: false, credit: false });
+    const fonts = { name: `700 ${letters.name}px ${SANS}`, value: `700 ${letters.number}px ${SANS}`, unit: `400 ${letters.number}px ${SANS}`, small: `400 ${letters.small}px ${SANS}` };
     context.font = fonts.name;
-    const nameLines = wrap(context, card.name.split(/\s+/).filter(Boolean), ' ', inner, NAME_LINES);
-    const numbers = card.numbers.map(([value, unit]) => ({ value, unit: unit && ` ${unit}`, width: measure(fonts.value, value) + (unit ? measure(fonts.unit, ` ${unit}`) : 0) }));
-    const numbersWidth = numbers.reduce((sum, number) => sum + number.width, 0) + gap * Math.max(0, numbers.length - 1);
-    // The credits stand at the right of the last line of the text, when they fit there in their lines.
-    const beside = inner - gap - (numbers.length ? numbersWidth : measure(fonts.name, nameLines.at(-1) ?? ''));
-    // A line breaks at a space; the dot between two parts stays with the part before it.
-    const words = cover ? creditParts(cover.credits).join('\u00a0· ').split(' ').filter(Boolean) : [];
-    context.font = small(false);
-    let credits = wrap(context, words, ' ', beside, Infinity);
-    const creditUnder = credits.length > BESIDE_LINES || beside < inner / 4;
-    context.font = small(creditUnder);
-    if (creditUnder) credits = wrap(context, words, ' ', inner, Infinity);
-    const boxes = layout(format, { nameLines: nameLines.length, date: card.date !== undefined, numbers: numbers.length > 0, profile: card.profile, creditLines: credits.length, creditUnder });
+    const nameLines = wrap(context, card.name, name.width, NAME_LINES);
+    const boxes = layout(format, { nameLines: nameLines.length, date: card.date !== undefined, numbers: card.numbers.length > 0, profile: card.profile, credit: !!cover });
+    const { picture, mark } = boxes;
+    // A new size clears the canvas and its settings.
+    [canvas.width, canvas.height] = boxes.size;
 
-    if (cover) drawCover(context, cover, { box: [width, height], line: card.line, look: card.look, trim: card.trim });
-    else {
-        context.fillStyle = GROUND;
-        context.fillRect(0, 0, width, height);
-        if (card.line) plan(context, boxes.plan, stretch(summary, card.trim), LINE[card.look], Math.round(0.008 * Math.min(width, height)));
-    }
+    context.fillStyle = GROUND;
+    context.fillRect(0, 0, ...boxes.size);
     if (cover) {
-        // A shade under the text and a weaker one under the mark, so that both read on snow and on a pale sky.
-        const from = Math.max(0, (boxes.date ?? boxes.name).y - 0.22 * height), under = context.createLinearGradient(0, from, 0, height);
-        under.addColorStop(0, `rgb(${SHADE} / 0)`);
-        under.addColorStop(0.55, `rgb(${SHADE} / 0.62)`);
-        under.addColorStop(1, `rgb(${SHADE} / 0.82)`);
-        context.fillStyle = under;
-        context.fillRect(0, from, width, height - from);
-        const over = context.createLinearGradient(0, 0, 0, 0.16 * height);
-        over.addColorStop(0, `rgb(${SHADE} / 0.42)`);
-        over.addColorStop(1, `rgb(${SHADE} / 0)`);
-        context.fillStyle = over;
-        context.fillRect(0, 0, width, 0.16 * height);
-    }
+        // The glow of a line at the lower edge of the picture stays in the picture.
+        context.save();
+        context.beginPath();
+        context.rect(picture.x, picture.y, picture.width, picture.height);
+        context.clip();
+        drawCover(context, cover, { box: [picture.width, picture.height], line: card.line, look: card.look, trim: card.trim });
+        // A weak shade under the mark, so that it reads on snow and on a pale sky.
+        const shade = context.createLinearGradient(0, 0, 0, 0.16 * picture.height);
+        shade.addColorStop(0, 'rgb(18 20 14 / 0.42)');
+        shade.addColorStop(1, 'rgb(18 20 14 / 0)');
+        context.fillStyle = shade;
+        context.fillRect(0, 0, picture.width, 0.16 * picture.height);
+        context.restore();
+    } else if (card.line) plan(context, boxes.plan, stretch(summary, card.trim), LINE[card.look], Math.round(0.005 * picture.width));
+    if (boxes.band) profile(context, boxes.band, summary);
 
-    if (boxes.band) profile(context, boxes.band, summary, colours.band, colours.profile);
-
-    // Text on a picture has a tight shadow.
-    if (cover) [context.shadowColor, context.shadowOffsetY, context.shadowBlur] = ['rgb(0 0 0 / 0.45)', 2, 4];
     context.textBaseline = 'alphabetic';
     const text = (font: string, colour: string, content: string, x: number, y: number) => {
         [context.font, context.fillStyle] = [font, colour];
@@ -199,23 +185,20 @@ export function drawCard(context: CanvasRenderingContext2D, format: Format, card
         return context.measureText(content).width;
     };
     const base = (box: Box) => box.y + box.height;
-    if (boxes.date) text(fonts.unit, colours.soft, card.date!, boxes.date.x, base(boxes.date));
+    if (boxes.date) text(fonts.unit, SOFT, card.date!, boxes.date.x, base(boxes.date));
     const nameLine = boxes.name.height / nameLines.length;
-    nameLines.forEach((line, i) => text(fonts.name, colours.ink, line, boxes.name.x, boxes.name.y + (i + 1) * nameLine));
+    nameLines.forEach((line, i) => text(fonts.name, INK, line, boxes.name.x, boxes.name.y + (i + 1) * nameLine));
     let x = boxes.numbers?.x ?? 0;
-    for (const { value, unit } of numbers) {
-        x += text(fonts.value, colours.ink, value, x, base(boxes.numbers!));
-        if (unit) x += text(fonts.unit, colours.soft, unit, x, base(boxes.numbers!));
-        x += gap;
+    for (const [value, unit] of card.numbers) {
+        x += text(fonts.value, INK, value, x, base(boxes.numbers!));
+        if (unit) x += text(fonts.unit, SOFT, ` ${unit}`, x, base(boxes.numbers!));
+        x += letters.number;
     }
-    if (boxes.credit) {
-        const smallLine = boxes.credit.height / credits.length;
-        context.textAlign = creditUnder ? 'left' : 'right';
-        credits.forEach((line, i) => text(small(creditUnder), colours.credit, line, boxes.credit!.x + (creditUnder ? 0 : boxes.credit!.width), boxes.credit!.y + (i + 1) * smallLine));
-        context.textAlign = 'left';
-    }
+    if (boxes.credit) text(fonts.small, FAINT, CREDIT, boxes.credit.x, base(boxes.credit));
 
-    const { mark } = boxes, scale = mark.height / 100;
+    const colours = cover ? MARK.picture : MARK.plain, scale = mark.height / 100;
+    // The mark on a picture has a tight shadow.
+    if (cover) [context.shadowColor, context.shadowOffsetY, context.shadowBlur] = ['rgb(0 0 0 / 0.45)', 2, 4];
     const shape = (points: number[][], colour: string) => {
         context.beginPath();
         points.forEach(([px, py], i) => context[i ? 'lineTo' : 'moveTo'](mark.x + px * scale, mark.y + py * scale));
@@ -226,9 +209,7 @@ export function drawCard(context: CanvasRenderingContext2D, format: Format, card
     shape(POST, colours.post);
     for (const board of BOARDS) shape(board, BOARD);
     context.textBaseline = 'middle';
-    text(`700 ${Math.round(0.5 * mark.height)}px ${MONO}`, colours.ink, PRODUCT, mark.x + 1.05 * mark.height, mark.y + 0.52 * mark.height);
-    context.textBaseline = 'alphabetic';
-    [context.shadowColor, context.shadowOffsetY, context.shadowBlur] = ['transparent', 0, 0];
+    text(`700 ${Math.round(0.5 * mark.height)}px ${MONO}`, colours.text, PRODUCT, mark.x + 1.05 * mark.height, mark.y + 0.52 * mark.height);
     return boxes;
 }
 
@@ -245,7 +226,7 @@ function plan(context: CanvasRenderingContext2D, box: Box, line: [number, number
 }
 
 /** The heights over the distance, from edge to edge of `box`: a pale shape with a line on it. */
-function profile(context: CanvasRenderingContext2D, box: Box, summary: Summary, fill: string, line: string): void {
+function profile(context: CanvasRenderingContext2D, box: Box, summary: Summary): void {
     const at = metresAlong(summary), known = summary.heights.flatMap((height, i) => height === null ? [] : [[at[i] / (summary.lengthM || 1) * box.width, height]]);
     if (!known.length) return;
     const heights = known.map(point => point[1]), low = Math.min(...heights), range = Math.max(LEAST_RANGE_M, Math.max(...heights) - low);
@@ -257,10 +238,10 @@ function profile(context: CanvasRenderingContext2D, box: Box, summary: Summary, 
     context.lineTo(box.x + box.width, bottom);
     context.lineTo(box.x, bottom);
     context.closePath();
-    context.fillStyle = fill;
+    context.fillStyle = BAND;
     context.fill();
     trace();
     context.lineJoin = 'round';
-    [context.lineWidth, context.strokeStyle] = [Math.max(2, 0.0016 * box.width), line];
+    [context.lineWidth, context.strokeStyle] = [Math.max(2, 0.0016 * box.width), SOFT];
     context.stroke();
 }

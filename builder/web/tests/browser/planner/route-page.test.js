@@ -55,7 +55,8 @@ test('the route page shows a stored route, renames, sends, opens in the planner,
   await page.goBack();
   await expect(page.getByRole('heading', { name: 'Lake loop', level: 1 })).toBeVisible();
 
-  // "Share" is the first item of "More". Its window gives the share card as a JPEG of 1920 × 1280.
+  // "Share" is the first item of "More". Its window gives the share card as a JPEG, 1920 pixels wide: the picture of
+  // 1920 × 1280 and the ground of a name of one line.
   await page.getByRole('button', { name: 'More ▾' }).click();
   await expect(page.locator('menu button').first()).toHaveText('Share');
   await page.getByRole('button', { name: 'Share' }).click();
@@ -72,7 +73,7 @@ test('the route page shows a stored route, renames, sends, opens in the planner,
   expect(await page.evaluate(async file => {
     const image = await createImageBitmap(new Blob([new Uint8Array(file)]));
     return [image.width, image.height];
-  }, [...bytes])).toEqual([1920, 1280]);
+  }, [...bytes])).toEqual([1920, 1780]);
   await page.keyboard.press('Escape');
   await expect(share).toHaveCount(0);
 
