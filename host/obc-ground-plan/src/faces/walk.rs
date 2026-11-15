@@ -459,6 +459,19 @@ pub(super) fn build(
             }
         }
     }
+    // A line that ends at a deck's start with no point of this level there (a joint to a deck) ends its slab before
+    // the deck's stroke too.
+    for (l, line) in lines.iter().enumerate().filter(|(_, l)| l.deck.contains(&true)) {
+        for (e, at, dir) in [(0, 0, 1), (1, line.p.len() - 1, -1)] {
+            let Some(d) = decks.iter().find(|d| line.deck[e] && d.0 == line.p[at]) else { continue };
+            for side in [1.0, -1.0] {
+                let arm = Arm { line: l, at, dir };
+                if let Some(x) = deck_cut(ctx, lines, arm, side, &d.1) {
+                    cuts[side_of(l, side)].push(Cut { v: at, dir, tip: Tip::Taper, to: Some(x) });
+                }
+            }
+        }
+    }
     for (p, list) in pieces.iter_mut().zip(&cuts) {
         apply(p, list);
     }
