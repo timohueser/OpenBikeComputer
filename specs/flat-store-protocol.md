@@ -751,7 +751,7 @@ reads them. The entry exists to keep them out of the allocator, and post-install
 removes it with one commit.
 
 There is no card-sideload path. The card is not user-accessible and the only delivery routes are
-BLE, USB and the builder.
+BLE and USB.
 
 ## 5. Transport bindings
 

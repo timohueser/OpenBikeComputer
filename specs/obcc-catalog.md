@@ -7,7 +7,7 @@ feed them to the same assembler. The device does not read OBCC.
 - Version: `"schema_version": 3`. Consumers MUST reject any other value before interpreting the rest
   of the document.
 - Writers: `host/obc-pack` (`obc-pack catalog`), run by `obc-bake`.
-- Readers: the map builder (`builder/web/src/lib/catalog/`).
+- Readers: the web app (`builder/web/src/lib/catalog/`).
 - Code authority: [`host/obc-pack/src/catalog.rs`](../host/obc-pack/src/catalog.rs). Its checked-in
   JSON Schema and worked examples:
   [`catalog.schema.json`](../host/obc-pack/schema/catalog.schema.json),
@@ -396,7 +396,7 @@ identities, and the selected skin are passed to the OBCA assembler. Island pruni
 assembly, seams unify only exact serialized coordinates, and the resulting mounted map follows
 [obca-assembly.md](obca-assembly.md) §4.
 
-Every host of the map builder MUST use the same selection arithmetic, verified cell bytes, skin,
+Every client that assembles a map MUST use the same selection arithmetic, verified cell bytes, skin,
 and assembler. Host-specific file saving MUST NOT alter the assembled bytes.
 
 A consumer MAY stream assembler output directly to a connected device instead of first saving it,
@@ -534,7 +534,7 @@ generation has no dependency on the OBCM store.
 ### 13.5 Attribution
 
 `attribution` carries the source dataset's required credit verbatim. Consumers that display terrain
-— the map builder, the docs, anything that ships derived rasters — MUST take the string from the
+— the web app, the docs, anything that ships derived rasters — MUST take the string from the
 catalog rather than hard-coding it. A producer MUST NOT publish a terrain block with an empty
 `attribution`. The producer takes it from the `data/sources.toml` entry whose id is `dataset_id`.
 

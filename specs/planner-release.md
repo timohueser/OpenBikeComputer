@@ -8,7 +8,7 @@ of the planner](obc-data.md#planner).
 - Version: manifest `format` `2`; catalogue `format: 1`; `public/grid.json` `format: 4`. A client
   refuses a catalogue `format` that it does not know.
 - Writers: `obc data update` (`host/obc-data`).
-- Readers: the web planner (`builder/web/src/lib/planner/release.ts`), the map builder, the tile
+- Readers: the web app (`builder/web/src/lib/planner/release.ts`), the tile
   service ([`planner/tiles`](../planner/tiles/README.md)), `obc data serve`, the companion app.
 - Related: [offline bundle](planner-offline.md), [route package](route-package.md), [route
   catalog](route-catalog.md), [snow tiles](planner-snow-tiles.md), [climate
@@ -232,9 +232,9 @@ has it. `routes` is the route catalog cell URL template on the tile API origin,
 `/releases/ID/routes/tiles/{cell}.json`, where `{cell}` is a cell ID `9-X-Y`.
 
 The publisher uploads and verifies all release files before the manifest. The catalogue cache
-lifetime is 30 seconds. Immutable objects have a one-year cache lifetime. The web planner and the
-map builder read the catalogue at page load. The planner uses `active`, unchanged, as its
-configuration. The map builder uses its device catalogue. A client refuses a catalogue `format` that
+lifetime is 30 seconds. Immutable objects have a one-year cache lifetime. The web app reads the
+catalogue at page load. Its planner uses `active`, unchanged, as its configuration. Its map pages
+use the device catalogue of `active`. A client refuses a catalogue `format` that
 it does not know. When a release object returns 404 or no answer, a client reads the catalogue
 again, once, and retries with the new `active` entry.
 

@@ -182,8 +182,8 @@ the registry. A map with terrain-derived contours needs the attribution too.
 
 A map with [crest lifts](#crest-lifts) also carries the attribution of each finer model it used.
 The catalog lists those models with their required credit and license, copied from the reference
-archive that holds the wording. A consumer that shows one shows all of them. The map builder shows
-them on the map summary card.
+archive that holds the wording. A consumer that shows one shows all of them. The web app shows
+them in the credits of the map area page.
 
 Map data carries the OpenStreetMap credit of the same registry.
 
