@@ -27,11 +27,20 @@
         </nav>
     {:else if text.kind === 'year'}
         {@const { bike, foot } = text.totals}
-        {@const main = bike.count ? bike : foot}
-        <p class="over">This year, {bike.count ? 'by bike' : 'on foot'}</p>
-        <h1 class="total">{formatDistance(main.lengthM)}</h1>
-        <p class="numbers">{count(main.count, bike.count ? 'ride' : 'hike')}</p>
-        {#if bike.count && foot.count}<p>On foot: {formatDistance(foot.lengthM)} · {count(foot.count, 'hike')}</p>{/if}
+        {#if bike.count && foot.count}
+            <!-- The two lengths never add, and neither leads: two rows of one size. -->
+            <p class="over">This year</p>
+            <h1 class="pair">
+                <span>{formatDistance(bike.lengthM)}</span><small>by bike</small>
+                <span>{formatDistance(foot.lengthM)}</span><small>on foot</small>
+            </h1>
+            <p class="numbers">{count(bike.count, 'ride')} · {count(foot.count, 'hike')}</p>
+        {:else}
+            {@const main = bike.count ? bike : foot}
+            <p class="over">This year, {bike.count ? 'by bike' : 'on foot'}</p>
+            <h1 class="total">{formatDistance(main.lengthM)}</h1>
+            <p class="numbers">{count(main.count, bike.count ? 'ride' : 'hike')}</p>
+        {/if}
         <p>Your last {text.hike ? 'hike' : 'ride'} was {text.last.name}, {text.ago}.</p>
         <nav class="buttons" aria-label="This year">
             <a class="button primary" href={`${ROUTES.ride}/${text.last.key}`}>Look back at it</a>
@@ -84,6 +93,19 @@
     .slogan {
         font-size: 48px;
     }
+    /* Each row is a length and its word on one line; the words start on one edge. */
+    .pair {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        align-items: baseline;
+        gap: 2px 14px;
+        font-size: 48px;
+    }
+    .pair small {
+        font-size: 18px;
+        font-weight: 400;
+        letter-spacing: 0;
+    }
     .numbers, .lead {
         font-size: 18px;
         opacity: 1;
@@ -125,6 +147,12 @@
         }
         .total {
             font-size: 48px;
+        }
+        .pair {
+            font-size: 38px;
+        }
+        .pair small {
+            font-size: 16px;
         }
         .numbers, .lead {
             font-size: 16px;
