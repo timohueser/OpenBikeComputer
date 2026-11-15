@@ -1,8 +1,10 @@
-// The planned route: a ribbon LIFT_M above the drawn surface through the points of route.ts, drawn after
+// The routes: a ribbon LIFT_M above the drawn surface through the points of route.ts, drawn after
 // the terrain. Near, it lies on the ground BODY_M to each side, its edges draped on the surface; where
 // lying would show it thinner than BODY_PIXELS it turns to face the eye. A crisp body with a lighter middle
 // covers the ground, and a narrow glow beyond its edges adds light. Its depth moves toward the eye by
 // PULL_M and PULL_PIXELS, so that the ground between two points does not hide it. It is not lit.
+// One triangle strip holds all routes: a break point between two routes has no width, so no ribbon joins
+// them. The bold route draws in a second instance of the strip, BOLD times as wide, on top of the others.
 // A pin stands on a stem over a ring on the ground, all of a constant size on the screen: on top, a badge that
 // faces the eye, or a sphere in the sun. It shows faintly through what hides it.
 // #include ../terrain/drawn-mesh.wgsl
@@ -22,6 +24,8 @@ struct Point {
     at: vec2i,
     // sRGB bytes, red lowest.
     colour: u32,
+    // The number of the route from 1, or 0 for a break point.
+    route: u32,
 }
 
 // As PIN_WORDS of route.ts.
@@ -38,12 +42,16 @@ struct Pin {
 @group(0) @binding(2) var<storage, read> pins: array<Pin>;
 @group(0) @binding(3) var badges: texture_2d_array<f32>;
 @group(0) @binding(4) var badge_sampler: sampler;
+// The number of the bold route, or 0 for none.
+@group(0) @binding(5) var<uniform> bold: u32;
 
 const LIFT_M: f32 = 0.3;
 // The half-width of the body, in metres and at least in output pixels, and the width of the glow beyond it in output pixels.
 const BODY_M: f32 = 1.0;
 const BODY_PIXELS: f32 = 1.5;
 const GLOW_PIXELS: f32 = 2.0;
+// The body of the bold route over that of the others, in metres and in pixels.
+const BOLD: f32 = 2.5;
 // The body's light over the line's colour: LIGHTER more in the middle, DARKER less at the edge.
 const BODY_GAIN: f32 = 1.2;
 const LIGHTER: f32 = 0.6;
@@ -90,6 +98,19 @@ fn direction(d: vec2f, fallback: vec2f) -> vec2f {
     return select(fallback, normalize(d), dot(d, d) > 1e-12);
 }
 
+// The body of point i in an instance of the strip, over that of a route: the first instance draws every
+// route but the bold one, the second only the bold one. A break point draws in neither.
+fn width(i: u32, instance: u32) -> f32 {
+    let route = points[i].route;
+    if (route == 0u) {
+        return 0.0;
+    }
+    if (instance == 1u) {
+        return select(0.0, BOLD, route == bold);
+    }
+    return select(1.0, 0.0, route == bold);
+}
+
 // sRGB squared as linear light, as the colours of the terrain.
 fn linear(srgb: vec3f) -> vec3f {
     return srgb * srgb;
@@ -107,21 +128,27 @@ fn eye_space(s: vec2f, h: f32) -> vec3f {
 }
 
 @vertex
-fn route_vertex(@builtin(vertex_index) v: u32) -> RouteOut {
+fn route_vertex(@builtin(vertex_index) v: u32, @builtin(instance_index) instance: u32) -> RouteOut {
     let n = arrayLength(&points);
     let i = v >> 1u;
     let side = f32(v & 1u) * 2.0 - 1.0;
     let s = centre(i);
-    let back = direction(s - centre(max(i, 1u) - 1u), vec2f(0.0, 1.0));
-    let tangent = direction(back + direction(centre(min(i + 1u, n - 1u)) - s, back), back);
+    // A neighbour of another route gives no direction: the point stands in for it, as at the ends of the strip.
+    let route = points[i].route;
+    let before = select(i, i - 1u, i > 0u && points[i - 1u].route == route);
+    let after = select(i, i + 1u, i + 1u < n && points[i + 1u].route == route);
+    let back = direction(s - centre(before), vec2f(0.0, 1.0));
+    let tangent = direction(back + direction(centre(after) - s, back), back);
     let left = vec3f(-tangent.y, tangent.x, 0.0);
     let h = ground(s);
     let c = eye_space(s, select(frame.eye - LIFT_M - surface.above, h, known(h)));
     let distance = max(length(c), 1e-6);
     // Metres of one output pixel at the point.
     let metre = frame.pixel * distance;
-    let body = max(BODY_M, BODY_PIXELS * metre);
-    let half = body + GLOW_PIXELS * metre;
+    // With no width, both vertices of the point stand at its centre.
+    let wide = width(i, instance);
+    let body = max(BODY_M, BODY_PIXELS * metre) * wide;
+    let half = body + GLOW_PIXELS * metre * min(wide, 1.0);
     // The half-width in pixels that the body shows when it lies on the ground.
     let lying_pixels = BODY_M * length(cross(left, c)) / (distance * metre);
     let lying = 1.0 - smoothstep(1.0, 2.0, BODY_PIXELS / max(lying_pixels, 1e-6));
@@ -135,7 +162,7 @@ fn route_vertex(@builtin(vertex_index) v: u32) -> RouteOut {
     var out: RouteOut;
     out.clip = frame.view_proj * vec4f(p, 1.0);
     out.side = side;
-    out.body = body / half;
+    out.body = body / max(half, 1e-6);
     out.colour = linear(unpack4x8unorm(points[i].colour).rgb);
     out.fade = smoothstep(FADE_NEAR_M, FADE_FAR_M, distance);
     // The crack and surface views show the terrain alone.
