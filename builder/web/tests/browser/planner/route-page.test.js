@@ -61,8 +61,9 @@ test('the route page shows a stored route, renames, sends, opens in the planner,
   await expect(page.locator('menu button').first()).toHaveText('Share');
   await page.getByRole('button', { name: 'Share' }).click();
   const share = page.getByRole('dialog', { name: 'Share' });
-  await expect(share.getByRole('switch')).toHaveCount(3);
-  for (const name of ['Numbers', 'Elevation profile', 'Hide start and end']) await expect(share.getByRole('switch', { name, exact: true })).toBeVisible();
+  // This browser makes no cover, so the window makes the picture of the map: then the card has a picture to switch off.
+  for (const name of ['Picture', 'Line', 'Numbers', 'Elevation profile', 'Hide start and end']) await expect(share.getByRole('switch', { name, exact: true })).toBeVisible();
+  await expect(share.getByRole('switch')).toHaveCount(5);
   await expect(share.getByRole('switch', { name: 'Hide start and end' })).toHaveAccessibleDescription('The first and last 500 m');
   // The planner saved the summary again when it opened the plan, with its own time.
   await expect(share.getByRole('img', { name: /^Share card: Lake loop, 22\.2 km, 400 m up, 1h \d+m$/ })).toBeVisible();
@@ -70,18 +71,37 @@ test('the route page shows a stored route, renames, sends, opens in the planner,
   expect(card.suggestedFilename()).toBe('Lake loop.jpg');
   const bytes = await readFile(await card.path());
   expect([...bytes.subarray(0, 3)]).toEqual([0xff, 0xd8, 0xff]);
-  const drawn = await page.evaluate(async file => {
+  // The size of an image file, and the colour of a pixel of the ground and of a board of the signpost.
+  const sample = async ({ file, ground, board }) => {
     const image = await createImageBitmap(new Blob([new Uint8Array(file)]));
     const context = new OffscreenCanvas(image.width, image.height).getContext('2d');
     context.drawImage(image, 0, 0);
-    const pixel = (x, y) => [...context.getImageData(x, y, 1, 1).data.slice(0, 3)];
-    return { size: [image.width, image.height], ground: pixel(1900, 1300), board: pixel(111, 83) };
-  }, [...bytes]);
+    const pixel = ([x, y]) => [...context.getImageData(x, y, 1, 1).data.slice(0, 3)];
+    return { size: [image.width, image.height], ground: pixel(ground), board: pixel(board) };
+  };
+  const drawn = await page.evaluate(sample, { file: [...bytes], ground: [1900, 1300], board: [111, 83] });
   expect(drawn.size).toEqual([1920, 1780]);
   // The card is drawn: the plain ground in its right margin, and a board of the signpost of the product mark.
   const near = (pixel, colour) => pixel.every((value, i) => Math.abs(value - colour[i]) <= 24);
   expect(near(drawn.ground, [0xf4, 0xf2, 0xeb]), `ground ${drawn.ground}`).toBe(true);
   expect(near(drawn.board, [0xf4, 0xa8, 0x1d]), `board ${drawn.board}`).toBe(true);
+  // The square format: the same card in 1280 × 1280, with the picture whole at the top.
+  await share.getByRole('radio', { name: 'Square' }).click();
+  await expect(share.getByRole('radio', { name: 'Square' })).toBeChecked();
+  const [square] = await Promise.all([page.waitForEvent('download'), share.getByRole('button', { name: 'Download' }).click()]);
+  const squareDrawn = await page.evaluate(sample, { file: [...await readFile(await square.path())], ground: [1270, 870], board: [74, 55] });
+  expect(squareDrawn.size).toEqual([1280, 1280]);
+  expect(near(squareDrawn.ground, [0xf4, 0xf2, 0xeb]), `ground ${squareDrawn.ground}`).toBe(true);
+  expect(near(squareDrawn.board, [0xf4, 0xa8, 0x1d]), `board ${squareDrawn.board}`).toBe(true);
+  // "Copy" puts the card of the format on the clipboard as a PNG. The share sheet of a system has no test here.
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  await share.getByRole('button', { name: 'Copy' }).click();
+  await expect(share.getByRole('status')).toHaveText('Copied.');
+  expect(await page.evaluate(async () => {
+    const [item] = await navigator.clipboard.read();
+    const image = await createImageBitmap(await item.getType('image/png'));
+    return [image.width, image.height];
+  })).toEqual([1280, 1280]);
   await page.keyboard.press('Escape');
   await expect(share).toHaveCount(0);
 

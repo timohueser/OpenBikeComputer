@@ -3,9 +3,10 @@ import type { Summary } from '../library/records';
 import { drawCover, type CoverImage, type Look } from './draw';
 import { fromAbove, metresAlong } from './line';
 
-export type Format = 'wide';
-/** The width of a card in pixels. The wide card shows a cover at its own size. */
-const WIDTHS: Record<Format, number> = { wide: 1920 };
+export type Format = 'wide' | 'square' | 'tall';
+/** The size of a card in pixels. The wide card shows a cover at its own size, and is as high as the picture and the
+ * ground of its name need. */
+const SIZES: Record<Format, { width: number; height?: number }> = { wide: { width: 1920 }, square: { width: 1280, height: 1280 }, tall: { width: 1024, height: 1280 } };
 /** "Hide start and end" leaves out HIDDEN_M of the line at each end. A line shorter than SHORT_M stays whole. */
 export const HIDDEN_M = 500, SHORT_M = 2000;
 /** The fonts of the card. A canvas draws a font only after the page loaded it. */
@@ -77,17 +78,21 @@ export interface Layout {
 /** The parts of a card that change its layout. */
 export interface Shown { nameLines: number; date: boolean; numbers: boolean; profile: boolean; credit: boolean }
 
-/** The layout of a card. The ground is as high as the text of a name of one line with each of its rows and a profile
- * need (0.26 of the width, chosen), and one line higher for each more line of the name: no switch changes the size.
- * The profile takes the height that the text leaves, up to 0.104 of the width. With no profile, the text stands in
- * the middle of the ground. */
+/** The layout of a card. Each size is a share of the width, so the text of each format reads the same on a screen
+ * of one width. The picture is whole, 3 : 2, and the ground takes the rest of the card. The ground of the wide card
+ * is as high as the text of a name of one line with each of its rows and a profile need (0.26 of the width, chosen),
+ * and one line higher for each more line of the name: no switch changes the size of a card.
+ *
+ * The profile takes the height that the text at the margin leaves, up to 0.4 of the ground; a profile lower than 0.03
+ * of the width is no profile. The text stands in the middle of the room over the profile, at least the margin under
+ * the picture. */
 export function layout(format: Format, shown: Shown): Layout {
-    const width = WIDTHS[format], margin = Math.round(0.042 * width), inner = width - 2 * margin;
+    const { width, height } = SIZES[format], margin = Math.round(0.042 * width), inner = width - 2 * margin;
     const letters = { name: Math.round(0.05 * width), number: Math.round(0.025 * width), small: Math.round(0.012 * width) };
     const nameLine = Math.round(1.08 * letters.name);
     const picture = { x: 0, y: 0, width, height: Math.round(width * 2 / 3) };
-    const ground = { x: 0, y: picture.height, width, height: Math.round(0.2604 * width) + (shown.nameLines - 1) * nameLine };
-    const bottom = ground.y + ground.height;
+    const bottom = height ?? picture.height + Math.round(0.2604 * width) + (shown.nameLines - 1) * nameLine;
+    const ground = { x: 0, y: picture.height, width, height: bottom - picture.height };
     // The baseline of each row, from the top of the letters of the first row.
     const dateBase = shown.date ? Math.round(CAPITAL * letters.number) : undefined;
     const nameBase = dateBase === undefined ? Math.round(CAPITAL * letters.name) : dateBase + Math.round(0.25 * letters.number) + nameLine;
@@ -95,20 +100,20 @@ export function layout(format: Format, shown: Shown): Layout {
     const numbersBase = shown.numbers ? nameEnd + Math.round(1.45 * letters.number) : undefined;
     const creditBase = shown.credit ? (numbersBase ?? nameEnd) + Math.round(1.9 * letters.small) : undefined;
     const end = creditBase ?? numbersBase ?? nameEnd;
-    const top = ground.y + (shown.profile ? margin : Math.round((ground.height - end) / 2));
-    const row = (base: number | undefined, height: number) => base === undefined ? undefined : { x: margin, y: top + base - height, width: inner, height };
-    const bandTop = Math.max(top + end + Math.round(0.55 * margin), bottom - Math.round(0.104 * width));
+    const room = Math.min(Math.round(0.4 * ground.height), ground.height - margin - end - Math.round(0.55 * margin));
+    const band = shown.profile && room >= Math.round(0.03 * width) ? { x: 0, y: bottom - room, width, height: room } : undefined;
+    const top = ground.y + Math.max(margin, Math.round((ground.height - (band?.height ?? 0) - end) / 2));
+    const row = (base: number | undefined, size: number) => base === undefined ? undefined : { x: margin, y: top + base - size, width: inner, height: size };
     // The signpost, then the name of the product in mono letters of half its height, each 0.6 of its size wide.
     const markHeight = Math.round(0.62 * letters.name), planTop = Math.round(2.4 * margin);
     return {
-        size: [width, bottom], picture, ground, letters,
+        size: [width, bottom], picture, ground, letters, band,
         mark: { x: margin, y: Math.round(0.8 * margin), width: Math.round((1.05 + 0.3 * PRODUCT.length) * markHeight), height: markHeight },
         plan: { x: Math.round(1.5 * margin), y: planTop, width: width - 3 * margin, height: picture.height - planTop - margin },
         date: row(dateBase, letters.number),
         name: { x: margin, y: top + nameBase - nameLine, width: inner, height: shown.nameLines * nameLine },
         numbers: row(numbersBase, letters.number),
         credit: row(creditBase, letters.small),
-        band: shown.profile ? { x: 0, y: bandTop, width, height: bottom - bandTop } : undefined,
     };
 }
 
