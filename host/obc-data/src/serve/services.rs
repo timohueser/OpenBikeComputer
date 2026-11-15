@@ -92,13 +92,14 @@ impl Programs {
     }
 
     /// Programs that read these formats, for a test that starts no service. Its routing program
-    /// installs a package as the marker `install.bin` alone, a copy of `directory.bin`.
+    /// installs a package as the marker `install.bin` alone, with the bytes of `directory.bin`: a
+    /// new file, not a copy of the read-only object.
     #[cfg(test)]
     pub(crate) fn reading(reads: Vec<(&'static str, String, u32)>) -> Self {
         static INSTALLER: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
         let routing = INSTALLER.get_or_init(|| {
             let path = std::env::temp_dir().join(format!("obc-data-test-installer-{}", std::process::id()));
-            let script = "#!/bin/sh\n[ \"$2\" = --missing ] && { echo 0; exit 0; }\nmkdir -p \"$1\" && cp \"$3\" \"$1/install.bin\"\n";
+            let script = "#!/bin/sh\n[ \"$2\" = --missing ] && { echo 0; exit 0; }\nmkdir -p \"$1\" && cat \"$3\" > \"$1/install.bin\"\n";
             fs::write(&path, script).unwrap();
             #[cfg(unix)]
             fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
