@@ -28,7 +28,7 @@ pub(crate) struct Line {
     points: Vec<[f64; 2]>,
     pub z: Vec<f64>,
     /// Per vertex, the sides of the segment from it on with a sidewalk: 1 left, 2 right.
-    walk: Vec<u8>,
+    pub walk: Vec<u8>,
 }
 
 pub(crate) fn line(kind: &'static str, tags: &[(&'static str, &'static str)], points: &[[f64; 2]]) -> Line {

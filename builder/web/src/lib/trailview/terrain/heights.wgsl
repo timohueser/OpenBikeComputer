@@ -1287,10 +1287,10 @@ fn h_paved_at(block: u32, q: vec2f, mpu: f32, label: u32, rule: u32, material: u
 const H_WALK_LINE: u32 = 5u;
 const H_WALK_RULE: u32 = 3u;
 
-// The width x metres past a rule's station toward its slab, as walk::ramp: a ramp at slope k from target to full,
+// The width x metres past a rule's station toward its slab, as walk::ramp: a ramp at slope k low low to full,
 // its two kinks rounded with radius r (less where the rounds would meet).
-fn h_ramp(x0: f32, target: f32, full: f32, k: f32, r0: f32) -> f32 {
-    let rise = full - target;
+fn h_ramp(x0: f32, low: f32, full: f32, k: f32, r0: f32) -> f32 {
+    let rise = full - low;
     if (rise <= 0.0) {
         return full;
     }
@@ -1302,10 +1302,10 @@ fn h_ramp(x0: f32, target: f32, full: f32, k: f32, r0: f32) -> f32 {
     let top = t + rise / k;
     let x = max(x0, 0.0);
     if (x <= r * s) {
-        return target + r - sqrt(max(r * r - x * x, 0.0));
+        return low + r - sqrt(max(r * r - x * x, 0.0));
     }
     if (x <= top - t * c) {
-        return target + k * (x - t);
+        return low + k * (x - t);
     }
     if (x < top + t) {
         let y = x - top - t;
@@ -1337,11 +1337,11 @@ fn h_walk_width(block: u32, row: u32, at: f32, side: f32, tips: bool) -> f32 {
         let e = rules + H_WALK_RULE * i;
         let flags = mw(e + 2u);
         let dir = select(-1.0, 1.0, (flags & 2u) != 0u);
-        let target = mf(e + 1u);
-        if ((flags & 1u) != own || (tips && target != 0.0) || (at - mf(e)) * dir < 0.0) {
+        let low = mf(e + 1u);
+        if ((flags & 1u) != own || (tips && low != 0.0) || (at - mf(e)) * dir < 0.0) {
             continue;
         }
-        w = min(w, h_ramp(abs(at - mf(e)), target, full, k, r));
+        w = min(w, h_ramp(abs(at - mf(e)), low, full, k, r));
     }
     return w;
 }

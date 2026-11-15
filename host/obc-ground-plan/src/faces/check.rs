@@ -906,6 +906,56 @@ pub fn short_features(plan: &FacePlan) -> Vec<ShortFeature> {
     out
 }
 
+/// The points of a sidewalk face of level 0 that lie inside a deck's stroke near where the deck leaves the ground (within
+/// `extent_m` of a graph point with a deck arm and a ground arm), by more than `SLIVER`: its vertices and its edges' points
+/// every `SUPPORT_M`. A slab there would cross the road that the deck carries.
+pub fn sidewalk_on_decks(plan: &FacePlan, graph: &WayGraph, input: &crate::CellInput, rules: &super::Rules) -> Vec<P> {
+    if plan.level != 0 || !plan.faces.iter().any(|f| f.surface == Surface::Sidewalk) {
+        return Vec::new();
+    }
+    let o = plan.cell.origin();
+    let units = |m: f64, p: P| m / metres_per_unit(o.y + i64::from(p[1]));
+    let arms =
+        (graph.junctions.iter().map(|j| (j.pos, &j.arms[..]))).chain(graph.joints.iter().map(|j| (j.pos, &j.arms[..])));
+    let starts: Vec<P> = arms
+        .filter(|(_, a)| a.iter().any(|a| a.level == Level::Deck) && a.iter().any(|a| a.level == Level::Ground))
+        .map(|(pos, _)| pos)
+        .collect();
+    let near = |p: P| starts.iter().any(|&s| len(p, s) <= units(rules.plan.extent_m, s));
+    // The decks' segments near their ground points, with the stroke's half-width, and whether each end of a segment
+    // is its line's: there the stroke ends flat on the end line, which the half-width does not pass.
+    let segs: Vec<(P, P, f64, [bool; 2])> = (super::ceiling_lines(graph, input, rules, plan.cell).iter())
+        .flat_map(|l| {
+            let n = l.p.len();
+            (0..n.saturating_sub(1)).map(move |i| (l.p[i], l.p[i + 1], l.h[i].min(l.h[i + 1]), [i == 0, i + 2 == n]))
+        })
+        .filter(|&(a, b, ..)| near(a) || near(b))
+        .collect();
+    let mut out = Vec::new();
+    for f in plan.faces.iter().filter(|f| f.surface == Surface::Sidewalk) {
+        for ring in &f.rings {
+            let pts = ring_points(plan, ring);
+            for i in 0..pts.len() {
+                let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
+                let n = (len(a, b) / units(SUPPORT_M, a)).ceil().max(1.0) as i32;
+                for k in 0..n {
+                    let t = f64::from(k) / f64::from(n);
+                    let q = [a[0] + (t * f64::from(b[0] - a[0])) as i32, a[1] + (t * f64::from(b[1] - a[1])) as i32];
+                    let inside = segs.iter().any(|&(c, d, h, ends)| {
+                        let (dist, _, t) = closest(q, q, c, d);
+                        let flat = (ends[0] && t <= 0.0) || (ends[1] && t >= 1.0);
+                        dist < h - SLIVER && !flat
+                    });
+                    if inside {
+                        out.push(q);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -953,49 +1003,4 @@ mod tests {
         let off = libm::hypot(f64::from(p[0]), f64::from(p[1] + 1200)) - 1200.0;
         assert!(off.abs() < 2.0, "the corner's place {p:?} lies off the arc by {off}");
     }
-}
-
-/// The points of a sidewalk face of level 0 that lie inside a deck's stroke near where the deck leaves the ground (within
-/// `extent_m` of a graph point with a deck arm and a ground arm), by more than `SLIVER`: its vertices and its edges' points
-/// every `SUPPORT_M`. A slab there would cross the road that the deck carries.
-pub fn sidewalk_on_decks(plan: &FacePlan, graph: &WayGraph, input: &crate::CellInput, rules: &super::Rules) -> Vec<P> {
-    if plan.level != 0 || !plan.faces.iter().any(|f| f.surface == Surface::Sidewalk) {
-        return Vec::new();
-    }
-    let o = plan.cell.origin();
-    let units = |m: f64, p: P| m / metres_per_unit(o.y + i64::from(p[1]));
-    let arms =
-        (graph.junctions.iter().map(|j| (j.pos, &j.arms[..]))).chain(graph.joints.iter().map(|j| (j.pos, &j.arms[..])));
-    let starts: Vec<P> = arms
-        .filter(|(_, a)| a.iter().any(|a| a.level == Level::Deck) && a.iter().any(|a| a.level == Level::Ground))
-        .map(|(pos, _)| pos)
-        .collect();
-    let near = |p: P| starts.iter().any(|&s| len(p, s) <= units(rules.plan.extent_m, s));
-    // The decks' segments near their ground points, with the stroke's half-width at each end.
-    let segs: Vec<(P, P, f64)> = (super::ceiling_lines(graph, input, rules, plan.cell).iter())
-        .flat_map(|l| (0..l.p.len().saturating_sub(1)).map(move |i| (l.p[i], l.p[i + 1], l.h[i].min(l.h[i + 1]))))
-        .filter(|&(a, b, _)| near(a) || near(b))
-        .collect();
-    let mut out = Vec::new();
-    for f in plan.faces.iter().filter(|f| f.surface == Surface::Sidewalk) {
-        for ring in &f.rings {
-            let pts = ring_points(plan, ring);
-            for i in 0..pts.len() {
-                let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
-                let n = (len(a, b) / units(SUPPORT_M, a)).ceil().max(1.0) as i32;
-                for k in 0..n {
-                    let t = f64::from(k) / f64::from(n);
-                    let q = [a[0] + (t * f64::from(b[0] - a[0])) as i32, a[1] + (t * f64::from(b[1] - a[1])) as i32];
-                    let inside = segs.iter().any(|&(c, d, h)| {
-                        let (dist, _, _) = closest(q, q, c, d);
-                        dist < h - SLIVER
-                    });
-                    if inside {
-                        out.push(q);
-                    }
-                }
-            }
-        }
-    }
-    out
 }

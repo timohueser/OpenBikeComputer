@@ -751,7 +751,7 @@ pub fn explain(words: &[u32], q: [f64; 2], labels: [Option<u32>; 2], t: f64) -> 
 /// A kerb's step may differ from its rise by this: two hosts' surfaces where a slab runs into another road.
 pub const KERB_SLACK_M: f64 = 0.05;
 
-/// The edges between a sidewalk and a carriageway, crossing or shoulder face on a grid of `grid_m` over the cell, found
+/// The edges between a sidewalk and a carriageway, crossing, shoulder or rail bed face on a grid of `grid_m` over the cell, found
 /// as `edge_steps` finds its edges, whose step is not the kerb's rise there within `KERB_SLACK_M`: a missing kerb, or
 /// one that stands too high.
 pub fn kerb_steps(words: &[u32], terrain: &Terrain, cell: CellKey, grid_m: f64) -> Vec<Step> {
@@ -762,7 +762,9 @@ pub fn kerb_steps(words: &[u32], terrain: &Terrain, cell: CellKey, grid_m: f64) 
     let surface = |l: Option<u32>| l.map(|id| label(words, id)[0] & 0xff);
     let walk = |l: Option<u32>| surface(l) == Some(Surface::Sidewalk as u32);
     let below = |l: Option<u32>| {
-        [Surface::Carriageway, Surface::Crossing, Surface::Shoulder].iter().any(|&s| surface(l) == Some(s as u32))
+        [Surface::Carriageway, Surface::Crossing, Surface::Shoulder, Surface::RailBed]
+            .iter()
+            .any(|&s| surface(l) == Some(s as u32))
     };
     let mut out = Vec::new();
     for k in 0..n * n {

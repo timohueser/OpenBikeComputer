@@ -54,8 +54,8 @@ pub enum Step {
     /// A step that another line's cone holds (as `Held`) higher than the paved side's wall cap: a fault
     /// (`check::held_over_cap`).
     HeldOverCap,
-    /// A sidewalk's kerb: the sidewalk stands higher than a carriageway or shoulder beside it. Its size is the
-    /// check's (`check::kerb_steps`), not the rule's.
+    /// A sidewalk's kerb: the sidewalk stands higher than a carriageway, a shoulder or a rail bed beside it (its size is
+    /// the check's, `check::kerb_steps`), or higher than the ground by at most the kerb's rise: a kerb's end.
     Kerb,
 }
 
@@ -1609,10 +1609,16 @@ pub fn height_at_sides(words: &[u32], q: [f64; 2], labels: [Option<u32>; 2], t: 
     let ends = labels.map(surface);
     let [water, zone] = [Surface::Water, Surface::Zone].map(|s| Some(s as u32));
     let mouth = (ends == [water, zone] || ends == [zone, water]) && (sides[0].0.h - sides[1].0.h).abs() > p.step_m;
+    // A kerb against the paved faces beside a slab; against the ground (a slope side) only up to the kerb's rise:
+    // the end of a kerb, where the slab and a carriageway meet the ground at one corner of the outline.
     let walk = Some(Surface::Sidewalk as u32);
-    let below = [Surface::Carriageway, Surface::Crossing, Surface::Shoulder].map(|s| Some(s as u32));
-    let kerb =
-        (0..2).any(|k| ends[k] == walk && below.contains(&ends[1 - k]) && sides[k].0.h - sides[1 - k].0.h > p.step_m);
+    let below = [Surface::Carriageway, Surface::Crossing, Surface::Shoulder, Surface::RailBed].map(|s| Some(s as u32));
+    let kerb = (0..2).any(|k| {
+        let rise = sides[k].0.h - sides[1 - k].0.h;
+        let end =
+            || sides[1 - k].0.kind == Kind::Slope && rise <= kerb::rise(&b, q, sides[k].0.owner, items.segs) + p.step_m;
+        ends[k] == walk && rise > p.step_m && (below.contains(&ends[1 - k]) || end())
+    });
     let step = if mouth {
         Step::Mouth
     } else if kerb {

@@ -217,6 +217,9 @@ struct Piece {
     tip: [Tip; 2],
 }
 
+/// A join between two lines' slabs at a graph point: the point, and per side its line, stroke side and arm.
+type Join = (P, [(usize, f64, Arm); 2]);
+
 /// What ends a piece at a point on an arm's side: its tip there, and where it moves the end from the point.
 struct Cut {
     v: usize,
@@ -378,8 +381,7 @@ pub(super) fn build(
     let units = |m: f64, p: [f64; 2]| ctx.units(m, round(p));
     let mut cuts: BTreeMap<(usize, u8), Vec<Cut>> = BTreeMap::new();
     let mut extra: BTreeMap<(usize, u8), Rings> = BTreeMap::new();
-    // Joins between two lines: their point, and per side its line, side and arm.
-    let mut joins: Vec<(P, [(usize, f64, Arm); 2])> = Vec::new();
+    let mut joins: Vec<Join> = Vec::new();
     let heading = |a: Arm| {
         let line = &lines[a.line];
         let next = a.at.checked_add_signed(isize::from(a.dir)).filter(|&j| j < line.p.len());
@@ -720,4 +722,164 @@ fn deck_cut(ctx: &Ctx, lines: &[WayLine], arm: Arm, side: f64, decks: &[(Vec<[f6
         }
     }
     Some(hi)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::faces::check::sidewalk_on_decks;
+    use crate::faces::heights::check::terrain_at;
+    use crate::faces::heights::{height_at, height_at_sides, kerb, Step};
+    use crate::faces::records::{self, find, label};
+    use crate::faces::tests::{at, cell, input_of, line, plane, road, Line};
+    use crate::faces::{Rules, Surface};
+    use crate::graph::build;
+    use crate::CellInput;
+
+    struct Built {
+        words: Vec<u32>,
+        input: CellInput,
+    }
+
+    fn built(lines: &[Line]) -> Built {
+        let rules = Rules::embedded();
+        let mut input = input_of(cell(), lines);
+        input.terrain = plane(cell(), &|_, _| 500.0);
+        let graph = build(cell(), &input, &rules.sections);
+        let words = records::build(&graph, &input, rules, cell(), 0, true).near.words;
+        Built { words, input }
+    }
+
+    impl Built {
+        fn q(&self, m: [f64; 2]) -> [f64; 2] {
+            let (g, o) = (at(m), cell().origin());
+            [(g.x - o.x) as f64, (g.y - o.y) as f64]
+        }
+
+        fn surface(&self, m: [f64; 2]) -> Option<u32> {
+            find(&self.words, self.q(m)).map(|id| label(&self.words, id)[0] & 0xff)
+        }
+
+        fn walks(&self, m: [f64; 2]) -> bool {
+            self.surface(m) == Some(Surface::Sidewalk as u32)
+        }
+
+        fn h(&self, m: [f64; 2]) -> f64 {
+            let q = self.q(m);
+            let t = terrain_at(&self.input.terrain, cell(), q).unwrap();
+            height_at(&self.words, q, find(&self.words, q), t).h
+        }
+
+        /// The kerb's rise at m read with the sidewalk label found at `on`.
+        fn rise(&self, m: [f64; 2], on: [f64; 2]) -> f64 {
+            kerb::rise_at(&self.words, self.q(m), find(&self.words, self.q(on)))
+        }
+    }
+
+    /// A residential road east from x0 with a sidewalk on its south (the bake's right: bit 2) up to x = 0.
+    fn walking(points: &[[f64; 2]], bits: &[u8]) -> Line {
+        let mut l = road(points);
+        l.walk = bits.to_vec();
+        l
+    }
+
+    const KERB_M: f64 = 0.12;
+    const H: f64 = 2.5;
+    const W: f64 = 1.5;
+
+    #[test]
+    fn a_sidewalk_whose_bit_ends_tapers_to_its_kerb_which_stays_straight() {
+        let c = built(&[walking(&[[-300.0, 0.0], [0.0, 0.0], [300.0, 0.0]], &[2, 0, 0])]);
+        let walk = Rules::embedded().plan.walk;
+        let full = -(walk.reach_m(W));
+        // Full width, and the full kerb, a ramp's reach before the tip.
+        assert!(c.walks([full, H + W - 0.05]) && c.walks([full, H + 0.05]));
+        assert!((c.h([full, H + 0.5]) - c.h([full, H - 0.05]) - KERB_M).abs() < 1e-3);
+        // The kerb stays straight through the taper and past its tip.
+        for x in [-20.0, full, -1.0, -0.2, 0.5, 20.0] {
+            assert_eq!(c.surface([x, H - 0.05]), Some(Surface::Carriageway as u32), "{x}");
+            assert!(!c.walks([x, -H - 0.2]), "{x}: no sidewalk on the north");
+        }
+        assert!(!c.walks([0.5, H + 0.1]) && !c.walks([-0.3, H + 0.6]));
+        // No width and no rise at the tip; the rise grows with the width.
+        let on = [full, H + 0.5];
+        assert!(c.rise([0.0, H + 0.01], on).abs() < 1e-3);
+        assert!(c.rise([-0.5, H + 0.01], on) < c.rise([-1.5, H + 0.01], on));
+        assert!((c.rise([full, H + 0.01], on) - KERB_M).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_joint_bent_five_degrees_keeps_one_slab_on_both_sides_with_its_full_kerb() {
+        let a = 5f64.to_radians();
+        let end = [100.0 * libm::cos(a), 100.0 * libm::sin(a)];
+        let c = built(&[walking(&[[-100.0, 0.0], [0.0, 0.0]], &[3, 0]), walking(&[[0.0, 0.0], end], &[3, 0])]);
+        // Across the joint on both sides, along the bisector's normal at the back edge less 1 cm.
+        let n = [-libm::sin(a / 2.0), libm::cos(a / 2.0)];
+        for side in [1.0, -1.0] {
+            for d in [H + 0.3, H + W - 0.01] {
+                let m = [side * d * n[0], side * d * n[1]];
+                assert!(c.walks(m), "side {side}, {d} m out: {:?}", c.surface(m));
+            }
+            let m = [side * (H + W / 2.0) * n[0], side * (H + W / 2.0) * n[1]];
+            assert!((c.rise(m, m) - KERB_M).abs() < 1e-6, "side {side}: no taper at the joint");
+        }
+    }
+
+    #[test]
+    fn a_t_where_both_sides_walk_carries_the_slab_round_its_corner() {
+        // A road east to west walks on its south; one south from it walks on its east (the bake's left: bit 1).
+        let main = walking(&[[-100.0, 0.0], [0.0, 0.0], [100.0, 0.0]], &[2, 2, 0]);
+        let side = walking(&[[0.0, 0.0], [0.0, 100.0]], &[1, 0]);
+        let c = built(&[main, side]);
+        let sections = &Rules::embedded().sections;
+        let rho = sections.way("road", &[("highway".into(), "residential".into())].into(), false).corner_radius_walk_m;
+        // The round's centre lies a radius off both kerbs; the ring between it and the kerb, either side of the
+        // bisector, and its rise is the kerb's.
+        let c0 = H + rho;
+        for deg in [10.0, 30.0, 44.0, 45.0, 46.0, 60.0, 80.0] {
+            let a = f64::to_radians(180.0 + deg);
+            let m = [c0 + (rho - W / 2.0) * libm::cos(a), c0 + (rho - W / 2.0) * libm::sin(a)];
+            assert!(c.walks(m), "{deg}°: {:?}", c.surface(m));
+            assert!((c.rise(m, m) - KERB_M).abs() < 1e-6, "{deg}°");
+        }
+    }
+
+    #[test]
+    fn a_t_where_one_side_walks_runs_the_slab_at_full_width_to_the_other_road() {
+        let main = walking(&[[-100.0, 0.0], [0.0, 0.0], [100.0, 0.0]], &[2, 2, 0]);
+        let c = built(&[main, road(&[[0.0, 0.0], [0.0, 100.0]])]);
+        for x in [-H - 0.1, H + 0.1] {
+            assert!(c.walks([x, H + W - 0.05]), "{x}: the back edge at full width");
+        }
+        assert_eq!(c.surface([0.0, H + W / 2.0]), Some(Surface::Carriageway as u32));
+        // No slab in the sector past the back edge.
+        for m in [[H + 1.0, H + W + 0.3], [H + 0.2, H + 5.0], [H + 3.0, H + 3.0]] {
+            assert!(!c.walks(m), "{m:?}");
+        }
+    }
+
+    #[test]
+    fn a_slab_at_a_junction_where_a_deck_starts_stays_off_the_deck() {
+        let deck =
+            line("road", &[("highway", "residential"), ("bridge", "yes"), ("deck", "1")], &[[0.0; 2], [60.0, 0.0]]);
+        let main = walking(&[[-100.0, 0.0], [0.0, 0.0]], &[3, 0]);
+        let side = walking(&[[0.0, 0.0], [0.0, 100.0]], &[3, 0]);
+        let lines = [main, side, deck];
+        let rules = Rules::embedded();
+        let input = input_of(cell(), &lines);
+        let graph = build(cell(), &input, &rules.sections);
+        let plan = crate::faces::build(&graph, &input, rules, cell(), 0, true);
+        assert!(plan.faces.iter().any(|f| f.surface == Surface::Sidewalk));
+        assert_eq!(sidewalk_on_decks(&plan, &graph, &input, rules), Vec::<[i32; 2]>::new());
+    }
+
+    #[test]
+    fn a_straight_kerb_is_the_kerb_step() {
+        let c = built(&[walking(&[[-300.0, 0.0], [300.0, 0.0]], &[2, 0])]);
+        let (q, a, b) = (c.q([0.0, H]), c.q([0.0, H + 0.1]), c.q([0.0, H - 0.1]));
+        let labels = [find(&c.words, a), find(&c.words, b)];
+        let t = terrain_at(&c.input.terrain, cell(), q).unwrap();
+        let sides = height_at_sides(&c.words, q, labels, t);
+        assert_eq!(sides[0].step, Step::Kerb);
+        assert!((sides[0].h - sides[1].h - KERB_M).abs() < 1e-3);
+    }
 }
