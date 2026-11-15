@@ -124,7 +124,7 @@ impl Circle {
     }
 }
 
-/// A round tangent to both facing edges of a pair: the pair's place in the list `round` takes, its arms (a turning counter-clockwise to b), each foot's fractional sample index on its arm's line,
+/// A round tangent to both facing edges of a pair: the pair's place in the list `round` takes, its arms (a turning counter-clockwise to b), each foot's fractional vertex index on its arm's line (`line.p`),
 /// its centre relative to the point and radius (units), and its arc's start angle at a's foot and signed sweep to b's
 /// foot.
 #[derive(Clone, Copy, Debug)]

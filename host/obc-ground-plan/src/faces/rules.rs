@@ -79,6 +79,18 @@ impl WalkRules {
     pub fn reach_m(&self, width_m: f64) -> f64 {
         width_m / self.end_slope + 2.0 * self.end_round_m
     }
+
+    /// The terms of how far past a point a slab's shape reaches, for the widest sidewalk `width_m`: a taper's tip
+    /// up to `extent_m` along an arm (a cut), its ramp past it, and the slab's offset from the line.
+    fn taper_terms(&self, extent_m: f64, width_m: f64) -> Vec<(String, f64)> {
+        [
+            ("extent_m: a cut along an arm", extent_m),
+            ("W / end_slope + 2 end_round_m: the ramp", self.reach_m(width_m)),
+            ("HALF_MAX_M + W: the slab's back edge", HALF_MAX_M + width_m),
+        ]
+        .map(|(what, m)| (what.to_string(), m))
+        .to_vec()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -249,6 +261,18 @@ impl Rules {
             return Err("roads.json: a return_grade of 0".into());
         }
         let mut reaches = reach_rows(&plan, band_m(&sections), inner_max_m(&sections), radius_max_m(&sections));
+        // A taper's ramp ends within the points that a cell reads, so two cells build the same slabs.
+        let walk_max = (0..).map_while(|rank| sections.class_faces(rank)).map(|c| c.sidewalk_m).fold(0.0, f64::max);
+        let taper = plan.walk.taper_terms(plan.extent_m, walk_max);
+        let taper = Reach { name: "faces sidewalk taper".into(), owner: "faces", chain: true, terms: taper };
+        if taper.metres() > input_m(&plan, &sections) {
+            return Err(format!(
+                "the sidewalk taper reaches {} m, over input_m {} m",
+                taper.metres(),
+                input_m(&plan, &sections)
+            ));
+        }
+        reaches.push(taper);
         let graph_m = (sections.reaches().iter()).filter(|r| r.owner == "graph").map(Reach::metres).fold(0.0, f64::max);
         reaches.push(structures.reach(graph_m));
         for row in reaches.iter().filter(|r| r.chain) {

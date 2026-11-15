@@ -853,12 +853,17 @@ pub(crate) fn ceiling_lines<'a>(
     let ctx = Ctx { graph, rules, origin: cell.origin() };
     let half = HALF_MAX_M + rules.structures.edge_band_m;
     let m = records::ceiling_end_reach(half, rules.plan.heights.ceiling_release_m) + records::HEIGHT_PAD_M;
-    let mut out = lines(&ctx, input, &|w| on_deck(graph, w), grown(cell, m, true)).0;
+    deck_lines(&ctx, input, &|w| on_deck(graph, w), grown(cell, m, true))
+}
+
+/// The lines of the ways that `keep` takes in a box, each one leg, with the half-width of the deck's stroke.
+fn deck_lines<'a>(ctx: &Ctx<'a>, input: &CellInput, keep: &dyn Fn(u32) -> bool, bx: [i32; 4]) -> Vec<WayLine<'a>> {
+    let mut out = lines(ctx, input, keep, bx).0;
     for line in &mut out {
         line.cuts.clear();
         line.spans.clear();
         for i in 0..line.p.len() {
-            line.h[i] = line.bands[i][VERGE] + ctx.units(rules.structures.edge_band_m, line.p[i]);
+            line.h[i] = line.bands[i][VERGE] + ctx.units(ctx.rules.structures.edge_band_m, line.p[i]);
         }
     }
     out

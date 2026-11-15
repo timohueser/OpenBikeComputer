@@ -3,25 +3,51 @@
 //! back edge moves. At a graph point a slab goes on into the next road's slab through an open sector, follows the
 //! kerb round a two-foot round where both arms walk (a ring), runs at full width into another road, whose
 //! carriageway cuts it, or tapers against nothing: its width falls along a ramp with round kinks to 0 at its tip
-//! (`ramp`). Stations are the records' metres along, so two cells build the same slabs.
+//! (`Ramp`). A width rule is a point and a direction, so the slab's width and its kerb's rise are one continuous
+//! function of position, and two cells build the same slabs.
 
 use std::f64::consts::PI;
 
 use super::geom::P;
 use super::points::{Arm, Rounded, TwoFoot, INSET};
 use super::stroke::{left, pie_between, push_positive, side_along, union, unit, Rings, STEPS};
-use super::{Cand, Ctx, Label, Owner, Point, Rank, WayLine, TERRAIN, VERGE};
+use super::{Cand, Ctx, Label, Owner, Point, Rank, WayLine, TERRAIN};
 use crate::faces::{HeightRule, Surface};
-use crate::graph::{Level, WayGraph};
+use crate::graph::Level;
 use crate::CellInput;
 
-/// A width rule of a line side: from metres along `at` (as the records' samples) toward `dir` (+1: more metres
-/// along), the slab rises from `target` metres (0 at a taper's tip) to its full width (`ramp`).
+/// A width rule of a line side: from a point of the line (frame units) along the line's unit direction `dir`, the
+/// slab on the `left` of `dir` (else on its right) rises from `target` metres (0 at a taper's tip) to its full width
+/// (`Ramp`). A point takes the rule at its metres along `dir` past `at`, on its side of the line through `at` and at
+/// most `across` metres from it (the slab's back edge there) and its metres along: a slab turns away from the line by
+/// no more than its length, and the rule leaves the slabs of other places of its line side alone. The values are those that the records hold (`records::WALK_RULE`), so a block gives the same
+/// widths.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct End {
-    pub at: f64,
-    pub dir: f64,
+    pub at: [i32; 2],
+    pub dir: [f64; 2],
+    pub left: bool,
     pub target: f64,
+    pub across: f64,
+}
+
+impl End {
+    fn new(at: [f64; 2], dir: [f64; 2], left: bool, target: f64, across: f64) -> End {
+        let q = |v: f64| libm::round(v.clamp(-1.0, 1.0) * 32767.0) / 32767.0;
+        let cm = |m: f64| libm::round(m * 100.0) / 100.0;
+        End { at: round(at), dir: [q(dir[0]), q(dir[1])], left, target: cm(target), across: cm(across) }
+    }
+
+    /// The metres along the rule past its point of q, frame units from the origin, with `mpu` metres per unit; None
+    /// where q lies before it, on the other side of the line through its point, or farther across than its slab. The
+    /// point is its place rounded to a unit, so the rule holds from one unit before it on, at its target there.
+    fn past(&self, q: [f64; 2], mpu: f64) -> Option<f64> {
+        let v = [q[0] - f64::from(self.at[0]), q[1] - f64::from(self.at[1])];
+        let x = v[0] * self.dir[0] + v[1] * self.dir[1];
+        let across = (self.dir[0] * v[1] - self.dir[1] * v[0]) * if self.left { mpu } else { -mpu };
+        let along = x.max(0.0) * mpu;
+        (x >= -1.0 && across > 0.0 && across <= self.across + along).then_some(along)
+    }
 }
 
 /// Per line side, at `side_of`, its width rules.
@@ -40,85 +66,65 @@ pub(super) struct Walk {
 
 /// One arc step: a join this close to half a turn has no gap worth a round, and the strokes mitre it.
 const STEP: f64 = 2.0 * PI / STEPS as f64;
-/// A deck's stroke is searched for over a way's sections this far apart, then to a hundredth of it.
-const DECK_STEP_M: f64 = 0.5;
+/// A stroke that a slab must not enter is searched for over the slab's sections this far apart, then finer.
+const STROKE_STEP_M: f64 = 0.5;
 
-/// The width `x` metres past a rule's station toward its slab: a straight ramp at slope `k` from `target` to
-/// `full`, its two kinks rounded with radius `r` (less where the two rounds would meet), so that it leaves the
-/// target at the station and meets the full width tangentially.
-pub(crate) fn ramp(x: f64, target: f64, full: f64, k: f64, r: f64) -> f64 {
-    let rise = full - target;
-    if rise <= 0.0 {
-        return full;
-    }
-    let phi = libm::atan(k);
-    let (s, c) = (libm::sin(phi), libm::cos(phi));
-    let r = r.min(rise * (1.0 + c) / (2.0 * s * s));
-    let t = r * s / (1.0 + c);
-    let top = t + rise / k;
-    let x = x.max(0.0);
-    if x <= r * s {
-        target + r - (r * r - x * x).max(0.0).sqrt()
-    } else if x <= top - t * c {
-        target + k * (x - t)
-    } else if x < top + t {
-        let y = x - top - t;
-        full - r + (r * r - y * y).max(0.0).sqrt()
-    } else {
-        full
-    }
+/// The ramp from `target` to `full` at slope `k`, its two kinks rounded with radius `r` (less where the two rounds
+/// would meet), so that it leaves the target at its station and meets the full width tangentially.
+struct Ramp {
+    target: f64,
+    full: f64,
+    k: f64,
+    r: f64,
+    /// The tangent length of a round, and where the upper kink lies.
+    t: f64,
+    top: f64,
+    phi: f64,
 }
 
-/// The places of a ramp's rounds in steps of at most one arc step of turn, metres past its station: a stroke
-/// through them follows the rounds.
-fn ramp_points(target: f64, full: f64, k: f64, r: f64) -> Vec<f64> {
-    let rise = full - target;
-    if rise <= 0.0 {
-        return Vec::new();
+impl Ramp {
+    fn new(target: f64, full: f64, k: f64, r: f64) -> Ramp {
+        let phi = libm::atan(k);
+        let (s, c) = (libm::sin(phi), libm::cos(phi));
+        let r = r.min((full - target).max(0.0) * (1.0 + c) / (2.0 * s * s));
+        let t = r * s / (1.0 + c);
+        Ramp { target, full, k, r, t, top: t + (full - target) / k, phi }
     }
-    let phi = libm::atan(k);
-    let (s, c) = (libm::sin(phi), libm::cos(phi));
-    let r = r.min(rise * (1.0 + c) / (2.0 * s * s));
-    let t = r * s / (1.0 + c);
-    let top = t + rise / k;
-    let n = libm::ceil(phi / STEP).max(1.0) as usize;
-    let mut out = Vec::with_capacity(2 * n + 2);
-    for j in 0..=n {
-        let a = phi * j as f64 / n as f64;
-        out.push(r * libm::sin(a));
-        out.push(top + t - r * libm::sin(a));
-    }
-    out
-}
 
-/// The width at metres along `at` of a side of full width `full` with the rules `ends`: the least ramp whose slab
-/// side holds it. With `tips`, of the taper tips alone: the kerb's rise, which a narrower way beyond leaves.
-pub(crate) fn width(at: f64, ends: &[End], full: f64, k: f64, r: f64, tips: bool) -> f64 {
-    (ends.iter())
-        .filter(|e| (at - e.at) * e.dir >= 0.0 && (!tips || e.target == 0.0))
-        .map(|e| ramp((at - e.at).abs(), e.target, full, k, r))
-        .fold(full, f64::min)
-}
-
-/// A line's metres along at each vertex, as its record's samples hold them (`records::line_words`): its graph
-/// samples' and, between them, by share of the chord.
-pub(crate) fn alongs(graph: &WayGraph, line: &WayLine) -> Vec<f64> {
-    let way = &graph.ways[line.way as usize];
-    let samples = &graph.samples[way.samples.start as usize..way.samples.end as usize];
-    let mut out = vec![0.0; line.p.len()];
-    for (k, win) in line.index.windows(2).enumerate() {
-        let (a, b) = (line.p[win[0]], line.p[win[1]]);
-        let len = libm::hypot(f64::from(b[0] - a[0]), f64::from(b[1] - a[1])).max(1e-9);
-        for (j, v) in out.iter_mut().enumerate().take(win[1]).skip(win[0]) {
-            let p = line.p[j];
-            let x = libm::hypot(f64::from(p[0] - a[0]), f64::from(p[1] - a[1])) / len;
-            *v = samples[k].along_m + x * (samples[k + 1].along_m - samples[k].along_m);
+    /// The width x metres past the station.
+    fn at(&self, x: f64) -> f64 {
+        let (r, s, c) = (self.r, libm::sin(self.phi), libm::cos(self.phi));
+        let x = x.max(0.0);
+        if self.full <= self.target {
+            self.full
+        } else if x <= r * s {
+            self.target + r - (r * r - x * x).max(0.0).sqrt()
+        } else if x <= self.top - self.t * c {
+            self.target + self.k * (x - self.t)
+        } else if x < self.top + self.t {
+            let y = x - self.top - self.t;
+            self.full - r + (r * r - y * y).max(0.0).sqrt()
+        } else {
+            self.full
         }
     }
-    if let Some(&last) = line.index.last() {
-        out[last] = samples[line.index.len() - 1].along_m;
+
+    /// The places of its rounds in steps of at most one arc step of turn, metres past the station: a stroke through
+    /// them follows the rounds.
+    fn points(&self) -> Vec<f64> {
+        let n = libm::ceil(self.phi / STEP).max(1.0) as usize;
+        let a = |j: usize| self.r * libm::sin(self.phi * j as f64 / n as f64);
+        (0..=n).flat_map(|j| [a(j), self.top + self.t - a(j)]).collect()
     }
-    out
+}
+
+/// The width at q (frame units, `mpu` metres per unit) of a side of full width `full` with the rules `ends`: the least
+/// ramp of the rules that hold q. With `tips`, of the taper tips alone: the kerb's rise, which a narrower way beyond
+/// leaves.
+pub(crate) fn width(q: [f64; 2], ends: &[End], full: f64, k: f64, r: f64, mpu: f64, tips: bool) -> f64 {
+    (ends.iter().filter(|e| !tips || e.target == 0.0))
+        .filter_map(|e| e.past(q, mpu).map(|x| Ramp::new(e.target, full, k, r).at(x)))
+        .fold(full, f64::min)
 }
 
 /// The sidewalk width of a line's class; 0 for a class with none, water and rails.
@@ -130,18 +136,11 @@ fn full_m(line: &WayLine) -> f64 {
     }
 }
 
-/// The `walk` bit of a stroke side: 2 on its left normal (the bake's right), 1 on its right.
-fn bit(side: f64) -> u8 {
-    if side > 0.0 {
-        2
-    } else {
-        1
-    }
-}
-
-/// Whether segment i of a line has a sidewalk on stroke side `side`.
+/// Whether segment i of a line has a sidewalk on stroke side `side` (the `walk` bit 2 on the stroke's left normal,
+/// the bake's right, 1 on its right).
 fn walks_seg(line: &WayLine, i: usize, side: f64) -> bool {
-    full_m(line) > 0.0 && i + 1 < line.p.len() && line.walk[i] & bit(side) != 0
+    let bit = if side > 0.0 { 2 } else { 1 };
+    full_m(line) > 0.0 && i + 1 < line.p.len() && line.walk[i] & bit != 0
 }
 
 /// Whether an arm's first segment has a sidewalk on its right, seen from the point, else on its left.
@@ -162,17 +161,11 @@ fn at_x(line: &WayLine, x: f64) -> ([f64; 2], f64, [f64; 2]) {
     (p, h, unit(a, b).unwrap_or([1.0, 0.0]))
 }
 
-fn along_x(along: &[f64], x: f64) -> f64 {
-    let i = (libm::floor(x).max(0.0) as usize).min(along.len().saturating_sub(2));
-    along[i] + (x - i as f64) * (along[(i + 1).min(along.len() - 1)] - along[i])
-}
-
-/// The fractional vertex index at metres along `a` on a line whose metres along change monotonically.
-fn x_along(along: &[f64], a: f64) -> Option<f64> {
-    along.windows(2).enumerate().find_map(|(i, w)| {
-        let (lo, hi) = (w[0].min(w[1]), w[0].max(w[1]));
-        (lo <= a && a <= hi && w[1] != w[0]).then(|| i as f64 + (a - w[0]) / (w[1] - w[0]))
-    })
+/// The point at fractional vertex index x of a line, moved `d` units across onto stroke side `side`.
+fn beside(line: &WayLine, x: f64, side: f64, d: f64) -> [f64; 2] {
+    let (q, _, u) = at_x(line, x);
+    let n = left(u);
+    [q[0] + side * d * n[0], q[1] + side * d * n[1]]
 }
 
 /// The fractional vertex index `d` units from x toward `dir` along a line, at most to `stop`.
@@ -224,20 +217,22 @@ struct Piece {
 /// A join between two lines' slabs at a graph point: the point, and per side its line, stroke side and arm.
 type Join = (P, [(usize, f64, Arm); 2]);
 
-/// What ends a piece at a point on an arm's side: its tip there, and where it moves the end from the point.
+/// What ends a piece at a place of a line side (a fractional vertex index) toward a direction: its tip there, and where
+/// it moves the end from the place.
 struct Cut {
-    v: usize,
+    v: f64,
     dir: i8,
     tip: Tip,
     to: Option<f64>,
 }
 
-/// Each line side's pieces after the cuts: a cut at vertex v toward `dir` splits the piece that holds the segment
-/// there and ends the part on that side with its tip, moved to `to`.
+/// Each line side's pieces after the cuts: a cut at v toward `dir` splits the piece that goes on from v that way and
+/// ends the part on that side with its tip, moved to `to`.
 fn apply(pieces: &mut Vec<Piece>, cuts: &[Cut]) {
     for c in cuts {
-        let (v, d) = (c.v as f64, f64::from(c.dir));
-        let Some(k) = pieces.iter().position(|p| p.x[0] <= v.min(v + d) && p.x[1] >= v.max(v + d)) else { continue };
+        let (v, d) = (c.v, f64::from(c.dir));
+        let holds = |p: &Piece| if d > 0.0 { p.x[0] <= v && v < p.x[1] } else { p.x[0] < v && v <= p.x[1] };
+        let Some(k) = pieces.iter().position(holds) else { continue };
         let p = pieces[k];
         let end = usize::from(d < 0.0);
         if p.x[0] < v && v < p.x[1] {
@@ -261,57 +256,114 @@ fn apply(pieces: &mut Vec<Piece>, cuts: &[Cut]) {
 /// The slab's half of a ring about centre c (absolute, units) of radius rho: the annulus sector from angle `a0`
 /// through `sweep`, out to rho + `INSET` (into the round's fan), in to rho less the slab's width, which runs from
 /// `w[0]` at the first foot to `w[1]` at the second by angle and stops at the centre. Its two halves, split at
-/// the bisector, whose points they share.
+/// the bisector, whose points both compute alike.
 fn ring_halves(c: [f64; 2], rho: f64, a0: f64, sweep: f64, w: [f64; 2]) -> [Vec<P>; 2] {
     let at = |a: f64, r: f64| round([c[0] + r * libm::cos(a), c[1] + r * libm::sin(a)]);
     let inner = |a: f64| (rho - w[0] - (w[1] - w[0]) * (a - a0) / sweep).max(0.0);
-    let mid = a0 + sweep / 2.0;
-    let bisector = [at(mid, rho + INSET), at(mid, inner(mid))];
-    let half = |from: f64, to: f64, start: bool| {
+    let half = |from: f64, to: f64| {
         let mut angles = vec![from];
         angles.extend(super::points::arc_angles(from, to - from));
         angles.push(to);
         let mut ring: Vec<P> = angles.iter().map(|&a| at(a, rho + INSET)).collect();
         ring.extend(angles.iter().rev().map(|&a| at(a, inner(a))));
-        // The bisector's points, made once for both halves.
-        let k = if start { angles.len() - 1 } else { 0 };
-        ring[k] = bisector[0];
-        let j = ring.len() - 1 - k;
-        ring[j] = bisector[1];
         ring
     };
-    [half(a0, mid, true), half(mid, a0 + sweep, false)]
+    let mid = a0 + sweep / 2.0;
+    [half(a0, mid), half(mid, a0 + sweep)]
 }
 
-/// The stations where a stroke of a side turns along its ramps: the rules' round points within the piece.
-fn piece_points(along: &[f64], ends: &[End], full: f64, k: f64, r: f64, x: [f64; 2]) -> Vec<f64> {
+/// A stroke that a slab must not enter: its centre line and the half-width at each point (units). Its ends are
+/// flat on their end lines.
+pub(crate) type Stroke = (Vec<[f64; 2]>, Vec<f64>);
+
+/// Whether q lies inside a stroke by more than `margin` units: within the half-width of a segment's foot that falls
+/// inside the segment, or of a vertex between two segments. A point on an end line lies outside.
+pub(crate) fn in_stroke(q: [f64; 2], (pts, half): &Stroke, margin: f64) -> bool {
+    let n = pts.len();
+    (0..n.saturating_sub(1)).any(|i| {
+        let (a, b) = (pts[i], pts[i + 1]);
+        let (u, v) = ([b[0] - a[0], b[1] - a[1]], [q[0] - a[0], q[1] - a[1]]);
+        let l2 = u[0] * u[0] + u[1] * u[1];
+        let t = if l2 > 0.0 { (u[0] * v[0] + u[1] * v[1]) / l2 } else { 0.0 };
+        let flat = (i == 0 && t <= 0.0) || (i + 2 == n && t >= 1.0);
+        let t = t.clamp(0.0, 1.0);
+        let d = libm::hypot(v[0] - t * u[0], v[1] - t * u[1]);
+        !flat && d < half[i] + t * (half[i + 1] - half[i]) - margin
+    })
+}
+
+/// The farthest place of a line side from x toward `dir` within `extent_m` whose section, from the kerb out to the
+/// full width, enters one of `strokes`: the slab ends there with a taper, which lies wholly in sections that do not
+/// enter them. None where no section does.
+fn stroke_cut(ctx: &Ctx, line: &WayLine, (x, dir): (f64, f64), side: f64, strokes: &[Stroke]) -> Option<f64> {
+    let full = full_m(line);
+    let meets = |x: f64| {
+        let h = at_x(line, x).1;
+        let w = ctx.units(full, round(at_x(line, x).0));
+        (0..=8).any(|k| {
+            let q = beside(line, x, side, h + w * f64::from(k) / 8.0);
+            strokes.iter().any(|s| in_stroke(q, s, 0.0))
+        })
+    };
+    let at = round(at_x(line, x).0);
+    let (step, reach) = (ctx.units(STROKE_STEP_M, at), ctx.units(ctx.rules.plan.extent_m, at));
+    let end = if dir > 0.0 { (line.p.len() - 1) as f64 } else { 0.0 };
+    let (mut x, mut d, mut last) = (x, 0.0, None);
+    while d <= reach {
+        if meets(x) {
+            last = Some(x);
+        }
+        if x == end {
+            break;
+        }
+        x = moved(line, x, dir, step, end);
+        d += step;
+    }
+    let mut lo = last?;
+    let mut hi = moved(line, lo, dir, step, end);
+    for _ in 0..7 {
+        let mid = 0.5 * (lo + hi);
+        if meets(mid) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    Some(hi)
+}
+
+/// The places along a piece where a stroke of its side turns: its ends, the line's vertices and its rules' round
+/// points, found where the kerb's metres along a rule reach each round point.
+fn piece_points(
+    line: &WayLine,
+    side: f64,
+    ends: &[End],
+    full: f64,
+    ramp: (f64, f64),
+    mpu: f64,
+    x: [f64; 2],
+) -> Vec<f64> {
     let mut out: Vec<f64> = vec![x[0], x[1]];
     out.extend((libm::floor(x[0]) as usize + 1..=libm::ceil(x[1]) as usize).map(|i| i as f64));
     for e in ends {
-        for d in ramp_points(e.target, full, k, r) {
-            out.extend(x_along(along, e.at + e.dir * d));
+        let along = |x: f64| {
+            let q = beside(line, x, side, at_x(line, x).1);
+            let v = [q[0] - f64::from(e.at[0]), q[1] - f64::from(e.at[1])];
+            (v[0] * e.dir[0] + v[1] * e.dir[1]) * mpu
+        };
+        for d in Ramp::new(e.target, full, ramp.0, ramp.1).points() {
+            for i in libm::floor(x[0]) as usize..libm::ceil(x[1]) as usize {
+                let (fa, fb) = (along(i as f64) - d, along((i + 1) as f64) - d);
+                if fa * fb <= 0.0 && fa != fb {
+                    out.push(i as f64 + fa / (fa - fb));
+                }
+            }
         }
     }
     out.retain(|&v| v >= x[0] && v <= x[1]);
     out.sort_by(f64::total_cmp);
     out.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
     out
-}
-
-/// The distance between segments ab and cd.
-fn seg_dist(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> f64 {
-    let cross = |o: [f64; 2], p: [f64; 2], q: [f64; 2]| (p[0] - o[0]) * (q[1] - o[1]) - (p[1] - o[1]) * (q[0] - o[0]);
-    let (d1, d2, d3, d4) = (cross(a, b, c), cross(a, b, d), cross(c, d, a), cross(c, d, b));
-    if d1 * d2 < 0.0 && d3 * d4 < 0.0 {
-        return 0.0;
-    }
-    let to = |p: [f64; 2], s: [f64; 2], e: [f64; 2]| {
-        let (u, v) = ([e[0] - s[0], e[1] - s[1]], [p[0] - s[0], p[1] - s[1]]);
-        let l2 = u[0] * u[0] + u[1] * u[1];
-        let t = if l2 > 0.0 { ((u[0] * v[0] + u[1] * v[1]) / l2).clamp(0.0, 1.0) } else { 0.0 };
-        libm::hypot(v[0] - t * u[0], v[1] - t * u[1])
-    };
-    to(a, c, d).min(to(b, c, d)).min(to(c, a, b)).min(to(d, a, b))
 }
 
 /// The first crossing of polyline `path` with segment cd: its place along the path (segment index and fraction)
@@ -330,6 +382,135 @@ fn crossing(path: &[[f64; 2]], c: [f64; 2], d: [f64; 2]) -> Option<(f64, f64)> {
     })
 }
 
+/// A line's stroke from vertex `at` toward `dir`, up to `reach` units (and its next vertex).
+fn path_from(line: &WayLine, at: usize, dir: i8, reach: f64) -> Stroke {
+    let (mut path, mut half): Stroke = (Vec::new(), Vec::new());
+    let (mut i, mut length) = (at, 0.0);
+    loop {
+        let q = [f64::from(line.p[i][0]), f64::from(line.p[i][1])];
+        if let Some(last) = path.last() {
+            length += libm::hypot(q[0] - last[0], q[1] - last[1]);
+        }
+        path.push(q);
+        half.push(line.h[i]);
+        let Some(j) = i.checked_add_signed(isize::from(dir)).filter(|&j| j < line.p.len()) else { break };
+        if length >= reach {
+            break;
+        }
+        i = j;
+    }
+    (path, half)
+}
+
+/// Where a slab on an arm's side runs into the other arm `other`: where the other arm's centre line first crosses the
+/// slab's middle line (half its width past the kerb) within `extent_m`, on the arm's own line (the fractional vertex
+/// index there), or past the point on its through partner's line (the other host arm on another line: that arm, the
+/// slab's side there and the index). None where it does not.
+fn run_in(ctx: &Ctx, lines: &[WayLine], pt: &Point, a: usize, side: f64, other: Arm) -> Option<Run> {
+    let arm = pt.arms[a];
+    let reach = ctx.units(ctx.rules.plan.extent_m, pt.pos);
+    let path = path_from(&lines[other.line], other.at, other.dir, reach).0;
+    let w = full_m(&lines[arm.line]);
+    // The first crossing along the other arm with a line's slab middle line on its side: its place along the
+    // path and on the line. The chord over the gap at a vertex between two segments' offsets counts too.
+    let first = |line: &WayLine, side: f64| {
+        let mid = |j: usize| line.h[j] + ctx.units(w / 2.0, line.p[j]);
+        let near = |j: usize| {
+            let (p, q) = (line.p[j], pt.pos);
+            libm::hypot(f64::from(p[0] - q[0]), f64::from(p[1] - q[1])) <= reach
+        };
+        let off = |v: usize, n: [f64; 2]| {
+            let p = line.p[v];
+            [f64::from(p[0]) + side * mid(v) * n[0], f64::from(p[1]) + side * mid(v) * n[1]]
+        };
+        let mut best: Option<(f64, f64)> = None;
+        let mut last: Option<(usize, [f64; 2])> = None;
+        for j in (0..line.p.len().saturating_sub(1)).filter(|&j| near(j) || near(j + 1)) {
+            let Some(n) = unit(line.p[j], line.p[j + 1]).map(left) else { continue };
+            let mut found = crossing(&path, off(j, n), off(j + 1, n)).map(|(at, f)| (at, j as f64 + f));
+            if let Some((_, m)) = last.filter(|&(i, _)| i + 1 == j) {
+                found = found.or(crossing(&path, off(j, m), off(j, n)).map(|(at, _)| (at, j as f64)));
+            }
+            last = Some((j, n));
+            if let Some(f) = found.filter(|f| best.is_none_or(|b| f.0 < b.0)) {
+                best = Some(f);
+            }
+        }
+        best
+    };
+    let own = first(&lines[arm.line], side).map(|(at, x)| (at, Run::Own(x)));
+    // The partner goes on from the point the other way, so the same side of the road is its side times the turn of
+    // the arms' directions.
+    let partner = (0..pt.arms.len())
+        .filter(|&k| k != a && pt.hosts[k] && pt.hosts[a] && pt.arms[k].line != arm.line)
+        .map(|k| (pt.arms[k], -side * f64::from(arm.dir) * f64::from(pt.arms[k].dir)))
+        .find_map(|(p, s)| {
+            let past = |x: f64| (x - p.at as f64) * f64::from(p.dir) > 0.0;
+            first(&lines[p.line], s).filter(|f| past(f.1)).map(|(at, x)| (at, Run::Partner(p, s, x)))
+        });
+    [own, partner].into_iter().flatten().min_by(|x, y| x.0.total_cmp(&y.0)).map(|f| f.1)
+}
+
+/// Where a slab runs into another road: on its own line, or past the point along the through partner's.
+#[derive(Clone, Copy)]
+enum Run {
+    Own(f64),
+    Partner(Arm, f64, f64),
+}
+
+/// The points of the cell's ground level where a deck starts, each with the strokes of its deck arms
+/// (`deck_lines`: their paved layers and `edge_band_m`, as the ceilings').
+fn deck_points(ctx: &Ctx, input: &CellInput, lines: &[WayLine], bx: [i32; 4]) -> Vec<(P, Vec<Stroke>)> {
+    let g = ctx.graph;
+    let arms = (g.junctions.iter().map(|j| (j.pos, &j.arms[..]))).chain(g.joints.iter().map(|j| (j.pos, &j.arms[..])));
+    let found: Vec<(P, Vec<u32>)> = arms
+        .filter(|(pos, arms)| {
+            pos[0] >= bx[0]
+                && pos[0] <= bx[2]
+                && pos[1] >= bx[1]
+                && pos[1] <= bx[3]
+                && arms.iter().any(|a| a.level == Level::Deck)
+                && arms.iter().any(|a| lines.iter().any(|l| l.way == a.way))
+        })
+        .map(|(pos, arms)| (pos, arms.iter().filter(|a| a.level == Level::Deck).map(|a| a.way).collect()))
+        .collect();
+    if found.is_empty() {
+        return Vec::new();
+    }
+    let wanted: Vec<u32> = found.iter().flat_map(|f| f.1.iter().copied()).collect();
+    let decks = super::deck_lines(ctx, input, &|w| wanted.contains(&w) && super::on_deck(g, w), bx);
+    (found.into_iter())
+        .map(|(pos, ways)| (pos, decks.iter().filter(|d| ways.contains(&d.way)).map(stroke_of).collect()))
+        .collect()
+}
+
+/// A line's centre line and half-width as a stroke.
+pub(crate) fn stroke_of(line: &WayLine) -> Stroke {
+    (line.p.iter().map(|p| [f64::from(p[0]), f64::from(p[1])]).collect(), line.h.clone())
+}
+
+/// The direction at a piece's end x into the piece (`s`: +1 at its start, −1 at its end), of its segment there.
+fn dir_in(line: &WayLine, x: f64, s: f64) -> [f64; 2] {
+    let i = if s > 0.0 { libm::floor(x) } else { libm::ceil(x) - 1.0 };
+    let u = at_x(line, i.max(0.0) + 0.5).2;
+    [s * u[0], s * u[1]]
+}
+
+/// A side's own width rules: a 0-target at each taper tip of its pieces, toward the piece.
+fn rule_ends(ctx: &Ctx, line: &WayLine, pieces: &[Piece], side: f64) -> Vec<End> {
+    let mut out = Vec::new();
+    for p in pieces {
+        for (n, s) in [(0, 1.0), (1, -1.0)] {
+            if p.tip[n] == Tip::Taper {
+                let (at, h, _) = at_x(line, p.x[n]);
+                let across = h / ctx.units(1.0, round(at)) + full_m(line);
+                out.push(End::new(at, dir_in(line, p.x[n], s), side * s > 0.0, 0.0, across));
+            }
+        }
+    }
+    out
+}
+
 /// The sidewalks of a cell's ground level: the candidates and each line side's width rules.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build(
@@ -342,18 +523,10 @@ pub(super) fn build(
     bx: [i32; 4],
 ) -> Walk {
     let rules = &ctx.rules.plan.walk;
-    let (k, r) = (rules.end_slope, rules.end_round_m);
-    let along: Vec<Vec<f64>> =
-        lines.iter().map(|l| if full_m(l) > 0.0 { alongs(ctx.graph, l) } else { Vec::new() }).collect();
-    // The way's metres along grow toward its vertices' order, or fall.
-    let sign = |l: usize| {
-        let a = &along[l];
-        if a.len() > 1 && a[a.len() - 1] < a[0] {
-            -1.0
-        } else {
-            1.0
-        }
-    };
+    let ramp = (rules.end_slope, rules.end_round_m);
+    let (k, r) = ramp;
+    let units = |m: f64, p: [f64; 2]| ctx.units(m, round(p));
+    let mpu = |p: [f64; 2]| 1.0 / units(1.0, p);
     // The pieces from the bits, inside the read box: a run of segments with the bit; a taper at each end, but at
     // the box's edge.
     let mut pieces: Vec<Vec<Piece>> = vec![Vec::new(); 2 * lines.len()];
@@ -381,10 +554,11 @@ pub(super) fn build(
         return Walk::default();
     }
     let decks = deck_points(ctx, input, lines, bx);
-    let units = |m: f64, p: [f64; 2]| ctx.units(m, round(p));
     let mut cuts: Vec<Vec<Cut>> = (0..pieces.len()).map(|_| Vec::new()).collect();
     let mut rings: Vec<Rings> = vec![Vec::new(); pieces.len()];
     let mut joins: Vec<Join> = Vec::new();
+    // Run-ins past the point along the partner line: the slab's side and arm, the partner arm, its side and the end.
+    let mut onto: Vec<(usize, Arm, Arm, f64, f64)> = Vec::new();
     let heading = |a: Arm| {
         let line = &lines[a.line];
         let next = a.at.checked_add_signed(isize::from(a.dir)).filter(|&j| j < line.p.len());
@@ -400,7 +574,7 @@ pub(super) fn build(
         } else {
             rounded[pi].two_foot.iter().map(|t| (Some(t), t.arms[0], t.arms[1])).collect()
         };
-        let deck = decks.iter().find(|d| d.0 == pt.pos).map(|d| &d.1);
+        let deck = decks.iter().find(|d| d.0 == pt.pos).map(|d| &d.1[..]);
         for (round_of, a, b) in pairs {
             let (arm_a, arm_b) = (pt.arms[a], pt.arms[b]);
             let (sa, sb) = (f64::from(arm_a.dir), -f64::from(arm_b.dir));
@@ -410,9 +584,10 @@ pub(super) fn build(
                 continue;
             }
             let key = |arm: Arm, side: f64| side_of(arm.line, side);
-            // At a point where a deck starts, a slab that would meet the deck's stroke ends before it.
-            let cut_a = deck.and_then(|d| deck_cut(ctx, lines, arm_a, sa, d));
-            let cut_b = deck.and_then(|d| deck_cut(ctx, lines, arm_b, sb, d));
+            // At a point where a deck starts, a slab that would enter the deck's stroke ends before it.
+            let from = |arm: Arm| (arm.at as f64, f64::from(arm.dir));
+            let cut_a = deck.and_then(|d| stroke_cut(ctx, &lines[arm_a.line], from(arm_a), sa, d));
+            let cut_b = deck.and_then(|d| stroke_cut(ctx, &lines[arm_b.line], from(arm_b), sb, d));
             let sector = (heading(arm_b) - heading(arm_a)).rem_euclid(2.0 * PI);
             let same = !junction || (pt.hosts[a] && pt.hosts[b]);
             let through = arm_a.line == arm_b.line && arm_a.at == arm_b.at;
@@ -421,7 +596,7 @@ pub(super) fn build(
                 if open {
                     if !through {
                         for (arm, side) in [(arm_a, sa), (arm_b, sb)] {
-                            cuts[key(arm, side)].push(Cut { v: arm.at, dir: arm.dir, tip: Tip::Join, to: None });
+                            cuts[key(arm, side)].push(Cut { v: arm.at as f64, dir: arm.dir, tip: Tip::Join, to: None });
                         }
                         joins.push((pt.pos, [(arm_a.line, sa, arm_a), (arm_b.line, sb, arm_b)]));
                     }
@@ -433,10 +608,10 @@ pub(super) fn build(
                 for (n, (arm, side)) in [(arm_a, sa), (arm_b, sb)].into_iter().enumerate() {
                     let line = &lines[arm.line];
                     let foot = moved(line, t.x[n], -f64::from(arm.dir), INSET, arm.at as f64);
-                    let ends = rule_ends(&pieces[key(arm, side)], &along[arm.line], sign(arm.line));
-                    let m = width(along_x(&along[arm.line], t.x[n]), &ends, full_m(line), k, r, false);
-                    w[n] = units(m, at_x(line, t.x[n]).0);
-                    cuts[key(arm, side)].push(Cut { v: arm.at, dir: arm.dir, tip: Tip::Square, to: Some(foot) });
+                    let ends = rule_ends(ctx, line, &pieces[key(arm, side)], side);
+                    let q = beside(line, t.x[n], side, at_x(line, t.x[n]).1);
+                    w[n] = units(width(q, &ends, full_m(line), k, r, mpu(q), false), q);
+                    cuts[key(arm, side)].push(Cut { v: arm.at as f64, dir: arm.dir, tip: Tip::Square, to: Some(foot) });
                 }
                 let c = [f64::from(pt.pos[0]) + t.c[0], f64::from(pt.pos[1]) + t.c[1]];
                 let halves = ring_halves(c, t.rho, t.a0, t.sweep, w);
@@ -445,17 +620,26 @@ pub(super) fn build(
                 }
                 continue;
             }
-            for (arm, side, other, walking, cut) in [(arm_a, sa, arm_b, wa, cut_a), (arm_b, sb, arm_a, wb, cut_b)] {
+            for (n, arm, side, other, walking, cut) in
+                [(a, arm_a, sa, arm_b, wa, cut_a), (b, arm_b, sb, arm_a, wb, cut_b)]
+            {
                 if !walking {
                     continue;
                 }
                 let to = match cut {
                     Some(x) => Some((Tip::Taper, x)),
                     None if same => None,
-                    None => run_in(ctx, lines, pt, arm, side, other).map(|x| (Tip::Square, x)),
+                    None => match run_in(ctx, lines, pt, n, side, other) {
+                        Some(Run::Own(x)) => Some((Tip::Square, x)),
+                        Some(Run::Partner(p, s, x)) => {
+                            onto.push((key(arm, side), arm, p, s, x));
+                            Some((Tip::Square, arm.at as f64))
+                        }
+                        None => None,
+                    },
                 };
                 let (tip, to) = to.map_or((Tip::Taper, None), |(tip, x)| (tip, Some(x)));
-                cuts[key(arm, side)].push(Cut { v: arm.at, dir: arm.dir, tip, to });
+                cuts[key(arm, side)].push(Cut { v: arm.at as f64, dir: arm.dir, tip, to });
             }
         }
     }
@@ -465,9 +649,27 @@ pub(super) fn build(
         for (e, at, dir) in [(0, 0, 1), (1, line.p.len() - 1, -1)] {
             let Some(d) = decks.iter().find(|d| line.deck[e] && d.0 == line.p[at]) else { continue };
             for side in [1.0, -1.0] {
-                let arm = Arm { line: l, at, dir };
-                if let Some(x) = deck_cut(ctx, lines, arm, side, &d.1) {
-                    cuts[side_of(l, side)].push(Cut { v: at, dir, tip: Tip::Taper, to: Some(x) });
+                if let Some(x) = stroke_cut(ctx, line, (at as f64, f64::from(dir)), side, &d.1) {
+                    cuts[side_of(l, side)].push(Cut { v: at as f64, dir, tip: Tip::Taper, to: Some(x) });
+                }
+            }
+        }
+    }
+    // Where a rail crosses a slab's line, the slab ends before the rail's stroke on both sides of it.
+    let rails: Vec<(usize, Stroke)> =
+        (lines.iter().enumerate()).filter(|(_, l)| l.rail).map(|(m, l)| (m, stroke_of(l))).collect();
+    for (l, line) in
+        lines.iter().enumerate().filter(|&(l, _)| !pieces[2 * l].is_empty() || !pieces[2 * l + 1].is_empty())
+    {
+        for (_, rail) in &rails {
+            for j in 0..line.p.len() - 1 {
+                let v = |i: usize| [f64::from(line.p[i][0]), f64::from(line.p[i][1])];
+                let Some((_, f)) = crossing(&rail.0, v(j), v(j + 1)) else { continue };
+                for (side, dir) in [(1.0, 1), (1.0, -1), (-1.0, 1), (-1.0, -1)] {
+                    let x = j as f64 + f;
+                    if let Some(to) = stroke_cut(ctx, line, (x, f64::from(dir)), side, std::slice::from_ref(rail)) {
+                        cuts[side_of(l, side)].push(Cut { v: x, dir, tip: Tip::Taper, to: Some(to) });
+                    }
                 }
             }
         }
@@ -476,83 +678,103 @@ pub(super) fn build(
         apply(p, list);
     }
     // The width rules: each side's taper tips; at a join to a narrower way, that way's width; and the rules of the
-    // slab beyond a join within a ramp's reach, carried on past the join.
-    let own: Ends = (pieces.iter().enumerate()).map(|(n, p)| rule_ends(p, &along[n / 2], sign(n / 2))).collect();
+    // slab beyond a join within a ramp's reach.
+    let own: Ends = (pieces.iter().enumerate())
+        .map(|(n, p)| rule_ends(ctx, &lines[n / 2], p, if n % 2 == 1 { 1.0 } else { -1.0 }))
+        .collect();
     let mut ends = own.clone();
-    for (_, sides) in &joins {
+    for (pos, sides) in &joins {
+        let v = [f64::from(pos[0]), f64::from(pos[1])];
         for n in 0..2 {
             let (l, side, arm) = sides[n];
-            let (m, other_side, other) = sides[1 - n];
+            let (m, other_side, _) = sides[1 - n];
             let (full, other_full) = (full_m(&lines[l]), full_m(&lines[m]));
-            let into = sign(l) * f64::from(arm.dir);
-            let at = along[l][arm.at];
             let mut add = Vec::new();
             if other_full < full {
-                add.push(End { at, dir: into, target: other_full });
+                let into = dir_in(&lines[l], arm.at as f64, f64::from(arm.dir));
+                let across = lines[l].h[arm.at] / units(1.0, v) + full;
+                add.push(End::new(v, into, side * f64::from(arm.dir) > 0.0, other_full, across));
             }
-            let beyond = along[m][other.at];
-            let reach = rules.reach_m(full.max(other_full));
+            let reach = units(rules.reach_m(full.max(other_full)), v);
             for e in &own[side_of(m, other_side)] {
-                let d = (e.at - beyond).abs();
-                if d <= reach && e.dir * (beyond - e.at) >= 0.0 {
-                    add.push(End { at: at - into * d, dir: into, target: e.target });
+                let d = [v[0] - f64::from(e.at[0]), v[1] - f64::from(e.at[1])];
+                if libm::hypot(d[0], d[1]) <= reach && d[0] * e.dir[0] + d[1] * e.dir[1] >= 0.0 {
+                    add.push(*e);
                 }
             }
             ends[side_of(l, side)].extend(add);
         }
     }
-    // The strokes of the pieces, the joins' pies and the rings.
+    // The strokes of the pieces, the joins' pies, the run-ins past their point and the rings.
+    let back = |l: usize, side: f64, x: f64| {
+        let line = &lines[l];
+        let h = at_x(line, x).1;
+        let q = beside(line, x, side, h);
+        h + units(width(q, &ends[side_of(l, side)], full_m(line), k, r, mpu(q), false), q)
+    };
     for (n, list) in pieces.iter().enumerate() {
         let (l, side) = (n / 2, if n % 2 == 1 { 1.0 } else { -1.0 });
         let line = &lines[l];
-        let full = full_m(line);
-        let e = &ends[n];
         for piece in list {
-            let xs = piece_points(&along[l], e, full, k, r, piece.x);
+            let q0 = at_x(line, piece.x[0]).0;
+            let xs = piece_points(line, side, &ends[n], full_m(line), ramp, mpu(q0), piece.x);
             if xs.len() < 2 {
                 continue;
             }
-            let (mut p, mut inner, mut outer, mut dirs) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-            for (j, &x) in xs.iter().enumerate() {
-                let (q, h, _) = at_x(line, x);
-                let w = width(along_x(&along[l], x), e, full, k, r, false);
-                p.push(round(q));
-                inner.push(h / 2.0);
-                outer.push(h + units(w, q));
-                if let Some(&next) = xs.get(j + 1) {
-                    dirs.push(Some(at_x(line, (x + next) / 2.0).2));
-                }
-            }
+            let p: Vec<P> = xs.iter().map(|&x| round(at_x(line, x).0)).collect();
+            let inner: Vec<f64> = xs.iter().map(|&x| at_x(line, x).1 / 2.0).collect();
+            let outer: Vec<f64> = xs.iter().map(|&x| back(l, side, x)).collect();
+            let dirs: Vec<Option<[f64; 2]>> = xs.windows(2).map(|w| Some(at_x(line, (w[0] + w[1]) / 2.0).2)).collect();
             side_along(&p, &inner, &outer, &dirs, side, &mut rings[n]);
         }
     }
-    for (pos, sides) in &joins {
-        // Each side's end normal and back edge at the point; the pie fills the gap on the outer side of the join.
-        let edge = |(l, side, arm): (usize, f64, Arm)| {
-            let line = &lines[l];
-            let seg = if arm.dir > 0 { arm.at } else { arm.at.saturating_sub(1) };
-            let n = left(unit(line.p[seg], line.p[(seg + 1).min(line.p.len() - 1)]).unwrap_or([1.0, 0.0]));
-            let e = &ends[side_of(l, side)];
-            let q = [f64::from(line.p[arm.at][0]), f64::from(line.p[arm.at][1])];
-            let w = width(along[l][arm.at], e, full_m(line), k, r, false);
-            ([side * n[0], side * n[1]], line.h[arm.at] + units(w, q))
-        };
-        let ((na, da), (nb, db)) = (edge(sides[0]), edge(sides[1]));
+    // Each side's end normal and back edge at a point; a pie fills the gap on the outer side of two lines' ends.
+    let edge = |(l, side, arm): (usize, f64, Arm), d: f64| {
+        let line = &lines[l];
+        let seg = if arm.dir > 0 { arm.at } else { arm.at.saturating_sub(1) };
+        let n = left(unit(line.p[seg], line.p[(seg + 1).min(line.p.len() - 1)]).unwrap_or([1.0, 0.0]));
+        ([side * n[0], side * n[1]], d)
+    };
+    let pie = |pos: P, (na, da): ([f64; 2], f64), (nb, db): ([f64; 2], f64)| {
         let turn = libm::atan2(na[0] * nb[1] - na[1] * nb[0], na[0] * nb[0] + na[1] * nb[1]);
-        let mut pie = Vec::new();
+        let mut out = Vec::new();
         if turn > 0.0 {
-            pie_between(*pos, da, db, na, nb, turn, [&[], &[]], &mut pie);
+            pie_between(pos, da, db, na, nb, turn, [&[], &[]], &mut out);
         } else if turn < 0.0 {
-            pie_between(*pos, db, da, nb, na, -turn, [&[], &[]], &mut pie);
+            pie_between(pos, db, da, nb, na, -turn, [&[], &[]], &mut out);
         }
+        out
+    };
+    for (pos, sides) in &joins {
+        let ends_of = |(l, side, arm): (usize, f64, Arm)| edge((l, side, arm), back(l, side, arm.at as f64));
+        let fill = pie(*pos, ends_of(sides[0]), ends_of(sides[1]));
         for (l, side, _) in sides {
-            rings[side_of(*l, *side)].extend(pie.iter().cloned());
+            rings[side_of(*l, *side)].extend(fill.iter().cloned());
         }
+    }
+    for &(n, arm, p, s, x) in &onto {
+        // The slab goes on past the point along the partner at its full width, to where the other road cuts it.
+        let (l, side) = (n / 2, if n % 2 == 1 { 1.0 } else { -1.0 });
+        let partner = &lines[p.line];
+        let full = full_m(&lines[l]);
+        let (lo, hi) = ((p.at as f64).min(x), (p.at as f64).max(x));
+        let mut xs = vec![lo];
+        xs.extend((libm::floor(lo) as usize + 1..libm::ceil(hi) as usize).map(|i| i as f64));
+        xs.push(hi);
+        let pts: Vec<P> = xs.iter().map(|&v| round(at_x(partner, v).0)).collect();
+        let inner: Vec<f64> = xs.iter().map(|&v| at_x(partner, v).1 / 2.0).collect();
+        let outer: Vec<f64> = xs.iter().map(|&v| at_x(partner, v).1 + units(full, at_x(partner, v).0)).collect();
+        let dirs: Vec<Option<[f64; 2]>> = xs.windows(2).map(|w| Some(at_x(partner, (w[0] + w[1]) / 2.0).2)).collect();
+        side_along(&pts, &inner, &outer, &dirs, s, &mut rings[n]);
+        let pos = partner.p[p.at];
+        let start = partner.h[p.at] + units(full, at_x(partner, p.at as f64).0);
+        let fill = pie(pos, edge((l, side, arm), back(l, side, arm.at as f64)), edge((p.line, s, p), start));
+        rings[n].extend(fill);
     }
     let rank = ctx.rules.plan.rank(Rank::Sidewalk);
     let cands = (rings.into_iter().enumerate())
         .filter(|(_, r)| !r.is_empty())
-        .map(|(n, r)| {
+        .map(|(n, rings)| {
             let (l, s) = (n / 2, (n % 2) as u8);
             let line = &lines[l];
             let label = Label {
@@ -565,7 +787,7 @@ pub(super) fn build(
                 ..TERRAIN
             };
             Cand {
-                rings: union(&r, [0, 0]),
+                rings: union(&rings, [0, 0]),
                 label,
                 key: (rank, line.sec.rank as u8, s),
                 glob: None,
@@ -578,153 +800,6 @@ pub(super) fn build(
         })
         .collect();
     Walk { cands, ends }
-}
-
-/// A side's own width rules: a 0-target at each taper tip of its pieces, toward the piece.
-fn rule_ends(pieces: &[Piece], along: &[f64], sign: f64) -> Vec<End> {
-    let mut out = Vec::new();
-    for p in pieces {
-        for (n, dir) in [(0, sign), (1, -sign)] {
-            if p.tip[n] == Tip::Taper {
-                out.push(End { at: along_x(along, p.x[n]), dir, target: 0.0 });
-            }
-        }
-    }
-    out
-}
-
-/// Where a slab on an arm's side runs into the other arm `other`: the fractional vertex index on its own line
-/// where the other arm's centre line crosses the slab's middle line (half its width past the kerb), on the arm
-/// or past the point; None where it does not within `extent_m`.
-fn run_in(ctx: &Ctx, lines: &[WayLine], pt: &Point, arm: Arm, side: f64, other: Arm) -> Option<f64> {
-    let line = &lines[arm.line];
-    let reach = ctx.units(ctx.rules.plan.extent_m, pt.pos);
-    let o = &lines[other.line];
-    // The other arm's centre line from the point.
-    let mut path: Vec<[f64; 2]> = Vec::new();
-    let mut i = other.at;
-    let mut length = 0.0;
-    loop {
-        let q = [f64::from(o.p[i][0]), f64::from(o.p[i][1])];
-        if let Some(last) = path.last() {
-            length += libm::hypot(q[0] - last[0], q[1] - last[1]);
-        }
-        path.push(q);
-        let Some(j) = i.checked_add_signed(isize::from(other.dir)).filter(|&j| j < o.p.len()) else { break };
-        if length >= reach {
-            break;
-        }
-        i = j;
-    }
-    // The slab's middle line: per segment of the arm's line within `extent_m` of the point, both ways, and the
-    // chord over the gap at each vertex between two segments' offsets.
-    let mid = |j: usize| line.h[j] + ctx.units(full_m(line) / 2.0, line.p[j]);
-    let near = |j: usize| {
-        let (a, b) = (line.p[j], pt.pos);
-        libm::hypot(f64::from(a[0] - b[0]), f64::from(a[1] - b[1])) <= reach
-    };
-    let off = |v: usize, n: [f64; 2]| {
-        let p = line.p[v];
-        [f64::from(p[0]) + side * mid(v) * n[0], f64::from(p[1]) + side * mid(v) * n[1]]
-    };
-    let mut best: Option<(f64, f64)> = None;
-    let mut last: Option<(usize, [f64; 2])> = None;
-    for j in (0..line.p.len().saturating_sub(1)).filter(|&j| near(j) || near(j + 1)) {
-        let Some(n) = unit(line.p[j], line.p[j + 1]).map(left) else { continue };
-        let mut found = crossing(&path, off(j, n), off(j + 1, n)).map(|(at, f)| (at, j as f64 + f));
-        if let Some((_, m)) = last.filter(|&(i, _)| i + 1 == j) {
-            found = found.or(crossing(&path, off(j, m), off(j, n)).map(|(at, _)| (at, j as f64)));
-        }
-        last = Some((j, n));
-        // The first crossing along the other arm.
-        if let Some(f) = found.filter(|f| best.is_none_or(|b| f.0 < b.0)) {
-            best = Some(f);
-        }
-    }
-    best.map(|(_, x)| x)
-}
-
-/// The points of the cell's ground level where a deck starts: per point, the strokes of its deck arms' ways (their
-/// points and half-widths: paved layers and `edge_band_m`, units).
-type DeckPoint = (P, Vec<(Vec<[f64; 2]>, Vec<f64>)>);
-
-fn deck_points(ctx: &Ctx, input: &CellInput, lines: &[WayLine], bx: [i32; 4]) -> Vec<DeckPoint> {
-    let g = ctx.graph;
-    let arms = (g.junctions.iter().map(|j| (j.pos, &j.arms[..]))).chain(g.joints.iter().map(|j| (j.pos, &j.arms[..])));
-    let found: Vec<(P, Vec<u32>)> = arms
-        .filter(|(pos, arms)| {
-            pos[0] >= bx[0]
-                && pos[0] <= bx[2]
-                && pos[1] >= bx[1]
-                && pos[1] <= bx[3]
-                && arms.iter().any(|a| a.level == Level::Deck)
-                && arms.iter().any(|a| lines.iter().any(|l| l.way == a.way))
-        })
-        .map(|(pos, arms)| (pos, arms.iter().filter(|a| a.level == Level::Deck).map(|a| a.way).collect()))
-        .collect();
-    if found.is_empty() {
-        return Vec::new();
-    }
-    let wanted: Vec<u32> = found.iter().flat_map(|f| f.1.iter().copied()).collect();
-    let decks = super::lines(ctx, input, &|w| wanted.contains(&w) && super::on_deck(g, w), bx).0;
-    let band = ctx.rules.structures.edge_band_m;
-    (found.into_iter())
-        .map(|(pos, ways)| {
-            let strokes = (decks.iter())
-                .filter(|d| ways.contains(&d.way))
-                .map(|d| {
-                    let pts = d.p.iter().map(|p| [f64::from(p[0]), f64::from(p[1])]).collect();
-                    let half = (0..d.p.len()).map(|i| d.bands[i][VERGE] + ctx.units(band, d.p[i])).collect();
-                    (pts, half)
-                })
-                .collect();
-            (pos, strokes)
-        })
-        .collect()
-}
-
-/// At a point where a deck starts, the farthest station of an arm's side within `extent_m` whose section, from
-/// the kerb out to the full width, meets a deck's stroke: the slab ends there with a taper, which lies wholly in
-/// sections that do not meet it. None where no section does.
-fn deck_cut(ctx: &Ctx, lines: &[WayLine], arm: Arm, side: f64, decks: &[(Vec<[f64; 2]>, Vec<f64>)]) -> Option<f64> {
-    let line = &lines[arm.line];
-    let full = full_m(line);
-    let dir = f64::from(arm.dir);
-    let meets = |x: f64| {
-        let (q, h, u) = at_x(line, x);
-        let n = left(u);
-        let w = h + ctx.units(full, round(q));
-        let (a, b) =
-            ([q[0] + side * h * n[0], q[1] + side * h * n[1]], [q[0] + side * w * n[0], q[1] + side * w * n[1]]);
-        decks.iter().any(|(pts, half)| {
-            (0..pts.len().saturating_sub(1)).any(|j| seg_dist(a, b, pts[j], pts[j + 1]) < half[j].max(half[j + 1]))
-        })
-    };
-    let step = ctx.units(DECK_STEP_M, line.p[arm.at]);
-    let reach = ctx.units(ctx.rules.plan.extent_m, line.p[arm.at]);
-    let end = if dir > 0.0 { (line.p.len() - 1) as f64 } else { 0.0 };
-    let (mut x, mut d, mut last) = (arm.at as f64, 0.0, None);
-    while d <= reach {
-        if meets(x) {
-            last = Some(x);
-        }
-        if x == end {
-            break;
-        }
-        x = moved(line, x, dir, step, end);
-        d += step;
-    }
-    let mut lo = last?;
-    let mut hi = moved(line, lo, dir, step, end);
-    for _ in 0..7 {
-        let mid = 0.5 * (lo + hi);
-        if meets(mid) {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    Some(hi)
 }
 
 #[cfg(test)]
@@ -858,6 +933,31 @@ mod tests {
         for m in [[H + 1.0, H + W + 0.3], [H + 0.2, H + 5.0], [H + 3.0, H + 3.0]] {
             assert!(!c.walks(m), "{m:?}");
         }
+    }
+
+    #[test]
+    fn a_slab_runs_into_a_side_road_past_the_point_on_the_through_partner_line() {
+        // The through road is split at the junction; the side road leans east, so it crosses the west slab's middle
+        // line past the point, on the east line.
+        let west = walking(&[[-100.0, 0.0], [0.0, 0.0]], &[2, 0]);
+        let east = walking(&[[0.0, 0.0], [100.0, 0.0]], &[2, 0]);
+        let c = built(&[west, east, road(&[[0.0, 0.0], [40.0, 100.0]])]);
+        for m in [[-1.6, H + W - 0.05], [-2.2, H + 0.3], [-3.0, H + W - 0.05]] {
+            assert!(c.walks(m), "{m:?}: the back edge at full width");
+            assert!((c.rise(m, m) - KERB_M).abs() < 1e-6, "{m:?}: the full kerb");
+        }
+    }
+
+    #[test]
+    fn a_slab_tapers_before_a_rail_arm() {
+        let main = walking(&[[-100.0, 0.0], [0.0, 0.0], [100.0, 0.0]], &[2, 2, 0]);
+        let rail = line("railway", &[("railway", "rail")], &[[0.0, 0.0], [0.0, 100.0]]);
+        let c = built(&[main, rail]);
+        let sections = &Rules::embedded().sections;
+        let half = sections.way("railway", &[("railway".into(), "rail".into())].into(), false).half_m;
+        // Its tip lies at the rail's stroke, and the ramp starts there.
+        assert!(!c.walks([-(half + 0.5), H + 0.5]) && c.walks([-(half + 0.5), H + 0.05]));
+        assert!(c.walks([-(half + Rules::embedded().plan.walk.reach_m(W)), H + W - 0.05]));
     }
 
     #[test]

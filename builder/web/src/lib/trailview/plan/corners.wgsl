@@ -193,37 +193,14 @@ fn may_pave(label: u32) -> bool {
 }
 
 // The look and place words of a sidewalk corner on host line `line`: paving, the slab's width there as its half, and
-// its frame: the metres from its kerb (past the host's carriageway edge, or inside the arc of a round of q's bin
-// whose sector holds q) and the host's metres along.
+// its frame: the metres from its kerb (the paved outline's edge: the carriageways that rank before the sidewalks) and
+// the host's metres along.
 fn sidewalk_look(q: vec2i, line: u32, wall: u32, mpu: f32) -> vec2u {
     let block = params.block;
-    let qf = vec2f(q);
-    let f = line_frame(q, line, mpu);
-    var d = abs(f.x) - f.z;
     let row = h_walk_row(block, line);
-    var w = select(0.0, mf(row + 2u), row != 0u);
-    let head = m_bin_head(block, qf);
-    if (head != 0u) {
-        let at = h_heights_start(block, qf);
-        let nh = mw(head + 2u) >> 16u;
-        for (var k = 0u; k < (mw(head + 2u) & 0xffffu); k++) {
-            let item = mw(at + nh + k);
-            let disc = m_extras(block) + mw(m_cand(block, item & 0xffffu) + 5u) + M_DISC * (item >> 16u);
-            let v = qf - vec2f(mi(disc), mi(disc + 1u));
-            let ua = unpack2x16snorm(mw(disc + 5u));
-            let ub = unpack2x16snorm(mw(disc + 6u));
-            let turn = m_cross(ua, ub);
-            let r = length(v);
-            if (r < mf(disc + 2u) && m_cross(ua, v) * turn >= 0.0 && m_cross(v, ub) * turn >= 0.0) {
-                d = min(d, (mf(disc + 2u) - r) * mpu);
-            }
-        }
-        let s = h_walk_station(block, qf, line, at, nh);
-        if (row != 0u && s.y != 0.0) {
-            w = h_walk_width(block, row, s.x, s.y, false);
-        }
-    }
-    return vec2u(look_word(MAT_SIDEWALK, 0u, w) | wall, place_word(max(d, 0.0), f.y));
+    let w = select(0.0, h_walk_width(block, row, vec2f(q), mpu, false), row != 0u);
+    let d = m_outline_metres(block, q, mpu);
+    return vec2u(look_word(MAT_SIDEWALK, 0u, w) | wall, place_word(max(d, 0.0), line_frame(q, line, mpu).y));
 }
 
 // The look word and the place word of a corner with a label. A paved face takes its way's look and a frame:

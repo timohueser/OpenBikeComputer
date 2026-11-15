@@ -315,6 +315,49 @@ fn model_at(p: vec2i, reach: f32) -> ModelPoint {
 }
 
 // The model of a block at point q (frame units from the cell's origin).
+// The outline polygon cuts each round's arc in chords; its discs move the metres `poly` from q to the polygon of the
+// outline candidate at word k onto the arcs, by no more than the chords' sagitta.
+fn m_on_arcs(block: u32, k: u32, qf: vec2f, poly: f32, mpu: f32) -> f32 {
+    var d = poly;
+    for (var j = 0u; j < mw(k + 6u); j++) {
+        let disc = m_extras(block) + mw(k + 5u) + M_DISC * j;
+        let r = mf(disc + 2u);
+        let arc = (r - length(qf - vec2f(m_vertex(disc)))) * mpu;
+        d = max(d, min(arc, poly + (r * M_SAGITTA + 1.0) * mpu));
+    }
+    return d;
+}
+
+// The metres from q to the paved outline (negative inside), as model_point's before the rail beds: from the bin's
+// first item, where it is the outline; M_FAR where the bin lists none.
+fn m_outline_metres(block: u32, q: vec2i, mpu: f32) -> f32 {
+    let head = m_bin_head(block, vec2f(q));
+    if (head == 0u || (mw(head + 1u) >> 16u) == 0u) {
+        return M_FAR;
+    }
+    let at = block + mw(head);
+    let k = m_cand(block, mw(at) & 0xffffu);
+    if (mw(k) != M_OUTLINE) {
+        return M_FAR;
+    }
+    let bin = min(q / M_BIN_UNITS, vec2i(M_BINS - 1));
+    let c = 2 * (bin * M_BIN_UNITS + M_BIN_UNITS / 2) + 1;
+    var wind = i32((mw(at) >> 16u) & 0xffu) - 128;
+    var d = M_FAR;
+    var run = at + 2u;
+    for (var r = 0u; r < mw(at + 1u); r++) {
+        let n = mw(run);
+        for (var e = 0u; e + 1u < n; e++) {
+            let a = m_vertex(run + 1u + 2u * e);
+            let b = m_vertex(run + 3u + 2u * e);
+            wind += m_crossing(2 * a, 2 * b, c, 2 * q);
+            d = min(d, m_segment(vec2f(a), vec2f(b), vec2f(q)));
+        }
+        run += 1u + 2u * n;
+    }
+    return m_on_arcs(block, k, vec2f(q), select(d, -d, wind != 0) * mpu, mpu);
+}
+
 fn model_point(block: u32, q: vec2i, reach: f32) -> ModelPoint {
     var out = ModelPoint(0u, vec2i(0), M_NONE, M_NONE, M_FAR, M_FAR, M_FAR, 0.0, 0.0, 0u, M_NONE);
     out.block = block;
@@ -391,16 +434,8 @@ fn model_point(block: u32, q: vec2i, reach: f32) -> ModelPoint {
             nears++;
         }
     }
-    // The outline polygon cuts each round's arc in chords; its disc moves the distance onto the arc, by no
-    // more than the chords' sagitta.
     if (outline != M_NONE) {
-        let poly = out.d_paved;
-        for (var j = 0u; j < mw(outline + 6u); j++) {
-            let disc = extras + mw(outline + 5u) + M_DISC * j;
-            let r = mf(disc + 2u);
-            let arc = (r - length(qf - vec2f(m_vertex(disc)))) * mpu;
-            out.d_paved = max(out.d_paved, min(arc, poly + (r * M_SAGITTA + 1.0) * mpu));
-        }
+        out.d_paved = m_on_arcs(block, outline, qf, out.d_paved, mpu);
     }
     out.d_paved = min(out.d_paved, rail);
     out.core = min(out.core, out.d_paved);

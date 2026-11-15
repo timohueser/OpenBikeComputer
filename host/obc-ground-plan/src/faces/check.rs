@@ -922,14 +922,10 @@ pub fn sidewalk_on_decks(plan: &FacePlan, graph: &WayGraph, input: &crate::CellI
         .map(|(pos, _)| pos)
         .collect();
     let near = |p: P| starts.iter().any(|&s| len(p, s) <= units(rules.plan.extent_m, s));
-    // The decks' segments near their ground points, with the stroke's half-width, and whether each end of a segment
-    // is its line's: there the stroke ends flat on the end line, which the half-width does not pass.
-    let segs: Vec<(P, P, f64, [bool; 2])> = (super::ceiling_lines(graph, input, rules, plan.cell).iter())
-        .flat_map(|l| {
-            let n = l.p.len();
-            (0..n.saturating_sub(1)).map(move |i| (l.p[i], l.p[i + 1], l.h[i].min(l.h[i + 1]), [i == 0, i + 2 == n]))
-        })
-        .filter(|&(a, b, ..)| near(a) || near(b))
+    // The decks' strokes as the slabs' deck rule takes them (`walk::in_stroke`).
+    let strokes: Vec<_> = (super::ceiling_lines(graph, input, rules, plan.cell).iter())
+        .filter(|l| l.p.iter().any(|&p| near(p)))
+        .map(super::walk::stroke_of)
         .collect();
     let mut out = Vec::new();
     for f in plan.faces.iter().filter(|f| f.surface == Surface::Sidewalk) {
@@ -941,12 +937,8 @@ pub fn sidewalk_on_decks(plan: &FacePlan, graph: &WayGraph, input: &crate::CellI
                 for k in 0..n {
                     let t = f64::from(k) / f64::from(n);
                     let q = [a[0] + (t * f64::from(b[0] - a[0])) as i32, a[1] + (t * f64::from(b[1] - a[1])) as i32];
-                    let inside = segs.iter().any(|&(c, d, h, ends)| {
-                        let (dist, _, t) = closest(q, q, c, d);
-                        let flat = (ends[0] && t <= 0.0) || (ends[1] && t >= 1.0);
-                        dist < h - SLIVER && !flat
-                    });
-                    if inside {
+                    let qf = [f64::from(q[0]), f64::from(q[1])];
+                    if near(q) && strokes.iter().any(|s| super::walk::in_stroke(qf, s, SLIVER)) {
                         out.push(q);
                     }
                 }

@@ -14,7 +14,7 @@
 //! | samples | `SAMPLE` words each: x, y, half-width (units), metres along, glob order, height, bank, grade, mitre direction x, y, health radius left and right (units) |
 //! | extras | discs (`DISC` words), beyond cuts (a cut and a label), parts (a way and two cuts, each with a flag) |
 //! | junctions | the table, a word per junction record: its offset; then the records (`junction`) |
-//! | sidewalks | the ramps' `end_slope` and `end_round_m`, the count of record lines R; per record line `WALK_LINE` words: its first rule, its count of rules, its class's sidewalk width, kerb rise and kerb top width (m); then the rules, `WALK_RULE` words each: metres along, the width there (m), the side (bit 0: the stroke's left normal) and the direction (bit 1: toward more metres along) (`walk::End`) |
+//! | sidewalks | the ramps' `end_slope` and `end_round_m`, the count of record lines R; per record line `WALK_LINE` words: its first rule (bits 0-19) and its count of rules, its class's sidewalk width in cm (low half), kerb rise in mm (bits 16-23) and kerb top's width in cm; then the rules, `WALK_RULE` words each: the tip x, y (units), its unit direction (`pack2x16snorm`), the width there in cm (low half), whether its slab lies on the direction's left (bit 16) and how far across it reaches in cm (bits 17-31) (`walk::End`) |
 //! | blend edges | `BLEND` words each: the ends a (x, y) and b (x, y) as i32 bits, the label of the blend face, the label of the face beyond (u32::MAX for terrain) |
 //! | outline edges | `EDGE` words each (`edge_ends`, `edge_line`): the end a (x, y) as i32 bits with the paved face on the left; b − a as two i16 (x low); the host line, low half, and the terrain's grade outward at a in 1/`GRADE_STEPS` (i16, `i16::MIN` unknown), high half; the paved height at a and at b; the plain terrain where the cones from a and from b start to let go (NaN unknown); the grade at b, low half, and the turn at b in 1/`TURN_STEPS` of π (i16, `i16::MIN` none), high half; the turn at a, low half |
 //! | bins | `BINS`² headers of `HEADER` words (the first word of the bin's items; the counts of items and segments; of height segments and height discs; the words of the items and the count of blend edges), then per bin its candidate items, segments, height segments, height discs, blend edges, and in half words (the first low) the count of its outline edges followed by them |
@@ -86,14 +86,14 @@ pub const CAND: usize = 11;
 pub const LABEL: usize = 12;
 pub const LINE: usize = 18;
 pub const SAMPLE: usize = 12;
-/// Centre, radius, the line at each foot, the unit direction from the centre to each foot (`pack2x16snorm`).
-pub const DISC: usize = 7;
+/// Centre, radius, the line at each foot.
+pub const DISC: usize = 5;
 pub const BEYOND: usize = 5;
 pub const PART: usize = 11;
 pub const BLEND: usize = 6;
 pub const EDGE: usize = 10;
-pub const WALK_LINE: usize = 5;
-pub const WALK_RULE: usize = 3;
+pub const WALK_LINE: usize = 2;
+pub const WALK_RULE: usize = 4;
 /// An outline edge's turn at an end in these steps per π radians (`i16`; `i16::MIN`: no edge goes on there).
 pub const TURN_STEPS: f64 = 32767.0;
 /// A junction record: node x, y; the arm count (bits 0-7) and the graph junction (bits 16-31); then
@@ -605,9 +605,10 @@ fn kind(c: &Cand) -> u32 {
     }
 }
 
-/// Whether a candidate paves: a carriageway's label that is no band layer and relabels nothing.
-fn paves(c: &Cand) -> bool {
-    c.label.surface == Surface::Carriageway && !matches!(kind(c), REGION | BAND)
+/// Whether a candidate paves: a carriageway's label that is no band layer, relabels nothing and ranks before the
+/// sidewalks, so that no slab covers it and the outline's edge is a kerb wherever a slab meets it.
+fn paves(c: &Cand, walk_rank: u8) -> bool {
+    c.label.surface == Surface::Carriageway && !matches!(kind(c), REGION | BAND) && c.key.0 < walk_rank
 }
 
 pub(super) fn label_words(l: &Label) -> [u32; 4] {
@@ -907,7 +908,6 @@ fn line_words(
     }
     w.extend([f(sec.fill_max), f(sec.cut_max), f(sec.rise_m), f(sec.crest_m)]);
     let samples = &graph.samples[way.samples.start as usize..way.samples.end as usize];
-    let along = super::walk::alongs(graph, line);
     // Per vertex: its graph sample and its share of the segment to the next one.
     let mut share = vec![(0usize, 0.0f64); line.p.len()];
     for (k, win) in line.index.windows(2).enumerate() {
@@ -933,7 +933,7 @@ fn line_words(
         let (k, x) = share[i];
         let (s0, s1) = (&samples[k], &samples[(k + 1).min(samples.len() - 1)]);
         let lerp = |a: f64, b: f64| a + x * (b - a);
-        s.extend([p[0] as u32, p[1] as u32, f(line.h[i]), f(along[i]), order(&line.key[i])]);
+        s.extend([p[0] as u32, p[1] as u32, f(line.h[i]), f(lerp(s0.along_m, s1.along_m)), order(&line.key[i])]);
         s.extend([f(lerp(s0.z_m, s1.z_m)), f(lerp(s0.bank, s1.bank)), f(lerp(s0.grade, s1.grade))]);
         s.extend(mitres[i - lo].map(f));
     }
@@ -942,14 +942,7 @@ fn line_words(
 
 /// The words of a disc; `line` gives the record line of a line at a foot.
 fn disc_words(d: &Circle, line: &dyn Fn(usize, P) -> u32) -> [u32; DISC] {
-    let toward = |foot: P| {
-        let v = [f64::from(foot[0] - d.centre[0]), f64::from(foot[1] - d.centre[1])];
-        let len = libm::hypot(v[0], v[1]).max(1e-9);
-        let snorm = |x: f64| u32::from(libm::round((x / len).clamp(-1.0, 1.0) * 32767.0) as i16 as u16);
-        snorm(v[0]) | snorm(v[1]) << 16
-    };
-    let (a, b) = (line(d.lines[0], d.feet[0]), line(d.lines[1], d.feet[1]));
-    [d.centre[0] as u32, d.centre[1] as u32, f(d.radius), a, b, toward(d.feet[0]), toward(d.feet[1])]
+    [d.centre[0] as u32, d.centre[1] as u32, f(d.radius), line(d.lines[0], d.feet[0]), line(d.lines[1], d.feet[1])]
 }
 
 /// The words of a cut as the slice holds it: its ends snapped as the overlay's `past` reads them.
@@ -980,9 +973,11 @@ fn encode(
     let window = Window { wide };
     // The paved outline with the circles of its fans and rounds: one union, so the distance to the
     // road's edge has no seam inside the paved area.
-    let paved: Vec<Vec<P>> = cands.iter().filter(|c| paves(c)).flat_map(|c| c.rings.iter().cloned()).collect();
+    let walk_rank = rules.plan.rank(super::Rank::Sidewalk);
+    let paved: Vec<Vec<P>> =
+        cands.iter().filter(|c| paves(c, walk_rank)).flat_map(|c| c.rings.iter().cloned()).collect();
     let outline = union(&paved, [0, 0]);
-    let outline_discs: Vec<&Circle> = cands.iter().filter(|c| paves(c)).flat_map(|c| &c.discs).collect();
+    let outline_discs: Vec<&Circle> = cands.iter().filter(|c| paves(c, walk_rank)).flat_map(|c| &c.discs).collect();
     // The global names in order: a way's at its samples, a point's at its position.
     let mut globs: Vec<Glob> =
         lines.iter().flat_map(|l| l.key.iter().copied()).chain(cands.iter().filter_map(|c| c.glob)).collect();
@@ -1140,7 +1135,9 @@ fn encode(
             .map(|(col, row)| window.at(col, row))
             .collect();
         for (region, other, a, b) in [(l, r, a, b), (r, l, b, a)] {
-            if region.rule != HeightRule::Blend || listed.is_empty() {
+            // A slab fades to the paved faces beside it only: toward the ground, its edge is the slopes' outline.
+            let fades = region.rule == HeightRule::Blend || (region.rule == HeightRule::KerbOffset && paved(&other));
+            if !fades || listed.is_empty() {
                 continue;
             }
             let other = if other.surface == Surface::Terrain { u32::MAX } else { label_id(&other) };
@@ -1483,16 +1480,20 @@ fn encode(
     let w = &rules.plan.walk;
     let mut rows = vec![f(w.end_slope), f(w.end_round_m), rec.len() as u32];
     let mut walk_w = Vec::new();
+    let cm = |m: f64| (libm::round(m * 100.0) as u32).min(0xffff);
     for &(l, _, _) in &rec {
         let first = walk_w.len() / WALK_RULE;
         for side in [-1.0, 1.0] {
             for e in walk.get(super::walk::side_of(l, side)).into_iter().flatten() {
-                walk_w.extend([f(e.at), f(e.target), u32::from(side > 0.0) | u32::from(e.dir > 0.0) << 1]);
+                let dir = e.dir.map(|v| u32::from(libm::round(v * 32767.0) as i16 as u16));
+                let side = cm(e.target) | u32::from(e.left) << 16 | cm(e.across).min(0x7fff) << 17;
+                walk_w.extend([e.at[0] as u32, e.at[1] as u32, dir[0] | dir[1] << 16, side]);
             }
         }
         let sec = &lines[l].sec;
-        rows.extend([first as u32, (walk_w.len() / WALK_RULE - first) as u32]);
-        rows.extend([f(sec.sidewalk_m), f(sec.kerb_m), f(sec.kerb_top_m)]);
+        let byte = |v: f64| (libm::round(v) as u32).min(0xff);
+        let class = cm(sec.sidewalk_m) | byte(sec.kerb_m * 1000.0) << 16 | byte(sec.kerb_top_m * 100.0) << 24;
+        rows.extend([first as u32 | ((walk_w.len() / WALK_RULE - first) as u32) << 20, class]);
     }
     words.extend(rows);
     words.extend(walk_w);
@@ -1771,6 +1772,41 @@ pub fn find(words: &[u32], q: [f64; 2]) -> Option<u32> {
         }
     }
     decide(words, &covered, q, &words[at..at + n_segs as usize])
+}
+
+/// The units from q to the paved outline's chords (negative inside), from q's bin; infinity where the bin does not
+/// list the outline (its first item) or q lies off the cell square.
+pub fn paved_outline_units(words: &[u32], q: [f64; 2]) -> f64 {
+    let cell = f64::from(CELL_UNITS as i32);
+    if !(0.0..=cell).contains(&q[0]) || !(0.0..=cell).contains(&q[1]) {
+        return f64::INFINITY;
+    }
+    let bin = |v: f64| ((v / f64::from(BIN_UNITS)).floor() as i32).min(BINS - 1);
+    let (col, row) = (bin(q[0]), bin(q[1]));
+    let head = words[9] as usize + HEADER * (row * BINS + col) as usize;
+    let mut at = words[head] as usize;
+    if words[head + 1] >> 16 == 0 || cand(words, words[at] & 0xffff)[0] != OUTLINE {
+        return f64::INFINITY;
+    }
+    let c = [2.0 * f64::from(reference(col)) + 1.0, 2.0 * f64::from(reference(row)) + 1.0];
+    let (mut w, mut d) = (((words[at] >> 16) & 0xff) as i32 - 128, f64::INFINITY);
+    let runs = words[at + 1];
+    at += 2;
+    for _ in 0..runs {
+        let n = words[at] as usize;
+        let v = |k: usize| [f64::from(words[at + 1 + 2 * k] as i32), f64::from(words[at + 2 + 2 * k] as i32)];
+        for k in 0..n.saturating_sub(1) {
+            let (a, b) = (v(k), v(k + 1));
+            w += crossing([2.0 * a[0], 2.0 * a[1]], [2.0 * b[0], 2.0 * b[1]], c, [2.0 * q[0], 2.0 * q[1]]);
+            d = d.min(seg_dist(a, b, q));
+        }
+        at += 1 + 2 * n;
+    }
+    if w != 0 {
+        -d
+    } else {
+        d
+    }
 }
 
 /// The glob order of a line at q: of its sample nearest q among the bin's segments.

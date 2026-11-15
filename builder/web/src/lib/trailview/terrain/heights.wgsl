@@ -13,7 +13,7 @@ const H_SLOTS: u32 = 10u;
 const H_PAIRS: u32 = 45u;
 const H_QUADS: u32 = 4u;
 // The most regions beyond a region's edges that weigh at a point, as heights::REGIONS.
-const H_REGIONS: u32 = 2u;
+const H_REGIONS: u32 = 3u;
 // The heights' rule words follow the block's head (heights::RULES of the crate).
 const H_RULES_AT: u32 = 16u;
 // The words of an outline edge, its grade's steps per metre and its turn's steps per π (records::EDGE,
@@ -1013,13 +1013,12 @@ fn h_arms_of(block: u32, hp: ptr<function, HPoint>, id: u32) -> u32 {
     return arms;
 }
 
-// A junction's region at q: its own painter, faded near each of its edges to the face beyond, as
-// heights::region. The groups: a host beyond at its record's index, then the regions beyond (the
-// nearest H_REGIONS). Toward a slope or the terrain the region keeps its own painter. `water`: the region's
-// kind, its material line's.
-fn h_region(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, label: u32, arms: u32, water: bool) -> f32 {
+// A fading face at q (a junction's region, or a slab) with its own surface `own`, faded near each of its edges to the
+// face beyond, as heights::region. The groups: a host's face beyond at its material line's record index, then the
+// fading faces beyond (the nearest H_REGIONS). Toward a slope or the terrain the face keeps its own surface.
+// `water`: the face's kind, its material line's.
+fn h_region(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, label: u32, arms: u32, own: f32, water: bool) -> f32 {
     let n = (*hp).n;
-    let own = h_paved_as(hp, H_SLOTS, arms, water);
     var dist: array<f32, H_SLOTS>;
     for (var k = 0u; k < H_SLOTS; k++) {
         dist[k] = H_BIG;
@@ -1046,7 +1045,7 @@ fn h_region(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, label: u3
             }
             let other = mw(ew + 5u);
             let rule = select(0u, mw(m_label(block, other)) >> 24u, other != M_NONE);
-            if (rule == 3u) {
+            if (rule == 3u || rule == 4u) {
                 var k = H_REGIONS - 1u;
                 for (var j = 0u; j < H_REGIONS; j++) {
                     if (beyond_id[j] == other) {
@@ -1069,12 +1068,9 @@ fn h_region(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, label: u3
                 }
                 continue;
             }
-            // A paved face beyond: its host line, if it has one.
-            if (rule != 2u && rule != 4u) {
-                continue;
-            }
+            // A host's face beyond: its material line (a face with none takes no part).
             let host = mw(m_label(block, other) + 2u);
-            for (var k = 0u; k < n; k++) {
+            for (var k = 0u; k < n && rule == 2u; k++) {
                 if ((*hp).recs[k].line == host) {
                     dist[k] = min(dist[k], d);
                 }
@@ -1251,7 +1247,8 @@ fn h_paved_at(block: u32, q: vec2f, mpu: f32, label: u32, rule: u32, material: u
         kind = kind || h_kind(&hp, k, water);
     }
     if (rule == 3u && kind) {
-        return vec2f(h_region(block, q, mpu, &hp, label, h_arms_of(block, &hp, label), water), H_PAVED);
+        let arms = h_arms_of(block, &hp, label);
+        return vec2f(h_region(block, q, mpu, &hp, label, arms, h_paved_as(&hp, H_SLOTS, arms, water), water), H_PAVED);
     }
     // The host: the label's material line; with none (a way's band face), the first way record whose core
     // holds q, else the nearest way record, as heights::host.
@@ -1278,17 +1275,22 @@ fn h_paved_at(block: u32, q: vec2f, mpu: f32, label: u32, rule: u32, material: u
     if (o == H_SLOTS) {
         return vec2f(t, H_PAVED);
     }
-    let rise = select(0.0, h_kerb_rise(block, q, hp.recs[o].line, start), rule == 4u);
-    return vec2f(h_paved_as(&hp, o, 0u, (hp.recs[o].rank & H_WATER) != 0u) + rise, H_PAVED);
+    let paved = h_paved_as(&hp, o, 0u, (hp.recs[o].rank & H_WATER) != 0u);
+    if (rule != 4u) {
+        return vec2f(paved, H_PAVED);
+    }
+    // A slab: its host's field, faded to the paved faces beside it as theirs is, and the kerb's rise.
+    let own = h_region(block, q, mpu, &hp, label, h_arms_of(block, &hp, label), paved, water);
+    return vec2f(own + h_kerb_rise(block, q, mpu, hp.recs[o].line), H_PAVED);
 }
 
 // The sidewalks (the crate's faces::walk and heights::kerb): the words of a record line's row in the block's
 // sidewalks' table and of a width rule (records::WALK_LINE, WALK_RULE).
-const H_WALK_LINE: u32 = 5u;
-const H_WALK_RULE: u32 = 3u;
+const H_WALK_LINE: u32 = 2u;
+const H_WALK_RULE: u32 = 4u;
 
-// The width x metres past a rule's station toward its slab, as walk::ramp: a ramp at slope k low low to full,
-// its two kinks rounded with radius r (less where the rounds would meet).
+// The width x metres past a rule's tip toward its slab, as walk::Ramp: a ramp at slope k from low to full, its two
+// kinks rounded with radius r (less where the rounds would meet).
 fn h_ramp(x0: f32, low: f32, full: f32, k: f32, r0: f32) -> f32 {
     let rise = full - low;
     if (rise <= 0.0) {
@@ -1323,85 +1325,44 @@ fn h_walk_row(block: u32, line: u32) -> u32 {
     return block + t + 3u + H_WALK_LINE * line;
 }
 
-// The width at metres along `at` on a side (+1 the stroke's left normal) of a row's sidewalk, as walk::width:
-// the least ramp whose slab side holds it; with `tips`, of the taper tips alone.
-fn h_walk_width(block: u32, row: u32, at: f32, side: f32, tips: bool) -> f32 {
+// The full width of a row's sidewalk (m).
+fn h_walk_full(row: u32) -> f32 {
+    return f32(mw(row + 1u) & 0xffffu) / 100.0;
+}
+
+// The width at q (mpu metres per unit) of a row's sidewalk, as walk::width: the least ramp of the rules that hold q
+// (from one unit before their tip on, on their side, within their reach across and their metres along); with `tips`,
+// of the taper tips alone.
+fn h_walk_width(block: u32, row: u32, q: vec2f, mpu: f32, tips: bool) -> f32 {
     let t = mw(block + 15u);
     let k = mf(block + t);
     let r = mf(block + t + 1u);
-    let rules = block + t + 3u + H_WALK_LINE * mw(block + t + 2u) + H_WALK_RULE * mw(row);
-    let full = mf(row + 2u);
-    let own = select(0u, 1u, side > 0.0);
+    let rules = block + t + 3u + H_WALK_LINE * mw(block + t + 2u) + H_WALK_RULE * (mw(row) & 0xfffffu);
+    let full = h_walk_full(row);
     var w = full;
-    for (var i = 0u; i < mw(row + 1u); i++) {
+    for (var i = 0u; i < (mw(row) >> 20u); i++) {
         let e = rules + H_WALK_RULE * i;
-        let flags = mw(e + 2u);
-        let dir = select(-1.0, 1.0, (flags & 2u) != 0u);
-        let low = mf(e + 1u);
-        if ((flags & 1u) != own || (tips && low != 0.0) || (at - mf(e)) * dir < 0.0) {
+        let low = f32(mw(e + 3u) & 0xffffu) / 100.0;
+        let dir = unpack2x16snorm(mw(e + 2u));
+        let v = q - vec2f(mi(e), mi(e + 1u));
+        let x = dot(v, dir);
+        let across = m_cross(dir, v) * select(-mpu, mpu, ((mw(e + 3u) >> 16u) & 1u) != 0u);
+        let along = max(x, 0.0) * mpu;
+        if ((tips && low != 0.0) || x < -1.0 || across <= 0.0 || across > f32(mw(e + 3u) >> 17u) / 100.0 + along) {
             continue;
         }
-        w = min(w, h_ramp(abs(at - mf(e)), low, full, k, r));
+        w = min(w, h_ramp(along, low, full, k, r));
     }
     return w;
 }
 
-// q's metres along record line l and its side (y: +1 on the stroke's left normal, 0 where none of the nh height
-// segment items from word `at` frames q), as kerb::station: in the mitre quad that holds q, the one nearest across
-// where quads overlap, at its share; past the line's first or last sample, along its end chord.
-fn h_walk_station(block: u32, q: vec2f, l: u32, at: u32, nh: u32) -> vec2f {
-    let ln = h_line(block, l);
-    let samples = block + mw(block + 7u) + M_SAMPLE * ln.first;
-    var best = vec3f(H_BIG, 0.0, 0.0);
-    for (var k = 0u; k < nh; k++) {
-        let item = mw(at + k);
-        if ((item & 0xffffu) != l) {
-            continue;
-        }
-        let i = item >> 16u;
-        let wa = samples + M_SAMPLE * i;
-        let wb = wa + M_SAMPLE;
-        let pa = vec2f(mi(wa), mi(wa + 1u));
-        let pb = vec2f(mi(wb), mi(wb + 1u));
-        let ab = pb - pa;
-        let len = length(ab);
-        if (len <= 0.0) {
-            continue;
-        }
-        let da = dot(q - pa, h_mitre(block, ln, i));
-        let db = dot(pb - q, h_mitre(block, ln, i + 1u));
-        let aa = mf(wa + 3u);
-        let ab_ = mf(wb + 3u);
-        var along = 0.0;
-        if (da >= 0.0 && db >= 0.0) {
-            along = aa + select(0.5, da / (da + db), da + db > 0.0) * (ab_ - aa);
-        } else if (i == 0u && da < 0.0 && db >= 0.0) {
-            along = aa + (ab_ - aa) * dot(q - pa, ab) / (len * len);
-        } else if (i + 2u == ln.count && db < 0.0 && da >= 0.0) {
-            along = ab_ + (ab_ - aa) * dot(q - pb, ab) / (len * len);
-        } else {
-            continue;
-        }
-        let across = m_cross(ab, q - pa) / len;
-        if (abs(across) < best.x) {
-            best = vec3f(abs(across), along, select(-1.0, 1.0, across >= 0.0));
-        }
-    }
-    return best.yz;
-}
-
-// The kerb's rise at q of a sidewalk on record line `line`, as kerb::rise: kerb_m times the share of the full
-// width that the taper tips on q's side leave at q's metres along; in full where no segment frames q.
-fn h_kerb_rise(block: u32, q: vec2f, line: u32, start: u32) -> f32 {
+// The kerb's rise at q of a sidewalk on record line `line`, as kerb::rise: kerb_m times the share of the full width
+// that the taper tips leave at q.
+fn h_kerb_rise(block: u32, q: vec2f, mpu: f32, line: u32) -> f32 {
     let row = h_walk_row(block, line);
-    if (row == 0u || mf(row + 2u) <= 0.0 || mf(row + 3u) <= 0.0) {
+    let kerb = select(0.0, f32((mw(row + 1u) >> 16u) & 0xffu) / 1000.0, row != 0u);
+    if (kerb <= 0.0 || h_walk_full(row) <= 0.0) {
         return 0.0;
     }
-    let head = m_bin_head(block, q);
-    let at = select(h_heights_start(block, q), start, start != 0u);
-    let s = h_walk_station(block, q, line, at, select(0u, mw(head + 2u) >> 16u, head != 0u));
-    if (s.y == 0.0) {
-        return mf(row + 3u);
-    }
-    return mf(row + 3u) * h_walk_width(block, row, s.x, s.y, true) / mf(row + 2u);
+    return kerb * h_walk_width(block, row, q, mpu, true) / h_walk_full(row);
 }
