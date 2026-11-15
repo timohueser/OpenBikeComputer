@@ -816,9 +816,9 @@ def check_links(rendered):
                 continue
             path, _, frag = href.partition("#")
             target = urljoin(url, path).lstrip("/") if path else url
-            # The map builder is a sibling *app* in the published artifact, not a page
+            # The web app is a sibling *app* in the published artifact, not a page
             # this renderer produces — there is no HTML here to validate it against.
-            if target.startswith(("builder/", "plan/")):
+            if target.startswith("plan/"):
                 continue
             label = "/" + url
             if not frag and target.startswith("docs/") and (OUT / target[5:]).is_file():

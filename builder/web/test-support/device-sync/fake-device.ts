@@ -1,7 +1,7 @@
 /**
  * A device on a pretend cable: `planner.html?fake-device`, on the dev server and in the build of the browser tests. The wasm
  * test device of the sync tests holds a map, a route and two rides of today. The chooser of the Connect button plugs it in.
- * `window.deviceTest`: `plug(unformatted)` and `unplug()` move the cable, `hold()` stops each sync at its start until `release()`, and
+ * `window.deviceTest`: `plug(unformatted)` and `unplug()` move the cable, `hold()` stops each sync at its start and `holdPut()` each put before its first byte, until `release()`; `map()` gives the map on the card; and
  * `offer(version)` publishes a pretend software version. The card is the same at each page load. `plug(true)` puts a second
  * device with the same serial on the cable, whose card has no format. A format restarts the device, as the real one does.
  */
@@ -11,6 +11,7 @@ import { firmwareCheck } from '../../src/lib/firmware/check.svelte';
 import { flatDevice, initFlatDevice } from '../../src/lib/usb/flat-device';
 import { encodeRideObject, type RideObject } from '../../src/lib/usb/objects';
 import { ObjectKind } from '../../src/lib/usb/protocol';
+import { bytesSource } from '../../src/lib/usb/source';
 import type { DeviceState, DeviceWatcher } from '../../src/lib/usb/session';
 import { WatchedDeviceSession } from '../../src/lib/usb/session.svelte';
 
@@ -61,7 +62,21 @@ export async function fakeDevice(): Promise<void> {
     const list = rig.client.list.bind(rig.client);
     rig.client.list = async (...args) => { await gate; return list(...args); };
     const hold = () => { gate = new Promise(resolve => open = resolve); };
-    const release = () => open();
+    // A held put has started on the wire: the device has its header and waits for the first byte.
+    let putGate: Promise<void> = Promise.resolve(), openPut = () => {};
+    const put = rig.client.put.bind(rig.client);
+    rig.client.put = (target, source, options) => {
+        const src = source instanceof Uint8Array ? bytesSource(source) : source, wait = putGate;
+        return put(target, { ...src, async *chunks(size) { await wait; yield* src.chunks(size); } }, options);
+    };
+    const holdPut = () => { putGate = new Promise(resolve => openPut = resolve); };
+    const release = () => { open(); openPut(); };
+    /** The payload of the map that the device selects, as numbers. */
+    const map = () => {
+        const shards = rig.device.entries.filter(entry => entry.kind === ObjectKind.MapShard);
+        const selected = shards.reduce((best, entry) => entry.objectId < best.objectId ? entry : best);
+        return Array.from(rig.device.payloadOf(selected.objectId) ?? []);
+    };
     const offer = (version: string) => { firmwareCheck.release = { version, bytes: 1, sha256: '', url: 'https://updates.test/UPDATE.BIN' }; };
     const watcher: DeviceWatcher = {
         get current() { return state; },
@@ -74,5 +89,5 @@ export async function fakeDevice(): Promise<void> {
     // `open()` then gives this session, and never a WebUSB one.
     Object.assign(deviceHolder, { session, opening: Promise.resolve(session) });
     // `route`: the `device` of a `sent` entry for the route on the card.
-    Object.assign(window, { deviceTest: { plug, unplug, hold, release, offer, route: `${STORE}:${route.objectId}` } });
+    Object.assign(window, { deviceTest: { plug, unplug, hold, holdPut, release, map, offer, route: `${STORE}:${route.objectId}` } });
 }

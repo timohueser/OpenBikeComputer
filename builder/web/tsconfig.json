@@ -12,11 +12,7 @@
         "types": ["vite/client", "node", "@webgpu/types"],
         "strict": true,
         "noUnusedLocals": true,
-        "noUnusedParameters": true,
-        // The platform alias of vite.config.ts, which names the web host in every mode.
-        "paths": {
-            "$host": ["./src/lib/platform/web.ts"]
-        }
+        "noUnusedParameters": true
     },
     // `test-support/` holds what the suites need and the app must not have: the loader for the wasm
     // test device, and the device smoke's phases. It is checked to the same bar; its generated

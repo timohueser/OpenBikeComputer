@@ -415,6 +415,56 @@ jobs:
           path: ${{ runner.temp }}/ui-snapshots/*.png
           if-no-files-found: ignore
 
+  # Routing-profile round-trips through the obc-pack binary. These pack the tiny corpus with custom
+  # profiles and byte-compare the §8.6 profile table against independently quantized expectations,
+  # so they pin the packer's writer against the spec rather than against itself. The preflight is
+  # what stops a missing binary or corpus from turning the suite into a silent skip.
+  packer-python:
+    needs: selection
+    if: contains(fromJSON(needs.selection.outputs.jobs), 'packer-python')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+          shared-key: host-tests
+          save-if: false
+      - uses: ./.github/actions/setup-host-deps
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: *python-uv-version
+      - name: Prepare the packer profile tests
+        run: |
+          uv sync --locked --group packer-test
+          cargo build -p obc-bake --bin obc-pack --release --locked
+      - name: Packer binary and corpus are present
+        run: |
+          test -x target/release/obc-pack
+          test -f builder/tests/corpus/data/tiny.osm.pbf
+      - name: Packer profile tests (pytest)
+        id: python-packer
+        run: |
+          mkdir -p .artifacts/python
+          rm -f .artifacts/python/packer.xml
+          uv run --locked --group packer-test python -m pytest host/obc-bake/tests/test_routing_profiles.py -v --junitxml=.artifacts/python/packer.xml
+      - name: Upload packer Python test results
+        if: ${{ !cancelled() && (steps.python-packer.outcome == 'success' || steps.python-packer.outcome == 'failure') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-packer-${{ github.run_attempt }}
+          path: .artifacts/python/packer.xml
+          if-no-files-found: error
+
   embedded:
     needs: selection
     if: contains(fromJSON(needs.selection.outputs.jobs), 'embedded')
@@ -1161,7 +1211,7 @@ jobs:
   # publishes no plan, which fails this gate rather than silently passing.
   ci:
     if: always()
-    needs: [selection, guards, cairn, fmt, clippy, test, ui-snapshots, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, ios-release, web, web-browser, verification, planner-search]
+    needs: [selection, guards, cairn, fmt, clippy, test, ui-snapshots, packer-python, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, ios-release, web, web-browser, verification, planner-search]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4

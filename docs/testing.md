@@ -103,7 +103,7 @@ and a missing expected file fails the upload. Download with
 | Artifact | Holds |
 | --- | --- |
 | `rust-test-ATTEMPT`, `rust-fixtures-ATTEMPT` | nextest JUnit XML for the fast and fixture tiers; the fast artifact also holds `doctests.log` and `formats-default.log` |
-| `python-repository-tools-ATTEMPT`, `python-firmware-tools-ATTEMPT` | unittest and pytest XML |
+| `python-repository-tools-ATTEMPT`, `python-firmware-tools-ATTEMPT`, `python-packer-ATTEMPT` | unittest and pytest XML |
 | `web-builder-ATTEMPT` | Vitest JUnit XML |
 | `web-builder-browser-ATTEMPT`, `web-demo-browser-ATTEMPT` | the Chromium journeys of the web app and of the landing page, with a screenshot and trace on failure |
 | `ios-tests-coverage-ATTEMPT`, `ios-screenshots-ATTEMPT`, `ios-application-ATTEMPT` | `.xcresult` bundles; restore the suffix and open in Xcode |

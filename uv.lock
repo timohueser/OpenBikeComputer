@@ -999,6 +999,9 @@ forest-reference = [
     { name = "pillow" },
     { name = "pmtiles" },
 ]
+packer-test = [
+    { name = "pytest" },
+]
 planner-climate = [
     { name = "h5py" },
     { name = "numcodecs" },
@@ -1126,6 +1129,7 @@ forest-reference = [
     { name = "pillow", specifier = "==12.3.0" },
     { name = "pmtiles", specifier = "==3.8.1" },
 ]
+packer-test = [{ name = "pytest", specifier = ">=8.0.0" }]
 planner-climate = [
     { name = "h5py", specifier = "==3.16.0" },
     { name = "numcodecs", specifier = "==0.17.0" },
@@ -1551,7 +1555,7 @@ name = "pytest"
 version = "9.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'group-22-openbikecomputer-tools-dev' and extra == 'group-22-openbikecomputer-tools-search-runtime') or (extra == 'group-22-openbikecomputer-tools-dev' and extra == 'group-22-openbikecomputer-tools-search-test') or (extra == 'group-22-openbikecomputer-tools-dev' and extra == 'group-22-openbikecomputer-tools-search-training') or (extra == 'group-22-openbikecomputer-tools-planner-search' and extra == 'group-22-openbikecomputer-tools-search-runtime') or (extra == 'group-22-openbikecomputer-tools-planner-search' and extra == 'group-22-openbikecomputer-tools-search-test') or (extra == 'group-22-openbikecomputer-tools-planner-search' and extra == 'group-22-openbikecomputer-tools-search-training')" },
     { name = "iniconfig" },
     { name = "packaging" },
     { name = "pluggy" },

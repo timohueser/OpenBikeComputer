@@ -34,9 +34,6 @@ export default defineConfig(({ mode }) => {
         // Always a string, so a build without it drops the pretend device of `planner.ts` with its wasm.
         define: { "import.meta.env.VITE_FAKE_DEVICE": JSON.stringify(process.env.VITE_FAKE_DEVICE ?? "") },
         resolve: {
-            // Root-relative rather than an absolute path so the config needs no
-            // node: builtins (and so no @types/node just to type-check itself).
-            alias: { $host: "/src/lib/platform/web.ts" },
             // Component tests run through Vitest's SSR transform even when their
             // per-file environment supplies a DOM. Select Svelte's client runtime
             // there so mounted tests exercise the real browser lifecycle.

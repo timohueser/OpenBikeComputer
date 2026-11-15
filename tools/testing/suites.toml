@@ -408,6 +408,20 @@ triggers = ["tools/trailview/**", "data/trailview/**", "fixtures/sources/trailvi
   "builder/web/src/lib/trailview/models/trees/**", "builder/web/src/lib/trailview/models/plants/**", "pyproject.toml", "uv.lock"]
 
 [[suite]]
+id = "python.packer-profiles"
+route = "ordinary"
+command = "rm -f .artifacts/python/packer.xml && uv run --locked --group packer-test python -m pytest host/obc-bake/tests/test_routing_profiles.py -v --junitxml=.artifacts/python/packer.xml"
+jobs = ["packer-python"]
+fixtures = ["builder-corpus"]
+triggers = [
+  "host/obc-bake/tests/test_routing_profiles.py",
+  "builder/tests/corpus/**",
+  "builder/presets/**",
+  "host/obc-map-core/schema/config.schema.json",
+  "pyproject.toml", "uv.lock",
+]
+
+[[suite]]
 id = "ios.replay-camera"
 scoped = true
 route = "ordinary"
@@ -499,7 +513,7 @@ triggers = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml"]
 id = "ci.rust-builds"
 route = "ordinary"
 command = "obc check device board wasm"
-jobs = ["boot", "device", "embedded", "ui-snapshots", "wasm"]
+jobs = ["boot", "device", "embedded", "packer-python", "ui-snapshots", "wasm"]
 foundation = true
 triggers = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "tools/install-riscv.sh"]
 

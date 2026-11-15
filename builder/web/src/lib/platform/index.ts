@@ -1,5 +1,4 @@
-// The one place the app reaches its host. `$host` is a Vite alias (see vite.config.ts) that
-// names the web host, `web.ts`, in every mode.
+// The one place the app reaches its host, the web host.
 
-export { platform } from "$host";
+export { platform } from "./web";
 export * from "./types";

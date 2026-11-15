@@ -452,8 +452,8 @@ class ShippedPlanTests(unittest.TestCase):
             "obc-boot": ["boot", "fmt"],
             "obc-builder-bridge": ["clippy", "fmt", "test", "wasm-bridges"],
             "obc-web-demo": ["clippy", "fmt", "test", "wasm"],
-            "obc-pack": ["clippy", "fmt", "test"],
-            "obc-bake": ["clippy", "fmt", "test"],
+            "obc-pack": ["clippy", "fmt", "packer-python", "test"],
+            "obc-bake": ["clippy", "fmt", "packer-python", "test"],
             "obc-sim": ["clippy", "fmt", "test", "ui-snapshots"],
             "obc-app": ["clippy", "device", "fmt", "test"],
         }
@@ -475,7 +475,7 @@ class ShippedPlanTests(unittest.TestCase):
             (
                 "foundational Rust crate",
                 ["firmware/obc-crc/src/lib.rs"],
-                ["boot", "cairn", "clippy", "device", "embedded", "fmt", "ios-app", "ios-release", "ios-unit", "test", "ui-snapshots", "wasm", "wasm-bridges"],
+                ["boot", "cairn", "clippy", "device", "embedded", "fmt", "ios-app", "ios-release", "ios-unit", "packer-python", "test", "ui-snapshots", "wasm", "wasm-bridges"],
             ),
             (
                 "shared vectors",
@@ -491,12 +491,12 @@ class ShippedPlanTests(unittest.TestCase):
             (
                 "workflow",
                 [".github/workflows/ci.yml"],
-                ["boot", "cairn", "clippy", "deny", "device", "docs", "embedded", "fmt", "ios-app", "ios-release", "ios-unit", "planner-search", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
+                ["boot", "cairn", "clippy", "deny", "device", "docs", "embedded", "fmt", "ios-app", "ios-release", "ios-unit", "packer-python", "planner-search", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
             ),
             (
                 "nextest configuration",
                 [".config/nextest.toml"],
-                ["boot", "cairn", "clippy", "deny", "device", "docs", "embedded", "fmt", "planner-search", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
+                ["boot", "cairn", "clippy", "deny", "device", "docs", "embedded", "fmt", "packer-python", "planner-search", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
             ),
             ("web demo crate", ["sim/web-demo/src/lib.rs"], ["cairn", "clippy", "fmt", "test", "wasm"]),
             ("web demo Trunk target", ["docs/index.html"], ["docs", "wasm", "wasm-bridges"]),

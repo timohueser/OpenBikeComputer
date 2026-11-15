@@ -1,5 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HOSTS, respond } from './stubs.js';
@@ -7,6 +9,9 @@ import { HOSTS, respond } from './stubs.js';
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '../../../../..');
 const PLANNER_CATALOG = 'https://maps.openbikecomputer.com/planner/catalog.json';
 const CORS = { 'access-control-allow-origin': '*' };
+/** The map that `obcm-assemble` writes from the cells of the fixture catalog. */
+const PINNED_MAP = join(REPO, 'builder/wasm/tests/fixture/expected/map.obcm');
+const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 
 // The fixture catalog of the builder journey: one region, "Bridge Fixture", of two detail cells side by side.
 let server, origin;
@@ -200,6 +205,28 @@ test('"Send the map" builds the map that waits and puts it on the device; Stop i
   await expect(row).not.toContainText('New area');
   await expect(row.getByRole('button')).toHaveCount(0);
   await expect(row.getByRole('link', { name: 'Change the area of the map' })).toBeVisible();
+  // The card holds the map that `obcm-assemble` wrote from the same cells, byte for byte.
+  const sent = Buffer.from(await page.evaluate(() => window.deviceTest.map()));
+  expect(sha256(sent)).toBe(sha256(await readFile(PINNED_MAP)));
   expect(errors).toEqual([]);
   expect(await nextMap(page)).toBeNull();
+});
+
+test('Stop while the map goes to the device keeps the map of the card, and the new map waits', async ({ page }) => {
+  await library(page, () => window.coverTest.library.setState('nextMap', { regions: ['bridge-fixture'], boxes: [], light: 'default', dark: 'dusk', bytes: 16_000 }));
+  const errors = await open(page, '?fake-device#/device');
+  await page.getByRole('button', { name: 'Connect a device' }).click();
+  const row = page.locator('.row', { has: page.getByText('Map', { exact: true }) });
+  await expect(page.locator('.row', { hasText: 'In sync.' })).toBeVisible();
+  const before = await page.evaluate(() => window.deviceTest.map());
+
+  await page.evaluate(() => window.deviceTest.holdPut());
+  await row.getByRole('button', { name: 'Send the map' }).click();
+  await expect(row).toContainText(/Send \d+ %/);
+  await row.getByRole('button', { name: 'Stop' }).click();
+  await page.evaluate(() => window.deviceTest.release());
+  await expect(row).toContainText('The new map was not sent. “Send the map” starts again.');
+  await expect(row).toContainText('New area · 15.6 KB');
+  expect(await page.evaluate(() => window.deviceTest.map())).toEqual(before);
+  expect(errors).toEqual([]);
 });
