@@ -65,6 +65,33 @@ describe('the layout of the wide share card', () => {
     });
 });
 
+describe('the layout of the square and the tall share card', () => {
+    const rows = { date: true, numbers: true, profile: true, credit: true };
+
+    it.each([['square', [1280, 1280], 853], ['tall', [1024, 1280], 683]] as const)('has one size and the whole picture at the top, and each row under it: %s', (format, size, pictureHeight) => {
+        for (const nameLines of [1, 3]) {
+            const boxes = layout(format, { nameLines, ...rows });
+            expect(boxes.size).toEqual(size);
+            // The picture is 3 : 2, as a cover, so the card cuts nothing of it.
+            expect(boxes.picture).toEqual({ x: 0, y: 0, width: size[0], height: pictureHeight });
+            expect(boxes.ground).toEqual({ x: 0, y: pictureHeight, width: size[0], height: size[1] - pictureHeight });
+            const parts = [boxes.picture, boxes.date!, boxes.name, boxes.numbers!, boxes.credit!, ...boxes.band ? [boxes.band] : []];
+            parts.slice(1).forEach((part, i) => expect(part.y).toBeGreaterThanOrEqual(bottom(parts[i])));
+            // The text keeps the margin from the lower edge, and a profile ends on it.
+            expect(size[1] - bottom(boxes.credit!)).toBeGreaterThanOrEqual(boxes.mark.x);
+            if (boxes.band) expect(bottom(boxes.band)).toBe(size[1]);
+        }
+    });
+
+    it('makes the profile lower when the text needs the room, and leaves it out when it gets too low', () => {
+        const heights = (format: 'square' | 'tall') => [1, 2, 3].map(nameLines => layout(format, { nameLines, ...rows }).band?.height);
+        expect(heights('square')).toEqual([169, 100, undefined]);
+        expect(heights('tall')).toEqual([239, 239, 239]);
+        // The layout says so also with the profile off, so that the window can leave out its switch.
+        expect([1, 3].map(nameLines => layout('square', { nameLines, ...rows, profile: false }).profileFits)).toEqual([true, false]);
+    });
+});
+
 describe('the drawing of a share card', () => {
     it('gives the canvas the size of the card, and draws the name, each number with its unit and the mark', () => {
         const full = recorder(), bare = recorder();
