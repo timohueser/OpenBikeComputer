@@ -7,7 +7,7 @@ use crate::{sort, work, Roads};
 use planner_router::model::Point;
 use sha2::{Digest, Sha256};
 use std::ops::Range;
-use std::sync::atomic::{AtomicU32, AtomicU8, Ordering::Relaxed};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering::Relaxed};
 
 /// The largest number of levels: a road keeps its border level in a byte of its order key.
 pub const MAX_LEVELS: usize = 8;
@@ -273,9 +273,10 @@ impl Cells {
 /// the junctions of a part are near in memory. The order keys, their ties, the islands and the
 /// order of a split use the walk-1 IDs, so these numbers change only the speed. The arrays never
 /// move: a part of a bisection is a range of positions, and an arc to a junction outside the part
-/// is skipped. Parts that run at the same time
-/// touch disjoint entries of `residual` and `pos`, so relaxed atomics suffice. A read of `pos` of a
-/// junction of another part gives a position in that part, before or after its split: outside.
+/// is skipped. Parts that run at the same time touch disjoint entries of `residual` and `pos`, and
+/// the two directions of a part that run at the same time each have their own `residual`, so
+/// relaxed atomics suffice. A read of `pos` of a junction of another part gives a position in that
+/// part, before or after its split: outside.
 struct Junctions {
     /// The walk-1 ID of each junction.
     walk1: Vec<u32>,
@@ -285,10 +286,11 @@ struct Junctions {
     first: Vec<u32>,
     /// The neighbour of each arc. The arcs of a junction are sorted by neighbour.
     adj: Vec<u32>,
-    /// The capacity of each arc, the same in both directions: the roads between the two junctions,
-    /// at most 127, so that a residual of up to twice the capacity fits a byte.
-    capacity: Vec<u8>,
-    residual: Vec<AtomicU8>,
+    /// The residual of each arc, for each of the two directions that run at the same time. It
+    /// starts at the capacity, the same in both directions: the roads between the two junctions,
+    /// at most 127, so that a residual of up to twice the capacity fits a byte. A flow keeps the sum
+    /// of the residuals of an arc and its twin, so that sum gives the capacity again.
+    residual: [Vec<AtomicU8>; 2],
     /// The position of each junction.
     pos: Vec<AtomicU32>,
 }
@@ -307,17 +309,48 @@ const SINK: u32 = 1 << 30;
 /// On the source side of the best cut so far.
 const BEST: u32 = 1 << 31;
 
-/// One part of a bisection: the positions `lo..lo + at.len()`, and the work space of each.
+/// One part of a bisection: the positions `lo..lo + at.len()`, and two work spaces for each, so
+/// that two directions of a cut run at the same time.
 struct Part<'a> {
     lo: u32,
     /// The junction at each position.
     at: &'a mut [u32],
+    work: [Work<'a>; 2],
+}
+
+/// The work space of one direction, for each position of a part.
+struct Work<'a> {
     /// The level of a search, with the flags `SINK` and `BEST`.
     level: &'a mut [u32],
     /// The current arc of the flow search.
     current: &'a mut [u32],
     /// The selection of sources and sinks, the search queue, the path of the flow search, and the
     /// space of the split.
+    queue: &'a mut [u32],
+}
+
+impl<'a> Work<'a> {
+    fn split_at(self, m: usize) -> (Work<'a>, Work<'a>) {
+        let (level, current, queue) =
+            (self.level.split_at_mut(m), self.current.split_at_mut(m), self.queue.split_at_mut(m));
+        (
+            Work { level: level.0, current: current.0, queue: queue.0 },
+            Work { level: level.1, current: current.1, queue: queue.1 },
+        )
+    }
+
+    fn search<'s>(&'s mut self, lo: u32, at: &'s [u32], residual: &'s [AtomicU8]) -> Search<'s> {
+        Search { lo, at, residual, level: self.level, current: self.current, queue: self.queue }
+    }
+}
+
+/// The search of one direction in a part, with its work space and its residuals.
+struct Search<'a> {
+    lo: u32,
+    at: &'a [u32],
+    residual: &'a [AtomicU8],
+    level: &'a mut [u32],
+    current: &'a mut [u32],
     queue: &'a mut [u32],
 }
 
@@ -340,6 +373,54 @@ impl Junctions {
 }
 
 impl Part<'_> {
+    /// Splits the part at the smallest of the cuts of four directions, two at a time. Returns the
+    /// size of the source side, which comes first in `at`.
+    fn bisect(&mut self, graph: &Junctions) -> usize {
+        let n = self.at.len();
+        let k = (n / 4).max(1);
+        // The smallest cut of the directions that finished: a flow that passes it cannot win.
+        let bound = AtomicU64::new(u64::MAX);
+        let (lo, at) = (self.lo, &*self.at);
+        let [a, b] = &mut self.work;
+        a.level.fill(UNSEEN);
+        // (cut, smaller side) of the best direction; its source side has `BEST` in `a`.
+        let mut best: Option<(u64, usize)> = None;
+        for direction in [0, 2] {
+            let (mut first, mut second) = (a.search(lo, at, &graph.residual[0]), b.search(lo, at, &graph.residual[1]));
+            // With no free thread, `join` runs the second direction after the first, with its bound.
+            let found = rayon::join(
+                || first.direction(graph, direction, k, &bound),
+                || second.direction(graph, direction + 1, k, &bound),
+            );
+            for (found, in_b) in [(found.0, false), (found.1, true)] {
+                let Some((cut, smaller)) = found else { continue };
+                if best.is_none_or(|best| (cut, std::cmp::Reverse(smaller)) < (best.0, std::cmp::Reverse(best.1))) {
+                    best = Some((cut, smaller));
+                    for place in 0..n {
+                        let side = if in_b { b.level[place] } else { a.level[place] };
+                        let level = &mut a.level[place];
+                        *level = if side & LEVEL == SINK_SIDE { *level & !BEST } else { *level | BEST };
+                    }
+                }
+            }
+        }
+        // A stable split of `at`, the source side first.
+        let sources = a.level.iter().filter(|&&level| level & BEST != 0).count();
+        let (mut source, mut sink) = (0, sources);
+        for place in 0..n {
+            let slot = if a.level[place] & BEST != 0 { &mut source } else { &mut sink };
+            a.queue[*slot] = self.at[place];
+            *slot += 1;
+        }
+        self.at.copy_from_slice(a.queue);
+        for (place, &junction) in self.at.iter().enumerate() {
+            graph.pos[junction as usize].store(self.lo + place as u32, Relaxed);
+        }
+        sources
+    }
+}
+
+impl Search<'_> {
     /// The place of `junction` in the part, or `None` outside it.
     fn place(&self, graph: &Junctions, junction: u32) -> Option<usize> {
         let place = graph.pos[junction as usize].load(Relaxed).wrapping_sub(self.lo) as usize;
@@ -350,56 +431,40 @@ impl Part<'_> {
         self.level[place] = (self.level[place] & !LEVEL) | level;
     }
 
-    /// Splits the part at the smallest of the cuts of four directions. Returns the size of the
-    /// source side, which comes first in `at`.
-    fn bisect(&mut self, graph: &Junctions) -> usize {
+    /// The cut of `direction`, and the size of the smaller side, which `level` then holds: the
+    /// level `SINK_SIDE` on the sink side. Keeps the flag `BEST`. `None` when the flow passes
+    /// `bound`; on `Some`, `bound` becomes the smaller of itself and the cut.
+    fn direction(&mut self, graph: &Junctions, direction: usize, k: usize, bound: &AtomicU64) -> Option<(u64, usize)> {
         let n = self.at.len();
-        let k = (n / 4).max(1);
-        self.level.fill(UNSEEN);
-        // (cut, smaller side) of the best direction.
-        let mut best: Option<(u64, usize)> = None;
-        for direction in 0..4 {
-            let key = |&junction: &u32| graph.key(direction, junction);
-            self.queue.copy_from_slice(self.at);
-            self.queue.select_nth_unstable_by_key(n - k, key);
-            self.queue[..n - k].select_nth_unstable_by_key(k - 1, key);
-            self.queue[k..n - k].select_nth_unstable_by_key(n / 2 - k, key);
-            let median = key(&self.queue[n / 2]);
-            for level in &mut self.level[..n] {
-                *level &= BEST;
-            }
-            for i in n - k..n {
-                let place = self.place(graph, self.queue[i]).expect("a sink of the part");
-                self.level[place] |= SINK;
-            }
-            for &junction in self.at.iter() {
-                for arc in graph.arcs(junction) {
-                    graph.residual[arc].store(graph.capacity[arc], Relaxed);
-                }
-            }
-            let Some(cut) = self.flow(graph, k, best.map(|(cut, _)| cut)) else { continue };
-            let sources = self.sides(graph, direction, median);
-            let smaller = sources.min(n - sources);
-            if best.is_none_or(|best| (cut, std::cmp::Reverse(smaller)) < (best.0, std::cmp::Reverse(best.1))) {
-                best = Some((cut, smaller));
-                for level in self.level.iter_mut() {
-                    *level = if *level & LEVEL == SINK_SIDE { *level & !BEST } else { *level | BEST };
+        let key = |&junction: &u32| graph.key(direction, junction);
+        self.queue.copy_from_slice(self.at);
+        self.queue.select_nth_unstable_by_key(n - k, key);
+        self.queue[..n - k].select_nth_unstable_by_key(k - 1, key);
+        self.queue[k..n - k].select_nth_unstable_by_key(n / 2 - k, key);
+        let median = key(&self.queue[n / 2]);
+        for level in self.level.iter_mut() {
+            *level &= BEST;
+        }
+        for i in n - k..n {
+            let place = self.place(graph, self.queue[i]).expect("a sink of the part");
+            self.level[place] |= SINK;
+        }
+        for &junction in self.at {
+            for arc in graph.arcs(junction) {
+                let neighbour = graph.adj[arc];
+                if neighbour > junction && self.place(graph, neighbour).is_some() {
+                    let twin = graph.twin(junction, neighbour);
+                    let sum =
+                        u16::from(self.residual[arc].load(Relaxed)) + u16::from(self.residual[twin].load(Relaxed));
+                    self.residual[arc].store((sum / 2) as u8, Relaxed);
+                    self.residual[twin].store((sum / 2) as u8, Relaxed);
                 }
             }
         }
-        // A stable split of `at`, the source side first.
-        let sources = self.level.iter().filter(|&&level| level & BEST != 0).count();
-        let (mut source, mut sink) = (0, sources);
-        for place in 0..n {
-            let slot = if self.level[place] & BEST != 0 { &mut source } else { &mut sink };
-            self.queue[*slot] = self.at[place];
-            *slot += 1;
-        }
-        self.at.copy_from_slice(self.queue);
-        for (place, &junction) in self.at.iter().enumerate() {
-            graph.pos[junction as usize].store(self.lo + place as u32, Relaxed);
-        }
-        sources
+        let cut = self.flow(graph, k, bound)?;
+        bound.fetch_min(cut, Relaxed);
+        let sources = self.sides(graph, direction, median);
+        Some((cut, sources.min(n - sources)))
     }
 
     /// Dinic's maximum flow from the `k` sources at the start of `queue` to the junctions marked
@@ -413,7 +478,7 @@ impl Part<'_> {
     /// before it, so the levels `1..start` count as unseen, and no phase walks its junctions again
     /// to reset them. `start` is at least 2, so a dead end gets level 1 and is unseen in the next
     /// phase. When the levels come near `PHASE_END`, all but the sources go back to 1.
-    fn flow(&mut self, graph: &Junctions, k: usize, bound: Option<u64>) -> Option<u64> {
+    fn flow(&mut self, graph: &Junctions, k: usize, bound: &AtomicU64) -> Option<u64> {
         let n = self.at.len();
         for place in 0..n {
             self.set_level(place, 1);
@@ -475,7 +540,7 @@ impl Part<'_> {
             let top = self.level[self.place(graph, last).expect("a queued junction")] & LEVEL;
             for i in 0..border {
                 flow += self.blocking(graph, self.queue[i], k, start);
-                if bound.is_some_and(|bound| flow > bound) {
+                if flow > bound.load(Relaxed) {
                     return None;
                 }
             }
@@ -498,7 +563,7 @@ impl Part<'_> {
         for arc in graph.arcs(junction) {
             let neighbour = graph.adj[arc];
             let Some(other) = self.place(graph, neighbour) else { continue };
-            if graph.residual[arc].load(Relaxed) > 0 && (1..start).contains(&(self.level[other] & LEVEL)) {
+            if self.residual[arc].load(Relaxed) > 0 && (1..start).contains(&(self.level[other] & LEVEL)) {
                 self.set_level(other, next);
                 self.current[other] = graph.first[neighbour as usize];
                 self.queue[tail] = neighbour;
@@ -527,7 +592,7 @@ impl Part<'_> {
             while self.current[place] < end {
                 let arc = self.current[place] as usize;
                 let neighbour = graph.adj[arc];
-                if graph.residual[arc].load(Relaxed) > 0 {
+                if self.residual[arc].load(Relaxed) > 0 {
                     if let Some(other) = self.place(graph, neighbour).filter(|&o| self.level[o] & LEVEL == next) {
                         found = Some((neighbour, other));
                         break;
@@ -559,12 +624,12 @@ impl Part<'_> {
     fn augment(&self, graph: &Junctions, source: u32, k: usize, depth: usize) -> u8 {
         let path = |i: usize| if i == 0 { source } else { self.queue[k + i - 1] };
         let arc = |i: usize| self.current[self.place(graph, path(i)).expect("a junction of the path")] as usize;
-        let bottleneck = (0..depth).map(|i| graph.residual[arc(i)].load(Relaxed)).min().expect("a path of one arc");
+        let bottleneck = (0..depth).map(|i| self.residual[arc(i)].load(Relaxed)).min().expect("a path of one arc");
         for i in 0..depth {
             let arc = arc(i);
             let twin = graph.twin(path(i), graph.adj[arc]);
-            graph.residual[arc].fetch_sub(bottleneck, Relaxed);
-            graph.residual[twin].fetch_add(bottleneck, Relaxed);
+            self.residual[arc].fetch_sub(bottleneck, Relaxed);
+            self.residual[twin].fetch_add(bottleneck, Relaxed);
         }
         bottleneck
     }
@@ -635,11 +700,10 @@ fn split(graph: &Junctions, size: usize, mut part: Part) -> Vec<[u32; 2]> {
         return vec![node];
     }
     let m = part.bisect(graph);
-    let Part { lo, at, level, current, queue } = part;
-    let (at, level, current, queue) =
-        (at.split_at_mut(m), level.split_at_mut(m), current.split_at_mut(m), queue.split_at_mut(m));
-    let source = Part { lo, at: at.0, level: level.0, current: current.0, queue: queue.0 };
-    let sink = Part { lo: lo + m as u32, at: at.1, level: level.1, current: current.1, queue: queue.1 };
+    let Part { lo, at, work: [a, b] } = part;
+    let (at, a, b) = (at.split_at_mut(m), a.split_at(m), b.split_at(m));
+    let source = Part { lo, at: at.0, work: [a.0, b.0] };
+    let sink = Part { lo: lo + m as u32, at: at.1, work: [a.1, b.1] };
     let (source, sink) = rayon::join(|| split(graph, size, source), || split(graph, size, sink));
     let mut tree = Vec::with_capacity(1 + source.len() + sink.len());
     tree.push(node);
@@ -687,7 +751,7 @@ pub fn partition(points: &Column<Point>, ends: &Column<(u32, u32)>, sizes: &[u32
     let edges: Column<((u32, u32), u8)> =
         sort::sorted(pairs).counted().map(|(pair, count)| (pair, count.min(127) as u8)).collect();
     let arcs = 2 * edges.len();
-    let need = 36 * j as u64 + 6 * arcs as u64;
+    let need = 48 * j as u64 + 6 * arcs as u64;
     let budget = work::page_budget()?.0;
     if need > budget {
         return Err(format!("The partition needs {need} bytes; the page budget is {budget}"));
@@ -710,8 +774,7 @@ pub fn partition(points: &Column<Point>, ends: &Column<(u32, u32)>, sizes: &[u32
         walk1,
         first: vec![0; j + 1],
         adj: vec![0; arcs],
-        capacity: vec![0; arcs],
-        residual: (0..arcs).map(|_| AtomicU8::new(0)).collect(),
+        residual: [0, 1].map(|_| (0..arcs).map(|_| AtomicU8::new(0)).collect()),
         pos: (0..j as u32).map(|_| AtomicU32::new(0)).collect(),
     };
     for (place, &junction) in at.iter().enumerate() {
@@ -730,7 +793,8 @@ pub fn partition(points: &Column<Point>, ends: &Column<(u32, u32)>, sizes: &[u32
         let (a, b) = (at[a as usize], at[b as usize]);
         for (from, to) in [(a, b), (b, a)] {
             let arc = level[from as usize] as usize;
-            (graph.adj[arc], graph.capacity[arc]) = (to, capacity);
+            graph.adj[arc] = to;
+            graph.residual.iter().for_each(|residual| residual[arc].store(capacity, Relaxed));
             level[from as usize] += 1;
         }
     }
@@ -740,16 +804,21 @@ pub fn partition(points: &Column<Point>, ends: &Column<(u32, u32)>, sizes: &[u32
     for junction in 0..j as u32 {
         let arcs = graph.arcs(junction);
         list.clear();
-        list.extend(arcs.clone().map(|arc| (graph.adj[arc], graph.capacity[arc])));
+        list.extend(arcs.clone().map(|arc| (graph.adj[arc], graph.residual[0][arc].load(Relaxed))));
         list.sort_unstable();
         for (arc, &(neighbour, capacity)) in arcs.zip(&list) {
-            (graph.adj[arc], graph.capacity[arc]) = (neighbour, capacity);
+            graph.adj[arc] = neighbour;
+            graph.residual.iter().for_each(|residual| residual[arc].store(capacity, Relaxed));
         }
     }
     let (mut current, mut queue) = (vec![0u32; j], vec![0u32; j]);
-    let part = Part { lo: 0, at: &mut at, level: &mut level, current: &mut current, queue: &mut queue };
-    let tree = split(&graph, sizes[0] as usize, part);
-    drop((level, current, queue));
+    let (mut level2, mut current2, mut queue2) = (vec![0u32; j], vec![0u32; j], vec![0u32; j]);
+    let work = [
+        Work { level: &mut level, current: &mut current, queue: &mut queue },
+        Work { level: &mut level2, current: &mut current2, queue: &mut queue2 },
+    ];
+    let tree = split(&graph, sizes[0] as usize, Part { lo: 0, at: &mut at, work });
+    drop((level, current, queue, level2, current2, queue2));
     let mut rank = Column::filled(j, 0u32);
     for (junction, pos) in graph.pos.iter().enumerate() {
         rank.values_mut()[graph.walk1[junction] as usize] = pos.load(Relaxed);
@@ -954,8 +1023,7 @@ mod tests {
             point: vec![[0, 0]; n as usize],
             first,
             adj,
-            residual: capacity.iter().map(|&c| AtomicU8::new(c)).collect(),
-            capacity,
+            residual: [0, 1].map(|_| capacity.iter().map(|&c| AtomicU8::new(c)).collect()),
             pos: (0..n).map(AtomicU32::new).collect(),
         }
     }
@@ -1037,18 +1105,46 @@ mod tests {
             let (expected, reached) = plain_flow(n as usize, &roads, &sources, &sinks);
 
             let graph = junctions(n, &roads);
-            let (mut at, mut level) = ((0..n).collect::<Vec<_>>(), vec![0u32; n as usize]);
+            let (at, mut level) = ((0..n).collect::<Vec<_>>(), vec![0u32; n as usize]);
             let (mut current, mut queue) = (vec![0u32; n as usize], vec![0u32; n as usize]);
             queue[..sources.len()].copy_from_slice(&sources);
             for &sink in &sinks {
                 level[sink as usize] |= SINK;
             }
-            let mut part = Part { lo: 0, at: &mut at, level: &mut level, current: &mut current, queue: &mut queue };
-            let flow = part.flow(&graph, sources.len(), None);
+            let residual = &graph.residual[0];
+            let mut search =
+                Search { lo: 0, at: &at, residual, level: &mut level, current: &mut current, queue: &mut queue };
+            let flow = search.flow(&graph, sources.len(), &AtomicU64::new(u64::MAX));
             assert_eq!(flow, Some(expected), "round {round}");
             let found: Vec<bool> = level.iter().map(|&level| level & LEVEL != UNSEEN).collect();
             assert_eq!(found, reached, "round {round}");
         }
+    }
+
+    #[test]
+    fn a_direction_stops_only_when_its_flow_passes_the_bound() {
+        // A 4 × 4 grid with one road on each edge. All points are equal, so the keys go by ID: the
+        // sources are row 0 and the sinks row 3, and the cut is 4.
+        let roads: Vec<(u32, u32, u8)> = (0..16u32)
+            .flat_map(|i| [(i, i + 1), (i, i + 4)])
+            .filter(|&(i, next)| next < 16 && (next == i + 4 || i % 4 != 3))
+            .map(|(i, next)| (i, next, 1))
+            .collect();
+        let graph = junctions(16, &roads);
+        let at: Vec<u32> = (0..16).collect();
+        let run = |bound: u64| {
+            let (mut level, mut current, mut queue) = (vec![UNSEEN; 16], vec![0u32; 16], vec![0u32; 16]);
+            let residual = &graph.residual[0];
+            let mut search =
+                Search { lo: 0, at: &at, residual, level: &mut level, current: &mut current, queue: &mut queue };
+            let bound = AtomicU64::new(bound);
+            let found = search.direction(&graph, 0, 4, &bound);
+            (found, bound.load(Relaxed), level.iter().map(|&level| level & LEVEL == SINK_SIDE).collect::<Vec<_>>())
+        };
+        let (found, bound, sides) = run(u64::MAX);
+        assert_eq!((found, bound), (Some((4, 4)), 4));
+        assert_eq!(run(4), (found, 4, sides));
+        assert_eq!(run(3).0, None);
     }
 
     #[test]
