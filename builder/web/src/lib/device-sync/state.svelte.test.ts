@@ -14,7 +14,7 @@ vi.mock('./sync', () => ({ syncDevice: vi.fn() }));
 
 const SERIAL = '9F3A00C1E2B47D10';
 const session = (status: DeviceSession['status']) =>
-    ({ status, client: status === 'ready' ? {} : null, info: { serialNumber: SERIAL }, store: null }) as unknown as DeviceSession;
+    ({ status, client: status === 'ready' ? {} : null, info: { serialNumber: SERIAL }, store: status === 'ready' ? {} : null }) as unknown as DeviceSession;
 const report = (tried: string[]): SyncReport => ({ rides: 0, marked: 0, sent: 0, removed: 0, waypointsLeft: 0, tried, problem: null });
 const settle = () => new Promise(resolve => setTimeout(resolve, 20));
 
@@ -53,6 +53,22 @@ describe('startDeviceSync', () => {
         // Only an id that no sync tried starts one.
         await library.changeState('waiting', ids => [...ids ?? [], 'new']);
         await vi.waitFor(() => expect(signals).toHaveLength(3));
+        stop();
+        deviceHolder.session = null;
+        remembered.device = null;
+    });
+
+    it('starts no sync with a card that has no format', async () => {
+        vi.spyOn(deviceHolder, 'open').mockResolvedValue(null);
+        vi.mocked(syncDevice).mockClear();
+        rememberCard(SERIAL, '8f2c41d96b074ea3b1559c207de83466');
+        deviceHolder.session = { ...session('ready'), store: null } as DeviceSession;
+        const stop = startDeviceSync(new Library(new IDBFactory()));
+        flushSync();
+        deviceSync.run();
+        await settle();
+        expect(syncDevice).not.toHaveBeenCalled();
+        expect(deviceSync.running).toBe(false);
         stop();
         deviceHolder.session = null;
         remembered.device = null;
