@@ -94,7 +94,8 @@ Nach dem Anschluss eines OpenBikeComputer ruft der Routenplaner einmalig die akt
 Firmware-Beschreibung unter `updates.openbikecomputer.com` ab. Die Auslieferung erfolgt
 über **Cloudflare R2** der Cloudflare, Inc., 101 Townsend St., San Francisco,
 CA 94107, USA. Nach Betätigung von „Update“ auf der Seite „Device“ lädt der Routenplaner
-auch das Aktualisierungspaket von diesem Host.
+auch das Aktualisierungspaket von der Adresse, die die Firmware-Beschreibung nennt. Für die
+aktuellen Versionen ist das derselbe Host.
 
 Die Anfrage enthält weder Seriennummer noch installierte Firmware-Version. Der
 Vergleich findet lokal im Browser statt. Ohne angeschlossenes Gerät wird die Datei
@@ -219,8 +220,8 @@ im Browser gelöscht werden.
 
 Die Webanwendung verwendet lokalen Gerätespeicher. Der Routenplaner nutzt
 `localStorage`, die Browser-Datenbank *IndexedDB*, das *Origin Private File System*
-(OPFS) und den *Cache Storage* des Browsers. Diese Daten bleiben auf dem verwendeten Gerät und werden nicht an den
-Verantwortlichen übertragen.
+(OPFS) und den *Cache Storage* des Browsers. Diese Daten bleiben auf dem verwendeten Gerät, außer
+wenn die Tabelle unten angibt, dass sie den Browser verlassen.
 
 | Daten | Zweck und Dauer |
 | --- | --- |

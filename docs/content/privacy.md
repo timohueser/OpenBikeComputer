@@ -88,7 +88,8 @@ select a region and view routes or recorded rides.
 After you connect an OpenBikeComputer, the route planner requests the current firmware description
 once from `updates.openbikecomputer.com`. It is delivered through **Cloudflare R2** of
 Cloudflare, Inc., 101 Townsend St., San Francisco, CA 94107, USA. When you press "Update" on
-the Device page, the route planner also downloads the update package from this host.
+the Device page, the route planner also downloads the update package from the address that the
+firmware description names. For the current releases, this is the same host.
 
 The request contains neither the serial number nor the installed firmware version. The
 comparison takes place locally in the browser. Without a connected device, the file is not
@@ -209,7 +210,7 @@ browser.
 The web application uses local device storage. The route planner uses `localStorage`, the
 browser database *IndexedDB*, the browser's *Origin Private File System* (OPFS) and the
 browser's *Cache Storage*. This data stays on
-the device that you use. It is not transmitted to the controller.
+the device that you use, except where the table below says that it leaves the browser.
 
 | Data | Purpose and duration |
 | --- | --- |
