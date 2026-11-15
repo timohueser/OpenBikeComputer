@@ -4,6 +4,7 @@
     import Window from '../../lib/ui/Window.svelte';
     import { drawCard, FONTS, HIDDEN_M, SHORT_M, type Card, type Format } from '../../lib/covers/card';
     import { coverKey } from '../../lib/covers/job';
+    import type { MapPictureResult } from '../../lib/covers/map-picture';
     import type { CoverPoints, RideSummary, RouteSummary } from '../../lib/library/records';
     import type { Library } from '../../lib/library/store';
     import { duration } from '../../lib/planner/editor';
@@ -37,6 +38,8 @@
     let canvas = $state<HTMLCanvasElement>(), file = $state.raw<Blob>();
     /** What the last "Copy" or "Share" did. */
     let said = $state('');
+    /** The text of the card leaves room for the profile. */
+    let profileFits = $state(true);
 
     const ground = $derived(cover ?? map);
     const ride = $derived('movingS' in summary);
@@ -44,7 +47,7 @@
     const canHide = $derived(summary.lengthM >= SHORT_M);
     /** A formatted value has a space that does not break before its unit. */
     const split = (text: string): [string, string] => {
-        const [amount, unit = ''] = text.split(' ');
+        const [amount, unit = ''] = text.split('\u00a0');
         return [amount, unit];
     };
     const card = $derived<Card>({
@@ -73,7 +76,11 @@
         let live = true, asked = false;
         const mapGround = async () => {
             const { mapPicture } = await import('../../lib/covers/map-picture');
-            const made = await mapPicture(summary, false, abort.signal, 'share').catch(() => 'none' as const);
+            // A hidden page draws no map: the window tries again each time the page comes into view.
+            const inView = () => new Promise(resolve => document.addEventListener('visibilitychange', resolve, { once: true, signal: abort.signal }));
+            const hidden = (reason: unknown) => reason instanceof Error && reason.name === 'hidden' ? inView().then(make) : 'none';
+            const make = (): Promise<MapPictureResult | 'none'> => mapPicture(summary, false, abort.signal, 'share').catch(hidden);
+            const made = await make();
             const bitmap = made === 'none' ? undefined : await createImageBitmap(made.image).catch(() => undefined);
             if (!live || made === 'none') return bitmap?.close();
             map = bitmap && { bitmap, points: made.points };
@@ -109,7 +116,7 @@
         [file, said] = [undefined, ''];
         const draw = () => {
             if (!live) return;
-            drawCard(target, shape, content);
+            profileFits = drawCard(target, shape, content).profileFits;
             target.toBlob(made => { if (live && made) file = made; }, 'image/jpeg', QUALITY);
         };
         // With its fonts loaded, as the page has them, the card has its size before the first paint. A font that does
@@ -155,7 +162,7 @@
                 {/if}
                 {#if date !== undefined}<div><Switch label="Date" bind:checked={dated} /></div>{/if}
                 <div><Switch label="Numbers" bind:checked={numbers} /></div>
-                {#if heights}<div><Switch label="Elevation profile" bind:checked={profile} /></div>{/if}
+                {#if heights && profileFits}<div><Switch label="Elevation profile" bind:checked={profile} /></div>{/if}
                 {#if canHide}<div><Switch label="Hide start and end" note="The first and last 500 m" bind:checked={hideEnds} /></div>{/if}
             </div>
             <p class="said" role="status">{said}</p>

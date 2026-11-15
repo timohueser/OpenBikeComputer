@@ -87,6 +87,8 @@ describe('the layout of the square and the tall share card', () => {
         const heights = (format: 'square' | 'tall') => [1, 2, 3].map(nameLines => layout(format, { nameLines, ...rows }).band?.height);
         expect(heights('square')).toEqual([169, 100, undefined]);
         expect(heights('tall')).toEqual([239, 239, 239]);
+        // The layout says so also with the profile off, so that the window can leave out its switch.
+        expect([1, 3].map(nameLines => layout('square', { nameLines, ...rows, profile: false }).profileFits)).toEqual([true, false]);
     });
 });
 

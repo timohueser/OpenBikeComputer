@@ -71,6 +71,8 @@ export interface Layout {
     credit?: Box;
     /** The elevation profile, along the lower edge of the ground. */
     band?: Box;
+    /** The text leaves room for the profile. With none, the card has no profile, and its switch does nothing. */
+    profileFits: boolean;
     /** The sizes of the letters: the name, the numbers and the date, and the credit. */
     letters: { name: number; number: number; small: number };
 }
@@ -101,13 +103,14 @@ export function layout(format: Format, shown: Shown): Layout {
     const creditBase = shown.credit ? (numbersBase ?? nameEnd) + Math.round(1.9 * letters.small) : undefined;
     const end = creditBase ?? numbersBase ?? nameEnd;
     const room = Math.min(Math.round(0.4 * ground.height), ground.height - margin - end - Math.round(0.55 * margin));
-    const band = shown.profile && room >= Math.round(0.03 * width) ? { x: 0, y: bottom - room, width, height: room } : undefined;
+    const profileFits = room >= Math.round(0.03 * width);
+    const band = shown.profile && profileFits ? { x: 0, y: bottom - room, width, height: room } : undefined;
     const top = ground.y + Math.max(margin, Math.round((ground.height - (band?.height ?? 0) - end) / 2));
     const row = (base: number | undefined, size: number) => base === undefined ? undefined : { x: margin, y: top + base - size, width: inner, height: size };
     // The signpost, then the name of the product in mono letters of half its height, each 0.6 of its size wide.
     const markHeight = Math.round(0.62 * letters.name), planTop = Math.round(2.4 * margin);
     return {
-        size: [width, bottom], picture, ground, letters, band,
+        size: [width, bottom], picture, ground, letters, band, profileFits,
         mark: { x: margin, y: Math.round(0.8 * margin), width: Math.round((1.05 + 0.3 * PRODUCT.length) * markHeight), height: markHeight },
         plan: { x: Math.round(1.5 * margin), y: planTop, width: width - 3 * margin, height: picture.height - planTop - margin },
         date: row(dateBase, letters.number),

@@ -102,6 +102,10 @@ test('the route page shows a stored route, renames, sends, opens in the planner,
     const image = await createImageBitmap(await item.getType('image/png'));
     return [image.width, image.height];
   })).toEqual([1280, 1280]);
+  // A copy that the browser refuses says one sentence in the window.
+  await page.evaluate(() => { navigator.clipboard.write = () => Promise.reject(new DOMException('refused', 'NotAllowedError')); });
+  await share.getByRole('button', { name: 'Copy' }).click();
+  await expect(share.getByRole('status')).toHaveText('The browser did not copy the image.');
   await page.keyboard.press('Escape');
   await expect(share).toHaveCount(0);
 
