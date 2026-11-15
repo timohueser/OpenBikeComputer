@@ -7,7 +7,7 @@
     import type { Trip } from '../../lib/library/trips';
     import { ridingProfiles } from '../../lib/planner/riding-profiles';
     import { ROUTES } from '../../lib/routes';
-    import { distanceIn, formatDistance, formatHeight, heightIn, heightUnit } from '../../lib/settings/format';
+    import { distanceIn, formatCount, formatDistance, formatHeight, formatHours, heightIn, heightUnit } from '../../lib/settings/format';
     import { settings } from '../../lib/settings/settings.svelte';
     import Segmented, { radioKey } from '../../lib/ui/Segmented.svelte';
     import Window from '../../lib/ui/Window.svelte';
@@ -24,6 +24,8 @@
     const MONTHS = Array.from({ length: 12 }, (_, month) => new Date(2000, month).toLocaleDateString('en-GB', { month: 'short' }));
 
     let foot = $state(false), measure = $state<Measure>('lengthM'), year = $state<number>();
+    /** The bar under the pointer, with the focus or after a tap: a narrow bar shows its number only then, one at a time. */
+    let active = $state<string>();
     let root: HTMLElement, back = $state<HTMLButtonElement>();
 
     const both = $derived(rides.some(onFoot) && rides.some(ride => !onFoot(ride)));
@@ -46,15 +48,14 @@
     /** The value of a measure in the units of the rider, for the height of a bar and the number over it. */
     const amount = (key: Measure, of: Totals) =>
         key === 'lengthM' ? distanceIn(of.lengthM) : key === 'climbM' ? heightIn(of.climbM) : key === 'movingS' ? of.movingS / 3600 : of.count;
-    const short = (value: number) => value.toLocaleString('en', { maximumFractionDigits: value < 10 ? 1 : 0 });
     const text = (key: Measure, of: Totals) => key === 'lengthM' ? formatDistance(of.lengthM) : key === 'climbM' ? formatHeight(of.climbM)
-        : key === 'movingS' ? `${short(of.movingS / 3600)} h` : of.count.toLocaleString('en');
+        : key === 'movingS' ? formatHours(of.movingS) : formatCount(of.count);
     const top = $derived(Math.max(...bars.map(bar => amount(measure, bar.totals)), 0));
 
     /** The bars that take the focus leave with the view, so the focus goes to the way back, and back to the year. */
     async function show(next: number | undefined) {
         const from = year;
-        year = next;
+        [year, active] = [next, undefined];
         await tick();
         (next === undefined ? root.querySelector<HTMLElement>(`[data-year="${from}"]`) : back)?.focus();
     }
@@ -80,7 +81,7 @@
     {@const value = amount(measure, bar.totals)}
     <span class="area">
         {#if value > 0}
-            <span class="amount">{short(value)}</span>
+            <span class="amount">{formatCount(value)}</span>
             <span class="stack" style:height={`calc((100% - 22px) * ${value / top})`}>
                 {#each order.filter(bike => bar.kinds.has(bike)) as bike (bike)}
                     <span style:flex-grow={amount(measure, bar.kinds.get(bike)!)} style:background={`var(--kind-${order.indexOf(bike)})`}></span>
@@ -123,14 +124,18 @@
             </div>
 
             <div class="middle">
-                <ol class="bars" class:alone={walks || order.length < 2} aria-label={`${labels[measure]} of each ${shownYear === undefined ? 'year' : 'month'}`}>
+                <ol class="bars" class:alone={walks || order.length < 2} onfocusout={() => active = undefined} aria-label={`${labels[measure]} of each ${shownYear === undefined ? 'year' : 'month'}`}>
                     {#each bars as bar (bar.name)}
                         {@const title = `${bar.name}: ${text(measure, bar.totals)}`}
                         <li>
-                            {#if bar.year !== undefined && bar.totals.count}
-                                <button type="button" class="column" data-year={bar.year} {title} onclick={() => show(bar.year)}>{@render column(bar)}</button>
+                            {#if bar.totals.count}
+                                <!-- A year opens its months. A month only shows its number, which a touch screen gets with a tap. -->
+                                <button type="button" class="column" class:active={active === bar.name} data-year={bar.year} {title} aria-label={title}
+                                    onclick={() => bar.year === undefined ? active = bar.name : show(bar.year)} onfocus={() => active = bar.name}
+                                    onpointerenter={() => active = bar.name}
+                                    onpointerleave={event => { if (event.pointerType === 'mouse') active = undefined; }}>{@render column(bar)}</button>
                             {:else}
-                                <span class="column" title={bar.totals.count ? title : undefined}>{@render column(bar)}</span>
+                                <span class="column">{@render column(bar)}</span>
                             {/if}
                         </li>
                     {/each}
@@ -146,9 +151,9 @@
                                 {@const of = kinds.get(bike)}
                                 <tr class:none={!of}>
                                     <th scope="row"><span class="dot" style:background={`var(--kind-${index})`}></span>{ridingProfiles[bike].label}</th>
-                                    <td>{of ? short(distanceIn(of.lengthM)) : '–'}</td>
-                                    <td>{of ? short(heightIn(of.climbM)) : '–'}</td>
-                                    <td>{of ? of.count.toLocaleString('en') : '–'}</td>
+                                    <td>{of ? formatCount(Math.round(distanceIn(of.lengthM))) : '–'}</td>
+                                    <td>{of ? formatCount(Math.round(heightIn(of.climbM))) : '–'}</td>
+                                    <td>{of ? formatCount(of.count) : '–'}</td>
                                 </tr>
                             {/each}
                         </tbody>
@@ -160,11 +165,11 @@
                 {#if best.ride}{@render record(walks ? 'Longest hike' : 'Longest ride', formatDistance(best.ride.summary.lengthM), best.ride, close)}{/if}
                 {#if best.day}{@render record('Most climb in one day', formatHeight(best.day.climbM), best.day.ride, close)}{/if}
                 {#if best.trip}
-                    {@const { trip, lengthM } = best.trip}
+                    {@const { trip, rides: own, lengthM, days } = best.trip}
                     <button type="button" onclick={() => { close(); onTrip(trip.id); }}>
                         <span class="label">Longest trip</span>
-                        <strong>{formatDistance(lengthM)} · {trip.days.at(-1)! - trip.days[0] + 1} days</strong>
-                        <span class="of">{trip.name} · {dayText(trip.rides[0].summary.start * 1000, { month: 'short', year: 'numeric' })}</span>
+                        <strong>{formatDistance(lengthM)} · {days} {days === 1 ? 'day' : 'days'}</strong>
+                        <span class="of">{trip.name} · {dayText(own[0].summary.start * 1000, { month: 'short', year: 'numeric' })}</span>
                     </button>
                 {/if}
                 {#if best.highest}{@render record('Highest point', formatHeight(best.highest.summary.highestM!), best.highest, close)}{/if}
@@ -239,7 +244,7 @@
         text-align: left;
         text-decoration: none;
     }
-    .numbers button:hover, .largest :is(a, button):hover, button.column:hover {
+    .numbers button:hover, .largest :is(a, button):hover, .column[data-year]:hover {
         background: var(--parchment);
     }
     .label, .of {
@@ -302,7 +307,10 @@
         color: var(--ink-soft);
         font: inherit;
     }
-    button.column:hover {
+    .column:not([data-year]) {
+        cursor: default;
+    }
+    .active {
         color: var(--ink);
     }
     .area {
@@ -338,10 +346,10 @@
         font-size: 12.5px;
         text-align: center;
     }
-    /* A narrow bar has no number over it: the number would run into the next one. */
+    /* The numbers of narrow bars would run into each other, so only the active bar shows its number. */
     @container (max-width: 34px) {
-        .amount {
-            display: none;
+        .column:not(.active) .amount {
+            visibility: hidden;
         }
     }
     @media (prefers-reduced-motion: no-preference) {

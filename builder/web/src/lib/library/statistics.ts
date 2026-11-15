@@ -1,6 +1,6 @@
 /** The totals of the rides over a time and the largest values, by bike and on foot apart. */
 import { bikes, type Bike, type RideRecord } from './records';
-import { localDay, type Trip } from './trips';
+import { localDay, tripDays, type Trip } from './trips';
 
 export interface Totals {
     lengthM: number;
@@ -21,8 +21,8 @@ export interface Largest {
     ride?: RideRecord;
     /** The local day with the most climb, and the ride of that day with the most climb. */
     day?: { climbM: number; ride: RideRecord };
-    /** The trip with the most distance. `lengthM` adds only its rides of this statistic. */
-    trip?: { trip: Trip; lengthM: number };
+    /** The trip with the most distance. `rides` are only its rides of this statistic, and `lengthM` and `days` are of them. */
+    trip?: { trip: Trip; rides: RideRecord[]; lengthM: number; days: number };
     /** The ride with the highest point. */
     highest?: RideRecord;
 }
@@ -75,20 +75,21 @@ const most = <T>(items: T[], value: (item: T) => number) =>
     items.reduce<T | undefined>((best, item) => best === undefined || value(item) > value(best) ? item : best, undefined);
 
 /**
- * The largest values of `rides`, which are the rides of one statistic, or of those in `year`. A trip counts for the year
- * of its first ride, with its rides of this statistic in each year.
+ * The largest values of `rides`, which are the rides of one statistic, or of those in `year`. A trip counts with its rides
+ * of this statistic only, of each year, for the year of the first of them.
  */
 export function largest(rides: RideRecord[], trips: Trip[], year?: number): Largest {
     const shown = year === undefined ? rides : inYear(rides, year), keys = new Set(rides.map(ride => ride.key));
     const days = new Map<number, RideRecord[]>();
     for (const ride of shown) days.set(localDay(ride.summary.start), [...days.get(localDay(ride.summary.start)) ?? [], ride]);
     const day = most([...days.values()], day => sum(day).climbM);
-    const own = trips.filter(trip => year === undefined || started(trip.rides[0]).getFullYear() === year)
-        .map(trip => ({ trip, lengthM: sum(trip.rides.filter(ride => keys.has(ride.key))).lengthM }));
+    const own = trips.map(trip => ({ trip, rides: trip.rides.filter(ride => keys.has(ride.key)) }))
+        .filter(({ rides }) => rides.length && (year === undefined || started(rides[0]).getFullYear() === year))
+        .map(({ trip, rides }) => ({ trip, rides, lengthM: sum(rides).lengthM, days: tripDays(trip, rides) }));
     return {
         ride: most(shown, ride => ride.summary.lengthM),
         day: day && sum(day).climbM > 0 ? { climbM: sum(day).climbM, ride: most(day, ride => ride.summary.climbM)! } : undefined,
-        trip: most(own.filter(({ lengthM }) => lengthM > 0), ({ lengthM }) => lengthM),
+        trip: most(own, ({ lengthM }) => lengthM),
         highest: most(shown.filter(ride => ride.summary.highestM !== null), ride => ride.summary.highestM!),
     };
 }

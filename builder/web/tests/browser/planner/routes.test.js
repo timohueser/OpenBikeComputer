@@ -181,7 +181,7 @@ test('the line of the year opens the statistics: the years, the months of a year
   await expect(distance).toHaveText(/130\skm/);
 
   // A year shows its 12 months; "All years" and Escape go back, and the window stays open.
-  await statistics.getByRole('button', { name: `${year - 1}` }).click();
+  await statistics.getByRole('button', { name: new RegExp(`^${year - 1}: 50.0\\skm$`) }).click();
   await expect(bars).toHaveCount(12);
   await expect(distance).toHaveText(/50.0\skm/);
   await statistics.getByRole('button', { name: 'All years' }).click();
