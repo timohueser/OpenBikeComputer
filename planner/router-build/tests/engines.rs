@@ -1,23 +1,20 @@
-//! The data and the search of format 10 (`Region`) against those of format 9 (`Selection`) of the
-//! same bake.
+//! The data and the search of the route package on one bake of a town: with its cost tables and
+//! with each cell open, on installs of some or all cells, and on two layouts.
 
 use planner_router::cells::Directory;
 use planner_router::compare::{self, Outcome};
-use planner_router::data::{RoutingData, Selection};
 use planner_router::host::{self, Part};
 use planner_router::install;
 use planner_router::model::{Point, Profile, Road, Surface, BIKE, FOOT, PUSH};
-use planner_router::package::{digest, Endpoint, Package, Source};
-use planner_router::region::Region;
+use planner_router::region::{Endpoint, Region};
 use planner_router::snap::{self, Candidates, Policy, REACH_M};
 use planner_router::{Control, Error, Request, Route, Router};
 use planner_router_build::cells::{write, Info, Input};
 use planner_router_build::source::{Builder, Tags, Ways};
+use planner_router_build::tables::Tables;
 use planner_router_build::{base, Graph, Turn};
-use std::collections::HashMap;
 use std::fs::{self, File};
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
 
 fn xorshift(state: &mut u64) -> u64 {
     *state ^= *state << 13;
@@ -139,15 +136,6 @@ fn town(sizes: &[u32]) -> Graph {
     graph
 }
 
-#[derive(Clone)]
-struct Objects(Arc<HashMap<String, Vec<u8>>>);
-
-impl Source for Objects {
-    fn read(&self, key: &str) -> planner_router::Result<Vec<u8>> {
-        self.0.get(key).cloned().ok_or_else(|| Error::MissingRegion(key.into()))
-    }
-}
-
 /// A folder of the test that `Drop` removes.
 struct Scratch(PathBuf);
 
@@ -157,16 +145,14 @@ impl Drop for Scratch {
     }
 }
 
-/// The two formats of one bake of `town()`: format 9 in memory, and format 10 as objects that
-/// `install` reads.
+/// One bake of `town()`: the package with its cost tables in `objects`, and the package with each
+/// cell open (#3301 rule 3) in `open`, as objects that `install` reads.
 const SIZES: [u32; 3] = [8, 32, 128];
 
 struct Bake {
     graph: Graph,
-    old: Selection<Objects>,
     scratch: Scratch,
     directory: Vec<u8>,
-    info: Vec<u8>,
 }
 
 fn bake(name: &str) -> Bake {
@@ -178,68 +164,69 @@ fn bake_with(name: &str, sizes: &[u32]) -> Bake {
     let graph = town(sizes);
     let profiles = Profile::presets();
     assert_eq!(profiles.len(), 10);
-    let mut objects = HashMap::new();
     let bounds = [7.4, 46.4, 7.7, 46.6];
-    let manifest =
-        planner_router_build::prepare(&graph, "town".into(), bounds, &profiles, vec![], "test".into(), |b| {
-            let key = digest(b);
-            objects.insert(key.clone(), b.to_vec());
-            Ok(key)
-        })
-        .unwrap();
-    let manifest = serde_json::to_vec(&manifest).unwrap();
-    let old = Selection::whole(Package::open(Objects(Arc::new(objects)), &manifest).unwrap());
-
     let topology = base::Topology::new(&graph.roads, graph.points.len()).unwrap();
     let costs = planner_router_build::costs(&graph, &topology, &profiles).unwrap();
     let (first, head) = (topology.first.values(), topology.head.values());
     let tables = planner_router_build::tables::build(&graph.cells, first, head, &costs.columns(), 16).unwrap();
     let scratch = Scratch(std::env::temp_dir().join(format!("obc-engines-{name}-{}", std::process::id())));
     let _ = fs::remove_dir_all(&scratch.0);
-    let info = Info { region: "town".into(), bounds, source_sha256: vec![], attribution: "test".into() };
-    let input = Input {
-        graph: &graph,
-        topology: &topology,
-        costs: &costs,
-        tables: &tables,
-        sizes,
-        download_level: 2,
-        info,
-        level: 3,
-    };
-    write(&input, &scratch.0.join("objects")).unwrap();
-    let read = |file: &str| fs::read(scratch.0.join("objects").join(file)).unwrap();
-    let (directory, info) = (read("directory.bin"), read("package.json"));
-    Bake { graph, old, scratch, directory, info }
+    let open = Tables::none(&graph.cells, profiles.len());
+    for (folder, tables) in [("objects", &tables), ("open", &open)] {
+        let info = Info { region: "town".into(), bounds, source_sha256: vec![], attribution: "test".into() };
+        let input = Input {
+            graph: &graph,
+            topology: &topology,
+            costs: &costs,
+            tables,
+            sizes,
+            download_level: 2,
+            info,
+            level: 3,
+        };
+        write(&input, &scratch.0.join(folder)).unwrap();
+    }
+    let directory = fs::read(scratch.0.join("objects").join("directory.bin")).unwrap();
+    Bake { graph, scratch, directory }
 }
 
 impl Bake {
+    /// The folder of an install of the download cells `cells`, or all, of the package in `folder`.
+    fn install_of(&self, folder: &str, cells: Option<&[u32]>) -> PathBuf {
+        let target = self.scratch.0.join(format!("install-{folder}-{}", cells.map_or(0, |c| c.len())));
+        let objects = self.scratch.0.join(folder);
+        let read = |file: &str| fs::read(objects.join(file)).unwrap();
+        let fetch = |name: &str| File::open(objects.join(name));
+        install::install(&target, (&read("directory.bin"), &read("package.json")), (cells, None), 2, fetch).unwrap();
+        target
+    }
+
     /// The folder of an install of the download cells `cells`, or all.
     fn install(&self, cells: Option<&[u32]>) -> PathBuf {
-        let target = self.scratch.0.join(format!("install-{}", cells.map_or(0, |c| c.len())));
-        let objects = self.scratch.0.join("objects");
-        let fetch = |name: &str| File::open(objects.join(name));
-        install::install(&target, (&self.directory, &self.info), (cells, None), 2, fetch).unwrap();
-        target
+        self.install_of("objects", cells)
     }
 
     /// The data of an install of the download cells `cells`, or all, through memory maps.
     fn region(&self, cells: Option<&[u32]>) -> Region<host::Maps> {
-        planner_router::open::cells(&self.install(cells), false).unwrap()
+        planner_router::open(&self.install(cells), false).unwrap()
     }
 
-    /// The data of the install of all cells, held in memory.
-    fn memory(&self) -> Region<host::Memory> {
-        let target = self.install(None);
-        let (directory, plan) = install::installed(&target).unwrap();
-        let mut memory = host::Memory::default();
-        for item in &plan.files {
-            let bytes = fs::read(target.join(install::CELLS).join(&item.name)).unwrap();
-            memory.insert(Part { record: item.record, part: item.part }, bytes);
-        }
-        let marker = fs::read(target.join(install::MARKER)).unwrap();
-        Region::open(memory, directory, self.info.clone(), &marker).unwrap()
+    /// The data of the install of all cells of the package in `folder`, held in memory.
+    fn memory(&self, folder: &str) -> Region<host::Memory> {
+        memory(&self.install_of(folder, None))
     }
+}
+
+/// The data of the install in `target`, held in memory.
+fn memory(target: &Path) -> Region<host::Memory> {
+    let (directory, plan) = install::installed(target).unwrap();
+    let mut memory = host::Memory::default();
+    for item in &plan.files {
+        let bytes = fs::read(target.join(install::CELLS).join(&item.name)).unwrap();
+        memory.insert(Part { record: item.record, part: item.part }, bytes);
+    }
+    let read = |name: &str| fs::read(target.join(name)).unwrap();
+    Region::open(memory, directory, read("package.json"), &read(install::MARKER)).unwrap()
 }
 
 fn departures(endpoint: &Endpoint) -> Vec<(u32, u64)> {
@@ -277,57 +264,6 @@ fn snap_points(graph: &Graph) -> Vec<Point> {
         elevation: 0.0,
     }));
     points
-}
-
-#[test]
-fn the_data_of_format_10_is_the_data_of_format_9() {
-    let bake = bake("same");
-    let (old, new) = (&bake.old, bake.region(None));
-    assert_eq!((old.region(), old.bounds()), (new.region(), new.bounds()));
-    assert_eq!(old.profiles(), new.profiles());
-    let roads = bake.graph.roads.len() as u32;
-    let (mut turns, mut closures) = (0, 0);
-    for profile in old.profiles() {
-        for road in 0..roads {
-            let (a, b) = (old.endpoint(profile, road).unwrap(), new.endpoint(profile, road).unwrap());
-            assert_eq!(a.cost, b.cost, "the cost of road {road} for {profile}");
-            assert_eq!(departures(&a), departures(&b), "the turns into road {road} for {profile}");
-            turns += a.departures.len();
-        }
-    }
-    assert!(turns > 0);
-    let fields = |road: &Road| {
-        let shape: Vec<_> = road.shape.iter().map(|p| (p.lat, p.lon, p.elevation.to_bits())).collect();
-        (shape, road.surface, road.access, road.difficulty, road.hiking_difficulty, road.way, road.length_m)
-    };
-    for road in 0..roads {
-        assert_eq!(old.with_road(road, fields).unwrap(), new.with_road(road, fields).unwrap(), "road {road}");
-        for mode in [BIKE, FOOT, PUSH] {
-            let found = old.closing(road, mode).unwrap();
-            closures += usize::from(found.is_some());
-            assert_eq!(found, new.closing(road, mode).unwrap(), "the closures of road {road}");
-        }
-    }
-    assert!(closures > 0, "the town has closures");
-    // The parts in memory give the same roads, and each span that the data announces fits its part.
-    let memory = bake.memory();
-    for road in 0..roads {
-        assert_eq!(memory.with_road(road, fields).unwrap(), new.with_road(road, fields).unwrap());
-    }
-    memory.announce(&(0..roads).collect::<Vec<_>>());
-    let profiles = old.profiles();
-    let mut kinds = [0; 2];
-    for (k, &point) in snap_points(&bake.graph).iter().enumerate() {
-        let profile = profiles[k % profiles.len()];
-        for radius_m in [250.0, REACH_M, 4_000.0] {
-            let policy = Policy { radius_m, ..Policy::default() };
-            let a = candidates(&old.snap(point, profile, policy).unwrap());
-            assert_eq!(a, candidates(&new.snap(point, profile, policy).unwrap()), "{point:?} {radius_m} m {profile}");
-            kinds[usize::from(a.0)] += 1;
-        }
-    }
-    assert!(kinds[0] > 0 && kinds[1] > 0, "snaps with and without truncation: {kinds:?}");
-    assert!(matches!(new.profile("unknown"), Err(Error::InvalidRequest(_))));
 }
 
 #[test]
@@ -384,11 +320,11 @@ fn a_missing_cell_is_a_missing_region_and_gives_no_turn() {
 fn a_route_costs_what_its_pieces_and_turns_cost() {
     let bake = bake("cost");
     let graph = &bake.graph;
-    let mut router = Router::new(bake.old.fork(), usize::MAX);
+    let mut router = Router::new(bake.region(None));
     let coordinate = |p: Point| [p.lon as f64 * 1e-6, p.lat as f64 * 1e-6];
     let junction = |k: u32| coordinate(graph.points.values()[k as usize]);
     let middle = |road: usize| coordinate(graph.roads.shape(road)[1]);
-    let check = |router: &mut Router<Selection<Objects>>, request: &Request| {
+    let check = |router: &mut Router<host::Maps>, request: &Request| {
         let Ok(route) = router.route(request, &Control::default()) else { return None };
         assert_eq!(router.cost(&route, &request.profile).unwrap(), Some(route.cost), "{request:?}");
         Some(route)
@@ -413,7 +349,7 @@ fn a_route_costs_what_its_pieces_and_turns_cost() {
     assert!(routes > 100, "{routes} routes");
     // A leg from the end of one road to the start of the road after it: no piece, one turn. And a
     // leg whose two points are one place of one road: no turn.
-    let selection = &bake.old;
+    let selection = router.package().fork();
     let (mut turn, mut place) = (false, false);
     for k in 0..points {
         let found = selection.snap(graph.points.values()[k as usize], "touring", Policy::default()).unwrap();
@@ -445,10 +381,10 @@ fn a_route_costs_what_its_pieces_and_turns_cost() {
 }
 
 #[test]
-fn the_engine_on_format_10_gives_the_costs_and_candidates_of_format_9() {
+fn tables_give_the_costs_and_candidates_of_open_cells() {
     let bake = bake("search");
-    let mut old = Router::new(bake.old.fork(), usize::MAX);
-    let mut new = Router::new(bake.region(None), usize::MAX);
+    let mut old = Router::new(bake.memory("open"));
+    let mut new = Router::new(bake.memory("objects"));
     // The two ends of the long road. The road is a candidate at both, so its cost is the ceiling of
     // the search of the other candidates.
     let graph = &bake.graph;
@@ -499,8 +435,8 @@ fn an_install_of_some_cells_routes_on_its_roads() {
     let ids: Vec<u32> = (0..half).map(|record| directory.cell(record).unwrap().id).collect();
     let installed = |road: u32| directory.download_of_road(road).unwrap().unwrap() < half;
     let on_installed = |route: &Route| route.pieces().all(|piece| installed(piece.road));
-    let mut full = Router::new(bake.region(None), usize::MAX);
-    let mut some = Router::new(bake.region(Some(&ids)), usize::MAX);
+    let mut full = Router::new(bake.region(None));
+    let mut some = Router::new(bake.region(Some(&ids)));
     // Points whose snap windows meet only installed cells.
     let points: Vec<[f64; 2]> = snap_points(&bake.graph)
         .into_iter()
@@ -536,7 +472,7 @@ fn only_the_chosen_legs_are_unpacked() {
     let bake = bake("unpack");
     let points = bake.graph.points.values();
     let junction = |k: usize| [points[k].lon as f64 * 1e-6, points[k].lat as f64 * 1e-6];
-    let mut router = Router::new(bake.region(None), usize::MAX);
+    let mut router = Router::new(bake.region(None));
     // The via point is a junction, so each road at it is a candidate and the first leg runs one
     // search for each.
     let request: Request = serde_json::from_value(serde_json::json!({
@@ -561,8 +497,8 @@ fn only_the_chosen_legs_are_unpacked() {
 #[test]
 fn two_layouts_of_one_bake_give_the_same_routes() {
     let (a, b) = (bake("layout-a"), bake_with("layout-b", &[4, 16, 64]));
-    let mut old = Router::new(a.region(None), usize::MAX);
-    let mut new = Router::new(b.region(None), usize::MAX);
+    let mut old = Router::new(a.region(None));
+    let mut new = Router::new(b.region(None));
     let (min_m, max_m) = (3_000.0, 10_000.0);
     let (mut pinned, mut moved_ids, mut same) = (0, 0, 0);
     for profile in Profile::presets() {

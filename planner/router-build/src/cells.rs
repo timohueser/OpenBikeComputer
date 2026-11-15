@@ -9,12 +9,14 @@ use planner_router::cells::{
     self as format, align, class_entry, encode_group_cell, encode_road, encode_set, width, Cell, GeometryCell, Header,
     Level1, Part, Reference, Upper, GEOMETRY_RECORD, LONG_ROAD_M, PART_HEADER, TOPOLOGY_RECORD, UPPER_RECORD,
 };
-use planner_router::model::{Point, Road};
+use planner_router::host::{Memory, Part as Span};
+use planner_router::model::{Point, Profile, Road};
+use planner_router::{install, region::Region};
 use rayon::prelude::*;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub const PACKAGE: &str = "package.json";
 pub const DIRECTORY: &str = "directory.bin";
@@ -710,4 +712,33 @@ pub fn write(input: &Input, output: &Path) -> Result<Summary, String> {
         groups.iter().map(|group| group.iter().map(|&p| input.costs.profiles[p].name.clone()).collect()).collect();
     *summary.columns.entry("directory.records".into()).or_default() += directory.len() as u64;
     Ok(summary)
+}
+
+/// The package of `graph`, which `layout::order` ordered into `sizes`, for `profiles`: download
+/// level 1, the tables by column from 16 bytes, all cells installed and held in memory. The data
+/// that a test routes on; each route that crosses a level-1 cell reads its table.
+pub fn memory(graph: &Graph, sizes: &[u32], profiles: &[Profile], bounds: [f64; 4]) -> Result<Region<Memory>, String> {
+    crate::check(graph, profiles)?;
+    let topology = Topology::new(&graph.roads, graph.points.len())?;
+    let costs = crate::costs(graph, &topology, profiles)?;
+    let (first, head) = (topology.first.values(), topology.head.values());
+    let tables = crate::tables::build(&graph.cells, first, head, &costs.columns(), 16)?;
+    let info = Info { region: "test".into(), bounds, source_sha256: vec![], attribution: "test".into() };
+    let input =
+        Input { graph, topology: &topology, costs: &costs, tables: &tables, sizes, download_level: 1, info, level: 1 };
+    let folder = crate::work::Folder::create().map_err(|e| e.to_string())?;
+    let (objects, target) = (folder.path().join("objects"), folder.path().join("install"));
+    write(&input, &objects)?;
+    let read = |path: PathBuf| std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()));
+    let (directory, info) = (read(objects.join(DIRECTORY))?, read(objects.join(PACKAGE))?);
+    let fetch = |name: &str| std::fs::File::open(objects.join(name));
+    install::install(&target, (&directory, &info), (None, None), 1, fetch).map_err(|e| e.to_string())?;
+    let (_, plan) = install::installed(&target).map_err(|e| e.to_string())?;
+    let mut memory = Memory::default();
+    for item in &plan.files {
+        memory
+            .insert(Span { record: item.record, part: item.part }, read(target.join(install::CELLS).join(&item.name))?);
+    }
+    let marker = read(target.join(install::MARKER))?;
+    Region::open(memory, directory, info, &marker).map_err(|e| e.to_string())
 }
