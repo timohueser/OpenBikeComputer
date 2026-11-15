@@ -53,9 +53,9 @@ assets, and their manifest. When the region recipe names a snow source, it also 
 contract](planner-snow-tiles.md). When the recipe has a `climate` field, it also contains
 `climate.pmtiles` from the [climate tile contract](planner-climate-tiles.md). The files of the
 release are exactly the files of the map manifest and the manifest itself. `routing/` contains the
-three files of format 9, plus `overlays.sqlite`. It also contains the files of format 10 of the
-[route package contract](route-package.md): `routing/package.json`, `routing/directory.bin` and
-`routing/objects/SHA256`. Each object is an `identity` file. The overlay index stores the identity
+files of the [route package contract](route-package.md): `routing/package.json`,
+`routing/directory.bin` and `routing/objects/SHA256`, and no `blocks.json` or packs. Each object is
+an `identity` file. The overlay index stores the identity
 of that route package and has the same OSM source. `search/` contains `pois/REGION.sqlite`,
 `addresses/REGION.sqlite`, and `model/`. Local combined packages use `REGION.sqlite`. `routes/`
 contains `REGION.json` from the [route catalog contract](route-catalog.md). `device/catalog.json` is
@@ -190,7 +190,8 @@ verification indexes.
 
 Before publication, the verifier checks the packed bytes and named metadata against their receipts.
 It composes the indexes with the same source and coverage checks as the producer. It reads changed
-decoded map archives, search shards and routing graphs with their format validators. Unchanged
+decoded map archives and search shards with their format validators, and checks changed routing
+objects with the installer check of the route package. Unchanged
 binary payloads retain their previous verification. The Python group and Node reader dependencies
 must be prepared from their locks. A fresh store can restore the named indexes and client objects
 without the producer files. Verification does not install tools, download data or build runtimes.

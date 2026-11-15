@@ -4,17 +4,15 @@ The routing package of one region, format 10: a binary cell directory, a JSON de
 compressed object for each part of each cell. An installer writes the parts of a set of cells as
 files, and the route engine reads those files.
 
-The bake also writes format 9 until the old engine is deleted, and the code of format 9 stays until
-then. The contract of format 9 is this file on `develop`.
-
 ## Version and readers
 
 - Version: `format` 10 in `package.json` and in `directory.bin`; directory magic `OBCROUTE`;
   install marker magic `OBCRINST`. A change of a byte layout needs a new format value.
 - Writer: [`planner/router-build`](../planner/router-build/README.md), `cells::write`, in the step
   `planner/routing` of `obc data`. The step `planner/routing/cells/grid` publishes the files.
-- Readers: `planner/router/src/install.rs` (the installer of the server and of the phone) and the
-  views of `planner/router/src/cells.rs`.
+- Readers: the route service and the phone library, with the installer
+  `planner/router/src/install.rs` and the views of `planner/router/src/cells.rs`, and the follower
+  of `obc data serve`, which runs the installer of the route service.
 - Code authority: `planner/router/src/cells.rs` (`Directory`, `Topology`, `Group`, `Table`,
   `Geometry`, `encode_road`, `decode_road`, `encode_table`).
 - Related: [route API](route-api.md), [planner release](planner-release.md), [obc data](obc-data.md)
@@ -37,7 +35,7 @@ each integer with no alignment need. A digest is SHA-256 as 64 lower-case hexade
 | Key | Value |
 | --- | --- |
 | `format` | 10 |
-| `region`, `bounds`, `source_sha256`, `attribution`, `warnings` | As in format 9. Bounds are `[west, south, east, north]` in degrees |
+| `region`, `bounds`, `source_sha256`, `attribution`, `warnings` | The region ID, its bounds `[west, south, east, north]` in degrees, the SHA-256 of the OSM extract and then of the terrain inputs, the credit of the data, and the warnings of the bake |
 | `profiles` | Sorted by name. Each is `{"group", "profile"}`: the profile group number and the `Profile` of the engine |
 | `levels` | The size limit of each level of the package, level 1 first: the first values of `routing.cell_sizes`, one for each level of the partition |
 | `download_level` | The download level of the package |
@@ -62,8 +60,7 @@ A **download cell** is a cell of the download level. An **upper cell** is a cell
 These cells have objects. No object is without a cell.
 
 The run-time ID of a road is `first_road` of its download cell plus its index in the cell. It is
-the number of the road in the cell order of the bake, so format 9 of the same bake names each road
-with the same number. No published byte holds it. The IDs of an install of some cells are sparse.
+the number of the road in the cell order of the bake. No published byte holds it. The IDs of an install of some cells are sparse.
 
 A **road reference** has 8 bytes: `cell` (u32, a download cell ID) and `index` (u32). Its run-time
 ID is `first_road` of that cell plus `index`. Each list of road references is in ascending order
@@ -334,23 +331,3 @@ A part and an object are smaller than 4 GiB. A level-1 cell has fewer than 65,53
 IDs of at most 32 bits, and at most 32 profile groups. A closure set has at most 255 entries. An
 MTB or SAC scale that the record cannot hold fails the bake. These limits do not set the size of a
 region or a phone performance target.
-
-## Grid selections
-
-This section is of format 9; it goes with format 9. `routing/blocks.json` has `format: 2`. `source`
-is the SHA-256 of the format 9 manifest. `data` has the structure of that manifest, with the bounds
-and the region of the selection. Each sparse table adds `pages`, an ascending list of source page
-numbers, parallel to `blocks`. `len` stays the length of the source column. An absent page is
-unavailable, not an empty page.
-
-`roads` holds sorted, disjoint half-open ranges of source roads. `arcs` is the number of source
-turns of those roads, before the turns to absent roads are removed. `snap` maps source spatial
-keys to page hashes. `archives` is the sorted list of pack IDs, each once. Each pack is
-`packs/ID/{pages.idx,pages.bin}`, with the objects of format 9.
-
-A selection keeps the source geometry, weights, turn costs, snap bits and landmark values. Its
-run-time road IDs are compact indices in source road order. A query uses only the turns whose two
-roads are present. The snap bits come from the whole region, so a road near the edge of a
-selection can be snappable although the selection has no path to it; such a query returns
-`no_path`. The source junction IDs join the kept roads to the landmark columns. The hash of the
-selection manifest is its package identity. Selections of different source releases do not mix.
