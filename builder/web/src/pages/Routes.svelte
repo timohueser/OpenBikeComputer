@@ -15,7 +15,7 @@
     import { trips } from '../lib/library/trips';
     import { router } from '../lib/router.svelte';
     import { ROUTES } from '../lib/routes';
-    import { formatDistance, formatHeight } from '../lib/settings/format';
+    import { distanceIn, formatDistance, formatHeight, heightIn } from '../lib/settings/format';
     import Chips from './routes/Chips.svelte';
     import { readSearch, results, rideItem, routeItem, type Box, type Chips as ChipValues, type Item, type Naming, type RideItem } from './routes/filter';
     import { dayText, rideRows, tripDates, type Row } from './routes/rows';
@@ -46,6 +46,9 @@
     const rideItems = $derived(rides?.map(rideItem) ?? []);
     const items: Item[] = $derived(ridden ? rideItems : routeItems);
     const shown = $derived(results(items, chips, text, onlyView ? view : undefined));
+    /** The value of each item that the text and the other chips keep, for the bars of the slider of `key`. */
+    const values = (key: 'length' | 'climb') => results(items, { ...chips, [key]: undefined }, text, onlyView ? view : undefined)
+        .flatMap(({ summary }) => summary ? [key === 'length' ? distanceIn(summary.lengthM) : heightIn(summary.climbM)] : []);
     const tripList = $derived(trips(rides ?? []));
     const rows = $derived(ridden ? rideRows(shown as RideItem[], tripList, grouped, new Map(routeItems.map(item => [item.id, item.name]))) : []);
     const group = $derived(rows.find(row => row.kind === 'group' && row.id === opened));
@@ -211,7 +214,7 @@
                     <input class="search" type="search" aria-label={ridden ? 'Search your rides' : 'Search your routes'}
                         placeholder={ridden ? 'Search your rides, or a place' : 'Search your routes, or a place'}
                         bind:value={text} onkeydown={event => { if (event.key === 'Enter' && text.trim()) void understand(); }} />
-                    <Chips bind:chips {view} keys={[...KEYS[ridden ? 'ridden' : 'planned']]} {years} />
+                    <Chips bind:chips {view} keys={[...KEYS[ridden ? 'ridden' : 'planned']]} {years} {values} />
                     {#if group}
                         <p class="count">
                             <button type="button" class="back" onclick={() => { opened = undefined; selected = undefined; }}>‹ All rides</button>

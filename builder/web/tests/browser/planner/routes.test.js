@@ -71,9 +71,11 @@ test('the Routes page lists the routes, filters them with a chip, shows the sele
   await page.keyboard.press('Escape');
   await expect(plan).toHaveCount(0);
 
+  // The lengths 22 and 150 km give the slider the step 10 km: the upper handle at 100 km keeps the short route.
   await page.getByText('+ Length').click();
-  await page.getByRole('button', { name: 'Under 100 km' }).click();
+  await page.getByRole('slider', { name: 'Length, to' }).fill('100');
   await expect(page.getByText('1 of 3 routes')).toBeVisible();
+  await page.locator('summary', { hasText: 'Under' }).click();
   await expect(list.getByRole('button')).toHaveText([/Lake test/]);
   await expect(plan).toHaveCount(0);
 

@@ -2,7 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { readSettings, updateSettings } from '../../lib/settings/settings.svelte';
 import type { RouteSummary } from '../../lib/library/records';
-import { distanceToBox, readSearch, results, rideItem, routeItem, type Item } from './filter';
+import { distanceToBox, readSearch, results, rideItem, routeItem, scale, type Item } from './filter';
 
 vi.mock('../../lib/planner/search/types', () => ({
     searchPlaces: async () => ({ type: 'places', request: {}, results: [
@@ -71,6 +71,22 @@ describe('results', () => {
         const items = [ride('eve', new Date(2025, 11, 31, 23, 30)), ride('new', new Date(2026, 0, 1, 0, 30))];
         expect(ids(results(items, { year: 2026 }, ''))).toEqual(['new']);
         expect(ids(results(items, {}, ''))).toEqual(['new', 'eve']);
+    });
+});
+
+describe('scale', () => {
+    it('reaches above the value at 95 %, so one very long value does not stretch it', () => {
+        const values = [...Array.from({ length: 20 }, (_, i) => 2 * (i + 1)), 900];
+        expect(scale(values)).toEqual({ step: 5, top: 80 });
+    });
+
+    it('reaches above each finite end of the range', () => {
+        expect(scale([10, 20], [0, 300])).toEqual({ step: 20, top: 320 });
+        expect(scale([10, 20], [50, Infinity])).toEqual({ step: 5, top: 80 });
+    });
+
+    it('has the step 1 with no value and no range', () => {
+        expect(scale([])).toEqual({ step: 1, top: 16 });
     });
 });
 
