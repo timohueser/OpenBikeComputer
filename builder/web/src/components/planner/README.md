@@ -24,8 +24,8 @@ The [release contract](../../../../../specs/planner-release.md) defines the file
 The planner reads the `active`
 [catalogue](../../../../../specs/planner-release.md#catalogue) entry at page load.
 `VITE_PLANNER_CATALOG` names another catalogue, such as the one that `obc data serve`
-prints. The map builder then reads its device catalogue too. `VITE_PLANNER_CONFIG`
-replaces the entry with one entry. `VITE_CATALOG_URL` gives the map builder another
+prints. The map pages then read its device catalogue too. `VITE_PLANNER_CONFIG`
+replaces the entry with one entry. `VITE_CATALOG_URL` gives the map pages another
 device catalogue.
 
 Basemap zooms are 0–14; terrain zooms are 0–12. Browser contours use terrain
