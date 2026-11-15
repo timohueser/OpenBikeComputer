@@ -8,12 +8,13 @@ let chips: ReturnType<typeof mount> | undefined;
 afterEach(async () => { if (chips) await unmount(chips); document.body.replaceChildren(); });
 
 describe('chips', () => {
-    it('keeps the menu open and the chip in its place while the slider changes', () => {
+    it('keeps the menu open and the chip in its place while the slider changes, and reads only its values', () => {
         let current = $state<ChipValues>({ bike: 'road' });
         const now = () => current;
+        const asked = new Set<string>();
         chips = mount(Chips, { target: document.body, props: {
             get chips() { return current; }, set chips(next: ChipValues) { current = next; },
-            keys: ['bike', 'length', 'climb'], values: () => [10, 20, 30],
+            keys: ['bike', 'length', 'climb'], values: key => { asked.add(key); return [10, 20, 30]; },
         } });
         flushSync();
         const summaries = () => [...document.querySelectorAll('summary')].map(summary => summary.textContent!.replaceAll('\u00a0', ' '));
@@ -30,10 +31,30 @@ describe('chips', () => {
         expect(now().climb).toEqual([0, 20]);
         expect(summaries()).toEqual(['Road bike ▾', '+ Length', 'Under 20 m ▾']);
         expect(document.querySelector('details.open')).toBe(climb);
+        // Only the open slider reads its values.
+        expect([...asked]).toEqual(['climb']);
 
         climb.open = false;
         climb.dispatchEvent(new Event('toggle'));
         flushSync();
         expect(summaries()).toEqual(['Road bike ▾', 'Under 20 m ▾', '+ Length']);
+    });
+
+    it('closes the open menu when the chips of another view come', () => {
+        let keys = $state<(keyof ChipValues)[]>(['length', 'climb', 'days']);
+        chips = mount(Chips, { target: document.body, props: {
+            chips: {}, get keys() { return keys; }, values: () => [10, 20, 30],
+        } });
+        flushSync();
+        const length = document.querySelector('details')!;
+        length.open = true;
+        length.dispatchEvent(new Event('toggle'));
+        flushSync();
+        expect(document.querySelector('details.open')).toBe(length);
+
+        keys = ['year', 'length'];
+        flushSync();
+        expect(document.querySelector('details.open')).toBeNull();
+        expect([...document.querySelectorAll('summary')].map(summary => summary.textContent)).toEqual(['+ Year', '+ Length']);
     });
 });

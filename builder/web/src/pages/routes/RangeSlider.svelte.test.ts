@@ -66,6 +66,22 @@ describe('range slider', () => {
         expect(to().value).toBe('30');
     });
 
+    it('keeps its scale while it shows, so a handle does not move under the pointer', () => {
+        // The end 300 gives the step 20; the range [0, 100) alone would give the step 10.
+        const { range } = show(VALUES, [0, 300]);
+        set(to(), 100);
+        expect(range()).toEqual([0, 100]);
+        expect([to().step, to().max, to().value]).toEqual(['20', '320', '100']);
+    });
+
+    it('shows a set end that is near the end of the rail one step in, so a move to the end clears it', () => {
+        const { changes } = show(VALUES, [0.4, Infinity]);
+        expect(from().value).toBe('5');
+        expect(reading()).toBe('0.4 km or more');
+        set(from(), 0);
+        expect(changes).toEqual([undefined]);
+    });
+
     it('keeps a stored end that is off the step until the rider moves its handle', () => {
         const { changes, range } = show(VALUES, [12, 33]);
         expect([from().value, to().value]).toEqual(['10', '35']);

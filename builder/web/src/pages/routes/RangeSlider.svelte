@@ -1,5 +1,6 @@
 <!-- A range of a chip: bars with the count of the items at each step, and two handles under them. -->
 <script lang="ts">
+    import { untrack } from 'svelte';
     import { rangeText, scale, STEPS, type Range } from './filter';
 
     let { values, range, onchange, label, format }: {
@@ -12,11 +13,12 @@
         format: (value: number) => string;
     } = $props();
 
-    const step = $derived(scale(values, range).step);
-    const top = $derived(STEPS * step);
+    // The scale holds while the slider shows, so a handle never moves under the pointer.
+    const step = untrack(() => scale(values, range).step), top = STEPS * step;
     // A stored end that is off the step shows at the nearest step, and keeps its value until the rider moves its handle.
-    const low = $derived(range ? Math.max(0, Math.min(Math.round(range[0] / step), STEPS - 1)) : 0);
-    const high = $derived(range && range[1] !== Infinity ? Math.max(Math.min(Math.round(range[1] / step), STEPS), low + 1) : STEPS);
+    // A set end never shows at the end of the rail, so a move to that end changes the value.
+    const low = $derived(range && range[0] > 0 ? Math.max(1, Math.min(Math.round(range[0] / step), STEPS - 1)) : 0);
+    const high = $derived(range && range[1] !== Infinity ? Math.max(Math.min(Math.round(range[1] / step), STEPS - 1), low + 1) : STEPS);
     /** The last bar also counts each value from `top` up. */
     const counts = $derived.by(() => {
         const counts = Array<number>(STEPS).fill(0);
@@ -30,10 +32,11 @@
         // A handle stops one step before the other one.
         const at = end === 0 ? Math.min(wanted, high - 1) : Math.max(wanted, low + 1);
         input.value = String(at * step);
-        if (at === (end === 0 ? low : high)) return;
-        const min = end === 0 ? at * step : range?.[0] ?? 0;
-        const max = end === 1 ? (at === STEPS ? Infinity : at * step) : range?.[1] ?? Infinity;
-        onchange(min <= 0 && max === Infinity ? undefined : [min, max]);
+        const next: Range = range ? [...range] : [0, Infinity];
+        const value = end === 1 && at === STEPS ? Infinity : at * step;
+        if (next[end] === value) return;
+        next[end] = value;
+        onchange(next[0] <= 0 && next[1] === Infinity ? undefined : next);
     }
 </script>
 
@@ -133,6 +136,10 @@
         outline: none;
     }
     .rail input:focus-visible::-webkit-slider-thumb {
+        outline: 2px solid var(--forest);
+        outline-offset: 2px;
+    }
+    .rail input:focus-visible::-moz-range-thumb {
         outline: 2px solid var(--forest);
         outline-offset: 2px;
     }

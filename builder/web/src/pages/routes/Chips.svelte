@@ -1,5 +1,6 @@
 <!-- The chips of the search of the Routes page. A free chip offers its options; a set chip shows its value. -->
 <script lang="ts">
+    import { untrack } from 'svelte';
     import { bikes } from '../../lib/library/records';
     import { ridingProfiles } from '../../lib/planner/riding-profiles';
     import { distanceIn, formatDistance, formatHeight, heightIn } from '../../lib/settings/format';
@@ -48,6 +49,12 @@
 
     // The set chips come first, each group in the order of `keys`. A chip does not move while a menu is open.
     let ordered = $state<Key[]>([]);
+    // Another view has other chips and other values, so its menus start closed.
+    const offered = $derived(keys.join());
+    $effect.pre(() => {
+        void offered;
+        untrack(() => open = null);
+    });
     $effect.pre(() => {
         if (open === null) ordered = [...keys.filter(key => chips[key] !== undefined), ...keys.filter(key => chips[key] === undefined)];
     });
@@ -102,7 +109,8 @@
                         </button>
                     {/each}
                 {:else if key === 'length' || key === 'climb'}
-                    <RangeSlider values={values(key)} range={chips[key]} onchange={range => put(key, range)} label={NAMES[key]} format={show(key)} />
+                    <!-- Only the open slider reads its values, and it takes its scale as it opens. -->
+                    {#if open === key}<RangeSlider values={values(key)} range={chips[key]} onchange={range => put(key, range)} label={NAMES[key]} format={show(key)} />{/if}
                 {:else}
                     {#each options(key) as option (option.label)}
                         <button type="button" aria-pressed={set && label(key) === option.label} onclick={() => choose(key, option.value)}>{option.label}</button>
