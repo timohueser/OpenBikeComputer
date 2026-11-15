@@ -7,7 +7,7 @@ import RangeSlider from './RangeSlider.svelte';
 let slider: ReturnType<typeof mount> | undefined;
 afterEach(async () => { if (slider) await unmount(slider); document.body.replaceChildren(); });
 
-// 20 values: the value at 95 % is 79, so the scale has the step 5 and the top 80.
+// 20 values: the value at 90 % is 79, so the scale has the step 5 and the top 80.
 const VALUES = [...Array(11).fill(1), 0, 3, 7, 12, 40, 41, 79, 79, 300];
 
 function show(values: number[], start?: Range) {
@@ -35,10 +35,12 @@ function set(element: HTMLInputElement, value: number) {
 describe('range slider', () => {
     it('counts the values of each step, and the last bar counts each value from the top up', () => {
         show(VALUES);
-        // The highest bar holds 13 values; the last one holds 79, 79 and 300.
-        expect(bars().map(bar => Math.round(parseFloat(bar.style.height) * 13 / 100))).toEqual([13, 1, 1, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 3]);
+        // The highest bar holds 13 values; the last one holds 79, 79 and 300, and is striped for the 300 above the top.
+        expect(bars().map(bar => Math.round(parseFloat(bar.style.getPropertyValue('--share')) * 13))).toEqual([13, 1, 1, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 3]);
+        expect(bars().map(bar => bar.classList.contains('more'))).toEqual([...Array(15).fill(false), true]);
         expect(to().max).toBe('80');
         expect(reading()).toBe('Any');
+        expect([...document.querySelectorAll('.ends span')].map(end => end.textContent)).toEqual(['0', '75 km+']);
     });
 
     it('sets the range with a handle, and gives no range with both handles at the ends', () => {

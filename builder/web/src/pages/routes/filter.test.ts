@@ -75,9 +75,9 @@ describe('results', () => {
 });
 
 describe('scale', () => {
-    it('reaches above the value at 95 %, so one very long value does not stretch it', () => {
-        const values = [...Array.from({ length: 20 }, (_, i) => 2 * (i + 1)), 900];
-        expect(scale(values)).toEqual({ step: 5, top: 80 });
+    it('reaches above the value at 90 %, so a few very long values do not stretch it', () => {
+        const values = [...Array.from({ length: 30 }, (_, i) => 20 + i * 70 / 29), 600, 1200, 2400];
+        expect(scale(values)).toEqual({ step: 10, top: 160 });
     });
 
     it('reaches above each finite end of the range', () => {

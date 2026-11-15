@@ -26,6 +26,8 @@
         return counts;
     });
     const most = $derived(Math.max(1, ...counts));
+    /** The last bar also stands for values above the scale. */
+    const over = $derived(values.some(value => value >= top));
 
     function move(end: 0 | 1, input: HTMLInputElement) {
         const wanted = Math.round(Number(input.value) / step);
@@ -43,7 +45,7 @@
 <div class="slider">
     <p class="reading">{range ? rangeText(range, format) : 'Any'}</p>
     <div class="bars" aria-hidden="true">
-        {#each counts as count, i (i)}<span class:on={i >= low && i < high} style:height="{count / most * 100}%"></span>{/each}
+        {#each counts as count, i (i)}<span class:on={i >= low && i < high} class:more={over && i === STEPS - 1} style:--share={count / most}></span>{/each}
     </div>
     <div class="rail" style:--low={low} style:--high={high} style:--steps={STEPS}>
         <input type="range" min="0" max={top} {step} value={low * step} aria-label="{label}, from" aria-valuetext={low ? format(low * step) : 'Any'}
@@ -51,6 +53,7 @@
         <input type="range" min="0" max={top} {step} value={high * step} aria-label="{label}, to" aria-valuetext={high < STEPS ? format(high * step) : 'Any'}
             oninput={event => move(1, event.currentTarget)} />
     </div>
+    <div class="ends"><span>0</span><span>{format(top - step)}+</span></div>
 </div>
 
 <style>
@@ -71,13 +74,29 @@
         gap: 2px;
         height: 44px;
     }
+    /* An empty step keeps a stub, so the row of bars has no holes. */
     .bars span {
         flex: 1;
+        height: calc(3px + var(--share) * (100% - 3px));
         border-radius: 2px 2px 0 0;
         background: var(--parchment-3);
     }
     .bars .on {
         background: var(--ink-soft);
+    }
+    /* Stripes mark a last bar that holds values above the scale; its height is still its count. */
+    .bars .more {
+        background: repeating-linear-gradient(135deg, var(--parchment-3) 0 3px, transparent 3px 6px);
+    }
+    .bars .more.on {
+        background: repeating-linear-gradient(135deg, var(--ink-soft) 0 3px, transparent 3px 6px);
+    }
+    .ends {
+        display: flex;
+        justify-content: space-between;
+        margin-top: -2px;
+        color: var(--ink-soft);
+        font-size: 11px;
     }
     /* Two range inputs share one rail; only their thumbs take the pointer. */
     .rail {

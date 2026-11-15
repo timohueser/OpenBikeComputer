@@ -4,6 +4,7 @@
     import { bikes } from '../../lib/library/records';
     import { ridingProfiles } from '../../lib/planner/riding-profiles';
     import { distanceIn, formatDistance, formatHeight, heightIn } from '../../lib/settings/format';
+    import { settings } from '../../lib/settings/settings.svelte';
     import { findPlaces, rangeText, type Box, type Chips, type FoundPlace, type Range } from './filter';
     import RangeSlider from './RangeSlider.svelte';
 
@@ -29,9 +30,11 @@
     let query = $state(''), found = $state.raw<FoundPlace[] | null>(null), failure = $state('');
     let timer: ReturnType<typeof setTimeout> | undefined, controller: AbortController | undefined;
 
-    /** A value in the units of the rider, with its unit. */
+    /** A value in the units of the rider, with its unit. A length on a step of the slider is a whole number and shows no
+     * decimal; a stored length off the step keeps the decimal of `formatDistance`. */
     const show = (key: 'length' | 'climb') => (value: number) =>
-        key === 'length' ? formatDistance(value / distanceIn(1)) : formatHeight(value / heightIn(1));
+        key === 'climb' ? formatHeight(value / heightIn(1))
+            : Number.isInteger(value) ? `${value.toLocaleString('en')}\u00a0${settings.units}` : formatDistance(value / distanceIn(1));
     const rangeLabel = (key: 'length' | 'climb', range: Range) => rangeText(range, show(key));
 
     function options(key: 'bike' | 'days' | 'year'): { value: Chips[Key]; label: string }[] {
@@ -124,6 +127,7 @@
 
 <style>
     .chips {
+        position: relative;
         display: flex;
         flex-wrap: wrap;
         gap: 4px 6px;
@@ -204,5 +208,11 @@
     .note {
         margin: 4px 8px 6px;
         color: var(--ink-soft);
+    }
+    /* On a phone a menu starts at the left of the row, so that it stays on the screen under a chip at the right. */
+    @media (max-width: 760px) {
+        .chip {
+            position: static;
+        }
     }
 </style>

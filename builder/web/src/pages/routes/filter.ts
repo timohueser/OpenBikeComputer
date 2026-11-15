@@ -23,12 +23,12 @@ export function rangeText([min, max]: Range, format: (value: number) => string):
 export const STEPS = 16;
 
 /** The step of a range slider for `values`: the smallest of 1, 2, 5, 10, 20, 50, … whose `STEPS` steps reach above
- * the value at 95 % of the sorted values, so that one very long route does not stretch the scale, and above each
+ * the value at 90 % of the sorted values, so that a few very long routes do not stretch the scale, and above each
  * finite end of `range`, so that a range that is set is inside it. `top` is `STEPS × step`. */
 export function scale(values: number[], range?: Range): { step: number; top: number } {
     const sorted = [...values].sort((a, b) => a - b);
     const ends = (range ?? []).filter(Number.isFinite);
-    const reach = Math.max(0, sorted[Math.ceil(sorted.length * 0.95) - 1] ?? 0, ...ends);
+    const reach = Math.max(0, sorted[Math.ceil(sorted.length * 9 / 10) - 1] ?? 0, ...ends);
     for (let power = 1; ; power *= 10)
         for (const step of [power, 2 * power, 5 * power]) if (STEPS * step > reach) return { step, top: STEPS * step };
 }
