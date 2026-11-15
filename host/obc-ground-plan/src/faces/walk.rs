@@ -41,6 +41,7 @@ impl End {
     /// The metres along the rule past its point of q, frame units from the origin, with `mpu` metres per unit; None
     /// where q lies before it, on the other side of the line through its point, or farther across than its slab. The
     /// point is its place rounded to a unit, so the rule holds from one unit before it on, at its target there.
+    #[inline(never)]
     fn past(&self, q: [f64; 2], mpu: f64) -> Option<f64> {
         let v = [q[0] - f64::from(self.at[0]), q[1] - f64::from(self.at[1])];
         let x = v[0] * self.dir[0] + v[1] * self.dir[1];
@@ -83,6 +84,7 @@ struct Ramp {
 }
 
 impl Ramp {
+    #[inline(never)]
     fn new(target: f64, full: f64, k: f64, r: f64) -> Ramp {
         let phi = libm::atan(k);
         let (s, c) = (libm::sin(phi), libm::cos(phi));
@@ -92,6 +94,7 @@ impl Ramp {
     }
 
     /// The width x metres past the station.
+    #[inline(never)]
     fn at(&self, x: f64) -> f64 {
         let (r, s, c) = (self.r, libm::sin(self.phi), libm::cos(self.phi));
         let x = x.max(0.0);
@@ -121,6 +124,7 @@ impl Ramp {
 /// The width at q (frame units, `mpu` metres per unit) of a side of full width `full` with the rules `ends`: the least
 /// ramp of the rules that hold q. With `tips`, of the taper tips alone: the kerb's rise, which a narrower way beyond
 /// leaves.
+#[inline(never)]
 pub(crate) fn width(q: [f64; 2], ends: &[End], full: f64, k: f64, r: f64, mpu: f64, tips: bool) -> f64 {
     (ends.iter().filter(|e| !tips || e.target == 0.0))
         .filter_map(|e| e.past(q, mpu).map(|x| Ramp::new(e.target, full, k, r).at(x)))
@@ -151,6 +155,7 @@ pub(super) fn walks(line: &WayLine, arm: Arm, right: bool) -> bool {
 }
 
 /// A line's point and half-width at fractional vertex index x, and its segment's unit direction.
+#[inline(never)]
 fn at_x(line: &WayLine, x: f64) -> ([f64; 2], f64, [f64; 2]) {
     let n = line.p.len();
     let i = (libm::floor(x).max(0.0) as usize).min(n.saturating_sub(2));
@@ -162,6 +167,7 @@ fn at_x(line: &WayLine, x: f64) -> ([f64; 2], f64, [f64; 2]) {
 }
 
 /// The point at fractional vertex index x of a line, moved `d` units across onto stroke side `side`.
+#[inline(never)]
 fn beside(line: &WayLine, x: f64, side: f64, d: f64) -> [f64; 2] {
     let (q, _, u) = at_x(line, x);
     let n = left(u);
@@ -169,6 +175,7 @@ fn beside(line: &WayLine, x: f64, side: f64, d: f64) -> [f64; 2] {
 }
 
 /// The fractional vertex index `d` units from x toward `dir` along a line, at most to `stop`.
+#[inline(never)]
 fn moved(line: &WayLine, x: f64, dir: f64, d: f64, stop: f64) -> f64 {
     let (mut x, mut d) = (x, d);
     while d > 0.0 && (stop - x) * dir > 0.0 {
@@ -406,6 +413,7 @@ fn piece_points(
 
 /// The first crossing of polyline `path` with segment cd: its place along the path (segment index and fraction)
 /// and its fraction along cd.
+#[inline(never)]
 fn crossing(path: &[[f64; 2]], c: [f64; 2], d: [f64; 2]) -> Option<(f64, f64)> {
     path.windows(2).enumerate().find_map(|(k, w)| {
         let (a, b) = (w[0], w[1]);
@@ -421,6 +429,7 @@ fn crossing(path: &[[f64; 2]], c: [f64; 2], d: [f64; 2]) -> Option<(f64, f64)> {
 }
 
 /// A line's centre line from vertex `at` toward `dir`, up to `reach` units (and its next vertex).
+#[inline(never)]
 fn path_from(line: &WayLine, at: usize, dir: i8, reach: f64) -> Vec<[f64; 2]> {
     let mut path: Vec<[f64; 2]> = Vec::new();
     let (mut i, mut length) = (at, 0.0);
@@ -522,6 +531,7 @@ fn deck_points(ctx: &Ctx, input: &CellInput, lines: &[WayLine], bx: [i32; 4]) ->
 }
 
 /// The direction at a piece's end x into the piece (`s`: +1 at its start, −1 at its end), of its segment there.
+#[inline(never)]
 fn dir_in(line: &WayLine, x: f64, s: f64) -> [f64; 2] {
     let i = if s > 0.0 { libm::floor(x) } else { libm::ceil(x) - 1.0 };
     let u = at_x(line, i.max(0.0) + 0.5).2;
