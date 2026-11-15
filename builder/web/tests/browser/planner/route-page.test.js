@@ -70,10 +70,18 @@ test('the route page shows a stored route, renames, sends, opens in the planner,
   expect(card.suggestedFilename()).toBe('Lake loop.jpg');
   const bytes = await readFile(await card.path());
   expect([...bytes.subarray(0, 3)]).toEqual([0xff, 0xd8, 0xff]);
-  expect(await page.evaluate(async file => {
+  const drawn = await page.evaluate(async file => {
     const image = await createImageBitmap(new Blob([new Uint8Array(file)]));
-    return [image.width, image.height];
-  }, [...bytes])).toEqual([1920, 1780]);
+    const context = new OffscreenCanvas(image.width, image.height).getContext('2d');
+    context.drawImage(image, 0, 0);
+    const pixel = (x, y) => [...context.getImageData(x, y, 1, 1).data.slice(0, 3)];
+    return { size: [image.width, image.height], ground: pixel(1900, 1300), board: pixel(111, 83) };
+  }, [...bytes]);
+  expect(drawn.size).toEqual([1920, 1780]);
+  // The card is drawn: the plain ground in its right margin, and a board of the signpost of the product mark.
+  const near = (pixel, colour) => pixel.every((value, i) => Math.abs(value - colour[i]) <= 24);
+  expect(near(drawn.ground, [0xf4, 0xf2, 0xeb]), `ground ${drawn.ground}`).toBe(true);
+  expect(near(drawn.board, [0xf4, 0xa8, 0x1d]), `board ${drawn.board}`).toBe(true);
   await page.keyboard.press('Escape');
   await expect(share).toHaveCount(0);
 

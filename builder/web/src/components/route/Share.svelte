@@ -84,12 +84,15 @@
         if (!target) return;
         let live = true;
         file = undefined;
-        // A font that does not load, as with no network, leaves its fallback to the card.
-        void Promise.allSettled(FONTS.map(font => document.fonts.load(font))).then(() => {
+        const draw = () => {
             if (!live) return;
             drawCard(target, format, content);
             target.toBlob(made => { if (live && made) file = made; }, 'image/jpeg', QUALITY);
-        });
+        };
+        // With its fonts loaded, as the page has them, the card has its size before the first paint. A font that does
+        // not load, as with no network, leaves its fallback to the card.
+        if (FONTS.every(font => document.fonts.check(font))) draw();
+        else void Promise.allSettled(FONTS.map(font => document.fonts.load(font))).then(draw);
         return () => { live = false; };
     });
 </script>
