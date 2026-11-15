@@ -52,6 +52,9 @@
         trim: canHide && hideEnds ? HIDDEN_M : 0,
     });
 
+    /** The text of the card, for a reader that does not see the canvas. */
+    const label = $derived(`Share card: ${[card.date, name, ...card.numbers.map(number => number.join(' ').trim())].filter(Boolean).join(', ')}`);
+
     // The cover job of the page renders a missing cover; the card changes to the picture when it is there. A cover of
     // an earlier line, and a cover with no credits, is no picture of the card.
     $effect(() => {
@@ -79,7 +82,8 @@
         if (!target) return;
         let live = true;
         file = undefined;
-        void Promise.all(FONTS.map(font => document.fonts.load(font))).then(() => {
+        // A font that does not load, as with no network, leaves its fallback to the card.
+        void Promise.allSettled(FONTS.map(font => document.fonts.load(font))).then(() => {
             if (!live) return;
             drawCard(target.getContext('2d')!, format, content);
             target.toBlob(made => { if (live && made) file = made; }, 'image/jpeg', QUALITY);
@@ -90,7 +94,8 @@
 
 <Window title="Share" wide {onClose}>
     <div class="share">
-        <canvas bind:this={canvas} width={SIZES[format][0]} height={SIZES[format][1]} aria-label={`The share card of ${name}`}></canvas>
+        <!-- svelte-ignore a11y_no_interactive_element_to_noninteractive_role -->
+        <canvas bind:this={canvas} width={SIZES[format][0]} height={SIZES[format][1]} role="img" aria-label={label}></canvas>
         <div class="side">
             <div class="switches">
                 {#if cover}

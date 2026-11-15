@@ -1,9 +1,12 @@
 <script lang="ts">
-    let { checked = $bindable(false), label, note }: { checked?: boolean; label: string; /** A second line under the label. */ note?: string } = $props();
+    /** `note` is a second line under the label. It describes the switch; the name of the switch is the label alone. */
+    let { checked = $bindable(false), label, note }: { checked?: boolean; label: string; note?: string } = $props();
+    const id = $props.id();
 </script>
 
-<button type="button" role="switch" aria-checked={checked} onclick={() => checked = !checked}>
-    <span class="label">{label}{#if note}<small>{note}</small>{/if}</span>
+<button type="button" role="switch" aria-checked={checked} aria-labelledby={`${id}-label`} aria-describedby={note ? `${id}-note` : undefined}
+    onclick={() => checked = !checked}>
+    <span class="label"><span id={`${id}-label`}>{label}</span>{#if note}<small id={`${id}-note`}>{note}</small>{/if}</span>
     <span class="track" aria-hidden="true"><span class="knob"></span></span>
 </button>
 

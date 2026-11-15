@@ -1,7 +1,7 @@
 /** Draws the share card of a route or a ride: the picture or a plain ground with the line, the name, the numbers, the elevation profile, the date of a ride, the product mark and the credits of the map data. */
 import type { Summary } from '../library/records';
 import { drawCover, type CoverImage, type Look } from './draw';
-import { metresAlong } from './line';
+import { fromAbove, metresAlong } from './line';
 
 export type Format = 'wide';
 /** The pixels of a card. The wide card has the size of a cover, so it shows the whole picture. */
@@ -26,8 +26,11 @@ const BOARDS = [
 const PRODUCT = 'OpenBikeComputer';
 /** The profile band shows at least this range of heights, so a flat line looks flat. Chosen. */
 const LEAST_RANGE_M = 50;
-/** The name has at most NAME_LINES lines and the credits CREDIT_LINES; the rest ends with "…". */
-const NAME_LINES = 3, CREDIT_LINES = 2;
+/** The name has at most NAME_LINES lines; the rest ends with "…". Credits of at most BESIDE_LINES lines stand beside
+ * the text. Longer credits stand under it, whole, on the lines that they need. */
+const NAME_LINES = 3, BESIDE_LINES = 2;
+/** A missing font file must not stop the card: each font names the fallback of the product. */
+const SANS = 'Atkinson, system-ui, sans-serif', MONO = '"Atkinson Mono", ui-monospace, monospace';
 
 export interface Card {
     name: string;
@@ -65,15 +68,21 @@ export interface Layout {
     letters: { name: number; number: number; small: number };
 }
 
+/** The margin at the sides, the width between the margins and the sizes of the letters. Credits under the text have
+ * the smallest letters that still read in the file, 16 px in a card of 1920 px. Chosen. */
+function measures(format: Format, creditUnder: boolean) {
+    const [width] = SIZES[format], margin = Math.round(0.042 * width);
+    const letters = { name: Math.round(0.05 * width), number: Math.round(0.025 * width), small: Math.round(width / (creditUnder ? 120 : 84)) };
+    return { margin, inner: width - 2 * margin, letters };
+}
+
 /** The parts of a card that change its layout. The credits stand beside the numbers, or under them in their own lines. */
 export interface Shown { nameLines: number; date: boolean; numbers: boolean; profile: boolean; creditLines: number; creditUnder: boolean }
 
 /** The layout of a card: the picture fills it, the text stands at the lower left over the band of the profile, and the
  * mark at the upper left. */
 export function layout(format: Format, shown: Shown): Layout {
-    const [width, height] = SIZES[format];
-    const margin = Math.round(0.042 * width), inner = width - 2 * margin;
-    const letters = { name: Math.round(0.05 * width), number: Math.round(0.025 * width), small: Math.round(0.012 * width) };
+    const [width, height] = SIZES[format], { margin, inner, letters } = measures(format, shown.creditUnder);
     const nameLine = Math.round(1.08 * letters.name), smallLine = Math.round(1.4 * letters.small);
     const band = shown.profile ? { x: 0, y: height - Math.round(0.13 * height), width, height: Math.round(0.13 * height) } : undefined;
     // With no band, the text keeps the margin of the sides from the lower edge.
@@ -95,11 +104,9 @@ export function layout(format: Format, shown: Shown): Layout {
     };
 }
 
-/** The credits of a release are sentences, too long for a card: the card names each holder of a right, the name after
- * each "©". Credits with no "©" stay as they are. */
-export function holders(credits: string[]): string[] {
-    const names = credits.flatMap(credit => [...credit.matchAll(/©\s*([^;,()/\d]+)/g)].map(match => `© ${match[1].trim()}`));
-    return names.length ? [...new Set(names)] : credits;
+/** The credits of a picture as the card shows them: each part between two ";", whole, one time. */
+export function creditParts(credits: string[]): string[] {
+    return [...new Set(credits.flatMap(credit => credit.split(';')).map(part => part.trim()).filter(Boolean))];
 }
 
 /** The lines of `pieces` in the font of `context`: pieces joined by `joint`, broken between two pieces at `max` pixels.
@@ -140,9 +147,9 @@ export function stretch(summary: Summary, trim: number): [number, number][] {
 /** Draws the card over the whole canvas of `context`, which has the size of the format, and returns its layout. */
 export function drawCard(context: CanvasRenderingContext2D, format: Format, card: Card): Layout {
     const { summary, cover } = card, [width, height] = SIZES[format], colours = cover ? ON_PICTURE : PLAIN;
-    const sizes = layout(format, { nameLines: 1, date: false, numbers: false, profile: false, creditLines: 0, creditUnder: false });
-    const { letters } = sizes, inner = sizes.name.width, gap = letters.number;
-    const fonts = { name: `700 ${letters.name}px Atkinson`, value: `700 ${letters.number}px Atkinson`, unit: `400 ${letters.number}px Atkinson`, small: `400 ${letters.small}px Atkinson` };
+    const { inner, letters } = measures(format, false), gap = letters.number;
+    const fonts = { name: `700 ${letters.name}px ${SANS}`, value: `700 ${letters.number}px ${SANS}`, unit: `400 ${letters.number}px ${SANS}` };
+    const small = (under: boolean) => `400 ${measures(format, under).letters.small}px ${SANS}`;
     const measure = (font: string, text: string) => { context.font = font; return context.measureText(text).width; };
 
     context.font = fonts.name;
@@ -151,11 +158,13 @@ export function drawCard(context: CanvasRenderingContext2D, format: Format, card
     const numbersWidth = numbers.reduce((sum, number) => sum + number.width, 0) + gap * Math.max(0, numbers.length - 1);
     // The credits stand at the right of the last line of the text, when they fit there in their lines.
     const beside = inner - gap - (numbers.length ? numbersWidth : measure(fonts.name, nameLines.at(-1) ?? ''));
-    context.font = fonts.small;
-    const names = cover ? holders(cover.credits) : [];
-    let credits = wrap(context, names, ' · ', beside, Infinity);
-    const creditUnder = credits.length > CREDIT_LINES || beside < inner / 4;
-    if (creditUnder) credits = wrap(context, names, ' · ', inner, CREDIT_LINES);
+    // A line breaks at a space; the dot between two parts stays with the part before it.
+    const words = cover ? creditParts(cover.credits).join('\u00a0· ').split(' ').filter(Boolean) : [];
+    context.font = small(false);
+    let credits = wrap(context, words, ' ', beside, Infinity);
+    const creditUnder = credits.length > BESIDE_LINES || beside < inner / 4;
+    context.font = small(creditUnder);
+    if (creditUnder) credits = wrap(context, words, ' ', inner, Infinity);
     const boxes = layout(format, { nameLines: nameLines.length, date: card.date !== undefined, numbers: numbers.length > 0, profile: card.profile, creditLines: credits.length, creditUnder });
 
     if (cover) drawCover(context, cover, { box: [width, height], line: card.line, look: card.look, trim: card.trim });
@@ -202,7 +211,7 @@ export function drawCard(context: CanvasRenderingContext2D, format: Format, card
     if (boxes.credit) {
         const smallLine = boxes.credit.height / credits.length;
         context.textAlign = creditUnder ? 'left' : 'right';
-        credits.forEach((line, i) => text(fonts.small, colours.credit, line, boxes.credit!.x + (creditUnder ? 0 : boxes.credit!.width), boxes.credit!.y + (i + 1) * smallLine));
+        credits.forEach((line, i) => text(small(creditUnder), colours.credit, line, boxes.credit!.x + (creditUnder ? 0 : boxes.credit!.width), boxes.credit!.y + (i + 1) * smallLine));
         context.textAlign = 'left';
     }
 
@@ -217,22 +226,19 @@ export function drawCard(context: CanvasRenderingContext2D, format: Format, card
     shape(POST, colours.post);
     for (const board of BOARDS) shape(board, BOARD);
     context.textBaseline = 'middle';
-    text(`700 ${Math.round(0.5 * mark.height)}px "Atkinson Mono"`, colours.ink, PRODUCT, mark.x + 1.05 * mark.height, mark.y + 0.52 * mark.height);
+    text(`700 ${Math.round(0.5 * mark.height)}px ${MONO}`, colours.ink, PRODUCT, mark.x + 1.05 * mark.height, mark.y + 0.52 * mark.height);
     context.textBaseline = 'alphabetic';
     [context.shadowColor, context.shadowOffsetY, context.shadowBlur] = ['transparent', 0, 0];
     return boxes;
 }
 
 /** The line from above with the north up, in the middle of `box`. */
-function plan(context: CanvasRenderingContext2D, box: Box, points: [number, number][], colour: string, lineWidth: number): void {
-    if (!points.length) return;
-    const lons = points.map(point => point[0]), lats = points.map(point => point[1]);
-    const [west, east, south, north] = [Math.min(...lons), Math.max(...lons), Math.min(...lats), Math.max(...lats)];
-    const across = Math.cos((south + north) / 2 * Math.PI / 180);
-    const scale = Math.min(box.width / ((east - west) * across || 1e-9), box.height / (north - south || 1e-9));
+function plan(context: CanvasRenderingContext2D, box: Box, line: [number, number][], colour: string, lineWidth: number): void {
+    if (!line.length) return;
+    const { points, width, height } = fromAbove(line), scale = Math.min(box.width / (width || 1e-9), box.height / (height || 1e-9));
+    const left = box.x + (box.width - width * scale) / 2, top = box.y + (box.height - height * scale) / 2;
     context.beginPath();
-    points.forEach(([lon, lat], i) => context[i ? 'lineTo' : 'moveTo'](
-        box.x + box.width / 2 + (lon - (west + east) / 2) * across * scale, box.y + box.height / 2 - (lat - (south + north) / 2) * scale));
+    points.forEach(([x, y], i) => context[i ? 'lineTo' : 'moveTo'](left + x * scale, top + y * scale));
     context.lineCap = context.lineJoin = 'round';
     [context.lineWidth, context.strokeStyle] = [lineWidth, colour];
     context.stroke();
