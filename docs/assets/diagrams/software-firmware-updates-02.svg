@@ -17,7 +17,7 @@
   <path class="d-flow" d="M240 164 L240 202" marker-end="url(#software-firmware-updates-2)" fill="none" stroke="#a4501e" stroke-width="2" />
   <rect class="d-panel" x="20" y="205" width="440" height="74" rx="8" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
   <text class="d-title" x="240" y="230" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">Companion (BLE) or web app (USB)</text>
-  <text class="d-sub" x="240" y="250" text-anchor="middle" fill="#5c5a2e" font-size="12px">Download a release, or select a local package</text>
+  <text class="d-sub" x="240" y="250" text-anchor="middle" fill="#5c5a2e" font-size="12px">A release, or a local file (companion)</text>
   <rect class="d-panel" x="500" y="205" width="200" height="74" rx="8" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
   <text class="d-title" x="600" y="230" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">Local package</text>
   <text class="d-sub" x="600" y="250" text-anchor="middle" fill="#5c5a2e" font-size="12px">A file on the computer</text>

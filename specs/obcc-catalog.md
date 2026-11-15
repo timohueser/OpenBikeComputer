@@ -1,8 +1,7 @@
 # OBCC catalog manifest
 
-The JSON contract between the central cell bakery and map-building consumers. The website and the
-maintainer dev server read the same catalog, select the same [OBCA](obca-assembly.md) cells, and
-feed them to the same assembler. The device does not read OBCC.
+The JSON contract between the central cell bakery and map-building consumers. The web app reads the
+catalog, selects the [OBCA](obca-assembly.md) cells, and feeds them to the assembler. The device does not read OBCC.
 
 - Version: `"schema_version": 3`. Consumers MUST reject any other value before interpreting the rest
   of the document.
@@ -372,8 +371,8 @@ A publish MUST make all referenced content available before replacing the root:
 
 A failure before step 4 leaves the previously published root authoritative. An explicit catalog
 refresh replaces the complete accepted root and its satellite client. It MUST NOT combine objects or
-schema bytes from two roots in one assembly. The builder stops and drains old preparation before it
-accepts a replacement. It MUST NOT replace the builder during an active device transfer. Refresh
+schema bytes from two roots in one assembly. The web app stops and drains old preparation before it
+accepts a replacement. It MUST NOT accept a replacement during an active device transfer. Refresh
 keeps the coverage parts. It resolves them against the new catalog and shows
 unavailable coverage without dropping parts. Chosen skins remain selected when they are compatible
 with the new schema.
@@ -397,7 +396,7 @@ assembly, seams unify only exact serialized coordinates, and the resulting mount
 [obca-assembly.md](obca-assembly.md) §4.
 
 Every client that assembles a map MUST use the same selection arithmetic, verified cell bytes, skin,
-and assembler. Host-specific file saving MUST NOT alter the assembled bytes.
+and assembler.
 
 A consumer MAY stream assembler output directly to a connected device instead of first saving it,
 and MUST verify the emitted file's announced length before transfer. A streaming consumer has no
@@ -685,7 +684,7 @@ The index is sparse. An absent cell or collection means no content only after th
 and verifies the index. A fetch, length or digest failure MUST fail the build. A consumer MUST NOT
 fall back to embedded content after a detached index failure.
 
-The builder selects entries from the selected core-band cell ids. It adds their bytes to the
+The web app selects entries from the selected core-band cell ids. It adds their bytes to the
 selection price and verifies each artifact before assembly. The assembler reads both collections
 with the same readers as embedded content and verifies the finished map. Each article and photo
 keeps its source credit in the assembled map.
