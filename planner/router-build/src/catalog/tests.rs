@@ -46,9 +46,7 @@ fn grid(routes: Vec<Route>) -> (Region<Memory>, Data) {
     for row in 0..7 {
         for column in 0..7 {
             let a = 10 * row + column;
-            // No street joins nodes 50 and 51, so no second way of the same cost leads the lollipop
-            // of route 8 back to its start.
-            for b in [a + 1, a + 10].into_iter().filter(|&b| b % 10 < 7 && b / 10 < 7 && (a, b) != (50, 51)) {
+            for b in [a + 1, a + 10].into_iter().filter(|b| b % 10 < 7 && b / 10 < 7) {
                 let id = way(a, b);
                 ways.push(id, &[a, b], &tags(&[("highway", "residential")]));
                 for (from, to) in [(index[&a], index[&b]), (index[&b], index[&a])] {
