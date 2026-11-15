@@ -109,7 +109,7 @@
             {#if plain || isCustomSkinId(skin.id)}
                 <span class="label-line">
                     <span class="name">{skin.name}</span>
-                    {#if !plain && isCustomSkinId(skin.id)}<span class="custom-tag">custom</span>{/if}
+                    {#if isCustomSkinId(skin.id)}<span class="custom-tag">custom</span>{/if}
                 </span>
             {/if}
         </button>
@@ -237,16 +237,11 @@
         padding: 0 5px;
     }
 
+    /* Tells a style of the rider from a ready-made style with the same name. */
     .custom-tag {
         margin-right: 5px;
-        padding: 2px 5px;
-        color: var(--forest);
-        background: rgba(60, 107, 57, 0.1);
-        border-radius: 5px;
-        font-size: 10px;
-        font-weight: 700;
-        letter-spacing: 0.06em;
-        text-transform: uppercase;
+        color: var(--ink-soft);
+        font-size: 12.5px;
     }
 
     .actions {

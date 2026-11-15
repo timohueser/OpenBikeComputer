@@ -85,7 +85,7 @@ test('assembles the fixture region in the tab and downloads the pinned map', asy
     const styles = page.locator('.style-options');
     await expect(styles).not.toHaveAttribute('open');
     await styles.locator('summary').click();
-    await expect(styles.getByRole('button', { name: 'Customize light' })).toBeVisible();
+    await expect(styles.getByRole('button', { name: 'Edit the colours' })).toBeVisible();
     await styles.locator('summary').click();
     await expect(styles).not.toHaveAttribute('open');
 

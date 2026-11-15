@@ -15,6 +15,7 @@
     import { isPlan } from '../lib/planner/library';
     import { platform } from '../lib/platform';
     import { ROUTES } from '../lib/routes';
+    import type { FlatStoreClient } from '../lib/usb/client';
     import { deviceArea, sameArea } from '../lib/device-sync/area';
 
     let { library }: { library: Library; active: boolean } = $props();
@@ -35,8 +36,8 @@
     let updating = $state(false);
     /** The question before a map download in a browser that saves data. */
     let asking = $state(false);
-    /** The question before a format of the memory card. */
-    let erasing = $state(false);
+    /** The question before a format, with the device and the card that it is about: the format goes to no other. */
+    let erasing = $state.raw<{ client: FlatStoreClient; serial: string; storeId: string | null } | null>(null);
     /** A format runs, or it ended and the device did not restart yet. */
     let formatting = $state(false);
     let formatProblem = $state('');
@@ -55,8 +56,13 @@
     /** A device on the cable that is not the remembered one; Connect uses it with no chooser. */
     const other = $derived(view !== 'connected' && status === 'ready' && session?.info ? { name: deviceName(session.info.serialNumber), formatted: !!session.store } : null);
     $effect(() => { if (status === 'ready') released = false; });
-    $effect(() => { if (status !== 'ready') formatting = false; });
+    // The link went: the format ended, and a sentence about it is of a card that the page cannot see any more.
+    $effect(() => { if (status !== 'ready') { formatting = false; formatProblem = ''; } });
     const busy = $derived(deviceSync.running || updating || !!deviceSync.map || formatting);
+    // The question closes when its device or its card is not on the cable any more.
+    $effect(() => {
+        if (erasing && (session?.client !== erasing.client || session.info?.serialNumber !== erasing.serial || (session.store?.storeId ?? null) !== erasing.storeId)) erasing = null;
+    });
 
     const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
     const day = (date: Date) => date.toLocaleDateString('en-GB', { day: 'numeric', month: 'long' });
@@ -140,15 +146,23 @@
         void session?.disconnect();
     }
 
-    /** Erases the card of the session. The device restarts after its answer, so `formatting` ends when the link goes. */
+    function askFormat() {
+        const client = session?.client, serial = session?.info?.serialNumber;
+        if (client && serial && !busy) erasing = { client, serial, storeId: session.store?.storeId ?? null };
+    }
+
+    /** Erases the card of the question. The device restarts after its answer, so `formatting` ends when the link goes. */
     async function format() {
-        const client = session?.client;
-        if (!client || formatting) return;
+        const target = erasing;
+        if (!target || busy) return;
+        erasing = null;
         formatting = true;
         formatProblem = '';
         try {
-            await client.format(session.store?.storeId ?? null);
+            await target.client.format(target.storeId);
         } catch (cause) {
+            // After the link went, the card can have its format in spite of the lost answer.
+            if (session?.client !== target.client) return;
             formatProblem = `The format did not work: ${cause instanceof Error ? cause.message : String(cause)}`;
             formatting = false;
         }
@@ -157,7 +171,7 @@
 
 {#snippet connectButton(label: string)}
     {#if other && !other.formatted}
-        <button type="button" class="button primary" onclick={() => erasing = true} disabled={formatting}>{formatting ? 'Formatting' : 'Format'}</button>
+        <button type="button" class="button primary" onclick={askFormat} disabled={busy}>{formatting ? 'Formatting' : 'Format'}</button>
     {:else}
         <button type="button" class="button primary" onclick={connect} disabled={status === 'connecting'}>
             {status === 'connecting' ? 'Connecting' : other ? `Use ${other.name}` : label}
@@ -283,7 +297,7 @@
                                 {/if}
                                 {#if formatProblem}<p class="second problem" role="alert">{formatProblem}</p>{/if}
                             </div>
-                            <div><button type="button" class="button" onclick={() => erasing = true} disabled={busy}>Format</button></div>
+                            <div><button type="button" class="button" onclick={askFormat} disabled={busy}>Format</button></div>
                         </div>
                         {@render mapRow(true)}
                         {#if session?.client}
@@ -331,12 +345,12 @@
 </main>
 
 {#if erasing}
-    <Window title="Format the memory card?" onClose={() => erasing = false}>
+    <Window title={`Format the memory card of ${deviceName(erasing.serial)}?`} onClose={() => erasing = null}>
         {#snippet children(close)}
             <p>The format erases the map, the routes and the rides on the memory card. The device then starts again.</p>
             <div class="window-buttons">
                 <button type="button" class="button" onclick={close}>Cancel</button>
-                <button type="button" class="button danger" onclick={() => { close(); void format(); }}>Format</button>
+                <button type="button" class="button danger" onclick={() => void format()} disabled={busy}>Format</button>
             </div>
         {/snippet}
     </Window>

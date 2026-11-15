@@ -103,6 +103,7 @@ test('a box past the map data gives the note, and the credits of the data are be
   await expect(page.getByText('Map data is missing in a part of this area.')).toBeVisible();
   await page.getByRole('button', { name: 'Credits' }).hover();
   await expect(page.getByRole('tooltip')).toContainText('Synthetic geometry');
+  await expect(page.getByRole('tooltip').getByRole('link', { name: 'CC0-1.0' })).toHaveAttribute('href', 'https://creativecommons.org/publicdomain/zero/1.0/');
 
   await page.getByRole('button', { name: 'Remove Box 1' }).click();
   await page.locator('.leaflet-container').click();

@@ -57,4 +57,20 @@ describe('startDeviceSync', () => {
         deviceHolder.session = null;
         remembered.device = null;
     });
+
+    it('starts no sync with a card that has no format', async () => {
+        vi.spyOn(deviceHolder, 'open').mockResolvedValue(null);
+        vi.mocked(syncDevice).mockClear();
+        rememberCard(SERIAL, '8f2c41d96b074ea3b1559c207de83466');
+        deviceHolder.session = { ...session('ready'), store: null } as DeviceSession;
+        const stop = startDeviceSync(new Library(new IDBFactory()));
+        flushSync();
+        deviceSync.run();
+        await settle();
+        expect(syncDevice).not.toHaveBeenCalled();
+        expect(deviceSync.running).toBe(false);
+        stop();
+        deviceHolder.session = null;
+        remembered.device = null;
+    });
 });

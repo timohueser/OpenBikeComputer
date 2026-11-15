@@ -8,7 +8,7 @@ import type { NextMap } from '../library/records';
 import { platform } from '../platform';
 import type { FlatStoreClient } from '../usb/client';
 import type { PutResponse } from '../usb/protocol';
-import { sameMap } from './area';
+import { areaOf, sameMap } from './area';
 import { until } from './until';
 
 /**
@@ -25,8 +25,8 @@ export async function buildMap(next: NextMap, client: FlatStoreClient, ctx: JobC
         const store = new CoverageStore(CatalogClient.fromBody(body, url, { fetchImpl: platform.catalogFetch }), body);
         store.setArea(next);
         // The selection leaves out a region that the catalog does not hold and a box that the grid refuses, and it takes
-        // the first map style for one that is not there.
-        if (!sameMap(store.area(), next)) throw new Error('This area cannot be built: a part or a map style of it is not there any more. Choose the area again.');
+        // the first map style for one that is not there. A map style can have new colours since the rider chose the area.
+        if (!sameMap(areaOf(store), next)) throw new Error('This area cannot be built: a part or a map style of it changed or is not there any more. Choose the area again.');
         if (await until(mapWorkBusy(), ctx.signal)) waits();
         run = new MapRun(store);
         run.start();

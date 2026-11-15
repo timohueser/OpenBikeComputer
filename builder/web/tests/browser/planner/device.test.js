@@ -125,7 +125,7 @@ test('a card with no format: Format asks first, then formats the card, and the d
 
   // Cancel formats nothing.
   await page.getByRole('button', { name: 'Format' }).click();
-  const question = page.getByRole('dialog', { name: 'Format the memory card?' });
+  const question = page.getByRole('dialog', { name: 'Format the memory card of OBC-4F2A?' });
   await expect(question).toContainText('erases the map, the routes and the rides');
   await question.getByRole('button', { name: 'Cancel' }).click();
   await expect(page.getByText('The memory card of OBC-4F2A needs a format.')).toBeVisible();

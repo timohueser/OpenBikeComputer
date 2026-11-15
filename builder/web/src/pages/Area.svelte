@@ -18,7 +18,7 @@
     import { formatDistance } from '../lib/settings/format';
     import Segmented from '../lib/ui/Segmented.svelte';
     import Window from '../lib/ui/Window.svelte';
-    import { deviceArea, sameMap } from '../lib/device-sync/area';
+    import { areaOf, deviceArea, sameMap } from '../lib/device-sync/area';
     import { routesOutside } from './area/outside';
 
     let { library, active }: { library: Library; active: boolean } = $props();
@@ -57,7 +57,7 @@
     const credits = $derived.by(() => {
         const source = store?.catalog.source, terrain = store?.catalog.terrain;
         return [
-            ...(source ? [`${source.attribution} (${source.license})`] : []),
+            ...(source ? [source.attribution, { text: source.license, href: source.license_url }] : []),
             ...(terrain ? [terrain.attribution, ...terrain.references.map(from => `Summit heights from ${from.product}: ${from.attribution} (${from.licence})`)] : []),
         ];
     });
@@ -90,7 +90,7 @@
     /** Writes the map that the device gets next, or none when it is the map on the device or has no part. */
     async function done() {
         if (store) {
-            const area = store.area(), known = deviceArea(remembered.device, store.catalog.regions);
+            const area = areaOf(store), known = deviceArea(remembered.device, store.catalog.regions);
             const next = !parts.length || bytes === null || (known && sameMap(area, known)) ? null : { ...area, bytes };
             const same = next && stored ? sameMap(next, stored) && next.bytes === stored.bytes : next === stored;
             try {
