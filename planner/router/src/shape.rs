@@ -465,11 +465,13 @@ pub fn shape<H: Host>(
         if legs.is_empty() {
             return Ok(Plan { points: snapped, turnarounds, route: routes.swap_remove(0) });
         }
-        // A shaping point that the prune removed can be the one that the whole route needs: a leg of
-        // the whole route starts on the road where the leg before it ended, so between ways of equal
-        // cost it can take another way than the leg routed alone. The point stays fixed in the plan,
-        // so each round adds another one.
-        let via = untried(&mut legs, &plan.iter().copied().collect());
+        // The shaping point of the worst leg, also one that was tried before: a leg of the whole
+        // route starts on the road where the leg before it ended, so it can break a tie between ways
+        // of equal cost in another way than the leg routed alone, and a point that the prune
+        // removed can be the one that the whole route needs. A leg's point lies strictly inside the
+        // leg, so it is never in the plan; it stays fixed, so each round adds another one.
+        legs.sort_by(|a, b| b.off.total_cmp(&a.off));
+        let via = legs.iter().find_map(|leg| leg.via);
         search.insert(&mut plan, via)?;
         search.fixed.extend(via);
     }
