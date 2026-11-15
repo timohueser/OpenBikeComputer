@@ -78,8 +78,8 @@ export function startDeviceSync(library: Library): () => void {
 
     async function run(): Promise<void> {
         const session = deviceHolder.session, client = session?.client, serial = session?.info?.serialNumber;
-        // A map send ends with a sync.
-        if (session?.status !== 'ready' || !client || !serial || remembered.device?.serial !== serial || deviceSync.map) return;
+        // A map send ends with a sync. A card with no format has nothing to sync.
+        if (session?.status !== 'ready' || !client || !session.store || !serial || remembered.device?.serial !== serial || deviceSync.map) return;
         if (deviceSync.running) { again = true; return; }
         deviceSync.running = true;
         const controller = running = new AbortController();

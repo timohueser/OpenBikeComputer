@@ -57,9 +57,13 @@ export interface RouteMatch { route: CatalogRecord; distanceM: number }
 /** A cell file, or null when the cell is not covered. */
 export type CellLoader = (id: string) => Promise<CatalogRecord[] | null>;
 
-const kinds: Record<BikeType, CatalogRecord['kind'][]> = {
+/** The catalog kinds that each bike rides. */
+export const kinds: Record<BikeType, CatalogRecord['kind'][]> = {
     hiking: ['hiking', 'foot'], mtb: ['mtb'], road: ['bicycle'], gravel: ['bicycle'], touring: ['bicycle'],
 };
+
+/** The name of grade `index` of `grades_m`: T1 to T6 for hiking and foot, S0 to S5 for mountain bike. */
+export const gradeName = (kind: 'hiking' | 'foot' | 'mtb', index: number) => kind === 'mtb' ? `S${index}` : `T${index + 1}`;
 const sortKeys: Record<RouteSort, (match: RouteMatch) => number> = {
     nearest: match => match.distanceM,
     shortest: match => match.route.length_m,

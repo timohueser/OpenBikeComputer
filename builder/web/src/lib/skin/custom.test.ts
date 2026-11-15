@@ -35,6 +35,12 @@ describe("custom skin storage", () => {
         expect(second).toMatchObject({ id: "custom-mine", version: 2, marker_color: 0x07e0 });
     });
 
+    it("keeps the version of a save with no change", () => {
+        const first = prepareCustomSkin(hosted, schema, "Mine", null, () => "custom-mine");
+        expect(prepareCustomSkin(cloneSkin(first), schema, "Mine", first).version).toBe(1);
+        expect(prepareCustomSkin(cloneSkin(first), schema, "Mine too", first).version).toBe(2);
+    });
+
     it("ignores stale, reordered, or schema-space records", () => {
         const storage = new MemoryStorage();
         const skin = prepareCustomSkin(hosted, schema, "Mine", null, () => "custom-mine");

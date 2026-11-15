@@ -1,7 +1,7 @@
 <script lang="ts">
     import Switch from '../../lib/ui/Switch.svelte';
     import Window from '../../lib/ui/Window.svelte';
-    import { drawCard, FONTS, HIDDEN_M, SHORT_M, SIZES, type Card, type Format } from '../../lib/covers/card';
+    import { drawCard, FONTS, HIDDEN_M, layout, SHORT_M, type Card, type Format } from '../../lib/covers/card';
     import { coverKey } from '../../lib/covers/job';
     import type { CoverPoints, RideSummary, RouteSummary } from '../../lib/library/records';
     import type { Library } from '../../lib/library/store';
@@ -25,8 +25,10 @@
     const QUALITY = 0.9;
     const format: Format = 'wide';
     let picture = $state(true), line = $state(true), numbers = $state(true), profile = $state(true), hideEnds = $state(true), dated = $state(true);
-    /** The cover of the line of today, with the credits of its data. */
-    let cover = $state.raw<{ bitmap: ImageBitmap; points: CoverPoints; credits: string[] }>();
+    /** The size of the canvas before the first drawing: the card of a name of one line. */
+    const [width, height] = layout(format, { nameLines: 1, date: false, numbers: true, profile: true, credit: false }).size;
+    /** The cover of the line of today. */
+    let cover = $state.raw<{ bitmap: ImageBitmap; points: CoverPoints }>();
     let canvas = $state<HTMLCanvasElement>(), file = $state.raw<Blob>();
 
     const ride = $derived('movingS' in summary);
@@ -45,7 +47,7 @@
             [split(formatHeight(summary.climbM))[0], `${heightUnit()} up`],
             [duration(('movingS' in summary ? summary.movingS : summary.seconds) / 3600), ''],
         ] : [],
-        cover: cover && picture ? { image: cover.bitmap, width: cover.bitmap.width, height: cover.bitmap.height, points: cover.points, summary, credits: cover.credits } : undefined,
+        cover: cover && picture ? { image: cover.bitmap, width: cover.bitmap.width, height: cover.bitmap.height, points: cover.points, summary } : undefined,
         // With no cover, the window has no switch for the line.
         line: !cover || line,
         profile: heights && profile,
@@ -56,16 +58,16 @@
     const label = $derived(`Share card: ${[card.date, name, ...card.numbers.map(number => number.join(' ').trim())].filter(Boolean).join(', ')}`);
 
     // The cover job of the page renders a missing cover; the card changes to the picture when it is there. A cover of
-    // an earlier line, and a cover with no credits, is no picture of the card.
+    // an earlier line is no picture of the card.
     $effect(() => {
         const target = id;
         let live = true;
         const load = async () => {
             const [item, stored] = await Promise.all([library.item(target), library.cover(target)]);
-            const current = item && stored?.state === 'done' && stored.lineKey === coverKey(item) && stored.image && stored.points && stored.credits?.length ? stored : undefined;
+            const current = item && stored?.state === 'done' && stored.lineKey === coverKey(item) && stored.image && stored.points ? stored : undefined;
             const bitmap = current && await createImageBitmap(current.image!).catch(() => undefined);
             if (!live) return bitmap?.close();
-            cover = bitmap && { bitmap, points: current!.points!, credits: current!.credits! };
+            cover = bitmap && { bitmap, points: current!.points! };
         };
         void load();
         const stop = library.onChange((store, key) => { if (key === target && store !== 'state') void load(); });
@@ -85,7 +87,7 @@
         // A font that does not load, as with no network, leaves its fallback to the card.
         void Promise.allSettled(FONTS.map(font => document.fonts.load(font))).then(() => {
             if (!live) return;
-            drawCard(target.getContext('2d')!, format, content);
+            drawCard(target, format, content);
             target.toBlob(made => { if (live && made) file = made; }, 'image/jpeg', QUALITY);
         });
         return () => { live = false; };
@@ -95,7 +97,7 @@
 <Window title="Share" wide {onClose}>
     <div class="share">
         <!-- svelte-ignore a11y_no_interactive_element_to_noninteractive_role -->
-        <canvas bind:this={canvas} width={SIZES[format][0]} height={SIZES[format][1]} role="img" aria-label={label}></canvas>
+        <canvas bind:this={canvas} {width} {height} role="img" aria-label={label}></canvas>
         <div class="side">
             <div class="switches">
                 {#if cover}
@@ -115,16 +117,18 @@
 </Window>
 
 <style>
-    /* The card has its shape before it is drawn, and the side has one width: no switch moves a part of the window. */
+    /* The side has one width, and no switch changes the size of the card: no switch moves a part of the window. */
     .share {
         display: grid;
         grid-template-columns: minmax(0, 1fr) 280px;
         gap: 24px;
     }
+    /* The card keeps its shape. In a low window it gets smaller, so that the window does not scroll: the window is
+       48 px lower than the screen, and its header and its padding take 80 px. */
     canvas {
         display: block;
-        width: 100%;
-        aspect-ratio: 3 / 2;
+        max-width: 100%;
+        max-height: calc(100dvh - 130px);
         border-radius: 8px;
         background: var(--parchment-2);
     }
@@ -155,6 +159,11 @@
         .share {
             grid-template-columns: 1fr;
             gap: 16px;
+        }
+        /* The switches and the button stay on the screen under the card. */
+        canvas {
+            max-height: 40dvh;
+            margin: 0 auto;
         }
     }
 </style>

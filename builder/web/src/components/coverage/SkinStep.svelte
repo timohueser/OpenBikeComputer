@@ -7,13 +7,15 @@
     import type { SkinEntry } from "../../lib/catalog/manifest";
     import { isCustomSkinId } from "../../lib/skin/custom";
     import { renderSkinPreviewFrames, type SkinPreviewFrame } from "../../lib/skin/preview";
-    import { confirmAction } from "../../lib/ui/confirm.svelte";
+    import Window from "../../lib/ui/Window.svelte";
 
-    /** `plain`: only the choice, each skin with its name, with no note and no editor, for a window of the shell. */
+    /** `plain`: each skin with its name and no note, for a window of the shell. */
     let { store, plain = false }: { store: CoverageStore; plain?: boolean } = $props();
     let previewUrls = $state<Record<string, string>>({});
     let customPreviewFrames = $state<Record<string, SkinPreviewFrame>>({});
     let editing = $state<SkinEntry | null>(null);
+    /** The custom skin of the question before a delete. */
+    let doomed = $state<SkinEntry | null>(null);
     let mode = $state<"light" | "dark">("light");
     const visibleSkins = $derived(mode === "light" ? store.lightSkins : store.darkSkins);
     const selected = $derived(mode === "light" ? store.lightSkin : store.darkSkin);
@@ -68,17 +70,6 @@
         };
     });
 
-    async function removeSelected() {
-        if (!isCustomSkinId(selected.id)) return;
-        const doomed = selected;
-        const ok = await confirmAction({
-            title: `Delete “${doomed.name}”?`,
-            body: "This removes the custom style from this browser. Hosted styles and downloaded maps are unchanged.",
-            confirmLabel: "Delete style",
-            destructive: true,
-        });
-        if (ok) store.deleteCustomSkin(doomed.id);
-    }
 </script>
 
 <div class="theme-tabs" aria-label="Map style theme">
@@ -124,19 +115,28 @@
         </button>
     {/each}
 </div>
-{#if !plain}
 <div class="actions">
+    <button type="button" class="action" onclick={() => (editing = selected)}>Edit the colours</button>
     {#if isCustomSkinId(selected.id)}
-        <button type="button" class="text-action danger" onclick={removeSelected}>Delete</button>
+        <button type="button" class="action delete" onclick={() => (doomed = selected)}>Delete</button>
     {/if}
-    <button type="button" class="btn ghost customize" onclick={() => (editing = selected)}>
-        {isCustomSkinId(selected.id) ? `Edit ${mode}` : `Customize ${mode}`}
-    </button>
 </div>
-{/if}
 
 {#if editing}
     <SkinEditor {store} base={editing} theme={mode === "light" ? "Light" : "Dark"} onclose={() => (editing = null)} />
+{/if}
+
+{#if doomed}
+    {@const id = doomed.id}
+    <Window title={`Delete “${doomed.name}”?`} onClose={() => (doomed = null)}>
+        {#snippet children(close)}
+            <p>These colours leave this browser. A map on the device keeps them.</p>
+            <div class="window-buttons">
+                <button type="button" class="action" onclick={close}>Cancel</button>
+                <button type="button" class="action danger" onclick={() => { close(); store.deleteCustomSkin(id); }}>Delete</button>
+            </div>
+        {/snippet}
+    </Window>
 {/if}
 
 <style>
@@ -237,37 +237,42 @@
         padding: 0 5px;
     }
 
+    /* Tells a style of the rider from a ready-made style with the same name. */
     .custom-tag {
         margin-right: 5px;
-        padding: 2px 5px;
-        color: var(--forest);
-        background: rgba(60, 107, 57, 0.1);
-        border-radius: 5px;
-        font-size: 10px;
-        font-weight: 700;
-        letter-spacing: 0.06em;
-        text-transform: uppercase;
+        color: var(--ink-soft);
+        font-size: 12.5px;
     }
 
     .actions {
         display: flex;
         align-items: center;
-        gap: 10px;
-        margin-top: 8px;
+        gap: 8px;
+        margin-top: 16px;
     }
 
-    .customize {
-        padding: 7px 12px;
+    .action {
+        min-height: 34px;
+        padding: 5px 14px;
+        border: 1px solid var(--line-strong);
+        border-radius: 6px;
+        background: var(--panel);
+        color: var(--ink);
     }
 
-    .text-action {
-        padding: 5px;
-        border: 0;
-        background: transparent;
-        color: var(--ink-faint);
+    .action:hover {
+        background: var(--parchment-2);
     }
 
-    .text-action.danger:hover {
+    .danger {
+        border-color: var(--coral);
+        color: var(--coral);
+    }
+
+    /* Beside the edit button the delete is plain text at the far end; its window asks before it deletes. */
+    .delete {
+        margin-left: auto;
+        border-color: transparent;
         color: var(--coral);
     }
 </style>
