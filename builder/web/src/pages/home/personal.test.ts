@@ -13,13 +13,13 @@ describe('homeText', () => {
 
     it('shows the open plan first, then the rides of this year, then the slogan', () => {
         expect(homeText([plan], rides, 'plan', now)).toMatchObject({ kind: 'continue', route: { id: 'plan' }, ago: '2 days ago' });
-        expect(homeText([plan], rides, null, now)).toMatchObject({ kind: 'year', totals: { lengthM: 124_000, rides: 2, hikes: 0 }, last: { key: 'newest' }, ago: '4 days ago' });
+        expect(homeText([plan], rides, null, now)).toMatchObject({ kind: 'year', totals: { bike: { lengthM: 124_000, count: 2 }, foot: { count: 0 } }, last: { key: 'newest' }, ago: '4 days ago' });
         expect(homeText([plan], [ride('last year', new Date(2025, 11, 31))], null, now)).toEqual({ kind: 'slogan' });
     });
 
     it('names the last record a hike when it was on foot', () => {
         expect(homeText([], rides, null, now)).toMatchObject({ hike: false });
-        expect(homeText([], [...rides, ride('walk', new Date(2026, 10, 12), 'hiking')], null, now)).toMatchObject({ last: { key: 'walk' }, hike: true, totals: { rides: 2, hikes: 1 } });
+        expect(homeText([], [...rides, ride('walk', new Date(2026, 10, 12), 'hiking')], null, now)).toMatchObject({ last: { key: 'walk' }, hike: true, totals: { bike: { lengthM: 124_000, count: 2 }, foot: { lengthM: 62_000, count: 1 } } });
     });
 
     it('does not continue a plan older than 7 days, a plan with no line, or an import', () => {
