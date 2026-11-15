@@ -28,10 +28,9 @@ use no analytics services, tracking pixels, advertising, externally loaded fonts
 media plugins or error trackers. When you open a page, the host only receives the
 connection data it needs to deliver the page and to keep it secure.
 
-The map builder at `/builder/` also loads map tiles and map data. It checks for new firmware
+The route planner at `/plan/` also loads map tiles and map data. It checks for new firmware
 after you connect a device. It processes the files you select and the device data locally in
-the browser. The route planner at `/plan/` sends search requests and routes to a server of
-the controller. The verification console is for approved maintainers only. Sections 6 to 10
+the browser. It sends search requests and routes to a server of the controller. The verification console is for approved maintainers only. Sections 6 to 10
 give the details.
 
 ## 3. Hosting on GitHub Pages
@@ -68,7 +67,7 @@ GDPR in the data processing agreements of the two providers apply.
 
 The website is delivered only over TLS-encrypted connections (HTTPS).
 
-## 6. Connections of the map builder
+## 6. Connections for the device map
 
 For the following requests, your IP address is transmitted to the server concerned. This is
 technically necessary so that the server can send the requested data back to the browser.
@@ -76,8 +75,8 @@ The legal basis in each case is Art. 6(1)(f) GDPR.
 
 ### 6.1 Map tiles
 
-The region picker of the map builder loads tiles from `tiles.openbikecomputer.com`. This is
-the Cloudflare Worker that also serves the route planner (section 7.1). Cloudflare receives
+The area page of the route planner loads tiles from `tiles.openbikecomputer.com`. This is
+the Cloudflare Worker of section 7.1. Cloudflare receives
 your IP address and the requested tile. From this, Cloudflare can see the map area. The route data itself is not transmitted.
 The map's fonts and symbols come from `maps.openbikecomputer.com` (section 6.3). Builds
 without fixed planner settings also read the active release from the catalog on that host.
@@ -86,7 +85,7 @@ select a region and view routes or recorded rides.
 
 ### 6.2 Check for new firmware
 
-After you connect an OpenBikeComputer, the builder requests the current firmware description
+After you connect an OpenBikeComputer, the route planner requests the current firmware description
 once from `updates.openbikecomputer.com`. It is delivered through **Cloudflare R2** of
 Cloudflare, Inc., 101 Townsend St., San Francisco, CA 94107, USA.
 
@@ -98,8 +97,9 @@ that matter for security.
 ### 6.3 Map data through Cloudflare R2
 
 The catalog, previews, cell directories and map cells are also delivered through Cloudflare
-R2 from `maps.openbikecomputer.com`. The catalog loads when you open the map builder. The
-builder requests further files according to your selection. From the requested cells,
+R2 from `maps.openbikecomputer.com`. The catalog loads when you open the area page, and when the
+Device page shows or sends a map that waits. The route planner requests further files according
+to your selection. From the requested cells,
 Cloudflare can see the approximate map area that you selected.
 
 The R2 bucket in use has **no EU jurisdiction restriction**. Cloudflare is therefore not
@@ -119,7 +119,8 @@ large to include in the website.
 
 ## 7. Route planner
 
-The route planner at `/plan/` is a separate application. It connects to three servers. The
+The route planner at `/plan/` is a separate application. For route planning it connects to
+three servers. The
 legal basis is Art. 6(1)(f) GDPR. The legitimate interest is to provide the planner that you
 requested. Section 7.2 applies to your location.
 
@@ -183,39 +184,27 @@ deleted after seven days, as described there.
 
 ## 9. Storage on your device
 
-The light/dark switch of the website and of the map builder, and the row "Look" on the
+The light/dark switch of the website, and the row "Look" on the
 Settings page of the route planner, store your chosen appearance locally in `localStorage`
 under `obc-theme`. Without a choice, your browser setting applies.
 The value is not sent to a server. It stays stored until you delete the website data in your
 browser.
 
-The web application uses local device storage. The map builder
-uses `localStorage` and the browser's *Origin Private File System* (OPFS). The route planner
-uses `localStorage` and the browser database *IndexedDB*. This data stays on
+The web application uses local device storage. The route planner uses `localStorage`, the
+browser database *IndexedDB* and the browser's *Origin Private File System* (OPFS). This data stays on
 the device that you use. It is not transmitted to the controller.
 
 | Data | Purpose and duration |
 | --- | --- |
-| Current map and scheme configuration | Automatic local working state, so that an edit survives a reload. Kept until it is replaced or you delete the website data. |
-| Skins you save yourself, with names and colors | Only after you press "Save custom skin". Kept until you delete them with the delete function or delete the website data. |
-| Map cells and working files in OPFS | Needed for large maps during download and assembly. By default the cells are deleted after the run. Sort files are removed at the end of the run. Older output files are removed at the start of the next run at the latest, or with the delete function. |
-| Map cells kept for reuse (optional) | Only if you enable "Keep downloaded map cells for future builds". Kept until you disable the option, until you choose "Delete stored map data", until you delete browser data, or until a new catalog generation replaces the old one. |
-| Your choice to reuse map cells | So that the setting you chose is kept at a later visit. Kept until the next change or until you delete the website data. |
-| Answered firmware notices, with device serial number and offered version | Only after you close or open a notice, so that the same question does not appear again for the same device. At most the 32 most recent answers. Kept until you delete the website data. |
+| Skins you save yourself, with names and colors | Only after you press "Save" in the colour editor of the area page. Kept until you delete them with the delete function or delete the website data. |
+| Map cells and working files in OPFS | Needed for large maps during download and assembly. The cells and the assembled map are deleted after the run. Sort files are removed at the end of the run. Files that a stopped run leaves are removed at the start of the next run at the latest. |
 | Library of the route planner (IndexedDB `obc-library`): routes and their versions, rides with their files and their photos, and cover images | The planner saves a route automatically while you plan it, and a ride when you add it, so that your library stays in this browser. For a photo that you add to a ride, it saves a smaller copy with the time of the photo, or with the GPS place of the photo when the time gives no place on the ride; it does not save the original file. A backup file that you save holds these copies. Kept until you delete it, use "Delete all" on the Settings page, or delete the website data. It leaves the browser only in a backup file that you save, and as a search request under section 7.1. |
 | Your choice to center the map of the route planner on a chosen point (`obc-planner-auto-center`) | So that the setting you chose is kept at a later visit. Kept until the next change or until you delete the website data. |
 | Settings of the route planner (`obc-settings`): units, maximum heart rate and threshold power | So that the settings you chose are kept at a later visit. Kept until the next change or until you delete the website data. The values go into a backup file that you save. |
-| Chosen bike profile for routes (`obcm.routeBikeType`) | So that the setting you chose is kept at a later visit. Kept until the next change or until you delete the website data. |
 
 Saving and reading the working data for a short time, saving the library of the route
-planner and chosen settings, and saving a skin or an answered firmware notice that you
-explicitly saved are necessary for the function that you requested (§ 25(2) no. 2 TDDDG).
+planner and chosen settings, and saving a skin that you explicitly saved are necessary for the function that you requested (§ 25(2) no. 2 TDDDG).
 These processes need no consent.
-
-Reusing downloaded map cells in later builds is optional and off by default. When you enable
-the clearly labeled option, this is your consent under § 25(1) TDDDG. You can withdraw it at
-any time with effect for the future by disabling the option or with "Delete stored map data".
-The lawfulness of the earlier storage remains unaffected.
 
 ## 10. Local processing of files and device data
 
