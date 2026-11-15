@@ -28,14 +28,15 @@ export class Controls {
     private readonly held = new Set<string>();
 
     constructor(element: HTMLElement, camera: Camera, signal: AbortSignal, { onclick, onhover }: Pointer = {}) {
-        // `x` and `y` are where the pointer was at the press, and after the drag starts, at the last move.
+        // `x` and `y` are where the pointer was at the press, and after the drag starts, at the last move. A press of
+        // another button than the primary one looks around at once and never clicks.
         let press: { x: number; y: number; time: number; drag: boolean } | undefined, hover: [number, number] | undefined;
         const local = (event: PointerEvent): [number, number] => {
             const box = element.getBoundingClientRect();
             return [event.clientX - box.left, event.clientY - box.top];
         };
         element.addEventListener('pointerdown', event => {
-            press = { x: event.clientX, y: event.clientY, time: event.timeStamp, drag: false };
+            press = { x: event.clientX, y: event.clientY, time: event.timeStamp, drag: event.button !== 0 };
             element.setPointerCapture(event.pointerId);
         }, { signal });
         element.addEventListener('pointermove', event => {

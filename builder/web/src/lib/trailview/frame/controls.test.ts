@@ -22,7 +22,7 @@ it('clicks on a short press, and looks around only once a drag leaves the press 
     const canvas = document.createElement('canvas'), moved = vi.fn(), onclick = vi.fn();
     Object.defineProperty(canvas, 'clientHeight', { value: 600 });
     new Controls(canvas, { pose: () => ({ east: 0, north: 0, heading: 0, pitch: 0, mode: 'walk', height: 1.6 }), moved, ground: () => 0 }, new AbortController().signal, { onclick });
-    const pointer = (type: string, x: number, y: number) => canvas.dispatchEvent(new PointerEvent(type, { clientX: x, clientY: y, pointerId: 1, buttons: type === 'pointerup' ? 0 : 1 }));
+    const pointer = (type: string, x: number, y: number, button = 0) => canvas.dispatchEvent(new PointerEvent(type, { clientX: x, clientY: y, pointerId: 1, button, buttons: type === 'pointerup' ? 0 : 1 }));
     pointer('pointerdown', 100, 100);
     pointer('pointermove', 103, 102);
     pointer('pointerup', 103, 102);
@@ -37,5 +37,12 @@ it('clicks on a short press, and looks around only once a drag leaves the press 
     expect(moved).toHaveBeenCalledOnce();
     expect(moved.mock.calls[0][0].heading).toBeCloseTo(359.4, 9);
     pointer('pointerup', 106, 100);
+    expect(onclick).toHaveBeenCalledOnce();
+
+    // The right button looks around from the first pixel and never clicks.
+    pointer('pointerdown', 100, 100, 2);
+    pointer('pointermove', 101, 100, 2);
+    pointer('pointerup', 101, 100, 2);
+    expect(moved).toHaveBeenCalledTimes(2);
     expect(onclick).toHaveBeenCalledOnce();
 });
