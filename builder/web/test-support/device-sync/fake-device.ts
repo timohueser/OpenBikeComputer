@@ -2,7 +2,8 @@
  * A device on a pretend cable: `planner.html?fake-device`, on the dev server and in the build of the browser tests. The wasm
  * test device of the sync tests holds a map, a route and two rides of today. The chooser of the Connect button plugs it in.
  * `window.deviceTest`: `plug(unformatted)` and `unplug()` move the cable, `hold()` stops each sync at its start until `release()`, and
- * `offer(version)` publishes a pretend software version. The card is the same at each page load.
+ * `offer(version)` publishes a pretend software version. The card is the same at each page load. `plug(true)` puts a second
+ * device with the same serial on the cable, whose card has no format. A format restarts the device, as the real one does.
  */
 import { initCore } from '../../src/lib/core/bridge';
 import { deviceHolder } from '../../src/lib/device/session.svelte';
@@ -27,8 +28,8 @@ const STORE = '0f5e9a7c2b3d4e1f8a6b5c4d3e2f1a0b';
 
 export async function fakeDevice(): Promise<void> {
     await Promise.all([initFlatDevice(), initCore()]);
-    const rig = flatDevice({ storeId: STORE, deviceInfo: {
-        firmwareRevision: '0.9.2', hardwareRevision: 'obc-lm20-r1', serialNumber: '9F3A00C1E2B44F2A' } });
+    const deviceInfo = { firmwareRevision: '0.9.2', hardwareRevision: 'obc-lm20-r1', serialNumber: '9F3A00C1E2B44F2A' };
+    const rig = flatDevice({ storeId: STORE, deviceInfo }), blank = flatDevice({ formatted: false, deviceInfo });
     const now = Math.floor(Date.now() / 1000);
     rig.device.seed({ kind: ObjectKind.MapShard, displayName: 'Baden-Württemberg', bytes: new Uint8Array(40_000) });
     const route = rig.device.seed({ kind: ObjectKind.Route, displayName: 'Lake loop', bytes: new Uint8Array(1_200) });
@@ -39,15 +40,23 @@ export async function fakeDevice(): Promise<void> {
     let state = idle;
     const listeners = new Set<(state: DeviceState) => void>();
     const publish = (next: DeviceState) => { state = next; for (const listener of listeners) listener(next); };
-    /** `unformatted`: the device reports a card with no format, as a new card does. */
+    /** `unformatted`: the device with the new card. A card with no format has no list, so the session has no store. */
     const plug = async (unformatted = false) => {
+        const { client } = unformatted ? blank : rig;
         publish({ ...idle, status: 'connecting' });
-        const info = await rig.client.deviceInfo(), page = await rig.client.listPage({});
-        const store = unformatted ? null : { storeId: page.storeId, commitSequence: page.commitSequence };
-        publish({ status: 'ready', client: rig.client, store, info, error: null });
+        const info = await client.deviceInfo(), page = await client.listPage({}).catch(() => null);
+        publish({ status: 'ready', client, store: page && { storeId: page.storeId, commitSequence: page.commitSequence }, info, error: null });
         return true;
     };
     const unplug = async () => publish(idle);
+    for (const [{ client }, unformatted] of [[rig, false], [blank, true]] as const) {
+        const format = client.format.bind(client);
+        client.format = async (...args) => {
+            const answer = await format(...args);
+            setTimeout(() => { publish(idle); setTimeout(() => void plug(unformatted), 600); }, 300);
+            return answer;
+        };
+    }
     let gate: Promise<void> = Promise.resolve(), open = () => {};
     const list = rig.client.list.bind(rig.client);
     rig.client.list = async (...args) => { await gate; return list(...args); };

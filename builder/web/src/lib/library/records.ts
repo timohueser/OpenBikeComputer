@@ -132,6 +132,9 @@ export interface NextMap {
     /** The ids of the map styles for the day and for the night. */
     light: string;
     dark: string;
+    /** The versions of the two map styles, where known. An edit of a style of the rider keeps its id and raises its version. */
+    lightVersion?: number;
+    darkVersion?: number;
     /** The size of the download of the whole map. */
     bytes: number;
 }
@@ -204,7 +207,8 @@ const isBox = (value: unknown): value is MapBox =>
     && (value.minLat as number) < (value.maxLat as number) && (value.minLon as number) < (value.maxLon as number);
 
 const isNextMap = (value: unknown): value is NextMap => isRecord(value) && isStrings(value.regions)
-    && Array.isArray(value.boxes) && value.boxes.every(isBox) && isString(value.light) && isString(value.dark) && isNumber(value.bytes);
+    && Array.isArray(value.boxes) && value.boxes.every(isBox) && isString(value.light) && isString(value.dark) && isNumber(value.bytes)
+    && optional(value.lightVersion, isNumber) && optional(value.darkVersion, isNumber);
 
 /** The check of each value of the `state` store. */
 export const stateChecks: { [K in keyof LibraryState]: (value: unknown) => value is LibraryState[K] } = {
