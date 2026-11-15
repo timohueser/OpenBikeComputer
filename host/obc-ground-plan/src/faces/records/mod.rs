@@ -1485,9 +1485,9 @@ fn encode(
     let mut walk_w = Vec::new();
     for &(l, _, _) in &rec {
         let first = walk_w.len() / WALK_RULE;
-        for (s, list) in [0u8, 1].map(|s| (s, walk.get(&(l, s)))) {
-            for e in list.into_iter().flatten() {
-                walk_w.extend([f(e.at), f(e.target), u32::from(s) | u32::from(e.dir > 0.0) << 1]);
+        for side in [-1.0, 1.0] {
+            for e in walk.get(super::walk::side_of(l, side)).into_iter().flatten() {
+                walk_w.extend([f(e.at), f(e.target), u32::from(side > 0.0) | u32::from(e.dir > 0.0) << 1]);
             }
         }
         let sec = &lines[l].sec;

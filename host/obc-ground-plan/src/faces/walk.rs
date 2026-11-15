@@ -5,7 +5,6 @@
 //! carriageway cuts it, or tapers against nothing: its width falls along a ramp with round kinks to 0 at its tip
 //! (`ramp`). Stations are the records' metres along, so two cells build the same slabs.
 
-use std::collections::BTreeMap;
 use std::f64::consts::PI;
 
 use super::geom::P;
@@ -25,8 +24,13 @@ pub(crate) struct End {
     pub target: f64,
 }
 
-/// Per line side with a slab (its line, and 1 for the stroke's left normal, 0 for its right), its width rules.
-pub(crate) type Ends = BTreeMap<(usize, u8), Vec<End>>;
+/// Per line side, at `side_of`, its width rules.
+pub(crate) type Ends = Vec<Vec<End>>;
+
+/// The place of a line side in the per-side lists: two per line, the stroke's right normal first.
+pub(crate) fn side_of(line: usize, side: f64) -> usize {
+    2 * line + usize::from(side > 0.0)
+}
 
 #[derive(Default)]
 pub(super) struct Walk {
@@ -350,13 +354,12 @@ pub(super) fn build(
             1.0
         }
     };
-    let sides = [(1.0, 1u8), (-1.0, 0u8)];
     // The pieces from the bits, inside the read box: a run of segments with the bit; a taper at each end, but at
     // the box's edge.
-    let mut pieces: BTreeMap<(usize, u8), Vec<Piece>> = BTreeMap::new();
+    let mut pieces: Vec<Vec<Piece>> = vec![Vec::new(); 2 * lines.len()];
     for (l, line) in lines.iter().enumerate() {
         let Some((first, last)) = runs[l].filter(|_| full_m(line) > 0.0) else { continue };
-        for (side, s) in sides {
+        for side in [1.0, -1.0] {
             let mut i = first;
             while i + 1 < last {
                 if !walks_seg(line, i, side) {
@@ -369,18 +372,18 @@ pub(super) fn build(
                 }
                 let lo = if i == first && first > 0 { Tip::Open } else { Tip::Taper };
                 let hi = if j + 1 == last && last < line.p.len() { Tip::Open } else { Tip::Taper };
-                pieces.entry((l, s)).or_default().push(Piece { x: [i as f64, j as f64], tip: [lo, hi] });
+                pieces[side_of(l, side)].push(Piece { x: [i as f64, j as f64], tip: [lo, hi] });
                 i = j;
             }
         }
     }
-    if pieces.is_empty() {
+    if pieces.iter().all(Vec::is_empty) {
         return Walk::default();
     }
     let decks = deck_points(ctx, input, lines, bx);
     let units = |m: f64, p: [f64; 2]| ctx.units(m, round(p));
-    let mut cuts: BTreeMap<(usize, u8), Vec<Cut>> = BTreeMap::new();
-    let mut extra: BTreeMap<(usize, u8), Rings> = BTreeMap::new();
+    let mut cuts: Vec<Vec<Cut>> = (0..pieces.len()).map(|_| Vec::new()).collect();
+    let mut rings: Vec<Rings> = vec![Vec::new(); pieces.len()];
     let mut joins: Vec<Join> = Vec::new();
     let heading = |a: Arm| {
         let line = &lines[a.line];
@@ -406,7 +409,7 @@ pub(super) fn build(
             if !wa && !wb {
                 continue;
             }
-            let key = |arm: Arm, side: f64| (arm.line, u8::from(side > 0.0));
+            let key = |arm: Arm, side: f64| side_of(arm.line, side);
             // At a point where a deck starts, a slab that would meet the deck's stroke ends before it.
             let cut_a = deck.and_then(|d| deck_cut(ctx, lines, arm_a, sa, d));
             let cut_b = deck.and_then(|d| deck_cut(ctx, lines, arm_b, sb, d));
@@ -418,12 +421,7 @@ pub(super) fn build(
                 if open {
                     if !through {
                         for (arm, side) in [(arm_a, sa), (arm_b, sb)] {
-                            cuts.entry(key(arm, side)).or_default().push(Cut {
-                                v: arm.at,
-                                dir: arm.dir,
-                                tip: Tip::Join,
-                                to: None,
-                            });
+                            cuts[key(arm, side)].push(Cut { v: arm.at, dir: arm.dir, tip: Tip::Join, to: None });
                         }
                         joins.push((pt.pos, [(arm_a.line, sa, arm_a), (arm_b.line, sb, arm_b)]));
                     }
@@ -435,20 +433,15 @@ pub(super) fn build(
                 for (n, (arm, side)) in [(arm_a, sa), (arm_b, sb)].into_iter().enumerate() {
                     let line = &lines[arm.line];
                     let foot = moved(line, t.x[n], -f64::from(arm.dir), INSET, arm.at as f64);
-                    let ends = rule_ends(&pieces, &along, key(arm, side), sign(arm.line));
+                    let ends = rule_ends(&pieces[key(arm, side)], &along[arm.line], sign(arm.line));
                     let m = width(along_x(&along[arm.line], t.x[n]), &ends, full_m(line), k, r, false);
                     w[n] = units(m, at_x(line, t.x[n]).0);
-                    cuts.entry(key(arm, side)).or_default().push(Cut {
-                        v: arm.at,
-                        dir: arm.dir,
-                        tip: Tip::Square,
-                        to: Some(foot),
-                    });
+                    cuts[key(arm, side)].push(Cut { v: arm.at, dir: arm.dir, tip: Tip::Square, to: Some(foot) });
                 }
                 let c = [f64::from(pt.pos[0]) + t.c[0], f64::from(pt.pos[1]) + t.c[1]];
                 let halves = ring_halves(c, t.rho, t.a0, t.sweep, w);
                 for ((arm, side), half) in [(arm_a, sa), (arm_b, sb)].into_iter().zip(halves) {
-                    push_positive(half, extra.entry(key(arm, side)).or_default());
+                    push_positive(half, &mut rings[key(arm, side)]);
                 }
                 continue;
             }
@@ -462,18 +455,17 @@ pub(super) fn build(
                     None => run_in(ctx, lines, pt, arm, side, other).map(|x| (Tip::Square, x)),
                 };
                 let (tip, to) = to.map_or((Tip::Taper, None), |(tip, x)| (tip, Some(x)));
-                cuts.entry(key(arm, side)).or_default().push(Cut { v: arm.at, dir: arm.dir, tip, to });
+                cuts[key(arm, side)].push(Cut { v: arm.at, dir: arm.dir, tip, to });
             }
         }
     }
-    for (key, list) in &cuts {
-        if let Some(p) = pieces.get_mut(key) {
-            apply(p, list);
-        }
+    for (p, list) in pieces.iter_mut().zip(&cuts) {
+        apply(p, list);
     }
     // The width rules: each side's taper tips; at a join to a narrower way, that way's width; and the rules of the
     // slab beyond a join within a ramp's reach, carried on past the join.
-    let mut ends: Ends = pieces.keys().map(|&key| (key, rule_ends(&pieces, &along, key, sign(key.0)))).collect();
+    let own: Ends = (pieces.iter().enumerate()).map(|(n, p)| rule_ends(p, &along[n / 2], sign(n / 2))).collect();
+    let mut ends = own.clone();
     for (_, sides) in &joins {
         for n in 0..2 {
             let (l, side, arm) = sides[n];
@@ -487,40 +479,38 @@ pub(super) fn build(
             }
             let beyond = along[m][other.at];
             let reach = rules.reach_m(full.max(other_full));
-            let theirs = ends.get(&(m, u8::from(other_side > 0.0))).cloned().unwrap_or_default();
-            for e in theirs {
+            for e in &own[side_of(m, other_side)] {
                 let d = (e.at - beyond).abs();
                 if d <= reach && e.dir * (beyond - e.at) >= 0.0 {
                     add.push(End { at: at - into * d, dir: into, target: e.target });
                 }
             }
-            ends.entry((l, u8::from(side > 0.0))).or_default().extend(add);
+            ends[side_of(l, side)].extend(add);
         }
     }
-    // The strokes of the pieces, the joins' pies and the extras.
-    let mut rings: BTreeMap<(usize, u8), Rings> = extra;
-    for (&(l, s), list) in &pieces {
+    // The strokes of the pieces, the joins' pies and the rings.
+    for (n, list) in pieces.iter().enumerate() {
+        let (l, side) = (n / 2, if n % 2 == 1 { 1.0 } else { -1.0 });
         let line = &lines[l];
-        let side = if s == 1 { 1.0 } else { -1.0 };
         let full = full_m(line);
-        let e = &ends[&(l, s)];
+        let e = &ends[n];
         for piece in list {
             let xs = piece_points(&along[l], e, full, k, r, piece.x);
             if xs.len() < 2 {
                 continue;
             }
             let (mut p, mut inner, mut outer, mut dirs) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-            for (n, &x) in xs.iter().enumerate() {
+            for (j, &x) in xs.iter().enumerate() {
                 let (q, h, _) = at_x(line, x);
                 let w = width(along_x(&along[l], x), e, full, k, r, false);
                 p.push(round(q));
                 inner.push(h / 2.0);
                 outer.push(h + units(w, q));
-                if let Some(&next) = xs.get(n + 1) {
+                if let Some(&next) = xs.get(j + 1) {
                     dirs.push(Some(at_x(line, (x + next) / 2.0).2));
                 }
             }
-            side_along(&p, &inner, &outer, &dirs, side, rings.entry((l, s)).or_default());
+            side_along(&p, &inner, &outer, &dirs, side, &mut rings[n]);
         }
     }
     for (pos, sides) in &joins {
@@ -529,7 +519,7 @@ pub(super) fn build(
             let line = &lines[l];
             let seg = if arm.dir > 0 { arm.at } else { arm.at.saturating_sub(1) };
             let n = left(unit(line.p[seg], line.p[(seg + 1).min(line.p.len() - 1)]).unwrap_or([1.0, 0.0]));
-            let e = ends.get(&(l, u8::from(side > 0.0))).map_or(&[][..], |e| &e[..]);
+            let e = &ends[side_of(l, side)];
             let q = [f64::from(line.p[arm.at][0]), f64::from(line.p[arm.at][1])];
             let w = width(along[l][arm.at], e, full_m(line), k, r, false);
             ([side * n[0], side * n[1]], line.h[arm.at] + units(w, q))
@@ -543,13 +533,14 @@ pub(super) fn build(
             pie_between(*pos, db, da, nb, na, -turn, [&[], &[]], &mut pie);
         }
         for (l, side, _) in sides {
-            rings.entry((*l, u8::from(*side > 0.0))).or_default().extend(pie.iter().cloned());
+            rings[side_of(*l, *side)].extend(pie.iter().cloned());
         }
     }
     let rank = ctx.rules.plan.rank(Rank::Sidewalk);
-    let cands = (rings.into_iter())
+    let cands = (rings.into_iter().enumerate())
         .filter(|(_, r)| !r.is_empty())
-        .map(|((l, s), r)| {
+        .map(|(n, r)| {
+            let (l, s) = (n / 2, (n % 2) as u8);
             let line = &lines[l];
             let label = Label {
                 owner: Owner::Terrain,
@@ -573,17 +564,16 @@ pub(super) fn build(
             }
         })
         .collect();
-    ends.retain(|_, e| !e.is_empty());
     Walk { cands, ends }
 }
 
 /// A side's own width rules: a 0-target at each taper tip of its pieces, toward the piece.
-fn rule_ends(pieces: &BTreeMap<(usize, u8), Vec<Piece>>, along: &[Vec<f64>], key: (usize, u8), sign: f64) -> Vec<End> {
+fn rule_ends(pieces: &[Piece], along: &[f64], sign: f64) -> Vec<End> {
     let mut out = Vec::new();
-    for p in pieces.get(&key).into_iter().flatten() {
+    for p in pieces {
         for (n, dir) in [(0, sign), (1, -sign)] {
             if p.tip[n] == Tip::Taper {
-                out.push(End { at: along_x(&along[key.0], p.x[n]), dir, target: 0.0 });
+                out.push(End { at: along_x(along, p.x[n]), dir, target: 0.0 });
             }
         }
     }
