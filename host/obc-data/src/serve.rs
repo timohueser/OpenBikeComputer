@@ -723,8 +723,8 @@ pub(crate) mod tests {
     }
 
     /// Upload a release of the layer `test` in `format`: its device pointer is `device`, its
-    /// planner release has the routing file `routing`, and its planner pointer names the API origin
-    /// `api`. Give its id and the id of the planner release.
+    /// planner release has the file `offline/pages.bin` with the bytes `routing` and a routing
+    /// package, and its planner pointer names the API origin `api`. Give its id and the id of the planner release.
     pub(crate) fn release_at(
         target: &Target,
         device: &str,
@@ -732,21 +732,26 @@ pub(crate) mod tests {
         format: u32,
         api: &str,
     ) -> (String, String) {
-        let sha256 = sha256_hex(routing);
-        let transport = json!({"bytes": routing.len(), "sha256": sha256, "encoding": "identity"});
-        let entry = json!({"bytes": routing.len(), "sha256": sha256, "transport": transport});
-        let document =
-            serde_json::to_vec(&json!({"format": 1, "region": "test", "files": {"routing/pages.bin": entry}})).unwrap();
+        let entry = |bytes: &[u8]| {
+            let sha256 = sha256_hex(bytes);
+            let transport = json!({"bytes": bytes.len(), "sha256": sha256, "encoding": "identity"});
+            json!({"bytes": bytes.len(), "sha256": sha256, "transport": transport})
+        };
+        let directory = [b"directory of ", routing].concat();
+        let files = json!({"offline/pages.bin": entry(routing), "routing/directory.bin": entry(&directory),
+            "routing/package.json": entry(b"{}")});
+        let document = serde_json::to_vec(&json!({"format": 1, "region": "test", "files": files})).unwrap();
         let planner = crate::engine::digest([("release.json", sha256_hex(&document).as_str())]);
         let origins = format!(r#"{{"api_origin":"{api}","objects_origin":"https://objects.test"}}"#);
         let catalog = format!(r#"{{"format":1,"origins":{origins},"active":{{"id":"{planner}"}}}}"#);
-        let files = [device.as_bytes().to_vec(), catalog.into_bytes(), document, routing.to_vec()];
+        let files =
+            [device.as_bytes().to_vec(), catalog.into_bytes(), document, routing.to_vec(), directory, b"{}".to_vec()];
         let mut release = crate::release::tests::reading(b"", "osm", "1");
         let output = &mut release.outputs[0];
         output.format = format;
         output.files = files
             .iter()
-            .zip(["device.json", "catalog.json", "release.json", "pages.bin"])
+            .zip(["device.json", "catalog.json", "release.json", "pages.bin", "directory.bin", "package.json"])
             .map(|(bytes, path)| LayerFile { path: path.into(), size: bytes.len() as u64, sha256: sha256_hex(bytes) })
             .collect();
         let file = |key: String, file: &LayerFile| File { key, size: file.size, sha256: file.sha256.clone() };
@@ -1113,7 +1118,7 @@ pub(crate) mod tests {
         published.answers(&pa);
         assert_eq!(published.case.current(), a);
         let work = published.case.scratch.0.join("work");
-        assert_eq!(std::fs::read(work.join(&pa).join("routing/pages.bin")).unwrap(), b"routing a", "from the store");
+        assert_eq!(std::fs::read(work.join(&pa).join("offline/pages.bin")).unwrap(), b"routing a", "from the store");
 
         let (b, pb) = release(&published.case.target, "device b", b"routing b", 1);
         published.next(&b);
@@ -1358,7 +1363,7 @@ pub(crate) mod tests {
         assert_eq!(published.case.current(), a);
         assert!(services::installed(&dir), "a folder without a marker installs again");
         assert_ne!(writes(&dir), installed);
-        assert_eq!(std::fs::read(dir.join("routing/pages.bin")).unwrap(), b"routing a");
+        assert_eq!(std::fs::read(dir.join("offline/pages.bin")).unwrap(), b"routing a");
     }
 
     #[test]

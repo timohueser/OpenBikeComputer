@@ -91,10 +91,20 @@ impl Programs {
         self.reads.iter().map(|(_, layer, format)| (layer.clone(), *format)).collect()
     }
 
-    /// Programs that read these formats, for a test that starts no service.
+    /// Programs that read these formats, for a test that starts no service. Its routing program
+    /// installs a package as the marker `install.bin` alone, a copy of `directory.bin`.
     #[cfg(test)]
     pub(crate) fn reading(reads: Vec<(&'static str, String, u32)>) -> Self {
-        Self { root: PathBuf::new(), routing: PathBuf::new(), reads }
+        static INSTALLER: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        let routing = INSTALLER.get_or_init(|| {
+            let path = std::env::temp_dir().join(format!("obc-data-test-installer-{}", std::process::id()));
+            let script = "#!/bin/sh\n[ \"$2\" = --missing ] && { echo 0; exit 0; }\nmkdir -p \"$1\" && cp \"$3\" \"$1/install.bin\"\n";
+            fs::write(&path, script).unwrap();
+            #[cfg(unix)]
+            fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+            path
+        });
+        Self { root: PathBuf::new(), routing: routing.clone(), reads }
     }
 }
 
@@ -203,12 +213,9 @@ pub fn fetch(
         )?;
         let runtime = runtime(store, &document)?;
         let package = package(&runtime)?;
-        let mut installed = 0;
-        if let Some(package) = &package {
-            let first = [&package.directory, &package.info].map(|sha256| (format!("objects/{sha256}"), sha256.clone()));
-            download(store, target, first.to_vec(), &go)?;
-            installed = package.missing(&programs.routing, store, &dir.join(CELLS))?;
-        }
+        let first = [&package.directory, &package.info].map(|sha256| (format!("objects/{sha256}"), sha256.clone()));
+        download(store, target, first.to_vec(), &go)?;
+        let installed = package.missing(&programs.routing, store, &dir.join(CELLS))?;
         let missing: BTreeMap<&str, u64> = (runtime.iter())
             .filter(|(_, entry)| !store.object(&entry.transport.sha256).is_file())
             .map(|(_, entry)| (entry.transport.sha256.as_str(), entry.transport.bytes))
@@ -223,14 +230,7 @@ pub fn fetch(
         }
         let missing = missing.keys().map(|sha256| (format!("objects/{sha256}"), sha256.to_string())).collect();
         download(store, target, missing, &go)?;
-        install(
-            store,
-            dir,
-            served,
-            &runtime,
-            package.as_ref().map(|package| (programs.routing.as_path(), package)),
-            &go,
-        )?;
+        install(store, dir, served, &runtime, (programs.routing.as_path(), &package), &go)?;
         Ok(Fetched::Installed)
     };
     fetched().unwrap_or_else(Fetched::Failed)
@@ -445,15 +445,13 @@ fn install(
     dir: &Path,
     served: &Served,
     runtime: &[(String, Entry)],
-    package: Option<(&Path, &Package)>,
+    (routing, package): (&Path, &Package),
     go: &dyn Fn() -> Result<(), String>,
 ) -> Result<(), String> {
     let fail = |e: std::io::Error| format!("{}: {e}", dir.display());
     fs::create_dir_all(dir).map_err(fail)?;
     materialize(store, runtime, dir, go)?;
-    if let Some((routing, package)) = package {
-        package.install(routing, store, &dir.join(CELLS), go)?;
-    }
+    package.install(routing, store, &dir.join(CELLS), go)?;
     crate::target::link(&store.object(&served.document.sha256), &dir.join("release.json")).map_err(fail)?;
     let folder = File::open(dir).map_err(fail)?;
     sync(&folder).map_err(fail)?;
@@ -768,13 +766,12 @@ struct Package {
     info: String,
 }
 
-/// The [`Package`] of `runtime`, the files under [`RUNTIME`] of a planner release, when it has
-/// `routing/directory.bin`.
-fn package(runtime: &[(String, Entry)]) -> Result<Option<Package>, String> {
+/// The [`Package`] of `runtime`, the files under [`RUNTIME`] of a planner release.
+fn package(runtime: &[(String, Entry)]) -> Result<Package, String> {
     let object = |name: &str| runtime.iter().find(|(file, _)| file == name).map(|(_, entry)| &entry.transport.sha256);
     match (object("routing/directory.bin"), object("routing/package.json")) {
-        (None, _) => Ok(None),
-        (Some(directory), Some(info)) => Ok(Some(Package { directory: directory.clone(), info: info.clone() })),
+        (Some(directory), Some(info)) => Ok(Package { directory: directory.clone(), info: info.clone() }),
+        (None, _) => Err("the planner release has no routing package".into()),
         (Some(_), None) => Err("the routing package has routing/directory.bin and no routing/package.json".into()),
     }
 }
@@ -953,6 +950,7 @@ mod tests {
         let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         encoder.write_all(b"places").unwrap();
         let (pages, places) = (object(b"pages"), object(&encoder.finish().unwrap()));
+        let (directory, info) = (object(b"directory"), object(b"{}"));
         let entry = |bytes: &[u8], transport: &str, encoding: &str| {
             let (sha256, size) =
                 (sha256_hex(bytes), fs::metadata(target.join("objects").join(transport)).map_or(0, |m| m.len()));
@@ -960,6 +958,8 @@ mod tests {
         };
         let mut document = json!({"format": 1, "region": "test", "files": {
             "offline/pages.bin": entry(b"pages", &pages, "identity"),
+            "routing/directory.bin": entry(b"directory", &directory, "identity"),
+            "routing/package.json": entry(b"{}", &info, "identity"),
             "search/tiles/pois/9-1-1.sqlite": entry(b"places", &places, "gzip"),
             "maps/basemap.json": entry(b"basemap", &"0".repeat(64), "identity"),
         }});
@@ -997,10 +997,19 @@ mod tests {
         assert_eq!(fs::read(dir.join("offline/pages.bin")).unwrap(), b"pages");
         assert_eq!(fs::read(dir.join("search/tiles/pois/9-1-1.sqlite")).unwrap(), b"places");
         assert!(!dir.join("maps").exists(), "no service reads the maps");
+        assert!(dir.join("route-cells/install.bin").is_file() && !dir.join("routing").exists());
+        let mut without = document.clone();
+        without["files"].as_object_mut().unwrap().retain(|name, _| !name.starts_with("routing/"));
+        let refused = materialize(&release(&without), &scratch.0.join("without")).unwrap_err();
+        assert_eq!(refused, "the planner release has no routing package");
 
         // Format 2 names the step indexes. The follower reads only those of the folders of its services:
         // the target has no index of the maps.
-        let index = serde_json::to_vec(&json!({"files": {"offline/pages.bin": entry(b"pages", &pages, "identity")}}));
+        let index = serde_json::to_vec(&json!({"files": {
+            "offline/pages.bin": entry(b"pages", &pages, "identity"),
+            "routing/directory.bin": entry(b"directory", &directory, "identity"),
+            "routing/package.json": entry(b"{}", &info, "identity"),
+        }}));
         let index = index.unwrap();
         let routing = object(&index);
         let step = |bytes: usize, sha256: &str, folders: &[&str]| json!({"bytes": bytes, "sha256": sha256, "folders": folders});
