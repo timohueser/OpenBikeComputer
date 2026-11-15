@@ -15,8 +15,8 @@ use std::collections::BTreeMap;
 
 use fixture::{default_dir, Fixture};
 use obc_ground_plan::faces::heights::check::{
-    at, border, deck_ends, edge_steps, held_over_cap, ripple, scan, slope_steps, under_decks, wall_steps, Class,
-    EDGE_GRID_M, RIPPLE_M,
+    at, border, deck_ends, edge_steps, held_over_cap, kerb_of, ripple, scan, slope_steps, under_decks, wall_steps,
+    Class, EDGE_GRID_M, KERB_SLACK_M, RIPPLE_M,
 };
 use obc_ground_plan::faces::heights::Step;
 use obc_ground_plan::faces::records;
@@ -37,6 +37,10 @@ const INSIDE_MAX: usize = 9;
 /// (an end's cone over the fan of its turn only), walls up to the highest wall, faces past it as steep as
 /// their need, line water and its culverts and fords: the count must not grow.
 const EDGE_MAX: usize = 101;
+/// The scan's kerb steps whose size is more than `KERB_SLACK_M` off the kerb's rise there (`check::kerb_of`), measured
+/// on the revision 17 fixture with the sidewalks' slabs: a kerb's end against a slope, whose step the slope's cone
+/// makes less than the rise at the corner where slab, carriageway and slope meet. The count must not grow.
+const KERB_OFF_MAX: usize = 1;
 /// Pairs of grid points on a slope steeper than a rock face where the terrain is not (`Scan::steep`),
 /// measured on the revision 17 fixture with cones on their outward side, the outline pieces of
 /// `records::outline_edges` and the vertex values of `heights::groups`, faces past the highest wall as steep
@@ -144,15 +148,17 @@ fn every_fixture_cell_keeps_its_steps_on_face_edges_and_agrees_with_its_neighbou
         w.retain(|st| !off(st.0));
         g.retain(|st| !off(st.0));
         let kept = [s.steps.len(), e.len(), s.steep.len(), w.len(), g.len()];
+        let off_rise = |(dh, rise): (f64, f64)| (dh - rise).abs() > KERB_SLACK_M;
+        let kerbs = s.steps.iter().filter_map(|st| kerb_of(&words, st)).filter(|&k| off_rise(k)).count();
         let levels: [usize; 5] = std::array::from_fn(|k| n[k] - kept[k]);
         let line = if ours { border(&words, &input.terrain, key, 512) } else { Vec::new() };
         let held = if ours { held_over_cap(&words, &input.terrain, key, EDGE_GRID_M) } else { Vec::new() };
         let decks = ours
             .then(|| (deck_ends(&words, &input.terrain, key), under_decks(&words, &input.terrain, key, DECK_GRID_M)));
-        (key, s, [e.len(), w.len(), g.len()], line, levels, apart, (held, decks), Cell { words, input })
+        (key, s, [e.len(), w.len(), g.len(), kerbs], line, levels, apart, (held, decks), Cell { words, input })
     });
     let (mut inside, mut unnamed, mut full, mut missing, mut water_off) = (0, 0, 0, 0, 0);
-    let [mut edges, mut walls, mut slopes] = [0; 3];
+    let [mut edges, mut walls, mut slopes, mut kerbs] = [0; 4];
     let mut levels = [0; 5];
     let mut apart = (0, 0.0f64);
     let mut steep = Vec::new();
@@ -174,7 +180,7 @@ fn every_fixture_cell_keeps_its_steps_on_face_edges_and_agrees_with_its_neighbou
             (uncovered, paved_beyond) = (uncovered + d.uncovered.len(), paved_beyond + d.paved_beyond.len());
         }
         inside += s.steps.iter().filter(|st| st.class == Class::Inside).count();
-        (edges, walls, slopes) = (edges + e[0], walls + e[1], slopes + e[2]);
+        (edges, walls, slopes, kerbs) = (edges + e[0], walls + e[1], slopes + e[2], kerbs + e[3]);
         unnamed += s.steps.iter().filter(|st| st.class == Class::Unnamed).count();
         let o = key.origin();
         steep.extend(s.steep.iter().map(|st| ([o.x as f64 + st.0[0], o.y as f64 + st.0[1]], st.1)));
@@ -188,7 +194,7 @@ fn every_fixture_cell_keeps_its_steps_on_face_edges_and_agrees_with_its_neighbou
     let over = |m: f64| steep.iter().filter(|c| c.1 > m).count();
     let (over_6, over_12) = (over(6.0), over(12.0));
     println!(
-        "inside {inside}, unnamed {unnamed}, edge steps {edges}, wall-top steps {walls}, slope steps {slopes}, steep {} (over 6 m/m {over_6}, over 12 m/m {over_12}), slots full {full}, host missing {missing}",
+        "inside {inside}, unnamed {unnamed}, edge steps {edges}, wall-top steps {walls}, slope steps {slopes}, steep {} (over 6 m/m {over_6}, over 12 m/m {over_12}), slots full {full}, host missing {missing}, kerbs off their rise {kerbs}",
         steep.len()
     );
     println!(
@@ -239,6 +245,7 @@ fn every_fixture_cell_keeps_its_steps_on_face_edges_and_agrees_with_its_neighbou
     );
     assert!(inside <= INSIDE_MAX, "{inside} steps inside faces");
     assert!(edges <= EDGE_MAX, "{edges} steps at label edges with no rule");
+    assert!(kerbs <= KERB_OFF_MAX, "{kerbs} kerb steps off their rise");
     assert!(walls <= WALL_STEPS_MAX, "{walls} wall-top steps over {WALL_STEP_GRADE} m/m");
     assert!(slopes <= SLOPE_STEPS_MAX, "{slopes} slope steps over {SLOPE_STEP_GRADE} m/m");
     assert!(steep.len() <= STEEP_MAX, "{} slope pairs steeper than a rock face", steep.len());

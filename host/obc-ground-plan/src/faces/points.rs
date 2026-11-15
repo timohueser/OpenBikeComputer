@@ -399,7 +399,7 @@ fn edge(run: &[RunPoint], side: f64, extra: f64) -> Vec<[[f64; 2]; 2]> {
 }
 
 /// The crossing of segments ab and cd as fractions (t on ab, u on cd).
-fn crossing(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> Option<(f64, f64)> {
+pub(super) fn crossing(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> Option<(f64, f64)> {
     let (r, s) = ([b[0] - a[0], b[1] - a[1]], [d[0] - c[0], d[1] - c[1]]);
     let den = r[0] * s[1] - r[1] * s[0];
     if den == 0.0 {

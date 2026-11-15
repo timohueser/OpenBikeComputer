@@ -605,10 +605,9 @@ fn kind(c: &Cand) -> u32 {
     }
 }
 
-/// Whether a candidate paves: a carriageway's label that is no band layer, relabels nothing and ranks before the
-/// sidewalks, so that no slab covers it and the outline's edge is a kerb wherever a slab meets it.
-fn paves(c: &Cand, walk_rank: u8) -> bool {
-    c.label.surface == Surface::Carriageway && !matches!(kind(c), REGION | BAND) && c.key.0 < walk_rank
+/// Whether a candidate paves: a carriageway's label that is no band layer and relabels nothing.
+fn paves(c: &Cand) -> bool {
+    c.label.surface == Surface::Carriageway && !matches!(kind(c), REGION | BAND)
 }
 
 pub(super) fn label_words(l: &Label) -> [u32; 4] {
@@ -973,11 +972,9 @@ fn encode(
     let window = Window { wide };
     // The paved outline with the circles of its fans and rounds: one union, so the distance to the
     // road's edge has no seam inside the paved area.
-    let walk_rank = rules.plan.rank(super::Rank::Sidewalk);
-    let paved: Vec<Vec<P>> =
-        cands.iter().filter(|c| paves(c, walk_rank)).flat_map(|c| c.rings.iter().cloned()).collect();
+    let paved: Vec<Vec<P>> = cands.iter().filter(|c| paves(c)).flat_map(|c| c.rings.iter().cloned()).collect();
     let outline = union(&paved, [0, 0]);
-    let outline_discs: Vec<&Circle> = cands.iter().filter(|c| paves(c, walk_rank)).flat_map(|c| &c.discs).collect();
+    let outline_discs: Vec<&Circle> = cands.iter().filter(|c| paves(c)).flat_map(|c| &c.discs).collect();
     // The global names in order: a way's at its samples, a point's at its position.
     let mut globs: Vec<Glob> =
         lines.iter().flat_map(|l| l.key.iter().copied()).chain(cands.iter().filter_map(|c| c.glob)).collect();
@@ -1135,8 +1132,11 @@ fn encode(
             .map(|(col, row)| window.at(col, row))
             .collect();
         for (region, other, a, b) in [(l, r, a, b), (r, l, b, a)] {
-            // A slab fades to the paved faces beside it only: toward the ground, its edge is the slopes' outline.
-            let fades = region.rule == HeightRule::Blend || (region.rule == HeightRule::KerbOffset && paved(&other));
+            // A slab fades to the paved faces beside it only (toward the ground, its edge is the slopes' outline), and
+            // not to its own host's, whose surface is its own.
+            let own = other.rule == HeightRule::Owner && other.material == region.material;
+            let fades =
+                region.rule == HeightRule::Blend || (region.rule == HeightRule::KerbOffset && paved(&other) && !own);
             if !fades || listed.is_empty() {
                 continue;
             }

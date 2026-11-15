@@ -96,5 +96,8 @@ function normal(path: string): string {
 /** The includes of the pieces of a junction with a stop arm: their pixels find the mouth (plan/mouth-in.wgsl). */
 export const MOUTH: Record<string, string> = { 'roads/corridor-in.wgsl': 'plan/mouth-in.wgsl' };
 
+/** The includes of the other pieces: a slab's pixel near its kerb reads its kerb distance (plan/piece-in.wgsl). */
+export const PIECE_IN: Record<string, string> = { 'roads/corridor-in.wgsl': 'plan/piece-in.wgsl' };
+
 /** The includes that a device with `clip-distances` reads in place of the default ones. */
 export const CLIP_DISTANCES: Record<string, string> = { 'terrain/unknown.wgsl': 'terrain/unknown-clip.wgsl', 'terrain/water-cut.wgsl': 'terrain/water-cut-clip.wgsl' };

@@ -1,9 +1,10 @@
 // The corridors' varyings with a piece corner's label, and the mouth's hooks: this file takes the place of
 // roads/corridor-in.wgsl in the pieces of a junction with a stop arm (pieces.ts). A pixel in a stop arm's mouth
 // (terrain/mouth.wgsl) shades with the arm's look in the arm's frame. Its includes are relative to roads/, the folder
-// of the file that it replaces.
+// of the file that it replaces. A slab's pixel near its kerb reads its kerb distance (plan/slab-in.wgsl).
 // #include ../terrain/mouth.wgsl
 // #include ../plan/line-look.wgsl
+// #include ../plan/slab-in.wgsl
 
 struct CorridorOut {
     @builtin(position) @invariant clip: vec4f,
@@ -28,7 +29,9 @@ fn corridor_in(in: CorridorOut) -> CorridorOut {
     let q = (in.u - vec2f(params.origin - surface.anchor)) * 16.0;
     let mouth = m_mouth(params.block, m_junction(params.block, in.label), q, h_scale(params.block, q));
     if (mouth.line == M_NONE) {
-        return in;
+        var out = in;
+        out.road.x = slab_across(in.u, in.word, in.road.x);
+        return out;
     }
     let look = line_look(m_line_finish(params.block, mouth.line));
     // A paved arm draws neither its edge nor its edge lines in the mouth, as a junction's look past its frame; a soil
