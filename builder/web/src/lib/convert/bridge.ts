@@ -93,6 +93,34 @@ export async function gpxToObcr(gpx: Uint8Array, name: string, bike: number): Pr
     }
 }
 
+/** A waypoint on a calculated line: microdegrees, metres along the line, and an OBCR category (`0` generic). */
+export interface LineWaypoint {
+    lon: number;
+    lat: number;
+    distanceM: number;
+    category: number;
+    /** Cut to the 24-byte field on a character boundary. */
+    name: string;
+}
+
+/**
+ * Encode a calculated line into a `.obcr` route named `name` and typed `bike` (`0..=3`). `coordinates` holds longitude
+ * and latitude in microdegrees for each point, `heights` metres or null, and `surfaces[i]` the surface class of the
+ * segment that ends at point `i`.
+ *
+ * @throws {ConvertError} with an actionable message; see {@link ConvertErrorCode}.
+ */
+export async function lineToObcr(line: { coordinates: Int32Array; heights: (number | null)[]; surfaces: Uint8Array },
+    waypoints: LineWaypoint[], name: string, bike: number): Promise<Uint8Array> {
+    const mod = await ensure();
+    try {
+        const heights = Int16Array.from(line.heights, height => height === null ? -0x8000 : Math.round(height));
+        return mod.obc_convert_line_to_obcr(line.coordinates, heights, line.surfaces, JSON.stringify(waypoints), name, bike);
+    } catch (cause) {
+        throw asConvertError(cause);
+    }
+}
+
 /**
  * Convert a finished ride-v6 object's bytes into a GPX 1.1 document naming the track `name`.
  *

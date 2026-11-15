@@ -41,7 +41,7 @@ const RIDE_NAME_AT = 42;
 const RIDE_TRIP_AT = 90;
 const RIDE_LIMITS_AT = 150;
 
-/** One recorded point. Coordinates are degrees × 1e7 (a ~1 cm grid); `null` means the sensor was
+/** One recorded point. Coordinates are microdegrees (`specs/ble-interface.md` §7.2); `null` means the sensor was
  *  absent, dropped, or stale. */
 export interface RidePoint {
     /** The recorded wrapping monotonic clock, in milliseconds. */

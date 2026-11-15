@@ -3,7 +3,7 @@ import type { CoverPoints, Summary } from '../library/records';
 import { kilometres } from '../planner/geo';
 import type { StillPoints } from '../trailview/still';
 
-/** A visible or a hidden stretch shorter than this, in pixels of the image, joins the stretch before it, so trees and houses do not cut the line into dashes. */
+/** A visible or a hidden stretch shorter than this, in pixels of the image, joins the stretch before it, so the edge of a ridge does not cut the line into dashes. */
 const JOIN_PX = 16;
 /** Distance code c of 1 to 127 is NEAREST_M · 2^((c − 1) / STEPS) metres: 9 % for each step, from 10 m to 550 km. */
 const NEAREST_M = 10, STEPS = 8, VISIBLE = 128;
@@ -53,15 +53,16 @@ export function metresAlong({ line, lengthM }: Summary): Float64Array {
     return metres.map(m => m * scale);
 }
 
-/** The place in the image of the point `metres` along the route, or undefined where the line has a gap. */
-export function along(points: CoverPoints, summary: Summary, metres: number): { x: number; y: number; distance: number } | undefined {
+/** The place in the image of the point `metres` along the route, or undefined where the line has a gap. It is visible
+ * when its segment is. */
+export function along(points: CoverPoints, summary: Summary, metres: number): { x: number; y: number; distance: number; visible: boolean } | undefined {
     const at = metresAlong(summary);
     let i = 1;
     while (i < at.length - 1 && at[i] < metres) i++;
     if (!placed(points, i - 1) || !placed(points, i)) return undefined;
     const t = at[i] > at[i - 1] ? Math.max(0, Math.min(1, (metres - at[i - 1]) / (at[i] - at[i - 1]))) : 0;
     const mix = (a: number, b: number) => a + t * (b - a);
-    return { x: mix(points.x[i - 1], points.x[i]), y: mix(points.y[i - 1], points.y[i]), distance: mix(distanceAt(points, i - 1), distanceAt(points, i)) };
+    return { x: mix(points.x[i - 1], points.x[i]), y: mix(points.y[i - 1], points.y[i]), distance: mix(distanceAt(points, i - 1), distanceAt(points, i)), visible: visibleAt(points, i) };
 }
 
 /** The metres along the route of the point of the line that is nearest to pixel (x, y) of the image; undefined when no

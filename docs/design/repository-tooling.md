@@ -10,6 +10,7 @@ owns:
   - tools/install-geos.sh
   - tools/install-riscv.sh
   - tools/obc-dev.sh
+  - tools/sccache-rustc.sh
   - tools/ready.py
   - tools/agent_time.py
   - tools/test_plan.py

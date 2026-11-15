@@ -244,6 +244,16 @@ describe("partial-detail hatching (#1041 A9)", () => {
     });
 });
 
+describe("the area of a map", () => {
+    it("gives back the area it was set to, without a region or a skin that the catalog does not hold", () => {
+        const client = CatalogClient.fromBody(canonicalCatalogBody, ROOT_URL, { fetchImpl: offline });
+        const store = new CoverageStore(client, canonicalCatalogBody, null);
+        store.addRegion("europe/switzerland/basel-stadt");
+        store.setArea({ regions: ["europe/switzerland", "europe/atlantis"], boxes: [PUBLISHED_BOX], light: "custom-gone", dark: "dusk" });
+        expect(store.area()).toEqual({ regions: ["europe/switzerland"], boxes: [PUBLISHED_BOX], light: "default", dark: "dusk" });
+    });
+});
+
 describe("resolver reuse", () => {
     it("reuses the region's answers when a box is added", () => {
         const store = makeStore();

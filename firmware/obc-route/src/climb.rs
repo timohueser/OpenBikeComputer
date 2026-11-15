@@ -3,9 +3,9 @@
 //!
 //! A planned route's elevation profile is known up front, so one load-time sweep turns "which
 //! climb am I on?" into the interval lookup [`Climbs::active_at`], which the ride loop can call
-//! per frame. It folds over the same route walk and [`DeadBand`] smoothing as
-//! [`elevation_profile`](crate::profile), feeding the smoothed stream through the hysteresis
-//! state machine [`segment_climbs`].
+//! per frame. It folds over the same route walk as [`elevation_profile`](crate::profile), feeding
+//! the heights through the [`DeadBand`] smoothing and hysteresis state machine [`segment_climbs`].
+//! The web planner runs the same rule; `specs/vectors/climbs.json` keeps the two equal.
 //!
 //! A single grade threshold would split a real climb at every false flat and merge a
 //! descent-linked pair of passes. The hysteresis here bridges a dip shallower than [`MAX_DROP`]
@@ -50,7 +50,7 @@ pub const MAX_CLIMBS: usize = 24;
 /// the profile and the matcher progress.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ClimbSeg {
-    /// Distance (m) at the pre-climb trough, where the sustained rise begins.
+    /// Distance (m) at the pre-climb trough: the last point before the smoothed height rises.
     pub start_m: u32,
     /// Distance (m) at the summit.
     pub end_m: u32,
@@ -141,7 +141,7 @@ pub struct ElePt {
     /// Cumulative distance from the route start, meters. `f64` matches the profile's running
     /// total, which does not drift over a long route.
     pub dist_m: f64,
-    /// Dead-band-smoothed elevation, meters.
+    /// Raw elevation, meters; NaN for a missing height.
     pub ele_m: f32,
 }
 
@@ -156,8 +156,11 @@ struct Candidate {
     max_ele: f32,
 }
 
-/// Fold an ordered `(distance, smoothed elevation)` stream into the route's kept climbs. This is
-/// the whole detection policy; [`RouteReader::detect_climbs`] only feeds it the route walk.
+/// Fold an ordered `(distance, elevation)` stream into the route's kept climbs. This is the whole
+/// detection policy; [`RouteReader::detect_climbs`] only feeds it the route walk.
+///
+/// The fold reads the [`DeadBand`] reference, not the raw height, so noise below the band neither
+/// opens nor closes a climb. A NaN height resets the band and drops the open candidate.
 ///
 /// A candidate closes when, measured from its running summit, the elevation drops more than
 /// [`MAX_DROP`] or more than [`MAX_FLAT`] meters pass without a new summit. It is then kept only
@@ -176,8 +179,8 @@ pub(crate) struct ClimbDetector {
     capped: bool,
     cand: Option<Candidate>,
     trough: Option<ElePt>,
-    /// Smooths a route walk's raw elevations for [`push_point`](Self::push_point), across chunk
-    /// seams too: a seam point compares equal to itself and books nothing.
+    /// Holds the reference across a route walk's chunk seams too: a seam point compares equal to
+    /// itself and books nothing.
     smooth: DeadBand<f32>,
 }
 
@@ -186,25 +189,21 @@ impl ClimbDetector {
         Self { climbs: Climbs::new(), capped: false, cand: None, trough: None, smooth: DeadBand::new() }
     }
 
-    /// Feed one point of the route walk. The segmenter reads the dead-band's reference, not the
-    /// raw sample, so noise below the band neither opens nor closes a climb.
+    /// Feed one point of the route walk.
     pub(crate) fn push_point(&mut self, p: RoutePoint, dist_m: f64) {
-        let ele_m = if p.elevation().is_none() || p.elevation_incomplete {
-            self.smooth.pause();
-            f32::NAN
-        } else {
-            self.smooth.push(p.ele as f32);
-            self.smooth.smoothed().unwrap_or(p.ele as f32)
-        };
-        self.push(ElePt { dist_m, ele_m });
+        let missing = p.elevation().is_none() || p.elevation_incomplete;
+        self.push(ElePt { dist_m, ele_m: if missing { f32::NAN } else { p.ele as f32 } });
     }
 
     pub(crate) fn push(&mut self, p: ElePt) {
         if !p.ele_m.is_finite() {
+            self.smooth.pause();
             self.cand = None;
             self.trough = None;
             return;
         }
+        self.smooth.push(p.ele_m);
+        let p = ElePt { ele_m: self.smooth.smoothed().unwrap_or(p.ele_m), ..p };
         match self.cand.as_mut() {
             // The gates are applied at close, not at open, so any rise opens a candidate and it
             // can grow into a keeper.
@@ -216,9 +215,10 @@ impl ClimbDetector {
                     }
                     Some(t) => t,
                 };
-                if p.ele_m < base.ele_m {
+                // A flat floor moves the trough along, so the climb starts where the rise starts.
+                if p.ele_m <= base.ele_m {
                     self.trough = Some(p);
-                } else if p.ele_m > base.ele_m {
+                } else {
                     self.cand = Some(Candidate {
                         trough_dist: base.dist_m,
                         trough_ele: base.ele_m,

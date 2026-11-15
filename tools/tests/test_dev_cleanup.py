@@ -3,6 +3,7 @@ import fcntl
 import importlib.util
 import io
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -191,6 +192,9 @@ class DevCleanupTests(unittest.TestCase):
             now = time.time()
             old = now - 8 * cleanup.SECONDS_PER_DAY
             wasm = "wasm32-unknown-unknown/debug"
+            # The own target of a registered checkout.
+            live = Path("/wt/live")
+            bridges = f"checkouts/{cleanup.checkout_key(live)}/{wasm}"
             target = self.make_target(
                 Path(scratch),
                 {
@@ -213,6 +217,8 @@ class DevCleanupTests(unittest.TestCase):
                     "debug/incremental/live-4444444444444444/s-2/object.o": (old, old),
                     f"{wasm}/.cargo-lock": (old, old),
                     f"{wasm}/.fingerprint/w-5555555555555555/lib-w": (old, old),
+                    f"{bridges}/.cargo-lock": (old, old),
+                    f"{bridges}/.fingerprint/b-7777777777777777/lib-b": (old, old),
                     # A profile without `.cargo-lock` is not cargo's.
                     "doc/.fingerprint/d-6666666666666666/lib-d": (old, old),
                     "doc/deps/libd-6666666666666666.rlib": (old, old),
@@ -231,14 +237,15 @@ class DevCleanupTests(unittest.TestCase):
                     target / "debug" / "deps": (2, 2),
                     target / "debug" / "incremental": (1, 1),
                     target / wasm / ".fingerprint": (1, 1),
+                    target / bridges / ".fingerprint": (1, 1),
                 },
                 [],
             )
 
-            self.assertEqual(cleanup.prune_cargo_target(target, cutoff, apply=False), expected)
+            self.assertEqual(cleanup.prune_cargo_target(target, cutoff, False, {live}), expected)
             self.assertTrue((target / "debug" / "deps" / "libstale-2222222222222222.rlib").exists())
 
-            self.assertEqual(cleanup.prune_cargo_target(target, cutoff, apply=True), expected)
+            self.assertEqual(cleanup.prune_cargo_target(target, cutoff, True, {live}), expected)
             for gone in (
                 "debug/.fingerprint/stale-2222222222222222",
                 "debug/build/stale-2222222222222222",
@@ -246,6 +253,7 @@ class DevCleanupTests(unittest.TestCase):
                 "debug/deps/stale-2222222222222222.d",
                 "debug/incremental/stale-3333333333333333",
                 f"{wasm}/.fingerprint/w-5555555555555555",
+                f"{bridges}/.fingerprint/b-7777777777777777",
             ):
                 self.assertFalse((target / gone).exists(), gone)
             for kept in (
@@ -262,6 +270,51 @@ class DevCleanupTests(unittest.TestCase):
                 self.assertTrue((target / kept).exists(), kept)
             self.assertTrue(outside_file.exists())
 
+    def test_prune_cargo_target_removes_the_idle_target_of_a_gone_checkout_whole(self):
+        live, gone = Path("/wt/live"), Path("/wt/gone")
+        script = MODULE_PATH.parent / "obc-dev.sh"
+        # A nested task keeps the target of its checkout.
+        nested = "obc_checkout_target; obc_checkout_target"
+        own = f"/t/checkouts/{cleanup.checkout_key(live)}"
+        # The recipes run under `set -u`, with or without a wrapper.
+        wrappers = (
+            ("RUSTC_WRAPPER=/bin/sccache", f"{live}/tools/sccache-rustc.sh"),
+            ("unset RUSTC_WRAPPER", "none"),
+        )
+        for wrapper, expected in wrappers:
+            shell = (
+                f"{wrapper}; OBC_ROOT={live} CARGO_TARGET_DIR=/t; source {script}; {nested}; "
+                'printf "%s %s" "$CARGO_TARGET_DIR" "${RUSTC_WRAPPER:-none}"'
+            )
+            command = ["bash", "-euo", "pipefail", "-c", shell]
+            run = subprocess.run(command, check=True, text=True, stdout=subprocess.PIPE)
+            self.assertEqual(run.stdout, f"{own} {expected}")
+        with tempfile.TemporaryDirectory() as scratch:
+            now = time.time()
+            old = now - 8 * cleanup.SECONDS_PER_DAY
+            used = "checkouts/0123456789abcdef"
+            target = self.make_target(
+                Path(scratch),
+                {
+                    f"checkouts/{cleanup.checkout_key(live)}/release/.cargo-lock": (old, old),
+                    f"checkouts/{cleanup.checkout_key(live)}/release/deps/libbridge.rlib": (old, old),
+                    f"checkouts/{cleanup.checkout_key(gone)}/release/.cargo-lock": (old, old),
+                    f"checkouts/{cleanup.checkout_key(gone)}/release/deps/libbridge.rlib": (old, old),
+                    f"{used}/release/.cargo-lock": (old, old),
+                    f"{used}/release/deps/libbridge.rlib": (now, now),
+                },
+            )
+            cutoff = now - 7 * cleanup.SECONDS_PER_DAY
+            own = target / "checkouts" / cleanup.checkout_key(gone)
+            expected = ({own: (1, 2)}, [])
+            self.assertEqual(cleanup.prune_cargo_target(target, cutoff, False, {live}), expected)
+            self.assertTrue(own.exists())
+            self.assertEqual(cleanup.prune_cargo_target(target, cutoff, True, {live}), expected)
+            self.assertFalse(own.exists())
+            mine = target / "checkouts" / cleanup.checkout_key(live)
+            self.assertTrue((mine / "release/deps/libbridge.rlib").exists())
+            self.assertTrue((target / used / "release/deps/libbridge.rlib").exists())
+
     def test_prune_cargo_target_skips_a_profile_that_a_build_holds(self):
         with tempfile.TemporaryDirectory() as scratch:
             old = time.time() - 8 * cleanup.SECONDS_PER_DAY
@@ -277,11 +330,11 @@ class DevCleanupTests(unittest.TestCase):
             with open(target / "debug" / ".cargo-lock") as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX)
                 self.assertEqual(
-                    cleanup.prune_cargo_target(target, cutoff, apply=True), ({}, [target / "debug"])
+                    cleanup.prune_cargo_target(target, cutoff, True, set()), ({}, [target / "debug"])
                 )
             self.assertTrue((target / "debug" / "deps" / "libold-1111111111111111.rlib").exists())
             self.assertEqual(
-                cleanup.prune_cargo_target(target, cutoff, apply=True)[0],
+                cleanup.prune_cargo_target(target, cutoff, True, set())[0],
                 {target / "debug" / ".fingerprint": (1, 1), target / "debug" / "deps": (1, 1)},
             )
 
@@ -300,6 +353,9 @@ class DevCleanupTests(unittest.TestCase):
             self.assertIn("no CACHEDIR.TAG", output.getvalue())
             (untagged / "CACHEDIR.TAG").write_text("Signature: 8a477f597d28d172789f06886806bc55")
             self.assertEqual(cleanup.cargo_target(str(untagged)), untagged.resolve())
+            own = untagged / "checkouts" / cleanup.checkout_key(repo)
+            own.mkdir(parents=True)
+            self.assertEqual(cleanup.cargo_target(str(own)), untagged.resolve())
             self.assertIsNone(cleanup.cargo_target(""))
             self.assertIsNone(cleanup.cargo_target(str(root / "missing")))
 

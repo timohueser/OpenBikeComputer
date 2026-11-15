@@ -45,6 +45,22 @@ export const gradeBands = [
 
 export const gradeThresholds = [3, 6, 10, 15, 20];
 
+/** SVG paths of the line of a profile, one for each band of `gradeBands`, in the box of `profilePaths`. */
+export function gradePaths(samples: readonly { progress: number; height: number | null }[], grades: readonly (number | null)[], low: number, high: number): string[] {
+    const paths = gradeBands.map(() => '');
+    const y = (height: number) => 105 - (height - low) / (high - low) * 100;
+    let previous = -1;
+    for (let i = 0; i < grades.length; i++) {
+        const a = samples[i], b = samples[i + 1];
+        if (a.height === null || b.height === null) { previous = -1; continue; }
+        const band = gradeBand(grades[i]);
+        if (band !== previous) paths[band] += `M${a.progress * 1000} ${y(a.height)}`;
+        paths[band] += `L${b.progress * 1000} ${y(b.height)}`;
+        previous = band;
+    }
+    return paths;
+}
+
 export function gradeBand(grade: number | null): number {
     if (grade === null || !Number.isFinite(grade)) return 11;
     const magnitude = Math.round(Math.abs(grade) * 10) / 10;

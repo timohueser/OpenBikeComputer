@@ -1,7 +1,7 @@
 // Draws a list of views of the built TrailView page in headless Chromium and writes one PNG per view.
 //
 //   npm run pretest:trailview --prefix builder/web/tests/browser     # build against the fixture
-//   node builder/web/tests/browser/trailview/shoot.mjs [--views FILE] [--out DIR] [--width PX] [--height PX] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--hud] [--gpu] [--audit] [--pages N]
+//   node builder/web/tests/browser/trailview/shoot.mjs [--views FILE] [--out DIR] [--width PX] [--height PX] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--hud] [--gpu] [--audit] [--pages N] [--query Q]
 //
 // --views is a JSON list of {name, view}, where view is a query string (default: views.json).
 // --width and --height are the size of the page (default 1280 × 800).
@@ -12,7 +12,10 @@
 // draws on the CPU. Prints one JSON line per view: the file, the adapter, the nodes drawn, the
 // requests, the red pixels of a `debug=cracks` view and page errors.
 // --pages is the number of views that draw at once, each on its own page (default 3 with --gpu, else
-// 1). The JSON lines come in the order in which the views finish.
+// 1). The JSON lines come in the order in which the views finish. --query Q appends `&Q` to each view,
+// such as `ground=plan&plan=faces`; with the ground plan, a line holds its cells, failures, ready time and heap,
+// the records, and the meshes: the cells that draw, their triangles and slots in view, their bytes and the
+// milliseconds to the first frame in which every cell of level 18 draws its mesh.
 
 import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -33,6 +36,7 @@ const { values } = parseArgs({
         audit: { type: 'boolean' },
         gpu: { type: 'boolean' },
         pages: { type: 'string' },
+        query: { type: 'string' },
     },
 });
 /** The longest wait for the page and for an idle view. */
@@ -52,7 +56,7 @@ async function shoot({ name, view }) {
     const page = await browser.newPage({ viewport: { width: Number(values.width), height: Number(values.height) }, deviceScaleFactor: 1 });
     const errors = errorsOf(page);
     await routeFixture(page, values.tiles, values.ground, values.colour, values.features);
-    await page.goto(`${origin}/trailview.html${view}`);
+    await page.goto(`${origin}/trailview.html${view}${values.query ? `&${values.query}` : ''}`);
     await page.waitForFunction(() => window.trailView, null, { timeout: TIMEOUT_MS });
     await idle(page);
     await page.evaluate(() => window.trailView.showMarker(null));
@@ -64,7 +68,10 @@ async function shoot({ name, view }) {
     const stats = await page.evaluate(() => window.trailView.stats());
     const red = view.includes('debug=cracks') ? { redPixels: await redPixels(page) } : {};
     const audit = values.audit ? { audit: await page.evaluate(() => window.trailView.audit()) } : {};
-    console.log(JSON.stringify({ name, file, adapter: stats.adapter, drawn: stats.drawn, requests: stats.requests, ...red, ...audit, errors }));
+    const plan = stats.plan ? { plan: { cells: stats.plan.cells, failed: stats.plan.failed, ready: stats.plan.ready, heap: stats.plan.heap, debugVertices: stats.plan.debugVertices, build: stats.plan.build, error: stats.plan.error } } : {};
+    const records = stats.terrain?.records ? { records: stats.terrain.records } : {};
+    const pieces = stats.terrain?.pieces ? { pieces: stats.terrain.pieces } : {};
+    console.log(JSON.stringify({ name, file, adapter: stats.adapter, drawn: stats.drawn, requests: stats.requests, ...red, ...audit, ...plan, ...records, ...pieces, errors }));
     await page.close();
 }
 try {

@@ -80,7 +80,7 @@ describe('what stands beside a road', () => {
         return runs;
     };
 
-    it.each([[-3, 0, 1, 'rail', 28], [0, 5, -1, 'wall', 32]] as const)('closes a gap of up to two ramps and a break whole, and opens a wider one to nothing, with one rise and one fall to a stretch', (left, right, side, field, width) => {
+    it.each([['rail', -3, 0, 1, 28], ['wall', 0, 5, -1, 32]] as const)('a %s closes a gap of up to two ramps and a break whole, and opens a wider one to nothing, with one rise and one fall to a stretch', (field, left, right, side, width) => {
         const { line, stations } = road();
         for (let gap = 2; gap <= 50; gap += 2) {
             const off = (x: number) => Math.abs(alongOf(x) - 100);

@@ -11,6 +11,9 @@ import { streetLamps } from '../roads/lamps';
 import { BRIDGE, metresPerUnit, PROFILES, RAIL, ROAD, TUNNEL, type Line, type Shapes } from '../terrain/bins';
 import { RIGHT } from '../terrain/town';
 
+/** The shapes of a tile with these lines and buildings alone. */
+const tileOf = (lines: Line[], buildings: unknown[] = []) => ({ lines, lakes: [], seas: [], pads: [], areas: [], buildings }) as unknown as Shapes;
+
 describe('kinds', () => {
     it('draws only kinds of the table', () => {
         const names = new Set(TABLE.map(entry => entry.kind));
@@ -40,13 +43,13 @@ describe('kinds', () => {
     });
 
     it('stands a model along the nearest way within reach, its front toward it', () => {
-        const y = 2 ** 29, m = 1 / metresPerUnit(y), way = (xy: number[]) => ({ xy }) as Line;
+        const y = 2 ** 29, m = 1 / metresPerUnit(y), way = (xy: number[]) => ({ kind: ROAD, xy, h: 2.5 }) as Line;
         // An east–west way 5 m south of the point (world y runs south), and one 8 m north.
         const ways = [way([-50 * m, y + 5 * m, 50 * m, y + 5 * m]), way([-50 * m, y - 8 * m, 50 * m, y - 8 * m])];
         const front = (yaw: number) => [Math.sin(yaw), -Math.cos(yaw)].map(v => Math.round(v * 1e6) / 1e6 + 0);
-        expect(front(facing(ways, 0, y)!)).toEqual([0, -1]);
-        expect(front(facing(ways.slice(1), 0, y)!)).toEqual([0, 1]);
-        expect(facing([way([-50 * m, y + 20 * m, 50 * m, y + 20 * m])], 0, y)).toBeUndefined();
+        expect(front(facing(tileOf(ways), 0, y)!)).toEqual([0, -1]);
+        expect(front(facing(tileOf(ways.slice(1)), 0, y)!)).toEqual([0, 1]);
+        expect(facing(tileOf([way([-50 * m, y + 20 * m, 50 * m, y + 20 * m])]), 0, y)).toBeUndefined();
     });
 
     describe('a model at a point keeps out of the ways', () => {
@@ -56,8 +59,8 @@ describe('kinds', () => {
         const road = (xy: number[]) => ({ kind: ROAD, xy, z: xy.filter((_, i) => i % 2 === 0).map(() => 0), h: 2.5, code: 2, ford: false, profile: 0 }) as Line;
         const EDGE = 2.9, ROOM = EDGE + 0.35, STEP = 0.1;
         const stand = (kind: string, lines: Line[], x: number, at: number, { cornered = (() => false) as Build['cornered'], buildings = [] as Shapes['buildings'] } = {}) => {
-            const placed: Placement[] = [], shapes = { lines, lakes: [], seas: [], areas: [], buildings } as unknown as Shapes;
-            const out = { owns: () => true, place: (p: Placement) => placed.push(p), ways: lines, cores: coresOf(shapes), taken: [], cornered } as unknown as Build;
+            const placed: Placement[] = [], shapes = tileOf(lines, buildings);
+            const out = { owns: () => true, place: (p: Placement) => placed.push(p), shapes, cores: coresOf(shapes), taken: [], cornered } as unknown as Build;
             KINDS.get(kind)!.build({ tags: {}, parts: [{ outer: false, xy: [x, at] }] }, out);
             return placed[0];
         };
@@ -126,8 +129,8 @@ describe('kinds', () => {
         });
 
         it('a moved model keeps clear of a model that the node placed before', () => {
-            const placed: Placement[] = [], shapes = { lines: east, lakes: [], seas: [], areas: [], buildings: [] } as unknown as Shapes;
-            const out = { owns: () => true, place: (p: Placement) => placed.push(p), ways: east, cores: coresOf(shapes), taken: [], cornered: () => false } as unknown as Build;
+            const placed: Placement[] = [], shapes = tileOf(east);
+            const out = { owns: () => true, place: (p: Placement) => placed.push(p), shapes, cores: coresOf(shapes), taken: [], cornered: () => false } as unknown as Build;
             for (const kind of ['bench', 'drinking-water']) KINDS.get(kind)!.build({ tags: {}, parts: [{ outer: false, xy: [0, y + m] }] }, out);
             // The bench reaches 0.8 m along its seat.
             expect(Math.hypot(placed[0].x - placed[1].x, placed[0].y - placed[1].y) / m).toBeGreaterThan(0.8);
@@ -155,7 +158,7 @@ describe('kinds', () => {
         const main = road([0, y, 112 * m, y, 320 * m, y], { sidewalks: [RIGHT, RIGHT] }), house = { rings: [[0, y - 10 * m, 100 * m, y - 10 * m, 100 * m, y - 20 * m]], outer: [true] };
         const places = (lines: Line[], { buildings = [house] as unknown[], cornered = (() => false) as (x: number, y: number) => boolean } = {}) => {
             const placed: Placement[] = [];
-            streetLamps({ owns: () => true, place: p => placed.push(p), buildings, cornered } as Parameters<typeof streetLamps>[0], lines);
+            streetLamps({ owns: () => true, place: p => placed.push(p), shapes: tileOf(lines, buildings), cornered });
             return placed;
         };
         const along = (lines: Line[], others?: Parameters<typeof places>[1]) => places(lines, others).map(p => Math.round(p.x / m));

@@ -21,36 +21,6 @@ struct Job {
 // The float32 bits of an unknown height in `out`, before its 16-bit codes.
 const UNKNOWN32: u32 = 0xffffffffu;
 
-// Catmull-Rom weights of the four texels about a part t.
-fn spline(t: f32) -> vec4f {
-    return 0.5 * vec4f(-t + 2.0 * t * t - t * t * t, 2.0 - 5.0 * t * t + 3.0 * t * t * t, t + 4.0 * t * t - 3.0 * t * t * t, -t * t + t * t * t);
-}
-
-// The bicubic height of the finest stored level up to `top` that knows all 16 texels about a point.
-fn stored_base(u: vec2i, top: u32) -> f32 {
-    for (var level = top; level >= COARSEST; level--) {
-        let t = texel_of_units(u, level);
-        let wx = spline(t.part.x);
-        let wy = spline(t.part.y);
-        var sum = 0.0;
-        var complete = true;
-        for (var j = 0; j < 4 && complete; j++) {
-            for (var i = 0; i < 4; i++) {
-                let h = texel_height(level, t.whole + vec2i(i - 1, j - 1), true);
-                if (!known(h)) {
-                    complete = false;
-                    break;
-                }
-                sum += h * wx[i] * wy[j];
-            }
-        }
-        if (complete) {
-            return sum;
-        }
-    }
-    return NONE;
-}
-
 // The ordered bits of a height, so that unsigned atomics take the least and the greatest.
 fn ordered(h: f32) -> u32 {
     let b = bitcast<u32>(h);

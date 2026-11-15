@@ -1,0 +1,637 @@
+// The ground plan's meshes near the eye (`ground=plan`): each cell's mesh from the plan worker on the device,
+// its corners' heights, normals and looks made once by a compute pass (corners.wgsl), drawn before the
+// terrain with the corridors' fragment stage (piece.wgsl). A cell's mesh draws over the nodes of the finest
+// level, 18 or 17, within level 18's range; the terrain's vertices there take no snap of their own and sink
+// inside the mesh's owned region (cells.wgsl), and the strip, made of the terrain's own vertices at the
+// region's border, closes the mesh against it. Past them the terrain draws the records' far look. A cell's storeys
+// over the ground draw with it: their corners from the same pass, their sheets and shells with piece.wgsl, and they
+// cast into the shadow map.
+import type { Gpu } from '../gpu/device';
+import { MOUTH } from '../gpu/include';
+import { layouts } from '../gpu/layouts';
+import { wgsl } from '../gpu/wgsl';
+import { CASTER_DEPTH, CASTER_PRIMITIVE } from '../light/shadow';
+import { DEPTH, sceneFormat } from '../resolve/targets';
+import { CALM, CELL_LEVEL, distances, key, MORPH, size, type Eye, type Node, type Rule } from '../terrain/lod';
+import { touches } from '../terrain/pages';
+import { cellMesh, SUNK_WORDS, type CellMesh, type StoreyMesh } from './mesh';
+
+/** The cells per side of the window about the eye's cell, the words before the slots, and the slots of sunk points: as cells.wgsl. */
+export const WINDOW = 7;
+const HEAD = 64;
+const SLOTS = 24;
+/** The bytes of the cells buffer that the terrain and the pieces read. */
+export const CELLS_BYTES = 4 * (HEAD + SLOTS * SUNK_WORDS);
+/** A cell's mesh builds this far before the terrain draws the whole cell at level 18: about 10 s of a car. */
+const LEAD_M = 150;
+/** Corners whose heights the compute pass makes in a frame, past the plain terrain's corners of the pieces in view: a town cell takes about eight frames. */
+const CORNERS_PER_FRAME = 8192;
+/** Corners per workgroup of the pass: GROUP_CORNERS of corners.wgsl. */
+const GROUP_CORNERS = 12;
+/** A pass of the plain terrain's corners charges one corner of the budget for this many: the other corners return at once. */
+const TERRAIN_SHARE = 8;
+/** The top bit of the first corner in the parameters: the pass makes only the plain terrain's corners. */
+const TERRAIN_BIT = 0x80000000;
+/** A piece whose cell reaches this far before the level-18 plateau's end draws with the fade: the metres of four mesh triangles. */
+const FADE_MARGIN_M = 10;
+/** Bytes of a piece's parameters, as Piece of piece.wgsl (corners.wgsl reads the first 48). */
+const PARAMS_BYTES = 64;
+/** The vertices of a culvert mouth's model: MOUTH_QUADS of plan/piece.wgsl, six each. */
+const CULVERT_VERTICES = 6 * 48;
+/** The level-18 nodes per side of the block whose stamps a cell's corners read, NODES of corners.wgsl: the cell's four and one more on each side. */
+const NODES = 6;
+
+/** What a pass makes: every corner, or only the plain terrain's corners, the ones that read the drawn page. */
+type Make = 'all' | 'terrain';
+
+const more = (a: Make | undefined, b: Make): Make => (a === 'all' || b === 'all' ? 'all' : 'terrain');
+
+interface Piece {
+    node: Node;
+    mesh: CellMesh;
+    /** Per run of triangles, how many of its last triangles belong to a junction with a stop arm: they draw with the mouth's pipeline. */
+    mouths: number[];
+    /** The first word of the cell's records block that its labels index. */
+    block: number;
+    /** Its buffers, and the compute bind group with the stamp data of the pass that it was made for (`bound`). */
+    gpu?: { data: GPUBuffer; indices: GPUBuffer; params: GPUBuffer; draw: GPUBindGroup; compute?: GPUBindGroup; stamps?: GPUBuffer; bound?: Make; storeys?: StoreysGpu };
+    /** Whether its corners hold their heights, what a pass must make, and how many corners the pass made so far. */
+    computed: boolean;
+    stale?: Make;
+    done: number;
+    /** Whether the plain terrain's corners of a stale `all` piece hold the current pages, or its pass makes them all from its start. */
+    grounded?: boolean;
+    /** Its corners' box in world units, and the keys of the raw stored pages and the drawn pages that the pass reads there (Pages.reads). */
+    box: [number, number, number, number];
+    plain?: string;
+    drawn?: string;
+    /** Whether the stamp data of its stampNodes is known: a labelled corner reads it, so the pass waits for it. */
+    stamped: boolean;
+}
+
+/** A cell's storeys on the device: their buffer (as a piece's, with the triangles and the offsets after the slots), parameters, draw and cast groups, and the compute group of the last stamps. */
+interface StoreysGpu { data: GPUBuffer; params: GPUBuffer; draw: GPUBindGroup; cast?: GPUBindGroup; compute?: GPUBindGroup; computed: boolean }
+
+interface Resources {
+    gpu: Gpu;
+    frame: GPUBuffer;
+    cells: GPUBuffer;
+    records: GPUTexture;
+    /** The road and path profiles, as stamp-core.wgsl reads them. */
+    profiles: GPUBuffer;
+    /** The triangles and the step slots of a cell drawn wholly at level 18, and of one drawn in part (`cut`); the triangles of a
+     * stop arm's junction, whose pixels find the mouth (plan/mouth-in.wgsl), with pipelines of their own, so that no other pixel pays for it. */
+    triangles: GPURenderPipeline;
+    mouthTriangles: GPURenderPipeline;
+    cutMouthTriangles: GPURenderPipeline;
+    slots: GPURenderPipeline;
+    cutTriangles: GPURenderPipeline;
+    cutSlots: GPURenderPipeline;
+    /** The culvert mouths' models (`culvert_vertex` of plan/piece.wgsl). */
+    culverts: GPURenderPipeline;
+    cutCulverts: GPURenderPipeline;
+    /** The storeys' triangles, whole and cut, and their caster into the shadow map. */
+    storeys: GPURenderPipeline[];
+    storeyCaster: GPURenderPipeline;
+    corners: GPUComputePipeline;
+    drawLayout: GPUBindGroupLayout;
+    computeLayout: GPUBindGroupLayout;
+}
+
+export interface PiecesStats {
+    /** Cells whose mesh is on the device, that draw, and that draw in view; their triangles and step slots in view. */
+    cells: number;
+    drawn: number;
+    inView: number;
+    triangles: number;
+    steps: number;
+    /** The storeys' triangles and slots in view. */
+    storeyTriangles: number;
+    /** The pieces' GPU bytes, the storeys' among them. */
+    bytes: number;
+    /** Milliseconds from the first frame with a wanted cell that does not draw to the next frame in which all draw. */
+    ready: number;
+}
+
+/** The cells of zoom 16 that hold a point near the eye: those within `reach` cells of the eye's. */
+function cellsAbout(eye: Eye, reach: number): Node[] {
+    const s = size(CELL_LEVEL), x = Math.floor((eye.anchor.whole[0] + eye.anchor.part[0]) / s), y = Math.floor((eye.anchor.whole[1] + eye.anchor.part[1]) / s);
+    const out: Node[] = [];
+    for (let j = -reach; j <= reach; j++) for (let i = -reach; i <= reach; i++) out.push({ level: CELL_LEVEL, x: x + i, y: y + j });
+    return out;
+}
+
+/** The level-18 nodes whose stamps a cell's corners read, row by row from the north-west, as corners.wgsl indexes them. */
+export function stampNodes(cell: Node): Node[] {
+    return Array.from({ length: NODES * NODES }, (_, i) => ({ level: 18, x: cell.x * 4 - 1 + (i % NODES), y: cell.y * 4 - 1 + Math.floor(i / NODES) }));
+}
+
+/** Whether a quarter of a cell lies nearer than level 18's range, where the meshes draw: at the finest level 18, its level-18 nodes. */
+function inRange(rule: Rule, eye: Eye, cell: Node): boolean {
+    for (let q = 0; q < 4; q++) if (distances(eye, { level: CELL_LEVEL + 1, x: 2 * cell.x + (q & 1), y: 2 * cell.y + (q >> 1) })[0] < rule.range / 2 ** 18) return true;
+    return false;
+}
+
+/** The coarsest terrain level that the meshes draw over. With a coarser finest level they rest. */
+export const COARSEST_MESH = 17;
+
+/**
+ * The level of the nodes that the meshes draw over at the terrain's `finest` level, 0 for none, after `calm` frames in a
+ * row at COARSEST_MESH or finer: 18, or 17 at a lower quality. Below 17 they stop at once and draw again after CALM frames, so a
+ * quality that steps between 17 and 16 does not switch them every few frames. Returns the calm frames with this one.
+ */
+export function meshLevel(finest: number, calm: number): { level: number; calm: number } {
+    const now = finest >= COARSEST_MESH ? Math.min(calm + 1, CALM) : 0;
+    return { level: now >= CALM ? Math.min(finest, 18) : 0, calm: now };
+}
+
+/**
+ * The cells whose meshes the eye wants, at any finest level, so that a return to level 17 builds nothing again: those
+ * in level 18's range, and those that will be within LEAD_M, each with its metres from the eye on the ground, as
+ * `nearCells` has them.
+ */
+export function meshCells(rule: Rule, eye: Eye): { node: Node; distance: number }[] {
+    // Level 18's range: at the finest level 18, a level-17 node splits nearer than this.
+    const split = rule.range / 2 ** 18, ground = { anchor: eye.anchor, above: 0 };
+    return cellsAbout(eye, WINDOW >> 1).filter(cell => distances(eye, cell)[0] < split + LEAD_M).map(node => ({ node, distance: distances(ground, node)[0] }));
+}
+
+export class Pieces {
+    private pieces = new Map<string, Piece>();
+    private resources?: Resources;
+    /** The cells that draw, nearest first, those in view, and those of them that reach past the level-18 plateau, where they fade out. */
+    private drawn: Piece[] = [];
+    private inView: Piece[] = [];
+    private cut = new Set<Piece>();
+    private window?: [number, number];
+    private slots = new Map<string, number>();
+    private cellsDirty = true;
+    private readyFrom?: number;
+    private readyMs = 0;
+    /** The level of the nodes that the meshes draw over this frame, 0 for none, and the calm frames of meshLevel. */
+    private meshLevel = 0;
+    private calm = CALM;
+    /** Whether the terrain's finest level is coarser than COARSEST_MESH: the meshes ask for no stamp and make no corner. */
+    private resting = false;
+    /** The frame uniform of the sun's view, for the storeys' casters. */
+    private sun?: GPUBuffer;
+
+    /** `stamps` gives a node's stamp data, null for none, undefined while it is on its way, and asks for it. */
+    constructor(private readonly stamps: (node: Node) => Uint32Array<ArrayBuffer> | null | undefined) {}
+
+    /** A cell's mesh arrives with the first word of its records block, and the labels of its junctions with a stop arm. */
+    add(node: Node, bytes: ArrayBuffer, block: number, mouths: Set<number>): void {
+        this.remove(node);
+        const mesh = cellMesh(bytes), s = size(CELL_LEVEL), box: [number, number, number, number] = [Infinity, Infinity, -Infinity, -Infinity];
+        // A corner's x and y in frame units, 16 to a world unit, from the cell's origin.
+        for (let k = 0; k < mesh.corners.length; k += 2) {
+            const x = node.x * s + (mesh.corners[k] & 0x7ffff) / 16, y = node.y * s + (mesh.corners[k + 1] & 0x7ffff) / 16;
+            box[0] = Math.min(box[0], x);
+            box[1] = Math.min(box[1], y);
+            box[2] = Math.max(box[2], x);
+            box[3] = Math.max(box[3], y);
+        }
+        this.pieces.set(key(node), { node, mesh, mouths: splitMouths(mesh, mouths), block, computed: false, stale: 'all', done: 0, box, stamped: false });
+    }
+
+    remove(node: Node): void {
+        const piece = this.pieces.get(key(node));
+        if (!piece) return;
+        this.release(piece);
+        this.pieces.delete(key(node));
+        this.cellsDirty = true;
+    }
+
+    private release(piece: Piece): void {
+        const r = this.resources;
+        if (r && piece.gpu) for (const buffer of [piece.gpu.data, piece.gpu.indices, piece.gpu.params, piece.gpu.stamps, piece.gpu.storeys?.data, piece.gpu.storeys?.params]) if (buffer) r.gpu.destroy('plan', buffer);
+        piece.gpu = undefined;
+        piece.computed = false;
+        piece.stale = 'all';
+        piece.done = 0;
+    }
+
+    /**
+     * Takes the pipelines on a device: `frame` is the frame uniform of the eye's view, `cells` the buffer of CELLS_BYTES, `records` the
+     * records' texture, `profiles` the stamps' profile table.
+     */
+    async attach(gpu: Gpu, frame: GPUBuffer, cells: GPUBuffer, records: GPUTexture, profiles: GPUBuffer): Promise<void> {
+        this.resources = undefined;
+        for (const piece of this.pieces.values()) Object.assign(piece, { gpu: undefined, computed: false, stale: 'all', done: 0 });
+        const made = await gpu.once(piecePipelines);
+        this.resources = { gpu, frame, cells, records, profiles, ...made };
+        this.cellsDirty = true;
+    }
+
+    /** Takes the frame uniform of the sun's view: the storeys then cast into the shadow map. */
+    castWith(sun: GPUBuffer): void {
+        this.sun = sun;
+        for (const piece of this.pieces.values()) if (piece.gpu?.storeys) piece.gpu.storeys.cast = undefined;
+    }
+
+    /**
+     * Picks the cells that draw: those in level 18's range whose mesh holds its heights, at the mesh level. A cell `rests` where
+     * a page of the mesh level in it found no room and a page coarser than COARSEST_MESH stands in its place (Pages.fallback);
+     * then every cell in range rests, as below COARSEST_MESH, and draws again after CALM frames. So inside the range, a shortage
+     * leaves every cell with its mesh or none: a resting cell beside a drawing one would show a step or a slit where a road
+     * crosses their border. Over a page of level 17 in place of one of 18 a mesh draws as it does in a load: the strip and the
+     * plain corners read that page through the terrain's own code. `block` gives each cell's records block, `reads` the key of the
+     * pages that the pass reads in a box (Pages.reads), which can change only where a page of `touched` lies; `visible` whether
+     * a cell can show, `settled` whether a cell's mesh came or never comes. Returns whether what draws changed.
+     */
+    update(rule: Rule, eye: Eye, block: (node: Node) => number | undefined, reads: (box: [number, number, number, number], stored: boolean) => string, touched: Node[],
+        visible: (node: Node) => boolean, settled: (node: Node) => boolean, rests: (cell: Node) => boolean = () => false): boolean {
+        // At rest the recovery from the shortage that took the level away comes first: the pieces keep what they hold.
+        // `touched` names only this frame's pages, so a piece reads its page keys again after a rest.
+        const resting = rule.finest < COARSEST_MESH;
+        if (resting && !this.resting) for (const piece of this.pieces.values()) piece.plain = undefined;
+        this.resting = resting;
+        for (const piece of this.resting ? [] : this.pieces.values()) {
+            // Every node is asked for at once.
+            const now = block(piece.node) ?? -1, ready = stampNodes(piece.node).map(this.stamps).every(data => data !== undefined);
+            // A new piece takes its first keys.
+            const read = piece.plain === undefined || touched.some(node => touches(node, piece.box));
+            const plain = read ? reads(piece.box, true) : piece.plain, drawn = read ? reads(piece.box, false) : piece.drawn;
+            const all = now !== piece.block || plain !== piece.plain || ready !== piece.stamped;
+            if (all || drawn !== piece.drawn) {
+                piece.block = now;
+                piece.plain = plain;
+                piece.drawn = drawn;
+                piece.stamped = ready;
+                // A new drawn page changes only the plain terrain's corners: an `all` pass under way goes on, as its
+                // labelled corners read the stored pages, the stamps and the block. Any other pass starts again.
+                if (all || piece.stale !== 'all') piece.done = 0;
+                piece.stale = more(piece.stale, all ? 'all' : 'terrain');
+                piece.grounded = false;
+            }
+        }
+        const before = this.drawn.map(piece => key(piece.node)).join();
+        const range = cellsAbout(eye, WINDOW >> 1).filter(cell => inRange(rule, eye, cell));
+        ({ level: this.meshLevel, calm: this.calm } = meshLevel(range.some(rests) ? 0 : rule.finest, this.calm));
+        const cells = this.meshLevel ? range : [];
+        const near = (piece: Piece) => distances(eye, piece.node)[0];
+        // The plateau of level 18 ends here; a triangle's reach and a little more stay whole past it.
+        const plateau = rule.range / 2 ** (18 + MORPH) - FADE_MARGIN_M;
+        this.cut.clear();
+        this.drawn = cells.flatMap(cell => {
+            const piece = this.pieces.get(key(cell));
+            if (piece?.computed && distances(eye, cell)[1] >= plateau) this.cut.add(piece);
+            return piece?.computed ? [piece] : [];
+        }).sort((a, b) => near(a) - near(b));
+        this.inView = this.drawn.filter(piece => visible(piece.node));
+        const waiting = cells.some(cell => !this.pieces.get(key(cell))?.computed && !settled(cell));
+        const now = performance.now();
+        if (waiting) this.readyFrom ??= now;
+        else if (this.readyFrom !== undefined) {
+            this.readyMs = now - this.readyFrom;
+            this.readyFrom = undefined;
+        }
+        const changed = before !== this.drawn.map(piece => key(piece.node)).join();
+        this.cellsDirty ||= changed;
+        return changed || (!this.resting && [...this.pieces.values()].some(piece => piece.stale));
+    }
+
+    /** Uploads new pieces and the window of the cells that draw. */
+    write(eye: Eye): void {
+        const r = this.resources;
+        if (!r) return;
+        const { device } = r.gpu;
+        for (const piece of this.pieces.values()) if (!piece.gpu) this.upload(r, piece);
+        const s = size(CELL_LEVEL), window: [number, number] = [Math.floor((eye.anchor.whole[0] + eye.anchor.part[0]) / s) - (WINDOW >> 1), Math.floor((eye.anchor.whole[1] + eye.anchor.part[1]) / s) - (WINDOW >> 1)];
+        if (!this.cellsDirty && window[0] === this.window?.[0] && window[1] === this.window?.[1]) return;
+        this.cellsDirty = false;
+        this.window = window;
+        const names = new Set(this.drawn.map(piece => key(piece.node)));
+        for (const name of this.slots.keys()) if (!names.has(name)) this.slots.delete(name);
+        const used = new Set(this.slots.values()), head = new Int32Array(HEAD);
+        head.set(window);
+        for (const piece of this.drawn) {
+            const name = key(piece.node), i = piece.node.x - window[0], j = piece.node.y - window[1];
+            if (i < 0 || j < 0 || i >= WINDOW || j >= WINDOW) continue;
+            let slot = this.slots.get(name);
+            if (slot === undefined) {
+                slot = [...Array(SLOTS).keys()].find(k => !used.has(k));
+                if (slot === undefined) continue;
+                used.add(slot);
+                this.slots.set(name, slot);
+                device.queue.writeBuffer(r.cells, 4 * (HEAD + slot * SUNK_WORDS), piece.mesh.sunk);
+            }
+            head[2 + j * WINDOW + i] = slot + 1;
+        }
+        // A cell without a slot does not draw: its terrain would neither sink nor lose its snap.
+        this.drawn = this.drawn.filter(piece => this.slots.has(key(piece.node)));
+        this.inView = this.inView.filter(piece => this.slots.has(key(piece.node)));
+        device.queue.writeBuffer(r.cells, 0, head);
+    }
+
+    private upload(r: Resources, piece: Piece): void {
+        const { device } = r.gpu, { corners, triangles, steps, culverts } = piece.mesh, n = corners.length / 2;
+        // COPY_SRC for the determinism check's reads (`buffers`).
+        const data = r.gpu.buffer('plan', 4 * Math.max(4, 6 * n + steps.length + culverts.length), GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC);
+        // A buffer write takes whole words.
+        const indices = r.gpu.buffer('plan', 4 * Math.max(2, Math.ceil(triangles.length / 2)), GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST);
+        const params = r.gpu.buffer('plan', PARAMS_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+        device.queue.writeBuffer(data, 0, corners);
+        device.queue.writeBuffer(data, 4 * 6 * n, steps);
+        device.queue.writeBuffer(data, 4 * (6 * n + steps.length), culverts);
+        device.queue.writeBuffer(indices, 0, triangles.buffer, triangles.byteOffset, 4 * Math.ceil(triangles.length / 2));
+        piece.gpu = { data, indices, params, draw: this.drawGroup(r, data, params, r.frame), storeys: piece.mesh.storeys && this.uploadStoreys(r, piece.mesh.storeys) };
+        piece.computed = false;
+        piece.stale = 'all';
+        piece.done = 0;
+    }
+
+    /** A cell's storeys: their corners, out words, slots, triangles and offsets in one buffer, as their parameters name them. */
+    private uploadStoreys(r: Resources, storeys: StoreyMesh): StoreysGpu {
+        const { device } = r.gpu, { corners, slots, triangles, offsets } = storeys, n = offsets.length;
+        const data = r.gpu.buffer('plan', 4 * Math.max(4, 7 * n + slots.length + triangles.length), GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+        const params = r.gpu.buffer('plan', PARAMS_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+        device.queue.writeBuffer(data, 0, corners);
+        device.queue.writeBuffer(data, 4 * 6 * n, slots);
+        device.queue.writeBuffer(data, 4 * (6 * n + slots.length), triangles);
+        device.queue.writeBuffer(data, 4 * (6 * n + slots.length + triangles.length), offsets);
+        return { data, params, draw: this.drawGroup(r, data, params, r.frame), computed: false };
+    }
+
+    private drawGroup(r: Resources, data: GPUBuffer, params: GPUBuffer, frame: GPUBuffer): GPUBindGroup {
+        return r.gpu.device.createBindGroup({ layout: r.drawLayout, entries: [
+            { binding: 0, resource: { buffer: frame } }, { binding: 1, resource: { buffer: data } }, { binding: 2, resource: { buffer: params } }, { binding: 3, resource: { buffer: r.cells } },
+            { binding: 8, resource: r.records.createView() },
+        ] });
+    }
+
+    /**
+     * Makes the heights of the stale pieces, after the frame's pages and records. A piece in view makes its plain
+     * terrain's corners whole in the frame: they read the drawn page, and on the old one they would tear from the
+     * terrain beside them. The rest of an `all` pass waits for CORNERS_PER_FRAME, in view first, near the eye first.
+     */
+    encode(encoder: GPUCommandEncoder, surface: GPUBindGroup, eye: Eye, time: () => GPUComputePassTimestampWrites | undefined = () => undefined): void {
+        const r = this.resources;
+        if (!r || this.resting) return;
+        // A pass's stamp data is spent once its commands went out.
+        for (const piece of this.pieces.values()) {
+            if (piece.stale || !piece.gpu?.stamps) continue;
+            r.gpu.destroy('plan', piece.gpu.stamps);
+            piece.gpu.stamps = piece.gpu.compute = piece.gpu.bound = undefined;
+            if (piece.gpu.storeys) piece.gpu.storeys.compute = undefined;
+        }
+        const shown = new Set(this.inView), near = (piece: Piece) => distances(eye, piece.node)[0];
+        const stale = [...this.pieces.values()].filter(piece => piece.stale && piece.gpu && piece.block >= 0).sort((a, b) => +shown.has(b) - +shown.has(a) || near(a) - near(b));
+        if (!stale.length) return;
+        const pass = encoder.beginComputePass({ label: 'plan corners', timestampWrites: time() });
+        pass.setPipeline(r.corners);
+        pass.setBindGroup(1, surface);
+        let budget = CORNERS_PER_FRAME;
+        for (const piece of stale) {
+            const n = piece.mesh.corners.length / 2;
+            if (shown.has(piece) && (piece.stale === 'terrain' || !piece.grounded)) {
+                this.dispatch(r, pass, piece, 'terrain', 0, n);
+                budget -= Math.ceil(n / TERRAIN_SHARE);
+                if (piece.stale === 'terrain') this.made(piece);
+                else piece.grounded = true;
+                continue;
+            }
+            // A labelled corner reads the stamp data: an `all` pass waits for it.
+            if (budget <= 0 || (piece.stale === 'all' && !piece.stamped)) continue;
+            const share = piece.stale === 'terrain' ? TERRAIN_SHARE : 1, count = Math.min(n - piece.done, budget * share);
+            budget -= Math.ceil(count / share);
+            this.dispatch(r, pass, piece, piece.stale!, piece.done, count);
+            piece.grounded ||= piece.done === 0;
+            piece.done += Math.ceil(count / GROUP_CORNERS) * GROUP_CORNERS;
+            if (piece.done < n) continue;
+            // An `all` pass that a new drawn page met on its way makes the plain terrain's corners again.
+            if (piece.grounded) this.made(piece);
+            else {
+                piece.stale = 'terrain';
+                piece.done = 0;
+            }
+        }
+        pass.end();
+    }
+
+    /** One dispatch of a piece's corners from `first`: a piece takes one a frame, since its parameters are one buffer. */
+    private dispatch(r: Resources, pass: GPUComputePassEncoder, piece: Piece, make: Make, first: number, count: number): void {
+        const gpu = piece.gpu!, n = piece.mesh.corners.length / 2, s = size(CELL_LEVEL);
+        const params = new ArrayBuffer(PARAMS_BYTES), ints = new Int32Array(params), words = new Uint32Array(params);
+        ints.set([piece.node.x * s, piece.node.y * s]);
+        words.set([n, 6 * n, 2 * n, piece.mesh.steps.length / 4 - piece.mesh.endFaces, piece.block, (first | (make === 'terrain' ? TERRAIN_BIT : 0)) >>> 0, 6 * n + piece.mesh.steps.length], 2);
+        r.gpu.device.queue.writeBuffer(gpu.params, 0, params);
+        if (first === 0 || gpu.bound !== make) this.bindStamps(r, piece, make === 'terrain');
+        gpu.bound = make;
+        pass.setBindGroup(0, gpu.compute!);
+        pass.dispatchWorkgroups(Math.ceil(count / GROUP_CORNERS));
+        // The storeys' corners carry labels only, and are few: all of them with the first dispatch of an `all` pass.
+        const storeys = gpu.storeys, mesh = piece.mesh.storeys;
+        if (make !== 'all' || first !== 0 || !storeys?.compute || !mesh) return;
+        const m = mesh.offsets.length, slots = mesh.slots.length, tris = 6 * m + slots;
+        // The storeys' slots are all plain concrete: their end faces start at 0.
+        words.set([m, 6 * m, 2 * m, 0, piece.block, 0, 0, tris + mesh.triangles.length, tris, mesh.top, mesh.railings, mesh.piers], 2);
+        r.gpu.device.queue.writeBuffer(storeys.params, 0, params);
+        pass.setBindGroup(0, storeys.compute);
+        pass.dispatchWorkgroups(Math.ceil(m / GROUP_CORNERS));
+        storeys.computed = true;
+    }
+
+    private made(piece: Piece): void {
+        piece.computed = true;
+        piece.stale = undefined;
+        piece.done = 0;
+        piece.grounded = false;
+    }
+
+    /** The stamp data of a cell's stampNodes, as corners.wgsl reads it: none for the plain terrain's corners, which read the drawn page. */
+    private bindStamps(r: Resources, piece: Piece, terrain: boolean): void {
+        const gpu = piece.gpu!, nodes = terrain ? [] : stampNodes(piece.node).map(this.stamps);
+        const table = new Uint32Array(NODES * NODES);
+        let words = table.length;
+        nodes.forEach((data, i) => {
+            if (!data) return;
+            table[i] = words + 1;
+            words += data.length;
+        });
+        const packed = new Uint32Array(words);
+        packed.set(table);
+        nodes.forEach((data, i) => data && packed.set(data, table[i] - 1));
+        if (gpu.stamps) r.gpu.destroy('plan', gpu.stamps);
+        gpu.stamps = r.gpu.buffer('plan', packed.byteLength, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+        r.gpu.device.queue.writeBuffer(gpu.stamps, 0, packed);
+        const compute = (data: GPUBuffer, params: GPUBuffer) => r.gpu.device.createBindGroup({ layout: r.computeLayout, entries: [
+            { binding: 0, resource: { buffer: data } }, { binding: 1, resource: { buffer: gpu.stamps! } }, { binding: 2, resource: { buffer: params } },
+            { binding: 4, resource: { buffer: r.profiles } }, { binding: 8, resource: r.records.createView() },
+        ] });
+        gpu.compute = compute(gpu.data, gpu.params);
+        if (gpu.storeys) gpu.storeys.compute = terrain ? undefined : compute(gpu.storeys.data, gpu.storeys.params);
+    }
+
+    /** For the determinism check, per computed piece: its mesh from the worker, and the GPU buffer range of the corners that the pass made. */
+    buffers(): { name: string; mesh: CellMesh; buffer: GPUBuffer; offset: number; bytes: number }[] {
+        return [...this.pieces].flatMap(([name, { mesh, gpu, computed }]) => (gpu && computed ? [{ name, mesh, buffer: gpu.data, offset: 4 * mesh.corners.length, bytes: 8 * mesh.corners.length }] : []));
+    }
+
+    /** Before the terrain, nearest first: early depth then rejects the terrain under the meshes. */
+    draw(pass: GPURenderPassEncoder, surface: GPUBindGroup, ground: GPUBindGroup, features: GPUBindGroup): void {
+        const r = this.resources;
+        if (!r || !this.inView.length) return;
+        pass.setBindGroup(1, surface);
+        pass.setBindGroup(2, ground);
+        pass.setBindGroup(3, features);
+        for (const cut of [false, true]) {
+            const pieces = this.inView.filter(piece => this.cut.has(piece) === cut);
+            if (!pieces.length) continue;
+            for (const mouth of [false, true]) {
+                pass.setPipeline(mouth ? (cut ? r.cutMouthTriangles : r.mouthTriangles) : cut ? r.cutTriangles : r.triangles);
+                for (const piece of pieces) {
+                    if (mouth && !piece.mouths.some(m => m > 0)) continue;
+                    pass.setBindGroup(0, piece.gpu!.draw);
+                    pass.setIndexBuffer(piece.gpu!.indices, 'uint16');
+                    // vertex_index includes the run's base. Over level-17 nodes the last runs do not draw.
+                    let first = 0;
+                    piece.mesh.runs.slice(0, this.drawnRuns(piece)).forEach(({ count, base }, k) => {
+                        const own = count - piece.mouths[k], n = mouth ? piece.mouths[k] : own;
+                        if (n) pass.drawIndexed(3 * n, 1, first + (mouth ? 3 * own : 0), base);
+                        first += 3 * count;
+                    });
+                }
+            }
+            pass.setPipeline(cut ? r.cutSlots : r.slots);
+            for (const piece of pieces) {
+                if (!piece.mesh.steps.length) continue;
+                pass.setBindGroup(0, piece.gpu!.draw);
+                pass.draw(6 * (piece.mesh.steps.length / 4));
+            }
+            pass.setPipeline(cut ? r.cutCulverts : r.culverts);
+            for (const piece of pieces) {
+                if (!piece.mesh.culverts.length) continue;
+                pass.setBindGroup(0, piece.gpu!.draw);
+                pass.draw(CULVERT_VERTICES * (piece.mesh.culverts.length / 4));
+            }
+            const storeyed = pieces.filter(piece => piece.gpu!.storeys?.computed);
+            pass.setPipeline(r.storeys[+cut]);
+            for (const piece of storeyed) {
+                pass.setBindGroup(0, piece.gpu!.storeys!.draw);
+                pass.draw(piece.mesh.storeys!.triangles.length);
+            }
+            pass.setPipeline(cut ? r.cutSlots : r.slots);
+            for (const piece of storeyed) {
+                if (!piece.mesh.storeys!.slots.length) continue;
+                pass.setBindGroup(0, piece.gpu!.storeys!.draw);
+                pass.draw(6 * (piece.mesh.storeys!.slots.length / 4));
+            }
+        }
+    }
+
+    /** Draws the storeys of the cells that draw into the shadow map as casters, with the sun's frame (`castWith`). */
+    cast(pass: GPURenderPassEncoder, surface: GPUBindGroup, empty: GPUBindGroup, features: GPUBindGroup): void {
+        const r = this.resources;
+        if (!r || !this.sun) return;
+        const storeyed = this.drawn.filter(piece => piece.gpu?.storeys?.computed);
+        if (!storeyed.length) return;
+        pass.setPipeline(r.storeyCaster);
+        pass.setBindGroup(1, surface);
+        pass.setBindGroup(2, empty);
+        pass.setBindGroup(3, features);
+        for (const piece of storeyed) {
+            const storeys = piece.gpu!.storeys!;
+            storeys.cast ??= this.drawGroup(r, storeys.data, storeys.params, this.sun);
+            pass.setBindGroup(0, storeys.cast);
+            pass.draw(piece.mesh.storeys!.triangles.length);
+        }
+    }
+
+    /** The runs of a piece that draw at this frame's level. */
+    private drawnRuns(piece: Piece): number {
+        return piece.mesh.runs.length - (this.meshLevel < 18 ? piece.mesh.level18Runs : 0);
+    }
+
+    /** The level of the terrain nodes that the meshes draw over, 0 for none. */
+    get level(): number {
+        return this.meshLevel;
+    }
+
+    /** Whether the meshes count calm frames to draw again: frames must go on until they draw, also in a still view. */
+    get returning(): boolean {
+        return this.meshLevel === 0 && this.calm > 0;
+    }
+
+    /** Whether a cell's mesh holds its corners' heights; undefined while the cell has no mesh. */
+    ready(cell: Node): boolean | undefined {
+        return this.pieces.get(key(cell))?.computed;
+    }
+
+    /** True while a cell that the terrain draws in part at level 18 has no mesh that draws. */
+    get loading(): boolean {
+        return this.readyFrom !== undefined;
+    }
+
+    get stats(): PiecesStats {
+        const storeyBytes = ({ storeys: s }: CellMesh) => (s ? 4 * (7 * s.offsets.length + s.slots.length + s.triangles.length) : 0);
+        const bytes = [...this.pieces.values()].reduce((sum, { mesh }) => sum + 4 * (3 * mesh.corners.length + mesh.steps.length + mesh.culverts.length) + 2 * mesh.triangles.length + storeyBytes(mesh), 0);
+        return {
+            cells: this.pieces.size, drawn: this.drawn.length, inView: this.inView.length,
+            triangles: this.inView.reduce((sum, piece) => sum + piece.mesh.runs.slice(0, this.drawnRuns(piece)).reduce((n, run) => n + run.count, 0), 0), steps: this.inView.reduce((sum, { mesh }) => sum + mesh.steps.length / 4, 0),
+            storeyTriangles: this.inView.reduce((sum, { mesh: { storeys: s } }) => sum + (s ? s.triangles.length / 3 + 2 * (s.slots.length / 4) : 0), 0),
+            bytes, ready: this.readyMs,
+        };
+    }
+}
+
+export async function piecePipelines(gpu: Gpu) {
+    const { device } = gpu, { surface, ground, features } = gpu.once(layouts);
+    const V = GPUShaderStage.VERTEX, F = GPUShaderStage.FRAGMENT, C = GPUShaderStage.COMPUTE;
+    // A stop arm's mouth reads the records in the fragment stage (plan/mouth-in.wgsl).
+    const drawLayout = device.createBindGroupLayout({ entries: [
+        { binding: 0, visibility: V | F, buffer: { type: 'uniform' } }, { binding: 1, visibility: V, buffer: { type: 'read-only-storage' } },
+        { binding: 2, visibility: V | F, buffer: { type: 'uniform' } }, { binding: 3, visibility: V, buffer: { type: 'read-only-storage' } },
+        { binding: 8, visibility: F, texture: { sampleType: 'uint' } },
+    ] });
+    const computeLayout = device.createBindGroupLayout({ entries: [
+        { binding: 0, visibility: C, buffer: { type: 'storage' } }, { binding: 1, visibility: C, buffer: { type: 'read-only-storage' } }, { binding: 2, visibility: C, buffer: { type: 'uniform' } },
+        { binding: 4, visibility: C, buffer: { type: 'uniform' } }, { binding: 8, visibility: C, texture: { sampleType: 'uint' } },
+    ] });
+    const modules = [false, true].map(mouth => device.createShaderModule({ label: `plan pieces${mouth ? ' mouth' : ''}`, code: wgsl('plan/piece.wgsl', mouth ? MOUTH : {}) }));
+    const render = (entryPoint: string, cullMode: GPUCullMode, cut: boolean, mouth = false) => device.createRenderPipelineAsync({
+        label: `plan ${entryPoint}${mouth ? ' mouth' : ''}${cut ? ' cut' : ''}`, layout: device.createPipelineLayout({ bindGroupLayouts: [drawLayout, surface, ground, features] }),
+        vertex: { module: modules[+mouth], entryPoint, constants: { MOUTH: +mouth } },
+        // The ground without the road paint, as the corridors' band.
+        fragment: { module: modules[+mouth], entryPoint: 'corridor_fragment', targets: [{ format: sceneFormat(gpu) }], constants: { BAND: 1, PIECE: 1, MODEL: 1, CUT: cut ? 1 : 0, MOUTH: +mouth } },
+        primitive: { topology: 'triangle-list', cullMode },
+        depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: 'greater' },
+    });
+    // The casters' vertices read no group 2, which holds the shadow map that they draw.
+    const empty = device.createBindGroupLayout({ entries: [] });
+    const caster = device.createRenderPipelineAsync({
+        label: 'plan storey caster', layout: device.createPipelineLayout({ bindGroupLayouts: [drawLayout, surface, empty, features] }),
+        vertex: { module: modules[0], entryPoint: 'storey_caster' }, primitive: CASTER_PRIMITIVE, depthStencil: CASTER_DEPTH,
+    });
+    // A step faces its lower side from either side of its edge.
+    const [triangles, slots, cutTriangles, cutSlots, mouthTriangles, cutMouthTriangles, culverts, cutCulverts, storeys, cutStoreys, storeyCaster, corners] = await Promise.all([
+        render('piece_vertex', 'back', false), render('slot_vertex', 'none', false), render('piece_vertex', 'back', true), render('slot_vertex', 'none', true),
+        render('piece_vertex', 'back', false, true), render('piece_vertex', 'back', true, true),
+        render('culvert_vertex', 'none', false), render('culvert_vertex', 'none', true),
+        render('storey_vertex', 'back', false), render('storey_vertex', 'back', true), caster,
+        device.createComputePipelineAsync({
+            label: 'plan corners', layout: device.createPipelineLayout({ bindGroupLayouts: [computeLayout, surface] }),
+            compute: { module: device.createShaderModule({ label: 'plan corners', code: wgsl('plan/corners.wgsl') }), entryPoint: 'corners' },
+        }),
+    ]);
+    return { triangles, slots, cutTriangles, cutSlots, mouthTriangles, cutMouthTriangles, culverts, cutCulverts, storeys: [storeys, cutStoreys], storeyCaster, corners, drawLayout, computeLayout };
+}
+
+/**
+ * Moves the triangles of a run whose first corner's label is in `mouths` to the run's end, in place, and returns their
+ * count per run. A triangle takes its look from its first corner (corridor.wgsl), so it keeps that corner first.
+ */
+export function splitMouths(mesh: CellMesh, mouths: Set<number>): number[] {
+    let first = 0;
+    return mesh.runs.map(({ count, base }) => {
+        const tris = mesh.triangles.subarray(first, first + 3 * count), own: number[] = [], mouth: number[] = [];
+        for (let t = 0; t < count; t++) {
+            const k = tris[3 * t] + base, w0 = mesh.corners[2 * k], w1 = mesh.corners[2 * k + 1];
+            const label = (w0 >>> 19) | (((w1 >>> 19) & 0xfff) << 13);
+            (mouths.has(label) ? mouth : own).push(tris[3 * t], tris[3 * t + 1], tris[3 * t + 2]);
+        }
+        tris.set([...own, ...mouth]);
+        first += 3 * count;
+        return mouth.length / 3;
+    });
+}

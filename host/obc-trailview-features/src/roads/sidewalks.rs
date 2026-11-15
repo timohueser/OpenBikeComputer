@@ -13,7 +13,7 @@ use rstar::RTree;
 
 use super::align::Curve;
 use super::network::{dot, hypot, sub, Network};
-use super::rows::{root, union};
+use super::rows::{root, union, UntaggedCrossing};
 use super::{Classes, River};
 use crate::geometry::{key, Boxes};
 use crate::kinds::SIDEWALK_MAX_M;
@@ -64,14 +64,16 @@ pub(crate) struct Piece {
     pub last: usize,
 }
 
-/// A bed on the ground: a segment, its half-width, its way, None for a waterway, and per end whether it
-/// is a culvert's mouth there, where a waterway's bed ends.
+/// A bed on the ground: a segment, its half-width, its way, None for a waterway, per end whether it is
+/// a culvert's mouth there, where a waterway's bed ends, and the pipes of untagged culverts under it as
+/// (point, metres along the water that the pipe runs each way).
 struct Bed {
     p: [f64; 2],
     q: [f64; 2],
     half: f64,
     way: Option<usize>,
     mouth: [bool; 2],
+    pipes: Vec<([f64; 2], f64)>,
 }
 
 /// What the sidewalks of a solve read besides the strokes.
@@ -87,9 +89,13 @@ pub(crate) struct Town<'a> {
 }
 
 impl<'a> Town<'a> {
+    /// The pipe of an untagged culvert runs under its road and the road's sidewalks: as far along the
+    /// water from the crossing as the road's outer half-width, its widening and the bed's half-width
+    /// reach at the angle of the crossing.
     pub fn new(
         net: &Network,
         (rivers, culverts): (&[&River], &[&River]),
+        (untagged, classes): (&[UntaggedCrossing], &Classes),
         buildings: Option<&'a RTree<[f64; 2]>>,
         terrain: &'a dyn Terrain,
     ) -> Self {
@@ -98,16 +104,28 @@ impl<'a> Town<'a> {
         for (s, &w) in net.segment_way.iter().enumerate().filter(|&(_, &w)| !net.free[w]) {
             let v = net.segment_start[s];
             let (p, q) = (net.vertex_xy[v], net.vertex_xy[v + 1]);
-            beds.push(Bed { p, q, half: net.half[w], way: Some(w), mouth: [false; 2] });
+            beds.push(Bed { p, q, half: net.half[w], way: Some(w), mouth: [false; 2], pipes: Vec::new() });
         }
-        for river in rivers {
+        for (r, river) in rivers.iter().enumerate() {
             let mouth = |point: &[f64; 2]| mouths.contains(&key(*point));
-            let bed = |p: &[[f64; 2]]| Bed {
-                p: p[0],
-                q: p[1],
-                half: river.half,
-                way: None,
-                mouth: [mouth(&p[0]), mouth(&p[1])],
+            let pipes: Vec<([f64; 2], f64)> = untagged
+                .iter()
+                .filter(|c| c.river == r)
+                .map(|c| {
+                    let reach = net.outer[c.way] + classes.rows[net.rule[c.way]].widen_m + river.half;
+                    (c.point, reach / c.sin)
+                })
+                .collect();
+            let bed = |p: &[[f64; 2]]| {
+                let near = |&&(at, reach): &&([f64; 2], f64)| distance(at, p[0], p[1]) * metres(at[1]) < reach;
+                Bed {
+                    p: p[0],
+                    q: p[1],
+                    half: river.half,
+                    way: None,
+                    mouth: [mouth(&p[0]), mouth(&p[1])],
+                    pipes: pipes.iter().filter(near).copied().collect(),
+                }
             };
             beds.extend(river.points.windows(2).map(bed));
         }
@@ -270,7 +288,7 @@ impl<'a> Town<'a> {
             })
         };
         self.boxes.overlapping([point[0], point[1], point[0], point[1]]).into_iter().all(|b| {
-            let Bed { p, q, half, way, mouth } = self.beds[b];
+            let Bed { p, q, half, way, mouth, ref pipes } = self.beds[b];
             if way.is_some_and(|o| net.way_feature[o].0 == net.way_feature[w].0 || joined(o)) {
                 return true;
             }
@@ -279,9 +297,17 @@ impl<'a> Town<'a> {
             let foot = [p[0] + t * d[0], p[1] + t * d[1]];
             // An open waterway's bed ends at a culvert's mouth: the pipe runs on under the road and its sidewalks.
             let at_mouth = [p, q].iter().zip(mouth).any(|(&end, m)| m && hypot(sub(foot, end)) * scale < reach);
-            at_mouth || hypot(sub(foot, point)) * scale >= reach
+            let piped = pipes.iter().any(|&(at, length)| hypot(sub(foot, at)) * scale < length);
+            at_mouth || piped || hypot(sub(foot, point)) * scale >= reach
         })
     }
+}
+
+/// The distance from `point` to the segment p-q, in world units.
+fn distance(point: [f64; 2], p: [f64; 2], q: [f64; 2]) -> f64 {
+    let d = sub(q, p);
+    let t = (dot(sub(point, p), d) / dot(d, d).max(1e-300)).clamp(0.0, 1.0);
+    hypot(sub(point, [p[0] + t * d[0], p[1] + t * d[1]]))
 }
 
 /// Per segment of a stroke of `n` samples, its piece.

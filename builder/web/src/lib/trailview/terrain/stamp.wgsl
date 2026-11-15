@@ -1,10 +1,12 @@
 // The stamp pass: each page that arrives or is synthesized gets its node's stamps before the mesh,
 // drawnHeight and the normals read it. A stored page keeps its raw heights for the syntheses below
 // it and draws a stamped copy; a synthesized page reads the raw stored pages only, so no level ever
-// upsamples a stamped parent. Near pages get the feature mask.
+// upsamples a stamped parent. Near pages get the feature mask. With MODEL the records of the cells
+// shape and paint the ways; today's stamps then hold only the water and the structures.
 // #include drawn-height.wgsl
 // #include stamp-core.wgsl
 // #include mask-walk.wgsl
+// #include model.wgsl
 
 struct StampJob {
     // The node's first texel at its level.
@@ -15,7 +17,8 @@ struct StampJob {
     // The page in `out` that receives the heights, and that holds the synthesized base.
     out: u32,
     // The raw stored page that is the base, or SYNTHESIZED for the base in `out`; for a mask alone,
-    // the drawn page.
+    // the drawn page, or SYNTHESIZED for a page synthesized in the frame: its layer gets the heights in
+    // `out` only after the stamps.
     base: u32,
     mode: u32,
     mask: u32,
@@ -32,6 +35,11 @@ struct StampJob {
 // features.wgsl reads it.
 @group(0) @binding(6) var mask_in: texture_2d_array<f32>;
 @group(0) @binding(7) var snaps: texture_storage_2d_array<r32uint, write>;
+// With MODEL, per mask texel: the paint of the paved label (paint_texel) and how far the heights moved
+// the ground, four texels of a row in one texel, as features.wgsl reads them.
+@group(0) @binding(9) var paint_out: texture_storage_2d_array<rgba8unorm, write>;
+@group(0) @binding(10) var moved_out: texture_storage_2d_array<rgba8unorm, write>;
+var<workgroup> moved_share: array<f32, 64>;
 
 const SYNTHESIZED: u32 = 0xffffffffu;
 // The float32 bits of an unknown height in `out`, as in pages.wgsl.
@@ -62,12 +70,10 @@ const SNAP_TEXELS: f32 = 3.0;
 const SNAP_OUT_TEXELS: f32 = 3.75;
 // How far past a way's edge the snap compares the ground, past the bench that a path's stamp holds level.
 const UPHILL_TEXELS: f32 = 3.0;
-// Where a road's cut or fill meets the ground, the ground rounds over DAYLIGHT_M of height instead of a
-// crease. Near the road the slope keeps its crease: the rounding grows from SOFT_FROM_M to SOFT_FULL_M past
-// the core.
-const DAYLIGHT_M: f32 = 0.8;
-const SOFT_FROM_M: f32 = 1.5;
-const SOFT_FULL_M: f32 = 4.0;
+// As MOVED_RANGE_M of features.wgsl.
+const MOVED_RANGE_M: f32 = 0.5;
+// The paint finds the paved label across a change this many texels away.
+const PAINT_TEXELS: f32 = 2.0;
 
 // As in pages.wgsl: the ordered bits of a height, so that unsigned atomics take the least and the greatest.
 fn ordered(h: f32) -> u32 {
@@ -84,30 +90,20 @@ fn code_distance(code: f32) -> f32 {
     return MASK_KNEE * sinh((2.0 * code - 1.0) * asinh(MASK_RANGE / MASK_KNEE));
 }
 
-// The ground before the clamp: a soft minimum with the top of a cut, a soft maximum with the foot of a fill.
-fn rounded(base: f32, s: Stamp) -> f32 {
-    var h = base;
-    if (s.cut) {
-        let r = DAYLIGHT_M * smoothstep(SOFT_FROM_M, SOFT_FULL_M, s.cut_x);
-        let k = max(r - abs(h - s.hi), 0.0) / max(r, 1e-3);
-        h = min(h, s.hi) - k * k * r * 0.25;
-    }
-    if (s.fill) {
-        let r = DAYLIGHT_M * smoothstep(SOFT_FROM_M, SOFT_FULL_M, s.fill_x);
-        let k = max(r - abs(h - s.lo), 0.0) / max(r, 1e-3);
-        h = max(h, s.lo) + k * k * r * 0.25;
-    }
-    return h;
-}
-
 @compute @workgroup_size(8, 8)
-fn stamp(@builtin(global_invocation_id) id: vec3u) {
+fn stamp(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_id) lane: vec3u) {
     let job = stamp_jobs[id.z];
     let t = job.first + vec2i(id.xy);
     let shift = 22u - job.level;
     let p = (t << vec2u(shift)) + vec2i(1 << (shift - 1u));
     let s = stamp_at(job.level, job.first, job.data, p);
+    var mp = ModelPoint(0u, vec2i(0), M_NONE, M_NONE, M_FAR, M_FAR, M_FAR, 0.0, 0.0, 0u, M_NONE);
+    if (MODEL && job.level >= M_CELL_LEVEL) {
+        mp = model_at(p, PAINT_TEXELS * unit_metres(p.y) * f32(1 << shift));
+    }
     var h = NONE;
+    // The ground that the ways shape: the plain terrain after the water and the structures.
+    var ground = NONE;
     if ((job.mode & HEIGHTS) != 0u) {
         let at = job.out * 65536u + id.y * 256u + id.x;
         var base = NONE;
@@ -117,7 +113,8 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
         } else {
             base = slot_height(job.base, t);
         }
-        h = select(NONE, clamp(rounded(base, s), s.lo, s.hi), known(base));
+        ground = select(NONE, stamped_ground(base, s), known(base));
+        h = model_height(mp, ground, s);
         out[at] = select(UNKNOWN32, bitcast<u32>(h), known(h));
         if (known(h)) {
             atomicMin(&extent[2u * job.out], ordered(h));
@@ -126,17 +123,87 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
     }
     if ((job.mode & MASK) != 0u) {
         if ((job.mode & HEIGHTS) == 0u) {
-            h = slot_height(job.base, t);
+            h = page_height(job, t);
+            // A late mask: the plain terrain is the bicubic that made the page.
+            if (MODEL) {
+                let plain = stored_base(p, job.level);
+                ground = select(NONE, stamped_ground(plain, s), known(plain));
+            }
         }
-        // A cut or a fill face of a road, where the look draws a retaining wall if it is steep.
-        let faced = known(h) && ((s.fill && h <= s.lo + FACE_M) || (s.cut && h >= s.hi - FACE_M));
-        let flags = select(0u, WALL_FLAG, faced) | select(0u, CONFLICT_FLAG, s.conflict) | select(0u, FORD_FLAG, s.ford && s.road < 0.0) | select(0u, TAKEN_FLAG, s.taken);
-        let surface = select(0u, s.surface, s.road < MASK_RANGE);
-        let across = clamp(s.across / (2.0 * select(MASK_RANGE, TRACK_RANGE, surface >= TRACK_CODE)) + 0.5, 0.0, 1.0);
-        let walk = f32(walk_byte(s.walk, s.shoulder, s.trodden, s.marked)) / 255.0;
-        textureStore(mask_out, in_layer(job.mask, t), job.mask >> 6u,
-            vec4f(distance_code(s.road), select(walk, fract(s.sleepers), surface >= TRACK_CODE), across, f32(surface | (flags << 4u)) / 255.0));
+        if (MODEL) {
+            textureStore(mask_out, in_layer(job.mask, t), job.mask >> 6u, model_mask(mp, s));
+            textureStore(paint_out, in_layer(job.mask, t), job.mask >> 6u, paint_texel(mp));
+        } else {
+            // A cut or a fill face of a road, where the look draws a retaining wall if it is steep.
+            let faced = known(h) && ((s.fill && h <= s.lo + FACE_M) || (s.cut && h >= s.hi - FACE_M));
+            let flags = select(0u, WALL_FLAG, faced) | select(0u, CONFLICT_FLAG, s.conflict) | select(0u, FORD_FLAG, s.ford && s.road < 0.0) | select(0u, TAKEN_FLAG, s.taken);
+            let surface = select(0u, s.surface, s.road < MASK_RANGE);
+            let across = clamp(s.across / (2.0 * select(MASK_RANGE, TRACK_RANGE, surface >= TRACK_CODE)) + 0.5, 0.0, 1.0);
+            let walk = f32(walk_byte(s.walk, s.shoulder, s.trodden, s.marked)) / 255.0;
+            textureStore(mask_out, in_layer(job.mask, t), job.mask >> 6u,
+                vec4f(distance_code(s.road), select(walk, fract(s.sleepers), surface >= TRACK_CODE), across, f32(surface | (flags << 4u)) / 255.0));
+        }
     }
+    if (MODEL) {
+        moved_share[lane.y * 8u + lane.x] = select(0.0, clamp(abs(h - ground) / MOVED_RANGE_M, 0.0, 1.0), known(h) && known(ground));
+        workgroupBarrier();
+        if ((job.mode & MASK) != 0u && (lane.x & 3u) == 0u) {
+            let k = lane.y * 8u + lane.x;
+            let at = in_layer(job.mask, t);
+            textureStore(moved_out, vec2i(at.x >> 2u, at.y), job.mask >> 6u, vec4f(moved_share[k], moved_share[k + 1u], moved_share[k + 2u], moved_share[k + 3u]));
+        }
+    }
+}
+
+// The height of the records at a texel over the ground that the water and the structures shaped. A
+// water's core and, off the paved area, a bore's cover and a deck's underside bound it, so a road runs
+// on onto its deck.
+fn model_height(mp: ModelPoint, ground: f32, s: Stamp) -> f32 {
+    if (!MODEL || mp.block == 0u || !known(ground)) {
+        return ground;
+    }
+    let hk = height_at(mp.block, vec2f(mp.q), mp.label, ground, mp.heights);
+    return stamp_bounded(hk.x, hk.y == H_PAVED, s);
+}
+
+// The finish of the painted label; in a stop arm's mouth, the arm's own.
+fn painted_finish(mp: ModelPoint) -> u32 {
+    return select(model_finish(mp.block, mp.painted), m_line_finish(mp.block, mp.mouth), mp.mouth != M_NONE);
+}
+
+// The feature mask of a texel from the records: the distance to the core's outline, which every reader
+// takes for a way's edge; the metres across of the way whose core it is, so that |across| less the
+// distance is its half-width; a way of the records counts as surface code 1. The water and the
+// structures keep their flags, and the records' water face takes the texel, so no plant stands in it.
+fn model_mask(mp: ModelPoint, s: Stamp) -> vec4f {
+    let road = mp.block != 0u && mp.core < MASK_RANGE;
+    let water = mp.block != 0u && mp.label != M_NONE && m_surface(mp.block, mp.label) == M_SURFACE_WATER;
+    let flags = select(0u, CONFLICT_FLAG, s.conflict) | select(0u, FORD_FLAG, s.ford && mp.core < 0.0) | select(0u, TAKEN_FLAG, s.taken || water);
+    let side = select(1.0, sign(mp.across), mp.across != M_FAR && mp.across != 0.0);
+    let half = select(mp.half, 0.0, mp.across == M_FAR);
+    let across = clamp(side * min(max(mp.core, 0.0) + half, MASK_RANGE) / (2.0 * MASK_RANGE) + 0.5, 0.0, 1.0);
+    let walk = f32(walk_byte(0.0, false, (painted_finish(mp) & 0xffu) == 6u, false)) / 255.0;
+    return vec4f(distance_code(mp.core), walk, across, f32(select(0u, 1u, road) | (flags << 4u)) / 255.0);
+}
+
+// The paint of a texel in the mask's format, read by mask_in of features.wgsl: the distance to the paved
+// outline, the walk byte (or a track's sleepers), the metres across from the host's middle (a road's on the
+// distance's asinh scale), and the finish code of the painted label (0 none) in the low 4 bits of a byte with
+// its top's material (sections::Material, at most 15) above them. A road of a lesser class paints in the main road's asphalt.
+fn paint_texel(mp: ModelPoint) -> vec4f {
+    let finish = painted_finish(mp);
+    var code = select(finish & 0xffu, 1u, (finish & 0xffu) == 2u);
+    if (mp.block == 0u || mp.painted == M_NONE || mp.d_paved >= MASK_RANGE) {
+        code = 0u;
+    }
+    let track = code >= TRACK_CODE;
+    let metres = select(mp.across, MASK_RANGE, mp.across == M_FAR);
+    let across = select(distance_code(metres), clamp(metres / (2.0 * TRACK_RANGE) + 0.5, 0.0, 1.0), track);
+    // Lines on the asphalt of a way that wears them (the records' flag); a soil path is trodden.
+    let marked = (finish & M_MARKED) != 0u;
+    let walk = f32(walk_byte(0.0, false, code == 6u, marked)) / 255.0;
+    let material = select(0u, (finish >> M_MATERIAL_SHIFT) & 15u, code != 0u);
+    return vec4f(distance_code(mp.d_paved), select(walk, fract(mp.along / SLEEPER_M), track), across, f32(code | (material << 4u)) / 255.0);
 }
 
 // The rise per metre of a value at the four texels about a vertex's corner.
@@ -152,7 +219,7 @@ fn corner_value(c: array<f32, 4>, rise: vec2f, past: vec2f) -> f32 {
 // The height that a job's page holds at a texel, inside the page.
 fn page_height(job: StampJob, t: vec2i) -> f32 {
     let p = clamp(t, job.first, job.first + vec2i(255));
-    if ((job.mode & HEIGHTS) == 0u) {
+    if ((job.mode & HEIGHTS) == 0u && job.base != SYNTHESIZED) {
         return slot_height(job.base, p);
     }
     let v = vec2u(p - job.first);

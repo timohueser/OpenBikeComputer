@@ -396,12 +396,15 @@ function transferKm(stops: Stop[], from: number, to: number): number {
         : km + Math.max(0, Math.min(to, stop.distance) - Math.max(from, stops[i].distance)), 0);
 }
 
+/** The kinds of the points that `dayStops` lists. */
+export const stopKinds: PointKind[] = ['pass', 'waypoint', 'detour', 'marker'];
+
 /** Stops inside a day in route order, with kilometres from the day start. */
 export function dayStops(trip: Trip, line: RoutingLine | undefined, day: Pick<Day, 'from' | 'to'>): { point: RoutePoint; km: number }[] {
     const layout = planView(trip, line), { stops } = layout;
     const total = stops.at(-1)?.distance ?? 0;
     const markers = trip.points.filter(p => p.kind === 'marker').map(point => ({ point, distance: markerKm(layout, point) }));
-    return [...stops.filter(stop => ['pass', 'waypoint', 'detour'].includes(stop.point.kind)), ...markers]
+    return [...stops.filter(stop => stopKinds.includes(stop.point.kind)), ...markers]
         // The first day also holds what lies at the start.
         .filter(stop => (stop.distance > day.from * total || !day.from) && stop.distance <= day.to * total)
         .sort((a, b) => a.distance - b.distance)

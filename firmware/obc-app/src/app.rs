@@ -5303,8 +5303,8 @@ mod tests {
     use obc_formats::io::SliceSource;
     use obc_route::RouteIndex;
 
-    /// The committed Grimsel fixture bytes: 3 back-to-back climbs at 501-11067, 11067-14472 and
-    /// 14472-18547 m, about 18.7 km total.
+    /// The committed Grimsel fixture bytes: 3 climbs at 916-11069, 12594-14564 and
+    /// 15093-18494 m, about 18.7 km total.
     const GRIMSEL: &[u8] = include_bytes!("../../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr");
 
     /// Parse the fixture into a `RouteIndex` the callers pair with a `SliceSource` over [`GRIMSEL`].
@@ -5379,8 +5379,8 @@ mod tests {
         assert_eq!(
             trace,
             [
-                (0, false, 0, Some(0), Some(0)),
-                (744, false, 0, Some(0), Some(0)),
+                (0, false, 0, None, Some(0)),
+                (744, false, 0, None, Some(0)),
                 (893, false, 0, Some(0), Some(0)),
                 (1_042, false, 0, Some(0), Some(1)),
                 (1_787, false, 0, Some(0), Some(1)),
@@ -5437,9 +5437,9 @@ mod tests {
         app.navigator.route_state_mut().progress_m = 1_000;
         let session = app.ride_session();
         let mode = app.activity.mode;
-        app.navigator.request_seam(0, 12_000); // lands on the fixture's second climb
+        app.navigator.request_seam(0, 13_000); // lands on the fixture's second climb
         tick_without_fix(&mut app, Some(&route));
-        assert_eq!(app.navigator.route_state_mut().progress_m, 12_000);
+        assert_eq!(app.navigator.route_state_mut().progress_m, 13_000);
         assert!(!app.navigator.route_state_mut().off_route);
         assert_eq!(
             app.navigator.route_state_mut().active_climb,
@@ -5455,7 +5455,7 @@ mod tests {
         let mut loc = OneFix(Some(Fix { lon: p.lon, lat: p.lat, course: None, speed_mps: None }));
         app.tick(RideClock(1_000), Sensors::new(&mut loc), Some(&route));
         assert!(app.navigator.route_state_mut().off_route);
-        assert_eq!(app.navigator.route_state_mut().progress_m, 12_000);
+        assert_eq!(app.navigator.route_state_mut().progress_m, 13_000);
 
         // Removing/reloading the route resets the floor; an early fix on the reloaded geometry can
         // establish an early first lock again (the tracking session itself is still the same).
@@ -5466,7 +5466,7 @@ mod tests {
         let mut loc = OneFix(Some(Fix { lon: p.lon, lat: p.lat, course: None, speed_mps: None }));
         app.tick(RideClock(2_000), Sensors::new(&mut loc), Some(&route));
         assert!(!app.navigator.route_state_mut().off_route);
-        assert!(app.navigator.route_state_mut().progress_m < 3_000, "route reload cleared the old 12 km floor");
+        assert!(app.navigator.route_state_mut().progress_m < 3_000, "route reload cleared the old 13 km floor");
 
         // A new session on the same route also clears every seam-derived anchor.
         app.navigator.request_seam(0, 8_000);
@@ -5563,7 +5563,7 @@ mod tests {
         assert_eq!(app.navigator.climbs().len(), 3, "the Grimsel fixture segments into 3 climbs");
 
         // Sweep progress across the whole route in 250 m steps. Climb boundaries (from the fixture):
-        // 501–11067, 11067–14472, 14472–18547 — three entries as the sweep crosses each base.
+        // 916–11069, 12594–14564, 15093–18494 — three entries as the sweep crosses each base.
         let mut entries = 0;
         let mut prev = None;
         for p in (0..=18_725u32).step_by(250) {
@@ -5576,7 +5576,7 @@ mod tests {
             }
             prev = app.navigator.route_state_mut().active_climb;
         }
-        // The climbs are back-to-back, so the sweep enters all three: 3 entries, 3 fills.
+        // The sweep enters all three: 3 entries, 3 fills.
         assert_eq!(entries, 3, "the sweep enters each of the 3 climbs once");
         assert_eq!(
             app.navigator.climb_fill_count(),
@@ -5628,7 +5628,7 @@ mod tests {
     fn enter_first_climb(app: &mut App, idx: &RouteIndex) {
         let src = SliceSource(GRIMSEL);
         let route = RouteReader::new(idx, &src);
-        app.navigator.route_state_mut().progress_m = 5_000; // mid climb 0 (501–11067)
+        app.navigator.route_state_mut().progress_m = 5_000; // mid climb 0 (916–11069)
         app.update_active_climb(&route);
         assert_eq!(app.navigator.route_state_mut().active_climb, Some(0), "the fixture puts progress on climb 0");
     }

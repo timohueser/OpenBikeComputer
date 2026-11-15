@@ -164,6 +164,8 @@ export class MapRun {
 
     #worker: Worker | null = null;
     #destroyed = false;
+    /** Ends the wait of `start()` for the map-work directories when this run is destroyed. */
+    readonly #startWait = new AbortController();
 
     #phase = $state<Phase>("idle");
     #dlProgress = $state<CellDownloadProgress | null>(null);
@@ -293,6 +295,7 @@ export class MapRun {
     destroy(): void {
         this.#destroyed = true;
         const cause = new DOMException("the map builder was closed", "AbortError");
+        this.#startWait.abort(cause);
         // Finalization starts only after the map is durable and its abort listener has been
         // detached. Let that owner finish its cleanup. Every earlier teardown goes through the
         // same barrier-owning failure path; independent close/discard calls here could race the
@@ -541,15 +544,16 @@ export class MapRun {
     }
 
     async #initializeStorage() {
-        const release = await acquireMapWorkStorage();
+        let release: (() => void) | undefined;
         try {
+            release = await acquireMapWorkStorage(this.#startWait.signal);
             if (this.#destroyed) return;
             if (!this.#keepCells) await clearMapWorkStorage();
         } catch {
             // Startup maintenance is best-effort, as it was before serialization. A later run's
             // own probes give the actionable storage error.
         } finally {
-            release();
+            release?.();
             if (!this.#destroyed) this.#clearingCells = false;
         }
     }
@@ -730,7 +734,7 @@ export class MapRun {
 
         // Readiness only covers this instance. The lease also waits for an older,
         // already-destroyed instance's put/finalization before this run touches shared OPFS.
-        out.releaseWork = await runOp(acquireMapWorkStorage, async (release) => release());
+        out.releaseWork = await runOp(() => acquireMapWorkStorage(runAbort.signal), async (release) => release());
 
         // Cells go to disk when this browser will take them, which keeps a country's
         // worth out of the tab's heap, and with the opt-in above a later build can

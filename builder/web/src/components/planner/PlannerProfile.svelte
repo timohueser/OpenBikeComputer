@@ -5,7 +5,7 @@
     import Segmented from '../../lib/ui/Segmented.svelte';
     import TripRow from './TripRow.svelte';
     import Icon from './PlannerIcon.svelte';
-    import { formatGrade, gradeBand, gradeBands, profileGrades } from '../../lib/planner/grade-data';
+    import { formatGrade, gradeBands, gradePaths, profileGrades } from '../../lib/planner/grade-data';
     import { dayColor } from '../../lib/planner/day-colors';
     import { heightRange, profileHeightAt, profilePaths, profileSamples, sampleIndex } from '../../lib/planner/profile-data';
     import type { RoutingLine } from '../../lib/planner/routing';
@@ -60,19 +60,7 @@
     let gradeChoice = $state<boolean | null>(null);
     const showGrade = $derived(gradeChoice ?? singleRoute);
     const grades = $derived(profileGrades(samples, total));
-    const gradePaths = $derived.by(() => {
-        const paths = gradeBands.map(() => '');
-        let previous = -1;
-        for (let i = 0; i < grades.length; i++) {
-            const a = samples[i], b = samples[i + 1];
-            if (a.height === null || b.height === null) { previous = -1; continue; }
-            const band = gradeBand(grades[i]);
-            if (band !== previous) paths[band] += `M${a.progress * 1000} ${105 - (a.height - low) / (high - low) * 100}`;
-            paths[band] += `L${b.progress * 1000} ${105 - (b.height - low) / (high - low) * 100}`;
-            previous = band;
-        }
-        return paths;
-    });
+    const bandPaths = $derived(gradePaths(samples, grades, low, high));
     function color(index: number) { return theme === 'dark' ? gradeBands[index].dark : gradeBands[index].color; }
     const hoverHeight = $derived(hover === null ? null : profileHeightAt(hover, samples));
     const hoverIndex = $derived(hover === null ? -1 : Math.max(0, sampleIndex(samples, hover) - 1));
@@ -218,7 +206,7 @@
 
             {#if band && !band.blocked}<rect x={band.from * 1000} width={Math.max(0, band.to - band.from) * 1000} y="0" height="112" class="band" />{/if}
             {#if showGrade}
-                {#each gradePaths as path, i (i)}
+                {#each bandPaths as path, i (i)}
                     <path d={path} style:stroke={color(i)} class="grade-line" />
                 {/each}
             {:else}

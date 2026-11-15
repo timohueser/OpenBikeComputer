@@ -2,7 +2,7 @@
 // engine takes unknown-clip.wgsl when the device has clip distances.
 
 struct Varyings {
-    @builtin(position) clip: vec4f,
+    @builtin(position) @invariant clip: vec4f,
     @location(0) s: vec2f,
     @location(1) relative: vec3f,
     @location(2) known: f32,
