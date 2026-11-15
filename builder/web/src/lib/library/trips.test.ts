@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { rideKeyAt } from './import';
 import type { RideRecord, RideTrip } from './records';
 import { rideSummary } from './summary';
-import { trips } from './trips';
+import { tripDays, trips } from './trips';
 
 const KM_PER_DEGREE = 6_371.0088 * Math.PI / 180, COS = Math.cos(47 * Math.PI / 180);
 
@@ -46,5 +46,14 @@ describe('trips', () => {
         // A commute of 25 km with the first morning ride missing: every night is at home, 25 km from the first point.
         const long = [12, 13, 14].flatMap(day => [ride(at(day, 7), [0, 0], [25, 0]), ride(at(day, 17), [25, 0], [0, 0])]);
         expect(trips(long.slice(1))).toEqual([]);
+    });
+});
+
+describe('tripDays', () => {
+    it('counts from the lowest to the highest day, also where a later ride has an earlier day, and of a part of the rides', () => {
+        const loop = { key: '7', name: 'Loop' };
+        const [trip] = trips([ride(at(1), [0, 0], [80, 0], { ...loop, day: 3 }), ride(at(2), [80, 0], [160, 0], { ...loop, day: 1 }),
+            ride(at(4), [160, 0], [240, 0], { ...loop, day: 2 })]);
+        expect([tripDays(trip), tripDays(trip, trip.rides.slice(1))]).toEqual([3, 2]);
     });
 });

@@ -28,20 +28,22 @@ const bottom = (box: Box) => box.y + box.height;
 describe('the layout of the wide share card', () => {
     const all = layout('wide', { nameLines: 3, date: true, numbers: true, profile: true, credit: true });
 
-    it('has the whole picture at the top with only the mark on it, and the text and the profile on the ground under it', () => {
-        expect(all.picture).toEqual({ x: 0, y: 0, width: 1920, height: 1280 });
-        expect(all.ground).toMatchObject({ x: 0, y: 1280, width: 1920 });
-        expect(all.size).toEqual([1920, bottom(all.ground)]);
-        expect(bottom(all.mark)).toBeLessThan(all.plan.y);
-        expect(bottom(all.plan)).toBeLessThan(all.ground.y);
+    // The usual card of a ride, and the highest card.
+    it.each([1, 3])('has the whole picture at the top with only the mark on it, and each row and the profile under it: %i name lines', nameLines => {
+        const boxes = nameLines === 3 ? all : layout('wide', { nameLines, date: true, numbers: true, profile: true, credit: true });
+        expect(boxes.picture).toEqual({ x: 0, y: 0, width: 1920, height: 1280 });
+        expect(boxes.ground).toMatchObject({ x: 0, y: 1280, width: 1920 });
+        expect(boxes.size).toEqual([1920, bottom(boxes.ground)]);
+        expect(bottom(boxes.mark)).toBeLessThan(boxes.plan.y);
+        expect(bottom(boxes.plan)).toBeLessThan(boxes.ground.y);
         // Each row ends before the next one starts, from the top of the ground down to the profile on its lower edge.
-        const rows = [all.picture, all.date!, all.name, all.numbers!, all.credit!, all.band!];
+        const rows = [boxes.picture, boxes.date!, boxes.name, boxes.numbers!, boxes.credit!, boxes.band!];
         rows.slice(1).forEach((row, i) => expect(row.y).toBeGreaterThanOrEqual(bottom(rows[i])));
-        for (const row of rows.slice(1, 5)) expect([row.x, row.x + row.width]).toEqual([all.mark.x, 1920 - all.mark.x]);
-        expect(all.band).toMatchObject({ x: 0, width: 1920 });
-        expect(bottom(all.band!)).toBe(all.size[1]);
-        // A name of three lines with each row leaves a profile of 110 pixels.
-        expect(all.band!.height).toBe(110);
+        for (const row of rows.slice(1, 5)) expect([row.x, row.x + row.width]).toEqual([boxes.mark.x, 1920 - boxes.mark.x]);
+        expect(boxes.band).toMatchObject({ x: 0, width: 1920 });
+        expect(bottom(boxes.band!)).toBe(boxes.size[1]);
+        // With each row, the text leaves a profile of 110 pixels.
+        expect(boxes.band!.height).toBe(110);
     });
 
     it('has one size for each count of name lines, and gives the height that a row leaves to the profile', () => {
