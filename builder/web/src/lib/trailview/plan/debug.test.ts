@@ -114,5 +114,6 @@ describe('the debug mesh of the faces', () => {
             }
             expect(checked).toBeGreaterThan(20);
         }
-    });
+        // Three real cells, each face meshed alone: a busy runner takes longer than the default limit.
+    }, 30_000);
 });
