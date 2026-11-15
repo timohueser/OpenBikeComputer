@@ -302,10 +302,11 @@
     "website"
    ],
    "test_depends_on": [
-    "repository-tooling"
+    "repository-tooling",
+    "web-planner"
    ],
    "violations": 10,
-   "lines": 12271,
+   "lines": 12922,
    "problems": [
     {
      "rule": "cycle",
@@ -337,7 +338,7 @@
     },
     {
      "rule": "cycle",
-     "message": "map-assembly -> device-map-builder closes a cycle: builder/web/src/components/coverage/CoverageHome.svelte -> builder/web/src/components/device/DeviceStep.svelte, builder/web/src/components/coverage/CoverageHome.svelte.test.ts -> builder/web/src/routes/Home.svelte (test), builder/web/src/components/coverage/CoverageHome.svelte.test.ts -> builder/web/test-support/coverage/Selection.svelte (test), and 28 more"
+     "message": "map-assembly -> device-map-builder closes a cycle: builder/web/src/components/coverage/CoverageHome.svelte -> builder/web/src/components/device/DeviceStep.svelte, builder/web/src/components/coverage/CoverageHome.svelte.test.ts -> builder/web/src/routes/Home.svelte (test), builder/web/src/components/coverage/CoverageHome.svelte.test.ts -> builder/web/test-support/coverage/Selection.svelte (test), and 29 more"
     },
     {
      "rule": "cycle",
@@ -520,7 +521,7 @@
    "depends_on": [],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 2276,
+   "lines": 2304,
    "problems": []
   },
   {
@@ -543,7 +544,7 @@
     "content"
    ],
    "violations": 10,
-   "lines": 24646,
+   "lines": 24848,
    "problems": [
     {
      "rule": "cycle",
@@ -563,7 +564,7 @@
     },
     {
      "rule": "cycle",
-     "message": "map-assembly -> device-map-builder closes a cycle: builder/web/src/components/coverage/CoverageHome.svelte -> builder/web/src/components/device/DeviceStep.svelte, builder/web/src/components/coverage/CoverageHome.svelte.test.ts -> builder/web/src/routes/Home.svelte (test), builder/web/src/components/coverage/CoverageHome.svelte.test.ts -> builder/web/test-support/coverage/Selection.svelte (test), and 28 more"
+     "message": "map-assembly -> device-map-builder closes a cycle: builder/web/src/components/coverage/CoverageHome.svelte -> builder/web/src/components/device/DeviceStep.svelte, builder/web/src/components/coverage/CoverageHome.svelte.test.ts -> builder/web/src/routes/Home.svelte (test), builder/web/src/components/coverage/CoverageHome.svelte.test.ts -> builder/web/test-support/coverage/Selection.svelte (test), and 29 more"
     },
     {
      "rule": "cycle",
@@ -708,7 +709,7 @@
     },
     {
      "rule": "R1",
-     "message": "crate obc-data-steps (obc-data) holds 4 file(s) of planner-map-baking"
+     "message": "crate obc-data-steps (obc-data) holds 2 file(s) of planner-map-baking"
     },
     {
      "rule": "R1",
@@ -729,7 +730,7 @@
    "problems": [
     {
      "rule": "R1",
-     "message": "crate obc-data-steps (obc-data) holds 4 file(s) of planner-map-baking"
+     "message": "crate obc-data-steps (obc-data) holds 2 file(s) of planner-map-baking"
     },
     {
      "rule": "R4",
@@ -945,7 +946,7 @@
     "repository-tooling"
    ],
    "violations": 4,
-   "lines": 18734,
+   "lines": 18928,
    "problems": [
     {
      "rule": "cycle",
@@ -976,7 +977,7 @@
    ],
    "test_depends_on": [],
    "violations": 5,
-   "lines": 101940,
+   "lines": 103131,
    "problems": [
     {
      "rule": "cycle",
@@ -1045,7 +1046,7 @@
    ],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 11044,
+   "lines": 11967,
    "problems": []
   },
   {
@@ -1324,6 +1325,12 @@
    "from": "device-map-builder",
    "to": "trailview",
    "test": false,
+   "undeclared": false
+  },
+  {
+   "from": "device-map-builder",
+   "to": "web-planner",
+   "test": true,
    "undeclared": false
   },
   {
