@@ -1,10 +1,10 @@
 use crate::{
     closures::Closure,
-    data::RoutingData,
     geometry,
+    host::Host,
     model::{Pace, Point, Profile, Surface, Totals, BIKE, NO_ELEVATION, PUSH},
     overlay::{Found, Query, Seed},
-    package::digest,
+    region::{digest, Region},
     snap::{self, Candidate, Policy, Position},
     Error, Result,
 };
@@ -160,20 +160,19 @@ struct Work {
     queries: usize,
 }
 
-pub struct Router<P> {
-    pub(crate) package: P,
+pub struct Router<H> {
+    pub(crate) package: Region<H>,
     metric: String,
     /// Snaps by point and profile.
     snaps: VecDeque<(i32, i32, String, snap::Candidates)>,
 }
 
-impl<P: RoutingData> Router<P> {
-    pub fn package(&self) -> &P {
+impl<H: Host> Router<H> {
+    pub fn package(&self) -> &Region<H> {
         &self.package
     }
 
-    pub fn new(mut package: P, memory_budget_bytes: usize) -> Self {
-        package.set_memory_budget(memory_budget_bytes);
+    pub fn new(package: Region<H>) -> Self {
         Self { package, metric: String::new(), snaps: VecDeque::new() }
     }
 

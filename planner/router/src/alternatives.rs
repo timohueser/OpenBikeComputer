@@ -1,13 +1,13 @@
 use crate::{
-    data::RoutingData,
     geometry::{self, METRES_PER_UDEG},
+    host::Host,
     model::Point,
     router::Response,
     snap, Control, Error, Request, Result, Route, Router,
 };
 use std::collections::BTreeSet;
 
-impl<P: RoutingData> Router<P> {
+impl<H: Host> Router<H> {
     /// Alternative discovery is bounded. It does not enumerate all useful routes. All routes share
     /// the query budget of `control`.
     pub fn routes(&mut self, request: &Request, control: &Control<'_>) -> Result<Response> {
