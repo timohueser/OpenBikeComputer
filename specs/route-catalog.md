@@ -138,8 +138,7 @@ at a vertex of `line_udeg` takes the profile at the share of the line's length t
 The line is simplified within 50 m of the plan route (see [Line](#line)), so on switchbacks it is
 shorter than the plan route. The share of a vertex then points to a place up to some hundred metres
 away along the plan route, and the height is wrong by the climb of the route over that stretch. The
-profile is for a picture and for the pick of
-a route in TrailView, not for a figure.
+profile is for a picture and for the pick of a route in TrailView, not for a figure.
 
 ### Grades
 
