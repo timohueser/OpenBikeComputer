@@ -922,10 +922,10 @@ pub fn sidewalk_on_decks(plan: &FacePlan, graph: &WayGraph, input: &crate::CellI
         .map(|(pos, _)| pos)
         .collect();
     let near = |p: P| starts.iter().any(|&s| len(p, s) <= units(rules.plan.extent_m, s));
-    // The decks' strokes as the slabs' deck rule takes them (`walk::in_stroke`).
+    // The decks' strokes as the slabs' deck rule takes them (`walk::Stroke`).
     let strokes: Vec<_> = (super::ceiling_lines(graph, input, rules, plan.cell).iter())
         .filter(|l| l.p.iter().any(|&p| near(p)))
-        .map(super::walk::stroke_of)
+        .map(super::walk::Stroke::of)
         .collect();
     let mut out = Vec::new();
     for f in plan.faces.iter().filter(|f| f.surface == Surface::Sidewalk) {
@@ -938,7 +938,7 @@ pub fn sidewalk_on_decks(plan: &FacePlan, graph: &WayGraph, input: &crate::CellI
                     let t = f64::from(k) / f64::from(n);
                     let q = [a[0] + (t * f64::from(b[0] - a[0])) as i32, a[1] + (t * f64::from(b[1] - a[1])) as i32];
                     let qf = [f64::from(q[0]), f64::from(q[1])];
-                    if near(q) && strokes.iter().any(|s| super::walk::in_stroke(qf, s, SLIVER)) {
+                    if near(q) && strokes.iter().any(|s| s.holds(qf, SLIVER)) {
                         out.push(q);
                     }
                 }
