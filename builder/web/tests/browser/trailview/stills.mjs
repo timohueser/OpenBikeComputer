@@ -14,14 +14,19 @@ export const SOFTWARE_MS = 600_000;
 
 export const readJson = file => (existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : undefined);
 
-/** A page with the still function; throws when the browser has no GPU for stills. */
+/** A page with the still function; throws when the browser has no GPU for stills. A page that fails closes. */
 export async function stillPage(browser, origin, { gpu, fixture }) {
     const page = await browser.newPage();
-    if (fixture) await routeFixture(page);
-    await page.goto(`${origin}/trailview.html?still`);
-    await page.waitForFunction(() => window.trailviewStill || document.querySelector('.notice'), null, { timeout: 60_000 });
-    if (!await page.evaluate(software => window.trailviewStill?.canRenderStills({ software }), !gpu)) throw new Error('This browser has no GPU for stills: run render with --gpu on a machine with a GPU.');
-    return page;
+    try {
+        if (fixture) await routeFixture(page);
+        await page.goto(`${origin}/trailview.html?still`);
+        await page.waitForFunction(() => window.trailviewStill || document.querySelector('.notice'), null, { timeout: 60_000 });
+        if (!await page.evaluate(software => window.trailviewStill?.canRenderStills({ software }), !gpu)) throw new Error('This browser has no GPU for stills: run render with --gpu on a machine with a GPU.');
+        return page;
+    } catch (error) {
+        await page.close().catch(() => {});
+        throw error;
+    }
 }
 
 /** The active release of the production catalogue: its `id`, `bounds` and `routes`. */

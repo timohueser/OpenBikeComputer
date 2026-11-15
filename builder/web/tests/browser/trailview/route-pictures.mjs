@@ -34,6 +34,12 @@ const CAMERA = 1, DAY = '07-15', TIME = '10:00';
 export const LOOK = `${CAMERA}|${DAY}|${TIME}|${WIDTH}|${HEIGHT}`;
 /** The code of `eye` (specs/route-pictures.md, `pack` in src/lib/covers/line.ts): 1 to 127 is NEAREST_M · 2^((c − 1) / STEPS) metres, plus VISIBLE. */
 const NEAREST_M = 10, STEPS = 8, VISIBLE = 128;
+/**
+ * The time limit of one route in Node, where a hung page cannot stop it: the default limit of `still()`
+ * (TIMEOUT_MS in src/lib/trailview/still.ts) or the job's, plus the 60 s that `stillPage` waits for the
+ * page and 60 s for `coverView` and the encoding, which take seconds.
+ */
+const STILL_MS = 60_000, MARGIN_MS = 120_000;
 /** After this many routes fail in a row, render stops: the tile host or the GPU is down, not one route. */
 const FAILURES_IN_A_ROW = 5;
 /** Requests that run at a time, the wait after a 429 of the host and the most tries again. */
@@ -159,22 +165,26 @@ const shoot = (page, job) => page.evaluate(async ({ line, when, width, height, t
 }, job);
 
 /**
- * The cover of one line in a page of its own, with the seconds of the page and the still. The renderer keeps
- * memory of each still until its page closes, so one page for many routes outgrows a 3 GB cap. `browser.get()`
- * starts a new browser after one died, so a dead browser fails at most this route.
+ * The cover of one line in a page of its own, with the seconds of the page and the still: the renderer keeps
+ * the memory of each still until its page closes. After the time limit the route fails and its browser goes,
+ * because a hung page may not close; `browser.get()` starts a new browser, also after one died.
  */
 async function cover(browser, origin, options, job) {
-    const started = performance.now();
-    let page;
-    try {
+    const started = performance.now(), limit = (job.timeoutMs ?? STILL_MS) + MARGIN_MS;
+    let page, timer;
+    const late = new Promise(resolve => {
+        timer = setTimeout(() => resolve({ failure: 'late', message: `the route took more than ${limit / 1000} s` }), limit);
+    });
+    const work = (async () => {
         page = await stillPage(await browser.get(), origin, options);
         return { ...await shoot(page, job), seconds: (performance.now() - started) / 1000 };
-    } catch (error) {
-        // Playwright appends the whole log of the browser.
-        return { failure: 'page', message: `the page failed: ${error.message.split('\n')[0]}` };
-    } finally {
-        await page?.close().catch(() => {});
-    }
+    // Playwright appends the whole log of the browser to its message.
+    })().catch(error => ({ failure: 'page', message: `the page failed: ${error.message.split('\n')[0]}` }));
+    const result = await Promise.race([work, late]);
+    clearTimeout(timer);
+    if (result.failure === 'late') await browser.drop();
+    else await page?.close().catch(() => {});
+    return result;
 }
 
 /**
@@ -213,12 +223,20 @@ export async function render({ out = OUT, sample, only, gpu = false, fixture = f
     console.log(`${records.length} routes, ${chosen.length} chosen, ${todo.length} to render.`);
     const when = { date: `${new Date().getFullYear()}-${DAY}`, time: TIME, weather: 'sunny' };
     const { origin, close } = await serve();
-    let current = await launch(gpu);
-    const browser = { get: async () => (current.isConnected() ? current : (current = await launch(gpu))) };
+    let current;
+    const browser = {
+        get: async () => (current?.isConnected() ? current : (current = await launch(gpu))),
+        // Playwright kills a browser whose close takes more than 30 s.
+        drop: async () => {
+            const old = current;
+            current = undefined;
+            await old?.close().catch(() => {});
+        },
+    };
     const options = { gpu, fixture }, release = active?.id ?? 'fixture', failed = [];
     let covers = 0, none = 0, seconds = 0, bytes = 0;
     try {
-        const probe = await stillPage(current, origin, options);
+        const probe = await stillPage(await browser.get(), origin, options);
         if (!fixture) checkRelease(await probe.evaluate(() => window.trailviewStill.release), release);
         await probe.close();
         let inARow = 0;
@@ -256,7 +274,7 @@ export async function render({ out = OUT, sample, only, gpu = false, fixture = f
             console.log(`${record.id}: ${result.seconds.toFixed(1)} s, ${Math.round(image.length / 1000)} kB`);
         }
     } finally {
-        await current.close().catch(() => {});
+        await browser.drop();
         close();
     }
     const done = covers + none, mean = done ? seconds / done : 0;
