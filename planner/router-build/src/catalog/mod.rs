@@ -6,7 +6,7 @@ use crate::source::{Data, Id, Relation, Tags};
 use planner_router::{
     data::{RoutingData, Selection},
     directory::Directory,
-    model::Profile,
+    model::{Profile, NO_ELEVATION},
     package::Source,
     shape::{self, distance, Failure, Limits, P},
     Control, Router,
@@ -29,6 +29,8 @@ const ROUTERS_MEMORY: usize = 6 << 30;
 const PROFILES: [&str; 5] = ["touring", "road", "gravel", "mtb/technical", "hiking/alpine"];
 /// The line keeps every point of the plan route within this distance.
 const LINE_TOLERANCE_M: f64 = 50.0;
+/// The distance between two entries of `profile_m`.
+const PROFILE_STEP_M: f64 = 100.0;
 /// Router calls for the search of one route, for each profile that it checks. A search that needs
 /// more does not converge, and the route leaves the catalog; the bound keeps the bake of a large
 /// region within minutes.
@@ -541,6 +543,17 @@ fn route<D: RoutingData>(
     }
     record.insert("cells".into(), json!(cell_ids(&cover)));
     record.insert("line_udeg".into(), json!(encode(&simple)));
+    let walked: Vec<f64> = std::iter::once(0.0)
+        .chain(geometry.windows(2).scan(0.0, |sum, w| {
+            *sum += distance(w[0], w[1]);
+            Some(*sum)
+        }))
+        .collect();
+    let elevations: Vec<Option<f32>> =
+        plan.route.points.iter().map(|p| (p.elevation != NO_ELEVATION).then_some(p.elevation)).collect();
+    if let Some(profile) = profile(&walked, &elevations, totals.distance_m as f64) {
+        record.insert("profile_m".into(), json!(profile));
+    }
     let via = &positions[1..positions.len() - 1];
     record.insert("via".into(), json!(via));
     let mut turnarounds: Vec<usize> = plan.turnarounds.iter().map(|&i| positions[i]).collect();
@@ -561,6 +574,26 @@ fn route<D: RoutingData>(
         cells: cover,
         grades,
     })
+}
+
+/// The height at each `PROFILE_STEP_M` along a route, and at its end, from the walked distance and
+/// the elevation of each point. The walked distances are scaled to `length_m`. `None` when no point
+/// has an elevation.
+fn profile(distances_m: &[f64], elevations: &[Option<f32>], length_m: f64) -> Option<Vec<Option<i32>>> {
+    if distances_m.len() < 2 || elevations.iter().all(Option::is_none) {
+        return None;
+    }
+    let walked = distances_m[distances_m.len() - 1];
+    let steps = (length_m / PROFILE_STEP_M).floor() as usize;
+    let at = |along: f64| {
+        let u = if length_m > 0.0 { (along / length_m * walked).min(walked) } else { 0.0 };
+        let k = distances_m.partition_point(|&d| d <= u).clamp(1, distances_m.len() - 1) - 1;
+        let (a, b) = (elevations[k]?, elevations[k + 1]?);
+        let span = distances_m[k + 1] - distances_m[k];
+        let share = if span > 0.0 { (u - distances_m[k]) / span } else { 0.0 };
+        Some((a as f64 + (b - a) as f64 * share).round() as i32)
+    };
+    Some((0..=steps).map(|i| i as f64 * PROFILE_STEP_M).chain([length_m]).map(at).collect())
 }
 
 /// The length of the plan route with each grade, and the hardest explicit grade, from the grades

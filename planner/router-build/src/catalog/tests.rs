@@ -181,6 +181,11 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
         [&json!(routed.distance_m), &json!(routed.ascent_m), &json!(routed.descent_m)]
     );
 
+    for id in [1, 2, 8, 9] {
+        let length = by_id[&id]["length_m"].as_u64().unwrap() as usize;
+        assert_eq!(by_id[&id]["profile_m"].as_array().unwrap().len(), length / 100 + 2);
+    }
+
     let ring = by_id[&2];
     assert_eq!((&ring["loop"], &ring["length_m"]), (&json!(true), &json!(8 * 445)));
     let line = ring["line_udeg"].as_array().unwrap();
@@ -198,9 +203,24 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
     let whole = by_id[&5];
     assert_eq!((&whole["stages"], &whole["length_m"]), (&json!([1, 2]), &json!(16 * 445)));
     assert_eq!(whole["start_udeg"], json!([ORIGIN, ORIGIN]));
-    assert!(whole.get("line_udeg").is_none());
+    assert!(whole.get("line_udeg").is_none() && whole.get("profile_m").is_none());
     // The trail ends where the ring starts, so that point counts once.
     let points = via + 2 + ring["via"].as_array().unwrap().len() + 2 - 1;
     assert_eq!(report.long_points, [(5, points)]);
     Ok(())
+}
+
+#[test]
+fn profile_gives_the_height_at_each_100_m_and_at_the_end() {
+    let known = |heights: &[f32]| heights.iter().map(|&h| Some(h)).collect::<Vec<_>>();
+    let rising = known(&[100.0, 350.0]);
+    let entries = Some(vec![Some(100), Some(200), Some(300), Some(350)]);
+    assert_eq!(profile(&[0.0, 250.0], &rising, 250.0), entries);
+    assert_eq!(profile(&[0.0, 240.0], &rising, 250.0), entries, "the walked distance is scaled to the length");
+    assert_eq!(profile(&[0.0, 300.0], &known(&[0.0, 300.0]), 300.0).unwrap().len(), 5);
+
+    let gap = [Some(0.0), Some(10.0), None, Some(30.0), Some(40.0)];
+    let distances = [0.0, 100.0, 200.0, 300.0, 400.0];
+    assert_eq!(profile(&distances, &gap, 400.0), Some(vec![Some(0), None, None, Some(30), Some(40), Some(40)]));
+    assert_eq!(profile(&distances, &[None; 5], 400.0), None);
 }
