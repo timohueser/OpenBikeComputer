@@ -3,7 +3,6 @@
 use crate::{error_body, respond, Engine};
 use planner_router::{
     cells::Directory,
-    data::RoutingData,
     install::{self, Object},
     Error, Router,
 };
@@ -74,9 +73,11 @@ pub unsafe extern "C" fn planner_router_open(
         let root = unsafe { CStr::from_ptr(root) }
             .to_str()
             .map_err(|_| Error::InvalidRequest("Routing directory must be UTF-8".into()))?;
-        let package = planner_router::open(Path::new(root))?;
-        let budget = if memory_budget_bytes == 0 { package.default_budget() } else { memory_budget_bytes };
-        Ok(Router::new(package, budget))
+        let mut region = planner_router::open(Path::new(root), false)?;
+        if memory_budget_bytes != 0 {
+            region.set_search_limit(memory_budget_bytes);
+        }
+        Ok(Router::new(region))
     };
     let (status, body) = match catch_unwind(open) {
         Ok(Ok(router)) => {
@@ -511,7 +512,7 @@ mod tests {
         let directory = std::fs::read(objects.join("directory.bin")).unwrap();
         let (status, answer) = route(&target, 0.0);
         assert_eq!(status, 200, "{answer}");
-        assert_eq!(answer["routes"][0]["package"], planner_router::package::digest(&directory));
+        assert_eq!(answer["routes"][0]["package"], planner_router::region::digest(&directory));
         assert_eq!(route(&target, 1.0).0, 200);
 
         install(&request(&[a]), None).unwrap();

@@ -8,7 +8,7 @@ use axum::{
     routing::{get, post},
     Json,
 };
-use planner_router::{data::RoutingData, Error, Router};
+use planner_router::{Error, Router};
 use serde_json::{json, Value};
 use std::{
     sync::{
@@ -22,12 +22,6 @@ use tower_http::{compression::CompressionLayer, CompressionLevel};
 
 /// How long a request waits for its permits before it answers `busy`.
 const QUEUE_WAIT: Duration = Duration::from_secs(1);
-/// The web planner's default profile. It loads before the service accepts requests.
-const WARM_PROFILE: &str = "touring";
-/// The most routers measured busy at once on the heaviest allowed requests, on the Central
-/// Switzerland routing package. Router memory grows with the road count, so a larger package needs
-/// a new measurement.
-pub const MAX_WORKERS: usize = 12;
 
 struct Workers {
     routers: Mutex<Vec<Engine>>,
@@ -74,21 +68,14 @@ fn heavy(call: &str, body: &[u8]) -> bool {
         || serde_json::from_slice::<planner_router::Request>(body).is_ok_and(|r| r.alternatives || r.alternatives_only)
 }
 
-pub fn app(directory: &std::path::Path, workers: usize) -> Result<axum::Router, Error> {
-    if !(1..=MAX_WORKERS).contains(&workers) {
-        return Err(Error::InvalidRequest(format!("Use 1 to {MAX_WORKERS} workers")));
+/// The service on `workers` routers over the install of format 10 in `install`.
+pub fn app(install: &std::path::Path, workers: usize) -> Result<axum::Router, Error> {
+    if workers == 0 {
+        return Err(Error::InvalidRequest("Use at least 1 worker".into()));
     }
-    // The opened handle has no budget, so it must not outlive the forks' setup.
-    let routers: Vec<Engine> = {
-        let source = planner_router::open(directory)?;
-        let budget = source.default_budget();
-        (0..workers).map(|_| Router::new(source.fork(), budget)).collect()
-    };
+    let opened = planner_router::open(install, false)?;
+    let routers: Vec<Engine> = (0..workers).map(|_| Router::new(opened.fork())).collect();
     let package = routers[0].package();
-    // Forks share prepared profiles, so one load serves every router.
-    if package.profiles().contains(&WARM_PROFILE) {
-        package.warm(WARM_PROFILE)?;
-    }
     let metadata = json!({ "package": package.identity(), "region": package.region(), "bounds": package.bounds(),
         "profiles": package.profiles(), "attribution": package.attribution(), "warnings": package.warnings() });
     let state = Arc::new(Workers { routers: Mutex::new(routers), gate: Gate::new(workers, QUEUE_WAIT), metadata });
