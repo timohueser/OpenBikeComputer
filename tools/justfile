@@ -731,8 +731,8 @@ check *args:
         # gets the core and test device from the `wasm-bridges` job; locally we build them.
         step "wasm bridges"          npm run build:wasm
         step "frontend svelte-check" npm run check
+        # `bundle.test.ts` builds the web app and inspects the emitted chunks.
         step "frontend vitest"       npm test
-        step "frontend builds (dev + web)" npm run build:all
         popd >/dev/null
       else _warn "skip frontend — npm not installed"; SKIPPED+=("frontend"); fi
     fi

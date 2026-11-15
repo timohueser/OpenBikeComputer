@@ -23,19 +23,16 @@ import {
     discardMapOutput,
     hasRoomFor,
     isStorageQuotaError,
-    openCellInventory,
     openCellStore,
     readMapOutput,
     reclaimableAssemblyBytes,
     STORAGE_QUOTA_MESSAGE,
-    type CellInventory,
 } from "../cells/store";
 import { projectedRunDiskBytes } from "../cells/quota";
 import { acquireMapWorkStorage } from "../cells/workBarrier";
 import {
     downloadCells,
     planCells,
-    type CellDownloadPlan,
 } from "../catalog/download";
 import type { CoverageStore } from "./store.svelte";
 import type { JobContext } from "../device/progress";
@@ -43,16 +40,6 @@ import type { SendAssembledMap } from "../device/write";
 import { formatBytes, truncateUtf8 } from "../format";
 import type { FlatStoreClient } from "../usb/client";
 import type { PutResponse } from "../usb/protocol";
-
-const KEEP_CELLS_KEY = "obcm.keepMapCells";
-
-function loadKeepCells(): boolean {
-    try {
-        return globalThis.localStorage?.getItem(KEEP_CELLS_KEY) === "true";
-    } catch {
-        return false;
-    }
-}
 
 /** The engine's sort budget, which after the external merge **is** the wasm engine term. A
  *  chosen value: big enough that a DACH-scale sort is about a dozen runs, small enough that
@@ -101,48 +88,6 @@ interface Output {
     readonly operations: Set<Promise<unknown>>;
 }
 
-/**
- * The same plan minus every cell already in the store, and the tally of what that saved.
- *
- * A cell is "already here" when a file named by its catalog digest exists at the catalog's
- * length. The name **is** the SHA-256 `fetchVerified` matched before the file was written, and
- * the length catches a write torn by a crash or a quota refusal. Re-hashing every cell on every
- * run would cost seconds and a full read of exactly the bytes this exists to stop reading.
- *
- * Terrain is never skipped: it is not in the store.
- */
-interface CachedPlan {
-    plan: CellDownloadPlan;
-    cells: number;
-    bytes: number;
-}
-
-async function scanCached(
-    plan: CellDownloadPlan,
-    cells: CellInventory,
-    runOp: <T>(operation: () => Promise<T>) => Promise<T> = (operation) => operation(),
-): Promise<CachedPlan> {
-    const wanted: typeof plan.items = [];
-    let bytes = 0;
-    let have = 0;
-    let haveBytes = 0;
-    for (const item of plan.items) {
-        const present = item.band !== null && (await runOp(() => cells.has(item.cell.sha256, item.cell.bytes)));
-        if (present) {
-            have += 1;
-            haveBytes += item.cell.bytes;
-            continue;
-        }
-        wanted.push(item);
-        bytes += item.cell.bytes;
-    }
-    return {
-        plan: { ...plan, items: wanted, totalBytes: bytes },
-        cells: have,
-        bytes: haveBytes,
-    };
-}
-
 /** The build of one map from a coverage store. Call `start()` once, and `destroy()` when the
  *  owner goes away. */
 export class MapRun {
@@ -163,11 +108,6 @@ export class MapRun {
     /** Set by `failRun`: a delivery that has not started must not write into an
      *  output that is being discarded. */
     #sinkClosed = false;
-    /** The bytes of the cells this run did not have to fetch, because a previous one already put
-     *  them in OPFS under the same digest. */
-    #cachedBytes = 0;
-    /** Opt-in reuse. OPFS may still be the active run's necessary working disk when false. */
-    #keepCells = $state(loadKeepCells());
     // Starts true so the first readiness cannot briefly enable a run before
     // `start()` maintenance has joined the origin-global map-work barrier.
     #clearingCells = $state(true);
@@ -239,7 +179,7 @@ export class MapRun {
 
     destroy(): void {
         this.#destroyed = true;
-        const cause = new DOMException("the map builder was closed", "AbortError");
+        const cause = new DOMException("the map run was closed", "AbortError");
         this.#startWait.abort(cause);
         // Finalization starts only after the map is durable and its abort listener has been
         // detached. Let that owner finish its cleanup. Every earlier teardown goes through the
@@ -456,7 +396,7 @@ export class MapRun {
         try {
             release = await acquireMapWorkStorage(this.#startWait.signal);
             if (this.#destroyed) return;
-            if (!this.#keepCells) await clearMapWorkStorage();
+            await clearMapWorkStorage();
         } catch {
             // Startup maintenance is best-effort, as it was before serialization. A later run's
             // own probes give the actionable storage error.
@@ -582,7 +522,7 @@ export class MapRun {
         const admittedEstimate = this.#estimate;
         const admissionId = this.#estimateGeneration;
         const requireDisk = this.#estimateOnDisk;
-        if (this.#destroyed) throw new DOMException("the map builder was closed", "AbortError");
+        if (this.#destroyed) throw new DOMException("the map run was closed", "AbortError");
         if (this.#estimateGeneration !== admissionId || this.#estimate !== admittedEstimate || !this.#ready) {
             throw new Error("The map selection changed. Wait for its memory check before trying again.");
         }
@@ -593,7 +533,6 @@ export class MapRun {
         this.#runFileName = this.#mapFileName();
         this.#delivery = Promise.resolve();
         this.#sinkClosed = false;
-        this.#cachedBytes = 0;
         this.#phase = "downloading";
         out.ctx.phase("downloading", l.totalBytes);
 
@@ -613,18 +552,15 @@ export class MapRun {
         out.releaseWork = await runOp(() => acquireMapWorkStorage(runAbort.signal), async (release) => release());
 
         // Cells go to disk when this browser will take them, which keeps a country's
-        // worth out of the tab's heap, and with the opt-in above a later build can
-        // reuse them. The raster deliberately does not: its objects are small and it
-        // is downloaded last. Probed by writing and reading a file back, not by
+        // worth out of the tab's heap. The raster deliberately does not: its objects are
+        // small and it is downloaded last. Probed by writing and reading a file back, not by
         // sniffing for a method: a store that cannot be written to is worse than none.
         const revision = cellStoreRevision(store.catalog);
-        // Unchecked means no reuse in either direction. OPFS still carries this run when available,
+        // No run reuses the cells of another. OPFS still carries this run when available,
         // because that working disk is what makes country-sized assembly possible.
-        if (!this.#keepCells) {
-            await runOp(clearCellStores);
-        }
+        await runOp(clearCellStores);
         const writable = await runOp(cellStoreWritable);
-        out.transientCellRevision = writable && !this.#keepCells ? revision : null;
+        out.transientCellRevision = writable ? revision : null;
         let cellStore = writable
             ? await runOp(
                   () => openCellStore(revision),
@@ -640,21 +576,15 @@ export class MapRun {
               )
             : null;
         if (!cellStore) out.transientCellRevision = null;
-        let fetchPlan = plan;
         if (cellStore) {
-            const cached = await scanCached(plan, cellStore, runOp);
-            fetchPlan = cached.plan;
-            this.#cachedBytes = cached.bytes;
             // Asked once, before a byte is fetched, and about the WHOLE run — cells, the
             // map the sink writes, the merge's spill — because all three live in OPFS: a
             // store with room for the cells but not the output would fail at the first
             // write, after the download.
             const reclaimable = await runOp(reclaimableAssemblyBytes);
-            const hasRoom = await runOp(() => hasRoomFor(projectedRunDiskBytes(l, this.#cachedBytes), reclaimable));
+            const hasRoom = await runOp(() => hasRoomFor(projectedRunDiskBytes(l), reclaimable));
             if (!hasRoom) {
                 cellStore = null;
-                fetchPlan = plan;
-                this.#cachedBytes = 0;
             } else {
                 // Only an admitted run replaces the previous temporary output. A refused run leaves
                 // it alone, and accepted work reclaims the bytes before the first download.
@@ -668,7 +598,7 @@ export class MapRun {
 
         try {
             await runOp(() =>
-                downloadCells(fetchPlan, {
+                downloadCells(plan, {
                     fetchImpl: store.client.fetchImpl,
                     onCell: async (item, bytes) => {
                         if (item.article) {
@@ -822,15 +752,6 @@ export class MapRun {
         const totalCellBytes = l.totalBytes;
         // Both artifact classes stay resident even when map cells stream from disk.
         const terrainBytes = (l.terrain?.bytes ?? 0) + (l.articleBytes ?? 0);
-        const reuseCells = this.#keepCells;
-        const store = this.#store;
-        const resolution = store.resolution;
-        const indices = store.indices;
-        const catalog = store.catalog;
-        const plan = reuseCells && resolution && indices
-            ? planCells(resolution, catalog, indices, store.terrain, store.articles)
-            : null;
-        const revision = cellStoreRevision(catalog);
         this.#estimatePending = true;
         this.#estimateError = null;
         // Debounced: a slider mid-drag changes the figures every frame, and the
@@ -842,13 +763,8 @@ export class MapRun {
             // sync-handle probe.
             void (async () => {
                 const writable = await cellStoreWritable();
-                let storedCellBytes = 0;
-                if (writable && plan) {
-                    const cells = await openCellInventory(revision);
-                    if (cells) storedCellBytes = (await scanCached(plan, cells)).bytes;
-                }
                 const reclaimable = writable ? await reclaimableAssemblyBytes() : 0;
-                const diskNeed = projectedRunDiskBytes(l, storedCellBytes);
+                const diskNeed = projectedRunDiskBytes(l);
                 const onDisk = writable && (await hasRoomFor(diskNeed, reclaimable));
                 if (this.#destroyed || estimateId !== this.#estimateGeneration || l !== this.#ledger) return;
                 this.#estimateLedger = l;

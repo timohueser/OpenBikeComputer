@@ -157,10 +157,12 @@ test('the base map loads in the light and the dark look, from the tile host only
 });
 
 test('when the base map does not load, the map says so and a click still adds a region', async ({ page }) => {
-  const errors = await open(page, '#/device/area', { tiles: 'fail' });
+  const outside = [];
+  const errors = await open(page, '#/device/area', { tiles: 'fail', outside });
   await expect(page.getByRole('status').filter({ hasText: 'Map background unavailable.' })).toBeVisible();
   await page.locator('.leaflet-container').click();
   await expect(page.locator('.parts li')).toHaveText(['Bridge Fixture']);
+  expect(outside.every(url => new URL(url).hostname === HOSTS.tiles)).toBe(true);
   expect(errors).toEqual([]);
 });
 

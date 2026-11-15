@@ -1,14 +1,13 @@
 /**
- * The three flows, end to end against the simulated device.
+ * The map and firmware flows, end to end against the simulated device.
  *
  * The LM20's USB peripheral does not exist yet, so this is where "it works" is decided. The device on
  * the other end is the real protocol engine over a real flat store on a simulated card: it assigns
  * the ids, enforces the compare-and-swap, answers a second transfer `busy`, refuses a payload its
  * extents cannot hold with the bytes it needed, and runs the bilateral cancel.
  *
- * A map is **one object**, exactly as a route and a firmware image are: one `PUT`, one stream, one
- * whole-payload CRC, one commit. There is no multi-file map upload to test, so a map's tests are the
- * same tests the other two get, on a much larger object.
+ * A map is **one object**, exactly as a firmware image is: one `PUT`, one stream, one whole-payload
+ * CRC, one commit. There is no multi-file map upload to test.
  *
  * Nothing here proves the LM20 enumerates, that its endpoints have the sizes assumed, or that a real
  * SD write keeps up. What it does prove is the object-model half, including the four failure paths
@@ -27,11 +26,9 @@ import { FlatDevice, flatDevice } from "../usb/flat-device";
 import { loopbackLink } from "../usb/loopback";
 import type { BytePipe, DeviceLink } from "../usb/pipe";
 import { ObjectKind } from "../usb/protocol";
-import { initConvert } from "../convert/bridge";
 import { expectBytes } from "../../../test-support/bytes";
 import { loadFlatDevice } from "../../../test-support/flat-device/load";
-import { prepareRoute } from "./route";
-import { armUpdate, sendMapBlob, sendMapBytes, sendRoute, stageFirmware } from "./write";
+import { armUpdate, sendMapBlob, sendMapBytes, stageFirmware } from "./write";
 import type { JobContext, JobPhase } from "./progress";
 
 function repoRoot(): string {
@@ -46,14 +43,7 @@ function repoRoot(): string {
 const ROOT = repoRoot();
 const vector = (name: string) => new Uint8Array(readFileSync(join(ROOT, "specs/vectors", name)));
 
-beforeAll(async () => {
-    const wasm = join(dirname(fileURLToPath(import.meta.url)), "..", "core", "pkg", "obc_builder_bridge_bg.wasm");
-    if (!existsSync(wasm)) {
-        throw new Error(`the wasm bridge is not built (${wasm} missing). Run \`npm run build:wasm\`.`);
-    }
-    await initConvert(readFileSync(wasm));
-    await loadFlatDevice();
-});
+beforeAll(loadFlatDevice);
 
 interface Watched extends JobContext {
     readonly phases: JobPhase[];
@@ -315,43 +305,6 @@ describe("map upload from a file", () => {
             );
             await running;
             expect((await second) as DeviceError).toMatchObject({ code: "busy" });
-        });
-    });
-});
-
-describe("route upload", () => {
-    it("converts a dropped GPX and sends the OBCR the device would have produced itself", async () => {
-        await withDevice({}, async ({ client, device }) => {
-            const gpx = readFileSync(join(ROOT, "host/obc-vectors/src/route-source.gpx"));
-            // The route's name comes from the file's stem, which is what makes this comparable to
-            // the checked-in vector: same input, same name, same bytes.
-            const prepared = await prepareRoute(new File([gpx], "Vector Loop.gpx"), 0);
-            expect(prepared.obcr).toEqual(vector("route-waypoints.obcr"));
-            expect(prepared.header).toMatchObject({
-                name: "Vector Loop",
-                pointCount: 9,
-                distanceM: 2207,
-                ascentM: 76,
-            });
-
-            const result = await sendRoute(client, prepared, context());
-            expect(device.payloadOf(result.objectId)).toEqual(prepared.obcr);
-                // The display name is what a catalog listing shows, and it is the route's own name —
-                // so the row a rider reads on the device page is the row they dropped.
-            const listed = await client.list({ kind: ObjectKind.Route });
-            expect(listed.entries.map((entry) => [entry.objectId, entry.displayName])).toEqual([
-                [result.objectId, "Vector Loop"],
-            ]);
-        });
-    });
-
-    it("rejects a file that is not a route before anything is sent", async () => {
-        await withDevice({}, async ({ client, device }) => {
-            await expect(prepareRoute(new File([new Uint8Array(64)], "notes.txt"), 0)).rejects.toMatchObject({
-                name: "ConvertError",
-            });
-            expect(device.entries).toEqual([]);
-            void client;
         });
     });
 });

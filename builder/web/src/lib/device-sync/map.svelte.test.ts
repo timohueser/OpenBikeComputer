@@ -14,7 +14,7 @@ function stubs() {
 }
 
 describe('ready', () => {
-    it('lets the send start only after the cell lists and the memory check of the run are complete', async () => {
+    it('lets the send start only after the memory check of the run is complete', async () => {
         const { store, run, typed } = stubs();
         let done = false;
         const waiting = ready(...typed, new AbortController().signal).then(() => { done = true; });

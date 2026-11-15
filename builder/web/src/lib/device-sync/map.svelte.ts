@@ -1,4 +1,4 @@
-/** Builds the device map that waits, in this tab, and sends it to the device. It needs the wasm core of the map builder. */
+/** Builds the device map that waits, in this tab, and sends it to the device. It needs the shared wasm core. */
 import { CatalogClient } from '../catalog/client';
 import { mapWorkBusy } from '../cells/workBarrier';
 import { MapRun } from '../coverage/run.svelte';

@@ -194,8 +194,8 @@
    "test_depends_on": [
     "map-reading"
    ],
-   "violations": 9,
-   "lines": 35082,
+   "violations": 8,
+   "lines": 34811,
    "problems": [
     {
      "rule": "cycle",
@@ -207,15 +207,11 @@
     },
     {
      "rule": "cycle",
-     "message": "device-link -> device-map-builder closes a cycle: builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/bytes.ts (test), builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/flat-device/load.ts (test), builder/web/src/lib/device/route.ts -> builder/web/src/lib/format.ts, and 9 more"
+     "message": "device-link -> device-map-builder closes a cycle: builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/bytes.ts (test), builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/flat-device/load.ts (test), builder/web/src/lib/device/sha256.test.ts -> builder/web/src/lib/core/hash.ts (test), and 8 more"
     },
     {
      "rule": "cycle",
      "message": "device-link -> firmware-update closes a cycle: obc-vectors -> obc-dfu, builder/web/src/lib/device/write.ts -> builder/web/src/lib/firmware/obcu.ts"
-    },
-    {
-     "rule": "cycle",
-     "message": "device-link -> map-assembly closes a cycle: builder/web/src/lib/device/flows.test.ts -> builder/web/src/lib/convert/bridge.ts (test), builder/web/src/lib/device/route.ts -> builder/web/src/lib/convert/bridge.ts"
     },
     {
      "rule": "cycle",
@@ -305,11 +301,11 @@
     "repository-tooling"
    ],
    "violations": 8,
-   "lines": 9218,
+   "lines": 9192,
    "problems": [
     {
      "rule": "cycle",
-     "message": "device-link -> device-map-builder closes a cycle: builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/bytes.ts (test), builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/flat-device/load.ts (test), builder/web/src/lib/device/route.ts -> builder/web/src/lib/format.ts, and 9 more"
+     "message": "device-link -> device-map-builder closes a cycle: builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/bytes.ts (test), builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/flat-device/load.ts (test), builder/web/src/lib/device/sha256.test.ts -> builder/web/src/lib/core/hash.ts (test), and 8 more"
     },
     {
      "rule": "cycle",
@@ -534,13 +530,9 @@
    "test_depends_on": [
     "content"
    ],
-   "violations": 9,
-   "lines": 21873,
+   "violations": 8,
+   "lines": 21789,
    "problems": [
-    {
-     "rule": "cycle",
-     "message": "device-link -> map-assembly closes a cycle: builder/web/src/lib/device/flows.test.ts -> builder/web/src/lib/convert/bridge.ts (test), builder/web/src/lib/device/route.ts -> builder/web/src/lib/convert/bridge.ts"
-    },
     {
      "rule": "cycle",
      "message": "map-assembly -> card-storage closes a cycle: obc-builder-bridge -> obc-storage"
@@ -764,7 +756,7 @@
    ],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 18944,
+   "lines": 18895,
    "problems": []
   },
   {
@@ -1029,7 +1021,7 @@
    ],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 13982,
+   "lines": 14023,
    "problems": []
   },
   {
@@ -1183,12 +1175,6 @@
    "to": "foundations",
    "test": false,
    "undeclared": false
-  },
-  {
-   "from": "device-link",
-   "to": "map-assembly",
-   "test": false,
-   "undeclared": true
   },
   {
    "from": "device-link",

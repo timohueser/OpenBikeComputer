@@ -26,7 +26,6 @@
   "cycle device-link -> card-storage",
   "cycle device-link -> device-map-builder",
   "cycle device-link -> firmware-update",
-  "cycle device-link -> map-assembly",
   "cycle device-map-baking -> content",
   "cycle device-map-baking -> map-reading",
   "cycle device-map-baking -> source-preparation",
