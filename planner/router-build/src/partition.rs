@@ -286,10 +286,10 @@ struct Junctions {
     first: Vec<u32>,
     /// The neighbour of each arc. The arcs of a junction are sorted by neighbour.
     adj: Vec<u32>,
-    /// The capacity of each arc, the same in both directions: the roads between the two junctions,
-    /// at most 127, so that a residual of up to twice the capacity fits a byte.
-    capacity: Vec<u8>,
-    /// The residual of each arc, for each of the two directions that run at the same time.
+    /// The residual of each arc, for each of the two directions that run at the same time. It
+    /// starts at the capacity, the same in both directions: the roads between the two junctions,
+    /// at most 127, so that a residual of up to twice the capacity fits a byte. A flow keeps the sum
+    /// of the residuals of an arc and its twin, so that sum gives the capacity again.
     residual: [Vec<AtomicU8>; 2],
     /// The position of each junction.
     pos: Vec<AtomicU32>,
@@ -451,7 +451,14 @@ impl Search<'_> {
         }
         for &junction in self.at {
             for arc in graph.arcs(junction) {
-                self.residual[arc].store(graph.capacity[arc], Relaxed);
+                let neighbour = graph.adj[arc];
+                if neighbour > junction && self.place(graph, neighbour).is_some() {
+                    let twin = graph.twin(junction, neighbour);
+                    let sum =
+                        u16::from(self.residual[arc].load(Relaxed)) + u16::from(self.residual[twin].load(Relaxed));
+                    self.residual[arc].store((sum / 2) as u8, Relaxed);
+                    self.residual[twin].store((sum / 2) as u8, Relaxed);
+                }
             }
         }
         let cut = self.flow(graph, k, bound)?;
@@ -744,7 +751,7 @@ pub fn partition(points: &Column<Point>, ends: &Column<(u32, u32)>, sizes: &[u32
     let edges: Column<((u32, u32), u8)> =
         sort::sorted(pairs).counted().map(|(pair, count)| (pair, count.min(127) as u8)).collect();
     let arcs = 2 * edges.len();
-    let need = 48 * j as u64 + 7 * arcs as u64;
+    let need = 48 * j as u64 + 6 * arcs as u64;
     let budget = work::page_budget()?.0;
     if need > budget {
         return Err(format!("The partition needs {need} bytes; the page budget is {budget}"));
@@ -767,7 +774,6 @@ pub fn partition(points: &Column<Point>, ends: &Column<(u32, u32)>, sizes: &[u32
         walk1,
         first: vec![0; j + 1],
         adj: vec![0; arcs],
-        capacity: vec![0; arcs],
         residual: [0, 1].map(|_| (0..arcs).map(|_| AtomicU8::new(0)).collect()),
         pos: (0..j as u32).map(|_| AtomicU32::new(0)).collect(),
     };
@@ -787,7 +793,8 @@ pub fn partition(points: &Column<Point>, ends: &Column<(u32, u32)>, sizes: &[u32
         let (a, b) = (at[a as usize], at[b as usize]);
         for (from, to) in [(a, b), (b, a)] {
             let arc = level[from as usize] as usize;
-            (graph.adj[arc], graph.capacity[arc]) = (to, capacity);
+            graph.adj[arc] = to;
+            graph.residual.iter().for_each(|residual| residual[arc].store(capacity, Relaxed));
             level[from as usize] += 1;
         }
     }
@@ -797,10 +804,11 @@ pub fn partition(points: &Column<Point>, ends: &Column<(u32, u32)>, sizes: &[u32
     for junction in 0..j as u32 {
         let arcs = graph.arcs(junction);
         list.clear();
-        list.extend(arcs.clone().map(|arc| (graph.adj[arc], graph.capacity[arc])));
+        list.extend(arcs.clone().map(|arc| (graph.adj[arc], graph.residual[0][arc].load(Relaxed))));
         list.sort_unstable();
         for (arc, &(neighbour, capacity)) in arcs.zip(&list) {
-            (graph.adj[arc], graph.capacity[arc]) = (neighbour, capacity);
+            graph.adj[arc] = neighbour;
+            graph.residual.iter().for_each(|residual| residual[arc].store(capacity, Relaxed));
         }
     }
     let (mut current, mut queue) = (vec![0u32; j], vec![0u32; j]);
@@ -1016,7 +1024,6 @@ mod tests {
             first,
             adj,
             residual: [capacity.iter().map(|&c| AtomicU8::new(c)).collect(), Vec::new()],
-            capacity,
             pos: (0..n).map(AtomicU32::new).collect(),
         }
     }
