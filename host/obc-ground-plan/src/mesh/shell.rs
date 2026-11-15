@@ -203,6 +203,8 @@ fn corner_key(p: P, label: u32) -> u64 {
 }
 
 impl Build {
+    // One copy: the shell calls it from many places.
+    #[inline(never)]
     fn corner(&mut self, p: P, label: u32, offset: f64) -> u32 {
         let label = self.relabelled(p, label).unwrap_or(label);
         self.keys.push((corner_key(p, label), (offset as f32).to_bits()));
@@ -217,6 +219,8 @@ impl Build {
 
     /// A cap for the corner of label l at p with an offset: its height is at most label `cap`'s there plus `cap_off`.
     #[cfg(feature = "bores")]
+    // One copy: the shell calls it from many places.
+    #[inline(never)]
     fn cap(&mut self, p: P, label: u32, offset: f64, (cap, cap_off): (u32, f64)) {
         let label = self.relabelled(p, label).unwrap_or(label);
         self.caps.push(((corner_key(p, label), (offset as f32).to_bits()), (cap, (cap_off as f32).to_bits())));
@@ -841,13 +845,13 @@ pub fn mesh_storeys(
         slot_runs.extend(runs(&sorted)?);
         slots.extend(sorted);
     }
-    let mut caps: Vec<[u32; 3]> = (b.caps.iter().filter(|_| BORES))
-        .filter_map(|&(key, (l, off))| unique.binary_search(&key).ok().map(|k| [k as u32, l, off]))
+    // By corner, then label, in the corners' own key type: their sort serves.
+    let mut caps: Vec<(u64, u32)> = (b.caps.iter().filter(|_| BORES))
+        .filter_map(|&(key, (l, off))| unique.binary_search(&key).ok().map(|k| ((k as u64) << 32 | u64::from(l), off)))
         .collect();
-    if BORES {
-        caps.sort_unstable();
-        caps.dedup();
-    }
+    caps.sort_unstable();
+    caps.dedup();
+    let caps: Vec<[u32; 3]> = caps.into_iter().map(|(k, off)| [(k >> 32) as u32, k as u32, off]).collect();
     let corners = (unique.iter())
         .map(|&(key, offset)| {
             let (label, x, y) = ((key as u32) & NO_LABEL, (key >> 25) as u32 & 0x7ffff, (key >> 44) as u32);
@@ -1110,17 +1114,16 @@ pub fn border(a: Side, b: Side, east: bool) -> Vec<String> {
 /// (`Storeys::portals`): by point, the pieces that leave it and those that reach it.
 #[cfg(feature = "bores")]
 struct PortalMap {
-    pieces: BTreeMap<P, Vec<(P, u32, u32, bool)>>,
+    /// Each piece both ways: from, to, the way's label, the back's, and whether it runs with its way on the left.
+    pieces: Vec<(P, P, u32, u32, bool)>,
 }
 
 #[cfg(feature = "bores")]
 impl PortalMap {
     fn new(portals: &[crate::faces::Portal]) -> PortalMap {
-        let mut pieces: BTreeMap<P, Vec<(P, u32, u32, bool)>> = BTreeMap::new();
-        for p in portals {
-            pieces.entry(p.a).or_default().push((p.b, p.front, p.back, true));
-            pieces.entry(p.b).or_default().push((p.a, p.front, p.back, false));
-        }
+        let pieces = (portals.iter())
+            .flat_map(|p| [(p.a, p.b, p.front, p.back, true), (p.b, p.a, p.front, p.back, false)])
+            .collect();
         PortalMap { pieces }
     }
 
@@ -1132,21 +1135,21 @@ impl PortalMap {
         let ahead = |p: P| f64::from(p[0] - a[0]) * d[0] + f64::from(p[1] - a[1]) * d[1];
         let (mut at, mut out) = (a, Vec::new());
         while at != b {
-            let next = (self.pieces.get(&at)?.iter())
-                .filter(|x| ahead(x.0) > ahead(at))
-                .min_by(|x, y| ahead(x.0).total_cmp(&ahead(y.0)))?;
-            if ahead(next.0) > ahead(b) {
+            let next = (self.pieces.iter())
+                .filter(|x| x.0 == at && ahead(x.1) > ahead(at))
+                .min_by(|x, y| ahead(x.1).total_cmp(&ahead(y.1)))?;
+            if ahead(next.1) > ahead(b) {
                 return None;
             }
-            out.push(*next);
-            at = next.0;
+            out.push((next.1, next.2, next.3, next.4));
+            at = next.1;
         }
         Some(out)
     }
 
     /// The label of the ground or the way on top over the bore at a point of a portal piece.
     fn back(&self, p: P) -> Option<u32> {
-        self.pieces.get(&p).and_then(|v| v.first()).map(|x| x.2)
+        self.pieces.iter().find(|x| x.0 == p).map(|x| x.3)
     }
 }
 

@@ -258,8 +258,8 @@ fn raised(graph: &WayGraph, a: &crate::graph::Arm) -> bool {
 
 /// The end direction of each arm of a portal (a joint of a ground way and a bore way), by its arm's key: the mean of
 /// the two ways' tangents at their end samples, both turned into the bore. Both storeys read it from the same samples.
-fn portal_dirs(g: &WayGraph) -> BTreeMap<(u32, i8, u32, u64), [f64; 2]> {
-    let mut out = BTreeMap::new();
+fn portal_dirs(g: &WayGraph) -> Vec<((u32, i8, u32, u64), [f64; 2])> {
+    let mut out = Vec::new();
     for j in g.joints.iter().filter(|_| BORES) {
         let [a, b] = &j.arms;
         let (ground, bore) = match (in_bore(g, a.way), in_bore(g, b.way)) {
@@ -281,7 +281,7 @@ fn portal_dirs(g: &WayGraph) -> BTreeMap<(u32, i8, u32, u64), [f64; 2]> {
         let len = libm::hypot(m[0], m[1]);
         if len > 1e-9 {
             for arm in [a, b] {
-                out.insert(station_key(arm.way, arm.dir, &arm.at), [m[0] / len, m[1] / len]);
+                out.push((station_key(arm.way, arm.dir, &arm.at), [m[0] / len, m[1] / len]));
             }
         }
     }
@@ -331,7 +331,7 @@ fn lines<'a>(
             decks.extend(ground);
         }
     }
-    let dirs = if BORES { portal_dirs(g) } else { BTreeMap::new() };
+    let dirs = if BORES { portal_dirs(g) } else { Vec::new() };
     let mut out = Vec::new();
     let mut of_way = BTreeMap::new();
     let (ways, water): (Vec<_>, Vec<_>) = g.ways.iter().partition(|w| w.family != Family::Water);
@@ -352,7 +352,7 @@ fn lines<'a>(
             if !BORES {
                 return None;
             }
-            let d = *dirs.get(&ends_at[k])?;
+            let d = dirs.iter().find(|x| x.0 == ends_at[k])?.1;
             let (a, b) = if k == 0 {
                 (samples[0].pos, samples[1].pos)
             } else {
