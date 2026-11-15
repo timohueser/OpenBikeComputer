@@ -135,7 +135,10 @@ no height of the plan route is known.
 The profile samples the smoothed heights that `ascent_m` and `descent_m` come from. Its climb can
 differ from `ascent_m` because it has only one height for each 100 m. A reader that needs the height
 at a vertex of `line_udeg` takes the profile at the share of the line's length that the vertex has.
-On a winding route this height is some metres off. The profile is for a picture and for the pick of
+The line is simplified within 50 m of the plan route (see [Line](#line)), so on switchbacks it is
+shorter than the plan route. The share of a vertex then points to a place up to some hundred metres
+away along the plan route, and the height is wrong by the climb of the route over that stretch. The
+profile is for a picture and for the pick of
 a route in TrailView, not for a figure.
 
 ### Grades

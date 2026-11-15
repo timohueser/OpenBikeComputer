@@ -6,6 +6,7 @@ use crate::source::{Data, Id, Relation, Tags};
 use planner_router::{
     data::{RoutingData, Selection},
     directory::Directory,
+    geometry,
     model::{Point, Profile, NO_ELEVATION},
     package::Source,
     shape::{self, distance, Failure, Limits, P},
@@ -543,10 +544,7 @@ fn route<D: RoutingData>(
     }
     record.insert("cells".into(), json!(cell_ids(&cover)));
     record.insert("line_udeg".into(), json!(encode(&simple)));
-    let walked = planner_router::geometry::cumulative(&plan.route.points);
-    let elevations: Vec<Option<f32>> =
-        plan.route.points.iter().map(|p| (p.elevation != NO_ELEVATION).then_some(p.elevation)).collect();
-    if let Some(profile) = profile(&walked, &elevations, totals.distance_m as f64) {
+    if let Some(profile) = profile(&plan.route.points, totals.distance_m as f64) {
         record.insert("profile_m".into(), json!(profile));
     }
     let via = &positions[1..positions.len() - 1];
@@ -571,22 +569,19 @@ fn route<D: RoutingData>(
     })
 }
 
-/// The height at each `PROFILE_STEP_M` along a route, and at its end, from the walked distance and
-/// the elevation of each point. The walked distances are scaled to `length_m`. `None` when no point
-/// has an elevation.
-fn profile(distances_m: &[f64], elevations: &[Option<f32>], length_m: f64) -> Option<Vec<Option<i32>>> {
-    if distances_m.len() < 2 || elevations.iter().all(Option::is_none) {
+/// The height at each `PROFILE_STEP_M` along a route, and at its end, with the walked distance
+/// scaled to `length_m`. `None` when no point has an elevation.
+fn profile(points: &[Point], length_m: f64) -> Option<Vec<Option<i32>>> {
+    if points.len() < 2 || points.iter().all(|p| p.elevation == NO_ELEVATION) {
         return None;
     }
-    // `geometry::at` takes the height of a point that an entry falls on, and else the straight
-    // line between the points around it.
-    let points: Vec<Point> =
-        elevations.iter().map(|e| Point { lat: 0, lon: 0, elevation: e.unwrap_or(NO_ELEVATION) }).collect();
-    let walked = distances_m[distances_m.len() - 1];
+    let along = geometry::cumulative(points);
+    let walked = along[along.len() - 1];
     let steps = (length_m / PROFILE_STEP_M).floor() as usize;
-    let at = |along: f64| {
-        let u = if length_m > 0.0 { (along / length_m * walked).min(walked) } else { 0.0 };
-        let height = planner_router::geometry::at(&points, distances_m, u).elevation;
+    let at = |distance: f64| {
+        let u = if length_m > 0.0 { (distance / length_m * walked).min(walked) } else { 0.0 };
+        // An entry on a point takes its height; between points, the straight line between them.
+        let height = geometry::at(points, &along, u).elevation;
         (height != NO_ELEVATION).then(|| height.round() as i32)
     };
     Some((0..=steps).map(|i| i as f64 * PROFILE_STEP_M).chain([length_m]).map(at).collect())

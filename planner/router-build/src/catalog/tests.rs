@@ -219,18 +219,25 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
 
 #[test]
 fn profile_gives_the_height_at_each_100_m_and_at_the_end() {
-    let known = |heights: &[f32]| heights.iter().map(|&h| Some(h)).collect::<Vec<_>>();
-    let rising = known(&[100.0, 350.0]);
+    // Points at the given metres along a meridian, with their heights.
+    let line = |points: &[(f64, Option<f32>)]| -> Vec<Point> {
+        let at = |(m, h): &(f64, Option<f32>)| Point {
+            lat: (m / planner_router::geometry::METRES_PER_UDEG).round() as i32,
+            lon: 0,
+            elevation: h.unwrap_or(NO_ELEVATION),
+        };
+        points.iter().map(at).collect()
+    };
     let entries = Some(vec![Some(100), Some(200), Some(300), Some(350)]);
-    assert_eq!(profile(&[0.0, 250.0], &rising, 250.0), entries);
-    assert_eq!(profile(&[0.0, 240.0], &rising, 250.0), entries, "the walked distance is scaled to the length");
-    assert_eq!(profile(&[0.0, 300.0], &known(&[0.0, 300.0]), 300.0).unwrap().len(), 5);
+    assert_eq!(profile(&line(&[(0.0, Some(100.0)), (250.0, Some(350.0))]), 250.0), entries);
+    let short = line(&[(0.0, Some(100.0)), (240.0, Some(350.0))]);
+    assert_eq!(profile(&short, 250.0), entries, "the walked distance is scaled to the length");
+    assert_eq!(profile(&line(&[(0.0, Some(0.0)), (300.0, Some(300.0))]), 300.0).unwrap().len(), 5);
 
-    let gap = [Some(0.0), Some(10.0), None, Some(30.0), Some(40.0)];
-    let distances = [0.0, 100.0, 200.0, 300.0, 400.0];
-    assert_eq!(profile(&distances, &gap, 400.0), Some(vec![Some(0), Some(10), None, Some(30), Some(40), Some(40)]));
+    let gap = line(&[(0.0, Some(0.0)), (150.0, Some(15.0)), (250.0, None), (400.0, Some(40.0))]);
+    assert_eq!(profile(&gap, 400.0), Some(vec![Some(0), Some(10), None, None, Some(40), Some(40)]));
     // The ends fall on the end points, so they keep their known heights beside an unknown point.
-    let ends = profile(&[0.0, 100.0, 250.0], &[Some(5.0), None, Some(20.0)], 250.0);
-    assert_eq!(ends, Some(vec![Some(5), None, None, Some(20)]));
-    assert_eq!(profile(&distances, &[None; 5], 400.0), None);
+    let ends = line(&[(0.0, Some(5.0)), (100.0, None), (250.0, Some(20.0))]);
+    assert_eq!(profile(&ends, 250.0), Some(vec![Some(5), None, None, Some(20)]));
+    assert_eq!(profile(&line(&[(0.0, None), (400.0, None)]), 400.0), None);
 }
