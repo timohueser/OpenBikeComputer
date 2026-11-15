@@ -21,7 +21,8 @@ export interface Largest {
     ride?: RideRecord;
     /** The local day with the most climb, and the ride of that day with the most climb. */
     day?: { climbM: number; ride: RideRecord };
-    /** The trip with the most distance. `rides` are only its rides of this statistic, and `lengthM` and `days` are of them. */
+    /** The trip with the most distance. `rides` are only its rides of this statistic, on 2 days or more, and `lengthM` and
+     * `days` are of them. */
     trip?: { trip: Trip; rides: RideRecord[]; lengthM: number; days: number };
     /** The ride with the highest point. */
     highest?: RideRecord;
@@ -85,7 +86,7 @@ export function largest(rides: RideRecord[], trips: Trip[], year?: number): Larg
     const day = most([...days.values()], day => sum(day).climbM);
     const own = trips.map(trip => ({ trip, rides: trip.rides.filter(ride => keys.has(ride.key)) }))
         .filter(({ rides }) => rides.length && (year === undefined || started(rides[0]).getFullYear() === year))
-        .map(({ trip, rides }) => ({ trip, rides, lengthM: sum(rides).lengthM, days: tripDays(trip, rides) }));
+        .map(({ trip, rides }) => ({ trip, rides, lengthM: sum(rides).lengthM, days: tripDays(trip, rides) })).filter(({ days }) => days > 1);
     return {
         ride: most(shown, ride => ride.summary.lengthM),
         day: day && sum(day).climbM > 0 ? { climbM: sum(day).climbM, ride: most(day, ride => ride.summary.climbM)! } : undefined,

@@ -4,6 +4,7 @@ import { ridingProfiles } from './riding-profiles';
 import { coordinateAt, cumulative, firstIndex, nearestOnLine, nearestProgress, routeSlice, segmentDistances, type Coordinate } from './geo';
 import type { MapSegment } from './map-types';
 import type { PlaceCategory } from './poi-kinds';
+import { formatMinutes } from '../settings/format';
 
 /** A vertex of a drawn leg; a third number is its elevation in metres. */
 export type DrawnCoordinate = Coordinate | [number, number, number];
@@ -86,8 +87,7 @@ export interface Figures {
 }
 /** "5h 20m" */
 export function duration(hours: number): string {
-    const minutes = Math.round(hours * 60);
-    return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+    return formatMinutes(Math.round(hours * 60));
 }
 export interface Day extends Figures {
     number: number;

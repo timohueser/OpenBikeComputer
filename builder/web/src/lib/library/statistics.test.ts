@@ -39,8 +39,11 @@ describe('largest', () => {
         const days = [ride('day 1', new Date(2026, 6, 1), 90_000), ride('day 2', new Date(2026, 6, 2), 14_000, 'hiking'), ride('day 3', new Date(2026, 6, 3), 70_000)];
         const mixed = trip(...days), short = trip(ride('other 1', new Date(2026, 7, 1), 60_000), ride('other 2', new Date(2026, 7, 2), 60_000));
         expect(largest([days[0], days[2], ...short.rides], [short, mixed]).trip).toEqual({ trip: mixed, rides: [days[0], days[2]], lengthM: 160_000, days: 3 });
-        // On foot, the trip is one walk on one day, not the three days of the whole trip.
-        expect(largest([days[1]], [short, mixed]).trip).toEqual({ trip: mixed, rides: [days[1]], lengthM: 14_000, days: 1 });
+        // One walk on one day of a trip by bike is no trip on foot. Two walks are a trip of their own days.
+        expect(largest([days[1]], [short, mixed]).trip).toBeUndefined();
+        const walks = trip(ride('walk 1', new Date(2026, 8, 1), 9000, 'hiking'), ride('ride', new Date(2026, 8, 2), 50_000), ride('walk 2', new Date(2026, 8, 3), 11_000, 'hiking'),
+            ride('ride home', new Date(2026, 8, 4), 50_000));
+        expect(largest([walks.rides[0], walks.rides[2]], [walks]).trip).toEqual({ trip: walks, rides: [walks.rides[0], walks.rides[2]], lengthM: 20_000, days: 3 });
     });
 
     it('counts a trip over the turn of a year for the year of its first ride of the statistic', () => {

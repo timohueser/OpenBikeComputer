@@ -51,11 +51,14 @@ export function formatCount(value: number): string {
     return Number.isFinite(value) ? number(value, Number.isInteger(value) || Math.abs(value) >= 10 ? 0 : 1) : NONE;
 }
 
+/** "5h 20m", from whole minutes. */
+export const formatMinutes = (minutes: number) => `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+
 /** "5h 20m", "1,105h": the hours of a total, in whole hours from 100 hours. */
 export function formatHours(seconds: number): string {
     if (!Number.isFinite(seconds)) return NONE;
     const minutes = Math.round(seconds / 60);
-    return minutes >= 6000 ? `${number(minutes / 60, 0)}h` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+    return minutes >= 6000 ? `${number(minutes / 60, 0)}h` : formatMinutes(minutes);
 }
 
 /** "7 %", "−4 %": a grade in whole percent. */

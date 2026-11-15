@@ -108,7 +108,7 @@
                 {#if both}
                     <Segmented compact label="By bike or on foot" value={walks ? 'foot' : 'bike'}
                         options={[{ value: 'bike', label: 'By bike' }, { value: 'foot', label: 'On foot' }]}
-                        onChange={next => { foot = next === 'foot'; year = undefined; }} />
+                        onChange={next => { foot = next === 'foot'; [year, active] = [undefined, undefined]; }} />
                 {/if}
             </div>
 
