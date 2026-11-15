@@ -29,6 +29,9 @@ pub(crate) use curve::{folds, water_spans, water_tangents};
 pub use curve::{point, s_at, u_at, water_curves, water_grades, water_level, SpanPoint, WaterCurve};
 pub use levels::{check_levels, levels, step, EndKind, EndLine, Ladder, Levels, Run, State, Step, Structures};
 
+/// Whether the storey under the ground is built (the feature `bores`): its tunnel ways split by their states.
+pub(crate) const BORES: bool = cfg!(feature = "bores");
+
 /// The coarsest sample step: the grid of level l is `BASE_STEP_M / 2^l` along a span.
 pub const BASE_STEP_M: f64 = 16.0;
 /// The finest step, level 7; a grid point closer than half of it to a break goes.
@@ -517,7 +520,8 @@ pub fn build_levelled(cell: CellKey, input: &CellInput, rules: &Sections, band_m
 fn build_with(cell: CellKey, input: &CellInput, rules: &Sections, levelled: Option<f64>) -> WayGraph {
     let area = work_area(cell);
     let mut stats = GraphStats::default();
-    let (mut parts, mut part_rules) = parts::parts(input, rules, &mut stats);
+    // The levels read every tunnel; the graph of the storeys reads a shallow one (`parts::tunnel`) with the bores.
+    let (mut parts, mut part_rules) = parts::parts(input, rules, &mut stats, levelled.is_none() || BORES);
     let (mut samples, sampled): (Vec<Vec<Sample>>, Vec<Vec<bool>>) =
         parts.iter().zip(&part_rules).map(|(part, rule)| curve::samples(part, rule, cell, area)).unzip();
     let plan = points::pieces(&parts, &sampled, input, &mut stats);

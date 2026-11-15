@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 
 use super::curve::{insert, point, s_at, u_at};
-use super::parts::{classify, Rule};
+use super::parts::{classify, tunnel, Rule};
 use super::points::{exact, key, norm, Piece, Plan};
 use super::{CrossingKind, EndKind, EndLine, Family, Level, Part, Run, Sample, State, Station, Step, WayGraph};
 use crate::faces::records::FLAT_TURN_DEG;
@@ -275,7 +275,7 @@ pub fn end_line(
     let part = &g.parts[st.part as usize];
     let sp = point(part, st.span as usize, st.u);
     let p = exact(&g.parts, &st);
-    let half = match classify(&input.features[part.feature.0 as usize], sections).map(|c| c.3) {
+    let half = match classify(&input.features[part.feature.0 as usize], sections, true).map(|c| c.3) {
         Some(Rule::Way(s, _)) => s.half_m + sp.widen_m,
         Some(Rule::Water(r)) => r.half_m,
         None => 0.0,
@@ -291,16 +291,16 @@ pub fn end_line(
 }
 
 /// The pieces of a plan split at the end lines that the tiles carry (`LEVELS`), each with the level of its state: a
-/// DECK stretch on its deck, an OPEN stretch on the ground (a bridge way's stub, or any way of the road solver), a
-/// HIDDEN stretch not at all. A tunnel way keeps its level, and so does a synthetic deck. Each cut is a sample of its
-/// part, so the stretches meet at a joint.
+/// DECK stretch on its deck, a BORE stretch in its tunnel, an OPEN stretch on the ground (a bridge's or a tunnel's
+/// stub, or any way of the road solver), a HIDDEN stretch not at all. A synthetic deck keeps its level, and without
+/// the bores so does a tunnel way (`parts::tunnel`). Each cut is a sample of its part, so the stretches meet at a joint.
 pub(crate) fn split(cell: CellKey, parts: &[Part], input: &CellInput, samples: &mut [Vec<Sample>], plan: Plan) -> Plan {
     let mut out = Vec::with_capacity(plan.pieces.len());
     for piece in &plan.pieces {
         let part = &parts[piece.part];
         let f = &input.features[part.feature.0 as usize];
         let tag = f.tags.get(LEVELS).filter(|_| f.parts.iter().all(|p| p.plan.is_some()));
-        let levels = tag.and_then(|t| parse(t)).filter(|_| !piece.synthetic && part.level != Level::Tunnel);
+        let levels = tag.and_then(|t| parse(t)).filter(|_| !piece.synthetic && (super::BORES || !tunnel(f)));
         let Some((first, lines)) = levels else {
             out.push(piece.clone());
             continue;
@@ -350,12 +350,12 @@ pub(crate) fn split(cell: CellKey, parts: &[Part], input: &CellInput, samples: &
     Plan { pieces: out, ..plan }
 }
 
-/// A junction with arms on the ground and on a deck lies on the ground: its arms meet at one height there, and the
-/// ground's junction rounds its corners. Each deck arm's stretch from the junction up to its mouth, its first sample
-/// where its stroke (its outer half-width and `band_m`) has left the strokes of the junction's ground arms that leave
-/// across it, is a ground piece, which meets the rest of the deck at a joint as a stub meets its deck. A deck arm that
-/// never leaves them is a ground piece as a whole. The mouth is a sample of the deck, so no new sample lies a few
-/// centimetres from an old one.
+/// A junction with arms on the ground and on a structure (a deck, or with the bores a bore) lies on the ground: its
+/// arms meet at one height there, and the ground's junction rounds its corners. Each structure arm's stretch from the
+/// junction up to its mouth, its first sample where its stroke (its outer half-width and `band_m`) has left the strokes
+/// of the junction's ground arms that leave across it, is a ground piece, which meets the rest of the structure at a
+/// joint as a stub meets its deck. A structure arm that never leaves them is a ground piece as a whole. The mouth is a
+/// sample of the structure, so no new sample lies a few centimetres from an old one.
 /// Piece ends this near (frame units) are one node: a station's point is a curve point, not its vertex's exact one.
 const NODE_UNITS: f64 = 4.0;
 
@@ -397,16 +397,16 @@ fn ground_junctions_once(
         ([v[0] as f64 + sp.d[0], v[1] as f64 + sp.d[1]], sp.tangent)
     };
     let units = |m: f64, y: f64| m / metres_per_unit_at(y);
-    // The nodes of the pieces on the ground or on a (real) deck: per node, each piece's arm there, an end (0 or 1) or
-    // a vertex that it runs through (2), with its way's direction away from the node.
+    let raised = |p: &Piece| !p.synthetic && (p.level == Level::Deck || (super::BORES && p.level == Level::Tunnel));
+    // The nodes of the pieces on the ground or on a (real) structure: per node, each piece's arm there, an end (0 or
+    // 1) or a vertex that it runs through (2), with its way's direction away from the node.
     let nodes = |plan: &Plan| {
         // The arms, and per arm its node's key (y, then x, in `NODE_UNITS`) and its place in the arms, sorted.
         let mut arms: Vec<NodeArm> = Vec::new();
         let mut keys: Vec<(u64, u32)> = Vec::new();
         for (i, p) in plan.pieces.iter().enumerate() {
             let part = &parts[p.part];
-            let deck = p.level == Level::Deck && !p.synthetic;
-            if part.family == Family::Water || !(p.level == Level::Ground || deck) {
+            if part.family == Family::Water || !(p.level == Level::Ground || raised(p)) {
                 continue;
             }
             let through = (p.from.span + 1..=p.to.span).map(|k| Station { span: k, u: 0.0, ..p.from });
@@ -434,12 +434,12 @@ fn ground_junctions_once(
     let mixed = |arms: &[NodeArm], plan: &Plan| {
         arms.len() >= 3
             && arms.iter().any(|a| plan.pieces[a.0].level == Level::Ground)
-            && arms.iter().any(|a| plan.pieces[a.0].level == Level::Deck)
+            && arms.iter().any(|a| raised(&plan.pieces[a.0]))
     };
-    // A deck that runs through such a node ends there.
+    // A structure that runs through such a node ends there.
     let mut cuts: Vec<(usize, Station)> = Vec::new();
     for arms in nodes(&plan).iter().filter(|arms| mixed(arms, &plan)) {
-        for a in arms.iter().filter(|a| a.1 == 2 && plan.pieces[a.0].level == Level::Deck) {
+        for a in arms.iter().filter(|a| a.1 == 2 && raised(&plan.pieces[a.0])) {
             if !cuts.contains(&(a.0, a.2)) {
                 // In order along the piece: a few cuts.
                 let at = cuts.iter().position(|c| (c.0, key(&c.1)) > (a.0, key(&a.2))).unwrap_or(cuts.len());
@@ -494,7 +494,7 @@ fn ground_junctions_once(
                 })
             })
         };
-        for &(i, e, _, dir) in arms.iter().filter(|a| a.1 < 2 && plan.pieces[a.0].level == Level::Deck) {
+        for &(i, e, _, dir) in arms.iter().filter(|a| a.1 < 2 && raised(&plan.pieces[a.0])) {
             let p = &plan.pieces[i];
             let part = &parts[p.part];
             let k = |x: &Sample| (x.span, x.u);
