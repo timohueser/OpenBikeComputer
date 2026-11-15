@@ -51,7 +51,7 @@
     "map-reading",
     "navigation"
    ],
-   "violations": 5,
+   "violations": 3,
    "lines": 16264,
    "problems": [
     {
@@ -61,14 +61,6 @@
     {
      "rule": "cycle",
      "message": "device-link -> card-storage closes a cycle: obc-flat-device -> obc-storage, obc-link -> obc-storage (test)"
-    },
-    {
-     "rule": "cycle",
-     "message": "host-runtime -> card-storage closes a cycle: obc-host-core -> obc-storage"
-    },
-    {
-     "rule": "cycle",
-     "message": "map-assembly -> card-storage closes a cycle: obc-builder-bridge -> obc-storage"
     },
     {
      "rule": "R1",
@@ -189,13 +181,14 @@
    "depends_on": [
     "firmware-update",
     "foundations",
-    "navigation"
+    "navigation",
+    "web-foundations"
    ],
    "test_depends_on": [
     "map-reading"
    ],
-   "violations": 9,
-   "lines": 36239,
+   "violations": 5,
+   "lines": 36200,
    "problems": [
     {
      "rule": "cycle",
@@ -207,27 +200,11 @@
     },
     {
      "rule": "cycle",
-     "message": "device-link -> device-map-builder closes a cycle: builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/bytes.ts (test), builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/flat-device/load.ts (test), builder/web/src/lib/device/rides.test.ts -> builder/web/test-support/flat-device/load.ts (test), and 10 more"
-    },
-    {
-     "rule": "cycle",
      "message": "device-link -> firmware-update closes a cycle: obc-vectors -> obc-dfu, builder/web/src/lib/device/write.ts -> builder/web/src/lib/firmware/obcu.ts"
     },
     {
      "rule": "cycle",
-     "message": "device-link -> map-assembly closes a cycle: builder/web/src/lib/device/flows.test.ts -> builder/web/src/lib/convert/bridge.ts (test), builder/web/src/lib/device/rides.test.ts -> builder/web/src/lib/convert/bridge.ts (test), builder/web/src/lib/device/rides.ts -> builder/web/src/lib/convert/bridge.ts, and 1 more"
-    },
-    {
-     "rule": "cycle",
-     "message": "device-map-builder -> device-link closes a cycle: builder/web/src/components/UpdatePrompt.svelte -> builder/web/src/lib/device/job.svelte.ts, builder/web/src/components/UpdatePrompt.svelte -> builder/web/src/lib/device/session.svelte.ts, builder/web/src/components/device/CardFormat.svelte -> builder/web/src/lib/usb/client.ts, and 46 more"
-    },
-    {
-     "rule": "cycle",
      "message": "firmware-update -> device-link closes a cycle: builder/web/src/lib/firmware/obcu.test.ts -> builder/web/src/lib/usb/crc32.ts (test), builder/web/src/lib/firmware/obcu.ts -> builder/web/src/lib/usb/crc32.ts, builder/web/src/lib/firmware/obcu.ts -> builder/web/src/lib/usb/protocol.ts"
-    },
-    {
-     "rule": "cycle",
-     "message": "map-assembly -> device-link closes a cycle: obc-builder-bridge -> obc-flat-device, obc-builder-bridge -> obc-link, obc-builder-bridge -> obc-vectors (test), and 12 more"
     },
     {
      "rule": "R1",
@@ -254,7 +231,7 @@
     "repository-tooling"
    ],
    "violations": 7,
-   "lines": 60410,
+   "lines": 60595,
    "problems": [
     {
      "rule": "cycle",
@@ -283,70 +260,6 @@
     {
      "rule": "R4",
      "message": "device-map-baking (Data and services) has 1 file(s) under tools/"
-    }
-   ]
-  },
-  {
-   "name": "device-map-builder",
-   "kind": "shell",
-   "area": "Shells",
-   "purpose": "Runs the map builder, where a rider builds a device map and manages the device, in the browser.",
-   "status": "approved",
-   "depends_on": [
-    "device-link",
-    "firmware-update",
-    "map-assembly",
-    "map-style",
-    "route-planning",
-    "trailview",
-    "website"
-   ],
-   "test_depends_on": [
-    "repository-tooling",
-    "web-planner"
-   ],
-   "violations": 10,
-   "lines": 12922,
-   "problems": [
-    {
-     "rule": "cycle",
-     "message": "device-link -> device-map-builder closes a cycle: builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/bytes.ts (test), builder/web/src/lib/device/flows.test.ts -> builder/web/test-support/flat-device/load.ts (test), builder/web/src/lib/device/rides.test.ts -> builder/web/test-support/flat-device/load.ts (test), and 10 more"
-    },
-    {
-     "rule": "cycle",
-     "message": "device-map-builder -> device-link closes a cycle: builder/web/src/components/UpdatePrompt.svelte -> builder/web/src/lib/device/job.svelte.ts, builder/web/src/components/UpdatePrompt.svelte -> builder/web/src/lib/device/session.svelte.ts, builder/web/src/components/device/CardFormat.svelte -> builder/web/src/lib/usb/client.ts, and 46 more"
-    },
-    {
-     "rule": "cycle",
-     "message": "device-map-builder -> firmware-update closes a cycle: builder/web/src/components/UpdatePrompt.svelte -> builder/web/src/lib/firmware/check.svelte.ts, builder/web/src/components/device/FirmwareCard.svelte -> builder/web/src/lib/firmware/check.svelte.ts, builder/web/src/components/device/FirmwareCard.svelte -> builder/web/src/lib/firmware/release.ts, and 1 more"
-    },
-    {
-     "rule": "cycle",
-     "message": "device-map-builder -> map-assembly closes a cycle: builder/web/src/components/device/DeviceStep.svelte -> builder/web/src/lib/catalog/ledger.ts, builder/web/src/components/device/DeviceSurfaces.svelte -> builder/web/src/lib/catalog/ledger.ts, builder/web/src/components/device/MapSend.svelte -> builder/web/src/lib/catalog/ledger.ts, and 7 more"
-    },
-    {
-     "rule": "cycle",
-     "message": "device-map-builder -> map-style closes a cycle: builder/web/src/lib/api/client.ts -> builder/web/src/lib/config/model.ts, builder/web/src/lib/platform/types.ts -> builder/web/src/lib/config/model.ts, builder/web/src/routes/Advanced.svelte -> builder/web/src/components/advanced/CategoryRail.svelte, and 10 more"
-    },
-    {
-     "rule": "cycle",
-     "message": "device-map-builder -> route-planning closes a cycle: builder/web/scripts/road-census.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/platform/web.ts -> builder/web/src/lib/planner/release.ts, builder/web/src/lib/ui/Segmented.svelte -> builder/web/src/components/planner/PlannerIcon.svelte, and 15 more"
-    },
-    {
-     "rule": "cycle",
-     "message": "device-map-builder -> trailview closes a cycle: builder/web/scripts/check-wgsl.mjs -> builder/web/src/lib/trailview/gpu/include.ts, builder/web/scripts/road-census.ts -> builder/web/src/lib/trailview/frame/space.ts, builder/web/scripts/road-census.ts -> builder/web/src/lib/trailview/terrain/bins.ts, and 28 more"
-    },
-    {
-     "rule": "cycle",
-     "message": "map-assembly -> device-map-builder closes a cycle: builder/web/src/components/coverage/CoverageHome.svelte -> builder/web/src/components/device/DeviceStep.svelte, builder/web/src/components/coverage/CoverageHome.svelte.test.ts -> builder/web/src/routes/Home.svelte (test), builder/web/src/components/coverage/CoverageHome.svelte.test.ts -> builder/web/test-support/coverage/Selection.svelte (test), and 29 more"
-    },
-    {
-     "rule": "cycle",
-     "message": "map-style -> device-map-builder closes a cycle: builder/web/src/components/advanced/ColorControl.svelte -> builder/web/src/lib/palette.ts, builder/web/src/components/advanced/ProfilesTab.svelte -> builder/web/src/lib/ui/confirm.svelte.ts, builder/web/src/components/advanced/SchemaLab.svelte -> builder/web/src/lib/platform/types.ts, and 4 more"
-    },
-    {
-     "rule": "cycle",
-     "message": "route-planning -> device-map-builder closes a cycle: builder/web/src/components/planner/CompareList.svelte -> builder/web/src/lib/ui/Segmented.svelte, builder/web/src/components/planner/CompareScreen.svelte.test.ts -> builder/web/test-support/planner/MapStub.svelte (test), builder/web/src/components/planner/CompareScreen.svelte.test.ts -> builder/web/test-support/planner/trip.ts (test), and 33 more"
     }
    ]
   },
@@ -432,16 +345,12 @@
    "test_depends_on": [
     "map-reading"
    ],
-   "violations": 4,
+   "violations": 3,
    "lines": 7697,
    "problems": [
     {
      "rule": "cycle",
      "message": "device-link -> firmware-update closes a cycle: obc-vectors -> obc-dfu, builder/web/src/lib/device/write.ts -> builder/web/src/lib/firmware/obcu.ts"
-    },
-    {
-     "rule": "cycle",
-     "message": "device-map-builder -> firmware-update closes a cycle: builder/web/src/components/UpdatePrompt.svelte -> builder/web/src/lib/firmware/check.svelte.ts, builder/web/src/components/device/FirmwareCard.svelte -> builder/web/src/lib/firmware/check.svelte.ts, builder/web/src/components/device/FirmwareCard.svelte -> builder/web/src/lib/firmware/release.ts, and 1 more"
     },
     {
      "rule": "cycle",
@@ -499,29 +408,20 @@
     "device-map-baking",
     "repository-tooling"
    ],
-   "violations": 2,
+   "violations": 0,
    "lines": 17284,
-   "problems": [
-    {
-     "rule": "cycle",
-     "message": "host-runtime -> card-storage closes a cycle: obc-host-core -> obc-storage"
-    },
-    {
-     "rule": "cycle",
-     "message": "map-assembly -> host-runtime closes a cycle: obc-builder-bridge -> obc-host-core"
-    }
-   ]
+   "problems": []
   },
   {
    "name": "library",
    "kind": "system",
    "area": "Apps",
-   "purpose": "Keeps the rider's routes, rides and settings in the browser, each route and ride with a summary, and saves and loads them as one backup file.",
+   "purpose": "Keeps the rider's routes, rides, photos of rides and settings in the browser, each route and ride with a summary, and saves and loads them as one backup file.",
    "status": "draft",
    "depends_on": [],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 2304,
+   "lines": 2851,
    "problems": []
   },
   {
@@ -538,38 +438,15 @@
     "host-runtime",
     "map-reading",
     "navigation",
-    "rendering-display"
+    "rendering-display",
+    "web-foundations"
    ],
    "test_depends_on": [
     "content"
    ],
-   "violations": 10,
-   "lines": 24848,
+   "violations": 4,
+   "lines": 21758,
    "problems": [
-    {
-     "rule": "cycle",
-     "message": "device-link -> map-assembly closes a cycle: builder/web/src/lib/device/flows.test.ts -> builder/web/src/lib/convert/bridge.ts (test), builder/web/src/lib/device/rides.test.ts -> builder/web/src/lib/convert/bridge.ts (test), builder/web/src/lib/device/rides.ts -> builder/web/src/lib/convert/bridge.ts, and 1 more"
-    },
-    {
-     "rule": "cycle",
-     "message": "device-map-builder -> map-assembly closes a cycle: builder/web/src/components/device/DeviceStep.svelte -> builder/web/src/lib/catalog/ledger.ts, builder/web/src/components/device/DeviceSurfaces.svelte -> builder/web/src/lib/catalog/ledger.ts, builder/web/src/components/device/MapSend.svelte -> builder/web/src/lib/catalog/ledger.ts, and 7 more"
-    },
-    {
-     "rule": "cycle",
-     "message": "map-assembly -> card-storage closes a cycle: obc-builder-bridge -> obc-storage"
-    },
-    {
-     "rule": "cycle",
-     "message": "map-assembly -> device-link closes a cycle: obc-builder-bridge -> obc-flat-device, obc-builder-bridge -> obc-link, obc-builder-bridge -> obc-vectors (test), and 12 more"
-    },
-    {
-     "rule": "cycle",
-     "message": "map-assembly -> device-map-builder closes a cycle: builder/web/src/components/coverage/CoverageHome.svelte -> builder/web/src/components/device/DeviceStep.svelte, builder/web/src/components/coverage/CoverageHome.svelte.test.ts -> builder/web/src/routes/Home.svelte (test), builder/web/src/components/coverage/CoverageHome.svelte.test.ts -> builder/web/test-support/coverage/Selection.svelte (test), and 29 more"
-    },
-    {
-     "rule": "cycle",
-     "message": "map-assembly -> host-runtime closes a cycle: obc-builder-bridge -> obc-host-core"
-    },
     {
      "rule": "cycle",
      "message": "map-assembly -> map-style closes a cycle: builder/web/src/components/coverage/SkinStep.svelte -> builder/web/src/components/skin/SkinEditor.svelte, builder/web/src/components/coverage/SkinStep.svelte -> builder/web/src/components/skin/SkinPreviewThumbnail.svelte, builder/web/src/components/coverage/SkinStep.svelte -> builder/web/src/lib/skin/custom.ts, and 4 more"
@@ -628,22 +505,16 @@
    "area": "Apps",
    "purpose": "Defines how map features look on the device.",
    "status": "draft",
-   "depends_on": [],
+   "depends_on": [
+    "web-foundations"
+   ],
    "test_depends_on": [],
-   "violations": 4,
-   "lines": 6923,
+   "violations": 2,
+   "lines": 1998,
    "problems": [
     {
      "rule": "cycle",
-     "message": "device-map-builder -> map-style closes a cycle: builder/web/src/lib/api/client.ts -> builder/web/src/lib/config/model.ts, builder/web/src/lib/platform/types.ts -> builder/web/src/lib/config/model.ts, builder/web/src/routes/Advanced.svelte -> builder/web/src/components/advanced/CategoryRail.svelte, and 10 more"
-    },
-    {
-     "rule": "cycle",
      "message": "map-assembly -> map-style closes a cycle: builder/web/src/components/coverage/SkinStep.svelte -> builder/web/src/components/skin/SkinEditor.svelte, builder/web/src/components/coverage/SkinStep.svelte -> builder/web/src/components/skin/SkinPreviewThumbnail.svelte, builder/web/src/components/coverage/SkinStep.svelte -> builder/web/src/lib/skin/custom.ts, and 4 more"
-    },
-    {
-     "rule": "cycle",
-     "message": "map-style -> device-map-builder closes a cycle: builder/web/src/components/advanced/ColorControl.svelte -> builder/web/src/lib/palette.ts, builder/web/src/components/advanced/ProfilesTab.svelte -> builder/web/src/lib/ui/confirm.svelte.ts, builder/web/src/components/advanced/SchemaLab.svelte -> builder/web/src/lib/platform/types.ts, and 4 more"
     },
     {
      "rule": "cycle",
@@ -683,21 +554,21 @@
    "depends_on": [
     "data-engine",
     "device-map-baking",
-    "device-map-builder",
     "foundations",
     "map-assembly",
     "route-planning",
     "routing",
     "search",
     "source-preparation",
-    "trailview"
+    "trailview",
+    "web-foundations"
    ],
    "test_depends_on": [
     "map-reading",
     "repository-tooling"
    ],
    "violations": 4,
-   "lines": 9954,
+   "lines": 10055,
    "problems": [
     {
      "rule": "R1",
@@ -781,7 +652,7 @@
    ],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 18954,
+   "lines": 18895,
    "problems": []
   },
   {
@@ -825,23 +696,16 @@
    "purpose": "Lets a rider plan a route on a map, in the browser or on the phone.",
    "status": "draft",
    "depends_on": [
-    "library"
+    "library",
+    "web-foundations"
    ],
    "test_depends_on": [],
-   "violations": 7,
-   "lines": 27428,
+   "violations": 5,
+   "lines": 27639,
    "problems": [
     {
      "rule": "cycle",
-     "message": "device-map-builder -> route-planning closes a cycle: builder/web/scripts/road-census.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/platform/web.ts -> builder/web/src/lib/planner/release.ts, builder/web/src/lib/ui/Segmented.svelte -> builder/web/src/components/planner/PlannerIcon.svelte, and 15 more"
-    },
-    {
-     "rule": "cycle",
      "message": "map-assembly -> route-planning closes a cycle: builder/web/src/lib/map/basemap-config.test.ts -> builder/web/src/lib/planner/map-style.ts (test), builder/web/src/lib/map/basemap-config.ts -> builder/web/src/lib/planner/config.ts, builder/web/src/lib/map/basemap-config.ts -> builder/web/src/lib/planner/release.ts, and 1 more"
-    },
-    {
-     "rule": "cycle",
-     "message": "route-planning -> device-map-builder closes a cycle: builder/web/src/components/planner/CompareList.svelte -> builder/web/src/lib/ui/Segmented.svelte, builder/web/src/components/planner/CompareScreen.svelte.test.ts -> builder/web/test-support/planner/MapStub.svelte (test), builder/web/src/components/planner/CompareScreen.svelte.test.ts -> builder/web/test-support/planner/trip.ts (test), and 33 more"
     },
     {
      "rule": "cycle",
@@ -857,7 +721,7 @@
     },
     {
      "rule": "cycle",
-     "message": "trailview -> route-planning closes a cycle: builder/web/src/lib/trailview/dressing/dressing.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/trailview/engine.ts -> builder/web/src/lib/planner/config.ts, builder/web/src/lib/trailview/engine.ts -> builder/web/src/lib/planner/geo.ts, and 38 more"
+     "message": "trailview -> route-planning closes a cycle: builder/web/scripts/road-census.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/trailview/dressing/dressing.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/trailview/engine.ts -> builder/web/src/lib/planner/config.ts, and 42 more"
     }
    ]
   },
@@ -889,18 +753,15 @@
    "status": "draft",
    "depends_on": [
     "content",
-    "data-engine"
+    "data-engine",
+    "web-foundations"
    ],
    "test_depends_on": [
     "device-map-baking"
    ],
-   "violations": 2,
+   "violations": 1,
    "lines": 11477,
    "problems": [
-    {
-     "rule": "dependency",
-     "message": "search uses device-map-builder but does not list it in depends_on: planner/search/native-build.mjs -> builder/web/vite/third-party-licenses.ts"
-    },
     {
      "rule": "R4",
      "message": "search (Data and services) has 2 file(s) under tools/"
@@ -975,25 +836,20 @@
    "depends_on": [
     "data-engine"
    ],
-   "test_depends_on": [],
-   "violations": 5,
-   "lines": 103131,
+   "test_depends_on": [
+    "repository-tooling",
+    "web-planner"
+   ],
+   "violations": 3,
+   "lines": 106869,
    "problems": [
-    {
-     "rule": "cycle",
-     "message": "device-map-builder -> trailview closes a cycle: builder/web/scripts/check-wgsl.mjs -> builder/web/src/lib/trailview/gpu/include.ts, builder/web/scripts/road-census.ts -> builder/web/src/lib/trailview/frame/space.ts, builder/web/scripts/road-census.ts -> builder/web/src/lib/trailview/terrain/bins.ts, and 28 more"
-    },
     {
      "rule": "cycle",
      "message": "route-planning -> trailview closes a cycle: builder/web/src/components/planner/TrailViewConditions.svelte -> builder/web/src/lib/trailview/view.ts, builder/web/src/components/planner/TrailViewWindow.svelte -> builder/web/src/lib/trailview/engine.ts, builder/web/src/components/planner/TrailViewWindow.svelte -> builder/web/src/lib/trailview/frame/camera.ts, and 12 more"
     },
     {
-     "rule": "dependency",
-     "message": "trailview tests use device-map-builder but test_depends_on does not list it: builder/web/src/lib/trailview/roads/mesh.test.ts -> builder/web/test-support/trailview/census.ts (test), builder/web/src/lib/trailview/terrain/model.test.ts -> builder/web/test-support/fake-caches.ts (test), builder/web/src/lib/trailview/terrain/stamp-cache.test.ts -> builder/web/test-support/fake-caches.ts (test), and 2 more"
-    },
-    {
      "rule": "cycle",
-     "message": "trailview -> route-planning closes a cycle: builder/web/src/lib/trailview/dressing/dressing.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/trailview/engine.ts -> builder/web/src/lib/planner/config.ts, builder/web/src/lib/trailview/engine.ts -> builder/web/src/lib/planner/geo.ts, and 38 more"
+     "message": "trailview -> route-planning closes a cycle: builder/web/scripts/road-census.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/trailview/dressing/dressing.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/trailview/engine.ts -> builder/web/src/lib/planner/config.ts, and 42 more"
     },
     {
      "rule": "R4",
@@ -1029,6 +885,18 @@
    "problems": []
   },
   {
+   "name": "web-foundations",
+   "kind": "system",
+   "area": "Apps",
+   "purpose": "Holds the small parts that the web systems share: the window, the switches and the icon, the loader of the WebAssembly core, the GPX and FIT files, the theme, the page addresses, the verified download, the colour tokens and the licence notices of the build.",
+   "status": "draft",
+   "depends_on": [],
+   "test_depends_on": [],
+   "violations": 0,
+   "lines": 1518,
+   "problems": []
+  },
+  {
    "name": "web-planner",
    "kind": "shell",
    "area": "Shells",
@@ -1036,17 +904,19 @@
    "status": "approved",
    "depends_on": [
     "device-link",
-    "device-map-builder",
     "firmware-update",
     "library",
     "map-assembly",
     "map-style",
     "route-planning",
-    "trailview"
+    "trailview",
+    "web-foundations"
    ],
-   "test_depends_on": [],
+   "test_depends_on": [
+    "repository-tooling"
+   ],
    "violations": 0,
-   "lines": 11967,
+   "lines": 17113,
    "problems": []
   },
   {
@@ -1185,12 +1055,6 @@
   },
   {
    "from": "device-link",
-   "to": "device-map-builder",
-   "test": false,
-   "undeclared": true
-  },
-  {
-   "from": "device-link",
    "to": "firmware-update",
    "test": false,
    "undeclared": false
@@ -1203,12 +1067,6 @@
   },
   {
    "from": "device-link",
-   "to": "map-assembly",
-   "test": false,
-   "undeclared": true
-  },
-  {
-   "from": "device-link",
    "to": "map-reading",
    "test": true,
    "undeclared": false
@@ -1216,6 +1074,12 @@
   {
    "from": "device-link",
    "to": "navigation",
+   "test": false,
+   "undeclared": false
+  },
+  {
+   "from": "device-link",
+   "to": "web-foundations",
    "test": false,
    "undeclared": false
   },
@@ -1284,60 +1148,6 @@
    "to": "source-preparation",
    "test": false,
    "undeclared": true
-  },
-  {
-   "from": "device-map-builder",
-   "to": "device-link",
-   "test": false,
-   "undeclared": false
-  },
-  {
-   "from": "device-map-builder",
-   "to": "firmware-update",
-   "test": false,
-   "undeclared": false
-  },
-  {
-   "from": "device-map-builder",
-   "to": "map-assembly",
-   "test": false,
-   "undeclared": false
-  },
-  {
-   "from": "device-map-builder",
-   "to": "map-style",
-   "test": false,
-   "undeclared": false
-  },
-  {
-   "from": "device-map-builder",
-   "to": "repository-tooling",
-   "test": true,
-   "undeclared": false
-  },
-  {
-   "from": "device-map-builder",
-   "to": "route-planning",
-   "test": false,
-   "undeclared": false
-  },
-  {
-   "from": "device-map-builder",
-   "to": "trailview",
-   "test": false,
-   "undeclared": false
-  },
-  {
-   "from": "device-map-builder",
-   "to": "web-planner",
-   "test": true,
-   "undeclared": false
-  },
-  {
-   "from": "device-map-builder",
-   "to": "website",
-   "test": false,
-   "undeclared": false
   },
   {
    "from": "device-runtime",
@@ -1485,12 +1295,6 @@
   },
   {
    "from": "map-assembly",
-   "to": "device-map-builder",
-   "test": false,
-   "undeclared": true
-  },
-  {
-   "from": "map-assembly",
    "to": "foundations",
    "test": false,
    "undeclared": false
@@ -1532,6 +1336,12 @@
    "undeclared": true
   },
   {
+   "from": "map-assembly",
+   "to": "web-foundations",
+   "test": false,
+   "undeclared": false
+  },
+  {
    "from": "map-reading",
    "to": "device-map-baking",
    "test": false,
@@ -1557,15 +1367,15 @@
   },
   {
    "from": "map-style",
-   "to": "device-map-builder",
+   "to": "map-assembly",
    "test": false,
    "undeclared": true
   },
   {
    "from": "map-style",
-   "to": "map-assembly",
+   "to": "web-foundations",
    "test": false,
-   "undeclared": true
+   "undeclared": false
   },
   {
    "from": "navigation",
@@ -1605,12 +1415,6 @@
   },
   {
    "from": "obc-data",
-   "to": "device-map-builder",
-   "test": false,
-   "undeclared": false
-  },
-  {
-   "from": "obc-data",
    "to": "foundations",
    "test": false,
    "undeclared": false
@@ -1635,12 +1439,6 @@
   },
   {
    "from": "obc-data",
-   "to": "route-planning",
-   "test": false,
-   "undeclared": false
-  },
-  {
-   "from": "obc-data",
    "to": "routing",
    "test": false,
    "undeclared": false
@@ -1660,6 +1458,12 @@
   {
    "from": "obc-data",
    "to": "trailview",
+   "test": false,
+   "undeclared": false
+  },
+  {
+   "from": "obc-data",
+   "to": "web-foundations",
    "test": false,
    "undeclared": false
   },
@@ -1707,12 +1511,6 @@
   },
   {
    "from": "route-planning",
-   "to": "device-map-builder",
-   "test": false,
-   "undeclared": true
-  },
-  {
-   "from": "route-planning",
    "to": "library",
    "test": false,
    "undeclared": false
@@ -1734,6 +1532,12 @@
    "to": "trailview",
    "test": false,
    "undeclared": true
+  },
+  {
+   "from": "route-planning",
+   "to": "web-foundations",
+   "test": false,
+   "undeclared": false
   },
   {
    "from": "routing",
@@ -1767,9 +1571,9 @@
   },
   {
    "from": "search",
-   "to": "device-map-builder",
+   "to": "web-foundations",
    "test": false,
-   "undeclared": true
+   "undeclared": false
   },
   {
    "from": "simulators",
@@ -1875,15 +1679,21 @@
   },
   {
    "from": "trailview",
-   "to": "device-map-builder",
+   "to": "repository-tooling",
    "test": true,
-   "undeclared": true
+   "undeclared": false
   },
   {
    "from": "trailview",
    "to": "route-planning",
    "test": false,
    "undeclared": true
+  },
+  {
+   "from": "trailview",
+   "to": "web-planner",
+   "test": true,
+   "undeclared": false
   },
   {
    "from": "trailview-page",
@@ -1900,12 +1710,6 @@
   {
    "from": "web-planner",
    "to": "device-link",
-   "test": false,
-   "undeclared": false
-  },
-  {
-   "from": "web-planner",
-   "to": "device-map-builder",
    "test": false,
    "undeclared": false
   },
@@ -1935,6 +1739,12 @@
   },
   {
    "from": "web-planner",
+   "to": "repository-tooling",
+   "test": true,
+   "undeclared": false
+  },
+  {
+   "from": "web-planner",
    "to": "route-planning",
    "test": false,
    "undeclared": false
@@ -1944,25 +1754,31 @@
    "to": "trailview",
    "test": false,
    "undeclared": false
+  },
+  {
+   "from": "web-planner",
+   "to": "web-foundations",
+   "test": false,
+   "undeclared": false
   }
  ],
  "cycles": [
   [
    "card-storage",
    "device-link",
-   "device-map-builder",
-   "firmware-update",
-   "host-runtime",
-   "map-assembly",
-   "map-style",
-   "route-planning",
-   "trailview"
+   "firmware-update"
   ],
   [
    "content",
    "device-map-baking",
    "map-reading",
    "source-preparation"
+  ],
+  [
+   "map-assembly",
+   "map-style",
+   "route-planning",
+   "trailview"
   ]
  ]
 }

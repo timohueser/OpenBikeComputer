@@ -19,7 +19,7 @@
     $effect(() => { working = !!step; });
     let said = $state<string | null>(null);
 
-    /** The two steps of the map builder: the package goes to the card, then the device is asked to install it. Only the
+    /** The two steps of the update: the package goes to the card, then the device is asked to install it. Only the
      * answer of the device says that it installs. */
     async function update() {
         const target = release;

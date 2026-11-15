@@ -38,6 +38,7 @@
     import './styles/shell.css';
     import TopBar from './components/TopBar.svelte';
     import Window from './lib/ui/Window.svelte';
+    import { LINKS } from './lib/constants';
     import { ROUTES } from './lib/routes';
     import { router } from './lib/router.svelte';
     import { startTheme } from './lib/theme.svelte';
@@ -115,9 +116,9 @@
         <a href={siteBase}>OpenBikeComputer</a>
         <a href={`${siteBase}docs/`}>Docs</a>
         <a href={`${siteBase}blog/`}>Blog</a>
-        <a href={`${siteBase}builder/`}>Map builder</a>
         <a href={`${siteBase}docs/impressum/`}>Impressum</a>
         <a href={`${siteBase}docs/datenschutz/`}>Datenschutz</a>
+        <a href={LINKS.licenses}>Licences</a>
     </footer>
 </div>
 

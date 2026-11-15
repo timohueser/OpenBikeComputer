@@ -5,19 +5,23 @@
     import type { Summary } from '../../lib/library/records';
     import { lineCoordinates } from '../../lib/library/summary';
     import { coordinateAt, nearestOnLine, nearestProgress, routeSlice, type Coordinate } from '../../lib/planner/geo';
-    import Icon from '../planner/PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
+    import PhotoMarks from './PhotoMarks.svelte';
     import { basemapStyle } from '../../lib/planner/map-style';
     import { styleConfig, useMapProtocols } from '../../lib/planner/map-setup';
     import { appearance } from '../../lib/theme.svelte';
 
     /** A map that the rider can move, with the summary line of a route or a ride and the mark. A share is 0 to 1 along the line. */
-    let { summary, ride = false, mark, pins = [], onpoint, fitTo, lit, place }: {
+    let { summary, ride = false, mark, pins = [], photos = [], onphoto, onpoint, fitTo, lit, place }: {
         summary: Summary;
         /** The line is a ride, in `--ride`. */
         ride?: boolean;
         mark?: number;
         /** Labels at shares of the line: a numbered waypoint, or a night without a number. */
         pins?: { share: number; label: string; number?: number }[];
+        /** The photos of a ride at shares of the line, each with the address of its small picture. */
+        photos?: { id: string; url: string; share: number }[];
+        onphoto?: (id: string) => void;
         /** The share of the point of the line nearest to the pointer, or null when the pointer is not near the line. */
         onpoint?: (share: number | null) => void;
         /** The stretch that the map fits; without it, the whole line. */
@@ -35,6 +39,7 @@
     let map = $state.raw<maplibregl.Map>();
     /** `index` is the place in `pins`; `left` puts the label on the side with more room. */
     let shownPins = $state.raw<{ share: number; label: string; number?: number; x: number; y: number; index: number; left: boolean }[]>([]);
+    let shownPhotos = $state.raw<{ id: string; url: string; x: number; y: number }[]>([]);
     /** The pin whose name shows, by its index; one at a time. */
     let opened = $state<number>();
     const pinName = (pin: { label: string; number?: number }) => pin.number ? pin.label : pin.label ? `Night · ${pin.label}` : 'Night';
@@ -131,15 +136,20 @@
         const source = map?.getSource<maplibregl.GeoJSONSource>('route');
         source?.setData({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates } });
     });
-    // The pins follow the map: their places in the box change with each move.
+    // The pins and the photos follow the map: their places in the box change with each move.
     $effect(() => {
-        if (!map || coordinates.length < 2) return void (shownPins = []);
-        const shown = map, at = pins.map(pin => coordinateAt(coordinates, pin.share));
+        if (!map || coordinates.length < 2) return void ([shownPins, shownPhotos] = [[], []]);
+        const shown = map, at = pins.map(pin => coordinateAt(coordinates, pin.share)), photoAt = photos.map(photo => coordinateAt(coordinates, photo.share));
         const place = () => {
             const { clientWidth: width, clientHeight: height } = shown.getContainer();
+            const inside = ({ x, y }: { x: number; y: number }) => x >= 0 && x <= width && y >= 0 && y <= height;
             shownPins = pins.flatMap((pin, i) => {
                 const { x, y } = shown.project(at[i]);
-                return x >= 0 && x <= width && y >= 0 && y <= height ? [{ ...pin, x, y, index: i, left: x > width / 2 }] : [];
+                return inside({ x, y }) ? [{ ...pin, x, y, index: i, left: x > width / 2 }] : [];
+            });
+            shownPhotos = photos.flatMap(({ id, url }, i) => {
+                const { x, y } = shown.project(photoAt[i]);
+                return inside({ x, y }) ? [{ id, url, x, y }] : [];
             });
         };
         place();
@@ -167,6 +177,7 @@
                 {#if opened === pin.index}<span class="route-pin-label" class:left={pin.left}>{pinName(pin)}</span>{/if}
             </span>
         {/each}
+        <PhotoMarks photos={shownPhotos} onopen={onphoto} />
     </div>
 </div>
 

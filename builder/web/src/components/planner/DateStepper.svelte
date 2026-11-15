@@ -16,7 +16,7 @@
 </script>
 
 <script lang="ts">
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import DateCalendar from './DateCalendar.svelte';
 
     /** The previous day, the date that opens the calendar, and the next day. `label` names the date button for a screen reader. */

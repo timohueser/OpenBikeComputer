@@ -92,13 +92,13 @@ test('the Routes page lists the routes, filters them with a chip, shows the sele
 
 const year = new Date().getFullYear();
 const lake = [8, 48, 8.1, 48, 8.1, 48.1, 8, 48.1, 8, 48];
-function ride(name, line, lengthM, month, day) {
-  const start = new Date(year, month, day, 9).getTime() / 1000;
+function ride(name, line, lengthM, month, day, bike = 'road', at = year) {
+  const start = new Date(at, month, day, 9).getTime() / 1000;
   const xs = line.filter((_, i) => i % 2 === 0), ys = line.filter((_, i) => i % 2);
   return {
     key: new Date(start * 1000).toISOString().replace(/[-:]|\.\d+/g, ''), name, source: 'file', format: 'gpx', maxHr: null, ftp: null,
     summary: { line, heights: xs.map(() => 400), bounds: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)],
-      lengthM, climbM: 100, highestM: 400, seconds: 3600, bike: 'road', start, movingS: 3000 },
+      lengthM, climbM: 100, highestM: 400, seconds: 3600, bike, start, movingS: 3000 },
   };
 }
 
@@ -154,4 +154,51 @@ test('the ridden view shows a trip, a group of rides on a route, a ride taken ou
   await page.locator('ul').getByRole('button', { name: /Lake test/ }).click();
   await expect(page.getByRole('region', { name: 'Lake test' })).toContainText('ridden 2 times');
   expect(errors).toEqual([]);
+});
+
+test('the line of the year opens the statistics: the years, the months of a year, on foot apart, and the longest ride', async ({ page }) => {
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.route(url => url.hostname !== '127.0.0.1', request => {
+    if (request.request().method() === 'OPTIONS') return request.fulfill(CORS_PREFLIGHT);
+    const response = respond(request.request());
+    return response ? request.fulfill(response) : request.abort();
+  });
+  const rides = [ride('Old loop', lake, 50_000, 3, 5, 'road', year - 1), ride('Long day', lake, 80_000, 4, 5), ride('Walk', lake, 12_000, 5, 5, 'hiking')];
+  await page.goto('/planner.html?cover=none');
+  await page.waitForFunction(() => window.coverTest);
+  await page.evaluate(async rides => {
+    for (const ride of rides) await window.coverTest.library.addRide(ride, new Blob(['ride']));
+  }, rides);
+
+  // The line never adds the ride by bike and the hike.
+  await page.goto('/planner.html#/routes/ridden');
+  await expect(page.locator('.totals')).toHaveText(new RegExp(`${year} · 80.0\\skm · 1 ride · 12.0\\skm · 1 hike`));
+  await page.locator('.totals').click();
+  const statistics = page.getByRole('dialog', { name: 'Statistics' });
+  const bars = statistics.getByRole('list').getByRole('listitem'), distance = statistics.getByRole('radio', { name: /Distance/ });
+  await expect(bars).toHaveText([new RegExp(`50.*${year - 1}`), new RegExp(`80.*${year}`)]);
+  await expect(distance).toHaveText(/130\skm/);
+
+  // A year shows its 12 months; "All years" and Escape go back, and the window stays open.
+  await statistics.getByRole('button', { name: new RegExp(`^${year - 1}: 50.0\\skm$`) }).click();
+  await expect(bars).toHaveCount(12);
+  await expect(distance).toHaveText(/50.0\skm/);
+  await statistics.getByRole('button', { name: 'All years' }).click();
+  await expect(bars).toHaveCount(2);
+  await statistics.getByRole('button', { name: `${year - 1}` }).click();
+  await page.keyboard.press('Escape');
+  await expect(bars).toHaveCount(2);
+
+  // On foot has one year, so its months show at once.
+  await statistics.getByRole('radio', { name: 'On foot' }).click();
+  await expect(distance).toHaveText(/12.0\skm/);
+  await expect(bars).toHaveCount(12);
+  await expect(statistics.getByRole('button', { name: 'All years' })).toHaveCount(0);
+  expect(errors).toEqual([]);
+
+  await statistics.getByRole('radio', { name: 'By bike' }).click();
+  await statistics.getByRole('link', { name: /Longest ride/ }).click();
+  await expect(page).toHaveURL(new RegExp(`#/ride/${rides[1].key}$`));
+  await expect(statistics).toHaveCount(0);
 });

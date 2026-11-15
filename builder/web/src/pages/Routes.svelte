@@ -1,7 +1,7 @@
 <!-- The Routes page: the planned routes or the rides in a list with a search and chips, on a map, and the selected one in a
      card. -->
 <script lang="ts">
-    import { onMount, untrack } from 'svelte';
+    import { onMount, tick, untrack } from 'svelte';
     import { SvelteSet } from 'svelte/reactivity';
     import Card from '../lib/ui/Card.svelte';
     import Segmented from '../lib/ui/Segmented.svelte';
@@ -20,6 +20,7 @@
     import { readSearch, results, rideItem, routeItem, type Box, type Chips as ChipValues, type Item, type Naming, type RideItem } from './routes/filter';
     import { dayText, rideRows, tripDates, type Row } from './routes/rows';
     import SelectedCard from './routes/SelectedCard.svelte';
+    import Statistics from './routes/Statistics.svelte';
     import { deviceState, type DeviceState } from './routes/state';
 
     let { library }: { library: Library; active: boolean } = $props();
@@ -34,7 +35,7 @@
     let waiting = $state.raw<LibraryState['waiting']>(), sent = $state.raw<LibraryState['sent']>();
     let naming = $state.raw<Naming>(), failure = $state('');
     let chips = $state<ChipValues>(search()?.chips ?? {}), text = $state(search()?.text ?? '');
-    let onlyView = $state(false), view = $state.raw<Box>(), selected = $state<string>(), fit = $state(0), adding = $state(false);
+    let onlyView = $state(false), view = $state.raw<Box>(), selected = $state<string>(), fit = $state(0), adding = $state(false), statistics = $state(false);
     /** The ride groups by ride key, once `groups` ends; until then each ride is its own group. */
     let grouped = $state.raw(new Map<string, string>()), opened = $state<string>();
     /** The rows in view or near it: only these mount their picture. */
@@ -64,6 +65,9 @@
     const years = $derived([...new Set(rideItems.map(item => new Date(item.at).getFullYear()))].sort((a, b) => b - a));
     const year = $derived(chips.year ?? new Date().getFullYear());
     const totals = $derived(yearTotals(rides ?? [], year));
+    /** The year by bike, and on foot after it when the year has hikes. A year with no ride shows by bike. */
+    const yearText = $derived([...totals.bike.count || !totals.foot.count ? [formatDistance(totals.bike.lengthM), count(totals.bike.count, 'ride')] : [],
+        ...totals.foot.count ? [formatDistance(totals.foot.lengthM), count(totals.foot.count, 'hike')] : []]);
 
     // The map fits the results when the list first shows, after a chip change and in the other view, unless it keeps its
     // view. A reload of the library after a write does not move it.
@@ -165,6 +169,13 @@
     function select(id: string | undefined) {
         const row = ridden ? listRows.find(row => row.rides.some(ride => ride.id === id)) : undefined;
         selected = row ? `${row.kind}:${row.id}` : ridden ? undefined : id;
+    }
+
+    /** The row of a trip is in the list only with no search and no open group. The list then scrolls to the row. */
+    async function showTrip(id: string) {
+        [chips, text, onlyView, opened, selected] = [{}, '', false, undefined, `trip:${id}`];
+        await tick();
+        document.querySelector(`.list li[data-id="${CSS.escape(selected!)}"]`)?.scrollIntoView({ block: 'nearest' });
     }
 
     const addFiles = () => initCore().then(() => import('./AddFiles.svelte')).then(module => module.default);
@@ -272,8 +283,10 @@
                     </ul>
                     <div class="switch"><Switch bind:checked={onlyView} label="Only in this map view" /></div>
                     {#if ridden}
-                        <p class="totals"><strong>{year}</strong> · {[formatDistance(totals.lengthM), count(totals.rides, 'ride'),
-                            totals.hikes && count(totals.hikes, 'hike')].filter(Boolean).join(' · ')}</p>
+                        <button type="button" class="totals" aria-haspopup="dialog" onclick={() => statistics = true}>
+                            <span class="meta"><strong>{year}</strong>{#each yearText as part, i (i)}{' · '}<span>{part}</span>{/each}</span>
+                            <span aria-hidden="true">›</span>
+                        </button>
                     {/if}
                 {/if}
             </Card>
@@ -297,6 +310,10 @@
         </div>
     </div>
 </div>
+
+{#if statistics}
+    <Statistics rides={rides ?? []} trips={tripList} onClose={() => statistics = false} onTrip={showTrip} />
+{/if}
 
 {#if adding}
     {#await addFiles() then AddFiles}
@@ -496,14 +513,28 @@
         color: var(--ink);
         font: inherit;
     }
-    /* One line over the foot of the list: the switch, and under it the year. */
+    /* One line over the foot of the list: the switch, and under it the year, which is the row that opens the statistics. */
     .switch {
         padding-top: 8px;
         border-top: 1px solid var(--line);
     }
     .totals {
-        margin: -4px 0 0;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin: -8px -6px -6px;
+        padding: 6px;
+        border: 0;
+        border-radius: 8px;
+        background: none;
         color: var(--ink-soft);
+        text-align: left;
+    }
+    .totals:hover {
+        background: var(--parchment);
+    }
+    .totals .meta {
         font-size: 13px;
     }
     .totals strong {

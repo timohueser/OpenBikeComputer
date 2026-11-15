@@ -1,7 +1,7 @@
 <script lang="ts">
     import PlaceRow from './PlaceRow.svelte';
     import { asPlace, kindLabel, routesPlaces } from '../../lib/planner/search/presentation';
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import type { SearchPlace, SearchState } from '../../lib/planner/search/types';
     import type { Place } from '../../lib/planner/editor';
     import type { Coordinate } from '../../lib/planner/geo';

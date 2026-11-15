@@ -1,5 +1,5 @@
 <script lang="ts">
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import LayerLegend from './LayerLegend.svelte';
     import SeasonGrid from './SeasonGrid.svelte';
     import type { Chart } from '../../lib/planner/layers/data-layer';

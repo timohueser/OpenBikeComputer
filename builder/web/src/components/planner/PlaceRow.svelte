@@ -1,5 +1,5 @@
 <script lang="ts">
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import OpeningStatus from './OpeningStatus.svelte';
     import { kindLabel } from '../../lib/planner/search/presentation';
     import { placeCategories } from '../../lib/planner/poi-kinds';

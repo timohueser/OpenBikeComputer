@@ -28,7 +28,7 @@ Each file here is a normative contract: what the bytes, the JSON or the API must
 | [planner-release.md](planner-release.md) | A planner release: `release.json`, grid storage, tile paths and the catalogue |
 | [planner-offline.md](planner-offline.md) | The offline bundle of one release |
 | [planner-plan.md](planner-plan.md) | The `.obcplan` file of an editable plan |
-| [library-backup.md](library-backup.md) | The backup file of the library: routes, rides, ride files, state and settings |
+| [library-backup.md](library-backup.md) | The backup file of the library: routes, rides, ride files, photos, state and settings |
 | [home-views.md](home-views.md) | The home views: their keys in the bucket, the manifest of a set, and the choice of an image |
 | [route-pictures.md](route-pictures.md) | The covers of the signed routes: their keys in the bucket, the manifest and the cell files of a set |
 | [planner-climate-tiles.md](planner-climate-tiles.md) | `climate.pmtiles`: rain, temperature and wind per week |

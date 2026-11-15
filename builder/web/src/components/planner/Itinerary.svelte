@@ -1,6 +1,6 @@
 <script lang="ts">
     import { tick } from 'svelte';
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import DayRow from './DayRow.svelte';
     import NightNode from './NightNode.svelte';
     import StopPicker from './StopPicker.svelte';

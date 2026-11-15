@@ -1,5 +1,5 @@
 <script lang="ts">
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import TrailMarker from './TrailMarker.svelte';
     import { trailMarker } from '../../lib/planner/trail-markers';
     import { networkName, routeKindTitles, routeWebsite, type OverlaySelection } from '../../lib/planner/route-overlays';

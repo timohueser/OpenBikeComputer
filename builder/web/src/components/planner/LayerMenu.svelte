@@ -1,5 +1,5 @@
 <script lang="ts">
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import LayerLegend from './LayerLegend.svelte';
     import Segmented from '../../lib/ui/Segmented.svelte';
     import { placeCategories, type PlaceCategory } from '../../lib/planner/poi-kinds';

@@ -6,9 +6,13 @@ import { mapStyle } from '../planner/map-style';
 import type { StillFailure } from '../trailview/still';
 import { pack } from './line';
 
-const PICTURE_WIDTH = 768, PICTURE_HEIGHT = 512;
-/** The line fits inside the middle 720 × 300 pixels, the band that `crop` shows in each box from 3:2 to 2.2:1. */
-const PADDING = { top: 106, bottom: 106, left: 24, right: 24 };
+/** The picture of a library card: the line fits inside the middle 720 × 300 pixels, the band that `crop` shows in
+ * each box from 3:2 to 2.2:1. The picture of a share card has the size of a cover and shows whole: the line keeps
+ * clear of the product mark at the top. */
+const SIZES = {
+    card: { width: 768, height: 512, padding: { top: 106, bottom: 106, left: 24, right: 24 } },
+    share: { width: 1920, height: 1280, padding: { top: 200, bottom: 140, left: 160, right: 160 } },
+};
 /** A short loop keeps the tiles of the basemap. */
 const MAX_ZOOM = 13;
 /** Chosen, not measured: well above the time of a picture of a long route on a slow link. */
@@ -18,17 +22,18 @@ const QUALITY = 0.85;
 const LEFT_OUT = new Set(['contour-lines', 'planner-pois']);
 
 export interface MapPictureResult { image: Blob; points: CoverPoints; credits: string[] }
-export type MapPictureMaker = (summary: Summary, dark: boolean, signal: AbortSignal) => Promise<MapPictureResult | 'none'>;
+export type MapPictureMaker = (summary: Summary, dark: boolean, signal: AbortSignal, size?: keyof typeof SIZES) => Promise<MapPictureResult | 'none'>;
 
 const failure = (name: StillFailure, message: string) => Object.assign(new Error(message), { name });
 
 /** The picture of the map at its zoom, or `none` when the line is outside the map data. It fails with the names of `still`. */
-export const mapPicture: MapPictureMaker = async (summary, dark, signal) => {
+export const mapPicture: MapPictureMaker = async (summary, dark, signal, size = 'card') => {
     const [west, south, east, north] = summary.bounds, data = styleConfig.bounds;
     if (west > data[2] || east < data[0] || south > data[3] || north < data[1]) return 'none';
     useMapProtocols();
     const container = document.createElement('div');
-    container.style.cssText = `position: fixed; top: 0; left: 0; width: ${PICTURE_WIDTH}px; height: ${PICTURE_HEIGHT}px; visibility: hidden; pointer-events: none`;
+    const { width, height, padding } = SIZES[size];
+    container.style.cssText = `position: fixed; top: 0; left: 0; width: ${width}px; height: ${height}px; visibility: hidden; pointer-events: none`;
     document.body.append(container);
     const done = new AbortController();
     let map: maplibregl.Map | undefined;
@@ -46,7 +51,7 @@ export const mapPicture: MapPictureMaker = async (summary, dark, signal) => {
             document.addEventListener('visibilitychange', hidden, { signal: done.signal });
             signal.addEventListener('abort', aborted, { signal: done.signal });
             map = new maplibregl.Map({
-                container, style: style(dark), bounds: [west, south, east, north], fitBoundsOptions: { padding: PADDING },
+                container, style: style(dark), bounds: [west, south, east, north], fitBoundsOptions: { padding },
                 pixelRatio: 1, canvasContextAttributes: { preserveDrawingBuffer: true }, interactive: false, fadeDuration: 0,
                 maxZoom: MAX_ZOOM, attributionControl: false, renderWorldCopies: false,
             });

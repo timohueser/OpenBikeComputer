@@ -1,5 +1,4 @@
-/* The rules of the coverage map on Leaflet. `lib/map/coverageMap.ts` loads them, so the map builder and a page of the
-   shell show the same map. */
+/* The rules of the coverage map on Leaflet. `lib/map/coverageMap.ts` loads them. */
 .basemap-warning {
     padding: 6px 10px;
     background: var(--panel);

@@ -1,7 +1,7 @@
 <script lang="ts">
     import { boundsOf, extent, nameOf, parseBox, search, union, type Areas, type Bbox } from "../../lib/data/areas";
     import type { BakeRoute } from "../../lib/data/screens";
-    import Icon from "../planner/PlannerIcon.svelte";
+    import Icon from "../../lib/ui/Icon.svelte";
     import DataMap from "./DataMap.svelte";
 
     // The area of a bake: a saved area, a Geofabrik area, a box typed as `W,S,E,N`, or a box drawn

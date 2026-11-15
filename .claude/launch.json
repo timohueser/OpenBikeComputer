@@ -2,22 +2,9 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "web-builder",
-      "runtimeExecutable": ".venv/bin/python",
-      "runtimeArgs": ["-m", "builder.server", "--no-browser", "--port", "8000"],
-      "port": 8000
-    },
-    {
       "name": "web-builder-frontend",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev", "--", "--port", "5173"],
-      "cwd": "builder/web",
-      "port": 5173
-    },
-    {
-      "name": "web-builder-static",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--", "--mode", "web", "--port", "5173"],
       "cwd": "builder/web",
       "port": 5173
     },

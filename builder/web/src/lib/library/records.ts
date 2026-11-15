@@ -109,6 +109,26 @@ export interface MapPicture {
     dark?: Blob;
 }
 
+/** A photo of a ride. Its place on the line comes from `time` against the times of the ride, or from `place` where the
+ * time gives none (`lib/ride/photos.ts`). */
+export interface PhotoRecord {
+    /** The key of its ride, then a hash of the file of the photo: the same file is the same photo of a ride. */
+    id: string;
+    /** The key of its ride. */
+    ride: string;
+    /** Unix seconds when the rider took the photo, or null when the file has no time. */
+    time: number | null;
+    /** Longitude and latitude in degrees, only for a photo that has its place from the GPS place of the file. */
+    place?: [number, number];
+    /** The copy: a JPEG with a longest side of 2048 pixels at most. */
+    image: Blob;
+    /** A JPEG with a longest side of 160 pixels, for a mark and a list. */
+    small: Blob;
+}
+
+/** A photo record with no image, as a backup file holds it. */
+export type PhotoEntry = Omit<PhotoRecord, 'image' | 'small'>;
+
 export interface DeletedRide {
     key: string;
     device?: string;
@@ -132,6 +152,9 @@ export interface NextMap {
     /** The ids of the map styles for the day and for the night. */
     light: string;
     dark: string;
+    /** The versions of the two map styles, where known. An edit of a style of the rider keeps its id and raises its version. */
+    lightVersion?: number;
+    darkVersion?: number;
     /** The size of the download of the whole map. */
     bytes: number;
 }
@@ -190,6 +213,10 @@ export function isRideRecord(value: unknown): value is RideRecord {
         && optional(value.trip, isTrip) && optional(value.device, isString);
 }
 
+export const isPhotoEntry = (value: unknown): value is PhotoEntry => isRecord(value) && isString(value.id) && /^[\w-]+$/.test(value.id)
+    && isString(value.ride) && rideKey.test(value.ride) && (value.time === null || isNumber(value.time))
+    && optional(value.place, place => Array.isArray(place) && place.length === 2 && place.every(isNumber)) && (value.time === null) === (value.place !== undefined);
+
 const isTrip = (value: unknown): value is RideTrip => isRecord(value) && isString(value.key) && /^[1-9]\d*$/.test(value.key)
     && Number.isInteger(value.day) && (value.day as number) >= 1 && isString(value.name);
 
@@ -204,7 +231,8 @@ const isBox = (value: unknown): value is MapBox =>
     && (value.minLat as number) < (value.maxLat as number) && (value.minLon as number) < (value.maxLon as number);
 
 const isNextMap = (value: unknown): value is NextMap => isRecord(value) && isStrings(value.regions)
-    && Array.isArray(value.boxes) && value.boxes.every(isBox) && isString(value.light) && isString(value.dark) && isNumber(value.bytes);
+    && Array.isArray(value.boxes) && value.boxes.every(isBox) && isString(value.light) && isString(value.dark) && isNumber(value.bytes)
+    && optional(value.lightVersion, isNumber) && optional(value.darkVersion, isNumber);
 
 /** The check of each value of the `state` store. */
 export const stateChecks: { [K in keyof LibraryState]: (value: unknown) => value is LibraryState[K] } = {

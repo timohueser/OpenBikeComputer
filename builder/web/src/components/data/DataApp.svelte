@@ -4,7 +4,7 @@
     import { runAt, SCREENS, screenAt } from "../../lib/data/screens";
     import { elsewhere, free, hardware, title, type RunList, type Status } from "../../lib/data/shapes";
     import { appearance, startTheme, toggleTheme } from "../../lib/theme.svelte";
-    import Icon from "../planner/PlannerIcon.svelte";
+    import Icon from "../../lib/ui/Icon.svelte";
     import Bake from "./Bake.svelte";
     import Failure from "./Failure.svelte";
     import Machine from "./Machine.svelte";
