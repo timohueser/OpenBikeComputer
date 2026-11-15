@@ -318,7 +318,7 @@ impl Stroke {
 }
 
 /// Whether the section of a line side at x, from the kerb out to the full width, enters one of `strokes`.
-fn enters(ctx: &Ctx, line: &WayLine, x: f64, side: f64, strokes: &[Stroke]) -> bool {
+fn enters(ctx: &Ctx, line: &WayLine, x: f64, side: f64, strokes: &[&Stroke]) -> bool {
     let (c, h, _) = at_x(line, x);
     let w = ctx.units(full_m(line), round(c));
     (0..=8).any(|k| {
@@ -328,7 +328,7 @@ fn enters(ctx: &Ctx, line: &WayLine, x: f64, side: f64, strokes: &[Stroke]) -> b
 }
 
 /// One place in each run of a line side's sections, `STROKE_STEP_M` apart, that enters one of `strokes`.
-fn entering(ctx: &Ctx, line: &WayLine, side: f64, strokes: &[Stroke]) -> Vec<f64> {
+fn entering(ctx: &Ctx, line: &WayLine, side: f64, strokes: &[&Stroke]) -> Vec<f64> {
     let end = (line.p.len() - 1) as f64;
     let step = ctx.units(STROKE_STEP_M, line.p[0]);
     let (mut x, mut out, mut was) = (0.0, Vec::new(), false);
@@ -348,7 +348,7 @@ fn entering(ctx: &Ctx, line: &WayLine, side: f64, strokes: &[Stroke]) -> Vec<f64
 /// The farthest place of a line side from x toward `dir` within `extent_m` whose section enters one of `strokes`:
 /// the slab ends there with a taper, which lies wholly in sections that do not enter them. None where no section
 /// does.
-fn stroke_cut(ctx: &Ctx, line: &WayLine, (x, dir): (f64, f64), side: f64, strokes: &[Stroke]) -> Option<f64> {
+fn stroke_cut(ctx: &Ctx, line: &WayLine, (x, dir): (f64, f64), side: f64, strokes: &[&Stroke]) -> Option<f64> {
     let meets = |x: f64| enters(ctx, line, x, side, strokes);
     let at = round(at_x(line, x).0);
     let (step, reach) = (ctx.units(STROKE_STEP_M, at), ctx.units(ctx.rules.plan.extent_m, at));
@@ -628,8 +628,9 @@ pub(super) fn build(
             let key = |arm: Arm, side: f64| side_of(arm.line, side);
             // At a point where a deck starts, a slab that would enter the deck's stroke ends before it.
             let from = |arm: Arm| (arm.at as f64, f64::from(arm.dir));
-            let cut_a = deck.and_then(|d| stroke_cut(ctx, &lines[arm_a.line], from(arm_a), sa, d));
-            let cut_b = deck.and_then(|d| stroke_cut(ctx, &lines[arm_b.line], from(arm_b), sb, d));
+            let d: Vec<&Stroke> = deck.into_iter().flatten().collect();
+            let cut_a = stroke_cut(ctx, &lines[arm_a.line], from(arm_a), sa, &d);
+            let cut_b = stroke_cut(ctx, &lines[arm_b.line], from(arm_b), sb, &d);
             let sector = (heading(arm_b) - heading(arm_a)).rem_euclid(2.0 * PI);
             let same = !junction || (pt.hosts[a] && pt.hosts[b]);
             let through = arm_a.line == arm_b.line && arm_a.at == arm_b.at;
@@ -695,11 +696,22 @@ pub(super) fn build(
             }
         }
     }
-    for (l, line) in lines.iter().enumerate() {
-        for side in [1.0, -1.0].into_iter().filter(|&side| !pieces[side_of(l, side)].is_empty()) {
-            for x in entering(ctx, line, side, &forbidden) {
+    for (l, line) in
+        lines.iter().enumerate().filter(|&(l, _)| !pieces[2 * l].is_empty() || !pieces[2 * l + 1].is_empty())
+    {
+        // The strokes whose box meets the line's, grown by its slabs' reach.
+        let g = line.h.iter().copied().fold(0.0, f64::max) + ctx.units(full_m(line), line.p[0]);
+        let bx = line.p.iter().fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, p| {
+            let p = [f64::from(p[0]), f64::from(p[1])];
+            [b[0].min(p[0] - g), b[1].min(p[1] - g), b[2].max(p[0] + g), b[3].max(p[1] + g)]
+        });
+        let near: Vec<&Stroke> = (forbidden.iter())
+            .filter(|s| s.bx[0] <= bx[2] && s.bx[2] >= bx[0] && s.bx[1] <= bx[3] && s.bx[3] >= bx[1])
+            .collect();
+        for side in [1.0, -1.0].into_iter().filter(|&side| !near.is_empty() && !pieces[side_of(l, side)].is_empty()) {
+            for x in entering(ctx, line, side, &near) {
                 for dir in [1, -1] {
-                    if let Some(to) = stroke_cut(ctx, line, (x, f64::from(dir)), side, &forbidden) {
+                    if let Some(to) = stroke_cut(ctx, line, (x, f64::from(dir)), side, &near) {
                         cuts[side_of(l, side)].push(Cut { v: x, dir, tip: Tip::Taper, to: Some(to) });
                     }
                 }
