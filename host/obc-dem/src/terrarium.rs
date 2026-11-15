@@ -49,7 +49,7 @@ struct Level {
 }
 
 impl Level {
-    fn new(z: u32, [w, s, e, n]: [f64; 4], terrain: &Terrain) -> Self {
+    fn new(z: u32, [w, s, e, n]: [f64; 4], terrain: &Terrain) -> Result<Self, String> {
         let count = f64::from(1u32 << z);
         let row = |lat: f64| (1.0 - (lat.to_radians().tan() + 1.0 / lat.to_radians().cos()).ln() / PI) / 2.0 * count;
         let west = ((w + 180.0) / 360.0 * count).floor() as u32;
@@ -58,11 +58,11 @@ impl Level {
         let tiles = vec![(Vec::new(), false); (east - west) as usize];
         let wanted = Vec::new();
         let mut level = Self { z, west, y, south, py: 0, lats: Vec::new(), tiles, wanted, spooled: Vec::new() };
-        level.start_row(terrain);
-        level
+        level.start_row(terrain)?;
+        Ok(level)
     }
 
-    fn start_row(&mut self, terrain: &Terrain) {
+    fn start_row(&mut self, terrain: &Terrain) -> Result<(), String> {
         let count = f64::from(1u32 << self.z);
         self.lats = (0..SIZE)
             .map(|py| {
@@ -75,13 +75,14 @@ impl Level {
             .map(|i| {
                 let lon = |x: u32| f64::from(x) / count * 360.0 - 180.0;
                 let x = self.west + i;
-                self.z < FINE || fine && terrain.national_in([lon(x), south, lon(x + 1), north])
+                Ok(self.z < FINE || fine && terrain.national_in([lon(x), south, lon(x + 1), north])?)
             })
-            .collect();
+            .collect::<Result<_, String>>()?;
         for (rgba, known) in &mut self.tiles {
             *rgba = vec![0; (SIZE * SIZE * 4) as usize];
             *known = false;
         }
+        Ok(())
     }
 
     /// The latitude of the next pixel row, or `None` when the zoom is complete.
@@ -141,7 +142,7 @@ impl Level {
         self.y += 1;
         self.py = 0;
         match self.y < self.south {
-            true => self.start_row(terrain),
+            true => self.start_row(terrain)?,
             false => self.tiles.clear(),
         }
         Ok(())
@@ -174,7 +175,7 @@ pub fn write(terrain: &mut Terrain, bounds: [f64; 4], bounds_text: &str, output:
     let spool = spool.map_err(|e| format!("{}: {e}", path.display()))?;
     std::fs::remove_file(&path).map_err(|e| format!("{}: {e}", path.display()))?;
 
-    let mut levels: Vec<Level> = (0..=FINE).map(|z| Level::new(z, bounds, terrain)).collect();
+    let mut levels: Vec<Level> = (0..=FINE).map(|z| Level::new(z, bounds, terrain)).collect::<Result<_, _>>()?;
     // The northmost pending pixel row decides the squares: no pending row needs one north of them.
     let mut last = None;
     while let Some(level) = levels.iter_mut().filter(|level| level.next().is_some()).max_by_key(|level| level.next()) {
