@@ -133,11 +133,11 @@ fn route_vertex(@builtin(vertex_index) v: u32, @builtin(instance_index) instance
     let i = v >> 1u;
     let side = f32(v & 1u) * 2.0 - 1.0;
     let s = centre(i);
-    // A neighbour of another route gives no direction: the point stands in for it, as at the ends of the strip.
+    // A neighbour of another route gives no direction: the point stands in for it. The first point of a route takes the direction to the next.
     let route = points[i].route;
     let before = select(i, i - 1u, i > 0u && points[i - 1u].route == route);
     let after = select(i, i + 1u, i + 1u < n && points[i + 1u].route == route);
-    let back = direction(s - centre(before), vec2f(0.0, 1.0));
+    let back = direction(s - centre(before), direction(centre(after) - s, vec2f(0.0, 1.0)));
     let tangent = direction(back + direction(centre(after) - s, back), back);
     let left = vec3f(-tangent.y, tangent.x, 0.0);
     let h = ground(s);
