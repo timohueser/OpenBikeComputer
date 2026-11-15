@@ -433,7 +433,7 @@ impl Search<'_> {
 
     /// The cut of `direction`, and the size of the smaller side, which `level` then holds: the
     /// level `SINK_SIDE` on the sink side. Keeps the flag `BEST`. `None` when the flow passes
-    /// `bound`, which gets the cut.
+    /// `bound`; on `Some`, `bound` becomes the smaller of itself and the cut.
     fn direction(&mut self, graph: &Junctions, direction: usize, k: usize, bound: &AtomicU64) -> Option<(u64, usize)> {
         let n = self.at.len();
         let key = |&junction: &u32| graph.key(direction, junction);
@@ -1023,7 +1023,7 @@ mod tests {
             point: vec![[0, 0]; n as usize],
             first,
             adj,
-            residual: [capacity.iter().map(|&c| AtomicU8::new(c)).collect(), Vec::new()],
+            residual: [0, 1].map(|_| capacity.iter().map(|&c| AtomicU8::new(c)).collect()),
             pos: (0..n).map(AtomicU32::new).collect(),
         }
     }
@@ -1119,6 +1119,32 @@ mod tests {
             let found: Vec<bool> = level.iter().map(|&level| level & LEVEL != UNSEEN).collect();
             assert_eq!(found, reached, "round {round}");
         }
+    }
+
+    #[test]
+    fn a_direction_stops_only_when_its_flow_passes_the_bound() {
+        // A 4 × 4 grid with one road on each edge. All points are equal, so the keys go by ID: the
+        // sources are row 0 and the sinks row 3, and the cut is 4.
+        let roads: Vec<(u32, u32, u8)> = (0..16u32)
+            .flat_map(|i| [(i, i + 1), (i, i + 4)])
+            .filter(|&(i, next)| next < 16 && (next == i + 4 || i % 4 != 3))
+            .map(|(i, next)| (i, next, 1))
+            .collect();
+        let graph = junctions(16, &roads);
+        let at: Vec<u32> = (0..16).collect();
+        let run = |bound: u64| {
+            let (mut level, mut current, mut queue) = (vec![UNSEEN; 16], vec![0u32; 16], vec![0u32; 16]);
+            let residual = &graph.residual[0];
+            let mut search =
+                Search { lo: 0, at: &at, residual, level: &mut level, current: &mut current, queue: &mut queue };
+            let bound = AtomicU64::new(bound);
+            let found = search.direction(&graph, 0, 4, &bound);
+            (found, bound.load(Relaxed), level.iter().map(|&level| level & LEVEL == SINK_SIDE).collect::<Vec<_>>())
+        };
+        let (found, bound, sides) = run(u64::MAX);
+        assert_eq!((found, bound), (Some((4, 4)), 4));
+        assert_eq!(run(4), (found, 4, sides));
+        assert_eq!(run(3).0, None);
     }
 
     #[test]
