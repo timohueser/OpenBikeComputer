@@ -304,7 +304,10 @@ export class TrailView {
         return [...this.groundLook.attribution, SKY_CREDITS];
     }
 
-    /** Draws the routes on the surface in place of the ones before, numbered from 1 in their order. A route of fewer than two points draws none. */
+    /**
+     * Draws the routes on the surface in place of the ones before, numbered from 1 in their order. A route of fewer
+     * than two points draws none. No route of the new list is bold.
+     */
     showRoutes(routes: readonly RouteLine[]): void {
         this.route.set(routes, this.frame);
         this.request();

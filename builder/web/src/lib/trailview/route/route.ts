@@ -129,11 +129,12 @@ export class Route {
     /** What is not on the GPU yet. */
     private fresh = { points: true, pins: true, badges: true, bold: true };
 
-    /** The routes in place of the ones before, numbered from 1 in their order; `frame` places their pick points. */
+    /** The routes in place of the ones before, numbered from 1 in their order, with no bold route; `frame` places their pick points. */
     set(routes: readonly RouteLine[], frame: Frame): void {
         this.points = routePoints(routes);
         this.picks = routes.map(route => pickPoints(route, frame));
-        this.fresh.points = this.newContent = true;
+        this.bold = null;
+        this.fresh.points = this.fresh.bold = this.newContent = true;
     }
 
     setBold(route: number | null): void {

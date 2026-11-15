@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { frameAt } from '../frame/frame';
 import { nearestRoute } from './pick';
-import { pickPoints, POINT_WORDS, routePoints, type RouteLine } from './route';
+import { pickPoints, POINT_WORDS, Route, routePoints, type RouteLine } from './route';
 
 /** The words of each point: x, y, the colour and the number of the route. */
 const pointsOf = (words: Uint32Array) => Array.from({ length: words.length / POINT_WORDS }, (_, i) => {
@@ -73,4 +73,11 @@ describe('pickPoints', () => {
         // 9 m from the chord between the start and the entry at 100 m, and 20 m from the line.
         expect(nearestRoute([screen], 20, 0, null)).toBeNull();
     });
+});
+
+it('clears the bold route with new routes', () => {
+    const route = new Route();
+    route.setBold(2);
+    route.set([], frameAt(8.3, 46.8));
+    expect(route.bold).toBeNull();
 });
