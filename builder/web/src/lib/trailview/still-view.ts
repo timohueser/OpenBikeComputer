@@ -184,7 +184,7 @@ export async function coverView(line: readonly [number, number][], config: Plann
     }
     const sun = solarPosition(centre, solarTerms(instant)).bearing / RAD;
     const camera = chooseView(line, grid, { width, height, sun });
-    return camera && { ...camera, date, time, weather, debug: 'off' };
+    return camera && { ...camera, date, time, weather, debug: 'off', plan: 'off' };
 }
 
 /** The heights of a rectangle of tiles at zoom `z`, decoded into one grid. */

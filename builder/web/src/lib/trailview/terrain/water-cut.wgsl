@@ -16,8 +16,9 @@ struct WaterOut {
     @location(6) inside: vec4f,
     // 1 where the vertex is kept.
     @location(7) kept: f32,
-    // The point of LOD space.
+    // The point of LOD space, and in units about the anchor.
     @location(8) lod: vec2f,
+    @location(9) u: vec2f,
 }
 
 // The fragment shader reads what the vertex shader writes.

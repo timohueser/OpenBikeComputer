@@ -3,7 +3,8 @@
 //! and the two guards below are tested natively.
 
 use obc_formats::io::{ByteSink, Error, SliceSource};
-use obc_route::{BikeType, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS};
+use obc_formats::obcr::{ELEVATION_NONE, WAYPOINT_ELE_NONE, WAYPOINT_NAME_CAP};
+use obc_route::{BikeType, RoutePoint, Waypoint, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS};
 
 /// Largest point count an `.obcr` can store, and so the ceiling [`gpx_to_obcr`] converts up to:
 /// every chunk full, with consecutive chunks sharing their seam vertex.
@@ -110,6 +111,66 @@ pub fn gpx_to_obcr(gpx: &[u8], name: &str, bike: BikeType) -> Result<Vec<u8>, Co
     Ok(sink.0)
 }
 
+/// A waypoint of a calculated line. `distance_m` is along the line as the caller gave it, before
+/// decimation; the waypoint lies on the line.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LineWaypoint {
+    pub lon: i32,
+    pub lat: i32,
+    pub distance_m: f64,
+    pub category: u8,
+    pub name: String,
+}
+
+/// Encode a calculated line into a `.obcr` route named `name` and typed `bike`, with the shared
+/// emitter that the phone uses. `points` are microdegrees with the height in metres;
+/// `surfaces[i]` is the surface class of the segment that ends at point `i`. A waypoint name is
+/// cut to the field on a char boundary.
+pub fn line_to_obcr(
+    points: &[(i32, i32, Option<i16>)],
+    surfaces: &[u8],
+    waypoints: &[LineWaypoint],
+    name: &str,
+    bike: BikeType,
+) -> Result<Vec<u8>, ConvertFailure> {
+    let points: Vec<RoutePoint> = points
+        .iter()
+        .enumerate()
+        .map(|(i, &(lon, lat, ele))| RoutePoint {
+            lon,
+            lat,
+            ele: ele.unwrap_or(ELEVATION_NONE),
+            surface: surfaces.get(i).copied().unwrap_or(0),
+            elevation_incomplete: ele.is_none(),
+        })
+        .collect();
+    let waypoints: Vec<(Waypoint, f64)> = waypoints
+        .iter()
+        .map(|w| {
+            let mut waypoint = Waypoint {
+                dist_along_m: 0,
+                lon: w.lon,
+                lat: w.lat,
+                ele: WAYPOINT_ELE_NONE,
+                category_id: w.category,
+                lateral_offset_m: 0,
+                name: Default::default(),
+                provenance: None,
+            };
+            for ch in w.name.chars() {
+                if waypoint.name.len() + ch.len_utf8() > WAYPOINT_NAME_CAP || waypoint.name.push(ch).is_err() {
+                    break;
+                }
+            }
+            (waypoint, w.distance_m)
+        })
+        .collect();
+    let mut sink = VecSink(Vec::new());
+    obc_route::convert::points_to_obcr(&points, &waypoints, name, bike, &mut sink).map_err(describe_line_error)?;
+    Ok(sink.0)
+}
+
 /// Convert a finished ride-v6 object's bytes into a GPX 1.1 document named `name`.
 ///
 /// Byte-for-byte the same output as `obc_route::track_to_gpx`; only the buffer adapter is new.
@@ -198,6 +259,24 @@ fn describe_gpx_error(e: Error) -> ConvertFailure {
             ErrorCode::Internal,
             "Internal error: the route converter reported a file-format mismatch, which it does \
              not produce when reading GPX. This is a bug — please report it with the file.",
+        ),
+    }
+}
+
+/// Map a line-to-OBCR failure onto the browser vocabulary.
+fn describe_line_error(e: Error) -> ConvertFailure {
+    match e {
+        Error::Empty => ConvertFailure::new(ErrorCode::GpxNoTrackPoints, "This route has no line to send."),
+        Error::TooLarge => ConvertFailure::new(
+            ErrorCode::GpxTooManyPoints,
+            format!(
+                "This route is too long for the device: it needs more than {MAX_STORED_POINTS} stored \
+                 points. Split it into shorter routes."
+            ),
+        ),
+        Error::BadOffset | Error::BadMagic | Error::BadVersion | Error::Io => ConvertFailure::new(
+            ErrorCode::Internal,
+            "Internal error: the route line could not be encoded. This is a bug — please report it.",
         ),
     }
 }
@@ -341,6 +420,48 @@ mod tests {
         obc_route::track_to_gpx(&SliceSource(&ride), "a < b", &mut reference).unwrap();
         assert_eq!(mine.as_bytes(), reference.0.as_slice());
         assert!(mine.contains("<name>a &lt; b</name>"), "name escaping survives: {mine}");
+    }
+
+    /// The line encoder adds nothing to the shared emitter: the same points, surfaces and waypoints
+    /// give the same bytes, and a long waypoint name is cut on a char boundary.
+    #[test]
+    fn line_conversion_matches_the_shared_emitter() {
+        let line =
+            [(7_820_000, 48_000_000, Some(236)), (7_823_000, 48_000_500, None), (7_826_500, 48_000_200, Some(249))];
+        let long = "Brunnen am Marktplatz Süd";
+        let waypoint =
+            LineWaypoint { lon: 7_823_000, lat: 48_000_500, distance_m: 230.0, category: 1, name: long.into() };
+        let mine = line_to_obcr(&line, &[0, 1, 3], core::slice::from_ref(&waypoint), "Day", BikeType::Gravel).unwrap();
+
+        let points: Vec<RoutePoint> = line
+            .iter()
+            .zip([0, 1, 3])
+            .map(|(&(lon, lat, ele), surface)| RoutePoint {
+                lon,
+                lat,
+                ele: ele.unwrap_or(ELEVATION_NONE),
+                surface,
+                elevation_incomplete: ele.is_none(),
+            })
+            .collect();
+        let mut stored = Waypoint {
+            dist_along_m: 0,
+            lon: waypoint.lon,
+            lat: waypoint.lat,
+            ele: WAYPOINT_ELE_NONE,
+            category_id: 1,
+            lateral_offset_m: 0,
+            name: Default::default(),
+            provenance: None,
+        };
+        // "ü" would end at byte 25 of the 24-byte field.
+        stored.name.push_str("Brunnen am Marktplatz S").unwrap();
+        let mut reference = VecSink(Vec::new());
+        obc_route::convert::points_to_obcr(&points, &[(stored, 230.0)], "Day", BikeType::Gravel, &mut reference)
+            .unwrap();
+        assert_eq!(mine, reference.0);
+        assert_eq!(mine[obc_formats::obcr::BIKE_TYPE_OFF], BikeType::Gravel as u8);
+        assert_eq!(code_of(line_to_obcr(&[], &[], &[], "x", BikeType::Road)), ErrorCode::GpxNoTrackPoints);
     }
 
     /// An empty file, a non-GPX file and a GPX without a track are three different answers, not one

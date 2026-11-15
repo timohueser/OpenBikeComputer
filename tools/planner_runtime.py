@@ -14,7 +14,7 @@ from urllib.request import Request, urlopen
 TRAILVIEW = ("ground", "colour-q1", "colour-q2", "colour-q3", "colour-q4")
 DATA_LAYERS = {
     "snow": "snow_format", "snow-levels": "snow_format", "snow-seasons": "snow_format", "climate": "years",
-    "trailview-features": "features_format", "trailview-canopy": "canopy_format",
+    "trailview-features": "features_format", "trailview-stamps": "stamp_version", "trailview-canopy": "canopy_format",
     **{f"trailview-{name}": "trailview_format" for name in TRAILVIEW},
 }
 # The format of the offline catalog, of its cell files and of `search/<region>.grid.json`: the format of

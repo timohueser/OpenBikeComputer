@@ -2,14 +2,13 @@
     import type { RiderValue } from '../lib/settings/settings.svelte';
     import type { Zone } from '../lib/settings/zones';
 
-    let { id, label, unit, value, range, zones, ramp, onSet }: {
+    let { id, label, unit, value, range, zones, onSet }: {
         id: string;
         label: string;
         unit: string;
         value: RiderValue | null;
         range: { min: number; max: number };
         zones: (limit: number) => Zone[];
-        ramp: 'hr' | 'power';
         onSet: (value: number | null) => void;
     } = $props();
 
@@ -60,7 +59,7 @@
     {:else}
         <ul class="zones" aria-label={`${label} zones`}>
             {#each list as zone, i (zone.name)}
-                <li style:--zone={`var(--${ramp}-${i + 1})`}><span class="bar"></span><small><b>{zone.name}</b> {zone.range}</small></li>
+                <li style:--zone={`var(--zone-${i + 1})`}><span class="bar"></span><small><b>{zone.name}</b> {zone.range}</small></li>
             {/each}
         </ul>
     {/if}
@@ -71,13 +70,6 @@
         padding: 12px 0;
         border-top: 1px solid var(--line);
         cursor: text;
-        /* The zone ramps of the ride board: heart rate warm, power cool. */
-        --hr-1: #e9e4d4; --hr-2: #e8b06d; --hr-3: #d0752a; --hr-4: #a24f1f; --hr-5: #5e2a10;
-        --power-1: #e1e8e2; --power-2: #b9d4d8; --power-3: #6e9ea3; --power-4: #2f5559; --power-5: #1b3133;
-    }
-    :global([data-theme="dark"]) .block {
-        --hr-1: #4a4232; --hr-2: #8a5a2c; --hr-3: #c46d2a; --hr-4: #e8954a; --hr-5: #f6c48a;
-        --power-1: #33403e; --power-2: #3e6a6e; --power-3: #5b9a9f; --power-4: #8fc4c8; --power-5: #c4e3e5;
     }
     .head {
         display: flex;

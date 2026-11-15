@@ -104,6 +104,13 @@ const BUCKETS: u32 = 11u;
 // As KERB_M of roads.wgsl: a corner keeps its kerb where its sidewalk narrows to nothing.
 const CORNER_KERB_M: f32 = 0.18;
 
+// Where a road's cut or fill meets the ground, the ground rounds over DAYLIGHT_M of height instead of a
+// crease. Near the road the slope keeps its crease: the rounding grows from SOFT_FROM_M to SOFT_FULL_M past
+// the core.
+const DAYLIGHT_M: f32 = 0.8;
+const SOFT_FROM_M: f32 = 1.5;
+const SOFT_FULL_M: f32 = 4.0;
+
 const PI: f32 = 3.14159265;
 // As EARTH_RADIUS of frame.ts.
 const RADIUS: f32 = 6371000.0;
@@ -303,6 +310,32 @@ fn widen(x: f32, reach: f32, slope: f32) -> f32 {
         return INF;
     }
     return slope * x * reach / (reach - x);
+}
+
+// The ground before the clamp: a soft minimum with the top of a cut, a soft maximum with the foot of a fill.
+fn rounded(base: f32, s: Stamp) -> f32 {
+    var h = base;
+    if (s.cut) {
+        let r = DAYLIGHT_M * smoothstep(SOFT_FROM_M, SOFT_FULL_M, s.cut_x);
+        let k = max(r - abs(h - s.hi), 0.0) / max(r, 1e-3);
+        h = min(h, s.hi) - k * k * r * 0.25;
+    }
+    if (s.fill) {
+        let r = DAYLIGHT_M * smoothstep(SOFT_FROM_M, SOFT_FULL_M, s.fill_x);
+        let k = max(r - abs(h - s.lo), 0.0) / max(r, 1e-3);
+        h = max(h, s.lo) + k * k * r * 0.25;
+    }
+    return h;
+}
+
+// The ground at a point after the stamps: a known base rounded at a bound of the cones, then clamped to them.
+fn stamped_ground(base: f32, s: Stamp) -> f32 {
+    return clamp(rounded(base, s), s.lo, s.hi);
+}
+
+// The height of a record over that ground: a paved one keeps its height, every other one keeps within the bounds.
+fn stamp_bounded(h: f32, paved: bool, s: Stamp) -> f32 {
+    return select(clamp(h, s.lo, s.hi), h, paved);
 }
 
 fn word(at: u32) -> u32 {

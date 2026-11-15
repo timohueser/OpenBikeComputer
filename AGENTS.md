@@ -38,7 +38,7 @@ and test them from their own directories. The nearest README has the surface's s
   ```
 
 - Run a command that no task covers with `obc exec`: a raw shell lacks the tools of `obc.local`,
-  GEOS and the shared Cargo target. `obc suites prepare` installs the npm projects and the wasm
+  GEOS and the Cargo target of the checkout. `obc suites prepare` installs the npm projects and the wasm
   bridges of a new worktree; `obc test affected` installs the ones its suites need.
 
 - `obc test fixtures -p <crate>` is for captured external data only. For a non-Rust surface, run

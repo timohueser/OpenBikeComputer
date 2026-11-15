@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CoverRecord, RouteRecord } from '../library/records';
 import { Library } from '../library/store';
 import type { Still, StillJob } from '../trailview/still';
-import { lineKey, settled, startCoverJob, wantCover, type Renderer } from './job';
+import { lineKey } from '../library/summary';
+import { coverKey, settled, startCoverJob, wantCover, type Renderer } from './job';
 import type { MapPictureMaker, MapPictureResult } from './map-picture';
 
 const route = (id: string, name = id, line = [8.38, 46.82, 8.42, 46.81]): RouteRecord => ({
@@ -25,7 +26,7 @@ function fake() {
     let open = false;
     const renderer: Renderer = {
         canRender: async () => true,
-        view: async (_, when) => ({ lat: 46.8, lon: 8.4, heading: 0, pitch: -30, mode: 'fly', height: 3000, debug: 'off', ...when }),
+        view: async (_, when) => ({ lat: 46.8, lon: 8.4, heading: 0, pitch: -30, mode: 'fly', height: 3000, debug: 'off', plan: 'off', ...when }),
         still: (job, signal) => new Promise((resolve, reject) => {
             stills.push({ job, resolve, reject });
             signal.addEventListener('abort', () => reject(failure('aborted')));
@@ -52,7 +53,7 @@ const settle = async () => { for (let i = 0; i < 30; i++) await new Promise(reso
 
 let held = false;
 const document = Object.assign(new EventTarget(), { hidden: false });
-let library: Library, factory: IDBFactory, stops: (() => void)[];
+let library: Library, factory: IDBFactory, stops: (() => void)[], coarse = false;
 
 beforeEach(() => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
@@ -61,6 +62,8 @@ beforeEach(() => {
     document.hidden = false;
     vi.stubGlobal('document', document);
     vi.stubGlobal('window', new EventTarget());
+    coarse = false;
+    vi.stubGlobal('matchMedia', (query: string) => ({ matches: coarse && query === '(pointer: coarse)' }));
     // One lock for all the jobs, as the browser has for all its tabs.
     vi.stubGlobal('navigator', {
         onLine: true,
@@ -96,9 +99,9 @@ async function saved(...ids: string[]) {
 
 describe('settled', () => {
     it('is false for the image of an earlier line and for a waiting cover, so a page asks for them', () => {
-        const item = route('a'), key = lineKey(item), image = new Blob(['cover']);
+        const item = route('a'), key = coverKey(item), image = new Blob(['cover']);
         expect(settled(item, undefined)).toBe(false);
-        expect(settled(item, { id: 'a', lineKey: lineKey(route('a', 'a', [8, 46, 8.1, 46])), state: 'done', image, tries: 0 })).toBe(false);
+        expect(settled(item, { id: 'a', lineKey: coverKey(route('a', 'a', [8, 46, 8.1, 46])), state: 'done', image, tries: 0 })).toBe(false);
         expect(settled(item, { id: 'a', lineKey: key, state: 'waiting', image, tries: 1 })).toBe(false);
         for (const state of ['done', 'none', 'failed'] as const) expect(settled(item, { id: 'a', lineKey: key, state, tries: 0 })).toBe(true);
     });
@@ -122,7 +125,7 @@ describe('the cover job', () => {
         await settle();
         expect(second.stills).toHaveLength(0);
         const cover = await library.cover('a');
-        expect(cover).toMatchObject({ state: 'done', lineKey: lineKey(route('a')), tries: 0, credits: ['Terrain test data'] });
+        expect(cover).toMatchObject({ state: 'done', lineKey: coverKey(route('a')), tries: 0, credits: ['Terrain test data'] });
         expect(cover?.points?.x).toEqual(Float32Array.of(10, 20));
         expect(first.stills[0].job).toMatchObject({ width: 1920, height: 1280, view: { date: '2026-08-15', time: '10:00', weather: 'sunny' } });
     });
@@ -207,7 +210,7 @@ describe('the cover job', () => {
 
     it('marks a cover as failed after three tries, also of earlier sessions', async () => {
         await saved('a');
-        await library.saveCover({ id: 'a', lineKey: lineKey(route('a')), state: 'waiting', tries: 2 });
+        await library.saveCover({ id: 'a', lineKey: coverKey(route('a')), state: 'waiting', tries: 2 });
         const { renderer, stills } = fake();
         await start(renderer);
         wantCover('a', 'page');
@@ -322,6 +325,17 @@ describe('the map picture', () => {
         expect(await library.cover('b')).toBeUndefined();
     });
 
+    it('comes in place of a cover with a coarse pointer, as on a phone', async () => {
+        await saved('a');
+        coarse = true;
+        const renderer = vi.fn<() => Promise<Renderer>>(), { maker, calls } = fakePicture();
+        stops.push(startCoverJob(library, renderer, async () => maker));
+        wantCover('a', 'card');
+        await settle();
+        expect(calls).toHaveLength(1);
+        expect(renderer).not.toHaveBeenCalled();
+    });
+
     it('waits while a cover renders, and comes after a cover that is not possible', async () => {
         const { renderer, stills } = fake(), { maker, calls } = fakePicture(), view = renderer.view;
         renderer.view = async (line, when) => line[0][0] === 9 ? undefined : view(line, when);
@@ -360,7 +374,7 @@ describe('the map picture', () => {
 
     it('goes when the cover is done', async () => {
         await saved('a');
-        const key = lineKey(route('a')), waiting: CoverRecord = { id: 'a', lineKey: key, state: 'waiting', tries: 1, map: { lineKey: key, tries: 0, light: new Blob(['map']) } };
+        const waiting: CoverRecord = { id: 'a', lineKey: coverKey(route('a')), state: 'waiting', tries: 1, map: { lineKey: lineKey(route('a')), tries: 0, light: new Blob(['map']) } };
         await library.saveCover(waiting);
         const { renderer, stills } = fake();
         await start(renderer);

@@ -5,7 +5,7 @@
 import WATERWAY_RULES from '../../../../../../data/trailview/waterways.json' with { type: 'json' };
 import type { Feature } from '../stream/features';
 import { BRIDGE, metresPerUnit, PATH, RAIL, RIVER, ROAD, STREAM, walkOf, type Line } from './bins';
-import { cornersOf } from './corners';
+import { keepBands } from './corners';
 import { along, gridOf, LEFT, near, RIGHT } from './town';
 
 /** A ribbon stops this far past a way's edge or its sidewalk, as GIVE_WAY_M of water.wgsl: past a guard rail's posts, 0.67 m (roads/details.ts). */
@@ -338,7 +338,7 @@ function piecesOf(line: Line, { metres, total, at }: Ruler, cuts: Cut[]): Line[]
 /** Runs each stream on to the ways ahead of it, ends its ribbon at a mouth on each side of a road or a railway that it crosses and at each buried culvert, and returns the mouths. */
 export function standMouths(lines: Line[], buried: Set<string>): CulvertMouth[] {
     // A corner's shape holds for the lines as they were joined: it stays sharp where a stream's ribbon would reach it, so a wall on that stream stands on no corner's paint.
-    cornersOf(lines);
+    keepBands(lines);
     const ways = waysOf(lines), mouths: CulvertMouth[] = [];
     joinSplits(lines, buried);
     runOnToWays(lines, buried, ways.gap);

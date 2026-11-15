@@ -63,14 +63,19 @@ struct Place {
 }
 
 fn vertex_place(u: vec2i, level: u32, snapping: bool) -> Place {
+    return vertex_place_by(u, level, snapping, snapping);
+}
+
+// vertex_place with the snap of the vertex's own level (`own`) and of the coarser level that it morphs toward apart.
+fn vertex_place_by(u: vec2i, level: u32, own: bool, coarser: bool) -> Place {
     let morph = clamp(f32(level) - lod(lod_space(vec2f(u))), 0.0, 1.0);
-    let moved = u + snap(u, level, snapping);
+    let moved = u + snap(u, level, own);
     let at = lod_space(vec2f(moved));
     if (morph <= 0.0) {
         return Place(at, moved, moved, morph);
     }
     let even = u - ((surface.anchor + u) & vec2i(1 << (24u - level)));
-    let settled = even + snap(even, level - 1u, snapping);
+    let settled = even + snap(even, level - 1u, coarser);
     return Place(mix(at, lod_space(vec2f(settled)), morph), moved, settled, morph);
 }
 
@@ -90,7 +95,11 @@ fn place_height(p: Place, level: u32) -> f32 {
 
 // The mesh vertex of a level at a grid point.
 fn grid_vertex(u: vec2i, level: u32, snapping: bool) -> Vertex {
-    let p = vertex_place(u, level, snapping);
+    return grid_vertex_by(u, level, snapping, snapping);
+}
+
+fn grid_vertex_by(u: vec2i, level: u32, own: bool, coarser: bool) -> Vertex {
+    let p = vertex_place_by(u, level, own, coarser);
     return Vertex(p.at, place_height(p, level));
 }
 

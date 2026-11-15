@@ -6,7 +6,7 @@ import type { View } from './view';
 
 /**
  * The place of each point of a line in a still. `x` and `y` are pixels of the image and can lie outside
- * it; `distance` is metres from the eye. `visible` is 0 for a point that is hidden, outside the image,
+ * it; `distance` is metres from the eye. `visible` is 0 for a point that the terrain hides, outside the image,
  * behind the eye or on terrain with no data. Behind the eye and with no data, `x`, `y` and `distance`
  * are NaN.
  */
@@ -54,7 +54,7 @@ export async function still(gpu: Gpu, config: PlannerConfig, job: StillJob, { si
         signal?.addEventListener('abort', aborted, { signal: done.signal });
         void gpu.device.lost.then(info => fail('device-lost', `The WebGPU device was lost: ${info.message}`));
     });
-    const started = TrailView.start(document.createElement('canvas'), gpu, config, job.view, MAX_SCALE, [job.width, job.height]);
+    const started = TrailView.start(document.createElement('canvas'), gpu, config, job.view, MAX_SCALE, { size: [job.width, job.height] });
     try {
         return await Promise.race([failed, started.then(async engine => {
             await engine.waitForIdle();

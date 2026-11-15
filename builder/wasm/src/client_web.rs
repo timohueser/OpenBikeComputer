@@ -3,7 +3,7 @@
 use obc_link::flat::{
     client::{Action, Client, Error, Event, Options, Outcome, QueryId, QueryOutcome},
     wire::*,
-    Ceilings, Channel, DisplayName, EntryMeta, ObjectId, ObjectKind, Revision, StoreId,
+    ArchiveSource, Ceilings, Channel, DisplayName, EntryMeta, ObjectId, ObjectKind, Revision, StoreId,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -20,6 +20,7 @@ enum BrowserRequest {
     Cancel { transfer: u32 },
     Arm { id: String, revision: String },
     Format { expected: String, replacement: String },
+    ArchiveRide { store: String, id: String, revision: String, length: String, crc: u32 },
 }
 
 #[derive(Deserialize)]
@@ -93,6 +94,13 @@ impl BrowserRequest {
             Self::Format { expected, replacement } => {
                 Request::Format(FormatRequest { expected: store(&expected)?, replacement: store(&replacement)? })
             }
+            Self::ArchiveRide { store: card, id, revision, length, crc } => Request::ArchiveRide(ArchiveSource {
+                store: store(&card)?,
+                id: ObjectId(number(&id)?),
+                revision: Revision(number(&revision)?),
+                payload_len: number(&length)?,
+                payload_crc: crc,
+            }),
         })
     }
 }
@@ -158,7 +166,9 @@ fn outcome(outcome: Outcome) -> Value {
             "kind": "arm", "rollbackObjectId": reserve.0.to_string(), "commitSequence": sequence.to_string(),
         }),
         Outcome::Format(store) => json!({"kind": "format", "storeId": store_text(store)}),
-        Outcome::ArchiveRide(_) => unreachable!("The browser surface has no archive request."),
+        Outcome::ArchiveRide(result) => json!({
+            "kind": "archiveRide", "commitSequence": result.sequence.to_string(), "timestamp": result.timestamp,
+        }),
     }
 }
 

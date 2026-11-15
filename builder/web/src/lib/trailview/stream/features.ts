@@ -30,7 +30,7 @@ export const WALK_LEFT = 1, WALK_RIGHT = 2;
  * that decodes to about 8 MB. The four quarters of a tile reach a worker far apart in its queue.
  */
 let budget = 32 * 2 ** 20;
-const kept = new Map<string, { features: Promise<Feature[]>; bytes: number; charged: number }>();
+const kept = new Map<string, { features: Promise<Feature[]>; bytes: number; charged: number; pinned?: boolean }>();
 let held = 0;
 
 /** Sets the bytes that this worker keeps, for a worker that hangs more than decoded features on its tiles. */
@@ -38,14 +38,35 @@ export function tileBudget(bytes: number): void {
     budget = bytes;
 }
 
-/** Past the budget, the tiles that have gone longest without use go, but for `newest`. */
-function trim(newest: { bytes: number; charged: number }): void {
+/** The tiles that jobs on their way or still wished read: see wantTiles. */
+let wanted = new Set<string>();
+
+/** Names the tiles that jobs on their way or still wished read: `trim` keeps them, as it keeps the newest. The others fall back under the budget at once. */
+export function wantTiles(names: Iterable<string>): void {
+    wanted = new Set(names);
+    trim();
+}
+
+/**
+ * The tiles that have gone longest without use go, but never `newest` or a wanted one: an unpinned one past the
+ * budget, a pinned one past a third of it, so the unpinned tiles always keep the rest.
+ */
+function trim(newest?: { bytes: number; charged: number }): void {
+    let pins = 0;
+    for (const item of kept.values()) if (item.pinned) pins += item.bytes + item.charged;
     for (const [old, item] of kept) {
-        if (held <= budget) break;
-        if (item === newest) continue;
+        if (held <= budget && pins <= budget / 3) break;
+        if (item === newest || wanted.has(old) || (item.pinned ? pins <= budget / 3 : held <= budget)) continue;
         kept.delete(old);
         held -= item.bytes + item.charged;
+        if (item.pinned) pins -= item.bytes + item.charged;
     }
+}
+
+/** Keeps a kept tile through `trim` while `pinned`, within a third of the budget. A failed decode leaves `kept` at once, pinned or not. */
+export function pinTile(name: string, pinned: boolean): void {
+    const entry = kept.get(name);
+    if (entry) entry.pinned = pinned;
 }
 
 /** Counts `bytes` that hang from the features of a kept tile, in place of what was counted for it before. */
@@ -57,22 +78,29 @@ export function chargeTile(name: string, bytes: number): void {
     trim(entry);
 }
 
-/** The features of tile body `body`, gzip or not, named `name`: decoded once while it is among the last bytes of the budget. */
-export function decodedTile(name: string, body: ArrayBuffer): Promise<Feature[]> {
-    let entry = kept.get(name);
-    if (entry) kept.delete(name);
-    else {
-        // The Promise is kept at once, so a second message for the tile waits for this decode.
-        const created = entry = { features: decodeBody(body), bytes: 0, charged: 0 };
-        created.features.then(features => {
-            if (kept.get(name) !== created) return;
-            created.bytes = decodedBytes(features);
-            held += created.bytes;
-            trim(created);
-        }, () => { if (kept.get(name) === created) kept.delete(name); });
-    }
+/** The features of tile `name` while it is among the last bytes of the budget; undefined after it left. */
+export function heldTile(name: string): Promise<Feature[]> | undefined {
+    const entry = kept.get(name);
+    if (!entry) return undefined;
+    kept.delete(name);
     kept.set(name, entry);
     return entry.features;
+}
+
+/** The features of tile body `body`, gzip or not, named `name`: decoded once while it is among the last bytes of the budget. */
+export function decodedTile(name: string, body: ArrayBuffer): Promise<Feature[]> {
+    const known = heldTile(name);
+    if (known) return known;
+    // The Promise is kept at once, so a second message for the tile waits for this decode.
+    const created = { features: decodeBody(body), bytes: 0, charged: 0 };
+    created.features.then(features => {
+        if (kept.get(name) !== created) return;
+        created.bytes = decodedBytes(features);
+        held += created.bytes;
+        trim(created);
+    }, () => { if (kept.get(name) === created) kept.delete(name); });
+    kept.set(name, created);
+    return created.features;
 }
 
 async function decodeBody(body: ArrayBuffer): Promise<Feature[]> {

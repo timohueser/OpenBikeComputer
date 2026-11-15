@@ -2,7 +2,7 @@
 // apart, their kerb turns from the edge of the one to the edge of the other round an arc: the stamps paint
 // its asphalt and the sidewalk round it and hold their ground. A corner that
 // another line's band reaches into stays sharp, so its paint covers no other way or water.
-import { crossSlope, junctionWays, metresPerUnit, PAVED_CODES, ROAD, ROAD_CODE, splitThrough, walkOf, type Line } from './bins';
+import { crossSlope, junctionWays, metresPerUnit, PAVED_CODES, ROAD, ROAD_CODE, splitThrough, STREAM, walkOf, type Line } from './bins';
 import { gridOf, LEFT, near, RIGHT, type Grid } from './town';
 
 /**
@@ -28,6 +28,16 @@ interface Way { line: Line; v: number; step: number; ux: number; uy: number; ang
 
 const found = new WeakMap<Line[], { corners: Corner[]; grid: Grid }>();
 const paired = new WeakMap<Line[], Map<Line, [Line?, Line?]>>();
+/** The lines whose bands keep the corners of a tile's lines sharp, where keepBands holds them. */
+const bands = new WeakMap<Line[], Line[]>();
+
+/**
+ * Holds the bands of a tile's lines as they are now for its corners, which are made at their first read: a later
+ * change of a stream's line leaves them as they are. Only the streams change after this, so only they are copied.
+ */
+export function keepBands(lines: Line[]): void {
+    bands.set(lines, lines.map(line => (line.kind === STREAM ? { ...line, xy: line.xy.slice(), z: line.z.slice() } : line)));
+}
 
 /** Per road, the roads that its start and its end run on into: the other way of a through road that OSM splits at the junction, a bridge's or a tunnel's too. */
 export function partnersOf(lines: Line[]): Map<Line, [Line?, Line?]> {
@@ -73,7 +83,8 @@ function cornersIn(lines: Line[]): { corners: Corner[]; grid: Grid } {
             (at.get(key) ?? at.set(key, []).get(key)!).push({ line, v });
         }
     }
-    const all = segmentsOf(lines), partners = partnersOf(lines), corners: Corner[] = [];
+    const all = segmentsOf(bands.get(lines) ?? lines), partners = partnersOf(lines), corners: Corner[] = [];
+    bands.delete(lines);
     for (const here of at.values()) {
         if (here.every(({ line }) => line === here[0].line)) continue;
         const out = here.flatMap(({ line, v }) => [-1, 1].filter(step => v + step >= 0 && v + step < line.z.length).map(step => wayOut(line, v, step))).sort((p, q) => p.angle - q.angle);

@@ -28,6 +28,8 @@ pub static ROUTING_CELLS: Function =
 pub static SEARCH: Function = Function { name: "obc-search-bake/search", run: obc_search_bake::step::step };
 pub static TRAILVIEW_FEATURES: Function =
     Function { name: "obc-trailview-features/features", run: obc_trailview_features::step::step };
+pub static TRAILVIEW_STAMPS: Function =
+    Function { name: "obc-trailview-features/stamps", run: obc_trailview_features::stamps::step };
 pub static PLANNER_CATALOG: Function =
     Function { name: "obc-data-steps/planner-catalog", run: crate::planner::catalog::pointer };
 
@@ -51,6 +53,7 @@ pub const FUNCTIONS: &[&Function] = &[
     &ROUTING_CELLS,
     &SEARCH,
     &TRAILVIEW_FEATURES,
+    &TRAILVIEW_STAMPS,
     &PLANNER_CATALOG,
     &obc_data::engine::PASS,
 ];

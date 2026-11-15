@@ -64,7 +64,7 @@ JOBS: dict[str, Job] = {
     "wasm": Job(needs=("selection",), packages=("obc-web-demo", "obcm-assemble")),
     "wasm-bridges": Job(
         needs=("selection",),
-        packages=("obc-builder-bridge",),
+        packages=("obc-builder-bridge", "obc-ground-plan-bridge"),
     ),
     "docs": Job(needs=("selection",)),
     "ios-unit": Job(needs=("selection",)),
@@ -332,13 +332,16 @@ def load_document(root: Path) -> dict[str, Any]:
         raise PlanError("tools/testing/suites.toml: schema must be 2")
     return document
 
-def carved_targets(document: Mapping[str, Any]) -> set[tuple[str, str]]:
-    """Targets a manual, weekly or live suite owns, so no tier compiles them."""
+def carved_targets(document: Mapping[str, Any], running: Iterable[str] | None = None) -> set[tuple[str, str]]:
+    """Targets a suite owns, which no tier runs. An ordinary or required suite in `running` (every
+    one when `running` is None) gives its targets back to the fast tier: one build, one result file."""
 
+    running = None if running is None else set(running)
     return {
         (suite["package"], target)
         for suite in document.get("suite", [])
         if suite.get("package")
+        and not (suite.get("route", "ordinary") in CI_ROUTES and (running is None or suite["id"] in running))
         for target in suite.get("targets", ())
     }
 
@@ -739,8 +742,12 @@ NPM_PROJECTS: dict[str, tuple[str, ...]] = {
     "verification": ("tools/verification",),
     "planner-search": ("planner/search", "planner/tiles"),
 }
-BRIDGES = ("builder/web/src/lib/core/pkg", "builder/web/test-support/flat-device/pkg")
-BRIDGE_PACKAGE = "obc-builder-bridge"
+BRIDGES = (
+    "builder/web/src/lib/core/pkg",
+    "builder/web/test-support/flat-device/pkg",
+    "builder/web/src/lib/trailview/plan/pkg",
+)
+BRIDGE_PACKAGES = ("obc-builder-bridge", "obc-ground-plan-bridge")
 NPM_STAMP = "node_modules/.obc-lock"
 
 def _lock_digest(project: Path) -> str:
@@ -755,7 +762,7 @@ def local_setup(root: Path, jobs: Iterable[str], bridge_changed: bool) -> list[t
         stamp = root / project / NPM_STAMP
         if not stamp.is_file() or stamp.read_text() != _lock_digest(root / project):
             setup.append((project, ["npm", "ci", "--no-audit", "--no-fund"]))
-    needed = any("wasm-bridges" in JOBS[job].needs for job in jobs if job in JOBS)
+    needed = any(job == "wasm-bridges" or "wasm-bridges" in JOBS[job].needs for job in jobs if job in JOBS)
     if needed and (bridge_changed or not all(any((root / pkg).glob("*.wasm")) for pkg in BRIDGES)):
         setup.append((".", ["bash", "builder/build-wasm-bridges.sh"]))
     return setup
@@ -780,7 +787,8 @@ def run_plan(
 ) -> int:
     """Run the selected Rust binaries once, then every selected suite command."""
 
-    packages = list(plan.packages)
+    # A selected suite that owns targets runs them in its package's fast run.
+    packages = sorted(set(plan.packages) | {unit.package for unit in plan.selected if unit.declared and unit.package})
     commands: list[list[str]] = []
     if packages:
         # Package flags narrow compilation; the tier filter narrows execution. An empty
@@ -791,7 +799,7 @@ def run_plan(
         # workspace run in `tools/ci/test.sh` keeps `fail`, where an empty run really does
         # mean the filter is wrong.
         commands.append(
-            ["cargo", "nextest", "run", "--locked", "--all-features", "--no-tests", "warn"]
+            ["cargo", "nextest", "run", "--locked", "--all-features", "--tests", "--no-tests", "warn"]
             + [argument for name in packages for argument in ("-p", name)]
             + ["--filter-expr", cargo_filter(graph, "fast", packages, carved)]
         )
@@ -799,7 +807,7 @@ def run_plan(
     setup = local_setup(
         root,
         (job for unit in suites if not unit.platforms or host_platform() in unit.platforms for job in unit.jobs),
-        BRIDGE_PACKAGE in packages,
+        any(package in packages for package in BRIDGE_PACKAGES),
     )
     print(f"selected {len(plan.selected)} of {len(plan.units)} units, {len(packages)} Cargo package(s)")
     for unit in plan.selected:
@@ -827,9 +835,14 @@ def run_plan(
         print("running  " + shlex.join(command), flush=True)
         if subprocess.run(command, cwd=root).returncode != 0:
             return 1
+    # A suite whose command the setup just ran at the root, such as the bridge build, runs once.
+    prepared = {shlex.join(command) for directory, command in setup if directory == "."}
     for unit in suites:
         if unit.platforms and host_platform() not in unit.platforms:
             print(f"skipped  {unit.id}: runs only on {', '.join(unit.platforms)}")
+            continue
+        if unit.command in prepared:
+            print(f"done     {unit.id}: the setup ran it")
             continue
         print(f"running  {unit.id}: {unit.command}", flush=True)
         if subprocess.run(["bash", "-c", unit.command], cwd=root).returncode != 0:
@@ -1039,7 +1052,8 @@ def command_run(args: argparse.Namespace) -> int:
         deleted.update(path for path in changed if not (root / path).exists())
     definitions = changed_suite_ids(root, args.base, document, args.head) if "tools/testing/suites.toml" in changed else ()
     plan = select(units, graph, changed, deleted=deleted, changed_suites=definitions, base=args.base, head=args.head)
-    return run_plan(plan, graph, root, carved_targets(document), dry_run=args.dry_run)
+    running = (unit.id for unit in plan.selected)
+    return run_plan(plan, graph, root, carved_targets(document, running), dry_run=args.dry_run)
 
 def command_prepare(args: argparse.Namespace) -> int:
     root = (args.root or repository_root()).resolve()
@@ -1048,7 +1062,7 @@ def command_prepare(args: argparse.Namespace) -> int:
 def command_cargo_filter(args: argparse.Namespace) -> int:
     root = (args.root or repository_root()).resolve()
     graph, document, _ = load(root)
-    print(cargo_filter(graph, args.tier, args.packages or None, carved_targets(document)))
+    print(cargo_filter(graph, args.tier, args.packages or None, carved_targets(document, args.suites)))
     return 0
 
 def command_gates(args: argparse.Namespace) -> int:
@@ -1131,6 +1145,7 @@ def build_parser() -> argparse.ArgumentParser:
     filter_parser = subparsers.add_parser("cargo-filter", help="a nextest expression over whole test binaries")
     filter_parser.add_argument("--tier", choices=["fast", "fixtures"], required=True)
     filter_parser.add_argument("--packages", nargs="*", help="narrow to these packages")
+    filter_parser.add_argument("--suites", nargs="*", help="the selected suites whose targets join the fast tier (default: all)")
     filter_parser.set_defaults(func=command_cargo_filter)
 
     gates_parser = subparsers.add_parser("gates", help="report what `obc check` gates reproduce")
