@@ -41,9 +41,9 @@ export function browserZone(clock: number): number {
 /**
  * The place of a photo on a ride, as its record keeps it, or undefined for a photo that is not of the ride.
  * The time is the clock time with the zone of the file, else the GPS time, else the clock time in the zone of the
- * browser on that day. A clock time with no zone and a GPS place takes other whole hours from the zone of the browser
- * when they put the photo within NEAR_M of that place, and nearer to it: a photo far from the line keeps the zone of
- * the browser. A time outside the ride is not of the ride. A photo with no time, and each photo of a ride with no
+ * browser on that day. A clock time with no zone, and a GPS place within NEAR_M of the line, takes the whole hours from
+ * the zone of the browser that put the photo nearest to that place; a photo with a place far from the line keeps the
+ * zone of the browser. A time outside the ride is not of the ride. A photo with no time, and each photo of a ride with no
  * times, is of the ride when its GPS place is within NEAR_M of the line.
  */
 export function placePhoto(samples: FitSample[], facts: PhotoFacts, zone = browserZone): PhotoPlace | undefined {
@@ -53,7 +53,8 @@ export function placePhoto(samples: FitSample[], facts: PhotoFacts, zone = brows
     let time = clock !== undefined && facts.zone !== undefined ? clock - facts.zone : facts.gpsTime;
     if (time === undefined && clock !== undefined) {
         const local = time = clock - zone(clock);
-        if (place) {
+        // The hour has no distance limit: a clock that is a minute off puts a moving rider some hundred metres away.
+        if (place && sampleNear(samples, place) !== undefined) {
             const metresAt = (candidate: number) => {
                 const sample = sampleAtTime(samples, candidate);
                 return sample === undefined ? Infinity : metresTo(samples[sample], place);
@@ -63,7 +64,7 @@ export function placePhoto(samples: FitSample[], facts: PhotoFacts, zone = brows
             for (let hours = 1; hours <= ZONE_HOURS; hours++) {
                 for (const candidate of [local - hours * 3600, local + hours * 3600]) {
                     const metres = metresAt(candidate);
-                    if (metres <= NEAR_M && metres < least) [time, least] = [candidate, metres];
+                    if (metres < least) [time, least] = [candidate, metres];
                 }
             }
         }

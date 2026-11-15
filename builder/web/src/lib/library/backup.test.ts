@@ -1,7 +1,7 @@
 import { IDBFactory } from 'fake-indexeddb';
 import { describe, expect, it } from 'vitest';
 import { loadBackup, saveBackup } from './backup';
-import type { RideRecord, RouteRecord, RouteSummary } from './records';
+import { isPhotoEntry, type RideRecord, type RouteRecord, type RouteSummary } from './records';
 import { Library } from './store';
 import { summarize } from './summary';
 import { TooLarge, unzip, zip } from './zip';
@@ -70,6 +70,12 @@ describe('library backup', () => {
         const bare = await saveBackup(source, {}, false);
         expect([...(await unzip(bare)).keys()].some(name => name.startsWith('photos/'))).toBe(false);
         expect(await loadBackup(new Library(new IDBFactory()), bare, small)).toMatchObject({ rides: 2, photos: 0 });
+    });
+
+    it('takes a photo record with a time or with a place, and none with both or with neither', () => {
+        const record = { id: 'p1', ride: '20260801T070000Z' };
+        expect([{ ...record, time: 1 }, { ...record, time: null, place: [8, 47] }].every(isPhotoEntry)).toBe(true);
+        expect([{ ...record, time: 1, place: [8, 47] }, { ...record, time: null }].some(isPhotoEntry)).toBe(false);
     });
 
     it('refuses entries of 4 GiB or more before it reads one', async () => {

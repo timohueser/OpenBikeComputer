@@ -212,7 +212,7 @@ export function isRideRecord(value: unknown): value is RideRecord {
 
 export const isPhotoEntry = (value: unknown): value is PhotoEntry => isRecord(value) && isString(value.id) && /^[\w-]+$/.test(value.id)
     && isString(value.ride) && rideKey.test(value.ride) && (value.time === null || isNumber(value.time))
-    && optional(value.place, place => Array.isArray(place) && place.length === 2 && place.every(isNumber)) && (value.time !== null || value.place !== undefined);
+    && optional(value.place, place => Array.isArray(place) && place.length === 2 && place.every(isNumber)) && (value.time === null) === (value.place !== undefined);
 
 const isTrip = (value: unknown): value is RideTrip => isRecord(value) && isString(value.key) && /^[1-9]\d*$/.test(value.key)
     && Number.isInteger(value.day) && (value.day as number) >= 1 && isString(value.name);

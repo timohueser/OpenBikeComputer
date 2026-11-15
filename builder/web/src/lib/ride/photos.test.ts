@@ -29,6 +29,8 @@ describe('the place of a photo on a ride', () => {
     it('takes the hour that puts a photo with no zone nearest to its GPS place', () => {
         // The camera clock is two hours ahead of the zone of the browser; the place is that of sample 40.
         expect(placePhoto(samples, { clock: start + 7200 + 400, place: placeOf(40) }, utc)).toEqual({ time: start + 400 });
+        // The clock is also a minute fast: the right hour puts the photo 300 m from its place, and still wins.
+        expect(placePhoto(samples, { clock: start + 7200 + 460, place: placeOf(40) }, utc)).toEqual({ time: start + 460 });
         // No hour is in the ride.
         expect(placePhoto(samples, { clock: start + 1800 + 400, place: placeOf(40) }, utc)).toBeUndefined();
     });
