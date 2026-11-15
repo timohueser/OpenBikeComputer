@@ -55,6 +55,36 @@ test('the route page shows a stored route, renames, sends, opens in the planner,
   await page.goBack();
   await expect(page.getByRole('heading', { name: 'Lake loop', level: 1 })).toBeVisible();
 
+  // "Share" is the first item of "More". Its window gives the share card as a JPEG, 1920 pixels wide: the picture of
+  // 1920 × 1280 and the ground of a name of one line.
+  await page.getByRole('button', { name: 'More ▾' }).click();
+  await expect(page.locator('menu button').first()).toHaveText('Share');
+  await page.getByRole('button', { name: 'Share' }).click();
+  const share = page.getByRole('dialog', { name: 'Share' });
+  await expect(share.getByRole('switch')).toHaveCount(3);
+  for (const name of ['Numbers', 'Elevation profile', 'Hide start and end']) await expect(share.getByRole('switch', { name, exact: true })).toBeVisible();
+  await expect(share.getByRole('switch', { name: 'Hide start and end' })).toHaveAccessibleDescription('The first and last 500 m');
+  // The planner saved the summary again when it opened the plan, with its own time.
+  await expect(share.getByRole('img', { name: /^Share card: Lake loop, 22\.2 km, 400 m up, 1h \d+m$/ })).toBeVisible();
+  const [card] = await Promise.all([page.waitForEvent('download'), share.getByRole('button', { name: 'Download' }).click()]);
+  expect(card.suggestedFilename()).toBe('Lake loop.jpg');
+  const bytes = await readFile(await card.path());
+  expect([...bytes.subarray(0, 3)]).toEqual([0xff, 0xd8, 0xff]);
+  const drawn = await page.evaluate(async file => {
+    const image = await createImageBitmap(new Blob([new Uint8Array(file)]));
+    const context = new OffscreenCanvas(image.width, image.height).getContext('2d');
+    context.drawImage(image, 0, 0);
+    const pixel = (x, y) => [...context.getImageData(x, y, 1, 1).data.slice(0, 3)];
+    return { size: [image.width, image.height], ground: pixel(1900, 1300), board: pixel(111, 83) };
+  }, [...bytes]);
+  expect(drawn.size).toEqual([1920, 1780]);
+  // The card is drawn: the plain ground in its right margin, and a board of the signpost of the product mark.
+  const near = (pixel, colour) => pixel.every((value, i) => Math.abs(value - colour[i]) <= 24);
+  expect(near(drawn.ground, [0xf4, 0xf2, 0xeb]), `ground ${drawn.ground}`).toBe(true);
+  expect(near(drawn.board, [0xf4, 0xa8, 0x1d]), `board ${drawn.board}`).toBe(true);
+  await page.keyboard.press('Escape');
+  await expect(share).toHaveCount(0);
+
   await page.getByRole('button', { name: 'More ▾' }).click();
   await page.getByRole('button', { name: 'Duplicate' }).click();
   await expect(page.getByRole('heading', { name: 'Lake loop (copy)', level: 1 })).toBeVisible();

@@ -3,9 +3,9 @@
     import type { Library } from '../library/store';
     import { appearance } from '../theme.svelte';
     import { crop, drawCover, type Crop } from './draw';
-    import { lineKey } from '../library/summary';
+    import { lineCoordinates, lineKey } from '../library/summary';
     import { coverKey, settled, wantCover, wantsPicture, type Place } from './job';
-    import { along, nearest } from './line';
+    import { along, fromAbove, nearest } from './line';
     import Icon from '../../components/planner/PlannerIcon.svelte';
 
     let { library, id, mark, part, line = true, place = 'row', pins = [], onpoint, credits = $bindable([]) }: {
@@ -104,15 +104,12 @@
 
     /** The line on a plain ground, in a box of 100 by the shape of the line, with the north up. */
     const fallback = $derived.by(() => {
-        const flat = item?.summary?.line;
-        if (!flat?.length) return undefined;
-        const lons = flat.filter((_, i) => i % 2 === 0), lats = flat.filter((_, i) => i % 2 === 1);
-        const west = Math.min(...lons), north = Math.max(...lats), across = Math.cos((north + Math.min(...lats)) / 2 * Math.PI / 180);
-        const xs = lons.map(lon => (lon - west) * across), ys = lats.map(lat => north - lat);
-        const size = Math.max(...xs, ...ys) || 1, pad = 8;
+        const summary = item?.summary;
+        if (!summary?.line.length) return undefined;
+        const { points, width, height } = fromAbove(lineCoordinates(summary)), pad = 8;
         return {
-            box: `${-pad} ${-pad} ${Math.max(...xs) / size * 100 + 2 * pad} ${Math.max(...ys) / size * 100 + 2 * pad}`,
-            points: xs.map((x, i) => `${(x / size * 100).toFixed(2)},${(ys[i] / size * 100).toFixed(2)}`).join(' '),
+            box: `${-pad} ${-pad} ${width * 100 + 2 * pad} ${height * 100 + 2 * pad}`,
+            points: points.map(([x, y]) => `${(x * 100).toFixed(2)},${(y * 100).toFixed(2)}`).join(' '),
         };
     });
 </script>

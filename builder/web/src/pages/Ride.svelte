@@ -6,6 +6,7 @@
     import Picture from '../components/route/Picture.svelte';
     import RideFacts from '../components/route/RideFacts.svelte';
     import RideLines from '../components/route/RideLines.svelte';
+    import Share from '../components/route/Share.svelte';
     import { download } from '../components/route/download';
     import { writeFitRide, type FitSample } from '../lib/core/fit';
     import { writeGpx } from '../lib/core/gpx';
@@ -28,7 +29,7 @@
     let source = $state.raw<{ file: Blob; samples: FitSample[] } | null>();
     /** The pointer, as a share of the summary line from 0 to 1. */
     let share = $state<number>();
-    let deleting = $state(false), failure = $state('');
+    let deleting = $state(false), sharing = $state(false), failure = $state('');
     /** The selected part, from its first to its last sample, and its numbers. A drag changes the part with each move:
      * the numbers follow PART_MS after the last one. */
     let part = $state.raw<[number, number] | null>(null), partFacts = $state.raw<PartNumbers>();
@@ -53,7 +54,7 @@
         const target = key;
         let live = true, reading = false;
         record = source = undefined;
-        [share, deleting, failure, part, onlyPart] = [undefined, false, '', null, false];
+        [share, deleting, sharing, failure, part, onlyPart] = [undefined, false, false, '', null, false];
         const load = async () => {
             const ride = await library.ride(target);
             if (!live) return;
@@ -92,9 +93,9 @@
         });
     }
 
-    /** The exports, then Delete. An export of the whole ride is the stored file for its own format, else a file written
-     * from the samples. With "Only the selected part", each export is written from the samples of the part, and its
-     * name says so. */
+    /** Share, the exports, then Delete. An export of the whole ride is the stored file for its own format, else a file
+     * written from the samples. With a part, the switch "Only the selected part" stands over the exports: with it on,
+     * each export is written from the samples of the part, and its name says so. The share card is the whole ride. */
     const more = $derived.by(() => {
         const ride = record, read = source, range = onlyPart ? part : null;
         const samplesOf = () => range ? slice(read!.samples, range) : read!.samples, name = () => range ? `${ride!.name} part` : ride!.name;
@@ -104,7 +105,8 @@
             download(ride.format === format && !range ? read.file : write(), type, name(), extension);
         };
         return [
-            { label: 'Export FIT file', disabled: !read, run: file('fit', () => writeFitRide({ sport: fitSport(ride!.summary.bike), samples: samplesOf() }) as Uint8Array<ArrayBuffer>) },
+            { label: 'Share', disabled: !ride, run: () => { sharing = true; } },
+            { label: 'Export FIT file', rule: true, control: part ? partSwitch : undefined, disabled: !read, run: file('fit', () => writeFitRide({ sport: fitSport(ride!.summary.bike), samples: samplesOf() }) as Uint8Array<ArrayBuffer>) },
             { label: 'Export GPX track', disabled: !read, run: file('gpx', () => writeGpx({ name: name(), points: ridePoints(samplesOf()), waypoints: [] })) },
             { label: 'Export table of the data (CSV)', note: 'One line for each point', disabled: !read,
                 run: () => { if (ride && read) download(rideCsv(samplesOf()), 'text/csv', name(), 'csv'); } },
@@ -122,7 +124,7 @@
     {/snippet}
     {#snippet buttons()}
         <button type="button" class="button" disabled={!samples} onclick={() => act(() => rideAgain(library, record!, samples))}>Ride it again</button>
-        <Menu label="More" items={more} children={part ? partSwitch : undefined} />
+        <Menu label="More" items={more} />
     {/snippet}
     {#snippet left()}
         {#if summary}
@@ -137,6 +139,7 @@
         {#key key}<RideLines {samples} {shares} {speed} channels={numbers} {climbs} {limits} mark={share} onpoint={next => share = next ?? undefined}
             {part} onpart={next => part = next} />{/key}
     {/if}
+    {#if sharing && record}<Share {library} id={key} name={record.name} summary={record.summary} {date} onClose={() => sharing = false} />{/if}
     {#if deleting}
         <Window title="Delete this ride?" onClose={() => deleting = false}>
             <p>“{record?.name}” and its file leave the library. You cannot undo this.</p>
