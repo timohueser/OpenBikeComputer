@@ -20,11 +20,13 @@ from pathlib import Path
 # vertices, the decks' ceilings and end faces, the shared water level and curve of the feature bake, line water
 # and its culverts with their mouths, the classifier's ford rule, and the storeys over the ground with their open
 # junction ends, their ends on the stubs' points, what each deck is made of and the junctions that lie on the
-# ground (the crate's feature `storeys` on, stable 1.100.0). The owner allows a few per cent for line water and
-# about 60 kB for the crossing block when stated.
+# ground (the crate's feature `storeys` on, stable 1.100.0).
+# The owner allows about 60 kB of code growth for the crossing block, stated in its pull request and recorded here.
 GROUND_PLAN_MEASURED = {"gzipped": 806_847, "raw_wasm": 2_087_262}
 # The owner's margin: compiler and dependency updates move the size by a few kilobytes and must not fail
 # unrelated pull requests; real growth past the margin still fails. Raw gets the same fraction as gzipped.
+# A pull request that changes the bridge's code records its own CI size here; the margin is only for toolchain
+# and dependency noise.
 GROUND_PLAN_MARGIN_GZIPPED = 8 * 1024
 GROUND_PLAN_MARGIN = {
     "gzipped": GROUND_PLAN_MARGIN_GZIPPED,
