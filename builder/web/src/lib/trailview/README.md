@@ -62,7 +62,7 @@ the palette of the `world` region.
 | `scale` | The render scale per axis, 0.25 to 0.75 (default 0.7); debug views draw at 1, with the nodes of the scale |
 | `ground` | `plan`: a worker builds the ground plan of each cell near the eye; the HUD shows its line. Read once, as `scale` is |
 | `plan` | With `ground=plan`: `faces` draws the plan over the view in the debug tool's colours (default `off`) |
-| `still` | No engine starts. A headless script calls `window.trailviewStill.still(job, options)`, `coverView(line, when)`, `canRenderStills(options)`, `view(search)`, the view of a query string, `pack(points)`, the points of a still as a cover keeps them, and reads `release`, the id of the release; `still.test.js`, `home-views.mjs` and `route-pictures.mjs` show how |
+| `still` | No engine starts. A headless script calls `window.trailviewStill.still(job, options)`, `coverView(line, when)`, `canRenderStills(options)`, `view(search)`, the view of a query string, and reads `release`, the id of the release; `still.test.js` and `home-views.mjs` show how |
 
 The HUD lists the keys; Ctrl+C and Ctrl+V copy and paste the view as an address.
 

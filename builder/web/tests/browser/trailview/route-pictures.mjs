@@ -32,6 +32,10 @@ const WIDTH = 960, HEIGHT = 640;
 /** The version of the camera rule, and the date and the time of the light: a change of one gives each line a new key. */
 const CAMERA = 1, DAY = '07-15', TIME = '10:00';
 export const LOOK = `${CAMERA}|${DAY}|${TIME}|${WIDTH}|${HEIGHT}`;
+/** The code of `eye` (specs/route-pictures.md, `pack` in src/lib/covers/line.ts): 1 to 127 is NEAREST_M · 2^((c − 1) / STEPS) metres, plus VISIBLE. */
+const NEAREST_M = 10, STEPS = 8, VISIBLE = 128;
+/** After this many routes fail in a row, render stops: the tile host or the GPU is down, not one route. */
+const FAILURES_IN_A_ROW = 5;
 /** Requests that run at a time, the wait after a 429 of the host and the most tries again. */
 const AT_ONCE = 16, BUSY_MS = 60_000, BUSY_TRIES = 5;
 /** The covers that upload checks on the public host. */
@@ -122,15 +126,21 @@ function lineOf({ line_udeg: udeg }) {
     return line;
 }
 
-/** The points file of a cover from the points of `pack`: one decimal of a pixel, and `null` for a point with no place. */
-export function pointsOf({ x, y, eye }, credits) {
-    const place = values => values.map((v, i) => (eye[i] & 127 ? Math.round(v * 10) / 10 : null));
+/** The points file of a cover from the points of a still: one decimal of a pixel, and `null` and eye 0 for a point with no place. */
+export function pointsOf({ x, y, distance, visible }, credits) {
+    const placed = i => [x[i], y[i], distance[i]].every(Number.isFinite), place = values => Array.from(values, (v, i) => (placed(i) ? Math.round(v * 10) / 10 : null));
+    const eye = Array.from(distance, (d, i) => (placed(i) ? Math.min(127, 1 + Math.round(STEPS * Math.log2(Math.max(d, NEAREST_M) / NEAREST_M))) | (visible[i] ? VISIBLE : 0) : 0));
     return { x: place(x), y: place(y), eye, credits };
 }
 
-/** The cover of one line in the page: the view of `coverView`, then the still and its points as `pack` gives them; `none` when no view holds the line. */
+/** Throws unless the still page was built for the release whose routes render reads. */
+export function checkRelease(page, release) {
+    if (page !== release) throw new Error(`The still page has release ${page ?? 'none'}, not the production release ${release}: build it for production with \`npm run build:trailview --prefix ../..\`.`);
+}
+
+/** The cover of one line in the page: the view of `coverView`, then the still; `none` when no view holds the line. */
 const shoot = (page, job) => page.evaluate(async ({ line, when, width, height, timeoutMs }) => {
-    const { coverView, still, pack } = window.trailviewStill, started = performance.now();
+    const { coverView, still } = window.trailviewStill, started = performance.now();
     try {
         const view = await coverView(line, { width, height, ...when });
         if (!view) return { none: true, seconds: (performance.now() - started) / 1000 };
@@ -141,12 +151,12 @@ const shoot = (page, job) => page.evaluate(async ({ line, when, width, height, t
             reader.onload = () => resolve(reader.result);
             reader.readAsDataURL(image);
         });
-        const packed = Object.fromEntries(Object.entries(pack(points)).map(([key, values]) => [key, Array.from(values)]));
-        return { image: url.slice(url.indexOf(',') + 1), points: packed, credits, seconds: (performance.now() - started) / 1000 };
+        const arrays = Object.fromEntries(Object.entries(points).map(([key, values]) => [key, Array.from(values)]));
+        return { image: url.slice(url.indexOf(',') + 1), points: arrays, credits, seconds: (performance.now() - started) / 1000 };
     } catch (error) {
         return { failure: error.name, message: error.message };
     }
-}, job);
+}, job).catch(error => ({ failure: 'page', message: `the page failed: ${error.message}` }));
 
 /**
  * Writes the cell files and the manifest of the set of the covers in `out` for `records`, under
@@ -188,7 +198,8 @@ export async function render({ out = OUT, sample, only, gpu = false, fixture = f
     const release = active?.id ?? 'fixture', failed = [];
     let covers = 0, none = 0, seconds = 0, bytes = 0;
     try {
-        let page = await stillPage(browser, origin, { gpu, fixture });
+        let page = await stillPage(browser, origin, { gpu, fixture }), inARow = 0;
+        if (!fixture) checkRelease(await page.evaluate(() => window.trailviewStill.release), release);
         for (const record of todo) {
             const job = { line: lineOf(record), when, width: WIDTH, height: HEIGHT, timeoutMs: gpu ? undefined : SOFTWARE_MS };
             let result = await shoot(page, job);
@@ -200,11 +211,16 @@ export async function render({ out = OUT, sample, only, gpu = false, fixture = f
             if (result.failure) {
                 failed.push(`${record.id}: ${result.message}`);
                 console.log(`${record.id}: failed: ${result.message}`);
-                // A new page asks for a new GPU device, also after a lost one.
-                await page.close();
+                if (++inARow >= FAILURES_IN_A_ROW) {
+                    console.log(`${inARow} routes failed in a row: render stops. Check the tile host and the GPU, then run again.`);
+                    break;
+                }
+                // A new page asks for a new GPU device, also after a lost one or a crash.
+                await page.close().catch(() => {});
                 page = await stillPage(browser, origin, { gpu, fixture });
                 continue;
             }
+            inARow = 0;
             mkdirSync(coverDir(out, record), { recursive: true });
             seconds += result.seconds;
             if (result.none) {
@@ -220,7 +236,7 @@ export async function render({ out = OUT, sample, only, gpu = false, fixture = f
             bytes += image.length;
             console.log(`${record.id}: ${result.seconds.toFixed(1)} s, ${Math.round(image.length / 1000)} kB`);
         }
-        await page.close();
+        await page.close().catch(() => {});
     } finally {
         await browser.close();
         close();

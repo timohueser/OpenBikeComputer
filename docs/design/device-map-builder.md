@@ -41,6 +41,7 @@ depends_on:
   - website
 test_depends_on:
   - repository-tooling
+  - web-planner
 status: approved
 ---
 

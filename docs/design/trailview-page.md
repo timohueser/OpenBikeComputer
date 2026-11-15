@@ -7,7 +7,6 @@ owns:
 depends_on:
   - route-planning
   - trailview
-  - web-planner
 test_depends_on: []
 status: approved
 ---

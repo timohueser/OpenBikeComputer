@@ -67,18 +67,25 @@ key of a cover. Run the commands from `builder/web/tests/browser`.
 
 ## Steps
 
-1. Build the page against production: `npm run build:trailview --prefix ../..`.
-2. Measure a sample: `node trailview/route-pictures.mjs render --gpu --sample 30`. It prints the
+The first runs, from `builder/web/tests/browser`:
+
+1. Build the still page for production: `npm run build:trailview --prefix ../..`. `npm run
+   test:trailview` builds it for the fixture, so build it again after each test run. `render`
+   refuses a page of another release than production.
+2. Run the test of one fixture route on the GPU:
+   `npm run test:trailview -- --trace off route-pictures.test.js` with `OBC_TRAILVIEW_GPU=1`. It
+   passes with no test skipped. Then build the page again (step 1).
+3. Measure a sample: `node trailview/route-pictures.mjs render --gpu --sample 30`. It prints the
    seconds and the bytes of each cover, and the time, the size and the count of files of all routes.
-3. Render all routes in `.artifacts/route-pictures/`: `node trailview/route-pictures.mjs render --gpu`.
+4. Render all routes in `.artifacts/route-pictures/`: `node trailview/route-pictures.mjs render --gpu`.
    It writes `covers/<id>/<key>.webp` and `.json`, or `<key>.none` for a route with no view, and at
-   the end the set under `sets/<set>/`.
-4. Upload: `node trailview/route-pictures.mjs upload`. It prints the set id.
-5. Approve the set id, then make the set live: `node trailview/route-pictures.mjs switch SET`.
+   the end the set under `sets/<set>/`. Then upload: `node trailview/route-pictures.mjs upload`. It
+   prints the set id. Approve the set id, then make the set live:
+   `node trailview/route-pictures.mjs switch SET`.
    `curl -sI https://maps.openbikecomputer.com/route-pictures/manifest.json` answers 200.
    `switch` with the id of the previous set goes back.
 
-For a new planner release, do steps 3 to 5: only the routes whose line changed render.
+For a new planner release, do steps 1 and 4: only the routes whose line changed render.
 
 ## Options of render
 
@@ -93,7 +100,8 @@ For a new planner release, do steps 3 to 5: only the routes whose line changed r
 ## Pitfalls
 
 - A route that fails gets no file. `render` goes on with the next route, names each failed route
-  with its reason at the end, and exits with 1. The next run tries it again. When a route fails on
+  with its reason at the end, and exits with 1. The next run tries it again. After 5 failures in a
+  row it stops: the tile host or the GPU is down. When a route fails on
   each run, leave it out of the set: `upload --without ID,ID`. It then has no cover in that set.
 - `render` skips a route whose cover or `.none` mark exists for its key. A change of the light or
   of the camera rule in the script changes `look` and so each key: all routes render again.

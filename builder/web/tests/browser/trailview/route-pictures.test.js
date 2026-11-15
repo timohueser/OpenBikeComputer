@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { expect, test } from '@playwright/test';
 import { CATALOG, HOST } from './stills.mjs';
-import { FIXTURE_ROUTES, LOOK, gridCells, keyOf, patiently, pointsOf, sampleOf, switchTo, upload } from './route-pictures.mjs';
+import { FIXTURE_ROUTES, LOOK, checkRelease, gridCells, keyOf, patiently, pointsOf, sampleOf, switchTo, upload } from './route-pictures.mjs';
 import { pack } from '../../../src/lib/covers/line.ts';
 
 const SCRIPT = new URL('./route-pictures.mjs', import.meta.url).pathname;
@@ -81,13 +81,17 @@ test('after a 429 of the host a request waits and tries again, 5 times at most',
     await expect(patiently('key', async () => { calls++; throw new Error('denied'); }, async () => {})).rejects.toThrow('denied');
 });
 
-test('the points file keeps the eye code of pack, which the spec states, and has no place where the eye code is 0', () => {
-    const distance = Float32Array.of(5, 10, 1000, 1e9, NaN);
-    const packed = pack({ x: Float32Array.of(1.04, -20.26, 970, 3, NaN), y: Float32Array.of(2, 3, 4, 5, NaN), distance, visible: Uint8Array.of(1, 0, 1, 0, 0) });
-    const code = d => Math.min(127, 1 + Math.round(8 * Math.log2(Math.max(d, 10) / 10)));
-    expect(Array.from(packed.eye)).toEqual([code(5) | 128, code(10), code(1000) | 128, 127, 0]);
-    const points = pointsOf({ x: Array.from(packed.x), y: Array.from(packed.y), eye: Array.from(packed.eye) }, ['terrain']);
-    expect(points).toEqual({ x: [1, -20.3, 970, 3, null], y: [2, 3, 4, 5, null], eye: Array.from(packed.eye), credits: ['terrain'] });
+test('the points file has the eye code of pack, and no place where pack has none', () => {
+    const still = { x: Float32Array.of(1.04, -20.26, 970, 3, NaN, 7), y: Float32Array.of(2, 3, 4, 5, NaN, 8), distance: Float32Array.of(5, 10, 1000, 1e9, NaN, 123.4), visible: Uint8Array.of(1, 0, 1, 0, 0, 1) };
+    const points = pointsOf(still, ['terrain']);
+    expect(points.eye).toEqual(Array.from(pack(still).eye));
+    expect(points).toEqual({ x: [1, -20.3, 970, 3, null, 7], y: [2, 3, 4, 5, null, 8], eye: points.eye, credits: ['terrain'] });
+});
+
+test('render refuses a still page of another release than production', () => {
+    expect(() => checkRelease(undefined, RELEASE.id)).toThrow('npm run build:trailview');
+    expect(() => checkRelease('release-0', RELEASE.id)).toThrow('release release-0, not the production release release-1');
+    checkRelease(RELEASE.id, RELEASE.id);
 });
 
 test('upload refuses a route with no cover and no mark, else sends the covers that the bucket lacks and then the set; switch makes it live', async () => {
