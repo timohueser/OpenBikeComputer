@@ -1,9 +1,9 @@
 /**
- * Object **payload** layouts: the ride object and the trip object.
+ * Object **payload** layout: the ride object.
  *
  * Not the wire. The protocol carries an object as opaque bytes with a kind, a display name and a
  * whole-payload CRC, so nothing in this file crosses a frame boundary — it is what the bytes
- * *inside* one object mean, and only for the two kinds this app has to look inside.
+ * *inside* one object mean, and only for the one kind this app has to look inside.
  *
  * Routes, maps and firmware images are absent on purpose: an `.obcr`, an `.obcm` and an `UPDATE.BIN`
  * are written verbatim and read back verbatim. The browser's OBCR encoding is the wasm bridge's job,
@@ -41,7 +41,7 @@ const RIDE_NAME_AT = 42;
 const RIDE_TRIP_AT = 90;
 const RIDE_LIMITS_AT = 150;
 
-/** One recorded point. Coordinates are degrees × 1e7 (a ~1 cm grid); `null` means the sensor was
+/** One recorded point. Coordinates are microdegrees (`specs/ble-interface.md` §7.2); `null` means the sensor was
  *  absent, dropped, or stale. */
 export interface RidePoint {
     /** The recorded wrapping monotonic clock, in milliseconds. */
@@ -239,116 +239,6 @@ function clippedUtf8(value: string, cap: number): Uint8Array {
     let end = Math.min(encoded.length, cap);
     while (end > 0 && (encoded[end] & 0xc0) === 0x80) end--;
     return encoded.subarray(0, end);
-}
-
-export const TRIP_HEADER_LEN = 64;
-export const TRIP_DAY_LEN = 16;
-
-/** One day of a trip: its route object id and where that route runs on the trip's main line. */
-export interface TripDay {
-    route: bigint;
-    /** Metres along the day route where it joins the main line. */
-    joinM: number;
-    /** Metres along the day route where it leaves the main line; at or past its end = ends on it. */
-    leaveM: number;
-}
-
-/** A day that starts and ends on the main line. */
-export function wholeDay(route: bigint): TripDay {
-    return { route, joinM: 0, leaveM: 0xffffffff };
-}
-
-/**
- * A trip (spec §7.7): a key, a name, a start date and one **route object id** per day, never route
- * bytes.
- *
- * Dangling days — a day route deleted on its own — are tolerated on read and served verbatim; the
- * device never rewrites a stored trip. Compaction happens when the *peer* re-uploads the trip
- * built from resolvable days, which is why this decoder keeps every day it finds.
- */
-export interface TripObject {
-    /** The trip's stable key; a re-upload keeps it. */
-    key: bigint;
-    name: string;
-    /** Days since 1970-01-01; 0 = no start date. */
-    startDate: number;
-    days: TripDay[];
-}
-
-export function decodeTripObject(data: Uint8Array): TripObject {
-    if (data.length < TRIP_HEADER_LEN) {
-        throw new ObjectDecodeError(`trip object is ${data.length} bytes, shorter than its 64-byte header.`);
-    }
-    if (data[0] !== 3) {
-        throw new ObjectDecodeError(`trip object version ${data[0]}; this client decodes 3.`);
-    }
-    const view = viewOf(data);
-    const dayCount = view.getUint16(2, true);
-    const expected = TRIP_HEADER_LEN + TRIP_DAY_LEN * dayCount;
-    if (data.length !== expected) {
-        throw new ObjectDecodeError(`trip with ${dayCount} days should be ${expected} bytes, got ${data.length}.`);
-    }
-    const days: TripDay[] = [];
-    for (let i = 0; i < dayCount; i++) {
-        const at = TRIP_HEADER_LEN + i * TRIP_DAY_LEN;
-        days.push({
-            route: view.getBigUint64(at, true),
-            joinM: view.getUint32(at + 8, true),
-            leaveM: view.getUint32(at + 12, true),
-        });
-    }
-    const key = view.getBigUint64(56, true);
-    // The device reads key 0 as "no trip".
-    if (key === 0n) throw new ObjectDecodeError("trip object has key 0.");
-    return {
-        key,
-        name: paddedName(data, 4, 5, 48),
-        startDate: view.getUint16(54, true),
-        days,
-    };
-}
-
-export function encodeTripObject(t: TripObject): Uint8Array {
-    // **Refused here, not left to call-site discipline.** `setUint16` wraps silently, so a trip
-    // with 65,536 days would encode as one with zero and the device would commit a trip that is
-    // not the trip it was given — a wrong object rather than a rejected one.
-    if (t.days.length > 0xffff) {
-        throw new RangeError(`a trip carries at most 65535 days; this one has ${t.days.length}`);
-    }
-    const out = new Uint8Array(TRIP_HEADER_LEN + TRIP_DAY_LEN * t.days.length);
-    const view = new DataView(out.buffer);
-    out[0] = 3;
-    view.setUint16(2, t.days.length, true);
-    writePaddedName(out, 4, 5, 48, t.name);
-    view.setUint16(54, t.startDate, true);
-    view.setBigUint64(56, t.key, true);
-    t.days.forEach((day, i) => {
-        const at = TRIP_HEADER_LEN + i * TRIP_DAY_LEN;
-        view.setBigUint64(at, day.route, true);
-        view.setUint32(at + 8, day.joinM, true);
-        view.setUint32(at + 12, day.leaveM, true);
-    });
-    return out;
-}
-
-/** Read a `name_len u8` + zero-padded UTF-8 field, clamping a bogus length to the field's cap. */
-function paddedName(data: Uint8Array, lenAt: number, nameAt: number, cap: number): string {
-    const len = Math.min(data[lenAt], cap);
-    return new TextDecoder().decode(data.subarray(nameAt, nameAt + len));
-}
-
-/**
- * Write a `name_len u8` + zero-padded UTF-8 field, truncating an over-long name.
- *
- * Truncation is on a **byte** boundary, matching the firmware encoder, which can split a multi-byte
- * character. Names are capped at the source, so this is a backstop rather than a path anything
- * travels.
- */
-function writePaddedName(out: Uint8Array, lenAt: number, nameAt: number, cap: number, name: string): void {
-    const bytes = new TextEncoder().encode(name);
-    const n = Math.min(bytes.length, cap);
-    out[lenAt] = n;
-    out.set(bytes.subarray(0, n), nameAt);
 }
 
 function absent8(v: number): number | null {

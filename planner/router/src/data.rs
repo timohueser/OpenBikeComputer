@@ -34,6 +34,11 @@ pub trait RoutingData {
     /// This router's estimated working set with `metric` prepared: its own label blocks and the
     /// data the forks hold together.
     fn routing_bytes(&self, metric: &str) -> Result<usize>;
+    /// The working set of `routing_bytes` on an idle service: only `metric` prepared.
+    fn idle_bytes(&self, metric: &str) -> Result<usize>;
+    /// Drops the cached metrics other than `metric` that no router holds, so that an idle service
+    /// has the room of `idle_bytes`. Returns whether it dropped one.
+    fn release(&self, metric: &str) -> bool;
     fn memory_budget(&self) -> usize;
     fn set_memory_budget(&mut self, bytes: usize);
     /// The budget native hosts give a router: the costliest profile's routing bytes plus room
@@ -91,6 +96,13 @@ struct State {
     /// The budget of every live handle. The cache is budgeted like one router: the shared data
     /// plus one router's own blocks and queue headroom fit the largest budget.
     budgets: Vec<usize>,
+}
+
+/// Drops the cached metrics other than `metric` that no router holds. Returns whether it dropped one.
+fn drop_unheld(state: &mut State, metric: &str) -> bool {
+    let cached = state.profiles.len();
+    state.profiles.retain(|(name, prepared)| name == metric || Arc::strong_count(prepared) > 1);
+    state.profiles.len() < cached
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -518,8 +530,10 @@ impl<S: Source> RoutingData for Selection<S> {
             // Make room first, so a metric that cannot fit fails before any page is read.
             let mut state = lock(&self.shared.state);
             self.retain(&mut state, metric)?;
-            if self.share(&state, metric)? > self.memory_budget {
-                return Err(Error::Limit);
+            if self.share(&state, metric)? > self.memory_budget
+                && (!drop_unheld(&mut state, metric) || self.share(&state, metric)? > self.memory_budget)
+            {
+                return Err(if self.idle_bytes(metric)? > self.memory_budget { Error::Limit } else { Error::Memory });
             }
         }
         let _loading = lock(&self.shared.loading);
@@ -537,6 +551,15 @@ impl<S: Source> RoutingData for Selection<S> {
         self.package.metric(metric)?;
         let state = lock(&self.shared.state);
         self.share(&state, metric)
+    }
+
+    fn idle_bytes(&self, metric: &str) -> Result<usize> {
+        self.package.metric(metric)?;
+        Ok(self.router_bytes().saturating_add(self.shared_bytes([metric])?))
+    }
+
+    fn release(&self, metric: &str) -> bool {
+        drop_unheld(&mut lock(&self.shared.state), metric)
     }
 
     fn memory_budget(&self) -> usize {

@@ -1,42 +1,53 @@
 // Hash routing keeps the SPA sub-path tolerant: it works served at "/" or
-// under any prefix without server rewrite rules. Five routes are all we need.
+// under any prefix without server rewrite rules.
 //
 // The hashes themselves live in `lib/routes.ts`, which has no side effects —
 // this module reads `location` and subscribes to `hashchange` on import.
 
-import { ADVANCED_ROUTE, DESKTOP_ROUTE, DEVICE_ROUTE, HOME_ROUTE, RIDES_ROUTE } from "./routes";
+import { parseRoute, ROUTES, type Route } from "./routes";
 
-export type Route = "home" | "advanced" | "desktop" | "device" | "rides";
-
-const HASH: Record<Route, string> = {
-    home: HOME_ROUTE,
-    advanced: ADVANCED_ROUTE,
-    desktop: DESKTOP_ROUTE,
-    device: DEVICE_ROUTE,
-    rides: RIDES_ROUTE,
-};
-
-function parse(): Route {
-    if (location.hash.startsWith(ADVANCED_ROUTE)) return "advanced";
-    // "#/device" before "#/desktop" would also work — `startsWith` on the full
-    // hash never confuses the two, but keep them adjacent so nobody wonders.
-    if (location.hash.startsWith(DESKTOP_ROUTE)) return "desktop";
-    if (location.hash.startsWith(DEVICE_ROUTE)) return "device";
-    if (location.hash.startsWith(RIDES_ROUTE)) return "rides";
-    return "home";
-}
+export type { Route };
 
 class Router {
-    route = $state<Route>(parse());
+    route = $state<Route>("home");
+    id = $state<string | undefined>();
+    /** `#/settings` is a window over the page before it: `route` and `id` keep that page, so it is not created again. */
+    settings = $state(false);
 
     constructor() {
-        window.addEventListener("hashchange", () => {
-            this.route = parse();
-        });
+        // A first address of the settings gets the home page in an entry before it, so each close of the window is Back.
+        if (parseRoute(location.hash).route === "settings") {
+            const settings = location.hash;
+            history.replaceState(history.state, "", ROUTES.home);
+            history.pushState(history.state, "", settings);
+        }
+        this.read();
+        window.addEventListener("hashchange", () => this.read());
     }
 
-    go(route: Route) {
-        location.hash = HASH[route];
+    /** Goes to `hash` in a new entry of the history that holds `state`, for the page there to read. */
+    go(hash: string, state: Record<string, unknown>) {
+        history.pushState(state, "", hash);
+        this.read();
+    }
+
+    /** Goes to `hash` in place of the current entry of the history, so Back skips the current address. */
+    replace(hash: string) {
+        history.replaceState(history.state, "", hash);
+        this.read();
+    }
+
+    closeSettings() {
+        if (this.settings) history.back();
+    }
+
+    private read() {
+        const { route, id } = parseRoute(location.hash);
+        this.settings = route === "settings";
+        if (!this.settings) {
+            this.route = route;
+            this.id = id;
+        }
     }
 }
 

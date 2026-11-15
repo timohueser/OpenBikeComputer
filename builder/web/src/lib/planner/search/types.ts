@@ -31,6 +31,8 @@ export interface HoursStatus { state: 'open' | 'closed' | 'unknown'; closesAt?: 
 export interface SearchPlace {
     source: string; name: string; kind: string; lon: number; lat: number; city: string; region: string;
     distance: number; position?: { along: number; distance: number }; precision: 'place' | 'street' | 'house';
+    /** The bounds of the record; a record with no extent has its point. */
+    west?: number; south?: number; east?: number; north?: number;
     opening_hours?: string; opening?: string; hoursStatus?: HoursStatus;
     website?: string; phone?: string; description?: string;
     content?: import('../place-content').PlaceContent;

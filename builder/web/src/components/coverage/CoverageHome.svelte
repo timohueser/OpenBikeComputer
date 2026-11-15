@@ -2,9 +2,7 @@
     import { tick } from "svelte";
     import type { CatalogClient } from "../../lib/catalog/client";
     import { CoverageStore } from "../../lib/coverage/store.svelte";
-    import { available } from "../../lib/platform/gating";
     import DeviceStep from "../device/DeviceStep.svelte";
-    import MapSendStep from "../device/MapSendStep.svelte";
     import CoverageMap from "./CoverageMap.svelte";
     import DownloadStep from "./DownloadStep.svelte";
     import MapSummary from "./MapSummary.svelte";
@@ -115,11 +113,7 @@
             <div class="step-head">
                 <h3>Or send directly to device</h3>
             </div>
-            {#if available("deviceDashboard")}
-                <MapSendStep ledger={store.ledger} {sendAssembled} sendReady={sendReady && !refreshing} />
-            {:else}
-                <DeviceStep ledger={store.ledger} {sendAssembled} sendReady={sendReady && !refreshing} />
-            {/if}
+            <DeviceStep ledger={store.ledger} {sendAssembled} sendReady={sendReady && !refreshing} />
         </section>
     </div>
 </div>

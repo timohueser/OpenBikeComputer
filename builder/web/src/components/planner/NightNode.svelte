@@ -7,6 +7,8 @@
     import type { Day } from '../../lib/planner/editor';
     import type { Coordinate } from '../../lib/planner/geo';
     import type { NightChoices } from '../../lib/planner/night-stops.svelte';
+    import { distanceIn } from '../../lib/settings/format';
+    import { settings } from '../../lib/settings/settings.svelte';
 
     let { day, label, nights, end, elevation, onShow, onActive, children }: {
         /** The riding day that ends at this night. */
@@ -38,7 +40,7 @@
     const status = $derived(found?.state === 'loading' ? 'Finding towns nearby…' : found?.state === 'error' ? 'Towns could not load'
         : towns ? `No ${wanted} near the day end · ${towns} ${towns === 1 ? 'town' : 'towns'} to choose from` : `No ${wanted} nearby`);
     const detail = $derived(!around ? status
-        : around.place ? `${around.stop.name} · ${around.place.off < .15 ? 'on the route' : `${around.place.off.toFixed(1)} km off the route`}`
+        : around.place ? `${around.stop.name} · ${around.place.off < .15 ? 'on the route' : `${distanceIn(around.place.off * 1000).toFixed(1)} ${settings.units} off the route`}`
         : stopCounts(around.stop));
     const date = $derived(nights.date(day.number));
     const sunset = $derived(date && end ? sunsetAt(end, date) : null);

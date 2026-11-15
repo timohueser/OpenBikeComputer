@@ -10,6 +10,9 @@ use crate::pmtiles::Archive;
 use crate::Terrain;
 
 const TILE: usize = 512;
+/// From this zoom on, the grid holds the terrain in archives of its own, under `13/`
+/// (`specs/planner-release.md`).
+const FINE_ZOOM: u8 = 13;
 /// Decoded tiles of 1 MB that the threads share. A tile that leaves the cache costs one more decode
 /// when a job reads it again: the road solver reads its samples in the order of the tiles.
 const CACHED: usize = 256;
@@ -62,7 +65,7 @@ impl Tiles {
                 files.get(&format!("objects/{sha}")).ok_or_else(|| format!("the grid lacks the object of {name}"))?;
             archives.insert(part.to_string(), file.clone());
         }
-        let top = if archives.keys().any(|part| part.starts_with("13/")) { 13 } else { 12 };
+        let top = if archives.keys().any(|part| part.starts_with("13/")) { FINE_ZOOM } else { FINE_ZOOM - 1 };
         Ok(Self { source: Source::Grid { files: archives, open: Mutex::default() }, top, cache: Mutex::default() })
     }
 
@@ -96,7 +99,7 @@ impl Tiles {
             7 | 8 => 7,
             _ => 9,
         };
-        let prefix = if z == 13 { "13/" } else { "" };
+        let prefix = if z >= FINE_ZOOM { "13/" } else { "" };
         let mut packs =
             (base..=z).rev().map(|level| format!("{prefix}{level}-{}-{}", x >> (z - level), y >> (z - level)));
         let Some(part) = packs.find(|part| files.contains_key(part)) else { return Ok(None) };

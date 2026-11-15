@@ -1,5 +1,5 @@
 // The maintainer dev host keeps only the schema-editor HTTP seam. Product map
-// building consumes the same published catalog as web and desktop.
+// building consumes the same published catalog as the web host.
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { platform } from "./dev";

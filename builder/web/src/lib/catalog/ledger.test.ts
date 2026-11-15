@@ -37,7 +37,7 @@ const overA = box("a", { minLat: A.minLat + 1, minLon: A.minLon + 1, maxLat: A.m
 const overAB = box("ab", { minLat: A.minLat + 1, minLon: A.minLon + 1, maxLat: A.maxLat - 1, maxLon: B.maxLon - 1 });
 
 function ledgerOf(...parts: BoxPart[]) {
-    return ledgerFor(resolveSelection({ parts, corridorRadiusM: 0 }, ctx), exampleCatalog, indices);
+    return ledgerFor(resolveSelection({ parts }, ctx), exampleCatalog, indices);
 }
 
 describe("ledgerFor", () => {
@@ -113,7 +113,7 @@ describe("ledgerFor", () => {
             { fine: [{ start: "18/1204/1055", end: "18/1204/1055" }] },
         );
         const resolution = resolveSelection(
-            { parts: [emptyBox], corridorRadiusM: 0 },
+            { parts: [emptyBox] },
             { catalog: exampleCatalog, indices: emptyIndices, regionCells: new Map() },
         );
         const ledger = ledgerFor(resolution, exampleCatalog, emptyIndices);
@@ -126,7 +126,7 @@ describe("ledgerFor", () => {
     it("says nothing is final while a band's index is missing", () => {
         const partial = { ...ctx, indices: new Map([["fine", indices.get("fine")!]]) };
         const ledger = ledgerFor(
-            resolveSelection({ parts: [overA], corridorRadiusM: 0 }, partial),
+            resolveSelection({ parts: [overA] }, partial),
             exampleCatalog,
             partial.indices,
         );
@@ -144,7 +144,7 @@ describe("ledgerFor", () => {
             regionId: "europe/switzerland",
         };
         const ledger = ledgerFor(
-            resolveSelection({ parts: [region], corridorRadiusM: 0 }, ctx),
+            resolveSelection({ parts: [region] }, ctx),
             exampleCatalog,
             indices,
         );

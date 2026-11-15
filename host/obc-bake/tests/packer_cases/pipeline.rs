@@ -2,8 +2,8 @@
 //! code path, that a cancelled run stops and cleans up, and that the phases a host
 //! shows still line up with the ones the web builder scrapes.
 //!
-//! The byte-identity test is the one that matters: the desktop app links `obc-pack` instead of
-//! spawning it, so the two can drift. They run against the same fixture and the same preset and
+//! The byte-identity test is the one that matters: an in-process caller links `obc-pack` instead
+//! of spawning it, so the two can drift. They run against the same fixture and the same preset and
 //! their outputs are compared whole, the binary through `CARGO_BIN_EXE_obc-pack`, so it is the real
 //! executable and the real argument parsing.
 
@@ -96,8 +96,8 @@ fn a_run_reports_its_phases_in_order() {
 }
 
 /// The dev server still scrapes these prefixes off the CLI's stdout
-/// (`builder/server/jobs.py`'s `_STAGE_MARKERS`) while the desktop app reads
-/// the [`Phase`] beside them. They are the same events, so a renamed stage line
+/// (`builder/server/jobs.py`'s `_STAGE_MARKERS`) while an in-process caller
+/// reads the [`Phase`] beside them. They are the same events, so a renamed stage line
 /// must break here rather than silently freeze one host's progress bar.
 #[test]
 fn stage_lines_still_match_the_web_builders_markers() {

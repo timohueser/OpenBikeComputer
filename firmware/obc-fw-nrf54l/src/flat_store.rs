@@ -1471,7 +1471,7 @@ pub(crate) fn route_heads(
 pub(crate) fn route_fingerprint(
     store: &FlatStore<FlatCard>,
     id: u64,
-) -> Option<obc_formats::assistant::PayloadFingerprint> {
+) -> Option<obc_formats::navigator::PayloadFingerprint> {
     let meta = store
         .find_entry(|meta| meta.kind == ObjectKind::Route && meta.id.0 == id && meta.flags.is_route_head())
         .ok()?;

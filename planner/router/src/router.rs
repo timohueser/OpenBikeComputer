@@ -11,6 +11,10 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
+/// The window along each leg that smooths the heights of an answer before its time and climb.
+/// The grade colours of the web planner take their grade over a second window of 100 m of these heights.
+const HEIGHT_WINDOW_M: f64 = 100.0;
+
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
@@ -143,9 +147,6 @@ pub struct Router<P> {
     pub(crate) package: P,
     workspace: Workspace,
     metric: String,
-    /// The last primary route, by its request without the alternatives flags: the web asks for the
-    /// alternatives of a route right after the route.
-    primary: Option<(Request, Route)>,
     /// Snaps by point and profile.
     snaps: VecDeque<(i32, i32, String, snap::Candidates)>,
 }
@@ -157,25 +158,13 @@ impl<P: RoutingData> Router<P> {
 
     pub fn new(mut package: P, memory_budget_bytes: usize) -> Self {
         package.set_memory_budget(memory_budget_bytes);
-        Self { package, workspace: Workspace::default(), metric: String::new(), primary: None, snaps: VecDeque::new() }
+        Self { package, workspace: Workspace::default(), metric: String::new(), snaps: VecDeque::new() }
     }
 
     /// Snapping attaches only to roads in a large connected part of the profile's graph, so a leg
     /// without a path means the points are truly disconnected and the client plans around it.
     pub fn route(&mut self, request: &Request, control: &Control<'_>) -> Result<Route> {
         self.route_counted(request, control, &mut 0)
-    }
-
-    /// The primary route of `request`, from the last primary route when only the alternatives
-    /// flags differ.
-    pub(crate) fn primary(&mut self, request: &Request, control: &Control<'_>, queries: &mut usize) -> Result<Route> {
-        let key = Request { alternatives: false, alternatives_only: false, ..request.clone() };
-        let route = match self.primary.take().filter(|(cached, _)| *cached == key) {
-            Some((_, route)) => route,
-            None => self.route_counted(request, control, queries)?,
-        };
-        self.primary = Some((key, route.clone()));
-        Ok(route)
     }
 
     /// Routes after `queries` attachment queries of the same request, and adds the queries of
@@ -360,13 +349,12 @@ impl<P: RoutingData> Router<P> {
     ) -> Result<(Vec<Point>, Vec<f64>, Vec<Leg>)> {
         let closures = self.package.closures()?;
         let mut points: Vec<Point> = Vec::new();
-        let mut elapsed = Vec::new();
+        // The leg and the walking pace of the step into each point after the first.
+        let mut steps: Vec<(usize, bool)> = Vec::new();
         let mut legs = Vec::with_capacity(paths.len());
         for &(start, end, ref roads) in paths {
             let from_index = points.len().saturating_sub(1);
             let mut totals = Totals::default();
-            // Climb rounds once per leg, so the sub-metre rises of short pieces add up.
-            let (mut ascent, mut descent) = (0.0f64, 0.0f64);
             let mut pieces = Vec::with_capacity(roads.len());
             for slice in roads {
                 if (control.cancelled)() {
@@ -398,33 +386,21 @@ impl<P: RoutingData> Router<P> {
                 if shape.iter().any(|p| p.elevation == NO_ELEVATION) {
                     totals.unknown_elevation_m += length;
                 }
-                let mut seconds = elapsed.last().copied().unwrap_or(0.0);
-                for (index, &point) in shape.iter().enumerate() {
-                    if index > 0 {
-                        let before = shape[index - 1];
-                        let step = request.pace.segment_seconds(before, point, piece.mode != BIKE, profile.mtb_pace);
-                        seconds += step;
-                        totals.seconds += step;
-                        if before.elevation != NO_ELEVATION && point.elevation != NO_ELEVATION {
-                            let rise = point.elevation as f64 - before.elevation as f64;
-                            ascent += rise.max(0.0);
-                            descent += (-rise).max(0.0);
-                        }
-                    }
+                for point in shape {
                     if points.last().is_some_and(|p| p.lat == point.lat && p.lon == point.lon) {
                         continue;
                     }
                     if points.len() >= control.max_geometry {
                         return Err(Error::Limit);
                     }
+                    if !points.is_empty() {
+                        steps.push((legs.len(), piece.mode != BIKE));
+                    }
                     points.push(point);
-                    elapsed.push(seconds);
                 }
                 piece.end = points.len() - 1;
                 pieces.push(piece);
             }
-            totals.ascent_m = ascent.round() as u64;
-            totals.descent_m = descent.round() as u64;
             legs.push(Leg {
                 start: start.position,
                 end,
@@ -436,7 +412,30 @@ impl<P: RoutingData> Router<P> {
         }
         if points.is_empty() {
             points.push(paths[0].0.projected);
-            elapsed.push(0.0);
+        }
+        // Each leg on its own, so a leg that a client keeps from an earlier answer keeps its figures.
+        // A request point ends one leg and starts the next, and keeps its height in both.
+        for leg in &legs {
+            geometry::smooth_heights(&mut points[leg.from_index..=leg.to_index], HEIGHT_WINDOW_M);
+        }
+        let mut elapsed = Vec::with_capacity(points.len());
+        elapsed.push(0.0);
+        // Climb rounds once per leg, so the sub-metre rises of short steps add up.
+        let mut climbs = vec![(0.0f64, 0.0f64); legs.len()];
+        for (pair, &(leg, walking)) in points.windows(2).zip(&steps) {
+            let (before, point) = (pair[0], pair[1]);
+            let step = request.pace.segment_seconds(before, point, walking, profile.mtb_pace);
+            elapsed.push(elapsed[elapsed.len() - 1] + step);
+            legs[leg].totals.seconds += step;
+            if before.elevation != NO_ELEVATION && point.elevation != NO_ELEVATION {
+                let rise = point.elevation as f64 - before.elevation as f64;
+                climbs[leg].0 += rise.max(0.0);
+                climbs[leg].1 += (-rise).max(0.0);
+            }
+        }
+        for (leg, (ascent, descent)) in legs.iter_mut().zip(climbs) {
+            leg.totals.ascent_m = ascent.round() as u64;
+            leg.totals.descent_m = descent.round() as u64;
         }
         Ok((points, elapsed, legs))
     }
@@ -502,21 +501,34 @@ impl<P: RoutingData> Router<P> {
             }
         }
         let prepared = self.package.prepared(&self.metric)?;
-        let heap_bytes = (self.package.memory_budget().saturating_sub(self.package.routing_bytes(&self.metric)?))
-            .min(control.max_heap_bytes);
+        let budget = self.package.memory_budget();
+        let heap_bytes = budget.saturating_sub(self.package.routing_bytes(&self.metric)?).min(control.max_heap_bytes);
+        let heap_limit = budget.saturating_sub(self.package.idle_bytes(&self.metric)?).min(control.max_heap_bytes);
         let query = Query {
             starts: &starts,
             ends: &ends,
             ceiling: best.as_ref().map_or(u64::MAX, |b| b.cost),
             max_roads: control.max_geometry,
             heap_bytes,
+            heap_limit,
             cancelled: control.cancelled,
         };
         let potential = match &prepared.guide {
             Some(guide) => Some(guide.potential(&starts, &ends)?),
             None => None,
         };
-        let found = self.workspace.run_with_potential(&prepared.graph, &prepared.costs, query, potential.as_ref())?;
+        let found = match self.workspace.run_with_potential(&prepared.graph, &prepared.costs, query, potential.as_ref())
+        {
+            // Cached metrics that no router holds go first, so that an idle service has the room
+            // of `heap_limit` and answers `Memory` only for memory that other requests hold.
+            Err(Error::Memory) if self.package.release(&self.metric) => {
+                let heap_bytes =
+                    budget.saturating_sub(self.package.routing_bytes(&self.metric)?).min(control.max_heap_bytes);
+                let query = Query { heap_bytes, ..query };
+                self.workspace.run_with_potential(&prepared.graph, &prepared.costs, query, potential.as_ref())?
+            }
+            result => result?,
+        };
         if let Some(found) = found {
             let &(source, from, _) = &sources[found.source];
             let &(target, to) = &targets[end_targets[found.target]];

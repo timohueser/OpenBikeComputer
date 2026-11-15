@@ -26,7 +26,6 @@ pub fn obc_builder_constants() -> Vec<f64> {
         grid::MIN_CELL_LOG2 as f64,
         grid::MAX_CELL_LOG2 as f64,
         65_536.0,
-        crate::gpx::MAX_ROUTE_POINTS as f64,
     ]
 }
 
@@ -162,12 +161,6 @@ pub fn obc_grid_coverage(cells: &[f64]) -> Vec<f64> {
 pub fn obc_gpx_read(text: &str, fallback: &str) -> Result<String, JsValue> {
     let imported = crate::gpx::read(text, fallback).map_err(|e| error("GpxError", &e))?;
     serde_json::to_string(&imported).map_err(|e| error("GpxError", &e.to_string()))
-}
-
-#[wasm_bindgen]
-pub fn obc_gpx_parse(text: &str, fallback: &str) -> Result<String, JsValue> {
-    let route = crate::gpx::parse(text, fallback).map_err(|e| error("GpxError", &e))?;
-    serde_json::to_string(&route).map_err(|e| error("GpxError", &e.to_string()))
 }
 
 #[wasm_bindgen(js_name = IncrementalSha256)]

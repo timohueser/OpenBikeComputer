@@ -8,4 +8,6 @@ NO = Wcs10Source(
     url="https://wcs.geonorge.no/skwms1/wcs.hoyde-dtm-nhm-25833",
     coverage="nhm_dtm_topo_25833",
     epsg=25833,
+    # 20 a minute: Kartverket states no limit, and its gateway refused bursts of several blocks.
+    gap=3.0,
 )

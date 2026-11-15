@@ -1,7 +1,7 @@
 use crate::{
     data::RoutingData,
     geometry::{self, METRES_PER_UDEG},
-    model::{Point, Totals},
+    model::Point,
     router::Response,
     snap, Control, Error, Request, Result, Route, Router,
 };
@@ -12,11 +12,12 @@ impl<P: RoutingData> Router<P> {
     /// the query budget of `control`.
     pub fn routes(&mut self, request: &Request, control: &Control<'_>) -> Result<Response> {
         let mut queries = 0;
-        let mut routes = vec![self.primary(request, control, &mut queries)?];
+        let mut routes = vec![self.route_counted(request, control, &mut queries)?];
         if request.alternatives || request.alternatives_only {
             match self.alternatives(request, control, &mut queries, &mut routes) {
-                // The deadline or a limit ends the discovery, and the answer keeps what it found.
-                Ok(()) | Err(Error::Cancelled | Error::Limit) => {}
+                // The deadline, a limit or a lack of memory ends the discovery, and the answer keeps
+                // what it found.
+                Ok(()) | Err(Error::Cancelled | Error::Limit | Error::Memory) => {}
                 Err(error) => return Err(error),
             }
             if request.alternatives_only {
@@ -35,24 +36,18 @@ impl<P: RoutingData> Router<P> {
         routes: &mut Vec<Route>,
     ) -> Result<()> {
         let base = request.profile.split('/').next().unwrap_or(&request.profile);
-        let skill = self.package.profile(&request.profile)?.max_difficulty;
-        for variant in ["shorter", "less-climbing"] {
-            let name = format!("{base}/{variant}");
-            // A variant with another difficulty limit is a different skill choice, not a tradeoff.
-            if name == request.profile || self.package.profile(&name).map_or(true, |p| p.max_difficulty != skill) {
-                continue;
-            }
+        let name = format!("{base}/less-climbing");
+        if name != request.profile && self.package.profile(&name).is_ok() {
             let goal = Request { profile: name, alternatives: false, ..request.clone() };
-            let mut candidate = match self.route_counted(&goal, control, queries) {
-                Ok(route) => route,
-                Err(Error::NoPath | Error::NoSnap(_)) => continue,
-                Err(error) => return Err(error),
-            };
-            if let Some(reason) = tradeoff(&routes[0], &candidate) {
-                candidate.reason = reason;
-                if self.accept(routes, &candidate, &request.profile)? {
-                    routes.push(candidate);
+            match self.route_counted(&goal, control, queries) {
+                Ok(mut candidate) => {
+                    if less_climbing(&routes[0], &candidate) && self.accept(routes, &candidate, &request.profile)? {
+                        candidate.reason = "less_climbing";
+                        routes.push(candidate);
+                    }
                 }
+                Err(Error::NoPath | Error::NoSnap(_)) => {}
+                Err(error) => return Err(error),
             }
         }
         // A single via probe preserves directed context, unlike independently joined shortest paths.
@@ -90,9 +85,20 @@ impl<P: RoutingData> Router<P> {
                 if (control.cancelled)() {
                     return Err(Error::Cancelled);
                 }
-                let policy = snap::Policy { radius_m: offset_m.min(5000.0), ..snap::Policy::default() };
-                let found = self.package.snap(probe, &request.profile, policy)?;
-                let Some(attachment) = found.retained.first() else {
+                // The probe uses the nearest road, which is the same at any radius that holds it. A
+                // small radius keeps the window of a dense city below the road limit of a snap.
+                let radii = [snap::Policy::default().radius_m, snap::REACH_M]
+                    .into_iter()
+                    .chain((offset_m > snap::REACH_M).then_some(offset_m));
+                let mut attachment = None;
+                for radius_m in radii {
+                    let policy = snap::Policy { radius_m, ..snap::Policy::default() };
+                    attachment = self.package.snap(probe, &request.profile, policy)?.retained.into_iter().next();
+                    if attachment.is_some() {
+                        break;
+                    }
+                }
+                let Some(attachment) = attachment else {
                     continue;
                 };
                 let via = [attachment.projected.lon as f64 / 1e6, attachment.projected.lat as f64 / 1e6];
@@ -195,23 +201,12 @@ impl<P: RoutingData> Router<P> {
     }
 }
 
-fn tradeoff(primary: &Route, candidate: &Route) -> Option<&'static str> {
+/// Whether both routes have known heights and the candidate climbs at least 100 m and 10 % less.
+fn less_climbing(primary: &Route, candidate: &Route) -> bool {
     let (a, b) = (&primary.totals(), &candidate.totals());
-    let unpaved = |t: &Totals| t.surface_m[3..].iter().sum::<u64>();
-    if a.distance_m.saturating_sub(b.distance_m) >= 500.max(a.distance_m / 20) {
-        Some("shorter")
-    } else if a.unknown_elevation_m == 0
+    a.unknown_elevation_m == 0
         && b.unknown_elevation_m == 0
         && a.ascent_m.saturating_sub(b.ascent_m) >= 100.max(a.ascent_m / 10)
-    {
-        Some("less_climbing")
-    } else if unpaved(a).saturating_sub(unpaved(b)) >= 1000.max(unpaved(a) / 5)
-        && b.surface_m[0] <= a.surface_m[0] + 250
-    {
-        Some("smoother")
-    } else {
-        None
-    }
 }
 
 /// Whether a quarter or more of about 100 points along the candidate are 500 m or more from the

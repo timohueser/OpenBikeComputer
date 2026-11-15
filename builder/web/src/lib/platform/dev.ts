@@ -1,8 +1,7 @@
 // The dev host: `python -m builder.server` on :8000, which is what local
 // development has always talked to. This file is a thin adapter — every call
 // below adapts the local tools to the same coverage composer the shipped web
-// and desktop targets use. Localhost is a secure WebUSB context, so the local
-// builder also uses the browser transport offered by the static web host.
+// target uses.
 
 import { api } from "../api/client";
 import { LINKS } from "../constants";
@@ -14,16 +13,6 @@ async function catalog({ refresh = false }: { refresh?: boolean } = {}): Promise
 
 export const platform: Platform = {
     name: "dev",
-    caps: {
-        // Rides still live on the phone or desktop app. USB map/route transfer,
-        // however, is a browser feature and works from this localhost host in
-        // Chrome and Edge exactly as it does from the published web app.
-        rideLibrary: false,
-        deviceUsb: true,
-        deviceDashboard: false,
-    },
-
-    usbViaWebUsb: true,
 
     styleEditor: {
         load: () => import("../../routes/Advanced.svelte"),
@@ -37,13 +26,6 @@ export const platform: Platform = {
     },
     catalog,
     catalogFetch: (input, init) => api.catalogFetch(input, init),
-    openMapOutput: null,
-
-    device: async () => {
-        const { openWebUsbSession } = await import("../usb/session.svelte");
-        return openWebUsbSession();
-    },
-    rides: null,
 
     // A localhost stand-in for the hosted site keeps the site's chrome.
     siteNav: LINKS,

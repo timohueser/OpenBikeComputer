@@ -45,22 +45,27 @@ public struct PlannerPreviewPlace: Identifiable, Equatable, Sendable {
 }
 
 public enum PlannerPreviewPreset: String, CaseIterable, Sendable {
-    case balanced, shorter, lessClimbing, technical, alpine
+    case balanced, lessClimbing, technical, alpine
     public var title: String { self == .lessClimbing ? "Less climbing" : rawValue.capitalized }
     public init(_ preference: RoutePreference) {
         switch preference {
-        case .balanced: self = .balanced; case .shorter: self = .shorter; case .lessClimbing: self = .lessClimbing
+        case .balanced: self = .balanced; case .lessClimbing: self = .lessClimbing
         case .technical: self = .technical; case .alpine: self = .alpine
         }
     }
     public var preference: RoutePreference {
         switch self {
-        case .balanced: .balanced; case .shorter: .shorter; case .lessClimbing: .lessClimbing
+        case .balanced: .balanced; case .lessClimbing: .lessClimbing
         case .technical: .technical; case .alpine: .alpine
         }
     }
     public func applies(to activity: RouteActivity) -> Bool {
-        switch self { case .technical: activity == .mtb; case .alpine: activity == .hiking; default: true }
+        switch self {
+        case .balanced: true
+        case .lessClimbing: [.touring, .road, .gravel].contains(activity)
+        case .technical: activity == .mtb
+        case .alpine: activity == .hiking
+        }
     }
 }
 
@@ -683,7 +688,8 @@ public final class PlannerPreviewModel {
         state.loop = plan.isLoop && route.count > 1
         state.name = plan.name
         state.activity = plan.bike.flatMap(RouteActivity.init(rawValue:)) ?? .gravel
-        state.preset = PlannerPreviewPreset.allCases.first { $0.title == plan.preset } ?? .balanced
+        // A plan can hold a preset that its activity does not have (`specs/planner-plan.md`).
+        state.preset = PlannerPreviewPreset.allCases.first { $0.title == plan.preset && $0.applies(to: state.activity) } ?? .balanced
         let ends = route + (state.loop ? route.prefix(1) : [])
         for (from, to) in zip(ends, ends.dropFirst()) where (to.leg ?? .routed) != .routed || to.drawn != nil {
             state.legs[LegID(from: from.id, to: to.id)] = .init(mode: to.leg ?? .routed, drawn: to.drawn)

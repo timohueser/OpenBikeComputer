@@ -179,7 +179,7 @@ The options of the [planner layers](#planner) that are the same for each region.
 | Key | Type | Meaning |
 | --- | --- | --- |
 | `osm.margin_m` | number | `planner/osm/bounds` of a region with a box reaches at least this far around the region, in metres: the search puts a place in the town of a place node up to 15 km away |
-| `routing.profiles` | array of strings | The profiles of the routing package. The route catalog needs `touring`, `road`, `gravel`, `mtb` and `hiking` |
+| `routing.profiles` | array of strings | The profiles of the routing package. The route catalog needs `touring`, `road`, `gravel`, `mtb/technical` and `hiking/alpine` |
 | `climate.first_year` | integer | The first of the ten years of ERA5-Land that the climate layer reads |
 | `snow.seasons` | array of 2 integers | The first and the last season of the snow layer, and of a version of [`snow`](#snow) |
 
@@ -369,7 +369,8 @@ it runs in, and the store:
   newest version of each request record (`requests/`), by the latest `retrieved` of its files, such as the extract of each Geofabrik area, and each version
   that `obc data source refresh` took (`refreshed/`).
 - An object is reached when a reached snapshot record or a reached layer has it, or when its
-  SHA-256 is a file of an output of a root release, or is in `fixtures/catalog.toml` or a JSON or
+  SHA-256 is a file of an output of a root release (for an output of a `cache` layer, only a file
+  that a client reads), or is in `fixtures/catalog.toml` or a JSON or
   TOML file below `fixtures/sources/`.
 - An unpacked copy (`unpacked/<sha256>/`) is reached while a manifest of the
   [archive](#archive) lists a file with that SHA-256. While `OBC_DATA_ARCHIVE` names no root, a
@@ -379,6 +380,17 @@ it runs in, and the store:
   digest of the files that it names (`files`) of a reached record of its source, and a step input
   whose digest is the digest of the files that it selects of a reached layer of its step: the
   `files` of the input, or all files when it names none.
+- Of the receipts with `cache` of one step and the same options, only the one with the latest
+  `used`, else `built` (then by key), can be reached, and it is reached when its inputs are. So a
+  new OSM cut or a new version of a work layer deletes the older work layers of that region at the
+  next collection, also those that a release read, and the work layers of other regions stay. An
+  update that ends without an error marks the work layers that it built or read, so an update back
+  to an older set keeps that set. After a failed or stopped update, a collection can delete a set
+  that the update read, and the next update makes it again. This has known costs. A collection between a failed
+  bake and the next bake can delete the last complete set of work layers while the new set is not
+  complete. A region that no target lists any more keeps its work layers until its extract
+  request goes, as its `osm` layers do. When the work layers of a target are gone, a later update
+  of that target bakes them again, also when its package is still in the store.
 
 The plan lists what the collection deletes and what stays. What stays is one entry for each
 reached snapshot record, with the reasons: `served by TARGET, …`, `newest of the source`,
@@ -736,6 +748,7 @@ The `obc data` binary declares each layer beside the steps that make it:
 | `format` | The number that the readers of its files check. Where a reader has a constant, the layer uses it: `obct::SURFACE_VERSION` for `device/terrain`, `obcm::VERSION` for `device/map`, the router `FORMAT` and `CATALOG_SCHEMA_VERSION`. `device/landmarks` has the sum of `obcm::landmarks::SECTION_VERSION` and `obcm::peaks::VERSION`: each only grows. Another layer has the format that its spec states, or 1 |
 | `revision` | The number that a person changes in the change that improves the output. It starts at 1 |
 | `readers` | The programs or layers that read its files. An internal layer has none |
+| `cache` | `true` for a work layer that a later step reads: a [collection](#clean) keeps only the layer of each of its steps and options that a run used last, and a release does not keep it. `false` for each other layer |
 
 | Layer | Steps |
 | --- | --- |
@@ -749,6 +762,7 @@ The `obc data` binary declares each layer beside the steps that make it:
 | `planner/places`, `planner/climate`, `planner/snow`, `planner/trailview-rules`, `planner/trailview-colour` | The step of the same name and its grids |
 | `planner/trailview-features` | `planner/trailview-features`, `planner/trailview-stamps` and their grids |
 | `planner/trailview-ground` | `planner/trailview-material`, `planner/trailview-lithology`, `planner/trailview-region`, `planner/trailview-ground` and its grid |
+| `planner/routing-source`, `planner/routing-roads`, `planner/routing-costs` | The step of the same name. Internal, `cache`. Their files hold router types, so their format is the router `FORMAT` plus 1 |
 | `planner/routing` | `planner/routing`, `planner/overlays` and their grids |
 | `planner/search` | `planner/search/…`, `planner/model` and their grids |
 | `planner/index` | `planner/fonts/grid`, `planner/offline/grid`, `planner/index`, `planner/catalog` |
@@ -869,6 +883,8 @@ ends.
 | `wall_ms` | The time from start to end, in milliseconds |
 | `cpu_ms` | User and system time in milliseconds of the process of the step and of the children that it waited for, such as Osmium (`wait4`). `null` when the system does not report it |
 | `peak_rss_bytes` | The peak resident set of the process of the step, or of the largest child that it waited for. It is not the sum of processes that run at the same time. `null` when the system does not report it |
+| `cache` | The `cache` of the layer (`false` when absent) |
+| `used` | For a `cache` layer, `YYYY-MM-DDTHH:MM:SSZ` when the last run that built or read it ended. Absent before that |
 | `own_process` | Whether the step ran in a process of its own. Without it (`false` when absent), `cpu_ms` and `peak_rss_bytes` can be those of the engine, and no estimate reads the peak |
 | `bytes_in` | The size of the input files |
 | `bytes_out` | The size of `files` |
@@ -960,7 +976,8 @@ when they are unchanged.
   end of the run starts first: its estimated `wall_ms` and that of the longest chain of the steps
   that read it. A step without an estimate counts as the longest.
 - The memory that the steps that run at the same time reserve is not more than three quarters of
-  the physical memory of the machine. A step reserves its estimated peak (`peak_rss_bytes` of the estimate).
+  the physical memory of the machine, or of the least `memory.max` of the cgroup v2 of the process
+  and of its parents when that is less. A step reserves its estimated peak (`peak_rss_bytes` of the estimate).
   A step with a guess, or without a peak, reserves from its measured runs too, the larger of the
   two: the receipts of the step, also with other options or of another leaf of its tiled step,
   with `own_process`, a peak and input bytes, in the store or of this run. They give their
@@ -1182,7 +1199,10 @@ reads their maximum: the blocks `mean/18/<bi:04>/<bj:04>.tif` that hold the arch
 | `planner/terrain-osm/<area>` | `terrain-osm`, `area=<area>`, for each source area | `path`: `source.osm.pbf` | `source.osm.pbf`: the extract as it is |
 | `planner/terrain-osm` | Only for more than one source area: `source.osm.pbf` of each `planner/terrain-osm/<area>` | None | `osm.pbf`: their union, as `planner/osm` merges |
 | `planner/terrain` | The GLO-30 tiles of `bounds`; `planner/reference` when there is one; `planner/terrain-osm`, or for one source area its `planner/terrain-osm/<area>` | `bounds`: west, south, east and north of the zoom 10 tiles that the bounds of the region touch and of their neighbours; `attribution`: the credit of GLO-30; `osm_attribution`: the credit of `osm-planet` | `terrain.mbtiles`: the terrain tiles of [the planner release](planner-release.md#terrain-tiles), the bytes that `planner-dem` writes from the same tiles, archive and OSM. `terrain-osm` is the Geofabrik extract with `refresh = "manual"`: the terrain keeps the extract of each area that it read first, and a newer `geofabrik-extracts` does not build the terrain again. `obc data fetch terrain-osm area=<area>` puts a newer extract in the store, which the next update reads. Where GLO-30 has weight, its heights follow the OSM within 300 m of `bounds` (`host/obc-dem/src/shape.rs`): the water side of `natural=coastline` is at 0 m up to 45 m from the line; within 45 m of the top of GLO-30 within 30 m of a `natural=peak` or `natural=volcano` with a numeric `ele`, the cone of its flanks continued from 45 m and 90 m, only rising and never above `ele`. With OSM, the metrics name the Osmium version (`osmium`) |
-| `planner/routing` | `planner/osm/bounds`, the GLO-30 tiles of the bounds of the region, and `planner/reference` when there is one. The heights of the roads are those of `planner/terrain` without the OSM corrections | `region` (the last part of the region id), `bounds`, `profiles` and `countries`; `attribution` and `terrain_attribution`: the credits of OSM and GLO-30. The import applies the German access defaults | `routing/`: the package of [the route package contract](route-package.md) with `overlays.sqlite` and `route-catalog.json`; `blocks/`: the routing blocks of the grid cells: shared page packs, one manifest for each cell, `blocks.json` and `catalog.json`; `routes/<cell>.json`: the records of `route-catalog.json` that name the cell, with a final newline |
+| `planner/routing-source` | `planner/osm/bounds` | `bounds` | `source/`: the ways with their node references, tags and facts, the relations, the present node members, the turn rules of the relations, the closure sets, `source.json` (the counts of the import, the SHA-256 of the PBF from `layer_files`) and `layout.json`. The columns are stored columns of `planner/router-build/src/column.rs`: little-endian values of one type each, which `layout.json` names with their count. The import applies the country access defaults |
+| `planner/routing-roads` | `planner/routing-source`, the GLO-30 tiles of the bounds of the region, and `planner/reference` when there is one. The heights of the roads are those of `planner/terrain` without the OSM corrections | `bounds`; `terrain_attribution`: the credit of GLO-30 | `roads/`: the junctions, the roads in package order with their heights, the forbidden turns, the closure sets, the road topology, `roads.json` (the warnings of the manifest, the identities of the PBF and the terrain) and `layout.json` |
+| `planner/routing-costs` | `planner/routing-source`, `planner/routing-roads` | `bounds`, `profiles` | `costs/`: the cost dictionary and, for each profile `<i>` in order, `<i>.bases`, `<i>.totals`, `<i>.turns` and `<i>.snap`; `costs.json` (the profile IDs) and `layout.json` |
+| `planner/routing` | `planner/routing-source`, `planner/routing-roads`, `planner/routing-costs` | `region` (the last part of the region id), `bounds` and `countries`; `attribution`: the credit of OSM. The step list checks the profiles and the countries when it is built | `routing/`: the package of [the route package contract](route-package.md) with `overlays.sqlite` and `route-catalog.json`; `blocks/`: the routing blocks of the grid cells: shared page packs, one manifest for each cell, `blocks.json` and `catalog.json`; `routes/<cell>.json`: the records of `route-catalog.json` that name the cell, with a final newline |
 | `planner/overlays` | `planner/routing` | `attribution` of `osm-planet` | `overlays.pmtiles`: the route networks and the access of `routing/overlays.sqlite`, as [the planner release](planner-release.md) defines it |
 | `planner/assets` | `protomaps-assets`, `tangrams-icons` | None | `assets/fonts/` and `assets/sprites/` of the assets archive; `assets/sprites/LICENSE.txt`: the MIT notice of `tangrams-icons` |
 | `planner/model` | `query-model` | None | `model/`: `model.int8.onnx`, `tokenizer.json` and `tokenizer_config.json` of the archive, and `labels.json`, the labels of the query schema |
@@ -1567,6 +1587,10 @@ switch to a new release, an update of an R2 target does this; a `dir` target ski
    answer, or its status. Each new reason goes to the log and the status of the run and to the
    next heartbeat of the lock. The next phase clears it.
 3. After the switch, the run deletes `planner/next.json`.
+
+While `planner/next.json` names a release, the follower runs the services of the serving release
+and of that release. Once that release has an install, the services of the rollback stop, and its
+`ready` answers 503 with `{"state": "installed"}` until the file goes.
 
 The run waits at most 24 hours (`GIVE_UP` in `ready.rs`). After that, or when the run stops or
 another run takes the lock, it fails with `<target> unchanged: <last reason>`. `release.json` and
@@ -2282,8 +2306,8 @@ each origin.
 | Path | Answer |
 | --- | --- |
 | `/planner-api/version` | `{"commit", "formats", "manifest"}`: the commit that the build of serve names in `OBC_DATA_COMMIT`, or `null`, the format of each layer that its services read, and the format of the release manifest that it reads. Never cached |
-| `/planner-api/releases/<id>/ready` | `{"state": "ready"}` while the services of the planner release `<id>` answer. 503 with `{"state": "starting"}` while its objects download and its services start, or `{"state": "failed", "reason": "not ready: <why>"}` after they failed. 404 with `{"state": "unknown", "reason"}` while serve does not know `<id>` yet: a publisher that waits for `<id>` keeps waiting, as on 503. Never cached |
-| `/planner-api/releases/<id>/<service>/<path>` | `<path>` of the `routing`, `search` or `downloads` service of the planner release `<id>`. Search gets `/api/planner-search/<path>`. 404 when the services of `<id>` do not answer |
+| `/planner-api/releases/<id>/ready` | `{"state": "ready"}` while each service of the planner release `<id>` answers. 503 with `{"state": "starting"}` while its objects download or a service starts, `{"state": "installed"}` while its files are on disk and its services do not run, or `{"state": "failed", "reason": "not ready: <why>"}` with the reason of each failed service or of the failed fetch. 404 with `{"state": "unknown", "reason"}` while serve does not know `<id>` yet: a publisher that waits for `<id>` keeps waiting, as on 503. Never cached |
+| `/planner-api/releases/<id>/<service>/<path>` | `<path>` of the `routing`, `search` or `downloads` service of the planner release `<id>`, while that service answers, also while another service of `<id>` failed. Search gets `/api/planner-search/<path>`. 503 with `{"code": "busy", "message": "The <service> service restarts. Try again shortly."}` while that service does not answer. 404 when serve does not know `<id>` |
 | `/planner-offline/<path>` | `<path>` of the downloads service of the current release, for apps that name no planner release. 503 while it does not answer |
 | `/cell-catalog/catalog.json` | `dir` only: the device pointer of the current release |
 | `/planner/catalog.json` | `dir` only: the planner pointer of the current release. Each string that starts with one of its `origins`, followed by `/` or nothing, starts with the origin of the request instead: `http://` and the `Host` of the request |
@@ -2293,27 +2317,33 @@ Serve reads `release.json` and `planner/next.json` of a `dir` target each second
 target every 30 seconds. It reads the manifest, the pointers and the list of the named files of a
 release once: a rollback reads nothing else. It reads no other list. A `planner/next.json` that cannot be read, or whose release cannot be read,
 names no release: serve writes why, reads it again at each look, and loads the other releases.
-When one of the two files changes:
+The planner release of a release is `active.id` of its planner pointer. Serve orders the releases
+current, serving, release of `planner/next.json`, rollback, and counts each planner release once:
 
-1. Serve loads the planner release of the serving release, of the rollback and of the release of
-   `planner/next.json`, unless it runs. The planner release of a release is `active.id` of its
-   planner pointer.
-   First it compares the formats of the layers of the release with the formats that the services
-   read (see [Service runtimes](#service-runtimes)). A layer in another format fails the planner
-   release before anything downloads: `needs a routing service that reads planner/routing format
-   9; it reads 8`. Then a thread downloads its objects into the store, and its services start once
-   they are there. Serve keeps reading the two files and checking the other services meanwhile.
-2. Clients get the serving release once each service of its planner release answers: routing
+1. One fetch runs at a time, on a thread of its own. It is for the first planner release of the
+   order that has no install and does not wait after a failure. While `planner/next.json` names a
+   release, the rollback does not fetch; a fetch of the rollback that runs when the file appears
+   stops between two files, and goes on after the file goes. A fetch first compares the formats of
+   the layers of the release with the formats that the services read (see
+   [Service runtimes](#service-runtimes)). A layer in another format fails the planner release
+   before anything downloads: `needs a routing service that reads planner/routing format 9; it
+   reads 8`. Then the fetch downloads the objects and installs the files. Serve keeps reading the
+   two files and checking the services meanwhile.
+2. The services of the first two planner releases of the order that have an install run. The
+   services of each other installed planner release stop, and its files stay.
+3. Clients get the serving release once each service of its planner release answers: routing
    `GET /health`, search `GET /api/planner-search/status` with `parser.ready` true, and downloads
    `GET /catalog`. Until then clients keep the current release. No client gets the release of
    `planner/next.json`.
-3. A planner release fails when its start fails, when one of its services stops, or when its
-   services do not answer within 120 seconds after they start. Its other services stop, and its
-   API answers 404. Clients keep the current release, also when the failed planner release is the
-   one of the current release. A planner release that failed starts again after 60 seconds, after
-   each later failure in a row twice the wait before, up to 30 minutes. It starts again at once
-   only when the two files name other releases.
-4. The services of a planner release that neither the serving release, the rollback, the release
+4. Each service has its own state and wait. A service fails when its start fails, when it stops
+   within 60 seconds after its first answer, or when it does not answer within 120 seconds after
+   it starts. It starts again after 60 seconds, after each later failure in a row twice the wait
+   before, up to 30 minutes. A service that stops 60 seconds or more after its first answer starts
+   again at the next check, and its wait is 60 seconds again. The other services of its planner
+   release keep answering, and clients keep the current release.
+5. A fetch that fails waits as a failed service does. It fetches again at once only when the two
+   files name other releases.
+6. The services of a planner release that neither the serving release, the rollback, the release
    of `planner/next.json` nor the current release names stop.
 
 When the serving release and the rollback fail one after the other, clients keep a release that
@@ -2321,20 +2351,40 @@ When the serving release and the rollback fail one after the other, clients keep
 then writes a warning: an update can delete the files of that release.
 
 The services of a planner release read its files under `routing/`, `search/` and `offline/` in
-`<store>/serve/<target>/<planner id>/`. The document `releases/<planner id>/release.json`, which the list
+its install, `<store>/serve/<target>/<planner id>/`. The document `releases/<planner id>/release.json`, which the list
 of the named files names, lists them: format 1 in `files`; format 2 in the step indexes whose `folders` hold
 one of those folders, and in `files`. Serve downloads those indexes as objects after the document,
 checks their size and SHA-256, and keeps them with the files. Each file comes from an object of the store of serve, which downloads
-an object that it lacks from `objects/` of the target and checks its SHA-256: a link to an `identity`
-object, or the decoded bytes of a `gzip` object under a temporary name. No write opens an
-existing file. Each file must have the SHA-256 and the size that the planner release gives. When
-serve stops, it ends each download at its next read and waits for it within the 10 seconds of its
-grace; a wait before a retry, a connection or a hash does not see the stop.
-Serve removes `<store>/serve/<target>/` when it starts and when it stops; `obc data clean` does
-not touch it. The objects are in a store of serve alone, `<store>/follower/<target>/`. After the
-releases that the two files name change, and after downloads, serve deletes there each object and
-each unfinished download that the services of none of them read, once no download runs. A
-download for a planner release that no release names any more stops at its next object. For a
+an object that it lacks from `objects/` of the target, 8 at a time, and checks its SHA-256: a link
+to an `identity` object, or the decoded bytes of a `gzip` object under a temporary name. No write
+opens an existing file. Each file must have the SHA-256 and the size that the planner release
+gives. After the files, the install gets the document as `release.json`, the data of the file
+system goes to the disk, and the install writes the marker `installed` last, which holds the
+planner release id. Only a folder whose marker names it is an install; a fetch deletes the content
+of a folder without one first. The services read the region of the release from `release.json`.
+When serve stops, it ends each download at its next read and each install between two files, and
+waits for them within the 10 seconds of its grace; a wait before a retry, a connection or a hash
+does not see the stop.
+
+Before the objects of the files download, the fetch checks the disk. The install needs the bytes
+of each object that the store lacks, the decoded bytes of each file that is not `identity`, and a
+reserve of 5 % of the file system for the logs, the downloads cache and the file system. When the
+free bytes of the file system of the store are fewer, nothing downloads. Then, when the planner
+release is not the one of the rollback, and no other release names the planner release of the
+rollback, serve stops the services of the rollback, deletes its install, writes `WARNING: no
+rollback during the install of <planner>: deleted the files of planner release <rollback>; the
+disk has <free> GB free and the install needs <need> GB`, and fetches again at its next check.
+Else the fetch fails with `the disk has <free> GB free; the install needs <need> GB`.
+
+An install stays when serve starts and stops, and when a service stops: a restart installs
+nothing again. Serve deletes an install only when neither a planner release that it follows nor
+a release that the two files name has it, after its services stopped, and only after a look
+read the two files and each release that they name: a start without a network deletes nothing.
+`obc data clean` does not touch the installs. The objects are in a store of serve alone, `<store>/follower/<target>/`. After the
+releases that the two files name change, and after fetches, serve deletes there each object and
+each unfinished download that the services of none of them read, once no fetch runs. A `gzip`
+object of a planner release with an install goes too: the install holds its decoded file. A fetch
+for a planner release that no release names any more stops between two files. For a
 `dir` target, download bundles name the origin of the machine on its network when serve starts,
 else `http://127.0.0.1:8710`. For an R2 target, they name `api_origin` and
 `<objects_origin>/objects` of the planner pointer.
@@ -3576,7 +3626,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "additionalProperties": false,
       "properties": {
         "at_once": {
-          "description": "The most block programs of the `terrain` prepare that read the source at the same time: a\nservice that answers slower under many requests holds only that many slots.",
+          "description": "The most block programs of the `terrain` prepare that read the source at the same time, 4\nwhen it is not set: a service that answers slower under many requests holds fewer slots.",
           "format": "uint32",
           "minimum": 1,
           "type": [

@@ -23,6 +23,9 @@ pub mod table;
 pub use directory::open;
 pub use router::{Control, Request, Route, Router};
 
+/// A request that exceeds a fixed limit, and fails again on an idle service with the same data,
+/// gives `Limit`. A request that fails for memory that other requests hold, or for an allocation
+/// that fails, gives `Memory`: a retry can succeed.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("Invalid request: {0}")]
@@ -39,6 +42,8 @@ pub enum Error {
     Cancelled,
     #[error("Routing resource limit reached")]
     Limit,
+    #[error("A routing worker has no memory for this request now")]
+    Memory,
     #[error("The line exceeds the shaping limits")]
     LineTooLong,
     #[error("No plan follows the line on roads")]

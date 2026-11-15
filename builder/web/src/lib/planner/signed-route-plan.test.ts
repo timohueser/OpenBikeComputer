@@ -33,6 +33,7 @@ describe('signed route plans', () => {
         const preset = (kind: RouteRecord['kind'], hardest?: number) => routeBase({ ...record(103), kind, hardest }, base()).preset;
         expect([preset('hiking'), preset('foot', 1), preset('hiking', 2), preset('mtb', 2), preset('mtb', 3), preset('bicycle', 5)])
             .toEqual(['Balanced', 'Balanced', 'Alpine', 'Balanced', 'Technical', 'Balanced']);
+        expect(routeBase({ ...record(103), kind: 'bicycle' }, { ...base(), bike: 'gravel', pace: 'fast' }).pace).toBe('fast');
     });
 
     it('joins the stages of a long route at their shared ends', () => {

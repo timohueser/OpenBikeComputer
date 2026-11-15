@@ -1,6 +1,6 @@
 import { allStay, maxRidingDays, type RoutePoint, type Trip } from './editor';
 import type { Coordinate } from './geo';
-import { presetNames, ridingProfiles } from './riding-profiles';
+import { ridingProfiles } from './riding-profiles';
 
 function record(value: unknown): value is Record<string, unknown> {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -74,5 +74,6 @@ export function isTrip(value: unknown): value is Trip {
         integer(Number(night), 1, days - 1) && stay(kinds)))) return false;
 
     if (value.bike !== undefined && (typeof value.bike !== 'string' || !Object.hasOwn(ridingProfiles, value.bike))) return false;
-    return value.preset === undefined || (typeof value.preset === 'string' && presetNames.includes(value.preset));
+    // A reader routes a preset that the activity does not have with Balanced (`planPreset`), and an unknown pace is Moderate (`planPace`).
+    return (value.preset === undefined || typeof value.preset === 'string') && (value.pace === undefined || typeof value.pace === 'string');
 }

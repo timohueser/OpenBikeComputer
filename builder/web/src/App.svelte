@@ -2,13 +2,10 @@
     import ConfirmDialog from "./components/ConfirmDialog.svelte";
     import Header from "./components/Header.svelte";
     import UpdatePrompt from "./components/UpdatePrompt.svelte";
-    import Desktop from "./routes/Desktop.svelte";
     import Home from "./routes/Home.svelte";
     import { LINKS } from "./lib/constants";
     import { platform, type StyleEditorModule } from "./lib/platform";
-    import { DESKTOP_ADDS } from "./lib/platform/gating";
     import { router } from "./lib/router.svelte";
-    import { DESKTOP_ROUTE } from "./lib/routes";
 
     // The advanced editor is maintainer tooling, reached through an `import()`
     // only the dev host declares — product hosts have no reference to the route
@@ -20,28 +17,8 @@
     let editor: Promise<StyleEditorModule> | undefined;
     const openEditor = load ? () => (editor ??= load()) : null;
 
-    // The device and rides pages reach the protocol codecs and the library —
-    // exactly the modules the entry chunk must not contain (platform/bundle.test.ts)
-    // — so both live behind memoized dynamic imports, the same shape the device
-    // surfaces already use. Gated on caps, not on a host name: a tier without
-    // the page treats its hash as home.
-    let devicePage: Promise<typeof import("./routes/Device.svelte")> | undefined;
-    const openDevice = platform.caps.deviceDashboard
-        ? () => (devicePage ??= import("./routes/Device.svelte"))
-        : null;
-    let ridesPage: Promise<typeof import("./routes/Rides.svelte")> | undefined;
-    const openRides = platform.caps.rideLibrary
-        ? () => (ridesPage ??= import("./routes/Rides.svelte"))
-        : null;
-
     const showEditor = $derived(router.route === "advanced" && openEditor !== null);
-    // Same shape as the editor's gate: a host that is missing nothing has
-    // nothing to read there, so #/desktop falls back to home rather than
-    // rendering a page that pitches the app you are already running.
-    const showDesktop = $derived(router.route === "desktop" && DESKTOP_ADDS.length > 0);
-    const showDevice = $derived(router.route === "device" && openDevice !== null);
-    const showRides = $derived(router.route === "rides" && openRides !== null);
-    const showHome = $derived(!showEditor && !showDesktop && !showDevice && !showRides);
+    const showHome = $derived(!showEditor);
 </script>
 
 <!-- Contour-line backdrop, the field-guide signature (see docs/index.html). -->
@@ -64,35 +41,18 @@
             <StyleEditor />
         {/await}
     {/if}
-    {#if showDesktop}
-        <Desktop />
-    {/if}
-    {#if showDevice && openDevice}
-        {#await openDevice() then { default: Device }}
-            <Device />
-        {/await}
-    {/if}
-    {#if showRides && openRides}
-        {#await openRides() then { default: Rides }}
-            <Rides />
-        {/await}
-    {/if}
 </main>
 
 <footer class="faint small">
     <span>Map data © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors</span>
     <span class="legal">
-        {#if platform.siteNav && DESKTOP_ADDS.length}
-            <a href={DESKTOP_ROUTE}>Desktop app</a>
-        {/if}
         <a href={LINKS.licenses}>Licences</a>
         <a href={LINKS.impressum}>Impressum</a>
         <a href={LINKS.datenschutz}>Datenschutz</a>
     </span>
 </footer>
 
-<!-- Mounted once, at the root: the app's own "are you sure?", because the browser's does not exist
-     in the desktop webview (lib/ui/confirm.svelte.ts). -->
+<!-- Mounted once, at the root: the app's own "are you sure?" (lib/ui/confirm.svelte.ts). -->
 <ConfirmDialog />
 
 <!-- Also mounted once, for the same reason: a device can be plugged in from any page, and the

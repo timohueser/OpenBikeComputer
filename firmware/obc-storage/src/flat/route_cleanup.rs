@@ -113,14 +113,14 @@ mod tests {
         let accepted = route(&store, None);
         let named = route(&store, None);
         let moved = route(&store, None);
-        let checkpoint = obc_formats::assistant::NavigatorCheckpoint {
+        let checkpoint = obc_formats::navigator::NavigatorCheckpoint {
             route: fingerprint(accepted),
             original: Some(fingerprint(named)),
             progress_m: 0,
             occurrence: 0,
             lon: 0,
             lat: 0,
-            phase: obc_formats::assistant::JourneyPhase::Following,
+            phase: obc_formats::navigator::JourneyPhase::Following,
             unresolved_avoidance: false,
             selection: false,
             lower_m: 0,

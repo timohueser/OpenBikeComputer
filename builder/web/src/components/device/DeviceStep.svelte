@@ -1,8 +1,6 @@
 <!--
-  The device step: connect a plugged-in OBC, then write to it (C4, #903).
-
-  Gated `["deviceUsb", "webUsb"]` — tier first, browser second — so a visitor on a tier without USB
-  and a visitor on Safari get different sentences, both of them written once in `GATES`.
+  The device step: connect a plugged-in OBC, then write to it. In a browser with no WebUSB, the
+  session is `unsupported` and its error is the sentence to show.
 
   The connect button is not a nicety. WebUSB's chooser may only open from a real click, so a page
   that auto-detects has to *also* have a button for the first visit; `requestDevice()` is called
@@ -10,8 +8,6 @@
 -->
 <script lang="ts">
     import { onMount } from "svelte";
-    import Gated from "../Gated.svelte";
-    import { platform } from "../../lib/platform";
     import { deviceHolder } from "../../lib/device/session.svelte";
     import type { Ledger } from "../../lib/catalog/ledger";
     import type { SendAssembledMap } from "../../lib/device/write";
@@ -53,64 +49,56 @@
     }
 </script>
 
-<Gated need={["deviceUsb", "webUsb"]} value={platform.device}>
-    {#snippet children()}
-        {#if deviceHolder.error}
-            <p class="note error small" role="alert">{deviceHolder.error}</p>
-        {:else if !session}
-            <p class="small muted">Looking for a device…</p>
-        {:else if session.status === "unsupported"}
-            <p class="small muted">{session.error}</p>
-        {:else if session.status === "ready" && session.client}
-            <div class="head">
-                <p class="small">
-                    <span class="dot" aria-hidden="true"></span>
-                    Connected
-                    {#if session.info}<span class="faint mono">{session.info.hardwareRevision}</span>{/if}
-                </p>
-                <button type="button" class="btn ghost" onclick={() => void session.disconnect()}>
-                    Disconnect
-                </button>
-            </div>
+{#if deviceHolder.error}
+    <p class="note error small" role="alert">{deviceHolder.error}</p>
+{:else if !session}
+    <p class="small muted">Looking for a device…</p>
+{:else if session.status === "unsupported"}
+    <p class="small muted">{session.error}</p>
+{:else if session.status === "ready" && session.client}
+    <div class="head">
+        <p class="small">
+            <span class="dot" aria-hidden="true"></span>
+            Connected
+            {#if session.info}<span class="faint mono">{session.info.hardwareRevision}</span>{/if}
+        </p>
+        <button type="button" class="btn ghost" onclick={() => void session.disconnect()}>
+            Disconnect
+        </button>
+    </div>
 
-            {#await loadSurfaces()}
-                <p class="small muted">Loading…</p>
-            {:then { default: Surfaces }}
-                <Surfaces
-                    client={session.client}
-                    info={session.info}
-                    store={session.store}
-                    {ledger}
-                    {sendAssembled}
-                    {sendReady}
-                />
-            {:catch}
-                <p class="note error small" role="alert">
-                    The device tools could not be loaded. Check your connection and reload the page.
-                </p>
-            {/await}
-        {:else if session.status === "connecting"}
-            <p class="small muted">Connecting…</p>
-        {:else}
-            {#if deviceHolder.interrupted}
-                <p class="note error small" role="alert">{deviceHolder.interrupted}</p>
-            {/if}
-            <div class="connect">
-                <button type="button" class="btn primary" disabled={prompting} onclick={connect}>
-                    Connect device
-                </button>
-                <p class="small faint">Connect by USB, then choose your device.</p>
-            </div>
-            {#if session.status === "error" && session.error}
-                <p class="note error small" role="alert">{session.error}</p>
-            {/if}
-        {/if}
-    {/snippet}
-
-    {#snippet unavailable(reason)}
-        <button type="button" class="btn primary" disabled aria-describedby={reason}>Connect device</button>
-    {/snippet}
-</Gated>
+    {#await loadSurfaces()}
+        <p class="small muted">Loading…</p>
+    {:then { default: Surfaces }}
+        <Surfaces
+            client={session.client}
+            info={session.info}
+            store={session.store}
+            {ledger}
+            {sendAssembled}
+            {sendReady}
+        />
+    {:catch}
+        <p class="note error small" role="alert">
+            The device tools could not be loaded. Check your connection and reload the page.
+        </p>
+    {/await}
+{:else if session.status === "connecting"}
+    <p class="small muted">Connecting…</p>
+{:else}
+    {#if deviceHolder.interrupted}
+        <p class="note error small" role="alert">{deviceHolder.interrupted}</p>
+    {/if}
+    <div class="connect">
+        <button type="button" class="btn primary" disabled={prompting} onclick={connect}>
+            Connect device
+        </button>
+        <p class="small faint">Connect by USB, then choose your device.</p>
+    </div>
+    {#if session.status === "error" && session.error}
+        <p class="note error small" role="alert">{session.error}</p>
+    {/if}
+{/if}
 
 <style>
     .head {

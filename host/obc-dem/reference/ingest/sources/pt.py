@@ -35,7 +35,7 @@ from functools import partial
 from pathlib import Path
 
 from ..lattice import Refuse
-from .base import HTTP_TIMEOUT, TIFF_MAGIC, Credential, host_of, inside, with_retry
+from .base import HTTP_TIMEOUT, OPENER, TIFF_MAGIC, Credential, host_of, inside, with_retry
 from .cog import SharedZip
 from .stac import StacSearchSource, stac_items
 
@@ -63,7 +63,9 @@ def session_opener():
     """An opener that keeps the cookies of a login, and the jar it keeps them in."""
 
     jar = http.cookiejar.CookieJar()
-    return urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar)), jar
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+    opener.addheaders = OPENER.addheaders
+    return opener, jar
 
 
 class CddSearch(StacSearchSource):

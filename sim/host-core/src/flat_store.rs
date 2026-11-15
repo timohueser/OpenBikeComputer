@@ -273,7 +273,7 @@ impl ObjectSource {
     }
 
     /// Full current stored identity, independent of a particular mount's owner allocation.
-    pub fn fingerprint(&self) -> Option<obc_formats::assistant::PayloadFingerprint> {
+    pub fn fingerprint(&self) -> Option<obc_formats::navigator::PayloadFingerprint> {
         let owner = self.0.owner.lock().ok()?;
         let card = owner.ready().ok()?;
         let entry = card

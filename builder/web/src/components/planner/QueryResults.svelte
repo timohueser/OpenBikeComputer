@@ -5,6 +5,9 @@
     import type { SearchPlace, SearchState } from '../../lib/planner/search/types';
     import type { Place } from '../../lib/planner/editor';
     import type { Coordinate } from '../../lib/planner/geo';
+    import { distanceIn } from '../../lib/settings/format';
+    import { settings } from '../../lib/settings/settings.svelte';
+    const tenths = (km: number) => distanceIn(km * 1000).toFixed(1);
     let { state, selectedId, hoveredId = null, onHover, applying = false, applyError = '', routes, onRoutes, onSelect, onApply, onMore, onRetry, onStretch, attribution }: {
         /** The map data credit of the release. */
         attribution: string;
@@ -38,7 +41,7 @@
             {#if applyError}<p role="alert">{applyError}</p>{/if}
         {:else if answer.type === 'stretches'}
             <p class="count">{answer.stretches?.length ?? 0} stretches · {answer.area}</p>
-            {#each answer.stretches ?? [] as stretch}<button type="button" class="stretch" onclick={() => onStretch(stretch.coordinates)}>{stretch.label}<span>km {stretch.from.toFixed(1)}–{stretch.to.toFixed(1)} · {(stretch.to - stretch.from).toFixed(1)} km</span></button>{/each}
+            {#each answer.stretches ?? [] as stretch}<button type="button" class="stretch" onclick={() => onStretch(stretch.coordinates)}>{stretch.label}<span>{settings.units} {tenths(stretch.from)}–{tenths(stretch.to)} · {tenths(stretch.to - stretch.from)} {settings.units}</span></button>{/each}
             {#if !answer.stretches?.length}<p>No matching stretch in this route data.</p>{/if}
         {:else if answer.type === 'places'}
             {@const near = answer.request.type === 'place' ? routesPlaces(answer.results ?? [], answer.request.name ?? '')[0] : undefined}
@@ -51,7 +54,7 @@
             {/if}
             <div class="result-heading"><p class="count">{answer.area}</p><span>{count}</span></div>
             {#each answer.results ?? [] as result (result.source)}
-                <PlaceRow wrapDetail place={asPlace(result)} detail={[result.precision === 'street' ? 'Street location only' : '', result.position ? `${result.position.along.toFixed(1)} km along route · ${result.position.distance.toFixed(1)} km off route` : `${result.distance.toFixed(1)} km from search centre`].filter(Boolean).join(' · ')} selected={selectedId === result.source} hovered={hoveredId === result.source} {onHover} {onSelect} />
+                <PlaceRow wrapDetail place={asPlace(result)} detail={[result.precision === 'street' ? 'Street location only' : '', result.position ? `${tenths(result.position.along)} ${settings.units} along route · ${tenths(result.position.distance)} ${settings.units} off route` : `${tenths(result.distance)} ${settings.units} from search centre`].filter(Boolean).join(' · ')} selected={selectedId === result.source} hovered={hoveredId === result.source} {onHover} {onSelect} />
             {:else}<p>No mapped places match this request in this package.</p>{/each}
             {#if answer.hasMore && (answer.results?.length ?? 0) < 100}<button type="button" onclick={onMore}>Show more results</button>{:else if answer.hasMore}<p>Zoom in or narrow the request to see more places.</p>{/if}
         {/if}

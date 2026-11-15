@@ -76,10 +76,9 @@ The legal basis in each case is Art. 6(1)(f) GDPR.
 
 ### 6.1 Map tiles
 
-The region picker, tour previews and recorded ride maps in the map builder and desktop
-app load tiles from `tiles.openbikecomputer.com`. This is the Cloudflare Worker that also
-serves the route planner (section 7.1). Cloudflare receives your IP address and the requested
-tile. From this, Cloudflare can see the map area. The route data itself is not transmitted.
+The region picker of the map builder loads tiles from `tiles.openbikecomputer.com`. This is
+the Cloudflare Worker that also serves the route planner (section 7.1). Cloudflare receives
+your IP address and the requested tile. From this, Cloudflare can see the map area. The route data itself is not transmitted.
 The map's fonts and symbols come from `maps.openbikecomputer.com` (section 6.3). Builds
 without fixed planner settings also read the active release from the catalog on that host.
 The tiles load when you open a map. The legitimate interest is to show the map needed to
@@ -184,13 +183,15 @@ deleted after seven days, as described there.
 
 ## 9. Storage on your device
 
-The light/dark switch of the website and of the map builder stores your chosen appearance
-locally in `localStorage` under `obc-theme`. Without a choice, your browser setting applies.
+The light/dark switch of the website and of the map builder, and the row "Look" on the
+Settings page of the route planner, store your chosen appearance locally in `localStorage`
+under `obc-theme`. Without a choice, your browser setting applies.
 The value is not sent to a server. It stays stored until you delete the website data in your
 browser.
 
-The web application and the installed desktop app use local device storage. The map builder
-uses `localStorage` and the browser's *Origin Private File System* (OPFS). This data stays on
+The web application uses local device storage. The map builder
+uses `localStorage` and the browser's *Origin Private File System* (OPFS). The route planner
+uses `localStorage` and the browser database *IndexedDB*. This data stays on
 the device that you use. It is not transmitted to the controller.
 
 | Data | Purpose and duration |
@@ -201,18 +202,15 @@ the device that you use. It is not transmitted to the controller.
 | Map cells kept for reuse (optional) | Only if you enable "Keep downloaded map cells for future builds". Kept until you disable the option, until you choose "Delete stored map data", until you delete browser data, or until a new catalog generation replaces the old one. |
 | Your choice to reuse map cells | So that the setting you chose is kept at a later visit. Kept until the next change or until you delete the website data. |
 | Answered firmware notices, with device serial number and offered version | Only after you close or open a notice, so that the same question does not appear again for the same device. At most the 32 most recent answers. Kept until you delete the website data. |
-| Current trip plan of the route planner (`obc-planner-routing-v2`) | Automatically saved draft with waypoints and stages, so that it survives a reload. Kept until it is replaced or you delete the website data. It leaves the browser only as a search request under section 7.1. |
-| Saved plan versions of the route planner (`obc-planner-lab-versions-v1`) | Only when you save one. Kept until you delete it in the version list or delete the website data. |
+| Library of the route planner (IndexedDB `obc-library`): routes and their versions, rides with their files, and cover images | The planner saves a route automatically while you plan it, and a ride when you add it, so that your library stays in this browser. Kept until you delete it, use "Delete all" on the Settings page, or delete the website data. It leaves the browser only in a backup file that you save, and as a search request under section 7.1. |
+| Your choice to center the map of the route planner on a chosen point (`obc-planner-auto-center`) | So that the setting you chose is kept at a later visit. Kept until the next change or until you delete the website data. |
+| Settings of the route planner (`obc-settings`): units, maximum heart rate and threshold power | So that the settings you chose are kept at a later visit. Kept until the next change or until you delete the website data. The values go into a backup file that you save. |
 | Chosen bike profile for routes (`obcm.routeBikeType`) | So that the setting you chose is kept at a later visit. Kept until the next change or until you delete the website data. |
-| Route and tour previews in the web application | Thinned-out coordinates loaded from the connected device, to draw the tiles. Held only in the memory of the running page session, until you reload or close it. |
-| Route and tour previews in the installed desktop app | Thinned-out coordinates are cached locally, so that they need not be loaded again from the connected device after an app restart. The cache holds at most 300 entries and removes older entries that were not used recently. Changed objects get a new cache key from content marks. You can delete the cache on the device page with "Delete saved previews" or by deleting the app data. |
 
-Saving and reading the working data for a short time, saving the trip plan, saved plan
-versions and chosen settings, saving a skin or an answered firmware notice that you
-explicitly saved, and the limited preview cache of the explicitly installed desktop app are
-necessary for the function that you requested (§ 25(2) no. 2 TDDDG). The preview cache in
-particular avoids repeated full transfers of all displayed routes and tours over USB. These
-processes need no consent.
+Saving and reading the working data for a short time, saving the library of the route
+planner and chosen settings, and saving a skin or an answered firmware notice that you
+explicitly saved are necessary for the function that you requested (§ 25(2) no. 2 TDDDG).
+These processes need no consent.
 
 Reusing downloaded map cells in later builds is optional and off by default. When you enable
 the clearly labeled option, this is your consent under § 25(1) TDDDG. You can withdraw it at
@@ -226,11 +224,7 @@ locally in the browser. Files that you select or drag into the window are not tr
 a server. This applies in particular to route files, which can contain position data.
 
 A WebUSB connection exists only after you confirm a device in the browser's selection
-dialog. The data flows directly between the browser and the device. When a map shows tours
-or rides, the browser and the desktop app load only map tiles under section 6.1. The route
-data does not leave the device. For the preview images of the device overview, simplified
-route lines are held in memory, but **not stored permanently in the browser**. They are
-discarded when you reload or when the browser session ends.
+dialog. The data flows directly between the browser and the device.
 
 ## 11. External links
 

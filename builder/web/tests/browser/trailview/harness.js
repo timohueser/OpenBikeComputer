@@ -23,36 +23,20 @@ export const DIST = new URL('../../../dist/trailview/', import.meta.url).pathnam
 const FIXTURE = new URL('./fixture/terrain/', import.meta.url).pathname;
 const FEATURES = new URL('./fixture/features/', import.meta.url).pathname;
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.txt': 'text/plain', '.svg': 'image/svg+xml' };
-/** `ground` of routeFixture: one ground everywhere, so the fixture has ground pages: the first material, lithology and region of FLAT_RULES. */
-export const FLAT = 'flat';
-/** A 512 px lossless WebP ground tile of zero bytes (cwebp -lossless -exact). */
-const FLAT_TILE = Buffer.from('UklGRiwAAABXRUJQVlA4TB8AAAAv/8F/EAcQEREQCCT7e89QRP8z/vOf//znP//5z/8BAA==', 'base64');
-/** The `world` region of the engine's ground without a ruleset (ground.ts), as a rules.json. */
-const FLAT_RULES = {
-    format: 3, materials: { materials: [{ id: 'none', cover: 'grass' }], lithologies: [{ id: 'unknown', hardness: 0.5 }] },
-    ids: [['world', '*']],
-    regions: {
-        world: { leaf: 'mixed', look: {
-            snap: 0.4, hazeKm: 35, hazeHeight: 2500, mistTop: 0, softness: 0.08, gradient: 0.35, ramps: {}, outcrops: 0, turf_deg: 42,
-            rock: '#8c877d', sea: { deep: '#2c5874', shallow: '#4f8088' }, grade: { shadow: [-0.004, 0, 0.012], light: [0.01, 0.004, -0.008], saturation: 1.08 },
-        } },
-    },
-};
-
 /**
  * The tile service of the planner hosts at `origin`: a function from a path to its answer
  * `{ status, type, body }`, or undefined for a path that the service does not know. The terrain tiles
  * come from the fixture, or from `tiles`, a `planner-dem` MBTiles, and 204 answers an absent tile as
  * the tile service does. With `ground`, a folder of the TrailView bakes, it answers their TileJSON and
  * tiles, and `trailview/rules.json`; `colour` names the folder of the colour variant in it. The feature
- * tiles come from the fixture, or from `features`, a folder of `z/x/y.bin`. `ground` may be FLAT.
+ * tiles come from the fixture, or from `features`, a folder of `z/x/y.bin`.
  */
 export async function tileService(origin, tiles, ground, colour = 'webp-12', features = FEATURES) {
     const read = tiles?.endsWith('.mbtiles') ? await mbtiles(tiles) : (z, x, y) => {
         const path = join(tiles ?? FIXTURE, `${z}/${x}/${y}.webp`);
         return existsSync(path) ? readFileSync(path) : undefined;
     };
-    const layers = ground === FLAT ? { 'trailview-ground': FLAT_ARCHIVE } : ground ? groundLayers(ground, colour) : {};
+    const layers = ground ? groundLayers(ground, colour) : {};
     const none = { status: 204, body: Buffer.alloc(0) };
     const found = (body, type) => (body ? { status: 200, type, body } : none);
     const json = value => found(Buffer.from(JSON.stringify(value)), 'application/json');
@@ -67,7 +51,7 @@ export async function tileService(origin, tiles, ground, colour = 'webp-12', fea
         }
         const tile = /^\/terrain\/(\d+)\/(\d+)\/(\d+)\.webp$/.exec(path);
         if (tile) return found(read(...tile.slice(1).map(Number)), 'image/webp');
-        if (ground && path === '/trailview/rules.json') return ground === FLAT ? json(FLAT_RULES) : found(readFileSync(join(ground, 'rules.json')), 'application/json');
+        if (ground && path === '/trailview/rules.json') return found(readFileSync(join(ground, 'rules.json')), 'application/json');
         const [, name, z, x, y] = /^\/([a-z0-9-]+)(?:\.json|\/(\d+)\/(\d+)\/(\d+))$/.exec(path) ?? [];
         const archive = layers[name];
         if (!archive) return undefined;
@@ -90,13 +74,6 @@ export async function routeFixture(page, tiles, ground, colour, features) {
         return route.fulfill({ status: found.status, body: found.body, contentType: found.type, headers: { 'access-control-allow-origin': '*' } });
     });
 }
-
-/** The ground archive of FLAT: every tile of zooms 0 to 13 is FLAT_TILE. */
-const FLAT_ARCHIVE = {
-    getHeader: async () => ({ minZoom: 0, maxZoom: 13, minLon: -180, minLat: -85, maxLon: 180, maxLat: 85 }),
-    getMetadata: async () => ({ trailview_format: 3 }),
-    getZxy: async () => ({ data: FLAT_TILE }),
-};
 
 /** The archives of the TrailView bakes in a folder, by their names in the catalogue's `layers`. */
 function groundLayers(dir, colour) {

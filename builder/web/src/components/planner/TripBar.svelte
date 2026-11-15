@@ -3,7 +3,7 @@
     import Select from './PlannerSelect.svelte';
     import VersionsMenu from './VersionsMenu.svelte';
     import { onMount } from 'svelte';
-    import { ridingProfiles, servedPresets, type BikeType } from '../../lib/planner/riding-profiles';
+    import { paces, planPace, planPreset, ridingProfiles, servedPresets, type BikeType } from '../../lib/planner/riding-profiles';
     import { planTitle, type Trip } from '../../lib/planner/editor';
     import { regionProfiles, type RoutingLine } from '../../lib/planner/routing';
     import type { Version } from '../../lib/planner/versions';
@@ -54,8 +54,12 @@
             }} />
         </div>
         <div class="preference"><span>Preset</span>
-            <Select label="Preset" value={trip.preset ?? 'Balanced'} options={servedPresets(bike, profiles).map(value => ({ value, label: value, icon: value === 'Less climbing' ? 'less-climbing' : value === 'Shorter' ? 'arrow' : 'sliders' }))}
+            <Select label="Preset" value={planPreset(bike, trip.preset)} options={servedPresets(bike, profiles).map(value => ({ value, label: value, icon: value === 'Less climbing' ? 'less-climbing' : 'sliders' }))}
                 onChange={(preset) => onChange({ preset }, 'Route preference changed')} />
+        </div>
+        <div class="preference"><span>Pace</span>
+            <Select label="Pace" value={planPace(trip)} options={Object.entries(paces).map(([value, { label }]) => ({ value, label }))}
+                onChange={(value) => onChange({ pace: value as Trip['pace'] }, 'Pace changed')} />
         </div>
     </div>
     <div class="actions">
@@ -73,9 +77,9 @@
         grid-template-columns: calc(var(--side-width) - 16px) minmax(0, 1fr) auto;
         align-items: center;
         gap: 16px;
-        height: 56px;
+        min-height: 56px;
         flex: none;
-        padding: 0 16px;
+        padding: 8px 16px;
         border-bottom: 1px solid var(--line);
         background: var(--panel);
     }
@@ -95,7 +99,8 @@
     .ride {
         display: flex;
         align-items: center;
-        gap: 16px;
+        flex-wrap: wrap;
+        gap: 8px 16px;
     }
     .preference {
         display: flex;
@@ -125,14 +130,13 @@
         background: var(--parchment-2);
     }
     @media (max-width: 1050px) {
-        .trip-bar { grid-template-columns: minmax(0, 1fr) auto; height: auto; min-height: 56px; padding-block: 8px; gap: 8px 16px; }
+        .trip-bar { grid-template-columns: minmax(0, 1fr) auto; gap: 8px 16px; }
         .ride { grid-column: 1; grid-row: 2; }
         .actions { grid-column: 2; grid-row: 1 / span 2; }
     }
     @media (max-width: 760px) {
         .trip-bar { grid-template-columns: minmax(0, 1fr); }
         .trip-name h1 { flex: 1; }
-        .ride { flex-wrap: wrap; }
         .actions { grid-column: 1; grid-row: 3; justify-content: flex-end; }
     }
     .actions > :global(.versions) {

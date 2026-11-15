@@ -440,11 +440,11 @@ fn route_bytes() -> Vec<u8> {
     route_gpx(|_| 200.0)
 }
 
-/// The same geometry with a 300 m climb over points 12..28, which is the relief the Climb view
+/// The same geometry with a 300 m climb over points 0..16, which is the relief the Climb view
 /// needs.
 fn climb_route_bytes() -> Vec<u8> {
     route_gpx(|i| {
-        let rise = i.clamp(12, 28) - 12;
+        let rise = i.min(16);
         200.0 + rise as f64 * (300.0 / 16.0)
     })
 }

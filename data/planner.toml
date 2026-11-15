@@ -14,21 +14,14 @@ margin_m = 15000
 profiles = [
   "gravel",
   "gravel/less-climbing",
-  "gravel/shorter",
   "hiking",
   "hiking/alpine",
-  "hiking/less-climbing",
-  "hiking/shorter",
   "mtb",
-  "mtb/less-climbing",
-  "mtb/shorter",
   "mtb/technical",
   "road",
   "road/less-climbing",
-  "road/shorter",
   "touring",
   "touring/less-climbing",
-  "touring/shorter",
 ]
 
 [climate]

@@ -10,7 +10,8 @@ owns:
   - companion-ios/Packages/OBCKit/Tests/OBCPlannerTests/**
   - companion-ios/PlannerNative/**
   - companion-ios/PlannerSearch/**
-depends_on: []
+depends_on:
+  - library
 test_depends_on: []
 status: draft
 ---

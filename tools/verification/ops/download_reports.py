@@ -14,7 +14,7 @@ repo = os.environ["GH_REPO"]
 pages = json.loads(subprocess.check_output([
     "gh", "api", f"repos/{repo}/actions/runs/{run_id}/artifacts?per_page=100", "--paginate", "--slurp"
 ]))
-pattern = re.compile(r"(?:rust-(?:test|fixtures)|python-.+|web-.+|desktop-tests-.+|ios-tests-coverage)-" + re.escape(attempt))
+pattern = re.compile(r"(?:rust-(?:test|fixtures)|python-.+|web-.+|ios-tests-coverage)-" + re.escape(attempt))
 for artifact in (artifact for page in pages for artifact in page["artifacts"]):
     name = artifact["name"]
     if not pattern.fullmatch(name):

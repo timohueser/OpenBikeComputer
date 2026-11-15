@@ -41,7 +41,7 @@ _obc_tasks() {
     [[ -f "$justfile" ]] || justfile="$t/justfile"
     python3 "$t/tasks.py" --justfile "$justfile" --names "${scope[@]}" 2>/dev/null && return
   fi
-  echo "fixtures sim board flash flash-boot uart debug rtt pack bake web site desktop test fmt licenses check clean doctor setup"
+  echo "fixtures sim board flash flash-boot uart debug rtt pack bake web site test fmt licenses check clean doctor setup"
 }
 
 _obc_fixture_ids() {
@@ -116,8 +116,6 @@ _obc() {
         1) compopt -o filenames 2>/dev/null; _obc_reply < <(compgen -W "$(_obc_presets)" -- "$cur"; compgen -f -X '!*.json' -- "$cur") ;;
         *) compopt -o filenames 2>/dev/null; _obc_reply < <(compgen -f -- "$cur") ;;
       esac ;;
-    desktop)
-      _obc_reply < <(compgen -W "dev build" -- "$cur") ;;
     board)
       (( idx == 0 )) && _obc_reply < <(compgen -W "doctor run download attach reset" -- "$cur") ;;
     flash-boot)

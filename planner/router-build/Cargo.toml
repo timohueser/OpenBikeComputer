@@ -14,6 +14,8 @@ postcard = { version = "1", features = ["alloc"] }
 rusqlite = { version = "0.41", features = ["bundled"] }
 sha2 = "0.10"
 memmap2 = "0.9.11"
+# The parallel passes of the bake.
+rayon = "1"
 # The request of the planner routing step.
 obc-data = { path = "../../host/obc-data" }
 # The heights of the roads, and the planner routing step of `obc data`.

@@ -1,7 +1,8 @@
 <script lang="ts">
-    import { surfaceRuns, surfaceWindow } from '../../lib/planner/surface-data';
-    import type { RoutingLine, Surface } from '../../lib/planner/routing';
+    import { surfaceBarColors as colors, surfaceRuns, surfaceWindow } from '../../lib/planner/surface-data';
+    import type { RoutingLine } from '../../lib/planner/routing';
     import { axisLeft, axisProgress, axisWidth } from '../../lib/planner/profile-axis';
+    import { noteDistance } from '../../lib/planner/route-closures';
     let { line, from, to, rests = [], walking = false, onHover }: {
         walking?: boolean; line?: RoutingLine; from: number; to: number;
         /** The rest columns of the profile, as route progress. */
@@ -9,12 +10,11 @@
         onHover: (progress: number | null) => void;
     } = $props();
     const axis = $derived({ from, to, rests });
-    const colors: Record<Surface, string> = { Paved: '#536674', Compacted: '#7d8b63', Gravel: '#ba9c5c', Dirt: '#a36d49', Rough: '#875f72', Unknown: '#b8b5ac' };
     const helpId = $props.id();
     const data = $derived(surfaceRuns(line));
     const visible = $derived(surfaceWindow(data.runs, from, to));
     const hasPushing = $derived(!walking && data.runs.some(run => run.pushing));
-    const pushingDistance = $derived((line?.pushingKm ?? 0) < 1 ? `${Math.round((line?.pushingKm ?? 0) * 1000)} m` : `${line!.pushingKm.toFixed(1)} km`);
+    const pushingDistance = $derived(noteDistance(line?.pushingKm ?? 0));
     let position = $state<number | null>(null);
     const at = $derived(Math.max(from, Math.min(to, position ?? from)));
     const current = $derived(visible.find(run => run.to > at) ?? visible.at(-1));

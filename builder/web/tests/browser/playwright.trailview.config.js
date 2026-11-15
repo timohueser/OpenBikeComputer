@@ -31,7 +31,7 @@ export default defineConfig({
     trace: 'retain-on-failure',
   },
   webServer: {
-    command: `python3 -m http.server ${PORT} --bind 127.0.0.1 --directory ../../dist/trailview`,
+    command: `python3 serve.py ${PORT} ../../dist/trailview`,
     url: `http://127.0.0.1:${PORT}/trailview.html`,
     reuseExistingServer: false,
     timeout: 10_000,

@@ -1532,7 +1532,7 @@ fn a_detour_without_a_path_is_a_failure_and_not_an_absent_capability() {
 fn selecting_a_route_owes_one_bounded_checkpoint_operation() {
     use obc_app::metadata::MetadataOutcome;
     use obc_app::navigator::{ReviewStatus, RouteCheckpointSource};
-    use obc_formats::assistant::PayloadFingerprint;
+    use obc_formats::navigator::PayloadFingerprint;
 
     let mut harness = recording_harness();
     // Only a route being followed owes a checkpoint, so the rider is out on one.
@@ -1589,7 +1589,7 @@ fn deleting_the_active_route_drops_it_in_the_same_pass() {
 #[test]
 fn a_delete_waits_for_the_checkpoint_that_would_refuse_it() {
     use obc_app::metadata::MetadataOutcome;
-    use obc_formats::assistant::{JourneyPhase, NavigatorCheckpoint, PayloadFingerprint};
+    use obc_formats::navigator::{JourneyPhase, NavigatorCheckpoint, PayloadFingerprint};
 
     let mut harness = recording_harness();
     let id = harness.app().route_ids()[0];

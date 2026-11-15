@@ -61,39 +61,9 @@ async function releaseCatalog(): Promise<{ url: string; body: string }> {
 
 export const platform: Platform = {
     name: "web",
-    caps: {
-        // A browser ride library would be OPFS/IndexedDB: invisible, evictable
-        // and unbackupable. Web exports one GPX and keeps no record.
-        rideLibrary: false,
-        // WebUSB is this tier's design, Chromium-only, which is why the desktop app
-        // exists.
-        deviceUsb: true,
-        deviceDashboard: false,
-    },
-
-    // Chromium-only, and this tier has no other way to reach a cable — so on Safari
-    // and Firefox the USB features gate on the *browser*, with their own reason and
-    // their own remedy. The download-and-copy-to-the-card path is unaffected.
-    //
-    usbViaWebUsb: true,
 
     catalog: fetchCatalog,
     catalogFetch: globalThis.fetch,
-    // A map is one `.obcm` again, so the web tier uses the browser's ordinary
-    // download flow. This avoids Chromium's restricted directory picker and
-    // makes Downloads behave like every other file from the site.
-    openMapOutput: null,
-
-    // WebUSB, loaded on demand. The import is dynamic so the transport, the protocol
-    // codecs and the client land in their own chunk: a visitor who only downloads a
-    // map never pays for the device stack. The session it returns is `unsupported`
-    // on a browser without WebUSB rather than absent — the tier *has* the capability,
-    // this browser does not, and those are different sentences for the UI to say.
-    device: async () => {
-        const { openWebUsbSession } = await import("../usb/session.svelte");
-        return openWebUsbSession();
-    },
-    rides: null,
 
     styleEditor: null,
 

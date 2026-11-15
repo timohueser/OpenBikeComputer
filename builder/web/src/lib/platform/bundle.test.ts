@@ -2,9 +2,8 @@
 // Vite actually emits is asserted here, against what Rollup put in the emitted
 // output rather than against source imports or a grep of them.
 //
-// One file, because Vitest isolates by file and not by test. Three builds,
-// because `web`, `production` (the dev host) and `desktop` are three different
-// module graphs.
+// One file, because Vitest isolates by file and not by test. Two builds,
+// because `web` and `production` (the dev host) are two different module graphs.
 
 import { build } from "vite";
 import { describe, expect, it } from "vitest";
@@ -62,13 +61,12 @@ function product(mode: string, env: Record<string, string> = {}): Promise<Built>
     return next;
 }
 
-/** The static web tier as `.github/workflows/deploy-site.yml` builds it, the
- *  maintainer dev host, and the Tauri app. `VITE_SITE_BASE` only sets the link
+/** The static web tier as `.github/workflows/deploy-site.yml` builds it, and the
+ *  maintainer dev host. `VITE_SITE_BASE` only sets the link
  *  prefix in `lib/constants.ts`, so the deployed build stands for `npm run build:web`
  *  too. */
 const web = () => product("web", { VITE_SITE_BASE: "../" });
 const dev = () => product("production");
-const desktop = () => product("desktop");
 
 /** Every source module in every emitted chunk of one product, and only the ones
  *  Rollup put in an entry chunk. */
@@ -89,43 +87,12 @@ function textFiles(b: Built): Map<string, string> {
     return files;
 }
 
-/**
- * Source modules the static web tier must not contain.
- *
- * `@tauri-apps/api` in a static site's bundle would mean the host alias picked
- * the wrong module, which the assertions below could not otherwise notice: a
- * desktop host's methods all resolve and simply never work in a browser.
- * `lib/desktop/release.ts` is deliberately absent — the web tier reads it, to
- * decide whether the desktop app has a download link yet.
- */
-const DESKTOP_ONLY = {
+/** Source modules the static web tier must not contain: only the dev host has them. */
+const DEV_ONLY = {
     "the FastAPI client": /\/src\/lib\/api\/client\.ts$/,
     "the dev host": /\/src\/lib\/platform\/dev\.ts$/,
-    "the desktop host": /\/src\/lib\/platform\/desktop\.ts$/,
-    "the Tauri command bridge": /\/src\/lib\/desktop\/invoke\.ts$/,
-    "the native USB transport": /\/src\/lib\/desktop\/usb\.ts$/,
-    "the native USB session": /\/src\/lib\/desktop\/usb\.svelte\.ts$/,
-    "the ride library's Tauri backing": /\/src\/lib\/desktop\/library\.ts$/,
-    "the Tauri JS API": /\/@tauri-apps\/api\//,
     "the style editor route": /\/src\/routes\/Advanced\.svelte/,
     "the style editor components": /\/src\/components\/advanced\//,
-};
-
-/** …and the ones only the *desktop* target may contain, for the same reason in
- *  the other direction: a desktop build that quietly fell back to the dev host
- *  would talk to a FastAPI server that isn't running. */
-const DESKTOP_TARGET_ONLY = {
-    "the desktop host": /\/src\/lib\/platform\/desktop\.ts$/,
-    "the Tauri command bridge": /\/src\/lib\/desktop\/invoke\.ts$/,
-    // The desktop tier drives USB natively. Its presence here also proves the
-    // dynamic `import()` in `desktop.ts` still resolves — `device()` is only
-    // called from a click, so a broken path would surface on someone's desk.
-    "the native USB transport": /\/src\/lib\/desktop\/usb\.ts$/,
-    "the native USB session": /\/src\/lib\/desktop\/usb\.svelte\.ts$/,
-    // Only the tier with a disk may carry the code that writes the ride library.
-    // Its presence also proves `desktop.ts`'s dynamic `import()` still resolves.
-    "the ride library's Tauri backing": /\/src\/lib\/desktop\/library\.ts$/,
-    "the Tauri JS API": /\/@tauri-apps\/api\//,
 };
 
 describe("bundle split", () => {
@@ -136,7 +103,7 @@ describe("bundle split", () => {
         expect(modules.some((id) => id.endsWith("/src/lib/platform/web.ts"))).toBe(true);
         expect(modules.some((id) => id.includes("/src/routes/Home.svelte"))).toBe(true);
 
-        const found = Object.entries(DESKTOP_ONLY).flatMap(([what, re]) =>
+        const found = Object.entries(DEV_ONLY).flatMap(([what, re]) =>
             modules.filter((id) => re.test(id)).map((id) => `${what}: ${id}`),
         );
         expect(found).toEqual([]);
@@ -147,40 +114,21 @@ describe("bundle split", () => {
     }, 180_000);
 
     it("ships the maintainer style editor only in the dev target", async () => {
-        // The dev host's own set: everything in DESKTOP_ONLY except the rows that
-        // name the *desktop* host — one alias picks exactly one host.
         const modules = modulesOf(await dev());
-        const missing = Object.entries(DESKTOP_ONLY)
-            .filter(([what]) => !(what in DESKTOP_TARGET_ONLY))
+        const missing = Object.entries(DEV_ONLY)
             .filter(([, re]) => !modules.some((id) => re.test(id)))
             .map(([what]) => what);
         expect(missing).toEqual([]);
 
-        const strays = Object.entries(DESKTOP_TARGET_ONLY).flatMap(([what, re]) =>
-            modules.filter((id) => re.test(id)).map((id) => `${what}: ${id}`),
-        );
-        expect(strays).toEqual([]);
-
-        // Localhost is a secure WebUSB context, so this build must keep the same
-        // lazy browser transport rather than a desktop-only dead end.
+        // Localhost is a secure WebUSB context, so this build keeps the same lazy
+        // browser transport.
         expect(modules.some((id) => id.endsWith("/src/lib/usb/webusb.ts"))).toBe(true);
-    }, 180_000);
-
-    it("wires the desktop target to the Tauri backend", async () => {
-        const modules = modulesOf(await desktop());
-        const missing = Object.entries(DESKTOP_TARGET_ONLY)
-            .filter(([, re]) => !modules.some((id) => re.test(id)))
-            .map(([what]) => what);
-        expect(missing).toEqual([]);
-        // …and not to the maintainer dev server.
-        expect(modules.some((id) => /\/src\/lib\/api\/client\.ts$/.test(id))).toBe(false);
     }, 180_000);
 });
 
 // Whatever the bundler puts in the bundle, its licence text has to ship beside
 // it. A list of `dependencies` would prove nothing: Svelte is a devDependency
-// compiled into every chunk, and `@tauri-apps/api` is one the web tier never
-// bundles.
+// compiled into every chunk.
 
 const LICENSE_FILE = "third-party-licenses.txt";
 
@@ -223,13 +171,6 @@ describe("third-party licences", () => {
         expect(notices).toContain(`Map data ${registryAttribution("osm-planet")}, under the ODbL`);
     }, 180_000);
 
-    it("describes the tier it was built for, not a fixed list", async () => {
-        // The desktop tier bundles the Tauri API the web tier does not, so the two
-        // notice files must differ.
-        const built = await desktop();
-        expect(bundledPackages(modulesOf(built))).toContain("@tauri-apps/api");
-        expect(noticesOf(built)).toContain("@tauri-apps/api");
-    }, 180_000);
 });
 
 // The static web tier is published under a project sub-path and is expected to
@@ -286,15 +227,10 @@ describe("deployment portability", () => {
     }, 180_000);
 });
 
-// The USB stack must stay in its own chunk, not the web tier's entry bundle. `platform/web.ts`
+// The USB stack must stay in its own chunk, not the web tier's entry bundle. `lib/device/session`
 // reaches it through a dynamic `import()` so a visitor who only downloads a map never fetches the
 // transport, the codecs and the client. That split disappears *silently*: everything still works,
 // the entry chunk is just bigger.
-//
-// The likeliest way to break it is deduplication that looks like a tidy-up. `platform/gating.ts`
-// has its own one-line `hasWebUsb()` that overlaps this module's `webUsb()`. They are duplicated on
-// purpose: `gating.ts` lives in the entry chunk, so importing anything from `lib/usb/` into it would
-// drag the whole stack in behind it.
 
 const IS_USB = /\/src\/lib\/usb\//;
 
@@ -311,15 +247,10 @@ describe("the USB stack's chunk", () => {
         expect(inEntry, "the USB stack leaked into the entry chunk").toEqual([]);
     }, 180_000);
 
-    it.each([
-        ["web", web],
-        ["desktop", desktop],
-    ])("does not ship the simulated device (%s target)", async (_mode, target) => {
+    it("does not ship the simulated device", async () => {
         // `loopback.ts` is the in-memory transport and `flat-device.ts` with its wasm package is a
-        // whole device. Neither belongs in anything a person installs or visits. The desktop row
-        // matters most: that app is the one people take to a bench with a real board, where "if the
-        // window says Connected, something enumerated" is the first tell that a transfer is real.
-        const built = await target();
+        // whole device. Neither belongs in anything a person visits.
+        const built = await web();
         const shipped = modulesOf(built).filter((id) =>
             /\/src\/lib\/usb\/(loopback|flat-device)\.ts$|\/test-support\/flat-device\//.test(id),
         );

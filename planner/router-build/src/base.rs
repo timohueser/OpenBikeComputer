@@ -15,6 +15,11 @@ impl Dictionary {
         if !value.valid() {
             return Err("Invalid cost basis".into());
         }
+        self.intern(value)
+    }
+
+    /// `insert` without the check of the value.
+    pub(crate) fn intern(&mut self, value: CostBasis) -> Result<u32, String> {
         let key = (value.factor.to_bits(), value.turn.to_bits(), value.ferry);
         if let Some(&id) = self.ids.get(&key) {
             return Ok(id);

@@ -17,9 +17,7 @@
     import { jobRegistry } from "../lib/device/job.svelte";
     import { deviceHolder } from "../lib/device/session.svelte";
     import { firmwareCheck } from "../lib/firmware/check.svelte";
-    import { platform } from "../lib/platform";
-    import { router } from "../lib/router.svelte";
-    import { DEVICE_ROUTE, FIRMWARE_ANCHOR } from "../lib/routes";
+    import { FIRMWARE_ANCHOR } from "../lib/routes";
 
     const session = $derived(deviceHolder.session);
     /** Non-null exactly while a device is connected and has said what it is. */
@@ -42,15 +40,11 @@
     }
 
     /**
-     * Take the rider to the card.
-     *
-     * On a tier with a Device page that is a navigation, and the page arrives through a dynamic
-     * import — so the element does not exist yet at the moment of the click. Hence the short poll
-     * rather than one `scrollIntoView` into nothing; it gives up quietly after a second.
+     * Take the rider to the card. The device surfaces arrive through a dynamic import, so the card
+     * can be missing at the moment of the click: a short poll, which gives up quietly after a second.
      */
     function show(release: { version: string }) {
         answer(release);
-        if (platform.caps.deviceDashboard && router.route !== "device") router.go("device");
         let tries = 0;
         const settle = () => {
             const card = document.getElementById(FIRMWARE_ANCHOR);
@@ -73,13 +67,7 @@
         {/if}
         <div class="actions">
             <button type="button" class="btn ghost" onclick={() => answer(release)}>Dismiss</button>
-            <!-- A link on the tiers that have a Device page, so it behaves like one (middle-click,
-                 the status bar) — the click still does the scrolling. -->
-            {#if platform.caps.deviceDashboard}
-                <a class="btn primary" href={DEVICE_ROUTE} onclick={() => show(release)}>View update</a>
-            {:else}
-                <button type="button" class="btn primary" onclick={() => show(release)}>View update</button>
-            {/if}
+            <button type="button" class="btn primary" onclick={() => show(release)}>View update</button>
         </div>
     </div>
 {/if}
@@ -114,12 +102,5 @@
         justify-content: flex-end;
         gap: 8px;
         margin-top: 6px;
-    }
-
-    /* The link-shaped primary: `.btn` is written for buttons, so undo the anchor's own colour rule
-       and keep the label from picking up an underline on hover. */
-    a.btn.primary {
-        color: var(--parchment);
-        text-decoration: none;
     }
 </style>

@@ -88,8 +88,8 @@ function signedArea(ring: RingPoint[]): number {
 }
 
 /**
- * How many disjoint patches a cell set forms — the number the corridor panel turns into
- * "1 gap between routes" (patches − 1). Outer rings wind counter-clockwise and holes
+ * How many disjoint patches a cell set forms — the coverage proof calls patches − 1
+ * "separate parts". Outer rings wind counter-clockwise and holes
  * clockwise, so patches are exactly the positive-area rings.
  */
 export function patchCount(cells: Iterable<CellId>): number {

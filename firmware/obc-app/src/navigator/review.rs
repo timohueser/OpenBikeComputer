@@ -3,7 +3,7 @@ use super::NavigatorError;
 use crate::device_core::{MetadataTag, OperationToken, StoreIdentity};
 use crate::settings::BikeType;
 use crate::CatalogObjectId;
-use obc_formats::assistant::{NavigatorCheckpoint, PayloadFingerprint};
+use obc_formats::navigator::{NavigatorCheckpoint, PayloadFingerprint};
 use obc_formats::obcr::RouteSourceKey;
 
 pub const REVIEW_ALONG_TOLERANCE_M: u32 = 50;
@@ -223,7 +223,7 @@ impl ReviewState {
 
 use super::{NavigatorMachine, PlanFamily, PlanPhase};
 use crate::metadata::{MetadataError, MetadataOutcome};
-use obc_formats::assistant::JourneyPhase;
+use obc_formats::navigator::JourneyPhase;
 
 impl NavigatorMachine {
     /// A measuring request starts its leg wherever the caller says; a route starts at the rider.

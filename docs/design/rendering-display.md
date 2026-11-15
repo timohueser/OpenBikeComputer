@@ -56,7 +56,7 @@ flowchart LR
 
 A rider pans the map in a dense town. No hold gesture is active at first.
 
-1. The board's ride loop borrows the resident frame `&mut` and wraps it in `FbDevice64`. The app makes a `Viewport` from the camera and calls `RenderScratch::render_timed` with the map's scene.
+1. The board's ride loop borrows the resident frame `&mut` and calls `Device64Frame::draw_target`, which returns an `FbDevice64`. The app makes a `Viewport` from the camera and calls `RenderScratch::render_timed` with the map's scene.
 2. `render_timed` clears the target. It asks the scene for the level of detail that fits the viewport's metres per pixel.
 3. The **direct walk** starts. The scene decodes each candidate in the view. The renderer rejects a malformed feature, culls an invisible one, projects the rest to 16-bit screen points, and appends them to the frame buffers.
 4. The town holds more points than `MAX_FRAME_POINTS`, so the direct walk stops and its buffers clear. A late chunk could hold a high-priority feature, and low-priority features already took its room.
@@ -64,7 +64,7 @@ A rider pans the map in a dense town. No hold gesture is active at first.
 6. The renderer sorts the spans into paint order: a style's z first, then `seq`. At the finest level of detail, the casings go in at the first cased road, under every road fill. Polygons with the same z get their fills first, then their outlines.
 7. The app adds the route, the breadcrumb and the rider marker through the methods of `RenderScratch`. It draws the screen's chrome through `Canvas`. `FbDevice64` stores each pixel as one byte, `0b00RRGGBB`.
 8. The board calls `Presenter::present`, and the frame stays borrowed shared. `RowDiff` hashes all 320 rows, updates its store, and joins the changed rows into spans. The coprocessor reads those rows directly from the frame, packs them for the bus, and writes them to the panel. It moves past unchanged rows without a write and stops after the last changed row.
-9. If the push stalls, `present` returns an error. The store already holds the new frame, so a plain retry would push nothing. The board calls `reset_diff`, and the next present pushes every row.
+9. The store already holds the new frame before the push. The presenter confirms the push to `RowDiff` only when the rows reach glass. If the push stalls, `present` returns an error and the push stays unconfirmed. A failed overlay push resets the store. In both cases the next present pushes every row outside the bulge.
 
 Now the rider holds a button. The hold feedback, the bulge, lives on the input plane and is not in the frame. `composite_into_resident` saves the window's clean bytes, writes the composite into the frame, pushes those rows, and restores the bytes, also after a fault. A map redraw during the hold pushes every changed row except the bulge's rows, so the bulge does not flash off. The row store still records those rows as the new frame. When the bulge ends, the presenter pushes its rows from the frame with nothing composited, so the clear needs no map render.
 
@@ -80,7 +80,7 @@ Now the rider holds a button. The hold feedback, the bulge, lives on the input p
 | [`canvas.rs`](../../firmware/obc-render/src/canvas.rs), [`surface.rs`](../../firmware/obc-render/src/surface.rs) | The drawing vocabulary of the screens. |
 | [`text.rs`](../../firmware/obc-render/src/text.rs), [`font_data.rs`](../../firmware/obc-render/src/font_data.rs), [`text_tap.rs`](../../firmware/obc-render/src/text_tap.rs) | The font tiers, their bitmaps, and a host-only record of drawn text for the copy-fit test. |
 | `obc-display` [`framebuffer.rs`](../../firmware/obc-display/src/framebuffer.rs) | The draw targets `FbDevice64` and `Framebuffer565`, with the colour conversions. |
-| [`display_contracts/`](../../firmware/obc-display/src/display_contracts/mod.rs) | `NativeFrame`, `Presenter`, `OverlayPresenter` and the conformance suite. |
+| [`display_contracts/`](../../firmware/obc-display/src/display_contracts/mod.rs) | `Device64Frame`, `Presenter`, `OverlayPresenter` and the conformance suite. |
 | [`ls021/`](../../firmware/obc-display/src/ls021/mod.rs) | The panel's geometry, `RowDiff`, the wire pack and the overlay engine. |
 | [`panel.rs`](../../firmware/obc-display/src/panel.rs) | `Band`, a frame-absolute view of a window, and the composite that fills it from the frame. |
 
@@ -90,7 +90,7 @@ Now the rider holds a button. The hold feedback, the bulge, lives on the input p
 | --- | --- |
 | The renderer drops a feature whole, lowest priority first, across all chunks. | `priority_one_survives_saturation_across_chunks` in [`priority.rs`](../../firmware/obc-render/tests/cases/priority.rs), `frame_points_saturate_before_spans_and_priority_still_wins` in [`fill_edges.rs`](../../firmware/obc-render/tests/cases/fill_edges.rs), `over_capacity_feature_is_dropped_whole_with_typed_stat` in [`errors.rs`](../../firmware/obc-render/tests/cases/errors.rs) |
 | A scene is outside the trust boundary. Bad priorities, rings or coordinates never reach the painter or take a later winner's room. | [`static_scene.rs`](../../firmware/obc-render/tests/cases/static_scene.rs); `a_projection_outside_i16_is_rejected_instead_of_wrapping` in [`collect.rs`](../../firmware/obc-render/src/collect.rs) |
-| The renderer needs no OBCM bytes and no reader. | `renders_static_scene_without_reader_or_map_bytes`; `obc-reader` is only a dev-dependency |
+| The renderer needs no OBCM bytes and no reader. | `renders_static_scene_without_reader_or_map_bytes` in [`static_scene.rs`](../../firmware/obc-render/tests/cases/static_scene.rs); `obc-reader` is only a dev-dependency |
 | Each specialized fill gives the pixels of `fill_polygon`. | `packed_edge_scan_is_pixel_identical_on_pseudo_random_polygons` in [`fill.rs`](../../firmware/obc-render/src/fill.rs), `convex_quad_fill_matches_even_odd_on_pseudo_random_quads` in [`stroke.rs`](../../firmware/obc-render/src/stroke.rs) |
 | A row with too many crossings stays empty. It never fills with the wrong parity. | `fill_polygon_skips_rows_that_overflow_the_crossing_buffer` in [`fill.rs`](../../firmware/obc-render/src/fill.rs) |
 | Dashes stay at one place on the map while the camera moves. | `a_pan_does_not_slide_the_pattern_along_the_line` in [`stroke.rs`](../../firmware/obc-render/src/stroke.rs) |
@@ -117,7 +117,7 @@ Now the rider holds a button. The hold feedback, the bulge, lives on the input p
 - **One resident frame, read directly by the coprocessor.** We rejected a staging copy, because a second frame doubles the frame's RAM and the scan can read the first one.
 - **The overlay goes through the frame and comes back out.** The coprocessor reads only the frame, so the composite must be there during the scan. We rejected rendering the overlay into the map, because a clear would then need a map render.
 - **Region repaint rejects whole primitives.** `Canvas` skips a primitive that misses the clip, and the clipped framebuffer discards the rest. We rejected a pixel clip alone, because the rasterizer would still run for a primitive that lands outside.
-- **Frame and presenter contracts apart from the panel.** The traits name no rows and no widths, and the LS021 code lives beside them. The contracts carry a conformance suite that the desktop presenter and a host double run. The board's own presenter runs on hardware only.
+- **Concrete presenter contracts.** The traits take the device-64 frame, the excluded rows and a `RowWindow`, which are the calls the board makes. The conformance suite runs on a host double and on the desktop presenter. The board's own presenter runs on hardware only. We rejected generic frame and damage types, because no second panel exists.
 
 ## Words it introduces
 
@@ -135,7 +135,6 @@ Now the rider holds a button. The hold feedback, the bulge, lives on the input p
 | Device-64 | The panel's gamut of 64 colours, stored as one byte per pixel, `0b00RRGGBB`. |
 | Resident frame | The one frame in RAM. Presenters read it, and it holds the clean image when a presenter returns. |
 | Row store | The row hashes that `RowDiff` keeps from the last present. |
-| Damage | What a present must push. Each presenter has its own type: for the LS021, `RowDamage`. |
 | Bulge | The hold-gesture overlay at the screen edge. |
 | Input plane | The task that recognizes gestures while the map task renders. The [architecture guide](../content/software/architecture.md) explains the two planes. |
 | FLPR | The nRF54L coprocessor that runs the panel scan. |

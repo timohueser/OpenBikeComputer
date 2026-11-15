@@ -20,28 +20,28 @@ struct PlannerRouteOptionsTests {
         let source = OptionsSource(), (model, options) = await planned(source)
         // Your route is the plan's own, not the primary route of the options answer.
         let yours = try #require(options.yours(model))
-        #expect(yours.option.path.distance == 30_700 && options.items.map(\.name) == ["Shorter", "Via Kirchzarten"])
-        let shorter = try #require(options.items.first { $0.id == "B" })
-        #expect(PlannerRouteOptions.difference(shorter.option.path, from: yours.option.path, locale: english) == "5.5 km shorter · 237 m less climbing")
-        #expect(PlannerRouteOptions.accessibilityLabel(shorter, yours: yours, locale: english)
-                == "B, Shorter, 25.2 kilometres, 669 metres climbing, 5.5 km shorter, 237 m less climbing")
+        #expect(yours.option.path.distance == 30_700 && options.items.map(\.name) == ["Less climbing", "Via Kirchzarten"])
+        let lower = try #require(options.items.first { $0.id == "B" })
+        #expect(PlannerRouteOptions.difference(lower.option.path, from: yours.option.path, locale: english) == "5.5 km shorter · 237 m less climbing")
+        #expect(PlannerRouteOptions.accessibilityLabel(lower, yours: yours, locale: english)
+                == "B, Less climbing, 25.2 kilometres, 669 metres climbing, 5.5 km shorter, 237 m less climbing")
 
         let plan = model.exportPlan(), depth = model.undoDepth, revision = model.routingRevision
         options.select("B", model: model)
-        #expect(options.preview?.name == "Shorter" && options.letterPlaces != nil)
+        #expect(options.preview?.name == "Less climbing" && options.letterPlaces != nil)
         #expect(model.exportPlan() == plan && model.undoDepth == depth && model.routingRevision == revision && model.canSave)
         options.cancel()
         #expect(options.preview == nil && model.exportPlan() == plan)
 
         options.select("B", model: model)
         options.use(model)
-        #expect(model.preset == .shorter && model.points.count == 2 && model.undoDepth == depth + 1 && options.preview == nil)
+        #expect(model.preset == .lessClimbing && model.points.count == 2 && model.undoDepth == depth + 1 && options.preview == nil)
         // The set stays: the route that Use replaced is listed under its own name.
         #expect(options.isCurrent(model) && options.items.map(\.name) == ["Via Kirchzarten", "Balanced"])
         await model.calculateRoute()
         options.select("C", model: model)
         options.use(model)
-        #expect(model.preset == .balanced && model.undoDepth == depth + 2 && options.items.map(\.name) == ["Via Kirchzarten", "Shorter"])
+        #expect(model.preset == .balanced && model.undoDepth == depth + 2 && options.items.map(\.name) == ["Via Kirchzarten", "Less climbing"])
     }
 
     @Test func theCorridorBecomesAShapingPointAndStaleOptionsAreRefused() async throws {
@@ -62,7 +62,7 @@ struct PlannerRouteOptionsTests {
         await model.calculateRoute()
         options.select("B", model: model)
         options.use(model)
-        #expect(model.points.count == 2 && model.preset == .shorter && model.undoDepth == depth + 2)
+        #expect(model.points.count == 2 && model.preset == .lessClimbing && model.undoDepth == depth + 2)
 
         model.setLegMode(try #require(model.leg(into: model.points[1].id)), to: .straight)
         #expect(!model.offersRouteOptions)
@@ -88,7 +88,7 @@ private let start = Coordinate(latitude: 47.995, longitude: 7.85)
 private let finish = Coordinate(latitude: 47.903, longitude: 8.106)
 private let via = Coordinate(latitude: 47.962, longitude: 7.95)
 
-/// Your route is 30.7 km with 906 m of climbing. Shorter is 25.2 km with 669 m.
+/// Your route is 30.7 km with 906 m of climbing. Less climbing is 25.2 km with 669 m.
 private actor OptionsSource: PlannerDataSource {
     enum Naming { case kirchzarten, hamlet, failure, slow }
     private var naming = Naming.kirchzarten
@@ -102,10 +102,9 @@ private actor OptionsSource: PlannerDataSource {
     func options(points: [Coordinate], activity: RouteActivity, preference: RoutePreference,
                  release: PlannerRelease) async throws -> [RouteOption] {
         let mine = try await route(points: points, turnarounds: [], activity: activity, preference: preference, release: release)
-        let other: RoutePreference = preference == .balanced ? .shorter : .lessClimbing
         return [RouteOption(reason: .primary, preference: preference,
                             path: path(points, meters: mine.distance + 300, climb: mine.ascent)),
-                RouteOption(reason: preference == .balanced ? .shorter : .lessClimbing, preference: other,
+                RouteOption(reason: .lessClimbing, preference: .lessClimbing,
                             path: path([points[0], Coordinate(latitude: 47.97, longitude: 8.0), points[1]], meters: 25_200, climb: 669)),
                 RouteOption(reason: .corridor, preference: preference, via: via,
                             path: path([points[0], via, points[1]], meters: 30_100, climb: 886))]

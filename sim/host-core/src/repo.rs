@@ -109,7 +109,7 @@ pub trait RouteRepository {
     fn publish_review_route(&mut self, _bytes: &[u8]) -> Result<RoutePublication, obc_app::navigator::NavigatorError> {
         Err(obc_app::navigator::NavigatorError::Unavailable)
     }
-    fn fingerprint(&self, _id: CatalogObjectId) -> Option<obc_formats::assistant::PayloadFingerprint> {
+    fn fingerprint(&self, _id: CatalogObjectId) -> Option<obc_formats::navigator::PayloadFingerprint> {
         None
     }
     /// The current bytes of stored route `id`.
@@ -123,7 +123,7 @@ pub trait RouteRepository {
     }
     fn read_checkpoint(
         &self,
-    ) -> Result<Option<obc_formats::assistant::NavigatorCheckpoint>, obc_app::metadata::MetadataError> {
+    ) -> Result<Option<obc_formats::navigator::NavigatorCheckpoint>, obc_app::metadata::MetadataError> {
         Err(obc_app::metadata::MetadataError::Unsupported)
     }
     /// Remove only this publication. A replacement is already outside this operation's authority.

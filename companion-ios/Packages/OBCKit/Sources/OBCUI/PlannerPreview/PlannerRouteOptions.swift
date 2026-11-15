@@ -125,9 +125,7 @@ final class PlannerRouteOptions {
     static func name(_ reason: RouteOption.Reason) -> String {
         switch reason {
         case .primary: "Your route"
-        case .shorter: "Shorter"
         case .lessClimbing: "Less climbing"
-        case .smoother: "Smoother"
         case .corridor: "Other way"
         }
     }
@@ -149,7 +147,7 @@ final class PlannerRouteOptions {
         meters >= 5 ? "\(OBCFormat.shortDistance(meters: meters, locale: locale)) unknown surface" : nil
     }
 
-    /// "B, Shorter, 25.2 kilometres, 669 metres climbing, 5.5 km shorter". Your route names its preset instead.
+    /// "B, Less climbing, 25.2 kilometres, 669 metres climbing, 5.5 km shorter". Your route names its preset instead.
     static func accessibilityLabel(_ item: Item, yours: Item, locale: Locale = .current) -> String {
         let path = item.option.path
         let detail = item.id == yours.id ? PlannerPreviewPreset(item.option.preference).title

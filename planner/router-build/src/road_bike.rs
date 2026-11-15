@@ -2,16 +2,13 @@
 use crate::country::Country;
 use crate::source::{self, Oneway, Tags};
 use crate::{suitability::Suitability, traffic};
-use planner_router::{
-    cost::CostBasis,
-    model::{Road, RoadBike},
-};
+use planner_router::{cost::CostBasis, model::Road};
 
 pub fn tag<'a>(tags: &'a Tags, key: &str) -> &'a str {
     tags.get(key).unwrap_or("")
 }
 
-pub fn way(road: &Road, tags: &Tags, country: Country, variant: RoadBike, pushing: bool) -> Option<Suitability> {
+pub fn way(road: &Road, tags: &Tags, country: Country, pushing: bool) -> Option<Suitability> {
     let highway = tag(tags, "highway");
     let ferry = tag(tags, "route") == "ferry";
     if matches!(highway, "motorway" | "motorway_link" | "construction" | "proposed" | "abandoned")
@@ -161,17 +158,7 @@ pub fn way(road: &Road, tags: &Tags, country: Country, variant: RoadBike, pushin
         factor *= 1.0 + 2.0 * stress;
     }
     Some(Suitability {
-        basis: CostBasis {
-            factor,
-            turn: if tag(tags, "junction") == "roundabout" {
-                0.0
-            } else if variant == RoadBike::Shorter {
-                30.0
-            } else {
-                90.0
-            },
-            ferry,
-        },
+        basis: CostBasis { factor, turn: if tag(tags, "junction") == "roundabout" { 0.0 } else { 90.0 }, ferry },
         minimum_factor,
     })
 }
@@ -182,8 +169,8 @@ mod tests {
     use planner_router::model::{Point, Surface, BIKE, FOOT, PUSH};
 
     /// Tests use the worldwide rules.
-    fn way(road: &Road, tags: &Tags, variant: RoadBike, pushing: bool) -> Option<CostBasis> {
-        super::way(road, tags, Country::default(), variant, pushing).map(|suitability| suitability.basis)
+    fn way(road: &Road, tags: &Tags, pushing: bool) -> Option<CostBasis> {
+        super::way(road, tags, Country::default(), pushing).map(|suitability| suitability.basis)
     }
 
     fn road() -> Road {
@@ -223,57 +210,47 @@ mod tests {
             ("path", 5.0),
         ] {
             let source = tags(&[("highway", highway)]);
-            let found = way(&road(), &source, RoadBike::Balanced, false).unwrap().factor;
+            let found = way(&road(), &source, false).unwrap().factor;
             assert!((found - factor).abs() < 1e-9, "{highway}: {found}");
         }
         for (tracktype, factor) in
             [("grade1", 1.2), ("grade2", 3.0), ("grade3", 10.0), ("grade4", 20.0), ("grade5", 30.0)]
         {
             let source = tags(&[("highway", "track"), ("tracktype", tracktype)]);
-            assert_eq!(way(&road(), &source, RoadBike::Balanced, false).unwrap().factor, factor);
+            assert_eq!(way(&road(), &source, false).unwrap().factor, factor);
         }
-        for variant in [RoadBike::Balanced, RoadBike::Shorter, RoadBike::LessClimbing] {
-            let unknown = tags(&[("highway", "residential")]);
-            let asphalt = tags(&[("highway", "residential"), ("surface", "asphalt")]);
-            assert_eq!(
-                way(&road(), &unknown, variant, false).unwrap().factor,
-                way(&road(), &asphalt, variant, false).unwrap().factor
-            );
-            let unrecognized = tags(&[("highway", "residential"), ("surface", "unrecognized")]);
-            assert_eq!(
-                way(&road(), &unknown, variant, false).unwrap().factor,
-                way(&road(), &unrecognized, variant, false).unwrap().factor
-            );
-            let gravel = tags(&[("highway", "tertiary"), ("surface", "gravel")]);
-            assert!(way(&road(), &gravel, variant, false).unwrap().factor >= 10.0);
-        }
+        let unknown = tags(&[("highway", "residential")]);
+        let asphalt = tags(&[("highway", "residential"), ("surface", "asphalt")]);
+        assert_eq!(way(&road(), &unknown, false).unwrap().factor, way(&road(), &asphalt, false).unwrap().factor);
+        let unrecognized = tags(&[("highway", "residential"), ("surface", "unrecognized")]);
+        assert_eq!(way(&road(), &unknown, false).unwrap().factor, way(&road(), &unrecognized, false).unwrap().factor);
+        let gravel = tags(&[("highway", "tertiary"), ("surface", "gravel")]);
+        assert!(way(&road(), &gravel, false).unwrap().factor >= 10.0);
         let sett = tags(&[("highway", "residential"), ("surface", "sett")]);
-        assert!((way(&road(), &sett, RoadBike::Balanced, false).unwrap().factor - 1.8).abs() < 1e-9);
-        assert!(way(&road(), &tags(&[("highway", "path"), ("smoothness", "impassable")]), RoadBike::Balanced, false)
-            .is_none());
+        assert!((way(&road(), &sett, false).unwrap().factor - 1.8).abs() < 1e-9);
+        assert!(way(&road(), &tags(&[("highway", "path"), ("smoothness", "impassable")]), false).is_none());
     }
 
     #[test]
     fn pushing_costs_a_fixed_charge_and_more_against_a_one_way() {
         let primary = tags(&[("highway", "primary"), ("oneway", "yes")]);
-        assert_eq!(way(&road(), &primary, RoadBike::Balanced, true).unwrap().factor, 6.0);
+        assert_eq!(way(&road(), &primary, true).unwrap().factor, 6.0);
         let reverse = Road { reversed: true, ..road() };
-        assert_eq!(way(&reverse, &primary, RoadBike::Balanced, true).unwrap().factor, 51.0);
-        assert_eq!(way(&road(), &primary, RoadBike::Shorter, false).unwrap().turn, 30.0);
+        assert_eq!(way(&reverse, &primary, true).unwrap().factor, 51.0);
     }
 
     #[test]
     fn a_cycle_track_beats_the_exposed_road_without_erasing_roughness() {
         // A later pair replaces the value of its key.
         let mut primary = vec![("highway", "primary"), ("maxspeed", "80"), ("surface", "asphalt")];
-        let exposed = way(&road(), &tags(&primary), RoadBike::Balanced, false).unwrap().factor;
+        let exposed = way(&road(), &tags(&primary), false).unwrap().factor;
         let cycleway = tags(&[("highway", "cycleway"), ("surface", "asphalt")]);
-        let cycleway = way(&road(), &cycleway, RoadBike::Balanced, false).unwrap().factor;
+        let cycleway = way(&road(), &cycleway, false).unwrap().factor;
         primary.push(("cycleway:right", "track"));
-        let protected = way(&road(), &tags(&primary), RoadBike::Balanced, false).unwrap().factor;
+        let protected = way(&road(), &tags(&primary), false).unwrap().factor;
         assert!(cycleway < protected && protected < exposed);
         primary.push(("surface", "gravel"));
-        let rough = super::way(&road(), &tags(&primary), Country::default(), RoadBike::Balanced, false).unwrap();
+        let rough = super::way(&road(), &tags(&primary), Country::default(), false).unwrap();
         assert!(rough.minimum_factor >= 10.0 && rough.basis.factor >= rough.minimum_factor);
     }
 }

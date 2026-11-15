@@ -3703,6 +3703,7 @@ dependencies = [
  "js-sys",
  "obc-bake",
  "obc-draw",
+ "obc-fit",
  "obc-flat-device",
  "obc-formats",
  "obc-host-core",
@@ -3852,6 +3853,10 @@ dependencies = [
  "obc-formats",
  "obcm-testkit",
 ]
+
+[[package]]
+name = "obc-fit"
+version = "0.1.0"
 
 [[package]]
 name = "obc-fixtures"
@@ -4157,6 +4162,7 @@ dependencies = [
  "obc-ports",
  "obc-reader",
  "obcm-testkit",
+ "serde_json",
 ]
 
 [[package]]
@@ -4258,7 +4264,6 @@ dependencies = [
  "nusb",
  "obc-flat-device",
  "obc-link",
- "serde",
  "tokio",
 ]
 
@@ -4954,6 +4959,7 @@ dependencies = [
  "osmpbfreader",
  "planner-router",
  "postcard",
+ "rayon",
  "rusqlite",
  "serde_json",
  "sha2 0.10.9",

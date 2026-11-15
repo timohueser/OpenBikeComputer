@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 
 import { mount, tick, unmount } from 'svelte';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { addRestDay, allStay, planView, type Place } from '../../lib/planner/editor';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { addRestDay, allStay, planView, type Place, type Trip } from '../../lib/planner/editor';
 import { testLine, testTrip } from '../../../test-support/planner/trip';
 import type { NightChoices } from '../../lib/planner/night-stops.svelte';
 import { proposal, type Stop } from '../../lib/planner/stops';
@@ -12,8 +12,11 @@ import MapCallout from './MapCallout.svelte';
 import VersionsMenu from './VersionsMenu.svelte';
 import Select from './PlannerSelect.svelte';
 import RouteList from './RouteList.svelte';
+import RouteStats from './RouteStats.svelte';
+import TripBar from './TripBar.svelte';
 import type { RoutingLine } from '../../lib/planner/routing';
 import { newVersion } from '../../lib/planner/versions';
+import { settings } from '../../lib/settings/settings.svelte';
 
 const places: Place[] = [{id:'test-camp',kind:'place',label:'Test camp',category:'camp',description:'',coordinate:[7.5,47.5]}];
 
@@ -243,6 +246,57 @@ describe('planner day views', () => {
         await tick();
         expect(axis()).toEqual(['0 km', '36 km', '72 km', '108 km', '144 km']);
         expect(document.querySelector('.distance')?.textContent).toBe('144.0 km');
+    });
+
+    it('writes miles and feet for a rider on miles, and a missing ascent as a dash', async () => {
+        settings.units = 'mi';
+        onTestFinished(() => { settings.units = 'km'; });
+        const props = itineraryProps(null);
+        mounted.push(mount(RouteStats, { target: document.body, props: { distance: 48, ascent: 1000, descent: null, hours: 2 } }));
+        mounted.push(mount(Itinerary, { target: document.body, props: { ...props, line: { ...props.line, unknownElevationKm: 1 } } }));
+        mounted.push(mount(Profile, {
+            target: document.body,
+            props: {
+                total: 144, days: planView(testTrip(), testLine(testTrip())).days, dayLabels: { 1: 1, 2: 3, 3: 4 },
+                activeNight: 2, band: null, window: { from: 0, to: 1 }, onToggle: vi.fn(), onNight: vi.fn(), onDayEndDrag: vi.fn(), onHover: vi.fn(),
+            },
+        }));
+        await tick();
+
+        expect([...document.querySelectorAll('.stats dd')].map(figure => figure.textContent).slice(0, 3)).toEqual(['29.8mi', '3281ft', '—ft']);
+        expect(document.querySelector('.title small')?.textContent).toContain('↑ — ft · ↓ — ft');
+        expect([...document.querySelectorAll('.axis span')].map(tick => tick.textContent)).toEqual(['0 mi', '22 mi', '45 mi', '67 mi', '89 mi']);
+        expect([...document.querySelectorAll('.height')].map(label => label.textContent)).toEqual(['100 ft', '0 ft']);
+    });
+});
+
+describe('trip pace', () => {
+    it('offers the pace, and a pick changes the riding time of the days', async () => {
+        vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
+        const props = itineraryProps(null);
+        let trip = $state.raw<Trip>(props.trip);
+        const onChange = vi.fn((change: Partial<Trip>) => { trip = { ...trip, ...change }; });
+        mounted.push(mount(TripBar, { target: document.body, props: { get trip() { return trip; }, line: props.line, name: '', versions: [], ready: true,
+            canUndo: false, canRedo: false, draftSavedAt: null, draftError: '', onChange, onUndo: vi.fn(), onRedo: vi.fn(),
+            onOpen: vi.fn(), onSaveNew: vi.fn(), onVersions: vi.fn(), onCompare: vi.fn(), onNew: vi.fn(), onLibrary: vi.fn() } }));
+        mounted.push(mount(Itinerary, { target: document.body, props: { ...props, get trip() { return trip; },
+            get itinerary() { return planView(trip, props.line).itinerary; }, get days() { return planView(trip, props.line).days; } } }));
+        await tick();
+        const firstDay = () => document.querySelector('[data-day="1"]')!.textContent;
+        const moderate = firstDay();
+        button('Pace').click();
+        await tick();
+        [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(option => option.textContent?.includes('Fast'))!.click();
+        await tick();
+        expect(onChange).toHaveBeenCalledExactlyOnceWith({ pace: 'fast' }, 'Pace changed');
+        expect(firstDay()).not.toBe(moderate);
+        const fast = firstDay();
+        onChange({ bike: 'hiking' });
+        await tick();
+        expect(button('Pace').textContent).toContain('Fast');
+        onChange({ bike: 'road' });
+        await tick();
+        expect(firstDay()).not.toBe(fast);
     });
 });
 

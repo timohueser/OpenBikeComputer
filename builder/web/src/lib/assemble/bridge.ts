@@ -36,10 +36,13 @@ export class AssembleError extends Error {
 }
 
 /**
- * Which stage of the assembly is running. Mirrors `Phase::as_str` in
+ * The stages of the assembly, in the order they run. Mirrors `Phase::as_str` in
  * `builder/wasm/src/driver.rs`. `nav`, `write` and `verify` are the long phases.
  */
-export type AssemblePhase = "open" | "poi" | "nav" | "plan" | "write" | "verify" | "done";
+export const ASSEMBLE_PHASES = ["open", "poi", "nav", "plan", "write", "verify", "done"] as const;
+
+/** Which stage of the assembly is running. */
+export type AssemblePhase = (typeof ASSEMBLE_PHASES)[number];
 
 /**
  * Progress sink. `fraction` is overall completion (0..1), not progress within `phase`. Return
