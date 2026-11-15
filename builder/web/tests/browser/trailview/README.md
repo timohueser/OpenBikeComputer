@@ -57,3 +57,46 @@ For a new season, change `date`, then do steps 4 to 7.
 - `upload` and `switch` call `obc data r2`, which needs `OBC_R2_*`. An image key is never replaced,
   so a changed image gives a new set id. `switch` checks the images in the bucket, because the
   public host keeps a deleted image in its cache for a year.
+
+# Route pictures
+
+`route-pictures.mjs` renders the cover of each route of the route catalog with the TrailView still
+function, uploads the covers and the set that names them, and makes a set the live set.
+[specs/route-pictures.md](../../../../../specs/route-pictures.md) has the keys, the files and the
+key of a cover. Run the commands from `builder/web/tests/browser`.
+
+## Steps
+
+1. Build the page against production: `npm run build:trailview --prefix ../..`.
+2. Measure a sample: `node trailview/route-pictures.mjs render --gpu --sample 30`. It prints the
+   seconds and the bytes of each cover, and the time, the size and the count of files of all routes.
+3. Render all routes in `.artifacts/route-pictures/`: `node trailview/route-pictures.mjs render --gpu`.
+   It writes `covers/<id>/<key>.webp` and `.json`, or `<key>.none` for a route with no view, and at
+   the end the set under `sets/<set>/`.
+4. Upload: `node trailview/route-pictures.mjs upload`. It prints the set id.
+5. Approve the set id, then make the set live: `node trailview/route-pictures.mjs switch SET`.
+   `curl -sI https://maps.openbikecomputer.com/route-pictures/manifest.json` answers 200.
+   `switch` with the id of the previous set goes back.
+
+For a new planner release, do steps 3 to 5: only the routes whose line changed render.
+
+## Options of render
+
+| Option | Effect |
+| --- | --- |
+| `--catalog FILE` | The routes of a region file of the route catalog, not of the production release |
+| `--sample N` | Only N routes, spread over the catalog |
+| `--only ID,ID` | Only these relation IDs |
+| `--out DIR` | Another folder than `.artifacts/route-pictures` |
+| `--gpu` | The GPU of the machine. Without it, SwiftShader draws for minutes. |
+| `--fixture` | The tiles of the test fixture: build the page with `npm run pretest:trailview` |
+
+## Pitfalls
+
+- `render` skips a route whose cover or `.none` mark exists for its key. A change of the light or
+  of the camera rule in the script changes `look` and so each key: all routes render again.
+- `upload` takes the routes of the active production release, and refuses while one of them has no
+  cover and no `.none` mark. It lists the covers in the bucket one time and sends only the missing
+  ones, 16 at a time. After a 429 of the host it waits one minute, at most 5 times for a file.
+- `upload` and `switch` call `obc data r2`, which needs `OBC_R2_*`. `switch` checks the covers in
+  the bucket, because the public host keeps a deleted file in its cache for a year.
