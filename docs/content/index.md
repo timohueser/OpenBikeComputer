@@ -12,7 +12,7 @@ offline maps, route navigation, and ride recording.
 ## Start here
 
 - [Try the device](../#demo): explore a ride in the browser demo.
-- [Prepare a map](../builder/): choose coverage and download a map.
+- [Prepare a map](../plan/#/device): choose coverage and download a map.
 - [Work on the software](src:README.md): find setup instructions and the source code.
 
 ## How the system fits together
