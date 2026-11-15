@@ -1,6 +1,6 @@
 <script lang="ts">
     import { untrack } from 'svelte';
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import Segmented from '../../lib/ui/Segmented.svelte';
     import PlannerSelect from './PlannerSelect.svelte';
     import RouteStats from './RouteStats.svelte';

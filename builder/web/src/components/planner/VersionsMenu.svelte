@@ -1,6 +1,6 @@
 <script lang="ts">
     import { tick } from 'svelte';
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import { savedWhen, versionSummary, versionTitle, type Version } from '../../lib/planner/versions';
     import type { Trip } from '../../lib/planner/editor';
     import type { RoutingLine } from '../../lib/planner/routing';

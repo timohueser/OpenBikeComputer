@@ -1,7 +1,7 @@
 <script lang="ts">
     import type { Snippet } from 'svelte';
     import type { Attachment } from 'svelte/attachments';
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import RouteStats from './RouteStats.svelte';
     import { dayColor } from '../../lib/planner/day-colors';
     import { kindLabel, sleepIcon } from '../../lib/planner/search/presentation';

@@ -11,7 +11,7 @@
     import BakeContents from "./BakeContents.svelte";
     import BakeProgress from "./BakeProgress.svelte";
     import BakeReview from "./BakeReview.svelte";
-    import Icon from "../planner/PlannerIcon.svelte";
+    import Icon from "../../lib/ui/Icon.svelte";
     import Failure from "./Failure.svelte";
 
     // A bake in four steps: the area, what it contains, the review of its plan, and the bake. The

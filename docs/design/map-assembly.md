@@ -23,6 +23,7 @@ depends_on:
   - map-reading
   - navigation
   - rendering-display
+  - web-foundations
 test_depends_on:
   - content
 status: draft

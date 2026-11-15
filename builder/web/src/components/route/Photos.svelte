@@ -2,7 +2,7 @@
     import { untrack } from 'svelte';
     import Window from '../../lib/ui/Window.svelte';
     import type { Library } from '../../lib/library/store';
-    import Icon from '../planner/PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
 
     /** The window of the photos of a ride: one photo large, with the list of all photos beside it, so a rider with many
      * photos goes to one with one click. The arrows and the arrow keys go to the next and the last photo. Under the

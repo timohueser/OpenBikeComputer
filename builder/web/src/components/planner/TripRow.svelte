@@ -1,5 +1,5 @@
 <script lang="ts">
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import { allStay, fewestDays, maxRidingDays, setDays, type Stay, type Trip } from '../../lib/planner/editor';
     import { addDays, weekdayLabel } from '../../lib/planner/layers/data-layer';
     import { stayOptions as kinds } from '../../lib/planner/search/presentation';

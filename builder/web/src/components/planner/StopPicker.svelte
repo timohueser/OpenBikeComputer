@@ -1,5 +1,5 @@
 <script lang="ts">
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import StopCard from './StopCard.svelte';
     import { dayColor } from '../../lib/planner/day-colors';
     import { placeCategories } from '../../lib/planner/poi-kinds';

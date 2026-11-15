@@ -1,6 +1,6 @@
 <script lang="ts">
     import { onMount } from 'svelte';
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import TrailViewConditions from './TrailViewConditions.svelte';
     import TrailViewMiniMap from './TrailViewMiniMap.svelte';
     import TrailViewProfile from './TrailViewProfile.svelte';
