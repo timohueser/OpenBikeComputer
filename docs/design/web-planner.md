@@ -20,6 +20,7 @@ owns:
   - builder/web/tests/browser/planner/**
   - builder/web/tests/browser/playwright.planner.config.js
   - builder/web/tests/browser/serve.py
+  - builder/web/tests/browser/package*.json
 depends_on:
   - device-link
   - firmware-update

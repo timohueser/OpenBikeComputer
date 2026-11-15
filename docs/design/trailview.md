@@ -11,6 +11,10 @@ owns:
   - builder/web/src/plan-timing.ts
   - builder/web/plan-timing.html
   - builder/web/scripts/**
+  - builder/web/vite/stamp-bundle.ts
+  - builder/web/vite/stamp-version.d.ts
+  - builder/web/vite/bundle-version.ts
+  - builder/web/vite/versions.d.ts
   - builder/web/test-support/trailview/**
   - builder/web/tests/browser/trailview/**
   - builder/web/tests/browser/playwright.trailview.config.js

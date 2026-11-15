@@ -7,6 +7,8 @@ owns:
   - builder/web/src/data.ts
   - builder/web/src/lib/data/**
   - builder/web/src/components/data/**
+  - builder/web/src/styles/data.css
+  - builder/web/test-support/data/**
   - builder/web/tests/browser/data/**
   - builder/web/tests/browser/playwright.data.config.js
 depends_on:

@@ -841,7 +841,7 @@
     "repository-tooling"
    ],
    "violations": 3,
-   "lines": 106147,
+   "lines": 106279,
    "problems": [
     {
      "rule": "cycle",
@@ -888,12 +888,12 @@
    "name": "web-foundations",
    "kind": "system",
    "area": "Apps",
-   "purpose": "Holds the small parts that the web systems share: the loader of the WebAssembly core, the GPX and FIT files, the theme, the page addresses, the verified download and the build plugins.",
+   "purpose": "Holds the small parts that the web systems share: the loader of the WebAssembly core, the GPX and FIT files, the theme, the page addresses, the verified download, the colour tokens and the licence notices of the build.",
    "status": "draft",
    "depends_on": [],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 1289,
+   "lines": 1157,
    "problems": []
   },
   {
@@ -916,7 +916,7 @@
     "repository-tooling"
    ],
    "violations": 0,
-   "lines": 16979,
+   "lines": 17113,
    "problems": []
   },
   {
@@ -1698,7 +1698,7 @@
   {
    "from": "trailview",
    "to": "web-foundations",
-   "test": false,
+   "test": true,
    "undeclared": false
   },
   {

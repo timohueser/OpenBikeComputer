@@ -83,6 +83,7 @@ flowchart LR
   s_source_preparation --> s_data_engine
   s_source_preparation ==> s_map_reading
   s_trailview ==> s_route_planning
+  s_trailview -.-> s_web_foundations
 ```
 
 ## Systems
@@ -96,7 +97,7 @@ flowchart LR
 | [map-assembly](map-assembly.md) | Assembles a device map from published cells. | draft | card-storage, device-link, device-map-baking, foundations, host-runtime, map-reading, map-style, navigation, rendering-display, route-planning, web-foundations | map-style, obc-data, route-planning, web-planner |
 | [map-style](map-style.md) | Defines how map features look on the device. | draft | map-assembly, web-foundations | map-assembly, web-planner |
 | [route-planning](route-planning.md) | Lets a rider plan a route on a map, in the browser or on the phone. | draft | library, map-assembly, trailview, web-foundations | map-assembly, obc-data, trailview, trailview-page, web-planner |
-| [web-foundations](web-foundations.md) | Holds the small parts that the web systems share: the loader of the WebAssembly core, the GPX and FIT files, the theme, the page addresses, the verified download and the build plugins. | draft |  | device-link, map-assembly, map-style, obc-data, route-planning, search, trailview, web-planner |
+| [web-foundations](web-foundations.md) | Holds the small parts that the web systems share: the loader of the WebAssembly core, the GPX and FIT files, the theme, the page addresses, the verified download, the colour tokens and the licence notices of the build. | draft |  | device-link, map-assembly, map-style, obc-data, route-planning, search, web-planner |
 
 ### Data and services
 
@@ -110,7 +111,7 @@ flowchart LR
 | [routing](routing.md) | Finds a bike route between points. | draft | data-engine, source-preparation | obc-data |
 | [search](search.md) | Finds places by name. | draft | content, data-engine, web-foundations | obc-data |
 | [source-preparation](source-preparation.md) | Turns raw external datasets into the prepared sources that products build from. | draft | data-engine, foundations, map-reading | device-map-baking, obc-data, routing |
-| [trailview](trailview.md) | Renders a region as an explorable 3-D landscape in the browser. | draft | data-engine, route-planning, web-foundations | obc-data, route-planning, trailview-page, web-planner |
+| [trailview](trailview.md) | Renders a region as an explorable 3-D landscape in the browser. | draft | data-engine, route-planning | obc-data, route-planning, trailview-page, web-planner |
 
 ### Device
 
