@@ -84,15 +84,17 @@ For a new planner release, do steps 3 to 5: only the routes whose line changed r
 
 | Option | Effect |
 | --- | --- |
-| `--catalog FILE` | The routes of a region file of the route catalog, not of the production release |
 | `--sample N` | Only N routes, spread over the catalog |
 | `--only ID,ID` | Only these relation IDs |
 | `--out DIR` | Another folder than `.artifacts/route-pictures` |
 | `--gpu` | The GPU of the machine. Without it, SwiftShader draws for minutes. |
-| `--fixture` | The tiles of the test fixture: build the page with `npm run pretest:trailview` |
+| `--fixture` | The routes of `fixture/routes.json` and the tiles of the test fixture, for the test: build the page with `npm run pretest:trailview` |
 
 ## Pitfalls
 
+- A route that fails gets no file. `render` goes on with the next route, names each failed route
+  with its reason at the end, and exits with 1. The next run tries it again. When a route fails on
+  each run, leave it out of the set: `upload --without ID,ID`. It then has no cover in that set.
 - `render` skips a route whose cover or `.none` mark exists for its key. A change of the light or
   of the camera rule in the script changes `look` and so each key: all routes render again.
 - `upload` takes the routes of the active production release, and refuses while one of them has no

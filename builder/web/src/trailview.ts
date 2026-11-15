@@ -1,3 +1,4 @@
+import { pack } from './lib/covers/line';
 import { plannerConfig, type PlannerConfig } from './lib/planner/config';
 import { activeRelease, pageRelease } from './lib/planner/release';
 import { TrailView } from './lib/trailview/engine';
@@ -58,6 +59,7 @@ async function stills(): Promise<void> {
             still: (job: StillJob, options?: Parameters<typeof still>[3]) => still(gpu, release, job, options),
             coverView: (line: [number, number][], when: Parameters<typeof coverView>[2]) => coverView(line, release, when),
             canRenderStills,
+            pack,
         },
     });
 }

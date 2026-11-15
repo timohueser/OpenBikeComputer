@@ -5,12 +5,12 @@ import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { expect, test } from '@playwright/test';
 import { CATALOG, HOST } from './stills.mjs';
-import { LOOK, gridCells, keyOf, switchTo, upload } from './route-pictures.mjs';
+import { FIXTURE_ROUTES, LOOK, gridCells, keyOf, patiently, pointsOf, sampleOf, switchTo, upload } from './route-pictures.mjs';
+import { pack } from '../../../src/lib/covers/line.ts';
 
 const SCRIPT = new URL('./route-pictures.mjs', import.meta.url).pathname;
-const ROUTES = new URL('./fixture/routes.json', import.meta.url).pathname;
 const CONFIG = JSON.parse(readFileSync(new URL('./fixture/config.json', import.meta.url), 'utf8'));
-const [VALLEY] = JSON.parse(readFileSync(ROUTES, 'utf8')).routes;
+const [VALLEY] = JSON.parse(readFileSync(FIXTURE_ROUTES, 'utf8')).routes;
 const NO_VIEW = { ...VALLEY, id: 1002, cells: ['9-268-180'], line_udeg: [8450000, 46800000, 1000, 0] };
 const LONG = { id: 1003, kind: 'hiking', name: 'Long', cells: ['9-267-180'], stages: [1001] };
 const RELEASE = { id: 'release-1', bounds: CONFIG.bounds, routes: 'https://tiles.test/releases/release-1/routes/tiles/{cell}.json' };
@@ -26,15 +26,22 @@ function rendered(out) {
     writeFileSync(none, '');
 }
 
-/** A fake of `obc data r2` (list, get, put) that keeps each put, and of the hosts: the catalogue, the cell files of RELEASE and what was put. */
+/**
+ * A fake of `obc data r2` (list, get, put) and of the hosts: the catalogue, the cell files of RELEASE
+ * and what was put. It refuses a key or folder with an empty part, as `check_key` does, and keeps each
+ * put when it ends. A cell file takes longer to put than another file.
+ */
 function bucket() {
     const puts = [], objects = new Map();
-    const r2 = ([action, ...args]) => {
-        if (action === 'list') return JSON.stringify({ objects: [...objects.keys()].filter(key => key.startsWith(args.at(-1))).map(key => ({ key })) });
-        if (action === 'get') return writeFileSync(args[1], objects.get(args[0]));
-        const [file, key] = args.slice(-2);
+    const r2 = async ([action, ...args]) => {
+        const key = action === 'put' ? args.at(-1) : action === 'get' ? args[0] : args.at(-1);
+        if (key.split('/').some(part => !part)) throw new Error(`${key} does not name an object or folder inside the bucket`);
+        if (action === 'list') return JSON.stringify({ objects: [...objects.keys()].filter(name => name.startsWith(`${key}/`)).map(name => ({ key: name })) });
+        if (action === 'get') return writeFileSync(args[1], objects.get(key));
+        const body = readFileSync(args.at(-2), 'utf8');
+        await new Promise(resolve => setTimeout(resolve, key.includes('/cells/') ? 20 : 0));
         puts.push({ key, args: [action, ...args.slice(0, -2)] });
-        objects.set(key, readFileSync(file, 'utf8'));
+        objects.set(key, body);
     };
     const fetch = async url => {
         const cell = /routes\/tiles\/(.+)\.json$/.exec(url)?.[1];
@@ -48,17 +55,52 @@ function bucket() {
 
 test('the grid cells of the fixture are the zoom 9 cells that its bounds overlap', () => {
     expect(gridCells(CONFIG.bounds)).toEqual(['9-267-180', '9-268-180']);
+    // Bounds on the edges of one cell, a little off in the last bits as from another builder.
+    const latitude = row => Math.atan(Math.sinh(Math.PI * (1 - 2 * row / 512))) * 180 / Math.PI;
+    expect(gridCells([267 / 512 * 360 - 180, latitude(181) * (1 - 1e-15), 268 / 512 * 360 - 180, latitude(180) * (1 + 1e-15)])).toEqual(['9-267-180']);
+});
+
+test('a sample spreads over the routes, and takes each route when it asks for more', () => {
+    const records = Array.from({ length: 59 }, (_, i) => i);
+    expect(sampleOf(records, 30)).toEqual(Array.from({ length: 30 }, (_, i) => Math.floor(i * 59 / 30)));
+    expect(sampleOf(records, 30).at(-1)).toBe(57);
+    expect(sampleOf(records, 80)).toEqual(records);
+});
+
+test('after a 429 of the host a request waits and tries again, 5 times at most', async () => {
+    const waits = [], busy = Object.assign(new Error('busy'), { stderr: 'HTTP 429 Too Many Requests' });
+    let calls = 0;
+    expect(await patiently('key', async () => {
+        if (++calls < 3) throw busy;
+        return 'sent';
+    }, async ms => waits.push(ms))).toBe('sent');
+    expect(waits).toEqual([60_000, 60_000]);
+    calls = 0;
+    await expect(patiently('key', async () => { calls++; throw busy; }, async () => {})).rejects.toThrow('busy');
+    expect(calls).toBe(6);
+    await expect(patiently('key', async () => { calls++; throw new Error('denied'); }, async () => {})).rejects.toThrow('denied');
+});
+
+test('the points file keeps the eye code of pack, which the spec states, and has no place where the eye code is 0', () => {
+    const distance = Float32Array.of(5, 10, 1000, 1e9, NaN);
+    const packed = pack({ x: Float32Array.of(1.04, -20.26, 970, 3, NaN), y: Float32Array.of(2, 3, 4, 5, NaN), distance, visible: Uint8Array.of(1, 0, 1, 0, 0) });
+    const code = d => Math.min(127, 1 + Math.round(8 * Math.log2(Math.max(d, 10) / 10)));
+    expect(Array.from(packed.eye)).toEqual([code(5) | 128, code(10), code(1000) | 128, 127, 0]);
+    const points = pointsOf({ x: Array.from(packed.x), y: Array.from(packed.y), eye: Array.from(packed.eye) }, ['terrain']);
+    expect(points).toEqual({ x: [1, -20.3, 970, 3, null], y: [2, 3, 4, 5, null], eye: Array.from(packed.eye), credits: ['terrain'] });
 });
 
 test('upload refuses a route with no cover and no mark, else sends the covers that the bucket lacks and then the set; switch makes it live', async () => {
     const out = test.info().outputPath('out'), fake = bucket();
     await expect(upload({ out, ...fake })).rejects.toThrow(`release ${RELEASE.id} have no cover and no mark of no view: 1001, 1002.`);
+    await expect(upload({ out, without: [1002], ...fake })).rejects.toThrow('no mark of no view: 1001.');
     expect(fake.puts).toEqual([]);
 
     rendered(out);
     const cover = `route-pictures/covers/1001/${keyOf(VALLEY)}`;
     fake.objects.set(`${cover}.json`, 'held');
     const set = await upload({ out, ...fake });
+    // The manifest goes last, after the slower cell file.
     expect(fake.puts.map(({ key }) => key)).toEqual([`${cover}.webp`, `route-pictures/sets/${set}/cells/9-267-180.json`, `route-pictures/sets/${set}/manifest.json`]);
     expect(fake.puts.every(({ args }) => args.includes('--immutable') && args.includes('public, max-age=31536000, immutable'))).toBe(true);
     expect(JSON.parse(fake.objects.get(`route-pictures/sets/${set}/cells/9-267-180.json`))).toEqual({ format: 1, routes: { 1001: keyOf(VALLEY) } });
@@ -75,7 +117,7 @@ test('upload refuses a route with no cover and no mark, else sends the covers th
 
 test('render --fixture writes the cover of a route, its points, the cell file and the manifest, and a second run renders nothing', { tag: '@gpu' }, async () => {
     const out = test.info().outputPath('render');
-    const run = () => promisify(execFile)(process.execPath, [SCRIPT, 'render', '--fixture', '--gpu', '--catalog', ROUTES, '--out', out]);
+    const run = () => promisify(execFile)(process.execPath, [SCRIPT, 'render', '--fixture', '--gpu', '--out', out]);
     const first = await run().catch(error => error);
     test.skip(/no GPU for stills/.test(first.stderr), 'This browser renders stills in software only.');
     expect(first.code, first.stderr).toBeUndefined();

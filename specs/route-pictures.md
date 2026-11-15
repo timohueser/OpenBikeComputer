@@ -9,7 +9,8 @@ key of a cover, and how a reader finds the cover of a route record.
 - Writers: `route-pictures.mjs` (`builder/web/tests/browser/trailview/`).
 - Readers: the pages that list the signed routes of a region.
 - Code authority: `builder/web/tests/browser/trailview/route-pictures.mjs` (the size, the date and
-  the time of the light, the version of the camera rule).
+  the time of the light, the version of the camera rule), `builder/web/src/lib/covers/line.ts`
+  (`pack`, the code of `eye`).
 - Related: [route-catalog.md](route-catalog.md) (the records and their cells),
   [planner-release.md](planner-release.md) (the release and its credits),
   [home-views.md](home-views.md) (the same bucket and host).
@@ -73,8 +74,8 @@ The points file is a UTF-8 JSON object with one entry in `x`, `y` and `eye` for 
 
 | Field | Value |
 | --- | --- |
-| `x`, `y` | The place of the vertex in the image in pixels, with one decimal; `null` for a vertex with no place (behind the eye) |
-| `eye` | The distance from the eye and the visibility, as `CoverPoints.eye` of `pack` in `builder/web/src/lib/covers/line.ts`; `0` for a vertex with no place |
+| `x`, `y` | The place of the vertex in pixels of the image, with one decimal. A place can be outside the image; the reader clips the line itself. `null` for a vertex with no place: it is behind the eye, or TrailView has no terrain data there. |
+| `eye` | An integer from 0 to 255. `0`: the vertex has no place. Else the low 7 bits are a code `c` from 1 to 127 of the distance from the eye, `min(127, 1 + round(8 · log2(max(d, 10) / 10)))` for `d` metres, so the distance is about `10 · 2^((c − 1) / 8)` metres. Bit 7 (`128`) is set when the vertex is visible: inside the image, and not hidden by the terrain. |
 | `credits` | Array of strings: the credits of the image |
 
 ## 5. Reader
