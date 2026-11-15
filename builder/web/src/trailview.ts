@@ -56,7 +56,7 @@ async function stills(): Promise<void> {
             release: release.id,
             view: (search: string) => parseView(search, defaultView(release.bounds)),
             still: (job: StillJob, options?: Parameters<typeof still>[3]) => still(gpu, release, job, options),
-            coverView: (line: [number, number][], when: Parameters<typeof coverView>[2]) => coverView(line, release, when),
+            coverView: (line: [number, number][], when: Parameters<typeof coverView>[2]) => coverView([line], release, when),
             canRenderStills,
         },
     });
