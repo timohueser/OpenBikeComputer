@@ -223,6 +223,26 @@ impl Drop for File {
     }
 }
 
+/// A new folder of the bake in the work folder, removed with its content when dropped, so that
+/// an error or a panic leaves nothing behind.
+pub struct Folder(PathBuf);
+
+impl Folder {
+    pub fn create() -> std::io::Result<Self> {
+        new_folder(&base()).map(Self)
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for Folder {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

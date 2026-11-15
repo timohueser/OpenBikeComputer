@@ -218,18 +218,19 @@ time_zone = "Europe/Berlin"
         built.iter().find(|built| built.receipt.step == "planner/osm/bounds").unwrap().receipt.files[0].sha256.clone();
 
     let routing = &built.iter().find(|built| built.receipt.step == "planner/routing").unwrap().receipt;
-    let package: BTreeMap<String, PathBuf> = routing
-        .files
-        .iter()
-        .filter_map(|file| Some((file.path.strip_prefix("routing/")?.to_string(), store.object(&file.sha256))))
-        .collect();
-    let dir = temp.0.join("routing");
-    obc_data::engine::view(&package, &dir).unwrap();
-    planner_router::open(&dir).unwrap().verify().unwrap();
     let paths: Vec<&str> = routing.files.iter().map(|file| file.path.as_str()).collect();
-    for path in ["blocks/blocks.json", "blocks/catalog.json", "routes/9-267-177.json", "routing/route-catalog.json"] {
+    for path in ["cells/directory.bin", "cells/package.json", "routes/9-267-177.json", "routing/route-catalog.json"] {
         assert!(paths.contains(&path), "{path} is not in the layer");
     }
+    assert!(paths
+        .iter()
+        .all(|path| path.starts_with("cells/") || path.starts_with("routes/") || path.starts_with("routing/")));
+    let read = |path: &str| {
+        let file = routing.files.iter().find(|file| file.path == path).unwrap();
+        std::fs::read(store.object(&file.sha256)).unwrap()
+    };
+    let fetch = |sha256: &str| std::fs::File::open(store.object(sha256));
+    planner_router::install::check(&read("cells/directory.bin"), &read("cells/package.json"), 1, fetch).unwrap();
 
     if Command::new("uv").arg("--version").output().is_err() {
         // CI installs uv, so there a missing uv is a failure, not a skip.
@@ -335,7 +336,6 @@ for kind, field, value in [('places', 'osm_sha256', '0' * 64), ('addresses', 'bo
         pass
     else:
         raise AssertionError('an inconsistent source or coverage is rejected')
-assert 'routing/blocks.json' not in document['files']
 files = {name: entry for path in (source / 'indexes').rglob('index.json')
     for name, entry in json.loads(path.read_bytes())['files'].items()} | document['files']
 offline.materialize(source, source / 'runtime', {'files': files}, ('offline/', 'routing/', 'search/', 'maps/overlays.json'))
@@ -432,7 +432,7 @@ for entries in [catalog['assets'], *(cell[key] for cell in cells for key in ('fi
     assert!(!restored.object(&osm.files[0].sha256).exists());
     Planner.verify(&root, None, &release, &restored).unwrap();
     let output = |step: &str| files.outputs.iter().find(|output| output.step == step).unwrap();
-    let private = output("planner/routing").files.iter().find(|file| file.path == "routing/manifest.json").unwrap();
+    let private = output("planner/routing").files.iter().find(|file| file.path == "routing/overlays.sqlite").unwrap();
     assert!(!restored.object(&private.sha256).exists());
     let basemap = output("planner/basemap/grid").files.iter().find(|file| file.path == "index.json").unwrap();
     let basemap: serde_json::Value =

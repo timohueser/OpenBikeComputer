@@ -16,9 +16,8 @@ obc data update local --only planner/routing
 
 The step writes a new layer directory. Do not edit an installed package in place.
 
-The roads step prints the counts of the roads and turns, the costs step the manifest estimate.
-Each stops at a limit of the package format. A region whose manifest passes the limit of format 9
-fails in the costs step, after the source and the roads steps.
+The roads step prints the counts of the roads and turns, and stops when the package cannot number
+them.
 
 ## Layers
 
@@ -29,7 +28,7 @@ The store keeps only the work layer of each step and options that a run used las
 | `planner/routing-source` | Pass 1, the node join, the way facts, the turn rules | `source/` |
 | `planner/routing-roads` | The walks, the partition into cells, the order with the terrain, the turn restrictions, the topology | `roads/` |
 | `planner/routing-costs` | The way bases, the road pass, the snap bits | `costs/` |
-| `planner/routing` | The landmarks, the package of format 9 and of format 10, the overlay index, the route catalog, the blocks and the routes | `routing/`, `cells/`, `blocks/`, `routes/` |
+| `planner/routing` | The package, the overlay index, the route catalog and the routes of each grid cell | `routing/`, `cells/`, `routes/` |
 
 | Change | Steps that run |
 | --- | --- |
@@ -37,7 +36,7 @@ The store keeps only the work layer of each step and options that a run used las
 | The profile list, or the revision of `planner/routing-costs` | Costs, package |
 | `region`, `countries`, `attribution`, `download_level` | Package |
 | The GLO-30 tiles or the reference, `cell_sizes`, or the revision of `planner/routing-roads` | Roads, costs, package |
-| The OSM cut, the bounds, the router `FORMAT`, or the revision of `planner/routing-source` | All four |
+| The OSM cut, the bounds, the format of the work layers, or the revision of `planner/routing-source` | All four |
 
 A change of the bytes of a work layer changes its format, of its content its revision. A column
 is one file of little-endian values; `layout.json` gives its type and count (`column::Layout`).
@@ -55,15 +54,14 @@ cargo clippy -p planner-router-build --all-targets --all-features -- -D warnings
 ```
 
 ```sh
-# Format 10 on the roads/ and costs/ folders of a bake: the bytes of each part and column, the
+# The package on the roads/ and costs/ folders of a bake: the bytes of each part and column, the
 # objects, the long roads and the boxes; then the install of all cells and the check of each object.
 cargo run --release -p planner-router-build --example cells -- write ROADS COSTS OUT [ZSTD_LEVEL]
 cargo run --release -p planner-router-build --example cells -- install OUT TARGET [THREADS]
 ```
 
-The builder also writes `overlays.sqlite` into the package directory: the route
-networks and access restrictions of the source data, bound to the new manifest
-identity. The [planner release contract](../../specs/planner-release.md) gives its layout. The
+The builder also writes `overlays.sqlite` into `routing/`: the route networks and access
+restrictions of the source data, bound to the identity of the package. The [planner release contract](../../specs/planner-release.md) gives its layout. The
 package does not keep the source OSM objects. The index omits proposed routes. Access markings are
 snapshot data, not live closures.
 
@@ -90,21 +88,20 @@ The bake keeps its large tables in memory-mapped work files and sorts them on di
 | Order buckets | The roads of one bucket, with their shapes before and after the terrain, take about one sort run; 1 to 256 buckets |
 | Threads | All cores, or `RAYON_NUM_THREADS`; the bytes of the package are the same for each thread count |
 | Road pass | The profiles of one group at a time; the way bases of a group take at most a quarter of the page budget |
-| Profile jobs | The snap bits and the landmarks of one profile in each job; the page budget sets how many jobs run at a time |
+| Profile jobs | The snap bits of one profile in each job; the page budget sets how many jobs run at a time |
 | Cost tables | One table in each task; a batch of tables holds at most 64 MiB of values at 8 B each, or one table for each thread when that is more |
-| Own memory | 4 GiB; the step samples `RssAnon` every 100 ms and stops at the first sample above it, with the name of the stage; `catalog` and `blocks` are exempt |
+| Own memory | 4 GiB; the step samples `RssAnon` every 100 ms and stops at the first sample above it, with the name of the stage; `catalog` is exempt |
 | Partition | 48 B of RAM for each junction and 6 B for each arc, about 64 B for each junction at about 2.67 arcs for each junction, outside the 4 GiB: the stage `partition` has the budget of this need plus 256 MiB. A need above the page budget stops the roads step |
-| Disk need | The stored layers above, and the work files of the step that runs; the roads step needs the most |
+| Disk need | The stored layers above, and the work files of the step that runs; the roads step needs the most. The route catalog installs the package of its bake in the bake folder: the installed bytes of the package, about 1.7 times its objects |
 
 Put the work folder on a disk, not on a tmpfs, whose files take RAM. A killed bake
 leaves its bake folder; remove it. A bake that the memory guard stops also leaves it.
 
 The costs layer holds the columns and the cost tables of each profile, with the bytes above.
-The package step maps the columns and adds the landmarks, 24 B for each junction and profile, until
-the writer ends. The page budget changes only the speed of the bake, never its bytes. Each step prints
-the time and the peak own memory of each stage: `import` (source and roads), `partition` and `emit` (roads), `open`,
-`way-bases`, `road-pass`, `snap` and `tables` (costs), `open`, `landmarks`, `writer`, `overlays`, `catalog`
-and `blocks` (package).
+The page budget changes only the speed of the bake, never its bytes. Each step prints the time and
+the peak own memory of each stage: `import` (source and roads), `partition` and `emit` (roads),
+`open`, `way-bases`, `road-pass`, `snap` and `tables` (costs), `open`, `cells`, `overlays` and
+`catalog` (package).
 
 ## Route catalog
 
@@ -114,7 +111,8 @@ the dropped relations by reason and the shaping points. The catalog needs the `t
 `gravel`, `mtb/technical` and `hiking/alpine` profiles. Name the region's countries, so that the
 catalog can omit route marks in France. When France is the only country, no record has a route
 mark. A region with France and another country fails. The builder checks the profiles and
-countries before the import.
+countries before the import. The catalog routes on an install of all cells of the package of its
+bake, with one router for each CPU; each router holds only its search.
 
 ## Terrain
 
@@ -184,15 +182,14 @@ traffic cost, in the direction that its member role gives. Access rules apply to
 MTB permits S2 at most and `mtb/technical` every grade; hiking permits T2 at most and
 `hiking/alpine` T4. Alternatives keep the difficulty limit of the request.
 
-The package holds geometry, snap cells, a shared directed graph, profile costs and snap bits,
-possible closures and compressed landmark bounds, separate from map tiles. A profile's snap bits
-mark the roads in a large strongly connected part of its graph (`connectivity`); the build log
-counts the roads in fragments and prints the landmark scale.
+The package holds the roads, their geometry and possible closures, the turns, the costs and snap
+bits of each profile, and the cost tables of each cell, separate from map tiles. A profile's snap
+bits mark the roads in a large strongly connected part of its graph (`connectivity`).
 
 ## Pitfalls
 
 - Rebuild packages after you change the profile code. Rider validation is required.
-- Read the manifest warnings before publishing.
+- Read the warnings of `package.json` before publishing.
 - Preserve the Copernicus source credits with the package, OpenStreetMap attribution and ODbL
   notices with the data, and [the BRouter licence notice](LICENSE.brouter) when you redistribute
   the BRouter weights.

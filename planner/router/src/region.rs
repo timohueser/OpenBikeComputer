@@ -8,18 +8,36 @@ use crate::{
         GEOMETRY, TOPOLOGY,
     },
     closures::Closure,
-    data::RoutingData,
+    cost::RoadCost,
     host::{Host, Part, Span},
     model::{Point, Profile, Road},
     overlay::{self, Found, Query, Stats, Workspace, SEARCH_BYTES},
-    package::{digest, Departure, Endpoint},
     router::Control,
     snap::{self, Candidates, Policy},
     Error, Result,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{cell::RefCell, collections::BTreeSet, sync::Arc};
+
+/// How a road joins the search. Its arrival state is its road ID.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Endpoint {
+    pub cost: Option<RoadCost>,
+    /// States from which this road can legally be entered.
+    pub departures: Vec<Departure>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Departure {
+    pub state: u32,
+    pub penalty: u64,
+}
+
+/// The SHA-256 of `bytes` in hex.
+pub fn digest(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
 
 fn invalid(what: impl std::fmt::Display) -> Error {
     Error::InvalidData(format!("Invalid route cell data: {what}"))
@@ -206,7 +224,7 @@ pub struct Region<H> {
     road: RefCell<Road>,
     workspace: Workspace,
     /// The search limit: the most bytes of the labels, queues and reverse turns of one search.
-    budget: usize,
+    limit: usize,
 }
 
 impl<H: Host> Region<H> {
@@ -243,13 +261,14 @@ impl<H: Host> Region<H> {
         }
         let identity = digest(&directory);
         let shared = Shared { host, directory, header, downloads, identity, info, profiles, cells, uppers, sizes };
-        Ok(Self { shared: Arc::new(shared), road: RefCell::default(), workspace: Workspace::default(), budget: 0 })
+        let (road, workspace) = (RefCell::default(), Workspace::default());
+        Ok(Self { shared: Arc::new(shared), road, workspace, limit: SEARCH_BYTES })
     }
 
     /// A handle for another worker.
     pub fn fork(&self) -> Self {
         let workspace = Workspace::default();
-        Self { shared: Arc::clone(&self.shared), road: RefCell::default(), workspace, budget: self.budget }
+        Self { shared: Arc::clone(&self.shared), road: RefCell::default(), workspace, limit: self.limit }
     }
 
     pub fn host(&self) -> &H {
@@ -260,34 +279,37 @@ impl<H: Host> Region<H> {
     pub fn take_stats(&self) -> Stats {
         self.workspace.take_stats()
     }
-}
 
-impl<H: Host> RoutingData for Region<H> {
+    /// Sets the search limit, `SEARCH_BYTES` after the open.
+    pub fn set_search_limit(&mut self, bytes: usize) {
+        self.limit = bytes;
+    }
+
     /// The SHA-256 of `directory.bin` in hex.
-    fn identity(&self) -> &str {
+    pub fn identity(&self) -> &str {
         &self.shared.identity
     }
-    fn region(&self) -> &str {
+    pub fn region(&self) -> &str {
         &self.shared.info.region
     }
-    fn bounds(&self) -> [f64; 4] {
+    pub fn bounds(&self) -> [f64; 4] {
         self.shared.info.bounds
     }
-    fn attribution(&self) -> &str {
+    pub fn attribution(&self) -> &str {
         &self.shared.info.attribution
     }
-    fn warnings(&self) -> &[String] {
+    pub fn warnings(&self) -> &[String] {
         &self.shared.info.warnings
     }
     /// The profiles of the installed groups.
-    fn profiles(&self) -> Vec<&str> {
+    pub fn profiles(&self) -> Vec<&str> {
         self.shared.profiles.iter().map(|installed| installed.profile.name.as_str()).collect()
     }
-    fn profile(&self, name: &str) -> Result<&Profile> {
+    pub fn profile(&self, name: &str) -> Result<&Profile> {
         Ok(&self.shared.installed(name)?.profile)
     }
 
-    fn snap(&self, point: Point, metric: &str, policy: Policy) -> Result<Candidates> {
+    pub fn snap(&self, point: Point, metric: &str, policy: Policy) -> Result<Candidates> {
         let shared = &*self.shared;
         let installed = shared.installed(metric)?;
         let window = snap::window(point, policy.radius_m).map_err(Error::InvalidRequest)?;
@@ -338,14 +360,14 @@ impl<H: Host> RoutingData for Region<H> {
     }
 
     /// Applies `f` to a road, decoded into the road of this handle.
-    fn with_road<T>(&self, road: u32, f: impl FnOnce(&Road) -> T) -> Result<T> {
+    pub fn with_road<T>(&self, road: u32, f: impl FnOnce(&Road) -> T) -> Result<T> {
         let mut decoded = self.road.borrow_mut();
         self.shared.road(&self.shared.place(road)?, &mut decoded)?;
         Ok(f(&decoded))
     }
 
     /// The closures that concern `mode` on `road`, or `None`.
-    fn closing(&self, road: u32, mode: u8) -> Result<Option<Vec<Closure>>> {
+    pub fn closing(&self, road: u32, mode: u8) -> Result<Option<Vec<Closure>>> {
         let (geometry, closure) = self.shared.road(&self.shared.place(road)?, &mut self.road.borrow_mut())?;
         let Some(set) = closure.checked_sub(1) else { return Ok(None) };
         let closures: Vec<Closure> =
@@ -355,7 +377,7 @@ impl<H: Host> RoutingData for Region<H> {
 
     /// The cost curve of `road` and the roads from which a turn enters it, with the turn cost, in
     /// ascending road ID. A turn from a cell that is not installed is not a turn.
-    fn endpoint(&self, metric: &str, road: u32) -> Result<Endpoint> {
+    pub fn endpoint(&self, metric: &str, road: u32) -> Result<Endpoint> {
         let shared = &*self.shared;
         let installed = shared.installed(metric)?;
         let place = shared.place(road)?;
@@ -375,7 +397,7 @@ impl<H: Host> RoutingData for Region<H> {
     }
 
     /// Tells the host that the engine reads the geometry blocks of these roads next.
-    fn announce(&self, roads: &[u32]) {
+    pub fn announce(&self, roads: &[u32]) {
         let shared = &*self.shared;
         let spans = roads
             .iter()
@@ -391,27 +413,16 @@ impl<H: Host> RoutingData for Region<H> {
         shared.announce(spans);
     }
 
-    fn search(&mut self, metric: &str, query: Query<'_>) -> Result<Option<Found>> {
+    pub fn search(&mut self, metric: &str, query: Query<'_>) -> Result<Option<Found>> {
         let installed = self.shared.installed(metric)?;
-        let limit = self.budget.min(query.heap_bytes);
+        let limit = self.limit.min(query.heap_bytes);
         overlay::search(&self.shared, &mut self.workspace, installed, query, limit)
     }
 
-    fn unpack(&mut self, metric: &str, legs: &[&Found], control: &Control<'_>) -> Result<Vec<Vec<u32>>> {
+    pub fn unpack(&mut self, metric: &str, legs: &[&Found], control: &Control<'_>) -> Result<Vec<Vec<u32>>> {
         let installed = self.shared.installed(metric)?;
-        let limit = self.budget.min(control.max_heap_bytes);
+        let limit = self.limit.min(control.max_heap_bytes);
         overlay::unpack(&self.shared, &mut self.workspace, installed, legs, control, limit)
-    }
-
-    /// The search limit.
-    fn memory_budget(&self) -> usize {
-        self.budget
-    }
-    fn set_memory_budget(&mut self, bytes: usize) {
-        self.budget = bytes;
-    }
-    fn default_budget(&self) -> usize {
-        SEARCH_BYTES
     }
 }
 

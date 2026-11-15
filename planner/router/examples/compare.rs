@@ -1,8 +1,8 @@
 //! Routes one request set on two routing folders and prints a line for each request:
 //! `compare OLD NEW COUNT SEED [options]`, `compare NEW COUNT SEED --new-only [options]`, or
-//! `compare --areas INSTALL`. OLD is format 9 and NEW an install of format 10 (`cells install`) of
-//! the same bake; with `--layouts`, OLD and NEW are installs of two layouts of one bake. COUNT is
-//! the requests of each profile. Exits with 1 on a difference, with 2 when the folders have other
+//! `compare --areas INSTALL`. OLD and NEW are installs of format 10 (`cells install`) with the same
+//! road IDs; with `--layouts`, installs of two layouts of one bake. COUNT is the requests of each
+//! profile. Exits with 1 on a difference, with 2 when the folders have other
 //! profiles.
 //!
 //! Options: `--min-km K` and `--max-km K`, the band of the later points of a request from its
@@ -25,11 +25,10 @@
 //! at its peak, and the times leave out the first request of OLD of each profile.
 use planner_router::{
     compare::{self, Outcome, Routed, KINDS},
-    data::RoutingData,
     host::Maps,
     model::{Point, NO_ELEVATION},
     snap::Policy,
-    Error, Opened, Request, Router,
+    Error, Request, Router,
 };
 use serde_json::{json, Value};
 use std::{
@@ -88,8 +87,8 @@ struct Options {
 }
 
 /// Opens an install; with `silent`, on a host whose `announce` does nothing.
-fn open_cells(path: &Path, silent: bool) -> Result<Router<Opened>, Error> {
-    Ok(Router::new(Opened::Cells(planner_router::open::cells(path, silent)?), usize::MAX))
+fn open(path: &Path, silent: bool) -> Result<Router<Maps>, Error> {
+    Ok(Router::new(planner_router::open(path, silent)?))
 }
 
 /// The first number after `name` in `/proc/self/FILE`; 0 off Linux.
@@ -155,8 +154,8 @@ fn side(routed: &Routed, settled: usize) -> Value {
 /// Routes `request` on OLD once, when there is one, and `new_request` on NEW `repeat_new` times;
 /// gives the line of the request and, with OLD, the check.
 fn measure(
-    old: Option<&mut Router<Opened>>,
-    new: &mut Router<Opened>,
+    old: Option<&mut Router<Maps>>,
+    new: &mut Router<Maps>,
     [request, new_request]: [&Request; 2],
     options: &Options,
 ) -> (Value, Option<Result<Outcome, String>>) {
@@ -301,12 +300,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("--workers needs --new-only and no --cold; --layouts needs OLD".into());
     }
     let new_path = Path::new(new_path);
-    let mut old = match old_path {
-        Some(path) if options.layouts => Some(open_cells(Path::new(path), options.silent)?),
-        Some(path) => Some(Router::new(planner_router::open(Path::new(path))?, usize::MAX)),
-        None => None,
-    };
-    let mut new = Some(open_cells(new_path, options.silent)?);
+    let mut old = old_path.map(|path| open(Path::new(path), options.silent)).transpose()?;
+    let mut new = Some(open(new_path, options.silent)?);
     let profiles: Vec<String> =
         new.as_ref().ok_or(USAGE)?.package().profiles().into_iter().map(str::to_string).collect();
     if let Some(old) = &old {
@@ -346,10 +341,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let run = (|| -> Result<(), Box<dyn std::error::Error>> {
             println!("{}", COLUMNS.map(|column| column[1..].replace(['/', '_'], " ")).join(", "));
             for profile in &profiles {
-                if let Some(old) = &old {
-                    // The decode of a profile of format 9 is not a time of its searches.
-                    old.package().warm(profile)?;
-                }
                 let (min_m, max_m) = (options.min_km * 1000.0, options.max_km * 1000.0);
                 let requests = match &old {
                     Some(old) => compare::requests(old, profile, count, seed, min_m, max_m),
@@ -375,7 +366,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     std::thread::scope(|scope| {
                         for _ in 0..workers {
                             let fork = new.as_ref().map(|new| new.package().fork());
-                            let Some(mut router) = fork.map(|fork| Router::new(fork, usize::MAX)) else { break };
+                            let Some(mut router) = fork.map(Router::new) else { break };
                             let (next, lines, requests, options) = (&next, &lines, &requests, &options);
                             scope.spawn(move || loop {
                                 let k = next.fetch_add(1, Ordering::Relaxed);
@@ -411,7 +402,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         drop(new.take());
                         Maps::evict(new_path)?;
                         let opened = Instant::now();
-                        let router = new.insert(open_cells(new_path, options.silent)?);
+                        let router = new.insert(open(new_path, options.silent)?);
                         let open_ms = ms(opened.elapsed());
                         let (routed, faults, read) = (Instant::now(), major_faults(), read_bytes());
                         let _ = router.routes(&moved, &planner_router::Control::default());

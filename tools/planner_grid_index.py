@@ -33,9 +33,7 @@ def compose(indexes, options):
             if name in files and files[name] != entry:
                 raise ValueError("Conflicting grid files")
             files[name] = entry
-    routing = indexes["routing"]
-    graph = routing["graph"]
-    data = graph["data"]
+    data = indexes["routing-cells"]["metadata"]
     if data["bounds"] != options["bounds"] or data["region"] != options["region"]:
         raise ValueError("Routing region or coverage differs")
     osm = data["source_sha256"][0]
@@ -86,7 +84,7 @@ def compose(indexes, options):
         if name not in files:
             raise ValueError(f"Missing grid file {name}")
     release = {"format": 1, **options, "osm_sha256": osm,
-        "routing_package": package, "profiles": sorted(data["metrics"]),
+        "routing_package": package, "profiles": data["profiles"],
         "terrain_bounds": terrain["metadata"]["bounds"], "terrain_attribution": terrain["metadata"]["attribution"]}
     search = {"format": runtime.INDEX_FORMAT, "metadata": metadata, "cells": [
         {"id": cell["id"], "bounds": cell["bounds"],

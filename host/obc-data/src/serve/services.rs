@@ -91,10 +91,21 @@ impl Programs {
         self.reads.iter().map(|(_, layer, format)| (layer.clone(), *format)).collect()
     }
 
-    /// Programs that read these formats, for a test that starts no service.
+    /// Programs that read these formats, for a test that starts no service. Its routing program
+    /// installs a package as the marker `install.bin` alone, with the bytes of `directory.bin`: a
+    /// new file, not a copy of the read-only object.
     #[cfg(test)]
     pub(crate) fn reading(reads: Vec<(&'static str, String, u32)>) -> Self {
-        Self { root: PathBuf::new(), routing: PathBuf::new(), reads }
+        static INSTALLER: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        let routing = INSTALLER.get_or_init(|| {
+            let path = std::env::temp_dir().join(format!("obc-data-test-installer-{}", std::process::id()));
+            let script = "#!/bin/sh\n[ \"$2\" = --missing ] && { echo 0; exit 0; }\nmkdir -p \"$1\" && cat \"$3\" > \"$1/install.bin\"\n";
+            fs::write(&path, script).unwrap();
+            #[cfg(unix)]
+            fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+            path
+        });
+        Self { root: PathBuf::new(), routing: routing.clone(), reads }
     }
 }
 
@@ -203,12 +214,9 @@ pub fn fetch(
         )?;
         let runtime = runtime(store, &document)?;
         let package = package(&runtime)?;
-        let mut installed = 0;
-        if let Some(package) = &package {
-            let first = [&package.directory, &package.info].map(|sha256| (format!("objects/{sha256}"), sha256.clone()));
-            download(store, target, first.to_vec(), &go)?;
-            installed = package.missing(&programs.routing, store, &dir.join(CELLS))?;
-        }
+        let first = [&package.directory, &package.info].map(|sha256| (format!("objects/{sha256}"), sha256.clone()));
+        download(store, target, first.to_vec(), &go)?;
+        let installed = package.missing(&programs.routing, store, &dir.join(CELLS))?;
         let missing: BTreeMap<&str, u64> = (runtime.iter())
             .filter(|(_, entry)| !store.object(&entry.transport.sha256).is_file())
             .map(|(_, entry)| (entry.transport.sha256.as_str(), entry.transport.bytes))
@@ -223,14 +231,7 @@ pub fn fetch(
         }
         let missing = missing.keys().map(|sha256| (format!("objects/{sha256}"), sha256.to_string())).collect();
         download(store, target, missing, &go)?;
-        install(
-            store,
-            dir,
-            served,
-            &runtime,
-            package.as_ref().map(|package| (programs.routing.as_path(), package)),
-            &go,
-        )?;
+        install(store, dir, served, &runtime, (programs.routing.as_path(), &package), &go)?;
         Ok(Fetched::Installed)
     };
     fetched().unwrap_or_else(Fetched::Failed)
@@ -335,8 +336,7 @@ pub fn remove(dir: &Path) -> Result<bool, String> {
 }
 
 /// Start the service `service` of [`SERVICES`] of the planner release `served`, installed in `dir`,
-/// on a free port of this machine. The routing service gets the folder [`CELLS`] in `ROUTE_CELLS`
-/// when the install has it.
+/// on a free port of this machine. The routing service gets the folder [`CELLS`] as its argument.
 pub fn start(
     programs: &Programs,
     dir: &Path,
@@ -346,13 +346,9 @@ pub fn start(
 ) -> Result<Process, String> {
     let port = free_port()?;
     let mut command = commands(&programs.root, &programs.routing).into_iter().nth(service).expect("a service");
-    let cells = Some(dir.join(CELLS)).filter(|cells| cells.is_dir());
     match SERVICES[service].name {
         "routing" => {
-            if let Some(cells) = &cells {
-                command.env("ROUTE_CELLS", cells);
-            }
-            command.arg(dir.join("routing")).env("ROUTE_LISTEN", format!("127.0.0.1:{port}")).env_remove("ROUTE_ORIGIN")
+            command.arg(dir.join(CELLS)).env("ROUTE_LISTEN", format!("127.0.0.1:{port}")).env_remove("ROUTE_ORIGIN")
         }
         "search" => {
             let document = dir.join("release.json");
@@ -375,9 +371,7 @@ pub fn start(
             .args(["--objects-url", &origins.objects]),
     };
     let name = SERVICES[service].name;
-    let mapped =
-        (programs.reads.iter()).any(|(reader, layer, _)| *reader == "routing" && layer == "planner/routing-cells");
-    let workers = match name == "routing" && cells.is_some() && mapped {
+    let workers = match name == "routing" {
         true => Some(workers(&programs.routing)?),
         false => None,
     };
@@ -452,15 +446,13 @@ fn install(
     dir: &Path,
     served: &Served,
     runtime: &[(String, Entry)],
-    package: Option<(&Path, &Package)>,
+    (routing, package): (&Path, &Package),
     go: &dyn Fn() -> Result<(), String>,
 ) -> Result<(), String> {
     let fail = |e: std::io::Error| format!("{}: {e}", dir.display());
     fs::create_dir_all(dir).map_err(fail)?;
     materialize(store, runtime, dir, go)?;
-    if let Some((routing, package)) = package {
-        package.install(routing, store, &dir.join(CELLS), go)?;
-    }
+    package.install(routing, store, &dir.join(CELLS), go)?;
     crate::target::link(&store.object(&served.document.sha256), &dir.join("release.json")).map_err(fail)?;
     let folder = File::open(dir).map_err(fail)?;
     sync(&folder).map_err(fail)?;
@@ -775,13 +767,12 @@ struct Package {
     info: String,
 }
 
-/// The [`Package`] of `runtime`, the files under [`RUNTIME`] of a planner release, when it has
-/// `routing/directory.bin`.
-fn package(runtime: &[(String, Entry)]) -> Result<Option<Package>, String> {
+/// The [`Package`] of `runtime`, the files under [`RUNTIME`] of a planner release.
+fn package(runtime: &[(String, Entry)]) -> Result<Package, String> {
     let object = |name: &str| runtime.iter().find(|(file, _)| file == name).map(|(_, entry)| &entry.transport.sha256);
     match (object("routing/directory.bin"), object("routing/package.json")) {
-        (None, _) => Ok(None),
-        (Some(directory), Some(info)) => Ok(Some(Package { directory: directory.clone(), info: info.clone() })),
+        (Some(directory), Some(info)) => Ok(Package { directory: directory.clone(), info: info.clone() }),
+        (None, _) => Err("the planner release has no routing package".into()),
         (Some(_), None) => Err("the routing package has routing/directory.bin and no routing/package.json".into()),
     }
 }
@@ -902,7 +893,7 @@ mod tests {
     fn a_release_in_a_format_that_a_service_does_not_read_starts_nothing() {
         let scratch = Scratch::new("serve-formats");
         let reads = vec![
-            ("routing", "planner/routing".into(), 8),
+            ("routing", "planner/routing".into(), 9),
             ("search", "planner/index".into(), 3),
             ("downloads", "planner/index".into(), 3),
         ];
@@ -922,15 +913,15 @@ mod tests {
         let target = Target::Dir(scratch.0.join("target"));
         let dir = scratch.0.join("work").join("a".repeat(64));
         let Fetched::Failed(refused) =
-            fetch(&programs, &store, &target, &served(9, 3), &dir, &AtomicBool::new(true), &|_| unreachable!())
+            fetch(&programs, &store, &target, &served(10, 3), &dir, &AtomicBool::new(true), &|_| unreachable!())
         else {
             panic!("the release starts")
         };
-        assert_eq!(refused, "needs a routing service that reads planner/routing format 9; it reads 8");
+        assert_eq!(refused, "needs a routing service that reads planner/routing format 10; it reads 9");
         assert!(!store.root().exists(), "nothing downloads");
-        let index = readable(&programs, &served(8, 4)).unwrap_err();
+        let index = readable(&programs, &served(9, 4)).unwrap_err();
         assert_eq!(index, "needs a search service that reads planner/index format 4; it reads 3");
-        assert!(readable(&programs, &served(8, 3)).is_ok());
+        assert!(readable(&programs, &served(9, 3)).is_ok());
     }
 
     /// The planner catalog reads the previous release of a target with `files` too: before its
@@ -960,13 +951,16 @@ mod tests {
         let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         encoder.write_all(b"places").unwrap();
         let (pages, places) = (object(b"pages"), object(&encoder.finish().unwrap()));
+        let (directory, info) = (object(b"directory"), object(b"{}"));
         let entry = |bytes: &[u8], transport: &str, encoding: &str| {
             let (sha256, size) =
                 (sha256_hex(bytes), fs::metadata(target.join("objects").join(transport)).map_or(0, |m| m.len()));
             json!({"bytes": bytes.len(), "sha256": sha256, "transport": {"bytes": size, "sha256": transport, "encoding": encoding}})
         };
         let mut document = json!({"format": 1, "region": "test", "files": {
-            "routing/pages.bin": entry(b"pages", &pages, "identity"),
+            "offline/pages.bin": entry(b"pages", &pages, "identity"),
+            "routing/directory.bin": entry(b"directory", &directory, "identity"),
+            "routing/package.json": entry(b"{}", &info, "identity"),
             "search/tiles/pois/9-1-1.sqlite": entry(b"places", &places, "gzip"),
             "maps/basemap.json": entry(b"basemap", &"0".repeat(64), "identity"),
         }});
@@ -1001,13 +995,22 @@ mod tests {
         assert!(!store.object(&named.sha256).exists(), "a download that no release wants stops at its next object");
         let dir = scratch.0.join("work");
         materialize(&named, &dir).unwrap();
-        assert_eq!(fs::read(dir.join("routing/pages.bin")).unwrap(), b"pages");
+        assert_eq!(fs::read(dir.join("offline/pages.bin")).unwrap(), b"pages");
         assert_eq!(fs::read(dir.join("search/tiles/pois/9-1-1.sqlite")).unwrap(), b"places");
         assert!(!dir.join("maps").exists(), "no service reads the maps");
+        assert!(dir.join("route-cells/install.bin").is_file() && !dir.join("routing").exists());
+        let mut without = document.clone();
+        without["files"].as_object_mut().unwrap().retain(|name, _| !name.starts_with("routing/"));
+        let refused = materialize(&release(&without), &scratch.0.join("without")).unwrap_err();
+        assert_eq!(refused, "the planner release has no routing package");
 
         // Format 2 names the step indexes. The follower reads only those of the folders of its services:
         // the target has no index of the maps.
-        let index = serde_json::to_vec(&json!({"files": {"routing/pages.bin": entry(b"pages", &pages, "identity")}}));
+        let index = serde_json::to_vec(&json!({"files": {
+            "offline/pages.bin": entry(b"pages", &pages, "identity"),
+            "routing/directory.bin": entry(b"directory", &directory, "identity"),
+            "routing/package.json": entry(b"{}", &info, "identity"),
+        }}));
         let index = index.unwrap();
         let routing = object(&index);
         let step = |bytes: usize, sha256: &str, folders: &[&str]| json!({"bytes": bytes, "sha256": sha256, "folders": folders});
@@ -1017,7 +1020,7 @@ mod tests {
             "files": {"search/tiles/pois/9-1-1.sqlite": entry(b"places", &places, "gzip")}});
         let (indexed_release, dir) = (release(&indexed), scratch.0.join("indexed"));
         materialize(&indexed_release, &dir).unwrap();
-        assert_eq!(fs::read(dir.join("routing/pages.bin")).unwrap(), b"pages");
+        assert_eq!(fs::read(dir.join("offline/pages.bin")).unwrap(), b"pages");
         assert_eq!(fs::read(dir.join("search/tiles/pois/9-1-1.sqlite")).unwrap(), b"places");
         let kept = objects(&store, &served(&indexed_release)).unwrap();
         assert!(kept.contains(&(format!("objects/{routing}"), routing.clone())), "prune keeps the index");
@@ -1028,22 +1031,22 @@ mod tests {
         // An existing file is never opened for writing: it can be a link to an object of the store.
         let (object, again) = (scratch.0.join("object"), scratch.0.join("again"));
         fs::write(&object, b"store object").unwrap();
-        for name in ["routing/pages.bin", "search/tiles/pois/9-1-1.sqlite"] {
+        for name in ["offline/pages.bin", "search/tiles/pois/9-1-1.sqlite"] {
             fs::create_dir_all(again.join(name).parent().unwrap()).unwrap();
             fs::hard_link(&object, again.join(name)).unwrap();
         }
         let files = runtime(&store, &read(&store, &named).unwrap()).unwrap();
         assert!(super::materialize(&store, &files, &again, &|| Ok(())).unwrap_err().contains("exists"));
-        fs::remove_file(again.join("routing/pages.bin")).unwrap();
+        fs::remove_file(again.join("offline/pages.bin")).unwrap();
         super::materialize(&store, &files, &again, &|| Ok(())).unwrap();
         assert_eq!(fs::read(again.join("search/tiles/pois/9-1-1.sqlite")).unwrap(), b"places");
         assert_eq!(fs::read(&object).unwrap(), b"store object");
 
-        document["files"]["routing/pages.bin"]["sha256"] = json!("b".repeat(64));
+        document["files"]["offline/pages.bin"]["sha256"] = json!("b".repeat(64));
         let refused = materialize(&release(&document), &scratch.0.join("other")).unwrap_err();
         assert!(refused.contains("not the file of the planner release"), "{refused}");
-        document["files"]["routing/pages.bin"]["sha256"] = json!(sha256_hex(b"pages"));
-        document["files"]["routing/../x"] = document["files"]["routing/pages.bin"].clone();
+        document["files"]["offline/pages.bin"]["sha256"] = json!(sha256_hex(b"pages"));
+        document["files"]["routing/../x"] = document["files"]["offline/pages.bin"].clone();
         let refused = materialize(&release(&document), &scratch.0.join("third")).unwrap_err();
         assert!(refused.contains("does not name"), "{refused}");
     }
@@ -1067,7 +1070,7 @@ mod tests {
         let (a, b) = (object(b"cell a"), object(b"cell b"));
         let directory = object(format!("{}\n{}\n", a.0, b.0).as_bytes());
         let document = serde_json::to_vec(&json!({"format": 1, "region": "test", "files": {
-            "routing/pages.bin": object(b"pages").1,
+            "offline/pages.bin": object(b"pages").1,
             "routing/directory.bin": directory.1,
             "routing/package.json": object(b"{}").1,
             format!("routing/objects/{}", a.0): a.1,
@@ -1126,9 +1129,8 @@ if [ "$action" = --missing ]; then echo $missing; else touch "$target/install.bi
         assert_eq!(stopped, format!("the routing cells (exit status: 1): stopped after {}", a.0));
         let cells = dir.join("route-cells/cells");
         assert!(cells.join(&a.0).is_file() && !cells.join(&b.0).exists() && !installed(&dir));
-        assert_eq!(fs::read(dir.join("routing/pages.bin")).unwrap(), b"pages");
-        let routing: Vec<_> = fs::read_dir(dir.join("routing")).unwrap().map(|e| e.unwrap().file_name()).collect();
-        assert_eq!(routing, ["pages.bin"], "the installer reads the package from the store");
+        assert_eq!(fs::read(dir.join("offline/pages.bin")).unwrap(), b"pages");
+        assert!(!dir.join("routing").exists(), "the installer reads the package from the store");
 
         fs::remove_file(&flag).unwrap();
         assert!(matches!(fetched(&dir), Fetched::Installed));
@@ -1188,14 +1190,13 @@ if [ "$action" = --missing ]; then echo $missing; else touch "$target/install.bi
         let (out, dir) = (scratch.0.join("out"), scratch.0.join("install"));
         fs::create_dir_all(dir.join(CELLS)).unwrap();
         let script = format!(
-            "#!/bin/sh\n[ \"$1\" = --workers ] && {{ echo 3; exit 0; }}\necho \"$(ulimit -d) $ROUTE_CELLS\" > {}\n",
+            "#!/bin/sh\n[ \"$1\" = --workers ] && {{ echo 3; exit 0; }}\necho \"$(ulimit -d) $1\" > {}\n",
             out.display()
         );
         let routing = scratch.0.join("routing");
         fs::write(&routing, script).unwrap();
         fs::set_permissions(&routing, fs::Permissions::from_mode(0o755)).unwrap();
-        let reads = vec![("routing", "planner/routing-cells".into(), 1)];
-        let programs = Programs { routing, ..Programs::reading(reads) };
+        let programs = Programs { routing, ..Programs::reading(Vec::new()) };
         let served = Served {
             id: String::new(),
             planner: String::new(),

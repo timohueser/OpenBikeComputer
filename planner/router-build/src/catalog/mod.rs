@@ -4,10 +4,10 @@ mod assemble;
 
 use crate::source::{Data, Id, Relation, Tags};
 use planner_router::{
-    data::{RoutingData, Selection},
-    directory::Directory,
+    host::Host,
+    install,
     model::Profile,
-    package::Source,
+    region::Region,
     shape::{self, distance, Failure, Limits, P},
     Control, Router,
 };
@@ -23,8 +23,6 @@ const MIN_LENGTH_M: f64 = 2_000.0;
 const MAX_GAP_M: f64 = 500.0;
 const ROUNDTRIP_M: f64 = 200.0;
 const DESCRIPTION_CHARS: usize = 200;
-/// The memory of all routers together; it limits the number of workers.
-const ROUTERS_MEMORY: usize = 6 << 30;
 /// The profiles a route is checked with.
 const PROFILES: [&str; 5] = ["touring", "road", "gravel", "mtb/technical", "hiking/alpine"];
 /// The line keeps every point of the plan route within this distance.
@@ -33,14 +31,6 @@ const LINE_TOLERANCE_M: f64 = 50.0;
 /// more does not converge, and the route leaves the catalog; the bound keeps the bake of a large
 /// region within minutes.
 const SEARCH_CALLS: usize = 400;
-/// The search queues of one route request.
-const SEARCH_BYTES: usize = 768 << 20;
-
-/// The router control of the catalog: a fixed search space, so that a router limit does not
-/// depend on the order of the routes.
-fn control() -> Control<'static> {
-    Control { max_heap_bytes: SEARCH_BYTES, ..Control::default() }
-}
 
 /// Why a selected relation is not in the catalog.
 #[derive(Clone, Copy, Debug)]
@@ -247,26 +237,30 @@ pub fn check(countries: &[String], profiles: &[Profile]) -> Result<bool, String>
     }
 }
 
-/// Writes `route-catalog.json` into the routing package in `directory`, from the source OSM
-/// objects of its import. `france` comes from `check`.
-pub fn write(directory: &Path, osm: Data, france: bool) -> Result<Report, String> {
+/// Writes `route-catalog.json` into `directory`, from the source OSM objects of the import, on the
+/// package in `cells` that `cells::write` made. The package is installed whole into a work folder
+/// for the time of the catalog. A router holds only its search, so the workers are the CPUs.
+/// `france` comes from `check`.
+pub fn write(directory: &Path, cells: &Path, osm: Data, france: bool) -> Result<Report, String> {
     let started = std::time::Instant::now();
-    let package = Directory::open(directory).map_err(|e| e.to_string())?;
-    // The routers share one graph, one junction mapping and the five prepared profiles; each
-    // adds its own label blocks and a search space of `SEARCH_BYTES`.
-    let routing = Selection::whole(package);
-    let shared = routing.shared_bytes(PROFILES).map_err(|e| e.to_string())?;
-    let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
-    let workers = cpus.min(ROUTERS_MEMORY.saturating_sub(shared) / (routing.router_bytes() + SEARCH_BYTES)).max(1);
-    let (records, report) = catalog(&routing, osm, france, workers)?;
+    let read = |name: &str| std::fs::read(cells.join(name)).map_err(|e| format!("{}: {e}", cells.join(name).display()));
+    let (package, info) = (read(crate::cells::DIRECTORY)?, read(crate::cells::PACKAGE)?);
+    let folder = crate::work::Folder::create().map_err(|e| e.to_string())?;
+    let target = folder.path().join("catalog-install");
+    let fetch = |name: &str| std::fs::File::open(cells.join(name));
+    let installed = install::install(&target, (&package, &info), (None, None), 4, fetch).map_err(|e| e.to_string())?;
+    eprintln!("Installed {} files of {} bytes for the route catalog", installed.files, installed.bytes);
+    let region = planner_router::open(&target, false).map_err(|e| e.to_string())?;
+    let workers = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let (records, report) = catalog(&region, osm, france, workers)?;
     let bytes =
         serde_json::to_vec(&crate::sort_keys(json!({"format": 1, "routes": records}))).map_err(|e| e.to_string())?;
     std::fs::write(directory.join(FILE), bytes).map_err(|e| e.to_string())?;
     Ok(Report { seconds: started.elapsed().as_secs_f64(), ..report })
 }
 
-fn catalog<S: Source + Clone + Send>(
-    selection: &Selection<S>,
+fn catalog<H: Host>(
+    region: &Region<H>,
     osm: Data,
     france: bool,
     workers: usize,
@@ -336,14 +330,12 @@ fn catalog<S: Source + Clone + Send>(
     let queue = Mutex::new(jobs);
     let started = std::time::Instant::now();
     let results = Mutex::new(Vec::new());
-    let mut forks: Vec<_> = (0..workers.max(1)).map(|_| selection.fork()).collect();
+    let mut forks: Vec<_> = (0..workers.max(1)).map(|_| region.fork()).collect();
     std::thread::scope(|scope| {
         for routing in forks.drain(..) {
             let (queue, results, points) = (&queue, &results, &points);
             scope.spawn(move || {
-                // The search space is capped by `control`, not by the budget, so that it
-                // does not depend on the cost tables in the cache.
-                let mut router = Router::new(routing, usize::MAX);
+                let mut router = Router::new(routing);
                 loop {
                     // The guard must drop before the work, so the job is taken in its own statement.
                     let job = queue.lock().unwrap().pop();
@@ -450,8 +442,8 @@ fn catalog<S: Source + Clone + Send>(
 }
 
 /// Builds the record of one route, or the reason it leaves the catalog.
-fn route<D: RoutingData>(
-    router: &mut Router<D>,
+fn route<H: Host>(
+    router: &mut Router<H>,
     job: &Job,
     points: &HashMap<i64, P>,
     france: bool,
@@ -482,12 +474,12 @@ fn route<D: RoutingData>(
             return Err(Reason::Gap);
         }
         let route =
-            router.route(&shape::request(profiles[0], &[from, to], vec![]), &control()).map_err(
-                |error| match error {
+            router.route(&shape::request(profiles[0], &[from, to], vec![]), &Control::default()).map_err(|error| {
+                match error {
                     planner_router::Error::Limit | planner_router::Error::Memory => Reason::RouterLimit,
                     _ => Reason::UnroutableGap,
-                },
-            )?;
+                }
+            })?;
         line.extend(shape::vertices(&route).into_iter().chain([to]));
         line.dedup();
         Ok(())
@@ -504,7 +496,7 @@ fn route<D: RoutingData>(
         };
     // An out-and-back spur retraces its nodes; its tip is a turnaround.
     let tips: Vec<usize> = (1..line.len().saturating_sub(1)).filter(|&k| line[k - 1] == line[k + 1]).collect();
-    let mut limits = Limits { control: control(), max_calls: SEARCH_CALLS * profiles.len(), calls: 0 };
+    let mut limits = Limits { control: Control::default(), max_calls: SEARCH_CALLS * profiles.len(), calls: 0 };
     let plan = shape::shape(router, profiles, &line, &tips, length, closed, &mut limits);
     *calls = limits.calls;
     let plan = plan.map_err(|failure| match failure {

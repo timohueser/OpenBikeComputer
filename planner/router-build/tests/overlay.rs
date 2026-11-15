@@ -3,7 +3,6 @@
 //! what it reads.
 
 use planner_router::cells::{Directory, Group, Topology};
-use planner_router::data::RoutingData;
 use planner_router::host::{Host, Memory, Part, Span};
 use planner_router::install;
 use planner_router::model::{Point, Profile, Road, BIKE, FOOT, PUSH};
@@ -258,7 +257,7 @@ fn install(objects: &Path, target: &Path, cells: Option<&[u32]>) -> Install {
     let marker = fs::read(target.join(install::MARKER)).unwrap();
     let host = Recorded { memory, announced: Mutex::default() };
     let mut region = Region::open(host, directory.clone(), info, &marker).unwrap();
-    region.set_memory_budget(usize::MAX);
+    region.set_search_limit(usize::MAX);
     Install { region, roads, profiles: costed, directory, parts }
 }
 

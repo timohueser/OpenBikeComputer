@@ -9,8 +9,6 @@ description = "Turn-aware regional routing with immutable prepared profiles"
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-postcard = { workspace = true, features = ["alloc"] }
-flate2 = { workspace = true }
 sha2 = "0.10"
 thiserror = "2"
 

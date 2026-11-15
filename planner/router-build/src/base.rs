@@ -1,6 +1,5 @@
 use crate::{column::Column, Roads};
 use planner_router::cost::CostBasis;
-use planner_router::{base, model::Profile, package::Metric, table::Table};
 use std::collections::HashMap;
 
 /// Interns exact cost parameters by their bits, without floating-point text conversion.
@@ -104,37 +103,6 @@ pub(crate) fn narrow(cost: Option<u64>) -> Result<u32, String> {
         None => Ok(u32::MAX),
         Some(cost) => u32::try_from(cost).ok().filter(|&cost| cost != u32::MAX).ok_or("A cost exceeds 32 bits".into()),
     }
-}
-
-fn widen(costs: &[u32]) -> impl Iterator<Item = u64> + Clone + '_ {
-    costs.iter().map(|&cost| if cost == u32::MAX { u64::MAX } else { cost as u64 })
-}
-
-/// `bases` holds the dictionary index of each road, and `allowed` the snap bits of
-/// `connectivity::States::snappable`.
-pub(crate) fn metric(
-    profile: &Profile,
-    bases: &[u32],
-    road_costs: &[u32],
-    turns: &[u32],
-    allowed: &[u64],
-    mut write: impl FnMut(&[u8]) -> Result<String, String>,
-) -> Result<Metric, String> {
-    if bases.len() != road_costs.len() || allowed.len() != bases.len().div_ceil(64) {
-        return Err("Incomplete road costs".into());
-    }
-    if bases.iter().zip(road_costs).any(|(&basis, &cost)| (basis != 0) != (cost != u32::MAX)) {
-        return Err("Road cost and eligibility disagree".into());
-    }
-    if bases.iter().enumerate().any(|(id, &basis)| basis == 0 && allowed[id / 64] & (1 << (id % 64)) != 0) {
-        return Err("A snappable road has no cost".into());
-    }
-    Ok(Metric {
-        profile: profile.clone(),
-        weights: base::write_weights(widen(road_costs), widen(turns), &mut write)?,
-        costs: Table::write(bases, &mut write)?,
-        allowed: Table::write(allowed, &mut write)?,
-    })
 }
 
 #[cfg(test)]

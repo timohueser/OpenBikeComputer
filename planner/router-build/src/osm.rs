@@ -976,14 +976,6 @@ mod tests {
     }
 
     #[test]
-    fn a_profile_list_that_passes_the_manifest_limit_fails() {
-        let graph = fixture(&[way(10, &[1, 2], &[("highway", "path")])], &[1, 2], &[], Default::default());
-        // A million profiles need a manifest larger than format 9 allows.
-        let limits = crate::Limits { profiles: 1_000_000, bounds: [-1.0, -1.0, 1.0, 1.0] };
-        assert!(limits.check(&graph).is_err_and(|e| e.contains("manifest")));
-    }
-
-    #[test]
     fn source_tags_and_relation_roles_survive_graph_compilation() {
         let values = [
             ("highway", "tertiary"),
@@ -1189,35 +1181,14 @@ mod tests {
             (BIKE | FOOT | PUSH, FOOT | PUSH)
         );
         let profile = Profile::presets().into_iter().find(|p| p.name == "road").unwrap();
-        let mut objects = HashMap::new();
-        let manifest = crate::prepare(
-            &graph,
-            "nodes".into(),
-            [-1.0, -1.0, 1.0, 1.0],
-            &[profile],
-            vec![],
-            "test".into(),
-            |bytes| {
-                let key = planner_router::package::digest(bytes);
-                objects.insert(key.clone(), bytes.to_vec());
-                Ok(key)
-            },
-        )
-        .unwrap();
-        struct Memory(HashMap<String, Vec<u8>>);
-        impl planner_router::package::Source for Memory {
-            fn read(&self, key: &str) -> planner_router::Result<Vec<u8>> {
-                self.0.get(key).cloned().ok_or_else(|| planner_router::Error::MissingRegion(key.into()))
-            }
-        }
-        let package = planner_router::package::Package::open(Memory(objects), &serde_json::to_vec(&manifest).unwrap());
-        let table = planner_router::data::Selection::whole(package.unwrap()).closures().unwrap();
+        let region = crate::cells::memory(&graph, &[2], &[profile], [-1.0, -1.0, 1.0, 1.0]).unwrap();
+        let closing = |road, mode| region.closing(road, mode).unwrap();
         let arriving =
             |id: i64| graph.roads.iter().position(|r| !r.reversed && r.to as usize == point(id)).unwrap() as u32;
         let closure = |kind, condition: &str| Some(vec![Closure { kind, condition: condition.into() }]);
-        assert_eq!(table.closing(arriving(2), BIKE), closure(Kind::Seasonal, "Nov-Apr"));
-        assert_eq!(table.closing(arriving(3), PUSH), closure(Kind::Unclear, "barrier=yes"));
-        assert_eq!((table.closing(arriving(3), BIKE), table.closing(arriving(4), BIKE)), (None, None));
+        assert_eq!(closing(arriving(2), BIKE), closure(Kind::Seasonal, "Nov-Apr"));
+        assert_eq!(closing(arriving(3), PUSH), closure(Kind::Unclear, "barrier=yes"));
+        assert_eq!((closing(arriving(3), BIKE), closing(arriving(4), BIKE)), (None, None));
     }
 
     #[test]

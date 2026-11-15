@@ -229,11 +229,6 @@ pub fn verify(root: &Path, previous: Option<&Release>, release: &Release, store:
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
-    if routing_changed {
-        planner_router::open(&source.join("runtime/routing"))
-            .and_then(|graph| graph.verify())
-            .map_err(|e| e.to_string())?;
-    }
     let cells = |name: &str| {
         name == "routing/directory.bin" || name == "routing/package.json" || name.starts_with("routing/objects/")
     };

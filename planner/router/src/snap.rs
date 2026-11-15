@@ -1,10 +1,8 @@
 use crate::{
     geometry,
     model::{Point, Road},
-    package::CELL,
     Error, Result,
 };
-use std::collections::BTreeSet;
 
 /// The snap radius for a point with no road within `Policy::radius_m`, and for a point whose
 /// nearest road no route reaches. The client shows the gap. Farther away, the nearest road is often
@@ -90,17 +88,6 @@ pub fn window(point: Point, radius: f64) -> std::result::Result<[i32; 4], String
     let lat = (radius / 0.110).ceil() as i32 + 2;
     let lon = (radius / (0.110 * (point.lat as f64 * 1e-6).to_radians().cos())).ceil() as i32 + 2;
     Ok([point.lon - lon, point.lat - lat, point.lon + lon, point.lat + lat])
-}
-
-pub(crate) fn cells(point: Point, radius: f64) -> std::result::Result<BTreeSet<(i32, i32)>, String> {
-    let [west, south, east, north] = window(point, radius)?;
-    let mut result = BTreeSet::new();
-    for y in south.div_euclid(CELL)..=north.div_euclid(CELL) {
-        for x in west.div_euclid(CELL)..=east.div_euclid(CELL) {
-            result.insert((y, x));
-        }
-    }
-    Ok(result)
 }
 
 /// The attachment of `point` to road `id`, when the road is within `radius_m`.

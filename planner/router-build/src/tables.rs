@@ -49,6 +49,15 @@ impl Tables {
         self.levels.len()
     }
 
+    /// Tables of `profiles` whose slots are all empty: the package treats each cell as open.
+    pub fn none(cells: &Cells, profiles: usize) -> Self {
+        let counts = cells.counts.values();
+        let levels = (0..cells.levels())
+            .map(|k| Level { bytes: Column::default(), at: Column::filled(counts[k] as usize * profiles + 1, 0) })
+            .collect();
+        Self { profiles, levels }
+    }
+
     pub fn table(&self, level: usize, cell: usize, profile: usize) -> &[u8] {
         let Level { bytes, at } = &self.levels[level - 1];
         let k = cell * self.profiles + profile;

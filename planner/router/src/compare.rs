@@ -1,10 +1,11 @@
-//! The request set and the check that compare two engines on the two formats of one bake, or two
-//! layouts of one bake on the new engine, and the table for the choice of the download level.
+//! The request set and the check that compare two installs of one bake or of two bakes, also of
+//! two layouts, and the table for the choice of the download level.
 use crate::{
     cells::{self, Directory, Geometry, Topology},
-    data::RoutingData,
+    host::Host,
     install,
     model::{Point, Road, NO_ELEVATION},
+    region::Region,
     router::Response,
     snap::{Candidates, Policy, Position, REACH_M},
     Control, Error, Request, Router,
@@ -57,7 +58,7 @@ fn along(shape: &[Point], fraction: f64) -> Point {
 
 /// The candidates of `point` as the router snaps it: within 250 m, else within `REACH_M`. `None`
 /// when it has none or the data has no roads there.
-fn snap<P: RoutingData>(data: &P, point: Point, profile: &str) -> Option<Candidates> {
+fn snap<H: Host>(data: &Region<H>, point: Point, profile: &str) -> Option<Candidates> {
     let found = data.snap(point, profile, Policy::default()).ok()?;
     let found = if found.retained.is_empty() {
         data.snap(point, profile, Policy { radius_m: REACH_M, ..Policy::default() }).ok()?
@@ -71,8 +72,8 @@ fn snap<P: RoutingData>(data: &P, point: Point, profile: &str) -> Option<Candida
 /// point counts when it snaps. Request `i` has the kind `KINDS[kind(i, min_m)]`, and its later
 /// spots lie from `min_m` to `max_m` from its first. The list is shorter when 100 tries for each
 /// request do not give `count`, as for a profile that snaps nowhere in the bounds.
-pub fn requests<P: RoutingData>(
-    router: &Router<P>,
+pub fn requests<H: Host>(
+    router: &Router<H>,
     profile: &str,
     count: usize,
     seed: u64,
@@ -162,7 +163,7 @@ pub fn requests<P: RoutingData>(
     requests
 }
 
-/// How the two engines answered a request.
+/// How the two installs answered a request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
     Same,
@@ -191,7 +192,7 @@ pub struct Routed {
     pub time: Duration,
 }
 
-pub fn route<P: RoutingData>(router: &mut Router<P>, request: &Request) -> Routed {
+pub fn route<H: Host>(router: &mut Router<H>, request: &Request) -> Routed {
     let started = Instant::now();
     let result = router.routes(request, &Control::default());
     let answers = result.as_ref().map(answers).unwrap_or_default();
@@ -205,20 +206,20 @@ pub fn error_kind(error: &Error) -> String {
 }
 
 /// The coordinate (latitude, longitude) of `position`, which two layouts of one bake give alike.
-fn position_at<P: RoutingData>(data: &P, position: &Position) -> Option<(i32, i32)> {
+fn position_at<H: Host>(data: &Region<H>, position: &Position) -> Option<(i32, i32)> {
     let point = data.with_road(position.road, |road| along(&road.shape, position.fraction)).ok()?;
     Some((point.lat, point.lon))
 }
 
 /// The coordinates of the start and the end of each leg of `route`.
-fn leg_ends<P: RoutingData>(data: &P, route: &crate::Route) -> Result<Vec<[(i32, i32); 2]>, String> {
+fn leg_ends<H: Host>(data: &Region<H>, route: &crate::Route) -> Result<Vec<[(i32, i32); 2]>, String> {
     let at = |p: &Position| position_at(data, p).ok_or_else(|| format!("no road {}", p.road));
     route.legs.iter().map(|leg| Ok([at(&leg.start)?, at(&leg.end)?])).collect()
 }
 
 /// The coordinate of `position` and the two ends of its road, which tell the two directions of a
 /// road apart.
-fn pin_key<P: RoutingData>(data: &P, position: &Position) -> Option<[(i32, i32); 3]> {
+fn pin_key<H: Host>(data: &Region<H>, position: &Position) -> Option<[(i32, i32); 3]> {
     let ends = data.with_road(position.road, |road| [road.shape[0], road.shape[road.shape.len() - 1]]).ok()?;
     Some([position_at(data, position)?, (ends[0].lat, ends[0].lon), (ends[1].lat, ends[1].lon)])
 }
@@ -226,7 +227,7 @@ fn pin_key<P: RoutingData>(data: &P, position: &Position) -> Option<[(i32, i32);
 /// `request` with its pins on the roads of `new`, another layout of the bake of `old`: each pin
 /// becomes the candidate of its point in `new` at the same coordinate on a road with the same
 /// ends. `None` when one has none.
-pub fn repin<A: RoutingData, B: RoutingData>(old: &A, new: &B, request: &Request) -> Option<Request> {
+pub fn repin<A: Host, B: Host>(old: &Region<A>, new: &Region<B>, request: &Request) -> Option<Request> {
     let mut moved = request.clone();
     let last = request.points.len().checked_sub(1)?;
     for (pin, at) in [(&mut moved.start_position, 0), (&mut moved.end_position, last)] {
@@ -244,7 +245,7 @@ pub fn repin<A: RoutingData, B: RoutingData>(old: &A, new: &B, request: &Request
 
 /// Compares the two sides of a request. A difference is the `Err`. On two layouts (`layouts`), a
 /// route gives its reason, its cost and the coordinates of its leg ends, not its roads.
-pub fn verdict<A: RoutingData, B: RoutingData>(
+pub fn verdict<A: Host, B: Host>(
     old: &Router<A>,
     new: &Router<B>,
     a: &Routed,
@@ -317,9 +318,9 @@ pub fn verdict<A: RoutingData, B: RoutingData>(
     Ok(Outcome::Same)
 }
 
-/// Routes `request` on both routers of the two formats of one bake and compares the answers; also
+/// Routes `request` on both routers of two installs with the same road IDs and compares the answers; also
 /// gives the time of each side. A difference is the `Err`.
-pub fn check<A: RoutingData, B: RoutingData>(
+pub fn check<A: Host, B: Host>(
     old: &mut Router<A>,
     new: &mut Router<B>,
     request: &Request,
@@ -390,7 +391,7 @@ fn overheads(mut values: Vec<f64>) -> (usize, f64, f64) {
 /// 3 × 3 blocks of them that lie in the bounds with a tile of the bounds between them and the edge.
 /// Each road has the same installed bytes, so the overhead is a ratio of road counts.
 pub fn areas(folder: &Path) -> Result<Vec<Level>, String> {
-    let [west, south, east, north] = crate::open::cells(folder, true).map_err(|e| e.to_string())?.bounds();
+    let [west, south, east, north] = crate::open(folder, true).map_err(|e| e.to_string())?.bounds();
     let (bytes, plan) = install::installed(folder).map_err(|e| e.to_string())?;
     let directory = Directory::new(&bytes).map_err(|e| e.to_string())?;
     if plan.records.len() != directory.len() {

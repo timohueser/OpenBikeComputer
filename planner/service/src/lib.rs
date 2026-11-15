@@ -3,9 +3,9 @@
 mod http;
 pub mod native;
 #[cfg(feature = "http")]
-pub use http::{app, MAX_WORKERS};
+pub use http::app;
 
-use planner_router::{data::RoutingData, shape::LineRequest, Control, Error, Opened, Request, Router};
+use planner_router::{host::Maps, shape::LineRequest, Control, Error, Request, Router};
 use serde_json::{json, Value};
 use std::{
     panic::{catch_unwind, AssertUnwindSafe},
@@ -13,7 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub type Engine = Router<Opened>;
+pub type Engine = Router<Maps>;
 
 /// The request body limit of every call.
 const BODY_LIMIT: usize = 64 * 1024;
@@ -49,8 +49,7 @@ pub fn respond(router: &mut Engine, call: &str, body: &[u8], cancelled: &AtomicB
         Ok(Err(error)) => error_body(error),
         Err(_) => {
             // The panic can leave the router's caches half updated. A fork shares only complete data.
-            let budget = router.package().memory_budget();
-            *router = Router::new(router.package().fork(), budget);
+            *router = Router::new(router.package().fork());
             internal(&format!("A {call} call panicked; its router was rebuilt"))
         }
     })

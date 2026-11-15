@@ -53,8 +53,8 @@ pub static PLANNER_ROUTING_ROADS: Layer = work(step::ROADS);
 pub static PLANNER_ROUTING_COSTS: Layer = work(step::COSTS);
 /// The routing package, its grid and the route network overlays.
 pub static PLANNER_ROUTING: Layer = Layer {
-    revision: 6,
-    ..whole("planner/routing", planner_router::package::FORMAT, &[&ROUTER_SERVICE, &IOS_OFFLINE_ROUTER])
+    revision: 7,
+    ..whole("planner/routing", planner_router::cells::FORMAT, &[&ROUTER_SERVICE, &IOS_OFFLINE_ROUTER])
 };
 /// The search databases and the query model. Its format is the search schema of
 /// `specs/planner-release.md`.
@@ -94,18 +94,10 @@ const fn whole(name: &'static str, format: u32, readers: &'static [&'static Read
 }
 
 /// The files of a work layer hold router types: the closure sets, `Point` and the postcard
-/// `CostBasis` of the dictionary. Its format is the sum of the router `FORMAT` and the format of
-/// its own files, 3; each only grows. The three work layers share this format, so a change of the
-/// files of one bakes all three again.
+/// `CostBasis` of the dictionary. Its format only grows. The three work layers share this format,
+/// so a change of the files of one bakes all three again.
 const fn work(name: &'static str) -> Layer {
-    Layer {
-        name,
-        shape: Shape::Whole,
-        format: planner_router::package::FORMAT + 3,
-        revision: 1,
-        readers: &[],
-        cache: true,
-    }
+    Layer { name, shape: Shape::Whole, format: 12, revision: 1, readers: &[], cache: true }
 }
 const BASEMAP_SOURCES: [&str; 7] = [
     "protomaps-basemaps",
@@ -472,7 +464,7 @@ impl Planner {
                 "cell_sizes": config.routing.cell_sizes,
                 "download_level": config.routing.download_level,
             }),
-            outputs: vec!["routing".into(), "blocks".into(), "routes".into(), "cells".into()],
+            outputs: vec!["routing".into(), "routes".into(), "cells".into()],
             run: Run::Rust(&functions::ROUTING),
             client: Client::All,
         };

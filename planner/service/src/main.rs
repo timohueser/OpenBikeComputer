@@ -4,16 +4,13 @@ use tower_http::cors::CorsLayer;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let usage = "Usage: planner-service PACKAGE_DIRECTORY [--verify] | planner-service INSTALL_DIRECTORY --scrub | \
+    let usage = "Usage: planner-service INSTALL_DIRECTORY [--scrub] | \
                  planner-service INSTALL_DIRECTORY --missing DIRECTORY PACKAGE | \
                  planner-service INSTALL_DIRECTORY --install DIRECTORY PACKAGE OBJECTS THREADS | \
                  planner-service --formats | planner-service --workers";
     let directory = std::env::args().nth(1).ok_or(usage)?;
     if directory == "--formats" {
-        let formats = serde_json::json!({
-            "planner/routing": planner_router::package::FORMAT,
-            "planner/routing-cells": planner_router::cells::FORMAT,
-        });
+        let formats = serde_json::json!({ "planner/routing": planner_router::cells::FORMAT });
         println!("{formats}");
         return Ok(());
     }
@@ -39,17 +36,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("Each installed file has its SHA-256");
         return Ok(());
     }
-    if std::env::args().nth(2).as_deref() == Some("--verify") {
-        let path = Path::new(&directory);
-        planner_router::open(path)?.verify()?;
-        eprintln!("Package object closure verified");
-        return Ok(());
-    }
     let address = std::env::var("ROUTE_LISTEN").unwrap_or_else(|_| "127.0.0.1:8788".into());
     let workers = workers()?;
-    // The install of format 10 that the follower names goes before the package of the argument.
-    let cells = std::env::var_os("ROUTE_CELLS");
-    let mut app = planner_service::app(cells.as_deref().map_or(Path::new(&directory), Path::new), workers)?;
+    let mut app = planner_service::app(Path::new(&directory), workers)?;
     if let Ok(origin) = std::env::var("ROUTE_ORIGIN") {
         app = app.layer(
             CorsLayer::new()
@@ -74,12 +63,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// The routers of the service: `ROUTE_WORKERS`, else one for each CPU up to `MAX_WORKERS`.
-/// `available_parallelism` obeys the CPU affinity and, on cgroup v2, the systemd `CPUQuota`.
+/// The routers of the service: `ROUTE_WORKERS`, else one for each CPU. `available_parallelism`
+/// obeys the CPU affinity and, on cgroup v2, the systemd `CPUQuota`.
 fn workers() -> Result<usize, std::num::ParseIntError> {
     match std::env::var("ROUTE_WORKERS") {
         Ok(count) => count.parse(),
-        Err(_) => Ok(std::thread::available_parallelism().map_or(1, |n| n.get()).min(planner_service::MAX_WORKERS)),
+        Err(_) => Ok(std::thread::available_parallelism().map_or(1, |n| n.get())),
     }
 }
 

@@ -3,10 +3,9 @@ use axum::{
     http::{Request, StatusCode},
 };
 use planner_router::{
-    directory::Writer,
     install,
     model::{Pace, Point, Profile, Road, Surface, BIKE, FOOT, NO_ELEVATION},
-    Opened, Router,
+    Router,
 };
 use planner_router_build::cells::{write, Info, Input};
 use planner_router_build::source::{Builder, Tags, Ways};
@@ -14,6 +13,7 @@ use planner_router_build::Graph;
 use planner_service::native;
 use std::{
     ffi::{c_char, CStr, CString},
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::atomic::AtomicBool,
 };
@@ -66,39 +66,57 @@ fn one_road() -> Graph {
     graph
 }
 
-#[test]
-fn app_refuses_a_worker_count_outside_its_memory_limit() {
-    let missing = std::path::Path::new("/nonexistent-routing-package");
-    for workers in [0, planner_service::MAX_WORKERS + 1] {
-        assert!(matches!(planner_service::app(missing, workers), Err(planner_router::Error::InvalidRequest(_))));
+/// A folder of the test that `Drop` removes.
+struct Cleanup(PathBuf);
+
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
     }
+}
+
+/// The package of format 10 of `one_road()` for `touring` in `scratch/objects`, and its install of
+/// all cells in `scratch/install`. Returns the install folder and `directory.bin`.
+fn install(scratch: &Path) -> (PathBuf, Vec<u8>) {
+    let mut graph = one_road();
+    planner_router_build::layout::order(&mut graph, &[8, 32, 128], None).unwrap();
+    let (objects, target) = (scratch.join("objects"), scratch.join("install"));
+    let bounds = [-1.0, -1.0, 1.0, 1.0];
+    let profiles = &Profile::presets()[..1];
+    let topology = planner_router_build::base::Topology::new(&graph.roads, graph.points.len()).unwrap();
+    let costs = planner_router_build::costs(&graph, &topology, profiles).unwrap();
+    let (first, head) = (topology.first.values(), topology.head.values());
+    let tables = planner_router_build::tables::build(&graph.cells, first, head, &costs.columns(), 16).unwrap();
+    let info = Info { region: "test".into(), bounds, source_sha256: vec![], attribution: "test".into() };
+    let input = Input {
+        graph: &graph,
+        topology: &topology,
+        costs: &costs,
+        tables: &tables,
+        sizes: &[8, 32, 128],
+        download_level: 2,
+        info,
+        level: 3,
+    };
+    write(&input, &objects).unwrap();
+    let (directory, info) =
+        (std::fs::read(objects.join("directory.bin")).unwrap(), std::fs::read(objects.join("package.json")).unwrap());
+    let fetch = |name: &str| std::fs::File::open(objects.join(name));
+    install::install(&target, (&directory, &info), (None, None), 1, fetch).unwrap();
+    (target, directory)
+}
+
+#[test]
+fn app_refuses_no_workers() {
+    let missing = Path::new("/nonexistent-routing-install");
+    assert!(matches!(planner_service::app(missing, 0), Err(planner_router::Error::InvalidRequest(_))));
 }
 
 #[tokio::test]
 async fn http_contract_uses_a_closed_package_and_returns_typed_failures() {
-    let path = std::env::temp_dir().join(format!("route-server-test-{}", std::process::id()));
-    std::fs::create_dir(&path).unwrap();
-    let mut writer = Writer::create(&path).unwrap();
-    struct Cleanup(std::path::PathBuf);
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-    let _cleanup = Cleanup(path.clone());
-    let graph = one_road();
-    let manifest = planner_router_build::prepare(
-        &graph,
-        "test".into(),
-        [-1.0, -1.0, 1.0, 1.0],
-        &Profile::presets()[..1],
-        vec![],
-        "test".into(),
-        |bytes| writer.write(bytes),
-    )
-    .unwrap();
-    writer.finish().unwrap();
-    std::fs::write(path.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
+    let scratch = std::env::temp_dir().join(format!("route-server-test-{}", std::process::id()));
+    let _cleanup = Cleanup(scratch.clone());
+    let (path, _) = install(&scratch);
     let app = planner_service::app(&path, 1).unwrap();
     let response = app.clone().oneshot(Request::get("/v1/region").body(Body::empty()).unwrap()).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
@@ -216,7 +234,7 @@ async fn http_contract_uses_a_closed_package_and_returns_typed_failures() {
     assert_eq!(answer["routes"][0]["package"], region["package"]);
     // SAFETY: All native calls have completed; the handle is closed once.
     unsafe { native::planner_router_close(native_router) };
-    let mut router = Router::new(planner_router::open(&path).unwrap(), 128 * 1024 * 1024);
+    let mut router = Router::new(planner_router::open(&path, false).unwrap());
     for (call, cancelled, status, code) in [("route", true, 408, "cancelled"), ("other", false, 404, "not_found")] {
         let (actual, answer) = planner_service::respond(&mut router, call, &body, &AtomicBool::new(cancelled));
         let answer: serde_json::Value = serde_json::from_slice(&answer).unwrap();
@@ -227,77 +245,34 @@ async fn http_contract_uses_a_closed_package_and_returns_typed_failures() {
 #[tokio::test]
 async fn the_service_opens_an_install_of_format_10() {
     let scratch = std::env::temp_dir().join(format!("route-server-cells-{}", std::process::id()));
-    struct Cleanup(std::path::PathBuf);
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
     let _cleanup = Cleanup(scratch.clone());
-    let mut graph = one_road();
-    planner_router_build::layout::order(&mut graph, &[8, 32, 128], None).unwrap();
-    let (pages, objects, target) = (scratch.join("pages"), scratch.join("objects"), scratch.join("install"));
-    std::fs::create_dir_all(&pages).unwrap();
-    let mut writer = Writer::create(&pages).unwrap();
-    let bounds = [-1.0, -1.0, 1.0, 1.0];
-    let profiles = &Profile::presets()[..1];
-    let manifest =
-        planner_router_build::prepare(&graph, "test".into(), bounds, profiles, vec![], "test".into(), |bytes| {
-            writer.write(bytes)
-        })
-        .unwrap();
-    writer.finish().unwrap();
-    std::fs::write(pages.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
-    let topology = planner_router_build::base::Topology::new(&graph.roads, graph.points.len()).unwrap();
-    let costs = planner_router_build::costs(&graph, &topology, profiles).unwrap();
-    let (first, head) = (topology.first.values(), topology.head.values());
-    let tables = planner_router_build::tables::build(&graph.cells, first, head, &costs.columns(), 16).unwrap();
-    let info = Info { region: "test".into(), bounds, source_sha256: vec![], attribution: "test".into() };
-    let input = Input {
-        graph: &graph,
-        topology: &topology,
-        costs: &costs,
-        tables: &tables,
-        sizes: &[8, 32, 128],
-        download_level: 2,
-        info,
-        level: 3,
-    };
-    write(&input, &objects).unwrap();
-    let (directory, info) =
-        (std::fs::read(objects.join("directory.bin")).unwrap(), std::fs::read(objects.join("package.json")).unwrap());
-    let fetch = |name: &str| std::fs::File::open(objects.join(name));
-    install::install(&target, (&directory, &info), (None, None), 1, fetch).unwrap();
-
+    let (target, directory) = install(&scratch);
     let app = planner_service::app(&target, 1).unwrap();
     let response = app.clone().oneshot(Request::get("/v1/region").body(Body::empty()).unwrap()).await.unwrap();
     let region: serde_json::Value =
         serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await.unwrap()).unwrap();
-    assert_eq!(region["package"], planner_router::package::digest(&directory));
+    assert_eq!(region["package"], planner_router::region::digest(&directory));
     let body = r#"{"points":[[0.002,0],[0.008,0]],"profile":"touring"}"#;
     let request = Request::post("/v1/route").header("content-type", "application/json").body(Body::from(body)).unwrap();
     assert_eq!(app.oneshot(request).await.unwrap().status(), StatusCode::OK);
 
     std::fs::remove_file(target.join(install::MARKER)).unwrap();
     assert!(matches!(planner_service::app(&target, 1), Err(planner_router::Error::MissingRegion(_))));
-    // The program opens the folder of `ROUTE_CELLS`, not its argument: it does not start on the
-    // install without its marker, also when the argument is a package that opens.
-    std::fs::write(pages.join("directory.bin"), &directory).unwrap();
+    // The program does not start on the install of its argument without the marker.
     let mut service = Command::new(env!("CARGO_BIN_EXE_planner-service"));
-    service.arg(&pages).env("ROUTE_CELLS", &target).env("ROUTE_LISTEN", "127.0.0.1:0").stderr(Stdio::null());
+    service.arg(&target).env("ROUTE_LISTEN", "127.0.0.1:0").stderr(Stdio::null());
     let mut service = service.spawn().unwrap();
     let ended = (0..100).find_map(|_| {
         std::thread::sleep(std::time::Duration::from_millis(100));
         service.try_wait().unwrap()
     });
     let _ = service.kill();
-    assert!(ended.is_some_and(|status| !status.success()), "the service started on the package of its argument");
-    assert!(matches!(planner_router::open(&pages).unwrap(), Opened::Pages(_)));
+    assert!(ended.is_some_and(|status| !status.success()), "the service started on an incomplete install");
 }
 
 #[test]
 fn the_program_prints_the_format_of_each_package_that_it_reads() {
     let output = Command::new(env!("CARGO_BIN_EXE_planner-service")).arg("--formats").output().unwrap();
     assert!(output.status.success());
-    assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), r#"{"planner/routing":9,"planner/routing-cells":10}"#);
+    assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), r#"{"planner/routing":10}"#);
 }
