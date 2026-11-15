@@ -4,7 +4,7 @@ use crate::{
     Graph,
 };
 use planner_router::{
-    model::{Point, Profile, Road, Surface, BIKE, FOOT, PUSH},
+    model::{Profile, Road, Surface, BIKE, FOOT, PUSH},
     package::{digest, Package},
 };
 use std::sync::Arc;
@@ -174,7 +174,14 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
         .map(|k| [vertices[k][0] as i32, vertices[k][1] as i32])
         .collect();
     let mut router = Router::new(Selection::whole(package.fork()), 768 << 20);
-    let routed = router.route(&shape::request("hiking/alpine", &plan, vec![]), &control()).unwrap().totals();
+    let routed = router.route(&shape::request("hiking/alpine", &plan, vec![]), &control()).unwrap();
+    let profile = trail["profile_m"].as_array().unwrap();
+    let height = |p: &Point| json!(p.elevation.round() as i32);
+    assert_eq!(
+        [&profile[0], &profile[profile.len() - 1]],
+        [&height(&routed.points[0]), &height(routed.points.last().unwrap())]
+    );
+    let routed = routed.totals();
     assert!(routed.ascent_m > 0);
     assert_eq!(
         [&trail["length_m"], &trail["ascent_m"], &trail["descent_m"]],
@@ -221,6 +228,9 @@ fn profile_gives_the_height_at_each_100_m_and_at_the_end() {
 
     let gap = [Some(0.0), Some(10.0), None, Some(30.0), Some(40.0)];
     let distances = [0.0, 100.0, 200.0, 300.0, 400.0];
-    assert_eq!(profile(&distances, &gap, 400.0), Some(vec![Some(0), None, None, Some(30), Some(40), Some(40)]));
+    assert_eq!(profile(&distances, &gap, 400.0), Some(vec![Some(0), Some(10), None, Some(30), Some(40), Some(40)]));
+    // The ends fall on the end points, so they keep their known heights beside an unknown point.
+    let ends = profile(&[0.0, 100.0, 250.0], &[Some(5.0), None, Some(20.0)], 250.0);
+    assert_eq!(ends, Some(vec![Some(5), None, None, Some(20)]));
     assert_eq!(profile(&distances, &[None; 5], 400.0), None);
 }

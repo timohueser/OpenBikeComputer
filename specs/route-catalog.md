@@ -126,11 +126,14 @@ of 100, so a route of 300 m has 5 entries.
 
 The distance along the plan route is the sum of the distances between its points, scaled so that
 the whole route has `length_m`. The lengths of `grades_m` use the same scale. A height is the
-elevation of the plan route at that distance: the straight line between the point before it and the
-point after it, rounded to the metre. An entry is `null` when one of these two points has no height.
-`profile_m` is absent when no height of the plan route is known.
+elevation of the plan route at that distance, rounded to the metre. When the distance is that of a
+point, the height is the height of that point, and the entry is `null` when that point has no
+height. Otherwise the height is on the straight line between the point before it and the point after
+it, and the entry is `null` when one of these two points has no height. `profile_m` is absent when
+no height of the plan route is known.
 
-The profile is not smoothed, so its climb can differ from `ascent_m`. A reader that needs the height
+The profile samples the smoothed heights that `ascent_m` and `descent_m` come from. Its climb can
+differ from `ascent_m` because it has only one height for each 100 m. A reader that needs the height
 at a vertex of `line_udeg` takes the profile at the share of the line's length that the vertex has.
 On a winding route this height is some metres off. The profile is for a picture and for the pick of
 a route in TrailView, not for a figure.
@@ -195,8 +198,8 @@ A one-way stage of 3.7 km in cell `9-267-178`, with one shaping point:
  "line_udeg":[8004512,47873120,9210,-6400,8800,-11500,6500,-4200,5510,-2100],
  "loop":false,"name":"Mühlbach-Weg, Etappe 1","operator":"Schwarzwaldverein",
  "parent":2345678,
- "profile_m":[612,618,625,631,640,652,661,668,676,684,690,699,708,716,725,733,741,748,752,
-              760,768,773,779,784,788,780,768,751,733,712,694,671,650,628,610,590,571,555,545],
+ "profile_m":[620,618,625,631,640,652,661,668,676,684,690,699,708,716,725,733,741,748,752,
+              760,768,773,779,784,788,780,768,751,733,712,694,671,650,628,610,590,571,555,553],
  "rank":1,"ref":"MW","stage":1,"symbol":"yellow:white:yellow_diamond","via":[2]}
 ```
 

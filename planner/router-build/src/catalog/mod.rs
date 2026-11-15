@@ -6,7 +6,7 @@ use crate::source::{Data, Id, Relation, Tags};
 use planner_router::{
     data::{RoutingData, Selection},
     directory::Directory,
-    model::{Profile, NO_ELEVATION},
+    model::{Point, Profile, NO_ELEVATION},
     package::Source,
     shape::{self, distance, Failure, Limits, P},
     Control, Router,
@@ -543,12 +543,7 @@ fn route<D: RoutingData>(
     }
     record.insert("cells".into(), json!(cell_ids(&cover)));
     record.insert("line_udeg".into(), json!(encode(&simple)));
-    let walked: Vec<f64> = std::iter::once(0.0)
-        .chain(geometry.windows(2).scan(0.0, |sum, w| {
-            *sum += distance(w[0], w[1]);
-            Some(*sum)
-        }))
-        .collect();
+    let walked = planner_router::geometry::cumulative(&plan.route.points);
     let elevations: Vec<Option<f32>> =
         plan.route.points.iter().map(|p| (p.elevation != NO_ELEVATION).then_some(p.elevation)).collect();
     if let Some(profile) = profile(&walked, &elevations, totals.distance_m as f64) {
@@ -583,15 +578,16 @@ fn profile(distances_m: &[f64], elevations: &[Option<f32>], length_m: f64) -> Op
     if distances_m.len() < 2 || elevations.iter().all(Option::is_none) {
         return None;
     }
+    // `geometry::at` takes the height of a point that an entry falls on, and else the straight
+    // line between the points around it.
+    let points: Vec<Point> =
+        elevations.iter().map(|e| Point { lat: 0, lon: 0, elevation: e.unwrap_or(NO_ELEVATION) }).collect();
     let walked = distances_m[distances_m.len() - 1];
     let steps = (length_m / PROFILE_STEP_M).floor() as usize;
     let at = |along: f64| {
         let u = if length_m > 0.0 { (along / length_m * walked).min(walked) } else { 0.0 };
-        let k = distances_m.partition_point(|&d| d <= u).clamp(1, distances_m.len() - 1) - 1;
-        let (a, b) = (elevations[k]?, elevations[k + 1]?);
-        let span = distances_m[k + 1] - distances_m[k];
-        let share = if span > 0.0 { (u - distances_m[k]) / span } else { 0.0 };
-        Some((a as f64 + (b - a) as f64 * share).round() as i32)
+        let height = planner_router::geometry::at(&points, distances_m, u).elevation;
+        (height != NO_ELEVATION).then(|| height.round() as i32)
     };
     Some((0..=steps).map(|i| i as f64 * PROFILE_STEP_M).chain([length_m]).map(at).collect())
 }
