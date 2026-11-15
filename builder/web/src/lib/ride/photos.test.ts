@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { FitSample } from '../core/fit';
-import { photoSample, placePhoto } from './photos';
+import { browserZone, photoSample, placePhoto } from './photos';
 
 const start = Date.UTC(2026, 9, 24, 7) / 1000;
 /** 60 samples 10 s apart, about 50 m each: 30 to the north, then back to the south on the same line. */
@@ -31,6 +31,25 @@ describe('the place of a photo on a ride', () => {
         expect(placePhoto(samples, { clock: start + 7200 + 400, place: placeOf(40) }, utc)).toEqual({ time: start + 400 });
         // No hour is in the ride.
         expect(placePhoto(samples, { clock: start + 1800 + 400, place: placeOf(40) }, utc)).toBeUndefined();
+    });
+
+    it('takes no other hour for a photo whose GPS place is far from the line', () => {
+        // Seven hours after the ride, 3 km east of it: the hour that is in the ride does not make it a photo of the ride.
+        expect(placePhoto(samples, { clock: start + 7 * 3600 + 400, place: [8.04, 46.91] }, utc)).toBeUndefined();
+        // In the ride by the zone of the browser, the photo keeps that time, far place or not.
+        expect(placePhoto(samples, { clock: start + 400, place: [8.04, 46.91] }, utc)).toEqual({ time: start + 400 });
+    });
+
+    it('reads the zone of the browser on a day with daylight time and on a day with none', () => {
+        const zone = process.env.TZ;
+        process.env.TZ = 'Europe/Zurich';
+        try {
+            expect(browserZone(Date.UTC(2026, 6, 1, 12) / 1000)).toBe(7200);
+            expect(browserZone(Date.UTC(2026, 0, 15, 12) / 1000)).toBe(3600);
+        } finally {
+            if (zone === undefined) delete process.env.TZ;
+            else process.env.TZ = zone;
+        }
     });
 
     it('puts a photo with no time at the first pass of the line within 100 m of its GPS place', () => {

@@ -29,11 +29,14 @@ export class Library {
     private listeners = new Set<(store: StoreName, key: string) => void>();
     private written = false;
     private cleared = false;
+    /** Another tab changed the version of the database; each later call fails. */
+    private outdated = false;
 
     /** Without `factory`, `open` reads `indexedDB`, so a browser that blocks storage gives a rejected promise. */
     constructor(private factory?: IDBFactory) {}
 
     private open(): Promise<IDBDatabase> {
+        if (this.outdated) return Promise.reject(new Error('The app was updated in another tab. Reload the page.'));
         return this.database ??= new Promise<IDBDatabase>((resolve, reject) => {
             const request = (this.factory ?? indexedDB).open('obc-library', 2);
             // Only the stores that are missing: a database of an earlier version keeps its records.
@@ -47,7 +50,9 @@ export class Library {
             };
             request.onsuccess = () => {
                 const db = request.result;
-                db.onversionchange = () => db.close();
+                // A newer app in another tab upgrades the database: this tab lets it, and its code no longer fits
+                // the database.
+                db.onversionchange = () => { db.close(); this.outdated = true; };
                 resolve(db);
             };
             request.onerror = () => reject(request.error);

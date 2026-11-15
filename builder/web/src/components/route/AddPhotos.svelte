@@ -8,7 +8,7 @@
     import { placePhoto, type PhotoPlace } from '../../lib/ride/photos';
 
     /** The window "Add photos": it reads the chosen files, shows the photos that are of the ride as small pictures, and
-     * says how many are not and how many the browser cannot open. "Add" then stores one photo at a time. A close of the
+     * says how many are not, how many are HEIC files and how many the browser cannot open. "Add" then stores one photo at a time. A close of the
      * window stops the work; the photos that are stored stay. */
     let { library, ride, samples, files, onClose }: {
         library: Library;
@@ -21,7 +21,7 @@
 
     /** The photos of the ride, with the address of a small picture. */
     let found = $state.raw<{ file: File; at: PhotoPlace; url: string }[]>([]);
-    /** Files read; photos that are not of the ride; other files that the browser cannot open; HEIC files that it cannot open. */
+    /** Files read; photos that are not of the ride; files that the browser cannot open; HEIC files. */
     let read = $state(0), outside = $state(0), closed = $state(0), heic = $state(0);
     /** Photos stored, while "Add" works. */
     let added = $state<number>();
@@ -38,15 +38,17 @@
         const urls: string[] = [];
         void (async () => {
             for (const file of files) {
-                const at = placePhoto(samples, await photoFacts(file));
+                // No reader gives the time of a HEIC file, so it is no photo of the ride in any browser, also in one
+                // that opens it.
+                const isHeic = /hei[cf]/.test(file.type) || /\.hei[cf]$/i.test(file.name);
+                const at = isHeic ? undefined : placePhoto(samples, await photoFacts(file));
                 // A JPEG file with no place needs no try: the browser opens it. Another kind of file can be a photo
                 // with no time, or a file that the browser cannot open.
-                const small = at || file.type !== 'image/jpeg' ? await smallPicture(file).catch(() => null) : undefined;
+                const small = isHeic ? undefined : at || file.type !== 'image/jpeg' ? await smallPicture(file).catch(() => null) : undefined;
                 if (!live) return;
-                if (small === null) {
-                    if (/hei[cf]/.test(file.type) || /\.hei[cf]$/i.test(file.name)) heic++;
-                    else closed++;
-                } else if (at && small) {
+                if (isHeic) heic++;
+                else if (small === null) closed++;
+                else if (at && small) {
                     urls.push(URL.createObjectURL(small));
                     found = [...found, { file, at, url: urls.at(-1)! }];
                 } else outside++;
@@ -88,7 +90,7 @@
                         {outside === 1 ? 'It has no time, or its time is' : 'They have no time, or their time is'} not in the ride.</p>
                 {/if}
                 {#if heic}
-                    <p><strong>This browser cannot open {count(heic)}.</strong>
+                    <p><strong>{count(heic)} cannot be added.</strong>
                         {heic === 1 ? 'It is a HEIC file. Export it as JPEG.' : 'They are HEIC files. Export them as JPEG.'}</p>
                 {/if}
                 {#if closed}

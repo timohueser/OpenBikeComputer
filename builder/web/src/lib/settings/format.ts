@@ -58,3 +58,6 @@ export function formatSpeed(metresPerSecond: number): string {
     if (!Number.isFinite(metresPerSecond)) return NONE;
     return settings.units === 'mi' ? `${number(metresPerSecond * 3600 / MILE, 1)}${SPACE}mph` : `${number(metresPerSecond * 3.6, 1)}${SPACE}km/h`;
 }
+
+/** "09:05": the time of day of a Unix time in seconds, in the zone of the browser. */
+export const formatClock = (seconds: number): string => new Date(seconds * 1000).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });

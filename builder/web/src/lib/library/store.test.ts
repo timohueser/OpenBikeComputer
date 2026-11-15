@@ -142,6 +142,18 @@ describe('library store', () => {
         await library.close();
     });
 
+    it('fails each call with one plain sentence after another tab upgrades the database', async () => {
+        const factory = new IDBFactory(), library = new Library(factory);
+        await library.saveRoute(route('a'));
+        await new Promise<void>((resolve, reject) => {
+            const request = factory.open('obc-library', 3);
+            request.onsuccess = () => { request.result.close(); resolve(); };
+            request.onerror = request.onblocked = () => reject(new Error('The upgrade did not run.'));
+        });
+        await expect(library.routes()).rejects.toThrow('The app was updated in another tab. Reload the page.');
+        await expect(library.saveRoute(route('b'))).rejects.toThrow('The app was updated in another tab. Reload the page.');
+    });
+
     it('adds a photo one time and only to a stored ride, and removes the photos of a ride with the ride', async () => {
         const library = new Library(new IDBFactory()), [first, second] = ['20260801T070000Z', '20260802T070000Z'];
         await library.addRide(ride(first), new Blob(['ride']));

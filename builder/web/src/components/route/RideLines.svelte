@@ -9,7 +9,7 @@
     import { duration } from '../../lib/planner/editor';
     import { distanceAxis, extent, outOfStops, range, sampleAt, samplesIn, smooth, speeds, stops, thin, timeAxis } from '../../lib/ride/lines';
     import { partNumbers, type Channels, type RideClimb } from '../../lib/ride/numbers';
-    import { formatAlong, formatDistance, formatHeight, formatSpeed } from '../../lib/settings/format';
+    import { formatAlong, formatClock, formatDistance, formatHeight, formatSpeed } from '../../lib/settings/format';
 
     /** The bottom card of the Ride page: one row for each line of the ride on its axis, with the average of the
      * line under its name and its scale after the row. A line with no value has no row. A drag selects a part; a click
@@ -74,7 +74,6 @@
     const halts = $derived(stops(samples));
     /** The stops on the axis. */
     const found = $derived(halts.map(stop => ({ ...stop, from: xs[stop.first], to: xs[stop.last] })));
-    const clock = (seconds: number) => new Date(seconds * 1000).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
     const values = $derived<Record<Key, (number | undefined)[]>>({
         elevation: samples.map(sample => sample.elevationM),
         speed: smooth(samples, speeds(samples), SMOOTH_S),
@@ -110,7 +109,7 @@
     const partText = $derived.by(() => {
         if (!part) return '';
         const [from, to] = [axis.xs[part[0]] * axis.lengthM, axis.xs[part[1]] * axis.lengthM];
-        return `${byTime ? `${clock(samples[part[0]].timeS)} to ${clock(samples[part[1]].timeS)}` : `${formatAlong(from)} to ${formatAlong(to)}`} · ${formatDistance(to - from)}`;
+        return `${byTime ? `${formatClock(samples[part[0]].timeS)} to ${formatClock(samples[part[1]].timeS)}` : `${formatAlong(from)} to ${formatAlong(to)}`} · ${formatDistance(to - from)}`;
     });
     /** The start, the end, then round distances; on the time axis the time of the start and of the end, then whole
      * times of the day. */
@@ -119,8 +118,8 @@
         const { start: first, seconds } = time, day = new Date(first * 1000);
         const step = [1, 5, 10, 15, 30, 60, 120, 240].find(minutes => seconds / 60 / minutes <= Math.max(1, width / CLOCK_PX)) ?? 480;
         const minute = day.getHours() * 60 + day.getMinutes() + day.getSeconds() / 60, whole = [];
-        for (let m = Math.ceil(minute / step) * step; (m - minute) * 60 < seconds; m += step) whole.push({ at: (m - minute) * 60 / seconds, label: clock(first + (m - minute) * 60) });
-        return fitTicks([{ at: 0, label: clock(first) }, { at: 1, label: clock(first + seconds) }, ...whole], width);
+        for (let m = Math.ceil(minute / step) * step; (m - minute) * 60 < seconds; m += step) whole.push({ at: (m - minute) * 60 / seconds, label: formatClock(first + (m - minute) * 60) });
+        return fitTicks([{ at: 0, label: formatClock(first) }, { at: 1, label: formatClock(first + seconds) }, ...whole], width);
     });
     /** The left edge and the width of the mark of a stop on the axis, in pixels: around the middle of the stop. */
     const markOf = (stop: { from: number; to: number }) => {
@@ -151,7 +150,7 @@
         if (pointer === undefined) return '';
         const at = pointer * width, dot = dots.find(dot => Math.abs(at - dot.left) <= DOT_PX);
         const minutes = stopAt && Math.round(stopAt.seconds / 60);
-        return [byTime ? clock(time.start + pointer * time.seconds) : formatDistance(pointer * axis.lengthM),
+        return [byTime ? formatClock(time.start + pointer * time.seconds) : formatDistance(pointer * axis.lengthM),
             ...minutes === undefined ? [] : [`stop ${minutes < 60 ? `${minutes} min` : duration(minutes / 60)}`],
             ...dot ? [dot.count > 1 ? `${dot.count} photos` : 'photo'] : []].join(' · ');
     });

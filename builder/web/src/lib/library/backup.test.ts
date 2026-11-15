@@ -42,6 +42,10 @@ describe('library backup', () => {
         // A file with no photos has no `photos` field.
         const older = await edited(backup, ({ photos: _, ...json }) => json);
         expect(await loadBackup(new Library(new IDBFactory()), older)).toMatchObject({ routes: 1, rides: 2, photos: 0 });
+        // A reader ignores a field of the envelope and an entry that it does not know.
+        const later = await zip([...(await unzip(await edited(backup, json => ({ ...json, later: [1] }))))].map(([name, data]) => ({ name, data }))
+            .concat({ name: 'later/a.bin', data: new Blob(['later']) }));
+        expect(await loadBackup(new Library(new IDBFactory()), later)).toMatchObject({ routes: 1, rides: 2, photos: 0 });
     });
 
     it('brings back each photo with its copy and a new small picture, one time, also for a ride that the library has', async () => {

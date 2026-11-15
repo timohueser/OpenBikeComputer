@@ -22,7 +22,7 @@
     import { fitSport, ridePoints, rideSamples } from '../lib/ride/samples';
     import { router } from '../lib/router.svelte';
     import { ROUTES } from '../lib/routes';
-    import { formatAlong } from '../lib/settings/format';
+    import { formatAlong, formatClock } from '../lib/settings/format';
     import { settings } from '../lib/settings/settings.svelte';
 
     let { library, active }: { library: Library; active: boolean } = $props();
@@ -63,8 +63,7 @@
     const listed = $derived.by(() => {
         if (!samples) return [];
         const { xs, lengthM } = distanceAxis(samples);
-        const clock = (seconds: number) => new Date(seconds * 1000).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
-        return photos.map(({ id, url, sample, time }) => ({ id, url, text: [formatAlong(xs[sample] * lengthM), ...time === null ? [] : [clock(time)]].join(' · ') }));
+        return photos.map(({ id, url, sample, time }) => ({ id, url, text: [formatAlong(xs[sample] * lengthM), ...time === null ? [] : [formatClock(time)]].join(' · ') }));
     });
 
     // The record loads again after each write of this ride, the file only for a new key.
@@ -122,20 +121,17 @@
         return () => { live = false; stop(); urls.forEach(url => URL.revokeObjectURL(url)); };
     });
 
-    /** A drag of files over the page, while the page shows and no window is open. */
-    const filesOver = (event: DragEvent) => active && !!samples && !!event.dataTransfer?.types.includes('Files') && !document.querySelector('dialog:modal');
-
-    function drag(event: DragEvent) {
-        if (!filesOver(event)) return;
+    /** A drag of files while the page shows. The page takes each one, so the browser never opens a dropped file in
+     * place of the app; it adds the files only with a ride that is read and with no window open. */
+    function filesOver(event: DragEvent) {
+        if (!active || !event.dataTransfer?.types.includes('Files')) return false;
         event.preventDefault();
-        dropping = true;
+        return !!samples && !document.querySelector('dialog:modal');
     }
 
     function drop(event: DragEvent) {
         dropping = false;
-        if (!filesOver(event)) return;
-        event.preventDefault();
-        chosen = [...event.dataTransfer!.files];
+        if (filesOver(event)) chosen = [...event.dataTransfer!.files];
     }
 
     /** Runs a library action; its error shows under the title. */
@@ -179,7 +175,7 @@
 
 {#snippet partSwitch()}<Switch label="Only the selected part" bind:checked={onlyPart} />{/snippet}
 
-<svelte:window ondragover={drag} ondrop={drop} ondragleave={event => { if (!event.relatedTarget) dropping = false; }} />
+<svelte:window ondragover={event => { dropping = filesOver(event); }} ondrop={drop} ondragleave={event => { if (!event.relatedTarget) dropping = false; }} />
 <input bind:this={picker} type="file" accept="image/*" multiple hidden
     onchange={event => { const files = [...event.currentTarget.files ?? []]; event.currentTarget.value = ''; if (files.length) chosen = files; }} />
 
