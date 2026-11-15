@@ -1566,24 +1566,22 @@ fn decks<'a>(
     })
 }
 
-/// The ceiling at q: the least over the decks near q of their bound inside their stroke (`decks`), past it
-/// rising at `face_max` per metre and letting go as a cone does over `ceiling_release_m`, so the ground that it
-/// bounds has no step; infinite where no deck is near.
-fn ceiling(b: &Block, q: [f64; 2], segs: &[u32], p: &HeightRules) -> f64 {
-    decks(b, q, segs, p)
-        .filter(|&(out, _, drop, _)| out < p.ceiling_release_m && drop > 0.0)
-        .map(|(out, base, ..)| base + p.face_max * out + release(out, p.ceiling_release_m, p).1)
-        .fold(f64::INFINITY, f64::min)
-}
-
-/// The floor at q over the plain terrain t: the ceiling with the sign turned, for the bores near q (their roof's top
-/// and its least plate inside their stroke, falling past it), each at most its lift over t; minus infinity where no
-/// bore is near.
-fn floor(b: &Block, q: [f64; 2], segs: &[u32], t: f64, p: &HeightRules) -> f64 {
-    decks(b, q, segs, p)
-        .filter(|&(out, _, drop, _)| out < p.ceiling_release_m && drop < 0.0)
-        .map(|(out, base, _, lift)| (base - p.face_max * out - release(out, p.ceiling_release_m, p).1).min(t + lift))
-        .fold(f64::NEG_INFINITY, f64::max)
+/// The ceiling and the floor at q over the plain terrain t, in one walk of the decks and bores near q (`decks`). The
+/// ceiling is the least over the decks of their bound inside their stroke, past it rising at `face_max` per metre and
+/// letting go as a cone does over `ceiling_release_m`, so the ground that it bounds has no step; infinite where no deck
+/// is near. The floor is the same with the sign turned, over the bores (their roof's top and least plate inside their
+/// stroke, falling past it), each at most its lift over t; minus infinity where no bore is near.
+fn bounds(b: &Block, q: [f64; 2], segs: &[u32], t: f64, p: &HeightRules) -> (f64, f64) {
+    let (mut ceiling, mut floor) = (f64::INFINITY, f64::NEG_INFINITY);
+    for (out, base, drop, lift) in decks(b, q, segs, p).filter(|&(out, ..)| out < p.ceiling_release_m) {
+        let gap = release(out, p.ceiling_release_m, p).1;
+        if drop > 0.0 {
+            ceiling = ceiling.min(base + p.face_max * out + gap);
+        } else if crate::graph::BORES {
+            floor = floor.max((base - p.face_max * out - gap).min(t + lift));
+        }
+    }
+    (ceiling, floor)
 }
 
 /// The least bound of the decks whose stroke holds q (their underside less `ceiling_gap_m`) and that deck's
@@ -1918,12 +1916,9 @@ fn by_label(
     if rule <= 1 {
         let ((h, cause), kind) =
             if rule == 0 { ((t, NO_CAUSE), Kind::Terrain) } else { (slope(b, q, t, p), Kind::Slope) };
-        // A comparison, not `max`: an unknown terrain (NaN) stays unknown. Only the bores have floor lines.
-        let (h, cause) = match crate::graph::BORES.then(|| floor(b, q, items.segs, t, p)) {
-            Some(f) if f > h => (f, Cause { floor: true, ..NO_CAUSE }),
-            _ => (h, cause),
-        };
-        let c = ceiling(b, q, items.segs, p);
+        let (c, f) = bounds(b, q, items.segs, t, p);
+        // A comparison, not `max`: an unknown terrain (NaN) stays unknown.
+        let (h, cause) = if f > h { (f, Cause { floor: true, ..NO_CAUSE }) } else { (h, cause) };
         if c < h {
             return (height(c, kind, None), Cause { ceiling: true, ..NO_CAUSE });
         }

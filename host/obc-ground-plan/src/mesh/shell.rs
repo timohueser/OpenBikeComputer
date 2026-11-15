@@ -645,6 +645,12 @@ pub fn mesh_storeys(
         b.relabel.sort_unstable();
         b.relabel.dedup_by_key(|x| x.0);
         let mut keyed: Vec<(u64, u32)> = pieces.iter().flat_map(|p| [(yx(p.0), 0), (yx(p.1), 0)]).collect();
+        // A bore's roof stays under the ground at its corners: it takes the grid points of the cell mesh inside its
+        // sheet, so its corners lie as close together as the ground's.
+        #[cfg(feature = "bores")]
+        if bore {
+            keyed.extend(inner_grid(plan, &pieces, &sheet, origin_y).into_iter().map(|p| (yx(p), 0)));
+        }
         keyed.sort_unstable();
         keyed.dedup();
         let points: Vec<P> = keyed.iter().map(|k| of_yx(k.0)).collect();
@@ -1079,6 +1085,37 @@ pub fn border(a: Side, b: Side, east: bool) -> Vec<String> {
     faults
 }
 
+/// The grid points of the cell mesh (`params::GRID`) inside a storey's sheet faces, farther than
+/// `params::GRID_CLEARANCE_M` from every piece of the sheet's edges.
+#[cfg(feature = "bores")]
+fn inner_grid(
+    plan: &FacePlan,
+    pieces: &[(P, P, u32, u32, EdgeKind)],
+    sheet: &dyn Fn(u32) -> bool,
+    origin_y: f64,
+) -> Vec<P> {
+    use super::params::{GRID, GRID_CLEARANCE_M};
+    let c = CELL_UNITS as i32;
+    let mut out = Vec::new();
+    for f in (0..plan.faces.len() as u32).filter(|&f| sheet(f)) {
+        let ring = &plan.faces[f as usize].rings[0];
+        let (lo, hi) = ring.iter().map(|&v| plan.vertices[v as usize]).fold(([c, c], [0, 0]), |(lo, hi), p| {
+            ([lo[0].min(p[0]), lo[1].min(p[1])], [hi[0].max(p[0]), hi[1].max(p[1])])
+        });
+        for y in (lo[1].div_euclid(GRID) + 1..=hi[1].div_euclid(GRID)).map(|j| j * GRID) {
+            for x in (lo[0].div_euclid(GRID) + 1..=hi[0].div_euclid(GRID)).map(|i| i * GRID) {
+                let q = [f64::from(x), f64::from(y)];
+                let clear = GRID_CLEARANCE_M / metres_per_unit_at(origin_y + q[1]);
+                let near = pieces.iter().any(|&(a, b, ..)| super::points::dist(a, b, q) <= clear);
+                if (1..c).contains(&x) && (1..c).contains(&y) && !near && in_face(plan, f as usize, q) {
+                    out.push([x, y]);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Storey 0's pieces on its portal lines, each from a to b with the way that ends there on its left
 /// (`Storeys::portals`): by point, the pieces that leave it and those that reach it.
 #[cfg(feature = "bores")]
@@ -1099,6 +1136,7 @@ impl PortalMap {
     /// Storey 0's points from a to b along its portal pieces, b included, each with its piece's labels and whether the
     /// walk runs along the piece (its way on the left); None where storey 0 holds no such run of pieces. Each step
     /// moves on toward b, so the walk ends.
+    #[inline(never)]
     fn walk(&self, a: P, b: P) -> Option<Vec<(P, u32, u32, bool)>> {
         let d = [f64::from(b[0] - a[0]), f64::from(b[1] - a[1])];
         let ahead = |p: P| f64::from(p[0] - a[0]) * d[0] + f64::from(p[1] - a[1]) * d[1];
@@ -1117,6 +1155,7 @@ impl PortalMap {
     }
 
     /// The label of the ground or the way on top over the bore at a point of a portal piece.
+    #[inline(never)]
     fn back(&self, p: P) -> Option<u32> {
         self.pieces.iter().find(|x| x.0 == p).map(|x| x.3)
     }

@@ -52,7 +52,7 @@ fn part(a: P, b: P, k: i64, n: i64) -> P {
     })
 }
 
-fn dist(a: P, b: P, p: [f64; 2]) -> f64 {
+pub(super) fn dist(a: P, b: P, p: [f64; 2]) -> f64 {
     let (e, w) = ([f64::from(b[0] - a[0]), f64::from(b[1] - a[1])], [p[0] - f64::from(a[0]), p[1] - f64::from(a[1])]);
     let l2 = e[0] * e[0] + e[1] * e[1];
     let t = if l2 > 0.0 { ((w[0] * e[0] + w[1] * e[1]) / l2).clamp(0.0, 1.0) } else { 0.0 };
