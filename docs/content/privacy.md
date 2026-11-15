@@ -87,7 +87,8 @@ select a region and view routes or recorded rides.
 
 After you connect an OpenBikeComputer, the route planner requests the current firmware description
 once from `updates.openbikecomputer.com`. It is delivered through **Cloudflare R2** of
-Cloudflare, Inc., 101 Townsend St., San Francisco, CA 94107, USA.
+Cloudflare, Inc., 101 Townsend St., San Francisco, CA 94107, USA. When you press "Update" on
+the Device page, the route planner also downloads the update package from this host.
 
 The request contains neither the serial number nor the installed firmware version. The
 comparison takes place locally in the browser. Without a connected device, the file is not
@@ -120,8 +121,7 @@ large to include in the website.
 ## 7. Route planner
 
 The route planner at `/plan/` is a separate application. For route planning it connects to
-three servers. The
-legal basis is Art. 6(1)(f) GDPR. The legitimate interest is to provide the planner that you
+five servers. The legal basis is Art. 6(1)(f) GDPR. The legitimate interest is to provide the planner that you
 requested. Section 7.2 applies to your location.
 
 ### 7.1 Tiles, search and route calculation
@@ -159,6 +159,20 @@ location is then sent with every search to the server in section 7.1, to sort re
 you. It is not stored. You can withdraw your consent at any time with effect for the future
 in the location permission settings of your browser.
 
+### 7.3 Photos of places
+
+When you open the card of a place that has a photo from Wikimedia Commons, the route planner
+asks `commons.wikimedia.org` whether the photo is unchanged. The request contains the page
+number of the photo on Wikimedia Commons. If the photo is unchanged, the browser loads it from
+`upload.wikimedia.org`, with the file name of the photo in the address. Both servers are
+operated by the Wikimedia Foundation, Inc., 1 Montgomery Street, Suite 1600, San Francisco,
+CA 94104, USA. They receive your IP address, the requested address and the usual request data
+of the browser, such as the browser identifier (user agent). Without a card with a photo,
+nothing is requested. The legal basis is Art. 6(1)(f) GDPR. The legitimate interest is to show
+the current photo of a place with its correct credit. The
+[privacy policy of the Wikimedia Foundation](https://foundation.wikimedia.org/wiki/Policy:Privacy_policy)
+applies in addition.
+
 ## 8. Verification console
 
 The verification console at `releases.openbikecomputer.com` serves the maintainers of the
@@ -191,19 +205,23 @@ The value is not sent to a server. It stays stored until you delete the website 
 browser.
 
 The web application uses local device storage. The route planner uses `localStorage`, the
-browser database *IndexedDB* and the browser's *Origin Private File System* (OPFS). This data stays on
+browser database *IndexedDB*, the browser's *Origin Private File System* (OPFS) and the
+browser's *Cache Storage*. This data stays on
 the device that you use. It is not transmitted to the controller.
 
 | Data | Purpose and duration |
 | --- | --- |
 | Skins you save yourself, with names and colors | Only after you press "Save" in the colour editor of the area page. Kept until you delete them with the delete function or delete the website data. |
+| Data of the 3-D view TrailView (Cache Storage `trailview-*`): terrain cells, house records, tree models and stamps that TrailView calculates from the map tiles | Saved when TrailView draws a region, also for the cover image of a route or a ride, so that TrailView does not calculate them again at a later visit. Each kind has a size limit, together 296 MiB; past it, the entries that were used least recently are deleted. The data of another map release or of another version of TrailView is deleted when TrailView opens its store. Kept until then or until you delete the website data. |
 | Map cells and working files in OPFS | Needed for large maps during download and assembly. The cells and the assembled map are deleted after the run. Sort files are removed at the end of the run. Files that a stopped run leaves are removed at the start of the next run at the latest. |
-| Library of the route planner (IndexedDB `obc-library`): routes and their versions, rides with their files and their photos, and cover images | The planner saves a route automatically while you plan it, and a ride when you add it, so that your library stays in this browser. For a photo that you add to a ride, it saves a smaller copy with the time of the photo, or with the GPS place of the photo when the time gives no place on the ride; it does not save the original file. A backup file that you save holds these copies. Kept until you delete it, use "Delete all" on the Settings page, or delete the website data. It leaves the browser only in a backup file that you save, and as a search request under section 7.1. |
+| Library of the route planner (IndexedDB `obc-library`): routes and their versions, rides with their files and their photos, and cover images | The planner saves a route automatically while you plan it, and a ride when you add it, so that your library stays in this browser. For a photo that you add to a ride, it saves a smaller copy with the time of the photo, or with the GPS place of the photo when the time gives no place on the ride; it does not save the original file. A backup file that you save holds these copies. Kept until you delete it, use "Delete all" on the Settings page, or delete the website data. For each route and ride that came from a device or went to it, the library also keeps the id of the memory card of the device. It leaves the browser only in a backup file that you save, as a search request under section 7.1, and with the device sync: the route planner sends routes over USB to the device that you connected (section 10), and before it sends a route, it sends its waypoints to the route calculation under section 7.1. |
 | Your choice to center the map of the route planner on a chosen point (`obc-planner-auto-center`) | So that the setting you chose is kept at a later visit. Kept until the next change or until you delete the website data. |
+| Remembered device (`obc-device`): the serial number of the device, the id of its memory card, the time of the last sync, the name and the area of the map on the card, the number of routes and the bytes on the card, the number of rides that came from it on the current day, and the ids of the rides on it that the library does not take | Only after you press "Connect" on the Device page, so that the sync works with this device at a later visit. Each sync updates it. Kept until you connect another device or another memory card, which replaces it, or until you delete the website data. "Delete all" on the Settings page does not delete it. |
 | Settings of the route planner (`obc-settings`): units, maximum heart rate and threshold power | So that the settings you chose are kept at a later visit. Kept until the next change or until you delete the website data. The values go into a backup file that you save. |
 
 Saving and reading the working data for a short time, saving the library of the route
-planner and chosen settings, and saving a skin that you explicitly saved are necessary for the function that you requested (§ 25(2) no. 2 TDDDG).
+planner, the remembered device, the TrailView data and chosen settings, and saving a skin that
+you explicitly saved are necessary for the function that you requested (§ 25(2) no. 2 TDDDG).
 These processes need no consent.
 
 ## 10. Local processing of files and device data
@@ -268,4 +286,4 @@ change.
 
 ---
 
-*Version: 1 October 2026*
+*Version: 16 November 2026*

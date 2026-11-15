@@ -93,7 +93,8 @@ und die Ansicht von Strecken oder aufgezeichneten Fahrten.
 Nach dem Anschluss eines OpenBikeComputer ruft der Routenplaner einmalig die aktuelle
 Firmware-Beschreibung unter `updates.openbikecomputer.com` ab. Die Auslieferung erfolgt
 über **Cloudflare R2** der Cloudflare, Inc., 101 Townsend St., San Francisco,
-CA 94107, USA.
+CA 94107, USA. Nach Betätigung von „Update“ auf der Seite „Device“ lädt der Routenplaner
+auch das Aktualisierungspaket von diesem Host.
 
 Die Anfrage enthält weder Seriennummer noch installierte Firmware-Version. Der
 Vergleich findet lokal im Browser statt. Ohne angeschlossenes Gerät wird die Datei
@@ -127,7 +128,7 @@ Einbindung in die Website zu großen Kartendaten bereitzustellen.
 ## 7. Routenplaner
 
 Der Routenplaner unter `/plan/` ist eine eigene Anwendung. Für die Routenplanung
-verbindet er sich mit drei Servern. Rechtsgrundlage ist Art. 6 Abs. 1 lit. f DSGVO; das berechtigte Interesse liegt
+verbindet er sich mit fünf Servern. Rechtsgrundlage ist Art. 6 Abs. 1 lit. f DSGVO; das berechtigte Interesse liegt
 in der Bereitstellung des angefragten Planers. Beim Standort gilt Abschnitt 7.2.
 
 ### 7.1 Kacheln, Suche und Routenberechnung
@@ -167,6 +168,20 @@ Suche an den Server nach Abschnitt 7.1 gesendet, um Ergebnisse in der Nähe zu o
 Er wird nicht gespeichert. Die Einwilligung kann jederzeit durch die Browsereinstellung
 für Standortfreigaben mit Wirkung für die Zukunft widerrufen werden.
 
+### 7.3 Fotos von Orten
+
+Beim Öffnen des Infofensters eines Ortes mit einem Foto von Wikimedia Commons fragt der
+Routenplaner bei `commons.wikimedia.org` nach, ob das Foto unverändert ist. Die Anfrage
+enthält die Seitennummer des Fotos auf Wikimedia Commons. Ist das Foto unverändert, lädt der
+Browser es von `upload.wikimedia.org`, mit dem Dateinamen des Fotos in der Adresse. Beide
+Server betreibt die Wikimedia Foundation, Inc., 1 Montgomery Street, Suite 1600,
+San Francisco, CA 94104, USA. Sie erhalten die IP-Adresse, die angefragte Adresse und die
+üblichen Anfragedaten des Browsers, etwa die Browserkennung (User-Agent). Ohne ein Infofenster
+mit Foto wird nichts abgerufen. Rechtsgrundlage ist Art. 6 Abs. 1 lit. f DSGVO; das berechtigte
+Interesse liegt darin, das aktuelle Foto eines Ortes mit der richtigen Quellenangabe zu
+zeigen. Ergänzend gilt die
+[Datenschutzrichtlinie der Wikimedia Foundation](https://foundation.wikimedia.org/wiki/Policy:Privacy_policy).
+
 ## 8. Verifikationskonsole
 
 Die Verifikationskonsole unter `releases.openbikecomputer.com` dient den Maintainern des
@@ -200,20 +215,22 @@ Wert wird nicht an einen Server gesendet. Er bleibt gespeichert, bis die Website
 im Browser gelöscht werden.
 
 Die Webanwendung verwendet lokalen Gerätespeicher. Der Routenplaner nutzt
-`localStorage`, die Browser-Datenbank *IndexedDB* und das *Origin Private File System*
-(OPFS) des Browsers. Diese Daten bleiben auf dem verwendeten Gerät und werden nicht an den
+`localStorage`, die Browser-Datenbank *IndexedDB*, das *Origin Private File System*
+(OPFS) und den *Cache Storage* des Browsers. Diese Daten bleiben auf dem verwendeten Gerät und werden nicht an den
 Verantwortlichen übertragen.
 
 | Daten | Zweck und Dauer |
 | --- | --- |
 | Selbst gespeicherte Skins mit Namen und Farben | Nur nach Betätigung von „Save“ im Farbeditor der Seite für den Kartenbereich; bis zur Löschung über die vorhandene Löschfunktion oder durch Löschen der Website-Daten. |
+| Daten der 3D-Ansicht TrailView (Cache Storage `trailview-*`): Geländezellen, Hausdaten, Baummodelle und Stempel, die TrailView aus den Kartenkacheln berechnet | Gespeichert, wenn TrailView eine Region darstellt, auch für das Titelbild einer Route oder Fahrt, damit TrailView sie bei einem späteren Besuch nicht erneut berechnet. Jede Art hat eine Größengrenze, zusammen 296 MiB; darüber werden die am längsten nicht genutzten Einträge gelöscht. Die Daten einer anderen Kartenversion oder einer anderen Version von TrailView werden gelöscht, wenn TrailView seinen Speicher öffnet; bis dahin oder bis zum Löschen der Website-Daten. |
 | Kartenzellen und Arbeitsdateien im OPFS | Für große Karten während Download und Zusammensetzen erforderlich. Die Zellen und die zusammengesetzte Karte werden nach dem Lauf gelöscht. Sortierdateien werden am Laufende entfernt; Dateien eines abgebrochenen Laufs spätestens beim Beginn des nächsten Laufs. |
-| Bibliothek des Routenplaners (IndexedDB `obc-library`): Routen und ihre Versionen, Fahrten mit ihren Dateien und Fotos sowie Titelbilder | Der Routenplaner speichert eine Route automatisch während der Planung und eine Fahrt beim Hinzufügen, damit die Bibliothek in diesem Browser bleibt. Zu einem Foto, das einer Fahrt hinzugefügt wird, speichert er eine verkleinerte Kopie mit der Aufnahmezeit oder, wenn die Zeit keinen Ort auf der Fahrt ergibt, mit dem GPS-Ort des Fotos; die Originaldatei speichert er nicht. Eine selbst gespeicherte Sicherungsdatei enthält diese Kopien. Gespeichert bis zum Löschen, bis „Delete all“ auf der Seite „Settings“ gewählt wird oder bis die Website-Daten gelöscht werden. Sie verlässt den Browser nur in einer selbst gespeicherten Sicherungsdatei und als Suchanfrage nach Abschnitt 7.1. |
+| Bibliothek des Routenplaners (IndexedDB `obc-library`): Routen und ihre Versionen, Fahrten mit ihren Dateien und Fotos sowie Titelbilder | Der Routenplaner speichert eine Route automatisch während der Planung und eine Fahrt beim Hinzufügen, damit die Bibliothek in diesem Browser bleibt. Zu einem Foto, das einer Fahrt hinzugefügt wird, speichert er eine verkleinerte Kopie mit der Aufnahmezeit oder, wenn die Zeit keinen Ort auf der Fahrt ergibt, mit dem GPS-Ort des Fotos; die Originaldatei speichert er nicht. Eine selbst gespeicherte Sicherungsdatei enthält diese Kopien. Gespeichert bis zum Löschen, bis „Delete all“ auf der Seite „Settings“ gewählt wird oder bis die Website-Daten gelöscht werden. Zu jeder Route und Fahrt, die von einem Gerät kam oder an eines ging, speichert die Bibliothek auch die Kennung der Speicherkarte des Geräts. Sie verlässt den Browser nur in einer selbst gespeicherten Sicherungsdatei, als Suchanfrage nach Abschnitt 7.1 und bei der Synchronisation: Der Routenplaner sendet Routen über USB an das verbundene Gerät (Abschnitt 10), und bevor er eine Route sendet, sendet er ihre Wegpunkte an die Routenberechnung nach Abschnitt 7.1. |
 | Entscheidung, die Karte des Routenplaners auf einen gewählten Punkt zu zentrieren (`obc-planner-auto-center`) | Damit die gewählte Einstellung bei einem späteren Besuch erhalten bleibt; bis zur nächsten Änderung oder zum Löschen der Website-Daten. |
+| Gemerktes Gerät (`obc-device`): Seriennummer des Geräts, Kennung seiner Speicherkarte, Zeitpunkt der letzten Synchronisation, Name und Bereich der Karte auf der Speicherkarte, Anzahl der Routen und belegte Bytes auf der Speicherkarte, Anzahl der am selben Tag übernommenen Fahrten sowie die Kennungen der Fahrten auf dem Gerät, die die Bibliothek nicht übernimmt | Erst nach Betätigung von „Connect“ auf der Seite „Device“, damit die Synchronisation bei einem späteren Besuch mit diesem Gerät arbeitet. Jede Synchronisation aktualisiert die Angaben. Gespeichert, bis ein anderes Gerät oder eine andere Speicherkarte verbunden wird, die sie ersetzt, oder bis die Website-Daten gelöscht werden. „Delete all“ auf der Seite „Settings“ löscht sie nicht. |
 | Einstellungen des Routenplaners (`obc-settings`): Einheiten, maximale Herzfrequenz und Schwellenleistung | Damit die gewählten Einstellungen bei einem späteren Besuch erhalten bleiben; bis zur nächsten Änderung oder zum Löschen der Website-Daten. Die Werte gehen in eine selbst gespeicherte Sicherungsdatei ein. |
 
 Das kurzfristige Speichern und Auslesen der Arbeitsdaten, das Speichern der Bibliothek
-des Routenplaners und gewählter Einstellungen sowie das Speichern eines vom
+des Routenplaners, des gemerkten Geräts, der TrailView-Daten und gewählter Einstellungen sowie das Speichern eines vom
 Nutzer ausdrücklich gesicherten Skins sind für die
 jeweils angeforderte Funktion erforderlich (§ 25 Abs. 2 Nr. 2 TDDDG). Für diese Vorgänge
 ist keine Einwilligung erforderlich.
@@ -286,4 +303,4 @@ beschriebenen Verarbeitungen ändern.
 
 ---
 
-*Stand: 1. Oktober 2026*
+*Stand: 16. November 2026*
