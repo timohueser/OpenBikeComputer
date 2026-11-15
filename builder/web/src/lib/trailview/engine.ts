@@ -2,7 +2,7 @@ import type { PlannerConfig } from '../planner/config';
 import type { Coordinate } from '../planner/geo';
 import { worldPixel } from '../planner/layers/mercator';
 import { instantAt } from '../planner/solar';
-import { eyeAltitude, follow, groundOf, MIN_CLEARANCE, move, NEAR, VFOV, viewProjection, type Footing, type Pose } from './frame/camera';
+import { eyeAltitude, follow, groundOf, MIN_CLEARANCE, move, VFOV, viewProjection, type Footing, type Pose } from './frame/camera';
 import { Controls, type Pointer } from './frame/controls';
 import { CURVATURE, frameAt, type Frame } from './frame/frame';
 import { UNITS } from './frame/space';
@@ -37,7 +37,7 @@ import { Rows } from './vegetation/rows';
 import { Dressing } from './dressing/dressing';
 import { KindPoints } from './structures/kind-points';
 import { LightPools } from './structures/light-pools';
-import { nearestRoute } from './route/pick';
+import { aboutEye, LIFT_M, nearestRoute, onImage, onScreen } from './route/pick';
 import { Route, type RouteLine, type RoutePin } from './route/route';
 import type { PlanStats } from './plan/plan';
 import { sampleDistances, terrainHides } from './sight';
@@ -64,10 +64,6 @@ const STEP_M = 1, HEADROOM_M = 2;
 const BORE_M = 6;
 /** The regions in reach are read this much wider and again only when the eye moves farther or the ground pages change. */
 const REACH_MARGIN_M = 250;
-/** The lift of the ribbon of route.wgsl above the surface. */
-const LIFT_M = 0.3;
-/** `routeAt` cuts a segment of a route here, a little in front of the near plane, where the eye stands on the route. */
-const CLIP_NEAR = 2 * NEAR;
 
 export interface Stats {
     adapter: string;
@@ -175,6 +171,8 @@ export class TrailView {
     private camera: number[] = [];
     /** The camera of the last frame that could draw, without its jitter: `routeAt` projects with it. */
     private sight?: Pick<Grabbed, 'viewProj' | 'eye'>;
+    /** The pick points on the screen, as `routeAt` last projected them, and what it projected them from. */
+    private picked?: { sight: Pick<Grabbed, 'viewProj' | 'eye'>; picks: readonly (Float64Array | undefined)[]; width: number; height: number; screen: (Float32Array | undefined)[] };
     private drawnExtras = '';
     private rendered: (() => void)[] = [];
     /** The last frame that drew, for occlusion culling: its depth, pixels and view projection, and its eye. */
@@ -327,29 +325,13 @@ export class TrailView {
      * terrain whether it hides a point, so a route behind a ridge answers when no nearer route is there.
      */
     routeAt(x: number, y: number): number | null {
-        const sight = this.sight, { clientWidth: width, clientHeight: height } = this.canvas;
+        const { sight, route: { picks, bold } } = this, { clientWidth: width, clientHeight: height } = this.canvas;
         if (!sight) return null;
-        const { viewProj: m, eye } = sight, ahead = (p: readonly number[]) => m[3] * p[0] + m[7] * p[1] + m[11] * p[2] + m[15];
-        const screen = this.route.picks.map(points => {
-            if (!points) return undefined;
-            const out: number[] = [];
-            const push = (p: readonly number[]) => {
-                const at = onImage(m, p);
-                out.push(...(at ? [at[0] * width, at[1] * height, Math.hypot(...p)] : [NaN, NaN, NaN]));
-            };
-            for (let i = 0, last: number[] | undefined; i < points.length; i += 3) {
-                const p = aboutEye(eye, points[i], points[i + 1], points[i + 2]);
-                // A segment through the near plane keeps its part in front of CLIP_NEAR.
-                if (last && (ahead(last) > CLIP_NEAR) !== (ahead(p) > CLIP_NEAR)) {
-                    const t = (CLIP_NEAR - ahead(last)) / (ahead(p) - ahead(last));
-                    push(last.map((value, j) => value + t * (p[j] - value)));
-                }
-                push(p);
-                last = p;
-            }
-            return new Float32Array(out);
-        });
-        return nearestRoute(screen, x, y, this.route.bold);
+        let picked = this.picked;
+        if (!picked || picked.sight !== sight || picked.picks !== picks || picked.width !== width || picked.height !== height) {
+            picked = this.picked = { sight, picks, width, height, screen: picks.map(points => points && onScreen(sight.viewProj, sight.eye, width, height, points)) };
+        }
+        return nearestRoute(picked.screen, x, y, bold);
     }
 
     /** Stands a pin with a sphere in `colour` at `at`, apart from the others so that it moves cheaply; null takes it away. */
@@ -732,7 +714,7 @@ export class TrailView {
             moved = camera.some((value, i) => value !== this.camera[i]);
             changed = this.completed || this.terrain.newContent || this.groundLook.newContent || this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent || this.instances.newContent || this.sky.newContent || this.lightPools.newContent || this.route.newContent || extras !== this.drawnExtras;
             this.camera = camera;
-            this.sight = { viewProj, eye: [eye.east, eye.north, eye.z] };
+            if (moved) this.sight = { viewProj, eye: [eye.east, eye.north, eye.z] };
             this.drawnExtras = extras;
             this.completed = false;
             lights = this.lights();
@@ -1044,20 +1026,6 @@ function placed(line: readonly [number, number][], along: number[][], heights: F
         points.visible[i] = terrainHides([p[0], p[1], heights[i] + LIFT_M - eye[2]], along[i], ground, pixel) ? 0 : 1;
     }
     return points;
-}
-
-/** A point of the frame at a height, about the eye as route.wgsl draws its ribbon: LIFT_M above it, with the curvature term. */
-function aboutEye(eye: readonly number[], east: number, north: number, height: number): [number, number, number] {
-    const x = east - eye[0], y = north - eye[1];
-    return [x, y, height + LIFT_M - eye[2] - CURVATURE * (x * x + y * y)];
-}
-
-/** Where a point about the eye lies on the image, from 0 to 1 to the right and down, or undefined behind the near plane. */
-function onImage(m: Float32Array, [x, y, z]: readonly number[]): [number, number] | undefined {
-    // Clip w is the distance along the view axis.
-    const ahead = m[3] * x + m[7] * y + m[11] * z + m[15];
-    if (!(ahead > NEAR)) return undefined;
-    return [((m[0] * x + m[4] * y + m[8] * z + m[12]) / ahead + 1) / 2, (1 - (m[1] * x + m[5] * y + m[9] * z + m[13]) / ahead) / 2];
 }
 
 /** A view projection whose image moves by `ndc` in clip space. */

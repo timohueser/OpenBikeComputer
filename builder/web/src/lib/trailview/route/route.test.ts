@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { frameAt } from '../frame/frame';
-import { nearestRoute } from './pick';
+import { viewProjection } from '../frame/camera';
+import { nearestRoute, onScreen } from './pick';
 import { pickPoints, POINT_WORDS, Route, routePoints, type RouteLine } from './route';
 
 /** The words of each point: x, y, the colour and the number of the route. */
@@ -46,14 +47,15 @@ describe('pickPoints', () => {
     const triples = (points: Float64Array) => Array.from({ length: points.length / 3 }, (_, i) => Array.from(points.subarray(3 * i, 3 * i + 3)));
     const close = (actual: number[][], expected: number[][]) => {
         expect(actual.length).toBe(expected.length);
-        expected.forEach((point, i) => point.forEach((value, j) => expect(actual[i][j]).toBeCloseTo(value, 6)));
+        expected.forEach((point, i) => point.forEach((value, j) => (Number.isNaN(value) ? expect(actual[i][j]).toBeNaN() : expect(actual[i][j]).toBeCloseTo(value, 6))));
     };
 
     it('stands a point at each vertex with the height of the profile there, and at each entry between two vertices', () => {
         close(triples(pickPoints({ line, colours: [], profile: { step: 100, heights: [1000, 1010, 1020, 1030] } }, frame)!),
             [[0, 0, 1000], [100, 0, 1010], [150, 0, 1015], [150, 50, 1020], [150, 100, 1030]]);
-        // An entry with no height leaves out itself and the vertices between the entries beside it.
-        close(triples(pickPoints({ line, colours: [], profile: { step: 100, heights: [1000, null, 1020, 1030] } }, frame)!), [[150, 50, 1020], [150, 100, 1030]]);
+        // An entry with no height gives no height to itself and to the vertices between the entries beside it.
+        close(triples(pickPoints({ line, colours: [], profile: { step: 100, heights: [1000, null, 1020, 1030] } }, frame)!),
+            [[0, 0, NaN], [100, 0, NaN], [150, 0, NaN], [150, 50, 1020], [150, 100, 1030]]);
         expect(pickPoints({ line, colours: [] }, frame)).toBeUndefined();
     });
 
@@ -72,6 +74,19 @@ describe('pickPoints', () => {
         expect(nearestRoute([screen], 20, 40, null)).toBe(1);
         // 9 m from the chord between the start and the entry at 100 m, and 20 m from the line.
         expect(nearestRoute([screen], 20, 0, null)).toBeNull();
+    });
+
+    it('ends a segment at a gap in the profile: a pointer on the chord across the gap does not find the route', () => {
+        // The hairpin with entries 25 m apart; the entries at 50 m and 75 m, on its top, have no height.
+        const hairpin = [frame.lonLat(0, 0), frame.lonLat(0, 40), frame.lonLat(40, 40), frame.lonLat(40, 0)];
+        const picks = pickPoints({ line: hairpin, colours: [], profile: { step: 25, heights: [0, 0, null, null, 0, 0] } }, frame)!;
+        // From 100 m above the middle, straight down.
+        const m = viewProjection(0, -90, 1), eye = [20, 20, 100];
+        const pixel = (east: number, north: number) => onScreen(m, eye, 1000, 1000, new Float64Array([east, north, 0]));
+        const screen = onScreen(m, eye, 1000, 1000, picks), at = (east: number, north: number) => nearestRoute([screen], pixel(east, north)[0], pixel(east, north)[1], null);
+        expect(at(40, 10)).toBe(1);
+        // Between the entries at 25 m and 100 m, 20 m from the line.
+        expect(at(20, 22.5)).toBeNull();
     });
 });
 

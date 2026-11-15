@@ -62,10 +62,10 @@ export function routePoints(routes: readonly RouteLine[]): Uint32Array<ArrayBuff
  * Each vertex of the line takes the height of the profile at its share of the line's length: on a
  * straight line between the two entries about it, none where one of them has none. Each entry of the
  * profile that falls between two vertices adds its own height there, so that the points also follow the
- * terrain along a long straight stretch. A point with no height is left out. Entry i lies at the share
- * i × step / L of the line, where L is the length of the route, and the last entry at its end. The profile
- * gives L only within a step, (n − 2) × step ≤ L < (n − 1) × step for n entries: the length of the line,
- * held in that range, stands for it. Undefined for a route with no profile or a line with no length.
+ * terrain along a long straight stretch. A point with no height has NaN for it, so that it ends a
+ * segment. Entry i lies at the share i × step / L of the line, where L is the length of the route, and the
+ * last entry at its end. The profile gives L only within a step, (n − 2) × step ≤ L < (n − 1) × step for
+ * n entries: the length of the line, held in that range, stands for it. Undefined for a route with no profile or a line with no length.
  */
 export function pickPoints({ line, profile }: RouteLine, frame: Frame): Float64Array | undefined {
     if (!profile || line.length < 2 || profile.heights.length < 2) return undefined;
@@ -88,7 +88,7 @@ export function pickPoints({ line, profile }: RouteLine, frame: Frame): Float64A
         const t = (d - along[i - 1]) / (along[i] - along[i - 1]);
         points.push([d, at[i - 1][0] + t * (at[i][0] - at[i - 1][0]), at[i - 1][1] + t * (at[i][1] - at[i - 1][1]), heights[e]]);
     }
-    return new Float64Array(points.sort((p, q) => p[0] - q[0]).flatMap(([, x, y, height]) => (height === null ? [] : [x, y, height])));
+    return new Float64Array(points.sort((p, q) => p[0] - q[0]).flatMap(([, x, y, height]) => [x, y, height ?? NaN]));
 }
 
 /** '#rrggbb' as the bytes of WGSL's unpack4x8unorm: red lowest. */
