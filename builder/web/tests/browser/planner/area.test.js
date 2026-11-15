@@ -97,6 +97,34 @@ test('a route that waits and leaves the area gives the warning, the box around i
   expect((await nextMap(page)).boxes).toHaveLength(2);
 });
 
+test('a box past the map data gives the note, and the credits of the data are behind their button', async ({ page }) => {
+  await library(page, west => window.coverTest.library.setState('nextMap', { regions: [], boxes: [{ ...west, maxLon: 7_900_000 }], light: 'default', dark: 'dusk', bytes: 1 }), west);
+  const errors = await open(page, '#/device/area');
+  await expect(page.getByText('Map data is missing in a part of this area.')).toBeVisible();
+  await page.getByRole('button', { name: 'Credits' }).hover();
+  await expect(page.getByRole('tooltip')).toContainText('Synthetic geometry');
+  await expect(page.getByRole('tooltip').getByRole('link', { name: 'CC0-1.0' })).toHaveAttribute('href', 'https://creativecommons.org/publicdomain/zero/1.0/');
+
+  await page.getByRole('button', { name: 'Remove Box 1' }).click();
+  await page.locator('.leaflet-container').click();
+  await expect(page.getByText(/to download$/)).toBeVisible();
+  await expect(page.getByText('is missing')).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test('the window Colours opens the colour editor over it, and Cancel goes back to the window', async ({ page }) => {
+  const errors = await open(page, '#/device/area');
+  await page.getByRole('button', { name: 'Change' }).click();
+  const colours = page.getByRole('dialog', { name: 'Colours' });
+  await colours.getByRole('button', { name: 'Edit the colours' }).click();
+  const editor = page.getByRole('dialog', { name: 'The colours of the day' });
+  await expect(editor.getByRole('textbox', { name: 'Name' })).toHaveValue('My Bridge Fixture');
+  await editor.getByRole('button', { name: 'Cancel' }).click();
+  await expect(editor).toHaveCount(0);
+  await expect(colours.getByRole('button', { name: 'Bridge Fixture' })).toHaveAttribute('aria-pressed', 'true');
+  expect(errors).toEqual([]);
+});
+
 test('"Send the map" builds the map that waits and puts it on the device; Stop in the middle keeps it waiting', async ({ page }) => {
   await library(page, () => window.coverTest.library.setState('nextMap', { regions: ['bridge-fixture'], boxes: [], light: 'default', dark: 'dusk', bytes: 16_000 }));
   const errors = await open(page, '?fake-device#/device');
