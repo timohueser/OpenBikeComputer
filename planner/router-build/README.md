@@ -93,7 +93,7 @@ The bake keeps its large tables in memory-mapped work files and sorts them on di
 | Profile jobs | The snap bits and the landmarks of one profile in each job; the page budget sets how many jobs run at a time |
 | Cost tables | One table in each task; a batch of tables holds at most 64 MiB of values at 8 B each, or one table for each thread when that is more |
 | Own memory | 4 GiB; the step samples `RssAnon` every 100 ms and stops at the first sample above it, with the name of the stage; `catalog` and `blocks` are exempt |
-| Partition | 36 B of RAM for each junction and 6 B for each arc, about 52 B for each junction, outside the 4 GiB: the stage `partition` has the budget of this need plus 256 MiB. A need above the page budget stops the roads step |
+| Partition | 48 B of RAM for each junction and 7 B for each arc, about 65 B for each junction (two directions of a cut run at the same time), outside the 4 GiB: the stage `partition` has the budget of this need plus 256 MiB. A need above the page budget stops the roads step |
 | Disk need | The stored layers above, and the work files of the step that runs; the roads step needs the most |
 
 Put the work folder on a disk, not on a tmpfs, whose files take RAM. A killed bake
