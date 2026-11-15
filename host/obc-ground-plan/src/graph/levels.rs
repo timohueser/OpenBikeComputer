@@ -22,7 +22,7 @@ pub struct Structures {
     pub cover_m: f64,
     /// Free ground over a bore may lack this much of the least room.
     pub lift_max_m: f64,
-    /// A tunnel way is open only this far along from a tag end.
+    /// A tunnel way is open only this far along from a tag end: the longest open cut of the crossing design.
     pub open_max_m: f64,
     /// A deck shorter than this between its end lines is a ground way.
     pub deck_min_m: f64,
@@ -427,10 +427,11 @@ impl<'a> Ctx<'a> {
 
     /// Storey 0 at q without way `not` and the ways that go on from its ends: the terrain and the bodies
     /// of the ground ways near q (their surface less their `fill` times the metres past the paved
-    /// stroke). And whether a paved stroke covers q.
-    fn ground(&self, q: [f64; 2], not: u32) -> (f64, bool) {
+    /// stroke). And the highest paved stroke that covers q, less the at-grade band of it and `not` (the
+    /// lower of their `snap_height_m`, as at a crossing); None where none covers q.
+    fn ground(&self, q: [f64; 2], not: u32) -> (f64, Option<f64>) {
         let mpu = self.mpu(q);
-        let (mut z, mut paved) = (self.terrain(q), false);
+        let (mut z, mut paved) = (self.terrain(q), None::<f64>);
         for f in self.feet(q, HALF_MAX_M + BODY_M) {
             if f.way == not || self.g.ways[f.way as usize].level != Level::Ground || self.joined(not, f.way) {
                 continue;
@@ -438,8 +439,12 @@ impl<'a> Ctx<'a> {
             let Rule::Way(s, _) = self.rule(f.way) else { continue };
             let past = f.d * mpu - self.foot_half(&f);
             if past <= s.reach_m {
-                paved |= past <= 0.0;
-                z = z.max(self.surface(&f, q) - s.fill * past.max(0.0));
+                let surface = self.surface(&f, q);
+                if past <= 0.0 {
+                    let top = surface - s.snap_height_m.min(self.snap_m(not));
+                    paved = Some(paved.map_or(top, |p| p.max(top)));
+                }
+                z = z.max(surface - s.fill * past.max(0.0));
             }
         }
         (z, paved)
@@ -460,7 +465,8 @@ impl<'a> Ctx<'a> {
     }
 
     /// The bore test at a point of a tunnel way: `c` less what it needs (the least room, or that less
-    /// `lift_max_m` on free ground). `c` is the least of storey 0 over the bore's width less the floor.
+    /// `lift_max_m` on free ground, where no paved stroke lies: a paved face never moves). `c` is the
+    /// least of storey 0 over the bore's width less the floor.
     fn bore(&self, w: u32, a: &At) -> f64 {
         let Rule::Way(s, _) = self.rule(w) else { return f64::NEG_INFINITY };
         let half = (s.half_m + a.widen) / self.mpu(a.p);
@@ -471,18 +477,21 @@ impl<'a> Ctx<'a> {
             let (z, paved) = self.ground(q, w);
             let across = -cross(a.tangent, sub(q, a.p)) * self.mpu(a.p);
             c = c.min(z - (a.z + a.bank * across));
-            free &= !paved;
+            free &= paved.is_none();
         }
         let least = s.bore_least_m + s.roof_least_m;
         c - if free { least - self.s.lift_max_m } else { least }
     }
 
-    /// The state of a tunnel station by its own test: BORE, OPEN or HIDDEN. OPEN needs the floor at
-    /// most `snap_height_m` over the terrain: at a tag end the floor lies on the ground way that goes on.
+    /// The state of a tunnel station by its own test: BORE where the bore fits; else OPEN within
+    /// `open_max_m` of a tag end, wherever its floor lies against the terrain (the way goes on as a ground
+    /// way, on its bank where the floor lies over the terrain, until the cover holds), unless a way lies on
+    /// top: a paved stroke over the floor by more than the at-grade band; else HIDDEN.
     fn tunnel_state(&self, w: u32, a: &At, tag_m: f64) -> State {
+        let on_top = || self.ground(a.p, w).1.is_some_and(|top| top > a.z);
         if self.bore(w, a) >= 0.0 {
             State::Bore
-        } else if tag_m > self.s.open_max_m || a.z > self.terrain(a.p) + self.snap_m(w) || self.ground(a.p, w).1 {
+        } else if tag_m > self.s.open_max_m || on_top() {
             State::Hidden
         } else {
             State::Open

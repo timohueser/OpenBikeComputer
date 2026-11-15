@@ -428,7 +428,12 @@ class and waterway kind, and the `structures` of `plan.json`), so a change of th
 of the code of the levels takes a new revision. The bake builds each zoom-16 cell of each zoom-13 tile that holds a
 way of the road solver as the viewer does: from the zoom-13 tiles of the bake and the terrain tiles of zooms 13 and
 12 of the grid. Each cell decides the ways inside its square. A way has a state where it is a bridge or a tunnel, or
-where it ends at the body of a way that it crosses. The A lines of one deck group that cross or lie within
+where it ends at the body of a way that it crosses. A station of a tunnel is `B` where the ground over it gives
+the least room of its class (`bore_least_m` and `roof_least_m`, less `lift_max_m` where no paved way lies on that
+ground). Else it is `O` within `open_max_m` (30 m) of a tag end and before the first `B` from its nearer tag end,
+also where its floor lies over the terrain (the way goes on as a way on the ground until the cover holds), but `H`
+where a paved way lies on top of it: more than the lower `snap_height_m` of the two ways over its floor. Else it is
+`H`. The A lines of one deck group that cross or lie within
 `edge_band_m` of each other move in together: each A moves in along its way to where its centre line meets the line
 normal to their mean direction into the decks through the farthest one in, and each end line stays square to its own
 way. One pass merges them; a cell merges the A lines that it sees. The storey is one per deck group, the deck ways that share a
