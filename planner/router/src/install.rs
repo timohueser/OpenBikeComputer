@@ -214,10 +214,19 @@ pub fn plan(directory: &[u8], info: &[u8], cells: Option<&[u32]>, profiles: Opti
     Ok(Plan { groups: mask, records, files })
 }
 
+/// `area` (`[west, south, east, north]` in microdegrees) grown by the half-sizes of the snap window
+/// of `REACH_M` at its corner nearest to a pole: the largest window of any point in it.
+pub(crate) fn grown(area: [i32; 4]) -> std::result::Result<[i32; 4], String> {
+    let pole = if area[1].unsigned_abs() > area[3].unsigned_abs() { area[1] } else { area[3] };
+    let corner = crate::model::Point { lat: pole.clamp(-85_000_000, 85_000_000), lon: 0, elevation: 0.0 };
+    let window = crate::snap::window(corner, crate::snap::REACH_M)?;
+    let (lon, lat) = (-window[0], corner.lat - window[1]);
+    Ok([area[0] - lon, area[1] - lat, area[2] + lon, area[3] + lat])
+}
+
 /// The sorted IDs of the download cells of `areas`, each `[west, south, east, north]` in degrees.
-/// An area takes each cell whose box meets it, grown by the half-sizes of the snap window of
-/// `REACH_M` at its corner nearest to a pole: the largest window of any point in it. So no request
-/// point in an area is `MissingRegion`. Long roads do not count.
+/// An area takes each cell whose box meets it `grown`, so no request point in an area is
+/// `MissingRegion`. Long roads do not count.
 pub fn area_cells(directory: &Directory, areas: &[[f64; 4]]) -> Result<Vec<u32>> {
     let mut ids = Vec::new();
     for &[west, south, east, north] in areas {
@@ -233,12 +242,7 @@ pub fn area_cells(directory: &Directory, areas: &[[f64; 4]]) -> Result<Vec<u32>>
         if west > east || south > north {
             return Err(invalid("an area whose west or south side is past its east or north side"));
         }
-        let pole = if south.unsigned_abs() > north.unsigned_abs() { south } else { north };
-        let corner = crate::model::Point { lat: pole.clamp(-85_000_000, 85_000_000), lon: 0, elevation: 0.0 };
-        let window = crate::snap::window(corner, crate::snap::REACH_M).map_err(invalid)?;
-        let (lon, lat) = (-window[0], corner.lat - window[1]);
-        let grown = [west - lon, south - lat, east + lon, north + lat];
-        for record in directory.meeting(grown).map_err(invalid)? {
+        for record in directory.meeting(grown([west, south, east, north]).map_err(invalid)?).map_err(invalid)? {
             ids.push(directory.cell(record).map_err(invalid)?.id);
         }
     }

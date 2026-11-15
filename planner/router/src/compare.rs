@@ -6,7 +6,7 @@ use crate::{
     install,
     model::{Point, Road, NO_ELEVATION},
     router::Response,
-    snap::{self, Candidates, Policy, Position, REACH_M},
+    snap::{Candidates, Policy, Position, REACH_M},
     Control, Error, Request, Router,
 };
 use serde_json::{json, Value};
@@ -378,15 +378,6 @@ fn tile_box(x: i64, y: i64) -> [i32; 4] {
     [lon(x), lat(y + 1), lon(x + 1), lat(y)].map(|degrees| (degrees * 1e6).round() as i32)
 }
 
-/// `area` grown by the snap window of `REACH_M` at its side nearer to a pole.
-// TODO: call `install::area_cells`, which grows an area by the same rule, once it is on this branch.
-fn grown(area: [i32; 4]) -> Result<[i32; 4], String> {
-    let pole = if area[1].unsigned_abs() > area[3].unsigned_abs() { area[1] } else { area[3] };
-    let window = snap::window(Point { lat: pole, lon: 0, elevation: NO_ELEVATION }, REACH_M)?;
-    let (lon, lat) = (-window[0], pole - window[1]);
-    Ok([area[0] - lon, area[1] - lat, area[2] + lon, area[3] + lat])
-}
-
 /// The median and the P90 of the area overhead at each level, and the number of areas.
 fn overheads(mut values: Vec<f64>) -> (usize, f64, f64) {
     values.sort_by(f64::total_cmp);
@@ -476,7 +467,7 @@ pub fn areas(folder: &Path) -> Result<Vec<Level>, String> {
         let (mut tiles, mut blocks) = (Vec::new(), Vec::new());
         for &(side, x, y) in &areas {
             let (southwest, northeast) = (tile_box(x, y + side - 1), tile_box(x + side - 1, y));
-            let window = grown([southwest[0], southwest[1], northeast[2], northeast[3]])?;
+            let window = install::grown([southwest[0], southwest[1], northeast[2], northeast[3]])?;
             let taken: u64 = cells
                 .values()
                 .filter(|(_, bounds)| cells::meets(*bounds, window))
