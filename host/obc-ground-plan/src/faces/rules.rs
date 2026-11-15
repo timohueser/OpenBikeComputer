@@ -19,6 +19,7 @@ pub enum Rank {
     Carriageway,
     Platform,
     RailBed,
+    Sidewalk,
     ShoulderPaved,
     WaterLine,
     Shoulder,
@@ -29,10 +30,11 @@ pub enum Rank {
     Terrain,
 }
 
-const RANKS: [(&str, Rank); 11] = [
+const RANKS: [(&str, Rank); 12] = [
     ("carriageway", Rank::Carriageway),
     ("platform", Rank::Platform),
     ("rail_bed", Rank::RailBed),
+    ("sidewalk", Rank::Sidewalk),
     ("shoulder_paved", Rank::ShoulderPaved),
     ("water_line", Rank::WaterLine),
     ("shoulder", Rank::Shoulder),
@@ -60,6 +62,25 @@ pub struct Pair {
     pub blend: bool,
 }
 
+/// The sidewalks' shape (`faces::walk`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WalkRules {
+    /// A taper's back edge meets the kerb at this slope (metres of width per metre along): 45° for every width.
+    pub end_slope: f64,
+    /// The radius of the rounds at a taper's two kinks.
+    pub end_round_m: f64,
+    /// A junction corner's radius where one of its two facing sides has a sidewalk: the slab runs at full width
+    /// straight to the other road's carriageway.
+    pub radius_one_walk_m: f64,
+}
+
+impl WalkRules {
+    /// How far a taper reaches from its tip along its way, for a sidewalk of `width_m`: its ramp and its two rounds.
+    pub fn reach_m(&self, width_m: f64) -> f64 {
+        width_m / self.end_slope + 2.0 * self.end_round_m
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlanRules {
     /// How far a point's arms reach along their ways: its rounds and its seams read this far.
@@ -73,6 +94,8 @@ pub struct PlanRules {
     pub taper_rate: f64,
     /// The block `heights`.
     pub heights: HeightRules,
+    /// The block `walk`.
+    pub walk: WalkRules,
     /// The half-width of a platform line without a `width` tag.
     pub platform_half_m: f64,
     /// A platform's `reach_m`: its edge is a wall, with no blend into the ground.
@@ -199,6 +222,16 @@ impl Rules {
             *v = number(block, field).map_err(|e| e.replace("plan.json ", "plan.json structures."))?;
         }
         let structures = Structures::new(parts);
+        let walk = top.get("walk").and_then(Value::as_object).ok_or("plan.json: no object walk")?;
+        let w = |field: &str| number(walk, field).map_err(|e| e.replace("plan.json ", "plan.json walk."));
+        let walk = WalkRules {
+            end_slope: w("end_slope")?,
+            end_round_m: w("end_round_m")?,
+            radius_one_walk_m: w("radius_one_walk_m")?,
+        };
+        if walk.end_slope <= 0.0 {
+            return Err("plan.json walk.end_slope: not over 0".into());
+        }
         let f = |field: &str| number(top, field);
         let plan = PlanRules {
             extent_m: f("extent_m")?,
@@ -207,6 +240,7 @@ impl Rules {
             platform_half_m: f("platform_half_m")?,
             platform_reach_m: f("platform_reach_m")?,
             heights: HeightRules::new(values, legs),
+            walk,
             ranks,
             pairs,
             tread,

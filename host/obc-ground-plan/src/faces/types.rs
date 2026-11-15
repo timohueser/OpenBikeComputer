@@ -38,6 +38,8 @@ pub enum Surface {
     Zone = 11,
     /// The band about a deck's paved stroke, the seat of its parapet or railing (`faces::deck`).
     DeckEdge = 12,
+    /// A sidewalk's slab (`faces::walk`): its way's surface raised by the kerb's rise.
+    Sidewalk = 13,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

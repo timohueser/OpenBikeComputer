@@ -12,7 +12,7 @@ use super::{WayLine, LAYERS};
 
 /// A fan's straight sides lie this many units inside the carriageway or the band it joins, so its
 /// arc crosses their edge at an angle and no sliver is left between two edges that run together.
-const INSET: f64 = 3.0;
+pub(super) const INSET: f64 = 3.0;
 
 /// The sides of a round at a corner of the paved outline run this many units inside the paved side:
 /// closer, they would run along its edges within the overlay's snap, and the slice splits such
@@ -84,6 +84,8 @@ pub struct Rounded {
     pub seams: Vec<Option<[P; 2]>>,
     /// The circle of each round.
     pub circles: Vec<Circle>,
+    /// The rounds tangent to both facing edges of their pair.
+    pub two_foot: Vec<TwoFoot>,
     /// Per arm, its run and the station of the farthest foot of a round or crossing of facing edges.
     runs: Vec<Vec<RunPoint>>,
     pub far: Vec<f64>,
@@ -120,6 +122,20 @@ impl Circle {
     fn at_edges(self, lines: [usize; 2]) -> Self {
         Circle { lines, ..self }
     }
+}
+
+/// A round tangent to both facing edges of a pair: the pair's place in the list `round` takes, its arms (a turning counter-clockwise to b), each foot's fractional sample index on its arm's line,
+/// its centre relative to the point and radius (units), and its arc's start angle at a's foot and signed sweep to b's
+/// foot.
+#[derive(Clone, Copy, Debug)]
+pub struct TwoFoot {
+    pub pair: usize,
+    pub arms: [usize; 2],
+    pub x: [f64; 2],
+    pub c: [f64; 2],
+    pub rho: f64,
+    pub a0: f64,
+    pub sweep: f64,
 }
 
 /// A part of a line in a point's region, between fractional sample indices `lo` and `hi`, and the
@@ -645,7 +661,7 @@ fn arc(c: [f64; 2], rho: f64, a0: f64, sweep: f64) -> Vec<[f64; 2]> {
 }
 
 /// The global directions strictly between angle a0 and a0 + sweep, in order from a0.
-fn arc_angles(a0: f64, sweep: f64) -> Vec<f64> {
+pub(super) fn arc_angles(a0: f64, sweep: f64) -> Vec<f64> {
     let step = 2.0 * std::f64::consts::PI / f64::from(STEPS);
     let mut out = Vec::new();
     let a1 = a0 + sweep;
@@ -832,6 +848,7 @@ pub fn round(
         spans: Vec::new(),
         seams: vec![None; arms.len()],
         circles: Vec::new(),
+        two_foot: Vec::new(),
         runs: Vec::new(),
         far: vec![0.0; arms.len()],
     };
@@ -863,7 +880,7 @@ pub fn round(
         fills.iter().all(|f| to_ring(f, c).d >= rho - 1.0) && off_lines(lines, water, pos, &own, c, rho)
     };
     let (tau, step) = (2.0 * std::f64::consts::PI, 2.0 * std::f64::consts::PI / f64::from(STEPS));
-    for &(i, j, r, tol) in pairs {
+    for (pair, &(i, j, r, tol)) in pairs.iter().enumerate() {
         // a turns counter-clockwise to b through the pair's sector: as given at a junction or a
         // joint, the inner side at a way's own turn.
         let (a, b) =
@@ -924,6 +941,8 @@ pub fn round(
         far[a] = far[a].max(fa.s);
         far[b] = far[b].max(fb.s);
         out.circles.push(Circle::new(&abs, c, rho, a0, sweep).at_edges([arms[a].line, arms[b].line]));
+        let x = [place(&runs[a], fa.s), place(&runs[b], fb.s)];
+        out.two_foot.push(TwoFoot { pair, arms: [a, b], x, c, rho, a0, sweep });
         let side_a = up_to(&runs[a], fa.s);
         let side_b = up_to(&runs[b], fb.s);
         let mut fan: Vec<[f64; 2]> = side_a.clone();
