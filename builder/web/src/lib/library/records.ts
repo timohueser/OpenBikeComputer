@@ -109,6 +109,26 @@ export interface MapPicture {
     dark?: Blob;
 }
 
+/** A photo of a ride. Its place on the line comes from `time` against the times of the ride, or from `place` where the
+ * time gives none (`lib/ride/photos.ts`). */
+export interface PhotoRecord {
+    /** The key of its ride, then a hash of the file of the photo: the same file is the same photo of a ride. */
+    id: string;
+    /** The key of its ride. */
+    ride: string;
+    /** Unix seconds when the rider took the photo, or null when the file has no time. */
+    time: number | null;
+    /** Longitude and latitude in degrees, only for a photo that has its place from the GPS place of the file. */
+    place?: [number, number];
+    /** The copy: a JPEG with a longest side of 2048 pixels at most. */
+    image: Blob;
+    /** A JPEG with a longest side of 160 pixels, for a mark and a list. */
+    small: Blob;
+}
+
+/** A photo record with no image, as a backup file holds it. */
+export type PhotoEntry = Omit<PhotoRecord, 'image' | 'small'>;
+
 export interface DeletedRide {
     key: string;
     device?: string;
@@ -192,6 +212,10 @@ export function isRideRecord(value: unknown): value is RideRecord {
         && isRideSummary(value.summary) && (value.maxHr === null || isNumber(value.maxHr)) && (value.ftp === null || isNumber(value.ftp))
         && optional(value.trip, isTrip) && optional(value.device, isString);
 }
+
+export const isPhotoEntry = (value: unknown): value is PhotoEntry => isRecord(value) && isString(value.id) && /^[\w-]+$/.test(value.id)
+    && isString(value.ride) && rideKey.test(value.ride) && (value.time === null || isNumber(value.time))
+    && optional(value.place, place => Array.isArray(place) && place.length === 2 && place.every(isNumber)) && (value.time === null) === (value.place !== undefined);
 
 const isTrip = (value: unknown): value is RideTrip => isRecord(value) && isString(value.key) && /^[1-9]\d*$/.test(value.key)
     && Number.isInteger(value.day) && (value.day as number) >= 1 && isString(value.name);

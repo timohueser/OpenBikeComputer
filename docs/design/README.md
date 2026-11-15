@@ -90,7 +90,7 @@ flowchart LR
 | System | Purpose | Status | Uses (production code) | Used by (production code) |
 | --- | --- | --- | --- | --- |
 | [host-runtime](host-runtime.md) | Runs the device core on a computer or phone instead of the board. | draft | card-storage, device-runtime, foundations, map-reading, navigation, rendering-display | map-assembly, simulators |
-| [library](library.md) | Keeps the rider's routes, rides and settings in the browser, each route and ride with a summary, and saves and loads them as one backup file. | draft |  | route-planning, web-planner |
+| [library](library.md) | Keeps the rider's routes, rides, photos of rides and settings in the browser, each route and ride with a summary, and saves and loads them as one backup file. | draft |  | route-planning, web-planner |
 | [map-assembly](map-assembly.md) | Assembles a device map from published cells. | draft | card-storage, device-link, device-map-baking, device-map-builder, foundations, host-runtime, map-reading, map-style, navigation, rendering-display, route-planning | device-link, device-map-builder, map-style, obc-data, route-planning, web-planner |
 | [map-style](map-style.md) | Defines how map features look on the device. | draft | device-map-builder, map-assembly | device-map-builder, map-assembly, web-planner |
 | [route-planning](route-planning.md) | Lets a rider plan a route on a map, in the browser or on the phone. | draft | device-map-builder, library, map-assembly, trailview | device-map-builder, map-assembly, obc-data, trailview, trailview-page, web-planner |

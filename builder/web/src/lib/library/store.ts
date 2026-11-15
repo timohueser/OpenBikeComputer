@@ -1,9 +1,9 @@
-/** Keeps the routes, the rides, their source files, the covers and the library state in the browser database `obc-library`. */
-import { isRideRecord, isRouteRecord, stateChecks, type CoverRecord, type LibraryState, type RideRecord, type RouteRecord } from './records';
+/** Keeps the routes, the rides, their source files, their photos, the covers and the library state in the browser database `obc-library`. */
+import { isRideRecord, isRouteRecord, stateChecks, type CoverRecord, type LibraryState, type PhotoRecord, type RideRecord, type RouteRecord } from './records';
 
-export type StoreName = 'routes' | 'versions' | 'rides' | 'ride-files' | 'covers' | 'state';
+export type StoreName = 'routes' | 'versions' | 'rides' | 'ride-files' | 'covers' | 'state' | 'photos';
 
-/** All records of the library except the covers: the content of a backup. */
+/** All records of the library except the covers and the photos: the content of a backup with no photos. */
 export interface Contents {
     routes: RouteRecord[];
     /** The versions of each route, by route id. */
@@ -17,7 +17,9 @@ export interface Contents {
 type Fail = (error: unknown) => void;
 
 const conflict = () => new Error('This route changed in another tab. Download your edits before reopening it.');
-const STORES: StoreName[] = ['routes', 'versions', 'rides', 'ride-files', 'covers', 'state'];
+const STORES: StoreName[] = ['routes', 'versions', 'rides', 'ride-files', 'covers', 'state', 'photos'];
+/** The field of a record that is its key. The other stores get the key with each write. */
+const KEYS: Partial<Record<StoreName, string>> = { routes: 'id', rides: 'key', covers: 'id', photos: 'id' };
 
 /** Writes are ordered within a tab; revisions prevent a second tab from replacing unseen edits of a route. */
 export class Library {
@@ -27,23 +29,30 @@ export class Library {
     private listeners = new Set<(store: StoreName, key: string) => void>();
     private written = false;
     private cleared = false;
+    /** Another tab changed the version of the database; each later call fails. */
+    private outdated = false;
 
     /** Without `factory`, `open` reads `indexedDB`, so a browser that blocks storage gives a rejected promise. */
     constructor(private factory?: IDBFactory) {}
 
     private open(): Promise<IDBDatabase> {
+        if (this.outdated) return Promise.reject(new Error('The app was updated in another tab. Reload the page.'));
         return this.database ??= new Promise<IDBDatabase>((resolve, reject) => {
-            const request = (this.factory ?? indexedDB).open('obc-library', 1);
+            const request = (this.factory ?? indexedDB).open('obc-library', 2);
+            // Only the stores that are missing: a database of an earlier version keeps its records.
             request.onupgradeneeded = () => {
                 const db = request.result;
-                db.createObjectStore('routes', { keyPath: 'id' });
-                db.createObjectStore('rides', { keyPath: 'key' });
-                db.createObjectStore('covers', { keyPath: 'id' });
-                for (const store of ['versions', 'ride-files', 'state']) db.createObjectStore(store);
+                for (const name of STORES) {
+                    if (db.objectStoreNames.contains(name)) continue;
+                    const store = db.createObjectStore(name, KEYS[name] ? { keyPath: KEYS[name] } : undefined);
+                    if (name === 'photos') store.createIndex('ride', 'ride');
+                }
             };
             request.onsuccess = () => {
                 const db = request.result;
-                db.onversionchange = () => db.close();
+                // A newer app in another tab upgrades the database: this tab lets it, and its code no longer fits
+                // the database.
+                db.onversionchange = () => { db.close(); this.outdated = true; };
                 resolve(db);
             };
             request.onerror = () => reject(request.error);
@@ -269,10 +278,12 @@ export class Library {
         }, 'strict');
     }
 
-    /** Removes a ride, its file and its cover, and adds its key to the deleted rides. */
+    /** Removes a ride, its file, its cover and its photos, and adds its key to the deleted rides. */
     removeRide(key: string): Promise<void> {
-        return this.write(['rides', 'ride-files', 'covers', 'state'], (tx, _, changed) => {
+        return this.write(['rides', 'ride-files', 'covers', 'state', 'photos'], (tx, _, changed) => {
             const state = tx.objectStore('state'), ride = tx.objectStore('rides').get(key), list = state.get('deleted');
+            const photos = tx.objectStore('photos'), ids = photos.index('ride').getAllKeys(key);
+            ids.onsuccess = () => { for (const id of ids.result) photos.delete(id); };
             list.onsuccess = () => {
                 const deleted = stateChecks.deleted(list.result) ? list.result : [];
                 const device: string | undefined = ride.result?.device;
@@ -290,6 +301,52 @@ export class Library {
     async deviceRides(): Promise<Set<string>> {
         const [rides, deleted] = await Promise.all([this.rides(), this.state('deleted')]);
         return new Set([...rides, ...deleted ?? []].flatMap(ride => ride.device ? [ride.device] : []));
+    }
+
+    /** The photos of a ride, in the order of their ids. The browser reads the bytes of an image only when the image is used. */
+    async photos(ride: string): Promise<PhotoRecord[]> {
+        await this.pending;
+        return this.run(['photos'], 'readonly', tx => {
+            const request = tx.objectStore('photos').index('ride').getAll(ride);
+            return () => request.result as PhotoRecord[];
+        });
+    }
+
+    async photo(id: string): Promise<PhotoRecord | undefined> {
+        return await this.read('photos', id) as PhotoRecord | undefined;
+    }
+
+    /** The ids of all photos. */
+    async photoIds(): Promise<string[]> {
+        await this.pending;
+        return this.run(['photos'], 'readonly', tx => {
+            const request = tx.objectStore('photos').getAllKeys();
+            return () => request.result as string[];
+        });
+    }
+
+    /** Adds a photo while its ride is stored. False when the ride is not stored or the id is stored: one transaction
+     * checks and writes. */
+    addPhoto(photo: PhotoRecord): Promise<boolean> {
+        return this.write(['photos', 'rides'], (tx, _, changed) => {
+            const photos = tx.objectStore('photos'), ride = tx.objectStore('rides').getKey(photo.ride), stored = photos.getKey(photo.id);
+            let added = false;
+            stored.onsuccess = () => {
+                if (ride.result === undefined || stored.result !== undefined) return;
+                photos.put(photo);
+                changed('photos', photo.id);
+                added = true;
+            };
+            return () => added;
+        });
+    }
+
+    removePhoto(id: string): Promise<void> {
+        return this.write(['photos'], (tx, _, changed) => {
+            tx.objectStore('photos').delete(id);
+            changed('photos', id);
+            return () => {};
+        });
     }
 
     async cover(id: string): Promise<CoverRecord | undefined> {
@@ -339,7 +396,7 @@ export class Library {
         });
     }
 
-    /** All records except the covers, read in one transaction. */
+    /** All records except the covers and the photos, read in one transaction. */
     contents(): Promise<Contents> {
         return this.run(['routes', 'versions', 'rides', 'ride-files', 'state'], 'readonly', tx => {
             const all = (store: StoreName) => ({ keys: tx.objectStore(store).getAllKeys(), values: tx.objectStore(store).getAll() });
