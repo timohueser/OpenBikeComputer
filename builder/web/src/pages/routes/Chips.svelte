@@ -1,9 +1,8 @@
 <!-- The chips of the search of the Routes page. A free chip offers its options; a set chip shows its value. -->
 <script lang="ts">
-    import { untrack } from 'svelte';
     import { bikes } from '../../lib/library/records';
     import { ridingProfiles } from '../../lib/planner/riding-profiles';
-    import { distanceIn, formatDistance, formatHeight, heightIn } from '../../lib/settings/format';
+    import { heightUnit } from '../../lib/settings/format';
     import { settings } from '../../lib/settings/settings.svelte';
     import { findPlaces, rangeText, type Box, type Chips, type FoundPlace, type Range } from './filter';
     import RangeSlider from './RangeSlider.svelte';
@@ -30,11 +29,9 @@
     let query = $state(''), found = $state.raw<FoundPlace[] | null>(null), failure = $state('');
     let timer: ReturnType<typeof setTimeout> | undefined, controller: AbortController | undefined;
 
-    /** A value in the units of the rider, with its unit. A length on a step of the slider is a whole number and shows no
-     * decimal; a stored length off the step keeps the decimal of `formatDistance`. */
+    /** A value in the units of the rider, with its unit and at most one decimal: "40 km", "12.3 km", "1,500 m". */
     const show = (key: 'length' | 'climb') => (value: number) =>
-        key === 'climb' ? formatHeight(value / heightIn(1))
-            : Number.isInteger(value) ? `${value.toLocaleString('en')}\u00a0${settings.units}` : formatDistance(value / distanceIn(1));
+        `${value.toLocaleString('en', { maximumFractionDigits: 1 })}\u00a0${key === 'length' ? settings.units : heightUnit()}`;
     const rangeLabel = (key: 'length' | 'climb', range: Range) => rangeText(range, show(key));
 
     function options(key: 'bike' | 'days' | 'year'): { value: Chips[Key]; label: string }[] {
@@ -52,12 +49,6 @@
 
     // The set chips come first, each group in the order of `keys`. A chip does not move while a menu is open.
     let ordered = $state<Key[]>([]);
-    // Another view has other chips and other values, so its menus start closed.
-    const offered = $derived(keys.join());
-    $effect.pre(() => {
-        void offered;
-        untrack(() => open = null);
-    });
     $effect.pre(() => {
         if (open === null) ordered = [...keys.filter(key => chips[key] !== undefined), ...keys.filter(key => chips[key] === undefined)];
     });

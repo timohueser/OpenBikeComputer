@@ -38,6 +38,8 @@ describe('range slider', () => {
         // The highest bar holds 13 values; the last one holds 79, 79 and 300, and is striped for the 300 above the top.
         expect(bars().map(bar => Math.round(parseFloat(bar.style.getPropertyValue('--share')) * 13))).toEqual([13, 1, 1, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 3]);
         expect(bars().map(bar => bar.classList.contains('more'))).toEqual([...Array(15).fill(false), true]);
+        // An empty step is a stub; a bar with a count is not.
+        expect(bars().map(bar => bar.classList.contains('empty'))).toEqual([false, false, false, ...Array(5).fill(true), false, ...Array(6).fill(true), false]);
         expect(to().max).toBe('80');
         expect(reading()).toBe('Any');
         expect([...document.querySelectorAll('.ends span')].map(end => end.textContent)).toEqual(['0', '75 km+']);
@@ -81,6 +83,13 @@ describe('range slider', () => {
         expect(from().value).toBe('5');
         expect(reading()).toBe('0.4 km or more');
         set(from(), 0);
+        expect(changes).toEqual([undefined]);
+    });
+
+    it('shows a set upper end near the end of the rail one step in, so a move to the end clears it', () => {
+        const { changes } = show(VALUES, [0, 79]);
+        expect(to().value).toBe('75');
+        set(to(), 80);
         expect(changes).toEqual([undefined]);
     });
 

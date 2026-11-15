@@ -214,7 +214,8 @@
                     <input class="search" type="search" aria-label={ridden ? 'Search your rides' : 'Search your routes'}
                         placeholder={ridden ? 'Search your rides, or a place' : 'Search your routes, or a place'}
                         bind:value={text} onkeydown={event => { if (event.key === 'Enter' && text.trim()) void understand(); }} />
-                    <Chips bind:chips {view} keys={[...KEYS[ridden ? 'ridden' : 'planned']]} {years} {values} />
+                    <!-- Each view has its own chips, so its menus start closed. -->
+                    {#key ridden}<Chips bind:chips {view} keys={[...KEYS[ridden ? 'ridden' : 'planned']]} {years} {values} />{/key}
                     {#if group}
                         <p class="count">
                             <button type="button" class="back" onclick={() => { opened = undefined; selected = undefined; }}>‹ All rides</button>

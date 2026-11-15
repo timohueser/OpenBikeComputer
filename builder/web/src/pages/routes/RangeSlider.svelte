@@ -16,8 +16,10 @@
     // The scale holds while the slider shows, so a handle never moves under the pointer.
     const step = untrack(() => scale(values, range).step), top = STEPS * step;
     // A stored end that is off the step shows at the nearest step, and keeps its value until the rider moves its handle.
-    // A set end never shows at the end of the rail, so a move to that end changes the value.
-    const low = $derived(range && range[0] > 0 ? Math.max(1, Math.min(Math.round(range[0] / step), STEPS - 1)) : 0);
+    // A set end never shows at the end of the rail, so a move to that end changes the value. With a set upper end, the
+    // lower handle stops two steps before the end, so the upper one has room inside the rail.
+    const low = $derived(range && range[0] > 0
+        ? Math.max(1, Math.min(Math.round(range[0] / step), range[1] === Infinity ? STEPS - 1 : STEPS - 2)) : 0);
     const high = $derived(range && range[1] !== Infinity ? Math.max(Math.min(Math.round(range[1] / step), STEPS - 1), low + 1) : STEPS);
     /** The last bar also counts each value from `top` up. */
     const counts = $derived.by(() => {
@@ -45,7 +47,7 @@
 <div class="slider">
     <p class="reading">{range ? rangeText(range, format) : 'Any'}</p>
     <div class="bars" aria-hidden="true">
-        {#each counts as count, i (i)}<span class:on={i >= low && i < high} class:more={over && i === STEPS - 1} style:--share={count / most}></span>{/each}
+        {#each counts as count, i (i)}<span class:on={i >= low && i < high} class:more={over && i === STEPS - 1} class:empty={!count} style:--share={count / most}></span>{/each}
     </div>
     <div class="rail" style:--low={low} style:--high={high} style:--steps={STEPS}>
         <input type="range" min="0" max={top} {step} value={low * step} aria-label="{label}, from" aria-valuetext={low ? format(low * step) : 'Any'}
@@ -74,12 +76,15 @@
         gap: 2px;
         height: 44px;
     }
-    /* An empty step keeps a stub, so the row of bars has no holes. */
+    /* An empty step keeps a stub, so the row of bars has no holes; a bar with a count stands clearly above the stub. */
     .bars span {
         flex: 1;
-        height: calc(3px + var(--share) * (100% - 3px));
+        height: calc(6px + var(--share) * (100% - 6px));
         border-radius: 2px 2px 0 0;
         background: var(--parchment-3);
+    }
+    .bars .empty {
+        height: 3px;
     }
     .bars .on {
         background: var(--ink-soft);

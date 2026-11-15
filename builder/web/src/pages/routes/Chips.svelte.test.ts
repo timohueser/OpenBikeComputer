@@ -39,22 +39,4 @@ describe('chips', () => {
         flushSync();
         expect(summaries()).toEqual(['Road bike ▾', 'Under 20 m ▾', '+ Length']);
     });
-
-    it('closes the open menu when the chips of another view come', () => {
-        let keys = $state<(keyof ChipValues)[]>(['length', 'climb', 'days']);
-        chips = mount(Chips, { target: document.body, props: {
-            chips: {}, get keys() { return keys; }, values: () => [10, 20, 30],
-        } });
-        flushSync();
-        const length = document.querySelector('details')!;
-        length.open = true;
-        length.dispatchEvent(new Event('toggle'));
-        flushSync();
-        expect(document.querySelector('details.open')).toBe(length);
-
-        keys = ['year', 'length'];
-        flushSync();
-        expect(document.querySelector('details.open')).toBeNull();
-        expect([...document.querySelectorAll('summary')].map(summary => summary.textContent)).toEqual(['+ Year', '+ Length']);
-    });
 });
