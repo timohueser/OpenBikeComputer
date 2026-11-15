@@ -1,6 +1,6 @@
 import { IDBFactory } from 'fake-indexeddb';
 import { describe, expect, it } from 'vitest';
-import type { RideRecord, RouteRecord } from './records';
+import type { PhotoRecord, RideRecord, RouteRecord } from './records';
 import { Library } from './store';
 import { summarize } from './summary';
 
@@ -10,6 +10,8 @@ const ride = (key: string, device?: string): RideRecord => ({
     key, name: key, source: device ? 'device' : 'file', format: 'gpx', maxHr: 180, ftp: null, ...device && { device },
     summary: summarize([[8, 47, 400], [8.01, 47, 420]], { lengthM: 760, climbM: 20, seconds: 300, movingS: 280, start: 1_700_000_000, bike: 'gravel' }),
 });
+
+const photo = (id: string, key: string): PhotoRecord => ({ id, ride: key, time: 1, image: new Blob([`copy of ${id}`]), small: new Blob(['small']) });
 
 describe('library store', () => {
     it('saves routes in order, refuses an unseen edit from another tab, and removes the versions and the active pointer', async () => {
@@ -109,5 +111,51 @@ describe('library store', () => {
         expect([contents.routes, contents.versions, contents.rides, contents.files.size, contents.state, await fresh.cover('a')])
             .toEqual([[], {}, [], 0, {}, undefined]);
         await library.close(); await fresh.close();
+    });
+
+    it('opens a database of version 1 with its routes and rides, and adds the store of the photos', async () => {
+        const factory = new IDBFactory(), key = '20260801T070000Z';
+        await new Promise<void>((resolve, reject) => {
+            const request = factory.open('obc-library', 1);
+            request.onupgradeneeded = () => {
+                const db = request.result;
+                db.createObjectStore('routes', { keyPath: 'id' });
+                db.createObjectStore('rides', { keyPath: 'key' });
+                db.createObjectStore('covers', { keyPath: 'id' });
+                for (const store of ['versions', 'ride-files', 'state']) db.createObjectStore(store);
+            };
+            request.onsuccess = () => {
+                const db = request.result, tx = db.transaction(['routes', 'rides', 'ride-files'], 'readwrite');
+                tx.objectStore('routes').put(route('a'));
+                tx.objectStore('rides').put(ride(key));
+                tx.objectStore('ride-files').put(new Blob(['ride']), key);
+                tx.oncomplete = () => { db.close(); resolve(); };
+            };
+            request.onerror = () => reject(request.error);
+        });
+        const library = new Library(factory);
+        expect((await library.routes()).map(r => r.id)).toEqual(['a']);
+        expect((await library.rides()).map(r => r.key)).toEqual([key]);
+        expect(await (await library.rideFile(key))!.text()).toBe('ride');
+        expect(await library.addPhoto(photo('p1', key))).toBe(true);
+        expect((await library.photos(key)).map(p => p.id)).toEqual(['p1']);
+        await library.close();
+    });
+
+    it('adds a photo one time and only to a stored ride, and removes the photos of a ride with the ride', async () => {
+        const library = new Library(new IDBFactory()), [first, second] = ['20260801T070000Z', '20260802T070000Z'];
+        await library.addRide(ride(first), new Blob(['ride']));
+        await library.addRide(ride(second), new Blob(['ride']));
+        expect(await library.addPhoto(photo('p1', first))).toBe(true);
+        expect(await library.addPhoto({ ...photo('p1', first), time: 5 })).toBe(false);
+        expect(await library.addPhoto(photo('p2', '20260809T070000Z'))).toBe(false);
+        await library.addPhoto(photo('p3', first));
+        await library.addPhoto(photo('p4', second));
+        await library.removePhoto('p3');
+        expect((await library.photos(first)).map(p => [p.id, p.time])).toEqual([['p1', 1]]);
+        expect(await (await library.photo('p1'))!.image.text()).toBe('copy of p1');
+        await library.removeRide(first);
+        expect(await library.photoIds()).toEqual(['p4']);
+        await library.close();
     });
 });
