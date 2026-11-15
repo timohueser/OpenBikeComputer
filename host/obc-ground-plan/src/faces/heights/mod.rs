@@ -1553,8 +1553,9 @@ fn decks<'a>(
         ];
         let (p0, p1) = (behind(0, near[0]), behind(1, near[1]));
         // A bore's floor holds the ground behind its portal lines only: in front of one the way that ends there and its
-        // cut stand alone.
-        if ln.ret < 0.0 && ((ln.level[0] && p0 > 0.0) || (ln.level[1] && p1 > 0.0)) {
+        // cut stand alone. A point of the line lies on it to the slice's rounding.
+        let front = f64::from(super::slice::PRECISION) * b.mpu;
+        if ln.ret < 0.0 && ((ln.level[0] && p0 > front) || (ln.level[1] && p1 > front)) {
             return None;
         }
         let past = p0.max(p1).max(0.0);
