@@ -26,10 +26,12 @@
             <a class="button" href={`${ROUTES.planner}/new`}>Plan a new route</a>
         </nav>
     {:else if text.kind === 'year'}
-        {@const { totals } = text}
-        <p class="over">This year, {totals.rides && totals.hikes ? 'by bike and on foot' : totals.hikes ? 'on foot' : 'by bike'}</p>
-        <h1 class="total">{formatDistance(totals.lengthM)}</h1>
-        <p class="numbers">{[totals.rides && count(totals.rides, 'ride'), totals.hikes && count(totals.hikes, 'hike')].filter(Boolean).join(' · ')}</p>
+        {@const { bike, foot } = text.totals}
+        {@const main = bike.count ? bike : foot}
+        <p class="over">This year, {bike.count ? 'by bike' : 'on foot'}</p>
+        <h1 class="total">{formatDistance(main.lengthM)}</h1>
+        <p class="numbers">{count(main.count, bike.count ? 'ride' : 'hike')}</p>
+        {#if bike.count && foot.count}<p>On foot: {formatDistance(foot.lengthM)} · {count(foot.count, 'hike')}</p>{/if}
         <p>Your last {text.hike ? 'hike' : 'ride'} was {text.last.name}, {text.ago}.</p>
         <nav class="buttons" aria-label="This year">
             <a class="button primary" href={`${ROUTES.ride}/${text.last.key}`}>Look back at it</a>
