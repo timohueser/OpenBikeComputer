@@ -28,13 +28,12 @@
     {:else if text.kind === 'year'}
         {@const { bike, foot } = text.totals}
         {#if bike.count && foot.count}
-            <!-- The two lengths never add, and neither leads: two rows of one size. -->
+            <!-- The two lengths never add, and neither leads: side by side in one size, each with its word and its count. -->
             <p class="over">This year</p>
-            <h1 class="pair">
-                <span>{formatDistance(bike.lengthM)}</span><small>by bike</small>
-                <span>{formatDistance(foot.lengthM)}</span><small>on foot</small>
+            <h1 class="sides">
+                <span>{formatDistance(bike.lengthM)}<small>by bike · {count(bike.count, 'ride')}</small></span>
+                <span>{formatDistance(foot.lengthM)}<small>on foot · {count(foot.count, 'hike')}</small></span>
             </h1>
-            <p class="numbers">{count(bike.count, 'ride')} · {count(foot.count, 'hike')}</p>
         {:else}
             {@const main = bike.count ? bike : foot}
             <p class="over">This year, {bike.count ? 'by bike' : 'on foot'}</p>
@@ -93,17 +92,21 @@
     .slogan {
         font-size: 48px;
     }
-    /* Each row is a length and its word on one line; the words start on one edge. */
-    .pair {
-        display: grid;
-        grid-template-columns: auto 1fr;
-        align-items: baseline;
-        gap: 2px 14px;
+    /* Where the two lengths do not fit in one row, the second goes under the first: no number is cut. */
+    .sides {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px 44px;
         font-size: 48px;
     }
-    .pair small {
-        font-size: 18px;
-        font-weight: 400;
+    .sides span {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        white-space: nowrap;
+    }
+    .sides small {
+        font: 400 18px/1.4 var(--sans);
         letter-spacing: 0;
     }
     .numbers, .lead {
@@ -148,10 +151,11 @@
         .total {
             font-size: 48px;
         }
-        .pair {
+        .sides {
+            column-gap: 28px;
             font-size: 38px;
         }
-        .pair small {
+        .sides small {
             font-size: 16px;
         }
         .numbers, .lead {
