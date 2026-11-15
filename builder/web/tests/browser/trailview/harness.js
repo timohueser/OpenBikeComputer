@@ -119,6 +119,21 @@ export async function redPixels(page) {
     }, png);
 }
 
+/** A screenshot of the page as `{ width, height, rgba }`, its bytes in rows from the top, decoded in the page. */
+export async function screenPixels(page) {
+    const png = (await page.screenshot()).toString('base64');
+    const { width, height, base64 } = await page.evaluate(async png => {
+        const image = await createImageBitmap(await (await fetch(`data:image/png;base64,${png}`)).blob());
+        const context = new OffscreenCanvas(image.width, image.height).getContext('2d');
+        context.drawImage(image, 0, 0);
+        const rgba = context.getImageData(0, 0, image.width, image.height).data;
+        let binary = '';
+        for (let i = 0; i < rgba.length; i += 0x8000) binary += String.fromCharCode(...rgba.subarray(i, i + 0x8000));
+        return { width: image.width, height: image.height, base64: btoa(binary) };
+    }, png);
+    return { width, height, rgba: Buffer.from(base64, 'base64') };
+}
+
 /** Serves the built page on a free loopback port; resolves to its origin and a close function. */
 export async function serve(root = DIST) {
     const server = createServer((request, response) => {
