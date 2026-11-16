@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { actions as browserActions } from './actions.js';
 import { createBudget, walk } from './loop.js';
 
 const model = { usdPerMillionInput: 2, usdPerMillionOutput: 10 };
@@ -13,7 +14,7 @@ const click = (x, y) => ({ type: 'click', target: 'map', x, y, x2: null, y2: nul
 function standInEnv() {
   const app = { performed: 0 };
   return {
-    actions: { same: (a, b) => a.type === b.type && Math.hypot(a.x - b.x, a.y - b.y) <= 20 },
+    actions: browserActions,
     start: async () => ({
       app,
       screenshot: async () => ({ png: Buffer.from('png'), unstable: false }),
@@ -24,17 +25,20 @@ function standInEnv() {
   };
 }
 
-/** A participant that answers with `actions` in turn and says `done` when asked. */
+/** A participant that answers with `actions` in turn and says `done` when asked. `seen` holds the records it got. */
 function standInParticipant(actions, { fail = 0 } = {}) {
   let calls = 0;
+  const seen = [];
   return {
+    seen,
     get calls() { return calls; },
-    step: async () => {
+    step: async ({ records }) => {
       calls++;
+      seen.push(...records);
       if (calls <= fail) throw Object.assign(new Error('refusal'), { usage });
       return { value: { options: [], expect: '', action: actions.shift(), match: null, confusion: { level: 0, reason: '' } }, usage };
     },
-    done: async () => { calls++; return { value: 'no', usage }; },
+    done: async ({ records }) => { calls++; seen.push(...records); return { value: 'no', usage }; },
   };
 }
 
@@ -62,6 +66,19 @@ test('success ends as done and stores the answer of the participant in the last 
   const records = readFileSync(join(dir, 'steps.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
   assert.equal(records[1].done_answer, 'no');
   assert.deepEqual([records[1].screen, records[1].hit, records[1].unstable], ['planner', 'map', false]);
+});
+
+test('the participant gets back only its own fields, never the fields that the loop adds from the page', async () => {
+  const { participant } = await run({ actions: [click(1, 1), click(300, 300)], success: app => app.performed === 2 });
+  assert.ok(participant.seen.length > 0);
+  for (const record of participant.seen) assert.deepEqual(Object.keys(record).sort(), ['action', 'confusion', 'expect', 'match', 'options']);
+});
+
+test('an action without the fields its type needs counts as a failed call and gets another try', async () => {
+  const key = { type: 'key', target: 'Enter', x: null, y: null, x2: null, y2: null, text: null };
+  const { result, participant } = await run({ actions: [key, { type: 'give_up' }] });
+  assert.deepEqual(result, { outcome: 'gave_up', steps: 1 });
+  assert.equal(participant.calls, 2);
 });
 
 test('the end of the step budget ends as gave_up', async () => {

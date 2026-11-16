@@ -6,15 +6,19 @@ export const walkthroughsPerTask = 3;
 
 /** True when a route in the library starts within `radiusM` of `from` and ends within `radiusM` of `to`. */
 async function libraryHasRoute(page, from, to, radiusM = 1000) {
+  // The open has no version, so on a page whose app has not created the library yet it would create an
+  // empty one and block the app's own open. It aborts that upgrade, and closes its connection after the read.
   const lines = await page.evaluate(() => new Promise((resolve, reject) => {
     const request = indexedDB.open('obc-library');
-    request.onerror = () => reject(request.error);
+    let created = false;
+    request.onupgradeneeded = () => { created = true; request.transaction.abort(); };
+    request.onerror = () => (created ? resolve([]) : reject(request.error));
     request.onsuccess = () => {
       const db = request.result;
-      if (!db.objectStoreNames.contains('routes')) return resolve([]);
+      if (!db.objectStoreNames.contains('routes')) { db.close(); return resolve([]); }
       const all = db.transaction('routes').objectStore('routes').getAll();
-      all.onsuccess = () => resolve(all.result.map(route => route.summary?.line ?? []));
-      all.onerror = () => reject(all.error);
+      all.onsuccess = () => { db.close(); resolve(all.result.map(route => route.summary?.line ?? [])); };
+      all.onerror = () => { db.close(); reject(all.error); };
     };
   }));
   return lines.some(line => line.length >= 4

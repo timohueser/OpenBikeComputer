@@ -4,47 +4,13 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { chromium } from '@playwright/test';
 import { loopbackPort } from '../../../../../tools/loopback_port.mjs';
+import { actions, VIEWPORT } from './actions.js';
 
-const VIEWPORT = { width: 1280, height: 800 };
 const STABLE_GAP_MS = 300;
 const STABLE_LIMIT_MS = 5_000;
-const SAME_POINT_PX = 20;
 const SCROLL_PX = 400;
 const BROWSER_DIR = fileURLToPath(new URL('..', import.meta.url));
 const DIST = fileURLToPath(new URL('../../../dist/planner', import.meta.url));
-
-const point = { anyOf: [{ type: 'integer' }, { type: 'null' }] };
-const nullableText = { anyOf: [{ type: 'string' }, { type: 'null' }] };
-
-/** The `action` part of the step record schema. */
-const schema = {
-  type: 'object',
-  properties: {
-    type: { type: 'string', enum: ['click', 'drag', 'scroll', 'hover', 'type', 'key', 'give_up'] },
-    target: { type: 'string' },
-    x: point, y: point, x2: point, y2: point,
-    text: nullableText,
-  },
-  required: ['type', 'target', 'x', 'y', 'x2', 'y2', 'text'],
-  additionalProperties: false,
-};
-
-const text = `The screenshot is ${VIEWPORT.width} × ${VIEWPORT.height} pixels. A point is x, y in pixels from the top left.
-- click: click at x, y.
-- drag: press at x, y, move to x2, y2, release.
-- scroll: turn the mouse wheel at x, y; text is "up" or "down".
-- hover: move the mouse to x, y.
-- type: click at x, y, then type text.
-- key: press one key, such as "Enter", "Escape" or "Tab"; text is the key name.
-- give_up: stop trying.
-Name the target in words. Use null for each field that the action does not use.`;
-
-/** True when two actions are the same: the same type and text, and each point within 20 pixels. */
-function same(a, b) {
-  const near = (x1, y1, x2, y2) => (x1 === null && x2 === null) || Math.hypot(x1 - x2, y1 - y2) <= SAME_POINT_PX;
-  return a.type === b.type && (a.text ?? null) === (b.text ?? null)
-    && near(a.x, a.y, b.x, b.y) && near(a.x2, a.y2, b.x2, b.y2);
-}
 
 /** Serves the build and starts Chromium. `close` stops both. */
 export async function openBrowser() {
@@ -57,7 +23,7 @@ export async function openBrowser() {
   const browser = await chromium.launch({ proxy });
   await waitForServer(`${base}/planner.html`);
   return {
-    actions: { schema, text, same },
+    actions,
     start: () => startWalkthrough(browser, base),
     close: async () => { await browser.close(); server.kill(); },
   };

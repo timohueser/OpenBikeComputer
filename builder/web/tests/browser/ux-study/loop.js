@@ -21,25 +21,26 @@ export function createBudget(model, maxCostUsd) {
 /**
  * Runs `task` once in a new walkthrough of `env` and writes `steps.jsonl` and one PNG for each screen to `dir`.
  * Resolves with `{ outcome, steps }`: `done`, `stuck`, `gave_up` or `error`; an `error` also has a `reason`.
+ * The participant gets only its own answers back: the fields that the loop adds come from the page, which
+ * the participant must know only from the screenshots.
  */
 export async function walk({ task, env, participant, budget, dir }) {
   mkdirSync(dir, { recursive: true });
+  const answers = [];
   const records = [];
   let screens = 0;
   const save = png => writeFileSync(join(dir, `${String(++screens).padStart(2, '0')}.png`), png);
-  const end = (outcome, reason) => {
-    writeFileSync(join(dir, 'steps.jsonl'), records.map(r => `${JSON.stringify(r)}\n`).join(''));
-    return { outcome, steps: records.length, ...(reason && { reason }) };
-  };
+  const end = (outcome, reason) => ({ outcome, steps: records.length, ...(reason && { reason }) });
   /** The value of a participant call with two more tries, or the reason that it failed. */
-  const call = async request => {
+  const call = async (request, invalid = () => null) => {
     let reason;
     for (let i = 0; i < TRIES; i++) {
       if (budget.exhausted) return { reason: 'spending limit' };
       try {
         const { value, usage } = await request();
         budget.add(usage);
-        return { value };
+        reason = invalid(value);
+        if (!reason) return { value };
       } catch (error) {
         if (error.usage) budget.add(error.usage);
         reason = error.message;
@@ -47,18 +48,22 @@ export async function walk({ task, env, participant, budget, dir }) {
     }
     return { reason };
   };
+  const invalidAction = answer => (env.actions.valid(answer.action) ? null : `invalid action ${JSON.stringify(answer.action)}`);
 
-  const walkthrough = await env.start();
+  let walkthrough;
   try {
+    walkthrough = await env.start();
     let shot = await walkthrough.screenshot();
     save(shot.png);
     let previous = null;
     for (;;) {
-      const answer = await call(() => participant.step({ goal: task.goal, records, previous, current: shot.png }));
+      const step = { goal: task.goal, records: answers, previous, current: shot.png };
+      const answer = await call(() => participant.step(step), invalidAction);
       if (!answer.value) return end('error', answer.reason);
       const { action } = answer.value;
       const where = action.type === 'give_up' ? { screen: null, hit: null } : await walkthrough.describe(action);
       const record = { step: records.length + 1, ...answer.value, ...where, unstable: shot.unstable };
+      answers.push(answer.value);
       records.push(record);
       if (action.type === 'give_up') return end('gave_up');
 
@@ -68,7 +73,7 @@ export async function walk({ task, env, participant, budget, dir }) {
       save(shot.png);
 
       if (await task.success(walkthrough.app)) {
-        const done = await call(() => participant.done({ goal: task.goal, records, current: shot.png }));
+        const done = await call(() => participant.done({ goal: task.goal, records: answers, current: shot.png }));
         if (!done.value) return end('error', done.reason);
         record.done_answer = done.value;
         return end('done');
@@ -77,7 +82,8 @@ export async function walk({ task, env, participant, budget, dir }) {
       if (records.length >= task.stepBudget) return end('gave_up');
     }
   } finally {
-    await walkthrough.end();
+    writeFileSync(join(dir, 'steps.jsonl'), records.map(r => `${JSON.stringify(r)}\n`).join(''));
+    await walkthrough?.end();
   }
 }
 

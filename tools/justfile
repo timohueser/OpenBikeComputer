@@ -532,8 +532,9 @@ site *args:
     # *serving* directory and vanished the moment we left the repo root.
     _run python3 -m http.server "$port" --directory "$fe/dist/planner"
 
-# Builds the planner as `site` does, against the active planner release or VITE_PLANNER_CATALOG,
-# and runs a UX study of it (builder/web/tests/browser/ux-study/). The study calls the Anthropic
+# Builds the wasm bridges and the planner, with no VITE_PLANNER_CONFIG and no VITE_FAKE_DEVICE, so it
+# reads the active planner release or VITE_PLANNER_CATALOG, and runs a UX study of it
+# (builder/web/tests/browser/ux-study/). The study calls the Anthropic
 # API with OBC_UX_API_KEY, from the environment or from ~/.config/openbikecomputer/credentials.env.
 [doc("Run a UX study of the web planner. Args: [--task ID]")]
 [group('run')]

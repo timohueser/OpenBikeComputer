@@ -882,7 +882,7 @@
     "repository-tooling"
    ],
    "violations": 0,
-   "lines": 0,
+   "lines": 489,
    "problems": []
   },
   {
@@ -1712,6 +1712,12 @@
    "from": "trailview-page",
    "to": "trailview",
    "test": false,
+   "undeclared": false
+  },
+  {
+   "from": "ux-study",
+   "to": "repository-tooling",
+   "test": true,
    "undeclared": false
   },
   {
