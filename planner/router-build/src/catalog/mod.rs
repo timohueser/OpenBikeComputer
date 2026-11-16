@@ -6,7 +6,8 @@ use crate::source::{Data, Id, Relation, Tags};
 use planner_router::{
     data::{RoutingData, Selection},
     directory::Directory,
-    model::Profile,
+    geometry,
+    model::{Point, Profile, NO_ELEVATION},
     package::Source,
     shape::{self, distance, Failure, Limits, P},
     Control, Router,
@@ -29,6 +30,8 @@ const ROUTERS_MEMORY: usize = 6 << 30;
 const PROFILES: [&str; 5] = ["touring", "road", "gravel", "mtb/technical", "hiking/alpine"];
 /// The line keeps every point of the plan route within this distance.
 const LINE_TOLERANCE_M: f64 = 50.0;
+/// The distance between two entries of `profile_m`.
+const PROFILE_STEP_M: f64 = 100.0;
 /// Router calls for the search of one route, for each profile that it checks. A search that needs
 /// more does not converge, and the route leaves the catalog; the bound keeps the bake of a large
 /// region within minutes.
@@ -541,6 +544,9 @@ fn route<D: RoutingData>(
     }
     record.insert("cells".into(), json!(cell_ids(&cover)));
     record.insert("line_udeg".into(), json!(encode(&simple)));
+    if let Some(profile) = profile(&plan.route.points, totals.distance_m as f64) {
+        record.insert("profile_m".into(), json!(profile));
+    }
     let via = &positions[1..positions.len() - 1];
     record.insert("via".into(), json!(via));
     let mut turnarounds: Vec<usize> = plan.turnarounds.iter().map(|&i| positions[i]).collect();
@@ -561,6 +567,24 @@ fn route<D: RoutingData>(
         cells: cover,
         grades,
     })
+}
+
+/// The height at each `PROFILE_STEP_M` along a route, and at its end, with the walked distance
+/// scaled to `length_m`. `None` when no point has an elevation.
+fn profile(points: &[Point], length_m: f64) -> Option<Vec<Option<i32>>> {
+    if points.len() < 2 || points.iter().all(|p| p.elevation == NO_ELEVATION) {
+        return None;
+    }
+    let along = geometry::cumulative(points);
+    let walked = along[along.len() - 1];
+    let steps = (length_m / PROFILE_STEP_M).floor() as usize;
+    let at = |distance: f64| {
+        let u = if length_m > 0.0 { (distance / length_m * walked).min(walked) } else { 0.0 };
+        // An entry on a point takes its height; between points, the straight line between them.
+        let height = geometry::at(points, &along, u).elevation;
+        (height != NO_ELEVATION).then(|| height.round() as i32)
+    };
+    Some((0..=steps).map(|i| i as f64 * PROFILE_STEP_M).chain([length_m]).map(at).collect())
 }
 
 /// The length of the plan route with each grade, and the hardest explicit grade, from the grades
