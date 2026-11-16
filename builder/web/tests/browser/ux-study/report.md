@@ -8,9 +8,9 @@ You get:
 Write each finding:
 - `title`: the fault in one short sentence, as a rider meets it.
 - `where`: the page and the part of the screen, such as "planner · search results".
-- `what_happened`: what the participants expected, what the screen did, and how many walkthroughs show it. Two sentences at most.
+- `what_happened`: what the participants expected and what the screen did. Two sentences at most. State no number of walkthroughs: the report counts them from `steps`.
 - `direction`: the direction of a fix, in one short sentence. Never propose more text on the screen: you read every word, a rider does not. Prefer a change to a control, its place, its feedback or a default.
-- `steps`: the ids of the candidate steps that show the fault.
+- `steps`: the ids of the candidate steps that show the fault, with at least one step of each walkthrough that shows it.
 
 Rules:
 - One finding is one fault. Merge groups that show the same fault. Split a group that shows several faults, such as a group on the map.

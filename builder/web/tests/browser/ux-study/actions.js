@@ -27,7 +27,7 @@ const text = `The screenshot is ${VIEWPORT.width} × ${VIEWPORT.height} pixels. 
 - drag: press at x, y, move to x2, y2, release.
 - scroll: turn the mouse wheel at x, y; text is "up" or "down".
 - hover: move the mouse to x, y.
-- type: click at x, y, then type text.
+- type: click the field at x, y, then type text. The text replaces the text of the field.
 - key: press one key; text is one of ${KEYS.join(', ')}.
 - give_up: stop trying.
 Name the target in words. Use null for each field that the action does not use.`;

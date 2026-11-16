@@ -202,7 +202,7 @@ function render({ notices, commit, model, costUsd, walkthroughs, groups, answer,
   findings.forEach((finding, i) => lines.push(`### ${i + 1}. ${finding.title}`,
     `- Where: ${finding.where}`,
     `- What happened: ${finding.what_happened}`,
-    `- Evidence: ${evidence(finding.steps)}`,
+    `- Evidence (${seenIn(finding.steps, walkthroughs)}): ${evidence(finding.steps)}`,
     `- Direction: ${finding.direction}`, ''));
   if (open.issues && compared) {
     const seen = new Set(answer.seen_again);
@@ -211,6 +211,14 @@ function render({ notices, commit, model, costUsd, walkthroughs, groups, answer,
     lines.push('## Open findings not seen in this study', '', ...list(open.issues.filter(issue => !seen.has(issue.number)), '. Close it if the fix is in.'), '');
   }
   return lines.join('\n');
+}
+
+/** "2 of 3 plan-route walkthroughs": the walkthroughs among the cited steps, against all of their task. */
+function seenIn(steps, walkthroughs) {
+  return [...new Set(steps.map(s => s.task))].map(task => {
+    const seen = new Set(steps.filter(s => s.task === task).map(s => s.n)).size;
+    return `${seen} of ${walkthroughs.filter(w => w.task === task).length} ${task} walkthroughs`;
+  }).join(', ');
 }
 
 /** "plan-route 1, steps [6](plan-route-1/06.jpg), [7](plan-route-1/07.jpg); plan-route 2, step [3](…)": each link opens the screen that the step acted on. */

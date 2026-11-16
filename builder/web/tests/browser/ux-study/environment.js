@@ -1,6 +1,7 @@
 // The browser environment of a study: serves the built planner on loopback, starts a clean browser
 // context for each walkthrough, takes stable screenshots and performs the participant's actions.
 import { spawn } from 'node:child_process';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from '@playwright/test';
 import { loopbackPort } from '../../../../../tools/loopback_port.mjs';
@@ -15,6 +16,7 @@ const SCROLL_PX = 400;
 const JPEG_QUALITY = 80;
 const BROWSER_DIR = fileURLToPath(new URL('..', import.meta.url));
 const DIST = fileURLToPath(new URL('../../../dist/planner', import.meta.url));
+const PUBLIC = fileURLToPath(new URL('../../../public', import.meta.url));
 
 /** Serves the build and starts Chromium. `close` stops both. */
 export async function openBrowser() {
@@ -50,6 +52,8 @@ async function startWalkthrough(browser, base) {
   const pending = new Set();
   context.on('request', request => pending.add(request));
   for (const settled of ['requestfinished', 'requestfailed']) context.on(settled, request => pending.delete(request));
+  // The planner build leaves out the files of the site root, such as the logo, which the deployed site serves.
+  await context.route(`${base}/brand/**`, route => route.fulfill({ path: join(PUBLIC, new URL(route.request().url()).pathname) }));
   const page = await context.newPage();
   await page.goto(`${base}/planner.html#/planner`);
   // The map marks itself busy until it has drawn; the canvas appears long before that.
@@ -94,7 +98,12 @@ async function perform(page, { type, x, y, x2, y2, text }) {
   else if (type === 'hover') await mouse.move(x, y);
   else if (type === 'scroll') { await mouse.move(x, y); await mouse.wheel(0, text === 'up' ? -SCROLL_PX : SCROLL_PX); }
   else if (type === 'drag') { await mouse.move(x, y); await mouse.down(); await mouse.move(x2, y2, { steps: 10 }); await mouse.up(); }
-  else if (type === 'type') { if (x !== null) await mouse.click(x, y); await keyboard.type(text ?? ''); }
+  else if (type === 'type') {
+    if (x !== null) await mouse.click(x, y);
+    // A person selects the old text first; the participant has no action for that.
+    await keyboard.press('ControlOrMeta+A');
+    await keyboard.type(text ?? '');
+  }
   else if (type === 'key') await keyboard.press(text);
 }
 

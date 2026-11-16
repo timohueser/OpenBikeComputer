@@ -89,12 +89,12 @@ async function report({ walkthroughs = ordinary, ask, limit = 15, spent = 0, lim
 const answers = finding => async () => ({ value: { findings: [finding], seen_again: [] }, usage: { input_tokens: 100_000, output_tokens: 10_000 } });
 const openSections = lines => lines.filter(line => line.startsWith('## Open findings'));
 
-test('the report links each step of a finding to its screenshot, and its first line says when gh failed', async () => {
+test('the report counts the walkthroughs of a finding from its steps, links each step to its screenshot, and says when gh failed', async () => {
   const finding = { title: 'The search box finds nothing', where: 'planner · search', what_happened: 'It shows no results.', direction: 'Search as the rider types.', steps: ['plan-route-3/2', 'plan-route-2/1', 'unknown/1'] };
   const { lines } = await report({ ask: answers(finding), issues: async () => ({ error: 'gh: not logged in' }) });
   assert.equal(lines[0], '`gh` failed, so the report does not list open findings: gh: not logged in');
   assert.equal(lines[2], '# UX study · planner · abc1234 · model · 0.30 USD');
-  assert.ok(lines.includes('- Evidence: plan-route 2, step [1](plan-route-2/01.jpg); plan-route 3, step [2](plan-route-3/02.jpg)'));
+  assert.ok(lines.includes('- Evidence (2 of 3 plan-route walkthroughs): plan-route 2, step [1](plan-route-2/01.jpg); plan-route 3, step [2](plan-route-3/02.jpg)'));
   assert.deepEqual(openSections(lines), []);
 });
 
