@@ -429,18 +429,20 @@ class and waterway kind, and the `structures` of `plan.json`), so a change of th
 of the code of the levels takes a new revision. The bake builds each zoom-16 cell of each zoom-13 tile that holds a
 way of the road solver as the viewer does: from the zoom-13 tiles of the bake and the terrain tiles of zooms 13 and
 12 of the grid. Each cell decides the ways inside its square. A way has a state where it is a bridge or a tunnel, or
-where it ends at the body of a way that it crosses. A tunnel is a way of the kind `tunnel`, or a way of a ground kind
-tagged `tunnel=yes` (the shallow tunnels above). A point of a tunnel has room where, at five points across
-the floor of its way (the edges of its core, of its carriageway, and its centre line), the ground over the floor
-lies at least the least room of its class over it (`bore_least_m` and `roof_least_m`). That ground is the lowest
-paved way that covers the point; else the plain terrain lifted by `lift_max_m`, or the bank of a ground way near it
-(its surface less its `fill` times the metres past its paved edge), the higher. From each tag end, along the chain
-of tunnel ways, the tunnel is `O` up to the first point with room, its portal line, also where its floor lies over
-the terrain (the way goes on as a way on the ground), but `H` where a paved way lies on top of it: more than the
-lower `snap_height_m` of the two ways over its floor. Behind a portal line that lies within `open_max_m` (30 m) of
-its tag end the tunnel is `B` where it has room, up to `body_m` (25 m) from the line, so a short tunnel is one body.
-Else it is `H`: past `open_max_m` from a tag end with no portal line, and past the body. `open_max_m` and `body_m`
-together take 55 m of a cell's reach: a cell reads a tunnel's chain that far past its own square. The A lines of one deck group that cross or lie within
+where it ends at the body of a way that it crosses (the smaller way, the later row of `roads.json`; of one row, the
+tunnel). A tunnel is a way of the kind `tunnel`, or a way of a ground kind tagged `tunnel=yes` (the shallow tunnels
+above). A point of a tunnel has room where, at five points across the floor of its way (the edges of its core, of its
+carriageway, and its centre line), the ground over the floor lies at least the least room of its class over it
+(`bore_least_m` and `roof_least_m`). That ground is the lowest paved way on the ground that covers the point, else
+the plain terrain lifted by `lift_max_m`; a way that ends at the tunnel is not part of it. A cell finds of its tunnel
+ways their stretches with room, under a paved way on top (more than the lower `snap_height_m` of the two ways over
+its floor) and over the body of a way that they end at, their tag ends, and the tunnel ways that go on at each end;
+the cell that holds an end finds it. The bake decides the states along each whole chain of tunnel ways from what all
+cells found: from each tag end the tunnel is `O` up to the first point with room, its portal line, at most
+`open_max_m` (300 m); behind the line it is `B` where it has room, up to `body_m` (30 m) along the chain; else `H`. A
+way on top of an open stretch makes it `H` there (a door), except where it goes on over a stretch with room: there it
+is the lid of the bore. A stretch over the body of a way that the tunnel ends at is `H`. A chain goes on at an end
+only where one tunnel way goes on. A cell reads no chain, so the open stretch takes none of a cell's reach. The A lines of one deck group that cross or lie within
 `edge_band_m` of each other move in together: each A moves in along its way to where its centre line meets the line
 normal to their mean direction into the decks through the farthest one in, and each end line stays square to its own
 way. One pass merges them; a cell merges the A lines that it sees. The storey is one per deck group, the deck ways that share a

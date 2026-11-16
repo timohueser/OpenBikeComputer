@@ -853,11 +853,11 @@ fn the_ladder_follows_the_room_by_the_class_rows_at_every_boundary() {
         ),
         ("bore, inverted", upper("road", &street, -0.55), lower("tunnel", &tunnel, 0.0), Inverted, false),
         (
-            "railway bore under a footway, closed: the railway ends",
+            "railway bore under a footway, closed: the footway (the smaller way) ends",
             upper("path", &foot, 5.05),
             lower("tunnel", &rail_tunnel, 0.0),
             Closed,
-            false,
+            true,
         ),
     ];
     for (what, u, l, want, upper_ends) in rows {
@@ -926,7 +926,8 @@ fn tunnel_levels(lines: &[Line], z: &dyn Fn(f64, f64) -> f64) -> WayLevels {
     let g = graph_with(input.clone());
     let found = super::level_tags::found(&g, &input, Sections::embedded());
     let cells = BTreeMap::from_iter(found.found.into_iter().map(|(k, f)| (k[2], vec![f])));
-    let links: Vec<(u32, f64, u32, f64)> = found.links.iter().map(|&(a, ma, b, mb)| (a[2], ma, b[2], mb)).collect();
+    let links: Vec<level_tags::Link<u32>> =
+        found.links.iter().map(|&(a, ma, da, b, mb, db)| (a[2], ma, da, b[2], mb, db)).collect();
     let tags = super::level_tags::merge(&cells, &[], &[], &links, &crate::faces::Rules::embedded().structures);
     let text = tags.get(&1).and_then(|t| t.get(super::level_tags::LEVELS)).cloned().unwrap_or_default();
     let letter = |t: &str| match t {

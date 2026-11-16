@@ -213,7 +213,7 @@ fn the_tiles_carry_the_levels_of_each_cell() {
         }
         groups.extend(cell.groups.into_iter().map(|g| g.into_iter().map(&mut id).collect::<Vec<_>>()));
         over.extend(cell.over.into_iter().map(|(l, u)| (id(l), id(u))));
-        links.extend(cell.links.into_iter().map(|(a, ma, b, mb)| (id(a), ma, id(b), mb)));
+        links.extend(cell.links.into_iter().map(|(a, ma, da, b, mb, db)| (id(a), ma, da, id(b), mb, db)));
         // The graph of the storeys gives each stretch the level of its state, and holds no HIDDEN stretch.
         let levelled = build_levelled(key, &input, Sections::embedded(), Rules::embedded().structures.edge_band_m);
         let k = |st: &Station| (st.span, st.u);

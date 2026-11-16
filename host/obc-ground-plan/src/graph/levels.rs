@@ -440,16 +440,18 @@ impl<'a> Ctx<'a> {
         [true, false].iter().any(|&start| self.others(w, start).is_some_and(|x| x.iter().any(|a| a.0 == o)))
     }
 
-    /// Storey 0 over a tunnel way's floor at q, without way `not` and the ways that go on from its ends, as the cover
-    /// holds it by construction: the lowest paved stroke of a ground way that covers q (a paved face never moves), else
-    /// the plain terrain lifted by `lift_max_m` (the floor bound's most). And the highest paved stroke that covers q
+    /// Storey 0 over a tunnel way's floor at q, without way `not`, the ways that go on from its ends and the ways
+    /// `gone` (they end at it on step 3: hidden over it), as the cover holds it by construction: the lowest paved
+    /// stroke of a ground way that covers q (a paved face never moves), else the plain terrain lifted by `lift_max_m`
+    /// (the floor bound's most). And the highest paved stroke that covers q
     /// less the at-grade band of it and `not` (the lower of their `snap_height_m`, as at a crossing); None where none
     /// covers q.
-    fn lid(&self, q: [f64; 2], not: u32) -> (f64, Option<f64>) {
+    fn lid(&self, q: [f64; 2], not: u32, gone: &[u32]) -> (f64, Option<f64>) {
         let mpu = self.mpu(q);
         let mut paved = None::<(f64, f64)>;
         for f in self.feet(q, HALF_MAX_M) {
-            if f.way == not || self.g.ways[f.way as usize].level != Level::Ground || self.joined(not, f.way) {
+            let w = &self.g.ways[f.way as usize];
+            if f.way == not || w.level != Level::Ground || self.joined(not, f.way) || gone.contains(&f.way) {
                 continue;
             }
             let Rule::Way(s, _) = self.rule(f.way) else { continue };
@@ -479,7 +481,7 @@ impl<'a> Ctx<'a> {
     /// The bore test at a point of a tunnel way: the least over the floor's width of storey 0 there (`lid`) less the
     /// floor, less the least room. The floor is the way's core, banked across its carriageway and level past it, as
     /// the floor bound of the heights reads it.
-    fn bore(&self, w: u32, a: &At) -> f64 {
+    fn bore(&self, w: u32, a: &At, gone: &[u32]) -> f64 {
         let Rule::Way(s, _) = self.rule(w) else { return f64::NEG_INFINITY };
         let mpu = self.mpu(a.p);
         let half = s.half_m + a.widen;
@@ -489,15 +491,15 @@ impl<'a> Ctx<'a> {
         for x in [-core, -half, 0.0, half, core] {
             let q = add(a.p, n, x / mpu);
             let across = -cross(a.tangent, sub(q, a.p)) * mpu;
-            c = c.min(self.lid(q, w).0 - (a.z + a.bank * across.clamp(-half, half)));
+            c = c.min(self.lid(q, w, gone).0 - (a.z + a.bank * across.clamp(-half, half)));
         }
         c - (s.bore_least_m + s.roof_least_m)
     }
 
     /// Whether a way lies on top of tunnel way w at a point: a paved stroke over its floor by more than the at-grade
     /// band.
-    fn on_top(&self, w: u32, a: &At) -> bool {
-        self.lid(a.p, w).1.is_some_and(|top| top > a.z)
+    fn on_top(&self, w: u32, a: &At, gone: &[u32]) -> bool {
+        self.lid(a.p, w, gone).1.is_some_and(|top| top > a.z)
     }
 
     /// Metres from an end of way w on through the ways that `same` accepts to the first end where
@@ -649,16 +651,16 @@ fn ladder(ctx: &Ctx, c: &super::Crossing) -> Option<Ladder> {
     Some(Ladder { upper, lower, room_m: r, full_m: full, least_m: least, step, ends })
 }
 
-/// The way that ends on step 3: a tunnel way; else the later row of `roads.json`; a tie, the lower
-/// way; with no tag and one height, the way whose tile span comes later.
+/// The way that ends on step 3: the later row of `roads.json` (the smaller way); a tie, a tunnel way; else
+/// the lower way; with no tag and one height, the way whose tile span comes later.
 fn ends(ctx: &Ctx, c: &super::Crossing, upper: u32, lower: u32) -> u32 {
-    let (tu, tl) = (ctx.tunnel(upper), ctx.tunnel(lower));
-    if tu != tl {
-        return if tu { upper } else { lower };
-    }
     let (cu, cl) = (ctx.g.ways[upper as usize].class, ctx.g.ways[lower as usize].class);
     if cu != cl {
         return if cu > cl { upper } else { lower };
+    }
+    let (tu, tl) = (ctx.tunnel(upper), ctx.tunnel(lower));
+    if tu != tl {
+        return if tu { upper } else { lower };
     }
     if ctx.tagged(upper) || ctx.tagged(lower) || ctx.at_station(c.over).z != ctx.at_station(c.under).z {
         return lower;
@@ -779,7 +781,7 @@ pub struct TunnelFound {
 
 /// A tunnel way's stretches and ends (`TunnelFound`): its stations are its samples and the crossings where it is the
 /// lower way (a way on top can give the room between two samples).
-fn tunnel_found(ctx: &Ctx, w: u32, ended: &[(usize, u32)]) -> TunnelFound {
+fn tunnel_found(ctx: &Ctx, w: u32, ended: &[(usize, u32)], gone: &[u32]) -> TunnelFound {
     let g = ctx.g;
     let from = g.ways[w as usize].from;
     let mut m: Vec<f64> = ctx.samples(w).iter().map(|s| between(&g.parts, &from, &ctx.station(w, s))).collect();
@@ -792,8 +794,8 @@ fn tunnel_found(ctx: &Ctx, w: u32, ended: &[(usize, u32)]) -> TunnelFound {
         let st = |x: f64| ctx.at(w, x).st;
         stretches(&m, &at, ok).into_iter().map(|(a, b)| (st(a), st(b))).collect()
     };
-    let room = of(&|x| ctx.bore(w, &ctx.at(w, x)) >= 0.0);
-    let top = of(&|x| ctx.on_top(w, &ctx.at(w, x)));
+    let room = of(&|x| ctx.bore(w, &ctx.at(w, x), gone) >= 0.0);
+    let top = of(&|x| ctx.on_top(w, &ctx.at(w, x), gone));
     let stay = of(&|x| ended.iter().any(|&(_, stay)| ctx.in_body(stay, ctx.at(w, x).p)));
     let end = |start: bool| {
         let others = ctx.others(w, start);
@@ -846,8 +848,12 @@ fn states(ctx: &Ctx, ladders: &[Option<Ladder>]) -> Levels {
     let mut out = Levels::default();
     for &w in &ways {
         if ctx.tunnel(w) {
-            // The merge decides a tunnel's states along its whole chain.
-            out.tunnels.push(tunnel_found(ctx, w, &ended[w as usize]));
+            // The merge decides a tunnel's states along its whole chain. A way that ends at it or at a way that goes
+            // on from its ends is hidden over them: no part of storey 0.
+            let on = |x: u32| x == w || ctx.joined(w, x);
+            let gone: Vec<u32> =
+                (0..g.ways.len() as u32).filter(|&o| ended[o as usize].iter().any(|&(_, stay)| on(stay))).collect();
+            out.tunnels.push(tunnel_found(ctx, w, &ended[w as usize], &gone));
             continue;
         }
         let from = g.ways[w as usize].from;
