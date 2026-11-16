@@ -138,15 +138,24 @@ test('the rows of a route of two days: a day, the pointer, a part, a climb, the 
   await expect(part).toHaveCount(0);
   await page.locator('.facts .climb button').first().click();
   await expect(part).toHaveText(climb);
+  // While a part is selected, a climb under the pointer does not light up, and a click on it only clears the part.
+  await drag(0.4, 0.6);
+  await page.mouse.move(elevation.x + elevation.width * 0.1, elevation.y + elevation.height / 2);
+  await expect(lanes.locator('.lit')).toHaveCount(0);
+  await page.mouse.click(elevation.x + elevation.width * 0.1, elevation.y + elevation.height / 2);
+  await expect(part).toHaveCount(0);
+  await expect(lanes.locator('.lit')).not.toHaveCount(0);
+  await page.mouse.move(0, 0);
 
-  // The keys: an arrow moves the pointer, Shift with an arrow grows a part, Enter selects the climb at the pointer.
-  await page.keyboard.press('Escape');
+  // The keys: an arrow moves the pointer, Shift with an arrow grows a part, Enter clears it, then Enter selects the
+  // climb at the pointer.
   await page.getByRole('slider', { name: 'Profile' }).focus();
   await page.keyboard.press('ArrowRight');
   await expect(lanes.locator('.chip')).toContainText(/^15\d\sm/);
   for (let i = 0; i < 5; i++) await page.keyboard.press('Shift+ArrowRight');
   await expect(part).toContainText('km 0.2 to km 0.9');
-  await page.keyboard.press('Escape');
+  await page.keyboard.press('Enter');
+  await expect(part).toHaveCount(0);
   await page.keyboard.press('Enter');
   await expect(part).toHaveText(climb);
 
