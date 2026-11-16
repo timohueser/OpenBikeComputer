@@ -549,8 +549,8 @@ fn h_present(hp: ptr<function, HPoint>, block: u32, q: vec2f, mpu: f32, keep: ve
         let zf = select(0.0, fb_z / fb_w, fb_w > 0.0);
         h_insert(hp, HRec(l, ln.rank, h_glob(block, ln), (z + fb * zf) / (sw + fb), core_d, feather, ln.ret), keep);
     }
-    // The fans: q's metres past a fan's circle per pair of its arms. A fan relates its two arms out to their
-    // feather past its circle; two lines that each meet a third near q are related through it as far as that
+    // The fans: q's metres past a fan's corner round per pair of its arms. A fan relates its two arms out to their
+    // feather past that circle; two lines that each meet a third near q are related through it as far as that
     // line's own feather reaches past both corners. With no fan every relation is 0, as rel holds.
     if (nd == 0u) {
         return;
@@ -565,8 +565,8 @@ fn h_present(hp: ptr<function, HPoint>, block: u32, q: vec2f, mpu: f32, keep: ve
         let item = mw(ds + e);
         let cand = m_cand(block, item & 0xffffu);
         let dk = extras + mw(cand + 5u) + M_DISC * (item >> 16u);
-        let v = q - vec2f(mi(dk), mi(dk + 1u));
-        let radius = mf(dk + 2u) * mpu;
+        let v = q - vec2f(mi(dk + 5u), mi(dk + 6u));
+        let radius = mf(dk + 7u) * mpu;
         let l0 = mw(dk + 3u);
         let l1 = mw(dk + 4u);
         // A point's fan relates its arms' ways; a round of the paved outline does not, and two legs of

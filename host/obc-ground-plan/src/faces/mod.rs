@@ -501,8 +501,9 @@ struct Point {
     pos: P,
     arms: Vec<Arm>,
     /// Neighbouring arms (as indices into `arms`), the first turning counter-clockwise to the second
-    /// through their sector, with the radius of their corner in metres.
-    pairs: Vec<(usize, usize, f64)>,
+    /// through their sector, with the radius of their kerb's round and of their corner in metres
+    /// (`points::round`).
+    pairs: Vec<(usize, usize, f64, f64)>,
     /// A junction or a joint: its arms belong to its face up to their seams.
     seams: bool,
     /// Per arm, whether it is one of the through road's: a junction's hosts, both arms of a joint or a turn.
@@ -631,24 +632,21 @@ fn graph_points(
             .collect();
         // Each two neighbouring arms, the first turning counter-clockwise to the second through their
         // sector, so that the sector lies on the first's right and the second's left. Their corner
-        // takes the lesser radius of their classes, the sidewalk one where both have a sidewalk there; where
-        // one has, the slab runs straight to the other's carriageway with a small round (`walk`).
+        // takes the lesser corner radius of their classes; their kerb's round the sidewalk one where both have a
+        // sidewalk there, and where one has, a small round, so the slab runs straight to the other's carriageway
+        // (`walk`).
         let pairs = (0..pts.len())
             .map(|k| {
                 let (a, b) = (pts[k], pts[(k + 1) % pts.len()]);
                 let walks =
                     u8::from(walk::walks(&lines[a.line], a, true)) + u8::from(walk::walks(&lines[b.line], b, false));
-                let radius = |l: usize| {
-                    let sec = &lines[l].sec;
-                    if walks == 2 {
-                        sec.corner_radius_walk_m
-                    } else {
-                        sec.corner_radius_m
-                    }
+                let corner = lines[a.line].sec.corner_radius_m.min(lines[b.line].sec.corner_radius_m);
+                let kerb = match walks {
+                    2 => lines[a.line].sec.corner_radius_walk_m.min(lines[b.line].sec.corner_radius_walk_m),
+                    1 => ctx.rules.plan.walk.radius_one_walk_m,
+                    _ => corner,
                 };
-                let r =
-                    if walks == 1 { ctx.rules.plan.walk.radius_one_walk_m } else { radius(a.line).min(radius(b.line)) };
-                (k, (k + 1) % pts.len(), r)
+                (k, (k + 1) % pts.len(), kerb, corner)
             })
             .collect();
         let gp = ctx.global(j.pos);
@@ -682,7 +680,7 @@ fn graph_points(
                 Arm { line: la, at: at[0], dir: j.arms[0].dir },
                 Arm { line: lb, at: at[1], dir: j.arms[1].dir },
             ],
-            pairs: vec![(0, 1, radius), (1, 0, radius)],
+            pairs: vec![(0, 1, radius, radius), (1, 0, radius, radius)],
             seams: true,
             hosts: vec![true; 2],
             label,
@@ -712,7 +710,7 @@ fn turn_points(ctx: &Ctx, lines: &[WayLine], taken: &[Vec<(f64, f64)>], bx: [i32
             out.push(Point {
                 pos: line.p[i],
                 arms: vec![Arm { line: li, at: i, dir: 1 }, Arm { line: li, at: i, dir: -1 }],
-                pairs: vec![(0, 1, r_m)],
+                pairs: vec![(0, 1, r_m, r_m)],
                 seams: false,
                 hosts: vec![true; 2],
                 label,
@@ -1111,8 +1109,14 @@ fn candidates<'a>(
         let u = |m: f64| ctx.units(m, pt.pos);
         // A round may cut into its arms' strokes as far as their chords leave the curve.
         let sag = |k: usize| lines[pt.arms[k].line].sec.sag_plan_m;
-        let pairs: Vec<(usize, usize, f64, f64)> =
-            pt.pairs.iter().map(|&(a, b, r)| (a, b, u(r), u(sag(a).max(sag(b))))).collect();
+        let pairs: Vec<points::Pair> = (pt.pairs.iter())
+            .map(|&(a, b, kerb, corner)| points::Pair {
+                arms: [a, b],
+                kerb: u(kerb),
+                corner: u(corner),
+                tol: u(sag(a).max(sag(b))),
+            })
+            .collect();
         points::round(&lines, stops, pt.pos, &pt.arms, &pairs, u(plan.extent_m), pt.seams)
     };
     let jj = stops(&points);
@@ -1370,7 +1374,7 @@ fn candidates<'a>(
         .flat_map(|c| c.rings.iter().cloned())
         .collect();
     paved.extend(outer_paved);
-    let circles: Vec<(P, f64)> = rounded.iter().flat_map(|r| r.circles.iter().map(|c| (c.centre, c.radius))).collect();
+    let circles: Vec<&Circle> = rounded.iter().flat_map(|r| r.circles.iter().chain(&r.corners)).collect();
     let r_max = rules::inner_max_m(&rules.sections);
     let near_win = reach(0.0);
     let beyond = |p: P| {

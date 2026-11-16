@@ -204,6 +204,32 @@ fn a_junction_corner_takes_the_lesser_class_radius_and_the_one_walk_radius_where
 }
 
 #[test]
+fn a_one_walk_round_shapes_the_kerb_inside_the_seams_of_its_class_corner_round() {
+    // The T of the test above, with and without the sidewalk: the 0.8 m round at the east corner changes the paving
+    // there only. The junction's face reaches as far along each arm as with the class's round, and meets the arms in
+    // straight seams.
+    let host = line("road", &[("highway", "tertiary")], &[[-80.0, 0.0], [0.0, 0.0], [80.0, 0.0]]);
+    let guest = road(&[[0.0, 0.0], [0.0, 80.0]]);
+    let mut walking = guest.clone();
+    walking.walk[0] = 1;
+    let reach = |lines: &[Line]| {
+        let (p, graph) = plan_of(cell(), lines);
+        let bent: Vec<_> =
+            (check::artefacts(&p, &graph).into_iter()).filter(|a| a.kind == check::ArtefactKind::BentBorder).collect();
+        assert!(bent.is_empty(), "{bent:?}");
+        let junction = p.faces.iter().filter(|f| matches!(f.owner, Owner::Junction(_)));
+        let pts: Vec<[i32; 2]> =
+            junction.flat_map(|f| f.rings.iter().flatten().map(|&v| p.vertices[v as usize])).collect();
+        let x = pts.iter().map(|q| q[0]);
+        [x.clone().min().unwrap(), x.max().unwrap(), pts.iter().map(|q| q[1]).max().unwrap()]
+    };
+    let (plain, walk) = (reach(&[host.clone(), guest]), reach(&[host, walking]));
+    for k in 0..3 {
+        assert!((plain[k] - walk[k]).abs() <= 2 * slice::PRECISION, "{plain:?} {walk:?}");
+    }
+}
+
+#[test]
 fn a_round_has_its_feet_on_its_circle_and_on_the_edges_it_joins() {
     // A T of two ways of one class: a primary one (9 m rounds) and a residential one (4 m).
     let sections = &Rules::embedded().sections;
