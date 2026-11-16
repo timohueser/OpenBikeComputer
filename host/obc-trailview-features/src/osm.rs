@@ -15,6 +15,12 @@ use crate::{world, Part, Tags};
 /// input reaches this far past the tiles of the region, more than the longest aerial lift.
 pub const LIFT_REACH_M: f64 = 20000.0;
 const METRES_PER_DEGREE: f64 = 111320.0;
+/// Up to this size, the input is renumbered before the cut. Osmium's extract keeps bit sets up to the
+/// largest ID of the file, 3.97 GiB on the Swiss OSM and as much on any file with the IDs of OSM;
+/// `osmium renumber` keeps 8 bytes per object in vectors that double. It took 11.8 bytes per object on the
+/// Swiss and the Irish OSM, which have 0.12 and 0.15 objects per byte: at most 16 bytes per object while a
+/// vector doubles is 2.4 bytes per byte, 3.6 GB at this size. Past it, the renumber can take more.
+const RENUMBER_MAX_BYTES: u64 = 1_500_000_000;
 /// The landuse areas whose value a building in them keeps as its tag `landuse`. They are not features.
 pub const LANDUSE: [&str; 2] = ["farmyard", "industrial"];
 /// The Osmium program: `OBC_OSMIUM`, else `osmium` on the path; and its version.
@@ -82,16 +88,19 @@ pub fn selected(entries: &[Entry], pbf: &Path, binary: &Path, tiles: &Tiles, wor
         set.into_iter().collect()
     };
     let area = |zoom: u8, reach_m: f64| reach(tiles, zoom, reach_m).map(|v| format!("{v:.7}")).join(",");
-    // Osmium's extract and filter keep a bit for each ID up to the largest ID of the file, which for OSM's
-    // node IDs is GBs. Renumbered from 1 in the order of the file, the IDs of a region take MBs. The export
-    // writes no IDs, so the objects that it gives stay the same.
-    let numbered = work.join("numbered.osm.pbf");
-    run(binary, &[&"renumber", &pbf, &"-o", &numbered])?;
+    // Renumbered from 1 in the order of the file, the IDs of the cut take MBs in the bit sets of the extract
+    // and of the filter. The export writes no IDs, so the objects that it gives stay the same.
+    let size = std::fs::metadata(pbf).map_err(|e| format!("{}: {e}", pbf.display()))?.len();
+    let numbered = (size <= RENUMBER_MAX_BYTES).then(|| work.join("numbered.osm.pbf"));
+    if let Some(numbered) = &numbered {
+        run(binary, &[&"renumber", &pbf, &"-o", numbered])?;
+    }
+    let input = numbered.as_deref().unwrap_or(pbf);
     // The cut comes first: the filter keeps the nodes of each way that it keeps, so alone it leaves most
     // of a file.
     let cut = |name: &str, bounds: String, entries: &[&Entry], more: &[String]| -> Result<PathBuf, String> {
         let (area_pbf, kept) = (work.join(format!("{name}-area.osm.pbf")), work.join(format!("{name}.osm.pbf")));
-        run(binary, &[&"extract", &"-b", &bounds, &"-s", &"smart", &numbered, &"-o", &area_pbf])?;
+        run(binary, &[&"extract", &"-b", &bounds, &"-s", &"smart", &input, &"-o", &area_pbf])?;
         let mut args: Vec<&dyn AsRef<std::ffi::OsStr>> = vec![&"tags-filter", &area_pbf];
         let filters: Vec<String> = expressions(entries).into_iter().chain(more.iter().cloned()).collect();
         args.extend(filters.iter().map(|f| f as &dyn AsRef<std::ffi::OsStr>));
@@ -111,7 +120,7 @@ pub fn selected(entries: &[Entry], pbf: &Path, binary: &Path, tiles: &Tiles, wor
     args.extend(paths.iter().map(|p| p as &dyn AsRef<std::ffi::OsStr>));
     args.extend([&"-o" as &dyn AsRef<std::ffi::OsStr>, &out]);
     run(binary, &args)?;
-    for path in paths.iter().chain([&numbered]) {
+    for path in paths.iter().chain(&numbered) {
         std::fs::remove_file(path).map_err(|e| e.to_string())?;
     }
     Ok(out)
