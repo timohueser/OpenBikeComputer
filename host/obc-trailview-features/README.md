@@ -73,9 +73,16 @@ Limits:
 
 ## Memory
 
+Osmium renumbers the objects of the OSM from 1 before it cuts them: its extract and its filter keep
+a bit for each ID up to the largest ID of the file. The bake then reads the cut two times. The first
+read keeps only what the water and road solvers need, and the solvers run before the bake places a
+feature. The second read places the features.
+
 The water networks run on all cores. The road jobs run on a core each, the largest first, as many
-at once as fit in the memory that is free past a quarter of RAM, less what the process holds. With
-no memory free, one job runs at a time.
+at once as fit in the memory that is free past a quarter of RAM, less what the process holds and the
+results of the jobs that ended. With no memory free, one job runs at a time. The largest job sets
+the peak of the step: a job takes about `JOB_BYTES_PER_M` bytes for each metre of the ways of its
+area.
 
 ## Test
 
