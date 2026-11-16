@@ -35,15 +35,17 @@ const INSIDE_MAX: usize = 9;
 /// Steps at label edges with no rule (`check::edge_steps`), measured on the revision 17 fixture with the
 /// slopes from the outline pieces of `records::outline_edges` and the vertex values of `heights::groups`
 /// (an end's cone over the fan of its turn only), walls up to the highest wall, faces past it as steep as
-/// their need, line water and its culverts and fords: the count must not grow.
-const EDGE_MAX: usize = 101;
+/// their need, line water and its culverts and fords, and on the revision 22 fixture, whose junction radii and
+/// kept vertices follow more walk bits (a step of 1.2 cm more): the count must not grow.
+const EDGE_MAX: usize = 102;
 /// Pairs of grid points on a slope steeper than a rock face where the terrain is not (`Scan::steep`),
 /// measured on the revision 17 fixture with cones on their outward side, the outline pieces of
 /// `records::outline_edges` and the vertex values of `heights::groups`, faces past the highest wall as steep
 /// as their need, the faces' rings with a vertex at each tile line, and the banks of line water, whose cuts
 /// climb as steep as the terrain asks beside a gorge, its culverts, the ground under the decks' ceilings, and a
-/// paved outline that holds no water: the count must not grow.
-const STEEP_MAX: usize = 2465;
+/// paved outline that holds no water, and on the revision 22 fixture, whose junction radii and kept vertices
+/// follow more walk bits: the count must not grow.
+const STEEP_MAX: usize = 2466;
 /// Of those, the pairs steeper than 6 m/m, measured the same way: the bank of one way that crosses a gully
 /// inside its ground band, which spans the terrain across the way's width. The count must not grow, and no pair
 /// is steeper than 12 m/m: a near-vertical rim that the total hides must not come back.
@@ -56,10 +58,10 @@ const WALL_STEPS_MAX: usize = 17;
 /// The ground's grade along the rim that changes across a piece end by more than this is a shading band
 /// (`check::slope_steps`), measured the same way, with the faces' rings with a vertex at each tile line (it
 /// moves piece ends by a few units), the crease where a deck's ceiling takes the ground, and line water, whose
-/// curved banks end many short pieces, its culverts, and a paved outline that holds no water: the count must not
-/// grow.
+/// curved banks end many short pieces, its culverts, and a paved outline that holds no water, and on the revision
+/// 22 fixture, whose junction radii and kept vertices follow more walk bits: the count must not grow.
 const SLOPE_STEP_GRADE: f64 = 0.1;
-const SLOPE_STEPS_MAX: usize = 12967;
+const SLOPE_STEPS_MAX: usize = 12976;
 /// A tile's water vertex whose level lies more than this off the terrain at the vertex has a level that
 /// the bake holds away from its line (a pit, or the low ground beside it): the design keeps the water at
 /// most `freeboard_m` (0.8 m) under its bank and `depth_m` (1 m) deep.
