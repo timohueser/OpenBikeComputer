@@ -77,6 +77,7 @@ Every durable artifact answers one question. If it answers two, it is in the wro
 | Guide | how does the product work, and why? | `docs/content/`, listed in `nav.json` |
 | README | how do I build, run and flash this, and what will bite me? | next to the code |
 | Rule | what must we not break? | the guard that enforces it, with `GOVERNS` and `RULE`, or one sentence here |
+| Principle | which idea decides a design question? | `PRODUCT.md` |
 | Requirement | what must it do for a rider? | the verification console |
 | Record | what happened, measured how? | the pull request; GitHub generates the release notes from it |
 
