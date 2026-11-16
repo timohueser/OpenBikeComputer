@@ -10,11 +10,11 @@ use crate::draw::{cell_square, paint, path, stroke, Canvas};
 use crate::fixture::Fixture;
 use obc_ground_plan::debug;
 use obc_ground_plan::faces::check::{
-    artefacts, feature_names, kinks, neighbours, partition, short_features, sidewalk_on_decks, Artefact, ArtefactKind,
-    Fault, Kink, ShortFeature,
+    artefacts, feature_names, kinks, lone_slabs, neighbours, partition, short_features, sidewalk_on_decks, Artefact,
+    ArtefactKind, Fault, Kink, ShortFeature,
 };
 use obc_ground_plan::faces::{self, window, FacePlan, Owner, Rules, Surface, OUTSIDE};
-use obc_ground_plan::frame::{metres_per_unit, CellKey, GlobalPoint, CELL_UNITS};
+use obc_ground_plan::frame::{CellKey, GlobalPoint};
 use obc_ground_plan::graph::{self, WayGraph};
 use obc_ground_plan::CellInput;
 
@@ -169,9 +169,6 @@ struct Built {
     decks: Vec<[i32; 2]>,
 }
 
-/// A slab face under this area is listed by the bench (`slab_pieces`): a ring's or pie's half that no slab reaches.
-const SLAB_PIECE_M2: f64 = 2.0;
-
 /// A cell's build of least time of `runs` and its check 1 and kinks; None if a build panics.
 fn bench_cell(key: CellKey, input: &obc_ground_plan::CellInput, rules: &Rules, runs: usize) -> Option<Built> {
     let graph = graph::build(key, input, &rules.sections);
@@ -260,25 +257,7 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usiz
             json!([lat, lon])
         };
         on_decks.extend(decks.iter().map(|&at| json!({"cell": [key.x, key.y], "at": lat_lon(at)})));
-        // The slab faces in the cell under `SLAB_PIECE_M2`, and whether each touches another slab face.
-        let slab = |f: u32| f != OUTSIDE && plan.faces[f as usize].surface == Surface::Sidewalk;
-        let mpu = metres_per_unit(o.y + CELL_UNITS / 2);
-        for f in plan.faces.iter().filter(|f| f.inside && f.surface == Surface::Sidewalk) {
-            let pts: Vec<[i32; 2]> = f.rings[0].iter().map(|&v| plan.vertices[v as usize]).collect();
-            let twice: i64 = (0..pts.len())
-                .map(|i| {
-                    let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
-                    i64::from(a[0]) * i64::from(b[1]) - i64::from(b[0]) * i64::from(a[1])
-                })
-                .sum();
-            let area = (twice as f64).abs() / 2.0 * mpu * mpu;
-            let touches =
-                plan.edges.iter().any(|e| (e.left == f.id && slab(e.right)) || (e.right == f.id && slab(e.left)));
-            if area < SLAB_PIECE_M2 {
-                slab_pieces
-                    .push(json!({"cell": [key.x, key.y], "at": lat_lon(pts[0]), "area_m2": area, "touches": touches}));
-            }
-        }
+        slab_pieces.extend(lone_slabs(&plan).iter().map(|&(_, at)| json!({"cell": [key.x, key.y], "at": lat_lon(at)})));
         // Every artefact, and whether its face is a sidewalk or borders one: the compare against a base reads them.
         let walks: Vec<bool> = (0..plan.faces.len())
             .map(|f| {
@@ -362,7 +341,7 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usiz
         "check2_faults": border_faults.len(),
         "sidewalk_on_decks": on_decks.len(),
         "sidewalk_on_deck_places": on_decks.iter().take(20).collect::<Vec<_>>(),
-        "slab_pieces": slab_pieces,
+        "lone_slabs": slab_pieces,
         "artefact_list": listed,
         "check2_examples": border_faults.iter().take(10).collect::<Vec<_>>(),
         "ms": profile,

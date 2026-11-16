@@ -910,6 +910,28 @@ pub fn short_features(plan: &FacePlan) -> Vec<ShortFeature> {
     out
 }
 
+/// A slab face under this area that touches no other slab face is a lone piece: a slab stands as part of a run.
+pub const LONE_SLAB_M2: f64 = 2.0;
+
+/// The lone slab faces of a plan: sidewalk faces in the cell under `LONE_SLAB_M2` that share no edge with another
+/// sidewalk face or with the cell's border (beyond which their slab may go on), each with a vertex.
+pub fn lone_slabs(plan: &FacePlan) -> Vec<(u32, P)> {
+    let mpu = metres_per_unit(plan.cell.origin().y + CELL_UNITS / 2);
+    let slab = |f: u32| f != OUTSIDE && plan.faces[f as usize].surface == Surface::Sidewalk;
+    let joined = |f: u32| {
+        plan.edges.iter().any(|e| {
+            (e.left == f && (slab(e.right) || e.right == OUTSIDE))
+                || (e.right == f && (slab(e.left) || e.left == OUTSIDE))
+        })
+    };
+    (plan.faces.iter())
+        .filter(|f| f.inside && f.surface == Surface::Sidewalk)
+        .filter(|f| (area2(&ring_points(plan, &f.rings[0])) as f64).abs() / 2.0 * mpu * mpu < LONE_SLAB_M2)
+        .filter(|f| !joined(f.id))
+        .map(|f| (f.id, plan.vertices[f.rings[0][0] as usize]))
+        .collect()
+}
+
 /// The points of a sidewalk face of level 0 that lie inside a deck's stroke near where the deck leaves the ground (within
 /// `extent_m` of a graph point with a deck arm and a ground arm), by more than `SLIVER`: its vertices and its edges' points
 /// every `SUPPORT_M`. A slab there would cross the road that the deck carries.

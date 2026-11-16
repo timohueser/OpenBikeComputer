@@ -8,10 +8,15 @@ mod fixture;
 use std::collections::BTreeMap;
 
 use fixture::{default_dir, Fixture};
-use obc_ground_plan::faces::check::{artefacts, feature_names, neighbours, partition};
+use obc_ground_plan::faces::check::{artefacts, feature_names, lone_slabs, neighbours, partition};
 use obc_ground_plan::faces::{self, window, FacePlan, Rules, Surface};
 use obc_ground_plan::frame::{from_lon_lat, CellKey};
 use obc_ground_plan::graph::{self, WayGraph};
+
+/// Slab faces under `check::LONE_SLAB_M2` that touch no other slab face (`check::lone_slabs`), measured on the revision
+/// 17 fixture: one needle of a few square centimetres where a taper's tip meets the carriageway's edge within a unit, which
+/// no view shows. The count must not grow.
+const LONE_SLABS_MAX: usize = 1;
 
 #[test]
 fn every_fixture_cell_is_a_planar_partition_that_its_neighbours_agree_with() {
@@ -29,17 +34,19 @@ fn every_fixture_cell_is_a_planar_partition_that_its_neighbours_agree_with() {
         let faults: Vec<String> =
             partition(&plan, window(key, 0.0)).into_iter().map(|f| format!("{key:?} 1: {}", f.what)).collect();
         let thin = artefacts(&plan, &graph).len();
-        (key, plan, graph, feature_names(&input), faults, thin)
+        let lone = lone_slabs(&plan).len();
+        (key, plan, graph, feature_names(&input), faults, thin, lone)
     });
     let mut plans: BTreeMap<CellKey, (FacePlan, WayGraph, Vec<[u32; 3]>)> = BTreeMap::new();
     let mut faults = Vec::new();
-    let mut thin = 0;
-    for (key, plan, graph, names, found, n) in built {
+    let (mut thin, mut lone) = (0, 0);
+    for (key, plan, graph, names, found, n, l) in built {
         faults.extend(found);
         thin += n;
+        lone += l;
         plans.insert(key, (plan, graph, names));
     }
-    println!("{} cells in {:.1} s, {thin} artefacts", cells.len(), start.elapsed().as_secs_f64());
+    println!("{} cells in {:.1} s, {thin} artefacts, {lone} lone slabs", cells.len(), start.elapsed().as_secs_f64());
     let mut borders = 0;
     for (&key, a) in &plans {
         for (east, other) in [(true, CellKey { x: key.x + 1, y: key.y }), (false, CellKey { x: key.x, y: key.y + 1 })] {
@@ -66,6 +73,7 @@ fn every_fixture_cell_is_a_planar_partition_that_its_neighbours_agree_with() {
         }
     }
     assert!(faults.is_empty(), "{} faults", faults.len());
+    assert!(lone <= LONE_SLABS_MAX, "{lone} lone slab faces");
 }
 
 /// The surface of a plan at a global point.
