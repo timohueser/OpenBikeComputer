@@ -2,23 +2,24 @@
 <script lang="ts">
     import { bikes } from '../../lib/library/records';
     import { ridingProfiles } from '../../lib/planner/riding-profiles';
-    import { distanceIn, formatDistance, formatHeight, heightIn } from '../../lib/settings/format';
+    import { heightUnit } from '../../lib/settings/format';
     import { settings } from '../../lib/settings/settings.svelte';
-    import { findPlaces, type Box, type Chips, type FoundPlace, type Range } from './filter';
+    import { findPlaces, rangeText, type Box, type Chips, type FoundPlace, type Range } from './filter';
+    import RangeSlider from './RangeSlider.svelte';
 
     type Key = keyof Chips;
-    let { chips = $bindable(), view, keys, years = [] }: {
+    let { chips = $bindable(), view, keys, years = [], values }: {
         chips: Chips;
         view?: Box;
         /** The chips to offer, in this order. */
         keys: Key[];
         /** The options of the year chip. */
         years?: number[];
+        /** The value of each item that the other chips keep, in the units of the rider, for the bars of a slider. */
+        values: (key: 'length' | 'climb') => number[];
     } = $props();
 
     const NAMES: Record<Key, string> = { bike: 'Bike', place: 'Place', length: 'Length', climb: 'Climb', days: 'Days', year: 'Year' };
-    // The limits between the options, in the units of the rider.
-    const LIMITS = { km: { length: [100, 200, 500], climb: [500, 1500, 3000] }, mi: { length: [100, 200, 500], climb: [1500, 5000, 10_000] } };
     const DAYS: { value: Range; label: string }[] = [
         { value: [1, 2], label: 'One day' }, { value: [2, 5], label: '2 to 4 days' }, { value: [5, Infinity], label: '5 days or more' },
     ];
@@ -28,17 +29,15 @@
     let query = $state(''), found = $state.raw<FoundPlace[] | null>(null), failure = $state('');
     let timer: ReturnType<typeof setTimeout> | undefined, controller: AbortController | undefined;
 
-    function rangeLabel(key: 'length' | 'climb', [min, max]: Range): string {
-        const show = (value: number) => key === 'length' ? formatDistance(value / distanceIn(1)) : formatHeight(value / heightIn(1));
-        return min <= 0 ? `Under ${show(max)}` : max === Infinity ? `${show(min)} or more` : `${show(min)} to ${show(max)}`;
-    }
+    /** A value in the units of the rider, with its unit and at most one decimal: "40 km", "12.3 km", "1,500 m". */
+    const show = (key: 'length' | 'climb') => (value: number) =>
+        `${value.toLocaleString('en', { maximumFractionDigits: 1 })}\u00a0${key === 'length' ? settings.units : heightUnit()}`;
+    const rangeLabel = (key: 'length' | 'climb', range: Range) => rangeText(range, show(key));
 
-    function options(key: Exclude<Key, 'place'>): { value: Chips[Key]; label: string }[] {
+    function options(key: 'bike' | 'days' | 'year'): { value: Chips[Key]; label: string }[] {
         if (key === 'bike') return bikes.map(bike => ({ value: bike, label: ridingProfiles[bike].label }));
         if (key === 'days') return DAYS;
-        if (key === 'year') return years.map(year => ({ value: year, label: String(year) }));
-        const limits = LIMITS[settings.units][key];
-        return [0, ...limits].map((min, i): Range => [min, limits[i] ?? Infinity]).map(value => ({ value, label: rangeLabel(key, value) }));
+        return years.map(year => ({ value: year, label: String(year) }));
     }
 
     function label(key: Key): string {
@@ -48,14 +47,21 @@
         return options(key).find(option => JSON.stringify(option.value) === JSON.stringify(value))?.label ?? NAMES[key];
     }
 
-    // The set chips come first, each group in the order of `keys`.
-    const ordered = $derived([...keys.filter(key => chips[key] !== undefined), ...keys.filter(key => chips[key] === undefined)]);
+    // The set chips come first, each group in the order of `keys`. A chip does not move while a menu is open.
+    let ordered = $state<Key[]>([]);
+    $effect.pre(() => {
+        if (open === null) ordered = [...keys.filter(key => chips[key] !== undefined), ...keys.filter(key => chips[key] === undefined)];
+    });
 
-    function choose(key: Key, value: Chips[Key] | undefined) {
+    function put(key: Key, value: Chips[Key] | undefined) {
         const next: Chips = { ...chips };
         if (value === undefined) delete next[key];
         else Object.assign(next, { [key]: value });
         chips = next;
+    }
+
+    function choose(key: Key, value: Chips[Key] | undefined) {
+        put(key, value);
         open = null;
     }
 
@@ -96,6 +102,9 @@
                             {place.name}<small>{[place.kind.replaceAll('_', ' '), place.region].filter(Boolean).join(' · ')}</small>
                         </button>
                     {/each}
+                {:else if key === 'length' || key === 'climb'}
+                    <!-- Only the open slider reads its values, and it takes its scale as it opens. -->
+                    {#if open === key}<RangeSlider values={values(key)} range={chips[key]} onchange={range => put(key, range)} label={NAMES[key]} format={show(key)} />{/if}
                 {:else}
                     {#each options(key) as option (option.label)}
                         <button type="button" aria-pressed={set && label(key) === option.label} onclick={() => choose(key, option.value)}>{option.label}</button>
@@ -109,6 +118,7 @@
 
 <style>
     .chips {
+        position: relative;
         display: flex;
         flex-wrap: wrap;
         gap: 4px 6px;
@@ -189,5 +199,11 @@
     .note {
         margin: 4px 8px 6px;
         color: var(--ink-soft);
+    }
+    /* On a phone a menu starts at the left of the row, so that it stays on the screen under a chip at the right. */
+    @media (max-width: 760px) {
+        .chip {
+            position: static;
+        }
     }
 </style>

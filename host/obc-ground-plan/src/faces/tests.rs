@@ -333,7 +333,7 @@ fn a_face_that_the_precision_cuts_in_two_keeps_its_hole_in_the_part_that_holds_i
             }
         })
         .collect();
-    let plan = output(cell(), 0, &Map::new(snap_round(&patches)), &labels, FaceStats::default());
+    let plan = output(cell(), 0, &Map::new(snap_round(&patches)), &labels, None, FaceStats::default());
     assert!(partition(&plan, win).is_empty());
     let parts: Vec<&Face> = plan.faces.iter().filter(|f| f.surface == Surface::Carriageway).collect();
     assert_eq!(parts.len(), 2, "the collapsed neck splits the face");
@@ -769,5 +769,111 @@ fn two_cells_give_one_side_to_their_line_where_an_edge_passes_a_tile_corner_on_i
         let east = sides([c, t - 400, c + 400, t + 400], &ring);
         assert!(west.len() >= 3, "{west:?}");
         assert_eq!(west, east, "ring {ring:?}");
+    }
+}
+
+/// A residential road through a bore of 120 m under ground 3.1 m over the road: storey 0 and the floor are one map,
+/// the bore is the prism under storey 0's triangles, and the cover holds the least room over the floor (its lift lies
+/// within `lift_max_m`).
+#[cfg(feature = "bores")]
+#[test]
+fn a_bore_is_the_prism_under_storey_0_and_its_cover_holds_the_least_room() {
+    use crate::mesh::shell::{closure, mesh_storeys_with};
+    use crate::mesh::{mesh_cell, Reads, NO_LABEL};
+    let key = cell();
+    let levels = ("levels", "O 40 P B 160 P O");
+    let bore = line("tunnel", &[("highway", "residential"), ("tunnel", "yes"), levels], &[[-100.0, 0.0], [100.0, 0.0]]);
+    let mut input = input_of(key, &[bore]);
+    input.terrain = plane(key, &|_, _| 503.1);
+    let rules = Rules::embedded();
+    let b = crate::cell::build_input(&input, rules);
+    let m0 = mesh_cell(&b.faces, &b.records, &Reads::of(&b.faces, &[]), &mut || 0.0).unwrap();
+    let m = mesh_storeys_with(key, &b.storeys, &b.records, &rules.structures, Some(&m0)).unwrap();
+    assert!(b.storeys.plans.iter().any(|p| p.level < 0), "a storey under the ground");
+    assert!(!b.storeys.portals.is_empty(), "pieces on the portal lines");
+    assert!(closure(&m).is_empty(), "{:?}", closure(&m));
+    let t = |p: P| {
+        input.terrain.height(GlobalPoint { x: key.origin().x + i64::from(p[0]), y: key.origin().y + i64::from(p[1]) })
+    };
+    let h0 = |k: usize| {
+        let (p, l, terrain) = m0.corner(k);
+        let t = t(p).unwrap();
+        if terrain || l == NO_LABEL {
+            t
+        } else {
+            heights::height_at(&b.records, [f64::from(p[0]), f64::from(p[1])], Some(l), t).h
+        }
+    };
+    // The floor's triangles by their points, and the lids: storey 0's corners of the triangles on the same points.
+    let points = |t: &[u32; 3], c: &dyn Fn(u32) -> P| {
+        let mut p = t.map(c);
+        p.sort_unstable();
+        p
+    };
+    let floors: std::collections::BTreeSet<[P; 3]> =
+        m.triangles[m.part(0)].iter().map(|t| points(t, &|k| m.corner(k as usize).0)).collect();
+    let mut ground: BTreeMap<P, Vec<f64>> = BTreeMap::new();
+    for t in &m0.triangles {
+        if floors.contains(&points(t, &|k| m0.corner(k as usize).0)) {
+            for &k in t {
+                ground.entry(m0.corner(k as usize).0).or_default().push(h0(k as usize));
+            }
+        }
+    }
+    let sec = rules.sections.way("road", &[("highway".to_string(), "residential".to_string())].into(), false);
+    // The floor's and the roof's heights by point.
+    let by_point = |part: std::ops::Range<usize>| {
+        let mut out: BTreeMap<P, f64> = BTreeMap::new();
+        for &k in m.triangles[part].iter().flatten() {
+            let h = m.corner_height(k as usize, &b.records, &input.terrain);
+            let e = out.entry(m.corner(k as usize).0).or_insert(h);
+            *e = e.min(h);
+        }
+        out
+    };
+    let (floor, roof) = (by_point(m.part(0)), by_point(m.part(1)));
+    let mut corners = 0;
+    for (p, &hf) in &floor {
+        // One map: every floor triangle is a triangle of storey 0's mesh.
+        let lid = ground.get(p).expect("a floor point is a point of storey 0's triangles over the floor");
+        // The prism: the roof lies its plate under storey 0 at the point, and the cover holds the least room.
+        let (least, hr) = (lid.iter().copied().fold(f64::INFINITY, f64::min), roof[p]);
+        assert!(hr <= least - sec.roof_least_m + 1e-3, "{p:?}: roof {hr} under storey 0 {least}");
+        assert!(hr - hf >= sec.bore_least_m - 1e-3, "{p:?}: room {} under the cover", hr - hf);
+        let lift = lid.iter().copied().fold(f64::NEG_INFINITY, f64::max) - t(*p).unwrap();
+        assert!(lift <= rules.structures.lift_max_m + 1e-3, "{p:?}: the cover {lift} m over the terrain");
+        corners += 1;
+    }
+    assert!(corners > 100, "{corners} floor corners");
+}
+
+/// A road that passes over its own bore 4 m up, as a way on top, before it descends into it (a spiral): an opening
+/// lies only on the bore's end lines, not under the road on top.
+#[cfg(feature = "bores")]
+#[test]
+fn a_way_over_its_own_bore_opens_it_only_at_its_ends() {
+    let key = cell();
+    let points = [[20.0, 30.0], [20.0, -30.0], [-40.0, -30.0], [-40.0, 0.0], [100.0, 0.0], [120.0, 0.0]];
+    let levels = ("levels", "O 140 P B 290 P O");
+    let mut way = line("tunnel", &[("highway", "residential"), ("tunnel", "yes"), levels], &points);
+    way.z = vec![504.0, 504.0, 500.0, 500.0, 500.0, 500.0];
+    let mut input = input_of(key, &[way]);
+    input.terrain = plane(key, &|_, _| 503.1);
+    let b = crate::cell::build_input(&input, Rules::embedded());
+    assert!(!b.storeys.portals.is_empty(), "pieces on the portal lines");
+    // The end lines: the joints of a ground way and a bore.
+    let level = |a: &crate::graph::Arm| b.graph.ways[a.way as usize].level;
+    let ends: Vec<[i32; 2]> = (b.graph.joints.iter())
+        .filter(|j| {
+            j.arms.iter().any(|a| level(a) == Level::Tunnel) && j.arms.iter().any(|a| level(a) == Level::Ground)
+        })
+        .map(|j| j.pos)
+        .collect();
+    assert_eq!(ends.len(), 2, "two portals");
+    for piece in &b.storeys.portals {
+        for p in [piece.a, piece.b] {
+            let near = |e: &[i32; 2]| libm::hypot(f64::from(p[0] - e[0]), f64::from(p[1] - e[1])) * mpu() < 10.0;
+            assert!(ends.iter().any(near), "a portal piece at {p:?}, off the end lines");
+        }
     }
 }

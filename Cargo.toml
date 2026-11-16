@@ -157,3 +157,8 @@ opt-level = 3
 opt-level = 2
 [profile.dev.package.i_overlay]
 opt-level = 2
+
+# One unit optimizes the crate as one module: the viewer's ground-plan WASM bridge is smaller and not
+# slower, and its size does not jump when the compiler splits the crate differently.
+[profile.release.package.obc-ground-plan]
+codegen-units = 1

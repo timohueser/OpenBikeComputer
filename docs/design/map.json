@@ -445,7 +445,7 @@
     "content"
    ],
    "violations": 4,
-   "lines": 21758,
+   "lines": 21759,
    "problems": [
     {
      "rule": "cycle",
@@ -652,7 +652,7 @@
    ],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 18895,
+   "lines": 18900,
    "problems": []
   },
   {
@@ -701,7 +701,7 @@
    ],
    "test_depends_on": [],
    "violations": 5,
-   "lines": 27639,
+   "lines": 27746,
    "problems": [
     {
      "rule": "cycle",
@@ -721,7 +721,7 @@
     },
     {
      "rule": "cycle",
-     "message": "trailview -> route-planning closes a cycle: builder/web/scripts/road-census.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/trailview/dressing/dressing.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/trailview/engine.ts -> builder/web/src/lib/planner/config.ts, and 42 more"
+     "message": "trailview -> route-planning closes a cycle: builder/web/scripts/road-census.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/trailview/dressing/dressing.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/trailview/engine.ts -> builder/web/src/lib/planner/config.ts, and 43 more"
     }
    ]
   },
@@ -737,7 +737,7 @@
    ],
    "test_depends_on": [],
    "violations": 1,
-   "lines": 16938,
+   "lines": 17022,
    "problems": [
     {
      "rule": "R4",
@@ -841,7 +841,7 @@
     "web-planner"
    ],
    "violations": 3,
-   "lines": 106869,
+   "lines": 109105,
    "problems": [
     {
      "rule": "cycle",
@@ -849,7 +849,7 @@
     },
     {
      "rule": "cycle",
-     "message": "trailview -> route-planning closes a cycle: builder/web/scripts/road-census.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/trailview/dressing/dressing.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/trailview/engine.ts -> builder/web/src/lib/planner/config.ts, and 42 more"
+     "message": "trailview -> route-planning closes a cycle: builder/web/scripts/road-census.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/trailview/dressing/dressing.ts -> builder/web/src/lib/planner/layers/mercator.ts, builder/web/src/lib/trailview/engine.ts -> builder/web/src/lib/planner/config.ts, and 43 more"
     },
     {
      "rule": "R4",
@@ -870,6 +870,20 @@
    "test_depends_on": [],
    "violations": 0,
    "lines": 100,
+   "problems": []
+  },
+  {
+   "name": "ux-study",
+   "kind": "system",
+   "area": "Tooling",
+   "purpose": "Lets an LLM try tasks of the web planner as a first-time user, and records where it fails or is surprised.",
+   "status": "draft",
+   "depends_on": [],
+   "test_depends_on": [
+    "repository-tooling"
+   ],
+   "violations": 0,
+   "lines": 979,
    "problems": []
   },
   {
@@ -916,7 +930,7 @@
     "repository-tooling"
    ],
    "violations": 0,
-   "lines": 17113,
+   "lines": 17486,
    "problems": []
   },
   {
@@ -1705,6 +1719,12 @@
    "from": "trailview-page",
    "to": "trailview",
    "test": false,
+   "undeclared": false
+  },
+  {
+   "from": "ux-study",
+   "to": "repository-tooling",
+   "test": true,
    "undeclared": false
   },
   {

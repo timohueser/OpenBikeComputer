@@ -1,0 +1,129 @@
+// The browser environment of a study: serves the built planner on loopback, starts a clean browser
+// context for each walkthrough, takes stable screenshots and performs the participant's actions.
+import { spawn } from 'node:child_process';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { chromium } from '@playwright/test';
+import { loopbackPort } from '../../../../../tools/loopback_port.mjs';
+import { actions, VIEWPORT } from './actions.js';
+
+const STABLE_GAP_MS = 300;
+// Without a GPU, the map needs 3 to 13 s to settle after a search while three walkthroughs run at once.
+const STABLE_LIMIT_MS = 15_000;
+const FIRST_DRAW_LIMIT_MS = 30_000;
+const SCROLL_PX = 400;
+// A JPEG at this quality weighs about 160 KB, a fifth of the PNG, and its text stays sharp.
+const JPEG_QUALITY = 80;
+const BROWSER_DIR = fileURLToPath(new URL('..', import.meta.url));
+const DIST = fileURLToPath(new URL('../../../dist/planner', import.meta.url));
+const PUBLIC = fileURLToPath(new URL('../../../public', import.meta.url));
+
+/** Serves the build and starts Chromium. `close` stops both. */
+export async function openBrowser() {
+  const port = await loopbackPort('OBC_UX_STUDY_PORT');
+  const base = `http://127.0.0.1:${port}`;
+  // A cloud session reaches the public hosts only through its HTTPS proxy, and Chromium does not read the
+  // proxy from the environment.
+  const proxy = process.env.HTTPS_PROXY ? { server: process.env.HTTPS_PROXY, bypass: '127.0.0.1,localhost' } : undefined;
+  // The browser starts first: when it cannot start, no server is left running.
+  const browser = await chromium.launch({ proxy });
+  const server = spawn('python3', ['serve.py', String(port), DIST], { cwd: BROWSER_DIR, stdio: 'inherit' });
+  const close = async () => { await browser.close(); server.kill(); };
+  try {
+    await waitForServer(`${base}/planner.html`);
+  } catch (error) {
+    await close();
+    throw error;
+  }
+  return { actions, start: () => startWalkthrough(browser, base), close };
+}
+
+async function waitForServer(url) {
+  for (const deadline = Date.now() + 10_000; Date.now() < deadline;) {
+    try { if ((await fetch(url)).ok) return; } catch { /* not listening yet */ }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  throw new Error(`${url} did not answer`);
+}
+
+/** A new browser context, so the library of each walkthrough starts empty. */
+async function startWalkthrough(browser, base) {
+  const context = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 1 });
+  const pending = new Set();
+  context.on('request', request => pending.add(request));
+  for (const settled of ['requestfinished', 'requestfailed']) context.on(settled, request => pending.delete(request));
+  // The planner build leaves out the files of the site root, such as the logo, which the deployed site serves.
+  await context.route(`${base}/brand/**`, route => route.fulfill({ path: join(PUBLIC, new URL(route.request().url()).pathname) }));
+  const page = await context.newPage();
+  await page.goto(`${base}/planner.html#/planner`);
+  // The map marks itself busy until it has drawn; the canvas appears long before that.
+  await page.locator('.maplibregl-canvas').waitFor();
+  await page.waitForFunction(idle, null, { timeout: FIRST_DRAW_LIMIT_MS });
+  return {
+    app: page,
+    screenshot: () => stableScreenshot(page, pending),
+    perform: action => perform(page, action),
+    describe: action => describe(page, action),
+    end: () => context.close(),
+  };
+}
+
+/**
+ * True when the map does not say that it is busy (`aria-busy`). Only the map counts: a part of the page can
+ * stay busy while the planner waits for a route that never comes, and the study must see that screen.
+ */
+const idle = () => !document.querySelector('.maplibregl-map[aria-busy=true]');
+
+/**
+ * Two equal screenshots 300 ms apart with no request in flight and no busy map; after 15 s the last
+ * one, marked unstable. A page that waits for an answer, a timer or a map worker can show the same pixels
+ * for longer than 300 ms, and the participant has no action to wait.
+ */
+async function stableScreenshot(page, pending) {
+  // Two JPEGs of the same pixels are the same bytes.
+  const shoot = () => page.screenshot({ type: 'jpeg', quality: JPEG_QUALITY, animations: 'disabled', caret: 'hide' });
+  let last = await shoot();
+  for (const deadline = Date.now() + STABLE_LIMIT_MS; Date.now() < deadline;) {
+    await page.waitForTimeout(STABLE_GAP_MS);
+    const next = await shoot();
+    if (next.equals(last) && !pending.size && await page.evaluate(idle)) return { jpeg: next, unstable: false };
+    last = next;
+  }
+  return { jpeg: last, unstable: true };
+}
+
+async function perform(page, { type, x, y, x2, y2, text }) {
+  const { mouse, keyboard } = page;
+  if (type === 'click') await mouse.click(x, y);
+  else if (type === 'hover') await mouse.move(x, y);
+  else if (type === 'scroll') { await mouse.move(x, y); await mouse.wheel(0, text === 'up' ? -SCROLL_PX : SCROLL_PX); }
+  else if (type === 'drag') { await mouse.move(x, y); await mouse.down(); await mouse.move(x2, y2, { steps: 10 }); await mouse.up(); }
+  else if (type === 'type') {
+    if (x !== null) await mouse.click(x, y);
+    // A person selects the old text first; the participant has no action for that.
+    await keyboard.press('ControlOrMeta+A');
+    await keyboard.type(text ?? '');
+  }
+  else if (type === 'key') await keyboard.press(text);
+}
+
+/** `screen`: the page from the address hash and the open dialogs and menus. `hit`: the control under the point. */
+function describe(page, action) {
+  return page.evaluate(({ x, y }) => {
+    const label = el => (el.getAttribute('aria-label')
+      || el.getAttribute('aria-labelledby')?.split(' ').map(id => document.getElementById(id)?.textContent).join(' ')
+      || el.textContent || el.getAttribute('placeholder') || el.getAttribute('title') || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+    const role = el => el.getAttribute('role') ?? ({ A: 'link', BUTTON: 'button', SELECT: 'combobox', TEXTAREA: 'textbox', DIALOG: 'dialog' }[el.tagName]
+      ?? (el.tagName === 'INPUT' ? (['checkbox', 'radio', 'range'].includes(el.type) ? el.type : 'textbox') : el.tagName.toLowerCase()));
+    const visible = el => el.checkVisibility();
+    const open = [...document.querySelectorAll('[role=dialog], [role=alertdialog], [role=menu], [role=listbox], dialog[open]')]
+      .filter(visible).map(el => `${role(el)} "${label(el)}"`);
+    const page = location.hash.replace(/^#\/?/, '').split('?')[0] || 'home';
+    const screen = [page, ...open].join(' · ');
+    const under = x === null ? document.activeElement : document.elementFromPoint(x, y);
+    if (!under || under === document.body) return { screen, hit: null };
+    if (under.closest('.maplibregl-canvas-container')) return { screen, hit: 'map' };
+    const control = under.closest('button, a[href], input, select, textarea, [role]') ?? under;
+    return { screen, hit: `${role(control)} "${label(control)}"` };
+  }, action);
+}

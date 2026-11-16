@@ -921,9 +921,10 @@ fn the_jobs_of_four_areas_that_each_hold_the_whole_network_stitch_into_its_one_s
     let areas: BTreeSet<(i64, i64)> = features.iter().flat_map(|f| &f.parts[0]).map(|&p| area::area_of(p)).collect();
     assert_eq!(areas.len(), 4);
     // Houses east of the residential way through the corner give it a sidewalk in each area.
-    let houses: Vec<[f64; 2]> = features[1].parts[0]
+    let houses: Vec<rstar::primitives::Rectangle<[f64; 2]>> = features[1].parts[0]
         .iter()
         .flat_map(|&[x, y]| [-10.0, 0.0, 10.0].map(|north| [x + 15.0 * place.unit, y - north * place.unit]))
+        .map(|p| rstar::primitives::Rectangle::from_corners(p, p))
         .collect();
     let buildings = rstar::RTree::bulk_load(houses);
     let near = Near { rivers: rivers.iter().collect(), buildings: Some(&buildings), ..Default::default() };
@@ -943,7 +944,6 @@ fn the_jobs_of_four_areas_that_each_hold_the_whole_network_stitch_into_its_one_s
             sidewalks: Walks {
                 tagged_m: mm(w.tagged_m),
                 built_m: mm(w.built_m),
-                steep_m: mm(w.steep_m),
                 bend_m: mm(w.bend_m),
                 bed_m: mm(w.bed_m),
                 short_m: mm(w.short_m),

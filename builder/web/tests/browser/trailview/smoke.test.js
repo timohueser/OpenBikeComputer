@@ -1,12 +1,14 @@
 import { readdirSync } from 'node:fs';
 import { expect, test } from '@playwright/test';
-import { DIST, errorsOf, redPixels, routeFixture } from './harness.js';
+import { DIST, errorsOf, redPixels, routeFixture, screenPixels } from './harness.js';
 
 // Down onto the middle of the fixture, so that only known terrain fills the frame and several levels meet.
 const DOWN = '?lat=46.797500&lon=8.415000&heading=20.0&pitch=-60.0&alt=2500.0&date=2026-08-15&time=15:00&weather=sunny';
 // Straight down onto the roads of Engelberg from 100 m, where the finest level shows them, then onto Trübsee from 2 km.
 const VILLAGE = '?lat=46.818000&lon=8.405000&heading=0.0&pitch=-89.0&alt=1100.0&date=2026-08-15&time=15:00&weather=sunny';
 const LAKE = { lat: 46.7825, lon: 8.391, heading: 0, pitch: -35, mode: 'fly', height: 2400 };
+// Straight down onto Engelberg from about 300 m, where a route draws a few pixels wide.
+const ROUTES = '?lat=46.818000&lon=8.405000&heading=0.0&pitch=-89.0&alt=1300.0&date=2026-08-15&time=15:00&weather=sunny';
 
 async function open(page, view) {
     await routeFixture(page);
@@ -85,6 +87,67 @@ test('the stamps hold along the roads of a village, where debug=mask draws them,
     expect(lake.checks.inWater.checked).toBeGreaterThan(50);
     expect(lake.checks.onBank.checked).toBeGreaterThan(0);
     expect(lake.levels.lakes).toBeGreaterThan(0);
+    expect(errors).toEqual([]);
+});
+
+test('two routes leave the gap between them, routeAt finds each, and the bold route draws one time', { tag: '@gpu' }, async ({ page }) => {
+    const errors = errorsOf(page);
+    await open(page, ROUTES);
+    await page.addStyleTag({ content: '#hud, #credits { display: none; }' });
+    // West and east of the eye, from 40 m to 200 m from it, each with its profile every 30 m from the probe. Route 2 is black: the
+    // middle of a line adds no light of its own and lets a twentieth of the ground through, at any width of the line.
+    const routes = await page.evaluate(async () => {
+        const tv = window.trailView, { lat, lon } = tv.view, degree = 111_320 * Math.cos(lat * Math.PI / 180);
+        const entries = [0, 30, 60, 90, 120, 150, 160], lines = [[-200, -40], [40, 200]];
+        const { probe } = await tv.check(lines.flatMap(([from, to]) => entries.map(d => [lon + (from + d * (to - from) / 160) / degree, lat])));
+        return lines.map(([from, to], k) => ({
+            line: [[lon + from / degree, lat], [lon + to / degree, lat]], colours: [['#00ffff', '#000000'][k]],
+            profile: { step: 30, heights: probe.slice(7 * k, 7 * k + 7).map(h => (Number.isFinite(h) ? h : null)) },
+        }));
+    });
+    /** The frame with these routes, once it is idle. */
+    const draw = async (list, bold = null) => {
+        await page.evaluate(async ([list, bold]) => {
+            window.trailView.showRoutes(list);
+            window.trailView.boldRoute(bold);
+            await window.trailView.waitForIdle();
+        }, [list, bold]);
+        return screenPixels(page);
+    };
+    const none = await screenPixels(page), two = await draw(routes);
+    const { width, height } = none, at = (shot, x, y) => [0, 1, 2].map(j => shot.rgba[4 * (y * width + x) + j]);
+    const change = (shot, x, y, base = none) => at(shot, x, y).reduce((sum, value, j) => sum + Math.abs(value - at(base, x, y)[j]), 0);
+    // The pixels that each route changes, route 1 west of the middle. A pixel of a route is the median of its pixels.
+    const changed = [[], []];
+    for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) if (change(two, x, y) > 60) changed[x < width / 2 ? 0 : 1].push([x, y]);
+    const median = values => values.sort((a, b) => a - b)[values.length >> 1];
+    const [west, east] = changed.map(pixels => [median(pixels.map(p => p[0])), median(pixels.map(p => p[1]))]);
+    expect(changed.map(pixels => pixels.length > 100)).toEqual([true, true]);
+    // The gap is the middle fifth of the 400 m from the start of route 1 to the end of route 2: no pixel there changes.
+    const xs = changed.flat().map(p => p[0]), reach = (Math.max(...xs) - Math.min(...xs)) / 10, row = Math.round((west[1] + east[1]) / 2);
+    const gap = [];
+    for (let x = Math.ceil(width / 2 - reach + 8); x < width / 2 + reach - 8; x++) for (let y = row - 3; y <= row + 3; y++) gap.push(change(two, x, y));
+    expect(gap.length).toBeGreaterThan(500);
+    expect(Math.max(...gap)).toBeLessThanOrEqual(12);
+    // Route 1 ends 40 m west of the middle with a round cap: a pixel on its row just past the end changes, and one at the corner of
+    // the cap, as far beyond the end as the line is wide to each side, does not.
+    const end = Math.round(width / 2 - reach), [x1, y1] = west;
+    const half = Math.ceil(Array.from({ length: 41 }, (_, k) => y1 - 20 + k).filter(y => change(two, x1, y) > 12).length / 2);
+    expect(change(two, end + 1, y1)).toBeGreaterThan(60);
+    expect(Math.max(change(two, end + half, y1 - half), change(two, end + half, y1 + half))).toBeLessThanOrEqual(12);
+    expect(await page.evaluate(points => points.map(([x, y]) => window.trailView.routeAt(x + 0.5, y + 0.5)), [west, east, [width / 2, row]])).toEqual([1, 2, null]);
+
+    const alone = await draw([routes[1]]), bold = await draw(routes, 2);
+    // The middle of route 2 in its column: the row that the route alone changes most.
+    const rows = y0 => Array.from({ length: 41 }, (_, k) => y0 - 20 + k), [x] = east;
+    const middle = rows(east[1]).reduce((best, y) => (change(alone, x, y) > change(alone, x, best) ? y : best));
+    const drawn = shot => rows(east[1]).filter(y => change(shot, x, y) > 60).length;
+    expect(drawn(bold)).toBeGreaterThan(drawn(alone) + 2);
+    // Drawn two times, the middle would let a four-hundredth of the ground through.
+    expect(at(alone, x, middle)[1]).toBeGreaterThan(8);
+    at(bold, x, middle).forEach((value, j) => expect(Math.abs(value - at(alone, x, middle)[j])).toBeLessThanOrEqual(3));
+    // The second draw leaves route 1 as it was.
+    expect(Math.max(...rows(west[1]).map(y => change(bold, west[0], y, two)))).toBeLessThanOrEqual(12);
     expect(errors).toEqual([]);
 });
 

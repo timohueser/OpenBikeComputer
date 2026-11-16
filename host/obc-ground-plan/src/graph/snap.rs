@@ -93,6 +93,10 @@ fn link<'a>(
 ) {
     let (e, a, za) = from;
     let (b, zb) = to;
+    // A link of no length has no span: the end already lies on its target.
+    if a == b {
+        return;
+    }
     let source = &parts[e.st.part as usize];
     let along = station_sample(source, e.st.span as usize, e.st.u, cell).along_m;
     let tangent = libm::atan2((b[1] - a[1]) as f64, (b[0] - a[0]) as f64);

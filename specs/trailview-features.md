@@ -374,24 +374,25 @@ A way is paved when it has no `surface` tag or one other than `gravel`, `compact
 1. OSM decides first. `sidewalk` `both` or `yes` gives both sides, `left` or `right` that side
    only, `no`, `none` and `separate` none. Then `sidewalk:both`, `sidewalk:left` and
    `sidewalk:right` set their sides: `yes` gives one, `no` and `separate` none.
-2. A side without a tag has a sidewalk where 3 buildings stand within 40 m of the middle of the
-   sidewalk, on that side of the way's middle line. A building counts by the mean of the vertices
-   of its outer ring.
-3. A gap under 40 m along the stroke between two such pieces closes, where no tag decides it.
-4. A side has no sidewalk where the ground from 2 m to 6 m past the road's edge rises or falls by
-   more than `sidewalk_steep` of the class per metre, unless a tag puts one there. The road's edge
-   lies its half-width (see Heights) and its widening from its middle.
-5. A side has no sidewalk inside a bend whose radius is less than the road's edge, the
-   sidewalk's width and `sidewalk_margin_m` of the class.
-6. A side has no sidewalk where its middle lies on the bed of another way on the ground or of a
+2. A side without a tag has a sidewalk where 2 buildings stand within 25 m of the road's middle
+   line, on either side of it. A building counts by the box of its outer ring.
+3. A side has no sidewalk inside a bend whose radius is less than the road's edge, the
+   sidewalk's width and `sidewalk_margin_m` of the class. The road's edge lies its half-width (see
+   Heights) and its widening from its middle.
+4. A side has no sidewalk where its middle lies on the bed of another way on the ground or of a
    river or a stream: within that way's half-width and half the sidewalk's width. A way that
    meets the road does not count within 12 m of their junction, and a waterway's bed does not
    count within that distance of a vertex that it shares with a culvert part, or where the water
    lies under a road or a track that crosses it on a culvert by the rule of Heights and holds its
    cover there: within the road's outer half-width, its widening and the bed's half-width, over
    the sine of their angle, along the water from the crossing. The pipe runs on.
-7. A piece that ends within 15 m of a junction, a point that three segments of ways or more leave,
-   runs on to it where rules 4 to 6 let it.
+5. A gap under 40 m along the stroke between two pieces closes, where no tag `no`, no way without
+   a sidewalk and no bend of rule 3 lies in it. Rules 5 and 6 come after rule 4: the bed of another
+   way and a stretch without buildings do not stop them.
+6. A piece that ends within 15 m of a junction, a point that three segments of ways or more leave,
+   runs on to it, where no tag `no`, no way without a sidewalk and no bend of rule 3 lies between.
+7. A piece that ends at a junction at one end and inside the stroke off a junction at the other,
+   and is shorter than 15 m, goes.
 8. A piece under 50 m goes, after rules 1 to 7 have decided every way of the solve. A piece is a
    run of sidewalk on one side that stops at both ends, followed across the vertices where it
    carries on into another line's sidewalk on the same side, and its length is the sum over those
@@ -428,7 +429,8 @@ class and waterway kind, and the `structures` of `plan.json`), so a change of th
 of the code of the levels takes a new revision. The bake builds each zoom-16 cell of each zoom-13 tile that holds a
 way of the road solver as the viewer does: from the zoom-13 tiles of the bake and the terrain tiles of zooms 13 and
 12 of the grid. Each cell decides the ways inside its square. A way has a state where it is a bridge or a tunnel, or
-where it ends at the body of a way that it crosses. A station of a tunnel is `B` where the ground over it gives
+where it ends at the body of a way that it crosses. A tunnel is a way of the kind `tunnel`, or a way of a ground kind
+tagged `tunnel=yes` (the shallow tunnels above). A station of a tunnel is `B` where the ground over it gives
 the least room of its class (`bore_least_m` and `roof_least_m`, less `lift_max_m` where no paved way lies on that
 ground). Else it is `O` within `open_max_m` (30 m) of a tag end and before the first `B` from its nearer tag end,
 also where its floor lies over the terrain (the way goes on as a way on the ground until the cover holds), but `H`

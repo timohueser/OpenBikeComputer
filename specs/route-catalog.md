@@ -4,7 +4,8 @@ The route catalog lists the signed routes of a region: OSM route relations for h
 and mountain-bike routes. Each route record also holds the plan that reproduces the route. A
 relation with a member outside the extract leaves the catalog.
 
-- Version: `format` `1`.
+- Version: `format` `1`. A new field does not change the format. A reader ignores a field that it
+  does not know.
 - Writers: the region prepare step, `planner/router-build` (`src/catalog/mod.rs`).
 - Readers: the planner search, online and offline: the web planner
   (`builder/web/src/lib/planner/signed-routes.ts`, `route-catalog.ts`), the companion app
@@ -55,6 +56,7 @@ microdegrees, longitude before latitude. Lengths and heights are integer metres.
 | `hardest` | Index in `grades_m` of the hardest explicit grade |
 | `cells` | Sorted IDs `9-X-Y` of the zoom 9 cells that the plan route touches |
 | `line_udeg` | Route record only: the simplified plan route, flat |
+| `profile_m` | Route record only: the height of the plan route in metres at each 100 m from its start, and at its end |
 | `via` | Route record only: ascending indices of the shaping vertices in `line_udeg` |
 | `turnarounds` | Route record only: the entries of `via` where the plan route turns back, and `0` for a loop that turns back at its start |
 | `parent` | Stage only: relation ID of its long route |
@@ -113,8 +115,31 @@ does not count. The climb of each leg is rounded to whole metres before the legs
 `line_udeg` holds two integers for each vertex: longitude, then latitude. The first pair is
 absolute. Each pair after it is the difference from the previous vertex. This is the encoding of
 `coordinates_udeg` in the [route API](route-api.md#deltas). The vertices are points of the plan
-route, in its order. No point of the plan route is more than 50 m from the line. Each shaping point
+route, in its order. No point of the plan route is more than 10 m from the line. Each shaping point
 is a vertex of the line.
+
+### Profile
+
+Entry `i` of `profile_m` is the height at `i × 100` m along the plan route. The last entry is the
+height at the end of the plan route, at `length_m`. It is there also when `length_m` is a multiple
+of 100, so a route of 300 m has 5 entries.
+
+The distance along the plan route is the sum of the distances between its points, scaled so that
+the whole route has `length_m`. The lengths of `grades_m` use the same scale. A height is the
+elevation of the plan route at that distance, rounded to the metre. When the distance is that of a
+point, the height is the height of that point, and the entry is `null` when that point has no
+height. Otherwise the height is on the straight line between the point before it and the point after
+it, and the entry is `null` when one of these two points has no height. `profile_m` is absent when
+no height of the plan route is known.
+
+The profile samples the smoothed heights that `ascent_m` and `descent_m` come from. Its climb can
+differ from `ascent_m` because it has only one height for each 100 m. A reader that needs the height
+at a vertex of `line_udeg` takes the profile at the share of the line's length that the vertex has.
+The line is simplified within 10 m of the plan route (see [Line](#line)), so on switchbacks it is
+shorter than the plan route. The share of a vertex then points to another place along the plan
+route. This offset grows with the switchbacks before the vertex and has no fixed limit, and the
+height is wrong by the climb of the route over that stretch. The profile is for a picture and for
+the pick of a route in TrailView, not for a figure.
 
 ### Grades
 
@@ -144,15 +169,17 @@ or `main` role and the same `network`, in member order. A long route is in the c
 each of its stages is in it. A long route with a child relation that holds route relations leaves
 the catalog.
 
-A long route has no `line_udeg`, `via` or `turnarounds`. Its line and its plan are those of its
-stages in order. The client loads the stages by their IDs from the files of the long route's
-`cells`. The joined plan has the points of the stage plans in order. A stage finish and the next
-stage start are one point when they are the same vertex, and two points otherwise. Each stage
-turnaround moves to its position in the joined plan. A client plans a whole long route only when its
-joined plan has at most 64 points; otherwise it offers its stages only. `start_udeg` is the start of
-its first stage. `length_m`, `ascent_m`, `descent_m` and `grades_m` are the sums of the values of
-its stages. `hardest` is the largest `hardest` of its stages. Its `cells` are the union of the
-`cells` of its stages. Thus each file that holds a stage also holds its long route.
+A long route has no `line_udeg`, `via`, `turnarounds` or `profile_m`. Its line and its plan are
+those of its stages in order. A reader that needs its profile joins the profiles of its stages, and
+places the entries of each stage by the `length_m` of the stage. The client loads the stages by
+their IDs from the files of the long route's `cells`. The joined plan has the points of the stage
+plans in order. A stage finish and the next stage start are one point when they are the same vertex,
+and two points otherwise. Each stage turnaround moves to its position in the joined plan. A client
+plans a whole long route only when its joined plan has at most 64 points; otherwise it offers its
+stages only. `start_udeg` is the start of its first stage. `length_m`, `ascent_m`, `descent_m` and
+`grades_m` are the sums of the values of its stages. `hardest` is the largest `hardest` of its
+stages. Its `cells` are the union of the `cells` of its stages. Thus each file that holds a stage
+also holds its long route.
 
 A stage has `parent` and `stage` only when its long route is in the catalog. When a route is a stage
 of two long routes, `parent` is the one with the lower relation ID.
@@ -183,8 +210,10 @@ A one-way stage of 3.7 km in cell `9-267-178`, with one shaping point:
  "hardest":1,"id":1234567,"kind":"hiking","length_m":3710,
  "line_udeg":[8004512,47873120,9210,-6400,8800,-11500,6500,-4200,5510,-2100],
  "loop":false,"name":"Mühlbach-Weg, Etappe 1","operator":"Schwarzwaldverein",
- "parent":2345678,"rank":1,"ref":"MW","stage":1,
- "symbol":"yellow:white:yellow_diamond","via":[2]}
+ "parent":2345678,
+ "profile_m":[620,618,625,631,640,652,661,668,676,684,690,699,708,716,725,733,741,748,752,
+              760,768,773,779,784,788,780,768,751,733,712,694,671,650,628,610,590,571,555,553],
+ "rank":1,"ref":"MW","stage":1,"symbol":"yellow:white:yellow_diamond","via":[2]}
 ```
 
 Its long route, with two stages:

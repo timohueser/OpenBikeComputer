@@ -11,7 +11,7 @@
 //! is one continuous field, so a triangle may span two ground faces.
 
 use super::cdt::{Segment, INSIDE};
-use super::params::{l_max_m, sharp, GRID, GRID_CLEARANCE_M, SIDE};
+use super::params::{l_max_m, GRID, GRID_CLEARANCE_M, SIDE};
 use super::region::Region;
 use crate::faces::{Edge, EdgeKind, FacePlan, OUTSIDE};
 use crate::frame::{metres_per_unit_at, CELL_UNITS};
@@ -24,8 +24,9 @@ pub struct Input {
     pub segments: Vec<Segment>,
     /// `segments[..edges]` are face edges, the rest D's border.
     pub edges: usize,
-    /// Per face edge piece, whether it lies on a deck end line (`EdgeKind::DeckEdge`): its slot is an end face.
-    pub end_faces: Vec<bool>,
+    /// Per face edge piece, the kind of its edge: on a deck end line (`EdgeKind::DeckEdge`) its slot is an end face; on
+    /// a portal line (`EdgeKind::Portal`) it has none, as the bore's shell stands there (`mesh::shell`).
+    pub kinds: Vec<EdgeKind>,
     pub grid_points: u32,
     /// Face edges of a sharp face that do not lie in D: none, as R grows past every sharp face.
     pub outside_d: u32,
@@ -51,7 +52,7 @@ fn part(a: P, b: P, k: i64, n: i64) -> P {
     })
 }
 
-fn dist(a: P, b: P, p: [f64; 2]) -> f64 {
+pub(super) fn dist(a: P, b: P, p: [f64; 2]) -> f64 {
     let (e, w) = ([f64::from(b[0] - a[0]), f64::from(b[1] - a[1])], [p[0] - f64::from(a[0]), p[1] - f64::from(a[1])]);
     let l2 = e[0] * e[0] + e[1] * e[1];
     let t = if l2 > 0.0 { ((w[0] * e[0] + w[1] * e[1]) / l2).clamp(0.0, 1.0) } else { 0.0 };
@@ -88,11 +89,14 @@ pub fn edge_points(plan: &FacePlan, e: &Edge, origin_y: f64) -> Vec<P> {
 pub fn input(plan: &FacePlan, region: &Region, lines: &[Vec<i32>; 4], origin_y: f64) -> Input {
     let mpu = |y: f64| metres_per_unit_at(origin_y + y);
     let mut ends: Vec<(P, P, u32, u32)> = Vec::new();
-    let mut end_faces = Vec::new();
+    let mut kinds = Vec::new();
     let mut outside_d = 0;
     for e in plan.edges.iter().filter(|e| e.left != OUTSIDE && e.right != OUTSIDE) {
-        let rule = |f: u32| plan.faces[f as usize].rule;
-        if !sharp(rule(e.left)) && !sharp(rule(e.right)) {
+        // An edge where the floor under the ground changes is a constraint too: a bore's mesh is storey 0's triangles
+        // over its floor.
+        let face = |f: u32| &plan.faces[f as usize];
+        let under = crate::graph::BORES && face(e.left).under != face(e.right).under;
+        if !super::params::sharp_face(face(e.left)) && !super::params::sharp_face(face(e.right)) && !under {
             continue;
         }
         let (a, b) = (plan.vertices[e.a as usize], plan.vertices[e.b as usize]);
@@ -103,7 +107,7 @@ pub fn input(plan: &FacePlan, region: &Region, lines: &[Vec<i32>; 4], origin_y: 
         }
         for w in edge_points(plan, e, origin_y).windows(2) {
             ends.push((w[0], w[1], e.left, e.right));
-            end_faces.push(e.kind == EdgeKind::DeckEdge);
+            kinds.push(e.kind);
         }
     }
     let edges = ends.len();
@@ -165,7 +169,7 @@ pub fn input(plan: &FacePlan, region: &Region, lines: &[Vec<i32>; 4], origin_y: 
     points.dedup();
     let at = |p: P| points.binary_search_by_key(&(p[1], p[0]), |q| (q[1], q[0])).unwrap() as u32;
     let segments = ends.iter().map(|&(a, b, left, right)| Segment { a: at(a), b: at(b), left, right }).collect();
-    Input { segments, edges, end_faces, grid_points, outside_d, points }
+    Input { segments, edges, kinds, grid_points, outside_d, points }
 }
 
 /// The face of the plan at each grid point of the cell, index j × `SIDE` + i, by scan lines half a
