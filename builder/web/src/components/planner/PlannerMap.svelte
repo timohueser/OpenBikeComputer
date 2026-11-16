@@ -14,6 +14,7 @@
     import "maplibre-gl/dist/maplibre-gl.css";
     import { mapStyle, poiFilter } from "../../lib/planner/map-style";
     import { mapIcon } from "../../lib/planner/map-icons";
+    import { PlacesPrototype, prototypeIcon } from "../../lib/planner/places-prototype";
     import { categoryIds, placeCategories, type PlaceCategory } from "../../lib/planner/poi-kinds";
     import { poiPlace } from "../../lib/planner/place-index";
     import type { Place } from "../../lib/planner/editor";
@@ -132,6 +133,7 @@
     let consumedPress = false;
     let wholeRoute = false;
     let overlayLayer: RouteOverlays | undefined;
+    let placesPrototype: PlacesPrototype | undefined;
     // Terrain and overlays wait for the first complete basemap, so their downloads never delay it.
     let basemapComplete = false;
     let overlayStatus = $state('');
@@ -394,7 +396,7 @@
     function placeAt(point: maplibregl.Point): Place | null {
         if (!map) return null;
         const box: [maplibregl.PointLike, maplibregl.PointLike] = [[point.x - 4, point.y - 4], [point.x + 4, point.y + 4]];
-        const feature = map.queryRenderedFeatures(box, { layers: placeLayers.filter((id) => map!.getLayer(id)) })[0];
+        const feature = map.queryRenderedFeatures(box, { layers: [...placeLayers, ...(placesPrototype?.layers ?? [])].filter((id) => map!.getLayer(id)) }).find((feature) => !feature.properties.cluster);
         if (!feature || feature.geometry.type !== "Point") return null;
         const { pid, kind } = feature.properties;
         if (pid) return highlightedPlaces.find((place) => place.id === pid) ?? null;
@@ -490,16 +492,17 @@
             // layer that no style layer draws.
             map = new maplibregl.Map({ container, center, zoom, maxBounds: config.bounds, style: mapStyle(theme, styleConfig, dem.sharedDemProtocolUrl, contourUrl), attributionControl: false, maxPitch: 0, renderWorldCopies: false, zoomLevelsToOverscale: undefined });
             signedLayer = new SignedRoutesLayer(map);
+            placesPrototype = new PlacesPrototype(map, config.places);
             overlayLayer = new RouteOverlays(map, config.overlays, (message, retry = false) => { overlayStatus = message; overlayRetry = retry; }, hint => routeHint = hint);
             fitInitialRoute();
             map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
             map.addControl(new maplibregl.ScaleControl({ maxWidth: 90, unit: "metric" }), "bottom-left");
             map.dragRotate.disable();
             map.touchZoomRotate.disableRotation();
-            map.on("style.load", () => { ready = true; installRoute(); signedLayer?.install(theme); signedLayer?.set(signedRoutes); signedLayer?.hover(signedHovered); syncTerrainAndOverlays(); syncDataLayer(); });
+            map.on("style.load", () => { ready = true; installRoute(); placesPrototype?.install(theme, shownCategories); signedLayer?.install(theme); signedLayer?.set(signedRoutes); signedLayer?.hover(signedHovered); syncTerrainAndOverlays(); syncDataLayer(); });
             map.once("load", () => { basemapComplete = true; syncTerrainAndOverlays(); });
             map.setMissingStyleImageResolver((id) => {
-                const icon = mapIcon(id);
+                const icon = prototypeIcon(id) ?? mapIcon(id);
                 if (icon && !map!.hasImage(id)) map!.addImage(id, icon.image, { pixelRatio: icon.pixelRatio });
             });
             map.once("load", reportView);
@@ -529,6 +532,7 @@
                 if (onPick) { onPick([event.lngLat.lng, event.lngLat.lat], [event.originalEvent.clientX, event.originalEvent.clientY]); return; }
                 const signed = signedRoutes ? signedLayer?.hit(event) : null;
                 if (signed !== null && signed !== undefined) { onSignedRoute?.(signed); return; }
+                if (placesPrototype?.click(event.point)) return;
                 const place = placeAt(event.point);
                 const hit = place || pickMode ? null : lineHit(event.point);
                 const overlay = place || pickMode ? null : overlayLayer?.hit(event);
@@ -659,6 +663,7 @@
         const filter = poiFilter(shownCategories);
         if (!map || !ready) return;
         for (const id of ["planner-pois", "planner-poi-icons"]) if (map.getLayer(id)) map.setFilter(id, filter);
+        placesPrototype?.setKinds(shownCategories);
     });
     $effect(() => {
         const data = placeData(highlightedPlaces);

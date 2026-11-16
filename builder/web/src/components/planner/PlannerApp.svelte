@@ -48,6 +48,7 @@
     } from '../../lib/planner/editor';
     import { coordinateAt, cumulative, kmPerDegree, nearestOnLine, nearestProgress, routeDistance, routeSlice, type Coordinate } from '../../lib/planner/geo';
     import { categoryIds, type PlaceCategory } from '../../lib/planner/poi-kinds';
+    import { prototypeKinds } from '../../lib/planner/places-prototype';
     import { corridorPlaces } from '../../lib/planner/place-index';
     import { config } from '../../lib/planner/map-data';
     import { beforeReload } from '../../lib/planner/release';
@@ -168,7 +169,7 @@
     let spot = $state<{ coordinate: Coordinate; legEndId?: string } | null>(null);
     // The selected place when it is not a fixture: a basemap place.
     let mapPlace = $state<Place | null>(null);
-    let hiddenCategories = $state<PlaceCategory[]>([]);
+    let hiddenCategories = $state<PlaceCategory[]>(categoryIds.filter(category => !prototypeKinds.includes(category)));
     let highlightedCategories = $state<PlaceCategory[]>([]);
     let corridor = $state<Place[]>([]);
     let corridorLoad = $state<'done' | 'loading' | 'failed'>('done');
