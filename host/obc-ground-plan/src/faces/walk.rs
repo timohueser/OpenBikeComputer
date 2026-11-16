@@ -837,6 +837,20 @@ pub(super) fn build(
         for (l, side, _) in sides {
             rings[side_of(*l, *side)].extend(fill.iter().cloned());
         }
+        // Each slab goes on `INSET` units past the joint, over the other's end: two slabs of one road side leave no
+        // ground between their ends.
+        for &(l, side, arm) in sides {
+            let (n, back_d) = edge((l, side, arm));
+            let line = &lines[l];
+            let c = [f64::from(pos[0]), f64::from(pos[1])];
+            let u = unit(line.p[arm.at], line.p[arm.at.wrapping_add_signed(isize::from(arm.dir))]).unwrap_or([0.0; 2]);
+            let at = |d: f64, past: f64| round([c[0] + d * n[0] - past * u[0], c[1] + d * n[1] - past * u[1]]);
+            let h = line.h[arm.at] / 2.0;
+            push_positive(
+                vec![at(h, 0.0), at(back_d, 0.0), at(back_d, INSET), at(h, INSET)],
+                &mut rings[side_of(l, side)],
+            );
+        }
     }
     for &(n, arm, p, s, x) in &onto {
         // The slab goes on past the point along the partner at its full width, to where the other road cuts it.
