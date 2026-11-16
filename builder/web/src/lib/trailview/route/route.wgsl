@@ -4,7 +4,9 @@
 // covers the ground, and a narrow glow beyond its edges adds light. Its depth moves toward the eye by
 // PULL_M and PULL_PIXELS, so that the ground between two points does not hide it. It is not lit.
 // One triangle strip holds all routes: a break point between two routes has no width, so no ribbon joins
-// them. The bold route draws in a second instance of the strip, BOLD times as wide, on top of the others.
+// them. The first and the last point of a route are its caps: copies of its ends that move half the
+// width beyond them along the line, so that the fragment stage cuts a round end from the quad between.
+// The bold route draws in a second instance of the strip, BOLD times as wide, on top of the others.
 // A pin stands on a stem over a ring on the ground, all of a constant size on the screen: on top, a badge that
 // faces the eye, or a sphere in the sun. It shows faintly through what hides it.
 // #include ../terrain/drawn-mesh.wgsl
@@ -83,6 +85,8 @@ struct RouteOut {
     // 1 where the surface under the vertex is known.
     @location(3) kept: f32,
     @location(4) fade: f32,
+    // Along the line beyond its end, from 0 at the end to 1 at the tip of the cap.
+    @location(5) beyond: f32,
 }
 
 fn centre(i: u32) -> vec2f {
@@ -133,10 +137,15 @@ fn route_vertex(@builtin(vertex_index) v: u32, @builtin(instance_index) instance
     let i = v >> 1u;
     let side = f32(v & 1u) * 2.0 - 1.0;
     let s = centre(i);
-    // A neighbour of another route gives no direction: the point stands in for it. The first point of a route takes the direction to the next.
+    // A neighbour of another route gives no direction: the point stands in for it. A cap looks past the end
+    // that it copies, and the start cap takes the direction to the point after that end.
     let route = points[i].route;
-    let before = select(i, i - 1u, i > 0u && points[i - 1u].route == route);
-    let after = select(i, i + 1u, i + 1u < n && points[i + 1u].route == route);
+    let starts = i == 0u || points[i - 1u].route != route;
+    let ends = i + 1u >= n || points[i + 1u].route != route;
+    let back_reach = select(1u, 2u, ends);
+    let ahead_reach = select(1u, 2u, starts);
+    let before = select(i, i - back_reach, i >= back_reach && points[i - back_reach].route == route);
+    let after = select(i, i + ahead_reach, i + ahead_reach < n && points[i + ahead_reach].route == route);
     let back = direction(s - centre(before), direction(centre(after) - s, vec2f(0.0, 1.0)));
     let tangent = direction(back + direction(centre(after) - s, back), back);
     let left = vec3f(-tangent.y, tangent.x, 0.0);
@@ -152,16 +161,23 @@ fn route_vertex(@builtin(vertex_index) v: u32, @builtin(instance_index) instance
     // The half-width in pixels that the body shows when it lies on the ground.
     let lying_pixels = BODY_M * length(cross(left, c)) / (distance * metre);
     let lying = 1.0 - smoothstep(1.0, 2.0, BODY_PIXELS / max(lying_pixels, 1e-6));
-    let foot = s + left.xy * side * half;
+    let beyond = select(0.0, 1.0, ends) - select(0.0, 1.0, starts);
+    let foot = s + (left.xy * side + tangent * beyond) * half;
     let foot_h = ground(foot);
     let lie = eye_space(foot, select(h, foot_h, known(foot_h)));
     // Across the line as the eye sees it, on the side of left; a line that runs straight at the eye turns flat.
     let facing = cross(vec3f(tangent, 0.0), c) * select(1.0, -1.0, c.z > 0.0);
     let across = select(left, normalize(facing), dot(facing, facing) > 1e-6 * distance * distance);
-    let p = pulled(mix(c + across * side * half, lie, lying), PULL_M, PULL_PIXELS);
+    // Along the line as the eye sees it, so that a standing cap shows its full length.
+    let onward_eye = cross(c, across);
+    let onward = select(vec3f(tangent, 0.0), normalize(onward_eye) * select(-1.0, 1.0, dot(onward_eye.xy, tangent) >= 0.0),
+        dot(onward_eye, onward_eye) > 1e-6 * distance * distance);
+    let p = pulled(mix(c + (across * side + onward * beyond) * half, lie, lying), PULL_M, PULL_PIXELS);
     var out: RouteOut;
     out.clip = frame.view_proj * vec4f(p, 1.0);
     out.side = side;
+    // A point with no width (a break point) keeps its strip triangles to a cap beyond the round end, where they draw nothing.
+    out.beyond = select(abs(beyond), 1.0, wide == 0.0);
     out.body = body / max(half, 1e-6);
     out.colour = linear(unpack4x8unorm(points[i].colour).rgb);
     out.fade = smoothstep(FADE_NEAR_M, FADE_FAR_M, distance);
@@ -173,7 +189,7 @@ fn route_vertex(@builtin(vertex_index) v: u32, @builtin(instance_index) instance
 // Premultiplied: the body covers what lies behind it, the glow adds to it.
 @fragment
 fn route_fragment(in: RouteOut) -> @location(0) vec4f {
-    let t = abs(in.side);
+    let t = length(vec2f(in.side, in.beyond));
     let aa = max(fwidth(t), 1e-6);
     if (in.kept < 0.999) {
         discard;
