@@ -48,6 +48,8 @@ const FAILURES_IN_A_ROW = 5;
 const AT_ONCE = 16, BUSY_MS = 60_000, BUSY_TRIES = 5;
 /** The covers that upload checks on the public host. */
 const CHECKED = 20;
+/** The time limit of one points file from the public host. */
+const POINTS_MS = 30_000;
 
 /** The key of the cover of a record. */
 export const keyOf = record => createHash('sha256').update(`${LOOK}|${record.line_udeg.join(',')}`).digest('hex').slice(0, 16);
@@ -74,19 +76,22 @@ export function lightOf(light) {
 /**
  * The camera of a record's points file: from `out`, else from the public host when `fetch` is given, and
  * `out` keeps that file. Undefined when the key has no points yet. An image of a key renders only with this
- * camera, so that a new month matches the points that the bucket holds.
+ * camera, so that a new month matches the points that the bucket holds. Throws on any other answer than 200
+ * with a whole camera or 404, and then writes nothing.
  */
 export async function storedCamera(out, record, fetch) {
     const file = coverFile(out, record, POINTS);
     if (!existsSync(file) && fetch) {
         const url = `${HOST}/${PREFIX}/covers/${record.id}/${keyOf(record)}${POINTS}`;
         const text = await patiently(url, async () => {
-            const response = await fetch(url);
+            const response = await fetch(url, { signal: AbortSignal.timeout(POINTS_MS) });
             if (response.status === 404) return undefined;
-            if (response.status !== 200) throw Object.assign(new Error(`${url}: ${response.status}.`), { status: response.status });
+            if (response.status !== 200) throw Object.assign(new Error(`${url} answers ${response.status}.`), { status: response.status });
             return response.text();
         });
         if (text === undefined) return undefined;
+        const camera = JSON.parse(text).camera;
+        if (!['lat', 'lon', 'heading', 'pitch', 'height'].every(field => Number.isFinite(camera?.[field]))) throw new Error(`${url} has no whole camera.`);
         mkdirSync(coverDir(out, record), { recursive: true });
         writeWhole(file, text);
     }
@@ -293,8 +298,16 @@ export async function render({ out = OUT, sample, only, gpu = false, fixture = f
         const before = records.find(record => stateOf(out, record) === 'cover');
         let inARow = 0, latest;
         for (const record of todo) {
-            const job = await jobOf(record).catch(error => ({ failure: 'points', message: `the points file failed: ${error.message}` }));
-            let result = job.failure ? job : await cover(browser, origin, options, job);
+            let job;
+            try {
+                job = await jobOf(record);
+            } catch (error) {
+                // Each next route would meet the same host, and the check after failures in a row makes no fetch.
+                failed.push(`${record.id}: the points file on the public host failed: ${error.message}`);
+                console.log(`${failed.at(-1)} render stops. Check the host, then run again.`);
+                break;
+            }
+            let result = await cover(browser, origin, options, job);
             if (result.failure === 'tiles-failed') {
                 console.log(`${record.id}: ${result.message} Waiting ${RETRY_MS / 1000} s to try once more.`);
                 await sleep(RETRY_MS);
@@ -389,7 +402,10 @@ export async function upload({ out = OUT, without = [], r2 = obcR2, fetch = glob
 
 /** Throws unless each light of `months` is in its month and `default_month` is a month of the set. */
 export function checkMonths({ months, default_month: month }) {
-    for (const [key, light] of Object.entries(months)) if (light.slice(0, 2) !== key) throw new Error(`The light ${light} is not in its month ${key}.`);
+    for (const [key, light] of Object.entries(months)) {
+        lightOf(light);
+        if (light.slice(0, 2) !== key) throw new Error(`The light ${light} is not in its month ${key}.`);
+    }
     if (!Object.hasOwn(months, month)) throw new Error(`The default_month ${month} is not a month of the set.`);
 }
 

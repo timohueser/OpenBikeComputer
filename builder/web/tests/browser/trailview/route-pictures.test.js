@@ -75,13 +75,18 @@ test('a light is a day of each year in its month, and the default month is a mon
     checkMonths({ months: { '07': '0715-1000' }, default_month: '07' });
     expect(() => checkMonths({ months: { '07': '0815-1000' }, default_month: '07' })).toThrow('not in its month 07');
     expect(() => checkMonths({ months: { '07': '0715-1000' }, default_month: '08' })).toThrow('default_month 08');
+    expect(() => checkMonths({ months: { '02': '0229-1000' }, default_month: '02' })).toThrow('a day of each year');
 });
 
 test('an image renders with the camera of the points file in the output folder, else of the one on the public host, which the folder then keeps', async () => {
     const out = test.info().outputPath('camera'), camera = { lat: 46.8, lon: 8.4, heading: 30, pitch: -54, height: 2960 };
     const file = join(out, 'covers', String(VALLEY.id), `${keyOf(VALLEY)}.json`), urls = [];
-    const host = body => async url => (urls.push(url), { status: body ? 200 : 404, text: async () => body });
+    const host = (body, status = body ? 200 : 404) => async url => (urls.push(url), { status, text: async () => body });
     expect(await storedCamera(out, VALLEY, host(undefined))).toBeUndefined();
+    // An error page, a file with no whole camera and a refusal leave no file.
+    await expect(storedCamera(out, VALLEY, host('<html>Bad gateway</html>'))).rejects.toThrow(SyntaxError);
+    await expect(storedCamera(out, VALLEY, host(JSON.stringify({ camera: { ...camera, height: null } })))).rejects.toThrow('has no whole camera');
+    await expect(storedCamera(out, VALLEY, host('denied', 403))).rejects.toThrow('answers 403');
     expect(existsSync(file)).toBe(false);
     expect(await storedCamera(out, VALLEY, host(JSON.stringify({ x: [], camera })))).toEqual(camera);
     expect(urls.at(-1)).toBe(`${HOST}/route-pictures/covers/1001/${keyOf(VALLEY)}.json`);
