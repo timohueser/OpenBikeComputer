@@ -6,12 +6,15 @@
 //! (`Ramp`). A width rule is a point and a direction, so the slab's width and its kerb's rise are one continuous
 //! function of position, and two cells build the same slabs.
 
+use std::collections::BTreeSet;
 use std::f64::consts::PI;
+
+use i_overlay::core::overlay_rule::OverlayRule;
 
 use super::geom::P;
 use super::points::{Arm, Rounded, TwoFoot, INSET};
-use super::stroke::{left, pie_between, push_positive, side_along, union, unit, Rings, STEPS};
-use super::{Cand, Ctx, Label, Owner, Point, Rank, WayLine, TERRAIN};
+use super::stroke::{boolean, left, pie_between, pieces_along, push_positive, side_along, union, unit, Rings, STEPS};
+use super::{Cand, Ctx, Label, Owner, Point, Rank, WayLine, TERRAIN, VERGE};
 use crate::faces::{HeightRule, Surface};
 use crate::graph::Level;
 use crate::CellInput;
@@ -264,15 +267,20 @@ struct Piece {
 type Join = (P, [(usize, f64, Arm); 2]);
 
 /// A ring between two lines' slabs: its two halves; per arm its side's place in the per-side lists and the cut that ends
-/// its piece at the ring's foot; whether both slabs have their full width at their feet; and the cuts and run-ins that
-/// the arms take where the ring does not stand.
+/// its piece at the ring's foot; whether both slabs have their full width at their feet; and the cuts, run-ins and
+/// stops (`Stop`) that the arms take where the ring does not stand.
 struct Ring {
     halves: [Vec<P>; 2],
     ends: [(usize, Cut); 2],
     full: bool,
     instead: Vec<(usize, Cut)>,
     onto: Vec<(usize, Arm, Arm, f64, f64)>,
+    stops: Vec<Stop>,
 }
+
+/// A line side whose slab ends at a junction: its place in the per-side lists, the point and the other arm, inside whose
+/// kerb the slab stops.
+type Stop = (usize, usize, usize);
 
 /// What ends a piece at a place of a line side (a fractional vertex index) toward a direction: its tip there, where it
 /// moves the end from the place, and the metres of the road that the piece runs into there.
@@ -354,13 +362,18 @@ fn in_box(b: &[f64; 4], q: [f64; 2]) -> bool {
 
 impl Stroke {
     pub(crate) fn of(line: &WayLine) -> Stroke {
+        Stroke::wide(line, line.h.clone())
+    }
+
+    /// A line's stroke with `half` its half-width at each point.
+    fn wide(line: &WayLine, half: Vec<f64>) -> Stroke {
         let pts: Vec<[f64; 2]> = line.p.iter().map(|p| [f64::from(p[0]), f64::from(p[1])]).collect();
         let segs: Vec<[f64; 4]> =
-            (0..pts.len().saturating_sub(1)).map(|i| grow(pts[i], pts[i + 1], line.h[i].max(line.h[i + 1]))).collect();
+            (0..pts.len().saturating_sub(1)).map(|i| grow(pts[i], pts[i + 1], half[i].max(half[i + 1]))).collect();
         let bx = segs.iter().fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, s| {
             [b[0].min(s[0]), b[1].min(s[1]), b[2].max(s[2]), b[3].max(s[3])]
         });
-        Stroke { pts, half: line.h.clone(), bx, segs }
+        Stroke { pts, half, bx, segs }
     }
 
     /// Whether q lies inside by more than `margin` units: within the half-width of a segment's foot that falls
@@ -659,6 +672,7 @@ pub(super) fn build(
     let mut ringed: Vec<Ring> = Vec::new();
     // Run-ins past the point along the partner line: the slab's side and arm, the partner arm, its side and the end.
     let mut onto: Vec<(usize, Arm, Arm, f64, f64)> = Vec::new();
+    let mut stops: Vec<Stop> = Vec::new();
     let heading = |a: Arm| {
         let line = &lines[a.line];
         let next = a.at.checked_add_signed(isize::from(a.dir)).filter(|&j| j < line.p.len());
@@ -719,8 +733,9 @@ pub(super) fn build(
                 // A ring: each arm's slab ends `INSET` units past its foot, inside its half of the ring.
                 let (mut w, mut full) = ([0.0; 2], true);
                 let mut ends = [(0, Cut::at(arm_a, Tip::Square, None)); 2];
-                let (mut instead, mut runs) = (Vec::new(), Vec::new());
-                for (n, (arm, side, other, i)) in [(arm_a, sa, arm_b, a), (arm_b, sb, arm_a, b)].into_iter().enumerate()
+                let (mut instead, mut runs, mut ring_stops) = (Vec::new(), Vec::new(), Vec::new());
+                for (n, (arm, side, other, i, j)) in
+                    [(arm_a, sa, arm_b, a, b), (arm_b, sb, arm_a, b, a)].into_iter().enumerate()
                 {
                     let line = &lines[arm.line];
                     let foot = moved(line, t.x[n], -f64::from(arm.dir), INSET, arm.at as f64);
@@ -732,33 +747,53 @@ pub(super) fn build(
                     let (cut, run) = run_cut(pt, i, arm, side, other, same);
                     instead.push((key(arm, side), cut));
                     runs.extend(run);
+                    if junction && other.line != arm.line {
+                        ring_stops.push((key(arm, side), pi, j));
+                    }
                 }
                 let c = [f64::from(pt.pos[0]) + t.c[0], f64::from(pt.pos[1]) + t.c[1]];
                 let halves = ring_halves(c, t.rho, t.a0, t.sweep, w);
-                ringed.push(Ring { halves, ends, full, instead, onto: runs });
+                ringed.push(Ring { halves, ends, full, instead, onto: runs, stops: ring_stops });
                 continue;
             }
             // An arm whose bits are too short to walk at the corner ends its piece with a taper at the point.
-            for (n, arm, side, other, walking, right) in
-                [(a, arm_a, sa, arm_b, wa, true), (b, arm_b, sb, arm_a, wb, false)]
+            for (n, arm, side, other, j, walking, right) in
+                [(a, arm_a, sa, arm_b, b, wa, true), (b, arm_b, sb, arm_a, a, wb, false)]
             {
+                let bits = walking || walks(ctx, &lines[arm.line], arm, right, false);
                 if walking {
                     let (cut, run) = run_cut(pt, n, arm, side, other, same);
                     cuts[key(arm, side)].push(cut);
                     onto.extend(run);
-                } else if walks(ctx, &lines[arm.line], arm, right, false) {
+                } else if bits {
                     cuts[key(arm, side)].push(Cut::at(arm, Tip::Taper, None));
+                }
+                if bits && junction && other.line != arm.line {
+                    stops.push((key(arm, side), pi, j));
                 }
             }
         }
     }
-    // A slab ends with tapers before the strokes that it must not enter: a deck's where it leaves the ground, and a
-    // rail's. Each run of a line side's sections that enters one is cut out toward both ends.
-    let mut forbidden: Vec<Stroke> = lines.iter().filter(|l| l.rail).map(Stroke::of).collect();
+    // A slab ends with tapers before the strokes that it must not enter: a deck's where it leaves the ground, a rail's
+    // core out to its verge, which no slope lies between, and the carriageway of a road that meets its way at no point
+    // (a slab runs into a road only at their point). Each run of a line side's sections that enters one is cut out
+    // toward both ends.
+    let graph = ctx.graph;
+    let met: BTreeSet<(u32, u32)> = (graph.junctions.iter().map(|j| &j.arms[..]))
+        .chain(graph.joints.iter().map(|j| &j.arms[..]))
+        .flat_map(|arms| arms.iter().flat_map(move |a| arms.iter().map(move |b| (a.way, b.way))))
+        .collect();
+    let mut forbidden: Vec<(Option<u32>, Stroke)> = (lines.iter())
+        .filter(|l| !l.sec.water)
+        .map(|l| match l.rail {
+            true => (None, Stroke::wide(l, l.bands.iter().map(|b| b[VERGE]).collect())),
+            false => (Some(l.way), Stroke::of(l)),
+        })
+        .collect();
     for (_, strokes) in decks {
         for s in strokes {
-            if !forbidden.iter().any(|f| f.pts == s.pts) {
-                forbidden.push(s);
+            if !forbidden.iter().any(|f| f.1.pts == s.pts) {
+                forbidden.push((None, s));
             }
         }
     }
@@ -772,6 +807,8 @@ pub(super) fn build(
             [b[0].min(p[0] - g), b[1].min(p[1] - g), b[2].max(p[0] + g), b[3].max(p[1] + g)]
         });
         let near: Vec<&Stroke> = (forbidden.iter())
+            .filter(|(w, _)| w.is_none_or(|w| w != line.way && !met.contains(&(line.way, w))))
+            .map(|(_, s)| s)
             .filter(|s| s.bx[0] <= bx[2] && s.bx[2] >= bx[0] && s.bx[1] <= bx[3] && s.bx[3] >= bx[1])
             .collect();
         for side in [1.0, -1.0].into_iter().filter(|_| !near.is_empty()) {
@@ -827,6 +864,7 @@ pub(super) fn build(
             cuts[n].push(cut);
         }
         onto.extend(ring.onto.iter().copied());
+        stops.extend(ring.stops.iter().copied());
     }
     let pieces = settle(&cuts);
     for ring in &ringed {
@@ -948,6 +986,33 @@ pub(super) fn build(
         let at_partner = (edge((p.line, s, p)).0, start);
         rings[n].extend(pie(pos, edge((l, side, arm)), at_partner));
     }
+    // A slab that ends at a junction stops `INSET` units inside the kerb of each other road that its end meets there: that
+    // road's carriageway hides the slab, and past the kerb the slab would show through any gap between the carriageway
+    // and the fans of the point.
+    let mut inside: Vec<Rings> = vec![Vec::new(); rings.len()];
+    for &(n, pi, k) in &stops {
+        let arm = points[pi].arms[k];
+        let line = &lines[arm.line];
+        if line.rail || line.sec.water {
+            continue;
+        }
+        // The arm's samples within `extent_m` of the point.
+        let reach = units(ctx.rules.plan.extent_m, at_x(line, arm.at as f64).0);
+        let (mut at, mut length) = (vec![arm.at], 0.0);
+        while let Some(j) = (at.last().unwrap().checked_add_signed(isize::from(arm.dir))).filter(|&j| j < line.p.len())
+        {
+            let (a, b) = (line.p[*at.last().unwrap()], line.p[j]);
+            length += libm::hypot(f64::from(b[0] - a[0]), f64::from(b[1] - a[1]));
+            at.push(j);
+            if length >= reach {
+                break;
+            }
+        }
+        let p: Vec<P> = at.iter().map(|&i| line.p[i]).collect();
+        let d: Vec<f64> = at.iter().map(|&i| (line.h[i] - INSET).max(0.0)).collect();
+        let dirs: Vec<Option<[f64; 2]>> = p.windows(2).map(|w| unit(w[0], w[1])).collect();
+        pieces_along(&p, &d, &dirs, [&[], &[]], [false, false], false, &mut inside[n]);
+    }
     let rank = ctx.rules.plan.rank(Rank::Sidewalk);
     let cands = (rings.into_iter().enumerate())
         .filter(|(_, r)| !r.is_empty())
@@ -963,8 +1028,13 @@ pub(super) fn build(
                 reach_m: line.sec.reach_m as f32,
                 ..TERRAIN
             };
+            let rings = union(&rings, [0, 0]);
             Cand {
-                rings: union(&rings, [0, 0]),
+                rings: if inside[n].is_empty() {
+                    rings
+                } else {
+                    boolean(&rings, &inside[n], OverlayRule::Difference, [0, 0])
+                },
                 label,
                 key: (rank, line.sec.rank as u8, s),
                 glob: None,
@@ -1177,10 +1247,23 @@ mod tests {
         let rail = line("railway", &[("railway", "rail")], &[[0.0, 0.0], [0.0, 100.0]]);
         let c = built(&[main, rail]);
         let sections = &Rules::embedded().sections;
-        let half = sections.way("railway", &[("railway".into(), "rail".into())].into(), false).half_m;
-        // Its tip lies at the rail's stroke, and the ramp starts there.
+        let sec = sections.way("railway", &[("railway".into(), "rail".into())].into(), false);
+        let half = sec.half_m + sec.shoulder_m + sec.verge_m;
+        // Its tip lies at the rail's core, and the ramp starts there.
         assert!(!c.walks([-(half + 0.5), H + 0.5]) && c.walks([-(half + 0.5), H + 0.05]));
         assert!(c.walks([-(half + Rules::embedded().plan.walk.reach_m(W)), H + W - 0.05]));
+    }
+
+    #[test]
+    fn a_slab_tapers_before_a_road_that_meets_its_way_at_no_point() {
+        // A road from 20 m west of the point on, whose carriageway covers the outer half metre of the main road's slab
+        // and meets the main road nowhere: the slab beside it is cut out, and it stands farther west.
+        let main = walking(&[[-100.0, 0.0], [0.0, 0.0], [100.0, 0.0]], &[2, 2, 0]);
+        let sections = &Rules::embedded().sections;
+        let half = sections.way("road", &[("highway".into(), "residential".into())].into(), false).half_m;
+        let c = built(&[main, road(&[[-20.0, H + W + half - 0.5], [40.0, H + W + half - 0.5]])]);
+        assert!(!c.walks([0.0, H + 0.3]) && !c.walks([0.0, H + W - 0.7]));
+        assert!(c.walks([-60.0, H + 0.3]) && c.walks([-60.0, H + W - 0.05]));
     }
 
     #[test]
