@@ -536,7 +536,7 @@ site *args:
 # reads the active planner release or VITE_PLANNER_CATALOG, and runs a UX study of it
 # (builder/web/tests/browser/ux-study/). The study calls the Anthropic
 # API with OBC_UX_API_KEY, from the environment or from ~/.config/openbikecomputer/credentials.env.
-[doc("Run a UX study of the web planner. Args: [--task ID]")]
+[doc("Run a UX study of the web planner. Args: [--task ID] [--model ID]")]
 [group('run')]
 ux *args:
     #!/usr/bin/env bash
