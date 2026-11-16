@@ -840,7 +840,40 @@ fn a_bore_is_the_prism_under_storey_0_and_its_cover_holds_the_least_room() {
         let (least, hr) = (lid.iter().copied().fold(f64::INFINITY, f64::min), roof[p]);
         assert!(hr <= least - sec.roof_least_m + 1e-3, "{p:?}: roof {hr} under storey 0 {least}");
         assert!(hr - hf >= sec.bore_least_m - 1e-3, "{p:?}: room {} under the cover", hr - hf);
+        let lift = lid.iter().copied().fold(f64::NEG_INFINITY, f64::max) - t(*p).unwrap();
+        assert!(lift <= rules.structures.lift_max_m + 1e-3, "{p:?}: the cover {lift} m over the terrain");
         corners += 1;
     }
     assert!(corners > 100, "{corners} floor corners");
+}
+
+/// A road that passes over its own bore 4 m up, as a way on top, before it descends into it (a spiral): an opening
+/// lies only on the bore's end lines, not under the road on top.
+#[cfg(feature = "bores")]
+#[test]
+fn a_way_over_its_own_bore_opens_it_only_at_its_ends() {
+    let key = cell();
+    let points = [[20.0, 30.0], [20.0, -30.0], [-40.0, -30.0], [-40.0, 0.0], [100.0, 0.0], [120.0, 0.0]];
+    let levels = ("levels", "O 140 P B 290 P O");
+    let mut way = line("tunnel", &[("highway", "residential"), ("tunnel", "yes"), levels], &points);
+    way.z = vec![504.0, 504.0, 500.0, 500.0, 500.0, 500.0];
+    let mut input = input_of(key, &[way]);
+    input.terrain = plane(key, &|_, _| 503.1);
+    let b = crate::cell::build_input(&input, Rules::embedded());
+    assert!(!b.storeys.portals.is_empty(), "pieces on the portal lines");
+    // The end lines: the joints of a ground way and a bore.
+    let level = |a: &crate::graph::Arm| b.graph.ways[a.way as usize].level;
+    let ends: Vec<[i32; 2]> = (b.graph.joints.iter())
+        .filter(|j| {
+            j.arms.iter().any(|a| level(a) == Level::Tunnel) && j.arms.iter().any(|a| level(a) == Level::Ground)
+        })
+        .map(|j| j.pos)
+        .collect();
+    assert_eq!(ends.len(), 2, "two portals");
+    for piece in &b.storeys.portals {
+        for p in [piece.a, piece.b] {
+            let near = |e: &[i32; 2]| libm::hypot(f64::from(p[0] - e[0]), f64::from(p[1] - e[1])) * mpu() < 10.0;
+            assert!(ends.iter().any(near), "a portal piece at {p:?}, off the end lines");
+        }
+    }
 }

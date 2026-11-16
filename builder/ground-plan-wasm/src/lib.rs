@@ -277,11 +277,13 @@ impl MeshInput {
         }
         let mesh = mesh_cell(&self.plan, &self.records, &reads, &mut now);
         self.last = Some(reads);
+        let mesh = mesh.map_err(|e| error(format!("{e:?}")))?;
+        let bytes = mesh.to_bytes();
         #[cfg(feature = "bores")]
         {
-            self.ground = mesh.as_ref().ok().filter(|_| self.storeys.plans.iter().any(|p| p.level < 0)).cloned();
+            self.ground = self.storeys.plans.iter().any(|p| p.level < 0).then_some(mesh);
         }
-        Ok(Some(mesh.map_err(|e| error(format!("{e:?}")))?.to_bytes()))
+        Ok(Some(bytes))
     }
 
     /// The bytes of the meshes of the cell's storeys over the ground (`StoreyMesh::to_bytes`).

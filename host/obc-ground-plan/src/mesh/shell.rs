@@ -34,7 +34,7 @@ use super::cdt::{self, Segment};
 use super::params::l_max_m;
 use super::{by_least, face_labels, packed, runs, MeshError, NO_LABEL};
 use crate::faces::records::{self, find, LINE, SAMPLE};
-use crate::faces::{EdgeKind, FacePlan, Storeys, Surface, OUTSIDE};
+use crate::faces::{EdgeKind, FacePlan, Storeys, Surface, NO_UNDER, OUTSIDE};
 use crate::frame::{metres_per_unit_at, CellKey, CELL_UNITS};
 use crate::graph::Structures;
 
@@ -853,32 +853,18 @@ fn bores(
     let portal = |a: P, c: P| storeys.portals.iter().any(|x| (x.a == a && x.b == c) || (x.a == c && x.b == a));
     let way = |l: u32| lines.way(l).and_then(|w| storeys.way(w));
     let wedges = storeys.wedges.as_ref().map(|w| (w, face_labels(&w.faces, lines.words)));
-    // The box of the floors: a triangle outside it lies over none.
-    let floors = [Some(plan), storeys.wedges.as_ref()];
-    let bx = (floors.iter().flatten())
-        .flat_map(|p| {
-            (p.faces.iter().filter(|f| f.surface != Surface::Terrain))
-                .flat_map(|f| f.rings.iter().flatten().map(|&v| p.vertices[v as usize]))
-        })
-        .fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |x, p| {
-            [x[0].min(f64::from(p[0])), x[1].min(f64::from(p[1])), x[2].max(f64::from(p[0])), x[3].max(f64::from(p[1]))]
-        });
-    // Each floor face with its plan, its box and its label.
-    let mut face_boxes: Vec<(&FacePlan, usize, [f64; 4], Option<u32>)> = Vec::new();
+    // Each floor's label by its id (`Face::under`): the storey under the ground's, and the floors' in front of a
+    // portal line.
+    let mut floor_of: Vec<Option<u32>> = Vec::new();
     for (p, ls) in [(plan, labels)].into_iter().chain(wedges.as_ref().map(|(w, l)| (*w, l.as_slice()))) {
-        for f in (0..p.faces.len()).filter(|&f| p.faces[f].surface != Surface::Terrain) {
-            let b = (p.faces[f].rings.iter().flatten().map(|&v| p.vertices[v as usize])).fold(
-                [f64::MAX, f64::MAX, f64::MIN, f64::MIN],
-                |x, q| {
-                    [
-                        x[0].min(f64::from(q[0])),
-                        x[1].min(f64::from(q[1])),
-                        x[2].max(f64::from(q[0])),
-                        x[3].max(f64::from(q[1])),
-                    ]
-                },
-            );
-            face_boxes.push((p, f, b, ls[f]));
+        for (f, &l) in p.faces.iter().zip(ls) {
+            if f.surface != Surface::Terrain && f.under != NO_UNDER {
+                let k = f.under as usize;
+                if floor_of.len() <= k {
+                    floor_of.resize(k + 1, None);
+                }
+                floor_of[k] = floor_of[k].or(l);
+            }
         }
     }
     // A point's id: its first corner (the corners lie in the order of their points).
@@ -887,37 +873,36 @@ fn bores(
         pid[k] = if m0.corner(k).0 == m0.corner(k - 1).0 { pid[k - 1] } else { k as u32 };
     }
     let key = |a: u32, c: u32| u64::from(pid[a as usize]) << 32 | u64::from(pid[c as usize]);
-    // The triangles over a floor face: corner points, the floor's label, storey 0's corners.
+    // The triangles over a floor (the floor of their face): corner points, the floor's label, storey 0's corners.
     let mut tris: Vec<([P; 3], u32, [u32; 3])> = Vec::new();
     let n = m0.triangles.len() - m0.strip_triangles as usize;
-    // Every directed edge of storey 0's triangles with its triangle, sorted: a portal piece's front.
-    let mut all: Vec<(u64, u32)> = Vec::with_capacity(3 * n);
     // Each directed edge of a triangle over a floor with that triangle (its place in `tris`), sorted: the edge back
     // along it is the neighbour's.
     let mut edges: Vec<(u64, u32)> = Vec::new();
-    // At each point, the labels of storey 0's corners of the triangles over the floor: the roof's caps there. A face
-    // in front of a portal line or beside the floor is no ground over the bore.
-    let mut at_point: Vec<((u64, u32), u32)> = Vec::new();
-    for (k, t) in m0.triangles[..n].iter().enumerate() {
+    // At each point and floor label (`corner_key`), the labels of storey 0's corners of the triangles over that
+    // floor: the roof's caps there. A face in front of a portal line or beside the floor is no ground over the bore.
+    let mut at_point: Vec<(u64, u32)> = Vec::new();
+    let mut near: Vec<u32> = Vec::new();
+    for (t, &f) in m0.triangles[..n].iter().zip(&m0.floors) {
+        let Some(l) = floor_of.get(f as usize).copied().flatten() else { continue };
         let c = t.map(|v| m0.corner(v as usize));
-        let p = c.map(|x| x.0);
-        for i in 0..3 {
-            all.push((key(t[i], t[(i + 1) % 3]), k as u32));
-        }
-        let q = [0, 1].map(|k| (f64::from(p[0][k]) + f64::from(p[1][k]) + f64::from(p[2][k])) / 3.0);
-        if q[0] < bx[0] || q[0] > bx[2] || q[1] < bx[1] || q[1] > bx[3] {
-            continue;
-        }
-        // The floor face that holds the triangle's middle: of the faces whose box holds it.
-        let hit = face_boxes
-            .iter()
-            .find(|(p, f, b, _)| q[0] >= b[0] && q[0] <= b[2] && q[1] >= b[1] && q[1] <= b[3] && in_face(p, *f, q));
-        let Some(l) = hit.and_then(|x| x.3) else { continue };
         for i in 0..3 {
             edges.push((key(t[i], t[(i + 1) % 3]), tris.len() as u32));
-            at_point.push(((yx(p[i]), l), c[i].1));
+            at_point.push((corner_key(c[i].0, l), c[i].1));
+            near.push(pid[t[i] as usize]);
         }
-        tris.push((p, l, *t));
+        tris.push((c.map(|x| x.0), l, *t));
+    }
+    near.sort_unstable();
+    // Every directed edge of storey 0's triangles at a point of a floor's triangle, with its triangle, sorted: a
+    // portal piece's front.
+    let mut all: Vec<(u64, u32)> = Vec::new();
+    for (k, t) in m0.triangles[..n].iter().enumerate() {
+        if t.iter().any(|&v| near.binary_search(&pid[v as usize]).is_ok()) {
+            for i in 0..3 {
+                all.push((key(t[i], t[(i + 1) % 3]), k as u32));
+            }
+        }
     }
     all.sort_unstable();
     edges.sort_unstable();
@@ -940,8 +925,8 @@ fn bores(
         for &v in &p {
             // The caps of a roof corner: storey 0's corners at its point of the triangles over its own floor label. A
             // face over another floor at that point (a second bore at another depth) is no lid of this one.
-            let first = at_point.partition_point(|x| x.0 < (yx(v), l));
-            for x in at_point[first..].iter().take_while(|x| x.0 == (yx(v), l)) {
+            let first = at_point.partition_point(|x| x.0 < corner_key(v, l));
+            for x in at_point[first..].iter().take_while(|x| x.0 == corner_key(v, l)) {
                 b.cap(v, l, -depth, (x.1, -plate));
                 // The floor has the roof's caps: where a lid leaves no room, the body has no height and lies under the
                 // lid. It never turns inside out and never stands over the ground.

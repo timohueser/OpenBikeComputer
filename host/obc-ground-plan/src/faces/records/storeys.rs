@@ -54,7 +54,7 @@ pub fn storeys(
             out.plans.push(faces);
             continue;
         }
-        let c = candidates(graph, input, rules, cell, k, LAYERS, true);
+        let c = candidates(graph, input, rules, cell, k, LAYERS, true, None);
         if c.cands.is_empty() {
             continue;
         }

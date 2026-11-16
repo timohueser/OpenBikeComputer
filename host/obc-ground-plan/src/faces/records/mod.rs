@@ -287,25 +287,24 @@ fn pass(
     slopes: bool,
     far_records: bool,
 ) -> Passed {
-    let mut c = candidates(graph, input, rules, cell, level, if slopes { LAYERS } else { SLOPE }, true);
+    let mut c = candidates(graph, input, rules, cell, level, if slopes { LAYERS } else { SLOPE }, true, None);
     // With the bores, storey 0 and the storey under it are two labellings of one slice. A cell whose graph has no bore
     // takes the path of a build with no bores.
     let bores = (crate::graph::BORES && level == 0 && crate::faces::any_bore(graph))
-        .then(|| candidates(graph, input, rules, cell, -1, LAYERS, true))
+        .then(|| candidates(graph, input, rules, cell, -1, LAYERS, true, Some(&c.lines)))
         .filter(|u| !u.cands.is_empty());
     let s = match &bores {
         Some(u) => Sliced::joint(&c, u),
         None => Sliced::new(&c),
     };
-    let faces = s.cell(&c, cell, level);
+    let (faces, storeys) = s.cells(&c, cell, level);
     let map = s.map();
     let ceilings = if level == 0 { super::ceiling_lines(graph, input, rules, cell) } else { Vec::new() };
     let plan = s.plan(cell, level, &map, &s.labels);
     let near = encode(cell, graph, input, rules, (&c.lines, &ceilings), &c.cands, &plan, true);
-    let under = bores.as_ref().map(|u| {
+    let under = bores.as_ref().zip(storeys).map(|(u, (faces, wedges))| {
         let plan = s.plan(cell, -1, &map, &s.under);
         let records = encode(cell, graph, input, rules, (&u.lines, &[]), &u.cands, &plan, false).words;
-        let (faces, wedges) = s.cell_under(cell);
         Under { faces, records, wedges }
     });
     // The far block and the far level hold no water: their lines are the way lines.
