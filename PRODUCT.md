@@ -22,10 +22,11 @@ The core principles decide when two of the others disagree.
 
 ### Core
 
-1. **Simplicity through gradual revelation.** Complexity appears when the rider asks for it, never on the main path. What a rider needs early is never hidden.
-2. **Fluid: the rider floats through it.** Screens, components and features link to each other in a way that the rider can see, so that a move between them feels natural. A transition shows where a thing came from. A thing that two screens share keeps its look and its place. The rider always knows where they are and how to go back.
-3. **Every element earns its place.** Remove before you add. The interface steps back for the content. Text is a last resort: show, do not explain.
-4. **One obvious primary action per screen.** The eye lands on one thing to do. Secondary actions look secondary.
+1. **Obvious at first use, fast at the hundredth.** An interaction does what the rider expects, so a new rider finds their way with no manual. The same interaction lets an experienced rider make an edit quickly.
+2. **Simplicity through gradual revelation.** Complexity appears when the rider asks for it, never on the main path. What a rider needs early is never hidden.
+3. **Fluid: the rider floats through it.** Screens, components and features link to each other in a way that the rider can see, so that a move between them feels natural. A transition shows where a thing came from. A thing that two screens share keeps its look and its place. The rider always knows where they are and how to go back.
+4. **Every element earns its place.** Remove before you add. The interface steps back for the content. Text is a last resort: show, do not explain.
+5. **One obvious primary action per screen.** The eye lands on one thing to do. Secondary actions look secondary.
 
 ### The others
 
