@@ -1538,7 +1538,7 @@ fn candidates<'a>(
     }
     // The cover over the bores, the lids (the stretches on top of a bore or of a way that enters one) and the lines
     // with such a stretch.
-    let Lid { cover: cover_cands, entering: lids, tops, of_lower: lid_of } = if level == 0 && any_bore(graph) {
+    let Lid { cover: cover_cands, entering: lids, of_lower: lid_of } = if level == 0 && any_bore(graph) {
         bore_cover(&ctx, input, &lines, reach(rules::ways_m(plan, &rules.sections)), bx)
     } else {
         Lid::default()
@@ -1626,13 +1626,11 @@ fn candidates<'a>(
             fill: None,
             discs: Vec::new(),
         });
-        // A deck's band layers are its own: the slab's edge band names its way.
-        let mut own = (!line.cuts.is_empty() || decks.is_some()).then(|| own_layers.entry(li).or_default());
-        // On its stretches next to a lid a way's paved layers name their way too, and win where they overlap the band
-        // layers: on top of a lower way their heights are that way's, not those of the way under it, and under a way
-        // on top (a way that enters a bore) they lose the lid's place.
-        let named = if BORES && own.is_none() { lid_runs(line, li, (first, last), &tops, &lids) } else { Vec::new() };
-        let mut named_layers: [Vec<Vec<P>>; LAYERS] = Default::default();
+        // A deck's band layers are its own: the slab's edge band names its way. So are the paved layers of a way with
+        // a stretch on top of a lower way: their heights are that way's, not those of the way under it, and over a
+        // floor they keep their place as a lid (`Sliced::joint`).
+        let top = BORES && lid_of.iter().any(|x| x.1 == li);
+        let mut own = (!line.cuts.is_empty() || decks.is_some() || top).then(|| own_layers.entry(li).or_default());
         // At a deck end the slope takes the round end of a free end, so its bank runs round the end: the
         // paved layers end square on the end line.
         let deck = [line.deck[0] && first == 0, line.deck[1] && last == line.p.len()];
@@ -1649,17 +1647,6 @@ fn candidates<'a>(
             };
             let ends = if k == SLOPE { [ends[0] || deck[0], ends[1] || deck[1]] } else { ends };
             pieces_along(p, &d, &line.dirs(first, last), cuts, ends, false, layer);
-            for &(lo, hi) in named.iter().filter(|_| BAND_LABELS[k].2 == HeightRule::Owner) {
-                let (d, ends) = (&d[lo - first..hi - first], [ends[0] && lo == first, ends[1] && hi == last]);
-                let cuts = [&cut(lo, k + 1)[..], &cut(hi - 1, k + 1)[..]];
-                pieces_along(&line.p[lo..hi], d, &line.dirs(lo, hi), cuts, ends, false, &mut named_layers[k]);
-            }
-        }
-        if !named.is_empty() {
-            let own = own_layers.entry(li).or_default();
-            for (k, layer) in named_layers.into_iter().enumerate() {
-                own[k].extend(layer);
-            }
         }
     }
     stats.ways = lines.len() as u32;
@@ -1887,42 +1874,6 @@ fn candidates<'a>(
     Candidates { lines, ways, cands, seams, win, cover, corners, mouths, ends, marks, wedges, lid_of, stats }
 }
 
-/// The runs of samples `lo..hi` within `first..last` of a line's stretches next to a lid: its segments on top of a
-/// lower way (`Lid::tops`), and, for a way that enters a bore, its segments whose stroke meets the box of its lids.
-fn lid_runs(
-    line: &WayLine,
-    li: usize,
-    (first, last): (usize, usize),
-    tops: &[Vec<bool>],
-    lids: &[(u32, Rings)],
-) -> Vec<(usize, usize)> {
-    let top = tops.get(li).filter(|t| !t.is_empty());
-    let lid = lids.iter().find(|x| x.0 == line.way).map(|x| {
-        x.1.iter().flatten().fold([i32::MAX, i32::MAX, i32::MIN, i32::MIN], |b, p| {
-            [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])]
-        })
-    });
-    let next = |i: usize| {
-        let r = libm::ceil(line.bands[i][SLOPE].max(line.bands[i + 1][SLOPE])) as i32;
-        let (a, c) = (line.p[i], line.p[i + 1]);
-        let meets = |b: [i32; 4]| {
-            a[0].min(c[0]) - r <= b[2]
-                && a[0].max(c[0]) + r >= b[0]
-                && a[1].min(c[1]) - r <= b[3]
-                && a[1].max(c[1]) + r >= b[1]
-        };
-        top.is_some_and(|t| t[i]) || lid.is_some_and(meets)
-    };
-    let mut out: Vec<(usize, usize)> = Vec::new();
-    for i in (first..last - 1).filter(|&i| next(i)) {
-        match out.last_mut() {
-            Some(r) if r.1 == i + 1 => r.1 = i + 2,
-            _ => out.push((i, i + 2)),
-        }
-    }
-    out
-}
-
 /// The samples of a line whose segments meet a box: the run `first..last`.
 fn run_in(line: &WayLine, bx: [i32; 4]) -> Option<(usize, usize)> {
     let meets = |i: &usize| geom::meets(bx, line.p[*i], line.p[i + 1]);
@@ -1939,8 +1890,6 @@ struct Lid {
     cover: Vec<Cand>,
     /// Per way that enters a bore, the strokes of the stretches on top of it.
     entering: Vec<(u32, Rings)>,
-    /// Per line of storey 0 and segment, whether it lies on top of a lower way (empty for a line with none).
-    tops: Vec<Vec<bool>>,
     /// Per lower way (a bore, or a way that enters one), the lines with a stretch on top of it and their strokes.
     of_lower: Vec<(u32, usize, Rings)>,
 }
@@ -2006,7 +1955,6 @@ fn bore_cover(ctx: &Ctx, input: &CellInput, ground: &[WayLine], ways_box: [i32; 
     // a stretch that meets no bore is not asked.
     // Per lower way, the core strokes of the stretches on top of it: its lids.
     let mut cores: Vec<Vec<Vec<P>>> = vec![Vec::new(); under.len()];
-    let mut tops: Vec<Vec<bool>> = vec![Vec::new(); ground.len()];
     // Per lower way and line with a stretch on top of it, the strokes of those stretches.
     let mut lid_of: Vec<(u32, usize, Rings)> = Vec::new();
     for (li, line) in ground.iter().enumerate() {
@@ -2058,13 +2006,6 @@ fn bore_cover(ctx: &Ctx, input: &CellInput, ground: &[WayLine], ways_box: [i32; 
         let ends = [line.round[0] && first == 0, line.round[1] && last == line.p.len()];
         for (u, cores) in under.iter().zip(&mut cores) {
             let top: Vec<bool> = (first..last - 1).map(|i| on_top(i, u)).collect();
-            if top.contains(&true) {
-                let t = &mut tops[li];
-                t.resize(line.p.len() - 1, false);
-                for (i, &x) in top.iter().enumerate() {
-                    t[first + i] |= x;
-                }
-            }
             let before = cores.len();
             let mut i = 0;
             while i < top.len() {
@@ -2110,7 +2051,7 @@ fn bore_cover(ctx: &Ctx, input: &CellInput, ground: &[WayLine], ways_box: [i32; 
         fill: None,
         discs: Vec::new(),
     }];
-    Lid { cover, entering: lids, tops, of_lower: lid_of }
+    Lid { cover, entering: lids, of_lower: lid_of }
 }
 
 /// Splits every candidate that gives the label of a way with legs (`legs`), or that is one of its own
