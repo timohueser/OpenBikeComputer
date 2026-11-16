@@ -534,7 +534,7 @@ site *args:
 
 # Builds the planner as `site` does, against the active planner release or VITE_PLANNER_CATALOG,
 # and runs a UX study of it (builder/web/tests/browser/ux-study/). The study calls the Anthropic
-# API with OBC_UX_API_KEY, which obc_init exports from obc.local.
+# API with OBC_UX_API_KEY, from the environment or from ~/.config/openbikecomputer/credentials.env.
 [doc("Run a UX study of the web planner. Args: [--task ID]")]
 [group('run')]
 ux *args:
@@ -542,6 +542,11 @@ ux *args:
     set -euo pipefail
     source "{{lib}}"; obc_init
     fe="$OBC_ROOT/builder/web"
+    credentials="$HOME/.config/openbikecomputer/credentials.env"
+    if [[ -z "${OBC_UX_API_KEY:-}" && -f "$credentials" ]]; then
+        OBC_UX_API_KEY="$(sed -nE 's/^OBC_UX_API_KEY=(.*)$/\1/p' "$credentials" | tail -n 1)"
+        export OBC_UX_API_KEY
+    fi
     [[ -n "${OBC_UX_API_KEY:-}" ]] || { _err "OBC_UX_API_KEY is not set"; exit 1; }
     [[ -d "$fe/node_modules" ]] || ( cd "$fe" && _run npm ci )
     # Small, and a stale install lacks the SDK of the study.

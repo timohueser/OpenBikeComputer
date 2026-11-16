@@ -5,7 +5,7 @@ export const maxCostUsd = 15;
 export const walkthroughsPerTask = 3;
 
 /** True when a route in the library starts within `radiusM` of `from` and ends within `radiusM` of `to`. */
-async function libraryHasRoute(page, from, to, radiusM = 500) {
+async function libraryHasRoute(page, from, to, radiusM = 1000) {
   const lines = await page.evaluate(() => new Promise((resolve, reject) => {
     const request = indexedDB.open('obc-library');
     request.onerror = () => reject(request.error);
@@ -31,6 +31,7 @@ function metres([lon1, lat1], [lon2, lat2]) {
 
 // Coordinates from the place search of the active planner release: the station on Bahnhofstrasse
 // (OSM node 5007055738) and the pass (OSM node 1456026791).
+// The search also lists a second "train station" result about 600 m from the station, so the radius is 1 km.
 const MEIRINGEN_STATION = [8.184271, 46.727359];
 const GRIMSEL_PASS = [8.337697, 46.561519];
 

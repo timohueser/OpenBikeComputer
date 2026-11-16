@@ -1,6 +1,6 @@
 // One walkthrough: shows the participant each screen, performs its action, and decides when the
 // walkthrough ends. It knows no platform; the environment does.
-import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const TRIES = 3;
