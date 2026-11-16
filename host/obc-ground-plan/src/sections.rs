@@ -851,6 +851,13 @@ impl Sections {
         &self.widths
     }
 
+    /// The most `underground_m` of the water rows: water deeper than this under the terrain is underground
+    /// whatever its row.
+    pub fn underground_max_m(&self) -> f64 {
+        let row = |name: &str| self.water("", &Tags::from([("waterway".to_string(), name.to_string())]));
+        self.waters.iter().map(|w| row(&w.name).underground_m).fold(0.0, f64::max)
+    }
+
     /// The cross-section of a waterway: the row of its `waterway` value, else `river` for the kind
     /// `river`, else `stream`.
     pub fn water(&self, kind: &str, tags: &Tags) -> WaterSection {
