@@ -40,7 +40,7 @@
     let routeShown = $state(true), look = $state<RouteLook>('day'), position = $state<number | null>(null);
     const nightPins = $derived(near.overlay.nights.map(night => ({ coordinate: night.coordinate, colour: night.color, badge: nightBadge(night) })));
     const drawRoute = () => {
-        engine?.showRoute(routeShown ? near.route : [], near.overlay.colours[look]);
+        engine?.showRoutes(routeShown ? [{ line: near.route, colours: near.overlay.colours[look] }] : []);
         engine?.showPins(routeShown && hasRoute ? nightPins : []);
         drawMarker();
     };

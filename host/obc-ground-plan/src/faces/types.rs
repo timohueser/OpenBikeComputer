@@ -38,8 +38,10 @@ pub enum Surface {
     Zone = 11,
     /// The band about a deck's paved stroke, the seat of its parapet or railing (`faces::deck`).
     DeckEdge = 12,
+    /// The ground over a bore behind its portal lines, over its floor bound (`faces::bore_cover`).
+    Cover = 13,
     /// A sidewalk's slab (`faces::walk`): its way's surface raised by the kerb's rise.
-    Sidewalk = 13,
+    Sidewalk = 14,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -70,6 +72,8 @@ pub enum EdgeKind {
 pub const SEAM: u8 = 1;
 pub const BLEND_JOIN: u8 = 2;
 pub const UNRELATED: u8 = 4;
+/// `FRONT_LEFT`: on a portal edge (`EdgeKind::Portal`), the way that ends on it lies on the left; the bore on the right.
+pub const FRONT_LEFT: u8 = 8;
 /// The face index past the window's edge.
 pub const OUTSIDE: u32 = u32::MAX;
 
@@ -95,6 +99,9 @@ pub struct Face {
     pub legs: [u8; 2],
     /// Vertex indices; ring 0 has a positive shoelace sum (x east, y south), each hole a negative one.
     pub rings: Vec<Vec<u32>>,
+    /// The id of the floor under the face (`faces::NO_UNDER`: none): faces of one label over two floors are two faces,
+    /// so storey 0's mesh holds each floor's outline (`mesh::points::input`).
+    pub under: u32,
 }
 
 /// One edge of the planar map: `left` is the face on the side where the shoelace sum of (a, b, point)

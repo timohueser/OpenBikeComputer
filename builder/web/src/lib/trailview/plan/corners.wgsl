@@ -49,7 +49,7 @@ const MAT_WATER: u32 = 50u;
 const S_SHOULDER: u32 = 3u;
 const S_WATER: u32 = 9u;
 const S_ZONE: u32 = 11u;
-const S_SIDEWALK: u32 = 13u;
+const S_SIDEWALK: u32 = 14u;
 // As MAT.SIDEWALK of roads/section.ts.
 const MAT_SIDEWALK: u32 = 3u;
 // The code of a ground-looking shoulder without a line, until its nearest way gives its class.

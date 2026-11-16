@@ -339,6 +339,7 @@ fn the_storeys_close_stand_on_their_sheets_meet_their_neighbours_and_leave_store
     let mut cache = TileCache::new(16);
     let mut faults = Vec::new();
     let mut built: BTreeMap<CellKey, (CellBuild, StoreyMesh)> = BTreeMap::new();
+    let mut terrain = BTreeMap::new();
     let (mut torn, mut seams, mut joints, mut beside, mut open_ends) = (0, Vec::new(), 0, 0, Vec::new());
     for key in fix.cells() {
         let without = build_request(fix.request(key), &mut cache, rules, &mut || 0.0).unwrap();
@@ -385,12 +386,13 @@ fn the_storeys_close_stand_on_their_sheets_meet_their_neighbours_and_leave_store
             Err(e) => faults.push(format!("{key:?}: storey 0's mesh: {e:?}")),
         }
         torn += mesh.stats.torn;
+        terrain.insert(key, fix.cell(key).terrain);
         built.insert(key, (with, mesh));
     }
     for (&key, (b, m)) in &built {
         for (east, other) in [(true, CellKey { x: key.x + 1, y: key.y }), (false, CellKey { x: key.x, y: key.y + 1 })] {
             if let Some((ob, om)) = built.get(&other) {
-                faults.extend(border((m, &b.records), (om, &ob.records), east));
+                faults.extend(border((m, &b.records, &terrain[&key]), (om, &ob.records, &terrain[&other]), east));
             }
         }
     }

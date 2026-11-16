@@ -31,6 +31,12 @@ pub fn sharp(rule: HeightRule) -> bool {
     !matches!(rule, HeightRule::Terrain | HeightRule::Slope)
 }
 
+/// A face that the mesh draws with corners of its own: a sharp rule, or the cover over a bore, whose step on a portal
+/// line and at its sides is a slot.
+pub fn sharp_face(f: &crate::faces::Face) -> bool {
+    sharp(f.rule) || (crate::graph::BORES && f.surface == Surface::Cover)
+}
+
 /// The longest piece of a face edge (m). The grid samples a face's inside; an edge has no grid
 /// points, so it splits into equal pieces no longer than this:
 /// - paved faces, rail beds and platforms: 4 m, the chord of a vertical radius of 200 m stays under

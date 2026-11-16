@@ -4,7 +4,7 @@ use crate::{
     Graph,
 };
 use planner_router::{
-    model::{Point, Profile, Road, Surface, BIKE, FOOT, PUSH},
+    model::{Profile, Road, Surface, BIKE, FOOT, PUSH},
     package::{digest, Package},
 };
 use std::sync::Arc;
@@ -174,12 +174,24 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
         .map(|k| [vertices[k][0] as i32, vertices[k][1] as i32])
         .collect();
     let mut router = Router::new(Selection::whole(package.fork()), 768 << 20);
-    let routed = router.route(&shape::request("hiking/alpine", &plan, vec![]), &control()).unwrap().totals();
+    let routed = router.route(&shape::request("hiking/alpine", &plan, vec![]), &control()).unwrap();
+    let profile = trail["profile_m"].as_array().unwrap();
+    let height = |p: &Point| json!(p.elevation.round() as i32);
+    assert_eq!(
+        [&profile[0], &profile[profile.len() - 1]],
+        [&height(&routed.points[0]), &height(routed.points.last().unwrap())]
+    );
+    let routed = routed.totals();
     assert!(routed.ascent_m > 0);
     assert_eq!(
         [&trail["length_m"], &trail["ascent_m"], &trail["descent_m"]],
         [&json!(routed.distance_m), &json!(routed.ascent_m), &json!(routed.descent_m)]
     );
+
+    for id in [1, 2, 8, 9] {
+        let length = by_id[&id]["length_m"].as_u64().unwrap() as usize;
+        assert_eq!(by_id[&id]["profile_m"].as_array().unwrap().len(), length / 100 + 2);
+    }
 
     let ring = by_id[&2];
     assert_eq!((&ring["loop"], &ring["length_m"]), (&json!(true), &json!(8 * 445)));
@@ -198,9 +210,34 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
     let whole = by_id[&5];
     assert_eq!((&whole["stages"], &whole["length_m"]), (&json!([1, 2]), &json!(16 * 445)));
     assert_eq!(whole["start_udeg"], json!([ORIGIN, ORIGIN]));
-    assert!(whole.get("line_udeg").is_none());
+    assert!(whole.get("line_udeg").is_none() && whole.get("profile_m").is_none());
     // The trail ends where the ring starts, so that point counts once.
     let points = via + 2 + ring["via"].as_array().unwrap().len() + 2 - 1;
     assert_eq!(report.long_points, [(5, points)]);
     Ok(())
+}
+
+#[test]
+fn profile_gives_the_height_at_each_100_m_and_at_the_end() {
+    // Points at the given metres along a meridian, with their heights.
+    let line = |points: &[(f64, Option<f32>)]| -> Vec<Point> {
+        let at = |(m, h): &(f64, Option<f32>)| Point {
+            lat: (m / planner_router::geometry::METRES_PER_UDEG).round() as i32,
+            lon: 0,
+            elevation: h.unwrap_or(NO_ELEVATION),
+        };
+        points.iter().map(at).collect()
+    };
+    let entries = Some(vec![Some(100), Some(200), Some(300), Some(350)]);
+    assert_eq!(profile(&line(&[(0.0, Some(100.0)), (250.0, Some(350.0))]), 250.0), entries);
+    let short = line(&[(0.0, Some(100.0)), (240.0, Some(350.0))]);
+    assert_eq!(profile(&short, 250.0), entries, "the walked distance is scaled to the length");
+    assert_eq!(profile(&line(&[(0.0, Some(0.0)), (300.0, Some(300.0))]), 300.0).unwrap().len(), 5);
+
+    let gap = line(&[(0.0, Some(0.0)), (150.0, Some(15.0)), (250.0, None), (400.0, Some(40.0))]);
+    assert_eq!(profile(&gap, 400.0), Some(vec![Some(0), Some(10), None, None, Some(40), Some(40)]));
+    // The ends fall on the end points, so they keep their known heights beside an unknown point.
+    let ends = line(&[(0.0, Some(5.0)), (100.0, None), (250.0, Some(20.0))]);
+    assert_eq!(profile(&ends, 250.0), Some(vec![Some(5), None, None, Some(20)]));
+    assert_eq!(profile(&line(&[(0.0, None), (400.0, None)]), 400.0), None);
 }

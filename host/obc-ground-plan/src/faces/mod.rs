@@ -25,7 +25,9 @@ mod walk;
 
 use std::collections::BTreeMap;
 
-pub use deck::{DeckWay, Storeys};
+use i_overlay::core::overlay_rule::OverlayRule;
+
+pub use deck::{DeckWay, Portal, Storeys};
 pub use rules::{input_m, Mouth, Pair, PlanRules, Rank, Rules};
 pub use types::*;
 
@@ -55,8 +57,19 @@ pub(crate) struct WayLine<'a> {
     /// Per sample, the sides of the segment from it on with a sidewalk: 1 left, 2 right.
     pub walk: Vec<u8>,
     pub round: [bool; 2],
-    /// Whether each end is a deck end: a ground way's end at a joint or junction with a deck arm.
+    /// Whether each end is a deck end: a ground way's end at a joint or junction with a deck arm, or with the bores a
+    /// bore arm (a portal, `portal`).
     pub deck: [bool; 2],
+    pub portal: [bool; 2],
+    /// At a portal (a joint of a ground way and a bore), the direction of the end segment, the same line for both
+    /// ways: their two end tangents meaned (`portal_dirs`), so the two strokes end square on one end line.
+    pub end_dir: [Option<[f64; 2]>; 2],
+    /// At a portal, the offsets that every stroke which ends on the portal line passes (the layers of the ground way
+    /// that ends there, and the bore's wall): the two ways and the cover share the line's vertices.
+    pub end_cuts: [Option<Vec<f64>>; 2],
+    /// The bores (ways) that this ground way enters: at its own portal end, or through the ways that go on from it at
+    /// joints, within `open_max_m` along them (`entering`).
+    pub leads: Vec<u32>,
     /// The box of its carriageway: its samples' box grown by its widest half-width.
     pub bbox: [i32; 4],
     /// The boxes of the carriageway of each `CHUNK` segments in order.
@@ -102,6 +115,23 @@ impl WayLine<'_> {
     /// The offsets of the layers at sample i, inner to outer: carriageway, then `LAYERS`.
     pub fn offsets(&self, i: usize) -> [f64; LAYERS + 1] {
         std::array::from_fn(|k| if k == 0 { self.h[i] } else { self.bands[i][k - 1] })
+    }
+
+    /// The directions of the segments of the run of samples `first..last` (`stroke::pieces_along`): a portal's end
+    /// segment takes the portal's direction, every other its chord's.
+    pub fn dirs(&self, first: usize, last: usize) -> Vec<Option<[f64; 2]>> {
+        // No portal end: every segment its chord's (`stroke::pieces_along` reads none as that).
+        if !BORES || self.end_dir == [None, None] {
+            return Vec::new();
+        }
+        let mut d = vec![None; (last - first).saturating_sub(1)];
+        if let (Some(e), 0, true) = (self.end_dir[0], first, !d.is_empty()) {
+            d[0] = Some(e);
+        }
+        if let (Some(e), Some(x)) = (self.end_dir[1], d.last_mut().filter(|_| last == self.p.len())) {
+            *x = Some(e);
+        }
+        d
     }
 
     /// The half-width of the core (carriageway, shoulder and verge) at each sample.
@@ -202,13 +232,15 @@ impl Ctx<'_> {
 /// Whether the storeys over the ground are built (the feature `storeys`): a build without them links none of their
 /// code.
 const STOREYS: bool = cfg!(feature = "storeys");
+/// Whether the storey under the ground is built (the feature `bores`).
+const BORES: bool = crate::graph::BORES;
 
 /// A way of storey 0. Water lies on the ground or in a tunnel, never on a deck.
 fn in_level(graph: &WayGraph, way: u32) -> bool {
     graph.ways[way as usize].level == Level::Ground
 }
 
-/// The ways of a level's lines: storey 0's (`in_level`), or those of a storey over the ground (`deck::Decks`).
+/// The ways of a level's lines: storey 0's (`in_level`), or those of another storey (`deck::Decks`).
 fn keep<'a>(graph: &'a WayGraph, decks: Option<&'a deck::Decks>, level: i8) -> impl Fn(u32) -> bool + 'a {
     move |w| match decks {
         Some(d) => d.storey[w as usize] == level,
@@ -222,7 +254,95 @@ fn on_deck(graph: &WayGraph, way: u32) -> bool {
     w.family != Family::Water && w.level == Level::Deck
 }
 
-fn station_key(way: u32, dir: i8, st: &Station) -> (u32, i8, u32, u64) {
+/// A bore way (with the bores): a BORE stretch of a tunnel way that is not water, in the graph of the storeys. Its
+/// floor bound is a ceiling line with the sign turned.
+#[inline]
+pub(crate) fn in_bore(graph: &WayGraph, way: u32) -> bool {
+    let w = &graph.ways[way as usize];
+    BORES && graph.levelled && w.family != Family::Water && w.level == Level::Tunnel
+}
+
+/// Whether the graph has a bore: a cell with none builds as a build with no bores does.
+pub(crate) fn any_bore(graph: &WayGraph) -> bool {
+    BORES && (0..graph.ways.len() as u32).any(|w| in_bore(graph, w))
+}
+
+/// An arm on a structure: a deck, or a bore.
+#[inline]
+fn raised(graph: &WayGraph, a: &crate::graph::Arm) -> bool {
+    a.level == Level::Deck || in_bore(graph, a.way)
+}
+
+/// Each arm of a portal (a joint of a ground way and a bore way) by its key, with the end direction of both and the
+/// other arm: the mean of the two ways' tangents at their end samples, both turned into the bore. Both storeys read it
+/// from the same samples.
+fn portal_dirs(g: &WayGraph) -> Vec<(ArmKey, [f64; 2], crate::graph::Arm)> {
+    let mut out = Vec::new();
+    for j in g.joints.iter().filter(|_| BORES) {
+        let [a, b] = &j.arms;
+        let (ground, bore) = match (in_bore(g, a.way), in_bore(g, b.way)) {
+            (false, true) => (a, b),
+            (true, false) => (b, a),
+            _ => continue,
+        };
+        if g.ways[ground.way as usize].level != Level::Ground || g.ways[ground.way as usize].family == Family::Water {
+            continue;
+        }
+        // An arm's tangent away from the node: its end sample's, along its part times its direction.
+        let away = |arm: &crate::graph::Arm| {
+            let r = &g.ways[arm.way as usize].samples;
+            let t = g.samples[if arm.dir > 0 { r.start } else { r.end - 1 } as usize].tangent;
+            [f64::from(arm.dir) * t[0], f64::from(arm.dir) * t[1]]
+        };
+        let (tg, tb) = (away(ground), away(bore));
+        let m = [tb[0] - tg[0], tb[1] - tg[1]];
+        let len = libm::hypot(m[0], m[1]);
+        if len > 1e-9 {
+            for arm in [a, b] {
+                let other = if std::ptr::eq(arm, a) { b } else { a };
+                out.push((station_key(arm.way, arm.dir, &arm.at), [m[0] / len, m[1] / len], other.clone()));
+            }
+        }
+    }
+    out
+}
+
+/// The ground ways that enter each bore, as (ground way, bore way): the way that ends on the portal line and the ways
+/// that go on from it at joints of two ground ways, as far as `reach_m` along them.
+fn entering(g: &WayGraph, dirs: &[(ArmKey, [f64; 2], crate::graph::Arm)], reach_m: f64) -> Vec<(u32, u32)> {
+    let mut out = Vec::new();
+    for (key, _, other) in dirs.iter().filter(|x| !in_bore(g, x.0 .0) && in_bore(g, x.2.way)) {
+        // The way and the direction of its arm at the end where the walk came in. Each way is taken once, so the walk
+        // ends.
+        let (mut way, mut dir, mut left) = (key.0, key.1, reach_m);
+        loop {
+            if out.contains(&(way, other.way)) {
+                break;
+            }
+            out.push((way, other.way));
+            let r = &g.ways[way as usize].samples;
+            left -= (g.samples[r.end as usize - 1].along_m - g.samples[r.start as usize].along_m).abs();
+            if left <= 0.0 {
+                break;
+            }
+            // The joint at its other end, with a ground way that is no water.
+            let next = g.joints.iter().find_map(|j| {
+                let k = j.arms.iter().position(|a| a.way == way && a.dir == -dir)?;
+                let o = &j.arms[1 - k];
+                let w = &g.ways[o.way as usize];
+                (w.level == Level::Ground && w.family != Family::Water).then_some((o.way, o.dir))
+            });
+            let Some((w, d)) = next else { break };
+            (way, dir) = (w, d);
+        }
+    }
+    out
+}
+
+/// An arm's key: its way, its direction and its station.
+type ArmKey = (u32, i8, u32, u64);
+
+fn station_key(way: u32, dir: i8, st: &Station) -> ArmKey {
     (way, dir, st.span, st.u.to_bits())
 }
 
@@ -234,6 +354,18 @@ fn lines<'a>(
     keep: &dyn Fn(u32) -> bool,
     bx: [i32; 4],
 ) -> (Vec<WayLine<'a>>, BTreeMap<u32, usize>) {
+    lines_with(ctx, input, keep, bx, None)
+}
+
+/// `lines`, with storey 0's lines of the same box (`ground`) where the caller has them: a bore's portal end reads the
+/// ground way that ends there.
+fn lines_with<'a>(
+    ctx: &Ctx<'a>,
+    input: &CellInput,
+    keep: &dyn Fn(u32) -> bool,
+    bx: [i32; 4],
+    ground: Option<&[WayLine]>,
+) -> (Vec<WayLine<'a>>, BTreeMap<u32, usize>) {
     let g = ctx.graph;
     // The round ends: free ends. A way ends square at a junction or a joint, whose face fills the
     // gaps between its arms; and at a level change.
@@ -241,13 +373,20 @@ fn lines<'a>(
     for e in &g.ends {
         ends.insert(station_key(e.arm.way, e.arm.dir, &e.arm.at), true);
     }
-    // The deck ends: the ground arms of a joint or junction with a deck arm.
+    // The deck ends: the ground arms of a joint or junction with an arm on a structure; a portal where it is a bore.
     let mut decks = std::collections::BTreeSet::new();
+    let mut portals = std::collections::BTreeSet::new();
     for arms in g.junctions.iter().map(|j| &j.arms[..]).chain(g.joints.iter().map(|j| &j.arms[..])) {
-        if arms.iter().any(|a| a.level == Level::Deck) {
-            decks.extend(arms.iter().filter(|a| a.level == Level::Ground).map(|a| station_key(a.way, a.dir, &a.at)));
+        if arms.iter().any(|a| raised(g, a)) {
+            let ground = arms.iter().filter(|a| a.level == Level::Ground).map(|a| station_key(a.way, a.dir, &a.at));
+            if arms.iter().any(|a| in_bore(g, a.way)) {
+                portals.extend(ground.clone());
+            }
+            decks.extend(ground);
         }
     }
+    let dirs = if BORES { portal_dirs(g) } else { Vec::new() };
+    let lead = if BORES { entering(g, &dirs, ctx.rules.structures.open_max_m) } else { Vec::new() };
     let mut out = Vec::new();
     let mut of_way = BTreeMap::new();
     let (ways, water): (Vec<_>, Vec<_>) = g.ways.iter().partition(|w| w.family != Family::Water);
@@ -265,6 +404,21 @@ fn lines<'a>(
         let sh = sec.shoulder_m;
         // The bank band ends at the bank top: where the bank's cut reaches its rise on level ground.
         let bank = heights::cone_reach(sec.cut, sec.rise_m, &ctx.rules.plan.heights);
+        let ends_at = [station_key(way.id, 1, &way.from), station_key(way.id, -1, &way.to)];
+        // A portal's end segment takes the portal's direction, turned along the line.
+        let end_dir = |k: usize| {
+            if !BORES {
+                return None;
+            }
+            let d = dirs.iter().find(|x| x.0 == ends_at[k])?.1;
+            let (a, b) = if k == 0 {
+                (samples[0].pos, samples[1].pos)
+            } else {
+                (samples[samples.len() - 2].pos, samples[samples.len() - 1].pos)
+            };
+            let along = f64::from(b[0] - a[0]) * d[0] + f64::from(b[1] - a[1]) * d[1];
+            Some(if along < 0.0 { [-d[0], -d[1]] } else { d })
+        };
         let mut line = WayLine {
             way: way.id,
             rail: way.family == Family::Rail,
@@ -277,10 +431,11 @@ fn lines<'a>(
                 ends.get(&station_key(way.id, 1, &way.from)).copied().unwrap_or(false),
                 ends.get(&station_key(way.id, -1, &way.to)).copied().unwrap_or(false),
             ],
-            deck: [
-                decks.contains(&station_key(way.id, 1, &way.from)),
-                decks.contains(&station_key(way.id, -1, &way.to)),
-            ],
+            deck: ends_at.map(|k| decks.contains(&k)),
+            portal: ends_at.map(|k| BORES && portals.contains(&k)),
+            end_dir: [end_dir(0), end_dir(1)],
+            end_cuts: [None, None],
+            leads: if BORES { lead.iter().filter(|x| x.0 == way.id).map(|x| x.1).collect() } else { Vec::new() },
             bbox: [i32::MAX, i32::MAX, i32::MIN, i32::MIN],
             chunks: Vec::new(),
             index: (0..samples.len()).collect(),
@@ -315,6 +470,45 @@ fn lines<'a>(
         out.push(line);
     }
     taper(ctx, &mut out, &of_way);
+    // A bore's end on a portal takes the offsets of the ground way that ends there as storey 0 builds that way (its
+    // own tapers included): one computation, so both strokes end on the same corners.
+    if BORES && out.iter().any(|l| l.end_dir.iter().any(Option::is_some) && in_bore(g, l.way)) {
+        let built;
+        let ground = match ground {
+            Some(lines) => lines,
+            None => {
+                built = lines(ctx, input, &|w| in_level(g, w), bx).0;
+                &built[..]
+            }
+        };
+        for line in out.iter_mut().filter(|l| in_bore(g, l.way)) {
+            let way = &g.ways[line.way as usize];
+            for (k, key) in [station_key(way.id, 1, &way.from), station_key(way.id, -1, &way.to)].iter().enumerate() {
+                let Some((_, _, other)) = dirs.iter().find(|x| x.0 == *key) else { continue };
+                let Some(gl) = ground.iter().position(|l| l.way == other.way) else { continue };
+                let gi = if other.dir > 0 { 0 } else { ground[gl].p.len() - 1 };
+                let o = ground[gl].offsets(gi);
+                let at = if k == 0 { 0 } else { line.p.len() - 1 };
+                line.p[at] = ground[gl].p[gi];
+                line.h[at] = o[0];
+                line.bands[at] = std::array::from_fn(|m| o[m + 1]);
+                line.end_cuts[k] = ground[gl].end_cuts[usize::from(gi != 0)].clone();
+            }
+        }
+    }
+    // A ground way's portal end passes its own layers' corners and the bore's wall corner.
+    for line in out.iter_mut().filter(|l| BORES && !in_bore(g, l.way)) {
+        for k in 0..2 {
+            if line.end_dir[k].is_some() {
+                let at = if k == 0 { 0 } else { line.p.len() - 1 };
+                let mut cuts = line.offsets(at).to_vec();
+                cuts.push(line.bands[at][VERGE] + ctx.units(deck::WALL_M, line.p[at]));
+                cuts.sort_by(f64::total_cmp);
+                cuts.dedup();
+                line.end_cuts[k] = Some(cuts);
+            }
+        }
+    }
     for line in &mut out {
         line.cuts = line.cuts.iter().map(|&k| line.index[k]).collect();
         line.spans = line.spans.iter().map(|&(a, b)| (line.index[a], line.index[b])).collect();
@@ -841,7 +1035,8 @@ pub(crate) fn record_lines<'a>(
 
 /// The ceiling lines of a cell's records: its deck ways whose ceiling reaches a bin of the cell (at most
 /// `records::ceiling_end_reach` from the centre line), each one leg, with the half-width of the deck's stroke: its
-/// paved layers' and `edge_band_m`.
+/// paved layers' and `edge_band_m`. With the bores also its bore ways, whose floor bound holds the ground over the
+/// bore's stroke: its core, its wall and the cover's margin.
 pub(crate) fn ceiling_lines<'a>(
     graph: &'a WayGraph,
     input: &CellInput,
@@ -849,19 +1044,24 @@ pub(crate) fn ceiling_lines<'a>(
     cell: CellKey,
 ) -> Vec<WayLine<'a>> {
     let ctx = Ctx { graph, rules, origin: cell.origin() };
-    let half = HALF_MAX_M + rules.structures.edge_band_m;
+    let (deck_m, bore_m) = (rules.structures.edge_band_m, deck::WALL_M + deck::COVER_SIDE_M);
+    // A cell whose graph has no bore reads its decks as a build with no bores does.
+    let half = HALF_MAX_M + if BORES && any_bore(graph) { deck_m.max(bore_m) } else { deck_m };
     let m = records::ceiling_end_reach(half, rules.plan.heights.ceiling_release_m) + records::HEIGHT_PAD_M;
-    deck_lines(&ctx, input, &|w| on_deck(graph, w), grown(cell, m, true))
+    deck_lines(&ctx, input, &|w| on_deck(graph, w) || in_bore(graph, w), grown(cell, m, true))
 }
 
-/// The lines of the ways that `keep` takes in a box, each one leg, with the half-width of the deck's stroke.
+/// The lines of the ways that `keep` takes in a box, each one leg, with the half-width of the deck's stroke (a bore's:
+/// its core, its wall and the cover's margin).
 fn deck_lines<'a>(ctx: &Ctx<'a>, input: &CellInput, keep: &dyn Fn(u32) -> bool, bx: [i32; 4]) -> Vec<WayLine<'a>> {
+    let (deck_m, bore_m) = (ctx.rules.structures.edge_band_m, deck::WALL_M + deck::COVER_SIDE_M);
     let mut out = lines(ctx, input, keep, bx).0;
     for line in &mut out {
         line.cuts.clear();
         line.spans.clear();
+        let band = if in_bore(ctx.graph, line.way) { bore_m } else { deck_m };
         for i in 0..line.p.len() {
-            line.h[i] = line.bands[i][VERGE] + ctx.units(ctx.rules.structures.edge_band_m, line.p[i]);
+            line.h[i] = line.bands[i][VERGE] + ctx.units(band, line.p[i]);
         }
     }
     out
@@ -876,15 +1076,24 @@ pub(crate) fn level_lines<'a>(
     level: i8,
 ) -> Vec<WayLine<'a>> {
     let ctx = Ctx { graph, rules, origin: cell.origin() };
-    let decks = (STOREYS && level > 0).then(|| deck::Decks::of(graph, input));
+    let decks = (STOREYS && level != 0).then(|| deck::Decks::of(graph, input));
     let mut out =
         lines(&ctx, input, &keep(graph, decks.as_ref(), level), window(cell, input_m(&rules.plan, &rules.sections))).0;
     if STOREYS && decks.is_some() {
-        for line in &mut out {
-            deck::deck_bands(line, &|p| ctx.units(rules.structures.edge_band_m, p));
-        }
+        storey_bands(&ctx, &mut out, level);
     }
     out
+}
+
+/// The layers of a storey's lines: a deck's stroke over the ground, a bore's floor under it.
+fn storey_bands(ctx: &Ctx, lines: &mut [WayLine], level: i8) {
+    for line in lines {
+        if BORES && level < 0 {
+            deck::bore_bands(line);
+        } else {
+            deck::deck_bands(line, &|p| ctx.units(ctx.rules.structures.edge_band_m, p));
+        }
+    }
 }
 
 /// The candidates of a cell and level, the one source of its shapes: the overlay slices and labels
@@ -899,9 +1108,19 @@ struct Candidates<'a> {
     cover: Cover,
     corners: Vec<CornerArc>,
     mouths: Vec<CulvertMouth>,
-    /// The end lines on which storey 0 and a deck meet: the end point, the unit direction into the line and the
-    /// half-width of its stroke there (units). A face edge on one is a `DeckEdge`.
-    ends: Vec<[f64; 5]>,
+    /// The end lines on which storey 0 and a deck or a bore meet: the edge kind of a face edge on one (`DeckEdge`,
+    /// `Portal`), the end point, the unit direction into the line and the half-width of its stroke there (units).
+    ends: Vec<(EdgeKind, [f64; 5])>,
+    /// With the bores, the two marks of each portal, by the bore's way: on storey 0 the core strokes of the ground ways
+    /// that enter it (`WayLine::leads`), on the storey under it the bore's own stroke. A floor's edge between the two
+    /// is an opening.
+    marks: Vec<(u32, Rings)>,
+    /// With the bores, on storey 0, the floors in front of a portal line: the bores of a way that enters them, that
+    /// way's carriageway label, and the part of its core stroke under a way on top of it.
+    wedges: Vec<(Vec<u32>, Label, Rings)>,
+    /// With the bores, on storey 0, per lower way (a bore, or a way that enters one) the lines with a stretch on top of
+    /// it and the strokes of those stretches.
+    lid_of: Vec<(u32, usize, Rings)>,
     /// The sidewalks' width rules per line side (`walk`).
     walk_ends: walk::Ends,
     stats: FaceStats,
@@ -910,7 +1129,8 @@ struct Candidates<'a> {
 /// The face plan of one cell and level. `slopes = false` leaves out storey 0's slope layer; a storey over the
 /// ground holds its decks' edge band there.
 pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, level: i8, slopes: bool) -> FacePlan {
-    let c = candidates(graph, input, rules, cell, level, if slopes || level > 0 { LAYERS } else { SLOPE }, false);
+    let c =
+        candidates(graph, input, rules, cell, level, if slopes || level != 0 { LAYERS } else { SLOPE }, false, None);
     Sliced::new(&c).cell(&c, cell, level)
 }
 
@@ -922,7 +1142,29 @@ const GROW: i32 = slice::TILE as i32;
 struct Sliced {
     patches: Vec<Vec<Vec<P>>>,
     labels: Vec<Label>,
+    /// With the bores (`joint`), per patch: the label of the storey under the ground (terrain where no bore lies under
+    /// it), and its floor's id (one per label of the storey under the ground or of a floor in front of a portal line,
+    /// `NO_UNDER` for none).
+    under: Vec<Label>,
+    under_id: Vec<u32>,
+    /// Per patch, the label of the floor in front of a portal line that holds it, else terrain.
+    wedge: Vec<Label>,
+    /// Per patch, the bores (ways) whose entering ways' strokes hold it, and those whose own stroke or floor in front of
+    /// a portal line holds it.
+    front: Vec<Vec<u32>>,
+    back: Vec<Vec<u32>>,
     stats: FaceStats,
+}
+
+/// No bore under a patch or a face.
+pub const NO_UNDER: u32 = u32::MAX;
+
+/// Per patch of a map: its floor's id and the bores of the strokes that hold it (`Sliced::joint`).
+#[derive(Clone, Copy)]
+struct Floors<'a> {
+    under: &'a [u32],
+    front: &'a [Vec<u32>],
+    back: &'a [Vec<u32>],
 }
 
 impl Sliced {
@@ -932,35 +1174,158 @@ impl Sliced {
         let (patches, segments) = slice(c.win, &strings, &c.seams);
         stats.slice_segments = segments as u32;
         let labels = patches.iter().map(|patch| label(&c.cands, &c.cover, &c.lines, patch, false)).collect();
-        Sliced { patches, labels, stats }
+        let (under, wedge) = (Vec::new(), Vec::new());
+        Sliced { patches, labels, under, under_id: Vec::new(), wedge, front: Vec::new(), back: Vec::new(), stats }
+    }
+
+    /// The one map: one slice of storey 0's candidates and those of the storey under it (`u`), each patch with a label
+    /// of each. Over a floor, storey 0 is the cover or a paved layer of a way on top of that floor's way; every other
+    /// face yields. No cover lies on an entering way's stroke where no floor lies under it.
+    fn joint(c: &Candidates, u: &Candidates) -> Sliced {
+        let mut stats = c.stats.clone();
+        let strings: Vec<Vec<P>> = (c.cands.iter().chain(&u.cands).flat_map(|c| c.rings.iter().cloned()))
+            .chain(c.marks.iter().chain(&u.marks).flat_map(|m| m.1.iter().cloned()))
+            .chain(c.wedges.iter().flat_map(|w| w.2.iter().cloned()))
+            .collect();
+        let seams: Vec<[P; 2]> = c.seams.iter().chain(&u.seams).copied().collect();
+        let (patches, segments) = slice(c.win, &strings, &seams);
+        stats.slice_segments = segments as u32;
+        let n = patches.len();
+        let (mut labels, mut under, mut inner) = (Vec::with_capacity(n), Vec::with_capacity(n), Vec::with_capacity(n));
+        for patch in &patches {
+            labels.push(label(&c.cands, &c.cover, &c.lines, patch, false));
+            under.push(label(&u.cands, &u.cover, &u.lines, patch, false));
+            inner.push(inner_point(patch));
+        }
+        // The box of some rings, doubled as an inner point is.
+        let boxed = |rings: &Rings| {
+            rings.iter().flatten().fold([i64::MAX, i64::MAX, i64::MIN, i64::MIN], |b, p| {
+                let (x, y) = (2 * i64::from(p[0]), 2 * i64::from(p[1]));
+                [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)]
+            })
+        };
+        let holds = |rings: &Rings, b: &[i64; 4], q: [i64; 2]| {
+            q[0] >= b[0] && q[0] <= b[2] && q[1] >= b[1] && q[1] <= b[3] && geom::winding(rings, q) != 0
+        };
+        // Per patch, the bores of the marks that hold its inner point (storey 0's: front; the storey under it's: back),
+        // and the floor in front of a portal line that holds a patch where no bore's floor lies under it.
+        let marks: Vec<&(u32, Rings)> = c.marks.iter().chain(&u.marks).collect();
+        let mark_boxes: Vec<[i64; 4]> = marks.iter().map(|m| boxed(&m.1)).collect();
+        let wedge_boxes: Vec<[i64; 4]> = c.wedges.iter().map(|w| boxed(&w.2)).collect();
+        let (mut front, mut back) = (vec![Vec::new(); n], vec![Vec::new(); n]);
+        let (mut wedge, mut under_id, mut ids) = (vec![TERRAIN; n], vec![NO_UNDER; n], Vec::new());
+        for k in 0..n {
+            if let Some(q) = inner[k] {
+                for (i, m) in marks.iter().enumerate() {
+                    if holds(&m.1, &mark_boxes[i], q) {
+                        if i < c.marks.len() { &mut front[k] } else { &mut back[k] }.push(m.0);
+                    }
+                }
+                for (w, b) in c.wedges.iter().zip(&wedge_boxes) {
+                    if under[k] == TERRAIN && holds(&w.2, b, q) {
+                        wedge[k] = w.1;
+                        back[k].extend(&w.0);
+                        break;
+                    }
+                }
+            }
+            // A floor's id: one per label of the storey under the ground or of a floor in front of a portal line.
+            let l = if under[k] == TERRAIN { wedge[k] } else { under[k] };
+            if l != TERRAIN {
+                under_id[k] = match ids.iter().position(|x| *x == l) {
+                    Some(i) => i as u32,
+                    None => {
+                        ids.push(l);
+                        ids.len() as u32 - 1
+                    }
+                };
+            }
+        }
+        // The cover's label, also where the window holds no cover candidate.
+        let cover = Label { surface: Surface::Cover, rule: HeightRule::Slope, rank: 0, ..TERRAIN };
+        for k in 0..patches.len() {
+            if under_id[k] == NO_UNDER {
+                if labels[k].surface == Surface::Cover && !front[k].is_empty() {
+                    let keep = |x: &Cand| x.label.surface != Surface::Cover;
+                    labels[k] = label_but(&c.cands, &c.cover, &c.lines, &patches[k], false, Some(&keep));
+                    back[k].clear();
+                }
+            } else if labels[k].surface != Surface::Cover {
+                // The lines that are a lid here: the patch lies in the stroke of their stretches on top of a way of
+                // the floor's.
+                let ok: Vec<usize> = (c.lid_of.iter())
+                    .filter(|x| back[k].contains(&x.0) && inner[k].is_some_and(|q| geom::winding(&x.2, q) != 0))
+                    .map(|x| x.1)
+                    .collect();
+                let keep = |x: &Cand| {
+                    x.relabel.is_some()
+                        || (x.glob.is_none() && ok.contains(&x.line))
+                        || x.label.material.is_some_and(|m| ok.iter().any(|&l| c.lines[l].way == m))
+                };
+                let l = label_but(&c.cands, &c.cover, &c.lines, &patches[k], false, Some(&keep));
+                labels[k] = if l == TERRAIN { cover } else { l };
+            }
+        }
+        Sliced { patches, labels, under, under_id, wedge, front, back, stats }
+    }
+
+    /// The patches of the cell's square.
+    fn own(&self, cell: CellKey) -> Vec<usize> {
+        let sq = window(cell, 0.0);
+        let inside = |p: &&P| p[0] >= sq[0] && p[0] <= sq[2] && p[1] >= sq[1] && p[1] <= sq[3];
+        (0..self.patches.len()).filter(|&k| self.patches[k].iter().flatten().all(|p| inside(&p))).collect()
     }
 
     /// The faces of the cell: its own patches. The snap rounding keeps off the cell lines, so they
     /// round as in a slice of the cell alone.
     fn cell(&self, c: &Candidates, cell: CellKey, level: i8) -> FacePlan {
-        let sq = window(cell, 0.0);
-        let inside = |p: &&P| p[0] >= sq[0] && p[0] <= sq[2] && p[1] >= sq[1] && p[1] <= sq[3];
-        let own: Vec<usize> =
-            (0..self.patches.len()).filter(|&k| self.patches[k].iter().flatten().all(|p| inside(&p))).collect();
+        self.cells(c, cell, level).0
+    }
+
+    /// `cell`, and with the bores (`joint`) from the same map the faces of the storey under the ground and of the
+    /// floors in front of the portal lines, each face with its floor (`Face::under`).
+    fn cells(&self, c: &Candidates, cell: CellKey, level: i8) -> (FacePlan, Option<(FacePlan, FacePlan)>) {
+        let own = self.own(cell);
         let patches: Vec<Vec<Vec<P>>> = own.iter().map(|&k| self.patches[k].clone()).collect();
+        let map = Map::new(snap_round(&patches));
         let labels: Vec<Label> = own.iter().map(|&k| self.labels[k]).collect();
-        let mut plan = self.plan(cell, level, &Map::new(snap_round(&patches)), &labels);
+        let mut stats = self.stats.clone();
+        stats.patches = labels.len() as u32;
+        // With the bores, each own patch's floor and marks.
+        let joint = BORES && !self.under_id.is_empty();
+        let pick = |v: &[Vec<u32>]| -> Vec<Vec<u32>> { own.iter().map(|&k| v[k].clone()).collect() };
+        let (under, front, back): (Vec<u32>, _, _) = if joint {
+            (own.iter().map(|&k| self.under_id[k]).collect(), pick(&self.front), pick(&self.back))
+        } else {
+            Default::default()
+        };
+        let floors = joint.then_some(Floors { under: &under, front: &front, back: &back });
+        let storeys = joint.then(|| {
+            let of = |v: &[Label]| -> Vec<Label> { own.iter().map(|&k| v[k]).collect() };
+            let floors = Some(Floors { under: &under, front: &[], back: &[] });
+            let plan = |level: i8, labels: &[Label]| output(cell, level, &map, labels, floors, stats.clone());
+            (plan(-1, &of(&self.under)), plan(0, &of(&self.wedge)))
+        });
+        let mut plan = output(cell, level, &map, &labels, floors, stats);
         plan.corners = c.corners.clone();
         plan.mouths = c.mouths.clone();
         let ends = &c.ends;
         // A deck's end passes the rounded corners of every layer of its stroke.
-        let tol = if level > 0 { DECK_END_UNITS } else { END_UNITS };
-        let on = |v: P, e: &[f64; 5]| {
+        let tol = if level != 0 { DECK_END_UNITS } else { END_UNITS };
+        let on = |v: P, (_, e): &(EdgeKind, [f64; 5])| {
             let r = [f64::from(v[0]) - e[0], f64::from(v[1]) - e[1]];
             (r[0] * e[2] + r[1] * e[3]).abs() <= tol && (r[1] * e[2] - r[0] * e[3]).abs() <= e[4] + tol
         };
         for e in plan.edges.iter_mut().filter(|e| e.kind == EdgeKind::Continuous) {
             let (a, b) = (plan.vertices[e.a as usize], plan.vertices[e.b as usize]);
-            if ends.iter().any(|end| on(a, end) && on(b, end)) {
-                e.kind = EdgeKind::DeckEdge;
+            // Storey 0's portal edges come from the one map (`output`), by the labels of its patches.
+            if let Some((kind, _)) = ends.iter().find(|end| on(a, end) && on(b, end)) {
+                if *kind != EdgeKind::Portal || level != 0 {
+                    e.kind = *kind;
+                }
             }
         }
-        plan
+        (plan, storeys)
     }
 
     /// The planar map of the whole window, for its faces by any labels.
@@ -972,7 +1337,7 @@ impl Sliced {
     fn plan(&self, cell: CellKey, level: i8, map: &Map, labels: &[Label]) -> FacePlan {
         let mut stats = self.stats.clone();
         stats.patches = labels.len() as u32;
-        output(cell, level, map, labels, stats)
+        output(cell, level, map, labels, None, stats)
     }
 }
 
@@ -983,33 +1348,35 @@ const END_UNITS: f64 = 2.0;
 /// own: they lie a few units apart.
 const DECK_END_UNITS: f64 = 4.0;
 
-/// A line's deck end lines: the end point, the unit direction into the line and the half-width of its
-/// paved layers (units).
-fn deck_ends(line: &WayLine) -> Vec<[f64; 5]> {
+/// A line's deck end lines (`Portal` at a bore, else `DeckEdge`): the end point, the unit direction into the line (a
+/// portal's own, `WayLine::end_dir`) and the half-width of its core (units).
+fn deck_ends(line: &WayLine) -> Vec<(EdgeKind, [f64; 5])> {
     let n = line.p.len();
-    let end = |at: usize, next: usize| {
+    let end = |k: usize, at: usize, next: usize| {
         let (p, q) = (line.p[at], line.p[next]);
         let d = [f64::from(q[0] - p[0]), f64::from(q[1] - p[1])];
         let len = libm::hypot(d[0], d[1]).max(1e-9);
-        [f64::from(p[0]), f64::from(p[1]), d[0] / len, d[1] / len, line.bands[at][VERGE]]
+        let d = line.end_dir[k].map_or([d[0] / len, d[1] / len], |e| if k == 0 { e } else { [-e[0], -e[1]] });
+        let kind = if BORES && line.portal[k] { EdgeKind::Portal } else { EdgeKind::DeckEdge };
+        (kind, [f64::from(p[0]), f64::from(p[1]), d[0], d[1], line.bands[at][VERGE]])
     };
     let mut out = Vec::new();
     if n >= 2 && line.deck[0] {
-        out.push(end(0, 1));
+        out.push(end(0, 0, 1));
     }
     if n >= 2 && line.deck[1] {
-        out.push(end(n - 1, n - 2));
+        out.push(end(1, n - 1, n - 2));
     }
     out
 }
 
-/// Whether a candidate is a band layer.
+/// Whether a candidate is a band layer. The cover over a bore is none: it decides the opening at every distance.
 fn band(c: &Cand) -> bool {
     c.relabel.is_none()
         && c.fill.is_none()
         && c.glob.is_some()
         && c.label.owner == Owner::Terrain
-        && c.label.surface != Surface::Zone
+        && !matches!(c.label.surface, Surface::Zone | Surface::Cover)
 }
 
 /// Whether the far level leaves a label out: water (whose bank is a band layer) and a culvert's zone, until the
@@ -1046,7 +1413,9 @@ impl Candidates<'_> {
 /// without the slope layer), and the labels of the outline rounds decided. With `records`, every reach grows by
 /// `records::MARGIN_M` and a unit, so the candidates are the neighbours' own that far past the cell,
 /// and their window is the cell grown by `GROW` units; else the window is the cell. Both give the
-/// cell the same faces. The crossings merge on the cell's own lines.
+/// cell the same faces. The crossings merge on the cell's own lines. `ground`: storey 0's lines of the same window,
+/// where the caller has them (`lines_with`).
+#[allow(clippy::too_many_arguments)]
 fn candidates<'a>(
     graph: &'a WayGraph,
     input: &CellInput,
@@ -1055,6 +1424,7 @@ fn candidates<'a>(
     level: i8,
     bands: usize,
     records: bool,
+    ground: Option<&[WayLine]>,
 ) -> Candidates<'a> {
     let ctx = Ctx { graph, rules, origin: cell.origin() };
     let plan = &rules.plan;
@@ -1074,14 +1444,17 @@ fn candidates<'a>(
     // The carriageways reach farther than the points: the outline rounds read them. The ways reach
     // farther still: the off-line test of the points' rounds reads them.
     let lx = reach(rules::lines_m(plan, &rules.sections));
-    // A storey over the ground holds its deck ways, each a deck's stroke.
-    let decks = (STOREYS && level > 0).then(|| deck::Decks::of(graph, input));
-    let (mut lines, of_way) =
-        lines(&ctx, input, &keep(graph, decks.as_ref(), level), reach(rules::ways_m(plan, &rules.sections)));
+    // A storey over the ground holds its deck ways, each a deck's stroke; the storey under it its bores' floors.
+    let decks = (STOREYS && level != 0).then(|| deck::Decks::of(graph, input));
+    let (mut lines, of_way) = lines_with(
+        &ctx,
+        input,
+        &keep(graph, decks.as_ref(), level),
+        reach(rules::ways_m(plan, &rules.sections)),
+        ground,
+    );
     if decks.is_some() {
-        for line in &mut lines {
-            deck::deck_bands(line, &|p| ctx.units(rules.structures.edge_band_m, p));
-        }
+        storey_bands(&ctx, &mut lines, level);
     }
     // The points within `bx` round their arms; the points past it only end their runs.
     let elsewhere = |w: u32| decks.as_ref().is_some_and(|d| d.goes_on(graph, w, level));
@@ -1213,6 +1586,13 @@ fn candidates<'a>(
             seam_points.insert(key, std::iter::once(i).chain(far).collect());
         }
     }
+    // The cover over the bores, the lids (the stretches on top of a bore or of a way that enters one) and the lines
+    // with such a stretch.
+    let Lid { cover: cover_cands, entering: lids, tops, of_lower: lid_of } = if BORES && level == 0 && any_bore(graph) {
+        bore_cover(&ctx, input, &lines, reach(rules::ways_m(plan, &rules.sections)), bx)
+    } else {
+        Lid::default()
+    };
     let mut cands: Vec<Cand> = Vec::new();
     let mut mouths = Vec::new();
     // The ways' carriageways and the band layers, on the run of samples near the window. A way with
@@ -1223,6 +1603,11 @@ fn candidates<'a>(
     // The carriageways on the runs that only the outline rounds read.
     let mut outer_paved: Vec<Vec<P>> = Vec::new();
     let mut walk_runs = vec![None; lines.len()];
+    // The marks of the portals by the bore's way: on storey 0 the core strokes of the ground ways that enter it, on the
+    // storey under the ground the bore's own stroke.
+    let mut mark_pieces: BTreeMap<u32, Vec<Vec<P>>> = BTreeMap::new();
+    // Per ground way that enters a bore: its line, its bores and its core stroke.
+    let mut entering: Vec<(usize, Vec<u32>, Vec<Vec<P>>)> = Vec::new();
     for (li, line) in lines.iter().enumerate() {
         // The samples of the segments that meet a box.
         let run = |bx: [i32; 4]| {
@@ -1231,12 +1616,21 @@ fn candidates<'a>(
             Some(((0..n).find(meets)?, (0..n).rfind(meets)? + 2))
         };
         // The cuts at the first and the last sample of layer k (0 the carriageway).
-        let cut = |i: usize, k: usize| end_cuts.get(&(li, i)).cloned().unwrap_or_else(|| line.offsets(i)[..k].to_vec());
+        let cut = |i: usize, k: usize| {
+            let portal = if BORES && i == 0 { line.end_cuts[0].clone() } else { None }.or_else(|| {
+                if BORES && i + 1 == line.p.len() {
+                    line.end_cuts[1].clone()
+                } else {
+                    None
+                }
+            });
+            portal.or_else(|| end_cuts.get(&(li, i)).cloned()).unwrap_or_else(|| line.offsets(i)[..k].to_vec())
+        };
         let carriageway = |(first, last): (usize, usize)| {
             let ends = [line.round[0] && first == 0, line.round[1] && last == line.p.len()];
             let mut own = Vec::new();
             let (p, h) = (&line.p[first..last], &line.h[first..last]);
-            pieces_along(p, h, &[], [&cut(first, 0), &cut(last - 1, 0)], ends, false, &mut own);
+            pieces_along(p, h, &line.dirs(first, last), [&cut(first, 0), &cut(last - 1, 0)], ends, false, &mut own);
             own
         };
         // The paved outline holds no water.
@@ -1251,6 +1645,40 @@ fn candidates<'a>(
         }
         let ends = [line.round[0] && first == 0, line.round[1] && last == line.p.len()];
         let p = &line.p[first..last];
+        if BORES && (level == 0 || level == -1) && graph.levelled {
+            let bore = in_bore(graph, line.way);
+            let of: Vec<u32> = match (level, bore) {
+                (0, false) => line.leads.clone(),
+                (-1, true) => vec![line.way],
+                _ => Vec::new(),
+            };
+            if !of.is_empty() {
+                let layer = if bore { SLOPE } else { VERGE };
+                let d: Vec<f64> = (first..last).map(|i| line.bands[i][layer]).collect();
+                let cuts = [&cut(first, layer + 1)[..], &cut(last - 1, layer + 1)[..]];
+                let (mut pieces, mut segs) = (Vec::new(), Vec::new());
+                let dirs = line.dirs(first, last);
+                stroke::pieces_along_of(p, &d, &dirs, cuts, ends, false, &mut pieces, Some(&mut segs));
+                if bore {
+                    // An opening lies on a bore's end line: the bore's own mark is the pieces of its own stroke on its
+                    // end segment at each portal in the run, so a way that passes over the bore elsewhere opens
+                    // nothing there. They meet the rest of the floor's stroke on its own mitre lines.
+                    let last_seg = last - first - 2;
+                    let end = |k: usize| {
+                        (k == 0 && first == 0 && line.end_dir[0].is_some())
+                            || (k == last_seg && last == line.p.len() && line.end_dir[1].is_some())
+                    };
+                    let mut on_end = segs.iter().map(|s| s[0] == s[1] && end(s[0]));
+                    pieces.retain(|_| on_end.next().unwrap_or(false));
+                }
+                for &w in &of {
+                    mark_pieces.entry(w).or_default().extend(pieces.iter().cloned());
+                }
+                if !bore {
+                    entering.push((li, of, pieces));
+                }
+            }
+        }
         let own = carriageway((first, last));
         cands.push(Cand {
             rings: union(&own, [0, 0]),
@@ -1265,9 +1693,16 @@ fn candidates<'a>(
         });
         // A deck's band layers are its own: the slab's edge band names its way.
         let mut own = (!line.cuts.is_empty() || decks.is_some()).then(|| own_layers.entry(li).or_default());
+        // So are the paved layers of a way on its segments on top of a lower way: their heights are that way's, not
+        // those of the way under it, and over a floor they keep their place as a lid (`Sliced::joint`). They are those
+        // segments' pieces of the band layers' own stroke, so the two meet on its mitre lines.
+        let top = tops.get(li).filter(|t| BORES && own.is_none() && !t.is_empty());
+        let mut named: [Vec<Vec<P>>; LAYERS] = Default::default();
         // At a deck end the slope takes the round end of a free end, so its bank runs round the end: the
-        // paved layers end square on the end line.
-        let deck = [line.deck[0] && first == 0, line.deck[1] && last == line.p.len()];
+        // paved layers end square on the end line. A portal is no free end: the ground goes on over the bore, so
+        // the bank ends square on the portal line too.
+        let free = |k: usize| line.deck[k] && !(BORES && line.portal[k]);
+        let deck = [free(0) && first == 0, free(1) && last == line.p.len()];
         for k in 0..bands {
             let inner = |i: usize| if k == 0 { line.h[i] } else { line.bands[i][k - 1] };
             let d: Vec<f64> = (first..last).map(|i| line.bands[i][k]).collect();
@@ -1280,7 +1715,24 @@ fn candidates<'a>(
                 _ => &mut layers[k],
             };
             let ends = if k == SLOPE { [ends[0] || deck[0], ends[1] || deck[1]] } else { ends };
-            pieces_along(p, &d, &[], cuts, ends, false, layer);
+            match top.filter(|_| BAND_LABELS[k].2 == HeightRule::Owner) {
+                Some(t) => {
+                    let (mut pieces, mut of) = (Vec::new(), Vec::new());
+                    let dirs = line.dirs(first, last);
+                    stroke::pieces_along_of(p, &d, &dirs, cuts, ends, false, &mut pieces, Some(&mut of));
+                    for (ring, [a, b]) in pieces.into_iter().zip(of) {
+                        let on_top = (first + a..=first + b).all(|i| t[i]);
+                        if on_top { &mut named[k] } else { &mut *layer }.push(ring);
+                    }
+                }
+                None => pieces_along(p, &d, &line.dirs(first, last), cuts, ends, false, layer),
+            }
+        }
+        if top.is_some() {
+            let own = own_layers.entry(li).or_default();
+            for (k, layer) in named.into_iter().enumerate() {
+                own[k].extend(layer);
+            }
         }
     }
     stats.ways = lines.len() as u32;
@@ -1362,8 +1814,40 @@ fn candidates<'a>(
         walk::Walk::default()
     };
     cands.extend(walk.cands);
+    // Where a way on top lies over the last metres of a way that enters a bore, that way's face is a floor under the
+    // way on top, as behind the portal line: its paved layers lose the place, and the place is a floor of its own
+    // label (`wedges`).
+    let mut wedges: Vec<(Vec<u32>, Label, Rings)> = Vec::new();
+    if level == 0 && BORES {
+        cands.extend(cover_cands);
+        for (li, of, pieces) in &entering {
+            let Some((_, lids)) = lids.iter().find(|x| x.0 == lines[*li].way) else { continue };
+            let rings = stroke::boolean(&union(pieces, [0, 0]), lids, OverlayRule::Intersect, [0, 0]);
+            if rings.is_empty() {
+                continue;
+            }
+            let way = lines[*li].way;
+            for c in cands.iter_mut().filter(|c| {
+                let carriageway = c.glob.is_none() && c.line == *li && matches!(c.label.owner, Owner::Way(_));
+                let layer = c.label.owner == Owner::Terrain
+                    && c.label.material == Some(way)
+                    && c.label.rule == HeightRule::Owner;
+                c.relabel.is_none() && c.fill.is_none() && (carriageway || layer)
+            }) {
+                c.rings = stroke::boolean(&c.rings, lids, OverlayRule::Difference, [0, 0]);
+            }
+            // With the way itself: its lids are the lids of the wedge (`Sliced::joint`).
+            let of: Vec<u32> = of.iter().copied().chain([way]).collect();
+            wedges.push((of, way_label(rules, &lines[*li], 0).0, rings));
+        }
+    }
     for c in &mut cands {
         c.rings = prepare(&c.rings);
+    }
+    let mut marks: Vec<(u32, Rings)> =
+        mark_pieces.into_iter().map(|(w, pieces)| (w, prepare(&union(&pieces, [0, 0])))).collect();
+    for w in &mut wedges {
+        w.2 = prepare(&w.2);
     }
     let pieces = split_legs(&ctx, &lines, &of_way, &mut cands);
     // The rounds at the corners of the paved outline that no point's round shapes. Their key loses
@@ -1432,13 +1916,26 @@ fn candidates<'a>(
     // A seam meets the cell lines where the carriageway's ring does.
     let mut seams = split(&seams, CELL_UNITS);
     let square = window(cell, 0.0);
-    merge_crossings(square, &mut cands.iter_mut().map(|c| &mut c.rings).collect::<Vec<_>>(), &mut seams);
+    merge_crossings(
+        square,
+        &mut (cands.iter_mut().map(|c| &mut c.rings))
+            .chain(marks.iter_mut().map(|m| &mut m.1))
+            .chain(wedges.iter_mut().map(|w| &mut w.2))
+            .collect::<Vec<_>>(),
+        &mut seams,
+    );
     cands.retain(|c| !c.rings.is_empty());
     // The last change of the rings and seams: a vertex at each tile line they cross. No tile of the slice
     // then rounds a crossing of its own side, which the overlay would snap onto a tile corner that the
     // next cell holds without the ring, and the cover and the labels read the edges that the slice cuts.
     for c in &mut cands {
         c.rings = c.rings.iter().map(|r| with_grid_lines(r, slice::TILE)).collect();
+    }
+    for m in &mut marks {
+        m.1 = m.1.iter().map(|r| with_grid_lines(r, slice::TILE)).collect();
+    }
+    for w in &mut wedges {
+        w.2 = w.2.iter().map(|r| with_grid_lines(r, slice::TILE)).collect();
     }
     let seams = split(&seams, slice::TILE);
     stats.candidates = cands.len() as u32;
@@ -1462,11 +1959,201 @@ fn candidates<'a>(
         }
     }
     let ways = lines.iter().take_while(|l| !l.sec.water).count();
-    let ends: Vec<[f64; 5]> = match &decks {
+    let ends: Vec<(EdgeKind, [f64; 5])> = match &decks {
         Some(d) => lines.iter().flat_map(|l| deck::open_ends(l, d.open[l.way as usize])).collect(),
         None => lines.iter().flat_map(deck_ends).collect(),
     };
-    Candidates { lines, ways, cands, seams, win, cover, corners, mouths, ends, walk_ends: walk.ends, stats }
+    Candidates { lines, ways, cands, seams, win, cover, corners, mouths, ends, walk_ends: walk.ends, marks, wedges, lid_of, stats }
+}
+
+/// The samples of a line whose segments meet a box: the run `first..last`.
+fn run_in(line: &WayLine, bx: [i32; 4]) -> Option<(usize, usize)> {
+    let meets = |i: &usize| geom::meets(bx, line.p[*i], line.p[i + 1]);
+    let n = line.p.len() - 1;
+    Some(((0..n).find(meets)?, (0..n).rfind(meets)? + 2))
+}
+
+/// The lid over the bores near a cell (`bore_cover`).
+#[derive(Default)]
+struct Lid {
+    /// The cover: one candidate of storey 0 over each bore's stroke (its core and its wall) from end line to end line,
+    /// less its lids. Its key wins every face: over a floor, only a way on top keeps its own surface (`Sliced::joint`).
+    /// Its height is the ground's (the slope rule) over the floor bound (`heights::floor`).
+    cover: Vec<Cand>,
+    /// Per way that enters a bore, the strokes of the stretches on top of it.
+    entering: Vec<(u32, Rings)>,
+    /// Per line of storey 0 and segment, whether it lies on top of a lower way (empty for a line with none).
+    tops: Vec<Vec<bool>>,
+    /// Per lower way (a bore, or a way that enters one), the lines with a stretch on top of it and their strokes.
+    of_lower: Vec<(u32, usize, Rings)>,
+}
+
+/// The lid over the bores near the cell (with the bores), from storey 0's lines `ground`.
+fn bore_cover(ctx: &Ctx, input: &CellInput, ground: &[WayLine], ways_box: [i32; 4], bx: [i32; 4]) -> Lid {
+    let g = ctx.graph;
+    let (bores, _) = lines_with(ctx, input, &|w| in_bore(g, w), ways_box, Some(ground));
+    // Per bore, its stroke: its core and its wall.
+    let mut strokes: Vec<Vec<Vec<P>>> = vec![Vec::new(); bores.len()];
+    for (line, rings) in bores.iter().zip(&mut strokes) {
+        let Some((first, last)) = run_in(line, bx) else { continue };
+        let own = |i: usize| line.offsets(i)[..=VERGE + 1].to_vec();
+        let c0 = if first == 0 { line.end_cuts[0].clone() } else { None }.unwrap_or_else(|| own(first));
+        let c1 = if last == line.p.len() { line.end_cuts[1].clone() } else { None }.unwrap_or_else(|| own(last - 1));
+        let d: Vec<f64> = (first..last).map(|i| line.bands[i][VERGE] + ctx.units(deck::WALL_M, line.p[i])).collect();
+        pieces_along(&line.p[first..last], &d, &line.dirs(first, last), [&c0, &c1], [false; 2], false, rings);
+    }
+    if strokes.iter().all(Vec::is_empty) {
+        return Lid::default();
+    }
+    // A way lies on top of a lower way where its surface lies at least the lower way's least room over the lower way's
+    // floor at every place where their strokes meet: the heights decide, not a crossing of the centre lines. A way
+    // beside the bore or level with it (the other tube's approach) is none: it ends at the side of the opening.
+    // The lower ways' centre lines with their heights (the graph's samples), their reach (core and wall, units) and
+    // their least room (the least bore and the roof's least plate, metres).
+    type Poly = Vec<([f64; 2], f64)>;
+    let poly = |w: u32| -> Poly {
+        let r = &g.ways[w as usize].samples;
+        g.samples[r.start as usize..r.end as usize]
+            .iter()
+            .map(|s| ([f64::from(s.pos[0]), f64::from(s.pos[1])], s.z_m))
+            .collect()
+    };
+    // The lower ways: the bores, and the ground ways that enter one (a way on top of a bore can reach over the last
+    // metres of the way that enters it: there it is that way's lid too).
+    let enters = |l: &&WayLine| !l.leads.is_empty() && !l.sec.water;
+    let under: Vec<(Poly, f64, f64, u32, [f64; 4])> = (bores.iter().map(|b| (b, ctx.units(deck::WALL_M, b.p[0]))))
+        .chain(ground.iter().filter(enters).map(|a| (a, 0.0)))
+        .map(|(b, wall)| {
+            let core = b.bands.iter().map(|x| x[VERGE]).fold(0.0, f64::max) + wall;
+            let l = poly(b.way);
+            // The box of its centre line.
+            let bx = l.iter().fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |x, (p, _)| {
+                [x[0].min(p[0]), x[1].min(p[1]), x[2].max(p[0]), x[3].max(p[1])]
+            });
+            (l, core, b.sec.bore_least_m + b.sec.roof_least_m, b.way, bx)
+        })
+        .collect();
+    // The height of a bore's floor at the foot of q on its line, and the distance to it (units).
+    let foot = |q: [f64; 2], l: &Poly| -> Option<(f64, f64)> {
+        l.windows(2)
+            .map(|w| {
+                let d = [w[1].0[0] - w[0].0[0], w[1].0[1] - w[0].0[1]];
+                let l2 = (d[0] * d[0] + d[1] * d[1]).max(1e-9);
+                let t = (((q[0] - w[0].0[0]) * d[0] + (q[1] - w[0].0[1]) * d[1]) / l2).clamp(0.0, 1.0);
+                (libm::hypot(q[0] - w[0].0[0] - t * d[0], q[1] - w[0].0[1] - t * d[1]), w[0].1 + t * (w[1].1 - w[0].1))
+            })
+            .min_by(|x, y| x.0.total_cmp(&y.0))
+    };
+    // A stretch of a ground way between two of its samples lies on top where, at each of its points about 2 m apart,
+    // its surface lies at least the least room over the floor of every bore whose stroke its own stroke meets there;
+    // a stretch that meets no bore is not asked.
+    // Per lower way, the core strokes of the stretches on top of it: its lids.
+    let mut cores: Vec<Vec<Vec<P>>> = vec![Vec::new(); under.len()];
+    let mut tops: Vec<Vec<bool>> = vec![Vec::new(); ground.len()];
+    // Per lower way and line with a stretch on top of it, the strokes of those stretches.
+    let mut lid_of: Vec<(u32, usize, Rings)> = Vec::new();
+    for (li, line) in ground.iter().enumerate() {
+        let Some((first, last)) = run_in(line, bx) else { continue };
+        let core_a = line.bands.iter().map(|b| b[VERGE]).fold(0.0, f64::max);
+        let way = &g.ways[line.way as usize];
+        let samples = &g.samples[way.samples.start as usize..way.samples.end as usize];
+        // The height at vertex i of the line: of its graph sample, or between the two about a taper's vertex.
+        let z = |i: usize| -> f64 {
+            let k = line.index.partition_point(|&x| x <= i).saturating_sub(1);
+            if line.index[k] == i || k + 1 >= samples.len() {
+                return samples[k.min(samples.len() - 1)].z_m;
+            }
+            let (a, c) = (line.index[k], line.index[k + 1]);
+            samples[k].z_m + (i - a) as f64 / (c - a) as f64 * (samples[k + 1].z_m - samples[k].z_m)
+        };
+        // Whether stretch i lies on top of lower way u: at each of its points whose stroke meets u's, at least u's
+        // least room over u's floor; and it meets u.
+        let on_top = |i: usize, u: &(Poly, f64, f64, u32, [f64; 4])| -> bool {
+            let (l, core_b, need, way, bx) = u;
+            if *way == line.way {
+                return false;
+            }
+            let (a, c) = (line.p[i], line.p[i + 1]);
+            let (a, c) = ([f64::from(a[0]), f64::from(a[1])], [f64::from(c[0]), f64::from(c[1])]);
+            let r = core_a + core_b;
+            // The stretch's box off the lower way's box, grown by their reach: they do not meet.
+            if a[0].max(c[0]) < bx[0] - r
+                || a[0].min(c[0]) > bx[2] + r
+                || a[1].max(c[1]) < bx[1] - r
+                || a[1].min(c[1]) > bx[3] + r
+            {
+                return false;
+            }
+            let n = (libm::hypot(c[0] - a[0], c[1] - a[1]) / 1200.0).ceil().max(1.0) as usize;
+            let mut meets = false;
+            for k in 0..=n {
+                let t = k as f64 / n as f64;
+                let (q, zq) = ([a[0] + t * (c[0] - a[0]), a[1] + t * (c[1] - a[1])], z(i) + t * (z(i + 1) - z(i)));
+                if let Some((_, zb)) = foot(q, l).filter(|x| x.0 <= r) {
+                    if zq - zb < *need {
+                        return false;
+                    }
+                    meets = true;
+                }
+            }
+            meets
+        };
+        let ends = [line.round[0] && first == 0, line.round[1] && last == line.p.len()];
+        for (u, cores) in under.iter().zip(&mut cores) {
+            let top: Vec<bool> = (first..last - 1).map(|i| on_top(i, u)).collect();
+            if top.contains(&true) {
+                let t = &mut tops[li];
+                t.resize(line.p.len() - 1, false);
+                for (i, &x) in top.iter().enumerate() {
+                    t[first + i] |= x;
+                }
+            }
+            let before = cores.len();
+            let mut i = 0;
+            while i < top.len() {
+                if !top[i] {
+                    i += 1;
+                    continue;
+                }
+                let mut j = i;
+                while j < top.len() && top[j] {
+                    j += 1;
+                }
+                let (lo, hi) = (first + i, first + j + 1);
+                // A lid is the way's own surface: its carriageway and its shoulders (the layers of the owner rule). Its
+                // verge is ground.
+                let d: Vec<f64> = (lo..hi).map(|k| line.bands[k][1]).collect();
+                let round = [ends[0] && lo == 0, ends[1] && hi == line.p.len()];
+                pieces_along(&line.p[lo..hi], &d, &line.dirs(lo, hi), [&[], &[]], round, false, cores);
+                i = j;
+            }
+            if cores.len() > before {
+                lid_of.push((u.3, li, union(&cores[before..], [0, 0])));
+            }
+        }
+    }
+    // The cover: each bore's stroke less its own lids. The lids of the ways that enter a bore, by way.
+    let lids: Vec<Rings> = cores.iter().map(|c| union(c, [0, 0])).collect();
+    let mut rings = Vec::new();
+    for (stroke, lid) in strokes.iter().zip(&lids).filter(|x| !x.0.is_empty()) {
+        rings.extend(stroke::boolean(&union(stroke, [0, 0]), lid, OverlayRule::Difference, [0, 0]));
+    }
+    let rings = union(&rings, [0, 0]);
+    let lids: Vec<(u32, Rings)> =
+        (under.iter().zip(lids)).skip(bores.len()).filter(|x| !x.1.is_empty()).map(|(u, lid)| (u.3, lid)).collect();
+    let label = Label { surface: Surface::Cover, rule: HeightRule::Slope, rank: 0, ..TERRAIN };
+    let cover = vec![Cand {
+        rings,
+        label,
+        key: (0, 0, 0),
+        glob: Some([i64::MIN; 5]),
+        line: 0,
+        relabel: None,
+        beyond: Vec::new(),
+        fill: None,
+        discs: Vec::new(),
+    }];
+    Lid { cover, entering: lids, tops, of_lower: lid_of }
 }
 
 /// Splits every candidate that gives the label of a way with legs (`legs`), or that is one of its own
@@ -1752,6 +2439,18 @@ fn past_seam(part: &Part, q: [i64; 2]) -> bool {
 /// terrain; a carriageway over a rail bed is a crossing.
 /// The label of a patch; `far` leaves out the band layers.
 fn label(cands: &[Cand], cover: &Cover, lines: &[WayLine], patch: &[Vec<P>], far: bool) -> Label {
+    label_but(cands, cover, lines, patch, far, None)
+}
+
+/// `label` of the candidates that `keep` keeps (`Sliced::joint`).
+fn label_but(
+    cands: &[Cand],
+    cover: &Cover,
+    lines: &[WayLine],
+    patch: &[Vec<P>],
+    far: bool,
+    keep: Option<&dyn Fn(&Cand) -> bool>,
+) -> Label {
     let mut at = match inner_point(patch) {
         Some(q) => cover.at(q),
         None => {
@@ -1764,6 +2463,9 @@ fn label(cands: &[Cand], cover: &Cover, lines: &[WayLine], patch: &[Vec<P>], far
     };
     if far {
         at.retain(|&c| !near_only(&cands[c as usize]));
+    }
+    if let (true, Some(keep)) = (BORES, keep) {
+        at.retain(|&c| keep(&cands[c as usize]));
     }
     // A patch with no inner point reads its seams at the mean of its vertices: a vertex of it can
     // lie on a seam.
@@ -1864,15 +2566,26 @@ fn decide(cands: &[Cand], lines: &[WayLine], mut at: Vec<u32>, q: [i64; 2]) -> L
 }
 
 /// The faces from the labelled patches: patches of one label that share an edge, not across a cell
-/// line, form a face.
-fn output(cell: CellKey, level: i8, map: &Map, labels: &[Label], mut stats: FaceStats) -> FacePlan {
-    let mut ids: Vec<Label> = Vec::new();
+/// line, form a face. With the bores (`floors`), patches of one label over two floors are two faces, and an opening
+/// edge is a `Portal` with the entering way's face on the left where `FRONT_LEFT` says so.
+fn output(
+    cell: CellKey,
+    level: i8,
+    map: &Map,
+    labels: &[Label],
+    floors: Option<Floors>,
+    mut stats: FaceStats,
+) -> FacePlan {
+    let floors = floors.filter(|_| BORES);
+    let under_of = |k: usize| floors.map_or(NO_UNDER, |f| f.under[k]);
+    let mut ids: Vec<(Label, u32)> = Vec::new();
     let key: Vec<u32> = labels
         .iter()
-        .map(|l| match ids.iter().position(|x| x == l) {
+        .enumerate()
+        .map(|(k, l)| match ids.iter().position(|x| x.0 == *l && x.1 == under_of(k)) {
             Some(i) => i as u32,
             None => {
-                ids.push(*l);
+                ids.push((*l, under_of(k)));
                 ids.len() as u32 - 1
             }
         })
@@ -1915,6 +2628,7 @@ fn output(cell: CellKey, level: i8, map: &Map, labels: &[Label], mut stats: Face
         .into_iter()
         .map(|(g, outer, holes)| {
             let l = labels[g as usize];
+            let under = under_of(g as usize);
             let ring = |lp: &[u32]| {
                 let mut r: Vec<u32> = lp.iter().map(|&v| index(v)).collect();
                 let start = (0..r.len()).min_by_key(|&i| r[i]).unwrap_or(0);
@@ -1939,6 +2653,7 @@ fn output(cell: CellKey, level: i8, map: &Map, labels: &[Label], mut stats: Face
                 reach_m: l.reach_m,
                 legs: l.legs,
                 rings,
+                under,
             };
             (halves, face)
         })
@@ -1964,9 +2679,29 @@ fn output(cell: CellKey, level: i8, map: &Map, labels: &[Label], mut stats: Face
         }
         let left = face_of[h];
         let (a, b, left, right) = if a < b { (a, b, left, right) } else { (b, a, right, left) };
-        let kind =
+        let mut kind =
             if on_cell_line(map.point(e.a), map.point(e.b)) { EdgeKind::CellBorder } else { EdgeKind::Continuous };
-        edges.push(Edge { a, b, left, right, kind, flags: 0 });
+        // An opening edge: a floor lies under the patch on one side, and on the other side lies the stroke of a way that
+        // enters that floor's bore, with no floor under it. It reads labels of patches, no distance.
+        let mut flags = 0;
+        if let (Some(Floors { under: u, front, back }), true, true) =
+            (floors.filter(|f| !f.front.is_empty()), e.twin != NONE, kind == EdgeKind::Continuous)
+        {
+            let (p, q) = (e.patch as usize, map.half[e.twin as usize].patch as usize);
+            let meets = |f: usize, b: usize| {
+                u[f] == NO_UNDER && u[b] != NO_UNDER && front[f].iter().any(|w| back[b].contains(w))
+            };
+            let (front_here, front_there) = (meets(p, q), meets(q, p));
+            if front_here || front_there {
+                kind = EdgeKind::Portal;
+                // The half-edge's own patch lies on its left before the swap below.
+                let unswapped = index(e.a) < index(e.b);
+                if front_here == unswapped {
+                    flags |= FRONT_LEFT;
+                }
+            }
+        }
+        edges.push(Edge { a, b, left, right, kind, flags });
     }
     edges.sort_by_key(|e| (e.a, e.b));
     stats.faces = faces.len() as u32;

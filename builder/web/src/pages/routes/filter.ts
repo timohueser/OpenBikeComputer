@@ -14,6 +14,25 @@ export type RideItem = Extract<Item, { kind: 'ride' }>;
 /** From `min` to below `max`, in the units of `settings.units`: km or mi for a length, m or ft for a climb. */
 export type Range = [min: number, max: number];
 
+/** "Under 100 km", "100 km or more", "100 km to 200 km". */
+export function rangeText([min, max]: Range, format: (value: number) => string): string {
+    return min <= 0 ? `Under ${format(max)}` : max === Infinity ? `${format(min)} or more` : `${format(min)} to ${format(max)}`;
+}
+
+/** The count of steps of a range slider. */
+export const STEPS = 16;
+
+/** The step of a range slider for `values`: the smallest of 1, 2, 5, 10, 20, 50, … whose `STEPS` steps reach above
+ * the value at 90 % of the sorted values, so that a few very long routes do not stretch the scale, and above each
+ * finite end of `range`, so that a range that is set is inside it. `top` is `STEPS × step`. */
+export function scale(values: number[], range?: Range): { step: number; top: number } {
+    const sorted = [...values].sort((a, b) => a - b);
+    const ends = (range ?? []).filter(Number.isFinite);
+    const reach = Math.max(0, sorted[Math.ceil(sorted.length * 9 / 10) - 1] ?? 0, ...ends);
+    for (let power = 1; ; power *= 10)
+        for (const step of [power, 2 * power, 5 * power]) if (STEPS * step > reach) return { step, top: STEPS * step };
+}
+
 /** A place of the place search. A place with no extent has its point as its box. */
 export interface Place { name: string; kind: string; box: Box }
 
