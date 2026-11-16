@@ -1,4 +1,4 @@
-import type { ExpressionSpecification, FilterSpecification, Map, MapGeoJSONFeature, MapMouseEvent, VectorSourceSpecification } from 'maplibre-gl';
+import type { ExpressionSpecification, FilterSpecification, LineLayerSpecification, Map, MapGeoJSONFeature, MapMouseEvent, VectorSourceSpecification } from 'maplibre-gl';
 import { PMTiles } from 'pmtiles';
 import type { Coordinate } from './map-types';
 import { releaseFetch, releaseUrl } from './release';
@@ -37,11 +37,12 @@ export function networkName({ kind, network }: Pick<NetworkRoute, 'kind' | 'netw
 }
 const source = 'route-overlays';
 const labelZoom = 11;
-const interactiveLayers = ['network-cycling', 'network-hiking', 'network-mtb', 'hiking-markers', 'access-symbols'];
+const activities = ['cycling', 'hiking', 'mtb'] as const;
+const interactiveLayers = [...activities.flatMap(activity => [`network-${activity}`, `network-${activity}-band`]), 'hiking-markers', 'access-symbols'];
 const layers = {
-    cycling: ['network-cycling', 'network-cycling-labels'],
-    hiking: ['network-hiking', 'network-hiking-labels', 'hiking-markers'],
-    mtb: ['network-mtb', 'network-mtb-labels'],
+    cycling: ['network-cycling', 'network-cycling-band', 'network-cycling-labels'],
+    hiking: ['network-hiking', 'network-hiking-band', 'network-hiking-labels', 'hiking-markers'],
+    mtb: ['network-mtb', 'network-mtb-band', 'network-mtb-labels'],
     access: ['access-lines', 'access-symbols'],
 } as const;
 
@@ -81,7 +82,16 @@ export function routeWebsite(value?: string | null): string | null {
     } catch { return null; }
 }
 
-const networkOpacity: ExpressionSpecification = ['case', ['boolean', ['feature-state', 'hover'], false], 1, 0.8];
+/** The route under a resting pointer; `name` is empty when the tile does not name it. */
+export interface RouteHint { point: { x: number; y: number }; name: string }
+const restMs = 450;
+
+// A network is a thin line over the roads while the basemap draws few of them. From `bandZoom` a band replaces it:
+// the band lies under the roads and paths and is wider than they are, so they stay visible on it, and a planned route
+// stays the strongest line. The band starts at the width of the line, which fades over one zoom level.
+const bandZoom = 12;
+const lineWidth: ExpressionSpecification = ['interpolate', ['linear'], ['zoom'], 6, 1.2, 10, 1.8, bandZoom, 2.4];
+const bandWidth: ExpressionSpecification = ['interpolate', ['exponential', 1.6], ['zoom'], bandZoom, 2.4, 13, 7, 15, 12, 18, 30];
 
 const accessStatus = (mode: AccessMode): ExpressionSpecification => ['get', `${mode}_status`];
 
@@ -95,10 +105,11 @@ export class RouteOverlays {
     private failure = '';
     private routingPackage?: string;
     private installable = false;
-    private hovered?: { sourceLayer: string; id: string | number };
     private faded = false;
+    private rest?: ReturnType<typeof setTimeout>;
 
-    constructor(private map: Map, private url: string, private status: (message: string, retry?: boolean) => void) {
+    constructor(private map: Map, private url: string, private status: (message: string, retry?: boolean) => void,
+        private hint: (hint: RouteHint | null) => void) {
         map.on('moveend', this.report);
     }
 
@@ -119,19 +130,17 @@ export class RouteOverlays {
         }
         // A theme change during the request installs into the new style instead.
         if (theme !== this.theme || this.map.getSource(source)) return;
-        this.hovered = undefined;
         this.map.addSource(source, this.loaded.source);
-        const before = this.map.getStyle().layers?.find(layer => layer.type === 'symbol')?.id;
-        const shade = (level: number) => networkLevels[level][theme === 'dark' ? 'dark' : 'color'];
-        const color: ExpressionSpecification = ['step', ['get', 'rank'], shade(3), 1, shade(2), 2, shade(1), 3, shade(0)];
-        const hovered = (on: number, off: number): ExpressionSpecification => ['case', ['boolean', ['feature-state', 'hover'], false], on, off];
-        for (const activity of ['cycling', 'hiking', 'mtb']) {
-            this.map.addLayer({
-                id: `network-${activity}`, type: 'line', source, 'source-layer': activity,
-                layout: { 'line-join': 'round', 'line-sort-key': ['get', 'rank'] },
-                paint: { 'line-color': color, 'line-opacity': networkOpacity,
-                    'line-width': ['interpolate', ['linear'], ['zoom'], 6, hovered(2.4, 1.2), 10, hovered(3, 1.8), 13, hovered(4.4, 3.2), 17, hovered(6.2, 5)] },
-            }, before);
+        const style = this.map.getStyle().layers ?? [];
+        const before = style.find(layer => layer.type === 'symbol')?.id;
+        const underRoads = style.find(layer => layer.id.startsWith('roads_'))?.id ?? before;
+        const color = this.color;
+        const layout: LineLayerSpecification['layout'] = { 'line-join': 'round', 'line-sort-key': ['get', 'rank'] };
+        for (const activity of activities) {
+            this.map.addLayer({ id: `network-${activity}`, type: 'line', source, 'source-layer': activity, maxzoom: bandZoom + 1, layout,
+                paint: { 'line-color': color, 'line-opacity': this.lineOpacity, 'line-width': lineWidth } }, before);
+            this.map.addLayer({ id: `network-${activity}-band`, type: 'line', source, 'source-layer': activity, minzoom: bandZoom, layout,
+                paint: { 'line-color': this.bandColor, 'line-width': bandWidth } }, underRoads);
             this.map.addLayer({
                 id: `network-${activity}-labels`, type: 'symbol', source, 'source-layer': activity, minzoom: labelZoom,
                 filter: ['!=', ['get', 'ref'], ''],
@@ -175,6 +184,22 @@ export class RouteOverlays {
         this.sync();
     }
 
+    private get color(): ExpressionSpecification {
+        const shade = (level: number) => networkLevels[level][this.theme === 'dark' ? 'dark' : 'color'];
+        return ['step', ['get', 'rank'], shade(3), 1, shade(2), 2, shade(1), 3, shade(0)];
+    }
+
+    private get lineOpacity(): ExpressionSpecification {
+        return ['interpolate', ['linear'], ['zoom'], bandZoom, this.faded ? 0.3 : 1, bandZoom + 1, 0];
+    }
+
+    // The band is the network colour mixed into the background colour of the basemap, not a transparent line: a wide
+    // transparent line darkens where a hairpin makes it cross itself.
+    private get bandColor(): ExpressionSpecification {
+        const paper = this.map.getPaintProperty('background', 'background-color') as string;
+        return ['interpolate', ['linear'], this.faded ? 0.25 : 0.5, 0, paper, 1, this.color];
+    }
+
     private get mismatch() {
         return !!this.routingPackage && !!this.loaded && this.loaded.routingPackage !== this.routingPackage;
     }
@@ -185,8 +210,9 @@ export class RouteOverlays {
             const shown = !this.mismatch && (kind === 'access' ? this.options.access : this.options.network === kind);
             for (const id of ids) if (this.map.getLayer(id)) this.map.setLayoutProperty(id, 'visibility', shown ? 'visible' : 'none');
         }
-        for (const activity of ['cycling', 'hiking', 'mtb']) {
-            if (this.map.getLayer(`network-${activity}`)) this.map.setPaintProperty(`network-${activity}`, 'line-opacity', this.faded ? 0.3 : networkOpacity);
+        for (const activity of this.map.getLayer('network-cycling') ? activities : []) {
+            this.map.setPaintProperty(`network-${activity}`, 'line-opacity', this.lineOpacity);
+            this.map.setPaintProperty(`network-${activity}-band`, 'line-color', this.bandColor);
         }
         if (this.map.getLayer('access-lines')) {
             const status = accessStatus(this.accessMode);
@@ -229,17 +255,21 @@ export class RouteOverlays {
         return overlaySelection(feature, [event.lngLat.lng, event.lngLat.lat], catalog, this.accessMode);
     }
 
+    /**
+     * Whether a click opens details here. A pointer that rests on a route gets the hint: the name of the route, for a
+     * note that also names the gesture that opens the details.
+     */
     hover(event?: MapMouseEvent): boolean {
-        const feature = event ? this.featureAt(event) : undefined;
-        const next = feature && feature.sourceLayer !== 'access' && feature.id !== undefined ? { sourceLayer: feature.sourceLayer!, id: feature.id } : undefined;
-        if (next?.id !== this.hovered?.id || next?.sourceLayer !== this.hovered?.sourceLayer) {
-            if (this.map.getSource(source)) {
-                if (this.hovered) this.map.setFeatureState({ source, ...this.hovered }, { hover: false });
-                if (next) this.map.setFeatureState({ source, ...next }, { hover: true });
-            }
-            this.hovered = next;
-        }
-        return !!feature;
+        clearTimeout(this.rest);
+        this.hint(null);
+        const feature = event && this.featureAt(event);
+        if (!feature || feature.sourceLayer === 'access') return !!feature;
+        this.rest = setTimeout(() => {
+            const routes = this.hit(event)?.routes ?? [];
+            const named = routes.find(route => route.name || route.ref);
+            this.hint({ point: event.point, name: named ? `${named.name || named.ref}${routes.length > 1 ? ` +${routes.length - 1}` : ''}` : '' });
+        }, restMs);
+        return false;
     }
 
     destroy() {

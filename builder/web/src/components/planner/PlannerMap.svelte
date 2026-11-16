@@ -19,7 +19,7 @@
     import type { Place } from "../../lib/planner/editor";
     import { coordinateAt, kilometres, nearestProgress } from "../../lib/planner/geo";
     import type { Coordinate, MapPoint, MapSegment } from "../../lib/planner/map-types";
-    import { RouteOverlays, type AccessMode, type OverlayOptions, type OverlaySelection } from "../../lib/planner/route-overlays";
+    import { RouteOverlays, type AccessMode, type OverlayOptions, type OverlaySelection, type RouteHint } from "../../lib/planner/route-overlays";
     import type { DataLayer } from "../../lib/planner/layers/data-layer";
     import { placeCallout } from "../../lib/planner/callout-placement";
     import MapOverlayDetails from './MapOverlayDetails.svelte';
@@ -138,6 +138,7 @@
     let overlayStatus = $state('');
     let overlayRetry = $state(false);
     let overlaySelection = $state<OverlaySelection | null>(null);
+    let routeHint = $state<RouteHint | null>(null);
     let signedLayer: SignedRoutesLayer | undefined;
     let signedHover: number | null = null;
     let overSigned = $state(false);
@@ -154,6 +155,7 @@
         event.preventDefault();
         cancelGesture();
         consumedPress = true;
+        overlayLayer?.hover();
         overlaySelection = selected;
     }
 
@@ -480,7 +482,7 @@
         try {
             map = new maplibregl.Map({ container, center, zoom, maxBounds: config.bounds, style: mapStyle(theme, styleConfig, dem.sharedDemProtocolUrl, contourUrl), attributionControl: false, maxPitch: 0, renderWorldCopies: false });
             signedLayer = new SignedRoutesLayer(map);
-            overlayLayer = new RouteOverlays(map, config.overlays, (message, retry = false) => { overlayStatus = message; overlayRetry = retry; });
+            overlayLayer = new RouteOverlays(map, config.overlays, (message, retry = false) => { overlayStatus = message; overlayRetry = retry; }, hint => routeHint = hint);
             fitInitialRoute();
             map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
             map.addControl(new maplibregl.ScaleControl({ maxWidth: 90, unit: "metric" }), "bottom-left");
@@ -821,6 +823,10 @@
             <span><svg width="26" height="6"><path d="M2 3H24" class="current" /></svg>A · Your route</span>
         </div>
     {/if}
+    {#if routeHint && !overlaySelection}
+        {@const flip = routeHint.point.x > frameWidth - 280}
+        <div class="planner-map-note route-hint" class:flip style:left={`${routeHint.point.x}px`} style:top={`${routeHint.point.y}px`}>{routeHint.name}<span>Right-click for details</span></div>
+    {/if}
     {#if overlayStatus && !failure && !overlaySelection}
         <div class="overlay-status" role="status">{overlayStatus}{#if overlayRetry}<button onclick={() => overlayLayer?.retry()}>Retry</button>{/if}</div>
     {/if}
@@ -877,6 +883,9 @@
     :global(.planner-map-letter) { width: 22px; height: 22px; display: grid; place-items: center; border-radius: 50%; color: var(--panel, #fff); background: var(--ink, #1c1b14); font: 700 12px var(--sans, sans-serif); box-shadow: var(--planner-shadow, 0 6px 18px rgba(28, 27, 20, .12)); pointer-events: none; }
     :global(.planner-map-letter.current) { background: var(--route, #cc2a93); }
     :global(.planner-map-note) { padding: 2px 8px; border-radius: 6px; color: var(--ink, #1c1b14); background: var(--panel, #fff); font: 600 12px/20px var(--sans, sans-serif); font-variant-numeric: tabular-nums; white-space: nowrap; box-shadow: var(--planner-shadow, 0 6px 18px rgba(28, 27, 20, .12)); pointer-events: none; }
+    .route-hint { position: absolute; display: flex; gap: 8px; transform: translate(14px, 18px); }
+    .route-hint.flip { transform: translate(calc(-100% - 14px), 18px); }
+    .route-hint span { color: var(--ink-soft, #5c5a2e); font-weight: 400; }
     :global(.planner-hover-dot) { width: 12px; height: 12px; border: 3px solid var(--panel, #fff); border-radius: 50%; background: var(--ink, #1c1b14); pointer-events: none; }
     :global(.planner-insert-dot) { width: 14px; height: 14px; border: 2.5px solid var(--route, #cc2a93); border-radius: 50%; background: var(--panel, #fff); pointer-events: none; }
     .map-frame :global(.maplibregl-popup-content) { padding: 0; border-radius: 8px; color: var(--ink, #1c1b14); background: var(--panel, white); font-family: var(--sans, sans-serif); box-shadow: var(--planner-shadow, 0 6px 18px rgba(28, 27, 20, .12)); }

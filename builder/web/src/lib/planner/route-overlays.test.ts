@@ -17,16 +17,16 @@ function overlays() {
         getBounds: () => ({ getWest: () => 7.9, getSouth: () => 48, getEast: () => 8, getNorth: () => 48.1 }),
         getSource: (id: string) => sources.get(id), addSource: vi.fn((id: string, spec: unknown) => sources.set(id, spec)),
         getStyle: () => ({ layers: [] }), getLayer: (id: string) => definitions.get(id),
-        addLayer: (layer: { id: string; layout?: Record<string, unknown> }) => definitions.set(layer.id, { ...layer, layout: layer.layout ?? {} }),
+        addLayer: (layer: { id: string; layout?: Record<string, unknown> }) => definitions.set(layer.id, { ...layer, layout: { ...layer.layout } }),
         setLayoutProperty: (id: string, key: string, value: unknown) => { definitions.get(id)!.layout[key] = value; },
         getLayoutProperty: (id: string, key: string) => definitions.get(id)?.layout[key],
-        setFilter: (id: string, filter: unknown) => { definitions.get(id)!.filter = filter; }, setPaintProperty: vi.fn(),
-        queryRenderedFeatures: vi.fn(), querySourceFeatures: vi.fn(), setFeatureState: vi.fn(),
+        setFilter: (id: string, filter: unknown) => { definitions.get(id)!.filter = filter; }, setPaintProperty: vi.fn(), getPaintProperty: () => '#f4f2eb',
+        queryRenderedFeatures: vi.fn(), querySourceFeatures: vi.fn(),
     };
-    const status = vi.fn();
-    const layer = new RouteOverlays(map as unknown as MapLibreMap, 'https://tiles.test/overlays.json', status);
+    const status = vi.fn(), hint = vi.fn();
+    const layer = new RouteOverlays(map as unknown as MapLibreMap, 'https://tiles.test/overlays.json', status, hint);
     const visible = () => [...definitions].filter(([, d]) => d.layout.visibility === 'visible').map(([id]) => id);
-    return { layer, map, definitions, sources, status, visible, zoomTo: (z: number) => { zoom = z; } };
+    return { layer, map, definitions, sources, status, hint, visible, zoomTo: (z: number) => { zoom = z; } };
 }
 
 it('loads the archive when an overlay is first shown, then draws the network and the access of the travel mode', async () => {
@@ -36,18 +36,18 @@ it('loads the archive when an overlay is first shown, then draws the network and
     await view.layer.install('light');
     expect(fetcher).not.toHaveBeenCalled();
     view.layer.set({ network: 'cycling', access: true });
-    await vi.waitFor(() => expect(view.visible()).toEqual(['network-cycling', 'network-cycling-labels', 'access-lines', 'access-symbols']));
+    await vi.waitFor(() => expect(view.visible()).toEqual(['network-cycling', 'network-cycling-band', 'network-cycling-labels', 'access-lines', 'access-symbols']));
     expect(view.sources.get('route-overlays')).toEqual({ type: 'vector', tiles: tilejson.tiles, minzoom: 6, maxzoom: 14, bounds: tilejson.bounds, attribution: 'OSM' });
     expect(JSON.stringify(view.definitions.get('access-symbols')!.filter)).toContain('cycling_minzoom');
     view.layer.set({ network: 'hiking', access: true }, 'walking');
-    expect(view.visible()).toEqual(['network-hiking', 'network-hiking-labels', 'hiking-markers', 'access-lines', 'access-symbols']);
+    expect(view.visible()).toEqual(['network-hiking', 'network-hiking-band', 'network-hiking-labels', 'hiking-markers', 'access-lines', 'access-symbols']);
     expect(JSON.stringify(view.definitions.get('access-symbols')!.filter)).toContain('walking_minzoom');
     view.layer.set({ network: 'mtb', access: false });
-    expect(view.visible()).toEqual(['network-mtb', 'network-mtb-labels']);
+    expect(view.visible()).toEqual(['network-mtb', 'network-mtb-band', 'network-mtb-labels']);
     // A new style after a theme change reuses the archive's TileJSON.
     view.sources.clear(); view.definitions.clear();
     await view.layer.install('dark');
-    expect(view.definitions.size).toBe(9);
+    expect(view.definitions.size).toBe(12);
     view.layer.set({ network: 'none', access: false });
     expect(view.visible()).toEqual([]);
     expect(fetcher).toHaveBeenCalledTimes(1);
@@ -60,7 +60,7 @@ it('hides every overlay when the route comes from another routing package', asyn
     view.layer.set({ network: 'cycling', access: true });
     await view.layer.install('light');
     view.layer.verify('package-a');
-    expect(view.visible()).toHaveLength(4);
+    expect(view.visible()).toHaveLength(5);
     view.layer.verify('package-b');
     expect(view.visible()).toEqual([]);
     expect(view.status).toHaveBeenLastCalledWith(expect.stringContaining('other map data than the router'));
@@ -78,7 +78,7 @@ it('offers a retry when the overlay archive cannot load', async () => {
     await view.layer.install('light');
     expect(view.status).toHaveBeenLastCalledWith('Route networks and access could not load.', true);
     view.layer.retry();
-    await vi.waitFor(() => expect(view.visible()).toEqual(['network-cycling', 'network-cycling-labels']));
+    await vi.waitFor(() => expect(view.visible()).toEqual(['network-cycling', 'network-cycling-band', 'network-cycling-labels']));
     expect(view.status).toHaveBeenLastCalledWith('');
     view.layer.destroy();
 });
@@ -107,27 +107,32 @@ it('opens route details from the tile catalogue, and access rules of the travel 
     view.layer.destroy();
 });
 
-it('highlights only the hovered network line and clears it when leaving or switching layers', async () => {
+it('hints at the route under a resting pointer, and takes clicks only on access symbols', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => tilejson }));
+    vi.useFakeTimers();
     const view = overlays();
-    view.layer.set({ network: 'hiking', access: false });
+    view.layer.set({ network: 'hiking', access: true });
     await view.layer.install('light');
-    const trail = { id: 12, sourceLayer: 'hiking', layer: { id: 'network-hiking' }, properties: {} };
+    const trail = { id: 12, sourceLayer: 'hiking', layer: { id: 'network-hiking' }, properties: { routes: '[42,43]' } };
     view.map.queryRenderedFeatures.mockReturnValue([trail]);
-    const event = { point: { x: 40, y: 40 } } as MapMouseEvent;
-    const state = { source: 'route-overlays', sourceLayer: 'hiking', id: 12 };
-    expect(view.layer.hover(event)).toBe(true);
-    expect(view.map.setFeatureState).toHaveBeenLastCalledWith(state, { hover: true });
-    view.layer.hover(event);
-    expect(view.map.setFeatureState).toHaveBeenCalledTimes(1);
-    view.map.queryRenderedFeatures.mockReturnValue([]);
+    view.map.querySourceFeatures.mockReturnValue([{ id: 42, properties: { name: 'Westweg' } }, { id: 43, properties: { ref: 'HW1' } }]);
+    const event = { point: { x: 40, y: 40 }, lngLat: { lng: 8, lat: 48 } } as MapMouseEvent;
     expect(view.layer.hover(event)).toBe(false);
-    expect(view.map.setFeatureState).toHaveBeenLastCalledWith(state, { hover: false });
-    view.map.queryRenderedFeatures.mockReturnValue([trail]);
+    vi.advanceTimersByTime(300);
+    // A pointer that moves on starts the rest again.
     view.layer.hover(event);
-    view.layer.set({ network: 'none', access: false });
-    expect(view.map.setFeatureState).toHaveBeenLastCalledWith(state, { hover: false });
+    vi.advanceTimersByTime(300);
+    expect(view.hint).not.toHaveBeenCalledWith(expect.anything());
+    vi.advanceTimersByTime(300);
+    expect(view.hint).toHaveBeenLastCalledWith({ point: event.point, name: 'Westweg +1' });
+    view.layer.hover();
+    expect(view.hint).toHaveBeenLastCalledWith(null);
+    view.map.queryRenderedFeatures.mockReturnValue([{ id: 13, sourceLayer: 'access', layer: { id: 'access-symbols' }, properties: {} }]);
+    expect(view.layer.hover(event)).toBe(true);
+    vi.runAllTimers();
+    expect(view.hint).toHaveBeenLastCalledWith(null);
     view.layer.destroy();
+    vi.useRealTimers();
 });
 
 it('names the network level of each route kind', () => {

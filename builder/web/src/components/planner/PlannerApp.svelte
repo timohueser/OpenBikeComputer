@@ -217,6 +217,12 @@
     // The plan came from the Routes view, so "Back to routes" shows under the search box.
     let fromRoutes = $state(false);
     const bike = $derived<BikeType>(trip.bike ?? 'touring');
+    const activityNetwork = $derived(bike === 'hiking' ? 'hiking' : bike === 'mtb' ? 'mtb' : 'cycling');
+    /** A shown route network is the one of the activity; a network that is off stays off. */
+    function showActivityNetwork() {
+        if (mapOverlays.network !== 'none') mapOverlays = { ...mapOverlays, network: activityNetwork };
+    }
+    $effect(() => { void activityNetwork; untrack(showActivityNetwork); });
     const nouns = { any: ['loop or route', 'loops and routes'], loop: ['loop', 'loops'], 'one-way': ['one-way route', 'one-way routes'] } as const;
     const routesNoun = (count = 0) => nouns[finder.filters.shape][count === 1 ? 0 : 1];
     // The names of map places change as map tiles load, so naming reads `mapIdle`.
@@ -805,8 +811,7 @@
         void finder.select(null);
         clearSelection();
         routesOpen = true;
-        // The route networks follow the activity, so the map shows the kind of route the view lists.
-        if (mapOverlays.network !== 'none') mapOverlays = { ...mapOverlays, network: bike === 'hiking' ? 'hiking' : bike === 'mtb' ? 'mtb' : 'cycling' };
+        showActivityNetwork();
         showRoutesArea();
     }
 

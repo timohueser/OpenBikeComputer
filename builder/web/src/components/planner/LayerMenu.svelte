@@ -182,7 +182,8 @@
     details[open] { padding-bottom: 8px; }
     .detail-value { margin-left: auto; font-size: 11px; color: var(--ink-soft); }
     .terrain { display: flex; gap: 12px; }
-    .sample { display: inline-block; flex: 0 0 14px; width: 14px; border-top: 3px solid currentColor; }
+    /* A band with its line: the map draws a route network as a line when far out and as a band when close. */
+    .sample { flex: 0 0 14px; height: 8px; border-radius: 2px; background: linear-gradient(currentColor 0 0) center / 100% 2px no-repeat, color-mix(in srgb, currentColor 50%, var(--parchment)); }
     .legend { display: grid; grid-template-columns: 1fr 1fr; column-gap: 8px; margin: 8px 0 0; font-size: 12px; color: var(--ink-soft); }
     .legend li { justify-content: flex-start; min-height: 22px; }
     .layer-legend { margin: 8px 0 4px; }

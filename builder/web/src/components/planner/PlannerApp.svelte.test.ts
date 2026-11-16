@@ -125,6 +125,7 @@ describe('planner app transitions', () => {
         expect(document.querySelector('.push-track')).toBeNull();
         button('Map settings').click(); await tick();
         expect(document.querySelector('.layer-menu')?.textContent).toContain('Walking access.');
+        expect(document.querySelector('[aria-label="Route network"] [aria-checked="true"]')?.textContent?.trim()).toBe('Hiking');
     });
 
     it('names map visits by address without adding an Undo step, and restores names on Redo', async () => {
