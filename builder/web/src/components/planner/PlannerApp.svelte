@@ -1249,7 +1249,7 @@
                     </div>
                 {/if}
                 {#if !focusedDay && visualRoute}
-                    <div class="trip-summary"><RouteStats distance={view.summary.distance} ascent={view.line?.unknownElevationKm === 0 ? view.summary.ascent : null} descent={view.line?.unknownElevationKm === 0 ? view.summary.descent : null} walking={shown.trip.bike === 'hiking'} hours={view.line ? view.summary.hours : null} /></div>
+                    <div class="trip-summary"><RouteStats distance={view.summary.distance} ascent={view.line?.unknownElevationKm === 0 ? view.summary.ascent : null} descent={view.line?.unknownElevationKm === 0 ? view.summary.descent : null} walking={shown.trip.bike === 'hiking'} hours={view.line ? view.summary.hours : null} line={view.line} /></div>
                 {/if}
                 {#if !focusedDay && gaps.length}
                     <p class="closure-note"><Icon name="pin" size={15} /><span>{gapNote(gaps)}</span></p>
