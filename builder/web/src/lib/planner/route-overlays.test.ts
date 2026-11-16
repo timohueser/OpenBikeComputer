@@ -2,13 +2,15 @@ import { afterEach, expect, it, vi } from 'vitest';
 import type { Map as MapLibreMap, MapMouseEvent } from 'maplibre-gl';
 import { networkName, RouteOverlays, routeWebsite } from './route-overlays';
 import { trailMarker } from './trail-markers';
+import { mapStyle } from './map-style';
+import { testConfig } from '../../../test-support/planner/config';
 
 afterEach(() => { vi.unstubAllGlobals(); });
 
 const tilejson = { tiles: ['https://tiles.test/overlays/{z}/{x}/{y}.mvt'], minzoom: 6, maxzoom: 14, bounds: [7.45, 47.5, 10.5, 49.85],
     attribution: 'OSM', routing_package: 'package-a' };
 
-function overlays() {
+function overlays(style: { id: string; type: string }[] = []) {
     let zoom = 12;
     const definitions = new Map<string, { layout: Record<string, unknown>; filter?: unknown; [key: string]: unknown }>();
     const sources = new Map<string, unknown>();
@@ -16,8 +18,8 @@ function overlays() {
         on: vi.fn(), off: vi.fn(), getZoom: () => zoom,
         getBounds: () => ({ getWest: () => 7.9, getSouth: () => 48, getEast: () => 8, getNorth: () => 48.1 }),
         getSource: (id: string) => sources.get(id), addSource: vi.fn((id: string, spec: unknown) => sources.set(id, spec)),
-        getStyle: () => ({ layers: [] }), getLayer: (id: string) => definitions.get(id),
-        addLayer: (layer: { id: string; layout?: Record<string, unknown> }) => definitions.set(layer.id, { ...layer, layout: { ...layer.layout } }),
+        getStyle: () => ({ layers: style }), getLayer: (id: string) => definitions.get(id),
+        addLayer: (layer: { id: string; layout?: Record<string, unknown> }, before?: string) => definitions.set(layer.id, { ...layer, layout: { ...layer.layout }, before }),
         setLayoutProperty: (id: string, key: string, value: unknown) => { definitions.get(id)!.layout[key] = value; },
         getLayoutProperty: (id: string, key: string) => definitions.get(id)?.layout[key],
         setFilter: (id: string, filter: unknown) => { definitions.get(id)!.filter = filter; }, setPaintProperty: vi.fn(), getPaintProperty: () => '#f4f2eb',
@@ -51,6 +53,20 @@ it('loads the archive when an overlay is first shown, then draws the network and
     view.layer.set({ network: 'none', access: false });
     expect(view.visible()).toEqual([]);
     expect(fetcher).toHaveBeenCalledTimes(1);
+    view.layer.destroy();
+});
+
+it('puts the bands over the water and under the roads and paths of the planner style', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => tilejson }));
+    const style = mapStyle('light', testConfig, '', '').layers;
+    const view = overlays(style);
+    view.layer.set({ network: 'cycling', access: false });
+    await view.layer.install('light');
+    const at = (id: string) => style.findIndex(layer => layer.id === id);
+    const band = at(view.definitions.get('network-cycling-band')!.before as string);
+    for (const under of ['water', 'water_river', 'landuse_pedestrian']) expect(band).toBeGreaterThan(at(under));
+    for (const over of ['roads_tunnels_other', 'roads_other', 'roads_minor', 'roads_bridges_other']) expect(band).toBeLessThanOrEqual(at(over));
+    expect(at(view.definitions.get('network-cycling')!.before as string)).toBeGreaterThan(at('roads_bridges_highway'));
     view.layer.destroy();
 });
 

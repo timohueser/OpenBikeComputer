@@ -128,6 +128,23 @@ describe('planner app transitions', () => {
         expect(document.querySelector('[aria-label="Route network"] [aria-checked="true"]')?.textContent?.trim()).toBe('Hiking');
     });
 
+    it('shows the route network of the activity, and keeps a network that the rider chose or switched off', async () => {
+        await startApp();
+        button('Map settings').click(); await tick();
+        const menu = document.querySelector('.layer-menu')!;
+        const network = () => menu.querySelector('[aria-label="Route network"] [aria-checked="true"]')?.textContent?.trim();
+        const activity = async (label: string) => { button('Activity').click(); await tick(); button(label).click(); await tick(); };
+        expect(network()).toBe('Cycling');
+        button('Hiking', menu).click(); await tick();
+        await activity('Gravel bike');
+        expect(network()).toBe('Hiking');
+        await activity('Mountain bike');
+        expect(network()).toBe('MTB');
+        button('Off', menu).click(); await tick();
+        await activity('Hiking');
+        expect(network()).toBe('Off');
+    });
+
     it('names map visits by address without adding an Undo step, and restores names on Redo', async () => {
         const saved = { ...JSON.parse(stored.get('trip')!), mode: 'route' };
         stored.set('trip', JSON.stringify(saved));

@@ -91,6 +91,8 @@ const restMs = 450;
 // stays the strongest line. The band starts at the width of the line, which fades over one zoom level.
 const bandZoom = 12;
 const lineWidth: ExpressionSpecification = ['interpolate', ['linear'], ['zoom'], 6, 1.2, 10, 1.8, bandZoom, 2.4];
+/** The share of the network colour in a band; a dark map needs more of it for the same contrast. */
+export const bandShare = { light: 0.4, dark: 0.5 };
 const bandWidth: ExpressionSpecification = ['interpolate', ['exponential', 1.6], ['zoom'], bandZoom, 2.4, 13, 7, 15, 10, 18, 22];
 
 const accessStatus = (mode: AccessMode): ExpressionSpecification => ['get', `${mode}_status`];
@@ -133,7 +135,8 @@ export class RouteOverlays {
         this.map.addSource(source, this.loaded.source);
         const style = this.map.getStyle().layers ?? [];
         const before = style.find(layer => layer.type === 'symbol')?.id;
-        const underRoads = style.find(layer => layer.id.startsWith('roads_'))?.id ?? before;
+        // The roads of the basemap over its water start with the tunnels; its runways lie under the water.
+        const underRoads = style.find(layer => layer.id.startsWith('roads_tunnels_'))?.id ?? before;
         const color = this.color;
         const layout: LineLayerSpecification['layout'] = { 'line-join': 'round', 'line-sort-key': ['get', 'rank'] };
         for (const activity of activities) {
@@ -197,8 +200,7 @@ export class RouteOverlays {
     // transparent line darkens where a hairpin makes it cross itself.
     private get bandColor(): ExpressionSpecification {
         const paper = this.map.getPaintProperty('background', 'background-color') as string;
-        // A dark map needs more of the network colour for the same contrast.
-        const share = this.theme === 'dark' ? 0.5 : 0.4;
+        const share = bandShare[this.theme];
         return ['interpolate', ['linear'], this.faded ? share / 2 : share, 0, paper, 1, this.color];
     }
 
