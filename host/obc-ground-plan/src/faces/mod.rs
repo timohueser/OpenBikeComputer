@@ -1180,9 +1180,13 @@ impl Sliced {
         let seams: Vec<[P; 2]> = c.seams.iter().chain(&u.seams).copied().collect();
         let (patches, segments) = slice(c.win, &strings, &seams);
         stats.slice_segments = segments as u32;
-        let mut labels: Vec<Label> =
-            patches.iter().map(|patch| label(&c.cands, &c.cover, &c.lines, patch, false)).collect();
-        let under: Vec<Label> = patches.iter().map(|patch| label(&u.cands, &u.cover, &u.lines, patch, false)).collect();
+        let n = patches.len();
+        let (mut labels, mut under, mut inner) = (Vec::with_capacity(n), Vec::with_capacity(n), Vec::with_capacity(n));
+        for patch in &patches {
+            labels.push(label(&c.cands, &c.cover, &c.lines, patch, false));
+            under.push(label(&u.cands, &u.cover, &u.lines, patch, false));
+            inner.push(inner_point(patch));
+        }
         // The box of some rings, doubled as an inner point is.
         let boxed = |rings: &Rings| {
             rings.iter().flatten().fold([i64::MAX, i64::MAX, i64::MIN, i64::MIN], |b, p| {
@@ -1190,45 +1194,41 @@ impl Sliced {
                 [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)]
             })
         };
-        let inside = |b: &[i64; 4], q: [i64; 2]| q[0] >= b[0] && q[0] <= b[2] && q[1] >= b[1] && q[1] <= b[3];
-        let holds = |rings: &Rings, b: &[i64; 4], q: [i64; 2]| inside(b, q) && geom::winding(rings, q) != 0;
-        let inner: Vec<Option<[i64; 2]>> = patches.iter().map(|patch| inner_point(patch)).collect();
-        let marked = |marks: &[(u32, Rings)]| -> Vec<Vec<u32>> {
-            let boxes: Vec<[i64; 4]> = marks.iter().map(|m| boxed(&m.1)).collect();
-            (inner.iter())
-                .map(|q| {
-                    q.map_or(Vec::new(), |q| {
-                        (marks.iter().zip(&boxes)).filter(|(m, b)| holds(&m.1, b, q)).map(|(m, _)| m.0).collect()
-                    })
-                })
-                .collect()
+        let holds = |rings: &Rings, b: &[i64; 4], q: [i64; 2]| {
+            q[0] >= b[0] && q[0] <= b[2] && q[1] >= b[1] && q[1] <= b[3] && geom::winding(rings, q) != 0
         };
-        // A floor in front of a portal line holds a patch that no bore's floor lies under.
+        // Per patch, the bores of the marks that hold its inner point (storey 0's: front; the storey under it's: back),
+        // and the floor in front of a portal line that holds a patch where no bore's floor lies under it.
+        let marks: Vec<&(u32, Rings)> = c.marks.iter().chain(&u.marks).collect();
+        let mark_boxes: Vec<[i64; 4]> = marks.iter().map(|m| boxed(&m.1)).collect();
         let wedge_boxes: Vec<[i64; 4]> = c.wedges.iter().map(|w| boxed(&w.2)).collect();
-        let in_wedge: Vec<Option<usize>> = (inner.iter().zip(&under))
-            .map(|(q, l)| {
-                let q = q.filter(|_| *l == TERRAIN)?;
-                (0..c.wedges.len()).find(|&k| holds(&c.wedges[k].2, &wedge_boxes[k], q))
-            })
-            .collect();
-        let wedge: Vec<Label> = in_wedge.iter().map(|w| w.map_or(TERRAIN, |k| c.wedges[k].1)).collect();
-        let mut ids: Vec<Label> = Vec::new();
-        let under_id: Vec<u32> = (under.iter().zip(&wedge))
-            .map(|(l, w)| {
-                let l = if *l == TERRAIN { w } else { l };
-                if *l == TERRAIN {
-                    return NO_UNDER;
+        let (mut front, mut back) = (vec![Vec::new(); n], vec![Vec::new(); n]);
+        let (mut wedge, mut under_id, mut ids) = (vec![TERRAIN; n], vec![NO_UNDER; n], Vec::new());
+        for k in 0..n {
+            if let Some(q) = inner[k] {
+                for (i, m) in marks.iter().enumerate() {
+                    if holds(&m.1, &mark_boxes[i], q) {
+                        if i < c.marks.len() { &mut front[k] } else { &mut back[k] }.push(m.0);
+                    }
                 }
-                ids.iter().position(|x| x == l).unwrap_or_else(|| {
-                    ids.push(*l);
-                    ids.len() - 1
-                }) as u32
-            })
-            .collect();
-        let (front, mut back) = (marked(&c.marks), marked(&u.marks));
-        for (k, w) in in_wedge.iter().enumerate() {
-            if let Some(w) = w {
-                back[k].extend(&c.wedges[*w].0);
+                for (w, b) in c.wedges.iter().zip(&wedge_boxes) {
+                    if under[k] == TERRAIN && holds(&w.2, b, q) {
+                        wedge[k] = w.1;
+                        back[k].extend(&w.0);
+                        break;
+                    }
+                }
+            }
+            // A floor's id: one per label of the storey under the ground or of a floor in front of a portal line.
+            let l = if under[k] == TERRAIN { wedge[k] } else { under[k] };
+            if l != TERRAIN {
+                under_id[k] = match ids.iter().position(|x| *x == l) {
+                    Some(i) => i as u32,
+                    None => {
+                        ids.push(l);
+                        ids.len() as u32 - 1
+                    }
+                };
             }
         }
         // The cover's label, also where the window holds no cover candidate.
@@ -1679,8 +1679,10 @@ fn candidates<'a>(
         let top = tops.get(li).filter(|t| BORES && own.is_none() && !t.is_empty());
         let mut named: [Vec<Vec<P>>; LAYERS] = Default::default();
         // At a deck end the slope takes the round end of a free end, so its bank runs round the end: the
-        // paved layers end square on the end line.
-        let deck = [line.deck[0] && first == 0, line.deck[1] && last == line.p.len()];
+        // paved layers end square on the end line. A portal is no free end: the ground goes on over the bore, so
+        // the bank ends square on the portal line too.
+        let free = |k: usize| line.deck[k] && !(BORES && line.portal[k]);
+        let deck = [free(0) && first == 0, free(1) && last == line.p.len()];
         for k in 0..bands {
             let inner = |i: usize| if k == 0 { line.h[i] } else { line.bands[i][k - 1] };
             let d: Vec<f64> = (first..last).map(|i| line.bands[i][k]).collect();
