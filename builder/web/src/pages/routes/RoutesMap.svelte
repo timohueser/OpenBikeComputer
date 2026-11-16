@@ -1,11 +1,17 @@
-<!-- The map of the Routes page: the lines of the shown routes or rides from zoom 8, bubbles with a count below it, and
-     the selected ones wide at each zoom. Rides draw on a pale map. -->
+<!-- The map of the Routes page: the lines of the shown routes or rides on the relief from zoom 8, bubbles with a count
+     below it, and the selected ones wide at each zoom. -->
+<script module lang="ts">
+    import { terrainSource } from '../../lib/planner/map-terrain';
+    import { config } from '../../lib/planner/map-data';
+    const terrain = terrainSource(config.terrain);
+</script>
+
 <script lang="ts">
     import { onMount, untrack } from 'svelte';
     import * as maplibregl from 'maplibre-gl';
     import 'maplibre-gl/dist/maplibre-gl.css';
     import type { FeatureCollection, LineString, Point } from 'geojson';
-    import { basemapStyle } from '../../lib/planner/map-style';
+    import { basemapStyle, type Relief } from '../../lib/planner/map-style';
     import { styleConfig, useMapProtocols } from '../../lib/planner/map-setup';
     import { appearance } from '../../lib/theme.svelte';
     import type { Box, Item } from './filter';
@@ -28,10 +34,12 @@
     } = $props();
 
     const LINE_ZOOM = 8;
+    /** The hill shading shows no contour lines. */
+    const CONTOUR_LINES = false;
     let container: HTMLElement;
     let map = $state.raw<maplibregl.Map>(), ready = $state(false);
     const theme = $derived(appearance.dark ? 'dark' : 'light');
-    let styled: typeof theme, styledLook: typeof look, fitted = 0;
+    let styled: typeof theme, styledLook: typeof look, fitted = 0, relief: Relief;
     /** The credits of the picture, behind a button beside the credit of the map. */
     let pictureCredits: HTMLElement, creditsOpen = $state(false);
 
@@ -57,7 +65,6 @@
         map.addSource('middles', { type: 'geojson', data: untrack(() => middles), cluster: true, clusterMaxZoom: LINE_ZOOM - 1, clusterRadius: 48 });
         const shownNow = untrack(() => shownFilter), selectedNow = untrack(() => selectedFilter);
         if (ride) {
-            map.addLayer({ id: 'pale', type: 'background', paint: { 'background-color': color('--parchment'), 'background-opacity': 0.5 } });
             map.addLayer({ id: 'casing', type: 'line', source: 'routes', minzoom: LINE_ZOOM, filter: shownNow, layout: round,
                 paint: { 'line-color': color('--panel'), 'line-width': 6 } });
         }
@@ -120,8 +127,10 @@
     onMount(() => {
         useMapProtocols();
         styledLook = look;
+        const lease = terrain.acquire(maplibregl);
+        relief = lease.relief(CONTOUR_LINES);
         const created = new maplibregl.Map({
-            container, style: basemapStyle(styled = theme, styleConfig), bounds: styleConfig.bounds,
+            container, style: basemapStyle(styled = theme, styleConfig, relief), bounds: styleConfig.bounds,
             attributionControl: false, maxPitch: 0, renderWorldCopies: false,
         });
         // The selected card covers the bottom of the map.
@@ -151,14 +160,14 @@
         map = created;
         const resize = new ResizeObserver(() => created.resize());
         resize.observe(container);
-        return () => { resize.disconnect(); created.remove(); };
+        return () => { resize.disconnect(); created.remove(); lease.release(); };
     });
 
     $effect(() => {
         if (map && (theme !== styled || look !== styledLook)) {
             styledLook = look;
             ready = false;
-            map.setStyle(basemapStyle(styled = theme, styleConfig), { diff: false });
+            map.setStyle(basemapStyle(styled = theme, styleConfig, relief), { diff: false });
         }
     });
     $effect(() => {
