@@ -33,26 +33,30 @@ export interface RouteLine {
 /**
  * The points of the routes in riding order, each with the number of its route, from 1: the vertices of a
  * line, and between them points at most STEP_M apart, so that the ribbon follows the surface. A point
- * takes the colour of the edge that ends at it, the first one that of the first edge. Between two routes
- * that draw stand two break points with the number 0: a copy of the last point of the one route and a
+ * takes the colour of the edge that ends at it, the first one that of the first edge. The first and the
+ * last point of a route are copies of its ends, its caps, which route.wgsl draws as round ends. Between two
+ * routes that draw stand two break points with the number 0: a copy of the last point of the one route and a
  * copy of the first point of the next. A route of fewer than two points draws none.
  */
 export function routePoints(routes: readonly RouteLine[]): Uint32Array<ArrayBuffer> {
     const words: number[] = [];
     const push = (x: number, y: number, colour: number, route: number) => words.push(Math.round(x), Math.round(y), colour, route);
+    const repeat = (route: number) => push(words.at(-4)!, words.at(-3)!, words.at(-2)!, route);
     routes.forEach(({ line, colours }, k) => {
         if (line.length < 2) return;
         const [x0, y0] = worldPixel(line[0], UNITS), first = packed(colours[0]);
         if (words.length) {
-            push(words.at(-4)!, words.at(-3)!, words.at(-2)!, 0);
+            repeat(0);
             push(x0, y0, first, 0);
         }
         push(x0, y0, first, k + 1);
+        repeat(k + 1);
         for (let i = 1; i < line.length; i++) {
             const [x, y] = worldPixel(line[i], UNITS), [lx, ly] = worldPixel(line[i - 1], UNITS), metres = Math.hypot(x - lx, y - ly) * metresPerUnit((y + ly) / 2);
             const steps = Math.ceil(metres / STEP_M), colour = packed(colours[i - 1]);
             for (let s = 1; s <= steps; s++) push(lx + (x - lx) * s / steps, ly + (y - ly) * s / steps, colour, k + 1);
         }
+        repeat(k + 1);
     });
     return new Uint32Array(new Int32Array(words).buffer);
 }

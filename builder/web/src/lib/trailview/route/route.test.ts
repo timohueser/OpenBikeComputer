@@ -15,7 +15,10 @@ describe('routePoints', () => {
         // About 222 m north, then a repeated vertex, then about 76 m east.
         const points = pointsOf(routePoints([{ line: [[8.3, 46.8], [8.3, 46.802], [8.3, 46.802], [8.301, 46.802]], colours: ['#ff0000', '#00ff00', '#0000ff'] }]));
         const colours = points.map(point => point.colour);
-        expect(points.length).toBe(1 + Math.ceil(222.4 / 5) + Math.ceil(76.1 / 5));
+        // The two caps repeat the first and the last point.
+        expect(points.length).toBe(1 + Math.ceil(222.4 / 5) + Math.ceil(76.1 / 5) + 2);
+        expect(points[0]).toEqual(points[1]);
+        expect(points.at(-1)).toEqual(points.at(-2));
         expect(points.every(point => point.route === 1)).toBe(true);
         // The bend is a point of its own and the last red one (red packs as 0x0000ff): the line leaves it east, in blue.
         const bend = colours.lastIndexOf(0x0000ff);
@@ -25,7 +28,7 @@ describe('routePoints', () => {
         expect(points[bend + 1].x).toBeGreaterThan(points[0].x);
     });
 
-    it('numbers the points of each route and parts two routes with two break points; a route of one point keeps its number', () => {
+    it('numbers the points of each route, caps included, and parts two routes with two break points; a route of one point keeps its number', () => {
         const red = { line: [[8.3, 46.8], [8.3, 46.8001]], colours: ['#ff0000'] } satisfies RouteLine;
         const blue = { line: [[8.31, 46.8], [8.31, 46.8001]], colours: ['#0000ff'] } satisfies RouteLine;
         const points = pointsOf(routePoints([red, { line: [[8.4, 46.9]], colours: [] }, blue]));
@@ -36,6 +39,9 @@ describe('routePoints', () => {
         // The break points copy the last point of the one route and the first point of the next.
         expect(points[first]).toEqual({ ...points[first - 1], route: 0 });
         expect(points[first + 1]).toEqual({ ...points[first + 2], route: 0 });
+        // Each route beside the break ends and starts with its cap.
+        expect(points[first - 1]).toEqual(points[first - 2]);
+        expect(points[first + 2]).toEqual(points[first + 3]);
         expect(points.length).toBe(2 * pointsOf(routePoints([red])).length + 2);
     });
 });
