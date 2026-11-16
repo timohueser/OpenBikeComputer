@@ -27,6 +27,7 @@ owns:
   - tools/check_fixture_policy.py
   - tools/cairn/**
   - .cairn/**
+  - .agents/skills/**
   - tools/ci/**
   - tools/licenses/**
   - tools/vps/**

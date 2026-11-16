@@ -652,7 +652,7 @@
    ],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 18895,
+   "lines": 33559,
    "problems": []
   },
   {
@@ -701,7 +701,7 @@
    ],
    "test_depends_on": [],
    "violations": 5,
-   "lines": 27643,
+   "lines": 27735,
    "problems": [
     {
      "rule": "cycle",
