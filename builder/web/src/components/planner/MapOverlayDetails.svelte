@@ -67,7 +67,7 @@
             {@const name = route.name || route.ref || 'Unnamed route'}
             {@const scope = networkScope(route)}
             <li>
-                <span class="marker"><TrailMarker symbol={route.symbol} description={route.symbol_text ?? ''} ref={route.ref.split(';')[0]} /></span>
+                <span class="marker"><TrailMarker symbol={route.symbol} description={route.symbol_text ?? ''} ref={route.ref?.split(';')[0]} /></span>
                 <span class="body">
                     <strong>{name}</strong>
                     {#if scope || website}<small>

@@ -16,7 +16,7 @@ it('shows relations of one name, number and network as one route, with the plan 
     shown = mount(MapOverlayDetails, { target: document.body, props: {
         selection: { coordinate: [8.3, 47], way: 1, kind: 'cycling', routes: [
             { ...route, id: 1 }, { ...route, id: 2, website: 'https://www.example.org/seen' },
-            { kind: 'cycling', network: 'rcn', rank: 2, name: 'Alpenpanorama-Route', ref: '4', id: 3 }] },
+            { kind: 'cycling', rank: 0, name: 'Alpenpanorama-Route', id: 3 }] },
         onclose: () => {}, onplan,
         canPlan: async (id: number) => id === 2 ? 'plan' as const : 'missing' as const,
     } });

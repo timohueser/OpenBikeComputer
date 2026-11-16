@@ -5,7 +5,8 @@ import { releaseFetch, releaseUrl } from './release';
 
 export interface OverlayOptions { network: 'cycling' | 'hiking' | 'mtb' | 'none'; access: boolean }
 export type AccessMode = 'cycling' | 'walking';
-export interface NetworkRoute { id: number; kind: string; network: string; rank: number; name: string; ref: string; website?: string | null; symbol?: string; symbol_text?: string }
+/** A route of the tiles' `routes` layer, which leaves out each empty property. */
+export interface NetworkRoute { id: number; kind: string; network?: string; rank: number; name?: string; ref?: string; website?: string | null; symbol?: string; symbol_text?: string }
 export interface OverlaySelection {
     coordinate: Coordinate;
     way: number;
@@ -31,7 +32,7 @@ const networkScopes: Record<string, string> = { i: 'International', n: 'National
 export const routeKindTitles: Record<string, string> = { cycling: 'Cycling routes', hiking: 'Hiking routes', mtb: 'Mountain bike routes' };
 /** The reach of the network of a route, or '' when the network names none. MTB routes use the cycling values `icn` to `lcn`. */
 export function networkScope({ network }: Pick<NetworkRoute, 'network'>): string {
-    return networkScopes[/^([inrl])[cw]n$/.exec(network)?.[1] ?? ''] ?? '';
+    return networkScopes[/^([inrl])[cw]n$/.exec(network ?? '')?.[1] ?? ''] ?? '';
 }
 const source = 'route-overlays';
 const labelZoom = 11;
