@@ -34,8 +34,6 @@
     } = $props();
 
     const LINE_ZOOM = 8;
-    /** The hill shading shows no contour lines. */
-    const CONTOUR_LINES = false;
     let container: HTMLElement;
     let map = $state.raw<maplibregl.Map>(), ready = $state(false);
     const theme = $derived(appearance.dark ? 'dark' : 'light');
@@ -129,7 +127,7 @@
         useMapProtocols();
         styledLook = look;
         const lease = terrain.acquire(maplibregl);
-        relief = lease.relief(CONTOUR_LINES);
+        relief = lease.relief();
         const created = new maplibregl.Map({
             container, style: basemapStyle(styled = theme, styleConfig, relief), bounds: styleConfig.bounds,
             attributionControl: false, maxPitch: 0, renderWorldCopies: false,

@@ -480,7 +480,7 @@
         useMapProtocols();
         const terrainLease = terrain.acquire(maplibregl);
         // The switches of the map show or hide the relief and the contour lines (`syncTerrainAndOverlays`).
-        relief = terrainLease.relief(true);
+        relief = terrainLease.relief();
         insertDot = new maplibregl.Marker({ element: Object.assign(document.createElement("div"), { className: "planner-insert-dot" }) });
         hoverDot = new maplibregl.Marker({ element: Object.assign(document.createElement("div"), { className: "planner-hover-dot" }) });
         try {

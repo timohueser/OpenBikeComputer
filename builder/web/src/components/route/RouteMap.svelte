@@ -39,8 +39,6 @@
 
     /** The pointer marks the line within this many pixels of it. */
     const NEAR_PX = 24;
-    /** The hill shading shows the contour lines too. */
-    const CONTOUR_LINES = true;
     /** A fit of a short part, such as one of no length, zooms in no further than this. */
     const FIT_ZOOM = 15;
     let container: HTMLElement;
@@ -103,7 +101,7 @@
     onMount(() => {
         useMapProtocols();
         const lease = terrain.acquire(maplibregl);
-        relief = lease.relief(CONTOUR_LINES);
+        relief = lease.relief();
         const created = new maplibregl.Map({
             container, style: basemapStyle(shown = theme, styleConfig, relief), bounds: bounds(), fitBoundsOptions: { padding: 32 },
             attributionControl: { compact: true }, maxPitch: 0, renderWorldCopies: false,

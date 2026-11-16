@@ -30,7 +30,7 @@ export function terrainSource(url: string) {
             if (users++ === 0) source.setupMaplibre(library);
             let active = true;
             const dem = source;
-            const relief = (contours: boolean): Relief => ({ dem: dem.sharedDemProtocolUrl, ...(contours ? { contours: dem.contourProtocolUrl(CONTOURS) } : {}) });
+            const relief = (): Relief => ({ dem: dem.sharedDemProtocolUrl, contours: dem.contourProtocolUrl(CONTOURS) });
             return { dem, relief, release() {
                 if (!active) return;
                 active = false;
