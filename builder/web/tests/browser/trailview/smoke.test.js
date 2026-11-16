@@ -129,6 +129,12 @@ test('two routes leave the gap between them, routeAt finds each, and the bold ro
     for (let x = Math.ceil(width / 2 - reach + 8); x < width / 2 + reach - 8; x++) for (let y = row - 3; y <= row + 3; y++) gap.push(change(two, x, y));
     expect(gap.length).toBeGreaterThan(500);
     expect(Math.max(...gap)).toBeLessThanOrEqual(12);
+    // Route 1 ends 40 m west of the middle with a round cap: a pixel on its row just past the end changes, and one at the corner of
+    // the cap, as far beyond the end as the line is wide to each side, does not.
+    const end = Math.round(width / 2 - reach), [x1, y1] = west;
+    const half = Math.ceil(Array.from({ length: 41 }, (_, k) => y1 - 20 + k).filter(y => change(two, x1, y) > 12).length / 2);
+    expect(change(two, end + 1, y1)).toBeGreaterThan(60);
+    expect(Math.max(change(two, end + half, y1 - half), change(two, end + half, y1 + half))).toBeLessThanOrEqual(12);
     expect(await page.evaluate(points => points.map(([x, y]) => window.trailView.routeAt(x + 0.5, y + 0.5)), [west, east, [width / 2, row]])).toEqual([1, 2, null]);
 
     const alone = await draw([routes[1]]), bold = await draw(routes, 2);

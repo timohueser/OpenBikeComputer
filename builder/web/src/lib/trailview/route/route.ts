@@ -54,7 +54,11 @@ export function routePoints(routes: readonly RouteLine[]): Uint32Array<ArrayBuff
         for (let i = 1; i < line.length; i++) {
             const [x, y] = worldPixel(line[i], UNITS), [lx, ly] = worldPixel(line[i - 1], UNITS), metres = Math.hypot(x - lx, y - ly) * metresPerUnit((y + ly) / 2);
             const steps = Math.ceil(metres / STEP_M), colour = packed(colours[i - 1]);
-            for (let s = 1; s <= steps; s++) push(lx + (x - lx) * s / steps, ly + (y - ly) * s / steps, colour, k + 1);
+            for (let s = 1; s <= steps; s++) {
+                const px = Math.round(lx + (x - lx) * s / steps), py = Math.round(ly + (y - ly) * s / steps);
+                // A point on the one before it gives the line no direction.
+                if (px !== words.at(-4) || py !== words.at(-3)) push(px, py, colour, k + 1);
+            }
         }
         repeat(k + 1);
     });

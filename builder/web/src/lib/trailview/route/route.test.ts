@@ -28,6 +28,13 @@ describe('routePoints', () => {
         expect(points[bend + 1].x).toBeGreaterThan(points[0].x);
     });
 
+    it('leaves out a point that rounds onto the point before it, so that the start cap takes the direction of the line', () => {
+        // The second vertex lies about 8 mm east of the first, less than one unit of the buffer.
+        const points = pointsOf(routePoints([{ line: [[8.3, 46.8], [8.3000001, 46.8], [8.301, 46.8]], colours: ['#ff0000', '#ff0000'] }]));
+        expect(points[2].x).toBeGreaterThan(points[1].x);
+        points.slice(2, -1).forEach((point, i) => expect(point).not.toEqual(points[i + 1]));
+    });
+
     it('numbers the points of each route, caps included, and parts two routes with two break points; a route of one point keeps its number', () => {
         const red = { line: [[8.3, 46.8], [8.3, 46.8001]], colours: ['#ff0000'] } satisfies RouteLine;
         const blue = { line: [[8.31, 46.8], [8.31, 46.8001]], colours: ['#0000ff'] } satisfies RouteLine;

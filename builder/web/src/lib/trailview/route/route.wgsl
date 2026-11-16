@@ -168,11 +168,16 @@ fn route_vertex(@builtin(vertex_index) v: u32, @builtin(instance_index) instance
     // Across the line as the eye sees it, on the side of left; a line that runs straight at the eye turns flat.
     let facing = cross(vec3f(tangent, 0.0), c) * select(1.0, -1.0, c.z > 0.0);
     let across = select(left, normalize(facing), dot(facing, facing) > 1e-6 * distance * distance);
-    let p = pulled(mix(c + (across * side + vec3f(tangent, 0.0) * beyond) * half, lie, lying), PULL_M, PULL_PIXELS);
+    // Along the line as the eye sees it, so that a standing cap shows its full length.
+    let onward_eye = cross(c, across);
+    let onward = select(vec3f(tangent, 0.0), normalize(onward_eye) * select(-1.0, 1.0, dot(onward_eye.xy, tangent) >= 0.0),
+        dot(onward_eye, onward_eye) > 1e-6 * distance * distance);
+    let p = pulled(mix(c + (across * side + onward * beyond) * half, lie, lying), PULL_M, PULL_PIXELS);
     var out: RouteOut;
     out.clip = frame.view_proj * vec4f(p, 1.0);
     out.side = side;
-    out.beyond = abs(beyond);
+    // A point with no width (a break point) keeps its strip triangles to a cap beyond the round end, where they draw nothing.
+    out.beyond = select(abs(beyond), 1.0, wide == 0.0);
     out.body = body / max(half, 1e-6);
     out.colour = linear(unpack4x8unorm(points[i].colour).rgb);
     out.fade = smoothstep(FADE_NEAR_M, FADE_FAR_M, distance);
