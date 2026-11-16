@@ -1538,7 +1538,7 @@ fn candidates<'a>(
     }
     // The cover over the bores, the lids (the stretches on top of a bore or of a way that enters one) and the lines
     // with such a stretch.
-    let Lid { cover: cover_cands, entering: lids, of_lower: lid_of } = if level == 0 && any_bore(graph) {
+    let Lid { cover: cover_cands, entering: lids, tops, of_lower: lid_of } = if level == 0 && any_bore(graph) {
         bore_cover(&ctx, input, &lines, reach(rules::ways_m(plan, &rules.sections)), bx)
     } else {
         Lid::default()
@@ -1626,11 +1626,13 @@ fn candidates<'a>(
             fill: None,
             discs: Vec::new(),
         });
-        // A deck's band layers are its own: the slab's edge band names its way. So are the paved layers of a way with
-        // a stretch on top of a lower way: their heights are that way's, not those of the way under it, and over a
-        // floor they keep their place as a lid (`Sliced::joint`).
-        let top = BORES && lid_of.iter().any(|x| x.1 == li);
-        let mut own = (!line.cuts.is_empty() || decks.is_some() || top).then(|| own_layers.entry(li).or_default());
+        // A deck's band layers are its own: the slab's edge band names its way.
+        let mut own = (!line.cuts.is_empty() || decks.is_some()).then(|| own_layers.entry(li).or_default());
+        // So are the paved layers of a way on its segments on top of a lower way: their heights are that way's, not
+        // those of the way under it, and over a floor they keep their place as a lid (`Sliced::joint`). They are those
+        // segments' pieces of the band layers' own stroke, so the two meet on its mitre lines.
+        let top = tops.get(li).filter(|t| BORES && own.is_none() && !t.is_empty());
+        let mut named: [Vec<Vec<P>>; LAYERS] = Default::default();
         // At a deck end the slope takes the round end of a free end, so its bank runs round the end: the
         // paved layers end square on the end line.
         let deck = [line.deck[0] && first == 0, line.deck[1] && last == line.p.len()];
@@ -1646,7 +1648,26 @@ fn candidates<'a>(
                 _ => &mut layers[k],
             };
             let ends = if k == SLOPE { [ends[0] || deck[0], ends[1] || deck[1]] } else { ends };
-            pieces_along(p, &d, &line.dirs(first, last), cuts, ends, false, layer);
+            match top.filter(|_| BAND_LABELS[k].2 == HeightRule::Owner) {
+                Some(t) => {
+                    let named = &mut named[k];
+                    let mut sort = |[a, b]: [usize; 2], ring| {
+                        if (first + a..=first + b).all(|i| t[i]) {
+                            named.push(ring)
+                        } else {
+                            layer.push(ring)
+                        }
+                    };
+                    stroke::pieces_along_by(p, &d, &line.dirs(first, last), cuts, ends, false, &mut sort);
+                }
+                None => pieces_along(p, &d, &line.dirs(first, last), cuts, ends, false, layer),
+            }
+        }
+        if top.is_some() {
+            let own = own_layers.entry(li).or_default();
+            for (k, layer) in named.into_iter().enumerate() {
+                own[k].extend(layer);
+            }
         }
     }
     stats.ways = lines.len() as u32;
@@ -1890,6 +1911,8 @@ struct Lid {
     cover: Vec<Cand>,
     /// Per way that enters a bore, the strokes of the stretches on top of it.
     entering: Vec<(u32, Rings)>,
+    /// Per line of storey 0 and segment, whether it lies on top of a lower way (empty for a line with none).
+    tops: Vec<Vec<bool>>,
     /// Per lower way (a bore, or a way that enters one), the lines with a stretch on top of it and their strokes.
     of_lower: Vec<(u32, usize, Rings)>,
 }
@@ -1955,6 +1978,7 @@ fn bore_cover(ctx: &Ctx, input: &CellInput, ground: &[WayLine], ways_box: [i32; 
     // a stretch that meets no bore is not asked.
     // Per lower way, the core strokes of the stretches on top of it: its lids.
     let mut cores: Vec<Vec<Vec<P>>> = vec![Vec::new(); under.len()];
+    let mut tops: Vec<Vec<bool>> = vec![Vec::new(); ground.len()];
     // Per lower way and line with a stretch on top of it, the strokes of those stretches.
     let mut lid_of: Vec<(u32, usize, Rings)> = Vec::new();
     for (li, line) in ground.iter().enumerate() {
@@ -2006,6 +2030,13 @@ fn bore_cover(ctx: &Ctx, input: &CellInput, ground: &[WayLine], ways_box: [i32; 
         let ends = [line.round[0] && first == 0, line.round[1] && last == line.p.len()];
         for (u, cores) in under.iter().zip(&mut cores) {
             let top: Vec<bool> = (first..last - 1).map(|i| on_top(i, u)).collect();
+            if top.contains(&true) {
+                let t = &mut tops[li];
+                t.resize(line.p.len() - 1, false);
+                for (i, &x) in top.iter().enumerate() {
+                    t[first + i] |= x;
+                }
+            }
             let before = cores.len();
             let mut i = 0;
             while i < top.len() {
@@ -2051,7 +2082,7 @@ fn bore_cover(ctx: &Ctx, input: &CellInput, ground: &[WayLine], ways_box: [i32; 
         fill: None,
         discs: Vec::new(),
     }];
-    Lid { cover, entering: lids, of_lower: lid_of }
+    Lid { cover, entering: lids, tops, of_lower: lid_of }
 }
 
 /// Splits every candidate that gives the label of a way with legs (`legs`), or that is one of its own
