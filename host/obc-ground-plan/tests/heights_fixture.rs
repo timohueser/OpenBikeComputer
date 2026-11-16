@@ -30,8 +30,10 @@ use obc_ground_plan::CellInput;
 /// The grid of the step scan, metres.
 const GRID_M: f64 = 0.5;
 /// Steps inside faces, measured on the revision 17 fixture with the slopes from the paved outline and line
-/// water: the count must not grow.
-const INSIDE_MAX: usize = 9;
+/// water, and on the revision 22 fixture: the count must not grow. A band face that two lines of one road reach
+/// takes the height of the nearer line, so it steps where their heights differ, as at the fold of a dead end and
+/// its hook: band faces have no line of their own yet.
+const INSIDE_MAX: usize = 10;
 /// Steps at label edges with no rule (`check::edge_steps`), measured on the revision 17 fixture with the
 /// slopes from the outline pieces of `records::outline_edges` and the vertex values of `heights::groups`
 /// (an end's cone over the fan of its turn only), walls up to the highest wall, faces past it as steep as

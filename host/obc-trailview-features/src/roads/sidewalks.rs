@@ -236,11 +236,12 @@ impl<'a> Town<'a> {
                     on[j..a].fill(true);
                 }
             }
-            // An end inside the stroke and off a junction stops in the open; one at the stroke's end may carry
-            // on into the next stroke.
+            // A stub joins a junction to an end in the open, inside the stroke and off a junction. An end at the
+            // stroke's end is neither: the sidewalk may carry on into the next stroke there.
             let open = |e: usize| e > 0 && e < n - 1 && !junction[e];
+            let stub = |a: usize, b: usize| (junction[a] && open(b)) || (open(a) && junction[b]);
             for (a, b) in runs(&on, true) {
-                if open(a) != open(b) && curve.s[b] - curve.s[a] < JUNCTION_M {
+                if stub(a, b) && curve.s[b] - curve.s[a] < JUNCTION_M {
                     (a..b).for_each(|i| count(&mut walks.short_m, i));
                     on[a..b].fill(false);
                 }
@@ -525,6 +526,36 @@ mod tests {
         }
         assert!(solved.metrics.sidewalks.short_m > 55.0);
         assert!(solved.metrics.sidewalks.bed_m > 2.0, "the footway's bed lies on the north sidewalk");
+    }
+
+    #[test]
+    fn a_tag_no_holds_against_the_gap_rule_and_the_run_on() {
+        let place = engelberg();
+        let road =
+            |corners: &[(f64, f64)], edit: fn(&mut Feature)| way("residential", place.line(corners, Some(20.0)), edit);
+        let no = |f: &mut Feature| f.sidewalks = [Some(false); 2];
+        let features = [
+            road(&[(0.0, 0.0), (220.0, 0.0)], plain),
+            road(&[(220.0, 0.0), (230.0, 0.0)], no),
+            road(&[(230.0, 0.0), (500.0, 0.0)], plain),
+            road(&[(0.0, 1000.0), (295.0, 1000.0)], plain),
+            road(&[(295.0, 1000.0), (300.0, 1000.0)], no),
+            road(&[(300.0, 1000.0), (400.0, 1000.0)], plain),
+            road(&[(300.0, 1000.0), (300.0, 1100.0)], plain),
+        ];
+        // The gap of 20 m between the two rows' pieces holds a part tagged `no`; the piece that ends 10 m before
+        // the junction has a part tagged `no` before it.
+        let mut houses = row(100.0, 200.0, -15.0);
+        houses.extend(row(240.0, 340.0, -15.0));
+        houses.extend(row(100.0, 280.0, 985.0));
+        let solved = solved(&place, &features, &houses, &place.terrain(|_, _| 1000.0));
+        for bit in [WALK_LEFT, WALK_RIGHT] {
+            assert!(one(&pieces(&place, &solved, 0, bit), (90.0, 210.0)), "{:?}", pieces(&place, &solved, 0, bit));
+            assert!(pieces(&place, &solved, 1, bit).is_empty());
+            assert!(one(&pieces(&place, &solved, 2, bit), (230.0, 350.0)), "{:?}", pieces(&place, &solved, 2, bit));
+            assert!(one(&pieces(&place, &solved, 3, bit), (90.0, 290.0)), "{:?}", pieces(&place, &solved, 3, bit));
+            assert!(pieces(&place, &solved, 4, bit).is_empty());
+        }
     }
 
     #[test]
