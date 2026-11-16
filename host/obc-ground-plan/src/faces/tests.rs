@@ -845,6 +845,18 @@ fn a_bore_is_the_prism_under_storey_0_and_its_cover_holds_the_least_room() {
         corners += 1;
     }
     assert!(corners > 100, "{corners} floor corners");
+    // The way's cut ends square on the portal line (x −60): in front of it the ground beside the way lies in the
+    // cut, behind it the ground beside the cover is the terrain.
+    let ground_at = |x: f64, y: f64| {
+        let o = key.origin();
+        let g = at([x, y]);
+        let q = [(g.x - o.x) as f64, (g.y - o.y) as f64];
+        heights::height_at(&b.records, q, records::find(&b.records, q), 503.1).h
+    };
+    for y in [-6.0, 6.0] {
+        assert!(ground_at(-62.0, y) < 503.1 - 0.5, "in front of the portal line at {y}: {}", ground_at(-62.0, y));
+        assert!(ground_at(-58.0, y) >= 503.1 - 1e-3, "behind the portal line at {y}: {}", ground_at(-58.0, y));
+    }
 }
 
 /// A road that passes over its own bore 4 m up, as a way on top, before it descends into it (a spiral): an opening

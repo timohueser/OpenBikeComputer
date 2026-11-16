@@ -1043,15 +1043,16 @@ pub(crate) fn ceiling_lines<'a>(
     cell: CellKey,
 ) -> Vec<WayLine<'a>> {
     let ctx = Ctx { graph, rules, origin: cell.origin() };
-    let (deck_m, bore_m) = (rules.structures.edge_band_m, deck::WALL_M + deck::COVER_SIDE_M);
-    // A cell whose graph has no bore reads its decks as a build with no bores does.
-    let half = HALF_MAX_M + if BORES && any_bore(graph) { deck_m.max(bore_m) } else { deck_m };
+    let deck_m = rules.structures.edge_band_m;
+    let half = HALF_MAX_M + deck_m;
     let m = records::ceiling_end_reach(half, rules.plan.heights.ceiling_release_m) + records::HEIGHT_PAD_M;
     let mut out = lines(&ctx, input, &|w| on_deck(graph, w) || in_bore(graph, w), grown(cell, m, true)).0;
     for line in &mut out {
         line.cuts.clear();
         line.spans.clear();
-        let band = if in_bore(graph, line.way) { bore_m } else { deck_m };
+        // A bore's floor bound holds over its floor, its core, and falls past it: by the lift at most, so the ground
+        // meets the plain terrain beside the cover with no step.
+        let band = if in_bore(graph, line.way) { 0.0 } else { deck_m };
         for i in 0..line.p.len() {
             line.h[i] = line.bands[i][VERGE] + ctx.units(band, line.p[i]);
         }
