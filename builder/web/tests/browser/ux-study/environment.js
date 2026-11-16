@@ -16,17 +16,20 @@ const DIST = fileURLToPath(new URL('../../../dist/planner', import.meta.url));
 export async function openBrowser() {
   const port = await loopbackPort('OBC_UX_STUDY_PORT');
   const base = `http://127.0.0.1:${port}`;
-  const server = spawn('python3', ['serve.py', String(port), DIST], { cwd: BROWSER_DIR, stdio: 'inherit' });
   // A cloud session reaches the public hosts only through its HTTPS proxy, and Chromium does not read the
   // proxy from the environment.
   const proxy = process.env.HTTPS_PROXY ? { server: process.env.HTTPS_PROXY, bypass: '127.0.0.1,localhost' } : undefined;
+  // The browser starts first: when it cannot start, no server is left running.
   const browser = await chromium.launch({ proxy });
-  await waitForServer(`${base}/planner.html`);
-  return {
-    actions,
-    start: () => startWalkthrough(browser, base),
-    close: async () => { await browser.close(); server.kill(); },
-  };
+  const server = spawn('python3', ['serve.py', String(port), DIST], { cwd: BROWSER_DIR, stdio: 'inherit' });
+  const close = async () => { await browser.close(); server.kill(); };
+  try {
+    await waitForServer(`${base}/planner.html`);
+  } catch (error) {
+    await close();
+    throw error;
+  }
+  return { actions, start: () => startWalkthrough(browser, base), close };
 }
 
 async function waitForServer(url) {

@@ -6,7 +6,11 @@ import { join } from 'node:path';
 const TRIES = 3;
 const STUCK_REPEATS = 3;
 
-/** The cost of the participant calls of one study. At `maxCostUsd` no further call starts. */
+/**
+ * The cost of the participant calls of one study. At `maxCostUsd` no further call starts. Calls that are
+ * already in flight still finish, so a study can pass the limit by the cost of one call for each walkthrough
+ * that runs at the same time.
+ */
 export function createBudget(model, maxCostUsd) {
   let spent = 0;
   return {
