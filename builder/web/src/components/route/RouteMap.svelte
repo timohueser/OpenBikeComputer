@@ -1,9 +1,3 @@
-<script module lang="ts">
-    import { terrainSource } from '../../lib/planner/map-terrain';
-    import { config } from '../../lib/planner/map-data';
-    const terrain = terrainSource(config.terrain);
-</script>
-
 <script lang="ts">
     import { onMount, untrack } from 'svelte';
     import * as maplibregl from 'maplibre-gl';
@@ -14,7 +8,8 @@
     import Icon from '../../lib/ui/Icon.svelte';
     import PhotoMarks from './PhotoMarks.svelte';
     import { basemapStyle, type Relief } from '../../lib/planner/map-style';
-    import { styleConfig, useMapProtocols } from '../../lib/planner/map-setup';
+    import { styleConfig, terrain, useMapProtocols } from '../../lib/planner/map-setup';
+    import { terrainRetry } from '../../lib/planner/map-terrain';
     import { appearance } from '../../lib/theme.svelte';
 
     /** A map that the rider can move, with the summary line of a route or a ride and the mark. A share is 0 to 1 along the line. */
@@ -111,7 +106,8 @@
         created.on('style.load', addLine);
         created.on('mousemove', point);
         created.on('mouseout', () => onpoint?.(null));
-        created.on('error', event => console.warn('Route map:', event.error));
+        const terrainError = terrainRetry(created);
+        created.on('error', event => console.warn(terrainError(event) ? 'Route map terrain:' : 'Route map:', event.error));
         map = created;
         // A swap of the large and the small place changes the size of the box.
         const resize = new ResizeObserver(() => { created.resize(); fit(); });

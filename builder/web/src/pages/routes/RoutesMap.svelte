@@ -1,18 +1,13 @@
 <!-- The map of the Routes page: the lines of the shown routes or rides on the relief from zoom 8, bubbles with a count
      below it, and the selected ones wide at each zoom. -->
-<script module lang="ts">
-    import { terrainSource } from '../../lib/planner/map-terrain';
-    import { config } from '../../lib/planner/map-data';
-    const terrain = terrainSource(config.terrain);
-</script>
-
 <script lang="ts">
     import { onMount, untrack } from 'svelte';
     import * as maplibregl from 'maplibre-gl';
     import 'maplibre-gl/dist/maplibre-gl.css';
     import type { FeatureCollection, LineString, Point } from 'geojson';
     import { basemapStyle, type Relief } from '../../lib/planner/map-style';
-    import { styleConfig, useMapProtocols } from '../../lib/planner/map-setup';
+    import { styleConfig, terrain, useMapProtocols } from '../../lib/planner/map-setup';
+    import { terrainRetry } from '../../lib/planner/map-terrain';
     import { appearance } from '../../lib/theme.svelte';
     import type { Box, Item } from './filter';
 
@@ -155,7 +150,8 @@
             created.on('mouseenter', layer, () => { created.getCanvas().style.cursor = 'pointer'; });
             created.on('mouseleave', layer, () => { created.getCanvas().style.cursor = ''; });
         }
-        created.on('error', event => console.warn('Routes map:', event.error));
+        const terrainError = terrainRetry(created);
+        created.on('error', event => console.warn(terrainError(event) ? 'Routes map terrain:' : 'Routes map:', event.error));
         map = created;
         const resize = new ResizeObserver(() => created.resize());
         resize.observe(container);

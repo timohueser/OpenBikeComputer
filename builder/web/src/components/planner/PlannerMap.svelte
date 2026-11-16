@@ -1,15 +1,11 @@
-<script module lang="ts">
-    import { terrainRetry, terrainSource } from '../../lib/planner/map-terrain';
-    import { config } from '../../lib/planner/map-data';
-    const terrain = terrainSource(config.terrain);
-</script>
-
 <script lang="ts">
     import { onMount, untrack, type Snippet } from "svelte";
     import * as maplibregl from "maplibre-gl";
     import type { GeoJSONSource } from "maplibre-gl";
     import type { Feature, FeatureCollection, LineString, Point } from "geojson";
-    import { styleConfig, useMapProtocols } from "../../lib/planner/map-setup";
+    import { styleConfig, terrain, useMapProtocols } from "../../lib/planner/map-setup";
+    import { config } from "../../lib/planner/map-data";
+    import { terrainRetry } from "../../lib/planner/map-terrain";
     import "maplibre-gl/dist/maplibre-gl.css";
     import { mapStyle, poiFilter, type Relief } from "../../lib/planner/map-style";
     import { mapIcon } from "../../lib/planner/map-icons";

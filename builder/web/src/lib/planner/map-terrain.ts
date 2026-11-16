@@ -19,8 +19,8 @@ function terrainTile({ sourceId: source, tile }: TileEvent): Retry | undefined {
     return { source, key: `${source}/${z}/${x}/${y}`, x, y, z };
 }
 
-/** Keep one bounded DEM cache per map surface; the plugin has no manager disposal API. The relief of a lease reads its
- * DEM cache, so the hill shading and the contour lines share each terrain tile. */
+/** The app keeps one source, so its maps share one bounded DEM cache; the plugin has no manager disposal API. The relief
+ * of a lease reads that cache, so the hill shading and the contour lines share each terrain tile. */
 export function terrainSource(url: string) {
     let source: InstanceType<typeof contour.DemSource> | undefined;
     let users = 0;
