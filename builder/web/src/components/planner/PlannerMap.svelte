@@ -111,6 +111,8 @@
     let popupContent: HTMLDivElement;
     let map = $state.raw<maplibregl.Map>();
     let ready = $state(false);
+    // True until the map has drawn its tiles and stopped moving.
+    let loading = $state(true);
     let failure = $state("");
     let errorDetail = $state("");
     const pins = new Map<string, { marker: maplibregl.Marker; button: HTMLButtonElement; key: string }>();
@@ -550,7 +552,9 @@
             });
             map.on("movestart", (event) => { if (event.originalEvent) wholeRoute = false; overOverlay = false; overlayLayer?.hover(); });
             map.on("moveend", reportView);
-            map.on("idle", () => onIdle?.());
+            map.on("idle", () => { loading = false; onIdle?.(); });
+            map.on("dataloading", () => loading = true);
+            map.on("movestart", () => loading = true);
             map.on("move", () => fitCallout(false));
         } catch (error) {
             failure = "The map could not start. This view needs a browser with WebGL enabled.";
@@ -808,7 +812,7 @@
 <!-- The callout always fits the free map area: inside the margins, clear of the controls and the bottom strip, less its offset and tip. -->
 <div class="map-frame" data-map-theme={theme} bind:clientWidth={frameWidth} bind:clientHeight={frameHeight}
     style:--callout-width={`${frameWidth - 16 - controlsWidth}px`} style:--callout-room={`${frameHeight - 16 - bottomClear - calloutOffset - 10}px`}>
-    <div class="map-canvas" bind:this={container} aria-label="Route map"></div>
+    <div class="map-canvas" bind:this={container} aria-label="Route map" aria-busy={loading && !failure}></div>
     <div class="popup-storage"><div bind:this={popupContent}>{#if popup}{@render popup()}{/if}</div></div>
     {#if overlaySelection}
         <MapOverlayDetails selection={overlaySelection} onclose={() => overlaySelection = null} canPlan={canPlanRoute}

@@ -8,6 +8,7 @@ import { actions, VIEWPORT } from './actions.js';
 
 const STABLE_GAP_MS = 300;
 const STABLE_LIMIT_MS = 5_000;
+const FIRST_DRAW_LIMIT_MS = 30_000;
 const SCROLL_PX = 400;
 const BROWSER_DIR = fileURLToPath(new URL('..', import.meta.url));
 const DIST = fileURLToPath(new URL('../../../dist/planner', import.meta.url));
@@ -48,7 +49,9 @@ async function startWalkthrough(browser, base) {
   for (const settled of ['requestfinished', 'requestfailed']) context.on(settled, request => pending.delete(request));
   const page = await context.newPage();
   await page.goto(`${base}/planner.html#/planner`);
+  // The map marks itself busy until it has drawn; the canvas appears long before that.
   await page.locator('.maplibregl-canvas').waitFor();
+  await page.waitForFunction(idle, null, { timeout: FIRST_DRAW_LIMIT_MS });
   return {
     app: page,
     screenshot: () => stableScreenshot(page, pending),
@@ -58,10 +61,13 @@ async function startWalkthrough(browser, base) {
   };
 }
 
+/** True when no element of the page says that it is busy (`aria-busy`). */
+const idle = () => !document.querySelector('[aria-busy=true]');
+
 /**
- * Two equal screenshots 300 ms apart with no request in flight; after 5 s the last one, marked unstable.
- * A page that waits for an answer can show the same pixels for longer than 300 ms, and the participant
- * has no action to wait.
+ * Two equal screenshots 300 ms apart with no request in flight and no busy element; after 5 s the last
+ * one, marked unstable. A page that waits for an answer, a timer or a map worker can show the same pixels
+ * for longer than 300 ms, and the participant has no action to wait.
  */
 async function stableScreenshot(page, pending) {
   const shoot = () => page.screenshot({ animations: 'disabled', caret: 'hide' });
@@ -69,7 +75,7 @@ async function stableScreenshot(page, pending) {
   for (const deadline = Date.now() + STABLE_LIMIT_MS; Date.now() < deadline;) {
     await page.waitForTimeout(STABLE_GAP_MS);
     const next = await shoot();
-    if (next.equals(last) && !pending.size) return { png: next, unstable: false };
+    if (next.equals(last) && !pending.size && await page.evaluate(idle)) return { png: next, unstable: false };
     last = next;
   }
   return { png: last, unstable: true };
