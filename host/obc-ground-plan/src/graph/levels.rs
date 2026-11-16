@@ -3,8 +3,9 @@
 //! The bake runs it on every cell and the tiles carry what it decides (`level_tags`); the device reads that.
 //!
 //! Every decision reads within the row of `Structures::reach`: a crossing's corners along each way up
-//! to `PLACE_M`; a tunnel station's chain along its way up to `open_max_m + body_m`, an A line up to `A_MAX_M`; the
-//! bodies and strokes within `GRID_M` of a station.
+//! to `PLACE_M`; a deck's tag end along its way and an A line up to `A_MAX_M`; the bodies and strokes within `GRID_M`
+//! of a station. A tunnel way's states read its whole chain: the cell finds its stretches (`TunnelFound`), and the
+//! bake's merge decides them (`level_tags::merge`).
 
 use super::curve::point;
 use super::level_tags::{end_line, kind_between};
@@ -76,7 +77,7 @@ impl Structures {
     pub fn reach(&self, graph_m: f64) -> Reach {
         let terms = [
             ("the graph's longest chain", graph_m),
-            ("along the way: max(open_max_m + body_m, A_MAX_M)", (self.open_max_m + self.body_m).max(A_MAX_M)),
+            ("along the way: A_MAX_M", A_MAX_M),
             ("about a station: GRID_M", GRID_M),
             ("a crossing's corners along each way: PLACE_M", PLACE_M),
         ];
@@ -168,6 +169,8 @@ pub struct EndLine {
 pub struct Levels {
     pub runs: Vec<Run>,
     pub end_lines: Vec<EndLine>,
+    /// The tunnel ways: what the cell finds of each (`TunnelFound`); the merge decides their states.
+    pub tunnels: Vec<TunnelFound>,
 }
 
 /// A body read past the widest half-width: the widest class reach and widening.
@@ -269,7 +272,7 @@ impl<'a> Ctx<'a> {
             .chain(g.joints.iter().map(|j| j.arms.iter().collect()))
             .chain(g.ends.iter().map(|e| vec![&e.arm]));
         // A tunnel way's ends are where its arms stand at its first or its last station: a node that it runs through
-        // names no end of it, so its chain finds its tag ends (`Ctx::beyond`).
+        // names no end of it, so the merge finds its tag ends (`TunnelFound`).
         let interior = |a: &crate::graph::Arm| {
             let w = &g.ways[a.way as usize];
             w.level == Level::Tunnel && w.family != Family::Water && a.at != if a.dir > 0 { w.from } else { w.to }
@@ -497,48 +500,6 @@ impl<'a> Ctx<'a> {
         self.lid(a.p, w).1.is_some_and(|top| top > a.z)
     }
 
-    /// A tunnel way's chain past its end `start` (along the tunnel ways that go on from it, up to `limit`): the metres
-    /// to the tag end, infinite where unread; and, where a station there passes the bore test, the metres to the first
-    /// passing point from the tag end (a sample, or bisected between it and the failing one before it). At a fork, the
-    /// branch with the nearest tag end.
-    fn beyond(&self, w: u32, start: bool, st: &[Stations], limit: f64, depth: u32) -> (f64, Option<f64>) {
-        let Some(others) = self.others(w, start) else { return (f64::INFINITY, None) };
-        let mut best = (0.0, None);
-        let mut any = false;
-        for &(o, o_start) in others.iter().filter(|(o, _)| self.tunnel(*o)) {
-            let len = self.lengths[o as usize];
-            let branch = if len >= limit || depth >= 8 {
-                (f64::INFINITY, None)
-            } else {
-                let (tag, portal) = self.beyond(o, !o_start, st, limit - len, depth + 1);
-                // Way o read from its far end inward: its metres from w's end.
-                let (m, pass) = (&st[o as usize].0, &st[o as usize].1);
-                let near = |x: f64| if o_start { x } else { len - x };
-                let own = || {
-                    let order: Vec<usize> = if o_start { (0..m.len()).rev().collect() } else { (0..m.len()).collect() };
-                    let k = order.iter().position(|&i| pass[i])?;
-                    let i = order[k];
-                    if k == 0 {
-                        return Some(near(m[i]));
-                    }
-                    let j = order[k - 1];
-                    let ok = |x: f64| self.bore(o, &self.at(o, x)) >= 0.0;
-                    let x = if m[j] < m[i] { bisect(m[j], m[i], &ok) } else { bisect_down(m[i], m[j], &ok) };
-                    Some(near(x))
-                };
-                (len + tag, portal.map(|p| len + p).or_else(own))
-            };
-            if !any || branch.0 < best.0 {
-                best = branch;
-            }
-            any = true;
-        }
-        if best.0.is_infinite() {
-            best.1 = None;
-        }
-        best
-    }
-
     /// Metres from an end of way w on through the ways that `same` accepts to the first end where
     /// none goes on: 0 there; infinite where the graph does not hold the point or past `limit`.
     fn onward(&self, w: u32, start: bool, limit: f64, same: &dyn Fn(u32) -> bool, depth: u32) -> f64 {
@@ -560,12 +521,6 @@ impl<'a> Ctx<'a> {
         } else {
             0.0
         }
-    }
-
-    /// The metres to the tag end behind and ahead of a way of the same kind, read up to `limit`.
-    fn tag_ends(&self, w: u32, limit: f64) -> (f64, f64) {
-        let same: &dyn Fn(u32) -> bool = if self.tunnel(w) { &|o| self.tunnel(o) } else { &|o| self.deck_tagged(o) };
-        (self.onward(w, true, limit, same, 0), self.onward(w, false, limit, same, 0))
     }
 
     /// How far the deck stroke at metres m stands clear of the paved strokes of the arms, metres.
@@ -784,16 +739,47 @@ struct Track {
     m: Vec<f64>,
     state: Vec<State>,
     a: [Option<f64>; 2],
-    /// A tunnel way's portals (`Portals`).
-    portals: Option<Portals>,
 }
 
-/// A tunnel way's stations (`stations`): the metres along of each, and whether the bore test passes there.
-type Stations = (Vec<f64>, Vec<bool>);
+/// The stretches of a way where `ok` holds, from its value at stations `m` (`at`), each end bisected between two
+/// stations; a station ends a stretch only where `ok` changes there.
+fn stretches(m: &[f64], at: &[bool], ok: &dyn Fn(f64) -> bool) -> Vec<(f64, f64)> {
+    let mut out = Vec::new();
+    let mut from = None;
+    for i in 0..m.len() {
+        match (from, at[i]) {
+            (None, true) => from = Some(if i == 0 { m[0] } else { bisect(m[i - 1], m[i], ok) }),
+            (Some(a), false) => {
+                out.push((a, bisect_down(m[i - 1], m[i], ok)));
+                from = None;
+            }
+            _ => {}
+        }
+    }
+    if let (Some(a), Some(&b)) = (from, m.last()) {
+        out.push((a, b));
+    }
+    out
+}
 
-/// The stations of a tunnel way: its samples, and the crossings where it is the lower way (a way on top can give the
-/// room between two samples).
-fn stations(ctx: &Ctx, w: u32) -> Stations {
+/// What a cell finds of a tunnel way, for the bake's merge (`level_tags::merge`), which decides its states along the
+/// whole chain of tunnel ways: its stations with room (`Ctx::bore`), with a way on top (`Ctx::on_top`) and over the
+/// body of a way that it ends at (step 3); per end, whether it is a tag end, and the tunnel ways that go on there.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TunnelFound {
+    pub way: u32,
+    pub room: Vec<(Station, Station)>,
+    pub top: Vec<(Station, Station)>,
+    pub stay: Vec<(Station, Station)>,
+    /// Per end (start, end): no tunnel way goes on there.
+    pub tag: [bool; 2],
+    /// Per end: the tunnel ways that go on there, each with its station at the node.
+    pub next: [Vec<(u32, Station)>; 2],
+}
+
+/// A tunnel way's stretches and ends (`TunnelFound`): its stations are its samples and the crossings where it is the
+/// lower way (a way on top can give the room between two samples).
+fn tunnel_found(ctx: &Ctx, w: u32, ended: &[(usize, u32)]) -> TunnelFound {
     let g = ctx.g;
     let from = g.ways[w as usize].from;
     let mut m: Vec<f64> = ctx.samples(w).iter().map(|s| between(&g.parts, &from, &ctx.station(w, s))).collect();
@@ -801,61 +787,24 @@ fn stations(ctx: &Ctx, w: u32) -> Stations {
     m.extend(under.map(|c| between(&g.parts, &from, &c.under)));
     m.sort_by(f64::total_cmp);
     m.dedup_by(|a, b| (*a - *b).abs() < PLACE_TO_M);
-    let pass = m.iter().map(|&x| ctx.bore(w, &ctx.at(w, x)) >= 0.0).collect();
-    (m, pass)
-}
-
-/// A tunnel way's two tag ends and their portal lines, each from its own end of the way (its start, then its end):
-/// the metres to the tag end, infinite where unread; and the metres from that end of the way to the first point from
-/// the tag end that passes the bore test (negative past the way's end, infinite where none is read).
-struct Portals {
-    tag: [f64; 2],
-    portal: [f64; 2],
-}
-
-impl Portals {
-    /// A tunnel way's portals: along its chain (`Ctx::beyond`), else at its own first passing point from each end,
-    /// bisected between its stations.
-    fn of(ctx: &Ctx, w: u32, st: &[Stations]) -> Portals {
-        let len = ctx.lengths[w as usize];
-        let limit = ctx.s.open_max_m + ctx.s.body_m;
-        let ok = |x: f64| ctx.bore(w, &ctx.at(w, x)) >= 0.0;
-        let (m, own) = (&st[w as usize].0, &st[w as usize].1);
-        let first = own.iter().position(|&p| p).map(|i| if i == 0 { m[0] } else { bisect(m[i - 1], m[i], &ok) });
-        let last = own.iter().rposition(|&p| p).map(|i| {
-            if i + 1 == m.len() {
-                len - m[i]
-            } else {
-                len - bisect_down(m[i], m[i + 1], &ok)
-            }
-        });
-        let ends = [(true, first), (false, last)];
-        let mut tag = [0.0; 2];
-        let mut portal = [f64::INFINITY; 2];
-        for (e, (start, own)) in ends.into_iter().enumerate() {
-            let (t, beyond) = ctx.beyond(w, start, st, limit, 0);
-            tag[e] = t;
-            portal[e] = beyond.map(|x| -x).or(own).unwrap_or(f64::INFINITY);
-        }
-        Portals { tag, portal }
-    }
-
-    /// The state at metres m of a way of length len, by the bore test there (`pass`) and `on_top`: OPEN from a tag
-    /// end up to its portal line, within `open_max_m` of the tag end, unless a way lies on top (a door); BORE up to
-    /// `body_m` behind a portal line within that reach; else HIDDEN.
-    fn state(&self, s: &Structures, len: f64, m: f64, pass: bool, on_top: &dyn Fn() -> bool) -> State {
-        let (mut open, mut body) = (false, false);
-        for ((&tag, &portal), at) in self.tag.iter().zip(&self.portal).zip([m, len - m]) {
-            open |= tag + at <= s.open_max_m && at < portal;
-            body |= pass && tag + portal <= s.open_max_m && at >= portal && at - portal <= s.body_m;
-        }
-        match (open, body) {
-            (true, _) if on_top() => State::Hidden,
-            (true, _) => State::Open,
-            (false, true) => State::Bore,
-            _ => State::Hidden,
-        }
-    }
+    let of = |ok: &dyn Fn(f64) -> bool| {
+        let at: Vec<bool> = m.iter().map(|&x| ok(x)).collect();
+        let st = |x: f64| ctx.at(w, x).st;
+        stretches(&m, &at, ok).into_iter().map(|(a, b)| (st(a), st(b))).collect()
+    };
+    let room = of(&|x| ctx.bore(w, &ctx.at(w, x)) >= 0.0);
+    let top = of(&|x| ctx.on_top(w, &ctx.at(w, x)));
+    let stay = of(&|x| ended.iter().any(|&(_, stay)| ctx.in_body(stay, ctx.at(w, x).p)));
+    let end = |start: bool| {
+        let others = ctx.others(w, start);
+        let next: Vec<(u32, Station)> = (others.into_iter().flatten())
+            .filter(|(o, _)| ctx.tunnel(*o))
+            .map(|&(o, o_start)| (o, if o_start { g.ways[o as usize].from } else { g.ways[o as usize].to }))
+            .collect();
+        (others.is_some() && next.is_empty(), next)
+    };
+    let ((t0, n0), (t1, n1)) = (end(true), end(false));
+    TunnelFound { way: w, room, top, stay, tag: [t0, t1], next: [n0, n1] }
 }
 
 fn states(ctx: &Ctx, ladders: &[Option<Ladder>]) -> Levels {
@@ -871,9 +820,6 @@ fn states(ctx: &Ctx, ladders: &[Option<Ladder>]) -> Levels {
         }
     }
     let ways: Vec<u32> = (0..g.ways.len() as u32).filter(|&w| ctx.tagged(w) || !ended[w as usize].is_empty()).collect();
-    // The stations of every tunnel way: a way's portals read them along its chain.
-    let st: Vec<Stations> =
-        (0..g.ways.len() as u32).map(|w| if ctx.tunnel(w) { stations(ctx, w) } else { Default::default() }).collect();
     // Deck ways that are ground: over a culvert, or with no room for a deck between their A lines. A
     // deck way that turns ground changes the A lines of the deck ways at its ends only.
     let mut ground: Vec<bool> = (0..g.ways.len() as u32).map(|w| !ctx.deck_tagged(w) || culvert[w as usize]).collect();
@@ -899,22 +845,15 @@ fn states(ctx: &Ctx, ladders: &[Option<Ladder>]) -> Levels {
     }
     let mut out = Levels::default();
     for &w in &ways {
-        let from = g.ways[w as usize].from;
-        let m: Vec<f64> = if ctx.tunnel(w) {
-            st[w as usize].0.clone()
-        } else {
-            ctx.samples(w).iter().map(|s| between(&g.parts, &from, &ctx.station(w, s))).collect()
-        };
-        let mut t = Track { way: w, state: vec![State::Open; m.len()], a: [None, None], portals: None, m };
         if ctx.tunnel(w) {
-            let p = Portals::of(ctx, w, &st);
-            for i in 0..t.m.len() {
-                let a = ctx.at(w, t.m[i]);
-                t.state[i] =
-                    p.state(ctx.s, ctx.lengths[w as usize], t.m[i], st[w as usize].1[i], &|| ctx.on_top(w, &a));
-            }
-            t.portals = Some(p);
-        } else if !ground[w as usize] {
+            // The merge decides a tunnel's states along its whole chain.
+            out.tunnels.push(tunnel_found(ctx, w, &ended[w as usize]));
+            continue;
+        }
+        let from = g.ways[w as usize].from;
+        let m: Vec<f64> = ctx.samples(w).iter().map(|s| between(&g.parts, &from, &ctx.station(w, s))).collect();
+        let mut t = Track { way: w, state: vec![State::Open; m.len()], a: [None, None], m };
+        if !ground[w as usize] {
             let (a, _) = deck_of[w as usize].expect("each DECK way has its ends");
             let (lo, hi) = (a[0].unwrap_or(0.0), a[1].unwrap_or(ctx.lengths[w as usize]));
             for (s, &m) in t.state.iter_mut().zip(&t.m) {
@@ -929,35 +868,12 @@ fn states(ctx: &Ctx, ladders: &[Option<Ladder>]) -> Levels {
             let c = &g.crossings[i];
             let at = if way_of(g, &c.over) == Some(w) { c.over } else { c.under };
             let k0 = t.m.partition_point(|&x| x < between(&g.parts, &from, &at));
-            // A tunnel's track holds its stations, another way's its samples.
-            let point = |k: usize| if ctx.tunnel(w) { ctx.at(w, t.m[k]).p } else { ctx.global(&ctx.samples(w)[k]) };
-            let over = |k: usize| ctx.in_body(stay, point(k));
+            let over = |k: usize| ctx.in_body(stay, ctx.global(&ctx.samples(w)[k]));
             for k in (k0..t.m.len()).take_while(|&k| over(k)) {
                 t.state[k] = State::Hidden;
             }
             for k in (0..k0).rev().take_while(|&k| over(k)) {
                 t.state[k] = State::Hidden;
-            }
-        }
-        // A body's end can lie between two samples of one state: a station just past it, away from its portal, joins
-        // the track, so the end line lies there.
-        if let Some(p) = &t.portals {
-            let len = ctx.lengths[w as usize];
-            for (e, sign) in [(0, 1.0), (1, -1.0)] {
-                let from = if e == 0 { 0.0 } else { len };
-                let m = from + sign * (p.portal[e] + ctx.s.body_m + 2.0 * PLACE_TO_M);
-                if !(m > 0.0 && m < len) || t.m.contains(&m) {
-                    continue;
-                }
-                let k = t.m.partition_point(|&x| x < m);
-                let a = ctx.at(w, m);
-                let state = if ended[w as usize].iter().any(|&(_, stay)| ctx.in_body(stay, a.p)) {
-                    State::Hidden
-                } else {
-                    p.state(ctx.s, len, m, ctx.bore(w, &a) >= 0.0, &|| ctx.on_top(w, &a))
-                };
-                t.m.insert(k, m);
-                t.state.insert(k, state);
             }
         }
         runs(ctx, &t, &ended[w as usize], &mut out);
@@ -1095,8 +1011,6 @@ fn runs(ctx: &Ctx, t: &Track, ended: &[(usize, u32)], out: &mut Levels) {
         let a = ctx.at(w, m);
         if stays.iter().any(|&s| ctx.in_body(s, a.p)) {
             State::Hidden
-        } else if let Some(p) = &t.portals {
-            p.state(ctx.s, len, m, ctx.bore(w, &a) >= 0.0, &|| ctx.on_top(w, &a))
         } else {
             State::Open
         }
@@ -1165,9 +1079,8 @@ fn line_at(ctx: &Ctx, w: u32, st: Station, kind: EndKind, structure: State) -> E
     end_line(ctx.g, ctx.input, ctx.sections, ctx.s.edge_band_m, (w, st, kind, structure))
 }
 
-/// G7: the runs of a bridge or tunnel way cover it once, in order; OPEN lies within `open_max_m` of a
-/// tag end and never between two BORE runs. G8: each BORE sample has its room; a DECK way has
-/// `deck_min_m` between its end lines. G9: an A line lies outside the paved stroke of every ground arm.
+/// G7: the runs of a bridge way cover it once, in order, with no BORE run. G8: a DECK way has `deck_min_m` between its
+/// end lines. G9: an A line lies outside the paved stroke of every ground arm. A tunnel's states are the merge's.
 pub fn check_levels(g: &WayGraph, input: &CellInput, sections: &Sections, s: &Structures) -> Vec<Fault> {
     let ctx = {
         let mut c = Ctx::new(g, input, sections, s);
@@ -1182,7 +1095,8 @@ pub fn check_levels(g: &WayGraph, input: &CellInput, sections: &Sections, s: &St
     for way in &g.ways {
         let w = way.id;
         let runs: Vec<&Run> = g.levels.runs.iter().filter(|r| r.way == w).collect();
-        if !ctx.tagged(w) && runs.is_empty() {
+        // A tunnel's states are the merge's (`level_tags::merge`, which its tests check).
+        if (!ctx.tagged(w) && runs.is_empty()) || ctx.tunnel(w) {
             continue;
         }
         let joined = runs.windows(2).all(|p| p[0].to == p[1].from);
@@ -1194,40 +1108,8 @@ pub fn check_levels(g: &WayGraph, input: &CellInput, sections: &Sections, s: &St
         {
             fault("G7", format!("way {w}: its runs do not cover it once in order"));
         }
-        let len = ctx.lengths[w as usize];
-        let tunnel = ctx.tunnel(w);
-        let (back, ahead) = ctx.tag_ends(w, s.open_max_m.max(s.deck_min_m));
-        let inside = |r: &Run, st: &Station| k(&r.from) <= k(st) && k(st) <= k(&r.to);
-        for r in &runs {
-            let wrong = match r.state {
-                State::Deck => tunnel,
-                State::Bore => !tunnel,
-                State::Open => {
-                    let tag = |st: &Station| {
-                        let m = between(&g.parts, &way.from, st);
-                        (back + m).min(ahead + len - m)
-                    };
-                    tunnel && tag(&r.from).min(tag(&r.to)) > s.open_max_m + PLACE_TO_M
-                }
-                State::Hidden => false,
-            };
-            if wrong {
-                fault("G7", format!("way {w}: a {:?} run at {:?}", r.state, r.from));
-            }
-        }
-        let bores: Vec<usize> = (0..runs.len()).filter(|&i| runs[i].state == State::Bore).collect();
-        if let (Some(&a), Some(&b)) = (bores.first(), bores.last()) {
-            if runs[a..b].iter().any(|r| r.state == State::Open) {
-                fault("G7", format!("way {w}: an OPEN run between two BORE runs"));
-            }
-        }
-        for smp in ctx.samples(w) {
-            let st = ctx.station(w, smp);
-            if runs.iter().any(|r| r.state == State::Bore && inside(r, &st))
-                && ctx.bore(w, &ctx.at_station(st)) < -tolerance
-            {
-                fault("G8", format!("way {w}: a BORE station at {st:?} lacks room"));
-            }
+        if let Some(r) = runs.iter().find(|r| r.state == State::Bore) {
+            fault("G7", format!("way {w}: a BORE run at {:?}", r.from));
         }
         let deck: f64 = runs.iter().filter(|r| r.state == State::Deck).map(|r| between(&g.parts, &r.from, &r.to)).sum();
         if deck > 0.0 {

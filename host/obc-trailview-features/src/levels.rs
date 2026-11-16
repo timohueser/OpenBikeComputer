@@ -51,6 +51,7 @@ pub fn tags(tiles: &Tiles, terrain: &dyn Terrain, memory: usize) -> (HashMap<u32
     let id = |[c, r, index]: [u32; 3]| z13(c, r).and_then(|t| t.id(index));
     let mut by_id: BTreeMap<u32, Vec<level_tags::Found>> = BTreeMap::new();
     let (mut groups, mut over): (Vec<Vec<u32>>, Vec<(u32, u32)>) = Default::default();
+    let mut links: Vec<(u32, f64, u32, f64)> = Vec::new();
     for cell in done.into_iter().flat_map(|d| d.1) {
         for (key, f) in cell.found {
             if let Some(id) = id(key) {
@@ -59,8 +60,9 @@ pub fn tags(tiles: &Tiles, terrain: &dyn Terrain, memory: usize) -> (HashMap<u32
         }
         groups.extend(cell.groups.into_iter().map(|g| g.into_iter().filter_map(id).collect::<Vec<_>>()));
         over.extend(cell.over.into_iter().filter_map(|(l, u)| Some((id(l)?, id(u)?))));
+        links.extend(cell.links.into_iter().filter_map(|(a, ma, b, mb)| Some((id(a)?, ma, id(b)?, mb))));
     }
-    let tags = level_tags::merge(&by_id, &groups, &over);
+    let tags = level_tags::merge(&by_id, &groups, &over, &links, &rules.structures);
     (tags.into_iter().collect(), jobs.len() << (2 * (CELL_ZOOM - FEATURE_ZOOM)))
 }
 

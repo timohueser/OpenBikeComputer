@@ -108,13 +108,6 @@ fn graph_of(key: CellKey, lines: &[Line]) -> WayGraph {
     graph_with(input_of(key, lines))
 }
 
-/// The graph of lines on terrain z of metres east and south of the cell's centre.
-fn graph_on(lines: &[Line], z: &dyn Fn(f64, f64) -> f64) -> WayGraph {
-    let mut input = input_of(cell(), lines);
-    input.terrain = crate::faces::tests::plane(cell(), z);
-    graph_with(input)
-}
-
 fn graph_with(input: CellInput) -> WayGraph {
     let key = input.key;
     let mut g = build(key, &input, Sections::embedded());
@@ -895,7 +888,7 @@ fn a_deck_over_another_deck_lies_on_storey_2() {
     // The bake's merge, with the features' positions as their ids.
     let ids = |k: [u32; 3]| k[2];
     let cells = BTreeMap::from_iter(found.found.into_iter().map(|(k, f)| (ids(k), vec![f])));
-    let tags = super::level_tags::merge(&cells, &[], &[(1, 0)]);
+    let tags = super::level_tags::merge(&cells, &[], &[(1, 0)], &[], &crate::faces::Rules::embedded().structures);
     let storey = |id: u32| tags.get(&id).and_then(|t| t.get(super::level_tags::STOREY)).cloned();
     assert_eq!((storey(0), storey(1)), (Some("2".to_string()), None));
 }
@@ -925,47 +918,76 @@ fn the_room_reads_each_way_on_its_own_curve() {
 /// The states of a way's runs in order, and its end lines by kind and metres along it.
 type WayLevels = (Vec<State>, Vec<(EndKind, f64)>);
 
-/// The levels of the one tunnel way of a graph.
-fn tunnel_levels(g: &WayGraph) -> WayLevels {
-    let tunnels: Vec<&Way> = g.ways.iter().filter(|w| w.level == Level::Tunnel).collect();
-    assert_eq!(tunnels.len(), 1);
-    let w = tunnels[0];
-    let states = g.levels.runs.iter().filter(|r| r.way == w.id).map(|r| r.state).collect();
-    let at = |l: &EndLine| (l.kind, super::points::between(&g.parts, &w.from, &l.at));
-    (states, g.levels.end_lines.iter().filter(|l| l.way == w.id).map(at).collect())
+/// The levels of the tunnel feature (the second line) of lines on terrain z, as the bake's merge writes them of one
+/// cell that holds them all.
+fn tunnel_levels(lines: &[Line], z: &dyn Fn(f64, f64) -> f64) -> WayLevels {
+    let mut input = input_of(cell(), lines);
+    input.terrain = crate::faces::tests::plane(cell(), z);
+    let g = graph_with(input.clone());
+    let found = super::level_tags::found(&g, &input, Sections::embedded());
+    let cells = BTreeMap::from_iter(found.found.into_iter().map(|(k, f)| (k[2], vec![f])));
+    let links: Vec<(u32, f64, u32, f64)> = found.links.iter().map(|&(a, ma, b, mb)| (a[2], ma, b[2], mb)).collect();
+    let tags = super::level_tags::merge(&cells, &[], &[], &links, &crate::faces::Rules::embedded().structures);
+    let text = tags.get(&1).and_then(|t| t.get(super::level_tags::LEVELS)).cloned().unwrap_or_default();
+    let letter = |t: &str| match t {
+        "D" => State::Deck,
+        "B" => State::Bore,
+        "O" => State::Open,
+        _ => State::Hidden,
+    };
+    let t: Vec<&str> = text.split(' ').collect();
+    let mut states = vec![letter(t[0])];
+    let mut ends = Vec::new();
+    for l in t[1..].chunks(3) {
+        let kind = match l[1] {
+            "A" => EndKind::A,
+            "P" => EndKind::Portal,
+            _ => EndKind::Closed,
+        };
+        ends.push((kind, l[0].parse::<f64>().unwrap()));
+        states.push(letter(l[2]));
+    }
+    (states, ends)
 }
 
 #[test]
 fn a_tunnel_is_open_up_to_its_first_station_with_room_and_its_body_reaches_body_m_behind() {
     use EndKind::*;
     use State::*;
-    // A residential way 3 m over flat terrain, a tunnel from x 0 to `len` through a ridge that rises `slope` per metre
-    // from each tag end. The cover lifts the terrain by at most 1 m and the bore needs 3.0 + 0.3 m of room, so the
-    // body starts where the ridge stands 3 + 2.3 m high: (3 + 2.3) / slope in from each tag end. Before it the way is
-    // open (a cut); the body reaches `body_m` (25 m) behind each portal line and the rest is hidden, so a short
-    // tunnel is one body. A portal more than `open_max_m` (30 m) in leaves no body: the cut ends there, hidden.
+    // A residential way 3 m over flat terrain, a tunnel of `len` metres about the cell's centre through a ridge that
+    // rises `slope` per metre from each tag end. The cover lifts the terrain by at most 1 m and the bore needs 3.0 + 0.3
+    // m of room, so the body starts where the ridge stands 3 + 2.3 m high: (3 + 2.3) / slope in from each tag end.
+    // Before it the way is open (a cut, however long: 106 m on the gentle ridge); the body reaches `body_m` (30 m)
+    // behind each portal line and the rest is hidden, so a short tunnel is one body.
     let street = [("highway", "residential")];
     let tunnel = [("highway", "residential"), ("tunnel", "yes")];
     let cases: [(f64, f64, WayLevels); 3] = [
         (
             0.5,
-            80.0,
+            100.0,
             (
                 vec![Open, Bore, Hidden, Bore, Open],
-                vec![(Portal, 10.6), (Closed, 35.6), (Closed, 44.4), (Portal, 69.4)],
+                vec![(Portal, 10.6), (Closed, 40.6), (Closed, 59.4), (Portal, 89.4)],
             ),
         ),
         (0.5, 50.0, (vec![Open, Bore, Open], vec![(Portal, 10.6), (Portal, 39.4)])),
-        (0.1, 160.0, (vec![Open, Hidden, Open], vec![(Closed, 30.0), (Closed, 130.0)])),
+        (
+            0.05,
+            300.0,
+            (
+                vec![Open, Bore, Hidden, Bore, Open],
+                vec![(Portal, 106.0), (Closed, 136.0), (Closed, 164.0), (Portal, 194.0)],
+            ),
+        ),
     ];
     for (slope, len, (want_states, want_lines)) in cases {
+        let h = len / 2.0;
         let lines = [
-            line("road", &street, &[[-60.0, 0.0], [0.0, 0.0]], 3.0),
-            line("tunnel", &tunnel, &[[0.0, 0.0], [len, 0.0]], 3.0),
-            line("road", &street, &[[len, 0.0], [len + 60.0, 0.0]], 3.0),
+            line("road", &street, &[[-h - 50.0, 0.0], [-h, 0.0]], 3.0),
+            line("tunnel", &tunnel, &[[-h, 0.0], [h, 0.0]], 3.0),
+            line("road", &street, &[[h, 0.0], [h + 50.0, 0.0]], 3.0),
         ];
-        let g = graph_on(&lines, &|x, _| (slope * x.min(len - x)).max(0.0));
-        let (states, lines) = tunnel_levels(&g);
+        let (states, lines) = tunnel_levels(&lines, &|x, _| (slope * (h - x.abs())).max(0.0));
         assert_eq!(states, want_states, "slope {slope}, {len} m: {lines:?}");
         assert_eq!(lines.len(), want_lines.len(), "slope {slope}, {len} m: {lines:?}");
         for (got, want) in lines.iter().zip(&want_lines) {
@@ -987,8 +1009,7 @@ fn an_underpass_is_a_bore_under_the_paved_stroke_of_the_way_on_top() {
         line("road", &street, &[[40.0, 0.0], [100.0, 0.0]], 0.0),
         line("road", &street, &[[20.0, -60.0], [20.0, 60.0]], 6.0),
     ];
-    let g = graph_on(&lines, &|_, _| 0.0);
-    let (states, lines) = tunnel_levels(&g);
+    let (states, lines) = tunnel_levels(&lines, &|_, _| 0.0);
     assert_eq!(states, [State::Open, State::Bore, State::Open], "{lines:?}");
     let edge = 2.5;
     for (got, want) in lines.iter().zip([20.0 - edge, 20.0 + edge]) {
@@ -1011,8 +1032,7 @@ fn a_paved_stroke_hides_a_tunnel_station_only_where_it_lies_on_top() {
             line("road", &street, &[[40.0, 0.0], [100.0, 0.0]], 0.0),
             line("road", &street, &[[5.0, 2.0], [30.0, 2.0]], dz),
         ];
-        let g = graph_on(&lines, &|_, _| 0.0);
-        let (states, lines) = tunnel_levels(&g);
+        let (states, lines) = tunnel_levels(&lines, &|_, _| 0.0);
         if hidden {
             assert_eq!(states, [State::Open, State::Hidden, State::Open], "dz {dz}: {lines:?}");
             let (a, b) = (lines[0].1, lines[1].1);

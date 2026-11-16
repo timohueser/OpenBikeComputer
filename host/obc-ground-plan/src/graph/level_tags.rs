@@ -9,7 +9,9 @@ use std::collections::BTreeMap;
 use super::curve::{insert, point, s_at, u_at};
 use super::parts::{classify, tunnel, Rule};
 use super::points::{exact, key, norm, Piece, Plan};
-use super::{CrossingKind, EndKind, EndLine, Family, Level, Part, Run, Sample, State, Station, Step, WayGraph};
+use super::{
+    CrossingKind, EndKind, EndLine, Family, Level, Part, Run, Sample, State, Station, Step, Structures, WayGraph,
+};
 use crate::faces::records::FLAT_TURN_DEG;
 use crate::frame::{metres_per_unit_at, CellKey, GlobalPoint};
 use crate::sections::Sections;
@@ -27,17 +29,26 @@ pub const SLAB: &str = "slab";
 const SAME_M: f64 = 1e-6;
 /// A chain of decks over decks is short; a loop (a spiral ramp) stops growing here.
 const CHAIN_ROUNDS: usize = 8;
+/// Two features meet at a node where their ends lie this near, metres along.
+const LINK_M: f64 = 0.5;
 
 const STATES: [(State, char); 4] = [(State::Deck, 'D'), (State::Bore, 'B'), (State::Open, 'O'), (State::Hidden, 'H')];
 const KINDS: [(EndKind, char); 3] = [(EndKind::A, 'A'), (EndKind::Portal, 'P'), (EndKind::Closed, 'C')];
 
 /// What a cell decides of one feature: the runs and end lines of its ways inside the cell's square, in metres along
-/// its stroke; the least depth of its slab on ladder step 2.
+/// its stroke; the least depth of its slab on ladder step 2. Of a tunnel's ways (`TunnelFound`), what the merge
+/// decides its states from: their extents, their stretches with room, with a way on top and over the body of a way
+/// that they end at, and their tag ends.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Found {
     pub runs: Vec<(f64, f64, State)>,
     pub lines: Vec<(f64, EndKind)>,
     pub slab: Option<f64>,
+    pub tunnel: Vec<(f64, f64)>,
+    pub room: Vec<(f64, f64)>,
+    pub top: Vec<(f64, f64)>,
+    pub stay: Vec<(f64, f64)>,
+    pub tag_ends: Vec<f64>,
 }
 
 /// What one cell decides: per feature, by its zoom-13 tile and its position there, what `Found` holds; each deck group
@@ -48,6 +59,8 @@ pub struct Cell {
     pub found: BTreeMap<[u32; 3], Found>,
     pub groups: Vec<Vec<[u32; 3]>>,
     pub over: Vec<([u32; 3], [u32; 3])>,
+    /// Two tunnel features whose ways meet at a node, each with its metres along there.
+    pub links: Vec<([u32; 3], f64, [u32; 3], f64)>,
 }
 
 /// The metres along the stroke at a station.
@@ -144,7 +157,29 @@ pub fn found(g: &WayGraph, input: &CellInput, sections: &Sections) -> Cell {
             (a, b) => a.or(b),
         };
     }
-    Cell { found: out, groups, over }
+    // The tunnels: what the merge decides their states from.
+    let mut links = Vec::new();
+    let span = |a: &Station, b: &Station| {
+        let (x, y) = (along(g, a), along(g, b));
+        (x.min(y), x.max(y))
+    };
+    for t in g.levels.tunnels.iter().filter(|t| inside(g, t.way) && aligned(g, input, t.way)) {
+        let way = &g.ways[t.way as usize];
+        let found = out.entry(feature(t.way)).or_default();
+        found.tunnel.push(span(&way.from, &way.to));
+        found.room.extend(t.room.iter().map(|(a, b)| span(a, b)));
+        found.top.extend(t.top.iter().map(|(a, b)| span(a, b)));
+        found.stay.extend(t.stay.iter().map(|(a, b)| span(a, b)));
+        for (e, end) in [way.from, way.to].iter().enumerate() {
+            if t.tag[e] {
+                found.tag_ends.push(along(g, end));
+            }
+            for (o, at) in t.next[e].iter().filter(|(o, _)| aligned(g, input, *o) && feature(*o) != feature(t.way)) {
+                links.push((feature(t.way), along(g, end), feature(*o), along(g, at)));
+            }
+        }
+    }
+    Cell { found: out, groups, over, links }
 }
 
 /// The kind of the end line between two states.
@@ -159,7 +194,14 @@ pub fn kind_between(a: State, b: State) -> EndKind {
 /// The tags of each feature id from what the cells found of it, in the order of the cells, from the deck groups that
 /// join ids and from the crossings of a deck over a deck (lower id, upper id). The features of one deck group, joined
 /// over all cells, have one storey: 1, and one more than each group under them.
-pub fn merge(found: &BTreeMap<u32, Vec<Found>>, groups: &[Vec<u32>], over: &[(u32, u32)]) -> BTreeMap<u32, Tags> {
+pub fn merge(
+    found: &BTreeMap<u32, Vec<Found>>,
+    groups: &[Vec<u32>],
+    over: &[(u32, u32)],
+    links: &[(u32, f64, u32, f64)],
+    s: &Structures,
+) -> BTreeMap<u32, Tags> {
+    let tunnels = tunnel_states(found, links, s);
     let ends = over.iter().flat_map(|&(l, u)| [l, u]);
     let mut ids: Vec<u32> = found.keys().copied().chain(groups.iter().flatten().copied()).chain(ends).collect();
     ids.sort_unstable();
@@ -198,10 +240,193 @@ pub fn merge(found: &BTreeMap<u32, Vec<Found>>, groups: &[Vec<u32>], over: &[(u3
     let mut out = BTreeMap::new();
     for (k, &id) in ids.iter().enumerate() {
         let r = find(&mut root, k);
-        let t = tags(found.get(&id).map_or(&[], Vec::as_slice), storey[r]);
+        let t = match tunnels.get(&id) {
+            Some(f) => tags(std::slice::from_ref(f), storey[r]),
+            None => tags(found.get(&id).map_or(&[], Vec::as_slice), storey[r]),
+        };
         if !t.is_empty() {
             out.insert(id, t);
         }
+    }
+    out
+}
+
+/// Sorted stretches with those that overlap or touch joined.
+fn union(mut v: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
+    v.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut out: Vec<(f64, f64)> = Vec::new();
+    for (a, b) in v {
+        match out.last_mut() {
+            Some(l) if a <= l.1 + SAME_M => l.1 = l.1.max(b),
+            _ => out.push((a, b)),
+        }
+    }
+    out
+}
+
+fn holds(v: &[(f64, f64)], m: f64) -> bool {
+    v.iter().any(|&(a, b)| a <= m && m <= b)
+}
+
+/// A tunnel feature as the cells found it (`Found`), its stretches joined.
+struct Tunnel {
+    lo: f64,
+    hi: f64,
+    room: Vec<(f64, f64)>,
+    top: Vec<(f64, f64)>,
+    stay: Vec<(f64, f64)>,
+    tag_ends: Vec<f64>,
+    /// The tunnel features that go on at its metres: (metres here, the other, metres there).
+    links: Vec<(f64, u32, f64)>,
+}
+
+/// The states of the tunnel features, as found runs and tag-end lines: along each chain of tunnel features from each
+/// tag end, open up to the first point with room (its portal line), at most `open_max_m`; a bore where it has room up
+/// to `body_m` behind the portal line; hidden elsewhere. A way on top that crosses an open stretch hides it there (a
+/// door); one whose stroke goes on over a stretch with room is that bore's lid. A stretch over the body of a way that
+/// it ends at is hidden. A chain goes on at a feature's end only where one feature goes on.
+fn tunnel_states(
+    found: &BTreeMap<u32, Vec<Found>>,
+    links: &[(u32, f64, u32, f64)],
+    s: &Structures,
+) -> BTreeMap<u32, Found> {
+    let mut tunnels: BTreeMap<u32, Tunnel> = BTreeMap::new();
+    for (&id, fs) in found {
+        let extent: Vec<(f64, f64)> = fs.iter().flat_map(|f| f.tunnel.iter().copied()).collect();
+        if extent.is_empty() {
+            continue;
+        }
+        let all = |k: fn(&Found) -> &Vec<(f64, f64)>| union(fs.iter().flat_map(|f| k(f).iter().copied()).collect());
+        let mut tag_ends: Vec<f64> = fs.iter().flat_map(|f| f.tag_ends.iter().copied()).collect();
+        tag_ends.sort_by(f64::total_cmp);
+        tag_ends.dedup_by(|a, b| (*a - *b).abs() <= SAME_M);
+        tunnels.insert(
+            id,
+            Tunnel {
+                lo: extent.iter().map(|e| e.0).fold(f64::INFINITY, f64::min),
+                hi: extent.iter().map(|e| e.1).fold(f64::NEG_INFINITY, f64::max),
+                room: all(|f| &f.room),
+                top: all(|f| &f.top),
+                stay: all(|f| &f.stay),
+                tag_ends,
+                links: Vec::new(),
+            },
+        );
+    }
+    for &(a, ma, b, mb) in links {
+        for (x, mx, y, my) in [(a, ma, b, mb), (b, mb, a, ma)] {
+            if let (Some(t), true) = (tunnels.get_mut(&x), found.contains_key(&y)) {
+                if !t.links.iter().any(|l| l.1 == y && (l.0 - mx).abs() <= LINK_M) {
+                    t.links.push((mx, y, my));
+                }
+            }
+        }
+    }
+    let ids: Vec<u32> = tunnels.keys().copied().collect();
+    let (mut open, mut body): (BTreeMap<u32, Vec<(f64, f64)>>, BTreeMap<u32, Vec<(f64, f64)>>) = Default::default();
+    for &id in &ids {
+        for &m0 in &tunnels[&id].tag_ends {
+            // The chain from this tag end: (feature, metres where it enters, direction along the stroke).
+            let (mut f, mut m, mut dir) =
+                (id, m0, if m0 - tunnels[&id].lo <= tunnels[&id].hi - m0 { 1.0 } else { -1.0 });
+            let (mut walked, mut portal) = (0.0, None::<(u32, f64, f64)>);
+            for _ in 0..CHAIN_ROUNDS * 4 {
+                let t = &tunnels[&f];
+                let end = if dir > 0.0 { t.hi } else { t.lo };
+                let first = if dir > 0.0 {
+                    t.room.iter().find(|r| r.1 > m).map(|r| r.0.max(m))
+                } else {
+                    t.room.iter().rev().find(|r| r.0 < m).map(|r| r.1.min(m))
+                };
+                let reach = s.open_max_m - walked;
+                match first.filter(|&p| (p - m).abs() <= reach) {
+                    Some(p) => {
+                        open.entry(f).or_default().push((m.min(p), m.max(p)));
+                        portal = Some((f, p, dir));
+                        break;
+                    }
+                    None if (end - m).abs() >= reach => {
+                        let x = m + dir * reach;
+                        open.entry(f).or_default().push((m.min(x), m.max(x)));
+                        break;
+                    }
+                    None => {
+                        open.entry(f).or_default().push((m.min(end), m.max(end)));
+                        walked += (end - m).abs();
+                        let next: Vec<&(f64, u32, f64)> =
+                            t.links.iter().filter(|l| (l.0 - end).abs() <= LINK_M).collect();
+                        let [&(_, g, mg)] = next[..] else { break };
+                        let tg = &tunnels[&g];
+                        (f, m, dir) = (g, mg, if mg - tg.lo <= tg.hi - mg { 1.0 } else { -1.0 });
+                    }
+                }
+            }
+            // The body: `body_m` behind the portal line, on along the chain.
+            let Some((mut f, mut m, mut dir)) = portal else { continue };
+            let mut left = s.body_m;
+            for _ in 0..CHAIN_ROUNDS * 4 {
+                let t = &tunnels[&f];
+                let end = if dir > 0.0 { t.hi } else { t.lo };
+                let x = if (end - m).abs() >= left { m + dir * left } else { end };
+                body.entry(f).or_default().push((m.min(x), m.max(x)));
+                left -= (x - m).abs();
+                let next: Vec<&(f64, u32, f64)> = t.links.iter().filter(|l| (l.0 - end).abs() <= LINK_M).collect();
+                match next[..] {
+                    [&(_, g, mg)] if left > 0.0 => {
+                        let tg = &tunnels[&g];
+                        (f, m, dir) = (g, mg, if mg - tg.lo <= tg.hi - mg { 1.0 } else { -1.0 });
+                    }
+                    _ => break,
+                }
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    for (&id, t) in &tunnels {
+        let (open, body) = (open.remove(&id).unwrap_or_default(), body.remove(&id).unwrap_or_default());
+        let meets = |(a, b): (f64, f64)| t.room.iter().any(|r| r.0 <= b + SAME_M && a <= r.1 + SAME_M);
+        let doors: Vec<(f64, f64)> = t.top.iter().copied().filter(|&x| !meets(x)).collect();
+        let state = |m: f64| {
+            if holds(&t.stay, m) {
+                State::Hidden
+            } else if holds(&open, m) {
+                if holds(&doors, m) {
+                    State::Hidden
+                } else {
+                    State::Open
+                }
+            } else if holds(&body, m) && holds(&t.room, m) {
+                State::Bore
+            } else {
+                State::Hidden
+            }
+        };
+        let mut cuts: Vec<f64> = [&open, &body, &t.room, &doors, &t.stay]
+            .iter()
+            .flat_map(|v| v.iter().flat_map(|&(a, b)| [a, b]))
+            .filter(|&m| m > t.lo && m < t.hi)
+            .chain([t.lo, t.hi])
+            .collect();
+        cuts.sort_by(f64::total_cmp);
+        cuts.dedup_by(|a, b| (*a - *b).abs() <= SAME_M);
+        let mut f = Found::default();
+        for w in cuts.windows(2) {
+            let st = state((w[0] + w[1]) / 2.0);
+            match f.runs.last_mut() {
+                Some(r) if r.2 == st => r.1 = w[1],
+                _ => f.runs.push((w[0], w[1], st)),
+            }
+        }
+        // At a tag end, its state against the ground way beyond it.
+        for &m in &t.tag_ends {
+            let inner = if m - t.lo <= t.hi - m { m + SAME_M * 10.0 } else { m - SAME_M * 10.0 };
+            match state(inner) {
+                State::Bore => f.lines.push((m, EndKind::Portal)),
+                State::Hidden => f.lines.push((m, EndKind::Closed)),
+                _ => {}
+            }
+        }
+        out.insert(id, f);
     }
     out
 }
@@ -561,10 +786,16 @@ mod tests {
     /// lifts nothing; L and a lone deck keep storey 1.
     #[test]
     fn the_storey_chain_runs_over_the_deck_groups_of_all_cells() {
-        let deck = || Found { runs: vec![(0.0, 50.0, State::Deck)], lines: Vec::new(), slab: None };
+        let deck = || Found { runs: vec![(0.0, 50.0, State::Deck)], ..Default::default() };
         let found =
             BTreeMap::from([(1, vec![deck(), deck()]), (3, vec![deck()]), (5, vec![deck()]), (20, vec![deck()])]);
-        let tags = merge(&found, &[vec![1, 3], vec![3, 7]], &[(10, 1), (3, 20), (1, 7)]);
+        let tags = merge(
+            &found,
+            &[vec![1, 3], vec![3, 7]],
+            &[(10, 1), (3, 20), (1, 7)],
+            &[],
+            &crate::faces::Rules::embedded().structures,
+        );
         let storey = |id: u32| tags.get(&id).and_then(|t| t.get(STOREY)).map(String::as_str);
         assert_eq!([storey(1), storey(3), storey(7)], [Some("2"); 3]);
         assert_eq!(storey(20), Some("3"), "U over the viaduct");
