@@ -87,8 +87,8 @@ export interface RouteHint { point: { x: number; y: number }; name: string }
 const restMs = 450;
 
 // A network is a thin line over the roads while the basemap draws few of them. From `bandZoom` a band replaces it:
-// the band lies under the roads and paths and is wider than they are, so they stay visible on it, and a planned route
-// stays the strongest line. The band starts at the width of the line, which fades over one zoom level.
+// the band lies under the lines of the basemap and is wider than its roads and paths, so they stay visible on it, and
+// a planned route stays the strongest line. The band starts at the width of the line, which fades over one zoom level.
 const bandZoom = 12;
 const lineWidth: ExpressionSpecification = ['interpolate', ['linear'], ['zoom'], 6, 1.2, 10, 1.8, bandZoom, 2.4];
 /** The share of the network colour in a band; a dark map needs more of it for the same contrast. */
@@ -135,15 +135,16 @@ export class RouteOverlays {
         this.map.addSource(source, this.loaded.source);
         const style = this.map.getStyle().layers ?? [];
         const before = style.find(layer => layer.type === 'symbol')?.id;
-        // The roads of the basemap over its water start with the tunnels; its runways lie under the water.
-        const underRoads = style.find(layer => layer.id.startsWith('roads_tunnels_'))?.id ?? before;
+        // The bands lie over the land, the water and the structures on it, and under every line of the basemap: the
+        // boundaries of protected areas come first, then streams, cliffs, ferries, roads and paths.
+        const underLines = style.find(layer => layer.id === 'land-protected')?.id ?? before;
         const color = this.color;
         const layout: LineLayerSpecification['layout'] = { 'line-join': 'round', 'line-sort-key': ['get', 'rank'] };
         for (const activity of activities) {
             this.map.addLayer({ id: `network-${activity}`, type: 'line', source, 'source-layer': activity, maxzoom: bandZoom + 1, layout,
                 paint: { 'line-color': color, 'line-opacity': this.lineOpacity, 'line-width': lineWidth } }, before);
             this.map.addLayer({ id: `network-${activity}-band`, type: 'line', source, 'source-layer': activity, minzoom: bandZoom, layout,
-                paint: { 'line-color': this.bandColor, 'line-width': bandWidth } }, underRoads);
+                paint: { 'line-color': this.bandColor, 'line-width': bandWidth } }, underLines);
             this.map.addLayer({
                 id: `network-${activity}-labels`, type: 'symbol', source, 'source-layer': activity, minzoom: labelZoom,
                 filter: ['!=', ['get', 'ref'], ''],

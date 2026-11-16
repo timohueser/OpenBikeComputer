@@ -56,16 +56,16 @@ it('loads the archive when an overlay is first shown, then draws the network and
     view.layer.destroy();
 });
 
-it('puts the bands over the water and under the roads and paths of the planner style', async () => {
+it('puts the bands over the water and its structures, and under the lines of the planner style', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => tilejson }));
     const style = mapStyle('light', testConfig, '', '').layers;
     const view = overlays(style);
     view.layer.set({ network: 'cycling', access: false });
     await view.layer.install('light');
-    const at = (id: string) => style.findIndex(layer => layer.id === id);
+    const at = (id: string) => { const index = style.findIndex(layer => layer.id === id); expect(index, id).toBeGreaterThanOrEqual(0); return index; };
     const band = at(view.definitions.get('network-cycling-band')!.before as string);
-    for (const under of ['water', 'water_river', 'landuse_pedestrian']) expect(band).toBeGreaterThan(at(under));
-    for (const over of ['roads_tunnels_other', 'roads_other', 'roads_minor', 'roads_bridges_other']) expect(band).toBeLessThanOrEqual(at(over));
+    for (const under of ['water', 'land-structure']) expect(band).toBeGreaterThan(at(under));
+    for (const over of ['land-protected', 'water_stream', 'water_river', 'cliffs', 'ferries', 'roads_other', 'roads_minor', 'roads_bridges_other']) expect(band).toBeLessThanOrEqual(at(over));
     expect(at(view.definitions.get('network-cycling')!.before as string)).toBeGreaterThan(at('roads_bridges_highway'));
     view.layer.destroy();
 });
