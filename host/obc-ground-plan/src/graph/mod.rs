@@ -29,6 +29,9 @@ pub(crate) use curve::{folds, water_spans, water_tangents};
 pub use curve::{point, s_at, u_at, water_curves, water_grades, water_level, SpanPoint, WaterCurve};
 pub use levels::{check_levels, levels, step, EndKind, EndLine, Ladder, Levels, Run, State, Step, Structures};
 
+/// Whether the storey under the ground is built (the feature `bores`): its tunnel ways split by their states.
+pub(crate) const BORES: bool = cfg!(feature = "bores");
+
 /// The coarsest sample step: the grid of level l is `BASE_STEP_M / 2^l` along a span.
 pub const BASE_STEP_M: f64 = 16.0;
 /// The finest step, level 7; a grid point closer than half of it to a break goes.
@@ -380,6 +383,9 @@ pub struct WayGraph {
     /// Empty from `build`: `levels` fills it.
     pub levels: Levels,
     pub stats: GraphStats,
+    /// The graph of the storeys (`build_levelled`): its ways are the stretches of the states that the tiles carry, so
+    /// a tunnel way here is a BORE stretch; in the graph of `build` it is a whole tunnel, whose states it does not know.
+    pub levelled: bool,
 }
 
 /// A sample of a walk along a way: its place (cell units) and its way.
@@ -517,20 +523,29 @@ pub fn build_levelled(cell: CellKey, input: &CellInput, rules: &Sections, band_m
 fn build_with(cell: CellKey, input: &CellInput, rules: &Sections, levelled: Option<f64>) -> WayGraph {
     let area = work_area(cell);
     let mut stats = GraphStats::default();
-    let (mut parts, mut part_rules) = parts::parts(input, rules, &mut stats);
+    // The levels read every tunnel; the graph of the storeys reads a shallow one (`parts::tunnel`) with the bores.
+    let (mut parts, mut part_rules) = parts::parts(input, rules, &mut stats, levelled.is_none() || BORES);
     let (mut samples, sampled): (Vec<Vec<Sample>>, Vec<Vec<bool>>) =
         parts.iter().zip(&part_rules).map(|(part, rule)| curve::samples(part, rule, cell, area)).unzip();
     let plan = points::pieces(&parts, &sampled, input, &mut stats);
+    // Levels first: a tunnel's stretches take the level of their state before any stage reads a level, so an OPEN
+    // stretch crosses and joins as the ground way that it is.
+    let plan = if levelled.is_some() && BORES {
+        level_tags::split(cell, &parts, input, &mut samples, plan, true)
+    } else {
+        plan
+    };
     let plan = crossings::crossings(cell, area, &parts, &part_rules, &mut samples, plan, &mut stats);
     let plan = snap::snap(cell, area, &mut parts, &mut part_rules, &mut samples, plan, &mut stats);
     let plan = match levelled {
         Some(band_m) => {
-            let plan = level_tags::split(cell, &parts, input, &mut samples, plan);
+            let plan = level_tags::split(cell, &parts, input, &mut samples, plan, false);
             level_tags::ground_junctions(&parts, input, rules, band_m, &samples, plan)
         }
         None => plan,
     };
     let mut g = points::assemble(cell, area, parts, &part_rules, samples, plan, stats);
+    g.levelled = levelled.is_some();
     open_culverts(&mut g, input, rules);
     g
 }

@@ -256,7 +256,9 @@ impl<'a> Ctx<'a> {
         let o = g.cell.origin();
         let origin = [o.x as f64, o.y as f64];
         let rules = (g.parts.iter())
-            .map(|p| classify(&input.features[p.feature.0 as usize], sections).expect("a part of a line feature").3)
+            .map(|p| {
+                classify(&input.features[p.feature.0 as usize], sections, true).expect("a part of a line feature").3
+            })
             .collect();
         let mut nodes: Vec<Option<Vec<(u32, bool)>>> = vec![None; 2 * g.ways.len()];
         let sets = (g.junctions.iter().map(|j| j.arms.iter().collect::<Vec<_>>()))

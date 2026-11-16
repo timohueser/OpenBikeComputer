@@ -1002,10 +1002,14 @@ fn a_paved_stroke_hides_a_tunnel_station_only_where_it_lies_on_top() {
 
 #[test]
 fn a_passage_through_a_building_of_kind_tunnel_lies_on_the_ground_and_a_tunnel_does_not() {
-    let level = |tunnel: &'static str| {
-        let l = line("tunnel", &[("highway", "residential"), ("tunnel", tunnel)], &[[-20.0, 0.0], [20.0, 0.0]], 500.0);
-        parts::classify(&feature(&l, cell().feature_tiles()[0], 0), Sections::embedded()).map(|c| c.2)
+    let level = |kind: &'static str, tunnel: &'static str, shallow: bool| {
+        let l = line(kind, &[("highway", "residential"), ("tunnel", tunnel)], &[[-20.0, 0.0], [20.0, 0.0]], 500.0);
+        parts::classify(&feature(&l, cell().feature_tiles()[0], 0), Sections::embedded(), shallow).map(|c| c.2)
     };
-    assert_eq!(level("building_passage"), Some(Level::Ground));
-    assert_eq!(level("yes"), Some(Level::Tunnel));
+    assert_eq!(level("tunnel", "building_passage", true), Some(Level::Ground));
+    assert_eq!(level("tunnel", "yes", false), Some(Level::Tunnel));
+    // A shallow tunnel that the bake lays on the ground keeps `tunnel=yes`; a passage there is no tunnel.
+    assert_eq!(level("road", "yes", true), Some(Level::Tunnel));
+    assert_eq!(level("road", "yes", false), Some(Level::Ground));
+    assert_eq!(level("road", "building_passage", true), Some(Level::Ground));
 }

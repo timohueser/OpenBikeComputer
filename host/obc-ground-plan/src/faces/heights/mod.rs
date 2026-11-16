@@ -24,6 +24,9 @@ use super::records::{
 use super::Surface;
 use crate::frame::{metres_per_unit_at, CELL_UNITS};
 
+/// Whether the storey under the ground is built (the feature `bores`).
+const BORES: bool = crate::graph::BORES;
+
 /// What kind of rule gave a height.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -1096,11 +1099,12 @@ struct Cause {
     arms: u32,
     parts: bool,
     wall: bool,
-    /// A deck's ceiling holds the side (`ceiling`).
+    /// A deck's ceiling holds the side (`ceiling`), or a bore's floor lifts it (`floor`).
     ceiling: bool,
+    floor: bool,
 }
 
-const NO_CAUSE: Cause = Cause { by: None, arms: 0, parts: false, wall: false, ceiling: false };
+const NO_CAUSE: Cause = Cause { by: None, arms: 0, parts: false, wall: false, ceiling: false, floor: false };
 
 impl Cause {
     /// The records that host a paved side: its host, or a region's arms, which all host it.
@@ -1398,6 +1402,7 @@ fn slope(b: &Block, q: [f64; 2], t: f64, p: &HeightRules) -> (f64, Cause) {
         parts: k.is_some_and(|k| groups[k].plain > at[k].1),
         wall: false,
         ceiling: false,
+        floor: false,
     };
     let (lo, top) = soft_top(&at, 0..groups.len(), p);
     let lo_by = by(top);
@@ -1503,7 +1508,9 @@ fn snorm2(w: u32) -> [f64; 2] {
 
 /// Per ceiling line segment of q's height segments (`segs`, whose ceiling lines come last): the metres of q
 /// outside the deck's stroke, the deck's surface at q's foot (banked as the line's surface is across its
-/// stroke, level past it) less its drop, which is the bound inside the stroke, and the drop. The stroke ends
+/// stroke, level past it) less its drop, which is the bound inside the stroke, the drop, the line's `rise` and the
+/// line. A bore's floor line has a negative drop: its bound is a floor (`floor`), and its rise is the most that it
+/// lifts the terrain. The stroke ends
 /// flat at each end of the line, on the line through the end sample along its `flat` normal: a segment whose
 /// start lies within its half-width and `ceiling_release_m` of an end, along the line, holds q past that end
 /// line as past its own end. The end segments reach on along their chord to the flat ends.
@@ -1512,11 +1519,12 @@ fn decks<'a>(
     q: [f64; 2],
     segs: &'a [u32],
     p: &'a HeightRules,
-) -> impl Iterator<Item = (f64, f64, f64)> + 'a {
+) -> impl Iterator<Item = (f64, f64, f64, f64, u32)> + 'a {
     // The storeys' lines over the ground come after the ceiling lines.
-    let lines = segs.iter().rev().map(move |&item| (b.line((item & 0xffff) as usize), (item >> 16) as usize));
-    let ceilings = lines.skip_while(|(ln, _)| ln.storey != 0).map_while(|(ln, i)| ln.ceiling.then_some((ln, i)));
-    ceilings.filter_map(move |(ln, i)| {
+    let lines = segs.iter().rev().map(move |&item| (item & 0xffff, (item >> 16) as usize));
+    let lines = lines.map(move |(l, i)| (b.line(l as usize), i, l));
+    let ceilings = lines.skip_while(|(ln, ..)| ln.storey != 0).map_while(|(ln, i, l)| ln.ceiling.then_some((ln, i, l)));
+    ceilings.filter_map(move |(ln, i, l)| {
         let (sa, sb) = (b.sample(&ln, i), b.sample(&ln, i + 1));
         let ab = sub(sb.p, sa.p);
         let len = norm(ab);
@@ -1543,16 +1551,18 @@ fn decks<'a>(
                 0.0
             }
         };
+        // A bore's part can run against its way: its metres along between two samples have no sign.
+        let along = |m: f64| if BORES && ln.ret < 0.0 { m.abs() } else { m };
         let near = [
-            b.along(&ln, i) - b.along(&ln, 0) <= sa.h + p.ceiling_release_m,
-            b.along(&ln, last) - b.along(&ln, i + 1) <= sb.h + p.ceiling_release_m,
+            along(b.along(&ln, i) - b.along(&ln, 0)) <= sa.h + p.ceiling_release_m,
+            along(b.along(&ln, last) - b.along(&ln, i + 1)) <= sb.h + p.ceiling_release_m,
         ];
         let past = behind(0, near[0]).max(behind(1, near[1])).max(0.0);
         let out = libm::hypot((across - half).max(0.0), past);
         let len_m = len * b.mpu;
         let bank = sa.bank + f * (sb.bank - sa.bank);
         let z = hermite(sa.z, sb.z, sa.grade * len_m, sb.grade * len_m, f) + bank * lateral.clamp(-half, half);
-        Some((out, z - ln.ret, ln.ret))
+        Some((out, z - ln.ret, ln.ret, ln.rise, l))
     })
 }
 
@@ -1561,9 +1571,40 @@ fn decks<'a>(
 /// bounds has no step; infinite where no deck is near.
 fn ceiling(b: &Block, q: [f64; 2], segs: &[u32], p: &HeightRules) -> f64 {
     decks(b, q, segs, p)
-        .filter(|&(out, ..)| out < p.ceiling_release_m)
-        .map(|(out, base, _)| base + p.face_max * out + release(out, p.ceiling_release_m, p).1)
+        .filter(|&(out, _, drop, ..)| (!BORES || drop > 0.0) && out < p.ceiling_release_m)
+        .map(|(out, base, ..)| base + p.face_max * out + release(out, p.ceiling_release_m, p).1)
         .fold(f64::INFINITY, f64::min)
+}
+
+/// A bore's bound at q from one of its segments (`decks`): its floor plus its least room inside its stroke, past it
+/// falling at `face_max` per metre and letting go as a cone does over `ceiling_release_m`.
+fn bore_bound(p: &HeightRules, (out, base, ..): (f64, f64, f64, f64, u32)) -> f64 {
+    base - p.face_max * out - release(out, p.ceiling_release_m, p).1
+}
+
+/// The floor bound at q over the plain terrain t: the most over the bores near q of their bound (`bore_bound`), each
+/// at most its lift over t; minus infinity where no bore is near.
+fn floor(b: &Block, q: [f64; 2], segs: &[u32], t: f64, p: &HeightRules) -> f64 {
+    decks(b, q, segs, p)
+        .filter(|&(out, _, drop, ..)| drop < 0.0 && out < p.ceiling_release_m)
+        .map(|d| bore_bound(p, d).min(t + d.3))
+        .fold(f64::NEG_INFINITY, f64::max)
+}
+
+/// The floor of bore way `way` at q: the most over its line's segments near q of their bound less its least room. A
+/// floor is the floor bound's own surface, so the floor bound is the floor plus the least room wherever no lift
+/// bounds it.
+fn floor_at(b: &Block, q: [f64; 2], segs: &[u32], way: u32, p: &HeightRules) -> Option<f64> {
+    decks(b, q, segs, p)
+        .filter(|&(out, _, drop, _, l)| drop < 0.0 && out < p.ceiling_release_m && b.way(l) == way)
+        .map(|d| bore_bound(p, d) + d.2)
+        .reduce(f64::max)
+}
+
+/// The least bound of the decks whose stroke holds q; infinite outside every stroke.
+fn under_decks(b: &Block, q: [f64; 2], segs: &[u32], p: &HeightRules) -> f64 {
+    let inside = decks(b, q, segs, p).filter(|&(out, _, drop, ..)| out <= 0.0 && drop > 0.0);
+    inside.map(|d| d.1).fold(f64::INFINITY, f64::min)
 }
 
 /// The least bound of the decks whose stroke holds q (their underside less `ceiling_gap_m`) and that deck's
@@ -1572,8 +1613,8 @@ pub(crate) fn under_deck(words: &[u32], q: [f64; 2]) -> Option<(f64, f64)> {
     let b = Block::at(words, q);
     let p = HeightRules::of(words);
     let items = bin_items(&b, q)?;
-    let inside = decks(&b, q, items.segs, &p).filter(|&(out, ..)| out <= 0.0);
-    inside.map(|(_, base, drop)| (base, drop)).reduce(|a, c| if c.0 < a.0 { c } else { a })
+    let inside = decks(&b, q, items.segs, &p).filter(|&(out, _, drop, ..)| out <= 0.0 && (!BORES || drop > 0.0));
+    inside.map(|(_, base, drop, ..)| (base, drop)).reduce(|a, c| if c.0 < a.0 { c } else { a })
 }
 
 /// The height rule of a label (0 for none).
@@ -1672,8 +1713,9 @@ fn step(b: &Block, q: [f64; 2], recs: &[Rec], sides: &[(Height, Cause); 2], p: &
         return Step::None;
     }
     // An end face: beside a paved side on the deck end line of a line present (one of several ways that end
-    // there need not host the face), whatever the lower side; or where the ceiling holds the lower side.
-    let lower = if sides[0].0.h < sides[1].0.h { &sides[0] } else { &sides[1] };
+    // there need not host the face), whatever the lower side; or where the ceiling holds the lower side, or a bore's
+    // floor the higher.
+    let (lower, higher) = if sides[0].0.h < sides[1].0.h { (&sides[0], &sides[1]) } else { (&sides[1], &sides[0]) };
     let on_deck_end = |r: &Rec| {
         let ln = b.line(r.line as usize);
         (0..2).any(|e| {
@@ -1682,7 +1724,10 @@ fn step(b: &Block, q: [f64; 2], recs: &[Rec], sides: &[(Height, Cause); 2], p: &
             ln.deck[e] && b.past_end(&ln, e, q).abs() <= END_UNITS * b.mpu && across <= b.half(&ln, i) + ln.side
         })
     };
-    if lower.1.ceiling || (sides.iter().any(|(h, _)| h.kind == Kind::Paved) && recs.iter().any(on_deck_end)) {
+    if lower.1.ceiling
+        || (BORES && higher.1.floor)
+        || (sides.iter().any(|(h, _)| h.kind == Kind::Paved) && recs.iter().any(on_deck_end))
+    {
         return Step::EndFace;
     }
     let within = |rise: f64, size: f64| rise * size > 0.0 && rise.abs() <= size.abs() + p.step_m;
@@ -1876,7 +1921,7 @@ fn host(recs: &[Rec], material: u32) -> Option<usize> {
 
 /// The height at q by the label's height rule, from the records present there and the items about q (a
 /// region's blend edges, the ceilings' segments), and its cause. The ground (the terrain and the slope rules)
-/// stays under the ceiling.
+/// stays over the floor of a bore and under the ceiling.
 fn by_label(
     b: &Block,
     q: [f64; 2],
@@ -1895,10 +1940,26 @@ fn by_label(
         let ((h, cause), kind) =
             if rule == 0 { ((t, NO_CAUSE), Kind::Terrain) } else { (slope(b, q, t, p), Kind::Slope) };
         let c = ceiling(b, q, items.segs, p);
+        // The cover over a bore is never under the plain terrain (no cut reaches over a bore) and stands at least at
+        // its floor bound. It yields to a deck only under the deck's own stroke: past it the deck's ceiling shapes the
+        // free ground, and the cover's own corners carry the step. Comparisons, not `max`: an unknown terrain (NaN)
+        // stays unknown.
+        let cover = BORES && label.is_some() && lw(0) & 0xff == Surface::Cover as u32;
+        let (h, cause) = if cover && t > h { (t, NO_CAUSE) } else { (h, cause) };
+        let f = if cover { floor(b, q, items.segs, t, p) } else { f64::NEG_INFINITY };
+        let c = if f > c { under_decks(b, q, items.segs, p) } else { c };
+        let (h, cause) = if f > h { (f, Cause { floor: true, ..NO_CAUSE }) } else { (h, cause) };
         if c < h {
             return (height(c, kind, None), Cause { ceiling: true, ..NO_CAUSE });
         }
         return (height(h, kind, cause.by), cause);
+    }
+    // A bore's floor stands on its bore's own line as the floor bound reads it (`floor_at`): no other bore blends into
+    // it, and the cover over it holds the least room.
+    if BORES && rule == 2 && lw(2) != u32::MAX && b.line(lw(2) as usize).storey < 0 {
+        if let Some(z) = floor_at(b, q, items.segs, b.way(lw(2)), p) {
+            return (height(z, Kind::Paved, Some(lw(2))), Cause { by: Some(lw(2)), ..NO_CAUSE });
+        }
     }
     let host = host(recs, lw(2));
     let water = b.water(lw(2));

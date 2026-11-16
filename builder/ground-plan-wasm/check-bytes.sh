@@ -10,7 +10,9 @@ limit_mib=512
 
 dir="$(mktemp -d)"
 trap 'rm -rf "$dir"' EXIT
-cargo run --locked --release -p obc-ground-plan --example debug -- requests --all --runs 1 --out "$dir"
+# The native side builds the crate with the package's default features (the storeys, not the bores).
+cargo run --locked --release -p obc-ground-plan --no-default-features --features storeys --example debug -- \
+  requests --all --runs 1 --out "$dir"
 size_mib=$(du -sm "$dir" | cut -f1)
 echo "requests: ${size_mib} MiB"
 if [ "$size_mib" -gt "$limit_mib" ]; then

@@ -59,7 +59,7 @@ pub struct Overlay<'a>(Candidates<'a>);
 
 impl<'a> Overlay<'a> {
     pub fn new(graph: &'a WayGraph, input: &CellInput, rules: &'a Rules, cell: CellKey, slopes: bool) -> Self {
-        Overlay(candidates(graph, input, rules, cell, 0, if slopes { LAYERS } else { SLOPE }, true))
+        Overlay(candidates(graph, input, rules, cell, 0, if slopes { LAYERS } else { SLOPE }, true, None))
     }
 
     /// The name of the overlay's label at q, a point on the half-unit grid.

@@ -80,9 +80,9 @@ pub mod shell;
 pub mod strip;
 
 use crate::faces::records::find;
-use crate::faces::{Face, FacePlan, Surface};
+use crate::faces::{EdgeKind, Face, FacePlan, Surface};
 use crate::frame::{metres_per_unit, CellKey, CELL_UNITS};
-use params::{sharp, SIDE};
+use params::SIDE;
 use region::{grid_of, Region, MARK_WORDS};
 
 pub use region::REGION_WORDS;
@@ -208,6 +208,8 @@ pub struct CellMesh {
     pub mouths: Vec<[u32; 4]>,
     pub stats: MeshStats,
     pub times: Vec<f64>,
+    /// With the bores, per triangle before the strip's, the floor under its face (`Face::under`); not in the bytes.
+    pub floors: Vec<u32>,
 }
 
 /// Indices less a run's base, two u16 to a word, low first; a zero pads an odd count.
@@ -416,18 +418,22 @@ impl Reads {
 /// Triangles or slots with their corners renamed by `rank`, in the order of their least corner (a
 /// counting sort, stable).
 fn by_least<const K: usize>(items: &[[u32; K]], rank: &[u32]) -> Vec<[u32; K]> {
-    let renamed: Vec<[u32; K]> = items.iter().map(|t| t.map(|c| rank[c as usize])).collect();
-    let least = |t: &[u32; K]| *t.iter().min().unwrap() as usize;
+    least_order(items, rank).into_iter().map(|i| items[i].map(|c| rank[c as usize])).collect()
+}
+
+/// The order of `by_least`: per place, the item that it takes.
+fn least_order<const K: usize>(items: &[[u32; K]], rank: &[u32]) -> Vec<usize> {
+    let least = |t: &[u32; K]| t.iter().map(|&c| rank[c as usize]).min().unwrap() as usize;
     let mut at = vec![0; rank.len() + 1];
-    for t in &renamed {
+    for t in items {
         at[least(t) + 1] += 1;
     }
     for k in 1..at.len() {
         at[k] += at[k - 1];
     }
-    let mut out = vec![[0; K]; renamed.len()];
-    for t in &renamed {
-        out[at[least(t)]] = *t;
+    let mut out = vec![0; items.len()];
+    for (i, t) in items.iter().enumerate() {
+        out[at[least(t)]] = i;
         at[least(t)] += 1;
     }
     out
@@ -455,8 +461,9 @@ pub fn mesh_cell(
     lap(&mut times);
     let labels = face_labels(&plan.faces, words);
     let label_of = |f: u32| labels[f as usize].unwrap_or(NO_LABEL);
-    let is_sharp = |f: u32| f != cdt::INSIDE && sharp(plan.faces[f as usize].rule);
-    let unlabelled = (0..plan.faces.len()).filter(|&f| sharp(plan.faces[f].rule) && labels[f].is_none()).count() as u32;
+    let is_sharp = |f: u32| f != cdt::INSIDE && params::sharp_face(&plan.faces[f as usize]);
+    let unlabelled =
+        (0..plan.faces.len()).filter(|&f| params::sharp_face(&plan.faces[f]) && labels[f].is_none()).count() as u32;
     // A point's ground face, from the face edges at it.
     let mut ground_face = vec![NONE; input.points.len()];
     for s in &input.segments[..input.edges] {
@@ -493,7 +500,11 @@ pub fn mesh_cell(
         of: Vec::new(),
     };
     let mut triangles = Vec::with_capacity(tris.len());
+    let mut floors = Vec::new();
     for (t, class) in &tris {
+        if crate::graph::BORES {
+            floors.push(plan.faces.get(*class as usize).map_or(crate::faces::NO_UNDER, |f| f.under));
+        }
         let key = |v: u32, ground: &mut Vec<u32>| {
             if is_sharp(*class) {
                 label_of(*class)
@@ -505,7 +516,11 @@ pub fn mesh_cell(
         triangles.push([0, 1, 2].map(|i| corners.get(t[i], k[i])));
     }
     let (mut steps, mut faces) = (Vec::new(), Vec::new());
-    for (s, &end) in input.segments[..input.edges].iter().zip(&input.end_faces) {
+    for (s, &kind) in input.segments[..input.edges].iter().zip(&input.kinds) {
+        if crate::graph::BORES && kind == EdgeKind::Portal {
+            continue;
+        }
+        let end = kind == EdgeKind::DeckEdge;
         let side = |f: u32, v: u32, ground: &mut Vec<u32>| {
             if is_sharp(f) {
                 label_of(f)
@@ -605,6 +620,11 @@ pub fn mesh_cell(
     for (new, &old) in order.iter().enumerate() {
         rank[old as usize] = new as u32;
     }
+    let floors = if crate::graph::BORES {
+        least_order(&triangles[..first_strip], &rank).into_iter().map(|i| floors[i]).collect()
+    } else {
+        Vec::new()
+    };
     let shared = [by_least(&triangles[..first_strip], &rank), by_least(&triangles[first_strip..], &rank)].concat();
     let level18 = by_least(&level18, &rank);
     let mut triangle_runs = runs(&shared)?;
@@ -652,6 +672,7 @@ pub fn mesh_cell(
         mouths,
         stats,
         times,
+        floors,
     })
 }
 

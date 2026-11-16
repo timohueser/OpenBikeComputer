@@ -234,7 +234,7 @@ pub struct Built {
 
 /// The faces and records of one cell and level. `slopes = false` leaves out the slope layer.
 pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, level: i8, slopes: bool) -> Built {
-    let (faces, near, far_records, far_block) = pass(graph, input, rules, cell, level, slopes, true);
+    let (faces, near, far_records, far_block, _) = pass(graph, input, rules, cell, level, slopes, true);
     Built { faces, near, far_records: far_records.expect("asked for"), far_block }
 }
 
@@ -248,9 +248,32 @@ pub fn near(
     level: i8,
     slopes: bool,
 ) -> (FacePlan, Records, Result<Vec<u32>, String>) {
-    let (faces, near, _, far_block) = pass(graph, input, rules, cell, level, slopes, false);
+    let (faces, near, _, far_block, _) = pass(graph, input, rules, cell, level, slopes, false);
     (faces, near, far_block)
 }
+
+/// The storey under the ground in a cell, from the slice that it shares with storey 0 (the one map): its faces, its
+/// records (a block of its own, which `storeys` merges), and the floors in front of the portal lines (faces of
+/// storey-0 labels under a way on top).
+pub struct Under {
+    pub faces: FacePlan,
+    pub records: Vec<u32>,
+    pub wedges: FacePlan,
+}
+
+/// `near` of storey 0, with the storey under the ground from the same slice where the graph has a bore.
+pub fn near_under(
+    graph: &WayGraph,
+    input: &CellInput,
+    rules: &Rules,
+    cell: CellKey,
+) -> (FacePlan, Records, Result<Vec<u32>, String>, Option<Under>) {
+    let (faces, near, _, far_block, under) = pass(graph, input, rules, cell, 0, true, false);
+    (faces, near, far_block, under)
+}
+
+/// What a pass gives (`pass`).
+type Passed = (FacePlan, Records, Option<Records>, Result<Vec<u32>, String>, Option<Under>);
 
 /// One pass of candidates and one slice: the faces, the near records, with `far_records` the far
 /// records, and the far block of the candidates' lines, the lines of `level` (`far_block` gives level
@@ -263,14 +286,27 @@ fn pass(
     level: i8,
     slopes: bool,
     far_records: bool,
-) -> (FacePlan, Records, Option<Records>, Result<Vec<u32>, String>) {
-    let mut c = candidates(graph, input, rules, cell, level, if slopes { LAYERS } else { SLOPE }, true);
-    let s = Sliced::new(&c);
-    let faces = s.cell(&c, cell, level);
+) -> Passed {
+    let mut c = candidates(graph, input, rules, cell, level, if slopes { LAYERS } else { SLOPE }, true, None);
+    // With the bores, storey 0 and the storey under it are two labellings of one slice. A cell whose graph has no bore
+    // takes the path of a build with no bores.
+    let bores = (crate::graph::BORES && level == 0 && crate::faces::any_bore(graph))
+        .then(|| candidates(graph, input, rules, cell, -1, LAYERS, true, Some(&c.lines)))
+        .filter(|u| !u.cands.is_empty());
+    let s = match &bores {
+        Some(u) => Sliced::joint(&c, u),
+        None => Sliced::new(&c),
+    };
+    let (faces, storeys) = s.cells(&c, cell, level);
     let map = s.map();
     let ceilings = if level == 0 { super::ceiling_lines(graph, input, rules, cell) } else { Vec::new() };
     let plan = s.plan(cell, level, &map, &s.labels);
     let near = encode(cell, graph, input, rules, (&c.lines, &ceilings), &c.cands, &plan, true);
+    let under = bores.as_ref().zip(storeys).map(|(u, (faces, wedges))| {
+        let plan = s.plan(cell, -1, &map, &s.under);
+        let records = encode(cell, graph, input, rules, (&u.lines, &[]), &u.cands, &plan, false).words;
+        Under { faces, records, wedges }
+    });
     // The far block and the far level hold no water: their lines are the way lines.
     let far_block = far::encode(cell, graph, input, rules, &c.lines[..c.ways]);
     let records = far_records.then(|| {
@@ -279,7 +315,7 @@ fn pass(
         let plan = s.plan(cell, level, &map, &labels);
         encode(cell, graph, input, rules, (&c.lines[..c.ways], &[]), &c.cands, &plan, false)
     });
-    (faces, near, records, far_block)
+    (faces, near, records, far_block, under)
 }
 
 /// How far an outline edge's cones reach: the greatest slope reach of a class or a water row. The
@@ -996,7 +1032,7 @@ fn encode(
     // The ceiling lines after them, each one leg (`faces::ceiling_lines`), with the drop in word 10.
     let heights = &rules.plan.heights;
     // The ground ways' deck end lines: their end point, the unit direction into the way.
-    let ends: Vec<[f64; 5]> = lines.iter().flat_map(super::deck_ends).collect();
+    let ends: Vec<[f64; 5]> = lines.iter().flat_map(super::deck_ends).map(|e| e.1).collect();
     let unit = |v: [f64; 2]| {
         let len = libm::hypot(v[0], v[1]);
         (len > 1e-9).then(|| [v[0] / len, v[1] / len])
@@ -1026,12 +1062,24 @@ fn encode(
                 .filter(|&(c, _)| c >= libm::cos(FLAT_TURN_DEG.to_radians()))
                 .max_by(|x, y| x.0.total_cmp(&y.0))
                 .map_or(own, |(_, n)| n);
+            // A portal's end is flat on the portal line: the direction that both strokes end on (`WayLine::end_dir`).
+            let flat =
+                line.end_dir[k]
+                    .filter(|_| crate::graph::BORES)
+                    .map_or(flat, |e| if k == 0 { e } else { [-e[0], -e[1]] });
             let snorm = |v: f64| u32::from(libm::round(v.clamp(-1.0, 1.0) * 32767.0) as i16 as u16);
             w[4 + k] = snorm(flat[0]) | snorm(flat[1]) << 16;
         }
         w[1] |= CEILING;
         w[2] = (samples_w.len() / SAMPLE) as u32;
-        w[10] = f(graph.deck_depth(input, line.way, &line.sec) + heights.ceiling_gap_m);
+        if super::in_bore(graph, line.way) {
+            // A bore's floor line: the drop turned, its least room (the least bore and the roof's least plate, as the
+            // test of a way on top), and in the rise word the most that it lifts the plain terrain.
+            w[10] = f(-(line.sec.bore_least_m + line.sec.roof_least_m));
+            w[16] = f(rules.structures.lift_max_m);
+        } else {
+            w[10] = f(graph.deck_depth(input, line.way, &line.sec) + heights.ceiling_gap_m);
+        }
         lines_w.extend(w);
         samples_w.extend(s);
     }

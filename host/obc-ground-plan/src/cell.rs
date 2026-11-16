@@ -1,6 +1,6 @@
 //! The build of one cell from its request bytes, stage by stage, with the time of each stage.
 
-use crate::faces::{records, EdgeKind, FacePlan, Rules, Storeys, OUTSIDE};
+use crate::faces::{records, EdgeKind, FacePlan, Portal, Rules, Storeys, FRONT_LEFT, OUTSIDE};
 use crate::frame::CellKey;
 use crate::graph::{self, WayGraph};
 use crate::mesh;
@@ -79,19 +79,49 @@ pub fn build_storeys(
     rules: &Rules,
     now: &mut dyn FnMut() -> f64,
 ) -> Result<CellBuild, String> {
-    let (mut b, input) = stages(now(), request, cache, rules, now)?;
+    let (b, input, under) = stages(now(), request, cache, rules, now)?;
+    Ok(with_storeys(b, &input, under, rules, now))
+}
+
+/// The storeys of a cell's build of level 0 (`stages`) and what their shells read.
+fn with_storeys(
+    mut b: CellBuild,
+    input: &CellInput,
+    under: Option<records::Under>,
+    rules: &Rules,
+    now: &mut dyn FnMut() -> f64,
+) -> CellBuild {
     let start = now();
-    b.storeys = records::storeys(&b.graph, &input, rules, b.key, &mut b.records);
+    b.storeys = records::storeys(&b.graph, input, rules, b.key, &mut b.records, under);
     let plan = &b.faces;
-    let sharp = |f: u32| f != OUTSIDE && mesh::params::sharp(plan.faces[f as usize].rule);
+    let sharp = |f: u32| f != OUTSIDE && mesh::params::sharp_face(&plan.faces[f as usize]);
+    let origin_y = b.key.origin().y as f64;
     b.storeys.ground_ends = (plan.edges.iter())
         .filter(|e| {
             e.kind == EdgeKind::DeckEdge && e.left != OUTSIDE && e.right != OUTSIDE && (sharp(e.left) || sharp(e.right))
         })
-        .flat_map(|e| mesh::points::edge_points(plan, e, b.key.origin().y as f64))
+        .flat_map(|e| mesh::points::edge_points(plan, e, origin_y))
         .collect();
+    let portals = (plan.edges.iter()).filter(|e| e.kind == EdgeKind::Portal && e.left != OUTSIDE && e.right != OUTSIDE);
+    let labels = if crate::graph::BORES { mesh::face_labels(&plan.faces, &b.records) } else { Vec::new() };
+    for e in portals.filter(|_| crate::graph::BORES) {
+        let (front, back) = if e.flags & FRONT_LEFT != 0 { (e.left, e.right) } else { (e.right, e.left) };
+        let (Some(front), Some(back)) = (labels[front as usize], labels[back as usize]) else { continue };
+        // Each piece from a to b with the entering way on its left.
+        for w in mesh::points::edge_points(plan, e, origin_y).windows(2) {
+            let (a, c) = if e.flags & FRONT_LEFT != 0 { (w[0], w[1]) } else { (w[1], w[0]) };
+            b.storeys.portals.push(Portal { a, b: c, front, back });
+        }
+    }
     b.storey_time = now() - start;
-    Ok(b)
+    b
+}
+
+/// `build_storeys` of a cell's input, untimed: the crate's tests build made cases of bores with it.
+#[cfg(all(test, feature = "bores"))]
+pub(crate) fn build_input(input: &CellInput, rules: &Rules) -> CellBuild {
+    let (b, under) = level_0(input, rules, 0.0, &mut || 0.0);
+    with_storeys(b, input, under, rules, &mut || 0.0)
 }
 
 /// The far block of a request's cell alone (`records::far_block`): the stages input and graph of
@@ -118,15 +148,30 @@ fn stages(
     cache: &mut TileCache,
     rules: &Rules,
     now: &mut dyn FnMut() -> f64,
-) -> Result<(CellBuild, CellInput), String> {
-    let (key, tiles, pages) = (request.key, request.tiles.len(), request.pages.len());
+) -> Result<(CellBuild, CellInput, Option<records::Under>), String> {
+    let (tiles, pages) = (request.tiles.len(), request.pages.len());
     let input = request.input(cache)?;
     let read = now();
-    let graph = cell_graph(key, &input, rules);
+    let (mut b, under) = level_0(&input, rules, read, now);
+    (b.tiles, b.pages, b.times[0]) = (tiles, pages, read - start);
+    Ok((b, input, under))
+}
+
+/// The graph, the faces of level 0, their records and the far block of a cell's input, timed from `read`, and the
+/// storey under the ground from the same slice.
+fn level_0(
+    input: &CellInput,
+    rules: &Rules,
+    read: f64,
+    now: &mut dyn FnMut() -> f64,
+) -> (CellBuild, Option<records::Under>) {
+    let key = input.key;
+    let graph = cell_graph(key, input, rules);
     let built = now();
-    let (faces, records, far) = records::near(&graph, &input, rules, key, 0, true);
-    let times = vec![read - start, built - read, now() - built];
+    let (faces, records, far, under) = records::near_under(&graph, input, rules, key);
+    let times = vec![0.0, built - read, now() - built];
     let records = records.words;
     let (storeys, storey_time) = (Storeys::default(), 0.0);
-    Ok((CellBuild { key, request: None, tiles, pages, graph, faces, records, far, times, storeys, storey_time }, input))
+    let (tiles, pages) = (0, 0);
+    (CellBuild { key, request: None, tiles, pages, graph, faces, records, far, times, storeys, storey_time }, under)
 }
