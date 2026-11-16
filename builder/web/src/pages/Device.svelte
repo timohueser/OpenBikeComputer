@@ -2,7 +2,7 @@
     import { onMount } from 'svelte';
     import Card from '../lib/ui/Card.svelte';
     import Window from '../lib/ui/Window.svelte';
-    import Icon from '../components/planner/PlannerIcon.svelte';
+    import Icon from '../lib/ui/Icon.svelte';
     import Drawing from './device/Drawing.svelte';
     import Software from './device/Software.svelte';
     import { deviceHolder } from '../lib/device/session.svelte';
@@ -15,6 +15,7 @@
     import { isPlan } from '../lib/planner/library';
     import { platform } from '../lib/platform';
     import { ROUTES } from '../lib/routes';
+    import type { FlatStoreClient } from '../lib/usb/client';
     import { deviceArea, sameArea } from '../lib/device-sync/area';
 
     let { library }: { library: Library; active: boolean } = $props();
@@ -35,13 +36,18 @@
     let updating = $state(false);
     /** The question before a map download in a browser that saves data. */
     let asking = $state(false);
+    /** The question before a format, with the device and the card that it is about: the format goes to no other. */
+    let erasing = $state.raw<{ client: FlatStoreClient; serial: string; storeId: string | null } | null>(null);
+    /** A format runs, or it ended and the device did not restart yet. */
+    let formatting = $state(false);
+    let formatProblem = $state('');
 
     const session = $derived(deviceHolder.session);
     const status = $derived(session?.status);
     const device = $derived(remembered.device);
     const raw = $derived(deviceHolder.error ?? (status === 'error' ? session?.error : null));
     // Chrome names `claimInterface` when another page holds the device.
-    const error = $derived(raw && /claim/i.test(raw) ? 'Another tab or the map builder uses the device. Close it, then connect again.' : raw);
+    const error = $derived(raw && /claim/i.test(raw) ? 'Another tab uses the device. Close it, then connect again.' : raw);
     const view = $derived(
         status === 'unsupported' ? 'cannot'
             : !session && !deviceHolder.error ? 'loading'
@@ -50,6 +56,13 @@
     /** A device on the cable that is not the remembered one; Connect uses it with no chooser. */
     const other = $derived(view !== 'connected' && status === 'ready' && session?.info ? { name: deviceName(session.info.serialNumber), formatted: !!session.store } : null);
     $effect(() => { if (status === 'ready') released = false; });
+    // The link went: the format ended, and a sentence about it is of a card that the page cannot see any more.
+    $effect(() => { if (status !== 'ready') { formatting = false; formatProblem = ''; } });
+    const busy = $derived(deviceSync.running || updating || !!deviceSync.map || formatting);
+    // The question closes when its device or its card is not on the cable any more.
+    $effect(() => {
+        if (erasing && (session?.client !== erasing.client || session.info?.serialNumber !== erasing.serial || (session.store?.storeId ?? null) !== erasing.storeId)) erasing = null;
+    });
 
     const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
     const day = (date: Date) => date.toLocaleDateString('en-GB', { day: 'numeric', month: 'long' });
@@ -133,17 +146,32 @@
         void session?.disconnect();
     }
 
-    /** The map builder can claim the device only after this tab lets it go. */
-    function openBuilder(event: MouseEvent) {
-        event.preventDefault();
-        const href = (event.currentTarget as HTMLAnchorElement).href;
-        void Promise.resolve(session?.disconnect()).finally(() => location.assign(href));
+    function askFormat() {
+        const client = session?.client, serial = session?.info?.serialNumber;
+        if (client && serial && !busy) erasing = { client, serial, storeId: session.store?.storeId ?? null };
+    }
+
+    /** Erases the card of the question. The device restarts after its answer, so `formatting` ends when the link goes. */
+    async function format() {
+        const target = erasing;
+        if (!target || busy) return;
+        erasing = null;
+        formatting = true;
+        formatProblem = '';
+        try {
+            await target.client.format(target.storeId);
+        } catch (cause) {
+            // After the link went, the card can have its format in spite of the lost answer.
+            if (session?.client !== target.client) return;
+            formatProblem = `The format did not work: ${cause instanceof Error ? cause.message : String(cause)}`;
+            formatting = false;
+        }
     }
 </script>
 
 {#snippet connectButton(label: string)}
-    {#if !other?.formatted && other}
-        <p class="note">The memory card of {other.name} needs a format. <a href={`${siteBase}builder/`} onclick={openBuilder}>The map builder</a> formats it.</p>
+    {#if other && !other.formatted}
+        <button type="button" class="button primary" onclick={askFormat} disabled={busy}>{formatting ? 'Formatting' : 'Format'}</button>
     {:else}
         <button type="button" class="button primary" onclick={connect} disabled={status === 'connecting'}>
             {status === 'connecting' ? 'Connecting' : other ? `Use ${other.name}` : label}
@@ -178,7 +206,7 @@
         {#if step}
             <div><button type="button" class="button map" onclick={() => deviceSync.stop()} disabled={step.storing}>Stop</button></div>
         {:else if held.next && connected}
-            <div><button type="button" class="button map" onclick={sendMap} disabled={deviceSync.running || updating}>Send the map</button></div>
+            <div><button type="button" class="button map" onclick={sendMap} disabled={busy}>Send the map</button></div>
         {/if}
     </div>
 {/snippet}
@@ -197,15 +225,16 @@
                 <span class="state"><span class="dot" class:on={connected}></span>{connected ? 'Connected' : released ? 'Disconnected' : 'Not connected'}</span>
                 <span class="actions">
                     {#if connected}
-                        <button type="button" class="button" onclick={release} disabled={deviceSync.running || updating || !!deviceSync.map}>Disconnect</button>
+                        <button type="button" class="button" onclick={release} disabled={busy}>Disconnect</button>
                     {:else}
                         {@render connectButton('Connect')}
                     {/if}
                 </span>
             </header>
-            {#if !connected && (other?.formatted || released || error)}
-                <p class="note" class:problem={!!error} role={error ? 'alert' : undefined}>
-                    {error ?? (other ? `${other.name} is on the cable.` : 'The map builder can use the device now. Connect takes it back.')}
+            {#if !connected && (other || error)}
+                {@const problem = error ?? (other && !other.formatted ? formatProblem : '')}
+                <p class="note" class:problem={!!problem} role={problem ? 'alert' : undefined}>
+                    {problem || (other?.formatted ? `${other.name} is on the cable.` : `The memory card of ${other?.name} needs a format.`)}
                 </p>
             {/if}
             <Card>
@@ -227,7 +256,7 @@
                             {/if}
                         </div>
                         {#if connected}
-                            <div><button type="button" class="button" onclick={() => deviceSync.run()} disabled={deviceSync.running || updating || !!deviceSync.map}>{deviceSync.problem ? 'Try again' : 'Sync now'}</button></div>
+                            <div><button type="button" class="button" onclick={() => deviceSync.run()} disabled={busy}>{deviceSync.problem ? 'Try again' : 'Sync now'}</button></div>
                         {/if}
                     </div>
                     {#if connected}
@@ -247,26 +276,33 @@
                                 {#if held.last !== null}<p class="second">The last on {day(new Date(held.last * 1000))}</p>{/if}
                             </div>
                         </div>
-                        {#if device.at !== null}
-                            <div class="row">
-                                <span class="label">Memory card</span>
-                                <div>
+                        <div class="row">
+                            <span class="label">Memory card</span>
+                            <div>
+                                {#if device.at !== null}
                                     <div class="bar">
                                         {#each parts as part (part.label)}
                                             {#if part.bytes}<span style:flex-grow={part.bytes} style:background={part.colour}></span>{/if}
                                         {/each}
                                     </div>
+                                {/if}
+                                <!-- In the place of the legend, so the row keeps its height. -->
+                                {#if formatting}
+                                    <p class="second syncing"><span class="turning"><Icon name="sync" size={16} /></span>Formatting</p>
+                                {:else if device.at !== null}
                                     <p class="second legend">
                                         {#each parts as part (part.label)}<span><i style:background={part.colour}></i>{part.label} {formatBytes(part.bytes)}</span>{/each}
                                     </p>
-                                </div>
+                                {/if}
+                                {#if formatProblem}<p class="second problem" role="alert">{formatProblem}</p>{/if}
                             </div>
-                        {/if}
+                            <div><button type="button" class="button" onclick={askFormat} disabled={busy}>Format</button></div>
+                        </div>
                         {@render mapRow(true)}
                         {#if session?.client}
                             <div class="row">
                                 <span class="label">Software</span>
-                                <Software client={session.client} running={session.info?.firmwareRevision ?? null} busy={deviceSync.running || !!deviceSync.map} bind:working={updating} />
+                                <Software client={session.client} running={session.info?.firmwareRevision ?? null} busy={deviceSync.running || !!deviceSync.map || formatting} bind:working={updating} />
                             </div>
                         {/if}
                     {:else}
@@ -293,9 +329,10 @@
                 <div class="aside"><strong>What works here</strong>Plan routes, keep rides, and export GPX and FIT files. Only the cable connection is missing.</div>
             {:else}
                 <h1>Connect your OpenBikeComputer</h1>
-                <p>{other ? `${other.name} is on the cable.` : 'Connect it with the USB cable. Then press the button, and choose the device in the window of the browser.'}</p>
+                <p>{!other ? 'Connect it with the USB cable. Then press the button, and choose the device in the window of the browser.'
+                    : other.formatted ? `${other.name} is on the cable.` : `${other.name} is on the cable. Its memory card needs a format.`}</p>
                 {@render connectButton('Connect a device')}
-                {#if error}<p class="problem" role="alert">{error}</p>{/if}
+                {#if error || formatProblem}<p class="problem" role="alert">{error ?? formatProblem}</p>{/if}
                 <div class="aside">
                     <strong>You have no OpenBikeComputer?</strong>
                     All of this product works without one. Take a route to another device as a GPX or FIT file from its page.
@@ -305,6 +342,18 @@
         </div>
     {/if}
 </main>
+
+{#if erasing}
+    <Window title={`Format the memory card of ${deviceName(erasing.serial)}?`} onClose={() => erasing = null}>
+        {#snippet children(close)}
+            <p>The format erases the map, the routes and the rides on the memory card. The device then starts again.</p>
+            <div class="window-buttons">
+                <button type="button" class="button" onclick={close}>Cancel</button>
+                <button type="button" class="button danger" onclick={() => void format()} disabled={busy}>Format</button>
+            </div>
+        {/snippet}
+    </Window>
+{/if}
 
 {#if asking && held.next}
     <Window title="Send the map?" onClose={() => asking = false}>
@@ -367,6 +416,10 @@
     .button:disabled {
         opacity: .6;
     }
+    .danger {
+        border-color: var(--coral);
+        color: var(--coral);
+    }
     .problem {
         color: var(--coral);
     }
@@ -395,10 +448,6 @@
     }
     .actions {
         margin-left: auto;
-    }
-    /* A note in the place of the button takes a line of its own. */
-    .actions:has(.note) {
-        flex-basis: 100%;
     }
     .note {
         color: var(--ink-soft);

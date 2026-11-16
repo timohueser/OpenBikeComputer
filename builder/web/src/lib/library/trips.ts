@@ -11,6 +11,15 @@ export interface Trip {
     days: number[];
 }
 
+/**
+ * The days from the lowest to the highest day of `rides`, rest days included. `rides` are rides of the trip. The day of a
+ * device ride comes from the device, so a later ride can have an earlier day.
+ */
+export function tripDays(trip: Trip, rides: RideRecord[] = trip.rides): number {
+    const days = rides.map(ride => trip.days[trip.rides.indexOf(ride)]);
+    return Math.max(...days) - Math.min(...days) + 1;
+}
+
 const JOIN_M = 5000, HOME_M = 20_000, BASE_M = 5000, GAP_DAYS = 2;
 
 /** The local day of a Unix time in seconds, as a count of days. */

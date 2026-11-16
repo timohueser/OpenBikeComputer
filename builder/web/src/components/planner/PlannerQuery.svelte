@@ -1,6 +1,6 @@
 <script lang="ts">
     import { onDestroy, untrack } from 'svelte';
-    import PlannerIcon from './PlannerIcon.svelte';
+    import PlannerIcon from '../../lib/ui/Icon.svelte';
     import { config } from '../../lib/planner/map-data';
     import QueryChip from './QueryChip.svelte';
     import type { Coordinate } from '../../lib/planner/geo';

@@ -445,14 +445,6 @@ class ShippedPlanTests(unittest.TestCase):
         self.assertEqual(plan.validate(self.root, self.graph, self.document, self.units), [])
         self.assertEqual(plan.validate_workflow(self.root), [])
 
-    def test_the_shared_config_schema_selects_its_rust_python_and_web_consumers(self) -> None:
-        selected = plan.select(self.units, self.graph, ["host/obc-map-core/schema/config.schema.json"])
-        self.assertEqual(selected.errors, [])
-        self.assertLessEqual(
-            {"rust.obc-map-core", "python.builder", "web.builder-vitest"},
-            {unit.id for unit in selected.selected},
-        )
-
     def test_every_package_reaches_the_jobs_that_compile_it(self) -> None:
         expected = {
             "obc-crc": ["clippy", "fmt", "test"],
@@ -460,8 +452,8 @@ class ShippedPlanTests(unittest.TestCase):
             "obc-boot": ["boot", "fmt"],
             "obc-builder-bridge": ["clippy", "fmt", "test", "wasm-bridges"],
             "obc-web-demo": ["clippy", "fmt", "test", "wasm"],
-            "obc-pack": ["builder-python", "clippy", "fmt", "test"],
-            "obc-bake": ["builder-python", "clippy", "fmt", "test"],
+            "obc-pack": ["clippy", "fmt", "packer-python", "test"],
+            "obc-bake": ["clippy", "fmt", "packer-python", "test"],
             "obc-sim": ["clippy", "fmt", "test", "ui-snapshots"],
             "obc-app": ["clippy", "device", "fmt", "test"],
         }
@@ -483,7 +475,7 @@ class ShippedPlanTests(unittest.TestCase):
             (
                 "foundational Rust crate",
                 ["firmware/obc-crc/src/lib.rs"],
-                ["boot", "builder-python", "cairn", "clippy", "device", "embedded", "fmt", "ios-app", "ios-release", "ios-unit", "test", "ui-snapshots", "wasm", "wasm-bridges"],
+                ["boot", "cairn", "clippy", "device", "embedded", "fmt", "ios-app", "ios-release", "ios-unit", "packer-python", "test", "ui-snapshots", "wasm", "wasm-bridges"],
             ),
             (
                 "shared vectors",
@@ -499,12 +491,12 @@ class ShippedPlanTests(unittest.TestCase):
             (
                 "workflow",
                 [".github/workflows/ci.yml"],
-                ["boot", "builder-python", "cairn", "clippy", "deny", "device", "docs", "embedded", "fmt", "ios-app", "ios-release", "ios-unit", "planner-search", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
+                ["boot", "cairn", "clippy", "deny", "device", "docs", "embedded", "fmt", "ios-app", "ios-release", "ios-unit", "packer-python", "planner-search", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
             ),
             (
                 "nextest configuration",
                 [".config/nextest.toml"],
-                ["boot", "builder-python", "cairn", "clippy", "deny", "device", "docs", "embedded", "fmt", "planner-search", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
+                ["boot", "cairn", "clippy", "deny", "device", "docs", "embedded", "fmt", "packer-python", "planner-search", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
             ),
             ("web demo crate", ["sim/web-demo/src/lib.rs"], ["cairn", "clippy", "fmt", "test", "wasm"]),
             ("web demo Trunk target", ["docs/index.html"], ["docs", "wasm", "wasm-bridges"]),

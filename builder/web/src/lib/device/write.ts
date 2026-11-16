@@ -1,15 +1,14 @@
 /**
- * The three things the builder writes to a device: a map, a route, a firmware image.
+ * The two things the web app writes to a device here: a map and a firmware image.
  *
  * A map is one object. There is no multi-file map upload here — no manifest, no shards, no separate
  * terrain file to order against them — so every write in this file is a single `PUT` against one
- * `.obcm`, `.obcr` or `UPDATE.BIN`, and there is no state that outlives a transfer.
+ * `.obcm` or `UPDATE.BIN`, and there is no state that outlives a transfer.
  *
- * All three are the same shape underneath: declare the length, the whole-payload CRC, the kind and a
+ * Both are the same shape underneath: declare the length, the whole-payload CRC, the kind and a
  * display name, stream the payload, read back what the commit published. What differs is what has to
  * be true *before* the first byte moves — the map checks the selected map's current id and revision,
- * the route has its OBCR header read back and shown, and the firmware has its whole OBCU container
- * checked (header CRC, image CRC, slot ceiling).
+ * and the firmware has its whole OBCU container checked (header CRC, image CRC, slot ceiling).
  *
  * "Uploaded" means the device has a valid object. The device verifies the declared length and the
  * whole-payload CRC, runs the kind's validator, and only then commits; anything else is an error
@@ -31,7 +30,6 @@ import { EntryFlags, ObjectKind, type PutResponse } from "../usb/protocol";
 import { truncateUtf8 } from "../format";
 import { readUpdateImage, type UpdateImage } from "../firmware/obcu";
 import type { JobContext } from "./progress";
-import type { PreparedRoute } from "./route";
 
 /** The display-name field: at most 48 UTF-8 bytes. */
 export const DISPLAY_NAME_MAX = 48;
@@ -50,10 +48,10 @@ export function displayName(name: string, fallback: string): string {
 // with the transport that pays for it: `DEFAULT_BATCH_BYTES` / `UPLOAD_WINDOW` in `../usb/client`.
 
 /**
- * Send a `.obcm` Blob, either selected by the rider or produced by the assembler.
+ * Send the `.obcm` Blob that the assembler built.
  *
- * No second staging copy: a picked `File` and the assembler's Blob are read twice in bounded chunks,
- * once for the CRC and once to send. That is what `blobSource` is for.
+ * No second staging copy: the Blob is read twice in bounded chunks, once for the CRC and once to
+ * send. That is what `blobSource` is for.
  *
  * Replaces the map the device will select: the active (non-retained) `MapShard` with the lowest
  * `ObjectId`. That is the firmware's deterministic selection rule, so a second send moves the map the
@@ -143,32 +141,6 @@ async function sendMapSource(
             // The commit is bounded work the ordinary timeout covers, and it still takes long
             // enough to be worth naming: the device has to land the last staging half first.
             onSent: () => ctx.phase("committing"),
-        },
-    );
-}
-
-/** Send a `.obcm` the rider selected from disk. */
-export function sendMapFile(client: FlatStoreClient, file: File, ctx: JobContext): Promise<PutResponse> {
-    return sendMapBlob(client, file, file.name, ctx);
-}
-
-/**
- * Send a converted route.
- *
- * Uploaded as a **create**: the device assigns the `ObjectId` and reports it in the answer. Dropping
- * the same GPX twice therefore makes two objects. The catalog carries every object's payload length
- * and CRC, so a caller that wants convergence looks before it uploads —
- * `FlatStoreClient.findCreated` is that lookup, used to reconcile an upload whose answer was lost
- * rather than to pre-empt an ordinary second drop.
- */
-export function sendRoute(client: FlatStoreClient, route: PreparedRoute, ctx: JobContext): Promise<PutResponse> {
-    ctx.phase("sending", route.obcr.length);
-    return client.put(
-        { kind: ObjectKind.Route, displayName: displayName(route.header.name, "Route") },
-        route.obcr,
-        {
-            signal: ctx.signal,
-            onProgress: (done, total) => ctx.progress(done, total),
         },
     );
 }

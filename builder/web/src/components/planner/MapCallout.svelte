@@ -7,7 +7,7 @@
 
 <script lang="ts">
     import { onMount, tick, type Snippet } from 'svelte';
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import OpeningHours from './OpeningHours.svelte';
     import PlaceContent from './PlaceContent.svelte';
     import { kindLabel } from '../../lib/planner/search/presentation';

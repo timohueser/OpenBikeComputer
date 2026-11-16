@@ -10,11 +10,21 @@ owns:
   - builder/web/src/lib/trailview/**
   - builder/web/src/plan-timing.ts
   - builder/web/plan-timing.html
+  - builder/web/scripts/**
+  - builder/web/vite/stamp-bundle.ts
+  - builder/web/vite/stamp-version.d.ts
+  - builder/web/vite/bundle-version.ts
+  - builder/web/vite/versions.d.ts
+  - builder/web/test-support/trailview/**
+  - builder/web/test-support/fake-caches.ts
+  - builder/web/tests/browser/trailview/**
+  - builder/web/tests/browser/playwright.trailview.config.js
   - tools/trailview/**
   - tools/planner_trailview_canopy.py
 depends_on:
   - data-engine
-test_depends_on: []
+test_depends_on:
+  - repository-tooling
 status: draft
 ---
 

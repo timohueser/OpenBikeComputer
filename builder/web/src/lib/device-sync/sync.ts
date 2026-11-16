@@ -14,6 +14,7 @@ import { DeviceError, type Catalog, type FlatStoreClient } from '../usb/client';
 import { Crc32 } from '../usb/crc32';
 import { decodeRideObject } from '../usb/objects';
 import { EntryFlags, ObjectKind, type CatalogEntry, type PutResponse } from '../usb/protocol';
+import type { MapArea } from './area';
 import { archivedRows } from './metadata';
 import { remember, rememberCard, remembered, type DeviceBytes } from './remembered.svelte';
 import { rideRecord } from './ride';
@@ -41,8 +42,8 @@ export const CABLE_OUT = 'The sync stopped when the cable came out. It goes on a
 export const NO_ROOM = 'The memory card has no room for the new map. The old map stays until the new one is complete, so the card needs room for both.';
 export const MAP_LOST = 'The new map was not sent. “Send the map” starts again.';
 
-/** Builds the map `next` and puts it on the device. The one of the app is `buildMap` of `map.svelte.ts`. */
-export type BuildMap = (next: NextMap, ctx: JobContext) => Promise<Pick<PutResponse, 'objectId' | 'revision'>>;
+/** Builds the map `next` and puts it on the device; `area` is what it sent. The one of the app is `buildMap` of `map.svelte.ts`. */
+export type BuildMap = (next: NextMap, ctx: JobContext) => Promise<Pick<PutResponse, 'objectId' | 'revision'> & { area: MapArea }>;
 
 const unused = (entry: CatalogEntry) => (entry.flags & (EntryFlags.Recording | EntryFlags.Retained)) === 0;
 const ofKind = (catalog: Catalog, kind: number) => catalog.entries.filter(entry => entry.kind === kind && unused(entry));
@@ -176,16 +177,16 @@ export async function syncDevice(client: SyncClient, serial: string, library: Li
 export async function sendMap(serial: string, library: Library, build: BuildMap, ctx: JobContext): Promise<string | null> {
     const next = await library.state('nextMap');
     if (!next || remembered.device?.serial !== serial) return null;
-    let object: string;
+    let object: string, area: MapArea;
     try {
-        const { objectId, revision } = await build(next, ctx);
-        object = `${objectId}:${revision}`;
+        const put = await build(next, ctx);
+        [object, area] = [`${put.objectId}:${put.revision}`, put.area];
     } catch (error) {
         if (refused(error, 'no-space')) return NO_ROOM;
         return cut(error) || ctx.signal.aborted ? MAP_LOST : text(error);
     }
     // The map is on the device: a failed write of the library is no failed send.
-    const { bytes: _, ...area } = next, sent = JSON.stringify(next);
+    const sent = JSON.stringify(next);
     remember({ mapObject: object, built: { object, ...area } });
     await library.changeState('nextMap', now => now && JSON.stringify(now) !== sent ? now : null);
     return null;

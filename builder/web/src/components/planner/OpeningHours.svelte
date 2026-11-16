@@ -1,5 +1,5 @@
 <script lang="ts">
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import { openingHoursRows } from '../../lib/planner/search/opening-hours';
     let { value }: { value?: string } = $props();
     const rows = $derived(value ? openingHoursRows(value) : null);

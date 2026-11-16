@@ -14,8 +14,8 @@ export interface DiskLedger {
 }
 
 /** New downloaded cells, assembled output, and peak retained merge scratch. */
-export function projectedRunDiskBytes(ledger: DiskLedger, storedCellBytes = 0): number {
+export function projectedRunDiskBytes(ledger: DiskLedger): number {
     const terrain = ledger.terrain?.bytes ?? 0;
-    const newCellBytes = Math.max(0, ledger.totalBytes - terrain - storedCellBytes);
+    const newCellBytes = Math.max(0, ledger.totalBytes - terrain);
     return newCellBytes + ledger.totalBytes + SCRATCH_PER_CORE_BYTE * ledger.core.bytes;
 }

@@ -22,14 +22,18 @@ export function poiPlace(id: string | number | undefined, kind: string, name: un
     };
 }
 
+/** The fractional Web Mercator tile column of a longitude and row of a latitude at `zoom`. */
+export const tileColumn = (lon: number, zoom: number) => (lon + 180) / 360 * 2 ** zoom;
+export const tileRow = (lat: number, zoom: number) => {
+    const rad = lat * Math.PI / 180;
+    return (1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2 * 2 ** zoom;
+};
+
 /** Keys `z/x/y` of the tiles at `zoom` that a square buffer of `bufferKm` around the route touches. */
 export function corridorTiles(coordinates: Coordinate[], bufferKm: number, zoom: number): string[] {
     const n = 2 ** zoom;
-    const column = (lon: number) => Math.floor((lon + 180) / 360 * n);
-    const row = (lat: number) => {
-        const rad = lat * Math.PI / 180;
-        return Math.floor((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2 * n);
-    };
+    const column = (lon: number) => Math.floor(tileColumn(lon, zoom));
+    const row = (lat: number) => Math.floor(tileRow(lat, zoom));
     const keys = new Set<string>();
     const dLat = bufferKm / kmPerDegree;
     // Samples no further apart than half a box or a quarter tile leave no gap between boxes.

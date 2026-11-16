@@ -6,8 +6,7 @@
  * *inside* one object mean, and only for the one kind this app has to look inside.
  *
  * Routes, maps and firmware images are absent on purpose: an `.obcr`, an `.obcm` and an `UPDATE.BIN`
- * are written verbatim and read back verbatim. The browser's OBCR encoding is the wasm bridge's job,
- * and `device/route.ts` reads its header.
+ * are written verbatim and read back verbatim. The browser's OBCR encoding is the wasm bridge's job.
  *
  * There is no list object: `LIST` is a control response carrying 88-byte catalog entries, and what a
  * client can know about an object without downloading it is exactly what that entry holds. The

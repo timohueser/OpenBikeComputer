@@ -1,6 +1,6 @@
 <script lang="ts">
     import Card from '../../lib/ui/Card.svelte';
-    import Icon from '../planner/PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import { townOf } from './towns';
     import type { RouteSummary } from '../../lib/library/records';
     import { distanceIn, formatAlong, formatDistance, formatHeight, formatPercent } from '../../lib/settings/format';

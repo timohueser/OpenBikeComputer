@@ -1,5 +1,5 @@
 <script lang="ts">
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
 
     /** The title of the elevation drawer, which opens and closes it. */
     let { title, open, onToggle }: { title: string; open: boolean; onToggle: () => void } = $props();

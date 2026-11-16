@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { distanceIn, formatDistance, formatHeight, formatSpeed, heightIn, heightUnit } from './format';
+import { distanceIn, formatCount, formatDistance, formatHeight, formatHours, formatSpeed, heightIn, heightUnit } from './format';
 import { readSettings, settings, takeDeviceValues, updateSettings } from './settings.svelte';
 
 const stored = new Map<string, string>();
@@ -55,6 +55,11 @@ describe('format', () => {
         expect(plain([formatDistance(400), formatDistance(12_340), formatDistance(123_400), formatDistance(1_234_000)])).toEqual(['400 m', '12.3 km', '123 km', '1,234 km']);
         expect([formatHeight(1240), heightUnit(), heightIn(1240), distanceIn(12_340)]).toEqual(['1,240\u00a0m', 'm', 1240, 12.34]);
         expect(plain([formatSpeed(19 / 3.6)])).toEqual(['19.0 km/h']);
+    });
+
+    it('writes a plain number, and the hours of a total in whole hours from 100 hours', () => {
+        expect([formatCount(1240), formatCount(7.46), formatCount(12.6), formatCount(NaN)]).toEqual(['1,240', '7.5', '13', '–']);
+        expect([formatHours(19_200), formatHours(359_940), formatHours(359_970), formatHours(3_978_000)]).toEqual(['5h 20m', '99h 59m', '100h', '1,105h']);
     });
 
     it('rounds before it chooses the unit and the digits, and shows a dash for a value that is not a number', () => {

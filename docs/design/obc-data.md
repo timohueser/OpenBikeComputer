@@ -7,10 +7,13 @@ owns:
   - builder/web/src/data.ts
   - builder/web/src/lib/data/**
   - builder/web/src/components/data/**
+  - builder/web/src/styles/data.css
+  - builder/web/test-support/data/**
+  - builder/web/tests/browser/data/**
+  - builder/web/tests/browser/playwright.data.config.js
 depends_on:
   - data-engine
   - device-map-baking
-  - device-map-builder
   - foundations
   - map-assembly
   - route-planning
@@ -18,6 +21,7 @@ depends_on:
   - search
   - source-preparation
   - trailview
+  - web-foundations
 test_depends_on:
   - map-reading
   - repository-tooling
@@ -30,7 +34,7 @@ status: approved
 
 An operator runs `obc data` to build and publish the project's data: the map cells of the device, the releases of the route planner, and the prepared sources (processed copies of large external datasets). The binary `obc-data` ([`main.rs`](../../host/obc-data-steps/src/main.rs)) gives the data engine the list of products and their steps ([`lib.rs`](../../host/obc-data-steps/src/lib.rs)). The products are the device maps and the planner, with its routing, search and TrailView layers. The list also names the producers of prepared sources.
 
-`obc data ui` serves an operator page on this machine, at port 8700 ([`ui.rs`](../../host/obc-data-steps/src/ui.rs)). The page is a Svelte app ([`DataApp.svelte`](../../builder/web/src/components/data/DataApp.svelte)) that the map builder's build configuration builds. For each action, the page sends one `obc data` command to the server, and the server runs it.
+`obc data ui` serves an operator page on this machine, at port 8700 ([`ui.rs`](../../host/obc-data-steps/src/ui.rs)). The page is a Svelte app ([`DataApp.svelte`](../../builder/web/src/components/data/DataApp.svelte)) that the build configuration of the web app ([`vite.config.ts`](../../builder/web/vite.config.ts)) builds. For each action, the page sends one `obc data` command to the server, and the server runs it.
 
 The data engine owns the commands, the store, the versions and the publication.
 

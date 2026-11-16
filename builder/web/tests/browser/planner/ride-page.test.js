@@ -95,6 +95,16 @@ test('the ride page shows a stored ride with its numbers and zones, renames, exp
   expect(csv[0]).toBe('time,latitude,longitude,elevation_m,distance_m,speed_m_s,heart_rate_bpm,cadence_rpm,power_w,temperature_c');
   expect(csv[1]).toBe('2026-10-24T07:00:00.000Z,46.900000,8.000000,1000,0,5,140,85,200,10');
 
+  // "Share" is the first item of "More". The card of a ride has its date, with a switch.
+  await page.getByRole('button', { name: 'More ▾' }).click();
+  await expect(page.locator('menu button').first()).toHaveText('Share');
+  await page.getByRole('button', { name: 'Share' }).click();
+  const share = page.getByRole('dialog', { name: 'Share' });
+  await expect(share.getByRole('switch', { name: 'Date' })).toBeVisible();
+  const [card] = await Promise.all([page.waitForEvent('download'), share.getByRole('button', { name: 'Download' }).click()]);
+  expect(card.suggestedFilename()).toBe('Trübsee.jpg');
+  await page.keyboard.press('Escape');
+
   await page.getByRole('button', { name: 'Ride it again' }).click();
   await expect(page).toHaveURL(/#\/route\/file-[0-9a-f]{32}$/);
   await expect(page.getByRole('heading', { name: 'Trübsee', level: 1 })).toBeVisible();
@@ -223,7 +233,7 @@ test('the lines of a ride: a row for each line with values, the pointer, and a p
   // The zones are those of the part: all of it is in Z4.
   await expect(facts.getByRole('img', { name: /Z3 · 130–147 bpm · 0h 0m, Z4 · 148–166 bpm · 0h 17m/ })).toBeVisible();
   await expect(facts.locator('.climbs')).toHaveCount(0);
-  // With a part, the menu has the switch "Only the selected part": with it on, an export holds only the part.
+  // With a part, the menu has the switch "Only the selected part" over its exports: with it on, an export holds only the part.
   const gpx = async () => {
     await page.getByRole('button', { name: 'More ▾' }).click();
     const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Export GPX track' }).click()]);
@@ -294,5 +304,78 @@ test('the lines of a ride: a row for each line with values, the pointer, and a p
   await expect(facts.locator('thead th')).toHaveText(['Selected', 'Whole ride']);
   await page.keyboard.press('Escape');
   await expect(facts.locator('.climbs li')).toHaveCount(1);
+  expect(errors).toEqual([]);
+});
+
+/** The EXIF block of a photo that a camera took at `time`, on a clock in UTC with its zone. */
+function exif(time) {
+  const u16 = value => [value & 255, value >> 8], u32 = value => [...u16(value & 0xffff), ...u16(value >>> 16)];
+  const ascii = text => [...text].map(letter => letter.charCodeAt(0));
+  const taken = `${new Date(time * 1000).toISOString().slice(0, 19).replace(/-/g, ':').replace('T', ' ')}\0`;
+  // The first directory, at 8, points to the EXIF directory at 26; the time and the zone follow it, at 56 and at 76.
+  const tiff = [0x49, 0x49, 42, 0, ...u32(8), ...u16(1), ...u16(0x8769), ...u16(4), ...u32(1), ...u32(26), ...u32(0),
+    ...u16(2), ...u16(0x9003), ...u16(2), ...u32(20), ...u32(56), ...u16(0x9011), ...u16(2), ...u32(7), ...u32(76), ...u32(0), ...ascii(taken), ...ascii('+00:00\0')];
+  return Buffer.from([0xff, 0xe1, (tiff.length + 8) >> 8, (tiff.length + 8) & 255, ...ascii('Exif\0\0'), ...tiff]);
+}
+
+test('the photos of a ride: "Add photos" places the files by their time, the marks open the photo window, and "Remove" removes one', async ({ page }) => {
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await answer(page);
+  await page.goto('/planner.html?cover=none');
+  await page.waitForFunction(() => window.coverTest);
+  await page.evaluate(([record, bytes]) => window.coverTest.library.addRide(record, new Blob([new Uint8Array(bytes)])), [ride, [...file]]);
+  // A drawn picture as a JPEG file; `photo` gives it a time.
+  const jpeg = Buffer.from(await page.evaluate(async () => {
+    const canvas = Object.assign(document.createElement('canvas'), { width: 64, height: 48 });
+    canvas.getContext('2d').fillRect(8, 8, 32, 24);
+    const blob = await new Promise(done => canvas.toBlob(done, 'image/jpeg'));
+    return [...new Uint8Array(await blob.arrayBuffer())];
+  }));
+  const photo = (name, time) => ({ name, mimeType: 'image/jpeg', buffer: Buffer.concat([jpeg.subarray(0, 2), exif(time), jpeg.subarray(2)]) });
+  await page.goto(`/planner.html#/ride/${key}`);
+  await expect(page.locator('.lanes')).toBeVisible();
+  await expect(page.locator('.photo-mark, .ticks .photo')).toHaveCount(0);
+
+  // Sample 50 is 500 s and 2.5 km after the start, sample 150 is 1500 s and 7.5 km after it; the ride ends after 1990 s.
+  const choose = async files => {
+    await page.getByRole('button', { name: 'More' }).click();
+    const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.getByRole('button', { name: 'Add photos' }).click()]);
+    await chooser.setFiles(files);
+  };
+  await choose([photo('late.jpg', start + 1500), photo('early.jpg', start + 500), photo('after.jpg', start + 5000),
+    { name: 'plain.jpg', mimeType: 'image/jpeg', buffer: jpeg }, { name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from('notes') }]);
+  const add = page.getByRole('dialog', { name: 'Add photos' });
+  await expect(add.getByText('2 photos are of this ride.')).toBeVisible();
+  await expect(add.getByText('2 are not: they have no time, or their time is not in the ride.')).toBeVisible();
+  await expect(add.getByText('This browser cannot open 1 file.')).toBeVisible();
+  await expect(add.locator('.found img')).toHaveCount(2);
+  await add.getByRole('button', { name: 'Add 2 photos' }).click();
+  await expect(add).toHaveCount(0);
+
+  await expect(page.locator('.route-map .photo-mark')).toHaveCount(2);
+  const dots = page.locator('.ticks .photo');
+  await expect(dots).toHaveCount(2);
+  await dots.first().hover();
+  await expect(page.locator('.lanes .chip')).toHaveText(/^2\.5.km · photo$/);
+  await dots.nth(1).click();
+  const large = page.getByRole('dialog');
+  await expect(large.getByRole('heading')).toHaveText('Photo 2 of 2');
+  await expect(large.locator('.foot')).toContainText(/^km.7\.5 · \d\d:\d\d/);
+  await page.keyboard.press('ArrowLeft');
+  await expect(large.getByRole('heading')).toHaveText('Photo 1 of 2');
+  await expect(large.locator('.foot')).toContainText(/^km.2\.5 · /);
+  await large.getByRole('button', { name: 'Remove' }).click();
+  await expect(large.getByRole('heading')).toHaveText('Photo 1 of 1');
+  await expect(large.locator('.foot')).toContainText(/^km.7\.5 · /);
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.route-map .photo-mark')).toHaveCount(1);
+  await expect(dots).toHaveCount(1);
+
+  // The same file again is the same photo.
+  await choose([photo('late.jpg', start + 1500)]);
+  await add.getByRole('button', { name: 'Add 1 photo' }).click();
+  await expect(add).toHaveCount(0);
+  await expect(dots).toHaveCount(1);
   expect(errors).toEqual([]);
 });

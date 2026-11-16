@@ -9,15 +9,15 @@
     import { duration } from '../../lib/planner/editor';
     import { distanceAxis, extent, outOfStops, range, sampleAt, samplesIn, smooth, speeds, stops, thin, timeAxis } from '../../lib/ride/lines';
     import { partNumbers, type Channels, type RideClimb } from '../../lib/ride/numbers';
-    import { formatAlong, formatDistance, formatHeight, formatSpeed } from '../../lib/settings/format';
+    import { formatAlong, formatClock, formatDistance, formatHeight, formatSpeed } from '../../lib/settings/format';
 
     /** The bottom card of the Ride page: one row for each line of the ride on its axis, with the average of the
      * line under its name and its scale after the row. A line with no value has no row. A drag selects a part; a click
      * on a climb in the elevation row selects the climb. A click on the label of a row opens its line large in a window.
      * The name of the axis beside the ticks is its switch: the distance, or the time of day, where a stop has a width and
      * the lines end at a step of more than a minute. A stop is a mark on the row of the ticks; the foot of the pointer says
-     * its length. */
-    let { samples, shares, speed, channels, climbs = [], mark, onpoint, part, onpart, limits }: {
+     * its length. A photo is a dot on that row; a click on it opens the photo. */
+    let { samples, shares, speed, channels, climbs = [], photos = [], onphoto, mark, onpoint, part, onpart, limits }: {
         samples: FitSample[];
         /** The share of the summary line at each sample (`lineShares`). */
         shares: number[];
@@ -25,6 +25,9 @@
         speed?: number;
         channels?: Channels;
         climbs?: RideClimb[];
+        /** The photos of the ride: the sample of each, and its time when it has one. */
+        photos?: { id: string; sample: number; time: number | null }[];
+        onphoto?: (id: string) => void;
         /** The pointer, as a share of the summary line. */
         mark?: number;
         onpoint: (share: number | null) => void;
@@ -43,6 +46,8 @@
     /** The mark of a stop is at least STOP_PX wide, and the pointer is on a stop within that width. A tick of the time
      * axis has about CLOCK_PX. */
     const STOP_PX = 6, CLOCK_PX = 90;
+    /** The dot of a photo is DOT_PX wide, and the pointer is on it within that width. */
+    const DOT_PX = 6;
 
     const whole = (unit: string) => (value: number) => `${Math.round(value)} ${unit}`;
     /** `unit` and `limit` are of a line with zones (`ZoneTimes`). */
@@ -69,7 +74,6 @@
     const halts = $derived(stops(samples));
     /** The stops on the axis. */
     const found = $derived(halts.map(stop => ({ ...stop, from: xs[stop.first], to: xs[stop.last] })));
-    const clock = (seconds: number) => new Date(seconds * 1000).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
     const values = $derived<Record<Key, (number | undefined)[]>>({
         elevation: samples.map(sample => sample.elevationM),
         speed: smooth(samples, speeds(samples), SMOOTH_S),
@@ -105,7 +109,7 @@
     const partText = $derived.by(() => {
         if (!part) return '';
         const [from, to] = [axis.xs[part[0]] * axis.lengthM, axis.xs[part[1]] * axis.lengthM];
-        return `${byTime ? `${clock(samples[part[0]].timeS)} to ${clock(samples[part[1]].timeS)}` : `${formatAlong(from)} to ${formatAlong(to)}`} · ${formatDistance(to - from)}`;
+        return `${byTime ? `${formatClock(samples[part[0]].timeS)} to ${formatClock(samples[part[1]].timeS)}` : `${formatAlong(from)} to ${formatAlong(to)}`} · ${formatDistance(to - from)}`;
     });
     /** The start, the end, then round distances; on the time axis the time of the start and of the end, then whole
      * times of the day. */
@@ -114,8 +118,8 @@
         const { start: first, seconds } = time, day = new Date(first * 1000);
         const step = [1, 5, 10, 15, 30, 60, 120, 240].find(minutes => seconds / 60 / minutes <= Math.max(1, width / CLOCK_PX)) ?? 480;
         const minute = day.getHours() * 60 + day.getMinutes() + day.getSeconds() / 60, whole = [];
-        for (let m = Math.ceil(minute / step) * step; (m - minute) * 60 < seconds; m += step) whole.push({ at: (m - minute) * 60 / seconds, label: clock(first + (m - minute) * 60) });
-        return fitTicks([{ at: 0, label: clock(first) }, { at: 1, label: clock(first + seconds) }, ...whole], width);
+        for (let m = Math.ceil(minute / step) * step; (m - minute) * 60 < seconds; m += step) whole.push({ at: (m - minute) * 60 / seconds, label: formatClock(first + (m - minute) * 60) });
+        return fitTicks([{ at: 0, label: formatClock(first) }, { at: 1, label: formatClock(first + seconds) }, ...whole], width);
     });
     /** The left edge and the width of the mark of a stop on the axis, in pixels: around the middle of the stop. */
     const markOf = (stop: { from: number; to: number }) => {
@@ -128,14 +132,27 @@
         const at = pointer * width;
         return found.find(stop => { const { left, wide } = markOf(stop); return at >= left && at <= left + wide; });
     });
-    /** The foot of the pointer: the place of the pointer on the axis, and the length of a stop under it, in whole
-     * minutes. */
+    /** The dots of the photos on the axis, in pixels. Photos whose dots touch are one dot, at the first of them. On the
+     * time axis a photo with a time is at its time, so the photos of one stop are apart. */
+    const dots = $derived.by(() => {
+        const found: { id: string; left: number; count: number }[] = [];
+        const places = photos.map(({ id, sample, time: taken }) => ({ id, left: (byTime && taken !== null ? (taken - time.start) / time.seconds : xs[sample]) * width }));
+        for (const { id, left } of places.sort((a, b) => a.left - b.left)) {
+            const last = found.at(-1);
+            if (last && left - last.left < DOT_PX) last.count++;
+            else found.push({ id, left, count: 1 });
+        }
+        return found;
+    });
+    /** The foot of the pointer: the place of the pointer on the axis, the length of a stop under it in whole minutes,
+     * and the photos of a dot under it. */
     const foot = $derived.by(() => {
         if (pointer === undefined) return '';
-        const place = byTime ? clock(time.start + pointer * time.seconds) : formatDistance(pointer * axis.lengthM);
-        if (!stopAt) return place;
-        const minutes = Math.round(stopAt.seconds / 60);
-        return `${place} · stop ${minutes < 60 ? `${minutes} min` : duration(minutes / 60)}`;
+        const at = pointer * width, dot = dots.find(dot => Math.abs(at - dot.left) <= DOT_PX);
+        const minutes = stopAt && Math.round(stopAt.seconds / 60);
+        return [byTime ? formatClock(time.start + pointer * time.seconds) : formatDistance(pointer * axis.lengthM),
+            ...minutes === undefined ? [] : [`stop ${minutes < 60 ? `${minutes} min` : duration(minutes / 60)}`],
+            ...dot ? [dot.count > 1 ? `${dot.count} photos` : 'photo'] : []].join(' · ');
     });
     const rowSnippets = { elevation: elevationRow, speed: speedRow, hr: hrRow, power: powerRow, cadence: cadenceRow };
     const rows = $derived(shown.map(key => ({
@@ -213,6 +230,9 @@
         {@const { left, wide } = markOf(stop)}
         <b class="stop" style:left={`${left}px`} style:width={`${wide}px`}></b>
     {/each}
+    {#each dots as dot (dot.id)}
+        <button type="button" class="photo" style:left={`${dot.left}px`} aria-label={dot.count > 1 ? `${dot.count} photos` : 'Photo'} onclick={() => onphoto?.(dot.id)}></button>
+    {/each}
 {/snippet}
 
 {#snippet corner()}
@@ -282,6 +302,35 @@
         height: 3px;
         border-radius: 2px;
         background: var(--ink-soft);
+    }
+    /* A dot on the line of the stops. Its box is larger than the dot, for the pointer; the edge in the colour of the
+     * panel keeps a dot apart from the mark of a stop under it. */
+    .photo {
+        position: absolute;
+        top: -11px;
+        width: 16px;
+        height: 16px;
+        margin-left: -8px;
+        padding: 0;
+        border: 0;
+        background: none;
+    }
+    .photo::after {
+        display: block;
+        width: 6px;
+        height: 6px;
+        margin: auto;
+        border-radius: 50%;
+        background: var(--ink-soft);
+        box-shadow: 0 0 0 1.5px var(--panel);
+        content: '';
+    }
+    .photo:hover::after, .photo:focus-visible::after {
+        background: var(--ink);
+    }
+    .photo:focus-visible {
+        border-radius: 50%;
+        outline: 2px solid var(--ink-soft);
     }
     .chips {
         display: flex;

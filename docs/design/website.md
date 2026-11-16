@@ -15,7 +15,7 @@ status: approved
 
 The website is the project site at openbikecomputer.com: the landing page, the guide, the blog, the system docs and the hardware parts list. The script [`build_docs.py`](../../docs/build_docs.py) renders the Markdown pages of `docs/content/` and the blog posts to HTML. [`nav.json`](../../docs/content/nav.json) gives the order and the titles of the guide pages. The script also makes the data-sources tables from the data registry, a page for each system doc, and, with the `--hardware` flag, the parts list of the hardware.
 
-Trunk ([`Trunk.toml`](../../docs/Trunk.toml)) builds the landing page with the web demo of the simulators, and runs the script first. The site deploy ([`deploy-site.yml`](../../.github/workflows/deploy-site.yml)) adds the map builder at `/builder/` and the route planner at `/plan/`. [`serve.py`](../../docs/serve.py) shows the site on this machine. `docs/README.md` gives the authoring rules.
+Trunk ([`Trunk.toml`](../../docs/Trunk.toml)) builds the landing page with the web demo of the simulators, and runs the script first. The site deploy ([`deploy-site.yml`](../../.github/workflows/deploy-site.yml)) adds the web app at `/plan/`. [`serve.py`](../../docs/serve.py) shows the site on this machine. `docs/README.md` gives the authoring rules.
 
 ## Rules that must hold
 

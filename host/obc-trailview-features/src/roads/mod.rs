@@ -33,6 +33,7 @@ mod tests;
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
+use rstar::primitives::Rectangle;
 use rstar::RTree;
 
 pub use align::polyline;
@@ -144,10 +145,9 @@ pub struct Class {
     pub bank: f64,
     pub widen_m: f64,
     pub keep_m: f64,
-    /// The width of a sidewalk, 0 where the class has none; the rise per metre of the ground past the
-    /// road's edge that is too steep for one; and the room that a bend leaves inside the sidewalk.
+    /// The width of a sidewalk, 0 where the class has none, and the room that a bend leaves inside the
+    /// sidewalk.
     pub sidewalk_m: f64,
-    pub sidewalk_steep: f64,
     pub sidewalk_margin_m: f64,
 }
 
@@ -199,21 +199,21 @@ pub struct River {
 }
 
 /// What the ways of a region meet besides the terrain: the solved waterways, the culvert parts with the
-/// levels of their water, and a point per building.
+/// levels of their water, and the box of each building.
 #[derive(Default)]
 pub struct Surroundings {
     pub rivers: Vec<River>,
     pub culverts: Vec<River>,
-    pub buildings: RTree<[f64; 2]>,
+    pub buildings: RTree<Rectangle<[f64; 2]>>,
 }
 
-/// What the ways of one solve meet: the solved waterways and the culvert parts near them, and the points
+/// What the ways of one solve meet: the solved waterways and the culvert parts near them, and the boxes
 /// of the buildings.
 #[derive(Default)]
 pub struct Near<'a> {
     pub rivers: Vec<&'a River>,
     pub culverts: Vec<&'a River>,
-    pub buildings: Option<&'a RTree<[f64; 2]>>,
+    pub buildings: Option<&'a RTree<Rectangle<[f64; 2]>>>,
 }
 
 /// A way after the solve: its kept vertices on the fitted curve, their heights (NaN where unknown) and
@@ -793,7 +793,7 @@ pub fn solve(
     // A pipe runs under the sidewalks only where its row holds the cover.
     let piped: Vec<rows::UntaggedCrossing> =
         (0..k_least.len()).filter(|&i| holds[i]).filter_map(|i| Some(untagged[k_untagged[i]?])).collect();
-    let town = Town::new(&net, (rivers, &near.culverts), (&piped, classes), near.buildings, terrain);
+    let town = Town::new(&net, (rivers, &near.culverts), (&piped, classes), near.buildings);
     let (ways, joins, walks) = align::align(&net, &z, &known, &stay, &water, &ground, classes, &mine, &town);
     for (way, &(f, p)) in ways.into_iter().zip(&net.way_feature) {
         solved.ways[f][p] = Some(way);

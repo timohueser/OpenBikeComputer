@@ -11,6 +11,9 @@ owns:
   - host/obc-vectors/**
   - builder/web/src/lib/usb/**
   - builder/web/src/lib/device/**
+  - builder/web/test-support/device-smoke/**
+  - builder/web/test-support/flat-device/**
+  - builder/web/tests/device-smoke/**
   - companion-ios/Packages/OBCKit/Sources/OBCTransport/**
   - companion-ios/Packages/OBCKit/Sources/OBCProtocolV4/**
   - companion-ios/Packages/OBCKit/Tests/OBCTransportTests/**
@@ -20,6 +23,7 @@ depends_on:
   - firmware-update
   - foundations
   - navigation
+  - web-foundations
 test_depends_on:
   - map-reading
 status: draft

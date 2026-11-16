@@ -30,16 +30,19 @@ use obc_ground_plan::CellInput;
 /// The grid of the step scan, metres.
 const GRID_M: f64 = 0.5;
 /// Steps inside faces, measured on the revision 17 fixture with the slopes from the paved outline and line
-/// water: the count must not grow.
-const INSIDE_MAX: usize = 9;
+/// water, and on the revision 22 fixture: the count must not grow. A band face that two lines of one road reach
+/// takes the height of the nearer line, so it steps where their heights differ, as at the fold of a dead end and
+/// its hook: band faces have no line of their own yet.
+const INSIDE_MAX: usize = 10;
 /// Steps at label edges with no rule (`check::edge_steps`), measured on the revision 17 fixture with the
 /// slopes from the outline pieces of `records::outline_edges` and the vertex values of `heights::groups`
 /// (an end's cone over the fan of its turn only), walls up to the highest wall, faces past it as steep as
-/// their need, line water and its culverts and fords, the corner rounds of the sidewalks' kerbs, which move the
-/// seams of two paved faces and leave steps between them too small to show, and a slab's end whose lower face's edge
-/// lies beside it at a right or acute corner, where the slope keeps the kerb's rise for a few centimetres: the count
-/// must not grow.
-const EDGE_MAX: usize = 106;
+/// their need, line water and its culverts and fords, and on the revision 22 fixture, whose junction radii and
+/// kept vertices follow more walk bits (a step of 1.2 cm more), the corner rounds of the sidewalks' kerbs, which move
+/// the seams of two paved faces and leave steps between them too small to show, and a slab's end whose lower face's
+/// edge lies beside it at a right or acute corner, where the slope keeps the kerb's rise for a few centimetres: the
+/// count must not grow.
+const EDGE_MAX: usize = 102;
 /// The scan's kerb steps whose size is more than `KERB_SLACK_M` off the kerb's rise there (`check::kerb_of`), measured
 /// on the revision 17 fixture with the sidewalks' slabs: a kerb's end against a slope, whose step the slope's cone
 /// makes less than the rise at the corner where slab, carriageway and slope meet. The count must not grow.
@@ -48,10 +51,11 @@ const KERB_OFF_MAX: usize = 1;
 /// measured on the revision 17 fixture with cones on their outward side, the outline pieces of
 /// `records::outline_edges` and the vertex values of `heights::groups`, faces past the highest wall as steep
 /// as their need, the faces' rings with a vertex at each tile line, and the banks of line water, whose cuts
-/// climb as steep as the terrain asks beside a gorge, its culverts, the ground under the decks' ceilings, a
-/// paved outline that holds no water, and the sidewalks' slabs, whose back edge leaves the slope a slab's width less
-/// room: the count must not grow.
-const STEEP_MAX: usize = 2474;
+/// climb as steep as the terrain asks beside a gorge, its culverts, the ground under the decks' ceilings, and a
+/// paved outline that holds no water, and on the revision 22 fixture, whose junction radii and kept vertices
+/// follow more walk bits, and the sidewalks' slabs, whose back edge leaves the slope a slab's width less room: the
+/// count must not grow.
+const STEEP_MAX: usize = 2466;
 /// Of those, the pairs steeper than 6 m/m, measured the same way: the bank of one way that crosses a gully
 /// inside its ground band, which spans the terrain across the way's width. The count must not grow, and no pair
 /// is steeper than 12 m/m: a near-vertical rim that the total hides must not come back.
@@ -64,11 +68,12 @@ const WALL_STEPS_MAX: usize = 17;
 /// The ground's grade along the rim that changes across a piece end by more than this is a shading band
 /// (`check::slope_steps`), measured the same way, with the faces' rings with a vertex at each tile line (it
 /// moves piece ends by a few units), the crease where a deck's ceiling takes the ground, and line water, whose
-/// curved banks end many short pieces, its culverts, a paved outline that holds no water, and the sidewalks' slabs,
-/// whose tapers and rings end short rim pieces, whose heights fade to the faces beside them and whose ends that a
-/// lower face meets cover no fan: the count must not grow.
+/// curved banks end many short pieces, its culverts, and a paved outline that holds no water, and on the revision
+/// 22 fixture, whose junction radii and kept vertices follow more walk bits, and the sidewalks' slabs, whose tapers
+/// and rings end short rim pieces, whose heights fade to the faces beside them and whose ends that a lower face meets
+/// cover no fan: the count must not grow.
 const SLOPE_STEP_GRADE: f64 = 0.1;
-const SLOPE_STEPS_MAX: usize = 13123;
+const SLOPE_STEPS_MAX: usize = 12976;
 /// A tile's water vertex whose level lies more than this off the terrain at the vertex has a level that
 /// the bake holds away from its line (a pit, or the low ground beside it): the design keeps the water at
 /// most `freeboard_m` (0.8 m) under its bank and `depth_m` (1 m) deep.

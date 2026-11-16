@@ -1,6 +1,6 @@
 <script lang="ts">
     import { onMount, type Snippet } from 'svelte';
-    import Icon from '../../components/planner/PlannerIcon.svelte';
+    import Icon from './Icon.svelte';
 
     /**
      * `children` gets `close`, which closes the dialog as Esc and the close button do: the focus goes back.
