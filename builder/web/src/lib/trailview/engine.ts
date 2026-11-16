@@ -2,8 +2,8 @@ import type { PlannerConfig } from '../planner/config';
 import type { Coordinate } from '../planner/geo';
 import { worldPixel } from '../planner/layers/mercator';
 import { instantAt } from '../planner/solar';
-import { eyeAltitude, follow, groundOf, MIN_CLEARANCE, move, NEAR, VFOV, viewProjection, type Footing, type Pose } from './frame/camera';
-import { Controls } from './frame/controls';
+import { eyeAltitude, follow, groundOf, MIN_CLEARANCE, move, VFOV, viewProjection, type Footing, type Pose } from './frame/camera';
+import { Controls, type Pointer } from './frame/controls';
 import { CURVATURE, frameAt, type Frame } from './frame/frame';
 import { UNITS } from './frame/space';
 import { Gpu } from './gpu/device';
@@ -37,7 +37,8 @@ import { Rows } from './vegetation/rows';
 import { Dressing } from './dressing/dressing';
 import { KindPoints } from './structures/kind-points';
 import { LightPools } from './structures/light-pools';
-import { Route, type RoutePin } from './route/route';
+import { aboutEye, LIFT_M, nearestRoute, onImage, onScreen } from './route/pick';
+import { Route, type RouteLine, type RoutePin } from './route/route';
 import type { PlanStats } from './plan/plan';
 import { sampleDistances, terrainHides } from './sight';
 import { Pacer } from './pacer';
@@ -63,8 +64,6 @@ const STEP_M = 1, HEADROOM_M = 2;
 const BORE_M = 6;
 /** The regions in reach are read this much wider and again only when the eye moves farther or the ground pages change. */
 const REACH_MARGIN_M = 250;
-/** The lift of the ribbon of route.wgsl above the surface. */
-const LIFT_M = 0.3;
 
 export interface Stats {
     adapter: string;
@@ -106,7 +105,7 @@ const first = (plan: boolean): ((gpu: Gpu) => Promise<unknown>)[] => [terrainPip
 const REST_WAIT_MS = 5000;
 
 /** The options of `TrailView.start`. */
-interface StartOptions { plan?: boolean; finest?: number; pool?: number; size?: [number, number] }
+interface StartOptions extends Pointer { plan?: boolean; finest?: number; pool?: number; size?: [number, number] }
 
 /** Where the eye stands: a height, and whether it lies in a tunnel. */
 interface Feet { z: number; tunnel: boolean; floor: boolean }
@@ -170,6 +169,10 @@ export class TrailView {
     private drawing = false;
     /** What the last frame drew: the camera and the extras, to tell a move and a change. */
     private camera: number[] = [];
+    /** The camera of the last frame that could draw, without its jitter: `routeAt` projects with it. */
+    private sight?: Pick<Grabbed, 'viewProj' | 'eye'>;
+    /** The pick points on the screen, as `routeAt` last projected them, and what it projected them from. */
+    private picked?: { sight: Pick<Grabbed, 'viewProj' | 'eye'>; picks: readonly (Float64Array | undefined)[]; width: number; height: number; screen: (Float32Array | undefined)[] };
     private drawnExtras = '';
     private rendered: (() => void)[] = [];
     /** The last frame that drew, for occlusion culling: its depth, pixels and view projection, and its eye. */
@@ -185,7 +188,7 @@ export class TrailView {
      */
     private skyMagnitude = DARK_SKY;
 
-    private constructor(private readonly canvas: HTMLCanvasElement, config: PlannerConfig, view: View, ground: GroundSource | undefined, tiles: EyeTiles, private readonly stop: AbortController, private readonly scale: number, readonly groundPlan: boolean, finest: number, pool: number, private readonly output?: [number, number]) {
+    private constructor(private readonly canvas: HTMLCanvasElement, config: PlannerConfig, view: View, ground: GroundSource | undefined, tiles: EyeTiles, private readonly stop: AbortController, private readonly scale: number, readonly groundPlan: boolean, finest: number, pool: number, pointer: Pointer, private readonly output?: [number, number]) {
         // `destroy()` aborts it: it ends the tile requests, the workers and the listeners.
         const { signal } = stop;
         this.context = canvas.getContext('webgpu')!;
@@ -210,7 +213,7 @@ export class TrailView {
             pose: () => this.pose,
             moved: pose => { this.pose = pose; this.moved = true; this.request(); },
             ground: () => this.ground(),
-        }, signal);
+        }, signal, pointer);
         const resize = new ResizeObserver(() => this.request());
         resize.observe(canvas);
         signal.addEventListener('abort', () => resize.disconnect());
@@ -232,12 +235,13 @@ export class TrailView {
      * passes draw once they attach after the view about the eye. `scale` is the render scale; `plan` builds the
      * ground plan beside the old ground (`ground=plan`); `finest` caps the terrain's finest level (`finest=`), and `pool`
      * scales its page pools (`pool=`). `size` is the output of a still in pixels, in place of the element's size on the
-     * screen. All but the attach run while `gpu` comes: the frames before it ask for the view's records and stamps.
+     * screen. `onclick` and `onhover` get a click and a move with no button on the canvas, in CSS pixels (`Pointer`).
+     * All but the attach run while `gpu` comes: the frames before it ask for the view's records and stamps.
      */
-    static async start(canvas: HTMLCanvasElement, gpu: Gpu | Promise<Gpu>, config: PlannerConfig, view: View, scale: number, { plan = false, finest = FINEST, pool = 1, size }: StartOptions = {}): Promise<TrailView> {
+    static async start(canvas: HTMLCanvasElement, gpu: Gpu | Promise<Gpu>, config: PlannerConfig, view: View, scale: number, { plan = false, finest = FINEST, pool = 1, size, onclick, onhover }: StartOptions = {}): Promise<TrailView> {
         const stop = new AbortController(), tiles = eyeTiles(config, [view.lon, view.lat], stop.signal);
         const ground = await GroundSource.open(config, stop.signal).catch(error => void console.warn(`TrailView draws no ground: ${error instanceof Error ? error.message : error}`));
-        const engine = new TrailView(canvas, config, view, ground ?? undefined, tiles, stop, scale, plan, finest, pool, size);
+        const engine = new TrailView(canvas, config, view, ground ?? undefined, tiles, stop, scale, plan, finest, pool, { onclick, onhover }, size);
         engine.request();
         // No caller holds an engine whose start fails, so it ends itself: its workers and listeners run already.
         await Promise.resolve(gpu).then(device => engine.attach(device)).catch(error => {
@@ -300,10 +304,34 @@ export class TrailView {
         return [...this.groundLook.attribution, SKY_CREDITS];
     }
 
-    /** Draws the planned route in riding order on the surface, each edge in its colour. Fewer than two points draw none. */
-    showRoute(route: readonly Coordinate[], colours: readonly string[]): void {
-        this.route.set(route, colours);
+    /**
+     * Draws the routes on the surface in place of the ones before, numbered from 1 in their order. A route of fewer
+     * than two points draws none. No route of the new list is bold.
+     */
+    showRoutes(routes: readonly RouteLine[]): void {
+        this.route.set(routes, this.frame);
         this.request();
+    }
+
+    /** Draws the route of this number bold and on top of the others; null draws none bold. */
+    boldRoute(route: number | null): void {
+        this.route.setBold(route);
+        this.request();
+    }
+
+    /**
+     * The number of the route under (x, y), CSS pixels of the canvas, or null for none: `nearestRoute` of
+     * the pick points of each route, projected with the camera of the last frame. It does not ask the
+     * terrain whether it hides a point, so a route behind a ridge answers when no nearer route is there.
+     */
+    routeAt(x: number, y: number): number | null {
+        const { sight, route: { picks, bold } } = this, { clientWidth: width, clientHeight: height } = this.canvas;
+        if (!sight) return null;
+        let picked = this.picked;
+        if (!picked || picked.sight !== sight || picked.picks !== picks || picked.width !== width || picked.height !== height) {
+            picked = this.picked = { sight, picks, width, height, screen: picks.map(points => points && onScreen(sight.viewProj, sight.eye, width, height, points)) };
+        }
+        return nearestRoute(picked.screen, x, y, bold);
     }
 
     /** Stands a pin with a sphere in `colour` at `at`, apart from the others so that it moves cheaply; null takes it away. */
@@ -686,6 +714,7 @@ export class TrailView {
             moved = camera.some((value, i) => value !== this.camera[i]);
             changed = this.completed || this.terrain.newContent || this.groundLook.newContent || this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent || this.instances.newContent || this.sky.newContent || this.lightPools.newContent || this.route.newContent || extras !== this.drawnExtras;
             this.camera = camera;
+            if (moved) this.sight = { viewProj, eye: [eye.east, eye.north, eye.z] };
             this.drawnExtras = extras;
             this.completed = false;
             lights = this.lights();
@@ -978,7 +1007,7 @@ interface Grabbed {
 
 /**
  * The place of each point of `line` in the image of a capture, from its drawn height (NaN where no page
- * knows it): projected as route.wgsl projects its ribbon, with the curvature term. `heights` holds the
+ * knows it), as `aboutEye` and `onImage` project it. `heights` holds the
  * drawn heights of the points, then those at the distances `along` on the way to each point, for `terrainHides`.
  */
 function placed(line: readonly [number, number][], along: number[][], heights: Float32Array, frame: Frame, grabbed: Grabbed): StillPoints {
@@ -986,18 +1015,15 @@ function placed(line: readonly [number, number][], along: number[][], heights: F
     const points: StillPoints = { x: new Float32Array(n).fill(NaN), y: new Float32Array(n).fill(NaN), distance: new Float32Array(n).fill(NaN), visible: new Uint8Array(n) };
     for (let i = 0, from = n; i < n; from += along[i].length, i++) {
         if (Number.isNaN(heights[i])) continue;
-        const [east, north] = frame.local(...line[i]), x = east - eye[0], y = north - eye[1], z = heights[i] + LIFT_M - eye[2] - CURVATURE * (x * x + y * y);
-        // Clip w is the distance along the view axis.
-        const ahead = m[3] * x + m[7] * y + m[11] * z + m[15];
-        if (!(ahead > NEAR)) continue;
-        const u = ((m[0] * x + m[4] * y + m[8] * z + m[12]) / ahead + 1) / 2, v = (1 - (m[1] * x + m[5] * y + m[9] * z + m[13]) / ahead) / 2;
-        const reach = Math.hypot(x, y, z);
+        const p = aboutEye(eye, ...frame.local(...line[i]), heights[i]), at = onImage(m, p);
+        if (!at) continue;
+        const [u, v] = at;
         points.x[i] = u * width;
         points.y[i] = v * height;
-        points.distance[i] = reach;
+        points.distance[i] = Math.hypot(...p);
         if (u < 0 || u >= 1 || v < 0 || v >= 1) continue;
         const ground = heights.subarray(from, from + along[i].length).map(h => h - eye[2]);
-        points.visible[i] = terrainHides([x, y, heights[i] + LIFT_M - eye[2]], along[i], ground, pixel) ? 0 : 1;
+        points.visible[i] = terrainHides([p[0], p[1], heights[i] + LIFT_M - eye[2]], along[i], ground, pixel) ? 0 : 1;
     }
     return points;
 }

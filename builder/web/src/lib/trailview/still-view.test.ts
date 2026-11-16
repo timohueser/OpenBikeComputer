@@ -1,7 +1,15 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import type { PlannerConfig } from '../planner/config';
 import { latitudeAt } from '../planner/layers/mercator';
 import { CURVATURE, frameAt } from './frame/frame';
-import { chooseView, type Camera, type HeightGrid } from './still-view';
+import { chooseView, coverView, pointCounts, type Camera, type HeightGrid } from './still-view';
+
+// The terrain tiles of `coverView`: every tile is flat at 1,000 m (Terrarium 131, 232, 0).
+vi.mock('./stream/terrain', () => ({ releaseTiles: () => async () => new ArrayBuffer(1) }));
+vi.mock('../planner/layers/terrain', async original => ({
+    ...(await original<object>()),
+    imagePixels: async () => ({ width: 512, data: new Uint8ClampedArray(512 * 512 * 4).map((_, i) => [131, 232, 0, 255][i % 4]) }),
+}));
 
 const CENTRE: [number, number] = [8.4, 46.8];
 const frame = frameAt(...CENTRE);
@@ -38,21 +46,21 @@ function screen(view: Camera, points: [number, number][], height: number): [numb
 describe('the cover view', () => {
     it('looks into a valley over its walls', () => {
         for (const sun of [90, 0, 135, 270]) {
-            const plain = chooseView(road, grid(10, () => 1000), { ...SIZE, sun })!, view = chooseView(road, grid(10, valley), { ...SIZE, sun })!;
+            const plain = chooseView([road], grid(10, () => 1000), { ...SIZE, sun })!, view = chooseView([road], grid(10, valley), { ...SIZE, sun })!;
             // The walls hide the road from the lowest tilts.
             expect(view.pitch, `sun ${sun}`).toBeLessThan(plain.pitch - 10);
         }
     });
 
     it('gives no view of a route that has no extent', () => {
-        expect(chooseView(line([[0, 0], [0, 0], [2, 1]]), grid(10, () => 1000), { ...SIZE, sun: 180 })).toBeUndefined();
+        expect(chooseView([line([[0, 0], [0, 0], [2, 1]])], grid(10, () => 1000), { ...SIZE, sun: 180 })).toBeUndefined();
     });
 
     it('holds each point of a long route inside the frame as the engine draws it, so the height of the eye is above sea level', () => {
         // 120 km across: from the eye, the curvature drops the ground by hundreds of metres.
         const route = line([[-60_000, -30_000], [0, 0], [60_000, 20_000]]);
         for (const sun of [180, 90]) {
-            const view = chooseView(route, grid(8, () => 0), { ...SIZE, sun })!;
+            const view = chooseView([route], grid(8, () => 0), { ...SIZE, sun })!;
             expect(view.mode).toBe('fly');
             for (const [x, y] of screen(view, route, 0)) {
                 expect(Math.abs(x)).toBeLessThan(0.905);
@@ -63,9 +71,43 @@ describe('the cover view', () => {
 
     it('searches a grid of 1,024 × 1,024 cells in less than 200 ms', () => {
         const terrain = grid(10, (east, north) => valley(east) + 300 * Math.sin(north / 900)), start = performance.now();
-        expect(chooseView(road, terrain, { ...SIZE, sun: 90 })).toBeDefined();
+        expect(chooseView([road], terrain, { ...SIZE, sun: 90 })).toBeDefined();
         const ms = performance.now() - start;
         console.log(`The search of a grid of 1,024 × 1,024 cells took ${ms.toFixed(0)} ms.`);
         expect(ms).toBeLessThan(200);
+    });
+
+    it('gives one line the view of the valley that it had as the only line', () => {
+        const view = chooseView([road], grid(10, valley), { ...SIZE, sun: 90 })!;
+        expect(view.pitch).toBe(-39);
+        expect(view.lat).toBeCloseTo(46.839457654, 8);
+        expect(view.lon).toBeCloseTo(8.452726137, 8);
+        expect(view.heading).toBeCloseTo(240.038456798, 6);
+        expect(view.height).toBeCloseTo(4647.764, 2);
+    });
+
+    it('holds each point of two lines 6 km apart inside the frame', () => {
+        const west = line([[-3000, -2000], [-3000, 2000]]), east = line([[3000, -1000], [3500, 1000]]);
+        const view = chooseView([west, east], grid(10, () => 1000), { ...SIZE, sun: 180 })!;
+        for (const [x, y] of screen(view, [...west, ...east], 1000)) {
+            expect(Math.abs(x)).toBeLessThan(0.905);
+            expect(Math.abs(y)).toBeLessThan(0.905);
+        }
+    });
+
+    it('gives each line its share of the points by its length, and a short loop beside a long line 3', () => {
+        const loop = line([[600, 0], [620, 0], [620, 20], [600, 0]]), counts = pointCounts([road, loop]);
+        expect(pointCounts([road])).toEqual([200]);
+        expect(counts[1]).toBe(3);
+        expect(counts[0] + counts[1]).toBeGreaterThan(200);
+    });
+
+    it('leaves out a line with a point outside the bounds of the release', async () => {
+        const config = { bounds: [8.3, 46.7, 8.5, 46.9] } as PlannerConfig, when = { width: 480, height: 320, date: '2026-08-15', time: '10:00', weather: 'sunny' } as const;
+        const inside: [number, number][] = [[8.38, 46.81], [8.42, 46.82]], outside: [number, number][] = [[8.45, 46.85], [8.55, 46.86]];
+        const view = await coverView([inside], config, when);
+        expect(view).toBeDefined();
+        expect(await coverView([inside, outside], config, when)).toEqual(view);
+        expect(await coverView([outside], config, when)).toBeUndefined();
     });
 });

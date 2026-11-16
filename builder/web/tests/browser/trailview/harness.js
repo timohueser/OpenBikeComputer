@@ -107,16 +107,25 @@ async function mbtiles(file) {
 
 /** The pixels of a screenshot of the page that show the red clear colour of `debug=cracks`. */
 export async function redPixels(page) {
+    const { rgba } = await screenPixels(page);
+    let red = 0;
+    for (let i = 0; i < rgba.length; i += 4) if (rgba[i] === 255 && rgba[i + 1] === 0 && rgba[i + 2] === 0) red++;
+    return red;
+}
+
+/** A screenshot of the page as `{ width, height, rgba }`, its bytes in rows from the top, decoded in the page. */
+export async function screenPixels(page) {
     const png = (await page.screenshot()).toString('base64');
-    return page.evaluate(async png => {
+    const { width, height, base64 } = await page.evaluate(async png => {
         const image = await createImageBitmap(await (await fetch(`data:image/png;base64,${png}`)).blob());
         const context = new OffscreenCanvas(image.width, image.height).getContext('2d');
         context.drawImage(image, 0, 0);
         const rgba = context.getImageData(0, 0, image.width, image.height).data;
-        let red = 0;
-        for (let i = 0; i < rgba.length; i += 4) if (rgba[i] === 255 && rgba[i + 1] === 0 && rgba[i + 2] === 0) red++;
-        return red;
+        let binary = '';
+        for (let i = 0; i < rgba.length; i += 0x8000) binary += String.fromCharCode(...rgba.subarray(i, i + 0x8000));
+        return { width: image.width, height: image.height, base64: btoa(binary) };
     }, png);
+    return { width, height, rgba: Buffer.from(base64, 'base64') };
 }
 
 /** Serves the built page on a free loopback port; resolves to its origin and a close function. */

@@ -241,7 +241,7 @@ async function trailView(): Promise<Renderer> {
     ]);
     return {
         canRender: () => canRenderStills(),
-        view: (line, conditions) => coverView(line, config, { width: WIDTH, height: HEIGHT, ...conditions }),
+        view: (line, conditions) => coverView([line], config, { width: WIDTH, height: HEIGHT, ...conditions }),
         async still(job, signal) {
             const gpu = await start.requestGpu();
             if (!gpu) throw new Error('No WebGPU device.');
