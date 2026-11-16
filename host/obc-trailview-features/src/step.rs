@@ -56,6 +56,23 @@ pub fn free_memory(reserved: Option<u64>) -> usize {
     free.min(reserved.unwrap_or(u64::MAX)) as usize
 }
 
+/// The bytes of memory that this process holds: `free_memory` counts what was free before it started.
+pub(crate) fn resident() -> usize {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    let line = status.lines().find(|l| l.starts_with("VmRSS:"));
+    line.and_then(|l| l.split_whitespace().nth(1)?.parse::<usize>().ok()).unwrap_or(0) << 10
+}
+
+/// Give the memory that the process freed back to the system. glibc keeps it in the arena of the thread that
+/// freed it, where other threads cannot take it and `resident` counts it.
+pub(crate) fn release() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: malloc_trim only returns free pages of the allocator to the system.
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;

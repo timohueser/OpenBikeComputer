@@ -5,7 +5,6 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use rstar::primitives::GeomWithData;
 use rstar::RTree;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, PoisonError};
 
 use super::fit::Graph;
@@ -13,14 +12,15 @@ use super::network::{distinct, hypot, sub, unique};
 use super::rows::{root, union};
 use super::{align, solve, Classes, Feature, Metrics, Near, Solved, Surroundings, Way};
 use crate::geometry::{bounds, Boxes};
-use crate::{metres, Terrain};
+use crate::step::{release, resident};
+use crate::{metres, Plan, Terrain};
 
 /// An area is a tile of AREA_ZOOM, about 27 km at 47° N. Its job holds the ways within HALO_M of it.
 pub const AREA_ZOOM: u32 = 10;
 pub const HALO_M: f64 = 500.0;
-/// A job holds about this many bytes per metre of the ways of its area: its samples, its rows and the
-/// factorization of its system, measured on the bake of central-switzerland.
-const JOB_BYTES_PER_M: f64 = 200.0;
+/// A job takes at most about this many bytes per metre of the ways of its area: its samples, its rows and
+/// the factorization of its system. Measured on the bake of central-switzerland, one job at a time.
+const JOB_BYTES_PER_M: f64 = 400.0;
 /// The ways that a deck or a bore crosses join a job from the points every FREE_STEP_M along it.
 const FREE_STEP_M: f64 = 50.0;
 /// A bridge or a tunnel has almost no length in the graph of the areas: a job holds it whole.
@@ -215,7 +215,8 @@ pub fn context(
 /// `solve` by area: a job solves the features within HALO_M of its area, and each OSM vertex of the
 /// area takes its height from there, with the vertices that follow it to the next one. The features
 /// of `context` join the jobs, but only the areas of `features` have one. The jobs run on a thread
-/// per core, the largest first, as many at once as `memory` holds.
+/// per core, the largest first, as many at once as `memory` holds beside what the process holds and the
+/// results of the jobs that ended.
 pub fn solve_by_area(
     features: &[&Feature],
     context: &[&Feature],
@@ -236,18 +237,36 @@ pub fn solve_by_area(
         .collect();
     let mut jobs: Vec<Area> = wanted.into_iter().filter(|area| region.areas.contains_key(area)).collect();
     jobs.sort_by(|p, q| region.areas[q].partial_cmp(&region.areas[p]).unwrap().then(p.cmp(q)));
+    let estimates: Vec<usize> = jobs.iter().map(|area| (JOB_BYTES_PER_M * region.areas[area]) as usize).collect();
+    // Of the graph of the region, a job reads only the features near its area. The graph goes before the jobs
+    // start: it takes as much memory as the rows of a large job.
+    let near: Vec<Vec<usize>> = jobs.iter().map(|&area| region.near(area)).collect();
+    drop(region);
     let cores = std::thread::available_parallelism().map_or(1, usize::from);
-    let memory = memory.saturating_sub(resident());
-    let budget = Budget { state: Mutex::new((memory, 0)), freed: Condvar::new() };
-    eprintln!("roads: {} areas on {cores} threads in {:.1} GB", jobs.len(), memory as f64 / 1e9);
-    let (next, done) = (AtomicUsize::new(0), Mutex::new(Vec::new()));
+    release();
+    let held = resident();
+    let memory = memory.saturating_sub(held);
+    let budget = Budget { state: Mutex::new(State { left: memory, running: 0, next: 0 }), freed: Condvar::new() };
+    let gb = |bytes: usize| bytes as f64 / 1e9;
+    let largest = estimates.first().copied().unwrap_or(0);
+    eprintln!(
+        "roads: {} areas on {cores} threads; the process holds {:.1} GB, the jobs may take {:.1} GB, the largest job {:.1} GB",
+        jobs.len(),
+        gb(held),
+        gb(memory),
+        gb(largest)
+    );
+    let done = Mutex::new(Vec::new());
     std::thread::scope(|scope| {
         for _ in 0..cores.min(jobs.len()) {
             scope.spawn(|| {
-                while let Some(area) = jobs.get(next.fetch_add(1, Ordering::Relaxed)) {
-                    let held = budget.take((JOB_BYTES_PER_M * region.areas[area]) as usize);
+                while let Some((k, mut held)) = budget.next(&estimates) {
                     let boxes = (&boxes, &culvert_boxes);
-                    let job = solve_area(&every, terrain, around, boxes, classes, &region, *area);
+                    let job = solve_area(&every, terrain, around, boxes, classes, &near[k], jobs[k]);
+                    // glibc keeps what a thread frees for that thread: without this, each thread would hold the
+                    // memory of the largest job that it ran.
+                    release();
+                    held.keep(job.bytes());
                     drop(held);
                     done.lock().unwrap().push(job);
                 }
@@ -293,16 +312,23 @@ struct Job {
     metrics: Metrics,
 }
 
+impl Job {
+    /// The bytes of the vertices that it found.
+    fn bytes(&self) -> usize {
+        let vertex = std::mem::size_of::<([f64; 2], f64, Plan, usize)>();
+        self.found.iter().flat_map(|(_, runs)| runs).map(|(_, way)| way.points.len() * vertex).sum()
+    }
+}
+
 fn solve_area(
     features: &[&Feature],
     terrain: &dyn Terrain,
     around: &Surroundings,
     (boxes, culvert_boxes): (&Boxes, &Boxes),
     classes: &Classes,
-    region: &Region,
+    chosen: &[usize],
     area: Area,
 ) -> Job {
-    let chosen = region.near(area);
     let owned = |xy: [f64; 2]| area_of(xy) == area;
     let points: Vec<[f64; 2]> =
         chosen.iter().flat_map(|&f| &features[f].parts).flat_map(|points| distinct(points)).collect();
@@ -336,95 +362,117 @@ fn solve_area(
     }
 }
 
-/// The memory that the running jobs may still take, and how many run.
+/// The memory that the jobs may still take, how many run, and the next job.
 struct Budget {
-    state: Mutex<(usize, usize)>,
+    state: Mutex<State>,
     freed: Condvar,
 }
 
-/// Bytes of a [`Budget`] that a job holds until it ends, also when it panics.
+#[derive(Debug, PartialEq)]
+struct State {
+    left: usize,
+    running: usize,
+    next: usize,
+}
+
+/// Bytes of a [`Budget`] that a job holds until it ends, also when it panics; then the budget gets them back,
+/// less what the job keeps.
 struct Held<'a> {
     budget: &'a Budget,
     bytes: usize,
+    kept: usize,
 }
 
 impl Budget {
-    /// Wait until `bytes` fit, or no job runs; then hold them, or all that is left. With nothing left,
-    /// one job runs at a time.
-    fn take(&self, bytes: usize) -> Held<'_> {
+    /// The next job of `estimates`, in their order, once its bytes fit or no job runs; then it holds them,
+    /// or all that is left. With nothing left, one job runs at a time. None when no job is left.
+    fn next(&self, estimates: &[usize]) -> Option<(usize, Held<'_>)> {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        while state.1 > 0 && state.0 < bytes {
+        loop {
+            let bytes = *estimates.get(state.next)?;
+            if state.running == 0 || state.left >= bytes {
+                let (job, bytes) = (state.next, bytes.min(state.left));
+                state.left -= bytes;
+                state.running += 1;
+                state.next += 1;
+                return Some((job, Held { budget: self, bytes, kept: 0 }));
+            }
             state = self.freed.wait(state).unwrap_or_else(PoisonError::into_inner);
         }
-        let bytes = bytes.min(state.0);
-        state.0 -= bytes;
-        state.1 += 1;
-        Held { budget: self, bytes }
+    }
+}
+
+impl Held<'_> {
+    /// Keep `bytes` of the budget when the job ends: its results.
+    fn keep(&mut self, bytes: usize) {
+        self.kept = bytes;
     }
 }
 
 impl Drop for Held<'_> {
     fn drop(&mut self) {
         let mut state = self.budget.state.lock().unwrap_or_else(PoisonError::into_inner);
-        state.0 += self.bytes;
-        state.1 -= 1;
+        state.left = (state.left + self.bytes).saturating_sub(self.kept);
+        state.running -= 1;
         self.budget.freed.notify_all();
     }
 }
 
-/// The bytes of memory that this process holds: `memory` counts what was free before it started.
-fn resident() -> usize {
-    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
-    let line = status.lines().find(|l| l.starts_with("VmRSS:"));
-    line.and_then(|l| l.split_whitespace().nth(1)?.parse::<usize>().ok()).unwrap_or(0) << 10
-}
-
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
     use super::*;
 
     fn budget(memory: usize) -> Budget {
-        Budget { state: Mutex::new((memory, 0)), freed: Condvar::new() }
+        Budget { state: Mutex::new(State { left: memory, running: 0, next: 0 }), freed: Condvar::new() }
+    }
+
+    fn state(left: usize, running: usize, next: usize) -> State {
+        State { left, running, next }
     }
 
     #[test]
-    fn with_no_memory_left_one_job_runs_at_a_time() {
+    fn with_no_memory_left_one_job_runs_at_a_time_in_order() {
         let budget = budget(0);
-        let first = budget.take(100);
+        let estimates = [100, 100];
+        let (first, held) = budget.next(&estimates).unwrap();
         let running = AtomicBool::new(false);
         std::thread::scope(|scope| {
             scope.spawn(|| {
-                let _second = budget.take(100);
+                let (second, _held) = budget.next(&estimates).unwrap();
+                assert_eq!(second, 1);
                 running.store(true, Ordering::SeqCst);
             });
             std::thread::sleep(Duration::from_millis(50));
             assert!(!running.load(Ordering::SeqCst), "a second job started beside the first");
-            drop(first);
+            drop(held);
         });
         assert!(running.load(Ordering::SeqCst));
-        assert_eq!(*budget.state.lock().unwrap(), (0, 0));
+        assert_eq!(first, 0);
+        assert!(budget.next(&estimates).is_none());
+        assert_eq!(*budget.state.lock().unwrap(), state(0, 0, 2));
     }
 
     #[test]
-    fn jobs_that_fit_run_together_and_a_panic_gives_its_bytes_back() {
+    fn jobs_that_fit_run_together_the_results_stay_taken_and_a_panic_gives_its_bytes_back() {
         let budget = budget(300);
-        let (a, b) = (budget.take(100), budget.take(200));
-        assert_eq!(*budget.state.lock().unwrap(), (0, 2));
+        let estimates = [200, 100, 300];
+        let ((_, mut a), (_, b)) = (budget.next(&estimates).unwrap(), budget.next(&estimates).unwrap());
+        assert_eq!(*budget.state.lock().unwrap(), state(0, 2, 2));
+        a.keep(50);
         drop((a, b));
+        assert_eq!(*budget.state.lock().unwrap(), state(250, 0, 2));
         let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             std::thread::scope(|scope| {
                 scope.spawn(|| {
-                    let _held = budget.take(300);
+                    let _held = budget.next(&estimates);
                     panic!("a job fails");
                 });
             });
         }));
         assert!(panicked.is_err());
-        // The bytes are back: a job of the whole budget starts at once.
-        drop(budget.take(300));
-        assert_eq!(*budget.state.lock().unwrap(), (300, 0));
+        assert_eq!(*budget.state.lock().unwrap(), state(250, 0, 3));
     }
 }

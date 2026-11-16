@@ -129,11 +129,21 @@ pub enum Selected {
 /// its first point, and each outer ring precedes its holes.
 pub type Object = (Selected, Tags, Vec<Part>);
 
-/// Each object of an active kind to `each`, the points and the lines first and then the areas, each in
+/// The geometry types of an export of Osmium: of the points and the lines, and of the areas.
+pub const ALL: [&str; 2] = ["point,linestring", AREAS];
+pub const AREAS: &str = "polygon";
+
+/// Each object of an active kind and of the geometry `types` to `each`, in the order of `types`, each in
 /// the order of the file. Osmium writes a point or a line as it reads it but buffers the areas, so one
 /// export of both would put an area among the lines where its buffer ran full.
-pub fn objects(entries: &[Entry], pbf: &Path, binary: &Path, mut each: impl FnMut(Object)) -> Result<(), String> {
-    for types in ["point,linestring", "polygon"] {
+pub fn objects(
+    entries: &[Entry],
+    pbf: &Path,
+    binary: &Path,
+    types: &[&str],
+    mut each: impl FnMut(Object),
+) -> Result<(), String> {
+    for &types in types {
         let mut child = Command::new(binary)
             .arg("export")
             .arg(pbf)
