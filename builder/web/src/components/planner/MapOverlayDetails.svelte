@@ -68,7 +68,7 @@
 </section>
 
 <style>
-    .overlay-details { position: absolute; z-index: 3; left: 12px; bottom: 38px; width: min(320px, calc(100% - 80px)); max-height: calc(100% - 54px); overflow: auto; padding: 14px; border-radius: 8px; background: var(--panel); box-shadow: var(--planner-shadow); color: var(--ink); font-size: 13px; }
+    .overlay-details { box-sizing: border-box; width: 320px; max-width: var(--callout-width); max-height: var(--callout-room); overflow: auto; padding: 14px; color: var(--ink); font-size: 13px; }
     .heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; }
     strong { font-size: 15px; }
     b { font-weight: 600; }
