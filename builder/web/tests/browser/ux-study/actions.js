@@ -3,6 +3,8 @@
 
 export const VIEWPORT = { width: 1280, height: 800 };
 const SAME_POINT_PX = 20;
+// Playwright rejects a key name that it does not know, such as "enter".
+const KEYS = ['Enter', 'Escape', 'Tab', 'Backspace', 'Delete', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
 
 const point = { anyOf: [{ type: 'integer' }, { type: 'null' }] };
 const nullableText = { anyOf: [{ type: 'string' }, { type: 'null' }] };
@@ -26,7 +28,7 @@ const text = `The screenshot is ${VIEWPORT.width} × ${VIEWPORT.height} pixels. 
 - scroll: turn the mouse wheel at x, y; text is "up" or "down".
 - hover: move the mouse to x, y.
 - type: click at x, y, then type text.
-- key: press one key, such as "Enter", "Escape" or "Tab"; text is the key name.
+- key: press one key; text is one of ${KEYS.join(', ')}.
 - give_up: stop trying.
 Name the target in words. Use null for each field that the action does not use.`;
 
@@ -41,7 +43,7 @@ function valid({ type, x, y, x2, y2, text }) {
     case 'drag': return onScreen(x, y) && onScreen(x2, y2);
     case 'scroll': return onScreen(x, y) && (text === 'up' || text === 'down');
     case 'type': return filled(text) && ((x === null && y === null) || onScreen(x, y));
-    case 'key': return filled(text);
+    case 'key': return KEYS.includes(text);
     case 'give_up': return true;
     default: return false;
   }

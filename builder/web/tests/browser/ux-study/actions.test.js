@@ -13,3 +13,10 @@ test('two actions are the same when their type and text match and their points a
   assert.ok(actions.same(key('Enter'), key('Enter')));
   assert.ok(!actions.same(key('Enter'), key('Tab')));
 });
+
+test('a key action is valid only with a key name that the browser knows', () => {
+  const key = text => ({ type: 'key', target: text, x: null, y: null, x2: null, y2: null, text });
+  assert.ok(actions.valid(key('Enter')));
+  assert.ok(!actions.valid(key('enter')));
+  assert.ok(!actions.valid(key(null)));
+});
