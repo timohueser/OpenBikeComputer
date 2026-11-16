@@ -160,21 +160,21 @@ function flavor(dark: boolean): Flavor {
  * their heights from the vector tiles at that address. */
 export type Relief = { dem: string; contours?: string };
 
-/** The basemap with no points of interest. With `relief`, the config gives the bounds and the credit of the terrain. */
-export function basemapStyle(theme: "light" | "dark", config: BasemapConfig & Partial<Pick<PlannerConfig, "bounds" | "terrain_attribution">>, relief?: Relief): StyleSpecification {
+/** The basemap with no points of interest. With `relief`, the config gives the bounds of the terrain. The credit of the
+ * terrain is not in the style: its long text would cover a page map, which shows it behind a button of credits. */
+export function basemapStyle(theme: "light" | "dark", config: BasemapConfig & Partial<Pick<PlannerConfig, "bounds">>, relief?: Relief): StyleSpecification {
     const dark = theme === "dark";
     const layers = baseLayers(dark).filter((layer) => layer.id !== "pois");
     const sources: StyleSpecification["sources"] = { basemap: basemapSource(config) };
-    const terrain = { bounds: config.bounds, attribution: config.terrain_attribution };
     if (relief) {
-        sources.terrain = { type: "raster-dem", tiles: [relief.dem], tileSize: DEM_TILE, encoding: "terrarium", maxzoom: DEM_MAX_ZOOM, ...terrain };
+        sources.terrain = { type: "raster-dem", tiles: [relief.dem], tileSize: DEM_TILE, encoding: "terrarium", maxzoom: DEM_MAX_ZOOM, bounds: config.bounds };
         layers.splice(layers.findIndex((layer) => layer.id === "land-detail") + 1, 0, {
             id: "relief", type: "hillshade", source: "terrain",
             paint: { ...reliefPaint(dark), "hillshade-illumination-direction": 315, "hillshade-illumination-anchor": "map" },
         });
     }
     if (relief?.contours) {
-        sources.contours = { type: "vector", tiles: [relief.contours], maxzoom: 15, ...terrain };
+        sources.contours = { type: "vector", tiles: [relief.contours], maxzoom: 15, bounds: config.bounds };
         layers.splice(layers.findIndex((layer) => layer.id === "relief") + 1, 0, {
             id: "contour-lines", type: "line", source: "contours", "source-layer": "contours", minzoom: 10,
             paint: { "line-color": dark ? "#b7b184" : "#647f73", "line-opacity": dark ? 0.38 : 0.44, "line-width": ["match", ["get", "level"], 1, 0.9, 0.45] },
@@ -225,6 +225,8 @@ export function mapStyle(theme: "light" | "dark", config: PlannerConfig, relief:
         },
         paint: { "text-color": dark ? "#f2efe3" : "#1c1b14", "text-halo-color": panel, "text-halo-width": 1.2 },
     });
+    // The planner map lists the credit of the terrain behind its own button of credits.
+    for (const id of ["terrain", "contours"]) Object.assign(style.sources[id] ?? {}, { attribution: config.terrain_attribution });
     style.sources.places = { type: "vector", url: config.places.endsWith(".json") ? config.places : `pmtiles://${config.places}`, attribution: config.attribution };
     return style;
 }
