@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Activity icons: three candidate sets</title>
+<style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 13px/1.4 "Atkinson", "Inter", system-ui, sans-serif; background: #d9d6ca; }
+    .theme { padding: 28px 32px 36px; background: var(--page); color: var(--ink); }
+    .theme.light { --page: #f4f2eb; --panel: #ffffff; --parchment: #f4f2eb; --hover: #e7ecdf; --ink: #1c1b14; --soft: #5c5a2e; --line: rgba(92, 90, 46, .32); --hair: rgba(92, 90, 46, .16); --forest: #a4501e; }
+    .theme.dark { --page: #16150f; --panel: #201f17; --parchment: #201f17; --hover: #232820; --ink: #f2efe3; --soft: #bdb47e; --line: rgba(189, 180, 126, .3); --hair: rgba(189, 180, 126, .15); --forest: #f2a93a; }
+    h1 { margin: 0 0 4px; font-size: 20px; }
+    .theme > p { margin: 0 0 20px; max-width: 760px; color: var(--soft); }
+    section { margin: 0 0 22px; padding: 16px 18px 18px; border: 1px solid var(--line); border-radius: 10px; background: var(--page); }
+    h2 { margin: 0; font-size: 15px; }
+    .idea { margin: 2px 0 12px; color: var(--soft); }
+    .cols { display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-start; }
+    .ground { padding: 10px 14px 12px; border: 1px solid var(--hair); border-radius: 8px; }
+    .ground.panel { background: var(--panel); }
+    .ground.parchment { background: var(--parchment); }
+    .caption { margin: 0 0 8px; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--soft); }
+    table { border-collapse: collapse; }
+    th { padding: 0 0 6px; font-size: 11px; font-weight: 400; color: var(--soft); }
+    td { width: 62px; height: 30px; padding: 0; text-align: center; vertical-align: middle; }
+    tr.s40 td { height: 54px; }
+    td.px { width: 34px; font-size: 11px; text-align: left; color: var(--soft); }
+    svg { display: inline-block; vertical-align: middle; flex: none; }
+    .routes { width: 250px; }
+    .route { display: flex; align-items: center; gap: 9px; padding: 7px 4px; border-top: 1px solid var(--hair); }
+    .route:first-of-type { border-top: 0; }
+    .route b { display: block; font-weight: 600; }
+    .route small { display: block; font-size: 12px; color: var(--soft); }
+    .menu { width: 196px; }
+    .trigger { display: flex; align-items: center; justify-content: space-between; min-height: 32px; margin-bottom: 6px; padding: 6px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); font-weight: 600; }
+    .options { padding: 4px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+    .option { display: flex; align-items: center; gap: 7px; min-height: 36px; padding: 8px; border-radius: 4px; }
+    .option.active { background: var(--hover); font-weight: 600; }
+    .option svg { color: var(--forest); }
+    .label { display: inline-flex; align-items: center; gap: 7px; }
+    .tight { display: inline-block; padding: 18px 22px; background: #ffffff; color: #1c1b14; }
+    .tight h2 { margin-bottom: 10px; }
+    .tight td { width: 70px; }
+    /* Drawing aid: body.work shows each icon large on a grid. */
+    .work { display: flex; flex-wrap: wrap; gap: 14px; padding: 14px; background: #fff; color: #1c1b14; }
+    .work figure { margin: 0; text-align: center; }
+    .work .big { background-image: linear-gradient(rgba(0, 90, 200, .16) 1px, transparent 1px), linear-gradient(90deg, rgba(0, 90, 200, .16) 1px, transparent 1px); background-size: 10px 10px; outline: 1px solid rgba(0, 90, 200, .4); }
+    .strip { display: inline-flex; gap: 8px; align-items: center; padding: 10px; background: #fff; color: #1c1b14; }
+</style>
+</head>
+<body>
+<script>
+// Each icon is one or two plain path strings for a 24 x 24 view box:
+// fill none, stroke currentColor, stroke width 1.7, round caps and joins.
+const HIKING = ['M15 4a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Zm-3 3 4 4h3M13 6l-3 7 5 3-1 6m-4-9-3 5-4 3M11 7l-3-1-2 6 3 1m11-3-2 12'];
+
+const SETS = [
+    {
+        id: 'set1', title: 'Set 1: riders', idea: 'A rider in a pose, in the hand of the hiking figure: low (road), half upright on stones (gravel), upright with a pannier (touring), standing on a slope (mountain bike).',
+        icons: {
+            road: ['M1.6 16.6a3.4 3.4 0 1 0 6.8 0a3.4 3.4 0 1 0 -6.8 0ZM15.6 16.6a3.4 3.4 0 1 0 6.8 0a3.4 3.4 0 1 0 -6.8 0ZM17.1 7.4a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0Z', 'M5 16.6L8.4 9.9L15 9.3L17.2 13.2L19 16.6M8.4 9.9L12.8 13L11.4 16.6'],
+            gravel: ['M1.6 16a3.4 3.4 0 1 0 6.8 0a3.4 3.4 0 1 0 -6.8 0ZM15.6 16a3.4 3.4 0 1 0 6.8 0a3.4 3.4 0 1 0 -6.8 0ZM14.5 2.6a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0ZM2 22.3v.01M7 22.3v.01M12 22.3v.01M17 22.3v.01M22 22.3v.01', 'M5 16L8.4 9.2L13.6 5.4L17 10.8L19 16M8.4 9.2L13 12L11.4 16'],
+            touring: ['M8.4 17.6A3.4 3.4 0 0 1 1.6 17.6M2.9 11.4H6.5a1.1 1.1 0 0 1 1.1 1.1V16.5a1.1 1.1 0 0 1 -1.1 1.1H2.9a1.1 1.1 0 0 1 -1.1 -1.1V12.5a1.1 1.1 0 0 1 1.1 -1.1ZM15.6 17.6a3.4 3.4 0 1 0 6.8 0a3.4 3.4 0 1 0 -6.8 0ZM11.3 2.5a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0Z', 'M8.8 11.2L11.2 6.2L16.4 10.6L19 17.6M8.8 11.2L13.4 13L12 17.6'],
+            mtb: ['M3.45 13.65a3 3 0 1 0 6 0a3 3 0 1 0 -6 0ZM14.95 17.49a3 3 0 1 0 6 0a3 3 0 1 0 -6 0ZM15.8 4a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0ZM1.5 15.17L21.5 21.83', 'M17.5 11L17.95 17.49M11.9 15.4L11.7 11.4L8.9 7.6L14.1 6.4L17.5 11'],
+        },
+    },
+    {
+        id: 'set2', title: 'Set 2: bikes', idea: 'Four bikes, one strong feature each: drop bar (road), drop bar and knobs (gravel), pannier and bar bag (touring), fat tyres and thick fork (mountain bike).',
+        icons: {
+            road: ['M1.3 16.5a3.7 3.7 0 1 0 7.4 0a3.7 3.7 0 1 0 -7.4 0ZM15.3 16.5a3.7 3.7 0 1 0 7.4 0a3.7 3.7 0 1 0 -7.4 0Z', 'M5 16.5L8.8 10.5L16.43 10.5L11.6 16.5L8.8 10.5M8.3 6.8L8.8 10.5M6.8 6.8L10 6.8M19 16.5L14.71 6.5M14.71 6.5H18.01A1.9 1.9 0 0 1 19.24 9.86'],
+            gravel: ['M8.69 16.69A3.7 3.7 0 0 1 8.3 18.18M6.68 19.8A3.7 3.7 0 0 1 5.19 20.19M2.98 19.6A3.7 3.7 0 0 1 1.9 18.52M1.31 16.31A3.7 3.7 0 0 1 1.7 14.82M3.32 13.2A3.7 3.7 0 0 1 4.81 12.81M7.02 13.4A3.7 3.7 0 0 1 8.1 14.48M22.69 16.69A3.7 3.7 0 0 1 22.3 18.18M20.68 19.8A3.7 3.7 0 0 1 19.19 20.19M16.98 19.6A3.7 3.7 0 0 1 15.9 18.52M15.31 16.31A3.7 3.7 0 0 1 15.7 14.82M17.32 13.2A3.7 3.7 0 0 1 18.81 12.81M21.02 13.4A3.7 3.7 0 0 1 22.1 14.48', 'M7.84 12.02L8.8 10.5L16.43 10.5L11.6 16.5L8.8 10.5M8.3 6.8L8.8 10.5M6.8 6.8L10 6.8M16.91 11.63L14.71 6.5M14.71 6.5H18.01A1.9 1.9 0 0 1 19.24 9.86'],
+            touring: ['M8.6 16.5A3.6 3.6 0 0 1 1.4 16.5M3 10H7a1.1 1.1 0 0 1 1.1 1.1V15.4a1.1 1.1 0 0 1 -1.1 1.1H3a1.1 1.1 0 0 1 -1.1 -1.1V11.1a1.1 1.1 0 0 1 1.1 -1.1ZM15.7 16.5a3.3 3.3 0 1 0 6.6 0a3.3 3.3 0 1 0 -6.6 0ZM18.4 5.9H20.6a1 1 0 0 1 1 1V8.9a1 1 0 0 1 -1 1H18.4a1 1 0 0 1 -1 -1V6.9a1 1 0 0 1 1 -1Z', 'M8.1 11.9L8.8 10.5L16.43 10.5L11.6 16.5L8.8 10.5M8.3 6.8L8.8 10.5M6.8 6.8L10 6.8M19 16.5L15.31 7.9M15.31 7.9H17.4'],
+            mtb: ['M1.15 16.5a4.25 4.25 0 1 0 8.5 0a4.25 4.25 0 1 0 -8.5 0ZM2 16.5a3.4 3.4 0 1 0 6.8 0a3.4 3.4 0 1 0 -6.8 0ZM14.35 16.5a4.25 4.25 0 1 0 8.5 0a4.25 4.25 0 1 0 -8.5 0ZM15.2 16.5a3.4 3.4 0 1 0 6.8 0a3.4 3.4 0 1 0 -6.8 0Z', 'M8.07 13.19L9.6 11.3L15.6 9.5L11.6 16.5L9.6 11.3M8.6 6.8L9.6 11.3M7.1 6.8L10.3 6.8M16.93 12.59L14.31 6.5M17.8 12.01L16.12 8.1M12.71 6.5h3.2'],
+        },
+    },
+    {
+        id: 'set3', title: 'Set 3: ground', idea: 'The ground, not the bike: a road, a broken track with stones (gravel), a road past a tent (touring), a zigzag trail on a peak (mountain bike).',
+        icons: {
+            road: ['M8.5 3L3 21M15.5 3L21 21', 'M12 4L12 7M12 10.5L12 13.5M12 17L12 20.5'],
+            gravel: ['M8.5 3L7.4 6.6M6.3 10.2L5.2 13.8M4.1 17.4L3 21M15.5 3L16.6 6.6M17.7 10.2L18.8 13.8M19.9 17.4L21 21', 'M12.2 7.2h.8m-.4-.4v.8M10.6 11v.01M13.2 13.6h.8m-.4-.4v.8M9.2 15.6v.01M10 19.4h.8m-.4-.4v.8M15.2 19v.01'],
+            touring: ['M1.5 21L8 10L14.5 21ZM5.2 21L8 16.2L10.8 21', 'M17 3L22 21M10.6 3L9.6 6.4M13.8 4L13.8 7M14.4 10.5L14.4 13.5'],
+            mtb: ['M2 21L12 3L22 21', 'M8.5 21L15 17.5L10 14L13.4 11'],
+        },
+    },
+];
+
+const ACTIVITIES = [
+    { key: 'road', label: 'Road bike', route: 'Rhine valley to Chur', stats: '118 km · 640 m up' },
+    { key: 'gravel', label: 'Gravel bike', route: 'Gotthard loop', stats: '62 km · 1,480 m up' },
+    { key: 'touring', label: 'Touring bike', route: 'Lake Constance, 4 days', stats: '263 km · 1,150 m up' },
+    { key: 'mtb', label: 'Mountain bike', route: 'Flims trail round', stats: '31 km · 1,240 m up' },
+    { key: 'hiking', label: 'Hiking', route: 'Säntis ridge walk', stats: '14 km · 980 m up' },
+];
+
+// Today's bikes in Icon.svelte: one frame, a handlebar and a tyre width for each.
+const todayFrame = 'M5 17 8 10h8l-4 7h7l-3-7-4 7L8 10M16 10l1-3m-2 0h4';
+const todayDrop = 'M8 10l.5-3H5a1.5 1.5 0 0 0 0 3h.5';
+const today = { road: [todayDrop, 1.6], gravel: [todayDrop, 2.1], touring: ['M8 10V6H5M17 12h5', 1.8], mtb: ['M8 10l.5-3H5', 2.5] };
+const todayBody = (key) => `<g stroke-width="1.6"><circle cx="5" cy="17" r="3.5" stroke-width="${today[key][1]}"/><circle cx="19" cy="17" r="3.5" stroke-width="${today[key][1]}"/><path d="${todayFrame}"/><path d="${today[key][0]}"/></g>`;
+
+const svg = (body, size) => `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+const paths = (list) => list.map(d => `<path d="${d}"/>`).join('');
+const TODAY = { id: 'today', title: 'Today', idea: 'The reference: one bike frame with a different handlebar and tyre width. Hiking stays as it is.', body: (key) => key === 'hiking' ? paths(HIKING) : todayBody(key) };
+for (const set of SETS) set.body = (key) => paths(key === 'hiking' ? HIKING : set.icons[key]);
+
+const sizes = [16, 20, 24, 40];
+const matrix = (set, ground, caption) => `<div class="ground ${ground}">${caption ? `<p class="caption">${caption}</p>` : ''}<table>
+    <tr><th></th>${ACTIVITIES.map(a => `<th>${a.label.replace(' bike', '')}</th>`).join('')}</tr>
+    ${sizes.map(size => `<tr class="s${size}"><td class="px">${size}</td>${ACTIVITIES.map(a => `<td>${svg(set.body(a.key), size)}</td>`).join('')}</tr>`).join('')}
+</table></div>`;
+const routes = (set, size) => `<div class="ground panel routes"><p class="caption">Route list, ${size} px</p>${ACTIVITIES.map(a => `<div class="route">${svg(set.body(a.key), size)}<span><b>${a.route}</b><small>${a.stats}</small></span></div>`).join('')}</div>`;
+const menu = (set) => `<div class="ground parchment menu"><p class="caption">Activity menu, 20 px</p>
+    <div class="trigger"><span class="label">${svg(set.body('gravel'), 20)}Gravel bike</span>${svg('<path d="m6 9 6 6 6-6"/>', 14)}</div>
+    <div class="options">${ACTIVITIES.map(a => `<div class="option${a.key === 'gravel' ? ' active' : ''}">${svg(set.body(a.key), 20)}${a.label}</div>`).join('')}</div></div>`;
+const section = (set, theme) => `<section id="${set.id}-${theme}"><h2>${set.title}</h2><p class="idea">${set.idea}</p><div class="cols">
+    ${theme === 'light' ? matrix(set, 'panel', 'Ink on panel') + matrix(set, 'parchment', 'Ink on parchment') : matrix(set, 'panel', 'Ink on dark')}
+    ${routes(set, 20)}${theme === 'dark' ? routes(set, 16) : ''}${menu(set)}</div></section>`;
+const sheet = (theme) => `<div class="theme ${theme}" id="sheet-${theme}"><h1>Activity icons: three candidate sets, ${theme} ground</h1>
+    <p>Each row of sizes is 16, 20, 24 and 40 px. The planner draws 20 px; the route list may draw 16 px. Every icon is one or two paths, stroke width 1.7, no fill.</p>
+    ${[TODAY, ...SETS].map(set => section(set, theme)).join('')}</div>`;
+// The tight picture of one set: 20 px and 40 px, with the hiking icon.
+const tight = (set) => `<div class="tight" id="tight-${set.id}"><h2>${set.title}</h2><table>
+    <tr><th></th>${ACTIVITIES.map(a => `<th>${a.label.replace(' bike', '')}</th>`).join('')}</tr>
+    ${[20, 40].map(size => `<tr class="s${size}"><td class="px">${size}</td>${ACTIVITIES.map(a => `<td>${svg(set.body(a.key), size)}</td>`).join('')}</tr>`).join('')}</table></div>`;
+const work = (set) => `<div class="work" id="work-${set.id}">${ACTIVITIES.map(a => `<figure><div class="big">${svg(set.body(a.key), 240)}</div>${a.key}</figure>`).join('')}</div>
+    <div class="strip" id="strip-${set.id}">${[20, 16].map(size => ACTIVITIES.map(a => svg(set.body(a.key), size)).join("")).join('<span style="width:10px"></span>')}</div>`;
+
+const mode = location.hash.slice(1);
+document.body.innerHTML = mode === 'work' ? [TODAY, ...SETS].map(work).join('')
+    : mode === 'tight' ? SETS.map(tight).join('<br>')
+    : sheet('light') + sheet('dark');
+</script>
+</body>
+</html>
