@@ -107,3 +107,11 @@ test('the spending limit stops the participant calls and ends the walkthrough as
   assert.equal(participant.calls, 2);
   assert.ok(budget.exhausted);
 });
+
+test('a call with more input tokens than the threshold of a model costs its second price', () => {
+  const budget = createBudget({ usdPerMillionInput: 0.1, usdPerMillionOutput: 0.5,
+    long: { overInputTokens: 100_000, usdPerMillionInput: 0.5, usdPerMillionOutput: 2.5 } }, 15);
+  budget.add({ input_tokens: 100_000, output_tokens: 10_000 }); // 0.010 + 0.005
+  budget.add({ input_tokens: 100_001, output_tokens: 10_000 }); // 0.0500005 + 0.025
+  assert.equal(budget.spent.toFixed(4), '0.0900');
+});

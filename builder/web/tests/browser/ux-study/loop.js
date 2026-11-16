@@ -7,15 +7,16 @@ const TRIES = 3;
 const STUCK_REPEATS = 3;
 
 /**
- * The cost of the participant calls of one study. At `maxCostUsd` no further call starts. Calls that are
- * already in flight still finish, so a study can pass the limit by the cost of one call for each walkthrough
- * that runs at the same time.
+ * The cost of the model calls of one study, each call at the price for its own number of input tokens. At
+ * `maxCostUsd` no further call starts. Calls that are already in flight still finish, so a study can pass the
+ * limit by the cost of one call for each walkthrough that runs at the same time.
  */
 export function createBudget(model, maxCostUsd) {
   let spent = 0;
   return {
     add(usage) {
-      spent += (usage.input_tokens * model.usdPerMillionInput + usage.output_tokens * model.usdPerMillionOutput) / 1e6;
+      const price = usage.input_tokens > (model.long?.overInputTokens ?? Infinity) ? model.long : model;
+      spent += (usage.input_tokens * price.usdPerMillionInput + usage.output_tokens * price.usdPerMillionOutput) / 1e6;
     },
     get spent() { return spent; },
     get exhausted() { return spent >= maxCostUsd; },

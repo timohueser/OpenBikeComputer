@@ -1,5 +1,5 @@
-// The command of a study: `node ux-study/run.js [--task ID] [--model ID]` runs each task (or one) three times
-// at once and writes the walkthroughs and the report to `.artifacts/ux-study/<UTC time>/`.
+// The command of a study: `node ux-study/run.js [--task ID] [--model ID] [--check]` runs each task (or one)
+// three times at once and writes the walkthroughs and the report to `.artifacts/ux-study/<UTC time>/`.
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -11,15 +11,21 @@ import { defaultModel, maxCostUsd, models, tasks, walkthroughsPerTask } from './
 
 const ARTIFACTS = fileURLToPath(new URL('../../../../../.artifacts/ux-study', import.meta.url));
 
-/**
- * Runs the study, writes its report, and resolves with its folder, the path of the report, the result of each
- * walkthrough and the cost. `participant` and `ask` replace the model calls of the walkthroughs and of the report.
- */
-export async function run({ taskId, modelId = defaultModel, participant, ask, walkthroughs = walkthroughsPerTask } = {}) {
+/** The tasks and the model that the options name; it throws for an unknown ID. */
+function select({ taskId, modelId = defaultModel }) {
   const selected = taskId ? tasks.filter(task => task.id === taskId) : tasks;
   if (!selected.length) throw new Error(`no task '${taskId}'; the tasks are: ${tasks.map(task => task.id).join(', ')}`);
   const model = models.find(known => known.id === modelId);
   if (!model) throw new Error(`no model '${modelId}'; the models are: ${models.map(known => known.id).join(', ')}`);
+  return { selected, model };
+}
+
+/**
+ * Runs the study, writes its report, and resolves with its folder, the path of the report, the result of each
+ * walkthrough and the cost. `participant` and `ask` replace the model calls of the walkthroughs and of the report.
+ */
+export async function run({ taskId, modelId, participant, ask, walkthroughs = walkthroughsPerTask } = {}) {
+  const { selected, model } = select({ taskId, modelId });
   const dir = join(ARTIFACTS, new Date().toISOString().replace(/[:.]/g, '-'));
   const budget = createBudget(model, maxCostUsd);
   const env = await openBrowser();
@@ -41,7 +47,12 @@ export async function run({ taskId, modelId = defaultModel, participant, ask, wa
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const { values } = parseArgs({ options: { task: { type: 'string' }, model: { type: 'string' } } });
+  const { values } = parseArgs({ options: { task: { type: 'string' }, model: { type: 'string' }, check: { type: 'boolean' } } });
+  // `--check` only checks the options, so that `obc ux` stops on a wrong ID before its build.
+  if (values.check) {
+    try { select({ taskId: values.task, modelId: values.model }); } catch (error) { console.error(error.message); process.exit(1); }
+    process.exit(0);
+  }
   const started = Date.now();
   const { report, results, costUsd, limited, model } = await run({ taskId: values.task, modelId: values.model });
   if (limited) console.log(`The spending limit of ${maxCostUsd} USD stopped the study.`);

@@ -1,12 +1,13 @@
 // The models with their prices, the spending limit, and the tasks.
 import placeKinds from '../../../../../planner/search/place-kinds.json' with { type: 'json' };
 
-// USD for 1 million input and output tokens. Haiku costs five times as much for a call with more than
-// 100K input tokens; the budget uses the lower price.
+// USD for 1 million input and output tokens. `long` holds the prices of a call with more input tokens than
+// `overInputTokens`, where the model has a second price.
 export const models = [
   { id: 'claude-sonnet-5-5', usdPerMillionInput: 2, usdPerMillionOutput: 10 },
   { id: 'claude-opus-5-5', usdPerMillionInput: 4, usdPerMillionOutput: 20 },
-  { id: 'claude-haiku-5-5', usdPerMillionInput: 0.1, usdPerMillionOutput: 0.5 },
+  { id: 'claude-haiku-5-5', usdPerMillionInput: 0.1, usdPerMillionOutput: 0.5,
+    long: { overInputTokens: 100_000, usdPerMillionInput: 0.5, usdPerMillionOutput: 2.5 } },
 ];
 export const defaultModel = 'claude-sonnet-5-5';
 export const maxCostUsd = 15;
@@ -64,50 +65,58 @@ function shareAlong(line, place) {
 }
 
 // Coordinates from the place search of the active planner release, with their OSM nodes: Meiringen station on
-// Bahnhofstrasse (5007055738), the Grimsel Pass (1456026791), the Furka Pass (1457531552) and the village of
-// Andermatt (240030058).
+// Bahnhofstrasse (5007055738), the Grimsel Pass (1456026791), the Furka Pass (1457531552), the village of
+// Andermatt (240030058) and the city of Lucerne (560719199).
 const MEIRINGEN_STATION = [8.184271, 46.727359];
 const GRIMSEL_PASS = [8.337697, 46.561519];
 const FURKA_PASS = [8.415184, 46.572685];
 const ANDERMATT = [8.594815, 46.63405];
+const LUCERNE = [8.305812, 47.052144];
 const FOOD = new Set(placeKinds.food);
+// The kinds of the planner's points that the route goes to: a visit, a visit-and-return, and a place that a
+// search sentence routes through. A marker only lies beside the route.
+const STOPS = new Set(['waypoint', 'detour', 'pass']);
 
-const meiringenToGrimsel = ({ summary }) => startsAt(summary.line, MEIRINGEN_STATION) && endsAt(summary.line, GRIMSEL_PASS);
+const from = (line, start, end) => startsAt(line, start) && endsAt(line, end);
+const meiringenToGrimsel = ({ summary }) => from(summary.line, MEIRINGEN_STATION, GRIMSEL_PASS);
 /** A stop of the plan at a place to eat, in the middle half of the line. */
-const lunchStop = ({ summary, trip }) => (trip?.points ?? []).some(point => point.kind === 'waypoint'
+const lunchStop = ({ summary, trip }) => (trip?.points ?? []).some(point => STOPS.has(point.kind)
   && FOOD.has(point.placeKind) && Math.abs(shareAlong(summary.line, point.coordinate) - 0.5) <= 0.25);
-const libraryHas = (page, fits) => libraryRoutes(page).then(routes => routes.some(fits));
 
+/**
+ * The tasks. `fits` says whether one route record of the library reaches the goal; `success` is true when a
+ * record of the page's library fits.
+ */
 export const tasks = [
   {
     id: 'plan-route',
     goal: 'You want to ride from Meiringen station to the top of the Grimsel Pass tomorrow. Plan the route.',
     stepBudget: 25,
-    success: page => libraryHas(page, meiringenToGrimsel),
+    fits: meiringenToGrimsel,
   },
   {
     id: 'route-through',
     goal: 'You want to ride from Meiringen to Andermatt via the Grimsel Pass and the Furka Pass. Plan the route.',
     stepBudget: 25,
-    success: page => libraryHas(page, ({ summary: { line } }) =>
-      endsAt(line, ANDERMATT) && passes(line, GRIMSEL_PASS) && passes(line, FURKA_PASS)),
+    fits: ({ summary: { line } }) =>
+      from(line, MEIRINGEN_STATION, ANDERMATT) && passes(line, GRIMSEL_PASS) && passes(line, FURKA_PASS),
   },
   {
     id: 'two-day-trip',
     goal: 'You want to ride from Lucerne to Andermatt in two days. Plan the ride.',
     stepBudget: 25,
-    success: page => libraryHas(page, ({ summary }) => endsAt(summary.line, ANDERMATT) && summary.days === 2),
+    fits: ({ summary }) => from(summary.line, LUCERNE, ANDERMATT) && summary.days === 2,
   },
   {
     id: 'change-bike',
     goal: 'You want to ride from Meiringen station to the top of the Grimsel Pass on your mountain bike. Plan a route that suits your bike.',
     stepBudget: 25,
-    success: page => libraryHas(page, route => meiringenToGrimsel(route) && route.summary.bike === 'mtb'),
+    fits: route => meiringenToGrimsel(route) && route.summary.bike === 'mtb',
   },
   {
     id: 'lunch-stop',
     goal: 'You want to ride from Meiringen station to the top of the Grimsel Pass, and stop for lunch about halfway. Plan the ride with a place to eat on the way.',
     stepBudget: 25,
-    success: page => libraryHas(page, route => meiringenToGrimsel(route) && lunchStop(route)),
+    fits: route => meiringenToGrimsel(route) && lunchStop(route),
   },
-];
+].map(task => ({ ...task, success: page => libraryRoutes(page).then(routes => routes.some(task.fits)) }));
