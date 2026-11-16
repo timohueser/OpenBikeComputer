@@ -92,9 +92,12 @@ revision, file revision, and 500 px thumbnail URL match the prepared reference. 
 mismatch retains the article and source links. A missing online URL never falls back to an original
 image.
 
-The overlay database has SQLite `user_version=2`. `features` stores stable IDs, layer kinds, cycling
+The overlay database has SQLite `user_version=3`. `features` stores stable IDs, layer kinds, cycling
 and walking minimum zooms, geometry IDs, and attribute IDs. `attributes` stores distinct JSON
-properties without the way ID or layer kind. Route memberships are ordered relation IDs. `routes`
+properties without the way ID or layer kind. Route memberships are ordered relation IDs. The `road`
+of a route line is the class in which the basemap draws the `highway` of its way: `major` for
+`motorway`, `trunk`, `primary`, `secondary`, `tertiary` and their links; `minor` for `residential`,
+`unclassified`, `living_street`, `service` and `road`; empty for all other ways. `routes`
 stores each relation's JSON properties once. `geometries` stores the way ID, a point count, and a
 Postcard `Vec<[i32;2]>`. Each coordinate pair is longitude and latitude in microdegrees. The first
 pair is absolute; each later pair is a difference from the previous pair. Decoding uses checked
@@ -116,7 +119,7 @@ routing package, the SHA-256 of `routing/blocks.json`, which packs the same grap
 
 | Layer | Feature ID | Properties |
 | --- | --- | --- |
-| `cycling`, `hiking`, `mtb` | Way ID of the first way in the line | `rank`, `ref`, and `routes`: a JSON array of relation IDs in rank order. `hiking` adds `marker`, the first route `symbol` that is not empty. |
+| `cycling`, `hiking`, `mtb` | Way ID of the first way in the line | `rank`, `ref`, and `routes`: a JSON array of relation IDs in rank order. `hiking` adds `marker`, the first route `symbol` that is not empty. From zoom 12, a line adds the `road` of the overlay index when it is not empty. |
 | `access` | Way ID | `cycling_status`, `walking_status`, `name`, `ref`, `conditional`; `riding`, `walking`, `pushing` and `tags` as JSON text; `cycling_minzoom` and `walking_minzoom`, the overlay index minimum zoom of each restricted mode |
 | `routes` | Relation ID | The route properties that are not empty: `kind`, `network`, `rank`, `name`, `ref`, `website`, `symbol`, `symbol_text`. The point is the tile origin. |
 

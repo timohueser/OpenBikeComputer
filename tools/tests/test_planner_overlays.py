@@ -55,14 +55,15 @@ class OverlayArchive(unittest.TestCase):
                     CREATE TABLE features(id INTEGER PRIMARY KEY, kind TEXT, cycling_minzoom REAL, walking_minzoom REAL, geometry INTEGER, attributes INTEGER);""")
                 db.execute("INSERT INTO metadata VALUES (?, ?)", ("a" * 64, "[7.8,47.9,7.9,48.0]"))
                 db.executemany("INSERT INTO routes VALUES (?, ?)", [(k, json.dumps(v)) for k, v in routes.items()])
-                # Two ways of both routes meet at one node; a third way carries only the local route.
+                # Two ways of both routes meet at one node, a path and a main road; a third way carries only the local route.
                 db.executemany("INSERT INTO geometries VALUES (?, ?, 2, ?)", [
                     (1, 10, blob([(7.85, 47.95), (7.852, 47.95)])), (2, 11, blob([(7.852, 47.95), (7.854, 47.951)])),
                     (3, 12, blob([(7.86, 47.96), (7.861, 47.96)])), (4, 13, blob([(7.854, 47.951), (7.856, 47.952)]))])
-                db.executemany("INSERT INTO attributes VALUES (?, ?)", [(1, json.dumps({"rank": 4, "ref": "EV6", "routes": [1, 2]})),
-                    (2, json.dumps(access)), (3, json.dumps({"rank": 1, "ref": "L1", "routes": [2]}))])
+                db.executemany("INSERT INTO attributes VALUES (?, ?)", [(1, json.dumps({"rank": 4, "ref": "EV6", "road": "", "routes": [1, 2]})),
+                    (2, json.dumps(access)), (3, json.dumps({"rank": 1, "ref": "L1", "road": "", "routes": [2]})),
+                    (4, json.dumps({"rank": 4, "ref": "EV6", "road": "major", "routes": [1, 2]}))])
                 db.executemany("INSERT INTO features(kind, cycling_minzoom, walking_minzoom, geometry, attributes) VALUES (?, ?, ?, ?, ?)", [
-                    ("cycling", 6, 6, 1, 1), ("cycling", 6, 6, 2, 1), ("access", 15, None, 3, 2), ("cycling", 11, 11, 4, 3)])
+                    ("cycling", 6, 6, 1, 1), ("cycling", 6, 6, 2, 4), ("access", 15, None, 3, 2), ("cycling", 11, 11, 4, 3)])
             overlays.derive(index, target, "© OpenStreetMap contributors")
             with target.open("rb") as stream:
                 reader = Reader(MmapSource(stream))
@@ -74,7 +75,9 @@ class OverlayArchive(unittest.TestCase):
         self.assertEqual(low["cycling"], {10: {"rank": 4, "ref": "EV6", "routes": "[1]"}})
         self.assertEqual(low["routes"], {1: {"kind": "cycling", "name": "EuroVelo 6", "network": "icn", "rank": 4, "ref": "EV6",
                                              "website": "https://ev.example"}})
-        self.assertEqual(high["cycling"][10]["routes"], "[1, 2]")
+        # From the zoom of the bands, the line on the main road is its own line and names the class of the road.
+        self.assertEqual(high["cycling"][10], {"rank": 4, "ref": "EV6", "routes": "[1, 2]"})
+        self.assertEqual(high["cycling"][11], {"rank": 4, "ref": "EV6", "routes": "[1, 2]", "road": "major"})
         self.assertEqual(high["routes"][2], {"kind": "cycling", "network": "lcn", "rank": 1, "ref": "L1"})
         self.assertEqual(high["access"][12], {**access, "riding": "[false,false]", "walking": "[true,true]", "pushing": "[true,true]",
                                               "tags": '{"bicycle":"dismount"}', "cycling_minzoom": 15})

@@ -93,7 +93,10 @@ const bandZoom = 12;
 const lineWidth: ExpressionSpecification = ['interpolate', ['linear'], ['zoom'], 6, 1.2, 10, 1.8, bandZoom, 2.4];
 /** The share of the network colour in a band; a dark map needs more of it for the same contrast. */
 export const bandShare = { light: 0.4, dark: 0.5 };
-const bandWidth: ExpressionSpecification = ['interpolate', ['exponential', 1.6], ['zoom'], bandZoom, 2.4, 13, 7, 15, 10, 18, 22];
+// The basemap draws a main road wider than a side road, and a side road wider than a path. The tiles name the class of
+// the road of a line in `road`, so the band shows about as far beside each of them. A line with no class is on a path.
+const byRoad = (path: number, minor: number, major: number): ExpressionSpecification => ['match', ['get', 'road'], 'major', major, 'minor', minor, path];
+const bandWidth: ExpressionSpecification = ['interpolate', ['exponential', 1.6], ['zoom'], bandZoom, 2.4, 13, byRoad(7, 7, 10), 15, byRoad(10, 13, 14), 18, byRoad(22, 24, 26)];
 
 const accessStatus = (mode: AccessMode): ExpressionSpecification => ['get', `${mode}_status`];
 
