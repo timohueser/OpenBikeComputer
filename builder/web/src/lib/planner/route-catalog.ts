@@ -1,10 +1,9 @@
 import type { Coordinate } from './geo';
 import { loadRouteCell } from './map-data';
-import { corridorTiles, tileColumn, tileRow } from './place-index';
+import { tileColumn, tileRow } from './place-index';
 import type { BikeType } from './riding-profiles';
 import { decodeCoordinates } from './route-answer';
-import { joinedPlan, type RoutePlan } from './signed-route-plan';
-import { kinds, routePlan, type CatalogRecord, type RouteRecord } from './signed-routes';
+import { kinds, type CatalogRecord } from './signed-routes';
 
 /**
  * West, south, east and north, in degrees. The caller wraps longitudes to -180..180. A box with west above east,
@@ -14,8 +13,6 @@ export type Box = [west: number, south: number, east: number, north: number];
 
 /** The most cell files that one map view loads (`specs/route-catalog.md`, "Map view"). */
 export const MAX_CELLS = 12;
-
-const cellsAround = (at: Coordinate, km: number) => corridorTiles([at], km, 9).map(key => key.replaceAll('/', '-'));
 
 /** The line of a record: its own, or the lines of the stages of a long route in order. */
 export function recordLine(route: CatalogRecord, stages: CatalogRecord[] = []): Coordinate[] {
@@ -92,16 +89,6 @@ export class RouteCatalog {
         return stages as CatalogRecord[];
     }
 
-    /** A record of the catalog that a map point lies on. */
-    async find(id: number, at: Coordinate): Promise<CatalogRecord | undefined> {
-        await Promise.all(cellsAround(at, .1).map(cell => this.cell(cell)));
-        return this.records.get(id);
-    }
-
-    /** The plan of a record in data order, or null when a long route is too long for one plan. */
-    async dataPlan(route: CatalogRecord): Promise<RoutePlan | null> {
-        return route.stages ? joinedPlan((await this.stagesOf(route)).map(stage => routePlan(stage as RouteRecord))) : routePlan(route as RouteRecord);
-    }
 }
 
 /** The catalog that the pages of the app share. */

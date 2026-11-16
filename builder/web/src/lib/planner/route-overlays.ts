@@ -5,7 +5,8 @@ import { releaseFetch, releaseUrl } from './release';
 
 export interface OverlayOptions { network: 'cycling' | 'hiking' | 'mtb' | 'none'; access: boolean }
 export type AccessMode = 'cycling' | 'walking';
-export interface NetworkRoute { id: number; kind: string; network: string; rank: number; name: string; ref: string; website?: string | null; symbol?: string; symbol_text?: string }
+/** A route of the tiles' `routes` layer, which leaves out each empty property. */
+export interface NetworkRoute { id: number; kind: string; network?: string; rank: number; name?: string; ref?: string; website?: string | null; symbol?: string; symbol_text?: string }
 export interface OverlaySelection {
     coordinate: Coordinate;
     way: number;
@@ -29,11 +30,9 @@ export const networkLevels = [
 ];
 const networkScopes: Record<string, string> = { i: 'International', n: 'National', r: 'Regional', l: 'Local' };
 export const routeKindTitles: Record<string, string> = { cycling: 'Cycling routes', hiking: 'Hiking routes', mtb: 'Mountain bike routes' };
-const routeKinds: Record<string, string> = { cycling: 'cycling route', hiking: 'hiking route', mtb: 'mountain bike route' };
-/** MTB routes use the cycling network values `icn` to `lcn`. */
-export function networkName({ kind, network }: Pick<NetworkRoute, 'kind' | 'network'>): string {
-    const scope = networkScopes[/^([inrl])[cw]n$/.exec(network)?.[1] ?? ''];
-    return scope && routeKinds[kind] ? `${scope} ${routeKinds[kind]}` : 'Network level unspecified';
+/** The reach of the network of a route, or '' when the network names none. MTB routes use the cycling values `icn` to `lcn`. */
+export function networkScope({ network }: Pick<NetworkRoute, 'network'>): string {
+    return networkScopes[/^([inrl])[cw]n$/.exec(network ?? '')?.[1] ?? ''] ?? '';
 }
 const source = 'route-overlays';
 const labelZoom = 11;
@@ -93,7 +92,10 @@ const bandZoom = 12;
 const lineWidth: ExpressionSpecification = ['interpolate', ['linear'], ['zoom'], 6, 1.2, 10, 1.8, bandZoom, 2.4];
 /** The share of the network colour in a band; a dark map needs more of it for the same contrast. */
 export const bandShare = { light: 0.4, dark: 0.5 };
-const bandWidth: ExpressionSpecification = ['interpolate', ['exponential', 1.6], ['zoom'], bandZoom, 2.4, 13, 7, 15, 10, 18, 22];
+// The basemap draws a main road wider than a side road, and a side road wider than a path. The tiles name the class of
+// the road of a line in `road`, so the band shows about as far beside each of them. A line with no class is on a path.
+const byRoad = (path: number, minor: number, major: number): ExpressionSpecification => ['match', ['get', 'road'], 'major', major, 'minor', minor, path];
+const bandWidth: ExpressionSpecification = ['interpolate', ['exponential', 1.6], ['zoom'], bandZoom, 2.4, 13, byRoad(7, 7, 10), 15, byRoad(10, 13, 14), 18, byRoad(22, 24, 26)];
 
 const accessStatus = (mode: AccessMode): ExpressionSpecification => ['get', `${mode}_status`];
 
@@ -143,7 +145,8 @@ export class RouteOverlays {
         for (const activity of activities) {
             this.map.addLayer({ id: `network-${activity}`, type: 'line', source, 'source-layer': activity, maxzoom: bandZoom + 1, layout,
                 paint: { 'line-color': color, 'line-opacity': this.lineOpacity, 'line-width': lineWidth } }, before);
-            this.map.addLayer({ id: `network-${activity}-band`, type: 'line', source, 'source-layer': activity, minzoom: bandZoom, layout,
+            // Round ends close the step where a line of one road class meets a line of another.
+            this.map.addLayer({ id: `network-${activity}-band`, type: 'line', source, 'source-layer': activity, minzoom: bandZoom, layout: { ...layout, 'line-cap': 'round' },
                 paint: { 'line-color': this.bandColor, 'line-width': bandWidth } }, underLines);
             this.map.addLayer({
                 id: `network-${activity}-labels`, type: 'symbol', source, 'source-layer': activity, minzoom: labelZoom,
