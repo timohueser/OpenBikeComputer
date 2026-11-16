@@ -268,6 +268,10 @@ struct Piece {
 /// A join between two lines' slabs at a graph point: the point, and per side its line, stroke side and arm.
 type Join = (P, [(usize, f64, Arm); 2]);
 
+/// Two lines' slabs that meet in a ring: the feet of its arms on their lines (absolute, units), and its sides as a
+/// join's.
+type Ringed = ([[f64; 2]; 2], [(usize, f64, Arm); 2]);
+
 /// What ends a piece at a place of a line side (a fractional vertex index) toward a direction: its tip there, and where
 /// it moves the end from the place.
 struct Cut {
@@ -645,6 +649,7 @@ pub(super) fn build(
     let mut cuts: Vec<Vec<Cut>> = (0..pieces.len()).map(|_| Vec::new()).collect();
     let mut rings: Vec<Rings> = vec![Vec::new(); pieces.len()];
     let mut joins: Vec<Join> = Vec::new();
+    let mut ringed: Vec<Ringed> = Vec::new();
     // Run-ins past the point along the partner line: the slab's side and arm, the partner arm, its side and the end.
     let mut onto: Vec<(usize, Arm, Arm, f64, f64)> = Vec::new();
     let heading = |a: Arm| {
@@ -688,6 +693,8 @@ pub(super) fn build(
                     continue;
                 }
                 let t = round_of.unwrap();
+                let feet = [(arm_a, 0), (arm_b, 1)].map(|(arm, n)| at_x(&lines[arm.line], t.x[n]).0);
+                ringed.push((feet, [(arm_a.line, sa, arm_a), (arm_b.line, sb, arm_b)]));
                 // A ring: each arm's slab ends `INSET` units past its foot, inside its half of the ring.
                 let mut w = [0.0; 2];
                 for (n, (arm, side)) in [(arm_a, sa), (arm_b, sb)].into_iter().enumerate() {
@@ -758,26 +765,28 @@ pub(super) fn build(
         apply(p, list);
     }
     // The width rules: each side's taper tips; at a join to a narrower way, that way's width; and the rules of the
-    // slab beyond a join within a ramp's reach.
+    // slab beyond a join or across a ring whose ramp reaches the other slab's foot, so two slabs that meet take one
+    // kerb's rise there.
     let own: Ends = (pieces.iter().enumerate())
         .map(|(n, p)| rule_ends(ctx, &lines[n / 2], p, if n % 2 == 1 { 1.0 } else { -1.0 }))
         .collect();
     let mut ends = own.clone();
-    for (pos, sides) in &joins {
-        let v = [f64::from(pos[0]), f64::from(pos[1])];
+    let at_point = joins.iter().map(|&(pos, sides)| ([[f64::from(pos[0]), f64::from(pos[1])]; 2], sides, true));
+    for (feet, sides, join) in at_point.chain(ringed.iter().map(|&(feet, sides)| (feet, sides, false))) {
         for n in 0..2 {
+            let (v, foot) = (feet[n], feet[1 - n]);
             let (l, side, arm) = sides[n];
             let (m, other_side, _) = sides[1 - n];
             let (full, other_full) = (full_m(&lines[l]), full_m(&lines[m]));
             let mut add = Vec::new();
-            if other_full < full {
+            if join && other_full < full {
                 let into = dir_in(&lines[l], arm.at as f64, f64::from(arm.dir));
                 let across = lines[l].h[arm.at] / units(1.0, v) + full;
                 add.push(End::new(v, into, side * f64::from(arm.dir) > 0.0, other_full, across));
             }
             let reach = units(rules.reach_m(full.max(other_full)), v);
             for e in &own[side_of(m, other_side)] {
-                let d = [v[0] - f64::from(e.at[0]), v[1] - f64::from(e.at[1])];
+                let d = [foot[0] - f64::from(e.at[0]), foot[1] - f64::from(e.at[1])];
                 if libm::hypot(d[0], d[1]) <= reach && d[0] * e.dir[0] + d[1] * e.dir[1] >= 0.0 {
                     add.push(*e);
                 }
