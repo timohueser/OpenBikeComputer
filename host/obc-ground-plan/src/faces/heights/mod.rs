@@ -899,16 +899,16 @@ fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2], items: &Item
         let Some(k) = out.iter().rposition(|r| !keep.contains(&r.line)) else { break };
         out.remove(k);
     }
-    // A point's fan relates its two arms' ways near it; a round of the paved outline does not, as no
-    // graph point joins its ways, and two legs of one way relate by their heights only.
+    // A point's fan relates its two arms' ways near it, past its pair's corner round; a round of the paved
+    // outline does not, as no graph point joins its ways, and two legs of one way relate by their heights only.
     let mut pairs: Vec<(u32, u32, f64)> = Vec::new();
     let extras = b.w[8] as usize;
     for &item in &ds[..nd] {
         let cand = &b.w[b.w[4] as usize + CAND * (item & 0xffff) as usize..][..CAND];
         let e = &b.w[extras + cand[5] as usize + DISC * (item >> 16) as usize..][..DISC];
-        let c = [f64::from(e[0] as i32), f64::from(e[1] as i32)];
+        let c = [f64::from(e[5] as i32), f64::from(e[6] as i32)];
         let (l0, l1) = (e[3], e[4]);
-        let past = norm(sub(q, c)) * b.mpu - f32w(e[2]) * b.mpu;
+        let past = norm(sub(q, c)) * b.mpu - f32w(e[7]) * b.mpu;
         if cand[0] != FILL && l0 != u32::MAX && l1 != u32::MAX && b.way(l0) != b.way(l1) {
             pairs.push((l0, l1, past));
         }

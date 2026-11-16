@@ -627,8 +627,8 @@ fn near_junction(words: &[u32], q: [f64; 2]) -> bool {
             .filter(|&&l| l != u32::MAX)
             .map(|&l| b.line(l as usize).reach.max(p.feather_min_m))
             .fold(0.0, f64::max);
-        let r = f64::from(f32::from_bits(e[2])) * b.mpu;
-        let d = libm::hypot(q[0] - f64::from(e[0] as i32), q[1] - f64::from(e[1] as i32)) * b.mpu;
+        let r = f64::from(f32::from_bits(e[7])) * b.mpu;
+        let d = libm::hypot(q[0] - f64::from(e[5] as i32), q[1] - f64::from(e[6] as i32)) * b.mpu;
         d <= r + feather
     })
 }

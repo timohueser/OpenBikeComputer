@@ -86,8 +86,8 @@ pub const CAND: usize = 11;
 pub const LABEL: usize = 12;
 pub const LINE: usize = 18;
 pub const SAMPLE: usize = 12;
-/// Centre, radius, the line at each foot.
-pub const DISC: usize = 5;
+/// Centre, radius, the line at each foot, the centre and radius of its pair's corner round.
+pub const DISC: usize = 8;
 pub const BEYOND: usize = 5;
 pub const PART: usize = 11;
 pub const BLEND: usize = 6;
@@ -941,7 +941,9 @@ fn line_words(
 
 /// The words of a disc; `line` gives the record line of a line at a foot.
 fn disc_words(d: &Circle, line: &dyn Fn(usize, P) -> u32) -> [u32; DISC] {
-    [d.centre[0] as u32, d.centre[1] as u32, f(d.radius), line(d.lines[0], d.feet[0]), line(d.lines[1], d.feet[1])]
+    let (c, r) = d.corner;
+    let lines = [line(d.lines[0], d.feet[0]), line(d.lines[1], d.feet[1])];
+    [d.centre[0] as u32, d.centre[1] as u32, f(d.radius), lines[0], lines[1], c[0] as u32, c[1] as u32, f(r)]
 }
 
 /// The words of a cut as the slice holds it: its ends snapped as the overlay's `past` reads them.
@@ -1395,9 +1397,9 @@ fn encode(
         wanted.dedup();
         segs[b].append(&mut wanted);
     }
-    // The heights' segments within their reach and HEIGHT_PAD_M of a bin, and the discs whose circle
+    // The heights' segments within their reach and HEIGHT_PAD_M of a bin, and the discs whose corner round
     // grown by the greater reach of its two lines meets a bin: a fan relates its lines only within their
-    // feathers past its circle. A segment's reach is the one that the heights read: its half-width, the
+    // feathers past that circle. A segment's reach is the one that the heights read: its half-width, the
     // class's shoulder and verge, and the class's slope reach or the least feather, whatever a taper
     // narrows the bands to.
     let mut hsegs: Vec<Vec<u32>> = vec![Vec::new(); window.len()];
@@ -1451,7 +1453,8 @@ fn encode(
     for (ci, cand) in cands.iter().enumerate() {
         for (di, d) in cand.discs.iter().enumerate() {
             let reach = d.lines.iter().filter_map(|&l| line_reach.get(l)).fold(0.0, |r: f64, &x| r.max(x));
-            let (x, y, reach) = (f64::from(d.centre[0]), f64::from(d.centre[1]), d.radius + reach);
+            let (c, r) = d.corner;
+            let (x, y, reach) = (f64::from(c[0]), f64::from(c[1]), r + reach);
             let Some((c, r)) = bins_in([x, y, x, y], reach, window.wide) else { continue };
             crate::probe::field(crate::probe::Field::Candidate, ci);
             crate::probe::field(crate::probe::Field::Disc, di);
