@@ -22,7 +22,7 @@ export interface OverlaySelection {
 }
 
 export const networkLevels = [
-    { label: 'International / national', color: '#7c519c', dark: '#c49de0', rank: 3 },
+    { label: 'International / national', color: '#7e41aa', dark: '#c88cf2', rank: 3 },
     { label: 'Regional', color: '#2368b5', dark: '#79b7f1', rank: 2 },
     { label: 'Local', color: '#4f8b24', dark: '#a4cf67', rank: 1 },
     { label: 'Unspecified network', color: '#626a70', dark: '#b0b8be', rank: 0 },
@@ -91,7 +91,7 @@ const restMs = 450;
 // stays the strongest line. The band starts at the width of the line, which fades over one zoom level.
 const bandZoom = 12;
 const lineWidth: ExpressionSpecification = ['interpolate', ['linear'], ['zoom'], 6, 1.2, 10, 1.8, bandZoom, 2.4];
-const bandWidth: ExpressionSpecification = ['interpolate', ['exponential', 1.6], ['zoom'], bandZoom, 2.4, 13, 7, 15, 12, 18, 30];
+const bandWidth: ExpressionSpecification = ['interpolate', ['exponential', 1.6], ['zoom'], bandZoom, 2.4, 13, 7, 15, 10, 18, 22];
 
 const accessStatus = (mode: AccessMode): ExpressionSpecification => ['get', `${mode}_status`];
 
@@ -197,7 +197,9 @@ export class RouteOverlays {
     // transparent line darkens where a hairpin makes it cross itself.
     private get bandColor(): ExpressionSpecification {
         const paper = this.map.getPaintProperty('background', 'background-color') as string;
-        return ['interpolate', ['linear'], this.faded ? 0.25 : 0.5, 0, paper, 1, this.color];
+        // A dark map needs more of the network colour for the same contrast.
+        const share = this.theme === 'dark' ? 0.5 : 0.4;
+        return ['interpolate', ['linear'], this.faded ? share / 2 : share, 0, paper, 1, this.color];
     }
 
     private get mismatch() {
