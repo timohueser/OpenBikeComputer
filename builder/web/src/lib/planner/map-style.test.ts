@@ -18,7 +18,7 @@ const tileKinds = [
 
 async function landLayers(theme: 'light' | 'dark') {
     const { mapStyle } = await import('./map-style');
-    const layers = mapStyle(theme, testConfig, 'dem://tiles', 'contours://tiles').layers;
+    const layers = mapStyle(theme, testConfig, { dem: 'dem://tiles', contours: 'contours://tiles' }).layers;
     const kinds = (layer: LayerSpecification) => ('filter' in layer ? (layer.filter as [string, unknown, [string, string[]]])[2][1] : []);
     return { layers, land: layers.filter((layer) => layer.id.startsWith('land-')), kinds };
 }
@@ -111,7 +111,7 @@ describe('planner label fonts', () => {
 describe('waterway labels', () => {
     it.each(['light', 'dark'] as const)('labels canals, rivers and streams in both map styles (%s)', async (theme) => {
         const { basemapStyle, mapStyle } = await import('./map-style');
-        for (const style of [basemapStyle(theme, testConfig), mapStyle(theme, testConfig, 'dem://tiles', 'contours://tiles')]) {
+        for (const style of [basemapStyle(theme, testConfig), mapStyle(theme, testConfig, { dem: 'dem://tiles', contours: 'contours://tiles' })]) {
             const label = style.layers.find((layer) => layer.id === 'water_waterway_label');
             if (label?.type !== 'symbol') throw new Error('Missing waterway label layer');
             expect(label).toMatchObject({ type: 'symbol', source: 'basemap', 'source-layer': 'water', minzoom: 13, layout: { 'symbol-placement': 'line' } });

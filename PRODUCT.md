@@ -44,6 +44,7 @@ The core principles decide when two of the others disagree.
 - **Every action has a visible signifier.** No feature that only a gesture reaches.
 - **The first run teaches itself.** Empty states and defaults show what to do. No manual and no tutorial.
 - **Fast paths for regulars.** Shortcuts and remembered choices, out of the way of a newcomer.
+- **Delight in the rare moments.** A moment that comes seldom, such as a record ride, can be playful. A thing a rider does every day stays plain and fast.
 
 ## Accessibility & Inclusion
 

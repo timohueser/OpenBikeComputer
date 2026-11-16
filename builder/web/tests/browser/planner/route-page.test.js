@@ -31,6 +31,8 @@ test('the route page shows a stored route, renames, sends, opens in the planner,
   await page.goto('/planner.html#/route/lake');
   const facts = page.locator('.facts');
   await expect(page.getByRole('heading', { name: 'Lake test', level: 1 })).toBeVisible();
+  // The map shows the relief, so the credit of the terrain is behind the button of credits.
+  await expect(page.locator('.credits small')).toContainText('Terrain test data');
   for (const [label, value] of [['Length', '22.2 km'], ['Climb', '400 m'], ['Time', '1h 7m'], ['Highest point', '700 m']]) {
     await expect(facts.locator('dl > div').filter({ hasText: label })).toContainText(value);
   }

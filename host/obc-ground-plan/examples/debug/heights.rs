@@ -13,7 +13,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use obc_ground_plan::faces::heights::check::{
-    border, edge_steps, scan, side_name, BorderKey, BorderValue, Class, Step, EDGE_GRID_M,
+    border, edge_steps, kerb_of, scan, side_name, slope_steps, BorderKey, BorderValue, Class, Step, EDGE_GRID_M,
+    KERB_SLACK_M,
 };
 use obc_ground_plan::faces::records::{self, label};
 use obc_ground_plan::faces::Rules;
@@ -44,6 +45,10 @@ struct Cell {
     edges: Vec<(Step, [String; 2])>,
     /// The slope pairs steeper than a rock face (`Scan::steep`): where, the climb per metre.
     steep: Vec<(Value, f64)>,
+    /// The scan's kerb steps: each one's size and the kerb's rise there (`check::kerb_of`), and where.
+    kerbs: Vec<(f64, f64, Value)>,
+    /// The slope steps over 0.1 m/m (`check::slope_steps`): where, and whether a sidewalk lies within 0.2 m.
+    slopes: Vec<(Value, bool)>,
 }
 
 fn round(v: f64, k: f64) -> f64 {
@@ -148,6 +153,17 @@ pub fn run() -> Result<(), String> {
         let graph = graph::build(key, &input, &rules.sections);
         let words = records::build(&graph, &input, rules, key, 0, true).near.words;
         let s = scan(&words, &input.terrain, key, grid);
+        let kerbs = (s.steps.iter())
+            .filter_map(|st| kerb_of(&words, st).map(|(dh, rise)| (st, dh, rise)))
+            .map(|(st, dh, rise)| {
+                let sides = st.sides.map(|h| side_name(&words, &h));
+                (
+                    dh,
+                    rise,
+                    json!({"at": at_json(key, st.a), "dh": round(dh, 1e3), "rise": round(rise, 1e3), "sides": sides}),
+                )
+            })
+            .collect();
         let steps = (s.steps.into_iter())
             .map(|st| {
                 let mut sides = st.sides.map(|h| side_name(&words, &h));
@@ -171,7 +187,28 @@ pub fn run() -> Result<(), String> {
             })
             .collect();
         let steep = s.steep.iter().map(|&(q, c)| (at_json(key, q), c)).collect();
-        Cell { key, points: s.points, steps, border, ripple: s.ripple, audit: [full, missing], edges, steep }
+        let walk = |q: [f64; 2]| {
+            let d = 0.2 / obc_ground_plan::frame::metres_per_unit(key.origin().y + q[1] as i64);
+            [[d, 0.0], [-d, 0.0], [0.0, d], [0.0, -d]].iter().any(|o| {
+                let id = records::find(&words, [q[0] + o[0], q[1] + o[1]]);
+                id.is_some_and(|id| label(&words, id)[0] & 0xff == obc_ground_plan::faces::Surface::Sidewalk as u32)
+            })
+        };
+        let slopes = (slope_steps(&words, &input.terrain, key, 0.1).into_iter())
+            .map(|(q, _)| (at_json(key, q), walk(q)))
+            .collect();
+        Cell {
+            key,
+            points: s.points,
+            steps,
+            border,
+            ripple: s.ripple,
+            audit: [full, missing],
+            edges,
+            steep,
+            kerbs,
+            slopes,
+        }
     });
     let mut by: BTreeMap<ClassKey, (u64, f64, Value)> = BTreeMap::new();
     let mut by_rule: BTreeMap<String, (u64, f64)> = BTreeMap::new();
@@ -296,6 +333,22 @@ pub fn run() -> Result<(), String> {
     write("border-differ.json", &Value::Array(differ))?;
     write("host-missing.json", &lists[1])?;
     write("edge-steps.json", &Value::Array(edge_list))?;
+    let mut sizes: Vec<f64> = scans.iter().flat_map(|c| c.kerbs.iter().map(|k| k.0)).collect();
+    sizes.sort_by(f64::total_cmp);
+    if let (Some(least), Some(greatest)) = (sizes.first(), sizes.last()) {
+        println!(
+            "kerb steps: {}, least {least:.3}, median {:.3}, greatest {greatest:.3} m",
+            sizes.len(),
+            sizes[sizes.len() / 2]
+        );
+    }
+    let off = |k: &&(f64, f64, Value)| (k.0 - k.1).abs() > KERB_SLACK_M;
+    let kerbs: Vec<Value> = scans.iter().flat_map(|c| c.kerbs.iter().filter(off).map(|k| k.2.clone())).collect();
+    println!("kerbs whose step is not their rise: {}", kerbs.len());
+    let slopes: Vec<&(Value, bool)> = scans.iter().flat_map(|c| c.slopes.iter()).collect();
+    println!("slope steps: {}, beside a sidewalk {}", slopes.len(), slopes.iter().filter(|s| s.1).count());
+    write("slope-steps.json", &Value::Array(slopes.iter().map(|s| json!({"at": s.0, "walk": s.1})).collect()))?;
+    write("kerb-steps.json", &Value::Array(kerbs))?;
     println!(
         "{}",
         serde_json::to_string_pretty(&json!({"slots_full": audit[0], "host_missing": audit[1], "ripple_mm": report["ripple_mm"], "steps": total, "on_edges": on_edges, "inside": total - on_edges, "by_rule": report["by_rule"], "inside_by_label": report["inside_by_label"], "border": {"points": both, "bit_equal": equal, "terrain_bit_equal": t_equal, "over_5mm": over, "max_dh_m": max_dh}, "edges": report["edges"], "steep": report["steep"]})).unwrap()

@@ -12,8 +12,8 @@
     import { formatAlong, formatClock, formatDistance, formatHeight, formatSpeed } from '../../lib/settings/format';
 
     /** The bottom card of the Ride page: one row for each line of the ride on its axis, with the average of the
-     * line under its name and its scale after the row. A line with no value has no row. A drag selects a part; a click
-     * on a climb in the elevation row selects the climb. A click on the label of a row opens its line large in a window.
+     * line under its name and its scale after the row. A line with no value has no row. A drag selects a part; with no
+     * part, a click on a climb in the elevation row selects the climb. A click on the label of a row opens its line large in a window.
      * The name of the axis beside the ticks is its switch: the distance, or the time of day, where a stop has a width and
      * the lines end at a step of more than a minute. A stop is a mark on the row of the ticks; the foot of the pointer says
      * its length. A photo is a dot on that row; a click on it opens the photo. */
@@ -189,13 +189,15 @@
         return byTime ? ends : outOfStops(halts, ends);
     };
 
-    /** The climb at a place of the elevation row, or of the keys, which have no row. */
+    /** The climb at a place of the elevation row, or of the keys, which have no row. While a part is selected, a click
+     * only clears it: no climb is under the pointer, to select or to light. */
     const climbAt = (x: number, row?: number | null) =>
-        row === null || shown[row ?? -1] === 'elevation' ? stretches.findIndex(climb => x >= climb.from && x <= climb.to) : -1;
+        !part && (row === null || shown[row ?? -1] === 'elevation') ? stretches.findIndex(climb => x >= climb.from && x <= climb.to) : -1;
     /** The climb that a click selects: it is a little darker under the pointer. */
     const hovered = $derived(over ? climbAt(over.x, over.row) : -1);
 
-    /** A click on a climb in the elevation row, or Enter, selects the climb; another click clears the part. */
+    /** With no part, a click on a climb in the elevation row, or Enter, selects the climb. Any other click, and each
+     * click while a part is selected, clears the part. */
     function click(x: number, row?: number | null) {
         const index = climbAt(x, row);
         onpart(index >= 0 ? [climbs[index].first, climbs[index].last] : null);

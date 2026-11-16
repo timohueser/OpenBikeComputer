@@ -13,6 +13,7 @@
 //! line's edge. The ground (the terrain and the slopes) stays under every deck's ceiling (`ceiling`).
 
 pub mod check;
+pub(crate) mod kerb;
 #[cfg(test)]
 mod tests;
 
@@ -57,6 +58,9 @@ pub enum Step {
     /// A step that another line's cone holds (as `Held`) higher than the paved side's wall cap: a fault
     /// (`check::held_over_cap`).
     HeldOverCap,
+    /// A sidewalk's kerb: the sidewalk stands higher than a carriageway, a shoulder or a rail bed beside it (its size is
+    /// the check's, `check::kerb_steps`), or higher than the ground by at most the kerb's rise: a kerb's end.
+    Kerb,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -899,16 +903,16 @@ fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2], items: &Item
         let Some(k) = out.iter().rposition(|r| !keep.contains(&r.line)) else { break };
         out.remove(k);
     }
-    // A point's fan relates its two arms' ways near it; a round of the paved outline does not, as no
-    // graph point joins its ways, and two legs of one way relate by their heights only.
+    // A point's fan relates its two arms' ways near it, past its pair's corner round; a round of the paved
+    // outline does not, as no graph point joins its ways, and two legs of one way relate by their heights only.
     let mut pairs: Vec<(u32, u32, f64)> = Vec::new();
     let extras = b.w[8] as usize;
     for &item in &ds[..nd] {
         let cand = &b.w[b.w[4] as usize + CAND * (item & 0xffff) as usize..][..CAND];
         let e = &b.w[extras + cand[5] as usize + DISC * (item >> 16) as usize..][..DISC];
-        let c = [f64::from(e[0] as i32), f64::from(e[1] as i32)];
+        let c = [f64::from(e[5] as i32), f64::from(e[6] as i32)];
         let (l0, l1) = (e[3], e[4]);
-        let past = norm(sub(q, c)) * b.mpu - f32w(e[2]) * b.mpu;
+        let past = norm(sub(q, c)) * b.mpu - f32w(e[7]) * b.mpu;
         if cand[0] != FILL && l0 != u32::MAX && l1 != u32::MAX && b.way(l0) != b.way(l1) {
             pairs.push((l0, l1, past));
         }
@@ -1680,7 +1684,27 @@ pub fn height_at_sides(words: &[u32], q: [f64; 2], labels: [Option<u32>; 2], t: 
     let ends = labels.map(surface);
     let [water, zone] = [Surface::Water, Surface::Zone].map(|s| Some(s as u32));
     let mouth = (ends == [water, zone] || ends == [zone, water]) && (sides[0].0.h - sides[1].0.h).abs() > p.step_m;
-    let step = if mouth { Step::Mouth } else { step(&b, q, &recs, &sides, &p) };
+    // A kerb against the carriageways and shoulders beside a slab; against the ground only at the kerb's end, where
+    // the slab and the paved outline meet the ground at one corner: within the kerb's top of the outline.
+    let walk = Some(Surface::Sidewalk as u32);
+    let below = [Surface::Carriageway, Surface::Crossing, Surface::Shoulder].map(|s| Some(s as u32));
+    let kerb = (0..2).any(|k| {
+        let rise = sides[k].0.h - sides[1 - k].0.h;
+        let end = || {
+            let top = kerb::class(words, sides[k].0.owner)[2];
+            sides[1 - k].0.kind == Kind::Slope
+                && rise <= kerb::rise(&b, q, sides[k].0.owner) + p.step_m
+                && super::records::paved_outline_units(words, q) * b.mpu <= top
+        };
+        ends[k] == walk && rise > p.step_m && (below.contains(&ends[1 - k]) || end())
+    });
+    let step = if mouth {
+        Step::Mouth
+    } else if kerb {
+        Step::Kerb
+    } else {
+        step(&b, q, &recs, &sides, &p)
+    };
     sides.map(|(h, _)| Height { step, ..h })
 }
 
@@ -1825,31 +1849,28 @@ fn step(b: &Block, q: [f64; 2], recs: &[Rec], sides: &[(Height, Cause); 2], p: &
 
 /// At most this many regions beyond a region's edges weigh at a point (the nearest); the GPU port holds
 /// the same, and the fixture check `slots_full` shows that no point has more.
-pub const REGIONS: usize = 2;
+pub const REGIONS: usize = 3;
 
-/// A junction's region (a blend face) at q: its own painter (`own`), which relates its arms, and near
-/// each of its edges toward another paved face a fade to that face. A paved face beyond gives its
-/// host's painter, which is that face's height; another region gives the painter that relates both
-/// regions' arms, the same from both sides. Toward a slope or the terrain the region keeps its own
-/// painter: the slope starts at its outline from it. Per group of edges, D its least distance,
+/// A fading face at q: a junction's region (a blend face) or a slab (the kerb rule), with its own surface `own` (a
+/// region's painter, which relates its arms; a slab's host's field), and near each of its edges toward another paved
+/// face a fade to that face. A host's face beyond gives its host's painter, which is that face's height; another
+/// fading face gives the painter that relates both faces' arms, the same from both sides. Toward a slope or the terrain the face keeps its own surface: the slope
+/// starts at its outline from it. Per group of edges, D its least distance,
 /// s = smoothstep(D / `region_fade_m`) and ω = σ (1 − s) / s; the height is (own + Σ ω V) / (1 + Σ ω).
 /// So it is V on the edge, with V's slope there, and `own` from `region_fade_m` on. σ is a host's
-/// presence times the region's agreement with it (a line that disagrees with every arm keeps its step
+/// presence times the face's agreement with it (a line that disagrees with every arm keeps its step
 /// on the edge), else 1. The distances are read up to `region_fade_m` only, where two cells give the
-/// same bits (the records' border check holds it). `water`: the region's kind, its material line's.
-#[allow(clippy::too_many_arguments)]
+/// same bits (the records' border check holds it). `water`: the face's kind, its material line's.
 fn region(
     b: &Block,
     q: [f64; 2],
     recs: &[Rec],
-    label: u32,
-    arms: u32,
+    (label, arms, own): (u32, u32, f64),
     blend: &[u32],
     water: bool,
     p: &HeightRules,
 ) -> f64 {
     let n = recs.len();
-    let own = paved_as(recs, usize::MAX, arms, water, p);
     let beta = |k: usize| phi(recs[k].d / recs[k].feather);
     let arm = |k: usize| arms >> k & 1 != 0;
     // The least metres to the edges of each host beyond, at its record's index; the regions beyond
@@ -1864,7 +1885,7 @@ fn region(
         }
         let Some(other) = e.other else { continue };
         let rule = label_words(b.w, other)[0] >> 24;
-        if rule == 3 {
+        if rule == 3 || rule == 4 {
             let k = beyond.iter().position(|g| g.0 == other).unwrap_or(REGIONS - 1);
             if beyond[k].0 != other && beyond[k].0 != u32::MAX {
                 crate::probe::hit(crate::probe::Cap::Regions);
@@ -1875,9 +1896,10 @@ fn region(
             }
             continue;
         }
-        // A paved face beyond: its host line, if it has one.
+        // A host's face beyond: its material line. A face with none takes its host by position, which can change
+        // inside the fade: it takes no part.
         let material = label_words(b.w, other)[2];
-        if let Some(g) = (rule == 2 || rule == 4).then(|| recs.iter().position(|r| r.line == material)).flatten() {
+        if let Some(g) = (rule == 2).then(|| recs.iter().position(|r| r.line == material)).flatten() {
             dist[g] = dist[g].min(d);
         }
     }
@@ -1913,7 +1935,7 @@ fn regions_full(w: &[u32], q: [f64; 2], label: u32, p: &HeightRules) -> bool {
         let v = |p: [i32; 2]| [f64::from(p[0]), f64::from(p[1])];
         let other = e.other.unwrap_or(u32::MAX);
         let near = to_segment(q, v(e.a), v(e.b)) * mpu < p.region_fade_m;
-        if near && other != u32::MAX && label_words(w, other)[0] >> 24 == 3 && !seen.contains(&other) {
+        if near && other != u32::MAX && matches!(label_words(w, other)[0] >> 24, 3 | 4) && !seen.contains(&other) {
             seen.push(other);
         }
     }
@@ -2004,13 +2026,21 @@ fn by_label(
         // whichever lies nearest. With no record of its kind it is a host missing: the plain terrain.
         let id = label.unwrap_or(u32::MAX);
         let arms = arms_of(words, recs, id);
-        let h = region(b, q, recs, id, arms, items.blend, water, p);
+        let h = region(b, q, recs, (id, arms, paved_as(recs, usize::MAX, arms, water, p)), items.blend, water, p);
         return (height(h, Kind::Paved, host.map(|o| recs[o].line)), Cause { arms, ..NO_CAUSE });
     }
     match host {
         Some(o) => {
             let line = recs[o].line;
-            (height(paved(recs, o, p), Kind::Paved, Some(line)), Cause { by: Some(line), ..NO_CAUSE })
+            let h = if rule == 4 {
+                // A slab: its host's field, faded to the paved faces beside it as theirs is, and the kerb's rise.
+                let id = label.unwrap_or(u32::MAX);
+                let own = (id, arms_of(words, recs, id), paved(recs, o, p));
+                region(b, q, recs, own, items.blend, water, p) + kerb::rise(b, q, line)
+            } else {
+                paved(recs, o, p)
+            };
+            (height(h, Kind::Paved, Some(line)), Cause { by: Some(line), ..NO_CAUSE })
         }
         // A host missing from the records: a fault (`check::Scan::host_missing`).
         None => (height(t, Kind::Paved, None), NO_CAUSE),

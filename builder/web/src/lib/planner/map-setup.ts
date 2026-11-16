@@ -3,6 +3,7 @@ import * as maplibregl from 'maplibre-gl';
 import mapWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import { Protocol } from 'pmtiles';
 import { config } from './map-data';
+import { terrainSource } from './map-terrain';
 import { releaseProtocol, releaseUrl } from './release';
 
 // MapLibre loads the release objects of the style through `releaseProtocol`.
@@ -11,6 +12,9 @@ export const styleConfig = { ...config, basemap: releaseUrl(config.basemap), gly
 /** The credits of a view of the map: the basemap (OSM data, its land cover, Protomaps), the terrain and `layers`. */
 export const creditsWith = (layers: string[]) =>
     [...new Set([config.attribution, config.landcover_attribution ?? '', 'Protomaps', config.terrain_attribution, ...layers].filter(Boolean))];
+
+/** The one terrain source of the app: each map with the relief shares its cache of terrain tiles. */
+export const terrain = terrainSource(config.terrain);
 
 let registered = false;
 
