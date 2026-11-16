@@ -1,19 +1,19 @@
 // A slab's kerb distance per pixel, for the pieces' hooks (plan/piece-in.wgsl, plan/mouth-in.wgsl). The corners hold
 // the distance to the paved outline (plan/corners.wgsl); inside a slab it is the least of the distances to straight
-// kerbs and arcs, so the interpolation between corners is never more than it, and it grows by a metre per metre
-// across a kerb. Where the interpolation lies within two kerb tops of the kerb and grows by less than half that, the
-// triangle spans two kerbs and the pixel reads the outline itself (outside it: no winding).
+// kerbs and arcs, so the interpolation between corners is never more than it. Wherever the interpolation lies within
+// the kerb top and two pixels, the pixel reads the outline itself (outside it: no winding): no triangle draws the kerb
+// top from a distance that is too small.
 // #include ../terrain/outline.wgsl
-// The growth of a pixel's interpolated kerb distance per metre across the screen, for slab_across.
-fn slab_grade(in: CorridorOut) -> f32 {
-    let metres = max(length(dpdx(in.relative)), length(dpdy(in.relative)));
-    return max(abs(dpdx(in.road.x)), abs(dpdy(in.road.x))) / max(metres, 1e-6);
+// The metres that a pixel spans on the ground, for slab_across.
+fn slab_pixel(in: CorridorOut) -> f32 {
+    return max(length(dpdx(in.relative)), length(dpdy(in.relative)));
 }
 
-fn slab_across(u: vec2f, word: u32, across: f32, grade: f32) -> f32 {
-    if ((word & MAT_BITS) != MAT_SIDEWALK || across >= 2.0 * KERB_TOP_M || grade >= 0.5) {
+fn slab_across(u: vec2f, word: u32, across: f32, pixel: f32) -> f32 {
+    let top = KERB_TOP_M + 2.0 * pixel;
+    if ((word & MAT_BITS) != MAT_SIDEWALK || across >= top) {
         return across;
     }
     let q = (u - vec2f(params.origin - surface.anchor)) * 16.0;
-    return m_outline_out(params.block, q, h_scale(params.block, q));
+    return m_outline_out(params.block, q, h_scale(params.block, q), top);
 }

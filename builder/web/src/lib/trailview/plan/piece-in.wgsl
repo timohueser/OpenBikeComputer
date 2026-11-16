@@ -20,7 +20,7 @@ struct CorridorOut {
 
 fn corridor_in(in: CorridorOut) -> CorridorOut {
     var out = in;
-    out.road.x = slab_across(in.u, in.word, in.road.x, slab_grade(in));
+    out.road.x = slab_across(in.u, in.word, in.road.x, slab_pixel(in));
     return out;
 }
 
