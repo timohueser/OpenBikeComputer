@@ -1,11 +1,11 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { expect, test } from '@playwright/test';
 import { CATALOG, HOST } from './stills.mjs';
-import { FIXTURE_ROUTES, LOOK, checkRelease, gridCells, keyOf, patiently, pointsOf, sampleOf, switchTo, upload } from './route-pictures.mjs';
+import { FIXTURE_ROUTES, LOOK, checkMonths, checkRelease, gridCells, keyOf, lightOf, patiently, pointsOf, sampleOf, storedCamera, switchTo, upload } from './route-pictures.mjs';
 import { pack } from '../../../src/lib/covers/line.ts';
 
 const SCRIPT = new URL('./route-pictures.mjs', import.meta.url).pathname;
@@ -62,11 +62,33 @@ test('the grid cells of the fixture are the zoom 9 cells that its bounds overlap
     expect(gridCells([267 / 512 * 360 - 180, latitude(181) * (1 - 1e-15), 268 / 512 * 360 - 180, latitude(180) * (1 + 1e-15)])).toEqual(['9-267-180']);
 });
 
-test('the key of a cover comes from the look and the line, with no date: it changes with the line and not with the month', () => {
+test('the key of a cover comes from the look and the line, with the light of the camera and no month: it changes with the line', () => {
     const hash = text => createHash('sha256').update(text).digest('hex').slice(0, 16);
-    expect(LOOK).toBe('1|960|640');
-    expect(keyOf(VALLEY)).toBe(hash(`1|960|640|${VALLEY.line_udeg.join(',')}`));
+    expect(LOOK).toBe('1|0715-1000|960|640');
+    expect(keyOf(VALLEY)).toBe(hash(`1|0715-1000|960|640|${VALLEY.line_udeg.join(',')}`));
     expect(keyOf({ ...VALLEY, line_udeg: [...VALLEY.line_udeg.slice(0, -1), -2000] })).not.toBe(keyOf(VALLEY));
+});
+
+test('a light is a day of each year in its month, and the default month is a month of the set', () => {
+    expect(lightOf('0715-1000')).toEqual({ date: `${new Date().getFullYear()}-07-15`, time: '10:00', weather: 'sunny' });
+    for (const light of ['0229-1000', '1301-1000', '0001-1000', '0715-10']) expect(() => lightOf(light)).toThrow('a day of each year');
+    checkMonths({ months: { '07': '0715-1000' }, default_month: '07' });
+    expect(() => checkMonths({ months: { '07': '0815-1000' }, default_month: '07' })).toThrow('not in its month 07');
+    expect(() => checkMonths({ months: { '07': '0715-1000' }, default_month: '08' })).toThrow('default_month 08');
+});
+
+test('an image renders with the camera of the points file in the output folder, else of the one on the public host, which the folder then keeps', async () => {
+    const out = test.info().outputPath('camera'), camera = { lat: 46.8, lon: 8.4, heading: 30, pitch: -54, height: 2960 };
+    const file = join(out, 'covers', String(VALLEY.id), `${keyOf(VALLEY)}.json`), urls = [];
+    const host = body => async url => (urls.push(url), { status: body ? 200 : 404, text: async () => body });
+    expect(await storedCamera(out, VALLEY, host(undefined))).toBeUndefined();
+    expect(existsSync(file)).toBe(false);
+    expect(await storedCamera(out, VALLEY, host(JSON.stringify({ x: [], camera })))).toEqual(camera);
+    expect(urls.at(-1)).toBe(`${HOST}/route-pictures/covers/1001/${keyOf(VALLEY)}.json`);
+    expect(JSON.parse(readFileSync(file, 'utf8')).camera).toEqual(camera);
+    expect(await storedCamera(out, VALLEY, async () => { throw new Error('no fetch'); })).toEqual(camera);
+    rmSync(file);
+    expect(await storedCamera(out, VALLEY, false)).toBeUndefined();
 });
 
 test('a sample spreads over the routes, and takes each route when it asks for more', () => {
@@ -126,6 +148,9 @@ test('upload refuses a route with no cover and no mark, else sends the covers th
     fake.objects.delete(`${cover}${IMAGE}`);
     await expect(switchTo(set, fake)).rejects.toThrow(`${cover}${IMAGE}`);
     await expect(switchTo('0123456789abcdef', fake)).rejects.toThrow('The bucket has no route-pictures/sets/0123456789abcdef/manifest.json');
+    const odd = 'fedcba9876543210', manifest = JSON.parse(fake.objects.get(`route-pictures/sets/${set}/manifest.json`));
+    fake.objects.set(`route-pictures/sets/${odd}/manifest.json`, JSON.stringify({ ...manifest, set: odd, default_month: '08' }));
+    await expect(switchTo(odd, fake)).rejects.toThrow('default_month 08');
     expect(fake.puts.length).toBe(puts);
 });
 
@@ -156,4 +181,12 @@ test('render --fixture writes the cover of a route, its points, the cell file an
     expect(second.stdout).toContain('0 to render');
     expect(second.stdout).toContain(`Set ${set}`);
     expect(statSync(image).mtimeMs).toBe(written);
+
+    // A missing image renders again from the camera of the points file, which stays as it is.
+    const pointsFile = join(out, 'covers', String(VALLEY.id), `${key}.json`), kept = statSync(pointsFile).mtimeMs;
+    rmSync(image);
+    const third = await run();
+    expect(third.stdout).toContain('1 to render');
+    expect(readFileSync(image).subarray(8, 12).toString()).toBe('WEBP');
+    expect(statSync(pointsFile).mtimeMs).toBe(kept);
 });

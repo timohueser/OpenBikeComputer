@@ -23,17 +23,15 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { launch, serve } from './harness.js';
-import { IMMUTABLE, LIVE, RETRY_MS, SOFTWARE_MS, checkHost, obcR2, productionRelease, readJson, stillPage } from './stills.mjs';
+import { HOST, IMMUTABLE, LIVE, RETRY_MS, SOFTWARE_MS, checkHost, obcR2, productionRelease, readJson, stillPage } from './stills.mjs';
 
 const OUT = new URL('../../../../../.artifacts/route-pictures', import.meta.url).pathname;
 export const FIXTURE_ROUTES = new URL('./fixture/routes.json', import.meta.url).pathname;
 export const PREFIX = 'route-pictures';
 const WIDTH = 960, HEIGHT = 640;
-/** The version of the camera rule: a change gives each line a new key. */
-const CAMERA = 1;
-export const LOOK = `${CAMERA}|${WIDTH}|${HEIGHT}`;
-/** The light `MMDD-HHMM` with which `coverView` chooses the camera of a cover, for each month of it. */
-const CAMERA_LIGHT = '0715-1000';
+/** The version of the camera rule, and the light `MMDD-HHMM` with which `coverView` chooses the camera of a cover for each month of it: a change of one gives each line a new key. */
+const CAMERA = 1, CAMERA_LIGHT = '0715-1000';
+export const LOOK = `${CAMERA}|${CAMERA_LIGHT}|${WIDTH}|${HEIGHT}`;
 /** The one month of the set, and the light of its images. */
 const MONTH = '07', LIGHT = '0715-1000';
 /** The code of `eye` (specs/route-pictures.md, `pack` in src/lib/covers/line.ts): 1 to 127 is NEAREST_M · 2^((c − 1) / STEPS) metres, plus VISIBLE. */
@@ -65,10 +63,34 @@ function stateOf(out, record) {
     if (existsSync(coverFile(out, record, NONE))) return 'none';
 }
 
-/** The sunny light of `MMDD-HHMM` in the year of the render. */
-function lightOf(light) {
-    const [, month, day, hour, minute] = /^(\d\d)(\d\d)-(\d\d)(\d\d)$/.exec(light);
+/** The sunny light of `MMDD-HHMM` in the year of the render; the day must be a day of each year. */
+export function lightOf(light) {
+    const [, month, day, hour, minute] = /^(\d\d)(\d\d)-(\d\d)(\d\d)$/.exec(light) ?? [];
+    const date = month && new Date(Date.UTC(2027, month - 1, day));
+    if (!date || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== Number(day)) throw new Error(`${light}: a light is MMDD-HHMM, on a day of each year.`);
     return { date: `${new Date().getFullYear()}-${month}-${day}`, time: `${hour}:${minute}`, weather: 'sunny' };
+}
+
+/**
+ * The camera of a record's points file: from `out`, else from the public host when `fetch` is given, and
+ * `out` keeps that file. Undefined when the key has no points yet. An image of a key renders only with this
+ * camera, so that a new month matches the points that the bucket holds.
+ */
+export async function storedCamera(out, record, fetch) {
+    const file = coverFile(out, record, POINTS);
+    if (!existsSync(file) && fetch) {
+        const url = `${HOST}/${PREFIX}/covers/${record.id}/${keyOf(record)}${POINTS}`;
+        const text = await patiently(url, async () => {
+            const response = await fetch(url);
+            if (response.status === 404) return undefined;
+            if (response.status !== 200) throw Object.assign(new Error(`${url}: ${response.status}.`), { status: response.status });
+            return response.text();
+        });
+        if (text === undefined) return undefined;
+        mkdirSync(coverDir(out, record), { recursive: true });
+        writeWhole(file, text);
+    }
+    return readJson(file)?.camera;
 }
 
 /** Writes a file under a temporary name first, so that a killed run leaves no half file. */
@@ -166,11 +188,14 @@ export function checkRelease(page, release) {
     if (page !== release) throw new Error(`The still page has release ${page ?? 'none'}, not the production release ${release}: build it for production with \`npm run build:trailview --prefix ../..\`.`);
 }
 
-/** The cover of one line in the page: the camera of `coverView` in the camera light, then the still in the light of the month; `none` when no view holds the line. */
-const shoot = (page, job) => page.evaluate(async ({ line, camera, light, width, height, timeoutMs }) => {
+/**
+ * The cover of one line in the page: the stored `camera`, else the camera of `coverView` in the camera light,
+ * then the still in the light of the month; `none` when no view holds the line.
+ */
+const shoot = (page, job) => page.evaluate(async ({ line, camera, cameraLight, light, width, height, timeoutMs }) => {
     const { coverView, still } = window.trailviewStill;
     try {
-        const view = await coverView(line, { width, height, ...camera });
+        const view = camera ? { ...camera, mode: 'fly', debug: 'off', plan: 'off' } : await coverView(line, { width, height, ...cameraLight });
         if (!view) return { none: true };
         const { image, points, credits } = await still({ view: { ...view, ...light }, width, height, line }, { timeoutMs });
         if (image.type !== 'image/webp') return { failure: 'type', message: `the browser encoded ${image.type}, not WebP` };
@@ -245,7 +270,7 @@ export async function render({ out = OUT, sample, only, gpu = false, fixture = f
     // Neighbours render one after the other: their pages share the tiles in the HTTP cache and the bakes in the device cache of the context.
     const todo = chosen.filter(record => !stateOf(out, record)).map(record => [placeKey(lineOf(record)), record]).sort((a, b) => a[0] - b[0]).map(([, record]) => record);
     console.log(`${records.length} routes, ${chosen.length} chosen, ${todo.length} to render.`);
-    const camera = lightOf(CAMERA_LIGHT), light = lightOf(LIGHT);
+    const cameraLight = lightOf(CAMERA_LIGHT), light = lightOf(LIGHT);
     const { origin, close } = await serve();
     let current;
     const browser = {
@@ -263,11 +288,13 @@ export async function render({ out = OUT, sample, only, gpu = false, fixture = f
         const probe = await stillPage(await browser.get(), origin, options);
         if (!fixture) checkRelease(await probe.evaluate(() => window.trailviewStill.release), release);
         await probe.close();
-        const jobOf = record => ({ line: lineOf(record), camera, light, width: WIDTH, height: HEIGHT, timeoutMs: gpu ? undefined : SOFTWARE_MS });
-        let inARow = 0, known = records.find(record => stateOf(out, record) === 'cover');
+        const jobOf = async record => ({ line: lineOf(record), camera: await storedCamera(out, record, !fixture && fetch), cameraLight, light, width: WIDTH, height: HEIGHT, timeoutMs: gpu ? undefined : SOFTWARE_MS });
+        // A route with a cover from before this run checks the hosts: its tiles are not in the caches of this run.
+        const before = records.find(record => stateOf(out, record) === 'cover');
+        let inARow = 0, latest;
         for (const record of todo) {
-            const job = jobOf(record);
-            let result = await cover(browser, origin, options, job);
+            const job = await jobOf(record).catch(error => ({ failure: 'points', message: `the points file failed: ${error.message}` }));
+            let result = job.failure ? job : await cover(browser, origin, options, job);
             if (result.failure === 'tiles-failed') {
                 console.log(`${record.id}: ${result.message} Waiting ${RETRY_MS / 1000} s to try once more.`);
                 await sleep(RETRY_MS);
@@ -277,8 +304,11 @@ export async function render({ out = OUT, sample, only, gpu = false, fixture = f
                 failed.push(`${record.id}: ${result.message}`);
                 console.log(`${record.id}: failed: ${result.message}`);
                 if (++inARow >= FAILURES_IN_A_ROW) {
-                    // The routes of one area follow each other: their faults stop render only when a route with a cover fails too.
-                    const check = known && await cover(browser, origin, options, jobOf(known));
+                    // The routes of one area follow each other: their faults stop render only when a route with a cover fails too,
+                    // in a new browser with empty caches.
+                    const known = before ?? latest;
+                    await browser.drop();
+                    const check = known && await cover(browser, origin, options, await jobOf(known));
                     if (!check || check.failure) {
                         console.log(`${inARow} routes failed in a row${known ? `, and route ${known.id} with a cover too` : ''}: render stops. Check the tile host and the GPU, then run again.`);
                         break;
@@ -289,7 +319,7 @@ export async function render({ out = OUT, sample, only, gpu = false, fixture = f
                 continue;
             }
             inARow = 0;
-            if (!result.none) known = record;
+            if (!result.none) latest = record;
             mkdirSync(coverDir(out, record), { recursive: true });
             seconds += result.seconds;
             if (result.none) {
@@ -300,7 +330,8 @@ export async function render({ out = OUT, sample, only, gpu = false, fixture = f
             }
             const image = Buffer.from(result.image, 'base64');
             writeWhole(coverFile(out, record, IMAGE), image);
-            writeWhole(coverFile(out, record, POINTS), JSON.stringify(pointsOf(result.points, result.credits, result.view)));
+            // A points file is never written again: the images of its other months come from its camera.
+            if (!job.camera) writeWhole(coverFile(out, record, POINTS), JSON.stringify(pointsOf(result.points, result.credits, result.view)));
             covers++;
             bytes += image.length;
             console.log(`${record.id}: ${result.seconds.toFixed(1)} s, ${Math.round(image.length / 1000)} kB`);
@@ -356,6 +387,12 @@ export async function upload({ out = OUT, without = [], r2 = obcR2, fetch = glob
     return set;
 }
 
+/** Throws unless each light of `months` is in its month and `default_month` is a month of the set. */
+export function checkMonths({ months, default_month: month }) {
+    for (const [key, light] of Object.entries(months)) if (light.slice(0, 2) !== key) throw new Error(`The light ${light} is not in its month ${key}.`);
+    if (!Object.hasOwn(months, month)) throw new Error(`The default_month ${month} is not a month of the set.`);
+}
+
 /**
  * Reads the cell files of an uploaded set from the bucket, checks with one list of the bucket that it
  * holds the points and the image of each month of the set of each cover that they name, then puts the manifest of the set at the live key. The bucket, not
@@ -370,6 +407,7 @@ export async function switchTo(set, { r2 = obcR2 } = {}) {
         await r2(['get', key, file]);
         const manifest = JSON.parse(readFileSync(file, 'utf8')), ends = [POINTS, ...Object.values(manifest.months).map(light => `-${light}.webp`)];
         if (manifest.set !== set) throw new Error(`The manifest of set ${set} names another set.`);
+        checkMonths(manifest);
         const cells = [...held].filter(name => name.startsWith(`${root}cells/`)), missing = new Set();
         await pool(cells, AT_ONCE, async cell => {
             const copy = join(dir, cell.slice(cell.lastIndexOf('/') + 1));

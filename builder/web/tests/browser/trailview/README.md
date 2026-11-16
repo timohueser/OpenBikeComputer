@@ -103,8 +103,8 @@ For a new planner release, do steps 1 and 4: only the routes whose line changed 
   with its reason at the end, and exits with 1. The next run tries it again. After 5 failures in a
   row it renders a route with a cover again, and stops if that fails too: the host or the GPU is down.
   When a route fails on each run, leave it out: `upload --without ID,ID`.
-- `render` skips a route whose cover or `.none` mark exists for its key. A change of the size or of
-  the camera rule in the script changes `look` and so each key: all routes render again.
+- `render` skips a route whose cover or `.none` mark exists for its key. A change of the size, the
+  camera rule or its light in the script changes `look` and so each key: all routes render again.
 - `upload` takes the routes of the active production release, and refuses while one of them has no
   cover and no `.none` mark. It lists the covers in the bucket one time and sends only the missing
   ones, 16 at a time. After a 429 of the host it waits one minute, at most 5 times for a file.

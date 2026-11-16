@@ -50,9 +50,9 @@ A UTF-8 JSON object.
 | `format` | `1` |
 | `set` | The hash of the cell files of the set in ascending order of their cell IDs as text, and then of this manifest as JSON with an empty `set` |
 | `release` | The ID of the planner release whose catalog the set was made for. It is information for the owner. |
-| `look` | `C\|W\|H`: the version `C` of the camera rule and the size of each image. Now `1\|960\|640`. |
-| `months` | Object: for each month `MM` (`01` to `12`) that the set holds, the light of its images as `MMDD-HHMM`, the date and the time in the year of the render. Each cover of the set has an image of each of these months. Now `{"07": "0715-1000"}`. |
-| `default_month` | The month `MM` of `months` that a reader shows when the set does not hold the current month. Now `07`. |
+| `look` | `C\|L\|W\|H`: the version `C` of the camera rule, the light `L` of the [camera](#4-cover) as `MMDD-HHMM`, and the size of each image. Now `1\|0715-1000\|960\|640`. |
+| `months` | Object: for each month `MM` (`01` to `12`) that the set holds, the light of its images as `MMDD-HHMM`, the date and the time in the year of the render. The `MM` of a light is its key. `DD` is a day of each year, so never `0229`. Each cover of the set has an image of each of these months. Now `{"07": "0715-1000"}`. |
+| `default_month` | A key of `months`: the month that a reader shows when the set does not hold the current month. A writer refuses to make live a set where it is not a key of `months`. Now `07`. |
 | `width`, `height` | `960`, `640`: the size of each image in pixels |
 | `covers` | The count of covers of the set |
 | `credits` | Array of strings: each credit of each cover, one time each. The page shows them with a cover. |
@@ -69,13 +69,16 @@ The key of a cover is the hash of the text of `look`, `|`, and the numbers of `l
 record in decimal, joined with commas. So a cover belongs to one line and one look, a new render of
 the same line has the same key, and the months and their light do not change it.
 
-The camera of a cover is `coverView()` of TrailView for the line of the record, in the light of
-15 July at 10:00 in the year of the render, sunny. It is the same for each month of the cover, so
+The camera of a cover is `coverView()` of TrailView for the line of the record, in the light `L` of
+`look` in the year of the render, sunny. It is the same for each month of the cover, so
 one points file serves all of its images. A route with no view has no cover: TrailView has no data
 there, or no view holds the line.
 
 Each image is a WebP of `width` × `height` pixels: the camera of the cover in the light of one
-month, sunny. A writer that adds a month renders it from `camera` of the points file.
+month, sunny. A writer renders an image only with `camera` of the points file of its key, and never
+writes a points file again. When its output folder does not have the points file of a key, it
+reads that file from the public host first, and chooses a new camera only when the host answers
+404.
 
 The points file is a UTF-8 JSON object with one entry in `x`, `y` and `eye` for each vertex of
 `line_udeg`:
@@ -96,6 +99,6 @@ The points file is a UTF-8 JSON object with one entry in `x`, `y` and `eye` for 
 3. It uses the cover only when the key in the cell file is the key that it computes from `look` and
    the record's `line_udeg`. So the covers stay through a new planner release, and a route whose
    line changed shows no cover until the next render.
-4. It shows the image of the current month of its clock when `months` holds it, else the image of
+4. It shows the image of the current month on the clock of the rider's own device when `months` holds it, else the image of
    `default_month`.
 5. When a cover file answers 404, the set is no longer live: the reader reads the manifest again.
