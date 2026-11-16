@@ -1940,10 +1940,12 @@ fn by_label(
         let ((h, cause), kind) =
             if rule == 0 { ((t, NO_CAUSE), Kind::Terrain) } else { (slope(b, q, t, p), Kind::Slope) };
         let c = ceiling(b, q, items.segs, p);
-        // The cover over a bore stands at least at its floor bound. It yields to a deck only under the deck's own
-        // stroke: past it the deck's ceiling shapes the free ground, and the cover's own corners carry the step. A
-        // comparison, not `max`: an unknown terrain (NaN) stays unknown.
+        // The cover over a bore is never under the plain terrain (no cut reaches over a bore) and stands at least at
+        // its floor bound. It yields to a deck only under the deck's own stroke: past it the deck's ceiling shapes the
+        // free ground, and the cover's own corners carry the step. Comparisons, not `max`: an unknown terrain (NaN)
+        // stays unknown.
         let cover = BORES && label.is_some() && lw(0) & 0xff == Surface::Cover as u32;
+        let (h, cause) = if cover && t > h { (t, NO_CAUSE) } else { (h, cause) };
         let f = if cover { floor(b, q, items.segs, t, p) } else { f64::NEG_INFINITY };
         let c = if f > c { under_decks(b, q, items.segs, p) } else { c };
         let (h, cause) = if f > h { (f, Cause { floor: true, ..NO_CAUSE }) } else { (h, cause) };
