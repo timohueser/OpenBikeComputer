@@ -944,6 +944,7 @@ fn the_jobs_of_four_areas_that_each_hold_the_whole_network_stitch_into_its_one_s
             sidewalks: Walks {
                 tagged_m: mm(w.tagged_m),
                 built_m: mm(w.built_m),
+                steep_m: mm(w.steep_m),
                 bend_m: mm(w.bend_m),
                 bed_m: mm(w.bed_m),
                 short_m: mm(w.short_m),

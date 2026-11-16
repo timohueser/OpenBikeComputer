@@ -145,9 +145,10 @@ pub struct Class {
     pub bank: f64,
     pub widen_m: f64,
     pub keep_m: f64,
-    /// The width of a sidewalk, 0 where the class has none, and the room that a bend leaves inside the
-    /// sidewalk.
+    /// The width of a sidewalk, 0 where the class has none; the rise per metre of the ground past the
+    /// road's edge that is too steep for one; and the room that a bend leaves inside the sidewalk.
     pub sidewalk_m: f64,
+    pub sidewalk_steep: f64,
     pub sidewalk_margin_m: f64,
 }
 
@@ -793,7 +794,7 @@ pub fn solve(
     // A pipe runs under the sidewalks only where its row holds the cover.
     let piped: Vec<rows::UntaggedCrossing> =
         (0..k_least.len()).filter(|&i| holds[i]).filter_map(|i| Some(untagged[k_untagged[i]?])).collect();
-    let town = Town::new(&net, (rivers, &near.culverts), (&piped, classes), near.buildings);
+    let town = Town::new(&net, (rivers, &near.culverts), (&piped, classes), near.buildings, terrain);
     let (ways, joins, walks) = align::align(&net, &z, &known, &stay, &water, &ground, classes, &mine, &town);
     for (way, &(f, p)) in ways.into_iter().zip(&net.way_feature) {
         solved.ways[f][p] = Some(way);

@@ -376,9 +376,11 @@ A way is paved when it has no `surface` tag or one other than `gravel`, `compact
    `sidewalk:right` set their sides: `yes` gives one, `no` and `separate` none.
 2. A side without a tag has a sidewalk where 2 buildings stand within 25 m of the road's middle
    line, on either side of it. A building counts by the box of its outer ring.
-3. A side has no sidewalk inside a bend whose radius is less than the road's edge, the
-   sidewalk's width and `sidewalk_margin_m` of the class. The road's edge lies its half-width (see
-   Heights) and its widening from its middle.
+3. A side has no sidewalk where the ground from 2 m to 6 m past the road's edge rises or falls by
+   more than `sidewalk_steep` of the class per metre, unless a tag puts one there, and none inside
+   a bend whose radius is less than the road's edge, the sidewalk's width and `sidewalk_margin_m`
+   of the class. The road's edge lies its half-width (see Heights) and its widening from its
+   middle.
 4. A side has no sidewalk where its middle lies on the bed of another way on the ground or of a
    river or a stream: within that way's half-width and half the sidewalk's width. A way that
    meets the road does not count within 12 m of their junction, and a waterway's bed does not
@@ -387,10 +389,11 @@ A way is paved when it has no `surface` tag or one other than `gravel`, `compact
    cover there: within the road's outer half-width, its widening and the bed's half-width, over
    the sine of their angle, along the water from the crossing. The pipe runs on.
 5. A gap under 40 m along the stroke between two pieces closes, where no tag `no`, no way without
-   a sidewalk and no bend of rule 3 lies in it. Rules 5 and 6 come after rule 4: the bed of another
-   way and a stretch without buildings do not stop them.
+   a sidewalk and no steep side or bend of rule 3 lies in it. Rules 5 and 6 come after rule 4: the
+   bed of another way and a stretch without buildings do not stop them.
 6. A piece that ends within 15 m of a junction, a point that three segments of ways or more leave,
-   runs on to it, where no tag `no`, no way without a sidewalk and no bend of rule 3 lies between.
+   runs on to it, where no tag `no`, no way without a sidewalk and no steep side or bend of rule 3
+   lies between.
 7. A piece that ends at a junction at one end and inside the stroke off a junction at the other,
    and is shorter than 15 m, goes.
 8. A piece under 50 m goes, after rules 1 to 7 have decided every way of the solve. A piece is a
