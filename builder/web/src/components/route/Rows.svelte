@@ -27,7 +27,7 @@
 
     /** The bottom card of the Route page: the waypoints, the heights, the surface and the places along the route or one
      * day of it, on one axis. Shares are 0 to 1 of the route. Without the calculated line, the rows that the summary
-     * holds show. A drag selects a part; a click on a climb in the elevation row selects the climb. */
+     * holds show. A drag selects a part; with no part, a click on a climb in the elevation row selects the climb. */
     let { summary, trip, line, facts, pins, mark, onpoint, part, onpart, onhover, onday, onplace }: {
         summary: RouteSummary;
         trip: Trip;
@@ -99,15 +99,17 @@
         from: climb.from * 1000 / totalM, to: climb.to * 1000 / totalM,
         text: `${formatDistance((climb.to - climb.from) * 1000)} · ${formatPercent(climb.gradient)}`, short: formatPercent(climb.gradient),
     })) ?? []);
-    const climbAt = (share: number) => climbs.findIndex(climb => share >= climb.from && share <= climb.to);
-    const same = (a: [number, number] | null, b: { from: number; to: number }) => !!a && Math.abs(a[0] - b.from) < 1e-9 && Math.abs(a[1] - b.to) < 1e-9;
-    const chosenClimb = $derived(climbs.findIndex(climb => same(part, climb)));
-    const hoveredClimb = $derived(onProfile === undefined ? -1 : climbAt(shown.from + onProfile * span));
-    const lit = $derived(hoveredClimb >= 0 ? hoveredClimb : chosenClimb >= 0 ? chosenClimb : undefined);
     const shownPart = $derived.by((): [number, number] | null => {
         if (!part || part[1] <= shown.from || part[0] >= shown.to) return null;
         return [Math.max(0, x(part[0])), Math.min(1, x(part[1]))];
     });
+    // While the rows show a selected part, a click only clears it: no climb is under the pointer, to select or to light.
+    // A part outside the shown day does not count, because the rows do not show it.
+    const climbAt = (share: number) => shownPart ? -1 : climbs.findIndex(climb => share >= climb.from && share <= climb.to);
+    const same = (a: [number, number] | null, b: { from: number; to: number }) => !!a && Math.abs(a[0] - b.from) < 1e-9 && Math.abs(a[1] - b.to) < 1e-9;
+    const chosenClimb = $derived(climbs.findIndex(climb => same(part, climb)));
+    const hoveredClimb = $derived(onProfile === undefined ? -1 : climbAt(shown.from + onProfile * span));
+    const lit = $derived(hoveredClimb >= 0 ? hoveredClimb : chosenClimb >= 0 ? chosenClimb : undefined);
     // A climb gives its own length and gain, as the left card does; a profile with no heights gives no gain.
     const partText = $derived.by(() => {
         if (!part) return '';
@@ -184,7 +186,8 @@
         open = number;
     }
 
-    /** A click on a climb in the elevation row, or Enter, selects the climb; another click clears the part. */
+    /** With no part in the rows, a click on a climb in the elevation row, or Enter, selects the climb. Any other click,
+     * and each click while the rows show a part, clears the part. */
     function click(at: number, row?: number | null) {
         const index = row === ELEVATION_ROW || row === null ? climbAt(shown.from + at * span) : -1;
         onpart(index >= 0 ? [climbs[index].from, climbs[index].to] : null);
