@@ -47,6 +47,7 @@ flowchart LR
   end
   subgraph area4["Tooling"]
     s_repository_tooling["repository-tooling"]
+    s_ux_study["ux-study"]
     s_verification_console["verification-console"]
   end
   s_board_inputs --> s_foundations
@@ -141,6 +142,7 @@ flowchart LR
 | System | Purpose | Status | Uses (production code) | Used by (production code) |
 | --- | --- | --- | --- | --- |
 | [repository-tooling](repository-tooling.md) | Keeps the development workflow running: the `obc` command, test selection, CI gates, fixtures. | draft | card-storage, device-runtime, foundations, map-reading, navigation | simulators |
+| [ux-study](ux-study.md) | Lets an LLM try tasks of the web planner as a first-time user, and records where it fails or is surprised. | draft |  |  |
 | [verification-console](verification-console.md) | Tracks system requirements against their release evidence. | draft |  |  |
 
 ### Shells

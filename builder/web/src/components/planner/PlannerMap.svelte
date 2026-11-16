@@ -19,7 +19,7 @@
     import type { Place } from "../../lib/planner/editor";
     import { coordinateAt, kilometres, nearestProgress } from "../../lib/planner/geo";
     import type { Coordinate, MapPoint, MapSegment } from "../../lib/planner/map-types";
-    import { RouteOverlays, type AccessMode, type OverlayOptions, type OverlaySelection } from "../../lib/planner/route-overlays";
+    import { RouteOverlays, type AccessMode, type OverlayOptions, type OverlaySelection, type RouteHint } from "../../lib/planner/route-overlays";
     import type { DataLayer } from "../../lib/planner/layers/data-layer";
     import { placeCallout } from "../../lib/planner/callout-placement";
     import MapOverlayDetails from './MapOverlayDetails.svelte';
@@ -31,7 +31,7 @@
         drawing = null, highlightedPlaceIds = [], theme = "light", hillshade = true, contours = true, pickMode = false,
         showRoute = true, hoverProgress = null, center = [8.8, 48.65], zoom = 7,
         shownCategories = categoryIds, highlightedPlaces = [], mapOverlays = { network: 'none', access: false }, accessMode = 'cycling', routingPackage, dataLayer, bottomInset = 0,
-        signedRoutes = null, signedHovered = null, planMuted = false, compare = null, lines = [], onPick = null, onIdle, onSignedRoute, onSignedHover, canPlanRoute, onPlanRoute,
+        signedRoutes = null, signedHovered = null, planMuted = false, compare = null, lines = [], onPick = null, onIdle, onSignedRoute, onSignedHover,
         onEmptyClick, onPointSelect, onPointHover, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, popup,
     }: {
         /** The Routes view: while it is open, a click on one of its routes selects that route. */
@@ -54,9 +54,6 @@
         onIdle?: () => void;
         onSignedRoute?: (id: number) => void;
         onSignedHover?: (id: number | null) => void;
-        /** Whether the route-network details offer "Plan this route" for a relation at a map point. */
-        canPlanRoute?: (id: number, at: Coordinate) => Promise<'plan' | 'too-long' | 'missing'>;
-        onPlanRoute?: (id: number, at: Coordinate) => void;
         segments?: MapSegment[];
         /** Dashed connectors from the route to points that it does not reach. */
         gaps?: Coordinate[][];
@@ -111,6 +108,8 @@
     let popupContent: HTMLDivElement;
     let map = $state.raw<maplibregl.Map>();
     let ready = $state(false);
+    // True until the map has drawn its tiles and stopped moving.
+    let loading = $state(true);
     let failure = $state("");
     let errorDetail = $state("");
     const pins = new Map<string, { marker: maplibregl.Marker; button: HTMLButtonElement; key: string }>();
@@ -138,6 +137,13 @@
     let overlayStatus = $state('');
     let overlayRetry = $state(false);
     let overlaySelection = $state<OverlaySelection | null>(null);
+    let routeHint = $state<RouteHint | null>(null);
+    // The callout holds the overlay details at their click, or else the popup of the page at `callout`.
+    const calloutAt = $derived(overlaySelection?.coordinate ?? (popup ? callout : null));
+    // A popup of the page at another place takes the callout from the overlay details. The place is compared by value:
+    // the page can pass an equal coordinate in a new array.
+    const calloutPlace = $derived(callout?.join());
+    $effect(() => { void calloutPlace; overlaySelection = null; });
     let signedLayer: SignedRoutesLayer | undefined;
     let signedHover: number | null = null;
     let overSigned = $state(false);
@@ -154,6 +160,7 @@
         event.preventDefault();
         cancelGesture();
         consumedPress = true;
+        overlayLayer?.hover();
         overlaySelection = selected;
     }
 
@@ -230,9 +237,9 @@
      * With `pan`, a callout that fits nowhere pans the map the least distance. A map move only re-anchors, so it never starts another pan.
      */
     function fitCallout(pan: boolean) {
-        if (!map || !calloutPopup || !callout) return;
+        if (!map || !calloutPopup || !calloutAt) return;
         const free = { left: 16, top: 16, right: container.clientWidth - controlsWidth, bottom: container.clientHeight - bottomClear };
-        const { x, y } = map.project(callout);
+        const { x, y } = map.project(calloutAt);
         const placed = placeCallout([x, y], [popupContent.offsetWidth, popupContent.offsetHeight], free, calloutOffset);
         if (calloutPopup.options.anchor !== placed.anchor) {
             calloutPopup.options.anchor = placed.anchor;
@@ -435,7 +442,7 @@
             if (signed !== signedHover) onSignedHover?.(signedHover = signed);
             overPoi = onMap && !!placeAt(event.point);
             hover = onMap && !overPoi && !dragging && !draggingPin && !drawing && !picking ? lineHit(event.point) : null;
-            overOverlay = overlayLayer?.hover(onMap && !overPoi && !hover && !dragging && !draggingPin && !drawing && !picking ? event : undefined) ?? false;
+            overOverlay = overlayLayer?.hover(onMap && !overPoi && !hover && signed === null && !dragging && !draggingPin && !drawing && !picking ? event : undefined) ?? false;
         }
     }
 
@@ -478,9 +485,12 @@
         insertDot = new maplibregl.Marker({ element: Object.assign(document.createElement("div"), { className: "planner-insert-dot" }) });
         hoverDot = new maplibregl.Marker({ element: Object.assign(document.createElement("div"), { className: "planner-hover-dot" }) });
         try {
-            map = new maplibregl.Map({ container, center, zoom, maxBounds: config.bounds, style: mapStyle(theme, styleConfig, dem.sharedDemProtocolUrl, contourUrl), attributionControl: false, maxPitch: 0, renderWorldCopies: false });
+            // `zoomLevelsToOverscale` must stay `undefined`: its default splits the tiles of each vector source past the deepest
+            // zoom of the source, and keeps only the source layers that a style layer draws. The route details read a source
+            // layer that no style layer draws.
+            map = new maplibregl.Map({ container, center, zoom, maxBounds: config.bounds, style: mapStyle(theme, styleConfig, dem.sharedDemProtocolUrl, contourUrl), attributionControl: false, maxPitch: 0, renderWorldCopies: false, zoomLevelsToOverscale: undefined });
             signedLayer = new SignedRoutesLayer(map);
-            overlayLayer = new RouteOverlays(map, config.overlays, (message, retry = false) => { overlayStatus = message; overlayRetry = retry; });
+            overlayLayer = new RouteOverlays(map, config.overlays, (message, retry = false) => { overlayStatus = message; overlayRetry = retry; }, hint => routeHint = hint);
             fitInitialRoute();
             map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
             map.addControl(new maplibregl.ScaleControl({ maxWidth: 90, unit: "metric" }), "bottom-left");
@@ -550,7 +560,9 @@
             });
             map.on("movestart", (event) => { if (event.originalEvent) wholeRoute = false; overOverlay = false; overlayLayer?.hover(); });
             map.on("moveend", reportView);
-            map.on("idle", () => onIdle?.());
+            map.on("idle", () => { loading = false; onIdle?.(); });
+            map.on("dataloading", () => loading = true);
+            map.on("movestart", () => loading = true);
             map.on("move", () => fitCallout(false));
         } catch (error) {
             failure = "The map could not start. This view needs a browser with WebGL enabled.";
@@ -746,6 +758,7 @@
             }
             button.addEventListener("click", (event) => {
                 event.stopPropagation();
+                overlaySelection = null;
                 if (!onPick) return onPointSelect?.(point.id);
                 const box = button.getBoundingClientRect();
                 onPick(point.coordinate, [box.left + box.width / 2, box.top + box.height / 2]);
@@ -786,7 +799,7 @@
     });
     $effect(() => {
         if (!map || !popupContent) return;
-        if (!callout || !popup) {
+        if (!calloutAt) {
             calloutPopup?.remove();
             calloutPopup = undefined;
             return;
@@ -794,7 +807,7 @@
         calloutPopup ??= new maplibregl.Popup({
             closeButton: false, closeOnClick: false, offset: calloutOffset, maxWidth: "340px", anchor: "bottom",
         }).setDOMContent(popupContent);
-        calloutPopup.setLngLat(callout).addTo(map);
+        calloutPopup.setLngLat(calloutAt).addTo(map);
         fitCallout(false);
         const settle = () => requestAnimationFrame(() => fitCallout(true));
         if (map.isMoving()) map.once("moveend", settle);
@@ -808,20 +821,31 @@
 <!-- The callout always fits the free map area: inside the margins, clear of the controls and the bottom strip, less its offset and tip. -->
 <div class="map-frame" data-map-theme={theme} bind:clientWidth={frameWidth} bind:clientHeight={frameHeight}
     style:--callout-width={`${frameWidth - 16 - controlsWidth}px`} style:--callout-room={`${frameHeight - 16 - bottomClear - calloutOffset - 10}px`}>
-    <div class="map-canvas" bind:this={container} aria-label="Route map"></div>
-    <div class="popup-storage"><div bind:this={popupContent}>{#if popup}{@render popup()}{/if}</div></div>
-    {#if overlaySelection}
-        <MapOverlayDetails selection={overlaySelection} onclose={() => overlaySelection = null} canPlan={canPlanRoute}
-            onplan={id => { const at = overlaySelection!.coordinate; overlaySelection = null; onPlanRoute?.(id, at); }}
-            onuse={() => { const coordinate = overlaySelection!.coordinate; overlaySelection = null; onEmptyClick?.(coordinate); }} />
-    {/if}
+    <div class="map-canvas" bind:this={container} aria-label="Route map" aria-busy={loading && !failure}></div>
+    <div class="popup-storage"><div bind:this={popupContent}>
+        {#if overlaySelection}
+            <MapOverlayDetails selection={overlaySelection} {theme} onclose={() => overlaySelection = null} />
+        {:else if popup}{@render popup()}{/if}
+    </div></div>
     {#if compare}
         <div class="compare-key" aria-hidden="true">
             <span><svg width="26" height="6"><path d="M2 3H24" class="option" /></svg>{compare.letter} · Preview</span>
             <span><svg width="26" height="6"><path d="M2 3H24" class="current" /></svg>A · Your route</span>
         </div>
     {/if}
-    {#if overlayStatus && !failure && !overlaySelection}
+    {#if routeHint && !overlaySelection}
+        <!-- The note starts from the pointer, or from the edge of the free area when the pointer is beyond it. -->
+        {@const right = frameWidth - controlsWidth}
+        {@const x = Math.min(routeHint.point.x, right)}
+        {@const y = Math.min(routeHint.point.y, frameHeight - bottomClear)}
+        {@const left = x > right / 2}
+        <!-- The note opens on the side of the pointer with more room, and is never wider than that room. It keeps clear of the controls and the bottom strip. -->
+        <div class="planner-map-note route-hint" style:left={`${x}px`} style:top={`${y}px`} style:max-width={`${(left ? x : right - x) - 22}px`}
+            style:translate={`${left ? 'calc(-100% - 14px)' : '14px'} ${y > frameHeight - bottomClear - 44 ? 'calc(-100% - 12px)' : '18px'}`}>
+            {#if routeHint.name}<b>{routeHint.name}</b>{/if}<span>Right-click for details</span>
+        </div>
+    {/if}
+    {#if overlayStatus && !failure}
         <div class="overlay-status" role="status">{overlayStatus}{#if overlayRetry}<button onclick={() => overlayLayer?.retry()}>Retry</button>{/if}</div>
     {/if}
     {#if !ready && !failure}<div class="map-status" role="status">Loading map…</div>{/if}
@@ -877,6 +901,11 @@
     :global(.planner-map-letter) { width: 22px; height: 22px; display: grid; place-items: center; border-radius: 50%; color: var(--panel, #fff); background: var(--ink, #1c1b14); font: 700 12px var(--sans, sans-serif); box-shadow: var(--planner-shadow, 0 6px 18px rgba(28, 27, 20, .12)); pointer-events: none; }
     :global(.planner-map-letter.current) { background: var(--route, #cc2a93); }
     :global(.planner-map-note) { padding: 2px 8px; border-radius: 6px; color: var(--ink, #1c1b14); background: var(--panel, #fff); font: 600 12px/20px var(--sans, sans-serif); font-variant-numeric: tabular-nums; white-space: nowrap; box-shadow: var(--planner-shadow, 0 6px 18px rgba(28, 27, 20, .12)); pointer-events: none; }
+    .route-hint { position: absolute; display: flex; gap: 8px; box-sizing: border-box; }
+    .route-hint :is(b, span) { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    /* A long route name gives way before the gesture does. */
+    .route-hint b { flex-shrink: 1000; font-weight: inherit; }
+    .route-hint span { color: var(--ink-soft, #5c5a2e); font-weight: 400; }
     :global(.planner-hover-dot) { width: 12px; height: 12px; border: 3px solid var(--panel, #fff); border-radius: 50%; background: var(--ink, #1c1b14); pointer-events: none; }
     :global(.planner-insert-dot) { width: 14px; height: 14px; border: 2.5px solid var(--route, #cc2a93); border-radius: 50%; background: var(--panel, #fff); pointer-events: none; }
     .map-frame :global(.maplibregl-popup-content) { padding: 0; border-radius: 8px; color: var(--ink, #1c1b14); background: var(--panel, white); font-family: var(--sans, sans-serif); box-shadow: var(--planner-shadow, 0 6px 18px rgba(28, 27, 20, .12)); }

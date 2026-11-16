@@ -217,6 +217,12 @@
     // The plan came from the Routes view, so "Back to routes" shows under the search box.
     let fromRoutes = $state(false);
     const bike = $derived<BikeType>(trip.bike ?? 'touring');
+    const activityNetwork = $derived(bike === 'hiking' ? 'hiking' : bike === 'mtb' ? 'mtb' : 'cycling');
+    /** A shown route network is the one of the activity; a network that is off stays off. */
+    function showActivityNetwork() {
+        if (mapOverlays.network !== 'none') mapOverlays = { ...mapOverlays, network: activityNetwork };
+    }
+    $effect(() => { void activityNetwork; untrack(showActivityNetwork); });
     const nouns = { any: ['loop or route', 'loops and routes'], loop: ['loop', 'loops'], 'one-way': ['one-way route', 'one-way routes'] } as const;
     const routesNoun = (count = 0) => nouns[finder.filters.shape][count === 1 ? 0 : 1];
     // The names of map places change as map tiles load, so naming reads `mapIdle`.
@@ -805,8 +811,7 @@
         void finder.select(null);
         clearSelection();
         routesOpen = true;
-        // The route networks follow the activity, so the map shows the kind of route the view lists.
-        if (mapOverlays.network !== 'none') mapOverlays = { ...mapOverlays, network: bike === 'hiking' ? 'hiking' : bike === 'mtb' ? 'mtb' : 'cycling' };
+        showActivityNetwork();
         showRoutesArea();
     }
 
@@ -827,18 +832,6 @@
         fromRoutes = true;
         message = `${route.name ?? route.ref} planned`;
         map?.fitCoordinates(plan.points);
-    }
-
-    async function planNetworkRoute(id: number, at: Coordinate) {
-        try {
-            const route = await finder.find(id, at);
-            const plan = route && await finder.dataPlan(route);
-            if (!route) message = 'This route is not in the route catalog.';
-            else if (plan) planSignedRoute(route, plan);
-            else message = 'This route is too long for one plan. Plan one of its stages from the Routes view.';
-        } catch {
-            message = 'The route could not load. Check your connection and retry.';
-        }
     }
 
     // The map shows the selected route whole; back at the list, it shows the list again.
@@ -1034,12 +1027,6 @@
         list = 'plan';
         if (first && hasEndpoints) firstOptions = true;
         if (autoCenter) map?.centerOn(coordinate);
-    }
-
-    /** Whether the route-network details can plan a relation, and why not. */
-    async function routeStatus(id: number, at: Coordinate): Promise<'plan' | 'too-long' | 'missing'> {
-        const route = await finder.find(id, at);
-        return !route ? 'missing' : await finder.dataPlan(route).catch(() => null) ? 'plan' : 'too-long';
     }
 
     async function newPlan() {
@@ -1322,7 +1309,7 @@
                     onBounds={(bounds, preserveSearch) => { viewBounds = bounds; if (!preserveSearch) searchViewRevision++; }} onEmptyClick={emptyClick} onPointSelect={selectPoint} onPointMove={movePoint} onPointPreview={(id, coordinate) => session.previewMove(id, coordinate)} onDayEndDrag={moveDayEnd}
                     onLegClick={legClick} onInsert={(legEndId, coordinate) => insert(legEndId, coordinate, true)} onDrawn={drawn} onPlaceClick={place => routesOpen ? moveRoutesStart({ coordinate: place.coordinate, name: place.label }) : mapMode?.kind === 'transfer' ? void arrive(place.coordinate, place.label) : choosePlace(place)}
                     signedRoutes={routesOpen ? finder.mapView : null} signedHovered={finder.hovered} onSignedRoute={id => void finder.select(id)} onSignedHover={id => finder.hovered = id}
-                    canPlanRoute={config.routes ? routeStatus : undefined} onPlanRoute={planNetworkRoute} onIdle={() => mapIdle++}
+                    onIdle={() => mapIdle++}
                     onVisibleRange={(range) => visibleRange = range}
                 >
                     {#snippet popup()}

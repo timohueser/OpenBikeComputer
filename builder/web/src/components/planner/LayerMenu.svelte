@@ -3,7 +3,7 @@
     import LayerLegend from './LayerLegend.svelte';
     import Segmented from '../../lib/ui/Segmented.svelte';
     import { placeCategories, type PlaceCategory } from '../../lib/planner/poi-kinds';
-    import { networkLevels, type OverlayOptions } from '../../lib/planner/route-overlays';
+    import { bandShare, networkLevels, type OverlayOptions } from '../../lib/planner/route-overlays';
     import type { DataLayer } from '../../lib/planner/layers/data-layer';
 
     let { autoCenter = $bindable(false), hillshade = $bindable(), contours = $bindable(), hidden = $bindable(), highlighted = $bindable(), mapOverlays = $bindable(), dataLayers = [], shownLayer = $bindable(''), theme = 'light', walking = false }: {
@@ -75,7 +75,7 @@
             <section aria-label="Route networks">
                 <Segmented label="Route network" options={networks} value={mapOverlays.network} onChange={network => mapOverlays = { ...mapOverlays, network }} />
             {#if mapOverlays.network !== 'none'}
-                <ul class="legend" aria-label="Route network colors">
+                <ul class="legend" aria-label="Route network colors" style:--band-share={`${bandShare[theme] * 100}%`}>
                     {#each networkLevels as level (level.rank)}<li title={level.label}><span class="sample" style:color={theme === 'dark' ? level.dark : level.color}></span>{level.rank === 3 ? 'National / intl.' : level.rank === 0 ? 'Unspecified' : level.label}</li>{/each}
                 </ul>
             {/if}
@@ -182,7 +182,8 @@
     details[open] { padding-bottom: 8px; }
     .detail-value { margin-left: auto; font-size: 11px; color: var(--ink-soft); }
     .terrain { display: flex; gap: 12px; }
-    .sample { display: inline-block; flex: 0 0 14px; width: 14px; border-top: 3px solid currentColor; }
+    /* A band with its line: the map draws a route network as a line when far out and as a band when close. */
+    .sample { flex: 0 0 14px; height: 8px; border-radius: 2px; background: linear-gradient(currentColor 0 0) center / 100% 2px no-repeat, color-mix(in srgb, currentColor var(--band-share), var(--parchment)); }
     .legend { display: grid; grid-template-columns: 1fr 1fr; column-gap: 8px; margin: 8px 0 0; font-size: 12px; color: var(--ink-soft); }
     .legend li { justify-content: flex-start; min-height: 22px; }
     .layer-legend { margin: 8px 0 4px; }
