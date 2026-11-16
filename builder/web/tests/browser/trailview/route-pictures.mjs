@@ -132,6 +132,16 @@ function lineOf({ line_udeg: udeg }) {
     return line;
 }
 
+/** The Z-order of the centre of a line's box on a grid of 2^16 × 2^16 Web Mercator cells: near lines have near keys. */
+export function placeKey(line) {
+    const lons = line.map(p => p[0]), lats = line.map(p => p[1]), n = 2 ** 16;
+    const lon = (Math.min(...lons) + Math.max(...lons)) / 2, lat = (Math.min(...lats) + Math.max(...lats)) / 2;
+    const x = Math.floor((lon + 180) / 360 * n), y = Math.floor((1 - Math.asinh(Math.tan(lat * Math.PI / 180)) / Math.PI) / 2 * n);
+    let key = 0;
+    for (let bit = 15; bit >= 0; bit--) key = key * 4 + ((y >> bit) & 1) * 2 + ((x >> bit) & 1);
+    return key;
+}
+
 /** The points file of a cover from the points of a still: one decimal of a pixel, and `null` and eye 0 for a point with no place. */
 export function pointsOf({ x, y, distance, visible }, credits) {
     const placed = i => [x[i], y[i], distance[i]].every(Number.isFinite), place = values => Array.from(values, (v, i) => (placed(i) ? Math.round(v * 10) / 10 : null));
@@ -167,7 +177,8 @@ const shoot = (page, job) => page.evaluate(async ({ line, when, width, height, t
 /**
  * The cover of one line in a page of its own, with the seconds of the page and the still: the renderer keeps
  * the memory of each still until its page closes. After the time limit the route fails and its browser goes,
- * because a hung page may not close; `browser.get()` starts a new browser, also after one died.
+ * because a hung page may not close; `browser.get()` gives the context of the browser, and starts a new
+ * browser, also after one died.
  */
 async function cover(browser, origin, options, job) {
     const started = performance.now(), limit = (job.timeoutMs ?? STILL_MS) + MARGIN_MS;
@@ -219,18 +230,20 @@ export async function render({ out = OUT, sample, only, gpu = false, fixture = f
     const records = fixture ? routesOf([JSON.parse(readFileSync(FIXTURE_ROUTES, 'utf8'))]) : await releaseRoutes(active, fetch);
     let chosen = only ? records.filter(record => only.includes(record.id)) : records;
     if (sample) chosen = sampleOf(chosen, sample);
-    const todo = chosen.filter(record => !stateOf(out, record));
+    // Neighbours render one after the other: their pages share the tiles in the HTTP cache and the device cache of the context.
+    const todo = chosen.filter(record => !stateOf(out, record)).map(record => [placeKey(lineOf(record)), record]).sort((a, b) => a[0] - b[0]).map(([, record]) => record);
     console.log(`${records.length} routes, ${chosen.length} chosen, ${todo.length} to render.`);
     const when = { date: `${new Date().getFullYear()}-${DAY}`, time: TIME, weather: 'sunny' };
     const { origin, close } = await serve();
     let current;
     const browser = {
-        get: async () => (current?.isConnected() ? current : (current = await launch(gpu))),
+        // One context for the pages of a browser: a context of their own would load and bake each tile again.
+        get: async () => (current?.browser().isConnected() ? current : (current = await (await launch(gpu)).newContext())),
         // Playwright kills a browser whose close takes more than 30 s.
         drop: async () => {
             const old = current;
             current = undefined;
-            await old?.close().catch(() => {});
+            await old?.browser().close().catch(() => {});
         },
     };
     const options = { gpu, fixture }, release = active?.id ?? 'fixture', failed = [];
