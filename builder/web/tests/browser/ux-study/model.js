@@ -6,7 +6,7 @@ export class ModelError extends Error {
   constructor(message, usage = null) { super(message); this.usage = usage; }
 }
 
-export const image = png => ({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: png.toString('base64') } });
+export const image = jpeg => ({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: jpeg.toString('base64') } });
 
 /**
  * `ask(content, schema)` sends one user message to `model` and resolves with `{ value, usage }`, where

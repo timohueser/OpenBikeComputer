@@ -11,6 +11,8 @@ const STABLE_GAP_MS = 300;
 const STABLE_LIMIT_MS = 15_000;
 const FIRST_DRAW_LIMIT_MS = 30_000;
 const SCROLL_PX = 400;
+// A JPEG at this quality weighs about 160 KB, a fifth of the PNG, and its text stays sharp.
+const JPEG_QUALITY = 80;
 const BROWSER_DIR = fileURLToPath(new URL('..', import.meta.url));
 const DIST = fileURLToPath(new URL('../../../dist/planner', import.meta.url));
 
@@ -62,24 +64,28 @@ async function startWalkthrough(browser, base) {
   };
 }
 
-/** True when no element of the page says that it is busy (`aria-busy`). */
-const idle = () => !document.querySelector('[aria-busy=true]');
+/**
+ * True when the map does not say that it is busy (`aria-busy`). Only the map counts: a part of the page can
+ * stay busy while the planner waits for a route that never comes, and the study must see that screen.
+ */
+const idle = () => !document.querySelector('.maplibregl-map[aria-busy=true]');
 
 /**
- * Two equal screenshots 300 ms apart with no request in flight and no busy element; after 15 s the last
+ * Two equal screenshots 300 ms apart with no request in flight and no busy map; after 15 s the last
  * one, marked unstable. A page that waits for an answer, a timer or a map worker can show the same pixels
  * for longer than 300 ms, and the participant has no action to wait.
  */
 async function stableScreenshot(page, pending) {
-  const shoot = () => page.screenshot({ animations: 'disabled', caret: 'hide' });
+  // Two JPEGs of the same pixels are the same bytes.
+  const shoot = () => page.screenshot({ type: 'jpeg', quality: JPEG_QUALITY, animations: 'disabled', caret: 'hide' });
   let last = await shoot();
   for (const deadline = Date.now() + STABLE_LIMIT_MS; Date.now() < deadline;) {
     await page.waitForTimeout(STABLE_GAP_MS);
     const next = await shoot();
-    if (next.equals(last) && !pending.size && await page.evaluate(idle)) return { png: next, unstable: false };
+    if (next.equals(last) && !pending.size && await page.evaluate(idle)) return { jpeg: next, unstable: false };
     last = next;
   }
-  return { png: last, unstable: true };
+  return { jpeg: last, unstable: true };
 }
 
 async function perform(page, { type, x, y, x2, y2, text }) {

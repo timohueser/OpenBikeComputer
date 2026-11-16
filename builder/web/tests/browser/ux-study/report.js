@@ -12,6 +12,8 @@ const MIN_WALKTHROUGHS = 2;
 const MAX_GROUPS = 15;
 const MAX_FINDINGS = 10;
 const END_STEPS = 3;
+// The API takes a request of at most 32 MB; 30 screenshots as JPEG are about 6 MB in base64.
+export const MAX_IMAGE_BYTES = 16_000_000;
 
 const findingsSchema = {
   type: 'object',
@@ -38,7 +40,7 @@ const findingsSchema = {
 };
 
 const failed = outcome => outcome === 'stuck' || outcome === 'gave_up';
-const screenFile = n => `${String(n).padStart(2, '0')}.png`;
+const screenFile = n => `${String(n).padStart(2, '0')}.jpg`;
 
 /**
  * The candidate steps of `walkthroughs` (`{ task, n, outcome, records }`). A step is a candidate when the
@@ -102,7 +104,9 @@ export async function openFindings() {
 
 /**
  * Writes `<dir>/report.md` for the walkthroughs in `results` and resolves with its path. The cost of the
- * report call goes into `budget`. `limited` says that the spending limit stopped the study.
+ * report call goes into `budget`. `limited` says that the spending limit stopped the study. The report
+ * compares the open findings only when the study completed and the report call answered: otherwise a
+ * finding that the study did not look for would read as not seen.
  */
 export async function writeReport({ dir, results, budget, model, maxCostUsd, limited, ask, issues = openFindings, commit = gitCommit() }) {
   const walkthroughs = results.map(result => ({ ...result, records: readRecords(join(dir, `${result.task}-${result.n}`)) }));
@@ -113,7 +117,11 @@ export async function writeReport({ dir, results, budget, model, maxCostUsd, lim
   if (open.error) notices.push(`\`gh\` failed, so the report does not list open findings: ${open.error}`);
 
   let answer = { findings: [], seen_again: [] };
-  if (groups.length) {
+  let compared = !limited;
+  if (groups.length && budget.exhausted) {
+    compared = false;
+    notices.push('The spending limit is reached, so the report call did not run.');
+  } else if (groups.length) {
     ask ??= createModelCall({ model, system: PROMPT, effort: 'medium' });
     try {
       const { value, usage } = await ask(reportContent(dir, groups, walkthroughs, open), findingsSchema);
@@ -121,12 +129,13 @@ export async function writeReport({ dir, results, budget, model, maxCostUsd, lim
       answer = value;
     } catch (error) {
       if (error.usage) budget.add(error.usage);
+      compared = false;
       notices.push(`The report call failed, so the report has no new findings: ${error.message}`);
     }
   }
 
   const path = join(dir, 'report.md');
-  writeFileSync(path, render({ notices, commit, model, costUsd: budget.spent, walkthroughs, groups, answer, open }));
+  writeFileSync(path, render({ notices, commit, model, costUsd: budget.spent, walkthroughs, groups, answer, open, compared }));
   return path;
 }
 
@@ -153,16 +162,18 @@ function reportContent(dir, groups, walkthroughs, open) {
       + `${group.walkthroughs} walkthroughs${group.failed ? ', a walkthrough failed here' : ''}.\n${lines.join('\n\n')}` });
     const { task, n, step, id } = group.steps[0];
     for (const [label, file] of [['before', screenFile(step)], ['after', screenFile(step + 1)]]) {
-      const png = join(dir, `${task}-${n}`, file);
-      if (existsSync(png)) content.push({ type: 'text', text: `The screen ${label} the action of ${id}:` }, image(readFileSync(png)));
+      const jpeg = join(dir, `${task}-${n}`, file);
+      if (existsSync(jpeg)) content.push({ type: 'text', text: `The screen ${label} the action of ${id}:` }, image(readFileSync(jpeg)));
     }
   });
+  const imageBytes = content.reduce((sum, block) => sum + (block.source?.data.length ?? 0), 0);
+  if (imageBytes > MAX_IMAGE_BYTES) throw new Error(`the screenshots are ${imageBytes} bytes, more than ${MAX_IMAGE_BYTES}`);
   content.push({ type: 'text', text: open.issues ? `Open accepted findings:\n${JSON.stringify(open.issues)}` : 'The open accepted findings are not available.' });
   content.push({ type: 'text', text: `Rejected findings:\n${readFileSync(REJECTED, 'utf8')}` });
   return content;
 }
 
-function render({ notices, commit, model, costUsd, walkthroughs, groups, answer, open }) {
+function render({ notices, commit, model, costUsd, walkthroughs, groups, answer, open, compared }) {
   const byId = new Map(groups.flatMap(group => group.steps).map(step => [step.id, step]));
   const findings = answer.findings
     .map(finding => ({ ...finding, steps: finding.steps.filter(id => byId.has(id)).map(id => byId.get(id)) }))
@@ -192,7 +203,7 @@ function render({ notices, commit, model, costUsd, walkthroughs, groups, answer,
     `- What happened: ${finding.what_happened}`,
     `- Evidence: ${evidence(finding.steps)}`,
     `- Direction: ${finding.direction}`, ''));
-  if (open.issues) {
+  if (open.issues && compared) {
     const seen = new Set(answer.seen_again);
     const list = (issues, suffix = '') => (issues.length ? issues.map(issue => `- #${issue.number}: ${issue.title}${suffix}`) : ['None.']);
     lines.push('## Open findings seen again', '', ...list(open.issues.filter(issue => seen.has(issue.number))), '');
@@ -201,7 +212,7 @@ function render({ notices, commit, model, costUsd, walkthroughs, groups, answer,
   return lines.join('\n');
 }
 
-/** "plan-route 1, steps [6](plan-route-1/06.png), [7](plan-route-1/07.png); plan-route 2, step [3](…)": each link opens the screen that the step acted on. */
+/** "plan-route 1, steps [6](plan-route-1/06.jpg), [7](plan-route-1/07.jpg); plan-route 2, step [3](…)": each link opens the screen that the step acted on. */
 function evidence(steps) {
   const walks = new Map();
   for (const s of [...steps].sort((a, b) => a.task.localeCompare(b.task) || a.n - b.n || a.step - b.step)) {

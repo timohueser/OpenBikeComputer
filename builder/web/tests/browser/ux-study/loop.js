@@ -23,7 +23,7 @@ export function createBudget(model, maxCostUsd) {
 }
 
 /**
- * Runs `task` once in a new walkthrough of `env` and writes `steps.jsonl` and one PNG for each screen to `dir`.
+ * Runs `task` once in a new walkthrough of `env` and writes `steps.jsonl` and one JPEG for each screen to `dir`.
  * Resolves with `{ outcome, steps }`: `done`, `stuck`, `gave_up` or `error`; an `error` also has a `reason`.
  * The participant gets only its own answers back: the fields that the loop adds come from the page, which
  * the participant must know only from the screenshots.
@@ -33,7 +33,7 @@ export async function walk({ task, env, participant, budget, dir }) {
   const answers = [];
   const records = [];
   let screens = 0;
-  const save = png => writeFileSync(join(dir, `${String(++screens).padStart(2, '0')}.png`), png);
+  const save = jpeg => writeFileSync(join(dir, `${String(++screens).padStart(2, '0')}.jpg`), jpeg);
   const end = (outcome, reason) => ({ outcome, steps: records.length, ...(reason && { reason }) });
   /** The value of a participant call with two more tries, or the reason that it failed. */
   const call = async (request, invalid = () => null) => {
@@ -58,26 +58,27 @@ export async function walk({ task, env, participant, budget, dir }) {
   try {
     walkthrough = await env.start();
     let shot = await walkthrough.screenshot();
-    save(shot.png);
+    save(shot.jpeg);
     let previous = null;
     for (;;) {
-      const step = { goal: task.goal, records: answers, previous, current: shot.png };
+      const step = { goal: task.goal, records: answers, previous, current: shot.jpeg };
       const answer = await call(() => participant.step(step), invalidAction);
       if (!answer.value) return end('error', answer.reason);
       const { action } = answer.value;
-      const where = action.type === 'give_up' ? { screen: null, hit: null } : await walkthrough.describe(action);
+      const where = await walkthrough.describe(action);
+      if (action.type === 'give_up') where.hit = null;
       const record = { step: records.length + 1, ...answer.value, ...where, unstable: shot.unstable };
       answers.push(answer.value);
       records.push(record);
       if (action.type === 'give_up') return end('gave_up');
 
       await walkthrough.perform(action);
-      previous = shot.png;
+      previous = shot.jpeg;
       shot = await walkthrough.screenshot();
-      save(shot.png);
+      save(shot.jpeg);
 
       if (await task.success(walkthrough.app)) {
-        const done = await call(() => participant.done({ goal: task.goal, records: answers, current: shot.png }));
+        const done = await call(() => participant.done({ goal: task.goal, records: answers, current: shot.jpeg }));
         if (!done.value) return end('error', done.reason);
         record.done_answer = done.value;
         return end('done');
