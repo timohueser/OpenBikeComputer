@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use rayon::prelude::*;
 use rstar::primitives::GeomWithData;
 use rstar::RTree;
 use std::sync::{Condvar, Mutex, PoisonError};
@@ -19,8 +20,13 @@ use crate::{metres, Plan, Terrain};
 pub const AREA_ZOOM: u32 = 10;
 pub const HALO_M: f64 = 500.0;
 /// A job takes at most about this many bytes per metre of the ways of its area: its samples, its rows and
-/// the factorization of its system. Measured on the bake of central-switzerland, one job at a time.
+/// the factorization of its system. On the bake of central-switzerland at layer revision 23, one job at a
+/// time, the peak of its largest job (8.0 million metres) was 348 bytes per metre, and that of each job
+/// over 3,500 km 334 to 370; these jobs set the peak of the step, and 400 is above all of them. A smaller
+/// job takes more per metre, but little in all.
 const JOB_BYTES_PER_M: f64 = 400.0;
+/// The search of the features near an area holds two numbers per point of the region.
+const SEARCH_BYTES_PER_POINT: usize = 16;
 /// The ways that a deck or a bore crosses join a job from the points every FREE_STEP_M along it.
 const FREE_STEP_M: f64 = 50.0;
 /// A bridge or a tunnel has almost no length in the graph of the areas: a job holds it whole.
@@ -239,10 +245,15 @@ pub fn solve_by_area(
     jobs.sort_by(|p, q| region.areas[q].partial_cmp(&region.areas[p]).unwrap().then(p.cmp(q)));
     let estimates: Vec<usize> = jobs.iter().map(|area| (JOB_BYTES_PER_M * region.areas[area]) as usize).collect();
     // Of the graph of the region, a job reads only the features near its area. The graph goes before the jobs
-    // start: it takes as much memory as the rows of a large job.
-    let near: Vec<Vec<usize>> = jobs.iter().map(|&area| region.near(area)).collect();
-    drop(region);
+    // start: it takes as much memory as the rows of a large job. The searches run on as many threads as the
+    // memory holds.
     let cores = std::thread::available_parallelism().map_or(1, usize::from);
+    release();
+    let search = SEARCH_BYTES_PER_POINT * region.point.len().max(1);
+    let threads = (memory.saturating_sub(resident()) / search).clamp(1, cores);
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().expect("the threads of the searches");
+    let near: Vec<Vec<usize>> = pool.install(|| jobs.par_iter().map(|&area| region.near(area)).collect());
+    drop((pool, region));
     release();
     let held = resident();
     let memory = memory.saturating_sub(held);
