@@ -3,7 +3,7 @@
 //! The bake runs it on every cell and the tiles carry what it decides (`level_tags`); the device reads that.
 //!
 //! Every decision reads within the row of `Structures::reach`: a crossing's corners along each way up
-//! to `PLACE_M`; a station's tag end along its way up to `open_max_m`, an A line up to `A_MAX_M`; the
+//! to `PLACE_M`; a tunnel station's chain along its way up to `open_max_m + body_m`, an A line up to `A_MAX_M`; the
 //! bodies and strokes within `GRID_M` of a station.
 
 use super::curve::point;
@@ -24,6 +24,8 @@ pub struct Structures {
     pub lift_max_m: f64,
     /// A tunnel way is open only this far along from a tag end: the longest open cut of the crossing design.
     pub open_max_m: f64,
+    /// A tunnel's body reaches this far behind each portal line; the rest is not drawn.
+    pub body_m: f64,
     /// A deck shorter than this between its end lines is a ground way.
     pub deck_min_m: f64,
     /// The band past a deck's paved edge.
@@ -39,10 +41,11 @@ pub struct Structures {
 }
 
 impl Structures {
-    pub const FIELDS: [&'static str; 9] = [
+    pub const FIELDS: [&'static str; 10] = [
         "cover_m",
         "lift_max_m",
         "open_max_m",
+        "body_m",
         "deck_min_m",
         "edge_band_m",
         "door_min_m",
@@ -52,12 +55,13 @@ impl Structures {
     ];
 
     pub fn new(
-        [cover_m, lift_max_m, open_max_m, deck_min_m, edge_band_m, door_min_m, railing_width_m, post_spacing_m, pier_depth_m]: [f64; 9],
+        [cover_m, lift_max_m, open_max_m, body_m, deck_min_m, edge_band_m, door_min_m, railing_width_m, post_spacing_m, pier_depth_m]: [f64; 10],
     ) -> Structures {
         Structures {
             cover_m,
             lift_max_m,
             open_max_m,
+            body_m,
             deck_min_m,
             edge_band_m,
             door_min_m,
@@ -72,7 +76,7 @@ impl Structures {
     pub fn reach(&self, graph_m: f64) -> Reach {
         let terms = [
             ("the graph's longest chain", graph_m),
-            ("along the way: max(open_max_m, A_MAX_M)", self.open_max_m.max(A_MAX_M)),
+            ("along the way: max(open_max_m + body_m, A_MAX_M)", (self.open_max_m + self.body_m).max(A_MAX_M)),
             ("about a station: GRID_M", GRID_M),
             ("a crossing's corners along each way: PLACE_M", PLACE_M),
         ];
@@ -264,8 +268,14 @@ impl<'a> Ctx<'a> {
         let sets = (g.junctions.iter().map(|j| j.arms.iter().collect::<Vec<_>>()))
             .chain(g.joints.iter().map(|j| j.arms.iter().collect()))
             .chain(g.ends.iter().map(|e| vec![&e.arm]));
+        // A tunnel way's ends are where its arms stand at its first or its last station: a node that it runs through
+        // names no end of it, so its chain finds its tag ends (`Ctx::beyond`).
+        let interior = |a: &crate::graph::Arm| {
+            let w = &g.ways[a.way as usize];
+            w.level == Level::Tunnel && w.family != Family::Water && a.at != if a.dir > 0 { w.from } else { w.to }
+        };
         for arms in sets {
-            for a in &arms {
+            for a in arms.iter().filter(|a| !interior(a)) {
                 let others = arms.iter().filter(|b| !std::ptr::eq(**b, *a)).map(|b| (b.way, b.dir > 0)).collect();
                 nodes[2 * a.way as usize + usize::from(a.dir > 0)] = Some(others);
             }
@@ -427,29 +437,26 @@ impl<'a> Ctx<'a> {
         [true, false].iter().any(|&start| self.others(w, start).is_some_and(|x| x.iter().any(|a| a.0 == o)))
     }
 
-    /// Storey 0 at q without way `not` and the ways that go on from its ends: the terrain and the bodies
-    /// of the ground ways near q (their surface less their `fill` times the metres past the paved
-    /// stroke). And the highest paved stroke that covers q, less the at-grade band of it and `not` (the
-    /// lower of their `snap_height_m`, as at a crossing); None where none covers q.
-    fn ground(&self, q: [f64; 2], not: u32) -> (f64, Option<f64>) {
+    /// Storey 0 over a tunnel way's floor at q, without way `not` and the ways that go on from its ends, as the cover
+    /// holds it by construction: the lowest paved stroke of a ground way that covers q (a paved face never moves), else
+    /// the plain terrain lifted by `lift_max_m` (the floor bound's most). And the highest paved stroke that covers q
+    /// less the at-grade band of it and `not` (the lower of their `snap_height_m`, as at a crossing); None where none
+    /// covers q.
+    fn lid(&self, q: [f64; 2], not: u32) -> (f64, Option<f64>) {
         let mpu = self.mpu(q);
-        let (mut z, mut paved) = (self.terrain(q), None::<f64>);
-        for f in self.feet(q, HALF_MAX_M + BODY_M) {
+        let mut paved = None::<(f64, f64)>;
+        for f in self.feet(q, HALF_MAX_M) {
             if f.way == not || self.g.ways[f.way as usize].level != Level::Ground || self.joined(not, f.way) {
                 continue;
             }
             let Rule::Way(s, _) = self.rule(f.way) else { continue };
-            let past = f.d * mpu - self.foot_half(&f);
-            if past <= s.reach_m {
+            if f.d * mpu <= self.foot_half(&f) {
                 let surface = self.surface(&f, q);
-                if past <= 0.0 {
-                    let top = surface - s.snap_height_m.min(self.snap_m(not));
-                    paved = Some(paved.map_or(top, |p| p.max(top)));
-                }
-                z = z.max(surface - s.fill * past.max(0.0));
+                let top = surface - s.snap_height_m.min(self.snap_m(not));
+                paved = Some(paved.map_or((surface, top), |(lo, hi)| (lo.min(surface), hi.max(top))));
             }
         }
-        (z, paved)
+        (paved.map_or(self.terrain(q) + self.s.lift_max_m, |p| p.0), paved.map(|p| p.1))
     }
 
     /// Whether q lies over the body of way `g`: its paved stroke and, for a ground way, its bank down
@@ -466,38 +473,70 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    /// The bore test at a point of a tunnel way: `c` less what it needs (the least room, or that less
-    /// `lift_max_m` on free ground, where no paved stroke lies: a paved face never moves). `c` is the
-    /// least of storey 0 over the bore's width less the floor.
+    /// The bore test at a point of a tunnel way: the least over the floor's width of storey 0 there (`lid`) less the
+    /// floor, less the least room. The floor is the way's core, banked across its carriageway and level past it, as
+    /// the floor bound of the heights reads it.
     fn bore(&self, w: u32, a: &At) -> f64 {
         let Rule::Way(s, _) = self.rule(w) else { return f64::NEG_INFINITY };
-        let half = (s.half_m + a.widen) / self.mpu(a.p);
+        let mpu = self.mpu(a.p);
+        let half = s.half_m + a.widen;
+        let core = half + s.shoulder_m + s.verge_m;
         let n = [-a.tangent[1], a.tangent[0]];
-        let (mut c, mut free) = (f64::INFINITY, true);
-        for side in [-1.0, 0.0, 1.0] {
-            let q = add(a.p, n, side * half);
-            let (z, paved) = self.ground(q, w);
-            let across = -cross(a.tangent, sub(q, a.p)) * self.mpu(a.p);
-            c = c.min(z - (a.z + a.bank * across));
-            free &= paved.is_none();
+        let mut c = f64::INFINITY;
+        for x in [-core, -half, 0.0, half, core] {
+            let q = add(a.p, n, x / mpu);
+            let across = -cross(a.tangent, sub(q, a.p)) * mpu;
+            c = c.min(self.lid(q, w).0 - (a.z + a.bank * across.clamp(-half, half)));
         }
-        let least = s.bore_least_m + s.roof_least_m;
-        c - if free { least - self.s.lift_max_m } else { least }
+        c - (s.bore_least_m + s.roof_least_m)
     }
 
-    /// The state of a tunnel station by its own test: BORE where the bore fits; else OPEN within
-    /// `open_max_m` of a tag end, wherever its floor lies against the terrain (the way goes on as a ground
-    /// way, on its bank where the floor lies over the terrain, until the cover holds), unless a way lies on
-    /// top: a paved stroke over the floor by more than the at-grade band; else HIDDEN.
-    fn tunnel_state(&self, w: u32, a: &At, tag_m: f64) -> State {
-        let on_top = || self.ground(a.p, w).1.is_some_and(|top| top > a.z);
-        if self.bore(w, a) >= 0.0 {
-            State::Bore
-        } else if tag_m > self.s.open_max_m || on_top() {
-            State::Hidden
-        } else {
-            State::Open
+    /// Whether a way lies on top of tunnel way w at a point: a paved stroke over its floor by more than the at-grade
+    /// band.
+    fn on_top(&self, w: u32, a: &At) -> bool {
+        self.lid(a.p, w).1.is_some_and(|top| top > a.z)
+    }
+
+    /// A tunnel way's chain past its end `start` (along the tunnel ways that go on from it, up to `limit`): the metres
+    /// to the tag end, infinite where unread; and, where a station there passes the bore test, the metres to the first
+    /// passing point from the tag end (a sample, or bisected between it and the failing one before it). At a fork, the
+    /// branch with the nearest tag end.
+    fn beyond(&self, w: u32, start: bool, st: &[Stations], limit: f64, depth: u32) -> (f64, Option<f64>) {
+        let Some(others) = self.others(w, start) else { return (f64::INFINITY, None) };
+        let mut best = (0.0, None);
+        let mut any = false;
+        for &(o, o_start) in others.iter().filter(|(o, _)| self.tunnel(*o)) {
+            let len = self.lengths[o as usize];
+            let branch = if len >= limit || depth >= 8 {
+                (f64::INFINITY, None)
+            } else {
+                let (tag, portal) = self.beyond(o, !o_start, st, limit - len, depth + 1);
+                // Way o read from its far end inward: its metres from w's end.
+                let (m, pass) = (&st[o as usize].0, &st[o as usize].1);
+                let near = |x: f64| if o_start { x } else { len - x };
+                let own = || {
+                    let order: Vec<usize> = if o_start { (0..m.len()).rev().collect() } else { (0..m.len()).collect() };
+                    let k = order.iter().position(|&i| pass[i])?;
+                    let i = order[k];
+                    if k == 0 {
+                        return Some(near(m[i]));
+                    }
+                    let j = order[k - 1];
+                    let ok = |x: f64| self.bore(o, &self.at(o, x)) >= 0.0;
+                    let x = if m[j] < m[i] { bisect(m[j], m[i], &ok) } else { bisect_down(m[i], m[j], &ok) };
+                    Some(near(x))
+                };
+                (len + tag, portal.map(|p| len + p).or_else(own))
+            };
+            if !any || branch.0 < best.0 {
+                best = branch;
+            }
+            any = true;
         }
+        if best.0.is_infinite() {
+            best.1 = None;
+        }
+        best
     }
 
     /// Metres from an end of way w on through the ways that `same` accepts to the first end where
@@ -744,13 +783,78 @@ struct Track {
     way: u32,
     m: Vec<f64>,
     state: Vec<State>,
-    tag: (f64, f64),
     a: [Option<f64>; 2],
+    /// A tunnel way's portals (`Portals`).
+    portals: Option<Portals>,
 }
 
-impl Track {
-    fn tag_m(&self, len: f64, m: f64) -> f64 {
-        (self.tag.0 + m).min(self.tag.1 + len - m)
+/// A tunnel way's stations (`stations`): the metres along of each, and whether the bore test passes there.
+type Stations = (Vec<f64>, Vec<bool>);
+
+/// The stations of a tunnel way: its samples, and the crossings where it is the lower way (a way on top can give the
+/// room between two samples).
+fn stations(ctx: &Ctx, w: u32) -> Stations {
+    let g = ctx.g;
+    let from = g.ways[w as usize].from;
+    let mut m: Vec<f64> = ctx.samples(w).iter().map(|s| between(&g.parts, &from, &ctx.station(w, s))).collect();
+    let under = g.crossings.iter().filter(|c| way_of(g, &c.under) == Some(w));
+    m.extend(under.map(|c| between(&g.parts, &from, &c.under)));
+    m.sort_by(f64::total_cmp);
+    m.dedup_by(|a, b| (*a - *b).abs() < PLACE_TO_M);
+    let pass = m.iter().map(|&x| ctx.bore(w, &ctx.at(w, x)) >= 0.0).collect();
+    (m, pass)
+}
+
+/// A tunnel way's two tag ends and their portal lines, each from its own end of the way (its start, then its end):
+/// the metres to the tag end, infinite where unread; and the metres from that end of the way to the first point from
+/// the tag end that passes the bore test (negative past the way's end, infinite where none is read).
+struct Portals {
+    tag: [f64; 2],
+    portal: [f64; 2],
+}
+
+impl Portals {
+    /// A tunnel way's portals: along its chain (`Ctx::beyond`), else at its own first passing point from each end,
+    /// bisected between its stations.
+    fn of(ctx: &Ctx, w: u32, st: &[Stations]) -> Portals {
+        let len = ctx.lengths[w as usize];
+        let limit = ctx.s.open_max_m + ctx.s.body_m;
+        let ok = |x: f64| ctx.bore(w, &ctx.at(w, x)) >= 0.0;
+        let (m, own) = (&st[w as usize].0, &st[w as usize].1);
+        let first = own.iter().position(|&p| p).map(|i| if i == 0 { m[0] } else { bisect(m[i - 1], m[i], &ok) });
+        let last = own.iter().rposition(|&p| p).map(|i| {
+            if i + 1 == m.len() {
+                len - m[i]
+            } else {
+                len - bisect_down(m[i], m[i + 1], &ok)
+            }
+        });
+        let ends = [(true, first), (false, last)];
+        let mut tag = [0.0; 2];
+        let mut portal = [f64::INFINITY; 2];
+        for (e, (start, own)) in ends.into_iter().enumerate() {
+            let (t, beyond) = ctx.beyond(w, start, st, limit, 0);
+            tag[e] = t;
+            portal[e] = beyond.map(|x| -x).or(own).unwrap_or(f64::INFINITY);
+        }
+        Portals { tag, portal }
+    }
+
+    /// The state at metres m of a way of length len, by the bore test there (`pass`) and `on_top`: OPEN from a tag
+    /// end up to its portal line, within `open_max_m` of the tag end, unless a way lies on top (a door); BORE up to
+    /// `body_m` behind a portal line within that reach; else HIDDEN.
+    fn state(&self, s: &Structures, len: f64, m: f64, pass: bool, on_top: &dyn Fn() -> bool) -> State {
+        let (mut open, mut body) = (false, false);
+        for ((&tag, &portal), at) in self.tag.iter().zip(&self.portal).zip([m, len - m]) {
+            open |= tag + at <= s.open_max_m && at < portal;
+            body |= pass && tag + portal <= s.open_max_m && at >= portal && at - portal <= s.body_m;
+        }
+        match (open, body) {
+            (true, _) if on_top() => State::Hidden,
+            (true, _) => State::Open,
+            (false, true) => State::Bore,
+            _ => State::Hidden,
+        }
     }
 }
 
@@ -767,6 +871,9 @@ fn states(ctx: &Ctx, ladders: &[Option<Ladder>]) -> Levels {
         }
     }
     let ways: Vec<u32> = (0..g.ways.len() as u32).filter(|&w| ctx.tagged(w) || !ended[w as usize].is_empty()).collect();
+    // The stations of every tunnel way: a way's portals read them along its chain.
+    let st: Vec<Stations> =
+        (0..g.ways.len() as u32).map(|w| if ctx.tunnel(w) { stations(ctx, w) } else { Default::default() }).collect();
     // Deck ways that are ground: over a culvert, or with no room for a deck between their A lines. A
     // deck way that turns ground changes the A lines of the deck ways at its ends only.
     let mut ground: Vec<bool> = (0..g.ways.len() as u32).map(|w| !ctx.deck_tagged(w) || culvert[w as usize]).collect();
@@ -792,20 +899,21 @@ fn states(ctx: &Ctx, ladders: &[Option<Ladder>]) -> Levels {
     }
     let mut out = Levels::default();
     for &w in &ways {
-        let samples = ctx.samples(w);
         let from = g.ways[w as usize].from;
-        let m: Vec<f64> = samples.iter().map(|s| between(&g.parts, &from, &ctx.station(w, s))).collect();
-        let mut t = Track { way: w, state: vec![State::Open; m.len()], tag: (0.0, 0.0), a: [None, None], m };
+        let m: Vec<f64> = if ctx.tunnel(w) {
+            st[w as usize].0.clone()
+        } else {
+            ctx.samples(w).iter().map(|s| between(&g.parts, &from, &ctx.station(w, s))).collect()
+        };
+        let mut t = Track { way: w, state: vec![State::Open; m.len()], a: [None, None], portals: None, m };
         if ctx.tunnel(w) {
-            t.tag = ctx.tag_ends(w, ctx.s.open_max_m);
-            for (i, s) in samples.iter().enumerate() {
+            let p = Portals::of(ctx, w, &st);
+            for i in 0..t.m.len() {
+                let a = ctx.at(w, t.m[i]);
                 t.state[i] =
-                    ctx.tunnel_state(w, &ctx.at_station(ctx.station(w, s)), t.tag_m(ctx.lengths[w as usize], t.m[i]));
+                    p.state(ctx.s, ctx.lengths[w as usize], t.m[i], st[w as usize].1[i], &|| ctx.on_top(w, &a));
             }
-            let raw = t.state.clone();
-            for i in 0..t.state.len() {
-                t.state[i] = open_rule(&t, &raw, ctx.lengths[w as usize], i);
-            }
+            t.portals = Some(p);
         } else if !ground[w as usize] {
             let (a, _) = deck_of[w as usize].expect("each DECK way has its ends");
             let (lo, hi) = (a[0].unwrap_or(0.0), a[1].unwrap_or(ctx.lengths[w as usize]));
@@ -819,14 +927,37 @@ fn states(ctx: &Ctx, ladders: &[Option<Ladder>]) -> Levels {
         // Step 3: not drawn over the body of the way that stays; the rest of the way keeps its state.
         for &(i, stay) in &ended[w as usize] {
             let c = &g.crossings[i];
-            let st = if way_of(g, &c.over) == Some(w) { c.over } else { c.under };
-            let k0 = t.m.partition_point(|&x| x < between(&g.parts, &from, &st));
-            let over = |k: usize| ctx.in_body(stay, ctx.global(&samples[k]));
-            for k in (k0..samples.len()).take_while(|&k| over(k)) {
+            let at = if way_of(g, &c.over) == Some(w) { c.over } else { c.under };
+            let k0 = t.m.partition_point(|&x| x < between(&g.parts, &from, &at));
+            // A tunnel's track holds its stations, another way's its samples.
+            let point = |k: usize| if ctx.tunnel(w) { ctx.at(w, t.m[k]).p } else { ctx.global(&ctx.samples(w)[k]) };
+            let over = |k: usize| ctx.in_body(stay, point(k));
+            for k in (k0..t.m.len()).take_while(|&k| over(k)) {
                 t.state[k] = State::Hidden;
             }
             for k in (0..k0).rev().take_while(|&k| over(k)) {
                 t.state[k] = State::Hidden;
+            }
+        }
+        // A body's end can lie between two samples of one state: a station just past it, away from its portal, joins
+        // the track, so the end line lies there.
+        if let Some(p) = &t.portals {
+            let len = ctx.lengths[w as usize];
+            for (e, sign) in [(0, 1.0), (1, -1.0)] {
+                let from = if e == 0 { 0.0 } else { len };
+                let m = from + sign * (p.portal[e] + ctx.s.body_m + 2.0 * PLACE_TO_M);
+                if !(m > 0.0 && m < len) || t.m.contains(&m) {
+                    continue;
+                }
+                let k = t.m.partition_point(|&x| x < m);
+                let a = ctx.at(w, m);
+                let state = if ended[w as usize].iter().any(|&(_, stay)| ctx.in_body(stay, a.p)) {
+                    State::Hidden
+                } else {
+                    p.state(ctx.s, len, m, ctx.bore(w, &a) >= 0.0, &|| ctx.on_top(w, &a))
+                };
+                t.m.insert(k, m);
+                t.state.insert(k, state);
             }
         }
         runs(ctx, &t, &ended[w as usize], &mut out);
@@ -939,18 +1070,17 @@ fn merge_a(ctx: &Ctx, out: &mut Levels) {
     }
 }
 
-/// OPEN only between a tag end and the first BORE from that end: the read stays within `open_max_m`.
-fn open_rule(t: &Track, raw: &[State], len: f64, i: usize) -> State {
-    if raw[i] != State::Open {
-        return raw[i];
+/// The last `m` in [lo, hi] where `ok` holds, to `PLACE_TO_M`; `ok(lo)` is true, `ok(hi)` false.
+fn bisect_down(mut lo: f64, mut hi: f64, ok: &dyn Fn(f64) -> bool) -> f64 {
+    while hi - lo > PLACE_TO_M {
+        let mid = (lo + hi) / 2.0;
+        if ok(mid) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
     }
-    let back = t.tag.0 + t.m[i] <= t.tag.1 + len - t.m[i];
-    let between = if back { &raw[..i] } else { &raw[i + 1..] };
-    if between.contains(&State::Bore) {
-        State::Hidden
-    } else {
-        State::Open
-    }
+    lo
 }
 
 /// The runs and end lines of a track: a change between two samples lies where the state that tells
@@ -965,16 +1095,8 @@ fn runs(ctx: &Ctx, t: &Track, ended: &[(usize, u32)], out: &mut Levels) {
         let a = ctx.at(w, m);
         if stays.iter().any(|&s| ctx.in_body(s, a.p)) {
             State::Hidden
-        } else if tunnel {
-            // The OPEN rule at m: no BORE sample between m and its nearer tag end.
-            let s = ctx.tunnel_state(w, &a, t.tag_m(len, m));
-            let back = t.tag.0 + m <= t.tag.1 + len - m;
-            let bore = t.m.iter().zip(&t.state).any(|(&x, &st)| st == State::Bore && if back { x < m } else { x > m });
-            if s == State::Open && bore {
-                State::Hidden
-            } else {
-                s
-            }
+        } else if let Some(p) = &t.portals {
+            p.state(ctx.s, len, m, ctx.bore(w, &a) >= 0.0, &|| ctx.on_top(w, &a))
         } else {
             State::Open
         }

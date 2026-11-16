@@ -936,26 +936,27 @@ fn tunnel_levels(g: &WayGraph) -> WayLevels {
 }
 
 #[test]
-fn a_tunnel_that_comes_in_over_the_terrain_is_open_from_its_tag_end_up_to_open_max_m() {
+fn a_tunnel_is_open_up_to_its_first_station_with_room_and_its_body_reaches_body_m_behind() {
     use EndKind::*;
     use State::*;
     // A residential way 3 m over flat terrain, a tunnel from x 0 to `len` through a ridge that rises `slope` per metre
-    // from each tag end. The bore needs the least room less the lift on free ground: 3.0 + 0.3 - 1.0 = 2.3 m of
-    // cover, at (3 + 2.3) / slope in from each end. On the steep ridge that lies within `open_max_m` (30 m): the way is
-    // open from its tag end, on its bank, to the portal. On the gentle one it lies past 30 m: open to 30 m, then
-    // closed.
+    // from each tag end. The cover lifts the terrain by at most 1 m and the bore needs 3.0 + 0.3 m of room, so the
+    // body starts where the ridge stands 3 + 2.3 m high: (3 + 2.3) / slope in from each tag end. Before it the way is
+    // open (a cut); the body reaches `body_m` (25 m) behind each portal line and the rest is hidden, so a short
+    // tunnel is one body. A portal more than `open_max_m` (30 m) in leaves no body: the cut ends there, hidden.
     let street = [("highway", "residential")];
     let tunnel = [("highway", "residential"), ("tunnel", "yes")];
-    let cases: [(f64, f64, WayLevels); 2] = [
-        (0.5, 80.0, (vec![Open, Bore, Open], vec![(Portal, 10.6), (Portal, 69.4)])),
+    let cases: [(f64, f64, WayLevels); 3] = [
         (
-            0.1,
-            160.0,
+            0.5,
+            80.0,
             (
-                vec![Open, Hidden, Bore, Hidden, Open],
-                vec![(Closed, 30.0), (Closed, 53.0), (Closed, 107.0), (Closed, 130.0)],
+                vec![Open, Bore, Hidden, Bore, Open],
+                vec![(Portal, 10.6), (Closed, 35.6), (Closed, 44.4), (Portal, 69.4)],
             ),
         ),
+        (0.5, 50.0, (vec![Open, Bore, Open], vec![(Portal, 10.6), (Portal, 39.4)])),
+        (0.1, 160.0, (vec![Open, Hidden, Open], vec![(Closed, 30.0), (Closed, 130.0)])),
     ];
     for (slope, len, (want_states, want_lines)) in cases {
         let lines = [
@@ -965,11 +966,33 @@ fn a_tunnel_that_comes_in_over_the_terrain_is_open_from_its_tag_end_up_to_open_m
         ];
         let g = graph_on(&lines, &|x, _| (slope * x.min(len - x)).max(0.0));
         let (states, lines) = tunnel_levels(&g);
-        assert_eq!(states, want_states, "slope {slope}: {lines:?}");
-        assert_eq!(lines.len(), want_lines.len(), "slope {slope}: {lines:?}");
+        assert_eq!(states, want_states, "slope {slope}, {len} m: {lines:?}");
+        assert_eq!(lines.len(), want_lines.len(), "slope {slope}, {len} m: {lines:?}");
         for (got, want) in lines.iter().zip(&want_lines) {
-            assert!(got.0 == want.0 && (got.1 - want.1).abs() < 0.3, "slope {slope}: {got:?}, want {want:?}");
+            assert!(got.0 == want.0 && (got.1 - want.1).abs() < 0.3, "slope {slope}, {len} m: {got:?}, want {want:?}");
         }
+    }
+}
+
+#[test]
+fn an_underpass_is_a_bore_under_the_paved_stroke_of_the_way_on_top() {
+    // A residential tunnel at the height of the flat terrain under a residential road 6 m up on its bank, square to it
+    // at x 20. The terrain gives no room; the road's paved stroke (2.5 m each side) gives the 3.3 m of room. Its bank
+    // gives none: the cover holds no more than the terrain and its lift by construction.
+    let street = [("highway", "residential")];
+    let tunnel = [("highway", "residential"), ("tunnel", "yes")];
+    let lines = [
+        line("road", &street, &[[-60.0, 0.0], [0.0, 0.0]], 0.0),
+        line("tunnel", &tunnel, &[[0.0, 0.0], [40.0, 0.0]], 0.0),
+        line("road", &street, &[[40.0, 0.0], [100.0, 0.0]], 0.0),
+        line("road", &street, &[[20.0, -60.0], [20.0, 60.0]], 6.0),
+    ];
+    let g = graph_on(&lines, &|_, _| 0.0);
+    let (states, lines) = tunnel_levels(&g);
+    assert_eq!(states, [State::Open, State::Bore, State::Open], "{lines:?}");
+    let edge = 2.5;
+    for (got, want) in lines.iter().zip([20.0 - edge, 20.0 + edge]) {
+        assert!(got.0 == EndKind::Portal && (got.1 - want).abs() < 0.3, "{got:?}, want a portal at {want}");
     }
 }
 
