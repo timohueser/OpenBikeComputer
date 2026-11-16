@@ -115,7 +115,7 @@ does not count. The climb of each leg is rounded to whole metres before the legs
 `line_udeg` holds two integers for each vertex: longitude, then latitude. The first pair is
 absolute. Each pair after it is the difference from the previous vertex. This is the encoding of
 `coordinates_udeg` in the [route API](route-api.md#deltas). The vertices are points of the plan
-route, in its order. No point of the plan route is more than 50 m from the line. Each shaping point
+route, in its order. No point of the plan route is more than 10 m from the line. Each shaping point
 is a vertex of the line.
 
 ### Profile
@@ -135,7 +135,7 @@ no height of the plan route is known.
 The profile samples the smoothed heights that `ascent_m` and `descent_m` come from. Its climb can
 differ from `ascent_m` because it has only one height for each 100 m. A reader that needs the height
 at a vertex of `line_udeg` takes the profile at the share of the line's length that the vertex has.
-The line is simplified within 50 m of the plan route (see [Line](#line)), so on switchbacks it is
+The line is simplified within 10 m of the plan route (see [Line](#line)), so on switchbacks it is
 shorter than the plan route. The share of a vertex then points to another place along the plan
 route. This offset grows with the switchbacks before the vertex and has no fixed limit, and the
 height is wrong by the climb of the route over that stretch. The profile is for a picture and for

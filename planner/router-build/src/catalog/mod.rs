@@ -29,7 +29,7 @@ const ROUTERS_MEMORY: usize = 6 << 30;
 /// The profiles a route is checked with.
 const PROFILES: [&str; 5] = ["touring", "road", "gravel", "mtb/technical", "hiking/alpine"];
 /// The line keeps every point of the plan route within this distance.
-const LINE_TOLERANCE_M: f64 = 50.0;
+const LINE_TOLERANCE_M: f64 = 10.0;
 /// The distance between two entries of `profile_m`.
 const PROFILE_STEP_M: f64 = 100.0;
 /// Router calls for the search of one route, for each profile that it checks. A search that needs
