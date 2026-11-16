@@ -38,9 +38,8 @@ const INSIDE_MAX: usize = 10;
 /// slopes from the outline pieces of `records::outline_edges` and the vertex values of `heights::groups`
 /// (an end's cone over the fan of its turn only), walls up to the highest wall, faces past it as steep as
 /// their need, line water and its culverts and fords, and on the revision 22 fixture, whose junction radii and
-/// kept vertices follow more walk bits (a step of 1.2 cm more), and the sidewalks' slabs, which keep the count (101 on
-/// the revision 23 fixture): their kerbs' corner rounds move the seams of two paved faces and leave steps between them
-/// too small to show, and a slab's end whose lower face's edge lies beside it at a right or acute corner keeps the
+/// kept vertices follow more walk bits, and the sidewalks' slabs on the revision 23 fixture: their kerbs' corner rounds
+/// move the seams of two paved faces and leave steps between them too small to show, and a slab's end whose lower face's edge lies beside it at a right or acute corner keeps the
 /// kerb's rise for a few centimetres, where as many steps of the faces without slabs go: the count must not grow.
 const EDGE_MAX: usize = 101;
 /// The scan's kerb steps whose size is more than `KERB_SLACK_M` off the kerb's rise there (`check::kerb_of`), measured
@@ -53,8 +52,8 @@ const KERB_OFF_MAX: usize = 1;
 /// as their need, the faces' rings with a vertex at each tile line, and the banks of line water, whose cuts
 /// climb as steep as the terrain asks beside a gorge, its culverts, the ground under the decks' ceilings, and a
 /// paved outline that holds no water, and on the revision 22 fixture, whose junction radii and kept vertices
-/// follow more walk bits, and the sidewalks' slabs, whose back edge leaves the slope a slab's width less room (17 pairs
-/// more, on the revision 23 fixture too): the count must not grow.
+/// follow more walk bits, and the sidewalks' slabs on the revision 23 fixture, whose back edge leaves the slope a slab's
+/// width less room: the count must not grow.
 const STEEP_MAX: usize = 2479;
 /// Of those, the pairs steeper than 6 m/m, measured the same way: the bank of one way that crosses a gully
 /// inside its ground band, which spans the terrain across the way's width. The count must not grow, and no pair
@@ -63,7 +62,7 @@ const NEAR_VERTICAL_MAX: usize = 2;
 /// A no-room wall's height that changes along it by more than this per metre is a step in its top
 /// (`check::wall_steps`): pairs of points measured on the revision 17 fixture with the slope and the wall of
 /// each point from the need at its foot (`heights::fit`) and line water, and on the revision 22 fixture with the
-/// sidewalks' slabs (three fewer): the count must not grow.
+/// sidewalks' slabs: the count must not grow.
 const WALL_STEP_GRADE: f64 = 0.5;
 const WALL_STEPS_MAX: usize = 14;
 /// The ground's grade along the rim that changes across a piece end by more than this is a shading band
@@ -72,7 +71,7 @@ const WALL_STEPS_MAX: usize = 14;
 /// curved banks end many short pieces, its culverts, and a paved outline that holds no water, and on the revision
 /// 22 fixture, whose junction radii and kept vertices follow more walk bits, and the sidewalks' slabs, whose tapers
 /// and rings end short rim pieces, whose heights fade to the faces beside them and whose ends that a lower face meets
-/// cover no fan (105 more, on the revision 23 fixture too): the count must not grow.
+/// cover no fan, on the revision 23 fixture: the count must not grow.
 const SLOPE_STEP_GRADE: f64 = 0.1;
 const SLOPE_STEPS_MAX: usize = 13072;
 /// A tile's water vertex whose level lies more than this off the terrain at the vertex has a level that
@@ -88,14 +87,14 @@ const LEVEL_MAX: [usize; 5] = [10, 85, 10882, 0, 1637];
 /// Steps that another line's cone holds higher than the paved side's wall cap (`check::held_over_cap`) between
 /// two ways, measured the same way with a rail bed's fill counted past its wall cap: all at the edge of a class
 /// without a wall, most where the two outlines leave no room for the steep face (the gap is printed), and on the
-/// revision 22 fixture with the sidewalks' slabs (one fewer): the count must not grow.
+/// revision 22 fixture with the sidewalks' slabs: the count must not grow.
 const HELD_OVER_CAP_MAX: usize = 73;
 /// Such steps where a side is line water, which has no wall (a way's fill that holds a bank over a waterline, or a
 /// bank's fill over a way's edge), counted apart and measured the same way with a paved outline that holds no water
 /// (where a way's edge meets the water, the bank's fill stands against it, and no round of the way's paving covers
-/// the corner; 90 of them stand within 25 m of 46.82015, 8.3866, at the river's bank against two paths' edges), and one
-/// more where a sidewalk's slab moves a road's paved outline out to its back edge, so the road's cone holds a stream's
-/// bank there lower: the count must not grow.
+/// the corner; 90 of them stand within 25 m of 46.82015, 8.3866, at the river's bank against two paths' edges), and
+/// with the sidewalks' slabs on the revision 23 fixture, where a slab moves a road's paved outline out to its back edge,
+/// so the road's cone holds a stream's bank lower: the count must not grow.
 const HELD_WATER_MAX: usize = 664;
 /// The grid of the ground under the decks, metres.
 const DECK_GRID_M: f64 = 0.5;

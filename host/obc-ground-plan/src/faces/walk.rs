@@ -407,20 +407,21 @@ impl Stroke {
     }
 }
 
-/// The strokes that slabs must not enter, each with the way of a road (None for a deck or a rail), and their segments
+/// The strokes that slabs must not enter, each with the way of a road (None for a deck or a rail) and whether it counts
+/// past the slab's kerb too (a road's, a rail's, a deck's; not a path's or a track's), and their segments
 /// by the squares of a grid that they reach: a point reads only its square's segments, so a slab's cost grows with
 /// its length and the strokes' segments, not with their product.
 struct NoEntry {
-    strokes: Vec<(Option<u32>, Stroke)>,
+    strokes: Vec<(Option<u32>, bool, Stroke)>,
     cell: f64,
     at: BTreeMap<(i64, i64), Vec<(usize, usize)>>,
 }
 
 impl NoEntry {
-    fn new(strokes: Vec<(Option<u32>, Stroke)>, cell: f64) -> NoEntry {
+    fn new(strokes: Vec<(Option<u32>, bool, Stroke)>, cell: f64) -> NoEntry {
         let mut at: BTreeMap<(i64, i64), Vec<(usize, usize)>> = BTreeMap::new();
         let sq = |v: f64| libm::floor(v / cell) as i64;
-        for (k, (_, s)) in strokes.iter().enumerate() {
+        for (k, (_, _, s)) in strokes.iter().enumerate() {
             for (i, b) in s.segs.iter().enumerate() {
                 for x in sq(b[0])..=sq(b[2]) {
                     for y in sq(b[1])..=sq(b[3]) {
@@ -432,10 +433,13 @@ impl NoEntry {
         NoEntry { strokes, cell, at }
     }
 
-    /// Whether one of the strokes that `keep` takes holds q.
-    fn holds(&self, q: [f64; 2], keep: &[bool]) -> bool {
+    /// Whether one of the strokes that `keep` takes holds q; with `kerb` false, a stroke that counts only at the kerb
+    /// does not.
+    fn holds(&self, q: [f64; 2], keep: &[bool], kerb: bool) -> bool {
         let key = (libm::floor(q[0] / self.cell) as i64, libm::floor(q[1] / self.cell) as i64);
-        self.at.get(&key).is_some_and(|v| v.iter().any(|&(k, i)| keep[k] && self.strokes[k].1.seg_holds(i, q, 0.0)))
+        let f =
+            |&(k, i): &(usize, usize)| keep[k] && (kerb || self.strokes[k].1) && self.strokes[k].2.seg_holds(i, q, 0.0);
+        self.at.get(&key).is_some_and(|v| v.iter().any(f))
     }
 }
 
@@ -444,7 +448,7 @@ impl NoEntry {
 fn enters(ctx: &Ctx, line: &WayLine, x: f64, side: f64, no: &NoEntry, keep: &[bool]) -> bool {
     let (c, h, _) = at_x(line, x);
     let w = ctx.units(full_m(line), round(c));
-    (0..=8).any(|k| no.holds(beside(line, x, side, h + w * f64::from(k) / 8.0), keep))
+    (0..=8).any(|k| no.holds(beside(line, x, side, h + w * f64::from(k) / 8.0), keep, k == 0))
 }
 
 /// The runs of a line side's sections between fractional vertex indices `x` that enter one of `strokes`, found
@@ -766,36 +770,95 @@ fn rule_ends(ctx: &Ctx, line: &WayLine, pieces: &[Piece], side: f64) -> Vec<End>
     out
 }
 
-/// Whether a piece of line side n holds q in its stroke: q's foot on one of its segments lies between half the
-/// half-width and the back edge at full width on its side.
-fn holds(ctx: &Ctx, lines: &[WayLine], n: usize, piece: &Piece, q: [f64; 2]) -> bool {
+/// The place on its line of q's foot where a piece of line side n holds q: the foot on one of its segments, between
+/// half the half-width and the back edge at the width that the side's rules `ends` leave at the kerb there.
+fn foot_on(ctx: &Ctx, lines: &[WayLine], n: usize, piece: &Piece, q: [f64; 2], ends: &[End]) -> Option<f64> {
     let (line, side) = (&lines[n / 2], if n % 2 == 1 { 1.0 } else { -1.0 });
-    let full = ctx.units(full_m(line), round(q));
-    (libm::floor(piece.x[0]) as usize..libm::ceil(piece.x[1]) as usize).any(|i| {
-        let (a, ha, _) = at_x(line, (i as f64).max(piece.x[0]));
-        let (b, hb, _) = at_x(line, ((i + 1) as f64).min(piece.x[1]));
+    let rules = &ctx.rules.plan.walk;
+    (libm::floor(piece.x[0]) as usize..libm::ceil(piece.x[1]) as usize).find_map(|i| {
+        let x = [(i as f64).max(piece.x[0]), ((i + 1) as f64).min(piece.x[1])];
+        let ((a, ha, _), (b, hb, _)) = (at_x(line, x[0]), at_x(line, x[1]));
         let (u, v) = ([b[0] - a[0], b[1] - a[1]], [q[0] - a[0], q[1] - a[1]]);
         let l2 = u[0] * u[0] + u[1] * u[1];
         let t = if l2 > 0.0 { (u[0] * v[0] + u[1] * v[1]) / l2 } else { -1.0 };
-        let h = ha + t * (hb - ha);
-        let d = side * (u[0] * v[1] - u[1] * v[0]) / l2.sqrt();
-        (0.0..=1.0).contains(&t) && d >= h / 2.0 && d <= h + full
+        let (h, d) = (ha + t * (hb - ha), side * (u[0] * v[1] - u[1] * v[0]) / l2.sqrt());
+        if !(0.0..=1.0).contains(&t) || d < h / 2.0 {
+            return None;
+        }
+        let at = x[0] + t * (x[1] - x[0]);
+        let kerb = beside(line, at, side, h);
+        let mpu = 1.0 / ctx.units(1.0, round(kerb));
+        let w = width(kerb, ends, full_m(line), rules.end_slope, rules.end_round_m, mpu, false) / mpu;
+        (d <= h + w).then_some(at)
     })
 }
 
-/// A taper whose tip lies on another slab is no taper: the slab goes on there at its full width, so the two slabs meet
-/// with one kerb's rise (on the inner side of a turn, at a corner without a ring), and the other slab hides its end.
+/// The place of a piece's line nearest to q, within the piece.
+fn nearest(line: &WayLine, piece: &Piece, q: [f64; 2]) -> f64 {
+    let mut best = (f64::MAX, piece.x[0]);
+    for i in libm::floor(piece.x[0]) as usize..libm::ceil(piece.x[1]) as usize {
+        let x = [(i as f64).max(piece.x[0]), ((i + 1) as f64).min(piece.x[1])];
+        let (a, b) = (at_x(line, x[0]).0, at_x(line, x[1]).0);
+        let (u, v) = ([b[0] - a[0], b[1] - a[1]], [q[0] - a[0], q[1] - a[1]]);
+        let l2 = u[0] * u[0] + u[1] * u[1];
+        let t = if l2 > 0.0 { ((u[0] * v[0] + u[1] * v[1]) / l2).clamp(0.0, 1.0) } else { 0.0 };
+        let d = libm::hypot(v[0] - t * u[0], v[1] - t * u[1]);
+        if d < best.0 {
+            best = (d, x[0] + t * (x[1] - x[0]));
+        }
+    }
+    best.1
+}
+
+/// The way's height (m) at place x of a line, between its graph samples by length.
+fn z_at(ctx: &Ctx, line: &WayLine, x: f64) -> f64 {
+    let k = line.index.partition_point(|&i| i as f64 <= x);
+    if line.z.is_empty() {
+        return 0.0;
+    }
+    if k == 0 || k >= line.z.len() {
+        return line.z[k.min(line.z.len() - 1)];
+    }
+    let (i0, i1) = (line.index[k - 1] as f64, line.index[k] as f64);
+    if x <= i0 {
+        return line.z[k - 1];
+    }
+    let t = length_m(ctx, line, [i0, x]) / length_m(ctx, line, [i0, i1]).max(1e-9);
+    line.z[k - 1] + t * (line.z[k] - line.z[k - 1])
+}
+
+/// A taper whose end lies on another slab is no taper: the slab goes on there at its full width, so the two slabs meet
+/// with one kerb's rise (on the inner side of a turn, at a corner without a ring), and the other slab hides its end. Its
+/// end lies on the other slab where the whole section there, from the kerb out to the full width, lies on that slab at
+/// the width that its rules leave (the end's own rule left out), and the other way, where it passes nearest the end,
+/// lies within the kerb's rise of the end's way. Else the taper stays, and the ground between two ways of different
+/// heights stays ground.
 fn covered_tips(ctx: &Ctx, lines: &[WayLine], pieces: &mut [Vec<Piece>]) {
+    let sign = |n: usize| if n % 2 == 1 { 1.0 } else { -1.0 };
     let mut found = Vec::new();
     for (n, list) in pieces.iter().enumerate() {
-        let (line, side) = (&lines[n / 2], if n % 2 == 1 { 1.0 } else { -1.0 });
+        let (line, side) = (&lines[n / 2], sign(n));
         for (j, p) in list.iter().enumerate() {
             for e in (0..2).filter(|&e| p.tip[e] == Tip::Taper) {
-                let q = beside(line, p.x[e], side, at_x(line, p.x[e]).1);
-                let on = |(m, list): (usize, &Vec<Piece>)| {
-                    list.iter().enumerate().any(|(i, o)| (m, i) != (n, j) && holds(ctx, lines, m, o, q))
+                let (c, h, _) = at_x(line, p.x[e]);
+                let w = ctx.units(full_m(line), round(c));
+                let section: Vec<[f64; 2]> =
+                    (0..=8).map(|k| beside(line, p.x[e], side, h + w * f64::from(k) / 8.0)).collect();
+                let z = z_at(ctx, line, p.x[e]);
+                let near = |m: usize, o: &Piece| z_at(ctx, &lines[m / 2], nearest(&lines[m / 2], o, c));
+                let on = |m: usize, i: usize, o: &Piece| {
+                    if (m, i) == (n, j) || foot_on(ctx, lines, m, o, section[0], &[]).is_none() {
+                        return false;
+                    }
+                    let mut others = pieces[m].clone();
+                    if m == n {
+                        others[j].tip[e] = Tip::Square;
+                    }
+                    let ends = rule_ends(ctx, &lines[m / 2], &others, sign(m));
+                    let feet: Option<Vec<f64>> = section.iter().map(|&q| foot_on(ctx, lines, m, o, q, &ends)).collect();
+                    feet.is_some() && (near(m, o) - z).abs() <= line.sec.kerb_m
                 };
-                if pieces.iter().enumerate().any(on) {
+                if pieces.iter().enumerate().any(|(m, l)| l.iter().enumerate().any(|(i, o)| on(m, i, o))) {
                     found.push((n, j, e));
                 }
             }
@@ -961,24 +1024,25 @@ pub(super) fn build(
     }
     // A slab ends with tapers before the strokes that it must not enter: a deck's where it leaves the ground, a rail's
     // core out to its verge, which no slope lies between, and the carriageway of a road that meets its way at no point
-    // (a slab runs into a road only at their point). Each run of a line side's sections that enters one is cut out
-    // toward both ends.
+    // (a slab runs into a road only at their point). A path's, steps' or track's stroke counts only where it holds the
+    // slab's kerb: there it takes the sidewalk's place; past the kerb it meets the slab as its faces do. Each run of a
+    // line side's sections that enters one is cut out toward both ends.
     let graph = ctx.graph;
     let met: BTreeSet<(u32, u32)> = (graph.junctions.iter().map(|j| &j.arms[..]))
         .chain(graph.joints.iter().map(|j| &j.arms[..]))
         .flat_map(|arms| arms.iter().flat_map(move |a| arms.iter().map(move |b| (a.way, b.way))))
         .collect();
-    let mut all: Vec<(Option<u32>, Stroke)> = (lines.iter())
+    let mut all: Vec<(Option<u32>, bool, Stroke)> = (lines.iter())
         .filter(|l| !l.sec.water)
         .map(|l| match l.rail {
-            true => (None, Stroke::wide(l, l.bands.iter().map(|b| b[VERGE]).collect())),
-            false => (Some(l.way), Stroke::of(l)),
+            true => (None, true, Stroke::wide(l, l.bands.iter().map(|b| b[VERGE]).collect())),
+            false => (Some(l.way), l.sec.group == "road", Stroke::of(l)),
         })
         .collect();
     for (_, strokes) in decks {
         for s in strokes {
-            if !all.iter().any(|f| f.1.pts == s.pts) {
-                all.push((None, s));
+            if !all.iter().any(|f| f.2.pts == s.pts) {
+                all.push((None, true, s));
             }
         }
     }
@@ -993,7 +1057,7 @@ pub(super) fn build(
             [b[0].min(p[0] - g), b[1].min(p[1] - g), b[2].max(p[0] + g), b[3].max(p[1] + g)]
         });
         let keep: Vec<bool> = (no.strokes.iter())
-            .map(|(w, s)| {
+            .map(|(w, _, s)| {
                 w.is_none_or(|w| w != line.way && !met.contains(&(line.way, w)))
                     && s.bx[0] <= bx[2]
                     && s.bx[2] >= bx[0]
