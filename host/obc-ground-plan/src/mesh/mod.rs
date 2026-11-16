@@ -80,9 +80,9 @@ pub mod shell;
 pub mod strip;
 
 use crate::faces::records::find;
-use crate::faces::{Face, FacePlan, Surface};
+use crate::faces::{EdgeKind, Face, FacePlan, Surface};
 use crate::frame::{metres_per_unit, CellKey, CELL_UNITS};
-use params::{sharp, SIDE};
+use params::SIDE;
 use region::{grid_of, Region, MARK_WORDS};
 
 pub use region::REGION_WORDS;
@@ -455,8 +455,9 @@ pub fn mesh_cell(
     lap(&mut times);
     let labels = face_labels(&plan.faces, words);
     let label_of = |f: u32| labels[f as usize].unwrap_or(NO_LABEL);
-    let is_sharp = |f: u32| f != cdt::INSIDE && sharp(plan.faces[f as usize].rule);
-    let unlabelled = (0..plan.faces.len()).filter(|&f| sharp(plan.faces[f].rule) && labels[f].is_none()).count() as u32;
+    let is_sharp = |f: u32| f != cdt::INSIDE && params::sharp_face(&plan.faces[f as usize]);
+    let unlabelled =
+        (0..plan.faces.len()).filter(|&f| params::sharp_face(&plan.faces[f]) && labels[f].is_none()).count() as u32;
     // A point's ground face, from the face edges at it.
     let mut ground_face = vec![NONE; input.points.len()];
     for s in &input.segments[..input.edges] {
@@ -505,7 +506,11 @@ pub fn mesh_cell(
         triangles.push([0, 1, 2].map(|i| corners.get(t[i], k[i])));
     }
     let (mut steps, mut faces) = (Vec::new(), Vec::new());
-    for (s, &end) in input.segments[..input.edges].iter().zip(&input.end_faces) {
+    for (s, &kind) in input.segments[..input.edges].iter().zip(&input.kinds) {
+        if kind == EdgeKind::Portal {
+            continue;
+        }
+        let end = kind == EdgeKind::DeckEdge;
         let side = |f: u32, v: u32, ground: &mut Vec<u32>| {
             if is_sharp(f) {
                 label_of(f)

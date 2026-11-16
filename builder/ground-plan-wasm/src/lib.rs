@@ -226,6 +226,8 @@ impl CellPlan {
             last: None,
             #[cfg(feature = "storeys")]
             storeys: self.built.storeys.clone(),
+            #[cfg(feature = "bores")]
+            ground: None,
         }
     }
 
@@ -251,6 +253,9 @@ pub struct MeshInput {
     last: Option<Reads>,
     #[cfg(feature = "storeys")]
     storeys: obc_ground_plan::faces::Storeys,
+    /// The cell's last mesh where the cell has a bore: a bore is the prism under its triangles (`mesh_storeys_with`).
+    #[cfg(feature = "bores")]
+    ground: Option<obc_ground_plan::mesh::CellMesh>,
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
@@ -272,6 +277,10 @@ impl MeshInput {
         }
         let mesh = mesh_cell(&self.plan, &self.records, &reads, &mut now);
         self.last = Some(reads);
+        #[cfg(feature = "bores")]
+        {
+            self.ground = mesh.as_ref().ok().filter(|_| self.storeys.plans.iter().any(|p| p.level < 0)).cloned();
+        }
         Ok(Some(mesh.map_err(|e| error(format!("{e:?}")))?.to_bytes()))
     }
 
@@ -279,9 +288,19 @@ impl MeshInput {
     #[cfg(feature = "storeys")]
     pub fn storeys(&self) -> Result<Vec<u8>, Error> {
         let rules = Rules::embedded();
-        obc_ground_plan::mesh::shell::mesh_storeys(self.plan.cell, &self.storeys, &self.records, &rules.structures)
-            .map(|m| m.to_bytes())
-            .map_err(|e| error(format!("{e:?}")))
+        #[cfg(feature = "bores")]
+        let ground = self.ground.as_ref();
+        #[cfg(not(feature = "bores"))]
+        let ground = None;
+        obc_ground_plan::mesh::shell::mesh_storeys_with(
+            self.plan.cell,
+            &self.storeys,
+            &self.records,
+            &rules.structures,
+            ground,
+        )
+        .map(|m| m.to_bytes())
+        .map_err(|e| error(format!("{e:?}")))
     }
 }
 

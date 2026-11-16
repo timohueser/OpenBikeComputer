@@ -7,7 +7,7 @@
 //! Each cell marks its own sharp cells (`sharp_cells`); R about a cell reads its neighbours' marks
 //! within `RING` cells, so two cells agree on R wherever both read it.
 
-use super::params::{sharp, CELLS, COARSE, FACE_RING, GRID};
+use super::params::{CELLS, COARSE, FACE_RING, GRID};
 use crate::faces::FacePlan;
 
 /// The window of sharp marks about the cell: R is exact on the cell and two rings, which S and the
@@ -169,7 +169,9 @@ pub fn grid_of(p: [i32; 2]) -> Option<[i32; 2]> {
 /// meets the inside of a sharp face.
 pub fn sharp_cells(plan: &FacePlan) -> Vec<u64> {
     let mut out = vec![0u64; MARK_WORDS];
-    for face in plan.faces.iter().filter(|f| f.level == 0 && sharp(f.rule)) {
+    for face in (plan.faces.iter())
+        .filter(|f| f.level == 0 && (super::params::sharp_face(f) || f.under != crate::faces::NO_UNDER))
+    {
         let rings: Vec<Vec<[i64; 2]>> = (face.rings.iter())
             .map(|r| r.iter().map(|&v| plan.vertices[v as usize].map(i64::from)).collect())
             .collect();

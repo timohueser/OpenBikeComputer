@@ -11,7 +11,7 @@ use obc_ground_plan::faces::records;
 use obc_ground_plan::faces::{Rules, Surface};
 use obc_ground_plan::frame::{metres_per_unit, CellKey, GlobalPoint};
 use obc_ground_plan::mesh::params::{CELLS, COARSE};
-use obc_ground_plan::mesh::shell::{closure, mesh_storeys, on_paved, StoreyMesh, PARTS};
+use obc_ground_plan::mesh::shell::{closure, on_paved, StoreyMesh, PARTS};
 use obc_ground_plan::mesh::{mesh_cell, CellMesh, Reads, Rim, NO_LABEL};
 use obc_ground_plan::tile::TileCache;
 use obc_ground_plan::CellInput;
@@ -46,7 +46,14 @@ pub fn cells(fix: &mut Fixture, keys: &[CellKey], rules: &Rules) -> Result<BTree
             .filter_map(|k| rims.get(&k).cloned())
             .collect();
         let mesh = mesh_cell(&b.faces, &b.records, &Reads::of(&b.faces, &around), &mut || 0.0).ok();
-        let storeys = mesh_storeys(key, &b.storeys, &b.records, &rules.structures).map_err(|e| format!("{e:?}"))?;
+        let storeys = obc_ground_plan::mesh::shell::mesh_storeys_with(
+            key,
+            &b.storeys,
+            &b.records,
+            &rules.structures,
+            mesh.as_ref(),
+        )
+        .map_err(|e| format!("{e:?}"))?;
         out.insert(key, Cell { build: b, mesh, storeys });
     }
     Ok(out)
@@ -255,11 +262,17 @@ fn triangles(
             }
         }
         let m = &c.storeys;
+        // A corner's height with its caps (`StoreyMesh::corner_height`): the lower of its own and each cap's.
         let z = |k: u32| {
             let (p, l, off) = m.corner(k as usize);
             let t = terrain(p);
-            let h = if l == NO_LABEL { t } else { height_at(words, [f64::from(p[0]), f64::from(p[1])], Some(l), t).h };
-            at(key, p, h + off)
+            let q = [f64::from(p[0]), f64::from(p[1])];
+            let of = |l: u32, off: f64| if l == NO_LABEL { t + off } else { height_at(words, q, Some(l), t).h + off };
+            let first = m.caps.partition_point(|c| c[0] < k);
+            let h = (m.caps[first..].iter().take_while(|c| c[0] == k))
+                .map(|c| of(c[1], f64::from(f32::from_bits(c[2]))))
+                .fold(of(l, off), f64::min);
+            at(key, p, h)
         };
         let colours = [
             (150, 150, 152),

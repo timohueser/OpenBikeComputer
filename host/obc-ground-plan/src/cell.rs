@@ -1,6 +1,6 @@
 //! The build of one cell from its request bytes, stage by stage, with the time of each stage.
 
-use crate::faces::{records, EdgeKind, FacePlan, Rules, Storeys, OUTSIDE};
+use crate::faces::{records, EdgeKind, FacePlan, Portal, Rules, Storeys, FRONT_LEFT, OUTSIDE};
 use crate::frame::CellKey;
 use crate::graph::{self, WayGraph};
 use crate::mesh;
@@ -79,17 +79,29 @@ pub fn build_storeys(
     rules: &Rules,
     now: &mut dyn FnMut() -> f64,
 ) -> Result<CellBuild, String> {
-    let (mut b, input) = stages(now(), request, cache, rules, now)?;
+    let (mut b, input, under) = stages(now(), request, cache, rules, now)?;
     let start = now();
-    b.storeys = records::storeys(&b.graph, &input, rules, b.key, &mut b.records);
+    b.storeys = records::storeys(&b.graph, &input, rules, b.key, &mut b.records, under);
     let plan = &b.faces;
-    let sharp = |f: u32| f != OUTSIDE && mesh::params::sharp(plan.faces[f as usize].rule);
+    let sharp = |f: u32| f != OUTSIDE && mesh::params::sharp_face(&plan.faces[f as usize]);
+    let origin_y = b.key.origin().y as f64;
     b.storeys.ground_ends = (plan.edges.iter())
         .filter(|e| {
             e.kind == EdgeKind::DeckEdge && e.left != OUTSIDE && e.right != OUTSIDE && (sharp(e.left) || sharp(e.right))
         })
-        .flat_map(|e| mesh::points::edge_points(plan, e, b.key.origin().y as f64))
+        .flat_map(|e| mesh::points::edge_points(plan, e, origin_y))
         .collect();
+    let portals = (plan.edges.iter()).filter(|e| e.kind == EdgeKind::Portal && e.left != OUTSIDE && e.right != OUTSIDE);
+    let labels = if crate::graph::BORES { mesh::face_labels(&plan.faces, &b.records) } else { Vec::new() };
+    for e in portals.filter(|_| crate::graph::BORES) {
+        let (front, back) = if e.flags & FRONT_LEFT != 0 { (e.left, e.right) } else { (e.right, e.left) };
+        let (Some(front), Some(back)) = (labels[front as usize], labels[back as usize]) else { continue };
+        // Each piece from a to b with the entering way on its left.
+        for w in mesh::points::edge_points(plan, e, origin_y).windows(2) {
+            let (a, c) = if e.flags & FRONT_LEFT != 0 { (w[0], w[1]) } else { (w[1], w[0]) };
+            b.storeys.portals.push(Portal { a, b: c, front, back });
+        }
+    }
     b.storey_time = now() - start;
     Ok(b)
 }
@@ -118,15 +130,19 @@ fn stages(
     cache: &mut TileCache,
     rules: &Rules,
     now: &mut dyn FnMut() -> f64,
-) -> Result<(CellBuild, CellInput), String> {
+) -> Result<(CellBuild, CellInput, Option<records::Under>), String> {
     let (key, tiles, pages) = (request.key, request.tiles.len(), request.pages.len());
     let input = request.input(cache)?;
     let read = now();
     let graph = cell_graph(key, &input, rules);
     let built = now();
-    let (faces, records, far) = records::near(&graph, &input, rules, key, 0, true);
+    let (faces, records, far, under) = records::near_under(&graph, &input, rules, key);
     let times = vec![read - start, built - read, now() - built];
     let records = records.words;
     let (storeys, storey_time) = (Storeys::default(), 0.0);
-    Ok((CellBuild { key, request: None, tiles, pages, graph, faces, records, far, times, storeys, storey_time }, input))
+    Ok((
+        CellBuild { key, request: None, tiles, pages, graph, faces, records, far, times, storeys, storey_time },
+        input,
+        under,
+    ))
 }

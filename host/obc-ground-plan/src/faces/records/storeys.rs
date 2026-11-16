@@ -1,11 +1,11 @@
-//! The storeys over the ground in a cell's one near block: each storey's records follow storey 0's in every
-//! table, so a corner's label names a label of any storey. A storey's lines (`STOREY`, after the ceiling lines)
+//! The storeys other than 0 (over the ground, and with the bores the bores' storey −1) in a cell's one near block:
+//! each storey's records follow storey 0's in every table, so a corner's label names a label of any storey. A storey's lines (`STOREY`, after the ceiling lines)
 //! are its own; its height segments, discs, blend edges and centre-line segments come last in each bin's lists.
 //! The bins list no candidate item of a storey over the ground: the mesh names its faces' labels, and no reader
 //! decides one by point.
 
 use super::{encode, BEYOND, BLEND, CAND, DISC, HEADER, JR, JR_ARM, LABEL, LEG_SHIFT, LINE, SAMPLE, STOREY};
-use super::{BINS, JUNCTION};
+use super::{Under, BINS, JUNCTION};
 use crate::faces::deck::{DeckWay, Decks, Storeys, PIER_NEAR_M};
 use crate::faces::{candidates, window, Rules, Sliced, LAYERS};
 use crate::frame::CellKey;
@@ -13,16 +13,47 @@ use crate::graph::WayGraph;
 use crate::tile::Geometry;
 use crate::CellInput;
 
-/// The storeys over the ground near the cell, storey 1 first, with their records merged into `near` (storey 0's
-/// block). A storey with no deck near the cell has no plan; without the feature `storeys` there is none.
-pub fn storeys(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, near: &mut Vec<u32>) -> Storeys {
+/// The storeys other than 0 near the cell, the lowest first, with their records merged into `near` (storey 0's
+/// block). A storey with no deck or bore near the cell has no plan; without the feature `storeys` there is none.
+pub fn storeys(
+    graph: &WayGraph,
+    input: &CellInput,
+    rules: &Rules,
+    cell: CellKey,
+    near: &mut Vec<u32>,
+    mut under: Option<Under>,
+) -> Storeys {
     if !cfg!(feature = "storeys") {
         return Storeys::default();
     }
     let decks = Decks::of(graph, input);
-    let top = decks.storey.iter().copied().max().unwrap_or(0);
+    let (low, top) = decks.storey.iter().fold((0, 0), |(l, t), &k| (k.min(l), k.max(t)));
     let mut out = Storeys::default();
-    for k in 1..=top {
+    for k in (low..=top).filter(|&k| k != 0) {
+        // The storey under the ground comes from storey 0's slice (the one map). A floor in front of a portal line
+        // is a bore of its own way's section.
+        if k < 0 {
+            let Some(Under { faces, records, wedges }) = under.take() else { continue };
+            *near = merge(near, &records, k, &|w| DeckWay::of(graph, input, rules, w, &decks).finish_bits());
+            let bore = |w: u32| {
+                let feature = &input.features[graph.parts[graph.ways[w as usize].part as usize].feature.0 as usize];
+                DeckWay::bore(&rules.sections.way(&feature.kind, &feature.tags, false))
+            };
+            let floors = (faces
+                .faces
+                .iter()
+                .filter_map(|f| f.material)
+                .map(|w| (w, DeckWay::of(graph, input, rules, w, &decks))))
+            .chain(wedges.faces.iter().filter_map(|f| f.material).map(|w| (w, bore(w))));
+            for (w, d) in floors {
+                if let Err(k) = out.ways.binary_search_by_key(&w, |x| x.0) {
+                    out.ways.insert(k, (w, d));
+                }
+            }
+            out.wedges = Some(wedges);
+            out.plans.push(faces);
+            continue;
+        }
         let c = candidates(graph, input, rules, cell, k, LAYERS, true);
         if c.cands.is_empty() {
             continue;

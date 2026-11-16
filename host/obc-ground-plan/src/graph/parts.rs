@@ -71,8 +71,26 @@ pub(crate) fn fords(family: Family, water: &WaterSection) -> bool {
     family == Family::Path || water.width_m > water.culvert_width_m
 }
 
-/// The family, rank, level and rules of a line feature, or None for another kind.
-pub(crate) fn classify<'a>(feature: &Feature, sections: &'a Sections) -> Option<(Family, u8, Level, Rule<'a>)> {
+/// The kinds that lie on the ground unless their tags say otherwise.
+const GROUND_KINDS: [&str; 4] = ["main-road", "road", "path", "railway"];
+
+/// Whether a way feature is a tunnel: of the kind `tunnel` (a passage through a building of an older bake is none), or
+/// a ground kind tagged `tunnel=yes` (the bake's shallow rule keeps the tag on a tunnel that it lays on the ground).
+pub(crate) fn tunnel(feature: &Feature) -> bool {
+    let tag = feature.tags.get("tunnel").map(String::as_str);
+    match feature.kind.as_str() {
+        "tunnel" => tag != Some("building_passage"),
+        kind => GROUND_KINDS.contains(&kind) && tag == Some("yes"),
+    }
+}
+
+/// The family, rank, level and rules of a line feature, or None for another kind. `shallow`: a ground kind tagged
+/// `tunnel=yes` is a tunnel (`tunnel`); else it lies on the ground.
+pub(crate) fn classify<'a>(
+    feature: &Feature,
+    sections: &'a Sections,
+    shallow: bool,
+) -> Option<(Family, u8, Level, Rule<'a>)> {
     let tag = |key: &str| feature.tags.get(key).map(String::as_str);
     let kind = feature.kind.as_str();
     if feature.geometry != Geometry::Line {
@@ -94,8 +112,7 @@ pub(crate) fn classify<'a>(feature: &Feature, sections: &'a Sections) -> Option<
     } else {
         Family::Road
     };
-    // Tiles of an older bake hold a passage through a building as a tunnel: it is a way, the building stands over it.
-    let level = if kind == "tunnel" && tag("tunnel") != Some("building_passage") {
+    let level = if tunnel(feature) && (shallow || kind == "tunnel") {
         Level::Tunnel
     } else if tag("deck").is_some() {
         Level::Deck
@@ -449,13 +466,14 @@ fn repeated(chain: &mut Chain, stats: &mut GraphStats) -> bool {
     changed
 }
 
-/// The parts of a cell and their rules, ordered by their vertex positions.
+/// The parts of a cell and their rules, ordered by their vertex positions; `shallow` as `classify`.
 pub(crate) fn parts<'a>(
     input: &CellInput,
     sections: &'a Sections,
     stats: &mut GraphStats,
+    shallow: bool,
 ) -> (Vec<Part>, Vec<Rule<'a>>) {
-    let classes: Vec<_> = input.features.iter().map(|f| classify(f, sections)).collect();
+    let classes: Vec<_> = input.features.iter().map(|f| classify(f, sections, shallow)).collect();
     let line: Vec<bool> = classes.iter().map(Option::is_some).collect();
     let water: Vec<bool> = classes.iter().map(|c| matches!(c, Some((Family::Water, _, Level::Ground, _)))).collect();
     let mut chains = chains(input, &line);
