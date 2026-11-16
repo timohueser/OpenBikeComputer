@@ -1636,22 +1636,22 @@ fn candidates<'a>(
             };
             if !of.is_empty() {
                 let layer = if bore { SLOPE } else { VERGE };
-                // An opening lies on a bore's end line: the bore's own mark is the stroke of its end segment at each
-                // portal in the run, so a way that passes over the bore elsewhere opens nothing there.
-                let n = line.p.len();
-                let runs: Vec<(usize, usize)> = if bore {
-                    let at =
-                        [(first == 0 && line.end_dir[0].is_some(), 0), (last == n && line.end_dir[1].is_some(), n - 2)];
-                    at.iter().filter(|x| x.0).map(|x| (x.1, x.1 + 2)).collect()
-                } else {
-                    vec![(first, last)]
-                };
-                let mut pieces = Vec::new();
-                for (a, b) in runs {
-                    let d: Vec<f64> = (a..b).map(|i| line.bands[i][layer]).collect();
-                    let cuts = [&cut(a, layer + 1)[..], &cut(b - 1, layer + 1)[..]];
-                    let ends = [line.round[0] && a == 0, line.round[1] && b == n];
-                    pieces_along(&line.p[a..b], &d, &line.dirs(a, b), cuts, ends, false, &mut pieces);
+                let d: Vec<f64> = (first..last).map(|i| line.bands[i][layer]).collect();
+                let cuts = [&cut(first, layer + 1)[..], &cut(last - 1, layer + 1)[..]];
+                let (mut pieces, mut segs) = (Vec::new(), Vec::new());
+                let dirs = line.dirs(first, last);
+                stroke::pieces_along_of(p, &d, &dirs, cuts, ends, false, &mut pieces, Some(&mut segs));
+                if bore {
+                    // An opening lies on a bore's end line: the bore's own mark is the pieces of its own stroke on its
+                    // end segment at each portal in the run, so a way that passes over the bore elsewhere opens
+                    // nothing there. They meet the rest of the floor's stroke on its own mitre lines.
+                    let last_seg = last - first - 2;
+                    let end = |k: usize| {
+                        (k == 0 && first == 0 && line.end_dir[0].is_some())
+                            || (k == last_seg && last == line.p.len() && line.end_dir[1].is_some())
+                    };
+                    let mut on_end = segs.iter().map(|s| s[0] == s[1] && end(s[0]));
+                    pieces.retain(|_| on_end.next().unwrap_or(false));
                 }
                 for &w in &of {
                     mark_pieces.entry(w).or_default().extend(pieces.iter().cloned());
