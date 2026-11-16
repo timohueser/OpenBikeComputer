@@ -23,6 +23,7 @@ struct CorridorOut {
 }
 
 fn corridor_in(in: CorridorOut) -> CorridorOut {
+    let grade = slab_grade(in);
     if ((in.word & MAT_BITS) == MAT_GROUND) {
         return in;
     }
@@ -30,7 +31,7 @@ fn corridor_in(in: CorridorOut) -> CorridorOut {
     let mouth = m_mouth(params.block, m_junction(params.block, in.label), q, h_scale(params.block, q));
     if (mouth.line == M_NONE) {
         var out = in;
-        out.road.x = slab_across(in.u, in.word, in.road.x);
+        out.road.x = slab_across(in.u, in.word, in.road.x, grade);
         return out;
     }
     let look = line_look(m_line_finish(params.block, mouth.line));

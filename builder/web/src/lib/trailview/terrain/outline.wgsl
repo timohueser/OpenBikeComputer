@@ -120,3 +120,27 @@ fn m_outline_metres(block: u32, q: vec2i, mpu: f32) -> f32 {
     }
     return m_on_arcs(block, k, vec2f(q), select(d, -d, wind != 0) * mpu, mpu);
 }
+
+// The metres from q, which lies outside the paved outline, to it, as m_outline_metres for such a point: the least
+// distance to the chords of the bin's first item, where it is the outline, moved onto its arcs; no winding.
+fn m_outline_out(block: u32, q: vec2f, mpu: f32) -> f32 {
+    let head = m_bin_head(block, q);
+    if (head == 0u || (mw(head + 1u) >> 16u) == 0u) {
+        return M_FAR;
+    }
+    let at = block + mw(head);
+    let k = m_cand(block, mw(at) & 0xffffu);
+    if (mw(k) != M_OUTLINE) {
+        return M_FAR;
+    }
+    var d = M_FAR;
+    var run = at + 2u;
+    for (var r = 0u; r < mw(at + 1u); r++) {
+        let n = mw(run);
+        for (var e = 0u; e + 1u < n; e++) {
+            d = min(d, m_segment(vec2f(m_vertex(run + 1u + 2u * e)), vec2f(m_vertex(run + 3u + 2u * e)), q));
+        }
+        run += 1u + 2u * n;
+    }
+    return m_on_arcs(block, k, q, d * mpu, mpu);
+}
