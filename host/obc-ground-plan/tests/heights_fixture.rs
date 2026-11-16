@@ -35,9 +35,11 @@ const INSIDE_MAX: usize = 9;
 /// Steps at label edges with no rule (`check::edge_steps`), measured on the revision 17 fixture with the
 /// slopes from the outline pieces of `records::outline_edges` and the vertex values of `heights::groups`
 /// (an end's cone over the fan of its turn only), walls up to the highest wall, faces past it as steep as
-/// their need, line water and its culverts and fords, and the corner rounds of the sidewalks' kerbs, which move the
-/// seams of two paved faces and leave steps between them too small to show: the count must not grow.
-const EDGE_MAX: usize = 105;
+/// their need, line water and its culverts and fords, the corner rounds of the sidewalks' kerbs, which move the
+/// seams of two paved faces and leave steps between them too small to show, and a slab's end whose lower face's edge
+/// lies beside it at a right or acute corner, where the slope keeps the kerb's rise for a few centimetres: the count
+/// must not grow.
+const EDGE_MAX: usize = 106;
 /// The scan's kerb steps whose size is more than `KERB_SLACK_M` off the kerb's rise there (`check::kerb_of`), measured
 /// on the revision 17 fixture with the sidewalks' slabs: a kerb's end against a slope, whose step the slope's cone
 /// makes less than the rise at the corner where slab, carriageway and slope meet. The count must not grow.
@@ -66,7 +68,7 @@ const WALL_STEPS_MAX: usize = 17;
 /// whose tapers and rings end short rim pieces, whose heights fade to the faces beside them and whose ends that a
 /// lower face meets cover no fan: the count must not grow.
 const SLOPE_STEP_GRADE: f64 = 0.1;
-const SLOPE_STEPS_MAX: usize = 13120;
+const SLOPE_STEPS_MAX: usize = 13123;
 /// A tile's water vertex whose level lies more than this off the terrain at the vertex has a level that
 /// the bake holds away from its line (a pit, or the low ground beside it): the design keeps the water at
 /// most `freeboard_m` (0.8 m) under its bank and `depth_m` (1 m) deep.
