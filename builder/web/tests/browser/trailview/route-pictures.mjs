@@ -40,7 +40,7 @@ const NEAREST_M = 10, STEPS = 8, VISIBLE = 128;
  * page and 60 s for `coverView` and the encoding, which take seconds.
  */
 const STILL_MS = 60_000, MARGIN_MS = 120_000;
-/** After this many routes fail in a row, render stops: the tile host or the GPU is down, not one route. */
+/** After this many routes fail in a row, render stops unless a route with a cover renders again: the tile host or the GPU is down, not one area. */
 const FAILURES_IN_A_ROW = 5;
 /** Requests that run at a time, the wait after a 429 of the host and the most tries again. */
 const AT_ONCE = 16, BUSY_MS = 60_000, BUSY_TRIES = 5;
@@ -230,14 +230,13 @@ export async function render({ out = OUT, sample, only, gpu = false, fixture = f
     const records = fixture ? routesOf([JSON.parse(readFileSync(FIXTURE_ROUTES, 'utf8'))]) : await releaseRoutes(active, fetch);
     let chosen = only ? records.filter(record => only.includes(record.id)) : records;
     if (sample) chosen = sampleOf(chosen, sample);
-    // Neighbours render one after the other: their pages share the tiles in the HTTP cache and the device cache of the context.
+    // Neighbours render one after the other: their pages share the tiles in the HTTP cache and the bakes in the device cache of the context.
     const todo = chosen.filter(record => !stateOf(out, record)).map(record => [placeKey(lineOf(record)), record]).sort((a, b) => a[0] - b[0]).map(([, record]) => record);
     console.log(`${records.length} routes, ${chosen.length} chosen, ${todo.length} to render.`);
     const when = { date: `${new Date().getFullYear()}-${DAY}`, time: TIME, weather: 'sunny' };
     const { origin, close } = await serve();
     let current;
     const browser = {
-        // One context for the pages of a browser: a context of their own would load and bake each tile again.
         get: async () => (current?.browser().isConnected() ? current : (current = await (await launch(gpu)).newContext())),
         // Playwright kills a browser whose close takes more than 30 s.
         drop: async () => {
@@ -252,9 +251,10 @@ export async function render({ out = OUT, sample, only, gpu = false, fixture = f
         const probe = await stillPage(await browser.get(), origin, options);
         if (!fixture) checkRelease(await probe.evaluate(() => window.trailviewStill.release), release);
         await probe.close();
-        let inARow = 0;
+        const jobOf = record => ({ line: lineOf(record), when, width: WIDTH, height: HEIGHT, timeoutMs: gpu ? undefined : SOFTWARE_MS });
+        let inARow = 0, known = records.find(record => stateOf(out, record) === 'cover');
         for (const record of todo) {
-            const job = { line: lineOf(record), when, width: WIDTH, height: HEIGHT, timeoutMs: gpu ? undefined : SOFTWARE_MS };
+            const job = jobOf(record);
             let result = await cover(browser, origin, options, job);
             if (result.failure === 'tiles-failed') {
                 console.log(`${record.id}: ${result.message} Waiting ${RETRY_MS / 1000} s to try once more.`);
@@ -265,12 +265,19 @@ export async function render({ out = OUT, sample, only, gpu = false, fixture = f
                 failed.push(`${record.id}: ${result.message}`);
                 console.log(`${record.id}: failed: ${result.message}`);
                 if (++inARow >= FAILURES_IN_A_ROW) {
-                    console.log(`${inARow} routes failed in a row: render stops. Check the tile host and the GPU, then run again.`);
-                    break;
+                    // The routes of one area follow each other: their faults stop render only when a route with a cover fails too.
+                    const check = known && await cover(browser, origin, options, jobOf(known));
+                    if (!check || check.failure) {
+                        console.log(`${inARow} routes failed in a row${known ? `, and route ${known.id} with a cover too` : ''}: render stops. Check the tile host and the GPU, then run again.`);
+                        break;
+                    }
+                    console.log(`${inARow} routes failed in a row, but route ${known.id} with a cover renders: render goes on.`);
+                    inARow = 0;
                 }
                 continue;
             }
             inARow = 0;
+            if (!result.none) known = record;
             mkdirSync(coverDir(out, record), { recursive: true });
             seconds += result.seconds;
             if (result.none) {

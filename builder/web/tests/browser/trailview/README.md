@@ -101,8 +101,8 @@ For a new planner release, do steps 1 and 4: only the routes whose line changed 
 
 - A route that fails gets no file. `render` goes on with the next route, names each failed route
   with its reason at the end, and exits with 1. The next run tries it again. After 5 failures in a
-  row it stops: the tile host or the GPU is down. When a route fails on
-  each run, leave it out of the set: `upload --without ID,ID`. It then has no cover in that set.
+  row it renders a route with a cover again, and stops if that fails too: the host or the GPU is down.
+  When a route fails on each run, leave it out: `upload --without ID,ID`.
 - `render` skips a route whose cover or `.none` mark exists for its key. A change of the light or
   of the camera rule in the script changes `look` and so each key: all routes render again.
 - `upload` takes the routes of the active production release, and refuses while one of them has no
