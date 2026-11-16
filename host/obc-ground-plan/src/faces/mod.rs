@@ -1080,7 +1080,7 @@ pub(crate) fn level_lines<'a>(
 /// The layers of a storey's lines: a deck's stroke over the ground, a bore's floor under it.
 fn storey_bands(ctx: &Ctx, lines: &mut [WayLine], level: i8) {
     for line in lines {
-        if level < 0 {
+        if BORES && level < 0 {
             deck::bore_bands(line);
         } else {
             deck::deck_bands(line, &|p| ctx.units(ctx.rules.structures.edge_band_m, p));

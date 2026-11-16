@@ -1063,7 +1063,10 @@ fn encode(
                 .max_by(|x, y| x.0.total_cmp(&y.0))
                 .map_or(own, |(_, n)| n);
             // A portal's end is flat on the portal line: the direction that both strokes end on (`WayLine::end_dir`).
-            let flat = line.end_dir[k].map_or(flat, |e| if k == 0 { e } else { [-e[0], -e[1]] });
+            let flat =
+                line.end_dir[k]
+                    .filter(|_| crate::graph::BORES)
+                    .map_or(flat, |e| if k == 0 { e } else { [-e[0], -e[1]] });
             let snorm = |v: f64| u32::from(libm::round(v.clamp(-1.0, 1.0) * 32767.0) as i16 as u16);
             w[4 + k] = snorm(flat[0]) | snorm(flat[1]) << 16;
         }
