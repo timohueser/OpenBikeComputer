@@ -82,11 +82,16 @@ pub fn selected(entries: &[Entry], pbf: &Path, binary: &Path, tiles: &Tiles, wor
         set.into_iter().collect()
     };
     let area = |zoom: u8, reach_m: f64| reach(tiles, zoom, reach_m).map(|v| format!("{v:.7}")).join(",");
+    // Osmium's extract and filter keep a bit for each ID up to the largest ID of the file, which for OSM's
+    // node IDs is GBs. Renumbered from 1 in the order of the file, the IDs of a region take MBs. The export
+    // writes no IDs, so the objects that it gives stay the same.
+    let numbered = work.join("numbered.osm.pbf");
+    run(binary, &[&"renumber", &pbf, &"-o", &numbered])?;
     // The cut comes first: the filter keeps the nodes of each way that it keeps, so alone it leaves most
     // of a file.
     let cut = |name: &str, bounds: String, entries: &[&Entry], more: &[String]| -> Result<PathBuf, String> {
         let (area_pbf, kept) = (work.join(format!("{name}-area.osm.pbf")), work.join(format!("{name}.osm.pbf")));
-        run(binary, &[&"extract", &"-b", &bounds, &"-s", &"smart", &pbf, &"-o", &area_pbf])?;
+        run(binary, &[&"extract", &"-b", &bounds, &"-s", &"smart", &numbered, &"-o", &area_pbf])?;
         let mut args: Vec<&dyn AsRef<std::ffi::OsStr>> = vec![&"tags-filter", &area_pbf];
         let filters: Vec<String> = expressions(entries).into_iter().chain(more.iter().cloned()).collect();
         args.extend(filters.iter().map(|f| f as &dyn AsRef<std::ffi::OsStr>));
@@ -106,8 +111,8 @@ pub fn selected(entries: &[Entry], pbf: &Path, binary: &Path, tiles: &Tiles, wor
     args.extend(paths.iter().map(|p| p as &dyn AsRef<std::ffi::OsStr>));
     args.extend([&"-o" as &dyn AsRef<std::ffi::OsStr>, &out]);
     run(binary, &args)?;
-    for path in paths {
-        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    for path in paths.iter().chain([&numbered]) {
+        std::fs::remove_file(path).map_err(|e| e.to_string())?;
     }
     Ok(out)
 }
@@ -297,6 +302,7 @@ mod tests {
             .lines()
             .filter_map(|line| line.strip_prefix('w')?.split(' ').next()?.parse().ok())
             .collect();
-        assert_eq!(kept, [101, 103]);
+        // The cut numbers the objects from 1 in the order of the file: ways 101 and 103 are ways 1 and 3.
+        assert_eq!(kept, [1, 3]);
     }
 }
