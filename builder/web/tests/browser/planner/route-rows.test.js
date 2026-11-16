@@ -73,8 +73,9 @@ test('the rows of a route of two days: a day, the pointer, a part, a climb, the 
 
   const lanes = page.locator('.lanes');
   for (const label of ['Waypoints', 'Elevation']) await expect(lanes.locator('.label').filter({ hasText: label })).toBeVisible();
-  // A drawn line has no surface data: the legend gives the one share.
-  await expect(lanes.getByRole('list', { name: 'Surface shares' }).getByRole('listitem')).toHaveText(['Unknown 100%']);
+  // A drawn line has no surface data, and the Surface row says so.
+  await expect(lanes.getByText('No surface data')).toBeVisible();
+  await expect(lanes.getByRole('list', { name: 'Surface shares' })).toHaveCount(0);
   await expect(lanes.locator('.ticks')).toContainText('start');
   await expect(lanes.locator('.ticks')).toContainText('15.2 km');
   await expect(lanes.locator('.pin')).toHaveText(['1', '2']);

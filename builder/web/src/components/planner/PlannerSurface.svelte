@@ -44,12 +44,9 @@
 <div class="surface">
     <div class="label">
         <strong>Surface</strong>
-        {#if hasPushing}<span class="hint">{pushingDistance} pushing</span>{/if}
-        {#if shares.length}
-            <span class="legend"><SurfaceLegend {shares} bind:lit current={position === null ? undefined : current?.surface} /></span>
-        {:else}
-            <span class="hint">No surface data</span>
-        {/if}
+        <!-- At the pointer, the hint says the access of the stretch there. -->
+        {#if position !== null && current}<span class="hint">{access}</span>{:else if hasPushing}<span class="hint">{pushingDistance} pushing</span>{/if}
+        <span class="legend"><SurfaceLegend {shares} bind:lit current={position === null ? undefined : current?.surface} /></span>
     </div>
     <span class="sr-only" id={helpId}>Use the arrow keys to inspect adjacent surface and access sections. Percentages refer to the whole route. {#if !walking}The Push strip marks sections where you must push your bike.{/if}</span>
     <div class="bar" class:with-pushing={hasPushing} role="slider" tabindex={visible.length ? 0 : -1} aria-label={walking ? 'Surface along route' : 'Surface and pushing along route'} aria-describedby={helpId} aria-disabled={!visible.length} aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round(at * 100)} aria-valuetext={description}
