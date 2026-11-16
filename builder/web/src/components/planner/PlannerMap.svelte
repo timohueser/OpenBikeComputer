@@ -480,7 +480,9 @@
         insertDot = new maplibregl.Marker({ element: Object.assign(document.createElement("div"), { className: "planner-insert-dot" }) });
         hoverDot = new maplibregl.Marker({ element: Object.assign(document.createElement("div"), { className: "planner-hover-dot" }) });
         try {
-            map = new maplibregl.Map({ container, center, zoom, maxBounds: config.bounds, style: mapStyle(theme, styleConfig, dem.sharedDemProtocolUrl, contourUrl), attributionControl: false, maxPitch: 0, renderWorldCopies: false });
+            // Tiles past the deepest zoom of a source stay whole. MapLibre otherwise splits them and keeps only the source layers
+            // that a style layer draws, and the route details read a source layer that no style layer draws.
+            map = new maplibregl.Map({ container, center, zoom, maxBounds: config.bounds, style: mapStyle(theme, styleConfig, dem.sharedDemProtocolUrl, contourUrl), attributionControl: false, maxPitch: 0, renderWorldCopies: false, zoomLevelsToOverscale: undefined });
             signedLayer = new SignedRoutesLayer(map);
             overlayLayer = new RouteOverlays(map, config.overlays, (message, retry = false) => { overlayStatus = message; overlayRetry = retry; }, hint => routeHint = hint);
             fitInitialRoute();
