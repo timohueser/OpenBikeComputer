@@ -23,7 +23,7 @@ from pathlib import Path
 # ground, and a building passage of an older bake on the ground (the crate's feature `storeys` on, the crate at one
 # codegen unit in the release profile, stable 1.100.0).
 # The owner allows about 60 kB of code growth for the crossing block, stated in its pull request and recorded here.
-GROUND_PLAN_MEASURED = {"gzipped": 742_003, "raw_wasm": 1_908_534}
+GROUND_PLAN_MEASURED = {"gzipped": 741_307, "raw_wasm": 1_906_399}
 # The owner's margin: compiler and dependency updates move the size by a few kilobytes and must not fail
 # unrelated pull requests; real growth past the margin still fails. Raw gets the same fraction as gzipped.
 # A pull request that changes the bridge's code records its own CI size here; the margin is only for toolchain
