@@ -17,7 +17,7 @@ function standInEnv() {
     actions: browserActions,
     start: async () => ({
       app,
-      screenshot: async () => ({ png: Buffer.from('png'), unstable: false }),
+      screenshot: async () => ({ jpeg: Buffer.from('jpeg'), unstable: false }),
       perform: async () => { app.performed++; },
       describe: async () => ({ screen: 'planner', hit: 'map' }),
       end: async () => {},
@@ -53,6 +53,12 @@ const run = ({ actions, success = () => false, budget = createBudget(model, 15),
 test('three clicks at different points of the map do not end a walkthrough', async () => {
   const { result } = await run({ actions: [click(100, 100), click(400, 300), click(700, 500), { type: 'give_up' }] });
   assert.deepEqual(result, { outcome: 'gave_up', steps: 4 });
+});
+
+test('a give-up records the screen where it happened and no control', async () => {
+  const { dir } = await run({ actions: [{ type: 'give_up', target: '', x: null, y: null, x2: null, y2: null, text: null }] });
+  const [record] = readFileSync(join(dir, 'steps.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  assert.deepEqual([record.screen, record.hit], ['planner', null]);
 });
 
 test('the same action on the same screen three times ends as stuck', async () => {
