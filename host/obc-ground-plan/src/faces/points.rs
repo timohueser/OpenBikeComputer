@@ -1205,3 +1205,100 @@ mod tests {
         assert!(crossing([0.0, 0.0], [2.0, 0.0], [3.0, -1.0], [3.0, 1.0]).is_none());
     }
 }
+
+/// B0 (throwaway): the bounded contact scan of a stop arm and its two `leave` fits.
+pub struct B0Scan {
+    pub intervals: u32,
+    pub last: Option<f64>,
+    pub at_end: bool,
+    pub bounded: bool,
+    pub total: f64,
+    pub steps: u32,
+    pub fits: u32,
+}
+
+/// B0: the guest's run from the node; at each `SCAN` station five points across its carriageway against the host
+/// area (the hosts' runs at their paved offset, the area's rings); the scan stops where the guest's centre lies
+/// farther than `bound` past every host run's paved edge. Then `leave` on each side down the ladder from `rho`.
+#[allow(clippy::too_many_arguments)]
+pub fn b0_scan(
+    lines: &[WayLine],
+    stops: &[Vec<usize>],
+    pos: P,
+    hosts: &[Arm],
+    guest: Arm,
+    area: &[Vec<P>],
+    rho: f64,
+    tol: f64,
+    len: f64,
+    bound: f64,
+) -> B0Scan {
+    let own = |a: Arm| -> Vec<usize> { stops[a.line].iter().copied().filter(|&s| s != a.at).collect() };
+    let mut runs = vec![run(&lines[guest.line], guest, pos, len, &own(guest))];
+    for &a in hosts {
+        let mut r = run(&lines[a.line], a, pos, len, &own(a));
+        for x in &mut r {
+            x.h = x.bands[0].max(x.h);
+        }
+        runs.push(r);
+    }
+    let rel = |p: P| [f64::from(p[0] - pos[0]), f64::from(p[1] - pos[1])];
+    let rings: Vec<(Vec<[f64; 2]>, [f64; 4])> = (area.iter())
+        .map(|r| {
+            let v: Vec<[f64; 2]> = r.iter().map(|&p| rel(p)).collect();
+            let b = v.iter().fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, p| {
+                [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])]
+            });
+            (v, b)
+        })
+        .collect();
+    let mut out = B0Scan { intervals: 0, last: None, at_end: false, bounded: false, total: 0.0, steps: 0, fits: 0 };
+    if runs.iter().any(|r| r.len() < 2) {
+        return out;
+    }
+    let total = length(&runs[0]);
+    out.total = total;
+    let (mut s, mut prev) = (0.0, false);
+    while s <= total {
+        out.steps += 1;
+        let c = edge_at(&runs[0], s, 1.0, 0.0);
+        let m = edge_at(&runs[0], s, -1.0, 0.0);
+        let mid = lerp(c, m, 0.5);
+        let h = dist(c, mid);
+        let far = (1..runs.len()).map(|j| to_piece(&runs, j, mid).d).fold(f64::INFINITY, f64::min);
+        if far > bound + h {
+            out.bounded = true;
+            break;
+        }
+        let pts = [c, lerp(c, mid, 0.5), mid, lerp(m, mid, 0.5), m];
+        let bb = pts.iter().fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, p| {
+            [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])]
+        });
+        let meets = |b: &[f64; 4]| b[0] <= bb[2] && b[2] >= bb[0] && b[1] <= bb[3] && b[3] >= bb[1];
+        let inside = pts.iter().any(|&q| {
+            (1..runs.len()).any(|j| to_piece(&runs, j, q).d <= 0.0)
+                || rings.iter().filter(|(_, b)| meets(b)).any(|(r, _)| to_ring(r, q).d <= 0.0)
+        });
+        if inside {
+            if !prev {
+                out.intervals += 1;
+            }
+            out.last = Some(s);
+        }
+        prev = inside;
+        s += SCAN;
+    }
+    out.at_end = prev;
+    let fills: Vec<Vec<[f64; 2]>> = rings.into_iter().map(|(r, _)| r).collect();
+    for side in [1.0, -1.0] {
+        for r in ladder(rho) {
+            if let Some(l) = leave(&runs, &fills, 0, side, r, tol, &|_, _| true) {
+                if leave_fan(&runs, &l, r).is_some() {
+                    out.fits += 1;
+                }
+                break;
+            }
+        }
+    }
+    out
+}

@@ -654,7 +654,8 @@ fn kind(c: &Cand) -> u32 {
 
 /// Whether a candidate paves: a carriageway's label that is no band layer and relabels nothing.
 fn paves(c: &Cand) -> bool {
-    c.label.surface == Surface::Carriageway && !matches!(kind(c), REGION | BAND)
+    let sidewalk = super::Rules::embedded().plan.rank(super::Rank::Sidewalk);
+    c.label.surface == Surface::Carriageway && !matches!(kind(c), REGION | BAND) && c.key.0 < sidewalk
 }
 
 pub(super) fn label_words(l: &Label) -> [u32; 4] {

@@ -987,6 +987,9 @@ pub(super) fn build(
                     feet[n] = beside(line, t.x[n], side, at_x(line, t.x[n]).1);
                     ends[n] = (key(arm, side), Cut::at(arm, Tip::Square, Some(foot)));
                     let (cut, run) = run_cut(pt, i, arm, side, other, same);
+                    if pt.would[j] && matches!(cut.tip, Tip::Square) {
+                        super::b0::put(&format!("A: run-in into a stop arm (ring) {}", key(arm, side)), ctx.global(pt.pos), 1.0);
+                    }
                     instead.push((key(arm, side), cut));
                     runs.extend(run);
                     if junction && other.line != arm.line {
@@ -1011,6 +1014,9 @@ pub(super) fn build(
                 let bits = walking || walks(ctx, &lines[arm.line], arm, right, false);
                 if walking {
                     let (cut, run) = run_cut(pt, n, arm, side, other, same);
+                    if pt.would[j] && matches!(cut.tip, Tip::Square) {
+                        super::b0::put(&format!("A: run-in into a stop arm {}", key(arm, side)), ctx.global(pt.pos), 1.0);
+                    }
                     cuts[key(arm, side)].push(cut);
                     onto.extend(run);
                 } else if bits {
@@ -1264,6 +1270,9 @@ pub(super) fn build(
     let mut inside: Vec<Rings> = vec![Vec::new(); rings.len()];
     for &(n, pi, k) in &stops {
         let arm = points[pi].arms[k];
+        if points[pi].would[k] {
+            super::b0::put(&format!("A: INSET stop at a stop arm {n}"), ctx.global(points[pi].pos), 1.0);
+        }
         let line = &lines[arm.line];
         if line.rail || line.sec.water {
             continue;

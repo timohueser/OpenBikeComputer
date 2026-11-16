@@ -46,6 +46,8 @@ use crate::CellInput;
 pub(crate) struct WayLine<'a> {
     pub way: u32,
     pub sec: WaySection<'a>,
+    /// B0: a `service=driveway` way.
+    pub drive: bool,
     pub rail: bool,
     pub p: Vec<P>,
     /// The carriageway half-width in units.
@@ -420,6 +422,7 @@ fn lines_with<'a>(
             Some(if along < 0.0 { [-d[0], -d[1]] } else { d })
         };
         let mut line = WayLine {
+            drive: feature.tags.get("service").is_some_and(|v| v == "driveway"),
             way: way.id,
             rail: way.family == Family::Rail,
             p: Vec::with_capacity(samples.len()),
@@ -702,6 +705,10 @@ struct Point {
     seams: bool,
     /// Per arm, whether it is one of the through road's: a junction's hosts, both arms of a joint or a turn.
     hosts: Vec<bool>,
+    /// B0: the stop arms (R1), no arms of the point's geometry.
+    stops: Vec<Arm>,
+    /// B0: per arm, whether R1 calls it a stop arm (for the develop counts with `B0_OFF`).
+    would: Vec<bool>,
     label: Label,
     key: (u8, u8, u8),
     glob: Glob,
@@ -820,16 +827,52 @@ fn graph_points(
         let (mut label, rank) = way_label(ctx.rules, &lines[best.1], legs::leg(&lines[best.1].cuts, at, best.0.dir));
         label.owner = Owner::Junction(id as u32);
         label.rule = HeightRule::Blend;
-        let pts: Vec<Arm> = arms
+        let all_pts: Vec<Arm> = arms
             .iter()
             .map(|(a, l)| Arm { line: *l, at: sample_at(g, &lines[*l], &a.at, j.pos), dir: a.dir })
             .collect();
+        // B0: R1. A stop arm is no host, all hosts are lines here, and its pair with the best host is `stop`.
+        let gp = ctx.global(j.pos);
+        let host_sec = (j.arms.iter().filter(|a| a.host)).filter_map(|a| of_way.get(&a.way)).map(|&l| &lines[l].sec).min_by_key(|s| s.rank);
+        let all_here = j.arms.iter().filter(|a| a.host).all(|a| of_way.contains_key(&a.way));
+        let would: Vec<bool> = (arms.iter())
+            .map(|(a, l)| !a.host && host_sec.is_some_and(|h| ctx.rules.plan.pair(h.group, lines[*l].sec.group).mouth == Mouth::Stop))
+            .collect();
+        let stop: Vec<bool> = would.iter().map(|&w| w && all_here && !b0::off()).collect();
+        if b0::on() && near(j.pos) {
+            let mut n: BTreeMap<String, f64> = BTreeMap::new();
+            for (k, (_, l)) in arms.iter().enumerate() {
+                if would[k] {
+                    let h = host_sec.unwrap();
+                    *n.entry(format!("pair {}/{}", h.group, lines[*l].sec.group)).or_default() += 1.0;
+                    *n.entry(format!("class {}/{}", h.class, lines[*l].sec.class)).or_default() += 1.0;
+                    *n.entry("stop arms".into()).or_default() += 1.0;
+                    if !all_here {
+                        *n.entry("stop arm skipped by the level test".into()).or_default() += 1.0;
+                    }
+                }
+                if !arms[k].0.host && lines[*l].drive {
+                    *n.entry("driveway guest arms".into()).or_default() += 1.0;
+                }
+            }
+            let left = stop.iter().filter(|&&s| !s).count();
+            if left == 1 && stop.iter().any(|&s| s) {
+                n.insert("junction with one non-stop arm".into(), 1.0);
+            }
+            for (name, v) in n {
+                b0::put(&name, gp, v);
+            }
+        }
+        let pts: Vec<Arm> = (0..all_pts.len()).filter(|&k| !stop[k]).map(|k| all_pts[k]).collect();
+        let stops: Vec<Arm> = (0..all_pts.len()).filter(|&k| stop[k]).map(|k| all_pts[k]).collect();
+        let would: Vec<bool> = (0..all_pts.len()).filter(|&k| !stop[k]).map(|k| would[k]).collect();
+        let hosts: Vec<bool> = (0..all_pts.len()).filter(|&k| !stop[k]).map(|k| arms[k].0.host).collect();
         // Each two neighbouring arms, the first turning counter-clockwise to the second through their
         // sector, so that the sector lies on the first's right and the second's left. Their corner
         // takes the lesser corner radius of their classes; their kerb's round the sidewalk one where both have a
         // sidewalk there, and where one has, a small round, so the slab runs straight to the other's carriageway
         // (`walk`).
-        let pairs = (0..pts.len())
+        let pairs = (0..if pts.len() < 2 { 0 } else { pts.len() })
             .map(|k| {
                 let (a, b) = (pts[k], pts[(k + 1) % pts.len()]);
                 let walks = u8::from(walk::walks(ctx, &lines[a.line], a, true, true))
@@ -840,16 +883,20 @@ fn graph_points(
                     1 => ctx.rules.plan.walk.radius_one_walk_m,
                     _ => corner,
                 };
+                if b0::on() && walks == 1 && (would[k] || would[(k + 1) % pts.len()]) && near(j.pos) {
+                    b0::put(&format!("A: one-walk round at a stop pair {k}"), gp, 1.0);
+                }
                 (k, (k + 1) % pts.len(), kerb, corner)
             })
             .collect();
-        let gp = ctx.global(j.pos);
         out.push(Point {
             pos: j.pos,
             arms: pts,
             pairs,
             seams: true,
-            hosts: arms.iter().map(|(a, _)| a.host).collect(),
+            hosts,
+            stops,
+            would,
             label,
             key: (rank, class(best.1), 0),
             glob: [gp[0], gp[1], 0, 0, 0],
@@ -877,6 +924,8 @@ fn graph_points(
             pairs: vec![(0, 1, radius, radius), (1, 0, radius, radius)],
             seams: true,
             hosts: vec![true; 2],
+            stops: Vec::new(),
+            would: vec![false; 2],
             label,
             key: (rank, class(owner), 1),
             glob: [gp[0], gp[1], 0, 0, 0],
@@ -907,6 +956,8 @@ fn turn_points(ctx: &Ctx, lines: &[WayLine], taken: &[Vec<(f64, f64)>], bx: [i32
                 pairs: vec![(0, 1, r_m, r_m)],
                 seams: false,
                 hosts: vec![true; 2],
+                stops: Vec::new(),
+                would: vec![false; 2],
                 label,
                 key: (rank, line.sec.rank as u8, 2),
                 glob: {
@@ -1099,6 +1150,8 @@ fn storey_bands(ctx: &Ctx, lines: &mut [WayLine], level: i8) {
 /// The candidates of a cell and level, the one source of its shapes: the overlay slices and labels
 /// them into faces, and the records evaluate them per point by the same `decide`.
 struct Candidates<'a> {
+    /// B0: the cell's origin.
+    origin: GlobalPoint,
     lines: Vec<WayLine<'a>>,
     /// The way lines: a prefix of `lines`, which the far level reads.
     ways: usize,
@@ -1173,7 +1226,10 @@ impl Sliced {
         let strings: Vec<Vec<P>> = c.cands.iter().flat_map(|c| c.rings.iter().cloned()).collect();
         let (patches, segments) = slice(c.win, &strings, &c.seams);
         stats.slice_segments = segments as u32;
-        let labels = patches.iter().map(|patch| label(&c.cands, &c.cover, &c.lines, patch, false)).collect();
+        let labels: Vec<Label> = patches.iter().map(|patch| label(&c.cands, &c.cover, &c.lines, patch, false)).collect();
+        if b0::on() {
+            b0_faces(c, &patches, &labels);
+        }
         let (under, wedge) = (Vec::new(), Vec::new());
         Sliced { patches, labels, under, under_id: Vec::new(), wedge, front: Vec::new(), back: Vec::new(), stats }
     }
@@ -1468,7 +1524,7 @@ fn candidates<'a>(
     // the next point. A turn on a part of a junction's or joint's region is none.
     let stops = |points: &[Point]| {
         let mut stops: Vec<Vec<usize>> = vec![Vec::new(); lines.len()];
-        for a in points.iter().chain(&outer).flat_map(|pt| &pt.arms) {
+        for a in points.iter().chain(&outer).flat_map(|pt| pt.arms.iter().chain(&pt.stops)) {
             stops[a.line].push(a.at);
         }
         for s in &mut stops {
@@ -1519,7 +1575,7 @@ fn candidates<'a>(
     }
     let mut taken: Vec<Vec<(f64, f64)>> = vec![Vec::new(); lines.len()];
     for (pt, r) in points.iter().zip(&rounded) {
-        for a in &pt.arms {
+        for a in pt.arms.iter().chain(&pt.stops) {
             taken[a.line].push((a.at as f64, a.at as f64));
         }
         for part in &r.spans {
@@ -1529,8 +1585,9 @@ fn candidates<'a>(
     // The cuts of a line's square end at a junction or joint: the corners of all its arms' layers.
     let mut end_cuts: BTreeMap<(usize, usize), Vec<f64>> = BTreeMap::new();
     for pt in &points {
-        let cuts = points::cuts(&lines, &pt.arms);
-        for a in pt.arms.iter().filter(|a| a.at == 0 || a.at + 1 == lines[a.line].p.len()) {
+        let all: Vec<Arm> = pt.arms.iter().chain(&pt.stops).copied().collect();
+        let cuts = points::cuts(&lines, &all);
+        for a in all.iter().filter(|a| a.at == 0 || a.at + 1 == lines[a.line].p.len()) {
             end_cuts.insert((a.line, a.at), cuts.clone());
         }
     }
@@ -1593,6 +1650,11 @@ fn candidates<'a>(
     } else {
         Lid::default()
     };
+    // B0: per line, its stop arms (sample, direction): the guest's carriageway from the node to 8 m along is its mouth.
+    let mut stop_arms: Vec<Vec<(usize, i8)>> = vec![Vec::new(); lines.len()];
+    for a in points.iter().chain(&outer).flat_map(|pt| &pt.stops) {
+        stop_arms[a.line].push((a.at, a.dir));
+    }
     let mut cands: Vec<Cand> = Vec::new();
     let mut mouths = Vec::new();
     // The ways' carriageways and the band layers, on the run of samples near the window. A way with
@@ -1679,18 +1741,56 @@ fn candidates<'a>(
                 }
             }
         }
-        let own = carriageway((first, last));
-        cands.push(Cand {
-            rings: union(&own, [0, 0]),
-            label: way_label(rules, line, legs::leg(&line.cuts, first, 1)).0,
-            key: way_key(rules, line),
-            glob: None,
-            line: li,
-            relabel: None,
-            beyond: Vec::new(),
-            fill: None,
-            discs: Vec::new(),
-        });
+        let (own, mouth) = if stop_arms[li].is_empty() {
+            (carriageway((first, last)), Vec::new())
+        } else {
+            // B0: the segments within 8 m of a stop arm's node along the arm.
+            let mut in_mouth = vec![false; line.p.len()];
+            for &(at, dir) in &stop_arms[li] {
+                let (mut i, mut len) = (at as isize, 0.0);
+                let reach = ctx.units(8.0, line.p[at]);
+                loop {
+                    let j = i + isize::from(dir);
+                    if j < 0 || j as usize >= line.p.len() || len >= reach {
+                        break;
+                    }
+                    in_mouth[i.min(j) as usize] = true;
+                    let (a, b) = (line.p[i as usize], line.p[j as usize]);
+                    len += libm::hypot(f64::from(b[0] - a[0]), f64::from(b[1] - a[1]));
+                    i = j;
+                }
+            }
+            let ends = [line.round[0] && first == 0, line.round[1] && last == line.p.len()];
+            let (mut pieces, mut of) = (Vec::new(), Vec::new());
+            let (p, h) = (&line.p[first..last], &line.h[first..last]);
+            let cuts = [&cut(first, 0)[..], &cut(last - 1, 0)[..]];
+            stroke::pieces_along_of(p, h, &line.dirs(first, last), cuts, ends, false, &mut pieces, Some(&mut of));
+            let (mut own, mut mouth) = (Vec::new(), Vec::new());
+            for (ring, [a, b]) in pieces.into_iter().zip(of) {
+                let m = (first + a..=first + b).all(|i| in_mouth[i]);
+                if m { &mut mouth } else { &mut own }.push(ring);
+            }
+            (own, mouth)
+        };
+        let label = way_label(rules, line, legs::leg(&line.cuts, first, 1)).0;
+        if !mouth.is_empty() {
+            let key = (plan.rank(Rank::Mouth), line.sec.rank as u8, 3);
+            let (rings, beyond, discs) = (union(&mouth, [0, 0]), Vec::new(), Vec::new());
+            cands.push(Cand { rings, label, key, glob: None, line: li, relabel: None, beyond, fill: None, discs });
+        }
+        if !own.is_empty() {
+            cands.push(Cand {
+                rings: union(&own, [0, 0]),
+                label,
+                key: way_key(rules, line),
+                glob: None,
+                line: li,
+                relabel: None,
+                beyond: Vec::new(),
+                fill: None,
+                discs: Vec::new(),
+            });
+        }
         // A deck's band layers are its own: the slab's edge band names its way.
         let mut own = (!line.cuts.is_empty() || decks.is_some()).then(|| own_layers.entry(li).or_default());
         // So are the paved layers of a way on its segments on top of a lower way: their heights are that way's, not
@@ -1813,6 +1913,70 @@ fn candidates<'a>(
     } else {
         walk::Walk::default()
     };
+    // B0: the bounded contact scan and the two `leave` fits of every stop arm, timed.
+    {
+        let slab_rings: Vec<Vec<P>> = (walk.cands.iter())
+            .flat_map(|c| c.rings.iter())
+            .filter(|r| geom::area2(r) > 0)
+            .cloned()
+            .collect();
+        let widest = lines.iter().map(|l| l.sec.sidewalk_m).fold(0.0, f64::max);
+        let all_stops = stops(&points);
+        for (pt, r) in points.iter().zip(&rounded).filter(|(pt, _)| !pt.stops.is_empty()) {
+            let t0 = std::time::Instant::now();
+            let u = |m: f64| ctx.units(m, pt.pos);
+            let mut area: Vec<Vec<P>> = r.fans.iter().chain(&r.rings[0]).cloned().collect();
+            let reach = u(plan.extent_m + widest + 4.0) as i32;
+            let near = |ring: &Vec<P>| ring.iter().any(|p| (p[0] - pt.pos[0]).abs() < reach && (p[1] - pt.pos[1]).abs() < reach);
+            area.extend(slab_rings.iter().filter(|r| near(r)).cloned());
+            let best = pt.arms.iter().filter(|a| lines[a.line].sec.rank < usize::MAX).min_by_key(|a| lines[a.line].sec.rank);
+            let (mut n, mut two, mut at8, mut end, mut fits, mut steps) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+            for &g in &pt.stops {
+                let (gs, hs) = (&lines[g.line].sec, best.map(|a| &lines[a.line].sec).unwrap_or(&lines[g.line].sec));
+                let rho = u(gs.corner_radius_m.min(hs.corner_radius_m));
+                let tol = u(gs.sag_plan_m.max(hs.sag_plan_m));
+                let scan = points::b0_scan(&lines, &all_stops, pt.pos, &pt.arms, g, &area, rho, tol, u(plan.extent_m), u(widest) + rho);
+                n += 1.0;
+                two += f64::from(u8::from(scan.intervals >= 2));
+                at8 += f64::from(u8::from(scan.last.is_some_and(|x| x >= u(8.0))));
+                end += f64::from(u8::from(scan.at_end));
+                fits += f64::from(scan.fits);
+                steps += f64::from(scan.steps);
+                if b0::on() && gs.group == "steps" {
+                    let line = &lines[g.line];
+                    let (mut i, mut d, mut grade) = (g.at as isize, 0.0, 0.0f64);
+                    loop {
+                        let j = i + isize::from(g.dir);
+                        if j < 0 || j as usize >= line.p.len() || d >= u(8.0) {
+                            break;
+                        }
+                        let (a, b) = (line.p[i as usize], line.p[j as usize]);
+                        d += libm::hypot(f64::from(b[0] - a[0]), f64::from(b[1] - a[1]));
+                        let m = d * metres_per_unit(ctx.origin.y + i64::from(a[1]));
+                        if m > 1.0 {
+                            grade = grade.max((line.z[j as usize] - line.z[g.at]).abs() / m);
+                        }
+                        i = j;
+                    }
+                    if grade > 0.3 {
+                        b0::put("steps guest on a slope over 0.3", ctx.global(pt.pos), grade);
+                    }
+                }
+            }
+            b0::NS.fetch_add(t0.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+            b0::SCANS.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
+            b0::STEPS.fetch_add(steps as u64, std::sync::atomic::Ordering::Relaxed);
+            if b0::on() && own(pt.pos) {
+                let gp = ctx.global(pt.pos);
+                for (name, v) in [("scan: stop arms", n), ("scan: two contact intervals", two), ("scan: contact at 8 m", at8),
+                    ("scan: contact at the scan's end", end), ("scan: leave fits", fits), ("scan: steps", steps)] {
+                    if v > 0.0 {
+                        b0::put(name, gp, v);
+                    }
+                }
+            }
+        }
+    }
     cands.extend(walk.cands);
     // Where a way on top lies over the last metres of a way that enters a bore, that way's face is a floor under the
     // way on top, as behind the portal line: its paved layers lose the place, and the place is a floor of its own
@@ -1854,6 +2018,7 @@ fn candidates<'a>(
     // to every carriageway and rail bed, so a round paves land only. `lines_m` holds their reach.
     let mut paved: Vec<Vec<P>> = (cands.iter())
         .filter(|c| c.relabel.is_none() && matches!(c.label.surface, Surface::Carriageway | Surface::RailBed))
+        .filter(|c| c.key.0 < plan.rank(Rank::Sidewalk))
         .flat_map(|c| c.rings.iter().cloned())
         .collect();
     paved.extend(outer_paved);
@@ -1964,6 +2129,7 @@ fn candidates<'a>(
         None => lines.iter().flat_map(deck_ends).collect(),
     };
     Candidates {
+        origin: ctx.origin,
         lines,
         ways,
         cands,
@@ -2731,5 +2897,75 @@ fn output(
         corners: Vec::new(),
         mouths: Vec::new(),
         stats,
+    }
+}
+
+/// B0 (throwaway): counters of the stop-arm measure, on where `B0_COUNT` is set; `B0_OFF` keeps develop's points.
+pub mod b0 {
+    use std::collections::BTreeMap;
+    use std::sync::atomic::AtomicU64;
+    use std::sync::{Mutex, OnceLock};
+    pub static NS: AtomicU64 = AtomicU64::new(0);
+    pub static SCANS: AtomicU64 = AtomicU64::new(0);
+    pub static STEPS: AtomicU64 = AtomicU64::new(0);
+    pub static MAX_COVER: AtomicU64 = AtomicU64::new(0);
+    type Map = BTreeMap<String, BTreeMap<[i64; 2], f64>>;
+    static MAP: Mutex<Map> = Mutex::new(BTreeMap::new());
+    pub fn on() -> bool {
+        static ON: OnceLock<bool> = OnceLock::new();
+        *ON.get_or_init(|| std::env::var_os("B0_COUNT").is_some())
+    }
+    pub fn off() -> bool {
+        static OFF: OnceLock<bool> = OnceLock::new();
+        *OFF.get_or_init(|| std::env::var_os("B0_OFF").is_some())
+    }
+    pub fn put(name: &str, at: [i64; 2], v: f64) {
+        if on() {
+            MAP.lock().unwrap().entry(name.to_string()).or_default().insert(at, v);
+        }
+    }
+    pub fn take() -> Map {
+        std::mem::take(&mut MAP.lock().unwrap())
+    }
+}
+
+/// B0: per patch of a slice, the most candidates over its inner point, and the faces over a slab or a mouth under a
+/// rail bed, by the winning candidate's kind.
+fn b0_faces(c: &Candidates, patches: &[Vec<Vec<P>>], labels: &[Label]) {
+    let rules = Rules::embedded();
+    let (mouth, rail) = (rules.plan.rank(Rank::Mouth), rules.plan.rank(Rank::RailBed));
+    for (patch, l) in patches.iter().zip(labels) {
+        let Some(q) = inner_point(patch) else { continue };
+        if q[0] < 2 * i64::from(c.win[0]) || q[0] > 2 * i64::from(c.win[2]) || q[1] < 2 * i64::from(c.win[1]) || q[1] > 2 * i64::from(c.win[3]) {
+            continue;
+        }
+        let at = c.cover.at(q);
+        b0::MAX_COVER.fetch_max(at.len() as u64, std::sync::atomic::Ordering::Relaxed);
+        let gp = [c.origin.x + q[0] / 2, c.origin.y + q[1] / 2];
+        let mpu = metres_per_unit(gp[1]);
+        let area = patch.iter().map(|r| geom::area2(r) as f64).sum::<f64>() / 2.0 * mpu * mpu;
+        let of = |k: u32| &c.cands[k as usize];
+        let slab = at.iter().any(|&k| of(k).label.surface == Surface::Sidewalk);
+        let mouthed = at.iter().any(|&k| of(k).key.0 == mouth && of(k).relabel.is_none());
+        if mouthed && matches!(l.surface, Surface::RailBed | Surface::Crossing) {
+            b0::put("mouth under a rail bed", gp, area);
+        }
+        if !slab || l.surface == Surface::Sidewalk {
+            continue;
+        }
+        let win = at.iter().map(|&k| of(k)).filter(|x| x.relabel.is_none() && x.fill.is_none()).min_by_key(|x| x.key);
+        let Some(w) = win else { continue };
+        let group = |line: usize| c.lines.get(line).map_or("?", |x| x.sec.group);
+        let what = if w.key.0 == mouth {
+            "over a slab: a mouth".to_string()
+        } else if w.glob.is_none() && matches!(w.label.owner, Owner::Way(_)) {
+            format!("over a slab: a {} carriageway", group(w.line))
+        } else if w.key.0 == rail && w.label.surface != Surface::RailBed {
+            let m = w.label.material.and_then(|m| c.lines.iter().position(|x| x.way == m)).map_or("?", group);
+            format!("over a slab: a {} point's fan", m)
+        } else {
+            format!("over a slab: {:?} key {:?}", w.label.surface, w.key)
+        };
+        b0::put(&what, gp, area);
     }
 }

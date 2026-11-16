@@ -284,6 +284,7 @@ pub fn far_matches_near(near: &[u32], far: &[u32], cell: CellKey) -> (Vec<String
     let keys: BTreeMap<u32, u32> = (0..near[1] as usize)
         .map(|ci| &near[near[4] as usize + CAND * ci..][..CAND])
         .filter(|c| c[0] == WAY && !sidewalk(c))
+        .filter(|c| c[1] >> 16 < u32::from(crate::faces::Rules::embedded().plan.rank(crate::faces::Rank::Sidewalk)))
         .map(|c| (c[4], c[1]))
         .collect();
     // Per near line matched by a far line: the far line's count of samples and its run's offset.

@@ -321,6 +321,26 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usiz
         }
     }
     slowest.sort_by(|a, b| b.0.total_cmp(&a.0));
+    // B0 (throwaway): the stop-arm counters.
+    let ord = std::sync::atomic::Ordering::Relaxed;
+    let b0: serde_json::Map<String, Value> = (faces::b0::take().into_iter())
+        .map(|(name, m)| {
+            let sum: f64 = m.values().sum();
+            let places: Vec<Value> = (m.iter().take(40))
+                .map(|(p, v)| {
+                    let (lon, lat) = crate::lon_lat(GlobalPoint { x: p[0], y: p[1] });
+                    json!([format!("{lat:.5}, {lon:.5}"), v])
+                })
+                .collect();
+            (name, json!({"places": m.len(), "sum": sum, "examples": places}))
+        })
+        .chain([
+            ("scan ns".to_string(), json!(faces::b0::NS.load(ord))),
+            ("scans".to_string(), json!(faces::b0::SCANS.load(ord))),
+            ("scan steps".to_string(), json!(faces::b0::STEPS.load(ord))),
+            ("max cover".to_string(), json!(faces::b0::MAX_COVER.load(ord))),
+        ])
+        .collect();
     let profile: serde_json::Map<String, Value> = total_ms
         .into_iter()
         .map(|(town, v)| (format!("{} total", if town { "town" } else { "rural" }), quantiles(v)))
@@ -345,6 +365,7 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usiz
         "artefact_list": listed,
         "check2_examples": border_faults.iter().take(10).collect::<Vec<_>>(),
         "ms": profile,
+        "b0": b0,
         "slowest": slowest.iter().take(5).map(|(t, k)| json!({"cell": k, "ms": t})).collect::<Vec<_>>(),
         "sizes": sizes.into_iter().map(|(k, v)| (k.to_string(), quantiles(v))).collect::<serde_json::Map<_, _>>(),
     })
