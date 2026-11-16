@@ -1963,7 +1963,22 @@ fn candidates<'a>(
         Some(d) => lines.iter().flat_map(|l| deck::open_ends(l, d.open[l.way as usize])).collect(),
         None => lines.iter().flat_map(deck_ends).collect(),
     };
-    Candidates { lines, ways, cands, seams, win, cover, corners, mouths, ends, walk_ends: walk.ends, marks, wedges, lid_of, stats }
+    Candidates {
+        lines,
+        ways,
+        cands,
+        seams,
+        win,
+        cover,
+        corners,
+        mouths,
+        ends,
+        walk_ends: walk.ends,
+        marks,
+        wedges,
+        lid_of,
+        stats,
+    }
 }
 
 /// The samples of a line whose segments meet a box: the run `first..last`.

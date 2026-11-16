@@ -6,7 +6,7 @@
 //! (`Ramp`). A width rule is a point and a direction, so the slab's width and its kerb's rise are one continuous
 //! function of position, and two cells build the same slabs.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::PI;
 
 use i_overlay::core::overlay_rule::OverlayRule;
@@ -72,6 +72,8 @@ pub(super) struct Walk {
 const STEP: f64 = 2.0 * PI / STEPS as f64;
 /// A stroke that a slab must not enter is searched for over the slab's sections this far apart, then finer.
 const STROKE_STEP_M: f64 = 0.5;
+/// The side of the grid squares of `NoEntry`, metres: about a road's half-width and a slab's width.
+const NO_ENTRY_CELL_M: f64 = 8.0;
 
 /// The ramp from `target` to `full` at slope `k`, its two kinks rounded with radius `r` (less where the two rounds
 /// would meet), so that it leaves the target at its station and meets the full width tangentially.
@@ -379,36 +381,71 @@ impl Stroke {
     /// Whether q lies inside by more than `margin` units: within the half-width of a segment's foot that falls
     /// inside the segment, or of a vertex between two segments. A point on an end line lies outside.
     pub(crate) fn holds(&self, q: [f64; 2], margin: f64) -> bool {
+        in_box(&self.bx, q) && (0..self.pts.len().saturating_sub(1)).any(|i| self.seg_holds(i, q, margin))
+    }
+
+    /// Whether segment i's part of the stroke holds q by more than `margin` units (`holds`).
+    fn seg_holds(&self, i: usize, q: [f64; 2], margin: f64) -> bool {
         let (pts, half, n) = (&self.pts, &self.half, self.pts.len());
-        in_box(&self.bx, q)
-            && (0..n.saturating_sub(1)).filter(|&i| in_box(&self.segs[i], q)).any(|i| {
-                let (a, b) = (pts[i], pts[i + 1]);
-                let (u, v) = ([b[0] - a[0], b[1] - a[1]], [q[0] - a[0], q[1] - a[1]]);
-                let l2 = u[0] * u[0] + u[1] * u[1];
-                let t = if l2 > 0.0 { (u[0] * v[0] + u[1] * v[1]) / l2 } else { 0.0 };
-                let flat = (i == 0 && t <= 0.0) || (i + 2 == n && t >= 1.0);
-                let t = t.clamp(0.0, 1.0);
-                let d = libm::hypot(v[0] - t * u[0], v[1] - t * u[1]);
-                !flat && d < half[i] + t * (half[i + 1] - half[i]) - margin
-            })
+        if !in_box(&self.segs[i], q) {
+            return false;
+        }
+        let (a, b) = (pts[i], pts[i + 1]);
+        let (u, v) = ([b[0] - a[0], b[1] - a[1]], [q[0] - a[0], q[1] - a[1]]);
+        let l2 = u[0] * u[0] + u[1] * u[1];
+        let t = if l2 > 0.0 { (u[0] * v[0] + u[1] * v[1]) / l2 } else { 0.0 };
+        let flat = (i == 0 && t <= 0.0) || (i + 2 == n && t >= 1.0);
+        let t = t.clamp(0.0, 1.0);
+        let d = libm::hypot(v[0] - t * u[0], v[1] - t * u[1]);
+        !flat && d < half[i] + t * (half[i + 1] - half[i]) - margin
     }
 }
 
-/// Whether the section of a line side at x, from the kerb out to the full width, enters one of `strokes`.
-fn enters(ctx: &Ctx, line: &WayLine, x: f64, side: f64, strokes: &[&Stroke]) -> bool {
+/// The strokes that slabs must not enter, each with the way of a road (None for a deck or a rail), and their segments
+/// by the squares of a grid that they reach: a point reads only its square's segments, so a slab's cost grows with
+/// its length and the strokes' segments, not with their product.
+struct NoEntry {
+    strokes: Vec<(Option<u32>, Stroke)>,
+    cell: f64,
+    at: BTreeMap<(i64, i64), Vec<(usize, usize)>>,
+}
+
+impl NoEntry {
+    fn new(strokes: Vec<(Option<u32>, Stroke)>, cell: f64) -> NoEntry {
+        let mut at: BTreeMap<(i64, i64), Vec<(usize, usize)>> = BTreeMap::new();
+        let sq = |v: f64| libm::floor(v / cell) as i64;
+        for (k, (_, s)) in strokes.iter().enumerate() {
+            for (i, b) in s.segs.iter().enumerate() {
+                for x in sq(b[0])..=sq(b[2]) {
+                    for y in sq(b[1])..=sq(b[3]) {
+                        at.entry((x, y)).or_default().push((k, i));
+                    }
+                }
+            }
+        }
+        NoEntry { strokes, cell, at }
+    }
+
+    /// Whether one of the strokes that `keep` takes holds q.
+    fn holds(&self, q: [f64; 2], keep: &[bool]) -> bool {
+        let key = (libm::floor(q[0] / self.cell) as i64, libm::floor(q[1] / self.cell) as i64);
+        self.at.get(&key).is_some_and(|v| v.iter().any(|&(k, i)| keep[k] && self.strokes[k].1.seg_holds(i, q, 0.0)))
+    }
+}
+
+/// Whether the section of a line side at x, from the kerb out to the full width, enters one of the strokes that `keep`
+/// takes.
+fn enters(ctx: &Ctx, line: &WayLine, x: f64, side: f64, no: &NoEntry, keep: &[bool]) -> bool {
     let (c, h, _) = at_x(line, x);
     let w = ctx.units(full_m(line), round(c));
-    (0..=8).any(|k| {
-        let q = beside(line, x, side, h + w * f64::from(k) / 8.0);
-        strokes.iter().any(|s| s.holds(q, 0.0))
-    })
+    (0..=8).any(|k| no.holds(beside(line, x, side, h + w * f64::from(k) / 8.0), keep))
 }
 
 /// The runs of a line side's sections between fractional vertex indices `x` that enter one of `strokes`, found
 /// `STROKE_STEP_M` apart: per run, the last place before it and the first past it whose sections do not enter
 /// (bisected), or the end of `x`. A slab cut out there ends with tapers that lie wholly in sections that do not enter.
-fn entering(ctx: &Ctx, line: &WayLine, side: f64, strokes: &[&Stroke], x: [f64; 2]) -> Vec<[f64; 2]> {
-    let meets = |x: f64| enters(ctx, line, x, side, strokes);
+fn entering(ctx: &Ctx, line: &WayLine, side: f64, no: &NoEntry, keep: &[bool], x: [f64; 2]) -> Vec<[f64; 2]> {
+    let meets = |x: f64| enters(ctx, line, x, side, no, keep);
     // The place between an outside one and an inside one where the sections start to enter, on the outside.
     let edge = |mut out: f64, mut inside: f64| {
         for _ in 0..7 {
@@ -783,7 +820,7 @@ pub(super) fn build(
         .chain(graph.joints.iter().map(|j| &j.arms[..]))
         .flat_map(|arms| arms.iter().flat_map(move |a| arms.iter().map(move |b| (a.way, b.way))))
         .collect();
-    let mut forbidden: Vec<(Option<u32>, Stroke)> = (lines.iter())
+    let mut all: Vec<(Option<u32>, Stroke)> = (lines.iter())
         .filter(|l| !l.sec.water)
         .map(|l| match l.rail {
             true => (None, Stroke::wide(l, l.bands.iter().map(|b| b[VERGE]).collect())),
@@ -792,11 +829,12 @@ pub(super) fn build(
         .collect();
     for (_, strokes) in decks {
         for s in strokes {
-            if !forbidden.iter().any(|f| f.1.pts == s.pts) {
-                forbidden.push((None, s));
+            if !all.iter().any(|f| f.1.pts == s.pts) {
+                all.push((None, s));
             }
         }
     }
+    let no = NoEntry::new(all, ctx.units(NO_ENTRY_CELL_M, [bx[0], bx[1]]));
     for (l, line) in
         lines.iter().enumerate().filter(|&(l, _)| !pieces[2 * l].is_empty() || !pieces[2 * l + 1].is_empty())
     {
@@ -806,14 +844,19 @@ pub(super) fn build(
             let p = [f64::from(p[0]), f64::from(p[1])];
             [b[0].min(p[0] - g), b[1].min(p[1] - g), b[2].max(p[0] + g), b[3].max(p[1] + g)]
         });
-        let near: Vec<&Stroke> = (forbidden.iter())
-            .filter(|(w, _)| w.is_none_or(|w| w != line.way && !met.contains(&(line.way, w))))
-            .map(|(_, s)| s)
-            .filter(|s| s.bx[0] <= bx[2] && s.bx[2] >= bx[0] && s.bx[1] <= bx[3] && s.bx[3] >= bx[1])
+        let keep: Vec<bool> = (no.strokes.iter())
+            .map(|(w, s)| {
+                w.is_none_or(|w| w != line.way && !met.contains(&(line.way, w)))
+                    && s.bx[0] <= bx[2]
+                    && s.bx[2] >= bx[0]
+                    && s.bx[1] <= bx[3]
+                    && s.bx[3] >= bx[1]
+            })
             .collect();
-        for side in [1.0, -1.0].into_iter().filter(|_| !near.is_empty()) {
+        for side in [1.0, -1.0].into_iter().filter(|_| keep.contains(&true)) {
             let n = side_of(l, side);
-            for [a, b] in pieces[n].iter().flat_map(|p| entering(ctx, line, side, &near, p.x)).collect::<Vec<_>>() {
+            for [a, b] in pieces[n].iter().flat_map(|p| entering(ctx, line, side, &no, &keep, p.x)).collect::<Vec<_>>()
+            {
                 let v = 0.5 * (a + b);
                 cuts[n].push(Cut { v, dir: -1, tip: Tip::Taper, to: Some(a), into: 0.0 });
                 cuts[n].push(Cut { v, dir: 1, tip: Tip::Taper, to: Some(b), into: 0.0 });

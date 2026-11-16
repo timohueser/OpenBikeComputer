@@ -200,10 +200,19 @@ fn passed(a: P, b: P, verts: &[P], by_x: &[u32], out: &mut Vec<(P, u32)>) {
     let (ga, gb) = (on_grid(a), on_grid(b));
     let r = PRECISION;
     let (x0, x1, y0, y1) = (a[0].min(b[0]) - r, a[0].max(b[0]) + r, a[1].min(b[1]) - r, a[1].max(b[1]) + r);
+    // A grid point on the rounded segment itself: the segment passes along the edge of its square, not through it,
+    // and a rounded edge that ran over the point would leave it inside the edge.
+    let on_rounded = |h: P| {
+        let side =
+            i128::from(gb[0] - ga[0]) * i128::from(h[1] - ga[1]) - i128::from(gb[1] - ga[1]) * i128::from(h[0] - ga[0]);
+        side == 0
+            && (ga[0].min(gb[0])..=ga[0].max(gb[0])).contains(&h[0])
+            && (ga[1].min(gb[1])..=ga[1].max(gb[1])).contains(&h[1])
+    };
     let mut test = |h: P, i: u32| {
         // The square of a vertex on a cell line holds only the edges on that line: the next cell holds
         // the line's vertices but not this cell's edges beside it.
-        if h != ga && h != gb && (!border(h) || on_cell_line(a, b)) && through(a, b, h) {
+        if h != ga && h != gb && (!border(h) || on_cell_line(a, b)) && (through(a, b, h) || on_rounded(h)) {
             out.push((h, i));
         }
     };
