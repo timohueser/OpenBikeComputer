@@ -133,14 +133,4 @@ export class RouteFinder {
         const stages = await this.catalog.stagesOf(family).catch(() => undefined);
         if (this.detail === detail) this.detail = stages ? { ...detail, family, stages } : { ...detail, failed: true };
     }
-
-    /** A record of the catalog that a map point lies on. */
-    find(id: number, at: Coordinate): Promise<CatalogRecord | undefined> {
-        return this.catalog.find(id, at);
-    }
-
-    /** The plan of a record in data order, or null when a long route is too long for one plan. */
-    dataPlan(route: CatalogRecord): Promise<RoutePlan | null> {
-        return this.catalog.dataPlan(route);
-    }
 }

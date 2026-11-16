@@ -2,34 +2,15 @@
     import Icon from '../../lib/ui/Icon.svelte';
     import TrailMarker from './TrailMarker.svelte';
     import { networkLevels, networkScope, routeKindTitles, routeWebsite, type NetworkRoute, type OverlaySelection } from '../../lib/planner/route-overlays';
-    import type { Coordinate } from '../../lib/planner/map-types';
-    let { selection, theme = 'light', onclose, canPlan, onplan }: {
-        selection: OverlaySelection; theme?: 'light' | 'dark'; onclose: () => void;
-        /** Whether a route is in the route catalog, so "Plan this route" can plan it. */
-        canPlan?: (id: number, at: Coordinate) => Promise<'plan' | 'too-long' | 'missing'>;
-        onplan?: (id: number) => void;
-    } = $props();
-    let plannable = $state<Record<number, 'plan' | 'too-long' | 'missing'>>({});
-    $effect(() => {
-        const { routes = [], coordinate } = selection;
-        let current = true;
-        plannable = {};
-        for (const { id } of canPlan ? routes : []) canPlan!(id, coordinate).then(status => { if (current) plannable = { ...plannable, [id]: status }; }, () => {});
-        return () => { current = false; };
-    });
+    let { selection, theme = 'light', onclose }: { selection: OverlaySelection; theme?: 'light' | 'dark'; onclose: () => void } = $props();
     // Relations with one name, number and network are one route to a rider: a route and its parts, or its two directions.
-    // A row is the relation that Plan plans. A relation that is too long for one plan keeps a row of its own.
     const routes = $derived.by(() => {
         const groups = new Map<string, NetworkRoute[]>();
         for (const route of selection.routes ?? []) {
             const key = route.name || route.ref ? JSON.stringify([route.name, route.ref, route.network]) : String(route.id);
             groups.set(key, [...groups.get(key) ?? [], route]);
         }
-        return [...groups.values()].flatMap(members => {
-            const website = members.map(route => routeWebsite(route.website)).find(Boolean);
-            const planned = members.find(route => plannable[route.id] === 'plan'), long = members.find(route => plannable[route.id] === 'too-long');
-            return (planned || long ? [planned, long].filter(route => !!route) : [members[0]]).map(route => ({ route, website, plan: route === planned, tooLong: route === long }));
-        });
+        return [...groups.values()].map(members => ({ route: members[0], website: members.map(route => routeWebsite(route.website)).find(Boolean) }));
     });
     const levelColor = (rank: number) => networkLevels.find(level => level.rank === Math.min(rank, 3))?.[theme === 'dark' ? 'dark' : 'color'];
     const access: Record<string, { title: string; detail: string }> = {
@@ -63,20 +44,17 @@
         <p class="note"><a href={`https://www.openstreetmap.org/way/${selection.way}`} target="_blank" rel="noreferrer">OpenStreetMap</a> · Closure reports are not live.</p>
     {:else}
         <!-- The badge shows the first of the numbers that OSM joins with ";". -->
-        <ul>{#each routes as { route, website, plan, tooLong } (route.id)}
-            {@const name = route.name || route.ref || 'Unnamed route'}
+        <ul>{#each routes as { route, website } (route.id)}
             {@const scope = networkScope(route)}
             <li>
                 <span class="marker"><TrailMarker symbol={route.symbol} description={route.symbol_text ?? ''} ref={route.ref?.split(';')[0]} /></span>
                 <span class="body">
-                    <strong>{name}</strong>
+                    <strong>{route.name || route.ref || 'Unnamed route'}</strong>
                     {#if scope || website}<small>
                         {#if scope}<i style:background={levelColor(route.rank)}></i>{scope}{/if}{#if scope && website}{' · '}{/if}
                         {#if website}<a href={website} target="_blank" rel="noreferrer">{new URL(website).hostname.replace(/^www\./, '')}</a>{/if}
                     </small>{/if}
-                    {#if tooLong}<small>Too long for one plan. Plan a stage in the Routes view.</small>{/if}
                 </span>
-                {#if plan}<button class="plan" aria-label={`Plan ${name}`} onclick={() => onplan?.(route.id)}>Plan</button>{/if}
             </li>
         {/each}</ul>
     {/if}
@@ -107,6 +85,4 @@
     small { display: block; margin-top: 2px; font: 400 13px/1.4 var(--sans); color: var(--ink-soft); }
     /* The colour of the route's network on the map. */
     small i { display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; }
-    .plan { flex: none; min-height: 28px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 6px; font-weight: 600; }
-    .plan:hover { background: var(--parchment-2); }
 </style>

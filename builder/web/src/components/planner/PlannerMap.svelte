@@ -31,7 +31,7 @@
         drawing = null, highlightedPlaceIds = [], theme = "light", hillshade = true, contours = true, pickMode = false,
         showRoute = true, hoverProgress = null, center = [8.8, 48.65], zoom = 7,
         shownCategories = categoryIds, highlightedPlaces = [], mapOverlays = { network: 'none', access: false }, accessMode = 'cycling', routingPackage, dataLayer, bottomInset = 0,
-        signedRoutes = null, signedHovered = null, planMuted = false, compare = null, lines = [], onPick = null, onIdle, onSignedRoute, onSignedHover, canPlanRoute, onPlanRoute,
+        signedRoutes = null, signedHovered = null, planMuted = false, compare = null, lines = [], onPick = null, onIdle, onSignedRoute, onSignedHover,
         onEmptyClick, onPointSelect, onPointHover, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, popup,
     }: {
         /** The Routes view: while it is open, a click on one of its routes selects that route. */
@@ -54,9 +54,6 @@
         onIdle?: () => void;
         onSignedRoute?: (id: number) => void;
         onSignedHover?: (id: number | null) => void;
-        /** Whether the route-network details offer "Plan this route" for a relation at a map point. */
-        canPlanRoute?: (id: number, at: Coordinate) => Promise<'plan' | 'too-long' | 'missing'>;
-        onPlanRoute?: (id: number, at: Coordinate) => void;
         segments?: MapSegment[];
         /** Dashed connectors from the route to points that it does not reach. */
         gaps?: Coordinate[][];
@@ -823,8 +820,7 @@
     <div class="map-canvas" bind:this={container} aria-label="Route map"></div>
     <div class="popup-storage"><div bind:this={popupContent}>
         {#if overlaySelection}
-            <MapOverlayDetails selection={overlaySelection} {theme} onclose={() => overlaySelection = null} canPlan={canPlanRoute}
-                onplan={id => { const at = overlaySelection!.coordinate; overlaySelection = null; onPlanRoute?.(id, at); }} />
+            <MapOverlayDetails selection={overlaySelection} {theme} onclose={() => overlaySelection = null} />
         {:else if popup}{@render popup()}{/if}
     </div></div>
     {#if compare}
@@ -834,8 +830,10 @@
         </div>
     {/if}
     {#if routeHint && !overlaySelection}
-        {@const { x, y } = routeHint.point}
+        <!-- The note starts from the pointer, or from the edge of the free area when the pointer is beyond it. -->
         {@const right = frameWidth - controlsWidth}
+        {@const x = Math.min(routeHint.point.x, right)}
+        {@const y = Math.min(routeHint.point.y, frameHeight - bottomClear)}
         {@const left = x > right / 2}
         <!-- The note opens on the side of the pointer with more room, and is never wider than that room. It keeps clear of the controls and the bottom strip. -->
         <div class="planner-map-note route-hint" style:left={`${x}px`} style:top={`${y}px`} style:max-width={`${(left ? x : right - x) - 22}px`}
