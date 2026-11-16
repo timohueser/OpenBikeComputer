@@ -199,9 +199,13 @@ fn paint_texel(mp: ModelPoint) -> vec4f {
     let track = code >= TRACK_CODE;
     let metres = select(mp.across, MASK_RANGE, mp.across == M_FAR);
     let across = select(distance_code(metres), clamp(metres / (2.0 * TRACK_RANGE) + 0.5, 0.0, 1.0), track);
-    // Lines on the asphalt of a way that wears them (the records' flag); a soil path is trodden.
+    // Lines on the asphalt of a way that wears them (the records' flag); a soil path is trodden. A marked asphalt road's
+    // shoulder (its class's, the line's record) draws paved past its edge, as the near look draws its owned shoulder.
     let marked = (finish & M_MARKED) != 0u;
-    let walk = f32(walk_byte(0.0, false, code == 6u, marked)) / 255.0;
+    let line = select(M_NONE, mw(m_label(mp.block, mp.painted) + 2u), code != 0u);
+    let asphalt = marked && ((finish >> M_MATERIAL_SHIFT) & 15u) == 0u && (code == 1u || code == 2u || code == 7u);
+    let shoulder = select(0.0, mf(mp.block + mw(mp.block + 6u) + M_LINE * line + 8u), asphalt && line != M_NONE);
+    let walk = f32(walk_byte(shoulder, shoulder > 0.0, code == 6u, marked)) / 255.0;
     let material = select(0u, (finish >> M_MATERIAL_SHIFT) & 15u, code != 0u);
     return vec4f(distance_code(mp.d_paved), select(walk, fract(mp.along / SLEEPER_M), track), across, f32(code | (material << 4u)) / 255.0);
 }

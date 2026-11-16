@@ -815,7 +815,9 @@ fn graph_points(
         }
         // The material: the arm of the best class, a road or path before a rail, a host before a guest.
         let rail = arms.iter().all(|(_, l)| lines[*l].rail);
-        let best = arms.iter().min_by_key(|(a, l)| (lines[*l].rail != rail, class(*l), !a.host, a.way)).unwrap();
+        // The last tie goes by the arm's global key at the node: way ids are the cell's own.
+        let global = |(a, l): &&(&crate::graph::Arm, usize)| lines[*l].key[sample_at(g, &lines[*l], &a.at, j.pos)];
+        let best = arms.iter().min_by_key(|x| (lines[x.1].rail != rail, class(x.1), !x.0.host, global(x))).unwrap();
         let at = sample_at(g, &lines[best.1], &best.0.at, j.pos);
         let (mut label, rank) = way_label(ctx.rules, &lines[best.1], legs::leg(&lines[best.1].cuts, at, best.0.dir));
         label.owner = Owner::Junction(id as u32);
@@ -1370,13 +1372,13 @@ fn deck_ends(line: &WayLine) -> Vec<(EdgeKind, [f64; 5])> {
     out
 }
 
-/// Whether a candidate is a band layer. The cover over a bore is none: it decides the opening at every distance.
+/// Whether a candidate is a band layer, a way's own or shared. The cover over a bore is none: it decides the opening
+/// at every distance.
 fn band(c: &Cand) -> bool {
     c.relabel.is_none()
         && c.fill.is_none()
-        && c.glob.is_some()
         && c.label.owner == Owner::Terrain
-        && !matches!(c.label.surface, Surface::Zone | Surface::Cover)
+        && !matches!(c.label.surface, Surface::Zone | Surface::Cover | Surface::Sidewalk)
 }
 
 /// Whether the far level leaves a label out: water (whose bank is a band layer) and a culvert's zone, until the
@@ -1588,21 +1590,21 @@ fn candidates<'a>(
     }
     // The cover over the bores, the lids (the stretches on top of a bore or of a way that enters one) and the lines
     // with such a stretch.
-    let Lid { cover: cover_cands, entering: lids, tops, of_lower: lid_of } = if BORES && level == 0 && any_bore(graph) {
+    let Lid { cover: cover_cands, entering: lids, of_lower: lid_of } = if BORES && level == 0 && any_bore(graph) {
         bore_cover(&ctx, input, &lines, reach(rules::ways_m(plan, &rules.sections)), bx)
     } else {
         Lid::default()
     };
     let mut cands: Vec<Cand> = Vec::new();
     let mut mouths = Vec::new();
-    // The ways' carriageways and the band layers, on the run of samples near the window. A way with
-    // legs keeps its own layers of the owner rule (its shoulders): `split_legs` gives each piece in a
-    // leg's near zone that leg's line as its host, as for the carriageway.
+    // The ways' carriageways and the band layers, on the run of samples near the window. Each way keeps its own
+    // layers of the owner rule (its shoulders, `band_cand`); a way with legs splits them (`split_legs`).
     let mut layers: [Vec<Vec<P>>; LAYERS] = Default::default();
     let mut own_layers: BTreeMap<usize, [Vec<Vec<P>>; LAYERS]> = BTreeMap::new();
     // The carriageways on the runs that only the outline rounds read.
     let mut outer_paved: Vec<Vec<P>> = Vec::new();
     let mut walk_runs = vec![None; lines.len()];
+    let owned = |k: usize| decks.is_some() || BAND_LABELS[k].2 == HeightRule::Owner;
     // The marks of the portals by the bore's way: on storey 0 the core strokes of the ground ways that enter it, on the
     // storey under the ground the bore's own stroke.
     let mut mark_pieces: BTreeMap<u32, Vec<Vec<P>>> = BTreeMap::new();
@@ -1691,13 +1693,8 @@ fn candidates<'a>(
             fill: None,
             discs: Vec::new(),
         });
-        // A deck's band layers are its own: the slab's edge band names its way.
-        let mut own = (!line.cuts.is_empty() || decks.is_some()).then(|| own_layers.entry(li).or_default());
-        // So are the paved layers of a way on its segments on top of a lower way: their heights are that way's, not
-        // those of the way under it, and over a floor they keep their place as a lid (`Sliced::joint`). They are those
-        // segments' pieces of the band layers' own stroke, so the two meet on its mitre lines.
-        let top = tops.get(li).filter(|t| BORES && own.is_none() && !t.is_empty());
-        let mut named: [Vec<Vec<P>>; LAYERS] = Default::default();
+        // A deck's band layers are all its own: the slab's edge band names its way.
+        let own = own_layers.entry(li).or_default();
         // At a deck end the slope takes the round end of a free end, so its bank runs round the end: the
         // paved layers end square on the end line. A portal is no free end: the ground goes on over the bore, so
         // the bank ends square on the portal line too.
@@ -1710,29 +1707,9 @@ fn candidates<'a>(
                 continue;
             }
             let cuts = [&cut(first, k + 1)[..], &cut(last - 1, k + 1)[..]];
-            let layer = match own.as_deref_mut() {
-                Some(own) if decks.is_some() || BAND_LABELS[k].2 == HeightRule::Owner => &mut own[k],
-                _ => &mut layers[k],
-            };
+            let layer = if owned(k) { &mut own[k] } else { &mut layers[k] };
             let ends = if k == SLOPE { [ends[0] || deck[0], ends[1] || deck[1]] } else { ends };
-            match top.filter(|_| BAND_LABELS[k].2 == HeightRule::Owner) {
-                Some(t) => {
-                    let (mut pieces, mut of) = (Vec::new(), Vec::new());
-                    let dirs = line.dirs(first, last);
-                    stroke::pieces_along_of(p, &d, &dirs, cuts, ends, false, &mut pieces, Some(&mut of));
-                    for (ring, [a, b]) in pieces.into_iter().zip(of) {
-                        let on_top = (first + a..=first + b).all(|i| t[i]);
-                        if on_top { &mut named[k] } else { &mut *layer }.push(ring);
-                    }
-                }
-                None => pieces_along(p, &d, &line.dirs(first, last), cuts, ends, false, layer),
-            }
-        }
-        if top.is_some() {
-            let own = own_layers.entry(li).or_default();
-            for (k, layer) in named.into_iter().enumerate() {
-                own[k].extend(layer);
-            }
+            pieces_along(p, &d, &line.dirs(first, last), cuts, ends, false, layer);
         }
     }
     stats.ways = lines.len() as u32;
@@ -1771,42 +1748,22 @@ fn candidates<'a>(
             let (key, discs) = (pt.key, Vec::new());
             cands.push(Cand { rings, label: pt.label, key, glob, line: 0, relabel: spans, beyond, fill: None, discs });
         }
-        // A point's rings belong to the one way with legs among its arms, if there is one; on a deck, to the way
-        // of its label.
-        let mut legged: Vec<usize> = pt.arms.iter().map(|a| a.line).filter(|&l| !lines[l].cuts.is_empty()).collect();
-        legged.sort_unstable();
-        legged.dedup();
-        let deck_owner = pt.label.material.and_then(|m| of_way.get(&m).copied()).filter(|_| STOREYS && decks.is_some());
+        // A point's ring of an owned layer belongs to the better of the two arms it joins.
         for k in 0..bands {
-            let layer = match (deck_owner, &legged[..]) {
-                (Some(l), _) => &mut own_layers.entry(l).or_default()[k],
-                (None, [l]) if BAND_LABELS[k].2 == HeightRule::Owner => &mut own_layers.entry(*l).or_default()[k],
-                _ => &mut layers[k],
-            };
-            layer.extend(r.rings[k].iter().cloned());
+            for (ring, &l) in r.rings[k].iter().zip(&r.ring_lines[k]) {
+                let layer = if owned(k) { &mut own_layers.entry(l).or_default()[k] } else { &mut layers[k] };
+                layer.push(ring.clone());
+            }
         }
     }
-    // A way's own band layers win over the others where they overlap: the way's shoulder is its own.
-    let owned = own_layers.iter().flat_map(|(&l, layers)| layers.iter().enumerate().map(move |(k, r)| (Some(l), k, r)));
-    for (line, k, layer) in layers.iter().enumerate().map(|(k, r)| (None, k, r)).chain(owned) {
-        if layer.is_empty() {
-            continue;
+    let deck = STOREYS && decks.is_some();
+    let shared = layers.iter().enumerate().map(|(k, r)| (None, k, r));
+    for (line, k, layer) in
+        shared.chain(own_layers.iter().flat_map(|(&l, ls)| ls.iter().enumerate().map(move |(k, r)| (Some(l), k, r))))
+    {
+        if !layer.is_empty() {
+            cands.push(band_cand(plan, &lines, line, k, deck, union(layer, [0, 0])));
         }
-        let (rank, surface, rule) = band_label(k, STOREYS && decks.is_some());
-        let rank = plan.rank(rank);
-        let material = line.map(|l| lines[l].way);
-        let label = Label { rank, surface, rule, material, ..TERRAIN };
-        cands.push(Cand {
-            rings: union(layer, [0, 0]),
-            label,
-            key: (rank, u8::from(line.is_none()), 0),
-            glob: Some([0; 5]),
-            line: line.unwrap_or(0),
-            relabel: None,
-            beyond: Vec::new(),
-            fill: None,
-            discs: Vec::new(),
-        });
     }
     let walk = if level == 0 {
         walk::build(&ctx, input, &lines, &walk_runs, &points, &rounded, bx)
@@ -1868,18 +1825,21 @@ fn candidates<'a>(
     let units = |m: f64, p: P| ctx.units(m, p);
     let fills = outline::rounds(&union(&paved, [0, 0]), &lines, &circles, &beyond, &units, plan.extent_m / 2.0, r_max);
     let fill_key = (plan.rank(Rank::RailBed), u8::MAX, u8::MAX);
-    for (k, &(rank, surface, rule)) in BAND_LABELS.iter().enumerate() {
-        let rings: Vec<Vec<P>> = fills.iter().flat_map(|f| f.bands[k].iter().cloned()).collect();
-        // A deck's band layers are its ways' own: a round's shared band would name no way.
-        if rings.is_empty() || k >= bands || (STOREYS && decks.is_some()) {
-            continue;
+    // A round's band rings of an owned layer belong to the way of its first foot. A deck's band layers are its ways'
+    // own: a round's band would name no way.
+    let mut fill_bands: Vec<Cand> = Vec::new();
+    for k in (0..bands).filter(|_| !deck) {
+        let mut by: BTreeMap<Option<usize>, Vec<Vec<P>>> = BTreeMap::new();
+        for f in &fills {
+            let foot = Some(f.circle.lines[0]).filter(|&l| l != usize::MAX && owned(k));
+            by.entry(foot).or_default().extend(f.bands[k].iter().cloned());
         }
-        let rank = plan.rank(rank);
-        let label = Label { rank, surface, rule, ..TERRAIN };
-        let (rings, glob, beyond) = (prepare(&rings), Some([0; 5]), Vec::new());
-        let (key, discs) = ((rank, 1, 0), Vec::new());
-        cands.push(Cand { rings, label, key, glob, line: 0, relabel: None, beyond, fill: None, discs });
+        for (line, rings) in by.into_iter().filter(|(_, r)| !r.is_empty()) {
+            fill_bands.push(band_cand(plan, &lines, line, k, false, prepare(&rings)));
+        }
     }
+    split_legs(&ctx, &lines, &of_way, &mut fill_bands);
+    cands.extend(fill_bands);
     for f in &fills {
         let gc = ctx.global(f.circle.centre);
         cands.push(Cand {
@@ -1997,8 +1957,6 @@ struct Lid {
     cover: Vec<Cand>,
     /// Per way that enters a bore, the strokes of the stretches on top of it.
     entering: Vec<(u32, Rings)>,
-    /// Per line of storey 0 and segment, whether it lies on top of a lower way (empty for a line with none).
-    tops: Vec<Vec<bool>>,
     /// Per lower way (a bore, or a way that enters one), the lines with a stretch on top of it and their strokes.
     of_lower: Vec<(u32, usize, Rings)>,
 }
@@ -2064,7 +2022,6 @@ fn bore_cover(ctx: &Ctx, input: &CellInput, ground: &[WayLine], ways_box: [i32; 
     // a stretch that meets no bore is not asked.
     // Per lower way, the core strokes of the stretches on top of it: its lids.
     let mut cores: Vec<Vec<Vec<P>>> = vec![Vec::new(); under.len()];
-    let mut tops: Vec<Vec<bool>> = vec![Vec::new(); ground.len()];
     // Per lower way and line with a stretch on top of it, the strokes of those stretches.
     let mut lid_of: Vec<(u32, usize, Rings)> = Vec::new();
     for (li, line) in ground.iter().enumerate() {
@@ -2116,13 +2073,6 @@ fn bore_cover(ctx: &Ctx, input: &CellInput, ground: &[WayLine], ways_box: [i32; 
         let ends = [line.round[0] && first == 0, line.round[1] && last == line.p.len()];
         for (u, cores) in under.iter().zip(&mut cores) {
             let top: Vec<bool> = (first..last - 1).map(|i| on_top(i, u)).collect();
-            if top.contains(&true) {
-                let t = &mut tops[li];
-                t.resize(line.p.len() - 1, false);
-                for (i, &x) in top.iter().enumerate() {
-                    t[first + i] |= x;
-                }
-            }
             let before = cores.len();
             let mut i = 0;
             while i < top.len() {
@@ -2168,7 +2118,31 @@ fn bore_cover(ctx: &Ctx, input: &CellInput, ground: &[WayLine], ways_box: [i32; 
         fill: None,
         discs: Vec::new(),
     }];
-    Lid { cover, entering: lids, tops, of_lower: lid_of }
+    Lid { cover, entering: lids, of_lower: lid_of }
+}
+
+/// The candidate of band layer k of a way's line, or of the layer shared by every way (`None`).
+///
+/// Every way owns its layers of the owner rule (its shoulders), and a deck way all its layers: such a face has one
+/// host line, its material, so its heights and its look never change lines inside it, and two ways' shoulders meet on a
+/// face edge. Where two ways' owned layers overlap, the better class wins, then the way's global name at the point
+/// (`way_glob`): the same in every cell. Its key wins over the shared layer's. The slope rule's layers (verge, bank,
+/// slope) stay shared: their heights come from every line's cones, their look is the ground's.
+fn band_cand(plan: &PlanRules, lines: &[WayLine], line: Option<usize>, k: usize, deck: bool, rings: Rings) -> Cand {
+    let (rank, surface, rule) = band_label(k, deck);
+    let rank = plan.rank(rank);
+    let label = Label { rank, surface, rule, material: line.map(|l| lines[l].way), ..TERRAIN };
+    Cand {
+        rings,
+        label,
+        key: (rank, line.map_or(u8::MAX, |l| lines[l].sec.rank as u8), 0),
+        glob: line.is_none().then_some([0; 5]),
+        line: line.unwrap_or(0),
+        relabel: None,
+        beyond: Vec::new(),
+        fill: None,
+        discs: Vec::new(),
+    }
 }
 
 /// Splits every candidate that gives the label of a way with legs (`legs`), or that is one of its own
@@ -2314,7 +2288,7 @@ fn seams_on_carriageways(cands: &mut [Cand], seams: &[(usize, [P; 2], Vec<usize>
         // The way's carriageway: one candidate per leg.
         let ways: Vec<usize> = (0..cands.len())
             .filter(|&c| cands[c].relabel.is_none() && cands[c].glob.is_none() && cands[c].line == *l)
-            .filter(|&c| cands[c].label.surface != Surface::Sidewalk)
+            .filter(|&c| matches!(cands[c].label.owner, Owner::Way(_)))
             .collect();
         if ways.is_empty() {
             out.push([a, b]);

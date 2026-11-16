@@ -643,10 +643,10 @@ fn kind(c: &Cand) -> u32 {
         REGION
     } else if c.fill.is_some() {
         FILL
-    } else if c.glob.is_none() {
-        WAY
     } else if band(c) {
         BAND
+    } else if c.glob.is_none() {
+        WAY
     } else {
         POINT
     }
@@ -1165,7 +1165,8 @@ fn encode(
             }
         }
         cands_w.extend([k, key_word(c.key), c.glob.as_ref().map_or(u32::MAX, order), own]);
-        cands_w.push(if k == WAY { rec_line(c.line, c.label.legs[0]) } else { u32::MAX });
+        // A candidate with no global name of its own (a way's carriageway, slab or band) takes its line's at q.
+        cands_w.push(if c.glob.is_none() { rec_line(c.line, c.label.legs[0]) } else { u32::MAX });
         cands_w.extend([discs, c.discs.len() as u32, beyond, c.beyond.len() as u32, parts_at, parts.len() as u32]);
     }
     // The blend edges that a bin lists, each side of an edge between two labels whose face blends.
@@ -1889,7 +1890,7 @@ fn decide(words: &[u32], covered: &[u32], q: [f64; 2], segs: &[u32]) -> Option<u
     let extras = &words[words[8] as usize..];
     let glob = |ci: u32| {
         let k = cand(words, ci);
-        if k[0] == WAY {
+        if k[4] != u32::MAX {
             way_glob(words, k[4], q, segs)
         } else {
             k[2]

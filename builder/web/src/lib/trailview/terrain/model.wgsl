@@ -16,7 +16,6 @@ const M_CELL_LEVEL: u32 = 16u;
 // The table's first word, as TABLE_MAGIC of model.ts.
 const M_TABLE: u32 = 0x4f42540au;
 // Candidate kinds and surfaces, as records.rs and faces::Surface.
-const M_WAY: u32 = 0u;
 const M_POINT: u32 = 1u;
 const M_REGION: u32 = 2u;
 const S_CARRIAGEWAY: u32 = 2u;
@@ -102,9 +101,10 @@ fn m_way_glob(block: u32, line: u32, q: vec2i, segs: u32, n: u32) -> u32 {
     return glob;
 }
 
+// A candidate with a record line (a way's carriageway, slab or band) takes its line's glob at q, as records::decide.
 fn m_glob(block: u32, ci: u32, q: vec2i, segs: u32, n: u32) -> u32 {
     let k = m_cand(block, ci);
-    if (mw(k) == M_WAY) {
+    if (mw(k + 4u) != M_NONE) {
         return m_way_glob(block, mw(k + 4u), q, segs, n);
     }
     return mw(k + 2u);

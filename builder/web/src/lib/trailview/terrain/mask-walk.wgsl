@@ -1,6 +1,7 @@
 // The byte of a mask texel that holds what lies past a way's bare surface, unless the texel is a track's: the
 // width of the sidewalk on the texel's side, whether the road holds a shoulder, whether the way is trodden, and
-// whether the road wears lines. A sidewalk is at most 2 m wide (`sidewalk_m` of data/trailview/roads.json).
+// whether the road wears lines. A sidewalk is at most 2 m wide (`sidewalk_m` of data/trailview/roads.json). In the one
+// road model's paint, a byte with the shoulder bit holds the shoulder's width in place of a sidewalk's.
 
 const WALK_STEP_M: f32 = 0.1;
 const MARKED_BIT: u32 = 32u;
