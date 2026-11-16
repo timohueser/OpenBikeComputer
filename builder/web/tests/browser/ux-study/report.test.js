@@ -110,6 +110,10 @@ test('a report compares the open findings only when the study completed and the 
   assert.equal(skipped.lines[0], 'The spending limit of 1 USD stopped the study. The spending limit is reached, so the report call did not run.');
   assert.equal(skipped.calls.length, 0);
   assert.deepEqual(openSections(skipped.lines), []);
+
+  const allErrors = await report({ ask: answers(), walkthroughs: ordinary.map(w => ({ ...w, outcome: 'error', records: [] })) });
+  assert.equal(allErrors.calls.length, 0);
+  assert.deepEqual(openSections(allErrors.lines), []);
 });
 
 test('the report call does not start when its screenshots pass the limit of the request', async () => {

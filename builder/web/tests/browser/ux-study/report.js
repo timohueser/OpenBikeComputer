@@ -117,7 +117,8 @@ export async function writeReport({ dir, results, budget, model, maxCostUsd, lim
   if (open.error) notices.push(`\`gh\` failed, so the report does not list open findings: ${open.error}`);
 
   let answer = { findings: [], seen_again: [] };
-  let compared = !limited;
+  // A study whose walkthroughs all ended as `error` looked at nothing.
+  let compared = !limited && walkthroughs.some(walkthrough => walkthrough.outcome !== 'error');
   if (groups.length && budget.exhausted) {
     compared = false;
     notices.push('The spending limit is reached, so the report call did not run.');
