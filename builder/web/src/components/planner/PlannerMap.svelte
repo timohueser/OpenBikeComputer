@@ -141,8 +141,10 @@
     let routeHint = $state<RouteHint | null>(null);
     // The callout holds the overlay details at their click, or else the popup of the page at `callout`.
     const calloutAt = $derived(overlaySelection?.coordinate ?? (popup ? callout : null));
-    // A new popup of the page takes the callout from the overlay details.
-    $effect(() => { void callout; overlaySelection = null; });
+    // A popup of the page at another place takes the callout from the overlay details. The place is compared by value:
+    // the page can pass an equal coordinate in a new array.
+    const calloutPlace = $derived(callout?.join());
+    $effect(() => { void calloutPlace; overlaySelection = null; });
     let signedLayer: SignedRoutesLayer | undefined;
     let signedHover: number | null = null;
     let overSigned = $state(false);
@@ -755,6 +757,7 @@
             }
             button.addEventListener("click", (event) => {
                 event.stopPropagation();
+                overlaySelection = null;
                 if (!onPick) return onPointSelect?.(point.id);
                 const box = button.getBoundingClientRect();
                 onPick(point.coordinate, [box.left + box.width / 2, box.top + box.height / 2]);

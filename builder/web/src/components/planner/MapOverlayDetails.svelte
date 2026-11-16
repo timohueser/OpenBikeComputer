@@ -18,18 +18,18 @@
         return () => { current = false; };
     });
     // Relations with one name, number and network are one route to a rider: a route and its parts, or its two directions.
+    // A row is the relation that Plan plans. A relation that is too long for one plan keeps a row of its own.
     const routes = $derived.by(() => {
         const groups = new Map<string, NetworkRoute[]>();
         for (const route of selection.routes ?? []) {
-            const key = JSON.stringify([route.name, route.ref, route.network]);
+            const key = route.name || route.ref ? JSON.stringify([route.name, route.ref, route.network]) : String(route.id);
             groups.set(key, [...groups.get(key) ?? [], route]);
         }
-        return [...groups.values()].map(members => ({
-            route: members[0],
-            website: members.map(route => routeWebsite(route.website)).find(Boolean),
-            plan: members.find(route => plannable[route.id] === 'plan')?.id,
-            tooLong: members.some(route => plannable[route.id] === 'too-long'),
-        }));
+        return [...groups.values()].flatMap(members => {
+            const website = members.map(route => routeWebsite(route.website)).find(Boolean);
+            const planned = members.find(route => plannable[route.id] === 'plan'), long = members.find(route => plannable[route.id] === 'too-long');
+            return (planned || long ? [planned, long].filter(route => !!route) : [members[0]]).map(route => ({ route, website, plan: route === planned, tooLong: route === long }));
+        });
     });
     const levelColor = (rank: number) => networkLevels.find(level => level.rank === Math.min(rank, 3))?.[theme === 'dark' ? 'dark' : 'color'];
     const access: Record<string, { title: string; detail: string }> = {
@@ -74,9 +74,9 @@
                         {#if scope}<i style:background={levelColor(route.rank)}></i>{scope}{/if}{#if scope && website}{' · '}{/if}
                         {#if website}<a href={website} target="_blank" rel="noreferrer">{new URL(website).hostname.replace(/^www\./, '')}</a>{/if}
                     </small>{/if}
-                    {#if plan === undefined && tooLong}<small>Too long for one plan. Plan a stage in the Routes view.</small>{/if}
+                    {#if tooLong}<small>Too long for one plan. Plan a stage in the Routes view.</small>{/if}
                 </span>
-                {#if plan !== undefined}<button class="plan" aria-label={`Plan ${name}`} onclick={() => onplan?.(plan)}>Plan</button>{/if}
+                {#if plan}<button class="plan" aria-label={`Plan ${name}`} onclick={() => onplan?.(route.id)}>Plan</button>{/if}
             </li>
         {/each}</ul>
     {/if}
