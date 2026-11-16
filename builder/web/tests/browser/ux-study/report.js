@@ -91,8 +91,10 @@ export function keptGroups(candidates) {
 /** The open accepted findings, or the reason that `gh` could not list them. */
 export async function openFindings() {
   try {
-    const { stdout } = await promisify(execFile)('gh', ['issue', 'list', '--label', 'ux-finding', '--state', 'open', '--json', 'number,title,body']);
-    return { issues: JSON.parse(stdout) };
+    // REST, because cloud sessions block the GraphQL API that `gh issue list` uses. `gh` fills in the
+    // repository from the remote. The list also holds pull requests.
+    const { stdout } = await promisify(execFile)('gh', ['api', 'repos/{owner}/{repo}/issues?labels=ux-finding&state=open&per_page=100']);
+    return { issues: JSON.parse(stdout).filter(item => !item.pull_request).map(({ number, title, body }) => ({ number, title, body })) };
   } catch (error) {
     return { error: (error.stderr || error.message).trim().split('\n')[0].slice(0, 160) };
   }

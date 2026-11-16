@@ -7,7 +7,8 @@ import { loopbackPort } from '../../../../../tools/loopback_port.mjs';
 import { actions, VIEWPORT } from './actions.js';
 
 const STABLE_GAP_MS = 300;
-const STABLE_LIMIT_MS = 5_000;
+// Without a GPU, the map needs 3 to 13 s to settle after a search while three walkthroughs run at once.
+const STABLE_LIMIT_MS = 15_000;
 const FIRST_DRAW_LIMIT_MS = 30_000;
 const SCROLL_PX = 400;
 const BROWSER_DIR = fileURLToPath(new URL('..', import.meta.url));
@@ -65,7 +66,7 @@ async function startWalkthrough(browser, base) {
 const idle = () => !document.querySelector('[aria-busy=true]');
 
 /**
- * Two equal screenshots 300 ms apart with no request in flight and no busy element; after 5 s the last
+ * Two equal screenshots 300 ms apart with no request in flight and no busy element; after 15 s the last
  * one, marked unstable. A page that waits for an answer, a timer or a map worker can show the same pixels
  * for longer than 300 ms, and the participant has no action to wait.
  */
