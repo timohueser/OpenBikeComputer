@@ -79,9 +79,20 @@ pub fn build_storeys(
     rules: &Rules,
     now: &mut dyn FnMut() -> f64,
 ) -> Result<CellBuild, String> {
-    let (mut b, input, under) = stages(now(), request, cache, rules, now)?;
+    let (b, input, under) = stages(now(), request, cache, rules, now)?;
+    Ok(with_storeys(b, &input, under, rules, now))
+}
+
+/// The storeys of a cell's build of level 0 (`stages`) and what their shells read.
+fn with_storeys(
+    mut b: CellBuild,
+    input: &CellInput,
+    under: Option<records::Under>,
+    rules: &Rules,
+    now: &mut dyn FnMut() -> f64,
+) -> CellBuild {
     let start = now();
-    b.storeys = records::storeys(&b.graph, &input, rules, b.key, &mut b.records, under);
+    b.storeys = records::storeys(&b.graph, input, rules, b.key, &mut b.records, under);
     let plan = &b.faces;
     let sharp = |f: u32| f != OUTSIDE && mesh::params::sharp_face(&plan.faces[f as usize]);
     let origin_y = b.key.origin().y as f64;
@@ -103,7 +114,14 @@ pub fn build_storeys(
         }
     }
     b.storey_time = now() - start;
-    Ok(b)
+    b
+}
+
+/// `build_storeys` of a cell's input, untimed: the crate's tests build made cases of bores with it.
+#[cfg(all(test, feature = "bores"))]
+pub(crate) fn build_input(input: &CellInput, rules: &Rules) -> CellBuild {
+    let (b, under) = level_0(input, rules, 0.0, &mut || 0.0);
+    with_storeys(b, input, under, rules, &mut || 0.0)
 }
 
 /// The far block of a request's cell alone (`records::far_block`): the stages input and graph of
@@ -131,18 +149,29 @@ fn stages(
     rules: &Rules,
     now: &mut dyn FnMut() -> f64,
 ) -> Result<(CellBuild, CellInput, Option<records::Under>), String> {
-    let (key, tiles, pages) = (request.key, request.tiles.len(), request.pages.len());
+    let (tiles, pages) = (request.tiles.len(), request.pages.len());
     let input = request.input(cache)?;
     let read = now();
-    let graph = cell_graph(key, &input, rules);
+    let (mut b, under) = level_0(&input, rules, read, now);
+    (b.tiles, b.pages, b.times[0]) = (tiles, pages, read - start);
+    Ok((b, input, under))
+}
+
+/// The graph, the faces of level 0, their records and the far block of a cell's input, timed from `read`, and the
+/// storey under the ground from the same slice.
+fn level_0(
+    input: &CellInput,
+    rules: &Rules,
+    read: f64,
+    now: &mut dyn FnMut() -> f64,
+) -> (CellBuild, Option<records::Under>) {
+    let key = input.key;
+    let graph = cell_graph(key, input, rules);
     let built = now();
-    let (faces, records, far, under) = records::near_under(&graph, &input, rules, key);
-    let times = vec![read - start, built - read, now() - built];
+    let (faces, records, far, under) = records::near_under(&graph, input, rules, key);
+    let times = vec![0.0, built - read, now() - built];
     let records = records.words;
     let (storeys, storey_time) = (Storeys::default(), 0.0);
-    Ok((
-        CellBuild { key, request: None, tiles, pages, graph, faces, records, far, times, storeys, storey_time },
-        input,
-        under,
-    ))
+    let (tiles, pages) = (0, 0);
+    (CellBuild { key, request: None, tiles, pages, graph, faces, records, far, times, storeys, storey_time }, under)
 }

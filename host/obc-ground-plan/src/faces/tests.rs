@@ -771,3 +771,76 @@ fn two_cells_give_one_side_to_their_line_where_an_edge_passes_a_tile_corner_on_i
         assert_eq!(west, east, "ring {ring:?}");
     }
 }
+
+/// A residential road through a bore of 120 m under ground 3.1 m over the road: storey 0 and the floor are one map,
+/// the bore is the prism under storey 0's triangles, and the cover holds the least room over the floor (its lift lies
+/// within `lift_max_m`).
+#[cfg(feature = "bores")]
+#[test]
+fn a_bore_is_the_prism_under_storey_0_and_its_cover_holds_the_least_room() {
+    use crate::mesh::shell::{closure, mesh_storeys_with};
+    use crate::mesh::{mesh_cell, Reads, NO_LABEL};
+    let key = cell();
+    let levels = ("levels", "O 40 P B 160 P O");
+    let bore = line("tunnel", &[("highway", "residential"), ("tunnel", "yes"), levels], &[[-100.0, 0.0], [100.0, 0.0]]);
+    let mut input = input_of(key, &[bore]);
+    input.terrain = plane(key, &|_, _| 503.1);
+    let rules = Rules::embedded();
+    let b = crate::cell::build_input(&input, rules);
+    let m0 = mesh_cell(&b.faces, &b.records, &Reads::of(&b.faces, &[]), &mut || 0.0).unwrap();
+    let m = mesh_storeys_with(key, &b.storeys, &b.records, &rules.structures, Some(&m0)).unwrap();
+    assert!(b.storeys.plans.iter().any(|p| p.level < 0), "a storey under the ground");
+    assert!(!b.storeys.portals.is_empty(), "pieces on the portal lines");
+    assert!(closure(&m).is_empty(), "{:?}", closure(&m));
+    let t = |p: P| {
+        input.terrain.height(GlobalPoint { x: key.origin().x + i64::from(p[0]), y: key.origin().y + i64::from(p[1]) })
+    };
+    let h0 = |k: usize| {
+        let (p, l, terrain) = m0.corner(k);
+        let t = t(p).unwrap();
+        if terrain || l == NO_LABEL {
+            t
+        } else {
+            heights::height_at(&b.records, [f64::from(p[0]), f64::from(p[1])], Some(l), t).h
+        }
+    };
+    // The floor's triangles by their points, and the lids: storey 0's corners of the triangles on the same points.
+    let points = |t: &[u32; 3], c: &dyn Fn(u32) -> P| {
+        let mut p = t.map(c);
+        p.sort_unstable();
+        p
+    };
+    let floors: std::collections::BTreeSet<[P; 3]> =
+        m.triangles[m.part(0)].iter().map(|t| points(t, &|k| m.corner(k as usize).0)).collect();
+    let mut ground: BTreeMap<P, Vec<f64>> = BTreeMap::new();
+    for t in &m0.triangles {
+        if floors.contains(&points(t, &|k| m0.corner(k as usize).0)) {
+            for &k in t {
+                ground.entry(m0.corner(k as usize).0).or_default().push(h0(k as usize));
+            }
+        }
+    }
+    let sec = rules.sections.way("road", &[("highway".to_string(), "residential".to_string())].into(), false);
+    // The floor's and the roof's heights by point.
+    let by_point = |part: std::ops::Range<usize>| {
+        let mut out: BTreeMap<P, f64> = BTreeMap::new();
+        for &k in m.triangles[part].iter().flatten() {
+            let h = m.corner_height(k as usize, &b.records, &input.terrain);
+            let e = out.entry(m.corner(k as usize).0).or_insert(h);
+            *e = e.min(h);
+        }
+        out
+    };
+    let (floor, roof) = (by_point(m.part(0)), by_point(m.part(1)));
+    let mut corners = 0;
+    for (p, &hf) in &floor {
+        // One map: every floor triangle is a triangle of storey 0's mesh.
+        let lid = ground.get(p).expect("a floor point is a point of storey 0's triangles over the floor");
+        // The prism: the roof lies its plate under storey 0 at the point, and the cover holds the least room.
+        let (least, hr) = (lid.iter().copied().fold(f64::INFINITY, f64::min), roof[p]);
+        assert!(hr <= least - sec.roof_least_m + 1e-3, "{p:?}: roof {hr} under storey 0 {least}");
+        assert!(hr - hf >= sec.bore_least_m - 1e-3, "{p:?}: room {} under the cover", hr - hf);
+        corners += 1;
+    }
+    assert!(corners > 100, "{corners} floor corners");
+}
