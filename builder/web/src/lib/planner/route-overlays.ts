@@ -29,11 +29,9 @@ export const networkLevels = [
 ];
 const networkScopes: Record<string, string> = { i: 'International', n: 'National', r: 'Regional', l: 'Local' };
 export const routeKindTitles: Record<string, string> = { cycling: 'Cycling routes', hiking: 'Hiking routes', mtb: 'Mountain bike routes' };
-const routeKinds: Record<string, string> = { cycling: 'cycling route', hiking: 'hiking route', mtb: 'mountain bike route' };
-/** MTB routes use the cycling network values `icn` to `lcn`. */
-export function networkName({ kind, network }: Pick<NetworkRoute, 'kind' | 'network'>): string {
-    const scope = networkScopes[/^([inrl])[cw]n$/.exec(network)?.[1] ?? ''];
-    return scope && routeKinds[kind] ? `${scope} ${routeKinds[kind]}` : 'Network level unspecified';
+/** The reach of the network of a route, or '' when the network names none. MTB routes use the cycling values `icn` to `lcn`. */
+export function networkScope({ network }: Pick<NetworkRoute, 'network'>): string {
+    return networkScopes[/^([inrl])[cw]n$/.exec(network)?.[1] ?? ''] ?? '';
 }
 const source = 'route-overlays';
 const labelZoom = 11;
@@ -146,7 +144,8 @@ export class RouteOverlays {
         for (const activity of activities) {
             this.map.addLayer({ id: `network-${activity}`, type: 'line', source, 'source-layer': activity, maxzoom: bandZoom + 1, layout,
                 paint: { 'line-color': color, 'line-opacity': this.lineOpacity, 'line-width': lineWidth } }, before);
-            this.map.addLayer({ id: `network-${activity}-band`, type: 'line', source, 'source-layer': activity, minzoom: bandZoom, layout,
+            // Round ends close the step where a line of one road class meets a line of another.
+            this.map.addLayer({ id: `network-${activity}-band`, type: 'line', source, 'source-layer': activity, minzoom: bandZoom, layout: { ...layout, 'line-cap': 'round' },
                 paint: { 'line-color': this.bandColor, 'line-width': bandWidth } }, underLines);
             this.map.addLayer({
                 id: `network-${activity}-labels`, type: 'symbol', source, 'source-layer': activity, minzoom: labelZoom,

@@ -141,6 +141,8 @@
     let routeHint = $state<RouteHint | null>(null);
     // The callout holds the overlay details at their click, or else the popup of the page at `callout`.
     const calloutAt = $derived(overlaySelection?.coordinate ?? (popup ? callout : null));
+    // A new popup of the page takes the callout from the overlay details.
+    $effect(() => { void callout; overlaySelection = null; });
     let signedLayer: SignedRoutesLayer | undefined;
     let signedHover: number | null = null;
     let overSigned = $state(false);
@@ -818,9 +820,8 @@
     <div class="map-canvas" bind:this={container} aria-label="Route map"></div>
     <div class="popup-storage"><div bind:this={popupContent}>
         {#if overlaySelection}
-            <MapOverlayDetails selection={overlaySelection} onclose={() => overlaySelection = null} canPlan={canPlanRoute}
-                onplan={id => { const at = overlaySelection!.coordinate; overlaySelection = null; onPlanRoute?.(id, at); }}
-                onuse={() => { const coordinate = overlaySelection!.coordinate; overlaySelection = null; onEmptyClick?.(coordinate); }} />
+            <MapOverlayDetails selection={overlaySelection} {theme} onclose={() => overlaySelection = null} canPlan={canPlanRoute}
+                onplan={id => { const at = overlaySelection!.coordinate; overlaySelection = null; onPlanRoute?.(id, at); }} />
         {:else if popup}{@render popup()}{/if}
     </div></div>
     {#if compare}
@@ -831,10 +832,11 @@
     {/if}
     {#if routeHint && !overlaySelection}
         {@const { x, y } = routeHint.point}
-        {@const left = x > frameWidth / 2}
-        <!-- The note opens on the side of the pointer with more room, and is never wider than that room. -->
-        <div class="planner-map-note route-hint" style:left={`${x}px`} style:top={`${y}px`} style:max-width={`${(left ? x : frameWidth - x) - 22}px`}
-            style:translate={`${left ? 'calc(-100% - 14px)' : '14px'} ${y > frameHeight - 56 ? 'calc(-100% - 12px)' : '18px'}`}>
+        {@const right = frameWidth - controlsWidth}
+        {@const left = x > right / 2}
+        <!-- The note opens on the side of the pointer with more room, and is never wider than that room. It keeps clear of the controls and the bottom strip. -->
+        <div class="planner-map-note route-hint" style:left={`${x}px`} style:top={`${y}px`} style:max-width={`${(left ? x : right - x) - 22}px`}
+            style:translate={`${left ? 'calc(-100% - 14px)' : '14px'} ${y > frameHeight - bottomClear - 44 ? 'calc(-100% - 12px)' : '18px'}`}>
             {#if routeHint.name}<b>{routeHint.name}</b>{/if}<span>Right-click for details</span>
         </div>
     {/if}
