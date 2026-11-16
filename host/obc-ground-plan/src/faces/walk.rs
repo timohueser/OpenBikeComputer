@@ -6,6 +6,7 @@
 //! (`Ramp`). A width rule is a point and a direction, so the slab's width and its kerb's rise are one continuous
 //! function of position, and two cells build the same slabs.
 
+use std::collections::BTreeMap;
 use std::f64::consts::PI;
 
 use super::geom::P;
@@ -145,6 +146,49 @@ fn full_m(line: &WayLine) -> f64 {
 fn walks_seg(line: &WayLine, i: usize, side: f64) -> bool {
     let bit = if side > 0.0 { 2 } else { 1 };
     full_m(line) > 0.0 && i + 1 < line.p.len() && line.walk[i] & bit != 0
+}
+
+/// Where a side's `walk` bits start a short way out from a junction on its own line, that side walks from the junction
+/// on, so that its slab meets the junction's corner by the corner rules and does not taper short of it. Short: less
+/// than the class's corner round and a taper's reach together, the room in which a taper would end at the corner.
+pub(super) fn run_on(ctx: &Ctx, lines: &mut [WayLine], of_way: &BTreeMap<u32, usize>, bx: [i32; 4]) {
+    let g = ctx.graph;
+    let near = |p: P| p[0] >= bx[0] && p[0] <= bx[2] && p[1] >= bx[1] && p[1] <= bx[3];
+    for j in g.junctions.iter().filter(|j| j.arms.len() > 2 && near(j.pos)) {
+        for a in &j.arms {
+            let Some(&l) = of_way.get(&a.way) else { continue };
+            let line = &lines[l];
+            let full = full_m(line);
+            if full <= 0.0 {
+                continue;
+            }
+            let at = super::sample_at(g, line, &a.at, j.pos);
+            let reach = ctx.units(line.sec.corner_radius_m + ctx.rules.plan.walk.reach_m(full), j.pos);
+            // The arm's segments from the point on, and the length before each.
+            let segs: Vec<usize> = if a.dir > 0 { (at..line.p.len() - 1).collect() } else { (0..at).rev().collect() };
+            let len = |i: usize| {
+                let (p, q) = (line.p[i], line.p[i + 1]);
+                libm::hypot(f64::from(q[0] - p[0]), f64::from(q[1] - p[1]))
+            };
+            let mut fill = Vec::new();
+            for bit in [1u8, 2] {
+                let mut before = 0.0;
+                for (k, &i) in segs.iter().enumerate() {
+                    if line.walk[i] & bit != 0 {
+                        fill.extend(segs[..k].iter().map(|&i| (i, bit)));
+                        break;
+                    }
+                    before += len(i);
+                    if before >= reach {
+                        break;
+                    }
+                }
+            }
+            for (i, bit) in fill {
+                lines[l].walk[i] |= bit;
+            }
+        }
+    }
 }
 
 /// Whether an arm's first segment has a sidewalk on its right, seen from the point, else on its left.
@@ -983,6 +1027,17 @@ mod tests {
         let c = built(&[west, east, road(&[[0.0, 0.0], [40.0, 100.0]])]);
         for m in [[-1.6, H + W - 0.05], [-2.2, H + 0.3], [-3.0, H + W - 0.05]] {
             assert!(c.walks(m), "{m:?}: the back edge at full width");
+            assert!((c.rise(m, m) - KERB_M).abs() < 1e-6, "{m:?}: the full kerb");
+        }
+    }
+
+    #[test]
+    fn a_side_whose_bits_start_short_of_a_junction_runs_on_to_it() {
+        // The south side walks up to 3 m before the junction; the side road leaves it to the south.
+        let main = walking(&[[-100.0, 0.0], [-3.0, 0.0], [0.0, 0.0], [100.0, 0.0]], &[2, 0, 0, 0]);
+        let c = built(&[main, road(&[[0.0, 0.0], [0.0, 100.0]])]);
+        for m in [[-H - 0.3, H + W - 0.05], [-H - 0.3, H + 0.3]] {
+            assert!(c.walks(m), "{m:?}: the slab at full width at the side road");
             assert!((c.rise(m, m) - KERB_M).abs() < 1e-6, "{m:?}: the full kerb");
         }
     }
