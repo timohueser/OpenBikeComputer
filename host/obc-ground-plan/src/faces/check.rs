@@ -9,7 +9,7 @@ use i_overlay::core::solver::{Precision, Solver, Strategy};
 use i_overlay::i_float::int::point::IntPoint;
 
 use super::geom::{area2, closest, cross, winding, P};
-use super::types::{Face, FacePlan, Owner, Surface, OUTSIDE};
+use super::types::{CornerArc, Face, FacePlan, Owner, Surface, OUTSIDE};
 use crate::frame::{metres_per_unit, CELL_UNITS};
 use crate::graph::{Level, WayGraph};
 
@@ -818,6 +818,10 @@ pub fn kinks(plan: &FacePlan, graph: &WayGraph, input: &crate::CellInput, rules:
         for k in 0..pts.len() {
             let Some(r) = place(pts, &turn, &radius, k, reach) else { continue };
             let Some((r_in, sag)) = super::outline::at_corner(&lines, pts[k]) else { continue };
+            // A pair's kerb round is smaller than its ways' inner radius by design (where one side walks): a corner
+            // within a round's radius of its circle is measured against that round.
+            let near = |c: &&CornerArc| (len(c.centre, pts[k]) * mpu - c.radius_m).abs() <= c.radius_m;
+            let r_in = plan.corners.iter().filter(near).fold(r_in, |r, c| r.min(c.radius_m));
             let radius_m = r * mpu;
             if radius_m < KINK_SHARE * r_in && !rounded(pts[k], sag) {
                 out.push(Kink { face: chain.face(k), at: pts[k], radius_m });
