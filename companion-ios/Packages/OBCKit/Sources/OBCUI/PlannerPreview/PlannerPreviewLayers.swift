@@ -3,8 +3,8 @@ import SwiftUI
 
 // Keep these tokens aligned with builder/web/src/lib/planner/route-overlays.ts.
 enum PlannerPreviewNetworkStyle {
-    private static let light: [UInt32] = [0x626a70, 0x4f8b24, 0x2368b5, 0x7c519c]
-    private static let dark: [UInt32] = [0xb0b8be, 0xa4cf67, 0x79b7f1, 0xc49de0]
+    private static let light: [UInt32] = [0x626a70, 0x4f8b24, 0x2368b5, 0x7e41aa]
+    private static let dark: [UInt32] = [0xb0b8be, 0xa4cf67, 0x79b7f1, 0xc88cf2]
     /// The opaque network colours by rank, for the signed routes on the map.
     static let lines: [Color] = zip(light, dark).map { Color(day: $0, tent: $1) }
 

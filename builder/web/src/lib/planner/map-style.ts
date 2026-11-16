@@ -204,7 +204,7 @@ export function mapStyle(theme: "light" | "dark", config: PlannerConfig, demUrl:
     base.splice(firstLabel, 0, {
         id: "obc-cycleways", type: "line", source: "basemap", "source-layer": "roads", minzoom: 12,
         filter: ["==", ["get", "kind_detail"], "cycleway"],
-        paint: { "line-color": dark ? "#b39de8" : "#7762b1", "line-width": ["interpolate", ["linear"], ["zoom"], 12, 1.4, 16, 2.8] },
+        paint: { "line-color": dark ? "#45a382" : "#14855f", "line-width": ["interpolate", ["linear"], ["zoom"], 12, 1.4, 16, 2.8] },
     });
     const panel = dark ? "#201f17" : "#ffffff";
     const category = ["match", ["get", "kind"], ...categoryIds.flatMap((id) => [Object.keys(placeCategories[id].kinds), id]), ""] as unknown as ExpressionSpecification;
