@@ -1403,7 +1403,9 @@ impl Candidates<'_> {
 /// without the slope layer), and the labels of the outline rounds decided. With `records`, every reach grows by
 /// `records::MARGIN_M` and a unit, so the candidates are the neighbours' own that far past the cell,
 /// and their window is the cell grown by `GROW` units; else the window is the cell. Both give the
-/// cell the same faces. The crossings merge on the cell's own lines.
+/// cell the same faces. The crossings merge on the cell's own lines. `ground`: storey 0's lines of the same window,
+/// where the caller has them (`lines_with`).
+#[allow(clippy::too_many_arguments)]
 fn candidates<'a>(
     graph: &'a WayGraph,
     input: &CellInput,

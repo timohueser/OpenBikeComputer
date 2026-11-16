@@ -268,9 +268,10 @@ fn the_tiles_carry_the_levels_of_each_cell() {
             .collect();
         for l in computed.levels.end_lines.iter().filter(|l| level_tags::inside(&computed, l.way)) {
             let m = along(&computed, &l.at);
-            // A line between two HIDDEN stretches (a closed end of two cells' runs) bounds no way.
-            let drawn = (computed.levels.runs.iter().filter(|r| r.way == l.way && r.state != State::Hidden))
-                .any(|r| [r.from, r.to].iter().any(|st| (along(&computed, st) - m).abs() <= CUT_M));
+            // A tunnel's line between two HIDDEN stretches (a closed end of two cells' runs) bounds no way.
+            let drawn = computed.parts[l.at.part as usize].level != Level::Tunnel
+                || (computed.levels.runs.iter().filter(|r| r.way == l.way && r.state != State::Hidden))
+                    .any(|r| [r.from, r.to].iter().any(|st| (along(&computed, st) - m).abs() <= CUT_M));
             if !structure(&computed, l.at.part) || !drawn {
                 continue;
             }
