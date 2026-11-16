@@ -1085,7 +1085,6 @@ fn candidates<'a>(
             deck::deck_bands(line, &|p| ctx.units(rules.structures.edge_band_m, p));
         }
     }
-    walk::run_on(&ctx, &mut lines, &of_way, reach(rules::points_m(plan, &rules.sections)));
     // The points within `bx` round their arms; the points past it only end their runs.
     let elsewhere = |w: u32| decks.as_ref().is_some_and(|d| d.goes_on(graph, w, level));
     let all = graph_points(&ctx, &lines, &of_way, &elsewhere, reach(rules::points_m(plan, &rules.sections)));
