@@ -14,8 +14,8 @@ use obc_ground_plan::frame::{from_lon_lat, CellKey};
 use obc_ground_plan::graph::{self, WayGraph};
 
 /// Slab faces under `check::LONE_SLAB_M2` that touch no other slab face (`check::lone_slabs`), measured on the revision
-/// 17 fixture: one needle of a few square centimetres where a taper's tip meets the carriageway's edge within a unit, which
-/// no view shows. The count must not grow.
+/// 23 fixture: one sliver about a millimetre wide where a slab's edge meets a culvert's cover within a unit, which no
+/// view shows. The count must not grow.
 const LONE_SLABS_MAX: usize = 1;
 
 #[test]

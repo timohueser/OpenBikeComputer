@@ -93,9 +93,10 @@ const HELD_OVER_CAP_MAX: usize = 73;
 /// Such steps where a side is line water, which has no wall (a way's fill that holds a bank over a waterline, or a
 /// bank's fill over a way's edge), counted apart and measured the same way with a paved outline that holds no water
 /// (where a way's edge meets the water, the bank's fill stands against it, and no round of the way's paving covers
-/// the corner; 90 of them stand within 25 m of 46.82015, 8.3866, at the river's bank against two paths' edges): the
-/// count must not grow.
-const HELD_WATER_MAX: usize = 663;
+/// the corner; 90 of them stand within 25 m of 46.82015, 8.3866, at the river's bank against two paths' edges), and one
+/// more where a sidewalk's slab moves a road's paved outline out to its back edge, so the road's cone holds a stream's
+/// bank there lower: the count must not grow.
+const HELD_WATER_MAX: usize = 664;
 /// The grid of the ground under the decks, metres.
 const DECK_GRID_M: f64 = 0.5;
 /// An end face may fall short of the deck's depth and the gap by this much, where its paved end's height is not
