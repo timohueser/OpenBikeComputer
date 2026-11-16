@@ -507,7 +507,7 @@ pub fn mesh_cell(
     }
     let (mut steps, mut faces) = (Vec::new(), Vec::new());
     for (s, &kind) in input.segments[..input.edges].iter().zip(&input.kinds) {
-        if kind == EdgeKind::Portal {
+        if crate::graph::BORES && kind == EdgeKind::Portal {
             continue;
         }
         let end = kind == EdgeKind::DeckEdge;

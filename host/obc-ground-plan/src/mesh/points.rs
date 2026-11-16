@@ -95,7 +95,7 @@ pub fn input(plan: &FacePlan, region: &Region, lines: &[Vec<i32>; 4], origin_y: 
         // An edge where the floor under the ground changes is a constraint too: a bore's mesh is storey 0's triangles
         // over its floor.
         let face = |f: u32| &plan.faces[f as usize];
-        let under = face(e.left).under != face(e.right).under;
+        let under = crate::graph::BORES && face(e.left).under != face(e.right).under;
         if !super::params::sharp_face(face(e.left)) && !super::params::sharp_face(face(e.right)) && !under {
             continue;
         }

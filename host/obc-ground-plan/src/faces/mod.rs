@@ -119,6 +119,10 @@ impl WayLine<'_> {
     /// The directions of the segments of the run of samples `first..last` (`stroke::pieces_along`): a portal's end
     /// segment takes the portal's direction, every other its chord's.
     pub fn dirs(&self, first: usize, last: usize) -> Vec<Option<[f64; 2]>> {
+        // No portal end: every segment its chord's (`stroke::pieces_along` reads none as that).
+        if !BORES || self.end_dir == [None, None] {
+            return Vec::new();
+        }
         let mut d = vec![None; (last - first).saturating_sub(1)];
         if let (Some(e), 0, true) = (self.end_dir[0], first, !d.is_empty()) {
             d[0] = Some(e);
@@ -415,10 +419,10 @@ fn lines<'a>(
                 ends.get(&station_key(way.id, -1, &way.to)).copied().unwrap_or(false),
             ],
             deck: ends_at.map(|k| decks.contains(&k)),
-            portal: ends_at.map(|k| portals.contains(&k)),
+            portal: ends_at.map(|k| BORES && portals.contains(&k)),
             end_dir: [end_dir(0), end_dir(1)],
             end_cuts: [None, None],
-            leads: lead.iter().filter(|x| x.0 == way.id).map(|x| x.1).collect(),
+            leads: if BORES { lead.iter().filter(|x| x.0 == way.id).map(|x| x.1).collect() } else { Vec::new() },
             bbox: [i32::MAX, i32::MAX, i32::MIN, i32::MIN],
             chunks: Vec::new(),
             index: (0..samples.len()).collect(),
@@ -1022,7 +1026,7 @@ pub(crate) fn ceiling_lines<'a>(
     let ctx = Ctx { graph, rules, origin: cell.origin() };
     let (deck_m, bore_m) = (rules.structures.edge_band_m, deck::WALL_M + deck::COVER_SIDE_M);
     // A cell whose graph has no bore reads its decks as a build with no bores does.
-    let half = HALF_MAX_M + if any_bore(graph) { deck_m.max(bore_m) } else { deck_m };
+    let half = HALF_MAX_M + if BORES && any_bore(graph) { deck_m.max(bore_m) } else { deck_m };
     let m = records::ceiling_end_reach(half, rules.plan.heights.ceiling_release_m) + records::HEIGHT_PAD_M;
     let mut out = lines(&ctx, input, &|w| on_deck(graph, w) || in_bore(graph, w), grown(cell, m, true)).0;
     for line in &mut out {
@@ -1213,7 +1217,7 @@ impl Sliced {
             if under_id[k] == NO_UNDER {
                 if labels[k].surface == Surface::Cover && !front[k].is_empty() {
                     let keep = |x: &Cand| x.label.surface != Surface::Cover;
-                    labels[k] = label_but(&c.cands, &c.cover, &c.lines, &patches[k], false, &keep);
+                    labels[k] = label_but(&c.cands, &c.cover, &c.lines, &patches[k], false, Some(&keep));
                     back[k].clear();
                 }
             } else if labels[k].surface != Surface::Cover {
@@ -1228,7 +1232,7 @@ impl Sliced {
                         || (x.glob.is_none() && ok.contains(&x.line))
                         || x.label.material.is_some_and(|m| ok.iter().any(|&l| c.lines[l].way == m))
                 };
-                let l = label_but(&c.cands, &c.cover, &c.lines, &patches[k], false, &keep);
+                let l = label_but(&c.cands, &c.cover, &c.lines, &patches[k], false, Some(&keep));
                 labels[k] = if l == TERRAIN { cover } else { l };
             }
         }
@@ -1321,7 +1325,7 @@ fn deck_ends(line: &WayLine) -> Vec<(EdgeKind, [f64; 5])> {
         let d = [f64::from(q[0] - p[0]), f64::from(q[1] - p[1])];
         let len = libm::hypot(d[0], d[1]).max(1e-9);
         let d = line.end_dir[k].map_or([d[0] / len, d[1] / len], |e| if k == 0 { e } else { [-e[0], -e[1]] });
-        let kind = if line.portal[k] { EdgeKind::Portal } else { EdgeKind::DeckEdge };
+        let kind = if BORES && line.portal[k] { EdgeKind::Portal } else { EdgeKind::DeckEdge };
         (kind, [f64::from(p[0]), f64::from(p[1]), d[0], d[1], line.bands[at][VERGE]])
     };
     let mut out = Vec::new();
@@ -1538,7 +1542,7 @@ fn candidates<'a>(
     }
     // The cover over the bores, the lids (the stretches on top of a bore or of a way that enters one) and the lines
     // with such a stretch.
-    let Lid { cover: cover_cands, entering: lids, tops, of_lower: lid_of } = if level == 0 && any_bore(graph) {
+    let Lid { cover: cover_cands, entering: lids, tops, of_lower: lid_of } = if BORES && level == 0 && any_bore(graph) {
         bore_cover(&ctx, input, &lines, reach(rules::ways_m(plan, &rules.sections)), bx)
     } else {
         Lid::default()
@@ -1566,8 +1570,8 @@ fn candidates<'a>(
         };
         // The cuts at the first and the last sample of layer k (0 the carriageway).
         let cut = |i: usize, k: usize| {
-            let portal = if i == 0 { line.end_cuts[0].clone() } else { None }.or_else(|| {
-                if i + 1 == line.p.len() {
+            let portal = if BORES && i == 0 { line.end_cuts[0].clone() } else { None }.or_else(|| {
+                if BORES && i + 1 == line.p.len() {
                     line.end_cuts[1].clone()
                 } else {
                     None
@@ -2365,7 +2369,7 @@ fn past_seam(part: &Part, q: [i64; 2]) -> bool {
 /// terrain; a carriageway over a rail bed is a crossing.
 /// The label of a patch; `far` leaves out the band layers.
 fn label(cands: &[Cand], cover: &Cover, lines: &[WayLine], patch: &[Vec<P>], far: bool) -> Label {
-    label_but(cands, cover, lines, patch, far, &|_| true)
+    label_but(cands, cover, lines, patch, far, None)
 }
 
 /// `label` of the candidates that `keep` keeps (`Sliced::joint`).
@@ -2375,7 +2379,7 @@ fn label_but(
     lines: &[WayLine],
     patch: &[Vec<P>],
     far: bool,
-    keep: &dyn Fn(&Cand) -> bool,
+    keep: Option<&dyn Fn(&Cand) -> bool>,
 ) -> Label {
     let mut at = match inner_point(patch) {
         Some(q) => cover.at(q),
@@ -2390,7 +2394,9 @@ fn label_but(
     if far {
         at.retain(|&c| !near_only(&cands[c as usize]));
     }
-    at.retain(|&c| keep(&cands[c as usize]));
+    if let (true, Some(keep)) = (BORES, keep) {
+        at.retain(|&c| keep(&cands[c as usize]));
+    }
     // A patch with no inner point reads its seams at the mean of its vertices: a vertex of it can
     // lie on a seam.
     let q = inner_point(patch).unwrap_or_else(|| {
@@ -2500,6 +2506,7 @@ fn output(
     floors: Option<Floors>,
     mut stats: FaceStats,
 ) -> FacePlan {
+    let floors = floors.filter(|_| BORES);
     let under_of = |k: usize| floors.map_or(NO_UNDER, |f| f.under[k]);
     let mut ids: Vec<(Label, u32)> = Vec::new();
     let key: Vec<u32> = labels

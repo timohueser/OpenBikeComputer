@@ -74,8 +74,8 @@ pub(crate) fn deck_bands(line: &mut WayLine, band: &dyn Fn(P) -> f64) {
     line.deck = [false; 2];
 }
 
-/// A bore's wall beside its floor (the old tunnel box's wall) and the ground's margin past it that the bore's cover
-/// holds (the old stamp's `BORE_WALL_M`): the crossing block's thickness table.
+/// A bore's wall beside its floor and the ground's margin past it that the bore's cover holds: the crossing block's
+/// thickness table.
 pub const WALL_M: f64 = 0.6;
 pub const COVER_SIDE_M: f64 = 1.0;
 
@@ -100,7 +100,7 @@ pub(crate) fn open_ends(line: &WayLine, open: [bool; 2]) -> Vec<(EdgeKind, [f64;
         let d = [f64::from(q[0] - p[0]), f64::from(q[1] - p[1])];
         let len = libm::hypot(d[0], d[1]).max(1e-9);
         let d = line.end_dir[k].map_or([d[0] / len, d[1] / len], |e| if k == 0 { e } else { [-e[0], -e[1]] });
-        let kind = if line.end_dir[k].is_some() { EdgeKind::Portal } else { EdgeKind::DeckEdge };
+        let kind = if super::BORES && line.end_dir[k].is_some() { EdgeKind::Portal } else { EdgeKind::DeckEdge };
         (kind, [f64::from(p[0]), f64::from(p[1]), d[0], d[1], line.bands[at][SLOPE]])
     };
     let mut out = Vec::new();

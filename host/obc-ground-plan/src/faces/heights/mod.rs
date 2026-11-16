@@ -1552,7 +1552,7 @@ fn decks<'a>(
             }
         };
         // A bore's part can run against its way: its metres along between two samples have no sign.
-        let along = |m: f64| if ln.ret < 0.0 { m.abs() } else { m };
+        let along = |m: f64| if BORES && ln.ret < 0.0 { m.abs() } else { m };
         let near = [
             along(b.along(&ln, i) - b.along(&ln, 0)) <= sa.h + p.ceiling_release_m,
             along(b.along(&ln, last) - b.along(&ln, i + 1)) <= sb.h + p.ceiling_release_m,
@@ -1571,7 +1571,7 @@ fn decks<'a>(
 /// bounds has no step; infinite where no deck is near.
 fn ceiling(b: &Block, q: [f64; 2], segs: &[u32], p: &HeightRules) -> f64 {
     decks(b, q, segs, p)
-        .filter(|&(out, _, drop, ..)| drop > 0.0 && out < p.ceiling_release_m)
+        .filter(|&(out, _, drop, ..)| (!BORES || drop > 0.0) && out < p.ceiling_release_m)
         .map(|(out, base, ..)| base + p.face_max * out + release(out, p.ceiling_release_m, p).1)
         .fold(f64::INFINITY, f64::min)
 }
@@ -1613,7 +1613,7 @@ pub(crate) fn under_deck(words: &[u32], q: [f64; 2]) -> Option<(f64, f64)> {
     let b = Block::at(words, q);
     let p = HeightRules::of(words);
     let items = bin_items(&b, q)?;
-    let inside = decks(&b, q, items.segs, &p).filter(|&(out, _, drop, ..)| out <= 0.0 && drop > 0.0);
+    let inside = decks(&b, q, items.segs, &p).filter(|&(out, _, drop, ..)| out <= 0.0 && (!BORES || drop > 0.0));
     inside.map(|(_, base, drop, ..)| (base, drop)).reduce(|a, c| if c.0 < a.0 { c } else { a })
 }
 
@@ -1725,7 +1725,7 @@ fn step(b: &Block, q: [f64; 2], recs: &[Rec], sides: &[(Height, Cause); 2], p: &
         })
     };
     if lower.1.ceiling
-        || higher.1.floor
+        || (BORES && higher.1.floor)
         || (sides.iter().any(|(h, _)| h.kind == Kind::Paved) && recs.iter().any(on_deck_end))
     {
         return Step::EndFace;

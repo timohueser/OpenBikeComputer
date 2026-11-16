@@ -189,6 +189,8 @@ pub fn pieces_along_of(
     out: &mut Vec<Vec<P>>,
     of: Option<&mut Vec<[usize; 2]>>,
 ) {
+    // Only the bores read the list: a build without them links none of it.
+    let of = of.filter(|_| crate::graph::BORES);
     let mut keep: Vec<usize> = (0..p.len()).collect();
     let mut k = 2;
     while !closed && k + 2 < keep.len() {
@@ -240,8 +242,9 @@ fn stroke(
     round_ends: [bool; 2],
     closed: bool,
     out: &mut Vec<Vec<P>>,
-    mut of: Option<&mut Vec<[usize; 2]>>,
+    of: Option<&mut Vec<[usize; 2]>>,
 ) {
+    let mut of = of.filter(|_| crate::graph::BORES);
     let mut mark = |out: &Vec<Vec<P>>, seg: [usize; 2]| {
         if let Some(s) = of.as_deref_mut() {
             s.resize(out.len(), seg);

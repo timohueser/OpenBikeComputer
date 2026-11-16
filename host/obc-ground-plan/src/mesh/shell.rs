@@ -581,7 +581,7 @@ pub fn mesh_storeys_with(
     let mut open = Vec::new();
     let mut all_labels = Vec::new();
     for plan in &storeys.plans {
-        if plan.level < 0 {
+        if BORES && plan.level < 0 {
             all_labels.push(face_labels(&plan.faces, words));
             continue;
         }
@@ -805,11 +805,16 @@ pub fn mesh_storeys_with(
         slots.extend(sorted);
     }
     // By corner, then label, in the corners' own key type: their sort serves.
-    let mut caps: Vec<(u64, u32)> = (b.caps.iter().filter(|_| BORES))
-        .filter_map(|&(key, (l, off))| unique.binary_search(&key).ok().map(|k| ((k as u64) << 32 | u64::from(l), off)))
-        .collect();
-    caps.sort_unstable();
-    caps.dedup();
+    let mut caps: Vec<(u64, u32)> = Vec::new();
+    if BORES {
+        for &(key, (l, off)) in &b.caps {
+            if let Ok(k) = unique.binary_search(&key) {
+                caps.push(((k as u64) << 32 | u64::from(l), off));
+            }
+        }
+        caps.sort_unstable();
+        caps.dedup();
+    }
     let caps: Vec<[u32; 3]> = caps.into_iter().map(|(k, off)| [(k >> 32) as u32, k as u32, off]).collect();
     let corners = (unique.iter())
         .map(|&(key, offset)| {
