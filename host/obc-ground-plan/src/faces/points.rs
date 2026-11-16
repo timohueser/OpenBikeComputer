@@ -69,6 +69,18 @@ pub struct Arm {
     pub dir: i8,
 }
 
+/// A pair of neighbouring arms (a turning counter-clockwise to b through their sector, at a way's own turn the inner
+/// side), the radius of their kerb's round and of their corner (units), and how far a round may cut into the arms'
+/// strokes. The round of the corner radius sizes the point: its region's seams lie past its feet, also where the
+/// kerb's round is smaller and shapes the paving inside it.
+#[derive(Clone, Copy, Debug)]
+pub struct Pair {
+    pub arms: [usize; 2],
+    pub kerb: f64,
+    pub corner: f64,
+    pub tol: f64,
+}
+
 pub struct Rounded {
     /// One fan per round: the arms' centre lines to the feet, the round's arc between.
     pub fans: Vec<Vec<P>>,
@@ -84,6 +96,8 @@ pub struct Rounded {
     pub seams: Vec<Option<[P; 2]>>,
     /// The circle of each round.
     pub circles: Vec<Circle>,
+    /// The circle of each pair's corner round where it is larger than the kerb's round.
+    pub corners: Vec<Circle>,
     /// The rounds tangent to both facing edges of their pair.
     pub two_foot: Vec<TwoFoot>,
     /// Per arm, its run and the station of the farthest foot of a round or crossing of facing edges.
@@ -819,18 +833,15 @@ pub fn cuts(lines: &[WayLine], arms: &[Arm]) -> Vec<f64> {
     all
 }
 
-/// The rounding of a point at `pos` with its arms, the arm length `len` (units) and the pairs (a, b,
-/// r, tol) of neighbouring arms, a turning counter-clockwise to b through their sector (at a way's
-/// own turn, the inner side), with the radius and how far the round may cut into the arms' strokes.
-/// With `gaps`, a fill between square ends of arms that open by half a turn or more (junctions and
-/// joints).
-#[allow(clippy::too_many_arguments)]
+/// The rounding of a point at `pos` with its arms, the arm length `len` (units) and the pairs of
+/// neighbouring arms. With `gaps`, a fill between square ends of arms that open by half a turn or more
+/// (junctions and joints).
 pub fn round(
     lines: &[WayLine],
     stops: &[Vec<usize>],
     pos: P,
     arms: &[Arm],
-    pairs: &[(usize, usize, f64, f64)],
+    pairs: &[Pair],
     len: f64,
     gaps: bool,
 ) -> Rounded {
@@ -848,6 +859,7 @@ pub fn round(
         spans: Vec::new(),
         seams: vec![None; arms.len()],
         circles: Vec::new(),
+        corners: Vec::new(),
         two_foot: Vec::new(),
         runs: Vec::new(),
         far: vec![0.0; arms.len()],
@@ -880,7 +892,7 @@ pub fn round(
         fills.iter().all(|f| to_ring(f, c).d >= rho - 1.0) && off_lines(lines, water, pos, &own, c, rho)
     };
     let (tau, step) = (2.0 * std::f64::consts::PI, 2.0 * std::f64::consts::PI / f64::from(STEPS));
-    for (pair, &(i, j, r, tol)) in pairs.iter().enumerate() {
+    for (pair, &Pair { arms: [i, j], kerb: r, corner: r_corner, tol }) in pairs.iter().enumerate() {
         // a turns counter-clockwise to b through the pair's sector: as given at a junction or a
         // joint, the inner side at a way's own turn.
         let (a, b) =
@@ -915,6 +927,30 @@ pub fn round(
                 .map(|(c, fa, fb)| Fit::Edges(c, fa, fb)),
             None => leaves(rho).map(Fit::Leaves),
         };
+        // A kerb's round smaller than the corner's lies inside the corner round's place, and the point reaches past
+        // the corner round's feet.
+        if r_corner > r {
+            match ladder(r_corner).find_map(|rho| fit(rho).map(|f| (rho, f))) {
+                Some((rho, Fit::Edges(c, fa, fb))) => {
+                    let (a0, sweep) = facing(c, &fa, &fb);
+                    if sweep.abs() >= step {
+                        far[a] = far[a].max(fa.s);
+                        far[b] = far[b].max(fb.s);
+                        out.corners.push(Circle::new(&abs, c, rho, a0, sweep));
+                    }
+                }
+                Some((rho, Fit::Leaves(l))) => {
+                    if let Some((_, a0, sweep)) = leave_fan(&runs, &l, rho) {
+                        far[l.k] = far[l.k].max(l.foot.s);
+                        if let Some((j, s)) = l.touch.arm {
+                            far[j] = far[j].max(s);
+                        }
+                        out.corners.push(Circle::new(&abs, l.c, rho, a0, sweep));
+                    }
+                }
+                None => {}
+            }
+        }
         let Some((rho, fit)) = ladder(r).find_map(|rho| fit(rho).map(|f| (rho, f))) else { continue };
         let (c, fa, fb) = match fit {
             Fit::Edges(c, fa, fb) => (c, fa, fb),

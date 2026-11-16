@@ -657,7 +657,7 @@ pub(super) fn build(
         // A turn's rounds are its only sectors: the inner side of its turn.
         let pairs: Vec<(Option<&TwoFoot>, usize, usize)> = if pt.seams {
             (pt.pairs.iter().enumerate())
-                .map(|(n, &(a, b, _))| (rounded[pi].two_foot.iter().find(|t| t.pair == n), a, b))
+                .map(|(n, &(a, b, _, _))| (rounded[pi].two_foot.iter().find(|t| t.pair == n), a, b))
                 .collect()
         } else {
             rounded[pi].two_foot.iter().map(|t| (Some(t), t.arms[0], t.arms[1])).collect()
