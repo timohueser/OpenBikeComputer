@@ -116,6 +116,13 @@ test('a report compares the open findings only when the study completed and the 
   assert.deepEqual(openSections(allErrors.lines), []);
 });
 
+test('the report call gets the design principles of PRODUCT.md', async () => {
+  const { calls } = await report({ ask: answers({ title: 't', where: 'w', what_happened: 'h', direction: 'd', steps: ['plan-route-2/1'] }) });
+  const principles = readFileSync(new URL('../../../../../PRODUCT.md', import.meta.url), 'utf8');
+  const [[content]] = calls;
+  assert.ok(content.some(block => block.type === 'text' && block.text.endsWith(principles)));
+});
+
 test('the report call does not start when its screenshots pass the limit of the request', async () => {
   const half = MAX_IMAGE_BYTES / 2;
   const { lines, calls } = await report({ ask: answers(), screenshots: { 'plan-route-2/01.jpg': half, 'plan-route-2/02.jpg': half } });

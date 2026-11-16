@@ -8,6 +8,8 @@ import { createModelCall, image } from './model.js';
 
 const PROMPT = readFileSync(new URL('./report.md', import.meta.url), 'utf8');
 const REJECTED = new URL('./rejected.md', import.meta.url);
+// The participant never gets the principles: a newcomer does not know them.
+const PRINCIPLES = new URL('../../../../../PRODUCT.md', import.meta.url);
 const MIN_WALKTHROUGHS = 2;
 const MAX_GROUPS = 15;
 const MAX_FINDINGS = 10;
@@ -149,7 +151,10 @@ function gitCommit() {
   try { return execFileSync('git', ['rev-parse', '--short', 'HEAD'], { encoding: 'utf8' }).trim(); } catch { return 'unknown commit'; }
 }
 
-/** The groups with their step records and the two screenshots of one step, the open findings and the rejected ones. */
+/**
+ * The groups with their step records and the two screenshots of one step, the open findings, the rejected
+ * ones, and the design principles when `PRODUCT.md` exists.
+ */
 function reportContent(dir, groups, walkthroughs, open) {
   const records = Object.fromEntries(walkthroughs.map(w => [`${w.task}-${w.n}`, w.records]));
   const content = [];
@@ -171,6 +176,7 @@ function reportContent(dir, groups, walkthroughs, open) {
   if (imageBytes > MAX_IMAGE_BYTES) throw new Error(`the screenshots are ${imageBytes} bytes, more than ${MAX_IMAGE_BYTES}`);
   content.push({ type: 'text', text: open.issues ? `Open accepted findings:\n${JSON.stringify(open.issues)}` : 'The open accepted findings are not available.' });
   content.push({ type: 'text', text: `Rejected findings:\n${readFileSync(REJECTED, 'utf8')}` });
+  if (existsSync(PRINCIPLES)) content.push({ type: 'text', text: `The design principles of the product:\n${readFileSync(PRINCIPLES, 'utf8')}` });
   return content;
 }
 

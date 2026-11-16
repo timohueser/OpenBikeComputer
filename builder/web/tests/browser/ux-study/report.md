@@ -4,12 +4,13 @@ You get:
 - Groups of candidate steps: places where the result of an action did not match the expectation, where the screen was very confusing, where a walkthrough ended without success, or where the participant did not see that its task was done. Each candidate step has an id such as `plan-route-2/6` (task, walkthrough, step), its step record, and the answer of the next step. Each group has the screenshots of one of its steps: the screen that the step acted on and the screen after its action.
 - The open accepted findings, as GitHub issues, when they are available.
 - The rejected findings: one line each, with the place and the reason that the design is right as it is.
+- The design principles of the product, when they are available. Their core principles decide when two of the others disagree.
 
 Write each finding:
 - `title`: the fault in one short sentence, as a rider meets it.
 - `where`: the page and the part of the screen, such as "planner · search results".
 - `what_happened`: what the participants expected and what the screen did. Two sentences at most. State no number of walkthroughs: the report counts them from `steps`.
-- `direction`: the direction of a fix, in one short sentence. Never propose more text on the screen: you read every word, a rider does not. Prefer a change to a control, its place, its feedback or a default.
+- `direction`: the direction of a fix, in one short sentence. The direction follows the core principles: reveal a control at the moment the rider needs it, in place of more controls or more text on the main screen. Never propose more text on the screen: you read every word, a rider does not. Prefer a change to a control, its place, its feedback or a default.
 - `steps`: the ids of the candidate steps that show the fault, with at least one step of each walkthrough that shows it.
 
 Rules:
