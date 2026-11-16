@@ -1132,11 +1132,9 @@ fn encode(
             .map(|(col, row)| window.at(col, row))
             .collect();
         for (region, other, a, b) in [(l, r, a, b), (r, l, b, a)] {
-            // A slab fades to the paved faces beside it only (toward the ground, its edge is the slopes' outline), and
-            // not to its own host's, whose surface is its own.
-            let own = other.rule == HeightRule::Owner && other.material == region.material;
-            let fades =
-                region.rule == HeightRule::Blend || (region.rule == HeightRule::KerbOffset && paved(&other) && !own);
+            // A slab fades to the paved faces beside it only: toward the ground, its edge is the slopes' outline. Its own
+            // host's face counts too: on that edge the fade gives the host's surface exactly, so the kerb is the rise.
+            let fades = region.rule == HeightRule::Blend || (region.rule == HeightRule::KerbOffset && paved(&other));
             if !fades || listed.is_empty() {
                 continue;
             }
