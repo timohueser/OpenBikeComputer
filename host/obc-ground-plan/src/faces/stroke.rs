@@ -135,24 +135,19 @@ pub fn pie_between(
 }
 
 /// Pushes a ring turned to a positive area; drops one with none.
-pub fn push_positive(ring: Vec<P>, out: &mut Vec<Vec<P>>) {
-    out.extend(positive(ring));
-}
-
-/// A ring turned to a positive area; none for one with none.
-fn positive(mut ring: Vec<P>) -> Option<Vec<P>> {
+pub fn push_positive(mut ring: Vec<P>, out: &mut Vec<Vec<P>>) {
     ring.dedup();
     if ring.len() > 1 && ring[0] == ring[ring.len() - 1] {
         ring.pop();
     }
     let a = area2(&ring);
     if a == 0 {
-        return None;
+        return;
     }
     if a < 0 {
         ring.reverse();
     }
-    Some(ring)
+    out.push(ring);
 }
 
 /// The pieces of the stroke of a line with offset `d[i]` (units) at point i: a quad per segment, a
@@ -176,20 +171,23 @@ pub fn pieces_along(
     closed: bool,
     out: &mut Vec<Vec<P>>,
 ) {
-    pieces_along_by(p, d, dirs, cuts, round_ends, closed, &mut |_, ring| out.push(ring));
+    pieces_along_of(p, d, dirs, cuts, round_ends, closed, out, None);
 }
 
-/// `pieces_along`, each piece with the segments of `p` that it belongs to, `[i, j]`: a segment's own piece `[i, i]`, a
-/// pie at a vertex the two segments about it. The pieces of a stroke meet on its mitre lines, so a set of whole
-/// segments' pieces shares every edge with the rest.
-pub fn pieces_along_by(
+/// `pieces_along`, and with `of` (one entry per piece of `out`) per piece pushed the segments of `p` that it belongs to,
+/// `[i, j]`: a segment's own
+/// piece `[i, i]`, a pie at a vertex the two segments about it. The pieces of one stroke meet on its mitre lines, so
+/// the pieces of a set of whole segments share every edge with the rest.
+#[allow(clippy::too_many_arguments)]
+pub fn pieces_along_of(
     p: &[P],
     d: &[f64],
     dirs: &[Option<[f64; 2]>],
     cuts: [&[f64]; 2],
     round_ends: [bool; 2],
     closed: bool,
-    sink: &mut impl FnMut([usize; 2], Vec<P>),
+    out: &mut Vec<Vec<P>>,
+    of: Option<&mut Vec<[usize; 2]>>,
 ) {
     let mut keep: Vec<usize> = (0..p.len()).collect();
     let mut k = 2;
@@ -221,12 +219,19 @@ pub fn pieces_along_by(
         let d: Vec<f64> = keep.iter().map(|&i| d[i]).collect();
         let dirs: Vec<Option<[f64; 2]>> =
             keep.windows(2).map(|w| if w[1] == w[0] + 1 { dirs.get(w[0]).copied().flatten() } else { None }).collect();
-        let mut by = |[a, b]: [usize; 2], ring| sink([keep[a], keep[b + 1] - 1], ring);
-        return stroke(&p, &d, &dirs, cuts, round_ends, closed, &mut by);
+        // The segments of the kept points are runs of the line's own.
+        let mut of = of;
+        let start = of.as_ref().map_or(0, |s| s.len());
+        stroke(&p, &d, &dirs, cuts, round_ends, closed, out, of.as_deref_mut());
+        for s in of.into_iter().flat_map(|s| s[start..].iter_mut()) {
+            *s = [keep[s[0]], keep[s[1] + 1] - 1];
+        }
+        return;
     }
-    stroke(p, d, dirs, cuts, round_ends, closed, sink)
+    stroke(p, d, dirs, cuts, round_ends, closed, out, of)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn stroke(
     p: &[P],
     d: &[f64],
@@ -234,8 +239,14 @@ fn stroke(
     cuts: [&[f64]; 2],
     round_ends: [bool; 2],
     closed: bool,
-    sink: &mut impl FnMut([usize; 2], Vec<P>),
+    out: &mut Vec<Vec<P>>,
+    mut of: Option<&mut Vec<[usize; 2]>>,
 ) {
+    let mut mark = |out: &Vec<Vec<P>>, seg: [usize; 2]| {
+        if let Some(s) = of.as_deref_mut() {
+            s.resize(out.len(), seg);
+        }
+    };
     let n = p.len();
     if n == 0 {
         return;
@@ -310,16 +321,9 @@ fn stroke(
             ring.extend(ray(p[i], d[i], nl, cuts[0]));
         }
         ring.push(sl);
-        if let Some(ring) = positive(ring) {
-            sink([i, i], ring);
-        }
+        push_positive(ring, out);
+        mark(out, [i, i]);
     }
-    let mut out = Vec::new();
-    let mut put = |seg: [usize; 2], out: &mut Vec<Vec<P>>| {
-        for ring in out.drain(..) {
-            sink(seg, ring);
-        }
-    };
     for (v, turn, dot, c, n1, n2, seg) in pies {
         if turn > 0.0 || (turn == 0.0 && dot < 0.0) {
             // Turning toward the left normal: the outer side is the right one.
@@ -330,24 +334,24 @@ fn stroke(
                 [-n2[0], -n2[1]],
                 turn.abs().max(if dot < 0.0 && c == 0.0 { std::f64::consts::PI } else { 0.0 }),
                 &[],
-                &mut out,
+                out,
             );
         } else if turn < 0.0 {
-            pie(p[v], d[v], n2, n1, -turn, &[], &mut out);
+            pie(p[v], d[v], n2, n1, -turn, &[], out);
         }
-        put(seg, &mut out);
+        mark(out, seg);
     }
     if !closed {
         if let (true, Some(i)) = (round_ends[0], first) {
             let u = dirs[i].unwrap();
             let back = [-u[0], -u[1]];
-            pie(p[0], d[0], left(back).map(|x| -x), left(back), std::f64::consts::PI, cuts[0], &mut out);
-            put([i, i], &mut out);
+            pie(p[0], d[0], left(back).map(|x| -x), left(back), std::f64::consts::PI, cuts[0], out);
+            mark(out, [i, i]);
         }
         if let (true, Some(i)) = (round_ends[1], last) {
             let u = dirs[i].unwrap();
-            pie(p[n - 1], d[n - 1], left(u).map(|x| -x), left(u), std::f64::consts::PI, cuts[1], &mut out);
-            put([i, i], &mut out);
+            pie(p[n - 1], d[n - 1], left(u).map(|x| -x), left(u), std::f64::consts::PI, cuts[1], out);
+            mark(out, [i, i]);
         }
     }
 }

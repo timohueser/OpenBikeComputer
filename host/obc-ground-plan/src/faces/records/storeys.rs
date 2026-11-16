@@ -32,7 +32,7 @@ pub fn storeys(
     for k in (low..=top).filter(|&k| k != 0) {
         // The storey under the ground comes from storey 0's slice (the one map). A floor in front of a portal line
         // is a bore of its own way's section.
-        if k < 0 {
+        if crate::graph::BORES && k < 0 {
             let Some(Under { faces, records, wedges }) = under.take() else { continue };
             *near = merge(near, &records, k, &|w| DeckWay::of(graph, input, rules, w, &decks).finish_bits());
             let bore = |w: u32| {

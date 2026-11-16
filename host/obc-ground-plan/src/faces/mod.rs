@@ -1262,7 +1262,7 @@ impl Sliced {
         let mut stats = self.stats.clone();
         stats.patches = labels.len() as u32;
         // With the bores, each own patch's floor and marks.
-        let joint = !self.under_id.is_empty();
+        let joint = BORES && !self.under_id.is_empty();
         let pick = |v: &[Vec<u32>]| -> Vec<Vec<u32>> { own.iter().map(|&k| v[k].clone()).collect() };
         let (under, front, back): (Vec<u32>, _, _) = if joint {
             (own.iter().map(|&k| self.under_id[k]).collect(), pick(&self.front), pick(&self.back))
@@ -1650,15 +1650,13 @@ fn candidates<'a>(
             let ends = if k == SLOPE { [ends[0] || deck[0], ends[1] || deck[1]] } else { ends };
             match top.filter(|_| BAND_LABELS[k].2 == HeightRule::Owner) {
                 Some(t) => {
-                    let named = &mut named[k];
-                    let mut sort = |[a, b]: [usize; 2], ring| {
-                        if (first + a..=first + b).all(|i| t[i]) {
-                            named.push(ring)
-                        } else {
-                            layer.push(ring)
-                        }
-                    };
-                    stroke::pieces_along_by(p, &d, &line.dirs(first, last), cuts, ends, false, &mut sort);
+                    let (mut pieces, mut of) = (Vec::new(), Vec::new());
+                    let dirs = line.dirs(first, last);
+                    stroke::pieces_along_of(p, &d, &dirs, cuts, ends, false, &mut pieces, Some(&mut of));
+                    for (ring, [a, b]) in pieces.into_iter().zip(of) {
+                        let on_top = (first + a..=first + b).all(|i| t[i]);
+                        if on_top { &mut named[k] } else { &mut *layer }.push(ring);
+                    }
                 }
                 None => pieces_along(p, &d, &line.dirs(first, last), cuts, ends, false, layer),
             }
