@@ -7,7 +7,7 @@ const modes = [['today', ''], ['groups', ''], ['badges', ''], ['badges', '&mix']
 const rows = [];
 for (const [area, center] of Object.entries(AREAS)) for (const [mode, extra] of modes) {
     const { page, context } = await open(browser, { mode, kinds, extra, scale: 1 });
-    for (const zoom of area === 'town' ? [11, 12, 13, 14, 15, 16, 17] : [11, 12, 13, 14, 15, 16]) {
+    for (const zoom of [12, 14, 16]) {
         await view(page, center, zoom);
         const row = await page.evaluate(() => {
             const proto = window.__places, { map } = proto, bounds = map.getBounds();
