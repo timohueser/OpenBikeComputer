@@ -830,7 +830,20 @@ pub(super) fn build(
     for (n, list) in pieces.iter().enumerate() {
         let (l, side) = (n / 2, if n % 2 == 1 { 1.0 } else { -1.0 });
         let line = &lines[l];
-        for piece in list {
+        // Two pieces of one side that meet end to end with square tips (a cut that split a piece where both parts end
+        // at one place) are one stroke: no ground between their ends.
+        let mut order: Vec<Piece> = list.clone();
+        order.sort_by(|a, b| a.x[0].total_cmp(&b.x[0]));
+        let mut strokes: Vec<Piece> = Vec::new();
+        for p in order {
+            match strokes.last_mut() {
+                Some(last) if last.x[1] == p.x[0] && last.tip[1] == Tip::Square && p.tip[0] == Tip::Square => {
+                    (last.x[1], last.tip[1]) = (p.x[1], p.tip[1]);
+                }
+                _ => strokes.push(p),
+            }
+        }
+        for piece in &strokes {
             let q0 = at_x(line, piece.x[0]).0;
             let xs = piece_points(line, side, &ends[n], full_m(line), ramp, mpu(q0), piece.x);
             if xs.len() < 2 {
