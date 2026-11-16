@@ -1,14 +1,16 @@
 //! The sidewalks of the roads: per side of each segment of a stroke, whether it has one.
 //!
 //! A side can have a sidewalk on a way on the ground whose class has a `sidewalk_m`. OSM's tags decide
-//! first; a side without a tag has one where TOWN_BUILDINGS buildings stand within TOWN_M of it. Then a
-//! gap under GAP_M without a tag closes. A side has none where the ground past its edge is steep, unless
-//! a tag puts one there, none inside a bend too tight for it, and none on the bed of another way. A piece
-//! that ends within JUNCTION_M of a junction runs on to it. Once every stroke of a solve has its sides,
-//! a run on one side that is shorter than PIECE_M and stops at both ends goes (`drop_short`).
+//! first; a side without a tag has one where TOWN_BUILDINGS buildings stand within TOWN_M of the road. A
+//! tight bend and the bed of another way take it off. Only a tag, a class without a sidewalk and a tight
+//! bend stop a sidewalk for good: a gap under GAP_M closes, a piece that ends within JUNCTION_M of a
+//! junction runs on to it, and a piece that leaves a junction and stops within JUNCTION_M of it goes. Once
+//! every stroke of a solve has its sides, a run on one side that is shorter than PIECE_M and stops at both
+//! ends goes (`drop_short`).
 
 use std::collections::{HashMap, HashSet};
 
+use rstar::primitives::Rectangle;
 use rstar::RTree;
 
 use super::align::Curve;
@@ -17,28 +19,25 @@ use super::rows::{root, union, UntaggedCrossing};
 use super::{Classes, River};
 use crate::geometry::{key, Boxes};
 use crate::kinds::SIDEWALK_MAX_M;
-use crate::{metres, Terrain, WALK_LEFT, WALK_RIGHT};
+use crate::{metres, WALK_LEFT, WALK_RIGHT};
 
-const TOWN_BUILDINGS: usize = 3;
-const TOWN_M: f64 = 40.0;
+/// One building beside a road is a house in the country, a second one makes it a street. A building
+/// counts by the box of its outer ring, both sides of the road alike.
+const TOWN_BUILDINGS: usize = 2;
+const TOWN_M: f64 = 25.0;
 const GAP_M: f64 = 40.0;
 const PIECE_M: f64 = 50.0;
 const JUNCTION_M: f64 = 15.0;
-/// The ground from STEEP_FROM_M to STEEP_TO_M past the road's edge is steep where it rises or falls by
-/// more than `sidewalk_steep` of the class per metre.
-const STEEP_FROM_M: f64 = 2.0;
-const STEEP_TO_M: f64 = 6.0;
 /// Another way does not count as a bed within this many metres of a point where it meets the road, as
 /// JOIN_M of bins.ts: the corner shapes the mouth there.
 const JOIN_M: f64 = 12.0;
 
-/// Metres of sidewalk by the rule that decides them: kept by a tag or by buildings, and taken by a steep
-/// side, by a bend, by another way's bed and by a piece too short.
+/// Metres of sidewalk by the rule that decides them: kept by a tag or by buildings, and taken by a bend,
+/// by another way's bed and by a piece too short.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Walks {
     pub tagged_m: f64,
     pub built_m: f64,
-    pub steep_m: f64,
     pub bend_m: f64,
     pub bed_m: f64,
     pub short_m: f64,
@@ -48,7 +47,6 @@ impl Walks {
     pub fn add(&mut self, other: &Walks) {
         self.tagged_m += other.tagged_m;
         self.built_m += other.built_m;
-        self.steep_m += other.steep_m;
         self.bend_m += other.bend_m;
         self.bed_m += other.bed_m;
         self.short_m += other.short_m;
@@ -78,8 +76,7 @@ struct Bed {
 
 /// What the sidewalks of a solve read besides the strokes.
 pub(crate) struct Town<'a> {
-    buildings: Option<&'a RTree<[f64; 2]>>,
-    terrain: &'a dyn Terrain,
+    buildings: Option<&'a RTree<Rectangle<[f64; 2]>>>,
     beds: Vec<Bed>,
     boxes: Boxes,
     /// Per way, the variables and points of its OSM vertices that other ways share.
@@ -96,8 +93,7 @@ impl<'a> Town<'a> {
         net: &Network,
         (rivers, culverts): (&[&River], &[&River]),
         (untagged, classes): (&[UntaggedCrossing], &Classes),
-        buildings: Option<&'a RTree<[f64; 2]>>,
-        terrain: &'a dyn Terrain,
+        buildings: Option<&'a RTree<Rectangle<[f64; 2]>>>,
     ) -> Self {
         let mouths: HashSet<[u64; 2]> = culverts.iter().flat_map(|c| &c.points).map(|&p| key(p)).collect();
         let mut beds: Vec<Bed> = Vec::new();
@@ -147,7 +143,7 @@ impl<'a> Town<'a> {
             }
         }
         let junction = out.iter().map(|&c| c >= 3).collect();
-        Town { buildings, terrain, beds, boxes: Boxes::new(&boxes), joins, junction }
+        Town { buildings, beds, boxes: Boxes::new(&boxes), joins, junction }
     }
 
     /// Per sample of a stroke, the sides of the segment from it to the next sample that have a sidewalk:
@@ -205,61 +201,49 @@ impl<'a> Town<'a> {
                 let piece = &pieces[owner[i]];
                 net.sidewalks[piece.way][if piece.forward { side } else { 1 - side }]
             };
-            let mut on: Vec<bool> = (0..n - 1)
-                .map(|i| {
-                    width[i] > 0.0
-                        && tag(i).unwrap_or_else(|| self.built(beside(i, half(i) + width[i] / 2.0), beside(i, 0.0)))
-                })
-                .collect();
+            let mut on: Vec<bool> =
+                (0..n - 1).map(|i| width[i] > 0.0 && tag(i).unwrap_or_else(|| self.built(beside(i, 0.0)))).collect();
             if !on.contains(&true) {
                 continue;
-            }
-            for (a, b) in runs(&on, false) {
-                let inside = a > 0 && b < n - 1;
-                if inside && curve.s[b] - curve.s[a] < GAP_M && (a..b).all(|i| width[i] > 0.0 && tag(i).is_none()) {
-                    on[a..b].fill(true);
-                }
-            }
-            let free: Vec<usize> = (0..n - 1).filter(|&i| width[i] > 0.0 && tag(i) != Some(true)).collect();
-            let near: Vec<[f64; 2]> = free
-                .iter()
-                .flat_map(|&i| [beside(i, half(i) + STEEP_FROM_M), beside(i, half(i) + STEEP_TO_M)])
-                .collect();
-            let ground_heights = self.terrain.heights(&near);
-            let mut steep = vec![false; n - 1];
-            for (k, &i) in free.iter().enumerate() {
-                let rise = (ground_heights[2 * k + 1] - ground_heights[2 * k]).abs();
-                steep[i] = rise > rule(i).sidewalk_steep * (STEEP_TO_M - STEEP_FROM_M);
             }
             let bend = |i: usize| {
                 let k = sign * curve.curvature[i];
                 k > 0.0 && 1.0 / k < half(i) + width[i] + rule(i).sidewalk_margin_m
             };
             let bed = |i: usize| !self.clear(net, way(i), beside(i, half(i) + width[i] / 2.0), width[i]);
-            let barred = |i: usize| width[i] == 0.0 || tag(i) == Some(false) || steep[i] || bend(i) || bed(i);
-            // A sample on has a width and no tag `no`: a steep side, a bend or a bed bars it.
             for (i, on) in on.iter_mut().enumerate().filter(|(_, on)| **on) {
-                if barred(i) {
-                    let why = if steep[i] {
-                        &mut walks.steep_m
-                    } else if bend(i) {
-                        &mut walks.bend_m
-                    } else {
-                        &mut walks.bed_m
-                    };
-                    count(why, i);
+                if bend(i) || bed(i) {
+                    count(if bend(i) { &mut walks.bend_m } else { &mut walks.bed_m }, i);
                     *on = false;
+                }
+            }
+            // A sidewalk crosses another way's bed and a stretch without buildings to its next piece or to a
+            // junction; inside a tight bend it would fold over itself.
+            let stops = |i: usize| width[i] == 0.0 || tag(i) == Some(false) || bend(i);
+            for (a, b) in runs(&on, false) {
+                if a > 0 && b < n - 1 && curve.s[b] - curve.s[a] < GAP_M && !(a..b).any(stops) {
+                    on[a..b].fill(true);
                 }
             }
             for (a, b) in runs(&on, true) {
                 let ahead = (b..n).take_while(|&j| curve.s[j] - curve.s[b] <= JUNCTION_M).find(|&j| junction[j]);
-                if let Some(j) = ahead.filter(|&j| (b..j).all(|i| !barred(i))) {
+                if let Some(j) = ahead.filter(|&j| !(b..j).any(stops)) {
                     on[b..j].fill(true);
                 }
                 let behind =
                     (0..=a).rev().take_while(|&j| curve.s[a] - curve.s[j] <= JUNCTION_M).find(|&j| junction[j]);
-                if let Some(j) = behind.filter(|&j| (j..a).all(|i| !barred(i))) {
+                if let Some(j) = behind.filter(|&j| !(j..a).any(stops)) {
                     on[j..a].fill(true);
+                }
+            }
+            // A stub joins a junction to an end in the open, inside the stroke and off a junction. An end at the
+            // stroke's end is neither: the sidewalk may carry on into the next stroke there.
+            let open = |e: usize| e > 0 && e < n - 1 && !junction[e];
+            let stub = |a: usize, b: usize| (junction[a] && open(b)) || (open(a) && junction[b]);
+            for (a, b) in runs(&on, true) {
+                if stub(a, b) && curve.s[b] - curve.s[a] < JUNCTION_M {
+                    (a..b).for_each(|i| count(&mut walks.short_m, i));
+                    on[a..b].fill(false);
                 }
             }
             for (out, _) in out.iter_mut().zip(&on).filter(|(_, &on)| on) {
@@ -269,13 +253,11 @@ impl<'a> Town<'a> {
         out
     }
 
-    /// Whether TOWN_BUILDINGS buildings stand within TOWN_M of `point`, on its side of the way's `middle`.
-    fn built(&self, point: [f64; 2], middle: [f64; 2]) -> bool {
+    /// Whether TOWN_BUILDINGS buildings stand within TOWN_M of `point`.
+    fn built(&self, point: [f64; 2]) -> bool {
         let Some(buildings) = self.buildings else { return false };
         let r = TOWN_M / metres(point[1]);
-        let out = sub(point, middle);
-        let near = buildings.locate_within_distance(point, r * r).filter(|&&b| dot(sub(b, middle), out) > 0.0);
-        near.take(TOWN_BUILDINGS).count() == TOWN_BUILDINGS
+        buildings.locate_within_distance(point, r * r).take(TOWN_BUILDINGS).count() == TOWN_BUILDINGS
     }
 
     /// Whether a sidewalk `width` metres wide, of way `w`, with its middle at `point`, keeps off the beds
@@ -443,12 +425,21 @@ mod tests {
 
     use super::super::{solve, Feature, Near, Solved};
     use super::*;
+    use crate::Terrain;
+
+    /// The solve of `features` with buildings whose boxes span (east, north) to (east, north) metres.
+    fn built(place: &Place, features: &[Feature], buildings: &[[(f64, f64); 2]], terrain: &dyn Terrain) -> Solved {
+        let boxes =
+            buildings.iter().map(|&[(e0, n0), (e1, n1)]| Rectangle::from_corners(place.at(e0, n0), place.at(e1, n1)));
+        let tree = RTree::bulk_load(boxes.collect());
+        let refs: Vec<&Feature> = features.iter().collect();
+        solve(&refs, terrain, &Near { buildings: Some(&tree), ..Default::default() }, &table().1, None)
+    }
 
     /// The solve of `features` with houses at (east, north) metres.
     fn solved(place: &Place, features: &[Feature], houses: &[(f64, f64)], terrain: &dyn Terrain) -> Solved {
-        let tree = RTree::bulk_load(houses.iter().map(|&(e, n)| place.at(e, n)).collect());
-        let refs: Vec<&Feature> = features.iter().collect();
-        solve(&refs, terrain, &Near { buildings: Some(&tree), ..Default::default() }, &table().1, None)
+        let points: Vec<[(f64, f64); 2]> = houses.iter().map(|&h| [h, h]).collect();
+        built(place, features, &points, terrain)
     }
 
     /// The runs of a solved way with a sidewalk on the side `bit`, in metres east.
@@ -475,7 +466,7 @@ mod tests {
     }
 
     #[test]
-    fn three_houses_give_a_side_a_sidewalk_one_does_not_and_a_tag_decides_first() {
+    fn two_buildings_give_both_sides_a_sidewalk_one_does_not_and_a_tag_decides_first() {
         let place = engelberg();
         let road = |north: f64, edit: fn(&mut Feature)| {
             way("residential", place.line(&[(0.0, north), (300.0, north)], Some(20.0)), edit)
@@ -484,15 +475,22 @@ mod tests {
             road(0.0, plain),
             road(500.0, |f| f.sidewalks = [Some(false); 2]),
             road(1000.0, |f| f.sidewalks = [Some(true), None]),
+            road(1500.0, plain),
         ];
-        // Left of a way to the east is north. Three houses south of the first road, one north of it.
-        let mut houses = vec![(150.0, -15.0), (160.0, -15.0), (170.0, -15.0), (60.0, 15.0)];
-        houses.extend(row(0.0, 300.0, 485.0).into_iter().chain(row(0.0, 300.0, 515.0)));
-        let solved = solved(&place, &features, &houses, &place.terrain(|_, _| 1000.0));
-        assert!(pieces(&place, &solved, 0, WALK_LEFT).is_empty(), "one house gives none");
-        // The middle of the sidewalk lies 3.75 m from the road's: within 40 m of a house 15 m from it for 38.4 m.
-        let right = pieces(&place, &solved, 0, WALK_RIGHT);
-        assert!(one(&right, (131.6, 188.4)), "{right:?}");
+        // A lone house north of the first road; a row south of it, 15 m from its middle: two houses lie within
+        // 25 m of the road's middle from 90 m to 210 m east, and both sides walk there.
+        let mut houses: Vec<[(f64, f64); 2]> =
+            [(40.0, 15.0)].iter().chain(&row(100.0, 200.0, -15.0)).map(|&h| [h, h]).collect();
+        houses.extend(row(0.0, 300.0, 485.0).into_iter().chain(row(0.0, 300.0, 515.0)).map(|h| [h, h]));
+        // Two large buildings on the last road: their middles lie 30 m from it, their boxes 10 m.
+        houses.extend([[(100.0, 1490.0), (160.0, 1450.0)], [(100.0, 1510.0), (160.0, 1550.0)]]);
+        let solved = built(&place, &features, &houses, &place.terrain(|_, _| 1000.0));
+        for bit in [WALK_LEFT, WALK_RIGHT] {
+            let runs = pieces(&place, &solved, 0, bit);
+            assert!(one(&runs, (90.0, 210.0)), "{runs:?}");
+            let runs = pieces(&place, &solved, 3, bit);
+            assert!(one(&runs, (77.1, 182.9)), "{runs:?}");
+        }
         assert!(pieces(&place, &solved, 1, WALK_LEFT | WALK_RIGHT).is_empty(), "a tag `separate` gives none");
         assert!(one(&pieces(&place, &solved, 2, WALK_LEFT), (0.0, 300.0)));
         assert!(pieces(&place, &solved, 2, WALK_RIGHT).is_empty());
@@ -500,26 +498,80 @@ mod tests {
     }
 
     #[test]
-    fn a_short_gap_closes_a_short_piece_goes_and_a_piece_runs_on_to_a_junction_near_it() {
+    fn a_short_gap_closes_a_short_piece_goes_and_a_piece_runs_on_to_a_junction_across_a_bed_near_it() {
         let place = engelberg();
+        let road = |corners: &[(f64, f64)]| way("residential", place.line(corners, Some(20.0)), plain);
         let features = [
-            way("residential", place.line(&[(0.0, 0.0), (500.0, 0.0)], Some(20.0)), plain),
-            way("residential", place.line(&[(0.0, 500.0), (300.0, 500.0)], Some(20.0)), plain),
-            way("residential", place.line(&[(0.0, 1000.0), (300.0, 1000.0), (400.0, 1000.0)], Some(20.0)), plain),
-            way("residential", place.line(&[(300.0, 1000.0), (300.0, 1100.0)], Some(20.0)), plain),
+            road(&[(0.0, 0.0), (500.0, 0.0)]),
+            road(&[(0.0, 500.0), (300.0, 500.0)]),
+            road(&[(0.0, 1000.0), (300.0, 1000.0), (400.0, 1000.0)]),
+            road(&[(300.0, 1000.0), (300.0, 1006.0), (300.0, 1100.0)]),
+            // A footway that leaves the side road 6 m from the junction: its bed lies on the main road's north
+            // sidewalk for its last 13 m.
+            way("footway", place.line(&[(300.0, 1006.0), (290.0, 1006.0)], Some(5.0)), plain),
         ];
-        // Two rows 30 m apart; a piece of 40 m from houses 30 m away; a piece that ends 12 m before a junction.
+        // Two rows 40 m apart: their pieces end 20 m apart, and the gap closes. Two houses: a piece of 30 m.
+        // A row that ends 10 m before the junction.
         let mut houses = row(100.0, 200.0, -15.0);
-        houses.extend(row(267.0, 367.0, -15.0));
-        houses.extend(row(100.0, 120.0, 470.0));
-        houses.extend(row(100.0, 270.0, 985.0));
+        houses.extend(row(240.0, 340.0, -15.0));
+        houses.extend([(150.0, 485.0), (160.0, 485.0)]);
+        houses.extend(row(100.0, 280.0, 985.0));
         let solved = solved(&place, &features, &houses, &place.terrain(|_, _| 1000.0));
-        let right = pieces(&place, &solved, 0, WALK_RIGHT);
-        assert!(one(&right, (81.6, 385.4)), "{right:?}");
-        assert!(pieces(&place, &solved, 1, WALK_RIGHT).is_empty());
-        assert!(solved.metrics.sidewalks.short_m > 35.0);
-        let right = pieces(&place, &solved, 2, WALK_RIGHT);
-        assert!(one(&right, (81.6, 300.0)), "{right:?}");
+        for bit in [WALK_LEFT, WALK_RIGHT] {
+            let runs = pieces(&place, &solved, 0, bit);
+            assert!(one(&runs, (90.0, 350.0)), "{runs:?}");
+            assert!(pieces(&place, &solved, 1, bit).is_empty());
+            let runs = pieces(&place, &solved, 2, bit);
+            assert!(one(&runs, (90.0, 300.0)), "{runs:?}");
+        }
+        assert!(solved.metrics.sidewalks.short_m > 55.0);
+        assert!(solved.metrics.sidewalks.bed_m > 2.0, "the footway's bed lies on the north sidewalk");
+    }
+
+    #[test]
+    fn a_tag_no_holds_against_the_gap_rule_and_the_run_on() {
+        let place = engelberg();
+        let road =
+            |corners: &[(f64, f64)], edit: fn(&mut Feature)| way("residential", place.line(corners, Some(20.0)), edit);
+        let no = |f: &mut Feature| f.sidewalks = [Some(false); 2];
+        let features = [
+            road(&[(0.0, 0.0), (220.0, 0.0)], plain),
+            road(&[(220.0, 0.0), (230.0, 0.0)], no),
+            road(&[(230.0, 0.0), (500.0, 0.0)], plain),
+            road(&[(0.0, 1000.0), (295.0, 1000.0)], plain),
+            road(&[(295.0, 1000.0), (300.0, 1000.0)], no),
+            road(&[(300.0, 1000.0), (400.0, 1000.0)], plain),
+            road(&[(300.0, 1000.0), (300.0, 1100.0)], plain),
+        ];
+        // The gap of 20 m between the two rows' pieces holds a part tagged `no`; the piece that ends 10 m before
+        // the junction has a part tagged `no` before it.
+        let mut houses = row(100.0, 200.0, -15.0);
+        houses.extend(row(240.0, 340.0, -15.0));
+        houses.extend(row(100.0, 280.0, 985.0));
+        let solved = solved(&place, &features, &houses, &place.terrain(|_, _| 1000.0));
+        for bit in [WALK_LEFT, WALK_RIGHT] {
+            assert!(one(&pieces(&place, &solved, 0, bit), (90.0, 210.0)), "{:?}", pieces(&place, &solved, 0, bit));
+            assert!(pieces(&place, &solved, 1, bit).is_empty());
+            assert!(one(&pieces(&place, &solved, 2, bit), (230.0, 350.0)), "{:?}", pieces(&place, &solved, 2, bit));
+            assert!(one(&pieces(&place, &solved, 3, bit), (90.0, 290.0)), "{:?}", pieces(&place, &solved, 3, bit));
+            assert!(pieces(&place, &solved, 4, bit).is_empty());
+        }
+    }
+
+    #[test]
+    fn a_sidewalk_that_leaves_a_junction_and_stops_within_15_m_goes() {
+        let place = engelberg();
+        let road =
+            |corners: &[(f64, f64)], edit: fn(&mut Feature)| way("residential", place.line(corners, Some(10.0)), edit);
+        let features = [
+            road(&[(0.0, 0.0), (300.0, 0.0)], |f| f.sidewalks = [Some(true); 2]),
+            road(&[(150.0, 0.0), (150.0, 10.0)], |f| f.sidewalks = [Some(true); 2]),
+            road(&[(150.0, 10.0), (150.0, 100.0)], |f| f.sidewalks = [Some(false); 2]),
+        ];
+        let solved = solved(&place, &features, &[], &place.terrain(|_, _| 1000.0));
+        let walks = |f: usize| solved.ways[f][0].as_ref().unwrap().plan.iter().map(|p| p.walk).max().unwrap();
+        assert_eq!(walks(0), WALK_LEFT | WALK_RIGHT);
+        assert_eq!((walks(1), walks(2)), (0, 0));
     }
 
     #[test]
@@ -589,23 +641,5 @@ mod tests {
         };
         assert_eq!(walks(1), BTreeSet::from([WALK_LEFT]));
         assert_eq!(walks(0), BTreeSet::from([0]));
-    }
-
-    #[test]
-    fn a_steep_side_has_no_sidewalk_unless_a_tag_puts_one_there() {
-        let place = engelberg();
-        // South of each road the ground climbs 1 in 1 from 4 m past its middle.
-        let steep = place.terrain(|_, n| 1000.0 + (-(n - 500.0 * (n / 500.0).round()) - 4.0).max(0.0));
-        let tagged = |f: &mut Feature| f.sidewalks = [None, Some(true)];
-        let features = [
-            way("residential", place.line(&[(0.0, 0.0), (300.0, 0.0)], Some(20.0)), plain),
-            way("residential", place.line(&[(0.0, 500.0), (300.0, 500.0)], Some(20.0)), tagged),
-        ];
-        let houses: Vec<(f64, f64)> = [-20.0, 20.0, 480.0, 520.0].iter().flat_map(|&n| row(0.0, 300.0, n)).collect();
-        let solved = solved(&place, &features, &houses, &steep);
-        assert!(one(&pieces(&place, &solved, 0, WALK_LEFT), (0.0, 300.0)));
-        assert!(pieces(&place, &solved, 0, WALK_RIGHT).is_empty());
-        assert!((solved.metrics.sidewalks.steep_m - 300.0).abs() < 1.0);
-        assert!(one(&pieces(&place, &solved, 1, WALK_RIGHT), (0.0, 300.0)));
     }
 }
