@@ -1,6 +1,6 @@
 # Product
 
-OpenBikeComputer is an open-source GPS computer for bikepacking: a device on the handlebar, a companion app for iOS, and a route planner in the browser. [`README.md`](README.md) has the goals and the state of the project.
+OpenBikeComputer is an open-source GPS computer for bikepacking: a device on the handlebar, a companion app for iOS, and a route planner in the browser.
 
 ## Platform
 
