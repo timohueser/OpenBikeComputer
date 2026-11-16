@@ -40,6 +40,8 @@ pub enum Surface {
     DeckEdge = 12,
     /// The ground over a bore behind its portal lines, over its floor bound (`faces::bore_cover`).
     Cover = 13,
+    /// A sidewalk's slab (`faces::walk`): its way's surface raised by the kerb's rise.
+    Sidewalk = 14,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

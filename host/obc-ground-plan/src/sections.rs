@@ -477,6 +477,7 @@ impl WaySection<'_> {
 pub struct ClassFaces<'a> {
     pub group: &'a str,
     pub shoulder_m: f64,
+    pub sidewalk_m: f64,
     pub reach_m: f64,
     pub verge_m: f64,
     pub return_grade: f64,
@@ -888,6 +889,7 @@ impl Sections {
         self.classes.get(rank).map(|row| ClassFaces {
             group: &row.group,
             shoulder_m: self.widths.classes[rank].1.shoulder_m,
+            sidewalk_m: self.widths.classes[rank].1.sidewalk_m,
             reach_m: row.reach_m,
             verge_m: row.face[1],
             return_grade: row.face[2],

@@ -12,7 +12,7 @@ use super::{WayLine, LAYERS};
 
 /// A fan's straight sides lie this many units inside the carriageway or the band it joins, so its
 /// arc crosses their edge at an angle and no sliver is left between two edges that run together.
-const INSET: f64 = 3.0;
+pub(super) const INSET: f64 = 3.0;
 
 /// The sides of a round at a corner of the paved outline run this many units inside the paved side:
 /// closer, they would run along its edges within the overlay's snap, and the slice splits such
@@ -69,6 +69,18 @@ pub struct Arm {
     pub dir: i8,
 }
 
+/// A pair of neighbouring arms (a turning counter-clockwise to b through their sector, at a way's own turn the inner
+/// side), the radius of their kerb's round and of their corner (units), and how far a round may cut into the arms'
+/// strokes. The round of the corner radius sizes the point: its region's seams lie past its feet, also where the
+/// kerb's round is smaller and shapes the paving inside it.
+#[derive(Clone, Copy, Debug)]
+pub struct Pair {
+    pub arms: [usize; 2],
+    pub kerb: f64,
+    pub corner: f64,
+    pub tol: f64,
+}
+
 pub struct Rounded {
     /// One fan per round: the arms' centre lines to the feet, the round's arc between.
     pub fans: Vec<Vec<P>>,
@@ -84,6 +96,10 @@ pub struct Rounded {
     pub seams: Vec<Option<[P; 2]>>,
     /// The circle of each round.
     pub circles: Vec<Circle>,
+    /// The circle of each pair's corner round where it is larger than the kerb's round.
+    pub corners: Vec<Circle>,
+    /// The rounds tangent to both facing edges of their pair.
+    pub two_foot: Vec<TwoFoot>,
     /// Per arm, its run and the station of the farthest foot of a round or crossing of facing edges.
     runs: Vec<Vec<RunPoint>>,
     pub far: Vec<f64>,
@@ -93,7 +109,8 @@ pub struct Rounded {
 /// it joins: the ends of its arc), and its arc's points at the global directions strictly between
 /// the feet, as its fan has them. A sharp corner is a circle of radius 0 with the corner as its
 /// centre, its feet and its arc. Per foot, the line of that edge (`usize::MAX` for none): the heights
-/// relate a fan's two arms so.
+/// relate a fan's two arms so, out to their feather past the centre and radius of its pair's corner round
+/// (`corner`), its own where it is that round.
 #[derive(Clone, Debug)]
 pub struct Circle {
     pub centre: P,
@@ -101,6 +118,7 @@ pub struct Circle {
     pub feet: [P; 2],
     pub arc: Vec<P>,
     pub lines: [usize; 2],
+    pub corner: (P, f64),
 }
 
 impl Circle {
@@ -109,17 +127,33 @@ impl Circle {
     fn new(abs: &dyn Fn([f64; 2]) -> P, c: [f64; 2], rho: f64, a0: f64, sweep: f64) -> Self {
         let at = |a: f64| abs([c[0] + rho * libm::cos(a), c[1] + rho * libm::sin(a)]);
         let arc = arc(c, rho, a0, sweep).into_iter().map(abs).collect();
-        Circle { centre: abs(c), radius: rho, feet: [at(a0), at(a0 + sweep)], arc, lines: [usize::MAX; 2] }
+        let (centre, lines) = (abs(c), [usize::MAX; 2]);
+        Circle { centre, radius: rho, feet: [at(a0), at(a0 + sweep)], arc, lines, corner: (centre, rho) }
     }
 
     fn sharp(k: P) -> Self {
-        Circle { centre: k, radius: 0.0, feet: [k, k], arc: vec![k], lines: [usize::MAX; 2] }
+        Circle { centre: k, radius: 0.0, feet: [k, k], arc: vec![k], lines: [usize::MAX; 2], corner: (k, 0.0) }
     }
 
-    /// The circle with the line at each foot.
-    fn at_edges(self, lines: [usize; 2]) -> Self {
-        Circle { lines, ..self }
+    /// The circle with the line at each foot, in its pair's corner round if one is given.
+    fn at_edges(self, lines: [usize; 2], corner: Option<&Circle>) -> Self {
+        let corner = corner.map_or(self.corner, |c| (c.centre, c.radius));
+        Circle { lines, corner, ..self }
     }
+}
+
+/// A round tangent to both facing edges of a pair: the pair's place in the list `round` takes, its arms (a turning counter-clockwise to b), each foot's fractional vertex index on its arm's line (`line.p`),
+/// its centre relative to the point and radius (units), and its arc's start angle at a's foot and signed sweep to b's
+/// foot.
+#[derive(Clone, Copy, Debug)]
+pub struct TwoFoot {
+    pub pair: usize,
+    pub arms: [usize; 2],
+    pub x: [f64; 2],
+    pub c: [f64; 2],
+    pub rho: f64,
+    pub a0: f64,
+    pub sweep: f64,
 }
 
 /// A part of a line in a point's region, between fractional sample indices `lo` and `hi`, and the
@@ -383,7 +417,7 @@ fn edge(run: &[RunPoint], side: f64, extra: f64) -> Vec<[[f64; 2]; 2]> {
 }
 
 /// The crossing of segments ab and cd as fractions (t on ab, u on cd).
-fn crossing(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> Option<(f64, f64)> {
+pub(super) fn crossing(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> Option<(f64, f64)> {
     let (r, s) = ([b[0] - a[0], b[1] - a[1]], [d[0] - c[0], d[1] - c[1]]);
     let den = r[0] * s[1] - r[1] * s[0];
     if den == 0.0 {
@@ -645,7 +679,7 @@ fn arc(c: [f64; 2], rho: f64, a0: f64, sweep: f64) -> Vec<[f64; 2]> {
 }
 
 /// The global directions strictly between angle a0 and a0 + sweep, in order from a0.
-fn arc_angles(a0: f64, sweep: f64) -> Vec<f64> {
+pub(super) fn arc_angles(a0: f64, sweep: f64) -> Vec<f64> {
     let step = 2.0 * std::f64::consts::PI / f64::from(STEPS);
     let mut out = Vec::new();
     let a1 = a0 + sweep;
@@ -803,18 +837,15 @@ pub fn cuts(lines: &[WayLine], arms: &[Arm]) -> Vec<f64> {
     all
 }
 
-/// The rounding of a point at `pos` with its arms, the arm length `len` (units) and the pairs (a, b,
-/// r, tol) of neighbouring arms, a turning counter-clockwise to b through their sector (at a way's
-/// own turn, the inner side), with the radius and how far the round may cut into the arms' strokes.
-/// With `gaps`, a fill between square ends of arms that open by half a turn or more (junctions and
-/// joints).
-#[allow(clippy::too_many_arguments)]
+/// The rounding of a point at `pos` with its arms, the arm length `len` (units) and the pairs of
+/// neighbouring arms. With `gaps`, a fill between square ends of arms that open by half a turn or more
+/// (junctions and joints).
 pub fn round(
     lines: &[WayLine],
     stops: &[Vec<usize>],
     pos: P,
     arms: &[Arm],
-    pairs: &[(usize, usize, f64, f64)],
+    pairs: &[Pair],
     len: f64,
     gaps: bool,
 ) -> Rounded {
@@ -832,6 +863,8 @@ pub fn round(
         spans: Vec::new(),
         seams: vec![None; arms.len()],
         circles: Vec::new(),
+        corners: Vec::new(),
+        two_foot: Vec::new(),
         runs: Vec::new(),
         far: vec![0.0; arms.len()],
     };
@@ -863,7 +896,7 @@ pub fn round(
         fills.iter().all(|f| to_ring(f, c).d >= rho - 1.0) && off_lines(lines, water, pos, &own, c, rho)
     };
     let (tau, step) = (2.0 * std::f64::consts::PI, 2.0 * std::f64::consts::PI / f64::from(STEPS));
-    for &(i, j, r, tol) in pairs {
+    for (pair, &Pair { arms: [i, j], kerb: r, corner: r_corner, tol }) in pairs.iter().enumerate() {
         // a turns counter-clockwise to b through the pair's sector: as given at a junction or a
         // joint, the inner side at a way's own turn.
         let (a, b) =
@@ -898,6 +931,32 @@ pub fn round(
                 .map(|(c, fa, fb)| Fit::Edges(c, fa, fb)),
             None => leaves(rho).map(Fit::Leaves),
         };
+        // A kerb's round smaller than the corner's lies inside the corner round's place, and the point reaches past
+        // the corner round's feet.
+        let corners = out.corners.len();
+        if r_corner > r {
+            match ladder(r_corner).find_map(|rho| fit(rho).map(|f| (rho, f))) {
+                Some((rho, Fit::Edges(c, fa, fb))) => {
+                    let (a0, sweep) = facing(c, &fa, &fb);
+                    if sweep.abs() >= step {
+                        far[a] = far[a].max(fa.s);
+                        far[b] = far[b].max(fb.s);
+                        out.corners.push(Circle::new(&abs, c, rho, a0, sweep));
+                    }
+                }
+                Some((rho, Fit::Leaves(l))) => {
+                    if let Some((_, a0, sweep)) = leave_fan(&runs, &l, rho) {
+                        far[l.k] = far[l.k].max(l.foot.s);
+                        if let Some((j, s)) = l.touch.arm {
+                            far[j] = far[j].max(s);
+                        }
+                        out.corners.push(Circle::new(&abs, l.c, rho, a0, sweep));
+                    }
+                }
+                None => {}
+            }
+        }
+        let zone = out.corners.get(corners).cloned();
         let Some((rho, fit)) = ladder(r).find_map(|rho| fit(rho).map(|f| (rho, f))) else { continue };
         let (c, fa, fb) = match fit {
             Fit::Edges(c, fa, fb) => (c, fa, fb),
@@ -908,7 +967,7 @@ pub fn round(
                         far[j] = far[j].max(s);
                     }
                     let lines = [arms[l.k].line, l.touch.arm.map_or(usize::MAX, |(j, _)| arms[j].line)];
-                    out.circles.push(Circle::new(&abs, l.c, rho, a0, sweep).at_edges(lines));
+                    out.circles.push(Circle::new(&abs, l.c, rho, a0, sweep).at_edges(lines, zone.as_ref()));
                     push_positive(fan.iter().map(|&q| abs(q)).collect(), &mut out.fans);
                 }
                 continue;
@@ -923,7 +982,9 @@ pub fn round(
         }
         far[a] = far[a].max(fa.s);
         far[b] = far[b].max(fb.s);
-        out.circles.push(Circle::new(&abs, c, rho, a0, sweep).at_edges([arms[a].line, arms[b].line]));
+        out.circles.push(Circle::new(&abs, c, rho, a0, sweep).at_edges([arms[a].line, arms[b].line], zone.as_ref()));
+        let x = [place(&runs[a], fa.s), place(&runs[b], fb.s)];
+        out.two_foot.push(TwoFoot { pair, arms: [a, b], x, c, rho, a0, sweep });
         let side_a = up_to(&runs[a], fa.s);
         let side_b = up_to(&runs[b], fb.s);
         let mut fan: Vec<[f64; 2]> = side_a.clone();
@@ -1062,7 +1123,7 @@ pub fn corner_round(
     Some(super::outline::Fill {
         ring: rings.pop()?,
         bands: band.map(|ring| ring.map(abs_ring).unwrap_or_default()),
-        circle: Circle::new(&abs, c, rho, a0, sweep).at_edges([&fa, &fb].map(|f| edge(at(f.at)).0)),
+        circle: Circle::new(&abs, c, rho, a0, sweep).at_edges([&fa, &fb].map(|f| edge(at(f.at)).0), None),
         inside: [
             2 * i64::from(v[0]) + libm::round(2.0 * inside[0]) as i64,
             2 * i64::from(v[1]) + libm::round(2.0 * inside[1]) as i64,

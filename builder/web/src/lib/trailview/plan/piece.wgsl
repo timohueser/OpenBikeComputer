@@ -102,6 +102,11 @@ fn on_water(k: u32) -> bool {
     return (piece[params.out + 4u * k + 1u] & MAT_BITS) == MAT_WATER;
 }
 
+// Whether corner k lies on a sidewalk's slab (MAT_SIDEWALK of corners.wgsl): a step beside it is its kerb.
+fn on_sidewalk(k: u32) -> bool {
+    return (piece[params.out + 4u * k + 1u] & MAT_BITS) == MAT_SIDEWALK;
+}
+
 // A corner's metres across and half-width, and its metres along, from its look and place words.
 struct CornerPlace {
     road: vec2f,
@@ -181,11 +186,14 @@ fn slot_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
     let left = normalize(vec2f(-along.y, along.x) + vec2f(1e-9, 0.0));
     // An end face (the mesh's last slots, on a deck end line) is plain concrete at any height. A step whose upper
     // side is water falls as water (its look foams on the upright slot). A step beside a wall class's road surface
-    // that stands as high as a wall is a wall, of concrete beside a bridge's ground stretch; any other is a bank of
-    // the ground, as on a path or a track.
+    // that stands as high as a wall is a wall, of concrete beside a bridge's ground stretch; a lower one beside a
+    // sidewalk is its kerb; any other is a bank of the ground, as on a path or a track.
     let upper = select(vec2u(piece[w + 2u], piece[w + 3u]), vec2u(piece[w], piece[w + 1u]), rise > 0.0);
     let wall = (on_road(piece[w]) || on_road(piece[w + 3u])) && max(abs(dp), abs(dq)) >= WALL_STEP_M;
     var mat = select(MAT_GROUND, select(MAT_WALL, MAT_CAP, on_bridge(piece[w]) || on_bridge(piece[w + 3u])), wall);
+    if (!wall && (on_sidewalk(piece[w]) || on_sidewalk(piece[w + 3u]))) {
+        mat = MAT_KERB;
+    }
     if (on_water(upper.x) || on_water(upper.y)) {
         mat = MAT_WATER;
     }

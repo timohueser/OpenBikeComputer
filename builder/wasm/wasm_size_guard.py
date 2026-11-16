@@ -21,9 +21,10 @@ from pathlib import Path
 # and its culverts with their mouths, the classifier's ford rule, and the storeys over the ground with their open
 # junction ends, their ends on the stubs' points, what each deck is made of, the junctions that lie on the
 # ground, a building passage of an older bake on the ground, and the plumbing of the storey under the ground (the
-# crate's feature `storeys` on and `bores` off, the crate at one codegen unit in the release profile, stable 1.100.0).
+# crate's feature `storeys` on and `bores` off, the crate at one codegen unit in the release profile, stable 1.100.0),
+# and the sidewalks' slabs with their ends, rings and kerbs.
 # The owner allows about 60 kB of code growth for the crossing block, stated in its pull request and recorded here.
-GROUND_PLAN_MEASURED = {"gzipped": 742_186, "raw_wasm": 1_907_147}
+GROUND_PLAN_MEASURED = {"gzipped": 787_435, "raw_wasm": 2_024_230}
 # The owner's margin: compiler and dependency updates move the size by a few kilobytes and must not fail
 # unrelated pull requests; real growth past the margin still fails. Raw gets the same fraction as gzipped.
 # A pull request that changes the bridge's code records its own CI size here; the margin is only for toolchain
