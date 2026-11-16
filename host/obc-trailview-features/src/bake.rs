@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use obc_ground_plan::sections::{is_track, leading_number, water_width_m, WidthRules};
+use rstar::primitives::Rectangle;
 use serde_json::{json, Map, Value};
 
 use crate::gate::{Census, GATE_M};
@@ -209,12 +210,15 @@ pub fn bake(
                    "housed_ends": lift_metrics.housed_ends, "shared_ends": lift_metrics.shared_ends}),
         );
     }
-    // The sidewalks count the buildings near a road by their middles.
-    let middles = buildings.iter().map(|ring| {
-        let (sx, sy) = ring.iter().fold((0.0, 0.0), |(x, y), p| (x + p[0], y + p[1]));
-        [sx / ring.len() as f64, sy / ring.len() as f64]
+    // The sidewalks count the buildings near a road by the boxes of their outer rings: a large building's
+    // middle lies far from the street that it lines.
+    let boxes = buildings.iter().map(|ring| {
+        let (lo, hi) = ring.iter().fold(([f64::MAX; 2], [f64::MIN; 2]), |(lo, hi), p| {
+            ([lo[0].min(p[0]), lo[1].min(p[1])], [hi[0].max(p[0]), hi[1].max(p[1])])
+        });
+        Rectangle::from_corners(lo, hi)
     });
-    let mut around = Surroundings { buildings: rstar::RTree::bulk_load(middles.collect()), ..Default::default() };
+    let mut around = Surroundings { buildings: rstar::RTree::bulk_load(boxes.collect()), ..Default::default() };
     drop(buildings);
     eprintln!("placed: {:.1} s", started.elapsed().as_secs_f64());
 
@@ -724,8 +728,8 @@ fn road_metrics(m: &roads::Metrics) -> Map<String, Value> {
         "covers_capped": m.covers_capped, "covers_untagged_capped": m.covers_untagged_capped,
         "cover_lift_top_m": round(m.cover_lift_top_m, 2),
         "sidewalk_tagged_m": m.sidewalks.tagged_m.round(), "sidewalk_built_m": m.sidewalks.built_m.round(),
-        "sidewalk_steep_m": m.sidewalks.steep_m.round(), "sidewalk_bend_m": m.sidewalks.bend_m.round(),
-        "sidewalk_bed_m": m.sidewalks.bed_m.round(), "sidewalk_short_m": m.sidewalks.short_m.round(),
+        "sidewalk_bend_m": m.sidewalks.bend_m.round(), "sidewalk_bed_m": m.sidewalks.bed_m.round(),
+        "sidewalk_short_m": m.sidewalks.short_m.round(),
     });
     value.as_object().unwrap().clone()
 }
