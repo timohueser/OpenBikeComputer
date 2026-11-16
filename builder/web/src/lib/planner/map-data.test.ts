@@ -13,7 +13,7 @@ describe('planner config', () => {
     it('gives the planner map the basemap, assets, terrain and coverage of one release', async () => {
         const { mapStyle } = await import('./map-style');
         for (const theme of ['light', 'dark'] as const) {
-            const style = mapStyle(theme, testConfig, 'dem://tiles', 'contours://tiles');
+            const style = mapStyle(theme, testConfig, { dem: 'dem://tiles', contours: 'contours://tiles' });
             expect(validateStyleMin(style)).toEqual([]);
             expect(style.sources.basemap).toHaveProperty('url', testConfig.basemap);
             expect((style.sources.basemap as { attribution: string }).attribution).toContain(testConfig.attribution);
@@ -37,6 +37,18 @@ describe('planner config', () => {
             expect(style.layers.some((layer) => layer.type === 'background')).toBe(true);
             expect(style.layers.every((layer) => !('source' in layer) || layer.source === 'basemap')).toBe(true);
         }
+    });
+
+    it('gives the basemap the hill shading, and the contour lines only when asked', async () => {
+        const { basemapStyle } = await import('./map-style');
+        const shaded = basemapStyle('light', testConfig, { dem: 'dem://tiles' });
+        const contoured = basemapStyle('light', testConfig, { dem: 'dem://tiles', contours: 'contours://tiles' });
+        for (const style of [shaded, contoured]) expect(validateStyleMin(style)).toEqual([]);
+        expect(Object.keys(shaded.sources)).toEqual(['basemap', 'terrain']);
+        // A page map shows the long credit of the terrain behind its own button, not in the line of the base map.
+        expect(contoured.sources.terrain).not.toHaveProperty('attribution');
+        expect(shaded.layers.filter(layer => 'source' in layer && layer.source !== 'basemap').map(layer => layer.id)).toEqual(['relief']);
+        expect(contoured.layers.filter(layer => 'source' in layer && layer.source !== 'basemap').map(layer => layer.id)).toEqual(['relief', 'contour-lines', 'contour-labels']);
     });
 
     it('refuses a config without a field that the planner reads', () => {
