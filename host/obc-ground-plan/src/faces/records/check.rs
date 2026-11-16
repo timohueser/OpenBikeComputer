@@ -614,7 +614,8 @@ pub fn outline_border(a: (&[u32], CellKey), b: (&[u32], CellKey)) -> (u64, [Vec<
 }
 
 /// The outline ends of a block that hold a turn but not exactly one edge of their host going on there with
-/// the same paved height bits: there the fan's far ray would be a step.
+/// the same paved height bits: there the fan's far ray would be a step. An end that turns back (a lower face meets
+/// it) covers no fan.
 pub fn outline_turns(words: &[u32]) -> Vec<String> {
     let edges = super::outline_words(words).as_chunks::<{ super::EDGE }>().0;
     let mut heights: BTreeMap<(super::P, u32, bool), Vec<u32>> = BTreeMap::new();
@@ -623,13 +624,13 @@ pub fn outline_turns(words: &[u32]) -> Vec<String> {
         heights.entry((a, super::edge_line(e), true)).or_default().push(e[4]);
         heights.entry((b, super::edge_line(e), false)).or_default().push(e[5]);
     }
-    let none = u32::from(i16::MIN as u16);
+    let (none, back) = (u32::from(i16::MIN as u16), u32::from(-(super::TURN_STEPS as i16) as u16));
     let mut out = Vec::new();
     for e in edges {
         let (a, b) = super::edge_ends(e);
         for (p, h, turn, next_a) in [(a, e[4], e[9] & 0xffff, false), (b, e[5], e[8] >> 16, true)] {
             let goes_on = heights.get(&(p, super::edge_line(e), next_a));
-            if turn != none && goes_on.map(Vec::as_slice) != Some(&[h][..]) {
+            if turn != none && turn != back && goes_on.map(Vec::as_slice) != Some(&[h][..]) {
                 out.push(format!(
                     "end {p:?} of line {}: a turn, the edges going on hold {goes_on:?}",
                     super::edge_line(e)

@@ -485,11 +485,12 @@ fn outline_edges<'a>(
     };
     // Whole-unit middles, the same in every cell.
     let mid = |p: P, q: P| [(p[0] + q[0]).div_euclid(2), (p[1] + q[1]).div_euclid(2)];
-    // The rims' edges with a height at both ends: ends, host, paved heights.
-    let mut edges: Vec<(P, P, u32, [f64; 2])> = Vec::with_capacity(rims.len());
+    // The rims' edges with a height at both ends: ends, host, paved heights, whether its face is a slab.
+    let mut edges: Vec<(P, P, u32, [f64; 2], bool)> = Vec::with_capacity(rims.len());
     let cell = f64::from(CELL_UNITS as i32);
     for &(a, b, id) in rims.iter().filter(|(a, b, _)| a != b) {
         let material = label(words, id)[2];
+        let slab = label(words, id)[0] & 0xff == Surface::Sidewalk as u32;
         let cuts = bin_cuts(a, b);
         for (&r0, &r1) in cuts.iter().zip(&cuts[1..]) {
             // The middle is the first point that the split reads.
@@ -534,7 +535,7 @@ fn outline_edges<'a>(
             for w in pieces.windows(2) {
                 if let ((p, Some(hp)), (q, Some(hq))) = (w[0], w[1]) {
                     if p != q {
-                        edges.push((p, q, host, [hp.h, hq.h]));
+                        edges.push((p, q, host, [hp.h, hq.h], slab));
                     }
                 }
             }
@@ -543,26 +544,36 @@ fn outline_edges<'a>(
     // Each end's turn to the one edge of the same host that goes on from it (a cut, a split or the rim's
     // corner) with the same paved height bits there: the angle between the two edges' integer directions, so
     // two cells that hold both give it alike. Where two faces of one host meet with two heights, the end has
-    // none: a fan's far ray would be a step there, and a free end's full cone is continuous.
+    // none: a fan's far ray would be a step there, and a free end's full cone is continuous. A slab's end where an
+    // edge of another face stands lower by a step (the kerb's end) turns back by half a turn: its cone covers no fan
+    // and falls on past the end as a rock face, so the kerb's rise stands over no lower face past its corner.
     let mut at: BTreeMap<(P, u32, bool), Vec<usize>> = BTreeMap::new();
     for (k, e) in edges.iter().enumerate() {
         at.entry((e.0, e.2, true)).or_default().push(k);
         at.entry((e.1, e.2, false)).or_default().push(k);
     }
+    // The edges of any host that start (their height 0) or end (their height 1) at x.
+    let lower = |k: usize, x: P, h: f64| {
+        let meet = at.range((x, 0, false)..=(x, u32::MAX, true));
+        let mut ends = meet.flat_map(|(key, v)| v.iter().map(move |&j| (j, usize::from(!key.2))));
+        edges[k].4 && ends.any(|(j, n)| j != k && edges[j].3[n] < h - heights::check::STEP_M)
+    };
     let dir = |k: usize| [f64::from(edges[k].1[0] - edges[k].0[0]), f64::from(edges[k].1[1] - edges[k].0[1])];
     let turn = |from: [f64; 2], to: [f64; 2]| {
         let t = libm::atan2(from[0] * to[1] - from[1] * to[0], from[0] * to[0] + from[1] * to[1]);
         u32::from(libm::round(t / PI * TURN_STEPS).clamp(-TURN_STEPS, TURN_STEPS) as i16 as u16)
     };
-    let none = u32::from(i16::MIN as u16);
+    let (none, back) = (u32::from(i16::MIN as u16), u32::from(-(TURN_STEPS as i16) as u16));
     let mut out = Vec::with_capacity(EDGE * edges.len());
-    for (k, &(p, q, host, h)) in edges.iter().enumerate() {
+    for (k, &(p, q, host, h, _)) in edges.iter().enumerate() {
         let one = |key: (P, u32, bool), h: f64| {
             let there = |j: usize| edges[j].3[usize::from(!key.2)];
             at.get(&key).filter(|v| v.len() == 1).map(|v| v[0]).filter(|&j| f(there(j)) == f(h))
         };
-        let turn_a = one((p, host, false), h[0]).map_or(none, |j| turn(dir(j), dir(k)));
-        let turn_b = one((q, host, true), h[1]).map_or(none, |j| turn(dir(k), dir(j)));
+        let turn_a =
+            if lower(k, p, h[0]) { back } else { one((p, host, false), h[0]).map_or(none, |j| turn(dir(j), dir(k))) };
+        let turn_b =
+            if lower(k, q, h[1]) { back } else { one((q, host, true), h[1]).map_or(none, |j| turn(dir(k), dir(j))) };
         let go = f32w(words[words[6] as usize + LINE * host as usize + 6]) * (1.0 - rules.plan.heights.fade_share);
         let ([tp, gp], [tq, gq]) = (ground(p, host, go), ground(q, host, go));
         let grade = |g: f64| {
