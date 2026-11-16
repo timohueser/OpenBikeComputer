@@ -274,9 +274,7 @@ platforms = ["linux", "macos"]
 triggers = [
   "builder/web/tests/browser/ux-study/**",
   "builder/web/tests/browser/package.json",
-  # The task checks read the route record, the points of a plan and the food kinds of the search.
-  "builder/web/src/lib/library/records.ts",
-  "builder/web/src/lib/planner/editor.ts",
+  # The task checks import the food kinds of the search.
   "planner/search/place-kinds.json",
 ]
 
