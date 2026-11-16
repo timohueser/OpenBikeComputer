@@ -264,6 +264,15 @@ triggers = [
   "planner/search/query/contract.json",
 ]
 
+# The run loop of the UX study with a stand-in environment and participant: no browser, no model call.
+[[suite]]
+id = "web.ux-study"
+route = "ordinary"
+command = "npm run test:ux-study --prefix builder/web/tests/browser"
+jobs = ["web-browser"]
+platforms = ["linux", "macos"]
+triggers = ["builder/web/tests/browser/ux-study/**", "builder/web/tests/browser/package.json"]
+
 [[suite]]
 id = "web.data-page"
 route = "ordinary"

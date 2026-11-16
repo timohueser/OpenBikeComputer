@@ -1139,6 +1139,9 @@ jobs:
         run: test "$JOURNEY_OUTCOME" = success
       - name: Operator page at phone width
         run: npm run test:data --prefix builder/web/tests/browser
+      - name: UX study run loop
+        if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'web.ux-study')
+        run: npm run test:ux-study --prefix builder/web/tests/browser
       - name: TrailView smoke on SwiftShader
         if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'web.trailview-smoke')
         run: npm run test:trailview --prefix builder/web/tests/browser -- --grep-invert @gpu
