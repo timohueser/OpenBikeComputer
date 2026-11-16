@@ -121,10 +121,10 @@ fn m_outline_metres(block: u32, q: vec2i, mpu: f32) -> f32 {
     return m_on_arcs(block, k, vec2f(q), select(d, -d, wind != 0) * mpu, mpu);
 }
 
-// The metres from q, which lies outside the paved outline, to it, as m_outline_metres for such a point: the least
-// distance to the chords of the bin's first item, where it is the outline, moved onto its arcs; no winding. The arcs
-// only move it up, so a distance to the chords of `within` or more is returned as it is.
-fn m_outline_out(block: u32, q: vec2f, mpu: f32, within: f32) -> f32 {
+// The metres from q, which lies outside the paved outline, to it: the least distance to the chords of the bin's first
+// item, where it is the outline; no winding. The arcs that m_outline_metres reads are left out: a round's chords lie
+// within its sagitta of the arc, on the slab's side, and reading every disc per pixel costs the pieces' frame time.
+fn m_outline_out(block: u32, q: vec2f, mpu: f32) -> f32 {
     let head = m_bin_head(block, q);
     if (head == 0u || (mw(head + 1u) >> 16u) == 0u) {
         return M_FAR;
@@ -143,8 +143,5 @@ fn m_outline_out(block: u32, q: vec2f, mpu: f32, within: f32) -> f32 {
         }
         run += 1u + 2u * n;
     }
-    if (d * mpu >= within) {
-        return d * mpu;
-    }
-    return m_on_arcs(block, k, q, d * mpu, mpu);
+    return d * mpu;
 }
