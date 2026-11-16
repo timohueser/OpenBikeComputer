@@ -78,7 +78,7 @@ The first runs, from `builder/web/tests/browser`:
 3. Measure a sample: `node trailview/route-pictures.mjs render --gpu --sample 30`. It prints the
    seconds and the bytes of each cover, and the time, the size and the count of files of all routes.
 4. Render all routes in `.artifacts/route-pictures/`: `node trailview/route-pictures.mjs render --gpu`.
-   It writes `covers/<id>/<key>.webp` and `.json`, or `<key>.none` for a route with no view, and at
+   It writes `covers/<id>/<key>-0715-1000.webp` and `<key>.json`, or `<key>.none` for a route with no view, and at
    the end the set under `sets/<set>/`. Then upload: `node trailview/route-pictures.mjs upload`. It
    prints the set id. Approve the set id, then make the set live:
    `node trailview/route-pictures.mjs switch SET`.
@@ -103,8 +103,8 @@ For a new planner release, do steps 1 and 4: only the routes whose line changed 
   with its reason at the end, and exits with 1. The next run tries it again. After 5 failures in a
   row it renders a route with a cover again, and stops if that fails too: the host or the GPU is down.
   When a route fails on each run, leave it out: `upload --without ID,ID`.
-- `render` skips a route whose cover or `.none` mark exists for its key. A change of the light or
-  of the camera rule in the script changes `look` and so each key: all routes render again.
+- `render` skips a route whose cover or `.none` mark exists for its key. A change of the size or of
+  the camera rule in the script changes `look` and so each key: all routes render again.
 - `upload` takes the routes of the active production release, and refuses while one of them has no
   cover and no `.none` mark. It lists the covers in the bucket one time and sends only the missing
   ones, 16 at a time. After a 429 of the host it waits one minute, at most 5 times for a file.

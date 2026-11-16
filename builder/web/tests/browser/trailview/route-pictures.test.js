@@ -13,14 +13,16 @@ const CONFIG = JSON.parse(readFileSync(new URL('./fixture/config.json', import.m
 const [VALLEY] = JSON.parse(readFileSync(FIXTURE_ROUTES, 'utf8')).routes;
 const NO_VIEW = { ...VALLEY, id: 1002, cells: ['9-268-180'], line_udeg: [8450000, 46800000, 1000, 0] };
 const LONG = { id: 1003, kind: 'hiking', name: 'Long', cells: ['9-267-180'], stages: [1001] };
+/** The end of the name of the image of July, the one month of a set, at 10:00. */
+const IMAGE = '-0715-1000.webp';
 const RELEASE = { id: 'release-1', bounds: CONFIG.bounds, routes: 'https://tiles.test/releases/release-1/routes/tiles/{cell}.json' };
 
 /** The cover of VALLEY and the mark of NO_VIEW in `out`, with a few bytes as the image. */
 function rendered(out) {
-    const file = ext => join(out, 'covers', String(VALLEY.id), `${keyOf(VALLEY)}.${ext}`);
-    mkdirSync(dirname(file('webp')), { recursive: true });
-    writeFileSync(file('webp'), 'image');
-    writeFileSync(file('json'), JSON.stringify({ x: [], y: [], eye: [], credits: ['terrain'] }));
+    const file = end => join(out, 'covers', String(VALLEY.id), `${keyOf(VALLEY)}${end}`);
+    mkdirSync(dirname(file(IMAGE)), { recursive: true });
+    writeFileSync(file(IMAGE), 'image');
+    writeFileSync(file('.json'), JSON.stringify({ x: [], y: [], eye: [], credits: ['terrain'], camera: {} }));
     const none = join(out, 'covers', String(NO_VIEW.id), `${keyOf(NO_VIEW)}.none`);
     mkdirSync(dirname(none), { recursive: true });
     writeFileSync(none, '');
@@ -60,6 +62,13 @@ test('the grid cells of the fixture are the zoom 9 cells that its bounds overlap
     expect(gridCells([267 / 512 * 360 - 180, latitude(181) * (1 - 1e-15), 268 / 512 * 360 - 180, latitude(180) * (1 + 1e-15)])).toEqual(['9-267-180']);
 });
 
+test('the key of a cover comes from the look and the line, with no date: it changes with the line and not with the month', () => {
+    const hash = text => createHash('sha256').update(text).digest('hex').slice(0, 16);
+    expect(LOOK).toBe('1|960|640');
+    expect(keyOf(VALLEY)).toBe(hash(`1|960|640|${VALLEY.line_udeg.join(',')}`));
+    expect(keyOf({ ...VALLEY, line_udeg: [...VALLEY.line_udeg.slice(0, -1), -2000] })).not.toBe(keyOf(VALLEY));
+});
+
 test('a sample spreads over the routes, and takes each route when it asks for more', () => {
     const records = Array.from({ length: 59 }, (_, i) => i);
     expect(sampleOf(records, 30)).toEqual(Array.from({ length: 30 }, (_, i) => Math.floor(i * 59 / 30)));
@@ -83,9 +92,10 @@ test('after a 429 of the host a request waits and tries again, 5 times at most',
 
 test('the points file has the eye code of pack, and no place where pack has none', () => {
     const still = { x: Float32Array.of(1.04, -20.26, 970, 3, NaN, 7), y: Float32Array.of(2, 3, 4, 5, NaN, 8), distance: Float32Array.of(5, 10, 1000, 1e9, NaN, 123.4), visible: Uint8Array.of(1, 0, 1, 0, 0, 1) };
-    const points = pointsOf(still, ['terrain']);
+    const camera = { lat: 46.8, lon: 8.4, heading: 30, pitch: -54, height: 2960 };
+    const points = pointsOf(still, ['terrain'], { ...camera, mode: 'fly', date: '2026-07-15' });
     expect(points.eye).toEqual(Array.from(pack(still).eye));
-    expect(points).toEqual({ x: [1, -20.3, 970, 3, null, 7], y: [2, 3, 4, 5, null, 8], eye: points.eye, credits: ['terrain'] });
+    expect(points).toEqual({ x: [1, -20.3, 970, 3, null, 7], y: [2, 3, 4, 5, null, 8], eye: points.eye, credits: ['terrain'], camera });
 });
 
 test('render refuses a still page of another release than production', () => {
@@ -105,16 +115,16 @@ test('upload refuses a route with no cover and no mark, else sends the covers th
     fake.objects.set(`${cover}.json`, 'held');
     const set = await upload({ out, ...fake });
     // The manifest goes last, after the slower cell file.
-    expect(fake.puts.map(({ key }) => key)).toEqual([`${cover}.webp`, `route-pictures/sets/${set}/cells/9-267-180.json`, `route-pictures/sets/${set}/manifest.json`]);
+    expect(fake.puts.map(({ key }) => key)).toEqual([`${cover}${IMAGE}`, `route-pictures/sets/${set}/cells/9-267-180.json`, `route-pictures/sets/${set}/manifest.json`]);
     expect(fake.puts.every(({ args }) => args.includes('--immutable') && args.includes('public, max-age=31536000, immutable'))).toBe(true);
     expect(JSON.parse(fake.objects.get(`route-pictures/sets/${set}/cells/9-267-180.json`))).toEqual({ format: 1, routes: { 1001: keyOf(VALLEY) } });
-    expect(JSON.parse(fake.objects.get(`route-pictures/sets/${set}/manifest.json`))).toEqual({ format: 1, set, release: RELEASE.id, look: LOOK, width: 960, height: 640, covers: 1, credits: ['terrain'] });
+    expect(JSON.parse(fake.objects.get(`route-pictures/sets/${set}/manifest.json`))).toEqual({ format: 1, set, release: RELEASE.id, look: LOOK, months: { '07': '0715-1000' }, default_month: '07', width: 960, height: 640, covers: 1, credits: ['terrain'] });
 
     await switchTo(set, fake);
     expect(fake.puts.at(-1)).toMatchObject({ key: 'route-pictures/manifest.json', args: ['put', '--content-type', 'application/json', '--cache-control', 'public, max-age=60, must-revalidate'] });
     const puts = fake.puts.length;
-    fake.objects.delete(`${cover}.webp`);
-    await expect(switchTo(set, fake)).rejects.toThrow(`${cover}.webp`);
+    fake.objects.delete(`${cover}${IMAGE}`);
+    await expect(switchTo(set, fake)).rejects.toThrow(`${cover}${IMAGE}`);
     await expect(switchTo('0123456789abcdef', fake)).rejects.toThrow('The bucket has no route-pictures/sets/0123456789abcdef/manifest.json');
     expect(fake.puts.length).toBe(puts);
 });
@@ -126,16 +136,16 @@ test('render --fixture writes the cover of a route, its points, the cell file an
     test.skip(/no GPU for stills/.test(first.stderr), 'This browser renders stills in software only.');
     expect(first.code, first.stderr).toBeUndefined();
     const set = /Set ([0-9a-f]{16})/.exec(first.stdout)[1], manifest = JSON.parse(readFileSync(join(out, 'sets', set, 'manifest.json'), 'utf8'));
-    expect(manifest).toMatchObject({ format: 1, set, release: 'fixture', width: 960, height: 640, covers: 1 });
-    expect(manifest.look).toMatch(/^1\|\d\d-\d\d\|\d\d:\d\d\|960\|640$/);
+    expect(manifest).toMatchObject({ format: 1, set, release: 'fixture', look: LOOK, months: { '07': '0715-1000' }, default_month: '07', width: 960, height: 640, covers: 1 });
     expect(manifest.credits).toContain(CONFIG.terrain_attribution);
-    const key = createHash('sha256').update(`${manifest.look}|${VALLEY.line_udeg.join(',')}`).digest('hex').slice(0, 16);
+    const key = keyOf(VALLEY);
     expect(JSON.parse(readFileSync(join(out, 'sets', set, 'cells', '9-267-180.json'), 'utf8'))).toEqual({ format: 1, routes: { [VALLEY.id]: key } });
 
-    const image = join(out, 'covers', String(VALLEY.id), `${key}.webp`), written = statSync(image).mtimeMs;
+    const image = join(out, 'covers', String(VALLEY.id), `${key}${IMAGE}`), written = statSync(image).mtimeMs;
     expect(readFileSync(image).subarray(8, 12).toString()).toBe('WEBP');
     const points = JSON.parse(readFileSync(join(out, 'covers', String(VALLEY.id), `${key}.json`), 'utf8'));
     for (const axis of ['x', 'y', 'eye']) expect(points[axis]).toHaveLength(VALLEY.line_udeg.length / 2);
+    expect(Object.values(points.camera).every(Number.isFinite)).toBe(true);
     // The cover view holds the route, so each vertex has a place inside the image.
     points.x.forEach((x, i) => {
         expect(points.eye[i], `vertex ${i}`).toBeGreaterThan(0);

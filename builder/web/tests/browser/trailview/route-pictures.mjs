@@ -6,10 +6,10 @@
 //   node trailview/route-pictures.mjs upload [--out DIR] [--without ID,ID]
 //   node trailview/route-pictures.mjs switch SET
 //
-// render reads the catalog of the production release and writes <out>/covers/<id>/<key>.webp and
-// .json, or <key>.none for a route with no view. A route whose files exist is done. A route that
-// fails gets no file: render goes on, names it at the end and exits with 1. At the end it writes the
-// set of the covers in <out> under <out>/sets/<set>/. --sample N renders N routes spread over the
+// render reads the catalog of the production release and writes <out>/covers/<id>/<key>-<light>.webp
+// and <key>.json, or <key>.none for a route with no view. A route whose files exist is done. A route
+// that fails gets no file: render goes on, names it at the end and exits with 1. At the end it writes
+// the set of the covers in <out> under <out>/sets/<set>/. --sample N renders N routes spread over the
 // catalog and prints what all of them would take. --gpu draws on the machine's GPU, else SwiftShader
 // draws on the CPU, for minutes. --fixture reads fixture/routes.json and answers the tile hosts from
 // the fixture: build the page with `npm run pretest:trailview` first. upload --without leaves these
@@ -29,9 +29,13 @@ const OUT = new URL('../../../../../.artifacts/route-pictures', import.meta.url)
 export const FIXTURE_ROUTES = new URL('./fixture/routes.json', import.meta.url).pathname;
 export const PREFIX = 'route-pictures';
 const WIDTH = 960, HEIGHT = 640;
-/** The version of the camera rule, and the date and the time of the light: a change of one gives each line a new key. */
-const CAMERA = 1, DAY = '07-15', TIME = '10:00';
-export const LOOK = `${CAMERA}|${DAY}|${TIME}|${WIDTH}|${HEIGHT}`;
+/** The version of the camera rule: a change gives each line a new key. */
+const CAMERA = 1;
+export const LOOK = `${CAMERA}|${WIDTH}|${HEIGHT}`;
+/** The light `MMDD-HHMM` with which `coverView` chooses the camera of a cover, for each month of it. */
+const CAMERA_LIGHT = '0715-1000';
+/** The one month of the set, and the light of its images. */
+const MONTH = '07', LIGHT = '0715-1000';
 /** The code of `eye` (specs/route-pictures.md, `pack` in src/lib/covers/line.ts): 1 to 127 is NEAREST_M · 2^((c − 1) / STEPS) metres, plus VISIBLE. */
 const NEAREST_M = 10, STEPS = 8, VISIBLE = 128;
 /**
@@ -50,13 +54,21 @@ const CHECKED = 20;
 /** The key of the cover of a record. */
 export const keyOf = record => createHash('sha256').update(`${LOOK}|${record.line_udeg.join(',')}`).digest('hex').slice(0, 16);
 
+/** The ends of the names of a cover's files after its key: the points, the mark of no view, the image of the month. */
+const POINTS = '.json', NONE = '.none', IMAGE = `-${LIGHT}.webp`;
 const coverDir = (out, record) => join(out, 'covers', String(record.id));
-const coverFile = (out, record, ext) => join(coverDir(out, record), `${keyOf(record)}.${ext}`);
+const coverFile = (out, record, end) => join(coverDir(out, record), `${keyOf(record)}${end}`);
 
-/** 'cover' when the record's cover is in `out`, 'none' when it has no view, else undefined. The `.json` is written last. */
+/** 'cover' when the record's points and the image of the month are in `out`, 'none' when it has no view, else undefined. */
 function stateOf(out, record) {
-    if (existsSync(coverFile(out, record, 'json'))) return 'cover';
-    if (existsSync(coverFile(out, record, 'none'))) return 'none';
+    if (existsSync(coverFile(out, record, POINTS)) && existsSync(coverFile(out, record, IMAGE))) return 'cover';
+    if (existsSync(coverFile(out, record, NONE))) return 'none';
+}
+
+/** The sunny light of `MMDD-HHMM` in the year of the render. */
+function lightOf(light) {
+    const [, month, day, hour, minute] = /^(\d\d)(\d\d)-(\d\d)(\d\d)$/.exec(light);
+    return { date: `${new Date().getFullYear()}-${month}-${day}`, time: `${hour}:${minute}`, weather: 'sunny' };
 }
 
 /** Writes a file under a temporary name first, so that a killed run leaves no half file. */
@@ -143,10 +155,10 @@ export function placeKey(line) {
 }
 
 /** The points file of a cover from the points of a still: one decimal of a pixel, and `null` and eye 0 for a point with no place. */
-export function pointsOf({ x, y, distance, visible }, credits) {
+export function pointsOf({ x, y, distance, visible }, credits, { lat, lon, heading, pitch, height }) {
     const placed = i => [x[i], y[i], distance[i]].every(Number.isFinite), place = values => Array.from(values, (v, i) => (placed(i) ? Math.round(v * 10) / 10 : null));
     const eye = Array.from(distance, (d, i) => (placed(i) ? Math.min(127, 1 + Math.round(STEPS * Math.log2(Math.max(d, NEAREST_M) / NEAREST_M))) | (visible[i] ? VISIBLE : 0) : 0));
-    return { x: place(x), y: place(y), eye, credits };
+    return { x: place(x), y: place(y), eye, credits, camera: { lat, lon, heading, pitch, height } };
 }
 
 /** Throws unless the still page was built for the release whose routes render reads. */
@@ -154,13 +166,13 @@ export function checkRelease(page, release) {
     if (page !== release) throw new Error(`The still page has release ${page ?? 'none'}, not the production release ${release}: build it for production with \`npm run build:trailview --prefix ../..\`.`);
 }
 
-/** The cover of one line in the page: the view of `coverView`, then the still; `none` when no view holds the line. */
-const shoot = (page, job) => page.evaluate(async ({ line, when, width, height, timeoutMs }) => {
+/** The cover of one line in the page: the camera of `coverView` in the camera light, then the still in the light of the month; `none` when no view holds the line. */
+const shoot = (page, job) => page.evaluate(async ({ line, camera, light, width, height, timeoutMs }) => {
     const { coverView, still } = window.trailviewStill;
     try {
-        const view = await coverView(line, { width, height, ...when });
+        const view = await coverView(line, { width, height, ...camera });
         if (!view) return { none: true };
-        const { image, points, credits } = await still({ view, width, height, line }, { timeoutMs });
+        const { image, points, credits } = await still({ view: { ...view, ...light }, width, height, line }, { timeoutMs });
         if (image.type !== 'image/webp') return { failure: 'type', message: `the browser encoded ${image.type}, not WebP` };
         const url = await new Promise(resolve => {
             const reader = new FileReader();
@@ -168,7 +180,7 @@ const shoot = (page, job) => page.evaluate(async ({ line, when, width, height, t
             reader.readAsDataURL(image);
         });
         const arrays = Object.fromEntries(Object.entries(points).map(([key, values]) => [key, Array.from(values)]));
-        return { image: url.slice(url.indexOf(',') + 1), points: arrays, credits };
+        return { image: url.slice(url.indexOf(',') + 1), points: arrays, credits, view };
     } catch (error) {
         return { failure: error.name, message: error.message };
     }
@@ -208,11 +220,11 @@ export function writeSet(out, records, release) {
     for (const record of records) {
         if (stateOf(out, record) !== 'cover') continue;
         covers++;
-        readJson(coverFile(out, record, 'json')).credits.forEach(credit => credits.add(credit));
+        readJson(coverFile(out, record, POINTS)).credits.forEach(credit => credits.add(credit));
         for (const cell of record.cells) (cells[cell] ??= {})[record.id] = keyOf(record);
     }
     const ids = Object.keys(cells).sort(), files = ids.map(cell => `${JSON.stringify({ format: 1, routes: cells[cell] })}\n`);
-    const manifest = { format: 1, set: '', release, look: LOOK, width: WIDTH, height: HEIGHT, covers, credits: [...credits] };
+    const manifest = { format: 1, set: '', release, look: LOOK, months: { [MONTH]: LIGHT }, default_month: MONTH, width: WIDTH, height: HEIGHT, covers, credits: [...credits] };
     const hash = createHash('sha256');
     for (const file of files) hash.update(file);
     manifest.set = hash.update(JSON.stringify(manifest)).digest('hex').slice(0, 16);
@@ -233,7 +245,7 @@ export async function render({ out = OUT, sample, only, gpu = false, fixture = f
     // Neighbours render one after the other: their pages share the tiles in the HTTP cache and the bakes in the device cache of the context.
     const todo = chosen.filter(record => !stateOf(out, record)).map(record => [placeKey(lineOf(record)), record]).sort((a, b) => a[0] - b[0]).map(([, record]) => record);
     console.log(`${records.length} routes, ${chosen.length} chosen, ${todo.length} to render.`);
-    const when = { date: `${new Date().getFullYear()}-${DAY}`, time: TIME, weather: 'sunny' };
+    const camera = lightOf(CAMERA_LIGHT), light = lightOf(LIGHT);
     const { origin, close } = await serve();
     let current;
     const browser = {
@@ -251,7 +263,7 @@ export async function render({ out = OUT, sample, only, gpu = false, fixture = f
         const probe = await stillPage(await browser.get(), origin, options);
         if (!fixture) checkRelease(await probe.evaluate(() => window.trailviewStill.release), release);
         await probe.close();
-        const jobOf = record => ({ line: lineOf(record), when, width: WIDTH, height: HEIGHT, timeoutMs: gpu ? undefined : SOFTWARE_MS });
+        const jobOf = record => ({ line: lineOf(record), camera, light, width: WIDTH, height: HEIGHT, timeoutMs: gpu ? undefined : SOFTWARE_MS });
         let inARow = 0, known = records.find(record => stateOf(out, record) === 'cover');
         for (const record of todo) {
             const job = jobOf(record);
@@ -282,13 +294,13 @@ export async function render({ out = OUT, sample, only, gpu = false, fixture = f
             seconds += result.seconds;
             if (result.none) {
                 none++;
-                writeFileSync(coverFile(out, record, 'none'), '');
+                writeFileSync(coverFile(out, record, NONE), '');
                 console.log(`${record.id}: no view, ${result.seconds.toFixed(1)} s`);
                 continue;
             }
             const image = Buffer.from(result.image, 'base64');
-            writeWhole(coverFile(out, record, 'webp'), image);
-            writeWhole(coverFile(out, record, 'json'), JSON.stringify(pointsOf(result.points, result.credits)));
+            writeWhole(coverFile(out, record, IMAGE), image);
+            writeWhole(coverFile(out, record, POINTS), JSON.stringify(pointsOf(result.points, result.credits, result.view)));
             covers++;
             bytes += image.length;
             console.log(`${record.id}: ${result.seconds.toFixed(1)} s, ${Math.round(image.length / 1000)} kB`);
@@ -331,7 +343,7 @@ export async function upload({ out = OUT, without = [], r2 = obcR2, fetch = glob
     if (missing.length) throw new Error(`These routes of the production release ${release.id} have no cover and no mark of no view: ${missing.join(', ')}. Run render first, or leave them out with --without.`);
     const { set, cells } = writeSet(out, records, release.id), dir = join(out, 'sets', set);
     const covered = records.filter(record => stateOf(out, record) === 'cover'), held = await listed(r2, `${PREFIX}/covers`);
-    const filesOf = record => [['image/webp', 'webp'], ['application/json', 'json']].map(([type, ext]) => ({ type, file: coverFile(out, record, ext), key: `${PREFIX}/covers/${record.id}/${keyOf(record)}.${ext}` }));
+    const filesOf = record => [['image/webp', IMAGE], ['application/json', POINTS]].map(([type, end]) => ({ type, file: coverFile(out, record, end), key: `${PREFIX}/covers/${record.id}/${keyOf(record)}${end}` }));
     const files = covered.flatMap(filesOf), sent = files.filter(({ key }) => !held.has(key));
     console.log(`${sent.length} of ${files.length} cover files to send.`);
     await pool(sent, AT_ONCE, ({ type, file, key }) => put(r2, type, file, key, wait));
@@ -346,7 +358,7 @@ export async function upload({ out = OUT, without = [], r2 = obcR2, fetch = glob
 
 /**
  * Reads the cell files of an uploaded set from the bucket, checks with one list of the bucket that it
- * holds each cover that they name, then puts the manifest of the set at the live key. The bucket, not
+ * holds the points and the image of each month of the set of each cover that they name, then puts the manifest of the set at the live key. The bucket, not
  * the public host: the edge cache keeps a file for a year after it is deleted.
  */
 export async function switchTo(set, { r2 = obcR2 } = {}) {
@@ -356,13 +368,14 @@ export async function switchTo(set, { r2 = obcR2 } = {}) {
     const dir = mkdtempSync(join(tmpdir(), 'route-pictures-')), file = join(dir, 'manifest.json');
     try {
         await r2(['get', key, file]);
-        if (JSON.parse(readFileSync(file, 'utf8')).set !== set) throw new Error(`The manifest of set ${set} names another set.`);
+        const manifest = JSON.parse(readFileSync(file, 'utf8')), ends = [POINTS, ...Object.values(manifest.months).map(light => `-${light}.webp`)];
+        if (manifest.set !== set) throw new Error(`The manifest of set ${set} names another set.`);
         const cells = [...held].filter(name => name.startsWith(`${root}cells/`)), missing = new Set();
         await pool(cells, AT_ONCE, async cell => {
             const copy = join(dir, cell.slice(cell.lastIndexOf('/') + 1));
             await r2(['get', cell, copy]);
             for (const [id, cover] of Object.entries(JSON.parse(readFileSync(copy, 'utf8')).routes)) {
-                for (const ext of ['webp', 'json']) if (!held.has(`${PREFIX}/covers/${id}/${cover}.${ext}`)) missing.add(`${PREFIX}/covers/${id}/${cover}.${ext}`);
+                for (const name of ends.map(end => `${PREFIX}/covers/${id}/${cover}${end}`)) if (!held.has(name)) missing.add(name);
             }
         });
         if (missing.size) throw new Error(`The bucket does not hold each cover of set ${set}:\n${[...missing].sort().join('\n')}`);
