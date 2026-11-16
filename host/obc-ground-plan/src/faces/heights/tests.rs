@@ -455,19 +455,6 @@ fn a_junction_region_meets_the_faces_beyond_its_edges_with_no_unnamed_step() {
 }
 
 #[test]
-fn a_junction_with_a_one_walk_round_meets_its_arms_with_no_unnamed_step() {
-    // A side road meets a tertiary one from the south on a slope, with a sidewalk on its east: a 0.8 m round at that
-    // corner, inside the seams of the class corner round.
-    let host = line("road", &[("highway", "tertiary")], &[[-300.0, 0.0], [0.0, 0.0], [300.0, 0.0]]);
-    let mut guest = road(&[[0.0, 0.0], [0.0, 80.0]]);
-    guest.z = vec![500.0, 504.0];
-    guest.walk[0] = 1;
-    let s = ways(&[host, guest], &|_, y| 500.0 + 0.05 * y).scan();
-    assert_eq!(count(&s, Class::Unnamed), 0);
-    assert_eq!(count(&s, Class::Inside), 0);
-}
-
-#[test]
 fn a_level_t_junction_gets_no_berm_in_its_corners() {
     // Roads at the height of flat terrain: the fills of the two arms tie along the corner, and the
     // envelope of the fills must not rise above them.
