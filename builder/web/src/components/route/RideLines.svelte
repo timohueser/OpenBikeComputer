@@ -196,7 +196,8 @@
     /** The climb that a click selects: it is a little darker under the pointer. */
     const hovered = $derived(over ? climbAt(over.x, over.row) : -1);
 
-    /** A click on a climb in the elevation row, or Enter, selects the climb; any other click clears the part. */
+    /** With no part, a click on a climb in the elevation row, or Enter, selects the climb. Any other click, and each
+     * click while a part is selected, clears the part. */
     function click(x: number, row?: number | null) {
         const index = climbAt(x, row);
         onpart(index >= 0 ? [climbs[index].first, climbs[index].last] : null);
