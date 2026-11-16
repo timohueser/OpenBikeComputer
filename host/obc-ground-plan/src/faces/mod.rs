@@ -638,8 +638,8 @@ fn graph_points(
         let pairs = (0..pts.len())
             .map(|k| {
                 let (a, b) = (pts[k], pts[(k + 1) % pts.len()]);
-                let walks =
-                    u8::from(walk::walks(&lines[a.line], a, true)) + u8::from(walk::walks(&lines[b.line], b, false));
+                let walks = u8::from(walk::walks(ctx, &lines[a.line], a, true, true))
+                    + u8::from(walk::walks(ctx, &lines[b.line], b, false, true));
                 let corner = lines[a.line].sec.corner_radius_m.min(lines[b.line].sec.corner_radius_m);
                 let kerb = match walks {
                     2 => lines[a.line].sec.corner_radius_walk_m.min(lines[b.line].sec.corner_radius_walk_m),
