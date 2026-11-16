@@ -532,6 +532,24 @@ site *args:
     # *serving* directory and vanished the moment we left the repo root.
     _run python3 -m http.server "$port" --directory "$fe/dist/planner"
 
+# Builds the planner as `site` does, against the active planner release or VITE_PLANNER_CATALOG,
+# and runs a UX study of it (builder/web/tests/browser/ux-study/). The study calls the Anthropic
+# API with OBC_UX_API_KEY, which obc_init exports from obc.local.
+[doc("Run a UX study of the web planner. Args: [--task ID]")]
+[group('run')]
+ux *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    fe="$OBC_ROOT/builder/web"
+    [[ -n "${OBC_UX_API_KEY:-}" ]] || { _err "OBC_UX_API_KEY is not set"; exit 1; }
+    [[ -d "$fe/node_modules" ]] || ( cd "$fe" && _run npm ci )
+    # Small, and a stale install lacks the SDK of the study.
+    ( cd "$fe/tests/browser" && _run npm ci )
+    ( cd "$fe" && _run npm run build:wasm )
+    ( cd "$fe" && unset VITE_PLANNER_CONFIG VITE_FAKE_DEVICE && _run npm run build:planner )
+    _run npm run ux-study --prefix "$fe/tests/browser" -- "$@"
+
 # A scope is required: `obc test -p obc-pack` runs nextest and then the same scope's doctests;
 # `--lib` runs the library target alone and no doctests.
 # The plan selector runs the affected packages and suites and prints why:
