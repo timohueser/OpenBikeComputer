@@ -879,10 +879,13 @@
    "status": "draft",
    "depends_on": [],
    "test_depends_on": [
-    "repository-tooling"
+    "library",
+    "repository-tooling",
+    "route-planning",
+    "search"
    ],
    "violations": 0,
-   "lines": 1066,
+   "lines": 1095,
    "problems": []
   },
   {

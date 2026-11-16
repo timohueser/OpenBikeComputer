@@ -7,7 +7,10 @@ owns:
   - builder/web/tests/browser/ux-study/**
 depends_on: []
 test_depends_on:
+  - library
   - repository-tooling
+  - route-planning
+  - search
 status: draft
 ---
 
@@ -27,7 +30,7 @@ A study lets an LLM (the participant) try the core tasks of the web route planne
 
 The study writes `report.md`, one `steps.jsonl` and one JPEG for each screen to `.artifacts/ux-study/<UTC time>/`. The map, the routing and the search come from the public hosts of the release, and the model calls go to the Anthropic API with the key `OBC_UX_API_KEY`.
 
-A task's `success` reads the route records of the library (the IndexedDB database `obc-library`). The task `lunch-stop` also reads the plan of the record, and uses the food kinds of the place search ([`place-kinds.json`](../../planner/search/place-kinds.json)).
+A task's `success` reads the route records of the library (the IndexedDB database `obc-library`, with the record shape of [`records.ts`](../../builder/web/src/lib/library/records.ts)). The task `lunch-stop` also reads the points of the plan in the record ([`editor.ts`](../../builder/web/src/lib/planner/editor.ts)), and uses the food kinds of the place search ([`place-kinds.json`](../../planner/search/place-kinds.json)). A change to one of these three files runs the tests of the study.
 
 ## Rules that must hold
 
@@ -35,6 +38,8 @@ A task's `success` reads the route records of the library (the IndexedDB databas
 | --- | --- |
 | The participant gets back only its own answers, never the fields that the loop reads from the page. | `the participant gets back only its own fields, never the fields that the loop adds from the page` in [`loop.test.js`](../../builder/web/tests/browser/ux-study/loop.test.js) |
 | Only the same action on the same screen three times ends a walkthrough as stuck. | `the same action on the same screen three times ends as stuck` in [`loop.test.js`](../../builder/web/tests/browser/ux-study/loop.test.js) |
+| Each task accepts exactly the route records that reach its goal. | `each task accepts exactly the route records that reach its goal` in [`study.test.js`](../../builder/web/tests/browser/ux-study/study.test.js) |
+| Each model call costs the price for its own number of input tokens. | `a call with more input tokens than the threshold of a model costs its second price` in [`loop.test.js`](../../builder/web/tests/browser/ux-study/loop.test.js) |
 | A failed model call costs money too, and counts toward the spending limit. | `a call that fails three times ends as error, and the failed calls count toward the cost` in [`loop.test.js`](../../builder/web/tests/browser/ux-study/loop.test.js) |
 | At the spending limit, the study starts no more participant calls. | `the spending limit stops the participant calls and ends the walkthrough as error` in [`loop.test.js`](../../builder/web/tests/browser/ux-study/loop.test.js) |
 | A group of steps goes to the report call only when two walkthroughs show it or a walkthrough failed there. | `a group stays when two walkthroughs show it or a walkthrough failed there, failed groups first` in [`report.test.js`](../../builder/web/tests/browser/ux-study/report.test.js) |
