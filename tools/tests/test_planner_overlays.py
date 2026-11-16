@@ -70,12 +70,14 @@ class OverlayArchive(unittest.TestCase):
                 metadata = reader.metadata()
                 tile = lambda z: layers(reader.get(z, *(int(v * (1 << z)) for v in overlays.coordinates(blob([(7.85, 47.95)])))))
                 low, high = tile(6), tile(14)
+                roads = {zoom: sorted(tags.get("road", "") for tags in tile(zoom)["cycling"].values() if tags["rank"] == 4) for zoom in (11, 12)}
         self.assertEqual(metadata["routing_package"], "a" * 64)
         # One line draws both ways at zoom 6, and it names only the route that zoom draws.
         self.assertEqual(low["cycling"], {10: {"rank": 4, "ref": "EV6", "routes": "[1]"}})
         self.assertEqual(low["routes"], {1: {"kind": "cycling", "name": "EuroVelo 6", "network": "icn", "rank": 4, "ref": "EV6",
                                              "website": "https://ev.example"}})
         # From the zoom of the bands, the line on the main road is its own line and names the class of the road.
+        self.assertEqual(roads, {11: [""], 12: ["", "major"]})
         self.assertEqual(high["cycling"][10], {"rank": 4, "ref": "EV6", "routes": "[1, 2]"})
         self.assertEqual(high["cycling"][11], {"rank": 4, "ref": "EV6", "routes": "[1, 2]", "road": "major"})
         self.assertEqual(high["routes"][2], {"kind": "cycling", "network": "lcn", "rank": 1, "ref": "L1"})

@@ -95,9 +95,9 @@ image.
 The overlay database has SQLite `user_version=3`. `features` stores stable IDs, layer kinds, cycling
 and walking minimum zooms, geometry IDs, and attribute IDs. `attributes` stores distinct JSON
 properties without the way ID or layer kind. Route memberships are ordered relation IDs. The `road`
-of a route line is the class in which the basemap draws the `highway` of its way: `major` for
-`motorway`, `trunk`, `primary`, `secondary`, `tertiary` and their links; `minor` for `residential`,
-`unclassified`, `living_street`, `service` and `road`; empty for all other ways. `routes`
+of a route line groups the `highway` of its way by the width at which the basemap draws it: `major`
+for `motorway`, `trunk`, `primary`, `secondary` and `tertiary`; `minor` for `residential`,
+`unclassified`, `living_street`, `service`, `road` and each `*_link`; empty for all other ways. `routes`
 stores each relation's JSON properties once. `geometries` stores the way ID, a point count, and a
 Postcard `Vec<[i32;2]>`. Each coordinate pair is longitude and latitude in microdegrees. The first
 pair is absolute; each later pair is a difference from the previous pair. Decoding uses checked

@@ -35,12 +35,13 @@ fn kind(tags: &Tags) -> Option<&'static str> {
     }
 }
 
-/// The class in which the basemap draws the road of a way: `major`, `minor`, or empty for a path or a track. The
-/// planner draws a route line wider than the road it follows.
+/// How wide the basemap draws the road of a way: `major`, `minor`, or empty for a path or a track. The planner draws
+/// a route line wider than the road it follows. The basemap draws a link as wide as a side road.
 fn road(tags: &Tags) -> &'static str {
-    match tag(tags, "highway").trim_end_matches("_link") {
+    match tag(tags, "highway") {
         "motorway" | "trunk" | "primary" | "secondary" | "tertiary" => "major",
         "residential" | "unclassified" | "living_street" | "service" | "road" => "minor",
+        link if link.ends_with("_link") => "minor",
         _ => "",
     }
 }
