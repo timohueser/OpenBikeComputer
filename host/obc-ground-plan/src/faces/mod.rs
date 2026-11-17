@@ -1994,7 +1994,11 @@ fn run_in(line: &WayLine, bx: [i32; 4]) -> Option<(usize, usize)> {
 struct Lid {
     /// The cover: one candidate of storey 0 over each bore's stroke (its core and its wall) from end line to end line,
     /// less its lids. Its key wins every face: over a floor, only a way on top keeps its own surface (`Sliced::joint`).
-    /// Its height is the ground's (the slope rule) over the floor bound (`heights::floor`).
+    /// Its height is the ground's (the slope rule) over the floor bound (`heights::floor`). A second candidate is the
+    /// cover's end: the stroke widened on each portal line to the whole end of the way that enters (its outermost
+    /// layer), narrowing to the stroke at the next sample, less the lids. It wins only the ground's slope band, so every
+    /// point of the line where that way's ground (its cut) differs from the ground behind (the floor bound) is an edge
+    /// of the cover, and the ground beside the cover lies wholly behind the line.
     cover: Vec<Cand>,
     /// Per way that enters a bore, the strokes of the stretches on top of it.
     entering: Vec<(u32, Rings)>,
@@ -2008,15 +2012,26 @@ struct Lid {
 fn bore_cover(ctx: &Ctx, input: &CellInput, ground: &[WayLine], ways_box: [i32; 4], bx: [i32; 4]) -> Lid {
     let g = ctx.graph;
     let (bores, _) = lines_with(ctx, input, &|w| in_bore(g, w), ways_box, Some(ground));
-    // Per bore, its stroke: its core and its wall.
+    // Per bore, its stroke: its core and its wall; and its stroke widened at a portal end to the whole end of the way
+    // that enters there (a bore's end sample holds that way's offsets).
     let mut strokes: Vec<Vec<Vec<P>>> = vec![Vec::new(); bores.len()];
-    for (line, rings) in bores.iter().zip(&mut strokes) {
+    let mut ends: Vec<Vec<Vec<P>>> = vec![Vec::new(); bores.len()];
+    for ((line, rings), wide) in bores.iter().zip(&mut strokes).zip(&mut ends) {
         let Some((first, last)) = run_in(line, bx) else { continue };
         let own = |i: usize| line.offsets(i)[..=VERGE + 1].to_vec();
         let c0 = if first == 0 { line.end_cuts[0].clone() } else { None }.unwrap_or_else(|| own(first));
         let c1 = if last == line.p.len() { line.end_cuts[1].clone() } else { None }.unwrap_or_else(|| own(last - 1));
         let d: Vec<f64> = (first..last).map(|i| line.bands[i][VERGE] + ctx.units(deck::WALL_M, line.p[i])).collect();
-        pieces_along(&line.p[first..last], &d, &line.dirs(first, last), [&c0, &c1], [false; 2], false, rings);
+        let dirs = line.dirs(first, last);
+        pieces_along(&line.p[first..last], &d, &dirs, [&c0, &c1], [false; 2], false, rings);
+        let portal =
+            |i: usize| (i == 0 && line.end_cuts[0].is_some()) || (i + 1 == line.p.len() && line.end_cuts[1].is_some());
+        if (first..last).any(portal) {
+            let d: Vec<f64> = (first..last)
+                .map(|i| if portal(i) { d[i - first].max(line.bands[i][SLOPE]) } else { d[i - first] })
+                .collect();
+            pieces_along(&line.p[first..last], &d, &dirs, [&c0, &c1], [false; 2], false, wide);
+        }
     }
     if strokes.iter().all(Vec::is_empty) {
         return Lid::default();
@@ -2155,20 +2170,31 @@ fn bore_cover(ctx: &Ctx, input: &CellInput, ground: &[WayLine], ways_box: [i32; 
         rings.extend(stroke::boolean(&union(stroke, [0, 0]), lid, OverlayRule::Difference, [0, 0]));
     }
     let rings = union(&rings, [0, 0]);
+    let mut wide = Vec::new();
+    for (end, lid) in ends.iter().zip(&lids).filter(|x| !x.0.is_empty()) {
+        wide.extend(stroke::boolean(&union(end, [0, 0]), lid, OverlayRule::Difference, [0, 0]));
+    }
+    let wide = union(&wide, [0, 0]);
     let lids: Vec<(u32, Rings)> =
         (under.iter().zip(lids)).skip(bores.len()).filter(|x| !x.1.is_empty()).map(|(u, lid)| (u.3, lid)).collect();
     let label = Label { surface: Surface::Cover, rule: HeightRule::Slope, rank: 0, ..TERRAIN };
-    let cover = vec![Cand {
+    let cand = |rings: Rings, key: (u8, u8, u8)| Cand {
         rings,
         label,
-        key: (0, 0, 0),
+        key,
         glob: Some([i64::MIN; 5]),
         line: 0,
         relabel: None,
         beyond: Vec::new(),
         fill: None,
         discs: Vec::new(),
-    }];
+    };
+    // The end's key is the merged slope band's (`candidates`), and its global name wins the tie.
+    let slope = (ctx.rules.plan.rank(Rank::Slope), 1, 0);
+    let mut cover = vec![cand(rings, (0, 0, 0))];
+    if !wide.is_empty() {
+        cover.push(cand(wide, slope));
+    }
     Lid { cover, entering: lids, tops, of_lower: lid_of }
 }
 

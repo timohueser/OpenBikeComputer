@@ -95,7 +95,7 @@ fn audit(words: &[u32], terrain: &Terrain, cell: CellKey, q: [f64; 2]) -> Option
     let b = Block::at(words, q);
     let p = HeightRules::of(words);
     if rule == 1 {
-        return Some(((height_at(words, q, label, t), label), super::groups(&b, q, &p).1, false, false));
+        return Some(((height_at(words, q, label, t), label), super::groups(&b, q, &p, false).1, false, false));
     }
     let material = super::material(words, label);
     let items = super::bin_items(&b, q)?;
@@ -721,7 +721,7 @@ pub fn explain(words: &[u32], q: [f64; 2], labels: [Option<u32>; 2], t: f64) -> 
             r.line, ln.count, r.class, r.rail, r.z, r.d, r.feather, paved(&recs, k, &p)
         );
     }
-    for g in groups(&b, q, &p).0 {
+    for g in groups(&b, q, &p, false).0 {
         s += &format!(
             "  outline of line {} class {} rail {}: fill {:.3} cut {:.3} steep {:.3} d {:.3} toe {:.3} fade {:.3}\n",
             g.line, g.class, g.rail, g.fill, g.cut, g.steep, g.d, g.toe, g.fade
