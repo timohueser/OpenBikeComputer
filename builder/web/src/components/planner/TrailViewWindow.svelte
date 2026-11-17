@@ -1,3 +1,10 @@
+<script module lang="ts">
+    import type { Coordinate } from '../../lib/planner/geo';
+
+    /** A route of the routes mode. `profile` has the height at each `step` metres along the line, and at its end. */
+    export type TrailViewRoute = { id: string; line: Coordinate[]; profile?: { step: number; heights: (number | null)[] }; colour: string };
+</script>
+
 <script lang="ts">
     import { onMount, untrack, type Snippet } from 'svelte';
     import Icon from '../../lib/ui/Icon.svelte';
@@ -7,32 +14,33 @@
     import { config } from '../../lib/planner/map-data';
     import { creditsWith } from '../../lib/planner/map-setup';
     import Credits from './Credits.svelte';
-    import { coordinateAt, cumulative, type Coordinate } from '../../lib/planner/geo';
+    import { coordinateAt, cumulative } from '../../lib/planner/geo';
     import { FIRST_HEADING, loadTrailView } from '../../lib/planner/trailview';
+    import type { Near } from '../../lib/planner/trailview-first';
     import { nightBadge, type RouteLook } from '../../lib/planner/trailview-route';
     import { sampleIndex } from '../../lib/planner/profile-data';
     import type { TrailView } from '../../lib/trailview/engine';
     import { VFOV } from '../../lib/trailview/frame/camera';
     import { defaultView, formatView, type View } from '../../lib/trailview/view';
 
-    /** A route of the routes mode. `profile` has the height at each `step` metres along the line, and at its end. */
-    type ShownRoute = { id: string; line: Coordinate[]; profile?: { step: number; heights: (number | null)[] }; colour: string };
-
-    // The window has two modes: a drop at `at` with the plan's data `near`, or `routes` from the first `view`.
-    let { at, near, routes: given, view: first, selected, onselect, card, origin, onClose }: {
-        at?: Coordinate;
-        near?: import('../../lib/planner/trailview-first').Near;
-        routes?: ShownRoute[];
-        view?: View;
+    type None<T> = { [K in keyof T]?: undefined };
+    type Drop = { at: Coordinate; near: Near };
+    type Routes = {
+        routes: TrailViewRoute[];
+        /** The first view. */
+        view: View;
         /** The id of the route that is bold while the pointer is on no route. */
         selected?: string;
         onselect?: (id: string) => void;
         /** Shows at the bottom of the window, over the view or its notice. */
         card?: Snippet;
+    };
+    // The window has two modes: a drop at `at` with the plan's data `near`, or `routes` from the first `view`.
+    let props: {
         /** The viewport point that the window grows from. */
         origin: [number, number];
         onClose: () => void;
-    } = $props();
+    } & ((Drop & None<Routes>) | (Routes & None<Drop>)) = $props();
 
     let dialog: HTMLDialogElement;
     let canvas: HTMLCanvasElement;
@@ -44,31 +52,32 @@
     let engine: TrailView | undefined;
     let view = $state<View>();
     let width = $state(0), height = $state(0);
+    // The window keeps what it opens with: route number i + 1 of the engine is routes[i].
+    const opened = untrack(() => ({ ...props })), { near, routes } = opened;
     // The plan's route draws on the terrain in the colours of its days, its grade or its surface, with a pin at
     // each night and a marker at the point of the profile under the pointer, until the rider hides it.
-    const hasRoute = $derived(!!near && near.route.length > 1);
-    const line = $derived([...near?.route ?? []]);
+    const hasRoute = !!near && near.route.length > 1;
+    const line = [...near?.route ?? []];
     let routeShown = $state(true), look = $state<RouteLook>('day'), position = $state<number | null>(null);
-    const nightPins = $derived(near?.overlay.nights.map(night => ({ coordinate: night.coordinate, colour: night.color, badge: nightBadge(night) })) ?? []);
-    // The window keeps the routes that it opens with: route number i + 1 of the engine is routes[i]. The route under
-    // the pointer is bold; with none, the selected route.
-    const routes = untrack(() => given);
+    const nightPins = near?.overlay.nights.map(night => ({ coordinate: night.coordinate, colour: night.color, badge: nightBadge(night) })) ?? [];
+    // The route under the pointer is bold; with none, the selected route.
     let hovered: number | null = null, bolded: number | null | undefined;
     const bold = () => {
-        const number = hovered ?? (routes!.findIndex(route => route.id === selected) + 1 || null);
-        if (number === bolded || !engine) return;
+        if (!routes || !engine) return;
+        const number = hovered ?? (routes.findIndex(route => route.id === props.selected) + 1 || null);
+        if (number === bolded) return;
         bolded = number;
         engine.boldRoute(number);
     };
     $effect(() => {
-        void selected;
-        if (routes) untrack(bold);
+        void props.selected;
+        untrack(bold);
     });
     const pointer = routes && {
         onhover: (x: number, y: number) => { hovered = engine?.routeAt(x, y) ?? null; bold(); },
         onclick: (x: number, y: number) => {
             const number = engine?.routeAt(x, y);
-            if (number) onselect?.(routes[number - 1].id);
+            if (number) props.onselect?.(routes[number - 1].id);
         },
     };
     const drawRoute = () => {
@@ -97,7 +106,7 @@
         dialog.showModal();
         // Only the transform animates: a new canvas size makes the engine's render targets again and restarts its frame history.
         const box = dialog.getBoundingClientRect();
-        dialog.style.transformOrigin = `${origin[0] - box.left}px ${origin[1] - box.top}px`;
+        dialog.style.transformOrigin = `${props.origin[0] - box.left}px ${props.origin[1] - box.top}px`;
         const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
         dialog.animate(still ? [{ opacity: 0 }, { opacity: 1 }] : [{ transform: 'scale(0.04)' }, { transform: 'none' }],
             { duration: still ? 200 : 420, easing: 'cubic-bezier(.2,.8,.2,1)' });
@@ -107,7 +116,7 @@
         (async () => {
             const chunk = await loadTrailView();
             if (abort.signal.aborted) return;
-            const start = first ?? { ...defaultView([at![0], at![1], at![0], at![1]]), heading: FIRST_HEADING };
+            const start = opened.routes ? opened.view : { ...defaultView([opened.at[0], opened.at[1], opened.at[0], opened.at[1]]), heading: FIRST_HEADING };
             const started = await chunk.startTrailView(canvas, config, start, near, abort.signal, pointer);
             if (!started) {
                 failure = 'gpu' in navigator ? 'TrailView cannot use the graphics card of this device.'
@@ -146,7 +155,7 @@
 
 <!-- A click on the backdrop lands on the dialog itself; its content fills it. Esc closes a modal dialog by itself.
      Esc and the Ctrl and Cmd shortcuts stop at the window: the planner below reads them on `window`, the engine reads none of them. -->
-<dialog bind:this={dialog} bind:clientWidth={width} bind:clientHeight={height} class="window" aria-label="TrailView" onclose={onClose}
+<dialog bind:this={dialog} bind:clientWidth={width} bind:clientHeight={height} class="window" aria-label="TrailView" onclose={props.onClose}
     onpointerdown={event => pressedBackdrop = event.target === dialog}
     onclick={event => {
         if (pressedBackdrop && event.target === dialog) dialog.close();
@@ -179,7 +188,7 @@
             {/if}
         {/if}
     {/if}
-    {#if card}<div class="card">{@render card()}</div>{/if}
+    {#if props.card}<div class="card">{@render props.card()}</div>{/if}
     <button type="button" class="close" aria-label="Close TrailView" onclick={() => dialog.close()}><Icon name="close" /></button>
     <Credits {credits} />
 </dialog>

@@ -1365,12 +1365,10 @@
         background: none;
         color: inherit;
     }
-    /* Links are rust in light and tan in dark, so amber stays the one action colour in both. */
     .planner-shell {
         --query-place: #3b654c;
         --query-area: #365f84;
         --query-time: #965125;
-        --link: var(--forest);
         display: flex;
         flex-direction: column;
         height: 100%;
@@ -1381,7 +1379,6 @@
         --query-place: #aed0b5;
         --query-area: #a9cce9;
         --query-time: #edb58b;
-        --link: var(--wood);
     }
     .planner-shell :global(.planner-action) {
         display: inline-flex;

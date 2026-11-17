@@ -27,7 +27,7 @@
         actions?: Snippet;
         /** The content of the list card. */
         list: Snippet;
-        /** At the top right of the map, under its zoom buttons. */
+        /** At the top right of the map, under its zoom buttons, in their margins. */
         mapButtons?: Snippet;
         /** The card of the selected item. The page gives it only while an item is selected. */
         card?: Snippet;
@@ -128,7 +128,7 @@
     .map-buttons {
         position: absolute;
         z-index: 2;
-        top: 82px;
+        top: 79px;
         right: 10px;
         display: flex;
         flex-direction: column;

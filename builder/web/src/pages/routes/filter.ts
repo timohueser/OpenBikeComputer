@@ -75,6 +75,9 @@ export function routeItem(route: RouteRecord, naming?: Naming): Item {
 export const rideItem = (ride: RideRecord): RideItem =>
     ({ kind: 'ride', id: ride.key, name: ride.name, summary: ride.summary, at: ride.summary.start * 1000 });
 
+/** `profile_m` of a catalog record has a height at each PROFILE_STEP_M metres along the route, and one at its end. */
+export const PROFILE_STEP_M = 100;
+
 const round5 = (value: number) => Math.round(value * 1e5) / 1e5;
 
 /** A route record of the catalog. The height of a point of its line is the profile at the share of the line's length
@@ -84,11 +87,11 @@ export function signedItem(record: CatalogRecord, bike: Bike): SignedItem {
     const points = decodeCoordinates(record.line_udeg ?? []), along = [0];
     for (let i = 1; i < points.length; i++) along.push(along[i - 1] + kilometres(points[i - 1], points[i]));
     const total = along.at(-1)!, entries = record.profile_m, length = record.length_m;
-    // Entry i is at i × 100 m, and the last entry at the end.
-    const entryAt = (i: number) => i === entries!.length - 1 ? length : i * 100;
+    // Entry i is at i × PROFILE_STEP_M, and the last entry at the end.
+    const entryAt = (i: number) => i === entries!.length - 1 ? length : i * PROFILE_STEP_M;
     const heightAt = (share: number): number | null => {
         if (!entries) return null;
-        const metres = share * length, i = Math.max(0, Math.min(Math.floor(metres / 100), entries.length - 2));
+        const metres = share * length, i = Math.max(0, Math.min(Math.floor(metres / PROFILE_STEP_M), entries.length - 2));
         // A profile of one entry has no next entry; a null entry is an unknown height.
         const [a, b] = [entries[i], entries[i + 1] === undefined ? entries[i] : entries[i + 1]], span = entryAt(i + 1) - entryAt(i);
         const t = span > 0 ? Math.max(0, Math.min(1, (metres - entryAt(i)) / span)) : 0;

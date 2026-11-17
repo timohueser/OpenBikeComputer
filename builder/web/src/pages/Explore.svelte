@@ -15,10 +15,11 @@
     import { distanceIn, heightIn } from '../lib/settings/format';
     import { today, type View } from '../lib/trailview/view';
     import Icon from '../lib/ui/Icon.svelte';
+    import type { TrailViewRoute } from '../components/planner/TrailViewWindow.svelte';
     import SignedCard, { signedNumbers } from './explore/SignedCard.svelte';
     import SignedPicture from './explore/SignedPicture.svelte';
     import Chips from './routes/Chips.svelte';
-    import { results, signedItem, type Chips as ChipValues, type SignedItem } from './routes/filter';
+    import { PROFILE_STEP_M, results, signedItem, type Chips as ChipValues, type SignedItem } from './routes/filter';
     import ListAndMap from './routes/ListAndMap.svelte';
     import PlaceSearch from './routes/PlaceSearch.svelte';
     import RouteRow from './routes/RouteRow.svelte';
@@ -105,17 +106,19 @@
 
     // TrailView shows the first routes of the list from a view above them all.
     const TRAILVIEW_ROUTES = 100;
-    type Window = typeof import('../components/planner/TrailViewWindow.svelte').default;
-    type Shown = { id: string; line: [number, number][]; profile?: { step: number; heights: (number | null)[] }; colour: string };
-    let trailView = $state.raw<{ component: Window; origin: [number, number]; view: View; routes: Shown[] }>();
+    let trailView = $state.raw<{ component: typeof import('../components/planner/TrailViewWindow.svelte').default; origin: [number, number]; view: View; routes: TrailViewRoute[] }>();
     /** A notice shows only in the map view that it is about. */
-    let opening = $state(false), notice = $state.raw<{ text: string; view?: Box }>();
+    let opening = $state(false), notice = $state.raw<{ text: string; view?: Box }>(), trailViewButton = $state<HTMLButtonElement>();
+    const trailViewTitle = $derived(shown.length > TRAILVIEW_ROUTES ? `TrailView: the first ${TRAILVIEW_ROUTES} of ${shown.length.toLocaleString('en')} routes` : 'TrailView');
 
     async function openTrailView(event: MouseEvent) {
-        const box = (event.currentTarget as HTMLElement).getBoundingClientRect(), at = view;
-        const routes = shown.slice(0, TRAILVIEW_ROUTES).map(({ id, record }): Shown => ({
+        const box = (event.currentTarget as HTMLElement).getBoundingClientRect(), at = view, from = chips;
+        // The selected route is always among them, so the window can show its card on its line.
+        const listed = shown.slice(0, TRAILVIEW_ROUTES);
+        if (chosen && !listed.includes(chosen)) listed[listed.length - 1] = chosen;
+        const routes = listed.map(({ id, record }): TrailViewRoute => ({
             id, line: decodeCoordinates(record.line_udeg ?? []), colour: routeColor(id),
-            ...record.profile_m ? { profile: { step: 100, heights: record.profile_m } } : {},
+            ...record.profile_m ? { profile: { step: PROFILE_STEP_M, heights: record.profile_m } } : {},
         }));
         opening = true;
         notice = undefined;
@@ -125,13 +128,16 @@
             const full = innerWidth <= 760;
             const first = await chunk.coverView(routes.map(route => route.line), config,
                 { width: full ? innerWidth : innerWidth - 64, height: full ? innerHeight : innerHeight - 64, date: today(), time: '10:00', weather: 'sunny' });
+            // A new view or new chips while it loaded make other routes the list's: the window would show the old ones.
+            if (view !== at || chips !== from) return;
             if (first) trailView = { component, origin: [box.left + box.width / 2, box.top + box.height / 2], view: first, routes };
             else notice = { text: 'TrailView has no view of this area.', view: at };
         } catch (error) {
             console.error('TrailView:', error);
             notice = { text: 'TrailView could not start. Try again.', view: at };
+        } finally {
+            opening = false;
         }
-        opening = false;
     }
 
     /** The planner makes the plan; "Find another route" there brings this state back. */
@@ -184,15 +190,18 @@
 {/snippet}
 
 {#snippet mapButtons()}
-    <button type="button" class="trailview" aria-busy={opening} disabled={opening} onclick={openTrailView}>
-        <Icon name="binoculars" />{opening ? 'Loading…' : shown.length > TRAILVIEW_ROUTES ? `TrailView · first ${TRAILVIEW_ROUTES}` : 'TrailView'}
-    </button>
+    <!-- A group of the map's own controls, as the zoom buttons above it. -->
+    <div class="maplibregl-ctrl maplibregl-ctrl-group">
+        <button type="button" class="trailview" bind:this={trailViewButton} aria-label="TrailView" aria-busy={opening} disabled={opening} title={trailViewTitle} onclick={openTrailView}>
+            {#if opening}<span class="spinner" aria-hidden="true"></span>{:else}<Icon name="binoculars" size={18} />{/if}
+        </button>
+    </div>
     {#if notice && notice.view === view}<p class="trailview-notice" role="status">{notice.text}</p>{/if}
 {/snippet}
 
 {#if trailView}
     <trailView.component origin={trailView.origin} view={trailView.view} routes={trailView.routes} {selected} onselect={id => selected = id}
-        card={chosen ? card : undefined} onClose={() => trailView = undefined} />
+        card={chosen ? card : undefined} onClose={() => { trailView = undefined; trailViewButton?.focus(); }} />
 {/if}
 
 <style>
@@ -212,8 +221,30 @@
         font: inherit;
         text-decoration: underline;
     }
+    /* The map's controls keep their light look in both themes; this is the colour of their icons. */
     .trailview {
-        box-shadow: var(--planner-shadow);
+        display: grid;
+        place-items: center;
+        color: #333;
+    }
+    /* While it loads, the spinner shows at full strength. */
+    .trailview:disabled {
+        opacity: 1;
+        cursor: progress;
+    }
+    .spinner {
+        width: 14px;
+        height: 14px;
+        border: 2px solid color-mix(in srgb, currentColor 25%, transparent);
+        border-top-color: currentColor;
+        border-radius: 50%;
+        animation: spin 900ms linear infinite;
+    }
+    @keyframes spin {
+        to { transform: rotate(1turn); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .spinner { animation-duration: 3s; }
     }
     .trailview-notice {
         max-width: 220px;
