@@ -32,6 +32,7 @@
     let unsaved = $state('');
     let tool = $state<Tool | 'none'>('region');
     let colours = $state(false);
+    let baseCredit = $state(false);
     /** The stored map that waits: Done writes only a value that differs from it. */
     let stored: NextMap | null = null;
     let routes = $state.raw<RouteRecord[]>([]);
@@ -53,7 +54,7 @@
         const map = store.holeCells().length > 0, elevation = (store.ledger?.terrain?.missingCount ?? 0) > 0;
         return map || elevation ? { map, elevation } : null;
     });
-    /** The credits of the data of the map for the device; the credit of the base map is a line on the map. */
+    /** The credits of the data of the map for the device; the credit of the base map is behind its own button. */
     const credits = $derived.by(() => {
         const source = store?.catalog.source, terrain = store?.catalog.terrain;
         return [
@@ -113,9 +114,13 @@
         <p class="problem" role="alert">The map catalogue did not load: {failure}</p>
     {:else}
         <div class="cards">
-            <div class="map">
+            <div class="map" class:base-credit={baseCredit}>
                 {#if store}<CoverageMap {store} {active} bind:tool rail={false} pale routes={lines} />{/if}
                 <Credits {credits} side="left" />
+                <!-- Leaflet has no compact credit: this button shows and hides its line, as MapLibre's button does. -->
+                <button type="button" class="base-credit-button" aria-label="Toggle attribution" aria-expanded={baseCredit} onclick={() => baseCredit = !baseCredit}>
+                    <svg viewBox="0 0 20 20" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M4 10a6 6 0 1 0 12 0 6 6 0 1 0-12 0m5-3a1 1 0 1 0 2 0 1 1 0 1 0-2 0m0 3a1 1 0 1 1 2 0v3a1 1 0 1 1-2 0" /></svg>
+                </button>
             </div>
             {#if store}
                 <section class="side" aria-label="The area">
@@ -237,12 +242,40 @@
     .map :global(.map-wrap) {
         isolation: isolate;
     }
-    /* The credit of the map has the letters and the colours of the page. */
+    /* The credit of the map has the letters and the colours of the page, and opens beside its button. */
     .map :global(.leaflet-control-attribution) {
+        margin: 0 40px 10px 0 !important;
         padding: 2px 8px;
-        border-top-left-radius: 6px;
+        border-radius: 12px;
+        background: var(--panel) !important;
         color: var(--ink-soft) !important;
-        font: 11px/1.5 var(--sans);
+        font: 11px/20px var(--sans);
+    }
+    /* The open credit wraps before the button of the data credits at the left. */
+    .map :global(.leaflet-bottom.leaflet-right) {
+        left: 44px;
+    }
+    .map:not(.base-credit) :global(.leaflet-control-attribution) {
+        display: none;
+    }
+    .base-credit-button {
+        position: absolute;
+        z-index: 2;
+        right: 10px;
+        bottom: 10px;
+        display: grid;
+        place-items: center;
+        width: 24px;
+        height: 24px;
+        padding: 0;
+        border: 0;
+        border-radius: 12px;
+        background: var(--panel);
+        color: var(--ink);
+    }
+    .base-credit-button svg {
+        width: 24px;
+        height: 24px;
     }
     .map :global(.leaflet-control-attribution a) {
         color: inherit;

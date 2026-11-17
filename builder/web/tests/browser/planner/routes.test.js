@@ -64,8 +64,12 @@ test('the Routes page lists the routes, filters them with a chip, shows the sele
   await row.click();
   const map = page.locator('.map');
   await expect(map.locator('.maplibregl-canvas')).toBeVisible();
-  // The map shows the relief, so the credit of the terrain is behind the button beside the credit of the map.
-  await expect(page.locator('.more-credits p')).toContainText('Terrain test data');
+  // The map shows the relief, so the credit of the terrain opens with the credit of the map.
+  const more = page.locator('.more-credits p');
+  await expect(more).toBeHidden();
+  await map.getByLabel('Toggle attribution').click();
+  await expect(more).toBeVisible();
+  await expect(more).toContainText('Terrain test data');
   const box = await map.boundingBox();
   await page.mouse.click(box.x + 40, box.y + box.height / 2);
   await expect(plan).toHaveCount(0);

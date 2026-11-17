@@ -39,8 +39,8 @@
     let styled: typeof theme, styledLook: typeof look, fitted = 0, relief: Relief;
     /** The lines that have the feature state `hover`: those that a click at the pointer selects. */
     let hovered: string[] = [];
-    /** The credits of the terrain and of the picture, behind a button beside the credit of the map. */
-    let moreCredits: HTMLElement, creditsOpen = $state(false);
+    /** The credits of the terrain and of the picture, which open with the credit of the map. */
+    let moreCredits: HTMLElement;
     const more = $derived([...new Set([styleConfig.terrain_attribution, ...credits])]);
 
     const pairs = (line: number[]) => Array.from({ length: line.length / 2 }, (_, i) => [line[2 * i], line[2 * i + 1]]);
@@ -112,12 +112,6 @@
         return [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
     };
 
-    // The credits of another picture start closed.
-    $effect(() => {
-        void credits;
-        creditsOpen = false;
-    });
-
     async function zoomIn(event: maplibregl.MapLayerMouseEvent) {
         const bubble = event.features?.[0];
         if (!bubble || bubble.geometry.type !== 'Point') return;
@@ -136,11 +130,8 @@
             attributionControl: false, maxPitch: 0, renderWorldCopies: false,
         });
         // The selected card covers the bottom of the map.
-        created.addControl(new ClosedAttribution({ compact: true }), 'top-left');
+        created.addControl(new ClosedAttribution(), 'top-left');
         created.addControl({ onAdd: () => moreCredits, onRemove: () => moreCredits.remove() }, 'top-left');
-        // The button of the map's credit opens the other credits with it.
-        container.querySelector('summary.maplibregl-ctrl-attrib-button')?.addEventListener('click', event =>
-            creditsOpen = (event.currentTarget as Element).parentElement!.classList.contains('maplibregl-compact-show'));
         created.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
         created.dragRotate.disable();
         created.touchZoomRotate.disableRotation();
@@ -225,7 +216,7 @@
 <div class="routes-map" data-loaded={loaded} bind:this={container}></div>
 <!-- The map takes this box as a control, after its own credit. The credits of the terrain and of the picture of the
      selected card open with the credit of the map, at its button. -->
-<div class="maplibregl-ctrl more-credits" class:open={creditsOpen} bind:this={moreCredits}>
+<div class="maplibregl-ctrl more-credits" bind:this={moreCredits}>
     <p>{@html more.join(' | ')}</p>
 </div>
 
@@ -260,7 +251,7 @@
         margin: 0;
         padding: 4px 10px;
     }
-    :global(.maplibregl-compact-show) + .more-credits.open p {
+    :global(.maplibregl-compact-show) + .more-credits p {
         display: block;
     }
     :global(:root[data-theme="dark"]) .routes-map :global(.maplibregl-ctrl-attrib-button) {

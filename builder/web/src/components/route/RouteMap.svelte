@@ -101,7 +101,7 @@
             container, style: basemapStyle(shown = theme, styleConfig, relief), bounds: bounds(), fitBoundsOptions: { padding: 32 },
             attributionControl: false, maxPitch: 0, renderWorldCopies: false,
         });
-        created.addControl(new ClosedAttribution({ compact: true }));
+        created.addControl(new ClosedAttribution());
         created.dragRotate.disable();
         created.touchZoomRotate.disableRotation();
         created.on('style.load', addLine);

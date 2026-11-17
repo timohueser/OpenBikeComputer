@@ -16,16 +16,19 @@ export const creditsWith = (layers: string[]) =>
 /** The one terrain source of the app: each map with the relief shares its cache of terrain tiles. */
 export const terrain = terrainSource(config.terrain);
 
-/** MapLibre's credits control, whose compact form starts closed and opens only at its button. */
+/** MapLibre's compact credits control, which starts closed and opens only at its button. */
 export class ClosedAttribution extends maplibregl.AttributionControl {
-    constructor(options: maplibregl.AttributionControlOptions) {
-        super(options);
-        // MapLibre opens a compact control when it turns compact, which is when its text arrives or the map gets narrow.
+    constructor() {
+        super({ compact: true });
+        // MapLibre opens the control when its first text arrives, and closes it only on a drag. This wraps
+        // `_updateCompact`, which MapLibre's documentation does not name; the credits test of shell.test.js guards it.
         const update = this._updateCompact;
         this._updateCompact = () => {
             const shown = this._container.classList.contains('maplibregl-compact-show');
             update();
-            if (!shown) this._updateCompactMinimize();
+            if (shown) return;
+            this._container.classList.remove('maplibregl-compact-show');
+            this._container.removeAttribute('open');
         };
     }
 }

@@ -487,7 +487,7 @@
             signedLayer = new SignedRoutesLayer(map);
             overlayLayer = new RouteOverlays(map, config.overlays, (message, retry = false) => { overlayStatus = message; overlayRetry = retry; }, hint => routeHint = hint);
             fitInitialRoute();
-            map.addControl(new ClosedAttribution({ compact: true }), "bottom-right");
+            map.addControl(new ClosedAttribution(), "bottom-right");
             map.addControl(new maplibregl.ScaleControl({ maxWidth: 90, unit: "metric" }), "bottom-left");
             map.dragRotate.disable();
             map.touchZoomRotate.disableRotation();
