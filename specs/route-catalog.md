@@ -202,16 +202,16 @@ grade.
 The child relations of a relation are its relation members with an empty or `main` role. A piece is
 a child relation that is a route in the data, has no route relation as a member, and is not a route
 of its own: it has no `name` and no `ref`, or it is a connector leg. A selected relation is a joined
-trail when it has child routes and each of them is a piece. A joined trail is one route, not a long
-route. Its member ways are its own and those of each piece in the place of the piece, in member
-order. Its record is an ordinary route record with its own `id` and tags, and the pieces have no
-records. The connector test of a joined trail counts no child routes.
+trail when it has child routes, each of them is a piece, and no child relation is absent. A joined
+trail is one route, not a long route. Its member ways are its own and those of each piece in the
+place of the piece, in member order. Its record is an ordinary route record with its own `id` and
+tags, and the pieces have no records. The connector test of a joined trail counts no child routes.
 
-A long route is a selected relation with a child relation that is absent from the data, or that is
-a route and not a piece. A long route with an absent child relation leaves the catalog. Its stages
-are its child routes with the same `network`, in member order. A long route is in the catalog only
-when each of its stages is in it. A long route with a child that is itself a long route leaves the
-catalog.
+A long route is a selected relation with a child relation that is absent from the data, or that is a
+route and not a piece. A long route with an absent child relation leaves the catalog. Its stages are
+its child routes with the same `network`, in member order. A long route is in the catalog only when
+each of its stages is in it. A long route with a child that is a long route by these rules, selected
+or not, leaves the catalog.
 
 A long route has no `line_udeg`, `via`, `turnarounds` or `profile_m`. Its line and its plan are
 those of its stages in order. A reader that needs its profile joins the profiles of its stages, and
