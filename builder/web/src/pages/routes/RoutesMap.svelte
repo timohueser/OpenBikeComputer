@@ -11,7 +11,7 @@
     import { appearance } from '../../lib/theme.svelte';
     import type { Box, Item } from './filter';
 
-    let { items, shown, selected, look = 'route', covered = 0, credits = [], onselect, onview, fit }: {
+    let { items, shown, selected, look = 'route', covered = 0, credits = [], together = id => [id], onselect, onview, fit }: {
         items: Item[];
         /** The items of the list. The map draws only these, and the bubbles count only these. */
         shown: Item[];
@@ -21,6 +21,8 @@
         covered?: number;
         /** The credits of the picture of the selected card, which shows none of its own. */
         credits?: string[];
+        /** The lines that a click on one line selects: the rides of its row, or the line alone. */
+        together?: (id: string) => string[];
         /** Undefined after a click on the map where no route is. */
         onselect: (id: string | undefined) => void;
         onview: (view: Box) => void;
@@ -33,8 +35,8 @@
     let map = $state.raw<maplibregl.Map>(), ready = $state(false);
     const theme = $derived(appearance.dark ? 'dark' : 'light');
     let styled: typeof theme, styledLook: typeof look, fitted = 0, relief: Relief;
-    /** The line under the pointer, which has the feature state `hover`. */
-    let hovered: string | undefined;
+    /** The lines that have the feature state `hover`: those that a click at the pointer selects. */
+    let hovered: string[] = [];
     /** The credits of the terrain and of the picture, behind a button beside the credit of the map. */
     let moreCredits: HTMLElement, creditsOpen = $state(false);
     const more = $derived([...new Set([styleConfig.terrain_attribution, ...credits])]);
@@ -154,16 +156,19 @@
             created.on('mouseenter', layer, () => { created.getCanvas().style.cursor = 'pointer'; });
             created.on('mouseleave', layer, () => { created.getCanvas().style.cursor = ''; });
         }
-        // The line that a click selects is bolder under the pointer. A tap moves a mouse too, and its line would stay bold.
+        // The lines that a click selects are bolder under the pointer. A tap moves a mouse too, and its line would stay bold.
         if (matchMedia('(hover: hover)').matches) {
             const hover = (id?: string) => {
-                if (id === hovered) return;
-                if (hovered !== undefined) created.setFeatureState({ source: 'routes', id: hovered }, { hover: false });
-                hovered = id;
-                if (id !== undefined) created.setFeatureState({ source: 'routes', id }, { hover: true });
+                const next = id === undefined ? [] : together(id);
+                if (next.length === hovered.length && next.every((line, i) => line === hovered[i])) return;
+                for (const line of hovered) created.setFeatureState({ source: 'routes', id: line }, { hover: false });
+                hovered = next;
+                for (const line of hovered) created.setFeatureState({ source: 'routes', id: line }, { hover: true });
             };
             created.on('mousemove', 'routes-hit', event => hover(event.features?.[0]?.properties.id));
             created.on('mouseleave', 'routes-hit', () => hover());
+            // A move of the map takes the line from under the pointer with no mouse event.
+            created.on('movestart', () => hover());
         }
         const terrainError = terrainRetry(created);
         created.on('error', event => console.warn(terrainError(event) ? 'Routes map terrain:' : 'Routes map:', event.error));
@@ -178,7 +183,7 @@
             styledLook = look;
             ready = false;
             // The new source has no feature state.
-            hovered = undefined;
+            hovered = [];
             map.setStyle(basemapStyle(styled = theme, styleConfig, relief), { diff: false });
         }
     });

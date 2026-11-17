@@ -168,9 +168,12 @@
         }
     }
 
+    /** The row of the ridden view that holds a ride. */
+    const rowOf = (id: string | undefined) => ridden ? listRows.find(row => row.rides.some(ride => ride.id === id)) : undefined;
+
     /** A click on a line selects its route, or the row that holds the ride. */
     function select(id: string | undefined) {
-        const row = ridden ? listRows.find(row => row.rides.some(ride => ride.id === id)) : undefined;
+        const row = rowOf(id);
         selected = row ? `${row.kind}:${row.id}` : ridden ? undefined : id;
     }
 
@@ -300,7 +303,7 @@
                 <!-- A route or a ride that the chips hide is not drawn as selected. -->
                 <RoutesMap {items} shown={mapShown} selected={ridden ? chosenRow?.rides.map(ride => ride.id) ?? [] : chosen ? [chosen.id] : []} {fit}
                     covered={chosen && cardHeight ? cardHeight + 12 : 0} credits={chosen ? cardCredits : []}
-                    look={ridden ? 'ride' : 'route'} onselect={select} onview={next => view = next} />
+                    look={ridden ? 'ride' : 'route'} together={id => rowOf(id)?.rides.map(ride => ride.id) ?? [id]} onselect={select} onview={next => view = next} />
             {:catch error}
                 <p class="note">{error instanceof Error ? error.message : String(error)}</p>
             {/await}
