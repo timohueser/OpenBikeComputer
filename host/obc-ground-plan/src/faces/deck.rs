@@ -74,10 +74,8 @@ pub(crate) fn deck_bands(line: &mut WayLine, band: &dyn Fn(P) -> f64) {
     line.deck = [false; 2];
 }
 
-/// A bore's wall beside its floor and the ground's margin past it that the bore's cover holds: the crossing block's
-/// thickness table.
+/// A bore's wall beside its floor: the crossing block's thickness table.
 pub const WALL_M: f64 = 0.6;
-pub const COVER_SIDE_M: f64 = 1.0;
 
 /// A bore's floor on a line of storey −1: its carriageway, its paved shoulder and, in the slope's place, the rest of
 /// the way's core (its shoulder and verge); the bank is 0 wide. A floor is one leg and ends square.

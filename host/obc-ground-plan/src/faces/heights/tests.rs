@@ -738,7 +738,7 @@ fn a_deck_end_turned_up_to_the_flat_turn_lists_its_ceiling_in_every_bin_where_it
                 let b = super::Block::at(&c.words, q);
                 let Some(items) = super::bin_items(&b, q) else { continue };
                 for &item in &ceilings {
-                    let Some((out, ..)) = super::decks(&b, q, &[item], &p).next() else { continue };
+                    let Some((out, ..)) = super::decks(&b, q, &[item], &p, false).next() else { continue };
                     if out < release {
                         assert!(
                             items.segs.contains(&item),

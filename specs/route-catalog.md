@@ -54,7 +54,7 @@ true:
 | `osmc:symbol` | absent, `yellow::yellow_diamond`, `red:white:red_bar` or `blue:white:blue_bar` (the Swiss trail grades) |
 | `ref` | absent or empty |
 | `roundtrip` | not `yes` |
-| Child routes | none: no member is a route relation |
+| Child routes | none: no member is a route relation, or the relation is a joined trail (see Long routes) |
 | `name` | empty, or a dash in it |
 | Theme word | outside round brackets, no word ends in `weg`, `wäg`, `pfad`, `trail`, `loop` or `tour`, in any letter case |
 
@@ -122,7 +122,8 @@ for `hiking` and `foot`, `mtb/technical` for `mtb`, and `road`, `gravel` and `to
 `bicycle`. A client plans a `hiking` or `foot` route with `hardest` above 1 (T2) with
 `hiking/alpine`, an `mtb` route with `hardest` above 2 (S2) with `mtb/technical`, and every other
 route with the Balanced profile. Both profiles give the same route when no grade on it is above the
-ordinary limit. The main line is the member ways with an empty, `main`, `forward` or `backward`
+ordinary limit. A hiking route can have `hardest` 4 or 5 (T5 or T6).
+The main line is the member ways with an empty, `main`, `forward` or `backward`
 role, ordered as the Waymarked Trails route builder orders them, with the forward branch where the
 route splits by direction. When that order has more than one piece, the builder joins the pieces at
 their nearest ends, from the first piece on, into one chain that uses each piece once, with each
@@ -199,10 +200,19 @@ grade.
 
 ### Long routes
 
-A long route is a relation that holds route relations. Its stages are its child routes with an empty
-or `main` role and the same `network`, in member order. A long route is in the catalog only when
-each of its stages is in it. A long route with a child relation that holds route relations leaves
-the catalog.
+The child relations of a relation are its relation members with an empty or `main` role. A piece is
+a child relation that is a route in the data, has no route relation as a member, and is not a route
+of its own: it has no `name` and no `ref`, or it is a connector leg. A selected relation is a joined
+trail when it has child routes, each of them is a piece, and no child relation is absent. A joined
+trail is one route, not a long route. Its member ways are its own and those of each piece in the
+place of the piece, in member order. Its record is an ordinary route record with its own `id` and
+tags, and the pieces have no records. The connector test of a joined trail counts no child routes.
+
+A long route is a selected relation with a child relation that is absent from the data, or that is a
+route and not a piece. A long route with an absent child relation leaves the catalog. Its stages are
+its child routes with the same `network`, in member order. A long route is in the catalog only when
+each of its stages is in it. A long route with a child that is a long route by these rules, selected
+or not, leaves the catalog.
 
 A long route has no `line_udeg`, `via`, `turnarounds` or `profile_m`. Its line and its plan are
 those of its stages in order. A reader that needs its profile joins the profiles of its stages, and

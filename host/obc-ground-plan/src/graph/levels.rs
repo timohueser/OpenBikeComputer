@@ -3,8 +3,9 @@
 //! The bake runs it on every cell and the tiles carry what it decides (`level_tags`); the device reads that.
 //!
 //! Every decision reads within the row of `Structures::reach`: a crossing's corners along each way up
-//! to `PLACE_M`; a station's tag end along its way up to `open_max_m`, an A line up to `A_MAX_M`; the
-//! bodies and strokes within `GRID_M` of a station.
+//! to `PLACE_M`; a deck's tag end along its way and an A line up to `A_MAX_M`; the bodies and strokes within `GRID_M`
+//! of a station. A tunnel way's states read its whole chain: the cell finds its stretches (`TunnelFound`), and the
+//! bake's merge decides them (`level_tags::merge`).
 
 use super::curve::point;
 use super::level_tags::{end_line, kind_between};
@@ -24,6 +25,8 @@ pub struct Structures {
     pub lift_max_m: f64,
     /// A tunnel way is open only this far along from a tag end: the longest open cut of the crossing design.
     pub open_max_m: f64,
+    /// A tunnel's body reaches this far behind each portal line; the rest is not drawn.
+    pub body_m: f64,
     /// A deck shorter than this between its end lines is a ground way.
     pub deck_min_m: f64,
     /// The band past a deck's paved edge.
@@ -39,10 +42,11 @@ pub struct Structures {
 }
 
 impl Structures {
-    pub const FIELDS: [&'static str; 9] = [
+    pub const FIELDS: [&'static str; 10] = [
         "cover_m",
         "lift_max_m",
         "open_max_m",
+        "body_m",
         "deck_min_m",
         "edge_band_m",
         "door_min_m",
@@ -52,12 +56,13 @@ impl Structures {
     ];
 
     pub fn new(
-        [cover_m, lift_max_m, open_max_m, deck_min_m, edge_band_m, door_min_m, railing_width_m, post_spacing_m, pier_depth_m]: [f64; 9],
+        [cover_m, lift_max_m, open_max_m, body_m, deck_min_m, edge_band_m, door_min_m, railing_width_m, post_spacing_m, pier_depth_m]: [f64; 10],
     ) -> Structures {
         Structures {
             cover_m,
             lift_max_m,
             open_max_m,
+            body_m,
             deck_min_m,
             edge_band_m,
             door_min_m,
@@ -72,7 +77,7 @@ impl Structures {
     pub fn reach(&self, graph_m: f64) -> Reach {
         let terms = [
             ("the graph's longest chain", graph_m),
-            ("along the way: max(open_max_m, A_MAX_M)", self.open_max_m.max(A_MAX_M)),
+            ("along the way: A_MAX_M", A_MAX_M),
             ("about a station: GRID_M", GRID_M),
             ("a crossing's corners along each way: PLACE_M", PLACE_M),
         ];
@@ -164,6 +169,8 @@ pub struct EndLine {
 pub struct Levels {
     pub runs: Vec<Run>,
     pub end_lines: Vec<EndLine>,
+    /// The tunnel ways: what the cell finds of each (`TunnelFound`); the merge decides their states.
+    pub tunnels: Vec<TunnelFound>,
 }
 
 /// A body read past the widest half-width: the widest class reach and widening.
@@ -264,8 +271,14 @@ impl<'a> Ctx<'a> {
         let sets = (g.junctions.iter().map(|j| j.arms.iter().collect::<Vec<_>>()))
             .chain(g.joints.iter().map(|j| j.arms.iter().collect()))
             .chain(g.ends.iter().map(|e| vec![&e.arm]));
+        // A tunnel way's ends are where its arms stand at its first or its last station: a node that it runs through
+        // names no end of it, so the merge finds its tag ends (`TunnelFound`).
+        let interior = |a: &crate::graph::Arm| {
+            let w = &g.ways[a.way as usize];
+            w.level == Level::Tunnel && w.family != Family::Water && a.at != if a.dir > 0 { w.from } else { w.to }
+        };
         for arms in sets {
-            for a in &arms {
+            for a in arms.iter().filter(|a| !interior(a)) {
                 let others = arms.iter().filter(|b| !std::ptr::eq(**b, *a)).map(|b| (b.way, b.dir > 0)).collect();
                 nodes[2 * a.way as usize + usize::from(a.dir > 0)] = Some(others);
             }
@@ -427,29 +440,28 @@ impl<'a> Ctx<'a> {
         [true, false].iter().any(|&start| self.others(w, start).is_some_and(|x| x.iter().any(|a| a.0 == o)))
     }
 
-    /// Storey 0 at q without way `not` and the ways that go on from its ends: the terrain and the bodies
-    /// of the ground ways near q (their surface less their `fill` times the metres past the paved
-    /// stroke). And the highest paved stroke that covers q, less the at-grade band of it and `not` (the
-    /// lower of their `snap_height_m`, as at a crossing); None where none covers q.
-    fn ground(&self, q: [f64; 2], not: u32) -> (f64, Option<f64>) {
+    /// Storey 0 over a tunnel way's floor at q, without way `not`, the ways that go on from its ends and the ways
+    /// `gone` (they end at it on step 3: hidden over it), as the cover holds it by construction: the lowest paved
+    /// stroke of a ground way that covers q (a paved face never moves), else the plain terrain lifted by `lift_max_m`
+    /// (the floor bound's most). And the highest paved stroke that covers q
+    /// less the at-grade band of it and `not` (the lower of their `snap_height_m`, as at a crossing); None where none
+    /// covers q.
+    fn lid(&self, q: [f64; 2], not: u32, gone: &[u32]) -> (f64, Option<f64>) {
         let mpu = self.mpu(q);
-        let (mut z, mut paved) = (self.terrain(q), None::<f64>);
-        for f in self.feet(q, HALF_MAX_M + BODY_M) {
-            if f.way == not || self.g.ways[f.way as usize].level != Level::Ground || self.joined(not, f.way) {
+        let mut paved = None::<(f64, f64)>;
+        for f in self.feet(q, HALF_MAX_M) {
+            let w = &self.g.ways[f.way as usize];
+            if f.way == not || w.level != Level::Ground || self.joined(not, f.way) || gone.contains(&f.way) {
                 continue;
             }
             let Rule::Way(s, _) = self.rule(f.way) else { continue };
-            let past = f.d * mpu - self.foot_half(&f);
-            if past <= s.reach_m {
+            if f.d * mpu <= self.foot_half(&f) {
                 let surface = self.surface(&f, q);
-                if past <= 0.0 {
-                    let top = surface - s.snap_height_m.min(self.snap_m(not));
-                    paved = Some(paved.map_or(top, |p| p.max(top)));
-                }
-                z = z.max(surface - s.fill * past.max(0.0));
+                let top = surface - s.snap_height_m.min(self.snap_m(not));
+                paved = Some(paved.map_or((surface, top), |(lo, hi)| (lo.min(surface), hi.max(top))));
             }
         }
-        (z, paved)
+        (paved.map_or(self.terrain(q) + self.s.lift_max_m, |p| p.0), paved.map(|p| p.1))
     }
 
     /// Whether q lies over the body of way `g`: its paved stroke and, for a ground way, its bank down
@@ -466,38 +478,28 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    /// The bore test at a point of a tunnel way: `c` less what it needs (the least room, or that less
-    /// `lift_max_m` on free ground, where no paved stroke lies: a paved face never moves). `c` is the
-    /// least of storey 0 over the bore's width less the floor.
-    fn bore(&self, w: u32, a: &At) -> f64 {
+    /// The bore test at a point of a tunnel way: the least over the floor's width of storey 0 there (`lid`) less the
+    /// floor, less the least room. The floor is the way's core, banked across its carriageway and level past it, as
+    /// the floor bound of the heights reads it.
+    fn bore(&self, w: u32, a: &At, gone: &[u32]) -> f64 {
         let Rule::Way(s, _) = self.rule(w) else { return f64::NEG_INFINITY };
-        let half = (s.half_m + a.widen) / self.mpu(a.p);
+        let mpu = self.mpu(a.p);
+        let half = s.half_m + a.widen;
+        let core = half + s.shoulder_m + s.verge_m;
         let n = [-a.tangent[1], a.tangent[0]];
-        let (mut c, mut free) = (f64::INFINITY, true);
-        for side in [-1.0, 0.0, 1.0] {
-            let q = add(a.p, n, side * half);
-            let (z, paved) = self.ground(q, w);
-            let across = -cross(a.tangent, sub(q, a.p)) * self.mpu(a.p);
-            c = c.min(z - (a.z + a.bank * across));
-            free &= paved.is_none();
+        let mut c = f64::INFINITY;
+        for x in [-core, -half, 0.0, half, core] {
+            let q = add(a.p, n, x / mpu);
+            let across = -cross(a.tangent, sub(q, a.p)) * mpu;
+            c = c.min(self.lid(q, w, gone).0 - (a.z + a.bank * across.clamp(-half, half)));
         }
-        let least = s.bore_least_m + s.roof_least_m;
-        c - if free { least - self.s.lift_max_m } else { least }
+        c - (s.bore_least_m + s.roof_least_m)
     }
 
-    /// The state of a tunnel station by its own test: BORE where the bore fits; else OPEN within
-    /// `open_max_m` of a tag end, wherever its floor lies against the terrain (the way goes on as a ground
-    /// way, on its bank where the floor lies over the terrain, until the cover holds), unless a way lies on
-    /// top: a paved stroke over the floor by more than the at-grade band; else HIDDEN.
-    fn tunnel_state(&self, w: u32, a: &At, tag_m: f64) -> State {
-        let on_top = || self.ground(a.p, w).1.is_some_and(|top| top > a.z);
-        if self.bore(w, a) >= 0.0 {
-            State::Bore
-        } else if tag_m > self.s.open_max_m || on_top() {
-            State::Hidden
-        } else {
-            State::Open
-        }
+    /// Whether a way lies on top of tunnel way w at a point: a paved stroke over its floor by more than the at-grade
+    /// band.
+    fn on_top(&self, w: u32, a: &At, gone: &[u32]) -> bool {
+        self.lid(a.p, w, gone).1.is_some_and(|top| top > a.z)
     }
 
     /// Metres from an end of way w on through the ways that `same` accepts to the first end where
@@ -521,12 +523,6 @@ impl<'a> Ctx<'a> {
         } else {
             0.0
         }
-    }
-
-    /// The metres to the tag end behind and ahead of a way of the same kind, read up to `limit`.
-    fn tag_ends(&self, w: u32, limit: f64) -> (f64, f64) {
-        let same: &dyn Fn(u32) -> bool = if self.tunnel(w) { &|o| self.tunnel(o) } else { &|o| self.deck_tagged(o) };
-        (self.onward(w, true, limit, same, 0), self.onward(w, false, limit, same, 0))
     }
 
     /// How far the deck stroke at metres m stands clear of the paved strokes of the arms, metres.
@@ -655,16 +651,16 @@ fn ladder(ctx: &Ctx, c: &super::Crossing) -> Option<Ladder> {
     Some(Ladder { upper, lower, room_m: r, full_m: full, least_m: least, step, ends })
 }
 
-/// The way that ends on step 3: a tunnel way; else the later row of `roads.json`; a tie, the lower
-/// way; with no tag and one height, the way whose tile span comes later.
+/// The way that ends on step 3: the later row of `roads.json` (the smaller way); a tie, a tunnel way; else
+/// the lower way; with no tag and one height, the way whose tile span comes later.
 fn ends(ctx: &Ctx, c: &super::Crossing, upper: u32, lower: u32) -> u32 {
-    let (tu, tl) = (ctx.tunnel(upper), ctx.tunnel(lower));
-    if tu != tl {
-        return if tu { upper } else { lower };
-    }
     let (cu, cl) = (ctx.g.ways[upper as usize].class, ctx.g.ways[lower as usize].class);
     if cu != cl {
         return if cu > cl { upper } else { lower };
+    }
+    let (tu, tl) = (ctx.tunnel(upper), ctx.tunnel(lower));
+    if tu != tl {
+        return if tu { upper } else { lower };
     }
     if ctx.tagged(upper) || ctx.tagged(lower) || ctx.at_station(c.over).z != ctx.at_station(c.under).z {
         return lower;
@@ -744,19 +740,77 @@ struct Track {
     way: u32,
     m: Vec<f64>,
     state: Vec<State>,
-    tag: (f64, f64),
     a: [Option<f64>; 2],
 }
 
-impl Track {
-    fn tag_m(&self, len: f64, m: f64) -> f64 {
-        (self.tag.0 + m).min(self.tag.1 + len - m)
+/// The stretches of a way where `ok` holds, from its value at stations `m` (`at`), each end bisected between two
+/// stations; a station ends a stretch only where `ok` changes there.
+fn stretches(m: &[f64], at: &[bool], ok: &dyn Fn(f64) -> bool) -> Vec<(f64, f64)> {
+    let mut out = Vec::new();
+    let mut from = None;
+    for i in 0..m.len() {
+        match (from, at[i]) {
+            (None, true) => from = Some(if i == 0 { m[0] } else { bisect(m[i - 1], m[i], ok) }),
+            (Some(a), false) => {
+                out.push((a, bisect_down(m[i - 1], m[i], ok)));
+                from = None;
+            }
+            _ => {}
+        }
     }
+    if let (Some(a), Some(&b)) = (from, m.last()) {
+        out.push((a, b));
+    }
+    out
 }
 
-fn states(ctx: &Ctx, ladders: &[Option<Ladder>]) -> Levels {
+/// What a cell finds of a tunnel way, for the bake's merge (`level_tags::merge`), which decides its states along the
+/// whole chain of tunnel ways: its stations with room (`Ctx::bore`), with a way on top (`Ctx::on_top`) and over the
+/// body of a way that it ends at (step 3); per end, whether it is a tag end, and the tunnel ways that go on there.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TunnelFound {
+    pub way: u32,
+    pub room: Vec<(Station, Station)>,
+    pub top: Vec<(Station, Station)>,
+    pub stay: Vec<(Station, Station)>,
+    /// Per end (start, end): no tunnel way goes on there.
+    pub tag: [bool; 2],
+    /// Per end: the tunnel ways that go on there, each with its station at the node.
+    pub next: [Vec<(u32, Station)>; 2],
+}
+
+/// A tunnel way's stretches and ends (`TunnelFound`): its stations are its samples and the crossings where it is the
+/// lower way (a way on top can give the room between two samples).
+fn tunnel_found(ctx: &Ctx, w: u32, ended: &[(usize, u32)], gone: &[u32]) -> TunnelFound {
     let g = ctx.g;
-    // The step-3 crossings by the way that ends: (crossing, the way that stays).
+    let from = g.ways[w as usize].from;
+    let mut m: Vec<f64> = ctx.samples(w).iter().map(|s| between(&g.parts, &from, &ctx.station(w, s))).collect();
+    let under = g.crossings.iter().filter(|c| way_of(g, &c.under) == Some(w));
+    m.extend(under.map(|c| between(&g.parts, &from, &c.under)));
+    m.sort_by(f64::total_cmp);
+    m.dedup_by(|a, b| (*a - *b).abs() < PLACE_TO_M);
+    let of = |ok: &dyn Fn(f64) -> bool| {
+        let at: Vec<bool> = m.iter().map(|&x| ok(x)).collect();
+        let st = |x: f64| ctx.at(w, x).st;
+        stretches(&m, &at, ok).into_iter().map(|(a, b)| (st(a), st(b))).collect()
+    };
+    let room = of(&|x| ctx.bore(w, &ctx.at(w, x), gone) >= 0.0);
+    let top = of(&|x| ctx.on_top(w, &ctx.at(w, x), gone));
+    let stay = of(&|x| ended.iter().any(|&(_, stay)| ctx.in_body(stay, ctx.at(w, x).p)));
+    let end = |start: bool| {
+        let others = ctx.others(w, start);
+        let next: Vec<(u32, Station)> = (others.into_iter().flatten())
+            .filter(|(o, _)| ctx.tunnel(*o))
+            .map(|&(o, o_start)| (o, if o_start { g.ways[o as usize].from } else { g.ways[o as usize].to }))
+            .collect();
+        (others.is_some() && next.is_empty(), next)
+    };
+    let ((t0, n0), (t1, n1)) = (end(true), end(false));
+    TunnelFound { way: w, room, top, stay, tag: [t0, t1], next: [n0, n1] }
+}
+
+/// The step-3 crossings by the way that ends, as (crossing, the way that stays), and the ways over a culvert.
+fn step3(g: &WayGraph, ladders: &[Option<Ladder>]) -> (Vec<Vec<(usize, u32)>>, Vec<bool>) {
     let mut ended: Vec<Vec<(usize, u32)>> = vec![Vec::new(); g.ways.len()];
     let mut culvert = vec![false; g.ways.len()];
     for (i, l) in ladders.iter().enumerate() {
@@ -766,6 +820,18 @@ fn states(ctx: &Ctx, ladders: &[Option<Ladder>]) -> Levels {
             None => culvert[l.upper as usize] = true,
         }
     }
+    (ended, culvert)
+}
+
+/// The ways that end at tunnel way w or at a way that goes on from its ends: hidden over them, no part of its lid.
+fn gone(ctx: &Ctx, ended: &[Vec<(usize, u32)>], w: u32) -> Vec<u32> {
+    let on = |x: u32| x == w || ctx.joined(w, x);
+    (0..ctx.g.ways.len() as u32).filter(|&o| ended[o as usize].iter().any(|&(_, stay)| on(stay))).collect()
+}
+
+fn states(ctx: &Ctx, ladders: &[Option<Ladder>]) -> Levels {
+    let g = ctx.g;
+    let (ended, culvert) = step3(g, ladders);
     let ways: Vec<u32> = (0..g.ways.len() as u32).filter(|&w| ctx.tagged(w) || !ended[w as usize].is_empty()).collect();
     // Deck ways that are ground: over a culvert, or with no room for a deck between their A lines. A
     // deck way that turns ground changes the A lines of the deck ways at its ends only.
@@ -792,21 +858,15 @@ fn states(ctx: &Ctx, ladders: &[Option<Ladder>]) -> Levels {
     }
     let mut out = Levels::default();
     for &w in &ways {
-        let samples = ctx.samples(w);
-        let from = g.ways[w as usize].from;
-        let m: Vec<f64> = samples.iter().map(|s| between(&g.parts, &from, &ctx.station(w, s))).collect();
-        let mut t = Track { way: w, state: vec![State::Open; m.len()], tag: (0.0, 0.0), a: [None, None], m };
         if ctx.tunnel(w) {
-            t.tag = ctx.tag_ends(w, ctx.s.open_max_m);
-            for (i, s) in samples.iter().enumerate() {
-                t.state[i] =
-                    ctx.tunnel_state(w, &ctx.at_station(ctx.station(w, s)), t.tag_m(ctx.lengths[w as usize], t.m[i]));
-            }
-            let raw = t.state.clone();
-            for i in 0..t.state.len() {
-                t.state[i] = open_rule(&t, &raw, ctx.lengths[w as usize], i);
-            }
-        } else if !ground[w as usize] {
+            // The merge decides a tunnel's states along its whole chain.
+            out.tunnels.push(tunnel_found(ctx, w, &ended[w as usize], &gone(ctx, &ended, w)));
+            continue;
+        }
+        let from = g.ways[w as usize].from;
+        let m: Vec<f64> = ctx.samples(w).iter().map(|s| between(&g.parts, &from, &ctx.station(w, s))).collect();
+        let mut t = Track { way: w, state: vec![State::Open; m.len()], a: [None, None], m };
+        if !ground[w as usize] {
             let (a, _) = deck_of[w as usize].expect("each DECK way has its ends");
             let (lo, hi) = (a[0].unwrap_or(0.0), a[1].unwrap_or(ctx.lengths[w as usize]));
             for (s, &m) in t.state.iter_mut().zip(&t.m) {
@@ -819,10 +879,10 @@ fn states(ctx: &Ctx, ladders: &[Option<Ladder>]) -> Levels {
         // Step 3: not drawn over the body of the way that stays; the rest of the way keeps its state.
         for &(i, stay) in &ended[w as usize] {
             let c = &g.crossings[i];
-            let st = if way_of(g, &c.over) == Some(w) { c.over } else { c.under };
-            let k0 = t.m.partition_point(|&x| x < between(&g.parts, &from, &st));
-            let over = |k: usize| ctx.in_body(stay, ctx.global(&samples[k]));
-            for k in (k0..samples.len()).take_while(|&k| over(k)) {
+            let at = if way_of(g, &c.over) == Some(w) { c.over } else { c.under };
+            let k0 = t.m.partition_point(|&x| x < between(&g.parts, &from, &at));
+            let over = |k: usize| ctx.in_body(stay, ctx.global(&ctx.samples(w)[k]));
+            for k in (k0..t.m.len()).take_while(|&k| over(k)) {
                 t.state[k] = State::Hidden;
             }
             for k in (0..k0).rev().take_while(|&k| over(k)) {
@@ -939,18 +999,17 @@ fn merge_a(ctx: &Ctx, out: &mut Levels) {
     }
 }
 
-/// OPEN only between a tag end and the first BORE from that end: the read stays within `open_max_m`.
-fn open_rule(t: &Track, raw: &[State], len: f64, i: usize) -> State {
-    if raw[i] != State::Open {
-        return raw[i];
+/// The last `m` in [lo, hi] where `ok` holds, to `PLACE_TO_M`; `ok(lo)` is true, `ok(hi)` false.
+fn bisect_down(mut lo: f64, mut hi: f64, ok: &dyn Fn(f64) -> bool) -> f64 {
+    while hi - lo > PLACE_TO_M {
+        let mid = (lo + hi) / 2.0;
+        if ok(mid) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
     }
-    let back = t.tag.0 + t.m[i] <= t.tag.1 + len - t.m[i];
-    let between = if back { &raw[..i] } else { &raw[i + 1..] };
-    if between.contains(&State::Bore) {
-        State::Hidden
-    } else {
-        State::Open
-    }
+    lo
 }
 
 /// The runs and end lines of a track: a change between two samples lies where the state that tells
@@ -965,16 +1024,6 @@ fn runs(ctx: &Ctx, t: &Track, ended: &[(usize, u32)], out: &mut Levels) {
         let a = ctx.at(w, m);
         if stays.iter().any(|&s| ctx.in_body(s, a.p)) {
             State::Hidden
-        } else if tunnel {
-            // The OPEN rule at m: no BORE sample between m and its nearer tag end.
-            let s = ctx.tunnel_state(w, &a, t.tag_m(len, m));
-            let back = t.tag.0 + m <= t.tag.1 + len - m;
-            let bore = t.m.iter().zip(&t.state).any(|(&x, &st)| st == State::Bore && if back { x < m } else { x > m });
-            if s == State::Open && bore {
-                State::Hidden
-            } else {
-                s
-            }
         } else {
             State::Open
         }
@@ -1043,16 +1092,18 @@ fn line_at(ctx: &Ctx, w: u32, st: Station, kind: EndKind, structure: State) -> E
     end_line(ctx.g, ctx.input, ctx.sections, ctx.s.edge_band_m, (w, st, kind, structure))
 }
 
-/// G7: the runs of a bridge or tunnel way cover it once, in order; OPEN lies within `open_max_m` of a
-/// tag end and never between two BORE runs. G8: each BORE sample has its room; a DECK way has
-/// `deck_min_m` between its end lines. G9: an A line lies outside the paved stroke of every ground arm.
+/// G7: the runs of a bridge way cover it once, in order, with no BORE run. G8: a DECK way has `deck_min_m` between its
+/// end lines; a tunnel way's stations in the cell's square that its tag (the merge's states) makes a BORE have their
+/// room by the test that the merge read there (`tunnel_found`), and those it leaves OPEN have none, as an open stretch
+/// ends at the first room. G9: an A line lies outside the paved stroke of every ground arm.
 pub fn check_levels(g: &WayGraph, input: &CellInput, sections: &Sections, s: &Structures) -> Vec<Fault> {
+    let ladders: Vec<Option<Ladder>> = g.crossings.iter().map(|x| x.ladder.clone()).collect();
     let ctx = {
         let mut c = Ctx::new(g, input, sections, s);
-        let ladders: Vec<Option<Ladder>> = g.crossings.iter().map(|x| x.ladder.clone()).collect();
         c.grid = grid(&c, &ladders);
         c
     };
+    let (ended, _) = step3(g, &ladders);
     let mut faults = Vec::new();
     let mut fault = |check: &'static str, what: String| faults.push(Fault { check, what });
     let tolerance = 1e-6;
@@ -1060,6 +1111,25 @@ pub fn check_levels(g: &WayGraph, input: &CellInput, sections: &Sections, s: &St
     for way in &g.ways {
         let w = way.id;
         let runs: Vec<&Run> = g.levels.runs.iter().filter(|r| r.way == w).collect();
+        if ctx.tunnel(w) {
+            let (gone, from) = (gone(&ctx, &ended, w), way.from);
+            let size = crate::frame::CELL_UNITS as i32;
+            for smp in ctx.samples(w).iter().filter(|x| x.pos.iter().all(|c| (0..size).contains(c))) {
+                let st = ctx.station(w, smp);
+                let Some(state) = super::level_tags::state_at(g, input, w, &st) else { continue };
+                let room = ctx.bore(w, &ctx.at(w, between(&g.parts, &from, &st)), &gone);
+                match state {
+                    State::Bore if room < -tolerance => {
+                        fault("G8", format!("way {w}: a BORE station at {st:?} lacks room"))
+                    }
+                    State::Open if room >= tolerance => {
+                        fault("G8", format!("way {w}: an OPEN station at {st:?} has room"))
+                    }
+                    _ => {}
+                }
+            }
+            continue;
+        }
         if !ctx.tagged(w) && runs.is_empty() {
             continue;
         }
@@ -1072,40 +1142,8 @@ pub fn check_levels(g: &WayGraph, input: &CellInput, sections: &Sections, s: &St
         {
             fault("G7", format!("way {w}: its runs do not cover it once in order"));
         }
-        let len = ctx.lengths[w as usize];
-        let tunnel = ctx.tunnel(w);
-        let (back, ahead) = ctx.tag_ends(w, s.open_max_m.max(s.deck_min_m));
-        let inside = |r: &Run, st: &Station| k(&r.from) <= k(st) && k(st) <= k(&r.to);
-        for r in &runs {
-            let wrong = match r.state {
-                State::Deck => tunnel,
-                State::Bore => !tunnel,
-                State::Open => {
-                    let tag = |st: &Station| {
-                        let m = between(&g.parts, &way.from, st);
-                        (back + m).min(ahead + len - m)
-                    };
-                    tunnel && tag(&r.from).min(tag(&r.to)) > s.open_max_m + PLACE_TO_M
-                }
-                State::Hidden => false,
-            };
-            if wrong {
-                fault("G7", format!("way {w}: a {:?} run at {:?}", r.state, r.from));
-            }
-        }
-        let bores: Vec<usize> = (0..runs.len()).filter(|&i| runs[i].state == State::Bore).collect();
-        if let (Some(&a), Some(&b)) = (bores.first(), bores.last()) {
-            if runs[a..b].iter().any(|r| r.state == State::Open) {
-                fault("G7", format!("way {w}: an OPEN run between two BORE runs"));
-            }
-        }
-        for smp in ctx.samples(w) {
-            let st = ctx.station(w, smp);
-            if runs.iter().any(|r| r.state == State::Bore && inside(r, &st))
-                && ctx.bore(w, &ctx.at_station(st)) < -tolerance
-            {
-                fault("G8", format!("way {w}: a BORE station at {st:?} lacks room"));
-            }
+        if let Some(r) = runs.iter().find(|r| r.state == State::Bore) {
+            fault("G7", format!("way {w}: a BORE run at {:?}", r.from));
         }
         let deck: f64 = runs.iter().filter(|r| r.state == State::Deck).map(|r| between(&g.parts, &r.from, &r.to)).sum();
         if deck > 0.0 {

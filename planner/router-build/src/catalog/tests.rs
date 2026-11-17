@@ -33,7 +33,7 @@ const ORIGIN: i32 = 100_000;
 type Route<'a> = (i64, Vec<(&'a str, &'a str)>, Vec<Id>);
 
 /// A 7 by 7 grid of streets 445 m apart on rolling ground, with node `10 * row + column`, and its
-/// source objects. The way from node 0 to node 1 is T3.
+/// source objects. The way from node 0 to node 1 is T3, the way from node 25 to node 26 is a T5 path.
 fn grid(routes: Vec<Route>) -> (Package<Memory>, Data) {
     let mut graph = Graph::default();
     let mut index = HashMap::new();
@@ -70,10 +70,14 @@ fn grid(routes: Vec<Route>) -> (Package<Memory>, Data) {
                             ascent_m: (shape[1].elevation - shape[0].elevation).max(0.0) as u32,
                             descent_m: (shape[0].elevation - shape[1].elevation).max(0.0) as u32,
                             surface: Surface::Paved,
-                            class: 1,
+                            class: if id == way(25, 26) { 4 } else { 1 },
                             access: BIKE | FOOT | PUSH,
                             difficulty: 255,
-                            hiking_difficulty: (id == way(0, 1)).then_some(3),
+                            hiking_difficulty: match id {
+                                _ if id == way(0, 1) => Some(3),
+                                _ if id == way(25, 26) => Some(5),
+                                _ => None,
+                            },
                             structure: false,
                             shape,
                         },
@@ -156,7 +160,24 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
             path(&[40, 41, 42]),
         ),
         route(11, &[("route", "hiking"), ("name", "Rundweg")], path(&[30, 31, 32, 33])),
-        long(12, &[10]),
+        long(12, &[10, 11]),
+        // A trail of an unnamed piece, its own ways and a connector leg, and a long route with it as
+        // its stage; a trail with an absent child; a connector made of a piece.
+        (
+            13,
+            vec![("type", "route"), ("route", "hiking"), ("name", "Joined"), ("network", "rwn")],
+            [vec![Id::Relation(14)], path(&[16, 26, 36]).into_iter().map(Id::Way).collect(), vec![Id::Relation(15)]]
+                .concat(),
+        ),
+        route(14, &[("route", "hiking")], path(&[6, 16])),
+        route(15, &[("route", "hiking"), ("name", "C - D")], path(&[36, 46])),
+        long(18, &[13]),
+        (16, vec![("type", "route"), ("route", "hiking"), ("name", "Half")], vec![Id::Relation(14), Id::Relation(998)]),
+        (
+            17,
+            [&trail[..1], &[("type", "route"), ("name", "A - B"), ("osmc:symbol", "yellow::yellow_diamond")]].concat(),
+            vec![Id::Relation(15)],
+        ),
     ]);
     let selection = Selection::whole(package.fork());
     let (records, report) = catalog(&selection, osm, false, 2)?;
@@ -165,14 +186,19 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
     assert_eq!(
         dropped,
         [
-            ("Connector", vec![10]),
-            ("ExtractEdge", vec![7]),
+            ("Connector", vec![10, 15, 17]),
+            ("ExtractEdge", vec![7, 16]),
             ("Gap", vec![3]),
             ("MissingStage", vec![12]),
             ("NestedLongRoute", vec![6])
         ]
     );
-    assert_eq!(by_id.keys().copied().collect::<BTreeSet<_>>(), BTreeSet::from([1, 2, 5, 8, 9, 11]));
+    assert_eq!(by_id.keys().copied().collect::<BTreeSet<_>>(), BTreeSet::from([1, 2, 5, 8, 9, 11, 13, 18]));
+    let joined = by_id[&13];
+    assert_eq!(joined["length_m"], 4 * 445);
+    assert_eq!(&joined["line_udeg"].as_array().unwrap()[..2], [json!(ORIGIN + 6 * 4_000), json!(ORIGIN)]);
+    assert!(joined.get("stages").is_none());
+    assert_eq!((&joined["parent"], &joined["stage"]), (&json!(18), &json!(1)));
 
     let trail = by_id[&1];
     assert_eq!((&trail["loop"], &trail["length_m"]), (&json!(false), &json!(8 * 445)));
@@ -236,7 +262,17 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
     assert!(whole.get("line_udeg").is_none() && whole.get("profile_m").is_none());
     // The trail ends where the ring starts, so that point counts once.
     let points = via + 2 + ring["via"].as_array().unwrap().len() + 2 - 1;
-    assert_eq!(report.long_points, [(5, points)]);
+    assert_eq!(report.long_points[0], (5, points));
+    Ok(())
+}
+
+#[test]
+fn catalog_keeps_a_hiking_route_over_a_t5_way() -> Result<(), String> {
+    let (package, osm) =
+        grid(vec![route(13, &[("route", "hiking"), ("name", "Ridge")], path(&[23, 24, 25, 26, 36, 46]))]);
+    let (records, report) = catalog(&Selection::whole(package.fork()), osm, false, 2)?;
+    assert!(report.dropped.is_empty(), "{:?}", report.dropped);
+    assert_eq!((&records[0]["id"], &records[0]["hardest"]), (&json!(13), &json!(4)));
     Ok(())
 }
 

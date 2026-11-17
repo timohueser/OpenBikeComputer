@@ -195,6 +195,7 @@ fn the_tiles_carry_the_levels_of_each_cell() {
     // A feature by its kind and tags, the same in each tile that holds it; and its level tags.
     let (mut ids, mut carried_tags) = (BTreeMap::<String, u32>::new(), BTreeMap::<u32, Tags>::new());
     let (mut found, mut groups, mut over) = (BTreeMap::<u32, Vec<level_tags::Found>>::new(), Vec::new(), Vec::new());
+    let mut links = Vec::new();
     for (key, computed) in graphs() {
         let input = fixture.cell(key);
         let cell = level_tags::found(&computed, &input, Sections::embedded());
@@ -212,6 +213,7 @@ fn the_tiles_carry_the_levels_of_each_cell() {
         }
         groups.extend(cell.groups.into_iter().map(|g| g.into_iter().map(&mut id).collect::<Vec<_>>()));
         over.extend(cell.over.into_iter().map(|(l, u)| (id(l), id(u))));
+        links.extend(cell.links.into_iter().map(|(a, ma, da, b, mb, db)| (id(a), ma, da, id(b), mb, db)));
         // The graph of the storeys gives each stretch the level of its state, and holds no HIDDEN stretch.
         let levelled = build_levelled(key, &input, Sections::embedded(), Rules::embedded().structures.edge_band_m);
         let k = |st: &Station| (st.span, st.u);
@@ -290,7 +292,7 @@ fn the_tiles_carry_the_levels_of_each_cell() {
             }
         }
     }
-    let merged = level_tags::merge(&found, &groups, &over);
+    let merged = level_tags::merge(&found, &groups, &over, &links, &Rules::embedded().structures);
     let mut counts = BTreeMap::<String, usize>::new();
     for (id, carried) in &carried_tags {
         let want = merged.get(id).cloned().unwrap_or_default();

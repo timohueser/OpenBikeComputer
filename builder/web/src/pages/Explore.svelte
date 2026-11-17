@@ -114,7 +114,7 @@
         <!-- The search field finds places only; a chosen place moves the map. -->
         <PlaceSearch {view} label="Find a place" placeholder="Find a place" float onchoose={({ lon, lat, box }) => place = { lon, lat, box }} />
         <Chips bind:chips={() => chips, setChips} {view} keys={['bike', 'length', 'climb', ...graded ? ['grade' as const] : [], 'shape']} fixed={['bike']}
-            grades={[0, 1, 2, 3].map(grade => gradeName(bike === 'mtb' ? 'mtb' : 'hiking', grade))} {values} />
+            grades={bike === 'mtb' ? [0, 1, 2, 3].map(grade => gradeName('mtb', grade)) : [0, 1, 2, 3, 4, 5].map(grade => gradeName('hiking', grade))} {values} />
         {#if failed}
             <p class="note">The routes could not load. <button type="button" class="retry" onclick={() => { if (view) void load(view, bike); }}>Retry</button></p>
         {:else if wide}
