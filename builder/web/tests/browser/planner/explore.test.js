@@ -42,6 +42,11 @@ test('the Explore page lists the signed routes of the map view, filters them, pl
   await list.getByRole('button', { name: /Westweg 2/ }).click();
   const card = page.getByRole('region', { name: 'Westweg 2' });
   await expect(card).toContainText('One way · Stage 2 of 2 · Westweg · National hiking route');
+  // The button of the card closes it and clears the selection.
+  await card.getByRole('button', { name: 'Close' }).click();
+  await expect(card).toHaveCount(0);
+  await expect(list.locator('.row[aria-current="true"]')).toHaveCount(0);
+  await list.getByRole('button', { name: /Westweg 2/ }).click();
   const kept = await page.evaluate(() => new Promise(done => setTimeout(() => done(history.state.explore), 500)));
 
   await card.getByRole('button', { name: 'Plan this route' }).click();

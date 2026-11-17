@@ -259,7 +259,8 @@
 {#snippet selectedCard()}
     <SelectedCard {library} item={chosen!} row={chosenRow} device={states.get(chosen!.id)} inGroup={!!group} bind:credits={cardCredits}
         runs={ridden ? 0 : times.get(chosen!.id)}
-        route={chosenRow?.kind === 'group' && records?.some(record => record.id === chosenRow.id) ? chosenRow.id : undefined} />
+        route={chosenRow?.kind === 'group' && records?.some(record => record.id === chosenRow.id) ? chosenRow.id : undefined}
+        onclose={() => selected = undefined} />
 {/snippet}
 
 {#if statistics}

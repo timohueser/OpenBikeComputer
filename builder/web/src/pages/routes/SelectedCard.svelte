@@ -12,7 +12,7 @@
     import { dayText, tripDates, type Row } from './rows';
     import { stateText, waitingWith, type DeviceState } from './state';
 
-    let { library, item, row, device, route, runs = 0, inGroup = false, credits = $bindable([]) }: {
+    let { library, item, row, device, route, runs = 0, inGroup = false, credits = $bindable([]), onclose }: {
         library: Library;
         /** A route, or the ride of `row` that the card shows. */
         item: Item;
@@ -27,6 +27,7 @@
         inGroup?: boolean;
         /** The credits of the picture. It is too small to show them, so the page shows them with the map. */
         credits?: string[];
+        onclose: () => void;
     } = $props();
 
     let failure = $state('');
@@ -57,7 +58,7 @@
 </script>
 
 <RouteCard name={row?.name ?? item.name} href={`${item.kind === 'ride' ? ROUTES.ride : ROUTES.route}/${item.id}`} {meta} {numbers}
-    profile={summary ?? undefined} state={device && stateText[device]} {failure}>
+    profile={summary ?? undefined} state={device && stateText[device]} {failure} {onclose}>
     {#snippet picture()}<Cover {library} id={item.id} place="card" bind:credits />{/snippet}
     {#snippet buttons()}
         {#if item.kind === 'route' && summary}

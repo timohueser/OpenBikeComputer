@@ -34,7 +34,7 @@ afterEach(() => {
     document.body.replaceChildren();
 });
 
-it('selects the route under a click, and makes the selected route bold when the pointer leaves the view', async () => {
+it('selects the route under a click, clears the selection with a click beside the routes, and makes the selected route bold when the pointer leaves the view', async () => {
     const line: [number, number][] = [[8.3, 47], [8.31, 47.01]];
     const onselect = vi.fn();
     shown = mount(TrailViewWindow, { target: document.body, props: {
@@ -46,6 +46,11 @@ it('selects the route under a click, and makes the selected route bold when the 
     engine.routeAt.mockReturnValue(2);
     pointer.onclick!(10, 10);
     expect(onselect).toHaveBeenCalledWith('b');
+    // A click where no route is clears the selection, as a click on the empty map does.
+    engine.routeAt.mockReturnValue(null);
+    pointer.onclick!(10, 10);
+    expect(onselect).toHaveBeenLastCalledWith(undefined);
+    engine.routeAt.mockReturnValue(2);
 
     pointer.onhover!(10, 10);
     expect(engine.boldRoute).toHaveBeenLastCalledWith(2);

@@ -1,5 +1,5 @@
 <!-- The frame of a page with a list beside a map: the header with the title, the list in a card, the map, and the card
-     of the selected item over the map. On a phone the map is under the list. -->
+     of the selected item over the map. On a phone the map is under the list, and the card is at the bottom of the screen. -->
 <script lang="ts">
     import type { Snippet } from 'svelte';
     import Card from '../../lib/ui/Card.svelte';
@@ -154,6 +154,12 @@
         }
         .map {
             height: 70vh;
+        }
+        /* The map is under the list, so a card over the map is below the screen after a tap on a row. */
+        .selected {
+            position: fixed;
+            z-index: 20;
+            bottom: max(12px, env(safe-area-inset-bottom));
         }
     }
 </style>

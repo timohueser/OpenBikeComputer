@@ -199,7 +199,7 @@
 </ListAndMap>
 
 {#snippet card()}
-    <SignedCard item={chosen!} onplan={() => plan(chosen!)} />
+    <SignedCard item={chosen!} onplan={() => plan(chosen!)} onclose={() => selected = undefined} />
 {/snippet}
 
 {#snippet mapButtons()}

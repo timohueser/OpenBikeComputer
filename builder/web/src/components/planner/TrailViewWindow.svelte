@@ -32,7 +32,8 @@
         view: View;
         /** The id of the route that is bold while the pointer is on no route. */
         selected?: string;
-        onselect?: (id: string) => void;
+        /** The id of the route under a click, or undefined after a click where no route is. */
+        onselect?: (id: string | undefined) => void;
         /** Shows at the bottom of the window, over the view or its notice. */
         card?: Snippet;
     };
@@ -78,7 +79,7 @@
         onhover: (x: number, y: number) => { hovered = engine?.routeAt(x, y) ?? null; bold(); },
         onclick: (x: number, y: number) => {
             const number = engine?.routeAt(x, y);
-            if (number) props.onselect?.(routes[number - 1].id);
+            props.onselect?.(number ? routes[number - 1].id : undefined);
         },
     };
     const drawRoute = () => {
@@ -309,7 +310,6 @@
         left: calc(max(12px, env(safe-area-inset-left)) + 232px);
         right: calc(max(12px, env(safe-area-inset-right)) + 44px);
         bottom: max(12px, env(safe-area-inset-bottom));
-        max-width: 980px;
     }
     @media (max-width: 640px) {
         .card {
