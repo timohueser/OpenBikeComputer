@@ -16,11 +16,12 @@ use crate::{world, Part, Tags};
 pub const LIFT_REACH_M: f64 = 20000.0;
 const METRES_PER_DEGREE: f64 = 111320.0;
 /// Up to this size, the input is renumbered before the cut. Osmium's extract keeps bit sets up to the
-/// largest ID of the file, 3.97 GiB on the Swiss OSM and as much on any file with the IDs of OSM;
-/// `osmium renumber` keeps 8 bytes per object in vectors that double. It took 11.8 bytes per object on the
-/// Swiss and the Irish OSM, which have 0.12 and 0.15 objects per byte: at most 16 bytes per object while a
-/// vector doubles is 2.4 bytes per byte, 3.6 GB at this size. Past it, the renumber can take more.
-const RENUMBER_MAX_BYTES: u64 = 1_500_000_000;
+/// largest ID of the file, 3.97 GiB on the Swiss OSM and as much on any file with the IDs of OSM.
+/// `osmium renumber` keeps 8 bytes per object in vectors that double, 16 bytes per object while one
+/// doubles. The limit assumes at most 0.22 objects per byte of input: then the vectors stay under 4 GiB.
+/// Two samples, with Osmium's buffers: the Swiss OSM (549 MB, 0.12 objects per byte) and the Irish OSM
+/// (417 MB, 0.15 objects per byte) took 11.8 bytes per object. A denser input can take more.
+const RENUMBER_MAX_BYTES: u64 = 1_200_000_000;
 /// The landuse areas whose value a building in them keeps as its tag `landuse`. They are not features.
 pub const LANDUSE: [&str; 2] = ["farmyard", "industrial"];
 /// The Osmium program: `OBC_OSMIUM`, else `osmium` on the path; and its version.

@@ -73,10 +73,10 @@ Limits:
 
 ## Memory
 
-Up to 1.5 GB of input (`RENUMBER_MAX_BYTES`), Osmium renumbers the objects of the OSM from 1 before
+Up to 1.2 GB of input (`RENUMBER_MAX_BYTES`), Osmium renumbers the objects of the OSM from 1 before
 it cuts them: its extract and its filter keep a bit for each ID up to the largest ID of the file,
-about 4 GiB with the IDs of OSM. A larger input keeps its IDs: there the map of the renumber takes
-more than the bit sets.
+about 4 GiB with the IDs of OSM. A larger input keeps its IDs: there the map of the renumber can
+take more than the bit sets.
 
 The bake reads the cut two times. The first read keeps only what the water and road solvers need,
 and the solvers run before the bake places a feature. The second read places the features.
