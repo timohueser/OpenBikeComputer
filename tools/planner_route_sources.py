@@ -20,7 +20,7 @@ TEMPLATES = ("ref", "name", "description", "operator", "website")
 SHARED = {"layer", "file", "ascent", "keep", "drop", *TEMPLATES}
 KEYS = {
     "description": {"origin", "countries", "kind", "route", "stage"},
-    "route": SHARED | {"key", "rank", "members"},
+    "route": SHARED | {"key", "rank"},
     "stage": SHARED | {"of", "number"},
 }
 NEEDS = {"description": {"origin", "countries", "kind", "route"}, "route": {"layer", "key"}, "stage": {"layer", "of", "number"}}
@@ -45,10 +45,23 @@ def parse(text):
         raise ValueError("`origin` is an integer from 1 to 9006")
     if not countries or not all(isinstance(code, str) and re.fullmatch("[A-Z]{2}", code) for code in countries):
         raise ValueError("`countries` lists ISO 3166-1 alpha-2 codes, at least one")
-    kinds = [kind] if isinstance(kind, str) else list(kind.get("values", {}).values()) if "field" in kind else []
+    kinds = [kind] if isinstance(kind, str) else values_of(kind) if isinstance(kind, dict) else None
     if not kinds or any(value not in KINDS for value in kinds):
         raise ValueError(f"`kind` is one of {', '.join(KINDS)}, or a table of `field` and `values` that map to them")
+    if "rank" in description["route"] and any(type(level) is not int or not 0 <= level <= 4
+                                               for level in values_of(description["route"]["rank"]) or [None]):
+        raise ValueError("`rank` is a table of `field` and `values` that map to the levels 0 to 4")
+    for name, table in tables.items():
+        for key in ("keep", "drop"):
+            if key in table and not (isinstance(table[key], dict) and all(isinstance(v, list) for v in table[key].values())):
+                raise ValueError(f"`{name}.{key}` maps each field to a list of values")
     return description
+
+
+def values_of(table):
+    """The values of a table `{ field, values }`, or None when it is not one."""
+    ok = isinstance(table, dict) and set(table) == {"field", "values"} and isinstance(table["values"], dict)
+    return list(table["values"].values()) if ok else None
 
 
 def text_key(text):
@@ -58,7 +71,7 @@ def text_key(text):
 
 def key_of(text, seen, where):
     """The key of the field value `text`; `seen` maps each key to the text that gave it."""
-    number = text.isascii() and text.isdigit() and str(int(text)) == text and int(text) < KEY_LIMIT
+    number = re.fullmatch("0|[1-9][0-9]{0,9}", text) is not None
     key = int(text) if number else text_key(text)
     if seen.setdefault(key, text) != text:
         raise ValueError(f"{where}: the texts {seen[key]!r} and {text!r} give the one key {key}")
@@ -72,12 +85,11 @@ def listed(value):
 def fields(table, kind=None):
     """The fields of the file that `table` reads."""
     names = {field for key in TEMPLATES if key in table
-             for _, field, _, _ in string.Formatter().parse(table[key]) if field and field != "route"}
+             for _, field, _, _ in string.Formatter().parse(table[key]) if field and field not in ("route", "key")}
     names |= set(table.get("keep", {})) | set(table.get("drop", {}))
     names |= {value for key in ("ascent", "of", "number") if (value := table.get(key))}
     names |= set(listed(table.get("key", [])))
     names |= {table[key]["field"] for key in ("rank",) if key in table}
-    names |= {table["members"]["link"]} if "members" in table else set()
     return names | ({kind["field"]} if isinstance(kind, dict) else set())
 
 
@@ -131,7 +143,8 @@ def features(name, files, table, wanted):
         raise ValueError(f"{name}: the layer {layer} has no field {', '.join(sorted(missing))}")
     meta, fids, geometry, values = pyogrio.raw.read(path, layer=layer, columns=sorted(wanted), force_2d=True, return_fids=True)
     to_wgs84 = pyproj.Transformer.from_crs(meta["crs"], "EPSG:4326", always_xy=True)
-    plain = lambda value: None if isinstance(value, float) and math.isnan(value) else value
+    # pyogrio reads an integer field with a null as floats: a whole float is the integer again.
+    plain = lambda value: (None if math.isnan(value) else int(value) if value.is_integer() else value) if isinstance(value, float) else value
     out = []
     for i in np.argsort(fids, kind="stable"):
         row = {field: plain(column[i].item() if hasattr(column[i], "item") else column[i]) for field, column in zip(meta["fields"], values)}
@@ -169,24 +182,21 @@ def read(source, files, bounds):
     seen = {}
 
     def keys(row, names, where):
-        return [key_of(str(row[field]), seen, where) for field in names if row[field] not in (None, "")]
+        """`(key, text)` of each field of `names` that has a value in `row`."""
+        texts = [str(row[field]) for field in names if row[field] not in (None, "")]
+        return [(key_of(text, seen, where), text) for text in texts]
 
-    links = {}
-    if members := route.get("members"):
-        for fid, row, found in features(name, files, {"layer": members["layer"], **({"file": route["file"]} if "file" in route else {})}, {members["field"]}):
-            links.setdefault(str(row[members["field"]]), []).extend(found)
     routes = {}
     for fid, row, found in features(name, files, route, fields(route, kind)):
         kind_of = kind if isinstance(kind, str) else kind["values"].get(str(row[kind["field"]]))
         if kind_of is None:
             continue
-        for key in keys(row, listed(route["key"]), f"{name}: {route['layer']} feature {fid}"):
-            entry = routes.setdefault(key, {"row": row, "kind": kind_of, "members": []})
-            entry["members"] += links.get(str(row[members["link"]]), []) if members else found
+        for key, text in keys(row, listed(route["key"]), f"{name}: {route['layer']} feature {fid}"):
+            routes.setdefault(key, {"row": row, "text": text, "kind": kind_of, "members": []})["members"] += found
     stages = {}
     for fid, row, found in features(name, files, stage, fields(stage)) if stage else []:
         where = f"{name}: {stage['layer']} feature {fid}"
-        for key in keys(row, [stage["of"]], where):
+        for key, _ in keys(row, [stage["of"]], where):
             if key in routes:
                 stages.setdefault(key, []).append((where, row, found))
 
@@ -194,7 +204,7 @@ def read(source, files, bounds):
     for key in sorted(routes):
         entry = routes[key]
         rank = route["rank"]["values"].get(str(entry["row"][route["rank"]["field"]]), 0) if "rank" in route else 0
-        record = {"key": key, "kind": entry["kind"], "rank": rank, **filled(route, entry["row"], {})}
+        record = {"key": key, "kind": entry["kind"], "rank": rank, **filled(route, entry["row"], {"key": entry["text"]})}
         parts = stages.get(key, [])
         if len(parts) >= 2:
             numbers = {}
@@ -203,7 +213,7 @@ def read(source, files, bounds):
                 if not re.fullmatch("[1-9][0-9]?", number) or number in numbers:
                     raise ValueError(f"{where}: the stage number {number} is not an integer from 1 to 99 that is unique in its route")
                 numbers[number] = {"stage": int(number), "members": flat(found) if touches(found, box) else [],
-                                   **filled(stage, row, {"route": record.get("name", "")})}
+                                   **filled(stage, row, {"route": record.get("name", ""), "key": entry["text"]})}
             if any(part["members"] for part in numbers.values()):
                 out.append(record | {"stages": sorted(numbers.values(), key=lambda part: part["stage"])})
         elif touches(entry["members"], box):

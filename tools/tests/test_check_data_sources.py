@@ -62,6 +62,19 @@ class RouteGuardTests(unittest.TestCase):
         text = 'origin = 1\ncountries = ["CH"]\nkind = "hiking"\n[route]\nlayer = "Route"\nkey = "Nr"\n'
         self.assertEqual(guard.route_problems(registry, {"a": text, "b": text}), ["b: `origin` 1 is the origin of a"])
 
+    def test_a_route_description_with_wrong_values_is_refused_with_a_message(self):
+        registry = {"source": [{"id": "a", "used_by": ["planner"], "keep": "archive"}]}
+        text = 'origin = 1\ncountries = ["CH"]\nkind = "hiking"\n[route]\nlayer = "Route"\nkey = "Nr"\n'
+        cases = {
+            text + 'keep = { Way = "out" }\n': "`route.keep` maps each field to a list of values",
+            text + 'rank = { field = "T", values = { national = 5 } }\n': "`rank` is a table",
+            text + 'rank = { values = { national = 3 } }\n': "`rank` is a table",
+            text.replace('kind = "hiking"', "kind = 5"): "`kind` is one of",
+        }
+        for description, problem in cases.items():
+            [got] = guard.route_problems(registry, {"a": description})
+            self.assertIn(problem, got)
+
 
 if __name__ == "__main__":
     unittest.main()

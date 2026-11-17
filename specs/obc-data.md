@@ -199,7 +199,8 @@ header `#262624`, and `obc data open` tunnels to the SSH host of its name.
 The description of a route source: which layers and fields of its files make a route and its
 stages. `<id>` is a source of `data/sources.toml` with `used_by` `planner` and `keep = "archive"`.
 [Route sources](#route-sources) reads it. An unknown key is refused, and so are an `origin` that
-another file has and empty `countries` (`tools/check_data_sources.py`).
+another file has, empty `countries`, a `keep` or `drop` value that is no list, and a `rank` level
+outside 0 to 4 (`tools/check_data_sources.py`).
 
 | Key | Type | Meaning |
 | --- | --- | --- |
@@ -215,15 +216,17 @@ Keys of `route` and `stage`:
 | --- | --- | --- |
 | `layer` | both | The layer of the file |
 | `file` | both | Optional: the path of the file in a zip, for a source with more than one |
-| `key` | `route` | The field, or a list of fields, that gives the route of a feature. The features with one key are one route; a feature with a value in two fields of the list is a member of both routes. A value that is an integer below 10^10, also as a text of digits, is the key as it is; another text has as key its SHA-256, read as an integer, modulo 10^10 |
+| `key` | `route` | The field, or a list of fields, that gives the route of a feature. The features with one key are one route; a feature with a value in two fields of the list is a member of both routes. A value whose text is a decimal integer from 0 to 10^10 − 1 with no leading zero is the key as it is; another text, such as `007` or `-5`, has as key its SHA-256, read as an integer, modulo 10^10 |
 | `of` | `stage` | The field that holds the key of the stage's route |
 | `number` | `stage` | The field of the stage number |
-| `ref`, `name`, `description`, `operator`, `website` | both | A template of field values, such as `"{NameR}"`. In a stage, `{route}` is the name of its route |
+| `ref`, `name`, `description`, `operator`, `website` | both | A template of field values, such as `"{NameR}"`. `{key}` is the text of the key field that gives the route; in a stage, `{route}` is the name of its route |
 | `rank` | `route` | `{ field, values }`: the value maps to a level 0 to 4 as the catalog's `rank`; another value or none: 0 |
 | `ascent` | both | The field of the source's own climb in metres. Only the catalog report reads it |
 | `keep` | both | `{ FIELD = [values] }`: a feature is read only when each field has one of its values |
 | `drop` | both | `{ FIELD = [values] }`: a feature with one of these values is left out |
-| `members` | `route` | Optional `{ layer, field, link }`, for a source whose route rows have no line: a route row names its member lines by its field `link`: the features of `layer` whose `field` has that value |
+
+A value is compared as its text. A whole number reads as an integer, also in an integer field
+that holds a null, which the file gives as a real number.
 
 ## State of a source
 
