@@ -98,12 +98,14 @@ fn has_child_route(relation: &Relation, relations: &Table<Relations>) -> bool {
     relation.members().any(|(id, _)| matches!(id, Id::Relation(id) if is_route(relations, id)))
 }
 
-/// Whether a child relation is a piece: a route in the data that is not a route of its own.
+/// Whether a child relation is a piece: a route in the data with no child routes that is not a
+/// route of its own.
 fn piece(relations: &Table<Relations>, id: i64) -> bool {
     is_route(relations, id) && {
         let child = relations.get(id).expect("a route is in the data");
-        tag(&child.tags, "name").is_empty() && tag(&child.tags, "ref").is_empty()
-            || connector::connector(&child.tags, has_child_route(&child, relations))
+        !has_child_route(&child, relations)
+            && (tag(&child.tags, "name").is_empty() && tag(&child.tags, "ref").is_empty()
+                || connector::connector(&child.tags, false))
     }
 }
 
@@ -441,16 +443,15 @@ fn catalog<S: Source + Clone + Send>(
             .into_iter()
             .filter(|id| tag(&child(id).tags, "network") == network && is_route(&relations, *id))
             .collect();
-        let reason =
-            if children(&relation).iter().any(|id| children(&child(id)).iter().any(|&id| is_route(&relations, id))) {
-                Some(Reason::NestedLongRoute)
-            } else if stages.is_empty() {
-                Some(Reason::NoStages)
-            } else if stages.iter().any(|id| !kept.contains_key(id)) {
-                Some(Reason::MissingStage)
-            } else {
-                None
-            };
+        let reason = if children(&relation).iter().any(|id| class(&child(id), &relations) == Class::Long) {
+            Some(Reason::NestedLongRoute)
+        } else if stages.is_empty() {
+            Some(Reason::NoStages)
+        } else if stages.iter().any(|id| !kept.contains_key(id)) {
+            Some(Reason::MissingStage)
+        } else {
+            None
+        };
         if let Some(reason) = reason {
             drops.insert(relation.id, reason);
             continue;
