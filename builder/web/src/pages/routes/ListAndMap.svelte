@@ -14,7 +14,7 @@
         selected: string[];
         fit: number;
         place?: { lon: number; lat: number; box?: Box };
-        look: 'route' | 'ride';
+        look: 'route' | 'ride' | 'signed';
         /** The credits of the picture of the card, which the map shows while the card is open. */
         credits: string[];
         /** The lines that a click on one line selects, for the map. Without it, a line stands alone. */

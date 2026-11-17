@@ -28,10 +28,8 @@
     import { dataLayers } from '../../lib/planner/layers/registry';
     import { addDays, type DataLayer } from '../../lib/planner/layers/data-layer';
     import type { OverlayOptions } from '../../lib/planner/route-overlays';
-    import SignedRoutes from './SignedRoutes.svelte';
-    import { presetName, ridingProfiles, type BikeType } from '../../lib/planner/riding-profiles';
-    import { RouteFinder, recordLine, type RouteStart } from '../../lib/planner/route-finder.svelte';
-    import { planTrip, routeBase, type RoutePlan } from '../../lib/planner/signed-route-plan';
+    import { presetName, type BikeType } from '../../lib/planner/riding-profiles';
+    import type { RoutePlan } from '../../lib/planner/signed-route-plan';
     import type { CatalogRecord } from '../../lib/planner/signed-routes';
     import LibraryPanel from './PlanLibrary.svelte';
     import type { Plan } from '../../lib/planner/library';
@@ -47,7 +45,7 @@
         setDrawnLeg, setLegMode, setSplit, setEndpoint, removeRoutePoint,
         type Day, type LegMode, type Place, type PlaceRef, type PointKind, type RoutePoint, type Trip,
     } from '../../lib/planner/editor';
-    import { coordinateAt, cumulative, kmPerDegree, nearestOnLine, nearestProgress, routeDistance, routeSlice, type Coordinate } from '../../lib/planner/geo';
+    import { coordinateAt, cumulative, nearestOnLine, nearestProgress, routeDistance, routeSlice, type Coordinate } from '../../lib/planner/geo';
     import { categoryIds, type PlaceCategory } from '../../lib/planner/poi-kinds';
     import { corridorPlaces } from '../../lib/planner/place-index';
     import { config } from '../../lib/planner/map-data';
@@ -58,8 +56,8 @@
     import { StopFinder, stretchKey, type NightChoices } from '../../lib/planner/night-stops.svelte';
     import { nightKinds, nightWindows, proposal, proposeNights, suits, withProposals, type Proposal, type Stop } from '../../lib/planner/stops';
     import { searchPlan } from '../../lib/planner/search/plan';
-    import { searchPlaces, placeDetails, type SearchPlace, type SearchState, type SearchContext, type Where } from '../../lib/planner/search/types';
-    import { asPlace, category, routesPlaces, sleepCategory, stayKind, stayOptions, trainNightText } from '../../lib/planner/search/presentation';
+    import { placeDetails, type SearchPlace, type SearchState, type SearchContext, type Where } from '../../lib/planner/search/types';
+    import { asPlace, category, sleepCategory, stayKind, stayOptions, trainNightText } from '../../lib/planner/search/presentation';
     import { applyQueryChanges } from '../../lib/planner/search/actions';
     import type { MapPoint, MapSegment } from '../../lib/planner/map-types';
     import type { Version } from '../../lib/planner/versions';
@@ -130,7 +128,7 @@
         const index = list === 'ways' ? optionRows.findIndex(row => row.id === session.compared?.id) : -1;
         return index > 0 ? { option: optionRows[index], current: optionRows[0], letter: optionLetter(index) } : null;
     });
-    $effect(() => { if (list !== 'ways' || searching || routesOpen) untrack(() => session.previewOption(null)); });
+    $effect(() => { if (list !== 'ways' || searching) untrack(() => session.previewOption(null)); });
 
     let listLinks = $state<HTMLDivElement>();
     /** An applied row ends its comparison, so the link that opens the comparison takes the focus. */
@@ -211,12 +209,8 @@
     let viewportWidth = $state(1200);
     let mapHeight = $state(600);
     let map = $state<PlannerMap>();
-    // The Routes view replaces the panel; the finder keeps its filters and list while the view is closed.
-    const finder = new RouteFinder();
-    let routesOpen = $state(false);
-    // The plan came from the Routes view, or from the Explore page with the state that brings it back, so "Find another
-    // route" shows under the search box.
-    let fromRoutes = $state.raw<false | { explore?: unknown }>(false);
+    // The plan came from the Explore page; "Find another route" gives this state back to it.
+    let exploreBack = $state.raw<unknown>(undefined);
     const bike = $derived<BikeType>(trip.bike ?? 'touring');
     const activityNetwork = $derived(bike === 'hiking' ? 'hiking' : bike === 'mtb' ? 'mtb' : 'cycling');
     /** A shown route network is the one of the activity; a network that is off stays off. */
@@ -224,16 +218,10 @@
         if (mapOverlays.network !== 'none') mapOverlays = { ...mapOverlays, network: activityNetwork };
     }
     $effect(() => { void activityNetwork; untrack(showActivityNetwork); });
-    const nouns = { any: ['loop or route', 'loops and routes'], loop: ['loop', 'loops'], 'one-way': ['one-way route', 'one-way routes'] } as const;
-    const routesNoun = (count = 0) => nouns[finder.filters.shape][count === 1 ? 0 : 1];
-    // The names of map places change as map tiles load, so naming reads `mapIdle`.
-    let mapIdle = $state(0);
-    const placeName = $derived.by(() => { void mapIdle; return (coordinate: Coordinate) => map?.placeName(coordinate); });
-    const previewKm = $derived(finder.preview ? cumulative(finder.preview.coordinates).at(-1)! : 0);
 
     const minProfile = $derived(viewportWidth <= 760 && dataLayer?.strip ? 320 : DRAWER_MIN);
     const maxProfile = $derived(Math.max(minProfile, Math.min(340, viewportHeight - 400)));
-    const hasProfile = $derived(routesOpen ? !!finder.preview : !!visualRoute);
+    const hasProfile = $derived(!!visualRoute);
     const drawerOpen = $derived(hasProfile ? profileOpen : emptyOpen);
     const drawerHeight = $derived(drawerOpen ? Math.min(Math.max(profileHeight, minProfile), maxProfile) : DRAWER_CLOSED);
     const maxSide = $derived(Math.max(320, Math.min(460, viewportWidth - 540)));
@@ -342,7 +330,7 @@
     // One stretch per leg and day, so the map can tell legs apart and colour days.
     const segments = $derived<MapSegment[]>(daySegments(view).map(segment => ({ ...segment, color: dayColor(segment.day, theme) })));
     const results = $derived((searchState.answer?.results ?? []).map(result => ({ place: asPlace(result) })));
-    const visiblePlaces = $derived(routesOpen ? [] : searching ? results.map(result => result.place)
+    const visiblePlaces = $derived(searching ? results.map(result => result.place)
         : openStop ? openStop.sleep.map(p => p.place)
         : pickerNight !== null ? readyStops(pickerNight).flatMap(stop => stop.sleep.map(p => p.place)) : []);
     const highlights = $derived(highlightedCategories);
@@ -497,9 +485,7 @@
 
     /** Resets the view after another plan replaced the trip. */
     function opened(plan: Plan) {
-        routesOpen = false;
-        fromRoutes = false;
-        finder.hovered = null;
+        exploreBack = undefined;
         statusUndo = null;
         clearSelection();
         exitSearch();
@@ -756,9 +742,7 @@
     }
 
     function emptyClick(coordinate: Coordinate) {
-        if (routesOpen) {
-            moveRoutesStart({ coordinate });
-        } else if (mapMode?.kind === 'transfer') {
+        if (mapMode?.kind === 'transfer') {
             void arrive(coordinate);
         } else if (picking) {
             mapMode = null;
@@ -799,64 +783,15 @@
         commit(setLegMode(trip, legEndId, mode), mode === 'straight' ? 'Leg set to a straight line' : mode === 'transfer' ? 'Leg set to a transfer' : 'Leg set to routed');
     }
 
-    /** Fits the search circle and the listed routes. */
-    function showRoutesArea() {
-        const start = finder.start;
-        if (!start) return;
-        const [lon, lat] = start.coordinate, dLat = finder.filters.radiusKm / kmPerDegree, dLon = dLat / Math.cos(lat * Math.PI / 180);
-        map?.fitCoordinates([[lon - dLon, lat - dLat], [lon + dLon, lat + dLat], ...finder.mapView?.lines.flatMap(route => route.line) ?? []]);
-    }
-
-    /** Opens the Routes view, from a new start or with the list it had. */
-    function openRoutes(start?: RouteStart) {
-        if (start) finder.start = start;
-        void finder.select(null);
-        clearSelection();
-        routesOpen = true;
-        showActivityNetwork();
-        showRoutesArea();
-    }
-
-    function closeRoutes() {
-        routesOpen = false;
-        finder.hovered = null;
-        if (hasEndpoints) map?.fitRoute();
-    }
-
-    /** A map click moves the start; the nearest place names it. */
-    function moveRoutesStart(start: RouteStart) {
-        finder.start = start.name ? start : { ...start, near: map?.placeName(start.coordinate) };
-        void finder.select(null);
-    }
-
     async function planSignedRoute(route: CatalogRecord, plan: RoutePlan, explore?: unknown) {
         if (!await session.planSignedRoute(route, plan, coordinate => map?.placeName(coordinate))) {
             message = `${route.name ?? route.ref} could not be planned. ${session.libraryError}`;
             return;
         }
-        fromRoutes = { explore };
+        exploreBack = explore;
         message = `${route.name ?? route.ref} planned`;
         map?.fitCoordinates(plan.points);
     }
-
-    // The map shows the selected route whole; back at the list, it shows the list again.
-    let showedDetail = false;
-    $effect(() => {
-        const detail = routesOpen ? finder.detail : null;
-        if (detail) untrack(() => map?.fitCoordinates(recordLine(detail.route, detail.stages)));
-        else if (showedDetail && routesOpen) untrack(showRoutesArea);
-        showedDetail = !!detail;
-    });
-
-    // The detail plan is routed once, for its profile and time. The leg cache keeps the legs for "Plan this route".
-    $effect(() => {
-        const detail = finder.detail, plan = routesOpen ? finder.plan : undefined;
-        if (!detail || !plan) return;
-        const draft = untrack(() => planTrip(routeBase(detail.route, trip), plan, detail.route.loop));
-        const abort = new AbortController();
-        session.calculate(draft, abort.signal).then(line => { if (!abort.signal.aborted) finder.routed = { plan, line }; }, () => {});
-        return () => abort.abort();
-    });
 
     function closeToStart() {
         clearSelection();
@@ -1091,11 +1026,11 @@
     const sampleRoute = new URL('../../../../../fixtures/sources/route-import/komoot-schwarzwald.gpx', import.meta.url);
     async function loadSearchSample() {
         try {
-            fromRoutes = false;
             const response = await fetch(sampleRoute);
             if (!response.ok) throw new Error('The example route is unavailable. Retry shortly.');
             const sample = importedTrip(trip, readTracks([{ name: 'Black Forest', text: await response.text() }]));
             const points = sample.points.map(p => p.kind === 'start' || p.kind === 'finish' ? { ...p, label: `Black Forest ${p.kind}` } : p);
+            exploreBack = undefined;
             commit({ ...sample, points, mode: 'trip' }, 'Black Forest test route loaded · three provisional days');
             exitSearch(); clearSelection(); pointing = undefined; fitPlan = true;
         } catch (error) { message = (error as Error).message; }
@@ -1109,7 +1044,7 @@
         try {
             const next = await applyQueryChanges(before, session.line, answer.changes, plan => session.calculate(plan, new AbortController().signal));
             if (JSON.stringify(answer.changes) !== JSON.stringify(searchState.answer?.changes) || before !== trip) throw new Error('The plan changed. Review the search again.');
-            if (answer.changes.some(change => change.op === 'route')) fromRoutes = false;
+            if (answer.changes.some(change => change.op === 'route')) exploreBack = undefined;
             session.commit(next.trip, next.line);
             afterEdit(answer.description ?? 'Query applied');
             exitSearch(); clearSelection();
@@ -1129,7 +1064,7 @@
             return;
         }
         afterEdit(`Opened ‘${name}’`);
-        fromRoutes = false;
+        exploreBack = undefined;
         statusUndo = undo;
         clearSelection();
         clampNight();
@@ -1212,19 +1147,13 @@
                 onGpx={roads => roads === null ? session.gpxLines = null : importGpx(roads)} onDownload={plan => session.download(plan)} />
         {/if}
         <aside class="planner-pane" aria-label="Trip planning" inert={!session.ready || session.busy}>
-            <div class="query-slot" style:display={routesOpen ? 'none' : 'contents'}><Query bind:this={searchBox} bind:text={query} bind:searchState={searchState} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} revision={searchRevision} viewRevision={searchViewRevision} onResults={coordinates => { deselect(); map?.fitSearchResults(coordinates); }} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} onPointing={where => pointing = where} onSample={loadSearchSample} /></div>
-            {#if fromRoutes && hasEndpoints && (fromRoutes.explore || finder.start) && !routesOpen && !searching}
-                {@const explore = fromRoutes.explore}
-                <button type="button" class="back-to-routes" onclick={() => explore ? router.go(ROUTES.explore, { explore }) : openRoutes()}><Icon name="back" size={15} />Find another route</button>
+            <Query bind:this={searchBox} bind:text={query} bind:searchState={searchState} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} revision={searchRevision} viewRevision={searchViewRevision} onResults={coordinates => { deselect(); map?.fitSearchResults(coordinates); }} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} onPointing={where => pointing = where} onSample={loadSearchSample} />
+            {#if exploreBack && hasEndpoints && !searching}
+                <button type="button" class="back-to-routes" onclick={() => router.go(ROUTES.explore, { explore: exploreBack })}><Icon name="back" size={15} />Find another route</button>
             {/if}
-            {#if routesOpen}
-                <SignedRoutes {finder} activity={bike} {trip} {theme} attribution={config.attribution} onClose={closeRoutes} onPlan={planSignedRoute} {placeName}
-                    current={hasEndpoints && total > 0 ? { title: planTitle(trip), km: view.summary.distance } : null}
-                    findPlaces={(text, signal) => searchPlaces(text, searchContext, 6, signal).then(answer => routesPlaces(answer.results ?? [], text))} />
-            {:else if searching}
+            {#if searching}
                 <div class="pane-scroll">
-                    <QueryResults attribution={config.attribution} routes={config.routes ? `${ridingProfiles[bike].label} · ${routesNoun()} within ${finder.filters.radiusKm} km` : undefined}
-                        onRoutes={place => openRoutes({ coordinate: [place.lon, place.lat], name: place.name })} state={searchState} {selectedId} {hoveredId} onHover={(id) => hoveredId = id} onSelect={selectPlace} applying={applyingQuery} applyError={queryApplyError} onApply={applySearch} onMore={() => searchBox?.more()} onRetry={() => searchBox?.retry()} onStretch={line => { pointing = {along:{ref:'km',from:{value:nearestProgress(coordinates,line[0])*total,unit:'km'},to:{value:nearestProgress(coordinates,line.at(-1)!)*total,unit:'km'}}}; map?.fitCoordinates(line); }} />
+                    <QueryResults attribution={config.attribution} state={searchState} {selectedId} {hoveredId} onHover={(id) => hoveredId = id} onSelect={selectPlace} applying={applyingQuery} applyError={queryApplyError} onApply={applySearch} onMore={() => searchBox?.more()} onRetry={() => searchBox?.retry()} onStretch={line => { pointing = {along:{ref:'km',from:{value:nearestProgress(coordinates,line[0])*total,unit:'km'},to:{value:nearestProgress(coordinates,line.at(-1)!)*total,unit:'km'}}}; map?.fitCoordinates(line); }} />
                 </div>
             {:else if !hasEndpoints}
                 <div class="start-plan pane-scroll">
@@ -1302,15 +1231,13 @@
             <div class="map-area" bind:clientHeight={mapHeight} style:--map-height={`${mapHeight}px`} ondragover={dragOver} ondrop={drop}
                 ondragleave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) dropping = false; }}>
                 <PlannerMap
-                    bind:this={map} {segments} gaps={gaps.map(gap => gap.coordinates)} {coordinates} points={routesOpen ? [] : mapPoints} {selectedId} {hoveredId} onPointHover={(id) => hoveredId = id} callout={calloutCoordinate} {drawing}
-                    {theme} {hillshade} {contours} {mapOverlays} dataLayer={{ layers: dataLayers, shown: dataLayer, date: shownDate, notes: layerNotes }} bottomInset={dataLayer ? dateBarHeight + 34 : 0} accessMode={trip.bike === 'hiking' ? 'walking' : 'cycling'} {showRoute} planMuted={routesOpen} compare={comparison && { line: comparison.option.line.coordinates, letter: comparison.letter }} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking || mapMode?.kind === 'transfer'} routingPackage={currentRoute?.package}
+                    bind:this={map} {segments} gaps={gaps.map(gap => gap.coordinates)} {coordinates} points={mapPoints} {selectedId} {hoveredId} onPointHover={(id) => hoveredId = id} callout={calloutCoordinate} {drawing}
+                    {theme} {hillshade} {contours} {mapOverlays} dataLayer={{ layers: dataLayers, shown: dataLayer, date: shownDate, notes: layerNotes }} bottomInset={dataLayer ? dateBarHeight + 34 : 0} accessMode={trip.bike === 'hiking' ? 'walking' : 'cycling'} {showRoute} compare={comparison && { line: comparison.option.line.coordinates, letter: comparison.letter }} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking || mapMode?.kind === 'transfer'} routingPackage={currentRoute?.package}
                     onPick={mapMode?.kind === 'look' ? openTrailView : null}
                     highlightedPlaceIds={searching ? results.map(result => result.place.id) : []}
                     shownCategories={categoryIds.filter(category => !hiddenCategories.includes(category))} {highlightedPlaces}
                     onBounds={(bounds, preserveSearch) => { viewBounds = bounds; if (!preserveSearch) searchViewRevision++; }} onEmptyClick={emptyClick} onPointSelect={selectPoint} onPointMove={movePoint} onPointPreview={(id, coordinate) => session.previewMove(id, coordinate)} onDayEndDrag={moveDayEnd}
-                    onLegClick={legClick} onInsert={(legEndId, coordinate) => insert(legEndId, coordinate, true)} onDrawn={drawn} onPlaceClick={place => routesOpen ? moveRoutesStart({ coordinate: place.coordinate, name: place.label }) : mapMode?.kind === 'transfer' ? void arrive(place.coordinate, place.label) : choosePlace(place)}
-                    signedRoutes={routesOpen ? finder.mapView : null} signedHovered={finder.hovered} onSignedRoute={id => void finder.select(id)} onSignedHover={id => finder.hovered = id}
-                    onIdle={() => mapIdle++}
+                    onLegClick={legClick} onInsert={(legEndId, coordinate) => insert(legEndId, coordinate, true)} onDrawn={drawn} onPlaceClick={place => mapMode?.kind === 'transfer' ? void arrive(place.coordinate, place.label) : choosePlace(place)}
                     onVisibleRange={(range) => visibleRange = range}
                 >
                     {#snippet popup()}
@@ -1319,8 +1246,6 @@
                                 <MapCallout
                                     kind={calloutKind} trip={withProposals(trip, session.line, proposals)} line={session.line} {days} {dayLabels} {night} {legMode}
                                     onEndpoint={chooseEndpoint} point={selectedPoint} place={selectedPoint ? pointPlace : selectedPlace} coordinate={previewCoordinate} {detailsError}
-                                    onRoutes={config.routes ? () => openRoutes(selectedPlace ? { coordinate: [...selectedPlace.coordinate], name: selectedPlace.label }
-                                        : { coordinate: [...spot!.coordinate], near: map?.placeName(spot!.coordinate) }) : undefined}
                                     onClose={clearSelection}
                                     onAddHere={addHere}
                                     onLegMode={setLeg}
@@ -1383,17 +1308,12 @@
                 {/if}
             </div>
             <Resize value={drawerHeight} min={DRAWER_CLOSED} max={maxProfile} axis="y" label="Elevation height" onResize={resizeProfile} />
-            {#if routesOpen && finder.preview}
-                <Profile lineData={finder.preview} walking={bike === 'hiking'} height={drawerHeight} open={profileOpen} onToggle={() => profileOpen = !profileOpen} total={previewKm} {theme}
-                    days={[{ number: 1, from: 0, to: 1, pinned: undefined }]} dayLabels={{ 1: 1 }}
-                    activeNight={0} band={null} onNight={() => {}} onDayEndDrag={() => {}} onHover={() => {}} />
-            {:else if comparison}
+            {#if comparison}
                 <CompareProfile option={comparison.option} current={comparison.current} letter={comparison.letter} height={drawerHeight} open={profileOpen} onToggle={() => profileOpen = !profileOpen} />
-            {:else if routesOpen || !visualRoute}
+            {:else if !visualRoute}
                 <section class="empty-profile" aria-label="Elevation profile" style:height={`${drawerHeight}px`}>
                     <DrawerTitle title="Elevation & surface" open={emptyOpen} onToggle={() => emptyOpen = !emptyOpen} />
-                    {#if emptyOpen && routesOpen}<div><Icon name="route" size={24} /><p>The profile appears when you pick a route.</p><small>Hover a result to see it on the map.</small></div>
-                    {:else if emptyOpen}<div><Icon name="route" size={24} /><p>{hasEndpoints ? 'The profile appears when your route is ready.' : 'See the climbs and surfaces along your route.'}</p><small>{hasEndpoints ? routingStatus : stops.length ? `Choose a ${nextEndpoint} to see the profile.` : 'Choose a start and finish to get started.'}</small></div>{/if}
+                    {#if emptyOpen}<div><Icon name="route" size={24} /><p>{hasEndpoints ? 'The profile appears when your route is ready.' : 'See the climbs and surfaces along your route.'}</p><small>{hasEndpoints ? routingStatus : stops.length ? `Choose a ${nextEndpoint} to see the profile.` : 'Choose a start and finish to get started.'}</small></div>{/if}
                 </section>
             {:else}
             <Profile
