@@ -1,4 +1,4 @@
-<!-- A row of a list of routes: a small picture, the name, a line of numbers, and a badge. The row shows its picture only
+<!-- A row of a list of routes: a picture, the name, a line of numbers, and a badge. The row shows its picture only
      while it is near the view, so a long list draws few pictures. -->
 <script module lang="ts">
     const rows = new WeakMap<Element, (near: boolean) => void>();
@@ -7,9 +7,12 @@
 
 <script lang="ts">
     import type { Snippet } from 'svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
 
-    let { name, current, onclick, lead = '', parts, tail, badge, room, picture }: {
+    let { name, icon, current, onclick, lead = '', parts, tail, badge, room, picture }: {
         name: string;
+        /** The name of an icon of `Icon.svelte`, before the name. */
+        icon?: string;
         current: boolean;
         onclick: () => void;
         /** The second line, written when `parts` is given: `lead` (such as a date), each part in its own span, so the
@@ -39,7 +42,7 @@
 <button type="button" class="row" aria-current={current} {onclick} use:watch>
     <span class="thumb">{#if near}{@render picture()}{/if}</span>
     <span class="text">
-        <strong>{name}</strong>
+        <strong>{#if icon}<span class="icon"><Icon name={icon} size={16} /></span>{/if}{name}</strong>
         {#if parts}
             <span class="meta">{lead}{#each parts.filter(Boolean) as part, i (i)}{i || lead ? ' · ' : ''}<span>{part}</span>{/each}{#if tail}{' · '}{tail}{/if}</span>
         {/if}
@@ -50,11 +53,11 @@
 <style>
     .row {
         display: grid;
-        grid-template-columns: 72px minmax(0, 1fr) auto;
-        align-items: center;
-        gap: 12px;
+        grid-template-columns: 150px minmax(0, 1fr) auto;
+        align-items: start;
+        gap: 14px;
         width: 100%;
-        padding: 6px;
+        padding: 7px;
         border: 0;
         border-radius: 8px;
         background: none;
@@ -68,7 +71,7 @@
         background: var(--parchment-2);
     }
     .thumb {
-        height: 48px;
+        height: 100px;
         overflow: hidden;
         border-radius: 6px;
         background: var(--parchment-2);
@@ -79,8 +82,14 @@
     .text {
         display: flex;
         flex-direction: column;
-        gap: 1px;
+        gap: 3px;
         min-width: 0;
+        padding-top: 6px;
+    }
+    .icon {
+        display: inline-flex;
+        margin-right: 5px;
+        vertical-align: -2px;
     }
     /* The numbers are one line where they fit and wrap where they do not: none is cut. */
     .meta, .badge, .room {
@@ -89,6 +98,10 @@
     }
     .badge, .meta span, .room {
         white-space: nowrap;
+    }
+    /* On the line of the name. */
+    .badge {
+        padding-top: 8px;
     }
     /* The one state that waits for the rider to connect the device has a dot. */
     .badge.waiting::before {
@@ -108,11 +121,11 @@
     }
     @media (max-width: 760px) {
         .row {
-            grid-template-columns: 64px minmax(0, 1fr) auto;
+            grid-template-columns: 120px minmax(0, 1fr) auto;
             gap: 10px;
         }
         .thumb {
-            height: 44px;
+            height: 80px;
         }
     }
 </style>

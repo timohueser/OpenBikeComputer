@@ -45,9 +45,11 @@ test('the Routes page lists the routes, filters them with a chip, shows the sele
   const card = page.getByRole('region', { name: 'Route that cannot be read' });
   await expect(card.getByRole('link', { name: 'Route that cannot be read' })).toHaveAttribute('href', '#/route/broken');
   await expect(card.getByRole('button')).toHaveCount(0);
+  await expect(card.getByRole('link', { name: 'Open in planner' })).toHaveCount(0);
 
   await list.getByRole('button', { name: /Start → Finish/ }).click();
   const plan = page.getByRole('region', { name: 'Start → Finish' });
+  await expect(plan.getByRole('link', { name: 'Open in planner' })).toHaveAttribute('href', '#/planner/long');
   await expect(plan).toContainText('Changed since it was sent');
   await plan.getByRole('button', { name: 'Send to device' }).click();
   await expect(plan).toContainText('Waits for the device');
@@ -104,10 +106,10 @@ test('the Routes page lists the routes, filters them with a chip, shows the sele
 const PARTS = { header: '.routes-page > header', chips: '.chips', rows: '.list .row', card: '.selected .card',
   picture: '.selected .picture', text: '.selected .text', profile: '.selected .profile', buttons: '.selected .buttons' };
 const LAYOUT = {
-  1440: { header: [20, 62, 1400, 36], chips: [31, 173, 358, 24], rows: [[31, 205, 358, 60], [31, 265, 358, 60], [31, 325, 358, 60]],
-    card: [427, 889, 980, 152], picture: [438, 900, 220, 130], text: [678, 930, 140, 69], profile: [838, 923, 419, 84], buttons: [1277, 948, 119, 34] },
-  390: { header: [16, 60, 358, 80], chips: [27, 214, 336, 24], rows: [[27, 246, 336, 56], [27, 302, 336, 56], [27, 358, 336, 56]],
-    card: [29, 927, 332, 148], picture: [40, 938, 120, 80], text: [176, 943, 174, 69], profile: null, buttons: [40, 1030, 119, 34] },
+  1440: { header: [20, 62, 1400, 36], chips: [31, 173, 458, 24], rows: [[31, 205, 458, 114], [31, 319, 458, 114], [31, 433, 458, 114]],
+    card: [527, 819, 880, 222], picture: [538, 830, 300, 200], text: [858, 830, 393, 75], profile: [858, 917, 538, 112], buttons: [1271, 830, 125, 78] },
+  390: { header: [16, 60, 358, 80], chips: [27, 214, 336, 24], rows: [[27, 246, 336, 94], [27, 340, 336, 94], [27, 434, 336, 94]],
+    card: [29, 973, 332, 216], picture: [40, 984, 120, 80], text: [176, 984, 174, 69], profile: [40, 1121, 310, 56], buttons: [40, 1076, 242, 34] },
 };
 const layout = page => page.evaluate(parts => {
   const box = node => { const r = node.getBoundingClientRect(); return r.width ? [r.x, r.y + scrollY, r.width, r.height] : null; };
