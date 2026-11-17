@@ -165,6 +165,20 @@
         border-radius: 0 0 5px 5px;
         color: var(--ink-soft);
     }
+    /* A finger needs a higher area than the text of a chip. */
+    @media (pointer: coarse) {
+        .chips {
+            row-gap: 14px;
+        }
+        summary {
+            position: relative;
+        }
+        summary::after {
+            position: absolute;
+            inset: -7px 0;
+            content: '';
+        }
+    }
     /* On a phone a menu starts at the left of the row, so that it stays on the screen under a chip at the right. */
     @media (max-width: 760px) {
         .chip {
