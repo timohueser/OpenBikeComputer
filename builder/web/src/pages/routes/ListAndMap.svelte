@@ -4,6 +4,7 @@
     import type { Snippet } from 'svelte';
     import Card from '../../lib/ui/Card.svelte';
     import type { Box, Item } from './filter';
+    import * as proto from './prototype-sizes';
 
     let { title, failure, items, shown, selected, fit, place, look, credits, together, onselect, onview, tabs, actions, list, card }: {
         title: string;
@@ -45,7 +46,7 @@
     </header>
     {#if failure}<p class="failure" role="alert">{failure}</p>{/if}
 
-    <div class="cards">
+    <div class="cards" class:wide={proto.on}>
         <div class="list">
             <Card>{@render list()}</Card>
         </div>
@@ -104,6 +105,9 @@
         gap: 14px;
         min-height: 0;
     }
+    .cards.wide {
+        grid-template-columns: min(480px, 33.33vw) 1fr;
+    }
     .list > :global(section) {
         display: flex;
         flex-direction: column;
@@ -134,7 +138,7 @@
             height: auto;
             padding: 12px 16px;
         }
-        .cards {
+        .cards, .cards.wide {
             grid-template-columns: 1fr;
             grid-template-rows: auto;
         }

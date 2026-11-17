@@ -23,6 +23,7 @@
     import SelectedCard from './routes/SelectedCard.svelte';
     import Statistics from './routes/Statistics.svelte';
     import { deviceState, type DeviceState } from './routes/state';
+    import { rowPlace } from './routes/prototype-sizes';
 
     let { library }: { library: Library; active: boolean } = $props();
 
@@ -219,8 +220,8 @@
                         {@const first = row.rides[0]}
                         {@const key = `${row.kind}:${row.id}`}
                         <li data-id={key}>
-                            <RouteRow name={row.name} current={key === selected} onclick={() => selected = key} {...rideLine(row)}>
-                                {#snippet picture()}<Cover {library} id={first.id} />{/snippet}
+                            <RouteRow name={row.name} activity={first.summary.bike} current={key === selected} onclick={() => selected = key} {...rideLine(row)}>
+                                {#snippet picture()}<Cover {library} id={first.id} place={rowPlace} />{/snippet}
                             </RouteRow>
                             {#if row.kind === 'group'}
                                 <button type="button" class="open" onclick={() => { opened = row.id; selected = undefined; }}>{count(row.rides.length, 'ride')} ›</button>
@@ -234,10 +235,10 @@
                         {@const state = states.get(item.id)}
                         {@const summary = item.kind === 'route' && item.summary}
                         <li>
-                            <RouteRow name={item.name} current={item.id === selected} onclick={() => selected = item.id}
+                            <RouteRow name={item.name} activity={item.summary?.bike} current={item.id === selected} onclick={() => selected = item.id}
                                 parts={summary ? [summary.days > 1 && `${summary.days} days`, formatDistance(summary.lengthM), `${formatHeight(summary.climbM)} up`] : undefined}
                                 badge={state && { text: BADGES[state], kind: state }}>
-                                {#snippet picture()}{#if item.summary}<Cover {library} id={item.id} />{/if}{/snippet}
+                                {#snippet picture()}{#if item.summary}<Cover {library} id={item.id} place={rowPlace} />{/if}{/snippet}
                             </RouteRow>
                         </li>
                     {:else}

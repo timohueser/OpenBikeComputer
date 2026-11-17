@@ -3,9 +3,11 @@
 <script lang="ts">
     import type { Snippet } from 'svelte';
     import type { Summary } from '../../lib/library/records';
+    import Icon from '../../lib/ui/Icon.svelte';
     import MiniProfile from './MiniProfile.svelte';
+    import * as proto from './prototype-sizes';
 
-    let { name, href, meta, numbers, profile, state, failure, picture, mark, more, buttons }: {
+    let { name, href, meta, numbers, profile, state, failure, picture, mark, more, buttons, activity }: {
         name: string;
         /** With it, the name is the link that covers the card; without it, the name is a plain heading. */
         href?: string;
@@ -22,16 +24,21 @@
         more?: Snippet;
         /** Buttons with the class `button`; a second one with `button quiet` is plain text. */
         buttons?: Snippet;
+        /** The icon name of the activity, before the first part of `meta`, which is its word. */
+        activity?: string;
     } = $props();
+    // The sizes of a card with a picture `card` px high, in proportion to today's 130 px.
+    const k = proto.card ? proto.card / 130 : 1, t = Math.sqrt(k);
+    const sizes = proto.card ? `--pic-w:${Math.round(1.5 * proto.card)}px;--pic-h:${proto.card}px;--prof-h:${Math.round(84 * k)}px;--name:${(18 * t).toFixed(1)}px;--num:${(15 * t).toFixed(1)}px;--meta:${(13 * t).toFixed(1)}px` : undefined;
 
     const metaText = $derived(meta.filter(Boolean).join(' · '));
 </script>
 
-<section class="card" aria-label={name}>
+<section class="card" aria-label={name} style={sizes}>
     <div class="picture">{@render picture()}</div>
     <div class="text">
         <h2>{@render mark?.()}{#if href}<a class="open" {href}>{name}</a>{:else}{name}{/if}</h2>
-        {#if metaText}<p class="meta">{metaText}</p>{/if}
+        {#if metaText}<p class="meta">{#if proto.on && activity}<span class="activity"><Icon name={activity} size={15} /></span>{/if}{metaText}</p>{/if}
         {#if numbers.length}<p class="numbers">{#each numbers as number, i (i)}<span>{number}</span>{/each}</p>{/if}
         {#if state}<p class="state">{state}</p>{/if}
         {#if failure}<p class="failure" role="alert">{failure}</p>{/if}
@@ -46,7 +53,7 @@
         position: relative;
         display: grid;
         /* The profile takes the room that the text leaves, and keeps a fair width beside a long name. */
-        grid-template-columns: 220px minmax(0, max-content) minmax(clamp(140px, 22%, 200px), 1fr) auto;
+        grid-template-columns: var(--pic-w, 220px) minmax(0, max-content) minmax(clamp(140px, 22%, 200px), 1fr) auto;
         align-items: center;
         gap: 20px;
         padding: 10px;
@@ -55,9 +62,13 @@
         background: var(--panel);
         box-shadow: 0 6px 20px rgb(28 27 20 / 0.18);
     }
+    /* The prototype keeps the text at least 170 px wide; the profile gives up room first. */
+    .card[style] {
+        grid-template-columns: var(--pic-w) minmax(170px, max-content) minmax(100px, 1fr) auto;
+    }
     .picture {
         position: relative;
-        height: 130px;
+        height: var(--pic-h, 130px);
         overflow: hidden;
         border-radius: 6px;
     }
@@ -66,7 +77,7 @@
         display: -webkit-box;
         margin: 0;
         overflow: hidden;
-        font: 700 18px/1.25 var(--sans);
+        font: 700 var(--name, 18px)/1.25 var(--sans);
         -webkit-box-orient: vertical;
         -webkit-line-clamp: 2;
         line-clamp: 2;
@@ -76,14 +87,20 @@
     }
     .meta, .state {
         color: var(--ink-soft);
-        font-size: 13px;
+        font-size: var(--meta, 13px);
+    }
+    .activity {
+        display: inline-flex;
+        margin-right: 5px;
+        color: var(--ink);
+        vertical-align: -3px;
     }
     .numbers {
         display: flex;
         flex-wrap: wrap;
         gap: 2px 16px;
         margin-top: 8px;
-        font: 600 15px/1.2 var(--sans);
+        font: 600 var(--num, 15px)/1.2 var(--sans);
         white-space: nowrap;
     }
     .state {
@@ -93,7 +110,7 @@
         color: var(--coral);
     }
     .profile {
-        height: 84px;
+        height: var(--prof-h, 84px);
     }
     .open {
         color: inherit;
@@ -136,6 +153,13 @@
     .buttons :global(.button:not(:disabled):hover) {
         background: var(--parchment-2);
     }
+    .buttons :global(.button.primary), .buttons :global(.button.primary:hover) {
+        border-color: var(--rust);
+        background: var(--rust);
+        color: var(--cream);
+        text-align: center;
+        text-decoration: none;
+    }
     /* The second button is plain text, so the card has one framed button. */
     .buttons :global(.quiet) {
         border-color: transparent;
@@ -151,8 +175,11 @@
             grid-template-columns: 120px minmax(0, 1fr);
             gap: 12px 16px;
         }
+        .card[style] {
+            grid-template-columns: calc(0.6 * var(--pic-w)) minmax(0, 1fr);
+        }
         .picture {
-            height: 80px;
+            height: calc(0.62 * var(--pic-h, 130px));
         }
         .profile {
             display: none;

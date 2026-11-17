@@ -7,8 +7,10 @@
 
 <script lang="ts">
     import type { Snippet } from 'svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
+    import * as proto from './prototype-sizes';
 
-    let { name, current, onclick, lead = '', parts, tail, badge, room, picture }: {
+    let { name, current, onclick, lead = '', parts, tail, badge, room, picture, activity }: {
         name: string;
         current: boolean;
         onclick: () => void;
@@ -23,6 +25,8 @@
         room?: string;
         /** A cover, whose root has the class `cover`. */
         picture: Snippet;
+        /** The icon name of the activity. */
+        activity?: string;
     } = $props();
 
     let near = $state(false);
@@ -36,10 +40,10 @@
     }
 </script>
 
-<button type="button" class="row" aria-current={current} {onclick} use:watch>
+<button type="button" class="row" class:row1={proto.row === 1} class:row2={proto.row === 2} aria-current={current} {onclick} use:watch>
     <span class="thumb">{#if near}{@render picture()}{/if}</span>
     <span class="text">
-        <strong>{name}</strong>
+        <strong>{#if proto.on && activity}<span class="activity"><Icon name={activity} size={16} /></span>{/if}{name}</strong>
         {#if parts}
             <span class="meta">{lead}{#each parts.filter(Boolean) as part, i (i)}{i || lead ? ' · ' : ''}<span>{part}</span>{/each}{#if tail}{' · '}{tail}{/if}</span>
         {/if}
@@ -106,6 +110,33 @@
         padding: 2px 4px;
         visibility: hidden;
     }
+    .activity {
+        display: inline-flex;
+        margin-right: 5px;
+        vertical-align: -2px;
+    }
+    .row1 {
+        grid-template-columns: 150px minmax(0, 1fr) auto;
+        align-items: start;
+        gap: 14px;
+        padding: 7px;
+    }
+    .row1 .thumb {
+        height: 100px;
+    }
+    .row1 .text {
+        padding-top: 6px;
+        gap: 3px;
+    }
+    .row2 {
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 6px 12px;
+        padding: 7px;
+    }
+    .row2 .thumb {
+        grid-column: 1 / -1;
+        height: 140px;
+    }
     @media (max-width: 760px) {
         .row {
             grid-template-columns: 64px minmax(0, 1fr) auto;
@@ -113,6 +144,15 @@
         }
         .thumb {
             height: 44px;
+        }
+        .row1 {
+            grid-template-columns: 120px minmax(0, 1fr) auto;
+        }
+        .row1 .thumb {
+            height: 80px;
+        }
+        .row2 .thumb {
+            height: 160px;
         }
     }
 </style>

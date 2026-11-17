@@ -11,6 +11,7 @@
     import RouteCard from './RouteCard.svelte';
     import { dayText, tripDates, type Row } from './rows';
     import { stateText, waitingWith, type DeviceState } from './state';
+    import * as proto from './prototype-sizes';
 
     let { library, item, row, device, route, runs = 0, inGroup = false, credits = $bindable([]) }: {
         library: Library;
@@ -37,7 +38,7 @@
         lengthM: sum('lengthM'), climbM: sum('climbM'), movingS: sum('movingS') } : item.summary);
     const meta = $derived(row?.kind === 'trip' ? [tripDates(row), `${row.days} days`]
         : row?.kind === 'group' ? [`${row.rides.length} rides`, `last on ${dayText(item.at)}`]
-        : item.kind === 'ride' ? [dayText(item.at)]
+        : item.kind === 'ride' ? [proto.on && ridingProfiles[item.summary!.bike].label, dayText(item.at)]
         : item.summary ? [ridingProfiles[item.summary.bike].label, item.summary.days > 1 && `${item.summary.days} days`,
             runs > 0 && (runs === 1 ? 'ridden once' : `ridden ${runs} times`)] : []);
     const numbers = $derived(summary ? [formatDistance(summary.lengthM), `${formatHeight(summary.climbM)} up`,
@@ -57,10 +58,17 @@
 </script>
 
 <RouteCard name={row?.name ?? item.name} href={`${item.kind === 'ride' ? ROUTES.ride : ROUTES.route}/${item.id}`} {meta} {numbers}
-    profile={summary ?? undefined} state={device && stateText[device]} {failure}>
+    profile={summary ?? undefined} state={device && stateText[device]} {failure} activity={row?.kind === 'trip' || row?.kind === 'group' ? undefined : item.summary?.bike}>
     {#snippet picture()}<Cover {library} id={item.id} place="card" bind:credits />{/snippet}
     {#snippet buttons()}
-        {#if item.kind === 'route' && summary}
+        {#if proto.on && item.kind === 'route'}
+            <a class="button primary" href={`${ROUTES.planner}/${item.id}`}>Open in planner</a>
+            {#if summary}
+                <button type="button" class="button quiet" disabled={device === 'sent'} onclick={() => send(device !== 'waiting')}>
+                    {device === 'waiting' ? 'Do not send' : 'Send to device'}
+                </button>
+            {/if}
+        {:else if item.kind === 'route' && summary}
             <button type="button" class="button" disabled={device === 'sent'} onclick={() => send(device !== 'waiting')}>
                 {device === 'waiting' ? 'Do not send' : 'Send to device'}
             </button>
