@@ -193,8 +193,12 @@ pub fn prune_forks(runs: &[Vec<i64>], distance: &dyn Fn(i64, i64) -> f64, share:
         }
         // A ring runs on as the runs leave its first node.
         let next = &graph[&node];
-        let ahead = runs.iter().flat_map(|run| run.windows(2)).find(|w| w[0] == node && next.contains(&w[1]));
-        let ahead = ahead.map_or(*next.first().unwrap(), |w| w[1]);
+        let windows = || runs.iter().flat_map(|run| run.windows(2));
+        let ahead = windows().find(|w| w[0] == node && next.contains(&w[1])).map(|w| w[1]).or_else(|| {
+            let entry = windows().find(|w| w[1] == node && next.contains(&w[0]))?;
+            next.iter().copied().find(|&n| n != entry[0])
+        });
+        let ahead = ahead.unwrap_or(*next.first().unwrap());
         let mut part = walk(&graph, node, ahead);
         if part[part.len() - 1] != node {
             let behind = next.iter().find(|&&n| n != ahead);
@@ -221,11 +225,15 @@ pub fn side_trips(runs: &mut [Vec<i64>], branches: &[Vec<i64>], ends: [i64; 2], 
     for branch in branches.iter().rev() {
         let (&junction, out) = branch.split_last().unwrap();
         let last = runs.len() - 1;
-        if branch[0] == ends[0] && runs[0][0] == junction {
+        let start = branch[0] == ends[0] && runs[0][0] == junction;
+        let end = branch[0] == ends[1] && runs[last].last() == Some(&junction);
+        if start {
             runs[0].splice(0..0, out.iter().copied());
-        } else if branch[0] == ends[1] && runs[last].last() == Some(&junction) {
+        }
+        if end {
             runs[last].extend(out.iter().rev());
-        } else if length(branch, distance) > NEAR_M {
+        }
+        if !start && !end && length(branch, distance) > NEAR_M {
             // A branch that leaves from a dropped branch is not longer than it, so it is dropped too.
             let (run, at) = runs
                 .iter()
@@ -790,8 +798,12 @@ mod tests {
         let runs = [vec![8, 1], vec![1, 5, 3, 2, 1], vec![5, 9]];
         let (mut parts, branches) = prune_forks(&runs, &distance, 0.1).unwrap();
         assert_eq!(parts, [vec![1, 5, 3, 2, 1]]);
+        let mut out_and_back = parts.clone();
         side_trips(&mut parts, &branches, [8, 9], &distance);
         assert_eq!(parts, [vec![8, 1, 5, 9, 5, 3, 2, 1]]);
+        // The stem is also the end of the member order: the line comes back along it.
+        side_trips(&mut out_and_back, &branches, [8, 8], &distance);
+        assert_eq!(out_and_back, [vec![8, 1, 5, 9, 5, 3, 2, 1, 8]]);
     }
 
     #[test]
