@@ -25,6 +25,11 @@ pub const FILE: &str = "route-catalog.json";
 /// keeps out the signed pieces between two signposts.
 const MIN_LENGTH_M: f64 = 1_000.0;
 const MAX_GAP_M: f64 = 500.0;
+/// The owner's limit for the side branches of a route, all together, as a share of the rest.
+const SIDE_TRIP_SHARE: f64 = 0.10;
+/// The most main member ways of a route that the import does not hold, such as a park or a way with
+/// no road tag; the line joins across them.
+const MAX_SKIPPED_WAYS: usize = 2;
 const ROUNDTRIP_M: f64 = 200.0;
 const DESCRIPTION_CHARS: usize = 200;
 /// The memory of all routers together; it limits the number of workers.
@@ -59,6 +64,7 @@ pub enum Reason {
     TooManyPoints,
     ShapingCheck,
     ShapingStall,
+    Fork,
     RouterLimit,
     SearchBudget,
     NestedLongRoute,
@@ -255,6 +261,7 @@ struct Job<'a> {
     kind: String,
     member_ways: Vec<(i64, String)>,
     members: Vec<assemble::Member>,
+    skipped: usize,
 }
 
 /// The facts that the report needs, besides the records.
@@ -268,6 +275,9 @@ pub struct Report {
     pub stages: usize,
     pub via: Vec<usize>,
     pub long_points: Vec<(i64, usize)>,
+    /// The routes that skip main member ways that the import does not hold, with their count. A
+    /// route can still leave the catalog later.
+    pub skipped_ways: BTreeMap<i64, usize>,
     /// The search of each route: relation ID, seconds and router calls.
     pub searches: Vec<(i64, f64, usize)>,
     pub workers: usize,
@@ -290,7 +300,7 @@ impl Report {
         let busy: f64 = self.searches.iter().map(|s| s.1).sum();
         json!({
             "tag_selected": self.tag_selected, "dropped": self.dropped, "kept": self.kept, "loops": self.loops,
-            "long_routes": self.long_routes, "stages": self.stages,
+            "long_routes": self.long_routes, "stages": self.stages, "skipped_ways": self.skipped_ways,
             "via": spread(self.via.iter().map(|&v| v as f64).collect()),
             "search": {
                 "seconds": spread(self.searches.iter().map(|s| s.1).collect()),
@@ -360,7 +370,7 @@ fn catalog<S: Source + Clone + Send>(
             drops.insert(relation.id, Reason::Connector);
         } else if class != Class::Long {
             let member_ways = member_ways(&relation, &relations, class == Class::Joined);
-            jobs.push(Job { relation, kind, member_ways, members: Vec::new() });
+            jobs.push(Job { relation, kind, member_ways, members: Vec::new(), skipped: 0 });
         } else if children(&relation).iter().any(|id| relations.get(*id).is_none()) {
             drops.insert(relation.id, Reason::ExtractEdge);
         } else {
@@ -376,18 +386,32 @@ fn catalog<S: Source + Clone + Send>(
         .map(|(id, point)| (id, [point.lon, point.lat]))
         .collect();
     jobs.retain_mut(|job| {
-        for (id, role) in &job.member_ways {
-            match ways.get(*id) {
-                Some(way) if way.nodes.iter().all(|n| points.contains_key(n)) => job.members.push(assemble::Member {
+        // The import does not hold a way outside the region either, so only a way between two held
+        // ways is skipped.
+        let mut missing = 0;
+        let held = job.member_ways.iter().all(|(id, role)| match ways.get(*id) {
+            Some(way) if way.nodes.iter().all(|n| points.contains_key(n)) => {
+                let between = !job.members.is_empty() || missing == 0;
+                (job.skipped, missing) = (job.skipped + missing, 0);
+                job.members.push(assemble::Member {
                     nodes: way.nodes.to_vec(),
                     role: role.clone(),
                     roundabout: matches!(tag(&way.tags, "junction"), "roundabout" | "circular"),
-                }),
-                _ => {
-                    drops.insert(job.relation.id, Reason::ExtractEdge);
-                    return false;
-                }
+                });
+                between
             }
+            None => {
+                missing += 1;
+                true
+            }
+            Some(_) => false,
+        });
+        if !held || missing > 0 || job.skipped > MAX_SKIPPED_WAYS {
+            drops.insert(job.relation.id, Reason::ExtractEdge);
+            return false;
+        }
+        if job.skipped > 0 {
+            report.skipped_ways.insert(job.relation.id, job.skipped);
         }
         true
     });
@@ -525,10 +549,17 @@ fn route<D: RoutingData>(
         match assemble::chain(&runs, &apart, MAX_GAP_M) {
             Some(chained) => runs = chained,
             None if runs.windows(2).all(|w| apart(w[0][w[0].len() - 1], w[1][0]) <= MAX_GAP_M) => {}
-            None => return Err(Reason::Gap),
+            None => {
+                let ends = [runs[0][0], runs[runs.len() - 1][runs[runs.len() - 1].len() - 1]];
+                let (parts, branches) = assemble::prune_forks(&runs, &apart, SIDE_TRIP_SHARE).ok_or(Reason::Fork)?;
+                runs = assemble::chain(&parts, &apart, MAX_GAP_M).ok_or(Reason::Gap)?;
+                assemble::side_trips(&mut runs, &branches, ends, &apart);
+            }
         }
     }
     let runs: Vec<Vec<P>> = runs.iter().map(|run| run.iter().map(|n| points[n]).collect()).collect();
+    let own = runs.concat();
+    let own = shape::Near::new(&own);
     let length: f64 = runs.iter().map(|run| shape::length(run)).sum();
     if length < MIN_LENGTH_M {
         return Err(Reason::Short);
@@ -549,7 +580,14 @@ fn route<D: RoutingData>(
                     _ => Reason::UnroutableGap,
                 },
             )?;
-        line.extend(shape::vertices(&route).into_iter().chain([to]));
+        let patch: Vec<P> = [from].into_iter().chain(shape::vertices(&route)).chain([to]).collect();
+        // The shaping check compares with the line that holds the patch, so it cannot see a detour
+        // in it. A patch may leave the route's own line, its runs joined straight across their
+        // gaps, for at most the longest hole that the builder joins.
+        if shape::far(&patch, &own) > MAX_GAP_M {
+            return Err(Reason::Gap);
+        }
+        line.extend(&patch[1..]);
         line.dedup();
         Ok(())
     };

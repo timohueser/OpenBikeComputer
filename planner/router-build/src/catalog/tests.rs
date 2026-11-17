@@ -33,7 +33,8 @@ const ORIGIN: i32 = 100_000;
 type Route<'a> = (i64, Vec<(&'a str, &'a str)>, Vec<Id>);
 
 /// A 7 by 7 grid of streets 445 m apart on rolling ground, with node `10 * row + column`, and its
-/// source objects. The way from node 0 to node 1 is T3, the way from node 25 to node 26 is a T5 path.
+/// source objects. The way from node 0 to node 1 is T3, the way from node 25 to node 26 is a T5 path;
+/// there is no street from node 15 to node 25.
 fn grid(routes: Vec<Route>) -> (Package<Memory>, Data) {
     let mut graph = Graph::default();
     let mut index = HashMap::new();
@@ -55,7 +56,7 @@ fn grid(routes: Vec<Route>) -> (Package<Memory>, Data) {
     for row in 0..7 {
         for column in 0..7 {
             let a = 10 * row + column;
-            for b in [a + 1, a + 10].into_iter().filter(|b| b % 10 < 7 && b / 10 < 7) {
+            for b in [a + 1, a + 10].into_iter().filter(|b| b % 10 < 7 && b / 10 < 7 && way(a, *b) != way(15, 25)) {
                 let id = way(a, b);
                 ways.push(id, &[a, b], &tags(&[("highway", "residential")]));
                 for (from, to) in [(index[&a], index[&b]), (index[&b], index[&a])] {
@@ -140,7 +141,14 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
         // Two parts 1.3 km apart.
         route(3, &trail, [path(&[0, 10, 20, 30]), path(&[5, 6, 16])].concat()),
         route(4, &[("route", "mtb"), ("name", "Planned"), ("state", "proposed")], path(&[0, 1, 2, 3, 4, 5, 6])),
+        // A way that the import does not hold: at the end it can be the edge of the region; between
+        // held ways the line joins across two of them.
         route(7, &trail, [path(&[0, 1, 2, 3, 4, 5]), vec![999]].concat()),
+        route(19, &trail, [path(&[50, 51, 52]), vec![990, 991], path(&[53, 54, 55])].concat()),
+        // The patch from node 15 to node 25 goes around a block: three times the gap. It leaves the
+        // route for more than 500 m, unless the route itself comes back along the block.
+        route(20, &trail, [path(&[12, 13, 14, 15]), path(&[25, 35, 45])].concat()),
+        route(21, &trail, [path(&[12, 13, 14, 15]), path(&[25, 24, 34, 44])].concat()),
         // A lollipop: out on one street, around a block and back.
         route(8, &trail, path(&[60, 61, 62, 52, 51, 61, 60])),
         // The member order jumps, and the way from node 21 to node 22 is missing.
@@ -188,12 +196,13 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
         [
             ("Connector", vec![10, 15, 17]),
             ("ExtractEdge", vec![7, 16]),
-            ("Gap", vec![3]),
+            ("Gap", vec![3, 20]),
             ("MissingStage", vec![12]),
             ("NestedLongRoute", vec![6])
         ]
     );
-    assert_eq!(by_id.keys().copied().collect::<BTreeSet<_>>(), BTreeSet::from([1, 2, 5, 8, 9, 11, 13, 18]));
+    assert_eq!(by_id.keys().copied().collect::<BTreeSet<_>>(), BTreeSet::from([1, 2, 5, 8, 9, 11, 13, 18, 19, 21]));
+    assert_eq!((&by_id[&19]["length_m"], &report.skipped_ways), (&json!(5 * 445), &BTreeMap::from([(19, 2)])));
     let joined = by_id[&13];
     assert_eq!(joined["length_m"], 4 * 445);
     assert_eq!(&joined["line_udeg"].as_array().unwrap()[..2], [json!(ORIGIN + 6 * 4_000), json!(ORIGIN)]);
