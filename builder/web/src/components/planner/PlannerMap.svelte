@@ -3,7 +3,7 @@
     import * as maplibregl from "maplibre-gl";
     import type { GeoJSONSource } from "maplibre-gl";
     import type { Feature, FeatureCollection, LineString, Point } from "geojson";
-    import { styleConfig, terrain, useMapProtocols } from "../../lib/planner/map-setup";
+    import { ClosedAttribution, styleConfig, terrain, useMapProtocols } from "../../lib/planner/map-setup";
     import { config } from "../../lib/planner/map-data";
     import { terrainRetry } from "../../lib/planner/map-terrain";
     import "maplibre-gl/dist/maplibre-gl.css";
@@ -143,11 +143,6 @@
     let signedHover: number | null = null;
     let overSigned = $state(false);
     const picking = $derived(pickMode || !!onPick);
-
-    export function centerOn(coordinate: Coordinate) {
-        wholeRoute = false;
-        map?.panTo(coordinate, { duration: motionDuration() }, { preserveSearch: true });
-    }
 
     function inspectOverlay(event: maplibregl.MapMouseEvent) {
         const selected = overlayLayer?.hit(event);
@@ -484,10 +479,12 @@
             // zoom of the source, and keeps only the source layers that a style layer draws. The route details read a source
             // layer that no style layer draws.
             map = new maplibregl.Map({ container, center, zoom, maxBounds: config.bounds, style: mapStyle(theme, styleConfig, relief), attributionControl: false, maxPitch: 0, renderWorldCopies: false, zoomLevelsToOverscale: undefined });
+            // The script of the tile pictures moves the map.
+            if (import.meta.env.DEV) Object.assign(window, { plannerMap: map });
             signedLayer = new SignedRoutesLayer(map);
             overlayLayer = new RouteOverlays(map, config.overlays, (message, retry = false) => { overlayStatus = message; overlayRetry = retry; }, hint => routeHint = hint);
             fitInitialRoute();
-            map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
+            map.addControl(new ClosedAttribution(), "bottom-right");
             map.addControl(new maplibregl.ScaleControl({ maxWidth: 90, unit: "metric" }), "bottom-left");
             map.dragRotate.disable();
             map.touchZoomRotate.disableRotation();

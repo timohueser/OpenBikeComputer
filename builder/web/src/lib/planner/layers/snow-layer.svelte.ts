@@ -67,8 +67,6 @@ class SnowLayer implements DataLayer<Samples> {
     id = 'snow';
     label = 'Snow';
     icon = 'snow';
-    description = 'How often past years had snow on your date.';
-    caveat = 'Satellites see less snow under trees.';
     meta = $state.raw<SnowMeta | null>(null);
     error = $state('');
     private map?: Map;
@@ -87,8 +85,10 @@ class SnowLayer implements DataLayer<Samples> {
         return meta ? `${meta.attribution} · ${meta.resolution} m · ${meta.firstSeason}–${meta.firstSeason + meta.seasons}` : '';
     }
 
+    /** The share of past years with snow. "never" is clear, as on the map; each other stop has the colour of the class that starts there. */
     legend(theme: Theme) {
-        return { swatches: snowClasses(theme).slice(1) };
+        const classes = snowClasses(theme);
+        return { scale: [{ color: 'transparent', label: 'never' }, ...([[2, '¼'], [3, '½'], [4, '¾'], [5, 'every year']] as const).map(([value, label]) => ({ color: classes[value].color, label }))] };
     }
 
     private archive<M, T>(url: string, decoding: Decoding<M, T>) {
