@@ -63,7 +63,7 @@
     /** The open group of places, and the place of a group of several that the rider chose. */
     let openPlace = $state<{ group: number; place?: number }>();
     let placeLane = $state<HTMLElement>(), width = $state(0), seen = $state(false);
-    /** The surface of the legend entry under the pointer: the bar lights its stretches. */
+    /** The surface of the legend entry under the pointer or with the focus: the bar lights its stretches. */
     let litSurface = $state<Surface>();
     let places = $state.raw<{ found?: Place[]; failed?: boolean }>({});
     let details = $state.raw<Record<string, SearchPlace | null>>({});

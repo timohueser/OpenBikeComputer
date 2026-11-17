@@ -13,18 +13,17 @@
     const axis = $derived({ from, to, rests });
     const helpId = $props.id();
     const runs = $derived(surfaceRuns(line));
-    // The shares are those of the whole route, also when the bar shows a part of it.
-    const shares = $derived(surfaceShares(runs));
     const visible = $derived(surfaceWindow(runs, from, to));
+    const shares = $derived(surfaceShares(visible));
     const hasPushing = $derived(!walking && runs.some(run => run.pushing));
     const pushingDistance = $derived(noteDistance(line?.pushingKm ?? 0));
     let position = $state<number | null>(null);
-    /** The surface of the legend entry under the pointer: the bar lights its stretches. */
+    /** The surface of the legend entry under the pointer or with the focus: the bar lights its stretches. */
     let lit = $state<Surface>();
     const at = $derived(Math.max(from, Math.min(to, position ?? from)));
     const current = $derived(visible.find(run => run.to > at) ?? visible.at(-1));
     const access = $derived(current?.pushing == null ? 'Access unverified' : walking ? 'Walking' : current.pushing ? 'Push bike' : 'Riding');
-    const description = $derived(current ? `${current.surface === 'Unknown' ? 'Unknown surface' : current.surface} · ${shares.find(share => share.surface === current.surface)?.percent || '<1'}% of route · ${access}` : 'No surface data');
+    const description = $derived(current ? `${current.surface === 'Unknown' ? 'Unknown surface' : current.surface} · ${shares.find(share => share.surface === current.surface)?.percent || '<1'}% of the shown stretch · ${access}` : 'No surface data');
     function inspect(value: number) { if (!visible.length) return; position = Math.max(from, Math.min(to, value)); onHover(position); }
     function leave(event: PointerEvent) { if (document.activeElement !== event.currentTarget) { position = null; onHover(null); } }
     function key(event: KeyboardEvent) {
@@ -48,7 +47,7 @@
         {#if position !== null && current}<span class="hint">{access}</span>{:else if hasPushing}<span class="hint">{pushingDistance} pushing</span>{/if}
         <span class="legend"><SurfaceLegend {shares} bind:lit current={position === null ? undefined : current?.surface} /></span>
     </div>
-    <span class="sr-only" id={helpId}>Use the arrow keys to inspect adjacent surface and access sections. Percentages refer to the whole route. {#if !walking}The Push strip marks sections where you must push your bike.{/if}</span>
+    <span class="sr-only" id={helpId}>Use the arrow keys to inspect adjacent surface and access sections. Percentages refer to the stretch that the bar shows. {#if !walking}The Push strip marks sections where you must push your bike.{/if}</span>
     <div class="bar" class:with-pushing={hasPushing} role="slider" tabindex={visible.length ? 0 : -1} aria-label={walking ? 'Surface along route' : 'Surface and pushing along route'} aria-describedby={helpId} aria-disabled={!visible.length} aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round(at * 100)} aria-valuetext={description}
         onpointermove={(event) => { const box = event.currentTarget.getBoundingClientRect(); inspect(axisProgress(axis, event.clientX - box.left, box.width)); }}
         onclick={(event) => { const box = event.currentTarget.getBoundingClientRect(); inspect(axisProgress(axis, event.clientX - box.left, box.width)); }}

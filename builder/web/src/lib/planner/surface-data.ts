@@ -31,15 +31,15 @@ export function surfaceWindow(runs: SurfaceRun[], from: number, to: number): Sur
 
 export interface SurfaceShare { surface: Surface; percent: number }
 
-/** The share of each surface of the runs in whole percent, the largest first. The largest-remainder method rounds the
- * shares, so they add to 100: each share rounds down, and the shares with the largest fractions take the points that
- * remain. A surface under one percent can have 0. */
+/** The share of each surface of the runs in whole percent, the largest first and Unknown last. The largest-remainder
+ * method rounds the shares, so they add to 100: each share rounds down, and the shares with the largest fractions take
+ * the points that remain. A surface under one percent can have 0. */
 export function surfaceShares(runs: Pick<SurfaceRun, 'surface' | 'from' | 'to'>[]): SurfaceShare[] {
     const lengths = new Map<Surface, number>();
     for (const run of runs) lengths.set(run.surface, (lengths.get(run.surface) ?? 0) + run.to - run.from);
     const total = [...lengths.values()].reduce((sum, length) => sum + length, 0);
     const shares = [...lengths].map(([surface, length]) => ({ surface, exact: length / total * 100, percent: Math.floor(length / total * 100) }))
-        .sort((a, b) => b.exact - a.exact);
+        .sort((a, b) => Number(a.surface === 'Unknown') - Number(b.surface === 'Unknown') || b.exact - a.exact);
     const rest = 100 - shares.reduce((sum, share) => sum + share.percent, 0);
     for (const share of [...shares].sort((a, b) => b.exact % 1 - a.exact % 1).slice(0, rest)) share.percent++;
     return shares.map(({ surface, percent }) => ({ surface, percent }));

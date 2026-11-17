@@ -185,7 +185,7 @@ describe('routing integration', () => {
         expect(sameSurface.map(run => run.pushing)).toEqual([false, true]);
         expect(sameSurface.map(run => run.surface)).toEqual(['Paved', 'Paved']);
     });
-    it('gives the surface shares in whole percent that add to 100, the largest first', () => {
+    it('gives the surface shares in whole percent that add to 100, the largest first and Unknown last', () => {
         const shares = (lengths: [Surface, number][]) => {
             let at = 0;
             return surfaceShares(lengths.map(([surface, length]) => ({ surface, from: at, to: at += length })));
@@ -196,6 +196,8 @@ describe('routing integration', () => {
         // The shares are those of the runs, which can be a part of the route.
         expect(shares([['Paved', .1], ['Gravel', .3]])).toEqual([{ surface: 'Gravel', percent: 75 }, { surface: 'Paved', percent: 25 }]);
         expect(shares([['Paved', .996], ['Rough', .004]])).toEqual([{ surface: 'Paved', percent: 100 }, { surface: 'Rough', percent: 0 }]);
+        expect(shares([['Unknown', .5], ['Dirt', .2], ['Paved', .3]]))
+            .toEqual([{ surface: 'Paved', percent: 30 }, { surface: 'Dirt', percent: 20 }, { surface: 'Unknown', percent: 50 }]);
         expect(shares([])).toEqual([]);
     });
     it('reports service failure and never substitutes fixture geometry', async () => {
