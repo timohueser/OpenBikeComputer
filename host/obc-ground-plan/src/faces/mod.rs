@@ -1820,7 +1820,17 @@ fn candidates<'a>(
     // label (`wedges`).
     let mut wedges: Vec<(Vec<u32>, Label, Rings)> = Vec::new();
     if level == 0 && BORES {
-        cands.extend(cover_cands);
+        // The cover's end takes only the ground's slope band (the merged band layer): past the band the ground is the
+        // terrain on both sides of the line.
+        let band = |c: &Cand| c.label.surface == Surface::Slope && c.label.material.is_none() && c.relabel.is_none();
+        let slope =
+            union(&cands.iter().filter(|c| band(c)).flat_map(|c| c.rings.iter().cloned()).collect::<Vec<_>>(), [0, 0]);
+        for mut c in cover_cands {
+            if c.key != (0, 0, 0) {
+                c.rings = stroke::boolean(&c.rings, &slope, OverlayRule::Intersect, [0, 0]);
+            }
+            cands.push(c);
+        }
         for (li, of, pieces) in &entering {
             let Some((_, lids)) = lids.iter().find(|x| x.0 == lines[*li].way) else { continue };
             let rings = stroke::boolean(&union(pieces, [0, 0]), lids, OverlayRule::Intersect, [0, 0]);
