@@ -5,7 +5,7 @@
     import Card from '../../lib/ui/Card.svelte';
     import type { Box, Item } from './filter';
 
-    let { title, failure, items, shown, selected, fit, place, look, credits, onselect, onview, tabs, actions, list, card }: {
+    let { title, failure, items, shown, selected, fit, place, look, credits, together, onselect, onview, tabs, actions, list, card }: {
         title: string;
         failure?: string;
         /** The props of the map. */
@@ -17,6 +17,8 @@
         look: 'route' | 'ride';
         /** The credits of the picture of the card, which the map shows while the card is open. */
         credits: string[];
+        /** The lines that a click on one line selects, for the map. Without it, a line stands alone. */
+        together?: (id: string) => string[];
         onselect: (id: string | undefined) => void;
         onview: (view: Box) => void;
         /** Beside the title. */
@@ -50,7 +52,7 @@
         <div class="map">
             {#await import('./RoutesMap.svelte') then { default: RoutesMap }}
                 <RoutesMap {items} {shown} {selected} {fit} {place} covered={card && cardHeight ? cardHeight + 12 : 0} credits={card ? credits : []}
-                    {look} {onselect} {onview} />
+                    {look} {together} {onselect} {onview} />
             {:catch error}
                 <p class="note">{error instanceof Error ? error.message : String(error)}</p>
             {/await}

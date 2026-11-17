@@ -131,11 +131,6 @@
     $effect(() => { void calloutPlace; overlaySelection = null; });
     const picking = $derived(pickMode || !!onPick);
 
-    export function centerOn(coordinate: Coordinate) {
-        wholeRoute = false;
-        map?.panTo(coordinate, { duration: motionDuration() }, { preserveSearch: true });
-    }
-
     function inspectOverlay(event: maplibregl.MapMouseEvent) {
         const selected = overlayLayer?.hit(event);
         if (!selected || drawing || picking) return;
@@ -466,6 +461,8 @@
             // zoom of the source, and keeps only the source layers that a style layer draws. The route details read a source
             // layer that no style layer draws.
             map = new maplibregl.Map({ container, center, zoom, maxBounds: config.bounds, style: mapStyle(theme, styleConfig, relief), attributionControl: false, maxPitch: 0, renderWorldCopies: false, zoomLevelsToOverscale: undefined });
+            // The script of the tile pictures moves the map.
+            if (import.meta.env.DEV) Object.assign(window, { plannerMap: map });
             overlayLayer = new RouteOverlays(map, config.overlays, (message, retry = false) => { overlayStatus = message; overlayRetry = retry; }, hint => routeHint = hint);
             fitInitialRoute();
             map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
