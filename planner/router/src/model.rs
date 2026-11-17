@@ -134,7 +134,7 @@ impl Profile {
                 },
                 mtb_pace: false,
                 route_bonus: 0.0,
-                // Up to `mountain_hiking` (T2); `hiking/alpine` goes to T4.
+                // Up to `mountain_hiking` (T2); `hiking/alpine` goes to T6.
                 max_difficulty: 2,
             },
         ];
@@ -162,8 +162,9 @@ impl Profile {
             })
             .collect();
         profiles.extend(variants);
-        // Explicit skill choices. T5 and T6 need climbing; MTB has no upper limit.
-        for (base, name, difficulty) in [("mtb", "mtb/technical", 6), ("hiking", "hiking/alpine", 4)] {
+        // Explicit skill choices with no upper limit. Alpine keeps off T5 and T6 paths only
+        // through their cost factors, so it takes one where every other way costs more.
+        for (base, name, difficulty) in [("mtb", "mtb/technical", 6), ("hiking", "hiking/alpine", 6)] {
             let mut profile = profiles.iter().find(|p| p.name == base).unwrap().clone();
             profile.name = name.into();
             profile.max_difficulty = difficulty;
@@ -334,7 +335,7 @@ mod tests {
             let sac = (1..=6).filter(|&t| profile.permits(&Road { hiking_difficulty: Some(t), ..path.clone() }));
             let mtb = (0..=6).filter(|&s| profile.permits(&Road { difficulty: s, ..path.clone() }));
             let expected = match profile.name.as_str() {
-                "hiking/alpine" => (4, 6),
+                "hiking/alpine" => (6, 6),
                 "mtb/technical" => (2, 6),
                 name if name.starts_with("hiking") => (2, 6),
                 name if name.starts_with("mtb") => (2, 2),
