@@ -27,7 +27,7 @@
         actions?: Snippet;
         /** The content of the list card. */
         list: Snippet;
-        /** At the top right of the map, under its zoom buttons, in their margins. */
+        /** At the top right of the map, left of its zoom buttons. */
         mapButtons?: Snippet;
         /** The card of the selected item. The page gives it only while an item is selected. */
         card?: Snippet;
@@ -128,13 +128,19 @@
     .map-buttons {
         position: absolute;
         z-index: 2;
-        /* As MapLibre stacks its controls: a 10 px margin, the zoom group of two 29 px buttons and a 1 px rule, and 10 px. */
-        top: 79px;
-        right: 10px;
+        /* Beside the zoom buttons of MapLibre: their margin of 10 px, their width of 29 px, and 10 px. */
+        top: 10px;
+        right: 49px;
         display: flex;
         flex-direction: column;
         align-items: flex-end;
         gap: 6px;
+    }
+    /* The buttons of the map are light in both themes, so their focus ring is the one of the light theme. */
+    .map :global(.maplibregl-ctrl button:focus-visible) {
+        outline: 2px solid #a4501e;
+        outline-offset: -2px;
+        box-shadow: none;
     }
     .selected {
         position: absolute;

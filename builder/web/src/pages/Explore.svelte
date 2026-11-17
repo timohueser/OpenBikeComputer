@@ -1,6 +1,7 @@
 <!-- The Explore page: the signed routes of the map view in a list with chips, on the map, and the selected one in a card
      that opens it as a plan in the planner. -->
 <script lang="ts">
+    import { tick, untrack } from 'svelte';
     import { keepInHistory } from '../lib/keep-in-history.svelte';
     import type { Bike } from '../lib/library/records';
     import type { Library } from '../lib/library/store';
@@ -53,16 +54,23 @@
         return item;
     };
     const items = $derived(records?.map(itemOf) ?? []);
-    // Each item is for `bike`. Until the load of a new view ends, the items are those of the last view: the list counts
-    // and shows the ones in the new view.
-    const inView = $derived(results(items, {}, '', view));
-    const shown = $derived(results(items, chips, '', view, 'shortest') as SignedItem[]);
+    /** The answer is for another view: until the load of the new view ends, the list shows its routes in the new view. */
+    const stale = $derived(!!answer && answer.view !== view);
+    // Each item is for `bike`, and each item of an answer for this view is in the view.
+    const inView = $derived(stale ? results(items, {}, '', view) : items);
+    const shown = $derived(results(inView, chips, '', undefined, 'shortest') as SignedItem[]);
     const wide = $derived(!!view && tooWide(view));
     const chosen = $derived(shown.find(item => item.id === selected));
     /** The value of each item that the other chips keep, for the bars of the slider of `key`. */
-    const values = (key: 'length' | 'climb') => results(items, { ...chips, [key]: undefined }, '', view)
+    const values = (key: 'length' | 'climb') => results(inView, { ...chips, [key]: undefined }, '')
         .map(({ summary }) => key === 'length' ? distanceIn(summary!.lengthM) : heightIn(summary!.climbM));
     const count = (n: number) => `${n.toLocaleString('en')} signed route${n === 1 ? '' : 's'}`;
+    /** No row to show yet: the first load, or a new view with no route of the last answer in it. */
+    const waiting = $derived(!failed && !wide && (!records || (!inView.length && stale)));
+    const listed = $derived(!failed && !wide && !waiting && inView.length > 0);
+    const status = $derived(failed ? 'The routes could not load.' : wide ? 'Zoom in to see the signed routes.' : waiting || stale ? 'Loading the routes…'
+        : !inView.length ? 'No signed route in this map view.'
+        : shown.length === inView.length ? `${count(inView.length)} in this map view` : `${shown.length.toLocaleString('en')} of ${count(inView.length)}`);
 
     // A selected route that the list does not show any more closes its card. A selection from the history waits for
     // the first answer.
@@ -82,11 +90,41 @@
             if (id === loads) failed = true;
         }
     }
-    $effect(() => {
+    // A view whose cell files the catalog holds gets its answer before the page draws the view, so the list shows no
+    // load. Another view loads its files when the map has stopped for `WAIT_MS`.
+    $effect.pre(() => {
         const box = view, kind = bike;
         if (!box) return;
+        const held = catalog.inBoxNow(box, kind);
+        if (held !== undefined) {
+            loads++;
+            failed = false;
+            answer = { bike: kind, view: box, records: held };
+            return;
+        }
         const timer = setTimeout(() => void load(box, kind), WAIT_MS);
         return () => clearTimeout(timer);
+    });
+
+    // The list draws its first rows, and more when the rider scrolls near their end, so a new view makes few rows.
+    const ROWS = 60;
+    let rows = $state<HTMLElement>(), rowLimit = $state(ROWS);
+    const drawn = $derived(shown.length > rowLimit ? shown.slice(0, rowLimit) : shown);
+    function drawMore() {
+        if (rows && rowLimit < shown.length && rows.scrollTop + rows.clientHeight > rows.scrollHeight - 600) rowLimit += ROWS;
+    }
+    // A route selected on the map or in TrailView shows its row. Only the list scrolls, not the page.
+    $effect(() => {
+        const item = chosen;
+        if (!item) return;
+        untrack(() => { rowLimit = Math.max(rowLimit, shown.indexOf(item) + 1); });
+        void tick().then(() => {
+            const row = rows?.querySelector('[aria-current="true"]');
+            if (!row) return;
+            const box = rows!.getBoundingClientRect(), at = row.getBoundingClientRect();
+            if (at.top < box.top) rows!.scrollTop -= box.top - at.top;
+            else if (at.bottom > box.bottom) rows!.scrollTop += at.bottom - box.bottom;
+        });
     });
 
     /** The view with the longitude of its middle in -180..180, and its ends cut there, as `inBox` needs it. */
@@ -109,7 +147,7 @@
     let trailView = $state.raw<{ component: typeof import('../components/planner/TrailViewWindow.svelte').default; origin: [number, number]; view: View; routes: TrailViewRoute[] }>();
     /** A notice shows only in the map view that it is about. */
     let opening = $state(false), notice = $state.raw<{ text: string; view?: Box }>(), trailViewButton = $state<HTMLButtonElement>();
-    const trailViewTitle = $derived(shown.length > TRAILVIEW_ROUTES ? `TrailView: the first ${TRAILVIEW_ROUTES} of ${shown.length.toLocaleString('en')} routes` : 'TrailView');
+    const trailViewTitle = $derived(shown.length > TRAILVIEW_ROUTES ? `TrailView: the first ${TRAILVIEW_ROUTES} of ${shown.length.toLocaleString('en')} routes` : undefined);
 
     /** The first routes of the list, with the selected route among them, so the window can show its card on its line. */
     function trailViewItems(): SignedItem[] {
@@ -172,19 +210,17 @@
         <PlaceSearch {view} label="Find a place" placeholder="Find a place" float onchoose={({ lon, lat, box }) => place = { lon, lat, box }} />
         <Chips bind:chips={() => chips, setChips} {view} keys={['bike', 'length', 'climb', ...graded ? ['grade' as const] : [], 'shape']} fixed={['bike']}
             grades={bike === 'mtb' ? [0, 1, 2, 3].map(grade => gradeName('mtb', grade)) : [0, 1, 2, 3, 4, 5].map(grade => gradeName('hiking', grade))} {values} />
-        {#if failed}
-            <p class="note">The routes could not load. <button type="button" class="retry" onclick={() => { if (view) void load(view, bike); }}>Retry</button></p>
-        {:else if wide}
-            <p class="note">Zoom in to see the signed routes.</p>
-        {:else if !records || (!inView.length && answer!.view !== view)}
-            <p class="note">Loading the routes…</p>
-        {:else if !inView.length}
-            <p class="note">No signed route in this map view.</p>
-        {:else}
+        <p class={listed ? 'count' : 'note'} aria-live="polite">
+            {status}{#if failed}{' '}<button type="button" class="retry" onclick={() => { if (view) void load(view, bike); }}>Retry</button>{/if}
+        </p>
+        {#if waiting}
+            <ul class="waiting" aria-hidden="true">
+                {#each { length: 5 }}<li><span class="thumb"></span><span class="lines"></span></li>{/each}
+            </ul>
+        {:else if listed}
             <!-- The rows of the last view stay until the answer for this view comes. -->
-            <p class="count">{answer!.view !== view ? 'Loading the routes…' : shown.length === inView.length ? `${count(inView.length)} in this map view` : `${shown.length.toLocaleString('en')} of ${count(inView.length)}`}</p>
-            <ul>
-                {#each shown as item (item.id)}
+            <ul bind:this={rows} onscroll={drawMore}>
+                {#each drawn as item (item.id)}
                     <li>
                         <RouteRow name={item.name} current={item.id === selected} onclick={() => selected = item.id} parts={signedNumbers(item.record)}>
                             {#snippet picture()}<SignedPicture {item} />{/snippet}
@@ -203,10 +239,10 @@
 {/snippet}
 
 {#snippet mapButtons()}
-    <!-- A group of the map's own controls, as the zoom buttons above it. -->
+    <!-- In the look of the map's own controls, beside its zoom buttons. -->
     <div class="maplibregl-ctrl maplibregl-ctrl-group">
-        <button type="button" class="trailview" bind:this={trailViewButton} aria-label="TrailView" aria-busy={opening} aria-disabled={opening} title={trailViewTitle} onclick={openTrailView}>
-            {#if opening}<span class="spinner" aria-hidden="true"></span>{:else}<Icon name="binoculars" size={18} />{/if}
+        <button type="button" class="trailview" bind:this={trailViewButton} aria-busy={opening} aria-disabled={opening} title={trailViewTitle} onclick={openTrailView}>
+            {#if opening}<span class="spinner" aria-hidden="true"></span>{:else}<Icon name="binoculars" size={18} />{/if}TrailView
         </button>
     </div>
     {#if notice && notice.view === view}<p class="trailview-notice" role="status">{notice.text}</p>{/if}
@@ -234,19 +270,34 @@
         font: inherit;
         text-decoration: underline;
     }
-    /* The map's controls keep their light look in both themes; this is the colour of their icons. */
+    /* The map's controls keep their light look in both themes; this is the colour of their icons and text. */
     .trailview {
-        display: grid;
-        place-items: center;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        width: auto;
+        padding: 0 10px 0 8px;
         color: #333;
+        font: 600 13px/1 var(--sans);
+        transition: transform 160ms cubic-bezier(0.23, 1, 0.32, 1);
+    }
+    .trailview:active {
+        transform: scale(0.97);
     }
     /* Not `disabled` while it loads, so that the button keeps the focus. */
     .trailview[aria-disabled="true"] {
         cursor: progress;
     }
+    @media (pointer: coarse) {
+        .trailview {
+            height: 40px;
+        }
+    }
+    /* With its margin, the spinner has the box of the icon. */
     .spinner {
         width: 14px;
         height: 14px;
+        margin: 2px;
         border: 2px solid color-mix(in srgb, currentColor 25%, transparent);
         border-top-color: currentColor;
         border-radius: 50%;
@@ -272,16 +323,50 @@
         flex: 1;
         min-height: 0;
         margin: 0 -6px;
-        padding: 0;
+        padding: 4px 0 0;
         overflow: auto;
+        border-top: 1px solid var(--line);
         list-style: none;
+    }
+    /* A row outside the list box skips its layout and paint. It keeps the height that it had, else that of a name of one line. */
+    li {
+        content-visibility: auto;
+        contain-intrinsic-size: auto 60px;
     }
     li.note {
         padding: 6px;
     }
+    .waiting {
+        overflow: hidden;
+    }
+    .waiting li {
+        display: grid;
+        grid-template-columns: 72px 1fr;
+        align-items: center;
+        gap: 12px;
+        padding: 6px;
+    }
+    .waiting .thumb {
+        height: 48px;
+        border-radius: 6px;
+        background: var(--parchment-2);
+    }
+    /* Two bars, where the name and the numbers of a row are. */
+    .waiting .lines {
+        height: 30px;
+        background: linear-gradient(var(--parchment-2), var(--parchment-2)) 0 0 / 62% 12px no-repeat,
+            linear-gradient(var(--parchment-2), var(--parchment-2)) 0 100% / 38% 10px no-repeat;
+    }
     @media (max-width: 760px) {
         ul {
             max-height: 60vh;
+        }
+        .waiting li {
+            grid-template-columns: 64px 1fr;
+            gap: 10px;
+        }
+        .waiting .thumb {
+            height: 44px;
         }
     }
 </style>
