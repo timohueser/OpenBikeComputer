@@ -289,6 +289,22 @@ describe('the cover job', () => {
         expect(await library.cover('a')).toBeUndefined();
     });
 
+    it('keeps the 12 newest asks that wait, and does no work for an older one', async () => {
+        const ids = Array.from({ length: 14 }, (_, i) => `r${i}`);
+        await saved(...ids);
+        const { renderer, stills } = fake();
+        await start(renderer);
+        // The first ask goes into work at once; the 13 after it wait, and the oldest of them leaves the queue.
+        for (const id of ids) wantCover(id, 'card');
+        await settle();
+        for (let i = 0; i < stills.length; i++) {
+            stills[i].resolve(result);
+            await settle();
+        }
+        expect(stills).toHaveLength(13);
+        expect(await library.cover('r1')).toBeUndefined();
+    });
+
     it('keeps an ask that comes before the job starts', async () => {
         await saved('a');
         const { renderer, stills } = fake();

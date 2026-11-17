@@ -6,7 +6,7 @@
     import { coverKey, settled, wantCover, wantsPicture, type Place } from './job';
     import CoverPicture from './CoverPicture.svelte';
 
-    let { library, id, mark, part, line = true, place = 'row', pins = [], photos = [], onphoto, onpoint, credits = $bindable([]) }: {
+    let { library, id, mark, part, line = true, place = 'card', pins = [], photos = [], onphoto, onpoint, credits = $bindable([]) }: {
         library: Library;
         /** The id of a route or the key of a ride. */
         id: string;
@@ -14,7 +14,8 @@
         mark?: number;
         part?: [number, number];
         line?: boolean;
-        /** A card shows the map picture when the record has no cover. A card and a page ask the cover job for what is missing. */
+        /** A card, also a row of a list, shows the map picture when the record has no cover. A card and a page ask the
+         * cover job for what is missing. */
         place?: Place;
         /** Labels at shares of the summary line from 0 to 1: a numbered waypoint, or a night without a number. */
         pins?: { share: number; label: string; number?: number }[];
@@ -52,7 +53,7 @@
             if (!live) return bitmap?.close();
             [item, shown] = [nextItem, from && bitmap && { bitmap, points: from.points, summary: from.summary }];
             credits = shown ? from?.credits ?? [] : [];
-            if (!first || place === 'row' || !nextItem?.summary) return;
+            if (!first || !nextItem?.summary) return;
             if (!settled(nextItem, nextCover) || (place === 'card' && wantsPicture(nextItem, nextCover, dark))) wantCover(target, place);
         };
         void load(true);
