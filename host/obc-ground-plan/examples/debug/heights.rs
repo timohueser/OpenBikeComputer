@@ -3,11 +3,13 @@
 //! (`check::edge_steps`, on a grid of `EDGE_GRID_M`), and the slopes steeper than a rock face. Writes
 //! `fixture-steps.json`.
 //! `heights --cost DIR`: the cost of the heights per fixture cell on one thread (`cost.json`).
-//! `heights --gpu-check --out DIR --places A,B [--at NAME=LAT,LON]`: the blocks of the places' cells
-//! (`blocks.bin`) and Rust's heights at their paved and slope points (`points.json`) for
-//! `tests/browser/trailview/model-probe.mjs`, which compares the viewer's `heights.wgsl` with them, and
-//! `find`'s labels at whole-unit points (`labels.json`): the grid, every candidate edge's vertices, the
-//! points one unit beside them and the edges' whole midpoints, for its `model.wgsl` check.
+//! `heights --gpu-check --out DIR [--fixture DIR] [--places A,B] [--at NAME=LAT,LON] [--cells X,Y;...]`: the blocks of
+//! the places' cells and of the cells named, as the viewer reads them (`cell::build_storeys`: every storey's records
+//! in one block; `blocks.bin`), and Rust's heights (`points.json`) for `tests/browser/trailview/model-probe.mjs`, which
+//! compares the viewer's `heights.wgsl` with them: at a grid of each place, at every corner of the cells' storey
+//! meshes with its label and with each cap's, and at a table of points about each portal line (`portal_points`); and
+//! `find`'s labels at whole-unit points (`labels.json`): the grid, every candidate edge's vertices, the points one
+//! unit beside them and the edges' whole midpoints, for its `model.wgsl` check.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -72,6 +74,7 @@ fn label_name(words: &[u32], id: Option<u32>) -> String {
 pub fn run() -> Result<(), String> {
     let (mut out, mut grid, mut only) = (None::<PathBuf>, 0.5f64, None::<Vec<(u32, u32)>>);
     let (mut gpu, mut scan_all, mut names, mut at) = (false, false, Vec::new(), Vec::new());
+    let mut dir = default_dir();
     let (mut size_m, mut px, mut sections) = (64.0, 1280u32, Vec::new());
     let mut args = std::env::args().skip(2);
     while let Some(arg) = args.next() {
@@ -116,6 +119,7 @@ pub fn run() -> Result<(), String> {
                 at.push(parse().ok_or("--at NAME=LAT,LON")?);
             }
             "--out" => out = Some(value()?.into()),
+            "--fixture" => dir = value()?.into(),
             "--grid" => grid = value()?.parse().map_err(|_| "--grid: metres")?,
             "--cells" => {
                 let cells = value()?;
@@ -137,7 +141,8 @@ pub fn run() -> Result<(), String> {
         let mut places = crate::named_places(&views, &names)?;
         places.extend(at);
         return if gpu {
-            gpu_check(&out, &places)
+            let cells: Vec<CellKey> = only.iter().flatten().map(|&(x, y)| CellKey { x, y }).collect();
+            gpu_check(&out, &dir, &places, &cells)
         } else {
             crate::heights_view::run(&out, &places, size_m, px, &sections)
         };
@@ -360,14 +365,70 @@ pub fn run() -> Result<(), String> {
 const GPU_SIDE: usize = 160;
 const GPU_SIZE_M: f64 = 60.0;
 
-fn gpu_check(out: &std::path::Path, places: &[(String, f64, f64)]) -> Result<(), String> {
-    let dir = default_dir();
-    let mut fix = Fixture::open(&dir);
+fn gpu_check(
+    out: &std::path::Path,
+    dir: &std::path::Path,
+    places: &[(String, f64, f64)],
+    cells: &[CellKey],
+) -> Result<(), String> {
+    use obc_ground_plan::faces::heights::{check::terrain_at, height_at};
+    use obc_ground_plan::mesh::{mesh_cell, shell::mesh_storeys_with, Reads, Rim, NO_LABEL};
+    let mut fix = Fixture::open(dir);
     let rules = Rules::embedded();
+    let mut cache = obc_ground_plan::tile::TileCache::new(16);
     let mut blocks: Vec<u32> = Vec::new();
-    let mut at: BTreeMap<CellKey, (usize, obc_ground_plan::CellInput)> = BTreeMap::new();
+    let mut at = BTreeMap::new();
     let mut points = Vec::new();
     let mut labels = Vec::new();
+    // A cell's block once, with the heights at its storey meshes' corners and caps and about its portal lines.
+    type Cells = BTreeMap<CellKey, (usize, obc_ground_plan::CellInput)>;
+    let mut add = |key: CellKey, fix: &mut Fixture, blocks: &mut Vec<u32>, points: &mut Vec<Value>, at: &mut Cells| {
+        let std::collections::btree_map::Entry::Vacant(e) = at.entry(key) else { return };
+        let Ok(input) = fix.try_cell(key) else { return };
+        let b = obc_ground_plan::cell::build_storeys(fix.request(key), &mut cache, rules, &mut || 0.0).unwrap();
+        let offset = blocks.len();
+        blocks.extend(&b.records);
+        let words = &b.records;
+        let name = format!("cell {}/{}", key.x, key.y);
+        let mut seen = std::collections::BTreeSet::new();
+        let mut point = |q: [f64; 2], label: Option<u32>, what: &str| {
+            if seen.insert((q[0].to_bits(), q[1].to_bits(), label)) {
+                let t = terrain_at(&input.terrain, key, q).unwrap_or(0.0);
+                let h = height_at(words, q, label, t);
+                let row = json!([
+                    offset,
+                    q[0],
+                    q[1],
+                    label.unwrap_or(u32::MAX),
+                    t,
+                    h.h,
+                    h.kind as u32,
+                    format!("{name} {what}")
+                ]);
+                points.push(row);
+            }
+        };
+        let reads = Reads::of(&b.faces, &[Rim::of(&b.faces)]);
+        if let Ok(m0) = mesh_cell(&b.faces, words, &reads, &mut || 0.0) {
+            if let Ok(m) = mesh_storeys_with(key, &b.storeys, words, &rules.structures, Some(&m0)) {
+                let whole = |p: [i32; 2]| [f64::from(p[0]), f64::from(p[1])];
+                for k in 0..m.corners.len() {
+                    let (p, l, _) = m.corner(k);
+                    point(whole(p), (l != NO_LABEL).then_some(l), "corner");
+                }
+                for c in &m.caps {
+                    point(whole(m.corner(c[0] as usize).0), (c[1] != NO_LABEL).then_some(c[1]), "cap");
+                }
+            }
+        }
+        for q in portal_points(words) {
+            point(q, records::find(words, q), "portal");
+        }
+        e.insert((offset, input));
+    };
+    for &key in cells {
+        add(key, &mut fix, &mut blocks, &mut points, &mut at);
+    }
     for (name, lat, lon) in places {
         let centre = obc_ground_plan::frame::from_lon_lat(*lon, *lat);
         let upm = 1.0 / obc_ground_plan::frame::metres_per_unit(centre.y);
@@ -377,14 +438,8 @@ fn gpu_check(out: &std::path::Path, places: &[(String, f64, f64)]) -> Result<(),
                 let off = |k: usize| (k as f64 / (GPU_SIDE - 1) as f64 - 0.5) * GPU_SIZE_M * upm;
                 let g = [centre.x as f64 + off(i) + 0.37, centre.y as f64 + off(j) + 0.21];
                 let key = CellKey::of(GlobalPoint { x: g[0].floor() as i64, y: g[1].floor() as i64 });
-                if let std::collections::btree_map::Entry::Vacant(e) = at.entry(key) {
-                    let Ok(input) = fix.try_cell(key) else { continue };
-                    let graph = graph::build(key, &input, &rules.sections);
-                    let words = records::build(&graph, &input, rules, key, 0, true).near.words;
-                    e.insert((blocks.len(), input));
-                    blocks.extend(words);
-                }
-                let (offset, input) = &at[&key];
+                add(key, &mut fix, &mut blocks, &mut points, &mut at);
+                let Some((offset, input)) = at.get(&key) else { continue };
                 let o = key.origin();
                 let q = [g[0] - o.x as f64, g[1] - o.y as f64];
                 let words = &blocks[*offset..];
@@ -393,12 +448,10 @@ fn gpu_check(out: &std::path::Path, places: &[(String, f64, f64)]) -> Result<(),
                 let Some((h, label)) = obc_ground_plan::faces::heights::check::at(words, &input.terrain, key, q) else {
                     continue;
                 };
-                let t = obc_ground_plan::faces::heights::check::terrain_at(&input.terrain, key, q).unwrap_or(0.0);
+                let t = terrain_at(&input.terrain, key, q).unwrap_or(0.0);
                 let kind = h.kind as u32;
                 n[kind as usize] += 1;
-                if kind > 0 {
-                    points.push(json!([offset, q[0], q[1], label.unwrap_or(u32::MAX), t, h.h, kind, name]));
-                }
+                points.push(json!([offset, q[0], q[1], label.unwrap_or(u32::MAX), t, h.h, kind, name]));
             }
         }
         println!("{name}: terrain {} slope {} paved {}", n[0], n[1], n[2]);
@@ -420,6 +473,36 @@ fn gpu_check(out: &std::path::Path, places: &[(String, f64, f64)]) -> Result<(),
     println!("{} label points", labels.len());
     println!("{} points in {} cells", points.len(), at.len());
     Ok(())
+}
+
+/// A table of points about each portal line of a block (the flat end of a bore's floor bound line: `records::CEILING`
+/// with a negative drop): from 12 units in front of it to 12 behind it, the edges of the heights' `ON_LINE_UNITS`
+/// among them, and across it out to three half-widths of the bore's stroke.
+fn portal_points(words: &[u32]) -> Vec<[f64; 2]> {
+    const PAST: [f64; 15] = [-12.0, -7.0, -6.5, -6.0, -5.5, -3.0, -1.0, 0.0, 1.0, 3.0, 5.5, 6.0, 6.5, 7.0, 12.0];
+    let cell = f64::from(1 << 18);
+    let mut out = Vec::new();
+    for w in words[words[6] as usize..words[7] as usize].chunks(records::LINE) {
+        if w[1] & records::CEILING == 0 || f32::from_bits(w[10]) >= 0.0 || w[3] < 2 {
+            continue;
+        }
+        for (end, flat) in [(w[2], w[4]), (w[2] + w[3] - 1, w[5])] {
+            let s = &words[words[7] as usize + records::SAMPLE * end as usize..][..records::SAMPLE];
+            let (p, half) = ([f64::from(s[0] as i32), f64::from(s[1] as i32)], f64::from(f32::from_bits(s[2])));
+            let n = [f64::from(flat as u16 as i16), f64::from((flat >> 16) as u16 as i16)];
+            let len = libm::hypot(n[0], n[1]).max(1e-9);
+            let (n, side) = ([n[0] / len, n[1] / len], [-n[1] / len, n[0] / len]);
+            for across in [-3.0, -1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 3.0] {
+                for past in PAST {
+                    let q = [0, 1].map(|k| p[k] + across * half * side[k] + past * n[k]);
+                    if (0.0..=cell).contains(&q[0]) && (0.0..=cell).contains(&q[1]) {
+                        out.push(q);
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 /// The vertices of every candidate edge that a block's bins list, the points one unit beside each and the
