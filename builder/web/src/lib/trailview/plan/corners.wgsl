@@ -26,10 +26,15 @@ struct Piece {
     // The first word of the culvert mouths (piece.wgsl).
     culverts: u32,
     // A storey mesh's: the first word of its corners' height offsets (f32 metres; 0 for a cell's mesh), of its
-    // triangles (three corners each) and the count of its top's triangles (piece.wgsl).
+    // triangles (three corners each) and the count of its top's triangles, the first triangles of its railings and of
+    // its piers (piece.wgsl), and the first word and the count of its caps (3 words each, sorted by corner).
     offsets: u32,
     tris: u32,
     top: u32,
+    railings: u32,
+    piers: u32,
+    caps: u32,
+    cap_count: u32,
 }
 
 @group(0) @binding(0) var<storage, read_write> piece: array<u32>;
@@ -102,6 +107,37 @@ fn height_of(q: vec2i, label: u32, storey: bool) -> f32 {
     }
     let h = height_at(params.block, vec2f(q), label, stamped_ground(base, s), 0u);
     return select(stamp_bounded(h.x, h.y == H_PAVED, s), h.x, storey);
+}
+
+// The least of a storey corner's height h and its caps' (mesh/shell.rs's StoreyMesh::corner_height): a cap reads its
+// label as storey 0's corner of that label reads it, so a bore's roof stays its plate under the ground as drawn; a cap
+// of the plain terrain as the storey's own corners read it. NONE where a cap is unknown.
+fn capped(k: u32, q: vec2i, h: f32) -> f32 {
+    var lo = 0u;
+    var hi = params.cap_count;
+    loop {
+        if (lo >= hi) {
+            break;
+        }
+        let mid = (lo + hi) / 2u;
+        if (piece[params.caps + 3u * mid] < k) {
+            lo = mid + 1u;
+        } else {
+            hi = mid;
+        }
+    }
+    var out = h;
+    for (var j = lo; j < params.cap_count && piece[params.caps + 3u * j] == k; j++) {
+        let label = piece[params.caps + 3u * j + 1u];
+        var c: f32;
+        if (label == NO_LABEL) {
+            c = height_of(q, M_NONE, true);
+        } else {
+            c = height_of(q, label, false);
+        }
+        out = select(NONE, min(out, c + bitcast<f32>(piece[params.caps + 3u * j + 2u])), known(c));
+    }
+    return out;
 }
 
 // Whether a line's finish word is of a wall class: the one flag that heights reads for a wall at its edge.
@@ -348,6 +384,9 @@ fn corners(@builtin(local_invocation_index) lane: u32, @builtin(workgroup_id) gr
     let e = n.xy / (abs(n.x) + abs(n.y) + n.z);
     if (params.offsets != 0u && known(h)) {
         h += bitcast<f32>(piece[params.offsets + k]);
+    }
+    if (params.cap_count != 0u && known(h)) {
+        h = capped(k, q, h);
     }
     piece[o] = bitcast<u32>(h);
     piece[o + 1u] = look.x;

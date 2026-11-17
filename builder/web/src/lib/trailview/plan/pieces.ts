@@ -34,7 +34,7 @@ const TERRAIN_SHARE = 8;
 const TERRAIN_BIT = 0x80000000;
 /** A piece whose cell reaches this far before the level-18 plateau's end draws with the fade: the metres of four mesh triangles. */
 const FADE_MARGIN_M = 10;
-/** Bytes of a piece's parameters, as Piece of piece.wgsl (corners.wgsl reads the first 48). */
+/** Bytes of a piece's parameters, as Piece of corners.wgsl (piece.wgsl reads the first 56). */
 const PARAMS_BYTES = 64;
 /** The vertices of a culvert mouth's model: MOUTH_QUADS of plan/piece.wgsl, six each. */
 const CULVERT_VERTICES = 6 * 48;
@@ -341,15 +341,16 @@ export class Pieces {
         piece.done = 0;
     }
 
-    /** A cell's storeys: their corners, out words, slots, triangles and offsets in one buffer, as their parameters name them. */
+    /** A cell's storeys: their corners, out words, slots, triangles, offsets and caps in one buffer, as their parameters name them. */
     private uploadStoreys(r: Resources, storeys: StoreyMesh): StoreysGpu {
-        const { device } = r.gpu, { corners, slots, triangles, offsets } = storeys, n = offsets.length;
-        const data = r.gpu.buffer('plan', 4 * Math.max(4, 7 * n + slots.length + triangles.length), GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+        const { device } = r.gpu, { corners, slots, triangles, offsets, caps } = storeys, n = offsets.length;
+        const data = r.gpu.buffer('plan', 4 * Math.max(4, 7 * n + slots.length + triangles.length + caps.length), GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
         const params = r.gpu.buffer('plan', PARAMS_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
         device.queue.writeBuffer(data, 0, corners);
         device.queue.writeBuffer(data, 4 * 6 * n, slots);
         device.queue.writeBuffer(data, 4 * (6 * n + slots.length), triangles);
         device.queue.writeBuffer(data, 4 * (6 * n + slots.length + triangles.length), offsets);
+        if (caps.length) device.queue.writeBuffer(data, 4 * (7 * n + slots.length + triangles.length), caps);
         return { data, params, draw: this.drawGroup(r, data, params, r.frame), computed: false };
     }
 
@@ -425,7 +426,7 @@ export class Pieces {
         if (make !== 'all' || first !== 0 || !storeys?.compute || !mesh) return;
         const m = mesh.offsets.length, slots = mesh.slots.length, tris = 6 * m + slots;
         // The storeys' slots are all plain concrete: their end faces start at 0.
-        words.set([m, 6 * m, 2 * m, 0, piece.block, 0, 0, tris + mesh.triangles.length, tris, mesh.top, mesh.railings, mesh.piers], 2);
+        words.set([m, 6 * m, 2 * m, 0, piece.block, 0, 0, tris + mesh.triangles.length, tris, mesh.top, mesh.railings, mesh.piers, mesh.caps.length ? tris + mesh.triangles.length + m : 0, mesh.caps.length / 3], 2);
         r.gpu.device.queue.writeBuffer(storeys.params, 0, params);
         pass.setBindGroup(0, storeys.compute);
         pass.dispatchWorkgroups(Math.ceil(m / GROUP_CORNERS));
@@ -564,7 +565,7 @@ export class Pieces {
     }
 
     get stats(): PiecesStats {
-        const storeyBytes = ({ storeys: s }: CellMesh) => (s ? 4 * (7 * s.offsets.length + s.slots.length + s.triangles.length) : 0);
+        const storeyBytes = ({ storeys: s }: CellMesh) => (s ? 4 * (7 * s.offsets.length + s.slots.length + s.triangles.length + s.caps.length) : 0);
         const bytes = [...this.pieces.values()].reduce((sum, { mesh }) => sum + 4 * (3 * mesh.corners.length + mesh.steps.length + mesh.culverts.length) + 2 * mesh.triangles.length + storeyBytes(mesh), 0);
         return {
             cells: this.pieces.size, drawn: this.drawn.length, inView: this.inView.length,

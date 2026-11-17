@@ -5,7 +5,7 @@
 // #include ../roads/corridor.wgsl
 // #include cells.wgsl
 
-// As Piece of corners.wgsl.
+// The first fields of Piece of corners.wgsl.
 struct Piece {
     origin: vec2i,
     corners: u32,
