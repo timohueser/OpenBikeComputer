@@ -1,13 +1,10 @@
 // The models with their prices, the spending limit, and the tasks.
 import placeKinds from '../../../../../planner/search/place-kinds.json' with { type: 'json' };
 
-// USD for 1 million input and output tokens. `long` holds the prices of a call with more input tokens than
-// `overInputTokens`, where the model has a second price.
+// USD for 1 million input and output tokens.
 export const models = [
   { id: 'claude-sonnet-5-5', usdPerMillionInput: 2, usdPerMillionOutput: 10 },
   { id: 'claude-opus-5-5', usdPerMillionInput: 4, usdPerMillionOutput: 20 },
-  { id: 'claude-haiku-5-5', usdPerMillionInput: 0.1, usdPerMillionOutput: 0.5,
-    long: { overInputTokens: 100_000, usdPerMillionInput: 0.5, usdPerMillionOutput: 2.5 } },
 ];
 export const defaultModel = 'claude-sonnet-5-5';
 export const maxCostUsd = 15;

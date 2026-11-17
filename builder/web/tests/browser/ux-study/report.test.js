@@ -23,23 +23,28 @@ const ordinary = [
   { task: 'plan-route', n: 3, outcome: 'done', records: records([['planner', CHIP], ['planner', SEARCH], ['planner', RESULT, 'no']]) },
 ];
 
-test('the candidate steps are the steps whose result did not match, the confusing screens, the end of a failed walkthrough, and a done answer of no', () => {
+test('the candidate steps are the steps with a strong or a mild signal and the end of a failed walkthrough', () => {
   const doneNo = records([['planner', SEARCH], ['planner', 'map', 'yes', 2]]);
   doneNo[1].done_answer = 'no';
+  const mild = records([['planner', SEARCH], ['planner', CHIP, 'partly', 1]]);
+  mild[0].hardest = 'The search box looked like a title.';
   const steps = candidateSteps([
     ...ordinary,
     { task: 'plan-route', n: 4, outcome: 'done', records: doneNo },
     { task: 'plan-route', n: 5, outcome: 'gave_up', records: records([['planner', SEARCH], ['planner', CHIP], ['planner', 'map'], ['planner', 'map']]) },
     { task: 'plan-route', n: 6, outcome: 'error', records: records([['planner', SEARCH], ['planner', RESULT, 'no']]) },
+    { task: 'plan-route', n: 7, outcome: 'done', records: mild },
   ]);
-  assert.deepEqual(steps.map(s => [s.id, s.hit, s.atEnd, s.reasons.length]), [
-    ['plan-route-1/2', RESULT, false, 1],
-    ['plan-route-2/1', SEARCH, false, 1],
-    ['plan-route-3/2', SEARCH, false, 1],
-    ['plan-route-4/2', 'map', false, 2],
-    ['plan-route-5/2', CHIP, true, 1],
-    ['plan-route-5/3', 'map', true, 1],
-    ['plan-route-5/4', 'map', true, 1],
+  assert.deepEqual(steps.map(s => [s.id, s.hit, s.atEnd, s.strong, s.reasons]), [
+    ['plan-route-1/2', RESULT, false, true, ['the result did not match the expectation']],
+    ['plan-route-2/1', SEARCH, false, true, ['the result did not match the expectation']],
+    ['plan-route-3/2', SEARCH, false, true, ['the result did not match the expectation']],
+    ['plan-route-4/2', 'map', false, true, ['confusion 2: reason', 'the participant did not see that the task was done']],
+    ['plan-route-5/2', CHIP, true, false, ['one of the last steps before gave_up']],
+    ['plan-route-5/3', 'map', true, false, ['one of the last steps before gave_up']],
+    ['plan-route-5/4', 'map', true, false, ['one of the last steps before gave_up']],
+    ['plan-route-7/1', SEARCH, false, false, ['named as the hardest step', 'the result matched the expectation only partly']],
+    ['plan-route-7/2', CHIP, false, false, ['confusion 1: reason']],
   ]);
 });
 
@@ -54,12 +59,15 @@ test('the give-ups of failed walkthroughs group by the screen where they happene
     [['planner', null, 1], ['planner · dialog "Map details"', null, 1]]);
 });
 
-test('a group stays when two walkthroughs show it or a walkthrough failed there, failed groups first', () => {
-  const failed = { task: 'plan-route', n: 4, outcome: 'stuck', records: records([['planner', 'map'], ['planner', 'map'], ['planner', 'map']]) };
-  const groups = keptGroups(candidateSteps([...ordinary, failed]));
-  assert.deepEqual(groups.map(g => [g.hit, g.walkthroughs, g.failed, g.steps.map(s => s.id)]), [
-    ['map', 1, true, ['plan-route-4/1', 'plan-route-4/2', 'plan-route-4/3']],
-    [SEARCH, 2, false, ['plan-route-2/1', 'plan-route-3/2']],
+test('a group stays when two walkthroughs show it or a walkthrough failed there; failed groups first, then groups with a strong signal', () => {
+  const doubt = w => ({ ...w, records: w.records.map(r => (r.hit === CHIP ? { ...r, confusion: { level: 1, reason: 'reason' } } : r)) });
+  const chip = { task: 'plan-route', n: 4, outcome: 'done', records: records([['planner', CHIP, 'yes', 1]]) };
+  const failed = { task: 'plan-route', n: 5, outcome: 'stuck', records: records([['planner', 'map'], ['planner', 'map'], ['planner', 'map']]) };
+  const groups = keptGroups(candidateSteps([...ordinary.map(doubt), chip, failed]));
+  assert.deepEqual(groups.map(g => [g.hit, g.walkthroughs, g.failed, g.strong, g.steps.map(s => s.id)]), [
+    ['map', 1, true, false, ['plan-route-5/1', 'plan-route-5/2', 'plan-route-5/3']],
+    [SEARCH, 2, false, true, ['plan-route-2/1', 'plan-route-3/2']],
+    [CHIP, 3, false, false, ['plan-route-1/3', 'plan-route-3/1', 'plan-route-4/1']],
   ]);
   const many = Array.from({ length: 20 }, (_, n) =>
     ({ task: 'plan-route', n, outcome: 'gave_up', records: records([[`screen ${n}`, 'map']]) }));
@@ -96,6 +104,11 @@ test('the report counts the walkthroughs of a finding from its steps, links each
   assert.equal(lines[2], '# UX study · planner · abc1234 · model · 0.30 USD');
   assert.ok(lines.includes('- Evidence (2 of 3 plan-route walkthroughs): plan-route 2, step [1](plan-route-2/01.jpg); plan-route 3, step [2](plan-route-3/02.jpg)'));
   assert.deepEqual(openSections(lines), []);
+});
+
+test('the report counts one walkthrough and one open finding in the singular', async () => {
+  const { lines } = await report({ ask: answers(), walkthroughs: ordinary.slice(0, 1) });
+  assert.equal(lines[2], '1 of 1 walkthrough completed its task. 1 accepted finding is open.');
 });
 
 test('a report compares the open findings only when the study completed and the report call answered', async () => {

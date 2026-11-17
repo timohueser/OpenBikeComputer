@@ -13,7 +13,7 @@ a study on its own. The owner gives out each fix.
 ```sh
 ./tools/obc ux                              # all tasks, the default model
 ./tools/obc ux --task plan-route            # one task
-./tools/obc ux --model claude-haiku-5-5     # another model of study.js
+./tools/obc ux --model claude-opus-5-5      # another model of study.js
 ```
 
 `obc ux` builds the wasm bridges and the planner against the active planner release, then runs

@@ -7,17 +7,14 @@ const TRIES = 3;
 const STUCK_REPEATS = 3;
 
 /**
- * The cost of the model calls of one study, each call at the price for its own number of input tokens. At
- * `maxCostUsd` no further call starts. Calls that are already in flight still finish, so a study can pass the
- * limit by the cost of one call for each walkthrough that runs at the same time.
+ * The cost of the model calls of one study. At `maxCostUsd` no further call starts. Calls that are already in
+ * flight still finish, so a study can pass the limit by the cost of one call for each walkthrough that runs at
+ * the same time.
  */
 export function createBudget(model, maxCostUsd) {
   let spent = 0;
   return {
-    add(usage) {
-      const price = usage.input_tokens > (model.long?.overInputTokens ?? Infinity) ? model.long : model;
-      spent += (usage.input_tokens * price.usdPerMillionInput + usage.output_tokens * price.usdPerMillionOutput) / 1e6;
-    },
+    add(usage) { spent += (usage.input_tokens * model.usdPerMillionInput + usage.output_tokens * model.usdPerMillionOutput) / 1e6; },
     get spent() { return spent; },
     get exhausted() { return spent >= maxCostUsd; },
   };
@@ -26,8 +23,9 @@ export function createBudget(model, maxCostUsd) {
 /**
  * Runs `task` once in a new walkthrough of `env` and writes `steps.jsonl` and one JPEG for each screen to `dir`.
  * Resolves with `{ outcome, steps }`: `done`, `stuck`, `gave_up` or `error`; an `error` also has a `reason`.
- * The participant gets only its own answers back: the fields that the loop adds come from the page, which
- * the participant must know only from the screenshots.
+ * After any other outcome, the participant names its hardest step, which goes into that step's record as
+ * `hardest`. The participant gets only its own answers back: the fields that the loop adds come from the
+ * page, which the participant must know only from the screenshots.
  */
 export async function walk({ task, env, participant, budget, dir }) {
   mkdirSync(dir, { recursive: true });
@@ -54,11 +52,19 @@ export async function walk({ task, env, participant, budget, dir }) {
     return { reason };
   };
   const invalidAction = answer => (env.actions.valid(answer.action) ? null : `invalid action ${JSON.stringify(answer.action)}`);
+  const invalidStep = ({ step }) => (step === null || (step >= 1 && step <= records.length) ? null : `no step ${step}`);
+  let shot;
+  /** Ends with `outcome`; a failed end question leaves the outcome as it is. */
+  const finish = async outcome => {
+    const hardest = await call(() => participant.hardest({ goal: task.goal, records: answers, current: shot.jpeg }), invalidStep);
+    if (hardest.value?.step) records[hardest.value.step - 1].hardest = hardest.value.why;
+    return end(outcome);
+  };
 
   let walkthrough;
   try {
     walkthrough = await env.start();
-    let shot = await walkthrough.screenshot();
+    shot = await walkthrough.screenshot();
     save(shot.jpeg);
     let previous = null;
     for (;;) {
@@ -71,7 +77,7 @@ export async function walk({ task, env, participant, budget, dir }) {
       const record = { step: records.length + 1, ...answer.value, ...where, unstable: shot.unstable };
       answers.push(answer.value);
       records.push(record);
-      if (action.type === 'give_up') return end('gave_up');
+      if (action.type === 'give_up') return await finish('gave_up');
 
       await walkthrough.perform(action);
       previous = shot.jpeg;
@@ -82,10 +88,10 @@ export async function walk({ task, env, participant, budget, dir }) {
         const done = await call(() => participant.done({ goal: task.goal, records: answers, current: shot.jpeg }));
         if (!done.value) return end('error', done.reason);
         record.done_answer = done.value;
-        return end('done');
+        return await finish('done');
       }
-      if (stuck(records, env.actions.same)) return end('stuck');
-      if (records.length >= task.stepBudget) return end('gave_up');
+      if (stuck(records, env.actions.same)) return await finish('stuck');
+      if (records.length >= task.stepBudget) return await finish('gave_up');
     }
   } finally {
     writeFileSync(join(dir, 'steps.jsonl'), records.map(r => `${JSON.stringify(r)}\n`).join(''));
