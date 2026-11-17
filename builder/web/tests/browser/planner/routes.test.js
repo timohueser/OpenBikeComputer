@@ -108,6 +108,8 @@ const PARTS = { header: '.routes-page > header', chips: '.chips', rows: '.list .
 const LAYOUT = {
   1440: { header: [20, 62, 1400, 36], chips: [31, 173, 458, 24], rows: [[31, 205, 458, 114], [31, 319, 458, 114], [31, 433, 458, 114]],
     card: [527, 819, 880, 222], picture: [538, 830, 300, 200], text: [858, 830, 393, 75], profile: [858, 917, 538, 112], buttons: [1271, 830, 125, 78] },
+  1024: { header: [20, 62, 984, 36], chips: [31, 173, 358, 24], rows: [[31, 205, 358, 114], [31, 319, 358, 114], [31, 433, 358, 114]],
+    card: [427, 826, 564, 214], picture: [438, 837, 190, 126], text: [644, 837, 336, 69], profile: [438, 974, 542, 56], buttons: [644, 930, 336, 34] },
   390: { header: [16, 60, 358, 80], chips: [27, 214, 336, 24], rows: [[27, 246, 336, 94], [27, 340, 336, 94], [27, 434, 336, 94]],
     card: [29, 973, 332, 216], picture: [40, 984, 120, 80], text: [176, 984, 174, 69], profile: [40, 1121, 310, 56], buttons: [40, 1076, 242, 34] },
 };
@@ -142,7 +144,7 @@ test('the Routes page with a selected route, at the width of a computer and of a
   await expect(page.locator('.list .row[aria-current="true"]')).toHaveCSS('background-color', 'rgb(231, 236, 223)');
   await expect(page.locator('.list .thumb .cover').first()).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
   await page.evaluate(() => document.fonts.ready);
-  for (const width of [1440, 390]) {
+  for (const width of [1440, 1024, 390]) {
     await page.setViewportSize({ width, height: width === 390 ? 844 : 1100 });
     await expect.poll(async () => { const actual = await layout(page); return Object.keys(PARTS).filter(key => !near(actual[key], LAYOUT[width][key])); },
       { message: `parts out of place at ${width} px` }).toEqual([]);

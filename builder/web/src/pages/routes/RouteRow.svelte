@@ -21,8 +21,8 @@
         parts?: (string | false)[];
         tail?: string;
         badge?: { text: string; kind: string };
-        /** The text of a button that lies on the row. The row keeps its room with the same text, hidden, where a badge
-         * would be. */
+        /** The text of a button that lies on the top right of the row. The row keeps its room with the same text,
+         * hidden, so the name does not run under it. */
         room?: string;
         /** A cover, whose root has the class `cover`. */
         picture: Snippet;
@@ -46,14 +46,14 @@
         {#if parts}
             <span class="meta">{lead}{#each parts.filter(Boolean) as part, i (i)}{i || lead ? ' · ' : ''}<span>{part}</span>{/each}{#if tail}{' · '}{tail}{/if}</span>
         {/if}
-    </span>
-    {#if badge}<span class="badge {badge.kind}">{badge.text}</span>{:else if room}<span class="room" aria-hidden="true">{room}</span>{/if}
+        {#if badge}<span class="badge {badge.kind}">{badge.text}</span>{/if}
+    </span>{#if room}<span class="room" aria-hidden="true">{room}</span>{/if}
 </button>
 
 <style>
     .row {
         display: grid;
-        grid-template-columns: 150px minmax(0, 1fr) auto;
+        grid-template-columns: 150px minmax(0, 1fr);
         align-items: start;
         gap: 14px;
         width: 100%;
@@ -99,9 +99,16 @@
     .badge, .meta span, .room {
         white-space: nowrap;
     }
-    /* On the line of the name. */
+    /* A long name has two lines; the page of the route has all of it. */
+    strong {
+        display: -webkit-box;
+        overflow: hidden;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+        line-clamp: 2;
+    }
     .badge {
-        padding-top: 8px;
+        align-self: start;
     }
     /* The one state that waits for the rider to connect the device has a dot. */
     .badge.waiting::before {
@@ -114,14 +121,15 @@
         vertical-align: 1px;
         content: '';
     }
-    /* The padding of the button that lies on the row. */
+    /* The padding and the place of the button that lies on the row. */
     .room {
+        grid-column: 3;
         padding: 2px 4px;
         visibility: hidden;
     }
     @media (max-width: 760px) {
         .row {
-            grid-template-columns: 120px minmax(0, 1fr) auto;
+            grid-template-columns: 120px minmax(0, 1fr);
             gap: 10px;
         }
         .thumb {

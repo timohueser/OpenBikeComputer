@@ -1,5 +1,5 @@
-<!-- The card of a route over the map: its picture, its name, its numbers, its profile and its buttons. The name is the one
-     link of the card. -->
+<!-- The card of a route over the map: its picture, its name, its numbers, its profile and its buttons. The link of the
+     name covers the card under the buttons. -->
 <script lang="ts">
     import type { Snippet } from 'svelte';
     import type { Summary } from '../../lib/library/records';
@@ -118,7 +118,7 @@
         color: inherit;
         text-decoration: none;
     }
-    /* The name is the one link of the card: it covers the whole card, under the buttons. */
+    /* The link of the name covers the whole card, under the buttons. */
     .open::after {
         position: absolute;
         inset: 0;
