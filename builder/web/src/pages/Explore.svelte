@@ -1,7 +1,6 @@
 <!-- The Explore page: the signed routes of the map view in a list with chips, on the map, and the selected one in a card
      that opens it as a plan in the planner. -->
 <script lang="ts">
-    import CoverPicture from '../lib/covers/CoverPicture.svelte';
     import { keepInHistory } from '../lib/keep-in-history.svelte';
     import type { Bike } from '../lib/library/records';
     import type { Library } from '../lib/library/store';
@@ -11,6 +10,7 @@
     import { ROUTES } from '../lib/routes';
     import { distanceIn, heightIn } from '../lib/settings/format';
     import SignedCard, { signedNumbers } from './explore/SignedCard.svelte';
+    import SignedPicture from './explore/SignedPicture.svelte';
     import Chips from './routes/Chips.svelte';
     import { results, signedItem, type Chips as ChipValues, type SignedItem } from './routes/filter';
     import ListAndMap from './routes/ListAndMap.svelte';
@@ -108,7 +108,7 @@
 <!-- Escape in an open window closes only the window. -->
 <svelte:window onkeydown={event => { if (event.key === 'Escape' && !document.querySelector('dialog[open]')) selected = undefined; }} />
 
-<ListAndMap title="Explore" {items} {shown} {place} fit={0} look="route" credits={[]} selected={chosen ? [chosen.id] : []}
+<ListAndMap title="Explore" {items} {shown} {place} fit={0} look="signed" credits={[]} selected={chosen ? [chosen.id] : []}
     onselect={id => selected = id} onview={next => view = wrapped(next)} card={chosen ? card : undefined}>
     {#snippet list()}
         <!-- The search field finds places only; a chosen place moves the map. -->
@@ -130,7 +130,7 @@
                 {#each shown as item (item.id)}
                     <li>
                         <RouteRow name={item.name} current={item.id === selected} onclick={() => selected = item.id} parts={signedNumbers(item.record)}>
-                            {#snippet picture()}<CoverPicture summary={item.summary} />{/snippet}
+                            {#snippet picture()}<SignedPicture {item} />{/snippet}
                         </RouteRow>
                     </li>
                 {:else}

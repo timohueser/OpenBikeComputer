@@ -13,11 +13,11 @@
 
 <script lang="ts">
     import TrailMarker from '../../components/planner/TrailMarker.svelte';
-    import CoverPicture from '../../lib/covers/CoverPicture.svelte';
     import { catalog } from '../../lib/planner/route-catalog';
     import { routeWebsite } from '../../lib/planner/route-overlays';
     import type { SignedItem } from '../routes/filter';
     import RouteCard from '../routes/RouteCard.svelte';
+    import SignedPicture from './SignedPicture.svelte';
 
     let { item, onplan }: { item: SignedItem; onplan: () => void } = $props();
 
@@ -36,7 +36,7 @@
 
 <RouteCard name={item.name} meta={[record.loop ? 'Loop' : 'One way', stage, kind]} numbers={signedNumbers(record)} profile={item.profile}
     more={about ? more : undefined}>
-    {#snippet picture()}<CoverPicture summary={item.summary} />{/snippet}
+    {#snippet picture()}<SignedPicture {item} />{/snippet}
     {#snippet mark()}<span class="mark"><TrailMarker symbol={record.symbol} ref={record.ref} /></span>{/snippet}
     {#snippet buttons()}<button type="button" class="button" onclick={onplan}>Plan this route</button>{/snippet}
 </RouteCard>
