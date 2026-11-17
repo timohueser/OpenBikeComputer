@@ -122,7 +122,8 @@ for `hiking` and `foot`, `mtb/technical` for `mtb`, and `road`, `gravel` and `to
 `bicycle`. A client plans a `hiking` or `foot` route with `hardest` above 1 (T2) with
 `hiking/alpine`, an `mtb` route with `hardest` above 2 (S2) with `mtb/technical`, and every other
 route with the Balanced profile. Both profiles give the same route when no grade on it is above the
-ordinary limit. The main line is the member ways with an empty, `main`, `forward` or `backward`
+ordinary limit. A hiking route can have `hardest` 4 or 5 (T5 or T6).
+The main line is the member ways with an empty, `main`, `forward` or `backward`
 role, ordered as the Waymarked Trails route builder orders them, with the forward branch where the
 route splits by direction. When that order has more than one piece, the builder joins the pieces at
 their nearest ends, from the first piece on, into one chain that uses each piece once, with each

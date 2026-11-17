@@ -1,16 +1,11 @@
 <script lang="ts">
     /** `path` draws a 24 px stroke path instead of a named icon. */
     let { name = 'pin', path, size = 18 }: { name?: string; path?: string; size?: number } = $props();
-    const bikeFrame = 'M5 17 8 10h8l-4 7h7l-3-7-4 7L8 10M16 10l1-3m-2 0h4';
-    const dropBars = 'M8 10l.5-3H5a1.5 1.5 0 0 0 0 3h.5';
-    const bikes: Record<string, { bars: string; tires: number; rack?: string }> = {
-        road: { bars: dropBars, tires: 1.6 },
-        gravel: { bars: dropBars, tires: 2.1 },
-        touring: { bars: 'M8 10V6H5', tires: 1.8, rack: 'M17 12h5' },
-        mtb: { bars: 'M8 10l.5-3H5', tires: 2.5 },
-    };
-    const bike = $derived(!path ? bikes[name] : undefined);
     const paths: Record<string, string> = {
+        road: 'M1.6 16.6a3.4 3.4 0 1 0 6.8 0a3.4 3.4 0 1 0 -6.8 0ZM15.6 16.6a3.4 3.4 0 1 0 6.8 0a3.4 3.4 0 1 0 -6.8 0ZM17.1 7.4a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0ZM5 16.6L8.4 9.9L15 9.3L17.2 13.2L19 16.6M8.4 9.9L12.8 13L11.4 16.6',
+        gravel: 'M1.6 16a3.4 3.4 0 1 0 6.8 0a3.4 3.4 0 1 0 -6.8 0ZM15.6 16a3.4 3.4 0 1 0 6.8 0a3.4 3.4 0 1 0 -6.8 0ZM14.5 2.6a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0ZM2 22.3v.01M7 22.3v.01M12 22.3v.01M17 22.3v.01M22 22.3v.01M5 16L8.4 9.2L13.6 5.4L17 10.8L19 16M8.4 9.2L13 12L11.4 16',
+        touring: 'M8.4 17.6A3.4 3.4 0 0 1 1.6 17.6M2.9 11.4H6.5a1.1 1.1 0 0 1 1.1 1.1V16.5a1.1 1.1 0 0 1 -1.1 1.1H2.9a1.1 1.1 0 0 1 -1.1 -1.1V12.5a1.1 1.1 0 0 1 1.1 -1.1ZM15.6 17.6a3.4 3.4 0 1 0 6.8 0a3.4 3.4 0 1 0 -6.8 0ZM11.3 2.5a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0ZM8.8 11.2L11.2 6.2L16.4 10.6L19 17.6M8.8 11.2L13.4 13L12 17.6',
+        mtb: 'M3.45 13.65a3 3 0 1 0 6 0a3 3 0 1 0 -6 0ZM14.95 17.49a3 3 0 1 0 6 0a3 3 0 1 0 -6 0ZM15.8 4a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0ZM1.5 15.17L21.5 21.83M17.5 11L17.95 17.49M11.9 15.4L11.7 11.4L8.9 7.6L14.1 6.4L17.5 11',
         hiking: 'M15 4a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Zm-3 3 4 4h3M13 6l-3 7 5 3-1 6m-4-9-3 5-4 3M11 7l-3-1-2 6 3 1m11-3-2 12',
         'less-climbing': 'M3 17h18M5 13l4-5 4 5 3-3 3 3',
         calendar: 'M4 5h16v16H4V5Zm0 5h16M8 3v4m8-4v4M8 14h2m4 0h2m-8 3h2',
@@ -52,12 +47,4 @@
         rain: 'M7 15h10a4 4 0 0 0 .7-7.9A5.5 5.5 0 0 0 7.2 6 4.5 4.5 0 0 0 7 15Zm2 3-1 3m5-3-1 3m5-3-1 3',
     };
 </script>
-<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">{#if bike}
-    <g stroke-width="1.6">
-        <circle cx="5" cy="17" r="3.5" stroke-width={bike.tires} />
-        <circle cx="19" cy="17" r="3.5" stroke-width={bike.tires} />
-        <path d={bikeFrame} />
-        <path d={bike.bars} />
-        {#if bike.rack}<path d={bike.rack} />{/if}
-    </g>
-{:else}<path d={path ?? paths[name] ?? paths.pin} />{/if}</svg>
+<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d={path ?? paths[name] ?? paths.pin} /></svg>

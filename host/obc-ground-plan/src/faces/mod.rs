@@ -68,7 +68,7 @@ pub(crate) struct WayLine<'a> {
     /// that ends there, and the bore's wall): the two ways and the cover share the line's vertices.
     pub end_cuts: [Option<Vec<f64>>; 2],
     /// The bores (ways) that this ground way enters: at its own portal end, or through the ways that go on from it at
-    /// joints, within `open_max_m` along them (`entering`).
+    /// joints, within `LEAD_M` along them (`entering`).
     pub leads: Vec<u32>,
     /// The box of its carriageway: its samples' box grown by its widest half-width.
     pub bbox: [i32; 4],
@@ -307,6 +307,12 @@ fn portal_dirs(g: &WayGraph) -> Vec<(ArmKey, [f64; 2], crate::graph::Arm)> {
     out
 }
 
+/// The metres along the ground ways in front of a portal line within which a way on top can be the lid of the way that
+/// enters the bore. A way on top over an open stretch is a lid only where its stroke also meets the bore's room (the
+/// bake's lid rule), else a door: so a lid starts on the line, and a motorway's stroke that crosses at 26 degrees spans
+/// 30 m along the way below.
+const LEAD_M: f64 = 30.0;
+
 /// The ground ways that enter each bore, as (ground way, bore way): the way that ends on the portal line and the ways
 /// that go on from it at joints of two ground ways, as far as `reach_m` along them.
 fn entering(g: &WayGraph, dirs: &[(ArmKey, [f64; 2], crate::graph::Arm)], reach_m: f64) -> Vec<(u32, u32)> {
@@ -386,7 +392,7 @@ fn lines_with<'a>(
         }
     }
     let dirs = if BORES { portal_dirs(g) } else { Vec::new() };
-    let lead = if BORES { entering(g, &dirs, ctx.rules.structures.open_max_m) } else { Vec::new() };
+    let lead = if BORES { entering(g, &dirs, LEAD_M) } else { Vec::new() };
     let mut out = Vec::new();
     let mut of_way = BTreeMap::new();
     let (ways, water): (Vec<_>, Vec<_>) = g.ways.iter().partition(|w| w.family != Family::Water);
@@ -1036,7 +1042,7 @@ pub(crate) fn record_lines<'a>(
 /// The ceiling lines of a cell's records: its deck ways whose ceiling reaches a bin of the cell (at most
 /// `records::ceiling_end_reach` from the centre line), each one leg, with the half-width of the deck's stroke: its
 /// paved layers' and `edge_band_m`. With the bores also its bore ways, whose floor bound holds the ground over the
-/// bore's stroke: its core, its wall and the cover's margin.
+/// bore's core and falls past it.
 pub(crate) fn ceiling_lines<'a>(
     graph: &'a WayGraph,
     input: &CellInput,
@@ -1044,22 +1050,23 @@ pub(crate) fn ceiling_lines<'a>(
     cell: CellKey,
 ) -> Vec<WayLine<'a>> {
     let ctx = Ctx { graph, rules, origin: cell.origin() };
-    let (deck_m, bore_m) = (rules.structures.edge_band_m, deck::WALL_M + deck::COVER_SIDE_M);
-    // A cell whose graph has no bore reads its decks as a build with no bores does.
-    let half = HALF_MAX_M + if BORES && any_bore(graph) { deck_m.max(bore_m) } else { deck_m };
+    let deck_m = rules.structures.edge_band_m;
+    let half = HALF_MAX_M + deck_m;
     let m = records::ceiling_end_reach(half, rules.plan.heights.ceiling_release_m) + records::HEIGHT_PAD_M;
     deck_lines(&ctx, input, &|w| on_deck(graph, w) || in_bore(graph, w), grown(cell, m, true))
 }
 
 /// The lines of the ways that `keep` takes in a box, each one leg, with the half-width of the deck's stroke (a bore's:
-/// its core, its wall and the cover's margin).
+/// its core).
 fn deck_lines<'a>(ctx: &Ctx<'a>, input: &CellInput, keep: &dyn Fn(u32) -> bool, bx: [i32; 4]) -> Vec<WayLine<'a>> {
-    let (deck_m, bore_m) = (ctx.rules.structures.edge_band_m, deck::WALL_M + deck::COVER_SIDE_M);
+    let deck_m = ctx.rules.structures.edge_band_m;
     let mut out = lines(ctx, input, keep, bx).0;
     for line in &mut out {
         line.cuts.clear();
         line.spans.clear();
-        let band = if in_bore(ctx.graph, line.way) { bore_m } else { deck_m };
+        // A bore's floor bound holds over its floor, its core, and falls past it: by the lift at most, so the ground
+        // meets the plain terrain beside the cover with no step.
+        let band = if in_bore(ctx.graph, line.way) { 0.0 } else { deck_m };
         for i in 0..line.p.len() {
             line.h[i] = line.bands[i][VERGE] + ctx.units(band, line.p[i]);
         }
@@ -1819,7 +1826,20 @@ fn candidates<'a>(
     // label (`wedges`).
     let mut wedges: Vec<(Vec<u32>, Label, Rings)> = Vec::new();
     if level == 0 && BORES {
-        cands.extend(cover_cands);
+        // The cover's end takes only the ground's slope band (the merged band layer): past the band the ground is the
+        // terrain on both sides of the line.
+        let band = |c: &Cand| c.label.surface == Surface::Slope && c.label.material.is_none() && c.relabel.is_none();
+        let slope = if cover_cands.iter().any(|c| c.key != (0, 0, 0)) {
+            union(&cands.iter().filter(|c| band(c)).flat_map(|c| c.rings.iter().cloned()).collect::<Vec<_>>(), [0, 0])
+        } else {
+            Vec::new()
+        };
+        for mut c in cover_cands {
+            if c.key != (0, 0, 0) {
+                c.rings = stroke::boolean(&c.rings, &slope, OverlayRule::Intersect, [0, 0]);
+            }
+            cands.push(c);
+        }
         for (li, of, pieces) in &entering {
             let Some((_, lids)) = lids.iter().find(|x| x.0 == lines[*li].way) else { continue };
             let rings = stroke::boolean(&union(pieces, [0, 0]), lids, OverlayRule::Intersect, [0, 0]);
@@ -1993,7 +2013,11 @@ fn run_in(line: &WayLine, bx: [i32; 4]) -> Option<(usize, usize)> {
 struct Lid {
     /// The cover: one candidate of storey 0 over each bore's stroke (its core and its wall) from end line to end line,
     /// less its lids. Its key wins every face: over a floor, only a way on top keeps its own surface (`Sliced::joint`).
-    /// Its height is the ground's (the slope rule) over the floor bound (`heights::floor`).
+    /// Its height is the ground's (the slope rule) over the floor bound (`heights::floor`). A second candidate is the
+    /// cover's end: the stroke widened on each portal line to the whole end of the way that enters (its outermost
+    /// layer), narrowing to the stroke at the next sample, less the lids. It wins only the ground's slope band, so every
+    /// point of the line where that way's ground (its cut) differs from the ground behind (the floor bound) is an edge
+    /// of the cover, and the ground beside the cover lies wholly behind the line.
     cover: Vec<Cand>,
     /// Per way that enters a bore, the strokes of the stretches on top of it.
     entering: Vec<(u32, Rings)>,
@@ -2007,15 +2031,26 @@ struct Lid {
 fn bore_cover(ctx: &Ctx, input: &CellInput, ground: &[WayLine], ways_box: [i32; 4], bx: [i32; 4]) -> Lid {
     let g = ctx.graph;
     let (bores, _) = lines_with(ctx, input, &|w| in_bore(g, w), ways_box, Some(ground));
-    // Per bore, its stroke: its core and its wall.
+    // Per bore, its stroke: its core and its wall; and its stroke widened at a portal end to the whole end of the way
+    // that enters there (a bore's end sample holds that way's offsets).
     let mut strokes: Vec<Vec<Vec<P>>> = vec![Vec::new(); bores.len()];
-    for (line, rings) in bores.iter().zip(&mut strokes) {
+    let mut ends: Vec<Vec<Vec<P>>> = vec![Vec::new(); bores.len()];
+    for ((line, rings), wide) in bores.iter().zip(&mut strokes).zip(&mut ends) {
         let Some((first, last)) = run_in(line, bx) else { continue };
         let own = |i: usize| line.offsets(i)[..=VERGE + 1].to_vec();
         let c0 = if first == 0 { line.end_cuts[0].clone() } else { None }.unwrap_or_else(|| own(first));
         let c1 = if last == line.p.len() { line.end_cuts[1].clone() } else { None }.unwrap_or_else(|| own(last - 1));
         let d: Vec<f64> = (first..last).map(|i| line.bands[i][VERGE] + ctx.units(deck::WALL_M, line.p[i])).collect();
-        pieces_along(&line.p[first..last], &d, &line.dirs(first, last), [&c0, &c1], [false; 2], false, rings);
+        let dirs = line.dirs(first, last);
+        pieces_along(&line.p[first..last], &d, &dirs, [&c0, &c1], [false; 2], false, rings);
+        let portal =
+            |i: usize| (i == 0 && line.end_cuts[0].is_some()) || (i + 1 == line.p.len() && line.end_cuts[1].is_some());
+        if (first..last).any(portal) {
+            let d: Vec<f64> = (first..last)
+                .map(|i| if portal(i) { d[i - first].max(line.bands[i][SLOPE]) } else { d[i - first] })
+                .collect();
+            pieces_along(&line.p[first..last], &d, &dirs, [&c0, &c1], [false; 2], false, wide);
+        }
     }
     if strokes.iter().all(Vec::is_empty) {
         return Lid::default();
@@ -2154,20 +2189,31 @@ fn bore_cover(ctx: &Ctx, input: &CellInput, ground: &[WayLine], ways_box: [i32; 
         rings.extend(stroke::boolean(&union(stroke, [0, 0]), lid, OverlayRule::Difference, [0, 0]));
     }
     let rings = union(&rings, [0, 0]);
+    let mut wide = Vec::new();
+    for (end, lid) in ends.iter().zip(&lids).filter(|x| !x.0.is_empty()) {
+        wide.extend(stroke::boolean(&union(end, [0, 0]), lid, OverlayRule::Difference, [0, 0]));
+    }
+    let wide = union(&wide, [0, 0]);
     let lids: Vec<(u32, Rings)> =
         (under.iter().zip(lids)).skip(bores.len()).filter(|x| !x.1.is_empty()).map(|(u, lid)| (u.3, lid)).collect();
     let label = Label { surface: Surface::Cover, rule: HeightRule::Slope, rank: 0, ..TERRAIN };
-    let cover = vec![Cand {
+    let cand = |rings: Rings, key: (u8, u8, u8)| Cand {
         rings,
         label,
-        key: (0, 0, 0),
+        key,
         glob: Some([i64::MIN; 5]),
         line: 0,
         relabel: None,
         beyond: Vec::new(),
         fill: None,
         discs: Vec::new(),
-    }];
+    };
+    // The end's key is the merged slope band's (`candidates`), and its global name wins the tie.
+    let slope = (ctx.rules.plan.rank(Rank::Slope), 1, 0);
+    let mut cover = vec![cand(rings, (0, 0, 0))];
+    if !wide.is_empty() {
+        cover.push(cand(wide, slope));
+    }
     Lid { cover, entering: lids, tops, of_lower: lid_of }
 }
 

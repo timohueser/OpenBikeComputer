@@ -33,7 +33,8 @@ const ORIGIN: i32 = 100_000;
 type Route<'a> = (i64, Vec<(&'a str, &'a str)>, Vec<Id>);
 
 /// A 7 by 7 grid of streets 445 m apart on rolling ground, with node `10 * row + column`, and its
-/// source objects. The way from node 0 to node 1 is T3; there is no street from node 15 to node 25.
+/// source objects. The way from node 0 to node 1 is T3, the way from node 25 to node 26 is a T5 path;
+/// there is no street from node 15 to node 25.
 fn grid(routes: Vec<Route>) -> (Package<Memory>, Data) {
     let mut graph = Graph::default();
     let mut index = HashMap::new();
@@ -70,10 +71,14 @@ fn grid(routes: Vec<Route>) -> (Package<Memory>, Data) {
                             ascent_m: (shape[1].elevation - shape[0].elevation).max(0.0) as u32,
                             descent_m: (shape[0].elevation - shape[1].elevation).max(0.0) as u32,
                             surface: Surface::Paved,
-                            class: 1,
+                            class: if id == way(25, 26) { 4 } else { 1 },
                             access: BIKE | FOOT | PUSH,
                             difficulty: 255,
-                            hiking_difficulty: (id == way(0, 1)).then_some(3),
+                            hiking_difficulty: match id {
+                                _ if id == way(0, 1) => Some(3),
+                                _ if id == way(25, 26) => Some(5),
+                                _ => None,
+                            },
                             structure: false,
                             shape,
                         },
@@ -265,6 +270,16 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
     // The trail ends where the ring starts, so that point counts once.
     let points = via + 2 + ring["via"].as_array().unwrap().len() + 2 - 1;
     assert_eq!(report.long_points[0], (5, points));
+    Ok(())
+}
+
+#[test]
+fn catalog_keeps_a_hiking_route_over_a_t5_way() -> Result<(), String> {
+    let (package, osm) =
+        grid(vec![route(13, &[("route", "hiking"), ("name", "Ridge")], path(&[23, 24, 25, 26, 36, 46]))]);
+    let (records, report) = catalog(&Selection::whole(package.fork()), osm, false, 2)?;
+    assert!(report.dropped.is_empty(), "{:?}", report.dropped);
+    assert_eq!((&records[0]["id"], &records[0]["hardest"]), (&json!(13), &json!(4)));
     Ok(())
 }
 
