@@ -5,7 +5,7 @@
 // (the records' outline edges): per host line a fill and a cut over its edges, released at the reach,
 // and the ground is a smooth min(cut, max(T, fill)), where a line's cut rises to the bank of the other
 // lines' fills, a wall class's up to its highest wall and then at its steepest cut. The ground (the terrain and
-// the slopes) stays under every deck's ceiling.
+// the slopes) stays under every deck's ceiling and over every bore's floor bound.
 // #include records.wgsl
 
 const H_SLOTS: u32 = 10u;
@@ -24,6 +24,10 @@ const H_GRADE_STEPS: f32 = 4096.0;
 // An outline edge's cone reaches this many frame units past its line into its paved face before it falls
 // on at face_max (heights::SIDE_UNITS).
 const H_SIDE_UNITS: f32 = 32.0;
+// Within this many frame units of a portal line a corner of storey 0 lies on it (heights::ON_LINE_UNITS).
+const H_ON_LINE_UNITS: f32 = 6.0;
+// The plain terrain over a bore falls at face_max from this far past its floor bound's stroke (faces::deck::WALL_M).
+const H_WALL_M: f32 = 0.6;
 // HRec.rank and HLine.rank: the class rank below H_FLAGS, the line's flags from it on (a wall class, a
 // rail, line water).
 const H_FLAGS: u32 = 1u << 24u;
@@ -854,9 +858,42 @@ fn h_close(gs: ptr<function, HGroups>, g0: HGroup, ln: HLine) {
     (*gs).n++;
 }
 
+// Whether a way that ends at a portal line holds no slope at q, as `ended` of heights::groups: an end sample of
+// line ln within its reach, half-width and side of q is the end point of a bore's floor bound line (`cs`) whose
+// flat end q lies past, along the flat normal into the bore, by more than `on_line` units.
+fn h_ended(block: u32, q: vec2f, mpu: f32, ln: HLine, cs: HCeilings, on_line: f32) -> bool {
+    let samples = block + mw(block + 7u);
+    let lines = block + mw(block + 6u);
+    for (var e = 0u; e < 2u; e++) {
+        let s = samples + M_SAMPLE * (ln.first + select(0u, ln.count - 1u, e == 1u));
+        let at = vec2f(mi(s), mi(s + 1u));
+        if (length(q - at) * mpu >= ln.reach + mf(s + 2u) * mpu + ln.side) {
+            continue;
+        }
+        for (var k = 1u; k <= cs.n; k++) {
+            let item = mw(cs.end - k);
+            let lw = lines + M_LINE * (item & 0xffffu);
+            let i = item >> 16u;
+            let count = mw(lw + 3u);
+            if (mf(lw + 10u) >= 0.0 || (i != 0u && i + 2u != count)) {
+                continue;
+            }
+            let end = select(0u, count - 1u, i != 0u);
+            let p = samples + M_SAMPLE * (mw(lw + 2u) + end);
+            let n = h_unit(unpack2x16snorm(mw(lw + select(4u, 5u, i != 0u))));
+            if (all(vec2f(mi(p), mi(p + 1u)) == at) && dot(q - at, n) > on_line) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 // The host lines of the outline edges that q's bin lists, as heights::groups. A bin lists its edges by
-// host line, in half words after their count; a block with no outline edges lists none.
-fn h_groups(block: u32, q: vec2f, mpu: f32) -> HGroups {
+// host line, in half words after their count; a block with no outline edges lists none. The cut and the bank of
+// a way that enters a bore end square on its portal line (h_ended): a point on the line is behind it for the
+// cover, in front of it for every other face.
+fn h_groups(block: u32, q: vec2f, mpu: f32, cover: bool, cs: HCeilings) -> HGroups {
     var gs: HGroups;
     gs.n = 0u;
     let head = m_bin_head(block, q);
@@ -869,6 +906,8 @@ fn h_groups(block: u32, q: vec2f, mpu: f32) -> HGroups {
     let edges = block + mw(block + 14u);
     var g = HGroup(M_NONE, 0u, 0u, -H_BIG, -H_BIG, H_BIG, H_BIG, H_BIG, H_BIG, 1.0);
     var ln: HLine;
+    var ended = false;
+    let on_line = select(H_ON_LINE_UNITS, -H_ON_LINE_UNITS, cover);
     for (var k = 1u; k <= n; k++) {
         let e = edges + H_EDGE * ((mw(at + k / 2u) >> (16u * (k % 2u))) & 0xffffu);
         let line = mw(e + 3u) & 0xffffu;
@@ -878,6 +917,10 @@ fn h_groups(block: u32, q: vec2f, mpu: f32) -> HGroups {
             }
             ln = h_line(block, line);
             g = HGroup(line, ln.rank, h_glob(block, ln), -H_BIG, -H_BIG, H_BIG, H_BIG, H_BIG, H_BIG, 1.0);
+            ended = cs.bores && h_ended(block, q, mpu, ln, cs, on_line);
+        }
+        if (ended) {
+            continue;
         }
         // Metres along and off the edge from q − a; b is two i16 offsets from a.
         let a = vec2f(mi(e), mi(e + 1u));
@@ -946,8 +989,8 @@ fn h_groups(block: u32, q: vec2f, mpu: f32) -> HGroups {
 // the other lines that are no rail and no water) up to its highest cut, in a round that grows from 0 at
 // its own outline and at the outline of every line in the budget; where its own plain fill passes its
 // cut, that fill bounds the cut.
-fn h_slope(block: u32, q: vec2f, mpu: f32, t: f32) -> f32 {
-    let gs = h_groups(block, q, mpu);
+fn h_slope(block: u32, q: vec2f, mpu: f32, t: f32, cover: bool, cs: HCeilings) -> f32 {
+    let gs = h_groups(block, q, mpu, cover, cs);
     let n = gs.n;
     if (n == 0u) {
         return t;
@@ -1144,92 +1187,202 @@ fn height_at(block: u32, q: vec2f, label: u32, t: f32, start: u32) -> vec2f {
 // height_at with every height less H_BASE.
 fn height_relative(block: u32, q: vec2f, label: u32, t: f32, start: u32) -> vec2f {
     let rule = select(mw(m_label(block, label)) >> 24u, 0u, label == M_NONE);
-    // The terrain under a deck's ceiling: a point with no ceiling line in its bin reads no rules.
-    if (rule == 0u) {
-        let at = h_ceilings(block, q, start);
-        if (at.y == 0u) {
+    if (rule <= 1u) {
+        // The terrain: a point with no ceiling line in its bin reads no rules.
+        let cs = h_ceilings(block, q, start);
+        if (rule == 0u && cs.n == 0u) {
             return vec2f(t, H_TERRAIN);
         }
         H = h_rules(block);
-        return vec2f(min(t, h_ceiling(block, q, h_scale(block, q), at)), H_TERRAIN);
+        let mpu = h_scale(block, q);
+        let kind = select(H_TERRAIN, H_SLOPE, rule == 1u);
+        let cover = label != M_NONE && (mw(m_label(block, label)) & 0xffu) == M_SURFACE_COVER;
+        // A slope reads only the outline edges, and the ceilings.
+        var h = t;
+        if (rule == 1u) {
+            h = h_slope(block, q, mpu, t, cover, cs);
+        }
+        var c = h_ceiling(block, q, mpu, cs);
+        // Behind a portal line the ground of storey 0 stands on the floor bound, as heights::by_label: it yields to a
+        // deck only under the deck's own stroke.
+        let line = select(mw(m_label(block, label) + 2u), M_NONE, label == M_NONE);
+        if (cs.bores && (line == M_NONE || h_storey(m_line_finish(block, line)) == 0u)) {
+            let f = h_floor(block, q, mpu, cs, t, cover);
+            if (f > c) {
+                c = h_under_decks(block, q, mpu, cs);
+            }
+            h = max(h, f);
+        }
+        return vec2f(min(h, c), kind);
     }
     H = h_rules(block);
     let mpu = h_scale(block, q);
-    // A slope reads only the outline edges, and the ceilings.
-    if (rule == 1u) {
-        return vec2f(min(h_slope(block, q, mpu, t), h_ceiling(block, q, mpu, h_ceilings(block, q, start))), H_SLOPE);
-    }
     return h_paved_at(block, q, mpu, label, rule, mw(m_label(block, label) + 2u), t, start);
 }
 
-// The word after q's bin's height segment items and the count of the ceiling lines' items among them, last
-// (records::CEILING): 0 where none.
-fn h_ceilings(block: u32, q: vec2f, start: u32) -> vec2u {
-    let head = m_bin_head(block, q);
-    if (head == 0u) {
-        return vec2u(0u);
-    }
-    let end = select(h_heights_start(block, q), start, start != 0u) + (mw(head + 2u) >> 16u);
-    let lines = block + mw(block + 6u);
-    var n = 0u;
-    loop {
-        if (n == (mw(head + 2u) >> 16u) || (mw(lines + M_LINE * (mw(end - n - 1u) & 0xffffu) + 1u) & M_CEILING) == 0u) {
-            break;
-        }
-        n++;
-    }
-    return vec2u(end, n);
+// The ceiling lines' items of q's bin's height segments (records::CEILING), after storey 0's and before the
+// storeys' (records::storeys): the word after the last of them, their count (0 where none) and whether one is a
+// bore's floor bound (a negative drop). A bin with neither kind pays one comparison.
+struct HCeilings {
+    end: u32,
+    n: u32,
+    bores: bool,
 }
 
-// The ceiling at q from the last `at.y` height segment items before word `at.x`, as heights::ceiling: per
-// segment of a deck's ceiling line, the metres outside its stroke (flat at the line's ends along their `flat`
-// normals, words 4 and 5) and its banked surface at q's foot less its drop (word 10); past the stroke the bound
-// rises at face_max and lets go over ceiling_release.
-fn h_ceiling(block: u32, q: vec2f, mpu: f32, at: vec2u) -> f32 {
-    var best = H_BIG;
+fn h_ceilings(block: u32, q: vec2f, start: u32) -> HCeilings {
+    var out = HCeilings(0u, 0u, false);
+    let head = m_bin_head(block, q);
+    if (head == 0u) {
+        return out;
+    }
+    let first = select(h_heights_start(block, q), start, start != 0u);
+    out.end = first + (mw(head + 2u) >> 16u);
     let lines = block + mw(block + 6u);
+    loop {
+        if (out.end - out.n == first) {
+            break;
+        }
+        let lw = lines + M_LINE * (mw(out.end - out.n - 1u) & 0xffffu);
+        let f = mw(lw + 1u);
+        if ((f & (M_CEILING | M_STOREY)) == 0u) {
+            break;
+        }
+        // A storey's items come last.
+        if ((f & M_STOREY) != 0u) {
+            if (out.n != 0u) {
+                break;
+            }
+            out.end--;
+            continue;
+        }
+        out.bores = out.bores || mf(lw + 10u) < 0.0;
+        out.n++;
+    }
+    return out;
+}
+
+// One segment of a ceiling line at q, as heights::decks: the metres of q outside its stroke (flat at the line's ends
+// along their `flat` normals, words 4 and 5), the deck's banked surface at q's foot less its drop (word 10), which is
+// the bound inside the stroke, the drop, the line's rise (word 16), its line, and the metres of q past the nearer
+// flat end (-H_BIG where no end is near). A bore's floor line has a negative drop, and its rise is the most that it
+// lifts the terrain. `ok` is false for a segment of no length.
+struct HDeck {
+    out: f32,
+    base: f32,
+    drop: f32,
+    rise: f32,
+    line: u32,
+    past: f32,
+    ok: bool,
+}
+
+fn h_deck(block: u32, q: vec2f, mpu: f32, item: u32) -> HDeck {
+    var d = HDeck(0.0, 0.0, 0.0, 0.0, item & 0xffffu, -H_BIG, false);
+    let lw = block + mw(block + 6u) + M_LINE * d.line;
     let samples = block + mw(block + 7u);
-    for (var k = 1u; k <= at.y; k++) {
-        let item = mw(at.x - k);
-        let lw = lines + M_LINE * (item & 0xffffu);
-        let ln = h_line(block, item & 0xffffu);
-        let i = item >> 16u;
-        let sa = h_sample(block, ln, i, mpu);
-        let sb = h_sample(block, ln, i + 1u, mpu);
-        let ab = sb.p - sa.p;
-        let len = length(ab);
-        if (len <= 0.0) {
-            continue;
+    let ln = h_line(block, d.line);
+    let i = item >> 16u;
+    let sa = h_sample(block, ln, i, mpu);
+    let sb = h_sample(block, ln, i + 1u, mpu);
+    let ab = sb.p - sa.p;
+    let len = length(ab);
+    if (len <= 0.0) {
+        return d;
+    }
+    let u = ab / len;
+    let v = q - sa.p;
+    let t = dot(v, u);
+    let lateral = -m_cross(u, v) * mpu;
+    var f = clamp(t / len, 0.0, 1.0);
+    var across = length(v - f * ab) * mpu;
+    if ((i == 0u && t < 0.0) || (i + 2u == ln.count && t > len)) {
+        f = select(1.0, 0.0, t < 0.0);
+        across = abs(lateral);
+    }
+    let half = sa.h + f * (sb.h - sa.h);
+    let last = ln.count - 1u;
+    let along = samples + M_SAMPLE * ln.first + 3u;
+    // A bore's part can run against its way: its metres along between two samples have no sign.
+    var to_start = mf(along + M_SAMPLE * i) - mf(along);
+    var to_end = mf(along + M_SAMPLE * last) - mf(along + M_SAMPLE * (i + 1u));
+    if (ln.ret < 0.0) {
+        to_start = abs(to_start);
+        to_end = abs(to_end);
+    }
+    if (to_start <= sa.h + H.ceiling_release) {
+        let a = samples + M_SAMPLE * ln.first;
+        d.past = max(d.past, -dot(q - vec2f(mi(a), mi(a + 1u)), h_unit(unpack2x16snorm(mw(lw + 4u)))) * mpu);
+    }
+    if (to_end <= sb.h + H.ceiling_release) {
+        let a = samples + M_SAMPLE * (ln.first + last);
+        d.past = max(d.past, -dot(q - vec2f(mi(a), mi(a + 1u)), h_unit(unpack2x16snorm(mw(lw + 5u)))) * mpu);
+    }
+    d.out = length(vec2f(max(across - half, 0.0), max(d.past, 0.0)));
+    let len_m = len * mpu;
+    let z = h_hermite(sa.z, sb.z, sa.grade * len_m, sb.grade * len_m, f) + (sa.bank + f * (sb.bank - sa.bank)) * clamp(lateral, -half, half);
+    d.base = z - ln.ret;
+    d.drop = ln.ret;
+    d.rise = ln.rise;
+    d.ok = true;
+    return d;
+}
+
+// The ceiling at q, as heights::ceiling: the least over the decks near q of their bound, past the stroke rising at
+// face_max and letting go over ceiling_release.
+fn h_ceiling(block: u32, q: vec2f, mpu: f32, cs: HCeilings) -> f32 {
+    var best = H_BIG;
+    for (var k = 1u; k <= cs.n; k++) {
+        let d = h_deck(block, q, mpu, mw(cs.end - k));
+        if (d.ok && d.drop > 0.0 && d.out < H.ceiling_release) {
+            best = min(best, d.base + H.face_max * d.out + h_release(d.out, H.ceiling_release).y);
         }
-        let u = ab / len;
-        let v = q - sa.p;
-        let t = dot(v, u);
-        let lateral = -m_cross(u, v) * mpu;
-        var f = clamp(t / len, 0.0, 1.0);
-        var across = length(v - f * ab) * mpu;
-        if ((i == 0u && t < 0.0) || (i + 2u == ln.count && t > len)) {
-            f = select(1.0, 0.0, t < 0.0);
-            across = abs(lateral);
+    }
+    return best;
+}
+
+// A bore's bound at q from one of its segments, as heights::bore_bound: its floor plus its least room inside its
+// stroke, past it falling at face_max and letting go over ceiling_release.
+fn h_bore_bound(d: HDeck) -> f32 {
+    return d.base - H.face_max * d.out - h_release(d.out, H.ceiling_release).y;
+}
+
+// The ground's bound over the bores near q, as heights::floor: the most of their floor bound (at most its lift over
+// the plain terrain t) and of the plain terrain over the cover; -H_BIG where no bore is near. The cover reads every
+// bore near it, the ground beside it only the bores whose flat ends q lies behind (a point on one is in front).
+fn h_floor(block: u32, q: vec2f, mpu: f32, cs: HCeilings, t: f32, cover: bool) -> f32 {
+    let on_line = select(-H_ON_LINE_UNITS * mpu, H_BIG, cover);
+    var best = -H_BIG;
+    for (var k = 1u; k <= cs.n; k++) {
+        let d = h_deck(block, q, mpu, mw(cs.end - k));
+        if (d.ok && d.drop < 0.0 && d.out < H.ceiling_release && d.past <= on_line) {
+            best = max(best, max(min(h_bore_bound(d), t + d.rise), t - H.face_max * max(d.out - H_WALL_M, 0.0)));
         }
-        let half = sa.h + f * (sb.h - sa.h);
-        let last = ln.count - 1u;
-        let along = samples + M_SAMPLE * ln.first + 3u;
-        var past = 0.0;
-        if (mf(along + M_SAMPLE * i) - mf(along) <= sa.h + H.ceiling_release) {
-            let a = samples + M_SAMPLE * ln.first;
-            past = max(past, -dot(q - vec2f(mi(a), mi(a + 1u)), h_unit(unpack2x16snorm(mw(lw + 4u)))) * mpu);
+    }
+    return best;
+}
+
+// The least bound of the decks whose stroke holds q, as heights::under_decks; H_BIG outside every stroke.
+fn h_under_decks(block: u32, q: vec2f, mpu: f32, cs: HCeilings) -> f32 {
+    var best = H_BIG;
+    for (var k = 1u; k <= cs.n; k++) {
+        let d = h_deck(block, q, mpu, mw(cs.end - k));
+        if (d.ok && d.drop > 0.0 && d.out <= 0.0) {
+            best = min(best, d.base);
         }
-        if (mf(along + M_SAMPLE * last) - mf(along + M_SAMPLE * (i + 1u)) <= sb.h + H.ceiling_release) {
-            let a = samples + M_SAMPLE * (ln.first + last);
-            past = max(past, -dot(q - vec2f(mi(a), mi(a + 1u)), h_unit(unpack2x16snorm(mw(lw + 5u)))) * mpu);
+    }
+    return best;
+}
+
+// The floor of bore way `way` at q, as heights::floor_at: the most over its floor bound line's segments near q of
+// their bound less its least room; -H_BIG where none is near.
+fn h_floor_at(block: u32, q: vec2f, mpu: f32, cs: HCeilings, way: u32) -> f32 {
+    let lines = block + mw(block + 6u);
+    var best = -H_BIG;
+    for (var k = 1u; k <= cs.n; k++) {
+        let d = h_deck(block, q, mpu, mw(cs.end - k));
+        if (d.ok && d.drop < 0.0 && d.out < H.ceiling_release && mw(lines + M_LINE * d.line) == way) {
+            best = max(best, h_bore_bound(d) + d.drop);
         }
-        let out = length(vec2f(max(across - half, 0.0), past));
-        if (out >= H.ceiling_release) {
-            continue;
-        }
-        let len_m = len * mpu;
-        let z = h_hermite(sa.z, sb.z, sa.grade * len_m, sb.grade * len_m, f) + (sa.bank + f * (sb.bank - sa.bank)) * clamp(lateral, -half, half);
-        best = min(best, z - ln.ret + H.face_max * out + h_release(out, H.ceiling_release).y);
     }
     return best;
 }
@@ -1237,6 +1390,14 @@ fn h_ceiling(block: u32, q: vec2f, mpu: f32, at: vec2u) -> f32 {
 // height_relative of a paved label. Tint zeroes a function's vars at its entry: hp lives here, so only a paved
 // texel pays for zeroing it.
 fn h_paved_at(block: u32, q: vec2f, mpu: f32, label: u32, rule: u32, material: u32, t: f32, start: u32) -> vec2f {
+    // A bore's floor (a line of a storey under the ground, whose leg bits hold its storey as a byte) stands on its
+    // bore's own floor bound line, as heights::by_label: no other bore blends into it.
+    if (rule == 2u && material != M_NONE && h_storey(m_line_finish(block, material)) >= 128u) {
+        let z = h_floor_at(block, q, mpu, h_ceilings(block, q, start), mw(block + mw(block + 6u) + M_LINE * material));
+        if (z > -H_BIG) {
+            return vec2f(z, H_PAVED);
+        }
+    }
     var hp: HPoint;
     h_present(&hp, block, q, mpu, vec2u(material, M_NONE), start);
     // A blend face (a junction's region) has no host, and it relates the junction's arms (its

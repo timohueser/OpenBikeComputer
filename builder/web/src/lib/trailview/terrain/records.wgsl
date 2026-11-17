@@ -47,6 +47,8 @@ const M_SURFACE_SLOPE: u32 = 1u;
 const M_SURFACE_WATER: u32 = 9u;
 const M_SURFACE_BANK: u32 = 10u;
 const M_SURFACE_ZONE: u32 = 11u;
+// A bore's cover over the ground, as faces::Surface.
+const M_SURFACE_COVER: u32 = 13u;
 // As MARGIN_M of records.rs: a bin lists every candidate edge within this of its square.
 const M_MARGIN: f32 = 3.0;
 
