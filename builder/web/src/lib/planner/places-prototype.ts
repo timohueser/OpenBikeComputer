@@ -9,6 +9,8 @@
 //   ?mixradius=30                 badges: from the split zoom, places of ALL kinds that would touch stay one small badge
 //   ?badge=tile|stack|ring|pill   badges: the shape, see places-badges.ts. The badges are HTML marks, not map layers.
 //   ?minzoom=11 ?names=16 ?margin=1 ?badgecount
+//   ?quiet=glyph|dot|none         the quiet looks of places-badges.ts (implies the badges engine; minzoom default 14)
+//   ?highlight=a ?dim=1           quiet: kind a shows from zoom 12 as a strong disc; dim = the other kinds go away meanwhile
 import { VectorTile } from '@mapbox/vector-tile';
 import type maplibregl from 'maplibre-gl';
 import type { ExpressionSpecification, GeoJSONSource } from 'maplibre-gl';
@@ -22,17 +24,21 @@ const query = new URLSearchParams(typeof location === 'undefined' ? '' : locatio
 const number = (key: string, fallback: number) => (query.has(key) && Number.isFinite(Number(query.get(key))) ? Number(query.get(key)) : fallback);
 
 export type PlacesMode = 'today' | 'groups' | 'badges';
-export const placesMode: PlacesMode = query.get('places') === 'groups' ? 'groups' : query.get('places') === 'badges' ? 'badges' : 'today';
+const QUIET = (['glyph', 'dot', 'none'] as const).find(look => look === query.get('quiet'));
+export const placesMode: PlacesMode = query.get('places') === 'groups' ? 'groups' : query.get('places') === 'badges' || QUIET ? 'badges' : 'today';
 const DEFAULT_ON = ORDER.slice(0, 7);
 /** The kinds that are on when the page opens. */
 const list = (key: string) => (query.get(key) ?? '').split('.').filter((id): id is PlaceCategory => categoryIds.includes(id as PlaceCategory));
 export const prototypeKinds: PlaceCategory[] = query.get('kinds') === 'all' ? categoryIds : list('kinds').length ? list('kinds') : DEFAULT_ON;
 const PINNED = list('pinned');
+const HIGHLIGHT = list('highlight')[0], DIM = query.has('dim');
 
 const RADIUS = number('radius', 26), BADGE_RADIUS = number('badgeradius', 64), SPLIT = number('split', 16);
 const MIX_RADIUS = number('mixradius', 30);
-const MIN_ZOOM = number('minzoom', 11), PINNED_ZOOM = Math.min(12, MIN_ZOOM), NAMES = number('names', 16), MARGIN = number('margin', 1), BADGE_COUNT = query.has('badgecount');
+const MIN_ZOOM = number('minzoom', QUIET ? 14 : 11), PINNED_ZOOM = Math.min(12, MIN_ZOOM), NAMES = number('names', 16), MARGIN = number('margin', 1), BADGE_COUNT = query.has('badgecount');
 const MAX_ZOOM = 20;
+/** The zoom from which any place shows. */
+const FIRST_ZOOM = QUIET ? Math.min(QUIET === 'none' ? 16 : MIN_ZOOM, HIGHLIGHT ? 12 : 99) : PINNED.length ? PINNED_ZOOM : MIN_ZOOM;
 
 type Properties = { kind: string; category: PlaceCategory; name: string; lon: number; lat: number };
 type Feature = GeoJSON.Feature<GeoJSON.Point, Properties>;
@@ -128,7 +134,7 @@ export class PlacesPrototype {
     constructor(private readonly map: maplibregl.Map, private readonly url: string, onPlace: (place: Feature) => string | undefined = () => undefined) {
         Object.assign(window, { __places: this });
         if (this.mode === 'today') return;
-        if (this.mode === 'badges') this.badges = new BadgeLayer(map, { badgeRadius: BADGE_RADIUS, touchRadius: MIX_RADIUS, split: SPLIT, minZoom: MIN_ZOOM, pinned: PINNED, pinnedZoom: PINNED_ZOOM, names: NAMES > 0 ? NAMES : 99 }, onPlace);
+        if (this.mode === 'badges') this.badges = new BadgeLayer(map, { badgeRadius: BADGE_RADIUS, touchRadius: MIX_RADIUS, split: SPLIT, minZoom: MIN_ZOOM, pinned: PINNED, pinnedZoom: PINNED_ZOOM, names: NAMES > 0 ? NAMES : 99, quiet: QUIET, highlight: HIGHLIGHT, dim: DIM }, onPlace);
         map.on('moveend', () => void this.load());
     }
 
@@ -192,7 +198,7 @@ export class PlacesPrototype {
 
     /** Loads the place tiles of the view and a margin of whole tiles around it. Loaded tiles stay. */
     private async load() {
-        if (!this.installed || this.map.getZoom() < (PINNED.length ? PINNED_ZOOM : MIN_ZOOM) - 1) return;
+        if (!this.installed || this.map.getZoom() < FIRST_ZOOM - 1) return;
         const start = performance.now();
         this.source ??= openSource(this.url);
         const source = await this.source, zoom = source.maxZoom, bounds = this.map.getBounds();

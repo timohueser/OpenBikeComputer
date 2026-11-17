@@ -160,3 +160,24 @@
 .places-list button.kind-start::before { content: ""; position: absolute; left: 2px; right: 2px; top: -5px; border-top: 1px solid var(--line, rgba(92, 90, 46, .16)); }
 .places-list button:focus-visible { outline: 2px solid var(--amber, #f4a81d); outline-offset: -2px; }
 @media (hover: hover) { .places-list button:hover { background: color-mix(in srgb, var(--ink, #1c1b14) 7%, transparent); } }
+
+/* The quiet looks: map ink on the land, like a map label. --land is the paper of the map style. */
+.places-layer { --quiet: #59604d; --land: #f4f2eb; --hl: var(--rust, #a4501e); --hl-ink: #fff; }
+:root[data-theme="dark"] .places-layer { --quiet: #b9bfae; --land: #181d19; --hl: #c8642a; --hl-ink: #fff; }
+.places-mark .bare { color: var(--quiet); }
+.places-layer.halo .bare { filter: drop-shadow(0 0 1px var(--land)) drop-shadow(0 0 1px var(--land)); }
+.places-mark .neutral { width: 8px; height: 8px; border-radius: 50%; box-sizing: border-box; border: 1.6px solid var(--quiet); background: var(--land); }
+.places-mark .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--quiet); box-shadow: 0 0 0 1px var(--land); }
+.places-mark .dot[data-kind="water"] { background: #3f7c92; }
+.places-mark .dot:is([data-kind="shop"], [data-kind="food"]) { background: #a87a35; }
+.places-mark .dot[data-kind="camp"] { background: #4d7a48; }
+.places-mark .dot[data-kind="peak"] { background: #8a6047; }
+.places-layer.onedot .dot { background: var(--quiet) !important; }
+:root[data-theme="dark"] .places-mark .dot[data-kind="water"] { background: #79b3c6; }
+:root[data-theme="dark"] .places-mark .dot:is([data-kind="shop"], [data-kind="food"]) { background: #d3a65e; }
+:root[data-theme="dark"] .places-mark .dot[data-kind="camp"] { background: #8fbb83; }
+:root[data-theme="dark"] .places-mark .dot[data-kind="peak"] { background: #c49a80; }
+/* The highlighted kind: a filled disc in the rust of the app, over the quiet marks. */
+.places-mark.hl { z-index: 1; }
+.places-mark .hl { display: flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; background: var(--hl); color: var(--hl-ink); box-shadow: 0 0 0 1.5px var(--land); }
+.places-mark .hl.several { translate: calc(-50% - 2px) -50%; box-shadow: 0 0 0 1.5px var(--land), 4px 0 0 0 var(--hl), 4px 0 0 1.5px var(--land); }

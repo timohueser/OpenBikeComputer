@@ -3,6 +3,10 @@
 //   ?badge=tile|stack|ring|pill   the shape of a badge (default tile; pill is the first prototype)
 //   ?tilemax=8                    tile: the most cells. 4 = a strict 2 x 2 grid: three icons and "+N"
 //   ?slow=5                       the motions run this many times slower (for the videos)
+//   ?quiet=glyph|dot|none         glyph: the bare icon from minzoom; dot: a 6 px dot from minzoom, the bare icon from 16;
+//                                 none: the bare icon from 16. Places that would cover each other are one 8 px ring.
+//   ?halo ?onedot                 quiet: a halo in the land colour round the bare icon; one colour for all dots
+//   ?highlight=a ?dim=1           kind a: a rust disc from zoom 12, a second disc behind it for several places
 import './places-badges.css';
 import type maplibregl from 'maplibre-gl';
 import type { GeoJSONSource } from 'maplibre-gl';
@@ -10,6 +14,12 @@ import { categoryIds, placeCategories, poiKinds, type PlaceCategory } from './po
 
 export type PlaceFeature = GeoJSON.Feature<GeoJSON.Point, { kind: string; category: PlaceCategory; name: string; lon: number; lat: number }>;
 export type Shape = 'pill' | 'tile' | 'stack' | 'ring';
+export type Quiet = 'glyph' | 'dot' | 'none';
+/** The look of one mark in the quiet modes. */
+type Look = 'glyph' | 'dot' | 'hl';
+/** Quiet: places nearer than this many px are one mark. */
+const RADIUS: Record<Look, number> = { glyph: 18, dot: 9, hl: 26 };
+const HL_ZOOM = 12, BARE = 16;
 
 const query = new URLSearchParams(typeof location === 'undefined' ? '' : location.search);
 const number = (key: string, fallback: number) => (query.has(key) && Number.isFinite(Number(query.get(key))) ? Number(query.get(key)) : fallback);
@@ -77,6 +87,18 @@ function keyOf(node: Node): string {
 const glyph = (category: PlaceCategory, size = 12) =>
     `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="${(1.1 * 24 / size).toFixed(2)}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${placeCategories[category].icon}"/></svg>`;
 
+/** A quiet mark or a highlighted disc. */
+function quietBody(look: Look, kinds: PlaceCategory[], count: number): HTMLElement {
+    const body = document.createElement('span');
+    if (look === 'hl') {
+        body.className = count > 1 ? 'body hl several' : 'body hl';
+        body.innerHTML = glyph(kinds[0], 13);
+    } else if (count > 1) body.className = 'body neutral';
+    else if (look === 'dot') { body.className = 'body dot'; body.dataset.kind = kinds[0]; }
+    else { body.className = 'body bare'; body.innerHTML = glyph(kinds[0], 14); }
+    return body;
+}
+
 /** The body of a mark: the plain icon of today for one place, else the badge in the given shape. */
 export function badgeBody(shape: Shape, kinds: PlaceCategory[], count: number, tileMax = TILE_MAX): HTMLElement {
     const body = document.createElement('span');
@@ -114,7 +136,7 @@ export function badgeBody(shape: Shape, kinds: PlaceCategory[], count: number, t
 const kindsOf = (places: PlaceFeature[]) => ORDER.filter(category => places.some(place => place.properties.category === category));
 const nameOf = (place: PlaceFeature) => place.properties.name || poiKinds[place.properties.kind]?.label || placeCategories[place.properties.category].label;
 
-type Mark = { key: string; lon: number; lat: number; places: PlaceFeature[]; kinds: PlaceCategory[]; element: HTMLButtonElement; body: HTMLElement; x: number; y: number; box?: string };
+type Mark = { look?: Look; key: string; lon: number; lat: number; places: PlaceFeature[]; kinds: PlaceCategory[]; element: HTMLButtonElement; body: HTMLElement; x: number; y: number; box?: string };
 
 /** A clear image of the size of a mark (`proto-blank-W-H`): the map keeps its labels off the marks with it. */
 export function blankIcon(id: string): { image: ImageData; pixelRatio: number } | null {
@@ -136,13 +158,16 @@ export class BadgeLayer {
     /** The pinned kinds alone, for the zooms below minZoom. */
     private early = new Map<number, Node[]>();
     private level = -1;
+    /** Quiet: the groups of each look. */
+    private quiet: Record<Look, Map<number, Node[]>> = { glyph: new Map(), dot: new Map(), hl: new Map() };
     private list: { mark: Mark; element: HTMLElement; panel: HTMLElement } | undefined;
     private picked: { place: PlaceFeature; element: HTMLElement; preview: boolean; id?: string } | undefined;
     private press: [number, number] = [0, 0];
 
-    constructor(private readonly map: maplibregl.Map, private readonly settings: { badgeRadius: number; touchRadius: number; split: number; minZoom: number; pinned: PlaceCategory[]; pinnedZoom: number; names: number },
+    constructor(private readonly map: maplibregl.Map, private readonly settings: { badgeRadius: number; touchRadius: number; split: number; minZoom: number; pinned: PlaceCategory[]; pinnedZoom: number; names: number; quiet?: Quiet; highlight?: PlaceCategory; dim: boolean },
         private readonly onPlace: (place: PlaceFeature) => string | undefined) {
         this.root.className = 'places-layer';
+        for (const flag of ['halo', 'onedot']) if (query.has(flag)) this.root.classList.add(flag);
         map.getCanvasContainer().append(this.root);
         map.on('move', () => this.position());
         map.on('zoom', () => { if (Math.floor(map.getZoom()) !== this.level) this.update(true); });
@@ -167,7 +192,17 @@ export class BadgeLayer {
     }
 
     setData(features: PlaceFeature[]) {
-        const { badgeRadius, touchRadius, split, minZoom, pinned, pinnedZoom } = this.settings;
+        const { badgeRadius, touchRadius, split, minZoom, pinned, pinnedZoom, quiet, highlight } = this.settings;
+        if (quiet) {
+            const others = features.filter(feature => feature.properties.category !== highlight);
+            this.quiet = {
+                hl: levels(features.filter(feature => feature.properties.category === highlight), RADIUS.hl, HL_ZOOM - 1, 19),
+                glyph: levels(others, RADIUS.glyph, Math.min(minZoom, BARE) - 1, 19),
+                dot: levels(others, RADIUS.dot, minZoom - 1, BARE - 1),
+            };
+            this.update(false);
+            return;
+        }
         this.early = levels(features.filter(feature => pinned.includes(feature.properties.category)), badgeRadius, pinnedZoom - 1, minZoom - 1);
         this.wide = levels(features, badgeRadius, minZoom - 1, split - 1);
         this.near = levels(features, touchRadius, split, 19);
@@ -188,11 +223,22 @@ export class BadgeLayer {
         if (this.picked && !this.picked.preview && this.picked.id && id !== this.picked.id) this.choose(null);
     }
 
-    private nodes(level: number): Node[] {
-        const { split, minZoom, pinned, pinnedZoom } = this.settings;
+    private nodes(level: number): [Node, Look?][] {
+        const { split, minZoom, pinned, pinnedZoom, quiet, highlight, dim } = this.settings;
+        if (quiet) {
+            const zoom = this.map.getZoom(), at = Math.min(level, 20), out: [Node, Look?][] = [];
+            if (zoom >= HL_ZOOM) out.push(...this.inView(this.quiet.hl.get(at)).map(node => [node, 'hl'] as [Node, Look]));
+            const look: Look = quiet === 'dot' && level < BARE ? 'dot' : 'glyph';
+            if (zoom >= (quiet === 'none' ? BARE : minZoom) && !(dim && highlight)) out.push(...this.inView(this.quiet[look].get(at)).map(node => [node, look] as [Node, Look]));
+            return out;
+        }
         const first = pinned.length ? pinnedZoom : minZoom;
         if (this.map.getZoom() < first) return [];
         const all = level < minZoom ? this.early.get(Math.max(level, first - 1)) : level < split ? this.wide.get(level) : this.near.get(Math.min(level, 20));
+        return this.inView(all).map(node => [node]);
+    }
+
+    private inView(all: Node[] | undefined): Node[] {
         const bounds = this.map.getBounds(), x0 = worldX(bounds.getWest()), x1 = worldX(bounds.getEast()), y0 = worldY(bounds.getNorth()), y1 = worldY(bounds.getSouth());
         const padX = (x1 - x0) * 0.3, padY = (y1 - y0) * 0.3;
         return (all ?? []).filter(node => node.x > x0 - padX && node.x < x1 + padX && node.y > y0 - padY && node.y < y1 + padY);
@@ -202,10 +248,10 @@ export class BadgeLayer {
         const level = Math.floor(this.map.getZoom());
         const motion = animate && !still() && this.level >= 0 && level !== this.level, zoomedIn = level > this.level;
         const before = this.marks, next = new Map<string, Mark>(), fresh: Mark[] = [];
-        for (const node of this.nodes(level)) {
-            const key = keyOf(node);
+        for (const [node, look] of this.nodes(level)) {
+            const key = (look ?? '') + keyOf(node);
             let mark = before.get(key);
-            if (!mark) fresh.push(mark = this.create(node, key));
+            if (!mark) fresh.push(mark = this.create(node, key, look));
             next.set(key, mark);
         }
         this.marks = next;
@@ -239,14 +285,14 @@ export class BadgeLayer {
         });
     }
 
-    private create(node: Node, key: string): Mark {
+    private create(node: Node, key: string, look?: Look): Mark {
         const element = document.createElement('button'), kinds = kindsOf(node.places);
-        const body = badgeBody(this.shape, kinds, node.places.length);
+        const body = look ? quietBody(look, kinds, node.places.length) : badgeBody(this.shape, kinds, node.places.length);
         element.type = 'button';
-        element.className = 'places-mark';
+        element.className = look === 'hl' ? 'places-mark hl' : 'places-mark';
         element.setAttribute('aria-label', node.places.length === 1 ? nameOf(node.places[0]) : `${node.places.length} places: ${kinds.map(kind => placeCategories[kind].label).join(', ')}`);
         element.append(body);
-        const mark: Mark = { key, lon: lonOf(node.x), lat: latOf(node.y), places: node.places, kinds, element, body, x: 0, y: 0 };
+        const mark: Mark = { look, key, lon: lonOf(node.x), lat: latOf(node.y), places: node.places, kinds, element, body, x: 0, y: 0 };
         element.addEventListener('click', event => {
             event.stopPropagation();
             if (Math.hypot(event.clientX - this.press[0], event.clientY - this.press[1]) > 5) return;
@@ -366,23 +412,24 @@ export class BadgeLayer {
     // ---- For the pictures and the measurements.
 
     /** Each mark of the view with its box on the map, in CSS px. */
-    info(): { key: string; count: number; kinds: string; x: number; y: number; w: number; h: number; lon: number; lat: number }[] {
+    info(): { look: string; key: string; count: number; kinds: string; x: number; y: number; w: number; h: number; lon: number; lat: number }[] {
         const box = this.map.getContainer().getBoundingClientRect();
         return [...this.marks.values()].map(mark => {
             const rect = mark.body.getBoundingClientRect();
-            return { key: mark.key, count: mark.places.length, kinds: mark.kinds.join('.'), x: mark.x, y: mark.y, w: rect.width, h: rect.height, lon: mark.lon, lat: mark.lat };
+            return { look: mark.look === 'hl' ? 'hl' : mark.look && mark.places.length > 1 ? 'neutral' : mark.look ?? 'badge', key: mark.key, count: mark.places.length, kinds: mark.kinds.join('.'), x: mark.x, y: mark.y, w: rect.width, h: rect.height, lon: mark.lon, lat: mark.lat };
         }).filter(item => item.x >= 0 && item.x <= box.width && item.y >= 0 && item.y <= box.height);
     }
 
     /** Shows only the given specimens, in a row at fixed places of the screen. */
-    specimen(items: { kinds: PlaceCategory[]; count: number; x: number; shape?: Shape; tileMax?: number }[], y: number) {
+    specimen(items: { kinds: PlaceCategory[]; count: number; x: number; shape?: Shape; tileMax?: number; look?: Look }[], y: number) {
         this.root.classList.add('specimen');
         this.root.querySelectorAll('.places-specimen').forEach(element => element.remove());
         items.forEach(item => {
             const element = document.createElement('div');
             element.className = 'places-mark places-specimen';
             element.style.transform = `translate(${item.x}px, ${y}px)`;
-            element.append(badgeBody(item.shape ?? this.shape, item.kinds, item.count, item.tileMax));
+            if (item.look) element.append(quietBody(item.look, item.kinds, item.count));
+            else element.append(badgeBody(item.shape ?? this.shape, item.kinds, item.count, item.tileMax));
             this.root.append(element);
         });
     }
