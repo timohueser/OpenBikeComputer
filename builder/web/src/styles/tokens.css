@@ -18,9 +18,15 @@
     --speed: #3f68b0;
     --cadence: #74508f;
     --heart-rate: var(--rust);
+    /* The shadow of a control that floats over a map or a view. */
+    --planner-shadow: 0 6px 18px rgba(28, 27, 20, .12);
+    /* Links are rust in light and tan in dark, so amber stays the one action colour in both. */
+    --link: var(--forest);
 }
 
 :root[data-theme="dark"] {
+    --planner-shadow: 0 6px 18px rgba(0, 0, 0, .4);
+    --link: var(--wood);
     --version-b: #e8964a;
     --ride: #3fd0c6;
     --connected: #8be3bc;

@@ -4,15 +4,22 @@
     import { keepInHistory } from '../lib/keep-in-history.svelte';
     import type { Bike } from '../lib/library/records';
     import type { Library } from '../lib/library/store';
+    import { config } from '../lib/planner/map-data';
+    import { decodeCoordinates } from '../lib/planner/route-answer';
+    import { routeColor } from '../lib/planner/route-colors';
     import { catalog, tooWide, type Box } from '../lib/planner/route-catalog';
     import { gradeName, routePlan, type CatalogRecord, type RouteRecord } from '../lib/planner/signed-routes';
+    import { hasTrailView, loadTrailView } from '../lib/planner/trailview';
     import { router } from '../lib/router.svelte';
     import { ROUTES } from '../lib/routes';
     import { distanceIn, heightIn } from '../lib/settings/format';
+    import { today, type View } from '../lib/trailview/view';
+    import Icon from '../lib/ui/Icon.svelte';
+    import type { TrailViewRoute } from '../components/planner/TrailViewWindow.svelte';
     import SignedCard, { signedNumbers } from './explore/SignedCard.svelte';
     import SignedPicture from './explore/SignedPicture.svelte';
     import Chips from './routes/Chips.svelte';
-    import { results, signedItem, type Chips as ChipValues, type SignedItem } from './routes/filter';
+    import { PROFILE_STEP_M, results, signedItem, type Chips as ChipValues, type SignedItem } from './routes/filter';
     import ListAndMap from './routes/ListAndMap.svelte';
     import PlaceSearch from './routes/PlaceSearch.svelte';
     import RouteRow from './routes/RouteRow.svelte';
@@ -97,6 +104,55 @@
     // Back from another page brings the view, the chips and the selection again.
     const keep = keepInHistory('explore', (): Kept => ({ chips, view, selected }));
 
+    // TrailView shows the first routes of the list from a view above them all.
+    const TRAILVIEW_ROUTES = 100;
+    let trailView = $state.raw<{ component: typeof import('../components/planner/TrailViewWindow.svelte').default; origin: [number, number]; view: View; routes: TrailViewRoute[] }>();
+    /** A notice shows only in the map view that it is about. */
+    let opening = $state(false), notice = $state.raw<{ text: string; view?: Box }>(), trailViewButton = $state<HTMLButtonElement>();
+    const trailViewTitle = $derived(shown.length > TRAILVIEW_ROUTES ? `TrailView: the first ${TRAILVIEW_ROUTES} of ${shown.length.toLocaleString('en')} routes` : 'TrailView');
+
+    /** The first routes of the list, with the selected route among them, so the window can show its card on its line. */
+    function trailViewItems(): SignedItem[] {
+        const listed = shown.slice(0, TRAILVIEW_ROUTES);
+        if (chosen && !listed.includes(chosen)) listed[listed.length - 1] = chosen;
+        return listed;
+    }
+
+    async function openTrailView(event: MouseEvent) {
+        if (opening) return;
+        const box = (event.currentTarget as HTMLElement).getBoundingClientRect();
+        opening = true;
+        notice = undefined;
+        try {
+            const [chunk, { default: component }] = await Promise.all([loadTrailView(), import('../components/planner/TrailViewWindow.svelte')]);
+            // The end of a pan or new chips during the load can change the list: one more try takes the new list.
+            for (let tries = 0; tries < 2; tries++) {
+                const listed = trailViewItems();
+                const routes = listed.map(({ id, record }): TrailViewRoute => ({
+                    id, line: decodeCoordinates(record.line_udeg ?? []), colour: routeColor(id),
+                    ...record.profile_m ? { profile: { step: PROFILE_STEP_M, heights: record.profile_m, length: record.length_m } } : {},
+                }));
+                // The size of the window: the rule of its CSS.
+                const full = innerWidth <= 760;
+                // A failure is about the routes it tried: it shows only while the list still has them.
+                const first = await chunk.coverView(routes.map(route => route.line), config,
+                    { width: full ? innerWidth : innerWidth - 64, height: full ? innerHeight : innerHeight - 64, date: today(), time: '10:00', weather: 'sunny' })
+                    .catch((error: unknown) => { console.error('TrailView:', error); return null; });
+                const now = trailViewItems();
+                if (now.length !== listed.length || now.some((item, i) => item.id !== listed[i].id)) continue;
+                if (first) trailView = { component, origin: [box.left + box.width / 2, box.top + box.height / 2], view: first, routes };
+                else notice = { text: first === null ? 'TrailView could not start. Try again.' : 'TrailView has no view of this area.', view };
+                return;
+            }
+            notice = { text: 'The routes changed while TrailView loaded. Try again.', view };
+        } catch (error) {
+            console.error('TrailView:', error);
+            notice = { text: 'TrailView could not start. Try again.', view };
+        } finally {
+            opening = false;
+        }
+    }
+
     /** The planner makes the plan; "Find another route" there brings this state back. */
     function plan(item: SignedItem) {
         keep();
@@ -109,7 +165,8 @@
 <svelte:window onkeydown={event => { if (event.key === 'Escape' && !document.querySelector('dialog[open]')) selected = undefined; }} />
 
 <ListAndMap title="Explore" {items} {shown} {place} fit={0} look="signed" credits={[]} selected={chosen ? [chosen.id] : []}
-    onselect={id => selected = id} onview={next => view = wrapped(next)} card={chosen ? card : undefined}>
+    onselect={id => selected = id} onview={next => view = wrapped(next)} card={chosen ? card : undefined}
+    mapButtons={hasTrailView(config) && shown.length ? mapButtons : undefined}>
     {#snippet list()}
         <!-- The search field finds places only; a chosen place moves the map. -->
         <PlaceSearch {view} label="Find a place" placeholder="Find a place" float onchoose={({ lon, lat, box }) => place = { lon, lat, box }} />
@@ -145,6 +202,21 @@
     <SignedCard item={chosen!} onplan={() => plan(chosen!)} />
 {/snippet}
 
+{#snippet mapButtons()}
+    <!-- A group of the map's own controls, as the zoom buttons above it. -->
+    <div class="maplibregl-ctrl maplibregl-ctrl-group">
+        <button type="button" class="trailview" bind:this={trailViewButton} aria-label="TrailView" aria-busy={opening} aria-disabled={opening} title={trailViewTitle} onclick={openTrailView}>
+            {#if opening}<span class="spinner" aria-hidden="true"></span>{:else}<Icon name="binoculars" size={18} />{/if}
+        </button>
+    </div>
+    {#if notice && notice.view === view}<p class="trailview-notice" role="status">{notice.text}</p>{/if}
+{/snippet}
+
+{#if trailView}
+    <trailView.component origin={trailView.origin} view={trailView.view} routes={trailView.routes} {selected} onselect={id => selected = id}
+        card={chosen ? card : undefined} onClose={() => { trailView = undefined; trailViewButton?.focus(); }} />
+{/if}
+
 <style>
     .note, .count {
         margin: 0;
@@ -161,6 +233,40 @@
         color: var(--ink);
         font: inherit;
         text-decoration: underline;
+    }
+    /* The map's controls keep their light look in both themes; this is the colour of their icons. */
+    .trailview {
+        display: grid;
+        place-items: center;
+        color: #333;
+    }
+    /* Not `disabled` while it loads, so that the button keeps the focus. */
+    .trailview[aria-disabled="true"] {
+        cursor: progress;
+    }
+    .spinner {
+        width: 14px;
+        height: 14px;
+        border: 2px solid color-mix(in srgb, currentColor 25%, transparent);
+        border-top-color: currentColor;
+        border-radius: 50%;
+        animation: spin 900ms linear infinite;
+    }
+    @keyframes spin {
+        to { transform: rotate(1turn); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .spinner { animation-duration: 3s; }
+    }
+    .trailview-notice {
+        max-width: 220px;
+        margin: 0;
+        padding: 6px 10px;
+        border-radius: 6px;
+        background: var(--panel);
+        color: var(--ink-soft);
+        font-size: 13px;
+        box-shadow: var(--planner-shadow);
     }
     ul {
         flex: 1;

@@ -68,7 +68,7 @@ describe('pickPoints', () => {
             [[0, 0, 1000], [100, 0, 1010], [150, 0, 1015], [150, 50, 1020], [150, 100, 1030]]);
         // An entry with no height gives no height to itself and to the vertices between the entries beside it.
         close(triples(pickPoints({ line, colours: [], profile: { step: 100, heights: [1000, null, 1020, 1030] } }, frame)!),
-            [[0, 0, NaN], [100, 0, NaN], [150, 0, NaN], [150, 50, 1020], [150, 100, 1030]]);
+            [[0, 0, 1000], [100, 0, NaN], [150, 0, NaN], [150, 50, 1020], [150, 100, 1030]]);
         expect(pickPoints({ line, colours: [] }, frame)).toBeUndefined();
     });
 
@@ -76,6 +76,12 @@ describe('pickPoints', () => {
         // Five entries: the route is 300 m to 400 m long, so the second entry lies at a third of the line, and the last at its end.
         close(triples(pickPoints({ line, colours: [], profile: { step: 100, heights: [0, 1, 2, 3, 4] } }, frame)!),
             [[0, 0, 0], [250 / 3, 0, 1], [150, 0, 1.8], [150, 50 / 3, 2], [150, 100, 4]]);
+    });
+
+    it('places the entries at their share of the route\'s length when the profile has one', () => {
+        // The catalog's route is 300 m and its simplified line 250 m: the second entry lies at a third of the line.
+        close(triples(pickPoints({ line, colours: [], profile: { step: 100, heights: [0, 1, 2, 3], length: 300 } }, frame)!),
+            [[0, 0, 0], [250 / 3, 0, 1], [150, 0, 1.8], [150, 50 / 3, 2], [150, 100, 3]]);
     });
 
     it('follows a hairpin between two entries: a pointer on the hairpin finds the route, one on the chord between the entries does not', () => {

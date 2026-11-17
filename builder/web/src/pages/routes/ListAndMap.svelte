@@ -5,7 +5,7 @@
     import Card from '../../lib/ui/Card.svelte';
     import type { Box, Item } from './filter';
 
-    let { title, failure, items, shown, selected, fit, place, look, credits, together, onselect, onview, tabs, actions, list, card }: {
+    let { title, failure, items, shown, selected, fit, place, look, credits, together, onselect, onview, tabs, actions, list, mapButtons, card }: {
         title: string;
         failure?: string;
         /** The props of the map. */
@@ -27,6 +27,8 @@
         actions?: Snippet;
         /** The content of the list card. */
         list: Snippet;
+        /** At the top right of the map, under its zoom buttons, in their margins. */
+        mapButtons?: Snippet;
         /** The card of the selected item. The page gives it only while an item is selected. */
         card?: Snippet;
     } = $props();
@@ -56,6 +58,7 @@
             {:catch error}
                 <p class="note">{error instanceof Error ? error.message : String(error)}</p>
             {/await}
+            {#if mapButtons}<div class="map-buttons">{@render mapButtons()}</div>{/if}
             {#if card}
                 <div class="selected" bind:offsetHeight={cardHeight}>{@render card()}</div>
             {/if}
@@ -121,6 +124,17 @@
     .note {
         margin: 32px 16px;
         color: var(--ink-soft);
+    }
+    .map-buttons {
+        position: absolute;
+        z-index: 2;
+        /* As MapLibre stacks its controls: a 10 px margin, the zoom group of two 29 px buttons and a 1 px rule, and 10 px. */
+        top: 79px;
+        right: 10px;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 6px;
     }
     .selected {
         position: absolute;
