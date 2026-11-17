@@ -17,6 +17,8 @@
     import QueryResults from './QueryResults.svelte';
     import MapCallout, { type CalloutKind, type EditableKind } from './MapCallout.svelte';
     import LayerMenu from './LayerMenu.svelte';
+    import MapSettings from './MapSettings.svelte';
+    import MapLegend from './MapLegend.svelte';
     import LayerDateBar from './LayerDateBar.svelte';
     import LayerInspect from './LayerInspect.svelte';
     import LayerStrip from './LayerStrip.svelte';
@@ -174,6 +176,11 @@
     let corridorLoad = $state<'done' | 'loading' | 'failed'>('done');
     const theme = $derived<'light' | 'dark'>(appearance.dark ? 'dark' : 'light');
     let autoCenter = $state(false);
+    // Prototype of issue 3555: `?mapsettings=tiles|list` shows a form of the map settings popup; without it, the popup of today.
+    const settingsParam = new URLSearchParams(location.search).get('mapsettings');
+    let settingsForm = $state<'tiles' | 'list' | null>(settingsParam === 'tiles' || settingsParam === 'list' ? settingsParam : null);
+    // The picture scripts change the form without a page load.
+    Object.assign(window, { __msForm: (form: typeof settingsForm) => settingsForm = form });
     let hoveredId = $state<string | null>(null);
     let hillshade = $state(true);
     let contours = $state(true);
@@ -491,7 +498,7 @@
     onMount(() => {
         void session.start(library);
         beforeReload(() => session.saved());
-        try { autoCenter = localStorage.getItem('obc-planner-auto-center') === 'true'; } catch { /* Optional browser preference. */ }
+        try { autoCenter = !settingsForm && localStorage.getItem('obc-planner-auto-center') === 'true'; } catch { /* Optional browser preference. */ }
         return () => session.close();
     });
 
@@ -1351,7 +1358,11 @@
                         <button type="button" disabled={!trip.points.length} onclick={() => focusedDay ? showDay(focusedDay.ridingNumber) : coordinates.length ? map?.fitRoute() : map?.fitCoordinates(trip.points.map(p => p.coordinate))} aria-label={focusedDay ? `Show day ${focusedDay.number} on map` : 'Show whole route'}><Icon name="fit" /></button>
                         <button type="button" disabled={!hasEndpoints} class:chosen={showRoute} aria-label={showRoute ? 'Hide route' : 'Show route'} aria-pressed={showRoute} onclick={() => showRoute = !showRoute}><Icon name="eye" /></button>
                     </div>
-                    <LayerMenu {theme} {dataLayers} bind:shownLayer={shownLayerId} walking={trip.bike === 'hiking'} bind:autoCenter bind:mapOverlays bind:hillshade bind:contours bind:hidden={hiddenCategories} bind:highlighted={highlightedCategories} />
+                    {#if settingsForm}
+                        <MapSettings form={settingsForm} {theme} {dataLayers} bind:shownLayer={shownLayerId} bind:mapOverlays bind:hillshade bind:contours />
+                    {:else}
+                        <LayerMenu {theme} {dataLayers} bind:shownLayer={shownLayerId} walking={trip.bike === 'hiking'} bind:autoCenter bind:mapOverlays bind:hillshade bind:contours bind:hidden={hiddenCategories} bind:highlighted={highlightedCategories} />
+                    {/if}
                     {#if hasTrailView}
                         <div class="control-group">
                             <TrailViewControl bind:this={trailViewControl} active={mapMode?.kind === 'look'} onActivate={binoculars}
@@ -1361,6 +1372,9 @@
                 </div>
                 {#if dataLayer && layerYear}
                     <div class="layer-date" bind:clientHeight={dateBarHeight}><LayerDateBar date={shownDate} year={layerYear} variable={dataLayer.variable} onDate={(date) => layerDate = date} /></div>
+                {/if}
+                {#if settingsForm}
+                    <div class="map-legend-place" style:bottom={`${dataLayer && layerYear ? dateBarHeight + 42 : 38}px`}><MapLegend {theme} {mapOverlays} {dataLayer} walking={trip.bike === 'hiking'} /></div>
                 {/if}
                 {#if dropping}
                     <div class="drop-frame"><strong>Drop to open as a plan</strong><span>One file is a route. Several files are a trip.</span></div>
@@ -1497,6 +1511,8 @@
     .closure-note span { flex: 1; }
     /* Clear of the map controls column, which reaches the bottom on a short map. */
     .layer-date { position: absolute; left: 16px; right: 68px; bottom: 34px; z-index: 2; }
+    .map-legend-place { position: absolute; left: 16px; right: 68px; z-index: 2; pointer-events: none; }
+    .map-legend-place > :global(*) { pointer-events: auto; }
     .list-head { display: flex; align-items: center; gap: 12px; padding: 12px 16px 4px; border-top: 1px solid var(--line); }
     .list-head h2 { margin: 0; font: 600 15px var(--sans); }
     .list-head :global(.planner-action) { gap: 4px; padding-left: 6px; }

@@ -484,6 +484,8 @@
             // zoom of the source, and keeps only the source layers that a style layer draws. The route details read a source
             // layer that no style layer draws.
             map = new maplibregl.Map({ container, center, zoom, maxBounds: config.bounds, style: mapStyle(theme, styleConfig, relief), attributionControl: false, maxPitch: 0, renderWorldCopies: false, zoomLevelsToOverscale: undefined });
+            // Prototype: the picture scripts move the map.
+            Object.assign(window, { __ms: { map } });
             signedLayer = new SignedRoutesLayer(map);
             overlayLayer = new RouteOverlays(map, config.overlays, (message, retry = false) => { overlayStatus = message; overlayRetry = retry; }, hint => routeHint = hint);
             fitInitialRoute();
