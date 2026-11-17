@@ -1280,8 +1280,8 @@ fn groups(b: &Block, q: [f64; 2], p: &HeightRules, cover: bool) -> (Vec<Group>, 
     };
     // The cut and the bank of a way that enters a bore end square on the portal line: no edge of that way holds q behind
     // it, within the way's reach and half-width of its end point. The ground is not continuous on the line: a point on
-    // it (`ON_LINE_M`) is behind it for the cover, and in front of it for every other face.
-    let on_line = if cover { -ON_LINE_M } else { ON_LINE_M } / b.mpu;
+    // it (`ON_LINE_UNITS`) is behind it for the cover, and in front of it for every other face.
+    let on_line = if cover { -ON_LINE_UNITS } else { ON_LINE_UNITS };
     let ended = |ln: &Line| {
         [0, ln.count - 1].iter().any(|&i| {
             let at = b.position(ln, i);
@@ -1627,7 +1627,7 @@ fn bore_bound(p: &HeightRules, (out, base, ..): (f64, f64, f64, f64, u32, f64)) 
 /// the cover reads only the bores whose flat ends q lies behind (a point on one is in front, `groups`). The cover reads
 /// every bore near it: its stroke can reach past its floor line's flat end, where its bore's room still holds it.
 fn floor(b: &Block, q: [f64; 2], segs: &[u32], t: f64, p: &HeightRules, cover: bool) -> f64 {
-    let on_line = if cover { f64::INFINITY } else { -ON_LINE_M };
+    let on_line = if cover { f64::INFINITY } else { -ON_LINE_UNITS * b.mpu };
     decks(b, q, segs, p)
         .filter(|&(out, _, drop, .., past)| drop < 0.0 && out < p.ceiling_release_m && past <= on_line)
         .map(|d| bore_bound(p, d).min(t + d.3).max(t - p.face_max * (d.0 - WALL_M).max(0.0)))
@@ -1769,11 +1769,12 @@ pub(crate) fn frame(words: &[u32], q: [f64; 2], l: u32, items: &Items) -> Option
 /// whole units.
 const END_UNITS: f64 = 2.0;
 
-/// Within this of a portal line a corner of storey 0 lies on it (metres): the map's snapping moves a corner off the
-/// line by millimetres. Only the cover meets the line from behind where the ground differs on its two sides (its end
-/// spans the way that enters, `faces::bore_cover`), so a corner on the line reads its face's side: the cover's behind,
-/// every other face's in front.
-const ON_LINE_M: f64 = 0.05;
+/// Within this many frame units of a portal line a corner of storey 0 lies on it: a corner on the line is rounded to
+/// whole units, and each of the five overlays on the way to the face map (the cover's union, its lids, the union of
+/// the covers, its end's slope band, the slice) snaps it by up to one unit. Only the cover meets the line from behind
+/// where the ground differs on its two sides (its end spans the way that enters, `faces::bore_cover`), so a corner on
+/// the line reads its face's side: the cover's behind, every other face's in front. A corner farther off reads its own.
+const ON_LINE_UNITS: f64 = 6.0;
 
 /// The rule of the step between two sides at q, if the step lies within that rule's size (up to
 /// `step_m` more): a no-room wall up to its top or up to the terrain, the disagreement of two hosts.
