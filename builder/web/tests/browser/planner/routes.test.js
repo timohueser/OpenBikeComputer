@@ -114,6 +114,9 @@ test('the Routes page with a selected route, at the width of a computer and of a
   await page.goto('/planner.html#/routes');
   await page.locator('.list .row', { hasText: 'Start → Finish' }).click();
   await expect(page.getByRole('region', { name: 'Start → Finish' }).locator('svg polyline')).toHaveCount(1);
+  // The pale fills are below the threshold of the pictures, so the test reads them.
+  await expect(page.locator('.list .row[aria-current="true"]')).toHaveCSS('background-color', 'rgb(231, 236, 223)');
+  await expect(page.locator('.list .thumb .cover').first()).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
   await expect(page.locator('.maplibregl-ctrl-attrib')).toBeVisible();
   await page.addStyleTag({ content: '.maplibregl-canvas { visibility: hidden; }' });
   await page.evaluate(() => document.fonts.ready);
@@ -163,6 +166,10 @@ test('the ridden view shows a trip, a group of rides on a route, a ride taken ou
   await expect(page.getByRole('radio', { name: 'Ridden 6' })).toBeChecked();
   const list = page.locator('.list ul');
   await expect(list.locator('li')).toHaveText([/Coast, day 1 1 to 2 Jun \d+ · 2 days · 76.0\skm/, /Lake test 37.0\skm · last on 5 Apr \d+ 4 rides ›/]);
+  // The button that opens the group lies on the hidden room of its row.
+  const [open, room] = await Promise.all([list.locator('button.open'), list.locator('.room')].map(part => part.boundingBox()));
+  expect(Math.abs(open.x - room.x)).toBeLessThan(1);
+  expect(Math.abs(open.width - room.width)).toBeLessThan(1);
   await expect(page.locator('.totals')).toHaveText(new RegExp(`${year} · 224\\skm · 6 rides`));
 
   // The card of a trip opens its first day; the card of a group takes its newest ride out.
