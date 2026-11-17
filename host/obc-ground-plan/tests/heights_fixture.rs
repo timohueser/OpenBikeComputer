@@ -40,8 +40,9 @@ const INSIDE_MAX: usize = 9;
 /// kept vertices follow more walk bits, and the sidewalks' slabs on the revision 23 fixture: their kerbs' corner rounds
 /// move the seams of two paved faces and leave steps between them too small to show, and a slab's end whose lower face's edge lies beside it at a right or acute corner keeps the
 /// kerb's rise for a few centimetres, where as many steps of the faces without slabs go, and with each way's own
-/// shoulders, whose junction faces fade to a shoulder's own way: the count must not grow.
-const EDGE_MAX: usize = 46;
+/// shoulders and the junctions' blend bands, which fade to each arm's own shoulder at its seam: the count must not
+/// grow.
+const EDGE_MAX: usize = 27;
 /// The scan's kerb steps whose size is more than `KERB_SLACK_M` off the kerb's rise there (`check::kerb_of`), measured
 /// on the revision 22 fixture with the sidewalks' slabs: a kerb's end against a slope, whose step the slope's cone
 /// makes less than the rise at the corner where slab, carriageway and slope meet. The count must not grow.
@@ -53,13 +54,14 @@ const KERB_OFF_MAX: usize = 1;
 /// climb as steep as the terrain asks beside a gorge, its culverts, the ground under the decks' ceilings, and a
 /// paved outline that holds no water, and on the revision 22 fixture, whose junction radii and kept vertices
 /// follow more walk bits, and the sidewalks' slabs on the revision 23 fixture, whose back edge leaves the slope a slab's
-/// width less room: the count must not grow.
-const STEEP_MAX: usize = 2479;
+/// width less room, and the junctions' blend bands, whose rims take their junction's heights up to each seam: the count
+/// must not grow.
+const STEEP_MAX: usize = 2481;
 /// Of those, the pairs steeper than 6 m/m, measured the same way: the bank of one way that crosses a gully
 /// inside its ground band, which spans the terrain across the way's width. The count must not grow, and no pair
 /// is steeper than 12 m/m: a near-vertical rim that the total hides must not come back. The bank that crosses a gully
-/// at 46.809177, 8.451817 holds all four pairs.
-const NEAR_VERTICAL_MAX: usize = 4;
+/// at 46.809177, 8.451817 holds all five pairs.
+const NEAR_VERTICAL_MAX: usize = 5;
 /// A no-room wall's height that changes along it by more than this per metre is a step in its top
 /// (`check::wall_steps`): pairs of points measured on the revision 17 fixture with the slope and the wall of
 /// each point from the need at its foot (`heights::fit`) and line water, and on the revision 22 fixture with the
@@ -73,9 +75,10 @@ const WALL_STEPS_MAX: usize = 14;
 /// 22 fixture, whose junction radii and kept vertices follow more walk bits, and the sidewalks' slabs, whose tapers
 /// and rings end short rim pieces, whose heights fade to the faces beside them and whose ends that a lower face meets
 /// cover no fan, on the revision 23 fixture, and each way's own shoulders, whose faces end rim pieces where two ways'
-/// shoulders meet: the count must not grow.
+/// shoulders meet, and the junctions' blend bands, whose rims take the cones of their junction's material line up to
+/// each seam: the count must not grow.
 const SLOPE_STEP_GRADE: f64 = 0.1;
-const SLOPE_STEPS_MAX: usize = 13106;
+const SLOPE_STEPS_MAX: usize = 13183;
 /// A tile's water vertex whose level lies more than this off the terrain at the vertex has a level that
 /// the bake holds away from its line (a pit, or the low ground beside it): the design keeps the water at
 /// most `freeboard_m` (0.8 m) under its bank and `depth_m` (1 m) deep.

@@ -91,6 +91,9 @@ pub(crate) const LAYERS: usize = 5;
 pub(crate) const VERGE: usize = 2;
 /// The slope, the outermost layer.
 pub(crate) const SLOPE: usize = LAYERS - 1;
+/// The layers inside the verge (paved shoulder, shoulder): those of the owner rule, which a junction's or joint's
+/// blend band takes up to its seams (`blend_bands`).
+const BLENDS: usize = VERGE;
 
 /// Segments per box of `WayLine::chunks`: a test near one point reads only the segments of a long way
 /// there.
@@ -1372,13 +1375,23 @@ fn deck_ends(line: &WayLine) -> Vec<(EdgeKind, [f64; 5])> {
     out
 }
 
-/// Whether a candidate is a band layer, a way's own or shared. The cover over a bore is none: it decides the opening
-/// at every distance.
+/// Whether a candidate is a band layer: a way's own, a point's blend band or shared. The cover over a bore is none: it
+/// decides the opening at every distance.
 fn band(c: &Cand) -> bool {
     c.relabel.is_none()
         && c.fill.is_none()
-        && c.label.owner == Owner::Terrain
+        && (c.label.owner == Owner::Terrain || c.label.surface == Surface::Shoulder)
         && !matches!(c.label.surface, Surface::Zone | Surface::Cover | Surface::Sidewalk)
+}
+
+/// Whether a candidate is a way's own band of a layer inside the verge, which a junction's or joint's blend band takes
+/// up to its seams.
+fn own_shoulder(c: &Cand) -> bool {
+    c.relabel.is_none()
+        && c.fill.is_none()
+        && c.label.owner == Owner::Terrain
+        && c.label.material.is_some()
+        && c.label.surface == Surface::Shoulder
 }
 
 /// Whether the far level leaves a label out: water (whose bank is a band layer) and a culvert's zone, until the
@@ -1748,7 +1761,8 @@ fn candidates<'a>(
             let (key, discs) = (pt.key, Vec::new());
             cands.push(Cand { rings, label: pt.label, key, glob, line: 0, relabel: spans, beyond, fill: None, discs });
         }
-        // A point's ring of an owned layer belongs to the better of the two arms it joins.
+        // A point's ring of an owned layer belongs to the better of the two arms it joins; a junction's or joint's
+        // blend band takes it from there (`blend_bands`).
         for (k, (rings, owners)) in r.rings.iter().zip(&r.ring_lines).enumerate().take(bands) {
             for (ring, &l) in rings.iter().zip(owners) {
                 let layer = if owned(k) { &mut own_layers.entry(l).or_default()[k] } else { &mut layers[k] };
@@ -1855,12 +1869,14 @@ fn candidates<'a>(
         });
     }
     // Each seam cuts its line's carriageway and the fans that reach across it.
-    let mut seams: Vec<(usize, [P; 2], Vec<usize>)> = (seam_points.into_iter())
+    let seams: Vec<(usize, [P; 2], Vec<usize>)> = (seam_points.into_iter())
         .map(|((l, s), pts)| (l, s, pts.iter().filter_map(|&p| fan_of[p]).flat_map(|c| pieces[c].clone()).collect()))
         .collect();
-    // A seam off the window cuts nothing of it.
-    seams.retain(|&(_, [a, b], _)| geom::meets(win, a, b));
-    let seams = seams_on_carriageways(&mut cands, &seams);
+    // A seam off the window cuts nothing of it but the shoulders: a shoulder's piece in the window ends on every seam
+    // that the cell knows, so its owner is the same in every cell (`blend_bands`).
+    let (mut seams, cuts) = seams_on_carriageways(&mut cands, &seams);
+    seams.retain(|&[a, b]| geom::meets(win, a, b));
+    blend_bands(plan, &lines, &points, &rounded, &cuts, &mut cands);
     // The seams and rings split at grid lines of `step`, as `grid_points` puts their points.
     let split = |seams: &[[P; 2]], step: i64| -> Vec<[P; 2]> {
         (seams.iter())
@@ -2168,11 +2184,7 @@ fn split_legs(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, cands
         let line = &lines[l];
         // The origin of the integer cuts and unions only: they do not depend on it.
         let anchor = line.p[line.cuts[0]];
-        let (legs, medial) = legs_of[l].get_or_insert_with(|| {
-            let legs = legs::Legs::new(&line.p, &line.cuts, &|o| ctx.units(line.leg_reach_m(), o));
-            let medial = legs.medial(&|o| ctx.units(LEG_STEP_M, o));
-            (legs, medial)
-        });
+        let (legs, medial) = legs_of[l].get_or_insert_with(|| medial_of(ctx, line));
         let label = cands[c].label;
         let mut by_label: Vec<(Label, Rings)> = Vec::new();
         for piece in stroke::cut(&cands[c].rings, medial, anchor) {
@@ -2218,6 +2230,13 @@ fn split_legs(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, cands
     parts
 }
 
+/// The legs of a line with legs and the medial lines between them.
+fn medial_of(ctx: &Ctx, line: &WayLine) -> (legs::Legs, Vec<[P; 2]>) {
+    let legs = legs::Legs::new(&line.p, &line.cuts, &|o| ctx.units(line.leg_reach_m(), o));
+    let medial = legs.medial(&|o| ctx.units(LEG_STEP_M, o));
+    (legs, medial)
+}
+
 /// The label of each band layer (`LAYERS`). A way with legs keeps its layers of the owner rule as its
 /// own, and the nearest leg hosts each of their pieces (`split_legs`).
 const BAND_LABELS: [(Rank, Surface, HeightRule); LAYERS] = [
@@ -2249,21 +2268,31 @@ fn way_glob(line: &WayLine, leg: u8, q: [i64; 2]) -> Glob {
     line.key[i]
 }
 
+/// A seam's line and the points of its cut across the paved outline and the shoulders.
+type SeamCut = (usize, Vec<P>);
+
 /// A crossing of a seam's line by a ring: its fraction along the seam, the candidate (as an index
 /// into the seam's list), ring and segment, its place along the segment in millionths, and +1 where
 /// the line enters the candidate, −1 where it leaves.
 type Crossing = (f64, usize, usize, usize, i64, i32);
 
-/// Each seam as a cut of the paved outline it splits: its way's carriageway and the fans that reach
-/// across it, from edge to edge of their union about the seam's middle. Each crossing of a ring on
-/// the way becomes a vertex of that ring, so the cut ends on an edge of the slice: past it a cut
-/// would only split one face and leave a slit, and an edge that a cut crosses between its vertices
-/// would bend by a unit there. A seam along an edge of the carriageway (a square end of the way) is
-/// that edge already. A seam whose union runs past an end keeps that end.
-fn seams_on_carriageways(cands: &mut [Cand], seams: &[(usize, [P; 2], Vec<usize>)]) -> Vec<[P; 2]> {
+/// Each seam as a cut of the paved outline it splits: its way's carriageway, the fans that reach
+/// across it and the way's own shoulders (`own_shoulder`), from edge to edge of their union about the
+/// seam's middle. Each crossing of a ring on the way becomes a vertex of that ring, so the cut ends on
+/// an edge of the slice: past it a cut would only split one face and leave a slit, and an edge that a
+/// cut crosses between its vertices would bend by a unit there. A seam along an edge of the
+/// carriageway (a square end of the way) is that edge already. A seam whose union runs past an end
+/// keeps that end; the seam's line runs on as far again past each end, so it crosses the shoulders.
+/// Returns the cuts, and per seam its line and the points of its cut, which cut the shoulders
+/// (`blend_bands`).
+fn seams_on_carriageways(
+    cands: &mut [Cand],
+    seams: &[(usize, [P; 2], Vec<usize>)],
+) -> (Vec<[P; 2]>, Vec<SeamCut>) {
     // Per (candidate, ring, segment): the points to insert, by their place along the segment.
     let mut inserts: BTreeMap<(usize, usize, usize), Vec<(i64, P)>> = BTreeMap::new();
     let mut out = Vec::with_capacity(seams.len());
+    let mut cuts = Vec::with_capacity(seams.len());
     for (l, [a, b], fans) in seams {
         let (a, b) = (*a, *b);
         // The way's carriageway: one candidate per leg.
@@ -2293,9 +2322,14 @@ fn seams_on_carriageways(cands: &mut [Cand], seams: &[(usize, [P; 2], Vec<usize>
         if on_edge {
             continue;
         }
+        let [a, b] = wide([a, b]);
+        let (fa, fb) = ([f64::from(a[0]), f64::from(a[1])], [f64::from(b[0]), f64::from(b[1])]);
+        let r = [fb[0] - fa[0], fb[1] - fa[1]];
+        let len = (r[0] * r[0] + r[1] * r[1]).sqrt();
         // The crossings of the whole line, so the windings start at zero; a vertex on the line lies
         // on its left.
-        let set: Vec<usize> = ways.iter().chain(fans).copied().collect();
+        let shoulders = (0..cands.len()).filter(|&c| cands[c].line == *l && own_shoulder(&cands[c]));
+        let set: Vec<usize> = ways.iter().chain(fans).copied().chain(shoulders).collect();
         let left = |p: P| geom::cross(a, b, p) >= 0;
         let mut xs: Vec<Crossing> = Vec::new();
         for (slot, &c) in set.iter().enumerate() {
@@ -2375,6 +2409,7 @@ fn seams_on_carriageways(cands: &mut [Cand], seams: &[(usize, [P; 2], Vec<usize>
         }
         pts.dedup();
         out.extend(pts.windows(2).map(|w| [w[0], w[1]]));
+        cuts.push((*l, pts));
     }
     // From the last segment of a ring back, so the earlier indices stay valid.
     for ((ci, ri, si), mut pts) in inserts.into_iter().rev() {
@@ -2386,7 +2421,125 @@ fn seams_on_carriageways(cands: &mut [Cand], seams: &[(usize, [P; 2], Vec<usize>
         ring.splice(si + 1..si + 1, add);
     }
     out.retain(|s| s[0] != s[1]);
-    out
+    (out, cuts)
+}
+
+/// A seam's cut run on along its line as far again past each end: across the shoulders beside the carriageway.
+fn wide([a, b]: [P; 2]) -> [P; 2] {
+    [[2 * a[0] - b[0], 2 * a[1] - b[1]], [2 * b[0] - a[0], 2 * b[1] - a[1]]]
+}
+
+/// The blend bands of the junctions and joints: per point and layer inside the verge, one candidate of the point's
+/// face's label with the layer's rank and surface. It holds the pieces of its arms' own shoulders (with the point's
+/// rings, which they hold) that its region relabels, as the region relabels their carriageways (`region_of`). The
+/// seams cut those shoulders through the vertices that they cut the carriageways at (`seams_on_carriageways`), so the
+/// blend band meets each arm's own shoulder on the seam, and a junction's band fades there to that arm's own: a ring
+/// between two arms takes no one arm's heights beside the other's shoulder. Its key wins over every way's own
+/// shoulder.
+fn blend_bands(
+    plan: &PlanRules,
+    lines: &[WayLine],
+    points: &[Point],
+    rounded: &[Rounded],
+    cuts: &[SeamCut],
+    cands: &mut Vec<Cand>,
+) {
+    let mut by: BTreeMap<(usize, usize), Rings> = BTreeMap::new();
+    // Per line, the junctions and joints with a part on it.
+    let mut on: Vec<Vec<usize>> = vec![Vec::new(); lines.len()];
+    for (i, r) in rounded.iter().enumerate().take(points.len()).filter(|(i, _)| points[*i].seams) {
+        for part in &r.spans {
+            if on[part.line].last() != Some(&i) {
+                on[part.line].push(i);
+            }
+        }
+    }
+    let layer = |c: &Cand| (0..BLENDS).find(|&k| c.label.rank == plan.rank(BAND_LABELS[k].0));
+    for c in cands.iter_mut().filter(|c| own_shoulder(c)) {
+        let (l, Some(k)) = (c.line, layer(c)) else { continue };
+        if on[l].is_empty() {
+            continue;
+        }
+        let strings: Vec<[P; 2]> =
+            (cuts.iter().filter(|x| x.0 == l)).flat_map(|x| x.1.windows(2).map(|w| [w[0], w[1]])).collect();
+        let pieces =
+            if strings.is_empty() { vec![c.rings.clone()] } else { stroke::cut(&c.rings, &strings, lines[l].p[0]) };
+        let mut own = Vec::new();
+        for piece in pieces {
+            match inner_point(&piece).and_then(|q| region_of(lines, points, rounded, &on[l], (l, c.label.legs[0]), q)) {
+                Some(i) => by.entry((i, k)).or_default().extend(piece),
+                None => own.extend(piece),
+            }
+        }
+        c.rings = own;
+    }
+    for ((i, k), rings) in by {
+        let pt = &points[i];
+        let (rank, surface) = (plan.rank(BAND_LABELS[k].0), BAND_LABELS[k].1);
+        // A junction's face blends its arms; a joint's is its owner way's, so its band is that way's own shoulder.
+        let label = match pt.label.owner {
+            Owner::Junction(_) => Label { rank, surface, ..pt.label },
+            _ => Label {
+                rank,
+                surface,
+                rule: HeightRule::Owner,
+                material: pt.label.material,
+                legs: [pt.label.legs[0], 0],
+                ..TERRAIN
+            },
+        };
+        cands.push(Cand {
+            rings: union(&rings, pt.pos),
+            label,
+            key: (rank, 0, 0),
+            glob: Some(pt.glob),
+            line: 0,
+            relabel: None,
+            beyond: Vec::new(),
+            fill: None,
+            discs: Vec::new(),
+        });
+    }
+}
+
+/// The junction or joint whose region relabels a piece of leg `leg` of line l's own shoulder at doubled point q, as
+/// `decide` relabels a carriageway: one of the point's parts on the line spans that leg, q lies within a shoulder's
+/// reach of one of its parts, and past none of its seams on the line, each run on across the shoulders (`wide`). Of
+/// two, the one of the least key.
+fn region_of(
+    lines: &[WayLine],
+    points: &[Point],
+    rounded: &[Rounded],
+    on: &[usize],
+    (l, leg): (usize, u8),
+    q: [i64; 2],
+) -> Option<usize> {
+    // A part's samples run one past each seam: past a seam is no part of it.
+    let samples = |part: &Part| {
+        let last = lines[part.line].p.len() - 1;
+        let lo = (part.lo.floor() as usize).min(last - 1);
+        (lo, (part.hi.ceil() as usize).clamp(lo + 1, last))
+    };
+    let spans_leg = |part: &Part| {
+        let (lo, hi) = samples(part);
+        let legs = [lo, hi - 1].map(|i| legs::leg(&lines[l].cuts, i, 1));
+        part.line == l && (legs[0]..=legs[1]).contains(&leg)
+    };
+    // Near a part: a ring between two arms lies near the other arm's part.
+    let near = |part: &Part| {
+        let (line, (lo, hi)) = (&lines[part.line], samples(part));
+        let reach = 2.0 * ((lo..=hi).map(|i| line.bands[i][BLENDS - 1]).fold(0.0, f64::max) + points::STUB_PAD);
+        (lo..hi).any(|i| geom::nearest_on(line.p[i], line.p[i + 1], q).0 as f64 <= reach * reach)
+    };
+    (on.iter().copied())
+        .filter(|&i| {
+            let spans = &rounded[i].spans;
+            let mut own = spans.iter().filter(|p| p.line == l);
+            spans.iter().any(spans_leg)
+                && spans.iter().any(near)
+                && own.all(|p| p.cuts.iter().flatten().all(|cut| !past(&wide(*cut), q)))
+        })
+        .min_by_key(|&i| (points[i].key, points[i].glob))
 }
 
 /// Whether a doubled point lies past a seam: on the far side of its cut line, exactly as the slice

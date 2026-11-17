@@ -990,15 +990,24 @@ fn paved_as(recs: &[Rec], o: usize, arms: u32, water: bool, p: &HeightRules) -> 
     // so a host's core is exact, and by (1 − β) toward it, so the weight goes to 0 at that core's edge
     // with no step. The host is ruled only as far as they agree and keeps its share (1 − c) there:
     // disagreeing ways meet in a step where the host changes, on a face edge. A lesser record keeps a
-    // greater one off its ground as far as they disagree, but the host is never kept off.
+    // greater one off its ground as far as they disagree, but the host is never kept off. A blend face's
+    // arms are its hosts, and another record weighs as far as it agrees with an arm present: no line that the
+    // face does not relate (another leg of an arm's way, a way beside it at another level) gives it its height.
     let (mut sw, mut swz) = (0.0, 0.0);
     let kind = |k: usize| recs[k].water == water;
+    let arm = |k: usize| o >= n && arms >> k & 1 != 0;
+    let related = |j: usize| (0..n).filter(|&k| arm(k)).map(|k| beta[k] * agree(k, j)).fold(0.0, f64::max);
     for j in (0..n).filter(|&j| kind(j)) {
-        let mut w = if j == o || o >= n { beta[j] } else { beta[j] * agree(o, j) };
+        let host = j == o || arm(j);
+        let mut w = match (host, o < n) {
+            (false, true) => beta[j] * agree(o, j),
+            (false, false) if arms != 0 => beta[j] * related(j),
+            _ => beta[j],
+        };
         for (i, &bi) in beta[..n].iter().enumerate().filter(|&(i, _)| kind(i)) {
             if i < j {
-                w *= if j == o { 1.0 - bi * agree(i, j) } else { 1.0 - bi };
-            } else if i > j && j != o {
+                w *= if host { 1.0 - bi * agree(i, j) } else { 1.0 - bi };
+            } else if i > j && !host {
                 // The host is never kept off, so its face always has a height of its own.
                 w *= 1.0 - bi * (1.0 - agree(i, j));
             }
@@ -1770,14 +1779,15 @@ fn step(b: &Block, q: [f64; 2], recs: &[Rec], sides: &[(Height, Cause); 2], p: &
         // Another line's cone or bank holds the slope side: the bank of a higher line at a lower line's
         // edge (an arm's at its region's edge), or a cut at a higher line's edge; or another part of
         // the host line, as two lines. A step at a line's own edge held by its own fill is no wall: the
-        // design puts none at an upper edge.
+        // design puts none at an upper edge. A face's own line is the host of its outline: a blend face's is its
+        // material line, not the other arms it relates.
         if let (Some(c), Some(_)) = (a.1.by, o.1.hosts(recs).next()) {
             // A side on its own line's wall stands up to `wall_max_m` above the edge, as a no-room wall.
             let walled = || rise > 0.0 && walls(b, q, c, p).is_some_and(|w| rise <= p.wall_max_m + w.1 + p.step_m);
             if a.1.wall && walled() {
                 return Step::Held;
             }
-            if a.1.parts || o.1.hosts(recs).all(|h| recs[h].line != c) {
+            if a.1.parts || o.0.owner != c {
                 // Up to the paved side's wall cap: past it a fault, which the steep face past a wall's top would
                 // have taken where the two outlines leave room for it.
                 let capped = |h: usize| {
@@ -1852,8 +1862,9 @@ fn region(
         let Some(other) = e.other else { continue };
         let rule = label_words(b.w, other)[0] >> 24;
         if rule == 3 || rule == 4 {
-            let k = beyond.iter().position(|g| g.0 == other).unwrap_or(REGIONS - 1);
-            if beyond[k].0 != other && beyond[k].0 != u32::MAX {
+            let k = beyond.iter().position(|g| g.0 != u32::MAX && slot(b.w, g.0) == slot(b.w, other));
+            let k = k.unwrap_or(REGIONS - 1);
+            if beyond[k].0 != u32::MAX && slot(b.w, beyond[k].0) != slot(b.w, other) {
                 crate::probe::hit(crate::probe::Cap::Regions);
             }
             if d < beyond[k].1 {
@@ -1896,16 +1907,31 @@ fn region(
 /// of q: then the farthest are left out.
 fn regions_full(w: &[u32], q: [f64; 2], label: u32, p: &HeightRules) -> bool {
     let mpu = Block::at(w, q).mpu;
-    let mut seen: Vec<u32> = Vec::new();
+    let mut seen: Vec<u64> = Vec::new();
     for e in super::records::blend_edges(w, q).filter(|e| e.region == label) {
         let v = |p: [i32; 2]| [f64::from(p[0]), f64::from(p[1])];
         let other = e.other.unwrap_or(u32::MAX);
         let near = to_segment(q, v(e.a), v(e.b)) * mpu < p.region_fade_m;
-        if near && other != u32::MAX && matches!(label_words(w, other)[0] >> 24, 3 | 4) && !seen.contains(&other) {
-            seen.push(other);
+        if near
+            && other != u32::MAX
+            && matches!(label_words(w, other)[0] >> 24, 3 | 4)
+            && !seen.contains(&slot(w, other))
+        {
+            seen.push(slot(w, other));
         }
     }
     seen.len() > REGIONS
+}
+
+/// The slot of a region beyond an edge: one per junction, whose faces (its carriageway, its blend bands) relate the
+/// same arms and so give one target, at the least distance to any of them; else one per label.
+fn slot(w: &[u32], id: u32) -> u64 {
+    let l = label_words(w, id);
+    if (l[0] >> 8) & 0xff == super::records::JUNCTION {
+        1 << 32 | u64::from(l[1])
+    } else {
+        u64::from(id)
+    }
 }
 
 /// The records that a region relates as its junction's arms (its material line and its junction's arms,

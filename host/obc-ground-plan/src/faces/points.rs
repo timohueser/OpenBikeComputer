@@ -59,7 +59,7 @@ fn ladder(r: f64) -> impl Iterator<Item = f64> {
 /// at 47° N, 0.35 m at 60° N): a margin for the strokes' mitres and tapers past the samples'
 /// half-widths. The region relabels only its arms' carriageways, so a wider stub changes no other
 /// face; a seam reaches as far past the carriageway before it grows across the fans (`grow`).
-const STUB_PAD: f64 = 300.0;
+pub(super) const STUB_PAD: f64 = 300.0;
 
 /// An arm: a way's line from the point's sample, toward `dir` (+1 or −1 in sample order).
 #[derive(Clone, Copy, Debug)]
