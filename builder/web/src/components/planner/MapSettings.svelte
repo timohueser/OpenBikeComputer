@@ -169,8 +169,9 @@
     .badge { bottom: 3px; left: 3px; width: 20px; height: 20px; background: var(--panel); color: var(--ink); }
     .check { top: 4px; right: 4px; width: 17px; height: 17px; background: var(--link); color: var(--panel); visibility: hidden; }
     .check :global(svg) { stroke-width: 3; }
-    /* A lit tile: a ring, a check and a darker, heavier word, so the state does not rely on colour. The focus outline of the app goes around the whole tile. */
-    .tile[aria-pressed="true"] .picture { outline: 2px solid var(--link); outline-offset: 1px; }
+    /* A lit tile: a ring, a check and a darker, heavier word, so the state does not rely on colour. The focus outline of the app
+       goes around the whole tile, and a tile shows one frame: with the focus, the ring goes. */
+    .tile[aria-pressed="true"]:not(:focus-visible) .picture { outline: 2px solid var(--link); outline-offset: 1px; }
     .tile[aria-pressed="true"] .check { visibility: visible; }
     .tile[aria-pressed="true"] .name { font-weight: 650; color: var(--ink); }
     /* A band with its line: the map draws a route network as a line when far out and as a band when close. */
