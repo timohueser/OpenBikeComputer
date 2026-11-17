@@ -472,8 +472,8 @@ pub fn solve(
     // Rows that pin a combination of variables to a value: the approaches of side roads, the fords,
     // the bores, the tracks side by side.
     let (approach, approached, ramp) = rows::approaches(&net, classes);
-    let fords = rows::fords(&net, rivers, classes);
-    let untagged = rows::untagged_crossings(&net, rivers, classes);
+    let fords = rows::fords(&net, rivers, classes, terrain);
+    let untagged = rows::untagged_crossings(&net, rivers, classes, terrain);
     // A way on the ground meets a tunnel where it comes out of the ground: at a portal, which ends its chain.
     let mut grounded = vec![false; n];
     for s in (0..a.len()).filter(|&s| !free[s]) {

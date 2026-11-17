@@ -13,7 +13,7 @@ use crate::geometry::key;
 use crate::{metres, Terrain};
 use obc_ground_plan::frame::GlobalPoint;
 use obc_ground_plan::graph::end_on_chord;
-use obc_ground_plan::sections::GRAZE_DEG;
+use obc_ground_plan::sections::{Sections, GRAZE_DEG};
 
 /// Rows of up to four variables: Σ coefficient × z_variable, against a value.
 #[derive(Default)]
@@ -380,8 +380,15 @@ impl Arms {
 /// The OSM vertices that a ford pins, with the level of their water: a vertex of a road or a path on the
 /// ground that open water shares, where each passes through it or meets another part of its own there.
 /// A railway takes the untagged rule there, a road or a track too where the water is a culvert's
-/// (`River::untagged_culvert`), and stepping stones keep their path's height.
-fn shared_fords(net: &Network, rivers: &[&River], arms: &Arms, classes: &Classes) -> Vec<(usize, f64)> {
+/// (`River::untagged_culvert`), and stepping stones keep their path's height. Water deeper under the
+/// terrain than `underground_max_m` is underground: the ground plan draws none there, so there is no ford.
+fn shared_fords(
+    net: &Network,
+    rivers: &[&River],
+    arms: &Arms,
+    classes: &Classes,
+    terrain: &dyn Terrain,
+) -> Vec<(usize, f64)> {
     let mut levels: HashMap<[u64; 2], f64> = HashMap::new();
     let mut wide = HashSet::new();
     for river in rivers {
@@ -395,7 +402,8 @@ fn shared_fords(net: &Network, rivers: &[&River], arms: &Arms, classes: &Classes
         }
     }
     let wet = |o: usize| arms.water.get(&key(net.osm_xy[o])).is_some_and(|&n| n >= 2);
-    (0..net.osm_xy.len())
+    let underground = Sections::embedded().underground_max_m();
+    let fords: Vec<(usize, f64)> = (0..net.osm_xy.len())
         .filter(|&o| {
             let w = net.osm_way[o];
             !net.free[w] && !net.stones[w] && !classes.rows[net.rule[w]].rail && arms.ways[0][net.osm_var[o]] >= 2
@@ -403,13 +411,20 @@ fn shared_fords(net: &Network, rivers: &[&River], arms: &Arms, classes: &Classes
         .filter(|&o| net.rule[net.osm_way[o]] >= classes.path || wide.contains(&key(net.osm_xy[o])))
         .filter(|&o| wet(o))
         .filter_map(|o| Some((o, *levels.get(&key(net.osm_xy[o]))?)))
+        .collect();
+    let ground = terrain.heights(&fords.iter().map(|&(o, _)| net.osm_xy[o]).collect::<Vec<_>>());
+    fords
+        .into_iter()
+        .zip(ground)
+        .filter(|&((_, level), ground)| ground.is_nan() || ground - level <= underground)
+        .map(|f| f.0)
         .collect()
 }
 
 /// The rows of the fords: a shared vertex of `shared_fords`, and the point where a way tagged as a ford
 /// crosses a waterway, lie FORD_M below the water there; a road or a track tagged as a ford takes the
 /// untagged rule over a culvert's water. A bridge or a tunnel has no ford.
-pub(crate) fn fords(net: &Network, rivers: &[&River], classes: &Classes) -> Pins<3> {
+pub(crate) fn fords(net: &Network, rivers: &[&River], classes: &Classes, terrain: &dyn Terrain) -> Pins<3> {
     let mut pins = Pins::default();
     if rivers.is_empty() {
         return pins;
@@ -424,7 +439,7 @@ pub(crate) fn fords(net: &Network, rivers: &[&River], classes: &Classes) -> Pins
         }
     }
     let arms = Arms::new(net, rivers, classes);
-    for (o, level) in shared_fords(net, rivers, &arms, classes) {
+    for (o, level) in shared_fords(net, rivers, &arms, classes, terrain) {
         pins.push([net.osm_var[o]; 3], [1.0, 0.0, 0.0], level - FORD_M);
     }
     let fords: Vec<usize> = (0..net.ford.len()).filter(|&w| net.ford[w] && !net.free[w]).collect();
@@ -470,7 +485,12 @@ pub(crate) struct UntaggedCrossing {
 /// way, along it, as the grade of its class lets the way climb from FORD_M under the water to its cover
 /// is none. Where one ends on the other there is no crossing, and a point of both gives one, the first.
 /// In the order of the ways, their segments and the water's segments.
-pub(crate) fn untagged_crossings(net: &Network, rivers: &[&River], classes: &Classes) -> Vec<UntaggedCrossing> {
+pub(crate) fn untagged_crossings(
+    net: &Network,
+    rivers: &[&River],
+    classes: &Classes,
+    terrain: &dyn Terrain,
+) -> Vec<UntaggedCrossing> {
     let mut out = Vec::new();
     let mut water: Vec<(usize, usize)> = Vec::new();
     for (r, river) in rivers.iter().enumerate().filter(|(_, r)| r.untagged_culvert) {
@@ -488,7 +508,7 @@ pub(crate) fn untagged_crossings(net: &Network, rivers: &[&River], classes: &Cla
         along[v + 1] = along[v] + net.length[s];
     }
     let mut ford_at: Vec<Vec<f64>> = vec![Vec::new(); net.free.len()];
-    for (o, _) in shared_fords(net, rivers, &arms, classes) {
+    for (o, _) in shared_fords(net, rivers, &arms, classes, terrain) {
         ford_at[net.osm_way[o]].push(along[net.osm_position[o]]);
     }
     let graze = GRAZE_DEG.to_radians().sin();

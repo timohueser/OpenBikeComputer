@@ -4242,6 +4242,7 @@ dependencies = [
  "faer",
  "flate2",
  "image",
+ "libc",
  "obc-data",
  "obc-ground-plan",
  "rayon",

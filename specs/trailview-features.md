@@ -214,7 +214,8 @@ The road solver:
   the ground passes over or under it,
 - puts a vertex that a road or a path shares with a river or a stream, where each passes through it
   or meets another part of its own there (only open water counts: a culvert part that starts there
-  makes no ford), and the crossing of a way tagged `ford` or
+  makes no ford, and water more than the largest `underground_m` of `waterways.json` under the terrain
+  there is underground, which the ground plan does not draw), and the crossing of a way tagged `ford` or
   `bridge=low_water_crossing` with a waterway, 0.2 m below the water. A road or a track does so only
   over water wider than `culvert_width_m`: over narrower water it takes the culvert's cover below,
   tagged as a ford or not. A path tagged
