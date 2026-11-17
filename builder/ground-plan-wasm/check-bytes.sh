@@ -10,8 +10,9 @@ limit_mib=512
 
 dir="$(mktemp -d)"
 trap 'rm -rf "$dir"' EXIT
-# The native side builds the crate with the package's default features (the storeys, not the bores).
-cargo run --locked --release -p obc-ground-plan --no-default-features --features storeys --example debug -- \
+# The native side builds the crate with the package's default features, which have the crate's names.
+features="$(sed -n 's/^default = \[\(.*\)\]$/\1/p' builder/ground-plan-wasm/Cargo.toml | tr -d '" ')"
+cargo run --locked --release -p obc-ground-plan --no-default-features --features "$features" --example debug -- \
   requests --all --runs 1 --out "$dir"
 size_mib=$(du -sm "$dir" | cut -f1)
 echo "requests: ${size_mib} MiB"

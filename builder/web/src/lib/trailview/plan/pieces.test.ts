@@ -20,6 +20,7 @@ describe('splitMouths', () => {
             level18Runs: 0,
             steps: new Uint32Array(0),
             endFaces: 0,
+            headwalls: 0,
             sunk: new Uint32Array(0),
             culverts: new Uint32Array(0),
         };

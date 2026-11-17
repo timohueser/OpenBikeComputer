@@ -2,7 +2,9 @@
 // obc-ground-plan), then the meshes of its storeys over the ground (`StoreyMesh::to_bytes` of `mesh/shell.rs`)
 // where it has any: the one reader of those bytes, in the form that pieces.ts uploads.
 
+/** A cell mesh, and one with the bores, whose head goes on with the count of the end faces on a portal line (`MAGIC` of `mesh/mod.rs`). */
 const MAGIC = 0x4f424d05;
+const BORED_MAGIC = 0x4f424d06;
 const HEAD = 12;
 /** A storey mesh of the decks, and one with the bores (`MAGIC` of `mesh/shell.rs`). */
 const STOREY_MAGIC = 0x4f425301;
@@ -36,8 +38,9 @@ export interface CellMesh {
     level18Runs: number;
     /** Four corner indices per step slot: a_p, a_q, b_q, b_p. */
     steps: Uint32Array<ArrayBuffer>;
-    /** The last slots of `steps`: the end faces on the deck end lines. */
+    /** The last slots of `steps`: the end faces on the deck end lines, and last of them those beside an opening on a portal line. */
     endFaces: number;
+    headwalls: number;
     /** One bit per grid point (j × SIDE + i) whose region cells all lie in R: the terrain sinks there. */
     sunk: Uint32Array<ArrayBuffer>;
     /** Four words per culvert mouth: its corner on the water, its corner in the zone, the outline's direction and the water's half-width. */
@@ -85,9 +88,10 @@ export function meshBytes(mesh: Uint8Array, storeys?: Uint8Array): ArrayBuffer {
 export function cellMesh(bytes: ArrayBuffer): CellMesh {
     const words = new Uint32Array(bytes);
     const [magic, x, y, corners, triangles, , triangleRuns, steps, stepRuns, level18Runs, endFaces, mouths] = words.subarray(0, HEAD);
-    if (magic !== MAGIC) throw new Error(`not a ground plan mesh: ${magic.toString(16)}`);
+    if (magic !== MAGIC && magic !== BORED_MAGIC) throw new Error(`not a ground plan mesh: ${magic.toString(16)}`);
     let at = HEAD;
     const take = (n: number) => words.subarray(at, (at += n));
+    const headwalls = magic === BORED_MAGIC ? take(1)[0] : 0;
     const corner = words.slice(at, (at += 2 * corners));
     /** Items of `size` corners in runs of (count, base), their 16-bit indices less the base. */
     const items = (count: number, runs: number, size: number) => {
@@ -98,7 +102,7 @@ export function cellMesh(bytes: ArrayBuffer): CellMesh {
     const triangle = items(triangles, triangleRuns, 3), step = items(steps, stepRuns, 4), region = take(REGION_WORDS), culverts = take(4 * mouths).slice();
     if (region.length !== REGION_WORDS || culverts.length !== 4 * mouths) throw new Error('a ground plan mesh ends early');
     const storeys = at < words.length ? storeyMesh(bytes, at) : undefined;
-    return { x, y, corners: corner, triangles: triangle.short, runs: triangle.runs, level18Runs, steps: whole(step, 4), endFaces, sunk: sunkOf(region), culverts, storeys };
+    return { x, y, corners: corner, triangles: triangle.short, runs: triangle.runs, level18Runs, steps: whole(step, 4), endFaces, headwalls, sunk: sunkOf(region), culverts, storeys };
 }
 
 /** Items of runs as whole corner indices: the vertex stage reads them by index. */

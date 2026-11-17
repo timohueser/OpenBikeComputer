@@ -83,26 +83,33 @@ describe('the mesh reader', () => {
         expect([decks.bores, decks.fronts, decks.seams, decks.sills, decks.caps.length]).toEqual([3, 3, 2, 2, 0]);
     });
 
-    it('reads the storeys after a cell mesh: every index names a storey corner, the top comes first, then the shell in its parts', () => {
-        // A cell of the browser fixture with decks over a road.
-        const fixture = new URL('../../../../tests/browser/trailview/fixture/features/13/', import.meta.url), [x, y] = [34294, 23098];
-        const request = new CellRequest(x, y), tiles = feature_tiles(x, y);
-        for (let t = 0; t < tiles.length; t += 2) {
-            const bytes = readFileSync(new URL(`${tiles[t]}/${tiles[t + 1]}.bin`, fixture));
-            request.add_tile(tiles[t], tiles[t + 1], bytes[0] === 0x1f && bytes[1] === 0x8b ? gunzipSync(bytes) : bytes);
-        }
-        const plan = build(request, false), input = plan.mesh_input();
-        try {
-            const storeys = cellMesh(meshBytes(input.mesh(plan.rim())!, input.storeys())).storeys!, corners = storeys.offsets.length;
-            expect(storeys.corners.length).toBe(2 * corners);
-            expect([...storeys.triangles, ...storeys.slots].every(c => c < corners)).toBe(true);
-            expect(storeys.top).toBeGreaterThan(0);
-            expect(storeys.top).toBeLessThan(storeys.triangles.length / 3);
-            expect(storeys.top <= storeys.railings && storeys.railings <= storeys.piers && storeys.piers <= storeys.triangles.length / 3).toBe(true);
-            expect([...new Float32Array(storeys.offsets.buffer)].every(Number.isFinite)).toBe(true);
-        } finally {
-            input.free();
-            plan.free();
+    it('reads the storeys after a cell mesh: every index names a storey corner, the top comes first, then the shell and the bores in their parts', () => {
+        // Two cells of the browser fixture: decks over a road, and a tunnel's openings.
+        const fixture = new URL('../../../../tests/browser/trailview/fixture/features/13/', import.meta.url);
+        for (const [x, y, bored] of [[34294, 23098, false], [34294, 23097, true]] as const) {
+            const request = new CellRequest(x, y), tiles = feature_tiles(x, y);
+            for (let t = 0; t < tiles.length; t += 2) {
+                const bytes = readFileSync(new URL(`${tiles[t]}/${tiles[t + 1]}.bin`, fixture));
+                request.add_tile(tiles[t], tiles[t + 1], bytes[0] === 0x1f && bytes[1] === 0x8b ? gunzipSync(bytes) : bytes);
+            }
+            const plan = build(request, false), input = plan.mesh_input();
+            try {
+                const mesh = cellMesh(meshBytes(input.mesh(plan.rim())!, input.storeys())), storeys = mesh.storeys!, corners = storeys.offsets.length;
+                expect(storeys.corners.length).toBe(2 * corners);
+                expect([...storeys.triangles, ...storeys.slots].every(c => c < corners)).toBe(true);
+                const firsts = [storeys.top, storeys.railings, storeys.piers, storeys.bores, storeys.fronts, storeys.triangles.length / 3];
+                expect(firsts.every((n, k) => k === 0 || firsts[k - 1] <= n)).toBe(true);
+                expect([...new Float32Array(storeys.offsets.buffer)].every(Number.isFinite)).toBe(true);
+                expect(mesh.headwalls).toBeLessThanOrEqual(mesh.endFaces);
+                // The decks have a top. A bore has its inside and a front over each opening, and its roof's caps name its corners in order.
+                const caps = Array.from({ length: storeys.caps.length / 3 }, (_, c) => storeys.caps[3 * c]);
+                if (bored) expect([storeys.bores < storeys.fronts, storeys.fronts < storeys.triangles.length / 3, caps.length > 0]).toEqual([true, true, true]);
+                else expect([storeys.top > 0, storeys.top < storeys.bores]).toEqual([true, true]);
+                expect(caps.every((c, k) => c < corners && (k === 0 || caps[k - 1] <= c))).toBe(true);
+            } finally {
+                input.free();
+                plan.free();
+            }
         }
     });
 });

@@ -321,14 +321,15 @@ describe('the stamp data of a node', { timeout: 30_000 }, () => {
         const list = [
             { kind: 'lake', tags: {}, geometry: 'area' as const, parts: [{ outer: true, xy: Int32Array.from([8600, 8600, 8800, 8600, 8800, 8800, 8600, 8800]), z: Float32Array.of(990) }] },
             line('road', { highway: 'tertiary', bridge: 'yes' }, [8200, 8500, 9200, 8500]), line('path', { highway: 'path' }, ...paths), line('river', { waterway: 'river' }, [8200, 8900, 9200, 8900]),
+            line('tunnel', { highway: 'tertiary', tunnel: 'yes' }, [8200, 8700, 9200, 8700]),
         ];
-        expect(features(list, tile).lines.length).toBe(0x10001 + 2);
+        expect(features(list, tile).lines.length).toBe(0x10001 + 3);
         for (const plan of [false, true]) {
             const { data, limits } = nodeStamps(list, tile, node, plan), records = 2 + GRID * GRID + 1 + data![1];
             const word = (r: number, i: number) => data![records + RECORD * r + i], all = Array.from({ length: data![0] }, (_, r) => r);
             expect(limits).toBeUndefined();
-            // With `plan` a bridge has no record on a near level: the records hold the ground under it.
-            expect([BRIDGE, LAKE, RIVER].map(kind => all.some(r => word(r, 4) === kind))).toEqual([!plan, true, true]);
+            // With `plan` a bridge and a tunnel have no record on a near level: the records hold the ground under the one and over the other.
+            expect([BRIDGE, TUNNEL, LAKE, RIVER].map(kind => all.some(r => word(r, 4) === kind))).toEqual([!plan, !plan, true, true]);
             const kinds = plan ? [RIVER] : [BRIDGE, RIVER];
             expect(kinds.map(kind => word(all.find(r => word(r, 4) === kind)!, 13) & 0xffff)).toEqual(plan ? [0] : [0, 1]);
         }

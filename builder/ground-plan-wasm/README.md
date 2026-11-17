@@ -15,7 +15,8 @@ obc exec cargo clippy -p obc-ground-plan-bridge --target wasm32-unknown-unknown 
 ```
 
 The feature `storeys` (on) builds the storeys over the ground too: `MeshInput.storeys()` gives their meshes'
-bytes and `CellPlan.storey_time()` their stages' milliseconds. Without it the package links none of it.
+bytes and `CellPlan.storey_time()` their stages' milliseconds. Without it the package links none of it. The
+feature `bores` (on) adds the storey under the ground, the tunnels' bodies, to the same storey meshes.
 
 ## Check 7: native and WASM bytes
 

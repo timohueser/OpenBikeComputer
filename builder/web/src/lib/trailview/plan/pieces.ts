@@ -4,8 +4,8 @@
 // level, 18 or 17, within level 18's range; the terrain's vertices there take no snap of their own and sink
 // inside the mesh's owned region (cells.wgsl), and the strip, made of the terrain's own vertices at the
 // region's border, closes the mesh against it. Past them the terrain draws the records' far look. A cell's storeys
-// over the ground draw with it: their corners from the same pass, their sheets and shells with piece.wgsl, and they
-// cast into the shadow map.
+// over and under the ground draw with it: their corners from the same pass, their sheets, shells and bores with
+// piece.wgsl, and the decks cast into the shadow map.
 import type { Gpu } from '../gpu/device';
 import { MOUTH, PIECE_IN } from '../gpu/include';
 import { layouts } from '../gpu/layouts';
@@ -35,8 +35,8 @@ const TERRAIN_BIT = 0x80000000;
 const CAPS_BIT = 0x40000000;
 /** A piece whose cell reaches this far before the level-18 plateau's end draws with the fade: the metres of four mesh triangles. */
 const FADE_MARGIN_M = 10;
-/** Bytes of a piece's parameters, as Piece of corners.wgsl (piece.wgsl reads the first 56). */
-const PARAMS_BYTES = 64;
+/** Bytes of a piece's parameters, as Piece of piece.wgsl (corners.wgsl reads the first 64). */
+const PARAMS_BYTES = 96;
 /** The vertices of a culvert mouth's model: MOUTH_QUADS of plan/piece.wgsl, six each. */
 const CULVERT_VERTICES = 6 * 48;
 /** The level-18 nodes per side of the block whose stamps a cell's corners read, NODES of corners.wgsl: the cell's four and one more on each side. */
@@ -422,6 +422,8 @@ export class Pieces {
         const params = new ArrayBuffer(PARAMS_BYTES), ints = new Int32Array(params), words = new Uint32Array(params);
         ints.set([piece.node.x * s, piece.node.y * s]);
         words.set([n, 6 * n, 2 * n, piece.mesh.steps.length / 4 - piece.mesh.endFaces, piece.block, (first | (make === 'terrain' ? TERRAIN_BIT : 0)) >>> 0, 6 * n + piece.mesh.steps.length], 2);
+        // The draw's words after the corners pass's: the first end face on a portal line; a cell's mesh has no bore part.
+        words[16] = piece.mesh.steps.length / 4 - piece.mesh.headwalls;
         r.gpu.device.queue.writeBuffer(gpu.params, 0, params);
         if (first === 0 || gpu.bound !== make) this.bindStamps(r, piece, make === 'terrain');
         gpu.bound = make;
@@ -431,8 +433,10 @@ export class Pieces {
         const storeys = gpu.storeys, mesh = piece.mesh.storeys;
         if (make !== 'all' || first !== 0 || !storeys?.compute || !mesh) return;
         const m = mesh.offsets.length, slots = mesh.slots.length, tris = 6 * m + slots, caps = mesh.caps.length / 3;
-        // The storeys' slots are all plain concrete: their end faces start at 0.
-        words.set([m, 6 * m, 2 * m, 0, piece.block, 0, 0, tris + mesh.triangles.length, tris, mesh.top, mesh.railings, mesh.piers, caps ? tris + mesh.triangles.length + m : 0, caps], 2);
+        // The storeys' slots are all concrete: their end faces start at 0, and none lies on a portal line. A bore's parts
+        // and seams draw dark.
+        words.set([m, 6 * m, 2 * m, 0, piece.block, 0, 0, tris + mesh.triangles.length, tris, mesh.top, mesh.railings, mesh.piers, caps ? tris + mesh.triangles.length + m : 0, caps,
+            slots / 4, mesh.bores, mesh.fronts, mesh.seams, mesh.sills], 2);
         // The caps' heights first, with their own parameters: a dispatch reads the parameters of the queue's last write.
         if (caps && storeys.capParams && storeys.capCompute) {
             words[7] = CAPS_BIT;
@@ -538,11 +542,14 @@ export class Pieces {
         }
     }
 
-    /** Draws the storeys of the cells that draw into the shadow map as casters, with the sun's frame (`castWith`). */
+    /**
+     * Draws the decks of the cells that draw into the shadow map as casters, with the sun's frame (`castWith`). A bore casts
+     * no shadow: its inside is dark, and its roof lies just under the ground.
+     */
     cast(pass: GPURenderPassEncoder, surface: GPUBindGroup, empty: GPUBindGroup, features: GPUBindGroup): void {
         const r = this.resources;
         if (!r || !this.sun) return;
-        const storeyed = this.drawn.filter(piece => piece.gpu?.storeys?.computed);
+        const storeyed = this.drawn.filter(piece => piece.gpu?.storeys?.computed && piece.mesh.storeys!.bores);
         if (!storeyed.length) return;
         pass.setPipeline(r.storeyCaster);
         pass.setBindGroup(1, surface);
@@ -552,7 +559,7 @@ export class Pieces {
             const storeys = piece.gpu!.storeys!;
             storeys.cast ??= this.drawGroup(r, storeys.data, storeys.params, this.sun);
             pass.setBindGroup(0, storeys.cast);
-            pass.draw(piece.mesh.storeys!.triangles.length);
+            pass.draw(3 * piece.mesh.storeys!.bores);
         }
     }
 

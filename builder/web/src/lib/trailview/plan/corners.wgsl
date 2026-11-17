@@ -66,6 +66,9 @@ const LOOK_WALL_SIDE: u32 = 268435456u;
 // The next bit: that wall is a bridge's (M_BRIDGE_GROUND), of concrete (piece.wgsl's BRIDGE_SIDE). A storey's corner
 // has no wall: it takes these bits for its deck's build and planks (M_BUILD_SHIFT), in the bits from DECK_SHIFT.
 const LOOK_BRIDGE_SIDE: u32 = 536870912u;
+// The next bit, of a cell mesh's corner: its face is a bore's cover, so an end face on a portal line beside it is the
+// tunnel's end wall where the cover is its higher side (piece.wgsl's COVER_SIDE).
+const LOOK_COVER: u32 = 1073741824u;
 const SIDE_SHIFT: u32 = 28u;
 const DECK_SHIFT: u32 = 29u;
 const S_CORNER_FILL: u32 = 5u;
@@ -379,7 +382,8 @@ fn corners(@builtin(local_invocation_index) lane: u32, @builtin(workgroup_id) gr
         // Ground: its nearest way, for the ground terms; a shoulder takes that way's wall class.
         let way = nearest_way(q, mpu);
         let side = select(0u, u32(way.z) << SIDE_SHIFT, ((look.x >> 7u) & 15u) == CODE_ROAD_SURFACE);
-        look = vec2u(look_word(MAT_GROUND, 0u, way.y) | side, place_word(way.x, 0.0));
+        let cover = params.offsets == 0u && label != M_NONE && (mw(m_label(params.block, label)) & 0xffu) == M_SURFACE_COVER;
+        look = vec2u(look_word(MAT_GROUND, 0u, way.y) | side | select(0u, LOOK_COVER, cover), place_word(way.x, 0.0));
     }
     // A storey's corner: its deck's build and planks, from its label's line.
     if (params.offsets != 0u && label != M_NONE) {

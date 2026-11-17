@@ -1,11 +1,12 @@
 // The ground plan's mesh of a cell (pieces.ts), drawn before the terrain with the corridors' fragment stage
 // (PIECE): its triangles at the corners' heights from corners.wgsl, and its step slots, two triangles each
-// on the slot's four corners; and the meshes of its storeys over the ground, their slots all plain concrete. A terrain vertex of the strip is the terrain's own
+// on the slot's four corners; and the meshes of its storeys over and under the ground, their slots concrete but a
+// bore's dark seams. A terrain vertex of the strip is the terrain's own
 // vertex at its level-18 grid point, made by the same code, so the strip meets the terrain without a crack.
 // #include ../roads/corridor.wgsl
 // #include cells.wgsl
 
-// The first fields of Piece of corners.wgsl.
+// Piece of corners.wgsl, then the draw's own words.
 struct Piece {
     origin: vec2i,
     corners: u32,
@@ -21,6 +22,15 @@ struct Piece {
     // A storey mesh's first triangle of its railings and posts, and of its piers (mesh/shell.rs's PARTS).
     railings: u32,
     piers: u32,
+    caps: u32,
+    cap_count: u32,
+    // The first step slot of the end faces on a portal line (the last end faces); a storey mesh's first triangle of its
+    // bores' parts and of their fronts, and its first slot of the bores' seams and of their sills.
+    walls: u32,
+    bores: u32,
+    fronts: u32,
+    seams: u32,
+    sills: u32,
 }
 
 @group(0) @binding(1) var<storage, read> piece: array<u32>;
@@ -95,6 +105,13 @@ const DECK_SHIFT: u32 = 29u;
 
 fn on_bridge(k: u32) -> bool {
     return (piece[params.out + 4u * k + 1u] & BRIDGE_SIDE) != 0u;
+}
+
+// The next bit, of a cell mesh's corner: on a bore's cover (LOOK_COVER of plan/corners.wgsl).
+const COVER_SIDE: u32 = 4u << FINE_SHIFT;
+
+fn on_cover(k: u32) -> bool {
+    return (piece[params.out + 4u * k + 1u] & COVER_SIDE) != 0u;
 }
 
 // Whether corner k lies on water (MAT_WATER of corners.wgsl).
@@ -184,10 +201,12 @@ fn slot_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
     // Toward b, the left of p → q, where a stands higher.
     let along = c[1].s - c[0].s;
     let left = normalize(vec2f(-along.y, along.x) + vec2f(1e-9, 0.0));
-    // An end face (the mesh's last slots, on a deck end line) is plain concrete at any height. A step whose upper
-    // side is water falls as water (its look foams on the upright slot). A step beside a wall class's road surface
-    // that stands as high as a wall is a wall, of concrete beside a bridge's ground stretch; a lower one beside a
-    // sidewalk is its kerb; any other is a bank of the ground, as on a path or a track.
+    // An end face (the mesh's last slots) on a deck end line is plain concrete at any height; one on a portal line is
+    // the tunnel's end wall where the cover is its higher side, and where it is the lower side a step like any other. A
+    // step whose upper side is water falls as water (its look foams on the upright slot). A step beside a wall class's
+    // road surface that stands as high as a wall is a wall, of concrete beside a bridge's ground stretch; a lower one
+    // beside a sidewalk is its kerb; any other is a bank of the ground, as on a path or a track. A storey's slots are
+    // all end faces; a bore's seams are its dark inside.
     let upper = select(vec2u(piece[w + 2u], piece[w + 3u]), vec2u(piece[w], piece[w + 1u]), rise > 0.0);
     let wall = (on_road(piece[w]) || on_road(piece[w + 3u])) && max(abs(dp), abs(dq)) >= WALL_STEP_M;
     var mat = select(MAT_GROUND, select(MAT_WALL, MAT_CAP, on_bridge(piece[w]) || on_bridge(piece[w + 3u])), wall);
@@ -197,7 +216,8 @@ fn slot_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
     if (on_water(upper.x) || on_water(upper.y)) {
         mat = MAT_WATER;
     }
-    mat = select(mat, MAT_CAP, index / 6u >= params.faces);
+    let slot = index / 6u;
+    mat = select(mat, MAT_CAP, slot >= params.faces && (slot < params.walls || on_cover(upper.x) || on_cover(upper.y)));
     // A bank's level normal is as long as its share of the light: a step of millimetres shades as the ground
     // beside it, a real one as a face of its own (corridor_ground).
     let share = select(smoothstep(BANK_LOW_M, BANK_HIGH_M, step), 1.0, mat != MAT_GROUND);
@@ -205,7 +225,8 @@ fn slot_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
     // A wall whose road stands on its higher side holds the road up, and the face that it continues lies below it; else
     // that face lies above it (wall_rock of roads/corridor.wgsl).
     let fill = select(on_road(piece[w + 3u]), on_road(piece[w]), rise > 0.0);
-    let word = mat | (480u << HALF_SHIFT) | select(0u, WALL_FILL, mat == MAT_WALL && fill);
+    let dark = select(0u, CULVERT_DARK, slot >= params.seams && slot < params.sills);
+    let word = mat | dark | (480u << HALF_SHIFT) | select(0u, WALL_FILL, mat == MAT_WALL && fill);
     if (mat == MAT_WALL || mat == MAT_CAP) {
         place = CornerPlace(vec2f(v.h - min(c[0].h, c[3].h), half_of(word)), length(v.s - c[0].s));
     }
@@ -314,7 +335,8 @@ fn culvert_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
 // A storey mesh's triangle corner (three corners a triangle from `tris`): its top takes its corners' looks and
 // normals, or planks; its shell (underside, edges, parapets, railings, posts, piers) is flat, of its deck's build
 // (DECK_SHIFT of plan/corners.wgsl, its first corner's): the slab and its edge feature of concrete, dark timber or
-// steel, a railing of wood on timber and else of steel, the piers concrete.
+// steel, a railing of wood on timber and else of steel, the piers concrete. A bore's floor, roof and walls are its
+// inside, flat dark as a culvert's; the fronts over its openings are concrete.
 @vertex
 fn storey_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
     let i = index / 3u;
@@ -339,7 +361,7 @@ fn storey_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
         let n = normalize(cross(vec3f(b.s - a.s, b.h - a.h), vec3f(c.s - a.s, c.h - a.h)) + vec3f(0.0, 0.0, 1e-9));
         var mat = select(build, select(MAT_STEEL, MAT_WOOD, build == MAT_TIMBER), i >= params.railings);
         mat = select(mat, MAT_CAP, i >= params.piers);
-        let word = mat | (480u << HALF_SHIFT);
+        let word = mat | select(0u, CULVERT_DARK, i >= params.bores && i < params.fronts) | (480u << HALF_SHIFT);
         out = piece_out(v, word, CornerPlace(vec2f(v.h, half_of(word)), v.s.x + v.s.y), n);
     }
     // A storey stands on no terrain vertex: a triangle with a corner of no height yet draws nothing.
