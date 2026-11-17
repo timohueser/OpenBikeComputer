@@ -111,6 +111,19 @@ fn line(points: Vec<[f64; 2]>, z: Option<Vec<f64>>) -> Vec<Part> {
     vec![Part { outer: false, points, z, plan: None }]
 }
 
+/// What the solvers give the placement: the waters with their levels, the vertices that the levels add to
+/// each river part and the metrics of the water; the solved roads, the ways of the region that they solve
+/// and the number of ways whose bridge or tunnel the input cuts.
+struct Solution {
+    waters: Vec<(usize, Tags, Vec<Part>)>,
+    drawn: water::Kept,
+    water: Value,
+    roads: roads::Solved,
+    kept: Vec<usize>,
+    cut: usize,
+    ways: usize,
+}
+
 /// Write the archive of the region to `output` from the OSM `pbf` and the `terrain`; the metrics.
 /// `work` holds the cut of the OSM, `memory` is what the road jobs may take.
 pub fn bake(
@@ -128,14 +141,13 @@ pub fn bake(
     let mut metrics = Map::new();
     let started = Instant::now();
     let cut = osm::selected(kinds, pbf, &binary, &placer.tiles, work)?;
-    // The lifts wait for the buildings and the other lifts: a station shares their places. The buildings
-    // of the region wait for the landuse areas that hold them; the features of the solvers for all of
-    // their kind.
-    let (mut lift_ways, mut lift_entry, mut buildings, mut houses, mut landuse) =
-        (Vec::new(), None, Vec::new(), Vec::new(), Vec::new());
-    let (mut waters, mut ways, mut stations, mut beyond, mut river_areas, mut culverts) =
-        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    osm::objects(kinds, &cut, &binary, |(selected, mut tags, mut parts)| {
+    let Solution { waters, drawn, water, roads: solved, kept, cut: cut_features, ways: solved_ways } =
+        solve(options, &cut, &binary, &placer.tiles, terrain, memory)?;
+    // The second read places the features in the order of the file. The lifts wait for the buildings and
+    // the other lifts: a station shares their places. The features of the solvers wait for all of their kind.
+    let (mut lift_ways, mut lift_entry, mut landuse) = (Vec::new(), None, Vec::new());
+    let (mut ways, mut stations, mut river_areas) = (Vec::new(), Vec::new(), Vec::new());
+    osm::objects(kinds, &cut, &binary, &osm::ALL, |(selected, mut tags, mut parts)| {
         let Selected::Entry(e) = selected else {
             if placer.tiles.meets(MAX_ZOOM, &parts) {
                 landuse.push((tags, parts));
@@ -150,15 +162,10 @@ pub fn bake(
             return;
         }
         if kind == "building" {
-            buildings.extend(parts.iter().filter(|p| p.outer).map(|p| p.points.clone()));
-            if placer.tiles.meets(MAX_ZOOM, &parts) {
-                houses.push((e, tags, parts));
-            }
             return;
         }
         if placer.tiles.meets(MAX_ZOOM, &parts) {
             if solves_water(kind, &tags) {
-                waters.push((e, tags, parts));
                 return;
             }
             if solves_road(kind, &tags) {
@@ -173,34 +180,49 @@ pub fn bake(
         if kind == "river-area" {
             river_areas.push(parts.iter().map(|p| p.points.clone()).collect::<Vec<_>>());
         }
-        if RIVERS.contains(&kind) && tags.get("tunnel").is_some_and(|t| CULVERT_TUNNELS.contains(&t.as_str())) {
-            culverts.extend(parts.iter().map(|p| (kind.to_string(), tags.clone(), p.points.clone())));
-        }
-        if solves_road(kind, &tags) {
-            beyond.push(road(kind, &tags, &parts, options));
-        }
         decided(&mut tags);
         parts.iter_mut().for_each(|p| p.z = None);
         placer.entry(entry, tags, parts);
     })?;
-    // The cut of a large region takes GBs, and the solvers run long after it is read.
-    std::fs::remove_file(&cut).map_err(|e| e.to_string())?;
-    eprintln!("osm: {:.1} s", started.elapsed().as_secs_f64());
-    let values = landuse_of(&houses.iter().map(|(_, _, parts)| parts).collect::<Vec<_>>(), &landuse);
-    for ((e, mut tags, parts), value) in houses.into_iter().zip(&values) {
-        if let Some(value) = value {
-            tags.insert("landuse".into(), value.clone());
-        }
-        placer.entry(&kinds[e], tags, parts);
+    if ways.len() != solved_ways {
+        return Err(format!(
+            "the second read of the OSM holds {} ways of the solver, the first {solved_ways}",
+            ways.len()
+        ));
     }
-    let landuse_counts: Map<String, Value> = LANDUSE
-        .iter()
-        .map(|l| (l.to_string(), values.iter().filter(|v| v.as_deref() == Some(l)).count().into()))
-        .collect();
+    eprintln!("osm: {:.1} s", started.elapsed().as_secs_f64());
+    // The buildings come in a read of the areas of their own, after the landuse areas: a building of the
+    // region takes the landuse of the area that holds it. The lifts keep only the outer rings that can house
+    // a station.
+    let ends: Vec<[f64; 4]> =
+        lift_ways.iter().flat_map(|(_, p)| [p[0], p[p.len() - 1]]).map(|[x, y]| [x, y, x, y]).collect();
+    let ends = Boxes::new(&ends);
+    let landuse_at = landuse_of(&landuse);
+    let (mut housing, mut counts) = (Vec::new(), [0usize; LANDUSE.len()]);
+    osm::objects(kinds, &cut, &binary, &[osm::AREAS], |(selected, mut tags, parts)| {
+        let Selected::Entry(e) = selected else { return };
+        if kinds[e].kind != "building" {
+            return;
+        }
+        let rings = parts.iter().filter(|p| p.outer).map(|p| &p.points);
+        housing.extend(rings.filter(|ring| !ends.overlapping(bounds(*ring)).is_empty()).cloned());
+        if placer.tiles.meets(MAX_ZOOM, &parts) {
+            if let Some(value) = landuse_at(&parts) {
+                counts[LANDUSE.iter().position(|l| *l == value).unwrap()] += 1;
+                tags.insert("landuse".into(), value.to_string());
+            }
+            placer.entry(&kinds[e], tags, parts);
+        }
+    })?;
+    // The cut of a large region takes GBs, and the rest of the bake runs long after it is read.
+    std::fs::remove_file(&cut).map_err(|e| e.to_string())?;
+    let landuse_counts: Map<String, Value> =
+        LANDUSE.iter().zip(counts).map(|(l, n)| (l.to_string(), n.into())).collect();
     metrics.insert("landuse".into(), landuse_counts.into());
+    drop(landuse_at);
     drop(landuse);
     if let Some(e) = lift_entry {
-        let (rigged, lift_metrics) = lifts::rigged(&lift_ways, &buildings, terrain);
+        let (rigged, lift_metrics) = lifts::rigged(&lift_ways, &housing, terrain);
         for (tags, points) in rigged {
             placer.entry(&kinds[e], tags, line(points, None));
         }
@@ -210,69 +232,12 @@ pub fn bake(
                    "housed_ends": lift_metrics.housed_ends, "shared_ends": lift_metrics.shared_ends}),
         );
     }
-    // The sidewalks count the buildings near a road by the boxes of their outer rings: a large building's
-    // middle lies far from the street that it lines.
-    let boxes = buildings.iter().map(|ring| {
-        let (lo, hi) = ring.iter().fold(([f64::MAX; 2], [f64::MIN; 2]), |(lo, hi), p| {
-            ([lo[0].min(p[0]), lo[1].min(p[1])], [hi[0].max(p[0]), hi[1].max(p[1])])
-        });
-        Rectangle::from_corners(lo, hi)
-    });
-    let mut around = Surroundings { buildings: rstar::RTree::bulk_load(boxes.collect()), ..Default::default() };
-    drop(buildings);
     eprintln!("placed: {:.1} s", started.elapsed().as_secs_f64());
 
     let (mut ground_census, mut water_census) = (Census::default(), Census::default());
-    // The heights of a junction need every road that meets there, a river level its whole network, a
-    // ford the water it crosses, and a platform its tracks.
     if !(waters.is_empty() && ways.is_empty() && stations.is_empty()) {
-        let mut features: Vec<water::Feature> = waters
-            .iter_mut()
-            .map(|(e, tags, parts)| water_feature(&kinds[*e].kind, tags, std::mem::take(parts), options))
-            .collect();
-        let pool = rayon::ThreadPoolBuilder::new().build().map_err(|e| e.to_string())?;
-        let (levels, drawn, _, water_metrics) = pool.install(|| water::solve_by_network(&mut features, terrain));
-        // The threads of the roads take over the memory of these.
-        drop(pool);
-        metrics.insert(
-            "water".into(),
-            json!({"lakes": water_metrics.lakes, "lakes_spilling": water_metrics.lakes_spilling,
-                   "river_parts": water_metrics.river_parts, "turned": water_metrics.turned,
-                   "added_vertices": water_metrics.added}),
-        );
-        // A waterway that OSM draws uphill has turned round in `features`.
-        for ((_, _, parts), (feature, z)) in waters.iter_mut().zip(features.into_iter().zip(levels)) {
-            *parts = feature.parts.into_iter().zip(z).map(|(p, z)| Part { z, ..p }).collect();
-        }
-        eprintln!("water: {:.1} s", started.elapsed().as_secs_f64());
+        metrics.insert("water".into(), water);
         let is_river = |e: usize| RIVERS.contains(&kinds[e].kind.as_str());
-        around.rivers = waters
-            .iter()
-            .filter(|(e, _, _)| is_river(*e))
-            .flat_map(|(e, tags, parts)| parts.iter().map(move |p| (kinds[*e].kind.as_str(), tags, p)))
-            .filter_map(|(kind, tags, p)| Some(River { levels: p.z.clone()?, ..river(kind, tags, &p.points, options) }))
-            .collect();
-        around.culverts = culvert_levels(&culverts, &around.rivers, options);
-        drop(culverts);
-        // A bridge or a tunnel runs between the ends of its chain, also where they lie past the region. A
-        // chain that the input cuts has no ends to run between.
-        let [west, south, east, north] = osm::reach(&placer.tiles, MAX_ZOOM, LIFT_REACH_M);
-        let ([x0, y1], [x1, y0]) = (world(west, south), world(east, north));
-        let inside = |[x, y]: [f64; 2]| x > x0 && x < x1 && y > y0 && y < y1;
-        let road_features: Vec<roads::Feature> =
-            ways.iter().map(|(e, tags, parts)| road(&kinds[*e].kind, tags, parts, options)).collect();
-        let (context, cut) = roads::context(&road_features, &beyond, &inside);
-        let kept: Vec<usize> = (0..road_features.len()).filter(|f| !cut.contains(f)).collect();
-        let solved = roads::solve_by_area(
-            &kept.iter().map(|&f| &road_features[f]).collect::<Vec<_>>(),
-            &context.iter().map(|&f| &beyond[f]).collect::<Vec<_>>(),
-            terrain,
-            &around,
-            &options.classes,
-            memory,
-        );
-        drop((road_features, around, beyond));
-        eprintln!("roads: {:.1} s", started.elapsed().as_secs_f64());
         let m = &solved.metrics;
         eprintln!(
             "roads: jobs at the round cap per scale {:?}, largest move of their last round {:?} m, unsettled variables {:?}",
@@ -281,7 +246,7 @@ pub fn bake(
             m.capped_left
         );
         let mut road_metrics = road_metrics(&solved.metrics);
-        road_metrics.insert("cut_features".into(), cut.len().into());
+        road_metrics.insert("cut_features".into(), cut_features.into());
         let culverts: Vec<usize> = solved.culverts.iter().map(|&i| kept[i]).collect();
         let underpasses: Vec<usize> = solved.underpasses.iter().map(|&i| kept[i]).collect();
         for (&f, parts) in kept.iter().zip(solved.ways) {
@@ -439,7 +404,8 @@ pub fn bake(
     eprintln!("census: {off} positions of ways on the ground lie more than {GATE_M} m off the terrain under their centre line, at most {most:.1} m");
     metrics.insert("census".into(), json!({"ground": ground_census.metrics(), "water": water_census.metrics()}));
     let pass = Instant::now();
-    let (levels, cells) = levels::tags(&placer.tiles, terrain, memory);
+    crate::step::release();
+    let (levels, cells) = levels::tags(&placer.tiles, terrain, memory.saturating_sub(crate::step::resident()));
     eprintln!("levels: {cells} cells, {} ways tagged in {:.1} s", levels.len(), pass.elapsed().as_secs_f64());
     metrics.insert("levels".into(), json!({"cells": cells, "ways": levels.len()}));
     low_zooms(&mut placer);
@@ -464,6 +430,107 @@ pub fn bake(
         ));
     }
     Ok(Value::Object(out))
+}
+
+/// The waters and the roads of the region, solved before the bake places a feature. The first read of the
+/// cut keeps only what the solvers need: the waters, the ways of the solver near the region and past it,
+/// the culverts and the boxes of the buildings. A road job takes GBs, so the features that the tiles hold
+/// wait for the second read.
+fn solve(
+    options: &Options,
+    cut: &Path,
+    binary: &Path,
+    tiles: &Tiles,
+    terrain: &dyn Terrain,
+    memory: usize,
+) -> Result<Solution, String> {
+    let kinds = &options.kinds;
+    let started = Instant::now();
+    let (mut waters, mut ways, mut beyond, mut culverts, mut boxes) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    osm::objects(kinds, cut, binary, &osm::ALL, |(selected, tags, parts)| {
+        let Selected::Entry(e) = selected else { return };
+        let kind = kinds[e].kind.as_str();
+        // The sidewalks count the buildings near a road by the boxes of their outer rings: a large building's
+        // middle lies far from the street that it lines.
+        if kind == "building" {
+            boxes.extend(parts.iter().filter(|p| p.outer).map(|p| {
+                let (lo, hi) = p.points.iter().fold(([f64::MAX; 2], [f64::MIN; 2]), |(lo, hi), p| {
+                    ([lo[0].min(p[0]), lo[1].min(p[1])], [hi[0].max(p[0]), hi[1].max(p[1])])
+                });
+                Rectangle::from_corners(lo, hi)
+            }));
+            return;
+        }
+        if tiles.meets(MAX_ZOOM, &parts) {
+            if solves_water(kind, &tags) {
+                waters.push((e, tags, parts));
+                return;
+            }
+            if solves_road(kind, &tags) {
+                ways.push(road(kind, &tags, &parts, options));
+                return;
+            }
+            if rails::solves(kind) {
+                return;
+            }
+        }
+        if RIVERS.contains(&kind) && tags.get("tunnel").is_some_and(|t| CULVERT_TUNNELS.contains(&t.as_str())) {
+            culverts.extend(parts.iter().map(|p| (kind.to_string(), tags.clone(), p.points.clone())));
+        }
+        if solves_road(kind, &tags) {
+            beyond.push(road(kind, &tags, &parts, options));
+        }
+    })?;
+    eprintln!("solvers' osm: {:.1} s", started.elapsed().as_secs_f64());
+    let mut around = Surroundings { buildings: rstar::RTree::bulk_load(boxes), ..Default::default() };
+    // The heights of a junction need every road that meets there, a river level its whole network, a
+    // ford the water it crosses, and a platform its tracks.
+    let mut features: Vec<water::Feature> = waters
+        .iter_mut()
+        .map(|(e, tags, parts)| water_feature(&kinds[*e].kind, tags, std::mem::take(parts), options))
+        .collect();
+    let pool = rayon::ThreadPoolBuilder::new().build().map_err(|e| e.to_string())?;
+    let (levels, drawn, _, water_metrics) = pool.install(|| water::solve_by_network(&mut features, terrain));
+    // The threads of the roads take over the memory of these.
+    drop(pool);
+    let water = json!({"lakes": water_metrics.lakes, "lakes_spilling": water_metrics.lakes_spilling,
+                       "river_parts": water_metrics.river_parts, "turned": water_metrics.turned,
+                       "added_vertices": water_metrics.added});
+    // A waterway that OSM draws uphill has turned round in `features`.
+    for ((_, _, parts), (feature, z)) in waters.iter_mut().zip(features.into_iter().zip(levels)) {
+        *parts = feature.parts.into_iter().zip(z).map(|(p, z)| Part { z, ..p }).collect();
+    }
+    eprintln!("water: {:.1} s", started.elapsed().as_secs_f64());
+    let is_river = |e: usize| RIVERS.contains(&kinds[e].kind.as_str());
+    around.rivers = waters
+        .iter()
+        .filter(|(e, _, _)| is_river(*e))
+        .flat_map(|(e, tags, parts)| parts.iter().map(move |p| (kinds[*e].kind.as_str(), tags, p)))
+        .filter_map(|(kind, tags, p)| Some(River { levels: p.z.clone()?, ..river(kind, tags, &p.points, options) }))
+        .collect();
+    around.culverts = culvert_levels(&culverts, &around.rivers, options);
+    drop(culverts);
+    // A bridge or a tunnel runs between the ends of its chain, also where they lie past the region. A
+    // chain that the input cuts has no ends to run between.
+    let [west, south, east, north] = osm::reach(tiles, MAX_ZOOM, LIFT_REACH_M);
+    let ([x0, y1], [x1, y0]) = (world(west, south), world(east, north));
+    let inside = |[x, y]: [f64; 2]| x > x0 && x < x1 && y > y0 && y < y1;
+    let (context, cut) = roads::context(&ways, &beyond, &inside);
+    let kept: Vec<usize> = (0..ways.len()).filter(|f| !cut.contains(f)).collect();
+    // Of the ways past the region, the solve reads only its context.
+    let context: Vec<roads::Feature> = context.into_iter().map(|f| std::mem::take(&mut beyond[f])).collect();
+    drop(beyond);
+    let roads = roads::solve_by_area(
+        &kept.iter().map(|&f| &ways[f]).collect::<Vec<_>>(),
+        &context.iter().collect::<Vec<_>>(),
+        terrain,
+        &around,
+        &options.classes,
+        memory,
+    );
+    eprintln!("roads: {:.1} s", started.elapsed().as_secs_f64());
+    Ok(Solution { waters, drawn, water, roads, kept, cut: cut.len(), ways: ways.len() })
 }
 
 /// The curves of the `ways`, (outer half-width, part), that can hold a pier off a deck. Only these get a
@@ -734,29 +801,26 @@ fn road_metrics(m: &roads::Metrics) -> Map<String, Value> {
     value.as_object().unwrap().clone()
 }
 
-/// Per building, the `landuse` of the smallest of the `areas` that holds the middle of its outer ring,
-/// or None. A point lies in an area when it lies inside an odd number of its rings.
-fn landuse_of(buildings: &[&Vec<Part>], areas: &[(Tags, Vec<Part>)]) -> Vec<Option<String>> {
+/// The `landuse` of the smallest of the `areas` that holds the middle of the outer ring of a building, or
+/// None. A point lies in an area when it lies inside an odd number of its rings.
+fn landuse_of<'a>(areas: &'a [(Tags, Vec<Part>)]) -> impl Fn(&[Part]) -> Option<&'a str> + 'a {
     let boxes: Vec<[f64; 4]> = areas.iter().map(|(_, parts)| bounds(parts.iter().flat_map(|p| &p.points))).collect();
     let boxes = Boxes::new(&boxes);
     let sizes: Vec<f64> = areas.iter().map(|(_, parts)| area(parts)).collect();
-    buildings
-        .iter()
-        .map(|parts| {
-            let ring = &parts[0].points;
-            let (sx, sy) = ring.iter().fold((0.0, 0.0), |(x, y), p| (x + p[0], y + p[1]));
-            let (x, y) = (sx / ring.len() as f64, sy / ring.len() as f64);
-            let hits = boxes.overlapping([x, y, x, y]).into_iter().filter(|&k| {
-                let rings: Vec<&[[f64; 2]]> = areas[k].1.iter().map(|p| p.points.as_slice()).collect();
-                contains(&rings, [x, y])
-            });
-            let smallest = hits.fold(None, |best: Option<usize>, k| match best {
-                Some(b) if sizes[b] <= sizes[k] => Some(b),
-                _ => Some(k),
-            });
-            smallest.and_then(|k| areas[k].0.get("landuse").cloned())
-        })
-        .collect()
+    move |parts: &[Part]| {
+        let ring = &parts[0].points;
+        let (sx, sy) = ring.iter().fold((0.0, 0.0), |(x, y), p| (x + p[0], y + p[1]));
+        let (x, y) = (sx / ring.len() as f64, sy / ring.len() as f64);
+        let hits = boxes.overlapping([x, y, x, y]).into_iter().filter(|&k| {
+            let rings: Vec<&[[f64; 2]]> = areas[k].1.iter().map(|p| p.points.as_slice()).collect();
+            contains(&rings, [x, y])
+        });
+        let smallest = hits.fold(None, |best: Option<usize>, k| match best {
+            Some(b) if sizes[b] <= sizes[k] => Some(b),
+            _ => Some(k),
+        });
+        smallest.and_then(|k| areas[k].0.get("landuse").map(String::as_str))
+    }
 }
 
 /// The area of the region in km².
