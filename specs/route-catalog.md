@@ -199,6 +199,14 @@ grade.
 
 ### Long routes
 
+A piece is a child route with an empty or `main` role that is in the data and is not a route of its
+own: it has no `name` and no `ref`, or it is a connector leg. A selected relation whose child routes
+with an empty or `main` role are all pieces is a joined trail. A joined trail is one route, not a
+long route. Its member ways are its own and those of each piece in the place of the piece, in member
+order. Its record is an ordinary route record with its own `id` and tags, and the pieces have no
+records. The connector test of a joined trail counts no child routes. A relation with an absent
+child relation is not a joined trail.
+
 A long route is a relation that holds route relations. Its stages are its child routes with an empty
 or `main` role and the same `network`, in member order. A long route is in the catalog only when
 each of its stages is in it. A long route with a child relation that holds route relations leaves
