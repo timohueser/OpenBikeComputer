@@ -17,7 +17,8 @@
         /** The items of the list. The map draws only these, and the bubbles count only these. */
         shown: Item[];
         selected: string[];
-        look?: 'route' | 'ride';
+        /** `signed`: signed routes of the catalog, each in its own colour. */
+        look?: 'route' | 'ride' | 'signed';
         /** The height in pixels of the bottom of the map that the selected card covers. */
         covered?: number;
         /** The credits of the picture of the selected card, which shows none of its own. */
@@ -46,7 +47,6 @@
 
     const pairs = (line: number[]) => Array.from({ length: line.length / 2 }, (_, i) => [line[2 * i], line[2 * i + 1]]);
     // All lines are in one source; a filter of the layers shows the shown ones, so a chip change sets no data.
-    // Only a signed route has a colour of its own; the others have an empty `color`.
     const colorOf = ({ id, kind }: Item) => kind === 'signed' ? routeColor(id) : '';
     const lines = $derived<FeatureCollection<LineString>>({ type: 'FeatureCollection', features: items.flatMap(item =>
         item.summary ? [{ type: 'Feature', properties: { id: item.id, color: colorOf(item) }, geometry: { type: 'LineString', coordinates: pairs(item.summary.line) } }] : []) });
@@ -59,19 +59,19 @@
     }) });
     const shownFilter = $derived<maplibregl.FilterSpecification>(['in', ['get', 'id'], ['literal', shown.map(item => item.id)]]);
     const selectedFilter = $derived<maplibregl.FilterSpecification>(['in', ['get', 'id'], ['literal', selected]]);
-    const signed = (other: maplibregl.ExpressionSpecification | string | number, own: maplibregl.ExpressionSpecification | string | number): maplibregl.ExpressionSpecification =>
-        ['case', ['==', ['get', 'color'], ''], other, own];
     // A feature state changes the paint at once, with no transition and no new data.
     const bolder = (rest: number, under: number): maplibregl.ExpressionSpecification => ['case', ['boolean', ['feature-state', 'hover'], false], under, rest];
-    /** While a route is selected, the other signed lines dim. `other` is the opacity of a line with no colour. */
-    const lineOpacity = (other: number, dim: boolean) => signed(other ? bolder(other, 1) : 0, bolder(dim ? 0.35 : 0.9, 1));
+    /** While a signed route is selected, the other lines dim. */
+    const signedOpacity = (dim: boolean) => bolder(dim ? 0.35 : 0.9, 1);
 
     function addLayers() {
         if (!map) return;
         const style = getComputedStyle(container), color = (name: string) => style.getPropertyValue(name).trim();
         const round = { 'line-join': 'round', 'line-cap': 'round' } as const, ride = untrack(() => look) === 'ride';
-        const plain = color(ride ? '--ride' : '--route'), line = signed(plain, ['get', 'color']);
-        const dim = untrack(() => selected.length) > 0;
+        const signed = untrack(() => look) === 'signed', dim = untrack(() => selected.length) > 0;
+        const line: maplibregl.ExpressionSpecification | string = signed ? ['get', 'color'] : color(ride ? '--ride' : '--route');
+        // The set of route colours is too dark for the dark map, so a signed line or bubble there has a light edge.
+        const edge = signed && untrack(() => theme) === 'dark' ? SIGNED_GROUND : color('--panel');
         map.addSource('routes', { type: 'geojson', data: untrack(() => lines), promoteId: 'id' });
         map.addSource('middles', { type: 'geojson', data: untrack(() => middles), cluster: true, clusterMaxZoom: LINE_ZOOM - 1, clusterRadius: 48 });
         const shownNow = untrack(() => shownFilter), selectedNow = untrack(() => selectedFilter);
@@ -79,25 +79,28 @@
             map.addLayer({ id: 'casing', type: 'line', source: 'routes', minzoom: LINE_ZOOM, filter: shownNow, layout: round,
                 paint: { 'line-color': color('--panel'), 'line-width': 6 } });
         }
-        // The set of route colours is too dark for the dark map, so a signed line there has a light edge.
-        if (!ride && untrack(() => theme) === 'dark') {
+        if (edge === SIGNED_GROUND) {
             map.addLayer({ id: 'signed-casing', type: 'line', source: 'routes', minzoom: LINE_ZOOM, filter: shownNow, layout: round,
-                paint: { 'line-color': SIGNED_GROUND, 'line-width': 5, 'line-opacity': lineOpacity(0, dim) } });
+                paint: { 'line-color': edge, 'line-width': bolder(5, 6), 'line-opacity': signedOpacity(dim) } });
         }
         map.addLayer({ id: 'routes', type: 'line', source: 'routes', minzoom: LINE_ZOOM, filter: shownNow, layout: round,
-            paint: { 'line-color': line, 'line-width': bolder(3, 4), 'line-opacity': ride ? 1 : lineOpacity(0.75, dim) } });
+            paint: { 'line-color': line, 'line-width': bolder(3, 4), 'line-opacity': ride ? 1 : signed ? signedOpacity(dim) : bolder(0.75, 1) } });
         // A wide line with no colour, so a click near a line selects it.
         map.addLayer({ id: 'routes-hit', type: 'line', source: 'routes', minzoom: LINE_ZOOM, filter: shownNow, layout: round,
             paint: { 'line-color': '#000', 'line-width': 14, 'line-opacity': 0 } });
         map.addLayer({ id: 'selected-casing', type: 'line', source: 'routes', filter: selectedNow, layout: round,
-            paint: { 'line-color': color('--panel'), 'line-width': 9 } });
+            paint: { 'line-color': edge, 'line-width': 9 } });
         map.addLayer({ id: 'selected', type: 'line', source: 'routes', filter: selectedNow, layout: round,
             paint: { 'line-color': line, 'line-width': 5 } });
         map.addLayer({ id: 'bubbles', type: 'circle', source: 'middles', maxzoom: LINE_ZOOM,
-            paint: { 'circle-color': ['case', ['has', 'point_count'], color('--ink-soft'), line], 'circle-radius': 13, 'circle-stroke-color': color('--panel'), 'circle-stroke-width': 3 } });
+            paint: signed
+                // A bubble of several routes has no route colour.
+                ? { 'circle-color': ['case', ['has', 'point_count'], color('--ink-soft'), line], 'circle-radius': 13,
+                    'circle-stroke-color': ['case', ['has', 'point_count'], color('--panel'), edge], 'circle-stroke-width': 3 }
+                : { 'circle-color': line, 'circle-radius': 13, 'circle-stroke-color': color('--panel'), 'circle-stroke-width': 3 } });
         map.addLayer({ id: 'bubble-count', type: 'symbol', source: 'middles', maxzoom: LINE_ZOOM,
             layout: { 'text-field': ['coalesce', ['get', 'point_count_abbreviated'], '1'], 'text-font': ['Noto Sans Regular'], 'text-size': 12, 'text-allow-overlap': true },
-            paint: { 'text-color': ['case', ['has', 'point_count'], color('--panel'), signed('#fff', ['get', 'text'])] } });
+            paint: { 'text-color': signed ? ['case', ['has', 'point_count'], color('--panel'), ['get', 'text']] : '#fff' } });
         ready = true;
     }
 
@@ -204,10 +207,8 @@
     $effect(() => {
         if (!ready) return;
         for (const layer of ['selected-casing', 'selected']) if (map!.getLayer(layer)) map!.setFilter(layer, selectedFilter);
-        if (look === 'ride') return;
-        const dim = selected.length > 0;
-        map!.setPaintProperty('routes', 'line-opacity', lineOpacity(0.75, dim));
-        if (map!.getLayer('signed-casing')) map!.setPaintProperty('signed-casing', 'line-opacity', lineOpacity(0, dim));
+        if (look !== 'signed') return;
+        for (const layer of ['signed-casing', 'routes']) if (map!.getLayer(layer)) map!.setPaintProperty(layer, 'line-opacity', signedOpacity(selected.length > 0));
     });
     // A new selection or a new card height moves the map; a reload of the same selection does not.
     let revealed = '';

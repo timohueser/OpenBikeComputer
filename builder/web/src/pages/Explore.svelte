@@ -108,7 +108,7 @@
 <!-- Escape in an open window closes only the window. -->
 <svelte:window onkeydown={event => { if (event.key === 'Escape' && !document.querySelector('dialog[open]')) selected = undefined; }} />
 
-<ListAndMap title="Explore" {items} {shown} {place} fit={0} look="route" credits={[]} selected={chosen ? [chosen.id] : []}
+<ListAndMap title="Explore" {items} {shown} {place} fit={0} look="signed" credits={[]} selected={chosen ? [chosen.id] : []}
     onselect={id => selected = id} onview={next => view = wrapped(next)} card={chosen ? card : undefined}>
     {#snippet list()}
         <!-- The search field finds places only; a chosen place moves the map. -->
