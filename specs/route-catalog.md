@@ -133,7 +133,9 @@ pieces as a network and removes its dead-end side branches, the shortest first, 
 branches together are at most 10 % of the rest. If the network still forks, the route leaves the
 catalog. The builder joins the parts that remain into one chain as above, and puts each side branch
 of more than 30 m back as an out-and-back side trip at the point where it leaves; its tip is a
-turnaround. A main member way that the import does not hold, such as a park or a way with no road
+turnaround. A removed branch whose tip is the first point of the member order starts the line at
+that tip when the line starts where the branch leaves; a branch at the last point ends the line in
+the same way. A main member way that the import does not hold, such as a park or a way with no road
 tag, is skipped when a held main way comes before it and after it in member order; a route skips
 at most 2 such ways, and the line joins across them as across any gap. The router patches each gap.
 The route's own line is its pieces joined straight across their gaps. A route leaves the catalog
