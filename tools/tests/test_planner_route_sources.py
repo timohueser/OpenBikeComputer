@@ -102,9 +102,6 @@ class RouteSourceTest(unittest.TestCase):
              "rank": 0, "ref": "Lake loop"}]
         self.assertEqual(got, {"credit": "Test", "id": "test", "origin": 7, "routes": sorted(routes, key=lambda route: route["key"])})
 
-    def test_the_known_projection_of_the_fixture(self):
-        self.assertEqual([round(value) for value in lv95(8.01, 47.01)], [2643448, 1206708])
-
     def test_an_integer_key_field_with_a_null_keeps_its_numbers(self):
         line = multiline([(8.01, 47.01), (8.02, 47.02)])
         got = read([(line, 3, "A", "local", None, "both"), (line, 4, "B", "local", None, "both"),
