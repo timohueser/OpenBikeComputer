@@ -143,13 +143,36 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
         route(9, &trail, [path(&[22, 23, 33, 43, 53]), path(&[20, 21])].concat()),
         long(5, &[1, 2]),
         long(6, &[5]),
+        // A signed piece between two signposts, which leaves also as the stage of a long route, and
+        // a named walk of 1.3 km.
+        route(
+            10,
+            &[
+                ("route", "hiking"),
+                ("name", "Rotkreuz - Auleten"),
+                ("network", "rwn"),
+                ("osmc:symbol", "yellow::yellow_diamond"),
+            ],
+            path(&[40, 41, 42]),
+        ),
+        route(11, &[("route", "hiking"), ("name", "Rundweg")], path(&[30, 31, 32, 33])),
+        long(12, &[10]),
     ]);
     let selection = Selection::whole(package.fork());
     let (records, report) = catalog(&selection, osm, false, 2)?;
     let by_id: HashMap<i64, &Value> = records.iter().map(|r| (r["id"].as_i64().unwrap(), r)).collect();
     let dropped: Vec<_> = report.dropped.iter().map(|(reason, ids)| (reason.as_str(), ids.clone())).collect();
-    assert_eq!(dropped, [("ExtractEdge", vec![7]), ("Gap", vec![3]), ("NestedLongRoute", vec![6])]);
-    assert_eq!(by_id.keys().copied().collect::<BTreeSet<_>>(), BTreeSet::from([1, 2, 5, 8, 9]));
+    assert_eq!(
+        dropped,
+        [
+            ("Connector", vec![10]),
+            ("ExtractEdge", vec![7]),
+            ("Gap", vec![3]),
+            ("MissingStage", vec![12]),
+            ("NestedLongRoute", vec![6])
+        ]
+    );
+    assert_eq!(by_id.keys().copied().collect::<BTreeSet<_>>(), BTreeSet::from([1, 2, 5, 8, 9, 11]));
 
     let trail = by_id[&1];
     assert_eq!((&trail["loop"], &trail["length_m"]), (&json!(false), &json!(8 * 445)));
