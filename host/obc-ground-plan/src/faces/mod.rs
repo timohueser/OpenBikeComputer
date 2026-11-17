@@ -2207,7 +2207,8 @@ fn bore_cover(ctx: &Ctx, input: &CellInput, ground: &[WayLine], ways_box: [i32; 
         let band = |i: usize, u: &Lower| rise(i, u).iter().any(|&d| d > line.sec.snap_height_m.min(u.5));
         let ends = [line.round[0] && first == 0, line.round[1] && last == line.p.len()];
         // The pieces of the run's paved stroke and the segments of each (`stroke::pieces_along_of`), once per line.
-        let mut paved: Option<(Vec<Vec<P>>, Vec<[usize; 2]>)> = None;
+        type Pieces = (Vec<Vec<P>>, Vec<[usize; 2]>);
+        let mut paved: Option<Pieces> = None;
         for (ui, (u, cores)) in under.iter().zip(&mut cores).enumerate() {
             let top: Vec<bool> = if ui < bores.len() && !line.sec.water {
                 let mut top = vec![false; last - first - 1];
