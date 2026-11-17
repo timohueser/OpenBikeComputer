@@ -61,6 +61,10 @@
     const selectedFilter = $derived<maplibregl.FilterSpecification>(['in', ['get', 'id'], ['literal', selected]]);
     // A feature state changes the paint at once, with no transition and no new data.
     const bolder = (rest: number, under: number): maplibregl.ExpressionSpecification => ['case', ['boolean', ['feature-state', 'hover'], false], under, rest];
+    /** The width of a signed line: thin where a wide view shows many routes, wider where the rider follows one. `edge`
+     * is the light edge of the dark theme, on both sides. */
+    const signedWidth = (edge = 0): maplibregl.ExpressionSpecification => ['interpolate', ['linear'], ['zoom'],
+        9, bolder(2 + edge, 3 + edge), 12, bolder(3 + edge, 4 + edge), 15, bolder(4 + edge, 5 + edge)];
     /** While a signed route is selected, the other lines dim. */
     const signedOpacity = (dim: boolean) => bolder(dim ? 0.35 : 0.9, 1);
 
@@ -81,10 +85,10 @@
         }
         if (edge === SIGNED_GROUND) {
             map.addLayer({ id: 'signed-casing', type: 'line', source: 'routes', minzoom: LINE_ZOOM, filter: shownNow, layout: round,
-                paint: { 'line-color': edge, 'line-width': bolder(5, 6), 'line-opacity': signedOpacity(dim) } });
+                paint: { 'line-color': edge, 'line-width': signedWidth(2), 'line-opacity': signedOpacity(dim) } });
         }
         map.addLayer({ id: 'routes', type: 'line', source: 'routes', minzoom: LINE_ZOOM, filter: shownNow, layout: round,
-            paint: { 'line-color': line, 'line-width': bolder(3, 4), 'line-opacity': ride ? 1 : signed ? signedOpacity(dim) : bolder(0.75, 1) } });
+            paint: { 'line-color': line, 'line-width': signed ? signedWidth() : bolder(3, 4), 'line-opacity': ride ? 1 : signed ? signedOpacity(dim) : bolder(0.75, 1) } });
         // A wide line with no colour, so a click near a line selects it.
         map.addLayer({ id: 'routes-hit', type: 'line', source: 'routes', minzoom: LINE_ZOOM, filter: shownNow, layout: round,
             paint: { 'line-color': '#000', 'line-width': 14, 'line-opacity': 0 } });
@@ -153,7 +157,9 @@
         created.dragRotate.disable();
         created.touchZoomRotate.disableRotation();
         created.on('style.load', addLayers);
-        created.on('load', () => { loaded = true; onview(view()); });
+        // The page gets its first view with the style: the load of the map waits for each tile of the view.
+        created.once('style.load', () => onview(view()));
+        created.on('load', () => { loaded = true; });
         created.on('moveend', () => onview(view()));
         created.on('click', 'routes-hit', event => { const id = event.features?.[0]?.properties.id; if (id) onselect(id); });
         created.on('click', 'bubbles', event => void zoomIn(event));
@@ -180,7 +186,11 @@
             created.on('movestart', () => hover());
         }
         const terrainError = terrainRetry(created);
-        created.on('error', event => console.warn(terrainError(event) ? 'Routes map terrain:' : 'Routes map:', event.error));
+        created.on('error', event => {
+            console.warn(terrainError(event) ? 'Routes map terrain:' : 'Routes map:', event.error);
+            // A failed tile draws no frame, and only a frame tells the map that it has loaded.
+            created.triggerRepaint();
+        });
         map = created;
         const resize = new ResizeObserver(() => created.resize());
         resize.observe(container);
