@@ -101,7 +101,8 @@ and `blocks` (package).
 
 The builder also writes `route-catalog.json`, the signed routes in the format of
 [the catalog contract](../../specs/route-catalog.md). The step metrics are its report: the counts,
-the dropped relations by reason and the shaping points. The catalog needs the `touring`, `road`,
+the dropped relations by reason and the shaping points. The builder leaves out connector legs
+([selection](../../specs/route-catalog.md#selection)). The catalog needs the `touring`, `road`,
 `gravel`, `mtb/technical` and `hiking/alpine` profiles. Name the region's countries, so that the
 catalog can omit route marks in France. When France is the only country, no record has a route
 mark. A region with France and another country fails. The builder checks the profiles and

@@ -1,6 +1,7 @@
 //! The route catalog: the signed routes of a region, each with the plan that reproduces it.
 //! `specs/route-catalog.md` is the contract.
 mod assemble;
+mod connector;
 
 use crate::source::{Data, Id, Relation, Tags};
 use planner_router::{
@@ -20,7 +21,9 @@ use std::{
 };
 
 pub const FILE: &str = "route-catalog.json";
-const MIN_LENGTH_M: f64 = 2_000.0;
+/// The owner chose 1 km, so that short named walks are in. The connector rule, not the length,
+/// keeps out the signed pieces between two signposts.
+const MIN_LENGTH_M: f64 = 1_000.0;
 const MAX_GAP_M: f64 = 500.0;
 const ROUNDTRIP_M: f64 = 200.0;
 const DESCRIPTION_CHARS: usize = 200;
@@ -48,6 +51,7 @@ fn control() -> Control<'static> {
 /// Why a selected relation is not in the catalog.
 #[derive(Clone, Copy, Debug)]
 pub enum Reason {
+    Connector,
     ExtractEdge,
     Short,
     Gap,
@@ -291,6 +295,11 @@ fn catalog<S: Source + Clone + Send>(
     for relation in relations.iter() {
         let Some(kind) = selected(&relation.tags).map(str::to_string) else { continue };
         report.tag_selected += 1;
+        let has_child_route = relation.members().any(|(id, _)| matches!(id, Id::Relation(id) if is_route(&id)));
+        if connector::connector(&relation.tags, has_child_route) {
+            drops.insert(relation.id, Reason::Connector);
+            continue;
+        }
         let children = children(&relation);
         if children.iter().any(|id| relations.get(*id).is_none()) {
             drops.insert(relation.id, Reason::ExtractEdge);
