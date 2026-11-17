@@ -165,7 +165,7 @@ export class Structures {
      * its node's floors are known.
      */
     floor(x: number, y: number, low: number, high: number): number | undefined {
-        const side = 2 ** (30 - OWNER), floors = this.stamps.known({ level: OWNER, x: Math.floor(x / side), y: Math.floor(y / side) })?.floors;
+        const floors = this.floorsAt(x, y);
         if (!floors) return undefined;
         let best: number | undefined;
         for (let i = 0; i < floors.length; i += FLOOR) {
@@ -176,6 +176,17 @@ export class Structures {
             if (z >= low && z <= high && (best === undefined || z > best)) best = z;
         }
         return best;
+    }
+
+    /** Whether the floors of the owner node at world point x, y are known, also where it has none. */
+    floorsKnown(x: number, y: number): boolean {
+        return this.floorsAt(x, y) !== undefined;
+    }
+
+    /** The floors of the owner node at world point x, y: null where it has none, undefined before its stamps come. */
+    private floorsAt(x: number, y: number): Float64Array | null | undefined {
+        const side = 2 ** (30 - OWNER);
+        return this.stamps.known({ level: OWNER, x: Math.floor(x / side), y: Math.floor(y / side) })?.floors;
     }
 
     /**
