@@ -59,7 +59,7 @@ fn ladder(r: f64) -> impl Iterator<Item = f64> {
 /// at 47° N, 0.35 m at 60° N): a margin for the strokes' mitres and tapers past the samples'
 /// half-widths. The region relabels only its arms' carriageways, so a wider stub changes no other
 /// face; a seam reaches as far past the carriageway before it grows across the fans (`grow`).
-const STUB_PAD: f64 = 300.0;
+pub(super) const STUB_PAD: f64 = 300.0;
 
 /// An arm: a way's line from the point's sample, toward `dir` (+1 or −1 in sample order).
 #[derive(Clone, Copy, Debug)]
@@ -86,6 +86,8 @@ pub struct Rounded {
     pub fans: Vec<Vec<P>>,
     /// The band fans: paved shoulder, shoulder, verge, slope.
     pub rings: [Rings; LAYERS],
+    /// Per band fan, the line of the better of the two arms it joins (`better`): the way that owns it.
+    pub ring_lines: [Vec<usize>; LAYERS],
     /// The point's region up to its seams (junctions and joints): it relabels its arms' carriageways.
     pub region: Rings,
     /// The parts of the arms' lines in the region. The arms of a way that runs on through the point
@@ -772,7 +774,7 @@ fn band_rings(c: [f64; 2], rho: f64, a0: f64, sweep: f64, sides: [&Side; 2]) -> 
 /// turn or more: a fan about the point from one arm's corner to the other's, built from the strokes'
 /// own corner points. An arm whose square end lies inside the other arms' layer is no neighbour: it
 /// splits no gap between them.
-fn fill_gaps(lines: &[WayLine], pos: P, arms: &[Arm], layer: usize, out: &mut Vec<Vec<P>>) {
+fn fill_gaps(lines: &[WayLine], pos: P, arms: &[Arm], layer: usize, out: &mut Vec<Vec<P>>, owners: &mut Vec<usize>) {
     let tau = 2.0 * std::f64::consts::PI;
     let cuts = cuts(lines, arms);
     let by: Vec<(f64, [f64; 2], [f64; LAYERS + 1], Arm)> = arms
@@ -816,14 +818,26 @@ fn fill_gaps(lines: &[WayLine], pos: P, arms: &[Arm], layer: usize, out: &mut Ve
         let sweep = sector - std::f64::consts::PI;
         if sweep >= tau / f64::from(STEPS) {
             pie_between(pos, wa, wb, na, [-nb[0], -nb[1]], sweep, [&cuts, &cuts], out);
-            continue;
+        } else {
+            // A gap under one arc step: each arm's layers up to the gap's bisector. A taper over so
+            // small a turn would be a needle.
+            let (c, s) = (libm::cos(sweep / 2.0), libm::sin(sweep / 2.0));
+            let mid = [c * na[0] - s * na[1], s * na[0] + c * na[1]];
+            pie_between(pos, wa, wa, na, mid, sweep / 2.0, [&cuts, &cuts], out);
+            pie_between(pos, wb, wb, mid, [-nb[0], -nb[1]], sweep / 2.0, [&cuts, &cuts], out);
         }
-        // A gap under one arc step: each arm's layers up to the gap's bisector. A taper over so
-        // small a turn would be a needle.
-        let (c, s) = (libm::cos(sweep / 2.0), libm::sin(sweep / 2.0));
-        let mid = [c * na[0] - s * na[1], s * na[0] + c * na[1]];
-        pie_between(pos, wa, wa, na, mid, sweep / 2.0, [&cuts, &cuts], out);
-        pie_between(pos, wb, wb, mid, [-nb[0], -nb[1]], sweep / 2.0, [&cuts, &cuts], out);
+        owners.resize(out.len(), better(lines, a.3, b.3));
+    }
+}
+
+/// The line of the better of two arms: the lesser class, then the lesser global key at its sample. The same in every
+/// cell.
+pub fn better(lines: &[WayLine], a: Arm, b: Arm) -> usize {
+    let key = |x: Arm| (lines[x.line].sec.rank, lines[x.line].key[x.at]);
+    if key(b) < key(a) {
+        b.line
+    } else {
+        a.line
     }
 }
 
@@ -859,6 +873,7 @@ pub fn round(
     let mut out = Rounded {
         fans: Vec::new(),
         rings: Default::default(),
+        ring_lines: Default::default(),
         region: Vec::new(),
         spans: Vec::new(),
         seams: vec![None; arms.len()],
@@ -875,9 +890,9 @@ pub fn round(
     let heading = |k: usize| angle(unit(runs[k][0].q, runs[k][1].q));
     let mut far = vec![0.0f64; arms.len()];
     if gaps {
-        fill_gaps(lines, pos, arms, 0, &mut out.fans);
-        for (k, ring) in out.rings.iter_mut().enumerate() {
-            fill_gaps(lines, pos, arms, k + 1, ring);
+        fill_gaps(lines, pos, arms, 0, &mut out.fans, &mut Vec::new());
+        for (k, (ring, owners)) in out.rings.iter_mut().zip(&mut out.ring_lines).enumerate() {
+            fill_gaps(lines, pos, arms, k + 1, ring, owners);
         }
     }
     // A round lies off every carriageway: its arms' runs, and the other lines but for those runs.
@@ -999,6 +1014,7 @@ pub fn round(
         for (k, ring) in rings.into_iter().enumerate() {
             if let Some(ring) = ring {
                 push_positive(ring.iter().map(|&q| abs(q)).collect(), &mut out.rings[k]);
+                out.ring_lines[k].resize(out.rings[k].len(), better(lines, arms[a], arms[b]));
             }
         }
     }

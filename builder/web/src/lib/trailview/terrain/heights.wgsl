@@ -651,17 +651,27 @@ fn h_paved_as(hp: ptr<function, HPoint>, o: u32, arms: u32, water: bool) -> f32 
         if (near == H_SLOTS || (*hp).recs[j].d < (*hp).recs[near].d) {
             near = j;
         }
+        // A blend face's arms are its hosts; another record weighs as far as it agrees with an arm present.
+        let host = j == o || (o >= n && ((arms >> j) & 1u) != 0u);
         var w = beta[j];
-        if (j != o && o < n) {
+        if (!host && o < n) {
             w *= h_agree(hp, o, j, arms);
+        } else if (!host && arms != 0u) {
+            var related = 0.0;
+            for (var k = 0u; k < n; k++) {
+                if (((arms >> k) & 1u) != 0u) {
+                    related = max(related, beta[k] * h_agree(hp, k, j, arms));
+                }
+            }
+            w *= related;
         }
         for (var i = 0u; i < n; i++) {
             if (!h_kind(hp, i, water)) {
                 continue;
             }
             if (i < j) {
-                w *= select(1.0 - beta[i], 1.0 - beta[i] * h_agree(hp, i, j, arms), j == o);
-            } else if (i > j && j != o) {
+                w *= select(1.0 - beta[i], 1.0 - beta[i] * h_agree(hp, i, j, arms), host);
+            } else if (i > j && !host) {
                 w *= 1.0 - beta[i] * (1.0 - h_agree(hp, i, j, arms));
             }
         }
@@ -1017,6 +1027,16 @@ fn h_arms_of(block: u32, hp: ptr<function, HPoint>, id: u32) -> u32 {
 // face beyond, as heights::region. The groups: a host's face beyond at its material line's record index, then the
 // fading faces beyond (the nearest H_REGIONS). Toward a slope or the terrain the face keeps its own surface.
 // `water`: the face's kind, its material line's.
+// The slot of a region beyond an edge, as heights::slot: one per junction (its faces relate the same arms), else one
+// per label.
+fn h_slot(block: u32, id: u32) -> vec2u {
+    let l = m_label(block, id);
+    if (((mw(l) >> 8u) & 0xffu) == M_JUNCTION) {
+        return vec2u(1u, mw(l + 1u));
+    }
+    return vec2u(0u, id);
+}
+
 fn h_region(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, label: u32, arms: u32, own: f32, water: bool) -> f32 {
     let n = (*hp).n;
     var dist: array<f32, H_SLOTS>;
@@ -1046,9 +1066,11 @@ fn h_region(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, label: u3
             let other = mw(ew + 5u);
             let rule = select(0u, mw(m_label(block, other)) >> 24u, other != M_NONE);
             if (rule == 3u || rule == 4u) {
+                // One slot per junction, as heights::slot.
+                let key = h_slot(block, other);
                 var k = H_REGIONS - 1u;
                 for (var j = 0u; j < H_REGIONS; j++) {
-                    if (beyond_id[j] == other) {
+                    if (beyond_id[j] != M_NONE && all(h_slot(block, beyond_id[j]) == key)) {
                         k = j;
                     }
                 }

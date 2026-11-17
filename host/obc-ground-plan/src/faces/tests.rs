@@ -903,3 +903,92 @@ fn a_way_over_its_own_bore_opens_it_only_at_its_ends() {
         }
     }
 }
+
+#[test]
+fn a_shoulder_that_two_roads_reach_takes_its_heights_from_its_own_road() {
+    // Two roads of one class run side by side 1 m apart in height, so near that their shoulders overlap. Each
+    // shoulder face has its own road as its host: across the overlap the height steps only where the label changes.
+    let (mut low, mut high) = (road(&[[-60.0, 0.0], [60.0, 0.0]]), road(&[[-60.0, 5.6], [60.0, 5.6]]));
+    (low.z, high.z) = (vec![500.0; 2], vec![501.0; 2]);
+    let rules = Rules::embedded();
+    let mut input = input_of(cell(), &[low, high]);
+    input.terrain = plane(cell(), &|_, _| 500.0);
+    let graph = build(cell(), &input, &rules.sections);
+    let words = records::build(&graph, &input, rules, cell(), 0, true).near.words;
+    let q = |m: [f64; 2]| {
+        let (g, o) = (at(m), cell().origin());
+        [(g.x - o.x) as f64, (g.y - o.y) as f64]
+    };
+    let shoulder = |id: u32| records::label(&words, id)[0] & 0xff == Surface::Shoulder as u32;
+    let mut last: Option<(u32, f64)> = None;
+    let mut owned = 0;
+    for k in 0..=56 {
+        let q = q([0.0, 0.1 * f64::from(k)]);
+        let id = records::find(&words, q).unwrap();
+        let h = heights::height_at(&words, q, Some(id), 500.0).h;
+        if shoulder(id) {
+            owned += usize::from(records::label(&words, id)[2] != u32::MAX);
+            if let Some((was, h0)) = last.filter(|&(was, _)| was == id) {
+                assert!((h - h0).abs() < 0.05, "a step of {:.2} m inside shoulder face {was}", h - h0);
+            }
+        }
+        last = Some((id, h));
+    }
+    assert!(owned >= 4, "{owned} points on a shoulder with a host line");
+}
+
+#[test]
+fn a_corner_ring_is_its_junctions_shoulder_up_to_each_arms_seam_and_meets_the_arms_own_without_a_step() {
+    // A road that falls 1 m in 10 m eastward and one that climbs as much from its middle, 30° north of it. The
+    // ring of the round between them and each arm's shoulder up to the arm's seam are the junction's blend band,
+    // which fades to each arm's own shoulder at its seam: one ring has no one road's heights beside the other's.
+    let mut fall = road(&[[-60.0, 0.0], [0.0, 0.0], [60.0, 0.0]]);
+    let mut climb = road(&[[0.0, 0.0], [52.0, -30.0]]);
+    (fall.z, climb.z) = (vec![506.0, 500.0, 494.0], vec![500.0, 506.0]);
+    let rules = Rules::embedded();
+    let mut input = input_of(cell(), &[fall, climb]);
+    input.terrain = plane(cell(), &|_, _| 500.0);
+    let graph = build(cell(), &input, &rules.sections);
+    let words = records::build(&graph, &input, rules, cell(), 0, true).near.words;
+    let q = |m: [f64; 2]| {
+        let (g, o) = (at(m), cell().origin());
+        [(g.x - o.x) as f64, (g.y - o.y) as f64]
+    };
+    let probe = |m: [f64; 2]| {
+        let id = records::find(&words, q(m)).unwrap();
+        (id, heights::height_at(&words, q(m), Some(id), 500.0).h)
+    };
+    // The kind of a shoulder face: the junction's (blend) or a way's own; None for any other face.
+    let kind = |id: u32| {
+        let l = records::label(&words, id);
+        (l[0] & 0xff == Surface::Shoulder as u32).then_some(l[0] >> 24 == HeightRule::Blend as u32)
+    };
+    // Along each arm on the corner side, at offsets across its shoulder: the junction's shoulder first, then the
+    // arm's own, the two sides of their edge a centimetre apart at one height.
+    for (dir, side) in [([1.0, 0.0], [0.0, -1.0]), ([0.866, -0.5], [0.5, 0.866])] {
+        let mut seams = 0;
+        for d in (8..=20).map(|k| 0.25 * f64::from(k)) {
+            let m = |s: f64| [s * dir[0] + d * side[0], s * dir[1] + d * side[1]];
+            for k in 0..300 {
+                let (s0, s1) = (0.1 * f64::from(k), 0.1 * f64::from(k + 1));
+                let (a, b) = (probe(m(s0)), probe(m(s1)));
+                if (kind(a.0), kind(b.0)) != (Some(true), Some(false)) {
+                    continue;
+                }
+                let (mut lo, mut hi) = (s0, s1);
+                for _ in 0..12 {
+                    let mid = 0.5 * (lo + hi);
+                    if probe(m(mid)).0 == a.0 {
+                        lo = mid
+                    } else {
+                        hi = mid
+                    }
+                }
+                let (ha, hb) = (probe(m(lo - 0.005)).1, probe(m(hi + 0.005)).1);
+                assert!((ha - hb).abs() < 0.02, "a step of {:.2} m at the seam at {:?}", hb - ha, m(hi));
+                seams += 1;
+            }
+        }
+        assert!(seams > 0, "no junction's shoulder that meets an arm's own along {dir:?}");
+    }
+}

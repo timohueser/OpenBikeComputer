@@ -643,10 +643,10 @@ fn kind(c: &Cand) -> u32 {
         REGION
     } else if c.fill.is_some() {
         FILL
-    } else if c.glob.is_none() {
-        WAY
     } else if band(c) {
         BAND
+    } else if c.glob.is_none() {
+        WAY
     } else {
         POINT
     }
@@ -1165,7 +1165,8 @@ fn encode(
             }
         }
         cands_w.extend([k, key_word(c.key), c.glob.as_ref().map_or(u32::MAX, order), own]);
-        cands_w.push(if k == WAY { rec_line(c.line, c.label.legs[0]) } else { u32::MAX });
+        // A candidate with no global name of its own (a way's carriageway, slab or band) takes its line's at q.
+        cands_w.push(if c.glob.is_none() { rec_line(c.line, c.label.legs[0]) } else { u32::MAX });
         cands_w.extend([discs, c.discs.len() as u32, beyond, c.beyond.len() as u32, parts_at, parts.len() as u32]);
     }
     // The blend edges that a bin lists, each side of an edge between two labels whose face blends.
@@ -1404,7 +1405,8 @@ fn encode(
     // The paint reads a label's host lines, its other lines and its material line at their segment
     // nearest the point: in every bin that a point's, region's or round's label reaches, each set's
     // segments that can be nearest to a point of the bin. A segment farther from the bin than the
-    // set's nearest one plus the bin's diagonal is nearer to no point of it.
+    // set's nearest one plus the bin's diagonal is nearer to no point of it. An owned band takes its line's glob at the
+    // point (`decide`), so its line's segments are listed in every bin that it reaches too.
     let diag = f64::from(BIN_UNITS) * std::f64::consts::SQRT_2;
     for b in 0..n_bins {
         let mut sets: Vec<[u32; 4]> = Vec::new();
@@ -1412,7 +1414,9 @@ fn encode(
         while at < items[b].len() {
             let ci = (items[b][at] & 0xffff) as usize;
             at = skip_item(&items[b], at);
-            if !cands.get(ci).is_some_and(|c| c.label.owner != Owner::Terrain && kind(c) != WAY) {
+            let listed =
+                |c: &Cand| (c.label.owner != Owner::Terrain && kind(c) != WAY) || (kind(c) == BAND && c.glob.is_none());
+            if !cands.get(ci).is_some_and(listed) {
                 continue;
             }
             for &l in &given[ci] {
@@ -1889,7 +1893,7 @@ fn decide(words: &[u32], covered: &[u32], q: [f64; 2], segs: &[u32]) -> Option<u
     let extras = &words[words[8] as usize..];
     let glob = |ci: u32| {
         let k = cand(words, ci);
-        if k[0] == WAY {
+        if k[4] != u32::MAX {
             way_glob(words, k[4], q, segs)
         } else {
             k[2]

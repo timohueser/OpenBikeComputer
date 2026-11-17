@@ -52,7 +52,7 @@ const S_ZONE: u32 = 11u;
 const S_SIDEWALK: u32 = 14u;
 // As MAT.SIDEWALK of roads/section.ts.
 const MAT_SIDEWALK: u32 = 3u;
-// The code of a ground-looking shoulder without a line, until its nearest way gives its class.
+// The code of a ground-looking shoulder, until its nearest way gives its class.
 const CODE_ROAD_SURFACE: u32 = 1u;
 // In a corner's look word, the bit of the corridors' fine offset (1 << FINE_SHIFT), which pieces do not read:
 // the face lies on the road surface of a wall class (the line's M_WALL, from `leg_wall` of roads.json), so a step
@@ -204,7 +204,7 @@ fn sidewalk_look(q: vec2i, line: u32, wall: u32, mpu: f32) -> vec2u {
 }
 
 // The look word and the place word of a corner with a label. A paved face takes its way's look and a frame:
-// a way's carriageway, bed and shoulder their line's, a junction's carriageway its one or two through lines',
+// a way's carriageway and bed their line's, a junction's carriageway its one or two through lines',
 // and soil its line's, in a junction the nearest arm's (from the junction's record). A junction's corner fill and a
 // platform are one surface without edges. A water face is water. Every other face is ground.
 fn corner_look(q: vec2i, label: u32, mpu: f32) -> vec2u {
@@ -231,8 +231,8 @@ fn corner_look(q: vec2i, label: u32, mpu: f32) -> vec2u {
     if (surface_code == S_SIDEWALK && line != M_NONE) {
         return sidewalk_look(q, line, wall, mpu);
     }
-    // A shoulder without a line looks like ground; its nearest way decides whether a step beside it is a wall.
-    if (line == M_NONE && shoulder) {
+    // A shoulder looks like ground, also where it has a line; its nearest way decides whether a step beside it is a wall.
+    if (shoulder) {
         return vec2u(look_word(MAT_GROUND, CODE_ROAD_SURFACE, 0.0), 0u);
     }
     if (line != M_NONE && code == 0u && surface_code != S_RAILBED) {
@@ -264,7 +264,7 @@ fn corner_look(q: vec2i, label: u32, mpu: f32) -> vec2u {
     }
     // Inside a carriageway its pixels keep the frame within the half-width (corridor.wgsl), so the look draws no
     // verge there; between the corners the frame stays linear, so its lines stay straight.
-    let inside = select(PIECE_INSIDE, 0u, soil || shoulder);
+    let inside = select(PIECE_INSIDE, 0u, soil);
     return vec2u(look_word(mat, drawn, f.z) | inside | wall, place_word(f.x, f.y));
 }
 

@@ -270,34 +270,6 @@ impl Legs {
         lines
     }
 
-    /// Per leg, the stretches of it whose bands can come within reach of another leg, with the leg's
-    /// reach: a segment one of whose ends lies within twice the reach of another leg, as a point of a
-    /// band lies within the reach of its leg.
-    pub fn runs(&self) -> Vec<(usize, Vec<P>, f64)> {
-        let mut out = Vec::new();
-        for (k, leg) in self.legs.iter().enumerate() {
-            let near: Vec<bool> = (leg.iter())
-                .map(|v| {
-                    let q = [f64::from(v[0]), f64::from(v[1])];
-                    (0..self.legs.len()).any(|j| j != k && self.to_leg(j, q) <= 2.0 * self.reach(k, j))
-                })
-                .collect();
-            let mut i = 0;
-            while i + 1 < leg.len() {
-                if !(near[i] || near[i + 1]) {
-                    i += 1;
-                    continue;
-                }
-                let lo = i;
-                while i + 1 < leg.len() && (near[i] || near[i + 1]) {
-                    i += 1;
-                }
-                out.push((k, leg[lo..=i].to_vec(), self.reach[k]));
-            }
-        }
-        out
-    }
-
     /// The leg nearest q (cell units); a tie between two consecutive legs goes to the side of their
     /// cut's mitre line.
     pub fn nearest(&self, q: [f64; 2]) -> u8 {
