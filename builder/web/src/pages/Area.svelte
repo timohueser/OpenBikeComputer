@@ -1,8 +1,8 @@
 <script lang="ts">
     import { onMount } from 'svelte';
+    import L from 'leaflet';
     import CoverageMap from '../components/coverage/CoverageMap.svelte';
     import SkinStep from '../components/coverage/SkinStep.svelte';
-    import Credits from '../components/planner/Credits.svelte';
     import Icon from '../lib/ui/Icon.svelte';
     import { CatalogClient } from '../lib/catalog/client';
     import { CoverageStore } from '../lib/coverage/store.svelte';
@@ -32,6 +32,8 @@
     let unsaved = $state('');
     let tool = $state<Tool | 'none'>('region');
     let colours = $state(false);
+    let creditsOpen = $state(false);
+    let mapBox = $state<HTMLElement>(), dataCredits = $state<HTMLElement>();
     /** The stored map that waits: Done writes only a value that differs from it. */
     let stored: NextMap | null = null;
     let routes = $state.raw<RouteRecord[]>([]);
@@ -53,7 +55,7 @@
         const map = store.holeCells().length > 0, elevation = (store.ledger?.terrain?.missingCount ?? 0) > 0;
         return map || elevation ? { map, elevation } : null;
     });
-    /** The credits of the data of the map for the device; the credit of the base map is a line on the map. */
+    /** The credits of the data of the map for the device, which open with the credit of the base map. */
     const credits = $derived.by(() => {
         const source = store?.catalog.source, terrain = store?.catalog.terrain;
         return [
@@ -67,6 +69,15 @@
         const checked = routes.filter(route => onDevice.has(route.id) && route.summary);
         return routesOutside(store, checked.map(route => ({ id: route.id, line: route.summary!.line })))
             .map(outside => ({ ...outside, name: nameOf(checked.find(route => route.id === outside.id)!) }));
+    });
+
+    // The data credits stand in Leaflet's corner, above its credit line, so the two open and wrap as one. As in
+    // Leaflet's own controls, a click or a wheel on them does not reach the map.
+    $effect(() => {
+        if (!store || !dataCredits) return;
+        mapBox?.querySelector('.leaflet-bottom.leaflet-right')?.prepend(dataCredits);
+        L.DomEvent.disableClickPropagation(dataCredits);
+        L.DomEvent.disableScrollPropagation(dataCredits);
     });
 
     onMount(() => {
@@ -113,9 +124,13 @@
         <p class="problem" role="alert">The map catalogue did not load: {failure}</p>
     {:else}
         <div class="cards">
-            <div class="map">
+            <div class="map" class:credits-open={creditsOpen} bind:this={mapBox}>
                 {#if store}<CoverageMap {store} {active} bind:tool rail={false} pale routes={lines} />{/if}
-                <Credits {credits} side="left" />
+                <p class="leaflet-control data-credits" bind:this={dataCredits}>{#each credits as credit, i (i)}{#if i}{' · '}{/if}{#if typeof credit === 'string'}{credit}{:else}<a href={credit.href} target="_blank" rel="noreferrer">{credit.text}</a>{/if}{/each}</p>
+                <!-- Leaflet has no compact credit: this button shows and hides all credits, as MapLibre's button does. -->
+                <button type="button" class="credits-button" aria-label="Toggle attribution" aria-expanded={creditsOpen} onclick={() => creditsOpen = !creditsOpen}>
+                    <svg viewBox="0 0 20 20" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M4 10a6 6 0 1 0 12 0 6 6 0 1 0-12 0m5-3a1 1 0 1 0 2 0 1 1 0 1 0-2 0m0 3a1 1 0 1 1 2 0v3a1 1 0 1 1-2 0" /></svg>
+                </button>
             </div>
             {#if store}
                 <section class="side" aria-label="The area">
@@ -237,14 +252,45 @@
     .map :global(.map-wrap) {
         isolation: isolate;
     }
-    /* The credit of the map has the letters and the colours of the page. */
-    .map :global(.leaflet-control-attribution) {
+    /* The credit of the map has the letters and the colours of the page, and opens beside its button. */
+    .map :global(.leaflet-control-attribution), .data-credits {
+        margin: 0 40px 10px 0 !important;
         padding: 2px 8px;
-        border-top-left-radius: 6px;
+        border-radius: 12px;
+        background: var(--panel) !important;
         color: var(--ink-soft) !important;
-        font: 11px/1.5 var(--sans);
+        font: 11px/20px var(--sans);
     }
-    .map :global(.leaflet-control-attribution a) {
+    .data-credits {
+        margin-bottom: 4px !important;
+    }
+    /* The open credits wrap inside the map. */
+    .map :global(.leaflet-bottom.leaflet-right) {
+        left: 10px;
+    }
+    .map:not(.credits-open) :global(.leaflet-control-attribution), .map:not(.credits-open) .data-credits, .data-credits:empty {
+        display: none;
+    }
+    .credits-button {
+        position: absolute;
+        z-index: 2;
+        right: 10px;
+        bottom: 10px;
+        display: grid;
+        place-items: center;
+        width: 24px;
+        height: 24px;
+        padding: 0;
+        border: 0;
+        border-radius: 12px;
+        background: var(--panel);
+        color: var(--ink);
+    }
+    .credits-button svg {
+        width: 24px;
+        height: 24px;
+    }
+    .map :global(.leaflet-control-attribution a), .data-credits a {
         color: inherit;
     }
     .map :global(.leaflet-attribution-flag) {
