@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { untrack } from 'svelte';
     import type { CoverPoints, CoverRecord, RideRecord, RouteRecord, Summary } from '../library/records';
     import type { Library } from '../library/store';
     import { appearance } from '../theme.svelte';
@@ -6,7 +7,7 @@
     import { coverKey, settled, wantCover, wantsPicture, type Place } from './job';
     import CoverPicture from './CoverPicture.svelte';
 
-    let { library, id, mark, part, line = true, place = 'card', pins = [], photos = [], onphoto, onpoint, credits = $bindable([]) }: {
+    let { library, id, mark, part, line = true, place = 'row', pins = [], photos = [], onphoto, onpoint, credits = $bindable([]) }: {
         library: Library;
         /** The id of a route or the key of a ride. */
         id: string;
@@ -14,8 +15,8 @@
         mark?: number;
         part?: [number, number];
         line?: boolean;
-        /** A card, also a row of a list, shows the map picture when the record has no cover. A card and a page ask the
-         * cover job for what is missing. */
+        /** A row and a card show the map picture when the record has no cover. Each place asks the cover job for what
+         * is missing. */
         place?: Place;
         /** Labels at shares of the summary line from 0 to 1: a numbered waypoint, or a night without a number. */
         pins?: { share: number; label: string; number?: number }[];
@@ -31,34 +32,44 @@
     /** The image that the part shows, with the points of its line, and the summary that the points belong to. */
     interface Shown { bitmap: ImageBitmap; points: CoverPoints; summary?: Summary }
     let item = $state<RouteRecord | RideRecord>(), shown = $state<Shown>();
+    /** The theme of the map picture that a record with no cover image shows; a cover does not depend on the theme. */
+    let pictureDark = $state<boolean>();
+    let reload: (() => void) | undefined;
     const look = $derived(item && 'key' in item ? 'ride' : 'route');
 
-    /** The cover, else on a card the map picture of the theme for the line. */
+    /** The cover, else on a row or a card the map picture of the theme for the line. */
     function source(item: RouteRecord | RideRecord, cover: CoverRecord, dark: boolean) {
         const current = cover.lineKey === coverKey(item), summary = item.summary ?? undefined;
         // The points of a cover of an earlier line draw no mark and no part.
         if (cover.image && cover.points) return { image: cover.image, points: cover.points, summary: current && cover.state === 'done' ? summary : undefined, credits: cover.credits };
-        const map = place === 'card' && cover.map?.lineKey === lineKey(item) ? cover.map : undefined, image = map?.[dark ? 'dark' : 'light'];
+        const map = place !== 'page' && cover.map?.lineKey === lineKey(item) ? cover.map : undefined, image = map?.[dark ? 'dark' : 'light'];
         return image && map?.points ? { image, points: map.points, summary, credits: map.credits } : undefined;
     }
 
-    // A card loads again after a change of the theme, and asks for the picture of the new theme.
     $effect(() => {
-        const target = id, dark = place === 'card' && appearance.dark;
+        const target = id;
         let live = true;
         const load = async (first: boolean) => {
+            const dark = place !== 'page' && untrack(() => appearance.dark);
             const [nextItem, nextCover] = await Promise.all([library.item(target), library.cover(target)]);
             const from = nextItem && nextCover && source(nextItem, nextCover, dark);
             const bitmap = from ? await createImageBitmap(from.image).catch(() => undefined) : undefined;
             if (!live) return bitmap?.close();
             [item, shown] = [nextItem, from && bitmap && { bitmap, points: from.points, summary: from.summary }];
             credits = shown ? from?.credits ?? [] : [];
+            pictureDark = place !== 'page' && !nextCover?.image ? dark : undefined;
             if (!first || !nextItem?.summary) return;
-            if (!settled(nextItem, nextCover) || (place === 'card' && wantsPicture(nextItem, nextCover, dark))) wantCover(target, place);
+            if (!settled(nextItem, nextCover) || (place !== 'page' && wantsPicture(nextItem, nextCover, dark))) wantCover(target, place);
         };
+        reload = () => void load(true);
         void load(true);
         const stop = library.onChange((store, key) => { if (key === target && store !== 'state') void load(false); });
         return () => { live = false; stop(); };
+    });
+
+    // A map picture loads again after a change of the theme, and asks for the picture of the new theme.
+    $effect(() => {
+        if (pictureDark !== undefined && appearance.dark !== pictureDark) untrack(() => reload?.());
     });
 
     $effect(() => {

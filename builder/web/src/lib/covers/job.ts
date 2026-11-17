@@ -16,8 +16,9 @@ const SETTLE_MS = 30_000;
 /** A tab that finds the lock of another tab tries again after this. */
 const RETRY_MS = 10_000;
 const MAX_TRIES = 3;
-/** The asks that wait: about two views of rows at 1440 × 900 px, so a scroll through a long list starts few renders. */
-const QUEUE = 12;
+/** The asks of rows that wait: about two views of rows at 1440 × 900 px, so a scroll through a long list starts few
+ * renders. */
+const ROWS = 12;
 const LOCK = 'obc-cover';
 
 /** What the job uses of TrailView. A test gives fakes. */
@@ -43,9 +44,9 @@ export const coverKey = (item: RouteRecord | RideRecord) => `${lineKey(item)}/${
  * asks for the cover of a record that is not settled, also when it shows the cover of an earlier line. */
 export const settled = (item: RouteRecord | RideRecord, cover: CoverRecord | undefined) => cover?.lineKey === coverKey(item) && cover.state !== 'waiting';
 
-/** Where a cover part shows: a card, also a row of a list, asks for the cover and else for the map picture, a page for
- * the cover only. */
-export type Place = 'card' | 'page';
+/** Where a cover part shows: a row of a list and a card ask for the cover and else for the map picture, a page for the
+ * cover only. Only the ROWS newest asks of rows wait, because a row asks again when it comes into view. */
+export type Place = 'row' | 'card' | 'page';
 
 /** Whether the job can still make the map picture of the theme for the line of the record: it has no cover image, and
  * the picture of its line has no image of the theme, no `none` and fewer than MAX_TRIES tries. */
@@ -58,8 +59,8 @@ let asked: ((id: string, place: Place) => void) | undefined;
 /** The asks that come before a job starts. */
 const early: [string, Place][] = [];
 
-/** Asks for the cover of a route or a ride, if it has none for its line, and for a card also for the map picture. The
- * newest ask comes first, and only the QUEUE newest asks wait. */
+/** Asks for the cover of a route or a ride, if it has none for its line, and for a row or a card also for the map
+ * picture. The newest ask comes first. */
 export function wantCover(id: string, place: Place): void {
     if (asked) asked(id, place);
     else early.push([id, place]);
@@ -78,7 +79,10 @@ export function startCoverJob(library: Library, renderer: () => Promise<Renderer
         early.length = 0;
         return () => {};
     }
-    const queue: string[] = [], cards = new Set<string>(), parked = new Set<string>(), settling = new Map<string, ReturnType<typeof setTimeout>>(), stops: (() => void)[] = [];
+    // `rows` holds the waiting ids that only rows asked for, the oldest first; `held` the ids that a card, a page or the
+    // job asked for, until their work ends. Only an id of `rows` leaves the queue unasked.
+    const queue: string[] = [], cards = new Set<string>(), rows = new Set<string>(), held = new Set<string>();
+    const parked = new Set<string>(), settling = new Map<string, ReturnType<typeof setTimeout>>(), stops: (() => void)[] = [];
     // A phone gets no covers, as a browser with no WebGPU: its cards show the map picture.
     let engine: Promise<Renderer | undefined> | undefined, off = !('gpu' in navigator) || matchMedia('(pointer: coarse)').matches, busy = false, stopped = false;
     let rendering: AbortController | undefined, drawing: AbortController | undefined, retry: ReturnType<typeof setTimeout> | undefined;
@@ -93,10 +97,18 @@ export function startCoverJob(library: Library, renderer: () => Promise<Renderer
         if (asked === want) asked = undefined;
     };
     const want = (id: string, place: Place) => {
-        if (place === 'card') cards.add(id);
+        if (place !== 'page') cards.add(id);
+        rows.delete(id);
+        if (place === 'row' && !held.has(id)) rows.add(id);
+        else held.add(id);
         if (queue.includes(id)) queue.splice(queue.indexOf(id), 1);
         queue.unshift(id);
-        for (const old of queue.splice(QUEUE)) cards.delete(old);
+        for (const old of rows) {
+            if (rows.size <= ROWS) break;
+            rows.delete(old);
+            cards.delete(old);
+            queue.splice(queue.indexOf(old), 1);
+        }
         void pump();
     };
     asked = want;
@@ -121,9 +133,15 @@ export function startCoverJob(library: Library, renderer: () => Promise<Renderer
             while (queue.length && !waits()) {
                 // An ask during the work puts the id in the queue again, for the line that it has then.
                 const id = queue.shift()!;
+                rows.delete(id);
                 const outcome = await navigator.locks.request(LOCK, { ifAvailable: true }, lock => lock && work(id));
-                if (outcome === 'park') parked.add(id);
-                else if (outcome === 'next') { if (!queue.includes(id)) cards.delete(id); }
+                if (outcome === 'park') {
+                    parked.add(id);
+                    held.add(id);
+                } else if (outcome === 'next' && !queue.includes(id)) {
+                    cards.delete(id);
+                    held.delete(id);
+                }
                 else if (!queue.includes(id)) queue.unshift(id);
                 if (!outcome) {
                     retry = setTimeout(() => void pump(), RETRY_MS);

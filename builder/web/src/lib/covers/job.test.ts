@@ -289,13 +289,13 @@ describe('the cover job', () => {
         expect(await library.cover('a')).toBeUndefined();
     });
 
-    it('keeps the 12 newest asks that wait, and does no work for an older one', async () => {
+    it('keeps the 12 newest asks of rows that wait, and does no work for an older one', async () => {
         const ids = Array.from({ length: 14 }, (_, i) => `r${i}`);
         await saved(...ids);
         const { renderer, stills } = fake();
         await start(renderer);
         // The first ask goes into work at once; the 13 after it wait, and the oldest of them leaves the queue.
-        for (const id of ids) wantCover(id, 'card');
+        for (const id of ids) wantCover(id, 'row');
         await settle();
         for (let i = 0; i < stills.length; i++) {
             stills[i].resolve(result);
@@ -303,6 +303,43 @@ describe('the cover job', () => {
         }
         expect(stills).toHaveLength(13);
         expect(await library.cover('r1')).toBeUndefined();
+    });
+
+    it('keeps the ask of a card and of the planner route after 13 later asks of rows', async () => {
+        const rows = Array.from({ length: 13 }, (_, i) => `r${i}`);
+        await saved('busy', 'card', 'plan', ...rows);
+        const { renderer, stills } = fake();
+        await start(renderer);
+        wantCover('busy', 'row');
+        wantCover('card', 'card');
+        await library.setState('active', 'plan');
+        await library.saveRoute(route('plan'));
+        await settle();
+        await vi.advanceTimersByTimeAsync(30_000);
+        await settle();
+        for (const id of rows) wantCover(id, 'row');
+        await settle();
+        for (let i = 0; i < stills.length; i++) {
+            stills[i].resolve(result);
+            await settle();
+        }
+        expect(stills).toHaveLength(15);
+        for (const id of ['card', 'plan']) expect(await library.cover(id)).toMatchObject({ state: 'done' });
+        expect(await library.cover('r0')).toBeUndefined();
+    });
+
+    it('does nothing for an ask before or after it starts when the browser saves data', async () => {
+        await saved('a', 'b');
+        (navigator as { connection?: object }).connection = { saveData: true };
+        const { renderer, stills } = fake();
+        wantCover('a', 'card');
+        await start(renderer);
+        wantCover('b', 'card');
+        await settle();
+        // A later job finds no ask that waits.
+        (navigator as { connection?: object }).connection = { saveData: false };
+        await start(renderer);
+        expect(stills).toHaveLength(0);
     });
 
     it('keeps an ask that comes before the job starts', async () => {
@@ -339,6 +376,22 @@ describe('the map picture', () => {
             state: 'waiting', tries: 0, map: { lineKey: lineKey(route('a')), tries: 0, light: expect.any(Blob), credits: ['Map test data'] },
         });
         expect(await library.cover('b')).toBeUndefined();
+    });
+
+    it('comes for a row, but not for a row whose ask the limit dropped', async () => {
+        const ids = Array.from({ length: 14 }, (_, i) => `r${i}`);
+        await saved(...ids);
+        const { calls } = await noGpu();
+        for (const id of ids) wantCover(id, 'row');
+        await settle();
+        for (let i = 0; i < calls.length; i++) {
+            calls[i].resolve(picture);
+            await settle();
+        }
+        expect(calls).toHaveLength(13);
+        wantCover('r1', 'page');
+        await settle();
+        expect(calls).toHaveLength(13);
     });
 
     it('comes in place of a cover with a coarse pointer, as on a phone', async () => {
