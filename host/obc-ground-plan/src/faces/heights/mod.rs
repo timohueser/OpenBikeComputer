@@ -1623,10 +1623,11 @@ fn bore_bound(p: &HeightRules, (out, base, ..): (f64, f64, f64, f64, u32, f64)) 
 
 /// The ground's bound over the bores near q, the cover's own rule: the most over them of their floor bound
 /// (`bore_bound`, at most its lift over the plain terrain t) and of the plain terrain over the cover (the floor and the
-/// bore's wall), which falls at `face_max` per metre past it; only of a bore whose flat ends q lies behind, with a point
-/// on one behind it for the cover (`groups`); minus infinity where no bore is near.
+/// bore's wall), which falls at `face_max` per metre past it; minus infinity where no bore is near. The ground beside
+/// the cover reads only the bores whose flat ends q lies behind (a point on one is in front, `groups`). The cover reads
+/// every bore near it: its stroke can reach past its floor line's flat end, where its bore's room still holds it.
 fn floor(b: &Block, q: [f64; 2], segs: &[u32], t: f64, p: &HeightRules, cover: bool) -> f64 {
-    let on_line = if cover { ON_LINE_M } else { -ON_LINE_M };
+    let on_line = if cover { f64::INFINITY } else { -ON_LINE_M };
     decks(b, q, segs, p)
         .filter(|&(out, _, drop, .., past)| drop < 0.0 && out < p.ceiling_release_m && past <= on_line)
         .map(|d| bore_bound(p, d).min(t + d.3).max(t - p.face_max * (d.0 - WALL_M).max(0.0)))
