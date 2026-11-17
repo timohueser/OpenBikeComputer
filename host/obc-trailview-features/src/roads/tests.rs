@@ -371,6 +371,27 @@ fn a_ford_lies_under_the_water_and_a_low_short_bridge_is_a_culvert() {
 }
 
 #[test]
+fn a_path_fords_the_water_that_it_shares_a_vertex_with_only_where_that_water_is_not_underground() {
+    let place = engelberg();
+    let terrain = place.terrain(|_, _| 1000.0);
+    let crossing = place.at(50.0, 0.0);
+    let path = way("path", place.line(&[(0.0, 0.0), (50.0, 0.0), (100.0, 0.0)], Some(10.0)), plain);
+    for (depth, fords, height) in [(0.4, 1, 999.6 - FORD_M), (18.0, 0, 1000.0)] {
+        let stream = River {
+            points: vec![place.at(50.0, -10.0), crossing, place.at(50.0, 10.0)],
+            levels: vec![1000.0 - depth; 3],
+            half: 0.5,
+            cover: 1.0,
+            lift: 1.5,
+            untagged_culvert: true,
+        };
+        let solved = run(std::slice::from_ref(&path), &terrain, &[stream]);
+        assert_eq!(solved.metrics.fords, fords, "depth {depth}");
+        assert!((height_at(&solved.ways[0][0], crossing) - height).abs() < 0.01, "depth {depth}");
+    }
+}
+
+#[test]
 fn a_tunnel_that_ends_in_the_mountain_is_level_from_the_road_that_it_leaves() {
     let place = engelberg();
     let terrain = place.terrain(|e, _| 1000.0 + 0.3 * e.max(0.0));

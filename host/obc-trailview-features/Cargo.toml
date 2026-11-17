@@ -22,6 +22,8 @@ flate2 = { workspace = true }
 image = { workspace = true, features = ["webp"] }
 rayon = "1"
 rstar = "0.12"
+# `malloc_trim`: the road jobs give the memory that they free back to the system.
+libc = "0.2"
 # The terrain of a direct bake.
 rusqlite = { workspace = true, features = ["bundled"] }
 # The options of the step keep the order of their keys, and coordinates parse exactly.

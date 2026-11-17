@@ -189,6 +189,32 @@ pub fn pieces_along_of(
     out: &mut Vec<Vec<P>>,
     of: Option<&mut Vec<[usize; 2]>>,
 ) {
+    let d: Vec<[f64; 2]> = d.iter().map(|&x| [x, x]).collect();
+    along(p, &d, dirs, cuts, round_ends, closed, out, of);
+}
+
+/// The pieces of a one-sided stroke: on `side` (+1 the left normal, −1 the right), from offset `inner[i]` to
+/// `outer[i]` at point i, as `pieces_along` with square ends. At a turn away from the side, the pie about the
+/// vertex on that side spans from the vertex out to `outer`.
+pub fn side_along(p: &[P], inner: &[f64], outer: &[f64], dirs: &[Option<[f64; 2]>], side: f64, out: &mut Vec<Vec<P>>) {
+    let d: Vec<[f64; 2]> =
+        (0..p.len()).map(|i| if side > 0.0 { [outer[i], -inner[i]] } else { [-inner[i], outer[i]] }).collect();
+    along(p, &d, dirs, [&[], &[]], [false, false], false, out, None);
+}
+
+/// `pieces_along_of` with the offset of each point on its left and on its right side (`d[i]`): a negative offset lies
+/// on the other side.
+#[allow(clippy::too_many_arguments)]
+fn along(
+    p: &[P],
+    d: &[[f64; 2]],
+    dirs: &[Option<[f64; 2]>],
+    cuts: [&[f64]; 2],
+    round_ends: [bool; 2],
+    closed: bool,
+    out: &mut Vec<Vec<P>>,
+    of: Option<&mut Vec<[usize; 2]>>,
+) {
     // Only the bores read the list: a build without them links none of it.
     let of = of.filter(|_| crate::graph::BORES);
     let mut keep: Vec<usize> = (0..p.len()).collect();
@@ -199,15 +225,17 @@ pub fn pieces_along_of(
             let c = u1[0] * u2[1] - u1[1] * u2[0];
             let dot = u1[0] * u2[0] + u1[1] * u2[1];
             let turn = libm::atan2(c, dot);
-            if turn != 0.0 && turn.abs() < MITRE && dot > 0.0 {
-                // Turning toward the left normal: the inner side is the left one.
+            // Turning toward the left normal: the inner side is the left one. An edge that lies on the other
+            // side (a negative offset) is no inner edge.
+            let side = usize::from(turn < 0.0);
+            if turn != 0.0 && turn.abs() < MITRE && dot > 0.0 && d[v][side] > 0.0 {
                 let s = if turn > 0.0 { 1.0 } else { -1.0 };
                 let (n1, n2) = (left(u1).map(|x| s * x), left(u2).map(|x| s * x));
                 let m = [(n1[0] + n2[0]) / (1.0 + dot), (n1[1] + n2[1]) / (1.0 + dot)];
-                let q = off(p[v], d[v], m);
+                let q = off(p[v], d[v][side], m);
                 let ahead =
                     |a: P, b: P, u: [f64; 2]| f64::from(b[0] - a[0]) * u[0] + f64::from(b[1] - a[1]) * u[1] > 0.0;
-                if !(ahead(off(p[a], d[a], n1), q, u1) && ahead(q, off(p[b], d[b], n2), u2)) {
+                if !(ahead(off(p[a], d[a][side], n1), q, u1) && ahead(q, off(p[b], d[b][side], n2), u2)) {
                     keep.remove(k);
                     k = (k - 1).max(2);
                     continue;
@@ -218,7 +246,7 @@ pub fn pieces_along_of(
     }
     if keep.len() < p.len() {
         let p: Vec<P> = keep.iter().map(|&i| p[i]).collect();
-        let d: Vec<f64> = keep.iter().map(|&i| d[i]).collect();
+        let d: Vec<[f64; 2]> = keep.iter().map(|&i| d[i]).collect();
         let dirs: Vec<Option<[f64; 2]>> =
             keep.windows(2).map(|w| if w[1] == w[0] + 1 { dirs.get(w[0]).copied().flatten() } else { None }).collect();
         // The segments of the kept points are runs of the line's own.
@@ -236,7 +264,7 @@ pub fn pieces_along_of(
 #[allow(clippy::too_many_arguments)]
 fn stroke(
     p: &[P],
-    d: &[f64],
+    d: &[[f64; 2]],
     dirs: &[Option<[f64; 2]>],
     cuts: [&[f64]; 2],
     round_ends: [bool; 2],
@@ -271,7 +299,7 @@ fn stroke(
             let j = (i + 1) % n;
             let nl = dirs[i].map_or([0.0, 0.0], left);
             let nr = [-nl[0], -nl[1]];
-            [[off(p[i], d[i], nl), off(p[i], d[i], nr)], [off(p[j], d[j], nl), off(p[j], d[j], nr)]]
+            [[off(p[i], d[i][0], nl), off(p[i], d[i][1], nr)], [off(p[j], d[j][0], nl), off(p[j], d[j][1], nr)]]
         })
         .collect();
     // The joins: between each segment and the next one with a direction. A join that turns less than
@@ -291,7 +319,7 @@ fn stroke(
         let (n1, n2) = (left(u1), left(u2));
         if turn.abs() < MITRE && dot > 0.0 {
             let m = [(n1[0] + n2[0]) / (1.0 + dot), (n1[1] + n2[1]) / (1.0 + dot)];
-            let q = [off(p[v], d[v], m), off(p[v], d[v], [-m[0], -m[1]])];
+            let q = [off(p[v], d[v][0], m), off(p[v], d[v][1], [-m[0], -m[1]])];
             // Turning toward the left normal: the inner side is the left one.
             let inner = if turn > 0.0 { 0 } else { 1 };
             let ahead = |a: P, b: P, u: [f64; 2]| f64::from(b[0] - a[0]) * u[0] + f64::from(b[1] - a[1]) * u[1] > 0.0;
@@ -315,13 +343,13 @@ fn stroke(
         let j = (i + 1) % n;
         let mut ring = vec![el];
         if !closed && Some(i) == last {
-            ring.extend(ray(p[j], d[j], nl, cuts[1]).rev());
-            ring.extend(ray(p[j], d[j], nr, cuts[1]));
+            ring.extend(ray(p[j], d[j][0], nl, cuts[1]).rev());
+            ring.extend(ray(p[j], d[j][1], nr, cuts[1]));
         }
         ring.extend([er, sr]);
         if !closed && Some(i) == first {
-            ring.extend(ray(p[i], d[i], nr, cuts[0]).rev());
-            ring.extend(ray(p[i], d[i], nl, cuts[0]));
+            ring.extend(ray(p[i], d[i][1], nr, cuts[0]).rev());
+            ring.extend(ray(p[i], d[i][0], nl, cuts[0]));
         }
         ring.push(sl);
         push_positive(ring, out);
@@ -332,7 +360,7 @@ fn stroke(
             // Turning toward the left normal: the outer side is the right one.
             pie(
                 p[v],
-                d[v],
+                d[v][1],
                 [-n1[0], -n1[1]],
                 [-n2[0], -n2[1]],
                 turn.abs().max(if dot < 0.0 && c == 0.0 { std::f64::consts::PI } else { 0.0 }),
@@ -340,20 +368,21 @@ fn stroke(
                 out,
             );
         } else if turn < 0.0 {
-            pie(p[v], d[v], n2, n1, -turn, &[], out);
+            pie(p[v], d[v][0], n2, n1, -turn, &[], out);
         }
         mark(out, seg);
     }
+    // A round end is a half disc: of the two sides' offsets, which `pieces_along` gives alike.
     if !closed {
         if let (true, Some(i)) = (round_ends[0], first) {
             let u = dirs[i].unwrap();
             let back = [-u[0], -u[1]];
-            pie(p[0], d[0], left(back).map(|x| -x), left(back), std::f64::consts::PI, cuts[0], out);
+            pie(p[0], d[0][0], left(back).map(|x| -x), left(back), std::f64::consts::PI, cuts[0], out);
             mark(out, [i, i]);
         }
         if let (true, Some(i)) = (round_ends[1], last) {
             let u = dirs[i].unwrap();
-            pie(p[n - 1], d[n - 1], left(u).map(|x| -x), left(u), std::f64::consts::PI, cuts[1], out);
+            pie(p[n - 1], d[n - 1][0], left(u).map(|x| -x), left(u), std::f64::consts::PI, cuts[1], out);
             mark(out, [i, i]);
         }
     }

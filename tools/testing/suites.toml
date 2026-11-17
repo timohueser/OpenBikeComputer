@@ -648,6 +648,8 @@ triggers = [
   # The agent on-ramps are owned here so they are not unowned paths. `build_docs.py` does not
   # read them; the check that does is the unconditional `guards` job.
   "AGENTS.md", "**/AGENTS.md", "companion-ios/README.md",
+  # The third-party agent skills and their lock file are agent prose too.
+  ".agents/skills/**", "skills-lock.json",
 ]
 
 [[suite]]

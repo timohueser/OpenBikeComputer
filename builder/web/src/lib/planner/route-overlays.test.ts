@@ -1,8 +1,9 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import type { Map as MapLibreMap, MapMouseEvent } from 'maplibre-gl';
-import { networkName, RouteOverlays, routeWebsite } from './route-overlays';
+import { networkScope, RouteOverlays, routeWebsite } from './route-overlays';
 import { trailMarker } from './trail-markers';
 import { mapStyle } from './map-style';
+import { createPropertyExpression, v8, type StylePropertySpecification } from '@maplibre/maplibre-gl-style-spec';
 import { testConfig } from '../../../test-support/planner/config';
 
 afterEach(() => { vi.unstubAllGlobals(); });
@@ -58,7 +59,7 @@ it('loads the archive when an overlay is first shown, then draws the network and
 
 it('puts the bands over the water and its structures, and under the lines of the planner style', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => tilejson }));
-    const style = mapStyle('light', testConfig, '', '').layers;
+    const style = mapStyle('light', testConfig, { dem: '' }).layers;
     const view = overlays(style);
     view.layer.set({ network: 'cycling', access: false });
     await view.layer.install('light');
@@ -67,6 +68,20 @@ it('puts the bands over the water and its structures, and under the lines of the
     for (const under of ['water', 'land-structure']) expect(band).toBeGreaterThan(at(under));
     for (const over of ['land-protected', 'water_stream', 'water_river', 'cliffs', 'ferries', 'roads_other', 'roads_minor', 'roads_bridges_other']) expect(band).toBeLessThanOrEqual(at(over));
     expect(at(view.definitions.get('network-cycling')!.before as string)).toBeGreaterThan(at('roads_bridges_highway'));
+    view.layer.destroy();
+});
+
+it('draws a wider band for a wider road, and the width of a path for a tile that names no road', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => tilejson }));
+    const view = overlays();
+    view.layer.set({ network: 'cycling', access: false });
+    await view.layer.install('light');
+    const band = view.definitions.get('network-cycling-band') as unknown as { paint: Record<string, unknown> };
+    const width = createPropertyExpression(band.paint['line-width'], 'line-width', v8.paint_line['line-width'] as StylePropertySpecification);
+    if (width.result === 'error') throw new Error(width.value[0].message);
+    const at = (zoom: number, properties: Record<string, string>) => width.value.evaluate({ zoom }, { type: 2, properties });
+    expect(['', 'minor', 'major'].map(road => at(15, road ? { road } : {}))).toEqual([10, 13, 14]);
+    expect(at(18, {})).toBe(22);
     view.layer.destroy();
 });
 
@@ -151,10 +166,10 @@ it('hints at the route under a resting pointer, and takes clicks only on access 
     vi.useRealTimers();
 });
 
-it('names the network level of each route kind', () => {
-    expect(networkName({ kind: 'mtb', network: 'rcn' })).toBe('Regional mountain bike route');
-    expect(networkName({ kind: 'hiking', network: 'nwn' })).toBe('National hiking route');
-    expect(networkName({ kind: 'mtb', network: '' })).toBe('Network level unspecified');
+it('names the reach of a cycling or a walking network', () => {
+    expect(networkScope({ network: 'rcn' })).toBe('Regional');
+    expect(networkScope({ network: 'iwn' })).toBe('International');
+    expect(networkScope({ network: '' })).toBe('');
 });
 
 it('only links valid route websites', () => {

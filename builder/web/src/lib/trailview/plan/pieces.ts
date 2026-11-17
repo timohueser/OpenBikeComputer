@@ -7,7 +7,7 @@
 // over the ground draw with it: their corners from the same pass, their sheets and shells with piece.wgsl, and they
 // cast into the shadow map.
 import type { Gpu } from '../gpu/device';
-import { MOUTH } from '../gpu/include';
+import { MOUTH, PIECE_IN } from '../gpu/include';
 import { layouts } from '../gpu/layouts';
 import { wgsl } from '../gpu/wgsl';
 import { CASTER_DEPTH, CASTER_PRIMITIVE } from '../light/shadow';
@@ -588,7 +588,7 @@ export async function piecePipelines(gpu: Gpu) {
         { binding: 0, visibility: C, buffer: { type: 'storage' } }, { binding: 1, visibility: C, buffer: { type: 'read-only-storage' } }, { binding: 2, visibility: C, buffer: { type: 'uniform' } },
         { binding: 4, visibility: C, buffer: { type: 'uniform' } }, { binding: 8, visibility: C, texture: { sampleType: 'uint' } },
     ] });
-    const modules = [false, true].map(mouth => device.createShaderModule({ label: `plan pieces${mouth ? ' mouth' : ''}`, code: wgsl('plan/piece.wgsl', mouth ? MOUTH : {}) }));
+    const modules = [false, true].map(mouth => device.createShaderModule({ label: `plan pieces${mouth ? ' mouth' : ''}`, code: wgsl('plan/piece.wgsl', mouth ? MOUTH : PIECE_IN) }));
     const render = (entryPoint: string, cullMode: GPUCullMode, cut: boolean, mouth = false) => device.createRenderPipelineAsync({
         label: `plan ${entryPoint}${mouth ? ' mouth' : ''}${cut ? ' cut' : ''}`, layout: device.createPipelineLayout({ bindGroupLayouts: [drawLayout, surface, ground, features] }),
         vertex: { module: modules[+mouth], entryPoint, constants: { MOUTH: +mouth } },

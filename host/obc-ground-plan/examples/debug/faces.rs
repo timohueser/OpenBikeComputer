@@ -10,10 +10,10 @@ use crate::draw::{cell_square, paint, path, stroke, Canvas};
 use crate::fixture::Fixture;
 use obc_ground_plan::debug;
 use obc_ground_plan::faces::check::{
-    artefacts, feature_names, kinks, neighbours, partition, short_features, Artefact, ArtefactKind, Fault, Kink,
-    ShortFeature,
+    artefacts, feature_names, kinks, lone_slabs, neighbours, partition, short_features, sidewalk_on_decks, Artefact,
+    ArtefactKind, Fault, Kink, ShortFeature,
 };
-use obc_ground_plan::faces::{self, window, FacePlan, Owner, Rules};
+use obc_ground_plan::faces::{self, window, FacePlan, Owner, Rules, Surface, OUTSIDE};
 use obc_ground_plan::frame::{CellKey, GlobalPoint};
 use obc_ground_plan::graph::{self, WayGraph};
 use obc_ground_plan::CellInput;
@@ -165,6 +165,8 @@ struct Built {
     kinks: Vec<Kink>,
     short: Vec<ShortFeature>,
     artefacts: Vec<Artefact>,
+    /// The points of sidewalks inside a deck's stroke near its ground end (`sidewalk_on_decks`).
+    decks: Vec<[i32; 2]>,
 }
 
 /// A cell's build of least time of `runs` and its check 1 and kinks; None if a build panics.
@@ -182,7 +184,8 @@ fn bench_cell(key: CellKey, input: &obc_ground_plan::CellInput, rules: &Rules, r
     let (faults, kinks, artefacts) =
         (partition(&plan, window(key, 0.0)), kinks(&plan, &graph, input, rules), artefacts(&plan, &graph));
     let short = short_features(&plan);
-    Some(Built { plan, graph, features: feature_names(input), ms: best, faults, kinks, short, artefacts })
+    let decks = sidewalk_on_decks(&plan, &graph, input, rules);
+    Some(Built { plan, graph, features: feature_names(input), ms: best, faults, kinks, short, artefacts, decks })
 }
 
 /// Per fixture cell: the face build's total time (the run of least time of `runs`), its sizes,
@@ -212,8 +215,10 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usiz
     let mut causes: BTreeMap<String, (u32, Vec<Value>)> = BTreeMap::new();
     let (mut kink_count, mut kink_examples) = (0, Vec::new());
     let mut short_examples = Vec::new();
+    let (mut listed, mut on_decks, mut slab_pieces) = (Vec::new(), Vec::new(), Vec::new());
     for (&key, b) in cells.iter().zip(built) {
-        let Some(Built { plan, graph, features, ms: total, faults, kinks: bent, short, artefacts: found }) = b else {
+        let Some(Built { plan, graph, features, ms: total, faults, kinks: bent, short, artefacts: found, decks }) = b
+        else {
             crashes.push([key.x, key.y]);
             continue;
         };
@@ -245,6 +250,34 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usiz
             let (lon, lat) = crate::lon_lat(GlobalPoint { x: o.x + i64::from(k.at[0]), y: o.y + i64::from(k.at[1]) });
             short_examples.push(json!({"cell": [key.x, key.y], "lat": lat, "lon": lon, "size_m": k.size_m,
                 "turn_deg": k.turn.to_degrees()}));
+        }
+        let o = key.origin();
+        let lat_lon = |at: [i32; 2]| {
+            let (lon, lat) = crate::lon_lat(GlobalPoint { x: o.x + i64::from(at[0]), y: o.y + i64::from(at[1]) });
+            json!([lat, lon])
+        };
+        on_decks.extend(decks.iter().map(|&at| json!({"cell": [key.x, key.y], "at": lat_lon(at)})));
+        slab_pieces.extend(lone_slabs(&plan).iter().map(|&(_, at)| json!({"cell": [key.x, key.y], "at": lat_lon(at)})));
+        // Every artefact, and whether its face is a sidewalk or borders one: the compare against a base reads them.
+        let walks: Vec<bool> = (0..plan.faces.len())
+            .map(|f| {
+                plan.faces[f].surface == Surface::Sidewalk
+                    || plan.edges.iter().any(|e| {
+                        let other = if e.left == f as u32 {
+                            e.right
+                        } else if e.right == f as u32 {
+                            e.left
+                        } else {
+                            OUTSIDE
+                        };
+                        other != OUTSIDE && plan.faces[other as usize].surface == Surface::Sidewalk
+                    })
+            })
+            .collect();
+        for x in &found {
+            let f = &plan.faces[x.face as usize];
+            listed.push(json!({"cell": [key.x, key.y], "at": x.at, "kind": format!("{:?}", x.kind),
+                "surface": format!("{:?}", f.surface), "walk": walks[x.face as usize], "ll": lat_lon(x.at)}));
         }
         // One count per face and kind.
         let mut seen = std::collections::BTreeSet::new();
@@ -306,6 +339,10 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usiz
         "check1_artefact_causes": causes.into_iter().map(|(k, (n, ex))| json!({"cause": k, "faces": n, "examples": ex})).collect::<Vec<_>>(),
         "borders": borders,
         "check2_faults": border_faults.len(),
+        "sidewalk_on_decks": on_decks.len(),
+        "sidewalk_on_deck_places": on_decks.iter().take(20).collect::<Vec<_>>(),
+        "lone_slabs": slab_pieces,
+        "artefact_list": listed,
         "check2_examples": border_faults.iter().take(10).collect::<Vec<_>>(),
         "ms": profile,
         "slowest": slowest.iter().take(5).map(|(t, k)| json!({"cell": k, "ms": t})).collect::<Vec<_>>(),
