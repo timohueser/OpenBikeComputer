@@ -111,30 +111,41 @@
     let opening = $state(false), notice = $state.raw<{ text: string; view?: Box }>(), trailViewButton = $state<HTMLButtonElement>();
     const trailViewTitle = $derived(shown.length > TRAILVIEW_ROUTES ? `TrailView: the first ${TRAILVIEW_ROUTES} of ${shown.length.toLocaleString('en')} routes` : 'TrailView');
 
-    async function openTrailView(event: MouseEvent) {
-        const box = (event.currentTarget as HTMLElement).getBoundingClientRect(), at = view, from = chips;
-        // The selected route is always among them, so the window can show its card on its line.
+    /** The first routes of the list, with the selected route among them, so the window can show its card on its line. */
+    function trailViewItems(): SignedItem[] {
         const listed = shown.slice(0, TRAILVIEW_ROUTES);
         if (chosen && !listed.includes(chosen)) listed[listed.length - 1] = chosen;
-        const routes = listed.map(({ id, record }): TrailViewRoute => ({
-            id, line: decodeCoordinates(record.line_udeg ?? []), colour: routeColor(id),
-            ...record.profile_m ? { profile: { step: PROFILE_STEP_M, heights: record.profile_m } } : {},
-        }));
+        return listed;
+    }
+
+    async function openTrailView(event: MouseEvent) {
+        if (opening) return;
+        const box = (event.currentTarget as HTMLElement).getBoundingClientRect();
         opening = true;
         notice = undefined;
         try {
             const [chunk, { default: component }] = await Promise.all([loadTrailView(), import('../components/planner/TrailViewWindow.svelte')]);
-            // The size of the window: the rule of its CSS.
-            const full = innerWidth <= 760;
-            const first = await chunk.coverView(routes.map(route => route.line), config,
-                { width: full ? innerWidth : innerWidth - 64, height: full ? innerHeight : innerHeight - 64, date: today(), time: '10:00', weather: 'sunny' });
-            // A new view or new chips while it loaded make other routes the list's: the window would show the old ones.
-            if (view !== at || chips !== from) return;
-            if (first) trailView = { component, origin: [box.left + box.width / 2, box.top + box.height / 2], view: first, routes };
-            else notice = { text: 'TrailView has no view of this area.', view: at };
+            // The end of a pan or new chips during the load can change the list: one more try takes the new list.
+            for (let tries = 0; tries < 2; tries++) {
+                const listed = trailViewItems();
+                const routes = listed.map(({ id, record }): TrailViewRoute => ({
+                    id, line: decodeCoordinates(record.line_udeg ?? []), colour: routeColor(id),
+                    ...record.profile_m ? { profile: { step: PROFILE_STEP_M, heights: record.profile_m } } : {},
+                }));
+                // The size of the window: the rule of its CSS.
+                const full = innerWidth <= 760;
+                const first = await chunk.coverView(routes.map(route => route.line), config,
+                    { width: full ? innerWidth : innerWidth - 64, height: full ? innerHeight : innerHeight - 64, date: today(), time: '10:00', weather: 'sunny' });
+                const now = trailViewItems();
+                if (now.length !== listed.length || now.some((item, i) => item.id !== listed[i].id)) continue;
+                if (first) trailView = { component, origin: [box.left + box.width / 2, box.top + box.height / 2], view: first, routes };
+                else notice = { text: 'TrailView has no view of this area.', view };
+                return;
+            }
+            notice = { text: 'The routes changed while TrailView loaded. Try again.', view };
         } catch (error) {
             console.error('TrailView:', error);
-            notice = { text: 'TrailView could not start. Try again.', view: at };
+            notice = { text: 'TrailView could not start. Try again.', view };
         } finally {
             opening = false;
         }
@@ -192,7 +203,7 @@
 {#snippet mapButtons()}
     <!-- A group of the map's own controls, as the zoom buttons above it. -->
     <div class="maplibregl-ctrl maplibregl-ctrl-group">
-        <button type="button" class="trailview" bind:this={trailViewButton} aria-label="TrailView" aria-busy={opening} disabled={opening} title={trailViewTitle} onclick={openTrailView}>
+        <button type="button" class="trailview" bind:this={trailViewButton} aria-label="TrailView" aria-busy={opening} aria-disabled={opening} title={trailViewTitle} onclick={openTrailView}>
             {#if opening}<span class="spinner" aria-hidden="true"></span>{:else}<Icon name="binoculars" size={18} />{/if}
         </button>
     </div>
@@ -227,9 +238,8 @@
         place-items: center;
         color: #333;
     }
-    /* While it loads, the spinner shows at full strength. */
-    .trailview:disabled {
-        opacity: 1;
+    /* Not `disabled` while it loads, so that the button keeps the focus. */
+    .trailview[aria-disabled="true"] {
         cursor: progress;
     }
     .spinner {

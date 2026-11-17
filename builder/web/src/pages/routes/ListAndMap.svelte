@@ -128,6 +128,7 @@
     .map-buttons {
         position: absolute;
         z-index: 2;
+        /* As MapLibre stacks its controls: a 10 px margin, the zoom group of two 29 px buttons and a 1 px rule, and 10 px. */
         top: 79px;
         right: 10px;
         display: flex;
