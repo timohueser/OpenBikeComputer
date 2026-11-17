@@ -378,20 +378,16 @@ describe('the map picture', () => {
         expect(await library.cover('b')).toBeUndefined();
     });
 
-    it('comes for a row, but not for a row whose ask the limit dropped', async () => {
-        const ids = Array.from({ length: 14 }, (_, i) => `r${i}`);
-        await saved(...ids);
-        const { calls } = await noGpu();
-        for (const id of ids) wantCover(id, 'row');
+    it('does not come for a row: with covers off, a row asks for nothing, and a card then gets the picture', async () => {
+        await saved('a');
+        const { calls } = await noGpu(), item = vi.spyOn(library, 'item');
+        wantCover('a', 'row');
+        wantCover('a', 'row');
         await settle();
-        for (let i = 0; i < calls.length; i++) {
-            calls[i].resolve(picture);
-            await settle();
-        }
-        expect(calls).toHaveLength(13);
-        wantCover('r1', 'page');
+        expect([calls.length, item.mock.calls.length]).toEqual([0, 0]);
+        wantCover('a', 'card');
         await settle();
-        expect(calls).toHaveLength(13);
+        expect(calls).toHaveLength(1);
     });
 
     it('comes in place of a cover with a coarse pointer, as on a phone', async () => {

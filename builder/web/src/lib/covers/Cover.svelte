@@ -15,8 +15,8 @@
         mark?: number;
         part?: [number, number];
         line?: boolean;
-        /** A row and a card show the map picture when the record has no cover. Each place asks the cover job for what
-         * is missing. */
+        /** A row and a card show the map picture when the record has no cover. A row and a page ask the cover job for the
+         * cover, a card also for the map picture. */
         place?: Place;
         /** Labels at shares of the summary line from 0 to 1: a numbered waypoint, or a night without a number. */
         pins?: { share: number; label: string; number?: number }[];
@@ -59,7 +59,7 @@
             credits = shown ? from?.credits ?? [] : [];
             pictureDark = place !== 'page' && !nextCover?.image ? dark : undefined;
             if (!first || !nextItem?.summary) return;
-            if (!settled(nextItem, nextCover) || (place !== 'page' && wantsPicture(nextItem, nextCover, dark))) wantCover(target, place);
+            if (!settled(nextItem, nextCover) || (place === 'card' && wantsPicture(nextItem, nextCover, dark))) wantCover(target, place);
         };
         reload = () => void load(true);
         void load(true);

@@ -1,5 +1,5 @@
 /** Renders the covers of routes and rides in the background, one at a time in the whole browser, and stores them in the
- * library, with a map picture for a card or a row whose record gets no cover. */
+ * library, with a map picture for a card whose record gets no cover. */
 import type { CoverRecord, MapPicture, RideRecord, RouteRecord } from '../library/records';
 import type { Library } from '../library/store';
 import { lineKey } from '../library/summary';
@@ -44,8 +44,8 @@ export const coverKey = (item: RouteRecord | RideRecord) => `${lineKey(item)}/${
  * asks for the cover of a record that is not settled, also when it shows the cover of an earlier line. */
 export const settled = (item: RouteRecord | RideRecord, cover: CoverRecord | undefined) => cover?.lineKey === coverKey(item) && cover.state !== 'waiting';
 
-/** Where a cover part shows: a row of a list and a card ask for the cover and else for the map picture, a page for the
- * cover only. Only the ROWS newest asks of rows wait, because a row asks again when it comes into view. */
+/** Where a cover part shows: a row of a list and a page ask for the cover, a card for the cover and else for the map
+ * picture. Only the ROWS newest asks of rows wait, because a row asks again when it comes into view. */
 export type Place = 'row' | 'card' | 'page';
 
 /** Whether the job can still make the map picture of the theme for the line of the record: it has no cover image, and
@@ -59,8 +59,8 @@ let asked: ((id: string, place: Place) => void) | undefined;
 /** The asks that come before a job starts. */
 const early: [string, Place][] = [];
 
-/** Asks for the cover of a route or a ride, if it has none for its line, and for a row or a card also for the map
- * picture. The newest ask comes first. */
+/** Asks for the cover of a route or a ride, if it has none for its line, and for a card also for the map picture. The
+ * newest ask comes first. */
 export function wantCover(id: string, place: Place): void {
     if (asked) asked(id, place);
     else early.push([id, place]);
@@ -79,9 +79,8 @@ export function startCoverJob(library: Library, renderer: () => Promise<Renderer
         early.length = 0;
         return () => {};
     }
-    // `rows` holds the waiting ids that only rows asked for, the oldest first; `held` the ids that a card, a page or the
-    // job asked for, until their work ends. Only an id of `rows` leaves the queue unasked.
-    const queue: string[] = [], cards = new Set<string>(), rows = new Set<string>(), held = new Set<string>();
+    // `rows` holds the waiting ids that only rows asked for, the oldest first. Only such an id leaves the queue unasked.
+    const queue: string[] = [], cards = new Set<string>(), rows = new Set<string>();
     const parked = new Set<string>(), settling = new Map<string, ReturnType<typeof setTimeout>>(), stops: (() => void)[] = [];
     // A phone gets no covers, as a browser with no WebGPU: its cards show the map picture.
     let engine: Promise<Renderer | undefined> | undefined, off = !('gpu' in navigator) || matchMedia('(pointer: coarse)').matches, busy = false, stopped = false;
@@ -97,16 +96,16 @@ export function startCoverJob(library: Library, renderer: () => Promise<Renderer
         if (asked === want) asked = undefined;
     };
     const want = (id: string, place: Place) => {
-        if (place !== 'page') cards.add(id);
-        rows.delete(id);
-        if (place === 'row' && !held.has(id)) rows.add(id);
-        else held.add(id);
+        // A row asks for the cover only, so with covers off it has nothing to ask for.
+        if (place === 'row' && off) return;
+        if (place === 'card') cards.add(id);
+        if (place !== 'row') rows.delete(id);
+        else if (rows.delete(id) || !queue.includes(id)) rows.add(id);
         if (queue.includes(id)) queue.splice(queue.indexOf(id), 1);
         queue.unshift(id);
         for (const old of rows) {
             if (rows.size <= ROWS) break;
             rows.delete(old);
-            cards.delete(old);
             queue.splice(queue.indexOf(old), 1);
         }
         void pump();
@@ -135,13 +134,8 @@ export function startCoverJob(library: Library, renderer: () => Promise<Renderer
                 const id = queue.shift()!;
                 rows.delete(id);
                 const outcome = await navigator.locks.request(LOCK, { ifAvailable: true }, lock => lock && work(id));
-                if (outcome === 'park') {
-                    parked.add(id);
-                    held.add(id);
-                } else if (outcome === 'next' && !queue.includes(id)) {
-                    cards.delete(id);
-                    held.delete(id);
-                }
+                if (outcome === 'park') parked.add(id);
+                else if (outcome === 'next') { if (!queue.includes(id)) cards.delete(id); }
                 else if (!queue.includes(id)) queue.unshift(id);
                 if (!outcome) {
                     retry = setTimeout(() => void pump(), RETRY_MS);
