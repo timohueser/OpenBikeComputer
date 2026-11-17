@@ -1053,9 +1053,9 @@ fn the_ground_beside_the_cover_meets_it_with_no_step() {
 /// Rust heights.
 #[cfg(feature = "bores")]
 struct EndWalls {
-    /// The end faces beside the cover; those of them on no portal line; the steps between the cover and another face
-    /// with both ends on one portal line that are no end face; end face corners in no triangle (a hole at the top or
-    /// the foot).
+    /// The end faces on the portal lines (`CellMesh::headwalls`); those of them on no portal line or not beside the
+    /// cover; the steps between the cover and another face with both ends on one portal line that are no end face; end
+    /// face corners in no triangle (a hole at the top or the foot).
     faces: usize,
     off_line: usize,
     steps_on_line: usize,
@@ -1092,21 +1092,25 @@ fn end_walls(b: &crate::cell::CellBuild, terrain: &Terrain, m0: &crate::mesh::Ce
     let corner = |k: u32| m0.corner(k as usize).0;
     let line_of = |s: &[u32; 4]| lines.iter().position(|e| on(corner(s[0]), e) && on(corner(s[1]), e));
     let in_triangle: std::collections::BTreeSet<u32> = m0.triangles.iter().flatten().copied().collect();
-    let first = m0.steps.len() - m0.end_faces as usize;
+    let (first, walls) = (m0.steps.len() - m0.end_faces as usize, m0.steps.len() - m0.headwalls as usize);
     let (mut faces, mut off_line, mut steps_on_line, mut loose, mut high, mut least) =
         (0, 0, 0, 0, 0.0f64, f64::INFINITY);
     let mut pieces: BTreeMap<usize, Vec<(P, P, bool)>> = BTreeMap::new();
     for (k, s) in m0.steps.iter().enumerate() {
         let left = cover(s[0]);
-        if left == cover(s[3]) {
+        let (beside, line) = (left != cover(s[3]), line_of(s));
+        if k < first {
+            steps_on_line += usize::from(beside && line.is_some());
             continue;
         }
-        let line = line_of(s);
-        if k < first {
-            steps_on_line += usize::from(line.is_some());
+        if k < walls {
             continue;
         }
         faces += 1;
+        if !beside {
+            off_line += 1;
+            continue;
+        }
         loose += s.iter().filter(|c| !in_triangle.contains(c)).count();
         let rise = [h(s[0]) - h(s[3]), h(s[1]) - h(s[2])].map(|r| if left { r } else { -r });
         high = high.max(rise[0].abs()).max(rise[1].abs());
@@ -1139,7 +1143,7 @@ fn end_walls(b: &crate::cell::CellBuild, terrain: &Terrain, m0: &crate::mesh::Ce
         // The step of the end face with a corner at metres m along.
         let step_at = |m: f64| {
             let near = |c: u32| (along(corner(c)) - m).abs() < 0.01;
-            let s = m0.steps[first..].iter().find(|s| near(s[0]) || near(s[1]))?;
+            let s = m0.steps[walls..].iter().find(|s| near(s[0]) || near(s[1]))?;
             let [a, c] = if near(s[0]) { [s[0], s[3]] } else { [s[1], s[2]] };
             Some((h(a) - h(c)).abs())
         };

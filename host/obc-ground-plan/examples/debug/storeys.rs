@@ -253,16 +253,17 @@ fn triangles(
                     out.push((v.map(|x| x.0), rgb(col), true));
                 }
             }
-            // A step brown-grey; an end face pale concrete, beside the cover orange where the cover is its higher side
-            // (the end wall) and magenta where it is the lower (a pit behind a portal line).
-            let first = m.steps.len() - m.end_faces as usize;
+            // A step brown-grey; a deck's end face pale concrete; an end face on a portal line (`headwalls`) orange where
+            // the cover is its higher side (the end wall) and magenta where it is the lower (a pit behind the line).
+            let (first, walls) = (m.steps.len() - m.end_faces as usize, m.steps.len() - m.headwalls as usize);
             let cover = |l: u32| l != NO_LABEL && records::label(words, l)[0] & 0xff == Surface::Cover as u32;
             for (k, s) in m.steps.iter().enumerate() {
                 let v = s.map(z);
-                let col = match (k >= first, cover(v[0].1), cover(v[3].1)) {
-                    (false, ..) => (150, 140, 125),
-                    (true, false, false) => (200, 196, 186),
-                    (true, left, _) => {
+                let col = match (k >= first, k >= walls) {
+                    (false, _) => (150, 140, 125),
+                    (true, false) => (200, 196, 186),
+                    (true, true) => {
+                        let left = cover(v[0].1);
                         // The rise of the cover over the other side at the slot's end with the larger step.
                         let rise = [(v[0].0[2] - v[3].0[2]), (v[1].0[2] - v[2].0[2])];
                         let rise = if rise[0].abs() > rise[1].abs() { rise[0] } else { rise[1] };

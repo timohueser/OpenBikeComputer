@@ -20,12 +20,12 @@
 //!
 //! | Words | Holds |
 //! | --- | --- |
-//! | head | `HEAD` words: `MAGIC`, the cell's x and y (zoom 16), the counts of corners, triangles, strip triangles, triangle runs, step slots and step runs, of the last triangle runs that draw only over level-18 nodes, of the last step slots, the end faces, and of the culvert mouths |
+//! | head | `HEAD` words: `MAGIC`, the cell's x and y (zoom 16), the counts of corners, triangles, strip triangles, triangle runs, step slots and step runs, of the last triangle runs that draw only over level-18 nodes, of the last step slots, the end faces, and of the culvert mouths; with the bores, then the count of the last end faces, those on a portal line |
 //! | corners | 2 words each (below), sorted by point (y, then x) |
 //! | triangle runs | 2 words each: the run's count of triangles and its base corner |
 //! | triangles | 3 u16 each, the run's base subtracted, turning as the terrain's `gridIndices` (negative signed area in x east, y south); the strip's triangles last, and last of all, in runs of their own, the strip's triangles of halves that the level-17 terrain draws (`strip`); a zero u16 pads an odd count of u16 |
 //! | step runs | 2 words each, as the triangle runs |
-//! | steps | 4 u16 each, the run's base subtracted: `a_p, a_q, b_q, b_p` (below); the slots on a deck end line (`EdgeKind::DeckEdge`) and, with the bores, beside the openings on a portal line (`EdgeKind::Headwall`) last, in runs of their own: the end faces |
+//! | steps | 4 u16 each, the run's base subtracted: `a_p, a_q, b_q, b_p` (below); the slots on a deck end line (`EdgeKind::DeckEdge`) last, in runs of their own: the end faces; with the bores the last of them beside the openings on a portal line (`EdgeKind::Headwall`) |
 //! | region | `REGION_WORDS` words: R on the cell and one ring of region cells, bit (cy + 1) × (`CELLS` + 2) + cx + 1 for region cell (cx, cy) of the cell, −1 ≤ cx, cy ≤ `CELLS` |
 //! | mouths | 4 words each: the corners of a culvert mouth's model (below), the zone outline's unit direction there (`pack2x16snorm`, x east, y south) and the water's half-width (f32, m) |
 //!
@@ -87,9 +87,9 @@ use region::{grid_of, Region, MARK_WORDS};
 
 pub use region::REGION_WORDS;
 
-/// "OBM" and the layout's version.
-pub const MAGIC: u32 = 0x4f42_4d05;
-pub const HEAD: usize = 12;
+/// "OBM" and the layout's version: with the bores, the end faces on the portal lines.
+pub const MAGIC: u32 = if crate::graph::BORES { 0x4f42_4d06 } else { 0x4f42_4d05 };
+pub const HEAD: usize = if crate::graph::BORES { 13 } else { 12 };
 /// A culvert mouth's corners lie this far from its point, on the water and in the zone (metres).
 pub const MOUTH_M: f64 = 0.1;
 /// The label of a corner of the terrain rule.
@@ -204,6 +204,10 @@ pub struct CellMesh {
     pub step_runs: Vec<[u32; 2]>,
     /// The last slots of `steps`: the end faces.
     pub end_faces: u32,
+    /// With the bores, the last of the end faces: those beside an opening on a portal line (`EdgeKind::Headwall`). Such
+    /// an end face is the end wall where the cover is its higher side; where the cover is the lower side, the step is a
+    /// fault and no wall. The CPU builds no height, so the look reads which side is higher.
+    pub headwalls: u32,
     pub region: Vec<u32>,
     pub mouths: Vec<[u32; 4]>,
     pub stats: MeshStats,
@@ -262,6 +266,7 @@ impl CellMesh {
         ];
         let words = head
             .into_iter()
+            .chain(crate::graph::BORES.then_some(self.headwalls))
             .chain(self.corners.iter().flatten().copied())
             .chain(self.triangle_runs.iter().flatten().copied())
             .chain(packed(&self.triangles, &self.triangle_runs))
@@ -515,12 +520,11 @@ pub fn mesh_cell(
         let k = t.map(|v| key(v, &mut ground));
         triangles.push([0, 1, 2].map(|i| corners.get(t[i], k[i])));
     }
-    let (mut steps, mut faces) = (Vec::new(), Vec::new());
+    let (mut steps, mut faces, mut walls) = (Vec::new(), Vec::new(), Vec::new());
     for (s, &kind) in input.segments[..input.edges].iter().zip(&input.kinds) {
         if crate::graph::BORES && kind == EdgeKind::Portal {
             continue;
         }
-        let end = matches!(kind, EdgeKind::DeckEdge | EdgeKind::Headwall);
         let side = |f: u32, v: u32, ground: &mut Vec<u32>| {
             if is_sharp(f) {
                 label_of(f)
@@ -532,10 +536,10 @@ pub fn mesh_cell(
         let (ra, rb) = (side(s.right, s.a, &mut ground), side(s.right, s.b, &mut ground));
         if la != ra || lb != rb {
             let slot = [corners.get(s.a, la), corners.get(s.b, lb), corners.get(s.b, rb), corners.get(s.a, ra)];
-            if end {
-                faces.push(slot);
-            } else {
-                steps.push(slot);
+            match kind {
+                EdgeKind::DeckEdge => faces.push(slot),
+                EdgeKind::Headwall => walls.push(slot),
+                _ => steps.push(slot),
             }
         }
     }
@@ -632,8 +636,8 @@ pub fn mesh_cell(
     let level18_count = level18.len() as u32;
     triangle_runs.extend(&level18_runs);
     let triangles = [shared, level18].concat();
-    let end_faces = faces.len();
-    let steps = [by_least(&steps, &rank), by_least(&faces, &rank)].concat();
+    let end_faces = faces.len() + walls.len();
+    let steps = [by_least(&steps, &rank), by_least(&faces, &rank), by_least(&walls, &rank)].concat();
     let mouths = mouths.into_iter().map(|[w, z, e, h]| [rank[w as usize], rank[z as usize], e, h]).collect();
     let step_runs = [runs(&steps[..steps.len() - end_faces])?, runs(&steps[steps.len() - end_faces..])?].concat();
     let packed = (order.iter())
@@ -668,6 +672,7 @@ pub fn mesh_cell(
         step_runs,
         steps,
         end_faces: end_faces as u32,
+        headwalls: walls.len() as u32,
         region: region.bits(),
         mouths,
         stats,

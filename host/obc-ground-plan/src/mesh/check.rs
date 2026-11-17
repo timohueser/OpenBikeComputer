@@ -226,15 +226,16 @@ pub fn deck_ends(
             along.abs() <= END_UNITS && across.abs() <= e.half + END_UNITS
         })
     };
-    // An end face beside an opening has both ends on one portal line (`EdgeKind::Headwall`); the points inside its edge
-    // are rounded to whole units, one unit more.
+    // An end face beside an opening (the last end faces, `CellMesh::headwalls`) has both ends on one portal line; the
+    // points inside its edge are rounded to whole units, one unit more.
     let portals = if crate::graph::BORES { portal_lines(words) } else { Vec::new() };
     let on_line = |q: [f64; 2], (p, n): ([f64; 2], u32)| behind_end(q, p, n).abs() <= ON_LINE_UNITS + 1.0;
     let on_portal = |a: [f64; 2], b: [f64; 2]| portals.iter().any(|&e| on_line(a, e) && on_line(b, e));
     let first = mesh.steps.len() - mesh.end_faces as usize;
+    let walls = mesh.steps.len() - mesh.headwalls as usize;
     for (k, s) in mesh.steps.iter().enumerate() {
-        let end = k >= first && on_portal(at(s[0]), at(s[1]));
-        match (end || (on(at(s[0])) && on(at(s[1]))), k >= first) {
+        let on_end = if k >= walls { on_portal(at(s[0]), at(s[1])) } else { on(at(s[0])) && on(at(s[1])) };
+        match (on_end, k >= first) {
             (false, true) => stray.push(format!("end face {k} at {:?} on no end line", at(s[0]))),
             (true, false) => missed.push(format!("slot {k} at {:?} on an end line", at(s[0]))),
             _ => {}
