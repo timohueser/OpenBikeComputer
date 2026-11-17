@@ -408,7 +408,9 @@ used_by = ["device", "planner", "trailview"]
 use = "Terrain in Denmark: DHM/Terræn 0.4 m"
 licence = "CC-BY-4.0"
 attribution = "Indeholder data fra Klimadatastyrelsen, Danmarks Højdemodel, {month} {year}"
-fetch = { kind = "dtm", url = "https://api.dataforsyningen.dk/dhm_wcs_DAF" }
+# `at_once` chosen by the owner: the Danish gateway answers 504 to a request that takes over
+# about 10 s, and one block at a time loads it least while the others run.
+fetch = { kind = "dtm", url = "https://api.dataforsyningen.dk/dhm_wcs_DAF", at_once = 1 }
 extent = [8.008, 54.435, 15.598, 57.769]
 areas = ["europe/denmark"]
 hosts = ["dataforsyningen.dk"]
