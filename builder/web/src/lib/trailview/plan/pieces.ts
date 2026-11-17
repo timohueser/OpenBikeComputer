@@ -30,8 +30,9 @@ const CORNERS_PER_FRAME = 8192;
 const GROUP_CORNERS = 12;
 /** A pass of the plain terrain's corners charges one corner of the budget for this many: the other corners return at once. */
 const TERRAIN_SHARE = 8;
-/** The top bit of the first corner in the parameters: the pass makes only the plain terrain's corners. */
+/** The top bit of the first corner in the parameters: the pass makes only the plain terrain's corners. The next one: the caps pass of a storey mesh (CAPS_BIT of corners.wgsl). */
 const TERRAIN_BIT = 0x80000000;
+const CAPS_BIT = 0x40000000;
 /** A piece whose cell reaches this far before the level-18 plateau's end draws with the fade: the metres of four mesh triangles. */
 const FADE_MARGIN_M = 10;
 /** Bytes of a piece's parameters, as Piece of corners.wgsl (piece.wgsl reads the first 56). */
@@ -69,8 +70,11 @@ interface Piece {
     stamped: boolean;
 }
 
-/** A cell's storeys on the device: their buffer (as a piece's, with the triangles and the offsets after the slots), parameters, draw and cast groups, and the compute group of the last stamps. */
-interface StoreysGpu { data: GPUBuffer; params: GPUBuffer; draw: GPUBindGroup; cast?: GPUBindGroup; compute?: GPUBindGroup; computed: boolean }
+/**
+ * A cell's storeys on the device: their buffer (as a piece's, with the triangles, the offsets and the caps after the slots), parameters,
+ * draw and cast groups, and the compute group of the last stamps; with caps, the parameters and the compute group of the caps pass.
+ */
+interface StoreysGpu { data: GPUBuffer; params: GPUBuffer; draw: GPUBindGroup; cast?: GPUBindGroup; compute?: GPUBindGroup; computed: boolean; capParams?: GPUBuffer; capCompute?: GPUBindGroup }
 
 interface Resources {
     gpu: Gpu;
@@ -204,7 +208,7 @@ export class Pieces {
 
     private release(piece: Piece): void {
         const r = this.resources;
-        if (r && piece.gpu) for (const buffer of [piece.gpu.data, piece.gpu.indices, piece.gpu.params, piece.gpu.stamps, piece.gpu.storeys?.data, piece.gpu.storeys?.params]) if (buffer) r.gpu.destroy('plan', buffer);
+        if (r && piece.gpu) for (const buffer of [piece.gpu.data, piece.gpu.indices, piece.gpu.params, piece.gpu.stamps, piece.gpu.storeys?.data, piece.gpu.storeys?.params, piece.gpu.storeys?.capParams]) if (buffer) r.gpu.destroy('plan', buffer);
         piece.gpu = undefined;
         piece.computed = false;
         piece.stale = 'all';
@@ -344,14 +348,16 @@ export class Pieces {
     /** A cell's storeys: their corners, out words, slots, triangles, offsets and caps in one buffer, as their parameters name them. */
     private uploadStoreys(r: Resources, storeys: StoreyMesh): StoreysGpu {
         const { device } = r.gpu, { corners, slots, triangles, offsets, caps } = storeys, n = offsets.length;
-        const data = r.gpu.buffer('plan', 4 * Math.max(4, 7 * n + slots.length + triangles.length + caps.length), GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+        // Each cap's height after the caps: one word each.
+        const data = r.gpu.buffer('plan', 4 * Math.max(4, 7 * n + slots.length + triangles.length + (4 * caps.length) / 3), GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
         const params = r.gpu.buffer('plan', PARAMS_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
         device.queue.writeBuffer(data, 0, corners);
         device.queue.writeBuffer(data, 4 * 6 * n, slots);
         device.queue.writeBuffer(data, 4 * (6 * n + slots.length), triangles);
         device.queue.writeBuffer(data, 4 * (6 * n + slots.length + triangles.length), offsets);
         if (caps.length) device.queue.writeBuffer(data, 4 * (7 * n + slots.length + triangles.length), caps);
-        return { data, params, draw: this.drawGroup(r, data, params, r.frame), computed: false };
+        const capParams = caps.length ? r.gpu.buffer('plan', PARAMS_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST) : undefined;
+        return { data, params, draw: this.drawGroup(r, data, params, r.frame), computed: false, capParams };
     }
 
     private drawGroup(r: Resources, data: GPUBuffer, params: GPUBuffer, frame: GPUBuffer): GPUBindGroup {
@@ -374,7 +380,7 @@ export class Pieces {
             if (piece.stale || !piece.gpu?.stamps) continue;
             r.gpu.destroy('plan', piece.gpu.stamps);
             piece.gpu.stamps = piece.gpu.compute = piece.gpu.bound = undefined;
-            if (piece.gpu.storeys) piece.gpu.storeys.compute = undefined;
+            if (piece.gpu.storeys) piece.gpu.storeys.compute = piece.gpu.storeys.capCompute = undefined;
         }
         const shown = new Set(this.inView), near = (piece: Piece) => distances(eye, piece.node)[0];
         const stale = [...this.pieces.values()].filter(piece => piece.stale && piece.gpu && piece.block >= 0).sort((a, b) => +shown.has(b) - +shown.has(a) || near(a) - near(b));
@@ -424,9 +430,17 @@ export class Pieces {
         // The storeys' corners carry labels only, and are few: all of them with the first dispatch of an `all` pass.
         const storeys = gpu.storeys, mesh = piece.mesh.storeys;
         if (make !== 'all' || first !== 0 || !storeys?.compute || !mesh) return;
-        const m = mesh.offsets.length, slots = mesh.slots.length, tris = 6 * m + slots;
+        const m = mesh.offsets.length, slots = mesh.slots.length, tris = 6 * m + slots, caps = mesh.caps.length / 3;
         // The storeys' slots are all plain concrete: their end faces start at 0.
-        words.set([m, 6 * m, 2 * m, 0, piece.block, 0, 0, tris + mesh.triangles.length, tris, mesh.top, mesh.railings, mesh.piers, mesh.caps.length ? tris + mesh.triangles.length + m : 0, mesh.caps.length / 3], 2);
+        words.set([m, 6 * m, 2 * m, 0, piece.block, 0, 0, tris + mesh.triangles.length, tris, mesh.top, mesh.railings, mesh.piers, caps ? tris + mesh.triangles.length + m : 0, caps], 2);
+        // The caps' heights first, with their own parameters: a dispatch reads the parameters of the queue's last write.
+        if (caps && storeys.capParams && storeys.capCompute) {
+            words[7] = CAPS_BIT;
+            r.gpu.device.queue.writeBuffer(storeys.capParams, 0, params);
+            words[7] = 0;
+            pass.setBindGroup(0, storeys.capCompute);
+            pass.dispatchWorkgroups(Math.ceil(caps / GROUP_CORNERS));
+        }
         r.gpu.device.queue.writeBuffer(storeys.params, 0, params);
         pass.setBindGroup(0, storeys.compute);
         pass.dispatchWorkgroups(Math.ceil(m / GROUP_CORNERS));
@@ -461,7 +475,10 @@ export class Pieces {
             { binding: 4, resource: { buffer: r.profiles } }, { binding: 8, resource: r.records.createView() },
         ] });
         gpu.compute = compute(gpu.data, gpu.params);
-        if (gpu.storeys) gpu.storeys.compute = terrain ? undefined : compute(gpu.storeys.data, gpu.storeys.params);
+        if (gpu.storeys) {
+            gpu.storeys.compute = terrain ? undefined : compute(gpu.storeys.data, gpu.storeys.params);
+            gpu.storeys.capCompute = terrain || !gpu.storeys.capParams ? undefined : compute(gpu.storeys.data, gpu.storeys.capParams);
+        }
     }
 
     /** For the determinism check, per computed piece: its mesh from the worker, and the GPU buffer range of the corners that the pass made. */
@@ -565,7 +582,7 @@ export class Pieces {
     }
 
     get stats(): PiecesStats {
-        const storeyBytes = ({ storeys: s }: CellMesh) => (s ? 4 * (7 * s.offsets.length + s.slots.length + s.triangles.length + s.caps.length) : 0);
+        const storeyBytes = ({ storeys: s }: CellMesh) => (s ? 4 * (7 * s.offsets.length + s.slots.length + s.triangles.length + (4 * s.caps.length) / 3) : 0);
         const bytes = [...this.pieces.values()].reduce((sum, { mesh }) => sum + 4 * (3 * mesh.corners.length + mesh.steps.length + mesh.culverts.length) + 2 * mesh.triangles.length + storeyBytes(mesh), 0);
         return {
             cells: this.pieces.size, drawn: this.drawn.length, inView: this.inView.length,

@@ -109,6 +109,11 @@ fn height_of(q: vec2i, label: u32, storey: bool) -> f32 {
     return select(stamp_bounded(h.x, h.y == H_PAVED, s), h.x, storey);
 }
 
+// The bit of `first` that marks the caps pass: before a storey's corners, each cap's height at its corner's
+// point with its offset, into the word after the caps (one call of height_of in the shader, so the driver inlines the
+// heights once).
+const CAPS_BIT: u32 = 0x40000000u;
+
 // The first cap of storey corner k: a lower bound over the caps, which lie sorted by corner (mesh/shell.rs).
 fn first_cap(k: u32) -> u32 {
     var lo = 0u;
@@ -300,15 +305,25 @@ var<workgroup> corner_heights: array<f32, 64>;
 // A dispatch makes the corners from `first` on: a large cell takes a few frames.
 @compute @workgroup_size(64)
 fn corners(@builtin(local_invocation_index) lane: u32, @builtin(workgroup_id) group: vec3u) {
-    let k = (params.first & 0x7fffffffu) + group.x * GROUP_CORNERS + lane / LANES;
+    let k = (params.first & 0x3fffffffu) + group.x * GROUP_CORNERS + lane / LANES;
     let tap = lane % LANES;
     let terrain_only = (params.first >> 31u) == 1u;
-    let w0 = piece[2u * min(k, params.corners - 1u)];
-    let w1 = piece[2u * min(k, params.corners - 1u) + 1u];
+    // The caps pass (CAPS_BIT): item k is a cap, which reads its label at its corner's point.
+    let caps_pass = (params.first & CAPS_BIT) != 0u;
+    let corner = select(min(k, params.corners - 1u), piece[params.caps + 3u * min(k, max(params.cap_count, 1u) - 1u)], caps_pass);
+    let w0 = piece[2u * corner];
+    let w1 = piece[2u * corner + 1u];
     // A terrain vertex draws with the terrain's vertex code, as ground.
-    let makes = lane < LANES * GROUP_CORNERS && k < params.corners && (w1 >> 31u) == 0u;
+    let makes = lane < LANES * GROUP_CORNERS && k < select(params.corners, params.cap_count, caps_pass) && (w1 >> 31u) == 0u;
     let q = vec2i(i32(w0 & 0x7ffffu), i32(w1 & 0x7ffffu));
     var label = (w0 >> 19u) | (((w1 >> 19u) & 0xfffu) << 13u);
+    // A cap reads its label as storey 0's corner of that label reads it, so a bore's roof stays its plate under the
+    // ground as drawn; a cap of the plain terrain reads as the storey's own corners do.
+    var storey = params.offsets != 0u;
+    if (caps_pass) {
+        label = piece[params.caps + 3u * k + 1u];
+        storey = label == NO_LABEL;
+    }
     if (label == NO_LABEL) {
         label = M_NONE;
     }
@@ -319,39 +334,17 @@ fn corners(@builtin(local_invocation_index) lane: u32, @builtin(workgroup_id) gr
     var taps = array(vec2i(0), vec2i(step, 0), vec2i(-step, 0), vec2i(0, -step), vec2i(0, step));
     let cell = vec2i(i32(M_CELL));
     var h = NONE;
-    // The least of a storey corner's caps (mesh/shell.rs's StoreyMesh::corner_height), each with its offset; NONE
-    // where one is unknown.
-    var caps = -NONE;
-    if (makes && (tap == 0u || (!terrain_only && may_pave(label))) && (!terrain_only || label == M_NONE)) {
-        // The corner's own height, then on lane 0 each cap's: one call of height_of, so the driver inlines the heights
-        // once. A cap reads its label as storey 0's corner of that label reads it, so a bore's roof stays its plate
-        // under the ground as drawn; a cap of the plain terrain reads as the storey's own corners do.
-        var j = select(params.cap_count, first_cap(k), tap == 0u && params.cap_count != 0u);
-        var own = true;
-        loop {
-            var l = label;
-            var storey = params.offsets != 0u;
-            if (!own) {
-                if (j >= params.cap_count || piece[params.caps + 3u * j] != k) {
-                    break;
-                }
-                l = piece[params.caps + 3u * j + 1u];
-                storey = l == NO_LABEL;
-                l = select(l, M_NONE, l == NO_LABEL);
-            }
-            let v = height_of(clamp(q + taps[tap], vec2i(0), cell), l, storey);
-            if (own) {
-                h = v;
-            } else {
-                caps = select(NONE, min(caps, v + bitcast<f32>(piece[params.caps + 3u * j + 2u])), known(v) && known(caps));
-                j++;
-            }
-            own = false;
-        }
+    if (makes && (tap == 0u || (!terrain_only && !caps_pass && may_pave(label))) && (!terrain_only || label == M_NONE)) {
+        h = height_of(clamp(q + taps[tap], vec2i(0), cell), label, storey);
     }
     corner_heights[lane] = h;
     workgroupBarrier();
-    if (lane >= LANES * GROUP_CORNERS || k >= params.corners || tap != 0u) {
+    if (lane >= LANES * GROUP_CORNERS || k >= select(params.corners, params.cap_count, caps_pass) || tap != 0u) {
+        return;
+    }
+    // A cap's height with its offset, after the caps, for the storey's corners pass.
+    if (caps_pass) {
+        piece[params.caps + 3u * params.cap_count + k] = bitcast<u32>(select(NONE, h + bitcast<f32>(piece[params.caps + 3u * k + 2u]), known(h)));
         return;
     }
     let o = params.out + 4u * k;
@@ -399,8 +392,11 @@ fn corners(@builtin(local_invocation_index) lane: u32, @builtin(workgroup_id) gr
     if (params.offsets != 0u && known(h)) {
         h += bitcast<f32>(piece[params.offsets + k]);
     }
-    if (params.cap_count != 0u && known(h)) {
-        h = select(NONE, min(h, caps), known(caps));
+    // The least of a storey corner's height and its caps' (mesh/shell.rs's StoreyMesh::corner_height), which the caps
+    // pass made; NONE where one is unknown.
+    for (var j = select(params.cap_count, first_cap(k), known(h) && params.cap_count != 0u); j < params.cap_count && piece[params.caps + 3u * j] == k; j++) {
+        let c = bitcast<f32>(piece[params.caps + 3u * params.cap_count + j]);
+        h = select(NONE, min(h, c), known(c) && known(h));
     }
     piece[o] = bitcast<u32>(h);
     piece[o + 1u] = look.x;
