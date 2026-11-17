@@ -1259,9 +1259,15 @@ impl Sliced {
                 }
             } else if labels[k].surface != Surface::Cover {
                 // The lines that are a lid here: the patch lies in the stroke of their stretches on top of a way of
-                // the floor's.
+                // the floor's: the floor's own way (over all its length, not only at its marks) or a way whose mark or
+                // floor in front of a portal line holds the patch.
+                let floor = match under[k] {
+                    Label { owner: Owner::Way(w), .. } | Label { material: Some(w), .. } => Some(w),
+                    _ => None,
+                };
                 let ok: Vec<usize> = (c.lid_of.iter())
-                    .filter(|x| back[k].contains(&x.0) && inner[k].is_some_and(|q| geom::winding(&x.2, q) != 0))
+                    .filter(|x| floor == Some(x.0) || back[k].contains(&x.0))
+                    .filter(|x| inner[k].is_some_and(|q| geom::winding(&x.2, q) != 0))
                     .map(|x| x.1)
                     .collect();
                 let keep = |x: &Cand| {
@@ -2080,9 +2086,24 @@ fn bore_cover(ctx: &Ctx, input: &CellInput, ground: &[WayLine], ways_box: [i32; 
     if strokes.iter().all(Vec::is_empty) {
         return Lid::default();
     }
-    // A way lies on top of a lower way where its surface lies at least the lower way's least room over the lower way's
-    // floor at every place where their strokes meet: the heights decide, not a crossing of the centre lines. A way
-    // beside the bore or level with it (the other tube's approach) is none: it ends at the side of the opening.
+    // Each bore's stroke as rings, and their box.
+    let bore_rings: Vec<Rings> = strokes.iter().map(|s| union(s, [0, 0])).collect();
+    let bore_box: Vec<[i32; 4]> = (bore_rings.iter())
+        .map(|r| {
+            r.iter().flatten().fold([i32::MAX, i32::MAX, i32::MIN, i32::MIN], |b, p| {
+                [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])]
+            })
+        })
+        .collect();
+    // The ways that enter a bore at its portal: they end on its portal line, in front of it.
+    let enters_bore = |way: u32, bore: u32| {
+        g.joints.iter().any(|j| j.arms.iter().any(|a| a.way == way) && j.arms.iter().any(|a| a.way == bore))
+    };
+    // A ground way lies on top of a bore where its paved stroke overlaps the bore's stroke: the bake makes a bore only
+    // where every paved stroke of a ground way over its floor leaves the least room (`graph::levels`, `Ctx::lid`), so
+    // the device asks no heights. Water is no lid of the bake's: it, and a way over the last metres of a way that enters
+    // a bore, lies on top where its surface lies at least the lower way's least room over the lower way's floor at every
+    // place where their strokes meet: the heights decide, not a crossing of the centre lines.
     // The lower ways' centre lines with their heights (the graph's samples), their reach (core and wall, units) and
     // their least room (the least bore and the roof's least plate, metres).
     type Poly = Vec<([f64; 2], f64)>;
@@ -2119,9 +2140,9 @@ fn bore_cover(ctx: &Ctx, input: &CellInput, ground: &[WayLine], ways_box: [i32; 
             })
             .min_by(|x, y| x.0.total_cmp(&y.0))
     };
-    // A stretch of a ground way between two of its samples lies on top where, at each of its points about 2 m apart,
-    // its surface lies at least the least room over the floor of every bore whose stroke its own stroke meets there;
-    // a stretch that meets no bore is not asked.
+    // By the heights, a stretch of a line between two of its samples lies on top where, at each of its points about 2 m
+    // apart, its surface lies at least the least room over the floor of the lower way whose stroke its own stroke meets
+    // there; a stretch that meets none is not asked.
     // Per lower way, the core strokes of the stretches on top of it: its lids.
     let mut cores: Vec<Vec<Vec<P>>> = vec![Vec::new(); under.len()];
     let mut tops: Vec<Vec<bool>> = vec![Vec::new(); ground.len()];
@@ -2174,8 +2195,39 @@ fn bore_cover(ctx: &Ctx, input: &CellInput, ground: &[WayLine], ways_box: [i32; 
             meets
         };
         let ends = [line.round[0] && first == 0, line.round[1] && last == line.p.len()];
-        for (u, cores) in under.iter().zip(&mut cores) {
-            let top: Vec<bool> = (first..last - 1).map(|i| on_top(i, u)).collect();
+        // The pieces of the run's paved stroke and the segments of each (`stroke::pieces_along_of`), once per line.
+        let mut paved: Option<(Vec<Vec<P>>, Vec<[usize; 2]>)> = None;
+        for (ui, (u, cores)) in under.iter().zip(&mut cores).enumerate() {
+            let top: Vec<bool> = if ui < bores.len() && !line.sec.water {
+                let mut top = vec![false; last - first - 1];
+                let reach = line.bands[first..last].iter().map(|b| b[1]).fold(0.0, f64::max).ceil() as i32;
+                let b = bore_box[ui];
+                let near = [b[0] - reach, b[1] - reach, b[2] + reach, b[3] + reach];
+                if !enters_bore(line.way, u.3) && (first..last - 1).any(|i| geom::meets(near, line.p[i], line.p[i + 1]))
+                {
+                    let (pieces, of) = paved.get_or_insert_with(|| {
+                        let d: Vec<f64> = (first..last).map(|k| line.bands[k][1]).collect();
+                        let (mut pieces, mut of) = (Vec::new(), Vec::new());
+                        let (p, dirs) = (&line.p[first..last], line.dirs(first, last));
+                        stroke::pieces_along_of(p, &d, &dirs, [&[], &[]], ends, false, &mut pieces, Some(&mut of));
+                        (pieces, of)
+                    });
+                    for (piece, &[a, c]) in pieces.iter().zip(of.iter()) {
+                        let (lo, hi) = piece.iter().fold(([i32::MAX; 2], [i32::MIN; 2]), |(l, h), p| {
+                            ([l[0].min(p[0]), l[1].min(p[1])], [h[0].max(p[0]), h[1].max(p[1])])
+                        });
+                        let boxes = lo[0] <= b[2] && hi[0] >= b[0] && lo[1] <= b[3] && hi[1] >= b[1];
+                        let rings = std::slice::from_ref(piece);
+                        if boxes && !stroke::boolean(rings, &bore_rings[ui], OverlayRule::Intersect, [0, 0]).is_empty()
+                        {
+                            top[a..=c].iter_mut().for_each(|x| *x = true);
+                        }
+                    }
+                }
+                top
+            } else {
+                (first..last - 1).map(|i| on_top(i, u)).collect()
+            };
             if top.contains(&true) {
                 let t = &mut tops[li];
                 t.resize(line.p.len() - 1, false);
@@ -2210,8 +2262,8 @@ fn bore_cover(ctx: &Ctx, input: &CellInput, ground: &[WayLine], ways_box: [i32; 
     // The cover: each bore's stroke less its own lids. The lids of the ways that enter a bore, by way.
     let lids: Vec<Rings> = cores.iter().map(|c| union(c, [0, 0])).collect();
     let mut rings = Vec::new();
-    for (stroke, lid) in strokes.iter().zip(&lids).filter(|x| !x.0.is_empty()) {
-        rings.extend(stroke::boolean(&union(stroke, [0, 0]), lid, OverlayRule::Difference, [0, 0]));
+    for (stroke, lid) in bore_rings.iter().zip(&lids).filter(|x| !x.0.is_empty()) {
+        rings.extend(stroke::boolean(stroke, lid, OverlayRule::Difference, [0, 0]));
     }
     let rings = union(&rings, [0, 0]);
     let mut wide = Vec::new();
