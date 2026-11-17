@@ -2149,14 +2149,13 @@ fn band_cand(plan: &PlanRules, lines: &[WayLine], line: Option<usize>, k: usize,
 /// band layers: the medial lines between its legs cut it, each piece goes to its nearest leg, whose line
 /// is its host, and each leg's part is the union of its pieces, which share their vertices. Where two
 /// legs overlap, the nearest one owns the ground, and the step between them stands on the medial line
-/// (blended where they agree). A candidate keeps its place with its first leg's part; the others go to
-/// the end. Returns per candidate the places of its parts.
+/// (blended where they agree). A cell that sees no cut names the same way (a label names a way, not its
+/// leg). A candidate keeps its place with its first leg's part; the others go to the end. Returns per
+/// candidate the places of its parts.
 fn split_legs(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, cands: &mut Vec<Cand>) -> Vec<Vec<usize>> {
     let mut parts: Vec<Vec<usize>> = (0..cands.len()).map(|c| vec![c]).collect();
-    // Per line, its legs, the medial lines between them, the near zone of each leg (`Legs::runs`), and
-    // the medial lines with the zones' edges.
-    type Cuts = (legs::Legs, Vec<[P; 2]>, Vec<Rings>, Vec<[P; 2]>);
-    let mut legs_of: Vec<Option<Cuts>> = (0..lines.len()).map(|_| None).collect();
+    // Per line, its legs and the medial lines between them.
+    let mut legs_of: Vec<Option<(legs::Legs, Vec<[P; 2]>)>> = (0..lines.len()).map(|_| None).collect();
     for c in 0..parts.len() {
         let w = match cands[c].label {
             Label { owner: Owner::Way(w), .. } | Label { owner: Owner::Terrain, material: Some(w), .. } => w,
@@ -2169,39 +2168,21 @@ fn split_legs(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, cands
         let line = &lines[l];
         // The origin of the integer cuts and unions only: they do not depend on it.
         let anchor = line.p[line.cuts[0]];
-        let (legs, medial, zones, edges) = legs_of[l].get_or_insert_with(|| {
+        let (legs, medial) = legs_of[l].get_or_insert_with(|| {
             let legs = legs::Legs::new(&line.p, &line.cuts, &|o| ctx.units(line.leg_reach_m(), o));
             let medial = legs.medial(&|o| ctx.units(LEG_STEP_M, o));
-            // A leg's near zone: its stretches' strokes, as wide as its reach, with round ends, so the
-            // zones of two legs leave no gap about their cut.
-            let mut strokes = vec![Vec::new(); line.cuts.len() + 1];
-            for (k, run, r) in legs.runs() {
-                stroke::pieces_along(&run, &vec![r; run.len()], &[], [&[], &[]], [true, true], false, &mut strokes[k]);
-            }
-            let zones: Vec<Rings> = strokes.iter().map(|s| prepare(&union(s, anchor))).collect();
-            let mut edges = medial.clone();
-            for r in zones.iter().flatten() {
-                edges.extend((0..r.len()).map(|i| [r[i], r[(i + 1) % r.len()]]));
-            }
-            (legs, medial, zones, edges)
+            (legs, medial)
         });
-        // A band also splits at the edge of the near zone: its pieces in the zone take their nearest
-        // leg's line as their host, and any piece outside stays plain, so its label does not depend on a
-        // cut that another cell may not see.
-        let band = cands[c].label.owner == Owner::Terrain && cands[c].label.surface != Surface::Sidewalk;
         let label = cands[c].label;
         let mut by_label: Vec<(Label, Rings)> = Vec::new();
-        for piece in stroke::cut(&cands[c].rings, if band { edges } else { medial }, anchor) {
+        for piece in stroke::cut(&cands[c].rings, medial, anchor) {
             let q = inner_point(&piece).unwrap_or_else(|| {
                 let n = piece[0].len() as i64;
                 let sum = piece[0].iter().fold([0i64; 2], |s, p| [s[0] + i64::from(p[0]), s[1] + i64::from(p[1])]);
                 [(2 * sum[0]).div_euclid(n), (2 * sum[1]).div_euclid(n)]
             });
             let leg = legs.nearest([q[0] as f64 / 2.0, q[1] as f64 / 2.0]);
-            let part = match band && zones.iter().all(|z| geom::winding(z, q) == 0) {
-                true => Label { material: None, ..label },
-                false => Label { legs: [leg, label.legs[1]], ..label },
-            };
+            let part = Label { legs: [leg, label.legs[1]], ..label };
             match by_label.iter_mut().find(|(l, _)| *l == part) {
                 Some((_, rings)) => rings.extend(piece),
                 None => by_label.push((part, piece)),
