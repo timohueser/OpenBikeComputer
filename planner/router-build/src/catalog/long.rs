@@ -23,11 +23,12 @@ pub(super) struct Leaf {
 }
 
 /// The parts of a long relation in member order: its children with a stage role, each long child
-/// opened in its place. A relation counts once, at its first place.
-pub(super) fn leaves(relation: &Relation, relations: &Table<Relations>) -> Vec<Leaf> {
-    let mut leaves = Vec::new();
-    open(relation, relations, 1, &mut HashSet::from([relation.id]), &mut leaves);
-    leaves
+/// opened in its place. A relation counts once, at its first place. The answer also says whether
+/// it opens a connector leg.
+pub(super) fn leaves(relation: &Relation, relations: &Table<Relations>) -> (Vec<Leaf>, bool) {
+    let (mut leaves, mut connector) = (Vec::new(), false);
+    open(relation, relations, 1, &mut HashSet::from([relation.id]), &mut leaves, &mut connector);
+    (leaves, connector)
 }
 
 fn open(
@@ -36,6 +37,7 @@ fn open(
     depth: usize,
     seen: &mut HashSet<i64>,
     leaves: &mut Vec<Leaf>,
+    connector: &mut bool,
 ) {
     for id in children(relation) {
         if !seen.insert(id) {
@@ -46,14 +48,18 @@ fn open(
             continue;
         };
         let class = class(&child, relations);
+        if !is_route(relations, id) {
+            continue;
+        }
         // A connector leg is no stage, so it moves no stage number.
-        if !is_route(relations, id) || is_connector(&child, class, relations) {
+        if is_connector(&child, class, relations) {
+            *connector = true;
             continue;
         }
         if class != Class::Long {
             leaves.push(Leaf { id, depth });
         } else if depth < MAX_DEPTH {
-            open(&child, relations, depth + 1, seen, leaves);
+            open(&child, relations, depth + 1, seen, leaves, connector);
         }
     }
 }
@@ -93,11 +99,13 @@ impl Part<'_> {
 }
 
 /// The record of a long relation from its parts, and the plan points of its kept parts joined.
-/// `None` when no part is kept.
+/// `None` when no part is kept. A relation that opens a connector leg is never complete: the leg
+/// leaves a gap between its parts.
 pub(super) fn record(
     relation: &Relation,
     kind: &str,
     parts: &[Part],
+    connector: bool,
     france: bool,
 ) -> Option<(Map<String, Value>, usize)> {
     let kept: Vec<&Kept> = parts.iter().filter_map(|part| part.kept).collect();
@@ -143,7 +151,7 @@ pub(super) fn record(
     record.insert("parts".into(), json!(entries));
     record.insert("stage_count".into(), json!(parts.len()));
     record.insert("trail_profile_m".into(), json!(trail_profile(parts, &flags)));
-    if kept.len() == parts.len() && flags.iter().all(|&(backwards, jump)| !backwards && !jump) {
+    if !connector && kept.len() == parts.len() && flags.iter().all(|&(backwards, jump)| !backwards && !jump) {
         record.insert("stages".into(), json!(parts.iter().map(|part| part.id).collect::<Vec<_>>()));
         record.insert("start_udeg".into(), json!(way(0).unwrap().0));
     }

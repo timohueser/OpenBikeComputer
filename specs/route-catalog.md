@@ -261,10 +261,12 @@ So a run is a stretch of parts that join each other, such as the stages of a tra
 or one of several trails that one relation lists one after another.
 
 A long route is complete when each part is in the catalog, and no part runs backwards or has a jump.
-Only a complete long route has `stages` and `start_udeg`, and only its stages have `parent` and
-`stage`: `stages` lists its parts, and `start_udeg` is the start of its first part. When a route is a
-stage of two complete long routes, `parent` is the one with the lower relation ID. A reader that
-knows only these fields shows the parts of every other long route as single routes.
+A long route that opens a connector leg is never complete, because the leg leaves a gap between its
+parts. Only a complete long route has `stages` and `start_udeg`, and only its stages have `parent`
+and `stage`: `stages` lists its parts, and `start_udeg` is the start of its first part. When a route
+is a stage of two complete long routes, `parent` is the one that lists it at the lower level (see
+`trail`); of two at the same level, the one with the lower relation ID. A reader that knows only
+these fields shows the parts of every other long route as single routes.
 
 A long route has no `line_udeg`, `via`, `turnarounds` or `profile_m`. `length_m`, `ascent_m`,
 `descent_m` and `grades_m` are the sums of the values of its parts in the catalog. `hardest` is the

@@ -316,9 +316,9 @@ pub struct Report {
     pub kept: BTreeMap<String, usize>,
     pub loops: usize,
     pub long_routes: usize,
-    /// Long records with a missing part, and none backwards or after a jump.
+    /// Long records that are not complete, with no kept part backwards or after a jump.
     pub partial_long_routes: usize,
-    /// Long records with a part backwards or after a jump.
+    /// Long records with a kept part backwards or after a jump.
     pub broken_long_routes: usize,
     pub missing_parts: usize,
     pub backwards_parts: usize,
@@ -353,9 +353,10 @@ impl Report {
         self.missing_parts += missing;
         self.backwards_parts += backwards;
         self.jumps += jumps;
-        if backwards + jumps > 0 {
+        let kept = parts.iter().filter(|part| part.get("missing").is_none());
+        if kept.clone().any(|part| part.get("backwards").is_some() || part.get("jump").is_some()) {
             self.broken_long_routes += 1;
-        } else if missing > 0 {
+        } else if !record.contains_key("stages") {
             self.partial_long_routes += 1;
         }
         *self.kept.entry(record["kind"].as_str().unwrap().to_string()).or_default() += 1;
@@ -538,13 +539,17 @@ fn catalog<S: Source + Clone + Send>(
             }
         }
     }
-    // Each kept part gets the innermost long record that lists it as its trail; a stage of a
-    // complete long record also gets the lowest such record as its parent.
+    // Each kept part gets the innermost long record that lists it as its trail, and a stage of a
+    // complete long record the innermost complete one as its parent; of two at the same level, the
+    // lower relation ID.
     let mut trails = BTreeMap::<i64, (usize, i64, usize)>::new();
-    let mut parents = BTreeMap::<i64, (i64, usize)>::new();
+    let mut parents = BTreeMap::<i64, (usize, i64, usize)>::new();
+    let innermost = |map: &mut BTreeMap<i64, (usize, i64, usize)>, id: i64, trail| {
+        map.entry(id).and_modify(|t| *t = (*t).min(trail)).or_insert(trail);
+    };
     let mut records = Vec::new();
     for (relation, kind) in long {
-        let leaves = long::leaves(&relation, &relations);
+        let (leaves, connector) = long::leaves(&relation, &relations);
         let parts: Vec<long::Part> = leaves
             .iter()
             .map(|leaf| long::Part {
@@ -554,16 +559,16 @@ fn catalog<S: Source + Clone + Send>(
                 line: lines.get(&leaf.id).copied(),
             })
             .collect();
-        let Some((record, points)) = long::record(&relation, &kind, &parts, france) else {
+        let Some((record, points)) = long::record(&relation, &kind, &parts, connector, france) else {
             drops.insert(relation.id, Reason::NoStages);
             continue;
         };
         let complete = record.contains_key("stages");
         for (number, leaf) in leaves.iter().enumerate().filter(|(_, leaf)| kept.contains_key(&leaf.id)) {
             let trail = (leaf.depth, relation.id, number + 1);
-            trails.entry(leaf.id).and_modify(|t| *t = (*t).min(trail)).or_insert(trail);
+            innermost(&mut trails, leaf.id, trail);
             if complete {
-                parents.entry(leaf.id).or_insert((relation.id, number + 1));
+                innermost(&mut parents, leaf.id, trail);
             }
         }
         report.add_long(&record, points);
@@ -574,7 +579,7 @@ fn catalog<S: Source + Clone + Send>(
             route.record.insert("trail".into(), json!(trail));
             route.record.insert("trail_stage".into(), json!(number));
         }
-        if let Some((parent, number)) = parents.get(&id) {
+        if let Some((_, parent, number)) = parents.get(&id) {
             route.record.insert("parent".into(), json!(parent));
             route.record.insert("stage".into(), json!(number));
             report.stages += 1;
