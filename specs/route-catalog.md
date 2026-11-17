@@ -136,8 +136,9 @@ of more than 30 m back as an out-and-back side trip at the point where it leaves
 turnaround. A main member way that the import does not hold, such as a park or a way with no road
 tag, is skipped when a held main way comes before it and after it in member order; a route skips
 at most 2 such ways, and the line joins across them as across any gap. The router patches each gap.
-A route whose routed patch is longer than twice the gap plus 100 m leaves the catalog. To reproduce the route, the router's route for the plan with
-each profile has a deviation of at most 2 % of the main-line length. The deviation is the length of
+The route's own line is its pieces joined straight across their gaps. A route leaves the catalog
+when more than 500 m of a routed patch is farther than 30 m from its own line. To reproduce the
+route, the router's route for the plan with each profile has a deviation of at most 2 % of the main-line length. The deviation is the length of
 the routed line that is more than 30 m from the main line, plus the length of the main line that is
 more than 30 m from the routed line. The plan route is the route that the router gives for the plan
 with one of these profiles: `touring` for `bicycle`, else the only one. The plan runs in the member
