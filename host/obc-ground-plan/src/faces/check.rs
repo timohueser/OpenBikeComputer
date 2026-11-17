@@ -9,7 +9,7 @@ use i_overlay::core::solver::{Precision, Solver, Strategy};
 use i_overlay::i_float::int::point::IntPoint;
 
 use super::geom::{area2, closest, cross, winding, P};
-use super::types::{Face, FacePlan, Owner, Surface, OUTSIDE};
+use super::types::{CornerArc, Face, FacePlan, Owner, Surface, OUTSIDE};
 use crate::frame::{metres_per_unit, CELL_UNITS};
 use crate::graph::{Level, WayGraph};
 
@@ -818,6 +818,10 @@ pub fn kinks(plan: &FacePlan, graph: &WayGraph, input: &crate::CellInput, rules:
         for k in 0..pts.len() {
             let Some(r) = place(pts, &turn, &radius, k, reach) else { continue };
             let Some((r_in, sag)) = super::outline::at_corner(&lines, pts[k]) else { continue };
+            // A pair's kerb round is smaller than its ways' inner radius by design (where one side walks): a corner
+            // within a round's radius of its circle is measured against that round.
+            let near = |c: &&CornerArc| (len(c.centre, pts[k]) * mpu - c.radius_m).abs() <= c.radius_m;
+            let r_in = plan.corners.iter().filter(near).fold(r_in, |r, c| r.min(c.radius_m));
             let radius_m = r * mpu;
             if radius_m < KINK_SHARE * r_in && !rounded(pts[k], sag) {
                 out.push(Kink { face: chain.face(k), at: pts[k], radius_m });
@@ -902,6 +906,70 @@ pub fn short_features(plan: &FacePlan) -> Vec<ShortFeature> {
             }
         }
         out.extend(run.map(|r| r.0));
+    }
+    out
+}
+
+/// A slab face under this area that touches no other slab face is a lone piece: a slab stands as part of a run.
+pub const LONE_SLAB_M2: f64 = 2.0;
+
+/// The lone slab faces of a plan: sidewalk faces in the cell under `LONE_SLAB_M2` that share no edge with another
+/// sidewalk face or with the cell's border (beyond which their slab may go on), each with a vertex.
+pub fn lone_slabs(plan: &FacePlan) -> Vec<(u32, P)> {
+    let mpu = metres_per_unit(plan.cell.origin().y + CELL_UNITS / 2);
+    let slab = |f: u32| f != OUTSIDE && plan.faces[f as usize].surface == Surface::Sidewalk;
+    let joined = |f: u32| {
+        plan.edges.iter().any(|e| {
+            (e.left == f && (slab(e.right) || e.right == OUTSIDE))
+                || (e.right == f && (slab(e.left) || e.left == OUTSIDE))
+        })
+    };
+    (plan.faces.iter())
+        .filter(|f| f.inside && f.surface == Surface::Sidewalk)
+        .filter(|f| (area2(&ring_points(plan, &f.rings[0])) as f64).abs() / 2.0 * mpu * mpu < LONE_SLAB_M2)
+        .filter(|f| !joined(f.id))
+        .map(|f| (f.id, plan.vertices[f.rings[0][0] as usize]))
+        .collect()
+}
+
+/// The points of a sidewalk face of level 0 that lie inside a deck's stroke near where the deck leaves the ground (within
+/// `extent_m` of a graph point with a deck arm and a ground arm), by more than `SLIVER`: its vertices and its edges' points
+/// every `SUPPORT_M`. A slab there would cross the road that the deck carries.
+pub fn sidewalk_on_decks(plan: &FacePlan, graph: &WayGraph, input: &crate::CellInput, rules: &super::Rules) -> Vec<P> {
+    if plan.level != 0 || !plan.faces.iter().any(|f| f.surface == Surface::Sidewalk) {
+        return Vec::new();
+    }
+    let o = plan.cell.origin();
+    let units = |m: f64, p: P| m / metres_per_unit(o.y + i64::from(p[1]));
+    let arms =
+        (graph.junctions.iter().map(|j| (j.pos, &j.arms[..]))).chain(graph.joints.iter().map(|j| (j.pos, &j.arms[..])));
+    let starts: Vec<P> = arms
+        .filter(|(_, a)| a.iter().any(|a| a.level == Level::Deck) && a.iter().any(|a| a.level == Level::Ground))
+        .map(|(pos, _)| pos)
+        .collect();
+    let near = |p: P| starts.iter().any(|&s| len(p, s) <= units(rules.plan.extent_m, s));
+    // The decks' strokes as the slabs' deck rule takes them (`walk::Stroke`).
+    let strokes: Vec<_> = (super::ceiling_lines(graph, input, rules, plan.cell).iter())
+        .filter(|l| l.p.iter().any(|&p| near(p)))
+        .map(super::walk::Stroke::of)
+        .collect();
+    let mut out = Vec::new();
+    for f in plan.faces.iter().filter(|f| f.surface == Surface::Sidewalk) {
+        for ring in &f.rings {
+            let pts = ring_points(plan, ring);
+            for i in 0..pts.len() {
+                let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
+                let n = (len(a, b) / units(SUPPORT_M, a)).ceil().max(1.0) as i32;
+                for k in 0..n {
+                    let t = f64::from(k) / f64::from(n);
+                    let q = [a[0] + (t * f64::from(b[0] - a[0])) as i32, a[1] + (t * f64::from(b[1] - a[1])) as i32];
+                    let qf = [f64::from(q[0]), f64::from(q[1])];
+                    if near(q) && strokes.iter().any(|s| s.holds(qf, SLIVER)) {
+                        out.push(q);
+                    }
+                }
+            }
+        }
     }
     out
 }

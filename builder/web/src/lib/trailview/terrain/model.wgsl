@@ -5,6 +5,7 @@
 // blocks (model.ts).
 // #include heights.wgsl
 // #include mouth.wgsl
+// #include outline.wgsl
 
 // The stamp shapes and paints the ground from the records (`ground=plan`).
 override MODEL: bool = false;
@@ -18,16 +19,12 @@ const M_TABLE: u32 = 0x4f42540au;
 const M_WAY: u32 = 0u;
 const M_POINT: u32 = 1u;
 const M_REGION: u32 = 2u;
-const M_OUTLINE: u32 = 5u;
 const S_CARRIAGEWAY: u32 = 2u;
 const S_CROSSING: u32 = 6u;
 const S_RAILBED: u32 = 7u;
-const M_BIN_UNITS: i32 = 4096;
 // The candidates that cover a point at most, and those whose edge lies near enough to change its paint.
 const M_COVER: u32 = 24u;
 const M_NEAR: u32 = 8u;
-// A round's chords leave its arc by at most this share of its radius (the overlay's 10° steps, with room).
-const M_SAGITTA: f32 = 0.0055;
 
 struct ModelPoint {
     // The block of the cell that holds the point; 0 where no records hold it.
@@ -52,77 +49,6 @@ struct ModelPoint {
     heights: u32,
     // The stop arm line whose mouth holds the point in a junction's face (m_mouth), M_NONE for none.
     mouth: u32,
-}
-
-// The product of two i32 as a signed 64-bit number: (low word, high word).
-fn m_mul(a: i32, b: i32) -> vec2u {
-    let x = u32(abs(a));
-    let y = u32(abs(b));
-    let x0 = x & 0xffffu;
-    let x1 = x >> 16u;
-    let y0 = y & 0xffffu;
-    let y1 = y >> 16u;
-    let p00 = x0 * y0;
-    let p01 = x0 * y1;
-    let p10 = x1 * y0;
-    let mid = (p00 >> 16u) + (p01 & 0xffffu) + (p10 & 0xffffu);
-    var lo = (p00 & 0xffffu) | (mid << 16u);
-    var hi = x1 * y1 + (p01 >> 16u) + (p10 >> 16u) + (mid >> 16u);
-    if ((a < 0) != (b < 0)) {
-        lo = ~lo + 1u;
-        hi = ~hi + select(0u, 1u, lo == 0u);
-    }
-    return vec2u(lo, hi);
-}
-
-// The sign of cross(a, b), exact for components of up to 31 bits.
-fn m_orient(a: vec2i, b: vec2i) -> i32 {
-    let l = m_mul(a.x, b.y);
-    let r = m_mul(a.y, b.x);
-    if (l.y != r.y) {
-        return select(-1, 1, bitcast<i32>(l.y) > bitcast<i32>(r.y));
-    }
-    if (l.x != r.x) {
-        return select(-1, 1, l.x > r.x);
-    }
-    return 0;
-}
-
-// Whether point p moved by (ε, ε²) lies left of the line through a along e, as records::left.
-fn m_left(e: vec2i, a: vec2i, p: vec2i) -> bool {
-    let s = m_orient(e, p - a);
-    if (s != 0) {
-        return s > 0;
-    }
-    return e.y < 0 || (e.y == 0 && e.x > 0);
-}
-
-// The change of the winding number from c to q, both moved by (ε, ε²), across edge ab, as
-// records::crossing. In doubled units.
-fn m_crossing(a: vec2i, b: vec2i, c: vec2i, q: vec2i) -> i32 {
-    // Segments whose boxes lie a unit or more apart do not cross, moved by (ε, ε²) or not.
-    if (any(max(a, b) < min(c, q)) || any(min(a, b) > max(c, q))) {
-        return 0;
-    }
-    let e = b - a;
-    let sq = m_left(e, a, q);
-    if (m_left(e, a, c) == sq) {
-        return 0;
-    }
-    let d = q - c;
-    let sa = m_orient(d, a - c);
-    let sb = m_orient(d, b - c);
-    let tie = d.y > 0 || (d.y == 0 && d.x < 0);
-    if (select(sa > 0, tie, sa == 0) == select(sb > 0, tie, sb == 0)) {
-        return 0;
-    }
-    return select(-1, 1, sq);
-}
-
-fn m_segment(a: vec2f, b: vec2f, q: vec2f) -> f32 {
-    let u = b - a;
-    let t = clamp(dot(q - a, u) / max(dot(u, u), 1e-9), 0.0, 1.0);
-    return length(q - a - t * u);
 }
 
 // Whether q lies past the cut at word `at`: on its right, within its length, as the overlay's `past`.
@@ -391,16 +317,8 @@ fn model_point(block: u32, q: vec2i, reach: f32) -> ModelPoint {
             nears++;
         }
     }
-    // The outline polygon cuts each round's arc in chords; its disc moves the distance onto the arc, by no
-    // more than the chords' sagitta.
     if (outline != M_NONE) {
-        let poly = out.d_paved;
-        for (var j = 0u; j < mw(outline + 6u); j++) {
-            let disc = extras + mw(outline + 5u) + M_DISC * j;
-            let r = mf(disc + 2u);
-            let arc = (r - length(qf - vec2f(m_vertex(disc)))) * mpu;
-            out.d_paved = max(out.d_paved, min(arc, poly + (r * M_SAGITTA + 1.0) * mpu));
-        }
+        out.d_paved = m_on_arcs(block, outline, qf, out.d_paved, mpu);
     }
     out.d_paved = min(out.d_paved, rail);
     out.core = min(out.core, out.d_paved);

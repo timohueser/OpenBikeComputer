@@ -7,8 +7,9 @@
     import { coordinateAt, nearestOnLine, nearestProgress, routeSlice, type Coordinate } from '../../lib/planner/geo';
     import Icon from '../../lib/ui/Icon.svelte';
     import PhotoMarks from './PhotoMarks.svelte';
-    import { basemapStyle } from '../../lib/planner/map-style';
-    import { styleConfig, useMapProtocols } from '../../lib/planner/map-setup';
+    import { basemapStyle, type Relief } from '../../lib/planner/map-style';
+    import { styleConfig, terrain, useMapProtocols } from '../../lib/planner/map-setup';
+    import { terrainRetry } from '../../lib/planner/map-terrain';
     import { appearance } from '../../lib/theme.svelte';
 
     /** A map that the rider can move, with the summary line of a route or a ride and the mark. A share is 0 to 1 along the line. */
@@ -49,7 +50,7 @@
     const marker = new maplibregl.Marker({ element: dot });
     const spot = Object.assign(document.createElement('div'), { className: 'route-map-place' });
     const placeMarker = new maplibregl.Marker({ element: spot });
-    let shown: typeof theme;
+    let shown: typeof theme, relief: Relief;
 
     const bounds = (): [number, number, number, number] => {
         if (!fitTo) return summary.bounds as [number, number, number, number];
@@ -94,8 +95,10 @@
 
     onMount(() => {
         useMapProtocols();
+        const lease = terrain.acquire(maplibregl);
+        relief = lease.relief();
         const created = new maplibregl.Map({
-            container, style: basemapStyle(shown = theme, styleConfig), bounds: bounds(), fitBoundsOptions: { padding: 32 },
+            container, style: basemapStyle(shown = theme, styleConfig, relief), bounds: bounds(), fitBoundsOptions: { padding: 32 },
             attributionControl: { compact: true }, maxPitch: 0, renderWorldCopies: false,
         });
         created.dragRotate.disable();
@@ -103,12 +106,13 @@
         created.on('style.load', addLine);
         created.on('mousemove', point);
         created.on('mouseout', () => onpoint?.(null));
-        created.on('error', event => console.warn('Route map:', event.error));
+        const terrainError = terrainRetry(created);
+        created.on('error', event => console.warn(terrainError(event) ? 'Route map terrain:' : 'Route map:', event.error));
         map = created;
         // A swap of the large and the small place changes the size of the box.
         const resize = new ResizeObserver(() => { created.resize(); fit(); });
         resize.observe(container);
-        return () => { resize.disconnect(); marker.remove(); placeMarker.remove(); created.remove(); };
+        return () => { resize.disconnect(); marker.remove(); placeMarker.remove(); created.remove(); lease.release(); };
     });
 
     $effect(() => {
@@ -130,7 +134,7 @@
 
     $effect(() => { dot.classList.toggle('ride', ride); });
     $effect(() => {
-        if (map && theme !== shown) map.setStyle(basemapStyle(shown = theme, styleConfig));
+        if (map && theme !== shown) map.setStyle(basemapStyle(shown = theme, styleConfig, relief));
     });
     $effect(() => {
         const source = map?.getSource<maplibregl.GeoJSONSource>('route');

@@ -351,7 +351,7 @@ fn wall_rock(in: CorridorOut, su: vec2f) -> WallRock {
 @fragment
 fn corridor_fragment(raw: CorridorOut) -> @location(0) vec4f {
     var in = raw;
-    if (MOUTH) {
+    if (PIECE) {
         in = corridor_in(raw);
     }
     if (!PIECE && paint_draws(length(in.relative.xy), in.clip.xy)) {

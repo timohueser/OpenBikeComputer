@@ -445,7 +445,7 @@
     "content"
    ],
    "violations": 4,
-   "lines": 21759,
+   "lines": 21760,
    "problems": [
     {
      "rule": "cycle",
@@ -652,7 +652,7 @@
    ],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 18900,
+   "lines": 33564,
    "problems": []
   },
   {
@@ -701,7 +701,7 @@
    ],
    "test_depends_on": [],
    "violations": 5,
-   "lines": 27746,
+   "lines": 27753,
    "problems": [
     {
      "rule": "cycle",
@@ -841,7 +841,7 @@
     "web-planner"
    ],
    "violations": 3,
-   "lines": 109105,
+   "lines": 111796,
    "problems": [
     {
      "rule": "cycle",
@@ -930,7 +930,7 @@
     "repository-tooling"
    ],
    "violations": 0,
-   "lines": 17486,
+   "lines": 17512,
    "problems": []
   },
   {

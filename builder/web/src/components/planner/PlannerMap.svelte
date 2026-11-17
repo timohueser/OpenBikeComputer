@@ -1,18 +1,13 @@
-<script module lang="ts">
-    import { terrainRetry, terrainSource } from '../../lib/planner/map-terrain';
-    import { config } from '../../lib/planner/map-data';
-    const terrain = terrainSource(config.terrain);
-</script>
-
 <script lang="ts">
     import { onMount, untrack, type Snippet } from "svelte";
     import * as maplibregl from "maplibre-gl";
     import type { GeoJSONSource } from "maplibre-gl";
     import type { Feature, FeatureCollection, LineString, Point } from "geojson";
-    import { styleConfig, useMapProtocols } from "../../lib/planner/map-setup";
-    import mlcontour from "maplibre-contour";
+    import { styleConfig, terrain, useMapProtocols } from "../../lib/planner/map-setup";
+    import { config } from "../../lib/planner/map-data";
+    import { terrainRetry } from "../../lib/planner/map-terrain";
     import "maplibre-gl/dist/maplibre-gl.css";
-    import { mapStyle, poiFilter } from "../../lib/planner/map-style";
+    import { mapStyle, poiFilter, type Relief } from "../../lib/planner/map-style";
     import { mapIcon } from "../../lib/planner/map-icons";
     import { categoryIds, placeCategories, type PlaceCategory } from "../../lib/planner/poi-kinds";
     import { poiPlace } from "../../lib/planner/place-index";
@@ -116,7 +111,7 @@
     let pinButtons = $state.raw(new Map<string, HTMLButtonElement>());
     let draggingPin = $state(false);
     let calloutPopup: maplibregl.Popup | undefined;
-    let dem: InstanceType<typeof mlcontour.DemSource>;
+    let relief: Relief;
     let appliedTheme: "light" | "dark";
     let fittedInitialRoute = false;
     let dragging = $state(false);
@@ -480,15 +475,15 @@
         appliedTheme = theme;
         useMapProtocols();
         const terrainLease = terrain.acquire(maplibregl);
-        dem = terrainLease.dem;
-        const contourUrl = dem.contourProtocolUrl({ thresholds: { 10: [200, 1000], 11: [100, 500], 13: [50, 250], 14: [20, 100] }, contourLayer: "contours", elevationKey: "ele", levelKey: "level" });
+        // The switches of the map show or hide the relief and the contour lines (`syncTerrainAndOverlays`).
+        relief = terrainLease.relief();
         insertDot = new maplibregl.Marker({ element: Object.assign(document.createElement("div"), { className: "planner-insert-dot" }) });
         hoverDot = new maplibregl.Marker({ element: Object.assign(document.createElement("div"), { className: "planner-hover-dot" }) });
         try {
             // `zoomLevelsToOverscale` must stay `undefined`: its default splits the tiles of each vector source past the deepest
             // zoom of the source, and keeps only the source layers that a style layer draws. The route details read a source
             // layer that no style layer draws.
-            map = new maplibregl.Map({ container, center, zoom, maxBounds: config.bounds, style: mapStyle(theme, styleConfig, dem.sharedDemProtocolUrl, contourUrl), attributionControl: false, maxPitch: 0, renderWorldCopies: false, zoomLevelsToOverscale: undefined });
+            map = new maplibregl.Map({ container, center, zoom, maxBounds: config.bounds, style: mapStyle(theme, styleConfig, relief), attributionControl: false, maxPitch: 0, renderWorldCopies: false, zoomLevelsToOverscale: undefined });
             signedLayer = new SignedRoutesLayer(map);
             overlayLayer = new RouteOverlays(map, config.overlays, (message, retry = false) => { overlayStatus = message; overlayRetry = retry; }, hint => routeHint = hint);
             fitInitialRoute();
@@ -602,7 +597,7 @@
         if (!map || !ready || appliedTheme === theme) return;
         appliedTheme = theme;
         ready = false;
-        map.setStyle(mapStyle(theme, styleConfig, dem.sharedDemProtocolUrl, dem.contourProtocolUrl({ thresholds: { 10: [200, 1000], 11: [100, 500], 13: [50, 250], 14: [20, 100] }, contourLayer: "contours", elevationKey: "ele", levelKey: "level" })));
+        map.setStyle(mapStyle(theme, styleConfig, relief));
     });
     $effect(() => {
         coordinates;

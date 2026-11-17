@@ -18,8 +18,6 @@ const MAX_ZOOM = 13;
 /** Chosen, not measured: well above the time of a picture of a long route on a slow link. */
 const TIMEOUT_MS = 20_000;
 const QUALITY = 0.85;
-/** The layers of the planner map that are no part of a picture, besides each layer of text and icons. */
-const LEFT_OUT = new Set(['contour-lines', 'planner-pois']);
 
 export interface MapPictureResult { image: Blob; points: CoverPoints; credits: string[] }
 export type MapPictureMaker = (summary: Summary, dark: boolean, signal: AbortSignal, size?: keyof typeof SIZES) => Promise<MapPictureResult | 'none'>;
@@ -72,11 +70,11 @@ export const mapPicture: MapPictureMaker = async (summary, dark, signal, size = 
     }
 };
 
-/** The planner map in the theme, with no text, icons, contour lines or places. */
+/** The planner map in the theme, with the hill shading and with no text, icons, contour lines or places. */
 function style(dark: boolean): maplibregl.StyleSpecification {
-    const full = mapStyle(dark ? 'dark' : 'light', styleConfig, styleConfig.terrain, '');
+    const full = mapStyle(dark ? 'dark' : 'light', styleConfig, { dem: styleConfig.terrain });
     const { basemap, terrain } = full.sources;
-    return { version: 8, sources: { basemap, terrain }, layers: full.layers.filter(layer => layer.type !== 'symbol' && !LEFT_OUT.has(layer.id)) };
+    return { version: 8, sources: { basemap, terrain }, layers: full.layers.filter(layer => layer.type !== 'symbol' && layer.id !== 'planner-pois') };
 }
 
 async function encode(canvas: HTMLCanvasElement): Promise<Blob> {

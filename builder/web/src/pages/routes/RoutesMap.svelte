@@ -1,12 +1,13 @@
-<!-- The map of the Routes page: the lines of the shown routes or rides from zoom 8, bubbles with a count below it, and
-     the selected ones wide at each zoom. Rides draw on a pale map. -->
+<!-- The map of the Routes page: the lines of the shown routes or rides on the relief from zoom 8, bubbles with a count
+     below it, and the selected ones wide at each zoom. -->
 <script lang="ts">
     import { onMount, untrack } from 'svelte';
     import * as maplibregl from 'maplibre-gl';
     import 'maplibre-gl/dist/maplibre-gl.css';
     import type { FeatureCollection, LineString, Point } from 'geojson';
-    import { basemapStyle } from '../../lib/planner/map-style';
-    import { styleConfig, useMapProtocols } from '../../lib/planner/map-setup';
+    import { basemapStyle, type Relief } from '../../lib/planner/map-style';
+    import { styleConfig, terrain, useMapProtocols } from '../../lib/planner/map-setup';
+    import { terrainRetry } from '../../lib/planner/map-terrain';
     import { appearance } from '../../lib/theme.svelte';
     import type { Box, Item } from './filter';
 
@@ -31,9 +32,10 @@
     let container: HTMLElement;
     let map = $state.raw<maplibregl.Map>(), ready = $state(false);
     const theme = $derived(appearance.dark ? 'dark' : 'light');
-    let styled: typeof theme, styledLook: typeof look, fitted = 0;
-    /** The credits of the picture, behind a button beside the credit of the map. */
-    let pictureCredits: HTMLElement, creditsOpen = $state(false);
+    let styled: typeof theme, styledLook: typeof look, fitted = 0, relief: Relief;
+    /** The credits of the terrain and of the picture, behind a button beside the credit of the map. */
+    let moreCredits: HTMLElement, creditsOpen = $state(false);
+    const more = $derived([...new Set([styleConfig.terrain_attribution, ...credits])]);
 
     const pairs = (line: number[]) => Array.from({ length: line.length / 2 }, (_, i) => [line[2 * i], line[2 * i + 1]]);
     // All lines are in one source; a filter of the layers shows the shown ones, so a chip change sets no data.
@@ -57,7 +59,6 @@
         map.addSource('middles', { type: 'geojson', data: untrack(() => middles), cluster: true, clusterMaxZoom: LINE_ZOOM - 1, clusterRadius: 48 });
         const shownNow = untrack(() => shownFilter), selectedNow = untrack(() => selectedFilter);
         if (ride) {
-            map.addLayer({ id: 'pale', type: 'background', paint: { 'background-color': color('--parchment'), 'background-opacity': 0.5 } });
             map.addLayer({ id: 'casing', type: 'line', source: 'routes', minzoom: LINE_ZOOM, filter: shownNow, layout: round,
                 paint: { 'line-color': color('--panel'), 'line-width': 6 } });
         }
@@ -120,15 +121,17 @@
     onMount(() => {
         useMapProtocols();
         styledLook = look;
+        const lease = terrain.acquire(maplibregl);
+        relief = lease.relief();
         const created = new maplibregl.Map({
-            container, style: basemapStyle(styled = theme, styleConfig), bounds: styleConfig.bounds,
+            container, style: basemapStyle(styled = theme, styleConfig, relief), bounds: styleConfig.bounds,
             attributionControl: false, maxPitch: 0, renderWorldCopies: false,
         });
         // The selected card covers the bottom of the map.
         // No option: the credit is a line on a wide map, and behind its button on a small one.
         created.addControl(new maplibregl.AttributionControl({}), 'top-left');
-        created.addControl({ onAdd: () => pictureCredits, onRemove: () => pictureCredits.remove() }, 'top-left');
-        // On a small map the button of the map's credit opens the credits of the picture with it.
+        created.addControl({ onAdd: () => moreCredits, onRemove: () => moreCredits.remove() }, 'top-left');
+        // On a small map the button of the map's credit opens the other credits with it.
         container.querySelector('summary.maplibregl-ctrl-attrib-button')?.addEventListener('click', event =>
             creditsOpen = (event.currentTarget as Element).parentElement!.classList.contains('maplibregl-compact-show'));
         created.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
@@ -147,18 +150,19 @@
             created.on('mouseenter', layer, () => { created.getCanvas().style.cursor = 'pointer'; });
             created.on('mouseleave', layer, () => { created.getCanvas().style.cursor = ''; });
         }
-        created.on('error', event => console.warn('Routes map:', event.error));
+        const terrainError = terrainRetry(created);
+        created.on('error', event => console.warn(terrainError(event) ? 'Routes map terrain:' : 'Routes map:', event.error));
         map = created;
         const resize = new ResizeObserver(() => created.resize());
         resize.observe(container);
-        return () => { resize.disconnect(); created.remove(); };
+        return () => { resize.disconnect(); created.remove(); lease.release(); };
     });
 
     $effect(() => {
         if (map && (theme !== styled || look !== styledLook)) {
             styledLook = look;
             ready = false;
-            map.setStyle(basemapStyle(styled = theme, styleConfig), { diff: false });
+            map.setStyle(basemapStyle(styled = theme, styleConfig, relief), { diff: false });
         }
     });
     $effect(() => {
@@ -189,12 +193,13 @@
 </script>
 
 <div class="routes-map" bind:this={container}></div>
-<!-- The map takes this box as a control, after its own credit. The credit of the map is always in view; the long credits
-     of the picture of the selected card open at the button. On a small map the button of the map's credit opens them. -->
-<div class="maplibregl-ctrl picture-credits" class:open={creditsOpen} bind:this={pictureCredits} hidden={!credits.length}>
-    <button type="button" class="maplibregl-ctrl-attrib-button" aria-label="Credits of the picture" aria-expanded={creditsOpen}
+<!-- The map takes this box as a control, after its own credit. The credit of the base map is always in view; the long
+     credits of the terrain and of the picture of the selected card open at the button. On a small map the button of the
+     map's credit opens them. -->
+<div class="maplibregl-ctrl more-credits" class:open={creditsOpen} bind:this={moreCredits}>
+    <button type="button" class="maplibregl-ctrl-attrib-button" aria-label="Credits" aria-expanded={creditsOpen}
         onclick={() => creditsOpen = !creditsOpen}></button>
-    <p>{@html credits.join(' | ')}</p>
+    <p>{@html more.join(' | ')}</p>
 </div>
 
 <style>
@@ -208,7 +213,7 @@
         right: 52px;
     }
     /* The credit in the letters and the colours of the page, as on the map of a route. */
-    .routes-map :global(.maplibregl-ctrl-attrib), .picture-credits {
+    .routes-map :global(.maplibregl-ctrl-attrib), .more-credits {
         border-radius: 12px;
         background: var(--panel);
         color: var(--ink-soft);
@@ -217,18 +222,18 @@
     .routes-map :global(.maplibregl-ctrl-attrib:not(.maplibregl-compact)) {
         padding: 2px 10px;
     }
-    .routes-map :global(.maplibregl-ctrl-attrib a), .picture-credits :global(a) {
+    .routes-map :global(.maplibregl-ctrl-attrib a), .more-credits :global(a) {
         color: inherit;
         text-decoration: none;
     }
     /* The button stands beside the line of the map's credit; its text opens under the line. */
     /* No transform, so the text is placed in the corner of the map and not in this box. */
-    .picture-credits {
+    .more-credits {
         clear: none;
         margin-left: 6px;
         transform: none;
     }
-    .picture-credits button {
+    .more-credits button {
         position: static;
         display: block;
         width: 24px;
@@ -238,7 +243,7 @@
         border-radius: 12px;
         background-color: transparent;
     }
-    .picture-credits p {
+    .more-credits p {
         position: absolute;
         top: 40px;
         right: 0;
@@ -249,18 +254,18 @@
         border-radius: 8px;
         background: var(--panel);
     }
-    .picture-credits.open p {
+    .more-credits.open p {
         display: block;
     }
-    /* A small map has its credit behind its own button: the credits of the picture open and close with it. */
-    :global(.maplibregl-compact) + .picture-credits {
+    /* A small map has its credit behind its own button: the other credits open and close with it. */
+    :global(.maplibregl-compact) + .more-credits {
         clear: both;
         margin-left: 10px;
     }
-    :global(.maplibregl-compact) + .picture-credits button, :global(.maplibregl-compact:not(.maplibregl-compact-show)) + .picture-credits p {
+    :global(.maplibregl-compact) + .more-credits button, :global(.maplibregl-compact:not(.maplibregl-compact-show)) + .more-credits p {
         display: none;
     }
-    :global(.maplibregl-compact-show) + .picture-credits.open p {
+    :global(.maplibregl-compact-show) + .more-credits.open p {
         position: static;
         display: block;
     }

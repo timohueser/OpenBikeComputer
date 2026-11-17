@@ -287,7 +287,7 @@ test('the lines of a ride: a row for each line with values, the pointer, and a p
   for (const name of ['Elevation', 'Heart rate', 'Power', 'Cadence']) await chips.filter({ hasText: name }).click();
   await expect(lanes.locator('.label')).toHaveCount(5);
 
-  // The elevation row fills the climb; a click on it selects the climb, a click on another row clears the part.
+  // The elevation row fills the climb; a click on it selects the climb, and a second click on it only clears the part.
   const click = async (row, at) => {
     const lane = await lanes.locator('.lane').nth(row).boundingBox();
     await page.mouse.click(lane.x + lane.width * at, lane.y + lane.height / 2);
@@ -296,7 +296,7 @@ test('the lines of a ride: a row for each line with values, the pointer, and a p
   await click(0, 0.75);
   await expect(page.locator('.lines .part')).toContainText('km 5.1 to km 9.9 · 4.9 km');
   await expect(facts.locator('tbody tr').filter({ hasText: 'Heart rate' }).locator('td')).toHaveText(['160', '150']);
-  await click(1, 0.75);
+  await click(0, 0.75);
   await expect(page.locator('.lines .part')).toHaveCount(0);
   // A click on the climb in the left card selects it too.
   await facts.locator('.climbs').getByRole('button').click();

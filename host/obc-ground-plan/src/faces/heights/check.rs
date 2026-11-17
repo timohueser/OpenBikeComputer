@@ -627,8 +627,8 @@ fn near_junction(words: &[u32], q: [f64; 2]) -> bool {
             .filter(|&&l| l != u32::MAX)
             .map(|&l| b.line(l as usize).reach.max(p.feather_min_m))
             .fold(0.0, f64::max);
-        let r = f64::from(f32::from_bits(e[2])) * b.mpu;
-        let d = libm::hypot(q[0] - f64::from(e[0] as i32), q[1] - f64::from(e[1] as i32)) * b.mpu;
+        let r = f64::from(f32::from_bits(e[7])) * b.mpu;
+        let d = libm::hypot(q[0] - f64::from(e[5] as i32), q[1] - f64::from(e[6] as i32)) * b.mpu;
         d <= r + feather
     })
 }
@@ -746,4 +746,14 @@ pub fn explain(words: &[u32], q: [f64; 2], labels: [Option<u32>; 2], t: f64) -> 
     let sides = height_at_sides(words, q, labels, t);
     s += &format!("  step {:?}\n", sides[0].step);
     s
+}
+
+/// A kerb's step may differ from its rise by this: two hosts' surfaces where a slab runs into another road.
+pub const KERB_SLACK_M: f64 = 0.05;
+
+/// A kerb step of the scan, from the slab down: its size and the kerb's rise there; None for another step.
+pub fn kerb_of(words: &[u32], st: &Step) -> Option<(f64, f64)> {
+    let walk = |l: Option<u32>| l.is_some_and(|id| label(words, id)[0] & 0xff == Surface::Sidewalk as u32);
+    let w = (0..2).find(|&k| walk(st.labels[k])).filter(|_| st.class == Class::Named(Rule::Kerb))?;
+    Some((st.sides[w].h - st.sides[1 - w].h, super::kerb::rise_at(words, st.a, st.labels[w])))
 }

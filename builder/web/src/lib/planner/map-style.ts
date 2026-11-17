@@ -156,15 +156,37 @@ function flavor(dark: boolean): Flavor {
     };
 }
 
-/** The shared basemap omits points of interest and planner overlays. */
-export function basemapStyle(theme: "light" | "dark", config: BasemapConfig): StyleSpecification {
-    return {
-        version: 8,
-        glyphs: config.glyphs,
-        sprite: `${config.sprites}/${theme}`,
-        sources: { basemap: basemapSource(config) },
-        layers: baseLayers(theme === "dark").filter((layer) => layer.id !== "pois"),
-    };
+/** The relief over the land: hill shading from the Terrarium tiles at `dem`, and with `contours`, contour lines with
+ * their heights from the vector tiles at that address. */
+export type Relief = { dem: string; contours?: string };
+
+/** The basemap with no points of interest. With `relief`, the config gives the bounds of the terrain. The credit of the
+ * terrain is not in the style: its long text would cover a page map, which shows it behind a button of credits. */
+export function basemapStyle(theme: "light" | "dark", config: BasemapConfig & Partial<Pick<PlannerConfig, "bounds">>, relief?: Relief): StyleSpecification {
+    const dark = theme === "dark";
+    const layers = baseLayers(dark).filter((layer) => layer.id !== "pois");
+    const sources: StyleSpecification["sources"] = { basemap: basemapSource(config) };
+    if (relief) {
+        sources.terrain = { type: "raster-dem", tiles: [relief.dem], tileSize: DEM_TILE, encoding: "terrarium", maxzoom: DEM_MAX_ZOOM, bounds: config.bounds };
+        layers.splice(layers.findIndex((layer) => layer.id === "land-detail") + 1, 0, {
+            id: "relief", type: "hillshade", source: "terrain",
+            paint: { ...reliefPaint(dark), "hillshade-illumination-direction": 315, "hillshade-illumination-anchor": "map" },
+        });
+    }
+    if (relief?.contours) {
+        sources.contours = { type: "vector", tiles: [relief.contours], maxzoom: 15, bounds: config.bounds };
+        layers.splice(layers.findIndex((layer) => layer.id === "relief") + 1, 0, {
+            id: "contour-lines", type: "line", source: "contours", "source-layer": "contours", minzoom: 10,
+            paint: { "line-color": dark ? "#b7b184" : "#647f73", "line-opacity": dark ? 0.38 : 0.44, "line-width": ["match", ["get", "level"], 1, 0.9, 0.45] },
+        });
+        layers.push({
+            id: "contour-labels", type: "symbol", source: "contours", "source-layer": "contours", minzoom: 12,
+            filter: ["==", ["get", "level"], 1],
+            layout: { "symbol-placement": "line", "symbol-spacing": 500, "text-field": ["concat", ["to-string", ["get", "ele"]], " m"], "text-font": ["Noto Sans Regular"], "text-size": 11 },
+            paint: { "text-color": dark ? "#b7b184" : "#596f65", "text-halo-color": dark ? "#20271e" : "#f4f2eb", "text-halo-width": 1 },
+        });
+    }
+    return { version: 8, glyphs: config.glyphs, sprite: `${config.sprites}/${theme}`, sources, layers };
 }
 
 /** Relief shading; over the snow layer, shadows turn blue-grey so snow reads as snow. */
@@ -177,29 +199,10 @@ export function reliefPaint(dark: boolean, snow = false) {
     };
 }
 
-export function mapStyle(theme: "light" | "dark", config: PlannerConfig, demUrl: string, contourUrl: string): StyleSpecification {
+/** The basemap with the relief, the cycleways and the places of the planner. */
+export function mapStyle(theme: "light" | "dark", config: PlannerConfig, relief: Relief): StyleSpecification {
     const dark = theme === "dark";
-    const base = baseLayers(dark).filter(layer => layer.id !== "pois");
-    const afterLand = base.findIndex((layer) => layer.id === "land-detail") + 1;
-    const terrain: LayerSpecification[] = [
-        {
-            id: "relief", type: "hillshade", source: "terrain",
-            paint: {
-                ...reliefPaint(dark),
-                "hillshade-illumination-direction": 315,
-                "hillshade-illumination-anchor": "map",
-            },
-        },
-        {
-            id: "contour-lines", type: "line", source: "contours", "source-layer": "contours", minzoom: 10,
-            paint: {
-                "line-color": dark ? "#b7b184" : "#647f73",
-                "line-opacity": dark ? 0.38 : 0.44,
-                "line-width": ["match", ["get", "level"], 1, 0.9, 0.45],
-            },
-        },
-    ];
-    base.splice(afterLand, 0, ...terrain);
+    const style = basemapStyle(theme, config, relief), base = style.layers;
     const firstLabel = base.findIndex((layer) => layer.type === "symbol");
     base.splice(firstLabel, 0, {
         id: "obc-cycleways", type: "line", source: "basemap", "source-layer": "roads", minzoom: 12,
@@ -208,7 +211,9 @@ export function mapStyle(theme: "light" | "dark", config: PlannerConfig, demUrl:
     });
     const panel = dark ? "#201f17" : "#ffffff";
     const category = ["match", ["get", "kind"], ...categoryIds.flatMap((id) => [Object.keys(placeCategories[id].kinds), id]), ""] as unknown as ExpressionSpecification;
-    base.push({
+    // The heights of the contour lines stay over the places.
+    const contourLabels = base.findIndex((layer) => layer.id === "contour-labels");
+    base.splice(contourLabels < 0 ? base.length : contourLabels, 0, {
         id: "planner-pois", type: "circle", source: "places", "source-layer": "pois", minzoom: 12, maxzoom: 13, filter: poiFilter(categoryIds),
         paint: { "circle-radius": 3.5, "circle-color": panel, "circle-stroke-color": dark ? "#aaa383" : "#676443", "circle-stroke-width": 1.5 },
     }, {
@@ -220,24 +225,10 @@ export function mapStyle(theme: "light" | "dark", config: PlannerConfig, demUrl:
         },
         paint: { "text-color": dark ? "#f2efe3" : "#1c1b14", "text-halo-color": panel, "text-halo-width": 1.2 },
     });
-    base.push({
-        id: "contour-labels", type: "symbol", source: "contours", "source-layer": "contours", minzoom: 12,
-        filter: ["==", ["get", "level"], 1],
-        layout: { "symbol-placement": "line", "symbol-spacing": 500, "text-field": ["concat", ["to-string", ["get", "ele"]], " m"], "text-font": ["Noto Sans Regular"], "text-size": 11 },
-        paint: { "text-color": dark ? "#b7b184" : "#596f65", "text-halo-color": dark ? "#20271e" : "#f4f2eb", "text-halo-width": 1 },
-    });
-    return {
-        version: 8,
-        glyphs: config.glyphs,
-        sprite: `${config.sprites}/${theme}`,
-        sources: {
-            basemap: basemapSource(config),
-            places: { type: "vector", url: config.places.endsWith(".json") ? config.places : `pmtiles://${config.places}`, attribution: config.attribution },
-            terrain: { type: "raster-dem", tiles: [demUrl], bounds: config.bounds, tileSize: DEM_TILE, encoding: "terrarium", maxzoom: DEM_MAX_ZOOM, attribution: config.terrain_attribution },
-            contours: { type: "vector", tiles: [contourUrl], bounds: config.bounds, maxzoom: 15, attribution: config.terrain_attribution },
-        },
-        layers: base,
-    };
+    // The planner map lists the credit of the terrain behind its own button of credits.
+    for (const id of ["terrain", "contours"]) Object.assign(style.sources[id] ?? {}, { attribution: config.terrain_attribution });
+    style.sources.places = { type: "vector", url: config.places.endsWith(".json") ? config.places : `pmtiles://${config.places}`, attribution: config.attribution };
+    return style;
 }
 
 /** Matches searchable places of the given categories. */
