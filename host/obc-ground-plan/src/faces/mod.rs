@@ -1265,15 +1265,22 @@ impl Sliced {
                     Label { owner: Owner::Way(w), .. } | Label { material: Some(w), .. } => Some(w),
                     _ => None,
                 };
+                // A patch with no inner point (a sliver) reads at the mean of its vertices, as its label does.
+                let q = inner[k].unwrap_or_else(|| {
+                    let ring = &patches[k][0];
+                    let sum = ring.iter().fold([0i64; 2], |s, p| [s[0] + i64::from(p[0]), s[1] + i64::from(p[1])]);
+                    [(2 * sum[0]).div_euclid(ring.len() as i64), (2 * sum[1]).div_euclid(ring.len() as i64)]
+                });
                 let ok: Vec<usize> = (c.lid_of.iter())
-                    .filter(|x| floor == Some(x.0) || back[k].contains(&x.0))
-                    .filter(|x| inner[k].is_some_and(|q| geom::winding(&x.2, q) != 0))
+                    .filter(|x| (floor == Some(x.0) || back[k].contains(&x.0)) && geom::winding(&x.2, q) != 0)
                     .map(|x| x.1)
                     .collect();
+                // A lid keeps its paved layers, and a platform beside a rail on top keeps its place.
                 let keep = |x: &Cand| {
                     x.relabel.is_some()
                         || (x.glob.is_none() && ok.contains(&x.line))
                         || x.label.material.is_some_and(|m| ok.iter().any(|&l| c.lines[l].way == m))
+                        || (!ok.is_empty() && matches!(x.label.owner, Owner::Platform(_)))
                 };
                 let l = label_but(&c.cands, &c.cover, &c.lines, &patches[k], false, Some(&keep));
                 labels[k] = if l == TERRAIN { cover } else { l };
