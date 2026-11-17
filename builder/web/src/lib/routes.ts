@@ -7,6 +7,7 @@ export const ROUTES = {
     home: "#/",
     planner: "#/planner",
     routes: "#/routes",
+    explore: "#/explore",
     route: "#/route",
     ride: "#/ride",
     device: "#/device",

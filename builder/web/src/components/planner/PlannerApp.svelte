@@ -214,8 +214,9 @@
     // The Routes view replaces the panel; the finder keeps its filters and list while the view is closed.
     const finder = new RouteFinder();
     let routesOpen = $state(false);
-    // The plan came from the Routes view, so "Back to routes" shows under the search box.
-    let fromRoutes = $state(false);
+    // The plan came from the Routes view, or from the Explore page with the state that brings it back, so "Find another
+    // route" shows under the search box.
+    let fromRoutes = $state.raw<false | { explore?: unknown }>(false);
     const bike = $derived<BikeType>(trip.bike ?? 'touring');
     const activityNetwork = $derived(bike === 'hiking' ? 'hiking' : bike === 'mtb' ? 'mtb' : 'cycling');
     /** A shown route network is the one of the activity; a network that is off stays off. */
@@ -534,7 +535,13 @@
         const id = router.route === 'planner' ? router.id : undefined;
         if (!id || !session.ready) return;
         router.replace(ROUTES.planner);
-        if (id === 'new') untrack(() => void newPlan().then(() => showStart(history.state?.place)));
+        if (id === 'new') untrack(() => {
+            const signed = history.state?.signed as { route: CatalogRecord; plan: RoutePlan; back: unknown } | undefined;
+            if (!signed) return void newPlan().then(() => showStart(history.state?.place));
+            // The entry keeps no route, so the planner never plans it twice.
+            history.replaceState({ ...history.state, signed: undefined }, '');
+            void planSignedRoute(signed.route, signed.plan, signed.back);
+        });
         // The open plan keeps its Undo history and its map view.
         else if (id !== untrack(() => session.plan.id)) untrack(() => void openPlan(id));
     });
@@ -827,9 +834,12 @@
         void finder.select(null);
     }
 
-    async function planSignedRoute(route: CatalogRecord, plan: RoutePlan) {
-        if (!await session.planSignedRoute(route, plan, coordinate => map?.placeName(coordinate))) return;
-        fromRoutes = true;
+    async function planSignedRoute(route: CatalogRecord, plan: RoutePlan, explore?: unknown) {
+        if (!await session.planSignedRoute(route, plan, coordinate => map?.placeName(coordinate))) {
+            message = `${route.name ?? route.ref} could not be planned. ${session.libraryError}`;
+            return;
+        }
+        fromRoutes = { explore };
         message = `${route.name ?? route.ref} planned`;
         map?.fitCoordinates(plan.points);
     }
@@ -1213,8 +1223,9 @@
         {/if}
         <aside class="planner-pane" aria-label="Trip planning" inert={!session.ready || session.busy}>
             <div class="query-slot" style:display={routesOpen ? 'none' : 'contents'}><Query bind:this={searchBox} bind:text={query} bind:searchState={searchState} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} revision={searchRevision} viewRevision={searchViewRevision} onResults={coordinates => { deselect(); map?.fitSearchResults(coordinates); }} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} onPointing={where => pointing = where} onSample={loadSearchSample} /></div>
-            {#if fromRoutes && hasEndpoints && finder.start && !routesOpen && !searching}
-                <button type="button" class="back-to-routes" onclick={() => openRoutes()}><Icon name="back" size={15} />Find another route</button>
+            {#if fromRoutes && hasEndpoints && (fromRoutes.explore || finder.start) && !routesOpen && !searching}
+                {@const explore = fromRoutes.explore}
+                <button type="button" class="back-to-routes" onclick={() => explore ? router.go(ROUTES.explore, { explore }) : openRoutes()}><Icon name="back" size={15} />Find another route</button>
             {/if}
             {#if routesOpen}
                 <SignedRoutes {finder} activity={bike} {trip} {theme} attribution={config.attribution} onClose={closeRoutes} onPlan={planSignedRoute} {placeName}
