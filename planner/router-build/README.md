@@ -170,7 +170,7 @@ profiles.
 
 Touring, gravel, MTB and hiking use separate surface and road-class tables, and add smoothness,
 track grade, trail grade and traffic. Hiking also adds trail visibility. Touring and gravel have a
-less-climbing variant with three times the climb cost. A signed cycle route discounts only the preference above the physical and
+less-climbing variant with triple climb cost. A signed cycle route discounts only the preference above the physical and
 traffic cost, in the direction that its member role gives. Access rules apply to every variant.
 MTB permits S2 at most and `mtb/technical` every grade; hiking permits T2 at most and
 `hiking/alpine` every known grade up to T6. Alternatives keep the difficulty limit of the request.
