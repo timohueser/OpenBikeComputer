@@ -18,14 +18,14 @@ class Writer:
         self.contexts = {}
         self.next_id = 2**52 if component == 'addresses' else 0
 
-    def place(self, source, name, aliases, kind, lon, lat, city, postcode, importance, bbox, region, context, country, cuisine='', opening_hours='', website='', phone='', description=''):
+    def place(self, source, name, aliases, kind, lon, lat, city, postcode, importance, bbox, region, context, country, cuisine='', opening_hours='', website='', phone='', description='', ele=None):
         self.next_id += 1
         if self.next_id >= (2**52 if self.component == 'pois' else 2**53):
             raise ValueError('Search identity exceeds the JavaScript integer range')
         context_id = self.context_id(city, postcode, region, context, country)
-        self.db.execute('INSERT INTO place_records VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        self.db.execute('INSERT INTO place_records VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                         (self.next_id, source, name, None if aliases == name else aliases,
-                         kind, lon, lat, context_id, importance, *bbox, cuisine, opening_hours, website, phone, description))
+                         kind, lon, lat, context_id, importance, *bbox, cuisine, opening_hours, website, phone, description, ele))
         return self.next_id
 
     def context_id(self, city, postcode, region, context, country):

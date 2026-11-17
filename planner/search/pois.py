@@ -11,6 +11,11 @@ def details(tags):
     return (first(['website', 'contact:website']), first(['phone', 'contact:phone']), first(descriptions))
 
 
+def height(tags):
+    """The height in metres of the tag `ele`; a unit, a sign or a second value gives none."""
+    value = tags.get('ele')
+    return float(value) if isinstance(value, str) and re.fullmatch(r'[0-9]+(\.[0-9]+)?', value.strip()) else None
+
 
 def add(writer, p, record):
     if not has_poi(p):
@@ -19,7 +24,7 @@ def add(writer, p, record):
     pid = writer.place(source, ns[0] if ns else kind.replace('_', ' '), ';'.join(ns), kind,
                  lon, lat, city, postcode, p.get('importance', 0) or 0, bbox, region, context, country,
                  p.get('extra', {}).get('cuisine', ''), p.get('extra', {}).get('opening_hours', ''),
-                 *details(p.get('extra', {})))
+                 *details(p.get('extra', {})), height(p.get('extra', {})))
 
     tags = p.get('extra', {})
     identities = set()

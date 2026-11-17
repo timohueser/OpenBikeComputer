@@ -34,7 +34,7 @@ uv run --locked --group planner-search python planner/search/build.py /tmp/searc
 
 Use `addresses.jsonl.zst`, `--component addresses` and `DATA/addresses` for addresses. The service
 opens both directories from `OBC_SEARCH_DATA=DATA`. The split runs once per source identity. A POI
-transform update reads only its filtered records. Search packages use schema 6; rebuild with
+transform update reads only its filtered records. Search packages use schema 7; rebuild with
 `build.py` after a schema change. Pass `--landmarks CONTENT.json` and `--peaks PEAKS.json` to
 include prepared content. The normal `obc data` POI step reads both content layers.
 

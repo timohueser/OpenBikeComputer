@@ -52,7 +52,7 @@ const records=[
 records.forEach(([source,name,kind,lon,lat,city,importance,aliases='',cuisine=''],i)=>{
   const bounds=kind==='city'?[lon-.1,lat-.1,lon+.1,lat+.1]:[lon,lat,lon,lat];
   conn.prepare('INSERT INTO place_contexts VALUES (?,?,?,?,?,?)').run(i+1,city,'','',city,'de');
-  conn.prepare('INSERT INTO place_records VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(i+1,source,name,aliases===name?null:aliases,kind,lon,lat,i+1,importance,...bounds,cuisine,'','','','');
+  conn.prepare('INSERT INTO place_records VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(i+1,source,name,aliases===name?null:aliases,kind,lon,lat,i+1,importance,...bounds,cuisine,'','','','',null);
   const forms=new Set([name,...aliases.split(';')].filter(Boolean).flatMap(n=>kind==='street'?[norm(n),streetNorm(n)]:[norm(n)]));
   conn.prepare('INSERT INTO terms(rowid,name,context) VALUES (?,?,?)').run(i+1,[...forms].join(' '),norm(city));
   for(const t of forms) {
@@ -65,7 +65,7 @@ conn.exec("INSERT INTO addresses VALUES (10,'12',7.851,47.991,'w123')");
 conn.exec("INSERT INTO addresses VALUES (14,'10',7.854,48.01,'w14'),(14,'10',7.854,48.03,'w141'),(15,'10',11.57,48.13,'w15')");
 conn.exec(readFileSync(new URL('../indexes.sql',import.meta.url),'utf8'));
 const metadata=conn.prepare('INSERT INTO metadata VALUES (?,?)');
-for(const [key,value] of Object.entries({schema:6,time_zone:'Europe/Berlin',attribution:['OSM contributors']}))
+for(const [key,value] of Object.entries({schema:7,time_zone:'Europe/Berlin',attribution:['OSM contributors']}))
   metadata.run(key,JSON.stringify(value));
 conn.exec('COMMIT');
 
