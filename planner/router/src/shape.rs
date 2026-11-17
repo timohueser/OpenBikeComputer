@@ -177,6 +177,11 @@ pub fn deviation(routed: &[P], line: &[P]) -> f64 {
     off(routed, &Near::new(line)).0 + off(line, &Near::new(routed)).0
 }
 
+/// The length of `line` that is farther than `NEAR_M` from `other`, in metres.
+pub fn far(line: &[P], other: &[P]) -> f64 {
+    off(line, &Near::new(other)).0
+}
+
 #[derive(Clone, Copy)]
 struct Leg {
     off: f64,

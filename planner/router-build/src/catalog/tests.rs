@@ -145,8 +145,10 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
         // held ways the line joins across two of them.
         route(7, &trail, [path(&[0, 1, 2, 3, 4, 5]), vec![999]].concat()),
         route(19, &trail, [path(&[50, 51, 52]), vec![990, 991], path(&[53, 54, 55])].concat()),
-        // The patch from node 15 to node 25 goes around a block: three times the gap.
+        // The patch from node 15 to node 25 goes around a block: three times the gap. It leaves the
+        // route for more than 500 m, unless the route itself comes back along the block.
         route(20, &trail, [path(&[12, 13, 14, 15]), path(&[25, 35, 45])].concat()),
+        route(21, &trail, [path(&[12, 13, 14, 15]), path(&[25, 24, 34, 44])].concat()),
         // A lollipop: out on one street, around a block and back.
         route(8, &trail, path(&[60, 61, 62, 52, 51, 61, 60])),
         // The member order jumps, and the way from node 21 to node 22 is missing.
@@ -199,7 +201,7 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
             ("NestedLongRoute", vec![6])
         ]
     );
-    assert_eq!(by_id.keys().copied().collect::<BTreeSet<_>>(), BTreeSet::from([1, 2, 5, 8, 9, 11, 13, 18, 19]));
+    assert_eq!(by_id.keys().copied().collect::<BTreeSet<_>>(), BTreeSet::from([1, 2, 5, 8, 9, 11, 13, 18, 19, 21]));
     assert_eq!((&by_id[&19]["length_m"], &report.skipped_ways), (&json!(5 * 445), &BTreeMap::from([(19, 2)])));
     let joined = by_id[&13];
     assert_eq!(joined["length_m"], 4 * 445);

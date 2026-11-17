@@ -25,11 +25,6 @@ pub const FILE: &str = "route-catalog.json";
 /// keeps out the signed pieces between two signposts.
 const MIN_LENGTH_M: f64 = 1_000.0;
 const MAX_GAP_M: f64 = 500.0;
-/// A routed patch is at most this factor of its straight distance plus `PATCH_SLACK_M`: a patch
-/// that more than doubles its gap is a detour that the shaping check cannot see, and the slack lets
-/// a short gap go around a corner.
-const PATCH_FACTOR: f64 = 2.0;
-const PATCH_SLACK_M: f64 = 100.0;
 /// The owner's limit for the side branches of a route, all together, as a share of the rest.
 const SIDE_TRIP_SHARE: f64 = 0.10;
 /// The most main member ways of a route that the import does not hold, such as a park or a way with
@@ -562,6 +557,7 @@ fn route<D: RoutingData>(
         }
     }
     let runs: Vec<Vec<P>> = runs.iter().map(|run| run.iter().map(|n| points[n]).collect()).collect();
+    let own = runs.concat();
     let length: f64 = runs.iter().map(|run| shape::length(run)).sum();
     if length < MIN_LENGTH_M {
         return Err(Reason::Short);
@@ -582,11 +578,14 @@ fn route<D: RoutingData>(
                     _ => Reason::UnroutableGap,
                 },
             )?;
-        let patch: Vec<P> = shape::vertices(&route).into_iter().chain([to]).collect();
-        if distance(from, patch[0]) + shape::length(&patch) > PATCH_FACTOR * distance(from, to) + PATCH_SLACK_M {
+        let patch: Vec<P> = [from].into_iter().chain(shape::vertices(&route)).chain([to]).collect();
+        // The shaping check compares with the line that holds the patch, so it cannot see a detour
+        // in it. A patch may leave the route's own line, its runs joined straight across their
+        // gaps, for at most the longest hole that the builder joins.
+        if shape::far(&patch, &own) > MAX_GAP_M {
             return Err(Reason::Gap);
         }
-        line.extend(patch);
+        line.extend(&patch[1..]);
         line.dedup();
         Ok(())
     };
