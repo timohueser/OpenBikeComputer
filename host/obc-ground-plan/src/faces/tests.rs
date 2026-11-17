@@ -903,3 +903,48 @@ fn a_way_over_its_own_bore_opens_it_only_at_its_ends() {
         }
     }
 }
+
+#[test]
+fn a_shoulder_that_two_roads_reach_takes_its_heights_from_its_own_road() {
+    // Two roads of one class run side by side 1 m apart in height, so near that their shoulders overlap. Each
+    // shoulder face has its own road as its host: across the overlap the height steps only where the label changes.
+    let (mut low, mut high) = (road(&[[-60.0, 0.0], [60.0, 0.0]]), road(&[[-60.0, 5.6], [60.0, 5.6]]));
+    (low.z, high.z) = (vec![500.0; 2], vec![501.0; 2]);
+    let rules = Rules::embedded();
+    let mut input = input_of(cell(), &[low, high]);
+    input.terrain = plane(cell(), &|_, _| 500.0);
+    let graph = build(cell(), &input, &rules.sections);
+    let words = records::build(&graph, &input, rules, cell(), 0, true).near.words;
+    let q = |m: [f64; 2]| {
+        let (g, o) = (at(m), cell().origin());
+        [(g.x - o.x) as f64, (g.y - o.y) as f64]
+    };
+    let shoulder = |id: u32| records::label(&words, id)[0] & 0xff == Surface::Shoulder as u32;
+    let mut last: Option<(u32, f64)> = None;
+    let mut owned = 0;
+    for k in 0..=56 {
+        let q = q([0.0, 0.1 * f64::from(k)]);
+        let id = records::find(&words, q).unwrap();
+        let h = heights::height_at(&words, q, Some(id), 500.0).h;
+        if shoulder(id) {
+            owned += usize::from(records::label(&words, id)[2] != u32::MAX);
+            if let Some((was, h0)) = last.filter(|&(was, _)| was == id) {
+                assert!((h - h0).abs() < 0.05, "a step of {:.2} m inside shoulder face {was}", h - h0);
+            }
+        }
+        last = Some((id, h));
+    }
+    assert!(owned >= 4, "{owned} points on a shoulder with a host line");
+}
+
+#[test]
+fn two_cells_give_a_junctions_shoulders_one_owner() {
+    // Two roads of one class meet 3 m west of the east cell line, the side road across it: their shoulders and the
+    // corner's band rings overlap with equal keys, and both cells give each point on the line the same owner.
+    let x = CELL_UNITS as f64 / 2.0 * mpu();
+    let lines = [road(&[[x - 3.0, -120.0], [x - 3.0, 120.0]]), road(&[[x - 3.0, 10.0], [x + 120.0, 14.0]])];
+    let (a, b) = (records_of(cell(), &lines), records_of(CellKey { x: cell().x + 1, y: cell().y }, &lines));
+    let (points, blend, differ) = records_check::border((&a.0, &a.1, &a.2), (&b.0, &b.1, &b.2), true, 37);
+    assert!(points > 7_000 && blend > 0, "{points} points, {blend} with a blend edge near");
+    assert!(differ.is_empty(), "{} differ: {:?}", differ.len(), &differ[..differ.len().min(4)]);
+}
