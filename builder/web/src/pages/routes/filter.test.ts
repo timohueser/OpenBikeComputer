@@ -91,6 +91,8 @@ describe('signedItem', () => {
         // The last entry is at the end, 50 m after the one before it.
         expect(item.profile).toEqual({ line: [8, 47, 8, 47.0006, 8, 47.0012, 8, 47.0018, 8, 47.0024, 8, 47.0027], heights: [500, 510, 530, 560, 600, 620] });
         expect(signedItem(record({ profile_m: [500, null, 530, 560, 600, 620] }), 'hiking').summary.heights).toEqual([500, null, 620]);
+        // A null next entry is unknown too: no point takes the height of the entry before it.
+        expect(signedItem(record({ profile_m: [500, 510, null, 560, 600, null] }), 'hiking').summary.heights).toEqual([500, null, null]);
     });
 
     it('has no heights and no profile without `profile_m`', () => {

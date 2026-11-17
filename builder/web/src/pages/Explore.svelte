@@ -50,7 +50,7 @@
     // and shows the ones in the new view.
     const inView = $derived(results(items, {}, '', view));
     const shown = $derived(results(items, chips, '', view, 'shortest') as SignedItem[]);
-    const wide = $derived(!!view && tooWide(wrapped(view)));
+    const wide = $derived(!!view && tooWide(view));
     const chosen = $derived(shown.find(item => item.id === selected));
     /** The value of each item that the other chips keep, for the bars of the slider of `key`. */
     const values = (key: 'length' | 'climb') => results(items, { ...chips, [key]: undefined }, '', view)
@@ -69,7 +69,7 @@
         const id = ++loads;
         failed = false;
         try {
-            const found = await catalog.inBox(wrapped(box), kind);
+            const found = await catalog.inBox(box, kind);
             if (id === loads) answer = { bike: kind, view: box, records: found };
         } catch {
             if (id === loads) failed = true;
@@ -109,7 +109,7 @@
 <svelte:window onkeydown={event => { if (event.key === 'Escape' && !document.querySelector('dialog[open]')) selected = undefined; }} />
 
 <ListAndMap title="Explore" {items} {shown} {place} fit={0} look="route" credits={[]} selected={chosen ? [chosen.id] : []}
-    onselect={id => selected = id} onview={next => view = next} card={chosen ? card : undefined}>
+    onselect={id => selected = id} onview={next => view = wrapped(next)} card={chosen ? card : undefined}>
     {#snippet list()}
         <!-- The search field finds places only; a chosen place moves the map. -->
         <PlaceSearch {view} label="Find a place" placeholder="Find a place" float onchoose={({ lon, lat, box }) => place = { lon, lat, box }} />

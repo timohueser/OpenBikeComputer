@@ -89,7 +89,8 @@ export function signedItem(record: CatalogRecord, bike: Bike): SignedItem {
     const heightAt = (share: number): number | null => {
         if (!entries) return null;
         const metres = share * length, i = Math.max(0, Math.min(Math.floor(metres / 100), entries.length - 2));
-        const [a, b] = [entries[i], entries[i + 1] ?? entries[i]], span = entryAt(i + 1) - entryAt(i);
+        // A profile of one entry has no next entry; a null entry is an unknown height.
+        const [a, b] = [entries[i], entries[i + 1] === undefined ? entries[i] : entries[i + 1]], span = entryAt(i + 1) - entryAt(i);
         const t = span > 0 ? Math.max(0, Math.min(1, (metres - entryAt(i)) / span)) : 0;
         return t === 0 ? a : t === 1 ? b : a === null || b === null ? null : Math.round(a + (b - a) * t);
     };

@@ -835,7 +835,10 @@
     }
 
     async function planSignedRoute(route: CatalogRecord, plan: RoutePlan, explore?: unknown) {
-        if (!await session.planSignedRoute(route, plan, coordinate => map?.placeName(coordinate))) return;
+        if (!await session.planSignedRoute(route, plan, coordinate => map?.placeName(coordinate))) {
+            message = `${route.name ?? route.ref} could not be planned. ${session.libraryError}`;
+            return;
+        }
         fromRoutes = { explore };
         message = `${route.name ?? route.ref} planned`;
         map?.fitCoordinates(plan.points);
