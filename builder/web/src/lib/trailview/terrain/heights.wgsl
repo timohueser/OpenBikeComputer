@@ -1196,7 +1196,14 @@ fn height_relative(block: u32, q: vec2f, label: u32, t: f32, start: u32) -> vec2
         H = h_rules(block);
         let mpu = h_scale(block, q);
         let kind = select(H_TERRAIN, H_SLOPE, rule == 1u);
-        let cover = label != M_NONE && (mw(m_label(block, label)) & 0xffu) == M_SURFACE_COVER;
+        // Only a bin with a bore's floor bound reads the label's surface and line.
+        var cover = false;
+        var ground = false;
+        if (cs.bores && label != M_NONE) {
+            cover = (mw(m_label(block, label)) & 0xffu) == M_SURFACE_COVER;
+            let line = mw(m_label(block, label) + 2u);
+            ground = line == M_NONE || h_storey(m_line_finish(block, line)) == 0u;
+        }
         // A slope reads only the outline edges, and the ceilings.
         var h = t;
         if (rule == 1u) {
@@ -1205,8 +1212,7 @@ fn height_relative(block: u32, q: vec2f, label: u32, t: f32, start: u32) -> vec2
         var c = h_ceiling(block, q, mpu, cs);
         // Behind a portal line the ground of storey 0 stands on the floor bound, as heights::by_label: it yields to a
         // deck only under the deck's own stroke.
-        let line = select(mw(m_label(block, label) + 2u), M_NONE, label == M_NONE);
-        if (cs.bores && (line == M_NONE || h_storey(m_line_finish(block, line)) == 0u)) {
+        if (cs.bores && (label == M_NONE || ground)) {
             let f = h_floor(block, q, mpu, cs, t, cover);
             if (f > c) {
                 c = h_under_decks(block, q, mpu, cs);
