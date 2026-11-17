@@ -885,6 +885,77 @@ fn a_bore_is_the_prism_under_storey_0_and_its_cover_holds_the_least_room() {
     }
 }
 
+/// A road at a slant into ground 3.1 m over it, so storey 0's corners on the portal line lie off it by parts of a frame
+/// unit: the cover's end parts the way's cut in front of the line from the ground behind it, so the cover meets the
+/// ground beside it with no step off the line, and the mouth keeps the least room.
+#[cfg(feature = "bores")]
+#[test]
+fn the_ground_beside_the_cover_meets_it_with_no_step() {
+    use crate::mesh::shell::mesh_storeys_with;
+    use crate::mesh::{mesh_cell, Reads, NO_LABEL};
+    let key = cell();
+    let u = [0.94, 0.341];
+    let levels = ("levels", "O 40 P B 160 P O");
+    let ends = [[-100.0 * u[0], -100.0 * u[1]], [100.0 * u[0], 100.0 * u[1]]];
+    let bore = line("tunnel", &[("highway", "residential"), ("tunnel", "yes"), levels], &ends);
+    let mut input = input_of(key, &[bore]);
+    input.terrain = plane(key, &|_, _| 503.1);
+    let rules = Rules::embedded();
+    let b = crate::cell::build_input(&input, rules);
+    let m0 = mesh_cell(&b.faces, &b.records, &Reads::of(&b.faces, &[]), &mut || 0.0).unwrap();
+    // Metres of a point along the way past the portal line (40 m from the way's start).
+    let behind = |p: P| {
+        let (g, o) = (at([0.0, 0.0]), key.origin());
+        let v = [(o.x + i64::from(p[0]) - g.x) as f64 * mpu(), (o.y + i64::from(p[1]) - g.y) as f64 * mpu()];
+        v[0] * u[0] + v[1] * u[1] + 60.0
+    };
+    let h0 = |k: usize| {
+        let (p, l, terrain) = m0.corner(k);
+        if terrain || l == NO_LABEL {
+            503.1
+        } else {
+            heights::height_at(&b.records, [f64::from(p[0]), f64::from(p[1])], Some(l), 503.1).h
+        }
+    };
+    let cover = |k: usize| {
+        let l = m0.corner(k).1;
+        l != NO_LABEL && records::label(&b.records, l)[0] & 0xff == Surface::Cover as u32
+    };
+    // A slot is [a left, b left, b right, a right]. The cover's sides within 10 m behind the line (farther, the cell's
+    // own window ends the cover).
+    let mut sides = 0;
+    for s in &m0.steps {
+        let [a, b2, c, d] = s.map(|k| k as usize);
+        let (ma, mb) = (behind(m0.corner(a).0), behind(m0.corner(b2).0));
+        let on_line = ma.abs() < 0.05 && mb.abs() < 0.05;
+        if cover(a) == cover(d) || on_line || ma.min(mb) > 10.0 {
+            continue;
+        }
+        let dh = (h0(a) - h0(d)).abs().max((h0(b2) - h0(c)).abs());
+        assert!(dh < 0.05, "a step of {dh} m on the cover's outline from {ma:.2} to {mb:.2} m behind the portal line");
+        sides += 1;
+    }
+    assert!(sides > 0, "the cover meets the ground off the portal line");
+    // The mouth: the floor's points within 3 m behind the line keep the least room under the roof.
+    let m = mesh_storeys_with(key, &b.storeys, &b.records, &rules.structures, Some(&m0)).unwrap();
+    let sec = rules.sections.way("road", &[("highway".to_string(), "residential".to_string())].into(), false);
+    let by_point = |part: std::ops::Range<usize>| {
+        let mut out: BTreeMap<P, f64> = BTreeMap::new();
+        for &k in m.triangles[part].iter().flatten() {
+            let h = m.corner_height(k as usize, &b.records, &input.terrain);
+            let e = out.entry(m.corner(k as usize).0).or_insert(h);
+            *e = e.min(h);
+        }
+        out
+    };
+    let (floor, roof) = (by_point(m.part(0)), by_point(m.part(1)));
+    let mouth: Vec<(&P, &f64)> = floor.iter().filter(|(p, _)| (0.0..3.0).contains(&behind(**p))).collect();
+    assert!(!mouth.is_empty(), "floor points in the mouth");
+    for (p, &hf) in mouth {
+        assert!(roof[p] - hf >= sec.bore_least_m - 1e-3, "{p:?}: room {} in the mouth", roof[p] - hf);
+    }
+}
+
 /// A road that passes over its own bore 4 m up, as a way on top, before it descends into it (a spiral): an opening
 /// lies only on the bore's end lines, not under the road on top.
 #[cfg(feature = "bores")]
