@@ -127,8 +127,15 @@ role, ordered as the Waymarked Trails route builder orders them, with the forwar
 route splits by direction. When that order has more than one piece, the builder joins the pieces at
 their nearest ends, from the first piece on, into one chain that uses each piece once, with each
 join at most 500 m. When no such chain exists, for example because a piece ends inside another
-piece, the member order stays if each of its gaps is at most 500 m; otherwise the route leaves the
-catalog. The router patches each gap. To reproduce the route, the router's route for the plan with
+piece, the member order stays if each of its gaps is at most 500 m. Otherwise the builder takes the
+pieces as a network and removes its dead-end side branches, the shortest first, while all removed
+branches together are at most 10 % of the rest. If the network still forks, the route leaves the
+catalog. The builder joins the parts that remain into one chain as above, and puts each side branch
+of more than 30 m back as an out-and-back side trip at the point where it leaves; its tip is a
+turnaround. A main member way that the import does not hold, such as a park or a way with no road
+tag, is skipped when a held main way comes before it and after it in member order; a route skips
+at most 2 such ways, and the line joins across them as across any gap. The router patches each gap.
+A route whose routed patch is longer than twice the gap plus 100 m leaves the catalog. To reproduce the route, the router's route for the plan with
 each profile has a deviation of at most 2 % of the main-line length. The deviation is the length of
 the routed line that is more than 30 m from the main line, plus the length of the main line that is
 more than 30 m from the routed line. The plan route is the route that the router gives for the plan
