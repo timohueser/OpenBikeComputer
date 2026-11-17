@@ -56,5 +56,12 @@ class UseGuardTests(unittest.TestCase):
         ])
 
 
+class RouteGuardTests(unittest.TestCase):
+    def test_a_route_description_with_the_origin_of_another_is_refused(self):
+        registry = {"source": [{"id": name, "used_by": ["planner"], "keep": "archive"} for name in ("a", "b")]}
+        text = 'origin = 1\ncountries = ["CH"]\nkind = "hiking"\n[route]\nlayer = "Route"\nkey = "Nr"\n'
+        self.assertEqual(guard.route_problems(registry, {"a": text, "b": text}), ["b: `origin` 1 is the origin of a"])
+
+
 if __name__ == "__main__":
     unittest.main()

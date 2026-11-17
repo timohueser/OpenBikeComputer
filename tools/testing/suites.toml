@@ -354,7 +354,7 @@ triggers = ["builder/web/tests/browser/trailview/**"]
 [[suite]]
 id = "python.repository-tools"
 route = "required"
-command = "rm -rf .artifacts/python/repository-tools && uv run --locked --group dev --group planner-snow --group forest-reference python -m xmlrunner discover -s tools/tests -v -o .artifacts/python/repository-tools"
+command = "rm -rf .artifacts/python/repository-tools && uv run --locked --group dev --group planner-snow --group forest-reference --group route-sources python -m xmlrunner discover -s tools/tests -v -o .artifacts/python/repository-tools"
 jobs = ["guards", "selection"]
 triggers = [
   "planner/search/place-kinds.json",

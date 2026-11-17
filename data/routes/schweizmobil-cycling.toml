@@ -1,0 +1,21 @@
+origin = 2
+countries = ["CH", "LI"]
+kind = "bicycle"
+
+# A route or a stage stored in both directions has one row for each; the outward one stays.
+[route]
+layer = "Route"
+key = "NrR"
+ref = "{NrR}"
+name = "{NameR}"
+rank = { field = "Typ_TR", values = { national = 3, regional = 2, local = 1, handicap = 1 } }
+ascent = "HoeheAufR"
+keep = { Abwicklung = ["Hinweg", "Identischer Hin- und Rückweg"] }
+
+[stage]
+layer = "Etappe"
+of = "NrR"
+number = "NrEtappe"
+name = "{route}, {NameS} – {NameZ}"
+ascent = "HoeheAufE"
+keep = { Abwicklung = ["Hinweg", "Identischer Hin- und Rückweg"] }

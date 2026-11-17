@@ -194,6 +194,37 @@ header `#262624`, and `obc data open` tunnels to the SSH host of its name.
 | `colour` | string | `#rrggbb`: the header of the page of the machine. White text on it has a contrast of at least 4.5:1, and it is not `#6e6c66`, the header of a page that loads |
 | `ssh` | string | Optional: the SSH host or alias that `obc data open` tunnels to |
 
+### `data/routes/<id>.toml`
+
+The description of a route source: which layers and fields of its files make a route and its
+stages. `<id>` is a source of `data/sources.toml` with `used_by` `planner` and `keep = "archive"`.
+[Route sources](#route-sources) reads it. An unknown key is refused, and so are an `origin` that
+another file has and empty `countries` (`tools/check_data_sources.py`).
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `origin` | integer, 1 to 9006 | The number of the source in the `id` of its records. Unique over `data/routes/`; a number is never used again |
+| `countries` | array of strings | The ISO 3166-1 alpha-2 codes of the countries whose routes the source holds, such as `CH`. A region reads the source only when its `countries` name one of them and its bounds meet the `extent` of the row |
+| `kind` | string, or table | `hiking`, `bicycle` or `mtb` for every route; or `{ field, values }`: the value of `field` maps to a kind, and a feature with another value is left out |
+| `route` | table | How the routes are read, see below |
+| `stage` | table | Optional: how the stages of a route are read |
+
+Keys of `route` and `stage`:
+
+| Key | In | Meaning |
+| --- | --- | --- |
+| `layer` | both | The layer of the file |
+| `file` | both | Optional: the path of the file in a zip, for a source with more than one |
+| `key` | `route` | The field, or a list of fields, that gives the route of a feature. The features with one key are one route; a feature with a value in two fields of the list is a member of both routes. A value that is an integer below 10^10, also as a text of digits, is the key as it is; another text has as key its SHA-256, read as an integer, modulo 10^10 |
+| `of` | `stage` | The field that holds the key of the stage's route |
+| `number` | `stage` | The field of the stage number |
+| `ref`, `name`, `description`, `operator`, `website` | both | A template of field values, such as `"{NameR}"`. In a stage, `{route}` is the name of its route |
+| `rank` | `route` | `{ field, values }`: the value maps to a level 0 to 4 as the catalog's `rank`; another value or none: 0 |
+| `ascent` | both | The field of the source's own climb in metres. Only the catalog report reads it |
+| `keep` | both | `{ FIELD = [values] }`: a feature is read only when each field has one of its values |
+| `drop` | both | `{ FIELD = [values] }`: a feature with one of these values is left out |
+| `members` | `route` | Optional `{ layer, field, link }`, for a source whose route rows have no line: a route row names its member lines by its field `link`: the features of `layer` whose `field` has that value |
+
 ## State of a source
 
 A fetch is a source id with its sorted `NAME=VALUE`s. `obc data sources` gives, for each target
@@ -1276,6 +1307,45 @@ A Python step runs `env PYTHONHASHSEED=0 uv run --locked --offline --no-default-
 --no-python-downloads --group <group> python <entry> --step` in the repository root.
 `uv sync --all-groups` prepares the packages on a machine. The fixed hash seed keeps the order
 of a set out of the bytes. A credit that it writes comes in its options.
+
+##### Route sources
+
+`tools/planner_route_sources.py` (group `route-sources`) reads the files of each route source by
+its [description](#dataroutesidtoml). Its options are `bounds` and `sources`: a list of `{id,
+credit, description}`, where `credit` is the `attribution` of the row and `description` the text
+of its file in `data/routes/`. It reads the snapshot of each source, in the order of `sources`, and
+writes `route-sources.json`: UTF-8 JSON, the keys of each object in byte order, written whole.
+
+```json
+{"format":1,"sources":[{"credit":"Bundesamt für Strassen, Kanton, Stiftung SchweizMobil","id":"schweizmobil-hiking","origin":1,
+ "routes":[
+  {"key":3,"kind":"hiking","name":"Alpenpanorama-Weg","rank":3,"ref":"3","stages":[
+    {"members":[],"name":"Alpenpanorama-Weg, Rorschach – Trogen","stage":1},
+    {"ascent_m":444,"members":[[8309770,47051860,8309910,47051950]],"name":"Alpenpanorama-Weg, Luzern – Malters","stage":11}]},
+  {"ascent_m":620,"key":561,"kind":"hiking","members":[[8461200,47052310,8461350,47052400]],"name":"Rigi Panoramaweg","rank":1,"ref":"561"}]}]}
+```
+
+- `sources`: one entry for each source of the options, in their order; `id` and `credit` from the
+  options, `origin` from the description.
+- A route: `key`; `kind`; `rank` (0 when the description maps none); `ref`, `name`,
+  `description`, `operator`, `website`: the filled template, with outer spaces removed, absent
+  when empty; `ascent_m`: an integer, absent when the description maps no field or the value is
+  empty.
+- `members`: each line of each feature of the route, in the order of the feature ids and then of
+  the parts of a multi-line: a flat list of integer microdegrees, longitude then latitude, in WGS
+  84, each line simplified within 1 m (Douglas–Peucker, so its ends stay) and with repeated points
+  removed. A line with fewer than two points is left out.
+- A route with two or more stages has `stages` and no `members`: `stage` (the number), `name`,
+  the other filled templates, `ascent_m`, `members`. A route with one stage or none takes its
+  `members` from the route layer.
+- A route is in the file when a point of one of its members is inside `bounds` (edges included).
+  A route with stages is in the file when a point of one of its stages is inside; it then lists
+  all its stages, and a stage with no point inside has `"members": []`. A stage row whose route has
+  no row is not read.
+- The routes are in the order of `key`, the stages in the order of `stage`.
+- The program fails, with the source and the feature, when: a layer or a field of the description
+  is not in the file; two routes of one source have one key from two texts; a stage number is not
+  an integer from 1 to 99, or comes twice in one route.
 
 ### Service runtimes
 
