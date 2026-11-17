@@ -113,19 +113,20 @@ test('a route that waits and leaves the area gives the warning, the box around i
   expect((await nextMap(page)).boxes).toHaveLength(2);
 });
 
-test('a box past the map data gives the note, and the credits of the data and of the base map are behind their buttons', async ({ page }) => {
+test('a box past the map data gives the note, and the credits of the data and of the base map are behind one button', async ({ page }) => {
   await library(page, west => window.coverTest.library.setState('nextMap', { regions: [], boxes: [{ ...west, maxLon: 7_900_000 }], light: 'default', dark: 'dusk', bytes: 1 }), west);
   const errors = await open(page, '#/device/area');
   await expect(page.getByText('Map data is missing in a part of this area.')).toBeVisible();
-  await page.getByRole('button', { name: 'Credits' }).hover();
-  await expect(page.getByRole('tooltip')).toContainText('Synthetic geometry');
-  await expect(page.getByRole('tooltip').getByRole('link', { name: 'CC0-1.0' })).toHaveAttribute('href', 'https://creativecommons.org/publicdomain/zero/1.0/');
-  const baseCredit = page.locator('.leaflet-control-attribution');
+  const baseCredit = page.locator('.leaflet-control-attribution'), dataCredits = page.locator('.data-credits');
   await expect(baseCredit).toBeHidden();
+  await expect(dataCredits).toBeHidden();
   await page.getByRole('button', { name: 'Toggle attribution' }).click();
   await expect(baseCredit).toBeVisible();
+  await expect(dataCredits).toContainText('Synthetic geometry');
+  await expect(dataCredits.getByRole('link', { name: 'CC0-1.0' })).toHaveAttribute('href', 'https://creativecommons.org/publicdomain/zero/1.0/');
   await page.getByRole('button', { name: 'Toggle attribution' }).click();
   await expect(baseCredit).toBeHidden();
+  await expect(dataCredits).toBeHidden();
 
   await page.getByRole('button', { name: 'Remove Box 1' }).click();
   await page.locator('.leaflet-container').click();
