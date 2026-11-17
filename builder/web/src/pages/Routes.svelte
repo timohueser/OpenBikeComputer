@@ -6,6 +6,7 @@
     import Switch from '../lib/ui/Switch.svelte';
     import Cover from '../lib/covers/Cover.svelte';
     import { initCore } from '../lib/core/bridge';
+    import { keepInHistory } from '../lib/keep-in-history.svelte';
     import { groups } from '../lib/library/groups';
     import type { LibraryState, RideRecord, RouteRecord } from '../lib/library/records';
     import { yearTotals } from '../lib/library/statistics';
@@ -27,7 +28,7 @@
 
     /** A page that sends the rider here can give the search to start with. */
     const search = () => history.state?.search as { chips?: ChipValues; text?: string } | undefined;
-    const READ_AFTER_MS = 200, KEEP_AFTER_MS = 300;
+    const READ_AFTER_MS = 200;
     const BADGES: Record<DeviceState, string> = { waiting: 'Waits', sent: 'On the device', changed: 'Changed' };
     const KEYS = { planned: ['bike', 'place', 'length', 'climb', 'days'], ridden: ['place', 'year', 'bike', 'length'] } as const;
 
@@ -99,16 +100,8 @@
             reason => { failure = reason instanceof Error ? reason.message : String(reason); });
     });
 
-    // Back from another page brings the search again. WebKit refuses many history writes in a short time, so the page
-    // writes once after the last key, and at once before a link changes the entry.
-    let keep: (() => void) | undefined;
-    $effect(() => {
-        const search = $state.snapshot({ chips, text });
-        keep = () => { keep = undefined; history.replaceState({ ...history.state, search }, ''); };
-        // After a link wrote the search, `keep` is undefined: the timer must not write into the next entry.
-        const timer = setTimeout(() => keep?.(), KEEP_AFTER_MS);
-        return () => clearTimeout(timer);
-    });
+    // Back from another page brings the search again.
+    const keep = keepInHistory('search', () => ({ chips, text }));
 
     async function load() {
         try {
@@ -176,8 +169,7 @@
 </script>
 
 <!-- Escape in an open window closes only the window. -->
-<svelte:window onclickcapture={event => { if ((event.target as Element).closest?.('a[href]')) keep?.(); }}
-    onkeydown={event => { if (event.key === 'Escape' && !document.querySelector('dialog[open]')) selected = undefined; }} />
+<svelte:window onkeydown={event => { if (event.key === 'Escape' && !document.querySelector('dialog[open]')) selected = undefined; }} />
 
 <!-- A route or a ride that the chips hide is not drawn as selected. -->
 <ListAndMap title="Routes" {failure} {items} shown={mapShown} {fit} look={ridden ? 'ride' : 'route'} credits={cardCredits}
@@ -188,7 +180,7 @@
             <Segmented label="Routes or rides" value={ridden ? 'ridden' : 'planned'}
                 options={[{ value: 'planned', label: `Planned ${records.length.toLocaleString('en')}` },
                     { value: 'ridden', label: `Ridden ${rides.length.toLocaleString('en')}` }]}
-                onChange={next => { keep?.(); location.hash = next === 'ridden' ? `${ROUTES.routes}/ridden` : ROUTES.routes; }} />
+                onChange={next => { keep(); location.hash = next === 'ridden' ? `${ROUTES.routes}/ridden` : ROUTES.routes; }} />
         {/if}
     {/snippet}
     {#snippet actions()}

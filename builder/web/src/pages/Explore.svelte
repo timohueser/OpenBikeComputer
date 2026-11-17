@@ -1,19 +1,20 @@
 <!-- The Explore page: the signed routes of the map view in a list with chips, on the map, and the selected one in a card
      that opens it as a plan in the planner. -->
 <script lang="ts">
-    import { onDestroy } from 'svelte';
     import CoverPicture from '../lib/covers/CoverPicture.svelte';
+    import { keepInHistory } from '../lib/keep-in-history.svelte';
     import type { Bike } from '../lib/library/records';
     import type { Library } from '../lib/library/store';
-    import { catalog, type Box } from '../lib/planner/route-catalog';
+    import { catalog, tooWide, type Box } from '../lib/planner/route-catalog';
     import { gradeName, routePlan, type CatalogRecord, type RouteRecord } from '../lib/planner/signed-routes';
     import { router } from '../lib/router.svelte';
     import { ROUTES } from '../lib/routes';
     import { distanceIn, heightIn } from '../lib/settings/format';
     import SignedCard, { signedNumbers } from './explore/SignedCard.svelte';
     import Chips from './routes/Chips.svelte';
-    import { findPlaces, results, signedItem, type Chips as ChipValues, type FoundPlace, type SignedItem } from './routes/filter';
+    import { results, signedItem, type Chips as ChipValues, type SignedItem } from './routes/filter';
     import ListAndMap from './routes/ListAndMap.svelte';
+    import PlaceSearch from './routes/PlaceSearch.svelte';
     import RouteRow from './routes/RouteRow.svelte';
 
     /** What the page keeps in `history.state.explore`, so that Back and "Find another route" find it again. */
@@ -31,8 +32,8 @@
     /** The place that the map shows: the kept view, a place that another page gives, or a place of the search field. */
     let place = $state.raw<Place | undefined>(kept?.view
         ? { lon: (kept.view[0] + kept.view[2]) / 2, lat: (kept.view[1] + kept.view[3]) / 2, box: kept.view } : history.state?.place);
-    /** The answer of the last load, for its bike: the records, or null when the view needs too many cells. */
-    let answer = $state.raw<{ bike: Bike; records: CatalogRecord[] | null }>(), failed = $state(false);
+    /** The answer of the last load, for its bike and view: the records, or null when the view needs too many cells. */
+    let answer = $state.raw<{ bike: Bike; view: Box; records: CatalogRecord[] | null }>(), failed = $state(false);
 
     const bike = $derived(chips.bike ?? 'hiking');
     const graded = $derived(bike === 'hiking' || bike === 'mtb');
@@ -45,7 +46,11 @@
         return item;
     };
     const items = $derived(records?.map(itemOf) ?? []);
+    // Each item is for `bike`. Until the load of a new view ends, the items are those of the last view: the list counts
+    // and shows the ones in the new view.
+    const inView = $derived(results(items, {}, '', view));
     const shown = $derived(results(items, chips, '', view, 'shortest') as SignedItem[]);
+    const wide = $derived(!!view && tooWide(wrapped(view)));
     const chosen = $derived(shown.find(item => item.id === selected));
     /** The value of each item that the other chips keep, for the bars of the slider of `key`. */
     const values = (key: 'length' | 'climb') => results(items, { ...chips, [key]: undefined }, '', view)
@@ -65,7 +70,7 @@
         failed = false;
         try {
             const found = await catalog.inBox(wrapped(box), kind);
-            if (id === loads) answer = { bike: kind, records: found };
+            if (id === loads) answer = { bike: kind, view: box, records: found };
         } catch {
             if (id === loads) failed = true;
         }
@@ -89,78 +94,37 @@
         chips = next;
     }
 
-    // Back from another page brings the view, the chips and the selection again. WebKit refuses many history writes in
-    // a short time, so the page writes once after the last change, and at once before a link changes the entry.
-    let keep: (() => void) | undefined;
-    $effect(() => {
-        const explore: Kept = $state.snapshot({ chips, view, selected });
-        keep = () => { keep = undefined; history.replaceState({ ...history.state, explore }, ''); };
-        // After a link wrote the state, `keep` is undefined: the timer must not write into the next entry.
-        const timer = setTimeout(() => keep?.(), WAIT_MS);
-        return () => clearTimeout(timer);
-    });
+    // Back from another page brings the view, the chips and the selection again.
+    const keep = keepInHistory('explore', (): Kept => ({ chips, view, selected }));
 
     /** The planner makes the plan; "Find another route" there brings this state back. */
     function plan(item: SignedItem) {
-        keep?.();
+        keep();
         const route = item.record as RouteRecord;
         router.go(`${ROUTES.planner}/new`, { signed: { route, plan: routePlan(route), back: $state.snapshot({ chips, view, selected }) } });
     }
-
-    // The search field finds places only; a chosen place moves the map.
-    let query = $state(''), found = $state.raw<FoundPlace[] | null>(null), findFailure = $state('');
-    let timer: ReturnType<typeof setTimeout> | undefined, controller: AbortController | undefined, field = $state<HTMLElement>();
-    function find() {
-        clearTimeout(timer);
-        controller?.abort();
-        [found, findFailure] = [null, ''];
-        const text = query.trim();
-        if (!text) return;
-        timer = setTimeout(() => {
-            const current = controller = new AbortController();
-            findPlaces(text, view ?? [-180, -85, 180, 85], current.signal).then(
-                places => { if (!current.signal.aborted) found = places; },
-                reason => { if (!current.signal.aborted) findFailure = reason instanceof Error ? reason.message : String(reason); });
-        }, WAIT_MS);
-    }
-    function go({ name, lon, lat, box }: FoundPlace) {
-        [query, found, place] = [name, null, { lon, lat, box }];
-    }
-    onDestroy(() => { clearTimeout(timer); controller?.abort(); });
 </script>
 
 <!-- Escape in an open window closes only the window. -->
-<svelte:window onclickcapture={event => { if ((event.target as Element).closest?.('a[href]')) keep?.(); }}
-    onclick={event => { if (found && !field?.contains(event.target as Node)) found = null; }}
-    onkeydown={event => { if (event.key === 'Escape' && !document.querySelector('dialog[open]')) [selected, found] = [undefined, null]; }} />
+<svelte:window onkeydown={event => { if (event.key === 'Escape' && !document.querySelector('dialog[open]')) selected = undefined; }} />
 
 <ListAndMap title="Explore" {items} {shown} {place} fit={0} look="route" credits={[]} selected={chosen ? [chosen.id] : []}
     onselect={id => selected = id} onview={next => view = next} card={chosen ? card : undefined}>
     {#snippet list()}
-        <div class="where" bind:this={field}>
-            <input class="search" type="search" aria-label="Find a place" placeholder="Find a place" bind:value={query} oninput={find} />
-            {#if findFailure || found}
-                <div class="found">
-                    {#each found ?? [] as option (option.box.join() + option.name)}
-                        <button type="button" onclick={() => go(option)}>{option.name}<small>{[option.kind.replaceAll('_', ' '), option.region].filter(Boolean).join(' · ')}</small></button>
-                    {:else}
-                        <p class="note">{findFailure || 'No place found.'}</p>
-                    {/each}
-                </div>
-            {/if}
-        </div>
+        <!-- The search field finds places only; a chosen place moves the map. -->
+        <PlaceSearch {view} label="Find a place" placeholder="Find a place" float onchoose={({ lon, lat, box }) => place = { lon, lat, box }} />
         <Chips bind:chips={() => chips, setChips} {view} keys={['bike', 'length', 'climb', ...graded ? ['grade' as const] : [], 'shape']} fixed={['bike']}
             grades={[0, 1, 2, 3].map(grade => gradeName(bike === 'mtb' ? 'mtb' : 'hiking', grade))} {values} />
         {#if failed}
             <p class="note">The routes could not load. <button type="button" class="retry" onclick={() => { if (view) void load(view, bike); }}>Retry</button></p>
-        {:else if records === null}
+        {:else if wide}
             <p class="note">Zoom in to see the signed routes.</p>
-        {:else if !records}
+        {:else if !records || (!inView.length && answer!.view !== view)}
             <p class="note">Loading the routes…</p>
-        {:else if !items.length}
+        {:else if !inView.length}
             <p class="note">No signed route in this map view.</p>
         {:else}
-            <p class="count">{shown.length === items.length ? `${count(items.length)} in this map view` : `${shown.length.toLocaleString('en')} of ${count(items.length)}`}</p>
+            <p class="count">{shown.length === inView.length ? `${count(inView.length)} in this map view` : `${shown.length.toLocaleString('en')} of ${count(inView.length)}`}</p>
             <ul>
                 {#each shown as item (item.id)}
                     <li>
@@ -181,54 +145,9 @@
 {/snippet}
 
 <style>
-    .where {
-        position: relative;
-    }
-    .search {
-        width: 100%;
-        padding: 8px 10px;
-        border: 1px solid var(--line-strong);
-        border-radius: 8px;
-        background: var(--panel);
-        color: var(--ink);
-    }
-    /* The places open over the list, so the list does not move. */
-    .found {
-        position: absolute;
-        z-index: 6;
-        top: calc(100% + 4px);
-        right: 0;
-        left: 0;
-        display: flex;
-        flex-direction: column;
-        padding: 4px;
-        border: 1px solid var(--line);
-        border-radius: 8px;
-        background: var(--panel);
-        box-shadow: 0 8px 24px rgb(28 27 20 / 0.18);
-    }
-    .found button {
-        display: flex;
-        flex-direction: column;
-        padding: 6px 10px;
-        border: 0;
-        border-radius: 5px;
-        background: none;
-        color: var(--ink);
-        text-align: left;
-    }
-    .found button:hover {
-        background: var(--parchment-2);
-    }
-    small {
-        color: var(--ink-soft);
-    }
     .note, .count {
         margin: 0;
         color: var(--ink-soft);
-    }
-    .found .note {
-        margin: 4px 8px 6px;
     }
     .count {
         font-size: 13px;

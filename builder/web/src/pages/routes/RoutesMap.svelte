@@ -32,7 +32,7 @@
 
     const LINE_ZOOM = 8;
     let container: HTMLElement;
-    let map = $state.raw<maplibregl.Map>(), ready = $state(false);
+    let map = $state.raw<maplibregl.Map>(), ready = $state(false), loaded = $state(false);
     const theme = $derived(appearance.dark ? 'dark' : 'light');
     let styled: typeof theme, styledLook: typeof look, fitted = 0, relief: Relief;
     /** The credits of the terrain and of the picture, behind a button beside the credit of the map. */
@@ -140,7 +140,7 @@
         created.dragRotate.disable();
         created.touchZoomRotate.disableRotation();
         created.on('style.load', addLayers);
-        created.on('load', () => onview(view()));
+        created.on('load', () => { loaded = true; onview(view()); });
         created.on('moveend', () => onview(view()));
         created.on('click', 'routes-hit', event => { const id = event.features?.[0]?.properties.id; if (id) onselect(id); });
         created.on('click', 'bubbles', event => void zoomIn(event));
@@ -201,7 +201,7 @@
     });
 </script>
 
-<div class="routes-map" bind:this={container}></div>
+<div class="routes-map" aria-busy={!loaded} bind:this={container}></div>
 <!-- The map takes this box as a control, after its own credit. The credit of the base map is always in view; the long
      credits of the terrain and of the picture of the selected card open at the button. On a small map the button of the
      map's credit opens them. -->
