@@ -94,6 +94,36 @@ test('the Routes page lists the routes, filters them with a chip, shows the sele
   expect(errors).toEqual([]);
 });
 
+// The map canvas is hidden, because its tiles draw differently on another system. With save-data on, the cover job
+// makes no picture, so the card shows the line on a plain ground.
+test('the Routes page with a selected route, at the width of a computer and of a phone', async ({ page }) => {
+  await page.addInitScript(() => Object.defineProperty(NetworkInformation.prototype, 'saveData', { get: () => true }));
+  await page.route(url => url.hostname !== '127.0.0.1', request => {
+    if (request.request().method() === 'OPTIONS') return request.fulfill(CORS_PREFLIGHT);
+    const response = respond(request.request());
+    return response ? request.fulfill(response) : request.abort();
+  });
+  await page.goto('/planner.html?cover=none');
+  await page.waitForFunction(() => window.coverTest);
+  await page.evaluate(async records => {
+    const { library } = window.coverTest;
+    for (const record of records) await library.saveRoute(record);
+    await library.setState('waiting', ['lake']);
+  }, routes);
+
+  await page.goto('/planner.html#/routes');
+  await page.locator('.list .row', { hasText: 'Start → Finish' }).click();
+  await expect(page.getByRole('region', { name: 'Start → Finish' }).locator('svg polyline')).toHaveCount(1);
+  await expect(page.locator('.maplibregl-ctrl-attrib')).toBeVisible();
+  await page.addStyleTag({ content: '.maplibregl-canvas { visibility: hidden; }' });
+  await page.evaluate(() => document.fonts.ready);
+  // No row under the pointer shows its hover.
+  await page.mouse.move(0, 0);
+  await expect(page).toHaveScreenshot('selected-1440.png');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page).toHaveScreenshot('selected-390.png', { fullPage: true });
+});
+
 const year = new Date().getFullYear();
 const lake = [8, 48, 8.1, 48, 8.1, 48.1, 8, 48.1, 8, 48];
 function ride(name, line, lengthM, month, day, bike = 'road', at = year) {
