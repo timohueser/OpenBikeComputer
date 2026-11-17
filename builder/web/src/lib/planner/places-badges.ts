@@ -133,12 +133,14 @@ export class BadgeLayer {
     private readonly leaving = new Set<Mark>();
     private wide = new Map<number, Node[]>();
     private near = new Map<number, Node[]>();
+    /** The pinned kinds alone, for the zooms below minZoom. */
+    private early = new Map<number, Node[]>();
     private level = -1;
     private list: { mark: Mark; element: HTMLElement; panel: HTMLElement } | undefined;
     private picked: { place: PlaceFeature; element: HTMLElement; preview: boolean; id?: string } | undefined;
     private press: [number, number] = [0, 0];
 
-    constructor(private readonly map: maplibregl.Map, private readonly settings: { badgeRadius: number; touchRadius: number; split: number; minZoom: number; names: number },
+    constructor(private readonly map: maplibregl.Map, private readonly settings: { badgeRadius: number; touchRadius: number; split: number; minZoom: number; pinned: PlaceCategory[]; pinnedZoom: number; names: number },
         private readonly onPlace: (place: PlaceFeature) => string | undefined) {
         this.root.className = 'places-layer';
         map.getCanvasContainer().append(this.root);
@@ -165,7 +167,8 @@ export class BadgeLayer {
     }
 
     setData(features: PlaceFeature[]) {
-        const { badgeRadius, touchRadius, split, minZoom } = this.settings;
+        const { badgeRadius, touchRadius, split, minZoom, pinned, pinnedZoom } = this.settings;
+        this.early = levels(features.filter(feature => pinned.includes(feature.properties.category)), badgeRadius, pinnedZoom - 1, minZoom - 1);
         this.wide = levels(features, badgeRadius, minZoom - 1, split - 1);
         this.near = levels(features, touchRadius, split, 19);
         this.update(false);
@@ -186,9 +189,10 @@ export class BadgeLayer {
     }
 
     private nodes(level: number): Node[] {
-        const { split, minZoom } = this.settings;
-        if (this.map.getZoom() < minZoom) return [];
-        const all = level < split ? this.wide.get(Math.max(level, minZoom - 1)) : this.near.get(Math.min(level, 20));
+        const { split, minZoom, pinned, pinnedZoom } = this.settings;
+        const first = pinned.length ? pinnedZoom : minZoom;
+        if (this.map.getZoom() < first) return [];
+        const all = level < minZoom ? this.early.get(Math.max(level, first - 1)) : level < split ? this.wide.get(level) : this.near.get(Math.min(level, 20));
         const bounds = this.map.getBounds(), x0 = worldX(bounds.getWest()), x1 = worldX(bounds.getEast()), y0 = worldY(bounds.getNorth()), y1 = worldY(bounds.getSouth());
         const padX = (x1 - x0) * 0.3, padY = (y1 - y0) * 0.3;
         return (all ?? []).filter(node => node.x > x0 - padX && node.x < x1 + padX && node.y > y0 - padY && node.y < y1 + padY);

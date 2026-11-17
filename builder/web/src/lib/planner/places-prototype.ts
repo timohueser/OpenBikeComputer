@@ -1,7 +1,8 @@
 // PROTOTYPE for issue 3556 (places a rider can predict). Throwaway: it never merges.
 //
 //   ?places=today|groups|badges   today = the map of develop (default)
-//   ?kinds=default|all            default = water, shop, camp, food, bike, station, peak
+//   ?kinds=default|all|a.b.c      default = water, shop, camp, food, bike, station, peak; a.b.c = these kinds
+//   ?pinned=a.b                   badges: these kinds show from zoom 12, the other kinds from minzoom
 //   ?radius=26                    groups: two places of one kind nearer than this (px at the whole zoom) are one group
 //   ?badgeradius=64               badges: places of all kinds nearer than this are one badge
 //   ?split=16                     badges: from this zoom the badge separates into the groups of each kind
@@ -24,11 +25,13 @@ export type PlacesMode = 'today' | 'groups' | 'badges';
 export const placesMode: PlacesMode = query.get('places') === 'groups' ? 'groups' : query.get('places') === 'badges' ? 'badges' : 'today';
 const DEFAULT_ON = ORDER.slice(0, 7);
 /** The kinds that are on when the page opens. */
-export const prototypeKinds: PlaceCategory[] = query.get('kinds') === 'all' ? categoryIds : DEFAULT_ON;
+const list = (key: string) => (query.get(key) ?? '').split('.').filter((id): id is PlaceCategory => categoryIds.includes(id as PlaceCategory));
+export const prototypeKinds: PlaceCategory[] = query.get('kinds') === 'all' ? categoryIds : list('kinds').length ? list('kinds') : DEFAULT_ON;
+const PINNED = list('pinned');
 
 const RADIUS = number('radius', 26), BADGE_RADIUS = number('badgeradius', 64), SPLIT = number('split', 16);
 const MIX_RADIUS = number('mixradius', 30);
-const MIN_ZOOM = number('minzoom', 11), NAMES = number('names', 16), MARGIN = number('margin', 1), BADGE_COUNT = query.has('badgecount');
+const MIN_ZOOM = number('minzoom', 11), PINNED_ZOOM = Math.min(12, MIN_ZOOM), NAMES = number('names', 16), MARGIN = number('margin', 1), BADGE_COUNT = query.has('badgecount');
 const MAX_ZOOM = 20;
 
 type Properties = { kind: string; category: PlaceCategory; name: string; lon: number; lat: number };
@@ -125,7 +128,7 @@ export class PlacesPrototype {
     constructor(private readonly map: maplibregl.Map, private readonly url: string, onPlace: (place: Feature) => string | undefined = () => undefined) {
         Object.assign(window, { __places: this });
         if (this.mode === 'today') return;
-        if (this.mode === 'badges') this.badges = new BadgeLayer(map, { badgeRadius: BADGE_RADIUS, touchRadius: MIX_RADIUS, split: SPLIT, minZoom: MIN_ZOOM, names: NAMES > 0 ? NAMES : 99 }, onPlace);
+        if (this.mode === 'badges') this.badges = new BadgeLayer(map, { badgeRadius: BADGE_RADIUS, touchRadius: MIX_RADIUS, split: SPLIT, minZoom: MIN_ZOOM, pinned: PINNED, pinnedZoom: PINNED_ZOOM, names: NAMES > 0 ? NAMES : 99 }, onPlace);
         map.on('moveend', () => void this.load());
     }
 
@@ -189,7 +192,7 @@ export class PlacesPrototype {
 
     /** Loads the place tiles of the view and a margin of whole tiles around it. Loaded tiles stay. */
     private async load() {
-        if (!this.installed || this.map.getZoom() < MIN_ZOOM - 1) return;
+        if (!this.installed || this.map.getZoom() < (PINNED.length ? PINNED_ZOOM : MIN_ZOOM) - 1) return;
         const start = performance.now();
         this.source ??= openSource(this.url);
         const source = await this.source, zoom = source.maxZoom, bounds = this.map.getBounds();
