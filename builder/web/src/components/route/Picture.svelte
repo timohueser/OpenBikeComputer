@@ -74,12 +74,13 @@
                     onpoint={metres => onpoint(metres === null || !summary.lengthM ? null : metres / summary.lengthM)} />
                 {#if !side && mapLarge}<button type="button" class="swap" aria-label="Show the picture large" onclick={() => swapped = false}></button>{/if}
             </div>
-            <Credits {credits} side="left" />
         {/if}
         <div class="slot map">
             <RouteMap {summary} {ride} pins={side || mapLarge ? pins : []} photos={side || mapLarge ? photos : []} {onphoto} {mark} {onpoint} fitTo={part} {lit} {place} />
             {#if !side && !mapLarge}<button type="button" class="swap" aria-label="Show the map large" onclick={() => swapped = true}></button>{/if}
         </div>
+        <!-- The map shows the credit of the base map as a line; this button has the rest, such as the terrain. -->
+        <Credits {credits} side="left" />
     </div>
 </div>
 

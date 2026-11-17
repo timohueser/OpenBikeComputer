@@ -21,6 +21,7 @@ mod stroke;
 #[cfg(test)]
 pub(crate) mod tests;
 mod types;
+mod walk;
 
 use std::collections::BTreeMap;
 
@@ -694,10 +695,13 @@ struct Point {
     pos: P,
     arms: Vec<Arm>,
     /// Neighbouring arms (as indices into `arms`), the first turning counter-clockwise to the second
-    /// through their sector, with the radius of their corner in metres.
-    pairs: Vec<(usize, usize, f64)>,
+    /// through their sector, with the radius of their kerb's round and of their corner in metres
+    /// (`points::round`).
+    pairs: Vec<(usize, usize, f64, f64)>,
     /// A junction or a joint: its arms belong to its face up to their seams.
     seams: bool,
+    /// Per arm, whether it is one of the through road's: a junction's hosts, both arms of a joint or a turn.
+    hosts: Vec<bool>,
     label: Label,
     key: (u8, u8, u8),
     glob: Glob,
@@ -790,13 +794,6 @@ fn turns(line: &WayLine, r: &[f64], support: f64) -> Vec<usize> {
     out
 }
 
-/// Whether an arm's first segment has a sidewalk on its right, seen from the point, else on its left.
-fn sidewalk(line: &WayLine, arm: Arm, right: bool) -> bool {
-    let seg = if arm.dir > 0 { Some(arm.at) } else { arm.at.checked_sub(1) };
-    let bit = if (arm.dir > 0) == right { 2 } else { 1 };
-    seg.is_some_and(|s| s + 1 < line.walk.len() && line.walk[s] & bit != 0)
-}
-
 /// The junctions and joints whose faces reach the window. A junction with an arm that goes on at another level
 /// (`elsewhere`) is no point of this level: each of its arms here ends there, open (`deck::Decks`), as at a joint.
 fn graph_points(
@@ -829,20 +826,21 @@ fn graph_points(
             .collect();
         // Each two neighbouring arms, the first turning counter-clockwise to the second through their
         // sector, so that the sector lies on the first's right and the second's left. Their corner
-        // takes the lesser radius of their classes, the sidewalk one where either has a sidewalk there.
+        // takes the lesser corner radius of their classes; their kerb's round the sidewalk one where both have a
+        // sidewalk there, and where one has, a small round, so the slab runs straight to the other's carriageway
+        // (`walk`).
         let pairs = (0..pts.len())
             .map(|k| {
                 let (a, b) = (pts[k], pts[(k + 1) % pts.len()]);
-                let walk = sidewalk(&lines[a.line], a, true) || sidewalk(&lines[b.line], b, false);
-                let radius = |l: usize| {
-                    let sec = &lines[l].sec;
-                    if walk {
-                        sec.corner_radius_walk_m
-                    } else {
-                        sec.corner_radius_m
-                    }
+                let walks = u8::from(walk::walks(ctx, &lines[a.line], a, true, true))
+                    + u8::from(walk::walks(ctx, &lines[b.line], b, false, true));
+                let corner = lines[a.line].sec.corner_radius_m.min(lines[b.line].sec.corner_radius_m);
+                let kerb = match walks {
+                    2 => lines[a.line].sec.corner_radius_walk_m.min(lines[b.line].sec.corner_radius_walk_m),
+                    1 => ctx.rules.plan.walk.radius_one_walk_m,
+                    _ => corner,
                 };
-                (k, (k + 1) % pts.len(), radius(a.line).min(radius(b.line)))
+                (k, (k + 1) % pts.len(), kerb, corner)
             })
             .collect();
         let gp = ctx.global(j.pos);
@@ -851,6 +849,7 @@ fn graph_points(
             arms: pts,
             pairs,
             seams: true,
+            hosts: arms.iter().map(|(a, _)| a.host).collect(),
             label,
             key: (rank, class(best.1), 0),
             glob: [gp[0], gp[1], 0, 0, 0],
@@ -875,8 +874,9 @@ fn graph_points(
                 Arm { line: la, at: at[0], dir: j.arms[0].dir },
                 Arm { line: lb, at: at[1], dir: j.arms[1].dir },
             ],
-            pairs: vec![(0, 1, radius), (1, 0, radius)],
+            pairs: vec![(0, 1, radius, radius), (1, 0, radius, radius)],
             seams: true,
+            hosts: vec![true; 2],
             label,
             key: (rank, class(owner), 1),
             glob: [gp[0], gp[1], 0, 0, 0],
@@ -904,8 +904,9 @@ fn turn_points(ctx: &Ctx, lines: &[WayLine], taken: &[Vec<(f64, f64)>], bx: [i32
             out.push(Point {
                 pos: line.p[i],
                 arms: vec![Arm { line: li, at: i, dir: 1 }, Arm { line: li, at: i, dir: -1 }],
-                pairs: vec![(0, 1, r_m)],
+                pairs: vec![(0, 1, r_m, r_m)],
                 seams: false,
+                hosts: vec![true; 2],
                 label,
                 key: (rank, line.sec.rank as u8, 2),
                 glob: {
@@ -1047,11 +1048,18 @@ pub(crate) fn ceiling_lines<'a>(
     // A cell whose graph has no bore reads its decks as a build with no bores does.
     let half = HALF_MAX_M + if BORES && any_bore(graph) { deck_m.max(bore_m) } else { deck_m };
     let m = records::ceiling_end_reach(half, rules.plan.heights.ceiling_release_m) + records::HEIGHT_PAD_M;
-    let mut out = lines(&ctx, input, &|w| on_deck(graph, w) || in_bore(graph, w), grown(cell, m, true)).0;
+    deck_lines(&ctx, input, &|w| on_deck(graph, w) || in_bore(graph, w), grown(cell, m, true))
+}
+
+/// The lines of the ways that `keep` takes in a box, each one leg, with the half-width of the deck's stroke (a bore's:
+/// its core, its wall and the cover's margin).
+fn deck_lines<'a>(ctx: &Ctx<'a>, input: &CellInput, keep: &dyn Fn(u32) -> bool, bx: [i32; 4]) -> Vec<WayLine<'a>> {
+    let (deck_m, bore_m) = (ctx.rules.structures.edge_band_m, deck::WALL_M + deck::COVER_SIDE_M);
+    let mut out = lines(ctx, input, keep, bx).0;
     for line in &mut out {
         line.cuts.clear();
         line.spans.clear();
-        let band = if in_bore(graph, line.way) { bore_m } else { deck_m };
+        let band = if in_bore(ctx.graph, line.way) { bore_m } else { deck_m };
         for i in 0..line.p.len() {
             line.h[i] = line.bands[i][VERGE] + ctx.units(band, line.p[i]);
         }
@@ -1113,6 +1121,8 @@ struct Candidates<'a> {
     /// With the bores, on storey 0, per lower way (a bore, or a way that enters one) the lines with a stretch on top of
     /// it and the strokes of those stretches.
     lid_of: Vec<(u32, usize, Rings)>,
+    /// The sidewalks' width rules per line side (`walk`).
+    walk_ends: walk::Ends,
     stats: FaceStats,
 }
 
@@ -1471,8 +1481,14 @@ fn candidates<'a>(
         let u = |m: f64| ctx.units(m, pt.pos);
         // A round may cut into its arms' strokes as far as their chords leave the curve.
         let sag = |k: usize| lines[pt.arms[k].line].sec.sag_plan_m;
-        let pairs: Vec<(usize, usize, f64, f64)> =
-            pt.pairs.iter().map(|&(a, b, r)| (a, b, u(r), u(sag(a).max(sag(b))))).collect();
+        let pairs: Vec<points::Pair> = (pt.pairs.iter())
+            .map(|&(a, b, kerb, corner)| points::Pair {
+                arms: [a, b],
+                kerb: u(kerb),
+                corner: u(corner),
+                tol: u(sag(a).max(sag(b))),
+            })
+            .collect();
         points::round(&lines, stops, pt.pos, &pt.arms, &pairs, u(plan.extent_m), pt.seams)
     };
     let jj = stops(&points);
@@ -1586,6 +1602,7 @@ fn candidates<'a>(
     let mut own_layers: BTreeMap<usize, [Vec<Vec<P>>; LAYERS]> = BTreeMap::new();
     // The carriageways on the runs that only the outline rounds read.
     let mut outer_paved: Vec<Vec<P>> = Vec::new();
+    let mut walk_runs = vec![None; lines.len()];
     // The marks of the portals by the bore's way: on storey 0 the core strokes of the ground ways that enter it, on the
     // storey under the ground the bore's own stroke.
     let mut mark_pieces: BTreeMap<u32, Vec<Vec<P>>> = BTreeMap::new();
@@ -1622,6 +1639,7 @@ fn candidates<'a>(
             outer_paved.extend(outer.map(|r| prepare(&union(&carriageway(r), [0, 0]))).unwrap_or_default());
             continue;
         };
+        walk_runs[li] = Some((first, last));
         if outer != Some((first, last)) {
             outer_paved.extend(outer.map(|r| prepare(&union(&carriageway(r), [0, 0]))).unwrap_or_default());
         }
@@ -1790,6 +1808,12 @@ fn candidates<'a>(
             discs: Vec::new(),
         });
     }
+    let walk = if level == 0 {
+        walk::build(&ctx, input, &lines, &walk_runs, &points, &rounded, bx)
+    } else {
+        walk::Walk::default()
+    };
+    cands.extend(walk.cands);
     // Where a way on top lies over the last metres of a way that enters a bore, that way's face is a floor under the
     // way on top, as behind the portal line: its paved layers lose the place, and the place is a floor of its own
     // label (`wedges`).
@@ -1833,7 +1857,7 @@ fn candidates<'a>(
         .flat_map(|c| c.rings.iter().cloned())
         .collect();
     paved.extend(outer_paved);
-    let circles: Vec<(P, f64)> = rounded.iter().flat_map(|r| r.circles.iter().map(|c| (c.centre, c.radius))).collect();
+    let circles: Vec<&Circle> = rounded.iter().flat_map(|r| r.circles.iter().chain(&r.corners)).collect();
     let r_max = rules::inner_max_m(&rules.sections);
     let near_win = reach(0.0);
     let beyond = |p: P| {
@@ -1939,7 +1963,22 @@ fn candidates<'a>(
         Some(d) => lines.iter().flat_map(|l| deck::open_ends(l, d.open[l.way as usize])).collect(),
         None => lines.iter().flat_map(deck_ends).collect(),
     };
-    Candidates { lines, ways, cands, seams, win, cover, corners, mouths, ends, marks, wedges, lid_of, stats }
+    Candidates {
+        lines,
+        ways,
+        cands,
+        seams,
+        win,
+        cover,
+        corners,
+        mouths,
+        ends,
+        walk_ends: walk.ends,
+        marks,
+        wedges,
+        lid_of,
+        stats,
+    }
 }
 
 /// The samples of a line whose segments meet a box: the run `first..last`.
@@ -2175,7 +2214,7 @@ fn split_legs(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, cands
         // A band also splits at the edge of the near zone: its pieces in the zone take their nearest
         // leg's line as their host, and any piece outside stays plain, so its label does not depend on a
         // cut that another cell may not see.
-        let band = cands[c].label.owner == Owner::Terrain;
+        let band = cands[c].label.owner == Owner::Terrain && cands[c].label.surface != Surface::Sidewalk;
         let label = cands[c].label;
         let mut by_label: Vec<(Label, Rings)> = Vec::new();
         for piece in stroke::cut(&cands[c].rings, if band { edges } else { medial }, anchor) {
@@ -2275,6 +2314,7 @@ fn seams_on_carriageways(cands: &mut [Cand], seams: &[(usize, [P; 2], Vec<usize>
         // The way's carriageway: one candidate per leg.
         let ways: Vec<usize> = (0..cands.len())
             .filter(|&c| cands[c].relabel.is_none() && cands[c].glob.is_none() && cands[c].line == *l)
+            .filter(|&c| cands[c].label.surface != Surface::Sidewalk)
             .collect();
         if ways.is_empty() {
             out.push([a, b]);

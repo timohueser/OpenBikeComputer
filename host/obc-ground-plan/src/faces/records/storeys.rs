@@ -61,7 +61,7 @@ pub fn storeys(
         let s = Sliced::new(&c);
         let faces = s.cell(&c, cell, k);
         let plan = s.plan(cell, k, &s.map(), &s.labels);
-        let sub = encode(cell, graph, input, rules, (&c.lines, &[]), &c.cands, &plan, false);
+        let sub = encode(cell, graph, input, rules, (&c.lines, &[]), (&c.cands, &c.walk_ends), &plan, false);
         *near = merge(near, &sub.words, k, &|w| DeckWay::of(graph, input, rules, w, &decks).finish_bits());
         for w in faces.faces.iter().filter_map(|f| f.material) {
             if let Err(k) = out.ways.binary_search_by_key(&w, |x| x.0) {

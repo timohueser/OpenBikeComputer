@@ -59,7 +59,7 @@ it('loads the archive when an overlay is first shown, then draws the network and
 
 it('puts the bands over the water and its structures, and under the lines of the planner style', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => tilejson }));
-    const style = mapStyle('light', testConfig, '', '').layers;
+    const style = mapStyle('light', testConfig, { dem: '' }).layers;
     const view = overlays(style);
     view.layer.set({ network: 'cycling', access: false });
     await view.layer.install('light');

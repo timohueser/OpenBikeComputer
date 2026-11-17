@@ -12,6 +12,12 @@
 // As MAT of section.ts.
 const MAT_KERB: u32 = 2u;
 const MAT_SIDEWALK: u32 = 3u;
+// A ground plan slab's kerb top (kerb_top_m of roads.json) and its bevel, and the edging stone along its back edge on
+// a slab at least EDGING_MIN_M wide, as the kerb profile of section.ts.
+const KERB_TOP_M: f32 = 0.16;
+const KERB_BEVEL_M: f32 = 0.025;
+const EDGING_M: f32 = 0.1;
+const EDGING_MIN_M: f32 = 0.36;
 // As CF of section.ts.
 const CF_NO_LEFT_LINE: u32 = 8u;
 const CF_NO_RIGHT_LINE: u32 = 16u;
@@ -505,7 +511,18 @@ fn way_look(mat: u32, code: u32, region: u32, su: vec2f, w: WayPixel, flags: u32
             return WayLook(rule(region, slot_kerb()).rgb * (0.94 + 0.12 * noise(w.p / 0.9)), vec2f(0.0), 0.0, 0.0, 0.0);
         }
         case MAT_SIDEWALK: {
-            return WayLook(paving(region, w.p, w.pw), vec2f(0.0), 0.0, 0.0, 0.0);
+            if (!piece) {
+                return WayLook(paving(region, w.p, w.pw), vec2f(0.0), 0.0, 0.0, 0.0);
+            }
+            // A slab's frame: the metres from its kerb across, its width as the half.
+            let kerb = rule(region, slot_kerb()).rgb * (0.94 + 0.12 * noise(w.p / 0.9));
+            let top = 1.0 - smoothstep(KERB_TOP_M - w.pw, KERB_TOP_M + w.pw, w.across);
+            let bevel = 1.0 - smoothstep(KERB_BEVEL_M - w.pw, KERB_BEVEL_M + w.pw, w.across);
+            let back = w.half - EDGING_M;
+            let edge = select(0.0, smoothstep(back - w.pw, back + w.pw, w.across), w.half >= EDGING_MIN_M);
+            var c = mix(paving(region, w.p, w.pw), kerb * 0.9, edge);
+            c = mix(c, kerb * (1.0 - 0.1 * bevel), top);
+            return WayLook(c, vec2f(0.0), 0.0, 0.0, 0.0);
         }
         case LOOK_ZEBRA, LOOK_ZEBRA_SETT, LOOK_ZEBRA_PAVERS, LOOK_ZEBRA_CONCRETE: {
             return zebra_look(mat, code, region, w, piece);

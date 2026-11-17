@@ -477,6 +477,7 @@ impl WaySection<'_> {
 pub struct ClassFaces<'a> {
     pub group: &'a str,
     pub shoulder_m: f64,
+    pub sidewalk_m: f64,
     pub reach_m: f64,
     pub verge_m: f64,
     pub return_grade: f64,
@@ -850,6 +851,13 @@ impl Sections {
         &self.widths
     }
 
+    /// The most `underground_m` of the water rows: water deeper than this under the terrain is underground
+    /// whatever its row.
+    pub fn underground_max_m(&self) -> f64 {
+        let row = |name: &str| self.water("", &Tags::from([("waterway".to_string(), name.to_string())]));
+        self.waters.iter().map(|w| row(&w.name).underground_m).fold(0.0, f64::max)
+    }
+
     /// The cross-section of a waterway: the row of its `waterway` value, else `river` for the kind
     /// `river`, else `stream`.
     pub fn water(&self, kind: &str, tags: &Tags) -> WaterSection {
@@ -888,6 +896,7 @@ impl Sections {
         self.classes.get(rank).map(|row| ClassFaces {
             group: &row.group,
             shoulder_m: self.widths.classes[rank].1.shoulder_m,
+            sidewalk_m: self.widths.classes[rank].1.sidewalk_m,
             reach_m: row.reach_m,
             verge_m: row.face[1],
             return_grade: row.face[2],
