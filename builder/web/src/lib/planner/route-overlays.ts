@@ -109,7 +109,6 @@ export class RouteOverlays {
     private failure = '';
     private routingPackage?: string;
     private installable = false;
-    private faded = false;
     private rest?: ReturnType<typeof setTimeout>;
 
     constructor(private map: Map, private url: string, private status: (message: string, retry?: boolean) => void,
@@ -179,12 +178,6 @@ export class RouteOverlays {
         if (this.installable) void this.install(this.theme);
     }
 
-    /** Fades the networks, so the routes of the Routes view stand out over them. */
-    fade(faded: boolean) {
-        this.faded = faded;
-        this.sync();
-    }
-
     /** The routing package of the latest route. The router excludes what the overlay shows as closed, so both must match. */
     verify(routingPackage?: string) {
         this.routingPackage = routingPackage;
@@ -197,7 +190,7 @@ export class RouteOverlays {
     }
 
     private get lineOpacity(): ExpressionSpecification {
-        return ['interpolate', ['linear'], ['zoom'], bandZoom, this.faded ? 0.3 : 1, bandZoom + 1, 0];
+        return ['interpolate', ['linear'], ['zoom'], bandZoom, 1, bandZoom + 1, 0];
     }
 
     // The band is the network colour mixed into the background colour of the basemap, not a transparent line: a wide
@@ -205,7 +198,7 @@ export class RouteOverlays {
     private get bandColor(): ExpressionSpecification {
         const paper = this.map.getPaintProperty('background', 'background-color') as string;
         const share = bandShare[this.theme];
-        return ['interpolate', ['linear'], this.faded ? share / 2 : share, 0, paper, 1, this.color];
+        return ['interpolate', ['linear'], share, 0, paper, 1, this.color];
     }
 
     private get mismatch() {

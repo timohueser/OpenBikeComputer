@@ -1,4 +1,3 @@
-import type { Coordinate } from './geo';
 import { loadRouteCell } from './map-data';
 import { tileColumn, tileRow } from './place-index';
 import type { BikeType } from './riding-profiles';
@@ -13,11 +12,6 @@ export type Box = [west: number, south: number, east: number, north: number];
 
 /** The most cell files that one map view loads (`specs/route-catalog.md`, "Map view"). */
 export const MAX_CELLS = 12;
-
-/** The line of a record: its own, or the lines of the stages of a long route in order. */
-export function recordLine(route: CatalogRecord, stages: CatalogRecord[] = []): Coordinate[] {
-    return route.line_udeg ? decodeCoordinates(route.line_udeg) : stages.flatMap(stage => stage.line_udeg ? decodeCoordinates(stage.line_udeg) : []);
-}
 
 /** The columns and rows of the zoom 9 cells whose box meets `box`, edges included, or null for a box with no cell. */
 function boxRange([west, south, east, north]: Box) {
