@@ -11,7 +11,7 @@
     import { appearance } from '../../lib/theme.svelte';
     import type { Box, Item } from './filter';
 
-    let { items, shown, selected, look = 'route', covered = 0, credits = [], onselect, onview, fit }: {
+    let { items, shown, selected, look = 'route', covered = 0, credits = [], onselect, onview, fit, place }: {
         items: Item[];
         /** The items of the list. The map draws only these, and the bubbles count only these. */
         shown: Item[];
@@ -26,6 +26,8 @@
         onview: (view: Box) => void;
         /** A change fits the map to the shown items. */
         fit: number;
+        /** A new place moves the map: a box of some size fits the map, a point shows at zoom 12. */
+        place?: { lon: number; lat: number; box?: Box };
     } = $props();
 
     const LINE_ZOOM = 8;
@@ -189,6 +191,13 @@
         if (!ready || target === fitted) return;
         fitted = target;
         fitShown();
+    });
+    // With no padding, a box that `onview` gave shows the same view again.
+    $effect(() => {
+        if (!map || !place) return;
+        const { lon, lat, box: [west, south, east, north] = [lon, lat, lon, lat] } = place;
+        if (west < east && south < north) map.fitBounds([[west, south], [east, north]], { padding: 0, animate: false });
+        else map.jumpTo({ center: [lon, lat], zoom: 12 });
     });
 </script>
 

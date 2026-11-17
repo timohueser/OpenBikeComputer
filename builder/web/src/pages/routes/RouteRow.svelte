@@ -1,4 +1,10 @@
-<!-- A row of a list of routes: a small picture, the name, a line of numbers, and a badge. -->
+<!-- A row of a list of routes: a small picture, the name, a line of numbers, and a badge. The row shows its picture only
+     while it is near the view, so a long list draws few pictures. -->
+<script module lang="ts">
+    const rows = new WeakMap<Element, (near: boolean) => void>();
+    let observer: IntersectionObserver | undefined;
+</script>
+
 <script lang="ts">
     import type { Snippet } from 'svelte';
 
@@ -18,10 +24,20 @@
         /** A cover, whose root has the class `cover`. */
         picture: Snippet;
     } = $props();
+
+    let near = $state(false);
+    function watch(node: Element) {
+        observer ??= new IntersectionObserver(entries => {
+            for (const { target, isIntersecting } of entries) rows.get(target)?.(isIntersecting);
+        }, { rootMargin: '200px' });
+        rows.set(node, value => near = value);
+        observer.observe(node);
+        return { destroy: () => observer!.unobserve(node) };
+    }
 </script>
 
-<button type="button" class="row" aria-current={current} {onclick}>
-    <span class="thumb">{@render picture()}</span>
+<button type="button" class="row" aria-current={current} {onclick} use:watch>
+    <span class="thumb">{#if near}{@render picture()}{/if}</span>
     <span class="text">
         <strong>{name}</strong>
         {#if parts}

@@ -2,7 +2,6 @@
      card. -->
 <script lang="ts">
     import { onMount, tick, untrack } from 'svelte';
-    import { SvelteSet } from 'svelte/reactivity';
     import Segmented from '../lib/ui/Segmented.svelte';
     import Switch from '../lib/ui/Switch.svelte';
     import Cover from '../lib/covers/Cover.svelte';
@@ -39,8 +38,6 @@
     let onlyView = $state(false), view = $state.raw<Box>(), selected = $state<string>(), fit = $state(0), adding = $state(false), statistics = $state(false);
     /** The ride groups by ride key, once `groups` ends; until then each ride is its own group. */
     let grouped = $state.raw(new Map<string, string>()), opened = $state<string>();
-    /** The rows in view or near it: only these mount their picture. */
-    const near = new SvelteSet<string>();
 
     /** The view of the address. The page keeps it while the address goes to another page. */
     let ridden = $state(router.id === 'ridden');
@@ -139,20 +136,6 @@
         return () => { stop(); clearTimeout(timer); reading?.abort(); };
     });
 
-    const observer = new IntersectionObserver(entries => {
-        for (const { target, isIntersecting } of entries) {
-            const id = (target as HTMLElement).dataset.id!;
-            if (isIntersecting) near.add(id);
-            else near.delete(id);
-        }
-    }, { rootMargin: '200px' });
-    onMount(() => () => observer.disconnect());
-
-    function watch(node: HTMLElement) {
-        observer.observe(node);
-        return { destroy: () => { observer.unobserve(node); near.delete(node.dataset.id!); } };
-    }
-
     /** Enter turns a place that the text names into a chip. */
     let reading: AbortController | undefined;
     /** Only the answer for the text that is still in the field changes the search; a failure keeps the text. */
@@ -240,9 +223,9 @@
                     {#each listRows as row (`${row.kind}:${row.id}`)}
                         {@const first = row.rides[0]}
                         {@const key = `${row.kind}:${row.id}`}
-                        <li data-id={key} use:watch>
+                        <li data-id={key}>
                             <RouteRow name={row.name} current={key === selected} onclick={() => selected = key} {...rideLine(row)}>
-                                {#snippet picture()}{#if near.has(key)}<Cover {library} id={first.id} />{/if}{/snippet}
+                                {#snippet picture()}<Cover {library} id={first.id} />{/snippet}
                             </RouteRow>
                             {#if row.kind === 'group'}
                                 <button type="button" class="open" onclick={() => { opened = row.id; selected = undefined; }}>{count(row.rides.length, 'ride')} ›</button>
@@ -255,11 +238,11 @@
                     {#each shown as item (item.id)}
                         {@const state = states.get(item.id)}
                         {@const summary = item.kind === 'route' && item.summary}
-                        <li data-id={item.id} use:watch>
+                        <li>
                             <RouteRow name={item.name} current={item.id === selected} onclick={() => selected = item.id}
                                 parts={summary ? [summary.days > 1 && `${summary.days} days`, formatDistance(summary.lengthM), `${formatHeight(summary.climbM)} up`] : undefined}
                                 badge={state && { text: BADGES[state], kind: state }}>
-                                {#snippet picture()}{#if item.summary && near.has(item.id)}<Cover {library} id={item.id} />{/if}{/snippet}
+                                {#snippet picture()}{#if item.summary}<Cover {library} id={item.id} />{/if}{/snippet}
                             </RouteRow>
                         </li>
                     {:else}
