@@ -124,7 +124,8 @@
         {:else if !inView.length}
             <p class="note">No signed route in this map view.</p>
         {:else}
-            <p class="count">{shown.length === inView.length ? `${count(inView.length)} in this map view` : `${shown.length.toLocaleString('en')} of ${count(inView.length)}`}</p>
+            <!-- The rows of the last view stay until the answer for this view comes. -->
+            <p class="count">{answer!.view !== view ? 'Loading the routes…' : shown.length === inView.length ? `${count(inView.length)} in this map view` : `${shown.length.toLocaleString('en')} of ${count(inView.length)}`}</p>
             <ul>
                 {#each shown as item (item.id)}
                     <li>

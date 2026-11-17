@@ -45,7 +45,7 @@ test('the Explore page lists the signed routes of the map view, filters them, pl
   await expect(list.locator('.row[aria-current="true"]')).toContainText('Westweg 2');
   await expect(page.getByRole('region', { name: 'Westweg 2' })).toBeVisible();
   // Until the map loads, the page keeps the view of the history; after it, the view is the map's own.
-  await expect(page.locator('.routes-map')).toHaveAttribute('aria-busy', 'false');
+  await expect(page.locator('.routes-map')).toHaveAttribute('data-loaded', 'true');
   const back = await page.evaluate(() => new Promise(done => setTimeout(() => done(history.state.explore), 500)));
   expect(back.chips).toEqual(kept.chips);
   for (const [i, value] of kept.view.entries()) expect(back.view[i]).toBeCloseTo(value, 4);

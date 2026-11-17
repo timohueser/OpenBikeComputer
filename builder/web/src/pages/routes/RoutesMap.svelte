@@ -201,7 +201,7 @@
     });
 </script>
 
-<div class="routes-map" aria-busy={!loaded} bind:this={container}></div>
+<div class="routes-map" data-loaded={loaded} bind:this={container}></div>
 <!-- The map takes this box as a control, after its own credit. The credit of the base map is always in view; the long
      credits of the terrain and of the picture of the selected card open at the button. On a small map the button of the
      map's credit opens them. -->
