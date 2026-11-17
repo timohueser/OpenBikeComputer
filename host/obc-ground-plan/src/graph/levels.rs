@@ -809,9 +809,8 @@ fn tunnel_found(ctx: &Ctx, w: u32, ended: &[(usize, u32)], gone: &[u32]) -> Tunn
     TunnelFound { way: w, room, top, stay, tag: [t0, t1], next: [n0, n1] }
 }
 
-fn states(ctx: &Ctx, ladders: &[Option<Ladder>]) -> Levels {
-    let g = ctx.g;
-    // The step-3 crossings by the way that ends: (crossing, the way that stays).
+/// The step-3 crossings by the way that ends, as (crossing, the way that stays), and the ways over a culvert.
+fn step3(g: &WayGraph, ladders: &[Option<Ladder>]) -> (Vec<Vec<(usize, u32)>>, Vec<bool>) {
     let mut ended: Vec<Vec<(usize, u32)>> = vec![Vec::new(); g.ways.len()];
     let mut culvert = vec![false; g.ways.len()];
     for (i, l) in ladders.iter().enumerate() {
@@ -821,6 +820,18 @@ fn states(ctx: &Ctx, ladders: &[Option<Ladder>]) -> Levels {
             None => culvert[l.upper as usize] = true,
         }
     }
+    (ended, culvert)
+}
+
+/// The ways that end at tunnel way w or at a way that goes on from its ends: hidden over them, no part of its lid.
+fn gone(ctx: &Ctx, ended: &[Vec<(usize, u32)>], w: u32) -> Vec<u32> {
+    let on = |x: u32| x == w || ctx.joined(w, x);
+    (0..ctx.g.ways.len() as u32).filter(|&o| ended[o as usize].iter().any(|&(_, stay)| on(stay))).collect()
+}
+
+fn states(ctx: &Ctx, ladders: &[Option<Ladder>]) -> Levels {
+    let g = ctx.g;
+    let (ended, culvert) = step3(g, ladders);
     let ways: Vec<u32> = (0..g.ways.len() as u32).filter(|&w| ctx.tagged(w) || !ended[w as usize].is_empty()).collect();
     // Deck ways that are ground: over a culvert, or with no room for a deck between their A lines. A
     // deck way that turns ground changes the A lines of the deck ways at its ends only.
@@ -848,12 +859,8 @@ fn states(ctx: &Ctx, ladders: &[Option<Ladder>]) -> Levels {
     let mut out = Levels::default();
     for &w in &ways {
         if ctx.tunnel(w) {
-            // The merge decides a tunnel's states along its whole chain. A way that ends at it or at a way that goes
-            // on from its ends is hidden over them: no part of storey 0.
-            let on = |x: u32| x == w || ctx.joined(w, x);
-            let gone: Vec<u32> =
-                (0..g.ways.len() as u32).filter(|&o| ended[o as usize].iter().any(|&(_, stay)| on(stay))).collect();
-            out.tunnels.push(tunnel_found(ctx, w, &ended[w as usize], &gone));
+            // The merge decides a tunnel's states along its whole chain.
+            out.tunnels.push(tunnel_found(ctx, w, &ended[w as usize], &gone(ctx, &ended, w)));
             continue;
         }
         let from = g.ways[w as usize].from;
@@ -1086,14 +1093,17 @@ fn line_at(ctx: &Ctx, w: u32, st: Station, kind: EndKind, structure: State) -> E
 }
 
 /// G7: the runs of a bridge way cover it once, in order, with no BORE run. G8: a DECK way has `deck_min_m` between its
-/// end lines. G9: an A line lies outside the paved stroke of every ground arm. A tunnel's states are the merge's.
+/// end lines; a tunnel way's stations in the cell's square that its tag (the merge's states) makes a BORE have their
+/// room by the test that the merge read there (`tunnel_found`), and those it leaves OPEN have none, as an open stretch
+/// ends at the first room. G9: an A line lies outside the paved stroke of every ground arm.
 pub fn check_levels(g: &WayGraph, input: &CellInput, sections: &Sections, s: &Structures) -> Vec<Fault> {
+    let ladders: Vec<Option<Ladder>> = g.crossings.iter().map(|x| x.ladder.clone()).collect();
     let ctx = {
         let mut c = Ctx::new(g, input, sections, s);
-        let ladders: Vec<Option<Ladder>> = g.crossings.iter().map(|x| x.ladder.clone()).collect();
         c.grid = grid(&c, &ladders);
         c
     };
+    let (ended, _) = step3(g, &ladders);
     let mut faults = Vec::new();
     let mut fault = |check: &'static str, what: String| faults.push(Fault { check, what });
     let tolerance = 1e-6;
@@ -1101,8 +1111,26 @@ pub fn check_levels(g: &WayGraph, input: &CellInput, sections: &Sections, s: &St
     for way in &g.ways {
         let w = way.id;
         let runs: Vec<&Run> = g.levels.runs.iter().filter(|r| r.way == w).collect();
-        // A tunnel's states are the merge's (`level_tags::merge`, which its tests check).
-        if (!ctx.tagged(w) && runs.is_empty()) || ctx.tunnel(w) {
+        if ctx.tunnel(w) {
+            let (gone, from) = (gone(&ctx, &ended, w), way.from);
+            let size = crate::frame::CELL_UNITS as i32;
+            for smp in ctx.samples(w).iter().filter(|x| x.pos.iter().all(|c| (0..size).contains(c))) {
+                let st = ctx.station(w, smp);
+                let Some(state) = super::level_tags::state_at(g, input, w, &st) else { continue };
+                let room = ctx.bore(w, &ctx.at(w, between(&g.parts, &from, &st)), &gone);
+                match state {
+                    State::Bore if room < -tolerance => {
+                        fault("G8", format!("way {w}: a BORE station at {st:?} lacks room"))
+                    }
+                    State::Open if room >= tolerance => {
+                        fault("G8", format!("way {w}: an OPEN station at {st:?} has room"))
+                    }
+                    _ => {}
+                }
+            }
+            continue;
+        }
+        if !ctx.tagged(w) && runs.is_empty() {
             continue;
         }
         let joined = runs.windows(2).all(|p| p[0].to == p[1].from);

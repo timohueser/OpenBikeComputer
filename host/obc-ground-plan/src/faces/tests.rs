@@ -888,68 +888,154 @@ fn a_bore_is_the_prism_under_storey_0_and_its_cover_holds_the_least_room() {
     }
 }
 
-/// A road at a slant into ground 3.1 m over it, so storey 0's corners on the portal line lie off it by parts of a frame
-/// unit: the cover's end parts the way's cut in front of the line from the ground behind it, so the cover meets the
-/// ground beside it with no step off the line, and the mouth keeps the least room.
+/// The slant of the ways into the hill (`entrance`): storey 0's corners on a portal line lie off it by a few frame
+/// units.
+#[cfg(feature = "bores")]
+const SLANT: [f64; 2] = [0.94, 0.341];
+
+/// A hill over metres along the slant: level at 500 m, rising from 80 m before the cell's centre to 506 m.
+#[cfg(feature = "bores")]
+fn hill(along: f64) -> f64 {
+    500.0 + ((along + 80.0) * 0.3).clamp(0.0, 6.0)
+}
+
+/// A residential tunnel way at 500 m along the slant, `off` metres to its left, from 100 m before the cell's centre to
+/// 100 m past it, with its `levels`.
+#[cfg(feature = "bores")]
+fn tube(off: f64, levels: &'static str) -> Line {
+    let (u, n) = (SLANT, [-SLANT[1], SLANT[0]]);
+    let ends = [-100.0, 100.0].map(|a| [a * u[0] + off * n[0], a * u[1] + off * n[1]]);
+    line("tunnel", &[("highway", "residential"), ("tunnel", "yes"), ("levels", levels)], &ends)
+}
+
+/// Storey 0's seams at the portals of a cell.
+#[cfg(feature = "bores")]
+struct Seams {
+    /// The largest step off the portal lines (within 10 m of one) between the cover and a ground face beside it.
+    step: f64,
+    /// The count of those slots.
+    sides: usize,
+    /// The largest difference between a ground corner on a portal line (within 2 cm) and its own face 3 cm to its side:
+    /// behind the line for the cover, in front of it for every other face.
+    side: f64,
+    /// The least height over the terrain of the ground within 12 m behind the first way's portal line and 14 m beside
+    /// its centre line.
+    under: f64,
+}
+
+/// A cell built from `ways` over the hill, storey 0's mesh and its seams at the portals.
+#[cfg(feature = "bores")]
+fn entrance(ways: &[Line]) -> (crate::cell::CellBuild, Terrain, crate::mesh::CellMesh, Seams) {
+    use crate::mesh::{mesh_cell, Reads, NO_LABEL};
+    let key = cell();
+    let mut input = input_of(key, ways);
+    let (centre, u) = (at([0.0, 0.0]), SLANT);
+    input.terrain = plane(key, &|x, y| hill(x * u[0] + y * u[1]));
+    let b = crate::cell::build_input(&input, Rules::embedded());
+    let m0 = mesh_cell(&b.faces, &b.records, &Reads::of(&b.faces, &[]), &mut || 0.0).unwrap();
+    let o = key.origin();
+    // Metres along the slant and to its left of a point from a point.
+    let rel = |p: [f64; 2], from: [f64; 2]| {
+        let v = [(p[0] - from[0]) * mpu(), (p[1] - from[1]) * mpu()];
+        [v[0] * u[0] + v[1] * u[1], v[1] * u[0] - v[0] * u[1]]
+    };
+    let f = |p: P| [f64::from(p[0]), f64::from(p[1])];
+    // The portal points (the joints of a ground way and a bore), each with the sign of the slant into its bore: toward
+    // the cell's centre, which every bore holds.
+    let mid = [(centre.x - o.x) as f64, (centre.y - o.y) as f64];
+    let level = |a: &crate::graph::Arm| b.graph.ways[a.way as usize].level;
+    let portals: Vec<([f64; 2], f64)> = (b.graph.joints.iter())
+        .filter(|j| {
+            j.arms.iter().any(|a| level(a) == Level::Tunnel) && j.arms.iter().any(|a| level(a) == Level::Ground)
+        })
+        .map(|j| (f(j.pos), rel(mid, f(j.pos))[0].signum()))
+        .collect();
+    // Metres past the nearest portal line within its way's reach (negative in front of it), and the slant into its bore.
+    let past = |p: P| {
+        let near = portals.iter().map(|&(x, into)| (rel(f(p), x), into)).filter(|(r, _)| r[1].abs() < 13.0);
+        let nearest = near.min_by(|a, c| a.0[0].abs().total_cmp(&c.0[0].abs()));
+        nearest.map_or((f64::INFINITY, 1.0), |(r, into)| (r[0] * into, into))
+    };
+    let t = |p: P| input.terrain.height(GlobalPoint { x: o.x + i64::from(p[0]), y: o.y + i64::from(p[1]) }).unwrap();
+    let surface = |l: u32| (l != NO_LABEL).then(|| records::label(&b.records, l)[0] & 0xff);
+    let ground = |l: u32| {
+        surface(l).is_none_or(|s| [Surface::Terrain, Surface::Slope, Surface::Cover].map(|x| x as u32).contains(&s))
+    };
+    let cover = |l: u32| surface(l) == Some(Surface::Cover as u32);
+    let at_label = |q: [f64; 2], l: u32, t: f64| heights::height_at(&b.records, q, Some(l), t).h;
+    let h0 = |k: usize| {
+        let (p, l, terrain) = m0.corner(k);
+        if terrain || l == NO_LABEL {
+            t(p)
+        } else {
+            at_label(f(p), l, t(p))
+        }
+    };
+    let mut seams = Seams { step: 0.0, sides: 0, side: 0.0, under: f64::INFINITY };
+    // A slot is [a left, b left, b right, a right].
+    for s in &m0.steps {
+        let [a, b2, c, d] = s.map(|k| k as usize);
+        let (la, ld) = (m0.corner(a).1, m0.corner(d).1);
+        let (ma, mb) = (past(m0.corner(a).0).0, past(m0.corner(b2).0).0);
+        let on_line = ma.abs() < 0.05 && mb.abs() < 0.05;
+        if cover(la) == cover(ld) || !ground(la) || !ground(ld) || on_line || ma.abs().min(mb.abs()) > 10.0 {
+            continue;
+        }
+        seams.step = seams.step.max((h0(a) - h0(d)).abs().max((h0(b2) - h0(c)).abs()));
+        seams.sides += 1;
+    }
+    // The first way's first portal: on its centre line, the nearer to the start.
+    let ours = portals.iter().map(|x| x.0).filter(|&x| rel(x, mid)[1].abs() < 1.0);
+    let first = ours.min_by(|a, c| rel(*a, mid)[0].total_cmp(&rel(*c, mid)[0]));
+    for k in 0..m0.corners.len() {
+        let (p, l, terrain) = m0.corner(k);
+        if terrain || l == NO_LABEL || !ground(l) {
+            continue;
+        }
+        let (m, into) = past(p);
+        if m.abs() < 0.02 {
+            // Its face's side: behind the line for the cover, in front for every other face.
+            let side = if cover(l) { 0.03 } else { -0.03 } * into / mpu();
+            let q = [f(p)[0] + side * u[0], f(p)[1] + side * u[1]];
+            seams.side = seams.side.max((h0(k) - at_label(q, l, t(p))).abs());
+        }
+        let r = first.map_or([f64::NAN; 2], |x| rel(f(p), x));
+        if (0.02..12.0).contains(&r[0]) && r[1].abs() < 14.0 {
+            seams.under = seams.under.min(h0(k) - t(p));
+        }
+    }
+    (b, input.terrain, m0, seams)
+}
+
+/// Twin bores side by side into a hill at a slant, their portals 10 m apart along it: the cover's end parts each way's
+/// cut in front of its portal line from the ground behind it, and the ground behind it, also the other way's slope
+/// band beside the first bore, meets the cover with no step off the line; a corner on a portal line reads its face's
+/// side; the mouth keeps the least room.
 #[cfg(feature = "bores")]
 #[test]
 fn the_ground_beside_the_cover_meets_it_with_no_step() {
     use crate::mesh::shell::{mesh_storeys_with, FLOOR, ROOF};
-    use crate::mesh::{mesh_cell, Reads, NO_LABEL};
-    let key = cell();
-    let u = [0.94, 0.341];
-    let levels = ("levels", "O 40 P B 160 P O");
-    let ends = [[-100.0 * u[0], -100.0 * u[1]], [100.0 * u[0], 100.0 * u[1]]];
-    let bore = line("tunnel", &[("highway", "residential"), ("tunnel", "yes"), levels], &ends);
-    let mut input = input_of(key, &[bore]);
-    input.terrain = plane(key, &|_, _| 503.1);
+    let (b, terrain, m0, seams) = entrance(&[tube(0.0, "O 40 P B 160 P O"), tube(9.0, "O 50 P B 150 P O")]);
+    assert!(seams.sides > 0, "the cover meets the ground off the portal lines");
+    assert!(seams.step < 0.05, "a step of {} m between the cover and the ground beside it", seams.step);
+    assert!(seams.side < 0.1, "a corner on a portal line {} m off its face's side", seams.side);
+    // The mouth: the floor's points within 3 m behind the first line keep the least room under the roof.
     let rules = Rules::embedded();
-    let b = crate::cell::build_input(&input, rules);
-    let m0 = mesh_cell(&b.faces, &b.records, &Reads::of(&b.faces, &[]), &mut || 0.0).unwrap();
-    // Metres of a point along the way past the portal line (40 m from the way's start).
-    let behind = |p: P| {
-        let (g, o) = (at([0.0, 0.0]), key.origin());
-        let v = [(o.x + i64::from(p[0]) - g.x) as f64 * mpu(), (o.y + i64::from(p[1]) - g.y) as f64 * mpu()];
-        v[0] * u[0] + v[1] * u[1] + 60.0
-    };
-    let h0 = |k: usize| {
-        let (p, l, terrain) = m0.corner(k);
-        if terrain || l == NO_LABEL {
-            503.1
-        } else {
-            heights::height_at(&b.records, [f64::from(p[0]), f64::from(p[1])], Some(l), 503.1).h
-        }
-    };
-    let cover = |k: usize| {
-        let l = m0.corner(k).1;
-        l != NO_LABEL && records::label(&b.records, l)[0] & 0xff == Surface::Cover as u32
-    };
-    // A slot is [a left, b left, b right, a right]. The cover's sides within 10 m behind the line (farther, the cell's
-    // own window ends the cover).
-    let mut sides = 0;
-    for s in &m0.steps {
-        let [a, b2, c, d] = s.map(|k| k as usize);
-        let (ma, mb) = (behind(m0.corner(a).0), behind(m0.corner(b2).0));
-        let on_line = ma.abs() < 0.05 && mb.abs() < 0.05;
-        if cover(a) == cover(d) || on_line || ma.min(mb) > 10.0 {
-            continue;
-        }
-        let dh = (h0(a) - h0(d)).abs().max((h0(b2) - h0(c)).abs());
-        assert!(dh < 0.05, "a step of {dh} m on the cover's outline from {ma:.2} to {mb:.2} m behind the portal line");
-        sides += 1;
-    }
-    assert!(sides > 0, "the cover meets the ground off the portal line");
-    // The mouth: the floor's points within 3 m behind the line keep the least room under the roof.
-    let m = mesh_storeys_with(key, &b.storeys, &b.records, &rules.structures, Some(&m0)).unwrap();
+    let m = mesh_storeys_with(b.key, &b.storeys, &b.records, &rules.structures, Some(&m0)).unwrap();
     let sec = rules.sections.way("road", &[("highway".to_string(), "residential".to_string())].into(), false);
     let by_point = |part: std::ops::Range<usize>| {
         let mut out: BTreeMap<P, f64> = BTreeMap::new();
         for &k in m.triangles[part].iter().flatten() {
-            let h = m.corner_height(k as usize, &b.records, &input.terrain);
+            let h = m.corner_height(k as usize, &b.records, &terrain);
             let e = out.entry(m.corner(k as usize).0).or_insert(h);
             *e = e.min(h);
         }
         out
+    };
+    let behind = |p: P| {
+        let (g, o) = (at([0.0, 0.0]), b.key.origin());
+        let v = [(o.x + i64::from(p[0]) - g.x) as f64 * mpu(), (o.y + i64::from(p[1]) - g.y) as f64 * mpu()];
+        v[0] * SLANT[0] + v[1] * SLANT[1] + 60.0
     };
     let (floor, roof) = (by_point(m.part(FLOOR)), by_point(m.part(ROOF)));
     let mouth: Vec<(&P, &f64)> = floor.iter().filter(|(p, _)| (0.0..3.0).contains(&behind(**p))).collect();
@@ -957,6 +1043,21 @@ fn the_ground_beside_the_cover_meets_it_with_no_step() {
     for (p, &hf) in mouth {
         assert!(roof[p] - hf >= sec.bore_least_m - 1e-3, "{p:?}: room {} in the mouth", roof[p] - hf);
     }
+}
+
+/// A bore into a hill at a slant beside a road on the terrain, whose slope band reaches behind the portal line: the cut
+/// of the way that enters ends on the line, so the ground behind it stands at the terrain.
+#[cfg(feature = "bores")]
+#[test]
+fn the_cut_of_the_way_that_enters_ends_on_its_portal_line() {
+    let (u, n) = (SLANT, [-SLANT[1], SLANT[0]]);
+    let along: Vec<f64> = (0..=40).map(|i| -100.0 + 5.0 * f64::from(i)).collect();
+    let mut beside = road(&along.iter().map(|a| [a * u[0] + 12.0 * n[0], a * u[1] + 12.0 * n[1]]).collect::<Vec<_>>());
+    beside.z = along.iter().map(|&a| hill(a)).collect();
+    let (.., seams) = entrance(&[tube(0.0, "O 40 P B 160 P O"), beside]);
+    assert!(seams.under > -0.1, "the ground {} m under the terrain behind the portal line", seams.under);
+    assert!(seams.step < 0.05, "a step of {} m between the cover and the ground beside it", seams.step);
+    assert!(seams.side < 0.1, "a corner on a portal line {} m off its face's side", seams.side);
 }
 
 /// A road that passes over its own bore 4 m up, as a way on top, before it descends into it (a spiral): an opening

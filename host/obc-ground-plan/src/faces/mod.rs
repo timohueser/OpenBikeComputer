@@ -68,7 +68,7 @@ pub(crate) struct WayLine<'a> {
     /// that ends there, and the bore's wall): the two ways and the cover share the line's vertices.
     pub end_cuts: [Option<Vec<f64>>; 2],
     /// The bores (ways) that this ground way enters: at its own portal end, or through the ways that go on from it at
-    /// joints, within `open_max_m` along them (`entering`).
+    /// joints, within `LEAD_M` along them (`entering`).
     pub leads: Vec<u32>,
     /// The box of its carriageway: its samples' box grown by its widest half-width.
     pub bbox: [i32; 4],
@@ -307,6 +307,12 @@ fn portal_dirs(g: &WayGraph) -> Vec<(ArmKey, [f64; 2], crate::graph::Arm)> {
     out
 }
 
+/// The metres along the ground ways in front of a portal line within which a way on top can be the lid of the way that
+/// enters the bore. A way on top over an open stretch is a lid only where its stroke also meets the bore's room (the
+/// bake's lid rule), else a door: so a lid starts on the line, and a motorway's stroke that crosses at 26 degrees spans
+/// 30 m along the way below.
+const LEAD_M: f64 = 30.0;
+
 /// The ground ways that enter each bore, as (ground way, bore way): the way that ends on the portal line and the ways
 /// that go on from it at joints of two ground ways, as far as `reach_m` along them.
 fn entering(g: &WayGraph, dirs: &[(ArmKey, [f64; 2], crate::graph::Arm)], reach_m: f64) -> Vec<(u32, u32)> {
@@ -386,7 +392,7 @@ fn lines_with<'a>(
         }
     }
     let dirs = if BORES { portal_dirs(g) } else { Vec::new() };
-    let lead = if BORES { entering(g, &dirs, ctx.rules.structures.open_max_m) } else { Vec::new() };
+    let lead = if BORES { entering(g, &dirs, LEAD_M) } else { Vec::new() };
     let mut out = Vec::new();
     let mut of_way = BTreeMap::new();
     let (ways, water): (Vec<_>, Vec<_>) = g.ways.iter().partition(|w| w.family != Family::Water);
@@ -1823,8 +1829,11 @@ fn candidates<'a>(
         // The cover's end takes only the ground's slope band (the merged band layer): past the band the ground is the
         // terrain on both sides of the line.
         let band = |c: &Cand| c.label.surface == Surface::Slope && c.label.material.is_none() && c.relabel.is_none();
-        let slope =
-            union(&cands.iter().filter(|c| band(c)).flat_map(|c| c.rings.iter().cloned()).collect::<Vec<_>>(), [0, 0]);
+        let slope = if cover_cands.iter().any(|c| c.key != (0, 0, 0)) {
+            union(&cands.iter().filter(|c| band(c)).flat_map(|c| c.rings.iter().cloned()).collect::<Vec<_>>(), [0, 0])
+        } else {
+            Vec::new()
+        };
         for mut c in cover_cands {
             if c.key != (0, 0, 0) {
                 c.rings = stroke::boolean(&c.rings, &slope, OverlayRule::Intersect, [0, 0]);
