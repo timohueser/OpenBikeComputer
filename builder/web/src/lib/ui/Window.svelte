@@ -17,10 +17,12 @@
     onMount(() => {
         const before = document.activeElement;
         dialog.showModal();
-        // A window that goes while open, for example at Back, gets no `close`, so the focus does not go back by itself.
+        // A window that goes while open, for example at Back, gets no `close`, so it tells its owner and gives the focus back.
+        // The owner hears it after the teardown, which reads the state from before the change, and before the next task:
+        // the `close` event of `dialog.close()` comes a frame later, when the owner can have opened the window again.
         return () => {
             if (!dialog.open) return;
-            dialog.close();
+            queueMicrotask(onClose);
             if (before instanceof HTMLElement) before.focus();
         };
     });
