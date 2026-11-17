@@ -7,46 +7,17 @@ const GRADE_SYMBOLS: [&str; 3] = ["yellow::yellow_diamond", "red:white:red_bar",
 /// A word with one of these endings names a theme trail, not a leg between two places.
 const THEME_ENDINGS: [&str; 6] = ["weg", "wäg", "pfad", "trail", "loop", "tour"];
 
-fn is_dash(c: char) -> bool {
-    matches!(c, '-' | '–' | '—')
-}
-
 /// Whether a selected relation is a connector leg.
 pub fn connector(tags: &Tags, has_child_route: bool) -> bool {
     let tag = |key| tags.get(key).unwrap_or("");
     let name = tag("name");
-    let shape = match parts(name).as_slice() {
-        _ if name.is_empty() => true,
-        [a, _] => !a.is_empty(),
-        [a, b, c] => !a.is_empty() && !b.is_empty() && !c.is_empty(),
-        _ => false,
-    };
     matches!(tag("route"), "hiking" | "foot")
         && (tag("osmc:symbol").is_empty() || GRADE_SYMBOLS.contains(&tag("osmc:symbol")))
         && tag("ref").is_empty()
         && tag("roundtrip") != "yes"
         && !has_child_route
-        && shape
+        && (name.is_empty() || name.contains(['-', '–', '—']))
         && !theme(name)
-}
-
-/// The trimmed parts of a name: cut at each dash with a space before it and a space or the end
-/// after it, when the name has one; else at each dash. So a dash inside a place name does not cut.
-fn parts(name: &str) -> Vec<&str> {
-    let chars: Vec<(usize, char)> = name.char_indices().collect();
-    let spaced =
-        |k: usize| is_dash(chars[k].1) && k > 0 && chars[k - 1].1 == ' ' && chars.get(k + 1).is_none_or(|c| c.1 == ' ');
-    let any_spaced = (0..chars.len()).any(spaced);
-    let mut parts = Vec::new();
-    let mut start = 0;
-    for k in 0..chars.len() {
-        if if any_spaced { spaced(k) } else { is_dash(chars[k].1) } {
-            parts.push(name[start..chars[k].0].trim());
-            start = chars[k].0 + chars[k].1.len_utf8();
-        }
-    }
-    parts.push(name[start..].trim());
-    parts
 }
 
 /// Whether a word outside round brackets ends in a theme ending, in any letter case.
@@ -83,27 +54,20 @@ mod tests {
     }
 
     #[test]
-    fn parts_cut_at_spaced_dashes_first() {
-        assert_eq!(parts("Unteriberg-Stöcken - Minsterbrücke"), ["Unteriberg-Stöcken", "Minsterbrücke"]);
-        assert_eq!(parts("Emmenbrücke-Rotenburg"), ["Emmenbrücke", "Rotenburg"]);
-        assert_eq!(parts("A – B — C"), ["A", "B", "C"]);
-        assert_eq!(parts("A -"), ["A", ""]);
-        assert_eq!(parts("Pilatus"), ["Pilatus"]);
-    }
-
-    #[test]
-    fn name_shapes_and_theme_words_decide() {
-        for name in ["Rotkreuz - Auleten", "Emmenbrücke-Rotenburg", "Unteriberg-Stöcken - Minsterbrücke", "A -"] {
+    fn a_dash_and_no_theme_word_decide() {
+        for name in [
+            "Rotkreuz - Auleten",
+            "Emmenbrücke-Rotenburg",
+            "A – B — C",
+            "- Niederrickenbach",
+            "Sonnhalde - Linden - Meiestoss - Moos",
+            "Wädenswil - Richterswil (Seeweg)",
+        ] {
             assert!(leg(name, &[]), "{name}");
         }
-        assert!(leg("Wädenswil - Richterswil (Seeweg)", &[]), "a theme word in brackets does not count");
-        assert!(leg("A - B - C", &[]));
-        for name in ["Zwergenweg Käserstatt-Lischen", "Brünig - Käserstatt - Gibel - Lungern - Giswil", "Pilatus"] {
+        for name in ["Zwergenweg Käserstatt-Lischen", "A - SEEWÄG", "Pilatus"] {
             assert!(!leg(name, &[]), "{name}");
         }
-        assert!(!leg("A - SEEWÄG", &[]));
-        assert!(!leg("- B", &[]));
-        assert!(!leg("A - - C", &[]));
     }
 
     #[test]

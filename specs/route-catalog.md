@@ -55,24 +55,17 @@ true:
 | `ref` | absent or empty |
 | `roundtrip` | not `yes` |
 | Child routes | none: no member is a route relation |
-| `name` | empty, or one of the name shapes below |
+| `name` | empty, or a dash in it |
 | Theme word | outside round brackets, no word ends in `weg`, `wäg`, `pfad`, `trail`, `loop` or `tour`, in any letter case |
 
-A dash is `-`, `–` or `—`. A word is a run of letters and digits. The builder cuts a name into
-parts: at each dash with a space before it and a space or the end after it, when the name has such
-a dash; else at each dash. It trims each part. So "Unteriberg-Stöcken - Minsterbrücke" has two
-parts.
+A dash is `-`, `–` or `—`. A word is a run of letters and digits. A dash parts the name of a
+connector into its places, also when a place is blank, as in "- Niederrickenbach". A name with no
+dash, such as "Pilatus", is a route.
 
-| Name shape | Rule |
-| --- | --- |
-| `A - B` | two parts, the first not blank (`A-B` counts too) |
-| `A - B - C` | three parts, none blank |
-| `A -` | two parts, the second blank |
-
-"Zwergenweg Käserstatt-Lischen", "Brünig - Käserstatt - Gibel - Lungern - Giswil" and "Pilatus"
-stay routes. "Emmenbrücke-Rotenburg" and "Wädenswil - Richterswil (Seeweg)" leave. The symbols are
-the Swiss trail grades, so elsewhere a local route with one of these symbols, no `ref` and a name
-"A - B" leaves too.
+"Zwergenweg Käserstatt-Lischen" stays a route. "Emmenbrücke-Rotenburg", "Sonnhalde - Linden -
+Meiestoss - Moos" and "Wädenswil - Richterswil (Seeweg)" leave. The symbols are the Swiss trail
+grades, so elsewhere a local route with one of these symbols, no `ref` and a name "A - B" leaves
+too.
 
 A route record has a main line of at least 1 km. With this length, short named walks are in; the
 connector rule, not the length, keeps out the pieces between signposts.
