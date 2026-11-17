@@ -25,6 +25,7 @@ depends_on:
   - data-engine
 test_depends_on:
   - repository-tooling
+  - web-planner
 status: draft
 ---
 
@@ -37,6 +38,8 @@ The body of this document is not written yet. Only the still function and the ro
 A page that does not show the 3-D view can still use one image of it: the cover of a route or a ride, or a home view. `still()` in [`still.ts`](../../builder/web/src/lib/trailview/still.ts) starts an engine of its own on a canvas that the page does not show. It waits until the view is complete, takes the image, and ends the engine. The image is WebP, or JPEG in a browser that cannot encode WebP. The still also gives the credits of the release and of the layers that the engine opened for the view, so that a page shows them with the image.
 
 The script `home-views.mjs` in `builder/web/tests/browser/trailview/` renders the home views with the still function on a GPU of the owner, and uploads them as one set ([specs/home-views.md](../../specs/home-views.md)).
+
+The script `route-pictures.mjs` beside it renders the cover of each route of the route catalog in the same way, with `coverView()` and the still function. It writes the image and the place of each point of the route's line. The key of a cover comes from the line, the size and the camera rule, not from the month of the image, so a new planner release needs a render only of the routes whose line changed ([specs/route-pictures.md](../../specs/route-pictures.md)).
 
 For a line that the caller gives, the still also gives the place of each point in the image, its distance from the eye, and whether it is visible. The engine puts each point on its drawn terrain. A point is hidden only when the drawn terrain rises above the line of sight from the eye to the point: the engine reads the terrain height on that line, in steps that grow with the distance from the eye. Trees, houses, bridges and water do not hide a point. So a page draws the line on the image with no depth image and no camera values.
 
