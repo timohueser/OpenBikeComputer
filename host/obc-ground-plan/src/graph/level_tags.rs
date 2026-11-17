@@ -423,13 +423,14 @@ fn tunnel_states(found: &BTreeMap<u32, Vec<Found>>, links: &[Link<u32>], s: &Str
             for _ in 0..CHAIN_ROUNDS * 4 {
                 let t = &tunnels[&f];
                 let end = t.end(m, dir);
+                // The first room within this extent: past its end the chain goes on along the links.
                 let first = if dir > 0.0 {
                     t.room.iter().find(|r| r.1 > m).map(|r| r.0.max(m))
                 } else {
                     t.room.iter().rev().find(|r| r.0 < m).map(|r| r.1.min(m))
                 };
                 let reach = s.open_max_m - walked;
-                match first.filter(|&p| (p - m).abs() <= reach) {
+                match first.filter(|&p| (p - m) * dir <= (end - m) * dir && (p - m).abs() <= reach) {
                     Some(p) => {
                         open.entry(f).or_default().push((m.min(p), m.max(p)));
                         portal = Some((f, p, dir));
@@ -560,6 +561,18 @@ fn tags(found: &[Found], storey: i8) -> Tags {
         out.insert(SLAB.into(), s.to_string());
     }
     out
+}
+
+/// The state that the `levels` tag of the feature of tunnel way w gives at a station; none without the tag or an
+/// alignment, and within a centimetre of one of its lines.
+pub(crate) fn state_at(g: &WayGraph, input: &CellInput, w: u32, st: &Station) -> Option<State> {
+    let f = &input.features[g.parts[g.ways[w as usize].part as usize].feature.0 as usize];
+    let (first, lines) = parse(f.tags.get(LEVELS).filter(|_| aligned(g, input, w))?)?;
+    let m = along(g, st);
+    if lines.iter().any(|l| (l.0 - m).abs() < 0.01) {
+        return None;
+    }
+    Some(lines.iter().take_while(|l| l.0 <= m).last().map_or(first, |l| l.2))
 }
 
 /// An end line of `levels`: its metres along, its kind and the state past it.
@@ -890,5 +903,29 @@ mod tests {
         assert_eq!(storey(20), Some("3"), "U over the viaduct");
         assert_eq!([storey(10), storey(5)], [None, None], "a deck on storey 1 has no tag");
         assert_eq!(tags[&7].get(LEVELS), None, "a feature that no cell decides has only the storey");
+    }
+
+    /// A tunnel feature in two parts along one alignment (0 to 100 m and 130 to 300 m) with another feature between
+    /// them, linked at both of its ends: the chain from the tag end at 0 m follows the links at the first part's end,
+    /// so the feature between is open up to the room at 140 m in the second part, not hidden.
+    #[test]
+    fn the_chain_follows_the_links_at_a_parts_end_before_the_room_of_the_next_part() {
+        let tunnel = |extents: Vec<(f64, f64)>, room: Vec<(f64, f64)>, tag_ends: Vec<(f64, f64)>| Found {
+            tunnel: extents,
+            room,
+            tag_ends,
+            ..Default::default()
+        };
+        let found = BTreeMap::from([
+            (
+                1,
+                vec![tunnel(vec![(0.0, 100.0), (130.0, 300.0)], vec![(140.0, 300.0)], vec![(0.0, 1.0), (300.0, -1.0)])],
+            ),
+            (2, vec![tunnel(vec![(0.0, 30.0)], Vec::new(), Vec::new())]),
+        ]);
+        let links = [(1, 100.0, -1.0, 2, 0.0, 1.0), (2, 30.0, -1.0, 1, 130.0, 1.0)];
+        let tags = merge(&found, &[], &[], &links, &crate::faces::Rules::embedded().structures);
+        let levels = |id: u32| tags.get(&id).and_then(|t| t.get(LEVELS)).cloned();
+        assert_eq!(levels(2).as_deref(), Some("O"), "the feature between the parts");
     }
 }
