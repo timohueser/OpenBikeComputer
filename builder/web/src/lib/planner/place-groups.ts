@@ -13,20 +13,22 @@ const PEAKS = new Set(['summit', 'pass']);
 export function groupTile(places: TilePlace[], on: PlaceCategory[]): Badge[][] {
     const shown = places.filter(place => on.includes(place.category)).sort((a, b) => a.id - b.id);
     const first = firstLevels(shown);
+    // A badge's first place is its seat: the place that shows first, and of those the smallest id. The seat goes
+    // only with the whole badge, so a badge keeps its key and its position at each level where it exists.
+    shown.sort((a, b) => first.get(a)! - first.get(b)! || a.id - b.id);
     // Positions in pixels of a world 512 px wide at zoom 0; the reach at level z is its pixels / 2^z.
     const position = new Map(shown.map(place => [place, [tileColumn(place.lon, 0) * 512, tileRow(place.lat, 0) * 512]]));
     const levels: Badge[][] = [shown.map(place => ({ key: place.id, lon: place.lon, lat: place.lat, places: [place] }))];
-    for (let z = LAST_LEVEL - 1; z >= FIRST_LEVEL; z--) {
+    for (let z = LAST_LEVEL; z >= FIRST_LEVEL; z--) {
         const reach = (z >= 16 ? 32 : 64) / 2 ** z;
         const parts = levels[0].flatMap(from => {
             const places = from.places.filter(place => first.get(place)! <= z);
             if (!places.length) return [];
-            const seat = places.reduce((a, b) => (b.id < a.id ? b : a));
-            const [x, y] = position.get(seat)!;
-            return [{ from, seat, places, x, y, column: Math.floor(x / reach), row: Math.floor(y / reach) }];
-        }).sort((a, b) => a.seat.id - b.seat.id);
+            const [x, y] = position.get(places[0])!;
+            return [{ from, seat: places[0], places, x, y, column: Math.floor(x / reach), row: Math.floor(y / reach) }];
+        });
         // Cells as wide as the reach: a badge reaches only into its own cell and the eight around it.
-        // A column and a row stay below 2^23 up to level 19, so the number of a cell is unique.
+        // A column and a row stay below 2^24 up to level 20, so the number of a cell is unique.
         const cells = new Map<number, typeof parts>();
         const cell = (column: number, row: number) => column * 2 ** 26 + row;
         for (const part of parts) {
@@ -36,9 +38,12 @@ export function groupTile(places: TilePlace[], on: PlaceCategory[]): Badge[][] {
         }
         const taken = new Set<object>();
         const level: Badge[] = [];
+        // The badges of a level stand in the order of their seats, so the parts need no sort.
         for (const part of parts) {
             if (taken.has(part)) continue;
-            const badge: Badge = { key: part.seat.id, lon: part.seat.lon, lat: part.seat.lat, places: [] };
+            taken.add(part);
+            const badge: Badge = { key: part.seat.id, lon: part.seat.lon, lat: part.seat.lat, places: [...part.places] };
+            part.from.parent = badge.key;
             for (let column = part.column - 1; column <= part.column + 1; column++) {
                 for (let row = part.row - 1; row <= part.row + 1; row++) {
                     for (const other of cells.get(cell(column, row)) ?? []) {
@@ -53,7 +58,8 @@ export function groupTile(places: TilePlace[], on: PlaceCategory[]): Badge[][] {
         }
         levels.unshift(level);
     }
-    return levels;
+    // The last entry holds the single places that level 20 groups.
+    return levels.slice(0, -1);
 }
 
 /**

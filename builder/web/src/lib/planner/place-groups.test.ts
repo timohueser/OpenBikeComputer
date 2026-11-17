@@ -26,8 +26,8 @@ describe('place groups', () => {
         expect(groupTile([...places].reverse(), categoryIds)).toEqual(groupTile(places, categoryIds));
     });
 
-    it('keeps no two badges of a grouped level inside the reach of each other', () => {
-        for (let z = FIRST_LEVEL; z < 20; z++) {
+    it('keeps no two badges of a level inside the reach of each other', () => {
+        for (let z = FIRST_LEVEL; z <= 20; z++) {
             const reach = z >= 16 ? 32 : 64, badges = levels[z - FIRST_LEVEL].map(badge => pixels(badge, z));
             const close = badges.flatMap((a, i) => badges.slice(i + 1).filter(b => Math.abs(a[0] - b[0]) <= reach && Math.abs(a[1] - b[1]) <= reach));
             expect(badges.length).toBeGreaterThan(1);
@@ -56,7 +56,18 @@ describe('place groups', () => {
         const peaks = [place(1, 'summit', lon, lat, 1000), place(2, 'summit', lon, lat), place(7, 'summit', lon, lat, 1000), place(9, 'pass', lon, lat, 900)];
         for (const z of [12, 15]) expect(shown(peaks, z)).toEqual([1, 9]);
         expect(shown(peaks, 16)).toEqual([1, 2, 7, 9]);
+        // The next zoom-16 tile to the east shares its square of zoom 15 with the peaks above.
+        const east = [...peaks, place(11, 'summit', lon + 360 / 2 ** 16, lat, 500)];
+        expect(shown(east, 14)).toEqual([1, 9]);
+        expect(shown(east, 15)).toEqual([1, 9, 11]);
         expect(shown([...peaks, place(5, 'summit', lon, lat, 2000)], 12)).toEqual([5, 9]);
+    });
+
+    it('keeps the key and the position of a badge when a peak appears', () => {
+        const spot = [place(1, 'summit', 8.3, 47.05, 100), place(2, 'summit', 8.3, 47.05, 900), place(5, 'bakery', 8.3, 47.05)];
+        const grouped = groupTile(spot, categoryIds), [badge] = grouped[0];
+        expect(badge.places.map(p => p.id)).toEqual([2, 5]);
+        for (const level of grouped) expect(level).toEqual([expect.objectContaining({ key: badge.key, lon: badge.lon, lat: badge.lat })]);
     });
 
     it('changes no badge of a tile when a neighbouring tile groups', () => {
