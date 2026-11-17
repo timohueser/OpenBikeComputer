@@ -1,6 +1,7 @@
 import type { Coordinate } from '../../planner/geo';
 import { worldPixel } from '../../planner/layers/mercator';
 import type { Frame } from '../frame/frame';
+import { profileEntry, profileHeight, type Profile } from './profile';
 import { UNITS } from '../frame/space';
 import type { Gpu } from '../gpu/device';
 import { layouts } from '../gpu/layouts';
@@ -26,8 +27,8 @@ export interface RoutePin { coordinate: Coordinate; colour: string; badge?: GPUC
 export interface RouteLine {
     line: readonly Coordinate[];
     colours: readonly string[];
-    /** The height in metres at each `step` metres along the route and at its end, as `profile_m` of the route catalog. Only a route with a profile has pick points. */
-    profile?: { step: number; heights: readonly (number | null)[] };
+    /** The heights along the route (`Profile`). Only a route with a profile has pick points. Without `length`, the length of the line stands for the route's length. */
+    profile?: Omit<Profile, 'length'> & { length?: number };
 }
 
 /**
@@ -71,9 +72,9 @@ export function routePoints(routes: readonly RouteLine[]): Uint32Array<ArrayBuff
  * straight line between the two entries about it, none where one of them has none. Each entry of the
  * profile that falls between two vertices adds its own height there, so that the points also follow the
  * terrain along a long straight stretch. A point with no height has NaN for it, so that it ends a
- * segment. Entry i lies at the share i × step / L of the line, where L is the length of the route, and the
- * last entry at its end. The profile gives L only within a step, (n − 2) × step ≤ L < (n − 1) × step for
- * n entries: the length of the line, held in that range, stands for it. Undefined for a route with no profile or a line with no length.
+ * segment. Entry i lies at the share `profileEntry` / L of the line, where L is the length of the route. Without
+ * a `length`, the profile gives L only within a step, (n − 2) × step ≤ L < (n − 1) × step for n entries: the
+ * length of the line, held in that range, stands for it. Undefined for a route with no profile or a line with no length.
  */
 export function pickPoints({ line, profile }: RouteLine, frame: Frame): Float64Array | undefined {
     if (!profile || line.length < 2 || profile.heights.length < 2) return undefined;
@@ -81,13 +82,10 @@ export function pickPoints({ line, profile }: RouteLine, frame: Frame): Float64A
     for (let i = 1; i < at.length; i++) along.push(along[i - 1] + Math.hypot(at[i][0] - at[i - 1][0], at[i][1] - at[i - 1][1]));
     const total = along.at(-1)!;
     if (!total) return undefined;
-    const length = Math.min(Math.max(total, (n - 2) * step), (n - 1) * step);
-    // Metres along the line of entry e; the last entries can share the end.
-    const entry = (e: number) => Math.min(e * step / length, 1) * total;
-    const heightAt = (d: number) => {
-        const e = Math.min(Math.floor(d / total * length / step), n - 2), a = heights[e], b = heights[e + 1], from = entry(e), to = entry(e + 1);
-        return a === null || b === null ? null : a + (b - a) * (to > from ? (d - from) / (to - from) : 1);
-    };
+    const route = { step, heights, length: profile.length ?? Math.min(Math.max(total, (n - 2) * step), (n - 1) * step) };
+    // Metres along the line of entry e, and the height at d metres along the line; the last entries can share the end.
+    const entry = (e: number) => profileEntry(route, e) / route.length * total;
+    const heightAt = (d: number) => profileHeight(route, d / total * route.length);
     const points: [number, number, number, number | null][] = at.map(([x, y], i) => [along[i], x, y, heightAt(along[i])]);
     for (let e = 0, i = 1; e < n; e++) {
         const d = entry(e);

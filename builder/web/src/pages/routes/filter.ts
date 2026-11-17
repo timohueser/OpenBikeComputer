@@ -5,6 +5,7 @@ import { decodeCoordinates } from '../../lib/planner/route-answer';
 import type { Box } from '../../lib/planner/route-catalog';
 import type { CatalogRecord } from '../../lib/planner/signed-routes';
 import { distanceIn, heightIn } from '../../lib/settings/format';
+import { profileEntry, profileHeight } from '../../lib/trailview/route/profile';
 
 export type { Box };
 
@@ -87,15 +88,10 @@ export function signedItem(record: CatalogRecord, bike: Bike): SignedItem {
     const points = decodeCoordinates(record.line_udeg ?? []), along = [0];
     for (let i = 1; i < points.length; i++) along.push(along[i - 1] + kilometres(points[i - 1], points[i]));
     const total = along.at(-1)!, entries = record.profile_m, length = record.length_m;
-    // Entry i is at i × PROFILE_STEP_M, and the last entry at the end.
-    const entryAt = (i: number) => i === entries!.length - 1 ? length : i * PROFILE_STEP_M;
+    const profile = entries && { step: PROFILE_STEP_M, heights: entries, length };
     const heightAt = (share: number): number | null => {
-        if (!entries) return null;
-        const metres = share * length, i = Math.max(0, Math.min(Math.floor(metres / PROFILE_STEP_M), entries.length - 2));
-        // A profile of one entry has no next entry; a null entry is an unknown height.
-        const [a, b] = [entries[i], entries[i + 1] === undefined ? entries[i] : entries[i + 1]], span = entryAt(i + 1) - entryAt(i);
-        const t = span > 0 ? Math.max(0, Math.min(1, (metres - entryAt(i)) / span)) : 0;
-        return t === 0 ? a : t === 1 ? b : a === null || b === null ? null : Math.round(a + (b - a) * t);
+        const height = profile ? profileHeight(profile, share * length) : null;
+        return height === null ? null : Math.round(height);
     };
     /** The point of the line at a share of its length; `from` is the segment to search from. */
     let from = 0;
@@ -117,7 +113,7 @@ export function signedItem(record: CatalogRecord, bike: Bike): SignedItem {
             lengthM: length, climbM: record.ascent_m, highestM: known.length ? Math.max(...known) : null, seconds: 0, bike, days: 1,
         },
         ...entries && points.length > 1
-            ? { profile: { line: entries.flatMap((_, i) => pointAt(length > 0 ? entryAt(i) / length : 0).map(round5)), heights: entries } } : {},
+            ? { profile: { line: entries.flatMap((_, i) => pointAt(length > 0 ? profileEntry(profile!, i) / length : 0).map(round5)), heights: entries } } : {},
     };
 }
 

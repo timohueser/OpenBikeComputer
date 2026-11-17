@@ -1,8 +1,9 @@
 <script module lang="ts">
     import type { Coordinate } from '../../lib/planner/geo';
+    import type { Profile } from '../../lib/trailview/route/profile';
 
-    /** A route of the routes mode. `profile` has the height at each `step` metres along the line, and at its end. */
-    export type TrailViewRoute = { id: string; line: Coordinate[]; profile?: { step: number; heights: (number | null)[] }; colour: string };
+    /** A route of the routes mode, with the heights along it. */
+    export type TrailViewRoute = { id: string; line: Coordinate[]; profile?: Profile; colour: string };
 </script>
 
 <script lang="ts">

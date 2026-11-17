@@ -130,16 +130,18 @@
                 const listed = trailViewItems();
                 const routes = listed.map(({ id, record }): TrailViewRoute => ({
                     id, line: decodeCoordinates(record.line_udeg ?? []), colour: routeColor(id),
-                    ...record.profile_m ? { profile: { step: PROFILE_STEP_M, heights: record.profile_m } } : {},
+                    ...record.profile_m ? { profile: { step: PROFILE_STEP_M, heights: record.profile_m, length: record.length_m } } : {},
                 }));
                 // The size of the window: the rule of its CSS.
                 const full = innerWidth <= 760;
+                // A failure is about the routes it tried: it shows only while the list still has them.
                 const first = await chunk.coverView(routes.map(route => route.line), config,
-                    { width: full ? innerWidth : innerWidth - 64, height: full ? innerHeight : innerHeight - 64, date: today(), time: '10:00', weather: 'sunny' });
+                    { width: full ? innerWidth : innerWidth - 64, height: full ? innerHeight : innerHeight - 64, date: today(), time: '10:00', weather: 'sunny' })
+                    .catch((error: unknown) => { console.error('TrailView:', error); return null; });
                 const now = trailViewItems();
                 if (now.length !== listed.length || now.some((item, i) => item.id !== listed[i].id)) continue;
                 if (first) trailView = { component, origin: [box.left + box.width / 2, box.top + box.height / 2], view: first, routes };
-                else notice = { text: 'TrailView has no view of this area.', view };
+                else notice = { text: first === null ? 'TrailView could not start. Try again.' : 'TrailView has no view of this area.', view };
                 return;
             }
             notice = { text: 'The routes changed while TrailView loaded. Try again.', view };
