@@ -18,7 +18,6 @@
     import type { DataLayer } from "../../lib/planner/layers/data-layer";
     import { placeCallout } from "../../lib/planner/callout-placement";
     import MapOverlayDetails from './MapOverlayDetails.svelte';
-    import { SignedRoutesLayer, type SignedRoutesView } from "../../lib/planner/signed-routes-map";
     import { divergence } from "../../lib/planner/route-options";
 
     let {
@@ -26,14 +25,9 @@
         drawing = null, highlightedPlaceIds = [], theme = "light", hillshade = true, contours = true, pickMode = false,
         showRoute = true, hoverProgress = null, center = [8.8, 48.65], zoom = 7,
         shownCategories = categoryIds, highlightedPlaces = [], mapOverlays = { network: 'none', access: false }, accessMode = 'cycling', routingPackage, dataLayer, bottomInset = 0,
-        signedRoutes = null, signedHovered = null, planMuted = false, compare = null, lines = [], onPick = null, onIdle, onSignedRoute, onSignedHover,
+        compare = null, lines = [], onPick = null,
         onEmptyClick, onPointSelect, onPointHover, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, popup,
     }: {
-        /** The Routes view: while it is open, a click on one of its routes selects that route. */
-        signedRoutes?: SignedRoutesView | null;
-        signedHovered?: number | null;
-        /** The plan draws in a quiet tone and takes no edits, as behind the Routes view. */
-        planMuted?: boolean;
         /** A previewed route option and its letter. It draws in ink over the plan, which draws as a dotted line without day
          * colours; a letter marks each line where they part. */
         compare?: { line: Coordinate[]; letter: string } | null;
@@ -45,10 +39,6 @@
          * line, overlay or route takes the click. Enter on the focused map gives it the map's centre.
          */
         onPick?: ((coordinate: Coordinate, point: [number, number]) => void) | null;
-        /** After each map move and tile load. */
-        onIdle?: () => void;
-        onSignedRoute?: (id: number) => void;
-        onSignedHover?: (id: number | null) => void;
         segments?: MapSegment[];
         /** Dashed connectors from the route to points that it does not reach. */
         gaps?: Coordinate[][];
@@ -139,9 +129,6 @@
     // the page can pass an equal coordinate in a new array.
     const calloutPlace = $derived(callout?.join());
     $effect(() => { void calloutPlace; overlaySelection = null; });
-    let signedLayer: SignedRoutesLayer | undefined;
-    let signedHover: number | null = null;
-    let overSigned = $state(false);
     const picking = $derived(pickMode || !!onPick);
 
     export function centerOn(coordinate: Coordinate) {
@@ -329,14 +316,12 @@
 
     function syncRouteVisibility() {
         if (!map?.getLayer("trip-line")) return;
-        const quiet = planMuted || !!compare;
+        const quiet = !!compare;
         for (const id of ["trip-line", "trip-casing", "trip-casing-drawn", "trip-gap", "trip-transfer", "trip-highlight"]) {
             map.setLayoutProperty(id, "visibility", showRoute && (!quiet || id === "trip-line") ? "visible" : "none");
         }
-        // Magenta stays for the selected signed route, so the muted plan takes the amber token.
         const token = (name: string, fallback: string) => getComputedStyle(container).getPropertyValue(name).trim() || fallback;
-        map.setPaintProperty("trip-line", "line-color", planMuted ? token("--amber", "#f4a81d") : compare ? token("--route", "#cc2a93") : ["get", "color"]);
-        map.setPaintProperty("trip-line", "line-opacity", planMuted ? 0.6 : 1);
+        map.setPaintProperty("trip-line", "line-color", compare ? token("--route", "#cc2a93") : ["get", "color"]);
         map.setPaintProperty("trip-line", "line-width", compare ? 3 : 4);
         map.setPaintProperty("trip-line", "line-dasharray", compare ? [0, 2] : undefined);
     }
@@ -364,7 +349,7 @@
 
     /** The nearest point on a leg within reach of a screen position. */
     function lineHit(point: maplibregl.Point): LineHit | null {
-        if (!map || !showRoute || planMuted) return null;
+        if (!map || !showRoute) return null;
         let best: { legEndId: string; x: number; y: number; pixels: number } | null = null;
         for (const segment of segments) {
             const projected = segment.coordinates.map((coordinate) => map!.project(coordinate));
@@ -432,12 +417,9 @@
             setSketch([from, coordinate, to]);
         } else {
             const onMap = event.originalEvent.target === map.getCanvas();
-            const signed = onMap && !dragging && signedRoutes ? signedLayer?.hit(event) ?? null : null;
-            overSigned = signed !== null;
-            if (signed !== signedHover) onSignedHover?.(signedHover = signed);
             overPoi = onMap && !!placeAt(event.point);
             hover = onMap && !overPoi && !dragging && !draggingPin && !drawing && !picking ? lineHit(event.point) : null;
-            overOverlay = overlayLayer?.hover(onMap && !overPoi && !hover && signed === null && !dragging && !draggingPin && !drawing && !picking ? event : undefined) ?? false;
+            overOverlay = overlayLayer?.hover(onMap && !overPoi && !hover && !dragging && !draggingPin && !drawing && !picking ? event : undefined) ?? false;
         }
     }
 
@@ -484,14 +466,13 @@
             // zoom of the source, and keeps only the source layers that a style layer draws. The route details read a source
             // layer that no style layer draws.
             map = new maplibregl.Map({ container, center, zoom, maxBounds: config.bounds, style: mapStyle(theme, styleConfig, relief), attributionControl: false, maxPitch: 0, renderWorldCopies: false, zoomLevelsToOverscale: undefined });
-            signedLayer = new SignedRoutesLayer(map);
             overlayLayer = new RouteOverlays(map, config.overlays, (message, retry = false) => { overlayStatus = message; overlayRetry = retry; }, hint => routeHint = hint);
             fitInitialRoute();
             map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
             map.addControl(new maplibregl.ScaleControl({ maxWidth: 90, unit: "metric" }), "bottom-left");
             map.dragRotate.disable();
             map.touchZoomRotate.disableRotation();
-            map.on("style.load", () => { ready = true; installRoute(); signedLayer?.install(theme); signedLayer?.set(signedRoutes); signedLayer?.hover(signedHovered); syncTerrainAndOverlays(); syncDataLayer(); });
+            map.on("style.load", () => { ready = true; installRoute(); syncTerrainAndOverlays(); syncDataLayer(); });
             map.once("load", () => { basemapComplete = true; syncTerrainAndOverlays(); });
             map.setMissingStyleImageResolver((id) => {
                 const icon = mapIcon(id);
@@ -522,8 +503,6 @@
                 const target = event.originalEvent.target;
                 if (consumedPress || drawing || (target instanceof Node && popupContent?.contains(target))) return;
                 if (onPick) { onPick([event.lngLat.lng, event.lngLat.lat], [event.originalEvent.clientX, event.originalEvent.clientY]); return; }
-                const signed = signedRoutes ? signedLayer?.hit(event) : null;
-                if (signed !== null && signed !== undefined) { onSignedRoute?.(signed); return; }
                 const place = placeAt(event.point);
                 const hit = place || pickMode ? null : lineHit(event.point);
                 const overlay = place || pickMode ? null : overlayLayer?.hit(event);
@@ -550,12 +529,10 @@
             map.on("mouseup", releaseMap);
             map.on("mouseout", () => {
                 if (!press) hover = null; overPoi = false; overOverlay = false; overlayLayer?.hover();
-                overSigned = false;
-                if (signedHover !== null) onSignedHover?.(signedHover = null);
             });
             map.on("movestart", (event) => { if (event.originalEvent) wholeRoute = false; overOverlay = false; overlayLayer?.hover(); });
             map.on("moveend", reportView);
-            map.on("idle", () => { loading = false; onIdle?.(); });
+            map.on("idle", () => loading = false);
             map.on("dataloading", () => loading = true);
             map.on("movestart", () => loading = true);
             map.on("move", () => fitCallout(false));
@@ -587,7 +564,6 @@
             hoverDot.remove();
             calloutPopup?.remove();
             overlayLayer?.destroy();
-            signedLayer?.destroy();
             map?.remove();
             terrainLease.release();
         };
@@ -609,8 +585,7 @@
     });
     $effect(() => { hillshade; contours; if (ready) syncTerrain(); });
     $effect(() => { const options = { ...mapOverlays }; const mode = accessMode; if (ready) { overlaySelection = null; overOverlay = false; overlayLayer?.set(options, mode); } });
-    $effect(() => { void [showRoute, planMuted]; if (ready) syncRouteVisibility(); });
-    $effect(() => { const view = signedRoutes; if (ready) signedLayer?.set(view); });
+    $effect(() => { void showRoute; if (ready) syncRouteVisibility(); });
     $effect(() => { void compare; if (ready) (map?.getSource("compare") as GeoJSONSource | undefined)?.setData(compareData()); });
     $effect(() => { void lines; if (ready) (map?.getSource("lines") as GeoJSONSource | undefined)?.setData(linesData()); });
     const letters: maplibregl.Marker[] = [];
@@ -624,9 +599,6 @@
             letters.push(new maplibregl.Marker({ element }).setLngLat(at).addTo(map));
         }
     });
-    $effect(() => { const id = signedHovered; if (ready) signedLayer?.hover(id); });
-    const routesShown = $derived(!!signedRoutes);
-    $effect(() => { const faded = routesShown; if (ready) overlayLayer?.fade(faded); });
     function syncDataLayer() {
         if (!map || !dataLayer) return;
         const { layers, shown, date } = dataLayer;
@@ -686,7 +658,7 @@
         setSketch([]);
     });
     $effect(() => {
-        if (map) map.getCanvas().style.cursor = dragging || draggingPin ? "grabbing" : drawing || picking ? "crosshair" : hover || overPoi || overOverlay || overSigned ? "pointer" : "grab";
+        if (map) map.getCanvas().style.cursor = dragging || draggingPin ? "grabbing" : drawing || picking ? "crosshair" : hover || overPoi || overOverlay ? "pointer" : "grab";
     });
 
     function markerIcon(path: string) {

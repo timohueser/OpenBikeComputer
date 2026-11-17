@@ -27,11 +27,11 @@
     const WAIT_MS = 300;
     const kept = history.state?.explore as Kept | undefined;
 
-    let chips = $state<ChipValues>(kept?.chips ?? { bike: (history.state?.bike as Bike | undefined) ?? 'hiking' });
+    let chips = $state<ChipValues>(kept?.chips ?? { bike: 'hiking' });
     let view = $state.raw<Box | undefined>(kept?.view), selected = $state(kept?.selected);
-    /** The place that the map shows: the kept view, a place that another page gives, or a place of the search field. */
+    /** The place that the map shows: the kept view, or a place of the search field. */
     let place = $state.raw<Place | undefined>(kept?.view
-        ? { lon: (kept.view[0] + kept.view[2]) / 2, lat: (kept.view[1] + kept.view[3]) / 2, box: kept.view } : history.state?.place);
+        ? { lon: (kept.view[0] + kept.view[2]) / 2, lat: (kept.view[1] + kept.view[3]) / 2, box: kept.view } : undefined);
     /** The answer of the last load, for its bike and view: the records, or null when the view needs too many cells. */
     let answer = $state.raw<{ bike: Bike; view: Box; records: CatalogRecord[] | null }>(), failed = $state(false);
 

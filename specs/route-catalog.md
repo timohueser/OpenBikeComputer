@@ -9,7 +9,7 @@ relation with a member outside the extract leaves the catalog.
 - Writers: the region prepare step, `planner/router-build` (`src/catalog/mod.rs`,
   `src/catalog/connector.rs`).
 - Readers: the planner search, online and offline: the web planner
-  (`builder/web/src/lib/planner/signed-routes.ts`, `route-catalog.ts`) and its Explore page
+  (`builder/web/src/lib/planner/route-catalog.ts`) and its Explore page
   (`builder/web/src/pages/Explore.svelte`), the companion app (`OBCPlanner/SignedRoutes.swift`).
 - Test vectors: [`vectors/signed-routes.json`](vectors/signed-routes.json).
 - Related: [route API](route-api.md), [planner release](planner-release.md), [offline
