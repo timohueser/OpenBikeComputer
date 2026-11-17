@@ -6,8 +6,9 @@
 //! corner has a cap (a second label and offset), the lower of the two.
 //!
 //! A bore (storey −1, the feature `bores`) is the prism under storey 0's own triangles over its floor
-//! (`mesh_storeys_with`): the top is its floor, the underside its roof, which stays its least plate under the ground
-//! over it (a corner's caps), and the edge faces its walls, facing in. It has no parapet, railing or pier.
+//! (`mesh_storeys_with`), in parts of its own: its floor, its roof, which stays its least plate under the ground over
+//! it (a corner's caps), its walls, facing in, and the fronts of the ground's plate over its openings. It has no
+//! parapet, railing or pier.
 //!
 //! The free outline is every face edge between the sheet and the rest that lies on no cell line and on no end line
 //! where storey 0 meets the deck (`EdgeKind::DeckEdge`): those stay open, as the neighbour cell or storey 0 goes on
@@ -22,11 +23,11 @@
 //!
 //! | Words | Holds |
 //! | --- | --- |
-//! | head | `HEAD` words: `MAGIC`, the cell's x and y (zoom 16), the counts of corners, triangles, triangle runs, slots, slot runs and of the tops' slots, then the triangles of each part in the order of `PARTS` |
+//! | head | `HEAD` words: `MAGIC`, the cell's x and y (zoom 16), the counts of corners, triangles, triangle runs, slots, slot runs and of the tops' slots, then the triangles of each part in the order of `PARTS`; with the bores, then the slots of each kind of `SLOT_KINDS` after the tops' and the count of the caps |
 //! | corners | 3 words each, sorted by point (y, then x): x in bits 0–18 and the label's bits 0–12 in bits 19–31; y in bits 0–18 and the label's bits 13–24 in bits 19–30; the offset (f32, metres) |
 //! | triangle runs, triangles | as the cell mesh's: 2 words a run (count, base corner), 3 u16 a triangle less its run's base; each part in runs of its own |
-//! | slot runs, slots | 2 words a run, 4 u16 a slot (`a_p, a_q, b_q, b_p`): the tops' slots between two labels, then the undersides' risers |
-//! | caps | with the bores (its count last in the head): 3 words each, sorted: a corner, a cap's label (`NO_LABEL`: the plain terrain) and offset (f32) |
+//! | slot runs, slots | 2 words a run, 4 u16 a slot (`a_p, a_q, b_q, b_p`), each kind of `SLOT_KINDS` in runs of its own |
+//! | caps | with the bores: 3 words each, sorted: a corner, a cap's label (`NO_LABEL`: the plain terrain) and offset (f32) |
 
 use std::collections::BTreeMap;
 
@@ -40,8 +41,17 @@ use crate::graph::Structures;
 
 /// "OBS" and the layout's version: with the bores, the caps.
 pub const MAGIC: u32 = if BORES { 0x4f42_5302 } else { 0x4f42_5301 };
-/// The parts of a storey's mesh, in the order of their triangles.
-pub const PARTS: [&str; 7] = ["top", "underside", "edge", "parapet", "railing", "post", "pier"];
+/// The parts of a storey's mesh, in the order of their triangles; with the bores, a bore's own come last: its floor,
+/// its roof, its walls and the fronts of the ground's plate over its openings.
+pub const PARTS: &[&str] = if BORES {
+    &["top", "underside", "edge", "parapet", "railing", "post", "pier", "floor", "roof", "wall", "front"]
+} else {
+    &["top", "underside", "edge", "parapet", "railing", "post", "pier"]
+};
+/// The kinds of a storey's slots, in the order of their runs: the tops' steps between two labels and the undersides'
+/// risers; with the bores, a bore's floor seams and roof seams between two floor labels, and the sills under its
+/// openings.
+pub const SLOT_KINDS: &[&str] = if BORES { &["top", "riser", "floor", "roof", "sill"] } else { &["top", "riser"] };
 const BORES: bool = cfg!(feature = "bores");
 const TOP: usize = 0;
 const UNDER: usize = 1;
@@ -50,7 +60,17 @@ const PARAPET: usize = 3;
 const RAILING: usize = 4;
 const POST: usize = 5;
 const PIER: usize = 6;
-pub const HEAD: usize = 9 + PARTS.len() + BORES as usize;
+pub(crate) const FLOOR: usize = 7;
+pub(crate) const ROOF: usize = 8;
+const WALL: usize = 9;
+const FRONT: usize = 10;
+const TOP_SLOT: usize = 0;
+const RISER: usize = 1;
+const FLOOR_SEAM: usize = 2;
+const ROOF_SEAM: usize = 3;
+const SILL: usize = 4;
+/// With the bores the head goes on with the slots of each kind after the tops' and the count of the caps.
+pub const HEAD: usize = 9 + PARTS.len() + if BORES { SLOT_KINDS.len() } else { 0 };
 
 /// A parapet: its width and its height over the deck (the crossing block's thickness table).
 const PARAPET_M: [f64; 2] = [0.35, 1.0];
@@ -86,7 +106,8 @@ pub struct StoreyMesh {
     pub parts: [u32; PARTS.len()],
     pub slots: Vec<[u32; 4]>,
     pub slot_runs: Vec<[u32; 2]>,
-    pub top_slots: u32,
+    /// Slots per kind, in the order of `SLOT_KINDS`.
+    pub slot_kinds: [u32; SLOT_KINDS.len()],
     pub open: Vec<[P; 2]>,
     /// The caps of corners, sorted (a corner may have several): the corner, the cap's label (`NO_LABEL`: the plain
     /// terrain) and its offset's bits (`corner_height`).
@@ -105,10 +126,11 @@ impl StoreyMesh {
             self.triangle_runs.len() as u32,
             self.slots.len() as u32,
             self.slot_runs.len() as u32,
-            self.top_slots,
+            self.slot_kinds[TOP_SLOT],
         ];
         head.extend(self.parts);
         if BORES {
+            head.extend(&self.slot_kinds[RISER..]);
             head.push(self.caps.len() as u32);
         }
         let words = (head.into_iter())
@@ -134,6 +156,12 @@ impl StoreyMesh {
         start..start + self.parts[k] as usize
     }
 
+    /// The range of `slots` of kind k of `SLOT_KINDS`.
+    pub fn slot_kind(&self, k: usize) -> std::ops::Range<usize> {
+        let start = self.slot_kinds[..k].iter().sum::<u32>() as usize;
+        start..start + self.slot_kinds[k] as usize
+    }
+
     /// The height of corner k by the crate's height function in the cell's block over the cell's terrain: its label's
     /// plus its offset, or the least of that and its caps'. A label `NO_LABEL` is the plain terrain (a pier's foot, a
     /// cap under the terrain).
@@ -152,13 +180,13 @@ impl StoreyMesh {
 }
 
 /// The corners and the items of the mesh as it grows.
-#[derive(Default)]
 struct Build {
     /// Each corner as it is asked for, its key (`corner_key`) and its offset's bits; equal ones are one corner.
     keys: Vec<(u64, u32)>,
-    tris: [Vec<[u32; 3]>; PARTS.len()],
-    /// The tops' slots, then the undersides' risers.
-    slots: [Vec<[u32; 4]>; 2],
+    /// Per part of `PARTS` and per kind of `SLOT_KINDS`: lists, not arrays, so that the bore's indices stay valid
+    /// code without the bores, which build none.
+    tris: Vec<Vec<[u32; 3]>>,
+    slots: Vec<Vec<[u32; 4]>>,
     /// A corner of a label at a point that takes another label (`stub_label`): its key (`corner_key`) and that label,
     /// sorted.
     relabel: Vec<(u64, u32)>,
@@ -178,6 +206,18 @@ fn of_yx(k: u64) -> P {
 /// A corner's point and label in one word, in the order y, then x, then the label.
 fn corner_key(p: P, label: u32) -> u64 {
     (p[1] as u64) << 44 | (p[0] as u64) << 25 | u64::from(label & NO_LABEL)
+}
+
+impl Default for Build {
+    fn default() -> Self {
+        Build {
+            keys: Vec::new(),
+            tris: vec![Vec::new(); PARTS.len()],
+            slots: vec![Vec::new(); SLOT_KINDS.len()],
+            relabel: Vec::new(),
+            caps: Vec::new(),
+        }
+    }
 }
 
 impl Build {
@@ -686,8 +726,8 @@ pub fn mesh_storeys_with(
                         [b.corner(pa, la, 0.0), b.corner(pc, la, 0.0), b.corner(pc, lb, 0.0), b.corner(pa, lb, 0.0)];
                     let under =
                         [b.corner(pa, la, da), b.corner(pc, la, da), b.corner(pc, lb, db), b.corner(pa, lb, db)];
-                    b.slots[0].push(top);
-                    b.slots[1].push(under);
+                    b.slots[TOP_SLOT].push(top);
+                    b.slots[RISER].push(under);
                 }
                 continue;
             }
@@ -798,10 +838,11 @@ pub fn mesh_storeys_with(
         parts[k] = sorted.len() as u32;
         triangles.extend(sorted);
     }
-    let (mut slots, mut slot_runs) = (Vec::new(), Vec::new());
-    for s in &b.slots {
+    let (mut slots, mut slot_runs, mut slot_kinds) = (Vec::new(), Vec::new(), [0; SLOT_KINDS.len()]);
+    for (k, s) in b.slots.iter().enumerate() {
         let sorted = by_least(s, &rank);
         slot_runs.extend(runs(&sorted)?);
+        slot_kinds[k] = sorted.len() as u32;
         slots.extend(sorted);
     }
     // By corner, then label, in the corners' own key type: their sort serves.
@@ -822,19 +863,7 @@ pub fn mesh_storeys_with(
             [x | label << 19, y | (label >> 13) << 19, offset]
         })
         .collect();
-    Ok(StoreyMesh {
-        cell,
-        corners,
-        triangles,
-        triangle_runs,
-        parts,
-        slots,
-        slot_runs,
-        top_slots: b.slots[0].len() as u32,
-        open,
-        caps,
-        stats,
-    })
+    Ok(StoreyMesh { cell, corners, triangles, triangle_runs, parts, slots, slot_runs, slot_kinds, open, caps, stats })
 }
 
 /// The bores of a cell from storey 0's mesh `m0`, the floor faces `plan` (storey −1, from storey 0's slice) with their
@@ -920,8 +949,8 @@ fn bores(
         let (depth, plate) = way(l).map_or((0.0, 0.0), |w| (w.depth_m, w.plate_m));
         let top = p.map(|v| b.corner(v, l, 0.0));
         let under = p.map(|v| b.corner(v, l, -depth));
-        b.tris[TOP].push(top);
-        b.tris[UNDER].push([under[0], under[2], under[1]]);
+        b.tris[FLOOR].push(top);
+        b.tris[ROOF].push([under[0], under[2], under[1]]);
         for &v in &p {
             // The caps of a roof corner: storey 0's corners at its point of the triangles over its own floor label. A
             // face over another floor at that point (a second bore at another depth) is no lid of this one.
@@ -945,8 +974,8 @@ fn bores(
                     let top = [b.corner(a, ln, 0.0), b.corner(c, ln, 0.0), b.corner(c, l, 0.0), b.corner(a, l, 0.0)];
                     let under =
                         [b.corner(a, ln, -dn), b.corner(c, ln, -dn), b.corner(c, l, -depth), b.corner(a, l, -depth)];
-                    b.slots[0].push(top);
-                    b.slots[1].push(under);
+                    b.slots[FLOOR_SEAM].push(top);
+                    b.slots[ROOF_SEAM].push(under);
                 }
                 Some(_) => {}
                 None if on_cell_line(a, c) => open.push([a, c]),
@@ -956,19 +985,19 @@ fn bores(
                     let (ga, gc) = (m0.corner(t[i] as usize).1, m0.corner(t[j] as usize).1);
                     let lo = [b.corner(a, l, -depth), b.corner(c, l, -depth)];
                     let hi = [b.corner(a, ga, 0.0), b.corner(c, gc, 0.0)];
-                    wall_of(b, EDGE, [lo[0], hi[0], lo[1], hi[1]], false);
+                    wall_of(b, FRONT, [lo[0], hi[0], lo[1], hi[1]], false);
                     // The sill: a slot from the floor's corners to those of storey 0's face in front of the piece,
                     // which closes the joint at any heights.
                     match front(t[i], t[j]) {
                         Some([fa, fc]) => {
                             let sill =
                                 [b.corner(a, fa, 0.0), b.corner(c, fc, 0.0), b.corner(c, l, 0.0), b.corner(a, l, 0.0)];
-                            b.slots[0].push(sill);
+                            b.slots[SILL].push(sill);
                         }
                         None => stats.portal_misses += 1,
                     }
                 }
-                None => wall(b, EDGE, (a, c), false, (l, l), ([-depth; 2], [0.0; 2])),
+                None => wall(b, WALL, (a, c), false, (l, l), ([-depth; 2], [0.0; 2])),
             }
         }
     }
@@ -1096,8 +1125,9 @@ fn piers(
     }
 }
 
-/// The faults of a storey mesh's closure, per solid: the slab (top, underside, edge faces and slots; a bore's floor,
-/// roof and walls), the parapets, the railings' rails, their posts and the piers. In each, every edge between two corners at two points is the edge of exactly one
+/// The faults of a storey mesh's closure, per solid: the slab (top, underside, edge faces and slots), a bore's body
+/// (floor, roof, walls, fronts, seams and sills), the parapets, the railings' rails, their posts and the piers. In
+/// each, every edge between two corners at two points is the edge of exactly one
 /// triangle in each direction (a closed, consistently turned surface), except on a cell line and on an open piece
 /// (`StoreyMesh::open`), where storey 0 or the neighbour goes on. Two corners at one point (a seam between two
 /// labels, or a vertical edge) span no area seen from above and count for nothing.
@@ -1107,11 +1137,23 @@ pub fn closure(m: &StoreyMesh) -> Vec<String> {
         |a: P, b: P| on_cell_line(a, b) || m.open.iter().any(|o| (o[0] == a && o[1] == b) || (o[0] == b && o[1] == a));
     let mut faults = Vec::new();
     let slab = |k: usize| m.triangles[m.part(k)].to_vec();
-    let mut solids = vec![("slab", [slab(TOP), slab(UNDER), slab(EDGE)].concat())];
-    for (k, s) in m.slots.iter().enumerate() {
-        let [ap, aq, bq, bp] = *s;
-        let two = if (k as u32) < m.top_slots { [[ap, aq, bq], [ap, bq, bp]] } else { [[ap, bq, aq], [ap, bp, bq]] };
-        solids[0].1.extend(two);
+    // A slot of a top or a floor turns as the top, a riser or a roof's seam as the underside.
+    let slots = |kinds: &[(usize, bool)]| -> Vec<[u32; 3]> {
+        let two = |[ap, aq, bq, bp]: [u32; 4], top: bool| {
+            if top {
+                [[ap, aq, bq], [ap, bq, bp]]
+            } else {
+                [[ap, bq, aq], [ap, bp, bq]]
+            }
+        };
+        kinds.iter().flat_map(|&(k, top)| m.slots[m.slot_kind(k)].iter().flat_map(move |&s| two(s, top))).collect()
+    };
+    let deck = [slab(TOP), slab(UNDER), slab(EDGE), slots(&[(TOP_SLOT, true), (RISER, false)])].concat();
+    let mut solids = vec![("slab", deck)];
+    if BORES {
+        let body = [slab(FLOOR), slab(ROOF), slab(WALL), slab(FRONT)];
+        let seams = slots(&[(FLOOR_SEAM, true), (ROOF_SEAM, false), (SILL, true)]);
+        solids.push(("bore", [body.concat(), seams].concat()));
     }
     for k in [PARAPET, RAILING, POST, PIER] {
         solids.push((PARTS[k], slab(k)));

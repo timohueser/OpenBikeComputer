@@ -11,7 +11,7 @@ use obc_ground_plan::faces::records;
 use obc_ground_plan::faces::{Rules, Surface};
 use obc_ground_plan::frame::{metres_per_unit, CellKey, GlobalPoint};
 use obc_ground_plan::mesh::params::{CELLS, COARSE};
-use obc_ground_plan::mesh::shell::{closure, on_paved, StoreyMesh, PARTS};
+use obc_ground_plan::mesh::shell::{closure, on_paved, StoreyMesh, PARTS, SLOT_KINDS};
 use obc_ground_plan::mesh::{mesh_cell, CellMesh, Reads, Rim, NO_LABEL};
 use obc_ground_plan::tile::TileCache;
 use obc_ground_plan::CellInput;
@@ -274,6 +274,7 @@ fn triangles(
                 .fold(of(l, off), f64::min);
             at(key, p, h)
         };
+        // Per part of `PARTS`; a bore's floor as a top, its roof, walls and fronts in the slab's colours.
         let colours = [
             (150, 150, 152),
             (95, 93, 88),
@@ -282,6 +283,10 @@ fn triangles(
             (70, 74, 78),
             (70, 74, 78),
             (170, 166, 156),
+            (150, 150, 152),
+            (95, 93, 88),
+            (165, 162, 152),
+            (200, 196, 186),
         ];
         // The top in its surface's colour: carriageway grey, rail bed brown, shoulder pale, band blue-grey.
         let top = |l: u32| match records::label(words, l)[0] & 0xff {
@@ -291,10 +296,11 @@ fn triangles(
             12 => (150, 170, 190),
             _ => (150, 150, 152),
         };
-        for (k, colour) in colours.iter().enumerate() {
+        for (k, colour) in colours.iter().enumerate().take(PARTS.len()) {
             for t in &m.triangles[m.part(k)] {
                 let v = t.map(z);
-                let colour = if k == 0 { top(m.corner(t[0] as usize).1) } else { *colour };
+                let colour =
+                    if PARTS[k] == "top" || PARTS[k] == "floor" { top(m.corner(t[0] as usize).1) } else { *colour };
                 if v.iter().all(|&x| near(x)) {
                     out.push((v, rgb(colour), false));
                 }
@@ -302,7 +308,9 @@ fn triangles(
         }
         for (i, s) in m.slots.iter().enumerate() {
             let v = s.map(z);
-            let col = rgb(if (i as u32) < m.top_slots { (140, 140, 140) } else { (95, 93, 88) });
+            // A top's or a floor's seam and a sill pale, a riser and a roof's seam dark.
+            let kind = (0..SLOT_KINDS.len()).find(|&k| m.slot_kind(k).contains(&i)).map_or("top", |k| SLOT_KINDS[k]);
+            let col = rgb(if kind == "riser" || kind == "roof" { (95, 93, 88) } else { (140, 140, 140) });
             if v.iter().all(|&x| near(x)) {
                 out.push(([v[0], v[1], v[2]], col, true));
                 out.push(([v[0], v[2], v[3]], col, true));

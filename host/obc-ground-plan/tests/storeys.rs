@@ -270,7 +270,7 @@ fn walls_between_decks(key: CellKey, m: &StoreyMesh, b: &CellBuild) -> Vec<Strin
         let (p, l, _) = m.corner(k as usize);
         height_at(w, [f64::from(p[0]), f64::from(p[1])], Some(l), 500.0).h
     };
-    (m.slots[..m.top_slots as usize].iter())
+    (m.slots[m.slot_kind(0)].iter())
         .filter(|s| deck(m.corner(s[0] as usize).1).zip(deck(m.corner(s[3] as usize).1)).is_some_and(|(a, c)| a != c))
         .filter(|s| (h(s[0]) - h(s[3])).abs().max((h(s[1]) - h(s[2])).abs()) > DECK_STEP_M)
         .map(|s| format!("{key:?}: the slot {s:?} is a wall between two deck ways"))

@@ -804,7 +804,7 @@ fn two_cells_give_one_side_to_their_line_where_an_edge_passes_a_tile_corner_on_i
 #[cfg(feature = "bores")]
 #[test]
 fn a_bore_is_the_prism_under_storey_0_and_its_cover_holds_the_least_room() {
-    use crate::mesh::shell::{closure, mesh_storeys_with};
+    use crate::mesh::shell::{closure, mesh_storeys_with, FLOOR, ROOF};
     use crate::mesh::{mesh_cell, Reads, NO_LABEL};
     let key = cell();
     let levels = ("levels", "O 40 P B 160 P O");
@@ -818,6 +818,9 @@ fn a_bore_is_the_prism_under_storey_0_and_its_cover_holds_the_least_room() {
     assert!(b.storeys.plans.iter().any(|p| p.level < 0), "a storey under the ground");
     assert!(!b.storeys.portals.is_empty(), "pieces on the portal lines");
     assert!(closure(&m).is_empty(), "{:?}", closure(&m));
+    // No deck: every triangle and slot is the bore's own.
+    assert_eq!(m.parts[..FLOOR].iter().sum::<u32>(), 0, "a bore's triangles in the decks' parts");
+    assert_eq!(m.slot_kinds[..2].iter().sum::<u32>(), 0, "a bore's slots among the decks' kinds");
     let t = |p: P| {
         input.terrain.height(GlobalPoint { x: key.origin().x + i64::from(p[0]), y: key.origin().y + i64::from(p[1]) })
     };
@@ -837,7 +840,7 @@ fn a_bore_is_the_prism_under_storey_0_and_its_cover_holds_the_least_room() {
         p
     };
     let floors: std::collections::BTreeSet<[P; 3]> =
-        m.triangles[m.part(0)].iter().map(|t| points(t, &|k| m.corner(k as usize).0)).collect();
+        m.triangles[m.part(FLOOR)].iter().map(|t| points(t, &|k| m.corner(k as usize).0)).collect();
     let mut ground: BTreeMap<P, Vec<f64>> = BTreeMap::new();
     for t in &m0.triangles {
         if floors.contains(&points(t, &|k| m0.corner(k as usize).0)) {
@@ -857,7 +860,7 @@ fn a_bore_is_the_prism_under_storey_0_and_its_cover_holds_the_least_room() {
         }
         out
     };
-    let (floor, roof) = (by_point(m.part(0)), by_point(m.part(1)));
+    let (floor, roof) = (by_point(m.part(FLOOR)), by_point(m.part(ROOF)));
     let mut corners = 0;
     for (p, &hf) in &floor {
         // One map: every floor triangle is a triangle of storey 0's mesh.
@@ -891,7 +894,7 @@ fn a_bore_is_the_prism_under_storey_0_and_its_cover_holds_the_least_room() {
 #[cfg(feature = "bores")]
 #[test]
 fn the_ground_beside_the_cover_meets_it_with_no_step() {
-    use crate::mesh::shell::mesh_storeys_with;
+    use crate::mesh::shell::{mesh_storeys_with, FLOOR, ROOF};
     use crate::mesh::{mesh_cell, Reads, NO_LABEL};
     let key = cell();
     let u = [0.94, 0.341];
@@ -948,7 +951,7 @@ fn the_ground_beside_the_cover_meets_it_with_no_step() {
         }
         out
     };
-    let (floor, roof) = (by_point(m.part(0)), by_point(m.part(1)));
+    let (floor, roof) = (by_point(m.part(FLOOR)), by_point(m.part(ROOF)));
     let mouth: Vec<(&P, &f64)> = floor.iter().filter(|(p, _)| (0.0..3.0).contains(&behind(**p))).collect();
     assert!(!mouth.is_empty(), "floor points in the mouth");
     for (p, &hf) in mouth {
