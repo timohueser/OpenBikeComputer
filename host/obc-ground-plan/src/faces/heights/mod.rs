@@ -1263,11 +1263,9 @@ fn groups(b: &Block, q: [f64; 2], p: &HeightRules, cover: bool) -> (Vec<Group>, 
     // bore. A ground way ends on a portal line where its end point is that point.
     let portals: Vec<([f64; 2], [f64; 2])> = if BORES {
         let items = bin_items(b, q).unwrap_or(NO_ITEMS);
-        let lines = items.segs.iter().map(|&item| (item & 0xffff, (item >> 16) as usize));
-        let ends = lines.filter_map(|(l, i)| {
-            let ln = b.line(l as usize);
+        let ends = ceiling_segs(b, items.segs).filter_map(|(ln, i, _)| {
             let e = match i {
-                _ if !ln.ceiling || ln.ret >= 0.0 => return None,
+                _ if ln.ret >= 0.0 => return None,
                 0 => 0,
                 _ if i + 2 == ln.count => 1,
                 _ => return None,
@@ -1290,6 +1288,7 @@ fn groups(b: &Block, q: [f64; 2], p: &HeightRules, cover: bool) -> (Vec<Group>, 
         })
     };
     let mut at: Option<(Line, Group)> = None;
+    let mut skip = false;
     // A line's group ends where the bin's next edge has another host.
     let close = |at: Option<(Line, Group)>, out: &mut Vec<Group>| {
         let Some((ln, mut g)) = at.filter(|(_, g)| g.d.is_finite()) else { return };
@@ -1325,10 +1324,11 @@ fn groups(b: &Block, q: [f64; 2], p: &HeightRules, cover: bool) -> (Vec<Group>, 
                 toe,
                 fade: 1.0,
             };
+            skip = !portals.is_empty() && ended(&ln);
             at = Some((ln, g));
         }
         let Some((ln, g)) = at.as_mut() else { continue };
-        if !portals.is_empty() && ended(ln) {
+        if skip {
             continue;
         }
         // Metres along and off the edge from q − a, which two cells give alike.
@@ -1544,7 +1544,16 @@ fn snorm2(w: u32) -> [f64; 2] {
     unit([f64::from(w as u16 as i16) / 32767.0, f64::from((w >> 16) as u16 as i16) / 32767.0])
 }
 
-/// Per ceiling line segment of q's height segments (`segs`, whose ceiling lines come last): the metres of q
+/// The ceiling line segments of a bin's height segments (`segs`), each with its line and its line's index: they come
+/// after storey 0's own and before the storeys' over the ground.
+fn ceiling_segs<'a>(b: &'a Block, segs: &'a [u32]) -> impl Iterator<Item = (Line, usize, u32)> + 'a {
+    let lines = segs.iter().rev().map(move |&item| (item & 0xffff, (item >> 16) as usize));
+    let lines = lines.map(move |(l, i)| (b.line(l as usize), i, l));
+    lines.skip_while(|(ln, ..)| ln.storey != 0).map_while(|(ln, i, l)| ln.ceiling.then_some((ln, i, l)))
+}
+
+/// Per ceiling line segment of q's height segments (`segs`) of the bores' floor lines (`floors`) or of the decks: the
+/// metres of q
 /// outside the deck's stroke, the deck's surface at q's foot (banked as the line's surface is across its
 /// stroke, level past it) less its drop, which is the bound inside the stroke, the drop, the line's `rise`, the
 /// line, and the metres of q past the nearer flat end (negative between them, minus infinity where no end is near). A
@@ -1558,12 +1567,10 @@ fn decks<'a>(
     q: [f64; 2],
     segs: &'a [u32],
     p: &'a HeightRules,
+    floors: bool,
 ) -> impl Iterator<Item = (f64, f64, f64, f64, u32, f64)> + 'a {
-    // The storeys' lines over the ground come after the ceiling lines.
-    let lines = segs.iter().rev().map(move |&item| (item & 0xffff, (item >> 16) as usize));
-    let lines = lines.map(move |(l, i)| (b.line(l as usize), i, l));
-    let ceilings = lines.skip_while(|(ln, ..)| ln.storey != 0).map_while(|(ln, i, l)| ln.ceiling.then_some((ln, i, l)));
-    ceilings.filter_map(move |(ln, i, l)| {
+    let kept = move |ln: &Line| if floors { ln.ret < 0.0 } else { !BORES || ln.ret > 0.0 };
+    ceiling_segs(b, segs).filter(move |(ln, ..)| kept(ln)).filter_map(move |(ln, i, l)| {
         let (sa, sb) = (b.sample(&ln, i), b.sample(&ln, i + 1));
         let ab = sub(sb.p, sa.p);
         let len = norm(ab);
@@ -1609,8 +1616,8 @@ fn decks<'a>(
 /// rising at `face_max` per metre and letting go as a cone does over `ceiling_release_m`, so the ground that it
 /// bounds has no step; infinite where no deck is near.
 fn ceiling(b: &Block, q: [f64; 2], segs: &[u32], p: &HeightRules) -> f64 {
-    decks(b, q, segs, p)
-        .filter(|&(out, _, drop, ..)| (!BORES || drop > 0.0) && out < p.ceiling_release_m)
+    decks(b, q, segs, p, false)
+        .filter(|&(out, ..)| out < p.ceiling_release_m)
         .map(|(out, base, ..)| base + p.face_max * out + release(out, p.ceiling_release_m, p).1)
         .fold(f64::INFINITY, f64::min)
 }
@@ -1628,8 +1635,8 @@ fn bore_bound(p: &HeightRules, (out, base, ..): (f64, f64, f64, f64, u32, f64)) 
 /// every bore near it: its stroke can reach past its floor line's flat end, where its bore's room still holds it.
 fn floor(b: &Block, q: [f64; 2], segs: &[u32], t: f64, p: &HeightRules, cover: bool) -> f64 {
     let on_line = if cover { f64::INFINITY } else { -ON_LINE_UNITS * b.mpu };
-    decks(b, q, segs, p)
-        .filter(|&(out, _, drop, .., past)| drop < 0.0 && out < p.ceiling_release_m && past <= on_line)
+    decks(b, q, segs, p, true)
+        .filter(|&(out, .., past)| out < p.ceiling_release_m && past <= on_line)
         .map(|d| bore_bound(p, d).min(t + d.3).max(t - p.face_max * (d.0 - WALL_M).max(0.0)))
         .fold(f64::NEG_INFINITY, f64::max)
 }
@@ -1638,15 +1645,15 @@ fn floor(b: &Block, q: [f64; 2], segs: &[u32], t: f64, p: &HeightRules, cover: b
 /// floor is the floor bound's own surface, so the floor bound is the floor plus the least room wherever no lift
 /// bounds it.
 fn floor_at(b: &Block, q: [f64; 2], segs: &[u32], way: u32, p: &HeightRules) -> Option<f64> {
-    decks(b, q, segs, p)
-        .filter(|&(out, _, drop, _, l, _)| drop < 0.0 && out < p.ceiling_release_m && b.way(l) == way)
+    decks(b, q, segs, p, true)
+        .filter(|&(out, _, _, _, l, _)| out < p.ceiling_release_m && b.way(l) == way)
         .map(|d| bore_bound(p, d) + d.2)
         .reduce(f64::max)
 }
 
 /// The least bound of the decks whose stroke holds q; infinite outside every stroke.
 fn under_decks(b: &Block, q: [f64; 2], segs: &[u32], p: &HeightRules) -> f64 {
-    let inside = decks(b, q, segs, p).filter(|&(out, _, drop, ..)| out <= 0.0 && drop > 0.0);
+    let inside = decks(b, q, segs, p, false).filter(|&(out, ..)| out <= 0.0);
     inside.map(|d| d.1).fold(f64::INFINITY, f64::min)
 }
 
@@ -1656,7 +1663,7 @@ pub(crate) fn under_deck(words: &[u32], q: [f64; 2]) -> Option<(f64, f64)> {
     let b = Block::at(words, q);
     let p = HeightRules::of(words);
     let items = bin_items(&b, q)?;
-    let inside = decks(&b, q, items.segs, &p).filter(|&(out, _, drop, ..)| out <= 0.0 && (!BORES || drop > 0.0));
+    let inside = decks(&b, q, items.segs, &p, false).filter(|&(out, ..)| out <= 0.0);
     inside.map(|(_, base, drop, ..)| (base, drop)).reduce(|a, c| if c.0 < a.0 { c } else { a })
 }
 

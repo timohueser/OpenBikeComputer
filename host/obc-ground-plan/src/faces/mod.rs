@@ -1823,8 +1823,11 @@ fn candidates<'a>(
         // The cover's end takes only the ground's slope band (the merged band layer): past the band the ground is the
         // terrain on both sides of the line.
         let band = |c: &Cand| c.label.surface == Surface::Slope && c.label.material.is_none() && c.relabel.is_none();
-        let slope =
-            union(&cands.iter().filter(|c| band(c)).flat_map(|c| c.rings.iter().cloned()).collect::<Vec<_>>(), [0, 0]);
+        let slope = if cover_cands.iter().any(|c| c.key != (0, 0, 0)) {
+            union(&cands.iter().filter(|c| band(c)).flat_map(|c| c.rings.iter().cloned()).collect::<Vec<_>>(), [0, 0])
+        } else {
+            Vec::new()
+        };
         for mut c in cover_cands {
             if c.key != (0, 0, 0) {
                 c.rings = stroke::boolean(&c.rings, &slope, OverlayRule::Intersect, [0, 0]);
