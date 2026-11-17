@@ -50,7 +50,7 @@ A UTF-8 JSON object.
 | Field | Value |
 | --- | --- |
 | `format` | `1` |
-| `set` | The hash of the cell files of the set in ascending order of their cell IDs as text, and then of this manifest as JSON with an empty `set` |
+| `set` | The hash of, for each cell file of the set in ascending order of the cell IDs as text, its cell ID, a line feed and the cell file, and then of this manifest as JSON with an empty `set` |
 | `release` | The ID of the planner release whose catalog the set was made for. It is information for the owner. |
 | `look` | `C\|L\|W\|H`: the version `C` of the camera rule, the light `L` of the [camera](#4-cover) as `MMDD-HHMM`, and the size of each image. Now `1\|0715-1000\|960\|640`. |
 | `months` | Object: for each month `MM` (`01` to `12`) that the set holds, the light of its images as `MMDD-HHMM`, the date and the time in the year of the render. The `MM` of a light is its key. `DD` is a day of each year, so never `0229`. `HHMM` is from `0000` to `2359`. Each cover of the set has an image of each of these months. Now `{"07": "0715-1000"}`. |

@@ -161,7 +161,12 @@ test('upload refuses a route with no cover and no mark, else sends the points, t
     const odd = 'fedcba9876543210', manifest = JSON.parse(fake.objects.get(`route-pictures/sets/${set}/manifest.json`));
     fake.objects.set(`route-pictures/sets/${odd}/manifest.json`, JSON.stringify({ ...manifest, set: odd, default_month: '08' }));
     await expect(switchTo(odd, fake)).rejects.toThrow('default_month 08');
-    fake.objects.delete(`route-pictures/sets/${set}/cells/9-267-180.json`);
+    // A cell file under another cell id, then no cell file.
+    const cell = `route-pictures/sets/${set}/cells/9-267-180.json`, body = fake.objects.get(cell);
+    fake.objects.delete(cell);
+    fake.objects.set(`route-pictures/sets/${set}/cells/9-268-180.json`, body);
+    await expect(switchTo(set, fake)).rejects.toThrow(`The cell files of set ${set} in the bucket do not give its id`);
+    fake.objects.delete(`route-pictures/sets/${set}/cells/9-268-180.json`);
     await expect(switchTo(set, fake)).rejects.toThrow(`The cell files of set ${set} in the bucket do not give its id`);
     expect(fake.puts.length).toBe(puts);
 });

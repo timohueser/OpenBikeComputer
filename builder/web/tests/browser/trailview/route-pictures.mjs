@@ -246,10 +246,10 @@ async function cover(browser, origin, options, job) {
     return result;
 }
 
-/** The id of a set: the hash of its cell files in the order of their cell ids, then of its manifest with an empty `set`. */
-const setOf = (files, manifest) => {
+/** The id of a set: the hash of each cell id, a line feed and its cell file in the order of the cell ids, then of its manifest with an empty `set`. */
+const setOf = (cells, manifest) => {
     const hash = createHash('sha256');
-    for (const file of files) hash.update(file);
+    for (const [id, file] of cells) hash.update(`${id}\n${file}`);
     return hash.update(JSON.stringify({ ...manifest, set: '' })).digest('hex').slice(0, 16);
 };
 
@@ -268,7 +268,7 @@ export function writeSet(out, records, release) {
     }
     const ids = Object.keys(cells).sort(), files = ids.map(cell => `${JSON.stringify({ format: 1, routes: cells[cell] })}\n`);
     const manifest = { format: 1, set: '', release, look: LOOK, months: { [MONTH]: LIGHT }, default_month: MONTH, width: WIDTH, height: HEIGHT, covers, credits: [...credits] };
-    manifest.set = setOf(files, manifest);
+    manifest.set = setOf(ids.map((cell, i) => [cell, files[i]]), manifest);
     const dir = join(out, 'sets', manifest.set);
     mkdirSync(join(dir, 'cells'), { recursive: true });
     ids.forEach((cell, i) => writeFileSync(join(dir, 'cells', `${cell}.json`), files[i]));
@@ -447,7 +447,7 @@ export async function switchTo(set, { r2 = obcR2 } = {}) {
                 for (const name of ends.map(end => `${PREFIX}/covers/${id}/${cover}${end}`)) if (!held.has(name)) missing.add(name);
             }
         });
-        if (setOf(cells.map(cell => texts.get(cell)), manifest) !== set) throw new Error(`The cell files of set ${set} in the bucket do not give its id: one is missing or changed.`);
+        if (setOf(cells.map(cell => [idOf(cell), texts.get(cell)]), manifest) !== set) throw new Error(`The cell files of set ${set} in the bucket do not give its id: one is missing or changed.`);
         if (missing.size) throw new Error(`The bucket does not hold each cover of set ${set}:\n${[...missing].sort().join('\n')}`);
         await r2(['put', '--content-type', 'application/json', '--cache-control', LIVE, file, `${PREFIX}/manifest.json`]);
         return set;
