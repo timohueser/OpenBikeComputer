@@ -923,14 +923,18 @@ struct Seams {
     under: f64,
 }
 
-/// A cell built from `ways` over the hill, storey 0's mesh and its seams at the portals.
+/// A cell built from `ways` over the ground of `profile` (metres along the slant), storey 0's mesh and its seams at the
+/// portals.
 #[cfg(feature = "bores")]
-fn entrance(ways: &[Line]) -> (crate::cell::CellBuild, Terrain, crate::mesh::CellMesh, Seams) {
+fn entrance(
+    ways: &[Line],
+    profile: &dyn Fn(f64) -> f64,
+) -> (crate::cell::CellBuild, Terrain, crate::mesh::CellMesh, Seams) {
     use crate::mesh::{mesh_cell, Reads, NO_LABEL};
     let key = cell();
     let mut input = input_of(key, ways);
     let (centre, u) = (at([0.0, 0.0]), SLANT);
-    input.terrain = plane(key, &|x, y| hill(x * u[0] + y * u[1]));
+    input.terrain = plane(key, &|x, y| profile(x * u[0] + y * u[1]));
     let b = crate::cell::build_input(&input, Rules::embedded());
     let m0 = mesh_cell(&b.faces, &b.records, &Reads::of(&b.faces, &[]), &mut || 0.0).unwrap();
     let o = key.origin();
@@ -1015,7 +1019,7 @@ fn entrance(ways: &[Line]) -> (crate::cell::CellBuild, Terrain, crate::mesh::Cel
 #[test]
 fn the_ground_beside_the_cover_meets_it_with_no_step() {
     use crate::mesh::shell::{mesh_storeys_with, FLOOR, ROOF};
-    let (b, terrain, m0, seams) = entrance(&[tube(0.0, "O 40 P B 160 P O"), tube(9.0, "O 50 P B 150 P O")]);
+    let (b, terrain, m0, seams) = entrance(&[tube(0.0, "O 40 P B 160 P O"), tube(9.0, "O 50 P B 150 P O")], &hill);
     assert!(seams.sides > 0, "the cover meets the ground off the portal lines");
     assert!(seams.step < 0.05, "a step of {} m between the cover and the ground beside it", seams.step);
     assert!(seams.side < 0.1, "a corner on a portal line {} m off its face's side", seams.side);
@@ -1045,6 +1049,134 @@ fn the_ground_beside_the_cover_meets_it_with_no_step() {
     }
 }
 
+/// Storey 0's end faces beside the cover on the portal lines of a cell (`EdgeKind::Headwall`), by its mesh and the
+/// Rust heights.
+#[cfg(feature = "bores")]
+struct EndWalls {
+    /// The end faces beside the cover; those of them on no portal line; the steps between the cover and another face
+    /// with both ends on one portal line that are no end face; end face corners in no triangle (a hole at the top or
+    /// the foot).
+    faces: usize,
+    off_line: usize,
+    steps_on_line: usize,
+    loose: usize,
+    /// The highest end face, and the least rise of the cover over the other side at an end face's corner.
+    high: f64,
+    least: f64,
+    /// Per portal line with an opening: its point, and where the end faces and the opening's pieces join in one run
+    /// along the line that starts and ends with an end face, the steps at its two ends.
+    runs: Vec<([f64; 2], Option<[f64; 2]>)>,
+}
+
+#[cfg(feature = "bores")]
+fn end_walls(b: &crate::cell::CellBuild, terrain: &Terrain, m0: &crate::mesh::CellMesh) -> EndWalls {
+    use crate::mesh::NO_LABEL;
+    let o = b.key.origin();
+    let f = |p: P| [f64::from(p[0]), f64::from(p[1])];
+    let t = |p: P| terrain.height(GlobalPoint { x: o.x + i64::from(p[0]), y: o.y + i64::from(p[1]) }).unwrap();
+    let h = |k: u32| {
+        let (p, l, vertex) = m0.corner(k as usize);
+        if vertex || l == NO_LABEL {
+            t(p)
+        } else {
+            heights::height_at(&b.records, f(p), Some(l), t(p)).h
+        }
+    };
+    let cover = |k: u32| {
+        let l = m0.corner(k as usize).1;
+        l != NO_LABEL && records::label(&b.records, l)[0] & 0xff == Surface::Cover as u32
+    };
+    let lines = heights::check::portal_lines(&b.records);
+    // A slot's ends are its edge's points, rounded to whole units: one unit more than the faces' test.
+    let on = |p: P, &(at, n): &([f64; 2], u32)| heights::behind_end(f(p), at, n).abs() <= heights::ON_LINE_UNITS + 1.0;
+    let corner = |k: u32| m0.corner(k as usize).0;
+    let line_of = |s: &[u32; 4]| lines.iter().position(|e| on(corner(s[0]), e) && on(corner(s[1]), e));
+    let in_triangle: std::collections::BTreeSet<u32> = m0.triangles.iter().flatten().copied().collect();
+    let first = m0.steps.len() - m0.end_faces as usize;
+    let (mut faces, mut off_line, mut steps_on_line, mut loose, mut high, mut least) =
+        (0, 0, 0, 0, 0.0f64, f64::INFINITY);
+    let mut pieces: BTreeMap<usize, Vec<(P, P, bool)>> = BTreeMap::new();
+    for (k, s) in m0.steps.iter().enumerate() {
+        let left = cover(s[0]);
+        if left == cover(s[3]) {
+            continue;
+        }
+        let line = line_of(s);
+        if k < first {
+            steps_on_line += usize::from(line.is_some());
+            continue;
+        }
+        faces += 1;
+        loose += s.iter().filter(|c| !in_triangle.contains(c)).count();
+        let rise = [h(s[0]) - h(s[3]), h(s[1]) - h(s[2])].map(|r| if left { r } else { -r });
+        high = high.max(rise[0].abs()).max(rise[1].abs());
+        least = least.min(rise[0]).min(rise[1]);
+        match line {
+            Some(l) => pieces.entry(l).or_default().push((corner(s[0]), corner(s[1]), false)),
+            None => off_line += 1,
+        }
+    }
+    let mut runs = Vec::new();
+    for (l, &(at, n)) in lines.iter().enumerate() {
+        let mut on_line = pieces.remove(&l).unwrap_or_default();
+        on_line.extend(
+            b.storeys.portals.iter().filter(|x| on(x.a, &lines[l]) && on(x.b, &lines[l])).map(|x| (x.a, x.b, true)),
+        );
+        // Metres along the line.
+        let u = [f64::from(n as u16 as i16), f64::from((n >> 16) as u16 as i16)];
+        let along = |p: P| (u[0] * (f(p)[1] - at[1]) - u[1] * (f(p)[0] - at[0])) / libm::hypot(u[0], u[1]) * mpu();
+        let mut spans: Vec<(f64, f64, bool)> =
+            on_line.iter().map(|&(a, c, open)| (along(a).min(along(c)), along(a).max(along(c)), open)).collect();
+        spans.sort_by(|x, y| x.0.total_cmp(&y.0));
+        let Some(open) = spans.iter().position(|x| x.2) else { continue };
+        let (mut lo, mut hi) = (open, open);
+        while lo > 0 && (spans[lo].0 - spans[lo - 1].1).abs() < 0.01 {
+            lo -= 1;
+        }
+        while hi + 1 < spans.len() && (spans[hi + 1].0 - spans[hi].1).abs() < 0.01 {
+            hi += 1;
+        }
+        // The step of the end face with a corner at metres m along.
+        let step_at = |m: f64| {
+            let near = |c: u32| (along(corner(c)) - m).abs() < 0.01;
+            let s = m0.steps[first..].iter().find(|s| near(s[0]) || near(s[1]))?;
+            let [a, c] = if near(s[0]) { [s[0], s[3]] } else { [s[1], s[2]] };
+            Some((h(a) - h(c)).abs())
+        };
+        let bounded = !spans[lo].2 && !spans[hi].2;
+        runs.push((at, bounded.then(|| step_at(spans[lo].0).zip(step_at(spans[hi].1)).map(|(a, c)| [a, c])).flatten()));
+    }
+    EndWalls { faces, off_line, steps_on_line, loose, high, least, runs }
+}
+
+/// Twin bores into a hill (the made case above): on each portal line the cover meets the ground in front in end faces
+/// beside the opening. Every step of the cover on a portal line is one, and none lies off a line; their corners are
+/// storey 0's, the cover's above and the ground's below; the cover is their higher side; and beside each way's opening
+/// they join it in one run that tapers to nothing at both ends. A single bore into the hill: beside its opening the cut
+/// stands as high as the cover on the line, so its end faces have no height.
+#[cfg(feature = "bores")]
+#[test]
+fn the_end_wall_spans_the_portal_line_beside_the_opening() {
+    let (b, terrain, m0, _) = entrance(&[tube(0.0, "O 40 P B 160 P O"), tube(9.0, "O 50 P B 150 P O")], &hill);
+    let w = end_walls(&b, &terrain, &m0);
+    assert!(w.faces > 0 && w.high > 3.0, "{} end faces, the highest {} m", w.faces, w.high);
+    assert_eq!((w.steps_on_line, w.off_line, w.loose), (0, 0, 0), "steps on a line, end faces off one, loose corners");
+    assert!(w.least > -0.01, "the cover {} m under the ground at an end face", -w.least);
+    // The lines that the ways enter by: before the cell's centre along the slant.
+    let (centre, o) = (at([0.0, 0.0]), b.key.origin());
+    let before =
+        |p: [f64; 2]| ((o.x - centre.x) as f64 + p[0]) * SLANT[0] + ((o.y - centre.y) as f64 + p[1]) * SLANT[1] < 0.0;
+    let entered: Vec<_> = w.runs.iter().filter(|r| before(r.0)).collect();
+    assert_eq!(entered.len(), 2, "two portal lines entered");
+    for (at, run) in entered {
+        let ends = run.unwrap_or_else(|| panic!("{at:?}: no run of end faces about the opening"));
+        assert!(ends.iter().all(|&e| e < 0.05), "{at:?}: the run ends in steps of {ends:?} m");
+    }
+    let (b, terrain, m0, _) = entrance(&[tube(0.0, "O 40 P B 160 P O")], &hill);
+    let w = end_walls(&b, &terrain, &m0);
+    assert!(w.faces > 0 && w.high < 0.01, "{} end faces, the highest {} m", w.faces, w.high);
+}
+
 /// A bore into a hill at a slant beside a road on the terrain, whose slope band reaches behind the portal line: the cut
 /// of the way that enters ends on the line, so the ground behind it stands at the terrain.
 #[cfg(feature = "bores")]
@@ -1054,7 +1186,7 @@ fn the_cut_of_the_way_that_enters_ends_on_its_portal_line() {
     let along: Vec<f64> = (0..=40).map(|i| -100.0 + 5.0 * f64::from(i)).collect();
     let mut beside = road(&along.iter().map(|a| [a * u[0] + 12.0 * n[0], a * u[1] + 12.0 * n[1]]).collect::<Vec<_>>());
     beside.z = along.iter().map(|&a| hill(a)).collect();
-    let (.., seams) = entrance(&[tube(0.0, "O 40 P B 160 P O"), beside]);
+    let (.., seams) = entrance(&[tube(0.0, "O 40 P B 160 P O"), beside], &hill);
     assert!(seams.under > -0.1, "the ground {} m under the terrain behind the portal line", seams.under);
     assert!(seams.step < 0.05, "a step of {} m between the cover and the ground beside it", seams.step);
     assert!(seams.side < 0.1, "a corner on a portal line {} m off its face's side", seams.side);

@@ -60,6 +60,8 @@ pub enum EdgeKind {
     Continuous = 0,
     Kerb = 1,
     Wall = 2,
+    /// On a portal line beside its opening, between the cover and the ground in front: the end wall's place, an end face
+    /// of storey 0's mesh.
     Headwall = 3,
     Portal = 4,
     DeckEdge = 5,

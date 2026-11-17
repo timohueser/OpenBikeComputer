@@ -633,6 +633,12 @@ fn f(v: f64) -> u32 {
     (v as f32).to_bits()
 }
 
+/// A unit vector in one word, x and y as snorm16 (`pack2x16snorm`): a ceiling line's flat end (words 4 and 5).
+pub(crate) fn unit_word(v: [f64; 2]) -> u32 {
+    let snorm = |v: f64| u32::from(libm::round(v.clamp(-1.0, 1.0) * 32767.0) as i16 as u16);
+    snorm(v[0]) | snorm(v[1]) << 16
+}
+
 /// A candidate's key as its word: rank, class, kind.
 fn key_word(key: (u8, u8, u8)) -> u32 {
     u32::from(key.0) << 16 | u32::from(key.1) << 8 | u32::from(key.2)
@@ -1084,8 +1090,7 @@ fn encode(
                 line.end_dir[k]
                     .filter(|_| crate::graph::BORES)
                     .map_or(flat, |e| if k == 0 { e } else { [-e[0], -e[1]] });
-            let snorm = |v: f64| u32::from(libm::round(v.clamp(-1.0, 1.0) * 32767.0) as i16 as u16);
-            w[4 + k] = snorm(flat[0]) | snorm(flat[1]) << 16;
+            w[4 + k] = unit_word(flat);
         }
         w[1] |= CEILING;
         w[2] = (samples_w.len() / SAMPLE) as u32;

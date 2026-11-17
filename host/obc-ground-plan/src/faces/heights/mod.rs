@@ -1261,7 +1261,7 @@ fn groups(b: &Block, q: [f64; 2], p: &HeightRules, cover: bool) -> (Vec<Group>, 
     let mut out: Vec<Group> = Vec::new();
     // The portal lines near q: each end of a bore's floor line in q's bin, its point and its flat end's normal into the
     // bore. A ground way ends on a portal line where its end point is that point.
-    let portals: Vec<([f64; 2], [f64; 2])> = if BORES {
+    let portals: Vec<([f64; 2], u32)> = if BORES {
         let items = bin_items(b, q).unwrap_or(NO_ITEMS);
         let ends = ceiling_segs(b, items.segs).filter_map(|(ln, i, _)| {
             let e = match i {
@@ -1270,7 +1270,7 @@ fn groups(b: &Block, q: [f64; 2], p: &HeightRules, cover: bool) -> (Vec<Group>, 
                 _ if i + 2 == ln.count => 1,
                 _ => return None,
             };
-            Some((b.position(&ln, if e == 0 { 0 } else { ln.count - 1 }), snorm2(ln.flat[e])))
+            Some((b.position(&ln, if e == 0 { 0 } else { ln.count - 1 }), ln.flat[e]))
         });
         ends.collect()
     } else {
@@ -1284,7 +1284,7 @@ fn groups(b: &Block, q: [f64; 2], p: &HeightRules, cover: bool) -> (Vec<Group>, 
         [0, ln.count - 1].iter().any(|&i| {
             let at = b.position(ln, i);
             let near = norm(sub(q, at)) * b.mpu < ln.reach + b.half(ln, i) + ln.side;
-            near && portals.iter().any(|(p, n)| *p == at && dot(sub(q, at), *n) > on_line)
+            near && portals.iter().any(|&(p, n)| p == at && behind_end(q, at, n) > on_line)
         })
     };
     let mut at: Option<(Line, Group)> = None;
@@ -1590,7 +1590,7 @@ fn decks<'a>(
         let behind = |e: usize, near: bool| {
             let at = b.position(&ln, if e == 0 { 0 } else { last });
             if near {
-                -dot(sub(q, at), snorm2(ln.flat[e])) * b.mpu
+                -behind_end(q, at, ln.flat[e]) * b.mpu
             } else {
                 f64::NEG_INFINITY
             }
@@ -1779,7 +1779,21 @@ const END_UNITS: f64 = 2.0;
 /// the covers, its end's slope band, the slice) snaps it by up to one unit. Only the cover meets the line from behind
 /// where the ground differs on its two sides (its end spans the way that enters, `faces::bore_cover`), so a corner on
 /// the line reads its face's side: the cover's behind, every other face's in front. A corner farther off reads its own.
-const ON_LINE_UNITS: f64 = 6.0;
+/// The faces read the same distance (`behind_end`): an edge between the cover and the ground with both ends on the
+/// line is the end wall's place (`EdgeKind::Headwall`).
+pub const ON_LINE_UNITS: f64 = 6.0;
+
+/// The frame units by which q lies behind a line's flat end (negative past it): the end line through the end point
+/// `at`, whose unit normal into the line is the packed word `into` (records words 4 and 5). A bore's floor line ends
+/// flat on its portal lines; the heights and the faces read a portal line by this one test.
+pub fn behind_end(q: [f64; 2], at: [f64; 2], into: u32) -> f64 {
+    dot(sub(q, at), snorm2(into))
+}
+
+/// Whether q lies on the portal line through `at` with the packed normal `into` (`behind_end`, `ON_LINE_UNITS`).
+pub fn on_portal_line(q: [f64; 2], at: [f64; 2], into: u32) -> bool {
+    behind_end(q, at, into).abs() <= ON_LINE_UNITS
+}
 
 /// The rule of the step between two sides at q, if the step lies within that rule's size (up to
 /// `step_m` more): a no-room wall up to its top or up to the terrain, the disagreement of two hosts.

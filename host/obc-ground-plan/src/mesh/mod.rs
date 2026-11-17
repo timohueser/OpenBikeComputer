@@ -25,7 +25,7 @@
 //! | triangle runs | 2 words each: the run's count of triangles and its base corner |
 //! | triangles | 3 u16 each, the run's base subtracted, turning as the terrain's `gridIndices` (negative signed area in x east, y south); the strip's triangles last, and last of all, in runs of their own, the strip's triangles of halves that the level-17 terrain draws (`strip`); a zero u16 pads an odd count of u16 |
 //! | step runs | 2 words each, as the triangle runs |
-//! | steps | 4 u16 each, the run's base subtracted: `a_p, a_q, b_q, b_p` (below); the slots on a deck end line (`EdgeKind::DeckEdge`) last, in runs of their own: the end faces |
+//! | steps | 4 u16 each, the run's base subtracted: `a_p, a_q, b_q, b_p` (below); the slots on a deck end line (`EdgeKind::DeckEdge`) and, with the bores, beside the openings on a portal line (`EdgeKind::Headwall`) last, in runs of their own: the end faces |
 //! | region | `REGION_WORDS` words: R on the cell and one ring of region cells, bit (cy + 1) × (`CELLS` + 2) + cx + 1 for region cell (cx, cy) of the cell, −1 ≤ cx, cy ≤ `CELLS` |
 //! | mouths | 4 words each: the corners of a culvert mouth's model (below), the zone outline's unit direction there (`pack2x16snorm`, x east, y south) and the water's half-width (f32, m) |
 //!
@@ -520,7 +520,7 @@ pub fn mesh_cell(
         if crate::graph::BORES && kind == EdgeKind::Portal {
             continue;
         }
-        let end = kind == EdgeKind::DeckEdge;
+        let end = matches!(kind, EdgeKind::DeckEdge | EdgeKind::Headwall);
         let side = |f: u32, v: u32, ground: &mut Vec<u32>| {
             if is_sharp(f) {
                 label_of(f)

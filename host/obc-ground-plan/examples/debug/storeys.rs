@@ -253,11 +253,29 @@ fn triangles(
                     out.push((v.map(|x| x.0), rgb(col), true));
                 }
             }
-            for s in &m.steps {
+            // A step brown-grey; an end face pale concrete, beside the cover orange where the cover is its higher side
+            // (the end wall) and magenta where it is the lower (a pit behind a portal line).
+            let first = m.steps.len() - m.end_faces as usize;
+            let cover = |l: u32| l != NO_LABEL && records::label(words, l)[0] & 0xff == Surface::Cover as u32;
+            for (k, s) in m.steps.iter().enumerate() {
                 let v = s.map(z);
+                let col = match (k >= first, cover(v[0].1), cover(v[3].1)) {
+                    (false, ..) => (150, 140, 125),
+                    (true, false, false) => (200, 196, 186),
+                    (true, left, _) => {
+                        // The rise of the cover over the other side at the slot's end with the larger step.
+                        let rise = [(v[0].0[2] - v[3].0[2]), (v[1].0[2] - v[2].0[2])];
+                        let rise = if rise[0].abs() > rise[1].abs() { rise[0] } else { rise[1] };
+                        if (rise > 0.0) == left {
+                            (255, 140, 0)
+                        } else {
+                            (220, 0, 200)
+                        }
+                    }
+                };
                 if v.iter().all(|x| near(x.0)) {
-                    out.push(([v[0].0, v[1].0, v[2].0], rgb((150, 140, 125)), true));
-                    out.push(([v[0].0, v[2].0, v[3].0], rgb((150, 140, 125)), true));
+                    out.push(([v[0].0, v[1].0, v[2].0], rgb(col), true));
+                    out.push(([v[0].0, v[2].0, v[3].0], rgb(col), true));
                 }
             }
         }

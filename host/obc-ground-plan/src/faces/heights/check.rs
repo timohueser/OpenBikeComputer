@@ -389,6 +389,14 @@ pub fn end_lines(words: &[u32]) -> Vec<EndLine> {
     out
 }
 
+/// The flat ends of a block's bore floor lines (ceiling lines with a negative drop): each end point and its packed unit
+/// normal into the bore. A ground way ends on such a line at a portal.
+pub fn portal_lines(words: &[u32]) -> Vec<([f64; 2], u32)> {
+    let b = Block::at(words, [0.0, 0.0]);
+    let lines = (0..words[3] as usize).map(|l| b.line(l)).filter(|ln| ln.ceiling && ln.ret < 0.0);
+    lines.flat_map(|ln| [(b.position(&ln, 0), ln.flat[0]), (b.position(&ln, ln.count - 1), ln.flat[1])]).collect()
+}
+
 pub fn deck_ends(words: &[u32], terrain: &Terrain, cell: CellKey) -> DeckEnds {
     let p = HeightRules::of(words);
     let mut out = DeckEnds::default();

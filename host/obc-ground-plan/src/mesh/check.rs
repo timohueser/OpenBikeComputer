@@ -213,7 +213,7 @@ pub fn deck_ends(
     terrain: &Terrain,
     cell: CellKey,
 ) -> (Vec<String>, Vec<String>, Vec<String>) {
-    use crate::faces::heights::{check::end_lines, HeightRules};
+    use crate::faces::heights::{behind_end, check::end_lines, check::portal_lines, HeightRules, ON_LINE_UNITS};
     let ends = end_lines(words);
     let (mut stray, mut missed, mut steep) = (Vec::new(), Vec::new(), Vec::new());
     if ends.is_empty() && mesh.end_faces == 0 {
@@ -226,9 +226,15 @@ pub fn deck_ends(
             along.abs() <= END_UNITS && across.abs() <= e.half + END_UNITS
         })
     };
+    // An end face beside an opening has both ends on one portal line (`EdgeKind::Headwall`); the points inside its edge
+    // are rounded to whole units, one unit more.
+    let portals = if crate::graph::BORES { portal_lines(words) } else { Vec::new() };
+    let on_line = |q: [f64; 2], (p, n): ([f64; 2], u32)| behind_end(q, p, n).abs() <= ON_LINE_UNITS + 1.0;
+    let on_portal = |a: [f64; 2], b: [f64; 2]| portals.iter().any(|&e| on_line(a, e) && on_line(b, e));
     let first = mesh.steps.len() - mesh.end_faces as usize;
     for (k, s) in mesh.steps.iter().enumerate() {
-        match (on(at(s[0])) && on(at(s[1])), k >= first) {
+        let end = k >= first && on_portal(at(s[0]), at(s[1]));
+        match (end || (on(at(s[0])) && on(at(s[1]))), k >= first) {
             (false, true) => stray.push(format!("end face {k} at {:?} on no end line", at(s[0]))),
             (true, false) => missed.push(format!("slot {k} at {:?} on an end line", at(s[0]))),
             _ => {}

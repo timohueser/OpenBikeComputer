@@ -24,8 +24,9 @@ pub struct Input {
     pub segments: Vec<Segment>,
     /// `segments[..edges]` are face edges, the rest D's border.
     pub edges: usize,
-    /// Per face edge piece, the kind of its edge: on a deck end line (`EdgeKind::DeckEdge`) its slot is an end face; on
-    /// a portal line (`EdgeKind::Portal`) it has none, as the bore's shell stands there (`mesh::shell`).
+    /// Per face edge piece, the kind of its edge: on a deck end line (`EdgeKind::DeckEdge`) and beside an opening on a
+    /// portal line (`EdgeKind::Headwall`) its slot is an end face; on an opening (`EdgeKind::Portal`) it has none, as the
+    /// bore's shell stands there (`mesh::shell`).
     pub kinds: Vec<EdgeKind>,
     pub grid_points: u32,
     /// Face edges of a sharp face that do not lie in D: none, as R grows past every sharp face.

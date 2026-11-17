@@ -1332,6 +1332,31 @@ impl Sliced {
                 }
             }
         }
+        // With the bores, storey 0's end wall's place: an edge with both ends on one portal line, by the heights' own
+        // test (`heights::on_portal_line`), between the cover and a face that is neither the cover nor over a floor.
+        // The heights read a corner on the line as behind it for the cover and in front of it for every other face, so
+        // their step stands on the line. Which side is higher is the heights' to say: a wall where the cover is.
+        if BORES && level == 0 {
+            // The line as the records hold it: the ground way's end point is its bore's, its direction the same up to
+            // the sign, packed as the records pack it.
+            let lines: Vec<([f64; 2], u32)> = (ends.iter())
+                .filter(|(kind, _)| *kind == EdgeKind::Portal)
+                .map(|(_, e)| ([e[0], e[1]], records::unit_word([e[2], e[3]])))
+                .collect();
+            let on_line = |v: P, &(at, into): &([f64; 2], u32)| {
+                heights::on_portal_line([f64::from(v[0]), f64::from(v[1])], at, into)
+            };
+            let cover = |f: u32| plan.faces.get(f as usize).is_some_and(|f| f.surface == Surface::Cover);
+            let ground =
+                |f: u32| plan.faces.get(f as usize).is_some_and(|f| f.surface != Surface::Cover && f.under == NO_UNDER);
+            for e in plan.edges.iter_mut().filter(|e| e.kind == EdgeKind::Continuous) {
+                let (a, b) = (plan.vertices[e.a as usize], plan.vertices[e.b as usize]);
+                let sides = (cover(e.left) && ground(e.right)) || (cover(e.right) && ground(e.left));
+                if sides && lines.iter().any(|line| on_line(a, line) && on_line(b, line)) {
+                    e.kind = EdgeKind::Headwall;
+                }
+            }
+        }
         (plan, storeys)
     }
 
