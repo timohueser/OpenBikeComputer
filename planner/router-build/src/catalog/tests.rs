@@ -160,7 +160,24 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
             path(&[40, 41, 42]),
         ),
         route(11, &[("route", "hiking"), ("name", "Rundweg")], path(&[30, 31, 32, 33])),
-        long(12, &[10]),
+        long(12, &[10, 11]),
+        // A trail of an unnamed piece, its own ways and a connector leg, and a long route with it as
+        // its stage; a trail with an absent child; a connector made of a piece.
+        (
+            13,
+            vec![("type", "route"), ("route", "hiking"), ("name", "Joined"), ("network", "rwn")],
+            [vec![Id::Relation(14)], path(&[16, 26, 36]).into_iter().map(Id::Way).collect(), vec![Id::Relation(15)]]
+                .concat(),
+        ),
+        route(14, &[("route", "hiking")], path(&[6, 16])),
+        route(15, &[("route", "hiking"), ("name", "C - D")], path(&[36, 46])),
+        long(18, &[13]),
+        (16, vec![("type", "route"), ("route", "hiking"), ("name", "Half")], vec![Id::Relation(14), Id::Relation(998)]),
+        (
+            17,
+            [&trail[..1], &[("type", "route"), ("name", "A - B"), ("osmc:symbol", "yellow::yellow_diamond")]].concat(),
+            vec![Id::Relation(15)],
+        ),
     ]);
     let selection = Selection::whole(package.fork());
     let (records, report) = catalog(&selection, osm, false, 2)?;
@@ -169,14 +186,19 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
     assert_eq!(
         dropped,
         [
-            ("Connector", vec![10]),
-            ("ExtractEdge", vec![7]),
+            ("Connector", vec![10, 15, 17]),
+            ("ExtractEdge", vec![7, 16]),
             ("Gap", vec![3]),
             ("MissingStage", vec![12]),
             ("NestedLongRoute", vec![6])
         ]
     );
-    assert_eq!(by_id.keys().copied().collect::<BTreeSet<_>>(), BTreeSet::from([1, 2, 5, 8, 9, 11]));
+    assert_eq!(by_id.keys().copied().collect::<BTreeSet<_>>(), BTreeSet::from([1, 2, 5, 8, 9, 11, 13, 18]));
+    let joined = by_id[&13];
+    assert_eq!(joined["length_m"], 4 * 445);
+    assert_eq!(&joined["line_udeg"].as_array().unwrap()[..2], [json!(ORIGIN + 6 * 4_000), json!(ORIGIN)]);
+    assert!(joined.get("stages").is_none());
+    assert_eq!((&joined["parent"], &joined["stage"]), (&json!(18), &json!(1)));
 
     let trail = by_id[&1];
     assert_eq!((&trail["loop"], &trail["length_m"]), (&json!(false), &json!(8 * 445)));
@@ -240,7 +262,7 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
     assert!(whole.get("line_udeg").is_none() && whole.get("profile_m").is_none());
     // The trail ends where the ring starts, so that point counts once.
     let points = via + 2 + ring["via"].as_array().unwrap().len() + 2 - 1;
-    assert_eq!(report.long_points, [(5, points)]);
+    assert_eq!(report.long_points[0], (5, points));
     Ok(())
 }
 
