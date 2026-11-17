@@ -58,8 +58,8 @@ true:
 | `name` | empty, or a dash in it |
 | Theme word | outside round brackets, no word ends in `weg`, `wäg`, `pfad`, `trail`, `loop` or `tour`, in any letter case |
 
-A dash is `-`, `–` or `—`. A word is a run of letters and digits. A dash parts the name of a
-connector into its places, also when a place is blank, as in "- Niederrickenbach". A name with no
+A dash is `-`, `–` or `—`. A word is a run of letters and digits. Any dash in the name counts,
+also inside round brackets or at the start or the end, as in "- Niederrickenbach". A name with no
 dash, such as "Pilatus", is a route.
 
 "Zwergenweg Käserstatt-Lischen" stays a route. "Emmenbrücke-Rotenburg", "Sonnhalde - Linden -
