@@ -1415,7 +1415,8 @@ impl Candidates<'_> {
             let at = (self.cover.at(q).into_iter())
                 .filter(|&c| self.cands[c as usize].fill.is_none() && !near_only(&self.cands[c as usize]))
                 .collect();
-            self.cands[k].label = decide(&self.cands, &self.lines, at, q);
+            self.cands[k].label =
+                on_nearest_leg(decide(&self.cands, &self.lines, at, q), &self.lines, &self.cands[k].rings);
         }
         let banded = |l: &Label| (l.owner == Owner::Terrain && l.surface != Surface::Terrain) || wet_or_zone(l);
         (s.patches.iter().zip(&s.labels))
@@ -1856,17 +1857,27 @@ fn candidates<'a>(
     cands.extend(fill_bands);
     for f in &fills {
         let gc = ctx.global(f.circle.centre);
-        cands.push(Cand {
-            rings: prepare(&vec![f.ring.clone()]),
-            label: TERRAIN,
-            key: fill_key,
-            glob: Some([gc[0], gc[1], 0, 0, 0]),
-            line: 0,
-            relabel: None,
-            beyond: Vec::new(),
-            fill: Some(f.inside),
-            discs: vec![f.circle.clone()],
-        });
+        // A round between two legs of one way splits on their medial lines, as the way's own candidates do: each piece
+        // takes the leg nearest it (`on_nearest_leg`).
+        let mut legged: Vec<usize> =
+            f.circle.lines.iter().copied().filter(|&l| l != usize::MAX && !lines[l].cuts.is_empty()).collect();
+        legged.dedup();
+        let medial: Vec<[P; 2]> = legged.iter().flat_map(|&l| medial_of(&ctx, &lines[l]).1).collect();
+        let ring = prepare(&vec![f.ring.clone()]);
+        let parts = if medial.is_empty() { vec![ring] } else { stroke::cut(&ring, &medial, f.circle.centre) };
+        for rings in parts {
+            cands.push(Cand {
+                rings,
+                label: TERRAIN,
+                key: fill_key,
+                glob: Some([gc[0], gc[1], 0, 0, 0]),
+                line: 0,
+                relabel: None,
+                beyond: Vec::new(),
+                fill: Some(f.inside),
+                discs: vec![f.circle.clone()],
+            });
+        }
     }
     // Each seam cuts its line's carriageway and the fans that reach across it.
     let seams: Vec<(usize, [P; 2], Vec<usize>)> = (seam_points.into_iter())
@@ -1920,7 +1931,7 @@ fn candidates<'a>(
     for k in 0..cands.len() {
         if let Some(q) = cands[k].fill {
             let at: Vec<u32> = cover.at(q).into_iter().filter(|&c| cands[c as usize].fill.is_none()).collect();
-            cands[k].label = decide(&cands, &lines, at, q);
+            cands[k].label = on_nearest_leg(decide(&cands, &lines, at, q), &lines, &cands[k].rings);
         }
     }
     let mpu = |p: P| metres_per_unit(ctx.origin.y + i64::from(p[1]));
@@ -2237,6 +2248,18 @@ fn medial_of(ctx: &Ctx, line: &WayLine) -> (legs::Legs, Vec<[P; 2]>) {
     (legs, medial)
 }
 
+/// The label of an outline round's piece: the label decided at its corner, on the leg of that way nearest the piece
+/// (`split_legs`), as the medial lines cut the round.
+fn on_nearest_leg(label: Label, lines: &[WayLine], rings: &Rings) -> Label {
+    let Owner::Way(w) = label.owner else { return label };
+    let (Some(line), Some(q)) = (lines.iter().find(|x| x.way == w && !x.cuts.is_empty()), inner_point(rings)) else {
+        return label;
+    };
+    // The reach does not enter the nearest leg.
+    let leg = legs::Legs::new(&line.p, &line.cuts, &|_| 0.0).nearest([q[0] as f64 / 2.0, q[1] as f64 / 2.0]);
+    Label { legs: [leg, label.legs[1]], ..label }
+}
+
 /// The label of each band layer (`LAYERS`). A way with legs keeps its layers of the owner rule as its
 /// own, and the nearest leg hosts each of their pieces (`split_legs`).
 const BAND_LABELS: [(Rank, Surface, HeightRule); LAYERS] = [
@@ -2285,10 +2308,7 @@ type Crossing = (f64, usize, usize, usize, i64, i32);
 /// keeps that end; the seam's line runs on as far again past each end, so it crosses the shoulders.
 /// Returns the cuts, and per seam its line and the points of its cut, which cut the shoulders
 /// (`blend_bands`).
-fn seams_on_carriageways(
-    cands: &mut [Cand],
-    seams: &[(usize, [P; 2], Vec<usize>)],
-) -> (Vec<[P; 2]>, Vec<SeamCut>) {
+fn seams_on_carriageways(cands: &mut [Cand], seams: &[(usize, [P; 2], Vec<usize>)]) -> (Vec<[P; 2]>, Vec<SeamCut>) {
     // Per (candidate, ring, segment): the points to insert, by their place along the segment.
     let mut inserts: BTreeMap<(usize, usize, usize), Vec<(i64, P)>> = BTreeMap::new();
     let mut out = Vec::with_capacity(seams.len());
