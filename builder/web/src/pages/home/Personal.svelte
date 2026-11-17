@@ -22,7 +22,7 @@
         <p class="numbers">{[formatDistance(summary.lengthM), `${formatHeight(summary.climbM)} up`, summary.days > 1 && count(summary.days, 'day')].filter(Boolean).join(' · ')}</p>
         <p>You changed it {text.ago}.</p>
         <nav class="buttons" aria-label="Continue">
-            <a class="button primary" href={`${ROUTES.planner}/${text.route.id}`}>Open in the planner</a>
+            <a class="button primary" href={`${ROUTES.planner}/${text.route.id}`}>Open in planner</a>
             <a class="button" href={`${ROUTES.planner}/new`}>Plan a new route</a>
         </nav>
     {:else if text.kind === 'year'}
