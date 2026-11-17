@@ -173,7 +173,7 @@ function reportContent(dir, groups, walkthroughs, open) {
     });
     content.push({ type: 'text', text: `Group ${i + 1}: task ${group.task}, screen ${group.screen}, control ${group.hit}, `
       + `${count(group.walkthroughs, 'walkthrough')}${group.failed ? ', a walkthrough failed here' : ''}.\n${lines.join('\n\n')}` });
-    const { task, n, step, id } = group.steps[0];
+    const { task, n, step, id } = group.steps.find(s => s.strong) ?? group.steps[0];
     for (const [label, file] of [['before', screenFile(step)], ['after', screenFile(step + 1)]]) {
       const jpeg = join(dir, `${task}-${n}`, file);
       if (existsSync(jpeg)) content.push({ type: 'text', text: `The screen ${label} the action of ${id}:` }, image(readFileSync(jpeg)));

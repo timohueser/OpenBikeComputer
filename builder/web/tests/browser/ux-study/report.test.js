@@ -136,6 +136,18 @@ test('the report call gets the design principles of PRODUCT.md', async () => {
   assert.ok(content.some(block => block.type === 'text' && block.text.endsWith(principles)));
 });
 
+test('the report call gets the screenshots of the first strong step of a group', async () => {
+  const walkthroughs = [
+    { task: 'plan-route', n: 1, outcome: 'done', records: records([['planner', 'map'], ['planner', SEARCH, 'yes', 1]]) },
+    { task: 'plan-route', n: 2, outcome: 'done', records: records([['planner', 'map'], ['planner', 'map'], ['planner', 'map'], ['planner', SEARCH], ['planner', 'map', 'no']]) },
+  ];
+  const screenshots = Object.fromEntries(['plan-route-1/02.jpg', 'plan-route-1/03.jpg', 'plan-route-2/04.jpg', 'plan-route-2/05.jpg'].map(file => [file, 10]));
+  const { calls } = await report({ walkthroughs, screenshots, ask: answers({ title: 't', where: 'w', what_happened: 'h', direction: 'd', steps: ['plan-route-2/4'] }) });
+  const [[content]] = calls;
+  assert.deepEqual(content.filter(block => block.text?.startsWith('The screen ')).map(block => block.text),
+    ['The screen before the action of plan-route-2/4:', 'The screen after the action of plan-route-2/4:']);
+});
+
 test('the report call does not start when its screenshots pass the limit of the request', async () => {
   const half = MAX_IMAGE_BYTES / 2;
   const { lines, calls } = await report({ ask: answers(), screenshots: { 'plan-route-2/01.jpg': half, 'plan-route-2/02.jpg': half } });

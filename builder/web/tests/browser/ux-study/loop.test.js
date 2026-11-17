@@ -94,6 +94,24 @@ test('the participant names its hardest step once at the end, and only the recor
   assert.deepEqual(readRecords(dir).map(r => r.hardest), [hardest.why, undefined, undefined]);
 });
 
+test('the end question comes once after done, stuck, the step budget and a give-up, and never after an error', async () => {
+  const cases = [
+    ['done', { actions: [click(1, 1)], success: app => app.performed === 1 }],
+    ['stuck', { actions: [click(1, 1), click(1, 1), click(1, 1)] }],
+    ['gave_up', { actions: [click(1, 1), click(300, 300)], stepBudget: 2 }],
+    ['gave_up', { actions: [{ type: 'give_up' }] }],
+    ['error', { actions: [click(1, 1)], fail: 3 }],
+    ['error', { actions: [click(1, 1), click(300, 300), click(600, 600)], budget: createBudget(model, 0.6) }],
+  ];
+  const asked = [];
+  for (const [outcome, options] of cases) {
+    const { result, participant } = await run(options);
+    assert.equal(result.outcome, outcome);
+    asked.push(participant.asked);
+  }
+  assert.deepEqual(asked, [1, 1, 1, 1, 0, 0]);
+});
+
 test('a failed end question keeps the outcome of the walkthrough, and its calls count toward the cost', async () => {
   const budget = createBudget(model, 15);
   const { result, participant, dir } = await run({ actions: [{ type: 'give_up' }], hardest: new Error('refusal'), budget });
