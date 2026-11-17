@@ -33,7 +33,7 @@ const ORIGIN: i32 = 100_000;
 type Route<'a> = (i64, Vec<(&'a str, &'a str)>, Vec<Id>);
 
 /// A 7 by 7 grid of streets 445 m apart on rolling ground, with node `10 * row + column`, and its
-/// source objects. The way from node 0 to node 1 is T3.
+/// source objects. The way from node 0 to node 1 is T3, the way from node 25 to node 26 is a T5 path.
 fn grid(routes: Vec<Route>) -> (Package<Memory>, Data) {
     let mut graph = Graph::default();
     let mut index = HashMap::new();
@@ -70,10 +70,14 @@ fn grid(routes: Vec<Route>) -> (Package<Memory>, Data) {
                             ascent_m: (shape[1].elevation - shape[0].elevation).max(0.0) as u32,
                             descent_m: (shape[0].elevation - shape[1].elevation).max(0.0) as u32,
                             surface: Surface::Paved,
-                            class: 1,
+                            class: if id == way(25, 26) { 4 } else { 1 },
                             access: BIKE | FOOT | PUSH,
                             difficulty: 255,
-                            hiking_difficulty: (id == way(0, 1)).then_some(3),
+                            hiking_difficulty: match id {
+                                _ if id == way(0, 1) => Some(3),
+                                _ if id == way(25, 26) => Some(5),
+                                _ => None,
+                            },
                             structure: false,
                             shape,
                         },
@@ -143,13 +147,36 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
         route(9, &trail, [path(&[22, 23, 33, 43, 53]), path(&[20, 21])].concat()),
         long(5, &[1, 2]),
         long(6, &[5]),
+        // A signed piece between two signposts, which leaves also as the stage of a long route, and
+        // a named walk of 1.3 km.
+        route(
+            10,
+            &[
+                ("route", "hiking"),
+                ("name", "Rotkreuz - Auleten"),
+                ("network", "rwn"),
+                ("osmc:symbol", "yellow::yellow_diamond"),
+            ],
+            path(&[40, 41, 42]),
+        ),
+        route(11, &[("route", "hiking"), ("name", "Rundweg")], path(&[30, 31, 32, 33])),
+        long(12, &[10]),
     ]);
     let selection = Selection::whole(package.fork());
     let (records, report) = catalog(&selection, osm, false, 2)?;
     let by_id: HashMap<i64, &Value> = records.iter().map(|r| (r["id"].as_i64().unwrap(), r)).collect();
     let dropped: Vec<_> = report.dropped.iter().map(|(reason, ids)| (reason.as_str(), ids.clone())).collect();
-    assert_eq!(dropped, [("ExtractEdge", vec![7]), ("Gap", vec![3]), ("NestedLongRoute", vec![6])]);
-    assert_eq!(by_id.keys().copied().collect::<BTreeSet<_>>(), BTreeSet::from([1, 2, 5, 8, 9]));
+    assert_eq!(
+        dropped,
+        [
+            ("Connector", vec![10]),
+            ("ExtractEdge", vec![7]),
+            ("Gap", vec![3]),
+            ("MissingStage", vec![12]),
+            ("NestedLongRoute", vec![6])
+        ]
+    );
+    assert_eq!(by_id.keys().copied().collect::<BTreeSet<_>>(), BTreeSet::from([1, 2, 5, 8, 9, 11]));
 
     let trail = by_id[&1];
     assert_eq!((&trail["loop"], &trail["length_m"]), (&json!(false), &json!(8 * 445)));
@@ -214,6 +241,16 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
     // The trail ends where the ring starts, so that point counts once.
     let points = via + 2 + ring["via"].as_array().unwrap().len() + 2 - 1;
     assert_eq!(report.long_points, [(5, points)]);
+    Ok(())
+}
+
+#[test]
+fn catalog_keeps_a_hiking_route_over_a_t5_way() -> Result<(), String> {
+    let (package, osm) =
+        grid(vec![route(13, &[("route", "hiking"), ("name", "Ridge")], path(&[23, 24, 25, 26, 36, 46]))]);
+    let (records, report) = catalog(&Selection::whole(package.fork()), osm, false, 2)?;
+    assert!(report.dropped.is_empty(), "{:?}", report.dropped);
+    assert_eq!((&records[0]["id"], &records[0]["hardest"]), (&json!(13), &json!(4)));
     Ok(())
 }
 

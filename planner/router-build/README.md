@@ -101,11 +101,11 @@ and `blocks` (package).
 
 The builder also writes `route-catalog.json`, the signed routes in the format of
 [the catalog contract](../../specs/route-catalog.md). The step metrics are its report: the counts,
-the dropped relations by reason and the shaping points. The catalog needs the `touring`, `road`,
-`gravel`, `mtb/technical` and `hiking/alpine` profiles. Name the region's countries, so that the
-catalog can omit route marks in France. When France is the only country, no record has a route
-mark. A region with France and another country fails. The builder checks the profiles and
-countries before the import.
+the dropped relations by reason and the shaping points. The builder leaves out connector legs
+([selection](../../specs/route-catalog.md#selection)). The catalog needs the `touring`, `road`,
+`gravel`, `mtb/technical` and `hiking/alpine` profiles. Name the region's countries: when France
+is the only country, no record has a route mark. A region with France and another country fails.
+The builder checks the profiles and countries before the import.
 
 ## Terrain
 
@@ -170,10 +170,10 @@ profiles.
 
 Touring, gravel, MTB and hiking use separate surface and road-class tables, and add smoothness,
 track grade, trail grade and traffic. Hiking also adds trail visibility. Touring and gravel have a
-less-climbing variant with three times the climb cost. A signed cycle route discounts only the preference above the physical and
+less-climbing variant with triple climb cost. A signed cycle route discounts only the preference above the physical and
 traffic cost, in the direction that its member role gives. Access rules apply to every variant.
 MTB permits S2 at most and `mtb/technical` every grade; hiking permits T2 at most and
-`hiking/alpine` T4. Alternatives keep the difficulty limit of the request.
+`hiking/alpine` every known grade up to T6. Alternatives keep the difficulty limit of the request.
 
 The package holds geometry, snap cells, a shared directed graph, profile costs and snap bits,
 possible closures and compressed landmark bounds, separate from map tiles. A profile's snap bits

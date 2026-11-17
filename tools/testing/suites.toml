@@ -271,7 +271,12 @@ route = "ordinary"
 command = "npm run test:ux-study --prefix builder/web/tests/browser"
 jobs = ["web-browser"]
 platforms = ["linux", "macos"]
-triggers = ["builder/web/tests/browser/ux-study/**", "builder/web/tests/browser/package.json"]
+triggers = [
+  "builder/web/tests/browser/ux-study/**",
+  "builder/web/tests/browser/package.json",
+  # The task checks import the food kinds of the search.
+  "planner/search/place-kinds.json",
+]
 
 [[suite]]
 id = "web.data-page"

@@ -49,6 +49,18 @@ test('the settings are a window over the page, and the page under it stays as it
     await page.goForward();
     await expect(settings).toBeVisible();
   }
+  // Back and then Forward with no pause keep the window: the window that Back removed closes no other window.
+  await page.evaluate(async () => {
+    const hash = () => new Promise(resolve => addEventListener('hashchange', resolve, { once: true }));
+    let changed = hash();
+    history.back();
+    await changed;
+    changed = hash();
+    history.forward();
+    await changed;
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  });
+  await expect(settings).toBeVisible();
   await page.goBack();
 
   await page.goto('/planner.html?cover=none');

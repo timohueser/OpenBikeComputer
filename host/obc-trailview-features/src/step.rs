@@ -352,11 +352,10 @@ mod tests {
             (MIN_ZOOM..=MAX_ZOOM).collect()
         );
         assert_eq!(find(left, "dam").parts[0].xy.len(), 2, "a closed dam way is an area, not a ring line");
-        // A shallow tunnel with no terrain over it keeps its kind and its tunnel tag. Its levels open it within
-        // `open_max_m` of each tag end and hide the rest, where no cover holds; a viewer without the bores keeps it
-        // on the ground.
+        // A shallow tunnel with no terrain over it keeps its kind and its tunnel tag. It has no room: its levels open
+        // it from each tag end all along, within `open_max_m`; a viewer without the bores keeps it on the ground.
         let tunnel = find(left, "main-road");
-        let levels = ("levels", "O 30.0078125 C H 72.28125 C O");
+        let levels = ("levels", "O");
         assert_eq!(tunnel.tags, tags(&[("highway", "secondary"), levels, ("tunnel", "yes")]));
         let road = find(left, "road");
         assert_eq!(road.tags, tags(&[("highway", "track"), ("surface", "gravel")]));

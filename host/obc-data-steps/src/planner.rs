@@ -50,10 +50,10 @@ pub static PLANNER_TERRAIN: Layer =
 /// or the terrain the roads, of the cost code the costs.
 pub static PLANNER_ROUTING_SOURCE: Layer = work(step::SOURCE);
 pub static PLANNER_ROUTING_ROADS: Layer = work(step::ROADS);
-pub static PLANNER_ROUTING_COSTS: Layer = work(step::COSTS);
+pub static PLANNER_ROUTING_COSTS: Layer = Layer { revision: 2, ..work(step::COSTS) };
 /// The routing package, its grid and the route network overlays.
 pub static PLANNER_ROUTING: Layer = Layer {
-    revision: 5,
+    revision: 6,
     ..whole("planner/routing", planner_router::package::FORMAT, &[&ROUTER_SERVICE, &IOS_OFFLINE_ROUTER])
 };
 /// The search databases and the query model. Its format is the search schema of
@@ -68,7 +68,7 @@ pub static PLANNER_SNOW: Layer = whole("planner/snow", 2, &[&WEB_PLANNER]);
 /// holds what the stamp worker makes of the tiles; `stamp_version` of `specs/trailview-tiles.md` says
 /// which stamp code made it.
 pub static PLANNER_TRAILVIEW_FEATURES: Layer =
-    Layer { revision: 24, ..whole("planner/trailview-features", 4, &[&WEB_PLANNER]) };
+    Layer { revision: 25, ..whole("planner/trailview-features", 4, &[&WEB_PLANNER]) };
 /// The TrailView ruleset, `rules.json` of `specs/trailview-tiles.md`. Its format is `format` of
 /// `rules.json`, `FORMAT` of `tools/trailview/rules.py`.
 pub static PLANNER_TRAILVIEW_RULES: Layer =
