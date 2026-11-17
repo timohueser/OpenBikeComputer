@@ -33,6 +33,8 @@
     let map = $state.raw<maplibregl.Map>(), ready = $state(false);
     const theme = $derived(appearance.dark ? 'dark' : 'light');
     let styled: typeof theme, styledLook: typeof look, fitted = 0, relief: Relief;
+    /** The line under the pointer, which has the feature state `hover`. */
+    let hovered: string | undefined;
     /** The credits of the terrain and of the picture, behind a button beside the credit of the map. */
     let moreCredits: HTMLElement, creditsOpen = $state(false);
     const more = $derived([...new Set([styleConfig.terrain_attribution, ...credits])]);
@@ -55,15 +57,17 @@
         const style = getComputedStyle(container), color = (name: string) => style.getPropertyValue(name).trim();
         const round = { 'line-join': 'round', 'line-cap': 'round' } as const, ride = untrack(() => look) === 'ride';
         const line = color(ride ? '--ride' : '--route');
-        map.addSource('routes', { type: 'geojson', data: untrack(() => lines) });
+        map.addSource('routes', { type: 'geojson', data: untrack(() => lines), promoteId: 'id' });
         map.addSource('middles', { type: 'geojson', data: untrack(() => middles), cluster: true, clusterMaxZoom: LINE_ZOOM - 1, clusterRadius: 48 });
         const shownNow = untrack(() => shownFilter), selectedNow = untrack(() => selectedFilter);
+        // A feature state changes the paint at once, with no transition and no new data.
+        const bolder = (rest: number, under: number): maplibregl.ExpressionSpecification => ['case', ['boolean', ['feature-state', 'hover'], false], under, rest];
         if (ride) {
             map.addLayer({ id: 'casing', type: 'line', source: 'routes', minzoom: LINE_ZOOM, filter: shownNow, layout: round,
                 paint: { 'line-color': color('--panel'), 'line-width': 6 } });
         }
         map.addLayer({ id: 'routes', type: 'line', source: 'routes', minzoom: LINE_ZOOM, filter: shownNow, layout: round,
-            paint: { 'line-color': line, 'line-width': 3, 'line-opacity': ride ? 1 : 0.75 } });
+            paint: { 'line-color': line, 'line-width': bolder(3, 4), 'line-opacity': ride ? 1 : bolder(0.75, 1) } });
         // A wide line with no colour, so a click near a line selects it.
         map.addLayer({ id: 'routes-hit', type: 'line', source: 'routes', minzoom: LINE_ZOOM, filter: shownNow, layout: round,
             paint: { 'line-color': '#000', 'line-width': 14, 'line-opacity': 0 } });
@@ -150,6 +154,17 @@
             created.on('mouseenter', layer, () => { created.getCanvas().style.cursor = 'pointer'; });
             created.on('mouseleave', layer, () => { created.getCanvas().style.cursor = ''; });
         }
+        // The line that a click selects is bolder under the pointer. A tap moves a mouse too, and its line would stay bold.
+        if (matchMedia('(hover: hover)').matches) {
+            const hover = (id?: string) => {
+                if (id === hovered) return;
+                if (hovered !== undefined) created.setFeatureState({ source: 'routes', id: hovered }, { hover: false });
+                hovered = id;
+                if (id !== undefined) created.setFeatureState({ source: 'routes', id }, { hover: true });
+            };
+            created.on('mousemove', 'routes-hit', event => hover(event.features?.[0]?.properties.id));
+            created.on('mouseleave', 'routes-hit', () => hover());
+        }
         const terrainError = terrainRetry(created);
         created.on('error', event => console.warn(terrainError(event) ? 'Routes map terrain:' : 'Routes map:', event.error));
         map = created;
@@ -162,6 +177,8 @@
         if (map && (theme !== styled || look !== styledLook)) {
             styledLook = look;
             ready = false;
+            // The new source has no feature state.
+            hovered = undefined;
             map.setStyle(basemapStyle(styled = theme, styleConfig, relief), { diff: false });
         }
     });
