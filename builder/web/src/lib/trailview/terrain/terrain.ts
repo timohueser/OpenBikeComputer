@@ -372,6 +372,11 @@ export class Terrain {
         return this.structures.floor(...worldPixel(lonLat, UNITS), low, high);
     }
 
+    /** Whether the floors at a point are known, also where there are none. */
+    floorsKnown(lonLat: [number, number]): boolean {
+        return this.structures.floorsKnown(...worldPixel(lonLat, UNITS));
+    }
+
     /** The drawn surface's pages for other passes: group 1 of the terrain. drawn_height reads the feature mask of group 3 too. */
     get surface(): GPUBindGroup | undefined {
         return this.resources?.surfaceGroup;

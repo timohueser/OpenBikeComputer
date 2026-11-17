@@ -151,6 +151,11 @@ export class TrailView {
     private footing?: Footing;
     /** Where the eye stood in the last frame: the height, and whether it was in a tunnel. */
     private feet?: Feet;
+    /**
+     * Whether the eye has landed: its ground is final and the floors at its point are known. Until then a walking eye
+     * stands on the highest floor over its ground, so where it lands does not hang on the order in which tiles come.
+     */
+    private landed = false;
     private ready = false;
     /** No frame draws before `start` lets it: a frame asks for every tile, and the tiles under the eye come first. */
     private held = true;
@@ -270,6 +275,7 @@ export class TrailView {
         if (Math.hypot(pose.east - this.pose.east, pose.north - this.pose.north) > NEW_PLACE) {
             this.footing = undefined;
             this.feet = undefined;
+            this.landed = false;
             this.terrain.forget();
             this.temporal.reset();
             this.lastFrame = undefined;
@@ -582,8 +588,9 @@ export class TrailView {
     /**
      * Where the eye stands: on the ground under it from the GPU probe, or where no level knows it, the
      * last known ground. A walking eye stands on the floor of a deck or a tunnel within a step of its
-     * feet instead. Off a tunnel's floor, past its edge or between its segments, it keeps its feet: the
-     * hill over it is no place to land. A flying eye under the terrain stands on a tunnel's floor below it.
+     * feet instead, and before it has landed on the highest floor over its ground. Off a tunnel's floor,
+     * past its edge or between its segments, it keeps its feet: the hill over it is no place to land. A
+     * flying eye under the terrain stands on a tunnel's floor below it.
      */
     private stand(): Feet | undefined {
         const terrain = this.footing && groundOf(this.footing, this.pose.east, this.pose.north);
@@ -591,6 +598,7 @@ export class TrailView {
         const at = this.frame.lonLat(this.pose.east, this.pose.north), feet = this.feet?.z ?? terrain;
         const floor = this.pose.mode === 'fly'
             ? this.pose.height < terrain ? this.terrain.floorAt(at, this.pose.height - BORE_M, this.pose.height) : undefined
+            : !this.landed ? this.terrain.floorAt(at, terrain - STEP_M, Infinity)
             : this.terrain.floorAt(at, feet - STEP_M, feet + STEP_M) ?? (this.feet?.tunnel ? feet : undefined);
         const z = floor ?? terrain;
         return { z, tunnel: z < terrain - HEADROOM_M, floor: floor !== undefined };
@@ -674,6 +682,7 @@ export class TrailView {
         }
         this.feet = this.stand();
         const settled = this.settled();
+        this.landed ||= settled && this.terrain.eye && this.terrain.floorsKnown(this.frame.lonLat(this.pose.east, this.pose.north));
         this.last = steer || !settled ? now : 0;
         const eye = this.eye(), place = this.place();
         const { gpu, uniform, times, targets } = this.gpuState;
