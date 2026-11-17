@@ -1,7 +1,7 @@
 """python3 sheet.py OUT.png "ROW LABEL|file,file,file" ... --cols "today,groups,badges" [--width 900]"""
 import sys
 from PIL import Image, ImageDraw, ImageFont
-D = '/tmp/claude-0/-home-user-OpenBikeComputer/2d1ce3ff-4225-5a70-a539-37426ae550b6/scratchpad/places/'
+D = '/tmp/claude-0/-home-user-OpenBikeComputer/2d1ce3ff-4225-5a70-a539-37426ae550b6/scratchpad/badges/'
 args = sys.argv[1:]
 width = int(args[args.index('--width') + 1]) if '--width' in args else 900
 cols = args[args.index('--cols') + 1].split(',')

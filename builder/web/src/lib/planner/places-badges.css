@@ -1,0 +1,162 @@
+/* PROTOTYPE (never merges): the HTML marks of ?places=badges. The colours are those of the map icons of today. */
+.places-layer {
+    --ring: var(--ink-faint, #676443);
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    font-family: var(--sans, sans-serif);
+    color: var(--ink, #1c1b14);
+}
+.places-mark {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 0;
+    height: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    pointer-events: auto;
+    cursor: pointer;
+}
+.places-mark:focus { outline: none; }
+.places-mark > .body {
+    position: absolute;
+    left: 0;
+    top: 0;
+    translate: -50% -50%;
+    width: max-content;
+    box-sizing: border-box;
+    transition: scale 120ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.places-mark:focus-visible > .body { outline: 2px solid var(--amber, #f4a81d); outline-offset: 2px; }
+.places-mark:active > .body { scale: 0.96; }
+.places-mark[aria-expanded="true"], .places-mark:focus-visible { --ring: var(--ink, #1c1b14); z-index: 1; }
+@media (hover: hover) { .places-mark:hover { --ring: var(--ink, #1c1b14); z-index: 1; } }
+
+.places-mark svg { display: block; flex: none; }
+.places-mark b { font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1; }
+
+/* One place: the icon of today. */
+.places-mark .disc {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: var(--panel, #fff);
+    box-shadow: inset 0 0 0 1.2px var(--ring);
+}
+/* Several places of one kind: a second disc shows behind the icon. */
+.places-mark .disc.several {
+    translate: calc(-50% - 2px) -50%;
+    box-shadow: inset 0 0 0 1.2px var(--ring), 4px 0 0 -1.2px var(--panel, #fff), 4px 0 0 0 var(--ring);
+}
+
+/* tile: one row for two kinds, then a grid of two rows. */
+.places-mark .tile {
+    display: flex;
+    flex-wrap: wrap;
+    align-content: center;
+    justify-content: center;
+    gap: 4px;
+    width: calc(var(--cols) * 16px + 4px);
+    height: 36px;
+    padding: 4px;
+    border-radius: 10px;
+    background: var(--panel, #fff);
+    box-shadow: inset 0 0 0 1.2px var(--ring);
+}
+.places-mark .tile.row { height: 20px; }
+.places-mark .tile b { display: flex; align-items: center; justify-content: center; width: 12px; height: 12px; font-size: 9px; letter-spacing: -0.03em; }
+
+/* stack: the icons of today, each over the next one. */
+.places-mark .stack { display: flex; }
+.places-mark .stack .disc { position: relative; }
+.places-mark .stack .disc + .disc { margin-left: -5px; }
+.places-mark .stack .disc + .disc > * { translate: 1.5px 0; }
+.places-mark .stack .disc:nth-child(1) { z-index: 3; }
+.places-mark .stack .disc:nth-child(2) { z-index: 2; }
+.places-mark .stack .disc:nth-child(3) { z-index: 1; }
+.places-mark .stack b { font-size: 9px; letter-spacing: -0.03em; }
+
+/* ring: the icon of the first kind, and one dot for each other kind. */
+.places-mark .ring i {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 4px;
+    height: 4px;
+    margin: -2px;
+    border-radius: 50%;
+    background: var(--ink, #1c1b14);
+    box-shadow: 0 0 0 1px var(--panel, #fff);
+    transform: rotate(var(--a)) translateY(13.5px);
+}
+
+/* pill: the badge of the first prototype. */
+.places-mark .pill {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    height: 22px;
+    padding: 0 5px 0 6px;
+    border-radius: 11px;
+    background: var(--panel, #fff);
+    box-shadow: inset 0 0 0 1.2px var(--ring);
+}
+.places-mark .pill b { margin-left: 1px; font-size: 10px; font-weight: 600; }
+.places-mark .pill.group { gap: 4px; height: 20px; padding: 0 7px 0 5px; border-radius: 10px; }
+.places-mark .pill.group b { margin: 0; font-size: 11px; font-weight: 700; }
+
+/* The chosen place: the icon of today, marked by its fill and its size. */
+.places-mark.chosen { z-index: 3; pointer-events: none; }
+.places-mark.chosen .disc { width: 24px; height: 24px; background: var(--ink, #1c1b14); color: var(--panel, #fff); box-shadow: 0 0 0 2px var(--panel, #fff); }
+.places-mark.chosen svg { width: 14px; height: 14px; }
+
+.places-layer.specimen > :not(.places-specimen) { display: none; }
+.places-specimen { pointer-events: none; }
+
+/* The list of a badge. */
+.places-list { position: absolute; left: 0; top: 0; width: 0; height: 0; z-index: 2; }
+.places-list .panel {
+    position: absolute;
+    box-sizing: border-box;
+    width: max-content;
+    min-width: 176px;
+    max-width: 248px;
+    padding: 4px;
+    border-radius: 8px;
+    background: var(--panel, #fff);
+    box-shadow: 0 0 0 1px var(--line-strong, rgba(92, 90, 46, .32)), var(--planner-shadow, 0 6px 18px rgba(28, 27, 20, .12));
+    pointer-events: auto;
+    cursor: default;
+    user-select: none;
+}
+.places-list .rows { display: flex; flex-direction: column; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+.places-list .panel:focus { outline: none; }
+.places-list button {
+    position: relative;
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 8px;
+    min-height: 28px;
+    padding: 0 8px 0 6px;
+    border: 0;
+    border-radius: 5px;
+    background: none;
+    color: var(--ink, #1c1b14);
+    font: 13px/1.2 var(--sans, sans-serif);
+    text-align: left;
+    cursor: pointer;
+}
+.places-list button svg { flex: none; color: var(--ink-faint, #676443); }
+.places-list button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.places-list button.kind-start { margin-top: 9px; }
+.places-list button.kind-start::before { content: ""; position: absolute; left: 2px; right: 2px; top: -5px; border-top: 1px solid var(--line, rgba(92, 90, 46, .16)); }
+.places-list button:focus-visible { outline: 2px solid var(--amber, #f4a81d); outline-offset: -2px; }
+@media (hover: hover) { .places-list button:hover { background: color-mix(in srgb, var(--ink, #1c1b14) 7%, transparent); } }

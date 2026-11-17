@@ -5,8 +5,8 @@
 //   ?radius=26                    groups: two places of one kind nearer than this (px at the whole zoom) are one group
 //   ?badgeradius=64               badges: places of all kinds nearer than this are one badge
 //   ?split=16                     badges: from this zoom the badge separates into the groups of each kind
-//   ?mix                         badges: from the split zoom, places of ALL kinds that would touch (?mixradius=30) stay one
-//                                small badge, in place of the groups of each kind. Nothing then lies on another icon.
+//   ?mixradius=30                 badges: from the split zoom, places of ALL kinds that would touch stay one small badge
+//   ?badge=tile|stack|ring|pill   badges: the shape, see places-badges.ts. The badges are HTML marks, not map layers.
 //   ?minzoom=11 ?names=16 ?margin=1 ?badgecount
 import { VectorTile } from '@mapbox/vector-tile';
 import type maplibregl from 'maplibre-gl';
@@ -14,6 +14,7 @@ import type { ExpressionSpecification, GeoJSONSource } from 'maplibre-gl';
 import { PbfReader } from 'pbf';
 import { openSource, requestSignal, type Source } from './layers/archive';
 import { tileColumn, tileRow } from './place-index';
+import { BadgeLayer, ORDER } from './places-badges';
 import { categoryIds, placeCategories, poiKinds, type PlaceCategory } from './poi-kinds';
 
 const query = new URLSearchParams(typeof location === 'undefined' ? '' : location.search);
@@ -21,14 +22,12 @@ const number = (key: string, fallback: number) => (query.has(key) && Number.isFi
 
 export type PlacesMode = 'today' | 'groups' | 'badges';
 export const placesMode: PlacesMode = query.get('places') === 'groups' ? 'groups' : query.get('places') === 'badges' ? 'badges' : 'today';
-const DEFAULT_ON: PlaceCategory[] = ['water', 'shop', 'camp', 'food', 'bike', 'station', 'peak'];
+const DEFAULT_ON = ORDER.slice(0, 7);
 /** The kinds that are on when the page opens. */
 export const prototypeKinds: PlaceCategory[] = query.get('kinds') === 'all' ? categoryIds : DEFAULT_ON;
-/** Which icons a badge shows first. */
-const ORDER: PlaceCategory[] = [...DEFAULT_ON, ...categoryIds.filter(id => !DEFAULT_ON.includes(id))];
 
 const RADIUS = number('radius', 26), BADGE_RADIUS = number('badgeradius', 64), SPLIT = number('split', 16);
-const MIX = query.has('mix'), MIX_RADIUS = number('mixradius', 30);
+const MIX_RADIUS = number('mixradius', 30);
 const MIN_ZOOM = number('minzoom', 11), NAMES = number('names', 16), MARGIN = number('margin', 1), BADGE_COUNT = query.has('badgecount');
 const MAX_ZOOM = 20;
 
@@ -106,7 +105,6 @@ export function prototypeIcon(id: string): { image: ImageData; pixelRatio: numbe
 }
 
 const groupSource = (category: PlaceCategory) => `proto-group-${category}`;
-const BADGES = 'proto-badges', MIXED = 'proto-mixed';
 
 export class PlacesPrototype {
     readonly mode = placesMode;
@@ -119,19 +117,21 @@ export class PlacesPrototype {
     private shown: PlaceCategory[] = prototypeKinds;
     private theme: 'light' | 'dark' = 'light';
     private installed = false;
-    private readonly mixed = placesMode === 'badges' && MIX;
+    /** The badges mode draws HTML marks. */
+    readonly badges: BadgeLayer | undefined;
     /** Loads that have not yet reached the map. */
     busy = 0;
 
-    constructor(private readonly map: maplibregl.Map, private readonly url: string) {
+    constructor(private readonly map: maplibregl.Map, private readonly url: string, onPlace: (place: Feature) => string | undefined = () => undefined) {
         Object.assign(window, { __places: this });
         if (this.mode === 'today') return;
+        if (this.mode === 'badges') this.badges = new BadgeLayer(map, { badgeRadius: BADGE_RADIUS, touchRadius: MIX_RADIUS, split: SPLIT, minZoom: MIN_ZOOM, names: NAMES > 0 ? NAMES : 99 }, onPlace);
         map.on('moveend', () => void this.load());
     }
 
     get layers(): string[] {
-        if (this.mode === 'today' || !this.installed) return [];
-        return [...(this.mode === 'badges' ? [BADGES] : []), ...(this.mixed ? [MIXED] : categoryIds.map(groupSource))];
+        if (this.mode !== 'groups' || !this.installed) return [];
+        return categoryIds.map(groupSource);
     }
 
     /** Adds the sources and layers to a new style. */
@@ -146,8 +146,10 @@ export class PlacesPrototype {
         const text = { 'text-font': ['Noto Sans Regular'], 'text-size': 11, 'text-anchor': 'top', 'text-offset': [0, 0.9], 'text-optional': true } as const;
         const paint = { 'text-color': dark ? '#f2efe3' : '#1c1b14', 'text-halo-color': panel, 'text-halo-width': 1.2 };
         const name: ExpressionSpecification = ['step', ['zoom'], '', NAMES > 0 ? NAMES : 99, ['case', ['has', 'point_count'], '', ['get', 'name']]];
-        const groupsFrom = this.mode === 'badges' ? SPLIT : MIN_ZOOM;
-        for (const category of this.mixed ? [] : categoryIds) {
+        this.installed = true;
+        if (this.badges) { this.badges.install(theme); void this.load(); return; }
+        const groupsFrom = MIN_ZOOM;
+        for (const category of categoryIds) {
             map.addSource(groupSource(category), { type: 'geojson', data: this.collection(category), cluster: true, clusterRadius: RADIUS, clusterMaxZoom: MAX_ZOOM - 1, maxzoom: MAX_ZOOM });
             map.addLayer({
                 id: groupSource(category), type: 'symbol', source: groupSource(category), minzoom: groupsFrom,
@@ -159,28 +161,6 @@ export class PlacesPrototype {
                 paint,
             }, before);
         }
-        if (this.mode === 'badges') {
-            const has = (category: PlaceCategory): ExpressionSpecification => ['>', ['get', category], 0];
-            const kinds = ['concat', ...ORDER.map(category => ['case', has(category), `${category}.`, ''])] as unknown as ExpressionSpecification;
-            const add = (id: string, radius: number, clusterMaxZoom: number, zooms: { minzoom: number; maxzoom?: number }) => {
-                map.addSource(id, {
-                    type: 'geojson', data: this.collection(), cluster: true, clusterRadius: radius, clusterMaxZoom, maxzoom: MAX_ZOOM,
-                    clusterProperties: Object.fromEntries(categoryIds.map(category => [category, ['+', ['case', ['==', ['get', 'category'], category], 1, 0]]])),
-                });
-                map.addLayer({
-                    id, type: 'symbol', source: id, ...zooms,
-                    layout: {
-                        'icon-image': ['case', ['has', 'point_count'],
-                            ['concat', 'proto-badge-', kinds, '-', ['to-string', ['get', 'point_count']], `-${theme}`],
-                            ['concat', 'poi-', ['get', 'category'], `-${theme}`]],
-                        'icon-allow-overlap': true, 'text-field': name, ...text,
-                    },
-                    paint,
-                }, before);
-            };
-            add(BADGES, BADGE_RADIUS, SPLIT - 1, { minzoom: MIN_ZOOM, maxzoom: SPLIT });
-            if (this.mixed) add(MIXED, MIX_RADIUS, MAX_ZOOM - 1, { minzoom: SPLIT });
-        }
         this.installed = true;
         void this.load();
     }
@@ -189,7 +169,7 @@ export class PlacesPrototype {
         this.shown = shown;
         if (!this.installed) return;
         for (const category of categoryIds) if (this.map.getLayer(groupSource(category))) this.map.setLayoutProperty(groupSource(category), 'visibility', shown.includes(category) ? 'visible' : 'none');
-        for (const id of [BADGES, MIXED]) (this.map.getSource(id) as GeoJSONSource | undefined)?.setData(this.collection());
+        this.badges?.setData(this.collection().features);
     }
 
     /** A click on a group or a badge zooms in until it separates. True when the click hit one. */
@@ -232,9 +212,10 @@ export class PlacesPrototype {
         const all = new Map<number, Feature>();
         for (const tile of this.tiles.values()) for (const feature of tile ?? []) all.set(feature.id as number, feature);
         this.features = [...all.values()].sort((a, b) => (a.id as number) - (b.id as number));
-        if (!this.map.getSource(this.layers[0])) { this.busy--; return; }
+        if (!this.badges && !this.map.getSource(this.layers[0])) { this.busy--; return; }
         for (const category of categoryIds) (this.map.getSource(groupSource(category)) as GeoJSONSource | undefined)?.setData(this.collection(category));
-        for (const id of [BADGES, MIXED]) (this.map.getSource(id) as GeoJSONSource | undefined)?.setData(this.collection());
+        this.badges?.setData(this.collection().features);
+        this.map.triggerRepaint();
         this.map.once('idle', () => {
             this.busy--;
             const timing = { tiles: missing.length, places: this.features.length, fetchMs: Math.round(fetchMs), idleMs: Math.round(performance.now() - start) };
@@ -256,11 +237,12 @@ export class PlacesPrototype {
 
     /** What the prototype layers draw in the view: each icon, group or badge with its position and the number of its places. */
     drawn(): { layer: string; lon: number; lat: number; count: number; kinds: string; x: number; y: number }[] {
+        if (this.badges) return this.badges.info().map(item => ({ layer: 'badges', ...item }));
         return this.map.queryRenderedFeatures({ layers: this.layers }).filter(feature => feature.geometry.type === 'Point').map(feature => {
             const [lon, lat] = (feature.geometry as GeoJSON.Point).coordinates, at = this.map.project([lon, lat]), properties = feature.properties;
             return {
                 layer: feature.layer.id, lon: Math.round(lon * 1e5) / 1e5, lat: Math.round(lat * 1e5) / 1e5, count: Number(properties.point_count ?? 1),
-                kinds: properties.cluster && (feature.layer.id === BADGES || feature.layer.id === MIXED) ? ORDER.filter(category => properties[category] > 0).join('.') : String(properties.category ?? feature.layer.id.slice(12)),
+                kinds: String(properties.category ?? feature.layer.id.slice(12)),
                 x: Math.round(at.x), y: Math.round(at.y),
             };
         });

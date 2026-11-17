@@ -15,6 +15,7 @@
     import { mapStyle, poiFilter } from "../../lib/planner/map-style";
     import { mapIcon } from "../../lib/planner/map-icons";
     import { PlacesPrototype, prototypeIcon } from "../../lib/planner/places-prototype";
+    import { blankIcon } from "../../lib/planner/places-badges";
     import { categoryIds, placeCategories, type PlaceCategory } from "../../lib/planner/poi-kinds";
     import { poiPlace } from "../../lib/planner/place-index";
     import type { Place } from "../../lib/planner/editor";
@@ -492,7 +493,12 @@
             // layer that no style layer draws.
             map = new maplibregl.Map({ container, center, zoom, maxBounds: config.bounds, style: mapStyle(theme, styleConfig, dem.sharedDemProtocolUrl, contourUrl), attributionControl: false, maxPitch: 0, renderWorldCopies: false, zoomLevelsToOverscale: undefined });
             signedLayer = new SignedRoutesLayer(map);
-            placesPrototype = new PlacesPrototype(map, config.places);
+            placesPrototype = new PlacesPrototype(map, config.places, (feature) => {
+                const place = poiPlace(feature.id, feature.properties.kind, feature.properties.name || undefined, [feature.properties.lon, feature.properties.lat]);
+                overlaySelection = null;
+                if (place) onPlaceClick?.(place);
+                return place?.id;
+            });
             overlayLayer = new RouteOverlays(map, config.overlays, (message, retry = false) => { overlayStatus = message; overlayRetry = retry; }, hint => routeHint = hint);
             fitInitialRoute();
             map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
@@ -502,7 +508,7 @@
             map.on("style.load", () => { ready = true; installRoute(); placesPrototype?.install(theme, shownCategories); signedLayer?.install(theme); signedLayer?.set(signedRoutes); signedLayer?.hover(signedHovered); syncTerrainAndOverlays(); syncDataLayer(); });
             map.once("load", () => { basemapComplete = true; syncTerrainAndOverlays(); });
             map.setMissingStyleImageResolver((id) => {
-                const icon = prototypeIcon(id) ?? mapIcon(id);
+                const icon = blankIcon(id) ?? prototypeIcon(id) ?? mapIcon(id);
                 if (icon && !map!.hasImage(id)) map!.addImage(id, icon.image, { pixelRatio: icon.pixelRatio });
             });
             map.once("load", reportView);
@@ -665,6 +671,7 @@
         for (const id of ["planner-pois", "planner-poi-icons"]) if (map.getLayer(id)) map.setFilter(id, filter);
         placesPrototype?.setKinds(shownCategories);
     });
+    $effect(() => { placesPrototype?.badges?.selected(selectedId); });
     $effect(() => {
         const data = placeData(highlightedPlaces);
         if (map && ready) (map.getSource("planner-highlights") as GeoJSONSource | undefined)?.setData(data);
