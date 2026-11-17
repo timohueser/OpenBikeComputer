@@ -5,6 +5,9 @@
 //   ?slow=5                       the motions run this many times slower (for the videos)
 //   ?quiet=glyph|dot|none         glyph: the bare icon from minzoom; dot: a 6 px dot from minzoom, the bare icon from 16;
 //                                 none: the bare icon from 16. Places that would cover each other are one 8 px ring.
+//   ?stack=kinds|each|ring        quiet glyph, places of one spot: one icon for each kind in a row; one icon for each place in a
+//                                 row (by id); or the 8 px ring. Rows wrap after 4 (kinds) or 5 (each) icons.
+//   ?hlradius=64                  highlight: the reach of a disc below zoom 14 (26 px from zoom 14)
 //   ?halo ?onedot                 quiet: a halo in the land colour round the bare icon; one colour for all dots
 //   ?highlight=a ?dim=1           kind a: a rust disc from zoom 12, a second disc behind it for several places
 import './places-badges.css';
@@ -19,10 +22,12 @@ export type Quiet = 'glyph' | 'dot' | 'none';
 type Look = 'glyph' | 'dot' | 'hl';
 /** Quiet: places nearer than this many px are one mark. */
 const RADIUS: Record<Look, number> = { glyph: 18, dot: 9, hl: 26 };
-const HL_ZOOM = 12, BARE = 16;
 
 const query = new URLSearchParams(typeof location === 'undefined' ? '' : location.search);
 const number = (key: string, fallback: number) => (query.has(key) && Number.isFinite(Number(query.get(key))) ? Number(query.get(key)) : fallback);
+const HL_ZOOM = 12, BARE = 16, HL_FINE = 14, HL_RADIUS = number('hlradius', 64), PITCH = 16;
+type Stack = 'kinds' | 'each' | 'ring';
+const STACK: Stack = (['kinds', 'each', 'ring'] as const).find(stack => stack === query.get('stack')) ?? 'kinds';
 const SHAPES: Shape[] = ['tile', 'stack', 'ring', 'pill'];
 export const badgeShape: Shape = SHAPES.find(shape => shape === query.get('badge')) ?? 'tile';
 const TILE_MAX = number('tilemax', 8), SLOW = number('slow', 1);
@@ -38,7 +43,7 @@ const still = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 // ---- The groups of each zoom: places nearer than `radius` px are one node. A zoom step in only separates nodes.
 
-type Node = { x: number; y: number; places: PlaceFeature[]; key?: string };
+type Node = { x: number; y: number; places: PlaceFeature[]; key?: string; dx?: number; dy?: number; spot?: string };
 const WORLD = 512;
 const worldX = (lon: number) => (lon + 180) / 360 * WORLD;
 const worldY = (lat: number) => (1 - Math.log(Math.tan(lat * Math.PI / 180) + 1 / Math.cos(lat * Math.PI / 180)) / Math.PI) / 2 * WORLD;
@@ -87,13 +92,26 @@ function keyOf(node: Node): string {
 const glyph = (category: PlaceCategory, size = 12) =>
     `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="${(1.1 * 24 / size).toFixed(2)}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${placeCategories[category].icon}"/></svg>`;
 
+/** Quiet glyph: the places of one spot as a row of bare icons, one for each kind or one for each place. */
+function spread(node: Node): Node[] {
+    if (node.places.length === 1) return [node];
+    const parts = STACK === 'kinds'
+        ? ORDER.map(kind => node.places.filter(place => place.properties.category === kind)).filter(list => list.length)
+        : [...node.places].sort((a, b) => (a.id as number) - (b.id as number)).map(place => [place]);
+    const per = STACK === 'kinds' ? 4 : 5, rows = Math.ceil(parts.length / per), spot = keyOf(node);
+    return parts.map((places, index) => {
+        const row = Math.floor(index / per), inRow = Math.min(per, parts.length - row * per);
+        return { x: node.x, y: node.y, places, spot, dx: (index % per - (inRow - 1) / 2) * PITCH, dy: (row - (rows - 1) / 2) * PITCH };
+    });
+}
+
 /** A quiet mark or a highlighted disc. */
 function quietBody(look: Look, kinds: PlaceCategory[], count: number): HTMLElement {
     const body = document.createElement('span');
     if (look === 'hl') {
         body.className = count > 1 ? 'body hl several' : 'body hl';
         body.innerHTML = glyph(kinds[0], 13);
-    } else if (count > 1) body.className = 'body neutral';
+    } else if (count > 1 && (look === 'dot' || STACK === 'ring' || kinds.length > 1)) body.className = 'body neutral';
     else if (look === 'dot') { body.className = 'body dot'; body.dataset.kind = kinds[0]; }
     else { body.className = 'body bare'; body.innerHTML = glyph(kinds[0], 14); }
     return body;
@@ -136,7 +154,7 @@ export function badgeBody(shape: Shape, kinds: PlaceCategory[], count: number, t
 const kindsOf = (places: PlaceFeature[]) => ORDER.filter(category => places.some(place => place.properties.category === category));
 const nameOf = (place: PlaceFeature) => place.properties.name || poiKinds[place.properties.kind]?.label || placeCategories[place.properties.category].label;
 
-type Mark = { look?: Look; key: string; lon: number; lat: number; places: PlaceFeature[]; kinds: PlaceCategory[]; element: HTMLButtonElement; body: HTMLElement; x: number; y: number; box?: string };
+type Mark = { look?: Look; dx: number; dy: number; spot?: string; key: string; lon: number; lat: number; places: PlaceFeature[]; kinds: PlaceCategory[]; element: HTMLButtonElement; body: HTMLElement; x: number; y: number; box?: string };
 
 /** A clear image of the size of a mark (`proto-blank-W-H`): the map keeps its labels off the marks with it. */
 export function blankIcon(id: string): { image: ImageData; pixelRatio: number } | null {
@@ -168,6 +186,7 @@ export class BadgeLayer {
         private readonly onPlace: (place: PlaceFeature) => string | undefined) {
         this.root.className = 'places-layer';
         for (const flag of ['halo', 'onedot']) if (query.has(flag)) this.root.classList.add(flag);
+        this.root.style.setProperty('--slow', String(SLOW));
         map.getCanvasContainer().append(this.root);
         map.on('move', () => this.position());
         map.on('zoom', () => { if (Math.floor(map.getZoom()) !== this.level) this.update(true); });
@@ -196,7 +215,10 @@ export class BadgeLayer {
         if (quiet) {
             const others = features.filter(feature => feature.properties.category !== highlight);
             this.quiet = {
-                hl: levels(features.filter(feature => feature.properties.category === highlight), RADIUS.hl, HL_ZOOM - 1, 19),
+                hl: new Map([
+                    ...levels(features.filter(feature => feature.properties.category === highlight), HL_RADIUS, HL_ZOOM - 1, HL_FINE - 1),
+                    ...levels(features.filter(feature => feature.properties.category === highlight), RADIUS.hl, HL_FINE, 19),
+                ]),
                 glyph: levels(others, RADIUS.glyph, Math.min(minZoom, BARE) - 1, 19),
                 dot: levels(others, RADIUS.dot, minZoom - 1, BARE - 1),
             };
@@ -229,7 +251,8 @@ export class BadgeLayer {
             const zoom = this.map.getZoom(), at = Math.min(level, 20), out: [Node, Look?][] = [];
             if (zoom >= HL_ZOOM) out.push(...this.inView(this.quiet.hl.get(at)).map(node => [node, 'hl'] as [Node, Look]));
             const look: Look = quiet === 'dot' && level < BARE ? 'dot' : 'glyph';
-            if (zoom >= (quiet === 'none' ? BARE : minZoom) && !(dim && highlight)) out.push(...this.inView(this.quiet[look].get(at)).map(node => [node, look] as [Node, Look]));
+            if (zoom >= (quiet === 'none' ? BARE : minZoom) && !(dim && highlight))
+                for (const node of this.inView(this.quiet[look].get(at))) out.push(...(look === 'glyph' && STACK !== 'ring' ? spread(node) : [node]).map(part => [part, look] as [Node, Look]));
             return out;
         }
         const first = pinned.length ? pinnedZoom : minZoom;
@@ -249,7 +272,7 @@ export class BadgeLayer {
         const motion = animate && !still() && this.level >= 0 && level !== this.level, zoomedIn = level > this.level;
         const before = this.marks, next = new Map<string, Mark>(), fresh: Mark[] = [];
         for (const [node, look] of this.nodes(level)) {
-            const key = (look ?? '') + keyOf(node);
+            const key = (look ?? '') + (node.spot ? `${node.spot}/` : '') + keyOf(node);
             let mark = before.get(key);
             if (!mark) fresh.push(mark = this.create(node, key, look));
             next.set(key, mark);
@@ -292,7 +315,7 @@ export class BadgeLayer {
         element.className = look === 'hl' ? 'places-mark hl' : 'places-mark';
         element.setAttribute('aria-label', node.places.length === 1 ? nameOf(node.places[0]) : `${node.places.length} places: ${kinds.map(kind => placeCategories[kind].label).join(', ')}`);
         element.append(body);
-        const mark: Mark = { look, key, lon: lonOf(node.x), lat: latOf(node.y), places: node.places, kinds, element, body, x: 0, y: 0 };
+        const mark: Mark = { look, dx: node.dx ?? 0, dy: node.dy ?? 0, spot: node.spot, key, lon: lonOf(node.x), lat: latOf(node.y), places: node.places, kinds, element, body, x: 0, y: 0 };
         element.addEventListener('click', event => {
             event.stopPropagation();
             if (Math.hypot(event.clientX - this.press[0], event.clientY - this.press[1]) > 5) return;
@@ -312,6 +335,8 @@ export class BadgeLayer {
     private position() {
         for (const mark of [...this.marks.values(), ...this.leaving]) {
             [mark.x, mark.y] = this.at(mark.lon, mark.lat);
+            mark.x += mark.dx;
+            mark.y += mark.dy;
             mark.element.style.transform = `translate(${mark.x}px, ${mark.y}px)`;
         }
         if (this.list) this.list.element.style.transform = `translate(${this.list.mark.x}px, ${this.list.mark.y}px)`;
@@ -412,11 +437,11 @@ export class BadgeLayer {
     // ---- For the pictures and the measurements.
 
     /** Each mark of the view with its box on the map, in CSS px. */
-    info(): { look: string; key: string; count: number; kinds: string; x: number; y: number; w: number; h: number; lon: number; lat: number }[] {
+    info(): { spot?: string; look: string; key: string; count: number; kinds: string; x: number; y: number; w: number; h: number; lon: number; lat: number }[] {
         const box = this.map.getContainer().getBoundingClientRect();
         return [...this.marks.values()].map(mark => {
             const rect = mark.body.getBoundingClientRect();
-            return { look: mark.look === 'hl' ? 'hl' : mark.look && mark.places.length > 1 ? 'neutral' : mark.look ?? 'badge', key: mark.key, count: mark.places.length, kinds: mark.kinds.join('.'), x: mark.x, y: mark.y, w: rect.width, h: rect.height, lon: mark.lon, lat: mark.lat };
+            return { spot: mark.spot, look: mark.look === 'hl' ? 'hl' : mark.body.classList.contains('neutral') ? 'neutral' : mark.look ?? 'badge', key: mark.key, count: mark.places.length, kinds: mark.kinds.join('.'), x: mark.x, y: mark.y, w: rect.width, h: rect.height, lon: mark.lon, lat: mark.lat };
         }).filter(item => item.x >= 0 && item.x <= box.width && item.y >= 0 && item.y <= box.height);
     }
 
