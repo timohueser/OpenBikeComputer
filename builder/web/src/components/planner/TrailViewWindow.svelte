@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { onMount } from 'svelte';
+    import { onMount, untrack, type Snippet } from 'svelte';
     import Icon from '../../lib/ui/Icon.svelte';
     import TrailViewConditions from './TrailViewConditions.svelte';
     import TrailViewMiniMap from './TrailViewMiniMap.svelte';
@@ -15,9 +15,20 @@
     import { VFOV } from '../../lib/trailview/frame/camera';
     import { defaultView, formatView, type View } from '../../lib/trailview/view';
 
-    let { at, near, origin, onClose }: {
-        at: Coordinate;
-        near: import('../../lib/planner/trailview-first').Near;
+    /** A route of the routes mode. `profile` has the height at each `step` metres along the line, and at its end. */
+    type ShownRoute = { id: string; line: Coordinate[]; profile?: { step: number; heights: (number | null)[] }; colour: string };
+
+    // The window has two modes: a drop at `at` with the plan's data `near`, or `routes` from the first `view`.
+    let { at, near, routes: given, view: first, selected, onselect, card, origin, onClose }: {
+        at?: Coordinate;
+        near?: import('../../lib/planner/trailview-first').Near;
+        routes?: ShownRoute[];
+        view?: View;
+        /** The id of the route that is bold while the pointer is on no route. */
+        selected?: string;
+        onselect?: (id: string) => void;
+        /** Shows at the bottom of the window, over the view or its notice. */
+        card?: Snippet;
         /** The viewport point that the window grows from. */
         origin: [number, number];
         onClose: () => void;
@@ -35,17 +46,46 @@
     let width = $state(0), height = $state(0);
     // The plan's route draws on the terrain in the colours of its days, its grade or its surface, with a pin at
     // each night and a marker at the point of the profile under the pointer, until the rider hides it.
-    const hasRoute = $derived(near.route.length > 1);
-    const line = $derived([...near.route]);
+    const hasRoute = $derived(!!near && near.route.length > 1);
+    const line = $derived([...near?.route ?? []]);
     let routeShown = $state(true), look = $state<RouteLook>('day'), position = $state<number | null>(null);
-    const nightPins = $derived(near.overlay.nights.map(night => ({ coordinate: night.coordinate, colour: night.color, badge: nightBadge(night) })));
+    const nightPins = $derived(near?.overlay.nights.map(night => ({ coordinate: night.coordinate, colour: night.color, badge: nightBadge(night) })) ?? []);
+    // The window keeps the routes that it opens with: route number i + 1 of the engine is routes[i]. The route under
+    // the pointer is bold; with none, the selected route.
+    const routes = untrack(() => given);
+    let hovered: number | null = null, bolded: number | null | undefined;
+    const bold = () => {
+        const number = hovered ?? (routes!.findIndex(route => route.id === selected) + 1 || null);
+        if (number === bolded || !engine) return;
+        bolded = number;
+        engine.boldRoute(number);
+    };
+    $effect(() => {
+        void selected;
+        if (routes) untrack(bold);
+    });
+    const pointer = routes && {
+        onhover: (x: number, y: number) => { hovered = engine?.routeAt(x, y) ?? null; bold(); },
+        onclick: (x: number, y: number) => {
+            const number = engine?.routeAt(x, y);
+            if (number) onselect?.(routes[number - 1].id);
+        },
+    };
     const drawRoute = () => {
+        if (routes) {
+            engine?.showRoutes(routes.map(route => ({ line: route.line, profile: route.profile, colours: route.line.slice(1).map(() => route.colour) })));
+            bolded = undefined;
+            bold();
+            return;
+        }
+        if (!near) return;
         engine?.showRoutes(routeShown ? [{ line: near.route, colours: near.overlay.colours[look] }] : []);
         engine?.showPins(routeShown && hasRoute ? nightPins : []);
         drawMarker();
     };
     // The marker takes the colour of the edge it stands on.
     const drawMarker = () => {
+        if (!near) return;
         const colours = near.overlay.colours[look], edge = Math.max(sampleIndex(near.overlay.profile, position ?? 0) - 1, 0);
         engine?.showMarker(!routeShown || position === null ? null : coordinateAt(line, position), colours[Math.min(edge, colours.length - 1)]);
     };
@@ -67,7 +107,8 @@
         (async () => {
             const chunk = await loadTrailView();
             if (abort.signal.aborted) return;
-            const started = await chunk.startTrailView(canvas, config, { ...defaultView([at[0], at[1], at[0], at[1]]), heading: FIRST_HEADING }, near, abort.signal);
+            const start = first ?? { ...defaultView([at![0], at![1], at![0], at![1]]), heading: FIRST_HEADING };
+            const started = await chunk.startTrailView(canvas, config, start, near, abort.signal, pointer);
             if (!started) {
                 failure = 'gpu' in navigator ? 'TrailView cannot use the graphics card of this device.'
                     : 'TrailView needs WebGPU. Open the planner in a current version of Chrome, Edge or Safari.';
@@ -118,7 +159,7 @@
         event.preventDefault();
     }}>
     <!-- Focusable, so that after a click on the view the keys still pass through the dialog. -->
-    <canvas bind:this={canvas} tabindex="-1"></canvas>
+    <canvas bind:this={canvas} tabindex="-1" onpointerleave={() => { if (routes) { hovered = null; bold(); } }}></canvas>
     <div class="cover" class:gone={ground && !failure}>
         {#if !failure}<p class="loading" role="status"><span class="spinner" aria-hidden="true"></span>Loading the view</p>{/if}
     </div>
@@ -132,12 +173,13 @@
                 <button type="button" aria-pressed={look === 'grade'} disabled={!routeShown} onclick={() => choose('grade')}><Icon name="mountain" />Grade</button>
                 <button type="button" aria-pressed={look === 'surface'} disabled={!routeShown} onclick={() => choose('surface')}><Icon name="layers" />Surface</button>
             </div>
-            {#if routeShown}
+            {#if routeShown && near}
                 <TrailViewProfile profile={near.overlay.profile} colours={near.overlay.colours[look]} total={cumulative(line).at(-1) ?? 0}
                     onHover={progress => { position = progress; drawMarker(); }} />
             {/if}
         {/if}
     {/if}
+    {#if card}<div class="card">{@render card()}</div>{/if}
     <button type="button" class="close" aria-label="Close TrailView" onclick={() => dialog.close()}><Icon name="close" /></button>
     <Credits {credits} />
 </dialog>
@@ -250,6 +292,21 @@
     }
     .close:hover {
         color: var(--link);
+    }
+    /* The card takes the place of the profile: right of the small map, left of the credits. */
+    .card {
+        position: absolute;
+        left: calc(max(12px, env(safe-area-inset-left)) + 232px);
+        right: calc(max(12px, env(safe-area-inset-right)) + 44px);
+        bottom: max(12px, env(safe-area-inset-bottom));
+        max-width: 980px;
+    }
+    @media (max-width: 640px) {
+        .card {
+            left: max(12px, env(safe-area-inset-left));
+            right: max(12px, env(safe-area-inset-right));
+            bottom: calc(max(12px, env(safe-area-inset-bottom)) + 152px);
+        }
     }
     .route {
         position: absolute;

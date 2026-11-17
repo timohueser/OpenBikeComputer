@@ -4,11 +4,17 @@
     import { keepInHistory } from '../lib/keep-in-history.svelte';
     import type { Bike } from '../lib/library/records';
     import type { Library } from '../lib/library/store';
+    import { config } from '../lib/planner/map-data';
+    import { decodeCoordinates } from '../lib/planner/route-answer';
+    import { routeColor } from '../lib/planner/route-colors';
     import { catalog, tooWide, type Box } from '../lib/planner/route-catalog';
     import { gradeName, routePlan, type CatalogRecord, type RouteRecord } from '../lib/planner/signed-routes';
+    import { hasTrailView, loadTrailView } from '../lib/planner/trailview';
     import { router } from '../lib/router.svelte';
     import { ROUTES } from '../lib/routes';
     import { distanceIn, heightIn } from '../lib/settings/format';
+    import { today, type View } from '../lib/trailview/view';
+    import Icon from '../lib/ui/Icon.svelte';
     import SignedCard, { signedNumbers } from './explore/SignedCard.svelte';
     import SignedPicture from './explore/SignedPicture.svelte';
     import Chips from './routes/Chips.svelte';
@@ -97,6 +103,37 @@
     // Back from another page brings the view, the chips and the selection again.
     const keep = keepInHistory('explore', (): Kept => ({ chips, view, selected }));
 
+    // TrailView shows the first routes of the list from a view above them all.
+    const TRAILVIEW_ROUTES = 100;
+    type Window = typeof import('../components/planner/TrailViewWindow.svelte').default;
+    type Shown = { id: string; line: [number, number][]; profile?: { step: number; heights: (number | null)[] }; colour: string };
+    let trailView = $state.raw<{ component: Window; origin: [number, number]; view: View; routes: Shown[] }>();
+    /** A notice shows only in the map view that it is about. */
+    let opening = $state(false), notice = $state.raw<{ text: string; view?: Box }>();
+
+    async function openTrailView(event: MouseEvent) {
+        const box = (event.currentTarget as HTMLElement).getBoundingClientRect(), at = view;
+        const routes = shown.slice(0, TRAILVIEW_ROUTES).map(({ id, record }): Shown => ({
+            id, line: decodeCoordinates(record.line_udeg ?? []), colour: routeColor(id),
+            ...record.profile_m ? { profile: { step: 100, heights: record.profile_m } } : {},
+        }));
+        opening = true;
+        notice = undefined;
+        try {
+            const [chunk, { default: component }] = await Promise.all([loadTrailView(), import('../components/planner/TrailViewWindow.svelte')]);
+            // The size of the window: the rule of its CSS.
+            const full = innerWidth <= 760;
+            const first = await chunk.coverView(routes.map(route => route.line), config,
+                { width: full ? innerWidth : innerWidth - 64, height: full ? innerHeight : innerHeight - 64, date: today(), time: '10:00', weather: 'sunny' });
+            if (first) trailView = { component, origin: [box.left + box.width / 2, box.top + box.height / 2], view: first, routes };
+            else notice = { text: 'TrailView has no view of this area.', view: at };
+        } catch (error) {
+            console.error('TrailView:', error);
+            notice = { text: 'TrailView could not start. Try again.', view: at };
+        }
+        opening = false;
+    }
+
     /** The planner makes the plan; "Find another route" there brings this state back. */
     function plan(item: SignedItem) {
         keep();
@@ -109,7 +146,8 @@
 <svelte:window onkeydown={event => { if (event.key === 'Escape' && !document.querySelector('dialog[open]')) selected = undefined; }} />
 
 <ListAndMap title="Explore" {items} {shown} {place} fit={0} look="signed" credits={[]} selected={chosen ? [chosen.id] : []}
-    onselect={id => selected = id} onview={next => view = wrapped(next)} card={chosen ? card : undefined}>
+    onselect={id => selected = id} onview={next => view = wrapped(next)} card={chosen ? card : undefined}
+    mapButtons={hasTrailView(config) && shown.length ? mapButtons : undefined}>
     {#snippet list()}
         <!-- The search field finds places only; a chosen place moves the map. -->
         <PlaceSearch {view} label="Find a place" placeholder="Find a place" float onchoose={({ lon, lat, box }) => place = { lon, lat, box }} />
@@ -145,6 +183,18 @@
     <SignedCard item={chosen!} onplan={() => plan(chosen!)} />
 {/snippet}
 
+{#snippet mapButtons()}
+    <button type="button" class="trailview" aria-busy={opening} disabled={opening} onclick={openTrailView}>
+        <Icon name="binoculars" />{opening ? 'Loading…' : shown.length > TRAILVIEW_ROUTES ? `TrailView · first ${TRAILVIEW_ROUTES}` : 'TrailView'}
+    </button>
+    {#if notice && notice.view === view}<p class="trailview-notice" role="status">{notice.text}</p>{/if}
+{/snippet}
+
+{#if trailView}
+    <trailView.component origin={trailView.origin} view={trailView.view} routes={trailView.routes} {selected} onselect={id => selected = id}
+        card={chosen ? card : undefined} onClose={() => trailView = undefined} />
+{/if}
+
 <style>
     .note, .count {
         margin: 0;
@@ -161,6 +211,19 @@
         color: var(--ink);
         font: inherit;
         text-decoration: underline;
+    }
+    .trailview {
+        box-shadow: var(--planner-shadow);
+    }
+    .trailview-notice {
+        max-width: 220px;
+        margin: 0;
+        padding: 6px 10px;
+        border-radius: 6px;
+        background: var(--panel);
+        color: var(--ink-soft);
+        font-size: 13px;
+        box-shadow: var(--planner-shadow);
     }
     ul {
         flex: 1;
