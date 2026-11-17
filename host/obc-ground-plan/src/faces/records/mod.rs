@@ -1405,7 +1405,8 @@ fn encode(
     // The paint reads a label's host lines, its other lines and its material line at their segment
     // nearest the point: in every bin that a point's, region's or round's label reaches, each set's
     // segments that can be nearest to a point of the bin. A segment farther from the bin than the
-    // set's nearest one plus the bin's diagonal is nearer to no point of it.
+    // set's nearest one plus the bin's diagonal is nearer to no point of it. An owned band takes its line's glob at the
+    // point (`decide`), so its line's segments are listed in every bin that it reaches too.
     let diag = f64::from(BIN_UNITS) * std::f64::consts::SQRT_2;
     for b in 0..n_bins {
         let mut sets: Vec<[u32; 4]> = Vec::new();
@@ -1413,7 +1414,9 @@ fn encode(
         while at < items[b].len() {
             let ci = (items[b][at] & 0xffff) as usize;
             at = skip_item(&items[b], at);
-            if !cands.get(ci).is_some_and(|c| c.label.owner != Owner::Terrain && kind(c) != WAY) {
+            let listed =
+                |c: &Cand| (c.label.owner != Owner::Terrain && kind(c) != WAY) || (kind(c) == BAND && c.glob.is_none());
+            if !cands.get(ci).is_some_and(listed) {
                 continue;
             }
             for &l in &given[ci] {

@@ -140,8 +140,7 @@ describe('the stamp data of a node', { timeout: 30_000 }, () => {
         const stamp = readFileSync(new URL('./stamp.wgsl', import.meta.url), 'utf8'), mask = readFileSync(new URL('./features.wgsl', import.meta.url), 'utf8');
         expect(functionOf(stamp, 'stamp')).toContain('walk_byte(s.walk, s.shoulder, s.trodden, s.marked)');
         expect(functionOf(stamp, 'snap')).toMatch(/walk = max\(walk, walk_metres\(wide\)\);\s+shoulder = max\(shoulder, select\(0\.0, shoulder_of\(surface\), holds_shoulder\(wide\)\)\);/);
-        // The paint holds a marked road's shoulder width where a mask holds a sidewalk's.
-        expect(functionOf(mask, 'mask_in')).toMatch(/shoulder = select\(0\.0, walk_metres\(past\), paint && holds_shoulder\(past\)\);\s+let walk = select\(walk_metres\(past\), 0\.0, shoulder > 0\.0\);/);
+        expect(functionOf(mask, 'mask_in')).toMatch(/walk_metres\(past\), is_trodden\(past\), is_marked\(past\)/);
         // Only a plain road marks it, and a corner's arc takes it away.
         const body = functionOf(shader, 'stamp_at');
         expect(body).toContain('let plain = kind == ROAD && walk == 0.0 && !gallery && road_shows(own, rule, level);');
@@ -152,7 +151,7 @@ describe('the stamp data of a node', { timeout: 30_000 }, () => {
     it('keeps the material of the painted way in the paint, and paints a way without one as before', () => {
         const source = ['./records.wgsl', './stamp-core.wgsl', './mask-walk.wgsl', './stamp.wgsl'].map(file => readFileSync(new URL(file, import.meta.url), 'utf8')).join('\n');
         const scope = globalThis as Record<string, unknown>, helpers = {
-            painted_finish: (mp: { finish: number }) => mp.finish, painted_shoulder: () => 0, asinh: Math.asinh, fract: (x: number) => x - Math.floor(x),
+            painted_finish: (mp: { finish: number }) => mp.finish, asinh: Math.asinh, fract: (x: number) => x - Math.floor(x),
             clamp: (x: number, lo: number, hi: number) => Math.min(Math.max(x, lo), hi), vec4f: (...v: number[]) => v,
         };
         Object.assign(scope, helpers);

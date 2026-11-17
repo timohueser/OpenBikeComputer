@@ -282,7 +282,7 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, 
 fn mask_paint(mask: Mask, material: u32, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, pixel: vec2f, flat: f32, reach: f32, ground: vec3f) -> Road {
     var edge = mask.edge;
     let walk = mask.walk;
-    if (mask.kind.x == 0u || edge - walk - mask.shoulder > w + 0.5) {
+    if (mask.kind.x == 0u || edge - walk > w + 0.5) {
         return Road(vec3f(0.0), 0.0, 0.0, ground.x, ground.y, ground.z);
     }
     let code = mask.kind.x;
@@ -307,10 +307,6 @@ fn mask_paint(mask: Mask, material: u32, ds: mat2x2f, p: vec2f, w: f32, distance
     if (walk > 0.0) {
         surface = vec4f(kerbed(region, surface.rgb, edge, walk, p, w, cross_w), surface.w);
     }
-    // A paved shoulder past the edge: the road's asphalt, a little dustier, as looks.wgsl's paved_look.
-    if (edge > 0.0 && mask.shoulder > 0.0) {
-        surface = vec4f(surface.rgb * 1.08, surface.w);
-    }
     // Unpaved edges fray into the ground.
     if (!paved) {
         edge += 0.36 * (0.7 * noise(p / 1.1) + 0.3 * noise(p / 0.35) - 0.5);
@@ -322,7 +318,7 @@ fn mask_paint(mask: Mask, material: u32, ds: mat2x2f, p: vec2f, w: f32, distance
     let corridor = code >= CODE_GRAVEL && code <= CODE_PATH && !paint_draws(distance, pixel);
     // A triangle that rises over a sidewalk's edge would carry its paint up the cut: a corridor draws the sidewalk.
     let riding = edge > 0.0 && flat < 0.86 && !paint_draws(distance, pixel);
-    let cover = select(1.0, 0.0, corridor || riding) * (1.0 - smoothstep(-cross_w, cross_w, edge - walk - mask.shoulder - thin)) * min(1.0, 2.0 * half / cross_w + 0.35) * reach;
+    let cover = select(1.0, 0.0, corridor || riding) * (1.0 - smoothstep(-cross_w, cross_w, edge - walk - thin)) * min(1.0, 2.0 * half / cross_w + 0.35) * reach;
     return Road(surface.rgb, cover, surface.w, ground.x, ground.y, ground.z);
 }
 

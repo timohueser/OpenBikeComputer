@@ -57,8 +57,8 @@ const KERB_OFF_MAX: usize = 1;
 const STEEP_MAX: usize = 2479;
 /// Of those, the pairs steeper than 6 m/m, measured the same way: the bank of one way that crosses a gully
 /// inside its ground band, which spans the terrain across the way's width. The count must not grow, and no pair
-/// is steeper than 12 m/m: a near-vertical rim that the total hides must not come back. With each way's own shoulders
-/// the same bank holds two pairs more.
+/// is steeper than 12 m/m: a near-vertical rim that the total hides must not come back. The bank that crosses a gully
+/// at 46.809177, 8.451817 holds all four pairs.
 const NEAR_VERTICAL_MAX: usize = 4;
 /// A no-room wall's height that changes along it by more than this per metre is a step in its top
 /// (`check::wall_steps`): pairs of points measured on the revision 17 fixture with the slope and the wall of

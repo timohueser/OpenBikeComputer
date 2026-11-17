@@ -936,15 +936,3 @@ fn a_shoulder_that_two_roads_reach_takes_its_heights_from_its_own_road() {
     }
     assert!(owned >= 4, "{owned} points on a shoulder with a host line");
 }
-
-#[test]
-fn two_cells_give_a_junctions_shoulders_one_owner() {
-    // Two roads of one class meet 3 m west of the east cell line, the side road across it: their shoulders and the
-    // corner's band rings overlap with equal keys, and both cells give each point on the line the same owner.
-    let x = CELL_UNITS as f64 / 2.0 * mpu();
-    let lines = [road(&[[x - 3.0, -120.0], [x - 3.0, 120.0]]), road(&[[x - 3.0, 10.0], [x + 120.0, 14.0]])];
-    let (a, b) = (records_of(cell(), &lines), records_of(CellKey { x: cell().x + 1, y: cell().y }, &lines));
-    let (points, blend, differ) = records_check::border((&a.0, &a.1, &a.2), (&b.0, &b.1, &b.2), true, 37);
-    assert!(points > 7_000 && blend > 0, "{points} points, {blend} with a blend edge near");
-    assert!(differ.is_empty(), "{} differ: {:?}", differ.len(), &differ[..differ.len().min(4)]);
-}

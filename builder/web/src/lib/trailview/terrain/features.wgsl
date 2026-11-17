@@ -116,9 +116,6 @@ struct Mask {
     // The width of the sidewalk of the nearest texel's road on its side: the paint reaches this far past the
     // edge.
     walk: f32,
-    // In the one road model's paint, the width of a marked road's shoulder past its edge, which the paint draws paved
-    // as the near look does; 0 elsewhere.
-    shoulder: f32,
     // Whether the nearest texel's way is trodden: only its tread is bare, and plants grow over its margin.
     trodden: bool,
     // Whether the nearest texel's road wears lines.
@@ -165,7 +162,7 @@ fn mask_at(s: vec2f, top: u32, roads: bool) -> Mask {
             return mask_in(mask_texels, s, level, slot - 1u, false);
         }
     }
-    return Mask(0.0, 0.0, vec2u(0u), 0u, vec2f(0.0), 0.0, 0.0, 0.0, vec2f(0.0), 0.0, 0.0, false, false, 0u);
+    return Mask(0.0, 0.0, vec2u(0u), 0u, vec2f(0.0), 0.0, 0.0, 0.0, vec2f(0.0), 0.0, false, false, 0u);
 }
 
 // The mask at a point of the page in layer `page` of `texels` (a texture in the mask's format, or with `paint`
@@ -204,10 +201,7 @@ fn mask_in(texels: texture_2d_array<f32>, s: vec2f, level: u32, page: u32, paint
     let y = nearest.y;
     let sleepers = y + dot(t.part - round(t.part), ahead) * texel_metres(level, whole.y) / SLEEPER_SPACING_M;
     let past = select(u32(round(y * 255.0)), 0u, (byte & 15u) >= RAIL_CODE);
-    // A paint byte with the shoulder bit holds the shoulder's width, not a sidewalk's.
-    let shoulder = select(0.0, walk_metres(past), paint && holds_shoulder(past));
-    let walk = select(walk_metres(past), 0.0, shoulder > 0.0);
-    return Mask(edge, face, vec2u(byte & 15u, byte >> 4u), level, away, half, sleepers, across, axis, walk, shoulder, is_trodden(past), is_marked(past), page);
+    return Mask(edge, face, vec2u(byte & 15u, byte >> 4u), level, away, half, sleepers, across, axis, walk_metres(past), is_trodden(past), is_marked(past), page);
 }
 
 fn texel_in(texels: texture_2d_array<f32>, page: u32, t: vec2i) -> vec4f {
