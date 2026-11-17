@@ -28,6 +28,29 @@ export interface CatalogRecord {
     stage?: number;
     stages?: number[];
     start_udeg?: [number, number];
+    /** Long record, region file only. */
+    parts?: TrailPart[];
+    /** Long record, region file only. */
+    trail_profile_m?: (number | null)[];
+    stage_count?: number;
+    trail?: number;
+    trail_stage?: number;
+}
+
+/** A part of a long record, in trail order. */
+export interface TrailPart {
+    id: number;
+    stage: number;
+    name?: string;
+    length_m?: number;
+    ascent_m?: number;
+    end_m: number;
+    cells?: string[];
+    missing?: true;
+    start_udeg?: [number, number];
+    end_udeg?: [number, number];
+    backwards?: true;
+    jump?: true;
 }
 
 /** A record with a line, not a long route. */

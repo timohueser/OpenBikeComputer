@@ -28,7 +28,8 @@ grid release has no region file.
 A grid cell is a Web Mercator tile at zoom 9 whose box overlaps the release bounds with a positive
 area. Each grid cell has a file. A cell with no routes has an empty `routes` list. Equal files share
 one object in the pool. A record is in the file of each grid cell in its `cells`, with all of its
-fields.
+fields; a long route is there without `parts` and `trail_profile_m`, which only the region file and
+the routing package hold.
 
 The tile API serves a cell file at `/releases/ID/routes/tiles/9-X-Y.json`. An offline selection
 holds the files of its `offline.cells`. A client reads only the files of covered cells: the grid
@@ -94,10 +95,15 @@ microdegrees, longitude before latitude. Lengths and heights are integer metres.
 | `profile_m` | Route record only: the height of the plan route in metres at each 100 m from its start, and at its end |
 | `via` | Route record only: ascending indices of the shaping vertices in `line_udeg` |
 | `turnarounds` | Route record only: the entries of `via` where the plan route turns back, and `0` for a loop that turns back at its start |
-| `parent` | Stage only: relation ID of its long route |
-| `stage` | Stage only: its number in the stages of `parent`, from `1` |
-| `stages` | Long route only: the relation IDs of its stages, in order |
-| `start_udeg` | Long route only: `[longitude, latitude]` of its start |
+| `parent` | Stage of a complete long route only: relation ID of that long route |
+| `stage` | Stage of a complete long route only: its number in the stages of `parent`, from `1` |
+| `trail` | Part of a long route only: relation ID of the long route that lists it at the lowest level |
+| `trail_stage` | Part of a long route only: its stage number in `trail` |
+| `stages` | Complete long route only: the relation IDs of its stages, in order |
+| `start_udeg` | Complete long route only: `[longitude, latitude]` of its start |
+| `parts` | Long route only: each of its parts, in order (see [Long routes](#long-routes)) |
+| `stage_count` | Long route only: the number of different stage numbers in `parts` |
+| `trail_profile_m` | Long route only: 201 heights of the whole trail (see [Long routes](#long-routes)) |
 
 Each record has a `name` or a `ref`, or both. The builder cuts a longer `description` at a word
 boundary. `symbol` is absent when France is the only country of the region; the client then draws
@@ -210,34 +216,103 @@ grade.
 
 ### Long routes
 
-The child relations of a relation are its relation members with an empty or `main` role. A piece is
-a child relation that is a route in the data, has no route relation as a member, and is not a route
-of its own: it has no `name` and no `ref`, or it is a connector leg. A selected relation is a joined
-trail when it has child routes, each of them is a piece, and no child relation is absent. A joined
-trail is one route, not a long route. Its member ways are its own and those of each piece in the
-place of the piece, in member order. Its record is an ordinary route record with its own `id` and
-tags, and the pieces have no records. The connector test of a joined trail counts no child routes.
+The child relations of a relation are its relation members with an empty, `main` or `part` role. A
+piece is a child relation that is a route in the data, has no route relation as a member, and is not
+a route of its own: it has no `name` and no `ref`, or it is a connector leg. A selected relation is a
+joined trail when it has child routes, each of them is a piece, and no child relation is absent. A
+joined trail is one route, not a long route. Its member ways are its own and those of each piece in
+the place of the piece, in member order. Its record is an ordinary route record with its own `id`
+and tags, and the pieces have no records. The connector test of a joined trail counts no child
+routes.
 
 A long route is a selected relation with a child relation that is absent from the data, or that is a
-route and not a piece. A long route with an absent child relation leaves the catalog. Its stages are
-its child routes with the same `network`, in member order. A long route is in the catalog only when
-each of its stages is in it. A long route with a child that is a long route by these rules, selected
-or not, leaves the catalog.
+route and not a piece. Its parts are its child relations in member order:
 
-A long route has no `line_udeg`, `via`, `turnarounds` or `profile_m`. Its line and its plan are
-those of its stages in order. A reader that needs its profile joins the profiles of its stages, and
-places the entries of each stage by the `length_m` of the stage. The client loads the stages by
-their IDs from the files of the long route's `cells`. The joined plan has the points of the stage
-plans in order. A stage finish and the next stage start are one point when they are the same vertex,
-and two points otherwise. Each stage turnaround moves to its position in the joined plan. A client
-plans a whole long route only when its joined plan has at most 64 points; otherwise it offers its
-stages only. `start_udeg` is the start of its first stage. `length_m`, `ascent_m`, `descent_m` and
-`grades_m` are the sums of the values of its stages. `hardest` is the largest `hardest` of its
-stages. Its `cells` are the union of the `cells` of its stages. Thus each file that holds a stage
-also holds its long route.
+| Child relation | Part |
+| --- | --- |
+| Absent from the data | One part, not in the catalog |
+| A connector leg | None: it is no stage, so it takes no stage number |
+| A long route by these rules, selected or not | Its own parts in its place, at most 4 levels of long routes deep |
+| Another route relation | One part; a joined trail is one part |
 
-A stage has `parent` and `stage` only when its long route is in the catalog. When a route is a stage
-of two long routes, `parent` is the one with the lower relation ID.
+A relation that comes twice counts once, at its first place. The stage number of a part is its
+position in the parts, from `1`, parts not in the catalog included. A long route inside another one
+is also a long route of its own. A child route with no `name` and no `ref` that is a part gets a
+route record with the `name` and the `ref` of the long route that has it as a child relation; of
+two, the one with the lower relation ID. A long route is in the catalog when at least one of its
+parts is.
+
+The ends of a part in the catalog are the first and the last vertex of its `line_udeg`. A part that
+left the catalog has the first and the last point of its main line as its ends, when the builder
+made one: the pieces of the main line in their order, chained when they chain, before the router
+patches the gaps (see [Plan](#plan)). Other parts have no ends. The distance from a point to a part
+is the distance to the nearer end of the part. The trail start and the trail end of a part are its
+first and its last end, swapped when the part runs backwards. The known end before a part is the
+trail end of the part right before it, when that part has ends.
+
+- A part whose nearer end is at most 500 m from the known end before it runs backwards when its last
+  end is nearer to the known end than its first end.
+- Each other part with ends starts a run. It runs backwards when its first end is nearer to the next
+  part than its last end, and at most 500 m from it. It has a jump when a part in the catalog comes
+  before it.
+- A loop part never runs backwards. A part without ends has no direction and no jump.
+
+So a run is a stretch of parts that join each other, such as the stages of a trail inside the region,
+or one of several trails that one relation lists one after another.
+
+A long route is complete when each part is in the catalog, and no part runs backwards or has a jump.
+A long route with a connector leg among its child relations, or among those of a long route in its
+place, is never complete, because the leg leaves a gap between its parts. Only a complete long
+route has `stages` and `start_udeg`, and only its stages have `parent` and `stage`: `stages` lists
+its parts, and `start_udeg` is the start of its first part. When a route is a stage of two complete
+long routes, `parent` is the one that lists it at the lower level (see `trail`); of two at the same
+level, the one with the lower relation ID. A reader that knows only
+these fields shows the parts of every other long route as single routes.
+
+A long route has no `line_udeg`, `via`, `turnarounds` or `profile_m`. `length_m`, `ascent_m`,
+`descent_m` and `grades_m` are the sums of the values of its parts in the catalog. `hardest` is the
+largest `hardest` of these parts, and `cells` the union of their `cells`. So each file that holds a
+part in the catalog also holds its long route. A long route is a loop when its first and last parts
+are in the catalog and the trail start of the first part is the trail end of the last part, or when
+it has `roundtrip=yes` and these two points are within 200 m.
+
+Each part in the catalog has `trail` and `trail_stage`. `trail` is the long route that lists it at
+the lowest level of long routes inside each other, 1 for a child relation of the long route itself;
+of two at the same level, the one with the lower relation ID.
+
+An object of `parts` has these fields. A field with no value is absent.
+
+| Field | Value |
+| --- | --- |
+| `id` | Relation ID of the part |
+| `stage` | Stage number of the part |
+| `name` | The OSM `name` of the part |
+| `length_m` | The `length_m` of the part's record; for a part not in the catalog, the length of its main line |
+| `ascent_m` | The `ascent_m` of the part's record |
+| `end_m` | The sum of `length_m` of this part and each part before it; a part without `length_m` adds 0 |
+| `cells` | The `cells` of the part's record |
+| `missing` | `true` when the part is not in the catalog |
+| `start_udeg`, `end_udeg` | Part not in the catalog only: its first and its last end |
+| `backwards` | `true` when the part runs backwards |
+| `jump` | `true` when the part has a jump |
+
+Entry `k` of `trail_profile_m` is the height at `k / 200` of the whole trail, from its start (entry
+0) to the last `end_m` (entry 200). The place along the trail lies on the first part whose `end_m`
+reaches it and whose `length_m` is positive. The entry is the entry of that part's `profile_m`
+nearest to the place, counted from the part's trail start, so a part that runs backwards counts from
+its last vertex. The entry is `null` on a part not in the catalog, and where the height is not known.
+
+A client loads the parts in the catalog by their IDs from the files of their `cells`. It joins the
+plans of a stretch of parts in order, each part that runs backwards with its plan points in reverse
+order. A stage finish and the next stage start are one point when they are the same vertex, and two
+points otherwise. Each stage turnaround moves to its position in the joined plan. A stretch starts
+at the trail start of a part in the catalog, ends at the trail end of a part in the catalog, and has
+no jump after its first part. A part not in the catalog, or a run of such parts, inside a stretch is
+an ordinary leg from the trail end of the part before to the trail start of the part after. A trip
+can end a day at the trail end of each part. A client plans a whole complete long route only when
+its joined plan has at most 64 points; otherwise it offers its stages only. A reader that needs the
+profile of a complete long route joins the profiles of its stages, and places the entries of each
+stage by the `length_m` of the stage.
 
 ### Coverage
 
@@ -268,15 +343,37 @@ A one-way stage of 3.7 km in cell `9-267-178`, with one shaping point:
  "parent":2345678,
  "profile_m":[620,618,625,631,640,652,661,668,676,684,690,699,708,716,725,733,741,748,752,
               760,768,773,779,784,788,780,768,751,733,712,694,671,650,628,610,590,571,555,553],
- "rank":1,"ref":"MW","stage":1,"symbol":"yellow:white:yellow_diamond","via":[2]}
+ "rank":1,"ref":"MW","stage":1,"symbol":"yellow:white:yellow_diamond","trail":2345678,
+ "trail_stage":1,"via":[2]}
 ```
 
-Its long route, with two stages:
+Its long route, with two stages, as in a cell file:
 
 ```json
 {"ascent_m":420,"cells":["9-267-178"],"descent_m":449,"grades_m":[6830,2000,0,0,0,0],
  "hardest":1,"id":2345678,"kind":"hiking","length_m":8830,"loop":false,
- "name":"Mühlbach-Weg","operator":"Schwarzwaldverein","rank":1,"ref":"MW",
+ "name":"Mühlbach-Weg","operator":"Schwarzwaldverein","rank":1,"ref":"MW","stage_count":2,
  "stages":[1234567,1234568],"start_udeg":[8004512,47873120],
  "symbol":"yellow:white:yellow_diamond"}
+```
+
+The same long route with four stages, as in the region file, when stage 3 left the catalog after
+the builder made its main line. The long route is not complete, so it has no `stages` and no
+`start_udeg`, and its stages have no `parent` and no `stage`. `length_m` is the sum over the parts in
+the catalog; the whole trail is the last `end_m`. `trail_profile_m` is shortened here:
+
+```json
+{"ascent_m":610,"cells":["9-267-178"],"descent_m":655,"grades_m":[9930,3200,0,0,0,0],
+ "hardest":1,"id":2345678,"kind":"hiking","length_m":13130,"loop":false,"name":"Mühlbach-Weg",
+ "operator":"Schwarzwaldverein","parts":[
+  {"ascent_m":184,"cells":["9-267-178"],"end_m":3710,"id":1234567,"length_m":3710,
+   "name":"Mühlbach-Weg, Etappe 1","stage":1},
+  {"ascent_m":236,"cells":["9-267-178"],"end_m":8830,"id":1234568,"length_m":5120,
+   "name":"Mühlbach-Weg, Etappe 2","stage":2},
+  {"end_m":13650,"end_udeg":[8051210,47840730],"id":1234569,"length_m":4820,"missing":true,
+   "name":"Mühlbach-Weg, Etappe 3","stage":3,"start_udeg":[8043980,47851020]},
+  {"ascent_m":190,"cells":["9-267-178"],"end_m":17950,"id":1234570,"length_m":4300,
+   "name":"Mühlbach-Weg, Etappe 4","stage":4}],
+ "rank":1,"ref":"MW","stage_count":4,"symbol":"yellow:white:yellow_diamond",
+ "trail_profile_m":[620,624,629,"…",655,null,null,"…",null,604,"…",612]}
 ```

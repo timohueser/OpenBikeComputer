@@ -46,16 +46,20 @@ pub fn cells(bounds: [f64; 4]) -> Vec<(String, [f64; 4])> {
 }
 
 /// The route catalog of each cell of `cells`: the records of `catalog` that name the cell, by
-/// `id`. A record can name a cell outside the grid, which has no file.
+/// `id`. A record can name a cell outside the grid, which has no file. A long record repeats in
+/// each cell of its stages, so it goes there without its list of parts and its profile.
 pub fn route_tiles(catalog: &Value, cells: &[&str]) -> Result<BTreeMap<String, Value>, String> {
     if catalog["format"] != 1 {
         return Err("Unsupported route catalog".into());
     }
-    let mut routes: Vec<&Value> =
-        catalog["routes"].as_array().ok_or("The route catalog has no routes")?.iter().collect();
+    let mut routes: Vec<Value> = catalog["routes"].as_array().ok_or("The route catalog has no routes")?.clone();
     routes.sort_by_key(|record| record["id"].as_i64());
+    for record in routes.iter_mut().filter_map(Value::as_object_mut) {
+        record.remove("parts");
+        record.remove("trail_profile_m");
+    }
     let mut tiles: BTreeMap<String, Vec<&Value>> = cells.iter().map(|cell| (cell.to_string(), Vec::new())).collect();
-    for record in routes {
+    for record in &routes {
         for cell in record["cells"].as_array().into_iter().flatten().filter_map(Value::as_str) {
             if let Some(tile) = tiles.get_mut(cell) {
                 tile.push(record);
@@ -81,11 +85,15 @@ mod tests {
 
         let catalog = json!({"format": 1, "routes": [
             {"id": 2, "cells": ["9-267-178", "9-300-1"]},
-            {"id": 1, "cells": ["9-267-177", "9-267-178"]},
+            {"id": 1, "cells": ["9-267-177", "9-267-178"], "parts": [{"id": 2}], "stage_count": 1, "trail_profile_m": [1]},
         ]});
         let tiles = route_tiles(&catalog, &ids).unwrap();
         let routes =
             |cell: &str| tiles[cell]["routes"].as_array().unwrap().iter().map(|r| r["id"].clone()).collect::<Vec<_>>();
         assert_eq!((routes("9-267-177"), routes("9-267-178")), (vec![json!(1)], vec![json!(1), json!(2)]));
+        assert_eq!(
+            tiles["9-267-177"]["routes"][0],
+            json!({"id": 1, "cells": ["9-267-177", "9-267-178"], "stage_count": 1})
+        );
     }
 }

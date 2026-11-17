@@ -29,8 +29,8 @@ fn way(a: i64, b: i64) -> i64 {
 /// Inside one zoom 9 cell.
 const ORIGIN: i32 = 100_000;
 
-/// A relation: ID, tags and members with the empty role.
-type Route<'a> = (i64, Vec<(&'a str, &'a str)>, Vec<Id>);
+/// A relation: ID, tags and members with their roles.
+type Route<'a> = (i64, Vec<(&'a str, &'a str)>, Vec<(Id, &'a str)>);
 
 /// A 7 by 7 grid of streets 445 m apart on rolling ground, with node `10 * row + column`, and its
 /// source objects. The way from node 0 to node 1 is T3, the way from node 25 to node 26 is a T5 path;
@@ -89,7 +89,7 @@ fn grid(routes: Vec<Route>) -> (Package<Memory>, Data) {
         }
     }
     for (id, pairs, members) in routes {
-        relations.push(id, &tags(&pairs), members.into_iter().map(|member| (member, "")));
+        relations.push(id, &tags(&pairs), members);
     }
     let mut ways = ways.finish().0;
     let point = |id: i64| graph.points.values()[index[&id] as usize];
@@ -110,7 +110,12 @@ fn grid(routes: Vec<Route>) -> (Package<Memory>, Data) {
 }
 
 fn route<'a>(id: i64, pairs: &[(&'a str, &'a str)], ways: impl IntoIterator<Item = i64>) -> Route<'a> {
-    (id, [&[("type", "route")], pairs].concat(), ways.into_iter().map(Id::Way).collect())
+    (id, [&[("type", "route")], pairs].concat(), ways.into_iter().map(|way| (Id::Way(way), "")).collect())
+}
+
+/// Relation members with the empty role.
+fn members(ids: &[i64], member: fn(i64) -> Id) -> Vec<(Id, &'static str)> {
+    ids.iter().map(|&id| (member(id), "")).collect()
 }
 
 fn path(nodes: &[i64]) -> Vec<i64> {
@@ -128,7 +133,7 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
     ];
     let long = |id, children: &[i64]| -> Route {
         let tags = vec![("type", "superroute"), ("route", "hiking"), ("name", "Long"), ("network", "rwn")];
-        (id, tags, children.iter().copied().map(Id::Relation).collect())
+        (id, tags, members(children, Id::Relation))
     };
     let mut corner = path(&[0, 1, 2, 3, 4, 14, 24, 34, 44]);
     corner.remove(5);
@@ -153,10 +158,11 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
         route(8, &trail, path(&[60, 61, 62, 52, 51, 61, 60])),
         // The member order jumps, and the way from node 21 to node 22 is missing.
         route(9, &trail, [path(&[22, 23, 33, 43, 53]), path(&[20, 21])].concat()),
-        long(5, &[1, 2]),
-        long(6, &[5]),
-        // A signed piece between two signposts, which leaves also as the stage of a long route, and
-        // a named walk of 1.3 km.
+        // A long relation inside another one with a lower relation ID.
+        long(22, &[1, 2]),
+        long(6, &[22]),
+        // A signed piece between two signposts, which is no part of a long route either, a named walk
+        // of 1.3 km, and an unnamed stage with its own mark that starts where the walk ends.
         route(
             10,
             &[
@@ -168,24 +174,39 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
             path(&[40, 41, 42]),
         ),
         route(11, &[("route", "hiking"), ("name", "Rundweg")], path(&[30, 31, 32, 33])),
-        long(12, &[10, 11]),
+        long(12, &[10, 11, 35]),
+        route(35, &[("route", "hiking"), ("osmc:symbol", "red")], path(&[33, 34, 35, 36])),
         // A trail of an unnamed piece, its own ways and a connector leg, and a long route with it as
         // its stage; a trail with an absent child; a connector made of a piece.
         (
             13,
             vec![("type", "route"), ("route", "hiking"), ("name", "Joined"), ("network", "rwn")],
-            [vec![Id::Relation(14)], path(&[16, 26, 36]).into_iter().map(Id::Way).collect(), vec![Id::Relation(15)]]
+            [members(&[14], Id::Relation), members(&path(&[16, 26, 36]), Id::Way), members(&[15], Id::Relation)]
                 .concat(),
         ),
         route(14, &[("route", "hiking")], path(&[6, 16])),
         route(15, &[("route", "hiking"), ("name", "C - D")], path(&[36, 46])),
         long(18, &[13]),
-        (16, vec![("type", "route"), ("route", "hiking"), ("name", "Half")], vec![Id::Relation(14), Id::Relation(998)]),
+        (16, vec![("type", "route"), ("route", "hiking"), ("name", "Half")], members(&[14, 998], Id::Relation)),
         (
             17,
             [&trail[..1], &[("type", "route"), ("name", "A - B"), ("osmc:symbol", "yellow::yellow_diamond")]].concat(),
-            vec![Id::Relation(15)],
+            members(&[15], Id::Relation),
         ),
+        // A trail: a first stage and a stage with the role `part`, both drawn against the trail, a
+        // stage that fails with a main line (two pieces 890 m apart), an absent stage, a stage after
+        // it, and a stage 1.4 km away from the end of that one.
+        (
+            30,
+            vec![("type", "superroute"), ("route", "hiking"), ("name", "Höhenweg"), ("network", "nwn")],
+            [members(&[31], Id::Relation), vec![(Id::Relation(32), "part")], members(&[33, 997, 34, 36], Id::Relation)]
+                .concat(),
+        ),
+        route(31, &[("route", "hiking"), ("name", "Etappe 1")], path(&[3, 2, 1, 0])),
+        route(32, &[("route", "hiking"), ("name", "Etappe 2")], path(&[6, 5, 4, 3])),
+        route(33, &[("route", "hiking"), ("name", "Etappe 3")], [path(&[6, 16, 26]), path(&[46, 56])].concat()),
+        route(34, &[("route", "hiking"), ("name", "Etappe 5")], path(&[66, 65, 64, 63])),
+        route(36, &[("route", "hiking"), ("name", "Etappe 6")], path(&[20, 30, 40, 50])),
     ]);
     let selection = Selection::whole(package.fork());
     let (records, report) = catalog(&selection, osm, false, 2)?;
@@ -193,15 +214,12 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
     let dropped: Vec<_> = report.dropped.iter().map(|(reason, ids)| (reason.as_str(), ids.clone())).collect();
     assert_eq!(
         dropped,
-        [
-            ("Connector", vec![10, 15, 17]),
-            ("ExtractEdge", vec![7, 16]),
-            ("Gap", vec![3, 20]),
-            ("MissingStage", vec![12]),
-            ("NestedLongRoute", vec![6])
-        ]
+        [("Connector", vec![10, 15, 17]), ("ExtractEdge", vec![7]), ("Gap", vec![3, 20, 33]), ("NoStages", vec![16])]
     );
-    assert_eq!(by_id.keys().copied().collect::<BTreeSet<_>>(), BTreeSet::from([1, 2, 5, 8, 9, 11, 13, 18, 19, 21]));
+    assert_eq!(
+        by_id.keys().copied().collect::<BTreeSet<_>>(),
+        BTreeSet::from([1, 2, 6, 8, 9, 11, 12, 13, 18, 19, 21, 22, 30, 31, 32, 34, 35, 36])
+    );
     assert_eq!((&by_id[&19]["length_m"], &report.skipped_ways), (&json!(5 * 445), &BTreeMap::from([(19, 2)])));
     let joined = by_id[&13];
     assert_eq!(joined["length_m"], 4 * 445);
@@ -212,7 +230,7 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
     let trail = by_id[&1];
     assert_eq!((&trail["loop"], &trail["length_m"]), (&json!(false), &json!(8 * 445)));
     assert_eq!((&trail["grades_m"][2], &trail["hardest"]), (&json!(445), &json!(2)));
-    assert_eq!((&trail["parent"], &trail["stage"]), (&json!(5), &json!(1)));
+    assert_eq!((&trail["parent"], &trail["stage"]), (&json!(22), &json!(1)), "the innermost complete trail");
     assert_eq!((&trail["symbol"], &trail["website"]), (&json!("red"), &json!("https://t.example")));
     assert_eq!(trail["cells"], json!(["9-256-255"]));
     let via = trail["via"].as_array().unwrap().len();
@@ -265,13 +283,45 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
     assert_eq!(jumping["length_m"], 6 * 445);
     assert_eq!(&jumping["line_udeg"].as_array().unwrap()[..2], [json!(ORIGIN), json!(ORIGIN + 2 * 4_000)]);
 
-    let whole = by_id[&5];
+    let whole = by_id[&22];
     assert_eq!((&whole["stages"], &whole["length_m"]), (&json!([1, 2]), &json!(16 * 445)));
     assert_eq!(whole["start_udeg"], json!([ORIGIN, ORIGIN]));
     assert!(whole.get("line_udeg").is_none() && whole.get("profile_m").is_none());
+    // A long relation inside another opens in its place, and its stages keep the inner one.
+    assert_eq!((&by_id[&6]["stages"], &by_id[&1]["trail"]), (&json!([1, 2]), &json!(22)));
+    // A connector leg is no part, and its trail is not complete; an unnamed stage takes the name of
+    // its trail.
+    assert!(by_id[&12].get("stages").is_none() && by_id[&35].get("parent").is_none());
+    assert_eq!(
+        (&by_id[&35]["name"], &by_id[&35]["trail"], &by_id[&35]["trail_stage"]),
+        (&json!("Long"), &json!(12), &json!(2))
+    );
+
+    let trail = by_id[&30];
+    assert!(trail.get("stages").is_none() && trail.get("start_udeg").is_none());
+    let parts = trail["parts"].as_array().unwrap();
+    let flags: Vec<Vec<&str>> = parts
+        .iter()
+        .map(|p| ["missing", "backwards", "jump"].into_iter().filter(|f| p.get(*f).is_some()).collect())
+        .collect();
+    assert_eq!(
+        flags,
+        [vec!["backwards"], vec!["backwards"], vec!["missing"], vec!["missing"], vec!["jump"], vec!["jump"]]
+    );
+    assert_eq!((&parts[2]["start_udeg"], &parts[3].get("length_m")), (&json!([ORIGIN + 6 * 4_000, ORIGIN]), &None));
+    for (id, number) in [(31, 1), (32, 2), (34, 5), (36, 6)] {
+        assert_eq!((&by_id[&id]["trail"], &by_id[&id]["trail_stage"]), (&json!(30), &json!(number)));
+        assert!(by_id[&id].get("parent").is_none());
+    }
+    let heights = trail["trail_profile_m"].as_array().unwrap();
+    assert_eq!(heights.len(), 201);
+    assert_eq!(heights[0], *by_id[&31]["profile_m"].as_array().unwrap().last().unwrap(), "the trail starts at its end");
+    assert_eq!(heights[80], by_id[&32]["profile_m"][0], "the stage against the trail ends at its own start");
+    assert!(heights[81..120].iter().all(Value::is_null), "the failed stage has no heights");
+    assert!(!heights[121].is_null() && !heights[200].is_null());
     // The trail ends where the ring starts, so that point counts once.
     let points = via + 2 + ring["via"].as_array().unwrap().len() + 2 - 1;
-    assert_eq!(report.long_points[0], (5, points));
+    assert!(report.long_points.contains(&(22, points)));
     Ok(())
 }
 
