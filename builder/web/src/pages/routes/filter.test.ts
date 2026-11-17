@@ -2,7 +2,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { readSettings, updateSettings } from '../../lib/settings/settings.svelte';
 import type { RouteSummary } from '../../lib/library/records';
-import { distanceToBox, readSearch, results, rideItem, routeItem, scale, type Item } from './filter';
+import type { CatalogRecord } from '../../lib/planner/signed-routes';
+import { distanceToBox, readSearch, results, rideItem, routeItem, scale, signedItem, type Item } from './filter';
 
 vi.mock('../../lib/planner/search/types', () => ({
     searchPlaces: async () => ({ type: 'places', request: {}, results: [
@@ -71,6 +72,48 @@ describe('results', () => {
         const items = [ride('eve', new Date(2025, 11, 31, 23, 30)), ride('new', new Date(2026, 0, 1, 0, 30))];
         expect(ids(results(items, { year: 2026 }, ''))).toEqual(['new']);
         expect(ids(results(items, {}, ''))).toEqual(['new', 'eve']);
+    });
+});
+
+// A route of 450 m whose simplified line runs 300 m north along 8° E, with one vertex after its first 100 m.
+const record = (fields: Partial<CatalogRecord> = {}): CatalogRecord => ({
+    id: 7, kind: 'hiking', ref: 'R7', rank: 2, loop: false, length_m: 450, ascent_m: 120, descent_m: 0, cells: ['9-267-180'],
+    line_udeg: [8_000_000, 47_000_000, 0, 900, 0, 1800], via: [1], profile_m: [500, 510, 530, 560, 600, 620], ...fields,
+});
+
+describe('signedItem', () => {
+    it('reads the height of each point from the profile at its share of the line, and places the entries on the line', () => {
+        const item = signedItem(record(), 'hiking');
+        expect(item).toMatchObject({ kind: 'signed', id: '7', name: 'R7', at: 0 });
+        // The vertex at a third of the line is at 150 m of the route, between the entries of 100 and 200 m.
+        expect(item.summary).toEqual({ line: [8, 47, 8, 47.0009, 8, 47.0027], heights: [500, 520, 620], bounds: [8, 47, 8, 47.0027],
+            lengthM: 450, climbM: 120, highestM: 620, seconds: 0, bike: 'hiking', days: 1 });
+        // The last entry is at the end, 50 m after the one before it.
+        expect(item.profile).toEqual({ line: [8, 47, 8, 47.0006, 8, 47.0012, 8, 47.0018, 8, 47.0024, 8, 47.0027], heights: [500, 510, 530, 560, 600, 620] });
+        expect(signedItem(record({ profile_m: [500, null, 530, 560, 600, 620] }), 'hiking').summary.heights).toEqual([500, null, 620]);
+    });
+
+    it('has no heights and no profile without `profile_m`', () => {
+        const item = signedItem(record({ profile_m: undefined, name: 'Lake path' }), 'hiking');
+        expect(item.name).toBe('Lake path');
+        expect(item.summary).toMatchObject({ heights: [null, null, null], highestM: null });
+        expect(item.profile).toBeUndefined();
+    });
+});
+
+describe('results of signed routes', () => {
+    const signed = (id: number, fields: Partial<CatalogRecord>) => signedItem(record({ id, ...fields }), 'hiking');
+
+    it('keeps the grade and the shape that the chips accept, and an ungraded route for each grade', () => {
+        const items = [signed(1, { loop: true, hardest: 2 }), signed(2, { loop: false }), item('planned')];
+        expect(ids(results(items, { grade: 1 }, ''))).toEqual(['2', 'planned']);
+        expect(ids(results(items, { grade: 2, shape: 'loop' }, ''))).toEqual(['1', 'planned']);
+        expect(ids(results(items, { shape: 'one-way' }, ''))).toEqual(['2', 'planned']);
+    });
+
+    it('in the order "shortest", sorts by the length and then by the number of the relation id', () => {
+        const items = [signed(20, { length_m: 3000 }), signed(100, { length_m: 2000 }), signed(3, { length_m: 2000 })];
+        expect(ids(results(items, {}, '', undefined, 'shortest'))).toEqual(['3', '100', '20']);
     });
 });
 

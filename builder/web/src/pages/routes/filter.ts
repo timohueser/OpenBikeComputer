@@ -1,15 +1,21 @@
-/** The items of the Routes page, the chips of its search, and the filter that reads both. */
-import type { Bike, RideRecord, RideSummary, RouteRecord, RouteSummary } from '../../lib/library/records';
+/** The items of the Routes and Explore pages, the chips of their search, and the filter that reads both. */
+import type { Bike, RideRecord, RideSummary, RouteRecord, RouteSummary, Summary } from '../../lib/library/records';
+import { kilometres, type Coordinate } from '../../lib/planner/geo';
+import { decodeCoordinates } from '../../lib/planner/route-answer';
+import type { Box } from '../../lib/planner/route-catalog';
+import type { CatalogRecord } from '../../lib/planner/signed-routes';
 import { distanceIn, heightIn } from '../../lib/settings/format';
 
-/** West, south, east, north. */
-export type Box = [number, number, number, number];
+export type { Box };
 
-/** A route or a ride as the list, the map and the card show it. A route with no summary has no line, and each chip
- * leaves it out. `at` is the time in ms of the last change of a route, or of the start of a ride. */
+/** A route, a ride or a signed route of the catalog as the list, the map and the card show it. A route with no summary
+ * has no line, and each chip leaves it out. `at` is the time in ms of the last change of a route, or of the start of a
+ * ride. */
 export type Item = { id: string; name: string; at: number }
-    & ({ kind: 'route'; summary: RouteSummary | null } | { kind: 'ride'; summary: RideSummary });
+    & ({ kind: 'route'; summary: RouteSummary | null } | { kind: 'ride'; summary: RideSummary }
+        | { kind: 'signed'; summary: RouteSummary; record: CatalogRecord; profile?: Pick<Summary, 'line' | 'heights'> });
 export type RideItem = Extract<Item, { kind: 'ride' }>;
+export type SignedItem = Extract<Item, { kind: 'signed' }>;
 
 /** From `min` to below `max`, in the units of `settings.units`: km or mi for a length, m or ft for a climb. */
 export type Range = [min: number, max: number];
@@ -45,6 +51,10 @@ export interface Chips {
     days?: Range;
     /** The local year of `at`. */
     year?: number;
+    /** Signed routes only: the hardest grade that the rider accepts, as an index of `grades_m`. */
+    grade?: number;
+    /** Signed routes only. */
+    shape?: 'loop' | 'one-way';
 }
 
 /** The planner functions that name a plan. They reach the map catalogue, so the page loads them after its list. */
@@ -65,6 +75,48 @@ export function routeItem(route: RouteRecord, naming?: Naming): Item {
 export const rideItem = (ride: RideRecord): RideItem =>
     ({ kind: 'ride', id: ride.key, name: ride.name, summary: ride.summary, at: ride.summary.start * 1000 });
 
+const round5 = (value: number) => Math.round(value * 1e5) / 1e5;
+
+/** A route record of the catalog. The height of a point of its line is the profile at the share of the line's length
+ * that the point has (`specs/route-catalog.md`, "Profile"). With a profile, `profile` places each entry on the line at
+ * the share of the route's length that the entry has. */
+export function signedItem(record: CatalogRecord, bike: Bike): SignedItem {
+    const points = decodeCoordinates(record.line_udeg ?? []), along = [0];
+    for (let i = 1; i < points.length; i++) along.push(along[i - 1] + kilometres(points[i - 1], points[i]));
+    const total = along.at(-1)!, entries = record.profile_m, length = record.length_m;
+    // Entry i is at i × 100 m, and the last entry at the end.
+    const entryAt = (i: number) => i === entries!.length - 1 ? length : i * 100;
+    const heightAt = (share: number): number | null => {
+        if (!entries) return null;
+        const metres = share * length, i = Math.max(0, Math.min(Math.floor(metres / 100), entries.length - 2));
+        const [a, b] = [entries[i], entries[i + 1] ?? entries[i]], span = entryAt(i + 1) - entryAt(i);
+        const t = span > 0 ? Math.max(0, Math.min(1, (metres - entryAt(i)) / span)) : 0;
+        return t === 0 ? a : t === 1 ? b : a === null || b === null ? null : Math.round(a + (b - a) * t);
+    };
+    /** The point of the line at a share of its length; `from` is the segment to search from. */
+    let from = 0;
+    const pointAt = (share: number): Coordinate => {
+        const at = share * total;
+        while (from < along.length - 2 && along[from + 1] < at) from++;
+        const span = along[from + 1] - along[from], t = span > 0 ? Math.max(0, Math.min(1, (at - along[from]) / span)) : 0;
+        const [a, b] = [points[from], points[from + 1] ?? points[from]];
+        return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+    };
+    const lons = points.map(point => point[0]), lats = points.map(point => point[1]);
+    const known = entries?.filter((entry): entry is number => entry !== null) ?? [];
+    return {
+        kind: 'signed', id: String(record.id), name: record.name ?? record.ref ?? '', at: 0, record,
+        summary: {
+            line: points.flatMap(([lon, lat]) => [round5(lon), round5(lat)]),
+            heights: along.map(metres => heightAt(total > 0 ? metres / total : 0)),
+            bounds: [Math.min(...lons), Math.min(...lats), Math.max(...lons), Math.max(...lats)],
+            lengthM: length, climbM: record.ascent_m, highestM: known.length ? Math.max(...known) : null, seconds: 0, bike, days: 1,
+        },
+        ...entries && points.length > 1
+            ? { profile: { line: entries.flatMap((_, i) => pointAt(length > 0 ? entryAt(i) / length : 0).map(round5)), heights: entries } } : {},
+    };
+}
+
 /** "Start → Finish" from the points of a trip that no check read yet, else "Route". */
 function endNames(trip: unknown): string {
     const points = (trip as { points?: unknown } | null)?.points;
@@ -82,8 +134,9 @@ const fold = (text: string) => text.normalize('NFD').replace(/\p{M}/gu, '').toLo
 const within = (value: number, [min, max]: Range) => value >= min && value < max;
 
 /** The items that match the text and the chips, and with `view` that have a point in it. With a place, the line nearest
- * to it comes first; else, and for a tie, the last changed. */
-export function results(items: Item[], chips: Chips, text: string, view?: Box): Item[] {
+ * to it comes first. Else, and for a tie, `newest` puts the last changed first, and `shortest` the shortest and then the
+ * lowest relation id. */
+export function results(items: Item[], chips: Chips, text: string, view?: Box, order: 'newest' | 'shortest' = 'newest'): Item[] {
     const words = fold(text.trim()), set = Object.values(chips).some(chip => chip !== undefined);
     const kept: { item: Item; near: number }[] = [];
     for (const item of items) {
@@ -98,12 +151,17 @@ export function results(items: Item[], chips: Chips, text: string, view?: Box): 
             || (chips.climb && !within(heightIn(summary.climbM), chips.climb))
             || (chips.days && !within('days' in summary ? summary.days : 1, chips.days))
             || (chips.year && new Date(item.at).getFullYear() !== chips.year)
+            || (item.kind === 'signed' && chips.grade !== undefined && (item.record.hardest ?? 0) > chips.grade)
+            || (item.kind === 'signed' && chips.shape && item.record.loop !== (chips.shape === 'loop'))
             || (view && !inBox(summary.line, view))) continue;
         const near = chips.place ? distanceToBox(summary.line, chips.place.box) : 0;
         if (chips.place && near > (NEAR_M[chips.place.kind] ?? OTHER_NEAR_M)) continue;
         kept.push({ item, near });
     }
-    return kept.sort((a, b) => a.near - b.near || b.item.at - a.item.at).map(({ item }) => item);
+    const tie = order === 'shortest'
+        ? (a: Item, b: Item) => (a.summary?.lengthM ?? 0) - (b.summary?.lengthM ?? 0) || Number(a.id) - Number(b.id)
+        : (a: Item, b: Item) => b.at - a.at;
+    return kept.sort((a, b) => a.near - b.near || tie(a.item, b.item)).map(({ item }) => item);
 }
 
 function inBox(line: number[], [west, south, east, north]: Box): boolean {

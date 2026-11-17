@@ -8,21 +8,26 @@
     import RangeSlider from './RangeSlider.svelte';
 
     type Key = keyof Chips;
-    let { chips = $bindable(), view, keys, years = [], values }: {
+    let { chips = $bindable(), view, keys, fixed = [], years = [], grades = [], values }: {
         chips: Chips;
         view?: Box;
         /** The chips to offer, in this order. */
         keys: Key[];
+        /** The chips with no "Remove". */
+        fixed?: Key[];
         /** The options of the year chip. */
         years?: number[];
+        /** The names of the grades of the grade chip, the easiest first. */
+        grades?: string[];
         /** The value of each item that the other chips keep, in the units of the rider, for the bars of a slider. */
         values: (key: 'length' | 'climb') => number[];
     } = $props();
 
-    const NAMES: Record<Key, string> = { bike: 'Bike', place: 'Place', length: 'Length', climb: 'Climb', days: 'Days', year: 'Year' };
+    const NAMES: Record<Key, string> = { bike: 'Bike', place: 'Place', length: 'Length', climb: 'Climb', days: 'Days', year: 'Year', grade: 'Grade', shape: 'Shape' };
     const DAYS: { value: Range; label: string }[] = [
         { value: [1, 2], label: 'One day' }, { value: [2, 5], label: '2 to 4 days' }, { value: [5, Infinity], label: '5 days or more' },
     ];
+    const SHAPES: { value: Chips['shape']; label: string }[] = [{ value: 'loop', label: 'Loop' }, { value: 'one-way', label: 'One way' }];
     const WAIT_MS = 300;
 
     let open = $state<Key | null>(null);
@@ -34,9 +39,11 @@
         `${value.toLocaleString('en', { maximumFractionDigits: 1 })}\u00a0${key === 'length' ? settings.units : heightUnit()}`;
     const rangeLabel = (key: 'length' | 'climb', range: Range) => rangeText(range, show(key));
 
-    function options(key: 'bike' | 'days' | 'year'): { value: Chips[Key]; label: string }[] {
+    function options(key: 'bike' | 'days' | 'year' | 'grade' | 'shape'): { value: Chips[Key]; label: string }[] {
         if (key === 'bike') return bikes.map(bike => ({ value: bike, label: ridingProfiles[bike].label }));
         if (key === 'days') return DAYS;
+        if (key === 'shape') return SHAPES;
+        if (key === 'grade') return grades.map((name, grade) => ({ value: grade, label: `Up to ${name}` }));
         return years.map(year => ({ value: year, label: String(year) }));
     }
 
@@ -110,7 +117,7 @@
                         <button type="button" aria-pressed={set && label(key) === option.label} onclick={() => choose(key, option.value)}>{option.label}</button>
                     {/each}
                 {/if}
-                {#if set}<button type="button" class="remove" onclick={() => choose(key, undefined)}>Remove</button>{/if}
+                {#if set && !fixed.includes(key)}<button type="button" class="remove" onclick={() => choose(key, undefined)}>Remove</button>{/if}
             </div>
         </details>
     {/each}
