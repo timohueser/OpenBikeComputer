@@ -6,3 +6,5 @@ export const card = Number(search.get('card') ?? 0) || undefined;
 export const on = row > 0 || card !== undefined;
 /** A row shows the map picture where a route has no cover, as a card does (`?rowpic=none`: as today, the line on a plain ground). */
 export const rowPlace: 'card' | 'row' = search.get('rowpic') === 'none' ? 'row' : 'card';
+/** The place of the elevation profile on the card: `strip`, `under` or `none`; else the square of the first prototype. */
+export const profile = search.get('profile') ?? '';

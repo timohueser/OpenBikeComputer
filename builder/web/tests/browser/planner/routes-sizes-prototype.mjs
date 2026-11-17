@@ -155,7 +155,7 @@ async function covers(context) {
 }
 
 /** One screenshot: the page at `query` and `hash`, with the row named `pick` selected; prints the rows in view. */
-async function shot(context, { file, query = '', hash = '#/routes', width = 1440, height = 900, dark = false, pick, after }) {
+async function shot(context, { file, crop, query = '', hash = '#/routes', width = 1440, height = 900, dark = false, pick, after }) {
     const page = await context.newPage();
     await page.setViewportSize({ width, height });
     await page.emulateMedia({ colorScheme: dark ? 'dark' : 'light' });
@@ -172,11 +172,12 @@ async function shot(context, { file, query = '', hash = '#/routes', width = 1440
     });
     console.log(file, JSON.stringify(rows));
     await page.screenshot({ path: join(out, file) });
+    if (crop) await page.locator('.selected section.card').screenshot({ path: join(out, crop) });
     await page.close();
 }
 
 async function shots(context) {
-    const pick = 'Engelberg';
+    const pick = process.env.PICK ?? 'Engelberg';
     const all = [
         { file: 'today-1440.png', pick },
         { file: 'row1-1440.png', query: '?row=1', pick },
@@ -247,12 +248,21 @@ async function maps(context) {
     }
 }
 
+async function profiles(context) {
+    const base = '?row=1&card=200';
+    for (const [name, query] of [['square', ''], ['strip', '&profile=strip'], ['under', '&profile=under'], ['none', '&profile=none']])
+        await shot(context, { file: `profile-${name}-1440.png`, crop: `crop-profile-${name}.png`, query: base + query, pick: 'Engelberg' });
+    await shot(context, { file: 'profile-strip-1100.png', query: `${base}&profile=strip`, pick: 'Engelberg', width: 1100 });
+    await shot(context, { file: 'profile-strip-long-1440.png', query: `${base}&profile=strip`, pick: 'Sustenpass' });
+}
+
 const context = await chromium.launchPersistentContext(profile, { headless: true, args: SWIFTSHADER, viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
 try {
     if (step === 'seed') await seed(await context.newPage());
     else if (step === 'covers') await covers(context);
     else if (step === 'shots') await shots(context);
     else if (step === 'maps') await maps(context);
+    else if (step === 'profiles') await profiles(context);
 } finally {
     await context.close();
 }

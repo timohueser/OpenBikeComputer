@@ -34,7 +34,7 @@
     const metaText = $derived(meta.filter(Boolean).join(' · '));
 </script>
 
-<section class="card" aria-label={name} style={sizes}>
+<section class="card {proto.profile && `profile-${proto.profile}`}" aria-label={name} style={sizes}>
     <div class="picture">{@render picture()}</div>
     <div class="text">
         <h2>{@render mark?.()}{#if href}<a class="open" {href}>{name}</a>{:else}{name}{/if}</h2>
@@ -170,6 +170,58 @@
         grid-column: 1 / -1;
     }
     /* Under this width the map leaves the card too little room for four columns. */
+    /* The profile as a wide strip: right of the picture under the text and the buttons, or under the whole card. */
+    .card.profile-strip, .card.profile-under, .card.profile-none {
+        grid-template-columns: var(--pic-w) minmax(0, 1fr) auto;
+        grid-template-areas: "pic text buttons" "pic prof prof";
+        grid-template-rows: 1fr 72px;
+        align-items: start;
+        gap: 10px 20px;
+    }
+    .card.profile-under {
+        grid-template-areas: "pic text buttons" "prof prof prof";
+        grid-template-rows: auto 56px;
+    }
+    .card.profile-none {
+        grid-template-areas: "pic text buttons";
+        grid-template-rows: auto;
+        align-items: center;
+    }
+    .card[class*="profile-"] .picture { grid-area: pic; }
+    .card[class*="profile-"] .text { grid-area: text; padding-top: 6px; }
+    .card[class*="profile-"] .buttons { grid-area: buttons; padding-top: 6px; }
+    .card[class*="profile-"] .profile { grid-area: prof; align-self: stretch; height: auto; }
+    .card.profile-none .profile { display: none; }
+    .card.profile-none .text, .card.profile-none .buttons { padding-top: 0; }
+    @media (max-width: 1200px) {
+        .card[style].profile-strip, .card[style].profile-under, .card[style].profile-none {
+            grid-template-columns: calc(0.8 * var(--pic-w)) minmax(0, 1fr);
+            /* Beside a narrow map, text and buttons fill the side of the picture; the strip goes under both. */
+            grid-template-areas: "pic text" "pic buttons" "prof prof";
+            grid-template-rows: auto 1fr 56px;
+        }
+        .card[style].profile-under {
+            grid-template-areas: "pic text" "pic buttons" "prof prof";
+            grid-template-rows: auto 1fr 48px;
+        }
+        .card[style].profile-none {
+            grid-template-areas: "pic text" "pic buttons";
+            grid-template-rows: auto 1fr;
+        }
+        .card[class*="profile-"] .picture {
+            height: calc(0.8 * var(--pic-h));
+        }
+        .card[class*="profile-"] .profile {
+            display: block;
+        }
+        .card[style].profile-none .profile {
+            display: none;
+        }
+        .card[class*="profile-"] .buttons {
+            grid-column: auto;
+            padding-top: 0;
+        }
+    }
     @media (max-width: 1200px) {
         .card {
             grid-template-columns: 120px minmax(0, 1fr);
