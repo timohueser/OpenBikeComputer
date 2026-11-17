@@ -52,9 +52,6 @@ export interface DataLayer<Samples = unknown> {
     label: string;
     /** A name of `lib/ui/Icon.svelte`. */
     icon: string;
-    description: string;
-    /** A limit of the data, beside the attribution. */
-    caveat: string;
     /** Attribution and resolution, once the data has loaded. */
     readonly source: string;
     readonly error: string;

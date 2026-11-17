@@ -124,15 +124,14 @@ describe('planner app transitions', () => {
         expect(surface.getAttribute('aria-valuetext')).toContain('Walking');
         expect(document.querySelector('.push-track')).toBeNull();
         button('Map settings').click(); await tick();
-        expect(document.querySelector('.layer-menu')?.textContent).toContain('Walking access.');
-        expect(document.querySelector('[aria-label="Route network"] [aria-checked="true"]')?.textContent?.trim()).toBe('Hiking');
+        expect(document.querySelector('[aria-label="Routes, one at a time"] [aria-pressed="true"]')?.textContent?.trim()).toBe('Hiking');
     });
 
     it('shows the route network of the activity, and keeps a network that the rider chose or switched off', async () => {
         await startApp();
         button('Map settings').click(); await tick();
-        const menu = document.querySelector('.layer-menu')!;
-        const network = () => menu.querySelector('[aria-label="Route network"] [aria-checked="true"]')?.textContent?.trim();
+        const menu = document.querySelector('.map-settings')!;
+        const network = () => menu.querySelector('[aria-label="Routes, one at a time"] [aria-pressed="true"]')?.textContent?.trim();
         const activity = async (label: string) => { button('Activity').click(); await tick(); button(label).click(); await tick(); };
         expect(network()).toBe('Cycling');
         button('Hiking', menu).click(); await tick();
@@ -140,9 +139,9 @@ describe('planner app transitions', () => {
         expect(network()).toBe('Hiking');
         await activity('Mountain bike');
         expect(network()).toBe('MTB');
-        button('Off', menu).click(); await tick();
+        button('MTB', menu).click(); await tick();
         await activity('Hiking');
-        expect(network()).toBe('Off');
+        expect(network()).toBeUndefined();
     });
 
     it('names map visits by address without adding an Undo step, and restores names on Redo', async () => {

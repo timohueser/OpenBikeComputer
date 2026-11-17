@@ -16,7 +16,8 @@
     import { optionLetter, optionName, otherWays, routeRow, type Compared } from '../../lib/planner/route-options';
     import QueryResults from './QueryResults.svelte';
     import MapCallout, { type CalloutKind, type EditableKind } from './MapCallout.svelte';
-    import LayerMenu from './LayerMenu.svelte';
+    import MapSettings from './MapSettings.svelte';
+    import LayerLegend from './LayerLegend.svelte';
     import LayerDateBar from './LayerDateBar.svelte';
     import LayerInspect from './LayerInspect.svelte';
     import LayerStrip from './LayerStrip.svelte';
@@ -173,7 +174,6 @@
     let corridor = $state<Place[]>([]);
     let corridorLoad = $state<'done' | 'loading' | 'failed'>('done');
     const theme = $derived<'light' | 'dark'>(appearance.dark ? 'dark' : 'light');
-    let autoCenter = $state(false);
     let hoveredId = $state<string | null>(null);
     let hillshade = $state(true);
     let contours = $state(true);
@@ -492,12 +492,7 @@
     onMount(() => {
         void session.start(library);
         beforeReload(() => session.saved());
-        try { autoCenter = localStorage.getItem('obc-planner-auto-center') === 'true'; } catch { /* Optional browser preference. */ }
         return () => session.close();
-    });
-
-    $effect(() => {
-        try { localStorage.setItem('obc-planner-auto-center', String(autoCenter)); } catch { /* Optional browser preference. */ }
     });
 
     /** Resets the view after another plan replaced the trip. */
@@ -871,7 +866,6 @@
     function insert(legEndId: string, coordinate: Coordinate, dragged = false) {
         clearSelection();
         commit((dragged ? dragPointOut : insertPoint)(trip, legEndId, coordinate), 'Shaping point inserted');
-        if (autoCenter) map?.centerOn(coordinate);
     }
 
     function drawn(legEndId: string, line: Coordinate[]) {
@@ -974,7 +968,6 @@
         commit(next, 'Overnight pinned');
         clearSelection();
         reveal(`night-${sleepDay}`, sleepDay);
-        if (autoCenter) map?.centerOn(coordinate);
     }
 
     const placeRef = (place: Place): PlaceRef => ({ placeKind: place.placeKind, placeId: place.id });
@@ -998,7 +991,6 @@
         clearSelection();
         selectedId = point.id;
         if (kind !== 'via') reveal(point.id, dayOf(point.coordinate));
-        if (autoCenter) map?.centerOn(point.coordinate);
         void session.nameVisit(point);
     }
 
@@ -1008,7 +1000,6 @@
         clearSelection();
         selectedId = point.id;
         reveal(point.id, dayOf(point.coordinate));
-        if (autoCenter) map?.centerOn(point.coordinate);
     }
 
     function movePoint(id: string, coordinate: Coordinate) {
@@ -1036,7 +1027,6 @@
         exitSearch();
         list = 'plan';
         if (first && hasEndpoints) firstOptions = true;
-        if (autoCenter) map?.centerOn(coordinate);
     }
 
     async function newPlan() {
@@ -1362,7 +1352,7 @@
                         <button type="button" disabled={!trip.points.length} onclick={() => focusedDay ? showDay(focusedDay.ridingNumber) : coordinates.length ? map?.fitRoute() : map?.fitCoordinates(trip.points.map(p => p.coordinate))} aria-label={focusedDay ? `Show day ${focusedDay.number} on map` : 'Show whole route'}><Icon name="fit" /></button>
                         <button type="button" disabled={!hasEndpoints} class:chosen={showRoute} aria-label={showRoute ? 'Hide route' : 'Show route'} aria-pressed={showRoute} onclick={() => showRoute = !showRoute}><Icon name="eye" /></button>
                     </div>
-                    <LayerMenu {theme} {dataLayers} bind:shownLayer={shownLayerId} walking={trip.bike === 'hiking'} bind:autoCenter bind:mapOverlays bind:hillshade bind:contours bind:hidden={hiddenCategories} bind:highlighted={highlightedCategories} />
+                    <MapSettings {theme} {dataLayers} bind:shownLayer={shownLayerId} bind:mapOverlays bind:hillshade bind:contours bind:hidden={hiddenCategories} bind:highlighted={highlightedCategories} />
                     {#if hasTrailView}
                         <div class="control-group">
                             <TrailViewControl bind:this={trailViewControl} active={mapMode?.kind === 'look'} onActivate={binoculars}
@@ -1370,8 +1360,15 @@
                         </div>
                     {/if}
                 </div>
-                {#if dataLayer && layerYear}
-                    <div class="layer-date" bind:clientHeight={dateBarHeight}><LayerDateBar date={shownDate} year={layerYear} variable={dataLayer.variable} onDate={(date) => layerDate = date} /></div>
+                {#if dataLayer}
+                    <div class="layer-date" bind:clientHeight={dateBarHeight}>
+                        <div class="layer-legend">
+                            {#if dataLayer.error}{dataLayer.error}
+                            {:else if dataLayer.source}<strong>{dataLayer.label}</strong><LayerLegend legend={dataLayer.legend(theme)} label={`${dataLayer.label} colours`} />
+                            {:else}Loading…{/if}
+                        </div>
+                        {#if layerYear}<LayerDateBar date={shownDate} year={layerYear} variable={dataLayer.variable} onDate={(date) => layerDate = date} />{/if}
+                    </div>
                 {/if}
                 {#if dropping}
                     <div class="drop-frame"><strong>Drop to open as a plan</strong><span>One file is a route. Several files are a trip.</span></div>
@@ -1506,8 +1503,11 @@
     .closure-note { display: flex; align-items: center; gap: 8px; margin: 0 16px 12px; font-size: 13px; color: var(--ink-soft); }
     .closure-note :global(svg) { flex: none; }
     .closure-note span { flex: 1; }
-    /* Clear of the map controls column, which reaches the bottom on a short map. */
-    .layer-date { position: absolute; left: 16px; right: 68px; bottom: 34px; z-index: 2; }
+    /* Clear of the map controls column, which reaches the bottom on a short map. The map reaches the clicks beside the legend. */
+    .layer-date { position: absolute; left: 16px; right: 68px; bottom: 34px; z-index: 2; display: grid; gap: 8px; pointer-events: none; }
+    .layer-date > :global(*) { pointer-events: auto; }
+    .layer-legend { justify-self: start; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 7px 12px; border-radius: 8px; background: var(--panel); box-shadow: var(--planner-shadow); font-size: 12px; color: var(--ink-soft); }
+    .layer-legend strong { font-weight: 600; color: var(--ink); }
     .list-head { display: flex; align-items: center; gap: 12px; padding: 12px 16px 4px; border-top: 1px solid var(--line); }
     .list-head h2 { margin: 0; font: 600 15px var(--sans); }
     .list-head :global(.planner-action) { gap: 4px; padding-left: 6px; }

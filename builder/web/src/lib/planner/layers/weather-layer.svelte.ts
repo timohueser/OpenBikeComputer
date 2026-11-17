@@ -68,8 +68,6 @@ class WeatherLayer implements DataLayer<Samples> {
     id = 'weather';
     label = 'Weather';
     icon = 'weather';
-    description = 'Daytime highs, night lows and rain from ten past years.';
-    caveat = 'Valleys can be colder on clear nights.';
     meta = $state.raw<ClimateMeta | null>(null);
     error = $state('');
     variable = $state({ label: 'Map shows', options: [{ value: 'temperature', label: 'Temperature' }, { value: 'rain', label: 'Rain' }], value: 'temperature' });
@@ -84,7 +82,7 @@ class WeatherLayer implements DataLayer<Samples> {
     private townsHidden = false;
     private raster = new Raster({
         id: this.id,
-        extent: () => this.open().then(({ bounds, meta }) => ({ maxzoom: MAX_ZOOM, bounds, attribution: meta.attribution })),
+        extent: () => this.open().then(({ bounds }) => ({ maxzoom: MAX_ZOOM, bounds, attribution: this.source })),
         draw: (look, z, x, y, signal) => this.draw(look, z, x, y, signal),
         report: error => { this.error = error ? FAILED : ''; },
     });
