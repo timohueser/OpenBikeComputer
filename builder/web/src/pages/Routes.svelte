@@ -3,7 +3,6 @@
 <script lang="ts">
     import { onMount, tick, untrack } from 'svelte';
     import { SvelteSet } from 'svelte/reactivity';
-    import Card from '../lib/ui/Card.svelte';
     import Segmented from '../lib/ui/Segmented.svelte';
     import Switch from '../lib/ui/Switch.svelte';
     import Cover from '../lib/covers/Cover.svelte';
@@ -17,6 +16,8 @@
     import { ROUTES } from '../lib/routes';
     import { distanceIn, formatDistance, formatHeight, heightIn } from '../lib/settings/format';
     import Chips from './routes/Chips.svelte';
+    import ListAndMap from './routes/ListAndMap.svelte';
+    import RouteRow from './routes/RouteRow.svelte';
     import { readSearch, results, rideItem, routeItem, type Box, type Chips as ChipValues, type Item, type Naming, type RideItem } from './routes/filter';
     import { dayText, rideRows, tripDates, type Row } from './routes/rows';
     import SelectedCard from './routes/SelectedCard.svelte';
@@ -53,8 +54,7 @@
     const tripList = $derived(trips(rides ?? []));
     const rows = $derived(ridden ? rideRows(shown as RideItem[], tripList, grouped, new Map(routeItems.map(item => [item.id, item.name]))) : []);
     const group = $derived(rows.find(row => row.kind === 'group' && row.id === opened));
-    /** The height of the selected card, which covers the bottom of the map. */
-    let cardHeight = $state(0), cardCredits = $state<string[]>([]);
+    let cardCredits = $state<string[]>([]);
     /** The rows of the list: the routes, the ride rows, or the rides of the open group. */
     const listRows: Row[] = $derived(group ? group.rides.map(ride => ({ kind: 'ride', id: ride.id, name: ride.name, rides: [ride], at: ride.at }))
         : ridden ? rows : []);
@@ -181,6 +181,14 @@
         document.querySelector(`.list li[data-id="${CSS.escape(selected!)}"]`)?.scrollIntoView({ block: 'nearest' });
     }
 
+    /** The second line of a ride row and the room of the button that opens a group. */
+    function rideLine(row: Row) {
+        const first = row.rides[0];
+        if (row.kind === 'trip') return { lead: tripDates(row), parts: [count(row.days!, 'day'), formatDistance(row.rides.reduce((sum, ride) => sum + ride.summary.lengthM, 0))] };
+        if (row.kind === 'group') return { parts: [formatDistance(first.summary.lengthM)], tail: `last on ${dayText(first.at)}`, room: `${count(row.rides.length, 'ride')} ›` };
+        return { lead: dayText(first.at), parts: [formatDistance(first.summary.lengthM), `${formatHeight(first.summary.climbM)} up`] };
+    }
+
     const addFiles = () => initCore().then(() => import('./AddFiles.svelte')).then(module => module.default);
 </script>
 
@@ -188,132 +196,93 @@
 <svelte:window onclickcapture={event => { if ((event.target as Element).closest?.('a[href]')) keep?.(); }}
     onkeydown={event => { if (event.key === 'Escape' && !document.querySelector('dialog[open]')) selected = undefined; }} />
 
-<!-- The second line of a row: a date, then the numbers. The line wraps between two numbers, never inside one. -->
-{#snippet numbers(parts: (string | false)[], lead = '')}
-    <span class="meta">{lead}{#each parts.filter(Boolean) as part, i (i)}{i || lead ? ' · ' : ''}<span>{part}</span>{/each}</span>
-{/snippet}
-
-<div class="routes-page">
-    <header>
-        <div class="title">
-            <h1>Routes</h1>
-            {#if records && rides}
-                <Segmented label="Routes or rides" value={ridden ? 'ridden' : 'planned'}
-                    options={[{ value: 'planned', label: `Planned ${records.length.toLocaleString('en')}` },
-                        { value: 'ridden', label: `Ridden ${rides.length.toLocaleString('en')}` }]}
-                    onChange={next => { keep?.(); location.hash = next === 'ridden' ? `${ROUTES.routes}/ridden` : ROUTES.routes; }} />
+<!-- A route or a ride that the chips hide is not drawn as selected. -->
+<ListAndMap title="Routes" {failure} {items} shown={mapShown} {fit} look={ridden ? 'ride' : 'route'} credits={cardCredits}
+    selected={ridden ? chosenRow?.rides.map(ride => ride.id) ?? [] : chosen ? [chosen.id] : []} onselect={select} onview={next => view = next}
+    card={chosen ? selectedCard : undefined}>
+    {#snippet tabs()}
+        {#if records && rides}
+            <Segmented label="Routes or rides" value={ridden ? 'ridden' : 'planned'}
+                options={[{ value: 'planned', label: `Planned ${records.length.toLocaleString('en')}` },
+                    { value: 'ridden', label: `Ridden ${rides.length.toLocaleString('en')}` }]}
+                onChange={next => { keep?.(); location.hash = next === 'ridden' ? `${ROUTES.routes}/ridden` : ROUTES.routes; }} />
+        {/if}
+    {/snippet}
+    {#snippet actions()}
+        {#if !ridden}<a class="button primary" href={`${ROUTES.planner}/new`}>New route</a>{/if}
+        <button type="button" class="button" onclick={() => adding = true}>Add files</button>
+    {/snippet}
+    {#snippet list()}
+        {#if !listed}
+            <p class="note">Loading…</p>
+        {:else if !items.length}
+            <p class="note empty">
+                <strong>{ridden ? 'No rides yet.' : 'No routes yet.'}</strong>
+                {ridden ? 'Connect the device, or add GPX and FIT files.' : 'Plan one, or add GPX and FIT files.'}
+            </p>
+        {:else}
+            <input class="search" type="search" aria-label={ridden ? 'Search your rides' : 'Search your routes'}
+                placeholder={ridden ? 'Search your rides, or a place' : 'Search your routes, or a place'}
+                bind:value={text} onkeydown={event => { if (event.key === 'Enter' && text.trim()) void understand(); }} />
+            <!-- Each view has its own chips, so its menus start closed. -->
+            {#key ridden}<Chips bind:chips {view} keys={[...KEYS[ridden ? 'ridden' : 'planned']]} {years} {values} />{/key}
+            {#if group}
+                <p class="count">
+                    <button type="button" class="back" onclick={() => { opened = undefined; selected = undefined; }}>‹ All rides</button>
+                    · {group.name} · {count(group.rides.length, 'ride')}
+                </p>
+            {:else if text.trim() || Object.keys(chips).length || onlyView}
+                <!-- The count of a search. With no search the switch above has the count. -->
+                <p class="count">{shown.length === items.length ? count(items.length, noun) : `${shown.length.toLocaleString('en')} of ${count(items.length, noun)}`}</p>
             {/if}
-        </div>
-        <nav class="buttons" aria-label="Routes">
-            {#if !ridden}<a class="button primary" href={`${ROUTES.planner}/new`}>New route</a>{/if}
-            <button type="button" class="button" onclick={() => adding = true}>Add files</button>
-        </nav>
-    </header>
-    {#if failure}<p class="failure" role="alert">{failure}</p>{/if}
-
-    <div class="cards">
-        <div class="list">
-            <Card>
-                {#if !listed}
-                    <p class="note">Loading…</p>
-                {:else if !items.length}
-                    <p class="note empty">
-                        <strong>{ridden ? 'No rides yet.' : 'No routes yet.'}</strong>
-                        {ridden ? 'Connect the device, or add GPX and FIT files.' : 'Plan one, or add GPX and FIT files.'}
-                    </p>
+            <ul>
+                {#if ridden}
+                    {#each listRows as row (`${row.kind}:${row.id}`)}
+                        {@const first = row.rides[0]}
+                        {@const key = `${row.kind}:${row.id}`}
+                        <li data-id={key} use:watch>
+                            <RouteRow name={row.name} current={key === selected} onclick={() => selected = key} {...rideLine(row)}>
+                                {#snippet picture()}{#if near.has(key)}<Cover {library} id={first.id} />{/if}{/snippet}
+                            </RouteRow>
+                            {#if row.kind === 'group'}
+                                <button type="button" class="open" onclick={() => { opened = row.id; selected = undefined; }}>{count(row.rides.length, 'ride')} ›</button>
+                            {/if}
+                        </li>
+                    {:else}
+                        <li class="note">No ride matches. Remove a chip or change the text.</li>
+                    {/each}
                 {:else}
-                    <input class="search" type="search" aria-label={ridden ? 'Search your rides' : 'Search your routes'}
-                        placeholder={ridden ? 'Search your rides, or a place' : 'Search your routes, or a place'}
-                        bind:value={text} onkeydown={event => { if (event.key === 'Enter' && text.trim()) void understand(); }} />
-                    <!-- Each view has its own chips, so its menus start closed. -->
-                    {#key ridden}<Chips bind:chips {view} keys={[...KEYS[ridden ? 'ridden' : 'planned']]} {years} {values} />{/key}
-                    {#if group}
-                        <p class="count">
-                            <button type="button" class="back" onclick={() => { opened = undefined; selected = undefined; }}>‹ All rides</button>
-                            · {group.name} · {count(group.rides.length, 'ride')}
-                        </p>
-                    {:else if text.trim() || Object.keys(chips).length || onlyView}
-                        <!-- The count of a search. With no search the switch above has the count. -->
-                        <p class="count">{shown.length === items.length ? count(items.length, noun) : `${shown.length.toLocaleString('en')} of ${count(items.length, noun)}`}</p>
-                    {/if}
-                    <ul>
-                        {#if ridden}
-                            {#each listRows as row (`${row.kind}:${row.id}`)}
-                                {@const first = row.rides[0]}
-                                {@const key = `${row.kind}:${row.id}`}
-                                <li data-id={key} use:watch>
-                                    <button type="button" class="row" aria-current={key === selected} onclick={() => selected = key}>
-                                        <span class="thumb">{#if near.has(key)}<Cover {library} id={first.id} />{/if}</span>
-                                        <span class="text">
-                                            <strong>{row.name}</strong>
-                                            {#if row.kind === 'trip'}
-                                                {@render numbers([count(row.days!, 'day'), formatDistance(row.rides.reduce((sum, ride) => sum + ride.summary.lengthM, 0))], tripDates(row))}
-                                            {:else if row.kind === 'group'}
-                                                <span class="meta"><span>{formatDistance(first.summary.lengthM)}</span> · last on {dayText(first.at)}</span>
-                                            {:else}
-                                                {@render numbers([formatDistance(first.summary.lengthM), `${formatHeight(first.summary.climbM)} up`], dayText(first.at))}
-                                            {/if}
-                                        </span>
-                                        <!-- The room of the button that opens the group, which lies on the row. -->
-                                        {#if row.kind === 'group'}<span class="open room" aria-hidden="true">{count(row.rides.length, 'ride')} ›</span>{/if}
-                                    </button>
-                                    {#if row.kind === 'group'}
-                                        <button type="button" class="open" onclick={() => { opened = row.id; selected = undefined; }}>{count(row.rides.length, 'ride')} ›</button>
-                                    {/if}
-                                </li>
-                            {:else}
-                                <li class="note">No ride matches. Remove a chip or change the text.</li>
-                            {/each}
-                        {:else}
-                            {#each shown as item (item.id)}
-                                {@const state = states.get(item.id)}
-                                <li data-id={item.id} use:watch>
-                                    <button type="button" class="row" aria-current={item.id === selected} onclick={() => selected = item.id}>
-                                        <span class="thumb">{#if item.summary && near.has(item.id)}<Cover {library} id={item.id} />{/if}</span>
-                                        <span class="text">
-                                            <strong>{item.name}</strong>
-                                            {#if item.kind === 'route' && item.summary}
-                                                {@const summary = item.summary}
-                                                {@render numbers([summary.days > 1 && `${summary.days} days`, formatDistance(summary.lengthM), `${formatHeight(summary.climbM)} up`])}
-                                            {/if}
-                                        </span>
-                                        {#if state}<span class="badge {state}">{BADGES[state]}</span>{/if}
-                                    </button>
-                                </li>
-                            {:else}
-                                <li class="note">No route matches. Remove a chip or change the text.</li>
-                            {/each}
-                        {/if}
-                    </ul>
-                    <div class="switch"><Switch bind:checked={onlyView} label="Only in this map view" /></div>
-                    {#if ridden}
-                        <button type="button" class="totals" aria-haspopup="dialog" onclick={() => statistics = true}>
-                            <span class="meta"><strong>{year}</strong>{#each yearText as part, i (i)}{' · '}<span>{part}</span>{/each}</span>
-                            <span aria-hidden="true">›</span>
-                        </button>
-                    {/if}
+                    {#each shown as item (item.id)}
+                        {@const state = states.get(item.id)}
+                        {@const summary = item.kind === 'route' && item.summary}
+                        <li data-id={item.id} use:watch>
+                            <RouteRow name={item.name} current={item.id === selected} onclick={() => selected = item.id}
+                                parts={summary ? [summary.days > 1 && `${summary.days} days`, formatDistance(summary.lengthM), `${formatHeight(summary.climbM)} up`] : undefined}
+                                badge={state && { text: BADGES[state], kind: state }}>
+                                {#snippet picture()}{#if item.summary && near.has(item.id)}<Cover {library} id={item.id} />{/if}{/snippet}
+                            </RouteRow>
+                        </li>
+                    {:else}
+                        <li class="note">No route matches. Remove a chip or change the text.</li>
+                    {/each}
                 {/if}
-            </Card>
-        </div>
-        <div class="map">
-            {#await import('./routes/RoutesMap.svelte') then { default: RoutesMap }}
-                <!-- A route or a ride that the chips hide is not drawn as selected. -->
-                <RoutesMap {items} shown={mapShown} selected={ridden ? chosenRow?.rides.map(ride => ride.id) ?? [] : chosen ? [chosen.id] : []} {fit}
-                    covered={chosen && cardHeight ? cardHeight + 12 : 0} credits={chosen ? cardCredits : []}
-                    look={ridden ? 'ride' : 'route'} onselect={select} onview={next => view = next} />
-            {:catch error}
-                <p class="note">{error instanceof Error ? error.message : String(error)}</p>
-            {/await}
-            {#if chosen}
-                <div class="selected" bind:offsetHeight={cardHeight}>
-                    <SelectedCard {library} item={chosen} row={chosenRow} device={states.get(chosen.id)} inGroup={!!group} bind:credits={cardCredits}
-                        runs={ridden ? 0 : times.get(chosen.id)}
-                        route={chosenRow?.kind === 'group' && records?.some(record => record.id === chosenRow.id) ? chosenRow.id : undefined} />
-                </div>
+            </ul>
+            <div class="switch"><Switch bind:checked={onlyView} label="Only in this map view" /></div>
+            {#if ridden}
+                <button type="button" class="totals" aria-haspopup="dialog" onclick={() => statistics = true}>
+                    <span class="meta"><strong>{year}</strong>{#each yearText as part, i (i)}{' · '}<span>{part}</span>{/each}</span>
+                    <span aria-hidden="true">›</span>
+                </button>
             {/if}
-        </div>
-    </div>
-</div>
+        {/if}
+    {/snippet}
+</ListAndMap>
+
+{#snippet selectedCard()}
+    <SelectedCard {library} item={chosen!} row={chosenRow} device={states.get(chosen!.id)} inGroup={!!group} bind:credits={cardCredits}
+        runs={ridden ? 0 : times.get(chosen!.id)}
+        route={chosenRow?.kind === 'group' && records?.some(record => record.id === chosenRow.id) ? chosenRow.id : undefined} />
+{/snippet}
 
 {#if statistics}
     <Statistics rides={rides ?? []} trips={tripList} onClose={() => statistics = false} onTrip={showTrip} />
@@ -328,34 +297,6 @@
 {/if}
 
 <style>
-    .routes-page {
-        display: flex;
-        flex-direction: column;
-        gap: 12px;
-        height: 100%;
-        padding: 14px 20px 18px;
-    }
-    header {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        justify-content: space-between;
-        gap: 10px 20px;
-    }
-    .title {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 10px 16px;
-    }
-    h1 {
-        margin: 0;
-        font: 700 25px/1.2 var(--sans);
-    }
-    .buttons {
-        display: flex;
-        gap: 8px;
-    }
     .button {
         display: inline-flex;
         align-items: center;
@@ -378,21 +319,6 @@
     .failure {
         margin: 0;
         color: var(--coral);
-    }
-    .cards {
-        display: grid;
-        flex: 1;
-        grid-template-columns: 380px 1fr;
-        grid-template-rows: minmax(0, 1fr);
-        gap: 14px;
-        min-height: 0;
-    }
-    .list > :global(section) {
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-        height: 100%;
-        min-height: 0;
     }
     .note {
         margin: 4px 0;
@@ -431,68 +357,10 @@
         overflow: auto;
         list-style: none;
     }
-    .row {
-        display: grid;
-        grid-template-columns: 72px minmax(0, 1fr) auto;
-        align-items: center;
-        gap: 12px;
-        width: 100%;
-        padding: 6px;
-        border: 0;
-        border-radius: 8px;
-        background: none;
-        color: var(--ink);
-        text-align: left;
-    }
-    .row:hover {
-        background: var(--parchment);
-    }
-    .row[aria-current="true"] {
-        background: var(--parchment-2);
-    }
-    .thumb {
-        height: 48px;
-        overflow: hidden;
-        border-radius: 6px;
-        background: var(--parchment-2);
-    }
-    .thumb :global(.cover) {
-        background: none;
-    }
-    .text {
-        display: flex;
-        flex-direction: column;
-        gap: 1px;
-        min-width: 0;
-    }
-    /* The numbers are one line where they fit and wrap where they do not: none is cut. */
-    .meta, .badge {
-        color: var(--ink-soft);
-        font-size: 12.5px;
-    }
-    .badge, .meta span {
-        white-space: nowrap;
-    }
-    /* The one state that waits for the rider to connect the device has a dot. */
-    .badge.waiting::before {
-        display: inline-block;
-        width: 6px;
-        height: 6px;
-        margin-right: 5px;
-        border-radius: 50%;
-        background: var(--amber);
-        vertical-align: 1px;
-        content: '';
-    }
     li {
         position: relative;
     }
-    /* The button that opens a group lies on its row, over a column of the row with the same text and width. */
-    .open.room {
-        position: static;
-        transform: none;
-        visibility: hidden;
-    }
+    /* The button that opens a group lies on its row, over a column of the row with the same text, padding and font size. */
     .open {
         position: absolute;
         top: 50%;
@@ -541,47 +409,15 @@
     .totals .meta {
         font-size: 13px;
     }
+    .totals .meta span {
+        white-space: nowrap;
+    }
     .totals strong {
         color: var(--ink);
     }
-    .map {
-        position: relative;
-        overflow: hidden;
-        border: 1px solid var(--line);
-        border-radius: 10px;
-        background: var(--parchment);
-    }
-    .map > .note {
-        margin: 32px 16px;
-    }
-    .selected {
-        position: absolute;
-        z-index: 2;
-        right: 12px;
-        bottom: 12px;
-        left: 12px;
-    }
     @media (max-width: 760px) {
-        .routes-page {
-            height: auto;
-            padding: 12px 16px;
-        }
-        .cards {
-            grid-template-columns: 1fr;
-            grid-template-rows: auto;
-        }
         ul {
             max-height: 60vh;
-        }
-        .row {
-            grid-template-columns: 64px minmax(0, 1fr) auto;
-            gap: 10px;
-        }
-        .thumb {
-            height: 44px;
-        }
-        .map {
-            height: 70vh;
         }
     }
 </style>

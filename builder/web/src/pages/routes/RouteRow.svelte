@@ -1,0 +1,102 @@
+<!-- A row of a list of routes: a small picture, the name, a line of numbers, and a badge. -->
+<script lang="ts">
+    import type { Snippet } from 'svelte';
+
+    let { name, current, onclick, lead = '', parts, tail, badge, room, picture }: {
+        name: string;
+        current: boolean;
+        onclick: () => void;
+        /** The second line, written when `parts` is given: `lead` (such as a date), each part in its own span, so the
+         * line wraps between two parts and never inside one, then `tail` as plain text. */
+        lead?: string;
+        parts?: (string | false)[];
+        tail?: string;
+        badge?: { text: string; kind: string };
+        /** The text of a button that lies on the row. The row keeps its room with the same text, hidden, where a badge
+         * would be. */
+        room?: string;
+        /** A cover, whose root has the class `cover`. */
+        picture: Snippet;
+    } = $props();
+</script>
+
+<button type="button" class="row" aria-current={current} {onclick}>
+    <span class="thumb">{@render picture()}</span>
+    <span class="text">
+        <strong>{name}</strong>
+        {#if parts}
+            <span class="meta">{lead}{#each parts.filter(Boolean) as part, i (i)}{i || lead ? ' · ' : ''}<span>{part}</span>{/each}{#if tail}{' · '}{tail}{/if}</span>
+        {/if}
+    </span>
+    {#if badge}<span class="badge {badge.kind}">{badge.text}</span>{:else if room}<span class="room" aria-hidden="true">{room}</span>{/if}
+</button>
+
+<style>
+    .row {
+        display: grid;
+        grid-template-columns: 72px minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 12px;
+        width: 100%;
+        padding: 6px;
+        border: 0;
+        border-radius: 8px;
+        background: none;
+        color: var(--ink);
+        text-align: left;
+    }
+    .row:hover {
+        background: var(--parchment);
+    }
+    .row[aria-current="true"] {
+        background: var(--parchment-2);
+    }
+    .thumb {
+        height: 48px;
+        overflow: hidden;
+        border-radius: 6px;
+        background: var(--parchment-2);
+    }
+    .thumb :global(.cover) {
+        background: none;
+    }
+    .text {
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+        min-width: 0;
+    }
+    /* The numbers are one line where they fit and wrap where they do not: none is cut. */
+    .meta, .badge, .room {
+        color: var(--ink-soft);
+        font-size: 12.5px;
+    }
+    .badge, .meta span, .room {
+        white-space: nowrap;
+    }
+    /* The one state that waits for the rider to connect the device has a dot. */
+    .badge.waiting::before {
+        display: inline-block;
+        width: 6px;
+        height: 6px;
+        margin-right: 5px;
+        border-radius: 50%;
+        background: var(--amber);
+        vertical-align: 1px;
+        content: '';
+    }
+    /* The padding of the button that lies on the row. */
+    .room {
+        padding: 2px 4px;
+        visibility: hidden;
+    }
+    @media (max-width: 760px) {
+        .row {
+            grid-template-columns: 64px minmax(0, 1fr) auto;
+            gap: 10px;
+        }
+        .thumb {
+            height: 44px;
+        }
+    }
+</style>
