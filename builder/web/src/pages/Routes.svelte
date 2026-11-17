@@ -2,11 +2,11 @@
      card. -->
 <script lang="ts">
     import { onMount, tick, untrack } from 'svelte';
-    import { SvelteSet } from 'svelte/reactivity';
     import Segmented from '../lib/ui/Segmented.svelte';
     import Switch from '../lib/ui/Switch.svelte';
     import Cover from '../lib/covers/Cover.svelte';
     import { initCore } from '../lib/core/bridge';
+    import { keepInHistory } from '../lib/keep-in-history.svelte';
     import { groups } from '../lib/library/groups';
     import type { LibraryState, RideRecord, RouteRecord } from '../lib/library/records';
     import { yearTotals } from '../lib/library/statistics';
@@ -28,7 +28,7 @@
 
     /** A page that sends the rider here can give the search to start with. */
     const search = () => history.state?.search as { chips?: ChipValues; text?: string } | undefined;
-    const READ_AFTER_MS = 200, KEEP_AFTER_MS = 300;
+    const READ_AFTER_MS = 200;
     const BADGES: Record<DeviceState, string> = { waiting: 'Waits', sent: 'On the device', changed: 'Changed' };
     const KEYS = { planned: ['bike', 'place', 'length', 'climb', 'days'], ridden: ['place', 'year', 'bike', 'length'] } as const;
 
@@ -39,8 +39,6 @@
     let onlyView = $state(false), view = $state.raw<Box>(), selected = $state<string>(), fit = $state(0), adding = $state(false), statistics = $state(false);
     /** The ride groups by ride key, once `groups` ends; until then each ride is its own group. */
     let grouped = $state.raw(new Map<string, string>()), opened = $state<string>();
-    /** The rows in view or near it: only these mount their picture. */
-    const near = new SvelteSet<string>();
 
     /** The view of the address. The page keeps it while the address goes to another page. */
     let ridden = $state(router.id === 'ridden');
@@ -102,16 +100,8 @@
             reason => { failure = reason instanceof Error ? reason.message : String(reason); });
     });
 
-    // Back from another page brings the search again. WebKit refuses many history writes in a short time, so the page
-    // writes once after the last key, and at once before a link changes the entry.
-    let keep: (() => void) | undefined;
-    $effect(() => {
-        const search = $state.snapshot({ chips, text });
-        keep = () => { keep = undefined; history.replaceState({ ...history.state, search }, ''); };
-        // After a link wrote the search, `keep` is undefined: the timer must not write into the next entry.
-        const timer = setTimeout(() => keep?.(), KEEP_AFTER_MS);
-        return () => clearTimeout(timer);
-    });
+    // Back from another page brings the search again.
+    const keep = keepInHistory('search', () => ({ chips, text }));
 
     async function load() {
         try {
@@ -138,20 +128,6 @@
         });
         return () => { stop(); clearTimeout(timer); reading?.abort(); };
     });
-
-    const observer = new IntersectionObserver(entries => {
-        for (const { target, isIntersecting } of entries) {
-            const id = (target as HTMLElement).dataset.id!;
-            if (isIntersecting) near.add(id);
-            else near.delete(id);
-        }
-    }, { rootMargin: '200px' });
-    onMount(() => () => observer.disconnect());
-
-    function watch(node: HTMLElement) {
-        observer.observe(node);
-        return { destroy: () => { observer.unobserve(node); near.delete(node.dataset.id!); } };
-    }
 
     /** Enter turns a place that the text names into a chip. */
     let reading: AbortController | undefined;
@@ -193,8 +169,7 @@
 </script>
 
 <!-- Escape in an open window closes only the window. -->
-<svelte:window onclickcapture={event => { if ((event.target as Element).closest?.('a[href]')) keep?.(); }}
-    onkeydown={event => { if (event.key === 'Escape' && !document.querySelector('dialog[open]')) selected = undefined; }} />
+<svelte:window onkeydown={event => { if (event.key === 'Escape' && !document.querySelector('dialog[open]')) selected = undefined; }} />
 
 <!-- A route or a ride that the chips hide is not drawn as selected. -->
 <ListAndMap title="Routes" {failure} {items} shown={mapShown} {fit} look={ridden ? 'ride' : 'route'} credits={cardCredits}
@@ -205,7 +180,7 @@
             <Segmented label="Routes or rides" value={ridden ? 'ridden' : 'planned'}
                 options={[{ value: 'planned', label: `Planned ${records.length.toLocaleString('en')}` },
                     { value: 'ridden', label: `Ridden ${rides.length.toLocaleString('en')}` }]}
-                onChange={next => { keep?.(); location.hash = next === 'ridden' ? `${ROUTES.routes}/ridden` : ROUTES.routes; }} />
+                onChange={next => { keep(); location.hash = next === 'ridden' ? `${ROUTES.routes}/ridden` : ROUTES.routes; }} />
         {/if}
     {/snippet}
     {#snippet actions()}
@@ -240,9 +215,9 @@
                     {#each listRows as row (`${row.kind}:${row.id}`)}
                         {@const first = row.rides[0]}
                         {@const key = `${row.kind}:${row.id}`}
-                        <li data-id={key} use:watch>
+                        <li data-id={key}>
                             <RouteRow name={row.name} current={key === selected} onclick={() => selected = key} {...rideLine(row)}>
-                                {#snippet picture()}{#if near.has(key)}<Cover {library} id={first.id} />{/if}{/snippet}
+                                {#snippet picture()}<Cover {library} id={first.id} />{/snippet}
                             </RouteRow>
                             {#if row.kind === 'group'}
                                 <button type="button" class="open" onclick={() => { opened = row.id; selected = undefined; }}>{count(row.rides.length, 'ride')} ›</button>
@@ -255,11 +230,11 @@
                     {#each shown as item (item.id)}
                         {@const state = states.get(item.id)}
                         {@const summary = item.kind === 'route' && item.summary}
-                        <li data-id={item.id} use:watch>
+                        <li>
                             <RouteRow name={item.name} current={item.id === selected} onclick={() => selected = item.id}
                                 parts={summary ? [summary.days > 1 && `${summary.days} days`, formatDistance(summary.lengthM), `${formatHeight(summary.climbM)} up`] : undefined}
                                 badge={state && { text: BADGES[state], kind: state }}>
-                                {#snippet picture()}{#if item.summary && near.has(item.id)}<Cover {library} id={item.id} />{/if}{/snippet}
+                                {#snippet picture()}{#if item.summary}<Cover {library} id={item.id} />{/if}{/snippet}
                             </RouteRow>
                         </li>
                     {:else}

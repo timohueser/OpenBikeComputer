@@ -22,6 +22,7 @@ export interface CatalogRecord {
     hardest?: number;
     cells: string[];
     line_udeg?: number[];
+    profile_m?: (number | null)[];
     via?: number[];
     turnarounds?: number[];
     parent?: number;
