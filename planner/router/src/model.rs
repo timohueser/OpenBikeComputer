@@ -162,8 +162,8 @@ impl Profile {
             })
             .collect();
         profiles.extend(variants);
-        // Explicit skill choices with no upper limit. Alpine keeps off T5 and T6 paths only
-        // through their cost factors, so it takes one where every other way costs more.
+        // Explicit skill choices up to the highest known grade, so an unknown grade value (255)
+        // stays refused. Alpine keeps off T5 and T6 paths only through their cost factors.
         for (base, name, difficulty) in [("mtb", "mtb/technical", 6), ("hiking", "hiking/alpine", 6)] {
             let mut profile = profiles.iter().find(|p| p.name == base).unwrap().clone();
             profile.name = name.into();

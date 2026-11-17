@@ -1252,6 +1252,8 @@ mod tests {
         assert!(profiles.iter().all(|p| p.permits(&alpine) == (p.name == "hiking/alpine")));
         let demanding = path(&[("highway", "path"), ("sac_scale", "demanding_alpine_hiking")]);
         assert!(profiles.iter().all(|p| p.permits(&demanding) == (p.name == "hiking/alpine")));
+        let unknown = path(&[("highway", "path"), ("sac_scale", "ddemanding_mountain_hiking")]);
+        assert!(profiles.iter().all(|p| !p.permits(&unknown)));
     }
 
     #[test]
