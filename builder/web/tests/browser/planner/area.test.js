@@ -124,6 +124,12 @@ test('a box past the map data gives the note, and the credits of the data and of
   await expect(baseCredit).toBeVisible();
   await expect(dataCredits).toContainText('Synthetic geometry');
   await expect(dataCredits.getByRole('link', { name: 'CC0-1.0' })).toHaveAttribute('href', 'https://creativecommons.org/publicdomain/zero/1.0/');
+  // The region of the fixture lies under the credits at this zoom, and a click on them adds no region.
+  const map = await page.locator('.leaflet-container').boundingBox();
+  await page.mouse.move(map.x + map.width / 2, map.y + map.height / 2);
+  for (let i = 0; i < 3; i++) await page.mouse.wheel(0, -300);
+  await dataCredits.click({ position: { x: 20, y: 10 } });
+  await expect(page.locator('.parts li')).toHaveCount(1);
   await page.getByRole('button', { name: 'Toggle attribution' }).click();
   await expect(baseCredit).toBeHidden();
   await expect(dataCredits).toBeHidden();

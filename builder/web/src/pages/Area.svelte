@@ -1,5 +1,6 @@
 <script lang="ts">
     import { onMount } from 'svelte';
+    import L from 'leaflet';
     import CoverageMap from '../components/coverage/CoverageMap.svelte';
     import SkinStep from '../components/coverage/SkinStep.svelte';
     import Icon from '../lib/ui/Icon.svelte';
@@ -70,9 +71,13 @@
             .map(outside => ({ ...outside, name: nameOf(checked.find(route => route.id === outside.id)!) }));
     });
 
-    // The data credits stand in Leaflet's corner, above its credit line, so the two open and wrap as one.
+    // The data credits stand in Leaflet's corner, above its credit line, so the two open and wrap as one. As in
+    // Leaflet's own controls, a click or a wheel on them does not reach the map.
     $effect(() => {
-        if (store && dataCredits) mapBox?.querySelector('.leaflet-bottom.leaflet-right')?.prepend(dataCredits);
+        if (!store || !dataCredits) return;
+        mapBox?.querySelector('.leaflet-bottom.leaflet-right')?.prepend(dataCredits);
+        L.DomEvent.disableClickPropagation(dataCredits);
+        L.DomEvent.disableScrollPropagation(dataCredits);
     });
 
     onMount(() => {
