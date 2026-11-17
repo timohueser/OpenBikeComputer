@@ -1226,3 +1226,35 @@ fn a_way_over_its_own_bore_opens_it_only_at_its_ends() {
         }
     }
 }
+
+/// A street over the middle of a bore of 60 m (a segment that is no end segment of the bore's line), 5 m over the floor
+/// where its stroke lies over the bore and 3.1 m (under the least room) 6 m to the side of the bore's centre line, where
+/// its centre line still lies within the reach of the two strokes: over the floor, storey 0 is the street's carriageway,
+/// never the cover.
+#[cfg(feature = "bores")]
+#[test]
+fn a_street_over_a_bore_keeps_its_paved_surface_over_the_floor() {
+    let key = cell();
+    let levels = ("levels", "O 70 P B 130 P O");
+    let bore = line("tunnel", &[("highway", "residential"), ("tunnel", "yes"), levels], &[[-100.0, 0.0], [100.0, 0.0]]);
+    let mut street = road(&[[0.0, -40.0], [0.0, -6.0], [0.0, 0.0], [0.0, 6.0], [0.0, 40.0]]);
+    street.z = vec![503.1, 503.1, 505.0, 503.1, 503.1];
+    let mut input = input_of(key, &[bore, street]);
+    input.terrain = plane(key, &|_, _| 503.1);
+    let b = crate::cell::build_input(&input, Rules::embedded());
+    let o = key.origin();
+    for x in [-2.0, 0.0, 2.0] {
+        for y in [-2.5, 0.0, 2.5] {
+            let g = at([x, y]);
+            let q = [2 * (g.x - o.x), 2 * (g.y - o.y)];
+            let face = b.faces.faces.iter().find(|f| {
+                let rings: Vec<Vec<P>> =
+                    f.rings.iter().map(|r| r.iter().map(|&v| b.faces.vertices[v as usize]).collect()).collect();
+                geom::winding(&rings, q) != 0
+            });
+            let face = face.unwrap_or_else(|| panic!("no face at {x}, {y}"));
+            assert_ne!(face.under, NO_UNDER, "no floor under {x}, {y}");
+            assert_eq!(face.surface, Surface::Carriageway, "the street's surface at {x}, {y}");
+        }
+    }
+}

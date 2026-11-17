@@ -2099,13 +2099,15 @@ fn bore_cover(ctx: &Ctx, input: &CellInput, ground: &[WayLine], ways_box: [i32; 
     let enters_bore = |way: u32, bore: u32| {
         g.joints.iter().any(|j| j.arms.iter().any(|a| a.way == way) && j.arms.iter().any(|a| a.way == bore))
     };
-    // A ground way lies on top of a bore where its paved stroke overlaps the bore's stroke: the bake makes a bore only
-    // where every paved stroke of a ground way over its floor leaves the least room (`graph::levels`, `Ctx::lid`), so
-    // the device asks no heights. Water is no lid of the bake's: it, and a way over the last metres of a way that enters
-    // a bore, lies on top where its surface lies at least the lower way's least room over the lower way's floor at every
+    // A ground way lies on top of a bore where a piece of its paved stroke overlaps the bore's stroke and its surface
+    // lies over the bore's floor by more than the at-grade band there (the bake's test of a way on top, `Ctx::on_top`):
+    // the bake makes a bore only where every paved stroke on top of it leaves the least room (`Ctx::lid`), so the faces
+    // ask no room. A way level with the floor (the other tube's approach, a way joined at the tag end) is none: it ends at
+    // the side of the opening. Water is no lid of the bake's: it, and a way over the last metres of a way that enters a
+    // bore, lies on top where its surface lies at least the lower way's least room over the lower way's floor at every
     // place where their strokes meet: the heights decide, not a crossing of the centre lines.
-    // The lower ways' centre lines with their heights (the graph's samples), their reach (core and wall, units) and
-    // their least room (the least bore and the roof's least plate, metres).
+    // The lower ways' centre lines with their heights (the graph's samples), their reach (core and wall, units), their
+    // least room (the least bore and the roof's least plate, metres) and their at-grade band (metres).
     type Poly = Vec<([f64; 2], f64)>;
     let poly = |w: u32| -> Poly {
         let r = &g.ways[w as usize].samples;
@@ -2117,7 +2119,8 @@ fn bore_cover(ctx: &Ctx, input: &CellInput, ground: &[WayLine], ways_box: [i32; 
     // The lower ways: the bores, and the ground ways that enter one (a way on top of a bore can reach over the last
     // metres of the way that enters it: there it is that way's lid too).
     let enters = |l: &&WayLine| !l.leads.is_empty() && !l.sec.water;
-    let under: Vec<(Poly, f64, f64, u32, [f64; 4])> = (bores.iter().map(|b| (b, ctx.units(deck::WALL_M, b.p[0]))))
+    type Lower = (Poly, f64, f64, u32, [f64; 4], f64);
+    let under: Vec<Lower> = (bores.iter().map(|b| (b, ctx.units(deck::WALL_M, b.p[0]))))
         .chain(ground.iter().filter(enters).map(|a| (a, 0.0)))
         .map(|(b, wall)| {
             let core = b.bands.iter().map(|x| x[VERGE]).fold(0.0, f64::max) + wall;
@@ -2126,7 +2129,7 @@ fn bore_cover(ctx: &Ctx, input: &CellInput, ground: &[WayLine], ways_box: [i32; 
             let bx = l.iter().fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |x, (p, _)| {
                 [x[0].min(p[0]), x[1].min(p[1]), x[2].max(p[0]), x[3].max(p[1])]
             });
-            (l, core, b.sec.bore_least_m + b.sec.roof_least_m, b.way, bx)
+            (l, core, b.sec.bore_least_m + b.sec.roof_least_m, b.way, bx, b.sec.snap_height_m)
         })
         .collect();
     // The height of a bore's floor at the foot of q on its line, and the distance to it (units).
@@ -2162,12 +2165,11 @@ fn bore_cover(ctx: &Ctx, input: &CellInput, ground: &[WayLine], ways_box: [i32; 
             let (a, c) = (line.index[k], line.index[k + 1]);
             samples[k].z_m + (i - a) as f64 / (c - a) as f64 * (samples[k + 1].z_m - samples[k].z_m)
         };
-        // Whether stretch i lies on top of lower way u: at each of its points whose stroke meets u's, at least u's
-        // least room over u's floor; and it meets u.
-        let on_top = |i: usize, u: &(Poly, f64, f64, u32, [f64; 4])| -> bool {
-            let (l, core_b, need, way, bx) = u;
+        // The rise of stretch i over the floor of lower way u at each of its points whose core stroke meets u's.
+        let rise = |i: usize, u: &Lower| -> Vec<f64> {
+            let (l, core_b, _, way, bx, _) = u;
             if *way == line.way {
-                return false;
+                return Vec::new();
             }
             let (a, c) = (line.p[i], line.p[i + 1]);
             let (a, c) = ([f64::from(a[0]), f64::from(a[1])], [f64::from(c[0]), f64::from(c[1])]);
@@ -2178,22 +2180,24 @@ fn bore_cover(ctx: &Ctx, input: &CellInput, ground: &[WayLine], ways_box: [i32; 
                 || a[1].max(c[1]) < bx[1] - r
                 || a[1].min(c[1]) > bx[3] + r
             {
-                return false;
+                return Vec::new();
             }
             let n = (libm::hypot(c[0] - a[0], c[1] - a[1]) / 1200.0).ceil().max(1.0) as usize;
-            let mut meets = false;
-            for k in 0..=n {
-                let t = k as f64 / n as f64;
-                let (q, zq) = ([a[0] + t * (c[0] - a[0]), a[1] + t * (c[1] - a[1])], z(i) + t * (z(i + 1) - z(i)));
-                if let Some((_, zb)) = foot(q, l).filter(|x| x.0 <= r) {
-                    if zq - zb < *need {
-                        return false;
-                    }
-                    meets = true;
-                }
-            }
-            meets
+            (0..=n)
+                .filter_map(|k| {
+                    let t = k as f64 / n as f64;
+                    let (q, zq) = ([a[0] + t * (c[0] - a[0]), a[1] + t * (c[1] - a[1])], z(i) + t * (z(i + 1) - z(i)));
+                    foot(q, l).filter(|x| x.0 <= r).map(|(_, zb)| zq - zb)
+                })
+                .collect()
         };
+        // By the room: at each of those points at least u's least room over u's floor, and at least one point.
+        let on_top = |i: usize, u: &Lower| {
+            let v = rise(i, u);
+            !v.is_empty() && v.iter().all(|&d| d >= u.2)
+        };
+        // By the at-grade band: at one of those points more than the lower of the two ways' bands.
+        let band = |i: usize, u: &Lower| rise(i, u).iter().any(|&d| d > line.sec.snap_height_m.min(u.5));
         let ends = [line.round[0] && first == 0, line.round[1] && last == line.p.len()];
         // The pieces of the run's paved stroke and the segments of each (`stroke::pieces_along_of`), once per line.
         let mut paved: Option<(Vec<Vec<P>>, Vec<[usize; 2]>)> = None;
@@ -2218,8 +2222,9 @@ fn bore_cover(ctx: &Ctx, input: &CellInput, ground: &[WayLine], ways_box: [i32; 
                         });
                         let boxes = lo[0] <= b[2] && hi[0] >= b[0] && lo[1] <= b[3] && hi[1] >= b[1];
                         let rings = std::slice::from_ref(piece);
-                        if boxes && !stroke::boolean(rings, &bore_rings[ui], OverlayRule::Intersect, [0, 0]).is_empty()
-                        {
+                        let over =
+                            || !stroke::boolean(rings, &bore_rings[ui], OverlayRule::Intersect, [0, 0]).is_empty();
+                        if boxes && (a..=c).any(|i| band(first + i, u)) && over() {
                             top[a..=c].iter_mut().for_each(|x| *x = true);
                         }
                     }
