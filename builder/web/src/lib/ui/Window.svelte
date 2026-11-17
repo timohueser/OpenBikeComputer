@@ -7,6 +7,8 @@
      * A `large` window is a page over the page: a click on the dimmed page closes it, and on a phone it fills the screen.
      * A `wide` window is a large window for a content that needs the width, such as a line over a distance.
      * `beside` stands after the title, such as the way back from a closer view of the content.
+     * `onClose` also runs, in a microtask, when the window goes while it is open, for example at Back. So it must do
+     * nothing when the owner already closed the window.
      */
     let { title, large = false, wide = false, onClose, children, beside }: {
         title: string; large?: boolean; wide?: boolean; onClose: () => void; children: Snippet<[() => void]>; beside?: Snippet;
@@ -18,8 +20,9 @@
         const before = document.activeElement;
         dialog.showModal();
         // A window that goes while open, for example at Back, gets no `close`, so it tells its owner and gives the focus back.
-        // The owner hears it after the teardown, which reads the state from before the change, and before the next task:
-        // the `close` event of `dialog.close()` comes a frame later, when the owner can have opened the window again.
+        // It tells the owner in a microtask: Svelte gives a teardown the values from before the change, so a direct call
+        // would see the window still open. It does not call `dialog.close()`: the `close` event of that call comes a
+        // frame later, when the owner can have opened the window again.
         return () => {
             if (!dialog.open) return;
             queueMicrotask(onClose);
@@ -37,7 +40,7 @@
     let pressedOutside = false;
 </script>
 
-<!-- Esc closes a modal dialog by itself, and each way of closing ends in `onclose`. -->
+<!-- Esc closes a modal dialog by itself, and each way in which the rider closes the window ends in `onclose`. -->
 <dialog bind:this={dialog} class:large={page} class:wide aria-labelledby={heading} onclose={onClose} onpointerdown={page ? event => pressedOutside = outside(event) : undefined}
     onclick={page ? event => { if (pressedOutside && outside(event)) close(); } : undefined}>
     <header>
