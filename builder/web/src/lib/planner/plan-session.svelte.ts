@@ -427,8 +427,10 @@ export class PlanSession {
 
     async planSignedRoute(route: CatalogRecord, plan: RoutePlan, placeName: PlaceName): Promise<boolean> {
         const trip = planTrip(routeBase(route, this.trip), plan, route.loop);
-        // A failure leaves the open plan as it was, so it is no save error of that plan.
-        return this.create(() => ({ plan: newPlan({ ...trip, points: trip.points.map(p => p.kind === 'start' || p.kind === 'finish' ? { ...p, label: placeName(p.coordinate) ?? p.label } : p) }) }));
+        // A failure before the install leaves the open plan as it was, so it is no save error of that plan; a failed
+        // list after the install still opened the new plan.
+        const before = this.plan;
+        return await this.create(() => ({ plan: newPlan({ ...trip, points: trip.points.map(p => p.kind === 'start' || p.kind === 'finish' ? { ...p, label: placeName(p.coordinate) ?? p.label } : p) }) })) || this.plan !== before;
     }
 
     /** Opens a new empty plan with the activity and preset of the open plan. */
