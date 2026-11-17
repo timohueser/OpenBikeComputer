@@ -1749,8 +1749,8 @@ fn candidates<'a>(
             cands.push(Cand { rings, label: pt.label, key, glob, line: 0, relabel: spans, beyond, fill: None, discs });
         }
         // A point's ring of an owned layer belongs to the better of the two arms it joins.
-        for k in 0..bands {
-            for (ring, &l) in r.rings[k].iter().zip(&r.ring_lines[k]) {
+        for (k, (rings, owners)) in r.rings.iter().zip(&r.ring_lines).enumerate().take(bands) {
+            for (ring, &l) in rings.iter().zip(owners) {
                 let layer = if owned(k) { &mut own_layers.entry(l).or_default()[k] } else { &mut layers[k] };
                 layer.push(ring.clone());
             }
