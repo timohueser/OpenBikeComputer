@@ -275,8 +275,8 @@ pub struct Report {
     pub stages: usize,
     pub via: Vec<usize>,
     pub long_points: Vec<(i64, usize)>,
-    /// The routes whose line joins across main member ways that the import does not hold, with
-    /// their count.
+    /// The routes that skip main member ways that the import does not hold, with their count. A
+    /// route can still leave the catalog later.
     pub skipped_ways: BTreeMap<i64, usize>,
     /// The search of each route: relation ID, seconds and router calls.
     pub searches: Vec<(i64, f64, usize)>,
@@ -550,14 +550,16 @@ fn route<D: RoutingData>(
             Some(chained) => runs = chained,
             None if runs.windows(2).all(|w| apart(w[0][w[0].len() - 1], w[1][0]) <= MAX_GAP_M) => {}
             None => {
+                let ends = [runs[0][0], runs[runs.len() - 1][runs[runs.len() - 1].len() - 1]];
                 let (parts, branches) = assemble::prune_forks(&runs, &apart, SIDE_TRIP_SHARE).ok_or(Reason::Fork)?;
                 runs = assemble::chain(&parts, &apart, MAX_GAP_M).ok_or(Reason::Gap)?;
-                assemble::side_trips(&mut runs, &branches, &apart);
+                assemble::side_trips(&mut runs, &branches, ends, &apart);
             }
         }
     }
     let runs: Vec<Vec<P>> = runs.iter().map(|run| run.iter().map(|n| points[n]).collect()).collect();
     let own = runs.concat();
+    let own = shape::Near::new(&own);
     let length: f64 = runs.iter().map(|run| shape::length(run)).sum();
     if length < MIN_LENGTH_M {
         return Err(Reason::Short);
