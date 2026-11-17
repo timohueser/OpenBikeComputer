@@ -71,7 +71,9 @@ test('the key of a cover comes from the look and the line, with the light of the
 
 test('a light is a day of each year in its month, and the default month is a month of the set', () => {
     expect(lightOf('0715-1000')).toEqual({ date: `${new Date().getFullYear()}-07-15`, time: '10:00', weather: 'sunny' });
-    for (const light of ['0229-1000', '1301-1000', '0001-1000', '0715-10']) expect(() => lightOf(light)).toThrow('a day of each year');
+    expect(lightOf('0101-0000').time).toBe('00:00');
+    expect(lightOf('1231-2359').time).toBe('23:59');
+    for (const light of ['0229-1000', '1301-1000', '0001-1000', '0715-10', '0715-2400', '0715-1060']) expect(() => lightOf(light)).toThrow('a day of each year');
     checkMonths({ months: { '07': '0715-1000' }, default_month: '07' });
     expect(() => checkMonths({ months: { '07': '0815-1000' }, default_month: '07' })).toThrow('not in its month 07');
     expect(() => checkMonths({ months: { '07': '0715-1000' }, default_month: '08' })).toThrow('default_month 08');
@@ -131,7 +133,7 @@ test('render refuses a still page of another release than production', () => {
     checkRelease(RELEASE.id, RELEASE.id);
 });
 
-test('upload refuses a route with no cover and no mark, else sends the covers that the bucket lacks and then the set; switch makes it live', async () => {
+test('upload refuses a route with no cover and no mark, else sends the points, the images that the bucket lacks and then the set; switch makes a whole set live', async () => {
     const out = test.info().outputPath('out'), fake = bucket();
     await expect(upload({ out, ...fake })).rejects.toThrow(`release ${RELEASE.id} have no cover and no mark of no view: 1001, 1002.`);
     await expect(upload({ out, without: [1002], ...fake })).rejects.toThrow('no mark of no view: 1001.');
@@ -139,13 +141,16 @@ test('upload refuses a route with no cover and no mark, else sends the covers th
 
     rendered(out);
     const cover = `route-pictures/covers/1001/${keyOf(VALLEY)}`;
-    fake.objects.set(`${cover}.json`, 'held');
     const set = await upload({ out, ...fake });
-    // The manifest goes last, after the slower cell file.
-    expect(fake.puts.map(({ key }) => key)).toEqual([`${cover}${IMAGE}`, `route-pictures/sets/${set}/cells/9-267-180.json`, `route-pictures/sets/${set}/manifest.json`]);
+    // The points go before the image, and the manifest last, after the slower cell file.
+    expect(fake.puts.map(({ key }) => key)).toEqual([`${cover}.json`, `${cover}${IMAGE}`, `route-pictures/sets/${set}/cells/9-267-180.json`, `route-pictures/sets/${set}/manifest.json`]);
     expect(fake.puts.every(({ args }) => args.includes('--immutable') && args.includes('public, max-age=31536000, immutable'))).toBe(true);
     expect(JSON.parse(fake.objects.get(`route-pictures/sets/${set}/cells/9-267-180.json`))).toEqual({ format: 1, routes: { 1001: keyOf(VALLEY) } });
     expect(JSON.parse(fake.objects.get(`route-pictures/sets/${set}/manifest.json`))).toEqual({ format: 1, set, release: RELEASE.id, look: LOOK, months: { '07': '0715-1000' }, default_month: '07', width: 960, height: 640, covers: 1, credits: ['terrain'] });
+
+    const sent = fake.puts.length;
+    expect(await upload({ out, ...fake })).toBe(set);
+    expect(fake.puts.slice(sent).map(({ key }) => key)).toEqual([`route-pictures/sets/${set}/cells/9-267-180.json`, `route-pictures/sets/${set}/manifest.json`]);
 
     await switchTo(set, fake);
     expect(fake.puts.at(-1)).toMatchObject({ key: 'route-pictures/manifest.json', args: ['put', '--content-type', 'application/json', '--cache-control', 'public, max-age=60, must-revalidate'] });
@@ -156,6 +161,8 @@ test('upload refuses a route with no cover and no mark, else sends the covers th
     const odd = 'fedcba9876543210', manifest = JSON.parse(fake.objects.get(`route-pictures/sets/${set}/manifest.json`));
     fake.objects.set(`route-pictures/sets/${odd}/manifest.json`, JSON.stringify({ ...manifest, set: odd, default_month: '08' }));
     await expect(switchTo(odd, fake)).rejects.toThrow('default_month 08');
+    fake.objects.delete(`route-pictures/sets/${set}/cells/9-267-180.json`);
+    await expect(switchTo(set, fake)).rejects.toThrow(`The cell files of set ${set} in the bucket do not give its id`);
     expect(fake.puts.length).toBe(puts);
 });
 

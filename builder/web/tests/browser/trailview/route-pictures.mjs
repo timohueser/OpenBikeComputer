@@ -69,7 +69,7 @@ function stateOf(out, record) {
 export function lightOf(light) {
     const [, month, day, hour, minute] = /^(\d\d)(\d\d)-(\d\d)(\d\d)$/.exec(light) ?? [];
     const date = month && new Date(Date.UTC(2027, month - 1, day));
-    if (!date || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== Number(day)) throw new Error(`${light}: a light is MMDD-HHMM, on a day of each year.`);
+    if (!date || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== Number(day) || hour > 23 || minute > 59) throw new Error(`${light}: a light is MMDD-HHMM, on a day of each year.`);
     return { date: `${new Date().getFullYear()}-${month}-${day}`, time: `${hour}:${minute}`, weather: 'sunny' };
 }
 
@@ -200,7 +200,13 @@ export function checkRelease(page, release) {
 const shoot = (page, job) => page.evaluate(async ({ line, camera, cameraLight, light, width, height, timeoutMs }) => {
     const { coverView, still } = window.trailviewStill;
     try {
-        const view = camera ? { ...camera, mode: 'fly', debug: 'off', plan: 'off' } : await coverView(line, { width, height, ...cameraLight });
+        let view;
+        try {
+            view = camera ? { ...camera, mode: 'fly', debug: 'off', plan: 'off' } : await coverView(line, { width, height, ...cameraLight });
+        } catch (error) {
+            // `coverView` fails when it cannot read a terrain tile, for example after a 429: render waits and tries again as for a still.
+            return { failure: 'tiles-failed', message: `the camera failed: ${error.message}` };
+        }
         if (!view) return { none: true };
         const { image, points, credits } = await still({ view: { ...view, ...light }, width, height, line }, { timeoutMs });
         if (image.type !== 'image/webp') return { failure: 'type', message: `the browser encoded ${image.type}, not WebP` };
@@ -240,6 +246,13 @@ async function cover(browser, origin, options, job) {
     return result;
 }
 
+/** The id of a set: the hash of its cell files in the order of their cell ids, then of its manifest with an empty `set`. */
+const setOf = (files, manifest) => {
+    const hash = createHash('sha256');
+    for (const file of files) hash.update(file);
+    return hash.update(JSON.stringify({ ...manifest, set: '' })).digest('hex').slice(0, 16);
+};
+
 /**
  * Writes the cell files and the manifest of the set of the covers in `out` for `records`, under
  * <out>/sets/<set>/, and gives the set id, the manifest and the cell ids.
@@ -255,9 +268,7 @@ export function writeSet(out, records, release) {
     }
     const ids = Object.keys(cells).sort(), files = ids.map(cell => `${JSON.stringify({ format: 1, routes: cells[cell] })}\n`);
     const manifest = { format: 1, set: '', release, look: LOOK, months: { [MONTH]: LIGHT }, default_month: MONTH, width: WIDTH, height: HEIGHT, covers, credits: [...credits] };
-    const hash = createHash('sha256');
-    for (const file of files) hash.update(file);
-    manifest.set = hash.update(JSON.stringify(manifest)).digest('hex').slice(0, 16);
+    manifest.set = setOf(files, manifest);
     const dir = join(out, 'sets', manifest.set);
     mkdirSync(join(dir, 'cells'), { recursive: true });
     ids.forEach((cell, i) => writeFileSync(join(dir, 'cells', `${cell}.json`), files[i]));
@@ -390,7 +401,8 @@ export async function upload({ out = OUT, without = [], r2 = obcR2, fetch = glob
     const filesOf = record => [['image/webp', IMAGE], ['application/json', POINTS]].map(([type, end]) => ({ type, file: coverFile(out, record, end), key: `${PREFIX}/covers/${record.id}/${keyOf(record)}${end}` }));
     const files = covered.flatMap(filesOf), sent = files.filter(({ key }) => !held.has(key));
     console.log(`${sent.length} of ${files.length} cover files to send.`);
-    await pool(sent, AT_ONCE, ({ type, file, key }) => put(r2, type, file, key, wait));
+    // The points first: an image in the bucket always has its points, so a later render takes its camera.
+    for (const kind of ['application/json', 'image/webp']) await pool(sent.filter(({ type }) => type === kind), AT_ONCE, ({ type, file, key }) => put(r2, type, file, key, wait));
     await pool(cells, AT_ONCE, cell => put(r2, 'application/json', join(dir, 'cells', `${cell}.json`), `${PREFIX}/sets/${set}/cells/${cell}.json`, wait));
     // Last: a set whose manifest is in the bucket has each of its cell files there.
     await put(r2, 'application/json', join(dir, 'manifest.json'), `${PREFIX}/sets/${set}/manifest.json`, wait);
@@ -410,9 +422,10 @@ export function checkMonths({ months, default_month: month }) {
 }
 
 /**
- * Reads the cell files of an uploaded set from the bucket, checks with one list of the bucket that it
- * holds the points and the image of each month of the set of each cover that they name, then puts the manifest of the set at the live key. The bucket, not
- * the public host: the edge cache keeps a file for a year after it is deleted.
+ * Reads the cell files of an uploaded set from the bucket, checks that they and the manifest give the set id,
+ * so that no cell file is missing, and with one list of the bucket that it holds the points and the image of
+ * each month of the set of each cover that they name, then puts the manifest of the set at the live key. The
+ * bucket, not the public host: the edge cache keeps a file for a year after it is deleted.
  */
 export async function switchTo(set, { r2 = obcR2 } = {}) {
     if (!/^[0-9a-f]{16}$/.test(set ?? '')) throw new Error(`${set}: a set id is 16 hexadecimal digits.`);
@@ -424,14 +437,17 @@ export async function switchTo(set, { r2 = obcR2 } = {}) {
         const manifest = JSON.parse(readFileSync(file, 'utf8')), ends = [POINTS, ...Object.values(manifest.months).map(light => `-${light}.webp`)];
         if (manifest.set !== set) throw new Error(`The manifest of set ${set} names another set.`);
         checkMonths(manifest);
-        const cells = [...held].filter(name => name.startsWith(`${root}cells/`)), missing = new Set();
+        const idOf = name => name.slice(`${root}cells/`.length, -'.json'.length);
+        const cells = [...held].filter(name => name.startsWith(`${root}cells/`)).sort((a, b) => (idOf(a) < idOf(b) ? -1 : 1)), missing = new Set(), texts = new Map();
         await pool(cells, AT_ONCE, async cell => {
             const copy = join(dir, cell.slice(cell.lastIndexOf('/') + 1));
             await r2(['get', cell, copy]);
-            for (const [id, cover] of Object.entries(JSON.parse(readFileSync(copy, 'utf8')).routes)) {
+            texts.set(cell, readFileSync(copy, 'utf8'));
+            for (const [id, cover] of Object.entries(JSON.parse(texts.get(cell)).routes)) {
                 for (const name of ends.map(end => `${PREFIX}/covers/${id}/${cover}${end}`)) if (!held.has(name)) missing.add(name);
             }
         });
+        if (setOf(cells.map(cell => texts.get(cell)), manifest) !== set) throw new Error(`The cell files of set ${set} in the bucket do not give its id: one is missing or changed.`);
         if (missing.size) throw new Error(`The bucket does not hold each cover of set ${set}:\n${[...missing].sort().join('\n')}`);
         await r2(['put', '--content-type', 'application/json', '--cache-control', LIVE, file, `${PREFIX}/manifest.json`]);
         return set;

@@ -106,7 +106,7 @@ For a new planner release, do steps 1 and 4: only the routes whose line changed 
 - `render` skips a route whose cover or `.none` mark exists for its key. A change of the size, the
   camera rule or its light in the script changes `look` and so each key: all routes render again.
 - `upload` takes the routes of the active production release, and refuses while one of them has no
-  cover and no `.none` mark. It lists the covers in the bucket one time and sends only the missing
-  ones, 16 at a time. After a 429 of the host it waits one minute, at most 5 times for a file.
+  cover and no `.none` mark. It lists the bucket once and sends only the missing cover files, 16
+  at a time, the points first. After a 429 of the host it waits one minute, at most 5 times for a file.
 - `upload` and `switch` call `obc data r2`, which needs `OBC_R2_*`. `switch` checks the covers in
   the bucket, because the public host keeps a deleted file in its cache for a year.

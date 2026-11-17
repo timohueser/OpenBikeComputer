@@ -35,8 +35,10 @@ blocks a query string.
 | `route-pictures/covers/<id>/<key>.json` | The [points](#4-cover) of that cover, for each month | `public, max-age=31536000, immutable` |
 
 The writer never replaces a key other than the live manifest. It puts the manifest of a set there
-to make that set live, after it checks in the bucket that each cover of each cell file of the set is
-there: its points and its image of each month of the set. The public host is no proof: its cache
+to make that set live, after it checks in the bucket that the cell files and the manifest of the
+set give its `set`, and that each cover of each cell file is there: its points and its image of
+each month of the set. It puts the points file of a cover before its images, so that each image in
+the bucket has its points. The public host is no proof: its cache
 keeps a file for a year. Sets share the files of the covers: a file that the bucket holds is not
 sent again. So a set that adds a month sends only the images of that month. The name of an image
 holds its light, so a set that changes the light of a month names new images of that month only.
@@ -51,7 +53,7 @@ A UTF-8 JSON object.
 | `set` | The hash of the cell files of the set in ascending order of their cell IDs as text, and then of this manifest as JSON with an empty `set` |
 | `release` | The ID of the planner release whose catalog the set was made for. It is information for the owner. |
 | `look` | `C\|L\|W\|H`: the version `C` of the camera rule, the light `L` of the [camera](#4-cover) as `MMDD-HHMM`, and the size of each image. Now `1\|0715-1000\|960\|640`. |
-| `months` | Object: for each month `MM` (`01` to `12`) that the set holds, the light of its images as `MMDD-HHMM`, the date and the time in the year of the render. The `MM` of a light is its key. `DD` is a day of each year, so never `0229`. Each cover of the set has an image of each of these months. Now `{"07": "0715-1000"}`. |
+| `months` | Object: for each month `MM` (`01` to `12`) that the set holds, the light of its images as `MMDD-HHMM`, the date and the time in the year of the render. The `MM` of a light is its key. `DD` is a day of each year, so never `0229`. `HHMM` is from `0000` to `2359`. Each cover of the set has an image of each of these months. Now `{"07": "0715-1000"}`. |
 | `default_month` | A key of `months`: the month that a reader shows when the set does not hold the current month. A writer refuses to make live a set where it is not a key of `months`. Now `07`. |
 | `width`, `height` | `960`, `640`: the size of each image in pixels |
 | `covers` | The count of covers of the set |
