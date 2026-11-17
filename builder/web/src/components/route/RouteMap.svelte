@@ -8,7 +8,7 @@
     import Icon from '../../lib/ui/Icon.svelte';
     import PhotoMarks from './PhotoMarks.svelte';
     import { basemapStyle, type Relief } from '../../lib/planner/map-style';
-    import { styleConfig, terrain, useMapProtocols } from '../../lib/planner/map-setup';
+    import { ClosedAttribution, styleConfig, terrain, useMapProtocols } from '../../lib/planner/map-setup';
     import { terrainRetry } from '../../lib/planner/map-terrain';
     import { appearance } from '../../lib/theme.svelte';
 
@@ -99,8 +99,9 @@
         relief = lease.relief();
         const created = new maplibregl.Map({
             container, style: basemapStyle(shown = theme, styleConfig, relief), bounds: bounds(), fitBoundsOptions: { padding: 32 },
-            attributionControl: { compact: true }, maxPitch: 0, renderWorldCopies: false,
+            attributionControl: false, maxPitch: 0, renderWorldCopies: false,
         });
+        created.addControl(new ClosedAttribution());
         created.dragRotate.disable();
         created.touchZoomRotate.disableRotation();
         created.on('style.load', addLine);

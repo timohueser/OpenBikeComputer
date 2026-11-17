@@ -1,5 +1,4 @@
-import { routeDistance, type Coordinate } from './geo';
-import { corridorTiles } from './place-index';
+import type { Coordinate } from './geo';
 import type { BikeType } from './riding-profiles';
 import { decodeCoordinates } from './route-answer';
 
@@ -34,30 +33,6 @@ export interface CatalogRecord {
 /** A record with a line, not a long route. */
 export type RouteRecord = CatalogRecord & Required<Pick<CatalogRecord, 'line_udeg' | 'via'>>;
 
-export type RouteShape = 'any' | 'loop' | 'one-way';
-export type RouteSort = 'nearest' | 'shortest' | 'longest' | 'most-climb' | 'least-climb';
-/** Inclusive bounds. An absent bound is no limit. */
-export interface Bounds { from?: number; to?: number }
-
-export interface RouteQuery {
-    start: Coordinate;
-    radiusKm: number;
-    activity: BikeType;
-    shape: RouteShape;
-    distanceKm?: Bounds;
-    climbM?: Bounds;
-    /** Grade indices of the hardest part: 0 to 5 (T1–T6) for hiking, 0 to 3 (S0–S3) for mountain bike. Other activities ignore it. */
-    hardest?: [number, number];
-    sort: RouteSort;
-    /** Offline: the downloaded cells. Only routes that lie wholly inside them match. */
-    covered?: ReadonlySet<string>;
-}
-
-export interface RouteMatch { route: CatalogRecord; distanceM: number }
-
-/** A cell file, or null when the cell is not covered. */
-export type CellLoader = (id: string) => Promise<CatalogRecord[] | null>;
-
 /** The catalog kinds that each bike rides. */
 export const kinds: Record<BikeType, CatalogRecord['kind'][]> = {
     hiking: ['hiking', 'foot'], mtb: ['mtb'], road: ['bicycle'], gravel: ['bicycle'], touring: ['bicycle'],
@@ -65,48 +40,6 @@ export const kinds: Record<BikeType, CatalogRecord['kind'][]> = {
 
 /** The name of grade `index` of `grades_m`: T1 to T6 for hiking and foot, S0 to S5 for mountain bike. */
 export const gradeName = (kind: 'hiking' | 'foot' | 'mtb', index: number) => kind === 'mtb' ? `S${index}` : `T${index + 1}`;
-const sortKeys: Record<RouteSort, (match: RouteMatch) => number> = {
-    nearest: match => match.distanceM,
-    shortest: match => match.route.length_m,
-    longest: match => -match.route.length_m,
-    'most-climb': match => -match.route.ascent_m,
-    'least-climb': match => match.route.ascent_m,
-};
-
-const within = (value: number, { from, to }: Bounds = {}, scale = 1) =>
-    (from ?? -Infinity) * scale <= value && value <= (to ?? Infinity) * scale;
-
-function passes(route: CatalogRecord, query: RouteQuery): boolean {
-    const { covered, shape, hardest } = query;
-    if (!kinds[query.activity].includes(route.kind)) return false;
-    if (covered && !route.cells.every(cell => covered.has(cell))) return false;
-    if (shape !== 'any' && route.loop !== (shape === 'loop')) return false;
-    if (!within(route.length_m, query.distanceKm, 1000) || !within(route.ascent_m, query.climbM)) return false;
-    if (!hardest || (query.activity !== 'hiking' && query.activity !== 'mtb')) return true;
-    // An ungraded route is easy for the upper bound, but only an explicit grade meets a lower bound.
-    const [min, max] = hardest;
-    return (route.hardest ?? 0) <= max && (min === 0 || (route.hardest ?? -1) >= min);
-}
-
-/**
- * The routes within the radius that pass the filters, in the sort order with ties by id. The distance is from the
- * start to the nearest point of the route; a long route measures to its own start. A search at a larger radius holds
- * every match of a smaller one, so the matches of one search at the largest radius give the count for each smaller radius.
- */
-export async function searchRoutes(query: RouteQuery, loadCell: CellLoader): Promise<RouteMatch[]> {
-    const { start, radiusKm, covered } = query;
-    const cells = corridorTiles([start], radiusKm, 9).map(key => key.replaceAll('/', '-')).filter(id => !covered || covered.has(id));
-    const records = new Map<number, CatalogRecord>();
-    for (const file of await Promise.all(cells.map(loadCell))) file?.forEach(route => records.set(route.id, route));
-    const matches: RouteMatch[] = [];
-    for (const route of records.values()) {
-        if (!passes(route, query)) continue;
-        const km = routeDistance(decodeCoordinates(route.start_udeg ?? route.line_udeg ?? []), radiusKm)(start);
-        if (km !== Infinity) matches.push({ route, distanceM: km * 1000 });
-    }
-    const key = sortKeys[query.sort];
-    return matches.sort((a, b) => key(a) - key(b) || a.route.id - b.route.id);
-}
 
 /** The plan of a route record: start, shaping points and finish, and the plan indices where it turns back on purpose. */
 export function routePlan(route: RouteRecord): { points: Coordinate[]; turnarounds: number[] } {
