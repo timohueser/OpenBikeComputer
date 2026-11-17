@@ -1552,16 +1552,14 @@ fn ceiling_segs<'a>(b: &'a Block, segs: &'a [u32]) -> impl Iterator<Item = (Line
     lines.skip_while(|(ln, ..)| ln.storey != 0).map_while(|(ln, i, l)| ln.ceiling.then_some((ln, i, l)))
 }
 
-/// Per ceiling line segment of q's height segments (`segs`) of the bores' floor lines (`floors`) or of the decks: the
-/// metres of q
-/// outside the deck's stroke, the deck's surface at q's foot (banked as the line's surface is across its
-/// stroke, level past it) less its drop, which is the bound inside the stroke, the drop, the line's `rise`, the
-/// line, and the metres of q past the nearer flat end (negative between them, minus infinity where no end is near). A
-/// bore's floor line has a negative
-/// drop: its bound is a floor (`floor`), and its rise is the most that it lifts the terrain. The stroke ends
-/// flat at each end of the line, on the line through the end sample along its `flat` normal: a segment whose
-/// start lies within its half-width and `ceiling_release_m` of an end, along the line, holds q past that end
-/// line as past its own end. The end segments reach on along their chord to the flat ends.
+/// Per ceiling line segment of q's height segments (`segs`), of the bores' floor lines (`floors`) or of the decks: the
+/// metres of q outside the deck's stroke, the deck's surface at q's foot (banked as the line's surface is across its
+/// stroke, level past it) less its drop, which is the bound inside the stroke, the drop, the line's `rise`, the line,
+/// and the metres of q past the nearer flat end (negative between them, minus infinity where no end is near). A bore's
+/// floor line has a negative drop: its bound is a floor (`floor`), and its rise is the most that it lifts the terrain.
+/// The stroke ends flat at each end of the line, on the line through the end sample along its `flat` normal: a segment
+/// whose start lies within its half-width and `ceiling_release_m` of an end, along the line, holds q past that end line
+/// as past its own end. The end segments reach on along their chord to the flat ends.
 fn decks<'a>(
     b: &'a Block,
     q: [f64; 2],

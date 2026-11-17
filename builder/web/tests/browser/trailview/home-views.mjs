@@ -12,7 +12,6 @@
 // with `npm run pretest:trailview` first. upload takes only images of the active production release.
 // upload and switch call `obc data r2`.
 
-import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -21,7 +20,10 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { clock, daylight, instantAt, solarPosition, solarTerms } from '../../../src/lib/planner/solar.ts';
-import { launch, routeFixture, serve } from './harness.js';
+import { launch, serve } from './harness.js';
+import { CATALOG, HOST, IMMUTABLE, LIVE, RETRY_MS, SOFTWARE_MS, checkHost, obcR2, productionRelease, readJson, stillPage } from './stills.mjs';
+
+export { CATALOG, HOST };
 
 export const LIST = new URL('./home-views.json', import.meta.url).pathname;
 const OUT = new URL('../../../../../.artifacts/home-views', import.meta.url).pathname;
@@ -35,12 +37,7 @@ const HOUR = 60;
 const SHORTEST = 240;
 /** The night image is at 23:00, and only where the sun is at least NIGHT_SUN degrees under the horizon then. */
 const NIGHT = 23 * 60, NIGHT_SUN = -6;
-/** After a tile fails, render waits this long and tries the image once more: the tile host answers 429 to too many requests. */
-const RETRY_MS = 60_000;
-/** The longest still on SwiftShader, which draws for minutes; on a GPU the default of `still()` holds. */
-const SOFTWARE_MS = 600_000;
-export const PREFIX = 'home-views', HOST = 'https://maps.openbikecomputer.com', CATALOG = `${HOST}/planner/catalog.json`;
-const IMMUTABLE = 'public, max-age=31536000, immutable', LIVE = 'public, max-age=60, must-revalidate';
+export const PREFIX = 'home-views';
 const RAD = Math.PI / 180;
 /** The altitude of the sun's centre in degrees when its upper limb meets the horizon, as daylight() takes it. */
 const SUNSET = -0.833;
@@ -136,22 +133,10 @@ export function setOf(manifest, images) {
     return hash.digest('hex').slice(0, 16);
 }
 
-const readJson = file => (existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : undefined);
-
 /** Whether the folder of a view holds its images and a view.json of the same `view`, `night` and `release`. */
 function rendered(dir, view, release) {
     const was = readJson(join(dir, 'view.json'));
     return was?.view === view.view && was.night === Boolean(view.night) && was.release === release && slotsOf(view).every(slot => existsSync(join(dir, `${slot}.webp`)));
-}
-
-/** A page with the still function; throws when the browser has no GPU for stills. */
-async function stillPage(browser, origin, { gpu, fixture }) {
-    const page = await browser.newPage();
-    if (fixture) await routeFixture(page);
-    await page.goto(`${origin}/trailview.html?still`);
-    await page.waitForFunction(() => window.trailviewStill || document.querySelector('.notice'), null, { timeout: 60_000 });
-    if (!await page.evaluate(software => window.trailviewStill?.canRenderStills({ software }), !gpu)) throw new Error('This browser has no GPU for stills: run render with --gpu on a machine with a GPU.');
-    return page;
 }
 
 /** One still in the page, as base64 WebP, or the name and message of its failure. */
@@ -218,38 +203,13 @@ export async function render({ list, out = OUT, only, preview = false, gpu = fal
     }
 }
 
-/** `obc data r2 ARGS`, which gives its standard output; throws when it fails. */
-function obcR2(args) {
-    const { status, stdout } = spawnSync('obc', ['data', 'r2', ...args], { stdio: ['inherit', 'pipe', 'inherit'], encoding: 'utf8' });
-    if (status !== 0) throw new Error(`obc data r2 ${args.join(' ')} failed`);
-    if (!args.includes('--json')) process.stdout.write(stdout);
-    return stdout;
-}
-
 /** The keys of the images of a manifest. */
 const imageKeys = manifest => manifest.views.flatMap(view => slotsOf(view).map(slot => `${PREFIX}/${manifest.set}/${view.id}/${slot}.webp`));
-
-/** Throws unless the public host answers 200 for each image of a manifest. */
-async function checkHost(manifest, fetch) {
-    const failed = [];
-    for (const key of imageKeys(manifest)) {
-        const { status } = await fetch(`${HOST}/${key}`, { method: 'HEAD' });
-        if (status !== 200) failed.push(`${HOST}/${key}: ${status}`);
-    }
-    if (failed.length) throw new Error(`The public host does not serve each image of set ${manifest.set}:\n${failed.join('\n')}`);
-}
-
-/** The id of the active release of the production catalogue. */
-async function productionRelease(fetch) {
-    const response = await fetch(CATALOG);
-    if (response.status !== 200) throw new Error(`${CATALOG}: ${response.status}.`);
-    return JSON.parse(await response.text()).active.id;
-}
 
 /** Puts the images and the manifest of the rendered set under its id, checks them on the public host, and gives the id. */
 export async function upload({ list, out = OUT, r2 = obcR2, fetch = globalThis.fetch }) {
     // `obc data` runs from the root of the repository, not from this directory.
-    const root = join(resolve(out), list.date), release = await productionRelease(fetch), missing = [], credits = {}, images = [];
+    const root = join(resolve(out), list.date), release = (await productionRelease(fetch)).id, missing = [], credits = {}, images = [];
     for (const view of list.views) {
         const dir = join(root, view.id);
         if (!rendered(dir, view, release)) {
@@ -264,9 +224,9 @@ export async function upload({ list, out = OUT, r2 = obcR2, fetch = globalThis.f
     manifest.set = setOf(manifest, images.map(({ file }) => readFileSync(file)));
     const file = join(root, 'manifest.json');
     writeFileSync(file, `${JSON.stringify(manifest, null, 2)}\n`);
-    for (const image of images) r2(['put', '--immutable', '--content-type', 'image/webp', '--cache-control', IMMUTABLE, image.file, `${PREFIX}/${manifest.set}/${image.key}`]);
-    r2(['put', '--immutable', '--content-type', 'application/json', '--cache-control', IMMUTABLE, file, `${PREFIX}/${manifest.set}/manifest.json`]);
-    await checkHost(manifest, fetch);
+    for (const image of images) await r2(['put', '--immutable', '--content-type', 'image/webp', '--cache-control', IMMUTABLE, image.file, `${PREFIX}/${manifest.set}/${image.key}`]);
+    await r2(['put', '--immutable', '--content-type', 'application/json', '--cache-control', IMMUTABLE, file, `${PREFIX}/${manifest.set}/manifest.json`]);
+    await checkHost(imageKeys(manifest), fetch, `each image of set ${manifest.set}`);
     return manifest.set;
 }
 
@@ -277,16 +237,16 @@ export async function upload({ list, out = OUT, r2 = obcR2, fetch = globalThis.f
  */
 export async function switchTo(set, { r2 = obcR2 } = {}) {
     if (!/^[0-9a-f]{16}$/.test(set ?? '')) throw new Error(`${set}: a set id is 16 hexadecimal digits.`);
-    const key = `${PREFIX}/${set}/manifest.json`, held = keys => new Set(JSON.parse(r2(['stat', '--json', ...keys])).objects.map(object => object.key));
-    if (!held([key]).size) throw new Error(`The bucket has no ${key}.`);
+    const key = `${PREFIX}/${set}/manifest.json`, held = async keys => new Set(JSON.parse(await r2(['stat', '--json', ...keys])).objects.map(object => object.key));
+    if (!(await held([key])).size) throw new Error(`The bucket has no ${key}.`);
     const dir = mkdtempSync(join(tmpdir(), 'home-views-')), file = join(dir, 'manifest.json');
     try {
-        r2(['get', key, file]);
+        await r2(['get', key, file]);
         const manifest = JSON.parse(readFileSync(file, 'utf8'));
         if (manifest.set !== set) throw new Error(`The manifest of set ${set} names set ${manifest.set}.`);
-        const images = imageKeys(manifest), there = held(images), missing = images.filter(image => !there.has(image));
+        const images = imageKeys(manifest), there = await held(images), missing = images.filter(image => !there.has(image));
         if (missing.length) throw new Error(`The bucket does not hold each image of set ${set}:\n${missing.join('\n')}`);
-        r2(['put', '--content-type', 'application/json', '--cache-control', LIVE, file, `${PREFIX}/manifest.json`]);
+        await r2(['put', '--content-type', 'application/json', '--cache-control', LIVE, file, `${PREFIX}/manifest.json`]);
         return set;
     } finally {
         rmSync(dir, { recursive: true, force: true });

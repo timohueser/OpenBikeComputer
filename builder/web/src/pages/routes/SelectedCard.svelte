@@ -1,5 +1,5 @@
-<!-- The card of the selected route, ride, group of rides or trip over the map: its picture, its numbers, its profile and
-     its buttons. The name is the one link of the card. -->
+<!-- The card of the selected route, ride, group of rides or trip over the map, with the buttons that change the
+     library. -->
 <script lang="ts">
     import Cover from '../../lib/covers/Cover.svelte';
     import type { Library } from '../../lib/library/store';
@@ -8,7 +8,7 @@
     import { ROUTES } from '../../lib/routes';
     import { formatDistance, formatHeight } from '../../lib/settings/format';
     import type { Item } from './filter';
-    import MiniProfile from './MiniProfile.svelte';
+    import RouteCard from './RouteCard.svelte';
     import { dayText, tripDates, type Row } from './rows';
     import { stateText, waitingWith, type DeviceState } from './state';
 
@@ -40,6 +40,8 @@
         : item.kind === 'ride' ? [dayText(item.at)]
         : item.summary ? [ridingProfiles[item.summary.bike].label, item.summary.days > 1 && `${item.summary.days} days`,
             runs > 0 && (runs === 1 ? 'ridden once' : `ridden ${runs} times`)] : []);
+    const numbers = $derived(summary ? [formatDistance(summary.lengthM), `${formatHeight(summary.climbM)} up`,
+        ...'movingS' in summary ? [duration(summary.movingS / 3600)] : []] : []);
 
     async function act(work: () => Promise<unknown>) {
         failure = '';
@@ -54,24 +56,10 @@
     const takeOut = () => act(() => library.changeState('apart', apart => [...apart ?? [], item.id]));
 </script>
 
-<section class="card" aria-label={row?.name ?? item.name}>
-    <div class="picture">
-        <Cover {library} id={item.id} place="card" bind:credits />
-    </div>
-    <div class="text">
-        <h2><a class="open" href={`${item.kind === 'ride' ? ROUTES.ride : ROUTES.route}/${item.id}`}>{row?.name ?? item.name}</a></h2>
-        {#if summary}
-            <p class="meta">{meta.filter(Boolean).join(' · ')}</p>
-            <p class="numbers">
-                <span>{formatDistance(summary.lengthM)}</span><span>{formatHeight(summary.climbM)} up</span>
-                {#if 'movingS' in summary}<span>{duration(summary.movingS / 3600)}</span>{/if}
-            </p>
-        {/if}
-        {#if device}<p class="state">{stateText[device]}</p>{/if}
-        {#if failure}<p class="failure" role="alert">{failure}</p>{/if}
-    </div>
-    {#if summary}<div class="profile"><MiniProfile {summary} /></div>{/if}
-    <div class="buttons">
+<RouteCard name={row?.name ?? item.name} href={`${item.kind === 'ride' ? ROUTES.ride : ROUTES.route}/${item.id}`} {meta} {numbers}
+    profile={summary ?? undefined} state={device && stateText[device]} {failure}>
+    {#snippet picture()}<Cover {library} id={item.id} place="card" bind:credits />{/snippet}
+    {#snippet buttons()}
         {#if item.kind === 'route' && summary}
             <button type="button" class="button" disabled={device === 'sent'} onclick={() => send(device !== 'waiting')}>
                 {device === 'waiting' ? 'Do not send' : 'Send to device'}
@@ -80,124 +68,5 @@
             <button type="button" class="button" onclick={again}>Ride it again</button>
             {#if row?.kind === 'group' || inGroup}<button type="button" class="button quiet" onclick={takeOut}>Take out of the group</button>{/if}
         {/if}
-    </div>
-</section>
-
-<style>
-    .card {
-        position: relative;
-        display: grid;
-        /* The profile takes the room that the text leaves, and keeps a fair width beside a long name. */
-        grid-template-columns: 220px minmax(0, max-content) minmax(clamp(140px, 22%, 200px), 1fr) auto;
-        align-items: center;
-        gap: 20px;
-        padding: 10px;
-        border: 1px solid var(--line);
-        border-radius: 10px;
-        background: var(--panel);
-        box-shadow: 0 6px 20px rgb(28 27 20 / 0.18);
-    }
-    .picture {
-        position: relative;
-        height: 130px;
-        overflow: hidden;
-        border-radius: 6px;
-    }
-    /* A long name has two lines; the page of the route has all of it. */
-    h2 {
-        display: -webkit-box;
-        margin: 0;
-        overflow: hidden;
-        font: 700 18px/1.25 var(--sans);
-        -webkit-box-orient: vertical;
-        -webkit-line-clamp: 2;
-        line-clamp: 2;
-    }
-    p {
-        margin: 2px 0 0;
-    }
-    .meta, .state {
-        color: var(--ink-soft);
-        font-size: 13px;
-    }
-    .numbers {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 2px 16px;
-        margin-top: 8px;
-        font: 600 15px/1.2 var(--sans);
-        white-space: nowrap;
-    }
-    .state {
-        margin-top: 8px;
-    }
-    .failure {
-        color: var(--coral);
-    }
-    .profile {
-        height: 84px;
-    }
-    .open {
-        color: inherit;
-        text-decoration: none;
-    }
-    /* The name is the one link of the card: it covers the whole card, under the send button. */
-    .open::after {
-        position: absolute;
-        inset: 0;
-        border-radius: 10px;
-        content: '';
-    }
-    .open:focus-visible {
-        outline: none;
-    }
-    .open:focus-visible::after {
-        outline: 2px solid var(--forest);
-        outline-offset: 2px;
-    }
-    .buttons {
-        position: relative;
-        z-index: 1;
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
-    }
-    .buttons:empty {
-        display: none;
-    }
-    .button {
-        padding: 6px 12px;
-        border: 1px solid var(--line-strong);
-        border-radius: 6px;
-        background: var(--panel);
-        color: var(--ink);
-        white-space: nowrap;
-    }
-    .button:not(:disabled):hover {
-        background: var(--parchment-2);
-    }
-    /* The second button is plain text, so the card has one framed button. */
-    .quiet {
-        border-color: transparent;
-        color: var(--ink-soft);
-        font-size: 13px;
-    }
-    /* Under this width the map leaves the card too little room for four columns. */
-    @media (max-width: 1200px) {
-        .card {
-            grid-template-columns: 120px minmax(0, 1fr);
-            gap: 12px 16px;
-        }
-        .picture {
-            height: 80px;
-        }
-        .profile {
-            display: none;
-        }
-        .buttons {
-            flex-direction: row;
-            grid-column: 1 / -1;
-            justify-self: start;
-        }
-    }
-</style>
+    {/snippet}
+</RouteCard>

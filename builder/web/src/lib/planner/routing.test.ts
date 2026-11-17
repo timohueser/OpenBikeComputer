@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { calculateLine, pacedLine, profileId, regionProfiles, requestAlternatives, requestRoute, routingKey, movingSecondsAt, type RouteTotals, type RoutingLine } from './routing';
+import { calculateLine, pacedLine, profileId, regionProfiles, requestAlternatives, requestRoute, routingKey, movingSecondsAt, type RouteTotals, type RoutingLine, type Surface } from './routing';
 import { LegCache } from './route-legs';
 import { routeService } from '../../../test-support/planner/route-service';
 import { decodeRoutes, type AnswerRoute } from './route-answer';
 import { paceFactor, presetName, servedPresets, type BikeType } from './riding-profiles';
-import { surfaceRuns, surfaceWindow } from './surface-data';
+import { surfaceRuns, surfaceShares, surfaceWindow } from './surface-data';
 import { planView, removeRoutePoint, setEndpoint, type RoutePoint, type Trip } from './editor';
 import { cumulative, type Coordinate } from './geo';
 import { testTrip } from '../../../test-support/planner/trip';
@@ -142,7 +142,7 @@ describe('routing integration', () => {
         expect(line.elapsed.at(-1)).toBe(line.seconds);
         expect(line.elevation.every(h => h === null)).toBe(true);
         expect(line.edges).toEqual({});
-        expect(surfaceRuns(line).shares.get('Unknown')).toBe(1);
+        expect(surfaceShares(surfaceRuns(line))).toEqual([{ surface: 'Unknown', percent: 100 }]);
         const mixed = await calculateLine(legs([undefined, 'straight', 'routed']), new AbortController().signal, new LegCache());
         expect(mixed.edges).toEqual({ surfaces: [null, null, 'Paved', 'Gravel'], pushing: [null, null, false, true] });
     });
@@ -171,19 +171,34 @@ describe('routing integration', () => {
     });
     it('aligns surface sections by distance and clips the view without changing route shares', () => {
         const line = { coordinates: route.geometry, edges: route.edges };
-        const data = surfaceRuns(line);
-        expect(data.runs.map(run => run.surface)).toEqual(['Paved', 'Gravel']);
-        expect(data.runs[0].to).toBeCloseTo(.5);
-        expect(data.runs[1].from).toBe(data.runs[0].to);
-        const clipped = surfaceWindow(data.runs, .25, .75);
-        expect(clipped[0]).toEqual({ ...data.runs[0], from: .25 });
-        expect(clipped[1]).toEqual({ ...data.runs[1], to: .75 });
-        expect(data.shares.get('Gravel')).toBeCloseTo(.5);
-        expect(surfaceRuns({ ...line, edges: {} }).shares.get('Unknown')).toBe(1);
-        expect(surfaceRuns().runs).toEqual([]);
+        const runs = surfaceRuns(line);
+        expect(runs.map(run => run.surface)).toEqual(['Paved', 'Gravel']);
+        expect(runs[0].to).toBeCloseTo(.5);
+        expect(runs[1].from).toBe(runs[0].to);
+        const clipped = surfaceWindow(runs, .25, .75);
+        expect(clipped[0]).toEqual({ ...runs[0], from: .25 });
+        expect(clipped[1]).toEqual({ ...runs[1], to: .75 });
+        expect(surfaceShares(runs)).toEqual([{ surface: 'Paved', percent: 50 }, { surface: 'Gravel', percent: 50 }]);
+        expect(surfaceRuns({ ...line, edges: {} }).map(run => run.surface)).toEqual(['Unknown']);
+        expect(surfaceRuns()).toEqual([]);
         const sameSurface = surfaceRuns({ ...line, edges: { ...line.edges, surfaces: ['Paved', 'Paved'] } });
-        expect(sameSurface.runs.map(run => run.pushing)).toEqual([false, true]);
-        expect(sameSurface.shares.get('Paved')).toBe(1);
+        expect(sameSurface.map(run => run.pushing)).toEqual([false, true]);
+        expect(sameSurface.map(run => run.surface)).toEqual(['Paved', 'Paved']);
+    });
+    it('gives the surface shares in whole percent that add to 100, the largest first and Unknown last', () => {
+        const shares = (lengths: [Surface, number][]) => {
+            let at = 0;
+            return surfaceShares(lengths.map(([surface, length]) => ({ surface, from: at, to: at += length })));
+        };
+        // 62.3, 25.3 and 12.4 percent round down to 99: the largest fraction takes the point that remains.
+        expect(shares([['Gravel', .124], ['Paved', .4], ['Dirt', .253], ['Paved', .223]]))
+            .toEqual([{ surface: 'Paved', percent: 62 }, { surface: 'Dirt', percent: 25 }, { surface: 'Gravel', percent: 13 }]);
+        // The shares are those of the runs, which can be a part of the route.
+        expect(shares([['Paved', .1], ['Gravel', .3]])).toEqual([{ surface: 'Gravel', percent: 75 }, { surface: 'Paved', percent: 25 }]);
+        expect(shares([['Paved', .996], ['Rough', .004]])).toEqual([{ surface: 'Paved', percent: 100 }, { surface: 'Rough', percent: 0 }]);
+        expect(shares([['Unknown', .5], ['Dirt', .2], ['Paved', .3]]))
+            .toEqual([{ surface: 'Paved', percent: 30 }, { surface: 'Dirt', percent: 20 }, { surface: 'Unknown', percent: 50 }]);
+        expect(shares([])).toEqual([]);
     });
     it('reports service failure and never substitutes fixture geometry', async () => {
         vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, json: async () => ({ code: 'no_path', message: 'No legal route.' }) }));

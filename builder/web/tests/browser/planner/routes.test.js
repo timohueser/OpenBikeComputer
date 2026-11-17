@@ -94,6 +94,55 @@ test('the Routes page lists the routes, filters them with a chip, shows the sele
   expect(errors).toEqual([]);
 });
 
+// The boxes of the parts of the page with a selected route, as x, y, width and height in page pixels. A screenshot
+// cannot hold them: the text antialiasing differs between two systems. With save-data on, the cover job makes no
+// picture, so the card shows the line on a plain ground.
+const PARTS = { header: '.routes-page > header', chips: '.chips', rows: '.list .row', card: '.selected .card',
+  picture: '.selected .picture', text: '.selected .text', profile: '.selected .profile', buttons: '.selected .buttons' };
+const LAYOUT = {
+  1440: { header: [20, 62, 1400, 36], chips: [31, 173, 358, 24], rows: [[31, 205, 358, 60], [31, 265, 358, 60], [31, 325, 358, 60]],
+    card: [427, 889, 980, 152], picture: [438, 900, 220, 130], text: [678, 930, 140, 69], profile: [838, 923, 419, 84], buttons: [1277, 948, 119, 34] },
+  390: { header: [16, 60, 358, 80], chips: [27, 214, 336, 24], rows: [[27, 246, 336, 56], [27, 302, 336, 56], [27, 358, 336, 56]],
+    card: [29, 927, 332, 148], picture: [40, 938, 120, 80], text: [176, 943, 174, 69], profile: null, buttons: [40, 1030, 119, 34] },
+};
+const layout = page => page.evaluate(parts => {
+  const box = node => { const r = node.getBoundingClientRect(); return r.width ? [r.x, r.y + scrollY, r.width, r.height] : null; };
+  return Object.fromEntries(Object.entries(parts).map(([key, selector]) =>
+    [key, key === 'rows' ? [...document.querySelectorAll(selector)].map(box) : box(document.querySelector(selector))]));
+}, PARTS);
+/** Each number within 1 px of the expected one. */
+const near = (actual, expected) => expected === null ? actual === null
+  : Array.isArray(expected) && actual?.length === expected.length && expected.every((value, i) => Array.isArray(value) ? near(actual[i], value) : Math.abs(actual[i] - value) <= 1);
+
+test('the Routes page with a selected route, at the width of a computer and of a phone', async ({ page }) => {
+  await page.addInitScript(() => Object.defineProperty(NetworkInformation.prototype, 'saveData', { get: () => true }));
+  await page.route(url => url.hostname !== '127.0.0.1', request => {
+    if (request.request().method() === 'OPTIONS') return request.fulfill(CORS_PREFLIGHT);
+    const response = respond(request.request());
+    return response ? request.fulfill(response) : request.abort();
+  });
+  await page.goto('/planner.html?cover=none');
+  await page.waitForFunction(() => window.coverTest);
+  await page.evaluate(async records => {
+    const { library } = window.coverTest;
+    for (const record of records) await library.saveRoute(record);
+    await library.setState('waiting', ['lake']);
+  }, routes);
+
+  await page.goto('/planner.html#/routes');
+  await page.locator('.list .row', { hasText: 'Start → Finish' }).click();
+  await expect(page.getByRole('region', { name: 'Start → Finish' }).locator('svg polyline')).toHaveCount(1);
+  // The pale fills are below the threshold of the pictures, so the test reads them.
+  await expect(page.locator('.list .row[aria-current="true"]')).toHaveCSS('background-color', 'rgb(231, 236, 223)');
+  await expect(page.locator('.list .thumb .cover').first()).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+  await page.evaluate(() => document.fonts.ready);
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: width === 390 ? 844 : 1100 });
+    await expect.poll(async () => { const actual = await layout(page); return Object.keys(PARTS).filter(key => !near(actual[key], LAYOUT[width][key])); },
+      { message: `parts out of place at ${width} px` }).toEqual([]);
+  }
+});
+
 const year = new Date().getFullYear();
 const lake = [8, 48, 8.1, 48, 8.1, 48.1, 8, 48.1, 8, 48];
 function ride(name, line, lengthM, month, day, bike = 'road', at = year) {
@@ -133,6 +182,10 @@ test('the ridden view shows a trip, a group of rides on a route, a ride taken ou
   await expect(page.getByRole('radio', { name: 'Ridden 6' })).toBeChecked();
   const list = page.locator('.list ul');
   await expect(list.locator('li')).toHaveText([/Coast, day 1 1 to 2 Jun \d+ · 2 days · 76.0\skm/, /Lake test 37.0\skm · last on 5 Apr \d+ 4 rides ›/]);
+  // The button that opens the group lies on the hidden room of its row.
+  const [open, room] = await Promise.all([list.locator('button.open'), list.locator('.room')].map(part => part.boundingBox()));
+  expect(Math.abs(open.x - room.x)).toBeLessThan(1);
+  expect(Math.abs(open.width - room.width)).toBeLessThan(1);
   await expect(page.locator('.totals')).toHaveText(new RegExp(`${year} · 224\\skm · 6 rides`));
 
   // The card of a trip opens its first day; the card of a group takes its newest ride out.

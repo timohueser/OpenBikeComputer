@@ -3,6 +3,7 @@
     import Card from '../../lib/ui/Card.svelte';
     import Segmented from '../../lib/ui/Segmented.svelte';
     import OpeningHours from '../planner/OpeningHours.svelte';
+    import SurfaceLegend from '../planner/SurfaceLegend.svelte';
     import Icon from '../../lib/ui/Icon.svelte';
     import ElevationRow from './ElevationRow.svelte';
     import Menu from './Menu.svelte';
@@ -19,10 +20,10 @@
     import { categoryIds, placeCategories, type PlaceCategory } from '../../lib/planner/poi-kinds';
     import { profileAscent, profileHeightAt, profileSamples, sampleIndex } from '../../lib/planner/profile-data';
     import type { Pin, RouteFacts } from '../../lib/planner/route-facts';
-    import type { RoutingLine } from '../../lib/planner/routing';
+    import type { RoutingLine, Surface } from '../../lib/planner/routing';
     import { kindLabel } from '../../lib/planner/search/presentation';
     import { placeDetails, type SearchPlace } from '../../lib/planner/search/types';
-    import { surfaceBarColors, surfaceRuns, surfaceWindow } from '../../lib/planner/surface-data';
+    import { surfaceBarColors, surfaceRuns, surfaceShares, surfaceWindow } from '../../lib/planner/surface-data';
     import { formatAlong, formatDistance, formatHeight, formatPercent } from '../../lib/settings/format';
 
     /** The bottom card of the Route page: the waypoints, the heights, the surface and the places along the route or one
@@ -62,6 +63,8 @@
     /** The open group of places, and the place of a group of several that the rider chose. */
     let openPlace = $state<{ group: number; place?: number }>();
     let placeLane = $state<HTMLElement>(), width = $state(0), seen = $state(false);
+    /** The surface of the legend entry under the pointer or with the focus: the bar lights its stretches. */
+    let litSurface = $state<Surface>();
     let places = $state.raw<{ found?: Place[]; failed?: boolean }>({});
     let details = $state.raw<Record<string, SearchPlace | null>>({});
 
@@ -80,8 +83,7 @@
     // The shares of a day belong to the calculated line.
     const slice = $derived(routeSlice(profile.coordinates, shown.from, shown.to));
     const nights = $derived(pins.filter(pin => !pin.number).map(pin => pin.share));
-    const runs = $derived(line ? surfaceWindow(surfaceRuns(line).runs, shown.from, shown.to) : []);
-    const surfaces = $derived([...new Set(runs.map(run => run.surface))]);
+    const runs = $derived(line ? surfaceWindow(surfaceRuns(line), shown.from, shown.to) : []);
     const tooLong = $derived(span * totalM / 1000 > PLACES_KM);
 
     // The start, the end, the nights, then the distances.
@@ -270,11 +272,9 @@
 
 {#snippet surface()}
     <div class="bar">
-        {#each runs as run, i (i)}<span style:left={`${x(run.from) * 100}%`} style:width={`${(run.to - run.from) / span * 100}%`} style:background={surfaceBarColors[run.surface]}></span>{/each}
+        {#each runs as run, i (i)}<span class:dim={litSurface && run.surface !== litSurface} style:left={`${x(run.from) * 100}%`} style:width={`${(run.to - run.from) / span * 100}%`} style:background={surfaceBarColors[run.surface]}></span>{/each}
     </div>
-    <span class="legend">
-        {#each surfaces as surface (surface)}<span><i style:background={surfaceBarColors[surface]}></i>{surface}</span>{/each}
-    </span>
+    <SurfaceLegend shares={surfaceShares(runs)} bind:lit={litSurface} />
 {/snippet}
 
 {#snippet placeRow()}
@@ -417,34 +417,7 @@
     .contacts a {
         color: var(--forest);
     }
-    /* The bar stands beside its label; its key follows under it. */
-    .legend {
-        display: flex;
-        gap: 12px;
-        overflow: hidden;
-        height: 16px;
-        color: var(--ink-soft);
-        font-size: 11px;
-        line-height: 16px;
-        white-space: nowrap;
-    }
-    @media (max-width: 760px) {
-        .legend {
-            flex-wrap: wrap;
-            gap: 0 10px;
-            height: auto;
-        }
-    }
-    .legend span {
-        display: flex;
-        align-items: center;
-        gap: 4px;
-    }
-    .legend i {
-        width: 8px;
-        height: 8px;
-        border-radius: 2px;
-    }
+    /* The bar stands beside its label; its legend follows under it. */
     .bar {
         position: relative;
         height: 10px;
@@ -457,6 +430,9 @@
         position: absolute;
         top: 0;
         bottom: 0;
+    }
+    .bar .dim {
+        opacity: .2;
     }
     .places {
         position: relative;

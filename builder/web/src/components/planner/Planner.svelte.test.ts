@@ -343,6 +343,33 @@ describe('profile access', () => {
         expect(document.querySelector('.push-track span')).not.toBeNull();
         expect(onHover).toHaveBeenLastCalledWith(expect.closeTo(.75));
     });
+
+    it('gives the surface shares of the shown stretch, and the focus on a legend entry lights its surface', async () => {
+        const line: RoutingLine = {
+            profile: 'gravel', coordinates: [[8,48], [8.001,48], [8.002,48], [8.003,48]],
+            elevation: [100, 90, 110, 100], elapsed: [0, 20, 40, 60], edges: { surfaces: ['Paved', 'Gravel', 'Gravel'], pushing: [false, false, false] },
+            stops: [], seconds: 60, unknownSurfaceKm: 0, unpavedKm: .15, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0,
+        };
+        mounted.push(mount(Profile, { target: document.body, props: {
+            lineData: line, total: .225, days: [], dayLabels: {}, activeNight: 0, band: null, window: { from: 0, to: .5 },
+            onToggle: vi.fn(), onNight: vi.fn(), onDayEndDrag: vi.fn(), onHover: vi.fn(),
+        } }));
+        await tick();
+        const entries = () => [...document.querySelectorAll<HTMLElement>('.surface li')];
+        const legend = () => entries().map(entry => entry.textContent!.replace(/\s+/g, ' ').trim());
+        expect(legend()).toEqual(['Paved 67%', 'Gravel 33%']);
+        const slider = document.querySelector<HTMLElement>('[role="slider"]')!;
+        slider.focus(); await tick();
+        expect(slider.getAttribute('aria-valuetext')).toContain('Paved · 67% of the shown stretch');
+        button('Whole route').click(); await tick();
+        expect(legend()).toEqual(['Gravel 67%', 'Paved 33%']);
+
+        const dimmed = () => [...document.querySelectorAll<HTMLElement>('.track span')].map(run => run.classList.contains('dim'));
+        entries()[0].focus(); await tick();
+        expect(dimmed()).toEqual([true, false]);
+        entries()[0].blur(); await tick();
+        expect(dimmed()).toEqual([false, false]);
+    });
 });
 
 describe('planner recovery', () => {

@@ -18,3 +18,15 @@ After a deliberate change, set each limit by the rule in `basis`.
 
 `places` counts the places TileJSON and the zoom 11 places tiles that the place index reads along
 the route. `overlays` counts the route network and access TileJSON and its tiles.
+
+## Tile pictures
+
+The tiles of the map settings show crops of the planner map. To make them again, start the
+development server in `builder/web` (`npx vite --port 5316`), then run from `tests/browser`:
+
+```sh
+node planner/tile-pictures.mjs --base http://127.0.0.1:5316 [--only cycling,relief]
+```
+
+The script writes `src/components/planner/tiles/<id>-<light|dark>.jpg`. It needs the network of
+the planner release.

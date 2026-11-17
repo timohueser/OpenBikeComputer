@@ -1,6 +1,7 @@
 <script lang="ts">
-    import { surfaceBarColors as colors, surfaceRuns, surfaceWindow } from '../../lib/planner/surface-data';
-    import type { RoutingLine } from '../../lib/planner/routing';
+    import SurfaceLegend from './SurfaceLegend.svelte';
+    import { surfaceBarColors as colors, surfaceRuns, surfaceShares, surfaceWindow } from '../../lib/planner/surface-data';
+    import type { RoutingLine, Surface } from '../../lib/planner/routing';
     import { axisLeft, axisProgress, axisWidth } from '../../lib/planner/profile-axis';
     import { noteDistance } from '../../lib/planner/route-closures';
     let { line, from, to, rests = [], walking = false, onHover }: {
@@ -11,15 +12,18 @@
     } = $props();
     const axis = $derived({ from, to, rests });
     const helpId = $props.id();
-    const data = $derived(surfaceRuns(line));
-    const visible = $derived(surfaceWindow(data.runs, from, to));
-    const hasPushing = $derived(!walking && data.runs.some(run => run.pushing));
+    const runs = $derived(surfaceRuns(line));
+    const visible = $derived(surfaceWindow(runs, from, to));
+    const shares = $derived(surfaceShares(visible));
+    const hasPushing = $derived(!walking && runs.some(run => run.pushing));
     const pushingDistance = $derived(noteDistance(line?.pushingKm ?? 0));
     let position = $state<number | null>(null);
+    /** The surface of the legend entry under the pointer or with the focus: the bar lights its stretches. */
+    let lit = $state<Surface>();
     const at = $derived(Math.max(from, Math.min(to, position ?? from)));
     const current = $derived(visible.find(run => run.to > at) ?? visible.at(-1));
     const access = $derived(current?.pushing == null ? 'Access unverified' : walking ? 'Walking' : current.pushing ? 'Push bike' : 'Riding');
-    const description = $derived(current ? `${current.surface === 'Unknown' ? 'Unknown surface' : current.surface} · ${Math.round((data.shares.get(current.surface) ?? 0) * 100) || '<1'}% of route · ${access}` : 'Surface unavailable');
+    const description = $derived(current ? `${current.surface === 'Unknown' ? 'Unknown surface' : current.surface} · ${shares.find(share => share.surface === current.surface)?.percent || '<1'}% of the shown stretch · ${access}` : 'No surface data');
     function inspect(value: number) { if (!visible.length) return; position = Math.max(from, Math.min(to, value)); onHover(position); }
     function leave(event: PointerEvent) { if (document.activeElement !== event.currentTarget) { position = null; onHover(null); } }
     function key(event: KeyboardEvent) {
@@ -39,20 +43,18 @@
 <div class="surface">
     <div class="label">
         <strong>Surface</strong>
-        {#if position !== null && current}
-            <span class="detail"><span class="swatch" style:background={colors[current.surface]}></span>{current.surface}<b>{Math.round((data.shares.get(current.surface) ?? 0) * 100) || '<1'}% <span>of route</span></b><span class="access">{access}</span></span>
-        {:else}
-            <span class="hint">{hasPushing ? `${pushingDistance} pushing · ` : ''}{visible.length ? 'Hover to inspect' : 'Surface unavailable'}</span>
-        {/if}
+        <!-- At the pointer, the hint says the access of the stretch there. -->
+        {#if position !== null && current}<span class="hint">{access}</span>{:else if hasPushing}<span class="hint">{pushingDistance} pushing</span>{/if}
+        <span class="legend"><SurfaceLegend {shares} bind:lit current={position === null ? undefined : current?.surface} /></span>
     </div>
-    <span class="sr-only" id={helpId}>Use the arrow keys to inspect adjacent surface and access sections. Percentages refer to the whole route. {#if !walking}The Push strip marks sections where you must push your bike.{/if}</span>
+    <span class="sr-only" id={helpId}>Use the arrow keys to inspect adjacent surface and access sections. Percentages refer to the stretch that the bar shows. {#if !walking}The Push strip marks sections where you must push your bike.{/if}</span>
     <div class="bar" class:with-pushing={hasPushing} role="slider" tabindex={visible.length ? 0 : -1} aria-label={walking ? 'Surface along route' : 'Surface and pushing along route'} aria-describedby={helpId} aria-disabled={!visible.length} aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round(at * 100)} aria-valuetext={description}
         onpointermove={(event) => { const box = event.currentTarget.getBoundingClientRect(); inspect(axisProgress(axis, event.clientX - box.left, box.width)); }}
         onclick={(event) => { const box = event.currentTarget.getBoundingClientRect(); inspect(axisProgress(axis, event.clientX - box.left, box.width)); }}
         onpointerleave={leave} onfocus={() => inspect(from)} onblur={() => { position = null; onHover(null); }} onkeydown={key}>
         <div class="track">
             {#each visible as run, i (i)}
-                <span style:left={axisLeft(axis, run.from, true)} style:width={axisWidth(axis, run.from, run.to)} style:background={colors[run.surface]}></span>
+                <span class:dim={lit && run.surface !== lit} style:left={axisLeft(axis, run.from, true)} style:width={axisWidth(axis, run.from, run.to)} style:background={colors[run.surface]}></span>
             {/each}
         </div>
         {#if hasPushing}
@@ -69,17 +71,16 @@
 
 <style>
     .surface { margin: 12px 12px 0 48px; }
-    .label { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-height: 20px; color: var(--ink); font: 13px var(--sans); }
+    /* A narrow drawer wraps the legend under the name, above the bar. */
+    .label { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; min-height: 20px; color: var(--ink); font: 13px var(--sans); }
     strong { font-weight: 600; }
-    .detail { display: flex; align-items: center; gap: 7px; min-width: 0; }
-    .access { font-size: 12px; font-weight: 600; }
-    .swatch { width: 10px; height: 10px; border-radius: 2px; flex: none; }
-    b { margin-left: 5px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
-    b span, .hint { font-size: 12px; font-weight: 400; color: var(--ink-soft); }
+    .hint { font-size: 12px; color: var(--ink-soft); }
+    .legend { margin-left: auto; }
     .bar { position: relative; height: 28px; cursor: crosshair; border-radius: 3px; }
     .bar.with-pushing { height: 44px; }
     .track { position: absolute; top: 7px; left: 0; right: 0; height: 14px; overflow: hidden; border-radius: 3px; background: var(--parchment-2); }
     .track span { position: absolute; height: 100%; }
+    .track .dim { opacity: .2; }
     .push-label { position: absolute; top: 27px; right: calc(100% + 10px); color: var(--ink-soft); font-size: 11px; }
     .push-track { position: absolute; top: 31px; left: 0; right: 0; height: 5px; background: var(--parchment-2); }
     .push-track span { position: absolute; height: 100%; background: var(--ink-soft); }
