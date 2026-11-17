@@ -33,8 +33,12 @@ describe('route catalog', () => {
 
     it.each(boxes.boxes)('$name', async ({ box, bike, ids }) => {
         host.load = cell;
-        const found = await new RouteCatalog().inBox(box, bike);
+        const catalog = new RouteCatalog();
+        // Before the cells load, a box with cells has no answer yet.
+        if (boxCells(box).length && boxCells(box).length <= MAX_CELLS) expect(catalog.inBoxNow(box, bike)).toBeUndefined();
+        const found = await catalog.inBox(box, bike);
         expect(found?.map(route => route.id)).toEqual(ids);
+        expect(catalog.inBoxNow(box, bike)).toEqual(found);
     });
 
     it('loads nothing for a box of more than the most cells', async () => {
