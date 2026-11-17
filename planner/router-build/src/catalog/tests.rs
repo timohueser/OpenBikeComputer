@@ -325,6 +325,56 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
     Ok(())
 }
 
+/// The start of a `line_udeg` and its last vertex.
+fn line_ends(record: &Value) -> [[i64; 2]; 2] {
+    let line: Vec<i64> = record["line_udeg"].as_array().unwrap().iter().map(|v| v.as_i64().unwrap()).collect();
+    let sum = |axis: usize| line.iter().skip(axis).step_by(2).sum::<i64>();
+    [[line[0], line[1]], [sum(0), sum(1)]]
+}
+
+#[test]
+fn catalog_cuts_a_long_line_whose_plan_fails_into_sections() -> Result<(), String> {
+    let bike = |name| vec![("route", "bicycle"), ("name", name), ("network", "rcn")];
+    let (package, osm) = grid(vec![
+        // 4 km whose end takes the T5 path, which no bike profile follows: the plan fails.
+        route(40, &bike("Long line"), path(&[10, 11, 12, 13, 14, 15, 16, 26, 25, 24])),
+        (41, [vec![("type", "superroute")], bike("Trail")].concat(), members(&[42, 40], Id::Relation)),
+        route(42, &bike("Etappe 1"), path(&[50, 40, 30, 20, 10])),
+        route(44, &bike("Plain"), path(&[60, 61, 62, 63, 64, 65, 66])),
+    ]);
+    let (records, report) = catalog(&Selection::whole(package.fork()), osm, false, 2)?;
+    let by_id: HashMap<i64, &Value> = records.iter().map(|r| (r["id"].as_i64().unwrap(), r)).collect();
+    assert_eq!(report.dropped.get("ShapingCheck"), Some(&vec![-4003]), "{:?}", report.dropped);
+    // A line longer than a section whose plan passes stays one route.
+    assert!(by_id[&44].get("section").is_none() && by_id[&44]["length_m"].as_u64() > Some(SECTION_M as u64));
+
+    // Three sections of 1.3 km, cut at the grid nodes nearest to each third.
+    let (first, second) = (by_id[&-4001], by_id[&-4002]);
+    assert_eq!((&first["section"], &first["trail"], &first["name"]), (&json!(1), &json!(40), &json!("Long line")));
+    assert!(first.get("trail_stage").is_none() && first.get("parent").is_none());
+    assert_eq!(line_ends(first)[0], [ORIGIN as i64, ORIGIN as i64 + 4_000]);
+    assert_eq!(line_ends(first)[1], line_ends(second)[0], "the sections meet");
+    assert_eq!([&first["length_m"], &second["length_m"]], [&json!(3 * 445), &json!(3 * 445)]);
+
+    let line = by_id[&40];
+    assert!(line.get("line_udeg").is_none() && line.get("stages").is_none());
+    let parts = line["parts"].as_array().unwrap();
+    let ids: Vec<_> = parts.iter().map(|p| (&p["id"], p.get("stage"), p.get("cut"), p.get("missing"))).collect();
+    let yes = Some(&json!(true));
+    assert_eq!(
+        ids,
+        [(&json!(-4001), None, yes, None), (&json!(-4002), None, yes, None), (&json!(-4003), None, None, yes)]
+    );
+    assert_eq!((&line["stage_count"], &line["trail"], &line["trail_stage"]), (&json!(0), &json!(41), &json!(2)));
+    // In the trail, the sections of its cut stage take the place of the stage.
+    let parts = by_id[&41]["parts"].as_array().unwrap();
+    let stages: Vec<_> = parts.iter().map(|p| (p["id"].as_i64().unwrap(), &p["stage"])).collect();
+    assert_eq!(stages, [(42, &json!(1)), (-4001, &json!(2)), (-4002, &json!(2)), (-4003, &json!(2))]);
+    assert!(by_id[&41].get("stages").is_none() && by_id[&42].get("parent").is_none());
+    assert_eq!((&by_id[&41]["stage_count"], report.cut_long_routes), (&json!(2), 2));
+    Ok(())
+}
+
 #[test]
 fn catalog_keeps_a_hiking_route_over_a_t5_way() -> Result<(), String> {
     let (package, osm) =

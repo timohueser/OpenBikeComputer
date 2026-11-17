@@ -47,6 +47,11 @@ const PROFILE_STEP_M: f64 = 100.0;
 const SEARCH_CALLS: usize = 400;
 /// The search queues of one route request.
 const SEARCH_BYTES: usize = 768 << 20;
+/// The longest section of a cut line. The owner chose this length for the sections of long trails:
+/// it is below the longest single line that the builder plans whole. The test grid is 2.7 km wide.
+const SECTION_M: f64 = if cfg!(test) { 2_000.0 } else { 60_000.0 };
+/// The `id` of a section holds its number in two decimal digits.
+const MAX_SECTIONS: usize = 99;
 
 /// The router control of the catalog: a fixed search space, so that a router limit does not
 /// depend on the order of the routes.
@@ -77,6 +82,17 @@ pub enum Reason {
 struct Failed {
     reason: Reason,
     line: Option<(f64, P, P)>,
+}
+
+/// What `route` builds: one route, or the sections of a long line whose plan failed.
+enum Built {
+    Route(Kept),
+    Sections(Vec<Result<Kept, Failed>>),
+}
+
+/// The `id` of section `number` of a relation. It is negative, so it is no OSM relation ID.
+fn section_id(relation: i64, number: usize) -> i64 {
+    -(relation * 100 + number as i64)
 }
 
 fn tag<'a>(tags: &'a Tags, key: &str) -> &'a str {
@@ -246,6 +262,13 @@ fn header(relation: &Relation, kind: &str, france: bool) -> Map<String, Value> {
     record
 }
 
+/// Gives the record of an unnamed stage the `name` and `ref` of the long relation that names it.
+fn named_after(record: &mut Map<String, Value>, trail: &Relation) {
+    for field in ["name", "ref"].into_iter().filter(|field| !tag(&trail.tags, field).is_empty()) {
+        record.insert(field.into(), json!(tag(&trail.tags, field)));
+    }
+}
+
 /// The zoom 9 cells that the bounding box of each segment touches, edges included.
 fn cells(line: &[P], into: &mut BTreeSet<(u32, u32)>) {
     let tile = |p: P| {
@@ -320,6 +343,8 @@ pub struct Report {
     pub partial_long_routes: usize,
     /// Long records with a kept part backwards or after a jump.
     pub broken_long_routes: usize,
+    /// Long records with a part that the builder cut, and no kept part backwards or after a jump.
+    pub cut_long_routes: usize,
     pub missing_parts: usize,
     pub backwards_parts: usize,
     pub jumps: usize,
@@ -356,6 +381,8 @@ impl Report {
         let kept = parts.iter().filter(|part| part.get("missing").is_none());
         if kept.clone().any(|part| part.get("backwards").is_some() || part.get("jump").is_some()) {
             self.broken_long_routes += 1;
+        } else if parts.iter().any(|part| part.get("cut").is_some()) {
+            self.cut_long_routes += 1;
         } else if !record.contains_key("stages") {
             self.partial_long_routes += 1;
         }
@@ -372,7 +399,8 @@ impl Report {
         json!({
             "tag_selected": self.tag_selected, "dropped": self.dropped, "kept": self.kept, "loops": self.loops,
             "long_routes": self.long_routes, "partial_long_routes": self.partial_long_routes,
-            "broken_long_routes": self.broken_long_routes, "missing_parts": self.missing_parts,
+            "broken_long_routes": self.broken_long_routes, "cut_long_routes": self.cut_long_routes,
+            "missing_parts": self.missing_parts,
             "backwards_parts": self.backwards_parts, "jumps": self.jumps,
             "stages": self.stages, "skipped_ways": self.skipped_ways,
             "via": spread(self.via.iter().map(|&v| v as f64).collect()),
@@ -452,7 +480,7 @@ fn catalog<S: Source + Clone + Send>(
             long.push((relation, kind));
         }
     }
-    for (id, trail) in unnamed {
+    for (&id, &trail) in &unnamed {
         let child = relations.get(id).expect("a stage is in the data");
         let kind = route_kind(&child.tags).expect("a stage has a kind").to_string();
         jobs.push(Job::new(child, &kind, &relations, relations.get(trail)));
@@ -526,18 +554,59 @@ fn catalog<S: Source + Clone + Send>(
     let mut lines = HashMap::new();
     report.workers = workers.max(1);
     report.search_seconds = started.elapsed().as_secs_f64();
+    // The number of sections of each cut relation.
+    let mut cut = BTreeMap::new();
     for (search, result) in results.into_inner().unwrap() {
         let id = search.0;
         report.searches.push(search);
-        match result {
-            Ok(route) => {
-                kept.insert(id, route);
+        let routes = match result {
+            Ok(Built::Route(route)) => vec![(id, Ok(route))],
+            Ok(Built::Sections(sections)) => {
+                cut.insert(id, sections.len());
+                sections.into_iter().enumerate().map(|(i, section)| (section_id(id, i + 1), section)).collect()
             }
-            Err(Failed { reason, line }) => {
-                drops.insert(id, reason);
-                lines.extend(line.map(|line| (id, line)));
+            Err(failed) => vec![(id, Err(failed))],
+        };
+        for (id, route) in routes {
+            match route {
+                Ok(route) => {
+                    kept.insert(id, route);
+                }
+                Err(Failed { reason, line }) => {
+                    drops.insert(id, reason);
+                    lines.extend(line.map(|line| (id, line)));
+                }
             }
         }
+    }
+    // The parts of a relation in a long record: the relation itself, or its sections.
+    let parts_of = |id: i64, stage: Option<usize>| -> Vec<long::Part> {
+        let name = relations.get(id).map_or(String::new(), |r| tag(&r.tags, "name").to_string());
+        let ids: Vec<i64> = cut.get(&id).map_or(vec![id], |&n| (1..=n).map(|k| section_id(id, k)).collect());
+        let last = ids.len() - 1;
+        let part = |(i, id)| long::Part {
+            id,
+            name: name.clone(),
+            stage,
+            cut: i < last,
+            kept: kept.get(&id),
+            line: lines.get(&id).copied(),
+        };
+        ids.into_iter().enumerate().map(part).collect()
+    };
+    let mut cut_records = BTreeMap::new();
+    for &id in cut.keys() {
+        let relation = relations.get(id).expect("a cut route is in the data");
+        let kind = route_kind(&relation.tags).expect("a cut route has a kind");
+        let Some((mut record, points)) = long::record(&relation, kind, &parts_of(id, None), false, france) else {
+            drops.insert(id, Reason::NoStages);
+            continue;
+        };
+        if let Some(trail) = unnamed.get(&id).and_then(|&trail| relations.get(trail)) {
+            named_after(&mut record, &trail);
+        }
+        report.add_long(&record, points);
+        cut_records.insert(id, record);
     }
     // Each kept part gets the innermost long record that lists it as its trail, and a stage of a
     // complete long record the innermost complete one as its parent; of two at the same level, the
@@ -550,21 +619,15 @@ fn catalog<S: Source + Clone + Send>(
     let mut records = Vec::new();
     for (relation, kind) in long {
         let (leaves, connector) = long::leaves(&relation, &relations);
-        let parts: Vec<long::Part> = leaves
-            .iter()
-            .map(|leaf| long::Part {
-                name: relations.get(leaf.id).map_or(String::new(), |r| tag(&r.tags, "name").to_string()),
-                id: leaf.id,
-                kept: kept.get(&leaf.id),
-                line: lines.get(&leaf.id).copied(),
-            })
-            .collect();
+        let parts: Vec<long::Part> =
+            leaves.iter().enumerate().flat_map(|(i, leaf)| parts_of(leaf.id, Some(i + 1))).collect();
         let Some((record, points)) = long::record(&relation, &kind, &parts, connector, france) else {
             drops.insert(relation.id, Reason::NoStages);
             continue;
         };
         let complete = record.contains_key("stages");
-        for (number, leaf) in leaves.iter().enumerate().filter(|(_, leaf)| kept.contains_key(&leaf.id)) {
+        let built = |id| kept.contains_key(id) || cut_records.contains_key(id);
+        for (number, leaf) in leaves.iter().enumerate().filter(|(_, leaf)| built(&leaf.id)) {
             let trail = (leaf.depth, relation.id, number + 1);
             innermost(&mut trails, leaf.id, trail);
             if complete {
@@ -574,11 +637,18 @@ fn catalog<S: Source + Clone + Send>(
         report.add_long(&record, points);
         records.push(Value::Object(record));
     }
-    for (id, mut route) in kept {
+    let in_trail = |record: &mut Map<String, Value>, id| {
         if let Some((_, trail, number)) = trails.get(&id) {
-            route.record.insert("trail".into(), json!(trail));
-            route.record.insert("trail_stage".into(), json!(number));
+            record.insert("trail".into(), json!(trail));
+            record.insert("trail_stage".into(), json!(number));
         }
+    };
+    for (id, mut record) in cut_records {
+        in_trail(&mut record, id);
+        records.push(Value::Object(record));
+    }
+    for (id, mut route) in kept {
+        in_trail(&mut route.record, id);
         if let Some((_, parent, number)) = parents.get(&id) {
             route.record.insert("parent".into(), json!(parent));
             route.record.insert("stage".into(), json!(number));
@@ -604,7 +674,7 @@ fn route<D: RoutingData>(
     points: &HashMap<i64, P>,
     france: bool,
     calls: &mut usize,
-) -> Result<Kept, Failed> {
+) -> Result<Built, Failed> {
     let apart = |a: i64, b: i64| distance(points[&a], points[&b]);
     let located =
         |runs: &[Vec<i64>]| -> Vec<Vec<P>> { runs.iter().map(|run| run.iter().map(|n| points[n]).collect()).collect() };
@@ -630,14 +700,15 @@ fn ends(runs: &[Vec<P>]) -> Option<(f64, P, P)> {
     Some((runs.iter().map(|run| shape::length(run)).sum(), first, last))
 }
 
-/// Builds the record of one route from the runs of its main line in order.
+/// Builds the record of one route from the runs of its main line in order, or the sections of a
+/// line longer than `SECTION_M` whose plan fails.
 fn shaped<D: RoutingData>(
     router: &mut Router<D>,
     job: &Job,
     runs: &[Vec<P>],
     france: bool,
     calls: &mut usize,
-) -> Result<Kept, Reason> {
+) -> Result<Built, Reason> {
     let own = runs.concat();
     let own = shape::Near::new(&own);
     let length: f64 = runs.iter().map(|run| shape::length(run)).sum();
@@ -681,11 +752,66 @@ fn shaped<D: RoutingData>(
         || tag(&job.relation.tags, "roundtrip") == "yes" && distance(start, end) <= ROUNDTRIP_M && {
             patch(&mut line, start).is_ok()
         };
+    match planned(router, job, &line, length, closed, france, calls) {
+        Err(_) if length > SECTION_M => {}
+        whole => return whole.map(Built::Route),
+    }
+    let sections = sections(&line);
+    if sections.len() > MAX_SECTIONS {
+        return Err(Reason::TooManyPoints);
+    }
+    let built = sections.iter().enumerate().map(|(i, line)| {
+        let length = shape::length(line);
+        let failed = |reason| Failed { reason, line: ends(std::slice::from_ref(line)) };
+        if length < MIN_LENGTH_M {
+            return Err(failed(Reason::Short));
+        }
+        let mut kept = planned(router, job, line, length, false, france, calls).map_err(failed)?;
+        kept.record.insert("id".into(), json!(section_id(job.relation.id, i + 1)));
+        kept.record.insert("section".into(), json!(i + 1));
+        kept.record.insert("trail".into(), json!(job.relation.id));
+        Ok(kept)
+    });
+    Ok(Built::Sections(built.collect()))
+}
+
+/// A line cut into ⌈length / `SECTION_M`⌉ sections of equal length, each cut at the line point
+/// nearest to it. Each section ends at the point where the next one starts.
+fn sections(line: &[P]) -> Vec<Vec<P>> {
+    let mut along = vec![0.0];
+    for w in line.windows(2) {
+        along.push(along[along.len() - 1] + distance(w[0], w[1]));
+    }
+    let total = along[along.len() - 1];
+    let n = (total / SECTION_M).ceil() as usize;
+    let nearest = |at: f64| {
+        let j = along.partition_point(|&a| a < at).min(line.len() - 1);
+        if j > 0 && at - along[j - 1] < along[j] - at {
+            j - 1
+        } else {
+            j
+        }
+    };
+    let cuts: Vec<usize> = (0..=n).map(|k| nearest(total * k as f64 / n as f64)).collect();
+    cuts.windows(2).map(|w| line[w[0]..=w[1]].to_vec()).collect()
+}
+
+/// Plans a line and builds its record.
+fn planned<D: RoutingData>(
+    router: &mut Router<D>,
+    job: &Job,
+    line: &[P],
+    length: f64,
+    closed: bool,
+    france: bool,
+    calls: &mut usize,
+) -> Result<Kept, Reason> {
+    let profiles = profiles(&job.kind);
     // An out-and-back spur retraces its nodes; its tip is a turnaround.
     let tips: Vec<usize> = (1..line.len().saturating_sub(1)).filter(|&k| line[k - 1] == line[k + 1]).collect();
     let mut limits = Limits { control: control(), max_calls: SEARCH_CALLS * profiles.len(), calls: 0 };
-    let plan = shape::shape(router, profiles, &line, &tips, length, closed, &mut limits);
-    *calls = limits.calls;
+    let plan = shape::shape(router, profiles, line, &tips, length, closed, &mut limits);
+    *calls += limits.calls;
     let plan = plan.map_err(|failure| match failure {
         Failure::TooManyPoints => Reason::TooManyPoints,
         Failure::Check => Reason::ShapingCheck,
@@ -705,9 +831,7 @@ fn shaped<D: RoutingData>(
     cells(&geometry, &mut cover);
     let mut record = header(&job.relation, &job.kind, france);
     if let Some(trail) = &job.named_by {
-        for field in ["name", "ref"].into_iter().filter(|field| !tag(&trail.tags, field).is_empty()) {
-            record.insert(field.into(), json!(tag(&trail.tags, field)));
-        }
+        named_after(&mut record, trail);
     }
     let totals = plan.route.totals();
     record.insert("loop".into(), json!(closed));

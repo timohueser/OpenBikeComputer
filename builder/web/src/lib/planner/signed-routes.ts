@@ -35,18 +35,21 @@ export interface CatalogRecord {
     stage_count?: number;
     trail?: number;
     trail_stage?: number;
+    /** Section of a cut line only: its number in `trail`. */
+    section?: number;
 }
 
 /** A part of a long record, in trail order. */
 export interface TrailPart {
     id: number;
-    stage: number;
+    stage?: number;
     name?: string;
     length_m?: number;
     ascent_m?: number;
     end_m: number;
     cells?: string[];
     missing?: true;
+    cut?: true;
     start_udeg?: [number, number];
     end_udeg?: [number, number];
     backwards?: true;

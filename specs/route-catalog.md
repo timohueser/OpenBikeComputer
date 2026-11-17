@@ -78,7 +78,7 @@ microdegrees, longitude before latitude. Lengths and heights are integer metres.
 
 | Field | Value |
 | --- | --- |
-| `id` | OSM relation ID |
+| `id` | OSM relation ID; for a section, a negative number (see [Sections](#sections)). A negative `id` is no OSM relation ID: no reader builds an OSM link from it |
 | `kind` | The OSM `route` value: `hiking`, `foot`, `bicycle` or `mtb` |
 | `name`, `ref`, `operator` | The OSM tag text |
 | `description` | The OSM tag text, at most 200 characters |
@@ -97,8 +97,9 @@ microdegrees, longitude before latitude. Lengths and heights are integer metres.
 | `turnarounds` | Route record only: the entries of `via` where the plan route turns back, and `0` for a loop that turns back at its start |
 | `parent` | Stage of a complete long route only: relation ID of that long route |
 | `stage` | Stage of a complete long route only: its number in the stages of `parent`, from `1` |
-| `trail` | Part of a long route only: relation ID of the long route that lists it at the lowest level |
-| `trail_stage` | Part of a long route only: its stage number in `trail` |
+| `trail` | Part of a long route only: relation ID of the long route that lists it at the lowest level; for a section, relation ID of its cut line |
+| `trail_stage` | Part of a long route only, not a section: its stage number in `trail` |
+| `section` | Section only: its number in `trail`, from `1` |
 | `stages` | Complete long route only: the relation IDs of its stages, in order |
 | `start_udeg` | Complete long route only: `[longitude, latitude]` of its start |
 | `parts` | Long route only: each of its parts, in order (see [Long routes](#long-routes)) |
@@ -115,7 +116,8 @@ lookup.
 The plan is the start, the shaping points and the finish. The start is vertex 0 of `line_udeg`. The
 finish is its last vertex. The shaping points are the vertices in `via`; vertex 0 and the last
 vertex are never in `via`. Every route record has `via`, and it can be empty. `via` has at most 62
-entries; a route that needs more leaves the catalog.
+entries; a route that needs more leaves the catalog, or the builder cuts it (see
+[Sections](#sections)).
 
 `turnarounds` has the meaning of `turnarounds` in the [route API request](route-api.md#request): at
 each of these shaping points the plan route turns back on purpose. In the request, the points are
@@ -260,7 +262,8 @@ trail end of the part right before it, when that part has ends.
 So a run is a stretch of parts that join each other, such as the stages of a trail inside the region,
 or one of several trails that one relation lists one after another.
 
-A long route is complete when each part is in the catalog, and no part runs backwards or has a jump.
+A long route is complete when each part is in the catalog, and no part is cut, runs backwards or has
+a jump.
 A long route with a connector leg among its child relations, or among those of a long route in its
 place, is never complete, because the leg leaves a gap between its parts. Only a complete long
 route has `stages` and `start_udeg`, and only its stages have `parent` and `stage`: `stages` lists
@@ -276,22 +279,23 @@ part in the catalog also holds its long route. A long route is a loop when its f
 are in the catalog and the trail start of the first part is the trail end of the last part, or when
 it has `roundtrip=yes` and these two points are within 200 m.
 
-Each part in the catalog has `trail` and `trail_stage`. `trail` is the long route that lists it at
-the lowest level of long routes inside each other, 1 for a child relation of the long route itself;
-of two at the same level, the one with the lower relation ID.
+Each part in the catalog has `trail` and `trail_stage`; a section has `trail` only. `trail` is the
+long route that lists it at the lowest level of long routes inside each other, 1 for a child
+relation of the long route itself; of two at the same level, the one with the lower relation ID.
 
 An object of `parts` has these fields. A field with no value is absent.
 
 | Field | Value |
 | --- | --- |
-| `id` | Relation ID of the part |
-| `stage` | Stage number of the part |
+| `id` | Relation ID of the part, or the `id` of a section |
+| `stage` | Stage number of the part; absent for a section of a cut line that is no stage |
 | `name` | The OSM `name` of the part |
 | `length_m` | The `length_m` of the part's record; for a part not in the catalog, the length of its main line |
 | `ascent_m` | The `ascent_m` of the part's record |
 | `end_m` | The sum of `length_m` of this part and each part before it; a part without `length_m` adds 0 |
 | `cells` | The `cells` of the part's record |
 | `missing` | `true` when the part is not in the catalog |
+| `cut` | `true` when the builder cut the line at the end of the part |
 | `start_udeg`, `end_udeg` | Part not in the catalog only: its first and its last end |
 | `backwards` | `true` when the part runs backwards |
 | `jump` | `true` when the part has a jump |
@@ -309,10 +313,30 @@ points otherwise. Each stage turnaround moves to its position in the joined plan
 at the trail start of a part in the catalog, ends at the trail end of a part in the catalog, and has
 no jump after its first part. A part not in the catalog, or a run of such parts, inside a stretch is
 an ordinary leg from the trail end of the part before to the trail start of the part after. A trip
-can end a day at the trail end of each part. A client plans a whole complete long route only when
-its joined plan has at most 64 points; otherwise it offers its stages only. A reader that needs the
-profile of a complete long route joins the profiles of its stages, and places the entries of each
-stage by the `length_m` of the stage.
+can end a day at the trail end of each part without `cut`. A client plans a whole complete long
+route only when its joined plan has at most 64 points; otherwise it offers its stages only. A reader
+that needs the profile of a complete long route joins the profiles of its stages, and places the
+entries of each stage by the `length_m` of the stage.
+
+### Sections
+
+When the plan of a route fails and its main line is longer than 60 km, the builder cuts its line, the
+main line with the routed patches of its gaps, into ⌈length / 60 km⌉ sections. Each cut is at the
+line point nearest to an equal share of the length, so each section ends at the point where the
+next section starts. The builder plans each section as a route, by the rules of [Plan](#plan). A
+section is never a loop. A line of more than 99 sections leaves the catalog. A route whose plan
+passes stays one route record, also when it is longer than 60 km.
+
+A section is a route record with the tag fields of its relation, `section` and `trail`, and no
+`parent`, `stage` or `trail_stage`. Its `id` is −(relation ID × 100 + `section`). So each section
+has a key of its own, and the cut relation keeps its relation ID.
+
+The relation becomes a cut long route: its parts are its sections in order, with no `stage`, and
+each part but the last has `cut`. A section that fails is a part not in the catalog, with the
+first and the last point of its line as its ends. When the cut relation is a stage of a trail, its
+cut long route has `trail` and `trail_stage`, and in the `parts` of the trail its sections take its
+place, each with the stage number and the name of the stage. A cut is no place, so a trip ends no day
+there.
 
 ### Coverage
 
@@ -376,4 +400,17 @@ the catalog; the whole trail is the last `end_m`. `trail_profile_m` is shortened
    "name":"Mühlbach-Weg, Etappe 4","stage":4}],
  "rank":1,"ref":"MW","stage_count":4,"symbol":"yellow:white:yellow_diamond",
  "trail_profile_m":[620,624,629,"…",655,null,null,"…",null,604,"…",612]}
+```
+
+A section, the second of a relation of 131 km, and its cut long route as in the region file
+(shortened):
+
+```json
+{"id":-345678902,"kind":"hiking","length_m":43610,"line_udeg":["…"],"loop":false,
+ "name":"Grat-Höhenweg","rank":2,"section":2,"trail":3456789,"via":["…"],"…":"…"}
+{"id":3456789,"kind":"hiking","length_m":130920,"loop":false,"name":"Grat-Höhenweg","parts":[
+  {"cut":true,"end_m":43650,"id":-345678901,"length_m":43650,"name":"Grat-Höhenweg","…":"…"},
+  {"cut":true,"end_m":87260,"id":-345678902,"length_m":43610,"name":"Grat-Höhenweg","…":"…"},
+  {"end_m":130920,"id":-345678903,"length_m":43660,"name":"Grat-Höhenweg","…":"…"}],
+ "rank":2,"stage_count":0,"…":"…"}
 ```
