@@ -62,7 +62,7 @@ cache, pass `OBC_SEARCH_DATA` and `OBC_SEARCH_REGIONS=baden-wuerttemberg` to the
 | `OBC_SEARCH_ORIGINS` | Loopback origins only when unset |
 
 One process serves the one region that `OBC_SEARCH_REGIONS` names. `node server.mjs --formats`
-prints the formats that it reads, such as `{"planner/search":6,"planner/index":3}`, and opens no
+prints the formats that it reads, such as `{"planner/search":7,"planner/index":4}`, and opens no
 data.
 
 `POST /api/planner-search/reverse` accepts `[longitude, latitude]` in `coordinate`. It returns

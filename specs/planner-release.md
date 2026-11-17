@@ -63,7 +63,8 @@ a snapshot. Its file references are absolute URLs to the original immutable cell
 Search packages use schema `7`. Each place stores `website`, `phone`, and `description` as UTF-8
 text. Empty values are empty strings. Each place stores `ele`, its height in metres as a real
 number, from the OSM tag `ele`. The producer trims the tag. The tag gives a height only when it is
-digits with at most one decimal point, for example `1234` or `1234.5`. Otherwise `ele` is null.
+one to four digits, optionally followed by a point and one or more digits, for example `1234` or
+`1234.5`. Otherwise `ele` is null, so a height is below 10,000 metres.
 Each place stores `country`, the lowercase ISO 3166-1 code of its source record, and `region`, its
 state. A Swiss `region` is the German canton name of the opening hours library, for example
 `Sankt Gallen`. Opening hours select public holidays by `country`

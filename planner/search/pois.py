@@ -12,9 +12,9 @@ def details(tags):
 
 
 def height(tags):
-    """The height in metres of the tag `ele`; a unit, a sign or a second value gives none."""
+    """The height in metres of the tag `ele`; a unit, a sign, a second value or more than four whole digits gives none."""
     value = tags.get('ele')
-    return float(value) if isinstance(value, str) and re.fullmatch(r'[0-9]+(\.[0-9]+)?', value.strip()) else None
+    return float(value) if isinstance(value, str) and re.fullmatch(r'[0-9]{1,4}(\.[0-9]+)?', value.strip()) else None
 
 
 def add(writer, p, record):

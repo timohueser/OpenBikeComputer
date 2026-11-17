@@ -60,7 +60,7 @@ test('the POI builder retains contact aliases and descriptions for named and unn
 test('a place keeps the tag ele as its height only when the tag is a plain number of metres',()=>{
   const directory=mkdtempSync(join(tmpdir(),'obc-heights-'));
   const heights=[['1234',1234],[' 1234.5 ',1234.5],['1234 m',null],['-12',null],['+12',null],['1234,5',null],
-    ['1234;1240',null],['1.2.3',null],['',null],[undefined,null]];
+    ['1234;1240',null],['1.2.3',null],['35000',null],['1'.repeat(21),null],['',null],[undefined,null]];
   const records=heights.map(([ele],i)=>({object_type:'N',object_id:i+1,centroid:[8,48],osm_key:'natural',osm_value:'peak',
     name:{name:`Peak ${i}`},extra:ele===undefined?{}:{ele}}));
   let connection;
