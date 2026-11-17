@@ -85,10 +85,10 @@ class SnowLayer implements DataLayer<Samples> {
         return meta ? `${meta.attribution} · ${meta.resolution} m · ${meta.firstSeason}–${meta.firstSeason + meta.seasons}` : '';
     }
 
-    /** The share of past years with snow; each stop has the colour of the class that starts there. */
+    /** The share of past years with snow. "never" is clear, as on the map; each other stop has the colour of the class that starts there. */
     legend(theme: Theme) {
         const classes = snowClasses(theme);
-        return { scale: ([[0, 'never'], [2, '¼'], [3, '½'], [4, '¾'], [5, 'every year']] as const).map(([value, label]) => ({ color: classes[value].color, label })) };
+        return { scale: [{ color: 'transparent', label: 'never' }, ...([[2, '¼'], [3, '½'], [4, '¾'], [5, 'every year']] as const).map(([value, label]) => ({ color: classes[value].color, label }))] };
     }
 
     private archive<M, T>(url: string, decoding: Decoding<M, T>) {

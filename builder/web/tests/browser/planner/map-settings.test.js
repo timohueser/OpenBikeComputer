@@ -1,10 +1,10 @@
 import { expect, test } from '@playwright/test';
 import { CORS_PREFLIGHT, respond } from './stubs.js';
 
-// The three snow archives as the tile service gives them: TileJSON with the archive metadata, and no tiles.
-const SNOW = {
-  tilejson: '3.0.0', tiles: ['https://tiles.test/snow/{z}/{x}/{y}'], minzoom: 0, maxzoom: 7, bounds: [7.45, 47.5, 10.5, 49.85],
-  snow_format: 1, first_season: 2001, seasons: 20, resolution_m: 500, attribution: 'Snow test data',
+// The climate archive as the tile service gives it: TileJSON with the archive metadata, and no tiles.
+const CLIMATE = {
+  tilejson: '3.0.0', tiles: ['https://tiles.test/climate/{z}/{x}/{y}'], minzoom: 0, maxzoom: 7, bounds: [7.45, 47.5, 10.5, 49.85],
+  first_year: 2015, years: 10, wet_day_mm: 1, attribution: 'Climate test data',
 };
 
 const overlap = (a, b) => a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
@@ -16,8 +16,8 @@ test('the map settings show their pictures, and the legend of a data layer stand
     const request = route.request();
     if (request.method() === 'OPTIONS') return route.fulfill(CORS_PREFLIGHT);
     const { pathname } = new URL(request.url());
-    if (/^\/snow(-levels|-seasons)?\.json$/.test(pathname)) return route.fulfill({ headers: CORS_PREFLIGHT.headers, json: SNOW });
-    if (pathname.startsWith('/snow/')) return route.fulfill({ headers: CORS_PREFLIGHT.headers, status: 204 });
+    if (pathname === '/climate.json') return route.fulfill({ headers: CORS_PREFLIGHT.headers, json: CLIMATE });
+    if (pathname.startsWith('/climate/')) return route.fulfill({ headers: CORS_PREFLIGHT.headers, status: 204 });
     const response = respond(request);
     return response ? route.fulfill(response) : route.abort();
   });
@@ -28,13 +28,15 @@ test('the map settings show their pictures, and the legend of a data layer stand
   await expect(pictures).toHaveCount(9);
   await expect.poll(() => pictures.evaluateAll(images => images.filter(image => !image.complete || !image.naturalWidth).length)).toBe(0);
 
-  await popup.getByRole('button', { name: 'Snow', exact: true }).click();
-  const legend = page.getByRole('img', { name: /^Snow colours/ });
+  // Wind has the widest legend.
+  await popup.getByRole('button', { name: 'Wind', exact: true }).click();
+  const legend = page.getByRole('status').filter({ has: page.getByRole('img', { name: /^Wind colours/ }) });
   const dateBar = page.getByRole('group', { name: 'Layer date' });
   await expect(legend).toBeVisible();
   await expect(dateBar).toBeVisible();
-  await expect(popup.getByRole('img', { name: /^Snow colours/ })).toHaveCount(0);
+  await expect(popup.getByRole('img', { name: /^Wind colours/ })).toHaveCount(0);
   const [map, legendBox, dateBox] = await Promise.all([page.locator('.map-area'), legend, dateBar].map(part => part.boundingBox()));
   expect(inside(legendBox, map) && inside(dateBox, map)).toBe(true);
   expect(overlap(legendBox, dateBox)).toBe(false);
+  expect(legendBox.x >= dateBox.x && legendBox.x + legendBox.width <= dateBox.x + dateBox.width).toBe(true);
 });

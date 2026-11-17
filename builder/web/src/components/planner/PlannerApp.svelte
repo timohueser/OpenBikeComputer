@@ -1362,7 +1362,7 @@
                 </div>
                 {#if dataLayer}
                     <div class="layer-date" bind:clientHeight={dateBarHeight}>
-                        <div class="layer-legend">
+                        <div class="layer-legend" role="status">
                             {#if dataLayer.error}{dataLayer.error}
                             {:else if dataLayer.source}<strong>{dataLayer.label}</strong><LayerLegend legend={dataLayer.legend(theme)} label={`${dataLayer.label} colours`} />
                             {:else}Loading…{/if}

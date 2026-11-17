@@ -164,14 +164,12 @@
     /* The edge lies over the picture, so a pale crop keeps its shape on the panel. */
     .picture::after { content: ''; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 1px var(--line-strong); }
     .tile:hover .picture::after { box-shadow: inset 0 0 0 1px var(--ink-soft); }
-    .tile:focus-visible { outline: none; }
-    .tile:focus-visible .picture { outline: 2px solid var(--ink); outline-offset: 3px; }
     .name { font-size: 12px; line-height: 16px; font-weight: 500; color: var(--ink-soft); }
     .badge, .check { position: absolute; z-index: 1; display: grid; place-items: center; border-radius: 50%; }
     .badge { bottom: 3px; left: 3px; width: 20px; height: 20px; background: var(--panel); color: var(--ink); }
     .check { top: 4px; right: 4px; width: 17px; height: 17px; background: var(--link); color: var(--panel); visibility: hidden; }
     .check :global(svg) { stroke-width: 3; }
-    /* A lit tile: a ring, a check and a darker, heavier word, so the state does not rely on colour. */
+    /* A lit tile: a ring, a check and a darker, heavier word, so the state does not rely on colour. The focus outline of the app goes around the whole tile. */
     .tile[aria-pressed="true"] .picture { outline: 2px solid var(--link); outline-offset: 1px; }
     .tile[aria-pressed="true"] .check { visibility: visible; }
     .tile[aria-pressed="true"] .name { font-weight: 650; color: var(--ink); }
