@@ -24,7 +24,7 @@ from pathlib import Path
 # crate's feature `storeys` on and `bores` off, the crate at one codegen unit in the release profile, stable 1.100.0),
 # the sidewalks' slabs with their ends, rings and kerbs, and each way's own shoulders.
 # The owner allows about 60 kB of code growth for the crossing block, stated in its pull request and recorded here.
-GROUND_PLAN_MEASURED = {"gzipped": 788_874, "raw_wasm": 2_024_135}
+GROUND_PLAN_MEASURED = {"gzipped": 788_967, "raw_wasm": 2_024_191}
 # The owner's margin: compiler and dependency updates move the size by a few kilobytes and must not fail
 # unrelated pull requests; real growth past the margin still fails. Raw gets the same fraction as gzipped.
 # A pull request that changes the bridge's code records its own CI size here; the margin is only for toolchain
