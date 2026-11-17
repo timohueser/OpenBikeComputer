@@ -536,7 +536,7 @@ site *args:
 # reads the active planner release or VITE_PLANNER_CATALOG, and runs a UX study of it
 # (builder/web/tests/browser/ux-study/). The study calls the Anthropic
 # API with OBC_UX_API_KEY, from the environment or from ~/.config/openbikecomputer/credentials.env.
-[doc("Run a UX study of the web planner. Args: [--task ID]")]
+[doc("Run a UX study of the web planner. Args: [--task ID] [--model ID]")]
 [group('run')]
 ux *args:
     #!/usr/bin/env bash
@@ -552,6 +552,7 @@ ux *args:
     [[ -d "$fe/node_modules" ]] || ( cd "$fe" && _run npm ci )
     # Small, and a stale install lacks the SDK of the study.
     ( cd "$fe/tests/browser" && _run npm ci )
+    _run npm run ux-study --prefix "$fe/tests/browser" -- --check "$@"
     ( cd "$fe" && _run npm run build:wasm )
     ( cd "$fe" && unset VITE_PLANNER_CONFIG VITE_FAKE_DEVICE && _run npm run build:planner )
     _run npm run ux-study --prefix "$fe/tests/browser" -- "$@"
