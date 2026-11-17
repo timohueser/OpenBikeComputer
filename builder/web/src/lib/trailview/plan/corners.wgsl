@@ -109,10 +109,8 @@ fn height_of(q: vec2i, label: u32, storey: bool) -> f32 {
     return select(stamp_bounded(h.x, h.y == H_PAVED, s), h.x, storey);
 }
 
-// The least of a storey corner's height h and its caps' (mesh/shell.rs's StoreyMesh::corner_height): a cap reads its
-// label as storey 0's corner of that label reads it, so a bore's roof stays its plate under the ground as drawn; a cap
-// of the plain terrain as the storey's own corners read it. NONE where a cap is unknown.
-fn capped(k: u32, q: vec2i, h: f32) -> f32 {
+// The first cap of storey corner k: a lower bound over the caps, which lie sorted by corner (mesh/shell.rs).
+fn first_cap(k: u32) -> u32 {
     var lo = 0u;
     var hi = params.cap_count;
     loop {
@@ -126,18 +124,7 @@ fn capped(k: u32, q: vec2i, h: f32) -> f32 {
             hi = mid;
         }
     }
-    var out = h;
-    for (var j = lo; j < params.cap_count && piece[params.caps + 3u * j] == k; j++) {
-        let label = piece[params.caps + 3u * j + 1u];
-        var c: f32;
-        if (label == NO_LABEL) {
-            c = height_of(q, M_NONE, true);
-        } else {
-            c = height_of(q, label, false);
-        }
-        out = select(NONE, min(out, c + bitcast<f32>(piece[params.caps + 3u * j + 2u])), known(c));
-    }
-    return out;
+    return lo;
 }
 
 // Whether a line's finish word is of a wall class: the one flag that heights reads for a wall at its edge.
@@ -332,8 +319,35 @@ fn corners(@builtin(local_invocation_index) lane: u32, @builtin(workgroup_id) gr
     var taps = array(vec2i(0), vec2i(step, 0), vec2i(-step, 0), vec2i(0, -step), vec2i(0, step));
     let cell = vec2i(i32(M_CELL));
     var h = NONE;
+    // The least of a storey corner's caps (mesh/shell.rs's StoreyMesh::corner_height), each with its offset; NONE
+    // where one is unknown.
+    var caps = -NONE;
     if (makes && (tap == 0u || (!terrain_only && may_pave(label))) && (!terrain_only || label == M_NONE)) {
-        h = height_of(clamp(q + taps[tap], vec2i(0), cell), label, params.offsets != 0u);
+        // The corner's own height, then on lane 0 each cap's: one call of height_of, so the driver inlines the heights
+        // once. A cap reads its label as storey 0's corner of that label reads it, so a bore's roof stays its plate
+        // under the ground as drawn; a cap of the plain terrain reads as the storey's own corners do.
+        var j = select(params.cap_count, first_cap(k), tap == 0u && params.cap_count != 0u);
+        var own = true;
+        loop {
+            var l = label;
+            var storey = params.offsets != 0u;
+            if (!own) {
+                if (j >= params.cap_count || piece[params.caps + 3u * j] != k) {
+                    break;
+                }
+                l = piece[params.caps + 3u * j + 1u];
+                storey = l == NO_LABEL;
+                l = select(l, M_NONE, l == NO_LABEL);
+            }
+            let v = height_of(clamp(q + taps[tap], vec2i(0), cell), l, storey);
+            if (own) {
+                h = v;
+            } else {
+                caps = select(NONE, min(caps, v + bitcast<f32>(piece[params.caps + 3u * j + 2u])), known(v) && known(caps));
+                j++;
+            }
+            own = false;
+        }
     }
     corner_heights[lane] = h;
     workgroupBarrier();
@@ -386,7 +400,7 @@ fn corners(@builtin(local_invocation_index) lane: u32, @builtin(workgroup_id) gr
         h += bitcast<f32>(piece[params.offsets + k]);
     }
     if (params.cap_count != 0u && known(h)) {
-        h = capped(k, q, h);
+        h = select(NONE, min(h, caps), known(caps));
     }
     piece[o] = bitcast<u32>(h);
     piece[o + 1u] = look.x;
