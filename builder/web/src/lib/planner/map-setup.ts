@@ -16,6 +16,20 @@ export const creditsWith = (layers: string[]) =>
 /** The one terrain source of the app: each map with the relief shares its cache of terrain tiles. */
 export const terrain = terrainSource(config.terrain);
 
+/** MapLibre's credits control, whose compact form starts closed and opens only at its button. */
+export class ClosedAttribution extends maplibregl.AttributionControl {
+    constructor(options: maplibregl.AttributionControlOptions) {
+        super(options);
+        // MapLibre opens a compact control when it turns compact, which is when its text arrives or the map gets narrow.
+        const update = this._updateCompact;
+        this._updateCompact = () => {
+            const shown = this._container.classList.contains('maplibregl-compact-show');
+            update();
+            if (!shown) this._updateCompactMinimize();
+        };
+    }
+}
+
 let registered = false;
 
 /** Sets the worker of MapLibre and its protocols `pmtiles` and `release`, once for the page. */

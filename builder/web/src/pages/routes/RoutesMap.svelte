@@ -6,7 +6,7 @@
     import 'maplibre-gl/dist/maplibre-gl.css';
     import type { FeatureCollection, LineString, Point } from 'geojson';
     import { basemapStyle, type Relief } from '../../lib/planner/map-style';
-    import { styleConfig, terrain, useMapProtocols } from '../../lib/planner/map-setup';
+    import { ClosedAttribution, styleConfig, terrain, useMapProtocols } from '../../lib/planner/map-setup';
     import { terrainRetry } from '../../lib/planner/map-terrain';
     import { appearance } from '../../lib/theme.svelte';
     import type { Box, Item } from './filter';
@@ -136,10 +136,9 @@
             attributionControl: false, maxPitch: 0, renderWorldCopies: false,
         });
         // The selected card covers the bottom of the map.
-        // No option: the credit is a line on a wide map, and behind its button on a small one.
-        created.addControl(new maplibregl.AttributionControl({}), 'top-left');
+        created.addControl(new ClosedAttribution({ compact: true }), 'top-left');
         created.addControl({ onAdd: () => moreCredits, onRemove: () => moreCredits.remove() }, 'top-left');
-        // On a small map the button of the map's credit opens the other credits with it.
+        // The button of the map's credit opens the other credits with it.
         container.querySelector('summary.maplibregl-ctrl-attrib-button')?.addEventListener('click', event =>
             creditsOpen = (event.currentTarget as Element).parentElement!.classList.contains('maplibregl-compact-show'));
         created.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
@@ -224,12 +223,9 @@
 </script>
 
 <div class="routes-map" data-loaded={loaded} bind:this={container}></div>
-<!-- The map takes this box as a control, after its own credit. The credit of the base map is always in view; the long
-     credits of the terrain and of the picture of the selected card open at the button. On a small map the button of the
-     map's credit opens them. -->
+<!-- The map takes this box as a control, after its own credit. The credits of the terrain and of the picture of the
+     selected card open with the credit of the map, at its button. -->
 <div class="maplibregl-ctrl more-credits" class:open={creditsOpen} bind:this={moreCredits}>
-    <button type="button" class="maplibregl-ctrl-attrib-button" aria-label="Credits" aria-expanded={creditsOpen}
-        onclick={() => creditsOpen = !creditsOpen}></button>
     <p>{@html more.join(' | ')}</p>
 </div>
 
@@ -250,54 +246,21 @@
         color: var(--ink-soft);
         font: 11px/20px var(--sans);
     }
-    .routes-map :global(.maplibregl-ctrl-attrib:not(.maplibregl-compact)) {
-        padding: 2px 10px;
-    }
     .routes-map :global(.maplibregl-ctrl-attrib a), .more-credits :global(a) {
         color: inherit;
         text-decoration: none;
     }
-    /* The button stands beside the line of the map's credit; its text opens under the line. */
-    /* No transform, so the text is placed in the corner of the map and not in this box. */
+    /* The other credits open and close with the credit of the map, under it. */
     .more-credits {
-        clear: none;
-        margin-left: 6px;
-        transform: none;
-    }
-    .more-credits button {
-        position: static;
-        display: block;
-        width: 24px;
-        height: 24px;
-        padding: 0;
-        border: 0;
-        border-radius: 12px;
-        background-color: transparent;
-    }
-    .more-credits p {
-        position: absolute;
-        top: 40px;
-        right: 0;
-        left: 10px;
-        display: none;
-        margin: 0;
-        padding: 4px 10px;
-        border-radius: 8px;
-        background: var(--panel);
-    }
-    .more-credits.open p {
-        display: block;
-    }
-    /* A small map has its credit behind its own button: the other credits open and close with it. */
-    :global(.maplibregl-compact) + .more-credits {
         clear: both;
         margin-left: 10px;
     }
-    :global(.maplibregl-compact) + .more-credits button, :global(.maplibregl-compact:not(.maplibregl-compact-show)) + .more-credits p {
+    .more-credits p {
         display: none;
+        margin: 0;
+        padding: 4px 10px;
     }
     :global(.maplibregl-compact-show) + .more-credits.open p {
-        position: static;
         display: block;
     }
     :global(:root[data-theme="dark"]) .routes-map :global(.maplibregl-ctrl-attrib-button) {
