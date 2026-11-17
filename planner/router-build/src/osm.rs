@@ -1250,8 +1250,10 @@ mod tests {
         assert!(profiles.iter().filter(|p| !p.walking).all(|p| p.permits(&road) == (p.name == "mtb/technical")));
         let alpine = path(&[("highway", "path"), ("sac_scale", "alpine_hiking")]);
         assert!(profiles.iter().all(|p| p.permits(&alpine) == (p.name == "hiking/alpine")));
-        let climbing = path(&[("highway", "path"), ("sac_scale", "demanding_alpine_hiking")]);
-        assert!(profiles.iter().all(|p| !p.permits(&climbing)));
+        let demanding = path(&[("highway", "path"), ("sac_scale", "demanding_alpine_hiking")]);
+        assert!(profiles.iter().all(|p| p.permits(&demanding) == (p.name == "hiking/alpine")));
+        let unknown = path(&[("highway", "path"), ("sac_scale", "ddemanding_mountain_hiking")]);
+        assert!(profiles.iter().all(|p| !p.permits(&unknown)));
     }
 
     #[test]

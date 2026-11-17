@@ -22,6 +22,7 @@ export interface CatalogRecord {
     hardest?: number;
     cells: string[];
     line_udeg?: number[];
+    profile_m?: (number | null)[];
     via?: number[];
     turnarounds?: number[];
     parent?: number;
@@ -45,7 +46,7 @@ export interface RouteQuery {
     shape: RouteShape;
     distanceKm?: Bounds;
     climbM?: Bounds;
-    /** Grade indices of the hardest part, 0 to 3: T1–T4 for hiking, S0–S3 for mountain bike. Other activities ignore it. */
+    /** Grade indices of the hardest part: 0 to 5 (T1–T6) for hiking, 0 to 3 (S0–S3) for mountain bike. Other activities ignore it. */
     hardest?: [number, number];
     sort: RouteSort;
     /** Offline: the downloaded cells. Only routes that lie wholly inside them match. */

@@ -445,7 +445,7 @@
     "content"
    ],
    "violations": 4,
-   "lines": 21759,
+   "lines": 21760,
    "problems": [
     {
      "rule": "cycle",
@@ -652,7 +652,7 @@
    ],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 33559,
+   "lines": 33564,
    "problems": []
   },
   {
@@ -701,7 +701,7 @@
    ],
    "test_depends_on": [],
    "violations": 5,
-   "lines": 27735,
+   "lines": 27753,
    "problems": [
     {
      "rule": "cycle",
@@ -737,7 +737,7 @@
    ],
    "test_depends_on": [],
    "violations": 1,
-   "lines": 16999,
+   "lines": 17022,
    "problems": [
     {
      "rule": "R4",
@@ -837,10 +837,11 @@
     "data-engine"
    ],
    "test_depends_on": [
-    "repository-tooling"
+    "repository-tooling",
+    "web-planner"
    ],
    "violations": 3,
-   "lines": 108406,
+   "lines": 111796,
    "problems": [
     {
      "rule": "cycle",
@@ -879,10 +880,13 @@
    "status": "draft",
    "depends_on": [],
    "test_depends_on": [
-    "repository-tooling"
+    "library",
+    "repository-tooling",
+    "route-planning",
+    "search"
    ],
    "violations": 0,
-   "lines": 979,
+   "lines": 1236,
    "problems": []
   },
   {
@@ -929,7 +933,7 @@
     "repository-tooling"
    ],
    "violations": 0,
-   "lines": 17486,
+   "lines": 17512,
    "problems": []
   },
   {
@@ -1701,6 +1705,12 @@
    "to": "route-planning",
    "test": false,
    "undeclared": true
+  },
+  {
+   "from": "trailview",
+   "to": "web-planner",
+   "test": true,
+   "undeclared": false
   },
   {
    "from": "trailview-page",

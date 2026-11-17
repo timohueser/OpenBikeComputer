@@ -4,39 +4,44 @@
     import { ridingProfiles } from '../../lib/planner/riding-profiles';
     import { heightUnit } from '../../lib/settings/format';
     import { settings } from '../../lib/settings/settings.svelte';
-    import { findPlaces, rangeText, type Box, type Chips, type FoundPlace, type Range } from './filter';
+    import { rangeText, type Box, type Chips, type Range } from './filter';
+    import PlaceSearch from './PlaceSearch.svelte';
     import RangeSlider from './RangeSlider.svelte';
 
     type Key = keyof Chips;
-    let { chips = $bindable(), view, keys, years = [], values }: {
+    let { chips = $bindable(), view, keys, fixed = [], years = [], grades = [], values }: {
         chips: Chips;
         view?: Box;
         /** The chips to offer, in this order. */
         keys: Key[];
+        /** The chips with no "Remove". */
+        fixed?: Key[];
         /** The options of the year chip. */
         years?: number[];
+        /** The names of the grades of the grade chip, the easiest first. */
+        grades?: string[];
         /** The value of each item that the other chips keep, in the units of the rider, for the bars of a slider. */
         values: (key: 'length' | 'climb') => number[];
     } = $props();
 
-    const NAMES: Record<Key, string> = { bike: 'Bike', place: 'Place', length: 'Length', climb: 'Climb', days: 'Days', year: 'Year' };
+    const NAMES: Record<Key, string> = { bike: 'Bike', place: 'Place', length: 'Length', climb: 'Climb', days: 'Days', year: 'Year', grade: 'Grade', shape: 'Shape' };
     const DAYS: { value: Range; label: string }[] = [
         { value: [1, 2], label: 'One day' }, { value: [2, 5], label: '2 to 4 days' }, { value: [5, Infinity], label: '5 days or more' },
     ];
-    const WAIT_MS = 300;
+    const SHAPES: { value: Chips['shape']; label: string }[] = [{ value: 'loop', label: 'Loop' }, { value: 'one-way', label: 'One way' }];
 
     let open = $state<Key | null>(null);
-    let query = $state(''), found = $state.raw<FoundPlace[] | null>(null), failure = $state('');
-    let timer: ReturnType<typeof setTimeout> | undefined, controller: AbortController | undefined;
 
     /** A value in the units of the rider, with its unit and at most one decimal: "40 km", "12.3 km", "1,500 m". */
     const show = (key: 'length' | 'climb') => (value: number) =>
         `${value.toLocaleString('en', { maximumFractionDigits: 1 })}\u00a0${key === 'length' ? settings.units : heightUnit()}`;
     const rangeLabel = (key: 'length' | 'climb', range: Range) => rangeText(range, show(key));
 
-    function options(key: 'bike' | 'days' | 'year'): { value: Chips[Key]; label: string }[] {
+    function options(key: 'bike' | 'days' | 'year' | 'grade' | 'shape'): { value: Chips[Key]; label: string }[] {
         if (key === 'bike') return bikes.map(bike => ({ value: bike, label: ridingProfiles[bike].label }));
         if (key === 'days') return DAYS;
+        if (key === 'shape') return SHAPES;
+        if (key === 'grade') return grades.map((name, grade) => ({ value: grade, label: `Up to ${name}` }));
         return years.map(year => ({ value: year, label: String(year) }));
     }
 
@@ -64,20 +69,6 @@
         put(key, value);
         open = null;
     }
-
-    function search() {
-        clearTimeout(timer);
-        controller?.abort();
-        const text = query.trim();
-        [found, failure] = [null, ''];
-        if (!text) return;
-        timer = setTimeout(() => {
-            const current = controller = new AbortController();
-            findPlaces(text, view ?? [-180, -85, 180, 85], current.signal).then(
-                places => { if (!current.signal.aborted) found = places; },
-                reason => { if (!current.signal.aborted) failure = reason instanceof Error ? reason.message : String(reason); });
-        }, WAIT_MS);
-    }
 </script>
 
 <svelte:window onclick={event => { if (open && !(event.target as Element).closest?.('.chip.open')) open = null; }} />
@@ -90,18 +81,8 @@
             <summary>{set ? `${label(key)} ▾` : `+ ${NAMES[key]}`}</summary>
             <div class="menu">
                 {#if key === 'place'}
-                    <!-- svelte-ignore a11y_autofocus -->
-                    <input type="search" aria-label="Place" placeholder="Town, region or lake" autofocus bind:value={query} oninput={search} />
-                    {#if failure}
-                        <p class="note">{failure}</p>
-                    {:else if found?.length === 0}
-                        <p class="note">No place found.</p>
-                    {/if}
-                    {#each found ?? [] as place (place.box.join() + place.name)}
-                        <button type="button" onclick={() => choose('place', { name: place.name, kind: place.kind, box: place.box })}>
-                            {place.name}<small>{[place.kind.replaceAll('_', ' '), place.region].filter(Boolean).join(' · ')}</small>
-                        </button>
-                    {/each}
+                    <PlaceSearch {view} label="Place" placeholder="Town, region or lake" autofocus
+                        onchoose={place => choose('place', { name: place.name, kind: place.kind, box: place.box })} />
                 {:else if key === 'length' || key === 'climb'}
                     <!-- Only the open slider reads its values, and it takes its scale as it opens. -->
                     {#if open === key}<RangeSlider values={values(key)} range={chips[key]} onchange={range => put(key, range)} label={NAMES[key]} format={show(key)} />{/if}
@@ -110,7 +91,7 @@
                         <button type="button" aria-pressed={set && label(key) === option.label} onclick={() => choose(key, option.value)}>{option.label}</button>
                     {/each}
                 {/if}
-                {#if set}<button type="button" class="remove" onclick={() => choose(key, undefined)}>Remove</button>{/if}
+                {#if set && !fixed.includes(key)}<button type="button" class="remove" onclick={() => choose(key, undefined)}>Remove</button>{/if}
             </div>
         </details>
     {/each}
@@ -178,26 +159,10 @@
     .menu button:hover, .menu [aria-pressed="true"] {
         background: var(--parchment-2);
     }
-    .menu small {
-        color: var(--ink-soft);
-    }
     .menu .remove {
         margin-top: 4px;
         border-top: 1px solid var(--line);
         border-radius: 0 0 5px 5px;
-        color: var(--ink-soft);
-    }
-    input {
-        min-width: 220px;
-        margin: 2px 2px 4px;
-        padding: 6px 8px;
-        border: 1px solid var(--line-strong);
-        border-radius: 6px;
-        background: var(--panel);
-        color: var(--ink);
-    }
-    .note {
-        margin: 4px 8px 6px;
         color: var(--ink-soft);
     }
     /* On a phone a menu starts at the left of the row, so that it stays on the screen under a chip at the right. */

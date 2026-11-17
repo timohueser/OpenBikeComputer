@@ -9,7 +9,6 @@
     export function fitCoordinates() {}
     export function showPlace() {}
     export function zoomBy() {}
-    export function centerOn() {}
     export function underTrees() { return false; }
 </script>
 

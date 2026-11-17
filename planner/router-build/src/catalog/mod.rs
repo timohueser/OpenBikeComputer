@@ -1,8 +1,9 @@
 //! The route catalog: the signed routes of a region, each with the plan that reproduces it.
 //! `specs/route-catalog.md` is the contract.
 mod assemble;
+mod connector;
 
-use crate::source::{Data, Id, Relation, Tags};
+use crate::source::{Data, Id, Relation, Relations, Table, Tags};
 use planner_router::{
     data::{RoutingData, Selection},
     directory::Directory,
@@ -20,7 +21,9 @@ use std::{
 };
 
 pub const FILE: &str = "route-catalog.json";
-const MIN_LENGTH_M: f64 = 2_000.0;
+/// The owner chose 1 km, so that short named walks are in. The connector rule, not the length,
+/// keeps out the signed pieces between two signposts.
+const MIN_LENGTH_M: f64 = 1_000.0;
 const MAX_GAP_M: f64 = 500.0;
 const ROUNDTRIP_M: f64 = 200.0;
 const DESCRIPTION_CHARS: usize = 200;
@@ -48,6 +51,7 @@ fn control() -> Control<'static> {
 /// Why a selected relation is not in the catalog.
 #[derive(Clone, Copy, Debug)]
 pub enum Reason {
+    Connector,
     ExtractEdge,
     Short,
     Gap,
@@ -75,6 +79,72 @@ fn selected<'a>(tags: &'a Tags) -> Option<&'a str> {
         && !matches!(tag(tags, "network:type"), "node_network" | "basic_network")
         && !matches!(tag(tags, "state"), "proposed" | "planned" | "disused" | "abandoned"))
     .then_some(kind)
+}
+
+fn is_route(relations: &Table<Relations>, id: i64) -> bool {
+    relations.get(id).is_some_and(|r| matches!(tag(&r.tags, "type"), "route" | "superroute"))
+}
+
+/// The child relations with a stage role, in member order.
+fn children(relation: &Relation) -> Vec<i64> {
+    relation
+        .members()
+        .filter(|(_, role)| matches!(*role, "" | "main"))
+        .filter_map(|(id, _)| if let Id::Relation(id) = id { Some(id) } else { None })
+        .collect()
+}
+
+fn has_child_route(relation: &Relation, relations: &Table<Relations>) -> bool {
+    relation.members().any(|(id, _)| matches!(id, Id::Relation(id) if is_route(relations, id)))
+}
+
+/// Whether a child relation is a piece: a route in the data with no child routes that is not a
+/// route of its own.
+fn piece(relations: &Table<Relations>, id: i64) -> bool {
+    is_route(relations, id) && {
+        let child = relations.get(id).expect("a route is in the data");
+        !has_child_route(&child, relations)
+            && (tag(&child.tags, "name").is_empty() && tag(&child.tags, "ref").is_empty()
+                || connector::connector(&child.tags, false))
+    }
+}
+
+/// How the catalog builds a selected relation.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Class {
+    /// One route from its own member ways.
+    Route,
+    /// One route from its own member ways and those of its pieces.
+    Joined,
+    /// A route of stages. An absent child can be a route, so a relation with one is long.
+    Long,
+}
+
+fn class(relation: &Relation, relations: &Table<Relations>) -> Class {
+    let routes: Vec<i64> =
+        children(relation).into_iter().filter(|&id| relations.get(id).is_none() || is_route(relations, id)).collect();
+    if routes.is_empty() {
+        Class::Route
+    } else if routes.iter().all(|&id| piece(relations, id)) {
+        Class::Joined
+    } else {
+        Class::Long
+    }
+}
+
+/// The main member ways and their roles in member order. In a joined trail, each piece gives its
+/// own in its place.
+fn member_ways(relation: &Relation, relations: &Table<Relations>, joined: bool) -> Vec<(i64, String)> {
+    relation
+        .members()
+        .flat_map(|(member, role)| match member {
+            Id::Way(id) if assemble::is_main(role) => vec![(id, role.to_string())],
+            Id::Relation(id) if joined && matches!(role, "" | "main") && piece(relations, id) => {
+                member_ways(&relations.get(id).expect("a piece is in the data"), relations, false)
+            }
+            _ => Vec::new(),
+        })
+        .collect()
 }
 
 /// The profiles that reproduce a kind. The first gives the plan route. A graded kind uses its
@@ -183,6 +253,7 @@ struct Kept {
 struct Job<'a> {
     relation: Relation<'a>,
     kind: String,
+    member_ways: Vec<(i64, String)>,
     members: Vec<assemble::Member>,
 }
 
@@ -277,35 +348,26 @@ fn catalog<S: Source + Clone + Send>(
     let Data { ways, relations, .. } = osm;
     let mut report = Report::default();
     let mut drops = BTreeMap::<i64, Reason>::new();
-    let is_route =
-        |id: &i64| relations.get(*id).is_some_and(|r| matches!(tag(&r.tags, "type"), "route" | "superroute"));
-    let children = |relation: &Relation| -> Vec<i64> {
-        relation
-            .members()
-            .filter(|(_, role)| matches!(*role, "" | "main"))
-            .filter_map(|(id, _)| if let Id::Relation(id) = id { Some(id) } else { None })
-            .collect()
-    };
     let mut long = Vec::new();
     let mut jobs = Vec::new();
     for relation in relations.iter() {
         let Some(kind) = selected(&relation.tags).map(str::to_string) else { continue };
         report.tag_selected += 1;
-        let children = children(&relation);
-        if children.iter().any(|id| relations.get(*id).is_none()) {
+        let class = class(&relation, &relations);
+        // A joined trail is one route, so its pieces are no child routes.
+        let has_child_route = class != Class::Joined && has_child_route(&relation, &relations);
+        if connector::connector(&relation.tags, has_child_route) {
+            drops.insert(relation.id, Reason::Connector);
+        } else if class != Class::Long {
+            let member_ways = member_ways(&relation, &relations, class == Class::Joined);
+            jobs.push(Job { relation, kind, member_ways, members: Vec::new() });
+        } else if children(&relation).iter().any(|id| relations.get(*id).is_none()) {
             drops.insert(relation.id, Reason::ExtractEdge);
-        } else if children.iter().any(is_route) {
-            long.push((relation, kind));
         } else {
-            jobs.push(Job { relation, kind, members: Vec::new() });
+            long.push((relation, kind));
         }
     }
-    let needed: HashSet<i64> = jobs
-        .iter()
-        .flat_map(|job| job.relation.members())
-        .filter(|(_, role)| assemble::is_main(role))
-        .filter_map(|(member, _)| member.way())
-        .collect();
+    let needed: HashSet<i64> = jobs.iter().flat_map(|job| &job.member_ways).map(|(id, _)| *id).collect();
     let points: HashMap<i64, P> = needed
         .into_iter()
         .filter_map(|id| ways.get(id))
@@ -314,15 +376,11 @@ fn catalog<S: Source + Clone + Send>(
         .map(|(id, point)| (id, [point.lon, point.lat]))
         .collect();
     jobs.retain_mut(|job| {
-        for (member, role) in job.relation.members() {
-            let Some(id) = member.way() else { continue };
-            if !assemble::is_main(role) {
-                continue;
-            }
-            match ways.get(id) {
+        for (id, role) in &job.member_ways {
+            match ways.get(*id) {
                 Some(way) if way.nodes.iter().all(|n| points.contains_key(n)) => job.members.push(assemble::Member {
                     nodes: way.nodes.to_vec(),
-                    role: role.into(),
+                    role: role.clone(),
                     roundabout: matches!(tag(&way.tags, "junction"), "roundabout" | "circular"),
                 }),
                 _ => {
@@ -383,9 +441,9 @@ fn catalog<S: Source + Clone + Send>(
         let child = |id: &i64| relations.get(*id).expect("a long route has all its children");
         let stages: Vec<i64> = children(&relation)
             .into_iter()
-            .filter(|id| tag(&child(id).tags, "network") == network && is_route(id))
+            .filter(|id| tag(&child(id).tags, "network") == network && is_route(&relations, *id))
             .collect();
-        let reason = if children(&relation).iter().any(|id| children(&child(id)).iter().any(is_route)) {
+        let reason = if children(&relation).iter().any(|id| class(&child(id), &relations) == Class::Long) {
             Some(Reason::NestedLongRoute)
         } else if stages.is_empty() {
             Some(Reason::NoStages)

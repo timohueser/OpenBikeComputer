@@ -23,6 +23,8 @@
         planner: { label: 'Planner', keep: true, load: () => initCore().then(() => import('./components/planner/PlannerApp.svelte')) },
         // The list shows from the library alone; the map and the place search load the map catalogue after it.
         routes: { label: 'Routes', load: () => import('./pages/Routes.svelte') },
+        // The page waits for the release, which names the route catalog.
+        explore: { label: 'Explore', load: () => import('./pages/Explore.svelte') },
         // The page writes GPX and FIT.
         route: { load: () => initCore().then(() => import('./pages/Route.svelte')) },
         // The page reads and writes GPX and FIT.

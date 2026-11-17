@@ -8,6 +8,8 @@ import { createModelCall, image } from './model.js';
 
 const PROMPT = readFileSync(new URL('./report.md', import.meta.url), 'utf8');
 const REJECTED = new URL('./rejected.md', import.meta.url);
+// The participant never gets the principles: a newcomer does not know them.
+const PRINCIPLES = new URL('../../../../../PRODUCT.md', import.meta.url);
 const MIN_WALKTHROUGHS = 2;
 const MAX_GROUPS = 15;
 const MAX_FINDINGS = 10;
@@ -40,31 +42,37 @@ const findingsSchema = {
 };
 
 const failed = outcome => outcome === 'stuck' || outcome === 'gave_up';
+/** "1 walkthrough", "3 walkthroughs". */
+const count = (n, noun) => `${n} ${noun}${n === 1 ? '' : 's'}`;
 const screenFile = n => `${String(n).padStart(2, '0')}.jpg`;
 
 /**
- * The candidate steps of `walkthroughs` (`{ task, n, outcome, records }`). A step is a candidate when the
- * next step says that its result did not match the expectation, when its screen confused the participant
- * most, when it is one of the last three steps of a failed walkthrough, or when the participant did not see
- * that its task was done. An `error` walkthrough gives no candidates.
+ * The candidate steps of `walkthroughs` (`{ task, n, outcome, records }`). A step is a strong candidate when
+ * the next step says that its result did not match the expectation, when its screen confused the participant
+ * most, or when the participant did not see that its task was done. It is a mild candidate when its result
+ * matched only partly, when its screen caused some doubt, or when the participant named it as the hardest
+ * step. The last three steps of a failed walkthrough are candidates too. An `error` walkthrough gives none.
  */
 export function candidateSteps(walkthroughs) {
   const candidates = new Map();
   for (const { task, n, outcome, records } of walkthroughs) {
     if (outcome === 'error') continue;
-    const add = (record, reason) => {
+    const add = (record, reason, strong = false) => {
       const id = `${task}-${n}/${record.step}`;
       const candidate = candidates.get(id)
-        ?? { id, task, n, outcome, step: record.step, screen: record.screen, hit: record.hit, reasons: [], atEnd: false };
+        ?? { id, task, n, outcome, step: record.step, screen: record.screen, hit: record.hit, reasons: [], strong: false, atEnd: false };
       candidate.reasons.push(reason);
+      candidate.strong ||= strong;
       candidates.set(id, candidate);
       return candidate;
     };
     records.forEach((record, i) => {
       // `match` judges the action of the step before.
-      if (record.match === 'no' && i > 0) add(records[i - 1], 'the result did not match the expectation');
-      if (record.confusion.level === 2) add(record, `confusion 2: ${record.confusion.reason}`);
-      if (record.done_answer === 'no') add(record, 'the participant did not see that the task was done');
+      if (record.match === 'no' && i > 0) add(records[i - 1], 'the result did not match the expectation', true);
+      if (record.match === 'partly' && i > 0) add(records[i - 1], 'the result matched the expectation only partly');
+      if (record.confusion.level > 0) add(record, `confusion ${record.confusion.level}: ${record.confusion.reason}`, record.confusion.level === 2);
+      if (record.done_answer === 'no') add(record, 'the participant did not see that the task was done', true);
+      if (record.hardest) add(record, 'named as the hardest step');
       if (failed(outcome) && i >= records.length - END_STEPS) add(record, `one of the last steps before ${outcome}`).atEnd = true;
     });
   }
@@ -73,8 +81,8 @@ export function candidateSteps(walkthroughs) {
 
 /**
  * The candidates grouped by task, `screen` and `hit`. A group stays when at least two walkthroughs show it,
- * or when a walkthrough failed there. At most 15 stay: those with a failed walkthrough first, then those that
- * more walkthroughs show.
+ * or when a walkthrough failed there. At most 15 stay: those with a failed walkthrough first, then those with
+ * a strong candidate, then those that more walkthroughs show.
  */
 export function keptGroups(candidates) {
   const groups = new Map();
@@ -84,9 +92,10 @@ export function keptGroups(candidates) {
     groups.get(key).steps.push(candidate);
   }
   return [...groups.values()]
-    .map(group => ({ ...group, walkthroughs: new Set(group.steps.map(s => s.n)).size, failed: group.steps.some(s => s.atEnd) }))
+    .map(group => ({ ...group, walkthroughs: new Set(group.steps.map(s => s.n)).size,
+      failed: group.steps.some(s => s.atEnd), strong: group.steps.some(s => s.strong) }))
     .filter(group => group.walkthroughs >= MIN_WALKTHROUGHS || group.failed)
-    .sort((a, b) => b.failed - a.failed || b.walkthroughs - a.walkthroughs)
+    .sort((a, b) => b.failed - a.failed || b.strong - a.strong || b.walkthroughs - a.walkthroughs)
     .slice(0, MAX_GROUPS);
 }
 
@@ -149,7 +158,10 @@ function gitCommit() {
   try { return execFileSync('git', ['rev-parse', '--short', 'HEAD'], { encoding: 'utf8' }).trim(); } catch { return 'unknown commit'; }
 }
 
-/** The groups with their step records and the two screenshots of one step, the open findings and the rejected ones. */
+/**
+ * The groups with their step records and the two screenshots of one step, the open findings, the rejected
+ * ones, and the design principles when `PRODUCT.md` exists.
+ */
 function reportContent(dir, groups, walkthroughs, open) {
   const records = Object.fromEntries(walkthroughs.map(w => [`${w.task}-${w.n}`, w.records]));
   const content = [];
@@ -160,8 +172,8 @@ function reportContent(dir, groups, walkthroughs, open) {
         `next step: ${next ? JSON.stringify({ match: next.match, confusion: next.confusion }) : 'none'}`].join('\n');
     });
     content.push({ type: 'text', text: `Group ${i + 1}: task ${group.task}, screen ${group.screen}, control ${group.hit}, `
-      + `${group.walkthroughs} walkthroughs${group.failed ? ', a walkthrough failed here' : ''}.\n${lines.join('\n\n')}` });
-    const { task, n, step, id } = group.steps[0];
+      + `${count(group.walkthroughs, 'walkthrough')}${group.failed ? ', a walkthrough failed here' : ''}.\n${lines.join('\n\n')}` });
+    const { task, n, step, id } = group.steps.find(s => s.strong) ?? group.steps[0];
     for (const [label, file] of [['before', screenFile(step)], ['after', screenFile(step + 1)]]) {
       const jpeg = join(dir, `${task}-${n}`, file);
       if (existsSync(jpeg)) content.push({ type: 'text', text: `The screen ${label} the action of ${id}:` }, image(readFileSync(jpeg)));
@@ -171,6 +183,7 @@ function reportContent(dir, groups, walkthroughs, open) {
   if (imageBytes > MAX_IMAGE_BYTES) throw new Error(`the screenshots are ${imageBytes} bytes, more than ${MAX_IMAGE_BYTES}`);
   content.push({ type: 'text', text: open.issues ? `Open accepted findings:\n${JSON.stringify(open.issues)}` : 'The open accepted findings are not available.' });
   content.push({ type: 'text', text: `Rejected findings:\n${readFileSync(REJECTED, 'utf8')}` });
+  if (existsSync(PRINCIPLES)) content.push({ type: 'text', text: `The design principles of the product:\n${readFileSync(PRINCIPLES, 'utf8')}` });
   return content;
 }
 
@@ -189,9 +202,10 @@ function render({ notices, commit, model, costUsd, walkthroughs, groups, answer,
   const lines = [];
   if (notices.length) lines.push(notices.join(' '), '');
   lines.push(`# UX study · planner · ${commit} · ${model.id} · ${costUsd.toFixed(2)} USD`, '');
-  lines.push([`${done(walkthroughs)} of ${walkthroughs.length} walkthroughs completed their task.`,
+  const total = walkthroughs.length;
+  lines.push([`${done(walkthroughs)} of ${count(total, 'walkthrough')} completed ${total === 1 ? 'its' : 'their'} task.`,
     errors && `${errors} ended with an error.`,
-    open.issues && `${open.issues.length} accepted findings are open.`].filter(Boolean).join(' '), '');
+    open.issues && `${count(open.issues.length, 'accepted finding')} ${open.issues.length === 1 ? 'is' : 'are'} open.`].filter(Boolean).join(' '), '');
   lines.push('| Task | Completed |', '| --- | --- |');
   for (const task of tasks) {
     const list = walkthroughs.filter(w => w.task === task);
@@ -217,7 +231,7 @@ function render({ notices, commit, model, costUsd, walkthroughs, groups, answer,
 function seenIn(steps, walkthroughs) {
   return [...new Set(steps.map(s => s.task))].map(task => {
     const seen = new Set(steps.filter(s => s.task === task).map(s => s.n)).size;
-    return `${seen} of ${walkthroughs.filter(w => w.task === task).length} ${task} walkthroughs`;
+    return `${seen} of ${count(walkthroughs.filter(w => w.task === task).length, `${task} walkthrough`)}`;
   }).join(', ');
 }
 

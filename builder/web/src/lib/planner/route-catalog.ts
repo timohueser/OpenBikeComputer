@@ -29,6 +29,9 @@ function boxRange([west, south, east, north]: Box) {
     return { columns, rows, count: Math.max(0, columns.to - columns.from + 1) * Math.max(0, rows.to - rows.from + 1) };
 }
 
+/** True when `box` meets more than `MAX_CELLS` cells, so that `inBox` loads nothing for it. */
+export const tooWide = (box: Box) => (boxRange(box)?.count ?? 0) > MAX_CELLS;
+
 /** The ids `9-X-Y` of the zoom 9 cells whose box meets `box`, edges included. */
 export function boxCells(box: Box): string[] {
     const cells: string[] = [];
@@ -68,7 +71,7 @@ export class RouteCatalog {
      * A long route is not one, but its stages are. Null, with no load, when the box meets more than `MAX_CELLS` cells.
      */
     async inBox(box: Box, bike: BikeType): Promise<CatalogRecord[] | null> {
-        if ((boxRange(box)?.count ?? 0) > MAX_CELLS) return null;
+        if (tooWide(box)) return null;
         const cells = boxCells(box);
         const [west, south, east, north] = box;
         const found = new Map<number, CatalogRecord>();

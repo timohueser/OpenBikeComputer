@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { createModelCall, image, ModelError } from './model.js';
 
 const PROMPT = readFileSync(new URL('./participant.md', import.meta.url), 'utf8');
+const HARDEST = readFileSync(new URL('./hardest.md', import.meta.url), 'utf8');
 
 const stepSchema = actionSchema => ({
   type: 'object',
@@ -29,6 +30,13 @@ const doneSchema = {
   additionalProperties: false,
 };
 
+const hardestSchema = {
+  type: 'object',
+  properties: { step: { anyOf: [{ type: 'integer' }, { type: 'null' }] }, why: { type: 'string' } },
+  required: ['step', 'why'],
+  additionalProperties: false,
+};
+
 /**
  * The newcomer on `model`, acting with the `actions` of an environment. Each method resolves with
  * `{ value, usage }` or throws a `ModelError`.
@@ -39,7 +47,7 @@ export function createParticipant({ model, actions, apiKey }) {
 
   const history = (goal, records) => [
     { type: 'text', text: `Your goal: ${goal}` },
-    { type: 'text', text: records.length ? `Your earlier steps:\n${records.map(r => JSON.stringify(r)).join('\n')}` : 'This is your first step.' },
+    { type: 'text', text: records.length ? `Your earlier steps:\n${records.map((r, i) => `${i + 1}. ${JSON.stringify(r)}`).join('\n')}` : 'This is your first step.' },
   ];
 
   return {
@@ -59,6 +67,15 @@ export function createParticipant({ model, actions, apiKey }) {
       const { value, usage } = await ask(content, doneSchema);
       if (value?.answer !== 'yes' && value?.answer !== 'no') throw new ModelError('the answer does not fit the schema', usage);
       return { value: value.answer, usage };
+    },
+    /** `{ step, why }`: the one step that was the hardest or the least clear, or a `step` of null. */
+    async hardest({ goal, records, current }) {
+      const content = [...history(goal, records), { type: 'text', text: 'The screen now:' }, image(current), { type: 'text', text: HARDEST }];
+      const { value, usage } = await ask(content, hardestSchema);
+      if (!(value?.step === null || Number.isInteger(value?.step)) || typeof value.why !== 'string') {
+        throw new ModelError('the answer does not fit the schema', usage);
+      }
+      return { value, usage };
     },
   };
 }
