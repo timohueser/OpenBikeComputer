@@ -108,10 +108,11 @@ addition. Shared geometry retains every source point.
 
 `places.pmtiles` holds rider places from the POI search database. It has gzip MVT at zoom 11, extent
 4096, and one `pois` layer. Each point has the database's `kind` and `name`. String properties `lon`
-and `lat` retain the search coordinates without tile quantization. The feature ID is
-`(type << 44) | source_id`, where type is 1 for nodes, 2 for ways, 3 for relations, and 4 for
-curated Wikidata items. Source IDs are positive and below 2^44; a Wikidata item uses the digits
-after `Q`. Categories are defined in the [place categories](../planner/search/place-kinds.json).
+and `lat` retain the search coordinates without tile quantization. The unsigned integer property
+`ele` is the database `ele` rounded to the nearest whole metre, with a tie to the even metre. It is
+absent when the database `ele` is null. The feature ID is `(type << 44) | source_id`, where type is
+1 for nodes, 2 for ways, 3 for relations, and 4 for curated Wikidata items. Source IDs are positive
+and below 2^44; a Wikidata item uses the digits after `Q`. Categories are defined in the [place categories](../planner/search/place-kinds.json).
 Archive metadata includes the source `osm_sha256`. Empty tiles are absent, except that an empty
 archive contains one empty tile at the southwest bound.
 

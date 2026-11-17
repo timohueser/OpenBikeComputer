@@ -41,7 +41,7 @@ def derive(database, destination):
         if meta.get('component') != 'pois':
             raise ValueError('Place tiles require the POI search component')
         bounds = meta['bounds']
-        for source, kind, name, lon, lat in db.execute('SELECT source,kind,name,lon,lat FROM places ORDER BY source'):
+        for source, kind, name, lon, lat, ele in db.execute('SELECT source,kind,name,lon,lat,ele FROM places ORDER BY source'):
             if kind not in kinds or not (bounds[0] <= lon <= bounds[2] and bounds[1] <= lat <= bounds[3]):
                 continue
             if source[0] not in 'nwrQ' or not source[1:].isdigit() or not 0 < int(source[1:]) < 2**44:
@@ -50,6 +50,8 @@ def derive(database, destination):
             x = (lon + 180) / 360 * (1 << ZOOM)
             y = (1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * (1 << ZOOM)
             properties = {'kind': kind, 'name': name, 'lon': str(lon), 'lat': str(lat)}
+            if ele is not None:
+                properties['ele'] = round(ele)
             tiles.setdefault((math.floor(x), math.floor(y)), []).append(
                 (identity, properties, math.floor((x % 1) * mvt.EXTENT), math.floor((y % 1) * mvt.EXTENT)))
             count += 1
@@ -67,7 +69,7 @@ def derive(database, destination):
             'center_lon_e7': round((bounds[0]+bounds[2])*5e6), 'center_lat_e7': round((bounds[1]+bounds[3])*5e6)}, {
             'name': 'OpenBikeComputer rider places', 'attribution': meta['attribution'], 'osm_sha256': meta['osm_sha256'],
             'vector_layers': [{'id': 'pois', 'minzoom': ZOOM, 'maxzoom': ZOOM,
-                'fields': {'kind': 'String', 'name': 'String', 'lon': 'String', 'lat': 'String'}}]})
+                'fields': {'kind': 'String', 'name': 'String', 'lon': 'String', 'lat': 'String', 'ele': 'Number'}}]})
     return {'places': count, 'tiles': len(tiles)}
 
 
