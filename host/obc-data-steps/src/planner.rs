@@ -50,7 +50,7 @@ pub static PLANNER_TERRAIN: Layer =
 /// or the terrain the roads, of the cost code the costs.
 pub static PLANNER_ROUTING_SOURCE: Layer = work(step::SOURCE);
 pub static PLANNER_ROUTING_ROADS: Layer = work(step::ROADS);
-pub static PLANNER_ROUTING_COSTS: Layer = work(step::COSTS);
+pub static PLANNER_ROUTING_COSTS: Layer = Layer { revision: 2, ..work(step::COSTS) };
 /// The routing package, its grid and the route network overlays.
 pub static PLANNER_ROUTING: Layer = Layer {
     revision: 6,
