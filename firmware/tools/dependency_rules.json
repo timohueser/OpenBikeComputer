@@ -87,6 +87,7 @@
       "obc-usb-host",
       "obc-vectors",
       "obc-web-demo",
+      "obc-webp-bridge",
       "obcm-assemble",
       "obcm-testkit",
       "planner-router-build",
