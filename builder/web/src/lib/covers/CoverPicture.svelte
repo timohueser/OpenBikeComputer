@@ -8,7 +8,7 @@
     import Icon from '../ui/Icon.svelte';
     import PhotoMarks from '../../components/route/PhotoMarks.svelte';
 
-    let { shown, summary, breaks = [], look = 'route', mark, part, line = true, pins = [], photos = [], onphoto, onpoint }: {
+    let { shown, summary, breaks = [], look = 'route', colour, mark, part, line = true, pins = [], photos = [], onphoto, onpoint }: {
         /** The image, the points of its line, and the summary that the points belong to. With no summary, the image
          * shows no mark, no part and no pins. */
         shown?: { bitmap: ImageBitmap; points: CoverPoints; summary?: Summary };
@@ -17,6 +17,8 @@
         /** The indices of the points of `summary` where a new piece of the line starts, after a gap. */
         breaks?: number[];
         look?: 'route' | 'ride';
+        /** The colour of the line on the image, in place of the colours of `look`. */
+        colour?: string;
         /** Metres along the route, as `along` of line.ts reads them. */
         mark?: number;
         part?: [number, number];
@@ -40,7 +42,7 @@
         canvas.height = Math.round(height * devicePixelRatio);
         const { bitmap, points, summary } = shown;
         cut = drawCover(canvas.getContext('2d')!, { image: bitmap, width: bitmap.width, height: bitmap.height, points, summary },
-            { box: [canvas.width, canvas.height], mark, part, line, look });
+            { box: [canvas.width, canvas.height], mark, part, line, look, colour });
     });
 
     function point(event: PointerEvent) {

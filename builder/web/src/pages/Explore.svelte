@@ -87,6 +87,12 @@
     // The map credits are HTML, and a record credit is plain text. A far file has no credits: the selected trail brings its own.
     const credits = $derived(recordCredits([...inView.flatMap(item => item.kind === 'signed' ? [item.record] : []), ...trail?.record ? [trail.record] : []])
         .map(escapeMarkup));
+    /** The pictures that show a cover, and the credits of the set: the map shows them while a cover shows. */
+    let covers = $state(0), coverCredits = $state.raw<string[]>([]);
+    function oncover(credits: string[] | undefined) {
+        if (credits) coverCredits = credits;
+        covers += credits ? 1 : -1;
+    }
     /** The value of each item that the other chips keep, for the bars of the slider of `key`. */
     const values = (key: 'length' | 'climb') => results(inView, { ...chips, [key]: undefined }, '')
         .map(({ summary }) => key === 'length' ? distanceIn(summary!.lengthM) : heightIn(summary!.climbM));
@@ -277,7 +283,7 @@
 <svelte:window onkeydown={event => { if (event.key === 'Escape' && !document.querySelector('dialog[open]')) select(undefined); }} />
 
 <!-- TrailView shows the routes of a near view only. -->
-<ListAndMap title="Explore" {items} {shown} {place} fit={0} look="signed" {credits} selected={chosen ? [chosen.id] : []} {marked}
+<ListAndMap title="Explore" {items} {shown} {place} fit={0} look="signed" credits={covers ? [...coverCredits, ...credits] : credits} selected={chosen ? [chosen.id] : []} {marked}
     onselect={select} onview={next => setView(wrapped(next))} card={trailAbout ? trailCard : chosen ? card : undefined}
     mapButtons={hasTrailView(config) && shown.length && !far ? mapButtons : undefined}>
     {#snippet list()}
@@ -299,7 +305,7 @@
                     <li>
                         <RouteRow name={item.name} current={item.id === currentId} onclick={() => select(item.id)}
                             parts={item.kind === 'trail' ? trailParts(item.entry) : signedNumbers(item.record)}>
-                            {#snippet picture()}<SignedPicture {item} />{/snippet}
+                            {#snippet picture()}<SignedPicture {item} {oncover} small />{/snippet}
                         </RouteRow>
                     </li>
                 {:else}
@@ -311,12 +317,12 @@
 </ListAndMap>
 
 {#snippet card(refocus: () => void)}
-    <SignedCard item={chosen!} onplan={() => plan(chosen!)} ontrail={config.trails ? trailOfCard : undefined} onclose={() => { refocus(); selected = undefined; }} />
+    <SignedCard item={chosen!} {oncover} onplan={() => plan(chosen!)} ontrail={config.trails ? trailOfCard : undefined} onclose={() => { refocus(); selected = undefined; }} />
 {/snippet}
 
 {#snippet trailCard(refocus: () => void)}
     {#if trailRoute}
-        <SignedCard item={trailRoute} onplan={() => plan(trailRoute)} onclose={() => { refocus(); trail = undefined; }} />
+        <SignedCard item={trailRoute} {oncover} onplan={() => plan(trailRoute)} onclose={() => { refocus(); trail = undefined; }} />
     {:else if trailAbout}
         <TrailCard about={trailAbout} item={trail!.entry && trailOf(trail!.entry)} record={trail!.record} failed={!!trail!.failed} onclose={() => { refocus(); trail = undefined; }} />
     {/if}

@@ -28,8 +28,10 @@
     import RouteCard from '../routes/RouteCard.svelte';
     import SignedPicture from './SignedPicture.svelte';
 
-    let { item, onplan, ontrail, onclose }: {
+    let { item, oncover, onplan, ontrail, onclose }: {
         item: SignedItem;
+        /** As `oncover` of the picture: it is too small for its credits, so the page shows them with the map. */
+        oncover?: (credits: string[] | undefined) => void;
         onplan: () => void;
         /** With it, the name of the long route of a stage or a section is a button that opens the card of its trail. */
         ontrail?: (id: number) => void;
@@ -52,7 +54,7 @@
 
 <RouteCard name={item.name} meta={[record.loop ? 'Loop' : 'One way', part, trailName, kindName(record)]} numbers={signedNumbers(record)} profile={item.profile}
     more={about ? more : undefined} {onclose}>
-    {#snippet picture()}<SignedPicture {item} />{/snippet}
+    {#snippet picture()}<SignedPicture {item} {oncover} />{/snippet}
     {#snippet mark()}<span class="mark"><TrailMarker symbol={record.symbol} ref={record.ref} /></span>{/snippet}
     {#snippet buttons()}<button type="button" class="button primary" onclick={onplan}>Plan this route</button>{/snippet}
 </RouteCard>

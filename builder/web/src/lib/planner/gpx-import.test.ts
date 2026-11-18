@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { dayStops, guessDays, orderedRoutePoints, planView, type DrawnCoordinate } from './editor';
+import { dayStops, guessDays, maxRidingDays, orderedRoutePoints, planView, type DrawnCoordinate } from './editor';
 import { cumulative, kilometres, type Coordinate } from './geo';
 import { profileAscent } from './profile-data';
 import { importedTrip, planFromFile, planOnRoads, readTracks } from './gpx-import';
@@ -100,8 +100,8 @@ describe('GPX import', () => {
     });
 
     it('rejects more files than a trip has days', () => {
-        const files = Array.from({ length: 15 }, (_, i) => ({ name: `${i}.gpx`, text: gpx(track([7.6, 47.5], 2)) }));
-        expect(() => readTracks(files)).toThrow('A trip has at most 14 days. Import 14 files or fewer.');
+        const files = Array.from({ length: maxRidingDays + 1 }, (_, i) => ({ name: `${i}.gpx`, text: gpx(track([7.6, 47.5], 2)) }));
+        expect(() => readTracks(files)).toThrow(`A trip has at most ${maxRidingDays} days. Import ${maxRidingDays} files or fewer.`);
     });
 
     it('routes a shaped file through its points and keeps the line of a file that cannot be shaped', async () => {

@@ -63,15 +63,15 @@ struct TripFlowModelTests {
     }
 
     @Test
-    func aTripHasAtMostFourteenDays() throws {
+    func aTripHasAtMostTheDayLimit() throws {
         let (model, _) = makeModel()
         let day = try #require(model.tripDays(tripID).first?.points)
-        #expect(model.createTrip(name: "Long", files: Array(repeating: day, count: 15)) == nil)
-        #expect(model.tripNotice == "A trip has at most 14 days.")
-        let id = try #require(model.createTrip(name: "Full", files: Array(repeating: day, count: 14)))
+        #expect(model.createTrip(name: "Long", files: Array(repeating: day, count: PlannerPlan.maxDays + 1)) == nil)
+        #expect(model.tripNotice == "A trip has at most \(PlannerPlan.maxDays) days.")
+        let id = try #require(model.createTrip(name: "Full", files: Array(repeating: day, count: PlannerPlan.maxDays)))
         model.tripNotice = nil
-        #expect(!model.appendToTrip(id, file: day) && model.trip(id)?.dayCount == 14)
-        #expect(model.tripNotice == "A trip has at most 14 days.")
+        #expect(!model.appendToTrip(id, file: day) && model.trip(id)?.dayCount == PlannerPlan.maxDays)
+        #expect(model.tripNotice == "A trip has at most \(PlannerPlan.maxDays) days.")
     }
 
     /// A route whose plan gains a night becomes a trip of the same name, with the route's device
