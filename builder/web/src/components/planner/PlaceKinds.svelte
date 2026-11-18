@@ -1,69 +1,39 @@
 <script lang="ts">
     import Icon from '../../lib/ui/Icon.svelte';
+    import MapControlPanel from './MapControlPanel.svelte';
     import { categoryIds, placeCategories } from '../../lib/planner/poi-kinds';
     import { placeChoice, toggleHighlight, toggleKind } from '../../lib/planner/place-choice.svelte';
-
-    let open = $state(false);
-    let root: HTMLDivElement;
-    let opener: HTMLButtonElement;
-
-    function outside(event: PointerEvent) {
-        if (open && !root.contains(event.target as Node)) open = false;
-    }
-
-    // A focus that moves to another control closes the panel, so only one panel of the controls is open.
-    function leave(event: FocusEvent) {
-        if (open && event.relatedTarget && !root.contains(event.relatedTarget as Node)) open = false;
-    }
-
-    function key(event: KeyboardEvent) {
-        if (event.key !== 'Escape' || !open) return;
-        event.stopPropagation();
-        open = false;
-        opener.focus();
-    }
 </script>
 
-<svelte:window onpointerdown={outside} />
-
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="place-kinds" bind:this={root} onkeydown={key} onfocusout={leave}>
-    <button type="button" class="toggle" class:chosen={open} bind:this={opener} aria-label="Kinds of places" aria-expanded={open} aria-haspopup="dialog" onclick={() => open = !open}>
+<MapControlPanel label="Kinds of places">
+    {#snippet button()}
         {#if placeChoice.highlight}
             <span class="mark lit"><Icon path={placeCategories[placeChoice.highlight].icon} size={12} /></span>
         {:else}
             <Icon name="sliders" />
         {/if}
-    </button>
-    {#if open}
-        <div class="panel" role="dialog" aria-label="Kinds of places" tabindex="-1">
-            <div class="head"><strong>Places</strong><span aria-hidden="true">Highlight</span></div>
-            <ul>
-                {#each categoryIds as kind (kind)}
-                    {@const { icon, plural } = placeCategories[kind]}
-                    {@const lit = placeChoice.highlight === kind}
-                    <li>
-                        <label>
-                            <input type="checkbox" checked={placeChoice.kinds.includes(kind)} onchange={() => toggleKind(kind)} />
-                            <Icon path={icon} size={15} />{plural}
-                        </label>
-                        <button type="button" class="highlight" aria-pressed={lit} aria-label={`Highlight ${plural}`} onclick={() => toggleHighlight(kind)}>
-                            <span class="mark" class:lit><Icon path={icon} size={12} /></span>
-                        </button>
-                    </li>
-                {/each}
-            </ul>
-            <p>Icons show when you zoom in. A highlighted kind shows from further out.</p>
-        </div>
-    {/if}
-</div>
+    {/snippet}
+    <div class="head"><strong>Places</strong><span aria-hidden="true">Highlight</span></div>
+    <ul>
+        {#each categoryIds as kind (kind)}
+            {@const { icon, plural } = placeCategories[kind]}
+            {@const lit = placeChoice.highlight === kind}
+            <li>
+                <label>
+                    <input type="checkbox" checked={placeChoice.kinds.includes(kind)} onchange={() => toggleKind(kind)} />
+                    <Icon path={icon} size={15} />{plural}
+                </label>
+                <button type="button" class="highlight" aria-pressed={lit} aria-label={`Highlight ${plural}`} onclick={() => toggleHighlight(kind)}>
+                    <span class="mark" class:lit><Icon path={icon} size={12} /></span>
+                </button>
+            </li>
+        {/each}
+    </ul>
+    <p>Icons show when you zoom in. A highlighted kind shows from further out.</p>
+</MapControlPanel>
 
 <style>
-    /* The frame and the button of the map controls, as in the map settings. */
-    .place-kinds { border-radius: 8px; background: var(--panel); box-shadow: var(--planner-shadow); }
-    button { padding: 0; border: 0; background: none; color: var(--ink); cursor: pointer; }
-    .toggle { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 8px; }
-    .toggle:hover, .toggle.chosen { color: var(--link); }
+    button { padding: 0; border: 0; background: none; cursor: pointer; }
 
     /* The look of a mark on the map: an empty ring, or the rust disc of the highlighted kind. */
     .mark {
@@ -76,14 +46,6 @@
     .mark.lit :global(svg) { opacity: 1; }
     :global([data-theme="dark"]) .mark.lit { background: #c8642a; }
 
-    /* Positioned against the controls column, as the map settings are. */
-    .panel {
-        position: absolute; top: 0; right: 44px;
-        width: min(288px, calc(100vw - 80px)); box-sizing: border-box;
-        max-height: calc(var(--map-height, 100vh) - 32px); overflow: auto;
-        padding: 10px 12px 12px; border-radius: 8px;
-        background: var(--panel); box-shadow: var(--planner-shadow); font-size: 13px;
-    }
     .head { display: flex; align-items: baseline; justify-content: space-between; padding-bottom: 4px; }
     .head strong { font-weight: 600; }
     .head span { font-size: 11px; color: var(--ink-soft); }

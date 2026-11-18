@@ -127,7 +127,7 @@ describe('planner app transitions', () => {
     it('shows the route network of the activity, and keeps a network that the rider chose or switched off', async () => {
         await startApp();
         button('Map settings').click(); await tick();
-        const menu = document.querySelector('.map-settings')!;
+        const menu = document.querySelector('[role="dialog"][aria-label="Map settings"]')!;
         const network = () => menu.querySelector('[aria-label="Routes, one at a time"] [aria-pressed="true"]')?.textContent?.trim();
         const activity = async (label: string) => { button('Activity').click(); await tick(); button(label).click(); await tick(); };
         expect(network()).toBe('Cycling');
