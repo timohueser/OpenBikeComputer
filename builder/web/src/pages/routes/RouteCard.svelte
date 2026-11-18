@@ -74,13 +74,16 @@
             }
         }
     }
-    /* The profile is a strip under the text and the buttons, as high as the room that they leave beside the picture. */
+    /* The profile is a strip under the text and the buttons, as high as the room that they leave beside the picture. A
+       place that fixes the card to the screen limits its height with `--card-height`: the rows of the picture keep
+       their height, and the row of `more` after them takes the rest and scrolls. */
     .card {
         position: relative;
         display: grid;
         grid-template-columns: 300px minmax(0, 1fr) auto;
-        grid-template-rows: auto minmax(40px, 1fr);
+        grid-template-rows: auto minmax(auto, 1fr);
         grid-template-areas: "picture text buttons" "picture profile profile";
+        grid-auto-rows: minmax(0, auto);
         max-height: var(--card-height, none);
         align-items: start;
         gap: 10px 20px;
@@ -147,6 +150,7 @@
     .profile {
         grid-area: profile;
         align-self: stretch;
+        min-height: 40px;
         contain: size;
     }
     .open {
@@ -219,7 +223,9 @@
         color: var(--ink-soft);
         font-size: 13px;
     }
+    /* Its own row, also when the card has no profile. */
     .more {
+        grid-row: 3;
         grid-column: 1 / -1;
         align-self: stretch;
         min-height: 0;
@@ -252,9 +258,7 @@
             content: '';
         }
     }
-    /* Under this width the card has too little room beside the picture, so the strip goes under the card. A place that
-       fixes the card to the screen limits its height with `--card-height`: the rows of the card keep their height, and
-       the row of `more`, the one flexible row, takes the rest and scrolls. */
+    /* Under this width the card has too little room beside the picture, so the strip goes under the card. */
     @container (max-width: 740px) {
         .card {
             grid-template-columns: clamp(120px, 35%, 240px) minmax(0, 1fr);
@@ -282,6 +286,9 @@
         }
         .profile {
             height: 56px;
+        }
+        .more {
+            grid-row: 4;
         }
     }
     @container (max-width: 480px) {
