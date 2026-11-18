@@ -47,7 +47,7 @@
      * LOW_PX high, such as the pins, stands at its middle. */
     const DRAG_PX = 4, KEY_STEP = .01, LOW_PX = 28;
     let root = $state<HTMLElement>(), layer = $state<HTMLElement>(), tickRow = $state<HTMLElement>(), lineEnd = $state<number>();
-    let down: { x: number; px: number; row?: number; moved: boolean } | null = null;
+    let down: { x: number; px: number; row?: number; moved: boolean; before: [number, number] | null } | null = null;
     const split = $derived(Math.min(rows.length, ticksAfter ?? rows.length));
     const gridRow = (i: number) => i < split ? i + 1 : i + 2;
     const gridRows = $derived.by(() => {
@@ -87,7 +87,7 @@
         const { x, px, row } = place(event);
         // A button, a link or a panel (`data-panel`) in a lane keeps its own press.
         if (!onpart || x < 0 || x > 1 || event.button || (event.target as Element).closest('button, a, [data-panel]')) return;
-        down = { x, px, row, moved: false };
+        down = { x, px, row, moved: false, before: part };
         (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
     }
 
@@ -96,6 +96,12 @@
             if (onclick) onclick(down.x, down.row);
             else onpart?.(null);
         }
+        down = null;
+    }
+
+    // The browser took the gesture, as for a scroll: the part is as before the drag.
+    function cancel() {
+        if (down?.moved) onpart?.(down.before);
         down = null;
     }
 
@@ -133,7 +139,7 @@
 {/if}
 {#if rows.length}
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="lanes" class:scaled={rows.some(row => row.scale)} class:bare={rows.every(row => !row.label)} class:grow={!!gridRows} style:grid-template-rows={gridRows} bind:this={root} onpointermove={move} onpointerdown={start} onpointerup={end} onpointercancel={() => down = null}
+<div class="lanes" class:scaled={rows.some(row => row.scale)} class:bare={rows.every(row => !row.label)} class:grow={!!gridRows} style:grid-template-rows={gridRows} bind:this={root} onpointermove={move} onpointerdown={start} onpointerup={end} onpointercancel={cancel}
     onpointerleave={() => { if (!down) onpointer(null); }}>
     {#each rows as row, i (i)}
         {#if row.label}

@@ -291,9 +291,10 @@
         map.addLayer({ id: "trip-casing-drawn", type: "line", source: "trip", filter: ["==", ["get", "leg"], "drawn"], layout: { "line-join": "round" }, paint: { "line-color": dark ? "#bdb47e" : "#5c5a2e", "line-width": 8, "line-dasharray": [1, 0.8] } });
         map.addLayer({ id: "trip-gap", type: "line", source: "trip", filter: ["==", ["get", "leg"], "gap"], paint: { "line-color": dark ? "#bdb47e" : "#5c5a2e", "line-width": 3, "line-dasharray": [1, 0.8] } });
         map.addLayer({ id: "trip-line", type: "line", source: "trip", filter: ["!", ["in", ["get", "leg"], ["literal", ["gap", "transfer"]]]], layout: round, paint: { "line-color": ["get", "color"], "line-width": 4 } });
-        map.addLayer({ id: "trip-transfer", type: "line", source: "trip", filter: ["==", ["get", "leg"], "transfer"], paint: { "line-color": dark ? "#8f8a6e" : "#9a9681", "line-width": 3, "line-dasharray": [2, 2] } });
+        // Under the transfers, so a train outside the part keeps its dashes.
         map.addSource("trip-rest", { type: "geojson", data: restData() });
         map.addLayer({ id: "trip-rest", type: "line", source: "trip-rest", layout: round, paint: { "line-color": casing, "line-width": 5, "line-opacity": .65 } });
+        map.addLayer({ id: "trip-transfer", type: "line", source: "trip", filter: ["==", ["get", "leg"], "transfer"], paint: { "line-color": dark ? "#8f8a6e" : "#9a9681", "line-width": 3, "line-dasharray": [2, 2] } });
         map.addSource("compare", { type: "geojson", data: compareData() });
         map.addLayer({ id: "compare-casing", type: "line", source: "compare", layout: round, paint: { "line-color": casing, "line-width": 9 } });
         map.addLayer({ id: "compare-line", type: "line", source: "compare", layout: round, paint: { "line-color": dark ? "#f2efe3" : "#1c1b14", "line-width": 4.5 } });
@@ -793,7 +794,7 @@
 </script>
 
 <svelte:window onmouseup={(event) => { if (event.target !== map?.getCanvas()) cancelGesture(); }}
-    onblur={cancelGesture} onkeydown={(event) => { if (event.key === 'Escape') { cancelGesture(); overlaySelection = null; } }} />
+    onblur={cancelGesture} onkeydown={(event) => { if (event.key === 'Escape') { cancelGesture(); if (overlaySelection) event.preventDefault(); overlaySelection = null; } }} />
 
 <!-- The callout always fits the free map area: inside the margins, clear of the controls and the bottom strip, less its offset and tip. -->
 <div class="map-frame" data-map-theme={theme} bind:clientWidth={frameWidth} bind:clientHeight={frameHeight}

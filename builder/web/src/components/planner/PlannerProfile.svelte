@@ -149,8 +149,11 @@
     }
 
     function select(next: [number, number] | null) {
-        if (next && !part) held = view;
-        onPart?.(next && [shown.from + next[0] * span, shown.from + next[1] * span]);
+        // A drag inside one rest column covers no route.
+        const progress: [number, number] | null = next && [shown.from + next[0] * span, shown.from + next[1] * span];
+        if (progress && progress[1] - progress[0] < 1e-9) return onPart?.(null);
+        if (progress && !part) held = view;
+        onPart?.(progress);
     }
 
     // Another range, another day, a closed drawer or no profile ends the part; a moved day end keeps it. A derived
