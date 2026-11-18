@@ -346,6 +346,28 @@ describe('the cover job', () => {
         expect(await library.cover('r0')).toBeUndefined();
     });
 
+    it('keeps the ask of a card in work after an ask of its row and 13 later asks of rows, while another tab holds the lock', async () => {
+        const rows = Array.from({ length: 13 }, (_, i) => `r${i}`);
+        await saved('card', ...rows);
+        const { renderer, stills } = fake();
+        await start(renderer);
+        held = true;
+        wantCover('card', 'card');
+        wantCover('card', 'row');
+        // The card comes back to the queue before the other rows ask.
+        await settle();
+        for (const id of rows) wantCover(id, 'row');
+        await settle();
+        held = false;
+        await vi.advanceTimersByTimeAsync(10_000);
+        await settle();
+        for (let i = 0; i < stills.length; i++) {
+            stills[i].resolve(result);
+            await settle();
+        }
+        expect(await library.cover('card')).toMatchObject({ state: 'done' });
+    });
+
     it('does nothing for an ask before or after it starts when the browser saves data', async () => {
         await saved('a', 'b');
         (navigator as { connection?: object }).connection = { saveData: true };

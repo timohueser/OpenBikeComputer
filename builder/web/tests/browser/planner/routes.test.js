@@ -154,6 +154,12 @@ test('the Routes page with a selected route, at the width of a computer and of a
     await expect.poll(async () => { const actual = await layout(page); return Object.keys(PARTS).filter(key => !near(actual[key], LAYOUT[width][key])); },
       { message: `parts out of place at ${width} px` }).toEqual([]);
   }
+  // In a low window, the picture of the card is lower, so the card holds it.
+  await page.setViewportSize({ width: 1440, height: 320 });
+  await expect.poll(() => page.getByRole('region', { name: 'Start → Finish' }).evaluate(card => {
+    const style = getComputedStyle(card), inner = card.getBoundingClientRect().bottom - parseFloat(style.paddingBottom) - parseFloat(style.borderBottomWidth);
+    return card.querySelector('.picture').getBoundingClientRect().bottom <= inner + 0.5;
+  })).toBe(true);
 });
 
 const year = new Date().getFullYear();
