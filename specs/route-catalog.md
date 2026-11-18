@@ -325,19 +325,20 @@ When the plan of a route fails and its main line is longer than 60 km, the build
 main line with the routed patches of its gaps, into ⌈length / 60 km⌉ sections. Each cut is at the
 line point nearest to an equal share of the length, so each section ends at the point where the
 next section starts. The builder plans each section as a route, by the rules of [Plan](#plan). A
-section is never a loop. A line of more than 99 sections leaves the catalog. A route whose plan
+section is never a loop. A line that needs more than 99 sections is not cut. A route whose plan
 passes stays one route record, also when it is longer than 60 km.
 
 A section is a route record with the tag fields of its relation, `section` and `trail`, and no
 `parent`, `stage` or `trail_stage`. Its `id` is −(relation ID × 100 + `section`). So each section
 has a key of its own, and the cut relation keeps its relation ID.
 
-The relation becomes a cut long route: its parts are its sections in order, with no `stage`, and
-each part but the last has `cut`. A section that fails is a part not in the catalog, with the
-first and the last point of its line as its ends. When the cut relation is a stage of a trail, its
-cut long route has `trail` and `trail_stage`, and in the `parts` of the trail its sections take its
-place, each with the stage number and the name of the stage. A cut is no place, so a trip ends no day
-there.
+When no section passes, or the line is not cut, the relation leaves the catalog as a whole, with the
+reason of its whole line. Else the relation becomes a cut long route: its parts are its sections in
+order, with no `stage`, and each part but the last has `cut`. A section that fails is a part not in
+the catalog, with the first and the last point of its line as its ends. When the cut relation is a
+stage of a trail, its cut long route has `trail` and `trail_stage`, and in the `parts` of the trail
+its sections take its place, each with the stage number and the name of the stage. A cut is no
+place, so a trip ends no day there.
 
 ### Coverage
 

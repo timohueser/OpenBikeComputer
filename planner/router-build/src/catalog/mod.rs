@@ -759,7 +759,7 @@ fn shaped<D: RoutingData>(
     };
     let sections = sections(&line, section_m);
     if sections.len() > MAX_SECTIONS {
-        return Err(Reason::TooManyPoints);
+        return Err(reason);
     }
     let built = sections.iter().enumerate().map(|(i, line)| {
         let length = shape::length(line);
