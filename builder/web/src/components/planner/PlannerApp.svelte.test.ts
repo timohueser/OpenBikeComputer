@@ -17,12 +17,15 @@ vi.mock('./PlannerMap.svelte', async () => ({ default: (await import('../../../t
 let app: ReturnType<typeof mount> | undefined;
 const stored = new Map<string, string>();
 let savedPlan: Plan | undefined;
+// The other routes of the library.
+let others: Plan[] = [];
 
 vi.mock('../../lib/library/store', () => ({
     Library: class {
         async state() { return stored.has('trip') ? 'stored' : null; }
-        async route() { return { ...newPlan(emptyTrip()), id: 'stored', revision: 1, trip: JSON.parse(stored.get('trip')!) }; }
-        async versions() { return []; }
+        async route(id: string) { return others.find(plan => plan.id === id) ?? { ...newPlan(emptyTrip()), id: 'stored', revision: 1, trip: JSON.parse(stored.get('trip')!) }; }
+        async routes() { return [...savedPlan ? [savedPlan] : [], ...others]; }
+        async unreadableRoutes() { return []; }
         async saveRoute(plan: Plan) {
             stored.set('trip', JSON.stringify(plan.trip));
             savedPlan = { ...plan, revision: plan.revision + 1 };
@@ -40,6 +43,7 @@ const tilePlace: Place = { id: 'poi-123', kind: 'place', label: 'Tile camp', cat
 beforeEach(() => {
     stored.clear();
     savedPlan = undefined;
+    others = [];
     vi.stubGlobal('confirm', vi.fn(() => true));
     const trip = testTrip();
     const coordinates = routeLine;
@@ -484,21 +488,6 @@ describe('planner app transitions', () => {
         expect(document.body.textContent).toContain('Where would you like to ride?');
     });
 
-    it('brings a deleted version back with the status-line Undo', async () => {
-        await startApp();
-        button('Save version').click(); await tick();
-        document.querySelector('.versions form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-        const deleteButton = () => document.querySelector<HTMLButtonElement>('.versions button[aria-label^="Delete"]');
-        await vi.waitFor(() => expect(deleteButton()).not.toBeNull());
-        const label = deleteButton()!.getAttribute('aria-label');
-        deleteButton()!.click();
-        await vi.waitFor(() => expect(deleteButton()).toBeNull());
-        expect(document.querySelector('.status-line')?.textContent).toContain('Version deleted');
-        button('Undo', document.querySelector('.status-line')!).click();
-        await vi.waitFor(() => expect(deleteButton()?.getAttribute('aria-label')).toBe(label));
-        expect(document.querySelector('.status-line')?.textContent).not.toContain('Undo');
-    });
-
     it('loads the website and phone that a list leaves out, also for a night made from the place', async () => {
         const camp = { source: 'n42', name: 'River camp', kind: 'campsite', city: '', region: '', lon: tilePlace.coordinate[0], lat: tilePlace.coordinate[1], precision: 'place', distance: 0 };
         vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
@@ -550,23 +539,18 @@ describe('planner app transitions', () => {
         expect(dayButton(1)).toBeDefined();
     });
 
-    it('compares two saved versions and opens one in the planner', async () => {
+    it('compares two saved routes and opens one in the planner', async () => {
+        others = [{ ...newPlan({ ...testTrip(), days: 4 }, 'Coast'), id: 'coast', revision: 1 }];
         await startApp();
-        // The menu stays open after a save.
-        const save = async () => {
-            document.querySelector('.versions form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-            await vi.waitFor(() => expect(document.querySelector('.versions form')).toBeNull());
-        };
-        button('Save version').click(); await tick(); await save();
-        button('Save as a new version…').click(); await tick(); await save();
-        button('Compare versions').click(); await tick();
+        await vi.waitFor(() => expect(savedPlan).toBeDefined());
+        button('Compare routes').click();
         await vi.waitFor(() => expect(document.querySelectorAll('.compare .head .totals')).toHaveLength(2));
         expect(document.querySelector('.trip-bar')).toBeNull();
         expect(document.activeElement?.textContent).toBe('Planner');
         button('Open in planner').click();
-        await vi.waitFor(() => expect(document.querySelector('.status-line')?.textContent).toContain('Opened'));
+        await vi.waitFor(() => expect(document.querySelector('.status-line')?.textContent).toContain('Plan opened'));
         expect(document.querySelector('.compare')).toBeNull();
-        expect(document.activeElement).toBe(document.querySelector('.versions .toggle'));
+        expect(document.querySelector('.trip-bar h1')?.textContent).toBe('Coast');
     });
 
     it('prevents adding an overnight past the riding-day limit', async () => {

@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import { emptyTrip, setEndpoint, addRestDay, setDays, maxRidingDays, pinNight, reorderPoint, setDrawnLeg, type Trip } from './editor';
 import { isTrip } from './trip-validation';
 import { planPace } from './riding-profiles';
-import { newVersion } from './versions';
 import { testTrip } from '../../../test-support/planner/trip';
 
 describe('stored planner data', () => {
@@ -14,8 +13,6 @@ describe('stored planner data', () => {
         const noted = { ...drawn, points: drawn.points.map(p => p.id === 'night-2' ? { ...p, note: 'Hut, cash only' } : p) };
         const trip = addRestDay(reorderPoint(noted, 'night-2', 1), 2);
         expect(isTrip(JSON.parse(JSON.stringify(trip)))).toBe(true);
-        expect(newVersion(trip, undefined, 'Trip').trip.points.find(p => p.id === 'night-2')?.note).toBe('Hut, cash only');
-        expect(newVersion(trip, undefined, 'Trip').trip).toEqual(trip);
     });
 
     it('rejects invalid endpoint roles, invalid geometry and broken route references', () => {
@@ -59,10 +56,9 @@ describe('stored planner data', () => {
         expect(isTrip(shorter)).toBe(true);
     });
 
-    it('round-trips empty and one-endpoint drafts and versions', () => {
+    it('round-trips empty and one-endpoint drafts', () => {
         for (const trip of [emptyTrip(), setEndpoint(emptyTrip('trip'), 'finish', [8, 48], 'Finish')]) {
             expect(isTrip(JSON.parse(JSON.stringify(trip)))).toBe(true);
-            expect(newVersion(trip, undefined).trip).toEqual(trip);
         }
         expect(isTrip({ ...emptyTrip(), points: [{ ...testTrip().points[0], kind: 'via' }] })).toBe(false);
     });

@@ -14,18 +14,17 @@ const ride = (key: string, device?: string): RideRecord => ({
 const photo = (id: string, key: string): PhotoRecord => ({ id, ride: key, time: 1, image: new Blob([`copy of ${id}`]), small: new Blob(['small']) });
 
 describe('library store', () => {
-    it('saves routes in order, refuses an unseen edit from another tab, and removes the versions and the active pointer', async () => {
+    it('saves routes in order, refuses an unseen edit from another tab, and removes the active pointer', async () => {
         const factory = new IDBFactory(), first = new Library(factory), second = new Library(factory);
-        const saved = await first.saveRoute(route('a'), [{ id: 'v' }]);
+        const saved = await first.saveRoute(route('a'));
         await first.setState('active', saved.id);
         const stale = (await second.route('a'))!;
         await Promise.all([first.saveRoute({ ...saved, updatedAt: 2 }), first.saveRoute({ ...saved, updatedAt: 3 })]);
         expect((await first.routes())[0]).toMatchObject({ updatedAt: 3, revision: 3 });
-        expect(await first.versions('a')).toEqual([{ id: 'v' }]);
         await expect(second.saveRoute({ ...stale, name: 'Unseen' })).rejects.toThrow('another tab');
         await expect(second.removeRoute('a', stale.revision)).rejects.toThrow('changed');
         await second.removeRoute('a', (await second.route('a'))!.revision);
-        expect([await first.routes(), await first.versions('a'), await first.state('active')]).toEqual([[], [], null]);
+        expect([await first.routes(), await first.state('active')]).toEqual([[], null]);
         await first.close(); await second.close();
     });
 
@@ -99,7 +98,7 @@ describe('library store', () => {
 
     it('clears all stores after the writes before it, and then refuses each write', async () => {
         const factory = new IDBFactory(), library = new Library(factory);
-        await library.saveRoute(route('a'), [{ id: 'v' }]);
+        await library.saveRoute(route('a'));
         await library.addRide(ride('20260801T070000Z'), new Blob(['ride']));
         await library.saveCover({ id: 'a', lineKey: 'k', state: 'none', tries: 0 });
         await library.setState('active', 'a');
@@ -108,12 +107,12 @@ describe('library store', () => {
         await expect(before).resolves.toMatchObject({ id: 'b' });
         await expect(library.saveRoute(route('c'))).rejects.toThrow('deleted');
         const fresh = new Library(factory), contents = await fresh.contents();
-        expect([contents.routes, contents.versions, contents.rides, contents.files.size, contents.state, await fresh.cover('a')])
-            .toEqual([[], {}, [], 0, {}, undefined]);
+        expect([contents.routes, contents.rides, contents.files.size, contents.state, await fresh.cover('a')])
+            .toEqual([[], [], 0, {}, undefined]);
         await library.close(); await fresh.close();
     });
 
-    it('opens a database of version 1 with its routes and rides, and adds the store of the photos', async () => {
+    it('opens a database of version 1 with its routes and rides, adds the store of the photos and deletes the store of the versions', async () => {
         const factory = new IDBFactory(), key = '20260801T070000Z';
         await new Promise<void>((resolve, reject) => {
             const request = factory.open('obc-library', 1);
@@ -140,13 +139,16 @@ describe('library store', () => {
         expect(await library.addPhoto(photo('p1', key))).toBe(true);
         expect((await library.photos(key)).map(p => p.id)).toEqual(['p1']);
         await library.close();
+        const db = await new Promise<IDBDatabase>(resolve => { const request = factory.open('obc-library'); request.onsuccess = () => resolve(request.result); });
+        expect(db.objectStoreNames.contains('versions')).toBe(false);
+        db.close();
     });
 
     it('fails each call with one plain sentence after another tab upgrades the database', async () => {
         const factory = new IDBFactory(), library = new Library(factory);
         await library.saveRoute(route('a'));
         await new Promise<void>((resolve, reject) => {
-            const request = factory.open('obc-library', 3);
+            const request = factory.open('obc-library', 4);
             request.onsuccess = () => { request.result.close(); resolve(); };
             request.onerror = request.onblocked = () => reject(new Error('The upgrade did not run.'));
         });

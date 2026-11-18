@@ -1,6 +1,6 @@
 # Editable planner files
 
-An `.obcplan` file is a UTF-8 JSON object: one editable plan and its saved versions. It has no
+An `.obcplan` file is a UTF-8 JSON object: one editable plan. It has no
 browser database ID or database revision, and no routed line: the planner calculates the line again
 from the points. Import gives the plan a new ID and does not replace another plan.
 
@@ -17,13 +17,8 @@ from the points. Import gives the plan a new ID and does not replace another pla
 | `version` | `1` |
 | `name` | Non-empty string, at most 120 characters |
 | `trip` | Plan object |
-| `versions` | Array of version objects, newest first |
-| `open` | Optional ID of the version that `trip` belongs to |
 
-A version has a unique non-empty string `id`, a UTC ISO timestamp `at` with milliseconds, an
-optional string `name`, a display string `summary`, and a plan object `trip`. Import calculates each
-summary from the plan. It rejects duplicate version IDs. It drops an `open` that names no version of
-the file.
+A reader ignores the fields `versions` and `open` of an older file.
 
 ## Plan object
 
@@ -88,5 +83,5 @@ its start. `routeOrder` contains each route point that is not the start or the f
 
 ## Import
 
-Import validates the complete file before saving it. An invalid plan or version rejects the file.
+Import validates the complete file before saving it. An invalid plan rejects the file.
 The open plan stays unchanged.

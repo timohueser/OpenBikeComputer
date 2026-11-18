@@ -1,32 +1,22 @@
 <script lang="ts">
     import Icon from '../../lib/ui/Icon.svelte';
     import Select from './PlannerSelect.svelte';
-    import VersionsMenu from './VersionsMenu.svelte';
     import { onMount } from 'svelte';
     import { paces, planPace, planPreset, ridingProfiles, servedPresets, type BikeType } from '../../lib/planner/riding-profiles';
     import { planTitle, type Trip } from '../../lib/planner/editor';
-    import { regionProfiles, type RoutingLine } from '../../lib/planner/routing';
-    import type { Version } from '../../lib/planner/versions';
+    import { regionProfiles } from '../../lib/planner/routing';
 
-    let { trip, line, name, versions, openId, canUndo, canRedo, draftSavedAt, draftError, onChange, onUndo, onRedo, onOpen, onSaveNew, onVersions, onCompare, onNew, onLibrary, ready }: {
+    let { trip, name, canUndo, canRedo, onChange, onUndo, onRedo, onCompare, onNew, onLibrary, ready }: {
         trip: Trip;
-        line?: RoutingLine;
         name: string;
-        versions: Version[];
-        openId?: string;
         ready: boolean;
         onLibrary: () => void;
         canUndo: boolean;
         canRedo: boolean;
-        draftSavedAt: number | null;
-        draftError: string;
         onChange: (change: Partial<Trip>, description: string) => void;
         onNew: () => void;
         onUndo: () => void;
         onRedo: () => void;
-        onOpen: (id: string, name: string) => void;
-        onSaveNew: (name: string) => Promise<void>;
-        onVersions: (versions: Version[]) => Promise<void>;
         onCompare: () => void;
     } = $props();
 
@@ -67,7 +57,7 @@
         <button type="button" class="icon" disabled={!canUndo} onclick={onUndo} aria-label="Undo" title="Undo"><Icon name="undo" /></button>
         <button type="button" class="icon" disabled={!canRedo} onclick={onRedo} aria-label="Redo" title="Redo"><Icon name="redo" /></button>
         <button type="button" class="planner-action" disabled={!ready} onclick={onLibrary}>My plans</button>
-        <VersionsMenu {trip} {line} {versions} {openId} {draftSavedAt} {draftError} {onOpen} {onSaveNew} onChange={onVersions} {onCompare} />
+        <button type="button" class="planner-action quiet compare-routes" onclick={onCompare}>Compare routes</button>
     </div>
 </div>
 
@@ -139,7 +129,7 @@
         .trip-name h1 { flex: 1; }
         .actions { grid-column: 1; grid-row: 3; justify-content: flex-end; }
     }
-    .actions > :global(.versions) {
+    .compare-routes {
         margin-left: 8px;
     }
 </style>
