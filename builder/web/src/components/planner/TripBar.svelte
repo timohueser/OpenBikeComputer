@@ -1,7 +1,8 @@
 <script lang="ts">
     import Icon from '../../lib/ui/Icon.svelte';
     import Select from './PlannerSelect.svelte';
-    import VersionsMenu from './VersionsMenu.svelte';
+    import SaveMenu from './SaveMenu.svelte';
+    import { proto } from './save-prototype.svelte';
     import { onMount } from 'svelte';
     import { paces, planPace, planPreset, ridingProfiles, servedPresets, type BikeType } from '../../lib/planner/riding-profiles';
     import { planTitle, type Trip } from '../../lib/planner/editor';
@@ -31,7 +32,7 @@
     } = $props();
 
     const bike = $derived(trip.bike ?? 'touring');
-    const title = $derived(name || planTitle(trip));
+    const title = $derived(proto.name || name || planTitle(trip));
     // The profiles of the routing region; until they arrive, every activity and preset shows.
     let profiles = $state<string[]>();
     // An activity that the region does not serve stays listed while the plan uses it.
@@ -42,7 +43,7 @@
 
 <div class="trip-bar" inert={!ready}>
     <div class="trip-name">
-        <h1>{title}</h1>
+        {#if proto.stored}<h1><button type="button" class="rename" title="Rename route">{title}</button></h1>{:else}<h1>{title}</h1>{/if}
         <Select label="Plan type" value={trip.mode ?? 'trip'} options={[{ value: 'trip', label: 'Multi-day trip' }, { value: 'route', label: 'Route' }]}
             onChange={(mode) => onChange({ mode: mode as Trip['mode'] }, mode === 'route' ? 'Route' : 'Multi-day trip')} />
     </div>
@@ -67,7 +68,7 @@
         <button type="button" class="icon" disabled={!canUndo} onclick={onUndo} aria-label="Undo" title="Undo"><Icon name="undo" /></button>
         <button type="button" class="icon" disabled={!canRedo} onclick={onRedo} aria-label="Redo" title="Redo"><Icon name="redo" /></button>
         <button type="button" class="planner-action" disabled={!ready} onclick={onLibrary}>My plans</button>
-        <VersionsMenu {trip} {line} {versions} {openId} {draftSavedAt} {draftError} {onOpen} {onSaveNew} onChange={onVersions} {onCompare} />
+        <SaveMenu canSave={trip.points.length > 0} />
     </div>
 </div>
 
@@ -102,6 +103,22 @@
         flex-wrap: wrap;
         gap: 8px 16px;
     }
+    .rename {
+        display: block;
+        white-space: nowrap;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        margin: 0 -6px;
+        padding: 2px 6px;
+        border: 0;
+        border-radius: 6px;
+        background: none;
+        color: inherit;
+        font: inherit;
+        cursor: pointer;
+    }
+    .rename:hover { background: var(--parchment-2); }
     .preference {
         display: flex;
         align-items: center;

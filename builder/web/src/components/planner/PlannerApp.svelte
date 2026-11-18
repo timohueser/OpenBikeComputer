@@ -2,6 +2,8 @@
     import { onMount, tick, untrack } from 'svelte';
     import PlannerMap from './PlannerMap.svelte';
     import Icon from '../../lib/ui/Icon.svelte';
+    import Window from '../../lib/ui/Window.svelte';
+    import { proto } from './save-prototype.svelte';
     import Profile from './PlannerProfile.svelte';
     import DrawerTitle from './DrawerTitle.svelte';
     import Query from './PlannerQuery.svelte';
@@ -1111,6 +1113,30 @@
         onSaveNew={name => session.saveNewVersion(name)} onVersions={changeVersions} onCompare={compare} onLibrary={openLibrary}
     />
     {/key}
+    {#if proto.window === 'name'}
+        {@const fallback = planTitle(trip)}
+        <Window title="Save route" onClose={() => proto.window = null}>
+            {#snippet children(close)}
+                <form onsubmit={event => { event.preventDefault(); const value = new FormData(event.currentTarget).get('name'); proto.name = String(value || fallback); proto.stored = true; proto.changed = false; close(); }}>
+                    <label class="proto-field"><span>Name</span><input name="name" value={fallback} maxlength="80" {@attach el => { el.focus(); el.select(); }} /></label>
+                    <div class="window-buttons">
+                        <button type="button" class="planner-action" onclick={close}>Cancel</button>
+                        <button type="submit" class="planner-action proto-primary">Save</button>
+                    </div>
+                </form>
+            {/snippet}
+        </Window>
+    {:else if proto.window === 'switch'}
+        <Window title={`Save changes to ‘${proto.name || planTitle(trip)}’?`} onClose={() => proto.window = null}>
+            {#snippet children(close)}
+                <div class="window-buttons">
+                    <button type="button" class="planner-action" onclick={close}>Cancel</button>
+                    <button type="button" class="planner-action" onclick={close}>Discard</button>
+                    <button type="button" class="planner-action proto-primary" onclick={close}>Save</button>
+                </div>
+            {/snippet}
+        </Window>
+    {/if}
     <main aria-busy={!session.ready}>
         {#if libraryOpen}
             <LibraryPanel plans={session.plans} unreadable={session.unreadable} onDeleteUnreadable={() => { if (window.confirm('Delete the saved plans that cannot be read? This cannot be undone.')) void session.removeUnreadable(); }} activeId={planId} busy={session.busy} error={session.libraryError}
@@ -1301,7 +1327,11 @@
             </Profile>
             {/if}
             <div class="status-line" role="status">
+                {#if proto.reminder}
+                    <span>Unsaved changes from {proto.reminder}</span><span>·</span><button type="button" class="proto-link" onclick={() => proto.reminder = ''}>Restore</button><span>·</span><button type="button" class="proto-x" aria-label="Dismiss" title="Dismiss" onclick={() => proto.reminder = ''}><Icon name="close" size={13} /></button>
+                {:else}
                 <span class:save-error={!!session.saveError}>{session.saveError || `${message} · ${routingMessage}`}</span>
+                {/if}
                 {#if session.saveError}<button type="button" class="planner-action" onclick={() => session.download()}>Download plan</button><button type="button" class="planner-action" onclick={() => { session.save().catch(() => {}); }}>Retry save</button>{/if}
                 {#if statusUndo}<span>·</span><button type="button" class="planner-action" onclick={statusUndo}>Undo</button>{/if}
                 <span class="lab-note">Regional map, search and routing</span>
@@ -1502,6 +1532,13 @@
         color: var(--ink-soft);
     }
     .save-error { color: var(--coral); }
+    .planner-shell :global(.proto-primary) { background: var(--amber); border-color: var(--amber); color: var(--on-amber); }
+    .planner-shell :global(.proto-primary:hover:not(:disabled)) { background: color-mix(in srgb, var(--amber) 86%, var(--ink)); border-color: transparent; }
+    .proto-field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--ink-soft); }
+    .proto-field input { height: 36px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--panel); color: var(--ink); font: 600 14px var(--sans); }
+    .proto-link { padding: 0; border: 0; background: none; color: var(--ink); font: inherit; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+    .proto-x { display: grid; place-items: center; width: 22px; height: 22px; margin-left: -6px; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--ink-soft); cursor: pointer; }
+    .proto-x:hover { background: var(--parchment-2); color: var(--ink); }
     .lab-note {
         margin-left: auto;
     }
