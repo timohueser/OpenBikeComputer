@@ -6,6 +6,7 @@
     import type { Bike } from '../lib/library/records';
     import type { Library } from '../lib/library/store';
     import { config } from '../lib/planner/map-data';
+    import { escapeMarkup } from '../lib/core/gpx';
     import { decodeCoordinates } from '../lib/planner/route-answer';
     import { routeColor } from '../lib/planner/route-colors';
     import { catalog, tooWide, type Box } from '../lib/planner/route-catalog';
@@ -61,7 +62,8 @@
     // Each item is for `bike`, and each item of an answer for this view is in the view.
     const inView = $derived(stale ? results(items, {}, '', view) : items);
     const shown = $derived(results(inView, chips, '', undefined, 'shortest') as SignedItem[]);
-    const credits = $derived(recordCredits((inView as SignedItem[]).map(item => item.record)));
+    // The map credits are HTML, and a record credit is plain text.
+    const credits = $derived(recordCredits((inView as SignedItem[]).map(item => item.record)).map(escapeMarkup));
     const wide = $derived(!!view && tooWide(view));
     const chosen = $derived(shown.find(item => item.id === selected));
     /** The value of each item that the other chips keep, for the bars of the slider of `key`. */

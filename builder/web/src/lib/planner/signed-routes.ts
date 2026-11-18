@@ -66,8 +66,8 @@ export const kinds: Record<BikeType, CatalogRecord['kind'][]> = {
     hiking: ['hiking', 'foot'], mtb: ['mtb'], road: ['bicycle'], gravel: ['bicycle'], touring: ['bicycle'],
 };
 
-/** The distinct credits of `records`, in their order. */
-export const recordCredits = (records: CatalogRecord[]) => [...new Set(records.flatMap(record => record.credit ?? []))];
+/** The distinct credits of `records`, in their order. A long route joins the credits of its parts with `; `. */
+export const recordCredits = (records: CatalogRecord[]) => [...new Set(records.flatMap(record => record.credit?.split('; ') ?? []))];
 
 /** The name of grade `index` of `grades_m`: T1 to T6 for hiking and foot, S0 to S5 for mountain bike. */
 export const gradeName = (kind: 'hiking' | 'foot' | 'mtb', index: number) => kind === 'mtb' ? `S${index}` : `T${index + 1}`;

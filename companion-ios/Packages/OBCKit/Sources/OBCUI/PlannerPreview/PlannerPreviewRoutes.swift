@@ -64,9 +64,11 @@ import SwiftUI
         return level.isEmpty ? word.prefix(1).uppercased() + word.dropFirst() : "\(level) \(word)"
     }
     /// The caption under the list: the credit of the release, then the distinct credits of the shown routes.
+    /// A long route joins the credits of its parts with "; ".
     static func credits(_ attribution: String, routes: [CatalogRecord]) -> String {
         var seen = Set<String>()
-        return ([attribution] + routes.compactMap(\.credit).filter { seen.insert($0).inserted }).joined(separator: " · ")
+        let credits = routes.flatMap { $0.credit?.components(separatedBy: "; ") ?? [] }
+        return ([attribution] + credits.filter { seen.insert($0).inserted }).joined(separator: " · ")
     }
     static func website(_ text: String?) -> URL? {
         guard let text = text?.trimmingCharacters(in: .whitespaces), !text.isEmpty else { return nil }
@@ -288,6 +290,9 @@ struct PlannerRouteDetail: View {
                         }.buttonStyle(.plain)
                     }
                 }
+            }
+            if let credit = route.credit {
+                Text("Route data: \(credit)").font(.caption2).foregroundStyle(OBCTheme.secondary)
             }
         }
     }
