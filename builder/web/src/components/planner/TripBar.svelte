@@ -80,7 +80,7 @@
 <style>
     .trip-bar {
         display: grid;
-        grid-template-columns: minmax(calc(var(--side-width) - 16px), max-content) minmax(0, 1fr) auto;
+        grid-template-columns: minmax(calc(var(--side-width) - 16px), max-content) minmax(min-content, 1fr) auto;
         align-items: center;
         gap: 16px;
         min-height: 56px;
@@ -96,6 +96,7 @@
         min-width: 0;
     }
     h1 {
+        display: flex;
         min-width: 0;
         margin: 0;
         overflow: hidden;
@@ -103,13 +104,14 @@
         white-space: nowrap;
         font: 700 17px var(--sans);
     }
-    .rename {
-        display: block;
-        max-width: 100%;
-        margin: 0 -6px;
-        padding: 2px 6px;
+    h1 > * {
+        min-width: 0;
         overflow: hidden;
         text-overflow: ellipsis;
+    }
+    .rename {
+        margin: 0 -6px;
+        padding: 2px 6px;
         white-space: nowrap;
         border: 0;
         border-radius: 6px;
