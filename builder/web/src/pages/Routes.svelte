@@ -175,7 +175,7 @@
 <svelte:window onkeydown={event => { if (event.key === 'Escape' && !document.querySelector('dialog[open]')) selected = undefined; }} />
 
 <!-- A route or a ride that the chips hide is not drawn as selected. -->
-<ListAndMap title="Routes" {failure} {items} shown={mapShown} {fit} look={ridden ? 'ride' : 'route'} credits={cardCredits}
+<ListAndMap title="Routes" {failure} {items} shown={mapShown} {fit} look={ridden ? 'ride' : 'route'} credits={chosen ? cardCredits : []}
     selected={ridden ? chosenRow?.rides.map(ride => ride.id) ?? [] : chosen ? [chosen.id] : []} together={id => rowOf(id)?.rides.map(ride => ride.id) ?? [id]} onselect={select} onview={next => view = next}
     card={chosen ? selectedCard : undefined}>
     {#snippet tabs()}

@@ -15,7 +15,7 @@
         fit: number;
         place?: { lon: number; lat: number; box?: Box };
         look: 'route' | 'ride' | 'signed';
-        /** The credits of the picture of the card, which the map shows while the card is open. */
+        /** The credits of the pictures that the page shows, which the map shows with its own. */
         credits: string[];
         /** The lines that a click on one line selects, for the map. Without it, a line stands alone. */
         together?: (id: string) => string[];
@@ -68,7 +68,7 @@
         </div>
         <div class="map" style:--map-buttons={mapButtons ? `${buttonsWidth + 10}px` : null}>
             {#await import('./RoutesMap.svelte') then { default: RoutesMap }}
-                <RoutesMap {items} {shown} {selected} {fit} {place} covered={card && cardHeight ? cardHeight + 12 : 0} credits={card ? credits : []}
+                <RoutesMap {items} {shown} {selected} {fit} {place} covered={card && cardHeight ? cardHeight + 12 : 0} {credits}
                     {look} {together} {onselect} {onview} />
             {:catch error}
                 <p class="note">{error instanceof Error ? error.message : String(error)}</p>

@@ -19,10 +19,10 @@
     import RouteCard from '../routes/RouteCard.svelte';
     import SignedPicture from './SignedPicture.svelte';
 
-    let { item, credits = $bindable([]), onplan, onclose }: {
+    let { item, oncover, onplan, onclose }: {
         item: SignedItem;
-        /** The credits of the picture. It is too small to show them, so the page shows them with the map. */
-        credits?: string[];
+        /** As `oncover` of the picture: it is too small for its credits, so the page shows them with the map. */
+        oncover?: (credits: string[] | undefined) => void;
         onplan: () => void;
         onclose: () => void;
     } = $props();
@@ -42,7 +42,7 @@
 
 <RouteCard name={item.name} meta={[record.loop ? 'Loop' : 'One way', ...stage, kind]} numbers={signedNumbers(record)} profile={item.profile}
     more={about ? more : undefined} {onclose}>
-    {#snippet picture()}<SignedPicture {item} bind:credits />{/snippet}
+    {#snippet picture()}<SignedPicture {item} {oncover} />{/snippet}
     {#snippet mark()}<span class="mark"><TrailMarker symbol={record.symbol} ref={record.ref} /></span>{/snippet}
     {#snippet buttons()}<button type="button" class="button primary" onclick={onplan}>Plan this route</button>{/snippet}
 </RouteCard>

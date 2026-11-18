@@ -1,30 +1,33 @@
-import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CatalogRecord } from '../planner/signed-routes';
 
 const LOOK = '1|0715-1000|960|640', SET = '0123456789abcdef', CELL = '9-267-177';
 const HOST = 'https://maps.openbikecomputer.com/route-pictures';
 const record = (id: number, line: number[]) => ({ id, cells: [CELL], line_udeg: line }) as CatalogRecord;
-const keyOf = (line: number[]) => createHash('sha256').update(`${LOOK}|${line.join(',')}`).digest('hex').slice(0, 16);
 const LINE = [7_850_000, 47_990_000, 1000, 500];
-const KEY = keyOf(LINE);
+/** `keyOf` of the cover script (tests/browser/trailview/route-pictures.mjs) for LOOK and LINE. */
+const KEY = '0689c7e60606ce1b';
 const manifest = { format: 1, set: SET, look: LOOK, months: { '07': '0715-1000' }, default_month: '07', credits: ['© Data'] };
+const CELL_FILE = `/sets/${SET}/cells/${CELL}.json`;
 
-/** The files of the host by path; each request is counted. */
+/** The files of the host by path: a body, a status, or an error to throw. Each request is counted. */
 let files: Record<string, unknown>, asked: string[];
 beforeEach(() => {
     vi.resetModules();
     asked = [];
     files = {
         '/manifest.json': manifest,
-        [`/sets/${SET}/cells/${CELL}.json`]: { format: 1, routes: { 1: KEY, 2: 'ffffffffffffffff' } },
+        [CELL_FILE]: { format: 1, routes: { 1: KEY, 2: 'ffffffffffffffff' } },
         [`/covers/1/${KEY}-0715-1000.webp`]: 'image',
         [`/covers/1/${KEY}.json`]: { x: [10, null], y: [20, null], eye: [130, 0] },
     };
-    vi.stubGlobal('fetch', async (url: string) => {
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
         const path = url.slice(HOST.length);
         asked.push(path);
+        if (init?.signal?.aborted) throw new DOMException('aborted', 'AbortError');
         const body = files[path];
+        if (body instanceof Error) throw body;
+        if (typeof body === 'number') return new Response(null, { status: body });
         return body === undefined ? new Response(null, { status: 404 }) : new Response(typeof body === 'string' ? body : JSON.stringify(body));
     });
     vi.stubGlobal('createImageBitmap', async () => ({ close() {} }));
@@ -33,12 +36,13 @@ afterEach(() => {
     vi.unstubAllGlobals();
     vi.useRealTimers();
 });
+const cellReads = () => asked.filter(path => path === CELL_FILE).length;
 
 describe('coverOf', () => {
-    it('reads one cell file for two rows that ask at the same time, and makes a null place a point with no place', async () => {
+    it('finds the cover by the key that the cover script writes, reads one cell file for two rows, and makes a null place a point with no place', async () => {
         const { coverOf } = await import('./route-pictures');
         const [first, second] = await Promise.all([coverOf(record(1, LINE)), coverOf(record(2, LINE))]);
-        expect(asked.filter(path => path.includes('/cells/'))).toHaveLength(1);
+        expect(cellReads()).toBe(1);
         expect(first?.credits).toEqual(['© Data']);
         expect(Array.from(first!.points.x)).toEqual([10, NaN]);
         expect(Array.from(first!.points.eye)).toEqual([130, 0]);
@@ -61,5 +65,45 @@ describe('coverOf', () => {
         expect(await coverOf(record(1, LINE))).toBeUndefined();
         expect(await coverOf(record(1, LINE))).toBeUndefined();
         expect(asked.filter(path => path === '/manifest.json')).toHaveLength(2);
+    });
+
+    it('reads the manifest again a minute after a read with no signal, not before', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        files['/manifest.json'] = new TypeError('Failed to fetch');
+        const { coverOf } = await import('./route-pictures');
+        expect(await coverOf(record(1, LINE))).toBeUndefined();
+        files['/manifest.json'] = manifest;
+        expect(await coverOf(record(1, LINE))).toBeUndefined();
+        vi.setSystemTime(Date.now() + 60_000);
+        expect(await coverOf(record(1, LINE))).toBeDefined();
+        expect(asked.filter(path => path === '/manifest.json')).toHaveLength(2);
+    });
+
+    it('asks for a cell file again after a 503, and keeps one that answers 404', async () => {
+        files[CELL_FILE] = 503;
+        const { coverOf } = await import('./route-pictures');
+        expect(await coverOf(record(1, LINE))).toBeUndefined();
+        files[CELL_FILE] = { format: 1, routes: { 1: KEY } };
+        expect(await coverOf(record(1, LINE))).toBeDefined();
+        expect(cellReads()).toBe(2);
+        vi.resetModules();
+        delete files[CELL_FILE];
+        const again = await import('./route-pictures');
+        await again.coverOf(record(1, LINE));
+        await again.coverOf(record(1, LINE));
+        expect(cellReads()).toBe(3);
+    });
+});
+
+describe('holdCover', () => {
+    it('loads once for two holders, and the last release stops a load that has not ended', async () => {
+        const { holdCover } = await import('./route-pictures');
+        const route = record(1, LINE);
+        const [a, b] = [holdCover(route), holdCover(route)];
+        expect(a.cover).toBe(b.cover);
+        a.release();
+        b.release();
+        expect(await b.cover).toBeUndefined();
+        expect(asked.some(path => path.startsWith('/covers/'))).toBe(false);
     });
 });

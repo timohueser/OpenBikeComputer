@@ -1,35 +1,35 @@
 <!-- The picture of a signed route: its cover in the live set of route pictures, else its line on one light ground in
      both themes. The line has the colour of the route. -->
 <script lang="ts">
-    import { coverOf, type RouteCover } from '../../lib/covers/route-pictures';
+    import { holdCover, type RouteCover } from '../../lib/covers/route-pictures';
     import CoverPicture from '../../lib/covers/CoverPicture.svelte';
     import { routeColor, SIGNED_GROUND } from '../../lib/planner/route-colors';
     import type { SignedItem } from '../routes/filter';
 
-    let { item, credits = $bindable([]) }: {
+    let { item, oncover }: {
         item: SignedItem;
-        /** The credits of the shown cover. */
-        credits?: string[];
+        /** The credits of the set when the cover shows, and undefined when that cover goes. */
+        oncover?: (credits: string[] | undefined) => void;
     } = $props();
 
     const colour = $derived(routeColor(item.id));
     let cover = $state.raw<RouteCover>();
+    // A row shows its picture only near the view: a picture that goes stops its load, and the last one closes the bitmap.
     $effect(() => {
-        const record = item.record;
-        let live = true;
+        const { cover: loading, release } = holdCover(item.record);
+        let live = true, shown = false;
         cover = undefined;
-        credits = [];
-        void coverOf(record).then(found => {
-            if (!live) return found?.bitmap.close();
+        void loading.then(found => {
+            if (!live || !found) return;
             cover = found;
-            credits = found?.credits ?? [];
+            shown = true;
+            oncover?.(found.credits);
         });
-        return () => { live = false; };
-    });
-    // A row shows its picture only near the view: the bitmap closes when the picture leaves.
-    $effect(() => {
-        const bitmap = cover?.bitmap;
-        return () => bitmap?.close();
+        return () => {
+            live = false;
+            if (shown) oncover?.(undefined);
+            release();
+        };
     });
 </script>
 

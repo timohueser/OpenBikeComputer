@@ -63,8 +63,12 @@
     const shown = $derived(results(inView, chips, '', undefined, 'shortest') as SignedItem[]);
     const wide = $derived(!!view && tooWide(view));
     const chosen = $derived(shown.find(item => item.id === selected));
-    /** The credits of the picture of the card, which the map shows. */
-    let cardCredits = $state.raw<string[]>([]);
+    /** The pictures that show a cover, and the credits of the set: the map shows them while a cover shows. */
+    let covers = $state(0), coverCredits = $state.raw<string[]>([]);
+    function oncover(credits: string[] | undefined) {
+        if (credits) coverCredits = credits;
+        covers += credits ? 1 : -1;
+    }
     /** The value of each item that the other chips keep, for the bars of the slider of `key`. */
     const values = (key: 'length' | 'climb') => results(inView, { ...chips, [key]: undefined }, '')
         .map(({ summary }) => key === 'length' ? distanceIn(summary!.lengthM) : heightIn(summary!.climbM));
@@ -222,7 +226,7 @@
 <!-- Escape in an open window closes only the window. -->
 <svelte:window onkeydown={event => { if (event.key === 'Escape' && !document.querySelector('dialog[open]')) selected = undefined; }} />
 
-<ListAndMap title="Explore" {items} {shown} {place} fit={0} look="signed" credits={cardCredits} selected={chosen ? [chosen.id] : []}
+<ListAndMap title="Explore" {items} {shown} {place} fit={0} look="signed" credits={covers ? coverCredits : []} selected={chosen ? [chosen.id] : []}
     onselect={id => selected = id} onview={next => setView(wrapped(next))} card={chosen ? card : undefined}
     mapButtons={hasTrailView(config) && shown.length ? mapButtons : undefined}>
     {#snippet list()}
@@ -243,7 +247,7 @@
                 {#each drawn as item (item.id)}
                     <li>
                         <RouteRow name={item.name} current={item.id === selected} onclick={() => selected = item.id} parts={signedNumbers(item.record)}>
-                            {#snippet picture()}<SignedPicture {item} />{/snippet}
+                            {#snippet picture()}<SignedPicture {item} {oncover} />{/snippet}
                         </RouteRow>
                     </li>
                 {:else}
@@ -255,7 +259,7 @@
 </ListAndMap>
 
 {#snippet card(refocus: () => void)}
-    <SignedCard item={chosen!} bind:credits={cardCredits} onplan={() => plan(chosen!)} onclose={() => { refocus(); selected = undefined; }} />
+    <SignedCard item={chosen!} {oncover} onplan={() => plan(chosen!)} onclose={() => { refocus(); selected = undefined; }} />
 {/snippet}
 
 {#snippet mapButtons()}
