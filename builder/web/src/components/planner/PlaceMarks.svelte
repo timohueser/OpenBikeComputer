@@ -28,11 +28,13 @@
     let root: HTMLDivElement;
     let level = $state(untrack(levelOf));
     let shown = $state.raw<Mark[]>([]);
+    // The keys of the shown marks inside the map itself, without the margin: only these take the keyboard focus.
+    let inView = $state.raw(new Set<string>());
     let focused = $state('');
     const quiet = $derived(kinds.filter(kind => kind !== highlight));
     const active = $derived(kinds.length > 0 && (level >= ROW_LEVEL || (!!highlight && level >= FIRST_LEVEL)));
-    const ids = $derived(shown.flatMap(mark => mark.icons.map((_, index) => `${mark.key}/${index}`)));
-    // All marks are one stop of the Tab key: the last focused button, or the first.
+    const ids = $derived(shown.filter(mark => inView.has(mark.key)).flatMap(mark => mark.icons.map((_, index) => `${mark.key}/${index}`)));
+    // All marks in the map are one stop of the Tab key: the last focused button, or the first.
     const stop = $derived(ids.includes(focused) ? focused : ids[0]);
 
     /** The loaded tiles of the view with its margin, and their marks once asked for. */
@@ -84,6 +86,8 @@
             shown = marks.filter(mark => mark.lon >= west && mark.lon <= east && mark.lat >= south && mark.lat <= north)
                 .sort((a, b) => b.lat - a.lat || a.lon - b.lon);
         } else shown = marks;
+        const view = map.getBounds();
+        inView = new Set(shown.filter(mark => view.contains([mark.lon, mark.lat])).map(mark => mark.key));
         (map.getSource('place-marks') as GeoJSONSource | undefined)?.setData(names());
     }
 
@@ -149,8 +153,8 @@
         if (!step) return;
         event.preventDefault();
         event.stopPropagation();
-        const buttons = [...root.querySelectorAll('button')];
-        buttons[buttons.indexOf(document.activeElement as HTMLButtonElement) + step]?.focus();
+        const buttons = [...root.querySelectorAll('button')].filter(button => ids.includes(button.dataset.id!));
+        buttons[buttons.indexOf(document.activeElement as HTMLButtonElement) + step]?.focus({ preventScroll: true });
     }
 
     const pressed = (event: PointerEvent) => press = { x: event.clientX, y: event.clientY };
@@ -162,6 +166,8 @@
         root.addEventListener('click', open);
         root.addEventListener('keydown', arrow);
         root.addEventListener('pointerdown', pressed);
+        // A double click on a mark does not zoom the map.
+        root.addEventListener('dblclick', event => event.stopPropagation());
         const move = () => placed.forEach((mark, element) => position(element, mark));
         const zoom = () => level = levelOf();
         map.on('move', move);
@@ -213,7 +219,8 @@
     .place-marks {
         --quiet: #59604d; --disc: var(--rust, #a4501e); --paper: #f4f2eb;
         --ease: cubic-bezier(0.23, 1, 0.32, 1);
-        position: absolute; inset: 0; isolation: isolate; overflow: hidden; pointer-events: none;
+        /* `clip`, unlike `hidden`, makes no scroll container: a focus or a script cannot scroll the marks off their places. */
+        position: absolute; inset: 0; isolation: isolate; overflow: clip; pointer-events: none;
     }
     .place-marks.dark { --quiet: #b9bfae; --disc: #c8642a; --paper: #181d19; }
     button { padding: 0; border: 0; background: none; font: inherit; cursor: pointer; pointer-events: auto; -webkit-tap-highlight-color: transparent; }

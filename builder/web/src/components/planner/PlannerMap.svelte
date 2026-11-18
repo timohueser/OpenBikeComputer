@@ -351,6 +351,8 @@
     /** A click on the places of a mark opens the place, lists the places in the callout, or fits the map to them. */
     function openMark(coordinate: Coordinate, places: TilePlace[], opener: HTMLButtonElement) {
         overlaySelection = null;
+        // The popup of the page can stay at the same place, so its effect does not clear the list.
+        placeList = null;
         const action = opens(places, level());
         if (action === "place") onPlaceClick?.(asPlace(places[0]));
         else if (action === "list") placeList = { coordinate, places, opener, level: level() };
@@ -361,7 +363,7 @@
     }
 
     function closeList() {
-        placeList?.opener.focus();
+        placeList?.opener.focus({ preventScroll: true });
         placeList = null;
     }
 

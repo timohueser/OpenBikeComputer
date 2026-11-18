@@ -17,8 +17,23 @@ test('a mark opens the popup of its place, or a list of its places, under the pi
   }
   const marks = page.getByRole('group', { name: 'Places on the map' });
   const popup = page.getByRole('dialog', { name: 'Map details' });
+  const fountain = marks.getByRole('button', { name: 'Town fountain, Fountain' });
+  const centre = async locator => { const { x, y, width, height } = await locator.boundingBox(); return [x + width / 2, y + height / 2]; };
 
-  await marks.getByRole('button', { name: 'Town fountain, Fountain' }).click();
+  // The keyboard reaches only the marks inside the map, and moves no mark from its place.
+  const place = await centre(fountain);
+  const map = await page.locator('.map-canvas').boundingBox();
+  await page.locator('.maplibregl-canvas').focus();
+  await page.keyboard.press('Tab');
+  for (let i = 0; i < 4; i++) {
+    const focused = await page.evaluate(() => { const { x, y, width, height } = document.activeElement.getBoundingClientRect(); return { label: document.activeElement.getAttribute('aria-label'), x: x + width / 2, y: y + height / 2 }; });
+    expect(focused.x > map.x && focused.x < map.x + map.width && focused.y > map.y && focused.y < map.y + map.height, focused.label).toBe(true);
+    await page.keyboard.press('ArrowDown');
+  }
+  const [x, y] = await centre(fountain);
+  expect(Math.abs(x - place[0]) <= 1 && Math.abs(y - place[1]) <= 1).toBe(true);
+
+  await fountain.click();
   await expect(popup).toContainText('Town fountain');
   const order = await marks.evaluate(root => ({
     beforePin: !!(root.compareDocumentPosition(document.querySelector('.planner-map-pin')) & Node.DOCUMENT_POSITION_FOLLOWING),
@@ -27,8 +42,16 @@ test('a mark opens the popup of its place, or a list of its places, under the pi
   }));
   expect(order).toEqual({ beforePin: true, beforePopup: true, isolation: 'isolate' });
 
-  await marks.getByRole('button', { name: '2 places, Eating' }).click();
   const list = page.getByRole('dialog', { name: 'Places here' });
+  // The mark of the open place takes the popup back from the list. The list covers the mark, so the keyboard opens it.
+  await marks.getByRole('button', { name: '2 places, Eating' }).click();
+  await expect(list).toBeVisible();
+  await fountain.focus();
+  await page.keyboard.press('Enter');
+  await expect(popup).toContainText('Town fountain');
+  await expect(list).toHaveCount(0);
+
+  await marks.getByRole('button', { name: '2 places, Eating' }).click();
   await expect(list.getByRole('listitem')).toHaveCount(2);
   await list.getByRole('button', { name: /^Pizzeria/ }).click();
   await expect(popup).toContainText('Pizzeria');

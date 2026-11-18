@@ -125,7 +125,13 @@ test('a planning session stays inside the request budget', async ({ page }) => {
   await page.getByRole('button', { name: 'Map settings' }).click();
   await page.getByText('Places', { exact: true }).click();
   await page.getByRole('button', { name: 'Highlight water at every zoom' }).click();
-  await idle();
+  await page.keyboard.press('Escape');
+  // The discs of a highlighted kind load from zoom 12: zoom in until the first place tile comes.
+  for (let i = 0; i < 8 && (counts.places ?? 0) < 2; i++) {
+    await page.getByRole('button', { name: 'Zoom in' }).click();
+    await idle();
+  }
+  expect(counts.places, 'place tiles at zoom 12').toBeGreaterThan(1);
   phase('show places');
   await drag(-200, -60);
   await drag(200, 60);

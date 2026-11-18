@@ -17,8 +17,8 @@ Cloudflare bills `basemap`, `places`, `overlays`, `terrain`, `glyphs` and `sprit
 After a deliberate change, set each limit by the rule in `basis`.
 
 `places` counts the places TileJSON and the zoom 11 place tiles that the place marks read for
-the view. The marks read tiles only from zoom 16, or from zoom 12 with a highlighted kind, so this
-session reads none. `overlays` counts the route network and access TileJSON and its tiles.
+the view. The marks read tiles only from zoom 16, or from zoom 12 with a highlighted kind, so the
+session zooms in to zoom 12 after it highlights a kind, and then pans. `overlays` counts the route network and access TileJSON and its tiles.
 
 ## Tile pictures
 

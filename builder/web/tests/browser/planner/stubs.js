@@ -123,12 +123,14 @@ function placeTile([z, x, y], places) {
   return Buffer.from(field(3, layer));
 }
 
-/** Two restaurants 5 m apart where the map starts, in the Mercator middle of `BOUNDS`, and a fountain 50 m east of them. */
+/** Two restaurants 5 m apart where the map starts, in the Mercator middle of `BOUNDS`, a fountain 50 m east of them, and a
+ * café 450 m south: at zoom 16, in the margin below the map. */
 const PLACE_TILE = '11/1075/706';
 const PLACES = placeTile([11, 1075, 706], [
   { id: 2 ** 44 + 1, kind: 'restaurant', name: 'Bistro', lon: 8.975, lat: 48.6887 },
   { id: 2 ** 44 + 2, kind: 'restaurant', name: 'Pizzeria', lon: 8.97507, lat: 48.6887 },
   { id: 2 ** 44 + 3, kind: 'fountain', name: 'Town fountain', lon: 8.97568, lat: 48.6887 },
+  { id: 2 ** 44 + 4, kind: 'cafe', name: 'Hill café', lon: 8.975, lat: 48.6847 },
 ]);
 
 /** The response for a request to one of the hosts, or null when the path has no stub. */
