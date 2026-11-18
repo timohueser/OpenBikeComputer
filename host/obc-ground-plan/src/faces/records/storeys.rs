@@ -52,6 +52,8 @@ pub fn storeys(
             }
             out.wedges = Some(wedges);
             out.plans.push(faces);
+            let ways: Vec<u32> = out.ways.iter().map(|w| w.0).collect();
+            out.lights = crate::faces::daylight::daylight(graph, &ways);
             continue;
         }
         let c = candidates(graph, input, rules, cell, k, LAYERS, true, None);

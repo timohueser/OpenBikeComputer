@@ -7,6 +7,7 @@
 pub mod check;
 mod cover;
 pub mod culverts;
+mod daylight;
 pub mod deck;
 mod geom;
 pub mod heights;

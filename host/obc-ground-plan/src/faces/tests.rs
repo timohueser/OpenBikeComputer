@@ -1257,3 +1257,27 @@ fn a_street_over_a_bore_keeps_its_paved_surface_over_the_floor() {
         }
     }
 }
+
+/// Daylight comes into the bores at their portals and passes a junction by the shortest way through the bores, never a
+/// closed end: a bore of 60 m open at both ends, with a side bore from its middle whose portal lies 20 m from the
+/// junction, gives entries of 0 m at the three portals and of 20 m (not 30 m) at the junction; a body that ends closed
+/// gives its portal's entry alone.
+#[cfg(feature = "bores")]
+#[test]
+fn daylight_comes_in_at_the_portals_and_passes_a_junction() {
+    let tags = |levels: &'static str| [("highway", "residential"), ("tunnel", "yes"), ("levels", levels)];
+    let lights = |ways: &[Line]| {
+        let mut input = input_of(cell(), ways);
+        input.terrain = plane(cell(), &|_, _| 507.0);
+        crate::cell::build_input(&input, Rules::embedded()).storeys.lights
+    };
+    let main = line("tunnel", &tags("O 70 P B 130 P O"), &[[-100.0, 0.0], [0.0, 0.0], [100.0, 0.0]]);
+    let side = line("tunnel", &tags("B 20 P O"), &[[0.0, 0.0], [0.0, 60.0]]);
+    let l = lights(&[main, side]);
+    assert_eq!(l.iter().filter(|x| x.2 == 0.0).count(), 3, "{l:?}");
+    assert!(l.iter().any(|x| x.2 > 0.0), "{l:?}");
+    assert!(l.iter().all(|x| x.2 == 0.0 || (x.2 - 20.0).abs() < 0.5), "{l:?}");
+    let body = line("tunnel", &tags("O 70 P B 100 C H"), &[[-100.0, 0.0], [100.0, 0.0]]);
+    let l = lights(&[body]);
+    assert_eq!(l.iter().map(|x| x.2).collect::<Vec<_>>(), [0.0], "{l:?}");
+}

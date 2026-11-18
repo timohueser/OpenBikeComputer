@@ -23,11 +23,12 @@
 //!
 //! | Words | Holds |
 //! | --- | --- |
-//! | head | `HEAD` words: `MAGIC`, the cell's x and y (zoom 16), the counts of corners, triangles, triangle runs, slots, slot runs and of the tops' slots, then the triangles of each part in the order of `PARTS`; with the bores, then the slots of each kind of `SLOT_KINDS` after the tops' and the count of the caps |
+//! | head | `HEAD` words: `MAGIC`, the cell's x and y (zoom 16), the counts of corners, triangles, triangle runs, slots, slot runs and of the tops' slots, then the triangles of each part in the order of `PARTS`; with the bores, then the slots of each kind of `SLOT_KINDS` after the tops', the count of the caps and the count of the lights |
 //! | corners | 3 words each, sorted by point (y, then x): x in bits 0–18 and the label's bits 0–12 in bits 19–31; y in bits 0–18 and the label's bits 13–24 in bits 19–30; the offset (f32, metres) |
 //! | triangle runs, triangles | as the cell mesh's: 2 words a run (count, base corner), 3 u16 a triangle less its run's base; each part in runs of its own |
 //! | slot runs, slots | 2 words a run, 4 u16 a slot (`a_p, a_q, b_q, b_p`), each kind of `SLOT_KINDS` in runs of its own |
 //! | caps | with the bores: 3 words each, sorted: a corner, a cap's label (`NO_LABEL`: the plain terrain) and offset (f32) |
+//! | lights | with the bores: 3 words each, sorted: where daylight comes into a bore way (`faces::Storeys::lights`): the way (its records line's word 0), its metres along there (f32, as its samples') and the metres from there to the nearest portal (f32) |
 
 use std::collections::BTreeMap;
 
@@ -39,8 +40,8 @@ use crate::faces::{EdgeKind, FacePlan, Storeys, Surface, NO_UNDER, OUTSIDE};
 use crate::frame::{metres_per_unit_at, CellKey, CELL_UNITS};
 use crate::graph::Structures;
 
-/// "OBS" and the layout's version: with the bores, the caps.
-pub const MAGIC: u32 = if BORES { 0x4f42_5302 } else { 0x4f42_5301 };
+/// "OBS" and the layout's version: with the bores, the caps and the lights.
+pub const MAGIC: u32 = if BORES { 0x4f42_5303 } else { 0x4f42_5301 };
 /// The parts of a storey's mesh, in the order of their triangles; with the bores, a bore's own come last: its floor,
 /// its roof, its walls and the fronts of the ground's plate over its openings.
 pub const PARTS: &[&str] = if BORES {
@@ -69,8 +70,8 @@ const RISER: usize = 1;
 const FLOOR_SEAM: usize = 2;
 const ROOF_SEAM: usize = 3;
 const SILL: usize = 4;
-/// With the bores the head goes on with the slots of each kind after the tops' and the count of the caps.
-pub const HEAD: usize = 9 + PARTS.len() + if BORES { SLOT_KINDS.len() } else { 0 };
+/// With the bores the head goes on with the slots of each kind after the tops', the count of the caps and of the lights.
+pub const HEAD: usize = 9 + PARTS.len() + if BORES { SLOT_KINDS.len() + 1 } else { 0 };
 
 /// A parapet: its width and its height over the deck (the crossing block's thickness table).
 const PARAPET_M: [f64; 2] = [0.35, 1.0];
@@ -112,6 +113,9 @@ pub struct StoreyMesh {
     /// The caps of corners, sorted (a corner may have several): the corner, the cap's label (`NO_LABEL`: the plain
     /// terrain) and its offset's bits (`corner_height`).
     pub caps: Vec<[u32; 3]>,
+    /// Where daylight comes into the bores: the way, its metres along there and the metres to the nearest portal (f32
+    /// bits).
+    pub lights: Vec<[u32; 3]>,
     pub stats: ShellStats,
 }
 
@@ -132,6 +136,7 @@ impl StoreyMesh {
         if BORES {
             head.extend(&self.slot_kinds[RISER..]);
             head.push(self.caps.len() as u32);
+            head.push(self.lights.len() as u32);
         }
         let words = (head.into_iter())
             .chain(self.corners.iter().flatten().copied())
@@ -139,7 +144,8 @@ impl StoreyMesh {
             .chain(packed(&self.triangles, &self.triangle_runs))
             .chain(self.slot_runs.iter().flatten().copied())
             .chain(packed(&self.slots, &self.slot_runs))
-            .chain(self.caps.iter().flatten().copied());
+            .chain(self.caps.iter().flatten().copied())
+            .chain(self.lights.iter().flatten().copied());
         words.flat_map(u32::to_le_bytes).collect()
     }
 
@@ -863,7 +869,24 @@ pub fn mesh_storeys_with(
             [x | label << 19, y | (label >> 13) << 19, offset]
         })
         .collect();
-    Ok(StoreyMesh { cell, corners, triangles, triangle_runs, parts, slots, slot_runs, slot_kinds, open, caps, stats })
+    let lights = (storeys.lights.iter())
+        .filter(|_| BORES)
+        .map(|&(w, along, metres)| [w, (along as f32).to_bits(), (metres as f32).to_bits()])
+        .collect();
+    Ok(StoreyMesh {
+        cell,
+        corners,
+        triangles,
+        triangle_runs,
+        parts,
+        slots,
+        slot_runs,
+        slot_kinds,
+        open,
+        caps,
+        lights,
+        stats,
+    })
 }
 
 /// The bores of a cell from storey 0's mesh `m0`, the floor faces `plan` (storey −1, from storey 0's slice) with their
