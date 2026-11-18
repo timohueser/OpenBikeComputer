@@ -1,21 +1,25 @@
 //! The RGBA bytes of a WebP image as stored, with the colour under every alpha. A browser that decodes images
 //! premultiplied (WebKit) loses the colour under a low alpha, which TrailView's ground tiles carry.
 
-/// The RGBA bytes of a WebP image, row by row; an image without alpha is opaque.
-pub fn decode(body: &[u8]) -> Result<Vec<u8>, image_webp::DecodingError> {
+/// The width and the RGBA bytes of a WebP image, row by row; an image without alpha is opaque.
+pub fn decode(body: &[u8]) -> Result<(u32, Vec<u8>), image_webp::DecodingError> {
     let mut decoder = image_webp::WebPDecoder::new(std::io::Cursor::new(body))?;
     let mut pixels = vec![0; decoder.output_buffer_size().ok_or(image_webp::DecodingError::ImageTooLarge)?];
     decoder.read_image(&mut pixels)?;
+    let width = decoder.dimensions().0;
     if decoder.has_alpha() {
-        return Ok(pixels);
+        return Ok((width, pixels));
     }
-    Ok(pixels.as_chunks::<3>().0.iter().flat_map(|&[r, g, b]| [r, g, b, 255]).collect())
+    Ok((width, pixels.as_chunks::<3>().0.iter().flat_map(|&[r, g, b]| [r, g, b, 255]).collect()))
 }
 
+/// The RGBA bytes of a WebP image; `size[0]` receives its width.
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen::prelude::wasm_bindgen]
-pub fn decode_webp(body: &[u8]) -> Result<Vec<u8>, wasm_bindgen::JsError> {
-    decode(body).map_err(|error| wasm_bindgen::JsError::new(&error.to_string()))
+pub fn decode_webp(body: &[u8], size: &mut [u32]) -> Result<Vec<u8>, wasm_bindgen::JsError> {
+    let (width, pixels) = decode(body).map_err(|error| wasm_bindgen::JsError::new(&error.to_string()))?;
+    size[0] = width;
+    Ok(pixels)
 }
 
 #[cfg(test)]
@@ -30,6 +34,16 @@ mod tests {
     #[test]
     fn keeps_the_colour_under_a_low_alpha() {
         let expected: Vec<u8> = [0, 1, 2, 255].iter().flat_map(|&alpha| [200, 100, 50, alpha]).collect();
-        assert_eq!(super::decode(PROBE).unwrap(), expected);
+        assert_eq!(super::decode(PROBE).unwrap(), (2, expected));
+    }
+
+    // A ground tile of only no-data texels (alpha 255) can be stored without alpha; it must read as alpha 255.
+    #[test]
+    fn an_image_without_alpha_is_opaque() {
+        let mut body = Vec::new();
+        image_webp::WebPEncoder::new(&mut body)
+            .encode(&[200, 100, 50, 7, 8, 9], 2, 1, image_webp::ColorType::Rgb8)
+            .unwrap();
+        assert_eq!(super::decode(&body).unwrap(), (2, vec![200, 100, 50, 255, 7, 8, 9, 255]));
     }
 }

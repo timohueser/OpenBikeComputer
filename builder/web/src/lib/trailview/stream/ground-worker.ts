@@ -51,15 +51,16 @@ async function webglPixels(body: ArrayBuffer): Promise<Pixels> {
 }
 
 /**
- * A 2 × 2 lossless WebP of (200, 100, 50) under alpha 0, 1, 2 and 255. Every ground texel has an alpha
- * of at most 61, so a decode that premultiplies scales every byte of the ground.
+ * A 2 × 2 lossless WebP of (200, 100, 50) under alpha 0, 1, 2 and 255. The alpha of a ground texel is
+ * its region id, so a decode that premultiplies changes the bytes of every texel with data.
  */
 const PROBE = 'UklGRioAAABXRUJQVlA4TB4AAAAvAUAAEB8wZIM8MgKSJP9vDuIBYJANUKYKs4j+xw4=';
 
 /** The bytes of a WebP image in WASM: slower than the browser's decode, and exact where that premultiplies (WebKit). */
 async function wasmPixels(body: ArrayBuffer): Promise<Pixels> {
-    const data = decode_webp(new Uint8Array(body));
-    return { size: Math.sqrt(data.length / 4), data };
+    const size = new Uint32Array(1);
+    const data = decode_webp(new Uint8Array(body), size);
+    return { size: size[0], data };
 }
 
 /** Whether a decode gives the probe's bytes: the RGB under a low alpha exactly. */
@@ -70,18 +71,20 @@ async function exact(decode: (body: ArrayBuffer) => Promise<Pixels>): Promise<bo
 
 let straight: Promise<(body: ArrayBuffer) => Promise<Pixels>> | undefined;
 
-/** The exact decode of this worker: the browser's through WebGL where it is exact, else WASM. */
+/** The exact decode of the ground tiles: the browser's through WebGL where it is exact, else WASM. A failure is tried again on the next job. */
 function straightDecode(): Promise<(body: ArrayBuffer) => Promise<Pixels>> {
     straight ??= exact(webglPixels).catch(() => false).then(async browser => {
         if (browser) return webglPixels;
-        await initWebp();
+        console.info('TrailView decodes the ground tiles in WASM: this browser does not decode the colour under a low alpha exactly.');
+        await initWebp().catch(error => { throw new Error(`The WASM decode of the ground tiles does not load: ${error}`); });
         if (!(await exact(wasmPixels))) throw new Error('This browser does not decode the RGB under a low alpha exactly, which the ground needs.');
         return wasmPixels;
+    }).catch(error => {
+        straight = undefined;
+        throw error;
     });
     return straight;
 }
-
-const straightPixels = async (body: ArrayBuffer): Promise<Pixels> => (await straightDecode())(body);
 
 /** Fails where this worker has no exact decode. */
 const probe = (): Promise<unknown> => straightDecode();
@@ -91,12 +94,13 @@ async function decode({ body, layer }: Body): Promise<{ size: number; channels: 
     if (layer === 'colour') {
         // The NDVI tile, then the colour: the RIFF header of the NDVI tile gives its length.
         const split = 8 + new DataView(body).getUint32(4, true);
-        const [ndvi, rgb] = await Promise.all([straightPixels(body.slice(0, split)), straightPixels(body.slice(split))]);
+        const [ndvi, rgb] = await Promise.all([webglPixels(body.slice(0, split)), webglPixels(body.slice(split))]);
         if (ndvi.size !== 256 || rgb.size !== 512) throw new Error(`A colour tile has a ${ndvi.size} px NDVI tile and ${rgb.size} px colour.`);
         return { size: rgb.size, channels: 4, data: colourTexels(ndvi.data, rgb.data) };
     }
-    const { size, data } = await straightPixels(body);
-    if (layer === 'ground') return { size, channels: 4, data };
+    // Only the ground carries data under an alpha below 255; the colour and snow images are opaque, which every browser decodes exactly.
+    if (layer === 'ground') return { channels: 4, ...(await (await straightDecode())(body)) };
+    const { size, data } = await webglPixels(body);
     // A snow tile is a run image: the first band in red, the last band in green.
     const run = new Uint8Array(2 * size * size);
     for (let i = 0; i < size * size; i++) {
