@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { onMount, untrack, type Snippet } from "svelte";
+    import { onMount, tick, untrack, type Snippet } from "svelte";
     import * as maplibregl from "maplibre-gl";
     import type { GeoJSONSource } from "maplibre-gl";
     import type { Feature, FeatureCollection, LineString } from "geojson";
@@ -143,6 +143,7 @@
         consumedPress = true;
         overlayLayer?.hover();
         overlaySelection = selected;
+        placeList = null;
     }
 
     /** The name of the basemap place nearest to `coordinate` within 5 km, such as a village or a hamlet, from the loaded tiles. */
@@ -203,10 +204,11 @@
         map.zoomTo(map.getZoom() + delta, { duration: motionDuration() });
     }
 
+    const boundsOf = (region: Coordinate[]) => region.reduce((bounds, coordinate) => bounds.extend(coordinate), new maplibregl.LngLatBounds());
+    const padding = () => ({ ...fitPadding, bottom: fitPadding.bottom + bottomInset });
+
     function fitBounds(region: Coordinate[], maxZoom: number, duration: number, preserveSearch = false) {
-        const bounds = new maplibregl.LngLatBounds();
-        region.forEach((coordinate) => bounds.extend(coordinate));
-        map!.fitBounds(bounds, { padding: { ...fitPadding, bottom: fitPadding.bottom + bottomInset }, maxZoom, duration }, { preserveSearch });
+        map!.fitBounds(boundsOf(region), { padding: padding(), maxZoom, duration }, { preserveSearch });
     }
 
     function motionDuration() {
@@ -364,17 +366,22 @@
         // The popup of the page can stay at the same place, so its effect does not clear the list.
         placeList = null;
         const action = opens(places, level());
-        if (action === "place") onPlaceClick?.(asPlace(places[0]));
-        else if (action === "list") placeList = { coordinate, places, opener, level: level() };
-        else {
+        if (action === "place") return onPlaceClick?.(asPlace(places[0]));
+        const region = places.map((place): Coordinate => [place.lon, place.lat]);
+        // A fit that reaches no finer level would ask for the same fit at the next click, so the list opens instead.
+        const zoom = action === "zoom" ? map!.cameraForBounds(boundsOf(region), { padding: padding(), maxZoom: FIT_LEVEL })?.zoom ?? 0 : 0;
+        if (Math.floor(zoom) > level()) {
             wholeRoute = false;
-            fitBounds(places.map((place) => [place.lon, place.lat]), FIT_LEVEL, motionDuration());
-        }
+            fitBounds(region, FIT_LEVEL, motionDuration());
+        } else placeList = { coordinate, places, opener, level: level() };
     }
 
+    /** Closes the list and gives the focus back to its opener, or to the map when the opener is gone. */
     function closeList() {
-        placeList?.opener.focus({ preventScroll: true });
+        const opener = placeList?.opener;
         placeList = null;
+        // A popup of the page that comes back focuses itself in its first frame; the opener takes the focus after it.
+        tick().then(() => requestAnimationFrame(() => (opener?.isConnected ? opener : map?.getCanvas())?.focus({ preventScroll: true })));
     }
 
     function legEnds(legEndId: string): [Coordinate, Coordinate] {
@@ -531,7 +538,11 @@
             map.on("dataloading", () => loading = true);
             map.on("movestart", () => loading = true);
             map.on("move", () => fitCallout(false));
-            map.on("zoom", () => { if (placeList && placeList.level !== level()) placeList = null; });
+            map.on("zoom", () => {
+                if (!placeList || placeList.level === level()) return;
+                if (popupContent.contains(document.activeElement)) closeList();
+                else placeList = null;
+            });
         } catch (error) {
             failure = "The map could not start. This view needs a browser with WebGL enabled.";
             errorDetail = error instanceof Error ? error.message : String(error);
@@ -717,6 +728,7 @@
             button.addEventListener("click", (event) => {
                 event.stopPropagation();
                 overlaySelection = null;
+                placeList = null;
                 if (!onPick) return onPointSelect?.(point.id);
                 const box = button.getBoundingClientRect();
                 onPick(point.coordinate, [box.left + box.width / 2, box.top + box.height / 2]);

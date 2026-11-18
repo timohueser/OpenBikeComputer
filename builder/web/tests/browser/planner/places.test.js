@@ -37,17 +37,29 @@ test('a mark opens the popup of its place, or a list of its places, under the pi
     await page.mouse.up();
     await page.waitForTimeout(800);
   };
-  for (const dx of [120, -120, 120, -120, 600, 600, 600, 600, 600, 600, -600, -600, -600, -600, -600, -600]) await drag(dx);
-  expect(tiles.sort()).toEqual(['1074/705', '1074/706', '1075/705', '1075/706'].map(tile => `/places/11/${tile}.mvt`));
+  const pans = async moves => { for (const dx of moves) await drag(dx); };
+  const paths = names => names.map(tile => `/places/11/${tile}.mvt`);
+  await pans([120, -120, 120, -120]);
+  expect(tiles).toHaveLength(2);
+  await pans([600, 600, 600, 600, 600, 600]);
+  expect(tiles.slice(2).sort()).toEqual(paths(['1074/705', '1074/706']));
+  await pans([-600, -600, -600, -600, -600, -600]);
+  expect(tiles.sort()).toEqual(paths(['1074/705', '1074/706', '1075/705', '1075/706']));
 
-  // The keyboard reaches only the marks inside the map.
+  // The keyboard reaches the marks inside the map, north to south and west to east, and not the café in the margin.
+  const restaurants = marks.getByRole('button', { name: '2 places, Eating' });
+  const tap = marks.getByRole('button', { name: 'Square tap, Water tap' });
   await page.locator('.maplibregl-canvas').focus();
   await page.keyboard.press('Tab');
-  for (let i = 0; i < 4; i++) {
-    const focused = await page.evaluate(() => { const { x, y, width, height } = document.activeElement.getBoundingClientRect(); return { label: document.activeElement.getAttribute('aria-label'), x: x + width / 2, y: y + height / 2 }; });
-    expect(focused.x > map.x && focused.x < map.x + map.width && focused.y > map.y && focused.y < map.y + map.height, focused.label).toBe(true);
-    await page.keyboard.press('ArrowDown');
-  }
+  await expect(tap).toBeFocused();
+  await page.keyboard.press('ArrowDown');
+  await expect(restaurants).toBeFocused();
+  await page.keyboard.press('ArrowDown');
+  await expect(fountain).toBeFocused();
+  await page.keyboard.press('ArrowDown');
+  await expect(fountain).toBeFocused();
+  const centre = async locator => { const { x, y, width, height } = await locator.boundingBox(); return [x + width / 2, y + height / 2]; };
+  const over = ([x, y], selector) => page.evaluate(([x, y, selector]) => !!document.elementFromPoint(x, y)?.closest(selector), [x, y, selector]);
 
   await fountain.click();
   await expect(popup).toContainText('Town fountain');
@@ -57,17 +69,28 @@ test('a mark opens the popup of its place, or a list of its places, under the pi
     isolation: getComputedStyle(root).isolation,
   }));
   expect(order).toEqual({ beforePin: true, beforePopup: true, isolation: 'isolate' });
+  // The pin of the chosen place draws over its mark.
+  expect(await over(await centre(fountain), '.planner-map-pin')).toBe(true);
 
   const list = page.getByRole('dialog', { name: 'Places here' });
-  // The mark of the open place takes the popup back from the list. The list covers the mark, so the keyboard opens it.
-  await marks.getByRole('button', { name: '2 places, Eating' }).click();
+  // The list draws over the tap. The mark of the open place takes the popup back from the list; its pin covers it, so the
+  // keyboard opens it.
+  await restaurants.click();
   await expect(list).toBeVisible();
+  expect(await over(await centre(tap), '.maplibregl-popup')).toBe(true);
   await fountain.focus();
   await page.keyboard.press('Enter');
   await expect(popup).toContainText('Town fountain');
   await expect(list).toHaveCount(0);
 
-  await marks.getByRole('button', { name: '2 places, Eating' }).click();
+  // Escape gives the focus back to the opener of the list, also when the popup of the place comes back.
+  await restaurants.click();
+  await expect(list.getByRole('button', { name: /^Bistro/ })).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(popup).toContainText('Town fountain');
+  await expect(restaurants).toBeFocused();
+
+  await restaurants.click();
   await expect(list.getByRole('listitem')).toHaveCount(2);
   await list.getByRole('button', { name: /^Pizzeria/ }).click();
   await expect(popup).toContainText('Pizzeria');

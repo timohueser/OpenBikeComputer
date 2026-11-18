@@ -142,6 +142,8 @@
         const button = (event.target as Element).closest('button');
         if (!button) return;
         event.stopPropagation();
+        // A focused mark takes Enter while the rider draws or picks.
+        if (still) return;
         // A keyboard click has no pointer; a pan that starts on a mark is no click.
         if (event.detail && press && Math.hypot(event.clientX - press.x, event.clientY - press.y) > 5) return;
         const [key, index] = button.dataset.id!.split('/'), mark = shown.find(mark => mark.key === key)!;
@@ -177,6 +179,9 @@
             map.off('move', move);
             map.off('zoom', zoom);
             map.off('moveend', refresh);
+            // A load in flight starts no more requests and draws nothing.
+            refreshes++;
+            wanted = new Set();
             root.remove();
         };
     });
@@ -195,7 +200,7 @@
         {#if mark.disc}
             {@const { category, places } = mark.icons[0]}
             {@const id = `${mark.key}/0`}
-            <button type="button" class="disc" data-id={id} tabindex={id === stop ? 0 : -1} aria-label={label(places, category)}
+            <button type="button" class="disc" data-id={id} tabindex={!still && id === stop ? 0 : -1} aria-label={label(places, category)}
                 {@attach track(mark)}>
                 <span class="face">
                     <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path d={placeCategories[category].icon} /></svg>
@@ -206,7 +211,7 @@
             <div class="row" style:width={`${Math.min(mark.icons.length, PER_LINE) * CELL}px`} {@attach track(mark)}>
                 {#each mark.icons as { category, places }, index (category)}
                     {@const id = `${mark.key}/${index}`}
-                    <button type="button" data-id={id} tabindex={id === stop ? 0 : -1} aria-label={label(places, category)}>
+                    <button type="button" data-id={id} tabindex={!still && id === stop ? 0 : -1} aria-label={label(places, category)}>
                         <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d={placeCategories[category].icon} /></svg>
                     </button>
                 {/each}

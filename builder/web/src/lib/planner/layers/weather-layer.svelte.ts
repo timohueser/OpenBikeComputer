@@ -3,6 +3,8 @@ import { cumulative } from '../geo';
 import { config } from '../map-data';
 import { DEM_MAX_ZOOM } from '../map-style';
 import type { Coordinate } from '../map-types';
+import { ROW_LEVEL } from '../place-groups';
+import { placeTile, placeTileKeys } from '../place-index';
 import { fetchTile } from './archive';
 import { OVERVIEW, locate, type ClimateMeta, type ClimateTile } from './climate';
 import { detailCell, openClimate, sampleLine, type CellRef, type ClimateSource } from './climate-source';
@@ -20,8 +22,10 @@ const TILE = 256;
 const MAX_ZOOM = DEM_MAX_ZOOM + 1;
 /** The labels of the layer replace the basemap's town labels while they show. */
 const LABELS = 'weather-labels', TOWNS = 'places_locality';
-/** From this zoom the planner marks peaks with its own symbol and name. */
-const PEAK_SYMBOLS = 13;
+/** From this zoom the place marks can show peaks with their own icon and name. */
+const PEAK_SYMBOLS = ROW_LEVEL;
+/** Peaks take labels from this zoom, where a view touches at most nine place tiles. */
+const SUMMITS = 12;
 const FAILED = 'Weather data could not load for this region.';
 
 /** The map's terrain tiles; the relief has loaded most of them, so the browser cache serves them. */
@@ -145,9 +149,9 @@ class WeatherLayer implements DataLayer<Samples> {
     };
 
     /**
-     * Labels the places of the loaded basemap tiles with the value of the layer week: the high at the
-     * place's height, or the typical rain. It reads only decoded tiles, so it requests nothing; a town
-     * without a decoded terrain tile keeps its bare name until the map renders that tile. It runs on each
+     * Labels the towns of the loaded basemap tiles and the summits of the place tiles with the value of
+     * the layer week: the high at the place's height, or the typical rain. Of the map tiles it reads only
+     * decoded ones; a town without a decoded terrain tile keeps its bare name until the map renders that tile. It runs on each
      * `idle`, so it sets nothing that renders again unless the view, week or decoded tiles changed.
      */
     private relabel = async () => {
@@ -158,7 +162,7 @@ class WeatherLayer implements DataLayer<Samples> {
         this.labelled = view;
         const places = mapPlaces([
             ...map.querySourceFeatures('basemap', { sourceLayer: 'places', filter: ['==', ['get', 'kind'], 'locality'] }),
-            ...map.querySourceFeatures('places', { sourceLayer: 'pois', filter: ['==', ['get', 'kind'], 'summit'] }),
+            ...await viewSummits(map.getBounds().toArray().flat() as [number, number, number, number], map.getZoom()),
         ] as BasemapFeature[]);
         const week = weekOf(date);
         const values = variable === 'rain'
@@ -249,3 +253,12 @@ class WeatherLayer implements DataLayer<Samples> {
 }
 
 export const weatherLayer = (url: string): DataLayer => new WeatherLayer(url);
+
+/** The summits of the place tiles of a view `[west, south, east, north]`, as map features. The place marks share the loaded tiles. */
+export async function viewSummits(bounds: [number, number, number, number], zoom: number): Promise<BasemapFeature[]> {
+    if (zoom < SUMMITS) return [];
+    const keys = await placeTileKeys(config.places, bounds).catch(() => []);
+    const places = (await Promise.all(keys.map(key => placeTile(config.places, key).catch(() => [])))).flat();
+    return places.filter(place => place.kind === 'summit').map(({ id, name, lon, lat, ele }) =>
+        ({ id, properties: { kind: 'summit', name, lon, lat, elevation: ele }, geometry: { type: 'Point' } }));
+}
