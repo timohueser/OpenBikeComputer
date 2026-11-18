@@ -255,6 +255,8 @@ struct Ctx<'a> {
     size: f64,
     /// The other arms at each end of a way: (way, at its start); None where the graph holds no point.
     nodes: Vec<Option<Vec<(u32, bool)>>>,
+    /// Per way, the ways that go on from its ends (`WayGraph::joined`).
+    joined: Vec<Vec<u32>>,
     lengths: Vec<f64>,
 }
 
@@ -267,22 +269,9 @@ impl<'a> Ctx<'a> {
                 classify(&input.features[p.feature.0 as usize], sections, true).expect("a part of a line feature").3
             })
             .collect();
-        let mut nodes: Vec<Option<Vec<(u32, bool)>>> = vec![None; 2 * g.ways.len()];
-        let sets = (g.junctions.iter().map(|j| j.arms.iter().collect::<Vec<_>>()))
-            .chain(g.joints.iter().map(|j| j.arms.iter().collect()))
-            .chain(g.ends.iter().map(|e| vec![&e.arm]));
-        // A tunnel way's ends are where its arms stand at its first or its last station: a node that it runs through
-        // names no end of it, so the merge finds its tag ends (`TunnelFound`).
-        let interior = |a: &crate::graph::Arm| {
-            let w = &g.ways[a.way as usize];
-            w.level == Level::Tunnel && w.family != Family::Water && a.at != if a.dir > 0 { w.from } else { w.to }
-        };
-        for arms in sets {
-            for a in arms.iter().filter(|a| !interior(a)) {
-                let others = arms.iter().filter(|b| !std::ptr::eq(**b, *a)).map(|b| (b.way, b.dir > 0)).collect();
-                nodes[2 * a.way as usize + usize::from(a.dir > 0)] = Some(others);
-            }
-        }
+        // A node that a tunnel way runs through names no end of it, so the merge finds its tag ends (`TunnelFound`).
+        let nodes = g.end_arms();
+        let joined = (0..g.ways.len() as u32).map(|w| g.joined(&nodes, w)).collect();
         let mut way_of = vec![0; g.samples.len()];
         for w in &g.ways {
             way_of[w.samples.start as usize..w.samples.end as usize].fill(w.id);
@@ -298,6 +287,7 @@ impl<'a> Ctx<'a> {
             way_of,
             size: super::BUCKET_M / metres_per_unit_at(origin[1]),
             nodes,
+            joined,
             lengths: g.ways.iter().map(|w| between(&g.parts, &w.from, &w.to)).collect(),
         }
     }
@@ -437,7 +427,7 @@ impl<'a> Ctx<'a> {
 
     /// Whether way o meets way w at one of w's ends: it goes on from w, it does not lie over it.
     fn joined(&self, w: u32, o: u32) -> bool {
-        [true, false].iter().any(|&start| self.others(w, start).is_some_and(|x| x.iter().any(|a| a.0 == o)))
+        self.joined[w as usize].contains(&o)
     }
 
     /// Storey 0 over a tunnel way's floor at q, without way `not`, the ways that go on from its ends and the ways

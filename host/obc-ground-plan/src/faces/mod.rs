@@ -2103,17 +2103,19 @@ fn bore_cover(ctx: &Ctx, input: &CellInput, ground: &[WayLine], ways_box: [i32; 
             })
         })
         .collect();
-    // The ways that enter a bore at its portal: they end on its portal line, in front of it.
-    let enters_bore = |way: u32, bore: u32| {
-        g.joints.iter().any(|j| j.arms.iter().any(|a| a.way == way) && j.arms.iter().any(|a| a.way == bore))
-    };
+    // The ways that go on from the ends of each bore's tunnel way, and its own stretches (`WayGraph::joined`, the set
+    // that the bake's lid leaves out): none is a lid of the bore.
+    let arms = g.end_arms();
+    let joined: Vec<Vec<u32>> = bores.iter().map(|b| g.joined(&arms, b.way)).collect();
     // A ground way lies on top of a bore where a piece of its paved stroke overlaps the bore's stroke and its surface
     // lies over the bore's floor by more than the at-grade band there (the bake's test of a way on top, `Ctx::on_top`):
     // the bake makes a bore only where every paved stroke on top of it leaves the least room (`Ctx::lid`), so the faces
-    // ask no room. A way level with the floor (the other tube's approach, a way joined at the tag end) is none: it ends at
-    // the side of the opening. Water is no lid of the bake's: it, and a way over the last metres of a way that enters a
-    // bore, lies on top where its surface lies at least the lower way's least room over the lower way's floor at every
-    // place where their strokes meet: the heights decide, not a crossing of the centre lines.
+    // ask no room. A way level with the floor (the other tube's approach) is none: it ends at the side of the opening.
+    // The bake's lid also leaves out the ways that end at the tunnel on its step 3 (`gone`): this graph holds no
+    // ladders, and the hidden stretch of such a way over the tunnel is no way here. Water is no lid of the bake's: it,
+    // and a way over the last metres of a way that enters a bore, lies on top where its surface lies at least the lower
+    // way's least room over the lower way's floor at every place where their strokes meet: the heights decide, not a
+    // crossing of the centre lines.
     // The lower ways' centre lines with their heights (the graph's samples), their reach (core and wall, units), their
     // least room (the least bore and the roof's least plate, metres) and their at-grade band (metres).
     type Poly = Vec<([f64; 2], f64)>;
@@ -2216,7 +2218,8 @@ fn bore_cover(ctx: &Ctx, input: &CellInput, ground: &[WayLine], ways_box: [i32; 
                 let reach = line.bands[first..last].iter().map(|b| b[1]).fold(0.0, f64::max).ceil() as i32;
                 let b = bore_box[ui];
                 let near = [b[0] - reach, b[1] - reach, b[2] + reach, b[3] + reach];
-                if !enters_bore(line.way, u.3) && (first..last - 1).any(|i| geom::meets(near, line.p[i], line.p[i + 1]))
+                if !joined[ui].contains(&line.way)
+                    && (first..last - 1).any(|i| geom::meets(near, line.p[i], line.p[i + 1]))
                 {
                     let (pieces, of) = paved.get_or_insert_with(|| {
                         let d: Vec<f64> = (first..last).map(|k| line.bands[k][1]).collect();

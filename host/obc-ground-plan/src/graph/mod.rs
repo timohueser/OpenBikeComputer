@@ -396,6 +396,79 @@ pub struct WalkPoint {
 }
 
 impl WayGraph {
+    /// Whether arm a stands at an end of its way: its first station going on, or its last coming back. A node that a
+    /// way runs through names no end of it.
+    pub fn at_end(&self, a: &Arm) -> bool {
+        let w = &self.ways[a.way as usize];
+        a.at == if a.dir > 0 { w.from } else { w.to }
+    }
+
+    /// The other arms at each end of each way, as (way, at its start), at `2 * way + start`; None where the graph holds
+    /// no point. A tunnel way's ends are where its arms stand at its first or its last station (`at_end`), so a node
+    /// that it runs through names no end of it.
+    pub fn end_arms(&self) -> Vec<Option<Vec<(u32, bool)>>> {
+        let mut out: Vec<Option<Vec<(u32, bool)>>> = vec![None; 2 * self.ways.len()];
+        let sets = (self.junctions.iter().map(|j| j.arms.iter().collect::<Vec<_>>()))
+            .chain(self.joints.iter().map(|j| j.arms.iter().collect()))
+            .chain(self.ends.iter().map(|e| vec![&e.arm]));
+        let interior = |a: &Arm| {
+            let w = &self.ways[a.way as usize];
+            w.level == Level::Tunnel && w.family != Family::Water && !self.at_end(a)
+        };
+        for arms in sets {
+            for a in arms.iter().filter(|a| !interior(a)) {
+                let others = arms.iter().filter(|b| !std::ptr::eq(**b, *a)).map(|b| (b.way, b.dir > 0)).collect();
+                out[2 * a.way as usize + usize::from(a.dir > 0)] = Some(others);
+            }
+        }
+        out
+    }
+
+    /// The ways that go on from the ends of the tunnel way that holds way w, with that way's own stretches: none of
+    /// them lies on top of it. `ends` is `end_arms`. The graph of the storeys (`levelled`) splits a tunnel way into
+    /// stretches of its part that meet at nodes of that part alone (its end lines, a mouth's cut), and leaves a hidden
+    /// stretch out between two free ends; the walk goes on over those to the tunnel way's ends. So both graphs give the
+    /// one set that the bake's lid leaves out (`levels::Ctx::lid`): in the bake's graph a tunnel way is whole.
+    pub fn joined(&self, ends: &[Option<Vec<(u32, bool)>>], w: u32) -> Vec<u32> {
+        let part = self.ways[w as usize].part;
+        let on_part = |o: u32| self.ways[o as usize].part == part;
+        let cmp = |a: &Station, b: &Station| a.span.cmp(&b.span).then(a.u.total_cmp(&b.u));
+        let mut out = vec![w];
+        for start in [true, false] {
+            let (mut x, mut at_start) = (w, start);
+            while let Some(others) = ends[2 * x as usize + usize::from(at_start)].as_deref() {
+                match *others {
+                    [(o, o_start)] if on_part(o) && !out.contains(&o) => {
+                        out.push(o);
+                        (x, at_start) = (o, !o_start);
+                    }
+                    [] if self.levelled => {
+                        // The part's next stretch past a hidden one, where it starts at a free end of its own.
+                        let st = if at_start { self.ways[x as usize].from } else { self.ways[x as usize].to };
+                        let free = |o: &u32| ends[2 * *o as usize + usize::from(!at_start)].as_deref() == Some(&[]);
+                        let past = (0..self.ways.len() as u32).filter(|&o| on_part(o) && !out.contains(&o));
+                        let (to, from) = (|o: &u32| self.ways[*o as usize].to, |o: &u32| self.ways[*o as usize].from);
+                        let next = if at_start {
+                            past.filter(|o| cmp(&to(o), &st).is_le()).max_by(|a, b| cmp(&to(a), &to(b)))
+                        } else {
+                            past.filter(|o| cmp(&from(o), &st).is_ge()).min_by(|a, b| cmp(&from(a), &from(b)))
+                        };
+                        let Some(o) = next.filter(free) else { break };
+                        out.push(o);
+                        x = o;
+                    }
+                    _ => {
+                        out.extend(others.iter().map(|a| a.0));
+                        break;
+                    }
+                }
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
     /// The way whose curve holds a station on the level `level`.
     pub fn way_at(&self, st: &Station, level: Level) -> Option<u32> {
         let key = |s: &Station| (s.span, s.u);
