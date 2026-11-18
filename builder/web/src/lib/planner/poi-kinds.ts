@@ -9,7 +9,11 @@ export const defaultKinds = presentation.on as PlaceCategory[];
 export const placeCategories = Object.fromEntries(categoryIds.map(category => [category, {
     ...presentation.categories[category],
     kinds: Object.fromEntries(membership[category].map(kind => [kind, presentation.labels[kind as keyof typeof presentation.labels]])),
-}])) as Record<PlaceCategory, { label: string; plural: string; icon: string; kinds: Record<string, string> }>;
+}])) as Record<PlaceCategory, {
+    label: string; plural: string; icon: string; kinds: Record<string, string>;
+    /** The most metres from a route at which the Route page shows a place of the category. */
+    routeM: number;
+}>;
 
 /** Search POI kinds the planner shows as places. */
 export const poiKinds: Record<string, { category: PlaceCategory; label: string }> = Object.fromEntries(

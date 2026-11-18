@@ -16,8 +16,8 @@
     import { lineCoordinates } from '../lib/library/summary';
     import { hasEndpoints, planTitle, planView } from '../lib/planner/editor';
     import { downloadPlan, isPlan, isVersion, newPlan } from '../lib/planner/library';
+    import type { RoutePlace } from '../lib/planner/place-index';
     import { routeFacts, routePins, type Climb } from '../lib/planner/route-facts';
-    import type { Coordinate } from '../lib/planner/geo';
     import { LegCache } from '../lib/planner/route-legs';
     import { calculateLine, routingKey, type RoutingLine } from '../lib/planner/routing';
     import type { Version } from '../lib/planner/versions';
@@ -36,10 +36,12 @@
     /** The pointer, as a share of the summary line from 0 to 1. */
     let share = $state<number>();
     let deleting = $state(false), sharing = $state(false), failure = $state('');
-    /** The selected part, the stretch of the climb under the pointer and the chosen day, as shares of the line; the
-     * place whose panel is open. A chosen day acts as the part when none is selected. */
+    /** The selected part, the stretch of the climb under the pointer and the chosen day, as shares of the line. A chosen
+     * day acts as the part when none is selected. */
     let part = $state<[number, number] | null>(null), hover = $state<[number, number] | null>(null);
-    let day = $state<[number, number] | null>(null), place = $state<Coordinate | null>(null);
+    let day = $state<[number, number] | null>(null);
+    /** The places of the kind chosen in the rows, the ids of the lit places, and the id of the place whose popup is open. */
+    let routePlaces = $state.raw<RoutePlace[]>([]), litPlaces = $state.raw<string[]>([]), openPlaceId = $state<string | null>(null);
 
     const plan = $derived(record && isPlan(record) ? record : undefined);
     // Derived, so the remembered device of a first connection shows at once.
@@ -64,7 +66,8 @@
         const target = id;
         let live = true;
         record = undefined;
-        [share, deleting, sharing, failure, part, hover, day, place] = [undefined, false, false, '', null, null, null, null];
+        [share, deleting, sharing, failure, part, hover, day] = [undefined, false, false, '', null, null, null];
+        [routePlaces, litPlaces, openPlaceId] = [[], [], null];
         const load = async () => {
             const [item, ids, copies] = await Promise.all([library.item(target), library.state('waiting'), library.state('sent')]);
             if (!live) return;
@@ -170,11 +173,12 @@
     {/snippet}
     {#snippet picture()}
         {#if summary}<Picture {library} {id} {summary} {pins} mark={share} onpoint={next => share = next ?? undefined}
-            part={focus} lit={hover ?? focus} {place} />{/if}
+            part={focus} lit={hover ?? focus} {routePlaces} bind:litPlaces bind:openPlaceId />{/if}
     {/snippet}
     {#if plan && summary}
         {#key id}<Rows {summary} trip={plan.trip} {line} {facts} {pins} mark={share} onpoint={next => share = next ?? undefined}
-            {part} onpart={next => part = next} onhover={next => hover = next} onday={next => day = next} onplace={next => place = next} />{/key}
+            {part} onpart={next => part = next} onhover={next => hover = next} onday={next => day = next}
+            bind:routePlaces bind:litPlaces bind:openPlaceId />{/key}
     {/if}
     {#if sharing && summary}<Share {library} {id} {name} {summary} onClose={() => sharing = false} />{/if}
     {#if deleting}
