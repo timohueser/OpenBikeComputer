@@ -2,7 +2,7 @@
 // a head wall with a recessed frame round the opening and wings whose tops follow the hill, a collar whose outer
 // shell stands out of the hill, the walls of a short cutting (V2), an underpass box with its wing walls, and the free
 // tube end with a slanted cut. Plus the boxes in which the terrain and the ground plan draw nothing.
-import { metresPerUnit, type Line } from '../terrain/bins';
+import { metresPerUnit, RAIL_CODE, type Line } from '../terrain/bins';
 import { BORE, LAMP, MeshBuilder, PAINT, paintOf, posts, rgb, VOID, type Corner, type Station } from './mesh';
 import { drawerOf, fitOf, partAt, type BoxEnd, type Placement } from './part-store';
 
@@ -133,7 +133,7 @@ function cuttingWalls(b: MeshBuilder, fr: Frame, rows: [number, number, number, 
 /** The floor of an open stretch of a tunnel line from s0 to s1: the road's paint in the open, a floor to `w`. */
 function openFloor(b: MeshBuilder, fr: Frame, line: Line, s0: number, s1: number, f0: number, f1: number, w: number): void {
     const A = { ...fr.at(s0), z: f0 }, B = { ...fr.at(s1), z: f1 }, h = line.h;
-    if (line.deck! > 3 && line.code < 0x100) {
+    if (line.deck! > 3 && line.code < RAIL_CODE) {
         const paint = paintOf(line, PAINT);
         b.quad([b.at(A, [-h, 0.03], paint, -h, h), b.at(A, [h, 0.03], paint, h, h), b.at(B, [h, 0.03], paint, h, h), b.at(B, [-h, 0.03], paint, -h, h)], [0, 0, 1]);
         for (const side of [1, -1]) quad(b, [[A, [side * h, 0.03]], [B, [side * h, 0.03]], [B, [side * w, 0.03]], [A, [side * w, 0.03]]], GUTTER, [0, 0, 1]);
@@ -230,7 +230,7 @@ function freeEnd(b: MeshBuilder, fr: Frame, line: Line, p: Placement, fl: (s: nu
 /** An underpass as one part from its owner end A to its other end B: the box, its lamps, two head walls and their wing walls. */
 function underpass(b: MeshBuilder, line: Line, p: Placement, look: Look): void {
     const [A, B] = p.ends!, unit = metresPerUnit(A.y), dx = (B.x - A.x) * unit, dy = (B.y - A.y) * unit, length = Math.hypot(dx, dy) || 1;
-    const fr = frameOf(A.x, A.y, dx / length, dy / length), w = p.w, hb = p.hb!, h = line.h, road = line.deck! > 3 && line.code < 0x100;
+    const fr = frameOf(A.x, A.y, dx / length, dy / length), w = p.w, hb = p.hb!, h = line.h, road = line.deck! > 3 && line.code < RAIL_CODE;
     const fl = (s: number) => A.floor + (B.floor - A.floor) * Math.max(0, Math.min(1, s / length));
     const st = (s: number) => ({ ...fr.at(s), z: fl(s) });
     const S = st(0), E = st(length);
@@ -239,7 +239,7 @@ function underpass(b: MeshBuilder, line: Line, p: Placement, look: Look): void {
         const paint = paintOf(line, PAINT | BORE);
         b.quad([b.at(S, [-h, 0.03], paint, -h, h), b.at(S, [h, 0.03], paint, h, h), b.at(E, [h, 0.03], paint, h, h), b.at(E, [-h, 0.03], paint, -h, h)], [0, 0, 1]);
         for (const side of [1, -1]) quad(b, [[S, [side * h, 0.03]], [E, [side * h, 0.03]], [E, [side * w, 0.15]], [S, [side * w, 0.15]]], WALK, [0, 0, 1]);
-    } else quad(b, [[S, [-w, 0.03]], [E, [-w, 0.03]], [E, [w, 0.03]], [S, [w, 0.03]]], line.code >= 0x100 ? ROCK_FLOOR : WALK, [0, 0, 1]);
+    } else quad(b, [[S, [-w, 0.03]], [E, [-w, 0.03]], [E, [w, 0.03]], [S, [w, 0.03]]], line.code >= RAIL_CODE ? ROCK_FLOOR : WALK, [0, 0, 1]);
     for (const side of [1, -1]) quad(b, [[S, [side * w, 0]], [E, [side * w, 0]], [E, [side * w, hb]], [S, [side * w, hb]]], TILES, scale(fr.left, -side));
     quad(b, [[S, [-w, hb]], [E, [-w, hb]], [E, [w, hb]], [S, [w, hb]]], LINING, [0, 0, -1]);
     posts(S, E, length, (q, r) => b.quad([b.at(q, [-0.15, hb - 0.05], LIGHT), b.at(q, [0.15, hb - 0.05], LIGHT), b.at(r, [0.15, hb - 0.05], LIGHT), b.at(r, [-0.15, hb - 0.05], LIGHT)], [0, 0, -1]), 1.2, 6);
