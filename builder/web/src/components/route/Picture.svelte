@@ -6,13 +6,16 @@
     import type { CoverRecord, Summary } from '../../lib/library/records';
     import type { Library } from '../../lib/library/store';
     import { creditsWith } from '../../lib/planner/map-setup';
+    import type { RoutePlace } from '../../lib/planner/place-index';
 
     /** The large picture of a detail page: the whole cover with the map beside it at the same height, or the map alone
      * with no cover. The cover is as high as the frame, but no higher than leaves a third of the width to the map; the
      * place under a lower picture stays free. When the map would get less than MAP_PX, the cover is large and cut, and
-     * the map is small in a corner; a click on the small one swaps them, and only the large one shows the pins. The
-     * pointer is a share of the summary line from 0 to 1, so the cover and the map mark the same place. */
-    let { library, id, summary, ride = false, pins = [], photos = [], onphoto, mark, onpoint, part, lit, place }: {
+     * the map is small in a corner; a click on the small one swaps them, and only the large one shows the pins and the
+     * places. An open place makes the small map large, and a click on the small cover closes the place. The pointer is
+     * a share of the summary line from 0 to 1, so the cover and the map mark the same place. */
+    let { library, id, summary, ride = false, pins = [], photos = [], onphoto, mark, onpoint, part, lit,
+        routePlaces = [], litPlaces = $bindable([]), openPlaceId = $bindable(null) }: {
         library: Library;
         /** The id of a route or the key of a ride. */
         id: string;
@@ -28,8 +31,9 @@
         part?: [number, number] | null;
         /** The stretch that the cover and the map mark, with the rest of the line paler. */
         lit?: [number, number] | null;
-        /** A place that the map marks. */
-        place?: [number, number] | null;
+        routePlaces?: RoutePlace[];
+        litPlaces?: string[];
+        openPlaceId?: string | null;
     } = $props();
 
     let cover = $state.raw<CoverRecord>(), swapped = $state(false);
@@ -46,6 +50,12 @@
     const coverHeight = $derived(Math.min(height, Math.round((width * 2 / 3 - GAP_PX - 2) * HEIGHT / WIDTH) + 2));
     const coverWidth = $derived(Math.round((coverHeight - 2) * WIDTH / HEIGHT) + 2);
     const side = $derived(covered && width - coverWidth - GAP_PX >= MAP_PX);
+    const mapShown = $derived(side || mapLarge);
+    // The small cover over the corner of the large map, with its inset: the popup of a place keeps clear of it.
+    let small = $state<[number, number]>([0, 0]);
+    const corner = $derived<[number, number]>(covered && !side && mapLarge ? [small[0] + 12, small[1] + 12] : [0, 0]);
+
+    $effect(() => { if (openPlaceId && !mapShown) swapped = true; });
 
     $effect(() => {
         const target = id;
@@ -68,19 +78,21 @@
     style:--cover-width={`${coverWidth}px`} style:--map-left={`${coverWidth + GAP_PX}px`} style:--cover-height={`${coverHeight}px`}>
     <div class="cards">
         {#if covered}
-            <div class="slot cover">
+            <div class="slot cover" bind:offsetWidth={small[0]} bind:offsetHeight={small[1]}>
                 <Cover {library} {id} place="page" pins={side || !mapLarge ? pins : []} photos={side || !mapLarge ? photos : []} {onphoto} mark={mark === undefined ? undefined : mark * summary.lengthM}
                     part={lit ? [lit[0] * summary.lengthM, lit[1] * summary.lengthM] : undefined}
                     onpoint={metres => onpoint(metres === null || !summary.lengthM ? null : metres / summary.lengthM)} />
-                {#if !side && mapLarge}<button type="button" class="swap" aria-label="Show the picture large" onclick={() => swapped = false}></button>{/if}
+                {#if !side && mapLarge}<button type="button" class="swap" aria-label="Show the picture large" onclick={() => { swapped = false; openPlaceId = null; }}></button>{/if}
             </div>
         {/if}
         <div class="slot map">
-            <RouteMap {summary} {ride} pins={side || mapLarge ? pins : []} photos={side || mapLarge ? photos : []} {onphoto} {mark} {onpoint} fitTo={part} {lit} {place} />
+            <RouteMap {summary} {ride} pins={mapShown ? pins : []} photos={mapShown ? photos : []} {onphoto} {mark} {onpoint} fitTo={part} {lit}
+                routePlaces={mapShown ? routePlaces : []} bind:litPlaces bind:openPlaceId {corner} />
             {#if !side && !mapLarge}<button type="button" class="swap" aria-label="Show the map large" onclick={() => swapped = true}></button>{/if}
         </div>
         <!-- The map has the credit of the base map behind its own button; this button has the rest, such as the terrain. -->
-        <Credits {credits} side="left" />
+        <!-- On a phone it can stand over a link of the popup of a place. -->
+        {#if !openPlaceId}<Credits {credits} side="left" />{/if}
     </div>
 </div>
 

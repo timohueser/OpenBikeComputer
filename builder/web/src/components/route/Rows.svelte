@@ -7,16 +7,18 @@
     import Icon from '../../lib/ui/Icon.svelte';
     import ElevationRow from './ElevationRow.svelte';
     import Menu from './Menu.svelte';
+    import { placeAside } from './PlacePopup.svelte';
+    import PlaceDisc from '../planner/PlaceDisc.svelte';
     import Lanes from '../../lib/ui/Lanes.svelte';
     import { distanceTicks, fitTicks } from './ticks';
     import type { RouteSummary } from '../../lib/library/records';
     import { lineCoordinates } from '../../lib/library/summary';
     import { phoneLink, phoneNumbers, websiteLink } from '../../lib/planner/contact-links';
     import { orderedRoutePoints, planView, type Place, type RoutePoint, type Trip } from '../../lib/planner/editor';
-    import { cumulative, nearestProgress, routeSlice, type Coordinate } from '../../lib/planner/geo';
+    import { cumulative, nearestProgress, routeSlice } from '../../lib/planner/geo';
     import { profileGrades } from '../../lib/planner/grade-data';
     import { config } from '../../lib/planner/map-data';
-    import { corridorPlaces } from '../../lib/planner/place-index';
+    import { corridorPlaces, type RoutePlace } from '../../lib/planner/place-index';
     import { categoryIds, placeCategories, type PlaceCategory } from '../../lib/planner/poi-kinds';
     import { formatPart, profileAscent, profileHeightAt, profileSamples, sampleIndex } from '../../lib/planner/profile-data';
     import type { Pin, RouteFacts } from '../../lib/planner/route-facts';
@@ -29,7 +31,8 @@
     /** The bottom card of the Route page: the waypoints, the heights, the surface and the places along the route or one
      * day of it, on one axis. Shares are 0 to 1 of the route. Without the calculated line, the rows that the summary
      * holds show. A drag selects a part; with no part, a click on a climb in the elevation row selects the climb. */
-    let { summary, trip, line, facts, pins, mark, onpoint, part, onpart, onhover, onday, onplace }: {
+    let { summary, trip, line, facts, pins, mark, onpoint, part, onpart, onhover, onday,
+        routePlaces = $bindable([]), litPlaces = $bindable([]), openPlaceId = $bindable(null) }: {
         summary: RouteSummary;
         trip: Trip;
         line?: RoutingLine;
@@ -44,14 +47,16 @@
         onhover: (stretch: [number, number] | null) => void;
         /** The stretch of the chosen day, or null for the whole route. */
         onday: (stretch: [number, number] | null) => void;
-        /** The place whose panel is open. */
-        onplace: (at: Coordinate | null) => void;
+        /** The places of the chosen category, which only the rows write. */
+        routePlaces?: RoutePlace[];
+        /** The ids of the places that the pointer lights, here or on the map, and of the place whose popup is open. */
+        litPlaces?: string[];
+        openPlaceId?: string | null;
     } = $props();
 
-    /** Places load within PLACE_M of the shown stretch, for at most PLACES_KM of it. A place icon is ICON_PX wide and a
-     * count after it about COUNT_CHAR_PX for each figure; icons that would touch join into one, whose list shows at most
-     * LIST_NAMES names. */
-    const PLACE_M = 1000, PLACES_KM = 300, ICON_PX = 24, COUNT_CHAR_PX = 7, LIST_NAMES = 30, PANEL_PX = 260;
+    /** Places load for at most PLACES_KM of the shown stretch. A place icon is ICON_PX wide and a count after it about
+     * COUNT_CHAR_PX for each figure; icons that would touch join into one, whose list shows at most LIST_NAMES names. */
+    const PLACES_KM = 300, ICON_PX = 24, COUNT_CHAR_PX = 7, LIST_NAMES = 30, PANEL_PX = 260;
     /** The elevation row is ELEVATION_PX high in a window at least WIDE_PX wide and TALL_PX high. The disc of a night keeps
      * NIGHT_PX from the middle of a waypoint pin. */
     const ELEVATION_PX = 120, WIDE_PX = 1200, TALL_PX = 800, ELEVATION_ROW = 1, NIGHT_PX = 20;
@@ -60,12 +65,12 @@
     /** The pointer on the axis of the shown stretch while it is over the elevation row or moved by the keys. */
     let onProfile = $state<number>(), innerWidth = $state(1440), innerHeight = $state(900);
     let day = $state('all'), category = $state<PlaceCategory | ''>(''), open = $state<number>(), shift = $state(0);
-    /** The open group of places, and the place of a group of several that the rider chose. */
-    let openPlace = $state<{ group: number; place?: number }>();
+    /** The group of places whose list is open. */
+    let listed = $state<number>();
     let placeLane = $state<HTMLElement>(), width = $state(0), seen = $state(false);
     /** The surface of the legend entry under the pointer or with the focus: the bar lights its stretches. */
     let litSurface = $state<Surface>();
-    let places = $state.raw<{ found?: Place[]; failed?: boolean }>({});
+    let placesState = $state<'' | 'loaded' | 'failed'>('');
     let details = $state.raw<Record<string, SearchPlace | null>>({});
 
     const coordinates = $derived(lineCoordinates(summary));
@@ -130,9 +135,8 @@
 
     /** The places of the chosen category, joined where their icons with the count would touch. */
     const groups = $derived.by(() => {
-        // On the shown slice, so that a place on a loop does not land on another day.
-        const found = (places.found ?? []).map(place => ({ place, at: nearestProgress(slice, place.coordinate) })).sort((a, b) => a.at - b.at);
-        const joined: { at: number; places: Place[] }[] = [];
+        const found = routePlaces.map(place => ({ place, at: x(place.alongM / totalM) })).sort((a, b) => a.at - b.at);
+        const joined: { at: number; places: RoutePlace[] }[] = [];
         const drawn = (count: number) => ICON_PX + (count > 1 ? 2 + String(count).length * COUNT_CHAR_PX : 0);
         for (const { place, at } of found) {
             const last = joined.at(-1);
@@ -141,17 +145,11 @@
         }
         return joined;
     });
-    const chosenPlace = $derived.by(() => {
-        const group = openPlace && groups[openPlace.group];
-        if (!group) return undefined;
-        return group.places.length === 1 ? group.places[0] : openPlace!.place === undefined ? undefined : group.places[openPlace!.place];
-    });
 
     $effect(() => { onhover(hoveredClimb >= 0 ? [climbs[hoveredClimb].from, climbs[hoveredClimb].to] : null); });
     $effect(() => { onday(day === 'all' ? null : [shown.from, shown.to]); });
-    $effect(() => { onplace(chosenPlace ? chosenPlace.coordinate : null); });
-    // `openPlace` points into `groups`: new groups, after a resize or another day, close it.
-    $effect(() => { void groups; openPlace = undefined; });
+    // `listed` points into `groups`: new groups, after a resize or another day, close it.
+    $effect(() => { void groups; listed = undefined; });
 
     $effect(() => {
         if (!placeLane) return;
@@ -161,19 +159,22 @@
     });
 
     $effect(() => {
-        places = {};
-        const wanted = category;
+        [routePlaces, litPlaces, openPlaceId, placesState] = [[], [], null, ''];
+        const wanted = category, along = slice, from = shown.from;
         if (!seen || !wanted || tooLong) return;
         let live = true;
-        corridorPlaces(config.places, slice, PLACE_M / 1000).then(
-            found => { if (live) places = { found: found.filter(place => place.category === wanted) }; },
-            () => { if (live) places = { failed: true }; });
+        corridorPlaces(config.places, along, wanted).then(found => {
+            if (!live) return;
+            // On the shown slice, so that a place on a loop does not land on another day.
+            routePlaces = found.map(item => ({ ...item, alongM: (from + nearestProgress(along, item.place.coordinate) * span) * totalM }));
+            placesState = 'loaded';
+        }, () => { if (live) placesState = 'failed'; });
         return () => { live = false; };
     });
 
-    // The details of a waypoint or a place made from a mapped place load when its panel opens.
+    // The details of a waypoint made from a mapped place load when its panel opens.
     $effect(() => {
-        const point = chosenPlace ?? pins.find(pin => pin.number === open)?.point, id = point?.placeId;
+        const point = pins.find(pin => pin.number === open)?.point, id = point?.placeId;
         if (!point || !id || !searchable.test(id) || untrack(() => id in details)) return;
         const abort = new AbortController();
         placeDetails(id, point.coordinate, abort.signal).then(found => { details = { ...details, [id]: found ?? null }; }, () => {});
@@ -199,22 +200,33 @@
         onpoint(at === null ? null : shown.from + at * span);
     }
 
-    /** Escape closes an open panel before the part, which `Lanes` clears; the focus goes back to the place. */
+    /** One Escape closes one thing: an open dialog or menu first, and a field, a pin of the map or the popup that has the
+     * focus, which close themselves; then a panel or the list, then the popup of a place, then the part, which `Lanes`
+     * clears. The focus goes back to the place. */
     function closeOnEscape(event: KeyboardEvent) {
-        if (event.key !== 'Escape' || (open === undefined && !openPlace)) return;
+        if (event.key !== 'Escape' || event.defaultPrevented || document.querySelector('dialog:modal, menu')) return;
+        if ((event.target as Element).closest?.('input, .route-pin, .map-callout') || (open === undefined && listed === undefined && !openPlaceId)) return;
         event.preventDefault();
-        if (openPlace) placeLane?.querySelector<HTMLElement>('.place.open > button')?.focus();
-        [open, openPlace] = [undefined, undefined];
+        if (listed !== undefined) focusGroup();
+        if (open === undefined && listed === undefined) openPlaceId = null;
+        [open, listed] = [undefined, undefined];
     }
 
-    const kmOf = (place: Place) => formatDistance((shown.from + nearestProgress(slice, place.coordinate) * span) * totalM);
+    const focusGroup = () => placeLane?.querySelector<HTMLElement>('.place.open > button')?.focus();
+
+    /** The popup takes the group button as its opener: the name in the list goes with the list. That name takes no
+     * `pointerleave`, so the lit places clear here. */
+    function openPlace(id: string) {
+        if (listed !== undefined) focusGroup();
+        [openPlaceId, listed, litPlaces] = [id, undefined, []];
+    }
 </script>
 
 <svelte:window bind:innerWidth bind:innerHeight onkeydowncapture={closeOnEscape} />
 <!-- iOS Safari does not focus a tapped button, so a tap outside closes the panel here, not by `focusout`. -->
 <svelte:document onpointerdown={event => {
     if (open !== undefined && !(event.target as Element).closest('.pin')) open = undefined;
-    if (openPlace && !(event.target as Element).closest('.place')) openPlace = undefined;
+    if (listed !== undefined && !(event.target as Element).closest('.place')) listed = undefined;
 }} />
 
 {#snippet about(point: RoutePoint)}
@@ -280,30 +292,36 @@
     <div class="places" bind:this={placeLane}>
         {#if category && tooLong}
             <span class="note">{days.length > 1 && day === 'all' ? 'Choose one day to see places' : 'Too long to show places'}</span>
-        {:else if places.failed}
+        {:else if placesState === 'failed'}
             <span class="note">Places are unavailable.</span>
-        {:else if places.found && !groups.length}
-            <span class="note">None within {formatDistance(PLACE_M)}</span>
+        {:else if category && placesState === 'loaded' && !groups.length}
+            <span class="note">None within {formatDistance(placeCategories[category].routeM)}</span>
         {:else if category}
+            {@const icon = placeCategories[category].icon}
             {#each groups as group, i (i)}
-                <span class="place" class:open={openPlace?.group === i} style:left={`${group.at * 100}%`}
+                {@const ids = group.places.map(({ place }) => place.id)}
+                {@const several = ids.length > 1}
+                <span class="place" class:open={listed === i} style:left={`${group.at * 100}%`}
                     style:transform={group.at * width > width - 40 ? 'translate(-100%, -50%)' : undefined}>
-                    <button type="button" aria-label={group.places.map(place => place.label).join(', ')} aria-expanded={openPlace?.group === i}
-                        onclick={event => { show(event.currentTarget.parentElement!, undefined); openPlace = openPlace?.group === i ? undefined : { group: i }; }}>
-                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d={placeCategories[category].icon} /></svg>
-                        {#if group.places.length > 1}<span class="count">{group.places.length}</span>{/if}
+                    <button type="button" aria-label={group.places.map(({ place }) => place.label).join(', ')} aria-expanded={several ? listed === i : undefined}
+                        onpointerenter={() => litPlaces = ids} onpointerleave={() => litPlaces = []}
+                        onclick={event => {
+                            if (!several) return openPlace(ids[0]);
+                            show(event.currentTarget.parentElement!, undefined);
+                            listed = listed === i ? undefined : i;
+                        }}>
+                        {#if ids.some(id => id === openPlaceId || litPlaces.includes(id))}<PlaceDisc {icon} grow />
+                        {:else}<svg viewBox="0 0 24 24" aria-hidden="true"><path d={icon} /></svg>{/if}
+                        {#if several}<span class="count">{ids.length}</span>{/if}
                     </button>
-                    {#if openPlace?.group === i}
-                        {#if chosenPlace}
-                            {@render about(chosenPlace)}
-                        {:else}
-                            <div class="panel list" data-panel style:left={`${shift}px`}>
-                                {#each group.places.slice(0, LIST_NAMES) as place, j (j)}
-                                    <button type="button" onclick={() => openPlace = { group: i, place: j }}><span>{place.label}</span><small>{kmOf(place)}</small></button>
-                                {/each}
-                                {#if group.places.length > LIST_NAMES}<p class="more">and {group.places.length - LIST_NAMES} more</p>{/if}
-                            </div>
-                        {/if}
+                    {#if listed === i}
+                        <div class="panel list" data-panel style:left={`${shift}px`}>
+                            {#each group.places.slice(0, LIST_NAMES) as item (item.place.id)}
+                                <button type="button" onpointerenter={() => litPlaces = [item.place.id]} onpointerleave={() => litPlaces = []}
+                                    onclick={() => openPlace(item.place.id)}><span>{item.place.label}</span><small>{placeAside(item)}</small></button>
+                            {/each}
+                            {#if group.places.length > LIST_NAMES}<p class="more">and {group.places.length - LIST_NAMES} more</p>{/if}
+                        </div>
                     {/if}
                 </span>
             {/each}
@@ -319,8 +337,8 @@
             options={[{ value: 'all', label: days.length === 2 ? 'Both days' : 'All days' }, ...days.map(item => ({ value: String(item.number), label: `Day ${item.number}` }))]} />
     {/if}
     <Menu label="Places" left items={[
-        ...categoryIds.map(id => ({ label: placeCategories[id].label, checked: category === id, run: () => { category = id; openPlace = undefined; } })),
-        ...category ? [{ label: 'Hide places', rule: true, run: () => { category = ''; openPlace = undefined; } }] : [],
+        ...categoryIds.map(id => ({ label: placeCategories[id].label, checked: category === id, run: () => { category = id; listed = undefined; } })),
+        ...category ? [{ label: 'Hide places', rule: true, run: () => { category = ''; listed = undefined; } }] : [],
     ]} />
 {/snippet}
 
@@ -457,6 +475,9 @@
     .place > button:hover, .place.open > button {
         color: var(--ink);
     }
+    .place :global(.place-disc) {
+        margin: 0 1px;
+    }
     .place svg {
         display: block;
         width: 18px;
@@ -485,17 +506,17 @@
         min-width: 180px;
         padding: 4px;
     }
+    /* The name over where the place is, so that the list keeps the width of a panel. */
     .list button {
         display: flex;
-        justify-content: space-between;
-        gap: 16px;
+        flex-direction: column;
+        gap: 1px;
         padding: 6px 8px;
         border: 0;
         border-radius: 5px;
         background: none;
         color: var(--ink);
         text-align: left;
-        white-space: nowrap;
     }
     .list button:hover {
         background: var(--parchment-2);
