@@ -1,5 +1,5 @@
 <!-- The card of the selected trail over the map: its far line, its mark and name, its shape, its stages and its kind, its
-     numbers, the profile of the whole trail and the strip of its parts. -->
+     numbers, the profile of the whole trail, the strip of its parts and the credit of its source. -->
 <script module lang="ts">
     import type { TrailEntry } from '../../lib/planner/signed-routes';
     import { signedNumbers } from './SignedCard.svelte';
@@ -35,13 +35,14 @@
 </script>
 
 <RouteCard name={trail.name ?? trail.ref ?? ''} meta={[trail.loop ? 'Loop' : 'One way', stages(trail), kindName(trail)]} numbers={signedNumbers(trail)}
-    {profile} failure={failed ? 'The trail could not load.' : undefined} more={record?.parts ? strip : undefined} {onclose}>
+    {profile} failure={failed ? 'The trail could not load.' : undefined} more={record?.parts || record?.credit ? more : undefined} {onclose}>
     {#snippet picture()}{#if item}<SignedPicture {item} />{/if}{/snippet}
     {#snippet mark()}<span class="mark"><TrailMarker symbol={trail.symbol} ref={trail.ref} /></span>{/snippet}
 </RouteCard>
 
-{#snippet strip()}
-    <StageStrip parts={record!.parts!} numbered={(trail.stage_count ?? 0) >= 2} color={routeColor(trail.id)} />
+{#snippet more()}
+    {#if record?.parts}<StageStrip parts={record.parts} numbered={(trail.stage_count ?? 0) >= 2} color={routeColor(trail.id)} />{/if}
+    {#if record?.credit}<p class="credit">Route data: {record.credit}</p>{/if}
 {/snippet}
 
 <style>
@@ -50,5 +51,10 @@
         display: inline-block;
         margin-right: 8px;
         vertical-align: -5px;
+    }
+    .credit {
+        margin: 8px 0 0;
+        color: var(--ink-soft);
+        font-size: 13px;
     }
 </style>
