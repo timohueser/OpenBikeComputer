@@ -79,6 +79,8 @@ interface Resources {
     records: GPUTexture;
     /** The road and path profiles, as stamp-core.wgsl reads them. */
     profiles: GPUBuffer;
+    /** PROTOTYPE parts: the terrain's boxes (holes of terrain.wgsl); a piece draws nothing in them. */
+    holes: GPUBuffer;
     /** The triangles and the step slots of a cell drawn wholly at level 18, and of one drawn in part (`cut`); the triangles of a
      * stop arm's junction, whose pixels find the mouth (plan/mouth-in.wgsl), with pipelines of their own, so that no other pixel pays for it. */
     triangles: GPURenderPipeline;
@@ -215,11 +217,11 @@ export class Pieces {
      * Takes the pipelines on a device: `frame` is the frame uniform of the eye's view, `cells` the buffer of CELLS_BYTES, `records` the
      * records' texture, `profiles` the stamps' profile table.
      */
-    async attach(gpu: Gpu, frame: GPUBuffer, cells: GPUBuffer, records: GPUTexture, profiles: GPUBuffer): Promise<void> {
+    async attach(gpu: Gpu, frame: GPUBuffer, cells: GPUBuffer, records: GPUTexture, profiles: GPUBuffer, holes: GPUBuffer): Promise<void> {
         this.resources = undefined;
         for (const piece of this.pieces.values()) Object.assign(piece, { gpu: undefined, computed: false, stale: 'all', done: 0 });
         const made = await gpu.once(piecePipelines);
-        this.resources = { gpu, frame, cells, records, profiles, ...made };
+        this.resources = { gpu, frame, cells, records, profiles, holes, ...made };
         this.cellsDirty = true;
     }
 
@@ -356,7 +358,7 @@ export class Pieces {
     private drawGroup(r: Resources, data: GPUBuffer, params: GPUBuffer, frame: GPUBuffer): GPUBindGroup {
         return r.gpu.device.createBindGroup({ layout: r.drawLayout, entries: [
             { binding: 0, resource: { buffer: frame } }, { binding: 1, resource: { buffer: data } }, { binding: 2, resource: { buffer: params } }, { binding: 3, resource: { buffer: r.cells } },
-            { binding: 8, resource: r.records.createView() },
+            { binding: 8, resource: r.records.createView() }, { binding: 9, resource: { buffer: r.holes } },
         ] });
     }
 
@@ -582,7 +584,7 @@ export async function piecePipelines(gpu: Gpu) {
     const drawLayout = device.createBindGroupLayout({ entries: [
         { binding: 0, visibility: V | F, buffer: { type: 'uniform' } }, { binding: 1, visibility: V, buffer: { type: 'read-only-storage' } },
         { binding: 2, visibility: V | F, buffer: { type: 'uniform' } }, { binding: 3, visibility: V, buffer: { type: 'read-only-storage' } },
-        { binding: 8, visibility: F, texture: { sampleType: 'uint' } },
+        { binding: 8, visibility: F, texture: { sampleType: 'uint' } }, { binding: 9, visibility: F, buffer: { type: 'read-only-storage' } },
     ] });
     const computeLayout = device.createBindGroupLayout({ entries: [
         { binding: 0, visibility: C, buffer: { type: 'storage' } }, { binding: 1, visibility: C, buffer: { type: 'read-only-storage' } }, { binding: 2, visibility: C, buffer: { type: 'uniform' } },

@@ -5,7 +5,8 @@
 // between. Where the terrain draws coarser than level 17, that slope reaches past the box, and a dark
 // void fills the opening.
 import { LIFT_M, metresPerUnit, RAIL_CODE, RULES, TUNNEL, type Line } from '../terrain/bins';
-import { BORE, curveStops, LAMP, MeshBuilder, PAINT, paintOf, posts, rgb, VOID, type Corner, type Station } from './mesh';
+import { BORE, curveStops, LAMP, MeshBuilder, mix, PAINT, paintOf, posts, rgb, VOID, type Corner, type Station } from './mesh';
+import { boreCut, buildPart } from './parts';
 import type { Owns } from './node';
 
 /** A portal of a road and of a path: the bore's margin past the road and the facade's wings past the opening. */
@@ -134,12 +135,21 @@ export function tunnels(b: MeshBuilder, lines: Line[], owns: Owns): void {
     for (const line of lines) {
         if (line.kind !== TUNNEL || !line.abut) continue;
         const n = line.z.length, road = line.deck! > 3, size = road ? ROAD_PORTAL : PATH_PORTAL;
-        const stops = curveStops(line);
-        for (let k = 0; k + 1 < stops.length; k++) if (owns(stops[k].x, stops[k].y)) bore(b, stops[k], stops[k + 1], line, boreHalf(line), road, stops[k + 1].along - stops[k].along);
+        const stops = curveStops(line), total = stops[stops.length - 1].along;
+        // PROTOTYPE parts: a part takes the bore's first metres at its end (a cutting, a slanted cut, an underpass).
+        const cut = [boreCut(line, 0), boreCut(line, 1)];
+        for (let k = 0; k + 1 < stops.length; k++) {
+            if (!owns(stops[k].x, stops[k].y)) continue;
+            const [a, c] = [stops[k].along, stops[k + 1].along], lo = Math.max(a, cut[0]), hi = Math.min(c, total - cut[1]);
+            if (hi <= lo) continue;
+            bore(b, mix(stops[k], stops[k + 1], (lo - a) / (c - a || 1)), mix(stops[k], stops[k + 1], (hi - a) / (c - a || 1)), line, boreHalf(line), road, hi - lo);
+        }
         for (const [end, from, to] of [[0, 0, n - 1], [1, n - 1, 0]]) {
             const x = line.xy[2 * from], y = line.xy[2 * from + 1];
             const pair = twin.get(line)?.[end];
-            if (!line.abut[end] || !owns(x, y) || pair === null) continue;
+            if (!owns(x, y)) continue;
+            if (buildPart(b, line, end as 0 | 1)) continue;
+            if (!line.abut[end] || pair === null) continue;
             portal(b, line, from, to, size, road, pair);
         }
     }

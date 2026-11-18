@@ -46,7 +46,8 @@ export const SYNTH_PAGES = Math.floor((BUDGET.synth - MASK_BYTES) / PAGE_BYTES);
 /** Per mask, the snaps of its page's 64 × 64 mesh vertices, 4 bytes each, as `snaps` in features.wgsl. */
 const SNAP_BYTES = (PAGE / 4) ** 2 * 4;
 /** Portal boxes in the terrain's holes at most. */
-const MAX_HOLES = 32;
+const MAX_HOLES = 160;
+const PARTS = typeof location !== 'undefined' && !!new URLSearchParams(location.search).get('parts');
 /** Nodes drawn per frame at most. */
 const MAX_NODES = 4096;
 /** The grid cell that a level has at the far end of its range, in pixels. */
@@ -478,7 +479,7 @@ export class Terrain {
             probeGroup: group(L.probe, [{ buffer: r.points }, { buffer: r.probed }]),
             eyeGroup: device.createBindGroup({ layout: L.eye, entries: [{ binding: 2, resource: { buffer: frameUniform } }] }),
         };
-        this.piecesAttached = this.pieces?.attach(gpu, frameUniform, r.cells, model, r.profiles);
+        this.piecesAttached = this.pieces?.attach(gpu, frameUniform, r.cells, model, r.profiles, r.holes);
         // `attachParts` reports a failure.
         this.piecesAttached?.catch(() => {});
     }
@@ -1236,8 +1237,9 @@ function holes(lists: Float64Array[], anchor: Anchor, drawn: (x: number, y: numb
     const out = new Float32Array(4 * (1 + 3 * MAX_HOLES)), seen = new Set<string>();
     let n = 0;
     for (const list of lists) for (let i = 0; i < list.length && n < MAX_HOLES; i += BOX) {
-        const name = `${list[i]},${list[i + 1]}`;
-        if (seen.has(name) || !drawn(list[i], list[i + 1])) continue;
+        const name = `${list[i]},${list[i + 1]},${list[i + 4]}`;
+        // PROTOTYPE parts: their boxes open the ground whether or not the part's node draws yet.
+        if (seen.has(name) || (!PARTS && !drawn(list[i], list[i + 1]))) continue;
         seen.add(name);
         out.set([list[i] - anchor.whole[0], list[i + 1] - anchor.whole[1], ...list.subarray(i + 2, i + BOX)], 4 + 12 * n++);
     }

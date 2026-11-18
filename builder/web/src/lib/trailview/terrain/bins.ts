@@ -10,6 +10,7 @@ import { approaches } from './approaches';
 import { boxOf, cornersOf, halfAt, partnersOf } from './corners';
 import { joinCulverts, standMouths, type CulvertMouth } from './culverts';
 import { along, BUILT_M, builtNear, gridOf, LEFT, near, RIGHT, townOf, type Grid, type Town } from './town';
+import { partReach } from '../structures/part-store';
 
 /** Words of a primitive record. */
 export const RECORD = 16;
@@ -1105,8 +1106,21 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
         // A bridge's or a tunnel's metres from its start at each vertex: it rests on its abutments, or runs on the ground into its portal, a few mesh cells from an end that meets the ground.
         const along = [0];
         for (let v = 1; v < n; v++) along.push(along[v - 1] + Math.hypot(line.xy[2 * v] - line.xy[2 * v - 2], line.xy[2 * v + 1] - line.xy[2 * v - 1]) * metresPerUnit(line.xy[2 * v + 1]));
+        // PROTOTYPE parts: a tunnel stamps no ground within its parts' reach; past it the cover holds at once.
+        const reaches = line.kind === TUNNEL ? [partReach(line.xy[0], line.xy[1]), partReach(line.xy[2 * n - 2], line.xy[2 * n - 1])] : [0, 0];
         for (let v = 0; v + 1 < n; v++) {
-            const [ax, ay, bx, by] = line.xy.slice(2 * v, 2 * v + 4);
+            let [ax, ay, bx, by] = line.xy.slice(2 * v, 2 * v + 4) as [number, number, number, number];
+            let za = line.z[v], zb = line.z[v + 1], m0 = along[v], m1 = along[n - 1] - along[v + 1];
+            if (reaches[0] || reaches[1]) {
+                const lo = Math.max(along[v], reaches[0]), hi = Math.min(along[v + 1], along[n - 1] - reaches[1]);
+                if (hi <= lo) continue;
+                const at = (s: number) => (s - along[v]) / Math.max(1e-6, along[v + 1] - along[v]);
+                const [u0, u1] = [at(lo), at(hi)], [x0, y0, x1, y1] = line.xy.slice(2 * v, 2 * v + 4);
+                [ax, ay, bx, by] = [x0 + (x1 - x0) * u0, y0 + (y1 - y0) * u0, x0 + (x1 - x0) * u1, y0 + (y1 - y0) * u1].map(Math.round);
+                [za, zb] = [line.z[v] + (line.z[v + 1] - line.z[v]) * u0, line.z[v] + (line.z[v + 1] - line.z[v]) * u1];
+                m0 = reaches[0] ? lo - reaches[0] + 30 : lo;
+                m1 = reaches[1] ? along[n - 1] - reaches[1] - hi + 30 : along[n - 1] - hi;
+            }
             const touched = within([Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)], reach);
             if (!touched.length) continue;
             const number = way || !numbers ? id : (numbers.get(id) ?? numbers.set(id, numbers.size).get(id)!);
@@ -1123,7 +1137,7 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
             // The deck, the bore or the roof in decimetres; the top bit marks a gallery whose hill is on its right.
             const deck = Math.min(line.gallery ? 127 : 255, Math.round(10 * (line.deck ?? 0))) | (line.gallery === -1 ? 128 : 0);
             // A bridge's or a tunnel's metres from its ends where they meet the ground, a gallery's from its ends, a track's sleepers; else a road's tilts.
-            const ends = line.abut ? [line.abut[0] ? along[v] : 1e30, line.abut[1] ? along[n - 1] - along[v + 1] : 1e30].map(f)
+            const ends = line.abut ? [line.abut[0] ? m0 : 1e30, line.abut[1] ? m1 : 1e30].map(f)
                 : line.gallery ? [along[v], along[n - 1] - along[v + 1]].map(f) : line.sleepers ? [line.sleepers[v], line.sleepers[v + 1]].map(f)
                     : [line.tilt?.[2 * v] ?? 0, line.tilt?.[2 * v + 1] ?? 0];
             // The surface code in the low 4 bits, the sides with a sidewalk above it. Beside the line's index, in
@@ -1131,7 +1145,7 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
             const taper = (w: number) => Math.max(-127, Math.min(127, Math.round((halfAt(line, w, partners) - line.h) / 0.02))) & 0xff;
             // The mitres of the two ends, then the rise of the bank to the right at each. One word stays free.
             const rise = (w: number) => -(line.plan?.bank[w] ?? 0);
-            const at = record([ax, ay, bx, by, line.kind, line.code | ((line.sidewalks?.[v] ?? 0) << 4) | (DRIVEWAYS.includes(CLASSES[line.profile]) && !line.sidewalks?.some(Boolean) ? DRIVEWAY : 0) | (flags << 8) | (line.profile << 16) | (deck << 24), f(line.z[v]), f(line.z[v + 1]), f(line.h),
+            const at = record([ax, ay, bx, by, line.kind, line.code | ((line.sidewalks?.[v] ?? 0) << 4) | (DRIVEWAYS.includes(CLASSES[line.profile]) && !line.sidewalks?.some(Boolean) ? DRIVEWAY : 0) | (flags << 8) | (line.profile << 16) | (deck << 24), f(za), f(zb), f(line.h),
                 pair(mx, my), pair(nx, ny), pair(rise(v), rise(v + 1)), 0, number | (taper(v) << 16) | (taper(v + 1) << 24), ...ends]);
             for (const c of touched) cells[2][c].push(at);
         }

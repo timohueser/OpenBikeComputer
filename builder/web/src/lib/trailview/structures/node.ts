@@ -13,6 +13,8 @@ import { galleries } from './galleries';
 import { MeshBuilder, type StructureMesh } from './mesh';
 import { rails } from './rails';
 import { boreHalf, portalBox, tunnels, twins } from './tunnels';
+import { partBoxes } from './parts';
+import { partsIn, partsOn } from './part-store';
 import { culvertMouths } from '../roads/mouths';
 import { streetLamps } from '../roads/lamps';
 
@@ -51,6 +53,12 @@ export const BOX = 9;
 export function portalBoxes(list: Feature[], tile: Node, node: Node): Float64Array<ArrayBuffer> | null {
     const side = 2 ** (30 - node.level), x0 = node.x * side, y0 = node.y * side, m = REACH_M / metresPerUnit(y0 + side / 2), out: number[] = [];
     const { lines } = features(list, tile), twin = twins(lines);
+    // PROTOTYPE parts: the boxes of every placement whose OSM end lies within PART_REACH of the node.
+    if (partsOn) {
+        const r = 80 / metresPerUnit(y0 + side / 2);
+        for (const p of partsIn(x0 - r, y0 - r, x0 + side + r, y0 + side + r)) out.push(...partBoxes(p));
+        return out.length ? new Float64Array(out) : null;
+    }
     for (const line of lines) {
         if (line.kind !== TUNNEL || !line.abut) continue;
         for (const end of [0, 1]) {

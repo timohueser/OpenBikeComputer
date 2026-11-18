@@ -32,3 +32,7 @@ tiny-skia = { version = "0.11", default-features = false, features = ["std", "si
 [[example]]
 name = "debug"
 path = "examples/debug/main.rs"
+
+[[example]]
+name = "tc"
+path = "examples/tc.rs"

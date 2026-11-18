@@ -5,6 +5,7 @@ import { auditSamples, waterLevels } from './audit-samples';
 import { nodeStamps, type Node } from './bins';
 import { waterMesh } from './water-mesh';
 import { floorsOf, portalBoxes, structureMeshes } from '../structures/node';
+import { setParts } from '../structures/part-store';
 
 /** What a job makes of a node: its stamps with its water, floors and portals, an owner node's structure meshes, or its audit samples. */
 export type Request = 'stamps' | 'meshes' | 'samples';
@@ -17,6 +18,17 @@ export type Request = 'stamps' | 'meshes' | 'samples';
 const COARSE = 4;
 tileBudget(48 * 2 ** 20);
 const coarse = new Map<number, string[]>();
+/** PROTOTYPE parts: the placements, when the page's `parts` asks for them. */
+const partsReady = (async () => {
+    const name = typeof self === 'undefined' ? '' : (self as { name?: string }).name;
+    if (!name) return;
+    try {
+        const { parts, url } = JSON.parse(name) as { parts: string; url: string };
+        setParts(parts, (await (await fetch(url)).json()).ends);
+    } catch (error) {
+        console.warn(`parts: ${error}`);
+    }
+})();
 
 /** The features of a tile from its body, or as the worker still holds them without one; undefined where it holds none. */
 function tileFeatures(tile: Node, body?: ArrayBuffer): Promise<Feature[]> | undefined {
@@ -37,6 +49,7 @@ function tileFeatures(tile: Node, body?: ArrayBuffer): Promise<Feature[]> | unde
  */
 self.onmessage = async ({ data: { id, tile, node, body, what, plan, wanted = [] } }: MessageEvent<{ id: number; tile: Node; node: Node; body?: ArrayBuffer; what: Request; plan: boolean; wanted?: string[] }>) => {
     wantTiles(wanted);
+    await partsReady;
     try {
         const held = tileFeatures(tile, body);
         if (!held) return void self.postMessage({ id, missing: true });

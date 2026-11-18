@@ -95,7 +95,9 @@ export class Stamps implements StampSource {
             console.warn(`The stamps' device cache did not open: ${error}`);
             return undefined;
         });
-        const worker = this.worker = new Worker(new URL('./stamp-worker.ts', import.meta.url), { type: 'module' });
+        // PROTOTYPE parts: the worker learns the variant and the placements' address through its name.
+        const parts = new URLSearchParams(location.search).get('parts'), name = parts ? JSON.stringify({ parts, url: new URL('parts.json', location.href).href }) : '';
+        const worker = this.worker = new Worker(new URL('./stamp-worker.ts', import.meta.url), { type: 'module', name });
         stop.addEventListener('abort', () => worker.terminate());
         this.worker.onmessage = ({ data }) => {
             const wait = this.waiting.get(data.id);
