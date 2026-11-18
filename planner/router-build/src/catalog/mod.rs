@@ -828,7 +828,7 @@ fn planned<D: RoutingData>(
     let mut cover = BTreeSet::new();
     cells(&geometry, &mut cover);
     // Every vertex of the plan route: a simple line can cut across a small piece of France.
-    let french = geometry.iter().any(|&p| crate::country::in_france(p));
+    let french = crate::country::in_france(&geometry);
     let mut record = header(&job.relation, &job.kind, french);
     if let Some(trail) = &job.named_by {
         named_after(&mut record, trail);
