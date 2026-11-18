@@ -75,6 +75,7 @@
     let drag = $state<{ night: number; progress: number; moved: boolean } | null>(null);
     let range = $state<'map' | 'route'>('map');
     let body = $state<HTMLDivElement>();
+    let rows = $state<HTMLDivElement>();
     let content = $state<HTMLDivElement>();
     // More content below the visible part shows as a fade at the bottom edge.
     let more = $state(false);
@@ -109,7 +110,9 @@
         at: (px: number, width: number) => px < 0 || px > width ? px / width : (axisProgress(axis, px, width) - shown.from) / span,
     });
     const share = (progress: number) => Math.min(1, Math.max(0, (progress - shown.from) / span));
-    const partText = $derived(part ? formatPart(part[0] * total * 1000, part[1] * total * 1000, known.length ? profileAscent(part[0], part[1], lineData) : null) : '');
+    // From the start of the open day, as the ticks and the readout.
+    const partText = $derived(part ? formatPart((part[0] - origin) * total * 1000, (part[1] - origin) * total * 1000,
+        known.length ? profileAscent(part[0], part[1], lineData) : null) : '');
     const labelled = $derived(singleRoute ? [] : days.filter(day => day.to > shown.from && day.from < shown.to));
     // The day ends inside the shown stretch; with none inside, the nearest one on each side sits at the edge so it can still be dragged in.
     const handles = $derived.by(() => {
@@ -150,9 +153,11 @@
         onPart?.(next && [shown.from + next[0] * span, shown.from + next[1] * span]);
     }
 
-    // Another stretch, a closed drawer or no profile ends the part.
+    // Another range, another day, a closed drawer or no profile ends the part; a moved day end keeps it. A derived
+    // value, because the effect would run again at each new `focus` object.
+    const openDay = $derived(focus?.label);
     $effect(() => {
-        void [range, open, focus?.from, focus?.to];
+        void [range, open, openDay];
         return () => untrack(() => onPart?.(null));
     });
 
@@ -186,7 +191,8 @@
             options={[{ value: 'map', label: focus?.label ?? 'Map view' }, { value: 'route', label: 'Whole route' }]} />
         <label class="grade-toggle"><input type="checkbox" checked={showGrade} onchange={(event) => gradeChoice = event.currentTarget.checked} />Grade</label>
         {#if part}
-            <div class="selected"><SelectedPart text={partText} onclear={() => select(null)} /></div>
+            <!-- Clear leaves the document, so the focus goes to the profile. -->
+            <div class="selected"><SelectedPart text={partText} onclear={() => { select(null); rows?.querySelector<HTMLElement>('[role="slider"]')?.focus(); }} /></div>
         {:else}
             <span class="distance">{distanceIn(span * total * 1000).toFixed(1)} {settings.units}</span>
         {/if}
@@ -271,7 +277,7 @@
     {#snippet readout()}
         {distanceIn(((hover ?? 0) - origin) * total * 1000).toFixed(1)} {settings.units}{origin > 0 ? ` into ${focus!.label.toLowerCase()}` : ''} · {hoverHeight === null ? 'Elevation unknown' : `${Math.round(heightIn(hoverHeight))} ${heightUnit()}`} · {formatGrade(hoverGrade)}{#if hoverPushing && !walking} · Push bike{:else if hoverPushing === null} · Access unverified{/if}
     {/snippet}
-    <div class="plot-rows">
+    <div class="plot-rows" bind:this={rows}>
         <Lanes label="Profile" rows={[{ label: '', draw: profile, grow: true }]} {ticks} axis={lanesAxis} pointer={hover === null ? undefined : share(hover)}
             chip={readout} onpointer={point} part={part && [share(part[0]), share(part[1])]} onpart={onPart && select} onclick={() => select(null)} />
     </div>

@@ -352,8 +352,35 @@ describe('profile part', () => {
         await select();
         button('Clear').click(); await tick();
         expect(part).toBeNull();
+        expect(document.activeElement).toBe(slider);
         await select();
         button('Whole route').click(); await tick();
+        expect(part).toBeNull();
+    });
+
+    it('counts the part of an open day from its start, keeps it when the day end moves, and clears it at another day', async () => {
+        const line: RoutingLine = {
+            profile: 'touring', coordinates: [[8, 46], [8, 46.5], [8, 47]], elevation: [100, 600, 100], elapsed: [0, 1, 2], edges: {},
+            stops: [], seconds: 2, unknownSurfaceKm: 0, unpavedKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0,
+        };
+        let part = $state<[number, number] | null>(null);
+        let focus = $state({ from: .4, to: .6, label: 'Day 2' });
+        mounted.push(mount(Profile, { target: document.body, props: {
+            lineData: line, total: 100, days: [], dayLabels: {}, activeNight: 0, band: null, get focus() { return focus; },
+            get part() { return part; }, onPart: next => { part = next; }, onToggle: vi.fn(), onNight: vi.fn(), onDayEndDrag: vi.fn(), onHover: vi.fn(),
+        } }));
+        await tick();
+        part = [.45, .5]; await tick();
+        expect(document.querySelector('.title .part')?.textContent?.replace(/\s/g, ' ')).toBe('km 5.0 to km 10.0 · 5.0 km · 50 m upClear');
+        expect(document.querySelector('.ticks span')?.textContent).toBe('0 km');
+
+        focus = { from: .4, to: .55, label: 'Day 2' }; await tick();
+        expect(part).toEqual([.45, .5]);
+        expect(document.querySelectorAll('.pale')).toHaveLength(2);
+        focus = { from: .4, to: .47, label: 'Day 2' }; await tick();
+        expect(part).toEqual([.45, .5]);
+        expect(document.querySelectorAll('.pale')).toHaveLength(1);
+        focus = { from: .6, to: .8, label: 'Day 3' }; await tick();
         expect(part).toBeNull();
     });
 });

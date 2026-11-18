@@ -204,7 +204,10 @@
     // The part of the route the profile selects, as route progress. Another line ends it; the map fits each part.
     let part = $state<[number, number] | null>(null);
     $effect(() => { void visualRoute; part = null; });
-    $effect(() => { if (part) map?.fitCoordinates(routeSlice(untrack(() => coordinates), part[0], part[1]), true); });
+    $effect(() => {
+        const fit = part;
+        untrack(() => { if (fit) map?.fitCoordinates(routeSlice(coordinates, fit[0], fit[1]), true); });
+    });
     let sideWidth = $state(360);
     let profileHeight = $state(260);
     let profileOpen = $state(true);
