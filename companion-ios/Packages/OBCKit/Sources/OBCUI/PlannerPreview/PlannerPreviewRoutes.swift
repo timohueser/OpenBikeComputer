@@ -67,7 +67,7 @@ import SwiftUI
     /// A long route joins the credits of its parts with "; ".
     static func credits(_ attribution: String, routes: [CatalogRecord]) -> String {
         var seen = Set<String>()
-        let credits = routes.flatMap { $0.credit?.components(separatedBy: "; ") ?? [] }
+        let credits = routes.flatMap { $0.credit?.components(separatedBy: "; ").filter { !$0.isEmpty } ?? [] }
         return ([attribution] + credits.filter { seen.insert($0).inserted }).joined(separator: " · ")
     }
     static func website(_ text: String?) -> URL? {

@@ -17,6 +17,6 @@ describe('signed routes', () => {
         const [first, second, osm] = vector.routes;
         const credit = 'Bundesamt für Strassen, Kanton, Stiftung SchweizMobil';
         expect(recordCredits([{ ...first, credit }, osm, { ...second, credit }])).toEqual([credit]);
-        expect(recordCredits([{ ...first, credit: `${credit}; Other` }, { ...second, credit }])).toEqual([credit, 'Other']);
+        expect(recordCredits([{ ...first, credit: `${credit}; Other; ` }, { ...second, credit }])).toEqual([credit, 'Other']);
     });
 });

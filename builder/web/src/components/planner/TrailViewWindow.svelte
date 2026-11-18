@@ -14,6 +14,7 @@
     import TrailViewProfile from './TrailViewProfile.svelte';
     import { config } from '../../lib/planner/map-data';
     import { creditsWith } from '../../lib/planner/map-setup';
+    import { recordCredits } from '../../lib/planner/signed-routes';
     import Credits from './Credits.svelte';
     import { coordinateAt, cumulative } from '../../lib/planner/geo';
     import { FIRST_HEADING, loadTrailView } from '../../lib/planner/trailview';
@@ -56,7 +57,7 @@
     let width = $state(0), height = $state(0);
     // The window keeps what it opens with: route number i + 1 of the engine is routes[i].
     const opened = untrack(() => ({ ...props })), { near, routes } = opened;
-    const routeCredits = routes?.flatMap(route => route.credit ?? []) ?? [];
+    const routeCredits = recordCredits(routes ?? []);
     let credits = $state(creditsWith(routeCredits));
     // The plan's route draws on the terrain in the colours of its days, its grade or its surface, with a pin at
     // each night and a marker at the point of the profile under the pointer, until the rider hides it.
