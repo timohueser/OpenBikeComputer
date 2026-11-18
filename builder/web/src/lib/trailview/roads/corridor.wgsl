@@ -57,8 +57,12 @@ const STOREY_TOP: u32 = 2147483648u;
 const INSIDE: u32 = 3221225472u;
 // The light inside a bore, in shares of the sky's light on a face out of the sun: on a portal line INSIDE_OPEN (the
 // ground in front throws light in), down to INSIDE_DIM deep in, the tunnel's own light, which takes no colour of the sky.
-const INSIDE_OPEN: f32 = 1.3;
+const INSIDE_OPEN: f32 = 1.1;
 const INSIDE_DIM: f32 = 0.65;
+// An eye that looks into a bore from afar is used to the daylight: a face of the inside reads darker the farther it lies
+// from the eye, from x metres on, down to z of its light at y metres. So a mouth reads dark from outside, and an eye
+// inside sees the faces near it in their own light and the far end fade.
+const INSIDE_FAR: vec3f = vec3f(6.0, 40.0, 0.4);
 // The share of an inside face's light by its direction, x + y times its normal's z: the floor 1.1, a wall 0.85, the roof
 // 0.6, so that their shapes read where the light is dim.
 const INSIDE_FACE: vec2f = vec2f(0.85, 0.25);
@@ -361,7 +365,7 @@ fn wall_rock(in: CorridorOut, su: vec2f) -> WallRock {
 // A bore's inside (INSIDE): no sun reaches it, and it reads no shadow map. Its floor keeps its way's look, and what of that
 // look would show the ground is concrete, as the walls and the roof are. A face's light is as long as its normal
 // (plan/piece.wgsl's daylight): INSIDE_DIM of it grey, the rest the sky's light that comes in at the openings; times
-// INSIDE_FACE by its direction.
+// INSIDE_FACE by its direction and INSIDE_FAR by its distance.
 fn inside_lit(in: CorridorOut, su: vec2f, d: mat2x3f) -> vec3f {
     let light = length(in.normal);
     let up = in.normal.z / max(light, 1e-6);
@@ -380,7 +384,8 @@ fn inside_lit(in: CorridorOut, su: vec2f, d: mat2x3f) -> vec3f {
     }
     let sky = look.ambient.rgb;
     let lit = INSIDE_DIM * vec3f(luma(sky)) + (light - INSIDE_DIM) * sky;
-    return atmosphere(albedo * lit * (INSIDE_FACE.x + INSIDE_FACE.y * up), in.relative, in.altitude);
+    let seen = mix(1.0, INSIDE_FAR.z, smoothstep(INSIDE_FAR.x, INSIDE_FAR.y, length(in.relative)));
+    return atmosphere(albedo * lit * (INSIDE_FACE.x + INSIDE_FACE.y * up) * seen, in.relative, in.altitude);
 }
 
 @fragment
