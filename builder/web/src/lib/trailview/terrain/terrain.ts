@@ -664,7 +664,7 @@ export class Terrain {
         const readback = due ? r.readbacks.pop() : undefined;
         if (!readback) return () => {};
         this.probed = state;
-        this.probedAbove = this.above;
+        this.probedAbove = this.heldAbove(this.above);
         const probe = encoder.beginComputePass({ label: 'probe' });
         probe.setPipeline(r.probe);
         probe.setBindGroup(0, r.probeGroup);
