@@ -70,10 +70,11 @@ function serve() {
         if (path === '/phone/' || path === '/phone') return send(response, 200, 'text/html', page('measure'));
         if (path === '/phone/diagnose') return send(response, 200, 'text/html', page('diagnose'));
         // A phone keyboard adds a capital or a slash.
-        if (/^\/phone\/diagnos(e|is)\/?$/i.test(path)) return response.writeHead(302, { location: '/phone/diagnose' }).end();
         if (path === '/phone/measure.js') return send(response, 200, 'text/javascript', readFileSync(join(HERE, 'phone-measure.js')));
         if (path === '/phone/diagnose.js') return send(response, 200, 'text/javascript', readFileSync(join(HERE, 'phone-diagnose.js')));
         if (path === '/phone/compile') return send(response, 200, 'text/html', page('compile'));
+        const page_ = /^\/phone\/(diagnos(?:e|is)|compile)\/?$/i.exec(path);
+        if (page_) return response.writeHead(302, { location: page_[1].toLowerCase().startsWith('d') ? '/phone/diagnose' : '/phone/compile' }).end();
         if (path === '/phone/compile.js') return send(response, 200, 'text/javascript', readFileSync(join(HERE, 'phone-compile.js')));
         // The shaders of the compile test, as the fault check saved them.
         const shader = /^\/phone\/shaders\/([\w-]+\.wgsl)$/.exec(path), shaderFile = shader && join(a.results, 'shaders', shader[1]);
