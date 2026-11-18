@@ -179,6 +179,9 @@
         }
         .map {
             height: 70vh;
+            /* Some browsers give a size container layout containment, which makes the map the containing block of the
+               fixed card. */
+            container-type: normal;
         }
         /* The map is under the list, so a card over the map is below the screen after a tap on a row. */
         .selected {
