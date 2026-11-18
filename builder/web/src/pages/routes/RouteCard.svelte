@@ -302,6 +302,13 @@
             .card:has(.more) .profile {
                 display: none;
             }
+            /* The text takes the row of the strip, so no empty row and gap stay. */
+            .card:has(.more) {
+                grid-template-rows: auto auto minmax(0, 1fr);
+            }
+            .more {
+                grid-row: 3;
+            }
         }
     }
     @container (max-width: 480px) {
