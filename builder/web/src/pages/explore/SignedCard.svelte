@@ -4,11 +4,20 @@
     import { gradeName, type CatalogRecord } from '../../lib/planner/signed-routes';
     import { formatDistance, formatHeight } from '../../lib/settings/format';
 
+    type About = Pick<CatalogRecord, 'kind' | 'rank' | 'hardest' | 'length_m' | 'ascent_m'>;
+
     /** The numbers of a row and of the card: the length, the climb, and the hardest grade of a graded route. */
-    export function signedNumbers(record: CatalogRecord): string[] {
+    export function signedNumbers(record: About): string[] {
         const grade = record.kind !== 'bicycle' && record.hardest !== undefined ? [gradeName(record.kind, record.hardest)] : [];
         return [formatDistance(record.length_m), `${formatHeight(record.ascent_m)} up`, ...grade];
     }
+
+    const LEVELS = ['', 'Local', 'Regional', 'National', 'International'];
+    const KINDS: Record<CatalogRecord['kind'], string> = { hiking: 'hiking route', foot: 'hiking route', bicycle: 'cycling route', mtb: 'mountain bike route' };
+
+    /** "National hiking route", or "Hiking route" with no network level. */
+    export const kindName = (record: About) =>
+        LEVELS[record.rank] ? `${LEVELS[record.rank]} ${KINDS[record.kind]}` : KINDS[record.kind].replace(/^./, first => first.toUpperCase());
 </script>
 
 <script lang="ts">
@@ -19,22 +28,27 @@
     import RouteCard from '../routes/RouteCard.svelte';
     import SignedPicture from './SignedPicture.svelte';
 
-    let { item, onplan, onclose }: { item: SignedItem; onplan: () => void; onclose: () => void } = $props();
-
-    const LEVELS = ['', 'Local', 'Regional', 'National', 'International'];
-    const KINDS: Record<CatalogRecord['kind'], string> = { hiking: 'hiking route', foot: 'hiking route', bicycle: 'cycling route', mtb: 'mountain bike route' };
+    let { item, onplan, ontrail, onclose }: {
+        item: SignedItem;
+        onplan: () => void;
+        /** With it, the name of the long route of a stage or a section is a button that opens the card of its trail. */
+        ontrail?: (id: number) => void;
+        onclose: () => void;
+    } = $props();
 
     const record = $derived(item.record);
-    /** The long route of a stage: each file that holds a stage also holds its long route. */
-    const parent = $derived(record.parent === undefined ? undefined : catalog.record(record.parent));
-    const kind = $derived(LEVELS[record.rank] ? `${LEVELS[record.rank]} ${KINDS[record.kind]}` : KINDS[record.kind].replace(/^./, first => first.toUpperCase()));
-    const stage = $derived<(string | false)[]>(record.stage === undefined ? []
-        : parent?.stages ? [`Stage ${record.stage} of ${parent.stages.length}`, parent.name ?? parent.ref ?? false] : [`Stage ${record.stage}`]);
+    /** The long route of a stage or a section: each file that holds a part also holds its long route. */
+    const longId = $derived(record.trail ?? record.parent), long = $derived(longId === undefined ? undefined : catalog.record(longId));
+    const number = $derived(record.stage ?? record.trail_stage), of = $derived(long?.stages?.length ?? long?.stage_count);
+    const part = $derived(record.section !== undefined ? `Section ${record.section}` : number === undefined ? false : of ? `Stage ${number} of ${of}` : `Stage ${number}`);
+    // A cut stage is no trail: its sections open the trail that the stage is in.
+    const longName = $derived((part && (long?.name ?? long?.ref)) || false);
+    const trailName = $derived(longName && ontrail ? { text: longName, onclick: () => ontrail(long!.trail ?? long!.id) } : longName);
     const website = $derived(routeWebsite(record.website));
     const about = $derived(!!(record.description || record.operator || website));
 </script>
 
-<RouteCard name={item.name} meta={[record.loop ? 'Loop' : 'One way', ...stage, kind]} numbers={signedNumbers(record)} profile={item.profile}
+<RouteCard name={item.name} meta={[record.loop ? 'Loop' : 'One way', part, trailName, kindName(record)]} numbers={signedNumbers(record)} profile={item.profile}
     more={about ? more : undefined} {onclose}>
     {#snippet picture()}<SignedPicture {item} />{/snippet}
     {#snippet mark()}<span class="mark"><TrailMarker symbol={record.symbol} ref={record.ref} /></span>{/snippet}
