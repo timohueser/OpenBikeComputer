@@ -322,9 +322,7 @@ impl Planner {
             countries => countries.to_vec(),
         };
         if countries.is_empty() {
-            return Err(invalid(format!(
-                "the Geofabrik areas of region `{id}` name no country, which the route catalog needs"
-            )));
+            return Err(invalid(format!("the Geofabrik areas of region `{id}` name no country, which search needs")));
         }
         let land: HashSet<&str> = tile_list.lines().map(str::trim).collect();
         let requested = obc_bake::coverage::Coverage::union(&selection.outlines.iter().collect::<Vec<_>>())
@@ -466,7 +464,6 @@ impl Planner {
             options: json!({
                 "region": name,
                 "bounds": bounds,
-                "countries": countries,
                 "attribution": attribution("osm-planet"),
             }),
             outputs: vec!["routing".into(), "blocks".into(), "routes".into()],
@@ -1667,7 +1664,7 @@ mod tests {
         assert_eq!(options(step::SOURCE), ["bounds"]);
         assert_eq!(options(step::ROADS), ["bounds", "terrain_attribution"]);
         assert_eq!(options(step::COSTS), ["bounds", "profiles"]);
-        assert_eq!(options("planner/routing"), ["attribution", "bounds", "countries", "region"]);
+        assert_eq!(options("planner/routing"), ["attribution", "bounds", "region"]);
         assert_eq!(reads(step::SOURCE), ["planner/osm/bounds"]);
         assert_eq!(reads(step::ROADS), [step::SOURCE]);
         assert_eq!(reads(step::COSTS), [step::SOURCE, step::ROADS]);
@@ -1848,7 +1845,7 @@ mod tests {
         }
         assert_eq!(tiles(&get("planner/routing-roads").inputs[1]), ["N47_00_E007", "N48_00_E007"]);
         assert_eq!(routing.options["bounds"], json!([7.79, 47.99, 7.82, 48.02]));
-        assert_eq!((&routing.options["region"], &routing.options["countries"]), (&json!("test"), &json!(["DE"])));
+        assert_eq!(routing.options["region"], json!("test"));
         assert_eq!(
             (&pois.options["bounds"], &pois.options["time_zone"]),
             (&routing.options["bounds"], &json!("Europe/Berlin"))
@@ -1879,8 +1876,8 @@ mod tests {
             "geometry":{"type":"Polygon","coordinates":[[[7.79,47.99],[7.82,47.99],[7.82,48.02],[7.79,48.02],[7.79,47.99]]]}}]});
         fetched(&store, crate::device::catalog::INDEX, "2", &[], &[("index-v1.json".into(), index.to_string())]);
         let steps = Planner.steps(&root(), &inputs("no-countries", &[]), &regions(), &store).unwrap().steps;
-        let routing = steps.iter().find(|step| step.name == "planner/routing").unwrap();
-        assert_eq!(routing.options["countries"], json!(["DE"]));
+        let dump = steps.iter().find(|step| step.name == "planner/search/dump").unwrap();
+        assert_eq!(dump.options["country"], json!("de"));
         let steps = Planner.steps(&root(), &inputs("no-time-zone", &[]), &regions(), &store).unwrap().steps;
         let pois = steps.iter().find(|step| step.name == "planner/search/pois").unwrap();
         assert_eq!(pois.options["time_zone"], "UTC");

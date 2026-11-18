@@ -107,9 +107,11 @@ microdegrees, longitude before latitude. Lengths and heights are integer metres.
 | `trail_profile_m` | Long route only: 201 heights of the whole trail (see [Long routes](#long-routes)) |
 
 Each record has a `name` or a `ref`, or both. The builder cuts a longer `description` at a word
-boundary. `symbol` is absent when a point of the route's line is in France, and on a long route
-when one of its kept parts is in France: the marks of the French networks belong to their
-federation. The client then draws the `ref`.
+boundary. `symbol` is absent when a vertex of the route's full planned line, before the
+simplification of `line_udeg`, is in France, and on a long route when one of its kept parts is in
+France: the marks of the French networks belong to their federation. The client then draws the
+`ref`. The rule is per route in each region, so a route of a French region that stays outside
+France, such as in Monaco, keeps its `symbol`.
 
 ### Plan
 

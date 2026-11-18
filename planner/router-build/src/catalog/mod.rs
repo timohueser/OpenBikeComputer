@@ -312,7 +312,7 @@ struct Kept {
     points: usize,
     cells: BTreeSet<(u32, u32)>,
     grades: Option<[u64; 6]>,
-    /// A vertex of the line is in France.
+    /// A vertex of the plan route is in France.
     french: bool,
 }
 
@@ -827,8 +827,8 @@ fn planned<D: RoutingData>(
     }
     let mut cover = BTreeSet::new();
     cells(&geometry, &mut cover);
-    // The simple line stays within `LINE_TOLERANCE_M` of the route.
-    let french = simple.iter().any(|&p| crate::country::in_france(p));
+    // Every vertex of the plan route: a simple line can cut across a small piece of France.
+    let french = geometry.iter().any(|&p| crate::country::in_france(p));
     let mut record = header(&job.relation, &job.kind, french);
     if let Some(trail) = &job.named_by {
         named_after(&mut record, trail);

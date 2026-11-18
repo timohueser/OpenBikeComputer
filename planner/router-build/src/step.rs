@@ -182,8 +182,7 @@ pub fn costs(request: &Request) -> Result<(), String> {
     layout.finish()
 }
 
-/// The package step. It reads the three work layers and the options `region`, `bounds`,
-/// `countries`, the ISO codes of the countries of the region for the route catalog, and
+/// The package step. It reads the three work layers and the options `region`, `bounds` and
 /// `attribution`, the credit of the OSM data. The layer:
 ///
 /// - `routing/`: the package, `overlays.sqlite` and `route-catalog.json`;
@@ -196,10 +195,6 @@ pub fn step(request: &Request) -> Result<(), String> {
     let _guard = start()?;
     Guard::stage("open");
     let bounds = obc_dem::step::bounds(options)?;
-    let countries = list(options, "countries")?;
-    if countries.is_empty() {
-        return Err("option `countries` is empty: the routes of each cell come from the route catalog".into());
-    }
     let (region, attribution) = (text(options, "region")?, text(options, "attribution")?);
     let costs = Costs::open(&folder(request, COSTS)?)?;
     catalog::check(&costs.profiles)?;
