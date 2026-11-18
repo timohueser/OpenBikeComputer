@@ -2,7 +2,7 @@
 // the covers and the set that names them, and makes a set the live set (specs/route-pictures.md).
 // README.md beside this file has the steps.
 //
-//   node trailview/route-pictures.mjs render [--gpu] [--fixture] [--out DIR] [--sample N] [--only ID,ID]
+//   node trailview/route-pictures.mjs render [--gpu] [--fixture] [--out DIR] [--sample N] [--only=ID,ID]
 //   node trailview/route-pictures.mjs upload [--out DIR] [--without ID,ID]
 //   node trailview/route-pictures.mjs switch SET
 //
@@ -13,7 +13,8 @@
 // catalog and prints what all of them would take. --gpu draws on the machine's GPU, else SwiftShader
 // draws on the CPU, for minutes. --fixture reads fixture/routes.json and answers the tile hosts from
 // the fixture: build the page with `npm run pretest:trailview` first. upload --without leaves these
-// routes with no cover in the set. upload and switch call `obc data r2`.
+// routes with no cover in the set. upload and switch call `obc data r2`. A list that starts with the
+// negative id of a section needs the form --only=-ID.
 
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';

@@ -69,6 +69,10 @@ pub(super) struct Part<'a> {
     pub id: i64,
     /// The OSM `name`, or empty.
     pub name: String,
+    /// The official number; `None` for a section of a one-line trail.
+    pub stage: Option<usize>,
+    /// The builder cut the line at the end of this part.
+    pub cut: bool,
     pub kept: Option<&'a Kept>,
     /// The length, first and last point of the main line of a failed route.
     pub line: Option<(f64, P, P)>,
@@ -145,13 +149,15 @@ pub(super) fn record(
     let entries: Vec<Value> = (0..parts.len())
         .map(|i| {
             end_m += parts[i].length().unwrap_or(0);
-            entry(&parts[i], i + 1, end_m, flags[i])
+            entry(&parts[i], end_m, flags[i])
         })
         .collect();
     record.insert("parts".into(), json!(entries));
-    record.insert("stage_count".into(), json!(parts.len()));
+    let stages: BTreeSet<usize> = parts.iter().filter_map(|part| part.stage).collect();
+    record.insert("stage_count".into(), json!(stages.len()));
     record.insert("trail_profile_m".into(), json!(trail_profile(parts, &flags)));
-    if !connector && kept.len() == parts.len() && flags.iter().all(|&(backwards, jump)| !backwards && !jump) {
+    let whole = parts.iter().all(|part| !part.cut);
+    if !connector && whole && kept.len() == parts.len() && flags.iter().all(|&(backwards, jump)| !backwards && !jump) {
         record.insert("stages".into(), json!(parts.iter().map(|part| part.id).collect::<Vec<_>>()));
         record.insert("start_udeg".into(), json!(way(0).unwrap().0));
     }
@@ -162,10 +168,12 @@ pub(super) fn record(
 }
 
 /// One object of `parts`.
-fn entry(part: &Part, stage: usize, end_m: u64, (backwards, jump): (bool, bool)) -> Value {
+fn entry(part: &Part, end_m: u64, (backwards, jump): (bool, bool)) -> Value {
     let mut entry = Map::new();
     entry.insert("id".into(), json!(part.id));
-    entry.insert("stage".into(), json!(stage));
+    if let Some(stage) = part.stage {
+        entry.insert("stage".into(), json!(stage));
+    }
     entry.insert("end_m".into(), json!(end_m));
     if !part.name.is_empty() {
         entry.insert("name".into(), json!(part.name));
@@ -186,7 +194,7 @@ fn entry(part: &Part, stage: usize, end_m: u64, (backwards, jump): (bool, bool))
             }
         }
     }
-    for (flag, set) in [("backwards", backwards), ("jump", jump)] {
+    for (flag, set) in [("cut", part.cut), ("backwards", backwards), ("jump", jump)] {
         if set {
             entry.insert(flag.into(), json!(true));
         }
