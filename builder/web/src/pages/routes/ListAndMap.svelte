@@ -181,6 +181,9 @@
             position: fixed;
             z-index: 20;
             bottom: max(12px, env(safe-area-inset-bottom));
+            /* The card is never higher than the screen, and leaves a part of the page over it: its long text scrolls
+               inside it, so its buttons stay on the screen. */
+            --card-height: calc(100dvh - 96px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
         }
         :global(body) {
             padding-bottom: var(--card-room, 0);

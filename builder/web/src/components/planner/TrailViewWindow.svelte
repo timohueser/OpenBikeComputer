@@ -317,6 +317,8 @@
             left: max(12px, env(safe-area-inset-left));
             right: max(12px, env(safe-area-inset-right));
             bottom: calc(max(12px, env(safe-area-inset-bottom)) + 152px);
+            /* The room between the controls at the top and the small map: a long text scrolls inside the card. */
+            --card-height: calc(100dvh - 236px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
         }
     }
     .route {
