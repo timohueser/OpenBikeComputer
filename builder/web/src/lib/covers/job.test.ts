@@ -305,6 +305,24 @@ describe('the cover job', () => {
         expect(await library.cover('r1')).toBeUndefined();
     });
 
+    it('keeps at most 12 asks of rows that wait while another tab holds the lock', async () => {
+        const ids = Array.from({ length: 13 }, (_, i) => `r${i}`);
+        await saved(...ids);
+        const { renderer, stills } = fake();
+        await start(renderer);
+        held = true;
+        for (const id of ids) wantCover(id, 'row');
+        await settle();
+        held = false;
+        await vi.advanceTimersByTimeAsync(10_000);
+        await settle();
+        for (let i = 0; i < stills.length; i++) {
+            stills[i].resolve(result);
+            await settle();
+        }
+        expect(stills).toHaveLength(12);
+    });
+
     it('keeps the ask of a card and of the planner route after 13 later asks of rows', async () => {
         const rows = Array.from({ length: 13 }, (_, i) => `r${i}`);
         await saved('busy', 'card', 'plan', ...rows);
