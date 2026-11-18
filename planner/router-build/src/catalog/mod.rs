@@ -3,6 +3,7 @@
 mod assemble;
 mod connector;
 mod long;
+pub mod trails;
 
 use crate::source::{Data, Id, Relation, Relations, Table, Tags};
 use planner_router::{
@@ -272,18 +273,8 @@ fn named_after(record: &mut Map<String, Value>, trail: &Relation) {
 
 /// The zoom 9 cells that the bounding box of each segment touches, edges included.
 fn cells(line: &[P], into: &mut BTreeSet<(u32, u32)>) {
-    let tile = |p: P| {
-        let (lon, lat) = (p[0] as f64 * 1e-6, (p[1] as f64 * 1e-6).to_radians());
-        [(lon + 180.0) / 360.0 * 512.0, (1.0 - lat.tan().asinh() / std::f64::consts::PI) / 2.0 * 512.0]
-    };
-    let range = |a: f64, b: f64| (a.min(b).ceil() as i64 - 1).max(0)..=(a.max(b).floor() as i64).min(511);
     for w in line.windows(2).chain(std::iter::once(&line[..1]).filter(|_| line.len() == 1)) {
-        let (a, b) = (tile(w[0]), tile(w[w.len() - 1]));
-        for x in range(a[0], b[0]) {
-            for y in range(a[1], b[1]) {
-                into.insert((x as u32, y as u32));
-            }
-        }
+        into.extend(crate::grid::touched(w[0], w[w.len() - 1], crate::grid::ZOOM));
     }
 }
 
@@ -293,7 +284,7 @@ fn cell_ids(cells: &BTreeSet<(u32, u32)>) -> Vec<String> {
     ids
 }
 
-fn encode(line: &[P]) -> Vec<i64> {
+pub(crate) fn encode(line: &[P]) -> Vec<i64> {
     let mut previous = [0i64; 2];
     line.iter()
         .flat_map(|p| {
@@ -304,12 +295,29 @@ fn encode(line: &[P]) -> Vec<i64> {
         .collect()
 }
 
+/// The vertices of a `line_udeg`.
+pub(crate) fn decode(line: &Value) -> Vec<P> {
+    let deltas: Vec<i64> = line.as_array().into_iter().flatten().filter_map(Value::as_i64).collect();
+    let mut previous = [0i64; 2];
+    deltas
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|delta| {
+            previous = [previous[0] + delta[0], previous[1] + delta[1]];
+            [previous[0] as i32, previous[1] as i32]
+        })
+        .collect()
+}
+
 /// A kept route, as its long route needs it.
 struct Kept {
     record: Map<String, Value>,
     start: P,
     finish: P,
     points: usize,
+    /// The moving time of the plan route.
+    seconds: f64,
     cells: BTreeSet<(u32, u32)>,
     grades: Option<[u64; 6]>,
     /// A vertex of the plan route is in France.
@@ -354,6 +362,8 @@ pub struct Report {
     pub stages: usize,
     pub via: Vec<usize>,
     pub long_points: Vec<(i64, usize)>,
+    /// The moving time of each trail, in hours.
+    pub trail_hours: BTreeMap<i64, f64>,
     /// The routes that skip main member ways that the import does not hold, with their count. A
     /// route can still leave the catalog later.
     pub skipped_ways: BTreeMap<i64, usize>,
@@ -416,6 +426,7 @@ impl Report {
                 "wall_seconds": self.search_seconds,
             },
             "long_routes_over_64_points": self.long_points.iter().filter(|(_, n)| *n > 64).count(),
+            "trail_hours": self.trail_hours.iter().map(|(id, h)| (id.to_string(), (h * 10.0).round() / 10.0)).collect::<BTreeMap<_, _>>(),
             "seconds": self.seconds,
         })
     }
@@ -430,8 +441,8 @@ pub fn check(profiles: &[Profile]) -> Result<(), String> {
 }
 
 /// Writes `route-catalog.json` into the routing package in `directory`, from the source OSM
-/// objects of its import.
-pub fn write(directory: &Path, osm: Data) -> Result<Report, String> {
+/// objects of its import. Returns each trail, as `trails::trails` gives it, and the report.
+pub fn write(directory: &Path, osm: Data) -> Result<(Vec<(Value, Value)>, Report), String> {
     let started = std::time::Instant::now();
     let package = Directory::open(directory).map_err(|e| e.to_string())?;
     // The routers share one graph, one junction mapping and the five prepared profiles; each
@@ -440,19 +451,27 @@ pub fn write(directory: &Path, osm: Data) -> Result<Report, String> {
     let shared = routing.shared_bytes(PROFILES).map_err(|e| e.to_string())?;
     let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
     let workers = cpus.min(ROUTERS_MEMORY.saturating_sub(shared) / (routing.router_bytes() + SEARCH_BYTES)).max(1);
-    let (records, report) = catalog(&routing, osm, workers, SECTION_M)?;
+    let (records, hours, mut report) = catalog(&routing, osm, workers, SECTION_M)?;
+    let trails = trails::trails(&records, &hours);
+    report.trail_hours = trails
+        .iter()
+        .map(|(_, record)| (record["id"].as_i64().unwrap(), trails::moving_hours(record, &hours)))
+        .collect();
     let bytes =
         serde_json::to_vec(&crate::sort_keys(json!({"format": 1, "routes": records}))).map_err(|e| e.to_string())?;
     std::fs::write(directory.join(FILE), bytes).map_err(|e| e.to_string())?;
-    Ok(Report { seconds: started.elapsed().as_secs_f64(), ..report })
+    Ok((trails, Report { seconds: started.elapsed().as_secs_f64(), ..report }))
 }
+
+/// The records, the moving time of each route record in hours, and the report.
+type Catalog = (Vec<Value>, HashMap<i64, f64>, Report);
 
 fn catalog<S: Source + Clone + Send>(
     selection: &Selection<S>,
     osm: Data,
     workers: usize,
     section_m: f64,
-) -> Result<(Vec<Value>, Report), String> {
+) -> Result<Catalog, String> {
     let Data { ways, relations, .. } = osm;
     let mut report = Report::default();
     let mut drops = BTreeMap::<i64, Reason>::new();
@@ -641,7 +660,10 @@ fn catalog<S: Source + Clone + Send>(
         in_trail(&mut record, id);
         records.push(Value::Object(record));
     }
+    // The moving time of each route record, in hours.
+    let mut hours = HashMap::new();
     for (id, mut route) in kept {
+        hours.insert(id, route.seconds / 3600.0);
         in_trail(&mut route.record, id);
         if let Some((_, parent, number)) = parents.get(&id) {
             route.record.insert("parent".into(), json!(parent));
@@ -658,7 +680,7 @@ fn catalog<S: Source + Clone + Send>(
     for (id, reason) in drops {
         report.dropped.entry(format!("{reason:?}")).or_default().push(id);
     }
-    Ok((records, report))
+    Ok((records, hours, report))
 }
 
 /// Builds the record of one route, or the reason it leaves the catalog.
@@ -869,6 +891,7 @@ fn planned<D: RoutingData>(
         start: simple[0],
         finish: simple[simple.len() - 1],
         points: plan.points.len(),
+        seconds: totals.seconds,
         cells: cover,
         grades,
         french,

@@ -5,6 +5,7 @@
 //! writes the package, its overlay index, its route catalog, the routing blocks and the routes of
 //! each grid cell.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -187,9 +188,11 @@ pub fn costs(request: &Request) -> Result<(), String> {
 ///
 /// - `routing/`: the package, `overlays.sqlite` and `route-catalog.json`;
 /// - `blocks/`: the routing blocks of the grid cells (`blocks::publish`);
-/// - `routes/<cell>.json`: the routes of each grid cell.
+/// - `routes/<cell>.json`: the routes of each grid cell;
+/// - `routes/trails/<cell>.json`: the far file of each cell at `grid::TRAIL_ZOOM`;
+/// - `routes/long/<id>.json`: the record of each trail.
 ///
-/// Its metrics are the report of the route catalog.
+/// Its metrics are the report of the route catalog and `trail_files`, the sizes of the trail files.
 pub fn step(request: &Request) -> Result<(), String> {
     let options = &request.options;
     let _guard = start()?;
@@ -212,7 +215,7 @@ pub fn step(request: &Request) -> Result<(), String> {
     overlays::write(&routing.join(overlays::FILE), &package::digest(&manifest), bounds, &osm)?;
     Guard::exempt("catalog");
     eprintln!("Writing the route catalog");
-    let report = catalog::write(&routing, osm)?;
+    let (trails, report) = catalog::write(&routing, osm)?;
 
     let cells = grid::cells(bounds);
     Guard::exempt("blocks");
@@ -221,14 +224,33 @@ pub fn step(request: &Request) -> Result<(), String> {
     let catalog: Value = serde_json::from_slice(&catalog).map_err(|e| e.to_string())?;
     let ids: Vec<&str> = cells.iter().map(|(id, _)| id.as_str()).collect();
     let routes = request.output.join("routes");
-    fs::create_dir(&routes).map_err(|e| format!("{}: {e}", routes.display()))?;
-    for (cell, document) in grid::route_tiles(&catalog, &ids)? {
-        let path = routes.join(format!("{cell}.json"));
-        let mut bytes = serde_json::to_vec(&crate::sort_keys(document)).expect("JSON values serialize");
-        bytes.push(b'\n');
-        fs::write(&path, bytes).map_err(|e| e.to_string())?;
-    }
-    fs::write(&request.metrics, report.to_json().to_string()).map_err(|e| e.to_string())
+    let files = |folder: &Path, documents: Vec<(String, Value)>| -> Result<Vec<(String, usize)>, String> {
+        fs::create_dir_all(folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+        let sizes = documents.into_iter().map(|(name, document)| {
+            let bytes = grid::file_bytes(&document);
+            fs::write(folder.join(format!("{name}.json")), &bytes).map_err(|e| e.to_string())?;
+            Ok((name, bytes.len()))
+        });
+        sizes.collect()
+    };
+    files(&routes, grid::route_tiles(&catalog, &ids)?.into_iter().collect())?;
+    let far_cells = grid::cells_at(bounds, grid::TRAIL_ZOOM);
+    let far_ids: Vec<&str> = far_cells.iter().map(|(id, _)| id.as_str()).collect();
+    let entries: Vec<Value> = trails.iter().map(|(entry, _)| entry.clone()).collect();
+    let far = grid::trail_tiles(&entries, &far_ids, catalog::trails::TRAIL_FILE_BYTES)?;
+    let tolerances: BTreeMap<String, Value> =
+        far.iter().map(|(cell, file)| (cell.clone(), file["tolerance_m"].clone())).collect();
+    let far = files(&routes.join("trails"), far.into_iter().collect())?;
+    let long =
+        trails.into_iter().map(|(entry, record)| (entry["id"].to_string(), json!({"format": 1, "routes": [record]})));
+    let long = files(&routes.join("long"), long.collect())?;
+    let largest = |files: &[(String, usize)]| files.iter().map(|f| f.1).max().unwrap_or(0);
+    let mut metrics = report.to_json();
+    metrics["trail_files"] = json!({
+        "far_files": far.len(), "largest_far_bytes": largest(&far), "tolerances_m": tolerances,
+        "record_files": long.len(), "largest_record_bytes": largest(&long),
+    });
+    fs::write(&request.metrics, metrics.to_string()).map_err(|e| e.to_string())
 }
 
 /// Writes the package objects and `manifest.json` into the empty directory `output`. Returns the
