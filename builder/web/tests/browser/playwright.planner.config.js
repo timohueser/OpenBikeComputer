@@ -8,6 +8,10 @@ const PORT = await loopbackPort('OBC_PLANNER_BROWSER_PORT');
 export default defineConfig({
   testDir: 'planner',
   testMatch: '*.test.js',
+  // One stored image for each screenshot on every system. A pixel differs when its colour moves more than the
+  // threshold; the few pixels allowed take the edges that two rasterizers smooth differently, but not a lost mark.
+  snapshotPathTemplate: '{testDir}/{testFileName}-snapshots/{arg}{ext}',
+  expect: { toHaveScreenshot: { threshold: 0.2, maxDiffPixels: 50 } },
   timeout: 180_000,
   workers: 1,
   retries: 0,
@@ -27,7 +31,7 @@ export default defineConfig({
     trace: 'retain-on-failure',
   },
   webServer: {
-    command: `python3 -m http.server ${PORT} --bind 127.0.0.1 --directory ../../dist/planner`,
+    command: `python3 serve.py ${PORT} ../../dist/planner`,
     url: `http://127.0.0.1:${PORT}/planner.html`,
     reuseExistingServer: false,
     timeout: 10_000,

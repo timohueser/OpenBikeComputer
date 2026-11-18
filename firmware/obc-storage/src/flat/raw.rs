@@ -47,5 +47,5 @@ pub fn is_zero(bytes: &[u8], off: usize, len: usize) -> bool {
 
 /// The one CRC of this format: CRC-32/IEEE, `crc32("123456789") = 0xCBF43926`.
 pub fn crc32(bytes: &[u8]) -> u32 {
-    obc_crc::Crc32::checksum(bytes)
+    obc_crc::crc32(bytes)
 }

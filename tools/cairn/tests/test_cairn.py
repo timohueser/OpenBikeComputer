@@ -16,28 +16,25 @@ assert SPEC.loader is not None
 sys.modules[SPEC.name] = cairn
 SPEC.loader.exec_module(cairn)
 
-from adapters import cargo  # noqa: E402 — cairn.py puts its own folder on the path
+from adapters import cargo, imports  # noqa: E402 — cairn.py puts its own folder on the path
 
-CONFIG = {
-    "runtimes": {"firmware/": "device", "host/": "host", "tools/": "host"},
-    "tooling": {"path": "tools/", "area": "Tooling"},
-}
+CONFIG = {"tooling": {"path": "tools/", "area": "Tooling"}}
 
 
 def doc(name, owns, kind="system", area="Device", depends_on=(), status="draft"):
     return cairn.Doc(name, kind, area if kind == "system" else "", "", tuple(owns), tuple(depends_on), (), status)
 
 
-def analyse(docs, files, units=(), edges=(), lines=None):
-    return cairn.analyse(docs, list(files), list(units), list(edges), lines or {}, CONFIG)
+def analyse(docs, files, units=(), edges=()):
+    return cairn.analyse(docs, list(files), list(units), list(edges), CONFIG)
 
 
 def ids(result, rule):
     return sorted(v.id for v in result.violations if v.rule == rule)
 
 
-def sizes(result, rule):
-    return {v.id: v.size for v in result.violations if v.rule == rule}
+def messages(result, rule):
+    return [v.message for v in result.violations if v.rule == rule]
 
 
 def unit(name, entry):
@@ -191,6 +188,31 @@ class SkillBudgetTests(unittest.TestCase):
                 self.assertEqual(cairn.main(["check"]), 0)
 
 
+class RulesTableTests(unittest.TestCase):
+    def test_a_name_in_the_check_column_must_be_in_a_file_that_its_cell_links(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "docs/design").mkdir(parents=True)
+            (root / "src").mkdir()
+            (root / "src/a.rs").write_text("fn a_frame_keeps_its_size() {}\nfn a_renamed_test_v2() {}\n")
+            (root / "src/b.ts").write_text('it("keeps the web target small", () => {});\nfunc testSeamHolds() {}\n'
+                                           'it("serves a tile from the cache", () => {});\n- name: Mountable at any prefix\n')
+            (root / "docs/design/nav.md").write_text(
+                "## Rules that must hold\n\n| Rule | Check |\n| --- | --- |\n"
+                "| `some_function` keeps the size. | `a_frame_keeps_its_size` in [`a.rs`](../../src/a.rs) |\n"
+                "| The order holds. | `a_renamed_test` in [`a.rs`](../../src/a.rs); `obc shot --check` |\n"
+                "| No link. | `a_test_with_no_link` |\n"
+                "| Any name. | `keeps the web target small` in [`b.ts`](../../src/b.ts), `testSeamHolds` in [`b.ts`](../../src/b.ts) |\n"
+                "| Its own file. | `testSeamHolds` in [`a.rs`](../../src/a.rs), with [`b.ts`](../../src/b.ts); `a lost title` in [`b.ts`](../../src/b.ts) |\n"
+                "| A link with an anchor, a title that grew, a step name. | `testGone` in [`b.ts`](../../src/b.ts#L3), "
+                "`serves a tile` in [`b.ts`](../../src/b.ts), `Mountable at any prefix` in [`b.ts`](../../src/b.ts) |\n"
+                "\nA sentence with `some_command` is not a row.\n\n"
+                "## Decisions\n\n`not_a_rule` is outside the table.\n")
+            found = cairn.lost_names(root, "docs/design")
+        self.assertEqual([line.split("`")[1] for line in found],
+                         ["a_renamed_test", "a_test_with_no_link", "testSeamHolds", "a lost title", "testGone", "serves a tile"])
+
+
 class CargoAdapterTests(unittest.TestCase):
     def package(self, name, dependencies=(), targets=None):
         return {
@@ -217,32 +239,50 @@ class CargoAdapterTests(unittest.TestCase):
         self.assertEqual(edges, [("a", "b", False), ("a", "tool", True)])
 
 
+class ImportAdapterTests(unittest.TestCase):
+    def test_a_relative_import_is_an_edge_between_two_tracked_files(self):
+        texts = {
+            "web/src/plan/app.ts": 'import { a } from "../view/engine.js";\nimport Map from "./Map.svelte";\n'
+                                   'import "leaflet";\nimport x from "$lib/x";\nconst p = await import("../view");\n'
+                                   'new Worker(new URL("./plan.worker.ts", import.meta.url));\nimport gone from "./gone";\n',
+            "web/src/view/engine.ts": 'export * from "./store.svelte";\n',
+        }
+        tracked = {*texts, "web/src/plan/Map.svelte", "web/src/plan/plan.worker.ts", "web/src/view/index.ts",
+                   "web/src/view/store.svelte.ts"}
+        self.assertEqual(imports.collect(texts, tracked), [
+            ("web/src/plan/app.ts", "web/src/plan/Map.svelte", False),
+            ("web/src/plan/app.ts", "web/src/plan/plan.worker.ts", False),
+            ("web/src/plan/app.ts", "web/src/view/engine.ts", False),
+            ("web/src/plan/app.ts", "web/src/view/index.ts", False),
+            ("web/src/view/engine.ts", "web/src/view/store.svelte.ts", False),
+        ])
+
+    def test_a_file_edge_counts_for_the_owners_of_the_two_files_and_a_test_file_gives_a_test_edge(self):
+        docs = [doc("plan", ["web/plan/**"], depends_on=["view"]), doc("view", ["web/view/**"])]
+        files = ["web/plan/app.ts", "web/plan/app.test.ts", "web/view/engine.ts"]
+        edges = [("web/plan/app.ts", "web/view/engine.ts", False), ("web/view/engine.ts", "web/plan/app.ts", False),
+                 ("web/plan/app.test.ts", "web/view/engine.ts", False)]
+        result = cairn.analyse(docs, files, [], edges, {**CONFIG, "tests": ["*.test.ts"]})
+        self.assertEqual(ids(result, "cycle"), ["cycle plan -> view", "cycle view -> plan"])
+        only_test = cairn.analyse(docs, files, [], edges[2:], {**CONFIG, "tests": ["*.test.ts"]})
+        self.assertEqual(only_test.edges, {("plan", "view", True)})
+
+
 class RuleTests(unittest.TestCase):
     def test_r1_counts_the_files_of_other_systems_in_a_crate(self):
         docs = [doc("runtime", ["app/src/lib.rs"]), doc("nav", ["app/src/nav*"])]
         crate = [unit("app", "app/src/lib.rs")]
         result = analyse(docs, ["app/src/lib.rs", "app/src/nav.rs"], crate)
-        self.assertEqual(sizes(result, "R1"), {"R1 app nav": 1})
-        grown = analyse(docs, ["app/src/lib.rs", "app/src/nav.rs", "app/src/nav_map.rs"], crate)
-        self.assertEqual(cairn.new_violations(grown.violations, {"R1 app nav": 1})[0].size, 2)
-
-    def test_r2_one_root_for_each_runtime(self):
-        docs = [doc("maps", ["host/bake/**", "tools/bake.py", "firmware/read/**"])]
-        result = analyse(docs, ["host/bake/lib.rs", "tools/bake.py", "firmware/read/lib.rs"])
-        self.assertEqual(ids(result, "R2"), ["R2 maps host host/", "R2 maps host tools/"])
-        self.assertEqual(sorted(v.message for v in result.violations if v.rule == "R2"),
-                         ["maps has host code in host/, and also in tools/", "maps has host code in tools/, and also in host/"])
-
-    def test_r3_records_every_shell_with_code_of_its_own(self):
-        docs = [doc("app", ["app/**"], kind="shell"), doc("web", ["web/**"], kind="shell"), doc("nav", ["app/src/nav.rs"])]
-        lines = {"app/src/main.rs": 40, "app/src/nav.rs": 500, "web/page.ts": 0}
-        result = analyse(docs, lines, lines=lines)
-        self.assertEqual(sizes(result, "R3"), {"R3 app": 40})
+        self.assertEqual(ids(result, "R1"), ["R1 app nav"])
+        more = analyse(docs, ["app/src/lib.rs", "app/src/nav.rs", "app/src/nav_map.rs"], crate)
+        self.assertEqual(messages(more, "R1"), ["crate app (runtime) holds 2 file(s) of nav"])
+        # The baseline holds the name, so more files of the same system in the same crate are not new.
+        self.assertEqual(cairn.new_violations(more.violations, {"R1 app nav"}), [])
 
     def test_r4_only_the_tooling_area_lives_in_tools(self):
         docs = [doc("tooling", ["tools/ci.py"], area="Tooling"), doc("maps", ["tools/maps.py", "tools/tiles.py"])]
         result = analyse(docs, ["tools/ci.py", "tools/maps.py", "tools/tiles.py"])
-        self.assertEqual(sizes(result, "R4"), {"R4 maps": 2})
+        self.assertEqual(messages(result, "R4"), ["maps (Device) has 2 file(s) under tools/"])
 
 
 class RatchetTests(unittest.TestCase):
@@ -252,50 +292,51 @@ class RatchetTests(unittest.TestCase):
             return cairn.report(cairn.Result(violations), baseline, docs, approved)
 
     def test_a_new_violation_fails_only_for_an_approved_system(self):
-        new = cairn.Violation("R4", "R4 maps", frozenset({"maps"}), "maps in tools", 3)
-        self.assertEqual(self.failing([new], {}, set()), [])
-        self.assertEqual(self.failing([new], {}, {"maps"}), ["maps in tools"])
-        self.assertEqual(self.failing([new], {"R4 maps": 3}, {"maps"}), [])
-        self.assertEqual(self.failing([new], {"R4 maps": 2}, {"maps"}), ["maps in tools"])
+        new = cairn.Violation("R4", "R4 maps", frozenset({"maps"}), "maps in tools")
+        self.assertEqual(self.failing([new], set(), set()), [])
+        self.assertEqual(self.failing([new], set(), {"maps"}), ["maps in tools"])
+        self.assertEqual(self.failing([new], {"R4 maps"}, {"maps"}), [])
 
     def test_an_unowned_file_fails_once_any_system_is_approved(self):
         unowned = cairn.Violation("ownership", "unowned x.rs", frozenset(), "x.rs has no owner")
-        self.assertEqual(self.failing([unowned], {}, set()), [])
-        self.assertEqual(self.failing([unowned], {}, {"maps"}), ["x.rs has no owner"])
+        self.assertEqual(self.failing([unowned], set(), set()), [])
+        self.assertEqual(self.failing([unowned], set(), {"maps"}), ["x.rs has no owner"])
 
-    def test_a_shrunk_or_gone_entry_fails_only_for_an_approved_system(self):
-        shrunk = cairn.Violation("R4", "R4 maps", frozenset({"maps"}), "", 2)
-        baseline = {"R4 maps": 3, "R3 app": 40}
-        self.assertEqual(self.failing([shrunk], baseline, set()), [])
-        self.assertEqual(self.failing([shrunk], baseline, {"maps"}), ["R4 maps"])
-        self.assertEqual(self.failing([shrunk], baseline, {"app"}), ["R3 app"])
+    def test_a_gone_entry_fails_only_for_an_approved_system(self):
+        baseline = {"R4 maps", "R1 crate app"}
+        self.assertEqual(self.failing([], baseline, set()), [])
+        self.assertEqual(self.failing([], baseline, {"maps"}), ["R4 maps"])
+        self.assertEqual(self.failing([], baseline, {"app"}), ["R1 crate app"])
 
     def test_update_never_grows_the_baseline(self):
-        violations = [
-            cairn.Violation("R4", "R4 maps", frozenset({"maps"}), "", 5),
-            cairn.Violation("R4", "R4 tiles", frozenset({"tiles"}), "", 1),
-            cairn.Violation("R3", "R3 app", frozenset({"app"}), "", 90),
-        ]
-        baseline = {"R4 maps": 3, "R3 app": 120, "R1 gone": 1}
-        self.assertEqual(cairn.updated(violations, baseline), {"R3 app": 90, "R4 maps": 3})
+        violations = [cairn.Violation("R4", "R4 maps", frozenset({"maps"}), ""),
+                      cairn.Violation("R4", "R4 tiles", frozenset({"tiles"}), "")]
+        self.assertEqual(cairn.updated(violations, {"R4 maps", "R1 gone"}), {"R4 maps"})
 
     def test_a_baseline_that_grew_by_hand_is_caught(self):
-        current = [cairn.Violation("R3", "R3 app", frozenset({"app"}), "", 90)]
-        base = {"R3 app": 80}
-        self.assertEqual(cairn.grown({"R3 app": 80}, base, current), [])
-        self.assertEqual(cairn.grown({"R3 app": 90}, base, current), ["R3 app: 90"])
-        self.assertEqual(cairn.grown({"R3 app": 80, "R1 new": 1}, base, current), ["R1 new: 1"])
+        current = [cairn.Violation("R4", "R4 maps", frozenset({"maps"}), "")]
+        self.assertEqual(cairn.grown({"R4 maps"}, {"R4 maps"}, current), [])
+        self.assertEqual(cairn.grown({"R4 maps", "R1 new"}, {"R4 maps"}, current), ["R1 new"])
         # With no baseline on the base, only the first baseline that `--accept` writes passes.
-        self.assertEqual(cairn.grown({"R3 app": 90}, None, current), [])
-        self.assertEqual(cairn.grown({"R3 app": 95}, None, current), ["R3 app: 95"])
+        self.assertEqual(cairn.grown({"R4 maps"}, None, current), [])
+        self.assertEqual(cairn.grown({"R4 maps", "R1 new"}, None, current), ["R1 new"])
 
+    def test_a_change_of_the_adapters_may_add_the_violations_of_head_to_the_baseline(self):
+        current = [cairn.Violation("cycle", "cycle a -> b", frozenset({"a", "b"}), "")]
+        base = {"R4 maps"}
+        self.assertEqual(cairn.grown({"R4 maps", "cycle a -> b"}, base, current), ["cycle a -> b"])
+        self.assertEqual(cairn.grown({"R4 maps", "cycle a -> b", "R1 invented"}, base, current, widened=True), ["R1 invented"])
+        config = {"adapters": {"cargo": {}, "imports": {"extensions": [".ts"]}}}
+        self.assertTrue(cairn.widened({cairn.CONFIG: '{"adapters": {"cargo": {}}}'}.get, config))
+        self.assertFalse(cairn.widened({cairn.CONFIG: json.dumps(config)}.get, config))
+        self.assertFalse(cairn.widened({}.get, config))
 
     def test_the_base_baseline_path_comes_from_the_base_config(self):
         files = {
             ".cairn/config.json": '{"baseline": "old/baseline.json"}',
-            "old/baseline.json": '{"R3 app": 80}',
+            "old/baseline.json": '["R4 maps"]',
         }
-        self.assertEqual(cairn.base_baseline(files.get), {"R3 app": 80})
+        self.assertEqual(cairn.base_baseline(files.get), {"R4 maps"})
         self.assertIsNone(cairn.base_baseline({}.get))
 
 

@@ -883,7 +883,7 @@ pub struct Waypoint {
     pub lat: i32,
     /// Elevation in meters; [`WAYPOINT_ELE_NONE`](obc_formats::obcr::WAYPOINT_ELE_NONE) when the source carried none.
     pub ele: i16,
-    /// The stored category byte: `0` is generic and `1..=6` are the [`PoiCategory`] wire ids.
+    /// The stored category byte: `0` is generic and the [`PoiCategory`] wire ids are categories.
     /// Kept raw so a rewrite carries an unknown value through byte for byte.
     pub category_id: u8,
     /// Lateral offset from the route line, meters. Positive is right of the direction of travel
@@ -894,7 +894,7 @@ pub struct Waypoint {
 }
 
 impl Waypoint {
-    /// The typed category, or `None` for generic, which also covers a byte outside `1..=6`.
+    /// The typed category, or `None` for generic, which also covers a byte that is no [`PoiCategory`] id.
     #[inline]
     pub fn category(&self) -> Option<PoiCategory> {
         PoiCategory::from_id(self.category_id)

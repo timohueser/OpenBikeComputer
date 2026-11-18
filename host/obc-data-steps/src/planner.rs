@@ -26,6 +26,7 @@ use obc_dem::reference::TILE_LOG2;
 use obc_dem::step::GLO30;
 use obc_map_core::grid::CellId;
 use planner_router_build::grid::{mercator, tile_bounds};
+use planner_router_build::step;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -43,9 +44,16 @@ pub static PLANNER_BASEMAP: Layer = whole("planner/basemap", 1, &[&WEB_PLANNER, 
 /// `specs/planner-release.md`.
 pub static PLANNER_TERRAIN: Layer =
     Layer { revision: 4, ..whole("planner/terrain", 2, &[&WEB_PLANNER, &readers::PLANNER_TRAILVIEW_FEATURES]) };
+/// The work layers of the routing bake, each of the step of its name: the source, the roads and the
+/// costs of `planner_router_build::step`. A change of their bytes changes their format (`work`), a
+/// change of their content their revision: of the import rules the source, of the split, the order
+/// or the terrain the roads, of the cost code the costs.
+pub static PLANNER_ROUTING_SOURCE: Layer = work(step::SOURCE);
+pub static PLANNER_ROUTING_ROADS: Layer = work(step::ROADS);
+pub static PLANNER_ROUTING_COSTS: Layer = Layer { revision: 2, ..work(step::COSTS) };
 /// The routing package, its grid and the route network overlays.
 pub static PLANNER_ROUTING: Layer = Layer {
-    revision: 4,
+    revision: 20,
     ..whole("planner/routing", planner_router::package::FORMAT, &[&ROUTER_SERVICE, &IOS_OFFLINE_ROUTER])
 };
 /// The search databases and the query model. Its format is the search schema of
@@ -56,9 +64,11 @@ pub static PLANNER_PLACES: Layer = whole("planner/places", 1, &[&WEB_PLANNER]);
 pub static PLANNER_CLIMATE: Layer = whole("planner/climate", 1, &[&WEB_PLANNER]);
 /// The snow archives of `specs/planner-snow-tiles.md`.
 pub static PLANNER_SNOW: Layer = whole("planner/snow", 2, &[&WEB_PLANNER]);
-/// Its format is `features_format` of `specs/trailview-features.md`.
+/// Its format is `features_format` of `specs/trailview-features.md`. Its step `planner/trailview-stamps`
+/// holds what the stamp worker makes of the tiles; `stamp_version` of `specs/trailview-tiles.md` says
+/// which stamp code made it.
 pub static PLANNER_TRAILVIEW_FEATURES: Layer =
-    Layer { revision: 12, ..whole("planner/trailview-features", 4, &[&WEB_PLANNER]) };
+    Layer { revision: 25, ..whole("planner/trailview-features", 4, &[&WEB_PLANNER]) };
 /// The TrailView ruleset, `rules.json` of `specs/trailview-tiles.md`. Its format is `format` of
 /// `rules.json`, `FORMAT` of `tools/trailview/rules.py`.
 pub static PLANNER_TRAILVIEW_RULES: Layer =
@@ -77,12 +87,26 @@ pub static PLANNER_TRAILVIEW_CANOPY: Layer = whole("planner/trailview-canopy", 1
 /// which the downloads and search services check: a change of either file format changes it, and
 /// `INDEX_FORMAT` of `tools/planner_runtime.py` and `GRID` of `planner/search/installation.mjs`.
 pub static PLANNER_INDEX: Layer =
-    Layer { revision: 2, ..whole("planner/index", 4, &[&WEB_PLANNER, &IOS, &SEARCH_SERVICE, &DOWNLOADS_SERVICE]) };
+    Layer { revision: 3, ..whole("planner/index", 4, &[&WEB_PLANNER, &IOS, &SEARCH_SERVICE, &DOWNLOADS_SERVICE]) };
 
 const WORLDCOVER_GRID: &str = "esa-worldcover-grid";
 
 const fn whole(name: &'static str, format: u32, readers: &'static [&'static Reader]) -> Layer {
-    Layer { name, shape: Shape::Whole, format, revision: 1, readers }
+    Layer { name, shape: Shape::Whole, format, revision: 1, readers, cache: false }
+}
+
+/// The files of a work layer hold router types: the closure sets, `Point` and the postcard
+/// `CostBasis` of the dictionary. Its format is the sum of the router `FORMAT` and the format of
+/// its own files, 1; each only grows.
+const fn work(name: &'static str) -> Layer {
+    Layer {
+        name,
+        shape: Shape::Whole,
+        format: planner_router::package::FORMAT + 1,
+        revision: 1,
+        readers: &[],
+        cache: true,
+    }
 }
 const BASEMAP_SOURCES: [&str; 7] = [
     "protomaps-basemaps",
@@ -298,9 +322,7 @@ impl Planner {
             countries => countries.to_vec(),
         };
         if countries.is_empty() {
-            return Err(invalid(format!(
-                "the Geofabrik areas of region `{id}` name no country, which the route catalog needs"
-            )));
+            return Err(invalid(format!("the Geofabrik areas of region `{id}` name no country, which search needs")));
         }
         let land: HashSet<&str> = tile_list.lines().map(str::trim).collect();
         let requested = obc_bake::coverage::Coverage::union(&selection.outlines.iter().collect::<Vec<_>>())
@@ -398,20 +420,51 @@ impl Planner {
         };
         // The last part of the id: the old planner names its files after it.
         let name = region.id.rsplit('/').next();
-        let routing = Step {
-            layer: &PLANNER_ROUTING,
-            name: "planner/routing".into(),
-            inputs: std::iter::once(Input::step(cut.name.clone()))
+        // A bad profile of the routing fails before any bake.
+        if on("routing") {
+            let profiles: Vec<&str> = config.routing.profiles.iter().map(String::as_str).collect();
+            planner_router_build::profiles(&profiles)
+                .and_then(|profiles| planner_router_build::catalog::check(&profiles))
+                .map_err(|reason| invalid(format!("the routing of region `{id}`: {reason}")))?;
+        }
+        let work = |layer: &'static Layer, inputs: Vec<Input>, options, run| Step {
+            layer,
+            name: layer.name.into(),
+            inputs,
+            options,
+            outputs: vec![step::folder_name(layer.name).into()],
+            run: Run::Rust(run),
+            client: Client::None,
+        };
+        let routing_source = work(
+            &PLANNER_ROUTING_SOURCE,
+            vec![Input::step(cut.name.clone())],
+            json!({"bounds": bounds}),
+            &functions::ROUTING_SOURCE,
+        );
+        let routing_roads = work(
+            &PLANNER_ROUTING_ROADS,
+            std::iter::once(Input::step(step::SOURCE))
                 .chain(tiles(bounds, &land, &glo30))
                 .chain(reference.iter().map(|step| Input::step(&step.name)))
                 .collect(),
+            json!({"bounds": bounds, "terrain_attribution": attribution(GLO30)}),
+            &functions::ROUTING_ROADS,
+        );
+        let routing_costs = work(
+            &PLANNER_ROUTING_COSTS,
+            vec![Input::step(step::SOURCE), Input::step(step::ROADS)],
+            json!({"bounds": bounds, "profiles": config.routing.profiles}),
+            &functions::ROUTING_COSTS,
+        );
+        let routing = Step {
+            layer: &PLANNER_ROUTING,
+            name: "planner/routing".into(),
+            inputs: [step::SOURCE, step::ROADS, step::COSTS].into_iter().map(Input::step).collect(),
             options: json!({
                 "region": name,
                 "bounds": bounds,
-                "profiles": config.routing.profiles,
-                "countries": countries,
                 "attribution": attribution("osm-planet"),
-                "terrain_attribution": attribution(GLO30),
             }),
             outputs: vec!["routing".into(), "blocks".into(), "routes".into()],
             run: Run::Rust(&functions::ROUTING),
@@ -517,7 +570,22 @@ impl Planner {
         steps.extend(content.steps);
         steps.extend(reference);
         steps.extend([
-            osm, cut, terrain, routing, overlays, assets, model, policy, dump, records, pois, addresses, places,
+            osm,
+            cut,
+            terrain,
+            routing_source,
+            routing_roads,
+            routing_costs,
+            routing,
+            overlays,
+            assets,
+            model,
+            policy,
+            dump,
+            records,
+            pois,
+            addresses,
+            places,
             basemap,
         ]);
         if on("climate") {
@@ -539,19 +607,38 @@ impl Planner {
             let waterways: serde_json::Value =
                 serde_json::from_str(include_str!("../../../data/trailview/waterways.json"))
                     .map_err(|e| Unplanned::Failed(format!("data/trailview/waterways.json: {e}")))?;
+            let finishes: serde_json::Value =
+                serde_json::from_str(include_str!("../../../data/trailview/finishes.json"))
+                    .map_err(|e| Unplanned::Failed(format!("data/trailview/finishes.json: {e}")))?;
             // The heights of roads, rivers and lakes come from the master terrain, by the class rules of the
             // roads; the sea, which OSM maps only as coastlines, from the water polygons.
             let sea = snapshot(inputs, store, "water-polygons", Vec::new(), &mut wanted)?;
+            let plan: serde_json::Value = serde_json::from_str(include_str!("../../../data/trailview/plan.json"))
+                .map_err(|e| Unplanned::Failed(format!("data/trailview/plan.json: {e}")))?;
+            // The rules of the ground plan's levels that the bake runs, as the solver's rows of the roads.
+            let levels = obc_trailview_features::kinds::level_rows(&roads, &waterways, &plan);
             let roads = obc_trailview_features::kinds::solver_rows(&roads);
             let waterways = obc_trailview_features::kinds::waterway_rows(&waterways);
+            let finishes = obc_trailview_features::kinds::finish_rows(&finishes);
             steps.push(Step {
                 layer: &PLANNER_TRAILVIEW_FEATURES,
                 name: "planner/trailview-features".into(),
                 inputs: vec![Input::step("planner/osm"), Input::step("planner/terrain/grid"), sea],
-                options: json!({"bounds": bounds, "kinds": kinds, "roads": roads, "waterways": waterways,
-                                "attribution": attribution("osm-planet")}),
+                options: json!({"bounds": bounds, "kinds": kinds, "roads": roads, "finishes": finishes,
+                                "waterways": waterways, "levels": levels, "attribution": attribution("osm-planet")}),
                 outputs: vec!["trailview-features.pmtiles".into()],
                 run: Run::Rust(&functions::TRAILVIEW_FEATURES),
+                client: Client::All,
+            });
+            steps.push(Step {
+                layer: &PLANNER_TRAILVIEW_FEATURES,
+                name: "planner/trailview-stamps".into(),
+                inputs: vec![Input::step("planner/trailview-features")],
+                // A change of the stamp code stales this step only; the feature tiles stay.
+                options: json!({"bounds": bounds, "attribution": attribution("osm-planet"),
+                                "stamp_sources": stamp_sources(root).map_err(Unplanned::Failed)?}),
+                outputs: vec!["trailview-stamps.pmtiles".into()],
+                run: Run::Rust(&functions::TRAILVIEW_STAMPS),
                 client: Client::All,
             });
         }
@@ -566,6 +653,7 @@ impl Planner {
             "overlays",
             "climate",
             "trailview-features",
+            "trailview-stamps",
             "trailview-ground",
             "trailview-canopy",
         ];
@@ -1148,23 +1236,48 @@ fn trailview(
 /// The digest of the JSON files of `data/trailview/`, by their paths in it, as `digest` of
 /// `tools/trailview/rules.py` gives it.
 fn ruleset(root: &Path) -> Result<String, String> {
-    fn walk(dir: &Path, base: &Path, out: &mut Vec<(String, String)>) -> Result<(), String> {
-        for entry in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
-            let path = entry.map_err(|e| e.to_string())?.path();
-            if path.is_dir() {
-                walk(&path, base, out)?;
-            } else if path.extension().is_some_and(|extension| extension == "json") {
-                let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-                let name = path.strip_prefix(base).unwrap().to_string_lossy().replace('\\', "/");
-                out.push((name, obc_data::store::sha256_hex(&bytes)));
-            }
-        }
-        Ok(())
-    }
     let base = root.join("data/trailview");
     let mut files = Vec::new();
-    walk(&base, &base, &mut files)?;
+    walk(&base, &base, &|path| path.extension().is_some_and(|extension| extension == "json"), &mut files)?;
     Ok(obc_data::engine::digest(files.iter().map(|(name, sha256)| (name.as_str(), sha256.as_str()))))
+}
+
+/// The digest of the files that the TrailView stamp code can read, by their paths in the repository: the
+/// TypeScript of `builder/web/src/lib/trailview/` but its tests and generated packages, the JSON of
+/// `data/trailview/`, the bake module, the stamp process and the npm lock. It changes with each change of the
+/// stamp version, and with more: the exact version needs Node and the npm packages, which a plan has not.
+fn stamp_sources(root: &Path) -> Result<String, String> {
+    let mut files = Vec::new();
+    let typescript = |path: &Path| {
+        let name = path.to_string_lossy();
+        name.ends_with(".ts") && !name.ends_with(".test.ts") && !path.components().any(|part| part.as_os_str() == "pkg")
+    };
+    walk(&root.join("builder/web/src/lib/trailview"), root, &typescript, &mut files)?;
+    walk(&root.join("data/trailview"), root, &|path| path.extension().is_some_and(|e| e == "json"), &mut files)?;
+    for name in [
+        "builder/web/vite/stamp-bundle.ts",
+        "builder/web/scripts/trailview-stamps.mjs",
+        "builder/web/package-lock.json",
+    ] {
+        let bytes = std::fs::read(root.join(name)).map_err(|e| format!("{name}: {e}"))?;
+        files.push((name.to_string(), obc_data::store::sha256_hex(&bytes)));
+    }
+    Ok(obc_data::engine::digest(files.iter().map(|(name, sha256)| (name.as_str(), sha256.as_str()))))
+}
+
+/// The SHA-256 of each file under `dir` that `keep` takes, by its path from `base`.
+fn walk(dir: &Path, base: &Path, keep: &dyn Fn(&Path) -> bool, out: &mut Vec<(String, String)>) -> Result<(), String> {
+    for entry in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        if path.is_dir() {
+            walk(&path, base, keep, out)?;
+        } else if keep(&path) {
+            let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            let name = path.strip_prefix(base).unwrap().to_string_lossy().replace('\\', "/");
+            out.push((name, obc_data::store::sha256_hex(&bytes)));
+        }
+    }
+    Ok(())
 }
 
 /// The sources of a ground chain that its step reads over `bounds`, each once: a source with an
@@ -1521,11 +1634,45 @@ mod tests {
             (&files[..], &reference.options["pool"]),
             (&["mean/18/1206/1054.tif".to_string(), "index.json".to_string()][..], &json!("mean"))
         );
-        for reader in ["planner/terrain", "planner/routing"] {
+        for reader in ["planner/terrain", "planner/routing-roads"] {
             let step = steps.iter().find(|step| step.name == reader).unwrap();
             let reads = |input: &Input| matches!(input, Input::Step { name, .. } if name == "planner/reference");
             assert!(step.inputs.iter().any(reads), "{reader} reads the national models");
         }
+    }
+
+    #[test]
+    fn the_profiles_are_an_option_of_the_costs_step_alone() {
+        let temp = temp("planner-routing-steps");
+        let store = store(&temp, &["2026-10-01"]);
+        let steps = Planner.steps(&root(), &inputs(AREA, &[]), &regions(), &store).unwrap().steps;
+        let get = |name: &str| steps.iter().find(|step| step.name == name).unwrap();
+        let options = |name: &str| {
+            let mut keys: Vec<String> = get(name).options.as_object().unwrap().keys().cloned().collect();
+            keys.sort();
+            keys
+        };
+        let reads = |name: &str| {
+            let names = get(name).inputs.iter().filter_map(|input| match input {
+                Input::Step { name, .. } => Some(name.clone()),
+                Input::Snapshot { .. } => None,
+            });
+            names.collect::<Vec<_>>()
+        };
+        // The key holds the options and the digests of the inputs: a new profile list changes the
+        // key of the costs, and so of the package, and no other.
+        assert_eq!(options(step::SOURCE), ["bounds"]);
+        assert_eq!(options(step::ROADS), ["bounds", "terrain_attribution"]);
+        assert_eq!(options(step::COSTS), ["bounds", "profiles"]);
+        assert_eq!(options("planner/routing"), ["attribution", "bounds", "region"]);
+        assert_eq!(reads(step::SOURCE), ["planner/osm/bounds"]);
+        assert_eq!(reads(step::ROADS), [step::SOURCE]);
+        assert_eq!(reads(step::COSTS), [step::SOURCE, step::ROADS]);
+        assert_eq!(reads("planner/routing"), [step::SOURCE, step::ROADS, step::COSTS]);
+        for name in [step::SOURCE, step::ROADS, step::COSTS] {
+            assert!(get(name).layer.cache && get(name).client.is_none(), "{name}");
+        }
+        assert!(!get("planner/routing").layer.cache);
     }
 
     /// A version of `terrain` with `paths` and an `index.json` whose tile 4825/4218 is of `ch`, with
@@ -1558,13 +1705,18 @@ mod tests {
     fn a_part_that_is_off_keeps_only_the_steps_that_a_part_that_is_on_reads() {
         let temp = temp("planner-parts");
         let store = store(&temp, &["2026-10-01"]);
-        let only = |parts: &[&str]| {
+        let planned = |parts: &[&str]| {
             let mut inputs = inputs(AREA, &[]);
             inputs.settings.layers = parts.iter().map(|part| part.to_string()).collect();
-            let steps = Planner.steps(&root(), &inputs, &regions(), &store).unwrap().steps;
-            steps.into_iter().map(|step| step.name).collect::<HashSet<_>>()
+            Planner.steps(&root(), &inputs, &regions(), &store).unwrap().steps
         };
+        let only = |parts: &[&str]| planned(parts).into_iter().map(|step| step.name).collect::<HashSet<_>>();
         let features = only(&["trailview-features"]);
+        let bake = planned(&["trailview-features"]).into_iter().find(|s| s.name == "planner/trailview-features");
+        let options = bake.unwrap().options;
+        assert!(options["finishes"]["gravel"]["shoulder_m"].is_number() && options["roads"][0]["half_m"].is_number());
+        let stamps = planned(&["trailview-features"]).into_iter().find(|s| s.name == "planner/trailview-stamps");
+        assert_eq!(stamps.unwrap().options["stamp_sources"], json!(stamp_sources(&root()).unwrap()));
         assert!(["planner/terrain/grid", "planner/trailview-features/grid", "planner/index", catalog::STEP]
             .iter()
             .all(|step| features.contains(*step)));
@@ -1602,6 +1754,9 @@ mod tests {
             "osm",
             "osm/bounds",
             "terrain",
+            "routing-source",
+            "routing-roads",
+            "routing-costs",
             "routing",
             "overlays",
             "assets",
@@ -1642,6 +1797,9 @@ mod tests {
                 "planner/osm",
                 "planner/osm/bounds",
                 "planner/terrain",
+                "planner/routing-source",
+                "planner/routing-roads",
+                "planner/routing-costs",
                 "planner/routing",
                 "planner/overlays",
                 "planner/assets",
@@ -1679,15 +1837,15 @@ mod tests {
         let cut = get("planner/osm/bounds");
         assert!(matches!(&cut.inputs[..], [Input::Step { name, files }] if name == "planner/osm" && files.is_empty()));
         assert!(matches!(cut.run, Run::Rust(function) if function.name == obc_data::engine::PASS.name));
-        for reader in ["planner/routing", "planner/basemap", "planner/search/dump"] {
+        for reader in ["planner/routing-source", "planner/basemap", "planner/search/dump"] {
             assert!(get(reader)
                 .inputs
                 .iter()
                 .any(|input| matches!(input, Input::Step { name, .. } if name == "planner/osm/bounds")));
         }
-        assert_eq!(tiles(&routing.inputs[1]), ["N47_00_E007", "N48_00_E007"]);
+        assert_eq!(tiles(&get("planner/routing-roads").inputs[1]), ["N47_00_E007", "N48_00_E007"]);
         assert_eq!(routing.options["bounds"], json!([7.79, 47.99, 7.82, 48.02]));
-        assert_eq!((&routing.options["region"], &routing.options["countries"]), (&json!("test"), &json!(["DE"])));
+        assert_eq!(routing.options["region"], json!("test"));
         assert_eq!(
             (&pois.options["bounds"], &pois.options["time_zone"]),
             (&routing.options["bounds"], &json!("Europe/Berlin"))
@@ -1718,8 +1876,8 @@ mod tests {
             "geometry":{"type":"Polygon","coordinates":[[[7.79,47.99],[7.82,47.99],[7.82,48.02],[7.79,48.02],[7.79,47.99]]]}}]});
         fetched(&store, crate::device::catalog::INDEX, "2", &[], &[("index-v1.json".into(), index.to_string())]);
         let steps = Planner.steps(&root(), &inputs("no-countries", &[]), &regions(), &store).unwrap().steps;
-        let routing = steps.iter().find(|step| step.name == "planner/routing").unwrap();
-        assert_eq!(routing.options["countries"], json!(["DE"]));
+        let dump = steps.iter().find(|step| step.name == "planner/search/dump").unwrap();
+        assert_eq!(dump.options["country"], json!("de"));
         let steps = Planner.steps(&root(), &inputs("no-time-zone", &[]), &regions(), &store).unwrap().steps;
         let pois = steps.iter().find(|step| step.name == "planner/search/pois").unwrap();
         assert_eq!(pois.options["time_zone"], "UTC");
@@ -1851,12 +2009,15 @@ mod tests {
                 ["device", "catalog"] => "device/catalog",
                 ["planner", "basemap" | "assets", ..] => "planner/basemap",
                 ["planner", "terrain", ..] => "planner/terrain",
+                ["planner", "routing-source"] => "planner/routing-source",
+                ["planner", "routing-roads"] => "planner/routing-roads",
+                ["planner", "routing-costs"] => "planner/routing-costs",
                 ["planner", "routing" | "overlays", ..] => "planner/routing",
                 ["planner", "search" | "model", ..] => "planner/search",
                 ["planner", "places", ..] => "planner/places",
                 ["planner", "climate", ..] => "planner/climate",
                 ["planner", "snow", ..] => "planner/snow",
-                ["planner", "trailview-features", ..] => "planner/trailview-features",
+                ["planner", "trailview-features" | "trailview-stamps", ..] => "planner/trailview-features",
                 ["planner", "trailview-rules", ..] => "planner/trailview-rules",
                 ["planner", "trailview-material" | "trailview-lithology" | "trailview-region" | "trailview-ground", ..] => {
                     "planner/trailview-ground"
@@ -1870,7 +2031,11 @@ mod tests {
             assert_eq!(step.layer.name, layer(&step.name), "{}", step.name);
         }
         let named: BTreeSet<&str> = steps.iter().map(|step| step.layer.name).collect();
-        assert_eq!(named.len(), 17, "sixteen operator layers and the OSM of the region: {named:?}");
+        assert_eq!(
+            named.len(),
+            20,
+            "sixteen operator layers, the OSM of the region and the work layers of the routing: {named:?}"
+        );
 
         // A target holds only client files: a step reads only those of a step of another layer
         // that a program reads, so another machine can bake it without baking that step again. A

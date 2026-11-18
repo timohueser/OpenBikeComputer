@@ -38,8 +38,8 @@ impl FreeMap {
     pub fn reset(&mut self, extents: u32) {
         self.extents = extents;
         self.words = [0; WORDS];
-        for index in (extents as usize).div_ceil(64)..WORDS {
-            self.words[index] = u64::MAX;
+        for word in self.words.iter_mut().skip((extents as usize).div_ceil(64)) {
+            *word = u64::MAX;
         }
         if !(extents as usize).is_multiple_of(64) {
             let word = extents as usize / 64;

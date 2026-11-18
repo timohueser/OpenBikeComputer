@@ -1,5 +1,6 @@
 import { coordinateAt, cumulative, kilometres, type Coordinate } from './geo';
 import type { RoutePoint } from './editor';
+import { noteDistance } from './route-closures';
 
 /** A shorter gap is a coarse click, or a building set back from its road: a map pixel at zoom 10 is about 100 m. */
 const shortestKm = 0.1;
@@ -33,7 +34,7 @@ export function routeGaps(stops: { point: RoutePoint; distance: number }[], coor
 
 /** Such as "Ends 180 m before your point". */
 export function gapLabel(gap: RouteGap): string {
-    const distance = gap.km < 1 ? `${Math.round(gap.km * 100) * 10} m` : `${gap.km.toFixed(1)} km`;
+    const distance = noteDistance(gap.km, 10);
     const kind = gap.point.kind;
     return kind === 'start' ? `Starts ${distance} from your point`
         : kind === 'finish' ? `Ends ${distance} before your point`

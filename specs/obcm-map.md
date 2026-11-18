@@ -1072,8 +1072,8 @@ included, is admissible.
 #### Canonical way-kind table (normative)
 
 `Way Kind = (surface_class << 5) | highway_class`. The packer's single source of truth is
-`obc-places/src/routing.rs` (`highway_class` / `surface_class` / `classify`); profile configs and
-the web builder key their multipliers by these class names.
+`obc-places/src/routing.rs` (`highway_class` / `surface_class` / `classify`); profile configs key
+their multipliers by these class names.
 
 **Highway class** (5 bits, `0..=31`; `0..=13` assigned, `14..=31` reserved):
 

@@ -1,0 +1,14 @@
+The skills in this folder, other than cairn, are copies of third-party work.
+`skills-lock.json` at the root of the repository names the source and the
+commit of each one. Update them with `npx skills@latest update`.
+
+animate, animation-performance, choreograph, emil-design-eng,
+find-animation-opportunities, improve-animations, remove-animations and
+review-animations: https://github.com/emilkowalski/skills
+Copyright (c) 2026 Emil Kowalski. MIT License. A copy is in
+LICENSE-emilkowalski-skills.
+
+impeccable: https://github.com/pbakaus/impeccable
+Licensed under the Apache License, Version 2.0. A copy is in
+LICENSE-impeccable, and its notices of third-party work are in
+NOTICE-impeccable.md.

@@ -49,12 +49,13 @@ pub fn named<'a>(
 
 /// The data layers of a release, as `DATA_LAYERS` of `tools/planner_runtime.py`, that `layers` of the
 /// catalogue lists where the release has their TileJSON.
-const DATA_LAYERS: [&str; 11] = [
+const DATA_LAYERS: [&str; 12] = [
     "snow",
     "snow-levels",
     "snow-seasons",
     "climate",
     "trailview-features",
+    "trailview-stamps",
     "trailview-canopy",
     "trailview-ground",
     "trailview-colour-q1",
@@ -102,6 +103,10 @@ pub fn pointer(request: &Request) -> Result<(), String> {
     });
     if files.contains_key("trailview/rules.json") {
         active["trailview_rules"] = json!(format!("{tiles}/trailview/rules.json"));
+    }
+    if files.keys().any(|name| name.starts_with("routes/tiles/trails/")) {
+        active["trails"] = json!(format!("{tiles}/routes/tiles/trails/{{cell}}.json"));
+        active["trail"] = json!(format!("{tiles}/routes/tiles/long/{{id}}.json"));
     }
     let pointer = json!({"format": 1, "origins": origins, "active": active});
     let body = serde_json::to_vec(&pointer).map_err(|e| e.to_string())?;

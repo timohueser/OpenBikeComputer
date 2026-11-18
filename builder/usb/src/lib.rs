@@ -1,8 +1,8 @@
 //! One claimed device: endpoint discovery, and the two byte pipes over it.
 //!
 //! Everything here moves **bytes**. Nothing in this file knows what a transfer descriptor is, what
-//! a status envelope means, or which object an upload belongs to. The desktop app and maintenance
-//! CLI share this transport; their protocol clients sit above it.
+//! a status envelope means, or which object an upload belongs to. The protocol client in `client`
+//! sits above it.
 
 pub mod client;
 
@@ -10,7 +10,6 @@ use std::sync::Arc;
 
 use nusb::transfer::{Buffer, Bulk, Completion, In, Out, TransferError};
 use nusb::{Device, DeviceInfo, Endpoint, Interface};
-use serde::{Deserialize, Serialize};
 use tokio::sync::{watch, Mutex};
 
 /// pid.codes' prototype/testing pair, shared with the board descriptors and WebUSB filter.
@@ -35,8 +34,7 @@ const USB_BINDING_MAJOR: u8 = 5;
 const BULK_READ_TARGET: usize = 16 * 1024;
 
 /// Which of the two planes a call means. The names match `lib/usb/pipe.ts`'s `DeviceLink`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Plane {
     Control,
     Bulk,
@@ -44,8 +42,7 @@ pub enum Plane {
 
 /// Which half of an endpoint pair. Cancellation is per-direction: an abort on a download must not
 /// also tear down the write the caller is about to make.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dir {
     In,
     Out,
@@ -53,11 +50,8 @@ pub enum Dir {
 
 /// A transport failure, in the vocabulary `lib/usb/pipe.ts`'s `PipeError` already speaks.
 ///
-/// The `code` is the contract — the TS side switches on it — and the `message` is for a human.
-/// `unsupported` never appears here: it means "this browser has no WebUSB", which is exactly the
-/// condition the desktop app exists to not have.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
+/// `unsupported` never appears here: it means "this browser has no WebUSB".
+#[derive(Debug, Clone)]
 pub struct PipeFault {
     /// `closed` | `aborted` | `device-error`.
     pub code: &'static str,
@@ -170,10 +164,7 @@ fn check_binding_major(interface_protocol: u8, device_release: u16) -> Result<()
 /// The mechanism is a `watch` channel rather than a `Notify` because the race matters: a cancel
 /// that arrives between the caller deciding to abort and the read parking itself must not be lost.
 /// A monotonic epoch the reader snapshots before it parks cannot miss one.
-/// that arrives between "the caller decided to abort" and "the read parked itself" must not be
-/// lost. A monotonic epoch the reader snapshots before it parks cannot miss one.
 pub struct Pipe {
-    pub max_packet: usize,
     read_len: usize,
     ep_in: Mutex<Endpoint<Bulk, In>>,
     ep_out: Mutex<Endpoint<Bulk, Out>>,
@@ -194,7 +185,6 @@ impl Pipe {
         // OS would fail the URB anyway. Round down, floor at one packet.
         let read_len = (target_read / max_packet).max(1) * max_packet;
         Ok(Self {
-            max_packet,
             read_len,
             ep_in: Mutex::new(ep_in),
             ep_out: Mutex::new(ep_out),
@@ -329,10 +319,6 @@ async fn cancel_and_drain<D: nusb::transfer::EndpointDirection>(ep: &mut Endpoin
 /// The `Interface` is held for its whole life because dropping it releases the claim — nothing
 /// reads it directly.
 pub struct OpenLink {
-    /// The stable key the frontend knows this device by; a hot-plug `Disconnected` carries the same
-    /// one, which is how a pulled cable reaches the pipes without waiting for a transfer to time
-    /// out.
-    pub device_id: String,
     pub control: Pipe,
     pub bulk: Pipe,
     _interface: Interface,
@@ -345,29 +331,10 @@ impl OpenLink {
             Plane::Bulk => &self.bulk,
         }
     }
-
-    /// Fail everything parked on both planes. Called on an unplug and on close.
-    pub fn cancel_all(&self) {
-        self.control.cancel(None);
-        self.bulk.cancel(None);
-    }
-}
-
-/// What `usb_open` tells the frontend about the link it just got.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OpenedLink {
-    pub handle: u32,
-    pub device_id: String,
-    pub interface_number: u8,
-    pub control_packet_size: usize,
-    pub bulk_packet_size: usize,
-    pub product: Option<String>,
-    pub serial_number: Option<String>,
 }
 
 /// Open, configure and claim a device, returning its two pipes.
-pub async fn open(info: &DeviceInfo, device_id: String) -> Result<(Arc<OpenLink>, OpenedLink), PipeFault> {
+pub async fn open(info: &DeviceInfo) -> Result<Arc<OpenLink>, PipeFault> {
     let device: Device = info
         .open()
         .await
@@ -414,23 +381,14 @@ pub async fn open(info: &DeviceInfo, device_id: String) -> Result<(Arc<OpenLink>
     let control = Pipe::new(&interface, layout.control.0, layout.control.1, layout.control.2)?;
     let bulk = Pipe::new(&interface, layout.bulk.0, layout.bulk.1, BULK_READ_TARGET)?;
 
-    let opened = OpenedLink {
-        handle: 0, // filled in by the registry
-        device_id: device_id.clone(),
-        interface_number: layout.interface,
-        control_packet_size: control.max_packet,
-        bulk_packet_size: bulk.max_packet,
-        product: info.product_string().map(str::to_owned),
-        serial_number: info.serial_number().map(str::to_owned),
-    };
-    Ok((Arc::new(OpenLink { device_id, control, bulk, _interface: interface }), opened))
+    Ok(Arc::new(OpenLink { control, bulk, _interface: interface }))
 }
 
 /// The two failures whose remedy is not "try again", spelled out where they happen.
 ///
 /// On Linux the usbfs node is root-owned unless a udev rule says otherwise, and the error the user
 /// would otherwise read is a bare `Permission denied` with nothing to suggest that a one-line file
-/// fixes it (`builder/desktop/linux/`). macOS needs nothing for a vendor interface; Windows
+/// fixes it (`builder/usb/linux/`). macOS needs nothing for a vendor interface; Windows
 /// binds WinUSB from the MS OS 2.0 descriptors the firmware already ships.
 ///
 /// `Busy` is the other one, and it is not platform-specific: an interface may be claimed once, so a
@@ -439,7 +397,7 @@ pub async fn open(info: &DeviceInfo, device_id: String) -> Result<(Arc<OpenLink>
 fn permission_hint(error: &nusb::Error) -> &'static str {
     match error.kind() {
         nusb::ErrorKind::PermissionDenied if cfg!(target_os = "linux") => {
-            " — install the udev rule from the app's `linux/` folder, then unplug and re-plug the device."
+            " — install the udev rule from `builder/usb/linux/`, then unplug and re-plug the device."
         }
         nusb::ErrorKind::PermissionDenied => " — this account is not allowed to open the device.",
         nusb::ErrorKind::Busy => " — something else has it open. Close the other app or browser tab and try again.",

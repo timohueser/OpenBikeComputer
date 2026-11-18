@@ -668,7 +668,7 @@ pub(super) mod tests {
     use super::*;
     use crate::cli::update_cli::tests::region;
     use crate::engine::tests::{fixture, write, Fixture};
-    use crate::engine::{Client, Input, Layer, Request, Run as StepRun, Shape, Step};
+    use crate::engine::{Client, Input, Layer, Request, Run as StepRun, Step};
     use crate::lock::{self, LockFile};
     use crate::product::{Inputs, Pointer, Product, Steps, Unplanned, Wanted};
     use crate::regions::Regions;
@@ -762,7 +762,7 @@ pub(super) mod tests {
     }
 
     static READS: Layer =
-        Layer { name: "reads", shape: Shape::Whole, format: 1, revision: 1, readers: &[&crate::engine::tests::TESTS] };
+        Layer { name: "reads", readers: &[&crate::engine::tests::TESTS], ..crate::engine::tests::TEST };
 
     /// A product that reads `a.txt` of the version of `sample` that its target reads.
     struct Reader;

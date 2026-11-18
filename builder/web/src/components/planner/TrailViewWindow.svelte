@@ -1,53 +1,105 @@
+<script module lang="ts">
+    import type { Coordinate } from '../../lib/planner/geo';
+    import type { Profile } from '../../lib/trailview/route/profile';
+
+    /** A route of the routes mode, with the heights along it and the credit of its source. */
+    export type TrailViewRoute = { id: string; line: Coordinate[]; profile?: Profile; colour: string; credit?: string };
+</script>
+
 <script lang="ts">
-    import { onMount } from 'svelte';
-    import Icon from './PlannerIcon.svelte';
+    import { onMount, untrack, type Snippet } from 'svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import TrailViewConditions from './TrailViewConditions.svelte';
     import TrailViewMiniMap from './TrailViewMiniMap.svelte';
     import TrailViewProfile from './TrailViewProfile.svelte';
     import { config } from '../../lib/planner/map-data';
-    import { coordinateAt, cumulative, type Coordinate } from '../../lib/planner/geo';
+    import { creditsWith } from '../../lib/planner/map-setup';
+    import { recordCredits } from '../../lib/planner/signed-routes';
+    import Credits from './Credits.svelte';
+    import { coordinateAt, cumulative } from '../../lib/planner/geo';
     import { FIRST_HEADING, loadTrailView } from '../../lib/planner/trailview';
+    import type { Near } from '../../lib/planner/trailview-first';
     import { nightBadge, type RouteLook } from '../../lib/planner/trailview-route';
     import { sampleIndex } from '../../lib/planner/profile-data';
     import type { TrailView } from '../../lib/trailview/engine';
     import { VFOV } from '../../lib/trailview/frame/camera';
     import { defaultView, formatView, type View } from '../../lib/trailview/view';
 
-    let { at, near, origin, onClose }: {
-        at: Coordinate;
-        near: import('../../lib/planner/trailview-first').Near;
+    type None<T> = { [K in keyof T]?: undefined };
+    type Drop = { at: Coordinate; near: Near };
+    type Routes = {
+        routes: TrailViewRoute[];
+        /** The first view. */
+        view: View;
+        /** The id of the route that is bold while the pointer is on no route. */
+        selected?: string;
+        /** The id of the route under a click, or undefined after a click where no route is. */
+        onselect?: (id: string | undefined) => void;
+        /** Shows at the bottom of the window, over the view or its notice. It gets a function that moves the focus to
+         * the view: a card that closes itself calls it first, because its close button goes with it. */
+        card?: Snippet<[() => void]>;
+    };
+    // The window has two modes: a drop at `at` with the plan's data `near`, or `routes` from the first `view`.
+    let props: {
         /** The viewport point that the window grows from. */
         origin: [number, number];
         onClose: () => void;
-    } = $props();
+    } & ((Drop & None<Routes>) | (Routes & None<Drop>)) = $props();
 
     let dialog: HTMLDialogElement;
     let canvas: HTMLCanvasElement;
     let failure = $state('');
     let ground = $state(false);
-    // The mini-map draws the basemap: its credits are the OSM data, its land cover and Protomaps.
-    const creditsWith = (layers: string[]) => [...new Set([config.attribution, config.landcover_attribution ?? '', 'Protomaps', config.terrain_attribution, ...layers].filter(Boolean))];
-    let credits = $state(creditsWith([]));
-    let creditsOpen = $state(false);
-    let creditsBox = $state<HTMLElement>();
     // A look-around drag that ends over the margin clicks the dialog too: only a press on the backdrop closes it.
     let pressedBackdrop = false;
     let engine: TrailView | undefined;
     let view = $state<View>();
     let width = $state(0), height = $state(0);
+    // The window keeps what it opens with: route number i + 1 of the engine is routes[i].
+    const opened = untrack(() => ({ ...props })), { near, routes } = opened;
+    const routeCredits = recordCredits(routes ?? []);
+    let credits = $state(creditsWith(routeCredits));
     // The plan's route draws on the terrain in the colours of its days, its grade or its surface, with a pin at
     // each night and a marker at the point of the profile under the pointer, until the rider hides it.
-    const hasRoute = $derived(near.route.length > 1);
-    const line = $derived([...near.route]);
+    const hasRoute = !!near && near.route.length > 1;
+    const line = [...near?.route ?? []];
     let routeShown = $state(true), look = $state<RouteLook>('day'), position = $state<number | null>(null);
-    const nightPins = $derived(near.overlay.nights.map(night => ({ coordinate: night.coordinate, colour: night.color, badge: nightBadge(night) })));
+    const nightPins = near?.overlay.nights.map(night => ({ coordinate: night.coordinate, colour: night.color, badge: nightBadge(night) })) ?? [];
+    // The route under the pointer is bold; with none, the selected route.
+    let hovered: number | null = null, bolded: number | null | undefined;
+    const bold = () => {
+        if (!routes || !engine) return;
+        const number = hovered ?? (routes.findIndex(route => route.id === props.selected) + 1 || null);
+        if (number === bolded) return;
+        bolded = number;
+        engine.boldRoute(number);
+    };
+    $effect(() => {
+        void props.selected;
+        untrack(bold);
+    });
+    const pointer = routes && {
+        onhover: (x: number, y: number) => { hovered = engine?.routeAt(x, y) ?? null; bold(); },
+        onclick: (x: number, y: number) => {
+            const number = engine?.routeAt(x, y);
+            props.onselect?.(number ? routes[number - 1].id : undefined);
+        },
+    };
     const drawRoute = () => {
-        engine?.showRoute(routeShown ? near.route : [], near.overlay.colours[look]);
+        if (routes) {
+            engine?.showRoutes(routes.map(route => ({ line: route.line, profile: route.profile, colours: route.line.slice(1).map(() => route.colour) })));
+            bolded = undefined;
+            bold();
+            return;
+        }
+        if (!near) return;
+        engine?.showRoutes(routeShown ? [{ line: near.route, colours: near.overlay.colours[look] }] : []);
         engine?.showPins(routeShown && hasRoute ? nightPins : []);
         drawMarker();
     };
     // The marker takes the colour of the edge it stands on.
     const drawMarker = () => {
+        if (!near) return;
         const colours = near.overlay.colours[look], edge = Math.max(sampleIndex(near.overlay.profile, position ?? 0) - 1, 0);
         engine?.showMarker(!routeShown || position === null ? null : coordinateAt(line, position), colours[Math.min(edge, colours.length - 1)]);
     };
@@ -59,7 +111,7 @@
         dialog.showModal();
         // Only the transform animates: a new canvas size makes the engine's render targets again and restarts its frame history.
         const box = dialog.getBoundingClientRect();
-        dialog.style.transformOrigin = `${origin[0] - box.left}px ${origin[1] - box.top}px`;
+        dialog.style.transformOrigin = `${props.origin[0] - box.left}px ${props.origin[1] - box.top}px`;
         const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
         dialog.animate(still ? [{ opacity: 0 }, { opacity: 1 }] : [{ transform: 'scale(0.04)' }, { transform: 'none' }],
             { duration: still ? 200 : 420, easing: 'cubic-bezier(.2,.8,.2,1)' });
@@ -69,7 +121,8 @@
         (async () => {
             const chunk = await loadTrailView();
             if (abort.signal.aborted) return;
-            const started = await chunk.startTrailView(canvas, config, { ...defaultView([at[0], at[1], at[0], at[1]]), heading: FIRST_HEADING }, near);
+            const start = opened.routes ? opened.view : { ...defaultView([opened.at[0], opened.at[1], opened.at[0], opened.at[1]]), heading: FIRST_HEADING };
+            const started = await chunk.startTrailView(canvas, config, start, near, abort.signal, pointer);
             if (!started) {
                 failure = 'gpu' in navigator ? 'TrailView cannot use the graphics card of this device.'
                     : 'TrailView needs WebGPU. Open the planner in a current version of Chrome, Edge or Safari.';
@@ -84,7 +137,7 @@
             drawRoute();
             view = started.view;
             started.onView = (next) => view = next;
-            credits = creditsWith(started.attribution);
+            credits = creditsWith([...started.attribution, ...routeCredits]);
             if (await chunk.viewSettled(started, abort.signal)) ground = true;
             else if (!abort.signal.aborted) failure = 'TrailView could not load this place. Close the window and try again.';
         })().catch((error: unknown) => {
@@ -107,11 +160,10 @@
 
 <!-- A click on the backdrop lands on the dialog itself; its content fills it. Esc closes a modal dialog by itself.
      Esc and the Ctrl and Cmd shortcuts stop at the window: the planner below reads them on `window`, the engine reads none of them. -->
-<dialog bind:this={dialog} bind:clientWidth={width} bind:clientHeight={height} class="window" aria-label="TrailView" onclose={onClose}
+<dialog bind:this={dialog} bind:clientWidth={width} bind:clientHeight={height} class="window" aria-label="TrailView" onclose={props.onClose}
     onpointerdown={event => pressedBackdrop = event.target === dialog}
     onclick={event => {
         if (pressedBackdrop && event.target === dialog) dialog.close();
-        else if (creditsOpen && !creditsBox?.contains(event.target as Node)) creditsOpen = false;
     }}
     onkeydown={event => { if (event.key === 'Escape' || event.ctrlKey || event.metaKey) event.stopPropagation(); }}
     oncopy={event => {
@@ -121,7 +173,7 @@
         event.preventDefault();
     }}>
     <!-- Focusable, so that after a click on the view the keys still pass through the dialog. -->
-    <canvas bind:this={canvas} tabindex="-1"></canvas>
+    <canvas bind:this={canvas} tabindex="-1" onpointerleave={() => { if (routes) { hovered = null; bold(); } }}></canvas>
     <div class="cover" class:gone={ground && !failure}>
         {#if !failure}<p class="loading" role="status"><span class="spinner" aria-hidden="true"></span>Loading the view</p>{/if}
     </div>
@@ -135,23 +187,15 @@
                 <button type="button" aria-pressed={look === 'grade'} disabled={!routeShown} onclick={() => choose('grade')}><Icon name="mountain" />Grade</button>
                 <button type="button" aria-pressed={look === 'surface'} disabled={!routeShown} onclick={() => choose('surface')}><Icon name="layers" />Surface</button>
             </div>
-            {#if routeShown}
+            {#if routeShown && near}
                 <TrailViewProfile profile={near.overlay.profile} colours={near.overlay.colours[look]} total={cumulative(line).at(-1) ?? 0}
                     onHover={progress => { position = progress; drawMarker(); }} />
             {/if}
         {/if}
     {/if}
+    {#if props.card}<div class="card">{@render props.card(() => canvas.focus())}</div>{/if}
     <button type="button" class="close" aria-label="Close TrailView" onclick={() => dialog.close()}><Icon name="close" /></button>
-    {#if credits.length}
-        <!-- Touch has no hover, so a tap toggles the credits. -->
-        <div class="credits" class:open={creditsOpen} bind:this={creditsBox}>
-            <small id="trailview-credits" role="tooltip">{credits.join(' · ')}</small>
-            <button type="button" aria-label="Credits" aria-describedby="trailview-credits"
-                onclick={event => { if ('pointerType' in event && event.pointerType === 'touch') creditsOpen = !creditsOpen; }}>
-                <svg viewBox="0 0 20 20" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M4 10a6 6 0 1 0 12 0 6 6 0 1 0-12 0m5-3a1 1 0 1 0 2 0 1 1 0 1 0-2 0m0 3a1 1 0 1 1 2 0v3a1 1 0 1 1-2 0" /></svg>
-            </button>
-        </div>
-    {/if}
+    <Credits {credits} />
 </dialog>
 
 <style>
@@ -263,6 +307,22 @@
     .close:hover {
         color: var(--link);
     }
+    /* The card takes the place of the profile: right of the small map, left of the credits. */
+    .card {
+        position: absolute;
+        left: calc(max(12px, env(safe-area-inset-left)) + 232px);
+        right: calc(max(12px, env(safe-area-inset-right)) + 44px);
+        bottom: max(12px, env(safe-area-inset-bottom));
+    }
+    @media (max-width: 640px) {
+        .card {
+            left: max(12px, env(safe-area-inset-left));
+            right: max(12px, env(safe-area-inset-right));
+            bottom: calc(max(12px, env(safe-area-inset-bottom)) + 152px);
+            /* The room between the controls at the top and the small map: a long text scrolls inside the card. */
+            --card-height: calc(100dvh - 236px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+        }
+    }
     .route {
         position: absolute;
         top: max(12px, env(safe-area-inset-top));
@@ -300,47 +360,5 @@
     .route button:focus-visible {
         outline: 2px solid var(--forest);
         outline-offset: -2px;
-    }
-    .credits {
-        position: absolute;
-        right: max(10px, env(safe-area-inset-right));
-        bottom: max(10px, env(safe-area-inset-bottom));
-        display: flex;
-        flex-direction: column;
-        align-items: flex-end;
-        gap: 4px;
-    }
-    .credits small {
-        display: none;
-        max-width: min(320px, 70vw);
-        padding: 3px 8px;
-        border-radius: 8px;
-        background: var(--panel);
-        color: var(--ink-soft);
-        font: 11px var(--sans);
-    }
-    .credits button {
-        display: grid;
-        place-items: center;
-        width: 24px;
-        height: 24px;
-        padding: 0;
-        border: 0;
-        border-radius: 12px;
-        background: var(--panel);
-        color: var(--ink);
-    }
-    /* A tap leaves :hover and :focus on the button: only a real hover and keyboard focus show the credits. */
-    .credits:is(.open, :has(:focus-visible)) small {
-        display: block;
-    }
-    @media (hover: hover) {
-        .credits:hover small {
-            display: block;
-        }
-    }
-    .credits svg {
-        width: 24px;
-        height: 24px;
     }
 </style>

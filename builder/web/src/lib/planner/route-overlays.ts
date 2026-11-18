@@ -1,11 +1,12 @@
-import type { ExpressionSpecification, FilterSpecification, Map, MapGeoJSONFeature, MapMouseEvent, VectorSourceSpecification } from 'maplibre-gl';
+import type { ExpressionSpecification, FilterSpecification, LineLayerSpecification, Map, MapGeoJSONFeature, MapMouseEvent, VectorSourceSpecification } from 'maplibre-gl';
 import { PMTiles } from 'pmtiles';
 import type { Coordinate } from './map-types';
 import { releaseFetch, releaseUrl } from './release';
 
 export interface OverlayOptions { network: 'cycling' | 'hiking' | 'mtb' | 'none'; access: boolean }
 export type AccessMode = 'cycling' | 'walking';
-export interface NetworkRoute { id: number; kind: string; network: string; rank: number; name: string; ref: string; website?: string | null; symbol?: string; symbol_text?: string }
+/** A route of the tiles' `routes` layer, which leaves out each empty property. */
+export interface NetworkRoute { id: number; kind: string; network?: string; rank: number; name?: string; ref?: string; website?: string | null; symbol?: string; symbol_text?: string }
 export interface OverlaySelection {
     coordinate: Coordinate;
     way: number;
@@ -22,26 +23,25 @@ export interface OverlaySelection {
 }
 
 export const networkLevels = [
-    { label: 'International / national', color: '#7c519c', dark: '#c49de0', rank: 3 },
+    { label: 'International / national', color: '#7e41aa', dark: '#c88cf2', rank: 3 },
     { label: 'Regional', color: '#2368b5', dark: '#79b7f1', rank: 2 },
     { label: 'Local', color: '#4f8b24', dark: '#a4cf67', rank: 1 },
     { label: 'Unspecified network', color: '#626a70', dark: '#b0b8be', rank: 0 },
 ];
 const networkScopes: Record<string, string> = { i: 'International', n: 'National', r: 'Regional', l: 'Local' };
 export const routeKindTitles: Record<string, string> = { cycling: 'Cycling routes', hiking: 'Hiking routes', mtb: 'Mountain bike routes' };
-const routeKinds: Record<string, string> = { cycling: 'cycling route', hiking: 'hiking route', mtb: 'mountain bike route' };
-/** MTB routes use the cycling network values `icn` to `lcn`. */
-export function networkName({ kind, network }: Pick<NetworkRoute, 'kind' | 'network'>): string {
-    const scope = networkScopes[/^([inrl])[cw]n$/.exec(network)?.[1] ?? ''];
-    return scope && routeKinds[kind] ? `${scope} ${routeKinds[kind]}` : 'Network level unspecified';
+/** The reach of the network of a route, or '' when the network names none. MTB routes use the cycling values `icn` to `lcn`. */
+export function networkScope({ network }: Pick<NetworkRoute, 'network'>): string {
+    return networkScopes[/^([inrl])[cw]n$/.exec(network ?? '')?.[1] ?? ''] ?? '';
 }
 const source = 'route-overlays';
 const labelZoom = 11;
-const interactiveLayers = ['network-cycling', 'network-hiking', 'network-mtb', 'hiking-markers', 'access-symbols'];
+const activities = ['cycling', 'hiking', 'mtb'] as const;
+const interactiveLayers = [...activities.flatMap(activity => [`network-${activity}`, `network-${activity}-band`]), 'hiking-markers', 'access-symbols'];
 const layers = {
-    cycling: ['network-cycling', 'network-cycling-labels'],
-    hiking: ['network-hiking', 'network-hiking-labels', 'hiking-markers'],
-    mtb: ['network-mtb', 'network-mtb-labels'],
+    cycling: ['network-cycling', 'network-cycling-band', 'network-cycling-labels'],
+    hiking: ['network-hiking', 'network-hiking-band', 'network-hiking-labels', 'hiking-markers'],
+    mtb: ['network-mtb', 'network-mtb-band', 'network-mtb-labels'],
     access: ['access-lines', 'access-symbols'],
 } as const;
 
@@ -81,7 +81,21 @@ export function routeWebsite(value?: string | null): string | null {
     } catch { return null; }
 }
 
-const networkOpacity: ExpressionSpecification = ['case', ['boolean', ['feature-state', 'hover'], false], 1, 0.8];
+/** The route under a resting pointer; `name` is empty when the tile does not name it. */
+export interface RouteHint { point: { x: number; y: number }; name: string }
+const restMs = 450;
+
+// A network is a thin line over the roads while the basemap draws few of them. From `bandZoom` a band replaces it:
+// the band lies under the lines of the basemap and is wider than its roads and paths, so they stay visible on it, and
+// a planned route stays the strongest line. The band starts at the width of the line, which fades over one zoom level.
+const bandZoom = 12;
+const lineWidth: ExpressionSpecification = ['interpolate', ['linear'], ['zoom'], 6, 1.2, 10, 1.8, bandZoom, 2.4];
+/** The share of the network colour in a band; a dark map needs more of it for the same contrast. */
+export const bandShare = { light: 0.4, dark: 0.5 };
+// The basemap draws a main road wider than a side road, and a side road wider than a path. The tiles name the class of
+// the road of a line in `road`, so the band shows about as far beside each of them. A line with no class is on a path.
+const byRoad = (path: number, minor: number, major: number): ExpressionSpecification => ['match', ['get', 'road'], 'major', major, 'minor', minor, path];
+const bandWidth: ExpressionSpecification = ['interpolate', ['exponential', 1.6], ['zoom'], bandZoom, 2.4, 13, byRoad(7, 7, 10), 15, byRoad(10, 13, 14), 18, byRoad(22, 24, 26)];
 
 const accessStatus = (mode: AccessMode): ExpressionSpecification => ['get', `${mode}_status`];
 
@@ -95,10 +109,10 @@ export class RouteOverlays {
     private failure = '';
     private routingPackage?: string;
     private installable = false;
-    private hovered?: { sourceLayer: string; id: string | number };
-    private faded = false;
+    private rest?: ReturnType<typeof setTimeout>;
 
-    constructor(private map: Map, private url: string, private status: (message: string, retry?: boolean) => void) {
+    constructor(private map: Map, private url: string, private status: (message: string, retry?: boolean) => void,
+        private hint: (hint: RouteHint | null) => void) {
         map.on('moveend', this.report);
     }
 
@@ -119,19 +133,20 @@ export class RouteOverlays {
         }
         // A theme change during the request installs into the new style instead.
         if (theme !== this.theme || this.map.getSource(source)) return;
-        this.hovered = undefined;
         this.map.addSource(source, this.loaded.source);
-        const before = this.map.getStyle().layers?.find(layer => layer.type === 'symbol')?.id;
-        const shade = (level: number) => networkLevels[level][theme === 'dark' ? 'dark' : 'color'];
-        const color: ExpressionSpecification = ['step', ['get', 'rank'], shade(3), 1, shade(2), 2, shade(1), 3, shade(0)];
-        const hovered = (on: number, off: number): ExpressionSpecification => ['case', ['boolean', ['feature-state', 'hover'], false], on, off];
-        for (const activity of ['cycling', 'hiking', 'mtb']) {
-            this.map.addLayer({
-                id: `network-${activity}`, type: 'line', source, 'source-layer': activity,
-                layout: { 'line-join': 'round', 'line-sort-key': ['get', 'rank'] },
-                paint: { 'line-color': color, 'line-opacity': networkOpacity,
-                    'line-width': ['interpolate', ['linear'], ['zoom'], 6, hovered(2.4, 1.2), 10, hovered(3, 1.8), 13, hovered(4.4, 3.2), 17, hovered(6.2, 5)] },
-            }, before);
+        const style = this.map.getStyle().layers ?? [];
+        const before = style.find(layer => layer.type === 'symbol')?.id;
+        // The bands lie over the land, the water and the structures on it, and under every line of the basemap: the
+        // boundaries of protected areas come first, then streams, cliffs, ferries, roads and paths.
+        const underLines = style.find(layer => layer.id === 'land-protected')?.id ?? before;
+        const color = this.color;
+        const layout: LineLayerSpecification['layout'] = { 'line-join': 'round', 'line-sort-key': ['get', 'rank'] };
+        for (const activity of activities) {
+            this.map.addLayer({ id: `network-${activity}`, type: 'line', source, 'source-layer': activity, maxzoom: bandZoom + 1, layout,
+                paint: { 'line-color': color, 'line-opacity': this.lineOpacity, 'line-width': lineWidth } }, before);
+            // Round ends close the step where a line of one road class meets a line of another.
+            this.map.addLayer({ id: `network-${activity}-band`, type: 'line', source, 'source-layer': activity, minzoom: bandZoom, layout: { ...layout, 'line-cap': 'round' },
+                paint: { 'line-color': this.bandColor, 'line-width': bandWidth } }, underLines);
             this.map.addLayer({
                 id: `network-${activity}-labels`, type: 'symbol', source, 'source-layer': activity, minzoom: labelZoom,
                 filter: ['!=', ['get', 'ref'], ''],
@@ -163,16 +178,27 @@ export class RouteOverlays {
         if (this.installable) void this.install(this.theme);
     }
 
-    /** Fades the networks, so the routes of the Routes view stand out over them. */
-    fade(faded: boolean) {
-        this.faded = faded;
-        this.sync();
-    }
-
     /** The routing package of the latest route. The router excludes what the overlay shows as closed, so both must match. */
     verify(routingPackage?: string) {
         this.routingPackage = routingPackage;
         this.sync();
+    }
+
+    private get color(): ExpressionSpecification {
+        const shade = (level: number) => networkLevels[level][this.theme === 'dark' ? 'dark' : 'color'];
+        return ['step', ['get', 'rank'], shade(3), 1, shade(2), 2, shade(1), 3, shade(0)];
+    }
+
+    private get lineOpacity(): ExpressionSpecification {
+        return ['interpolate', ['linear'], ['zoom'], bandZoom, 1, bandZoom + 1, 0];
+    }
+
+    // The band is the network colour mixed into the background colour of the basemap, not a transparent line: a wide
+    // transparent line darkens where a hairpin makes it cross itself.
+    private get bandColor(): ExpressionSpecification {
+        const paper = this.map.getPaintProperty('background', 'background-color') as string;
+        const share = bandShare[this.theme];
+        return ['interpolate', ['linear'], share, 0, paper, 1, this.color];
     }
 
     private get mismatch() {
@@ -185,8 +211,9 @@ export class RouteOverlays {
             const shown = !this.mismatch && (kind === 'access' ? this.options.access : this.options.network === kind);
             for (const id of ids) if (this.map.getLayer(id)) this.map.setLayoutProperty(id, 'visibility', shown ? 'visible' : 'none');
         }
-        for (const activity of ['cycling', 'hiking', 'mtb']) {
-            if (this.map.getLayer(`network-${activity}`)) this.map.setPaintProperty(`network-${activity}`, 'line-opacity', this.faded ? 0.3 : networkOpacity);
+        for (const activity of this.map.getLayer('network-cycling') ? activities : []) {
+            this.map.setPaintProperty(`network-${activity}`, 'line-opacity', this.lineOpacity);
+            this.map.setPaintProperty(`network-${activity}-band`, 'line-color', this.bandColor);
         }
         if (this.map.getLayer('access-lines')) {
             const status = accessStatus(this.accessMode);
@@ -229,17 +256,21 @@ export class RouteOverlays {
         return overlaySelection(feature, [event.lngLat.lng, event.lngLat.lat], catalog, this.accessMode);
     }
 
+    /**
+     * Whether a click opens details here. A pointer that rests on a route gets the hint: the name of the route, for a
+     * note that also names the gesture that opens the details.
+     */
     hover(event?: MapMouseEvent): boolean {
-        const feature = event ? this.featureAt(event) : undefined;
-        const next = feature && feature.sourceLayer !== 'access' && feature.id !== undefined ? { sourceLayer: feature.sourceLayer!, id: feature.id } : undefined;
-        if (next?.id !== this.hovered?.id || next?.sourceLayer !== this.hovered?.sourceLayer) {
-            if (this.map.getSource(source)) {
-                if (this.hovered) this.map.setFeatureState({ source, ...this.hovered }, { hover: false });
-                if (next) this.map.setFeatureState({ source, ...next }, { hover: true });
-            }
-            this.hovered = next;
-        }
-        return !!feature;
+        clearTimeout(this.rest);
+        this.hint(null);
+        const feature = event && this.featureAt(event);
+        if (!feature || feature.sourceLayer === 'access') return !!feature;
+        this.rest = setTimeout(() => {
+            const routes = this.hit(event)?.routes ?? [];
+            const named = routes.find(route => route.name || route.ref);
+            this.hint({ point: event.point, name: named ? `${named.name || named.ref}${routes.length > 1 ? ` +${routes.length - 1}` : ''}` : '' });
+        }, restMs);
+        return false;
     }
 
     destroy() {

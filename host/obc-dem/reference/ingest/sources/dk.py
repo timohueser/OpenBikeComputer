@@ -38,4 +38,7 @@ DK = DhmWcs(
     coverage="dhm_terraen",
     epsg=25832,
     image_format="GTiff",
+    # Chosen with the owner: the gateway answers 504 to a request that runs longer than about
+    # 10 s, which a 2000-pixel box at 0.4 m reaches while the service is busy.
+    cap=1000,
 )

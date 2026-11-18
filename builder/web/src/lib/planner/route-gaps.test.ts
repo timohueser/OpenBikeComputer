@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
+import { settings } from '../settings/settings.svelte';
 import { calculateLine, type EngineRoute } from './routing';
 import { emptyTrip, planView, type RoutePoint, type Trip } from './editor';
 import type { LegCache } from './route-legs';
@@ -32,6 +33,10 @@ describe('route gaps', () => {
         expect(gap.at).toBeCloseTo(2.224, 2);
         expect(gapLabel(gap)).toBe('Ends 220 m before your point');
         expect(gapLabel({ ...gap, point: { ...gap.point, kind: 'start' }, km: 1.24 })).toBe('Starts 1.2 km from your point');
+        settings.units = 'mi';
+        onTestFinished(() => { settings.units = 'km'; });
+        expect(gapLabel(gap)).toBe('Ends 0.1\u00a0mi before your point');
+        expect(gapLabel({ ...gap, km: 1.24 })).toBe('Ends 0.8\u00a0mi before your point');
     });
 
     it('names an off-road loop start once, where the route starts', async () => {

@@ -3,18 +3,19 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "pretest": "node -e \"require('node:fs').rmSync('../../../../.artifacts/web-builder', { recursive: true, force: true })\" && VITE_PLANNER_CONFIG=\"$(cat basemap-config.json)\" VITE_CATALOG_URL=/catalog/catalog.json npm run build:web --prefix ../..",
-    "test": "playwright test",
-    "pretest:live": "node -e \"require('node:fs').rmSync('../../../../.artifacts/web-builder-live', { recursive: true, force: true })\" && VITE_PLANNER_CONFIG=\"$(cat basemap-config.json)\" VITE_CATALOG_URL=https://maps.openbikecomputer.com/cell-catalog/catalog.json npm run build:web --prefix ../..",
-    "test:live": "playwright test --config playwright.live.config.js",
-    "pretest:planner": "VITE_PLANNER_CONFIG=\"$(cat planner/config.json)\" npm run build:planner --prefix ../..",
+    "pretest:planner": "VITE_FAKE_DEVICE=1 VITE_PLANNER_CONFIG=\"$(cat planner/config.json)\" npm run build:planner --prefix ../..",
     "test:planner": "playwright test --config playwright.planner.config.js",
     "pretest:data": "npm run build:data --prefix ../..",
     "test:data": "playwright test --config playwright.data.config.js",
     "pretest:trailview": "VITE_PLANNER_CONFIG=\"$(cat trailview/fixture/config.json)\" npm run build:trailview --prefix ../..",
-    "test:trailview": "playwright test --config playwright.trailview.config.js"
+    "test:trailview": "playwright test --config playwright.trailview.config.js",
+    "ux-study": "node ux-study/run.js",
+    "test:ux-study": "node --test 'ux-study/*.test.js'"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "1.8.0"
   }
 }

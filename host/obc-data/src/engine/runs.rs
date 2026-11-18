@@ -30,11 +30,15 @@ pub struct Limits {
 }
 
 impl Limits {
-    /// One step per core, and three quarters of the physical memory: the rest is for the engine,
-    /// the page cache and the other programs of the machine.
+    /// One step per core that the process can use, and three quarters of the smaller of the
+    /// physical memory and the least `memory.max` of its cgroups: the rest is for the engine, the
+    /// page cache and the other programs, which the cgroup limit counts too.
     pub fn machine() -> Self {
+        // `available_parallelism` already honours the affinity mask and the cgroup `cpu.max`.
         let jobs = std::thread::available_parallelism().map_or(1, |n| n.get());
-        Self { jobs, memory_bytes: memory().map(|memory| memory - memory / 4) }
+        let cgroup = super::cgroup::limit();
+        let memory = memory().into_iter().chain(cgroup).min();
+        Self { jobs, memory_bytes: memory.map(|memory| memory - memory / 4) }
     }
 }
 
@@ -515,6 +519,8 @@ impl Run {
         }
         self.plan_layers(plan, &ordered)?;
         self.fetch(context, plan)?;
+        let memory = limits.memory_bytes.map_or("no limit".into(), bytes);
+        self.line(&format!("limits: {} jobs, {memory} of memory", limits.jobs))?;
 
         let planned: HashMap<&str, &Build> = plan.builds().map(|build| (build.step.as_str(), build)).collect();
         let exact = |build: &Build| build.estimate.filter(|estimate| !estimate.guess)?.peak_rss_bytes;
@@ -709,6 +715,16 @@ impl Run {
         }
         if let Some(step) = pending.first() {
             return Err(format!("step `{}` reads a layer that the run did not build; plan again", step.name));
+        }
+        // A collection keeps the layer of a cache step that a run used last, also when the run
+        // reused an older one.
+        let used = crate::date::timestamp(crate::date::now());
+        for output in steps.iter().filter(|step| step.layer.cache).filter_map(|step| done.get(step.name.as_str())) {
+            let _lock = store.lock(&format!("layer-{}", output.key))?;
+            if let Some(mut receipt) = store.layer(&output.key)? {
+                receipt.used = Some(used.clone());
+                store.put_layer(&receipt)?;
+            }
         }
         self.count_leaves()?;
         built.sort_by_key(|built| position[built.receipt.step.as_str()]);
@@ -1483,9 +1499,11 @@ pub(crate) mod tests {
         assert!(err.starts_with("step `test/join`: `python3 join.py` failed"), "{err}");
         let failed = list(&fixture.store).unwrap().remove(0);
         let lines = logged(&fixture.store, &failed.id);
-        assert_eq!(lines[..2], ["started `obc data build test`", "test/upper started"]);
-        assert!(lines[2].starts_with("test/upper built in ") && lines[2].ends_with(", 5 B"), "{lines:?}");
-        assert!(lines[4].starts_with("test/join failed: "), "{lines:?}");
+        assert_eq!(lines[0], "started `obc data build test`");
+        assert!(lines[1].starts_with("limits: ") && lines[1].ends_with(" of memory"), "{lines:?}");
+        assert_eq!(lines[2], "test/upper started");
+        assert!(lines[3].starts_with("test/upper built in ") && lines[3].ends_with(", 5 B"), "{lines:?}");
+        assert!(lines[5].starts_with("test/join failed: "), "{lines:?}");
         let status = status(&fixture.store, &failed.id).unwrap();
         let progress = (&status.layers[0].layer, status.layers[0].done, status.layers[0].total);
         assert_eq!(progress, (&"test".to_string(), 1, 3), "test/upper of three steps");
@@ -1519,6 +1537,28 @@ pub(crate) mod tests {
         assert_eq!(last.log.last().map(|line| &line[9..18]), Some("finished "));
         let error = view(&fixture.store, &failed.id).unwrap().status.steps[1].error.clone();
         assert_eq!(error.as_deref(), Some(&err["step `test/join`: ".len()..]));
+    }
+
+    #[test]
+    fn a_run_marks_the_cache_layers_that_it_used() {
+        static CACHE: crate::engine::Layer =
+            crate::engine::Layer { name: "cache", cache: true, ..crate::engine::tests::TEST };
+        let fixture = fixture("runs-cache");
+        let steps = |after: u32| {
+            let cache = step("test/cache", vec![snapshot("head", "1", &[])], "out.txt", StepRun::Rust(&NAMED));
+            let next = step("test/after", vec![Input::step("test/cache")], "out.txt", StepRun::Rust(&NAMED));
+            vec![Step { layer: &CACHE, ..cache }, Step { options: serde_json::json!({ "after": after }), ..next }]
+        };
+        let built = fixture.build(&steps(1)).unwrap();
+        let key = built.iter().find(|built| built.receipt.step == "test/cache").unwrap().receipt.key.clone();
+        let mut receipt = fixture.store.layer(&key).unwrap().unwrap();
+        assert!(receipt.used.is_some(), "the run that built it used it");
+        receipt.used = None;
+        fixture.store.put_layer(&receipt).unwrap();
+        // A run that reads the cache layer and builds only the step after it.
+        let built = fixture.build(&steps(2)).unwrap();
+        assert!(built.iter().all(|built| built.receipt.step != "test/cache"));
+        assert!(fixture.store.layer(&key).unwrap().unwrap().used.is_some(), "a run that read it used it");
     }
 
     #[test]
@@ -1817,12 +1857,14 @@ open(os.path.join(request['output'], 'out.txt'), 'w').write(f'{start} {time.time
                 step: step.into(),
                 format: 1,
                 revision: 1,
+                cache: false,
                 key: crate::store::sha256_hex(b"old"),
                 inputs: Vec::new(),
                 options: serde_json::json!({}),
                 digest: String::new(),
                 files: Vec::new(),
                 built: "2026-10-01T00:00:00Z".into(),
+                used: None,
                 wall_ms: 0,
                 cpu_ms: None,
                 peak_rss_bytes: Some(peak),

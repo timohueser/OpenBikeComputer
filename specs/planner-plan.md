@@ -36,7 +36,7 @@ does not require them and the web planner ignores their values. A reader ignores
 | --- | --- |
 | `points` | Array of point objects |
 | `routeOrder` | Array of point IDs in route order, as specified below |
-| `days` | Integer from 1 to 14 |
+| `days` | Integer from 1 to 32 |
 | `daysSet` | Optional `true`; the rider set `days`. Without it, the planner guessed `days`. |
 | `budget` | Optional; written as `"days"` |
 | `target` | Optional; written as the value of `days` |
@@ -45,6 +45,7 @@ does not require them and the web planner ignores their values. A reader ignores
 | `name` | Optional signed-route name |
 | `bike` | Optional activity: `road`, `gravel`, `touring`, `mtb` or `hiking` |
 | `preset` | Optional preset: `Balanced`, `Less climbing` (`touring`, `road` and `gravel` only), `Technical` (`mtb` only) or `Alpine` (`hiking` only). A reader uses `Balanced` for a preset that the activity does not have |
+| `pace` | Optional pace of a ride: `easy`, `moderate`, `sporty` or `fast`. A reader shows the times at `moderate` for a missing or unknown value |
 | `startDate` | Optional valid calendar date in `YYYY-MM-DD` form |
 | `loop` | Optional `true`; the start also ends the route |
 | `restAfter` | Optional array of riding-day numbers from 1 to `days` |

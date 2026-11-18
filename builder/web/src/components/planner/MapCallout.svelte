@@ -7,20 +7,22 @@
 
 <script lang="ts">
     import { onMount, tick, type Snippet } from 'svelte';
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import OpeningHours from './OpeningHours.svelte';
     import PlaceContent from './PlaceContent.svelte';
     import { kindLabel } from '../../lib/planner/search/presentation';
     import { websiteLink, phoneNumbers, phoneLink } from '../../lib/planner/contact-links';
-    import Segmented from './Segmented.svelte';
+    import Segmented from '../../lib/ui/Segmented.svelte';
     import { placeCategories } from '../../lib/planner/poi-kinds';
     import { canMoveLoopStart, hasEndpoints as endpointsChosen, maxRidingDays, planView, provisionalDays, type Day, type LegMode, type Place, type RoutePoint, type Trip } from '../../lib/planner/editor';
     import { nearestProgress, type Coordinate } from '../../lib/planner/geo';
     import type { RoutingLine } from '../../lib/planner/routing';
+    import { distanceIn, heightIn, heightUnit } from '../../lib/settings/format';
+    import { settings } from '../../lib/settings/settings.svelte';
 
     let {
         kind, trip, line, days, detailsError = '', dayLabels, night, point, place, coordinate, legMode, takeFocus = true,
-        onClose, onEndpoint, onRoutes, onAddHere, onLegMode, onInsert, onLoop, onLoopStart, onPick, onChooseNight, onStay, onAddVisit, onRename, onKind, onRemove, children,
+        onClose, onEndpoint, onAddHere, onLegMode, onInsert, onLoop, onLoopStart, onPick, onChooseNight, onStay, onAddVisit, onRename, onKind, onRemove, children,
     }: {
         detailsError?: string;
         kind: CalloutKind;
@@ -41,8 +43,6 @@
         /** False keeps the focus where it is, such as in a radio group that moves on with the arrow keys. */
         takeFocus?: boolean;
         onEndpoint?: (kind: 'start' | 'finish') => void;
-        /** "Signed routes from here" on a place or a map point. */
-        onRoutes?: () => void;
         onClose: () => void;
         onAddHere: (kind: EditableKind) => void;
         onLegMode: (mode: LegMode) => void;
@@ -137,9 +137,6 @@
         {#if detailsError}<p class="hint" role="status">{detailsError}</p>{/if}
         {#if place.openingHours || ['shop','food','pharmacy','hotel','bike'].includes(place.category)}<OpeningHours value={place.openingHours} />{/if}
     {/snippet}
-    {#snippet routes()}
-        {#if onRoutes}<button type="button" class="secondary" onclick={onRoutes}><Icon name="diamond" size={15} />Signed routes from here</button>{/if}
-    {/snippet}
     {#snippet endpoints()}
         {#if onEndpoint}<div class="add-types endpoints">
             <button type="button" onclick={() => onEndpoint?.('start')}><Icon name="pin" size={15} />Start here</button>
@@ -149,7 +146,6 @@
     {#if kind === 'add'}
         <h2>{hasEndpoints ? 'Add point here' : 'Plan from here'}</h2>
         {@render endpoints()}
-        {@render routes()}
         {#if hasEndpoints}
         <div class="add-types">
             {#each types.filter(type => type.value !== 'marker') as type (type.value)}
@@ -181,7 +177,6 @@
         </div>
         {#if place}{@render about(place)}{/if}
         {#if place}{@render endpoints()}{/if}
-        {#if place}{@render routes()}{/if}
         {#if sleeps}
             <label class="field">End of day
                 <select bind:value={sleepDay}>
@@ -191,7 +186,7 @@
                 </select>
             </label>
             {#if preview}
-                <p class="predict">Day {dayLabels[sleepDay]} would be ≈ <strong>{preview.distance.toFixed(1)} km ↑ {preview.ascent} m</strong></p>
+                <p class="predict">Day {dayLabels[sleepDay]} would be ≈ <strong>{distanceIn(preview.distance * 1000).toFixed(1)} {settings.units} ↑ {Math.round(heightIn(preview.ascent))} {heightUnit()}</strong></p>
             {/if}
             {#if sleepDay >= maxRidingDays}<p class="hint">A trip can have up to {maxRidingDays} riding days. Choose an earlier day for this overnight.</p>{/if}
             <button type="button" class="primary" disabled={sleepDay >= maxRidingDays} onclick={() => onStay(sleepDay)}>{days[sleepDay - 1]?.pinned ? 'Replace overnight' : 'Stay here'}<Icon name="check" size={15} /></button>

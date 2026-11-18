@@ -1,5 +1,7 @@
-/** The two hosts the planner build is pointed at (see `config.json`). */
-export const HOSTS = { tiles: 'tiles.test', api: 'api.test' };
+import { createHash } from 'node:crypto';
+
+/** The two hosts the planner build is pointed at (see `config.json`), and the host of its planner catalogue. */
+export const HOSTS = { tiles: 'tiles.test', api: 'api.test', catalog: 'maps.openbikecomputer.com' };
 
 /** The tile Worker serves these, and Cloudflare bills them; the VPS serves `api`. */
 export const CLOUDFLARE = ['basemap', 'places', 'overlays', 'terrain', 'glyphs', 'sprites'];
@@ -25,6 +27,7 @@ export function classify(url) {
     if (pathname.startsWith('/fonts')) return 'glyphs';
     if (pathname.startsWith('/sprites')) return 'sprites';
     if (pathname.startsWith('/places')) return 'places';
+    if (pathname.startsWith('/routes/')) return 'routes';
     return pathname.startsWith('/overlays') ? 'overlays' : 'basemap';
   }
   if (hostname === HOSTS.api) {
@@ -32,6 +35,7 @@ export function classify(url) {
     if (pathname.endsWith('/v1/region')) return 'region';
     return pathname.endsWith('/reverse') ? 'reverse' : 'query';
   }
+  if (hostname === HOSTS.catalog && pathname.startsWith('/route-pictures/')) return 'pictures';
   return `other:${hostname}`;
 }
 
@@ -67,7 +71,37 @@ function route(points, profile) {
   };
 }
 
-/** The response for a request to one of the two hosts, or null when the path has no stub. */
+/** The zoom 9 cell of the route catalog around Freiburg that holds `CATALOG`; every other cell has no route. */
+const ROUTE_CELL = '9-267-177';
+/** Integer microdegrees: the first point, then the difference of each point to the one before (`specs/route-catalog.md`). */
+const udeg = points => points.map(point => point.map(value => Math.round(value * 1e6)))
+  .flatMap((point, i, all) => i ? [point[0] - all[i - 1][0], point[1] - all[i - 1][1]] : point);
+/** A loop with a profile and an official page, stage 2 of a long route, the long route, and a cycle route. */
+const CATALOG = [
+  { id: 101, kind: 'hiking', name: 'Schlossberg loop', rank: 1, loop: true, length_m: 1200, ascent_m: 150, descent_m: 150, hardest: 1,
+    description: 'Over the castle hill', operator: 'Test club', website: 'https://example.test/schlossberg', symbol: 'red:white:red_bar',
+    cells: [ROUTE_CELL], line_udeg: udeg([[7.85, 47.99], [7.86, 47.995], [7.855, 48.0], [7.85, 47.99]]), via: [1, 2],
+    profile_m: Array.from({ length: 14 }, (_, i) => 300 + 10 * Math.min(i, 13 - i)) },
+  { id: 202, kind: 'hiking', name: 'Westweg 2', ref: 'WW', rank: 3, loop: false, length_m: 2500, ascent_m: 80, descent_m: 20, hardest: 0,
+    cells: [ROUTE_CELL], line_udeg: udeg([[7.88, 47.98], [7.9, 47.985], [7.91, 48.0]]), via: [1], parent: 300, stage: 2 },
+  { id: 300, kind: 'hiking', name: 'Westweg', rank: 3, loop: false, length_m: 5000, ascent_m: 200, descent_m: 100, cells: [ROUTE_CELL],
+    stages: [201, 202], start_udeg: [7_800_000, 47_970_000] },
+  { id: 303, kind: 'bicycle', name: 'Dreisam path', rank: 2, loop: false, length_m: 3000, ascent_m: 10, descent_m: 10, cells: [ROUTE_CELL],
+    line_udeg: udeg([[7.83, 47.99], [7.87, 47.99]]), via: [] },
+];
+
+/** The live set of route pictures (`specs/route-pictures.md`) holds a cover of the first route of `CATALOG` only. */
+const LOOK = '1|0715-1000|960|640';
+const SET = '0123456789abcdef';
+const COVERED = CATALOG[0];
+const COVER = createHash('sha256').update(`${LOOK}|${COVERED.line_udeg.join(',')}`).digest('hex').slice(0, 16);
+const PICTURES = {
+  'manifest.json': { format: 1, set: SET, look: LOOK, months: { '07': '0715-1000' }, default_month: '07', credits: ['© Test terrain'] },
+  [`sets/${SET}/cells/${ROUTE_CELL}.json`]: { format: 1, routes: { [COVERED.id]: COVER } },
+  [`covers/${COVERED.id}/${COVER}.json`]: { x: [100, 860, 480, 100], y: [100, 300, 540, 100], eye: [140, 140, 140, 140] },
+};
+
+/** The response for a request to one of the hosts, or null when the path has no stub. */
 export function respond(request) {
   const url = new URL(request.url());
   const kind = classify(url);
@@ -85,6 +119,13 @@ export function respond(request) {
       return { headers: CORS, contentType: 'application/x-protobuf', body: Buffer.alloc(0) };
     case 'sprites':
       return url.pathname.endsWith('.png') ? { headers: CORS, contentType: 'image/png', body: PIXEL } : json({});
+    case 'pictures': {
+      const path = url.pathname.slice('/route-pictures/'.length);
+      if ([`covers/${COVERED.id}/${COVER}-0715-1000.webp`, `covers/${COVERED.id}/${COVER}-0715-1000-small.webp`].includes(path)) return { headers: CORS, contentType: 'image/png', body: PIXEL };
+      return PICTURES[path] ? json(PICTURES[path]) : { headers: CORS, status: 404 };
+    }
+    case 'routes':
+      return json({ format: 1, routes: url.pathname.endsWith(`/${ROUTE_CELL}.json`) ? CATALOG : [] });
     case 'route': {
       const { points, profile } = request.postDataJSON();
       return json({ routes: [route(points, profile)] });

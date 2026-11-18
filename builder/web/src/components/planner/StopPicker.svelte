@@ -1,5 +1,5 @@
 <script lang="ts">
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import StopCard from './StopCard.svelte';
     import StayChip from './StayChip.svelte';
     import { dayColor } from '../../lib/planner/day-colors';
@@ -8,6 +8,8 @@
     import type { NightStops } from '../../lib/planner/night-stops.svelte';
     import type { Place, Stay, Trip } from '../../lib/planner/editor';
     import type { RoutingLine } from '../../lib/planner/routing';
+    import { distanceIn } from '../../lib/settings/format';
+    import { settings } from '../../lib/settings/settings.svelte';
 
     let { trip, line, night, labels, back, theme, found, window, stopId, shownId, date, elevationAt, kinds, onOpen, onEndHere, onStay, onSelectPlace, onPick, onRetry, onCancel, onKinds, onRelease }: {
         trip: Trip;
@@ -44,6 +46,7 @@
         /** Makes a kept or moved night a suggestion again. */
         onRelease?: () => void;
     } = $props();
+    const at = (km: number) => Math.round(distanceIn(km * 1000));
 
     const stops = $derived(found?.state === 'ready' ? found.stops.filter(stop => suits(stop, kinds)) : []);
     const even = $derived(evenStop(stops, trip, line, night));
@@ -94,7 +97,7 @@
                     {/each}
                 </ul>
             {:else}
-                <p class="state" role="status">No {kinds.length === 1 ? stayNouns[kinds[0]] : 'place to sleep'} between km {Math.round(window[0])} and {Math.round(window[1])}.</p>
+                <p class="state" role="status">No {kinds.length === 1 ? stayNouns[kinds[0]] : 'place to sleep'} between {settings.units} {at(window[0])} and {at(window[1])}.</p>
             {/if}
         {:else if found?.state === 'error'}
             <p class="state" role="status">{found.message}</p>

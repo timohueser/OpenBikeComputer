@@ -137,7 +137,7 @@ def archive(path, kind, vector=None):
         reader = Reader(read)
         header, metadata = reader.header(), reader.metadata()
         colour = kind.startswith('trailview-colour-q')
-        expected = (TileType.UNKNOWN if kind in {'snow-seasons', 'climate', 'trailview-features'} or colour
+        expected = (TileType.UNKNOWN if kind in {'snow-seasons', 'climate', 'trailview-features', 'trailview-stamps'} or colour
                     else TileType.WEBP if kind in {'terrain', 'snow', 'snow-levels'} or kind.startswith('trailview-')
                     else TileType.MVT)
         if header['tile_type'] != expected:

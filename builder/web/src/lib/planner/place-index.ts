@@ -3,6 +3,7 @@ import { PbfReader } from 'pbf';
 import type { Place } from './editor';
 import { kmPerDegree, routeDistance, type Coordinate } from './geo';
 import { openSource, requestSignal, type Source } from './layers/archive';
+import type { TilePlace } from './place-groups';
 import { poiKinds } from './poi-kinds';
 
 /** Place tile IDs use namespaces 1–3 for OSM elements and 4 for Wikidata, above the 44-bit ID. */
@@ -22,14 +23,18 @@ export function poiPlace(id: string | number | undefined, kind: string, name: un
     };
 }
 
+/** The fractional Web Mercator tile column of a longitude and row of a latitude at `zoom`. */
+export const tileColumn = (lon: number, zoom: number) => (lon + 180) / 360 * 2 ** zoom;
+export const tileRow = (lat: number, zoom: number) => {
+    const rad = lat * Math.PI / 180;
+    return (1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2 * 2 ** zoom;
+};
+
 /** Keys `z/x/y` of the tiles at `zoom` that a square buffer of `bufferKm` around the route touches. */
 export function corridorTiles(coordinates: Coordinate[], bufferKm: number, zoom: number): string[] {
     const n = 2 ** zoom;
-    const column = (lon: number) => Math.floor((lon + 180) / 360 * n);
-    const row = (lat: number) => {
-        const rad = lat * Math.PI / 180;
-        return Math.floor((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2 * n);
-    };
+    const column = (lon: number) => Math.floor(tileColumn(lon, zoom));
+    const row = (lat: number) => Math.floor(tileRow(lat, zoom));
     const keys = new Set<string>();
     const dLat = bufferKm / kmPerDegree;
     // Samples no further apart than half a box or a quarter tile leave no gap between boxes.
@@ -50,36 +55,48 @@ export function corridorTiles(coordinates: Coordinate[], bufferKm: number, zoom:
 }
 
 let source: Promise<Source> | undefined;
-const tiles = new Map<string, Promise<Place[]>>();
+const tiles = new Map<string, Promise<TilePlace[]>>();
 
-/** Rider places within `bufferKm` of the route, from the archive's most detailed tiles. Each tile loads once per session. */
-export async function corridorPlaces(url: string, coordinates: Coordinate[], bufferKm = 5): Promise<Place[]> {
+async function placeArchive(url: string): Promise<Source> {
     source ??= openSource(url).catch(error => { source = undefined; throw error; });
     const archive = await source;
     // The maximum zoom sets how many tiles a corridor loads; place archives go to zoom 14 at most.
     if (!Number.isInteger(archive.maxZoom) || archive.maxZoom < 0 || archive.maxZoom > 14) throw new Error('Invalid place tile source.');
-    const loaded = await Promise.all(corridorTiles(coordinates, bufferKm, archive.maxZoom).map(key => {
-        // A tile that fails loads again on the next call.
-        if (!tiles.has(key)) tiles.set(key, loadTile(archive, key).catch(error => { tiles.delete(key); throw error; }));
-        return tiles.get(key)!;
-    }));
-    const distance = routeDistance(coordinates, bufferKm);
-    return [...new Map(loaded.flat().map(place => [place.id, place])).values()].filter(place => Number.isFinite(distance(place.coordinate)));
+    return archive;
 }
 
-async function loadTile(source: Source, key: string): Promise<Place[]> {
+/** The rider places of the place tile `z/x/y`. Each tile loads once per session. */
+export async function placeTile(url: string, key: string): Promise<TilePlace[]> {
+    const archive = await placeArchive(url);
+    // A tile that fails loads again on the next call.
+    if (!tiles.has(key)) tiles.set(key, loadTile(archive, key).catch(error => { tiles.delete(key); throw error; }));
+    return tiles.get(key)!;
+}
+
+/** Rider places within `bufferKm` of the route, from the archive's most detailed tiles. */
+export async function corridorPlaces(url: string, coordinates: Coordinate[], bufferKm = 5): Promise<Place[]> {
+    const archive = await placeArchive(url);
+    const loaded = await Promise.all(corridorTiles(coordinates, bufferKm, archive.maxZoom).map(key => placeTile(url, key)));
+    const places = loaded.flat().flatMap(place => poiPlace(place.id, place.kind, place.name, [place.lon, place.lat]) ?? []);
+    const distance = routeDistance(coordinates, bufferKm);
+    return [...new Map(places.map(place => [place.id, place])).values()].filter(place => Number.isFinite(distance(place.coordinate)));
+}
+
+async function loadTile(source: Source, key: string): Promise<TilePlace[]> {
     const [z, x, y] = key.split('/').map(Number);
     const tile = await source.get(z, x, y, requestSignal());
     const layer = tile && new VectorTile(new PbfReader(new Uint8Array(tile))).layers.pois;
     if (!layer) return [];
-    const found: Place[] = [];
+    const found: TilePlace[] = [];
     for (let i = 0; i < layer.length; i++) {
         const feature = layer.feature(i);
-        if (!poiKinds[String(feature.properties.kind)]) continue;
-        const { geometry } = feature.toGeoJSON(x, y, z);
-        if (geometry.type !== 'Point') continue;
-        const place = poiPlace(feature.id, String(feature.properties.kind), feature.properties['name:en'] ?? feature.properties.name, [Number(feature.properties.lon), Number(feature.properties.lat)]);
-        if (place) found.push(place);
+        const { kind, name, lon, lat, ele } = feature.properties;
+        const known = poiKinds[String(kind)];
+        if (!known || typeof feature.id !== 'number' || feature.toGeoJSON(x, y, z).geometry.type !== 'Point') continue;
+        found.push({
+            id: feature.id, kind: String(kind), category: known.category, name: String(feature.properties['name:en'] ?? name ?? known.label),
+            lon: Number(lon), lat: Number(lat), ...typeof ele === 'number' && { ele },
+        });
     }
     return found;
 }

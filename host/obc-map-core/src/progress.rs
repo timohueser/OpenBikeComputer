@@ -1,7 +1,7 @@
 //! What a packing run says about itself while it runs, and how it is stopped.
 //!
-//! The narration is a [`Progress`] sink the caller supplies: the CLI's prints the line, and the
-//! desktop app's forwards `(phase, line)` to the webview.
+//! The narration is a [`Progress`] sink the caller supplies: the CLI's prints the line, and an
+//! in-process caller's can forward `(phase, line)` to its UI.
 //!
 //! Two rules keep the two hosts from drifting apart. The phase vocabulary is [`Phase`] and it is
 //! closed, because the build UI derives a percentage from a phase's index, so a phase is a value

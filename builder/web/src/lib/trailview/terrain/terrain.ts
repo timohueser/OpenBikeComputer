@@ -4,33 +4,39 @@ import { VFOV } from '../frame/camera';
 import { CURVATURE, type Frame } from '../frame/frame';
 import { anchorAt, cubic, lodSpace, renderMap, UNITS, type Anchor } from '../frame/space';
 import type { Gpu } from '../gpu/device';
+import { hashBytes, hashRegions, type Region } from '../gpu/hashes';
 import { CLIP_DISTANCES } from '../gpu/include';
 import { layouts } from '../gpu/layouts';
 import { wgsl } from '../gpu/wgsl';
 import { PAGE } from '../stream/heights';
 import type { TerrainSource } from '../stream/terrain';
 import { DEPTH, sceneFormat } from '../resolve/targets';
-import { featureTile, NEAR, profileTable, waterAt } from './bins';
-import { cdlod, COARSEST, distances, EYE_M, FINEST, GRID, key, MAP, NEAR_M, RANGE, select, size, type Node, type Rule } from './lod';
-import { ARRIVALS, copies, MODE, NO_LIMIT, Pages, STAMP_WORDS, type Kind, type Page, type Stamp, type Work } from './pages';
-import { Stamps, type FeatureTiles } from './stamps';
+import { featureTile, NEAR, profileTable, STAMP_WORDS, waterAt } from './bins';
+import { CALM, cdlod, COARSEST, distances, EYE_M, FINEST, GRID, key, MAP, NEAR_M, RANGE, select, size, type Node, type Rule } from './lod';
+import { ARRIVALS, copies, MODE, NO_LIMIT, Pages, type Kind, type Page, type Stamp, type Work } from './pages';
+import { Stamps, type BakedNodes, type FeatureTiles } from './stamps';
 import { OPAQUE, Water } from './water';
 import type { RoadPiece } from '../roads/piece';
 import { Roads, type RoadStats } from '../roads/roads';
+import { Plan } from '../plan/plan';
+import { cellOf, MODEL_ROW, nearCells, Records, ROWS, type RecordsStats } from './model';
+import { CELLS_BYTES, COARSEST_MESH, meshCells, Pieces, stampNodes, type PiecesStats } from '../plan/pieces';
+import { CLIFF_JOB_BYTES, cliffJobs, packCliffJobs, type CliffJob } from './cliff';
 import { Structures } from '../structures/structures';
 import { BOX } from '../structures/node';
 
 /**
  * GPU memory for pages: the stored and the synthesized budgets for a laptop, in MiB. The feature masks
- * take their share of the synthesized budget. On a usual screen the range is the least, so the first
- * shortage of synthesized pages takes away the finest level, whose mesh alone holds a path's edges:
- * the pool holds what a frame wants at the least range, whichever way it looks.
+ * take their share of the synthesized budget. A shortage of synthesized pages leaves out the farthest
+ * pages of the finest level, and their parents draw in their place: the pool holds what a frame wants at
+ * the least range, whichever way it looks.
  */
 const BUDGET: Record<Kind, number> = { stored: 104 * 2 ** 20, synth: 67 * 2 ** 20 };
 /**
  * Feature masks of the near pages, 4 bytes per texel: 32 MiB of the synthesized budget. The views of
  * the test box draw up to 106 near pages with features, and every one of them needs its mask: a
- * page without one draws its roads unpainted.
+ * page without one draws its roads unpainted. With `ground=plan`, each mask also has its paint (32 MiB in all),
+ * its moves (8 MiB) and its cliff share (8 MiB): 48 MiB more, outside both budgets.
  */
 const MASKS = 128, MASK_BYTES = PAGE * PAGE * MASKS * 4;
 /** 16-bit heights. */
@@ -45,8 +51,6 @@ const MAX_HOLES = 32;
 const MAX_NODES = 4096;
 /** The grid cell that a level has at the far end of its range, in pixels. */
 const CELL_PIXELS = 4;
-/** Frames without a shortage before the quality rises again, when each pool would still have room: the share that it fills at most. */
-const CALM = 120, ROOM = 0.6;
 /** Heights that a node of unknown range may have, and the margin about a known range: micro-relief and bicubic overshoot. */
 const ANY_HEIGHT: [number, number] = [-500, 9000];
 const MARGIN = 50;
@@ -56,12 +60,22 @@ const LAYER_PAGES = 64;
 const CHECKS = 64;
 /** The probe reads the eye and four points this many metres east, west, north and south of it, for the slope. */
 const PROBE_STEP = 1;
+/**
+ * The probe runs again when the eye's height above the ground moves more than this many metres from that of the
+ * last probe. The probe's answer sets that height, and the height moves the answer through the morph of `lod`
+ * (drawn-height.wgsl) by D / (MORPH · above · ln 2) per metre for a gap D between two levels, far below 1, so
+ * repeated probes converge; float rounding then leaves a last swing of one step. The band ends it: 1 cm is 20
+ * times the float32 step of a ground height below 8,192 m (at most 0.5 mm), and no change that a view shows.
+ */
+const PROBE_ABOVE_M = 0.01;
 const READBACKS = 3;
 const RAD = Math.PI / 180;
+/** The workgroups of a cliff job, as ROW in cliff.wgsl. */
+const CLIFF_ROW = 32;
 /** Bytes of `Surface` and `Job` in the WGSL, and of a node instance. */
 const SURFACE_BYTES = 416, JOB_BYTES = 24, STAMP_JOB_BYTES = 32, NODE_BYTES = 16;
 /** A stamp job whose base is the synthesized page in `out`, as SYNTHESIZED in stamp.wgsl. */
-const SYNTHESIZED = 0xffffffff;
+export const SYNTHESIZED = 0xffffffff;
 /** Audit samples per run at most, words per sample, and words of results, as in audit.wgsl. */
 const SAMPLES = 2 ** 18, SAMPLE_WORDS = 12, COUNTS = 45, FOUND = 64;
 /** Cells per strip of the grid's index order. */
@@ -78,6 +92,8 @@ export interface View {
     viewProj: Float32Array;
     /** Pixels of the render target's height. */
     pixels: number;
+    /** The horizontal view direction in world units (x east, y south); undefined when the view looks nearly straight down or up. */
+    ahead?: [number, number];
 }
 
 export interface TerrainStats {
@@ -89,6 +105,8 @@ export interface TerrainStats {
     capacity: Record<Kind, number>;
     /** 0 is the best; each step draws coarser to stay in the pools. */
     quality: number;
+    /** Per level, the pages that the last frame left out: they found no room in their pool. */
+    left: number[];
     /** The stamp jobs of the last frame: heights on near pages, heights on coarser pages (lakes), and masks only. */
     jobs: { near: number; coarse: number; masks: number };
     /** Masks in use. */
@@ -96,8 +114,13 @@ export interface TerrainStats {
     /** Water and structure meshes of the last frame that did not fit in their pools. */
     waterDropped: number;
     structuresDropped: number;
+    /** How often the stamp worker hit a limit of a node's stamps: it left a primitive out, or took a cell origin near a shore. */
+    stampLimits: number;
     /** The corridors of the last frame. */
     roads: RoadStats;
+    /** With `ground=plan`, the records on the device, and the meshes near the eye. */
+    records?: RecordsStats;
+    pieces?: PiecesStats;
 }
 
 /** What the audit counts, as audit.wgsl does. */
@@ -122,6 +145,12 @@ interface Resources extends Pipelines {
     mask: GPUTexture;
     masks: GPUBuffer;
     snaps: GPUTexture;
+    /** With `ground=plan`: the records, and per mask their paint and the move of their heights (stamp.wgsl), and the cliff share (cliff.wgsl). */
+    model: GPUTexture;
+    paint: GPUTexture;
+    moved: GPUTexture;
+    cliffShare: GPUTexture;
+    cliffJobs: GPUBuffer;
     stampJobs: GPUBuffer;
     stampData: GPUBuffer;
     profiles: GPUBuffer;
@@ -130,6 +159,8 @@ interface Resources extends Pipelines {
     scales: GPUBuffer;
     nodes: GPUBuffer;
     holes: GPUBuffer;
+    /** With `ground=plan`: the cells whose meshes draw, as plan/cells.wgsl reads them. */
+    cells: GPUBuffer;
     synthJobs: GPUBuffer;
     synthOut: GPUBuffer;
     extent: GPUBuffer;
@@ -147,6 +178,9 @@ interface Resources extends Pipelines {
     eyeGroup: GPUBindGroup;
     stampGroup: GPUBindGroup;
     snapGroup: GPUBindGroup;
+    /** The cliff pass: its jobs and output, and the feature mask without the cliff share, which it writes. */
+    cliffGroup: GPUBindGroup;
+    cliffFeatures: GPUBindGroup;
     featureGroup: GPUBindGroup;
     emptyGroup: GPUBindGroup;
     /** The draw of the nodes with a tunnel's portal, after `attachParts`: until then they draw without their hole. */
@@ -168,6 +202,13 @@ export class Terrain {
     private readonly structures: Structures;
     private readonly roads: Roads;
     private roadsFree = false;
+    /** The ground plan, only with `ground=plan`. */
+    readonly plan?: Plan;
+    /** The records that shape and paint the ways, and the meshes near the eye, only with `ground=plan`. */
+    private readonly records?: Records;
+    private readonly pieces?: Pieces;
+    /** The meshes' attach, which `attach` starts: they draw the view about the eye, so they compile beside the first frame. */
+    private piecesAttached?: Promise<void>;
     /**
      * The probed ground under the eye at `lonLat`: NaN where no level knows it, a slope of 0 where no
      * level knows a point about it, and the frame that it comes from.
@@ -185,9 +226,14 @@ export class Terrain {
     private wantedNodes: Node[] = [];
     private work?: Work;
     private jobs = { near: 0, coarse: 0, masks: 0 };
+    /** With `ground=plan`: the frame's jobs of the cliff pass, and the mask layer and node of each page with a mask by name in the last frame. */
+    private cliffs: CliffJob[] = [];
+    private readonly masked = new Map<string, [number, Node]>();
     private anchor?: Anchor;
+    /** The quality, its calm frames, and whether it holds until the camera moves (stepQuality). */
     private quality = 0;
     private calm = 0;
+    private held = false;
     private selection = 0;
     private frameNumber = 0;
     private probing = 0;
@@ -195,10 +241,11 @@ export class Terrain {
     private nearDrawn = false;
     private eyeDrawn = false;
     /**
-     * The state that the last probe read, what the probe reads of the pages (`probeKey`), a count of
-     * the frames that changed it and the last of those frames.
+     * The state that the last probe read and its height above the ground, what the probe reads of the pages
+     * (`probeKey`), a count of the frames that changed it and the last of those frames.
      */
     private probed = '';
+    private probedAbove = NaN;
     private probeReads = '';
     private changes = 0;
     private changedAt = 0;
@@ -206,23 +253,40 @@ export class Terrain {
     private lonLat: [number, number] = [0, 0];
     /** The camera of the last frame, for the audit: only what the frame shows counts. */
     private seen?: { viewProj: Float32Array; z: number; forward: Float64Array };
+    /** The anchor and the view projection of the last frame: the pages rank with a margin while they change. */
+    private camera: number[] = [];
     private floor = 0;
     private instances = new Int32Array(0);
     /** The road and path profiles, as stamp-core.wgsl reads them. */
     private readonly profileTable: Float32Array<ArrayBuffer>;
 
-    /** An abort of `stop` ends the stamp worker. */
-    constructor(private readonly frame: Frame, source: TerrainSource, features: FeatureTiles | undefined, bounds: Bounds, private readonly changed: () => void, stop: AbortSignal) {
+    /**
+     * An abort of `stop` ends the stamp worker. `plan` builds the ground plan; `finest` caps the finest level and `pool` scales
+     * the page pools (debug options). The stamps read the nodes that `baked` holds. `cache` names the data of the tiles and the
+     * versions of the stamp code and of the plan's input preparation, under which the nodes' stamps and the plan's cells are
+     * cached on the device.
+     */
+    constructor(private readonly frame: Frame, source: TerrainSource, features: FeatureTiles | undefined, bounds: Bounds, private readonly changed: () => void, stop: AbortSignal, plan = false, private readonly finest = FINEST, baked?: BakedNodes, cache?: { release: string; version: string; plan: string }, pool = 1) {
         const [west, north] = worldPixel([bounds[0], bounds[3]], UNITS), [east, south] = worldPixel([bounds[2], bounds[1]], UNITS);
         this.bounds = [west, north, east, south];
         // Whole layers inside the two budgets; the synthesized pool takes its share, the stored pool the rest.
         const pages = Math.floor((BUDGET.stored + BUDGET.synth - MASK_BYTES) / PAGE_BYTES / LAYER_PAGES) * LAYER_PAGES;
         this.profileTable = profileTable();
-        this.stamps = new Stamps(features, changed, stop);
-        this.roads = new Roads(features, (z, x, y) => this.pages.body(z, x, y), changed, stop);
+        this.stamps = new Stamps(features, changed, stop, plan, baked, plan ? cache : undefined);
+        // With the ground plan the records draw the ways: no corridor holds one.
+        this.roads = new Roads(plan ? undefined : features, (z, x, y) => this.pages.body(z, x, y), changed, stop);
+        if (plan) this.plan = new Plan(features, (z, x, y) => this.pages.body(z, x, y), this.bounds, changed, stop);
         this.water = new Water(this.stamps);
         this.structures = new Structures(this.stamps);
-        this.pages = new Pages(source, { stored: pages - SYNTH_PAGES, synth: SYNTH_PAGES }, this.bounds, changed, this.stamps, MASKS);
+        const pieces = this.pieces = plan ? new Pieces(node => this.stamps.get(node)?.data) : undefined;
+        const records = this.records = plan
+            ? new Records(features, (z, x, y) => this.pages.body(z, x, y), changed, stop, mesh => pieces!.add(mesh.node, mesh.bytes, mesh.block, mesh.mouths), node => pieces!.remove(node), cache && { release: cache.release, version: cache.plan })
+            : undefined;
+        // A near page waits for its cell's records. A page of the level that the meshes draw over also waits for its cell's mesh
+        // to hold its heights: until then the coarser page draws, never the far look up close.
+        const waits = (node: Node) => records!.waits(node) || (node.level === pieces!.level && (records!.meshComing(cellOf(node)) || pieces!.ready(cellOf(node)) === false));
+        const stamps = records ? { get: (node: Node) => (waits(node) ? undefined : this.stamps.get(node)), known: (node: Node) => (waits(node) ? undefined : this.stamps.known(node)) } : this.stamps;
+        this.pages = new Pages(source, { stored: Math.round(pool * (pages - SYNTH_PAGES)), synth: Math.round(pool * SYNTH_PAGES) }, this.bounds, changed, stamps, MASKS);
     }
 
     get idle(): boolean {
@@ -236,7 +300,7 @@ export class Terrain {
 
     /** Whether road meshes or feature tiles, which carry the structure meshes, are on their way. The view about the eye waits for none. */
     get meshesLoading(): boolean {
-        return this.roads.loading || this.stamps.loading;
+        return this.roads.loading || this.stamps.loading || (!!this.plan?.debug && this.plan.loading) || !!this.records?.loading || !!this.pieces?.loading;
     }
 
     /**
@@ -264,15 +328,10 @@ export class Terrain {
 
     /** True while the terrain needs frames that no tile load, feature tile or probe will ask for. */
     get working(): boolean {
-        // A frame that changed nothing while feature tiles are on their way waits for them. Only frames
-        // count the calm that raises the quality, so a still view goes on until it rises.
-        return (!this.pages.idle && this.pages.loads === 0 && (this.newContent || !this.stamps.loading)) || this.calm === 0 || this.raisable;
-    }
-
-    /** Whether the quality can rise: each pool would still have room. */
-    private get raisable(): boolean {
-        const { capacity, wanted } = this.pages;
-        return this.quality > 0 && wanted.stored < ROOM * capacity.stored && wanted.synth < ROOM * capacity.synth;
+        // A frame that changed nothing while feature tiles are on their way waits for them. A still view takes the frame after a
+        // quality step, in which a finer quality is tried (stepQuality). Only frames count the calm that brings the meshes back, so
+        // a still view goes on until they do.
+        return (!this.pages.idle && this.pages.loads === 0 && (this.newContent || !this.stamps.loading)) || this.calm === 0 || !!this.pieces?.returning;
     }
 
     /** A new view: a probe from before it never sets the ground. */
@@ -294,8 +353,10 @@ export class Terrain {
             if (page.mask !== undefined) masks++;
         }
         return {
-            nodes: this.nodes.length, triangles: 2 * GRID * GRID * this.nodes.length, selection: this.selection, resident, capacity: { ...this.pages.capacity }, quality: this.quality,
-            jobs: this.jobs, masks, waterDropped: this.water.dropped, structuresDropped: this.structures.dropped, roads: this.roads.stats,
+            nodes: this.nodes.length, triangles: 2 * GRID * GRID * this.nodes.length, selection: this.selection, resident, capacity: { ...this.pages.capacity }, quality: this.quality, left: [...this.pages.left],
+            jobs: this.jobs, masks, waterDropped: this.water.dropped, structuresDropped: this.structures.dropped, stampLimits: this.stamps.limits, roads: this.roads.stats,
+            ...(this.records ? { records: this.records.stats } : {}),
+            ...(this.pieces ? { pieces: this.pieces.stats } : {}),
         };
     }
 
@@ -335,34 +396,46 @@ export class Terrain {
      * again, from the kept tile bodies.
      */
     async attach(gpu: Gpu, frameUniform: GPUBuffer): Promise<void> {
+        // Blocks go to a device only once it has resources: the cells built before the first attach upload at its first frame.
+        if (this.resources) this.records?.lost();
         this.resources = undefined;
         this.pages.lost();
         const { device } = gpu, pages = this.pages.capacity.stored + this.pages.capacity.synth;
         const layers = Math.ceil(pages / LAYER_PAGES), side = PAGE * Math.sqrt(LAYER_PAGES);
         const texels = PAGE * PAGE;
-        const usage = GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST;
+        // COPY_SRC for the determinism check's reads (`hashes`).
+        const usage = GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC;
         const heights = gpu.texture('pages', { size: [side, side, layers], format: 'r16uint', usage }, layers * side * side * 2);
         // The masks: written by the stamp pass, read by the shaders that draw.
         const mask = gpu.texture('features', {
-            size: [side, Math.ceil(Math.min(MASKS, LAYER_PAGES) / 8) * PAGE, Math.ceil(MASKS / LAYER_PAGES)], format: 'rgba8unorm', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+            size: [side, Math.ceil(Math.min(MASKS, LAYER_PAGES) / 8) * PAGE, Math.ceil(MASKS / LAYER_PAGES)], format: 'rgba8unorm', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
         }, MASK_BYTES);
         const snaps = gpu.texture('features', {
-            size: [PAGE / 4, PAGE / 4, MASKS], format: 'r32uint', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+            size: [PAGE / 4, PAGE / 4, MASKS], format: 'r32uint', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
         }, MASKS * SNAP_BYTES);
+        // The records, the paint of each mask in the mask's format, and the move of the heights, four texels of a row in one texel.
+        const plan = !!this.records, written = GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC;
+        const model = gpu.texture('records', { size: plan ? [MODEL_ROW, ROWS] : [1, 1], format: 'r32uint', usage }, plan ? MODEL_ROW * ROWS * 4 : 4);
+        const paint = gpu.texture('features', { size: plan ? [mask.width, mask.height, mask.depthOrArrayLayers] : [1, 1, 1], format: 'rgba8unorm', usage: written }, plan ? MASK_BYTES : 4);
+        const moved = gpu.texture('features', { size: plan ? [mask.width / 4, mask.height, mask.depthOrArrayLayers] : [1, 1, 1], format: 'rgba8unorm', usage: written }, plan ? MASK_BYTES / 4 : 4);
+        const cliffShare = gpu.texture('features', { size: [moved.width, moved.height, moved.depthOrArrayLayers], format: 'rgba8unorm', usage: written }, plan ? MASK_BYTES / 4 : 4);
         const storage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
         const buffer = (pool: string, bytes: number, usage: number) => gpu.buffer(pool, bytes, usage);
-        const r: Omit<Resources, keyof Pipelines | 'holedMesh' | 'surfaceGroup' | 'meshGroup' | 'synthGroup' | 'quantizeGroup' | 'probeGroup' | 'eyeGroup' | 'stampGroup' | 'snapGroup' | 'featureGroup' | 'emptyGroup'> = {
+        const r: Omit<Resources, keyof Pipelines | 'holedMesh' | 'surfaceGroup' | 'meshGroup' | 'synthGroup' | 'quantizeGroup' | 'probeGroup' | 'eyeGroup' | 'stampGroup' | 'snapGroup' | 'cliffGroup' | 'cliffFeatures' | 'featureGroup' | 'emptyGroup'> = {
             gpu, heights,
-            mask, snaps,
+            mask, snaps, model, paint, moved, cliffShare,
+            // A page with a mask has one whole job or one toward each of its eight neighbours (cliffJobs).
+            cliffJobs: buffer('compute', (plan ? 8 * MASKS : 1) * CLIFF_JOB_BYTES, storage),
             masks: buffer('features', (2 + pages) * 4, storage),
             stampJobs: buffer('compute', ARRIVALS * STAMP_JOB_BYTES, storage),
             stampData: buffer('compute', STAMP_WORDS * 4, storage),
             profiles: buffer('compute', this.profileTable.byteLength, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST),
             surface: buffer('terrain', SURFACE_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST),
             map: buffer('terrain', (FINEST + 1) * MAP * MAP * 4, storage),
-            scales: buffer('terrain', pages * 8, storage),
+            scales: buffer('terrain', pages * 8, storage | GPUBufferUsage.COPY_SRC),
             nodes: buffer('terrain', MAX_NODES * NODE_BYTES, storage),
             holes: buffer('terrain', (1 + 3 * MAX_HOLES) * 16, storage),
+            cells: buffer('plan', plan ? CELLS_BYTES : 256, storage),
             synthJobs: buffer('compute', ARRIVALS * JOB_BYTES, storage),
             synthOut: buffer('compute', ARRIVALS * texels * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC),
             extent: buffer('compute', ARRIVALS * 8, storage),
@@ -377,56 +450,77 @@ export class Terrain {
         device.queue.writeBuffer(r.profiles, 0, this.profileTable);
         device.queue.writeBuffer(r.scales, 0, new Float32Array(2 * pages).fill(1));
 
-        const L = gpu.once(terrainLayouts), { surface: surfaceLayout, features: featureLayout } = gpu.once(layouts), pipelines = await gpu.once(terrainPipelines);
+        const L = gpu.once(terrainLayouts), { surface: surfaceLayout, features: featureLayout } = gpu.once(layouts), pipelines = await gpu.once(terrainPipelines(plan));
+        this.masked.clear();
         const group = (layout: GPUBindGroupLayout, resources: GPUBindingResource[]) => device.createBindGroup({ layout, entries: resources.map((resource, binding) => ({ binding, resource })) });
         const view = (texture: GPUTexture) => texture.createView({ dimension: '2d-array' });
         // No mask yet, and a reach of the paint that no view meets.
         device.queue.writeBuffer(r.masks, 0, new Float32Array(2 + pages).fill(NO_LIMIT, 0, 1));
         this.resources = {
             ...r, ...pipelines,
-            stampGroup: group(L.stamp, [{ buffer: r.stampJobs }, { buffer: r.stampData }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.profiles }, view(r.mask)]),
+            stampGroup: device.createBindGroup({
+                layout: L.stamp, entries: [
+                    ...[{ buffer: r.stampJobs }, { buffer: r.stampData }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.profiles }, view(r.mask)].map((resource, binding) => ({ binding, resource })),
+                    { binding: 8, resource: r.model.createView() }, { binding: 9, resource: view(r.paint) }, { binding: 10, resource: view(r.moved) },
+                ],
+            }),
             snapGroup: device.createBindGroup({
                 layout: L.snap, entries: [{ binding: 0, resource: { buffer: r.stampJobs } }, { binding: 2, resource: { buffer: r.synthOut } }, { binding: 4, resource: { buffer: r.profiles } }, { binding: 6, resource: view(r.mask) }, { binding: 7, resource: view(r.snaps) }],
             }),
-            featureGroup: group(featureLayout, [{ buffer: r.masks }, view(r.mask), view(r.snaps)]),
+            cliffGroup: group(L.cliff, [{ buffer: r.cliffJobs }, view(r.cliffShare)]),
+            cliffFeatures: group(featureLayout, [{ buffer: r.masks }, view(r.mask), view(r.snaps), view(r.paint), view(r.moved), view(gpu.texture('features', { size: [1, 1, 1], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING }, 4))]),
+            featureGroup: group(featureLayout, [{ buffer: r.masks }, view(r.mask), view(r.snaps), view(r.paint), view(r.moved), view(r.cliffShare)]),
             emptyGroup: group(L.empty, []),
             surfaceGroup: group(surfaceLayout, [{ buffer: r.surface }, { buffer: r.map }, heights.createView({ dimension: '2d-array' }), { buffer: r.scales }, device.createSampler()]),
-            meshGroup: group(L.mesh, [{ buffer: frameUniform }, { buffer: r.nodes }, { buffer: r.holes }]),
+            meshGroup: group(L.mesh, [{ buffer: frameUniform }, { buffer: r.nodes }, { buffer: r.holes }, { buffer: r.cells }]),
             synthGroup: group(L.job, [{ buffer: r.synthJobs }, { buffer: r.synthOut }, { buffer: r.extent }]),
             quantizeGroup: group(L.quantize, [{ buffer: r.synthJobs }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.codes }, { buffer: r.scales }]),
             probeGroup: group(L.probe, [{ buffer: r.points }, { buffer: r.probed }]),
             eyeGroup: device.createBindGroup({ layout: L.eye, entries: [{ binding: 2, resource: { buffer: frameUniform } }] }),
         };
+        this.piecesAttached = this.pieces?.attach(gpu, frameUniform, r.cells, model, r.profiles);
+        // `attachParts` reports a failure.
+        this.piecesAttached?.catch(() => {});
     }
 
     /**
      * Takes the water, the structures and the holes of the tunnels' portals on the device of `attach`:
      * they draw once compiled. `frames` are the frame uniforms of the eye's view and of the sun's, whose
-     * casters draw into the shadow map.
+     * casters draw into the shadow map. It also waits for the meshes that `attach` started.
      */
     async attachParts(frames: GPUBuffer[]): Promise<void> {
         const r = this.resources!;
         await Promise.all([
-            this.water.attach(r.gpu, frames[0], r.nodes), this.structures.attach(r.gpu, frames, r.holes), this.roads.attach(r.gpu, frames),
-            r.gpu.once(holedPipeline).then(pipeline => void (r.holedMesh = pipeline)),
+            this.water.attach(r.gpu, frames[0], r.nodes, r.cells), this.structures.attach(r.gpu, frames, r.holes, r.cells), this.roads.attach(r.gpu, frames), this.piecesAttached,
+            r.gpu.once(this.records ? planHoledPipeline : holedPipeline).then(pipeline => void (r.holedMesh = pipeline)),
         ]);
+        this.pieces?.castWith(frames[1]);
     }
 
     /**
      * Selects the nodes for a view and takes the pages that they want, and the pages of `reads`, which
-     * the ground's relief reads. A frame that wants more pages than a pool holds draws coarser from the
-     * next frame on: quality goes down before memory goes up.
+     * the ground's relief reads. A page that finds no room in its pool is left out, the finest and
+     * farthest first (Pages.fit), and the coarser page draws in its place; the quality goes down only
+     * as `stepQuality` has it. Before `attach` it only asks for the records and the stamps of the meshes,
+     * so that their workers start before the device draws.
      */
     update(view: View, reads: Node[] = []): void {
         const r = this.resources;
-        if (!r) return;
-        this.frameNumber++;
         const anchor = anchorAt(...view.lonLat), eye = { anchor, above: view.above };
-        const rule = this.rule(eye, view.pixels);
+        const quality = this.quality, rule = this.rule(eye, view.pixels, quality);
         const forward = renderMap(this.frame, anchor);
         const start = performance.now();
         const { nodes, wanted } = select(rule, this.bounds, node => this.visible(node, eye, forward, view));
         this.selection = performance.now() - start;
+        // Below COARSEST_MESH the meshes rest: their cells stay, but build after the target and wish for no stamp.
+        const meshes = this.pieces ? meshCells(rule, eye) : [], resting = rule.finest < COARSEST_MESH;
+        if (this.records) {
+            const ground = { anchor, above: 0 };
+            this.records.update(nearCells(wanted, ground), meshes, resting, node => distances(ground, node)[0]);
+            for (const cell of this.records.takeChanged()) this.pages.restamp(cell);
+        }
+        if (!r) return this.sendStamps(resting ? [] : meshes, eye, forward, view);
+        this.frameNumber++;
         const ex = anchor.whole[0] + anchor.part[0], ey = anchor.whole[1] + anchor.part[1];
         const far = (node: Node) => Math.hypot((node.x + 0.5) * size(node.level) - ex, (node.y + 0.5) * size(node.level) - ey) / size(node.level);
         const order = (a: Node, b: Node) => a.level - b.level || far(a) - far(b), keys = new Set(wanted.map(key));
@@ -436,11 +530,13 @@ export class Terrain {
         const nearField = new Set(field(NEAR_M).map(key));
         // The eye field: its nodes and the parents that they morph toward.
         const eyeField = new Set(field(EYE_M).flatMap(({ level, x, y }) => [key({ level, x, y }), key({ level: level - 1, x: x >> 1, y: y >> 1 })]).filter(name => keys.has(name)));
-        const work = this.pages.update([...wanted, ...reads.filter(node => !keys.has(key(node)))].sort(order), anchor, nearField, eyeField);
+        const camera = [...anchor.whole, ...anchor.part, ...view.viewProj], moving = camera.some((v, i) => v !== this.camera[i]);
+        this.camera = camera;
+        const work = this.pages.update([...wanted, ...reads.filter(node => !keys.has(key(node)))].sort(order), anchor, nearField, eyeField, moving);
         // After the update, so that a page draws in the frame that it arrives in. The nodes that draw the
         // detail of the look come first, those with a tunnel's portal first of all, with its hole. A node
-        // coarser than NEAR draws without the detail only when its distance keeps it from splitting: a
-        // shortage can make a coarser level the finest, under the eye. Each pipeline draws near to far,
+        // coarser than NEAR draws without the detail only when its distance keeps it from splitting: the
+        // option `finest` can make a coarser level the finest, under the eye. Each pipeline draws near to far,
         // so that a GPU without hidden-surface removal shades few hidden fragments.
         const drawn = nodes.slice(0, MAX_NODES).filter(node => this.pages.covers(node));
         const group = drawn.map(node => (node.level < Math.min(NEAR, rule.finest) ? 2 : this.stamps.known(node)?.portals ? 0 : 1)), near = drawn.map(node => distances(eye, node)[0]);
@@ -454,20 +550,29 @@ export class Terrain {
         // The first view about the eye comes first: until then a road's worker would take its share of the CPU.
         this.roadsFree ||= this.eye || this.pages.idle;
         const roads = this.roads.update({ x: ex, y: ey, unit: anchor.unit }, piece => this.boxVisible(piece, eye, forward, view), this.roadsFree);
-        if (this.pages.shortage > 0) {
-            this.quality++;
-            this.calm = 0;
-        } else if (++this.calm > CALM && this.raisable) {
-            this.quality--;
-            this.calm = 0;
-        }
-        const probeReads = this.probeKey(rule, anchor);
+        // GP5's plan builds only for its debug draw: the records' workers build every cell for the far look and the meshes.
+        const planned = (this.plan?.debug && this.plan.update({ x: ex, y: ey, unit: anchor.unit, above: view.above }, view.ahead, this.roadsFree)) || false;
+        const records = this.records;
+        // The corners read the drawn and the raw stored heights of the finest level and coarser: the LOD map changes with them.
+        const meshed = !!records && !!this.pieces?.update(rule, eye, node => records.block(node), (box, stored) => this.pages.reads(box, FINEST, stored), work.touched,
+            node => this.visible(node, eye, forward, view), node => records.settled(node), cell => this.pages.fallback(cell, rule.finest) < COARSEST_MESH);
+        // The slots per pool that the pages coarser than the meshes' levels need at a quality, from its own selection.
+        const coarse = (quality: number) => this.pages.demand([...select(this.rule(eye, view.pixels, quality), this.bounds, node => this.visible(node, eye, forward, view)).wanted, ...reads],
+            anchor, COARSEST_MESH);
+        const short = this.pages.left.some((pages, level) => pages > 0 && level < COARSEST_MESH), { capacity } = this.pages;
+        ({ quality: this.quality, calm: this.calm, held: this.held } = stepQuality({ quality: this.quality, calm: this.calm, held: this.held }, short, this.pages.missing === 0, moving,
+            () => this.quality < qualitySteps(view.pixels) && lowers(coarse(this.quality), coarse(this.quality + 1), capacity),
+            () => fits(coarse(this.quality - 1), capacity)));
+        // The level that the probe reads splits by the height of the last probe, as `encode` decides the next probe by it.
+        const above = this.heldAbove(view.above), probeReads = this.probeKey(above === view.above ? rule : this.rule({ anchor, above }, view.pixels, quality), anchor);
         if (probeReads !== this.probeReads) {
             this.probeReads = probeReads;
             this.changes++;
             this.changedAt = this.frameNumber;
         }
         this.work = work;
+        // The masks and the LOD map change together with every change of a page's heights or mask.
+        this.cliffs = this.records && work.masks ? cliffJobs(this.pages.pages, this.masked, work.touched) : [];
         this.nearDrawn = this.pages.nearMissing === 0 && this.painted(nodes, nearField, anchor);
         this.eyeDrawn = this.pages.eyeMissing === 0 && this.painted(nodes, eyeField, anchor);
         this.jobs = { near: 0, coarse: 0, masks: 0 };
@@ -478,7 +583,27 @@ export class Terrain {
         this.seen = view.z === undefined ? undefined : { viewProj: view.viewProj, z: view.z, forward };
         const level = { anchor, above: 0 }, pages = [...work.uploads, ...work.syntheses, ...work.stamps.filter(({ mode }) => mode & MODE.HEIGHTS)];
         this.reshaped = structures ? 0 : Math.min(this.roads.arrived, ...pages.map(({ page }) => distances(level, page.node)[0]));
-        this.newContent = this.write(r, anchor, rule, forward, work, view.above) || water || structures || roads || !!(work.map || work.masks || work.uploads.length || work.syntheses.length || work.stamps.length);
+        this.newContent = this.write(r, anchor, rule, forward, work, view.above) || water || structures || roads || planned || meshed || !!(work.map || work.masks || work.uploads.length || work.syntheses.length || work.stamps.length);
+        this.sendStamps(resting ? [] : meshes, eye, forward, view);
+    }
+
+    /**
+     * One near-first order for the stamp worker: every wish within EYE_M and the nodes that the meshes in view read, then every
+     * other wish, each by its distance from the eye. The coarse pages over the eye count, as they draw until the eye's own do. A
+     * mesh's nodes are wished for before it comes, so its corners need not wait; those of a mesh out of view wait their turn.
+     */
+    private sendStamps(meshes: { node: Node }[], eye: { anchor: Anchor; above: number }, forward: Float64Array, view: View): void {
+        const shown = new Set<string>(), hidden = new Set<string>(), level = { anchor: eye.anchor, above: 0 };
+        for (const { node: cell } of meshes) {
+            if (this.pieces!.ready(cell)) continue;
+            const nodes = this.visible(cell, eye, forward, view) ? shown : hidden;
+            for (const node of stampNodes(cell)) {
+                this.stamps.get(node);
+                nodes.add(key(node));
+            }
+        }
+        const first = (name: string, node: Node) => shown.has(name) || (!hidden.has(name) && distances(level, node)[0] <= EYE_M);
+        this.stamps.send(node => (first(key(node), node) ? 0 : NO_LIMIT) + distances(eye, node)[0]);
     }
 
     /**
@@ -521,10 +646,25 @@ export class Terrain {
                 { buffer: r.codes, offset: k * texels * 2, bytesPerRow: PAGE * 2 },
                 { texture: r.heights, origin: origin(slot) }, [PAGE, PAGE, 1]));
         }
-        const state = `${this.anchor?.whole}/${this.anchor?.part}/${this.above}/${this.quality}/${this.changes}`;
-        const readback = state === this.probed ? undefined : r.readbacks.pop();
+        // After the heights and the moves of the frame's pages: the cliff share reads them about each texel.
+        if (this.cliffs.length && r.cliff) {
+            const pass = encoder.beginComputePass({ label: 'cliff', timestampWrites: time('cliff') });
+            pass.setPipeline(r.cliff);
+            pass.setBindGroup(0, r.cliffGroup);
+            pass.setBindGroup(1, r.surfaceGroup);
+            pass.setBindGroup(2, r.emptyGroup);
+            pass.setBindGroup(3, r.cliffFeatures);
+            pass.dispatchWorkgroups(CLIFF_ROW, 1, this.cliffs.length);
+            pass.end();
+        }
+        // After the pages: the meshes' corners read the stored pages and the records.
+        if (this.anchor) this.pieces?.encode(encoder, r.surfaceGroup, { anchor: this.anchor, above: this.above }, () => time('pieces'));
+        const state = `${this.anchor?.whole}/${this.anchor?.part}/${this.quality}/${this.changes}`;
+        const due = state !== this.probed || this.heldAbove(this.above) !== this.probedAbove;
+        const readback = due ? r.readbacks.pop() : undefined;
         if (!readback) return () => {};
         this.probed = state;
+        this.probedAbove = this.heldAbove(this.above);
         const probe = encoder.beginComputePass({ label: 'probe' });
         probe.setPipeline(r.probe);
         probe.setBindGroup(0, r.probeGroup);
@@ -574,24 +714,27 @@ export class Terrain {
         pass.end();
     }
 
-    /** Draws the structures into the shadow map (light/shadow.ts) as casters. */
+    /** Draws the structures and the ground plan's storeys into the shadow map (light/shadow.ts) as casters. */
     cast(pass: GPURenderPassEncoder): void {
         const r = this.resources;
         if (!r) return;
         this.structures.cast(pass, r.surfaceGroup, r.featureGroup);
         this.roads.cast(pass, r.surfaceGroup);
+        this.pieces?.cast(pass, r.surfaceGroup, r.emptyGroup, r.featureGroup);
     }
 
-    draw(pass: GPURenderPassEncoder, ground: GPUBindGroup): void {
+    /** With `owned` (the debug view), only the meshes and the terrain draw. */
+    draw(pass: GPURenderPassEncoder, ground: GPUBindGroup, owned = false): void {
         const r = this.resources;
         if (!r || !this.nodes.length) return;
         const { detailed, holed } = this;
         // Before the terrain: the terrain that they hide fails the depth test, also on a GPU without
         // hidden-surface removal, where the draw order decides what early-Z rejects. The ribbons blend
         // over the terrain.
-        this.structures.draw(pass, r.surfaceGroup, ground, r.featureGroup);
-        this.roads.draw(pass, r.surfaceGroup, ground, r.featureGroup);
-        this.water.draw(pass, r.surfaceGroup, ground, r.featureGroup, OPAQUE);
+        if (!owned) this.structures.draw(pass, r.surfaceGroup, ground, r.featureGroup);
+        if (!owned) this.roads.draw(pass, r.surfaceGroup, ground, r.featureGroup);
+        this.pieces?.draw(pass, r.surfaceGroup, ground, r.featureGroup);
+        if (!owned) this.water.draw(pass, r.surfaceGroup, ground, r.featureGroup, OPAQUE);
         pass.setBindGroup(0, r.meshGroup);
         pass.setBindGroup(1, r.surfaceGroup);
         pass.setBindGroup(2, ground);
@@ -603,7 +746,7 @@ export class Terrain {
         if (detailed > holed) pass.drawIndexed(GRID_INDICES.length, detailed - holed, 0, 0, holed);
         pass.setPipeline(r.farMesh);
         if (detailed < this.nodes.length) pass.drawIndexed(GRID_INDICES.length, this.nodes.length - detailed, 0, 0, detailed);
-        this.water.draw(pass, r.surfaceGroup, ground, r.featureGroup, ['ribbons']);
+        if (!owned) this.water.draw(pass, r.surfaceGroup, ground, r.featureGroup, ['ribbons']);
     }
 
     /**
@@ -658,7 +801,7 @@ export class Terrain {
      * At world points, x and y pairs in world units, with the state of the last frame: drawnHeight, or with
      * `kept` 1 where kept_off of features.wgsl keeps a plant off and 0 where it lets one stand, past the mask
      * pool's reach too. NaN where no page knows the height. Each call dispatches once and waits for its read
-     * back. Only the census reads it.
+     * back.
      */
     async probeAt(points: Float64Array, kept = false): Promise<Float32Array> {
         const r = this.resources, anchor = this.anchor, n = points.length / 2;
@@ -795,11 +938,14 @@ export class Terrain {
         return clip[2] > 0 && Math.abs(clip[0]) < 0.98 * clip[2] && Math.abs(clip[1]) < 0.98 * clip[2];
     }
 
-    private rule(eye: { anchor: Anchor; above: number }, pixels: number): Rule {
-        // The range at which a level's grid cell spans CELL_PIXELS, a quarter step smaller per quality step.
-        const best = Math.min(RANGE.most, Math.max(RANGE.least, pixels / (2 * Math.tan(VFOV * RAD / 2)) / (GRID * CELL_PIXELS)));
-        const steps = Math.ceil(4 * Math.log2(best / RANGE.least));
-        return cdlod(eye, Math.max(RANGE.least, best * 2 ** (-this.quality / 4)), FINEST - Math.max(0, this.quality - steps));
+    /** The height of the last probe above the ground while `above` stays within PROBE_ABOVE_M of it, else `above`. */
+    private heldAbove(above: number): number {
+        return Math.abs(above - this.probedAbove) <= PROBE_ABOVE_M ? this.probedAbove : above;
+    }
+
+    /** The rule at a quality: each step makes the range a quarter step smaller, down to the least. No step lowers the finest level. */
+    private rule(eye: { anchor: Anchor; above: number }, pixels: number, quality = this.quality): Rule {
+        return cdlod(eye, Math.max(RANGE.least, bestRange(pixels) * 2 ** (-quality / 4)), this.finest);
     }
 
     /** Whether a node's box can show: render space corners at its range of heights, against the frustum. */
@@ -829,8 +975,8 @@ export class Terrain {
         return planes.every(plane => points.some(([x, y, z]) => plane[0] * x + plane[1] * y + plane[2] * z + plane[3] >= 0));
     }
 
-    private writeStamps(r: Resources, stamps: Stamp[]): void {
-        const { jobs, data } = stampJobs(stamps);
+    private writeStamps(r: Resources, work: Work): void {
+        const { jobs, data } = stampJobs(work.stamps, new Set(work.syntheses.map(({ page }) => page)));
         r.gpu.device.queue.writeBuffer(r.stampJobs, 0, jobs);
         if (data.length) r.gpu.device.queue.writeBuffer(r.stampData, 0, data);
     }
@@ -859,6 +1005,39 @@ export class Terrain {
         return out.join();
     }
 
+    /**
+     * The determinism check: per drawn page in the LOD map a hash of its heights and their scale (`h/`) and of its mask,
+     * paint, move and snaps (`m/`), per records block (`r/`), per piece the corners that the pass made (`p/`)
+     * and its mesh from the worker (`w/`), with the
+     * state of the last frame. Call it after `waitForIdle()`.
+     */
+    async hashes(): Promise<Record<string, string>> {
+        const r = this.resources;
+        if (!r) throw new Error('The hashes read after the first frame.');
+        const regions: Region[] = [];
+        const layer = (texture: GPUTexture, slot: number, texelBytes: number, name: string, width = PAGE) =>
+            regions.push({ name, texture, origin: [width * (slot & 7), PAGE * ((slot >> 3) & 7), slot >> 6], size: [width, PAGE], texelBytes });
+        for (const [name, page] of this.pages.pages) {
+            if (page.drawn === undefined || !page.ready) continue;
+            layer(r.heights, page.drawn, 2, `h/${name}`);
+            regions.push({ name: `h/${name}`, buffer: r.scales, offset: 8 * page.drawn, bytes: 8 });
+            if (page.mask === undefined) continue;
+            layer(r.mask, page.mask, 4, `m/${name}`);
+            regions.push({ name: `m/${name}`, texture: r.snaps, origin: [0, 0, page.mask], size: [PAGE / 4, PAGE / 4], texelBytes: 4 });
+            if (!this.records) continue;
+            layer(r.paint, page.mask, 4, `m/${name}`);
+            layer(r.moved, page.mask, 4, `m/${name}`, PAGE / 4);
+            layer(r.cliffShare, page.mask, 4, `m/${name}`, PAGE / 4);
+        }
+        for (const { name, first, rows } of this.records?.blocks() ?? []) regions.push({ name: `r/${name}`, texture: r.model, origin: [0, first, 0], size: [MODEL_ROW, rows], texelBytes: 4 });
+        const meshes: Record<string, string> = {};
+        for (const { name, mesh, buffer, offset, bytes } of this.pieces?.buffers() ?? []) {
+            regions.push({ name: `p/${name}`, buffer, offset, bytes });
+            meshes[`w/${name}`] = hashBytes([mesh.corners, mesh.steps, mesh.triangles, mesh.sunk]);
+        }
+        return { ...(await hashRegions(r.gpu.device, regions)), ...meshes };
+    }
+
     /** Writes the frame's buffers; true when the drawn nodes differ from the last frame's. */
     private write(r: Resources, anchor: Anchor, rule: Rule, forward: Float64Array, work: Work, above: number): boolean {
         const { device } = r.gpu;
@@ -883,19 +1062,56 @@ export class Terrain {
             ...work.syntheses.map(({ page, stored }) => ({ page, stored, slot: page.slot, stamped: heightsOf.has(page) })),
             ...copies(work).map(({ page, target }) => ({ page, stored: 0, slot: target, stamped: true })),
         ]));
-        if (work.stamps.length) this.writeStamps(r, work.stamps);
+        if (work.stamps.length) this.writeStamps(r, work);
+        if (this.cliffs.length) device.queue.writeBuffer(r.cliffJobs, 0, packCliffJobs(this.cliffs));
         device.queue.writeBuffer(r.extent, 0, new Uint32Array(2 * ARRIVALS).map((_, i) => (i % 2 ? 0 : 0xffffffff)));
         const instances = new Int32Array(4 * this.nodes.length);
         this.nodes.forEach(({ level, x, y }, i) => instances.set([x * size(level) - anchor.whole[0], y * size(level) - anchor.whole[1], level, 0], 4 * i));
         device.queue.writeBuffer(r.nodes, 0, instances);
-        device.queue.writeBuffer(r.holes, 0, holes(this.boxes, anchor));
+        // After the structures' upload: a portal opens the ground only where its owner's bore and facade draw in this frame.
+        this.structures.write();
+        device.queue.writeBuffer(r.holes, 0, holes(this.boxes, anchor, (x, y) => this.structures.holds(x, y)));
         const changed = instances.length !== this.instances.length || instances.some((v, i) => v !== this.instances[i]);
         this.instances = instances;
         this.water.write();
-        this.structures.write();
         device.queue.writeBuffer(r.masks, 4, new Float32Array([this.roads.write()]));
+        this.records?.write(device, r.model, [anchor.whole[0] + anchor.part[0], anchor.whole[1] + anchor.part[1]]);
+        this.pieces?.write({ anchor, above });
         return changed;
     }
+}
+
+/** The range at which a level's grid cell spans CELL_PIXELS on a render target `pixels` high, within RANGE. */
+const bestRange = (pixels: number) => Math.min(RANGE.most, Math.max(RANGE.least, pixels / (2 * Math.tan(VFOV * RAD / 2)) / (GRID * CELL_PIXELS)));
+
+/** The quality steps that make the range smaller: 0 on a usual screen, whose best range is the least already. */
+const qualitySteps = (pixels: number) => Math.ceil(4 * Math.log2(bestRange(pixels) / RANGE.least));
+
+/** Whether a demand of slots per pool lowers that of `now` in every pool that `now` overfills. */
+const lowers = (now: Record<Kind, number>, next: Record<Kind, number>, capacity: Record<Kind, number>) =>
+    (['stored', 'synth'] as const).some(kind => now[kind] > capacity[kind]) && (['stored', 'synth'] as const).every(kind => now[kind] <= capacity[kind] || next[kind] < now[kind]);
+
+/** Whether a demand of slots per pool fits in the pools. */
+const fits = (demand: Record<Kind, number>, capacity: Record<Kind, number>) => demand.stored <= capacity.stored && demand.synth <= capacity.synth;
+
+/** The quality, its calm frames, and whether it holds until the camera moves. */
+export interface QualityState { quality: number; calm: number; held: boolean }
+
+/**
+ * The quality after a frame. The pages of the meshes' levels leave a page at a time (Pages.fit), and those of coarser levels
+ * too; a quality step makes the range of every level smaller (`rule`). It steps down when a page of a coarser level than
+ * the meshes' was left out (`short`) once the pages that fit are in (`settled`: while pages load, their ranges are not known
+ * and the selection is wider), and only where the step lowers the demand of the pool that is short (`lowers`). It steps up
+ * after CALM frames, or at once in a still view whose pages are in, where the demand of the finer quality fits (`fits`);
+ * where it does not, it holds until the camera moves. Down needs a demand that does not fit, up one that fits: for fixed
+ * pages and pools the quality comes to a fixed point, and a still view's frames stop. `lowers` and `fits` select at another
+ * quality, so they run only then.
+ */
+export function stepQuality({ quality, calm, held }: QualityState, short: boolean, settled: boolean, moving: boolean, lowers: () => boolean, fits: () => boolean): QualityState {
+    held &&= !moving;
+    if (short && settled && lowers()) return { quality: quality + 1, calm: 0, held: false };
+    if (!short && quality > 0 && !held && (calm >= CALM || (settled && !moving))) return fits() ? { quality: quality - 1, calm: 0, held: false } : { quality, calm: 0, held: true };
+    return { quality, calm: calm + 1, held };
 }
 
 /** The terrain's own bind group layouts; groups 1 to 3 are those of gpu/layouts.ts. */
@@ -904,16 +1120,23 @@ function terrainLayouts({ device }: Gpu) {
         device.createBindGroupLayout({ entries: entries.map(([visibility, entry], binding) => ({ binding, visibility, ...entry })) });
     const read: GPUBufferBindingLayout = { type: 'read-only-storage' }, write: GPUBufferBindingLayout = { type: 'storage' }, C = GPUShaderStage.COMPUTE;
     return {
-        mesh: layout([[GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, { buffer: { type: 'uniform' } }], [GPUShaderStage.VERTEX, { buffer: read }], [GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, { buffer: read }]]),
+        // The plan cells (binding 3) also in the fragment stage, for the debug view `owned`.
+        mesh: layout([[GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, { buffer: { type: 'uniform' } }], [GPUShaderStage.VERTEX, { buffer: read }], [GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, { buffer: read }], [GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, { buffer: read }]]),
         job: layout([[C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }]]),
         quantize: layout([[C, { buffer: read }], [C, { buffer: read }], [C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }]]),
         probe: layout([[C, { buffer: read }], [C, { buffer: write }]]),
         eye: device.createBindGroupLayout({ entries: [{ binding: 2, visibility: C, buffer: write }] }),
         check: layout([[GPUShaderStage.VERTEX, { buffer: read }]]),
-        stamp: layout([
-            [C, { buffer: read }], [C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }], [C, { buffer: { type: 'uniform' } }],
-            [C, { storageTexture: { format: 'rgba8unorm', viewDimension: '2d-array' } }],
-        ]),
+        stamp: device.createBindGroupLayout({
+            entries: [
+                ...[read, read, write, write, { type: 'uniform' } as const].map((buffer, binding) => ({ binding, visibility: C, buffer })),
+                ...[5, 9, 10].map(binding => ({ binding, visibility: C, storageTexture: { format: 'rgba8unorm', viewDimension: '2d-array' } as const })),
+                { binding: 8, visibility: C, texture: { sampleType: 'uint' } },
+            ],
+        }),
+        cliff: device.createBindGroupLayout({
+            entries: [{ binding: 0, visibility: C, buffer: read }, { binding: 1, visibility: C, storageTexture: { format: 'rgba8unorm', viewDimension: '2d-array' } }],
+        }),
         snap: device.createBindGroupLayout({
             entries: [
                 { binding: 0, visibility: C, buffer: read }, { binding: 2, visibility: C, buffer: write }, { binding: 4, visibility: C, buffer: { type: 'uniform' } }, { binding: 6, visibility: C, texture: { sampleType: 'float', viewDimension: '2d-array' } },
@@ -930,18 +1153,21 @@ function terrainLayouts({ device }: Gpu) {
 const shader = ({ device }: Gpu, file: string) => device.createShaderModule({ label: file, code: wgsl(`terrain/${file}.wgsl`, device.features.has('clip-distances') ? CLIP_DISTANCES : {}) });
 
 /** A compute pipeline of a terrain shader, whose groups take the layouts `groups`. */
-function compute(gpu: Gpu, file: string, entryPoint: string, groups: GPUBindGroupLayout[]): Promise<GPUComputePipeline> {
-    return gpu.device.createComputePipelineAsync({ label: entryPoint, layout: gpu.device.createPipelineLayout({ bindGroupLayouts: groups }), compute: { module: shader(gpu, file), entryPoint } });
+function compute(gpu: Gpu, file: string, entryPoint: string, groups: GPUBindGroupLayout[], constants?: Record<string, number>): Promise<GPUComputePipeline> {
+    return gpu.device.createComputePipelineAsync({ label: entryPoint, layout: gpu.device.createPipelineLayout({ bindGroupLayouts: groups }), compute: { module: shader(gpu, file), entryPoint, constants } });
 }
 
-/** The draw of the nodes: with the detail of the look (DETAIL of look.wgsl), without it (the far nodes), or with the holes of the tunnels' portals. */
-function meshPipeline(gpu: Gpu, detail: boolean, holes = false): Promise<GPURenderPipeline> {
+/**
+ * The draw of the nodes: with the detail of the look (DETAIL of look.wgsl), without it (the far nodes), or with the holes of the tunnels' portals;
+ * with `model` the records' look (`ground=plan`).
+ */
+function meshPipeline(gpu: Gpu, detail: boolean, holes = false, model = false): Promise<GPURenderPipeline> {
     const { device } = gpu, L = gpu.once(terrainLayouts), shared = gpu.once(layouts), module = shader(gpu, 'terrain');
     return device.createRenderPipelineAsync({
         label: holes ? 'terrain with holes' : detail ? 'terrain' : 'far terrain',
         layout: device.createPipelineLayout({ bindGroupLayouts: [L.mesh, shared.surface, shared.ground, shared.features] }),
-        vertex: { module, entryPoint: 'vertex_main', constants: { HOLES: holes ? 1 : 0 } },
-        fragment: { module, entryPoint: 'fragment_main', targets: [{ format: sceneFormat(gpu) }], constants: { DETAIL: detail ? 1 : 0, HOLES: holes ? 1 : 0 } },
+        vertex: { module, entryPoint: 'vertex_main', constants: { HOLES: holes ? 1 : 0, PLAN: model ? 1 : 0 } },
+        fragment: { module, entryPoint: 'fragment_main', targets: [{ format: sceneFormat(gpu) }], constants: { DETAIL: detail ? 1 : 0, HOLES: holes ? 1 : 0, MODEL: model ? 1 : 0 } },
         // The far nodes cull back faces: no snap moves their vertices, so no triangle turns over, and a
         // ray from an eye above them meets a front face first. The other nodes draw both faces:
         // the eye can be under the near mesh for some frames, and its underside then hides what is behind.
@@ -950,25 +1176,31 @@ function meshPipeline(gpu: Gpu, detail: boolean, holes = false): Promise<GPURend
     });
 }
 
-type Pipelines = Awaited<ReturnType<typeof terrainPipelines>>;
+type Pipelines = Awaited<ReturnType<typeof pipelines>>;
 
-/** What the terrain draws and computes with from its first frame. */
-export async function terrainPipelines(gpu: Gpu) {
+/** What the terrain draws and computes with from its first frame; with `plan`, with the records' heights and look (`ground=plan`). */
+export const terrainPipelines = (plan: boolean) => (plan ? planPipelines : basePipelines);
+const basePipelines = (gpu: Gpu) => pipelines(gpu, false);
+const planPipelines = (gpu: Gpu) => pipelines(gpu, true);
+
+async function pipelines(gpu: Gpu, model: boolean) {
     const L = gpu.once(terrainLayouts), { surface, features } = gpu.once(layouts);
-    const [mesh, farMesh, synthesize, quantize, probe, clampEye, stamp, snap] = await Promise.all([
-        meshPipeline(gpu, true), meshPipeline(gpu, false),
+    const [mesh, farMesh, synthesize, quantize, probe, clampEye, stamp, snap, cliff] = await Promise.all([
+        meshPipeline(gpu, true, false, model), meshPipeline(gpu, false, false, model),
         compute(gpu, 'pages', 'synthesize', [L.job, surface]),
         compute(gpu, 'quantize', 'quantize', [L.quantize]),
         compute(gpu, 'probe', 'probe', [L.probe, surface, L.empty, features]),
         compute(gpu, 'probe', 'clamp_eye', [L.eye, surface, L.empty, features]),
-        compute(gpu, 'stamp', 'stamp', [L.stamp, surface]),
+        compute(gpu, 'stamp', 'stamp', [L.stamp, surface], { MODEL: model ? 1 : 0 }),
         compute(gpu, 'stamp', 'snap', [L.snap, surface]),
+        model ? compute(gpu, 'cliff', 'cliff', [L.cliff, surface, L.empty, features]) : undefined,
     ]);
-    return { mesh, farMesh, synthesize, quantize, probe, clampEye, stamp, snap };
+    return { mesh, farMesh, synthesize, quantize, probe, clampEye, stamp, snap, cliff };
 }
 
 /** The draw of the nodes with a tunnel's portal, with its hole. */
 const holedPipeline = (gpu: Gpu) => meshPipeline(gpu, true, true);
+const planHoledPipeline = (gpu: Gpu) => meshPipeline(gpu, true, true, true);
 
 /** The check's draw and the probe of the share of the sun: only tests check. */
 function checkPipelines(gpu: Gpu): Promise<[GPURenderPipeline, GPUComputePipeline]> {
@@ -996,13 +1228,16 @@ function auditPipelines(gpu: Gpu): Promise<GPUComputePipeline[]> {
     return Promise.all(['audit', 'apron'].map(entry => compute(gpu, 'audit', entry, [L.audit, surface, L.empty, features])));
 }
 
-/** The portals' boxes as `holes` of terrain.wgsl reads them, about the anchor; each box once, MAX_HOLES at most. */
-function holes(lists: Float64Array[], anchor: Anchor): Float32Array<ArrayBuffer> {
+/**
+ * The portals' boxes as `holes` of terrain.wgsl reads them, about the anchor; each box once, MAX_HOLES at most. A box
+ * whose facade middle is not `drawn` is left out: without its bore and facade the ground stays closed.
+ */
+function holes(lists: Float64Array[], anchor: Anchor, drawn: (x: number, y: number) => boolean): Float32Array<ArrayBuffer> {
     const out = new Float32Array(4 * (1 + 3 * MAX_HOLES)), seen = new Set<string>();
     let n = 0;
     for (const list of lists) for (let i = 0; i < list.length && n < MAX_HOLES; i += BOX) {
         const name = `${list[i]},${list[i + 1]}`;
-        if (seen.has(name)) continue;
+        if (seen.has(name) || !drawn(list[i], list[i + 1])) continue;
         seen.add(name);
         out.set([list[i] - anchor.whole[0], list[i + 1] - anchor.whole[1], ...list.subarray(i + 2, i + BOX)], 4 + 12 * n++);
     }
@@ -1020,15 +1255,17 @@ function jobs(list: { page: Page; stored: number; slot: number; stamped: boolean
     return data;
 }
 
-/** Stamp jobs as `StampJob` in stamp.wgsl, with their nodes' data packed after each other from `base`. */
-function stampJobs(stamps: Stamp[], base = 0): { jobs: ArrayBuffer; data: Uint32Array<ArrayBuffer> } {
+/** Stamp jobs as `StampJob` in stamp.wgsl, with their nodes' data packed after each other; `synthesized` holds the frame's syntheses. */
+export function stampJobs(stamps: Stamp[], synthesized: Set<Page>): { jobs: ArrayBuffer; data: Uint32Array<ArrayBuffer> } {
     const jobs = new ArrayBuffer(Math.max(1, stamps.length) * STAMP_JOB_BYTES), words = new Uint32Array(jobs), ints = new Int32Array(jobs);
     const data = new Uint32Array(stamps.reduce((sum, { data }) => sum + (data?.length ?? 0), 0));
     let at = 0;
     stamps.forEach(({ page, out, data: node, mode }, k) => {
         const w = (STAMP_JOB_BYTES / 4) * k;
         ints.set([page.node.x * PAGE, page.node.y * PAGE], w);
-        words.set([page.node.level, node ? base + at : 0xffffffff, out, !(mode & MODE.HEIGHTS) ? page.drawn! : page.kind === 'stored' ? page.slot : SYNTHESIZED, mode, page.mask ?? 0], w + 2);
+        // A page synthesized in the frame has its heights in `out` until the quantize, also for a mask alone.
+        const base = page.kind === 'stored' && mode & MODE.HEIGHTS ? page.slot : mode & MODE.HEIGHTS || synthesized.has(page) ? SYNTHESIZED : page.drawn!;
+        words.set([page.node.level, node ? at : 0xffffffff, out, base, mode, page.mask ?? 0], w + 2);
         if (node) {
             data.set(node, at);
             at += node.length;

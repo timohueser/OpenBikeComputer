@@ -1,5 +1,5 @@
 //! `obc-bake` builds the published cell catalog once, centrally, and uploads it.
-//! Website and desktop consumers only select, download, and assemble these cells;
+//! The web app only selects, downloads, and assembles these cells;
 //! raw OSM processing stays here as maintainer tooling.
 //!
 //! A bake takes the Geofabrik regions of `data/regions/` ([`regions`]), the

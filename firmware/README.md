@@ -13,14 +13,13 @@ device-reachable; `firmware/tools/check_dependencies.py` enforces that rule. Dev
 cross the boundary, because a dev-dependency never enters the `no_std` build. So `cargo test`
 needs GEOS.
 
-Four crates are excluded from the workspace and built from **inside their own directory**, each
+Three crates are excluded from the workspace and built from **inside their own directory**, each
 with its own `Cargo.lock`, `fmt`, `clippy`, `test` and CI job:
 
 | Crate | Why it stands alone |
 | :-- | :-- |
 | [`obc-fw-nrf54l`](obc-fw-nrf54l/README.md) | the board: its own MCU target and `.cargo/config.toml` |
 | [`obc-boot`](obc-boot/README.md) | the 32 KB bootloader, same target, its own link script |
-| [`obc-desktop`](../builder/desktop/README.md) | the Tauri app: a platform webview |
 | [`obc-sensor-sim`](obc-sensor-sim/README.md) | the sensor simulator: its own MCU target |
 
 ## Setup
@@ -30,7 +29,6 @@ with its own `Cargo.lock`, `fmt`, `clippy`, `test` and CI job:
 | Anything Rust | A stable toolchain (`rustup`). |
 | The desktop simulator | Only Rust — the GUI is pure eframe/egui. |
 | The packer (`obc-pack`) | System **GEOS ≥ 3.14** (`brew install geos`), its only native dependency. |
-| The desktop app (`obc-desktop`) | **CMake** and a C++ compiler (it vendors GEOS), plus Node. Linux also needs WebKitGTK — see [its README](../builder/desktop/README.md). |
 | Compiling the shared crates for the device | `rustup target add thumbv8m.main-none-eabihf`. |
 
 ## Build
@@ -120,15 +118,14 @@ regenerates it in the same pull request, with the reason stated.
 
 ## Format
 
-`.rustfmt.toml` is committed, so let rustfmt own style. CI checks all five invocations. The
+`.rustfmt.toml` is committed, so let rustfmt own style. CI checks all four invocations. The
 workspace is a *virtual* manifest, so `--all` is required or it formats nothing, and `--all` skips
-the four excluded crates. `obc fmt` runs all five.
+the three excluded crates. `obc fmt` runs all four.
 
 ```sh
 cargo fmt --all                                             # the workspace
 cargo fmt --manifest-path firmware/obc-fw-nrf54l/Cargo.toml
 cargo fmt --manifest-path firmware/obc-boot/Cargo.toml
-cargo fmt --manifest-path builder/desktop/Cargo.toml
 cargo fmt --manifest-path firmware/obc-sensor-sim/Cargo.toml
 ```
 

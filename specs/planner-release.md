@@ -8,7 +8,7 @@ of the planner](obc-data.md#planner).
 - Version: manifest `format` `2`; catalogue `format: 1`; `public/grid.json` `format: 4`. A client
   refuses a catalogue `format` that it does not know.
 - Writers: `obc data update` (`host/obc-data`).
-- Readers: the web planner (`builder/web/src/lib/planner/release.ts`), the map builder, the tile
+- Readers: the web app (`builder/web/src/lib/planner/release.ts`), the tile
   service ([`planner/tiles`](../planner/tiles/README.md)), `obc data serve`, the companion app.
 - Related: [offline bundle](planner-offline.md), [route package](route-package.md), [route
   catalog](route-catalog.md), [snow tiles](planner-snow-tiles.md), [climate
@@ -92,9 +92,12 @@ revision, file revision, and 500 px thumbnail URL match the prepared reference. 
 mismatch retains the article and source links. A missing online URL never falls back to an original
 image.
 
-The overlay database has SQLite `user_version=2`. `features` stores stable IDs, layer kinds, cycling
+The overlay database has SQLite `user_version=3`. `features` stores stable IDs, layer kinds, cycling
 and walking minimum zooms, geometry IDs, and attribute IDs. `attributes` stores distinct JSON
-properties without the way ID or layer kind. Route memberships are ordered relation IDs. `routes`
+properties without the way ID or layer kind. Route memberships are ordered relation IDs. The `road`
+of a route line groups the `highway` of its way by the width at which the basemap draws it: `major`
+for `motorway`, `trunk`, `primary`, `secondary` and `tertiary`; `minor` for `residential`,
+`unclassified`, `living_street`, `service`, `road` and each `*_link`; empty for all other ways. `routes`
 stores each relation's JSON properties once. `geometries` stores the way ID, a point count, and a
 Postcard `Vec<[i32;2]>`. Each coordinate pair is longitude and latitude in microdegrees. The first
 pair is absolute; each later pair is a difference from the previous pair. Decoding uses checked
@@ -116,7 +119,7 @@ routing package, the SHA-256 of `routing/blocks.json`, which packs the same grap
 
 | Layer | Feature ID | Properties |
 | --- | --- | --- |
-| `cycling`, `hiking`, `mtb` | Way ID of the first way in the line | `rank`, `ref`, and `routes`: a JSON array of relation IDs in rank order. `hiking` adds `marker`, the first route `symbol` that is not empty. |
+| `cycling`, `hiking`, `mtb` | Way ID of the first way in the line | `rank`, `ref`, and `routes`: a JSON array of relation IDs in rank order. `hiking` adds `marker`, the first route `symbol` that is not empty. From zoom 12, a line adds the `road` of the overlay index when it is not empty. |
 | `access` | Way ID | `cycling_status`, `walking_status`, `name`, `ref`, `conditional`; `riding`, `walking`, `pushing` and `tags` as JSON text; `cycling_minzoom` and `walking_minzoom`, the overlay index minimum zoom of each restricted mode |
 | `routes` | Relation ID | The route properties that are not empty: `kind`, `network`, `rank`, `name`, `ref`, `website`, `symbol`, `symbol_text`. The point is the tile origin. |
 
@@ -131,10 +134,11 @@ The tile API serves `/releases/ID/basemap.json`, vector tiles at `/releases/ID/b
 `/releases/ID/overlays.json`, overlay tiles at `/releases/ID/overlays/Z/X/Y.mvt`, Terrarium tiles at
 `/releases/ID/terrain/Z/X/Y.webp`, and, for each data layer of the release,
 `/releases/ID/LAYER.json` and its tiles at `/releases/ID/LAYER/Z/X/Y`. It serves route catalog cells
-at `/releases/ID/routes/tiles/9-X-Y.json`, and TrailView's ruleset at
-`/releases/ID/trailview/rules.json`. Each TileJSON holds its archive metadata. Data layer tiles that
-are not MVT or WebP keep their gzip encoding. An absent tile returns 204. The raw archives remain
-downloadable from R2.
+at `/releases/ID/routes/tiles/9-X-Y.json`, the [trail files](route-catalog.md#trail-files) at
+`/releases/ID/routes/tiles/trails/7-X-Y.json` and `/releases/ID/routes/tiles/long/T.json`, where `T`
+is the `id` of a trail, and TrailView's ruleset at `/releases/ID/trailview/rules.json`. Each TileJSON
+holds its archive metadata. Data layer tiles that are not MVT or WebP keep their gzip encoding. An
+absent tile returns 204. The raw archives remain downloadable from R2.
 
 Routing, search and downloads APIs have the prefix `/planner-api/releases/ID/`. The final path
 component selects `routing`, `search` or `downloads`. `obc data serve` runs the services of each
@@ -229,12 +233,16 @@ catalogue URL, map asset URLs, tile URLs, and routing, search and downloads API 
 the name of the recipe's region in `data/regions/`. `layers` maps the name of each data layer of the
 release to its TileJSON URL. `trailview_rules` is the URL of TrailView's ruleset when the release
 has it. `routes` is the route catalog cell URL template on the tile API origin,
-`/releases/ID/routes/tiles/{cell}.json`, where `{cell}` is a cell ID `9-X-Y`.
+`/releases/ID/routes/tiles/{cell}.json`, where `{cell}` is a cell ID `9-X-Y`. When the release has
+trail files, `trails` is the far file URL template `/releases/ID/routes/tiles/trails/{cell}.json`, where
+`{cell}` is a cell ID `7-X-Y`, and `trail` is the trail record file URL template
+`/releases/ID/routes/tiles/long/{id}.json`, where `{id}` is the `id` of a trail. An offline selection
+holds no trail files.
 
 The publisher uploads and verifies all release files before the manifest. The catalogue cache
-lifetime is 30 seconds. Immutable objects have a one-year cache lifetime. The web planner and the
-map builder read the catalogue at page load. The planner uses `active`, unchanged, as its
-configuration. The map builder uses its device catalogue. A client refuses a catalogue `format` that
+lifetime is 30 seconds. Immutable objects have a one-year cache lifetime. The web app reads the
+catalogue at page load. Its planner uses `active`, unchanged, as its configuration. Its map pages
+use the device catalogue of `active`. A client refuses a catalogue `format` that
 it does not know. When a release object returns 404 or no answer, a client reads the catalogue
 again, once, and retries with the new `active` entry.
 

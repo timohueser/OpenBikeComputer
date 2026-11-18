@@ -8,6 +8,7 @@ import the test module under the name the planner already uses, and the planner'
 from __future__ import annotations
 
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -19,6 +20,8 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import test_plan as plan
+
+BUILD = (".", ["bash", "builder/build-wasm-bridges.sh"])
 
 
 def package(name, root, dependencies=(), product_root=".", ordinary=("main",), fixtures=(), examples=()):
@@ -295,12 +298,27 @@ class ExecutionTests(unittest.TestCase):
                 (root / pkg).mkdir(parents=True)
                 (root / pkg / "bridge.wasm").write_bytes(b"")
             self.assertEqual(plan.local_setup(root, ["web-browser"], bridge_changed=False), [])
-            self.assertEqual(
-                plan.local_setup(root, ["web"], bridge_changed=True),
-                [(".", ["bash", "builder/build-wasm-bridges.sh"])],
-            )
+            self.assertEqual(plan.local_setup(root, ["web"], bridge_changed=True), [BUILD])
             (root / "builder/web/package-lock.json").write_text("a new lock")
             self.assertEqual([d for d, _ in plan.local_setup(root, ["web"], bridge_changed=False)], ["builder/web"])
+
+    def test_the_bridge_job_itself_builds_the_bridges(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(plan.local_setup(Path(directory), ["wasm-bridges"], bridge_changed=False), [BUILD])
+            for pkg in plan.BRIDGES:
+                (Path(directory) / pkg).mkdir(parents=True, exist_ok=True)
+                (Path(directory) / pkg / "bridge.wasm").write_bytes(b"")
+            self.assertEqual(plan.local_setup(Path(directory), ["wasm-bridges"], bridge_changed=False), [])
+
+    def test_a_suite_whose_command_the_setup_ran_runs_once(self) -> None:
+        bridges = plan.Unit(id="ci.wasm-size", jobs=["wasm-bridges"], command=shlex.join(BUILD[1]), reasons=["x"])
+        chosen = plan.Plan(base="a", head="b", changed_paths=[], units=[bridges], packages=[], errors=[])
+        ran = []
+        with patch.object(plan, "local_setup", return_value=[BUILD]), \
+             patch.object(plan.subprocess, "run", side_effect=lambda command, **_: ran.append(command) or subprocess.CompletedProcess([], 0)), \
+             patch("builtins.print"):
+            self.assertEqual(plan.run_plan(chosen, self.graph, Path(".")), 0)
+        self.assertEqual(ran, [BUILD[1]])
 
     def test_gates_name_jobs_and_a_ci_only_suite_is_never_claimed(self) -> None:
         units = [
@@ -427,24 +445,15 @@ class ShippedPlanTests(unittest.TestCase):
         self.assertEqual(plan.validate(self.root, self.graph, self.document, self.units), [])
         self.assertEqual(plan.validate_workflow(self.root), [])
 
-    def test_the_shared_config_schema_selects_its_rust_python_and_web_consumers(self) -> None:
-        selected = plan.select(self.units, self.graph, ["host/obc-map-core/schema/config.schema.json"])
-        self.assertEqual(selected.errors, [])
-        self.assertLessEqual(
-            {"rust.obc-map-core", "python.builder", "web.builder-vitest"},
-            {unit.id for unit in selected.selected},
-        )
-
     def test_every_package_reaches_the_jobs_that_compile_it(self) -> None:
         expected = {
             "obc-crc": ["clippy", "fmt", "test"],
             "obc-fw-nrf54l": ["embedded", "fmt"],
             "obc-boot": ["boot", "fmt"],
-            "obc-desktop": ["desktop", "fmt"],
             "obc-builder-bridge": ["clippy", "fmt", "test", "wasm-bridges"],
             "obc-web-demo": ["clippy", "fmt", "test", "wasm"],
-            "obc-pack": ["builder-python", "clippy", "fmt", "test"],
-            "obc-bake": ["builder-python", "clippy", "fmt", "test"],
+            "obc-pack": ["clippy", "fmt", "packer-python", "test"],
+            "obc-bake": ["clippy", "fmt", "packer-python", "test"],
             "obc-sim": ["clippy", "fmt", "test", "ui-snapshots"],
             "obc-app": ["clippy", "device", "fmt", "test"],
         }
@@ -466,33 +475,28 @@ class ShippedPlanTests(unittest.TestCase):
             (
                 "foundational Rust crate",
                 ["firmware/obc-crc/src/lib.rs"],
-                ["boot", "builder-python", "cairn", "clippy", "desktop", "desktop-frontend", "device", "embedded", "fmt", "ios-app", "ios-release", "ios-unit", "test", "ui-snapshots", "wasm", "wasm-bridges"],
+                ["boot", "cairn", "clippy", "device", "embedded", "fmt", "ios-app", "ios-release", "ios-unit", "packer-python", "test", "ui-snapshots", "wasm", "wasm-bridges"],
             ),
             (
                 "shared vectors",
                 ["specs/vectors/obcm-v2.json"],
                 ["clippy", "device", "fmt", "ios-unit", "test", "wasm-bridges", "web"],
             ),
-            (
-                "desktop launch harness",
-                ["builder/desktop/e2e/launch.py"],
-                ["cairn", "desktop", "desktop-frontend", "fmt", "wasm-bridges"],
-            ),
             ("iOS application", ["companion-ios/OBCCompanion/App.swift"], ["cairn", "ios-app", "ios-release"]),
             (
                 "web only",
                 ["builder/web/src/lib/panel.ts"],
-                ["cairn", "desktop-frontend", "wasm-bridges", "web", "web-browser"],
+                ["cairn", "wasm-bridges", "web", "web-browser"],
             ),
             (
                 "workflow",
                 [".github/workflows/ci.yml"],
-                ["boot", "builder-python", "cairn", "clippy", "deny", "desktop", "desktop-frontend", "device", "docs", "embedded", "fmt", "ios-app", "ios-release", "ios-unit", "planner-search", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
+                ["boot", "cairn", "clippy", "deny", "device", "docs", "embedded", "fmt", "ios-app", "ios-release", "ios-unit", "packer-python", "planner-search", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
             ),
             (
                 "nextest configuration",
                 [".config/nextest.toml"],
-                ["boot", "builder-python", "cairn", "clippy", "deny", "desktop", "desktop-frontend", "device", "docs", "embedded", "fmt", "planner-search", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
+                ["boot", "cairn", "clippy", "deny", "device", "docs", "embedded", "fmt", "packer-python", "planner-search", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
             ),
             ("web demo crate", ["sim/web-demo/src/lib.rs"], ["cairn", "clippy", "fmt", "test", "wasm"]),
             ("web demo Trunk target", ["docs/index.html"], ["docs", "wasm", "wasm-bridges"]),
@@ -509,7 +513,7 @@ class ShippedPlanTests(unittest.TestCase):
             (
                 "repository tooling",
                 ["tools/fixtures.py"],
-                ["cairn", "desktop", "desktop-frontend", "test", "wasm-bridges"],
+                ["cairn", "test"],
             ),
         ]
         for name, paths, expected in cases:
@@ -529,7 +533,7 @@ class ShippedPlanTests(unittest.TestCase):
         for path in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".rustfmt.toml", ".cargo/config.toml"):
             with self.subTest(path=path):
                 self.assertLessEqual(
-                    {"boot", "clippy", "desktop", "device", "embedded", "fmt", "test", "wasm", "wasm-bridges"},
+                    {"boot", "clippy", "device", "embedded", "fmt", "test", "wasm", "wasm-bridges"},
                     set(self.jobs_for(path)),
                 )
 
@@ -713,6 +717,13 @@ class ShippedPlanTests(unittest.TestCase):
         for carved in ("binary(=decode)", "binary(=real_tile)", "binary(=assistant_places)"):
             self.assertNotIn(carved, expression)
 
+    def test_an_ordinary_suites_targets_join_the_fast_tier_only_when_it_runs(self) -> None:
+        census = "(package(=obc-ground-plan) & binary(=heights_fixture))"
+        running = plan.cargo_filter(self.graph, "fast", carved=plan.carved_targets(self.document, ["ci.ground-plan-census"]))
+        idle = plan.cargo_filter(self.graph, "fast", carved=plan.carved_targets(self.document, []))
+        self.assertIn(census, running)
+        self.assertNotIn(census, idle)
+
     def test_every_required_suite_a_full_local_run_misses_is_named(self) -> None:
         covered = {item.id for item in plan.reproduced(self.units, sorted(plan.GATES))}
         missing = sorted(item.id for item in self.units if item.route == "required" and item.id not in covered)
@@ -724,6 +735,7 @@ class ShippedPlanTests(unittest.TestCase):
                 "ci.ios-host-portability",
                 "ci.prose",
                 "python.repository-tools",
+                "python.trailview",
             ],
         )
 

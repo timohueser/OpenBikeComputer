@@ -3,7 +3,7 @@
 // corridors, and the requests.
 //
 //   npm run pretest:trailview --prefix builder/web/tests/browser     # build against the fixture
-//   node builder/web/tests/browser/trailview/flight.mjs --gpu [--flights FILE] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--cracks N] [--audit N] [--resolve MS]
+//   node builder/web/tests/browser/trailview/flight.mjs --gpu [--flights FILE] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--cracks N] [--audit N] [--resolve MS] [--query Q]
 //
 // A pass prints its median, p95 and max over the frames that ran it, their number, and `amortized`,
 // its time summed over the flight per frame: the `ground` compute runs only on frames with arriving pages.
@@ -21,7 +21,9 @@
 // idle and adds up its invariant audit (`trailView.audit()`). --resolve names the expected median of the
 // `resolve` pass, a fixed load per pixel: a flight past RESOLVE_DRIFT_MS prints `valid: false`. --gpu
 // draws 2560 × 1600 pixels on the machine's GPU, headless on Linux and in a window on macOS, with exact
-// timestamps. Without it SwiftShader draws on the CPU, and its times say nothing about a GPU.
+// timestamps. Without it SwiftShader draws on the CPU, and its times say nothing about a GPU. With the
+// ground plan's meshes a line holds the cells that draw, their triangles and slots in view, and their bytes.
+// --query Q appends `&Q` to the start view of each flight, such as `ground=plan`.
 
 import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
@@ -38,6 +40,7 @@ const { values } = parseArgs({
         audit: { type: 'string' },
         resolve: { type: 'string' },
         gpu: { type: 'boolean' },
+        query: { type: 'string' },
     },
 });
 /** The owner's limit: past it, the GPU clock moved or another job ran, and the flight does not count. */
@@ -96,7 +99,7 @@ try {
         const [width, height] = flight.viewport ?? [1280, 800];
         const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: 2 });
         await routeFixture(page, values.tiles, values.ground, values.colour, values.features);
-        await page.goto(`${origin}/trailview.html${values.cracks ? `${flight.from}&debug=cracks` : flight.from}`);
+        await page.goto(`${origin}/trailview.html${flight.from}${values.cracks ? '&debug=cracks' : ''}${values.query ? `&${values.query}` : ''}`);
         await page.waitForFunction(() => window.trailView, null, { timeout: 60_000 });
         await page.evaluate(() => window.trailView.waitForIdle());
         if (values.cracks) await page.addStyleTag({ content: '#hud { display: none; }' });
@@ -152,6 +155,7 @@ try {
             nodes: summary(of('nodes')), triangles: summary(of('triangles')), quality: summary(of('quality')),
             pages: { stored: Math.max(...of('resident').map(r => r.stored)), synth: Math.max(...of('resident').map(r => r.synth)), capacity: last.terrain.capacity },
             ...(last.terrain.roads ? { roads: { first: frames[0].terrain.roads, vertices: summary(of('roads').map(r => r.vertices)), triangles: summary(of('roads').map(r => r.triangles)), dropped: Math.max(...of('roads').map(r => r.dropped)) } } : {}),
+            ...(last.terrain.pieces ? { pieces: { drawn: summary(of('pieces').map(p => p.drawn)), triangles: summary(of('pieces').map(p => p.triangles)), steps: summary(of('pieces').map(p => p.steps)), megabytes: +(last.terrain.pieces.bytes / 2 ** 20).toFixed(1) } } : {}),
             ground: { wanted: summary(frames.map(frame => frame.ground.wanted)), short: summary(frames.map(frame => frame.ground.shortage)), capacity: last.ground.capacity, colour: last.ground.colour },
             poolMegabytes: Object.fromEntries(stats.pools.map(([pool, bytes]) => [pool, +(bytes / 2 ** 20).toFixed(1)])),
             requests: last.requests, megabytes: +(last.bytes / 2 ** 20).toFixed(2),

@@ -1,6 +1,6 @@
 <script lang="ts">
     import { onDestroy, untrack } from 'svelte';
-    import PlannerIcon from './PlannerIcon.svelte';
+    import PlannerIcon from '../../lib/ui/Icon.svelte';
     import QueryChip from './QueryChip.svelte';
     import type { Coordinate } from '../../lib/planner/geo';
     import { searchPlaces, type QueryRequest, type SearchContext, type SearchState, type Where } from '../../lib/planner/search/types';

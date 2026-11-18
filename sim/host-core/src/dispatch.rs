@@ -72,7 +72,7 @@ pub enum InflightPlan {
 /// Sources admitted together; the reader is always made by the leased FlatMap.
 struct PlanSources {
     map: crate::flat_store::ObjectSource,
-    map_fingerprint: obc_formats::assistant::PayloadFingerprint,
+    map_fingerprint: obc_formats::navigator::PayloadFingerprint,
     original: Option<(crate::RouteLease, Box<obc_route::RouteIndex>)>,
 }
 impl PlanSources {
@@ -1339,7 +1339,7 @@ mod tests {
         }
         let saved = routes.read_checkpoint().unwrap().expect("selecting a route is durable on its own");
         assert_eq!(Some(saved.route), routes.fingerprint(imported));
-        assert_eq!((saved.original, saved.phase), (None, obc_formats::assistant::JourneyPhase::Following));
+        assert_eq!((saved.original, saved.phase), (None, obc_formats::navigator::JourneyPhase::Following));
         assert_eq!((saved.progress_m, saved.lower_m), (0, 0), "an ordinary route carries no phase window");
         assert!(!app.recording(), "selecting a route is not starting a ride");
         assert!(routes.replace(imported, sink.bytes()).is_err(), "the checkpoint pins the bytes it names");

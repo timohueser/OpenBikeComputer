@@ -1,4 +1,4 @@
-/* Reading pages share the builder's palette and the landing page's typography. */
+/* Reading pages share the palette of the web app and the typography of the landing page. */
 @import "./theme.css";
 @import "./site-header.css";
 

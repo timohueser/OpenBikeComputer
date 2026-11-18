@@ -1,18 +1,15 @@
 #!/usr/bin/env python3
-"""Digest-pinned catalog fixtures on loopback, for the two journeys that drive a real catalog UI.
+"""A digest-pinned catalog fixture on loopback, for the browser journeys of the web app.
 
-Two document sets, one server. `schema_examples()` is the desktop launch smoke's catalog and
-publishes no cell bytes, because that journey stops at region selection. `web_assemble()` is the
-builder browser journey's catalog, where every artifact is real, so a region download from it
-assembles the checked-in cells into the checked-in map.
+`web_assemble()` is the journey's catalog, where every artifact is real, so a region download
+from it assembles the checked-in cells into the checked-in map.
 
 Every `bytes`, `sha256` and `url` is computed from the bytes this module serves, never copied from
 a document.
 
-Run it as a server for a browser test:
+Run it as a server for a browser test; it prints its origin first:
 
-    python3 tools/fixture_catalog.py --catalog web-assemble --port 4180 \\
-        --static builder/web/dist/web --log .artifacts/web-builder/catalog.jsonl
+    python3 tools/fixture_catalog.py --catalog web-assemble
 """
 
 from __future__ import annotations
@@ -22,11 +19,9 @@ import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
-from threading import Thread
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
-SCHEMA_EXAMPLES = ROOT / "host/obc-pack/schema"
 ASSEMBLE_FIXTURE = ROOT / "builder/wasm/tests/fixture"
 
 CONTENT_TYPES = {
@@ -63,40 +58,7 @@ def _document(objects: dict[str, bytes], path: str, document: object) -> dict:
     return pin(objects, path, json.dumps(document).encode())
 
 
-# The desktop launch smoke's catalog.
-
-
-def schema_examples() -> dict[str, bytes]:
-    """Keep the producer's fine-band example; make the other bands empty."""
-
-    catalog = json.loads((SCHEMA_EXAMPLES / "catalog.example.json").read_text())
-    fine = json.loads((SCHEMA_EXAMPLES / "cell-index.example.json").read_text())
-    region_cells = json.loads((SCHEMA_EXAMPLES / "region-cells.example.json").read_text())
-    objects: dict[str, bytes] = {}
-
-    catalog.pop("terrain", None)
-    for ref in catalog["cell_index"]:
-        doc = fine if ref["band"] == "fine" else {
-            "schema_version": 3, "schema_sha256": catalog["schema"]["sha256"],
-            "band": ref["band"], "cells": [], "known_empty": [],
-        }
-        ref.update(_document(objects, f"/{ref['band']}.json", doc))
-        ref.update(cell_count=len(doc["cells"]), known_empty_count=len(doc["known_empty"]))
-    region_cells["cells"] = {"fine": region_cells["cells"]["fine"]}
-    region_cells.pop("terrain", None)
-    region = catalog["regions"][0]
-    region.pop("terrain", None)
-    region.update(bytes=sum(cell["bytes"] for cell in fine["cells"]),
-                  bytes_by_band={"fine": sum(cell["bytes"] for cell in fine["cells"])}, cell_count={"fine": 3},
-                  partial_cell_count_by_band={"fine": 0})
-    pinned = _document(objects, "/region.json", region_cells)
-    region.update({f"cells_{key}": value for key, value in pinned.items()})
-    catalog["regions"] = [region]
-    objects["/catalog.json"] = json.dumps(catalog).encode()
-    return objects
-
-
-# The builder browser journey's catalog.
+# The catalog of the browser journeys.
 #
 # The bridge fixture's own cut numbers its feature types in config order. A hosted catalog names the
 # feature types and the schema assigns the ids, so the assignment is restated here in the catalog's
@@ -265,73 +227,32 @@ def web_assemble() -> dict[str, bytes]:
     return objects
 
 
-CATALOGS = {"schema-examples": schema_examples, "web-assemble": web_assemble}
+CATALOGS = {"web-assemble": web_assemble}
 
 
 
 
 class CatalogServer(ThreadingHTTPServer):
-    """Serves a pinned object set, and optionally a static build alongside it on one origin.
-
-    One origin matters: the builder fetches cells with `fetch`, and a second port would be a
-    cross-origin request needing CORS that the real deployment does not need.
-    """
+    """Serves a pinned object set on loopback."""
 
     daemon_threads = True
 
-    def __init__(self, objects: dict[str, bytes], port: int = 0,
-                 static: Path | None = None, log: Path | None = None) -> None:
+    def __init__(self, objects: dict[str, bytes], port: int = 0) -> None:
         super().__init__(("127.0.0.1", port), _Handler)
         self.objects = objects
-        self.static = static.resolve() if static else None
-        self.requests: list[str] = []
-        self.log = log
-        if log:
-            log.parent.mkdir(parents=True, exist_ok=True)
-            log.write_text(json.dumps({"served": sorted(objects)}) + "\n")
 
     @property
     def origin(self) -> str:
         return f"http://127.0.0.1:{self.server_port}"
-
-    def start(self) -> "CatalogServer":
-        Thread(target=self.serve_forever, daemon=True).start()
-        return self
-
-    def record(self, path: str, status: int, kind: str) -> None:
-        self.requests.append(path)
-        if self.log:
-            with self.log.open("a") as handle:
-                handle.write(json.dumps({"path": path, "status": status, "kind": kind}) + "\n")
-
-    def static_file(self, path: str) -> Path | None:
-        """A file under the static root, or `None`. A path that escapes the root is not one."""
-
-        if not self.static:
-            return None
-        candidate = (self.static / path.lstrip("/")).resolve()
-        if candidate.is_dir():
-            candidate = candidate / "index.html"
-        if not candidate.is_file() or self.static not in candidate.parents:
-            return None
-        return candidate
 
 
 class _Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 — BaseHTTPRequestHandler's spelling
         server: CatalogServer = self.server  # type: ignore[assignment]
         path = urlsplit(self.path).path
-        body, kind, name = server.objects.get(path), "object", path
-        if body is None:
-            static = server.static_file(path)
-            # The served file names the type: a request for the root is an index.html, and
-            # answering it as an octet-stream makes the browser download the app.
-            if static:
-                body, kind, name = static.read_bytes(), "static", static.name
-        status = 200 if body is not None else 404
-        server.record(path, status, kind if body is not None else "missing")
-        self.send_response(status)
-        self.send_header("Content-Type", content_type(name) if body is not None else "text/plain")
+        body = server.objects.get(path)
+        self.send_response(200 if body is not None else 404)
+        self.send_header("Content-Type", content_type(path) if body is not None else "text/plain")
         self.end_headers()
         self.wfile.write(body if body is not None else b"not found")
 
@@ -343,15 +264,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--catalog", choices=sorted(CATALOGS), default="web-assemble")
     parser.add_argument("--port", type=int, default=0)
-    parser.add_argument("--static", type=Path, help="A built site to serve on the same origin.")
-    parser.add_argument("--log", type=Path, help="JSONL request log; its first line names what is served.")
     args = parser.parse_args()
-    if args.static and not (args.static / "index.html").is_file():
-        raise SystemExit(
-            f"{args.static}/index.html is missing. Build it first:\n"
-            "  cd builder/web && npm run build:web"
-        )
-    server = CatalogServer(CATALOGS[args.catalog](), args.port, args.static, args.log)
+    server = CatalogServer(CATALOGS[args.catalog](), args.port)
     print(f"{server.origin} serving {len(server.objects)} pinned objects", flush=True)
     try:
         server.serve_forever()

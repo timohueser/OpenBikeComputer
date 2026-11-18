@@ -25,6 +25,7 @@ members = [
     "planner/router",
     "planner/router-build",
     "host/obc-file-source",
+    "host/obc-fit",
     "host/obc-inspect",
     "host/obc-fixtures",
     "host/obc-pack",
@@ -40,6 +41,7 @@ members = [
     "host/obc-mkimage",
     "host/obc-vectors",
     "host/obc-trailview-features",
+    "host/obc-ground-plan",
     "host/obc-tree-walk",
     "host/obcm-assemble",
     "host/obcm-testkit",
@@ -55,13 +57,14 @@ members = [
     "sim/phone/host",
     "sim/desktop",
     "sim/web-demo",
-    # Product bridges. obc-desktop carries its own [workspace].
+    # Product bridges.
     "planner/service",
     "builder/wasm",
+    "builder/ground-plan-wasm",
 ]
 # obc-fw-nrf54l is a standalone board crate (own target + .cargo/config.toml, own empty
 # [workspace]); it's built on its own, not as part of this host workspace (which builds its
-# members for the host target). obc-boot, obc-desktop and obc-sensor-sim carry their own
+# members for the host target). obc-boot and obc-sensor-sim carry their own
 # [workspace] tables, which excludes them automatically for the same reason.
 exclude = ["firmware/obc-fw-nrf54l"]
 resolver = "2"
@@ -74,6 +77,7 @@ obc-elevation = { path = "firmware/obc-elevation" }
 obc-fixtures = { path = "host/obc-fixtures" }
 obc-flat-device = { path = "sim/flat-device" }
 obc-formats = { path = "firmware/obc-formats" }
+obc-ground-plan = { path = "host/obc-ground-plan", default-features = false }
 obc-link = { path = "firmware/obc-link" }
 obc-map-scene = { path = "firmware/obc-map-scene" }
 obc-pack = { path = "host/obc-pack" }
@@ -94,6 +98,7 @@ obc-app = { path = "firmware/obc-app" }
 obc-dem = { path = "host/obc-dem", default-features = false }
 obc-dfu = { path = "firmware/obc-dfu" }
 obc-file-source = { path = "host/obc-file-source" }
+obc-fit = { path = "host/obc-fit" }
 obc-host-core = { path = "sim/host-core" }
 obc-places = { path = "host/obc-places" }
 obc-platform = { path = "firmware/obc-platform" }
@@ -144,3 +149,16 @@ opt-level = 2
 # Tool identities hash large compiler and sysroot files.
 [profile.dev.package.sha2]
 opt-level = 3
+
+# The ground plan's fixture tests build and mesh every fixture cell.
+[profile.dev.package.obc-ground-plan]
+opt-level = 3
+[profile.dev.package.spade]
+opt-level = 2
+[profile.dev.package.i_overlay]
+opt-level = 2
+
+# One unit optimizes the crate as one module: the viewer's ground-plan WASM bridge is smaller and not
+# slower, and its size does not jump when the compiler splits the crate differently.
+[profile.release.package.obc-ground-plan]
+codegen-units = 1

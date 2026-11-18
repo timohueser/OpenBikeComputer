@@ -7,7 +7,6 @@
     --stale: #8a4a00;
     --warn: color-mix(in srgb, var(--amber) 14%, var(--panel));
     --focus: var(--forest);
-    --link: var(--forest);
     --shadow: 0 6px 18px rgb(28 27 20 / 0.12);
     /* How this machine holds a source, from `obc data sources`. */
     --status-archived: var(--ready);
@@ -22,7 +21,6 @@
     --running: #94bde4;
     --missing: #f19a86;
     --stale: #e9ad62;
-    --link: var(--wood);
     --shadow: 0 6px 18px rgb(0 0 0 / 0.4);
     --status-prepared: #7cc8cf;
     --status-held: #c2cf86;

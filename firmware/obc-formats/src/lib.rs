@@ -12,11 +12,11 @@
 extern crate std;
 
 pub mod articles;
-pub mod assistant;
 pub mod bike;
 pub mod cache;
 pub mod grid;
 pub mod io;
+pub mod navigator;
 pub mod obcm;
 pub mod obcr;
 pub mod obct;

@@ -8,7 +8,7 @@ import type { AnchoredBuilder } from '../structures/anchored';
 import { GROUND, mix, type MeshBuilder, station, type Corner } from '../structures/mesh';
 import type { Light } from '../structures/light-pools';
 import type { Owns } from '../structures/node';
-import { metresPerUnit, type Line, type Node, type Shapes } from '../terrain/bins';
+import { linesNear, metresPerUnit, PATH, ROAD, type Line, type Node, type Shapes } from '../terrain/bins';
 import { besideWays, type Beside, type Cores, type Stand, type Taken } from '../roads/cores';
 
 /**
@@ -38,13 +38,12 @@ export interface Build {
     near: { mesh: MeshBuilder; anchored: AnchoredBuilder };
     place: (placement: Placement) => void;
     owns: Owns;
-    /** The roads and paths of the tile, and its buildings' rings. */
-    ways: Line[];
+    /** The shapes of the tile: a model faces the nearest of its roads and paths, and a lamp keeps off its buildings. */
+    shapes: Shapes;
     /** The ground that the models at points keep out of: the ways' cores, the water and the buildings. */
     cores: Cores;
     /** The models at points that the node placed, which a moved model keeps clear of. */
     taken: Taken[];
-    buildings: Shapes['buildings'];
     /** Whether a point lies in a junction's corner, which paints its asphalt and its sidewalk. */
     cornered: (x: number, y: number) => boolean;
 }
@@ -88,25 +87,30 @@ export function halfDepth(model: Model, facesWay: boolean): number {
 /** A model faces the nearest way within this many metres. */
 const FACE_M = 15;
 
-/** The nearest of `ways` within FACE_M of world point x, y: its line, its unit direction there and the offset to it, in world units. */
-export function nearestWay(ways: Line[], x: number, y: number): { line: Line; v: number; dx: number; dy: number; px: number; py: number } | undefined {
-    let best = (FACE_M / metresPerUnit(y)) ** 2, way: ReturnType<typeof nearestWay>;
-    for (const line of ways) for (let i = 0; i + 3 < line.xy.length; i += 2) {
-        const ax = line.xy[i], ay = line.xy[i + 1], dx = line.xy[i + 2] - ax, dy = line.xy[i + 3] - ay, l = dx * dx + dy * dy;
-        const t = l ? Math.min(1, Math.max(0, ((x - ax) * dx + (y - ay) * dy) / l)) : 0, px = ax + t * dx - x, py = ay + t * dy - y;
-        if (!l || px * px + py * py >= best) continue;
-        best = px * px + py * py;
-        way = { line, v: i / 2, dx: dx / Math.sqrt(l), dy: dy / Math.sqrt(l), px, py };
+/** The nearest road or path of a tile within FACE_M of world point x, y: its line, its unit direction there and the offset to it, in world units. */
+function nearestWay(shapes: Shapes, x: number, y: number): { line: Line; v: number; dx: number; dy: number; px: number; py: number } | undefined {
+    const reach = FACE_M / metresPerUnit(y);
+    let best = reach ** 2, way: ReturnType<typeof nearestWay>;
+    for (const k of linesNear(shapes, x, y, reach)) {
+        const line = shapes.lines[k];
+        if (line.kind !== ROAD && line.kind !== PATH) continue;
+        for (let i = 0; i + 3 < line.xy.length; i += 2) {
+            const ax = line.xy[i], ay = line.xy[i + 1], dx = line.xy[i + 2] - ax, dy = line.xy[i + 3] - ay, l = dx * dx + dy * dy;
+            const t = l ? Math.min(1, Math.max(0, ((x - ax) * dx + (y - ay) * dy) / l)) : 0, px = ax + t * dx - x, py = ay + t * dy - y;
+            if (!l || px * px + py * py >= best) continue;
+            best = px * px + py * py;
+            way = { line, v: i / 2, dx: dx / Math.sqrt(l), dy: dy / Math.sqrt(l), px, py };
+        }
     }
     return way;
 }
 
 /**
- * The yaw that stands a model at world point x, y along the nearest of `ways` within FACE_M, its front
- * (−y) toward it, as a bench beside a path; undefined without one.
+ * The yaw that stands a model at world point x, y along the nearest road or path of a tile within FACE_M, its
+ * front (−y) toward it, as a bench beside a path; undefined without one.
  */
-export function facing(ways: Line[], x: number, y: number): number | undefined {
-    const way = nearestWay(ways, x, y);
+export function facing(shapes: Shapes, x: number, y: number): number | undefined {
+    const way = nearestWay(shapes, x, y);
     if (!way) return undefined;
     // World y runs south: the way's direction and the front's, east and north.
     const along = Math.atan2(-way.dy, way.dx);
@@ -122,7 +126,7 @@ export function modelKind(name: string, model: () => Model, reach: number, { fac
     const { height, spec } = unitModel(model, reach), stand = { half: halfDepth(model(), facesWay), radius: halfDepth(model(), false), corner };
     return {
         build(feature, out) {
-            pointModels(feature, out, stand, (x, y, faced) => ({ yaw: (facesWay ? faced ?? facing(out.ways, x, y) : undefined) ?? ((x * 7 + y * 13) % 628) / 100, height, model: name }));
+            pointModels(feature, out, stand, (x, y, faced) => ({ yaw: (facesWay ? faced ?? facing(out.shapes, x, y) : undefined) ?? ((x * 7 + y * 13) % 628) / 100, height, model: name }));
         },
         models: { [name]: spec },
         lights: light && { [name]: light },

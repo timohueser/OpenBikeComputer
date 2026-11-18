@@ -144,8 +144,8 @@ mod tests {
     fn app() -> App {
         let mut app = App::new_idle(crate::AppState::new(0, 0, 1.0));
         app.state.peak_view_profile = Some(PeakViewProfile::at(200, 300, 0));
-        for i in 0..3 {
-            app.state.peak_view_peaks[i] = PeakViewPeak {
+        for (i, peak) in app.state.peak_view_peaks[..3].iter_mut().enumerate() {
+            *peak = PeakViewPeak {
                 source: SourceId::osm(1, 101 + i as u64),
                 name: PeakName::new("Summit"),
                 lat: 100,

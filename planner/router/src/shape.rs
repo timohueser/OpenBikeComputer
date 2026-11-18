@@ -91,14 +91,14 @@ fn point_at(line: &[P], at: f64) -> P {
 /// samples at most half a cell apart. A point within `NEAR_M` of a segment is then less than one
 /// cell from a sample, so the 3 x 3 cells around the point hold the segment. The index grows with
 /// the line length only.
-struct Near<'a> {
+pub struct Near<'a> {
     line: &'a [P],
     cell: [f64; 2],
     cells: HashMap<(i32, i32), Vec<u32>>,
 }
 
 impl<'a> Near<'a> {
-    fn new(line: &'a [P]) -> Self {
+    pub fn new(line: &'a [P]) -> Self {
         // A degree of longitude is shortest at the latitude farthest from the equator.
         let lat = line.iter().map(|p| (p[1] as f64 * 1e-6).abs()).fold(0.0, f64::max);
         let cell_lat = 2.0 * NEAR_M / METRES_PER_UDEG;
@@ -173,6 +173,11 @@ fn off(a: &[P], b: &Near) -> (f64, Option<f64>) {
 /// The deviation of a routed line from a line, in metres.
 pub fn deviation(routed: &[P], line: &[P]) -> f64 {
     off(routed, &Near::new(line)).0 + off(line, &Near::new(routed)).0
+}
+
+/// The length of `line` that is farther than `NEAR_M` from the line of `near`, in metres.
+pub fn far(line: &[P], near: &Near) -> f64 {
+    off(line, near).0
 }
 
 #[derive(Clone, Copy)]

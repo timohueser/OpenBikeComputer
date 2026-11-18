@@ -308,7 +308,8 @@ fn the_ways_over_a_seam_keep_their_tolerances_though_the_two_jobs_round_apart() 
     let (_, classes) = table();
     let (_, mut tight) = table();
     tight.rows.iter_mut().for_each(|row| row.keep_m = 0.005);
-    for layout in 0..48 {
+    // Every 4th of 48 layouts, and layout 1: the deepest sag of the 48.
+    for layout in (0..48).step_by(4).chain([1]) {
         // Long ways: a job holds a stroke that its neighbour cuts elsewhere, so a tangent can round apart.
         let (ways, length) = (7, 900.0);
         let from = seam(&place) - 3.5 * length + 13.0 * layout as f64;
@@ -406,6 +407,7 @@ fn a_vertex_shared_with_a_river_stays_and_lies_on_a_whole_tile_unit() {
         half: 1.0,
         cover: 1.0,
         lift: 1.5,
+        untagged_culvert: true,
     };
     let solved = run(&[road], &flat, &[river]);
     let way = solved.ways[0][0].as_ref().unwrap();

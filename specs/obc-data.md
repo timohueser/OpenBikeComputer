@@ -107,10 +107,10 @@ field for programs, such as the catalog `license`.
 Rust code reads the file that the build embeds (`obc_data::sources::attribution`). Python
 reads it through `tools/data_registry.py`, and shell through
 `tools/data_registry.py attribution ID`. The web bundle notice reads it at build time through
-`builder/web/vite/third-party-licenses.ts`. The web planner, the map builder and the iOS planner show the
+`builder/web/vite/third-party-licenses.ts`. The web app and the iOS planner show the
 planner release `attribution`. Text that no step can generate keeps a copy, and a test
-compares the copy with this file: the device About page, and the footers of the site, the
-docs and the map builder.
+compares the copy with this file: the device About page, and the footers of the site and the
+docs.
 
 ### Settings of a target
 
@@ -193,6 +193,40 @@ header `#262624`, and `obc data open` tunnels to the SSH host of its name.
 | --- | --- | --- |
 | `colour` | string | `#rrggbb`: the header of the page of the machine. White text on it has a contrast of at least 4.5:1, and it is not `#6e6c66`, the header of a page that loads |
 | `ssh` | string | Optional: the SSH host or alias that `obc data open` tunnels to |
+
+### `data/routes/<id>.toml`
+
+The description of a route source: which layers and fields of its files make a route and its
+stages. `<id>` is a source of `data/sources.toml` with `used_by` `planner` and `keep = "archive"`.
+[Route sources](#route-sources) reads it. An unknown key is refused, and so are an `origin` that
+another file has, empty `countries`, a `keep` or `drop` value that is no list, and a `rank` level
+outside 0 to 4 (`tools/check_data_sources.py`).
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `origin` | integer, 1 to 9006 | The number of the source in the `id` of its records. Unique over `data/routes/`; a number is never used again |
+| `countries` | array of strings | The ISO 3166-1 alpha-2 codes of the countries whose routes the source holds, such as `CH`. A region reads the source only when its `countries` name one of them and its bounds meet the `extent` of the row |
+| `kind` | string, or table | `hiking`, `bicycle` or `mtb` for every route; or `{ field, values }`: the value of `field` maps to a kind, and a feature with another value is left out |
+| `route` | table | How the routes are read, see below |
+| `stage` | table | Optional: how the stages of a route are read |
+
+Keys of `route` and `stage`:
+
+| Key | In | Meaning |
+| --- | --- | --- |
+| `layer` | both | The layer of the file |
+| `file` | both | Optional: the path of the file in a zip, for a source with more than one |
+| `key` | `route` | The field, or a list of fields, that gives the route of a feature. The features with one key are one route; a feature with a value in two fields of the list is a member of both routes. A value whose text is a decimal integer from 0 to 10^10 − 1 with no leading zero is the key as it is; another text, such as `007` or `-5`, has as key its SHA-256, read as an integer, modulo 10^10 |
+| `of` | `stage` | The field that holds the key of the stage's route |
+| `number` | `stage` | The field of the stage number |
+| `ref`, `name`, `description`, `operator`, `website` | both | A template of field values, such as `"{NameR}"`. `{key}` is the text of the key field that gives the route; in a stage, `{route}` is the name of its route |
+| `rank` | `route` | `{ field, values }`: the value maps to a level 0 to 4 as the catalog's `rank`; another value or none: 0 |
+| `ascent` | both | The field of the source's own climb in metres. Only the catalog report reads it |
+| `keep` | both | `{ FIELD = [values] }`: a feature is read only when each field has one of its values |
+| `drop` | both | `{ FIELD = [values] }`: a feature with one of these values is left out |
+
+A value is compared as its text. A whole number reads as an integer, also in an integer field
+that holds a null, which the file gives as a real number.
 
 ## State of a source
 
@@ -369,7 +403,8 @@ it runs in, and the store:
   newest version of each request record (`requests/`), by the latest `retrieved` of its files, such as the extract of each Geofabrik area, and each version
   that `obc data source refresh` took (`refreshed/`).
 - An object is reached when a reached snapshot record or a reached layer has it, or when its
-  SHA-256 is a file of an output of a root release, or is in `fixtures/catalog.toml` or a JSON or
+  SHA-256 is a file of an output of a root release (for an output of a `cache` layer, only a file
+  that a client reads), or is in `fixtures/catalog.toml` or a JSON or
   TOML file below `fixtures/sources/`.
 - An unpacked copy (`unpacked/<sha256>/`) is reached while a manifest of the
   [archive](#archive) lists a file with that SHA-256. While `OBC_DATA_ARCHIVE` names no root, a
@@ -379,6 +414,17 @@ it runs in, and the store:
   digest of the files that it names (`files`) of a reached record of its source, and a step input
   whose digest is the digest of the files that it selects of a reached layer of its step: the
   `files` of the input, or all files when it names none.
+- Of the receipts with `cache` of one step and the same options, only the one with the latest
+  `used`, else `built` (then by key), can be reached, and it is reached when its inputs are. So a
+  new OSM cut or a new version of a work layer deletes the older work layers of that region at the
+  next collection, also those that a release read, and the work layers of other regions stay. An
+  update that ends without an error marks the work layers that it built or read, so an update back
+  to an older set keeps that set. After a failed or stopped update, a collection can delete a set
+  that the update read, and the next update makes it again. This has known costs. A collection between a failed
+  bake and the next bake can delete the last complete set of work layers while the new set is not
+  complete. A region that no target lists any more keeps its work layers until its extract
+  request goes, as its `osm` layers do. When the work layers of a target are gone, a later update
+  of that target bakes them again, also when its package is still in the store.
 
 The plan lists what the collection deletes and what stays. What stays is one entry for each
 reached snapshot record, with the reasons: `served by TARGET, …`, `newest of the source`,
@@ -736,6 +782,7 @@ The `obc data` binary declares each layer beside the steps that make it:
 | `format` | The number that the readers of its files check. Where a reader has a constant, the layer uses it: `obct::SURFACE_VERSION` for `device/terrain`, `obcm::VERSION` for `device/map`, the router `FORMAT` and `CATALOG_SCHEMA_VERSION`. `device/landmarks` has the sum of `obcm::landmarks::SECTION_VERSION` and `obcm::peaks::VERSION`: each only grows. Another layer has the format that its spec states, or 1 |
 | `revision` | The number that a person changes in the change that improves the output. It starts at 1 |
 | `readers` | The programs or layers that read its files. An internal layer has none |
+| `cache` | `true` for a work layer that a later step reads: a [collection](#clean) keeps only the layer of each of its steps and options that a run used last, and a release does not keep it. `false` for each other layer |
 
 | Layer | Steps |
 | --- | --- |
@@ -746,8 +793,10 @@ The `obc data` binary declares each layer beside the steps that make it:
 | `device/catalog` | `device/catalog` |
 | `planner/basemap` | `planner/basemap`, `planner/assets` and their grids |
 | `planner/terrain` | `planner/reference`, `planner/terrain` and its grid |
-| `planner/places`, `planner/climate`, `planner/snow`, `planner/trailview-features`, `planner/trailview-rules`, `planner/trailview-colour` | The step of the same name and its grids |
+| `planner/places`, `planner/climate`, `planner/snow`, `planner/trailview-rules`, `planner/trailview-colour` | The step of the same name and its grids |
+| `planner/trailview-features` | `planner/trailview-features`, `planner/trailview-stamps` and their grids |
 | `planner/trailview-ground` | `planner/trailview-material`, `planner/trailview-lithology`, `planner/trailview-region`, `planner/trailview-ground` and its grid |
+| `planner/routing-source`, `planner/routing-roads`, `planner/routing-costs` | The step of the same name. Internal, `cache`. Their files hold router types, so their format is the router `FORMAT` plus 1 |
 | `planner/routing` | `planner/routing`, `planner/overlays` and their grids |
 | `planner/search` | `planner/search/…`, `planner/model` and their grids |
 | `planner/index` | `planner/fonts/grid`, `planner/offline/grid`, `planner/index`, `planner/catalog` |
@@ -868,6 +917,8 @@ ends.
 | `wall_ms` | The time from start to end, in milliseconds |
 | `cpu_ms` | User and system time in milliseconds of the process of the step and of the children that it waited for, such as Osmium (`wait4`). `null` when the system does not report it |
 | `peak_rss_bytes` | The peak resident set of the process of the step, or of the largest child that it waited for. It is not the sum of processes that run at the same time. `null` when the system does not report it |
+| `cache` | The `cache` of the layer (`false` when absent) |
+| `used` | For a `cache` layer, `YYYY-MM-DDTHH:MM:SSZ` when the last run that built or read it ended. Absent before that |
 | `own_process` | Whether the step ran in a process of its own. Without it (`false` when absent), `cpu_ms` and `peak_rss_bytes` can be those of the engine, and no estimate reads the peak |
 | `bytes_in` | The size of the input files |
 | `bytes_out` | The size of `files` |
@@ -959,7 +1010,8 @@ when they are unchanged.
   end of the run starts first: its estimated `wall_ms` and that of the longest chain of the steps
   that read it. A step without an estimate counts as the longest.
 - The memory that the steps that run at the same time reserve is not more than three quarters of
-  the physical memory of the machine. A step reserves its estimated peak (`peak_rss_bytes` of the estimate).
+  the physical memory of the machine, or of the least `memory.max` of the cgroup v2 of the process
+  and of its parents when that is less. A step reserves its estimated peak (`peak_rss_bytes` of the estimate).
   A step with a guess, or without a peak, reserves from its measured runs too, the larger of the
   two: the receipts of the step, also with other options or of another leaf of its tiled step,
   with `own_process`, a peak and input bytes, in the store or of this run. They give their
@@ -1181,7 +1233,10 @@ reads their maximum: the blocks `mean/18/<bi:04>/<bj:04>.tif` that hold the arch
 | `planner/terrain-osm/<area>` | `terrain-osm`, `area=<area>`, for each source area | `path`: `source.osm.pbf` | `source.osm.pbf`: the extract as it is |
 | `planner/terrain-osm` | Only for more than one source area: `source.osm.pbf` of each `planner/terrain-osm/<area>` | None | `osm.pbf`: their union, as `planner/osm` merges |
 | `planner/terrain` | The GLO-30 tiles of `bounds`; `planner/reference` when there is one; `planner/terrain-osm`, or for one source area its `planner/terrain-osm/<area>` | `bounds`: west, south, east and north of the zoom 10 tiles that the bounds of the region touch and of their neighbours; `attribution`: the credit of GLO-30; `osm_attribution`: the credit of `osm-planet` | `terrain.mbtiles`: the terrain tiles of [the planner release](planner-release.md#terrain-tiles), the bytes that `planner-dem` writes from the same tiles, archive and OSM. `terrain-osm` is the Geofabrik extract with `refresh = "manual"`: the terrain keeps the extract of each area that it read first, and a newer `geofabrik-extracts` does not build the terrain again. `obc data fetch terrain-osm area=<area>` puts a newer extract in the store, which the next update reads. Where GLO-30 has weight, its heights follow the OSM within 300 m of `bounds` (`host/obc-dem/src/shape.rs`): the water side of `natural=coastline` is at 0 m up to 45 m from the line; within 45 m of the top of GLO-30 within 30 m of a `natural=peak` or `natural=volcano` with a numeric `ele`, the cone of its flanks continued from 45 m and 90 m, only rising and never above `ele`. With OSM, the metrics name the Osmium version (`osmium`) |
-| `planner/routing` | `planner/osm/bounds`, the GLO-30 tiles of the bounds of the region, and `planner/reference` when there is one. The heights of the roads are those of `planner/terrain` without the OSM corrections | `region` (the last part of the region id), `bounds`, `profiles` and `countries`; `attribution` and `terrain_attribution`: the credits of OSM and GLO-30. The import applies the German access defaults | `routing/`: the package of [the route package contract](route-package.md) with `overlays.sqlite` and `route-catalog.json`; `blocks/`: the routing blocks of the grid cells: shared page packs, one manifest for each cell, `blocks.json` and `catalog.json`; `routes/<cell>.json`: the records of `route-catalog.json` that name the cell, with a final newline |
+| `planner/routing-source` | `planner/osm/bounds` | `bounds` | `source/`: the ways with their node references, tags and facts, the relations, the present node members, the turn rules of the relations, the closure sets, `source.json` (the counts of the import, the SHA-256 of the PBF from `layer_files`) and `layout.json`. The columns are stored columns of `planner/router-build/src/column.rs`: little-endian values of one type each, which `layout.json` names with their count. The import applies the country access defaults |
+| `planner/routing-roads` | `planner/routing-source`, the GLO-30 tiles of the bounds of the region, and `planner/reference` when there is one. The heights of the roads are those of `planner/terrain` without the OSM corrections | `bounds`; `terrain_attribution`: the credit of GLO-30 | `roads/`: the junctions, the roads in package order with their heights, the forbidden turns, the closure sets, the road topology, `roads.json` (the warnings of the manifest, the identities of the PBF and the terrain) and `layout.json` |
+| `planner/routing-costs` | `planner/routing-source`, `planner/routing-roads` | `bounds`, `profiles` | `costs/`: the cost dictionary and, for each profile `<i>` in order, `<i>.bases`, `<i>.totals`, `<i>.turns` and `<i>.snap`; `costs.json` (the profile IDs) and `layout.json` |
+| `planner/routing` | `planner/routing-source`, `planner/routing-roads`, `planner/routing-costs` | `region` (the last part of the region id) and `bounds`; `attribution`: the credit of OSM. The step list checks the profiles when it is built | `routing/`: the package of [the route package contract](route-package.md) with `overlays.sqlite` and `route-catalog.json`; `blocks/`: the routing blocks of the grid cells: shared page packs, one manifest for each cell, `blocks.json` and `catalog.json`; `routes/<cell>.json`: the records of `route-catalog.json` that name the cell, with a final newline; `routes/trails/<cell>.json` and `routes/long/<id>.json`: the far files and the trail record files of [the route catalog](route-catalog.md#trail-files) |
 | `planner/overlays` | `planner/routing` | `attribution` of `osm-planet` | `overlays.pmtiles`: the route networks and the access of `routing/overlays.sqlite`, as [the planner release](planner-release.md) defines it |
 | `planner/assets` | `protomaps-assets`, `tangrams-icons` | None | `assets/fonts/` and `assets/sprites/` of the assets archive; `assets/sprites/LICENSE.txt`: the MIT notice of `tangrams-icons` |
 | `planner/model` | `query-model` | None | `model/`: `model.int8.onnx`, `tokenizer.json` and `tokenizer_config.json` of the archive, and `labels.json`, the labels of the query schema |
@@ -1192,7 +1247,8 @@ reads their maximum: the blocks `mean/18/<bi:04>/<bj:04>.tif` that hold the arch
 | `planner/places` | `planner/search/pois` | None | `places.pmtiles`: the rider places of the POI database, at zoom 11 |
 | `planner/climate` | The files of [`climate`](#climate) of the blocks of the outline of the region, as `climate` defines the blocks of a region: the orography and the ten years from `climate.first_year`. A version that lacks one of them refuses | `bounds`, `first_year`, and `attribution` of `era5-land`, whose `{year}` is the year after the ten years, `first_year` + 10; `climate`: the version that it reads | `climate.pmtiles`: [the climate archive](planner-climate-tiles.md). A cell of a block that the step does not read is missing |
 | `planner/snow` | The files of [`snow`](#snow) of the blocks of the outline of the region, as `snow` defines the blocks of a region, for each season of `snow.seasons`. A version that lacks one of them refuses | `bounds`, `seasons`; `attribution`: the credits of `hr-wsi` when its `extent` meets the bounds, `modis-snow` and `hansen-gfc`; `year`: the year of the `snow` version, which fills the `{year}` of `hr-wsi` | `snow.pmtiles`, `snow-levels.pmtiles` and `snow-seasons.pmtiles`: [the snow archives](planner-snow-tiles.md). A tile of zoom 6 or more of `snow` and `snow-levels`, and of zoom 8 or more of `snow-seasons`, that lies inside the bounds has the same bytes in each region whose step reads its block |
-| `planner/trailview-features` | `planner/osm`, `planner/terrain/grid`, `water-polygons` | `bounds`; `kinds`: the kind table of `data/trailview/kinds.json`; `roads`: the name, the grade, the smoothing length, the alignment fields and the sidewalk fields (`sidewalk_m`, `sidewalk_steep`, `sidewalk_margin_m`) of each class of `data/trailview/roads.json`, as an array in its order; `waterways`: `width_m`, `cover_m`, `cover_lift_max_m` and `culvert_max_m` of each `waterway` value of `data/trailview/waterways.json`; `attribution` of `osm-planet` | `trailview-features.pmtiles`: [the feature archive](trailview-features.md) at zooms 8 to 13 |
+| `planner/trailview-features` | `planner/osm`, `planner/terrain/grid`, `water-polygons` | `bounds`; `kinds`: the kind table of `data/trailview/kinds.json`; `roads`: the name, the grade, the smoothing length, the alignment fields and the sidewalk fields (`sidewalk_m`, `sidewalk_margin_m`) of each class of `data/trailview/roads.json`, as an array in its order; `waterways`: `width_m`, `cover_m`, `cover_lift_max_m` and `culvert_max_m` of each `waterway` value of `data/trailview/waterways.json`; `attribution` of `osm-planet` | `trailview-features.pmtiles`: [the feature archive](trailview-features.md) at zooms 8 to 13 |
+| `planner/trailview-stamps` | `planner/trailview-features` | `bounds`; `attribution` of `osm-planet`; `stamp_sources`: the digest of the files that the stamp code can read, so a change of them bakes the step again | `trailview-stamps.pmtiles`: [the stamp archive](trailview-tiles.md#stamps), made by the TrailView stamp code in Node |
 | `planner/trailview-rules` | `data/trailview/` of the repository | `ruleset`: the digest of its JSON files by their paths in it. The step fails when the files differ | `rules.json`: [the TrailView rules](trailview-tiles.md#rules); `regions.json`, `materials.json` and `ground.json`: the region ids, the region areas, the ecoregions, the places, the vocabulary and the ground sources that the ground steps read |
 | `planner/trailview-material` | `materials.json` and `ground.json` of `planner/trailview-rules`; `lithology.pmtiles` of `planner/trailview-lithology`; each [material source](trailview-tiles.md#ground-sources) that meets the bounds: `osm.pbf` of `planner/osm` for `osm-planet`; `esa-worldcover`, `tile=` of each 3° tile that the bounds touch and that `esa-worldcover-grid` lists; the files of [`colour`](#colour) of `trailview.colour_year` of the blocks that the outline of the region meets, for `colour`. A version that lacks one of them refuses; a `capture` source with `bbox=<bounds>`, another without params | `layer`: `material`; `bounds`; `year`: `trailview.colour_year` | `material.pmtiles`: the material bytes and the barren shares of [the ground](trailview-tiles.md#ground) |
 | `planner/trailview-lithology` | `materials.json` and `ground.json` of `planner/trailview-rules`; each lithology source that meets the bounds, as for the material | `layer`: `lithology`; `bounds` | `lithology.pmtiles`: the lithology bytes |
@@ -1202,8 +1258,8 @@ reads their maximum: the blocks `mean/18/<bi:04>/<bj:04>.tif` that hold the arch
 | `planner/trailview-canopy` | The blocks of [`forest`](#forest) that the outline of the region meets, as `forest` defines them. A version that lacks one of those blocks refuses | `bounds`; `attribution`: the credits of the canopy models with a tile in those blocks and of the leaf type | `trailview-canopy.pmtiles`: [the canopy archive](trailview-tiles.md#canopy) |
 
 Each map producer has a `planner/<kind>/grid` step, where `<kind>` is `basemap`, `places`,
-`terrain`, `overlays`, `climate`, `trailview-features`, `trailview-ground` or
-`trailview-canopy`. It reads only the archive of its producer.
+`terrain`, `overlays`, `climate`, `trailview-features`, `trailview-stamps`,
+`trailview-ground` or `trailview-canopy`. It reads only the archive of its producer.
 `planner/trailview-colour/<archive>/grid` reads one archive of the colour step, as the kind
 `trailview-colour-<archive>`. `planner/snow/<kind>/grid` reads one archive of the snow step, as the
 kind `snow`, `snow-levels` or `snow-seasons`. It converts terrain MBTiles with the pinned Python
@@ -1225,13 +1281,14 @@ The parts of the planner are `map`, `routing`, `search`, `climate`, `snow`,
 part that is on makes it or reads it: `map` makes the basemap, places, assets and terrain grids,
 `routing` the routing and overlays grids, `search` the model and the two search grids; the other
 parts make their own steps. The fonts, the offline grid, the index and the catalog read only the grids that stay.
+`trailview-features` makes the stamps step too.
 `trailview-ground` makes the material, lithology and region steps, and needs `trailview-rules`.
 All producers are intermediate layers. Grid steps select their `objects/` and their
 `index.json`.
 
 | Layer | Reads | Files |
 | --- | --- | --- |
-| `planner/routing/grid` | `planner/routing` | Packed `routing/blocks.json`, `routing/packs/<sha256>/pages.bin` and `pages.idx`, `offline/routing-cells/<cell>.json`, and `routes/tiles/<cell>.json`. It does not build the routing blocks again. Its index records the source graph and cell descriptors |
+| `planner/routing/grid` | `planner/routing` | Packed `routing/blocks.json`, `routing/packs/<sha256>/pages.bin` and `pages.idx`, `offline/routing-cells/<cell>.json`, `routes/tiles/<cell>.json`, `routes/tiles/trails/<cell>.json` and `routes/tiles/long/<id>.json`. It does not build the routing blocks again. Its index records the source graph and cell descriptors |
 | `planner/search/pois/grid`, `planner/search/addresses/grid` | The database of its search component | `search/tiles/<component>/<cell>.sqlite`, packed. A cell retains intersecting places, addresses, their streets and contexts. The index records regional metadata and clipped cell bounds |
 | `planner/assets/grid`, `planner/model/grid`, `planner/trailview-rules/grid` | `planner/assets`, `planner/model` or `rules.json` of `planner/trailview-rules` | The input files, packed as `maps/assets/`, `search/model/` or `trailview/`. The index maps logical paths to file and transport identities |
 | `planner/fonts/grid` | `planner/basemap/grid`, `planner/places/grid`, `planner/overlays/grid` and `planner/assets/grid`: client files only. The route references are the `ref` of the overlay tiles | Packed `offline/fonts/<stack>.pbf`: the joined used glyph ranges of [the offline contract](planner-offline.md). The index maps each original glyph range to its joined stack |
@@ -1253,6 +1310,45 @@ A Python step runs `env PYTHONHASHSEED=0 uv run --locked --offline --no-default-
 --no-python-downloads --group <group> python <entry> --step` in the repository root.
 `uv sync --all-groups` prepares the packages on a machine. The fixed hash seed keeps the order
 of a set out of the bytes. A credit that it writes comes in its options.
+
+##### Route sources
+
+`python -m tools.planner_route_sources --step` (group `route-sources`) reads the files of each route source by
+its [description](#dataroutesidtoml). Its options are `bounds` and `sources`: a list of `{id,
+credit, description}`, where `credit` is the `attribution` of the row and `description` the text
+of its file in `data/routes/`. It reads the snapshot of each source, in the order of `sources`, and
+writes `route-sources.json`: UTF-8 JSON, the keys of each object in byte order, written whole.
+
+```json
+{"format":1,"sources":[{"credit":"Bundesamt für Strassen, Kanton, Stiftung SchweizMobil","id":"schweizmobil-hiking","origin":1,
+ "routes":[
+  {"key":3,"kind":"hiking","name":"Alpenpanorama-Weg","rank":3,"ref":"3","stages":[
+    {"members":[],"name":"Alpenpanorama-Weg, Rorschach – Trogen","stage":1},
+    {"ascent_m":444,"members":[[8309770,47051860,8309910,47051950]],"name":"Alpenpanorama-Weg, Luzern – Malters","stage":11}]},
+  {"ascent_m":620,"key":561,"kind":"hiking","members":[[8461200,47052310,8461350,47052400]],"name":"Rigi Panoramaweg","rank":1,"ref":"561"}]}]}
+```
+
+- `sources`: one entry for each source of the options, in their order; `id` and `credit` from the
+  options, `origin` from the description.
+- A route: `key`; `kind`; `rank` (0 when the description maps none); `ref`, `name`,
+  `description`, `operator`, `website`: the filled template, with outer spaces removed, absent
+  when empty; `ascent_m`: an integer, absent when the description maps no field or the value is
+  empty.
+- `members`: each line of each feature of the route, in the order of the feature ids and then of
+  the parts of a multi-line: a flat list of integer microdegrees, longitude then latitude, in WGS
+  84, each line simplified within 1 m (Douglas–Peucker, so its ends stay) and with repeated points
+  removed. A line with fewer than two points is left out.
+- A route with two or more stages has `stages` and no `members`: `stage` (the number), `name`,
+  the other filled templates, `ascent_m`, `members`. A route with one stage or none takes its
+  `members` from the route layer.
+- A route is in the file when a point of one of its members is inside `bounds` (edges included).
+  A route with stages is in the file when a point of one of its stages is inside; it then lists
+  all its stages, and a stage with no point inside has `"members": []`. A stage row whose route has
+  no row is not read.
+- The routes are in the order of `key`, the stages in the order of `stage`.
+- The program fails, with the source and the feature, when: a layer or a field of the description
+  is not in the file; two routes of one source have one key from two texts; a stage number is not
+  an integer from 1 to 99, or comes twice in one route.
 
 ### Service runtimes
 

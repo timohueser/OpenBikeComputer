@@ -22,12 +22,14 @@ terrain-reference = ["rasterio==1.5.2", "pyproj==3.8.0", "numpy==2.5.3"]
 trailview = [{ include-group = "planner-maps" }, "rasterio==1.5.2", "pyproj==3.8.0", "numpy==2.5.3", "shapely==2.1.2", "pyogrio==0.13.0", "osmium==4.3.2"]
 # The TrailView night sky: OpenEXR reads the Milky Way.
 trailview-sky = [{ include-group = "planner-maps" }, "numpy==2.5.3", "openexr==3.5.2"]
+# The route sources of the route catalog: tools/planner_route_sources.py.
+route-sources = ["pyogrio==0.13.0", "pyproj==3.8.0", "shapely==2.1.2"]
 # The search databases, and the country policy that PyYAML reads from the Nominatim archive.
 planner-search = ["orjson==3.12.0", "pyyaml==6.0.2", "shapely==2.1.2", "zstandard==0.25.0"]
 
 dev = ["unittest-xml-reporting==4.0.0", "PyYAML==6.0.2"]
-builder = ["fastapi>=0.110.0", "uvicorn[standard]>=0.27.0"]
-builder-test = [{ include-group = "builder" }, "pytest>=8.0.0", "httpx>=0.27.0"]
+# The routing-profile test of `obc-pack` (host/obc-bake/tests/test_routing_profiles.py).
+packer-test = ["pytest>=8.0.0"]
 search-runtime = [
     "orjson==3.12.0",
     "shapely==2.1.2",
@@ -96,13 +98,11 @@ search-training = [
     "typer==0.27.2",
     "typing-extensions==4.16.0",
 ]
-desktop-e2e = ["selenium==4.35.0"]
 
 [tool.uv]
 package = false
 default-groups = []
 conflicts = [
-    [{ group = "desktop-e2e" }, { group = "search-training" }],
     [{ group = "dev" }, { group = "search-runtime" }],
     [{ group = "dev" }, { group = "search-test" }],
     [{ group = "dev" }, { group = "search-training" }],

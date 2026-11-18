@@ -3,15 +3,17 @@
     import DrawerTitle from './DrawerTitle.svelte';
     import PlanTotals from './PlanTotals.svelte';
     import Surface from './PlannerSurface.svelte';
-    import Segmented from './Segmented.svelte';
-    import Icon from './PlannerIcon.svelte';
-    import { formatGrade, gradeBand, gradeBands, profileGrades } from '../../lib/planner/grade-data';
+    import Segmented from '../../lib/ui/Segmented.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
+    import { formatGrade, gradeBands, gradePaths, profileGrades } from '../../lib/planner/grade-data';
     import { dayColor } from '../../lib/planner/day-colors';
     import { heightRange, profileHeightAt, profilePaths, profileSamples, sampleIndex } from '../../lib/planner/profile-data';
     import type { RoutingLine } from '../../lib/planner/routing';
     import type { Day } from '../../lib/planner/editor';
     import { axisColumn, axisLeft, axisPieces, axisRest, axisProgress, axisWidth, type ProfileAxis } from '../../lib/planner/profile-axis';
     import { sleepIcon } from '../../lib/planner/search/presentation';
+    import { distanceIn, heightIn, heightUnit } from '../../lib/settings/format';
+    import { settings } from '../../lib/settings/settings.svelte';
     type ProfileDay = Pick<Day, 'number' | 'from' | 'to' | 'pinned' | 'split'>;
 
     let {
@@ -59,19 +61,7 @@
     let gradeChoice = $state<boolean | null>(null);
     const showGrade = $derived(gradeChoice ?? singleRoute);
     const grades = $derived(profileGrades(samples, total));
-    const gradePaths = $derived.by(() => {
-        const paths = gradeBands.map(() => '');
-        let previous = -1;
-        for (let i = 0; i < grades.length; i++) {
-            const a = samples[i], b = samples[i + 1];
-            if (a.height === null || b.height === null) { previous = -1; continue; }
-            const band = gradeBand(grades[i]);
-            if (band !== previous) paths[band] += `M${a.progress * 1000} ${105 - (a.height - low) / (high - low) * 100}`;
-            paths[band] += `L${b.progress * 1000} ${105 - (b.height - low) / (high - low) * 100}`;
-            previous = band;
-        }
-        return paths;
-    });
+    const bandPaths = $derived(gradePaths(samples, grades, low, high));
     function color(index: number) { return theme === 'dark' ? gradeBands[index].dark : gradeBands[index].color; }
     const hoverHeight = $derived(hover === null ? null : profileHeightAt(hover, samples));
     const hoverIndex = $derived(hover === null ? -1 : Math.max(0, sampleIndex(samples, hover) - 1));
@@ -182,8 +172,8 @@
     {/if}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="plot" bind:this={plot} onpointermove={track} onpointerleave={leave} onpointerup={release} onpointercancel={() => drag = null}>
-        <span class="height" style:top="5%">{high} m</span>
-        <span class="height" style:top="94%">{low} m</span>
+        <span class="height" style:top="5%">{Math.round(heightIn(high))} {heightUnit()}</span>
+        <span class="height" style:top="94%">{Math.round(heightIn(low))} {heightUnit()}</span>
         {#each axisPieces(axis) as [start, end], i (i)}
         <svg style:left={axisLeft(axis, start, true)} style:width={axisWidth(axis, start, end)} viewBox={`${start * 1000} 0 ${Math.max(1e-6, end - start) * 1000} 112`} preserveAspectRatio="none"
             role={i ? undefined : 'img'} aria-hidden={i ? 'true' : undefined} aria-label={i ? undefined : `${focus && range === 'map' ? focus.label : 'Route'} elevation profile. Distances start at ${origin > 0 ? 'the day start' : 'the route start'}. The shaded band is the suggested overnight stretch.`}>
@@ -200,7 +190,7 @@
 
             {#if band && !band.blocked}<rect x={band.from * 1000} width={Math.max(0, band.to - band.from) * 1000} y="0" height="112" class="band" />{/if}
             {#if showGrade}
-                {#each gradePaths as path, i (i)}
+                {#each bandPaths as path, i (i)}
                     <path d={path} style:stroke={color(i)} class="grade-line" />
                 {/each}
             {:else}
@@ -217,7 +207,7 @@
         {/each}
         {#if hover !== null}
             <span class="readout" style:left={axisLeft(axis, hover)}>
-                <span class="chip" class:flip={(hover - shown.from) / span > .8}>{((hover - origin) * total).toFixed(1)} km{origin > 0 ? ` into ${focus!.label.toLowerCase()}` : ''} · {hoverHeight === null ? 'Elevation unknown' : `${Math.round(hoverHeight)} m`} · {formatGrade(hoverGrade)}{#if hoverPushing && !walking} · Push bike{:else if hoverPushing === null} · Access unverified{/if}</span>
+                <span class="chip" class:flip={(hover - shown.from) / span > .8}>{distanceIn((hover - origin) * total * 1000).toFixed(1)} {settings.units}{origin > 0 ? ` into ${focus!.label.toLowerCase()}` : ''} · {hoverHeight === null ? 'Elevation unknown' : `${Math.round(heightIn(hoverHeight))} ${heightUnit()}`} · {formatGrade(hoverGrade)}{#if hoverPushing && !walking} · Push bike{:else if hoverPushing === null} · Access unverified{/if}</span>
             </span>
         {/if}
         {#each handles as { day, left } (day.number)}
@@ -237,8 +227,8 @@
         {/each}
     </div>
     <div class="axis">
-        <!-- Ticks less than 1 km apart need a decimal, or the labels repeat. -->
-        {#each ticks as { t, at }, i (i)}<span style:left={axisLeft(axis, at)} style:translate={`${-t * 100}%`}>{((at - origin) * total).toFixed(span * total / 4 < 1 ? 1 : 0)} km</span>{/each}
+        <!-- Ticks less than 1 unit apart need a decimal, or the labels repeat. -->
+        {#each ticks as { t, at }, i (i)}<span style:left={axisLeft(axis, at)} style:translate={`${-t * 100}%`}>{distanceIn((at - origin) * total * 1000).toFixed(distanceIn(span * total * 1000) / 4 < 1 ? 1 : 0)} {settings.units}</span>{/each}
     </div>
     <Surface {walking} line={lineData} from={shown.from} to={shown.to} rests={axis.rests} onHover={inspect} />
     {@render strip?.(shown.from, shown.to, axis.rests, inspect)}

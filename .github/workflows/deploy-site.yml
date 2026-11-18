@@ -5,15 +5,14 @@ name: Deploy site
 #
 #   /                     landing page + the live device demo   trunk (obc-web-demo → wasm)
 #   /docs/  /blog/        docs site + expedition log            build_docs.py (trunk pre_build hook)
-#   /builder/             the static map builder                vite --mode web
-#   /plan/                the regional route planner            vite --mode planner
+#   /plan/                the web app                           vite --mode planner
 #
 # Because the demo is the firmware's own render path compiled to wasm, every push
 # rebuilds it — the site can never show a stale screenshot. And everything here is
 # static files: there is no backend on this tier. Route conversion runs as wasm
 # in the tab. Routing and search use the VPS. The tile Worker serves map tiles.
 #
-# The site carries code only. The planner and the map builder read the active release from
+# The site carries code only. The web app reads the active release from
 # `planner/catalog.json` at page load, so a data release never runs this workflow.
 #
 # ── What GitHub Pages can and cannot do (C6 #905; measured 2026-07-26) ──────────────
@@ -140,7 +139,7 @@ jobs:
           OBC_BUILD_HARDWARE: "1"
         run: trunk build --release --config docs/Trunk.toml --public-url "./"
 
-      # The builder imports the shared obc-route GPX↔OBCR path (#896), the cell
+      # The web app imports the shared obc-route GPX↔OBCR path (#896), the cell
       # assembler (#1034), and the production-rendered skin preview (#1045). The shared
       # script is also used by CI so the lists cannot drift.
       # None is optional: the frontend imports the generated bindings, so a missing
@@ -154,28 +153,20 @@ jobs:
           cache: npm
           cache-dependency-path: builder/web/package-lock.json
 
-      # VITE_SITE_BASE makes the builder's links to the docs and the landing relative:
+      # VITE_SITE_BASE makes the web app's links to the docs and the landing relative:
       # they are siblings inside this artifact, so naming them by absolute URL would be
-      # the one place a domain move still bit us. Left unset everywhere else (dev
-      # server, desktop app), where the site genuinely is somewhere else.
-      - name: Build the static map builder
+      # the one place a domain move still bit us. Left unset everywhere else (the dev
+      # server), where the site genuinely is somewhere else.
+      - name: Build the web app
         working-directory: builder/web
         env:
           VITE_SITE_BASE: "../"
         run: |
           npm ci
-          npm run build:web
-
-      - name: Build the public route planner
-        working-directory: builder/web
-        env:
-          VITE_SITE_BASE: "../"
-        run: npm run build:planner
+          npm run build
 
       - name: Assemble the site
         run: |
-          mkdir -p docs/dist/builder
-          cp -R builder/web/dist/web/. docs/dist/builder/
           mkdir -p docs/dist/plan
           cp -R builder/web/dist/planner/. docs/dist/plan/
           mv docs/dist/plan/planner.html docs/dist/plan/index.html
@@ -193,7 +184,7 @@ jobs:
       # in, and they are the one thing to hand-edit on the day the domain changes.
       - name: No baked-in site path
         run: |
-          if grep -rIlE "[\"'(=]/OpenBikeComputer/" docs/dist/builder docs/dist/index.html; then
+          if grep -rIlE "[\"'(=]/OpenBikeComputer/" docs/dist/plan docs/dist/index.html; then
             echo "::error::the bundle hard-codes the project-Pages sub-path — it would 404 on a custom domain"
             exit 1
           fi
@@ -235,7 +226,6 @@ jobs:
             [ "$n" -gt 0 ] || { echo "     x no local assets referenced — check is vacuous"; fail=1; }
           }
           check "$base/"
-          check "$base/builder/"
           check "$base/docs/"
           check "$base/docs/hardware/bom/"
           for file in purchasing.csv OBC_PCB.csv USB_Baseboard.csv OBC_PCB.pdf USB_Baseboard.pdf; do

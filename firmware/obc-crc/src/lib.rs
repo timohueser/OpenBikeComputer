@@ -105,13 +105,6 @@ impl Crc32 {
     pub fn finalize(&self) -> u32 {
         self.state ^ 0xFFFF_FFFF
     }
-
-    /// One-shot convenience: the CRC-32 of a whole buffer.
-    pub fn checksum(bytes: &[u8]) -> u32 {
-        let mut h = Self::new();
-        h.update(bytes);
-        h.finalize()
-    }
 }
 
 impl Default for Crc32 {
@@ -122,7 +115,9 @@ impl Default for Crc32 {
 
 /// One-shot CRC-32/IEEE over `data`.
 pub fn crc32(data: &[u8]) -> u32 {
-    Crc32::checksum(data)
+    let mut h = Crc32::new();
+    h.update(data);
+    h.finalize()
 }
 
 #[cfg(test)]
@@ -134,7 +129,6 @@ mod tests {
     #[test]
     fn check_value() {
         assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
-        assert_eq!(Crc32::checksum(b"123456789"), 0xCBF4_3926);
     }
 
     #[test]
@@ -166,7 +160,7 @@ mod tests {
         let snapshot = h;
         let mut resumed = snapshot;
         resumed.update(&data[50..]);
-        assert_eq!(resumed.finalize(), Crc32::checksum(&data));
+        assert_eq!(resumed.finalize(), crc32(&data));
     }
 
     #[test]
@@ -176,6 +170,6 @@ mod tests {
         prefix.update(&data[..73]);
         let mut resumed = Crc32::from_checksum(prefix.finalize());
         resumed.update(&data[73..]);
-        assert_eq!(resumed.finalize(), Crc32::checksum(&data));
+        assert_eq!(resumed.finalize(), crc32(&data));
     }
 }

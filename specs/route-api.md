@@ -170,7 +170,7 @@ route request. The deadline is 30 s.
 A profile ID is an activity, such as `touring`, or an activity, `/` and a variant. Each activity
 has one variant: `touring/less-climbing`, `road/less-climbing`, `gravel/less-climbing`,
 `mtb/technical` and `hiking/alpine`. Two variants are skill choices. `mtb/technical` permits every MTB grade;
-`mtb` permits S2 at most. `hiking/alpine` permits T4; `hiking` permits T2 at most. Cycling profiles
+`mtb` permits S2 at most. `hiking/alpine` permits each grade up to T6; `hiking` permits T2 at most. Cycling profiles
 never use steps. The clients offer the presets of the profiles that the region serves.
 
 ## Errors

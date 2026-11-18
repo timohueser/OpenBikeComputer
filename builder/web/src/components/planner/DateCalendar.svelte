@@ -1,6 +1,6 @@
 <script lang="ts">
     import { onMount, tick } from 'svelte';
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import { addMonths } from '../../lib/planner/layers/data-layer';
 
     /** A month grid that picks one day. The opener closes it on a click outside. */

@@ -21,6 +21,17 @@ struct Masks {
 // vertex's move onto the nearest road edge in units, x and y as 16-bit signed halves. The stamp pass
 // writes it.
 @group(3) @binding(2) var snaps: texture_2d_array<u32>;
+// With `ground=plan`, per mask texel: the paint of the records' paved labels in the mask's format (the distance
+// to the paved outline, the walk byte, the metres across the host, the finish code with the material of the top in
+// place of the flags), and how far their heights moved the ground from the plain terrain, 0 to MOVED_RANGE_M as
+// 0..1, four texels of a row in one texel. The stamp pass writes them.
+@group(3) @binding(3) var paint_texels: texture_2d_array<f32>;
+@group(3) @binding(4) var moved_texels: texture_2d_array<f32>;
+// With `ground=plan`, per mask texel: the cliff share of cliff.wgsl in SHARE_STEPS steps, or UNSHAPED where the
+// plan did not move the ground about it, four texels of a row in one texel.
+@group(3) @binding(5) var cliff_texels: texture_2d_array<f32>;
+const SHARE_STEPS: f32 = 254.0;
+const UNSHAPED: f32 = 1.0;
 
 const WALL: u32 = 1u;
 const CONFLICT: u32 = 2u;
@@ -32,6 +43,7 @@ const MASK_LEVEL: u32 = 16u;
 // As MASK_RANGE and MASK_KNEE of stamp.wgsl.
 const MASK_M: f32 = 12.75;
 const MASK_KNEE: f32 = 0.5;
+const MOVED_RANGE_M: f32 = 0.5;
 // Paint hands over to the corridors this far inside what they hold.
 const CORRIDOR_FADE_M: f32 = 40.0;
 // Plants and stones keep this far off a trodden way's middle, and a little less off its tread (trail_look of
@@ -83,7 +95,8 @@ struct Mask {
     edge: f32,
     // The share of the texels on a road's cut or fill face.
     face: f32,
-    // The surface code and the flags.
+    // The surface code and the flags. A paint mask holds the material of the way's top in place of the flags, so
+    // its `kind.y` and `face` are no flags: no reader takes flags from a paint mask.
     kind: vec2u,
     // The level of the page that holds it; 0 where no page within reach has a mask.
     level: u32,
@@ -107,6 +120,8 @@ struct Mask {
     trodden: bool,
     // Whether the nearest texel's road wears lines.
     marked: bool,
+    // The mask layer of the page that holds the nearest texel.
+    page: u32,
 }
 
 // Metres across a texel of a level in texel row `row`, as unit_metres of stamp-core.wgsl.
@@ -115,18 +130,19 @@ fn texel_metres(level: u32, row: i32) -> f32 {
     return 2.0 * 3.14159265 * 6371000.0 / 1073741824.0 / cosh(3.14159265 * (1.0 - f32(row << shift) / 536870912.0)) * f32(1 << shift);
 }
 
-// The metres from the middle of a texel's road.
-fn across_metres(texel: vec4f) -> f32 {
+// The metres from the middle of a texel's road. The paint texture holds a road's on the asinh scale of the
+// distance, so a centre line keeps the steps of an edge.
+fn across_metres(texel: vec4f, paint: bool) -> f32 {
     let track = (u32(round(texel.w * 255.0)) & 15u) >= RAIL_CODE;
-    return (texel.z - 0.5) * 2.0 * select(MASK_M, TRACK_M, track);
+    return select((texel.z - 0.5) * 2.0 * select(MASK_M, TRACK_M, track), mask_metres(texel.z), paint && !track);
 }
 
 // The half-width of the road that a texel's distances belong to; a track's from its code, as `across`
 // stops at ±TRACK_M.
-fn half_width(texel: vec4f) -> f32 {
+fn half_width(texel: vec4f, paint: bool) -> f32 {
     let code = u32(round(texel.w * 255.0)) & 15u;
     let track = select(RAIL_HALF_M, NARROW_HALF_M, ((code - RAIL_CODE) & 1u) == 1u);
-    return select(abs(across_metres(texel)) - mask_metres(texel.x), track, code >= RAIL_CODE);
+    return select(abs(across_metres(texel, paint)) - mask_metres(texel.x), track, code >= RAIL_CODE);
 }
 
 // The mask at a point, from the finest page at or above `top` that has a mask: the shapes and the
@@ -139,45 +155,132 @@ fn mask_at(s: vec2f, top: u32, roads: bool) -> Mask {
         let whole = t.whole + vec2i(round(t.part));
         let slot = mask_of(level, whole);
         if (slot != 0u) {
-            let page = slot - 1u;
-            let byte = mask_byte(page, whole);
+            let byte = mask_byte(slot - 1u, whole);
             if (roads && (byte & 15u) == 0u && ((byte >> 4u) & TAKEN) == 0u) {
                 break;
             }
+            return mask_in(mask_texels, s, level, slot - 1u, false);
+        }
+    }
+    return Mask(0.0, 0.0, vec2u(0u), 0u, vec2f(0.0), 0.0, 0.0, 0.0, vec2f(0.0), 0.0, false, false, 0u);
+}
+
+// The mask at a point of the page in layer `page` of `texels` (a texture in the mask's format, or with `paint`
+// the paint texture's) at `level`.
+fn mask_in(texels: texture_2d_array<f32>, s: vec2f, level: u32, page: u32, paint: bool) -> Mask {
+    let t = texel_of(s, level);
+    let whole = t.whole + vec2i(round(t.part));
+    let first = (whole >> vec2u(8u)) << vec2u(8u);
+    let a = clamp(t.whole, first, first + vec2i(255));
+    let b = clamp(t.whole + vec2i(1), first, first + vec2i(255));
+    let ab = array(texel_in(texels, page, a), texel_in(texels, page, vec2i(b.x, a.y)), texel_in(texels, page, vec2i(a.x, b.y)), texel_in(texels, page, b));
+    let nearest = texel_in(texels, page, whole);
+    let byte = u32(round(nearest.w * 255.0));
+    // The paving of a footway takes the texels past a sidewalk. The distances of the two
+    // are to different edges, and a mix of them reads as a road: a texel of the other kind counts as the nearest.
+    let paving = (byte & 15u) == PAVING_CODE;
+    var e = array(mask_metres(ab[0].x), mask_metres(ab[1].x), mask_metres(ab[2].x), mask_metres(ab[3].x));
+    for (var i = 0; i < 4; i++) {
+        if (((u32(round(ab[i].w * 255.0)) & 15u) == PAVING_CODE) != paving) {
+            e[i] = mask_metres(nearest.x);
+        }
+    }
+    let edge = mix(mix(e[0], e[1], t.part.x), mix(e[2], e[3], t.part.x), t.part.y);
+    let face = mix(mix(faced(ab[0]), faced(ab[1]), t.part.x), mix(faced(ab[2]), faced(ab[3]), t.part.x), t.part.y);
+    // Texel rows run along -y of LOD space.
+    let rise = vec2f(mix(e[1] - e[0], e[3] - e[2], t.part.y), -mix(e[2] - e[0], e[3] - e[1], t.part.x));
+    let away = select(vec2f(0.0), normalize(rise), dot(rise, rise) > 0.0);
+    let half = mix(mix(half_width(ab[0], paint), half_width(ab[1], paint), t.part.x), mix(half_width(ab[2], paint), half_width(ab[3], paint), t.part.x), t.part.y);
+    // The sleepers of the nearest texel, carried on along the track: across the rise of the metres
+    // from its middle, which grow to the track's left. A fraction cannot be filtered across its wrap.
+    let m = array(across_metres(ab[0], paint), across_metres(ab[1], paint), across_metres(ab[2], paint), across_metres(ab[3], paint));
+    let across = mix(mix(m[0], m[1], t.part.x), mix(m[2], m[3], t.part.x), t.part.y);
+    let middle = vec2f(mix(m[1] - m[0], m[3] - m[2], t.part.y), mix(m[2] - m[0], m[3] - m[1], t.part.x));
+    let ahead = select(vec2f(0.0), normalize(vec2f(middle.y, -middle.x)), dot(middle, middle) > 0.0);
+    let axis = select(away, normalize(vec2f(middle.x, -middle.y)), dot(middle, middle) > 0.0);
+    let y = nearest.y;
+    let sleepers = y + dot(t.part - round(t.part), ahead) * texel_metres(level, whole.y) / SLEEPER_SPACING_M;
+    let past = select(u32(round(y * 255.0)), 0u, (byte & 15u) >= RAIL_CODE);
+    return Mask(edge, face, vec2u(byte & 15u, byte >> 4u), level, away, half, sleepers, across, axis, walk_metres(past), is_trodden(past), is_marked(past), page);
+}
+
+fn texel_in(texels: texture_2d_array<f32>, page: u32, t: vec2i) -> vec4f {
+    return textureLoad(texels, in_layer(page, t), page >> 6u, 0);
+}
+
+fn moved_texel(page: u32, t: vec2i) -> f32 {
+    let at = in_layer(page, t);
+    return textureLoad(moved_texels, vec2i(at.x >> 2u, at.y), page >> 6u, 0)[at.x & 3] * MOVED_RANGE_M;
+}
+
+// The metres that the records' heights moved the ground at a point, from the finest page at or above `top`
+// that has a mask, filtered between the four texels about it in that page; 0 where no page has one.
+fn moved_at(s: vec2f, top: u32) -> f32 {
+    for (var level = top; level >= MASK_LEVEL; level--) {
+        let t = texel_of(s, level);
+        let whole = t.whole + vec2i(round(t.part));
+        let slot = mask_of(level, whole);
+        if (slot != 0u) {
             let first = (whole >> vec2u(8u)) << vec2u(8u);
             let a = clamp(t.whole, first, first + vec2i(255));
             let b = clamp(t.whole + vec2i(1), first, first + vec2i(255));
-            let ab = array(shape_at(page, a), shape_at(page, vec2i(b.x, a.y)), shape_at(page, vec2i(a.x, b.y)), shape_at(page, b));
-            let nearest = shape_at(page, whole);
-            // The paving of a footway takes the texels past a sidewalk. The distances of the two
-            // are to different edges, and a mix of them reads as a road: a texel of the other kind counts as the nearest.
-            let paving = (byte & 15u) == PAVING_CODE;
-            var e = array(mask_metres(ab[0].x), mask_metres(ab[1].x), mask_metres(ab[2].x), mask_metres(ab[3].x));
-            for (var i = 0; i < 4; i++) {
-                if (((u32(round(ab[i].w * 255.0)) & 15u) == PAVING_CODE) != paving) {
-                    e[i] = mask_metres(nearest.x);
-                }
-            }
-            let edge = mix(mix(e[0], e[1], t.part.x), mix(e[2], e[3], t.part.x), t.part.y);
-            let face = mix(mix(faced(ab[0]), faced(ab[1]), t.part.x), mix(faced(ab[2]), faced(ab[3]), t.part.x), t.part.y);
-            // Texel rows run along -y of LOD space.
-            let rise = vec2f(mix(e[1] - e[0], e[3] - e[2], t.part.y), -mix(e[2] - e[0], e[3] - e[1], t.part.x));
-            let away = select(vec2f(0.0), normalize(rise), dot(rise, rise) > 0.0);
-            let half = mix(mix(half_width(ab[0]), half_width(ab[1]), t.part.x), mix(half_width(ab[2]), half_width(ab[3]), t.part.x), t.part.y);
-            // The sleepers of the nearest texel, carried on along the track: across the rise of the metres
-            // from its middle, which grow to the track's left. A fraction cannot be filtered across its wrap.
-            let m = array(across_metres(ab[0]), across_metres(ab[1]), across_metres(ab[2]), across_metres(ab[3]));
-            let across = mix(mix(m[0], m[1], t.part.x), mix(m[2], m[3], t.part.x), t.part.y);
-            let middle = vec2f(mix(m[1] - m[0], m[3] - m[2], t.part.y), mix(m[2] - m[0], m[3] - m[1], t.part.x));
-            let ahead = select(vec2f(0.0), normalize(vec2f(middle.y, -middle.x)), dot(middle, middle) > 0.0);
-            let axis = select(away, normalize(vec2f(middle.x, -middle.y)), dot(middle, middle) > 0.0);
-            let y = nearest.y;
-            let sleepers = y + dot(t.part - round(t.part), ahead) * texel_metres(level, whole.y) / SLEEPER_SPACING_M;
-            let past = select(u32(round(y * 255.0)), 0u, (byte & 15u) >= RAIL_CODE);
-            return Mask(edge, face, vec2u(byte & 15u, byte >> 4u), level, away, half, sleepers, across, axis, walk_metres(past), is_trodden(past), is_marked(past));
+            let top_row = mix(moved_texel(slot - 1u, a), moved_texel(slot - 1u, vec2i(b.x, a.y)), t.part.x);
+            return mix(top_row, mix(moved_texel(slot - 1u, vec2i(a.x, b.y)), moved_texel(slot - 1u, b), t.part.x), t.part.y);
         }
     }
-    return Mask(0.0, 0.0, vec2u(0u), 0u, vec2f(0.0), 0.0, 0.0, 0.0, vec2f(0.0), 0.0, false, false);
+    return 0.0;
+}
+
+// How far ground_colour turns the normal at a point toward the coarse one, with the level and morph of drawn_relief:
+// between the cliff shares of the texels about it (cliff.wgsl), each `key` (the look's own, at the point) where its
+// page has no mask or the plan did not move the ground about it.
+fn cliff_at(s: vec2f, key: f32) -> f32 {
+    let lambda = lod(s);
+    let level = u32(ceil(lambda));
+    var share = cliff_in(s, level, key);
+    let morph = f32(level) - lambda;
+    if (morph > 0.0) {
+        share = mix(share, cliff_in(s, level - 1u, key), morph);
+    }
+    return share;
+}
+
+fn cliff_in(s: vec2f, level: u32, key: f32) -> f32 {
+    if (level < MASK_LEVEL) {
+        return key;
+    }
+    let t = texel_of(s, level);
+    var slots = vec4u(mask_of(level, t.whole));
+    if (!in_one_page(t.whole)) {
+        slots = vec4u(slots.x, mask_of(level, t.whole + vec2i(1, 0)), mask_of(level, t.whole + vec2i(0, 1)), mask_of(level, t.whole + 1));
+    } else if (slots.x == 0u) {
+        return key;
+    }
+    let top = mix(cliff_texel(slots.x, t.whole, key), cliff_texel(slots.y, t.whole + vec2i(1, 0), key), t.part.x);
+    return mix(top, mix(cliff_texel(slots.z, t.whole + vec2i(0, 1), key), cliff_texel(slots.w, t.whole + 1, key), t.part.x), t.part.y);
+}
+
+// The cliff share of a texel in the mask layer + 1 `slot`, or `key`.
+fn cliff_texel(slot: u32, t: vec2i, key: f32) -> f32 {
+    if (slot == 0u) {
+        return key;
+    }
+    let at = in_layer(slot - 1u, t);
+    let v = textureLoad(cliff_texels, vec2i(at.x >> 2u, at.y), (slot - 1u) >> 6u, 0)[at.x & 3];
+    return select(v * 255.0 / SHARE_STEPS, key, v > (SHARE_STEPS + 0.5) / 255.0);
+}
+
+// The metres from a point to the records' paved outline (negative inside), from the paint of the finest page at
+// or above `top` that has a mask; MASK_M where none has one.
+fn paved_edge(s: vec2f, top: u32) -> f32 {
+    for (var level = top; level >= MASK_LEVEL; level--) {
+        let t = texel_of(s, level);
+        let slot = mask_of(level, t.whole + vec2i(round(t.part)));
+        if (slot != 0u) {
+            return mask_in(paint_texels, s, level, slot - 1u, true).edge;
+        }
+    }
+    return MASK_M;
 }
 
 // Whether the mask keeps a thing off a point: in water or in a building, on a road, its sidewalk, a path or

@@ -208,17 +208,15 @@ A node becomes a leaf when its features fit the chunk size and the ring limit; o
 and its features are clipped into the children, so a feature that crosses a boundary appears in
 both. The device walks the same flat quadtree, so the packer's decision is the renderer's index.
 
-### The builder
+### The map assembly
 
-The product builder assembles published cells; it does not run the packer. A selection can mix
-named regions, boxes, lassos, and GPX corridors, and the builder unions them before it prices or
-downloads anything, so overlapping parts do not pay twice. It verifies every object against the
-catalog, and the assembler verifies the finished map with the production readers.
+The web app assembles published cells; it does not run the packer. A selection can mix
+named regions and boxes, and the web app unions them before it prices or downloads anything, so
+overlapping parts do not pay twice. It verifies every object against the catalog, and the
+assembler verifies the finished map with the production readers.
 
-One Svelte application serves the website, the desktop app, and the maintainer server; the host
-modules differ in transport and storage, never in the selection or assembly algorithm. The website
-is static and the cells live in object storage, so publishing a new region does not deploy the
-website.
+The web app assembles the map in the browser. The website is static and the cells live in object storage, so publishing a new region
+does not deploy the website.
 
 ## Following a route
 
@@ -321,7 +319,7 @@ region's texts and photos are under. Each place keeps its own notices.
 - Landmark bake stage: [`landmarks.rs`](src:host/obc-bake/src/landmarks.rs)
 - Navigation graph: [`nav.rs`](src:host/obc-network/src/nav.rs)
 - Quadtree: [`quadtree.rs`](src:host/obc-draw/src/quadtree.rs)
-- Builder: [`builder/`](src:builder)
+- Web app: [`builder/web`](src:builder/web)
 - Web assembler: [`obc-builder-bridge`](src:builder/wasm)
 - Device router: [`nav.rs`](src:firmware/obc-route/src/nav.rs)
 - Route matcher: [`matcher.rs`](src:firmware/obc-route/src/matcher.rs)

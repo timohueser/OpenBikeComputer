@@ -474,8 +474,8 @@ use = "Terrain in England: LIDAR Composite DTM 1 m"
 licence = "OGL-UK-3.0"
 attribution = "© Environment Agency copyright and/or database right 2022. All rights reserved."
 # `at_once` chosen by the owner, the same as Poland's: the Environment Agency's gateway blocked a
-# prepare that sent up to 32 requests at once. It bounds requests in flight, not a rate.
-fetch = { kind = "dtm", url = "https://environment.data.gov.uk/spatialdata/lidar-composite-digital-terrain-model-dtm-1m/wcs", at_once = 2 }
+# prepare that sent up to 32 requests at once. The adapter also spaces its downloads (`GAP` in gb.py).
+fetch = { kind = "dtm", url = "https://environment.data.gov.uk/tiles/collections/survey/lidar_composite_dtm/2022/1/", at_once = 2 }
 extent = [-6.5, 49.8, 2.0, 55.9]
 areas = ["europe/united-kingdom/england"]
 version = "date"
@@ -867,6 +867,61 @@ refresh = "manual"
 keep = "archive"
 redistribute = true
 credential = { file = "~/.config/openbikecomputer/cdse-s3.env", register = "https://eodata-s3keysmanager.dataspace.copernicus.eu", hint = "Sign in with a free Copernicus Data Space account, add a credential, then copy its access key and secret key." }
+
+# ── Routes ───────────────────────────────────────────────────────────────────
+
+# The signed routes of SchweizMobil: the geocat record 95638869-ef86-4e95-ae60-20e84e8dca8c gives the
+# licence. FEDRO updates each dataset once a year. `data/routes/<id>.toml` says how to read each file.
+[[source]]
+id = "schweizmobil-hiking"
+kind = "data"
+group = "Routes"
+used_by = ["planner"]
+use = "Signed hiking routes of Switzerland and Liechtenstein for the route catalog"
+licence = "LicenseRef-opendata-swiss-BY"
+licence_url = "https://opendata.swiss/en/terms-of-use/#terms_by"
+attribution = "Bundesamt für Strassen, Kanton, Stiftung SchweizMobil"
+obligations = "Open use; provide the source"
+fetch = { kind = "http", url = "https://data.geo.admin.ch/ch.astra.wanderland/wanderland/wanderland_2056.gpkg" }
+extent = [5.9, 45.8, 10.5, 47.9]
+areas = ["europe/switzerland", "europe/liechtenstein"]
+version = "date"
+keep = "archive"
+redistribute = true
+
+[[source]]
+id = "schweizmobil-cycling"
+kind = "data"
+group = "Routes"
+used_by = ["planner"]
+use = "Signed cycling routes of Switzerland and Liechtenstein for the route catalog"
+licence = "LicenseRef-opendata-swiss-BY"
+licence_url = "https://opendata.swiss/en/terms-of-use/#terms_by"
+attribution = "Bundesamt für Strassen, Kanton, Stiftung SchweizMobil"
+obligations = "Open use; provide the source"
+fetch = { kind = "http", url = "https://data.geo.admin.ch/ch.astra.veloland/veloland/veloland_2056.gpkg" }
+extent = [5.9, 45.8, 10.5, 47.9]
+areas = ["europe/switzerland", "europe/liechtenstein"]
+version = "date"
+keep = "archive"
+redistribute = true
+
+[[source]]
+id = "schweizmobil-mtb"
+kind = "data"
+group = "Routes"
+used_by = ["planner"]
+use = "Signed mountain bike routes of Switzerland and Liechtenstein for the route catalog"
+licence = "LicenseRef-opendata-swiss-BY"
+licence_url = "https://opendata.swiss/en/terms-of-use/#terms_by"
+attribution = "Bundesamt für Strassen, Kanton, Stiftung SchweizMobil"
+obligations = "Open use; provide the source"
+fetch = { kind = "http", url = "https://data.geo.admin.ch/ch.astra.mountainbikeland/mountainbikeland/mountainbikeland_2056.gpkg" }
+extent = [5.9, 45.8, 10.5, 47.9]
+areas = ["europe/switzerland", "europe/liechtenstein"]
+version = "date"
+keep = "archive"
+redistribute = true
 
 # ── Wikimedia ────────────────────────────────────────────────────────────────
 

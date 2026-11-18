@@ -255,6 +255,9 @@ const PARAPET_M: vec2f = vec2f(0.25, 0.6);
 const GREENHOUSE_RISE_M: f32 = 1.0;
 const BEAM_M: f32 = 0.2;
 const BALCONY_M: f32 = 0.9;
+// The size of a pixel in metres where a facade's windows start to give way to their mean, and where only the mean
+// is left: there a window of about a metre is a pixel wide, and drawn sharp it would shimmer in motion.
+const WINDOWS_FADE_M = vec2f(0.3, 1.0);
 // A roof rises at most this much above the eaves.
 const ROOF_M: f32 = 7.0;
 // At night this share of the windows shines in this colour, and this share of the houses stays dark.
@@ -818,10 +821,10 @@ fn facade(d: Drawn, wall: u32, first: u32, u: f32, len: f32, z: f32, front: bool
         let beam = fract(z / d.storey) * d.storey < BEAM_M || z > d.wall - BEAM_M;
         base = select(base, wood, post || beam);
     }
-    // Far off, the cells are smaller than a pixel: their mean.
+    // Far off, a window is about a pixel wide: the cell's mean.
     let glass = select(0.0, share, z >= 0.0);
     let mean = vec4f(mix(select(base, plinth, z < PLINTH_M), GLASS, glass), lit * share);
-    if (w > 0.5) {
+    if (w > WINDOWS_FADE_M.y) {
         return mean;
     }
     var colour = base;
@@ -851,7 +854,7 @@ fn facade(d: Drawn, wall: u32, first: u32, u: f32, len: f32, z: f32, front: bool
             colour = plinth;
         }
     }
-    return mix(vec4f(colour, glow), mean, smoothstep(0.15, 0.5, w));
+    return mix(vec4f(colour, glow), mean, smoothstep(WINDOWS_FADE_M.x, WINDOWS_FADE_M.y, w));
 }
 
 // A church tower's face: plinth, wall, the belfry and the wall over it, in three columns.

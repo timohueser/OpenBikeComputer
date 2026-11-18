@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
-import { closureLabel, closureStretches, type ClosureStretch } from './route-closures';
+import { describe, expect, it, onTestFinished } from 'vitest';
+import { settings } from '../settings/settings.svelte';
+import { closureLabel, closureStretches, noteDistance, type ClosureStretch } from './route-closures';
 import type { RouteClosure } from './routing';
 import { decodeRoutes } from './route-answer';
 
@@ -38,5 +39,11 @@ describe('possible closures', () => {
         expect(label(closure('unclear', 'unknown'))).toBe('Access unclear (unknown)');
         expect(label(closure('private', 'private'), closure('farm', 'agricultural;forestry'), closure('discouraged', 'discouraged')))
             .toBe('Private road · Farm or forest traffic only · Access discouraged');
+    });
+
+    it('writes tenths of a mile, and at least 0.1 mi, for a rider on miles', () => {
+        settings.units = 'mi';
+        onTestFinished(() => { settings.units = 'km'; });
+        expect([3.3, 0.4, 0.03].map(km => noteDistance(km))).toEqual(['2.1\u00a0mi', '0.2\u00a0mi', '0.1\u00a0mi']);
     });
 });

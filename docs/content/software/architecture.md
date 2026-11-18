@@ -31,12 +31,13 @@ and events.
 The host owns [`RenderScratch`](src:firmware/obc-render/src/lib.rs) and lends it to each render
 call. The memory a frame needs is therefore not part of application state.
 
-Four foundation crates carry no policy:
+Five foundation crates carry no policy:
 
 - [`obc-formats`](src:firmware/obc-formats) defines the persistent byte constants and byte I/O.
-- [`obc-map-scene`](src:firmware/obc-map-scene) separates map sources from the renderer.
-- [`obc-elevation`](src:firmware/obc-elevation) reads terrain and applies the shared elevation rules.
+- [`obc-crc`](src:firmware/obc-crc) is the one CRC-32.
 - [`obc-ports`](src:firmware/obc-ports) defines the semantic host interfaces.
+- [`obc-map-scene`](src:firmware/obc-map-scene) separates map sources from the renderer.
+- [`obc-file-source`](src:host/obc-file-source) gives the host tools a file as a byte source.
 
 ## Four hosts, one core
 

@@ -1,4 +1,4 @@
-/** The shared Rust store client over browser, desktop and loopback byte channels. */
+/** The shared Rust store client over the WebUSB and loopback byte channels. */
 
 import { ClientIO, type NativeOutcome } from "./client-io";
 import { DeviceError, asDeviceError } from "./errors";
@@ -7,7 +7,7 @@ import type { DeviceLink } from "./pipe";
 import { DEVICE_INFO_MAX, GET_DEVICE_INFO, decodeDeviceInfo, type DeviceInfo } from "./records";
 import { NO_OBJECT, Opcode, hex, toSafeNumber, type ObjectRef, type ObjectKind,
     type ListPage, type CatalogEntry, type StatusResponse, type GetResponse, type PutResponse,
-    type ArmResponse, type FormatResponse } from "./protocol";
+    type ArmResponse, type FormatResponse, type ArchiveResponse } from "./protocol";
 
 export { DEFAULT_BATCH_BYTES, UPLOAD_WINDOW } from "./client-io";
 export { blobSource, bytesSource } from "./source";
@@ -109,7 +109,6 @@ export class FlatStoreClient {
     get liveTransfer(): number | null { return this.io.liveTransfer; }
 
     async deviceInfo(signal?: AbortSignal): Promise<DeviceInfo> {
-        if (!this.link.vendorIn) throw new DeviceError("unavailable", "This host cannot read the device's firmware version: it cannot issue a USB control request.");
         try { return decodeDeviceInfo(await this.link.vendorIn(GET_DEVICE_INFO, 0, DEVICE_INFO_MAX, signal)); }
         catch (cause) { throw asDeviceError(cause); }
     }
@@ -159,6 +158,16 @@ export class FlatStoreClient {
 
     async cancel(transferRequestId: number, signal?: AbortSignal): Promise<boolean> {
         return body<{ cancelled: boolean }>(await this.io.query({ op: "cancel", transfer: transferRequestId }, Opcode.Cancel, signal)).cancelled;
+    }
+
+    /**
+     * Tell the device that the client keeps this ride (`ARCHIVE_RIDE`). Call it only after the ride is durable on this
+     * side. `source` is the exact entry that `get` served, on the card `storeId`.
+     */
+    async archiveRide(source: { storeId: string; objectId: bigint; revision: bigint; payloadLength: bigint; payloadCrc32: number },
+        signal?: AbortSignal): Promise<ArchiveResponse> {
+        return body(await this.io.run({ op: "archiveRide", store: source.storeId, id: source.objectId.toString(), revision: source.revision.toString(),
+            length: source.payloadLength.toString(), crc: source.payloadCrc32 >>> 0 }, Opcode.ArchiveRide, { signal }));
     }
 
     async arm(ref: { objectId: bigint; expectedRevision: bigint }, signal?: AbortSignal): Promise<ArmResponse> {

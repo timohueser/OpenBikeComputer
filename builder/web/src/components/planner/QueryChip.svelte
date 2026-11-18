@@ -1,5 +1,5 @@
 <script lang="ts">
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import QueryKinds from './QueryKinds.svelte';
     import QueryAreaPicker from './QueryAreaPicker.svelte';
     import { tick } from 'svelte';

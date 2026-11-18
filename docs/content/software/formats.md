@@ -19,7 +19,7 @@ says what each format is for and why it has that shape.
 | OBCR | Route geometry, statistics, and waypoints | Device |
 | Ride object | Recorded samples and summary | Device and companion |
 | OBCT | Terrain height raster | Device and map tools |
-| OBCC | Map-builder catalog | Website and desktop app |
+| OBCC | Device map catalog | Web app |
 | OBCA | Cell and assembly rules | Map tools |
 
 Values are little-endian and coordinates are signed microdegrees. A reader uses checked arithmetic
@@ -212,9 +212,9 @@ its small tables in memory: the map header, styles, and level table; the route i
 header and a few tiles. Indexes and geometry stream as the frame needs them. That is what lets a
 map larger than the device's RAM be drawn at all.
 
-## The catalog — the map builder's source of truth
+## The catalog — the web app's source of truth
 
-OBCC is the map-builder catalog, and the device never reads it. Its root publishes the map schema,
+OBCC is the catalog of the device maps, and the device never reads it. Its root publishes the map schema,
 the skins, the region selections, the cell index for each band, the terrain metadata, and the
 license information. It pins every object by length and digest: a map is assembled from files
 fetched over a network, so the catalog, not the transport, decides what the right bytes are.

@@ -1,6 +1,6 @@
 //! The step `planner/trailview-features` of `obc data`: `trailview-features.pmtiles` of a region from
 //! the OSM of `planner/osm`, the master terrain of the grid of `planner/terrain` and the water
-//! polygons of `water-polygons`, by the kind table and the road classes of its options.
+//! polygons of `water-polygons`, by the kind table, the road classes and the finishes of its options.
 
 use obc_data::engine::Request;
 
@@ -11,6 +11,7 @@ pub fn step(request: &Request) -> Result<(), String> {
     let options = &request.options;
     let kinds = kinds::validate(&options["kinds"])?;
     let (class_names, classes) = kinds::classes(&options["roads"])?;
+    let widths = kinds::widths(&options["roads"], &options["finishes"])?;
     let waterways = kinds::waterways(&options["waterways"])?;
     let bounds: [f64; 4] =
         serde_json::from_value(options["bounds"].clone()).map_err(|_| "option `bounds` is not four numbers")?;
@@ -20,7 +21,8 @@ pub fn step(request: &Request) -> Result<(), String> {
     else {
         return Err("`water-polygons` is not one file".into());
     };
-    let options = Options { kinds, bounds, attribution, classes, class_names, waterways, sea: Some(sea.clone()) };
+    let sea = Some(sea.clone());
+    let options = Options { kinds, bounds, attribution, classes, class_names, widths, waterways, sea };
     let layer = |name: &str| request.layers.get(name).ok_or(format!("the step has no input `{name}`"));
     let [pbf] = layer("planner/osm")?.values().collect::<Vec<_>>()[..] else {
         return Err("`planner/osm` is not one file".into());
@@ -54,6 +56,23 @@ pub fn free_memory(reserved: Option<u64>) -> usize {
     free.min(reserved.unwrap_or(u64::MAX)) as usize
 }
 
+/// The bytes of memory that this process holds: `free_memory` counts what was free before it started.
+pub(crate) fn resident() -> usize {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    let line = status.lines().find(|l| l.starts_with("VmRSS:"));
+    line.and_then(|l| l.split_whitespace().nth(1)?.parse::<usize>().ok()).unwrap_or(0) << 10
+}
+
+/// Give the memory that the process freed back to the system. glibc keeps it in the arena of the thread that
+/// freed it, where other threads cannot take it and `resident` counts it.
+pub(crate) fn release() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: malloc_trim only returns free pages of the allocator to the system.
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -71,7 +90,7 @@ mod tests {
     /// A zoom-13 tile in Engelberg. Each node is (id, u, v) in its tile units.
     const COLUMN: u32 = 4286;
     const ROW: u32 = 2889;
-    const NODES: [(u32, u32, u32); 43] = [
+    const NODES: [(u32, u32, u32); 45] = [
         (1, 7000, 4000),
         (2, 17500, 4000),
         (3, 3000, 3000),
@@ -115,6 +134,8 @@ mod tests {
         (41, 9300, 9500),
         (42, 9000, 9000),
         (43, 9600, 9000),
+        (44, 3050, 3050),
+        (45, 8000, 6000),
     ];
 
     type Way = (u32, Vec<u32>, Vec<(&'static str, &'static str)>);
@@ -137,6 +158,8 @@ mod tests {
             (112, vec![36, 37, 38, 39, 36], vec![("landuse", "farmyard")]),
             (113, vec![40, 41], vec![("highway", "residential")]),
             (114, vec![42, 43], vec![("highway", "residential"), ("bridge", "yes")]),
+            // A chair lift from inside the building of relation 200.
+            (115, vec![44, 45], vec![("aerialway", "chair_lift")]),
         ]
     }
 
@@ -258,6 +281,7 @@ mod tests {
             options: json!({"bounds": [west, south, east, north], "attribution": "© OSM",
                             "kinds": table(include_str!("../../../data/trailview/kinds.json")),
                             "roads": kinds::solver_rows(&table(include_str!("../../../data/trailview/roads.json"))),
+                            "finishes": kinds::finish_rows(&table(include_str!("../../../data/trailview/finishes.json"))),
                             "waterways": kinds::waterway_rows(&table(include_str!("../../../data/trailview/waterways.json")))}),
             output: root.join("output"),
             metrics: root.join("metrics.json"),
@@ -294,6 +318,7 @@ mod tests {
             kinds
         };
         let expected = [
+            "aerialway",
             "bridge-pier",
             "bridge-pier",
             "building",
@@ -327,9 +352,11 @@ mod tests {
             (MIN_ZOOM..=MAX_ZOOM).collect()
         );
         assert_eq!(find(left, "dam").parts[0].xy.len(), 2, "a closed dam way is an area, not a ring line");
-        // A tunnel with no terrain over it runs on the ground, as a road.
+        // A shallow tunnel with no terrain over it keeps its kind and its tunnel tag. It has no room: its levels open
+        // it from each tag end all along, within `open_max_m`; a viewer without the bores keeps it on the ground.
         let tunnel = find(left, "main-road");
-        assert_eq!(tunnel.tags, tags(&[("highway", "secondary")]));
+        let levels = ("levels", "O");
+        assert_eq!(tunnel.tags, tags(&[("highway", "secondary"), levels, ("tunnel", "yes")]));
         let road = find(left, "road");
         assert_eq!(road.tags, tags(&[("highway", "track"), ("surface", "gravel")]));
         // A cut keeps the segment whole, so both tiles hold the same one, and its heights follow the terrain.
@@ -390,6 +417,8 @@ mod tests {
         }
         assert_eq!(building.parts.iter().map(|p| p.outer).collect::<Vec<_>>(), [true, false]);
         assert_eq!(building.parts[1].xy.len(), 4);
+        // The building houses the station of the lift at its start: the lift has a station at its end only.
+        assert_eq!(find(left, "aerialway").tags.get("stations").map(String::as_str), Some("end"));
         // Above zoom 13 a tile holds the water and the main roads only, and the river still ends on the
         // shore of the lake.
         let overview = tiles.iter().find(|(k, _)| k.0 == 11).unwrap().1;
@@ -398,5 +427,10 @@ mod tests {
         assert!(lake.parts[0].xy.contains(river.parts[0].xy.last().unwrap()));
         let metrics = table(&std::fs::read_to_string(root.join("metrics.json")).unwrap());
         assert_eq!(metrics["tiles"], tiles.len());
+        assert_eq!(metrics["lifts"]["housed_ends"], 1);
+        assert_eq!(
+            metrics["roads"]["shallow_tunnels"], 1,
+            "each way on the ground with a tunnel tag is a shallow tunnel"
+        );
     }
 }

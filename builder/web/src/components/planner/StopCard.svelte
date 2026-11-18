@@ -1,5 +1,5 @@
 <script lang="ts">
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import { dayColor } from '../../lib/planner/day-colors';
     import { placeCategories } from '../../lib/planner/poi-kinds';
     import { kindLabel, stayOptions } from '../../lib/planner/search/presentation';
@@ -7,6 +7,8 @@
     import { clockTime, nightLow, sunsetAt } from '../../lib/planner/evening';
     import { stopCounts, stopKm, suitable, type Stop, type StopPlace } from '../../lib/planner/stops';
     import type { Day, Place, Stay } from '../../lib/planner/editor';
+    import { distanceIn, heightIn, heightUnit } from '../../lib/settings/format';
+    import { settings } from '../../lib/settings/settings.svelte';
 
     let { stop, kinds, days, labels, back = 'All towns', shownId = null, theme, date, elevation, onBack, onEndHere, onStay, onSelectPlace }: {
         stop: Stop;
@@ -61,7 +63,7 @@
     // Search names an unnamed place after its kind.
     const named = (p: StopPlace) => p.place.label.toLowerCase() !== kind(p);
     const names = (places: StopPlace[]) => places.slice(0, 3).map(p => p.place.label).join(', ');
-    const away = (p: StopPlace) => p.off < .15 ? 'on the route' : `${p.off.toFixed(1)} km off the route`;
+    const away = (p: StopPlace) => p.off < .15 ? 'on the route' : `${distanceIn(p.off * 1000).toFixed(1)} ${settings.units} off the route`;
     function shops(places: StopPlace[]) {
         return places.slice(0, 3).map(({ place }) => {
             const hours = place.openingHours ? openingHoursRows(place.openingHours)?.[0] : null;
@@ -85,7 +87,7 @@
         {#each days as day, i}
             <div style:--day={dayColor(day.number, theme)}>
                 <dt><span class="badge">{labels[i]}</span>Day {labels[i]} {i ? 'starts here' : 'ends here'}</dt>
-                <dd>{day.distance.toFixed(1)} km · {duration(day.hours)} · ↑ {Math.round(day.ascent)} m</dd>
+                <dd>{distanceIn(day.distance * 1000).toFixed(1)} {settings.units} · {duration(day.hours)} · ↑ {Math.round(heightIn(day.ascent))} {heightUnit()}</dd>
             </div>
         {/each}
     </dl>

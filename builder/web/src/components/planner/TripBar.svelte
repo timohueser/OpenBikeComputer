@@ -1,9 +1,9 @@
 <script lang="ts">
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import Select from './PlannerSelect.svelte';
     import VersionsMenu from './VersionsMenu.svelte';
     import { onMount } from 'svelte';
-    import { planPreset, ridingProfiles, servedPresets, type BikeType } from '../../lib/planner/riding-profiles';
+    import { paces, planPace, planPreset, ridingProfiles, servedPresets, type BikeType } from '../../lib/planner/riding-profiles';
     import { planTitle, type Trip } from '../../lib/planner/editor';
     import { regionProfiles, type RoutingLine } from '../../lib/planner/routing';
     import type { Version } from '../../lib/planner/versions';
@@ -57,6 +57,10 @@
             <Select label="Preset" value={planPreset(bike, trip.preset)} options={servedPresets(bike, profiles).map(value => ({ value, label: value, icon: value === 'Less climbing' ? 'less-climbing' : 'sliders' }))}
                 onChange={(preset) => onChange({ preset }, 'Route preference changed')} />
         </div>
+        <div class="preference"><span>Pace</span>
+            <Select label="Pace" value={planPace(trip)} options={Object.entries(paces).map(([value, { label }]) => ({ value, label }))}
+                onChange={(value) => onChange({ pace: value as Trip['pace'] }, 'Pace changed')} />
+        </div>
     </div>
     <div class="actions">
         <button type="button" class="planner-action quiet" disabled={!ready || !trip.points.length} onclick={onNew}>New {trip.mode === 'route' ? 'route' : 'trip'}</button>
@@ -92,12 +96,12 @@
         white-space: nowrap;
         font: 700 17px var(--sans);
     }
-    /* Preset wraps below Activity where a wide side panel leaves the middle column too narrow. */
+    /* The controls wrap where a wide side panel leaves the middle column too narrow. */
     .ride {
         display: flex;
         align-items: center;
         flex-wrap: wrap;
-        gap: 4px 16px;
+        gap: 8px 16px;
     }
     .preference {
         display: flex;
@@ -126,11 +130,10 @@
     .icon:hover:not(:disabled) {
         background: var(--parchment-2);
     }
-    /* Narrower, the middle column beside the panel-wide name has no room for Activity and Preset. */
-    @media (max-width: 1210px) {
+    @media (max-width: 1050px) {
         .trip-bar { grid-template-columns: minmax(0, 1fr) auto; gap: 8px 16px; }
-        .ride { grid-column: 1 / -1; grid-row: 2; }
-        .actions { grid-column: 2; grid-row: 1; }
+        .ride { grid-column: 1; grid-row: 2; }
+        .actions { grid-column: 2; grid-row: 1 / span 2; }
     }
     @media (max-width: 760px) {
         .trip-bar { grid-template-columns: minmax(0, 1fr); }

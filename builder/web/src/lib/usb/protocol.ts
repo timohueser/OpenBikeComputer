@@ -246,6 +246,12 @@ export interface ArmResponse {
     readonly commitSequence: bigint;
 }
 
+/** The ARCHIVE_RIDE response. `timestamp` is the stored archive time of the proof; zero means unknown. */
+export interface ArchiveResponse {
+    readonly commitSequence: bigint;
+    readonly timestamp: number;
+}
+
 /** The FORMAT response: the new identity, durable before the device reboots. */
 export interface FormatResponse {
     readonly storeId: string;
@@ -255,7 +261,7 @@ export interface FormatResponse {
  * A `DataView` over exactly the bytes of `data` — `subarray` keeps the parent buffer, so the offset
  * and length have to be carried explicitly or every field read is off by the slice.
  *
- * Exported because `objects.ts` and `device/route.ts` parse the same little-endian layouts.
+ * Exported because `objects.ts` parses the same little-endian layouts.
  */
 export function viewOf(data: Uint8Array): DataView {
     return new DataView(data.buffer, data.byteOffset, data.byteLength);

@@ -714,7 +714,7 @@ def site_head(site_root, crumb, nav_toggle=""):
     of the markup, so a nav change can't drift between the docs and blog shells."""
     return fill(SITEHEAD_TEMPLATE.read_text(),
                 {"site_root": site_root, "crumb": crumb, "nav_toggle": nav_toggle,
-                 "builder_link": '<a href="%sbuilder/">Maps</a>' % esc(site_root),
+                 "builder_link": '<a href="%splan/#/device">Maps</a>' % esc(site_root),
                  "planner_link": '<a href="%splan/">Route planner</a>' % esc(site_root),
                  "docs_current": ' aria-current="page"' if crumb == "/ docs" else "",
                  "blog_current": ' aria-current="page"' if crumb == "/ log" else ""})
@@ -816,9 +816,9 @@ def check_links(rendered):
                 continue
             path, _, frag = href.partition("#")
             target = urljoin(url, path).lstrip("/") if path else url
-            # The map builder is a sibling *app* in the published artifact, not a page
+            # The web app is a sibling *app* in the published artifact, not a page
             # this renderer produces — there is no HTML here to validate it against.
-            if target.startswith(("builder/", "plan/")):
+            if target.startswith("plan/"):
                 continue
             label = "/" + url
             if not frag and target.startswith("docs/") and (OUT / target[5:]).is_file():

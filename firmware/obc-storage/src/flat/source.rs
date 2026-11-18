@@ -177,7 +177,7 @@ impl<D: BlockDevice> FlatStore<D> {
 mod tests {
     use std::vec;
 
-    use obc_crc::Crc32;
+    use obc_crc::crc32;
 
     use super::*;
     use crate::flat::layout::{Geometry, EXTENT_AREA};
@@ -255,7 +255,7 @@ mod tests {
         store.patch_allocation(&allocation, 0, &header).expect("an appended header remains patchable");
         assert_eq!(
             store.allocation_crc(&allocation).expect("the live allocation hashes"),
-            Crc32::checksum(&expected),
+            crc32(&expected),
             "the checksum covers the patched bytes and the unflushed tail",
         );
 
@@ -267,7 +267,7 @@ mod tests {
             kind: ObjectKind::Route,
             flags: EntryFlags::NONE,
             payload_len: LEN as u64,
-            payload_crc: Crc32::checksum(&expected),
+            payload_crc: crc32(&expected),
             name: DisplayName::new("computed").expect("a short name"),
         };
         store.commit(&[Mutation::Put { meta, source: PutSource::Fresh(allocation) }]).expect("the route publishes");
