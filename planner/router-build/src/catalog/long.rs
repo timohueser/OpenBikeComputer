@@ -82,7 +82,7 @@ pub(super) struct Part<'a> {
 }
 
 /// The first and last point of a part, and whether it is a loop. The main line of a failed part is a
-/// loop when its ends meet: its plan did not close it.
+/// loop when its ends are at most `MEET_M` apart: its plan did not close it.
 #[derive(Clone, Copy)]
 struct Ends {
     start: P,

@@ -278,12 +278,12 @@ A long route whose parts are separate routes, such as day loops from one village
 catalog, and no part has it as `trail` or `parent`. The member order of its parts does not matter.
 Two open parts join when one has an end at most 60 m from an end of the other; 60 m leaves room for
 the slack of two stage ends at one place. A loop part joins no part: it comes back to its start and
-takes the line no further. A part whose plan failed is a loop when the two ends of its main line
-meet. The parts are separate routes when at least two parts have ends, loops included, and the
-largest group of open parts that join holds fewer than a third of all parts with ends. With no loop
-part, a line with one or two holes in the map data still keeps a piece of at least a third. A part
-with no ends counts for nothing. Each long route is judged on its own parts, so a long route inside
-another one can leave while the outer one keeps the same parts as its stages.
+takes the line no further. A part whose plan failed is a loop when the two ends of its main line are
+at most 60 m apart. The parts are separate routes when at least two parts have ends, loops included,
+and the largest group of open parts that join holds fewer than a third of all parts with ends. With
+no loop part, a line with one or two holes in the map data still keeps a piece of at least a third.
+A part with no ends counts for nothing. Each long route is judged on its own parts, so a long route
+inside another one can leave while the outer one keeps the same parts as its stages.
 
 A long route is complete when each part is in the catalog, and no part is cut, runs backwards or has
 a jump.
