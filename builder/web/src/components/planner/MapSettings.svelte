@@ -13,7 +13,7 @@
         contours: boolean;
         /** Place categories the map leaves out. */
         hidden: PlaceCategory[];
-        /** Place categories shown with a ring at every zoom. */
+        /** The highlighted place category, or none. */
         highlighted: PlaceCategory[];
         mapOverlays: OverlayOptions;
         theme?: 'light' | 'dark';
@@ -53,7 +53,7 @@
     }
 
     function highlight(category: PlaceCategory) {
-        highlighted = highlighted.includes(category) ? highlighted.filter(c => c !== category) : [...highlighted, category];
+        highlighted = highlighted.includes(category) ? [] : [category];
     }
 
     function outside(event: PointerEvent) {

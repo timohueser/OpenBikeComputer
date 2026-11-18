@@ -237,7 +237,7 @@ struct PlannerPreviewMap: UIViewRepresentable {
         }
 
         private func showsAmbientPlaces(_ map: MLNMapView) -> Bool {
-            // Match planner-poi-icons in builder/web/src/lib/planner/map-style.ts.
+            // Match planner-poi-icons in companion-ios/ReplayAssets/prepare.mjs.
             map.zoomLevel >= 13
         }
 

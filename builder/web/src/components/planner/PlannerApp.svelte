@@ -46,9 +46,8 @@
         setDrawnLeg, setLegMode, setSplit, setEndpoint, removeRoutePoint,
         type Day, type LegMode, type Place, type PlaceRef, type PointKind, type RoutePoint, type Trip,
     } from '../../lib/planner/editor';
-    import { coordinateAt, cumulative, nearestOnLine, nearestProgress, routeDistance, routeSlice, type Coordinate } from '../../lib/planner/geo';
-    import { categoryIds, type PlaceCategory } from '../../lib/planner/poi-kinds';
-    import { corridorPlaces } from '../../lib/planner/place-index';
+    import { coordinateAt, cumulative, nearestOnLine, nearestProgress, routeSlice, type Coordinate } from '../../lib/planner/geo';
+    import { categoryIds, defaultKinds, type PlaceCategory } from '../../lib/planner/poi-kinds';
     import { config } from '../../lib/planner/map-data';
     import { beforeReload } from '../../lib/planner/release';
     import { coordinateName, townName } from '../../lib/planner/point-names';
@@ -168,10 +167,8 @@
     let spot = $state<{ coordinate: Coordinate; legEndId?: string } | null>(null);
     // The selected place when it is not a fixture: a basemap place.
     let mapPlace = $state<Place | null>(null);
-    let hiddenCategories = $state<PlaceCategory[]>([]);
+    let hiddenCategories = $state<PlaceCategory[]>(categoryIds.filter(category => !defaultKinds.includes(category)));
     let highlightedCategories = $state<PlaceCategory[]>([]);
-    let corridor = $state<Place[]>([]);
-    let corridorLoad = $state<'done' | 'loading' | 'failed'>('done');
     const theme = $derived<'light' | 'dark'>(appearance.dark ? 'dark' : 'light');
     let hoveredId = $state<string | null>(null);
     let hillshade = $state(true);
@@ -334,31 +331,8 @@
     const visiblePlaces = $derived(searching ? results.map(result => result.place)
         : openStop ? openStop.sleep.map(p => p.place)
         : pickerNight !== null ? readyStops(pickerNight).flatMap(stop => stop.sleep.map(p => p.place)) : []);
-    const highlights = $derived(highlightedCategories);
-    const highlightLimit = 300;
-    // Basemap places within 5 km of the route, nearest first.
-    const highlightCandidates = $derived.by(() => {
-        if (!highlights.length || coordinates.length < 2) return [];
-        const pinned = new Set(visiblePlaces.map(place => place.id));
-        const distance = routeDistance(coordinates, 5);
-        const nearby = corridor
-            .filter(place => highlights.includes(place.category))
-            .map(place => ({ place, off: distance(place.coordinate) }))
-            .filter(({ off }) => Number.isFinite(off))
-            .sort((a, b) => a.off - b.off)
-            .map(({ place }) => place);
-        return nearby.filter(place => !pinned.has(place.id));
-    });
-    const highlightedPlaces = $derived(highlightCandidates.slice(0, highlightLimit));
-    const placeNote = $derived(
-        !highlights.length ? ''
-        : corridorLoad === 'loading' ? 'Loading places along the route…'
-        : corridorLoad === 'failed' ? 'Places along the route could not load'
-        : highlightCandidates.length > highlightLimit ? `Showing ${highlightLimit} of ${highlightCandidates.length} highlighted places, nearest the route first`
-        : '',
-    );
     const selectedPoint = $derived(trip.points.find(p => p.id === selectedId));
-    const shownPlace = $derived((mapPlace?.id === selectedId ? mapPlace : undefined) ?? visiblePlaces.find(p => p.id === selectedId) ?? corridor.find(p => p.id === selectedId));
+    const shownPlace = $derived((mapPlace?.id === selectedId ? mapPlace : undefined) ?? visiblePlaces.find(p => p.id === selectedId));
     // List searches leave out details such as the website and phone; they load per place id, and null means search has none.
     let details = $state.raw<Record<string, SearchPlace | null>>({});
     let detailsError = $state('');
@@ -462,18 +436,6 @@
         return () => abort.abort();
     });
     const pinChart = $derived(dataLayer && calloutKind === 'add' && pinSamples?.layer === dataLayer && pinSamples.at === spot?.coordinate ? dataLayer.chart(pinSamples.samples, 0, { date: shownDate, theme }) : null);
-
-    $effect(() => {
-        if (!highlights.length || coordinates.length < 2) return;
-        const route = coordinates;
-        let current = true;
-        corridorLoad = 'loading';
-        corridorPlaces(config.places, route).then(
-            found => { if (current) { corridor = found; corridorLoad = 'done'; } },
-            () => { if (current) corridorLoad = 'failed'; },
-        );
-        return () => { current = false; };
-    });
 
     // A query runs again when anything it sends other than the map view changes.
     $effect(() => { void [queryPlan, here, pointing, trip.startDate]; untrack(() => searchRevision++); });
@@ -718,7 +680,7 @@
 
     function selectPoint(id: string) {
         if (id === 'pending') return;
-        const place = visiblePlaces.find(p => p.id === id) ?? corridor.find(p => p.id === id) ?? (mapPlace?.id === id ? mapPlace : undefined);
+        const place = visiblePlaces.find(p => p.id === id) ?? (mapPlace?.id === id ? mapPlace : undefined);
         if (place) { choosePlace(place); return; }
         clearSelection();
         selectedId = id;
@@ -1235,7 +1197,7 @@
                     {theme} {hillshade} {contours} {mapOverlays} dataLayer={{ layers: dataLayers, shown: dataLayer, date: shownDate, notes: layerNotes }} bottomInset={dataLayer ? dateBarHeight + 34 : 0} accessMode={trip.bike === 'hiking' ? 'walking' : 'cycling'} {showRoute} compare={comparison && { line: comparison.option.line.coordinates, letter: comparison.letter }} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking || mapMode?.kind === 'transfer'} routingPackage={currentRoute?.package}
                     onPick={mapMode?.kind === 'look' ? openTrailView : null}
                     highlightedPlaceIds={searching ? results.map(result => result.place.id) : []}
-                    shownCategories={categoryIds.filter(category => !hiddenCategories.includes(category))} {highlightedPlaces}
+                    placeKinds={categoryIds.filter(category => !hiddenCategories.includes(category))} highlightedKind={highlightedCategories[0] ?? null}
                     onBounds={(bounds, preserveSearch) => { viewBounds = bounds; if (!preserveSearch) searchViewRevision++; }} onEmptyClick={emptyClick} onPointSelect={selectPoint} onPointMove={movePoint} onPointPreview={(id, coordinate) => session.previewMove(id, coordinate)} onDayEndDrag={moveDayEnd}
                     onLegClick={legClick} onInsert={(legEndId, coordinate) => insert(legEndId, coordinate, true)} onDrawn={drawn} onPlaceClick={place => mapMode?.kind === 'transfer' ? void arrive(place.coordinate, place.label) : choosePlace(place)}
                     onVisibleRange={(range) => visibleRange = range}
@@ -1331,7 +1293,6 @@
                 <span class:save-error={!!session.saveError}>{session.saveError || `${message} · ${routingMessage}`}</span>
                 {#if session.saveError}<button type="button" class="planner-action" onclick={() => session.download()}>Download plan</button><button type="button" class="planner-action" onclick={() => { session.save().catch(() => {}); }}>Retry save</button>{/if}
                 {#if statusUndo}<span>·</span><button type="button" class="planner-action" onclick={statusUndo}>Undo</button>{/if}
-                {#if placeNote}<span>· {placeNote}</span>{/if}
                 <span class="lab-note">Regional map, search and routing</span>
             </div>
         </section>

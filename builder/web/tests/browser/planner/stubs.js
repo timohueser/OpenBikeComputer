@@ -101,6 +101,36 @@ const PICTURES = {
   [`covers/${COVERED.id}/${COVER}.json`]: { x: [100, 860, 480, 100], y: [100, 300, 540, 100], eye: [140, 140, 140, 140] },
 };
 
+/** Bytes of a protobuf varint, and of a field with a varint or with bytes. */
+const varint = value => { const out = []; for (; value > 127; value = Math.floor(value / 128)) out.push((value % 128) | 128); out.push(value); return out; };
+const field = (number, value) => typeof value === 'number'
+  ? [...varint(number * 8), ...varint(value)]
+  : [...varint(number * 8 + 2), ...varint(value.length), ...value];
+const text = value => [...Buffer.from(value)];
+const zigzag = value => value < 0 ? -2 * value - 1 : 2 * value;
+
+/** A Mapbox vector tile, version 2, with one layer `pois`: a point for each place, with its kind, name and position. */
+function placeTile([z, x, y], places) {
+  const extent = 4096, keys = ['kind', 'name', 'lon', 'lat'], values = [];
+  const features = places.map(({ id, kind, name, lon, lat }) => {
+    const column = ((lon + 180) / 360) * 2 ** z, row = ((1 - Math.asinh(Math.tan((lat * Math.PI) / 180)) / Math.PI) / 2) * 2 ** z;
+    const tags = [kind, name, lon, lat].flatMap((value, key) => [key, values.push(value) - 1]);
+    const geometry = [9, zigzag(Math.round((column - x) * extent)), zigzag(Math.round((row - y) * extent))];
+    return field(2, [...field(1, id), ...field(2, tags.flatMap(varint)), ...field(3, 1), ...field(4, geometry.flatMap(varint))]);
+  });
+  const value = v => field(4, typeof v === 'string' ? field(1, text(v)) : [3 * 8 + 1, ...new Uint8Array(new Float64Array([v]).buffer)]);
+  const layer = [...field(15, 2), ...field(1, text('pois')), ...features.flat(), ...keys.flatMap(key => field(3, text(key))), ...values.flatMap(value), ...field(5, extent)];
+  return Buffer.from(field(3, layer));
+}
+
+/** Two restaurants 5 m apart where the map starts, in the Mercator middle of `BOUNDS`, and a fountain 50 m east of them. */
+const PLACE_TILE = '11/1075/706';
+const PLACES = placeTile([11, 1075, 706], [
+  { id: 2 ** 44 + 1, kind: 'restaurant', name: 'Bistro', lon: 8.975, lat: 48.6887 },
+  { id: 2 ** 44 + 2, kind: 'restaurant', name: 'Pizzeria', lon: 8.97507, lat: 48.6887 },
+  { id: 2 ** 44 + 3, kind: 'fountain', name: 'Town fountain', lon: 8.97568, lat: 48.6887 },
+]);
+
 /** The response for a request to one of the hosts, or null when the path has no stub. */
 export function respond(request) {
   const url = new URL(request.url());
@@ -112,7 +142,7 @@ export function respond(request) {
     case 'overlays':
       return url.pathname === `/${kind}.json`
         ? json({ tilejson: '3.0.0', tiles: [`https://${HOSTS.tiles}/${kind}/{z}/{x}/{y}.mvt`], minzoom: ZOOMS[kind][0], maxzoom: ZOOMS[kind][1], bounds: BOUNDS, routing_package: 'budget-test' })
-        : { headers: CORS, status: 204 };
+        : url.pathname === `/places/${PLACE_TILE}.mvt` ? { headers: CORS, contentType: 'application/x-protobuf', body: PLACES } : { headers: CORS, status: 204 };
     case 'terrain':
       return { headers: CORS, contentType: 'image/png', body: PIXEL };
     case 'glyphs':
