@@ -327,8 +327,14 @@
     @media (prefers-reduced-motion: reduce) {
         .spinner { animation-duration: 3s; }
     }
+    /* Under the zoom buttons of the map, as wide as they and the control together: the credits of the map end before
+       the control, so the notice is never over the open credits. The numbers are the zoom buttons of MapLibre: 59 px
+       high and 29 px wide, with margins of 10 px. */
     .trailview-notice {
-        max-width: min(220px, 45vw);
+        position: absolute;
+        top: 65px;
+        right: -39px;
+        left: 0;
         margin: 0;
         padding: 6px 10px;
         border-radius: 6px;

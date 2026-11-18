@@ -40,7 +40,8 @@
     /** The width of the buttons of the page on the map: the credits of the map end before them. */
     let buttonsWidth = $state(0);
     let listBox = $state<HTMLElement>();
-    const toRow = () => listBox?.querySelector<HTMLElement>('[aria-current="true"]')?.focus();
+    // With no scroll: on a phone the list is above the map, and the rider who closes the card looks at the map.
+    const toRow = () => listBox?.querySelector<HTMLElement>('[aria-current="true"]')?.focus({ preventScroll: true });
 
     // A card that is fixed at the bottom of the screen covers the end of the document: the document gets its height
     // as room there. The rule of the phone layout reads it.
