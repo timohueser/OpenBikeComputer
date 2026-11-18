@@ -54,6 +54,8 @@ export function mapCallout(map: maplibregl.Map, content: HTMLElement, { free, of
             map.off('move', move);
             observer.disconnect();
             popup?.remove();
+            // A frame or a moveend that is still queued then pans nothing.
+            [popup, at] = [undefined, null];
         },
     };
 }

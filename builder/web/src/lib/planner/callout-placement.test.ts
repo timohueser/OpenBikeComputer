@@ -44,4 +44,9 @@ describe('callout placement', () => {
         const placed = calloutBox(anchor, [point[0] - pan[0], point[1] - pan[1]], [210, 160], 16);
         expect(placed.left >= box.left && placed.right <= box.right && placed.top >= box.top && placed.bottom <= box.bottom).toBe(true);
     });
+
+    it('pans the least distance also when the popup is larger than the free area', () => {
+        // Wider than the map: above the point needs a pan of 100 px down, below it only 5 px to the side.
+        expect(placeCallout([100, 30], [210, 100], { left: 0, top: 0, right: 200, bottom: 200 }, 20)).toEqual({ anchor: 'top', pan: [-5, 0] });
+    });
 });

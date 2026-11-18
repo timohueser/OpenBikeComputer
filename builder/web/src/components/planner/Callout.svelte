@@ -3,7 +3,7 @@
     import Icon from '../../lib/ui/Icon.svelte';
 
     /** The frame of a map popup: a close button, Escape, and the focus, which it takes on mount and gives back to the
-     * opener on close. */
+     * opener on close. It never takes the focus from a control that the rider chose before its first frame. */
     let { label, onClose, children }: { label: string; onClose: () => void; children: Snippet } = $props();
 
     let root: HTMLDivElement;
@@ -12,7 +12,11 @@
     onMount(() => {
         opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
         // The map moves this content into its popup after mounting.
-        const frame = requestAnimationFrame(() => root.focus({ preventScroll: true }));
+        // MapLibre can focus the close button as it adds the popup.
+        const frame = requestAnimationFrame(() => {
+            const at = document.activeElement;
+            if (at === opener || at === document.body || root.contains(at)) root.focus({ preventScroll: true });
+        });
         return () => cancelAnimationFrame(frame);
     });
 

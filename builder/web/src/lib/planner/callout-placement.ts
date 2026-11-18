@@ -32,13 +32,12 @@ function overflow(box: Box, free: Box): [number, number] {
  * it is the last choice.
  */
 export function placeCallout(point: [number, number], size: [number, number], free: Box, offset: number): { anchor: Anchor; pan: [number, number] } {
-    let best: { anchor: Anchor; pan: [number, number]; cost: number } | undefined;
+    let best: { anchor: Anchor; pan: [number, number]; larger: boolean } | undefined;
     for (const anchor of ANCHORS) {
         const box = calloutBox(anchor, point, size, offset), pan = overflow(box, free);
         if (!pan[0] && !pan[1]) return { anchor, pan };
         const larger = box.right - box.left > free.right - free.left || box.bottom - box.top > free.bottom - free.top;
-        const cost = Math.hypot(...pan) + (larger ? Infinity : 0);
-        if (!best || cost < best.cost) best = { anchor, pan, cost };
+        if (!best || larger < best.larger || (larger === best.larger && Math.hypot(...pan) < Math.hypot(...best.pan))) best = { anchor, pan, larger };
     }
     return { anchor: best!.anchor, pan: best!.pan };
 }

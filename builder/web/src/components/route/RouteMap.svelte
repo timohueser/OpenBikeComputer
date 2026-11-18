@@ -198,6 +198,11 @@
         const at = openPlace?.place.coordinate ?? null;
         if (map) untrack(() => callout.show(at));
     });
+    // A new size of the small cover can come after the resize of the map.
+    $effect(() => {
+        void [corner[0], corner[1]];
+        if (map) untrack(() => callout.refit(true));
+    });
 
     $effect(() => { dot.classList.toggle('ride', ride); });
     $effect(() => {
