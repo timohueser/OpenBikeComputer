@@ -50,6 +50,26 @@ function stitch(legs: Leg[], profile: string): EngineRoute {
 const legKeys = (points: Coordinate[], turnarounds: number[], profile: string) =>
     points.slice(1).map((to, k) => JSON.stringify([profile, points[k], to, turnarounds.includes(k), turnarounds.includes(k + 1)]));
 
+/** The points of one route request (`specs/route-api.md`). */
+const MAX_REQUEST_POINTS = 64;
+/** Half of the four workers of the production route service, so that one long plan leaves two to other riders. */
+const MAX_PARALLEL = 2;
+/** The route API asks to send `busy` and `internal` again later. */
+const RETRIES = 2, RETRY_MS = 1000;
+
+/** The legs `first` to `last` as consecutive leg ranges `[from, to]` of at most one request each. Each range starts at the
+ * end point of the range before, and no range ends at a turnaround: only an interior turnaround may depart on the other road. */
+export function chunks(first: number, last: number, turnarounds: number[]): [number, number][] {
+    const spans: [number, number][] = [];
+    for (let from = first; from <= last;) {
+        let to = Math.min(from + MAX_REQUEST_POINTS - 2, last);
+        while (to < last && to > from && turnarounds.includes(to + 1)) to--;
+        spans.push([from, to]);
+        from = to + 1;
+    }
+    return spans;
+}
+
 /** Routed legs by profile, end points and turnarounds, so an edit requests only the legs that it changed. */
 export class LegCache {
     private legs = new Map<string, Leg>();
@@ -57,9 +77,10 @@ export class LegCache {
     /** About ten 300 km trips. */
     constructor(private readonly limit = 200_000) {}
 
-    /** The route through a run of routed points. It sends at most one request: for the legs from the first to the last
-     * leg that is not cached. That request is pinned to the cached legs before and after it, so each join keeps its direction.
-     * When that request finds no path, one request for the whole run follows: the whole run can pass a neighbour point the other way. */
+    /** The route through a run of routed points. It requests the legs from the first to the last leg that is not cached,
+     * in `chunks`. The first chunk is pinned to the cached leg before, the last chunk to the cached leg after, so each join
+     * keeps its direction. A chunk that does not join the chunk before goes out again, pinned to the end of that chunk.
+     * When a pinned request finds no path, the whole run follows: the whole run can pass a neighbour point the other way. */
     async route(points: Coordinate[], turnarounds: number[], profile: string, signal: AbortSignal, whole = false): Promise<EngineRoute> {
         const turn = (index: number) => turnarounds.includes(index);
         // A turnaround joins legs in either direction.
@@ -75,19 +96,41 @@ export class LegCache {
             if (turn(first)) first--;
             if (turn(last + 1)) last++;
             const before = legs[first - 1], after = legs[last + 1];
-            let answer: EngineRoute;
+            const spans = chunks(first, last, turnarounds);
+            // A failed chunk cancels the chunks still out, so that no request of this attempt runs beside the next one.
+            const failed = new AbortController();
+            const chunkSignal = AbortSignal.any([signal, failed.signal]);
+            const send = async ([from, to]: [number, number], start_position?: string): Promise<Leg[]> => {
+                for (let attempt = 0; ; attempt++) {
+                    try {
+                        const [answer] = await requestRoute(points.slice(from, to + 2), profile, chunkSignal, false,
+                            turnarounds.filter(t => t > from && t <= to).map(t => t - from), { start_position, end_position: to === last ? after?.start : undefined });
+                        const fresh = answer.legs.map(leg => cut(answer, leg));
+                        if (fresh.length !== to + 1 - from) throw new Error('The routing service returned an invalid response.');
+                        return fresh;
+                    } catch (error) {
+                        if (attempt === RETRIES || !['busy', 'internal'].includes((error as { code?: string }).code ?? '')) throw error;
+                        await new Promise(resolve => setTimeout(resolve, RETRY_MS));
+                    }
+                }
+            };
+            const answers: Leg[][] = [];
             try {
-                [answer] = await requestRoute(points.slice(first, last + 2), profile, signal, false,
-                    turnarounds.filter(t => t > first && t <= last).map(t => t - first), { start_position: before?.end, end_position: after?.start });
+                let next = 0;
+                await Promise.all(Array.from({ length: MAX_PARALLEL }, async () => {
+                    for (let c = next++; c < spans.length; c = next++) answers[c] = await send(spans[c], c ? undefined : before?.end);
+                })).catch(error => { failed.abort(); throw error; });
+                for (let c = 1; c < spans.length; c++)
+                    if (!joins(answers[c - 1].at(-1), answers[c][0], spans[c][0])) answers[c] = await send(spans[c], answers[c - 1].at(-1)!.end);
             } catch (error) {
                 // Only a missing path can change with the whole run; a busy service must not get a larger request.
                 if (!(before || after) || (error as { code?: string }).code !== 'no_path') throw error;
                 return this.route(points, turnarounds, profile, signal, true);
             }
-            const fresh = answer.legs.map(leg => cut(answer, leg));
-            if (fresh.length !== last + 1 - first) throw new Error('The routing service returned an invalid response.');
+            const fresh = answers.flat();
             // A new routing package ignores the pins of the old one.
-            if (!joins(before, fresh[0], first) || !joins(fresh.at(-1), after, last + 1)) {
+            if (!joins(before, fresh[0], first) || !joins(fresh.at(-1), after, last + 1)
+                || spans.some(([from], c) => c > 0 && !joins(answers[c - 1].at(-1), answers[c][0], from))) {
                 this.legs.clear();
                 this.coordinates = 0;
                 return this.route(points, turnarounds, profile, signal);
