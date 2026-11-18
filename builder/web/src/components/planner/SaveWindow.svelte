@@ -28,22 +28,21 @@
     let value = $state(mode === 'copy' ? `${title} (copy)` : mode === 'rename' ? title : offeredName(trip));
     let answer: SaveAnswer = null;
 
-    function select(input: HTMLInputElement) {
-        input.focus();
-        input.select();
-    }
 </script>
 
+<!-- The window opens with the focus on the autofocus element: the name, or "Save" of the question. -->
 <Window title={heading} onClose={() => onAnswer(answer)}>
     {#snippet children(close)}
         <form onsubmit={event => { event.preventDefault(); answer = asks ? value.trim() : ''; close(); }}>
             {#if asks}
-                <label class="field"><span>Name</span><input bind:value maxlength="120" placeholder="Name of the route" autocomplete="off" {@attach select} /></label>
+                <label class="field"><span>Name</span><!-- svelte-ignore a11y_autofocus -->
+                    <input bind:value maxlength="120" placeholder="Name of the route" autocomplete="off" autofocus onfocus={event => event.currentTarget.select()} /></label>
             {/if}
             <div class="window-buttons">
                 <button type="button" class="planner-action" onclick={close}>Cancel</button>
                 {#if mode === 'leave'}<button type="button" class="planner-action" onclick={() => { answer = false; close(); }}>Discard</button>{/if}
-                <button type="submit" class="planner-action primary" disabled={asks && !value.trim()} {@attach button => { if (!asks) button.focus(); }}>{action}</button>
+                <!-- svelte-ignore a11y_autofocus -->
+                <button type="submit" class="planner-action primary" disabled={asks && !value.trim()} autofocus={!asks}>{action}</button>
             </div>
         </form>
     {/snippet}
