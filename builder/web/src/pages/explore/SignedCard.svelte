@@ -1,7 +1,7 @@
 <!-- The card of the selected signed route over the map: its line, its mark and name, what kind of route it is, its
      numbers and profile, its description and official page, the credit of its source, and "Plan this route". -->
 <script module lang="ts">
-    import { gradeName, type CatalogRecord } from '../../lib/planner/signed-routes';
+    import { gradeName, longTrailId, type CatalogRecord } from '../../lib/planner/signed-routes';
     import { formatDistance, formatHeight } from '../../lib/settings/format';
 
     type About = Pick<CatalogRecord, 'kind' | 'rank' | 'hardest' | 'length_m' | 'ascent_m'>;
@@ -48,7 +48,7 @@
     // a trail record file only when it takes more than 12 hours, which no reader knows: its name is no button.
     const longName = $derived((part && (long?.name ?? long?.ref)) || false);
     const opens = $derived(!!ontrail && !!long && (long.trail !== undefined || (long.stage_count ?? 0) >= 2));
-    const trailName = $derived(longName && opens ? { text: longName, onclick: () => ontrail!(long!.trail ?? long!.id) } : longName);
+    const trailName = $derived(longName && opens ? { text: longName, onclick: () => ontrail!(longTrailId(record, id => catalog.record(id))!) } : longName);
     const website = $derived(routeWebsite(record.website));
     const about = $derived(!!(record.description || record.operator || website || record.credit));
 </script>

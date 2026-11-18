@@ -1,10 +1,10 @@
 <!-- The picture of a signed route or a trail: the cover of a route in the live set of route pictures, else its line on
-     one light ground in both themes. The line has the colour of the route. -->
+     one light ground in both themes. The line has the colour of the route, or of its trail. -->
 <script lang="ts">
     import { holdCover, type RouteCover } from '../../lib/covers/route-pictures';
     import CoverPicture from '../../lib/covers/CoverPicture.svelte';
-    import { routeColor, SIGNED_GROUND } from '../../lib/planner/route-colors';
-    import type { SignedItem, TrailItem } from '../routes/filter';
+    import { SIGNED_GROUND } from '../../lib/planner/route-colors';
+    import { lineColor, type SignedItem, type TrailItem } from '../routes/filter';
 
     let { item, small = false, oncover }: {
         item: SignedItem | TrailItem;
@@ -14,7 +14,7 @@
         oncover?: (credits: string[] | undefined) => void;
     } = $props();
 
-    const colour = $derived(routeColor(item.id));
+    const colour = $derived(lineColor(item));
     // The far line of a trail breaks between its pieces.
     const breaks = $derived.by(() => {
         if (item.kind !== 'trail') return undefined;

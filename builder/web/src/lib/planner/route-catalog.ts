@@ -166,13 +166,35 @@ export class RouteCatalog {
     trailsInBoxNow(box: Box): TrailEntry[] | null | undefined {
         if (!config.trails || trailsTooWide(box)) return null;
         // A cell outside the release has no far file to wait for.
-        const files = boxCells(box, 7).map(id => coversCell(config.bounds, id) ? this.farLoaded.get(id) : null);
-        return files.every(file => file !== undefined) ? this.trailsOf(files as (TrailEntry[] | null)[], box) : undefined;
+        const files = this.farFilesNow(box);
+        return files && this.trailsOf(files, box);
     }
 
-    /** The trails of `files` in `box`. A trail in several files keeps one joined object while those files stay loaded, so
-     * a new answer keeps its row. */
+    /**
+     * Every trail of the loaded far files of the zoom 7 cells of `box`, by id, with no test against the box: the far files
+     * of a near view name each trail that a record of the view is in. Undefined while a far file of the box is not
+     * loaded; empty when the release has no trail files.
+     */
+    trailsOfCellsNow(box: Box): Map<number, TrailEntry> | undefined {
+        if (!config.trails) return new Map();
+        const files = this.farFilesNow(box);
+        return files && new Map(this.joinedOf(files).map(entry => [entry.id, entry]));
+    }
+
+    /** The far files of the box, or undefined while one is not loaded. A cell outside the release has no far file to wait for. */
+    private farFilesNow(box: Box): (TrailEntry[] | null)[] | undefined {
+        const files = boxCells(box, 7).map(id => coversCell(config.bounds, id) ? this.farLoaded.get(id) : null);
+        return files.every(file => file !== undefined) ? files as (TrailEntry[] | null)[] : undefined;
+    }
+
+    /** The trails of `files` in `box`. */
     private trailsOf(files: (TrailEntry[] | null)[], box: Box): TrailEntry[] {
+        return this.joinedOf(files).filter(entry => entry.far_udeg.some(piece => segmentInBox(piece, box))).sort((a, b) => a.id - b.id);
+    }
+
+    /** Each trail of `files` once. A trail in several files keeps one joined object while those files stay loaded, so a new
+     * answer keeps its row. */
+    private joinedOf(files: (TrailEntry[] | null)[]): TrailEntry[] {
         const found = new Map<number, TrailEntry[]>();
         for (const entry of files.flatMap(file => file ?? [])) found.set(entry.id, [...found.get(entry.id) ?? [], entry]);
         return [...found.values()].map(from => {
@@ -182,7 +204,7 @@ export class RouteCatalog {
             const entry = { ...from[0], far_udeg: from.flatMap(entry => entry.far_udeg) };
             this.joined.set(from[0], { from, entry });
             return entry;
-        }).filter(entry => entry.far_udeg.some(piece => segmentInBox(piece, box))).sort((a, b) => a.id - b.id);
+        });
     }
 
     /** The whole record of the trail `id`, with `parts` and `trail_profile_m`, or null for a grid release with no trail files. */

@@ -79,6 +79,18 @@ export const recordCredits = (records: { credit?: string }[]) =>
 /** The name of grade `index` of `grades_m`: T1 to T6 for hiking and foot, S0 to S5 for mountain bike. */
 export const gradeName = (kind: 'hiking' | 'foot' | 'mtb', index: number) => kind === 'mtb' ? `S${index}` : `T${index + 1}`;
 
+/**
+ * The id of the long trail that `record` is in: for a part, its long route L (`trail ?? parent`) or, when L is a cut stage,
+ * the trail of L; for any other record, its own id. Undefined when L is not loaded: each file that holds a part also holds
+ * L, so only a broken file gives it.
+ */
+export function longTrailId(record: CatalogRecord, recordOf: (id: number) => CatalogRecord | undefined): number | undefined {
+    const longId = record.trail ?? record.parent;
+    if (longId === undefined) return record.id;
+    const long = recordOf(longId);
+    return long && (long.trail ?? long.id);
+}
+
 /** The plan of a route record: start, shaping points and finish, and the plan indices where it turns back on purpose. */
 export function routePlan(route: RouteRecord): { points: Coordinate[]; turnarounds: number[] } {
     const line = decodeCoordinates(route.line_udeg);
