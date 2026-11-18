@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""Fail when code fetches from an undeclared host, or a source does not say who reads it and why.
+"""Fail when code fetches from an undeclared host, a source does not say who reads it and why, or
+a route description is wrong.
 
-The registry is the one list of external data, and its licence and attribution are only as
-complete as that list. URL literals in justfile, host/, planner/, sim/, tools/, fixtures/,
-builder/usb/ and data/archive/ name a host. That host is the host of a source's `fetch.url`, one of its
-`hosts`, or one of the non-bake hosts in `NOT_SOURCES`. The check is per host, not per URL: a
-new download from a host that a source already declares (api.github.com, for one) passes. Tests
+The registry is the one list of external data. URL literals in justfile, host/, planner/, sim/,
+tools/, fixtures/, builder/usb/ and data/archive/ name a host: the host of a source's `fetch.url`,
+one of its `hosts`, or a non-bake host of `NOT_SOURCES`. The check is per host, not per URL. Tests
 and reserved example domains are not checked. A host built at run time (`https://{site}/…`)
 cannot be checked; a placeholder in front of a fixed domain counts as `*.domain`.
 
-Each source names what reads it in `used_by`, from `USED_BY`, what for in `use`, and its `keep`,
-from `KEEP`.
+Each source names what reads it in `used_by`, what for in `use`, and its `keep`. Each route
+description of data/routes/ names a planner source kept in the archive, has known keys only, and
+an `origin` of its own.
 """
 
 from __future__ import annotations
 
-GOVERNS = ['justfile', 'host/**', 'planner/**', 'sim/**', 'tools/**', 'fixtures/**', 'builder/usb/**', 'data/archive/**', 'data/sources.toml']
-RULE = 'Every host that code in justfile, host/, planner/, sim/, tools/, fixtures/ and builder/usb/, or a dataset of data/archive/, fetches from is a source in data/sources.toml or a listed non-bake host, and each source names what reads it, what for and where its kept copy is.'
+GOVERNS = ['justfile', 'host/**', 'planner/**', 'sim/**', 'tools/**', 'fixtures/**', 'builder/usb/**', 'data/archive/**', 'data/sources.toml', 'data/routes/**']
+RULE = 'Every host that code in justfile, host/, planner/, sim/, tools/, fixtures/ and builder/usb/, or a dataset of data/archive/, fetches from is a source in data/sources.toml or a listed non-bake host, and each source names what reads it, what for and where its kept copy is; each route description names a planner source kept in the archive, has known keys and its own origin.'
 
 import re
 import subprocess
@@ -25,6 +25,8 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import planner_route_sources  # noqa: E402
 SCOPE = ("justfile", "host/", "planner/", "sim/", "tools/", "fixtures/", "builder/usb/", "data/archive/")
 CODE = (".rs", ".py", ".sh", ".mjs", ".js", ".ts", ".toml", "justfile")
 TEST = re.compile(r"(^|/)(tests?/|test_[^/]*\.py$|[^/]*_tests?\.(rs|py)$|tests\.rs$)")
@@ -121,6 +123,24 @@ def undocumented(registry: dict) -> list[str]:
     return problems
 
 
+def route_problems(registry: dict, descriptions: dict[str, str]) -> list[str]:
+    """Each problem of the route descriptions `descriptions` ({source id: TOML text})."""
+    rows = {source["id"]: source for source in registry["source"]}
+    problems, origins = [], {}
+    for name, text in sorted(descriptions.items()):
+        row = rows.get(name, {})
+        if "planner" not in row.get("used_by", []) or row.get("keep") != "archive":
+            problems.append(f"{name}: name a source with `used_by` planner and `keep = \"archive\"`")
+        try:
+            origin = planner_route_sources.parse(text)["origin"]
+        except ValueError as error:
+            problems.append(f"{name}: {error}")
+            continue
+        if (first := origins.setdefault(origin, name)) != name:
+            problems.append(f"{name}: `origin` {origin} is the origin of {first}")
+    return problems
+
+
 def code_files() -> dict[str, str]:
     paths = subprocess.check_output(["git", "-C", str(ROOT), "ls-files", *SCOPE], text=True).split("\n")
     return {path: (ROOT / path).read_text(errors="replace") for path in paths
@@ -136,13 +156,18 @@ def main() -> int:
         for host, paths in sorted(missing.items()):
             print(f"  {host}: {', '.join(sorted(paths))}", file=sys.stderr)
     problems = undocumented(registry)
+    routes = route_problems(registry, {path.stem: path.read_text() for path in (ROOT / "data/routes").glob("*.toml")})
+    if routes:
+        print("data sources: the route descriptions of data/routes/ break specs/obc-data.md:", file=sys.stderr)
+        for problem in routes:
+            print(f"  {problem}", file=sys.stderr)
     if problems:
         print(f"data sources: each source names its `used_by` ({', '.join(USED_BY)}), its `use` and its `keep`:", file=sys.stderr)
         for problem in problems:
             print(f"  {problem}", file=sys.stderr)
-    if missing or problems:
+    if missing or problems or routes:
         return 1
-    print("data sources: every fetched host is declared, and every source names its `used_by`, `use` and `keep`")
+    print("data sources: every fetched host is declared, every source names its `used_by`, `use` and `keep`, and every route description is sound")
     return 0
 
 

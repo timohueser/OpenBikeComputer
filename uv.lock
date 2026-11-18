@@ -1026,6 +1026,11 @@ planner-snow = [
     { name = "pyhdf" },
     { name = "rasterio" },
 ]
+route-sources = [
+    { name = "pyogrio" },
+    { name = "pyproj" },
+    { name = "shapely" },
+]
 search-runtime = [
     { name = "numpy" },
     { name = "onnxruntime" },
@@ -1153,6 +1158,11 @@ planner-snow = [
     { name = "pmtiles", specifier = "==3.8.1" },
     { name = "pyhdf", specifier = "==0.11.7" },
     { name = "rasterio", specifier = "==1.5.2" },
+]
+route-sources = [
+    { name = "pyogrio", specifier = "==0.13.0" },
+    { name = "pyproj", specifier = "==3.8.0" },
+    { name = "shapely", specifier = "==2.1.2" },
 ]
 search-runtime = [
     { name = "numpy", specifier = "==2.5.3" },
