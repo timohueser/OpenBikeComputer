@@ -48,7 +48,7 @@ pub static PLANNER_TERRAIN: Layer =
 /// costs of `planner_router_build::step`. A change of their bytes changes their format (`work`), a
 /// change of their content their revision: of the import rules the source, of the split, the order
 /// or the terrain the roads, of the cost code the costs.
-pub static PLANNER_ROUTING_SOURCE: Layer = work(step::SOURCE);
+pub static PLANNER_ROUTING_SOURCE: Layer = Layer { revision: 2, ..work(step::SOURCE) };
 pub static PLANNER_ROUTING_ROADS: Layer = work(step::ROADS);
 pub static PLANNER_ROUTING_COSTS: Layer = Layer { revision: 2, ..work(step::COSTS) };
 /// The routing package, its grid and the route network overlays.
