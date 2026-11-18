@@ -69,7 +69,7 @@
     <div class="cards">
         {#if covered}
             <div class="slot cover">
-                <Cover {library} {id} pins={side || !mapLarge ? pins : []} photos={side || !mapLarge ? photos : []} {onphoto} mark={mark === undefined ? undefined : mark * summary.lengthM}
+                <Cover {library} {id} place="page" pins={side || !mapLarge ? pins : []} photos={side || !mapLarge ? photos : []} {onphoto} mark={mark === undefined ? undefined : mark * summary.lengthM}
                     part={lit ? [lit[0] * summary.lengthM, lit[1] * summary.lengthM] : undefined}
                     onpoint={metres => onpoint(metres === null || !summary.lengthM ? null : metres / summary.lengthM)} />
                 {#if !side && mapLarge}<button type="button" class="swap" aria-label="Show the picture large" onclick={() => swapped = false}></button>{/if}

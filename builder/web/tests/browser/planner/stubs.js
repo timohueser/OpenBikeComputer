@@ -76,14 +76,16 @@ const ROUTE_CELL = '9-267-177';
 /** Integer microdegrees: the first point, then the difference of each point to the one before (`specs/route-catalog.md`). */
 const udeg = points => points.map(point => point.map(value => Math.round(value * 1e6)))
   .flatMap((point, i, all) => i ? [point[0] - all[i - 1][0], point[1] - all[i - 1][1]] : point);
-/** A loop with a profile and an official page, stage 2 of a long route, the long route, and a cycle route. */
+/** A loop with a profile and an official page, stage 2 of a long route with a long description and no profile, the
+ * long route, and a cycle route. */
 const CATALOG = [
   { id: 101, kind: 'hiking', name: 'Schlossberg loop', rank: 1, loop: true, length_m: 1200, ascent_m: 150, descent_m: 150, hardest: 1,
     description: 'Over the castle hill', operator: 'Test club', website: 'https://example.test/schlossberg', symbol: 'red:white:red_bar',
     cells: [ROUTE_CELL], line_udeg: udeg([[7.85, 47.99], [7.86, 47.995], [7.855, 48.0], [7.85, 47.99]]), via: [1, 2],
     profile_m: Array.from({ length: 14 }, (_, i) => 300 + 10 * Math.min(i, 13 - i)) },
   { id: 202, kind: 'hiking', name: 'Westweg 2', ref: 'WW', rank: 3, loop: false, length_m: 2500, ascent_m: 80, descent_m: 20, hardest: 0,
-    cells: [ROUTE_CELL], line_udeg: udeg([[7.88, 47.98], [7.9, 47.985], [7.91, 48.0]]), via: [1], parent: 300, stage: 2 },
+    cells: [ROUTE_CELL], line_udeg: udeg([[7.88, 47.98], [7.9, 47.985], [7.91, 48.0]]), via: [1], parent: 300, stage: 2,
+    description: 'The stage follows the old trail through the forest and along the ridge to the next village. '.repeat(40) },
   { id: 300, kind: 'hiking', name: 'Westweg', rank: 3, loop: false, length_m: 5000, ascent_m: 200, descent_m: 100, cells: [ROUTE_CELL],
     stages: [201, 202], start_udeg: [7_800_000, 47_970_000] },
   { id: 303, kind: 'bicycle', name: 'Dreisam path', rank: 2, loop: false, length_m: 3000, ascent_m: 10, descent_m: 10, cells: [ROUTE_CELL],

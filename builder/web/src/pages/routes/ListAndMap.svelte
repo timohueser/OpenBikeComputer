@@ -117,7 +117,7 @@
     .cards {
         display: grid;
         flex: 1;
-        grid-template-columns: 380px 1fr;
+        grid-template-columns: clamp(380px, 100vw / 3, 480px) 1fr;
         grid-template-rows: minmax(0, 1fr);
         gap: 14px;
         min-height: 0;
