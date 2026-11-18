@@ -16,7 +16,8 @@ class PublicMetadata(unittest.TestCase):
                  "maps/tiles/basemap/11-1072-720.pmtiles": item(3), "maps/tiles/terrain/13/10-536-360.pmtiles": item(4),
                  "maps/tiles/basemap/8-134-90.pmtiles": item(5), "maps/tiles/basemap/3-4-2.pmtiles": item(6),
                  "routes/tiles/9-268-178.json": item(7), "maps/basemap.json": item(8),
-                 "maps/assets/fonts/Noto Sans Regular/0-255.pbf": item(9), "search/central.grid.json": item(10)}
+                 "maps/assets/fonts/Noto Sans Regular/0-255.pbf": item(9), "search/central.grid.json": item(10),
+                 "routes/tiles/trails/7-66-45.json": item(11), "routes/tiles/long/123.json": item(12)}
         public = runtime.public_metadata(files)
         read = {name: json.loads(data) for name, data in public.items()}
         pointer = lambda n: {"bytes": n, "sha256": str(n) * 64, "encoding": "identity", "decoded_bytes": n}
@@ -30,6 +31,8 @@ class PublicMetadata(unittest.TestCase):
             "public/routes/tiles/5-16-11.json": {"9-268-178.json": pointer(7)},
             "public/maps/basemap.json.json": pointer(8),
             "public/maps/assets/fonts/Noto Sans Regular/0-255.pbf.json": pointer(9),
+            "public/routes/tiles/trails/3-4-2.json": {"7-66-45.json": pointer(11)},
+            "public/routes/tiles/long/123.json.json": pointer(12),
         })
 
     def test_a_block_index_that_the_tiles_worker_cannot_read_is_an_error(self):

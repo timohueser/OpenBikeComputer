@@ -27,6 +27,10 @@ export interface PlannerConfig {
     search: string;
     /** The route catalog of specs/route-catalog.md: a cell template with `{cell}`, or the region file. */
     routes?: string;
+    /** The far file template with `{cell}` of specs/route-catalog.md#trail-files; a release with no trail files has none. */
+    trails?: string;
+    /** The trail record file template with `{id}`; present with `trails`. */
+    trail?: string;
     /** The data layer archives of the region, by name. */
     layers: Partial<Record<Archive, string>>;
     /** TrailView's ruleset `rules.json` (specs/trailview-tiles.md#rules); older releases have none. */
@@ -34,6 +38,7 @@ export interface PlannerConfig {
 }
 
 const URLS = ['basemap', 'places', 'overlays', 'terrain', 'glyphs', 'sprites', 'routing', 'search'] as const;
+const OPTIONAL_URLS = ['routes', 'trailview_rules', 'trails', 'trail'] as const;
 
 /** `value` when it is an absolute URL, such as a URL template; else undefined. */
 export function configUrl(value: unknown): string | undefined {
@@ -46,13 +51,11 @@ export function plannerConfig(value: unknown): PlannerConfig {
     const config: any = value;
     const bounds = config.bounds;
     const urls = Object.fromEntries(URLS.map((key) => [key, configUrl(config[key])]));
-    const routes = config.routes === undefined ? undefined : configUrl(config.routes);
-    const rules = config.trailview_rules === undefined ? undefined : configUrl(config.trailview_rules);
+    const optional = Object.fromEntries(OPTIONAL_URLS.map((key) => [key, config[key] === undefined ? undefined : configUrl(config[key])]));
     const layers = Object.fromEntries(Object.entries(config.layers ?? {}).map(([name, value]) => [name, configUrl(value)]));
     const invalid = [
         ...URLS.filter((key) => !urls[key]),
-        ...(config.routes === undefined || routes ? [] : ['routes']),
-        ...(config.trailview_rules === undefined || rules ? [] : ['trailview_rules']),
+        ...OPTIONAL_URLS.filter((key) => config[key] !== undefined && !optional[key]),
         ...(typeof config.name === 'string' && config.name ? [] : ['name']),
         ...(typeof config.attribution === 'string' && config.attribution ? [] : ['attribution']),
         ...(config.landcover_attribution === undefined || typeof config.landcover_attribution === 'string' ? [] : ['landcover_attribution']),
@@ -62,5 +65,5 @@ export function plannerConfig(value: unknown): PlannerConfig {
             && bounds[1] >= -85 && bounds[3] <= 85 && bounds[0] < bounds[2] && bounds[1] < bounds[3] ? [] : ['bounds']),
     ];
     if (invalid.length) throw new Error(`The planner config has invalid fields: ${invalid.join(', ')}.`);
-    return { ...config, ...urls, routes, trailview_rules: rules, layers };
+    return { ...config, ...urls, ...optional, layers };
 }
