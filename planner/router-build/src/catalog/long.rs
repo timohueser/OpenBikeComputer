@@ -13,6 +13,9 @@ use std::collections::{BTreeSet, HashSet};
 const MAX_DEPTH: usize = 4;
 /// The entries of `trail_profile_m`.
 const TRAIL_PROFILE: usize = 201;
+/// Two parts meet when one has an end this near the other's end. It leaves room for the slack of two
+/// stage ends at one place, such as a plan route that starts on the road next to the line.
+const MEET_M: f64 = 60.0;
 
 /// A part of a long relation: a route relation, or a relation that the data does not hold, with the
 /// level of long relations that lists it, 1 for a member of the relation itself.
@@ -100,6 +103,30 @@ impl Part<'_> {
             None => self.line.map(|(length, ..)| length.round() as u64),
         }
     }
+}
+
+/// Whether the parts of a long relation are separate routes, not one line: at least two parts
+/// count against one line, and more than meet. A loop counts against one line: it comes back to its
+/// start and takes the line no further, so it meets no part. A pair of neighbouring parts with ends,
+/// neither a loop, meets or counts against one line. A part with no ends counts for nothing. One
+/// count is a hole in the map data, not a set of routes.
+pub(super) fn apart(parts: &[Part]) -> bool {
+    let flags = order(parts);
+    let ends: Vec<Option<Ends>> = parts.iter().map(Part::ends).collect();
+    let (mut against, mut meets) = (ends.iter().flatten().filter(|e| e.closed).count(), 0);
+    for i in 1..parts.len() {
+        let (Some(before), Some(part)) = (ends[i - 1], ends[i]) else { continue };
+        if before.closed || part.closed {
+            continue;
+        }
+        let end = if flags[i - 1].0 { before.start } else { before.finish };
+        if gap(part, end) <= MEET_M {
+            meets += 1;
+        } else {
+            against += 1;
+        }
+    }
+    against >= 2 && against > meets
 }
 
 /// The record of a long relation from its parts, and the plan points of its kept parts joined.
