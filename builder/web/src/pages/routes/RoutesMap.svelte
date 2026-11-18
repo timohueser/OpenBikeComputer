@@ -1,10 +1,10 @@
 <!-- The map of the Routes page: the lines of the shown routes or rides on the relief from zoom 8, bubbles with a count
-     below it, and the selected ones wide at each zoom. -->
+     below it, and the selected ones wide at each zoom. The lines of trails show at each zoom, with no bubble. -->
 <script lang="ts">
     import { onMount, untrack } from 'svelte';
     import * as maplibregl from 'maplibre-gl';
     import 'maplibre-gl/dist/maplibre-gl.css';
-    import type { FeatureCollection, LineString, Point } from 'geojson';
+    import type { FeatureCollection, LineString, MultiLineString, Point } from 'geojson';
     import { basemapStyle, type Relief } from '../../lib/planner/map-style';
     import { ClosedAttribution, styleConfig, terrain, useMapProtocols } from '../../lib/planner/map-setup';
     import { terrainRetry } from '../../lib/planner/map-terrain';
@@ -12,11 +12,13 @@
     import { appearance } from '../../lib/theme.svelte';
     import type { Box, Item } from './filter';
 
-    let { items, shown, selected, look = 'route', covered = 0, credits = [], together = id => [id], onselect, onview, fit, place }: {
+    let { items, shown, selected, marked = [], look = 'route', covered = 0, credits = [], together = id => [id], onselect, onview, fit, place }: {
         items: Item[];
         /** The items of the list. The map draws only these, and the bubbles count only these. */
         shown: Item[];
         selected: string[];
+        /** Lines drawn as selected that the map never moves to: a trail and its parts. */
+        marked?: string[];
         /** `signed`: signed routes of the catalog, each in its own colour. */
         look?: 'route' | 'ride' | 'signed';
         /** The height in pixels of the bottom of the map that the selected card covers. */
@@ -37,6 +39,8 @@
     } = $props();
 
     const LINE_ZOOM = 8;
+    /** The layers of the shown lines: from `LINE_ZOOM`, and at each zoom for trails. */
+    const LINE_LAYERS = ['casing', 'signed-casing', 'routes', 'routes-hit'];
     /** A zoom in steps ends a move after each step. The page gets the view of a still map, so that such a gesture gives
      * one view, at its end. */
     const STILL_MS = 100;
@@ -52,18 +56,23 @@
 
     const pairs = (line: number[]) => Array.from({ length: line.length / 2 }, (_, i) => [line[2 * i], line[2 * i + 1]]);
     // All lines are in one source; a filter of the layers shows the shown ones, so a chip change sets no data.
-    const colorOf = ({ id, kind }: Item) => kind === 'signed' ? routeColor(id) : '';
-    const lines = $derived<FeatureCollection<LineString>>({ type: 'FeatureCollection', features: items.flatMap(item =>
-        item.summary ? [{ type: 'Feature', properties: { id: item.id, color: colorOf(item) }, geometry: { type: 'LineString', coordinates: pairs(item.summary.line) } }] : []) });
+    const colorOf = ({ id, kind }: Item) => kind === 'signed' || kind === 'trail' ? routeColor(id) : '';
+    // A trail is one feature with a line for each piece of its far line.
+    const lines = $derived<FeatureCollection<LineString | MultiLineString>>({ type: 'FeatureCollection', features: items.flatMap(item =>
+        item.summary ? [{ type: 'Feature', properties: { id: item.id, color: colorOf(item) }, geometry: item.kind === 'trail'
+            ? { type: 'MultiLineString', coordinates: item.pieces }
+            : { type: 'LineString', coordinates: pairs(item.summary.line) } }] : []) });
+    /** Trails: their lines show at each zoom. */
+    const far = $derived(items.some(item => item.kind === 'trail'));
     // The bubbles cluster the middle points of the shown items only, so a bubble counts no hidden route.
     const middles = $derived<FeatureCollection<Point>>({ type: 'FeatureCollection', features: shown.flatMap(item => {
         const { id, summary } = item, color = colorOf(item);
-        if (!summary) return [];
+        if (!summary || item.kind === 'trail') return [];
         const i = Math.floor(summary.line.length / 4) * 2;
         return [{ type: 'Feature', properties: { id, color, text: color && onRouteColor(color) }, geometry: { type: 'Point', coordinates: [summary.line[i], summary.line[i + 1]] } }];
     }) });
     const shownFilter = $derived<maplibregl.FilterSpecification>(['in', ['get', 'id'], ['literal', shown.map(item => item.id)]]);
-    const selectedFilter = $derived<maplibregl.FilterSpecification>(['in', ['get', 'id'], ['literal', selected]]);
+    const selectedFilter = $derived<maplibregl.FilterSpecification>(['in', ['get', 'id'], ['literal', [...selected, ...marked]]]);
     // A feature state changes the paint at once, with no transition and no new data.
     const bolder = (rest: number, under: number): maplibregl.ExpressionSpecification => ['case', ['boolean', ['feature-state', 'hover'], false], under, rest];
     /** The width of a signed line: thin where a wide view shows many routes, wider where the rider follows one. `edge`
@@ -77,7 +86,7 @@
         if (!map) return;
         const style = getComputedStyle(container), color = (name: string) => style.getPropertyValue(name).trim();
         const round = { 'line-join': 'round', 'line-cap': 'round' } as const, ride = untrack(() => look) === 'ride';
-        const signed = untrack(() => look) === 'signed', dim = untrack(() => selected.length) > 0;
+        const signed = untrack(() => look) === 'signed', dim = untrack(() => selected.length + marked.length) > 0, minzoom = untrack(() => far) ? 0 : LINE_ZOOM;
         const line: maplibregl.ExpressionSpecification | string = signed ? ['get', 'color'] : color(ride ? '--ride' : '--route');
         // The set of route colours is too dark for the dark map, so a signed line or bubble there has a light edge.
         const edge = signed && untrack(() => theme) === 'dark' ? SIGNED_GROUND : color('--panel');
@@ -85,17 +94,17 @@
         map.addSource('middles', { type: 'geojson', data: untrack(() => middles), cluster: true, clusterMaxZoom: LINE_ZOOM - 1, clusterRadius: 48 });
         const shownNow = untrack(() => shownFilter), selectedNow = untrack(() => selectedFilter);
         if (ride) {
-            map.addLayer({ id: 'casing', type: 'line', source: 'routes', minzoom: LINE_ZOOM, filter: shownNow, layout: round,
+            map.addLayer({ id: 'casing', type: 'line', source: 'routes', minzoom, filter: shownNow, layout: round,
                 paint: { 'line-color': color('--panel'), 'line-width': 6 } });
         }
         if (edge === SIGNED_GROUND) {
-            map.addLayer({ id: 'signed-casing', type: 'line', source: 'routes', minzoom: LINE_ZOOM, filter: shownNow, layout: round,
+            map.addLayer({ id: 'signed-casing', type: 'line', source: 'routes', minzoom, filter: shownNow, layout: round,
                 paint: { 'line-color': edge, 'line-width': signedWidth(2), 'line-opacity': signedOpacity(dim) } });
         }
-        map.addLayer({ id: 'routes', type: 'line', source: 'routes', minzoom: LINE_ZOOM, filter: shownNow, layout: round,
+        map.addLayer({ id: 'routes', type: 'line', source: 'routes', minzoom, filter: shownNow, layout: round,
             paint: { 'line-color': line, 'line-width': signed ? signedWidth() : bolder(3, 4), 'line-opacity': ride ? 1 : signed ? signedOpacity(dim) : bolder(0.75, 1) } });
         // A wide line with no colour, so a click near a line selects it.
-        map.addLayer({ id: 'routes-hit', type: 'line', source: 'routes', minzoom: LINE_ZOOM, filter: shownNow, layout: round,
+        map.addLayer({ id: 'routes-hit', type: 'line', source: 'routes', minzoom, filter: shownNow, layout: round,
             paint: { 'line-color': '#000', 'line-width': 14, 'line-opacity': 0 } });
         map.addLayer({ id: 'selected-casing', type: 'line', source: 'routes', filter: selectedNow, layout: round,
             paint: { 'line-color': edge, 'line-width': 9 } });
@@ -221,14 +230,18 @@
     });
     $effect(() => {
         if (!ready) return;
+        for (const layer of LINE_LAYERS) if (map!.getLayer(layer)) map!.setLayerZoomRange(layer, far ? 0 : LINE_ZOOM, 24);
+    });
+    $effect(() => {
+        if (!ready) return;
         map!.getSource<maplibregl.GeoJSONSource>('middles')?.setData(middles);
-        for (const layer of ['casing', 'signed-casing', 'routes', 'routes-hit']) if (map!.getLayer(layer)) map!.setFilter(layer, shownFilter);
+        for (const layer of LINE_LAYERS) if (map!.getLayer(layer)) map!.setFilter(layer, shownFilter);
     });
     $effect(() => {
         if (!ready) return;
         for (const layer of ['selected-casing', 'selected']) if (map!.getLayer(layer)) map!.setFilter(layer, selectedFilter);
         if (look !== 'signed') return;
-        for (const layer of ['signed-casing', 'routes']) if (map!.getLayer(layer)) map!.setPaintProperty(layer, 'line-opacity', signedOpacity(selected.length > 0));
+        for (const layer of ['signed-casing', 'routes']) if (map!.getLayer(layer)) map!.setPaintProperty(layer, 'line-opacity', signedOpacity(selected.length + marked.length > 0));
     });
     // A new selection or a new card height moves the map; a reload of the same selection does not.
     let revealed = '';

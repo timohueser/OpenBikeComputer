@@ -2,8 +2,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { readSettings, updateSettings } from '../../lib/settings/settings.svelte';
 import type { RouteSummary } from '../../lib/library/records';
-import type { CatalogRecord } from '../../lib/planner/signed-routes';
-import { distanceToBox, readSearch, results, rideItem, routeItem, scale, signedItem, type Item } from './filter';
+import type { CatalogRecord, TrailEntry } from '../../lib/planner/signed-routes';
+import { distanceToBox, farOrder, readSearch, results, rideItem, routeItem, scale, signedItem, trailItem, type Item } from './filter';
 
 vi.mock('../../lib/planner/search/types', () => ({
     searchPlaces: async () => ({ type: 'places', request: {}, results: [
@@ -116,6 +116,35 @@ describe('results of signed routes', () => {
     it('in the order "shortest", sorts by the length and then by the number of the relation id', () => {
         const items = [signed(20, { length_m: 3000 }), signed(100, { length_m: 2000 }), signed(3, { length_m: 2000 })];
         expect(ids(results(items, {}, '', undefined, 'shortest'))).toEqual(['3', '100', '20']);
+    });
+});
+
+describe('trailItem', () => {
+    // Two pieces of a far line, each 0.01° north along 8° E, with a gap between them.
+    const entry = (fields: Partial<TrailEntry> = {}): TrailEntry => ({
+        id: 9, kind: 'hiking', name: 'Via Alpina', rank: 3, loop: false, length_m: 150_000, ascent_m: 9000, hardest: 2, stage_count: 20,
+        far_udeg: [[8_000_000, 46_000_000, 0, 10_000], [8_000_000, 46_100_000, 0, 10_000]], ...fields,
+    });
+
+    it('joins the pieces of the far line in its summary, with the bounds of all pieces and no heights', () => {
+        const item = trailItem(entry(), 'hiking');
+        expect(item).toMatchObject({ kind: 'trail', id: '9', name: 'Via Alpina', at: 0, pieces: [[[8, 46], [8, 46.01]], [[8, 46.1], [8, 46.11]]] });
+        expect(item.summary).toEqual({ line: [8, 46, 8, 46.01, 8, 46.1, 8, 46.11], heights: [null, null, null, null], bounds: [8, 46, 8, 46.11],
+            lengthM: 150_000, climbM: 9000, highestM: null, seconds: 0, bike: 'hiking', days: 1 });
+        // A section of a cut line has a negative id.
+        expect(trailItem(entry({ id: -1234501 }), 'hiking').id).toBe('-1234501');
+    });
+
+    it('keeps the trails of the grade and the shape chips', () => {
+        const items = [trailItem(entry({ id: 1, loop: true }), 'hiking'), trailItem(entry({ id: 2, hardest: 4 }), 'hiking')];
+        expect(ids(results(items, { grade: 2 }, ''))).toEqual(['1']);
+        expect(ids(results(items, { shape: 'one-way' }, ''))).toEqual(['2']);
+    });
+
+    it('in the far order, sorts by the network level, then the longest first, then the relation id', () => {
+        const items = [entry({ id: 5, rank: 2, length_m: 400_000 }), entry({ id: 4, rank: 4, length_m: 50_000 }),
+            entry({ id: 3, rank: 2, length_m: 90_000 }), entry({ id: 1, rank: 2, length_m: 90_000 })].map(trail => trailItem(trail, 'hiking'));
+        expect(ids(items.sort(farOrder))).toEqual(['4', '5', '1', '3']);
     });
 });
 

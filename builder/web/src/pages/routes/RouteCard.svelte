@@ -13,8 +13,9 @@
         href?: string;
         /** The name of an icon of `Icon.svelte`, before the line under the name. */
         icon?: string;
-        /** The parts of the line under the name. An empty list writes no line, as does an empty `numbers`. */
-        meta: (string | false)[];
+        /** The parts of the line under the name, a part with `onclick` as a quiet button. An empty list writes no line, as
+         * does an empty `numbers`. */
+        meta: (string | false | { text: string; onclick: () => void })[];
         numbers: string[];
         profile?: Pick<Summary, 'line' | 'heights'>;
         state?: string;
@@ -30,7 +31,7 @@
         onclose?: () => void;
     } = $props();
 
-    const metaParts = $derived(meta.filter(Boolean));
+    const metaParts = $derived(meta.filter((part): part is Exclude<typeof part, false> => !!part));
 </script>
 
 <div class="frame">
@@ -38,7 +39,7 @@
         <div class="picture">{@render picture()}</div>
         <div class="text">
             <h2>{@render mark?.()}{#if href}<a class="open" {href}>{name}</a>{:else}{name}{/if}</h2>
-            {#if metaParts.length}<p class="meta">{#if icon}<span class="icon"><Icon name={icon} size={15} /></span>{/if}{#each metaParts as part, i (i)}{i ? ' ' : ''}<span>{part}{i < metaParts.length - 1 ? ' ·' : ''}</span>{/each}</p>{/if}
+            {#if metaParts.length}<p class="meta">{#if icon}<span class="icon"><Icon name={icon} size={15} /></span>{/if}{#each metaParts as part, i (i)}{i ? ' ' : ''}<span>{#if typeof part === 'string'}{part}{:else}<button type="button" class="link" onclick={part.onclick}>{part.text}</button>{/if}{i < metaParts.length - 1 ? ' ·' : ''}</span>{/each}</p>{/if}
             {#if numbers.length}<p class="numbers">{#each numbers as number, i (i)}<span>{number}</span>{/each}</p>{/if}
             {#if state}<p class="state">{state}</p>{/if}
             {#if failure}<p class="failure" role="alert">{failure}</p>{/if}
@@ -131,6 +132,21 @@
     /* The line wraps between two parts, and inside a part only when the part is longer than the line. */
     .meta span {
         display: inline-block;
+    }
+    .link {
+        position: relative;
+        z-index: 1;
+        padding: 0;
+        border: 0;
+        background: none;
+        color: inherit;
+        font: inherit;
+        text-decoration: underline;
+        text-decoration-color: var(--line-strong);
+        text-underline-offset: 2px;
+    }
+    .link:hover {
+        color: var(--ink);
     }
     .meta .icon {
         display: inline-flex;

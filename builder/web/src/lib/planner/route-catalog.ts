@@ -1,4 +1,4 @@
-import { config, loadRouteCell, loadTrailCell, loadTrailRecord } from './map-data';
+import { config, coversCell, loadRouteCell, loadTrailCell, loadTrailRecord } from './map-data';
 import { tileColumn, tileRow } from './place-index';
 import type { BikeType } from './riding-profiles';
 import { kinds, type CatalogRecord, type TrailEntry } from './signed-routes';
@@ -51,6 +51,17 @@ function inBox(udeg: number[], [west, south, east, north]: Box): boolean {
 
 /** True when a segment of `udeg`, the deltas of a line in microdegrees, meets the box, edges included. */
 function segmentInBox(udeg: number[], [west, south, east, north]: Box): boolean {
+    // A far view tests some 100,000s of segments: a piece whose bounds miss the box needs no clip test.
+    let lon = 0, lat = 0, minLon = Infinity, minLat = Infinity, maxLon = -Infinity, maxLat = -Infinity;
+    for (let i = 0; i < udeg.length; i += 2) {
+        lon += udeg[i];
+        lat += udeg[i + 1];
+        minLon = Math.min(minLon, lon);
+        maxLon = Math.max(maxLon, lon);
+        minLat = Math.min(minLat, lat);
+        maxLat = Math.max(maxLat, lat);
+    }
+    if (minLon / 1e6 > east || maxLon / 1e6 < west || minLat / 1e6 > north || maxLat / 1e6 < south) return false;
     for (let i = 2, lon = udeg[0], lat = udeg[1]; i < udeg.length; i += 2) {
         const x = lon / 1e6, y = lat / 1e6, dx = udeg[i] / 1e6, dy = udeg[i + 1] / 1e6;
         lon += udeg[i];
@@ -90,6 +101,9 @@ function cached<K, V>(files: Map<K, Promise<V>>, key: K, load: (key: K) => Promi
 export class RouteCatalog {
     private readonly cells = new Map<string, Promise<CatalogRecord[] | null>>();
     private readonly farCells = new Map<string, Promise<TrailEntry[] | null>>();
+    /** The far files of `farCells` that have loaded. */
+    private readonly farLoaded = new Map<string, TrailEntry[] | null>();
+    private readonly joined = new WeakMap<TrailEntry, { from: TrailEntry[]; entry: TrailEntry }>();
     private readonly trails = new Map<number, Promise<CatalogRecord | null>>();
     private readonly loaded = new Map<string, CatalogRecord[] | null>();
     private readonly records = new Map<number, CatalogRecord>();
@@ -139,13 +153,36 @@ export class RouteCatalog {
      */
     async trailsInBox(box: Box): Promise<TrailEntry[] | null> {
         if (!config.trails || trailsTooWide(box)) return null;
-        const files = await Promise.all(boxCells(box, 7).map(id => cached(this.farCells, id, loadTrailCell, FAR_FILES)));
-        const found = new Map<number, TrailEntry>();
-        for (const entry of files.flatMap(file => file ?? [])) {
-            const seen = found.get(entry.id);
-            found.set(entry.id, seen ? { ...seen, far_udeg: [...seen.far_udeg, ...entry.far_udeg] } : entry);
-        }
-        return [...found.values()].filter(entry => entry.far_udeg.some(piece => segmentInBox(piece, box))).sort((a, b) => a.id - b.id);
+        const files = boxCells(box, 7).map(id => cached(this.farCells, id, id => loadTrailCell(id).then(entries => {
+            if (this.farCells.has(id)) this.farLoaded.set(id, entries);
+            return entries;
+        }), FAR_FILES));
+        // The files that the cache dropped go, also when a load of this box fails.
+        for (const id of this.farLoaded.keys()) if (!this.farCells.has(id)) this.farLoaded.delete(id);
+        return this.trailsOf(await Promise.all(files), box);
+    }
+
+    /** The answer of `trailsInBox` with no wait, or undefined while a far file of the box is not loaded. */
+    trailsInBoxNow(box: Box): TrailEntry[] | null | undefined {
+        if (!config.trails || trailsTooWide(box)) return null;
+        // A cell outside the release has no far file to wait for.
+        const files = boxCells(box, 7).map(id => coversCell(config.bounds, id) ? this.farLoaded.get(id) : null);
+        return files.every(file => file !== undefined) ? this.trailsOf(files as (TrailEntry[] | null)[], box) : undefined;
+    }
+
+    /** The trails of `files` in `box`. A trail in several files keeps one joined object while those files stay loaded, so
+     * a new answer keeps its row. */
+    private trailsOf(files: (TrailEntry[] | null)[], box: Box): TrailEntry[] {
+        const found = new Map<number, TrailEntry[]>();
+        for (const entry of files.flatMap(file => file ?? [])) found.set(entry.id, [...found.get(entry.id) ?? [], entry]);
+        return [...found.values()].map(from => {
+            if (from.length === 1) return from[0];
+            const kept = this.joined.get(from[0]);
+            if (kept?.from.length === from.length && kept.from.every((entry, i) => entry === from[i])) return kept.entry;
+            const entry = { ...from[0], far_udeg: from.flatMap(entry => entry.far_udeg) };
+            this.joined.set(from[0], { from, entry });
+            return entry;
+        }).filter(entry => entry.far_udeg.some(piece => segmentInBox(piece, box))).sort((a, b) => a.id - b.id);
     }
 
     /** The whole record of the trail `id`, with `parts` and `trail_profile_m`, or null for a grid release with no trail files. */

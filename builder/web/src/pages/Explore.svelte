@@ -1,5 +1,5 @@
 <!-- The Explore page: the signed routes of the map view in a list with chips, on the map, and the selected one in a card
-     that opens it as a plan in the planner. -->
+     that opens it as a plan in the planner. A map view that is too wide for the routes lists the long trails. -->
 <script lang="ts">
     import { tick, untrack } from 'svelte';
     import { keepInHistory } from '../lib/keep-in-history.svelte';
@@ -9,8 +9,8 @@
     import { escapeMarkup } from '../lib/core/gpx';
     import { decodeCoordinates } from '../lib/planner/route-answer';
     import { routeColor } from '../lib/planner/route-colors';
-    import { catalog, tooWide, type Box } from '../lib/planner/route-catalog';
-    import { gradeName, recordCredits, routePlan, type CatalogRecord, type RouteRecord } from '../lib/planner/signed-routes';
+    import { catalog, tooWide, trailsTooWide, type Box } from '../lib/planner/route-catalog';
+    import { gradeName, kinds, recordCredits, routePlan, type CatalogRecord, type RouteRecord, type TrailEntry } from '../lib/planner/signed-routes';
     import { hasTrailView, loadTrailView } from '../lib/planner/trailview';
     import { router } from '../lib/router.svelte';
     import { ROUTES } from '../lib/routes';
@@ -20,15 +20,16 @@
     import type { TrailViewRoute } from '../components/planner/TrailViewWindow.svelte';
     import SignedCard, { signedNumbers } from './explore/SignedCard.svelte';
     import SignedPicture from './explore/SignedPicture.svelte';
+    import TrailCard, { trailParts } from './explore/TrailCard.svelte';
     import { firstRows, ROWS } from './explore/rows';
     import Chips from './routes/Chips.svelte';
-    import { PROFILE_STEP_M, results, signedItem, type Chips as ChipValues, type SignedItem } from './routes/filter';
+    import { farOrder, PROFILE_STEP_M, results, signedItem, trailItem, type Chips as ChipValues, type Item, type SignedItem, type TrailItem } from './routes/filter';
     import ListAndMap from './routes/ListAndMap.svelte';
     import PlaceSearch from './routes/PlaceSearch.svelte';
     import RouteRow from './routes/RouteRow.svelte';
 
     /** What the page keeps in `history.state.explore`, so that Back and "Find another route" find it again. */
-    interface Kept { chips: ChipValues; view?: Box; selected?: string }
+    interface Kept { chips: ChipValues; view?: Box; selected?: string; trail?: number }
     type Place = { lon: number; lat: number; box?: Box };
 
     // The page reads the route catalog only.
@@ -43,29 +44,49 @@
     /** The place that the map shows: the kept view, or a place of the search field. */
     let place = $state.raw<Place | undefined>(kept?.view
         ? { lon: (kept.view[0] + kept.view[2]) / 2, lat: (kept.view[1] + kept.view[3]) / 2, box: kept.view } : undefined);
-    /** The answer of the last load, for its bike and view: the records, or null when the view needs too many cells. */
-    let answer = $state.raw<{ bike: Bike; view: Box; records: CatalogRecord[] | null }>(), failed = $state(false);
+    /** The answer of the last load, for its bike and view: the records of a near view or the trails of a far view, or null
+     * when the view is too wide. */
+    let answer = $state.raw<{ bike: Bike; view: Box; far: boolean; found: CatalogRecord[] | TrailEntry[] | null }>(), failed = $state(false);
+    /** The selected trail, apart from the selected route: it stays through a change between the far and the near view. */
+    let trail = $state.raw<{ id: number; entry?: TrailEntry; record?: CatalogRecord; failed?: boolean }>();
 
     const bike = $derived(chips.bike ?? 'hiking');
     const graded = $derived(bike === 'hiking' || bike === 'mtb');
-    const records = $derived(answer?.bike === bike ? answer.records : undefined);
-    // An item is made once for each record and bike, so a new answer changes no row that it keeps.
-    const made = new WeakMap<CatalogRecord, SignedItem>();
-    const itemOf = (record: CatalogRecord) => {
-        let item = made.get(record);
-        if (item?.summary.bike !== bike) made.set(record, item = signedItem(record, bike));
-        return item;
-    };
-    const items = $derived(records?.map(itemOf) ?? []);
+    /** The view needs more cell files than a view loads: the page lists the trails of the far files. */
+    const far = $derived(!!view && tooWide(view));
+    // The trails of a far answer are for each bike.
+    const found = $derived(answer && answer.far === far && (far || answer.bike === bike) ? answer.found : undefined);
+    // An item is made once for each record or trail and bike, so a new answer changes no row that it keeps.
+    const made = new WeakMap<CatalogRecord | TrailEntry, Item>();
+    function once<T extends Item>(key: CatalogRecord | TrailEntry, make: () => T): T {
+        let item = made.get(key);
+        if (item?.summary?.bike !== bike) made.set(key, item = make());
+        return item as T;
+    }
+    const trailOf = (entry: TrailEntry) => once(entry, () => trailItem(entry, bike));
+    const items = $derived<Item[]>(!found ? [] : far ? (found as TrailEntry[]).filter(entry => kinds[bike].includes(entry.kind)).map(trailOf)
+        : (found as CatalogRecord[]).map(record => once(record, () => signedItem(record, bike))));
     /** The answer is for another view: until the load of the new view ends, the list shows its routes in the new view. */
     const stale = $derived(!!answer && answer.view !== view);
     // Each item is for `bike`, and each item of an answer for this view is in the view.
     const inView = $derived(stale ? results(items, {}, '', view) : items);
-    const shown = $derived(results(inView, chips, '', undefined, 'shortest') as SignedItem[]);
-    // The map credits are HTML, and a record credit is plain text.
-    const credits = $derived(recordCredits((inView as SignedItem[]).map(item => item.record)).map(escapeMarkup));
-    const wide = $derived(!!view && tooWide(view));
-    const chosen = $derived(shown.find(item => item.id === selected));
+    // A trail of 400 km matches no range of day routes: the Length and Climb chips keep their values for the near view.
+    const shown = $derived<(SignedItem | TrailItem)[]>(far ? (results(inView, { ...chips, length: undefined, climb: undefined }, '') as TrailItem[]).sort(farOrder)
+        : results(inView, chips, '', undefined, 'shortest') as SignedItem[]);
+    const wide = $derived(far && (!config.trails || trailsTooWide(view!)));
+    const chosen = $derived(far ? undefined : shown.find(item => item.id === selected) as SignedItem | undefined);
+    /** The row of the selected trail or route. */
+    const currentId = $derived(trail ? String(trail.id) : selected);
+    const current = $derived(shown.find(item => item.id === currentId));
+    /** What the trail card names: a trail restored from the history has nothing to name until its record comes. */
+    const trailAbout = $derived(trail?.record ?? trail?.entry);
+    /** A trail that is a route record has the card of a route. */
+    const trailRoute = $derived(trail?.record?.line_udeg ? once(trail.record, () => signedItem(trail!.record!, bike)) as SignedItem : undefined);
+    /** The selected trail and its parts. The map marks them and does not move to them: a trail runs out of most views. */
+    const marked = $derived(trail && trailAbout ? [trail.id, ...trail.record?.parts?.map(part => part.id) ?? trail.record?.stages ?? []].map(String) : []);
+    // The map credits are HTML, and a record credit is plain text. A far file has no credits: the selected trail brings its own.
+    const credits = $derived(recordCredits([...inView.flatMap(item => item.kind === 'signed' ? [item.record] : []), ...trail?.record ? [trail.record] : []])
+        .map(escapeMarkup));
     /** The pictures that show a cover, and the credits of the set: the map shows them while a cover shows. */
     let covers = $state(0), coverCredits = $state.raw<string[]>([]);
     function oncover(credits: string[] | undefined) {
@@ -75,12 +96,12 @@
     /** The value of each item that the other chips keep, for the bars of the slider of `key`. */
     const values = (key: 'length' | 'climb') => results(inView, { ...chips, [key]: undefined }, '')
         .map(({ summary }) => key === 'length' ? distanceIn(summary!.lengthM) : heightIn(summary!.climbM));
-    const count = (n: number) => `${n.toLocaleString('en')} signed route${n === 1 ? '' : 's'}`;
+    const count = (n: number) => `${n.toLocaleString('en')} ${far ? 'long trail' : 'signed route'}${n === 1 ? '' : 's'}`;
     /** No row to show yet: the first load, or a new view with no route of the last answer in it. */
-    const waiting = $derived(!failed && !wide && (!records || (!inView.length && stale)));
+    const waiting = $derived(!failed && !wide && (!found || (!inView.length && stale)));
     const listed = $derived(!failed && !wide && !waiting && inView.length > 0);
-    const status = $derived(failed ? 'The routes could not load.' : wide ? 'Zoom in to see the signed routes.' : waiting || stale ? 'Loading the routes…'
-        : !inView.length ? 'No signed route in this map view.'
+    const status = $derived(failed ? 'The routes could not load.' : wide ? `Zoom in to see the ${config.trails ? 'long trails' : 'signed routes'}.`
+        : waiting || stale ? 'Loading the routes…' : !inView.length ? `No ${far ? 'long trail' : 'signed route'} in this map view.`
         : shown.length === inView.length ? `${count(inView.length)} in this map view` : `${shown.length.toLocaleString('en')} of ${count(inView.length)}`);
 
     // A selected route that the list does not show any more closes its card. A selection from the history waits for
@@ -92,11 +113,11 @@
     // The page keeps only the answer of its last load.
     let loads = 0;
     async function load(box: Box, kind: Bike) {
-        const id = ++loads;
+        const id = ++loads, far = tooWide(box);
         failed = false;
         try {
-            const found = await catalog.inBox(box, kind);
-            if (id === loads) answer = { bike: kind, view: box, records: found };
+            const found = far ? await catalog.trailsInBox(box) : await catalog.inBox(box, kind);
+            if (id === loads) answer = { bike: kind, view: box, far, found };
         } catch {
             if (id === loads) failed = true;
         }
@@ -109,16 +130,16 @@
         if (!now || next.some((value, i) => value !== now[i])) view = next;
     }
 
-    // A view whose cell files the catalog holds gets its answer before the page draws the view, so the list shows no
+    // A view whose cell files or far files the catalog holds gets its answer before the page draws the view, so the list shows no
     // load. Another view loads its files `WAIT_MS` later.
     $effect.pre(() => {
         const box = view, kind = bike;
         if (!box) return;
-        const held = catalog.inBoxNow(box, kind);
+        const far = tooWide(box), held = far ? catalog.trailsInBoxNow(box) : catalog.inBoxNow(box, kind);
         if (held !== undefined) {
             loads++;
             failed = false;
-            answer = { bike: kind, view: box, records: held };
+            answer = { bike: kind, view: box, far, found: held };
             return;
         }
         const timer = setTimeout(() => void load(box, kind), WAIT_MS);
@@ -128,7 +149,7 @@
     // The list draws its first rows, and more when the rider scrolls near their end, so a new view makes few rows.
     let rows = $state<HTMLElement>(), rowLimit = $state(ROWS);
     const drawn = $derived(shown.length > rowLimit ? shown.slice(0, rowLimit) : shown);
-    const chosenAt = $derived(chosen ? shown.indexOf(chosen) : -1);
+    const chosenAt = $derived(current ? shown.indexOf(current) : -1);
     function drawMore() {
         if (rows && rowLimit < shown.length && rows.scrollTop + rows.clientHeight > rows.scrollHeight - 600) rowLimit += ROWS;
     }
@@ -160,6 +181,39 @@
         return [Math.max(-180, west - shift), south, Math.min(180, east - shift), north];
     }
 
+    /** A trail opens its card; a route clears the selected trail. */
+    function select(id: string | undefined) {
+        const item = far ? shown.find(item => item.id === id) : undefined;
+        if (item?.kind === 'trail') return void openTrail(item.entry.id, item.entry);
+        trail = undefined;
+        selected = id;
+    }
+
+    /** The card shows the trail at once from a far file or a cell file, and its profile and strip when its record comes. */
+    async function openTrail(id: number, entry?: TrailEntry) {
+        selected = undefined;
+        if (trail?.id === id) return;
+        const next = trail = { id, entry, record: catalog.record(id) };
+        // A trail opened from a stage or from the history has no far line yet: the far files of the view have it.
+        const [record, entries] = await Promise.all([
+            catalog.trail(id).catch((error: unknown) => { console.error('Trail:', error); return undefined; }),
+            entry || !view ? undefined : catalog.trailsInBox(view).catch(() => null),
+        ]);
+        // A trail that is a route record keeps the record of its cell file: its card holds the cover by that object.
+        const kept = next.record?.line_udeg ? next.record : record ?? next.record;
+        const opened = { ...next, entry: entry ?? entries?.find(other => other.id === id), record: kept, failed: !record };
+        // A trail with nothing to show, such as one of the history that a new release does not have, closes.
+        if (trail === next) trail = opened.entry || opened.record ? opened : undefined;
+    }
+
+    /** The button that opens the trail card goes with the stage card: the focus moves to the new card. */
+    function trailOfCard(id: number) {
+        // The trail card shows on the page, under the TrailView window.
+        trailView = undefined;
+        void openTrail(id);
+        void tick().then(() => document.querySelector<HTMLElement>('.selected .close')?.focus());
+    }
+
     /** A new bike has other grades, so it clears the grade chip. */
     function setChips(next: ChipValues) {
         if (next.bike !== chips.bike) delete next.grade;
@@ -167,7 +221,8 @@
     }
 
     // Back from another page brings the view, the chips and the selection again.
-    const keep = keepInHistory('explore', (): Kept => ({ chips, view, selected }));
+    const keep = keepInHistory('explore', (): Kept => ({ chips, view, selected, trail: trail?.id }));
+    if (kept?.trail !== undefined) void openTrail(kept.trail);
 
     // TrailView shows the first routes of the list from a view above them all.
     const TRAILVIEW_ROUTES = 100;
@@ -178,7 +233,7 @@
 
     /** The first routes of the list, with the selected route among them, so the window can show its card on its line. */
     function trailViewItems(): SignedItem[] {
-        const listed = shown.slice(0, TRAILVIEW_ROUTES);
+        const listed = (shown as SignedItem[]).slice(0, TRAILVIEW_ROUTES);
         if (chosen && !listed.includes(chosen)) listed[listed.length - 1] = chosen;
         return listed;
     }
@@ -204,6 +259,8 @@
                     { width: full ? innerWidth : innerWidth - 64, height: full ? innerHeight : innerHeight - 64, date: today(), time: '10:00', weather: 'sunny' })
                     .catch((error: unknown) => { console.error('TrailView:', error); return null; });
                 const now = trailViewItems();
+                // TrailView shows the routes of a near view only.
+                if (far) return;
                 if (now.length !== listed.length || now.some((item, i) => item.id !== listed[i].id)) continue;
                 if (first) trailView = { component, origin: [box.left + box.width / 2, box.top + box.height / 2], view: first, routes };
                 else notice = { text: first === null ? 'TrailView could not start. Try again.' : 'TrailView has no view of this area.', view };
@@ -222,20 +279,21 @@
     function plan(item: SignedItem) {
         keep();
         const route = item.record as RouteRecord;
-        router.go(`${ROUTES.planner}/new`, { signed: { route, plan: routePlan(route), back: $state.snapshot({ chips, view, selected }) } });
+        router.go(`${ROUTES.planner}/new`, { signed: { route, plan: routePlan(route), back: $state.snapshot({ chips, view, selected, trail: trail?.id }) } });
     }
 </script>
 
 <!-- Escape in an open window closes only the window. -->
-<svelte:window onkeydown={event => { if (event.key === 'Escape' && !document.querySelector('dialog[open]')) selected = undefined; }} />
+<svelte:window onkeydown={event => { if (event.key === 'Escape' && !document.querySelector('dialog[open]')) select(undefined); }} />
 
-<ListAndMap title="Explore" {items} {shown} {place} fit={0} look="signed" credits={covers ? [...coverCredits, ...credits] : credits} selected={chosen ? [chosen.id] : []}
-    onselect={id => selected = id} onview={next => setView(wrapped(next))} card={chosen ? card : undefined}
-    mapButtons={hasTrailView(config) && shown.length ? mapButtons : undefined}>
+<!-- TrailView shows the routes of a near view only. -->
+<ListAndMap title="Explore" {items} {shown} {place} fit={0} look="signed" credits={covers ? [...coverCredits, ...credits] : credits} selected={chosen ? [chosen.id] : []} {marked}
+    onselect={select} onview={next => setView(wrapped(next))} card={trailAbout ? trailCard : chosen ? card : undefined}
+    mapButtons={hasTrailView(config) && shown.length && !far ? mapButtons : undefined}>
     {#snippet list()}
         <!-- The search field finds places only; a chosen place moves the map. -->
         <PlaceSearch {view} label="Find a place" placeholder="Find a place" float onchoose={({ lon, lat, box }) => place = { lon, lat, box }} />
-        <Chips bind:chips={() => chips, setChips} {view} keys={['bike', 'length', 'climb', ...graded ? ['grade' as const] : [], 'shape']} fixed={['bike']}
+        <Chips bind:chips={() => chips, setChips} {view} keys={['bike', ...far ? [] : ['length' as const, 'climb' as const], ...graded ? ['grade' as const] : [], 'shape']} fixed={['bike']}
             grades={bike === 'mtb' ? [0, 1, 2, 3].map(grade => gradeName('mtb', grade)) : [0, 1, 2, 3, 4, 5].map(grade => gradeName('hiking', grade))} {values} />
         <p class={listed ? 'count' : 'note'} aria-live="polite">
             {status}{#if failed}{' '}<button type="button" class="retry" onclick={() => { if (view) void load(view, bike); }}>Retry</button>{/if}
@@ -249,7 +307,8 @@
             <ul bind:this={rows} onscroll={drawMore}>
                 {#each drawn as item (item.id)}
                     <li>
-                        <RouteRow name={item.name} current={item.id === selected} onclick={() => selected = item.id} parts={signedNumbers(item.record)}>
+                        <RouteRow name={item.name} current={item.id === currentId} onclick={() => select(item.id)}
+                            parts={item.kind === 'trail' ? trailParts(item.entry) : signedNumbers(item.record)}>
                             {#snippet picture()}<SignedPicture {item} {oncover} small />{/snippet}
                         </RouteRow>
                     </li>
@@ -262,7 +321,15 @@
 </ListAndMap>
 
 {#snippet card(refocus: () => void)}
-    <SignedCard item={chosen!} {oncover} onplan={() => plan(chosen!)} onclose={() => { refocus(); selected = undefined; }} />
+    <SignedCard item={chosen!} {oncover} onplan={() => plan(chosen!)} ontrail={config.trails ? trailOfCard : undefined} onclose={() => { refocus(); selected = undefined; }} />
+{/snippet}
+
+{#snippet trailCard(refocus: () => void)}
+    {#if trailRoute}
+        <SignedCard item={trailRoute} {oncover} onplan={() => plan(trailRoute)} onclose={() => { refocus(); trail = undefined; }} />
+    {:else if trailAbout}
+        <TrailCard about={trailAbout} item={trail!.entry && trailOf(trail!.entry)} record={trail!.record} failed={!!trail!.failed} onclose={() => { refocus(); trail = undefined; }} />
+    {/if}
 {/snippet}
 
 {#snippet mapButtons()}
@@ -276,7 +343,7 @@
 {/snippet}
 
 {#if trailView}
-    <trailView.component origin={trailView.origin} view={trailView.view} routes={trailView.routes} {selected} onselect={id => selected = id}
+    <trailView.component origin={trailView.origin} view={trailView.view} routes={trailView.routes} {selected} onselect={select}
         card={chosen ? card : undefined} onClose={() => { trailView = undefined; trailViewButton?.focus(); }} />
 {/if}
 
