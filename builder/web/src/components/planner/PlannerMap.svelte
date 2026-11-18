@@ -12,7 +12,7 @@
     import { categoryIds, placeCategories, type PlaceCategory } from "../../lib/planner/poi-kinds";
     import { poiPlace } from "../../lib/planner/place-index";
     import type { Place } from "../../lib/planner/editor";
-    import { coordinateAt, kilometres, nearestProgress } from "../../lib/planner/geo";
+    import { coordinateAt, kilometres, nearestProgress, routeSlice } from "../../lib/planner/geo";
     import type { Coordinate, MapPoint, MapSegment } from "../../lib/planner/map-types";
     import { RouteOverlays, type AccessMode, type OverlayOptions, type OverlaySelection, type RouteHint } from "../../lib/planner/route-overlays";
     import type { DataLayer } from "../../lib/planner/layers/data-layer";
@@ -25,7 +25,7 @@
         drawing = null, highlightedPlaceIds = [], theme = "light", hillshade = true, contours = true, pickMode = false,
         showRoute = true, hoverProgress = null, center = [8.8, 48.65], zoom = 7,
         shownCategories = categoryIds, highlightedPlaces = [], mapOverlays = { network: 'none', access: false }, accessMode = 'cycling', routingPackage, dataLayer, bottomInset = 0,
-        compare = null, lines = [], onPick = null,
+        compare = null, lines = [], onPick = null, part = null,
         onEmptyClick, onPointSelect, onPointHover, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, popup,
     }: {
         /** A previewed route option and its letter. It draws in ink over the plan, which draws as a dotted line without day
@@ -62,6 +62,8 @@
         routingPackage?: string;
         /** Route progress the elevation profile points at. */
         hoverProgress?: number | null;
+        /** The part of the route the profile selects, as route progress; the rest of the line is pale. */
+        part?: [number, number] | null;
         center?: Coordinate; zoom?: number;
         onEmptyClick?: (coordinate: Coordinate) => void;
         onPointSelect?: (id: string) => void;
@@ -167,10 +169,10 @@
         map.flyTo({ center: coordinate, zoom: detail, offset: [-25, below], duration: motionDuration() }, { preserveSearch: true });
     }
 
-    export function fitCoordinates(region: Coordinate[]) {
+    export function fitCoordinates(region: Coordinate[], preserveSearch = false) {
         if (!map || !region.length) return;
         wholeRoute = false;
-        fitBounds(region, 13, motionDuration());
+        fitBounds(region, 13, motionDuration(), preserveSearch);
     }
 
     export function fitSearchResults(region: Coordinate[]) {
@@ -262,6 +264,11 @@
         return lineData(highlightedCoordinates.length < 2 ? [] : [lineFeature(highlightedCoordinates)]);
     }
 
+    function restData() {
+        const rest = part ? [routeSlice(coordinates, 0, part[0]), routeSlice(coordinates, part[1], 1)] : [];
+        return lineData(rest.filter(line => line.length >= 2).map(line => lineFeature(line)));
+    }
+
     function setSketch(line: Coordinate[]) {
         (map?.getSource("planner-sketch") as GeoJSONSource | undefined)?.setData(lineData(line.length < 2 ? [] : [lineFeature(line)]));
     }
@@ -285,6 +292,8 @@
         map.addLayer({ id: "trip-gap", type: "line", source: "trip", filter: ["==", ["get", "leg"], "gap"], paint: { "line-color": dark ? "#bdb47e" : "#5c5a2e", "line-width": 3, "line-dasharray": [1, 0.8] } });
         map.addLayer({ id: "trip-line", type: "line", source: "trip", filter: ["!", ["in", ["get", "leg"], ["literal", ["gap", "transfer"]]]], layout: round, paint: { "line-color": ["get", "color"], "line-width": 4 } });
         map.addLayer({ id: "trip-transfer", type: "line", source: "trip", filter: ["==", ["get", "leg"], "transfer"], paint: { "line-color": dark ? "#8f8a6e" : "#9a9681", "line-width": 3, "line-dasharray": [2, 2] } });
+        map.addSource("trip-rest", { type: "geojson", data: restData() });
+        map.addLayer({ id: "trip-rest", type: "line", source: "trip-rest", layout: round, paint: { "line-color": casing, "line-width": 5, "line-opacity": .65 } });
         map.addSource("compare", { type: "geojson", data: compareData() });
         map.addLayer({ id: "compare-casing", type: "line", source: "compare", layout: round, paint: { "line-color": casing, "line-width": 9 } });
         map.addLayer({ id: "compare-line", type: "line", source: "compare", layout: round, paint: { "line-color": dark ? "#f2efe3" : "#1c1b14", "line-width": 4.5 } });
@@ -312,7 +321,7 @@
     function syncRouteVisibility() {
         if (!map?.getLayer("trip-line")) return;
         const quiet = !!compare;
-        for (const id of ["trip-line", "trip-casing", "trip-casing-drawn", "trip-gap", "trip-transfer", "trip-highlight"]) {
+        for (const id of ["trip-line", "trip-casing", "trip-casing-drawn", "trip-gap", "trip-transfer", "trip-rest", "trip-highlight"]) {
             map.setLayoutProperty(id, "visibility", showRoute && (!quiet || id === "trip-line") ? "visible" : "none");
         }
         const token = (name: string, fallback: string) => getComputedStyle(container).getPropertyValue(name).trim() || fallback;
@@ -615,6 +624,10 @@
         }
     });
     $effect(() => { const routing = routingPackage; if (ready) overlayLayer?.verify(routing); });
+    $effect(() => {
+        const data = restData();
+        if (map && ready) (map.getSource("trip-rest") as GeoJSONSource | undefined)?.setData(data);
+    });
     $effect(() => {
         highlightedCoordinates;
         if (map && ready) (map.getSource("trip-highlight") as GeoJSONSource | undefined)?.setData(highlightData());

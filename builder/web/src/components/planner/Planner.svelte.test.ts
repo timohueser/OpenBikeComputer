@@ -239,7 +239,7 @@ describe('planner day views', () => {
         }));
         await tick();
 
-        const axis = () => [...document.querySelectorAll('.axis span')].map(tick => tick.textContent);
+        const axis = () => [...document.querySelectorAll('.ticks span')].map(tick => tick.textContent);
         expect(axis()).toEqual(['0 km', '12 km', '24 km', '36 km', '48 km']);
         expect(document.querySelector('.distance')?.textContent).toBe('48.0 km');
         button('Whole route').click();
@@ -265,7 +265,7 @@ describe('planner day views', () => {
 
         expect([...document.querySelectorAll('.stats dd')].map(figure => figure.textContent).slice(0, 3)).toEqual(['29.8mi', '3281ft', '—ft']);
         expect(document.querySelector('.title small')?.textContent).toContain('↑ — ft · ↓ — ft');
-        expect([...document.querySelectorAll('.axis span')].map(tick => tick.textContent)).toEqual(['0 mi', '22 mi', '45 mi', '67 mi', '89 mi']);
+        expect([...document.querySelectorAll('.ticks span')].map(tick => tick.textContent)).toEqual(['0 mi', '22 mi', '45 mi', '67 mi', '89 mi']);
         expect([...document.querySelectorAll('.height')].map(label => label.textContent)).toEqual(['100 ft', '0 ft']);
     });
 });
@@ -317,6 +317,47 @@ describe('trip timeline', () => {
     });
 });
 
+describe('profile part', () => {
+    it('selects a part with Shift and an arrow key, shows its numbers with Clear, keeps its stretch while the map window changes, and clears at Escape, at Clear and at another range', async () => {
+        const line: RoutingLine = {
+            profile: 'touring', coordinates: [[8, 46], [8, 46.5], [8, 47]], elevation: [100, 600, 100], elapsed: [0, 1, 2], edges: {},
+            stops: [], seconds: 2, unknownSurfaceKm: 0, unpavedKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0,
+        };
+        let view = $state({ from: 0, to: .5 });
+        let part = $state<[number, number] | null>(null);
+        mounted.push(mount(Profile, { target: document.body, props: {
+            lineData: line, total: 100, days: [], dayLabels: {}, activeNight: 0, band: null, get window() { return view; },
+            get part() { return part; }, onPart: next => { part = next; }, onToggle: vi.fn(), onNight: vi.fn(), onDayEndDrag: vi.fn(), onHover: vi.fn(),
+        } }));
+        await tick();
+        const slider = document.querySelector<HTMLElement>('[role="slider"][aria-label="Profile"]')!;
+        const key = async (shiftKey: boolean) => { slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', shiftKey, bubbles: true })); await tick(); };
+        const select = async () => { for (let i = 0; i < 10; i++) await key(true); };
+        const ticks = () => [...document.querySelectorAll('.ticks span')].map(tick => tick.textContent);
+
+        slider.focus();
+        for (let i = 0; i < 10; i++) await key(false);
+        await select();
+        expect(part![0]).toBeCloseTo(.05);
+        expect(part![1]).toBeCloseTo(.1);
+        expect(document.querySelector('.title .part')?.textContent?.replace(/\s/g, ' ')).toBe('km 5.0 to km 10.0 · 5.0 km · 50 m upClear');
+        expect(document.querySelector('.distance')).toBeNull();
+        const held = ticks();
+        view = { from: .5, to: 1 }; await tick();
+        expect(ticks()).toEqual(held);
+
+        slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); await tick();
+        expect(part).toBeNull();
+        expect(ticks()).not.toEqual(held);
+        await select();
+        button('Clear').click(); await tick();
+        expect(part).toBeNull();
+        await select();
+        button('Whole route').click(); await tick();
+        expect(part).toBeNull();
+    });
+});
+
 describe('profile access', () => {
     it('keeps pushing boundaries on one surface visible and keyboard-inspectable with grade colors off', async () => {
         const line: RoutingLine = {
@@ -332,7 +373,7 @@ describe('profile access', () => {
         await tick();
         expect(document.querySelector('.push-track span')).not.toBeNull();
         expect(document.querySelector('.hint')?.textContent).toContain('75 m pushing');
-        const slider = document.querySelector<HTMLElement>('[role="slider"]')!;
+        const slider = document.querySelector<HTMLElement>('[role="slider"][aria-label^="Surface"]')!;
         slider.focus(); await tick();
         expect(slider.getAttribute('aria-valuetext')).toContain('Riding');
         slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); await tick();
@@ -358,7 +399,7 @@ describe('profile access', () => {
         const entries = () => [...document.querySelectorAll<HTMLElement>('.surface li')];
         const legend = () => entries().map(entry => entry.textContent!.replace(/\s+/g, ' ').trim());
         expect(legend()).toEqual(['Paved 67%', 'Gravel 33%']);
-        const slider = document.querySelector<HTMLElement>('[role="slider"]')!;
+        const slider = document.querySelector<HTMLElement>('[role="slider"][aria-label^="Surface"]')!;
         slider.focus(); await tick();
         expect(slider.getAttribute('aria-valuetext')).toContain('Paved · 67% of the shown stretch');
         button('Whole route').click(); await tick();
