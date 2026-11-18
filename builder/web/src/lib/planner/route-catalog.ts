@@ -51,6 +51,17 @@ function inBox(udeg: number[], [west, south, east, north]: Box): boolean {
 
 /** True when a segment of `udeg`, the deltas of a line in microdegrees, meets the box, edges included. */
 function segmentInBox(udeg: number[], [west, south, east, north]: Box): boolean {
+    // A far view tests some 100,000s of segments: a piece whose bounds miss the box needs no clip test.
+    let lon = 0, lat = 0, minLon = Infinity, minLat = Infinity, maxLon = -Infinity, maxLat = -Infinity;
+    for (let i = 0; i < udeg.length; i += 2) {
+        lon += udeg[i];
+        lat += udeg[i + 1];
+        minLon = Math.min(minLon, lon);
+        maxLon = Math.max(maxLon, lon);
+        minLat = Math.min(minLat, lat);
+        maxLat = Math.max(maxLat, lat);
+    }
+    if (minLon / 1e6 > east || maxLon / 1e6 < west || minLat / 1e6 > north || maxLat / 1e6 < south) return false;
     for (let i = 2, lon = udeg[0], lat = udeg[1]; i < udeg.length; i += 2) {
         const x = lon / 1e6, y = lat / 1e6, dx = udeg[i] / 1e6, dy = udeg[i + 1] / 1e6;
         lon += udeg[i];
