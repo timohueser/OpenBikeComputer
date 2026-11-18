@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { flushSync, mount, unmount } from 'svelte';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
+import { settings } from '../../lib/settings/settings.svelte';
 import PlanTotals from './PlanTotals.svelte';
 
 let totals: ReturnType<typeof mount> | undefined;
@@ -15,6 +16,11 @@ describe('plan totals', () => {
         expect(line()).toBe('138.3 km · 4128 m · 2351 m · 10 h 8 m');
         expect(document.querySelectorAll('dd > svg[aria-hidden="true"]')).toHaveLength(4);
         expect([...document.querySelectorAll('dt')].map(label => label.textContent)).toEqual(['Distance', 'Ascent', 'Descent', 'Riding time']);
+        settings.units = 'mi';
+        onTestFinished(() => { settings.units = 'km'; });
+        flushSync();
+        expect(line()).toBe('85.9 mi · 13543 ft · 7713 ft · 10 h 8 m');
+        settings.units = 'km';
         await unmount(totals);
 
         totals = mount(PlanTotals, { target: document.body, props: { distance: 3, ascent: null, descent: null, hours: null, walking: true } });

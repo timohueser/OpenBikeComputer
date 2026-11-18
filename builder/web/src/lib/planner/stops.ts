@@ -2,6 +2,8 @@ import { allStay, overnightWindow, planView, provisionalDays, type Day, type Pla
 import { movingSecondsAt, type RoutingLine } from './routing';
 import { asPlace, stayKind } from './search/presentation';
 import type { SearchPlace } from './search/types';
+import { distanceIn } from '../settings/format';
+import { settings } from '../settings/settings.svelte';
 
 /** A place of a stop with its position along the route and its straight-line distance off it, in km. */
 export interface StopPlace { place: Place; km: number; off: number }
@@ -73,10 +75,10 @@ export function stopCounts(stop: Stop, kinds: Stay[], short = false): string {
     return short && counts.length > 2 ? `${places.length} places to sleep` : counts.join(' · ');
 }
 
-/** Where the places of `kinds` of a stop are along the route: "km 42–46". */
+/** Where the places of `kinds` of a stop are along the route, in the units of the rider: "km 42–46". */
 export function stopKm(stop: Stop, kinds: Stay[]): string {
-    const km = suitable(stop, kinds).map(p => Math.round(p.km)), from = Math.min(...km), to = Math.max(...km);
-    return `km ${from}${to !== from ? `–${to}` : ''}`;
+    const at = suitable(stop, kinds).map(p => Math.round(distanceIn(p.km * 1000))), from = Math.min(...at), to = Math.max(...at);
+    return `${settings.units} ${from}${to !== from ? `–${to}` : ''}`;
 }
 
 function townName(group: StopPlace[]): string {

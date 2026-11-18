@@ -1,6 +1,6 @@
 <script lang="ts">
     import { tick } from 'svelte';
-    import Icon from './PlannerIcon.svelte';
+    import Icon from '../../lib/ui/Icon.svelte';
     import { allStay, type Stay } from '../../lib/planner/editor';
     import { stayIcon, stayOptions } from '../../lib/planner/search/presentation';
 
