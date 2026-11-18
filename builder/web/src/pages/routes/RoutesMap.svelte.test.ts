@@ -53,7 +53,7 @@ describe('routes map', () => {
         expect(layers.get('bubbles')?.maxzoom).toBe(8);
     });
 
-    // Explore changes its list only when the map is still, so a bubble would count the routes of the last view.
+    // Explore lists single routes only where their lines can be read, so a bubble would count an out-of-date list.
     it('draws signed routes at each zoom, with no bubble', () => {
         const layers = layersOf('signed');
         expect(layers.get('routes')?.minzoom).toBe(0);

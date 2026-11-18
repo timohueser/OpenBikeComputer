@@ -21,7 +21,8 @@
         /** Lines drawn as selected that the map never moves to: a trail and its parts. */
         marked?: string[];
         /** `signed`: signed routes of the catalog and trails, each in its own colour. Their lines show at each zoom, with
-         * no bubble: the list changes only when the map is still, so a bubble would count the last list during a zoom. */
+         * no bubble: Explore lists single routes only in views where their lines can be read, so a bubble would count a
+         * list that is already out of date. */
         look?: 'route' | 'ride' | 'signed';
         /** The height in pixels of the bottom of the map that the selected card covers. */
         covered?: number;
@@ -226,7 +227,7 @@
     });
     $effect(() => {
         if (!ready) return;
-        map!.getSource<maplibregl.GeoJSONSource>('middles')?.setData(middles);
+        if (look !== 'signed') map!.getSource<maplibregl.GeoJSONSource>('middles')?.setData(middles);
         for (const layer of LINE_LAYERS) if (map!.getLayer(layer)) map!.setFilter(layer, shownFilter);
     });
     $effect(() => {
