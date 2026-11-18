@@ -1,14 +1,18 @@
 <script lang="ts">
     import type { Snippet } from 'svelte';
+    import SelectedPart from './SelectedPart.svelte';
+
+    const straight = { left: (x: number) => `${x * 100}%`, at: (px: number, width: number) => px / width };
 
     /** Rows on one axis from 0 to 1 under a header, with a narrow column of labels, the pointer as a line across the
      * rows and the ticks under them. A row can have a note under its label, and its scale in a column after the rows;
      * with `open`, its label is a button. Rows with no label have no column of labels. The scale:
      * the highest value at the top, the lowest at the floor. With `onpart`, a drag or Shift with an arrow key selects a part of the axis: the
      * rest is paler, the header shows `partText` with Clear, and Escape clears it. On a phone the labels stand above
-     * their rows, and `corner` stands under the ticks. With no row, only the header shows. */
-    let { rows, ticks, ticksAfter, header, label, pointer, onpointer, chip, part = null, onpart, partText = '', onclick, corner, marks }: {
-        rows: { label: string; draw: Snippet; height?: number; note?: string; color?: string; scale?: [high: string, low: string];
+     * their rows, and `corner` stands under the ticks. With no row, only the header shows. `axis` places a share of the
+     * axis when the axis is not straight; a row with `grow` takes the free height of a parent that is a flex column. */
+    let { rows, ticks, ticksAfter, header, label, pointer, onpointer, chip, part = null, onpart, partText = '', onclick, corner, marks, axis = straight }: {
+        rows: { label: string; draw: Snippet; height?: number; note?: string; color?: string; scale?: [high: string, low: string]; grow?: boolean;
             /** What a click on the label does, and the name of the button, such as "Heart rate, open large". */
             open?: { label: string; run: () => void } }[];
         /** Labels under the rows; the first and the last stay inside the axis. */
@@ -34,29 +38,37 @@
         partText?: string;
         /** A click or a tap with no drag, or Enter; `row` as for `onpointer`. Without it, a click clears the part. */
         onclick?: (x: number, row?: number | null) => void;
+        /** `left` is the CSS position of a share; at a share where the axis has a gap, `after` gives its far side. `at`
+         * is the share at `px` of an axis `width` px wide, below 0 or above 1 outside the axis. */
+        axis?: { left: (x: number, after?: boolean) => string; at: (px: number, width: number) => number };
     } = $props();
 
     /** A drag starts after DRAG_PX; an arrow key moves the pointer by KEY_STEP of the axis. The label of a row up to
      * LOW_PX high, such as the pins, stands at its middle. */
     const DRAG_PX = 4, KEY_STEP = .01, LOW_PX = 28;
-    let root = $state<HTMLElement>(), axis = $state<HTMLElement>(), tickRow = $state<HTMLElement>(), lineEnd = $state<number>();
+    let root = $state<HTMLElement>(), layer = $state<HTMLElement>(), tickRow = $state<HTMLElement>(), lineEnd = $state<number>();
     let down: { x: number; px: number; row?: number; moved: boolean } | null = null;
     const split = $derived(Math.min(rows.length, ticksAfter ?? rows.length));
     const gridRow = (i: number) => i < split ? i + 1 : i + 2;
+    const gridRows = $derived.by(() => {
+        if (!rows.some(row => row.grow)) return undefined;
+        const sizes = rows.map(row => row.grow ? 'minmax(0, 1fr)' : 'auto');
+        return [...sizes.slice(0, split), 'auto', ...sizes.slice(split)].join(' ');
+    });
 
     // With rows under the ticks, the pointer line ends on the ticks, where its chip shows. The gaps differ on a phone,
     // so the place is measured.
     $effect(() => {
-        if (!root || !axis || !tickRow || split === rows.length) return void (lineEnd = undefined);
-        const [box, ticksBox, measure] = [axis, tickRow, () => { lineEnd = ticksBox.offsetTop - box.offsetTop; }];
+        if (!root || !layer || !tickRow || split === rows.length) return void (lineEnd = undefined);
+        const [box, ticksBox, measure] = [layer, tickRow, () => { lineEnd = ticksBox.offsetTop - box.offsetTop; }];
         const observer = new ResizeObserver(measure);
         observer.observe(root);
         return () => observer.disconnect();
     });
 
     function place(event: PointerEvent) {
-        const box = axis!.getBoundingClientRect(), lane = (event.target as Element).closest<HTMLElement>('.lane');
-        return { x: (event.clientX - box.left) / box.width, px: event.clientX, row: lane ? Number(lane.dataset.row) : undefined };
+        const box = layer!.getBoundingClientRect(), lane = (event.target as Element).closest<HTMLElement>('.lane');
+        return { x: axis.at(event.clientX - box.left, box.width), px: event.clientX, row: lane ? Number(lane.dataset.row) : undefined };
     }
 
     function move(event: PointerEvent) {
@@ -105,7 +117,7 @@
     // Escape by itself, wherever the focus is: then the part stays.
     function escape(event: KeyboardEvent) {
         if (event.key !== 'Escape' || event.defaultPrevented || !part || !onpart || document.querySelector('dialog:modal')) return;
-        if (!(event.target as Element).closest?.('input, textarea')) onpart(null);
+        if (!(event.target as Element).closest?.('input, select, textarea')) onpart(null);
     }
 </script>
 
@@ -115,13 +127,13 @@
     <header>
         {@render header?.()}
         {#if part && partText}
-            <p class="part">{partText}<button type="button" class="clear" onclick={() => onpart?.(null)}>Clear</button></p>
+            <SelectedPart text={partText} onclear={() => onpart?.(null)} />
         {/if}
     </header>
 {/if}
 {#if rows.length}
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="lanes" class:scaled={rows.some(row => row.scale)} class:bare={rows.every(row => !row.label)} bind:this={root} onpointermove={move} onpointerdown={start} onpointerup={end} onpointercancel={() => down = null}
+<div class="lanes" class:scaled={rows.some(row => row.scale)} class:bare={rows.every(row => !row.label)} class:grow={!!gridRows} style:grid-template-rows={gridRows} bind:this={root} onpointermove={move} onpointerdown={start} onpointerup={end} onpointercancel={() => down = null}
     onpointerleave={() => { if (!down) onpointer(null); }}>
     {#each rows as row, i (i)}
         {#if row.label}
@@ -141,20 +153,20 @@
     {#if corner}<div class="corner" style:--beside={split + 1} style:--under={rows.length + 2}>{@render corner()}</div>{/if}
     <div class="ticks" bind:this={tickRow} style:grid-row={split + 1}>
         {@render marks?.()}
-        {#each ticks as tick, i (i)}<span style:left={`${tick.at * 100}%`} style:translate={`${-tick.at * 100}%`}>{tick.label}</span>{/each}
+        {#each ticks as tick, i (i)}<span style:left={axis.left(tick.at)} style:translate={`${-tick.at * 100}%`}>{tick.label}</span>{/each}
     </div>
     <!-- The pointer layer is the slider of the keys: it holds no button. Shift with an arrow grows a part, Enter clicks
          at the pointer. -->
-    <div class="over" bind:this={axis} style:grid-row={`1 / span ${split < rows.length ? rows.length + 1 : rows.length}`}
+    <div class="over" bind:this={layer} style:grid-row={`1 / span ${split < rows.length ? rows.length + 1 : rows.length}`}
         role="slider" tabindex="0" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round((pointer ?? 0) * 100)}
         onkeydown={key} onblur={() => onpointer(null)}>
         {#if part}
             <!-- A part that reaches an end of the axis has no pale layer there, and so no edge. -->
-            {#if part[0] > 0}<b class="pale before" style:left="0" style:width={`${part[0] * 100}%`}></b>{/if}
-            {#if part[1] < 1}<b class="pale after" style:left={`${part[1] * 100}%`} style:right="0"></b>{/if}
+            {#if part[0] > 0}<b class="pale before" style:left="0" style:width={axis.left(part[0], true)}></b>{/if}
+            {#if part[1] < 1}<b class="pale after" style:left={axis.left(part[1])} style:right="0"></b>{/if}
         {/if}
         {#if pointer !== undefined}
-            <i style:left={`${pointer * 100}%`} style:bottom={lineEnd === undefined ? undefined : 'auto'}
+            <i style:left={axis.left(pointer)} style:bottom={lineEnd === undefined ? undefined : 'auto'}
                 style:height={lineEnd === undefined ? undefined : `${lineEnd + 4}px`}>
                 {#if chip}<span class="chip" class:flip={pointer > .7}>{@render chip()}</span>{/if}
             </i>
@@ -175,25 +187,6 @@
     header:last-child {
         margin-bottom: 0;
     }
-    .part {
-        display: flex;
-        align-items: baseline;
-        gap: 10px;
-        margin: 0 0 0 4px;
-        font-size: 13px;
-        font-variant-numeric: tabular-nums;
-    }
-    .clear {
-        padding: 0;
-        border: 0;
-        background: none;
-        color: var(--ink-soft);
-        font-size: 13px;
-        text-decoration: underline;
-    }
-    .clear:hover {
-        color: var(--ink);
-    }
     .lanes {
         position: relative;
         display: grid;
@@ -204,6 +197,10 @@
         user-select: none;
         /* How much of the panel covers the rows outside a part. */
         --pale: .7;
+    }
+    .grow {
+        flex: 1;
+        min-height: 0;
     }
     /* On the dark panel the same share leaves too little of the rows to read. */
     :global(:root[data-theme="dark"]) .lanes {

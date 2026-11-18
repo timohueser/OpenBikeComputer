@@ -18,13 +18,13 @@
     import { config } from '../../lib/planner/map-data';
     import { corridorPlaces } from '../../lib/planner/place-index';
     import { categoryIds, placeCategories, type PlaceCategory } from '../../lib/planner/poi-kinds';
-    import { profileAscent, profileHeightAt, profileSamples, sampleIndex } from '../../lib/planner/profile-data';
+    import { formatPart, profileAscent, profileHeightAt, profileSamples, sampleIndex } from '../../lib/planner/profile-data';
     import type { Pin, RouteFacts } from '../../lib/planner/route-facts';
     import type { RoutingLine, Surface } from '../../lib/planner/routing';
     import { kindLabel } from '../../lib/planner/search/presentation';
     import { placeDetails, type SearchPlace } from '../../lib/planner/search/types';
     import { surfaceBarColors, surfaceRuns, surfaceShares, surfaceWindow } from '../../lib/planner/surface-data';
-    import { formatAlong, formatDistance, formatHeight, formatPercent } from '../../lib/settings/format';
+    import { formatDistance, formatHeight, formatPercent } from '../../lib/settings/format';
 
     /** The bottom card of the Route page: the waypoints, the heights, the surface and the places along the route or one
      * day of it, on one axis. Shares are 0 to 1 of the route. Without the calculated line, the rows that the summary
@@ -117,8 +117,7 @@
         if (!part) return '';
         const climb = chosenClimb >= 0 ? facts?.climbs[chosenClimb] : undefined;
         const gain = climb ? climb.ascent : samples.some(sample => sample.height !== null) ? profileAscent(part[0], part[1], profile) : null;
-        return [`${formatAlong(part[0] * totalM)} to ${formatAlong(part[1] * totalM)}`, formatDistance(climb ? (climb.to - climb.from) * 1000 : (part[1] - part[0]) * totalM),
-            gain === null ? '' : `${formatHeight(gain)} up`].filter(Boolean).join(' · ');
+        return formatPart(part[0] * totalM, part[1] * totalM, gain, climb ? (climb.to - climb.from) * 1000 : undefined);
     });
     const elevationHeight = $derived(innerWidth >= WIDE_PX && innerHeight >= TALL_PX ? ELEVATION_PX : 96);
 
