@@ -143,7 +143,14 @@ test('the text, the cards, the search and each button open what they name', asyn
   await expect(page.getByText('Choose your finish')).toBeVisible();
   await page.goto('/planner.html?cover=none');
   await page.waitForFunction(() => window.coverTest);
-  const [lon, lat] = await page.evaluate(async () => (await window.coverTest.library.routes()).find(route => route.trip.points.length === 1).trip.points[0].coordinate);
+  // The planner keeps a route that is not saved as its draft.
+  const [lon, lat] = await page.evaluate(() => new Promise(resolve => {
+    const request = indexedDB.open('obc-library');
+    request.onsuccess = () => {
+      const all = request.result.transaction('drafts').objectStore('drafts').getAll();
+      all.onsuccess = () => { request.result.close(); resolve(all.result.find(draft => draft.trip.points.length === 1).trip.points[0].coordinate); };
+    };
+  }));
   expect(lon).toBeGreaterThan(PLACE.west);
   expect(lon).toBeLessThan(PLACE.east);
   expect(lat).toBeGreaterThan(PLACE.south);
