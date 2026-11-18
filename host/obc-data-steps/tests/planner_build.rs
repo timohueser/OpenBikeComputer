@@ -413,6 +413,9 @@ for entries in [catalog['assets'], *(cell[key] for cell in cells for key in ('fi
     assert_eq!(pointer["active"]["name"], "Test");
     assert_eq!(pointer["active"]["device_catalog"], "https://maps.openbikecomputer.com/cell-catalog/catalog.json");
     assert_eq!(pointer["active"]["manifest"], format!("https://maps.openbikecomputer.com/releases/{id}/release.json"));
+    let tiles = format!("https://tiles.openbikecomputer.com/releases/{id}/routes/tiles");
+    assert_eq!(pointer["active"]["trails"], format!("{tiles}/trails/{{cell}}.json"));
+    assert_eq!(pointer["active"]["trail"], format!("{tiles}/long/{{id}}.json"));
     let settings = Settings { region: AREA.into(), ..Settings::default() };
     let files = Files { outputs, ..Files::default() };
     let time = "2026-10-01T00:00:00Z".to_string();

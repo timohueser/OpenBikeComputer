@@ -1,7 +1,7 @@
-import { loadRouteCell } from './map-data';
+import { config, loadRouteCell, loadTrailCell, loadTrailRecord } from './map-data';
 import { tileColumn, tileRow } from './place-index';
 import type { BikeType } from './riding-profiles';
-import { kinds, type CatalogRecord } from './signed-routes';
+import { kinds, type CatalogRecord, type TrailEntry } from './signed-routes';
 
 /**
  * West, south, east and north, in degrees. The caller wraps longitudes to -180..180. A box with west above east,
@@ -9,29 +9,32 @@ import { kinds, type CatalogRecord } from './signed-routes';
  */
 export type Box = [west: number, south: number, east: number, north: number];
 
-/** The most cell files that one map view loads (`specs/route-catalog.md`, "Map view"). */
+/** The most cell files, and the most far files, that one map view loads (`specs/route-catalog.md`, "Map view"). */
 export const MAX_CELLS = 12;
 
-/** The columns and rows of the zoom 9 cells whose box meets `box`, edges included, or null for a box with no cell. */
-function boxRange([west, south, east, north]: Box) {
+/** The columns and rows of the cells of `zoom` whose box meets `box`, edges included, or null for a box with no cell. */
+function boxRange([west, south, east, north]: Box, zoom: number) {
     if (!(-180 <= west && west <= east && east <= 180 && south <= north)) return null;
     // A cell [i, i + 1] meets the range [a, b] when i is from ceil(a) - 1 to floor(b). A latitude on a row edge
     // is not exact in floating point; no vertex in microdegrees lies on such an edge, so this has no effect.
-    const range = (a: number, b: number) => ({ from: Math.max(0, Math.ceil(a) - 1), to: Math.min(511, Math.floor(b)) });
-    const columns = range(tileColumn(west, 9), tileColumn(east, 9)), rows = range(tileRow(north, 9), tileRow(south, 9));
+    const range = (a: number, b: number) => ({ from: Math.max(0, Math.ceil(a) - 1), to: Math.min(2 ** zoom - 1, Math.floor(b)) });
+    const columns = range(tileColumn(west, zoom), tileColumn(east, zoom)), rows = range(tileRow(north, zoom), tileRow(south, zoom));
     return { columns, rows, count: Math.max(0, columns.to - columns.from + 1) * Math.max(0, rows.to - rows.from + 1) };
 }
 
 /** True when `box` meets more than `MAX_CELLS` cells, so that `inBox` loads nothing for it. */
-export const tooWide = (box: Box) => (boxRange(box)?.count ?? 0) > MAX_CELLS;
+export const tooWide = (box: Box) => (boxRange(box, 9)?.count ?? 0) > MAX_CELLS;
 
-/** The ids `9-X-Y` of the zoom 9 cells whose box meets `box`, edges included. */
-export function boxCells(box: Box): string[] {
+/** True when `box` meets more than `MAX_CELLS` zoom 7 cells, so that `trailsInBox` loads nothing for it. */
+export const trailsTooWide = (box: Box) => (boxRange(box, 7)?.count ?? 0) > MAX_CELLS;
+
+/** The ids `Z-X-Y` of the cells of `zoom`, 9 by default, whose box meets `box`, edges included. */
+export function boxCells(box: Box, zoom = 9): string[] {
     const cells: string[] = [];
-    const range = boxRange(box);
+    const range = boxRange(box, zoom);
     if (!range) return cells;
     const { columns, rows } = range;
-    for (let x = columns.from; x <= columns.to; x++) for (let y = rows.from; y <= rows.to; y++) cells.push(`9-${x}-${y}`);
+    for (let x = columns.from; x <= columns.to; x++) for (let y = rows.from; y <= rows.to; y++) cells.push(`${zoom}-${x}-${y}`);
     return cells;
 }
 
@@ -46,9 +49,22 @@ function inBox(udeg: number[], [west, south, east, north]: Box): boolean {
     return false;
 }
 
-/** The cell files of the route catalog and their records. The cache has no limit: a session holds some tens of cells. */
+/** A file that loads once; a failed one loads again on the next call. */
+function cached<K, V>(files: Map<K, Promise<V>>, key: K, load: (key: K) => Promise<V>): Promise<V> {
+    let file = files.get(key);
+    if (!file) {
+        file = load(key);
+        file.catch(() => files.delete(key));
+        files.set(key, file);
+    }
+    return file;
+}
+
+/** The cell files, far files and trail record files of the route catalog. The cache has no limit: a session holds some tens of files. */
 export class RouteCatalog {
     private readonly cells = new Map<string, Promise<CatalogRecord[] | null>>();
+    private readonly farCells = new Map<string, Promise<TrailEntry[] | null>>();
+    private readonly trails = new Map<number, Promise<CatalogRecord | null>>();
     private readonly loaded = new Map<string, CatalogRecord[] | null>();
     private readonly records = new Map<number, CatalogRecord>();
 
@@ -59,17 +75,11 @@ export class RouteCatalog {
 
     /** The records of a cell, or null for a cell outside the release. A failed cell loads again on the next call. */
     cell(id: string): Promise<CatalogRecord[] | null> {
-        let file = this.cells.get(id);
-        if (!file) {
-            file = loadRouteCell(id).then(records => {
-                records?.forEach(record => this.records.set(record.id, record));
-                this.loaded.set(id, records);
-                return records;
-            });
-            file.catch(() => this.cells.delete(id));
-            this.cells.set(id, file);
-        }
-        return file;
+        return cached(this.cells, id, id => loadRouteCell(id).then(records => {
+            records?.forEach(record => this.records.set(record.id, record));
+            this.loaded.set(id, records);
+            return records;
+        }));
     }
 
     /**
@@ -94,6 +104,27 @@ export class RouteCatalog {
             }
         }
         return [...found.values()].sort((a, b) => a.id - b.id);
+    }
+
+    /**
+     * The trails with a vertex of their far line in `box`, edges included, in ascending `id` order: each one once, with the
+     * pieces of all far files of the box. Null, with no load, when the box meets more than `MAX_CELLS` zoom 7 cells or the
+     * release has no trail files.
+     */
+    async trailsInBox(box: Box): Promise<TrailEntry[] | null> {
+        if (!config.trails || trailsTooWide(box)) return null;
+        const files = await Promise.all(boxCells(box, 7).map(id => cached(this.farCells, id, loadTrailCell)));
+        const found = new Map<number, TrailEntry>();
+        for (const entry of files.flatMap(file => file ?? [])) {
+            const seen = found.get(entry.id);
+            found.set(entry.id, seen ? { ...seen, far_udeg: [...seen.far_udeg, ...entry.far_udeg] } : entry);
+        }
+        return [...found.values()].filter(entry => entry.far_udeg.some(piece => inBox(piece, box))).sort((a, b) => a.id - b.id);
+    }
+
+    /** The whole record of the trail `id`, with `parts` and `trail_profile_m`, or null for a release with no trail files. */
+    trail(id: number): Promise<CatalogRecord | null> {
+        return cached(this.trails, id, loadTrailRecord);
     }
 
     /** The stages of a long route, in order. */

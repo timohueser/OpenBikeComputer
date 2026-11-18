@@ -399,7 +399,9 @@ several of its cells are loaded. A cell outside the covered set adds no record. 
 [`vectors/route-boxes.json`](vectors/route-boxes.json).
 
 A far view is a view with more than 12 zoom 9 cells and at most 12 zoom 7 cells. It reads the far
-files of its zoom 7 cells, and a trail record file when the rider selects a trail.
+files of its zoom 7 cells, and a trail record file when the rider selects a trail. A trail is in the
+far view when a vertex of a piece of its far line is in the box, edges included. Each trail is in the
+view once, with the pieces of all far files of the view.
 
 ## Examples
 

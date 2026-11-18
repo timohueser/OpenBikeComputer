@@ -27,6 +27,10 @@ export interface PlannerConfig {
     search: string;
     /** The route catalog of specs/route-catalog.md: a cell template with `{cell}`, or the region file. */
     routes?: string;
+    /** The far file template with `{cell}` of specs/route-catalog.md#trail-files; a release with no trail files has none. */
+    trails?: string;
+    /** The trail record file template with `{id}`; present with `trails`. */
+    trail?: string;
     /** The data layer archives of the region, by name. */
     layers: Partial<Record<Archive, string>>;
     /** TrailView's ruleset `rules.json` (specs/trailview-tiles.md#rules); older releases have none. */
@@ -48,11 +52,13 @@ export function plannerConfig(value: unknown): PlannerConfig {
     const urls = Object.fromEntries(URLS.map((key) => [key, configUrl(config[key])]));
     const routes = config.routes === undefined ? undefined : configUrl(config.routes);
     const rules = config.trailview_rules === undefined ? undefined : configUrl(config.trailview_rules);
+    const optional = (['trails', 'trail'] as const).filter((key) => config[key] !== undefined && !configUrl(config[key]));
     const layers = Object.fromEntries(Object.entries(config.layers ?? {}).map(([name, value]) => [name, configUrl(value)]));
     const invalid = [
         ...URLS.filter((key) => !urls[key]),
         ...(config.routes === undefined || routes ? [] : ['routes']),
         ...(config.trailview_rules === undefined || rules ? [] : ['trailview_rules']),
+        ...optional,
         ...(typeof config.name === 'string' && config.name ? [] : ['name']),
         ...(typeof config.attribution === 'string' && config.attribution ? [] : ['attribution']),
         ...(config.landcover_attribution === undefined || typeof config.landcover_attribution === 'string' ? [] : ['landcover_attribution']),
