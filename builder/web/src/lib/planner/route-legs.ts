@@ -76,7 +76,8 @@ export class LegCache {
     /** The route through a run of routed points. Each gap of legs that are not cached goes out by itself, in `chunks`, one
      * after the other. Each chunk is pinned to the leg before it, and the last chunk of a gap to the cached leg after it, so
      * each join keeps its direction. Each chunk is kept as it arrives, so a failed or aborted run asks only for the rest.
-     * When a pinned gap finds no path, the whole run follows: the whole run can pass a neighbour point the other way. */
+     * When a pinned gap finds no path, the gap goes out again with one more leg on each side, so that a neighbour point can
+     * pass the other way. When that finds no path too, the whole run follows. */
     async route(points: Coordinate[], turnarounds: number[], profile: string, signal: AbortSignal, whole = false): Promise<EngineRoute> {
         const turn = (index: number) => turnarounds.includes(index);
         // A turnaround joins legs in either direction.
@@ -84,6 +85,7 @@ export class LegCache {
         const keys = legKeys(points, turnarounds, profile);
         const legs = keys.map(key => whole ? undefined : this.legs.get(key));
         for (let k = 1; k < legs.length; k++) if (!joins(legs[k - 1], legs[k], k)) legs[k] = undefined;
+        let widened = false;
         for (let first = legs.findIndex(leg => !leg); first >= 0; first = legs.findIndex(leg => !leg)) {
             let last = first;
             while (last + 1 < legs.length && !legs[last + 1]) last++;
@@ -107,7 +109,9 @@ export class LegCache {
             } catch (error) {
                 // Only a missing path can change with the whole run; a busy service must not get a larger request.
                 if (!(before || after) || (error as { code?: string }).code !== 'no_path') throw error;
-                return this.route(points, turnarounds, profile, signal, true);
+                if (widened) return this.route(points, turnarounds, profile, signal, true);
+                widened = true;
+                legs.fill(undefined, Math.max(first - 1, 0), last + 2);
             }
         }
         this.keep(keys, legs as Leg[]);

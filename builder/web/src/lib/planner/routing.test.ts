@@ -285,6 +285,21 @@ describe('runs longer than one request', () => {
         expect(fetch).toHaveBeenCalledTimes(3);
     });
 
+    it('sends a gap without a path again with one more leg on each side, not the whole run', async () => {
+        const fetch = vi.fn<(url: string, init: RequestInit) => Promise<unknown>>(routeService('one'));
+        vi.stubGlobal('fetch', fetch);
+        const cache = new LegCache();
+        const points = run(230);
+        await cache.route(points, [], 'touring', signal);
+        const dragged = points.map((point, i): Coordinate => i === 115 ? [point[0], 48.01] : point);
+        fetch.mockImplementationOnce(failing('no_path', 'No legal route.'));
+        expect((await cache.route(dragged, [], 'touring', signal)).geometry).toEqual(dragged);
+        expect(bodies(fetch).slice(4)).toMatchObject([
+            { points: dragged.slice(114, 117), start_position: `one:${points[114]}`, end_position: `one:${points[116]}` },
+            { points: dragged.slice(113, 118), start_position: `one:${points[113]}`, end_position: `one:${points[117]}` }]);
+        expect(fetch).toHaveBeenCalledTimes(6);
+    });
+
     it('keeps each chunk as it arrives; a failure or an abort stops the chunks after it', async () => {
         const fetch = vi.fn<(url: string, init: RequestInit) => Promise<unknown>>(routeService('one'));
         vi.stubGlobal('fetch', fetch);
