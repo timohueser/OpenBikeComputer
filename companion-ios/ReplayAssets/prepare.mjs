@@ -27,7 +27,7 @@ for (const name of ['poi-kinds', 'map-style']) {
 const config = { basemap: '__BASEMAP__', places: '__PLACES__.json', glyphs: '__GLYPHS__', sprites: '__SPRITES__', terrain_attribution: '__TERRAIN_ATTRIBUTION__',
   attribution: '__ATTRIBUTION__', landcover_attribution: '__LANDCOVER_ATTRIBUTION__' };
 const { mapStyle } = await import(new URL('map-style.mjs', cache).href);
-const { poiKinds } = await import(new URL('poi-kinds.mjs', cache).href);
+const { categoryIds, placeCategories, poiKinds } = await import(new URL('poi-kinds.mjs', cache).href);
 const maps = new URL('../Packages/OBCKit/Sources/OBCUI/Resources/Map/', import.meta.url);
 await mkdir(maps, { recursive: true });
 await writeFile(new URL('poi-kinds.json', maps), JSON.stringify(poiKinds));
@@ -37,6 +37,18 @@ for (const theme of ['light', 'dark']) {
   // The web renderer generates contours from DEM tiles; native uses the DEM hillshade.
   style.layers = style.layers.filter(layer => layer.source !== 'contours');
   delete style.sources.contours;
+  // The web planner draws its places as HTML marks; the native map draws them with these two layers.
+  const panel = theme === 'dark' ? '#201f17' : '#ffffff';
+  const placeFilter = ['in', ['get','kind'], ['literal', Object.keys(poiKinds)]];
+  const category = ['match', ['get','kind'], ...categoryIds.flatMap(id => [Object.keys(placeCategories[id].kinds), id]), ''];
+  style.sources.places = { type: 'vector', url: config.places, attribution: config.attribution };
+  style.layers.push({ id: 'planner-pois', type: 'circle', source: 'places', 'source-layer': 'pois', minzoom: 12, maxzoom: 13, filter: placeFilter,
+    paint: { 'circle-radius': 3.5, 'circle-color': panel, 'circle-stroke-color': theme === 'dark' ? '#aaa383' : '#676443', 'circle-stroke-width': 1.5 } },
+    { id: 'planner-poi-icons', type: 'symbol', source: 'places', 'source-layer': 'pois', minzoom: 13, filter: placeFilter,
+      layout: { 'icon-image': ['concat', 'poi-', category, `-${theme}`], 'icon-padding': 1,
+        'text-field': ['step', ['zoom'], '', 14, ['coalesce', ['get','name:en'], ['get','name']]],
+        'text-font': ['Noto Sans Regular'], 'text-size': 11, 'text-anchor': 'top', 'text-offset': [0, 0.9], 'text-optional': true },
+      paint: { 'text-color': theme === 'dark' ? '#f2efe3' : '#1c1b14', 'text-halo-color': panel, 'text-halo-width': 1.2 } });
   // OBCNativeMapView adds the release's `networks` vector source.
   const colors = theme === 'dark' ? ['#b0b8be','#a4cf67','#79b7f1','#c49de0'] : ['#626a70','#4f8b24','#2368b5','#7c519c'];
   const color = ['match', ['get', 'rank'], 1, colors[1], 2, colors[2], 3, colors[3], colors[0]];
