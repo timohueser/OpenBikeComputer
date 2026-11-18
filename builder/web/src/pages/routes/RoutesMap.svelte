@@ -1,5 +1,6 @@
 <!-- The map of the Routes page: the lines of the shown routes or rides on the relief from zoom 8, bubbles with a count
-     below it, and the selected ones wide at each zoom. The lines of trails show at each zoom, with no bubble. -->
+     below it, and the selected ones wide at each zoom. Signed routes and trails show their lines at each zoom, with no
+     bubble. -->
 <script lang="ts">
     import { onMount, untrack } from 'svelte';
     import * as maplibregl from 'maplibre-gl';
@@ -8,7 +9,7 @@
     import { basemapStyle, type Relief } from '../../lib/planner/map-style';
     import { ClosedAttribution, styleConfig, terrain, useMapProtocols } from '../../lib/planner/map-setup';
     import { terrainRetry } from '../../lib/planner/map-terrain';
-    import { onRouteColor, routeColor, SIGNED_GROUND } from '../../lib/planner/route-colors';
+    import { routeColor, SIGNED_GROUND } from '../../lib/planner/route-colors';
     import { appearance } from '../../lib/theme.svelte';
     import type { Box, Item } from './filter';
 
@@ -19,7 +20,9 @@
         selected: string[];
         /** Lines drawn as selected that the map never moves to: a trail and its parts. */
         marked?: string[];
-        /** `signed`: signed routes of the catalog, each in its own colour. */
+        /** `signed`: signed routes of the catalog and trails, each in its own colour. Their lines show at each zoom, with
+         * no bubble: Explore lists single routes only in views where their lines can be read, so a bubble would count a
+         * list that is already out of date. */
         look?: 'route' | 'ride' | 'signed';
         /** The height in pixels of the bottom of the map that the selected card covers. */
         covered?: number;
@@ -39,7 +42,6 @@
     } = $props();
 
     const LINE_ZOOM = 8;
-    /** The layers of the shown lines: from `LINE_ZOOM`, and at each zoom for trails. */
     const LINE_LAYERS = ['casing', 'signed-casing', 'routes', 'routes-hit'];
     /** A zoom in steps ends a move after each step. The page gets the view of a still map, so that such a gesture gives
      * one view, at its end. */
@@ -62,14 +64,11 @@
         item.summary ? [{ type: 'Feature', properties: { id: item.id, color: colorOf(item) }, geometry: item.kind === 'trail'
             ? { type: 'MultiLineString', coordinates: item.pieces }
             : { type: 'LineString', coordinates: pairs(item.summary.line) } }] : []) });
-    /** Trails: their lines show at each zoom. */
-    const far = $derived(items.some(item => item.kind === 'trail'));
     // The bubbles cluster the middle points of the shown items only, so a bubble counts no hidden route.
-    const middles = $derived<FeatureCollection<Point>>({ type: 'FeatureCollection', features: shown.flatMap(item => {
-        const { id, summary } = item, color = colorOf(item);
-        if (!summary || item.kind === 'trail') return [];
+    const middles = $derived<FeatureCollection<Point>>({ type: 'FeatureCollection', features: shown.flatMap(({ summary }) => {
+        if (!summary) return [];
         const i = Math.floor(summary.line.length / 4) * 2;
-        return [{ type: 'Feature', properties: { id, color, text: color && onRouteColor(color) }, geometry: { type: 'Point', coordinates: [summary.line[i], summary.line[i + 1]] } }];
+        return [{ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [summary.line[i], summary.line[i + 1]] } }];
     }) });
     const shownFilter = $derived<maplibregl.FilterSpecification>(['in', ['get', 'id'], ['literal', shown.map(item => item.id)]]);
     const selectedFilter = $derived<maplibregl.FilterSpecification>(['in', ['get', 'id'], ['literal', [...selected, ...marked]]]);
@@ -86,12 +85,11 @@
         if (!map) return;
         const style = getComputedStyle(container), color = (name: string) => style.getPropertyValue(name).trim();
         const round = { 'line-join': 'round', 'line-cap': 'round' } as const, ride = untrack(() => look) === 'ride';
-        const signed = untrack(() => look) === 'signed', dim = untrack(() => selected.length + marked.length) > 0, minzoom = untrack(() => far) ? 0 : LINE_ZOOM;
+        const signed = untrack(() => look) === 'signed', dim = untrack(() => selected.length + marked.length) > 0, minzoom = signed ? 0 : LINE_ZOOM;
         const line: maplibregl.ExpressionSpecification | string = signed ? ['get', 'color'] : color(ride ? '--ride' : '--route');
-        // The set of route colours is too dark for the dark map, so a signed line or bubble there has a light edge.
+        // The set of route colours is too dark for the dark map, so a signed line there has a light edge.
         const edge = signed && untrack(() => theme) === 'dark' ? SIGNED_GROUND : color('--panel');
         map.addSource('routes', { type: 'geojson', data: untrack(() => lines), promoteId: 'id' });
-        map.addSource('middles', { type: 'geojson', data: untrack(() => middles), cluster: true, clusterMaxZoom: LINE_ZOOM - 1, clusterRadius: 48 });
         const shownNow = untrack(() => shownFilter), selectedNow = untrack(() => selectedFilter);
         if (ride) {
             map.addLayer({ id: 'casing', type: 'line', source: 'routes', minzoom, filter: shownNow, layout: round,
@@ -110,15 +108,14 @@
             paint: { 'line-color': edge, 'line-width': 9 } });
         map.addLayer({ id: 'selected', type: 'line', source: 'routes', filter: selectedNow, layout: round,
             paint: { 'line-color': line, 'line-width': 5 } });
-        map.addLayer({ id: 'bubbles', type: 'circle', source: 'middles', maxzoom: LINE_ZOOM,
-            paint: signed
-                // A bubble of several routes has no route colour.
-                ? { 'circle-color': ['case', ['has', 'point_count'], color('--ink-soft'), line], 'circle-radius': 13,
-                    'circle-stroke-color': ['case', ['has', 'point_count'], color('--panel'), edge], 'circle-stroke-width': 3 }
-                : { 'circle-color': line, 'circle-radius': 13, 'circle-stroke-color': color('--panel'), 'circle-stroke-width': 3 } });
-        map.addLayer({ id: 'bubble-count', type: 'symbol', source: 'middles', maxzoom: LINE_ZOOM,
-            layout: { 'text-field': ['coalesce', ['get', 'point_count_abbreviated'], '1'], 'text-font': ['Noto Sans Regular'], 'text-size': 12, 'text-allow-overlap': true },
-            paint: { 'text-color': signed ? ['case', ['has', 'point_count'], color('--panel'), ['get', 'text']] : '#fff' } });
+        if (!signed) {
+            map.addSource('middles', { type: 'geojson', data: untrack(() => middles), cluster: true, clusterMaxZoom: LINE_ZOOM - 1, clusterRadius: 48 });
+            map.addLayer({ id: 'bubbles', type: 'circle', source: 'middles', maxzoom: LINE_ZOOM,
+                paint: { 'circle-color': line, 'circle-radius': 13, 'circle-stroke-color': color('--panel'), 'circle-stroke-width': 3 } });
+            map.addLayer({ id: 'bubble-count', type: 'symbol', source: 'middles', maxzoom: LINE_ZOOM,
+                layout: { 'text-field': ['coalesce', ['get', 'point_count_abbreviated'], '1'], 'text-font': ['Noto Sans Regular'], 'text-size': 12, 'text-allow-overlap': true },
+                paint: { 'text-color': '#fff' } });
+        }
         ready = true;
     }
 
@@ -230,11 +227,7 @@
     });
     $effect(() => {
         if (!ready) return;
-        for (const layer of LINE_LAYERS) if (map!.getLayer(layer)) map!.setLayerZoomRange(layer, far ? 0 : LINE_ZOOM, 24);
-    });
-    $effect(() => {
-        if (!ready) return;
-        map!.getSource<maplibregl.GeoJSONSource>('middles')?.setData(middles);
+        if (look !== 'signed') map!.getSource<maplibregl.GeoJSONSource>('middles')?.setData(middles);
         for (const layer of LINE_LAYERS) if (map!.getLayer(layer)) map!.setFilter(layer, shownFilter);
     });
     $effect(() => {
