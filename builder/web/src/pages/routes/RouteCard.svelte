@@ -93,17 +93,18 @@
         background: var(--panel);
         box-shadow: 0 6px 20px rgb(28 27 20 / 0.18);
     }
-    /* A low limit of the card's height makes the picture lower, so the card holds it and about three lines of `more`. */
+    /* A low limit of the card's height makes the picture lower, so the card holds it: less the padding and the borders,
+       and with `more` also its gap and about three lines. */
     .picture {
         position: relative;
         grid-area: picture;
         height: 200px;
-        max-height: calc(var(--card-height) - 20px);
+        max-height: calc(var(--card-height) - 22px);
         overflow: hidden;
         border-radius: 6px;
     }
     .card:has(.more) .picture {
-        max-height: calc(var(--card-height) - 80px);
+        max-height: calc(var(--card-height) - 88px);
     }
     .text {
         grid-area: text;
@@ -295,9 +296,9 @@
         .more {
             grid-row: 4;
         }
-        /* A low size container around the card leaves too little room for the strip and three lines of `more`: the
-           text keeps the room. */
-        @container (max-height: 330px) {
+        /* A low window leaves too little room for the strip and three lines of `more` in each place that shows the
+           card: the text keeps the room. */
+        @media (max-height: 480px) {
             .card:has(.more) .profile {
                 display: none;
             }

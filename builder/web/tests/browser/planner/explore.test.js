@@ -84,13 +84,13 @@ async function openCard(page, name, width, height) {
   return page.getByRole('region', { name });
 }
 
-/** The text of the card shows at least one line on the screen, and the wheel over it scrolls it. */
-async function textScrolls(page, card) {
+/** The text of the card shows at least `lines` lines on the screen, and the wheel over it scrolls it. */
+async function textScrolls(page, card, lines) {
   const more = card.locator('.more');
-  await expect.poll(() => more.evaluate(node => {
-    const box = node.getBoundingClientRect(), line = 1.2 * parseFloat(getComputedStyle(node.firstElementChild).fontSize);
-    return Math.min(box.bottom, innerHeight) - Math.max(box.top, 0) >= line;
-  })).toBe(true);
+  await expect.poll(() => more.evaluate((node, lines) => {
+    const box = node.getBoundingClientRect(), line = parseFloat(getComputedStyle(node.firstElementChild).lineHeight);
+    return Math.min(box.bottom, innerHeight) - Math.max(box.top, 0) >= lines * line;
+  }, lines)).toBe(true);
   const box = await more.boundingBox();
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.wheel(0, 100);
@@ -102,15 +102,21 @@ test('on a phone, the card of a route with a long text and no profile stays on t
   // The card is never higher than the screen less 96 px.
   await expect.poll(() => card.evaluate(node => [!node.querySelector('.profile'), node.getBoundingClientRect().height <= innerHeight - 96]))
     .toEqual([true, true]);
-  await textScrolls(page, card);
+  await textScrolls(page, card, 1);
 });
 
-test('on a phone on its side, the card of a route with a profile gives the room of the profile to its text', async ({ page }) => {
-  await textScrolls(page, await openCard(page, 'Schlossberg loop', 844, 390));
-});
+// 844 px wide has the layout of a computer, and 667 px wide that of a phone.
+for (const [width, height] of [[844, 390], [667, 375]]) {
+  test(`in a window of ${width} × ${height} px, the card of a route with a profile shows no strip, and two lines of its text that scroll`, async ({ page }) => {
+    const card = await openCard(page, 'Schlossberg loop', width, height);
+    await expect(card.locator('.profile')).toBeHidden();
+    await textScrolls(page, card, 2);
+  });
+}
 
-test('in a wide and low window, the close button of the card is in the map', async ({ page }) => {
+test('in a wide and low window, the card is in the map with its close button, and a lower picture leaves three lines of its text', async ({ page }) => {
   const card = await openCard(page, 'Westweg 2', 1440, 420);
+  await textScrolls(page, card, 3);
   const close = card.getByRole('button', { name: 'Close' });
   await expect.poll(async () => {
     const [map, button] = await Promise.all([page.locator('.map').boundingBox(), close.boundingBox()]);

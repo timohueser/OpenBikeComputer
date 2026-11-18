@@ -129,7 +129,7 @@
         height: 100%;
         min-height: 0;
     }
-    /* A size container, so the card over it and its height limit follow its height. */
+    /* A size container, so the height limit of the card over it follows its height. */
     .map {
         position: relative;
         overflow: hidden;
@@ -179,7 +179,6 @@
         }
         .map {
             height: 70vh;
-            container-type: normal;
         }
         /* The map is under the list, so a card over the map is below the screen after a tap on a row. */
         .selected {
