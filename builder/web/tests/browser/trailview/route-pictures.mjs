@@ -284,8 +284,8 @@ export function writeSet(out, records, release) {
 
 /**
  * Writes the small image of each full image `covers/<id>/<name>.webp` in `out` whose `<name>-small.webp` is
- * missing or older, in one page with no render, and gives their count: a full image that render writes again
- * gets a new small image. An image that does not decode gets none and is named at the end.
+ * missing or older, in one page with no render: a full image that render writes again gets a new small image.
+ * Gives the count it made and the images that do not decode, which get none.
  */
 export async function small(out = OUT) {
     const dir = join(out, 'covers'), names = existsSync(dir) ? readdirSync(dir, { recursive: true }) : [];
@@ -306,7 +306,11 @@ export async function small(out = OUT) {
                     bitmap.close();
                     const image = await canvas.convertToBlob({ type: 'image/webp', quality });
                     return image.type === 'image/webp' ? { data: Array.from(new Uint8Array(await image.arrayBuffer()), byte => String.fromCharCode(byte)).join('') } : { type: image.type };
-                }, { data: readFileSync(file).toString('base64'), width: WIDTH / SMALL, height: HEIGHT / SMALL, quality: SMALL_QUALITY }).catch(error => ({ error: error.message }));
+                }, { data: readFileSync(file).toString('base64'), width: WIDTH / SMALL, height: HEIGHT / SMALL, quality: SMALL_QUALITY }).catch(error => {
+                    // A closed page or a dead browser is not a broken image: it stops the run.
+                    if (page.isClosed() || !browser.isConnected()) throw error;
+                    return { error: error.message };
+                });
                 if (result.error) {
                     // `upload` refuses a set whose cover has no small image.
                     broken.push(`${file}: ${result.error}`);
@@ -321,7 +325,7 @@ export async function small(out = OUT) {
     }
     console.log(`${todo.length - broken.length} small images.`);
     if (broken.length) console.log(`These images do not decode and have no small image:\n${broken.join('\n')}`);
-    return todo.length - broken.length;
+    return { made: todo.length - broken.length, broken };
 }
 
 /** Renders the covers that `out` lacks and writes the set; gives the ids of the routes that failed. */
@@ -521,7 +525,10 @@ async function main() {
     });
     const out = values.out ?? OUT, ids = text => text?.split(',').map(Number);
     if (command === 'switch') return console.log(`Set ${await switchTo(set)} is live.`);
-    if (command === 'small') return void await small(out);
+    if (command === 'small') {
+        if ((await small(out)).broken.length) process.exitCode = 1;
+        return;
+    }
     if (command === 'upload') return console.log(await upload({ out, without: ids(values.without) }));
     if (command === 'render') {
         const sample = values.sample === undefined ? undefined : Number(values.sample);

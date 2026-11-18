@@ -193,14 +193,9 @@ test('small makes a 240 × 160 WebP of a full image with none, keeps a newer one
             canvas.getContext('2d').fillRect(0, 0, 960, 640);
             return Array.from(new Uint8Array(await (await canvas.convertToBlob({ type: 'image/webp' })).arrayBuffer()));
         })));
-        const log = console.log, lines = [];
-        console.log = line => lines.push(line);
-        try {
-            expect(await small(out)).toBe(1);
-        } finally {
-            console.log = log;
-        }
-        expect(lines.join('\n')).toContain(broken);
+        const { made, broken: named } = await small(out);
+        expect(made).toBe(1);
+        expect(named.join('\n')).toContain(broken);
         expect(existsSync(join(dir, 'broken-small.webp'))).toBe(false);
         const size = await page.evaluate(async bytes => {
             const bitmap = await createImageBitmap(new Blob([Uint8Array.from(bytes)]));
@@ -212,10 +207,10 @@ test('small makes a 240 × 160 WebP of a full image with none, keeps a newer one
         await browser.close();
     }
     const made = statSync(little).mtimeMs;
-    expect(await small(out)).toBe(0);
+    expect((await small(out)).made).toBe(0);
     expect(statSync(little).mtimeMs).toBe(made);
     writeFileSync(full, readFileSync(full));
-    expect(await small(out)).toBe(1);
+    expect((await small(out)).made).toBe(1);
     expect(statSync(little).mtimeMs).toBeGreaterThan(made);
 });
 

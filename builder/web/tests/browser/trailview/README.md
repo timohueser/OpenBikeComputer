@@ -86,8 +86,8 @@ The first run:
 
 For a new planner release, do steps 1 and 4: only the routes whose line changed render.
 
-`node trailview/route-pictures.mjs small [--out DIR]` makes the small image of each full image that
-has none or an older one, with no render and no network.
+`node trailview/route-pictures.mjs small [--out DIR]` makes each missing or older small
+image, with no render or network. A broken image gives exit code 1.
 
 ## Options of render
 
