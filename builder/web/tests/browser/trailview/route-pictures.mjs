@@ -285,7 +285,7 @@ export function writeSet(out, records, release) {
 /**
  * Writes the small image of each full image `covers/<id>/<name>.webp` in `out` whose `<name>-small.webp` is
  * missing or older, in one page with no render, and gives their count: a full image that render writes again
- * gets a new small image.
+ * gets a new small image. An image that does not decode gets none and is named at the end.
  */
 export async function small(out = OUT) {
     const dir = join(out, 'covers'), names = existsSync(dir) ? readdirSync(dir, { recursive: true }) : [];
@@ -293,6 +293,7 @@ export async function small(out = OUT) {
         const little = file.replace(/\.webp$/, '-small.webp');
         return !existsSync(little) || statSync(little).mtimeMs < statSync(file).mtimeMs;
     });
+    const broken = [];
     if (todo.length) {
         const browser = await launch(false);
         try {
@@ -305,7 +306,12 @@ export async function small(out = OUT) {
                     bitmap.close();
                     const image = await canvas.convertToBlob({ type: 'image/webp', quality });
                     return image.type === 'image/webp' ? { data: Array.from(new Uint8Array(await image.arrayBuffer()), byte => String.fromCharCode(byte)).join('') } : { type: image.type };
-                }, { data: readFileSync(file).toString('base64'), width: WIDTH / SMALL, height: HEIGHT / SMALL, quality: SMALL_QUALITY });
+                }, { data: readFileSync(file).toString('base64'), width: WIDTH / SMALL, height: HEIGHT / SMALL, quality: SMALL_QUALITY }).catch(error => ({ error: error.message }));
+                if (result.error) {
+                    // `upload` refuses a set whose cover has no small image.
+                    broken.push(`${file}: ${result.error}`);
+                    continue;
+                }
                 if (result.type) throw new Error(`The browser encoded ${result.type}, not WebP.`);
                 writeWhole(file.replace(/\.webp$/, '-small.webp'), Buffer.from(result.data, 'latin1'));
             }
@@ -313,8 +319,9 @@ export async function small(out = OUT) {
             await browser.close();
         }
     }
-    console.log(`${todo.length} small images.`);
-    return todo.length;
+    console.log(`${todo.length - broken.length} small images.`);
+    if (broken.length) console.log(`These images do not decode and have no small image:\n${broken.join('\n')}`);
+    return todo.length - broken.length;
 }
 
 /** Renders the covers that `out` lacks and writes the set; gives the ids of the routes that failed. */
@@ -409,8 +416,8 @@ export async function render({ out = OUT, sample, only, gpu = false, fixture = f
     const done = covers + none, mean = done ? seconds / done : 0;
     console.log(`${covers} covers, ${none} routes with no view, ${failed.length} failed, ${mean.toFixed(1)} s each, ${(bytes / 1e6).toFixed(1)} MB.`);
     if (sample && done) {
-        const all = Math.round(records.length * covers / done), cells = new Set(records.flatMap(record => record.cells)).size;
-        console.log(`All ${records.length} routes: about ${(records.length * mean / 3600).toFixed(1)} h, ${(all * bytes / Math.max(covers, 1) / 1e6).toFixed(0)} MB, ${all} covers; an upload of ${2 * all + cells + 1} files at most.`);
+        const all = Math.round(records.length * covers / done);
+        console.log(`All ${records.length} routes: about ${(records.length * mean / 3600).toFixed(1)} h, ${all} covers, ${(all * bytes / Math.max(covers, 1) / 1e6).toFixed(0)} MB of full images.`);
     }
     const { set } = writeSet(out, records, release);
     console.log(`Set ${set} in ${join(out, 'sets', set)}.`);

@@ -180,10 +180,11 @@ test('upload refuses a route with no cover and no mark, else sends the points, t
     expect(fake.puts.length).toBe(puts);
 });
 
-test('small makes a 240 × 160 WebP of a full image with none, keeps a newer one, and makes it again after the full image is written again', async () => {
+test('small makes a 240 × 160 WebP of a full image with none, keeps a newer one, makes it again after the full image is written again, and names an image that does not decode', async () => {
     const out = test.info().outputPath('small'), dir = join(out, 'covers', String(VALLEY.id));
-    const full = join(dir, `${keyOf(VALLEY)}${IMAGE}`), little = join(dir, `${keyOf(VALLEY)}${SMALL}`);
+    const full = join(dir, `${keyOf(VALLEY)}${IMAGE}`), little = join(dir, `${keyOf(VALLEY)}${SMALL}`), broken = join(dir, 'broken.webp');
     mkdirSync(dir, { recursive: true });
+    writeFileSync(broken, 'broken');
     const browser = await launch(false);
     try {
         const page = await browser.newPage();
@@ -192,7 +193,15 @@ test('small makes a 240 × 160 WebP of a full image with none, keeps a newer one
             canvas.getContext('2d').fillRect(0, 0, 960, 640);
             return Array.from(new Uint8Array(await (await canvas.convertToBlob({ type: 'image/webp' })).arrayBuffer()));
         })));
-        expect(await small(out)).toBe(1);
+        const log = console.log, lines = [];
+        console.log = line => lines.push(line);
+        try {
+            expect(await small(out)).toBe(1);
+        } finally {
+            console.log = log;
+        }
+        expect(lines.join('\n')).toContain(broken);
+        expect(existsSync(join(dir, 'broken-small.webp'))).toBe(false);
         const size = await page.evaluate(async bytes => {
             const bitmap = await createImageBitmap(new Blob([Uint8Array.from(bytes)]));
             return [bitmap.width, bitmap.height];

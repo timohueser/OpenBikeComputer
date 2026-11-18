@@ -103,7 +103,7 @@ has none or an older one, with no render and no network.
 
 - A route that fails gets no file. `render` goes on with the next route, names each failed route
   with its reason at the end, and exits with 1. The next run tries it again. After 5 failures in a
-  row it renders a route with a cover again, and stops if that fails too.
+  row it renders a route with a cover again, and stops if that fails too: the host or the GPU is down.
   When a route fails on each run, leave it out: `upload --without ID,ID`.
 - `render` skips a route whose cover or `.none` mark exists for its key. A change of the size, the
   camera rule or its light in the script changes `look` and so each key: all routes render again.
