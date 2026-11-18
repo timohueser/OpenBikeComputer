@@ -35,4 +35,12 @@ describe('route notes', () => {
         expect(pass.length).toBeCloseTo(1.5);
         expect(pass.coordinates).toEqual([first, second]);
     });
+
+    it('joins alpine stretches of one grade, and keeps a row for each grade', () => {
+        const alpine = (at: number, grade: number) => ({ coordinates: [], km: 0.5, at, grade });
+        const notes = routeNotes([], [], [alpine(3, 4), alpine(4.5, 4), alpine(5.5, 5), alpine(6.5, 4)]);
+        expect(notes.map(note => [note.label, note.km, note.end, note.length])).toEqual([
+            ['Alpine path (T4)', 3, 7, 1.5], ['Alpine path (T5)', 5.5, undefined, 0.5],
+        ]);
+    });
 });

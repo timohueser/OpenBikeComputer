@@ -90,7 +90,7 @@ function button(label: string, scope: ParentNode = document) {
     return found;
 }
 
-const escape = (target: Element) => target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+const escape = (target: Element) => target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
 
 /** The checkbox of a kind of place to sleep in the open stay chip. */
 function stayBox(label: string, scope: ParentNode = document) {
@@ -628,6 +628,17 @@ describe('planner app transitions', () => {
         escape(button('Pan map')); await tick(); await tick();
         expect(document.querySelector('.night-page')).toBeNull();
         expect(document.activeElement).toBe(button('Choose night 1'));
+    });
+
+    it('keeps the night page when the map takes Escape to close its route details', async () => {
+        await startApp();
+        button('Choose night 1').click(); await tick();
+        // As `PlannerMap` does while its details are open: in the capture phase, before the page.
+        window.addEventListener('keydown', event => event.preventDefault(), { capture: true, once: true });
+        escape(button('Pan map')); await tick();
+        expect(document.querySelector('.night-page')).not.toBeNull();
+        escape(button('Pan map')); await tick(); await tick();
+        expect(document.querySelector('.night-page')).toBeNull();
     });
 
     it('selects where to sleep in a town with the arrow keys and on the map, with the focus kept in the card', async () => {

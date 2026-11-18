@@ -1088,8 +1088,9 @@
             if (event.shiftKey) redo();
             else (statusUndo ?? undo)();
         }
-        // Escape goes back one level wherever the focus is: a town, then a night page, then an open day.
-        if (event.key === 'Escape') {
+        // Escape goes back one level wherever the focus is: a town, then a night page, then an open day. The map
+        // prevents the default when Escape closes its route details: that is the level.
+        if (event.key === 'Escape' && !event.defaultPrevented) {
             if (!selectedId && !mapMode) {
                 if (openStop) stopId = null;
                 else if (nightPage !== null) stopChoosing();

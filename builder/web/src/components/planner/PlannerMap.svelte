@@ -767,10 +767,19 @@
         if (map.isMoving()) map.once("moveend", settle);
         else settle();
     });
+
+    // In the capture phase, so that Escape closes the route details before the page goes back a level.
+    function escape(event: KeyboardEvent) {
+        if (event.key !== 'Escape') return;
+        cancelGesture();
+        if (!overlaySelection) return;
+        event.preventDefault();
+        overlaySelection = null;
+    }
 </script>
 
 <svelte:window onmouseup={(event) => { if (event.target !== map?.getCanvas()) cancelGesture(); }}
-    onblur={cancelGesture} onkeydown={(event) => { if (event.key === 'Escape') { cancelGesture(); overlaySelection = null; } }} />
+    onblur={cancelGesture} onkeydowncapture={escape} />
 
 <!-- The callout always fits the free map area: inside the margins, clear of the controls and the bottom strip, less its offset and tip. -->
 <div class="map-frame" data-map-theme={theme} bind:clientWidth={frameWidth} bind:clientHeight={frameHeight}
