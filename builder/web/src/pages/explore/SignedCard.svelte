@@ -41,7 +41,8 @@
     const record = $derived(item.record);
     /** The long route of a stage or a section: each file that holds a part also holds its long route. */
     const longId = $derived(record.trail ?? record.parent), long = $derived(longId === undefined ? undefined : catalog.record(longId));
-    const number = $derived(record.stage ?? record.trail_stage), of = $derived(long?.stages?.length ?? long?.stage_count);
+    // `parent` and `trail` can name two long routes: the number must be of the one that the card names.
+    const number = $derived(record.trail !== undefined ? record.trail_stage : record.stage), of = $derived(long?.stages?.length ?? long?.stage_count);
     const part = $derived(record.section !== undefined ? `Section ${record.section}` : number === undefined ? false : of ? `Stage ${number} of ${of}` : `Stage ${number}`);
     // A cut stage is no trail: its sections open the trail that the stage is in. A cut route of fewer than two stages has
     // a trail record file only when it takes more than 12 hours, which no reader knows: its name is no button.

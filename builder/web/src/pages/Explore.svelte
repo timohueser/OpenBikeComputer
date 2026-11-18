@@ -194,22 +194,22 @@
         selected = undefined;
         if (trail?.id === id) return;
         const next = trail = { id, entry, record: catalog.record(id) };
-        let opened: typeof trail = { ...next, failed: true };
-        try {
-            // A trail opened from a stage or from the history has no far line yet: the far files of the view have it.
-            const [record, entries] = await Promise.all([catalog.trail(id), entry || !view ? undefined : catalog.trailsInBox(view).catch(() => null)]);
-            // A trail that is a route record keeps the record of its cell file: its card holds the cover by that object.
-            const kept = next.record?.line_udeg ? next.record : record ?? next.record;
-            opened = { ...next, entry: entry ?? entries?.find(other => other.id === id), record: kept, failed: !record };
-        } catch (error) {
-            console.error('Trail:', error);
-        }
+        // A trail opened from a stage or from the history has no far line yet: the far files of the view have it.
+        const [record, entries] = await Promise.all([
+            catalog.trail(id).catch((error: unknown) => { console.error('Trail:', error); return undefined; }),
+            entry || !view ? undefined : catalog.trailsInBox(view).catch(() => null),
+        ]);
+        // A trail that is a route record keeps the record of its cell file: its card holds the cover by that object.
+        const kept = next.record?.line_udeg ? next.record : record ?? next.record;
+        const opened = { ...next, entry: entry ?? entries?.find(other => other.id === id), record: kept, failed: !record };
         // A trail with nothing to show, such as one of the history that a new release does not have, closes.
         if (trail === next) trail = opened.entry || opened.record ? opened : undefined;
     }
 
     /** The button that opens the trail card goes with the stage card: the focus moves to the new card. */
     function trailOfCard(id: number) {
+        // The trail card shows on the page, under the TrailView window.
+        trailView = undefined;
         void openTrail(id);
         void tick().then(() => document.querySelector<HTMLElement>('.selected .close')?.focus());
     }
@@ -259,6 +259,8 @@
                     { width: full ? innerWidth : innerWidth - 64, height: full ? innerHeight : innerHeight - 64, date: today(), time: '10:00', weather: 'sunny' })
                     .catch((error: unknown) => { console.error('TrailView:', error); return null; });
                 const now = trailViewItems();
+                // TrailView shows the routes of a near view only.
+                if (far) return;
                 if (now.length !== listed.length || now.some((item, i) => item.id !== listed[i].id)) continue;
                 if (first) trailView = { component, origin: [box.left + box.width / 2, box.top + box.height / 2], view: first, routes };
                 else notice = { text: first === null ? 'TrailView could not start. Try again.' : 'TrailView has no view of this area.', view };
