@@ -55,9 +55,13 @@ const STOREY_TOP: u32 = 2147483648u;
 // Both top bits, which no other word holds together (a storey's top holds the first, a cover's corner the second): a
 // bore's inside (plan/piece.wgsl), lit by inside_lit.
 const INSIDE: u32 = 3221225472u;
-// The share of an inside face's light by its direction, x + y times its normal's z: the floor all, a wall 0.75, the roof
-// half, so that their shapes read where the light is dim.
-const INSIDE_FACE: vec2f = vec2f(0.75, 0.25);
+// The light inside a bore, in shares of the sky's light on a face out of the sun: on a portal line INSIDE_OPEN (the
+// ground in front throws light in), down to INSIDE_DIM deep in, the tunnel's own light, which takes no colour of the sky.
+const INSIDE_OPEN: f32 = 1.3;
+const INSIDE_DIM: f32 = 0.65;
+// The share of an inside face's light by its direction, x + y times its normal's z: the floor 1.1, a wall 0.85, the roof
+// 0.6, so that their shapes read where the light is dim.
+const INSIDE_FACE: vec2f = vec2f(0.85, 0.25);
 const CULVERT_INSIDE: vec3f = vec3f(0.018, 0.02, 0.018);
 const CF_SAMPLE: u32 = 1u;
 const CF_MESH: u32 = 2u;
@@ -355,8 +359,9 @@ fn wall_rock(in: CorridorOut, su: vec2f) -> WallRock {
 }
 
 // A bore's inside (INSIDE): no sun reaches it, and it reads no shadow map. Its floor keeps its way's look, and what of that
-// look would show the ground is concrete, as the walls and the roof are. A face takes the sky's light that comes in at the
-// openings, as long as its normal is (plan/piece.wgsl's daylight), times INSIDE_FACE by its direction.
+// look would show the ground is concrete, as the walls and the roof are. A face's light is as long as its normal
+// (plan/piece.wgsl's daylight): INSIDE_DIM of it grey, the rest the sky's light that comes in at the openings; times
+// INSIDE_FACE by its direction.
 fn inside_lit(in: CorridorOut, su: vec2f, d: mat2x3f) -> vec3f {
     let light = length(in.normal);
     let up = in.normal.z / max(light, 1e-6);
@@ -373,7 +378,9 @@ fn inside_lit(in: CorridorOut, su: vec2f, d: mat2x3f) -> vec3f {
     if (l.ground > 0.0) {
         albedo = mix(albedo, detail_look(MAT_CAP, su, way, in.altitude).albedo, min(l.ground, 1.0));
     }
-    return atmosphere(albedo * look.ambient.rgb * light * (INSIDE_FACE.x + INSIDE_FACE.y * up), in.relative, in.altitude);
+    let sky = look.ambient.rgb;
+    let lit = INSIDE_DIM * vec3f(luma(sky)) + (light - INSIDE_DIM) * sky;
+    return atmosphere(albedo * lit * (INSIDE_FACE.x + INSIDE_FACE.y * up), in.relative, in.altitude);
 }
 
 @fragment

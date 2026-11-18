@@ -56,16 +56,15 @@ struct PieceVertex {
     h: f32,
 }
 
-// A bore's inside takes the sky's light that comes in at its openings (INSIDE of roads/corridor.wgsl): on a portal line all
-// that a face out of the sun takes, less along the bore, down to DIM_LIGHT of it, the tunnel's own light, DAYLIGHT_M in. The
-// share falls as its square: fast past the opening, slowly deeper in. A closed end lets none in.
+// A bore's inside takes the daylight that comes in at its openings (INSIDE_OPEN of roads/corridor.wgsl on a portal line),
+// less along the bore, down to the tunnel's own light (INSIDE_DIM) DAYLIGHT_M in. The share falls as its square: fast past
+// the opening, slowly deeper in. A closed end lets none in.
 const DAYLIGHT_M: f32 = 15.0;
-const DIM_LIGHT: f32 = 0.35;
 
 // The light of bore corner k, from its metres to daylight (corners.wgsl's daylight_metres), as its normal's length.
 fn daylight(k: u32) -> f32 {
     let share = 1.0 - min(bitcast<f32>(piece[params.out + 4u * k + 3u]) / DAYLIGHT_M, 1.0);
-    return mix(DIM_LIGHT, 1.0, share * share);
+    return mix(INSIDE_DIM, INSIDE_OPEN, share * share);
 }
 
 // A corner's place and height: a terrain vertex as the terrain's vertex_main makes it, any other at its stored height.

@@ -4,25 +4,30 @@
 use super::in_bore;
 use crate::graph::{Arm, Family, Level, WayGraph};
 
-/// The points of the bore ways `ways` where daylight comes in, as (way, its metres along there, the metres from there to
-/// the nearest portal through the bore ways), sorted: each node of the graph (a joint or a junction) on such a way that a
-/// portal reaches. A node where a bore way meets a ground way that is no water is a portal (0 m); a node where bore ways
-/// meet passes the light on. The light at a point of a bore way is the least over its way's entries of the metres along
-/// between the two plus the entry's metres: so it comes round a bend and through a junction, and never through the rock
-/// to another bore. A point that no portal reaches (behind the body's end, between two closed ends) has none.
+/// The points of the ways `ways` where daylight comes into the bores, as (way, its metres along there, the metres from
+/// there to the nearest portal through the bore ways), sorted: each node of the graph (a joint or a junction) on a bore way
+/// that a portal reaches. A node where a bore way meets a ground way that is no water is a portal (0 m), also on that
+/// ground way: a floor in front of the portal line under a way on top is the ground way's. A node where bore ways meet
+/// passes the light on. The light at a point of a way is the least over its way's entries of the metres along between the
+/// two plus the entry's metres: so it comes round a bend and through a junction, and never through the rock to another
+/// bore. A point that no portal reaches (behind the body's end, between two closed ends) has none.
 pub(crate) fn daylight(g: &WayGraph, ways: &[u32]) -> Vec<(u32, f64, f64)> {
     let nodes: Vec<([i32; 2], &[Arm])> = (g.joints.iter().map(|j| (j.pos, &j.arms[..])))
         .chain(g.junctions.iter().map(|j| (j.pos, &j.arms[..])))
         .collect();
-    // Each bore arm of a node: its way, its metres along at the node, its node.
+    // Each bore arm of a node, and each ground arm of a portal: its way, its metres along at the node, its node.
+    let ground = |a: &Arm| {
+        let w = &g.ways[a.way as usize];
+        w.level == Level::Ground && w.family != Family::Water
+    };
     let mut points: Vec<(u32, f64, usize)> = Vec::new();
     let mut open = vec![false; nodes.len()];
     for (k, &(pos, arms)) in nodes.iter().enumerate() {
-        open[k] = arms.iter().any(|a| {
-            let w = &g.ways[a.way as usize];
-            w.level == Level::Ground && w.family != Family::Water
-        });
-        points.extend(arms.iter().filter(|a| in_bore(g, a.way)).map(|a| (a.way, along(g, a.way, pos), k)));
+        if !arms.iter().any(|a| in_bore(g, a.way)) {
+            continue;
+        }
+        open[k] = arms.iter().any(ground);
+        points.extend(arms.iter().filter(|a| in_bore(g, a.way) || ground(a)).map(|a| (a.way, along(g, a.way, pos), k)));
     }
     points.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
     let mut d: Vec<f64> = points.iter().map(|p| if open[p.2] { 0.0 } else { f64::INFINITY }).collect();

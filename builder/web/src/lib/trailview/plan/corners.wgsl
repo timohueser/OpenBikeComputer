@@ -140,8 +140,12 @@ fn first_cap(k: u32) -> u32 {
 
 // A bore corner's metres to daylight, in the place of its normal (piece.wgsl's storey_vertex): the least over its way's
 // lights of the metres along between the two plus the light's metres, M_FAR for none. Its metres along are those at its
-// foot on its floor's line, `line`, as the crate's shell reads them (`Lines::foot`): a bore's line is short.
+// foot on its label's line, `line` (the bore's, or in front of a portal line the ground way's), as the crate's shell reads
+// them (`Lines::foot`): a bore is short.
 fn daylight_metres(q: vec2i, line: u32) -> f32 {
+    if (line == M_NONE) {
+        return M_FAR;
+    }
     let lw = params.block + mw(params.block + 6u) + M_LINE * line;
     let first = params.block + mw(params.block + 7u) + M_SAMPLE * mw(lw + 2u);
     let qf = vec2f(q);
@@ -169,14 +173,10 @@ fn daylight_metres(q: vec2i, line: u32) -> f32 {
     return metres;
 }
 
-// The line of a bore corner's label, M_NONE for any other corner: a storey's line whose storey (the leg bits) is −1.
-fn bore_line(label: u32) -> u32 {
-    if (params.offsets == 0u || label == M_NONE) {
-        return M_NONE;
-    }
-    let line = mw(m_label(params.block, label) + 2u);
-    let finish = select(mw(params.block + mw(params.block + 6u) + M_LINE * line + 1u), 0u, line == M_NONE);
-    return select(M_NONE, line, (finish & M_STOREY) != 0u && (finish >> 24u) == 0xffu);
+// Whether storey corner k has a cap: only a bore's corners have, its floor's and its roof's (`mesh/shell.rs`).
+fn capped(k: u32) -> bool {
+    let j = first_cap(k);
+    return j < params.cap_count && piece[params.caps + 3u * j] == k;
 }
 
 // Whether a line's finish word is of a wall class: the one flag that heights reads for a wall at its edge.
@@ -380,10 +380,10 @@ fn corners(@builtin(local_invocation_index) lane: u32, @builtin(workgroup_id) gr
     let step = i32(max(1.0, round(NORMAL_STEP_M / mpu)));
     var taps = array(vec2i(0), vec2i(step, 0), vec2i(-step, 0), vec2i(0, -step), vec2i(0, step));
     let cell = vec2i(i32(M_CELL));
-    // A bore corner needs no normal: it lies in the shade of its bore.
-    let bore = select(M_NONE, bore_line(label), makes && !terrain_only && !caps_pass);
+    // A bore's corner needs no normal: no sun reaches it.
+    let bore = makes && !terrain_only && !caps_pass && params.offsets != 0u && capped(k);
     var h = NONE;
-    if (makes && (tap == 0u || (!terrain_only && !caps_pass && may_pave(label) && bore == M_NONE)) && (!terrain_only || label == M_NONE)) {
+    if (makes && (tap == 0u || (!terrain_only && !caps_pass && may_pave(label) && !bore)) && (!terrain_only || label == M_NONE)) {
         h = height_of(clamp(q + taps[tap], vec2i(0), cell), label, storey);
     }
     corner_heights[lane] = h;
@@ -452,8 +452,8 @@ fn corners(@builtin(local_invocation_index) lane: u32, @builtin(workgroup_id) gr
     piece[o + 1u] = look.x;
     piece[o + 2u] = look.y;
     var last = pack2x16snorm(e);
-    if (bore != M_NONE) {
-        last = bitcast<u32>(daylight_metres(q, bore));
+    if (bore) {
+        last = bitcast<u32>(daylight_metres(q, select(mw(m_label(params.block, label) + 2u), M_NONE, label == M_NONE)));
     }
     piece[o + 3u] = last;
 }
