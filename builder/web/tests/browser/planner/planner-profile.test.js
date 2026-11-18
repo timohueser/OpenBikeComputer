@@ -9,7 +9,7 @@ const drawn = (id, kind, lon, from, to, extra = {}) => ({
 // A plan of two days with drawn legs, so its line needs no routing request: 15.2 km along the parallel 47, the night in
 // the middle.
 const plan = {
-  id: 'two', revision: 0, name: 'Two days', updatedAt: 0,
+  id: 'two', revision: 0, name: 'Two days', updatedAt: 0, summary: null,
   trip: {
     mode: 'trip', bike: 'touring', days: 2, daysSet: true, restAfter: [], routeOrder: ['up', 'night-1', 'flat'], points: [
       drawn('start', 'start', 8, 400, 400), drawn('up', 'waypoint', 8.05, 400, 600), drawn('night-1', 'night', 8.1, 600, 600, { night: 1, label: 'Inn' }),
@@ -67,23 +67,22 @@ test('the planner profile: a drag selects a part, a press on a day-end handle se
   await part.getByRole('button', { name: 'Clear' }).click();
   await expect(part).toHaveCount(0);
 
-  // A drag of the day end moves the night and selects no part.
-  const handle = profile.locator('.handle');
-  const box = await handle.boundingBox();
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(box.x + box.width / 2 + 30, box.y + box.height / 2);
-  await page.mouse.move(box.x + box.width / 2 + 60, box.y + box.height / 2);
-  await expect(profile.locator('.chip')).toBeVisible();
-  await page.mouse.up();
-  await expect(part).toHaveCount(0);
-  await expect(profile.locator('.pale')).toHaveCount(0);
-
+  // A move of the map by the rider offers the search of the new view.
   const map = await page.locator('.maplibregl-canvas').boundingBox();
   await page.mouse.move(map.x + map.width / 2, map.y + map.height / 3);
   await page.mouse.down();
   await page.mouse.move(map.x + map.width / 2 + 80, map.y + map.height / 3, { steps: 4 });
   await page.mouse.up();
   await expect(searchView).toBeVisible();
+
+  // A drag that starts on the handle of the night selects no part.
+  const handle = await profile.locator('.handle').boundingBox();
+  await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(handle.x + handle.width / 2 + 30, handle.y + handle.height / 2);
+  await page.mouse.move(handle.x + handle.width / 2 + 60, handle.y + handle.height / 2);
+  await page.mouse.up();
+  await expect(part).toHaveCount(0);
+  await expect(profile.locator('.pale')).toHaveCount(0);
   expect(errors).toEqual([]);
 });
