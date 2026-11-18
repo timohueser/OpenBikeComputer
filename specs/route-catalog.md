@@ -238,7 +238,8 @@ route and not a piece. Its parts are its child relations in member order:
 | Another route relation | One part; a joined trail is one part |
 
 A relation that comes twice counts once, at its first place. The stage number of a part is its
-position in the parts, from `1`, parts not in the catalog included. A long route inside another one
+position in this list, from `1`, parts not in the catalog included. The sections of a cut part take
+its place in `parts`, each with its stage number (see [Sections](#sections)). A long route inside another one
 is also a long route of its own. A child route with no `name` and no `ref` that is a part gets a
 route record with the `name` and the `ref` of the long route that has it as a child relation; of
 two, the one with the lower relation ID. A long route is in the catalog when at least one of its

@@ -92,7 +92,7 @@ For a new planner release, do steps 1 and 4: only the routes whose line changed 
 | Option | Effect |
 | --- | --- |
 | `--sample N` | Only N routes, spread over the catalog |
-| `--only ID,ID` | Only these relation IDs |
+| `--only=ID,ID` | Only these record IDs; a section has a negative ID, which needs the `=` form |
 | `--out DIR` | Another folder than `.artifacts/route-pictures` |
 | `--gpu` | The GPU of the machine. Without it, SwiftShader draws for minutes. |
 | `--fixture` | The routes of `fixture/routes.json` and the tiles of the test fixture, for the test: build the page with `npm run pretest:trailview` |

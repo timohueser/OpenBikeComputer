@@ -48,8 +48,8 @@ const SEARCH_CALLS: usize = 400;
 /// The search queues of one route request.
 const SEARCH_BYTES: usize = 768 << 20;
 /// The longest section of a cut line. The owner chose this length for the sections of long trails:
-/// it is below the longest single line that the builder plans whole. The test grid is 2.7 km wide.
-const SECTION_M: f64 = if cfg!(test) { 2_000.0 } else { 60_000.0 };
+/// it is below the longest single line that the builder plans whole.
+const SECTION_M: f64 = 60_000.0;
 /// The `id` of a section holds its number in two decimal digits.
 const MAX_SECTIONS: usize = 99;
 
@@ -444,7 +444,7 @@ pub fn write(directory: &Path, osm: Data, france: bool) -> Result<Report, String
     let shared = routing.shared_bytes(PROFILES).map_err(|e| e.to_string())?;
     let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
     let workers = cpus.min(ROUTERS_MEMORY.saturating_sub(shared) / (routing.router_bytes() + SEARCH_BYTES)).max(1);
-    let (records, report) = catalog(&routing, osm, france, workers)?;
+    let (records, report) = catalog(&routing, osm, france, workers, SECTION_M)?;
     let bytes =
         serde_json::to_vec(&crate::sort_keys(json!({"format": 1, "routes": records}))).map_err(|e| e.to_string())?;
     std::fs::write(directory.join(FILE), bytes).map_err(|e| e.to_string())?;
@@ -456,6 +456,7 @@ fn catalog<S: Source + Clone + Send>(
     osm: Data,
     france: bool,
     workers: usize,
+    section_m: f64,
 ) -> Result<(Vec<Value>, Report), String> {
     let Data { ways, relations, .. } = osm;
     let mut report = Report::default();
@@ -543,7 +544,7 @@ fn catalog<S: Source + Clone + Send>(
                     let Some(job) = job else { break };
                     let begun = std::time::Instant::now();
                     let mut calls = 0;
-                    let result = route(&mut router, &job, points, france, &mut calls);
+                    let result = route(&mut router, &job, points, france, section_m, &mut calls);
                     let search = (job.relation.id, begun.elapsed().as_secs_f64(), calls);
                     results.lock().unwrap().push((search, result));
                 }
@@ -598,10 +599,8 @@ fn catalog<S: Source + Clone + Send>(
     for &id in cut.keys() {
         let relation = relations.get(id).expect("a cut route is in the data");
         let kind = route_kind(&relation.tags).expect("a cut route has a kind");
-        let Some((mut record, points)) = long::record(&relation, kind, &parts_of(id, None), false, france) else {
-            drops.insert(id, Reason::NoStages);
-            continue;
-        };
+        let (mut record, points) =
+            long::record(&relation, kind, &parts_of(id, None), false, france).expect("a cut route keeps a section");
         if let Some(trail) = unnamed.get(&id).and_then(|&trail| relations.get(trail)) {
             named_after(&mut record, &trail);
         }
@@ -673,6 +672,7 @@ fn route<D: RoutingData>(
     job: &Job,
     points: &HashMap<i64, P>,
     france: bool,
+    section_m: f64,
     calls: &mut usize,
 ) -> Result<Built, Failed> {
     let apart = |a: i64, b: i64| distance(points[&a], points[&b]);
@@ -691,7 +691,7 @@ fn route<D: RoutingData>(
         runs = assemble::chain(&parts, &apart, MAX_GAP_M).ok_or(failed(Reason::Gap))?;
         assemble::side_trips(&mut runs, &branches, ends, &apart);
     }
-    shaped(router, job, &located(&runs), france, calls).map_err(failed)
+    shaped(router, job, &located(&runs), france, section_m, calls).map_err(failed)
 }
 
 /// The length, first and last point of a line in runs.
@@ -701,12 +701,13 @@ fn ends(runs: &[Vec<P>]) -> Option<(f64, P, P)> {
 }
 
 /// Builds the record of one route from the runs of its main line in order, or the sections of a
-/// line longer than `SECTION_M` whose plan fails.
+/// line longer than `section_m` whose plan fails, when one of them passes.
 fn shaped<D: RoutingData>(
     router: &mut Router<D>,
     job: &Job,
     runs: &[Vec<P>],
     france: bool,
+    section_m: f64,
     calls: &mut usize,
 ) -> Result<Built, Reason> {
     let own = runs.concat();
@@ -752,11 +753,11 @@ fn shaped<D: RoutingData>(
         || tag(&job.relation.tags, "roundtrip") == "yes" && distance(start, end) <= ROUNDTRIP_M && {
             patch(&mut line, start).is_ok()
         };
-    match planned(router, job, &line, length, closed, france, calls) {
-        Err(_) if length > SECTION_M => {}
+    let reason = match planned(router, job, &line, length, closed, france, calls) {
+        Err(reason) if length > section_m => reason,
         whole => return whole.map(Built::Route),
-    }
-    let sections = sections(&line);
+    };
+    let sections = sections(&line, section_m);
     if sections.len() > MAX_SECTIONS {
         return Err(Reason::TooManyPoints);
     }
@@ -772,18 +773,23 @@ fn shaped<D: RoutingData>(
         kept.record.insert("trail".into(), json!(job.relation.id));
         Ok(kept)
     });
-    Ok(Built::Sections(built.collect()))
+    let built: Vec<_> = built.collect();
+    // With no section kept, the route leaves as the whole line did.
+    if built.iter().all(Result::is_err) {
+        return Err(reason);
+    }
+    Ok(Built::Sections(built))
 }
 
-/// A line cut into ⌈length / `SECTION_M`⌉ sections of equal length, each cut at the line point
+/// A line cut into ⌈length / `section_m`⌉ sections of equal length, each cut at the line point
 /// nearest to it. Each section ends at the point where the next one starts.
-fn sections(line: &[P]) -> Vec<Vec<P>> {
+fn sections(line: &[P], section_m: f64) -> Vec<Vec<P>> {
     let mut along = vec![0.0];
     for w in line.windows(2) {
         along.push(along[along.len() - 1] + distance(w[0], w[1]));
     }
     let total = along[along.len() - 1];
-    let n = (total / SECTION_M).ceil() as usize;
+    let n = (total / section_m).ceil() as usize;
     let nearest = |at: f64| {
         let j = along.partition_point(|&a| a < at).min(line.len() - 1);
         if j > 0 && at - along[j - 1] < along[j] - at {
