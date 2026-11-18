@@ -122,9 +122,8 @@ test('a planning session stays inside the request budget', async ({ page }) => {
   }
   phase('search');
 
-  await page.getByRole('button', { name: 'Map settings' }).click();
-  await page.getByText('Places', { exact: true }).click();
-  await page.getByRole('button', { name: 'Highlight water at every zoom' }).click();
+  await page.getByRole('button', { name: 'Kinds of places' }).click();
+  await page.getByRole('button', { name: 'Highlight Water' }).click();
   await idle();
   phase('show places');
   await drag(-200, -60);
