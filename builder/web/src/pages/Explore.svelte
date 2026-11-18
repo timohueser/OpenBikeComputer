@@ -63,6 +63,8 @@
     const shown = $derived(results(inView, chips, '', undefined, 'shortest') as SignedItem[]);
     const wide = $derived(!!view && tooWide(view));
     const chosen = $derived(shown.find(item => item.id === selected));
+    /** The credits of the picture of the card, which the map shows. */
+    let cardCredits = $state.raw<string[]>([]);
     /** The value of each item that the other chips keep, for the bars of the slider of `key`. */
     const values = (key: 'length' | 'climb') => results(inView, { ...chips, [key]: undefined }, '')
         .map(({ summary }) => key === 'length' ? distanceIn(summary!.lengthM) : heightIn(summary!.climbM));
@@ -220,7 +222,7 @@
 <!-- Escape in an open window closes only the window. -->
 <svelte:window onkeydown={event => { if (event.key === 'Escape' && !document.querySelector('dialog[open]')) selected = undefined; }} />
 
-<ListAndMap title="Explore" {items} {shown} {place} fit={0} look="signed" credits={[]} selected={chosen ? [chosen.id] : []}
+<ListAndMap title="Explore" {items} {shown} {place} fit={0} look="signed" credits={cardCredits} selected={chosen ? [chosen.id] : []}
     onselect={id => selected = id} onview={next => setView(wrapped(next))} card={chosen ? card : undefined}
     mapButtons={hasTrailView(config) && shown.length ? mapButtons : undefined}>
     {#snippet list()}
@@ -253,7 +255,7 @@
 </ListAndMap>
 
 {#snippet card(refocus: () => void)}
-    <SignedCard item={chosen!} onplan={() => plan(chosen!)} onclose={() => { refocus(); selected = undefined; }} />
+    <SignedCard item={chosen!} bind:credits={cardCredits} onplan={() => plan(chosen!)} onclose={() => { refocus(); selected = undefined; }} />
 {/snippet}
 
 {#snippet mapButtons()}

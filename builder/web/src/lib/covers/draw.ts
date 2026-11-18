@@ -10,6 +10,9 @@ const LOOKS = {
     ride: { line: '#12b3a8', glow: '#84e2d9', core: '#cdf6f1', ring: '#0b8f8b' },
 };
 export type Look = 'route' | 'ride';
+/** A line in its own colour, as a signed route has one. A white glow keeps each colour of the set apart from a dark
+ * forest or lake; the core is the colour itself, so the line keeps its full colour. */
+const own = (colour: string) => ({ line: colour, glow: '#ffffff', core: colour, ring: colour });
 /** With a part, the part keeps the colours of its look. The rest of the line is a paler solid tint with no glow and no
  * core, so that it stays behind the part on a dark slope as the pale line does on the map. */
 export const REST: Record<Look, string> = { route: '#e7a6d0', ride: '#a5d8d3' };
@@ -45,8 +48,8 @@ export function crop(cover: Pick<CoverImage, 'width' | 'height' | 'points'>, [wi
 /** Draws the cover over the whole canvas of `context`, which is `box` pixels in size, and returns the cut. `mark` and
  * `part` are metres along the route. `trim` leaves out the line in that many metres along the route at each end. */
 export function drawCover(context: CanvasRenderingContext2D, cover: CoverImage,
-    { box, mark, part, line, look = 'route', trim = 0 }: { box: [number, number]; mark?: number; part?: [number, number]; line: boolean; look?: Look; trim?: number }): Crop {
-    const cut = crop(cover, box), { points, summary } = cover, colours = LOOKS[look];
+    { box, mark, part, line, look = 'route', colour, trim = 0 }: { box: [number, number]; mark?: number; part?: [number, number]; line: boolean; look?: Look; colour?: string; trim?: number }): Crop {
+    const cut = crop(cover, box), { points, summary } = cover, colours = colour ? own(colour) : LOOKS[look];
     context.drawImage(cover.image, cut.left, cut.top, box[0] / cut.scale, box[1] / cut.scale, 0, 0, box[0], box[1]);
     if (!line) return cut;
     const x = (i: number) => (points.x[i] - cut.left) * cut.scale, y = (i: number) => (points.y[i] - cut.top) * cut.scale;
