@@ -19,6 +19,7 @@ beforeEach(() => {
         '/manifest.json': manifest,
         [CELL_FILE]: { format: 1, routes: { 1: KEY, 2: 'ffffffffffffffff' } },
         [`/covers/1/${KEY}-0715-1000.webp`]: 'image',
+        [`/covers/1/${KEY}-0715-1000-small.webp`]: 'small image',
         [`/covers/1/${KEY}.json`]: { x: [10, null], y: [20, null], eye: [130, 0] },
     };
     vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
@@ -41,11 +42,15 @@ const cellReads = () => asked.filter(path => path === CELL_FILE).length;
 describe('coverOf', () => {
     it('finds the cover by the key that the cover script writes, reads one cell file for two rows, and makes a null place a point with no place', async () => {
         const { coverOf } = await import('./route-pictures');
-        const [first, second] = await Promise.all([coverOf(record(1, LINE)), coverOf(record(2, LINE))]);
+        const [first, second, row] = await Promise.all([coverOf(record(1, LINE)), coverOf(record(2, LINE)), coverOf(record(1, LINE), true)]);
         expect(cellReads()).toBe(1);
         expect(first?.credits).toEqual(['© Data']);
         expect(Array.from(first!.points.x)).toEqual([10, NaN]);
         expect(Array.from(first!.points.eye)).toEqual([130, 0]);
+        // A row loads the small image, a quarter of the full image, so its points are a quarter of the points file.
+        expect(asked).toContain(`/covers/1/${KEY}-0715-1000-small.webp`);
+        expect(Array.from(row!.points.x)).toEqual([2.5, NaN]);
+        expect(Array.from(row!.points.y)).toEqual([5, NaN]);
         // The cell file holds another key for this line.
         expect(second).toBeUndefined();
     });
@@ -96,11 +101,14 @@ describe('coverOf', () => {
 });
 
 describe('holdCover', () => {
-    it('loads once for two holders, and the release of one leaves the other its picture with an open bitmap', async () => {
+    it('loads once for two holders of one size, and the release of one leaves the other its picture with an open bitmap', async () => {
         const { holdCover } = await import('./route-pictures');
         const route = record(1, LINE);
-        const [a, b] = [holdCover(route), holdCover(route)];
+        const [a, b, row] = [holdCover(route), holdCover(route), holdCover(route, true)];
         expect(a.cover).toBe(b.cover);
+        // A row and a card of one route load two images.
+        await Promise.all([a.cover, row.cover]);
+        expect(asked.filter(path => path.endsWith('.webp')).sort()).toEqual([`/covers/1/${KEY}-0715-1000-small.webp`, `/covers/1/${KEY}-0715-1000.webp`]);
         a.release();
         const cover = await b.cover;
         expect(cover).toBeDefined();
