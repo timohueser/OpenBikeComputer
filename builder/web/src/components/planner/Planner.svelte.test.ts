@@ -13,12 +13,15 @@ import Select from './PlannerSelect.svelte';
 import RouteList from './RouteList.svelte';
 import RouteStats from './RouteStats.svelte';
 import TripBar from './TripBar.svelte';
+import { coordinateName } from '../../lib/planner/point-names';
+import SaveWindow, { type SaveMode } from './SaveWindow.svelte';
 import type { RoutingLine } from '../../lib/planner/routing';
 import { settings } from '../../lib/settings/settings.svelte';
 
 const places: Place[] = [{id:'test-camp',kind:'place',label:'Test camp',category:'camp',description:'',coordinate:[7.5,47.5]}];
 
 const mounted: ReturnType<typeof mount>[] = [];
+const saveProps = { stored: false, changed: false, canSave: false, onSave: vi.fn(), onRename: vi.fn(), more: [] };
 
 beforeEach(() => {
     const values = new Map<string, string>();
@@ -275,7 +278,7 @@ describe('trip pace', () => {
         let trip = $state.raw<Trip>(props.trip);
         const onChange = vi.fn((change: Partial<Trip>) => { trip = { ...trip, ...change }; });
         mounted.push(mount(TripBar, { target: document.body, props: { get trip() { return trip; }, name: '', ready: true,
-            canUndo: false, canRedo: false, onChange, onUndo: vi.fn(), onRedo: vi.fn(), onCompare: vi.fn(), onNew: vi.fn(), onLibrary: vi.fn() } }));
+            canUndo: false, canRedo: false, onChange, onUndo: vi.fn(), onRedo: vi.fn(), onNew: vi.fn(), onLibrary: vi.fn(), ...saveProps } }));
         mounted.push(mount(Itinerary, { target: document.body, props: { ...props, get trip() { return trip; },
             get itinerary() { return planView(trip, props.line).itinerary; }, get days() { return planView(trip, props.line).days; } } }));
         await tick();
@@ -465,5 +468,75 @@ describe('planner recovery', () => {
         button('Close').click();
         expect(onClose).toHaveBeenCalledOnce();
         expect(document.activeElement).toBe(opener);
+    });
+});
+
+describe('save', () => {
+    beforeEach(() => {
+        vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
+        HTMLElement.prototype.showPopover ??= () => {};
+        HTMLDialogElement.prototype.showModal ??= function (this: HTMLDialogElement) { this.open = true; };
+    });
+    const bar = (props: { stored: boolean; changed: boolean; canSave: boolean; more?: { label: string; disabled?: boolean; run: () => void }[] }) =>
+        mounted.push(mount(TripBar, { target: document.body, props: { ...saveProps, ...props, trip: testTrip(), name: 'Lake loop', ready: true,
+            canUndo: false, canRedo: false, onChange: vi.fn(), onUndo: vi.fn(), onRedo: vi.fn(), onNew: vi.fn(), onLibrary: vi.fn() } }));
+    const saveButton = () => document.querySelector<HTMLButtonElement>('.trip-bar .save > button')!;
+
+    it.each([
+        ['a new empty route', { stored: false, changed: false, canSave: false }, 'Save', true],
+        ['a new route with points', { stored: false, changed: false, canSave: true }, 'Save', false],
+        ['a stored route with no changes', { stored: true, changed: false, canSave: false }, 'Saved', true],
+        ['a stored route with changes', { stored: true, changed: true, canSave: true }, 'Save', false],
+    ])('shows the Save button of %s', async (_, props, label, disabled) => {
+        bar(props);
+        await tick();
+        expect([saveButton().textContent?.trim(), saveButton().disabled]).toEqual([label, disabled]);
+        // Only a stored route has a title that renames it.
+        expect(!!document.querySelector('.trip-bar h1 button')).toBe(props.stored);
+    });
+
+    it('lists "Save a copy…", "Discard changes" and "Compare routes…" in the "More" menu', async () => {
+        const compare = vi.fn();
+        bar({ stored: true, changed: false, canSave: false, more: [{ label: 'Save a copy…', run: vi.fn() },
+            { label: 'Discard changes', disabled: true, run: vi.fn() }, { label: 'Compare routes…', run: compare }] });
+        await tick();
+        button('More ▾').click();
+        await tick();
+        expect([...document.querySelectorAll('menu button')].map(item => [item.textContent?.trim(), (item as HTMLButtonElement).disabled]))
+            .toEqual([['Save a copy…', false], ['Discard changes', true], ['Compare routes…', false]]);
+        button('Compare routes…').click();
+        await tick();
+        expect([compare.mock.calls.length, document.querySelector('menu')]).toEqual([1, null]);
+    });
+
+    /** The name field and the buttons of the save window for `trip`. */
+    async function saveWindow(mode: SaveMode, trip: Trip, stored = false) {
+        const onAnswer = vi.fn();
+        mounted.push(mount(SaveWindow, { target: document.body, props: { mode, name: stored ? 'Lake loop' : '', stored, trip, onAnswer } }));
+        await tick();
+        const input = document.querySelector<HTMLInputElement>('dialog input');
+        return { onAnswer, input, title: document.querySelector('dialog h2')!.textContent,
+            buttons: [...document.querySelectorAll<HTMLButtonElement>('dialog .window-buttons button')].map(b => [b.textContent, b.disabled]) };
+    }
+    // A finish with no label keeps its coordinates as its label.
+    const named = (start: string, finish?: string): Trip => ({ ...testTrip(), points: testTrip().points.map(p => p.kind === 'start' ? { ...p, label: start }
+        : p.kind === 'finish' ? { ...p, label: finish ?? coordinateName(p.coordinate) } : p) });
+
+    it('offers the title of the route as its name, and an empty field while the start or the finish has no place name', async () => {
+        const first = await saveWindow('save', named('Basel', 'Bern'));
+        expect([first.title, first.input?.value, first.buttons]).toEqual(['Save route', 'Basel → Bern', [['Cancel', false], ['Save', false]]]);
+        document.body.replaceChildren();
+        const unnamed = await saveWindow('save', named('Basel'));
+        expect([unnamed.input?.value, unnamed.input?.placeholder, unnamed.buttons[1]]).toEqual(['', 'Name of the route', ['Save', true]]);
+        unnamed.input!.value = 'Jura';
+        unnamed.input!.dispatchEvent(new Event('input', { bubbles: true }));
+        await tick();
+        expect(document.querySelector<HTMLButtonElement>('dialog button[type="submit"]')!.disabled).toBe(false);
+        document.body.replaceChildren();
+        const question = await saveWindow('leave', named('Basel', 'Bern'), true);
+        expect([question.title, question.input, question.buttons.map(([label]) => label)]).toEqual(['Save changes to ‘Lake loop’?', null, ['Cancel', 'Discard', 'Save']]);
+        document.body.replaceChildren();
+        const copy = await saveWindow('copy', named('Basel', 'Bern'), true);
+        expect([copy.title, copy.input?.value]).toEqual(['Save a copy', 'Lake loop (copy)']);
     });
 });

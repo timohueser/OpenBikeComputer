@@ -7,6 +7,7 @@
     import Query from './PlannerQuery.svelte';
     import Resize from './PanelResize.svelte';
     import TripBar from './TripBar.svelte';
+    import SaveWindow, { type SaveAnswer, type SaveMode } from './SaveWindow.svelte';
     import Itinerary from './Itinerary.svelte';
     import RouteList from './RouteList.svelte';
     import RouteStats from './RouteStats.svelte';
@@ -191,6 +192,10 @@
     let applyingQuery = $state(false);
     let queryApplyError = $state('');
     let message = $state(`Plan a ride in ${config.name}`);
+    // The status line offers Undo after "Discard changes", until the next change.
+    let statusUndo = $state<(() => void) | null>(null);
+    // The open window of a save, a copy, a rename or the question before another route replaces the open one.
+    let asking = $state<{ mode: SaveMode; answer: (answer: SaveAnswer) => void } | null>(null);
     let visibleRange = $state<[number, number] | null>(null);
     let hoverProgress = $state<number | null>(null);
     // The part of the route the profile selects, as route progress. Another line ends it; the map fits each part.
@@ -451,6 +456,7 @@
     /** Resets the view after another plan replaced the trip. */
     function opened() {
         exploreBack = undefined;
+        statusUndo = null;
         clearSelection();
         exitSearch();
         pointing = undefined;
@@ -500,7 +506,41 @@
         else map?.showPlace([place.lon, place.lat], 12);
     }
 
+    function ask(mode: SaveMode): Promise<SaveAnswer> {
+        return new Promise(answer => asking = { mode, answer });
+    }
+
+    /** Asks before another route replaces a route with changes: "Save" saves it, "Discard" leaves its draft. False at
+     * "Cancel" or a failed save. */
+    async function leave(): Promise<boolean> {
+        if (!session.changed || !session.canSave) return true;
+        const answer = await ask('leave');
+        return answer === false || (answer !== null && await session.save(answer));
+    }
+
+    async function save() {
+        const name = session.stored ? '' : await ask('save');
+        if (typeof name === 'string' && await session.save(name)) message = 'Route saved';
+    }
+
+    async function saveCopy() {
+        const name = await ask('copy');
+        if (name && await session.saveCopy(name)) message = 'Copy saved';
+    }
+
+    async function renameRoute() {
+        const name = await ask('rename');
+        if (name) await session.rename(session.plan, name);
+    }
+
+    function discard() {
+        session.discard();
+        afterHistory('Changes discarded');
+        statusUndo = undo;
+    }
+
     async function openPlan(id: string) {
+        if (!await leave()) return;
         if (!await session.open(id)) {
             if (session.libraryError) message = session.libraryError;
             return;
@@ -514,11 +554,18 @@
     }
 
     async function importFiles(files: File[]) {
+        // GPX files ask at the choice of their line.
+        if (!files.some(file => /\.gpx$/i.test(file.name)) && !await leave()) return;
         if (!libraryOpen) await openLibrary();
         await session.importFiles(files);
     }
 
+    async function duplicate(plan: Plan) {
+        if (await leave()) await session.duplicate(plan);
+    }
+
     async function importGpx(roads: boolean) {
+        if (!await leave()) return;
         const count = session.gpxLines!.length;
         if (roads) message = 'Planning on roads…';
         const failed = await session.importGpx(roads, coordinate => map?.placeName(coordinate));
@@ -552,6 +599,7 @@
         list = 'plan';
         if (!hasEndpoints) { expandedDay = null; hoverProgress = null; }
         message = description;
+        statusUndo = null;
     }
 
     function edit(change: Partial<Trip>, description: string) {
@@ -582,6 +630,7 @@
         clearSelection();
         clampNight();
         message = description;
+        statusUndo = null;
         nameVisits(trip);
     }
 
@@ -739,6 +788,7 @@
     }
 
     async function planSignedRoute(route: CatalogRecord, plan: RoutePlan, explore?: unknown) {
+        if (!await leave()) return;
         if (!await session.planSignedRoute(route, plan, coordinate => map?.placeName(coordinate))) {
             message = `${route.name ?? route.ref} could not be planned. ${session.libraryError}`;
             return;
@@ -920,7 +970,7 @@
     }
 
     async function newPlan() {
-        if (!await session.newPlan()) return;
+        if (!await leave() || !await session.newPlan()) return;
         message = 'New plan';
         libraryOpen = false;
     }
@@ -1022,21 +1072,22 @@
         comparing = true;
     }
 
-    /** Back in the planner, the button that opened the compare screen takes the focus. */
+    /** Back in the planner, the menu button that opened the compare screen takes the focus. */
     async function endCompare() {
         comparing = false;
         await tick();
-        document.querySelector<HTMLElement>('.trip-bar .compare-routes')?.focus();
+        document.querySelector<HTMLElement>('.trip-bar .menu > button')?.focus();
     }
 
     function keyboard(event: KeyboardEvent) {
-        if (!active || comparing || (event.target as HTMLElement)?.closest('input, select, textarea')) return;
+        if (!active || comparing || asking || (event.target as HTMLElement)?.closest('input, select, textarea')) return;
         if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') {
             event.preventDefault();
             if (event.shiftKey) redo();
             else undo();
         }
-        if (event.key === 'Escape') {
+        // An open menu takes Escape first.
+        if (event.key === 'Escape' && !event.defaultPrevented) {
             session.previewOption(null);
             // A map selection or mode closes before the part, which `Lanes` clears unless the default is prevented.
             if (selectedId || mapMode) event.preventDefault();
@@ -1079,14 +1130,19 @@
     {:else}
     {#key planId}
     <TripBar
-        {trip} name={session.plan.name} ready={session.ready && !session.busy} canUndo={session.canUndo} canRedo={session.canRedo}
-        onNew={newPlan} onChange={changeTrip} onUndo={undo} onRedo={redo} onCompare={compare} onLibrary={openLibrary}
+        {trip} name={session.plan.name} stored={session.stored} changed={session.changed} canSave={session.canSave} ready={session.ready && !session.busy}
+        canUndo={session.canUndo} canRedo={session.canRedo} onNew={newPlan} onChange={changeTrip} onUndo={undo} onRedo={redo} onLibrary={openLibrary}
+        onSave={save} onRename={renameRoute} more={[
+            { label: 'Save a copy…', disabled: !trip.points.length, run: saveCopy },
+            { label: 'Discard changes', disabled: !session.changed, run: discard },
+            { label: 'Compare routes…', rule: true, run: compare },
+        ]}
     />
     {/key}
     <main aria-busy={!session.ready}>
         {#if libraryOpen}
             <LibraryPanel plans={session.plans} unreadable={session.unreadable} onDeleteUnreadable={() => { if (window.confirm('Delete the saved plans that cannot be read? This cannot be undone.')) void session.removeUnreadable(); }} activeId={planId} busy={session.busy} error={session.libraryError}
-                onClose={() => libraryOpen = false} onOpen={plan => openPlan(plan.id)} onRename={(plan, name) => session.rename(plan, name)} onDuplicate={plan => session.duplicate(plan)}
+                onClose={() => libraryOpen = false} onOpen={plan => openPlan(plan.id)} onRename={(plan, name) => session.rename(plan, name)} onDuplicate={duplicate}
                 onDelete={deletePlan} onImport={importFiles} gpxNames={session.gpxLines?.map(line => line.name) ?? null}
                 onGpx={roads => roads === null ? session.gpxLines = null : importGpx(roads)} onDownload={plan => session.download(plan)} />
         {/if}
@@ -1275,11 +1331,15 @@
             {/if}
             <div class="status-line" role="status">
                 <span class:save-error={!!session.saveError}>{session.saveError || `${message} · ${routingMessage}`}</span>
-                {#if session.saveError}<button type="button" class="planner-action" onclick={() => session.download()}>Download plan</button>{/if}
+                {#if session.saveError}<button type="button" class="planner-action" onclick={() => session.download()}>Download plan</button>
+                {:else if statusUndo}<span>·</span><button type="button" class="planner-action" onclick={statusUndo}>Undo</button>{/if}
                 <span class="lab-note">Regional map, search and routing</span>
             </div>
         </section>
     </main>
+    {/if}
+    {#if asking}
+        <SaveWindow mode={asking.mode} name={session.plan.name} stored={session.stored} {trip} onAnswer={answer => { asking?.answer(answer); asking = null; }} />
     {/if}
     {#if trailView}
         <TrailViewWindow at={trailView.at} near={trailView.near} origin={trailView.origin} onClose={() => { trailView = null; trailViewControl?.focus(); }} />
@@ -1343,6 +1403,8 @@
     .planner-shell :global(.planner-action.quiet) {
         color: var(--ink-soft);
     }
+    .planner-shell :global(.planner-action.primary) { border-color: var(--amber); background: var(--amber); color: var(--on-amber); }
+    .planner-shell :global(.planner-action.primary:hover:not(:disabled)) { border-color: transparent; background: color-mix(in srgb, var(--amber) 86%, var(--ink)); }
     main {
         position: relative;
         display: grid;

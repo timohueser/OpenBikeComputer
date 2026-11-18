@@ -19,19 +19,28 @@ const stored = new Map<string, string>();
 let savedPlan: Plan | undefined;
 // The other routes of the library.
 let others: Plan[] = [];
+const storedPlan = (): Plan => ({ ...newPlan(emptyTrip()), id: 'stored', trip: JSON.parse(stored.get('trip')!) });
+/** The open state of the trip that the page wrote last: its draft, else the stored route. */
+const written = () => stored.get('draft') ?? stored.get('trip');
 
 vi.mock('../../lib/library/store', () => ({
+    OUTDATED: 'OutdatedError',
     Library: class {
         async state() { return stored.has('trip') ? 'stored' : null; }
-        async route(id: string) { return others.find(plan => plan.id === id) ?? { ...newPlan(emptyTrip()), id: 'stored', revision: 1, trip: JSON.parse(stored.get('trip')!) }; }
-        async routes() { return [...savedPlan ? [savedPlan] : [], ...others]; }
+        async route(id: string) { return others.find(plan => plan.id === id) ?? storedPlan(); }
+        async routes() { return [...savedPlan ? [savedPlan] : stored.has('trip') ? [storedPlan()] : [], ...others]; }
         async unreadableRoutes() { return []; }
         async saveRoute(plan: Plan) {
             stored.set('trip', JSON.stringify(plan.trip));
-            savedPlan = { ...plan, revision: plan.revision + 1 };
-            return savedPlan;
+            stored.delete('draft');
+            return savedPlan = plan;
         }
-        async setState(_key: string, id: string | null) { if (!id) { stored.set('trip', JSON.stringify(emptyTrip())); savedPlan = undefined; } }
+        async draft(id: string) { return stored.has('draft') ? { id, updatedAt: 0, trip: JSON.parse(stored.get('draft')!) } : undefined; }
+        // The page writes the open state of the trip here at each change.
+        async saveDraft(draft: { trip: unknown }) { stored.set('draft', JSON.stringify(draft.trip)); }
+        async removeDraft() { stored.delete('draft'); }
+        async setSummary() {}
+        async setState(_key: string, id: string | null) { if (!id) { stored.delete('trip'); savedPlan = undefined; } }
         onChange() { return () => {}; }
         async close() {}
     },
@@ -42,6 +51,7 @@ const tilePlace: Place = { id: 'poi-123', kind: 'place', label: 'Tile camp', cat
 
 beforeEach(() => {
     stored.clear();
+    sessionStorage.clear();
     savedPlan = undefined;
     others = [];
     vi.stubGlobal('confirm', vi.fn(() => true));
@@ -155,15 +165,15 @@ describe('planner app transitions', () => {
         await startApp(); await tick();
         button('Pick map location').click(); await tick();
         button('Visit').click(); await tick();
-        expect(JSON.parse(stored.get('trip')!).points).toContainEqual(expect.objectContaining({ kind: 'waypoint', label: '48.00000, 7.84000' }));
+        expect(JSON.parse(written()!).points).toContainEqual(expect.objectContaining({ kind: 'waypoint', label: '48.00000, 7.84000' }));
         const response = { ok: true, json: async () => ({ label: 'Dorfstraße 12, Teningen' }) };
         finish(response);
         await vi.waitFor(() => expect(document.querySelector('.route')?.textContent).toContain('Dorfstraße 12, Teningen'));
         button('Undo').click(); await tick();
-        expect(JSON.parse(stored.get('trip')!)).toEqual(saved);
+        expect(JSON.parse(written()!)).toEqual(saved);
         button('Redo').click(); await tick();
         finish(response);
-        await vi.waitFor(() => expect(JSON.parse(stored.get('trip')!).points).toContainEqual(expect.objectContaining({ label: 'Dorfstraße 12, Teningen' })));
+        await vi.waitFor(() => expect(JSON.parse(written()!).points).toContainEqual(expect.objectContaining({ label: 'Dorfstraße 12, Teningen' })));
     });
 
     it.each(['rename', 'remove', 'leave'] as const)('ignores an address response after %s', async action => {
@@ -180,10 +190,10 @@ describe('planner app transitions', () => {
             input.value = 'Picnic'; input.dispatchEvent(new Event('change', { bubbles: true })); await tick();
         } else if (action === 'remove') { button('Remove point').click(); await tick(); }
         else { await unmount(app!); app = undefined; }
-        const snapshot = stored.get('trip');
+        const snapshot = written();
         finish({ ok: true, json: async () => ({ label: 'Late address' }) });
         await tick(); await tick();
-        expect(stored.get('trip')).toBe(snapshot);
+        expect(written()).toBe(snapshot);
     });
 
     it('keeps a resolved address on reload when search is unavailable', async () => {
@@ -210,12 +220,12 @@ describe('planner app transitions', () => {
         const select = document.querySelector<HTMLSelectElement>('.callout select')!;
         expect(select.value).toBe('1');
         button('Stay here').click(); await tick();
-        const draft = JSON.parse(stored.get('trip')!);
+        const draft = JSON.parse(written()!);
         expect(draft).toMatchObject({ mode: 'trip', days: saved.days });
         expect(draft.points).toContainEqual(expect.objectContaining({ kind: 'night', night: 1, label: 'Fuxxbau', coordinate: [8.088, 48.279] }));
         expect(draft.points.find((p: { kind: string }) => p.kind === 'finish')).toEqual(saved.points.find((p: { kind: string }) => p.kind === 'finish'));
         button('Undo').click(); await tick();
-        expect(JSON.parse(stored.get('trip')!)).toEqual(saved);
+        expect(JSON.parse(written()!)).toEqual(saved);
     });
 
     it('runs an open search again after a plan edit', async () => {
@@ -286,7 +296,9 @@ describe('planner app transitions', () => {
         expect(document.body.textContent).toContain('Where would you like to ride?');
         button('Undo').click(); await tick();
         expect(document.body.textContent).toContain('Choose your start');
-        button(mode === 'route' ? 'New route' : 'New trip').click();
+        button(mode === 'route' ? 'New route' : 'New trip').click(); await tick();
+        expect(document.querySelector('dialog h2')?.textContent).toBe('Save changes to ‘To Finish’?');
+        button('Discard').click();
         await vi.waitFor(() => expect(document.body.textContent).toContain('Where would you like to ride?'));
         expect(window.confirm).not.toHaveBeenCalled();
         expect(document.body.textContent).toContain('Where would you like to ride?');
@@ -306,7 +318,7 @@ describe('planner app transitions', () => {
         button(`Map place: ${tilePlace.label}`).click(); await tick();
         button('Finish here').click(); await tick();
         expect(document.body.textContent).toContain('Choose your start');
-        const draft = JSON.parse(stored.get('trip')!);
+        const draft = JSON.parse(written()!);
         expect(draft.points).toEqual([expect.objectContaining({ kind: 'finish', label: tilePlace.label, coordinate: tilePlace.coordinate })]);
         expect(calculate).not.toHaveBeenCalled();
     });
@@ -327,14 +339,14 @@ describe('planner app transitions', () => {
         await startApp(props);
         button('Map point: Basel').click(); await tick();
         button('Remove point').click(); await tick();
-        const edited = stored.get('trip');
+        const edited = written();
         const undoKey = () => document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
         props.active = false; await tick();
         undoKey(); await tick();
-        expect(stored.get('trip')).toBe(edited);
+        expect(written()).toBe(edited);
         props.active = true; await tick();
         undoKey(); await tick();
-        expect(stored.get('trip')).not.toBe(edited);
+        expect(written()).not.toBe(edited);
     });
 
     it('returns to an earlier bike and undoes without a route request', async () => {
@@ -396,8 +408,7 @@ describe('planner app transitions', () => {
         vi.useRealTimers();
         button('Add as visit').click();
         await tick();
-        const draft = [...stored.values()].map(value => JSON.parse(value)).find(value => value.points);
-        expect(draft.points).toContainEqual(expect.objectContaining({ label: tilePlace.label, kind: 'waypoint' }));
+        expect(JSON.parse(written()!).points).toContainEqual(expect.objectContaining({ label: tilePlace.label, kind: 'waypoint' }));
     });
 
     it('restores the focused day after a different-day search', async () => {
@@ -503,7 +514,7 @@ describe('planner app transitions', () => {
         await vi.waitFor(() => expect(contacts()).toContain('href="https://camp.example/"'));
         expect(contacts()).toContain('href="tel:+49761123"');
         button('Stay here').click(); await tick();
-        expect(JSON.parse(stored.get('trip')!).points).toContainEqual(expect.objectContaining({ kind: 'night', placeId: 'n42', placeKind: 'campsite' }));
+        expect(JSON.parse(written()!).points).toContainEqual(expect.objectContaining({ kind: 'night', placeId: 'n42', placeKind: 'campsite' }));
         // A reopened plan has no details yet, so the night asks for its place.
         await unmount(app!);
         await startApp();
@@ -541,11 +552,11 @@ describe('planner app transitions', () => {
 
     it('compares two saved routes with a start and a finish, and opens one in the planner', async () => {
         const start = { ...testTrip(), points: testTrip().points.filter(point => point.kind === 'start') };
-        others = [{ ...newPlan({ ...testTrip(), days: 4 }, 'Coast'), id: 'coast', revision: 1 },
-            { ...newPlan(start, 'Only a start'), id: 'start', revision: 1, updatedAt: Date.now() + 60_000 }];
+        others = [{ ...newPlan({ ...testTrip(), days: 4 }, 'Coast'), id: 'coast' },
+            { ...newPlan(start, 'Only a start'), id: 'start', updatedAt: Date.now() + 60_000 }];
         await startApp();
-        await vi.waitFor(() => expect(savedPlan).toBeDefined());
-        button('Compare routes').click();
+        button('More ▾').click(); await tick();
+        button('Compare routes…').click();
         await vi.waitFor(() => expect(document.querySelectorAll('.compare .head .totals')).toHaveLength(2));
         expect([...document.querySelectorAll('.compare .head .name strong')].map(name => name.textContent)).not.toContain('Only a start');
         expect(document.querySelector('.compare .head .name strong')?.textContent).not.toBe('Coast');
@@ -555,7 +566,7 @@ describe('planner app transitions', () => {
         await vi.waitFor(() => expect(document.querySelector('.status-line')?.textContent).toContain('Plan opened'));
         expect(document.querySelector('.compare')).toBeNull();
         expect(document.querySelector('.trip-bar h1')?.textContent).toBe('Coast');
-        expect(document.activeElement).toBe(document.querySelector('.trip-bar .compare-routes'));
+        expect(document.activeElement).toBe(document.querySelector('.trip-bar .menu > button'));
     });
 
     it('prevents adding an overnight past the riding-day limit', async () => {
@@ -576,10 +587,13 @@ describe('planner app transitions', () => {
 
     it('sets the day count when the rider steps it, even back to the guess, and not when only the stay changes', async () => {
         stored.set('trip', JSON.stringify({ ...testTrip(), daysSet: undefined }));
-        const draft = () => JSON.parse(stored.get('trip')!);
+        const draft = () => JSON.parse(written()!);
+        const count = () => Number(document.querySelector('[aria-label="Number of riding days"] .count')!.textContent!.split(' ')[0]);
         await startApp();
-        await vi.waitFor(() => expect(draft().days).not.toBe(3));
-        const guessed = draft().days;
+        // A guess on the route as it opened writes nothing.
+        await vi.waitFor(() => expect(count()).not.toBe(3));
+        const guessed = count();
+        expect(draft().days).toBe(3);
         for (const kind of ['Huts', 'Hostels', 'Hotels', 'Shelters']) { button(kind).click(); await tick(); }
         expect(button('Campsites').disabled).toBe(true);
         expect(draft()).toMatchObject({ days: guessed, stay: ['camp'] });
@@ -598,7 +612,7 @@ describe('planner app transitions', () => {
         const date = document.querySelector<HTMLInputElement>('.trip-row input[type="date"]')!;
         date.value = '2027-06-19';
         date.dispatchEvent(new Event('change', { bubbles: true })); await tick();
-        expect(JSON.parse(stored.get('trip')!).startDate).toBe('2027-06-19');
+        expect(JSON.parse(written()!).startDate).toBe('2027-06-19');
         expect(button('Trip dates: Sat 19 – Mon 21 Jun')).toBeDefined();
         expect(document.querySelector('.labels')?.textContent).toContain('Sun 20');
     });
