@@ -1,16 +1,21 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import type { BikeType } from './riding-profiles';
-import type { CatalogRecord } from './signed-routes';
+import type { CatalogRecord, TrailEntry } from './signed-routes';
 
 const host = vi.hoisted(() => {
     Object.assign(globalThis, { window: { location: { href: 'http://localhost/' }, addEventListener: () => {} } });
-    return { load: (_id: string): Promise<CatalogRecord[] | null> => Promise.resolve(null) };
+    return {
+        load: (_id: string): Promise<CatalogRecord[] | null> => Promise.resolve(null),
+        far: (_id: string): Promise<TrailEntry[] | null> => Promise.resolve(null),
+    };
 });
 vi.mock('./map-data', async importActual => ({
     ...await importActual<typeof import('./map-data')>(),
     loadRouteCell: (id: string) => host.load(id),
+    loadTrailCell: (id: string) => host.far(id),
 }));
+const { config } = await import('./map-data');
 const { RouteCatalog, boxCells, MAX_CELLS } = await import('./route-catalog');
 type Box = import('./route-catalog').Box;
 
@@ -56,6 +61,29 @@ describe('route catalog', () => {
         const catalog = new RouteCatalog();
         const westweg = vector.routes.find(route => route.id === 401)!;
         expect((await catalog.stagesOf(westweg)).map(stage => stage.id)).toEqual([402, 403]);
+    });
+
+    it('joins the pieces of a trail from the far files of a box, and loads none for a box of more than the most cells', async () => {
+        config.trails = 'https://tiles.test/routes/tiles/trails/{cell}.json';
+        asked.length = 0;
+        const entry = (id: number, far_udeg: number[][]): TrailEntry => ({ id, kind: 'hiking', rank: 2, loop: false, length_m: 9e4, ascent_m: 900, far_udeg });
+        // 8.4375° E is the edge between the zoom 7 columns 66 and 67.
+        const west = [8000000, 46500000, 437500, 0], east = [8437500, 46500000, 500000, 100000];
+        const files: Record<string, TrailEntry[]> = { '7-66-45': [entry(1, [west]), entry(2, [[6000000, 46500000, 10000, 0]])], '7-67-45': [entry(1, [east])] };
+        host.far = async id => { asked.push(id); return files[id] ?? null; };
+        const box: Box = [7.5, 46, 9.5, 46.9];
+        expect(boxCells(box, 7)).toEqual(['7-66-45', '7-67-45']);
+        // Trail 2 is in a far file of the box, but not in the box.
+        expect(await new RouteCatalog().trailsInBox(box)).toEqual([entry(1, [west, east])]);
+        // A segment of trail 3 cuts the south-west corner of the box, with no vertex in it.
+        const corner = [8200000, 46050000, 120000, -100000];
+        files['7-66-45'].push(entry(3, [corner]));
+        expect((await new RouteCatalog().trailsInBox([8.25, 46, 9.5, 46.9]))?.map(trail => trail.id)).toEqual([1, 3]);
+        asked.length = 0;
+        expect(await new RouteCatalog().trailsInBox([5, 43, 20, 47])).toBeNull();
+        delete config.trails;
+        expect(await new RouteCatalog().trailsInBox(box)).toBeNull();
+        expect(asked).toEqual([]);
     });
 
     it('loads a failed cell again at the next call', async () => {
