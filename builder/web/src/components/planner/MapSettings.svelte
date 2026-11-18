@@ -1,20 +1,15 @@
 <script lang="ts">
     import Icon from '../../lib/ui/Icon.svelte';
-    import { placeCategories, type PlaceCategory } from '../../lib/planner/poi-kinds';
     import { bandShare, networkLevels, type OverlayOptions } from '../../lib/planner/route-overlays';
     import type { DataLayer } from '../../lib/planner/layers/data-layer';
 
-    let { hillshade = $bindable(), contours = $bindable(), hidden = $bindable(), highlighted = $bindable(), mapOverlays = $bindable(), dataLayers = [], shownLayer = $bindable(''), theme = 'light' }: {
+    let { hillshade = $bindable(), contours = $bindable(), mapOverlays = $bindable(), dataLayers = [], shownLayer = $bindable(''), theme = 'light' }: {
         /** The data layers of the region; the map shows one or none. */
         dataLayers?: DataLayer[];
         /** The id of the shown data layer, or '' for none. */
         shownLayer?: string;
         hillshade: boolean;
         contours: boolean;
-        /** Place categories the map leaves out. */
-        hidden: PlaceCategory[];
-        /** The highlighted place category, or none. */
-        highlighted: PlaceCategory[];
         mapOverlays: OverlayOptions;
         theme?: 'light' | 'dark';
     } = $props();
@@ -36,25 +31,8 @@
         ] },
     ].filter(row => row.tiles.length));
 
-    const groups: { title: string; categories: PlaceCategory[] }[] = [
-        { title: 'Sleep', categories: ['hotel', 'camp', 'shelter'] },
-        { title: 'Eat & drink', categories: ['shop', 'food', 'rest'] },
-        { title: 'Water', categories: ['water', 'toilets'] },
-        { title: 'Fix & go', categories: ['bike', 'pharmacy', 'station'] },
-        { title: 'See', categories: ['viewpoint', 'peak'] },
-    ];
-
     let open = $state(false);
     let root: HTMLDivElement;
-
-    function show(category: PlaceCategory, shown: boolean) {
-        hidden = shown ? hidden.filter(c => c !== category) : [...hidden, category];
-        if (!shown) highlighted = highlighted.filter(c => c !== category);
-    }
-
-    function highlight(category: PlaceCategory) {
-        highlighted = highlighted.includes(category) ? [] : [category];
-    }
 
     function outside(event: PointerEvent) {
         if (open && !root.contains(event.target as Node)) open = false;
@@ -95,28 +73,6 @@
                     </ul>
                 {/if}
             {/each}
-            <details>
-                <summary><Icon name="pin" size={17} /><strong>Places</strong><span class="detail-value">{Object.keys(placeCategories).length - hidden.length} shown</span><Icon name="chevron" size={14} /></summary>
-                <p>Use the ring to highlight a place type at every zoom.</p>
-                {#each groups as group (group.title)}
-                    <h3>{group.title}</h3>
-                    <ul>
-                        {#each group.categories as category (category)}
-                            {@const info = placeCategories[category]}
-                            {@const on = highlighted.includes(category)}
-                            <li>
-                                <label>
-                                    <input type="checkbox" checked={!hidden.includes(category)} onchange={(event) => show(category, event.currentTarget.checked)} />
-                                    <Icon path={info.icon} size={15} />{info.plural}
-                                </label>
-                                <button type="button" class="ring" class:on aria-pressed={on} disabled={hidden.includes(category)}
-                                    aria-label={`Highlight ${info.plural.toLowerCase()} at every zoom`} title="Highlight at every zoom"
-                                    onclick={() => highlight(category)}><span></span></button>
-                            </li>
-                        {/each}
-                    </ul>
-                {/each}
-            </details>
         </div>
     {/if}
 </div>
@@ -151,7 +107,7 @@
         box-sizing: border-box;
         max-height: calc(var(--map-height, 100vh) - 32px);
         overflow: auto;
-        padding: 12px 12px 0;
+        padding: 12px;
         border-radius: 8px;
         background: var(--panel);
         box-shadow: var(--planner-shadow);
@@ -178,17 +134,6 @@
     .sample { flex: 0 0 14px; height: 8px; border-radius: 2px; background: linear-gradient(currentColor 0 0) center / 100% 2px no-repeat, color-mix(in srgb, currentColor var(--band-share), var(--parchment)); }
     .legend { display: grid; grid-template-columns: 1fr 1fr; column-gap: 8px; margin-top: -4px; font-size: 12px; color: var(--ink-soft); }
     .legend li { justify-content: flex-start; min-height: 22px; }
-    strong { font-weight: 600; }
-    h3 { margin: 12px 0 8px; font-size: 12px; font-weight: 600; color: var(--ink-soft); }
-    details { margin: 0 -12px; padding: 0 12px; border-top: 1px solid var(--line); }
-    summary { display: flex; align-items: center; gap: 8px; min-height: 38px; cursor: pointer; list-style: none; }
-    summary::-webkit-details-marker { display: none; }
-    summary:hover { color: var(--link); }
-    summary :global(svg) { flex-shrink: 0; color: var(--ink-soft); }
-    details[open] summary :global(svg:last-child) { transform: rotate(90deg); }
-    details[open] { padding-bottom: 8px; }
-    .detail-value { margin-left: auto; font-size: 11px; color: var(--ink-soft); }
-    p { margin: 2px 0 8px; font-size: 12px; line-height: 1.45; color: var(--ink-soft); }
     ul {
         margin: 0;
         padding: 0;
@@ -199,51 +144,5 @@
         align-items: center;
         justify-content: space-between;
         gap: 8px;
-    }
-    label {
-        display: flex;
-        flex: 1;
-        align-items: center;
-        gap: 8px;
-        min-height: 32px;
-        color: var(--ink);
-        cursor: pointer;
-    }
-    li label :global(svg) {
-        color: var(--ink-soft);
-    }
-    input {
-        width: 18px;
-        height: 18px;
-        margin: 0;
-        accent-color: var(--link);
-        cursor: pointer;
-    }
-    .ring {
-        display: grid;
-        place-items: center;
-        width: 28px;
-        height: 28px;
-        padding: 0;
-        border-radius: 6px;
-    }
-    .ring span {
-        width: 14px;
-        height: 14px;
-        border: 2px solid var(--line-strong);
-        border-radius: 50%;
-    }
-    .ring:hover:not(:disabled) {
-        background: var(--parchment-2);
-    }
-    .ring:hover:not(:disabled) span {
-        border-color: var(--ink-soft);
-    }
-    .ring.on span {
-        border-width: 3px;
-        border-color: var(--amber);
-    }
-    .ring:disabled {
-        cursor: default;
     }
 </style>
