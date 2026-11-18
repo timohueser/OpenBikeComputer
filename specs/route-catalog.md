@@ -275,15 +275,14 @@ So a run is a stretch of parts that join each other, such as the stages of a tra
 or one of several trails that one relation lists one after another.
 
 A long route whose parts are separate routes, such as day loops from one village, is not in the
-catalog, and no part has it as `trail` or `parent`. Its parts are separate routes when there are at
-least two counts against one line, and more counts against one line than pairs of parts that meet. A
-loop part counts against one line: it comes back to its start and takes the line no further, so it
-meets no part. Two neighbouring parts with ends, neither a loop, meet when the second part is at
-most 60 m from the trail end of the first part; else they count against one line. 60 m leaves room
-for the slack of two stage ends at one place. A part with no ends counts for nothing. One count
-against one line is not enough: it can be a hole in the map data. Each long route is judged on its
-own parts, so a long route inside another one can leave while the outer one keeps the same parts as
-its stages.
+catalog, and no part has it as `trail` or `parent`. The member order of its parts does not matter.
+Two open parts join when one has an end at most 60 m from an end of the other; 60 m leaves room for
+the slack of two stage ends at one place. A loop part joins no part: it comes back to its start and
+takes the line no further. The parts are separate routes when at least two parts have ends and the
+largest group of open parts that join holds fewer than a third of them. A line with one or two holes
+in the map data still keeps a piece of at least a third. A part with no ends counts for nothing.
+Each long route is judged on its own parts, so a long route inside another one can leave while the
+outer one keeps the same parts as its stages.
 
 A long route is complete when each part is in the catalog, and no part is cut, runs backwards or has
 a jump.
