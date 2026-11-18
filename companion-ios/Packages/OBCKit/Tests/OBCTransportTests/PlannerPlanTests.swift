@@ -99,10 +99,10 @@ struct PlannerPlanTests {
     }
 
     /// One remaining day is still a trip; more days than a plan holds are no trip.
-    @Test func aTripHasOneToFourteenDays() throws {
+    @Test func aTripHasOneDayUpToTheDayLimit() throws {
         let day = try #require(PlannerPlan.keptLine([RoutePoint(coordinate: at(8.0)), RoutePoint(coordinate: at(8.01))]))
         #expect(PlannerPlan.trip(days: [day])?.mode == .trip)
-        #expect(PlannerPlan.trip(days: Array(repeating: day, count: 14)) != nil)
-        #expect(PlannerPlan.trip(days: Array(repeating: day, count: 15)) == nil)
+        #expect(PlannerPlan.trip(days: Array(repeating: day, count: PlannerPlan.maxDays)) != nil)
+        #expect(PlannerPlan.trip(days: Array(repeating: day, count: PlannerPlan.maxDays + 1)) == nil)
     }
 }

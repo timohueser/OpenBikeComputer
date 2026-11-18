@@ -231,8 +231,9 @@ extension PlannerPlan {
                            routeOrder: route.dropFirst().dropLast().map(\.id))
     }
 
-    /// The most days a plan has, as `specs/planner-plan.md` caps `days`.
-    public static let maxDays = 14
+    /// The most days a plan has, as `specs/planner-plan.md` caps `days`: the device's trip progress record holds 32 days, and a send to it
+    /// holds 32 waypoints.
+    public static let maxDays = 32
 
     /// Route plans as the days of one trip, in ride order. Nil for more than ``maxDays`` days. Each finish but the last is a night. A day that
     /// starts farther than ``Trip/transferMinMeters`` from the night before starts with a transfer leg; a
