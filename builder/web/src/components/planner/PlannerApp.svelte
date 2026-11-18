@@ -449,7 +449,7 @@
     });
 
     /** Resets the view after another plan replaced the trip. */
-    function opened(plan: Plan) {
+    function opened() {
         exploreBack = undefined;
         clearSelection();
         exitSearch();
@@ -463,7 +463,7 @@
         fitPlan = true;
         list = 'plan';
         firstOptions = false;
-        nameVisits(plan.trip);
+        nameVisits(session.trip);
     }
 
     function nameVisits(trip: Trip) {
@@ -501,7 +501,7 @@
     }
 
     async function openPlan(id: string) {
-        if (!await session.open(id, () => window.confirm('Some edits are not saved. Download a backup before reopening a plan. Discard the unsaved edits?'))) {
+        if (!await session.open(id)) {
             if (session.libraryError) message = session.libraryError;
             return;
         }
@@ -1073,7 +1073,7 @@
 
 <div class="planner-shell" style:--side-width={`${Math.min(sideWidth, maxSide)}px`}>
     {#if comparing}
-    <CompareScreen routes={session.plans.filter(plan => endpointsChosen(plan.trip))} first={session.plan.revision ? session.plan.id : undefined} changed={!!session.saveError}
+    <CompareScreen routes={session.plans.filter(plan => endpointsChosen(plan.trip))} first={session.stored ? session.plan.id : undefined} changed={session.changed}
         lines={session.foundLines} {theme} onBack={endCompare} onOpen={async id => { comparing = false; await openPlan(id); await endCompare(); }}
         onFindLines={(trips, retry) => session.findLines(trips, retry)} />
     {:else}
@@ -1275,7 +1275,7 @@
             {/if}
             <div class="status-line" role="status">
                 <span class:save-error={!!session.saveError}>{session.saveError || `${message} · ${routingMessage}`}</span>
-                {#if session.saveError}<button type="button" class="planner-action" onclick={() => session.download()}>Download plan</button><button type="button" class="planner-action" onclick={() => { session.save().catch(() => {}); }}>Retry save</button>{/if}
+                {#if session.saveError}<button type="button" class="planner-action" onclick={() => session.download()}>Download plan</button>{/if}
                 <span class="lab-note">Regional map, search and routing</span>
             </div>
         </section>
