@@ -50,13 +50,12 @@ A reader ignores the field `versions` of an older file.
 | Field | Value |
 | --- | --- |
 | `id` | Non-empty string |
-| `revision` | Integer, 0 or more |
 | `name` | String |
 | `updatedAt` | Unix time in milliseconds of the last edit |
 | `summary` | [Summary](#5-summary) with `days`, or `null` when the plan never had a calculated line |
 | `trip` | Plan object of [planner-plan.md](planner-plan.md) |
 
-A reader ignores the field `open` of a route record of an older file.
+A reader ignores the fields `open` and `revision` of a route record of an older file.
 
 ## 4. Ride record
 

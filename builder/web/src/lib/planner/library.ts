@@ -10,7 +10,7 @@ export interface Plan extends RouteRecord {
 }
 
 export function newPlan(trip: Trip, name = ''): Plan {
-    return { id: crypto.randomUUID(), revision: 0, name: name.trim().slice(0, 120), updatedAt: Date.now(), summary: null, trip };
+    return { id: crypto.randomUUID(), name: name.trim().slice(0, 120), updatedAt: Date.now(), summary: null, trip };
 }
 
 export const isPlan = (route: RouteRecord): route is Plan => isTrip(route.trip);

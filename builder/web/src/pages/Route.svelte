@@ -67,7 +67,7 @@
         const load = async () => {
             const [item, ids, copies] = await Promise.all([library.item(target), library.state('waiting'), library.state('sent')]);
             if (!live) return;
-            record = item && 'revision' in item ? item : null;
+            record = item && 'id' in item ? item : null;
             [waiting, sent] = [ids, copies];
         };
         void load();

@@ -6,7 +6,7 @@ import { Library } from './store';
 import { summarize } from './summary';
 import { TooLarge, unzip, zip } from './zip';
 
-const route: RouteRecord = { id: 'r1', revision: 0, name: 'Alps', updatedAt: 5,
+const route: RouteRecord = { id: 'r1', name: 'Alps', updatedAt: 5,
     summary: summarize<RouteSummary>([[8, 47, 400], [8.1, 47.1, 900]], { lengthM: 13_000, climbM: 500, seconds: 3600, days: 1, bike: 'touring' }),
     trip: { points: [], routeOrder: [], days: 1 } };
 
@@ -38,7 +38,6 @@ describe('library backup', () => {
         expect(await target.contents()).toEqual(await source.contents());
         expect(await (await target.rideFile('20260802T070000Z'))!.text()).toBe('bytes of 20260802T070000Z');
         expect(await loadBackup(target, backup)).toEqual({ routes: 0, rides: 0, photos: 0 });
-        expect((await target.routes())[0].revision).toBe(1);
         // A file with no photos has no `photos` field.
         const older = await edited(backup, ({ photos: _, ...json }) => json);
         expect(await loadBackup(new Library(new IDBFactory()), older)).toMatchObject({ routes: 1, rides: 2, photos: 0 });

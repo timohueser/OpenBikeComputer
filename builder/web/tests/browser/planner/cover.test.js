@@ -17,7 +17,7 @@ async function open(page, id) {
   const eye = points.eye.map((code, i) => i >= 120 && i < 160 ? code & 127 : code);
   await page.evaluate(async ({ image, summary, points, eye }) => {
     const { library, lineKey } = window.coverTest;
-    const route = id => ({ id, revision: 0, name: id, updatedAt: 0, trip: {}, summary });
+    const route = id => ({ id, name: id, updatedAt: 0, trip: {}, summary });
     for (const id of ['covered', 'plain']) await library.saveRoute(route(id));
     await library.saveCover({
       id: 'covered', lineKey: lineKey(route('covered')), state: 'done', tries: 0,
@@ -66,7 +66,7 @@ test('a card with no cover shows the map picture of the theme, and the large box
   };
   await page.goto('/planner.html?cover=loop');
   await page.waitForFunction(() => window.coverTest);
-  await page.evaluate(summary => window.coverTest.library.saveRoute({ id: 'loop', revision: 0, name: 'Loop', updatedAt: 0, trip: {}, summary }), summary);
+  await page.evaluate(summary => window.coverTest.library.saveRoute({ id: 'loop', name: 'Loop', updatedAt: 0, trip: {}, summary }), summary);
   // The card asks when it loads a record with a line.
   await page.reload();
   await page.waitForFunction(() => window.coverTest);

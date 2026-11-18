@@ -9,7 +9,7 @@ describe('plan file', () => {
         const plan = newPlan(setDrawnLeg(trip, 'finish', [[7, 47.5]]), 'Autumn tour');
         const imported = importPlan(exportPlan(plan));
         expect(imported.id).not.toBe(plan.id);
-        expect(imported).toMatchObject({ revision: 0, name: plan.name, trip: JSON.parse(JSON.stringify(plan.trip)) });
+        expect(imported).toMatchObject({ name: plan.name, trip: JSON.parse(JSON.stringify(plan.trip)) });
         expect(imported.trip.pace).toBe('easy');
     });
 

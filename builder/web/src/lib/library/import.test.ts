@@ -128,7 +128,7 @@ describe('readFiles', () => {
         await library.addRide(ride.ride, await ride.open());
         await library.addRide(other.ride, await other.open());
         await library.removeRide(other.ride.key);
-        await library.addRoute({ id: route.id, revision: 0, name: route.name, updatedAt: 0, summary: null, trip: {} });
+        await library.addRoute({ id: route.id, name: route.name, updatedAt: 0, summary: null, trip: {} });
         expect((await collect([evening, morning, jura], library)).map(found => found.kind)).toEqual(['known', 'known', 'known']);
         await library.close();
     });
@@ -201,7 +201,7 @@ describe('readFiles', () => {
         const route = ride.other as Found & { kind: 'route' }, recorded = planned.other as Found & { kind: 'ride' };
         expect(route).toMatchObject({ name: 'Evening', bike: 'mtb', lengthM: ride.ride.summary.lengthM });
         expect((await route.open()).points.map(p => p.time)).toEqual(points(t).map(p => p.time));
-        await library.addRoute({ id: route.id, revision: 0, name: route.name, updatedAt: 0, summary: null, trip: {} });
+        await library.addRoute({ id: route.id, name: route.name, updatedAt: 0, summary: null, trip: {} });
         await library.addRide(recorded.ride, await recorded.open());
         expect((await collect([evening, tour], library)).map(found => found.kind)).toEqual(['known', 'known']);
         await library.close();
