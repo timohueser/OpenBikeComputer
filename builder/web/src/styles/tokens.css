@@ -22,6 +22,8 @@
     --planner-shadow: 0 6px 18px rgba(28, 27, 20, .12);
     /* Links are rust in light and tan in dark, so amber stays the one action colour in both. */
     --link: var(--forest);
+    /* The fill of a highlighted place on a map. */
+    --place-disc: var(--rust);
 }
 
 :root[data-theme="dark"] {
@@ -38,4 +40,5 @@
     --speed: #7aa7f0;
     --cadence: #c2a3dc;
     --heart-rate: #e0874c;
+    --place-disc: #c8642a;
 }
