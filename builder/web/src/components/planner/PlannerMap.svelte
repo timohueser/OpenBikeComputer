@@ -17,7 +17,7 @@
     import type { Coordinate, MapPoint, MapSegment } from "../../lib/planner/map-types";
     import { RouteOverlays, type AccessMode, type OverlayOptions, type OverlaySelection, type RouteHint } from "../../lib/planner/route-overlays";
     import type { DataLayer } from "../../lib/planner/layers/data-layer";
-    import { placeCallout } from "../../lib/planner/callout-placement";
+    import { mapCallout, type MapCallout } from "../../lib/planner/map-callout";
     import MapOverlayDetails from './MapOverlayDetails.svelte';
     import PlaceMarks from './PlaceMarks.svelte';
     import PlaceList from './PlaceList.svelte';
@@ -103,7 +103,7 @@
     const pins = new Map<string, { marker: maplibregl.Marker; button: HTMLButtonElement; key: string }>();
     let pinButtons = $state.raw(new Map<string, HTMLButtonElement>());
     let draggingPin = $state(false);
-    let calloutPopup: maplibregl.Popup | undefined;
+    let calloutPopup: MapCallout | undefined;
     let relief: Relief;
     let appliedTheme: "light" | "dark";
     let fittedInitialRoute = false;
@@ -213,22 +213,6 @@
 
     function motionDuration() {
         return window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 400;
-    }
-
-    /**
-     * Anchors the open callout where it fits clear of the controls column and the bottom strip.
-     * With `pan`, a callout that fits nowhere pans the map the least distance. A map move only re-anchors, so it never starts another pan.
-     */
-    function fitCallout(pan: boolean) {
-        if (!map || !calloutPopup || !calloutAt) return;
-        const free = { left: 16, top: 16, right: container.clientWidth - controlsWidth, bottom: container.clientHeight - bottomClear };
-        const { x, y } = map.project(calloutAt);
-        const placed = placeCallout([x, y], [popupContent.offsetWidth, popupContent.offsetHeight], free, calloutOffset);
-        if (calloutPopup.options.anchor !== placed.anchor) {
-            calloutPopup.options.anchor = placed.anchor;
-            calloutPopup.setOffset(calloutOffset);
-        }
-        if (pan && (placed.pan[0] || placed.pan[1])) map.panBy(placed.pan, { duration: motionDuration() }, { preserveSearch: true });
     }
 
     function lineFeature(input: Coordinate[], properties: Record<string, string> = {}): Feature<LineString> {
@@ -469,6 +453,9 @@
             map = new maplibregl.Map({ container, center, zoom, maxBounds: config.bounds, style: mapStyle(theme, styleConfig, relief), attributionControl: false, maxPitch: 0, renderWorldCopies: false, zoomLevelsToOverscale: undefined });
             // The script of the tile pictures moves the map.
             if (import.meta.env.DEV) Object.assign(window, { plannerMap: map });
+            // The callout fits clear of the controls column and the bottom strip.
+            calloutPopup = mapCallout(map, popupContent, { offset: calloutOffset,
+                free: () => ({ left: 16, top: 16, right: container.clientWidth - controlsWidth, bottom: container.clientHeight - bottomClear }) });
             overlayLayer = new RouteOverlays(map, config.overlays, (message, retry = false) => { overlayStatus = message; overlayRetry = retry; }, hint => routeHint = hint);
             fitInitialRoute();
             map.addControl(new ClosedAttribution(), "bottom-right");
@@ -537,7 +524,6 @@
             map.on("idle", () => loading = false);
             map.on("dataloading", () => loading = true);
             map.on("movestart", () => loading = true);
-            map.on("move", () => fitCallout(false));
             map.on("zoom", () => {
                 if (!placeList || placeList.level === level()) return;
                 if (popupContent.contains(document.activeElement)) closeList();
@@ -559,11 +545,8 @@
         observer.observe(container);
         const preventDrag = (event: DragEvent) => event.preventDefault();
         container.addEventListener('dragstart', preventDrag);
-        const popupObserver = new ResizeObserver(() => { requestAnimationFrame(() => fitCallout(true)); });
-        popupObserver.observe(popupContent);
         return () => {
             container.removeEventListener('dragstart', preventDrag);
-            popupObserver.disconnect();
             observer.disconnect();
             clearTimeout(refit);
             pins.forEach(({ marker }) => marker.remove());
@@ -764,24 +747,12 @@
         void bottomClear;
         untrack(() => {
             if (wholeRoute) fitRoute();
-            fitCallout(true);
+            calloutPopup?.refit(true);
         });
     });
     $effect(() => {
-        if (!map || !popupContent) return;
-        if (!calloutAt) {
-            calloutPopup?.remove();
-            calloutPopup = undefined;
-            return;
-        }
-        calloutPopup ??= new maplibregl.Popup({
-            closeButton: false, closeOnClick: false, offset: calloutOffset, maxWidth: "340px", anchor: "bottom",
-        }).setDOMContent(popupContent);
-        calloutPopup.setLngLat(calloutAt).addTo(map);
-        fitCallout(false);
-        const settle = () => requestAnimationFrame(() => fitCallout(true));
-        if (map.isMoving()) map.once("moveend", settle);
-        else settle();
+        const at = calloutAt;
+        if (map) untrack(() => calloutPopup?.show(at));
     });
 </script>
 
@@ -835,8 +806,6 @@
 <style>
     .map-frame { position: relative; min-height: 240px; height: 100%; isolation: isolate; background: var(--parchment, #f4f2eb); }
     .map-canvas { user-select: none; -webkit-user-select: none; width: 100%; height: 100%; min-height: 240px; }
-    /* MapLibre puts the callout inside the map container, which would pass on its user-select: none. */
-    .map-canvas :global(.maplibregl-popup) { user-select: text; -webkit-user-select: text; }
     .popup-storage { display: none; }
     .overlay-status { position: absolute; left: 12px; bottom: 34px; max-width: calc(100% - 80px); padding: 7px 10px; border-radius: 6px; color: var(--ink); background: var(--panel); font-size: 12px; }
     .overlay-status button { margin-left: 8px; border: 0; background: none; color: var(--link); font: inherit; text-decoration: underline; cursor: pointer; }
@@ -883,15 +852,9 @@
     .route-hint span { color: var(--ink-soft, #5c5a2e); font-weight: 400; }
     :global(.planner-hover-dot) { width: 12px; height: 12px; border: 3px solid var(--panel, #fff); border-radius: 50%; background: var(--ink, #1c1b14); pointer-events: none; }
     :global(.planner-insert-dot) { width: 14px; height: 14px; border: 2.5px solid var(--route, #cc2a93); border-radius: 50%; background: var(--panel, #fff); pointer-events: none; }
-    .map-frame :global(.maplibregl-popup-content) { padding: 0; border-radius: 8px; color: var(--ink, #1c1b14); background: var(--panel, white); font-family: var(--sans, sans-serif); box-shadow: var(--planner-shadow, 0 6px 18px rgba(28, 27, 20, .12)); }
     .map-frame :global(.maplibregl-ctrl-scale) { padding: 0 6px; border: 1px solid var(--line-strong, #bcb9aa); border-top: 0; background: var(--panel, white); font: 11px/18px var(--sans, sans-serif); color: var(--ink, #1c1b14); }
     .map-frame :global(.maplibregl-ctrl-attrib) { background: var(--panel, white); font: 11px var(--sans, sans-serif); color: var(--ink-soft, #5c5a2e); }
     .map-frame :global(.maplibregl-ctrl-attrib a) { color: var(--link, var(--ink-soft, #5c5a2e)); }
     .map-frame :global(.maplibregl-ctrl-attrib.maplibregl-compact-show .maplibregl-ctrl-attrib-button) { background-color: var(--parchment-2, #e7ecdf); }
     .map-frame[data-map-theme="dark"] :global(.maplibregl-ctrl-attrib-button) { background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' fill-rule='evenodd' viewBox='0 0 20 20'%3E%3Cpath d='M4 10a6 6 0 1 0 12 0 6 6 0 1 0-12 0m5-3a1 1 0 1 0 2 0 1 1 0 1 0-2 0m0 3a1 1 0 1 1 2 0v3a1 1 0 1 1-2 0' fill='%23f2efe3'/%3E%3C/svg%3E"); }
-    /* The tip takes the panel colour on whichever side MapLibre draws it for each anchor. */
-    .map-frame :global(:is(.maplibregl-popup-anchor-bottom, .maplibregl-popup-anchor-bottom-left, .maplibregl-popup-anchor-bottom-right) .maplibregl-popup-tip) { border-top-color: var(--panel, white); }
-    .map-frame :global(:is(.maplibregl-popup-anchor-top, .maplibregl-popup-anchor-top-left, .maplibregl-popup-anchor-top-right) .maplibregl-popup-tip) { border-bottom-color: var(--panel, white); }
-    .map-frame :global(.maplibregl-popup-anchor-left .maplibregl-popup-tip) { border-right-color: var(--panel, white); }
-    .map-frame :global(.maplibregl-popup-anchor-right .maplibregl-popup-tip) { border-left-color: var(--panel, white); }
 </style>

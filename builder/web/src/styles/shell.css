@@ -79,3 +79,33 @@ summary:focus-visible {
     right: calc(100% + 6px);
     left: auto;
 }
+
+/* The popup of a map (`mapCallout`). It draws over each mark and pin of the map. MapLibre puts it inside the map
+   container, which can pass on its user-select: none. */
+.maplibregl-popup.map-callout {
+    z-index: 3;
+    user-select: text;
+    -webkit-user-select: text;
+}
+/* Over the corner radius that MapLibre takes off at the tip of a corner anchor. */
+.maplibregl-popup.map-callout .maplibregl-popup-content {
+    padding: 0;
+    border-radius: 8px;
+    color: var(--ink);
+    background: var(--panel);
+    font-family: var(--sans);
+    box-shadow: var(--planner-shadow);
+}
+/* The tip takes the panel colour on whichever side MapLibre draws it for each anchor. */
+.map-callout:is(.maplibregl-popup-anchor-bottom, .maplibregl-popup-anchor-bottom-left, .maplibregl-popup-anchor-bottom-right) .maplibregl-popup-tip {
+    border-top-color: var(--panel);
+}
+.map-callout:is(.maplibregl-popup-anchor-top, .maplibregl-popup-anchor-top-left, .maplibregl-popup-anchor-top-right) .maplibregl-popup-tip {
+    border-bottom-color: var(--panel);
+}
+.map-callout.maplibregl-popup-anchor-left .maplibregl-popup-tip {
+    border-right-color: var(--panel);
+}
+.map-callout.maplibregl-popup-anchor-right .maplibregl-popup-tip {
+    border-left-color: var(--panel);
+}
