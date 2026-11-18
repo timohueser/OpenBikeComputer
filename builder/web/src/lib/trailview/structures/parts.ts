@@ -175,17 +175,18 @@ export function buildPart(b: MeshBuilder, line: Line, end: 0 | 1): boolean {
             const k = Math.max(-16, Math.min(16, t)) + 16, i = Math.min(31, Math.floor(k)), row = f.tops[i] + (f.tops[i + 1] - f.tops[i]) * (k - i);
             return Math.min(f.head, Math.max(row, f.head - Math.max(0, Math.abs(t) - edge) * 1.5));
         };
-        headWall(b, fr, so, floor, w, h, p.round, top, edge + f.wl, edge + f.wr, look, true, f.foot);
+        const cut = f.S0 !== null ? FRAME + 0.3 + WALL - T - FRAME : null, tw = p.twin?.side;
+        const wl = cut === null || tw === 1 ? f.wl : cut, wr = cut === null || tw === -1 ? f.wr : cut;
+        headWall(b, fr, so, floor, w, h, p.round, top, edge + wl, edge + wr, look, true, f.foot);
         shell(b, fr, so - RECESS + FACE, so + Math.max(1, f.collar) + 1, fl(so - RECESS + FACE), fl(so + Math.max(1, f.collar) + 1), w, h, p.round, look.shell, f.cfoot);
-        if (so > 0.5) {
-            // The cutting: walls back to the OSM end, the floor in the open.
+        if (f.S0 !== null) {
+            // The cutting in front of the opening: walls out to where the ground is low, the floor between them.
             const wt = w + FRAME + 0.3, ss: number[] = [];
-            for (let k = 0; k < so - RECESS - 0.2; k++) ss.push(k);
+            for (let k = f.S0; k < so - RECESS - 0.2; k++) ss.push(k);
             ss.push(so - RECESS);
-            const pickRow = (row: number[], s: number) => row[Math.min(row.length - 1, Math.round(s))];
-            cuttingWalls(b, fr, ss.map(s => [s, pickRow(f.L, s), pickRow(f.R, s), fl(s), pickRow(f.LB, s), pickRow(f.RB, s)]), wt, look, 0);
-            openFloor(b, fr, line, 0, so - RECESS, fl(0), fl(so - RECESS), w);
-            for (const side of [1, -1]) quad(b, [[fr.at(0, fl(0)), [side * w, 0.04]], [fr.at(so - RECESS, fl(so - RECESS)), [side * w, 0.04]], [fr.at(so - RECESS, fl(so - RECESS)), [side * wt, 0.04]], [fr.at(0, fl(0)), [side * wt, 0.04]]], GUTTER, [0, 0, 1]);
+            const at = (row: number[], s: number) => row[Math.max(0, Math.min(row.length - 1, Math.round(s - f.S0!)))];
+            cuttingWalls(b, fr, ss.map(s => [s, at(f.L, s), at(f.R, s), at(f.F, s), at(f.LB, s), at(f.RB, s)]), wt, look, line.h);
+            if (so > 0.5) openFloor(b, fr, line, 0, so - RECESS, fl(0), fl(so - RECESS), w);
         }
         voidFan(b, fr, so + 0.7, floor, w, h, p.round);
         return true;
@@ -274,9 +275,9 @@ export function partBoxes(p: Placement): number[] {
     if (p.kind === 'arch' || p.kind === 'twin') {
         const f = fitOf(p)!, so = f.open, sf = so - RECESS, floor = f.floor;
         out.push(...box(fr, sf, Math.max(12, FACE + f.collar + 2), p.w + FRAME, floor + p.h + T + 0.1, floor + 0.03, f.grade ?? 0, p.ux, p.uy));
-        if (so > 0.5) {
+        if (f.S0 !== null) {
             const top = Math.max(...f.L, ...f.R) + 5, f0 = f.F[0];
-            out.push(...box(fr, 0, sf, p.w + FRAME + 0.3 + 0.25, top, f0 + 0.25, (floor - f0) / Math.max(sf, 0.1), p.ux, p.uy));
+            out.push(...box(fr, f.S0, sf - f.S0, p.w + FRAME + 0.3 + 0.25, top, f0 + 0.25, (floor - f0) / Math.max(sf - f.S0, 0.1), p.ux, p.uy));
         }
     } else if (p.kind === 'free') {
         out.push(...box(fr, 0, p.free!.len + 2, p.w + T, p.floor0 + p.h + T + 0.1, p.floor0 + 0.03, 0, p.ux, p.uy));

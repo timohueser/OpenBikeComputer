@@ -2,7 +2,7 @@
 // OSM end of a tunnel way. No imports: bins.ts and the structures read it.
 
 export interface Fit {
-    open: number; collar: number; head: number; wl: number; wr: number; tops: number[]; L: number[]; R: number[]; floor: number; F: number[]; grade: number; foot: number; cfoot: number; LB: number[]; RB: number[];
+    open: number; collar: number; head: number; wl: number; wr: number; tops: number[]; L: number[]; R: number[]; floor: number; F: number[]; grade: number; foot: number; cfoot: number; LB: number[]; RB: number[]; S0: number | null;
 }
 export interface BoxEnd { node: number; x: number; y: number; ux: number; uy: number; floor: number; head: number; len: number; L: number[]; R: number[]; F: number[]; LB: number[]; RB: number[]; foot?: number; sfoot?: number }
 export interface Placement {
