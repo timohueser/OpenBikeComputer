@@ -11,6 +11,8 @@ relation with a member outside the extract leaves the catalog.
 - Readers: the planner search, online and offline: the web planner
   (`builder/web/src/lib/planner/route-catalog.ts`) and its Explore page
   (`builder/web/src/pages/Explore.svelte`), the companion app (`OBCPlanner/SignedRoutes.swift`).
+  A reader that draws or lists a record with `credit` shows the credit with it: on its card, and
+  among the credits of a map, a 3D view or a list that shows it.
 - Test vectors: [`vectors/signed-routes.json`](vectors/signed-routes.json).
 - Related: [route API](route-api.md), [planner release](planner-release.md), [offline
   bundle](planner-offline.md).
@@ -109,6 +111,7 @@ microdegrees, longitude before latitude. Lengths and heights are integer metres.
 | `parts` | Long route only: each of its parts, in order (see [Long routes](#long-routes)) |
 | `stage_count` | Long route only: the number of different stage numbers in `parts` |
 | `trail_profile_m` | Long route only: 201 heights of the whole trail (see [Long routes](#long-routes)) |
+| `credit` | The `attribution` in `data/sources.toml` of the second route source of the record's line; on a long route, the distinct credits of its own line and of its parts, joined by `; `; absent otherwise |
 
 Each record has a `name` or a `ref`, or both. The builder cuts a longer `description` at a word
 boundary. `symbol` is absent when a vertex of the route's full planned line, before the
@@ -320,10 +323,11 @@ points otherwise. Each stage turnaround moves to its position in the joined plan
 at the trail start of a part in the catalog, ends at the trail end of a part in the catalog, and has
 no jump after its first part. A part not in the catalog, or a run of such parts, inside a stretch is
 an ordinary leg from the trail end of the part before to the trail start of the part after. A trip
-can end a day at the trail end of each part without `cut`. A client plans a whole complete long
-route only when its joined plan has at most 64 points; otherwise it offers its stages only. A reader
-that needs the profile of a complete long route joins the profiles of its stages, and places the
-entries of each stage by the `length_m` of the stage.
+can end a day at the trail end of each part without `cut`. A client that sends a plan of more than
+64 points in several route requests plans a whole complete long route or a stretch with any number
+of points. A client that sends one request for a plan offers the stages only when the joined plan
+has more than 64 points. A reader that needs the profile of a complete long route joins the
+profiles of its stages, and places the entries of each stage by the `length_m` of the stage.
 
 ### Sections
 
@@ -399,7 +403,10 @@ several of its cells are loaded. A cell outside the covered set adds no record. 
 [`vectors/route-boxes.json`](vectors/route-boxes.json).
 
 A far view is a view with more than 12 zoom 9 cells and at most 12 zoom 7 cells. It reads the far
-files of its zoom 7 cells, and a trail record file when the rider selects a trail.
+files of its zoom 7 cells, and a trail record file when the rider selects a trail. A trail is in the
+far view when a segment of a piece of its far line meets the box, edges included: a segment of a
+simplified far line can be longer than the view. Each trail is in the
+view once, with the pieces of all far files of the view.
 
 ## Examples
 

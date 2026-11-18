@@ -394,6 +394,17 @@ struct PlannerPreviewModelTests {
         #expect(PlannerRoutesText.summary(PlannerRouteFilters(), activity: .touring) == "10 km · Loop")
     }
 
+    @Test func theRouteListCreditsTheSourceOfItsRoutesOnce() throws {
+        let source = "Bundesamt für Strassen, Kanton, Stiftung SchweizMobil"
+        let fields = #""kind":"hiking","name":"Route","rank":1,"loop":true,"length_m":4000,"ascent_m":0,"descent_m":0,"cells":[]"#
+        let routes = try JSONDecoder().decode([CatalogRecord].self, from: Data("""
+        [{"id":-1,\(fields),"credit":"\(source)"},{"id":2,\(fields)},{"id":-3,\(fields),"credit":"\(source); Other"}]
+        """.utf8))
+        let release = "© OpenStreetMap contributors"
+        #expect(PlannerRoutesText.credits(release, routes: routes) == "\(release) · \(source) · Other")
+        #expect(PlannerRoutesText.credits(release, routes: [routes[1]]) == release)
+    }
+
     @Test func nightsEndDaysAtAnyPointUpToTheDayLimit() async throws {
         let at = { (lon: Double) in Coordinate(latitude: 47.9, longitude: lon) }
         let limit = PlannerPlan.maxDays

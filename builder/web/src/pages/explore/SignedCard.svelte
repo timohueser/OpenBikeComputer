@@ -1,5 +1,5 @@
 <!-- The card of the selected signed route over the map: its line, its mark and name, what kind of route it is, its
-     numbers and profile, its description and official page, and "Plan this route". -->
+     numbers and profile, its description and official page, the credit of its source, and "Plan this route". -->
 <script module lang="ts">
     import { gradeName, type CatalogRecord } from '../../lib/planner/signed-routes';
     import { formatDistance, formatHeight } from '../../lib/settings/format';
@@ -31,7 +31,7 @@
     const stage = $derived<(string | false)[]>(record.stage === undefined ? []
         : parent?.stages ? [`Stage ${record.stage} of ${parent.stages.length}`, parent.name ?? parent.ref ?? false] : [`Stage ${record.stage}`]);
     const website = $derived(routeWebsite(record.website));
-    const about = $derived(!!(record.description || record.operator || website));
+    const about = $derived(!!(record.description || record.operator || website || record.credit));
 </script>
 
 <RouteCard name={item.name} meta={[record.loop ? 'Loop' : 'One way', ...stage, kind]} numbers={signedNumbers(record)} profile={item.profile}
@@ -46,6 +46,7 @@
         {#if record.description}<span class="description">{record.description}</span>{/if}
         {#if record.operator}<span>{record.operator}</span>{/if}
         {#if website}<a href={website} target="_blank" rel="noopener noreferrer">Official page ↗</a>{/if}
+        {#if record.credit}<span>Route data: {record.credit}</span>{/if}
     </p>
 {/snippet}
 

@@ -63,6 +63,13 @@ import SwiftUI
         let level = levels[min(route.rank, 4)]
         return level.isEmpty ? word.prefix(1).uppercased() + word.dropFirst() : "\(level) \(word)"
     }
+    /// The caption under the list: the credit of the release, then the distinct credits of the shown routes.
+    /// A long route joins the credits of its parts with "; ".
+    static func credits(_ attribution: String, routes: [CatalogRecord]) -> String {
+        var seen = Set<String>()
+        let credits = routes.flatMap { $0.credit?.components(separatedBy: "; ").filter { !$0.isEmpty } ?? [] }
+        return ([attribution] + credits.filter { seen.insert($0).inserted }).joined(separator: " · ")
+    }
     static func website(_ text: String?) -> URL? {
         guard let text = text?.trimmingCharacters(in: .whitespaces), !text.isEmpty else { return nil }
         return URL(string: text.contains("://") ? text : "https://" + text).flatMap { ["http", "https"].contains($0.scheme) ? $0 : nil }
@@ -177,7 +184,8 @@ struct PlannerRoutesList: View {
             if finder.matches.count > finder.shown {
                 Button("Show 20 more") { finder.shown += 20 }.frame(minHeight: 44)
             }
-            Text(attribution).font(.caption2).foregroundStyle(OBCTheme.secondary)
+            Text(PlannerRoutesText.credits(attribution, routes: finder.matches.prefix(finder.shown).map(\.route)))
+                .font(.caption2).foregroundStyle(OBCTheme.secondary)
         }
     }
 
@@ -282,6 +290,9 @@ struct PlannerRouteDetail: View {
                         }.buttonStyle(.plain)
                     }
                 }
+            }
+            if let credit = route.credit {
+                Text("Route data: \(credit)").font(.caption2).foregroundStyle(OBCTheme.secondary)
             }
         }
     }
