@@ -68,6 +68,8 @@ function serve() {
         if (request.method === 'POST' && path === '/blob') return keep(request, response);
         if (path === '/phone/' || path === '/phone') return send(response, 200, 'text/html', page('measure'));
         if (path === '/phone/diagnose') return send(response, 200, 'text/html', page('diagnose'));
+        // A phone keyboard adds a capital or a slash.
+        if (/^\/phone\/diagnos(e|is)\/?$/i.test(path)) return response.writeHead(302, { location: '/phone/diagnose' }).end();
         if (path === '/phone/measure.js') return send(response, 200, 'text/javascript', readFileSync(join(HERE, 'phone-measure.js')));
         if (path === '/phone/diagnose.js') return send(response, 200, 'text/javascript', readFileSync(join(HERE, 'phone-diagnose.js')));
         if (path === '/phone/cert.cer') return send(response, 200, 'application/x-x509-ca-cert', tls.cert);
