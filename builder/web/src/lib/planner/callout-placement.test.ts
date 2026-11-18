@@ -36,4 +36,12 @@ describe('callout placement', () => {
         const narrow = { left: 16, top: 16, right: 400, bottom: 300 };
         expect(placeCallout([200, 120], [340, 180], narrow, 20)).toEqual({ anchor: 'top', pan: [0, 30] });
     });
+
+    it('pans to an anchor whose popup fits the free area, not to one that no pan can fit', () => {
+        // As wide as the free area: beside the point the tip makes it wider.
+        const box = { left: 8, top: 8, right: 218, bottom: 231 }, point: [number, number] = [30, 120];
+        const { anchor, pan } = placeCallout(point, [210, 160], box, 16);
+        const placed = calloutBox(anchor, [point[0] - pan[0], point[1] - pan[1]], [210, 160], 16);
+        expect(placed.left >= box.left && placed.right <= box.right && placed.top >= box.top && placed.bottom <= box.bottom).toBe(true);
+    });
 });

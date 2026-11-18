@@ -290,6 +290,8 @@ test('the rows of a route of two days: a day, the pointer, a part, a climb, the 
   await expect(part).toHaveCount(1);
   // A focused pin of the map and the name field take their own Escape; the popup stays.
   await places.first().click();
+  // The popup takes the focus in its first frame; the pin takes it after that.
+  await expect(popup.locator('.callout')).toBeFocused();
   await mapPins.locator('button').first().focus();
   await expect(mapPins.locator('.route-pin-label')).toHaveCount(1);
   await page.keyboard.press('Escape');
