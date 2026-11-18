@@ -300,6 +300,28 @@ describe('runs longer than one request', () => {
         expect(fetch).toHaveBeenCalledTimes(6);
     });
 
+    it('sends a chunk without a path under the pin of the chunk before again from one leg earlier', async () => {
+        const fetch = vi.fn<(url: string, init: RequestInit) => Promise<unknown>>(routeService('one'));
+        vi.stubGlobal('fetch', fetch);
+        fetch.mockImplementationOnce(routeService('one')).mockImplementationOnce(failing('no_path', 'No legal route.'));
+        const points = run(100);
+        expect((await new LegCache().route(points, [], 'touring', signal)).geometry).toEqual(points);
+        expect(bodies(fetch).slice(1)).toMatchObject([
+            { points: points.slice(63), start_position: `one:${points[63]}` }, { points: points.slice(62), start_position: `one:${points[62]}` }]);
+        expect(fetch).toHaveBeenCalledTimes(3);
+    });
+
+    it('keeps consecutive turnarounds inside the request of an edit', async () => {
+        const fetch = vi.fn<(url: string, init: RequestInit) => Promise<unknown>>(routeService('one'));
+        vi.stubGlobal('fetch', fetch);
+        const cache = new LegCache();
+        const points = run(8);
+        await cache.route(points, [2, 3], 'touring', signal);
+        const edited = points.map((point, i): Coordinate => i === 4 ? [point[0], 48.01] : point);
+        await cache.route(edited, [2, 3], 'touring', signal);
+        expect(bodies(fetch)[1]).toMatchObject({ points: edited.slice(1, 6), turnarounds: [1, 2], start_position: `one:${points[1]}` });
+    });
+
     it('keeps each chunk as it arrives; a failure or an abort stops the chunks after it', async () => {
         const fetch = vi.fn<(url: string, init: RequestInit) => Promise<unknown>>(routeService('one'));
         vi.stubGlobal('fetch', fetch);
