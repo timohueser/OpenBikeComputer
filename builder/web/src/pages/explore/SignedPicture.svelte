@@ -6,8 +6,10 @@
     import { routeColor, SIGNED_GROUND } from '../../lib/planner/route-colors';
     import type { SignedItem } from '../routes/filter';
 
-    let { item, oncover }: {
+    let { item, small = false, oncover }: {
         item: SignedItem;
+        /** The small image of the cover, for a list row. */
+        small?: boolean;
         /** The credits of the set when the cover shows, and undefined when that cover goes. */
         oncover?: (credits: string[] | undefined) => void;
     } = $props();
@@ -16,7 +18,7 @@
     let cover = $state.raw<RouteCover>();
     // A row shows its picture only near the view: a picture that goes stops its load, and the last one closes the bitmap.
     $effect(() => {
-        const { cover: loading, release } = holdCover(item.record);
+        const { cover: loading, release } = holdCover(item.record, small);
         let live = true, shown = false;
         cover = undefined;
         void loading.then(found => {

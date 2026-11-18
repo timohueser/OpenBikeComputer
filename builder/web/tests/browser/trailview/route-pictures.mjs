@@ -3,13 +3,15 @@
 // README.md beside this file has the steps.
 //
 //   node trailview/route-pictures.mjs render [--gpu] [--fixture] [--out DIR] [--sample N] [--only=ID,ID]
+//   node trailview/route-pictures.mjs small [--out DIR]
 //   node trailview/route-pictures.mjs upload [--out DIR] [--without ID,ID]
 //   node trailview/route-pictures.mjs switch SET
 //
 // render reads the catalog of the production release and writes <out>/covers/<id>/<key>-<light>.webp
 // and <key>.json, or <key>.none for a route with no view. A route whose files exist is done. A route
-// that fails gets no file: render goes on, names it at the end and exits with 1. At the end it writes
-// the set of the covers in <out> under <out>/sets/<set>/. --sample N renders N routes spread over the
+// that fails gets no file: render goes on, names it at the end and exits with 1. At the end it runs
+// small and writes the set of the covers in <out> under <out>/sets/<set>/. small writes the small image
+// <name>-small.webp of each full image <name>.webp in <out> that has none or an older one, with no render. --sample N renders N routes spread over the
 // catalog and prints what all of them would take. --gpu draws on the machine's GPU, else SwiftShader
 // draws on the CPU, for minutes. --fixture reads fixture/routes.json and answers the tile hosts from
 // the fixture: build the page with `npm run pretest:trailview` first. upload --without leaves these
@@ -17,7 +19,7 @@
 // negative id of a section needs the form --only=-ID.
 
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -30,6 +32,9 @@ const OUT = new URL('../../../../../.artifacts/route-pictures', import.meta.url)
 export const FIXTURE_ROUTES = new URL('./fixture/routes.json', import.meta.url).pathname;
 export const PREFIX = 'route-pictures';
 const WIDTH = 960, HEIGHT = 640;
+/** The small image is a quarter of the full image in width and height, as the reader divides the points by this fixed 4. */
+const SMALL = 4, SMALL_QUALITY = 0.8;
+if (WIDTH % SMALL || HEIGHT % SMALL) throw new Error(`The size ${WIDTH} × ${HEIGHT} of a cover is not a multiple of ${SMALL}.`);
 /** The version of the camera rule, and the light `MMDD-HHMM` with which `coverView` chooses the camera of a cover for each month of it: a change of one gives each line a new key. */
 const CAMERA = 1, CAMERA_LIGHT = '0715-1000';
 export const LOOK = `${CAMERA}|${CAMERA_LIGHT}|${WIDTH}|${HEIGHT}`;
@@ -55,8 +60,8 @@ const POINTS_MS = 30_000;
 /** The key of the cover of a record. */
 export const keyOf = record => createHash('sha256').update(`${LOOK}|${record.line_udeg.join(',')}`).digest('hex').slice(0, 16);
 
-/** The ends of the names of a cover's files after its key: the points, the mark of no view, the image of the month. */
-const POINTS = '.json', NONE = '.none', IMAGE = `-${LIGHT}.webp`;
+/** The ends of the names of a cover's files after its key: the points, the mark of no view, the full and the small image of the month. */
+const POINTS = '.json', NONE = '.none', IMAGE = `-${LIGHT}.webp`, SMALL_IMAGE = `-${LIGHT}-small.webp`;
 const coverDir = (out, record) => join(out, 'covers', String(record.id));
 const coverFile = (out, record, end) => join(coverDir(out, record), `${keyOf(record)}${end}`);
 
@@ -277,6 +282,41 @@ export function writeSet(out, records, release) {
     return { set: manifest.set, manifest, cells: ids };
 }
 
+/**
+ * Writes the small image of each full image `covers/<id>/<name>.webp` in `out` whose `<name>-small.webp` is
+ * missing or older, in one page with no render, and gives their count: a full image that render writes again
+ * gets a new small image.
+ */
+export async function small(out = OUT) {
+    const dir = join(out, 'covers'), names = existsSync(dir) ? readdirSync(dir, { recursive: true }) : [];
+    const todo = names.filter(name => name.endsWith('.webp') && !name.endsWith('-small.webp')).map(name => join(dir, name)).filter(file => {
+        const little = file.replace(/\.webp$/, '-small.webp');
+        return !existsSync(little) || statSync(little).mtimeMs < statSync(file).mtimeMs;
+    });
+    if (todo.length) {
+        const browser = await launch(false);
+        try {
+            const page = await browser.newPage();
+            for (const file of todo) {
+                const result = await page.evaluate(async ({ data, width, height, quality }) => {
+                    const bitmap = await createImageBitmap(new Blob([Uint8Array.from(atob(data), c => c.charCodeAt(0))]), { resizeWidth: width, resizeHeight: height, resizeQuality: 'high' });
+                    const canvas = new OffscreenCanvas(width, height);
+                    canvas.getContext('2d').drawImage(bitmap, 0, 0);
+                    bitmap.close();
+                    const image = await canvas.convertToBlob({ type: 'image/webp', quality });
+                    return image.type === 'image/webp' ? { data: Array.from(new Uint8Array(await image.arrayBuffer()), byte => String.fromCharCode(byte)).join('') } : { type: image.type };
+                }, { data: readFileSync(file).toString('base64'), width: WIDTH / SMALL, height: HEIGHT / SMALL, quality: SMALL_QUALITY });
+                if (result.type) throw new Error(`The browser encoded ${result.type}, not WebP.`);
+                writeWhole(file.replace(/\.webp$/, '-small.webp'), Buffer.from(result.data, 'latin1'));
+            }
+        } finally {
+            await browser.close();
+        }
+    }
+    console.log(`${todo.length} small images.`);
+    return todo.length;
+}
+
 /** Renders the covers that `out` lacks and writes the set; gives the ids of the routes that failed. */
 export async function render({ out = OUT, sample, only, gpu = false, fixture = false, fetch = globalThis.fetch }) {
     out = resolve(out);
@@ -365,6 +405,7 @@ export async function render({ out = OUT, sample, only, gpu = false, fixture = f
         await browser.drop();
         close();
     }
+    await small(out);
     const done = covers + none, mean = done ? seconds / done : 0;
     console.log(`${covers} covers, ${none} routes with no view, ${failed.length} failed, ${mean.toFixed(1)} s each, ${(bytes / 1e6).toFixed(1)} MB.`);
     if (sample && done) {
@@ -397,9 +438,11 @@ export async function upload({ out = OUT, without = [], r2 = obcR2, fetch = glob
     const release = await productionRelease(fetch), records = (await releaseRoutes(release, fetch, wait)).filter(record => !without.includes(record.id));
     const missing = records.filter(record => !stateOf(out, record)).map(record => record.id);
     if (missing.length) throw new Error(`These routes of the production release ${release.id} have no cover and no mark of no view: ${missing.join(', ')}. Run render first, or leave them out with --without.`);
+    const unsmall = records.filter(record => stateOf(out, record) === 'cover' && !existsSync(coverFile(out, record, SMALL_IMAGE))).map(record => record.id);
+    if (unsmall.length) throw new Error(`These covers have no small image: ${unsmall.join(', ')}. Run small first.`);
     const { set, cells } = writeSet(out, records, release.id), dir = join(out, 'sets', set);
     const covered = records.filter(record => stateOf(out, record) === 'cover'), held = await listed(r2, `${PREFIX}/covers`);
-    const filesOf = record => [['image/webp', IMAGE], ['application/json', POINTS]].map(([type, end]) => ({ type, file: coverFile(out, record, end), key: `${PREFIX}/covers/${record.id}/${keyOf(record)}${end}` }));
+    const filesOf = record => [['image/webp', IMAGE], ['image/webp', SMALL_IMAGE], ['application/json', POINTS]].map(([type, end]) => ({ type, file: coverFile(out, record, end), key: `${PREFIX}/covers/${record.id}/${keyOf(record)}${end}` }));
     const files = covered.flatMap(filesOf), sent = files.filter(({ key }) => !held.has(key));
     console.log(`${sent.length} of ${files.length} cover files to send.`);
     // The points first: an image in the bucket always has its points, so a later render takes its camera.
@@ -425,7 +468,7 @@ export function checkMonths({ months, default_month: month }) {
 /**
  * Reads the cell files of an uploaded set from the bucket, checks that they and the manifest give the set id,
  * so that no cell file is missing, and with one list of the bucket that it holds the points and the image of
- * each month of the set of each cover that they name, then puts the manifest of the set at the live key. The
+ * each month of the set, full and small, of each cover that they name, then puts the manifest of the set at the live key. The
  * bucket, not the public host: the edge cache keeps a file for a year after it is deleted.
  */
 export async function switchTo(set, { r2 = obcR2 } = {}) {
@@ -435,7 +478,7 @@ export async function switchTo(set, { r2 = obcR2 } = {}) {
     const dir = mkdtempSync(join(tmpdir(), 'route-pictures-')), file = join(dir, 'manifest.json');
     try {
         await r2(['get', key, file]);
-        const manifest = JSON.parse(readFileSync(file, 'utf8')), ends = [POINTS, ...Object.values(manifest.months).map(light => `-${light}.webp`)];
+        const manifest = JSON.parse(readFileSync(file, 'utf8')), ends = [POINTS, ...Object.values(manifest.months).flatMap(light => [`-${light}.webp`, `-${light}-small.webp`])];
         if (manifest.set !== set) throw new Error(`The manifest of set ${set} names another set.`);
         checkMonths(manifest);
         const idOf = name => name.slice(`${root}cells/`.length, -'.json'.length);
@@ -471,6 +514,7 @@ async function main() {
     });
     const out = values.out ?? OUT, ids = text => text?.split(',').map(Number);
     if (command === 'switch') return console.log(`Set ${await switchTo(set)} is live.`);
+    if (command === 'small') return void await small(out);
     if (command === 'upload') return console.log(await upload({ out, without: ids(values.without) }));
     if (command === 'render') {
         const sample = values.sample === undefined ? undefined : Number(values.sample);
@@ -479,7 +523,7 @@ async function main() {
         if (failed.length) process.exitCode = 1;
         return;
     }
-    throw new Error('Usage: route-pictures.mjs render|upload|switch SET; see the head of this file.');
+    throw new Error('Usage: route-pictures.mjs render|small|upload|switch SET; see the head of this file.');
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

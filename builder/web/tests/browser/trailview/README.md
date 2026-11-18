@@ -79,13 +79,16 @@ The first runs, from `builder/web/tests/browser`:
    seconds and the bytes of each cover, and the time, the size and the count of files of all routes.
 4. Render all routes in `.artifacts/route-pictures/`: `node trailview/route-pictures.mjs render --gpu`.
    It writes `covers/<id>/<key>-0715-1000.webp` and `<key>.json`, or `<key>.none` for a route with no view, and at
-   the end the set under `sets/<set>/`. Then upload: `node trailview/route-pictures.mjs upload`. It
+   the end the small images `<key>-0715-1000-small.webp` and the set under `sets/<set>/`. Then upload: `node trailview/route-pictures.mjs upload`. It
    prints the set id. Approve the set id, then make the set live:
    `node trailview/route-pictures.mjs switch SET`.
    `curl -sI https://maps.openbikecomputer.com/route-pictures/manifest.json` answers 200.
    `switch` with the id of the previous set goes back.
 
 For a new planner release, do steps 1 and 4: only the routes whose line changed render.
+
+`node trailview/route-pictures.mjs small [--out DIR]` makes the small image of each full image that
+has none or an older one, with no render and no network.
 
 ## Options of render
 
@@ -106,7 +109,7 @@ For a new planner release, do steps 1 and 4: only the routes whose line changed 
 - `render` skips a route whose cover or `.none` mark exists for its key. A change of the size, the
   camera rule or its light in the script changes `look` and so each key: all routes render again.
 - `upload` takes the routes of the active production release, and refuses while one of them has no
-  cover and no `.none` mark. It lists the bucket once and sends only the missing cover files, 16
+  cover and no `.none` mark, or a cover has no small image. It lists the bucket once and sends only the missing cover files, 16
   at a time, the points first. After a 429 of the host it waits one minute, at most 5 times for a file.
 - `upload` and `switch` call `obc data r2`, which needs `OBC_R2_*`. `switch` checks the covers in
   the bucket, because the public host keeps a deleted file in its cache for a year.

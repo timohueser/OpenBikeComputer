@@ -13,6 +13,8 @@ export const MANIFEST = address('manifest.json');
 /** The manifest is read again at most once in this time: after a cover file answers 404, as the set can have changed,
  * and after a read that failed for another reason, such as no signal. */
 const REREAD_MS = 60_000;
+/** A small image is a quarter of the full image in width and height, and the points are in the frame of the full image. */
+const SMALL = 4;
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 
@@ -79,17 +81,18 @@ async function file(path: string, signal?: AbortSignal): Promise<Response> {
     return response;
 }
 
-/** A `null` place becomes NaN, with eye 0, as `pack` of line.ts writes a vertex with no place. */
-function readPoints(value: unknown, vertices: number): CoverPoints | undefined {
+/** A `null` place becomes NaN, with eye 0, as `pack` of line.ts writes a vertex with no place; each place is multiplied by `scale`. */
+function readPoints(value: unknown, vertices: number, scale: number): CoverPoints | undefined {
     if (!isRecord(value)) return undefined;
     const { x, y, eye } = value;
     if (![x, y, eye].every(list => Array.isArray(list) && list.length === vertices)) return undefined;
-    const place = (list: unknown[]) => Float32Array.from(list, at => typeof at === 'number' ? at : NaN);
+    const place = (list: unknown[]) => Float32Array.from(list, at => typeof at === 'number' ? at * scale : NaN);
     return { x: place(x as unknown[]), y: place(y as unknown[]), eye: Uint8Array.from(eye as number[]) };
 }
 
-/** The cover of a record in the live set, or undefined, also after `signal` aborts. The caller owns the bitmap. */
-export async function coverOf(record: CatalogRecord, signal?: AbortSignal): Promise<RouteCover | undefined> {
+/** The cover of a record in the live set, with the small image for a list row, or undefined, also after `signal` aborts.
+ * The caller owns the bitmap. */
+export async function coverOf(record: CatalogRecord, small = false, signal?: AbortSignal): Promise<RouteCover | undefined> {
     const line = record.line_udeg, cell = record.cells[0];
     try {
         const set = await routePictures();
@@ -97,8 +100,8 @@ export async function coverOf(record: CatalogRecord, signal?: AbortSignal): Prom
         const [held, key] = await Promise.all([coverKey(cell, record.id), keyOf(set.look, line)]);
         if (held !== key || signal?.aborted) return undefined;
         const [image, points] = await Promise.all([
-            file(`covers/${record.id}/${key}-${set.light}.webp`, signal).then(response => response.blob()),
-            file(`covers/${record.id}/${key}.json`, signal).then(response => response.json()).then(value => readPoints(value, line.length / 2)),
+            file(`covers/${record.id}/${key}-${set.light}${small ? '-small' : ''}.webp`, signal).then(response => response.blob()),
+            file(`covers/${record.id}/${key}.json`, signal).then(response => response.json()).then(value => readPoints(value, line.length / 2, small ? 1 / SMALL : 1)),
         ]);
         if (!points || signal?.aborted) return undefined;
         const bitmap = await createImageBitmap(image);
@@ -110,15 +113,17 @@ export async function coverOf(record: CatalogRecord, signal?: AbortSignal): Prom
     }
 }
 
-/** The covers that pictures hold now, by record: a row and the card of the same route share one load and one bitmap. */
-const held = new Map<CatalogRecord, { cover: Promise<RouteCover | undefined>; users: number; stop: AbortController }>();
+type Hold = { cover: Promise<RouteCover | undefined>; users: number; stop: AbortController };
+/** The covers that pictures hold now, by size and record: two pictures of one route and one size share one load and one bitmap. */
+const holds = { small: new Map<CatalogRecord, Hold>(), full: new Map<CatalogRecord, Hold>() };
 
-/** Holds the cover of a record until `release`. The last release stops the load and closes the bitmap. */
-export function holdCover(record: CatalogRecord): { cover: Promise<RouteCover | undefined>; release: () => void } {
+/** Holds the cover of a record, small for a list row, until `release`. The last release stops the load and closes the bitmap. */
+export function holdCover(record: CatalogRecord, small = false): { cover: Promise<RouteCover | undefined>; release: () => void } {
+    const held = holds[small ? 'small' : 'full'];
     let entry = held.get(record);
     if (!entry) {
         const stop = new AbortController();
-        held.set(record, entry = { cover: coverOf(record, stop.signal), users: 0, stop });
+        held.set(record, entry = { cover: coverOf(record, small, stop.signal), users: 0, stop });
     }
     entry.users++;
     const mine = entry;

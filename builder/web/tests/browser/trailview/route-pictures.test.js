@@ -5,7 +5,8 @@ import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { expect, test } from '@playwright/test';
 import { CATALOG, HOST } from './stills.mjs';
-import { FIXTURE_ROUTES, LOOK, checkMonths, checkRelease, gridCells, keyOf, lightOf, patiently, pointsOf, sampleOf, storedCamera, switchTo, upload } from './route-pictures.mjs';
+import { launch } from './harness.js';
+import { FIXTURE_ROUTES, LOOK, checkMonths, checkRelease, gridCells, keyOf, lightOf, patiently, pointsOf, sampleOf, small, storedCamera, switchTo, upload } from './route-pictures.mjs';
 import { pack } from '../../../src/lib/covers/line.ts';
 
 const SCRIPT = new URL('./route-pictures.mjs', import.meta.url).pathname;
@@ -13,15 +14,16 @@ const CONFIG = JSON.parse(readFileSync(new URL('./fixture/config.json', import.m
 const [VALLEY] = JSON.parse(readFileSync(FIXTURE_ROUTES, 'utf8')).routes;
 const NO_VIEW = { ...VALLEY, id: 1002, cells: ['9-268-180'], line_udeg: [8450000, 46800000, 1000, 0] };
 const LONG = { id: 1003, kind: 'hiking', name: 'Long', cells: ['9-267-180'], stages: [1001] };
-/** The end of the name of the image of July, the one month of a set, at 10:00. */
-const IMAGE = '-0715-1000.webp';
+/** The ends of the names of the full and the small image of July, the one month of a set, at 10:00. */
+const IMAGE = '-0715-1000.webp', SMALL = '-0715-1000-small.webp';
 const RELEASE = { id: 'release-1', bounds: CONFIG.bounds, routes: 'https://tiles.test/releases/release-1/routes/tiles/{cell}.json' };
 
-/** The cover of VALLEY and the mark of NO_VIEW in `out`, with a few bytes as the image. */
+/** The cover of VALLEY and the mark of NO_VIEW in `out`, with a few bytes as each image. */
 function rendered(out) {
     const file = end => join(out, 'covers', String(VALLEY.id), `${keyOf(VALLEY)}${end}`);
     mkdirSync(dirname(file(IMAGE)), { recursive: true });
     writeFileSync(file(IMAGE), 'image');
+    writeFileSync(file(SMALL), 'small');
     writeFileSync(file('.json'), JSON.stringify({ x: [], y: [], eye: [], credits: ['terrain'], camera: {} }));
     const none = join(out, 'covers', String(NO_VIEW.id), `${keyOf(NO_VIEW)}.none`);
     mkdirSync(dirname(none), { recursive: true });
@@ -140,10 +142,15 @@ test('upload refuses a route with no cover and no mark, else sends the points, t
     expect(fake.puts).toEqual([]);
 
     rendered(out);
+    const smallFile = join(out, 'covers', '1001', `${keyOf(VALLEY)}${SMALL}`);
+    rmSync(smallFile);
+    await expect(upload({ out, ...fake })).rejects.toThrow('These covers have no small image: 1001. Run small first.');
+    expect(fake.puts).toEqual([]);
+    writeFileSync(smallFile, 'small');
     const cover = `route-pictures/covers/1001/${keyOf(VALLEY)}`;
     const set = await upload({ out, ...fake });
-    // The points go before the image, and the manifest last, after the slower cell file.
-    expect(fake.puts.map(({ key }) => key)).toEqual([`${cover}.json`, `${cover}${IMAGE}`, `route-pictures/sets/${set}/cells/9-267-180.json`, `route-pictures/sets/${set}/manifest.json`]);
+    // The points go before the images, and the manifest last, after the slower cell file.
+    expect(fake.puts.map(({ key }) => key)).toEqual([`${cover}.json`, `${cover}${IMAGE}`, `${cover}${SMALL}`, `route-pictures/sets/${set}/cells/9-267-180.json`, `route-pictures/sets/${set}/manifest.json`]);
     expect(fake.puts.every(({ args }) => args.includes('--immutable') && args.includes('public, max-age=31536000, immutable'))).toBe(true);
     expect(JSON.parse(fake.objects.get(`route-pictures/sets/${set}/cells/9-267-180.json`))).toEqual({ format: 1, routes: { 1001: keyOf(VALLEY) } });
     expect(JSON.parse(fake.objects.get(`route-pictures/sets/${set}/manifest.json`))).toEqual({ format: 1, set, release: RELEASE.id, look: LOOK, months: { '07': '0715-1000' }, default_month: '07', width: 960, height: 640, covers: 1, credits: ['terrain'] });
@@ -155,6 +162,8 @@ test('upload refuses a route with no cover and no mark, else sends the points, t
     await switchTo(set, fake);
     expect(fake.puts.at(-1)).toMatchObject({ key: 'route-pictures/manifest.json', args: ['put', '--content-type', 'application/json', '--cache-control', 'public, max-age=60, must-revalidate'] });
     const puts = fake.puts.length;
+    fake.objects.delete(`${cover}${SMALL}`);
+    await expect(switchTo(set, fake)).rejects.toThrow(`${cover}${SMALL}`);
     fake.objects.delete(`${cover}${IMAGE}`);
     await expect(switchTo(set, fake)).rejects.toThrow(`${cover}${IMAGE}`);
     await expect(switchTo('0123456789abcdef', fake)).rejects.toThrow('The bucket has no route-pictures/sets/0123456789abcdef/manifest.json');
@@ -169,6 +178,36 @@ test('upload refuses a route with no cover and no mark, else sends the points, t
     fake.objects.delete(`route-pictures/sets/${set}/cells/9-268-180.json`);
     await expect(switchTo(set, fake)).rejects.toThrow(`The cell files of set ${set} in the bucket do not give its id`);
     expect(fake.puts.length).toBe(puts);
+});
+
+test('small makes a 240 × 160 WebP of a full image with none, keeps a newer one, and makes it again after the full image is written again', async () => {
+    const out = test.info().outputPath('small'), dir = join(out, 'covers', String(VALLEY.id));
+    const full = join(dir, `${keyOf(VALLEY)}${IMAGE}`), little = join(dir, `${keyOf(VALLEY)}${SMALL}`);
+    mkdirSync(dir, { recursive: true });
+    const browser = await launch(false);
+    try {
+        const page = await browser.newPage();
+        writeFileSync(full, Buffer.from(await page.evaluate(async () => {
+            const canvas = new OffscreenCanvas(960, 640);
+            canvas.getContext('2d').fillRect(0, 0, 960, 640);
+            return Array.from(new Uint8Array(await (await canvas.convertToBlob({ type: 'image/webp' })).arrayBuffer()));
+        })));
+        expect(await small(out)).toBe(1);
+        const size = await page.evaluate(async bytes => {
+            const bitmap = await createImageBitmap(new Blob([Uint8Array.from(bytes)]));
+            return [bitmap.width, bitmap.height];
+        }, Array.from(readFileSync(little)));
+        expect(size).toEqual([240, 160]);
+        expect(readFileSync(little).subarray(8, 12).toString()).toBe('WEBP');
+    } finally {
+        await browser.close();
+    }
+    const made = statSync(little).mtimeMs;
+    expect(await small(out)).toBe(0);
+    expect(statSync(little).mtimeMs).toBe(made);
+    writeFileSync(full, readFileSync(full));
+    expect(await small(out)).toBe(1);
+    expect(statSync(little).mtimeMs).toBeGreaterThan(made);
 });
 
 test('render --fixture writes the cover of a route, its points, the cell file and the manifest, and a second run renders nothing', { tag: '@gpu' }, async () => {

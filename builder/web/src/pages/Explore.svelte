@@ -247,7 +247,7 @@
                 {#each drawn as item (item.id)}
                     <li>
                         <RouteRow name={item.name} current={item.id === selected} onclick={() => selected = item.id} parts={signedNumbers(item.record)}>
-                            {#snippet picture()}<SignedPicture {item} {oncover} />{/snippet}
+                            {#snippet picture()}<SignedPicture {item} {oncover} small />{/snippet}
                         </RouteRow>
                     </li>
                 {:else}
