@@ -238,15 +238,16 @@ fn description(text: &str) -> &str {
     }
 }
 
-/// The OSM tag fields of a record.
-fn header(relation: &Relation, kind: &str, france: bool) -> Map<String, Value> {
+/// The OSM tag fields of a record. A route in France has no `symbol`: the marks of the French
+/// networks belong to their federation.
+fn header(relation: &Relation, kind: &str, french: bool) -> Map<String, Value> {
     let tags = &relation.tags;
     let mut record = Map::new();
     record.insert("id".into(), json!(relation.id));
     record.insert("kind".into(), json!(kind));
     record.insert("rank".into(), json!(rank(tag(tags, "network"))));
     let website = ["website", "contact:website", "url"].into_iter().map(|key| tag(tags, key)).find(|w| !w.is_empty());
-    let symbol = if france { "" } else { tag(tags, "osmc:symbol") };
+    let symbol = if french { "" } else { tag(tags, "osmc:symbol") };
     for (field, value) in [
         ("name", tag(tags, "name")),
         ("ref", tag(tags, "ref")),
@@ -311,6 +312,8 @@ struct Kept {
     points: usize,
     cells: BTreeSet<(u32, u32)>,
     grades: Option<[u64; 6]>,
+    /// A vertex of the plan route is in France.
+    french: bool,
 }
 
 /// One route relation with its main-line members.
@@ -418,24 +421,17 @@ impl Report {
     }
 }
 
-/// Checks the catalog options before the import. The answer says whether the records leave out
-/// route marks: when France is the only country.
-pub fn check(countries: &[String], profiles: &[Profile]) -> Result<bool, String> {
-    if let Some(profile) = PROFILES.iter().find(|&&name| !profiles.iter().any(|p| p.name == name)) {
-        return Err(format!("The route catalog needs the {profile} profile"));
-    }
-    match countries {
-        [only] => Ok(only == "FR"),
-        _ if countries.iter().any(|c| c == "FR") => {
-            Err("A region with France and another country needs a country lookup for route marks".into())
-        }
-        _ => Ok(false),
+/// Checks the catalog options before the import.
+pub fn check(profiles: &[Profile]) -> Result<(), String> {
+    match PROFILES.iter().find(|&&name| !profiles.iter().any(|p| p.name == name)) {
+        Some(profile) => Err(format!("The route catalog needs the {profile} profile")),
+        None => Ok(()),
     }
 }
 
 /// Writes `route-catalog.json` into the routing package in `directory`, from the source OSM
-/// objects of its import. `france` comes from `check`.
-pub fn write(directory: &Path, osm: Data, france: bool) -> Result<Report, String> {
+/// objects of its import.
+pub fn write(directory: &Path, osm: Data) -> Result<Report, String> {
     let started = std::time::Instant::now();
     let package = Directory::open(directory).map_err(|e| e.to_string())?;
     // The routers share one graph, one junction mapping and the five prepared profiles; each
@@ -444,7 +440,7 @@ pub fn write(directory: &Path, osm: Data, france: bool) -> Result<Report, String
     let shared = routing.shared_bytes(PROFILES).map_err(|e| e.to_string())?;
     let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
     let workers = cpus.min(ROUTERS_MEMORY.saturating_sub(shared) / (routing.router_bytes() + SEARCH_BYTES)).max(1);
-    let (records, report) = catalog(&routing, osm, france, workers, SECTION_M)?;
+    let (records, report) = catalog(&routing, osm, workers, SECTION_M)?;
     let bytes =
         serde_json::to_vec(&crate::sort_keys(json!({"format": 1, "routes": records}))).map_err(|e| e.to_string())?;
     std::fs::write(directory.join(FILE), bytes).map_err(|e| e.to_string())?;
@@ -454,7 +450,6 @@ pub fn write(directory: &Path, osm: Data, france: bool) -> Result<Report, String
 fn catalog<S: Source + Clone + Send>(
     selection: &Selection<S>,
     osm: Data,
-    france: bool,
     workers: usize,
     section_m: f64,
 ) -> Result<(Vec<Value>, Report), String> {
@@ -544,7 +539,7 @@ fn catalog<S: Source + Clone + Send>(
                     let Some(job) = job else { break };
                     let begun = std::time::Instant::now();
                     let mut calls = 0;
-                    let result = route(&mut router, &job, points, france, section_m, &mut calls);
+                    let result = route(&mut router, &job, points, section_m, &mut calls);
                     let search = (job.relation.id, begun.elapsed().as_secs_f64(), calls);
                     results.lock().unwrap().push((search, result));
                 }
@@ -600,7 +595,7 @@ fn catalog<S: Source + Clone + Send>(
         let relation = relations.get(id).expect("a cut route is in the data");
         let kind = route_kind(&relation.tags).expect("a cut route has a kind");
         let (mut record, points) =
-            long::record(&relation, kind, &parts_of(id, None), false, france).expect("a cut route keeps a section");
+            long::record(&relation, kind, &parts_of(id, None), false).expect("a cut route keeps a section");
         if let Some(trail) = unnamed.get(&id).and_then(|&trail| relations.get(trail)) {
             named_after(&mut record, &trail);
         }
@@ -620,7 +615,7 @@ fn catalog<S: Source + Clone + Send>(
         let (leaves, connector) = long::leaves(&relation, &relations);
         let parts: Vec<long::Part> =
             leaves.iter().enumerate().flat_map(|(i, leaf)| parts_of(leaf.id, Some(i + 1))).collect();
-        let Some((record, points)) = long::record(&relation, &kind, &parts, connector, france) else {
+        let Some((record, points)) = long::record(&relation, &kind, &parts, connector) else {
             drops.insert(relation.id, Reason::NoStages);
             continue;
         };
@@ -671,7 +666,6 @@ fn route<D: RoutingData>(
     router: &mut Router<D>,
     job: &Job,
     points: &HashMap<i64, P>,
-    france: bool,
     section_m: f64,
     calls: &mut usize,
 ) -> Result<Built, Failed> {
@@ -691,7 +685,7 @@ fn route<D: RoutingData>(
         runs = assemble::chain(&parts, &apart, MAX_GAP_M).ok_or(failed(Reason::Gap))?;
         assemble::side_trips(&mut runs, &branches, ends, &apart);
     }
-    shaped(router, job, &located(&runs), france, section_m, calls).map_err(failed)
+    shaped(router, job, &located(&runs), section_m, calls).map_err(failed)
 }
 
 /// The length, first and last point of a line in runs.
@@ -706,7 +700,6 @@ fn shaped<D: RoutingData>(
     router: &mut Router<D>,
     job: &Job,
     runs: &[Vec<P>],
-    france: bool,
     section_m: f64,
     calls: &mut usize,
 ) -> Result<Built, Reason> {
@@ -753,7 +746,7 @@ fn shaped<D: RoutingData>(
         || tag(&job.relation.tags, "roundtrip") == "yes" && distance(start, end) <= ROUNDTRIP_M && {
             patch(&mut line, start).is_ok()
         };
-    let reason = match planned(router, job, &line, length, closed, france, calls) {
+    let reason = match planned(router, job, &line, length, closed, calls) {
         Err(reason) if length > section_m => reason,
         whole => return whole.map(Built::Route),
     };
@@ -767,7 +760,7 @@ fn shaped<D: RoutingData>(
         if length < MIN_LENGTH_M {
             return Err(failed(Reason::Short));
         }
-        let mut kept = planned(router, job, line, length, false, france, calls).map_err(failed)?;
+        let mut kept = planned(router, job, line, length, false, calls).map_err(failed)?;
         kept.record.insert("id".into(), json!(section_id(job.relation.id, i + 1)));
         kept.record.insert("section".into(), json!(i + 1));
         kept.record.insert("trail".into(), json!(job.relation.id));
@@ -809,7 +802,6 @@ fn planned<D: RoutingData>(
     line: &[P],
     length: f64,
     closed: bool,
-    france: bool,
     calls: &mut usize,
 ) -> Result<Kept, Reason> {
     let profiles = profiles(&job.kind);
@@ -835,7 +827,9 @@ fn planned<D: RoutingData>(
     }
     let mut cover = BTreeSet::new();
     cells(&geometry, &mut cover);
-    let mut record = header(&job.relation, &job.kind, france);
+    // Every vertex of the plan route: a simple line can cut across a small piece of France.
+    let french = crate::country::in_france(&geometry);
+    let mut record = header(&job.relation, &job.kind, french);
     if let Some(trail) = &job.named_by {
         named_after(&mut record, trail);
     }
@@ -877,6 +871,7 @@ fn planned<D: RoutingData>(
         points: plan.points.len(),
         cells: cover,
         grades,
+        french,
     })
 }
 

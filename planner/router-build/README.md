@@ -35,7 +35,7 @@ The store keeps only the work layer of each step and options that a run used las
 | --- | --- |
 | A stop or a crash in a step | That step and the steps after it |
 | The profile list, or the revision of `planner/routing-costs` | Costs, package |
-| `region`, `countries`, `attribution` | Package |
+| `region`, `attribution` | Package |
 | The GLO-30 tiles or the reference, or the revision of `planner/routing-roads` | Roads, costs, package |
 | The OSM cut, the bounds, the router `FORMAT`, or the revision of `planner/routing-source` | All four |
 
@@ -103,9 +103,8 @@ The builder also writes `route-catalog.json`, the signed routes in the format of
 [the catalog contract](../../specs/route-catalog.md). The step metrics are its report: the counts,
 the dropped relations by reason and the shaping points. The builder leaves out connector legs
 ([selection](../../specs/route-catalog.md#selection)). The catalog needs the `touring`, `road`,
-`gravel`, `mtb/technical` and `hiking/alpine` profiles. Name the region's countries: when France
-is the only country, no record has a route mark. A region with France and another country fails.
-The builder checks the profiles and countries before the import.
+`gravel`, `mtb/technical` and `hiking/alpine` profiles. A route in France has no route mark. The
+builder checks the profiles before the import.
 
 ## Terrain
 
