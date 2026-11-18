@@ -31,7 +31,8 @@
 <div class="control" bind:this={root} onkeydown={key} onfocusout={leave}>
     <button type="button" class:chosen={open} bind:this={opener} aria-label={label} aria-expanded={open} aria-haspopup="dialog" onclick={() => open = !open}>{@render button()}</button>
     {#if open}
-        <div class="panel" role="dialog" aria-label={label} tabindex="-1">{@render children()}</div>
+        <!-- The panel takes the focus, so Escape reaches it also where a click does not focus the button (Safari). -->
+        <div class="panel" role="dialog" aria-label={label} tabindex="-1" {@attach panel => panel.focus({ preventScroll: true })}>{@render children()}</div>
     {/if}
 </div>
 
@@ -49,5 +50,6 @@
         max-height: calc(var(--map-height, 100vh) - 32px); overflow: auto;
         padding: 12px; border-radius: 8px;
         background: var(--panel); box-shadow: var(--planner-shadow); font-size: 13px;
+        outline: none;
     }
 </style>

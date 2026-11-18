@@ -33,3 +33,15 @@ it('opens the kinds, and a highlight and a checkbox change the pressed states wi
     expect(checkbox('Lodging').checked).toBe(false);
     expect(pressed('Highlight Lodging')).toBe('false');
 });
+
+it('closes on Escape when the click did not focus the button, and gives the focus to the button', () => {
+    vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {} });
+    shown = mount(PlaceKinds, { target: document.body });
+    (document.activeElement as HTMLElement | null)?.blur();
+    button('Kinds of places')!.click();
+    flushSync();
+    document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    flushSync();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.activeElement).toBe(button('Kinds of places'));
+});
