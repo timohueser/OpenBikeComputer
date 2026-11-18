@@ -6,7 +6,8 @@
 //   node phone.mjs summarize RESULT.json
 //
 // The phone opens https://IP:PORT/phone/ to measure, or https://IP:PORT/phone/diagnose for the fault check of
-// phone-diagnose.js, whose pictures and page bytes land in RESULTS/<session>/. --data is the origin of `obc data serve` (or a stand-in), whose catalogue
+// phone-diagnose.js, whose pictures and page bytes land in RESULTS/<session>/, or https://IP:PORT/phone/compile for the
+// compile test of phone-compile.js over RESULTS/shaders/. --data is the origin of `obc data serve` (or a stand-in), whose catalogue
 // names its own origin: the proxy writes the phone's origin in its place. --requests is a folder of the ground plan's
 // `requests` tool: the session then ends with the timing page on those cells. Every answer is `no-store`, so each run
 // loads cold over the network.
@@ -72,6 +73,11 @@ function serve() {
         if (/^\/phone\/diagnos(e|is)\/?$/i.test(path)) return response.writeHead(302, { location: '/phone/diagnose' }).end();
         if (path === '/phone/measure.js') return send(response, 200, 'text/javascript', readFileSync(join(HERE, 'phone-measure.js')));
         if (path === '/phone/diagnose.js') return send(response, 200, 'text/javascript', readFileSync(join(HERE, 'phone-diagnose.js')));
+        if (path === '/phone/compile') return send(response, 200, 'text/html', page('compile'));
+        if (path === '/phone/compile.js') return send(response, 200, 'text/javascript', readFileSync(join(HERE, 'phone-compile.js')));
+        // The shaders of the compile test, as the fault check saved them.
+        const shader = /^\/phone\/shaders\/([\w-]+\.wgsl)$/.exec(path), shaderFile = shader && join(a.results, 'shaders', shader[1]);
+        if (shaderFile) return existsSync(shaderFile) ? send(response, 200, 'text/plain', readFileSync(shaderFile)) : send(response, 404, 'text/plain', '');
         if (path === '/phone/cert.cer') return send(response, 200, 'application/x-x509-ca-cert', tls.cert);
         if (path === '/phone/timing.json') return send(response, 200, 'application/json', JSON.stringify({ url: requests ? `/plan-timing.html?requests=/@fs${requests}/&runs=3` : null }));
         // The timing page reads the requests and their fixture files by absolute path, as Vite's /@fs/ does.
