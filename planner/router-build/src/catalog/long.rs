@@ -5,7 +5,7 @@ use super::{
     ROUNDTRIP_M,
 };
 use crate::source::{Relation, Relations, Table};
-use planner_router::shape::{distance, NEAR_M, P};
+use planner_router::shape::{distance, P};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeSet, HashSet};
 
@@ -13,9 +13,10 @@ use std::collections::{BTreeSet, HashSet};
 const MAX_DEPTH: usize = 4;
 /// The entries of `trail_profile_m`.
 const TRAIL_PROFILE: usize = 201;
-/// Two parts meet when one has an end this near the other's end. Stages that share an end node of
-/// their OSM lines meet: the plan route of each follows its line within `NEAR_M`.
-const MEET_M: f64 = 2.0 * NEAR_M;
+/// Two parts meet when one has an end this near the other's end. It leaves room for the slack of two
+/// stage ends at one place, such as a plan route that starts on the road next to the line, and it is
+/// far under the distance between the separate routes of one area.
+const MEET_M: f64 = 60.0;
 
 /// A part of a long relation: a route relation, or a relation that the data does not hold, with the
 /// level of long relations that lists it, 1 for a member of the relation itself.
@@ -105,14 +106,15 @@ impl Part<'_> {
     }
 }
 
-/// Whether the parts of a long relation are separate routes, not one line: no part meets the part
-/// right after it, and at least two parts count against one line. A loop counts against one line,
-/// and so does each pair of neighbouring parts with ends, neither a loop, that does not meet. One
+/// Whether the parts of a long relation are separate routes, not one line: at least two parts
+/// count against one line, and more than meet. A loop counts against one line: it comes back to its
+/// start and takes the line no further, so it meets no part. A pair of neighbouring parts with ends,
+/// neither a loop, meets or counts against one line. A part with no ends counts for nothing. One
 /// count is a hole in the map data, not a set of routes.
 pub(super) fn apart(parts: &[Part]) -> bool {
     let flags = order(parts);
     let ends: Vec<Option<Ends>> = parts.iter().map(Part::ends).collect();
-    let mut against = ends.iter().flatten().filter(|e| e.closed).count();
+    let (mut against, mut meets) = (ends.iter().flatten().filter(|e| e.closed).count(), 0);
     for i in 1..parts.len() {
         let (Some(before), Some(part)) = (ends[i - 1], ends[i]) else { continue };
         if before.closed || part.closed {
@@ -120,11 +122,12 @@ pub(super) fn apart(parts: &[Part]) -> bool {
         }
         let end = if flags[i - 1].0 { before.start } else { before.finish };
         if gap(part, end) <= MEET_M {
-            return false;
+            meets += 1;
+        } else {
+            against += 1;
         }
-        against += 1;
     }
-    against >= 2
+    against >= 2 && against > meets
 }
 
 /// The record of a long relation from its parts, and the plan points of its kept parts joined.

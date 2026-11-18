@@ -477,9 +477,9 @@ fn catalog<S: Source + Clone + Send>(
     let mut drops = BTreeMap::<i64, Reason>::new();
     let mut long = Vec::new();
     let mut jobs = Vec::new();
-    // Each unnamed stage that is no connector leg, with the lowest long relation that lists it: the
-    // relations come in ascending ID order.
-    let mut unnamed = BTreeMap::<i64, i64>::new();
+    // Each unnamed stage that is no connector leg, with the long relations that list it in ascending
+    // ID order, as the relations come.
+    let mut unnamed = BTreeMap::<i64, Vec<i64>>::new();
     for relation in relations.iter() {
         let Some(kind) = selected(&relation.tags).map(str::to_string) else { continue };
         report.tag_selected += 1;
@@ -490,15 +490,15 @@ fn catalog<S: Source + Clone + Send>(
             jobs.push(Job::new(relation, &kind, &relations, None));
         } else {
             for id in children(&relation).into_iter().filter(|&id| unnamed_stage(&relations, id)) {
-                unnamed.entry(id).or_insert(relation.id);
+                unnamed.entry(id).or_default().push(relation.id);
             }
             long.push((relation, kind));
         }
     }
-    for (&id, &trail) in &unnamed {
+    for (&id, listers) in &unnamed {
         let child = relations.get(id).expect("a stage is in the data");
         let kind = route_kind(&child.tags).expect("a stage has a kind").to_string();
-        jobs.push(Job::new(child, &kind, &relations, relations.get(trail)));
+        jobs.push(Job::new(child, &kind, &relations, relations.get(listers[0])));
     }
     let needed: HashSet<i64> = jobs.iter().flat_map(|job| &job.member_ways).map(|(id, _)| *id).collect();
     let points: HashMap<i64, P> = needed
@@ -615,7 +615,7 @@ fn catalog<S: Source + Clone + Send>(
         let kind = route_kind(&relation.tags).expect("a cut route has a kind");
         let (mut record, points) =
             long::record(&relation, kind, &parts_of(id, None), false).expect("a cut route keeps a section");
-        if let Some(trail) = unnamed.get(&id).and_then(|&trail| relations.get(trail)) {
+        if let Some(trail) = unnamed.get(&id).and_then(|listers| relations.get(listers[0])) {
             named_after(&mut record, &trail);
         }
         report.add_long(&record, points);
@@ -630,12 +630,14 @@ fn catalog<S: Source + Clone + Send>(
         map.entry(id).and_modify(|t| *t = (*t).min(trail)).or_insert(trail);
     };
     let mut records = Vec::new();
+    let mut apart = HashSet::new();
     for (relation, kind) in long {
         let (leaves, connector) = long::leaves(&relation, &relations);
         let parts: Vec<long::Part> =
             leaves.iter().enumerate().flat_map(|(i, leaf)| parts_of(leaf.id, Some(i + 1))).collect();
         if long::apart(&parts) {
             drops.insert(relation.id, Reason::Apart);
+            apart.insert(relation.id);
             continue;
         }
         let Some((record, points)) = long::record(&relation, &kind, &parts, connector) else {
@@ -660,13 +662,34 @@ fn catalog<S: Source + Clone + Send>(
             record.insert("trail_stage".into(), json!(number));
         }
     };
+    // An unnamed stage takes the name of the lowest long relation that lists it and is no set of
+    // separate routes, or else of its trail. With neither, it leaves, as any unnamed route.
+    let named = |record: &mut Map<String, Value>, id: i64| -> bool {
+        // A section holds the ID of its relation (`section_id`).
+        let relation = if id < 0 { -id / 100 } else { id };
+        let Some(listers) = unnamed.get(&relation) else { return true };
+        let namer = listers.iter().copied().find(|id| !apart.contains(id)).or(trails.get(&relation).map(|t| t.1));
+        let Some(namer) = namer else { return false };
+        if namer != listers[0] {
+            record.remove("name");
+            record.remove("ref");
+            named_after(record, &relations.get(namer).expect("a long relation is in the data"));
+        }
+        true
+    };
     for (id, mut record) in cut_records {
+        if !named(&mut record, id) {
+            continue;
+        }
         in_trail(&mut record, id);
         records.push(Value::Object(record));
     }
     // The moving time of each route record, in hours.
     let mut hours = HashMap::new();
     for (id, mut route) in kept {
+        if !named(&mut route.record, id) {
+            continue;
+        }
         hours.insert(id, route.seconds / 3600.0);
         in_trail(&mut route.record, id);
         if let Some((_, parent, number)) = parents.get(&id) {
