@@ -44,8 +44,15 @@
     };
 
     // The page asks for a WebGPU adapter and device itself: these wrappers report each failure and keep the device.
-    const hooks = { device: undefined, firstCanvas: undefined, lastSubmit: 0 };
+    const hooks = { device: undefined, firstCanvas: undefined, lastSubmit: 0, flightStart: Infinity, ground: { open: undefined, jobs: [] } };
     function hook() {
+        const Base = window.Worker;
+        window.Worker = class extends Base {
+            constructor(url, options) {
+                super(url, options);
+                if (String(url).includes('ground-worker')) tapGround(this, hooks.ground);
+            }
+        };
         addEventListener('error', e => event(`page error: ${e.message}`));
         addEventListener('unhandledrejection', e => event(`unhandled rejection: ${e.reason?.message ?? e.reason}`));
         const error = console.error;
@@ -125,6 +132,33 @@
     const poolBytes = tv => [...(tv.gpuState?.gpu.pools.values() ?? [])].reduce((a, b) => a + b, 0);
     const range = (r, v) => (v === undefined ? r : r ? [Math.min(r[0], v), Math.max(r[1], v)] : [v, v]);
 
+    /** Times the jobs of a ground worker: the first message is the decode probe that GroundSource.open sends. */
+    function tapGround(worker, ground) {
+        const sent = new Map(), post = worker.postMessage.bind(worker);
+        worker.postMessage = (data, ...rest) => {
+            const now = performance.now();
+            ground.open ??= now;
+            if (data?.job) sent.set(data.id, now);
+            return post(data, ...rest);
+        };
+        worker.addEventListener('message', ({ data }) => {
+            const start = sent.get(data?.id);
+            if (start === undefined) return;
+            sent.delete(data.id);
+            ground.jobs.push({ start, ms: performance.now() - start, failed: Boolean(data.error) });
+        });
+    }
+
+    /** The ground jobs sent from `from` to `until`: their count, round trips in ms, and the ms from the probe to the last of their pages. */
+    function groundSummary(ground, from, until) {
+        const jobs = ground.jobs.filter(job => job.start >= from && job.start < until), ms = jobs.map(job => job.ms);
+        if (!jobs.length) return { jobs: 0 };
+        return {
+            jobs: jobs.length, failed: jobs.filter(job => job.failed).length, median: round(quantile(ms, 0.5)), p95: round(quantile(ms, 0.95)),
+            sum: round(ms.reduce((a, b) => a + b, 0)), openToLast: round(Math.max(...jobs.map(job => job.start + job.ms)) - ground.open),
+        };
+    }
+
     async function measure() {
         const i = state.index, { variant, scene } = state.plan[i], key = `runs.${i}`;
         const label = `Run ${i + 1} of ${state.plan.length}: ${VARIANTS[variant].name}, ${SCENES[scene].name}`;
@@ -165,6 +199,7 @@
             return next();
         }
         await post(key, run);
+        hooks.flightStart = performance.now();
         run.flight = await fly(tv, SCENES[scene], label, key, run.memory);
         Object.assign(run, { stage: 'done' }, final(tv, run.memory));
         await post(key, run);
@@ -177,6 +212,8 @@
         Object.assign(memory, { poolsEnd: poolBytes(tv), pools: Object.fromEntries(s.pools), planHeap: s.terrain.records?.heap, jsHeap: performance.memory?.usedJSHeapSize });
         return {
             adapter: s.adapter, scale: s.scale, memory,
+            // The load's jobs (sent before the flight) and the flight's.
+            ground: { load: groundSummary(hooks.ground, 0, hooks.flightStart), flight: groundSummary(hooks.ground, hooks.flightStart, Infinity) },
             problems: {
                 recoveries: s.recoveries, failed: s.failed, groundShort: s.ground.shortage, instancesDropped: s.instances.dropped, stampLimits: s.terrain.stampLimits,
                 quality: s.terrain.quality, left: s.terrain.left, records: s.terrain.records?.error, recordsFailed: s.terrain.records?.failed, recordRestarts: s.terrain.records?.restarts,

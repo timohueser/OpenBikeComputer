@@ -145,10 +145,18 @@
     const hooks = { pipelines: 0, popFirst: undefined };
     const original = {};
 
+    /** The ground jobs sent before `until`: count, round trip median, p95 and sum in ms, and the ms from the probe to the last of their pages. */
+    function groundLoad(until) {
+        const { open } = hooks.groundTimes, jobs = hooks.groundTimes.jobs.filter(job => job.start < until), ms = jobs.map(job => job.ms).sort((a, b) => a - b), at = q => Math.round(ms[Math.min(ms.length - 1, Math.floor(q * ms.length))]);
+        if (!ms.length) return { jobs: 0 };
+        return { jobs: ms.length, median: at(0.5), p95: at(0.95), sum: Math.round(ms.reduce((a, b) => a + b, 0)), openToLast: Math.round(Math.max(...jobs.map(job => job.start + job.ms)) - open) };
+    }
+
     // --- The workers: their errors, and the ground worker's jobs and failures ------------------------------------
     function tapWorkers() {
         const Base = window.Worker;
         let jobs = 0, replies = 0, failures = 0;
+        const times = hooks.groundTimes = { open: undefined, jobs: [] };
         window.Worker = class extends Base {
             constructor(url, options) {
                 super(url, options);
@@ -156,15 +164,24 @@
                 this.addEventListener('error', e => event('worker error', { worker: name, message: e.message, at: `${e.filename}:${e.lineno}` }));
                 this.addEventListener('messageerror', () => event('worker message error', { worker: name }));
                 if (!name.includes('ground-worker')) return;
-                const post = this.postMessage.bind(this);
+                const post = this.postMessage.bind(this), sent = new Map();
                 this.postMessage = (data, ...rest) => {
+                    // The first message is the decode probe that GroundSource.open sends.
+                    const now = performance.now(), job = data?.job;
+                    times.open ??= now;
+                    if (job) sent.set(data.id, now);
                     // The bodies of the first job, to decode them on a desktop the same way.
-                    if (jobs++ === 0) for (const body of [data?.ground, ...(data?.quarters ?? []), data?.snow]) if (body?.body) blob(`ground-${body.layer}-${body.z}-${body.x}-${body.y}.bin`, body.body.slice(0));
+                    if (job && jobs++ === 0) for (const body of [job.ground, ...(job.quarters ?? []), job.snow]) if (body?.body) blob(`ground-${body.layer}-${body.z}-${body.x}-${body.y}.bin`, body.body.slice(0));
                     return post(data, ...rest);
                 };
                 this.addEventListener('message', ({ data }) => {
                     replies++;
                     if (data?.error && failures++ < 10) event('ground worker failed', { message: String(data.error).slice(0, 400) });
+                    const start = sent.get(data?.id);
+                    if (start !== undefined) {
+                        sent.delete(data.id);
+                        times.jobs.push({ start, ms: performance.now() - start });
+                    }
                     hooks.ground = { jobs, replies, failures };
                 });
             }
@@ -346,8 +363,10 @@
     async function today(tv) {
         const step = (n, text) => (say(`Step ${n} of 4: ${text}`), post('stage', { step: 'today', at: n, text, elapsed: Date.now() - state.started }));
         step(1, 'a walk');
-        const from = { ...tv.view, debug: 'off' }, to = { ...from, ...WALK_END };
+        const loaded = performance.now(), from = { ...tv.view, debug: 'off' }, to = { ...from, ...WALK_END };
         await fly(tv, 'walk', from, to, 20, 2);
+        // The load's jobs, sent before the walk, have their pages by now.
+        post('groundLoad', groundLoad(loaded));
         hooks.popFirst?.();
         post('stats.walk', statsOf(tv));
         step(2, 'the walk back with test colours');

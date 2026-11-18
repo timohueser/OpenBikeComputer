@@ -175,5 +175,12 @@ function summarize(record) {
     for (const row of rows) console.log(row.map((cell, c) => String(cell).padEnd(widths[c])).join(' '));
     const t = record.timing;
     if (t) console.log(t.error ? `plan timing: ${t.error}` : `plan timing: ${t.cells?.length} cells · median ${f(t.summary?.median)} ms · p95 ${f(t.summary?.p95)} ms · prepare ${f(t.summary?.prepare)} ms · heap ${f(t.summary?.heap / 2 ** 20, 0)} MiB · ${t.summary?.same}/${t.summary?.of} digests equal`);
+    // The ground worker's jobs of each run's load: count, round trip median, p95 and sum in ms, and the probe to the last page.
+    for (const [i, run] of record.runs.entries()) {
+        const g = run?.ground;
+        if (g) console.log(`ground run ${i + 1}: load ${g.load.jobs} jobs (${g.load.failed ?? 0} failed) · median ${f(g.load.median)} p95 ${f(g.load.p95)} sum ${f(g.load.sum, 0)} ms · probe to last page ${f(g.load.openToLast / 1000, 2)} s · flight ${g.flight.jobs} jobs, median ${f(g.flight.median)} ms`);
+    }
+    const l = record.groundLoad;
+    if (l) console.log(`ground load (diagnose): ${l.jobs} jobs · median ${f(l.median)} p95 ${f(l.p95)} sum ${f(l.sum, 0)} ms · probe to last page ${f(l.openToLast / 1000, 2)} s`);
     for (const event of record.events) console.log(`event ${event.at} run ${event.run ?? '–'}: ${event.text}`);
 }
