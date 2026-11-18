@@ -11,7 +11,7 @@ import { pack } from './line';
 import type { MapPictureMaker } from './map-picture';
 
 export const WIDTH = 1920, HEIGHT = 1280;
-/** A changed route waits this long after its last change, so a rider who edits a route gets one cover at the end. */
+/** A changed route waits this long after its last change, so several saves in a row give one cover. */
 const SETTLE_MS = 30_000;
 /** A tab that finds the lock of another tab tries again after this. */
 const RETRY_MS = 10_000;
