@@ -73,16 +73,49 @@ test('the Explore page lists the signed routes of the map view, filters them, pl
   expect(errors).toEqual([]);
 });
 
-test('on a phone, the card of a route with a long text and no profile stays on the screen, and its text scrolls', async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
+/** Shows the card of the signed route `name` in a window of `width` × `height` px. */
+async function openCard(page, name, width, height) {
+  await page.setViewportSize({ width, height });
   await stub(page);
   await page.goto('/planner.html#/explore');
   await page.getByRole('searchbox', { name: 'Find a place' }).fill('Freiburg');
   await page.getByRole('button', { name: /^Freiburg/ }).click();
-  await page.locator('.list').getByRole('button', { name: /Westweg 2/ }).click();
+  await page.locator('.list').getByRole('button', { name: new RegExp(name) }).click();
+  return page.getByRole('region', { name });
+}
+
+/** The text of the card shows at least one line on the screen, and the wheel over it scrolls it. */
+async function textScrolls(page, card) {
+  const more = card.locator('.more');
+  await expect.poll(() => more.evaluate(node => {
+    const box = node.getBoundingClientRect(), line = 1.2 * parseFloat(getComputedStyle(node.firstElementChild).fontSize);
+    return Math.min(box.bottom, innerHeight) - Math.max(box.top, 0) >= line;
+  })).toBe(true);
+  const box = await more.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.wheel(0, 100);
+  await expect.poll(() => more.evaluate(node => node.scrollTop)).toBeGreaterThan(0);
+}
+
+test('on a phone, the card of a route with a long text and no profile stays on the screen, and its text scrolls', async ({ page }) => {
+  const card = await openCard(page, 'Westweg 2', 390, 844);
   // The card is never higher than the screen less 96 px.
-  await expect.poll(() => page.getByRole('region', { name: 'Westweg 2' }).evaluate(node => {
-    const more = node.querySelector('.more');
-    return [!node.querySelector('.profile'), node.getBoundingClientRect().height <= innerHeight - 96, more.scrollHeight > more.clientHeight];
-  })).toEqual([true, true, true]);
+  await expect.poll(() => card.evaluate(node => [!node.querySelector('.profile'), node.getBoundingClientRect().height <= innerHeight - 96]))
+    .toEqual([true, true]);
+  await textScrolls(page, card);
+});
+
+test('on a phone on its side, the card of a route with a profile gives the room of the profile to its text', async ({ page }) => {
+  await textScrolls(page, await openCard(page, 'Schlossberg loop', 844, 390));
+});
+
+test('in a wide and low window, the close button of the card is in the map', async ({ page }) => {
+  const card = await openCard(page, 'Westweg 2', 1440, 420);
+  const close = card.getByRole('button', { name: 'Close' });
+  await expect.poll(async () => {
+    const [map, button] = await Promise.all([page.locator('.map').boundingBox(), close.boundingBox()]);
+    return button.y >= map.y && button.y + button.height <= map.y + map.height;
+  }).toBe(true);
+  await close.click();
+  await expect(card).toHaveCount(0);
 });

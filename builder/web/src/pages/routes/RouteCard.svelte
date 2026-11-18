@@ -75,8 +75,8 @@
         }
     }
     /* The profile is a strip under the text and the buttons, as high as the room that they leave beside the picture. A
-       place that fixes the card to the screen limits its height with `--card-height`: the rows of the picture keep
-       their height, and the row of `more` after them takes the rest and scrolls. */
+       place limits the height of the card with `--card-height`: the rows of the picture keep their height, and the row
+       of `more` after them takes the rest and scrolls. */
     .card {
         position: relative;
         display: grid;
@@ -93,12 +93,17 @@
         background: var(--panel);
         box-shadow: 0 6px 20px rgb(28 27 20 / 0.18);
     }
+    /* A low limit of the card's height makes the picture lower, so the card holds it and about three lines of `more`. */
     .picture {
         position: relative;
         grid-area: picture;
         height: 200px;
+        max-height: calc(var(--card-height) - 20px);
         overflow: hidden;
         border-radius: 6px;
+    }
+    .card:has(.more) .picture {
+        max-height: calc(var(--card-height) - 80px);
     }
     .text {
         grid-area: text;
@@ -289,6 +294,13 @@
         }
         .more {
             grid-row: 4;
+        }
+        /* A low size container around the card leaves too little room for the strip and three lines of `more`: the
+           text keeps the room. */
+        @container (max-height: 330px) {
+            .card:has(.more) .profile {
+                display: none;
+            }
         }
     }
     @container (max-width: 480px) {
