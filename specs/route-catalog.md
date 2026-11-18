@@ -316,10 +316,11 @@ points otherwise. Each stage turnaround moves to its position in the joined plan
 at the trail start of a part in the catalog, ends at the trail end of a part in the catalog, and has
 no jump after its first part. A part not in the catalog, or a run of such parts, inside a stretch is
 an ordinary leg from the trail end of the part before to the trail start of the part after. A trip
-can end a day at the trail end of each part without `cut`. A client plans a whole complete long
-route or a stretch with any number of points; it sends a plan of more than 64 points in several
-route requests. A reader that needs the profile of a complete long route joins the profiles of its
-stages, and places the entries of each stage by the `length_m` of the stage.
+can end a day at the trail end of each part without `cut`. A client that sends a plan of more than
+64 points in several route requests plans a whole complete long route or a stretch with any number
+of points. A client that sends one request for a plan offers the stages only when the joined plan
+has more than 64 points. A reader that needs the profile of a complete long route joins the
+profiles of its stages, and places the entries of each stage by the `length_m` of the stage.
 
 ### Sections
 
