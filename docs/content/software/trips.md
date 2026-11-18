@@ -55,9 +55,9 @@ order that chains the file ends. The rider can drag the rows into a different or
 Between two rows, the sheet says "joins" or shows the gap. A trip made from files gets one day per
 file, with the day ends on the file boundaries, and its page opens. Its plan has each file's
 line, kept or planned, with a night at each day end and a transfer leg where the next file starts
-more than 200 m away. A trip has at most 14 days, the limit of the plan format: the phone does not
-add a 15th file and says so in one line. Add to trip and Group into trip keep each route's line as
-a drawn leg.
+more than 200 m away. A trip has at most 32 days, the size of the device's trip progress record: the
+phone does not add a 33rd file and says so in one line. Add to trip and Group into trip keep each
+route's line as a drawn leg.
 
 ### Days in the planner
 
