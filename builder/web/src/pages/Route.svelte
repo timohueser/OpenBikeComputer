@@ -152,7 +152,7 @@
     {/snippet}
     {#snippet buttons()}
         {#if plan}
-            <a class="button primary" href={`${ROUTES.planner}/${id}`}>Open in the planner</a>
+            <a class="button primary" href={`${ROUTES.planner}/${id}`}>Open in planner</a>
             <button type="button" class="button" disabled={device === 'sent'} onclick={() => send(device !== 'waiting')}>{device === 'waiting' ? 'Do not send' : 'Send to device'}</button>
             <Menu label="More" items={more} />
         {/if}
