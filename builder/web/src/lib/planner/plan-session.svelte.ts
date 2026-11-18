@@ -273,8 +273,13 @@ export class PlanSession {
         const missing = [...saved].filter(([key]) => this.versionLines[key] === undefined || (retry && typeof this.versionLines[key] === 'string'));
         if (!missing.length || this.versionsRequest) return;
         const abort = this.versionsRequest = new AbortController();
-        void Promise.all(missing.map(([key, trip]) => (this.lines.get(key) ? Promise.resolve(this.lines.get(key)!) : this.calculate(trip, abort.signal)).then(
-            line => [key, line] as const, error => [key, error instanceof Error ? error.message : 'Routing is unavailable.'] as const))).then(found => {
+        void (async () => {
+            // One version after the other, so that a later version finds the shared legs in the cache.
+            const found: (readonly [string, RoutingLine | string])[] = [];
+            for (const [key, trip] of missing) found.push(await (this.lines.get(key) ? Promise.resolve(this.lines.get(key)!) : this.calculate(trip, abort.signal)).then(
+                line => [key, line] as const, error => [key, error instanceof Error ? error.message : 'Routing is unavailable.'] as const));
+            return found;
+        })().then(found => {
             if (abort.signal.aborted) return;
             this.versionsRequest = undefined;
             const lines: Record<string, RoutingLine | string> = { ...this.versionLines, ...Object.fromEntries(found) };

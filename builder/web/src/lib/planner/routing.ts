@@ -128,6 +128,9 @@ export function regionProfiles(): Promise<string[]> {
     })().catch(error => { region = undefined; throw error; });
 }
 
+/** The points of one route request (`specs/route-api.md`). */
+export const MAX_REQUEST_POINTS = 64;
+
 /** With `'only'`, the answer leaves out the primary route and can be empty. */
 export async function requestRoute(points: Coordinate[], profile: string, signal: AbortSignal, alternatives: boolean | 'only' = false, turnarounds: number[] = [],
     pins: { start_position?: string; end_position?: string } = {}): Promise<EngineRoute[]> {
@@ -252,7 +255,8 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCa
                 if (point.turnaround && p < until) turnarounds.push(expanded.length - 1);
             }
         }
-        const canOfferAlternatives = i === 1 && until === points.length - 1 && !turnarounds.length;
+        // The alternatives come from one request through all points.
+        const canOfferAlternatives = i === 1 && until === points.length - 1 && !turnarounds.length && expanded.length <= MAX_REQUEST_POINTS;
         const route = await legs.route(expanded, turnarounds, result.profile, signal);
         result.package = route.package;
         if (canOfferAlternatives) result.primary = route;

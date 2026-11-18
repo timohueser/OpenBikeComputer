@@ -1,7 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { emptyTrip, orderedRoutePoints, startLoopHere } from './editor';
-import type { Coordinate } from './geo';
 import { LegCache } from './route-legs';
 import { decodeCoordinates } from './route-answer';
 import { calculateLine } from './routing';
@@ -40,13 +39,7 @@ describe('signed route plans', () => {
         const [first, second] = [routePlan(record(402)), routePlan(record(403))];
         expect(joinedPlan([first, second])).toEqual({ points: [...first.points, ...second.points.slice(1)], turnarounds: [] });
         const turning = { ...second, turnarounds: [2] };
-        expect(joinedPlan([first, turning])!.turnarounds).toEqual([5]);
-    });
-
-    it('offers a long route whole only when the joined plan fits one request', () => {
-        const stage = (from: number) => ({ points: Array.from({ length: 22 }, (_, i): Coordinate => [8 + (from + i) / 100, 48]), turnarounds: [] });
-        expect(joinedPlan([stage(0), stage(21), stage(42)])!.points).toHaveLength(64);
-        expect(joinedPlan([stage(0), stage(21), stage(42), stage(63)])).toBeNull();
+        expect(joinedPlan([first, turning]).turnarounds).toEqual([5]);
     });
 
     it('builds a loop plan from the own start of the route with its shaping points', () => {
