@@ -421,11 +421,11 @@ fn catalog_keeps_only_long_relations_whose_parts_make_one_line() -> Result<(), S
         route(62, &[("route", "hiking")], path(&[6, 16, 26, 36])),
         route(65, &hiking("Aussicht"), path(&[40, 41, 42, 43])),
         long(58, &[54, 56, 50, 60, 55, 62, 65, 51]),
-        // Four stages of one line, listed out of order.
+        // Four stages of one line, listed so that no two neighbours join.
         route(61, &hiking("Weiter"), path(&[3, 4, 5, 6])),
         route(63, &hiking("Hinauf"), path(&[6, 16, 26, 36])),
         route(64, &hiking("Hinunter"), path(&[36, 46, 56, 66])),
-        long(59, &[64, 60, 63, 61]),
+        long(59, &[61, 64, 60, 63]),
     ]);
     let (records, _, report) = catalog(&Selection::whole(package.fork()), osm, 2, SECTION_M)?;
     let by_id: HashMap<i64, &Value> = records.iter().map(|r| (r["id"].as_i64().unwrap(), r)).collect();

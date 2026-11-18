@@ -81,7 +81,8 @@ pub(super) struct Part<'a> {
     pub line: Option<(f64, P, P)>,
 }
 
-/// The first and last point of a part, and whether it is a loop.
+/// The first and last point of a part, and whether it is a loop. The main line of a failed part is a
+/// loop when its ends meet: its plan did not close it.
 #[derive(Clone, Copy)]
 struct Ends {
     start: P,
@@ -93,7 +94,9 @@ impl Part<'_> {
     fn ends(&self) -> Option<Ends> {
         match self.kept {
             Some(kept) => Some(Ends { start: kept.start, finish: kept.finish, closed: kept.record["loop"] == true }),
-            None => self.line.map(|(_, start, finish)| Ends { start, finish, closed: false }),
+            None => {
+                self.line.map(|(_, start, finish)| Ends { start, finish, closed: distance(start, finish) <= MEET_M })
+            }
         }
     }
 
@@ -108,9 +111,10 @@ impl Part<'_> {
 /// Whether the parts of a long relation are separate routes, not one line, in any member order. Two
 /// open parts join when an end of one is within `MEET_M` of an end of the other. A loop joins no
 /// part: it comes back to its start and takes the line no further. The parts are separate routes
-/// when at least two parts have ends and the largest group of open parts that join holds fewer than
-/// a third of them: a line with one or two holes in the map data keeps a piece of at least a third.
-/// A part with no ends counts for nothing.
+/// when at least two parts have ends, loops included, and the largest group of open parts that join
+/// holds fewer than a third of all parts with ends. With no loop, a line with one or two holes in
+/// the map data keeps a piece of at least a third; loop parts lower the share of that piece. A part
+/// with no ends counts for nothing.
 pub(super) fn apart(parts: &[Part]) -> bool {
     let ends: Vec<Ends> = parts.iter().filter_map(Part::ends).collect();
     let open: Vec<Ends> = ends.iter().copied().filter(|e| !e.closed).collect();
