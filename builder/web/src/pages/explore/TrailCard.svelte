@@ -3,11 +3,10 @@
 <script module lang="ts">
     import type { TrailEntry } from '../../lib/planner/signed-routes';
     import { signedNumbers } from './SignedCard.svelte';
+    import { stageCount } from './strip';
 
-    const stages = (trail: Pick<TrailEntry, 'stage_count'>) => (trail.stage_count ?? 0) >= 2 && `${trail.stage_count} stages`;
-
-    /** The second line of a row of the far list. */
-    export const trailParts = (entry: TrailEntry) => [...signedNumbers(entry), entry.loop && 'Loop', stages(entry)];
+    /** The second line of a row of the far list. A far file does not say which stages the catalog holds. */
+    export const trailParts = (entry: TrailEntry) => [...signedNumbers(entry), entry.loop && 'Loop', stageCount(entry.stage_count)];
 </script>
 
 <script lang="ts">
@@ -35,7 +34,7 @@
     const profile = $derived(record?.trail_profile_m && { line: record.trail_profile_m.flatMap((_, i) => [i / 1000, 0]), heights: record.trail_profile_m });
 </script>
 
-<RouteCard name={trail.name ?? trail.ref ?? ''} meta={[trail.loop ? 'Loop' : 'One way', stages(trail), kindName(trail)]} numbers={signedNumbers(trail)}
+<RouteCard name={trail.name ?? trail.ref ?? ''} meta={[trail.loop ? 'Loop' : 'One way', stageCount(trail.stage_count, record?.parts), kindName(trail)]} numbers={signedNumbers(trail)}
     {profile} failure={failed ? 'The trail could not load.' : undefined} more={record?.parts || record?.credit ? more : undefined} {onclose}>
     {#snippet picture()}{#if item}<SignedPicture {item} />{/if}{/snippet}
     {#snippet mark()}<span class="mark"><TrailMarker symbol={trail.symbol} ref={trail.ref} /></span>{/snippet}

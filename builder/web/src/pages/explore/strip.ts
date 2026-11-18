@@ -1,4 +1,4 @@
-/** The layout of the strip of stages on the trail card: one cell for each part of the trail, in trail order. */
+/** The layout of the strip of stages on the trail card, one cell for each part of the trail in trail order, and its count. */
 import type { TrailPart } from '../../lib/planner/signed-routes';
 
 export interface StripCell {
@@ -23,4 +23,11 @@ export function stripCells(parts: TrailPart[], numbered: boolean): StripCell[] {
         id: part.id, share: widths[i] / total, ...numbered && part.stage !== undefined ? { number: part.stage } : {},
         missing: !!part.missing, jump: !!part.jump,
     }));
+}
+
+/** "N stages", or "K of N stages" when the catalog holds K of the N stages of `parts`; nothing under two stages. */
+export function stageCount(count: number | undefined, parts?: TrailPart[]): string | false {
+    if (count === undefined || count < 2) return false;
+    const held = parts && new Set(parts.filter(part => !part.missing && part.stage !== undefined).map(part => part.stage)).size;
+    return held !== undefined && held < count ? `${held} of ${count} stages` : `${count} stages`;
 }

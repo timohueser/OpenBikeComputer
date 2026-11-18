@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { TrailPart } from '../../lib/planner/signed-routes';
-import { stripCells } from './strip';
+import { stageCount, stripCells } from './strip';
 
 describe('stripCells', () => {
     it('makes each part as wide as its length, and a part with no length as wide as the mean', () => {
@@ -15,6 +15,7 @@ describe('stripCells', () => {
             { id: 3, share: 0.1, number: 3, missing: false, jump: false }, { id: 4, share: 0.3, number: 4, missing: false, jump: false },
             { id: 5, share: 0.2, number: 5, missing: true, jump: false },
         ]);
+        expect([stageCount(5, parts), stageCount(2, parts.slice(2, 4)), stageCount(5), stageCount(1)]).toEqual(['2 of 5 stages', '2 stages', '5 stages', false]);
     });
 
     it('numbers no part of a trail with fewer than two stages, and marks a jump', () => {

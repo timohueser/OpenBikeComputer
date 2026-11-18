@@ -83,7 +83,7 @@
     /** A trail that is a route record has the card of a route. */
     const trailRoute = $derived(trail?.record?.line_udeg ? once(trail.record, () => signedItem(trail!.record!, bike)) as SignedItem : undefined);
     /** The selected trail and its parts. The map marks them and does not move to them: a trail runs out of most views. */
-    const marked = $derived(trail ? [trail.id, ...trail.record?.parts?.map(part => part.id) ?? trail.record?.stages ?? []].map(String) : []);
+    const marked = $derived(trail && trailAbout ? [trail.id, ...trail.record?.parts?.map(part => part.id) ?? trail.record?.stages ?? []].map(String) : []);
     // The map credits are HTML, and a record credit is plain text. A far file has no credits: the selected trail brings its own.
     const credits = $derived(recordCredits([...inView.flatMap(item => item.kind === 'signed' ? [item.record] : []), ...trail?.record ? [trail.record] : []])
         .map(escapeMarkup));
