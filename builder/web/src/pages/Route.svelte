@@ -40,6 +40,10 @@
      * place whose panel is open. A chosen day acts as the part when none is selected. */
     let part = $state<[number, number] | null>(null), hover = $state<[number, number] | null>(null);
     let day = $state<[number, number] | null>(null), place = $state<Coordinate | null>(null);
+    // PROTOTYPE
+    let dots = $state.raw<Coordinate[]>([]), icon = $state(''), litDiscs = $state.raw<{ at: Coordinate; count?: number }[]>([]), chosen = $state.raw<any>(null);
+    const swapMode = new URLSearchParams(location.search).get('small') === 'swap';
+    const discs = $derived(chosen ? [...litDiscs.filter(d => d.at.join() !== chosen.place.coordinate.join()), { at: chosen.place.coordinate }] : litDiscs);
 
     const plan = $derived(record && isPlan(record) ? record : undefined);
     // Derived, so the remembered device of a first connection shows at once.
@@ -170,11 +174,12 @@
     {/snippet}
     {#snippet picture()}
         {#if summary}<Picture {library} {id} {summary} {pins} mark={share} onpoint={next => share = next ?? undefined}
-            part={focus} lit={hover ?? focus} {place} />{/if}
+            part={focus} lit={hover ?? focus} place={null} {dots} {discs} {icon} popup={swapMode ? chosen : null} />{/if}
     {/snippet}
     {#if plan && summary}
         {#key id}<Rows {summary} trip={plan.trip} {line} {facts} {pins} mark={share} onpoint={next => share = next ?? undefined}
-            {part} onpart={next => part = next} onhover={next => hover = next} onday={next => day = next} onplace={next => place = next} />{/key}
+            {part} onpart={next => part = next} onhover={next => hover = next} onday={next => day = next} onplace={next => place = next}
+            onplaces={(next, kind) => { dots = next; icon = kind; }} onlit={next => litDiscs = next} onchosen={next => chosen = next} />{/key}
     {/if}
     {#if sharing && summary}<Share {library} {id} {name} {summary} onClose={() => sharing = false} />{/if}
     {#if deleting}

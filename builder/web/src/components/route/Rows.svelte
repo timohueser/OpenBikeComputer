@@ -13,7 +13,7 @@
     import { lineCoordinates } from '../../lib/library/summary';
     import { phoneLink, phoneNumbers, websiteLink } from '../../lib/planner/contact-links';
     import { orderedRoutePoints, planView, type Place, type RoutePoint, type Trip } from '../../lib/planner/editor';
-    import { cumulative, nearestProgress, routeSlice, type Coordinate } from '../../lib/planner/geo';
+    import { cumulative, kilometres, nearestOnLine, nearestProgress, routeSlice, type Coordinate } from '../../lib/planner/geo';
     import { profileGrades } from '../../lib/planner/grade-data';
     import { config } from '../../lib/planner/map-data';
     import { corridorPlaces } from '../../lib/planner/place-index';
@@ -29,7 +29,10 @@
     /** The bottom card of the Route page: the waypoints, the heights, the surface and the places along the route or one
      * day of it, on one axis. Shares are 0 to 1 of the route. Without the calculated line, the rows that the summary
      * holds show. A drag selects a part; with no part, a click on a climb in the elevation row selects the climb. */
-    let { summary, trip, line, facts, pins, mark, onpoint, part, onpart, onhover, onday, onplace }: {
+    let { summary, trip, line, facts, pins, mark, onpoint, part, onpart, onhover, onday, onplace, onplaces, onlit, onchosen }: {
+        onplaces: (places: Coordinate[], icon: string) => void;
+        onlit: (discs: { at: Coordinate; count?: number }[]) => void;
+        onchosen: (info: { place: Place; km: string; off: string } | null) => void;
         summary: RouteSummary;
         trip: Trip;
         line?: RoutingLine;
@@ -208,6 +211,25 @@
         [open, openPlace] = [undefined, undefined];
     }
 
+    // PROTOTYPE: the variants of the pointer on a group and of a click with the small map.
+    const proto = new URLSearchParams(location.search);
+    const groupMode = proto.get('group') ?? 'all', smallMode = proto.get('small') ?? 'stay';
+    let hovered = $state<number>();
+    const offOf = (place: Place) => `${Math.round(kilometres(nearestOnLine(slice, place.coordinate).at, place.coordinate) * 1000 / 10) * 10} m from the route`;
+    $effect(() => { onplaces(category ? (places.found ?? []).map(place => place.coordinate) : [], category ? placeCategories[category].icon : ''); });
+    $effect(() => {
+        const group = hovered === undefined ? undefined : groups[hovered];
+        (window as any).protoGroup = group?.places.map(place => place.coordinate);
+        if (!group) return onlit([]);
+        if (group.places.length === 1) return onlit([{ at: group.places[0].coordinate }]);
+        if (groupMode === 'all') return onlit(group.places.map(place => ({ at: place.coordinate })));
+        if (groupMode === 'one') {
+            const n = group.places.length;
+            return onlit([{ at: [group.places.reduce((a, p) => a + p.coordinate[0], 0) / n, group.places.reduce((a, p) => a + p.coordinate[1], 0) / n], count: n }]);
+        }
+        onlit([]);
+    });
+    $effect(() => { onchosen(chosenPlace ? { place: chosenPlace, km: `km ${kmOf(chosenPlace).replace(/\s*km$/, '')}`, off: offOf(chosenPlace) } : null); });
     const kmOf = (place: Place) => formatDistance((shown.from + nearestProgress(slice, place.coordinate) * span) * totalM);
 </script>
 
@@ -228,6 +250,8 @@
         <strong>{point.label}</strong>
         {#if point.placeKind}<small>{kindLabel(point.placeKind)}</small>{/if}
         {#if point.note}<p>{point.note}</p>{/if}
+        {#if 'category' in point}<small>km {kmOf(point as Place).replace(/\s*km$/, '')} · {offOf(point as Place)}</small>{/if}
+        {#if 'category' in point && !hours}<OpeningHours value="Mo-Sa 08:00-22:00; Su 10:00-18:00" /><p class="contacts"><a href="#/">Website</a></p>{/if}
         {#if hours}<OpeningHours value={hours} />{/if}
         {#if website || phone}
             <p class="contacts">
@@ -287,7 +311,8 @@
             <span class="note">None within {formatDistance(PLACE_M)}</span>
         {:else if category}
             {#each groups as group, i (i)}
-                <span class="place" class:open={openPlace?.group === i} style:left={`${group.at * 100}%`}
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <span class="place" class:open={openPlace?.group === i} onpointerenter={() => hovered = i} onpointerleave={() => { if (hovered === i) hovered = undefined; }} style:left={`${group.at * 100}%`}
                     style:transform={group.at * width > width - 40 ? 'translate(-100%, -50%)' : undefined}>
                     <button type="button" aria-label={group.places.map(place => place.label).join(', ')} aria-expanded={openPlace?.group === i}
                         onclick={event => { show(event.currentTarget.parentElement!, undefined); openPlace = openPlace?.group === i ? undefined : { group: i }; }}>
@@ -296,7 +321,7 @@
                     </button>
                     {#if openPlace?.group === i}
                         {#if chosenPlace}
-                            {@render about(chosenPlace)}
+                            {#if smallMode !== 'swap'}{@render about(chosenPlace)}{/if}
                         {:else}
                             <div class="panel list" data-panel style:left={`${shift}px`}>
                                 {#each group.places.slice(0, LIST_NAMES) as place, j (j)}

@@ -12,7 +12,8 @@
      * place under a lower picture stays free. When the map would get less than MAP_PX, the cover is large and cut, and
      * the map is small in a corner; a click on the small one swaps them, and only the large one shows the pins. The
      * pointer is a share of the summary line from 0 to 1, so the cover and the map mark the same place. */
-    let { library, id, summary, ride = false, pins = [], photos = [], onphoto, mark, onpoint, part, lit, place }: {
+    let { library, id, summary, ride = false, pins = [], photos = [], onphoto, mark, onpoint, part, lit, place, dots = [], discs = [], icon = '', popup = null }: {
+        dots?: [number, number][]; discs?: { at: [number, number]; count?: number }[]; icon?: string; popup?: any;
         library: Library;
         /** The id of a route or the key of a ride. */
         id: string;
@@ -47,6 +48,8 @@
     const coverWidth = $derived(Math.round((coverHeight - 2) * WIDTH / HEIGHT) + 2);
     const side = $derived(covered && width - coverWidth - GAP_PX >= MAP_PX);
 
+    // PROTOTYPE: a popup makes the map large.
+    $effect(() => { if (popup) swapped = true; });
     $effect(() => {
         const target = id;
         let live = true;
@@ -76,7 +79,8 @@
             </div>
         {/if}
         <div class="slot map">
-            <RouteMap {summary} {ride} pins={side || mapLarge ? pins : []} photos={side || mapLarge ? photos : []} {onphoto} {mark} {onpoint} fitTo={part} {lit} {place} />
+            <RouteMap {summary} {ride} pins={side || mapLarge ? pins : []} photos={side || mapLarge ? photos : []} {onphoto} {mark} {onpoint} fitTo={part} {lit} place={side || mapLarge ? null : place}
+                dots={side || mapLarge ? dots : []} discs={side || mapLarge ? discs : []} {icon} popup={side || mapLarge ? popup : null} />
             {#if !side && !mapLarge}<button type="button" class="swap" aria-label="Show the map large" onclick={() => swapped = true}></button>{/if}
         </div>
         <!-- The map has the credit of the base map behind its own button; this button has the rest, such as the terrain. -->
