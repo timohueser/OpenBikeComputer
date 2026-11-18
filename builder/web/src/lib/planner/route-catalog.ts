@@ -153,12 +153,13 @@ export class RouteCatalog {
      */
     async trailsInBox(box: Box): Promise<TrailEntry[] | null> {
         if (!config.trails || trailsTooWide(box)) return null;
-        const files = await Promise.all(boxCells(box, 7).map(id => cached(this.farCells, id, id => loadTrailCell(id).then(entries => {
+        const files = boxCells(box, 7).map(id => cached(this.farCells, id, id => loadTrailCell(id).then(entries => {
             if (this.farCells.has(id)) this.farLoaded.set(id, entries);
             return entries;
-        }), FAR_FILES)));
+        }), FAR_FILES));
+        // The files that the cache dropped go, also when a load of this box fails.
         for (const id of this.farLoaded.keys()) if (!this.farCells.has(id)) this.farLoaded.delete(id);
-        return this.trailsOf(files, box);
+        return this.trailsOf(await Promise.all(files), box);
     }
 
     /** The answer of `trailsInBox` with no wait, or undefined while a far file of the box is not loaded. */

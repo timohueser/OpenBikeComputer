@@ -1,6 +1,5 @@
 <!-- The strip of the parts of a trail: a cell in the colour of the trail for each part in the catalog, a grey dashed cell
-     for each part that is not, each as wide as its length. Cells too thin for that are one bar with filled and empty
-     runs. -->
+     for each part that is not, each as wide as its length. Narrow cells make one bar with filled and empty runs. -->
 <script lang="ts">
     import { onRouteColor } from '../../lib/planner/route-colors';
     import type { TrailPart } from '../../lib/planner/signed-routes';
@@ -8,14 +7,15 @@
 
     let { parts, numbered, color }: { parts: TrailPart[]; numbered: boolean; color: string } = $props();
 
-    /** The numbers show only when each cell is wide enough for its number. A cell under `THIN_PX` makes the strip one bar. */
-    const DIGIT_PX = 6, PAD_PX = 4, GAP_PX = 1, JUMP_PX = 8, THIN_PX = 4;
+    /** The numbers show only when each cell is wide enough for its number. With no numbers, cells under `CELL_PX` on
+     * average make the strip one bar with filled and empty runs. */
+    const DIGIT_PX = 6, PAD_PX = 4, GAP_PX = 1, JUMP_PX = 8, CELL_PX = 12;
     const cells = $derived(stripCells(parts, numbered));
     let width = $state(0);
     /** The width of the cells: the strip less the gaps between them. */
     const room = $derived(width - GAP_PX * (cells.length - 1) - JUMP_PX * cells.slice(1).filter(cell => cell.jump).length);
-    const thin = $derived(cells.some(cell => room * cell.share < THIN_PX));
-    const numbers = $derived(!thin && cells.every(cell => cell.number === undefined || room * cell.share >= PAD_PX + DIGIT_PX * String(cell.number).length));
+    const numbers = $derived(numbered && cells.every(cell => cell.number === undefined || room * cell.share >= PAD_PX + DIGIT_PX * String(cell.number).length));
+    const thin = $derived(!numbers && room / cells.length < CELL_PX);
 </script>
 
 <div class="strip" class:thin style:--trail={color} style:--on-trail={onRouteColor(color)} bind:clientWidth={width} aria-hidden="true">

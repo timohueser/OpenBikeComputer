@@ -20,7 +20,9 @@
     import SignedPicture from './SignedPicture.svelte';
     import StageStrip from './StageStrip.svelte';
 
-    let { item, record, failed, onclose }: {
+    let { about: trail, item, record, failed, onclose }: {
+        /** The record or the far entry of the trail. */
+        about: CatalogRecord | TrailEntry;
         /** The trail of the far files, for the picture. */
         item?: TrailItem;
         /** The record of the trail: first that of a cell file if there is one, then the whole record. */
@@ -29,7 +31,6 @@
         onclose: () => void;
     } = $props();
 
-    const trail = $derived((record ?? item?.entry)!);
     // The entries of `trail_profile_m` are at equal shares of the trail: on a line of equal steps, MiniProfile places them so.
     const profile = $derived(record?.trail_profile_m && { line: record.trail_profile_m.flatMap((_, i) => [i / 1000, 0]), heights: record.trail_profile_m });
 </script>

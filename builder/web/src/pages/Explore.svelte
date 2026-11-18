@@ -78,6 +78,8 @@
     /** The row of the selected trail or route. */
     const currentId = $derived(trail ? String(trail.id) : selected);
     const current = $derived(shown.find(item => item.id === currentId));
+    /** What the trail card names: a trail restored from the history has nothing to name until its record comes. */
+    const trailAbout = $derived(trail?.record ?? trail?.entry);
     /** A trail that is a route record has the card of a route. */
     const trailRoute = $derived(trail?.record?.line_udeg ? once(trail.record, () => signedItem(trail!.record!, bike)) as SignedItem : undefined);
     /** The selected trail and its parts. The map marks them and does not move to them: a trail runs out of most views. */
@@ -186,14 +188,16 @@
         selected = undefined;
         if (trail?.id === id) return;
         const next = trail = { id, entry, record: catalog.record(id) };
+        let opened: typeof trail = { ...next, failed: true };
         try {
-            // A trail opened from a stage has no far line yet: the far files of the view have it.
+            // A trail opened from a stage or from the history has no far line yet: the far files of the view have it.
             const [record, entries] = await Promise.all([catalog.trail(id), entry || !view ? undefined : catalog.trailsInBox(view).catch(() => null)]);
-            if (trail === next) trail = { ...next, entry: entry ?? entries?.find(other => other.id === id), record: record ?? next.record, failed: !record };
+            opened = { ...next, entry: entry ?? entries?.find(other => other.id === id), record: record ?? next.record, failed: !record };
         } catch (error) {
             console.error('Trail:', error);
-            if (trail === next) trail = { ...next, failed: true };
         }
+        // A trail with nothing to show, such as one of the history that a new release does not have, closes.
+        if (trail === next) trail = opened.entry || opened.record ? opened : undefined;
     }
 
     /** The button that opens the trail card goes with the stage card: the focus moves to the new card. */
@@ -274,7 +278,7 @@
 
 <!-- TrailView shows the routes of a near view only. -->
 <ListAndMap title="Explore" {items} {shown} {place} fit={0} look="signed" {credits} selected={chosen ? [chosen.id] : []} {marked}
-    onselect={select} onview={next => setView(wrapped(next))} card={trail ? trailCard : chosen ? card : undefined}
+    onselect={select} onview={next => setView(wrapped(next))} card={trailAbout ? trailCard : chosen ? card : undefined}
     mapButtons={hasTrailView(config) && shown.length && !far ? mapButtons : undefined}>
     {#snippet list()}
         <!-- The search field finds places only; a chosen place moves the map. -->
@@ -313,8 +317,8 @@
 {#snippet trailCard(refocus: () => void)}
     {#if trailRoute}
         <SignedCard item={trailRoute} onplan={() => plan(trailRoute)} onclose={() => { refocus(); trail = undefined; }} />
-    {:else}
-        <TrailCard item={trail!.entry && trailOf(trail!.entry)} record={trail!.record} failed={!!trail!.failed} onclose={() => { refocus(); trail = undefined; }} />
+    {:else if trailAbout}
+        <TrailCard about={trailAbout} item={trail!.entry && trailOf(trail!.entry)} record={trail!.record} failed={!!trail!.failed} onclose={() => { refocus(); trail = undefined; }} />
     {/if}
 {/snippet}
 
