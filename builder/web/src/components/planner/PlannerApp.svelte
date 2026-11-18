@@ -56,7 +56,8 @@
     import { StopFinder, stretchKey, type NightChoices } from '../../lib/planner/night-stops.svelte';
     import { nightKinds, nightWindows, proposal, proposeNights, suits, withProposals, type Proposal, type Stop } from '../../lib/planner/stops';
     import { searchPlan } from '../../lib/planner/search/plan';
-    import { placeDetails, type SearchPlace, type SearchState, type SearchContext, type Where } from '../../lib/planner/search/types';
+    import { placeDetails, withDetails, type SearchPlace, type SearchState, type SearchContext, type Where } from '../../lib/planner/search/types';
+    import { placeSource } from '../../lib/planner/place-index';
     import { asPlace, category, sleepCategory, stayKind, stayOptions, trainNightText } from '../../lib/planner/search/presentation';
     import { applyQueryChanges } from '../../lib/planner/search/actions';
     import type { MapPoint, MapSegment } from '../../lib/planner/map-types';
@@ -349,7 +350,7 @@
         const id = detailsId;
         void mapPlace;
         detailsError = '';
-        if (!id || !/^(?:[nwr]|Q)[1-9]\d*$/.test(id) || untrack(() => id in details)) return;
+        if (!id || !placeSource(id) || untrack(() => id in details)) return;
         const coordinate = untrack(() => (shownPlace ?? selectedPoint)!.coordinate);
         const abort = new AbortController();
         placeDetails(id, coordinate, abort.signal).then(found => {
@@ -877,11 +878,6 @@
     }
 
     const placeRef = (place: Place): PlaceRef => ({ placeKind: place.placeKind, placeId: place.id });
-
-    function withDetails(place: Place, found: SearchPlace | null | undefined): Place {
-        return found ? { ...place, website: found.website, phone: found.phone, content: found.content, description: found.description || place.description,
-            openingHours: found.opening_hours, hoursStatus: found.hoursStatus, locality: found.city } : place;
-    }
 
     function newPoint(coordinate: Coordinate, kind: EditableKind, label?: string): RoutePoint {
         const autoLabel = kind === 'waypoint' && label === undefined;
