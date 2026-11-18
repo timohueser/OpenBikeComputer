@@ -24,7 +24,7 @@ const MAX_ZOOM = DEM_MAX_ZOOM + 1;
 const LABELS = 'weather-labels', TOWNS = 'places_locality';
 /** From this zoom the place marks can show peaks with their own icon and name. */
 const PEAK_SYMBOLS = ROW_LEVEL;
-/** Peaks take labels from this zoom, where a view touches at most nine place tiles. */
+/** Peaks take labels from this zoom, the first level of the place marks: further out, a view would read many place tiles. */
 const SUMMITS = 12;
 const FAILED = 'Weather data could not load for this region.';
 
@@ -44,8 +44,10 @@ function labelLayer(map: Map, theme: Theme): SymbolLayerSpecification {
         layout: {
             'text-field': ['case', ['has', 'value'], ['format', ['get', 'name'], {}, '  ', {}, ['get', 'value'], { 'font-scale': 1.1 }], ['get', 'name']],
             'text-size': town('text-size'), 'text-font': town('text-font'), 'text-padding': town('text-padding'), 'text-max-width': 14,
-            'text-anchor': ['case', peak, 'left', 'center'], 'text-offset': ['case', peak, ['literal', [0.8, 0]], ['literal', [0, 0]]],
-            'icon-image': ['case', peak, `poi-peak-${theme}`, ''], 'icon-size': 0.8,
+            // A highlighted peak has a disc of the place marks, whose clear box hides the peak symbol: the symbol is optional,
+            // and the name starts beyond the half width of that box and the padding of the town labels.
+            'text-anchor': ['case', peak, 'left', 'center'], 'text-offset': ['case', peak, ['literal', [2, 0]], ['literal', [0, 0]]],
+            'icon-image': ['case', peak, `poi-peak-${theme}`, ''], 'icon-size': 0.8, 'icon-optional': true,
             'symbol-sort-key': ['get', 'sort'],
         },
         paint: { 'text-color': map.getPaintProperty(TOWNS, 'text-color'), 'text-halo-color': map.getPaintProperty(TOWNS, 'text-halo-color'), 'text-halo-width': 1.2 },

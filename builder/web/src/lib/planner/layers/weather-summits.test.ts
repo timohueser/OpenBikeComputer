@@ -7,14 +7,24 @@ const tile: TilePlace[] = [
 ];
 vi.mock('../map-data', () => ({ config: { places: 'https://tiles.example/places.json', terrain: 'https://tiles.example/terrain/{z}/{x}/{y}.webp' } }));
 vi.mock('../place-index', () => ({ placeTileKeys: vi.fn(async () => ['11/1071/720']), placeTile: vi.fn(async () => tile) }));
+// Each place has typical rain, so each peak takes a label.
+vi.mock('./weather', async original => ({ ...await original<object>(), rainAt: () => 12 }));
 
 describe('weather summits', () => {
-    it('labels the summits of the place tiles of the view from zoom 12, whatever kinds the map shows', async () => {
-        const { viewSummits } = await import('./weather-layer.svelte');
-        const { mapPlaces } = await import('./weather');
-        expect(mapPlaces(await viewSummits([8.2, 46.9, 8.3, 47], 12))).toEqual([
-            { name: 'Pilatus', coordinate: [8.25, 46.98], peak: true, population: 0, rank: 0, minZoom: 12, elevation: 2128 },
-        ]);
-        expect(await viewSummits([8.2, 46.9, 8.3, 47], 11.9)).toEqual([]);
+    it('labels the summits of the place tiles of the view, which the map style has no source for', async () => {
+        const { weatherLayer } = await import('./weather-layer.svelte');
+        const setData = vi.fn();
+        const map = {
+            getSource: () => ({ setData }), getZoom: () => 12, getBounds: () => ({ toArray: () => [[8.2, 46.9], [8.3, 47]] }),
+            // The basemap has no town here, and the style has no `places` source.
+            querySourceFeatures: () => [],
+        };
+        const layer = Object.assign(weatherLayer('https://tiles.example/climate.json'), {
+            map, shown: true, date: '2026-07-01', climate: { version: 1, meta: { firstYear: 2015 }, loaded: () => undefined },
+        });
+        layer.variable!.value = 'rain';
+        await (layer as unknown as { relabel: () => Promise<void> }).relabel();
+        expect(setData.mock.lastCall?.[0].features.map((feature: { properties: { name: string; peak: boolean } }) => feature.properties))
+            .toEqual([expect.objectContaining({ name: 'Pilatus', peak: true })]);
     });
 });
