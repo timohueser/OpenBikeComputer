@@ -1,7 +1,6 @@
 import { loadRouteCell } from './map-data';
 import { tileColumn, tileRow } from './place-index';
 import type { BikeType } from './riding-profiles';
-import { decodeCoordinates } from './route-answer';
 import { kinds, type CatalogRecord } from './signed-routes';
 
 /**
@@ -36,9 +35,21 @@ export function boxCells(box: Box): string[] {
     return cells;
 }
 
+/** True when a vertex of `udeg`, the deltas of a line in microdegrees, is in the box, edges included. */
+function inBox(udeg: number[], [west, south, east, north]: Box): boolean {
+    for (let i = 0, lon = 0, lat = 0; i < udeg.length; i += 2) {
+        lon += udeg[i];
+        lat += udeg[i + 1];
+        const x = lon / 1e6, y = lat / 1e6;
+        if (west <= x && x <= east && south <= y && y <= north) return true;
+    }
+    return false;
+}
+
 /** The cell files of the route catalog and their records. The cache has no limit: a session holds some tens of cells. */
 export class RouteCatalog {
     private readonly cells = new Map<string, Promise<CatalogRecord[] | null>>();
+    private readonly loaded = new Map<string, CatalogRecord[] | null>();
     private readonly records = new Map<number, CatalogRecord>();
 
     /** A loaded record, such as the long route of a stage. */
@@ -52,6 +63,7 @@ export class RouteCatalog {
         if (!file) {
             file = loadRouteCell(id).then(records => {
                 records?.forEach(record => this.records.set(record.id, record));
+                this.loaded.set(id, records);
                 return records;
             });
             file.catch(() => this.cells.delete(id));
@@ -66,13 +78,19 @@ export class RouteCatalog {
      */
     async inBox(box: Box, bike: BikeType): Promise<CatalogRecord[] | null> {
         if (tooWide(box)) return null;
+        await Promise.all(boxCells(box).map(id => this.cell(id)));
+        return this.inBoxNow(box, bike)!;
+    }
+
+    /** The answer of `inBox` with no wait, or undefined while a cell of the box is not loaded. */
+    inBoxNow(box: Box, bike: BikeType): CatalogRecord[] | null | undefined {
+        if (tooWide(box)) return null;
         const cells = boxCells(box);
-        const [west, south, east, north] = box;
+        if (!cells.every(id => this.loaded.has(id))) return undefined;
         const found = new Map<number, CatalogRecord>();
-        for (const file of await Promise.all(cells.map(id => this.cell(id)))) {
-            for (const route of file ?? []) {
-                if (!route.line_udeg || !kinds[bike].includes(route.kind)) continue;
-                if (decodeCoordinates(route.line_udeg).some(([lon, lat]) => west <= lon && lon <= east && south <= lat && lat <= north)) found.set(route.id, route);
+        for (const id of cells) {
+            for (const route of this.loaded.get(id) ?? []) {
+                if (route.line_udeg && kinds[bike].includes(route.kind) && inBox(route.line_udeg, box)) found.set(route.id, route);
             }
         }
         return [...found.values()].sort((a, b) => a.id - b.id);

@@ -61,6 +61,10 @@
         color: var(--ink);
         text-align: left;
     }
+    /* Inside the row: the scroll box of a list cuts a ring around it. */
+    .row:focus-visible {
+        outline-offset: -2px;
+    }
     .row:hover {
         background: var(--parchment);
     }
@@ -82,10 +86,20 @@
         gap: 1px;
         min-width: 0;
     }
+    /* A long name has two lines. */
+    strong {
+        display: -webkit-box;
+        overflow: hidden;
+        font-weight: 600;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+        line-clamp: 2;
+    }
     /* The numbers are one line where they fit and wrap where they do not: none is cut. */
     .meta, .badge, .room {
         color: var(--ink-soft);
         font-size: 12.5px;
+        font-variant-numeric: tabular-nums;
     }
     .badge, .meta span, .room {
         white-space: nowrap;

@@ -27,6 +27,7 @@
         together?: (id: string) => string[];
         /** Undefined after a click on the map where no route is. */
         onselect: (id: string | undefined) => void;
+        /** The first view, and then each view in which the map is still for `STILL_MS`. */
         onview: (view: Box) => void;
         /** A change fits the map to the shown items. */
         fit: number;
@@ -35,6 +36,9 @@
     } = $props();
 
     const LINE_ZOOM = 8;
+    /** A zoom in steps ends a move after each step. The page gets the view of a still map, so that such a gesture gives
+     * one view, at its end. */
+    const STILL_MS = 100;
     let container: HTMLElement;
     let map = $state.raw<maplibregl.Map>(), ready = $state(false), loaded = $state(false);
     const theme = $derived(appearance.dark ? 'dark' : 'light');
@@ -61,6 +65,10 @@
     const selectedFilter = $derived<maplibregl.FilterSpecification>(['in', ['get', 'id'], ['literal', selected]]);
     // A feature state changes the paint at once, with no transition and no new data.
     const bolder = (rest: number, under: number): maplibregl.ExpressionSpecification => ['case', ['boolean', ['feature-state', 'hover'], false], under, rest];
+    /** The width of a signed line: thin where a wide view shows many routes, wider where the rider follows one. `edge`
+     * is the light edge of the dark theme, on both sides. */
+    const signedWidth = (edge = 0): maplibregl.ExpressionSpecification => ['interpolate', ['linear'], ['zoom'],
+        9, bolder(2 + edge, 3 + edge), 12, bolder(3 + edge, 4 + edge), 15, bolder(4 + edge, 5 + edge)];
     /** While a signed route is selected, the other lines dim. */
     const signedOpacity = (dim: boolean) => bolder(dim ? 0.35 : 0.9, 1);
 
@@ -81,10 +89,10 @@
         }
         if (edge === SIGNED_GROUND) {
             map.addLayer({ id: 'signed-casing', type: 'line', source: 'routes', minzoom: LINE_ZOOM, filter: shownNow, layout: round,
-                paint: { 'line-color': edge, 'line-width': bolder(5, 6), 'line-opacity': signedOpacity(dim) } });
+                paint: { 'line-color': edge, 'line-width': signedWidth(2), 'line-opacity': signedOpacity(dim) } });
         }
         map.addLayer({ id: 'routes', type: 'line', source: 'routes', minzoom: LINE_ZOOM, filter: shownNow, layout: round,
-            paint: { 'line-color': line, 'line-width': bolder(3, 4), 'line-opacity': ride ? 1 : signed ? signedOpacity(dim) : bolder(0.75, 1) } });
+            paint: { 'line-color': line, 'line-width': signed ? signedWidth() : bolder(3, 4), 'line-opacity': ride ? 1 : signed ? signedOpacity(dim) : bolder(0.75, 1) } });
         // A wide line with no colour, so a click near a line selects it.
         map.addLayer({ id: 'routes-hit', type: 'line', source: 'routes', minzoom: LINE_ZOOM, filter: shownNow, layout: round,
             paint: { 'line-color': '#000', 'line-width': 14, 'line-opacity': 0 } });
@@ -153,8 +161,15 @@
         created.dragRotate.disable();
         created.touchZoomRotate.disableRotation();
         created.on('style.load', addLayers);
-        created.on('load', () => { loaded = true; onview(view()); });
-        created.on('moveend', () => onview(view()));
+        // The page gets its first view with the style: the load of the map waits for each tile of the view.
+        created.once('style.load', () => onview(view()));
+        created.on('load', () => { loaded = true; });
+        let still: ReturnType<typeof setTimeout> | undefined;
+        created.on('movestart', () => clearTimeout(still));
+        created.on('moveend', () => {
+            clearTimeout(still);
+            still = setTimeout(() => onview(view()), STILL_MS);
+        });
         created.on('click', 'routes-hit', event => { const id = event.features?.[0]?.properties.id; if (id) onselect(id); });
         created.on('click', 'bubbles', event => void zoomIn(event));
         created.on('click', event => {
@@ -180,11 +195,15 @@
             created.on('movestart', () => hover());
         }
         const terrainError = terrainRetry(created);
-        created.on('error', event => console.warn(terrainError(event) ? 'Routes map terrain:' : 'Routes map:', event.error));
+        created.on('error', event => {
+            console.warn(terrainError(event) ? 'Routes map terrain:' : 'Routes map:', event.error);
+            // A failed tile draws no frame, and only a frame tells the map that it has loaded.
+            created.triggerRepaint();
+        });
         map = created;
         const resize = new ResizeObserver(() => created.resize());
         resize.observe(container);
-        return () => { resize.disconnect(); created.remove(); lease.release(); };
+        return () => { clearTimeout(still); resize.disconnect(); created.remove(); lease.release(); };
     });
 
     $effect(() => {
@@ -246,9 +265,10 @@
         height: 100%;
         background: var(--parchment);
     }
-    /* The credits wrap before they reach the zoom buttons at the top right. */
+    /* The credits wrap before they reach the zoom buttons at the top right, and the buttons that the page puts beside
+       them (`--map-buttons`). */
     .routes-map :global(.maplibregl-ctrl-top-left) {
-        right: 52px;
+        right: calc(52px + var(--map-buttons, 0px));
     }
     /* The credit in the letters and the colours of the page, as on the map of a route. */
     .routes-map :global(.maplibregl-ctrl-attrib), .more-credits {

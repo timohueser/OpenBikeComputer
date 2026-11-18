@@ -32,9 +32,11 @@
         view: View;
         /** The id of the route that is bold while the pointer is on no route. */
         selected?: string;
-        onselect?: (id: string) => void;
-        /** Shows at the bottom of the window, over the view or its notice. */
-        card?: Snippet;
+        /** The id of the route under a click, or undefined after a click where no route is. */
+        onselect?: (id: string | undefined) => void;
+        /** Shows at the bottom of the window, over the view or its notice. It gets a function that moves the focus to
+         * the view: a card that closes itself calls it first, because its close button goes with it. */
+        card?: Snippet<[() => void]>;
     };
     // The window has two modes: a drop at `at` with the plan's data `near`, or `routes` from the first `view`.
     let props: {
@@ -78,7 +80,7 @@
         onhover: (x: number, y: number) => { hovered = engine?.routeAt(x, y) ?? null; bold(); },
         onclick: (x: number, y: number) => {
             const number = engine?.routeAt(x, y);
-            if (number) props.onselect?.(routes[number - 1].id);
+            props.onselect?.(number ? routes[number - 1].id : undefined);
         },
     };
     const drawRoute = () => {
@@ -189,7 +191,7 @@
             {/if}
         {/if}
     {/if}
-    {#if props.card}<div class="card">{@render props.card()}</div>{/if}
+    {#if props.card}<div class="card">{@render props.card(() => canvas.focus())}</div>{/if}
     <button type="button" class="close" aria-label="Close TrailView" onclick={() => dialog.close()}><Icon name="close" /></button>
     <Credits {credits} />
 </dialog>
@@ -309,13 +311,14 @@
         left: calc(max(12px, env(safe-area-inset-left)) + 232px);
         right: calc(max(12px, env(safe-area-inset-right)) + 44px);
         bottom: max(12px, env(safe-area-inset-bottom));
-        max-width: 980px;
     }
     @media (max-width: 640px) {
         .card {
             left: max(12px, env(safe-area-inset-left));
             right: max(12px, env(safe-area-inset-right));
             bottom: calc(max(12px, env(safe-area-inset-bottom)) + 152px);
+            /* The room between the controls at the top and the small map: a long text scrolls inside the card. */
+            --card-height: calc(100dvh - 236px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
         }
     }
     .route {
