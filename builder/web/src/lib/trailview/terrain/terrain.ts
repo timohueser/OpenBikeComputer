@@ -60,6 +60,12 @@ const LAYER_PAGES = 64;
 const CHECKS = 64;
 /** The probe reads the eye and four points this many metres east, west, north and south of it, for the slope. */
 const PROBE_STEP = 1;
+/**
+ * The probe runs again when the eye's height above the ground moves more than this many metres. That height
+ * enters the drawn height under the eye only in its rounding, and the probe's answer sets that height again: a
+ * probe at each change of it can swing between two answers one rounding step apart, and a still view never settles.
+ */
+const PROBE_ABOVE_M = 0.01;
 const READBACKS = 3;
 const RAD = Math.PI / 180;
 /** The workgroups of a cliff job, as ROW in cliff.wgsl. */
@@ -233,10 +239,11 @@ export class Terrain {
     private nearDrawn = false;
     private eyeDrawn = false;
     /**
-     * The state that the last probe read, what the probe reads of the pages (`probeKey`), a count of
-     * the frames that changed it and the last of those frames.
+     * The state that the last probe read and its height above the ground, what the probe reads of the pages
+     * (`probeKey`), a count of the frames that changed it and the last of those frames.
      */
     private probed = '';
+    private probedAbove = NaN;
     private probeReads = '';
     private changes = 0;
     private changedAt = 0;
@@ -649,10 +656,12 @@ export class Terrain {
         }
         // After the pages: the meshes' corners read the stored pages and the records.
         if (this.anchor) this.pieces?.encode(encoder, r.surfaceGroup, { anchor: this.anchor, above: this.above }, () => time('pieces'));
-        const state = `${this.anchor?.whole}/${this.anchor?.part}/${this.above}/${this.quality}/${this.changes}`;
-        const readback = state === this.probed ? undefined : r.readbacks.pop();
+        const state = `${this.anchor?.whole}/${this.anchor?.part}/${this.quality}/${this.changes}`;
+        const due = state !== this.probed || !(Math.abs(this.above - this.probedAbove) <= PROBE_ABOVE_M);
+        const readback = due ? r.readbacks.pop() : undefined;
         if (!readback) return () => {};
         this.probed = state;
+        this.probedAbove = this.above;
         const probe = encoder.beginComputePass({ label: 'probe' });
         probe.setPipeline(r.probe);
         probe.setBindGroup(0, r.probeGroup);
