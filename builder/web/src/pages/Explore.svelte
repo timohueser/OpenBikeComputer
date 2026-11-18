@@ -198,7 +198,9 @@
         try {
             // A trail opened from a stage or from the history has no far line yet: the far files of the view have it.
             const [record, entries] = await Promise.all([catalog.trail(id), entry || !view ? undefined : catalog.trailsInBox(view).catch(() => null)]);
-            opened = { ...next, entry: entry ?? entries?.find(other => other.id === id), record: record ?? next.record, failed: !record };
+            // A trail that is a route record keeps the record of its cell file: its card holds the cover by that object.
+            const kept = next.record?.line_udeg ? next.record : record ?? next.record;
+            opened = { ...next, entry: entry ?? entries?.find(other => other.id === id), record: kept, failed: !record };
         } catch (error) {
             console.error('Trail:', error);
         }
