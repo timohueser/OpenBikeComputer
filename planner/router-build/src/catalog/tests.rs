@@ -399,6 +399,36 @@ fn catalog_cuts_a_long_line_whose_plan_fails_into_sections() -> Result<(), Strin
 }
 
 #[test]
+fn catalog_keeps_only_long_relations_whose_parts_make_one_line() -> Result<(), String> {
+    let hiking = |name| vec![("route", "hiking"), ("name", name)];
+    let long = |id, children: &[i64]| -> Route {
+        (id, [vec![("type", "superroute")], hiking("Long")].concat(), members(children, Id::Relation))
+    };
+    let (package, osm) = grid(vec![
+        // Two loops: separate routes.
+        route(50, &hiking("Dorf"), path(&[0, 1, 11, 10, 0])),
+        route(51, &hiking("Badi"), path(&[44, 45, 55, 54, 44])),
+        long(52, &[50, 51]),
+        // Two stages that meet, and an absent stage.
+        route(54, &hiking("Etappe 1"), path(&[60, 61, 62, 63])),
+        route(55, &hiking("Etappe 2"), path(&[63, 64, 65, 66])),
+        long(53, &[54, 55, 996]),
+        route(56, &hiking("Elsewhere"), path(&[20, 30, 40, 50])),
+        // One jump is a hole in the data; two jumps and no join are separate routes.
+        long(57, &[54, 56]),
+        long(58, &[54, 56, 55]),
+    ]);
+    let (records, _, report) = catalog(&Selection::whole(package.fork()), osm, 2, SECTION_M)?;
+    let by_id: HashMap<i64, &Value> = records.iter().map(|r| (r["id"].as_i64().unwrap(), r)).collect();
+    assert_eq!(report.dropped.get("Apart"), Some(&vec![52, 58]), "{:?}", report.dropped);
+    assert!(by_id[&50].get("trail").is_none() && by_id[&51].get("trail").is_none());
+    assert_eq!(by_id[&53]["parts"][2]["missing"], true);
+    assert!(by_id.contains_key(&57));
+    assert_eq!((&by_id[&56]["trail"], &by_id[&55]["trail"]), (&json!(57), &json!(53)));
+    Ok(())
+}
+
+#[test]
 fn catalog_leaves_out_the_mark_of_a_route_in_france() -> Result<(), String> {
     let marked = |name| vec![("route", "hiking"), ("name", name), ("osmc:symbol", "red:white:red_bar")];
     let long = |id, children: &[i64]| -> Route {

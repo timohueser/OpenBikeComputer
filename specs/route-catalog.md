@@ -252,7 +252,7 @@ its place in `parts`, each with its stage number (see [Sections](#sections)). A 
 is also a long route of its own. A child route with no `name` and no `ref` that is a part gets a
 route record with the `name` and the `ref` of the long route that has it as a child relation; of
 two, the one with the lower relation ID. A long route is in the catalog when at least one of its
-parts is.
+parts is, unless its parts are separate routes (see below).
 
 The ends of a part in the catalog are the first and the last vertex of its `line_udeg`. A part that
 left the catalog has the first and the last point of its main line as its ends, when the builder
@@ -271,6 +271,14 @@ trail end of the part right before it, when that part has ends.
 
 So a run is a stretch of parts that join each other, such as the stages of a trail inside the region,
 or one of several trails that one relation lists one after another.
+
+A long route whose parts are separate routes, such as day loops from one village, is not in the
+catalog, and no part has it as `trail` or `parent`. Its parts are separate routes when no part meets the part
+right after it, and at least two parts count against one line. A loop part counts against one line.
+Two neighbouring parts with ends, neither a loop, meet when the second part is at most 60 m from the
+trail end of the first part; else they count against one line. 60 m is twice the distance within
+which a plan route follows its line, so two stages that share an end node meet. One count is a hole
+in the map data, so a trail with one jump stays in the catalog.
 
 A long route is complete when each part is in the catalog, and no part is cut, runs backwards or has
 a jump.

@@ -75,6 +75,8 @@ pub enum Reason {
     RouterLimit,
     SearchBudget,
     NoStages,
+    /// A long relation whose parts are separate routes, not one line.
+    Apart,
 }
 
 /// A route that `route` did not keep, with the length, first and last point of its main line when
@@ -632,6 +634,10 @@ fn catalog<S: Source + Clone + Send>(
         let (leaves, connector) = long::leaves(&relation, &relations);
         let parts: Vec<long::Part> =
             leaves.iter().enumerate().flat_map(|(i, leaf)| parts_of(leaf.id, Some(i + 1))).collect();
+        if long::apart(&parts) {
+            drops.insert(relation.id, Reason::Apart);
+            continue;
+        }
         let Some((record, points)) = long::record(&relation, &kind, &parts, connector) else {
             drops.insert(relation.id, Reason::NoStages);
             continue;

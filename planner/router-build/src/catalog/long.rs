@@ -5,7 +5,7 @@ use super::{
     ROUNDTRIP_M,
 };
 use crate::source::{Relation, Relations, Table};
-use planner_router::shape::{distance, P};
+use planner_router::shape::{distance, NEAR_M, P};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeSet, HashSet};
 
@@ -13,6 +13,9 @@ use std::collections::{BTreeSet, HashSet};
 const MAX_DEPTH: usize = 4;
 /// The entries of `trail_profile_m`.
 const TRAIL_PROFILE: usize = 201;
+/// Two parts meet when one has an end this near the other's end. Stages that share an end node of
+/// their OSM lines meet: the plan route of each follows its line within `NEAR_M`.
+const MEET_M: f64 = 2.0 * NEAR_M;
 
 /// A part of a long relation: a route relation, or a relation that the data does not hold, with the
 /// level of long relations that lists it, 1 for a member of the relation itself.
@@ -100,6 +103,28 @@ impl Part<'_> {
             None => self.line.map(|(length, ..)| length.round() as u64),
         }
     }
+}
+
+/// Whether the parts of a long relation are separate routes, not one line: no part meets the part
+/// right after it, and at least two parts count against one line. A loop counts against one line,
+/// and so does each pair of neighbouring parts with ends, neither a loop, that does not meet. One
+/// count is a hole in the map data, not a set of routes.
+pub(super) fn apart(parts: &[Part]) -> bool {
+    let flags = order(parts);
+    let ends: Vec<Option<Ends>> = parts.iter().map(Part::ends).collect();
+    let mut against = ends.iter().flatten().filter(|e| e.closed).count();
+    for i in 1..parts.len() {
+        let (Some(before), Some(part)) = (ends[i - 1], ends[i]) else { continue };
+        if before.closed || part.closed {
+            continue;
+        }
+        let end = if flags[i - 1].0 { before.start } else { before.finish };
+        if gap(part, end) <= MEET_M {
+            return false;
+        }
+        against += 1;
+    }
+    against >= 2
 }
 
 /// The record of a long relation from its parts, and the plan points of its kept parts joined.
